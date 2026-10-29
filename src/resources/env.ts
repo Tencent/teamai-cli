@@ -470,8 +470,8 @@ export class EnvHandler extends ResourceHandler {
     // and writing a file there would throw EISDIR.
     const teamaiHome = getDataHome(localConfig);
     const envShPath = path.join(teamaiHome, 'env.sh');
-    const inject = teamConfig.sharing.env.injectShellProfile !== false;
-    const needsEnvGate = localConfig.scope === 'project' && localConfig.inheritUserScope === true;
+    const inject = teamConfig.sharing.env.injectShellProfile ?? true;
+    const needsEnvGate = localConfig.scope === 'project' && (localConfig.inheritUserScope ?? false);
     // Until its row is written, nothing else tells the loader this checkout is a project's.
     if (localConfig.scope === 'project' && localConfig.projectRoot) await markEnvScopePending(localConfig.projectRoot);
     if (variables.length === 0 && kept.length === 0 && !await pathExists(envShPath) && !needsEnvGate) {
@@ -548,14 +548,14 @@ export class EnvHandler extends ResourceHandler {
       const exports = [...parseEnvFile(last)];
       const keeps = [...parseEnvFileKept(last)];
       const kept = exports.filter(([key]) => sameEnvName(secretKeys, key) === undefined);
-      const inherits = localConfig.scope === 'project' && localConfig.inheritUserScope === true;
+      const inherits = localConfig.scope === 'project' && (localConfig.inheritUserScope ?? false);
       const newKeeps = inherits ? secretKeys.filter((key) => sameEnvName(keeps, key) === undefined && !isReservedTeamEnvKey(key)) : [];
       if (kept.length < exports.length || newKeeps.length > 0) {
         await this.writeResolvedEnv(kept.map(([key, value]) => ({ key, value })), teamConfig, localConfig, [...keeps, ...newKeeps]);
         return;
       }
     }
-    const inject = teamConfig.sharing.env.injectShellProfile !== false;
+    const inject = teamConfig.sharing.env.injectShellProfile ?? true;
     if (localConfig.scope === 'project' && localConfig.projectRoot) await markEnvScopePending(localConfig.projectRoot);
     await this.updateShellProfile(teamConfig, envShPath, inject, localConfig);
     await registerEnvScope(localConfig, inject && await pathExists(envShPath));

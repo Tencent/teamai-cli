@@ -209,7 +209,7 @@ function indexLog(lines: RecallLogLine[]): LogIndex {
   const consumed = new Set<string>();
   for (const line of lines) {
     if (line.kind === 'claim') {
-      if (line.direct !== true || !logged.has(line.run)) continue;
+      if (!line.direct || !logged.has(line.run)) continue;
       // Earliest by time: a claim a busy lock left in a side record reads after the file's lines.
       const first = claimOf.get(line.run);
       if (!first || line.ts < first.ts) claimOf.set(line.run, line);
@@ -227,7 +227,7 @@ function indexLog(lines: RecallLogLine[]): LogIndex {
     }
     return root;
   };
-  const ownerOf = (r: RunLine): string | null => claimOf.get(r.run)?.session ?? (r.unambiguous === true ? r.session : null);
+  const ownerOf = (r: RunLine): string | null => claimOf.get(r.run)?.session ?? (r.unambiguous ? r.session : null);
   return { lines, claimOf, consumed, rootOf, ownerOf };
 }
 
@@ -318,7 +318,7 @@ function viewRoot(index: LogIndex, target: string): RootView {
   };
   const evidence = lines.filter((e): e is EvidenceLine => e.kind === 'evidence' && rootOf(e.session) === target
     // A read of unknown status (Codex's shell) counts only as a simple read, never as a pipeline's head or an item of a list.
-    && (e.status === 'success' || (e.status === 'unknown' && e.simple === true)));
+    && (e.status === 'success' || (e.status === 'unknown' && e.simple)));
   const credited = evidence.filter((e) => consumed.has(e.id)).flatMap(opened);
   const done = new Set(credited.map(creditOf));
   return { runs, recalled, adopted: new Set(credited.map((d) => d.key)).size, evidence, opened, creditOf, done };

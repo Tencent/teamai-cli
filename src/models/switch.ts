@@ -874,7 +874,7 @@ function buddyAllowed(availableModels: string[] | undefined, ids: string[]): Rec
 
 function reconcileBuddyAllowed(availableModels: string[] | undefined, allowed: Record<string, boolean> | undefined): string[] | undefined {
   if (!availableModels || !allowed) return availableModels;
-  const next = availableModels.filter((id) => allowed[id] !== false);
+  const next = availableModels.filter((id) => allowed[id] ?? true);
   for (const [id, enabled] of Object.entries(allowed)) {
     if (enabled && !next.includes(id)) next.push(id);
   }

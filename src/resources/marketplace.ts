@@ -99,7 +99,7 @@ export async function refreshMarketplace(repoPath: string): Promise<boolean> {
   const existingPlugins = new Map<string, MarketplacePlugin>();
   const nonAutoPlugins: MarketplacePlugin[] = []; // strict:true or no strict field
   for (const plugin of marketplace.plugins) {
-    if (plugin.strict === false) {
+    if (!(plugin.strict ?? true)) {
       existingPlugins.set(plugin.name, plugin);
     } else {
       nonAutoPlugins.push(plugin);
