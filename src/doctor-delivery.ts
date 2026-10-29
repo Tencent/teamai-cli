@@ -1360,8 +1360,8 @@ async function writableAgentLocations(ctx: DoctorContext): Promise<{ tool: strin
 }
 
 /**
- * Per tool, whether the last pull wrote its agents where it takes them now
- * (#1221): the env, or a recorded home, can move them after that pull.
+ * Per tool, whether it reads the configured agents directory, and whether
+ * the last pull wrote there. A stable custom write path can still be unread.
  */
 export async function buildAgentPlaceChecks(ctx: DoctorContext): Promise<Check[]> {
   const located = await writableAgentLocations(ctx);
@@ -1371,6 +1371,17 @@ export async function buildAgentPlaceChecks(ctx: DoctorContext): Promise<Check[]
   const recorded = key === undefined ? undefined : placesRecordOf((await loadStateForScope(ctx.localConfig)).lastPullByWorkspace?.[key])?.agents;
   const checks: Check[] = [];
   for (const { tool, own, where } of located) {
+    if (where.reads !== 'unknown') {
+      const notRead = unreadWrites(where)
+        .filter((entry) => entry.reason === 'not-read');
+      checks.push({
+        name: `${tool} reads the agents teamai writes`,
+        source: 'local',
+        check: async () => notRead.length === 0,
+        fix: `${notRead.map((entry) => `${tool} does not read ${entry.write}`).join('; ')}. `
+          + `Point toolPaths.${tool}.agents in teamai.yaml at a directory ${tool} reads.`,
+      });
+    }
     const wrote = recorded?.[tool];
     if (wrote === undefined) continue;
     const writes = writesOf(where).map((place) => place.path);
