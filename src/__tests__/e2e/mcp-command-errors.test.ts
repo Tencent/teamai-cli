@@ -28,7 +28,11 @@ function runCLI(home: string, args: string[]): Promise<{ code: number | null; ou
   });
 }
 
-describe.each(['claude', 'codex'])('MCP command failures for %s (real CLI)', (tool) => {
+describe.each([
+  { label: 'claude', tool: 'claude', initial: '' },
+  { label: 'codex', tool: 'codex', initial: '' },
+  { label: 'codex with a UTF-8 BOM and CRLF', tool: 'codex', initial: '\uFEFF# member settings\r\nmodel = "gpt-5"\r\n' },
+])('MCP command failures for $label (real CLI)', ({ tool, initial: initialConfig }) => {
   it.each(['inject', 'remove'])('%s reports partial failure, preserves the broken config and retries after repair', async (command) => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-mcp-command-errors-'));
     sandboxes.push(home);
@@ -49,10 +53,18 @@ describe.each(['claude', 'codex'])('MCP command failures for %s (real CLI)', (to
     const toolConfig = tool === 'claude' ? path.join(home, '.claude.json') : path.join(home, '.codex', 'config.toml');
     const cursor = path.join(home, '.cursor', 'mcp.json');
     const manifest = path.join(dataHome, 'managed-mcp.json');
+    if (initialConfig) {
+      fs.writeFileSync(toolConfig, initialConfig);
+      const preview = await runCLI(home, ['inject', '--dry-run']);
+      expect(preview.code, preview.output).toBe(0);
+      expect(fs.readFileSync(toolConfig, 'utf8')).toBe(initialConfig);
+      expect(fs.existsSync(manifest)).toBe(false);
+    }
 
     const initial = await runCLI(home, ['inject']);
     expect(initial.code, initial.output).toBe(0);
     const repaired = fs.readFileSync(toolConfig, 'utf8');
+    expect(repaired.startsWith(initialConfig)).toBe(true);
     const recordsBefore = JSON.parse(fs.readFileSync(manifest, 'utf8'));
     expect(recordsBefore[tool]).toEqual([expect.objectContaining({ name: 'team-mcp' })]);
     const broken = tool === 'claude' ? '{ "mcpServers": {' : 'model = [\n' + repaired;
@@ -87,7 +99,8 @@ describe.each(['claude', 'codex'])('MCP command failures for %s (real CLI)', (to
     const retried = await runCLI(home, [command]);
     expect(retried.code, retried.output).toBe(0);
     const content = fs.readFileSync(toolConfig, 'utf8');
-    const servers = tool === 'claude' ? JSON.parse(content).mcpServers : parseToml(content).mcp_servers;
+    expect(content.startsWith(initialConfig)).toBe(true);
+    const servers = tool === 'claude' ? JSON.parse(content).mcpServers : parseToml(content.replace(/^\uFEFF/, '')).mcp_servers;
     if (command === 'inject') expect(servers['team-mcp'].url).toBe('https://example.com/updated');
     else expect(servers?.['team-mcp']).toBeUndefined();
   });

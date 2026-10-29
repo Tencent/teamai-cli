@@ -209,6 +209,7 @@ servers:
   it.each([
     ['no config.toml', null],
     ['a config.toml of the member\'s', 'model = "gpt-5"\n'],
+    ['a config.toml with a UTF-8 BOM and CRLF', '\uFEFF# member settings\r\nmodel = "gpt-5"\r\n'],
   ])('is idempotent for Codex — a second run over %s changes nothing', async (_label, initial) => {
     const configToml = path.join(homeDir, '.codex', 'config.toml');
     await fse.ensureDir(path.join(homeDir, '.codex', 'skills'));
@@ -223,6 +224,7 @@ servers:
 
     expect((await reconcileMcpForConfig(teamConfig, localConfig)).wrote).toBe(true);
     const written = await fse.readFile(configToml, 'utf-8');
+    if (initial !== null) expect(written.startsWith(initial)).toBe(true);
 
     const second = await reconcileMcpForConfig(teamConfig, localConfig);
     expect(second.changes).toEqual([]);
@@ -3785,6 +3787,7 @@ servers:
   it.each([
     ['claude', '.claude.json', '{ this is not valid json'],
     ['codex', '.codex/config.toml', 'model = ['],
+    ['codex', '.codex/config.toml', '\uFEFFmodel = ['],
   ])('leaves an unparseable %s config alone and reports an incomplete reconcile', async (tool, relativePath, broken) => {
     const file = path.join(homeDir, relativePath);
     await fse.ensureDir(path.dirname(file));

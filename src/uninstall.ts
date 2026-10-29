@@ -2877,7 +2877,7 @@ async function removeConfirmed(
 
   if (incomplete) {
     const files = [...pendingOpencode.map((ref) => ref.config), ...hooksLeft.map((hook) => hook.what), ...blocksLeft, ...filesLeft];
-    log.warn(`Uninstall incomplete: kept ${plan.teamaiHome} and the ownership records so removal can be retried. Repair permissions or JSON in ${files.join(', ')}, then run the same uninstall command again.`);
+    log.warn(`Uninstall incomplete: kept ${plan.teamaiHome} and the ownership records so removal can be retried. Repair permissions, JSON or TOML in ${files.join(', ')}, then run the same uninstall command again.`);
     process.exitCode = 1;
   } else {
     log.success('teamai uninstalled');

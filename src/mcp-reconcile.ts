@@ -3527,7 +3527,8 @@ async function moveOpencodeServersOut(
 async function readCodexConfig(file: string): Promise<string | null | undefined> {
   try {
     const source = await readFileIfExists(file);
-    if (source !== null) parseToml(source);
+    // Codex accepts a leading BOM; keep it in the original text for writes.
+    if (source !== null) parseToml(source.replace(/^\uFEFF/, ''));
     return source;
   } catch {
     return undefined;
