@@ -80,6 +80,7 @@ beforeAll(() => {
   delete env.GIT_CONFIG_GLOBAL;
   delete env.CLAUDE_CONFIG_DIR;
   delete env.CODEX_HOME;
+  delete env.HERMES_HOME;
   team('frontend', FRONTEND_URL, {
     'skills/react-review/SKILL.md': skillMd('react-review', 'Review React components.'),
     'skills/react-review/checklist.md': '- hooks rules\n',
@@ -152,5 +153,36 @@ describe('init <other team> --force, then pull (#1501 part 2)', () => {
     expect(fs.existsSync(path.join(shared, 'react-review')), pulled.output).toBe(false);
     expect(fs.existsSync(path.join(shared, 'storybook')), pulled.output).toBe(false);
     expect(fs.existsSync(path.join(userHome, '.codex', 'skills', 'terraform-plan', 'SKILL.md')), pulled.output).toBe(true);
+  }, 120_000);
+
+  it('keeps the skills in Hermes\' one directory that the user scope still delivers', () => {
+    const userHome = path.join(sandbox, 'hermes-home');
+    fs.mkdirSync(path.join(userHome, '.hermes'), { recursive: true });
+    const userEnv = { ...env, HOME: userHome, USERPROFILE: userHome, XDG_CONFIG_HOME: path.join(userHome, '.config') };
+    for (const [url, remote] of [[FRONTEND_URL, 'frontend'], [PLATFORM_URL, 'platform']]) {
+      const r = spawnSync('git', ['config', '--global', `url.${path.join(sandbox, `${remote}.git`)}.insteadOf`, url], { env: userEnv, encoding: 'utf8' });
+      if (r.status !== 0) throw new Error(r.stderr);
+    }
+    const project = path.join(userHome, 'work', 'app');
+    writeFile(path.join(project, 'README.md'), '# app\n');
+    for (const args of [['init', '-q', '-b', 'main'], ['add', '-A'], ['commit', '-qm', 'app']]) {
+      const r = spawnSync('git', args, { cwd: project, env: userEnv, encoding: 'utf8' });
+      if (r.status !== 0) throw new Error(r.stderr);
+    }
+    const hermesSkills = path.join(userHome, '.hermes', 'skills');
+    teamai(['init', FRONTEND_URL, '--provider', 'git', '--agent', 'hermes', '--scope', 'user'], userHome, userEnv);
+    teamai(['pull'], userHome, userEnv);
+    const inProject = ['--provider', 'git', '--agent', 'hermes', '--scope', 'project'];
+    teamai(['init', FRONTEND_URL, ...inProject], project, userEnv);
+    teamai(['pull'], project, userEnv);
+    expect(fs.existsSync(path.join(hermesSkills, 'react-review', 'SKILL.md'))).toBe(true);
+
+    teamai(['init', PLATFORM_URL, ...inProject, '--force'], project, userEnv);
+    const pulled = teamai(['pull'], project, userEnv);
+
+    expect(fs.existsSync(path.join(hermesSkills, 'react-review', 'SKILL.md')), pulled.output).toBe(true);
+    expect(fs.existsSync(path.join(hermesSkills, 'storybook', 'SKILL.md')), pulled.output).toBe(true);
+    expect(fs.existsSync(path.join(hermesSkills, 'terraform-plan', 'SKILL.md')), pulled.output).toBe(true);
+    expect(pulled.output).not.toContain('no longer delivered here');
   }, 120_000);
 });

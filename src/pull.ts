@@ -1,4 +1,5 @@
 import { hookToolPathsForConfig } from './types.js';
+import os from 'node:os';
 import path from 'node:path';
 import { readFile, realpath, stat } from 'node:fs/promises';
 import { isDeepStrictEqual } from 'node:util';
@@ -30,7 +31,8 @@ import {
 } from './resources/docs.js';
 import { ResourceHandler } from './resources/base.js';
 import { CODEX_TOOL, codexSkillsSplit, mayDeleteSkillCopy, skillOrigin } from './resources/skills.js';
-import { installOf, locate, ownOf, SHARED_AGENT_SKILLS_PATH, writable, writesOf } from './locate.js';
+import { installOf, locate, ownOf, SHARED_AGENT_SKILLS_PATH, writable, writesOf, type Install } from './locate.js';
+import { isWithin } from './utils/agent-path.js';
 import { describeToolHomeChange, recordToolHomes } from './tool-home-record.js';
 import { describeInvalidToolHomes, realHost } from './tool-home.js';
 import { placesOf, placesRecordOf, placesUnmoved, recordPlaces, type PlacesRecord, type SessionToolHomes } from './resources/places.js';
@@ -406,6 +408,21 @@ export async function cleanupInactiveNamespaceSkills(
     }
   }
   return removed;
+}
+
+/**
+ * Whether only `install` writes `tool`'s skills directory. Hermes and OpenClaw
+ * keep one directory that the user scope and every project on the machine
+ * write, so this install's record there does not show that no other install
+ * still delivers a skill (#1501). A project writes alone inside its root; the
+ * user scope writes alone where a project would not.
+ */
+async function writesSkillsAlone(tool: string, install: Install): Promise<boolean> {
+  const asProject: Install = install.scope === 'project'
+    ? install
+    : { ...install, scope: 'project', projectRoot: path.join(os.tmpdir(), 'teamai-project-probe'), repo: 'team', workspaceChildren: false };
+  const dir = ownOf(await locate(tool, 'skills', asProject))?.path;
+  return dir !== undefined && isWithin(dir, asProject.projectRoot);
 }
 
 /**
@@ -2286,13 +2303,15 @@ async function pullForScope(
   // Step 3b: Clean up local skills not in the desired union set (role + tags)
   if (!options.dryRun && desiredSkillNames && knownRepoSkillNames) {
     const install = installOf(freshConfig, localConfig);
-    // On record here, and not a skill the team removed, which Step 3 has judged and named already.
     const removedByTeam = new Set([...await getHandler('skills').readTombstones(localConfig), ...revisionRemovals?.skills ?? []]);
-    const isOtherTeamsSkill = (name: string, dir: string): boolean =>
-      !removedByTeam.has(name) && recordedUnder(ledger.previous ?? {}, dir).length > 0;
     for (const tool of Object.keys(install.toolPaths)) {
       const skillsDir = writable(await locate(tool, 'skills', install))?.path ?? null;
       if (skillsDir === null) continue;
+      // On record here, in a directory no other install writes, and not a skill
+      // the team removed, which Step 3 has judged and named already.
+      const alone = await writesSkillsAlone(tool, install);
+      const isOtherTeamsSkill = (name: string, dir: string): boolean =>
+        alone && !removedByTeam.has(name) && recordedUnder(ledger.previous ?? {}, dir).length > 0;
       if (tool === CODEX_TOOL) {
         const swept = (name: string, dir: string): boolean =>
           !desiredSkillNames.has(name) && (knownRepoSkillNames.has(name) || isOtherTeamsSkill(name, dir));
