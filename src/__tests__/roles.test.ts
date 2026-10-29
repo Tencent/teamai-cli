@@ -8,6 +8,7 @@ import {
   describeRoles,
   findRole,
   loadRolesManifest,
+  parseRolesManifestContent,
   saveRolesManifest,
   resolveRoleResourceNamespaces,
   activeRoleIds,
@@ -15,6 +16,12 @@ import {
   RolesManifestNotFoundError,
 } from '../roles.js';
 import type { RolesManifest } from '../roles.js';
+
+describe('parseRolesManifestContent', () => {
+  it('rejects malformed historical YAML with the live manifest error', () => {
+    expect(() => parseRolesManifestContent('version: [')).toThrow(/Invalid roles manifest YAML/);
+  });
+});
 
 describe('loadRolesManifest', () => {
   function writeManifest(content: string): string {

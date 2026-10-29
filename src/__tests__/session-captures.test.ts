@@ -182,13 +182,13 @@ describe('session captures (#1178)', () => {
   it('records the namespace actually delivered when two namespaces have the same skill name (#1469)', async () => {
     const { config, project } = checkout();
     const team = config.repo.localPath;
-    commitFile(team, 'skills/ops/ship/SKILL.md', '---\ndescription: Ops release.\n---\n');
-    commitFile(team, 'skills/web/ship/SKILL.md', '---\ndescription: Web release.\n---\n');
+    commitFile(team, 'skills/ops/ship/SKILL.md', '---\ndescription: Shared release.\n---\n');
+    commitFile(team, 'skills/web/ship/SKILL.md', '---\ndescription: Shared release.\n---\n');
     commitFile(team, 'teamai.yaml', 'team: fixture\nrepo: local\n');
     const rev = commitFile(team, 'manifest/roles.yaml', 'version: 1\nroles:\n  - id: web\n    resources: { knowledge: [], skills: [web] }\n  - id: ops\n    resources: { knowledge: [], skills: [ops] }\n');
     const ship = path.join(project, '.claude', 'skills', 'ship', 'SKILL.md');
     fs.mkdirSync(path.dirname(ship), { recursive: true });
-    fs.writeFileSync(ship, '---\ndescription: Web release.\n---\n');
+    fs.writeFileSync(ship, '---\ndescription: Shared release.\n---\n');
     const member = { ...config, primaryRole: 'web' };
     await recordDelivery(member, { rev, targets: ['claude'], files: [ship] });
 
@@ -201,9 +201,9 @@ describe('session captures (#1178)', () => {
 
     expect((await SessionCaptures.read(member, 'claude-code', SESSION)).map((capture) => capture.teamSkillInfo))
       .toEqual([
-        { ship: { namespace: 'web', description: 'Web release.' } },
-        { ship: { namespace: 'web', description: 'Web release.' } },
-        { ship: { namespace: 'web', description: 'Web release.' } },
+        { ship: { namespace: 'web', description: 'Shared release.' } },
+        { ship: { namespace: 'web', description: 'Shared release.' } },
+        { ship: { namespace: 'web', description: 'Shared release.' } },
       ]);
   });
 

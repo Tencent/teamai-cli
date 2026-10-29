@@ -129,15 +129,18 @@ export async function loadRolesManifest(repoPath: string): Promise<RolesManifest
     throw new RolesManifestNotFoundError(manifestPath);
   }
 
-  return parseManifestOnce(manifestPath, content, (text) => {
-    let raw: unknown;
-    try {
-      raw = YAML.parse(text);
-    } catch (error) {
-      throw new Error(`Invalid roles manifest YAML: ${(error as Error).message}`, { cause: error });
-    }
-    return validateManifestShape(raw);
-  });
+  return parseManifestOnce(manifestPath, content, parseRolesManifestContent);
+}
+
+/** Parse a roles manifest from a recorded team revision, using the same validation as a live pull. */
+export function parseRolesManifestContent(content: string): RolesManifest {
+  let raw: unknown;
+  try {
+    raw = YAML.parse(content);
+  } catch (error) {
+    throw new Error(`Invalid roles manifest YAML: ${(error as Error).message}`, { cause: error });
+  }
+  return validateManifestShape(raw);
 }
 
 /**

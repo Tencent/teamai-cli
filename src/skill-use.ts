@@ -23,6 +23,7 @@ import { collectTeamRepoSkills } from './agent-skills.js';
 import { sanitizeSessionId } from './contribute-check.js';
 import { loadTeamConfig, resolveMemberToolRoots } from './config.js';
 import { buildRolePullContext, resolveDesiredSkills } from './resources/desired.js';
+import { parseRolesManifestContent, resolveRoleResourceNamespaces } from './roles.js';
 import { recordedUnchanged, type DeliveredHashes } from './resources/delivered-copies.js';
 import type { SubagentsRead } from './session-flow/adapters/base.js';
 import type { ContentBlock, Message, Session } from './session-flow/ir.js';
@@ -337,6 +338,19 @@ export async function deliveredTeamSkillInfo(config: LocalConfig, cwd: string, d
       historical.set(name, [...historical.get(name) ?? [], { path: source, ...(parts.length === 4 ? { namespace: parts[1] } : {}) }]);
     }
   }
+  let deliveredRoleNamespaces: Set<string> | undefined;
+  if (deliveredRev && selection?.primaryRole) {
+    const content = await getFileContentAtRev(config.repo.localPath, deliveredRev, 'manifest/roles.yaml');
+    if (content) {
+      try {
+        deliveredRoleNamespaces = new Set(resolveRoleResourceNamespaces({
+          manifest: parseRolesManifestContent(content.toString('utf8')),
+          primaryRole: selection.primaryRole,
+          additionalRoles: selection.additionalRoles,
+        }).skills);
+      } catch { /* An old or unavailable manifest cannot prove the delivered namespace. */ }
+    }
+  }
   const toolRoots = config.toolRoots ?? await resolveMemberToolRoots(cwd);
   const found = new Map<string, DeliveredSkillInfo>();
   const others = new Set<string>();
@@ -351,7 +365,10 @@ export async function deliveredTeamSkillInfo(config: LocalConfig, cwd: string, d
         const content = await getFileContentAtRev(config.repo.localPath, deliveredRev!, source.path);
         return content && createHash('sha256').update(content).digest('hex') === delivered[file] ? source : null;
       }))).filter((source): source is { path: string; namespace?: string } => source !== null);
-      const namespace = matches.length === 1 ? matches[0].namespace : entry?.namespace;
+      const roleMatches = matches.length > 1 && deliveredRoleNamespaces
+        ? matches.filter((source) => source.namespace !== undefined && deliveredRoleNamespaces!.has(source.namespace)) : [];
+      const source = matches.length === 1 ? matches[0] : roleMatches.length === 1 ? roleMatches[0] : undefined;
+      const namespace = source ? source.namespace : entry?.namespace;
       const description = String(parseFrontmatter(await readFileSafe(file) ?? '').data.description ?? '').trim();
       found.set(name, { ...(namespace !== undefined ? { namespace } : {}), description });
     }
