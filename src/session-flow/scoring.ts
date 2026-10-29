@@ -332,7 +332,7 @@ export async function scoreSession(from: LocalConfig, demand: SessionDemand, now
     if (group) group.members.push(judgedMember);
     else groups.push({ choice: chosen.choice, members: [judgedMember] });
   }
-  const control = files.size > 0 ? judgeSession({ platform, found: firstPromptOnly(found), captures: [], mask }) : undefined;
+  const control = files.size > 0 ? judgeSession({ platform, found: firstPromptOnly(found), captures, mask }) : undefined;
   const answers: Array<Record<string, unknown>> = [];
   const tried: Tried[] = [];
   for (const { choice, members } of groups) {

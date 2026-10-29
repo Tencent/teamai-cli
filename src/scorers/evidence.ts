@@ -6,7 +6,7 @@ import type { ScorerDefinition } from './definition.js';
 /** What the evidence could not hold, and says so instead of guessing. */
 export const EVIDENCE_GAPS = [
   'no_recorded_range', 'no_checkout', 'commit_missing', 'transcript_not_found', 'subagents_unread', 'subagent_boundary_unknown',
-  'children_unattributed', 'files_omitted',
+  'children_unattributed', 'files_omitted', 'skills_unknown',
 ] as const;
 export type EvidenceGap = (typeof EVIDENCE_GAPS)[number];
 

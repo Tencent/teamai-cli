@@ -22,6 +22,7 @@ import type { ScoreLabel, SessionLabel, SessionLabelContext, SessionSubject } fr
 import { LabelStore } from '../scorers/label-store.js';
 import { pinnedDefinition, type PinnedScorer } from '../scorers/pin.js';
 import { isSampled } from '../scorers/sampling.js';
+import { skillsEvidence, type SkillsEvidence } from '../scorers/skill-evidence.js';
 import type { ScopeScoring } from '../scorers/settings.js';
 import { typedIn, usedSkills } from '../skill-use.js';
 import { getDataHome, type LocalConfig } from '../types.js';
@@ -93,7 +94,7 @@ export interface JudgedSession {
   subject: SessionSubject;
   /** The redacted transcript and its subagents', kept to the evidence cap with the evidence framing. */
   body: string;
-  manifest: { subject: SessionSubject; kind: 'session'; gaps: EvidenceGap[] };
+  manifest: { subject: SessionSubject; kind: 'session'; gaps: EvidenceGap[]; skills?: SkillsEvidence };
   context: SessionLabelContext;
   /** The owning scope's mask: the rubric prompt goes through it too, since a scorer may quote a team secret. */
   mask: (text: string) => string;
@@ -112,7 +113,13 @@ export function judgeSession({ platform, found, captures, mask }: {
   const { session } = found;
   const transcript = judgedTranscript(found, { session: Number.POSITIVE_INFINITY, subagent: Number.POSITIVE_INFINITY });
   const subject = { platform, sessionId: session.sessionId };
-  const manifest = { subject, kind: 'session' as const, gaps: transcript.gaps };
+  const used = usedSkills(AgentSession.toolForPlatform(platform), found, capturedTeamSkillsAt(captures));
+  const skills = skillsEvidence(captures, used, mask);
+  const manifest = {
+    subject, kind: 'session' as const,
+    gaps: 'gap' in skills ? [...transcript.gaps, skills.gap] : transcript.gaps,
+    ...('skills' in skills ? { skills: skills.skills } : {}),
+  };
   const framing = `## evidence.json\n\n${JSON.stringify(manifest)}\n\n## transcripts/session.md\n\n`.length;
   const models = new Set(session.messages.flatMap((message) => message.metadata?.model ?? []));
   const [reportedModel] = models.size === 1 ? models : [];
@@ -125,7 +132,7 @@ export function judgeSession({ platform, found, captures, mask }: {
     context: {
       ...(agent ? { agent } : {}),
       ...(runMode ? { runMode } : {}),
-      used: { skills: usedSkills(AgentSession.toolForPlatform(platform), found, capturedTeamSkillsAt(captures)) },
+      used: { skills: used },
       prompt: mask(firstPrompt(session)),
     },
     mask,

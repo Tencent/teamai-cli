@@ -21,13 +21,14 @@ import path from 'node:path';
 import { z } from 'zod';
 import { collectTeamRepoSkills } from './agent-skills.js';
 import { sanitizeSessionId } from './contribute-check.js';
-import { resolveMemberToolRoots } from './config.js';
+import { loadTeamConfig, resolveMemberToolRoots } from './config.js';
+import { buildRolePullContext, resolveDesiredSkills } from './resources/desired.js';
 import { recordedUnchanged, type DeliveredHashes } from './resources/delivered-copies.js';
 import type { SubagentsRead } from './session-flow/adapters/base.js';
 import type { ContentBlock, Message, Session } from './session-flow/ir.js';
 import { typedText } from './session-flow/title.js';
 import { isToolId, TOOLS, type PromptForm, type SkillLoad } from './tools.js';
-import { SKILL_NAME_CHARS, type LocalConfig } from './types.js';
+import { SKILL_NAME_CHARS, type DeliverySelection, type LocalConfig } from './types.js';
 import { withFileLock } from './update.js';
 import {
   appendUsageEvent,
@@ -39,7 +40,8 @@ import {
   updateKnownSkills,
 } from './usage-tracker.js';
 import { resolvePath } from './utils/agent-path.js';
-import { pathExists, readJson, writeJson } from './utils/fs.js';
+import { pathExists, readFileSafe, readJson, writeJson } from './utils/fs.js';
+import { parseFrontmatter } from './utils/frontmatter.js';
 import { getUserHome } from './utils/home.js';
 import { resolveHookCwd } from './utils/hook-cwd.js';
 import { log } from './utils/logger.js';
@@ -287,6 +289,57 @@ export async function deliveredTeamSkills(config: LocalConfig, cwd: string, deli
     }
   }
   return Object.fromEntries([...copies].filter(([name]) => !others.has(name)));
+}
+
+/** What a session records of a delivered team skill (#1469): the description it then had, and its skills namespace if any. */
+export interface DeliveredSkillInfo {
+  namespace?: string;
+  description: string;
+}
+
+/**
+ * The team skills a checkout holds as delivered, by name, each with the description its SKILL.md then carries and the
+ * skills namespace the team repo keeps it under (none for a root skill), as `deliveredTeamSkills` finds the same copies.
+ * A name with a copy teamai did not deliver, or one changed since, is left out, as there too. The description is read
+ * from the first delivered copy of a name; the manifest masks it later.
+ */
+export async function deliveredTeamSkillInfo(config: LocalConfig, cwd: string, delivered: DeliveredHashes, selection?: DeliverySelection): Promise<Record<string, DeliveredSkillInfo>> {
+  // The member may have changed roles since the last pull; the delivered copy still belongs to the old selection.
+  const selectedConfig: LocalConfig = selection ? {
+    ...config,
+    scope: selection.scope,
+    primaryRole: selection.primaryRole,
+    additionalRoles: selection.additionalRoles,
+    projects: selection.projects,
+    subscribedTags: selection.subscribedTags,
+    excludedSkills: selection.excludedSkills,
+    inheritUserScope: selection.inheritUserScope,
+    ...(selection.rolesAssigned ? {} : { roleAssignment: undefined }),
+  } : config;
+  // Pull's resolver knows which same-name namespace won for this member.
+  // The repo-wide catalog keeps only the first namespace and can mislabel a delivered copy.
+  const teamConfig = await loadTeamConfig(config.repo.localPath);
+  const desired = teamConfig
+    ? await resolveDesiredSkills(teamConfig, selectedConfig, await buildRolePullContext(selectedConfig))
+    : null;
+  const team = desired?.kind === 'resolved'
+    ? new Map(desired.items.map((item) => [item.name, { namespace: item.namespace }] as const))
+    : await collectTeamRepoSkills(config.repo.localPath);
+  const toolRoots = config.toolRoots ?? await resolveMemberToolRoots(cwd);
+  const found = new Map<string, DeliveredSkillInfo>();
+  const others = new Set<string>();
+  for (const root of await skillRoots({ config, toolRoots, hookCwd: cwd })) {
+    for (const name of await fs.readdir(root).catch(() => [])) {
+      const entry = team.get(name);
+      const file = path.join(root, name, 'SKILL.md');
+      if (entry === undefined || !await pathExists(file)) continue;
+      if (!await recordedUnchanged(delivered, file)) { others.add(name); continue; }
+      if (found.has(name)) continue;
+      const description = String(parseFrontmatter(await readFileSafe(file) ?? '').data.description ?? '').trim();
+      found.set(name, { ...(entry.namespace !== undefined ? { namespace: entry.namespace } : {}), description });
+    }
+  }
+  return Object.fromEntries([...found].filter(([name]) => !others.has(name)));
 }
 
 /**
