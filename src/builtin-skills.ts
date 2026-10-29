@@ -17,6 +17,7 @@ import { getUserHome } from './utils/home.js';
 import { packagedSkillRoots } from './skill-content.js';
 import { PACKAGED_SKILL_DIGESTS } from './packaged-skill-digests.js';
 import { keepsTrackedCopy } from './resources/delivered-copies.js';
+import { generatedSkillAt } from './workflow/discovery/generated-marker.js';
 import type { DeliveryRecorder } from './git-exclude-delivered.js';
 
 // ─── Built-in skills deployment ──────────────────────────
@@ -415,7 +416,8 @@ export async function pruneLegacyBuiltinSkills(
   for (const legacyName of names) {
     for (const root of skillRoots) {
       const dir = path.join(root, legacyName);
-      if (!await pathExists(dir)) continue;
+      // teamai-share-learnings is now also the skill pull generates for that default workflow.
+      if (!await pathExists(dir) || (await generatedSkillAt(dir)).kind === 'ours') continue;
       try {
         const backupDir = skillBackupDir(guardBase, tool, path.relative(guardBase, root), legacyName);
         const result = await removeOwnedFiles(dir, await ownedSkillFiles(legacyName), guardBase, backupDir);
