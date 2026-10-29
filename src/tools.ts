@@ -1266,7 +1266,7 @@ export const TOOLS = {
     sessions: ['agy'],
     launch: 'none',
     features: {
-      env: '?',
+      env: { cell: '✓v', note: 'agy 1.4.8 run_command inherits the environment agy starts in' },
       workflows: '?',
       recall: '?',
       stats: '✓v',
