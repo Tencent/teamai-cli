@@ -147,6 +147,12 @@ describe('skill use from a tool call (#1221)', () => {
     expect(await credits()).toEqual([]);
   });
 
+  it('credits the CodeBuddy plugin\'s own `use_skill` tool (#1516)', async () => {
+    install('.codebuddy/skills');
+    await toolCall({ session_id: 'codebuddy-use-skill', cwd, hook_event_name: 'PostToolUse', tool_name: 'use_skill', tool_input: { command: SKILL } }, 'codebuddy');
+    expect(await credits()).toEqual([{ skill: SKILL, tool: 'codebuddy' }]);
+  });
+
   it('credits nothing for a skill that is not installed', async () => {
     await toolCall(fixture('claude-skill'), 'claude');
     await toolCall(fixture('codex-real-a-cat'), 'codex');
@@ -437,6 +443,24 @@ describe('skill use from a prompt mention (#1221)', () => {
     install('.claude/skills');
     await prompt({ session_id: 's', hook_event_name: 'UserPromptSubmit', prompt: `/${SKILL} go` }, 'claude');
     expect(await credits()).toEqual([{ skill: SKILL, tool: 'claude' }]);
+  });
+
+  it('credits the `@command://name` the CodeBuddy plugin sends (#1516)', async () => {
+    install('.codebuddy/skills');
+    await prompt({ session_id: 'codebuddy-command', hook_event_name: 'UserPromptSubmit', cwd, prompt: `@command://${SKILL} review` }, 'codebuddy');
+    expect(await credits()).toEqual([{ skill: SKILL, tool: 'codebuddy' }]);
+  });
+
+  it('credits nothing for a command URI quoted in the conversation (#1516)', async () => {
+    install('.codebuddy/skills');
+    await prompt({ session_id: 'codebuddy-quoted', hook_event_name: 'UserPromptSubmit', cwd, prompt: `the log shows @command://${SKILL} in it` }, 'codebuddy');
+    expect(await credits()).toEqual([]);
+  });
+
+  it('still credits `/name` for CodeBuddy (#1516)', async () => {
+    install('.codebuddy/skills');
+    await prompt({ session_id: 'codebuddy-slash', hook_event_name: 'UserPromptSubmit', cwd, prompt: `/${SKILL} go` }, 'codebuddy');
+    expect(await credits()).toEqual([{ skill: SKILL, tool: 'codebuddy' }]);
   });
 
   it('skips the generic `/name` for a tool with its own prefix, and an uninstalled `$HOME`', async () => {

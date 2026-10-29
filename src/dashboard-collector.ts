@@ -2488,6 +2488,28 @@ export async function recordedHookCwd(hookData: Record<string, unknown>, tool: s
   return (events.find(event => event.cwd && !fs.existsSync(event.cwd)) ?? events.find(event => event.cwd))?.cwd;
 }
 
+const recordedWorkspaces = new Map<string, Promise<string | undefined>>();
+
+/**
+ * The workspace the session recorded, when one is still there: the answer for a
+ * host that sends a directory that holds no teamai scope (#1516). Read once per
+ * process, as the scope above is: events.jsonl grows with the session. The home
+ * is part of the key, as the events it reads live there.
+ */
+function recordedWorkspace(hookData: Record<string, unknown>, tool: string): Promise<string | undefined> {
+  const sessionId = deriveDispatchSessionId(hookData, tool);
+  const key = `${sessionId}\0${getUserHome()}`;
+  let known = recordedWorkspaces.get(key);
+  if (!known) {
+    known = readEvents().then((events) => events
+      .filter(event => event.sessionId === sessionId)
+      .toReversed()
+      .find(event => event.cwd && fs.existsSync(event.cwd))?.cwd);
+    recordedWorkspaces.set(key, known);
+  }
+  return known;
+}
+
 /**
  * The directory a hook's scope is resolved from (#810): its cwd. A cwd that no
  * longer exists (a removed worktree) would resolve to the user scope, so it is
@@ -2511,13 +2533,50 @@ export async function hookScopeDir(hookData: Record<string, unknown>, tool: stri
 }
 
 /**
- * The scope a hook reports to: resolveConfigForDir at {@link hookScopeDir}. The
- * dispatcher and the legacy `dashboard-report`, `track` and `track-slash` entry
- * points all resolve through here.
+ * The hosts whose hook payload names the extension host's own directory instead
+ * of the workspace the session works in: the CodeBuddy plugin sends the
+ * extension host's (#1516). Their scope comes from the workspace the session
+ * recorded. Every other host's payload names the workspace itself, so its scope
+ * stays what that directory holds — a directory without teamai runs no team
+ * handlers (#748), and another repository's work is never reported to the team
+ * the session started in.
+ */
+const HOSTS_SENDING_OWN_CWD = new Set(['codebuddy']);
+
+/**
+ * The scope a hook reports to, and the directory it works in: the payload's
+ * own, or — for a host that sends the extension host's directory — the
+ * workspace the session recorded (#1516). Such a host names a place that holds
+ * no teamai scope, so every handler that needs one was dropped and the
+ * session's tool use was never recorded.
+ */
+export async function resolveHookScopeFor(hookData: Record<string, unknown>, tool: string): Promise<{ config: LocalConfig | null; dir: string | undefined }> {
+  const { resolveConfigForDir } = await import('./config.js');
+  const scope = await hookScopeDir(hookData, tool);
+  const config = await resolveConfigForDir(scope);
+  // The directory the hook works in: the payload's own, as every host but the
+  // ones below sends the workspace.
+  const dir = resolveHookCwd(hookData);
+  if (!HOSTS_SENDING_OWN_CWD.has(tool)) return { config, dir };
+  // A scope the payload's own directory holds is the one the session works in.
+  if (config && config.scope === 'project') return { config, dir };
+  const workspace = await recordedWorkspace(hookData, tool);
+  if (!workspace || workspace === dir) return { config, dir };
+  const recorded = await resolveConfigForDir(workspace);
+  // The workspace's scope: the project the session started in, or the user
+  // scope, which the extension host's directory resolves to as well when the
+  // member installed there (#1516).
+  return recorded ? { config: recorded, dir: workspace } : { config, dir };
+}
+
+/**
+ * The scope a hook reports to: resolveConfigForDir at {@link hookScopeDir}, or at
+ * the workspace the session recorded when the payload's own directory holds none
+ * ({@link resolveHookScopeFor}). The dispatcher and the legacy `dashboard-report`,
+ * `track` and `track-slash` entry points all resolve through here.
  */
 export async function resolveHookConfig(hookData: Record<string, unknown>, tool: string): Promise<LocalConfig | null> {
-  const { resolveConfigForDir } = await import('./config.js');
-  return resolveConfigForDir(await hookScopeDir(hookData, tool));
+  return (await resolveHookScopeFor(hookData, tool)).config;
 }
 
 /**

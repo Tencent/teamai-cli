@@ -61,14 +61,14 @@ describe('deriveDispatchSessionId', () => {
 
 describe('hookDispatchCli', () => {
   it.each(['scorer', 'recall-promote', 'codebase'])('skips the hooks of a session teamai launched for %s before reading stdin or resolving config, including background children', async (launchedBy) => {
-    const resolveConfig = vi.spyOn(await import('../dashboard-collector.js'), 'resolveHookConfig');
+    const resolveScope = vi.spyOn(await import('../dashboard-collector.js'), 'resolveHookScopeFor');
     const readFile = vi.spyOn(fs, 'readFileSync');
     vi.stubEnv('TEAMAI_LAUNCHED_BY', launchedBy);
     try {
       for (const bgOnly of [false, true]) await hookDispatchCli('SessionStart', 'claude', '*', { bgOnly, stdinFile: '/missing-judge-payload' });
-      expect(resolveConfig).not.toHaveBeenCalled();
+      expect(resolveScope).not.toHaveBeenCalled();
       expect(readFile).not.toHaveBeenCalledWith('/missing-judge-payload', expect.anything());
-    } finally { resolveConfig.mockRestore(); readFile.mockRestore(); vi.unstubAllEnvs(); }
+    } finally { resolveScope.mockRestore(); readFile.mockRestore(); vi.unstubAllEnvs(); }
   });
 
   it('records why a Git hook cannot sync an unreadable project config, without dispatching', async () => {
@@ -359,7 +359,7 @@ describe('hookDispatchCli', () => {
     await recordDelivery(config, { rev, targets: ['claude'] });
     const stdinFile = path.join(root, 'payload.json');
     fs.writeFileSync(stdinFile, JSON.stringify({ hook_event_name: 'SessionStart', session_id: 'c1', cwd: project, source: 'startup', teamai_capture: 'from-host' }));
-    const resolveConfig = vi.spyOn(await import('../dashboard-collector.js'), 'resolveHookConfig').mockResolvedValue(config);
+    const resolveConfig = vi.spyOn(await import('../dashboard-collector.js'), 'resolveHookScopeFor').mockResolvedValue({ config, dir: project });
     const capturesDir = path.join(root, 'data', 'sessions', 'captures', 'claude-code', 'c1');
     let detachedPayload = '';
     let capturedFirst: string[] = [];

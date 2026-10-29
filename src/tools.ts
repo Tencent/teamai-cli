@@ -9,8 +9,15 @@ export type Evidence = 'verified' | 'source' | 'docs' | 'assumed';
 /** The host's dedicated skill tool, by its raw name. */
 export type SkillCall = { readonly name: string; readonly evidence: Evidence };
 
+/**
+ * How a prompt that loads a skill with no tool call reaches teamai: a `$name`
+ * Codex resolves, the `<skill>` block Pi expands `/skill:name` into, the
+ * `@command://name` the CodeBuddy plugin sends, or the `/name` most tools take.
+ */
+export type PromptForm = '$name' | 'skill-block' | 'command-uri' | '/name';
+
 export type SkillLoad =
-  | { readonly calls: readonly SkillCall[]; readonly promptForm?: '$name' | 'skill-block' }
+  | { readonly calls: readonly SkillCall[]; readonly promptForm?: PromptForm | readonly PromptForm[] }
   | 'unknown';
 
 /** One way a machine moves a tool's home. */
@@ -921,10 +928,19 @@ export const TOOLS = {
     },
   },
   // Model switching follows the same recorded home for models.json.
-  // The CodeBuddy IDE sends `skill` (src/utils/tool-names.ts). CODEBUDDY_CONFIG_DIR replaces ~/.codebuddy, and ~/.codebuddy.json moves into it.
+  // CODEBUDDY_CONFIG_DIR replaces ~/.codebuddy, and ~/.codebuddy.json moves into it.
+  // Two hosts share this home: the IDE sends the tool name `skill`
+  // (src/utils/tool-names.ts), while the VSCode plugin's own skill tool is
+  // `use_skill` (#1516). A manual slash command lands as `@command://name`
+  // rather than `/name`, so the prompt form is that.
   codebuddy: {
     home: { dir: '.codebuddy', moves: { by: [{ kind: 'env', name: 'CODEBUDDY_CONFIG_DIR', evidence: 'verified' }], defaultHomeLeftovers: true } },
-    skillLoad: { calls: [{ name: 'Skill', evidence: 'verified' }, { name: 'skill', evidence: 'assumed' }] },
+    skillLoad: {
+      calls: [{ name: 'Skill', evidence: 'verified' }, { name: 'skill', evidence: 'assumed' }, { name: 'use_skill', evidence: 'source' }],
+      // The plugin lands a manual slash command as `@command://name` (#1516);
+      // the generic `/name` counts too, for a build that sends that.
+      promptForm: ['/name', 'command-uri'],
+    },
     skills: { user: [{ base: 'home', path: '.codebuddy/skills', evidence: 'verified' }], project: 'unknown' },
     rules: {
       user: { channel: 'dir', format: 'codebuddy', reads: [{ base: 'home', path: '.codebuddy/rules', evidence: 'verified' }] },

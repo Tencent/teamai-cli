@@ -464,9 +464,17 @@ export async function hookDispatchCli(
     // working directory wins (#264), so filterHandlersForConfig can honour a
     // project-level repo.kind; a host that sends no cwd (OpenClaw) runs the
     // hook in its workspace, so the process cwd stands in. A cwd that is gone
-    // (a removed worktree) keeps the scope its session recorded (#810).
-    const { resolveHookConfig } = await import('./dashboard-collector.js');
-    const cwd = resolveHookCwd(stdin);
+    // (a removed worktree) keeps the scope its session recorded (#810). A host
+    // that sends its own directory (the CodeBuddy plugin sends the extension
+    // host's, #1516) names a place no teamai scope lives in, so it takes the
+    // workspace the session recorded — that host only, so every other host's
+    // payload keeps the scope its own directory holds.
+    const { resolveHookScopeFor } = await import('./dashboard-collector.js');
+    const { config: localConfig, dir: scopeDir } = await resolveHookScopeFor(stdin, tool);
+    // The workspace the session recorded is the directory the handlers work in,
+    // so the payload's own is replaced when it named no scope.
+    if (scopeDir && scopeDir !== resolveHookCwd(stdin)) stdin.cwd = scopeDir;
+    const cwd = scopeDir ?? resolveHookCwd(stdin);
     if (cwd) {
       try {
         process.chdir(cwd);
@@ -482,7 +490,12 @@ export async function hookDispatchCli(
         return;
       }
     }
-    const localConfig = await resolveHookConfig(stdin, tool);
+    if (!localConfig) {
+      // Nothing was found to work in: the payload's directory and the session's
+      // own are both without a teamai scope. Said out loud, because it is
+      // otherwise silent (#1516).
+      log.debug(`hook-dispatch: no teamai scope for ${resolveHookCwd(stdin) ?? 'no cwd'} (process cwd ${process.cwd()})`);
+    }
     // A self project's overrides and local hooks remain authoritative where
     // Copilot loaded them, so the global built-ins step aside there.
     const copilotProject = process.env.COPILOT_PROJECT_DIR?.trim();
