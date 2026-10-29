@@ -111,6 +111,24 @@ describe('dashboard workflow runs', () => {
     expect(row).not.toHaveProperty('teamRevision');
   });
 
+  it('names a run by its workflow\'s alias, and publishes the alias with the run record', async () => {
+    const config = scope('self');
+    fs.mkdirSync(path.join(config.repo.localPath, 'workflows'), { recursive: true });
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows/review-and-fix.yaml'), [
+      'schemaVersion: v1alpha1', 'name: review-and-fix', 'alias: fix', 'description: Review the change, then fix it.', 'steps:', '  - id: review', '    command: echo review',
+    ].join('\n'));
+    expect((await syncWorkflowDefinitions(config)).invalid).toEqual([]);
+    const started = await startRun(config, 'fix', {}, { secrets: {} });
+    if ('error' in started) throw new Error(started.error.message);
+
+    const [row] = await listLocalRuns(config);
+    expect(row).toMatchObject({ workflow: 'review-and-fix', alias: 'fix' });
+    const run = await readRun(config, String(started.data.run));
+    if (typeof run !== 'object') throw new Error('the run was not stored');
+    const { buildStartRecord } = await import('../workflow/records.js');
+    expect(buildStartRecord(run, undefined, 'tester')).toMatchObject({ workflow: 'review-and-fix', alias: 'fix' });
+  });
+
   it('refuses an answer to a pass the page no longer shows, and a repeated one', async () => {
     const run = await waitingRun('approve: Ship it?');
     expect(await refusal(answerFromDashboard(run.config, { run: run.id, step: 'ship', pass: 2, choice: 'yes' })))
@@ -158,6 +176,12 @@ describe('dashboard workflow runs', () => {
       expect(rows[0]).toMatchObject({ workflow: 'teamai-share-session', origin: { source: 'default', teamaiVersion: '0.22.0' } });
       expect(rows[1]).toMatchObject({ run: 'r0000000000000001' });
       expect(rows[1]).not.toHaveProperty('origin');
+    });
+
+    it('reads the alias a record names its workflow by', async () => {
+      const config = scope('http');
+      publish(config, record('r0000000000000001', { workflow: 'review-and-fix', alias: 'fix' }));
+      expect((await listReportedRuns(config))[0]).toMatchObject({ workflow: 'review-and-fix', alias: 'fix' });
     });
 
     it('lists every delivered pull request of a record, newest run first, and only web links', async () => {
