@@ -23,6 +23,7 @@ import {
   resolveBaseDir,
 } from './types.js';
 import YAML from 'yaml';
+import { parse as parseToml } from 'smol-toml';
 import {
   supportsTransport,
   supportsEnvExpansion,
@@ -3522,9 +3523,15 @@ async function moveOpencodeServersOut(
   return result || deleted;
 }
 
-/** A Codex config.toml: null when it does not exist, undefined when it cannot be read. */
+/** A Codex config.toml: null when absent, undefined when unreadable or invalid TOML. */
 async function readCodexConfig(file: string): Promise<string | null | undefined> {
-  return await readFileIfExists(file).catch(() => undefined);
+  try {
+    const source = await readFileIfExists(file);
+    if (source !== null) parseToml(source);
+    return source;
+  } catch {
+    return undefined;
+  }
 }
 
 async function applyCodex(
@@ -3541,7 +3548,7 @@ async function applyCodex(
 ): Promise<boolean | null> {
   const previous = await readCodexConfig(target.file);
   if (previous === undefined) {
-    log.warn(`Could not read ${target.file} — teamai left its MCP servers for ${target.tool} unchanged`);
+    log.warn(`Could not read or parse ${target.file} — teamai left its MCP servers for ${target.tool} unchanged`);
     return null;
   }
   let source = previous ?? '';

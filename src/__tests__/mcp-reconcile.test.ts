@@ -3782,20 +3782,28 @@ servers:
     expect(after).toContain('command = "my-mcp"');
   });
 
-  it('leaves an unparseable config file alone rather than clobbering it', async () => {
-    const claudeJson = path.join(homeDir, '.claude.json');
-    await fse.writeFile(claudeJson, '{ this is not valid json');
+  it.each([
+    ['claude', '.claude.json', '{ this is not valid json'],
+    ['codex', '.codex/config.toml', 'model = ['],
+  ])('leaves an unparseable %s config alone and reports an incomplete reconcile', async (tool, relativePath, broken) => {
+    const file = path.join(homeDir, relativePath);
+    await fse.ensureDir(path.dirname(file));
+    await fse.writeFile(file, broken);
 
     await writeMcpYaml(`
 servers:
   - name: s1
     transport: http
     url: https://example.com/mcp
-    tools: [claude]
+    tools: [${tool}]
 `);
 
-    await reconcileMcpForConfig(teamConfig, localConfig);
-    expect(await fse.readFile(claudeJson, 'utf-8')).toBe('{ this is not valid json');
+    const result = await reconcileMcpForConfig(teamConfig, localConfig);
+    expect(result.unparsed).toBe(true);
+    expect(await fse.readFile(file, 'utf-8')).toBe(broken);
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining(
+      `${tool === 'codex' ? 'Could not read or parse' : 'Could not parse'} ${file}`,
+    ));
   });
 
   it('enforces the allowedHosts policy', async () => {

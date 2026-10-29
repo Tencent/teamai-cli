@@ -1560,7 +1560,7 @@ export async function buildMcpDeliveryChecks(ctx: DoctorContext): Promise<Check[
     let withheld: string | undefined;
     const installed = await installedMcpEntries(target, { underKeyOnly: true });
     if (installed === null) {
-      problems.push('could not be parsed, so teamai injected no server there. Fix the JSON, or move the file aside, then run `teamai pull`');
+      problems.push(`could not be parsed, so teamai injected no server there. Fix the ${target.format === 'codex' ? 'TOML' : 'JSON'}, or move the file aside, then run \`teamai pull\``);
     } else {
       const absent: string[] = [];
       const foreign: string[] = [];
