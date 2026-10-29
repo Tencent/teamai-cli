@@ -165,7 +165,7 @@ describe('the order of the merged recall list', () => {
   it('ranks the codebase page that names the module in the query above a higher-scoring one', async () => {
     vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);
     vi.mocked(queryCodeKnowledge).mockResolvedValueOnce([
-      { page: 'evidence/code/other/overview.md', title: 'Other Overview', score: 30, snippet: 'o', kind: 'codebase' },
+      { page: 'evidence/code/other/overview.md', title: 'Other Overview', score: 23.5, snippet: 'o', kind: 'codebase' },
       { page: 'evidence/code/smart-sale-service/overview.md', title: 'Service Overview', score: 22, snippet: 's', kind: 'codebase' },
     ]);
     vi.mocked(search).mockReturnValue([]);
@@ -196,5 +196,88 @@ describe('the order of the merged recall list', () => {
     expect(thirdCode).toBeGreaterThanOrEqual(0);
     expect(learningPosition).toBeLessThan(thirdCode);
     expect(captured.indexOf('[docs] Alpha Overview')).toBeLessThan(learningPosition);
+  });
+
+  it('keeps a relevant code page in the five shown when no relevant learnings hit exists', async () => {
+    vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);
+    vi.mocked(queryCodeKnowledge).mockResolvedValueOnce([
+      { page: 'evidence/code/shop/docs/architecture.md', title: 'Shop architecture', score: 40, snippet: 'a', kind: 'codebase' },
+      { page: 'evidence/code/shop/overview.md', title: 'Shop overview', score: 39, snippet: 'o', kind: 'codebase' },
+      { page: 'evidence/code/shop/docs/payment.md', title: 'Shop payment', score: 38, snippet: 'p', kind: 'codebase' },
+    ]);
+    // All below the relevance bar: the third shop page must not drop behind them.
+    vi.mocked(search).mockReturnValue([
+      learningHit('Ledger misc note three', 3.1),
+      learningHit('Ledger misc note four', 3.1),
+      learningHit('Ledger misc note five', 3.1),
+    ]);
+
+    await recall('ledger receipts', { dryRun: true });
+
+    const payment = captured.indexOf('[docs] Shop payment');
+    const note = captured.indexOf('[learnings] Ledger misc note three');
+    expect(payment).toBeGreaterThanOrEqual(0);
+    expect(note).toBeGreaterThanOrEqual(0);
+    expect(payment).toBeLessThan(note);
+  });
+
+  it('never lifts the extra codebase page above its own better-ranked pages', async () => {
+    vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);
+    vi.mocked(queryCodeKnowledge).mockResolvedValueOnce([
+      { page: 'evidence/code/shop/docs/a.md', title: 'Shop A', score: 40, snippet: 'a', kind: 'codebase' },
+      { page: 'evidence/code/shop/docs/b.md', title: 'Shop B', score: 39, snippet: 'b', kind: 'codebase' },
+      { page: 'evidence/code/shop/docs/c.md', title: 'Shop C', score: 30, snippet: 'c', kind: 'codebase' },
+    ]);
+    // A relevant learnings hit above all code hits: the cap must not pull C up
+    // above A and B to sit right after the runbook.
+    vi.mocked(search).mockReturnValue([learningHit('Gateway Runbook', 90)]);
+
+    await recall('gateway charges', { dryRun: true });
+
+    const a = captured.indexOf('[docs] Shop A');
+    const b = captured.indexOf('[docs] Shop B');
+    const c = captured.indexOf('[docs] Shop C');
+    expect(a).toBeGreaterThanOrEqual(0);
+    expect(b).toBeGreaterThan(a);
+    expect(c).toBeGreaterThan(b);
+  });
+
+  it('keeps a learnings hit that leads the named module by more than the tie-break band', async () => {
+    vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);
+    vi.mocked(queryCodeKnowledge).mockResolvedValueOnce([
+      { page: 'evidence/code/other/overview.md', title: 'Other Overview', score: 22.5, snippet: 'o', kind: 'codebase' },
+      { page: 'evidence/code/smart-sale-service/overview.md', title: 'Sale Overview', score: 22, snippet: 's', kind: 'codebase' },
+    ]);
+    // 7.91 vs the named page's 7.24 + 0.5: ahead of the tie-break band.
+    vi.mocked(search).mockReturnValue([learningHit('Gateway Runbook', 15.5)]);
+
+    await recall('smart-sale-service gateway', { dryRun: true });
+
+    const learningsPosition = captured.indexOf('[learnings] Gateway Runbook');
+    const namedPosition = captured.indexOf('[docs] Sale Overview');
+    const otherPosition = captured.indexOf('[docs] Other Overview');
+    expect(learningsPosition).toBeGreaterThanOrEqual(0);
+    expect(namedPosition).toBeGreaterThanOrEqual(0);
+    // The named page may pass the other code page, never the learnings hit.
+    expect(learningsPosition).toBeLessThan(namedPosition);
+    expect(namedPosition).toBeLessThan(otherPosition);
+  });
+
+  it('does not treat an ordinary word in the query as a module name', async () => {
+    vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);
+    vi.mocked(queryCodeKnowledge).mockResolvedValueOnce([
+      { page: 'evidence/code/other/overview.md', title: 'Other Overview', score: 30, snippet: 'o', kind: 'codebase' },
+      { page: 'evidence/code/smart-sale-service/overview.md', title: 'Sale Overview', score: 22, snippet: 's', kind: 'codebase' },
+    ]);
+    vi.mocked(search).mockReturnValue([]);
+
+    // "service" and "interfaces" are plain words, not identifiers.
+    await recall('service HTTP interfaces endpoints routes', { dryRun: true });
+
+    const other = captured.indexOf('[docs] Other Overview');
+    const sale = captured.indexOf('[docs] Sale Overview');
+    expect(other).toBeGreaterThanOrEqual(0);
+    expect(sale).toBeGreaterThanOrEqual(0);
+    expect(other).toBeLessThan(sale);
   });
 });
