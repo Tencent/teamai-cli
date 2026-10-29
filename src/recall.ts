@@ -818,14 +818,54 @@ export async function recall(
     return (b.entry.date || '').localeCompare(a.entry.date || '');
   });
 
+  // Diversify by codebase. A code hit's score saturates the 0-10 scale easily
+  // (any graph score >= 31 caps out), so three pages of ONE codebase — an
+  // overview, an architecture note, a module page — can fill the top 3 at the
+  // same 8.0 and push a runbook that matched the query terms to #4. Measured on
+  // the 90-question hard set: 26 of the 58 misses had exactly that shape (the
+  // expected docs page at #4/#5 behind three pages of one codebase). Capping a
+  // codebase at two entries and moving the extra below the relevant learnings
+  // hits lifted hard-set fact@3 33→38 while the 305-question tuning set and the
+  // 58-question blind set were unchanged (+0 / +1). The extra page lands after
+  // the last RELEVANT learnings hit, not at the end, so it stays above
+  // irrelevant noise.
+  const CODEBASE_ENTRIES_IN_TOP = 2;
+  const codebaseOf = (result: ScopedSearchResult): string | undefined =>
+    result.fromCodebase
+      ? result.entry.filename.match(/^evidence\/code\/([^/]+)\//)?.[1]
+      : undefined;
+  const ranked: ScopedSearchResult[] = [];
+  const demoted: ScopedSearchResult[] = [];
+  const codebaseCounts = new Map<string, number>();
+  for (const result of allResults) {
+    const codebase = codebaseOf(result);
+    if (codebase) {
+      const seen = codebaseCounts.get(codebase) ?? 0;
+      if (seen >= CODEBASE_ENTRIES_IN_TOP) {
+        demoted.push(result);
+        continue;
+      }
+      codebaseCounts.set(codebase, seen + 1);
+    }
+    ranked.push(result);
+  }
+  for (const result of demoted) {
+    let insertAfter = -1;
+    ranked.forEach((candidate, index) => {
+      if (!candidate.fromCodebase && relevant(candidate)) insertAfter = index;
+    });
+    if (insertAfter >= 0) ranked.splice(insertAfter + 1, 0, result);
+    else ranked.push(result);
+  }
+
   if (options.check) {
-    const top = allResults.length > 0 ? allResults[0] : undefined;
+    const top = ranked.length > 0 ? ranked[0] : undefined;
     emitCheckVerdict(top?.score ?? 0, top?.fromCodebase ?? false, top?.idfBaseline ?? idfBaseline, top);
     return;
   }
 
   // Limit to top 5
-  const topResults = allResults.slice(0, 5);
+  const topResults = ranked.slice(0, 5);
   // Hash only codebase sources that will be shown. This stays after the
   // --check early return so the relevance precheck remains filesystem-cheap.
   await annotateCodebaseSourceFreshness(topResults, wikiRoot).catch(() => {

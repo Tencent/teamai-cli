@@ -136,4 +136,29 @@ describe('the order of the merged recall list', () => {
     expect(codePosition).toBeGreaterThanOrEqual(0);
     expect(learningPosition).toBeLessThan(codePosition);
   });
+
+  it('keeps at most two pages of one codebase above a relevant learnings hit', async () => {
+    vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);
+    // Three pages of ONE codebase all saturate at 8.0 on the merged scale
+    // (graph score >= 31), so they would fill the top 3 at the same rank and
+    // push the learnings page that matched the query terms to #4.
+    vi.mocked(queryCodeKnowledge).mockResolvedValueOnce([
+      { page: 'evidence/code/demo/docs/a-overview.md', title: 'A Overview', score: 63, snippet: 'a', kind: 'codebase' },
+      { page: 'evidence/code/demo/docs/b-architecture.md', title: 'B Architecture', score: 52, snippet: 'b', kind: 'codebase' },
+      { page: 'evidence/code/demo/docs/c-module.md', title: 'C Module', score: 47, snippet: 'c', kind: 'codebase' },
+    ]);
+    // Normalizes to 7.7 — relevant, but below a saturated code hit (8.0).
+    vi.mocked(search).mockReturnValue([learningHit('Deployment Timeout Retry', 14.4)]);
+
+    await recall('deployment timeout retry', { dryRun: true });
+
+    const learningPosition = captured.indexOf('[learnings] Deployment Timeout Retry');
+    const demotedPosition = captured.indexOf('[docs] C Module');
+    expect(learningPosition).toBeGreaterThanOrEqual(0);
+    expect(demotedPosition).toBeGreaterThanOrEqual(0);
+    expect(learningPosition).toBeLessThan(demotedPosition);
+    // The first two pages of the codebase keep their place.
+    expect(captured.indexOf('[docs] A Overview')).toBeLessThan(learningPosition);
+    expect(captured.indexOf('[docs] B Architecture')).toBeLessThan(learningPosition);
+  });
 });
