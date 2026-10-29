@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { loadLocalConfigForScope } from '../config.js';
 import { syncScorerDefinitions, type SyncScorerOptions, type SyncScorerResult } from '../scorers/cache.js';
 import { log } from '../utils/logger.js';
@@ -466,7 +467,13 @@ export async function syncWorkflowDefinitions(
   for (const shipped of DefaultWorkflows.all()) {
     if (settledTeam(shipped.definition.name) !== undefined || shipped.content === undefined) continue;
     const parsed = parseWorkflow(shipped.relativePath, shipped.content, { runnable, cycle: () => undefined });
-    for (const diagnostic of parsed.ok ? [] : parsed.diagnostics) log.warn(`[workflows] teamai's default ${shipped.definition.name} cannot start: ${diagnostic.message}`);
+    const retypedBy = workflowsRunBy(shipped.definition).flatMap((run) => {
+      const child = runnable(run.workflow);
+      return child ? retypedInputs(shipped.definition, run, child) : [];
+    });
+    for (const reason of [...(parsed.ok ? [] : parsed.diagnostics.map(({ message }) => message)), ...retypedBy]) {
+      log.warn(`[workflows] teamai's default ${shipped.definition.name} cannot start: ${reason}`);
+    }
   }
 
   const scope = options.scopeLabel ?? config.scope;
@@ -542,6 +549,20 @@ function withMismatch(parent: string, { step, with: passed }: { step: string; wi
   return message === undefined ? undefined : { code: 'invalid_inputs', message };
 }
 
+/**
+ * Why step `step` of teamai's default `parent` cannot pass `child` what it passes, one reason per input, when `child`
+ * replaces the default the step runs and declares one of those inputs as another type. `parent` renders its `with`
+ * for teamai's own definition of that workflow, so a value of the default's type would fail `child` at the step,
+ * after the steps before it ran. Team workflows are matched by input name only.
+ */
+function retypedInputs(parent: WorkflowDefinition, { step, workflow, with: passed }: { step: string; workflow: string; with?: Record<string, unknown> }, child: WorkflowDefinition): string[] {
+  const shipped = DefaultWorkflows.named(workflow)?.definition;
+  if (DefaultWorkflows.named(parent.name)?.definition !== parent || !shipped || shipped === child) return [];
+  return Object.keys(passed ?? {})
+    .filter((input) => child.inputs?.[input] !== undefined && !isDeepStrictEqual(child.inputs[input], shipped.inputs?.[input]))
+    .map((input) => `step "${step}" passes ${input}, which workflow "${child.name}" declares as another type than teamai's default ${workflow}`);
+}
+
 /** Every workflow `cached` runs through its steps, directly or not, from the cache, and one hash over all of their sources. */
 export async function loadWorkflowTree(
   config: LocalConfig,
@@ -550,6 +571,10 @@ export async function loadWorkflowTree(
   const workflows: Record<string, WorkflowDefinition> = {};
   const hashes: Array<[string, string]> = [];
   const revisions: Array<string | undefined> = [cached.teamRevision];
+  const retyped = (parent: WorkflowDefinition, run: { step: string; workflow: string; with?: Record<string, unknown> }, child: WorkflowDefinition): TreeFailure | undefined => {
+    const [reason] = retypedInputs(parent, run, child);
+    return reason === undefined ? undefined : { code: 'invalid_inputs', message: `Workflow "${parent.name}" ${reason}. Make the two agree, then pull again.` };
+  };
   const visit = async (definition: WorkflowDefinition, through: string[]): Promise<TreeFailure | undefined> => {
     for (const run of workflowsRunBy(definition)) {
       const { step, workflow } = run;
@@ -559,7 +584,7 @@ export async function loadWorkflowTree(
       }
       const loaded = Object.hasOwn(workflows, workflow) ? workflows[workflow] : undefined;
       if (loaded) {
-        const unfit = withMismatch(definition.name, run, loaded);
+        const unfit = withMismatch(definition.name, run, loaded) ?? retyped(definition, run, loaded);
         if (unfit) return unfit;
         continue;
       }
@@ -567,7 +592,7 @@ export async function loadWorkflowTree(
       if (!child) {
         return { code: 'workflow_not_found', message: `Workflow "${definition.name}" step "${step}" runs workflow "${workflow}", which has no runnable version. Check workflows/${workflow}.yaml and pull again.` };
       }
-      const unfit = withMismatch(definition.name, run, child.definition);
+      const unfit = withMismatch(definition.name, run, child.definition) ?? retyped(definition, run, child.definition);
       if (unfit) return unfit;
       workflows[workflow] = child.definition;
       hashes.push([workflow, child.sourceHash]);

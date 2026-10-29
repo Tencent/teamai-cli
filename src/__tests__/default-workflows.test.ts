@@ -139,6 +139,30 @@ steps:
     ]);
   });
 
+  it('warn at pull, and refuse to start teamai-share-learnings, while the team\'s teamai-share-session takes one of its inputs as another type', async () => {
+    const config = testConfig();
+    writeWorkflow(config, 'wrap-up', `schemaVersion: v1alpha1
+name: wrap-up
+alias: teamai-share-session
+description: Publish this session our way.
+inputs: { session: string, source: string, publish: string, scorers: [string], judge: here | driver }
+steps:
+  - id: note
+    command: echo wrapped
+`);
+    const warn = vi.spyOn(log, 'warn');
+    await syncWorkflowDefinitions(config);
+
+    expect(warn.mock.calls.map(([message]) => message)).toEqual([
+      '[workflows] teamai\'s default teamai-share-learnings cannot start: step "share-session" passes publish, which workflow "wrap-up" declares as another type than teamai\'s default teamai-share-session',
+    ]);
+    const started = await startRun(config, 'teamai-share-learnings', { session: 's1', source: 'claude', publish: false, scorers: [], judge: 'here' }, { secrets: await knownSecrets(config) });
+    expect(started).toMatchObject({ error: {
+      code: 'invalid_inputs',
+      message: 'Workflow "teamai-share-learnings" step "share-session" passes publish, which workflow "wrap-up" declares as another type than teamai\'s default teamai-share-session. Make the two agree, then pull again.',
+    } });
+  });
+
   it('run as a sub-workflow of a team workflow', async () => {
     const config = testConfig();
     writeWorkflow(config, 'wrap-up', `schemaVersion: v1alpha1

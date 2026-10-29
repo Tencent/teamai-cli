@@ -600,7 +600,7 @@ For one name, the first runnable version wins: the project's team file, then the
 ⚠ [workflows] workflows/teamai-share-session.yaml has no runnable version, so teamai's default teamai-share-session stays in effect
 ```
 
-`teamai-share-learnings` runs `teamai-share-session` with its five inputs, so a team `teamai-share-session` declares the same five, even the ones it ignores:
+`teamai-share-learnings` runs `teamai-share-session` with its five inputs, so a team `teamai-share-session`, or a team workflow whose alias is `teamai-share-session`, declares the same five with the same types, even the ones it ignores:
 
 ```yaml
 schemaVersion: v1alpha1
@@ -615,7 +615,7 @@ steps:
     env: { SESSION: "{{ inputs.session }}" }
 ```
 
-With other inputs, such as only `session` and `source`, pull warns once per input and writes no `/teamai-share-learnings` skill, `teamai-share-learnings` refuses to start with `invalid_inputs` before any learning is shared, and the friction reminder goes back to `teamai skill get share`:
+With other inputs, such as only `session` and `source`, or one of another type, such as `publish: string`, pull warns once per input and writes no `teamai-share-learnings` skill, `teamai-share-learnings` refuses to start with `invalid_inputs` before any learning is shared, and the friction reminder goes back to `teamai skill get share`:
 
 ```text
 ⚠ [workflows] teamai's default teamai-share-learnings cannot start: step "share-session" with.publish is not an input workflow "teamai-share-session" declares

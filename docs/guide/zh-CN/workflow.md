@@ -600,7 +600,7 @@ $ teamai list workflows
 ⚠ [workflows] workflows/teamai-share-session.yaml has no runnable version, so teamai's default teamai-share-session stays in effect
 ```
 
-`teamai-share-learnings` 用它的五个输入运行 `teamai-share-session`，所以团队的 `teamai-share-session` 要声明同样的五个输入，用不到的也要声明：
+`teamai-share-learnings` 用它的五个输入运行 `teamai-share-session`，所以团队的 `teamai-share-session`（或别名为 `teamai-share-session` 的团队工作流）要声明同样的五个输入，类型也相同，用不到的也要声明：
 
 ```yaml
 schemaVersion: v1alpha1
@@ -615,7 +615,7 @@ steps:
     env: { SESSION: "{{ inputs.session }}" }
 ```
 
-输入不同时（例如只有 `session` 和 `source`），pull 对每个输入警告一次，不写 `/teamai-share-learnings` skill，`teamai-share-learnings` 在分享任何经验之前就以 `invalid_inputs` 拒绝启动，摩擦提醒回到 `teamai skill get share`：
+输入不同时（例如只有 `session` 和 `source`），或某个输入类型不同时（例如 `publish: string`），pull 对每个输入警告一次，不写 `teamai-share-learnings` skill，`teamai-share-learnings` 在分享任何经验之前就以 `invalid_inputs` 拒绝启动，摩擦提醒回到 `teamai skill get share`：
 
 ```text
 ⚠ [workflows] teamai's default teamai-share-learnings cannot start: step "share-session" with.publish is not an input workflow "teamai-share-session" declares
