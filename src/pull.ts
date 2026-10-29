@@ -414,13 +414,13 @@ export async function cleanupInactiveNamespaceSkills(
  * Whether only `install` writes `tool`'s skills directory. Hermes and OpenClaw
  * keep one directory that the user scope and every project on the machine
  * write, so this install's record there does not show that no other install
- * still delivers a skill (#1501). A project writes alone inside its root; the
- * user scope writes alone where a project would not.
+ * still delivers a skill (#1501). Each install writes alone when a project
+ * would write inside its own root. Asked of a stand-in project, so a project
+ * rooted where the tool keeps that directory (OpenClaw's workspace) is not
+ * taken for one that writes alone.
  */
 async function writesSkillsAlone(tool: string, install: Install): Promise<boolean> {
-  const asProject: Install = install.scope === 'project'
-    ? install
-    : { ...install, scope: 'project', projectRoot: path.join(os.tmpdir(), 'teamai-project-probe'), repo: 'team', workspaceChildren: false };
+  const asProject: Install = { ...install, scope: 'project', projectRoot: path.join(os.tmpdir(), 'teamai-project-probe'), repo: 'team', workspaceChildren: false };
   const dir = ownOf(await locate(tool, 'skills', asProject))?.path;
   return dir !== undefined && isWithin(dir, asProject.projectRoot);
 }

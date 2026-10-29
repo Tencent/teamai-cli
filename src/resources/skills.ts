@@ -173,8 +173,9 @@ async function holdsTeamSkillCopy(sharedDir: string, repoPath: string, previous:
  * record `previous` in Codex's own directory, with its place in the shared one
  * free, while the shared one holds teamai's copy of a team skill. A copy pull
  * keeps after its skill stopped being delivered never moves, so it does not
- * count. The "Already synced" fast path syncs
- * then, so an install an older release split is joined on the next pull.
+ * count. The "Already synced" fast path syncs then, so an install an older
+ * release split is joined on the next pull. The selection is resolved last,
+ * only for an install that holds teamai's copy in the shared directory.
  */
 export async function codexSkillsSplit(
   teamConfig: Pick<TeamaiConfig, 'toolPaths'>, localConfig: LocalConfig, previous: DeliveredHashes | undefined,
@@ -188,14 +189,13 @@ export async function codexSkillsSplit(
   const recorded = new Set(Object.keys(previous)
     .filter((file) => file.startsWith(skillsDir + path.sep))
     .map((file) => path.relative(skillsDir, file).split(path.sep)[0]));
-  let selected: ReadonlySet<string> | undefined;
+  const candidates: string[] = [];
   for (const name of recorded) {
-    if (await pathExists(path.join(skillsDir, name)) && !await pathExists(path.join(sharedDir, name))
-      && (selected ??= await delivered()).has(name)) {
-      return holdsTeamSkillCopy(sharedDir, localConfig.repo.localPath, previous);
-    }
+    if (await pathExists(path.join(skillsDir, name)) && !await pathExists(path.join(sharedDir, name))) candidates.push(name);
   }
-  return false;
+  if (candidates.length === 0 || !await holdsTeamSkillCopy(sharedDir, localConfig.repo.localPath, previous)) return false;
+  const selected = await delivered();
+  return candidates.some((name) => selected.has(name));
 }
 
 /**

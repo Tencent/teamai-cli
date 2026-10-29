@@ -185,4 +185,35 @@ describe('init <other team> --force, then pull (#1501 part 2)', () => {
     expect(fs.existsSync(path.join(hermesSkills, 'terraform-plan', 'SKILL.md')), pulled.output).toBe(true);
     expect(pulled.output).not.toContain('no longer delivered here');
   }, 120_000);
+
+  it('keeps the skills the user scope delivers in OpenClaw\'s workspace when the project is that workspace', () => {
+    const userHome = path.join(sandbox, 'openclaw-home');
+    const workspace = path.join(userHome, '.openclaw', 'workspace');
+    writeFile(path.join(userHome, '.openclaw', 'openclaw.json'), '{}\n');
+    const userEnv = { ...env, HOME: userHome, USERPROFILE: userHome, XDG_CONFIG_HOME: path.join(userHome, '.config') };
+    for (const [url, remote] of [[FRONTEND_URL, 'frontend'], [PLATFORM_URL, 'platform']]) {
+      const r = spawnSync('git', ['config', '--global', `url.${path.join(sandbox, `${remote}.git`)}.insteadOf`, url], { env: userEnv, encoding: 'utf8' });
+      if (r.status !== 0) throw new Error(r.stderr);
+    }
+    writeFile(path.join(workspace, 'README.md'), '# workspace\n');
+    for (const args of [['init', '-q', '-b', 'main'], ['add', '-A'], ['commit', '-qm', 'workspace']]) {
+      const r = spawnSync('git', args, { cwd: workspace, env: userEnv, encoding: 'utf8' });
+      if (r.status !== 0) throw new Error(r.stderr);
+    }
+    const skills = path.join(workspace, 'skills');
+    teamai(['init', FRONTEND_URL, '--provider', 'git', '--agent', 'openclaw', '--scope', 'user'], userHome, userEnv);
+    teamai(['pull'], userHome, userEnv);
+    const inProject = ['--provider', 'git', '--agent', 'openclaw', '--scope', 'project'];
+    teamai(['init', FRONTEND_URL, ...inProject], workspace, userEnv);
+    teamai(['pull'], workspace, userEnv);
+    expect(fs.existsSync(path.join(skills, 'react-review', 'SKILL.md'))).toBe(true);
+
+    teamai(['init', PLATFORM_URL, ...inProject, '--force'], workspace, userEnv);
+    const pulled = teamai(['pull'], workspace, userEnv);
+
+    expect(fs.existsSync(path.join(skills, 'react-review', 'SKILL.md')), pulled.output).toBe(true);
+    expect(fs.existsSync(path.join(skills, 'storybook', 'SKILL.md')), pulled.output).toBe(true);
+    expect(fs.existsSync(path.join(skills, 'terraform-plan', 'SKILL.md')), pulled.output).toBe(true);
+    expect(pulled.output).not.toContain('no longer delivered here');
+  }, 120_000);
 });
