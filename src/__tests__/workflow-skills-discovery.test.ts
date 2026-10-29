@@ -257,6 +257,15 @@ describe('generated skills of teamai\'s default workflows', () => {
     expect(fs.existsSync(skillAt('teamai-share-session'))).toBe(true);
   });
 
+  it('offers no skill while recall is off for a team workflow whose alias replaces teamai-share-learnings', async () => {
+    const { deploy, skillAt } = await team({ 'close-session': workflow('close-session', 'ask', 'alias: teamai-share-learnings\n') }, undefined, { recall: false });
+    await deploy();
+
+    expect(fs.existsSync(skillAt('workflow-teamai-share-learnings'))).toBe(false);
+    expect(fs.existsSync(skillAt('teamai-share-learnings'))).toBe(false);
+    expect(fs.existsSync(skillAt('teamai-share-session'))).toBe(true);
+  });
+
   it('removes the teamai-share-learnings skill once recall is turned off', async () => {
     const { deploy, skillAt, teamConfig } = await team({}, undefined, { recall: true });
     await deploy();
