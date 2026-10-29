@@ -118,6 +118,56 @@ The runner first rejects `TMPDIR` (or `TMP` / `TEMP` on Windows) inside any Git 
 
 Workers share the prepared `dist/` and OpenCode binary: never rebuild or reinstall them inside a test. Cases needing remote credentials skip without them ([CI E2E setup](../docs/dev/ci-e2e-setup.md)). PRs changing runtime behavior (not docs- or tests-only) include one real-CLI verification, such as a focused E2E run, with its command and result.
 
+### When a test fails only on CI
+
+Find the failed cases, from the first attempt when a rerun passed:
+
+```bash
+gh run view <run-id> --attempt 1 --log-failed | grep -E '×|Test timed out'
+```
+
+The duration on the `×` line tells you what kind of failure it is:
+
+| The `×` line | What happened | What to do |
+|---|---|---|
+| `× … does not publish conflict markers a prompt left in an agent file 684ms`<br>`→ expected undefined to match object { code: 'merge_conflict' }` | It ended early, with the wrong outcome: a race. Its passing neighbours took 1.5 s. | Find the race. More time changes nothing. |
+| `× … stops setup when the lease passes its timeout at max_parallel 1, … 12994ms`<br>`→ setup did not start` | A timeout inside the test ran out before the slow work it waits for. | Give that timeout room, not the case. |
+| `× … continues the plan's session with every turn a step added on either machine, … 15197ms`<br>`→ Test timed out in 15000ms.` | The case ran out of budget on a slow runner. | Give it a budget only if it waits on real processes, and say so. |
+
+**A race: let the failure say why, then make it fail every run.** First put the state in the assertion message, so the next CI failure names the cause (#1526):
+
+```ts
+expect(join && 'failure' in join ? join.failure : undefined, JSON.stringify(typeof run === 'object' ? run.steps : null))
+  .toMatchObject({ code: 'merge_conflict' });
+```
+
+That message showed `fatal: failed to read .git/worktrees/<id>/commondir`: two steps ran `git worktree add` at once. Then widen the window with a fake binary first on `PATH`, so a test fails on every run until the cause is fixed. The case "opens a worktree for each of two steps that start at once, while git still writes the first one" in `workflow-workspace.test.ts` uses a `git` that leaves a worktree entry half written for half a second.
+
+**A timeout inside the test: slow down what comes before it.** The setup case gave its step `timeout: 1s`, which counts from the lease, and the lease makes the worktree first. This `git` makes that worktree as slow as a loaded runner does, and the case fails on every run, as it did on CI:
+
+```bash
+#!/bin/sh
+case " $* " in *" worktree add "*) sleep 1.5;; esac
+exec /usr/bin/git "$@"
+```
+
+**A case that runs out of budget.** Tests and hooks get 15 s (`vitest.config.ts`). A case that waits on real work, such as real git across machines, can take its own budget, with a comment saying what it waits on:
+
+```ts
+// Two members, a worktree each and a publish and a claim between them: real git,
+// which a loaded runner takes far longer over.
+it('continues a copy it took back from the commit the other machine recorded, fast-forwarding its own branch', { timeout: 120_000 }, async () => {
+```
+
+**When you cannot make it fail every run,** run it many times at once, as a runner runs its shards:
+
+```bash
+for i in $(seq 12); do
+  npx vitest run src/__tests__/workflow-workspace.test.ts -t "left in an agent file" > "/tmp/run-$i.log" 2>&1 &
+done; wait
+grep -lE "Tests +[0-9]+ failed" /tmp/run-*.log
+```
+
 ## Bug Reports & Feature Requests
 
 Please file issues at [github.com/Tencent/teamai-cli/issues](https://github.com/Tencent/teamai-cli/issues). Include:

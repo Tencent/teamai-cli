@@ -563,7 +563,7 @@ export function eligibleUpvotes(
 
 const contributeCheckHandler: HookHandler = {
   name: 'contribute-check',
-  async execute(stdin, tool) {
+  async execute(stdin, tool, localConfig) {
     // The payload's cwd, not the process's: hook-dispatch changes into it, but
     // that can fail, and the gate must not then read the launcher's directory.
     // A removed worktree's session keeps its recorded scope (#810).
@@ -584,7 +584,11 @@ const contributeCheckHandler: HookHandler = {
     // single state write inside contributeCheckForSession) for delivery on the
     // next UserPromptSubmit, so contributeCheckForSession returns null here.
     const stash = stopStdoutUnsupported(tool);
-    const { hint } = await contributeCheckForSession(sessionId, cwd, transcriptPath, stash);
+    // The session's mode and launcher as the dispatcher forwarded them, else as this process's environment has them.
+    const { readSessionRun, sessionRun } = await import('./launch-context.js');
+    const run = readSessionRun(stdin) ?? sessionRun(process.env);
+    const offer = localConfig ? async () => (await import('./session-close.js')).SessionClose.reminderOffer(localConfig, { tool, sessionId, cwd: cwd ?? process.cwd(), run }) : undefined;
+    const { hint } = await contributeCheckForSession(sessionId, cwd, transcriptPath, stash, offer);
     if (!hint) return null;
     // The hint is addressed to the user, so a host that hides the payload needs
     // the model to pass it on. Claude Code prints it and must not be asked (#719).

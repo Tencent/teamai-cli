@@ -26,6 +26,7 @@ vi.mock('../hooks.js', async () => {
         // Keep the real report so assertions verify the actual wording.
         reportCodexTrust: actual.reportCodexTrust,
         codexTrustPolicy: actual.codexTrustPolicy,
+        runsTeamHookOn: actual.runsTeamHookOn,
     };
 });
 
@@ -339,6 +340,28 @@ describe('hooksList', () => {
         expect(text).toContain('[lint] Stop');
         expect(text).toContain('npm run lint');
         expect(text).toContain('(tools: claude)');
+    });
+
+    it('says which tools run each team hook, and which have no hook on its event', async () => {
+        mockedParseTeamHooks.mockResolvedValue(hooksYaml([
+            { id: 'no-force-push', event: 'PreToolUse', matcher: 'Bash', command: 'scan-push', description: 'x' },
+            { id: 'lint', event: 'Stop', command: 'npm run lint', description: 'x', tools: ['cursor'] },
+        ]));
+        const out: string[] = [];
+        const spy = vi.spyOn(console, 'log').mockImplementation((m?: unknown) => { out.push(String(m)); });
+        try {
+            await hooksList({});
+        } finally {
+            spy.mockRestore();
+        }
+        const team = out.join('\n').split('Team hooks (B)')[1].split('\n');
+        const after = (id: string) => team.slice(team.findIndex((l) => l.includes(`[${id}]`)) + 1, team.findIndex((l) => l.includes(`[${id}]`)) + 3);
+        expect(after('no-force-push')).toEqual([
+            '      runs in: claude, claude-internal',
+            '      not in: cursor (no PreToolUse hook there)',
+        ]);
+        expect(after('lint')[0]).toBe('      runs in: cursor');
+        expect(after('lint')[1]).not.toContain('not in');
     });
 
     it('prints a deprecated roles restriction next to the tools one', async () => {

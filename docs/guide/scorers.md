@@ -85,10 +85,10 @@ A name with no valid `scorers/<name>.md` fails `teamai review --branch`; `teamai
 ```console
 $ teamai workflow start review-and-fix --driver local     # the run settles; judging never holds it
 $ teamai score --next --json '{"driver":{"kind":"local","machine":"m1","workspace":"/work","can":{"judge":{"isolation":"verified","tools":["claude"]}}}}'
-{"data":{"lease":{"ref":"s5d1e07c2a9b4/a91c0d7e","subject":{"runId":"r3f9…","step":"review","pass":1},
-  "evidence":"…/scores/evidence/a91c0d7e/","prompt":"…/prompt.md","answer":{"schema":{…}},
-  "submit":"teamai score --lease s5d1e07c2a9b4/a91c0d7e --submit --stdin"}}}
-$ teamai score --lease s5d1e07c2a9b4/a91c0d7e --json '{"driver":{"kind":"local","machine":"m1","workspace":"/work"}}'
+{"data":{"lease":{"ref":"s5d1e07c2a9b4a/a91c0d7e0","subject":{"runId":"r3f9…","step":"review","pass":1},
+  "evidence":"…/scores/evidence/a91c0d7e0/","prompt":"…/prompt.md","answer":{"schema":{…}},
+  "submit":"teamai score --lease s5d1e07c2a9b4a/a91c0d7e0 --submit --stdin"}}}
+$ teamai score --lease s5d1e07c2a9b4a/a91c0d7e0 --json '{"driver":{"kind":"local","machine":"m1","workspace":"/work"}}'
 {"data":{"label":{"scorer":"review-quality","label":"good","score":1,"passed":true,…},"published":true}}
 ```
 
@@ -104,7 +104,7 @@ A driver runs its own judge on `prompt.md`, with the evidence directory as its o
 
 ```console
 $ teamai score --next --json '{"driver":{"kind":"t3","machine":"m1","workspace":"/work","can":{"judge":{"isolation":"verified","access":"read","tools":["claude"]}}},"running":[]}'
-$ teamai score --lease s5d1e07c2a9b4/a91c0d7e --submit --stdin <<'JSON'
+$ teamai score --lease s5d1e07c2a9b4a/a91c0d7e0 --submit --stdin <<'JSON'
 {"driver":{"kind":"t3","machine":"m1","workspace":"/work"},"outcome":"success",
  "answer":{"label":"good","reasoning":"…"},"judge":{"tool":"claude"}}
 JSON
@@ -286,7 +286,7 @@ daily_limit: 10                                  # per data home: on a fresh CI 
 | Policy | `attended` | `unattended` |
 |---|---|---|
 | `off` | Nothing. The default. | Nothing. |
-| `ask` | Acts as `off` for now. | Acts as `off`, since nobody is there to answer. |
+| `ask` | When the friction reminder offers [`session-close`](workflow.md#session-close), it proposes the scorers that sample the session, and they judge it once the person confirms. | Acts as `off`, since nobody is there to answer. |
 | `auto` | A session is judged once nothing has happened in it for six hours, by the background judge. | A session is judged when `teamai score --drain` runs, before the job ends. The default. |
 
 Each mode resolves on its own, from the first of these that sets it: a member's `scoring.sessions` in `config.yaml`, the active namespaces' `scoring.yaml` files, the root `scorers/scoring.yaml`, the default. When two active namespaces disagree, the most restrictive policy wins (`off`, then `ask`, then `auto`), and so does the lowest `daily_limit`. A partial mapping such as `{ attended: ask }` leaves the other mode to the next level:

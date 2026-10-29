@@ -125,7 +125,9 @@ interface MachineOptions {
 
 function machine(base: string, opts: MachineOptions = {}): Machine {
   const name = `${base}-${++attempt}`;
-  const home = path.join(sandbox, `${name}-home`);
+  // Keep the nested TeamAI partition paths below Windows' legacy Git limit.
+  // The descriptive test name is still used for the remote and business repo.
+  const home = path.join(sandbox, `h${attempt}`);
   fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
   fs.mkdirSync(path.join(home, '.codex'), { recursive: true });
   const run = (command: string, args: string[], cwd: string): Run => {
@@ -253,7 +255,10 @@ function asOlderCliState(statePath: string): void {
 
 beforeAll(() => {
   if (!fs.existsSync(CLI)) throw new Error(`CLI binary not found at ${CLI}. Run "npm run build" first.`);
-  sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-git-exclude-e2e-')));
+  // Windows Git still has legacy path-length limits; the test creates nested
+  // per-workspace clone paths, so use a concise prefix there.
+  const prefix = process.platform === 'win32' ? 't-' : 'teamai-git-exclude-e2e-';
+  sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
 });
 
 afterAll(async () => {
@@ -1255,11 +1260,11 @@ describe('explicit commands and layout migrations never delete a file the busine
       trigger: (m) => `${m.ok(['roles', 'set', 'fe']).output}${m.ok(['pull']).output}`,
       kept: '.claude/skills/dup/extra.md',
     },
-    // An earlier release's copy of a team rule named teamai-context, where nothing rewrites that path:
-    // OpenCode's instruction file is .opencode/teamai-context.md, and Kiro takes none.
+    // An earlier release's copy of a team rule named teamai-context. These
+    // paths are not new instruction targets, so pull must keep a file the
+    // business repository tracks (#915).
     ...([
       ['opencode', '.opencode/rules/teamai-context.md'],
-      ['kiro', '.kiro/steering/teamai-context.md'],
     ] as const).map(([tool, kept]): TrackedRow => ({
       name: `${tool}'s teamai-context rule copy`,
       opts: { files: { ...TEAM_SKILLS, 'rules/teamai-context.md': rule('Context') }, agents: `claude,${tool}` },
@@ -1286,6 +1291,35 @@ describe('explicit commands and layout migrations never delete a file the busine
     expect(fs.existsSync(path.join(m.dir, row.kept)), output).toBe(true);
     const line = row.movedTo === undefined ? trackedKept(m, row.kept) : trackedMoved(m, row.kept, row.movedTo);
     expect(times(output, line), output).toBe(1);
+  });
+
+  it.each([
+    ['claude', '.claude/rules/teamai-context.md'],
+    ['cursor', '.cursor/rules/teamai-context.mdc'],
+    ['codebuddy', '.codebuddy/rules/teamai-context.md'],
+    ['workbuddy', '.codebuddy/rules/teamai-context.md'],
+    ['kiro', '.kiro/steering/teamai-context.md'],
+    ['qoder', '.qoder/rules/teamai-context.md'],
+    ['trae', '.trae/rules/teamai-context.md'],
+  ] as const)('rewrites the tracked %s context target with the team instructions', (tool, target) => {
+    const m = machine(`tracked-context-${tool}`, {
+      team: ON,
+      files: {
+        ...TEAM_SKILLS,
+        'culture.md': '# Culture\n\nTRACKED-CULTURE-915\n',
+        'claudemd/shared.md': 'TRACKED-SHARED-915\n',
+        'rules/teamai-context.md': rule('Context'),
+      },
+      agents: `claude,${tool}`,
+    });
+    commit(m, { [target]: renderRuleForTool(tool, rule('Context')) });
+
+    const pulled = m.ok(['pull', '--force']);
+    const content = read(path.join(m.dir, target));
+    expect(content, pulled.output).toContain('TRACKED-CULTURE-915');
+    expect(content, pulled.output).toContain('TRACKED-SHARED-915');
+    expect(m.status(), pulled.output).toContain(` M ${target}`);
+    expect(deletions(m), pulled.output).toEqual([]);
   });
 
   it('removes the copies of the team\'s last rule once the team deletes it, and keeps the member\'s own rule visible', () => {

@@ -278,4 +278,4 @@ Doctor 会按 UTF-8 字节计算项目规则回复序列化后的大小，并与
 
 ## Kiro 生命周期 hooks
 
-Kiro CLI V3 会为所有 agent（包括默认 agent）加载 `~/.kiro/hooks/teamai.json`。pull 和 hook 注入会安装其中的 SessionStart hook，无需先同步团队 agent。`hooks list` 和 `doctor` 检查它；移除 hooks 或用户级卸载会删除它，项目级卸载保留这份共享用户 hook。同名个人文件会被保留并提示。启用独立 hook 前，pull 和 hook 注入会从现有 Kiro agent（包括成员编辑过的副本）中仅移除 TeamAI 旧的 `agentSpawn` 命令，保留个人 hooks 和 agent 字段。生命周期集成需要 V3，Kiro 2.x 不加载这份独立 hook。
+Kiro CLI V3 会为所有 agent（包括默认 agent）加载 `~/.kiro/hooks/teamai.json`。pull 和 hook 注入会安装其中的 SessionStart hook，无需先同步团队 agent。`hooks list` 和 `doctor` 检查它；移除 hooks 或用户级卸载会删除它，项目级卸载保留这份共享用户 hook。同名个人文件会被保留并提示。启用独立 hook 前，pull 和 hook 注入会从现有 Kiro agent（包括成员编辑过的副本）中仅移除 TeamAI 旧的 `agentSpawn` 命令，保留个人 hooks 和 agent 字段。生命周期集成需要 V3，Kiro 2.x 不加载这份独立 hook。团队有给 Kiro 的 hook 时，pull 还会写 `~/.kiro/hooks/teamai-team.json`，每个事件一条，经 teamai 运行这些 hook；移除 hooks 和卸载时也会删除它。

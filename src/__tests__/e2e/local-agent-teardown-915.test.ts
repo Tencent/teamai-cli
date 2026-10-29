@@ -295,7 +295,10 @@ describe.skipIf(process.platform === 'win32')('removing the HTTP local agent rem
     const app = await m.project('app');
     await m.sessionStart(app, 'claude', [installRule('home-rule', app), installSkill('home-skill', app)]);
     expect(block(app)).toEqual(['/.claude/rules/home-rule.md', '/.claude/skills/home-skill/SKILL.md']);
-    expect(block(app, 'delivered')).toEqual(['/.claude/skills/teamai/SKILL.md', '/.workbuddy/skills/teamai/SKILL.md']);
+    expect(block(app, 'delivered')).toEqual([
+      '/.claude/skills/teamai/SKILL.md', '/.claude/skills/workflow-session-close/SKILL.md',
+      '/.workbuddy/skills/teamai/SKILL.md', '/.workbuddy/skills/workflow-session-close/SKILL.md',
+    ]);
     // The member removed WorkBuddy's copy of the CLI's skill.
     fs.rmSync(path.join(app, '.workbuddy', 'skills'), { recursive: true });
     const exclude = path.join(app, '.git', 'info', 'exclude');
@@ -309,9 +312,11 @@ describe.skipIf(process.platform === 'win32')('removing the HTTP local agent rem
     expect(fs.readdirSync(path.join(m.home, '.teamai')).sort(), out.output).toEqual(['env-loader.sh', 'env-scopes', 'projects']);
     expect(block(app), out.output).toBeNull();
     expect(fs.existsSync(path.join(app, '.claude', 'rules', 'home-rule.md'))).toBe(false);
-    // This uninstall leaves the CLI's skill in the project: its line stays, named.
-    expect(block(app, 'delivered'), out.output).toEqual(['/.claude/skills/teamai/SKILL.md']);
-    expect(out.output).toContain(`Kept /.claude/skills/teamai/SKILL.md in ${exclude}, so git still ignores ${path.join(app, '.claude', 'skills', 'teamai', 'SKILL.md')}`);
+    // This uninstall leaves the CLI's skill and pull's generated workflow skill in the project: their lines stay, named.
+    expect(block(app, 'delivered'), out.output).toEqual(['/.claude/skills/teamai/SKILL.md', '/.claude/skills/workflow-session-close/SKILL.md']);
+    const skillFile = (name: string): string => path.join(app, '.claude', 'skills', name, 'SKILL.md');
+    expect(out.output).toContain(`Kept /.claude/skills/teamai/SKILL.md, /.claude/skills/workflow-session-close/SKILL.md in ${exclude}, `
+      + `so git still ignores ${skillFile('teamai')}, ${skillFile('workflow-session-close')}`);
     expect(m.git(['status', '--porcelain', '-uall'], app).out, out.output).toBe('');
   }, 180_000);
 });

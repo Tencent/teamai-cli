@@ -25,6 +25,7 @@ import { reconcileHooksToAllTools } from '../hooks.js';
 import { log } from '../utils/logger.js';
 import { loadOmpExtension, type ExtensionDispatch } from './helpers/pi-extensions.js';
 import { hookAdapterDir } from '../locate.js';
+import { bridgedTeamHookFile } from '../bridged-team-hooks.js';
 
 describe('the OMP extension directory', () => {
   it('always targets the user agent dir (single-copy policy)', () => {
@@ -261,6 +262,93 @@ describe('reconcileHooksToAllTools routes omp to the extension adapter', () => {
 });
 
 // Team instructions (#945): the extension adds hook-dispatch's context to the prompt.
+describe('OMP extension: the team\'s hooks', () => {
+  const ctx = { cwd: '/work/proj', sessionManager: { getSessionId: () => 'omp-main' } };
+  let home: string;
+  let prevHome: string | undefined;
+  beforeEach(async () => {
+    home = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-omp-team-'));
+    prevHome = process.env.HOME;
+    process.env.HOME = home;
+  });
+  afterEach(async () => {
+    process.env.HOME = prevHome;
+    await fse.remove(home);
+  });
+  const teamHooksOn = (...events: string[]) => fse.outputJson(bridgedTeamHookFile('omp'), {
+    hooks: Object.fromEntries(events.map((event) => [event, [{ matcher: '*', hooks: [{ type: 'command', command: 'true' }] }]])),
+  });
+  const reply = (replies: Record<string, unknown>) => (args: string[]) =>
+    args.includes('--team-hooks') && replies[args[1]] ? JSON.stringify(replies[args[1]]) : '';
+  const team = (dispatches: ExtensionDispatch[]) => dispatches.filter((d) => d.args.includes('--team-hooks'));
+
+  it('blocks a tool call a PreToolUse team hook refuses, with its reason', async () => {
+    await teamHooksOn('PreToolUse');
+    const { on, dispatches } = loadOmpExtension(reply({ PreToolUse: { block: 'Use --force-with-lease' } }));
+    expect(await on.tool_call({ toolCallId: 'c1', toolName: 'bash', input: { command: 'jj push -f' } }, ctx))
+      .toEqual({ block: true, reason: 'Use --force-with-lease' });
+    expect(team(dispatches)).toEqual([{
+      args: ['hook-dispatch', 'PreToolUse', '--tool', 'omp', '--team-hooks'],
+      payload: { cwd: '/work/proj', session_id: 'omp-main', tool_name: 'bash', tool_input: { command: 'jj push -f' } },
+    }]);
+  });
+
+  it('starts no teamai process on a tool call when the team has no PreToolUse hook', async () => {
+    await teamHooksOn('Stop');
+    const { on, dispatches } = loadOmpExtension();
+    expect(await on.tool_call({ toolCallId: 'c1', toolName: 'bash', input: { command: 'ls' } }, ctx)).toBeUndefined();
+    expect(dispatches).toEqual([]);
+  });
+
+  it('adds the SessionStart context to every turn and the UserPromptSubmit context to its own', async () => {
+    await teamHooksOn('SessionStart', 'UserPromptSubmit');
+    const { on } = loadOmpExtension(reply({ SessionStart: { context: 'Release freeze until Monday' }, UserPromptSubmit: { context: 'Ticket ENG-42 is open' } }));
+    await on.session_start({}, ctx);
+    expect(await on.before_agent_start({ prompt: 'one', systemPrompt: ['BASE'] }, ctx))
+      .toEqual({ systemPrompt: ['BASE', 'Release freeze until Monday', 'Ticket ENG-42 is open'] });
+  });
+
+  it('runs no UserPromptSubmit team hook for a run an extension started without a user prompt', async () => {
+    await teamHooksOn('UserPromptSubmit');
+    const { on, dispatches } = loadOmpExtension(reply({ UserPromptSubmit: { context: 'Ticket ENG-42 is open' } }));
+    expect(await on.before_agent_start({ messageType: 'custom', systemPrompt: ['BASE'] }, ctx)).toBeUndefined();
+    expect(team(dispatches)).toEqual([]);
+  });
+
+  it('runs the SessionStart hooks before each turn, so a prompt hook\'s change shows on the next one (#1492)', async () => {
+    await teamHooksOn('SessionStart', 'UserPromptSubmit');
+    let level = 'full';
+    let prompts = 0;
+    const { on } = loadOmpExtension((args) => {
+      if (!args.includes('--team-hooks')) return '';
+      if (args[1] === 'UserPromptSubmit' && ++prompts === 2) level = 'lite';
+      return args[1] === 'SessionStart' ? JSON.stringify({ context: `Ponytail level: ${level}` }) : '';
+    });
+    await on.session_start({}, ctx);
+    expect(await on.before_agent_start({ prompt: 'hi', systemPrompt: ['BASE'] }, ctx)).toEqual({ systemPrompt: ['BASE', 'Ponytail level: full'] });
+    await on.before_agent_start({ prompt: '/ponytail lite', systemPrompt: ['BASE'] }, ctx);
+    expect(await on.before_agent_start({ prompt: 'go on', systemPrompt: ['BASE'] }, ctx)).toEqual({ systemPrompt: ['BASE', 'Ponytail level: lite'] });
+  });
+
+  it('shows what a team hook wrote on stderr in OMP\'s console', async () => {
+    await teamHooksOn('PostToolUse');
+    const { on, errors } = loadOmpExtension(() => '', (args) => args.includes('--team-hooks') ? 'prettier: command not found\n' : '');
+    await on.tool_result({ toolCallId: 'c1', toolName: 'write', input: { path: 'a.ts' }, content: [], isError: false }, ctx);
+    expect(errors).toEqual(['prettier: command not found']);
+  });
+
+  it('runs the PostToolUse and Stop team hooks with the event\'s payload', async () => {
+    await teamHooksOn('PostToolUse', 'Stop');
+    const { on, dispatches } = loadOmpExtension();
+    await on.tool_result({ toolCallId: 'c1', toolName: 'edit', input: { path: 'a.ts' }, content: [{ type: 'text', text: 'ok' }], isError: false }, ctx);
+    await on.session_stop({}, ctx);
+    expect(team(dispatches).map((d) => [d.args[1], d.payload])).toEqual([
+      ['PostToolUse', { cwd: '/work/proj', session_id: 'omp-main', tool_name: 'edit', tool_input: { path: 'a.ts' }, tool_response: 'ok', tool_status: 'success' }],
+      ['Stop', { cwd: '/work/proj', session_id: 'omp-main' }],
+    ]);
+  });
+});
+
 describe('OMP extension: team instructions in the system prompt (#945)', () => {
   const ctx = { cwd: '/work/proj/src', sessionManager: { getSessionId: () => 'omp-main' } };
   const context = (text: string) => (args: string[]) => args[1] === 'instructions'
@@ -295,14 +383,6 @@ describe('OMP extension: team instructions in the system prompt (#945)', () => {
     expect(await on.before_agent_start({ prompt: 'one', systemPrompt: ['BASE'] }, ctx)).toBeUndefined();
   });
 
-  it('adds the project team hooks\' output to the prompt (#1492)', async () => {
-    const { on, dispatches } = loadOmpExtension((args) => args.includes('--team-hooks') ? `team-${args[1]}\n` : '');
-    await on.session_start({}, ctx);
-    const turn = await on.before_agent_start({ prompt: 'one', systemPrompt: ['BASE'] }, ctx);
-    expect(turn).toEqual({ systemPrompt: ['BASE', 'team-session-start', 'team-prompt-submit'] });
-    expect(dispatches.filter((d) => d.args.includes('--team-hooks')).map((d) => d.args[1]))
-      .toEqual(['session-start', 'prompt-submit']);
-  });
 });
 
 // Recall attribution (#884): the extension evaluated in `vm`, with a fake host.

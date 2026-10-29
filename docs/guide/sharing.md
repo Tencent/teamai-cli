@@ -194,6 +194,68 @@ hooks:
 
 A hook for one project goes in `hooks/<ns>/hooks.yaml`.
 
+Four hooks a team can share. A hook reads Claude Code's JSON payload on stdin.
+
+```yaml
+hooks:
+  # Refuse a force push, and say what to run instead.
+  - id: no-force-push
+    description: Refuse git push --force
+    event: PreToolUse
+    matcher: Bash
+    command: >-
+      jq -r '.tool_input.command' | grep -Eq 'git push.* (-f|--force)( |$)'
+      && { echo 'Use git push --force-with-lease' >&2; exit 2; } || true
+
+  # Migrations that shipped are append-only.
+  - id: no-migration-edits
+    description: Keep shipped migrations unchanged
+    event: PreToolUse
+    matcher: Edit|Write
+    command: >-
+      jq -r '.tool_input.file_path // empty' | grep -q '/db/migrations/'
+      && { echo 'Add a new migration instead: make migration name=...' >&2; exit 2; } || true
+
+  # Tell every session about the release freeze.
+  - id: release-freeze
+    description: Announce the release freeze
+    event: SessionStart
+    command: echo 'Release freeze until Friday 18:00 UTC. Only hotfix/* branches merge to main.'
+
+  # Format what the agent wrote.
+  - id: format-on-write
+    description: Run Prettier on edited files
+    event: PostToolUse
+    matcher: Edit|Write
+    command: >-
+      f=$(jq -r '.tool_input.file_path // empty');
+      [ -n "$f" ] && npx --no-install prettier --write "$f" >/dev/null 2>&1; true
+```
+
+What a hook can do depends on its event. Every tool that runs the event does this much. Claude Code does more, such as refusing a prompt when a `UserPromptSubmit` hook exits 2:
+
+| Event | Exit 2 (reason on stderr) | Stdout |
+|-------|---------------------------|--------|
+| `PreToolUse` | Blocks the tool call | — |
+| `SessionStart`, `UserPromptSubmit` | — | Added to the agent's context |
+| `PostToolUse`, `Stop` | — | — |
+
+`teamai hooks list` shows where each team hook runs:
+
+```text
+  [no-force-push] PreToolUse [Bash]  →  jq -r '.tool_input.command' | grep -Eq 'git push.* (-f|--force)( |$)' && { echo 'Use git push --force-with-lease' >&2; exit 2; } || true  (tools: all)  from root
+      runs in: claude, omp, opencode
+      not in: cursor (no PreToolUse hook there)
+```
+
+OpenCode, Oh My Pi, Pi, OpenClaw, Kiro, and Hermes have no Claude Code hook file. Their hooks run through teamai, with Claude Code's payload and tool names (`matcher: Bash` matches OpenCode's `bash` and Hermes's `terminal`). There:
+
+- Only `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, and `Stop` run. Pull warns about a team hook on any other event.
+- `UserPromptSubmit` adds context but cannot block the prompt.
+- Oh My Pi waits 25 seconds for a `PreToolUse` hook. A slower hook does not block the call. Hermes stops any hook after 300 seconds.
+- OpenClaw and Hermes run `SessionStart` on the session's first prompt. OpenCode, Oh My Pi, and Pi build the system prompt for each request, so they run `SessionStart` again before each request after the first, so what it prints follows a change a `UserPromptSubmit` hook made (a `/ponytail lite` that sets a level shows on the next turn).
+- OpenClaw loads teamai's plugin from `plugins.load.paths` in `openclaw.json`. If `plugins.allow` leaves it out, pull warns and the hooks do not run.
+
 ```yaml
 sharing:
   hooks:
@@ -310,7 +372,7 @@ sessions:
   publish: { attended: ask, unattended: auto }
 ```
 
-`ask` acts as `off` for now, so a person's sessions are archived only by a command such as `teamai session push`. Attended `auto` archives a session once nothing has happened in it for six hours, in the background pass that judges finished sessions. Publishing always scrubs. An HTTP team keeps no session archive, so there `sessions.publish` acts as `off`, and `teamai doctor` says so.
+Attended `ask` proposes publishing when the friction reminder offers [`session-close`](workflow.md#session-close), and the person confirms it twice: at the start, and again from their own terminal or the dashboard before the transcript goes out. Otherwise a person's sessions are archived only by a command such as `teamai session push`. Unattended `ask` acts as `off`, since nobody is there to confirm. Attended `auto` archives a session once nothing has happened in it for six hours, in the background pass that judges finished sessions. Publishing always scrubs. An HTTP team keeps no session archive, so there `sessions.publish` acts as `off`, and `teamai doctor` says so.
 
 A member's `config.yaml` wins, one mode at a time. A mode it does not name falls through to `teamai.yaml`:
 

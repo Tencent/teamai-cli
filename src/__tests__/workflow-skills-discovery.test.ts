@@ -160,14 +160,24 @@ describe('generated workflow skills', () => {
     const first = createDeliveryRecorder();
     await deploy(first);
     const listed = await first.merge(undefined);
-    expect(listed).toEqual({ 'workflow-skills': [skill('check'), skill('gated')] });
+    expect(listed).toEqual({ 'workflow-skills': [skill('check'), skill('gated'), skill('session-close')] });
     const confirmed = createDeliveryRecorder();
     await deploy(confirmed);
     expect(await confirmed.merge(listed)).toEqual(listed);
     await put('gated', null);
     const pruned = createDeliveryRecorder();
     await deploy(pruned);
-    expect(await pruned.merge(listed)).toEqual({ 'workflow-skills': [skill('check')] });
+    expect(await pruned.merge(listed)).toEqual({ 'workflow-skills': [skill('check'), skill('session-close')] });
+  });
+
+  it('writes a skill for teamai\'s default session-close, and none once the team overrides it with invoke: deny', async () => {
+    const { deploy, skill, put } = await team({});
+    await deploy();
+    expect(fs.readFileSync(skill('session-close'), 'utf8')).toContain('Use when the person asks to close the session, share a learning, publish or archive the session, or score or judge it.');
+
+    await put('session-close', workflow('session-close', 'deny'));
+    await deploy();
+    expect(fs.existsSync(skill('session-close'))).toBe(false);
   });
 
   it('never writes or removes through a link', async () => {

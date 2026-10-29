@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { DefaultWorkflows } from '../default-workflows.js';
 import { knownSecrets } from '../env-resolution.js';
+import { getCurrentVersion } from '../package-info.js';
 import { pinScorers } from '../scorers/cache.js';
 import { AgentSession } from '../session-flow/agent-session.js';
 import { archiveSessions, type ArchiveSessionRef } from '../session-flow/archive.js';
@@ -11,7 +13,7 @@ import { gitRoot } from '../utils/branch-worktree.js';
 import { canonicalJson } from '../utils/canonical-json.js';
 import { sanitizeGitUrl } from '../utils/redact.js';
 import { fetchReportsOriginFile, readReportsOriginFile, updateReports, type ReportsChange } from '../utils/reports-branch.js';
-import { loadWorkflowBundle, loadWorkflowBundleAt, type WorkflowBundle } from './cache.js';
+import { loadWorkflowBundle, loadWorkflowBundleAt, loadWorkflowTree, type WorkflowBundle } from './cache.js';
 import { stepLoops } from './loop.js';
 import { pendingRecords, publishPendingRecords, type RecordDelivery } from './records.js';
 import {
@@ -20,7 +22,7 @@ import {
 } from './snapshot.js';
 import { takeOver, type UnleasedStep } from './step-state.js';
 import { installOwner, isRunId, readRun, updateRun } from './store.js';
-import type { RunState, RunStatus, WorkflowDefinition, WorkflowFailure, WorkflowStep } from './types.js';
+import type { RunState, RunStatus, WorkflowDefinition, WorkflowFailure, WorkflowSource, WorkflowStep } from './types.js';
 import { branchName, stepMode, type LeaseSession, type SessionRef } from './workspace.js';
 import { fetchMissingCommits, git, reconcileCopy } from './worktree.js';
 
@@ -683,6 +685,7 @@ function settledForGood({ definition, workflows }: Definitions, byId: ReadonlyMa
 
 /** What a run carries: its definitions, the steps it settled for good, and its status. */
 export interface CarriedRun extends Definitions {
+  source: WorkflowSource;
   settled: string[];
   status: RunStatus;
 }
@@ -695,14 +698,17 @@ export interface CarriedRun extends Definitions {
 export async function carriedRun(config: LocalConfig, runId: string, { published: alreadyPublished, claim = false }: { published: boolean; claim?: boolean }): Promise<Result<CarriedRun | undefined>> {
   const stored = await readRun(config, runId);
   if (stored === 'corrupt') return refused(runUnreadable(runId));
-  const local = stored === 'missing' ? undefined : { definition: stored.definition, workflows: stored.workflows ?? {}, settled: settledSteps(stored), status: stored.status };
+  const local = stored === 'missing' ? undefined
+    : { definition: stored.definition, workflows: stored.workflows ?? {}, source: DefaultWorkflows.sourceOfRun(stored), settled: settledSteps(stored), status: stored.status };
   if (local && !claim) return ok(local);
   if (!alreadyPublished) return ok(local);
   // Read from the team repository rather than the reports checkout, which a refused resume would otherwise leave synced.
   const origin = await publishedRun(config, runId, { checkout: false });
   if (!origin.ok || origin.value === 'absent') return origin.ok || local ? ok(local) : origin;
   const definitions = await definitionsOf(config, origin.value);
-  return definitions.ok ? ok({ ...definitions.value, settled: settledSteps({ ...definitions.value, steps: origin.value.steps }), status: origin.value.status }) : definitions;
+  return definitions.ok
+    ? ok({ ...definitions.value, source: DefaultWorkflows.sourceOfRun(origin.value), settled: settledSteps({ ...definitions.value, steps: origin.value.steps }), status: origin.value.status })
+    : definitions;
 }
 
 /**
@@ -910,6 +916,19 @@ function handedOver(snapshot: RunSnapshot, definitions: Definitions): Handover {
 export async function definitionsOf(config: LocalConfig, snapshot: RunSnapshot): Promise<Result<Definitions>> {
   const same = (bundle: WorkflowBundle): boolean => bundle.sourceHash === snapshot.sourceHash
     && definitionHash(bundle.definition, bundle.workflows) === snapshot.definitionHash;
+  // No team commit holds a default: only the default this teamai ships can be the one that ran, whatever the name resolves to here.
+  if (snapshot.origin?.source === 'default') {
+    const shipped = DefaultWorkflows.named(snapshot.name);
+    const tree = shipped ? await loadWorkflowTree(config, shipped) : undefined;
+    if (shipped && tree && !('failed' in tree) && same({ definition: shipped.definition, workflows: tree.workflows, sourceHash: tree.sourceHash })) {
+      return ok({ definition: shipped.definition, workflows: tree.workflows });
+    }
+    const { teamaiVersion } = snapshot.origin;
+    return refused({
+      code: 'definition_mismatch',
+      message: `Run ${snapshot.run} runs teamai's default workflow "${snapshot.name}" of teamai ${teamaiVersion}, which differs from the one teamai ${getCurrentVersion()} ships. Continue it on a machine with teamai ${teamaiVersion}, or start a new run.`,
+    });
+  }
   const cached = await loadWorkflowBundle(config, snapshot.name);
   if (!('failed' in cached) && same(cached)) return ok({ definition: cached.definition, workflows: cached.workflows });
   const revision = snapshot.teamRevision;

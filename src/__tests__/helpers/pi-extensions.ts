@@ -37,19 +37,26 @@ function register(source: string, context: Record<string, unknown>): Record<stri
 }
 
 /** The generated Pi extension, whose `child_process.spawn` records each dispatch instead of running `teamai`. */
-export function loadPiExtension(stdoutFor: (args: string[]) => string = () => ''): LoadedExtension {
+export function loadPiExtension(
+  stdoutFor: (args: string[]) => string = () => '',
+  stderrFor: (args: string[]) => string = () => '',
+): LoadedExtension & { errors: string[] } {
   const dispatches: ExtensionDispatch[] = [];
+  const errors: string[] = [];
   const spawn = (_command: string, argv: string[]) => {
     // Node now receives the installed CLI entry before the dispatcher arguments.
     const args = argv.slice(1);
-    const child = new EventEmitter() as EventEmitter & { stdin: EventEmitter & { end: (s: string) => void }; stdout: EventEmitter; kill: () => void };
+    const child = new EventEmitter() as EventEmitter & { stdin: EventEmitter & { end: (s: string) => void }; stdout: EventEmitter; stderr: EventEmitter; kill: () => void };
     child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
     child.stdin = Object.assign(new EventEmitter(), {
       end: (stdin: string) => {
         dispatches.push({ args, payload: JSON.parse(stdin) as Record<string, unknown> });
         queueMicrotask(() => {
           const stdout = stdoutFor(args);
           if (stdout) child.stdout.emit('data', stdout);
+          const stderr = stderrFor(args);
+          if (stderr) child.stderr.emit('data', stderr);
           child.emit('close', 0);
         });
       },
@@ -57,8 +64,9 @@ export function loadPiExtension(stdoutFor: (args: string[]) => string = () => ''
     child.kill = () => undefined;
     return child;
   };
-  const on = register(buildPiExtensionSource(), { spawn, process: { platform: 'linux' }, setTimeout, clearTimeout });
-  return { on, dispatches };
+  const console = { error: (message: unknown) => { errors.push(String(message)); } };
+  const on = register(buildPiExtensionSource(), { spawn, fs, process: { platform: 'linux' }, setTimeout, clearTimeout, console });
+  return { on, dispatches, errors };
 }
 
 /**
@@ -66,7 +74,11 @@ export function loadPiExtension(stdoutFor: (args: string[]) => string = () => ''
  * instead of running `teamai`: the launcher is the first value, argv the second, and the
  * STDIN the Response redirected into it.
  */
-export function loadOmpExtension(stdoutFor: (args: string[]) => string = () => ''): LoadedExtension {
+export function loadOmpExtension(
+  stdoutFor: (args: string[]) => string = () => '',
+  stderrFor: (args: string[]) => string = () => '',
+): LoadedExtension & { errors: string[] } {
+  const errors: string[] = [];
   const dispatches: ExtensionDispatch[] = [];
   const $ = (_strings: TemplateStringsArray, _launcher: string[], args: string[], stdin: Response) => {
     // The real Bun ShellPromise is both awaitable (to a ShellOutput with text(),
@@ -84,10 +96,11 @@ export function loadOmpExtension(stdoutFor: (args: string[]) => string = () => '
       text: async () => execute(),
       // oxlint-disable-next-line unicorn/no-thenable -- emulates Bun's ShellPromise
       then: (resolve: (value: unknown) => void, reject: (reason: unknown) => void) =>
-        execute().then((stdout) => ({ text: async () => stdout, exitCode: 0, stderr: Buffer.from('') })).then(resolve, reject),
+        execute().then((stdout) => ({ text: async () => stdout, exitCode: 0, stderr: Buffer.from(stderrFor(args)) })).then(resolve, reject),
     };
     return { quiet: () => ({ nothrow: () => output }) };
   };
-  const on = register(buildOmpExtensionSource(), { $, Response, fs, path, Buffer });
-  return { on, dispatches };
+  const console = { error: (message: unknown) => { errors.push(String(message)); } };
+  const on = register(buildOmpExtensionSource(), { $, Response, fs, path, Buffer, setTimeout, clearTimeout, console });
+  return { on, dispatches, errors };
 }

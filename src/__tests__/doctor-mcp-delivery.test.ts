@@ -201,6 +201,24 @@ describe('doctor — MCP servers delivered on disk', () => {
     const check = await mcpCheck();
     expect(await check.check()).toBe(false);
     expect(check.fix).toContain('could not be parsed');
+    expect(check.fix!.split(path.join(homeDir, '.claude.json')).length - 1).toBe(1);
+    expect(check.fix).toContain('Fix the JSON, or move the file aside, then run `teamai pull`');
+    expect(check.fix).not.toContain('env/env.yaml');
+  });
+
+  it('keeps env advice when a config parse failure and unresolved variable coexist', async () => {
+    await writeTeamMcp(
+      'servers:\n  - name: jira\n    transport: stdio\n    command: jira-server\n'
+        + '    env:\n      TOKEN: "${MISSING_TOKEN}"\n',
+    );
+    await fse.writeFile(path.join(homeDir, '.claude.json'), '{ not json');
+
+    const check = await mcpCheck();
+    expect(await check.check()).toBe(false);
+    expect(check.fix).toContain('could not be parsed');
+    expect(check.fix).toContain('MISSING_TOKEN');
+    expect(check.fix).toContain('env/env.yaml');
+    expect(check.fix).toContain('teamai env add MISSING_TOKEN --secret');
   });
 
   it('fails when mcp.yaml is present but does not parse', async () => {

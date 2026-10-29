@@ -16,10 +16,10 @@
  * one.
  */
 
-import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getTeamHookDispatchCommand, getTeamHookDispatchCommandWindows } from './builtin-hooks.js';
+import { runHookCommand } from './hook-command.js';
 import type { CodexGroupSlot, CodexTrustPolicy } from './hooks.js';
 import { CODEX_TOOL_ID, getTeamaiHomeDir } from './types.js';
 import { checkoutForProjectAnchor } from './utils/git.js';
@@ -251,47 +251,6 @@ function matches(hook: CodexTeamHook, payload: Record<string, unknown>): boolean
   return values.some((v) => (regex ? regex.test(v) : v === matcher));
 }
 
-interface HookRun { hook: CodexTeamHook; code: number | null; stdout: string; stderr: string; timedOut: boolean }
-
-/** Run one team hook as Codex would: through a shell, in `cwd`, the payload on stdin, bounded by its timeout. */
-function runHook(hook: CodexTeamHook, payload: string, cwd: string | undefined): Promise<HookRun> {
-  return new Promise((resolve) => {
-    const group = process.platform !== 'win32';
-    let stdout = '';
-    let stderr = '';
-    let settled = false;
-    const finish = (code: number | null, timedOut = false) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve({ hook, code, stdout, stderr, timedOut });
-    };
-    const child = spawn(hook.command, {
-      shell: true,
-      cwd,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
-      // Its own process group, so a timeout stops the shell and what it started.
-      detached: group,
-    });
-    const timer = setTimeout(() => {
-      try {
-        if (group && child.pid) process.kill(-child.pid, 'SIGKILL');
-        else child.kill('SIGKILL');
-      } catch {
-        // Already gone.
-      }
-      finish(null, true);
-    }, (hook.timeout ?? defaultTimeout(hook.event)) * 1000);
-    child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf8'); });
-    child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8'); });
-    child.on('error', (e) => { stderr += e.message; finish(null); });
-    child.on('close', (code) => finish(code));
-    child.stdin?.on('error', () => {});
-    child.stdin?.end(payload);
-  });
-}
-
 /**
  * `teamai hook-dispatch <event> --tool codex --team-hooks`: run the team hooks
  * of the project the payload's `cwd` belongs to for `event`, all at once, as
@@ -319,7 +278,7 @@ export async function runCodexDispatcher(event: string): Promise<number> {
   const hooks = (checkout === null ? [] : hooksFor(record, checkout ?? undefined) ?? []).filter((hook) => hook.event === event && matches(hook, payload));
   if (hooks.length === 0) return 0;
 
-  const runs = await Promise.all(hooks.map((hook) => runHook(hook, raw, cwd)));
+  const runs = await Promise.all(hooks.map(async (hook) => ({ hook, ...await runHookCommand(hook.command, { cwd, timeout: hook.timeout ?? defaultTimeout(hook.event), stdin: raw }) })));
   for (const run of runs) {
     if (run.timedOut) process.stderr.write(`teamai: team hook ${run.hook.id} timed out after ${run.hook.timeout ?? defaultTimeout(event)}s\n`);
     else if (run.code !== 0 && run.stderr) process.stderr.write(run.stderr);

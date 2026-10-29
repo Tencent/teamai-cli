@@ -289,6 +289,27 @@ export function negotiate(offer: Offer, can: DriverCan, allow: Allow, env: EnvFa
   return { kind: 'grant', terms: { requires: offer.requires, ...envScope, ...maxTurns, ...setup, unenforced } };
 }
 
+/**
+ * How a member gives `keys`, which this machine has no value for, a value: `teamai env set` only takes a key the team
+ * declares as a secret or an env variable, so it is offered for those alone; the rest are set in the environment, or
+ * declared in the team repo first (#1513).
+ */
+export function envAdvice(keys: readonly string[], declared: ReadonlySet<string>): string {
+  const known = keys.filter((key) => sameEnvName(declared, key) !== undefined);
+  const unknown = keys.filter((key) => sameEnvName(declared, key) === undefined);
+  const advice: string[] = [];
+  if (known.length > 0) {
+    advice.push(`run ${known.map((key) => `teamai env set ${key}`).join(', ')}, or set ${known.length > 1 ? 'them' : 'it'} in the environment`);
+  }
+  if (unknown.length > 0) {
+    const them = unknown.length > 1 ? 'them' : 'it';
+    const adds = unknown.map((key) => `teamai env add ${key} --secret`).join(', ');
+    const sets = unknown.map((key) => `teamai env set ${key}`).join(', ');
+    advice.push(`set ${unknown.join(', ')} in the environment, or declare ${them} in the team repo with ${adds} and give ${them} a value with ${sets}`);
+  }
+  return advice.join('; ');
+}
+
 /** Why `keys`, which `who` requires, cannot be given here: the team env cannot be read, or a key has no value. */
 function envUnavailable(who: string, keys: readonly string[], env: EnvFacts): WorkflowFailure | undefined {
   if (keys.length === 0) return undefined;
@@ -298,7 +319,8 @@ function envUnavailable(who: string, keys: readonly string[], env: EnvFacts): Wo
   const absent = keys.filter((key) => sameEnvName(env.present, key) === undefined);
   if (absent.length === 0) return undefined;
   const one = absent.length === 1;
-  return { code: 'missing_env', message: `${who} requires env ${absent.join(', ')}, which ${one ? 'has' : 'have'} no value on this machine. Run ${absent.map((key) => `teamai env set ${key}`).join(', ')}, or set ${one ? 'it' : 'them'} in the environment, then retry the step.` };
+  const advice = envAdvice(absent, env.declared);
+  return { code: 'missing_env', message: `${who} requires env ${absent.join(', ')}, which ${one ? 'has' : 'have'} no value on this machine. ${advice.charAt(0).toUpperCase()}${advice.slice(1)}, then retry the step.` };
 }
 
 function rank(level: Isolation): number {

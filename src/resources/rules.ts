@@ -16,6 +16,7 @@ import { placedResourcePath } from '../push-namespaces.js';
 import { recordedNamespace } from '../utils/pending-push.js';
 import { deliversEveryNamespace } from '../resource-namespaces.js';
 import { getFileContentAtRev, isPastVersionOf, listFilesAtRev } from '../utils/git.js';
+import { gitUntracked } from '../git-exclude.js';
 import { historicalVersions } from '../utils/team-history.js';
 import {
   adoptRecord, contentHash, describeMembersDirLeft, describeMembersLink, forgetDelivered, holdsNonRegular, isLink, isTeamaiCopy, keepsEditedCopy, openLedger, recordDelivered, recordedUnchanged,
@@ -684,7 +685,6 @@ export class RulesHandler extends ResourceHandler {
     ledger: DeliveryLedger | undefined,
   ): Promise<void> {
     const { holdsInstructionBlocks } = await import('../instruction-targets.js');
-    const install = installOf(teamConfig, localConfig);
     const relativePath = `rules/${TEAMAI_CONTEXT_RULE_NAME}.md`;
     const rule: ResourceItem = {
       name: TEAMAI_CONTEXT_RULE_NAME, type: 'rules', relativePath, sourcePath: path.join(localConfig.repo.localPath, relativePath),
@@ -702,13 +702,19 @@ export class RulesHandler extends ResourceHandler {
       const delivered = (recorded !== undefined && recorded === await fileHash(file))
         || await isDeliveredRender(deliveredRenders(tool), file, rule, localConfig.repo.localPath, deliveredRevs);
       if (!delivered) continue;
-      // Where this path is the tool's instruction file (Claude, Cursor,
-      // CodeBuddy, WorkBuddy), the instruction sync right after rewrites it,
-      // so a tracked copy shows ` M`, as any update does, and keeping the old
-      // file would block that sync. Elsewhere (OpenCode, Kiro) nothing
-      // rewrites it: a tracked copy is kept, as every removal keeps one.
-      const target = ownOf(await locate(tool, 'blocks', install))?.path;
+      const target = ownOf(await locate(tool, 'blocks', installOf(teamConfig, localConfig)))?.path;
+      // An old rule copy at its replacement instruction target must make room
+      // for the blocks. A tracked instruction file stays in place, emptied so
+      // the sync below can fill it; with no blocks it remains an empty tracked
+      // file instead of becoming a deletion (#915). A tracked copy elsewhere
+      // remains untouched and is named once.
       if (target !== file && await keepsTrackedCopy(file)) continue;
+      if (target === file && !await gitUntracked(file)) {
+        await writeFile(file, '');
+        if (ledger) forgetDelivered(ledger.hashes, file);
+        log.info(`Cleared ${file}, the tracked copy of the team rule ${TEAMAI_CONTEXT_RULE_NAME} an earlier release delivered: the team instructions go there now`);
+        continue;
+      }
       await remove(file);
       if (ledger) forgetDelivered(ledger.hashes, file);
       log.info(`Removed ${file}, the copy of the team rule ${TEAMAI_CONTEXT_RULE_NAME} an earlier release delivered: the team instructions go there now`);

@@ -115,6 +115,7 @@ function sameLocalSource(a: { localRootHash: string; sourceSubdir?: string }, b:
 type PublishedSource =
   | { kind: 'same' }
   | { kind: 'different'; published: RemoteSource; staged: CodebaseSource | null }
+  | { kind: 'other-checkout' }
   | { kind: 'unknown' };
 
 /**
@@ -125,8 +126,9 @@ type PublishedSource =
  * repository and directory in it, and from a different one when only the
  * published manifest names a repository or the two differ. Two checkouts with
  * no remote are the same source when they hashed the same root and extracted
- * the same directory in it; otherwise nothing is known, since a checkout moved
- * to another path hashes differently. Evidence with this checkout's own hashed
+ * the same directory in it; evidence that hashed a *different* root is known
+ * to be another checkout's and left alone without a warning, while a local
+ * manifest without a hash says nothing. Evidence with this checkout's own hashed
  * root and directory is its own even after the checkout gained a remote.
  * Teamwikis written before the per-codebase `source-manifest.json` existed have no published identity;
  * there a provider-namespaced slug (`gitlab__group__repo`) still names the
@@ -141,8 +143,22 @@ async function publishedSource(dirs: {
   sourceDir: string;
 }): Promise<PublishedSource> {
   const [published, staged] = await Promise.all([readCodebaseSource(dirs.publishedDir), readCodebaseSource(dirs.stagedDir)]);
-  if (published?.kind === 'local' && sameLocalSource(published, await sourceRepositoryMetadata(dirs.sourceDir))) {
-    return { kind: 'same' };
+  if (published?.kind === 'local') {
+    // Read lazily: a destination that does not name a local source never
+    // reaches for the checkout's metadata (nor for git).
+    const own = await sourceRepositoryMetadata(dirs.sourceDir);
+    if (sameLocalSource(published, own)) {
+      return { kind: 'same' };
+    }
+    // A published manifest that hashed a root this checkout did not come
+    // from names another checkout without an origin: it is not this
+    // source's, and no warning is needed on every later import that
+    // merely passes its name as a legacy slug (#1502). The same root with
+    // a different directory in it stays below: that is this repository's
+    // own older scope, and a manifest without a recorded hash says nothing.
+    if (published.localRootHash && published.localRootHash !== own.localRootHash) {
+      return { kind: 'other-checkout' };
+    }
   }
   if (published?.kind === 'remote') {
     const sameRepo = staged?.kind === 'remote' && remotesMatch(published.repoUrl, staged.repoUrl);
@@ -361,10 +377,15 @@ export async function importCodebase(opts: ImportCodebaseOptions): Promise<boole
           }
           break;
         case 'unknown':
-          // Evidence older than its source manifest, or another checkout's
-          // without an origin, cannot be shown to be this repo's, so it is not moved.
+          // Evidence older than its source manifest cannot be shown to be
+          // this repo's, so it is not moved.
           log.warn(`teamwiki/evidence/code/${legacySlug}/ names no repository, so it was left in place. `
             + `If it is an older copy of teamwiki/evidence/code/${slug}/, move any curated docs you want to keep from it, then remove it.`);
+          break;
+        case 'other-checkout':
+          // The legacy name holds another checkout's evidence, proven by a
+          // hashed root this source did not come from: it is not an older
+          // copy of this one, so it stays without a warning (#1502).
           break;
         case 'different':
           // Another repository's evidence keeps its own name.
@@ -394,6 +415,12 @@ export async function importCodebase(opts: ImportCodebaseOptions): Promise<boole
     switch (source.kind) {
       case 'different':
         throw differentSourceError(slug, source);
+      case 'other-checkout':
+        // Reached through `localCheckoutSlug`, another checkout's evidence
+        // under this name has already been answered with a suffix; a direct
+        // import replaces it like any `unknown` provenance. The distinction
+        // matters only where the name passed as a legacy slug is reported.
+        // fall through
       case 'same':
       case 'unknown':
         break;

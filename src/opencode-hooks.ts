@@ -16,21 +16,23 @@
  *   - `chat.message`        → prompt-submit   (skill mentions / dashboard)
  *   - `tool.execute.after`  → post-tool-use   (dashboard / skill use)
  *
- * The generated plugin is fire-and-forget: OpenCode's `event` hook has no
- * channel to inject a hook's stdout back into the session, so — like the Hermes
- * and OpenClaw adapters — teamai runs the dispatch for its side effects and
- * never blocks the agent. Node's child-process errors are swallowed.
+ * The built-in dispatches run for their side effects and never block the
+ * agent; Node's child-process errors are swallowed. The team's own hooks
+ * (bridged-team-hooks.ts) run only on the events the team has one on: a
+ * PreToolUse hook fails the tool call from `tool.execute.before`, and what a
+ * SessionStart or UserPromptSubmit hook prints joins the system prompt.
  */
 
 import path from 'node:path';
 import { hookSourceMatches } from './utils/hook-source.js';
-import { writeFile, writeIfChanged, ensureDir, pathExists, readFileSafe, remove } from './utils/fs.js';
+import { writeIfChanged, pathExists, readFileSafe, remove } from './utils/fs.js';
 import { probeBinary } from './utils/exec.js';
 import { log } from './utils/logger.js';
 import { earlierHookAdapterDir, hookAdapterDir } from './locate.js';
 import { toolHome } from './tool-home.js';
 import { isGitExcludeEnabled, type LocalConfig, type TeamaiConfig } from './types.js';
 import { resolveCliEntry } from './builtin-hooks.js';
+import { bridgedTeamHookFile } from './bridged-team-hooks.js';
 
 /** Plugin directory name under an OpenCode config dir. OpenCode scans both
  *  `plugin/` and `plugins/`; we use the singular, matching the docs examples. */
@@ -94,20 +96,21 @@ export function buildPluginSource(userConfigDir = toolHome('opencode'), entry = 
 // Bridges OpenCode's plugin events to \`teamai hook-dispatch\`, mirroring the
 // Claude built-in hook set. Feeds the same STDIN JSON payload other agents send
 // so the track / hint handlers and project-scope gating work. Errors are
-// swallowed. OpenCode's event hooks cannot inject a hook's stdout back into the
-// session, so the built-in dispatch runs purely for its side effects (status
-// report / sync / update). Project team hooks run through \`--team-hooks\`, and
-// their stdout is appended to each request's system prompt through
-// \`experimental.chat.system.transform\` (#1492).
+// swallowed; the built-in dispatch runs for its side effects (status report /
+// sync / update). The team's hooks run only on the events the team has one on:
+// a PreToolUse hook can fail a tool call, and SessionStart / UserPromptSubmit
+// context joins the system prompt.
 //
-// NOTE: OpenCode awaits its named hooks (chat.message, tool.execute.after), so
-// the dispatch is not truly fire-and-forget for those two — see the timeout
-// note below.
+// NOTE: OpenCode awaits its named hooks (chat.message, tool.execute.*), so
+// those dispatches are not fire-and-forget.
 
 /** A host field read defensively: a non-empty string, or undefined. */
 const nonEmpty = (value) => (typeof value === 'string' && value ? value : undefined);
 const NODE = ${JSON.stringify(process.execPath)};
 const ENTRY = ${JSON.stringify(entry)};
+const TEAM_HOOKS_FILE = ${JSON.stringify(bridgedTeamHookFile('opencode'))};
+/** OpenCode waits for a hook with no limit; the team hooks keep their own timeouts, this bounds the dispatch. */
+const TEAM_HOOKS_TIMEOUT_MS = 600000;
 
 /** @param {{ directory?: string, worktree?: string }} ctx */
 const TeamaiHooks = async ({ directory, worktree }) => {
@@ -140,57 +143,53 @@ const TeamaiHooks = async ({ directory, worktree }) => {
     }
   };
 
-  // Team hooks are not baked into this user-wide bridge: the dispatcher
-  // resolves the project from the payload's cwd and runs the hooks a pull
-  // applied. Its STDOUT is the team's context. OpenCode's event hooks cannot
-  // inject stdout, so SessionStart runs again for every request through the
-  // V2 context hook / experimental.chat.system.transform — which is also what
-  // makes a prompt hook's level change show on the next turn.
-  const promptContext = new Map();
-  const dispatchTeam = async (event, payload) => {
+  // The team's hooks for a Claude event (hooks/hooks.yaml), run by
+  // \`teamai hook-dispatch <Event> --tool opencode --team-hooks\` when the team
+  // has one on it: {block} for a PreToolUse hook that refuses, {context} for
+  // what a SessionStart or UserPromptSubmit hook adds, else undefined. What a
+  // hook that failed or timed out wrote on stderr goes to OpenCode's console.
+  const teamHooks = async (event, payload) => {
     try {
-      const args = [ENTRY, 'hook-dispatch', event, '--tool', 'opencode', '--team-hooks'];
-      const stdin = JSON.stringify({ cwd, ...(payload || {}) });
+      const fs = await import('node:fs/promises');
+      const hooks = JSON.parse(await fs.readFile(TEAM_HOOKS_FILE, 'utf8')).hooks;
+      if (!hooks || !Array.isArray(hooks[event]) || hooks[event].length === 0) return undefined;
       const { spawn } = await import('node:child_process');
       return await new Promise((resolve) => {
-        const child = spawn(NODE, args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+        const child = spawn(NODE, [ENTRY, 'hook-dispatch', event, '--tool', 'opencode', '--team-hooks'], {
+          windowsHide: true,
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
         let out = '';
         let err = '';
-        child.stdout.on('data', (chunk) => { out += chunk.toString(); });
-        child.stderr.on('data', (chunk) => { err += chunk.toString(); });
-        const finish = (code) => {
-          child.removeListener('error', onError);
-          child.removeListener('close', onClose);
-          resolve({ out, err, code });
+        const finish = () => {
+          clearTimeout(timer);
+          if (err.trim()) console.error(err.trimEnd());
+          err = '';
+          try {
+            resolve(out.trim() ? JSON.parse(out) : undefined);
+          } catch {
+            resolve(undefined);
+          }
         };
-        const onError = () => finish(null);
-        const onClose = (code) => finish(code);
-        child.once('error', onError);
-        child.once('close', onClose);
-        child.stdin.write(stdin);
-        child.stdin.end();
+        const timer = setTimeout(() => {
+          try { child.kill(); } catch {}
+          out = '';
+          finish();
+        }, TEAM_HOOKS_TIMEOUT_MS);
+        child.stdout.on('data', (chunk) => { out += chunk; });
+        child.stderr.on('data', (chunk) => { err += chunk; });
+        child.once('error', () => { out = ''; finish(); });
+        child.once('close', finish);
+        child.stdin.end(JSON.stringify({ cwd, ...(payload || {}) }));
       });
     } catch {
-      return { out: '', err: '', code: null };
+      return undefined;
     }
   };
-  const reportTeam = (run) => {
-    // The dispatcher reports a failing or timed-out hook on stderr but keeps
-    // its own exit 0 unless the hook blocks with 2; show it either way.
-    if (run.err.trim()) console.error(run.err.trimEnd());
-  };
-  // The team context reaches the session's own requests. OpenCode exposes no
-  // subagent-start event, so a subagent does not get its own copy.
-  const teamContextFor = async (sessionID) => {
-    const texts = [];
-    const started = await dispatchTeam('session-start', { session_id: sessionID });
-    reportTeam(started);
-    if (started.out.trim()) texts.push(started.out);
-    const prompt = sessionID ? promptContext.get(sessionID) : undefined;
-    if (prompt && prompt.trim()) texts.push(prompt);
-    if (sessionID) promptContext.delete(sessionID);
-    return texts;
-  };
+  // What each session's SessionStart hooks added at its start, for its first
+  // request, and what its last prompt's UserPromptSubmit hooks added.
+  const startContexts = new Map();
+  const promptContexts = new Map();
 
   return {
     // Lifecycle events name their session in event.properties: sessionID, or
@@ -199,11 +198,32 @@ const TeamaiHooks = async ({ directory, worktree }) => {
       const props = (event && event.properties) || {};
       const session = { session_id: nonEmpty(props.sessionID) || nonEmpty(props.info && props.info.id) };
       if (event.type === 'session.created') {
+        // The host does not wait for this event; the first request waits for the context.
+        startContexts.set(session.session_id, teamHooks('SessionStart', session));
         await dispatch('session-start', session);
       } else if (event.type === 'session.idle') {
         await dispatch('stop', session);
-        reportTeam(await dispatchTeam('stop', session));
+        await teamHooks('Stop', session);
       }
+    },
+    // A PreToolUse team hook that refuses fails the call: OpenCode gives the model the error.
+    'tool.execute.before': async (input, output) => {
+      const decision = await teamHooks('PreToolUse', {
+        session_id: nonEmpty(input && input.sessionID),
+        tool_name: (input && input.tool) || '',
+        tool_input: (output && output.args) || {},
+      });
+      if (decision && typeof decision.block === 'string') throw new Error(decision.block);
+    },
+    // OpenCode builds the system prompt for each request, so the SessionStart
+    // hooks run again for each after the first: what they print follows what
+    // a prompt hook changed (#1492).
+    'experimental.chat.system.transform': async (input, output) => {
+      const session = nonEmpty(input && input.sessionID);
+      const started = startContexts.get(session);
+      startContexts.delete(session);
+      const added = [(await (started ?? teamHooks('SessionStart', { session_id: session })))?.context, promptContexts.get(session)];
+      for (const text of added) if (typeof text === 'string' && text && output && Array.isArray(output.system)) output.system.push(text);
     },
     // A new user message maps to Claude's UserPromptSubmit. The prompt text
     // lives in output.parts (text parts); forward it so a skill mention counts.
@@ -215,11 +235,9 @@ const TeamaiHooks = async ({ directory, worktree }) => {
           prompt += part.text;
         }
       }
-      const sessionID = nonEmpty(input && input.sessionID);
-      await dispatch('prompt-submit', { session_id: sessionID, prompt });
-      const submitted = await dispatchTeam('prompt-submit', { session_id: sessionID, prompt });
-      if (sessionID && submitted.out.trim()) promptContext.set(sessionID, submitted.out);
-      reportTeam(submitted);
+      const session = nonEmpty(input && input.sessionID);
+      await dispatch('prompt-submit', { session_id: session, prompt });
+      promptContexts.set(session, (await teamHooks('UserPromptSubmit', { session_id: session, prompt }))?.context);
     },
     // Fires after every tool call. input.tool is the lowercase OpenCode tool
     // id; input.args is the tool input; output.output
@@ -243,18 +261,9 @@ const TeamaiHooks = async ({ directory, worktree }) => {
         payload.session_link = { child, parent };
       }
       await dispatch('post-tool-use', payload);
-      reportTeam(await dispatchTeam('post-tool-use', payload));
+      const { session_link: _link, ...team } = payload;
+      await teamHooks('PostToolUse', team);
     },
-    // Each request carries the team's SessionStart context at today's state and
-    // the last prompt hook's output once. Running SessionStart per request is
-    // what lets a prompt hook's level change reach the next turn (#1492).
-    'experimental.chat.system.transform': async (input, output) => {
-      if (!Array.isArray(output && output.system)) return;
-      for (const text of await teamContextFor(input && input.sessionID)) output.system.push(text);
-    },
-    // The V2 setup registers this through ctx.session.hook('context'); V1
-    // ignores it and uses the transform above.
-    teamContextFor,
     // Names the session in the bash tool's environment, so teamai recall
     // run there records its run under the session its hooks carry.
     'shell.env': async (input, output) => {
@@ -363,11 +372,10 @@ ${buildDualPluginDefinition('teamai.hooks', 'TeamaiHooks', 'teamaiContext', 'tea
  * Both hosts load one definition, but call only their own entrypoint.
  * `context` names a function of the session directory returning the texts the
  * V2 setup adds to each request's system prompt, compaction included, and
- * `mcp` one returning the MCP servers it adds to the location; only teamai's
- * own plugin passes them, so an agent-hook plugin adds nothing.
+ * `mcp` one returning the MCP servers it adds to the location.
  */
-function buildDualPluginDefinition(id: string, factory: string, context?: string, mcp?: string): string {
-  const mcpTransform = mcp ? `
+function buildDualPluginDefinition(id: string, factory: string, context: string, mcp: string): string {
+  const mcpTransform = `
     try {
       const servers = await ${mcp}(ctx.location.directory);
       if (Object.keys(servers).length > 0) {
@@ -377,21 +385,23 @@ function buildDualPluginDefinition(id: string, factory: string, context?: string
       }
     } catch (error) {
       console.error('[teamai] Could not add the team MCP servers', error);
-    }` : '';
-  const contextHooks = context ? `
+    }`;
+  const contextHooks = `
     const addContext = async (event) => {
       try {
         if (!Array.isArray(event.system)) return;
         for (const text of await ${context}(ctx.location.directory)) event.system.push({ type: 'text', text });
-        if (typeof hooks.teamContextFor === 'function') {
-          for (const text of await hooks.teamContextFor(event.sessionID)) event.system.push({ type: 'text', text });
+        if (hooks['experimental.chat.system.transform']) {
+          const system = [];
+          await hooks['experimental.chat.system.transform']({ sessionID: event.sessionID }, { system });
+          for (const text of system) event.system.push({ type: 'text', text });
         }
       } catch (error) {
         console.error('[teamai] Could not add the team rules and instructions', error);
       }
     };
     registrations.push(await ctx.session.hook('context', addContext));
-    registrations.push(await ctx.session.hook('compaction', addContext));` : '';
+    registrations.push(await ctx.session.hook('compaction', addContext));`;
   return `export default {
   id: ${JSON.stringify(id)},
   server: ${factory},
@@ -401,6 +411,16 @@ function buildDualPluginDefinition(id: string, factory: string, context?: string
     if (hooks['chat.message']) {
       registrations.push(await ctx.session.hook('prompt', async (event) => {
         await hooks['chat.message']({ sessionID: event.sessionID }, { parts: [{ type: 'text', text: event.prompt.text }] });
+      }));
+    }
+    if (hooks['tool.execute.before']) {
+      // A throw here is a Tool.Error: the call fails before the tool runs.
+      registrations.push(await ctx.tool.hook('execute.before', async (event) => {
+        await hooks['tool.execute.before']({
+          tool: event.tool === 'shell' ? 'bash' : event.tool === 'subagent' ? 'task' : event.tool,
+          sessionID: event.sessionID,
+          callID: event.id,
+        }, { args: event.input });
       }));
     }
     if (hooks['tool.execute.after']) {
@@ -531,116 +551,7 @@ function assertSafeSlug(slug: string): void {
   }
 }
 
-/** Map Claude PascalCase agent-hook events → OpenCode plugin event dispatch. */
-const CLAUDE_TO_OPENCODE_EVENTS: Record<string, string> = {
-  SessionStart: 'session.created',
-  Stop: 'session.idle',
-  UserPromptSubmit: 'chat.message',
-  PostToolUse: 'tool.execute.after',
-};
-
-/**
- * Build an agent-hook plugin source that runs a fixed shell `command` on a
- * single OpenCode event. Used by the HTTP-source agent-hook pipeline (issue
- * #238) so an enterprise-pushed hook installs as a real OpenCode plugin rather
- * than silently landing in a Claude settings file OpenCode never reads.
- *
- * `matcher` scopes a `tool.execute.after` hook to a single tool (e.g. only run
- * after the Bash tool). OpenCode passes lowercase tool ids while matchers use
- * Claude's PascalCase names, so the generated gate compares case-insensitively.
- * A missing or `*` matcher runs on every tool call. For non-tool events the
- * matcher has no meaning and is ignored.
- */
-export function buildAgentHookPluginSource(
-  slug: string,
-  ocEvent: string,
-  command: string,
-  matcher?: string,
-): string {
-  const scoped = ocEvent === 'tool.execute.after' && !!matcher && matcher !== '*';
-  let body: string;
-  if (ocEvent === 'tool.execute.after') {
-    // Tool hook: optionally gate on the tool id (case-insensitive).
-    body = scoped
-      ? `  return {
-    "tool.execute.after": async (input) => {
-      const tool = (input && input.tool) || '';
-      if (tool.toLowerCase() === ${JSON.stringify(matcher!.toLowerCase())}) { await run(); }
-    },
-  };`
-      : `  return {
-    "tool.execute.after": async () => { await run(); },
-  };`;
-  } else if (ocEvent === 'chat.message') {
-    body = `  return {
-    "chat.message": async () => { await run(); },
-  };`;
-  } else {
-    // session.* events arrive via the generic `event` hook (event.type).
-    body = `  return {
-    event: async ({ event }) => {
-      if (event.type === ${JSON.stringify(ocEvent)}) { await run(); }
-    },
-  };`;
-  }
-  const factory = `TeamaiAgentHook_${slug.replace(/[^A-Za-z0-9_]/g, '_')}`;
-  return `// ${TEAMAI_MARKER} agent hook [${slug}] — generated by teamai, do not edit by hand.
-const ${factory} = async ({ directory, worktree }) => {
-  const run = async () => {
-    try {
-      const { spawn } = await import('node:child_process');
-      await new Promise((resolve) => {
-        const windows = process.platform === 'win32';
-        const child = spawn(windows ? 'cmd.exe' : 'sh', windows ? ['/d', '/s', '/c', ${JSON.stringify(command)}] : ['-c', ${JSON.stringify(command)}], {
-          cwd: directory || worktree,
-          windowsHide: true,
-          stdio: 'ignore',
-        });
-        const finish = () => {
-          child.removeListener('error', finish);
-          child.removeListener('close', finish);
-          resolve();
-        };
-        child.once('error', finish);
-        child.once('close', finish);
-      });
-    } catch {
-      // never block the agent
-    }
-  };
-${body}
-};
-
-${buildDualPluginDefinition(`teamai.agent.${slug}`, factory)}
-`;
-}
-
-/**
- * Install a server-pushed agent hook as an OpenCode plugin file. Throws for
- * an event with no OpenCode equivalent, so the install is reported failed.
- */
-export async function applyOpencodeAgentHook(def: {
-  slug: string;
-  event: string;
-  command: string;
-  baseDir: string;
-  scope: 'project' | 'user';
-  matcher?: string;
-}): Promise<void> {
-  assertSafeSlug(def.slug);
-  const ocEvent = CLAUDE_TO_OPENCODE_EVENTS[def.event];
-  if (!ocEvent) throw new Error(`OpenCode has no hook event for ${def.event}`);
-  const dir = resolveOpencodePluginDir(def.baseDir, def.scope);
-  await ensureDir(dir);
-  const file = path.join(dir, `teamai-agent-${def.slug}.ts`);
-  await writeFile(file, buildAgentHookPluginSource(def.slug, ocEvent, def.command, def.matcher));
-  log.success(`Installed OpenCode agent hook [${def.slug}] in ${file}`);
-  // OpenCode 1.x also loads the default home's plugins, where an earlier release wrote this one (#1221).
-  const earlier = def.scope === 'user' ? await earlierHookAdapterDir('opencode-plugin') : null;
-  if (earlier) await remove(path.join(earlier, `teamai-agent-${def.slug}.ts`));
-}
-
-/** Remove a server-pushed agent-hook plugin file for OpenCode. */
+/** Remove the agent-hook plugin file an earlier release installed for OpenCode; agent hooks now run from teamai's plugin. */
 export async function removeOpencodeAgentHook(opts: {
   slug: string;
   baseDir: string;

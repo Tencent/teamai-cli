@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { loadLocalConfigForScope } from '../config.js';
 import { syncScorerDefinitions, type SyncScorerOptions, type SyncScorerResult } from '../scorers/cache.js';
 import { log } from '../utils/logger.js';
 import { pathExists, readFileSafe, remove, writeJsonAtomic } from '../utils/fs.js';
@@ -19,7 +20,8 @@ import {
 import { LineCounter, parseDocument } from 'yaml';
 import { formatDiagnostic, parseWorkflow, promptFileDiagnostics, stepField } from './parse.js';
 import { locate, valueNode, type WorkflowFiles } from './parse-context.js';
-import type { CachedWorkflow, WorkflowDefinition, WorkflowDiagnostic, WorkflowStep } from './types.js';
+import type { CachedWorkflow, ResolvedWorkflow, WorkflowDefinition, WorkflowDiagnostic, WorkflowStep } from './types.js';
+import { DefaultWorkflows } from '../default-workflows.js';
 import { assertSafePath, assertWithinRoot } from '../utils/path-safety.js';
 import { createGit } from '../utils/git.js';
 import {
@@ -114,17 +116,49 @@ async function readCache(config: LocalConfig, name: string): Promise<CachedWorkf
   }
 }
 
-/** The last validated definition for `name`, or null when this file has never been valid. */
-export async function loadCachedWorkflow(config: LocalConfig, name: string): Promise<CachedWorkflow | null> {
+/**
+ * The last validated team definition for `name`, by name then by alias, else teamai's default of that name; null when
+ * neither runs.
+ */
+export async function loadCachedWorkflow(config: LocalConfig, name: string): Promise<ResolvedWorkflow | null> {
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) return null;
   const direct = await readCache(config, name);
-  if (direct) return direct;
-  const aliases = (await listCachedWorkflows(config)).filter((entry) => entry.definition.alias === name);
-  return aliases.length === 1 ? aliases[0] : null;
+  if (direct) return { ...direct, source: 'team' };
+  const team = await listTeamWorkflows(config);
+  const aliases = team.filter((entry) => entry.definition.alias === name);
+  if (aliases.length === 1) return { ...aliases[0], source: 'team' };
+  const shipped = DefaultWorkflows.named(name);
+  return shipped && aliases.length === 0 ? { ...shipped, source: 'default' } : null;
 }
 
-/** All runnable cached files in stable name order, without resolving aliases recursively. */
-export async function listCachedWorkflows(config: LocalConfig): Promise<CachedWorkflow[]> {
+/**
+ * Where a start of workflow `name` from `config`'s directory runs, and what it runs: a team version in `config`'s scope,
+ * else, from a project, one in the user scope, whose generated skills show in every directory, else teamai's default in
+ * `config`'s scope. `workflow` is null when none of them runs.
+ */
+export async function resolveStart(config: LocalConfig, name: string): Promise<{ config: LocalConfig; workflow: ResolvedWorkflow | null }> {
+  const here = await loadCachedWorkflow(config, name);
+  if (here?.source === 'team' || config.scope !== 'project') return { config, workflow: here };
+  const user = await loadLocalConfigForScope('user', undefined, { dryRun: true });
+  const there = user ? await loadCachedWorkflow(user, name) : null;
+  return user && there?.source === 'team' ? { config: user, workflow: there } : { config, workflow: here };
+}
+
+/**
+ * Every runnable workflow in stable name order, without resolving aliases recursively: the cached team files, and each
+ * default no team file or alias takes the name of.
+ */
+export async function listCachedWorkflows(config: LocalConfig): Promise<ResolvedWorkflow[]> {
+  const team = await listTeamWorkflows(config);
+  const taken = new Set(team.flatMap(({ definition }) => [definition.name, ...(definition.alias ? [definition.alias] : [])]));
+  return [
+    ...team.map((entry) => ({ ...entry, source: 'team' as const })),
+    ...DefaultWorkflows.all().filter(({ definition }) => !taken.has(definition.name)).map((entry) => ({ ...entry, source: 'default' as const })),
+  ].sort((left, right) => (left.definition.name < right.definition.name ? -1 : 1));
+}
+
+/** The cached team files in name order. */
+async function listTeamWorkflows(config: LocalConfig): Promise<CachedWorkflow[]> {
   let files: string[];
   try { files = await fs.readdir(cacheDir(config)); } catch { return []; }
   const entries = await Promise.all(files.filter((file) => file.endsWith('.json')).sort().map((file) => readCache(config, file.slice(0, -5))));
@@ -362,7 +396,9 @@ export async function syncWorkflowDefinitions(
       log.warn(`[workflows] Kept the last valid version of ${stem}; this revision was not cached`);
     } else {
       result.unrunnable.push(relativePath);
-      log.warn(`[workflows] ${relativePath} has no runnable version`);
+      log.warn(DefaultWorkflows.named(stem)
+        ? `[workflows] ${relativePath} has no runnable version, so teamai's default ${stem} stays in effect`
+        : `[workflows] ${relativePath} has no runnable version`);
     }
   };
   let wrote = 0;
@@ -570,11 +606,13 @@ function checkReferences(checked: Checked[], kept: Map<string, CachedWorkflow | 
     candidates.has(stem) ? [[stem, 'revision']] : kept.get(stem) ? [[stem, 'kept']] : [])));
   const revisionProblems = new Map<string, WorkflowDiagnostic[]>();
   const keptProblems = new Map<string, WorkflowDiagnostic[]>();
-  const runs = (workflow: string): WorkflowDefinition | null => {
+  const own = (workflow: string): WorkflowDefinition | null => {
     const version = chosen.get(workflow);
     if (version === 'revision') return candidates.get(workflow)?.definition ?? null;
     return version === 'kept' ? kept.get(workflow)?.definition ?? null : null;
   };
+  // A name no team version is chosen for runs teamai's default of that name, as `loadCachedWorkflow` resolves it.
+  const runs = (workflow: string): WorkflowDefinition | null => own(workflow) ?? DefaultWorkflows.named(workflow)?.definition ?? null;
   // Every workflow a file runs at its version, directly or not; the file itself when it runs in a cycle.
   const reach = (stem: string): Set<string> => {
     const found = new Set<string>();
@@ -655,7 +693,7 @@ function checkReferences(checked: Checked[], kept: Map<string, CachedWorkflow | 
       }
     }
   }
-  return (stem) => ({ definition: runs(stem), revision: revisionProblems.get(stem) ?? [], kept: keptProblems.get(stem) ?? [] });
+  return (stem) => ({ definition: own(stem), revision: revisionProblems.get(stem) ?? [], kept: keptProblems.get(stem) ?? [] });
 }
 
 /** Resolves every `prompt_file`, including those inside inline workflows. */

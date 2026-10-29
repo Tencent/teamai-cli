@@ -757,11 +757,10 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<boo
   // while the root manifest proves that cache belongs to this exact source.
   // If provenance is absent or another repo was extracted last, run a full
   // hash scan rather than combining another repo's file/fact baseline.
-  // The Git diff helper reports repository-root-relative paths, while this
-  // extractor stores subdirectory-relative paths. Until those contracts are
-  // unified, subdirectory extracts must hash the complete source tree.
-  const incrementalBaselineMatches = sourceRepo.sourceSubdir === ''
-    && rootMatchesSource
+  // The manifests name the imported directory (`sourceSubdir`), so a root
+  // and a subdirectory extraction never share a baseline, and the git diff
+  // helper scopes repository-root-relative paths into the subdirectory (#1502).
+  const incrementalBaselineMatches = rootMatchesSource
     && (!projectManifest || projectMatchesSource);
   const incrementalManifestPath = projectMatchesSource ? projectManifestPath : manifestPath;
   const provenanceManifest = projectMatchesSource ? projectManifest : rootMatchesSource ? rootManifest : null;
@@ -770,7 +769,13 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<boo
   let deletedFiles: string[] = [];
   if (opts.incremental && incrementalBaselineMatches) {
     try {
-      const changes = await detectCodeIncrementalChanges(root, incrementalManifestPath, project, maxFiles);
+      const changes = await detectCodeIncrementalChanges(
+        root,
+        incrementalManifestPath,
+        project,
+        maxFiles,
+        sourceRepo.sourceSubdir,
+      );
       if (changes.added.length === 0 && changes.changed.length === 0 && changes.deleted.length === 0) {
         if (opts.json) {
           console.log(JSON.stringify({ status: 'up-to-date', project }));

@@ -209,6 +209,29 @@ afterAll(async () => {
 });
 
 describe('a .codex/hooks.json the business repo tracks', () => {
+  it('keeps a UTF-8 character split across hook writes intact', () => {
+    const script = path.join(sandbox, 'split-utf8-hook.cjs');
+    writeFile(script, [
+      "process.stdout.write(Buffer.from('{\\\"systemMessage\\\":\\\"', 'utf8'));",
+      'process.stdout.write(Buffer.from([0xe7]));',
+      "setTimeout(() => process.stdout.write(Buffer.from([0x8c, 0xab, 0x22, 0x7d])), 50);",
+    ].join('\n'));
+    const command = `${JSON.stringify(process.execPath)} ${JSON.stringify(script)}`;
+    const m = machine('split-utf8', {
+      committed: { '.codex/hooks.json': TEAM_OWN_HOOKS },
+      hooks: [{ id: 'split-utf8', event: 'Stop', command }],
+    });
+
+    const result = spawnSync(process.execPath, [CLI, 'hook-dispatch', 'Stop', '--tool', 'codex', '--team-hooks'], {
+      cwd: m.dir,
+      encoding: 'utf8',
+      env: m.env,
+      input: JSON.stringify({ cwd: m.dir, hook_event_name: 'Stop', session_id: 'split-utf8' }),
+    });
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout ?? '')).toEqual({ systemMessage: '猫' });
+  });
+
   it('stays as the team committed it, and the team hooks run from the dispatcher in ~/.codex/hooks.json', () => {
     const m = machine('tracked', {
       committed: { '.codex/hooks.json': TEAM_OWN_HOOKS },

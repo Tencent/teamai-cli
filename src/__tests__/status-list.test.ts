@@ -258,6 +258,24 @@ describe('teamai list / status resource coverage', () => {
     expect(lines.join('\n')).toContain('server "duplicate" is defined in both');
   });
 
+  it('list workflows shows whether each runs the team\'s file or teamai\'s default, and which team files cannot run', async () => {
+    localConfig.dataHome = path.join(tmpDir, 'data');
+    const workflow = (name: string) => `schemaVersion: v1alpha1\nname: ${name}\ndescription: Review it.\nsteps:\n  - id: review\n    command: node review.js\n`;
+    await fse.outputFile(path.join(repoPath, 'workflows', 'review-and-fix.yaml'), workflow('review-and-fix'));
+    await fse.outputFile(path.join(repoPath, 'workflows', 'broken.yaml'), 'schemaVersion: v1alpha1\nname: broken\n');
+    await syncWorkflowDefinitions(localConfig);
+
+    await list('workflows', { source: 'repo' });
+    expect(lines).toEqual(['', '=== REPO WORKFLOWS ===', '  broken  (not runnable)', '  review-and-fix  (team)', '  session-close  (default)', '']);
+
+    await fse.outputFile(path.join(repoPath, 'workflows', 'session-close.yaml'), workflow('session-close'));
+    await syncWorkflowDefinitions(localConfig);
+    lines.length = 0;
+
+    await list('workflows', { source: 'repo' });
+    expect(lines).toEqual(['', '=== REPO WORKFLOWS ===', '  broken  (not runnable)', '  review-and-fix  (team)', '  session-close  (team)', '']);
+  });
+
   it('status lists the scorers pull cached, next to the resource counts', async () => {
     localConfig.dataHome = path.join(tmpDir, 'data');
     const scorer = '---\nlabels:\n  - { value: good, score: 1, description: Good }\n  - { value: bad, score: 0, description: Bad }\npassingScore: 0.5\n---\nJudge.\n';

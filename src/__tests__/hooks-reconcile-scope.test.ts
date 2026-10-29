@@ -596,7 +596,7 @@ builtin:
     expect(await fse.pathExists(path.join(home, '.claude', 'settings.json'))).toBe(false);
   });
 
-  it('records self-mode team hooks for the OpenCode/OMP bridges (#1492)', async () => {
+  it('runs self-mode team hooks on OpenCode and OMP in the project, not outside it (#1492)', async () => {
     await fse.ensureDir(path.join(home, '.config', 'opencode'));
     await fse.ensureDir(path.join(home, '.omp', 'agent'));
     const selfConfig = {
@@ -625,12 +625,12 @@ hooks:
     } as unknown as TeamaiConfig;
     await reconcileTeamHooksForConfig(bridgeConfig, selfConfig);
 
-    const index = await fse.readJson(path.join(home, '.teamai', 'team-hook-bridges.json'));
+    const { runBridgedTeamHooks } = await import('../bridged-team-hooks.js');
+    const elsewhere = path.join(home, 'elsewhere');
+    await fse.ensureDir(elsewhere);
     for (const tool of ['opencode', 'omp']) {
-      const projects = index[tool]?.projects ?? {};
-      const [key] = Object.keys(projects);
-      expect(key, `${tool} record`).toBeDefined();
-      expect(projects[key].map((hook: { id: string }) => hook.id)).toContain('self-bridge');
+      expect(JSON.parse((await runBridgedTeamHooks(tool, 'SessionStart', JSON.stringify({ cwd: project }))).stdout), tool).toEqual({ context: 'SELF_BRIDGE' });
+      expect((await runBridgedTeamHooks(tool, 'SessionStart', JSON.stringify({ cwd: elsewhere }))).stdout, tool).toBe('');
     }
   });
 

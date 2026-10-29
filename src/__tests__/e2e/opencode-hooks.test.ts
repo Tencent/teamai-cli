@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import fs from 'node:fs';
@@ -7,7 +7,6 @@ import path from 'node:path';
 import net from 'node:net';
 import { randomBytes } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
-import { applyOpencodeAgentHook } from '../../opencode-hooks.js';
 
 const ROOT = process.cwd();
 const CLI = path.join(ROOT, 'dist/index.js');
@@ -25,14 +24,14 @@ async function freePort(): Promise<number> {
 
 // V2 is distributed separately; CI can opt in with its installed binary.
 describe.each([{ version: 'V1', binary: V1 }, { version: 'V2', binary: V2 }])('real OpenCode $version hooks', ({ version, binary }) => {
-  it.skipIf(!binary)('loads the CLI-generated plugin and dispatches session start once', async () => {
+  it.skipIf(!binary)('loads the CLI-generated plugin, dispatches session start once, and runs the team\'s SessionStart hook', async () => {
     const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-oc-hooks-e2e-')));
     const home = path.join(sandbox, 'home');
     const work = path.join(sandbox, 'work');
     const team = path.join(sandbox, 'team');
     const bin = path.join(sandbox, 'bin');
     const records = path.join(sandbox, 'dispatch.jsonl');
-    const commands = path.join(sandbox, 'enterprise.txt');
+    const commands = path.join(sandbox, 'team-hook.txt');
     const env = {
       ...process.env, HOME: home, USERPROFILE: home,
       PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`,
@@ -45,6 +44,11 @@ describe.each([{ version: 'V1', binary: V1 }, { version: 'V2', binary: V2 }])('r
     };
     for (const dir of [home, work, team, bin, path.join(home, '.teamai'), env.OPENCODE_CONFIG_DIR]) fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(team, 'teamai.yaml'), `team: opencode-hooks-e2e\nrepo: ${team}\nprovider: tgit\ntoolPaths:\n  opencode:\n    skills: .opencode/skills\n`);
+    // The team's own hook, which OpenCode runs through teamai's bridge.
+    const start = path.join(sandbox, 'start.cjs');
+    fs.writeFileSync(start, `require('node:fs').appendFileSync(${JSON.stringify(commands)}, 'start\\n');`);
+    fs.mkdirSync(path.join(team, 'hooks'));
+    fs.writeFileSync(path.join(team, 'hooks', 'hooks.yaml'), `hooks:\n  - id: start-proof\n    event: SessionStart\n    description: Record the session start\n    command: 'node "${start}"'\n`);
     fs.writeFileSync(path.join(home, '.teamai/config.yaml'), `repo:\n  localPath: ${team}\n  remote: ${team}\nusername: ci\nscope: user\nenabledAgents:\n  - opencode\n`);
     fs.writeFileSync(path.join(env.OPENCODE_CONFIG_DIR, 'opencode.json'), '{}');
     // With any plugin configured, OpenCode's first request for a directory waits
@@ -55,18 +59,15 @@ describe.each([{ version: 'V1', binary: V1 }, { version: 'V2', binary: V2 }])('r
     fs.mkdirSync(path.join(env.OPENCODE_CONFIG_DIR, 'node_modules'));
     fs.writeFileSync(path.join(env.OPENCODE_CONFIG_DIR, 'package-lock.json'), JSON.stringify({ packages: { '': { dependencies: { '@opencode-ai/plugin': '*' } } } }));
     const shim = path.join(bin, 'capture.cjs');
-    // Run injection through the installed-entry stand-in: dispatch captures
-    // the payload, while every other command executes the real built CLI.
-    fs.writeFileSync(shim, `if(process.argv[2]==='hook-dispatch'){let stdin='';process.stdin.on('data',d=>stdin+=d);process.stdin.on('end',()=>require('node:fs').appendFileSync(${JSON.stringify(records)},JSON.stringify({args:process.argv.slice(2),payload:JSON.parse(stdin)})+'\\n'));}else{import(${JSON.stringify(pathToFileURL(CLI).href)});}`);
+    // Run injection through the installed-entry stand-in: a built-in dispatch
+    // captures the payload, while every other command (the team hooks' too)
+    // executes the real built CLI.
+    fs.writeFileSync(shim, `if(process.argv[2]==='hook-dispatch'&&!process.argv.includes('--team-hooks')){let stdin='';process.stdin.on('data',d=>stdin+=d);process.stdin.on('end',()=>require('node:fs').appendFileSync(${JSON.stringify(records)},JSON.stringify({args:process.argv.slice(2),payload:JSON.parse(stdin)})+'\\n'));}else{import(${JSON.stringify(pathToFileURL(CLI).href)});}`);
     let server: ReturnType<typeof spawn> | undefined;
     let logs = '';
     try {
       const output = execFileSync(process.execPath, [shim, 'hooks', 'inject'], { env, cwd: work, encoding: 'utf8' });
       expect(output).toContain('OpenCode hook');
-      // In-process, the agent hook finds OpenCode's config home from this sandbox's environment, as the CLI does.
-      vi.stubEnv('HOME', home);
-      vi.stubEnv('OPENCODE_CONFIG_DIR', env.OPENCODE_CONFIG_DIR);
-      await applyOpencodeAgentHook({ slug: 'start-proof', event: 'SessionStart', command: `node -e ${JSON.stringify(`require('node:fs').appendFileSync(${JSON.stringify(commands)},'start\\n')`)}`, baseDir: home, scope: 'user' });
       const port = await freePort();
       const url = `http://127.0.0.1:${port}`;
       server = spawn(binary!, ['serve', '--print-logs', '--hostname', '127.0.0.1', '--port', String(port)], { env, cwd: work, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -88,8 +89,8 @@ describe.each([{ version: 'V1', binary: V1 }, { version: 'V2', binary: V2 }])('r
         await expect.poll(() => {
           const list = execFileSync(binary!, ['api', '--server', url, 'plugin.list'], { env, cwd: work, encoding: 'utf8', timeout: 5_000 });
           const plugins = JSON.parse(list).data as Array<{ id: string; state: { status: string } }>;
-          return ['teamai.hooks', 'teamai.agent.start-proof'].map((id) => plugins.find((p) => p.id === id)?.state.status);
-        }, { timeout: 20_000 }).toEqual(['active', 'active']);
+          return plugins.find((p) => p.id === 'teamai.hooks')?.state.status;
+        }, { timeout: 20_000 }).toBe('active');
       }
       // The first session can still install the config-dir plugins' npm dependencies, which takes seconds and varies with load.
       const session = await request(version === 'V1' ? '/session' : '/api/session', version === 'V1' ? {} : { location: { directory: work } }, 20_000)
@@ -108,7 +109,6 @@ describe.each([{ version: 'V1', binary: V1 }, { version: 'V2', binary: V2 }])('r
         await closed;
         clearTimeout(force);
       }
-      vi.unstubAllEnvs();
       fs.rmSync(sandbox, { recursive: true, force: true });
     }
   });

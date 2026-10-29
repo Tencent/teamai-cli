@@ -1560,7 +1560,7 @@ export async function buildMcpDeliveryChecks(ctx: DoctorContext): Promise<Check[
     let withheld: string | undefined;
     const installed = await installedMcpEntries(target, { underKeyOnly: true });
     if (installed === null) {
-      problems.push(`${target.file} could not be parsed, so no server was injected`);
+      problems.push('could not be parsed, so teamai injected no server there. Fix the JSON, or move the file aside, then run `teamai pull`');
     } else {
       const absent: string[] = [];
       const foreign: string[] = [];
@@ -1614,9 +1614,14 @@ export async function buildMcpDeliveryChecks(ctx: DoctorContext): Promise<Check[
       kept,
       declaredSecretKeys(ctx.teamEnv?.declarations ?? { kind: 'absent' }),
     ));
-    const delivery = problems.length === 0 ? [] : [`In ${target.file}, ${problems.join('; ')}. A server needing a variable reads it from `
-      + '`env/env.yaml` or an active `env/<ns>/env.yaml`, whose top-level key is `variables:` — a plain `KEY: value` mapping '
-      + `parses as no variables at all. Then run \`teamai pull\`.${declare}`,
+    const delivery = problems.length === 0 ? [] : [installed === null
+      ? `${target.file} ${problems.join('; ')}.`
+      : `In ${target.file}, ${problems.join('; ')}.`,
+      ...(installed === null && problems.length === 1
+        ? []
+        : [`A server needing a variable reads it from `
+          + '`env/env.yaml` or an active `env/<ns>/env.yaml`, whose top-level key is `variables:` — a plain `KEY: value` mapping '
+          + `parses as no variables at all. Then run \`teamai pull\`.${declare}`]),
       ...member.map((name) => describeKeptMemberServer(name, target.file)),
       ...member.length > 0 ? ['Or run `teamai mcp inject --force` to replace it with the team\'s.'] : []];
     checks.push({

@@ -13,19 +13,25 @@ import {
 import type { AttemptState, Dispatch, Gate, ModelPick, SkillState, StopReason, TurnEvent } from './skill-state.js';
 import { childCap, reportedByAgent, type Answer, type Refusal } from './transitions.js';
 
+/**
+ * One input a start passes. `value`: what teamai proposes for it, and `why`: what the input does and why that value, or
+ * why none, was proposed (#1388). The person may change or empty a proposed value.
+ */
+export type DescribedInput = { name: string; type: OutputSchema; value?: unknown; why?: string };
+
 /** How describe says to start: as is, after one question to the person, or with the local driver. */
 export type DescribeAsk =
   /**
    * `say`: the facts to tell the person before running `start`, a line each. `inputs`: in an unattended run, the inputs
    * the agent fills `start`'s `{inputs}` slot with, as JSON, from its own task.
    */
-  | { kind: 'start'; say?: string; start: Literal; inputs?: Array<{ name: string; type: OutputSchema }> }
+  | { kind: 'start'; say?: string; start: Literal; inputs?: DescribedInput[] }
   | {
     kind: 'ask';
     question: {
       text: string;
       /** The inputs the person fills in; the agent puts their answers, as JSON, in each option's `{inputs}` slot. */
-      inputs: Array<{ name: string; type: OutputSchema }>;
+      inputs: DescribedInput[];
       options: Array<{ label: string; start: Literal }>;
     };
   }

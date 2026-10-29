@@ -106,7 +106,7 @@ export type RunTimeVia = 'session-hook' | 'extension' | 'plugin';
 export type ReadGateKind = 'codex-project-trust';
 
 /** The frontmatter teamai writes above its blocks when it creates an owned blocks file a rules loader reads. */
-export type BlocksHeader = 'always-apply' | 'apply-to-all';
+export type BlocksHeader = 'always-apply' | 'apply-to-all' | 'trigger-always-on' | 'inclusion-always';
 
 /** `limit`: the size the channel takes before the tool drops the text whole. */
 export type RunTime = { readonly channel: RunTimeVia; readonly probe: ChannelProbe; readonly limit?: number; readonly evidence: Evidence };
@@ -206,7 +206,7 @@ export type HookSettings<R> = { readonly channel: 'settings'; readonly format: H
 
 /** A file or directory of teamai's own the tool loads from its home, written by the tool's own adapter. */
 export type HookAdapterId = 'opencode-plugin' | 'pi-extension' | 'omp-extension' | 'hermes-plugin' | 'openclaw-hook' | 'dsh-hooks' | 'kiro-hooks';
-export type HookAdapter = { readonly channel: 'adapter'; readonly adapter: HookAdapterId; readonly evidence: Evidence; /** The adapter also runs the team's custom hooks, not only the built-ins. */ readonly teamHooks?: boolean };
+export type HookAdapter = { readonly channel: 'adapter'; readonly adapter: HookAdapterId; readonly evidence: Evidence };
 
 /**
  * Where teamai installs the tool's hooks. A workspace takes the user hooks
@@ -630,7 +630,10 @@ export const TOOLS = {
       user: { channel: 'dir', format: 'qoder', reads: [{ base: 'home', path: '.qoder/rules', evidence: 'verified' }] },
       project: { channel: 'dir', format: 'qoder', reads: [{ base: 'project', path: '.qoder/rules', when: 'workspaceUnder', evidence: 'verified' }] },
     },
-    blocks: NONE,
+    blocks: {
+      user: { channel: 'file', file: { in: 'rules-dir', name: 'teamai-context.md', owned: true, header: 'trigger-always-on' }, reads: [{ base: 'home', path: '.qoder/rules', evidence: 'source' }] },
+      project: { channel: 'file', file: { in: 'rules-dir', name: 'teamai-context.md', owned: true, header: 'trigger-always-on' }, reads: [{ base: 'project', path: '.qoder/rules', when: 'workspaceUnder', evidence: 'source' }] },
+    },
     agents: {
       user: { reads: [{ base: 'home', path: '.qoder/agents', evidence: 'source' }] },
       project: { reads: [{ base: 'project', path: '.qoder/agents', when: 'workspaceUnder', evidence: 'source' }] },
@@ -663,7 +666,10 @@ export const TOOLS = {
       user: { channel: 'dir', format: 'qoder', reads: [{ base: 'home', path: '.qoder-cn/rules', evidence: 'verified' }] },
       project: { channel: 'dir', format: 'qoder', reads: [{ base: 'project', path: '.qoder/rules', when: 'workspaceUnder', evidence: 'verified' }] },
     },
-    blocks: NONE,
+    blocks: {
+      user: { channel: 'file', file: { in: 'rules-dir', name: 'teamai-context.md', owned: true, header: 'trigger-always-on' }, reads: [{ base: 'home', path: '.qoder-cn/rules', evidence: 'assumed' }] },
+      project: { channel: 'file', file: { in: 'rules-dir', name: 'teamai-context.md', owned: true, header: 'trigger-always-on' }, reads: [{ base: 'project', path: '.qoder/rules', when: 'workspaceUnder', evidence: 'assumed' }] },
+    },
     agents: {
       user: { reads: [{ base: 'home', path: '.qoder-cn/agents', evidence: 'source' }] },
       project: { reads: [{ base: 'project', path: '.qoder/agents', when: 'workspaceUnder', evidence: 'assumed' }] },
@@ -695,7 +701,10 @@ export const TOOLS = {
       user: { channel: 'dir', format: 'kiro-steering', reads: [{ base: 'home', path: '.kiro/steering', evidence: 'docs' }] },
       project: { channel: 'dir', format: 'kiro-steering', reads: [{ base: 'project', path: '.kiro/steering', when: 'workspaceUnder', evidence: 'docs' }] },
     },
-    blocks: NONE,
+    blocks: {
+      user: { channel: 'file', file: { in: 'rules-dir', name: 'teamai-context.md', owned: true, header: 'inclusion-always' }, reads: [{ base: 'home', path: '.kiro/steering', evidence: 'docs' }] },
+      project: { channel: 'file', file: { in: 'rules-dir', name: 'teamai-context.md', owned: true, header: 'inclusion-always' }, reads: [{ base: 'project', path: '.kiro/steering', when: 'workspaceUnder', evidence: 'docs' }] },
+    },
     agents: {
       user: { reads: [{ base: 'home', path: '.kiro/agents', evidence: 'docs' }] },
       project: { reads: [{ base: 'project', path: '.kiro/agents', when: 'workspaceUnder', evidence: 'docs' }] },
@@ -717,7 +726,7 @@ export const TOOLS = {
       aiBackend: '✓d',
       votesJudge: '?',
       sessionJudge: { cell: '✓d', note: 'a subagent works in its own context window, without the conversation; not run' },
-      agentHooks: '?',
+      agentHooks: { cell: '✓d', note: 'runs from teamai\'s team-hook bridge, which can block a tool call; Kiro\'s hook docs' },
     },
   },
   // Trae keeps user MCP servers in its app-support directory, which teamai does not write.
@@ -730,7 +739,10 @@ export const TOOLS = {
       user: { channel: 'dir', format: 'trae', reads: 'unknown' },
       project: { channel: 'dir', format: 'trae', reads: [{ base: 'project', path: '.trae/rules', when: 'workspaceUnder', evidence: 'assumed' }] },
     },
-    blocks: NONE,
+    blocks: {
+      user: { channel: 'file', file: { in: 'rules-dir', name: 'teamai-context.md', owned: true, header: 'always-apply' }, reads: [{ base: 'home', path: '.trae/user_rules', evidence: 'docs' }] },
+      project: { channel: 'file', file: { in: 'rules-dir', name: 'teamai-context.md', owned: true, header: 'always-apply' }, reads: [{ base: 'project', path: '.trae/rules', when: 'workspaceUnder', evidence: 'docs' }] },
+    },
     // Trae loads `.trae/agents` only while its Beta "Enable Subagents Directory" switch is on, a setting teamai cannot read.
     agents: {
       // Its docs give ~/.trae-cn/agents, a copy of Trae CN's page; nothing shows ~/.trae/agents.
@@ -765,7 +777,10 @@ export const TOOLS = {
       user: { channel: 'dir', format: 'trae', reads: 'unknown' },
       project: { channel: 'dir', format: 'trae', reads: [{ base: 'project', path: '.trae/rules', when: 'workspaceUnder', evidence: 'assumed' }] },
     },
-    blocks: NONE,
+    blocks: {
+      user: { channel: 'file', file: { in: 'rules-dir', name: 'teamai-context.md', owned: true, header: 'always-apply' }, reads: [{ base: 'home', path: '.trae-cn/user_rules', evidence: 'docs' }] },
+      project: { channel: 'file', file: { in: 'rules-dir', name: 'teamai-context.md', owned: true, header: 'always-apply' }, reads: [{ base: 'project', path: '.trae/rules', when: 'workspaceUnder', evidence: 'docs' }] },
+    },
     // Trae CN loads them only while its Beta "Enable Subagents Directory" switch is on (on by default, its docs say).
     agents: {
       user: { reads: [{ base: 'home', path: '.trae-cn/agents', evidence: 'docs' }] },
@@ -855,7 +870,7 @@ export const TOOLS = {
       user: { format: 'claude', reads: [{ base: 'home', path: '.omp/agent/mcp.json', evidence: 'verified' }] },
       project: { format: 'claude', reads: [{ base: 'project', path: '.omp/mcp.json', when: 'cwdOnly', evidence: 'verified' }] },
     },
-    hooks: { user: { channel: 'adapter', adapter: 'omp-extension', evidence: 'verified', teamHooks: true }, self: 'user' },
+    hooks: { user: { channel: 'adapter', adapter: 'omp-extension', evidence: 'verified' }, self: 'user' },
     sessions: 'none',
     launch: 'omp',
     features: {
@@ -866,7 +881,7 @@ export const TOOLS = {
       aiBackend: '✓d',
       votesJudge: '?',
       sessionJudge: { cell: '✓s', note: 'the task tool starts each child as a new agent session (omp 18.12.6); not run' },
-      agentHooks: '—t',
+      agentHooks: { cell: '✓s', note: 'runs from teamai\'s team-hook bridge, which can block a tool call; OMP\'s extension source' },
     },
   },
   pi: {
@@ -902,7 +917,7 @@ export const TOOLS = {
       aiBackend: '✓s',
       votesJudge: '?',
       sessionJudge: { cell: '◐s', note: 'bare Pi starts no subagent, so its session answers h4 and does not judge; the subagent example extension adds one (since 0.24.0); not run' },
-      agentHooks: '?',
+      agentHooks: { cell: '✓s', note: 'runs from teamai\'s team-hook bridge, which can block a tool call; Pi\'s extension source' },
     },
   },
   // Model switching follows the same recorded home for models.json.
@@ -985,7 +1000,7 @@ export const TOOLS = {
       aiBackend: '✓d',
       votesJudge: '—t',
       sessionJudge: { cell: '◐s', note: 'sessions_spawn with isolated context, in the coding and messaging tool profiles; a tool policy can remove it; not run' },
-      agentHooks: '◐s',
+      agentHooks: { cell: '✓s', note: 'runs from teamai\'s team-hook bridge, which can block a tool call; OpenClaw\'s plugin source' },
     },
   },
   // hermes_constants.py and hermes_cli/main.py at 68134629 (the same rules at 7e9eb8d9). Hermes reads its home in either scope.
@@ -1017,7 +1032,7 @@ export const TOOLS = {
       aiBackend: '✓s',
       votesJudge: '—t',
       sessionJudge: { cell: '✓s', note: 'delegate_task starts a child agent with a fresh conversation; not run' },
-      agentHooks: { cell: '✓t', note: '#1224 maps the events to Hermes\'s; not rerun' },
+      agentHooks: { cell: '✓s', note: 'runs from teamai\'s team-hook bridge, which can block a tool call; Hermes\'s shell-hook source' },
     },
   },
   dsh: {
@@ -1147,7 +1162,7 @@ export const TOOLS = {
         ],
       },
     },
-    hooks: { user: { channel: 'adapter', adapter: 'opencode-plugin', evidence: 'source', teamHooks: true }, self: 'user' },
+    hooks: { user: { channel: 'adapter', adapter: 'opencode-plugin', evidence: 'source' }, self: 'user' },
     sessions: ['opencode'],
     launch: 'opencode',
     features: {
@@ -1158,7 +1173,7 @@ export const TOOLS = {
       aiBackend: '✓v',
       votesJudge: '?',
       sessionJudge: { cell: '✓t', note: '#1386 the session judges its skill-driven run; not rerun' },
-      agentHooks: '◐t',
+      agentHooks: { cell: '✓v', note: 'runs from teamai\'s team-hook bridge, which can block a tool call; OpenCode 1.18.23 ran a team hook through it' },
     },
   },
   // muse-bin 1.4.11: $XDG_CONFIG_HOME/muse, else ~/.config/muse; with XDG_CONFIG_HOME set, ~/.config/muse is never read.

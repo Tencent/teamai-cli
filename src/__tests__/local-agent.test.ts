@@ -2142,7 +2142,7 @@ describe('local-agent: cmds[] migration', () => {
     expect(mine[0].hooks[0].timeout).toBe(45);
   });
 
-  it('passes the configured timeout through to a Pi agent hook extension', async () => {
+  it('passes the configured timeout through to the hook teamai\'s bridge runs for Pi', async () => {
     const acks = await runResponse({
       cmds: [{
         id: 45, type: 'install_hook_rule', handle_type: 'hook', slug: 'pi-slow',
@@ -2150,11 +2150,11 @@ describe('local-agent: cmds[] migration', () => {
       }],
     }, undefined, 'pi');
     expect(acks.find((a) => a.id === 45)?.status).toBe('success');
-    const extension = await fse.readFile(
-      path.join(tmpDir, '.pi', 'agent', 'extensions', 'teamai-agent-pi-slow.ts'),
-      'utf8',
-    );
-    expect(extension).toContain('}, 45000);');
+    const { bridgedTeamHookFile } = await import('../bridged-team-hooks.js');
+    const hooks = (await fse.readJson(bridgedTeamHookFile('pi'))).hooks;
+    expect(hooks.SessionStart).toEqual([expect.objectContaining({
+      description: agentHookDescription('pi-slow'), hooks: [{ type: 'command', command: 'echo slow', timeout: 45 }],
+    })]);
     const manifest = await fse.readJson(path.join(tmpDir, '.teamai', 'local-agent', 'agent-hooks.json'));
     expect(manifest['pi-slow']).toMatchObject({ tool: 'pi', timeout: 45 });
   });
@@ -2508,12 +2508,12 @@ describe('local-agent: cmds[] migration', () => {
   });
 
   it.each([
-    ['SessionStart', 'on_session_start'],
-    ['UserPromptSubmit', 'pre_llm_call'],
-    ['PreToolUse', 'pre_tool_call'],
-    ['PostToolUse', 'post_tool_call'],
-    ['Stop', 'on_session_end'],
-  ])('install_hook_rule registers a Hermes %s hook under %s (#1220)', async (event, hermesEvent) => {
+    ['SessionStart', 'pre_llm_call', 'UserPromptSubmit'],
+    ['UserPromptSubmit', 'pre_llm_call', 'UserPromptSubmit'],
+    ['PreToolUse', 'pre_tool_call', 'PreToolUse'],
+    ['PostToolUse', 'post_tool_call', 'PostToolUse'],
+    ['Stop', 'on_session_end', 'Stop'],
+  ])('install_hook_rule runs a Hermes %s hook from %s, through teamai\'s bridge', async (event, hermesEvent, dispatch) => {
     const acks = await runResponse({ cmds: [{
       id: 55, type: 'install_hook_rule', handle_type: 'hook', slug: 'hk-hermes',
       event, cmd: 'echo hermes', scope: 'user',
@@ -2521,19 +2521,48 @@ describe('local-agent: cmds[] migration', () => {
     expect(acks.find((a) => a.id === 55)?.status).toBe('success');
     const { default: YAML } = await import('yaml');
     const config = YAML.parse(await fse.readFile(path.join(tmpDir, '.hermes', 'config.yaml'), 'utf8'));
-    expect(Object.keys(config.hooks)).toEqual([hermesEvent]);
-    expect(config.hooks[hermesEvent]).toEqual([expect.objectContaining({ command: 'echo hermes' })]);
+    const { getTeamHookScriptPath } = await import('../hermes-hooks.js');
+    const { shellQuoteValue } = await import('../utils/shell-profile.js');
+    expect(config.hooks[hermesEvent]).toEqual([expect.objectContaining({ command: `${shellQuoteValue(getTeamHookScriptPath())} ${dispatch}` })]);
+    expect(JSON.stringify(config.hooks)).not.toContain('echo hermes');
   });
 
-  it('install_hook_rule fails the ack for an event OpenCode has no equivalent for (#1220)', async () => {
+  it.each([
+    ['opencode', 'bash'], ['omp', 'bash'], ['pi', 'bash'], ['openclaw', 'exec'], ['kiro', 'execute_bash'], ['hermes', 'terminal'],
+  ])('install_hook_rule on %s puts the hook where teamai\'s bridge runs it: a PreToolUse refusal blocks the call', async (tool, shell) => {
+    const { runBridgedTeamHooks } = await import('../bridged-team-hooks.js');
+    const call = (command: string) => runBridgedTeamHooks(tool, 'PreToolUse', JSON.stringify({ cwd: tmpDir, tool_name: shell, tool_input: { command } }));
     const acks = await runResponse({ cmds: [{
-      id: 56, type: 'install_hook_rule', handle_type: 'hook', slug: 'hk-oc',
-      event: 'PreToolUse', cmd: 'echo oc', scope: 'user',
-    }] }, undefined, 'opencode');
-    expect(acks.find((a) => a.id === 56)?.status).toBe('failed');
-    expect(String(acks.find((a) => a.id === 56)?.error)).toMatch(/PreToolUse/);
-    const manifestPath = path.join(tmpDir, '.teamai', 'local-agent', 'agent-hooks.json');
-    expect((await fse.pathExists(manifestPath)) ? (await fse.readJson(manifestPath))['hk-oc'] : undefined).toBeUndefined();
+      id: 60, type: 'install_hook_rule', handle_type: 'hook', slug: 'no-force-push', event: 'PreToolUse', matcher: 'Bash',
+      cmd: 'grep -q -- --force && { echo "Use --force-with-lease" >&2; exit 2; } || true', scope: 'user',
+    }] }, undefined, tool);
+    expect(acks.find((a) => a.id === 60), JSON.stringify(acks)).toMatchObject({ status: 'success' });
+
+    const blocked = await call('jj push --force');
+    expect(`${blocked.stdout}${blocked.stderr}`).toContain('Use --force-with-lease');
+    expect(await call('jj push')).toMatchObject({ code: 0, stdout: '' });
+
+    await runResponse({ cmds: [{ id: 61, type: 'uninstall_hook_rule', handle_type: 'hook', slug: 'no-force-push', scope: 'user' }] }, undefined, tool);
+    expect(await call('jj push --force')).toMatchObject({ code: 0, stdout: '' });
+  });
+
+  it('a sync moves an agent hook an earlier release wrote in Pi\'s own format to where teamai\'s bridge runs it', async () => {
+    const { hookAdapterDir } = await import('../locate.js');
+    const legacy = path.join(hookAdapterDir('pi-extension'), 'teamai-agent-no-force-push.ts');
+    await fse.outputFile(legacy, '// [teamai] agent hook [no-force-push]\nexport default function () {}\n');
+    await fse.outputJson(path.join(tmpDir, '.teamai', 'local-agent', 'agent-hooks.json'), {
+      'no-force-push': {
+        tool: 'pi', event: 'PreToolUse', matcher: 'Bash', timeout: 10,
+        command: 'grep -q -- --force && { echo "Use --force-with-lease" >&2; exit 2; } || true',
+      },
+    });
+
+    await runResponse({ cmds: [] }, undefined, 'pi');
+
+    expect(await fse.pathExists(legacy)).toBe(false);
+    const { runBridgedTeamHooks } = await import('../bridged-team-hooks.js');
+    const blocked = await runBridgedTeamHooks('pi', 'PreToolUse', JSON.stringify({ cwd: tmpDir, tool_name: 'bash', tool_input: { command: 'git push --force' } }));
+    expect(JSON.parse(blocked.stdout)).toEqual({ block: 'Use --force-with-lease' });
   });
 
   it('re-install same codex slug with a new command leaves no stale entry', async () => {

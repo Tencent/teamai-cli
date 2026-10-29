@@ -215,10 +215,11 @@ function selectedAs(scope: LocalConfig, selection: CaptureSelection): LocalConfi
 
 /**
  * The scorers namespaces of `dirs` active for every capture of a session, each resolved as its selection had the scope.
- * None when a capture records no selection: only root and shared scorers judge such a session.
+ * None when a capture records no selection, or the session has no capture: only root and shared scorers judge such a
+ * session.
  */
 async function sessionNamespaces(scope: LocalConfig, captures: readonly SessionCapture[], dirs: readonly string[]): Promise<Set<string>> {
-  let active = new Set(dirs);
+  let active = new Set(captures.length > 0 ? dirs : []);
   for (const capture of captures) {
     const selection = capture.agent.team?.selection;
     const selected = selection && selectedAs(scope, selection);
@@ -310,24 +311,56 @@ async function entries(config: LocalConfig, now: string, scoring: Extract<ScopeS
   const captured = await SessionCaptures.list(config);
   const keys = new Set(captured.map(sessionKey));
   if (captured.length === 0) return { entries: [], captured: keys };
-  const [labels, attempts] = await Promise.all([LabelStore.local(config), AttemptStore.read(config)]);
+  const pick = await sampler(config, now, scorers);
   const batch = batchesScorers({ team: scoring.batch });
-  const dirs = [...new Set(scorers.flatMap(({ namespace }) => namespace ?? []))];
-  const scope = dirs.length > 0 ? await readWorkspaceChildren(config) : config;
-  const sessions: Array<{ platform: string; sessionId: string; scorers: SessionScorer[] }> = [];
-  for (const { platform, sessionId, captures } of await finished(captured, now, (mode) => policies[mode].policy === 'auto')) {
-    const active = dirs.length > 0 ? await sessionNamespaces(scope, captures, dirs) : new Set<string>();
-    sessions.push({ platform, sessionId, scorers: scorers.filter(({ namespace }) => namespace === undefined || active.has(namespace)) });
+  const found: SessionEntry[] = [];
+  for (const session of await finished(captured, now, (mode) => policies[mode].policy === 'auto')) {
+    const subject = { platform: session.platform, sessionId: session.sessionId };
+    for (const sampled of await pick(session)) found.push({ source: 'session', ...sampled, subject, batch });
   }
-  const found = sessions.flatMap(({ platform, sessionId, scorers: applying }) => applying.flatMap(({ scorer, pin, definition }): SessionEntry[] => {
-    const subject = { platform, sessionId };
-    if (!isSampled(scorer, subject, definition.samplingRate)) return [];
-    const id = sessionEntryIdOf(scorer, pin.sourceHash, subject);
-    const state = sessionEntryState({ labels: labels.filter((label) => sameSessionKey(label, scorer, pin.sourceHash, subject)), attempts: attempts.get(id) ?? [], now });
-    // A tried or labelled key is never work again; leaving it out keeps the attempts lock's scan to open and live keys.
-    return state.kind === 'open' || state.kind === 'leased' ? [{ source: 'session', id, scorer, pin, definition, subject, state, batch }] : [];
-  }));
   return { entries: found, captured: keys };
+}
+
+/** A scorer that samples a session and has no label or settled attempt for it, with whether a judge holds that work now. */
+export interface SampledScorer {
+  scorer: string;
+  pin: PinnedScorer;
+  definition: ScorerDefinition;
+  id: string;
+  state: Extract<SessionEntryState, { kind: 'open' | 'leased' }>;
+}
+
+/**
+ * The rule a session is judge work by, for each scorer of this scope that judges sessions (`scorers`, else read): the
+ * scorer lives at the root, in a shared dir, or in a namespace every capture of the session was delivered; it samples
+ * the session; and no label or settled attempt exists for (scorer, rubric, session).
+ */
+async function sampler(config: LocalConfig, now: string, scorers?: readonly SessionScorer[]): Promise<(session: { platform: string; sessionId: string; captures: readonly SessionCapture[] }) => Promise<SampledScorer[]>> {
+  const all = scorers ?? await sessionScorers(config);
+  const [labels, attempts] = await Promise.all([LabelStore.local(config), AttemptStore.read(config)]);
+  const dirs = [...new Set(all.flatMap(({ namespace }) => namespace ?? []))];
+  const scope = dirs.length > 0 ? await readWorkspaceChildren(config) : config;
+  return async ({ platform, sessionId, captures }) => {
+    const active = dirs.length > 0 ? await sessionNamespaces(scope, captures, dirs) : new Set<string>();
+    const subject = { platform, sessionId };
+    return all.filter(({ namespace }) => namespace === undefined || active.has(namespace)).flatMap(({ scorer, pin, definition }): SampledScorer[] => {
+      if (!isSampled(scorer, subject, definition.samplingRate)) return [];
+      const id = sessionEntryIdOf(scorer, pin.sourceHash, subject);
+      const state = sessionEntryState({ labels: labels.filter((label) => sameSessionKey(label, scorer, pin.sourceHash, subject)), attempts: attempts.get(id) ?? [], now });
+      // A tried or labelled key is never work again; leaving it out keeps the attempts lock's scan to open and live keys.
+      return state.kind === 'open' || state.kind === 'leased' ? [{ scorer, pin, definition, id, state }] : [];
+    });
+  };
+}
+
+/**
+ * The scorers that sample session `subject` as the background judge picks them (#1179), each open, or leased while a
+ * judge holds it, whether or not the session is finished or its mode's policy is `auto`. The session-close offer
+ * proposes the open ones (#1388).
+ */
+async function sampledScorers(config: LocalConfig, subject: SessionSubject, now: string): Promise<SampledScorer[]> {
+  const captures = await SessionCaptures.read(config, subject.platform, subject.sessionId);
+  return (await sampler(config, now))({ ...subject, captures });
 }
 
 /**
@@ -405,4 +438,4 @@ function leaseCwd(config: LocalConfig): string {
   return config.scope === 'project' && config.projectRoot ? config.projectRoot : getDataHome(config);
 }
 
-export const SessionWork = { entries, entriesOf, finished, isLabelled, launchesToday, gone, read, ensureEvidence, leaseCwd, sessionScorers, isGone } as const;
+export const SessionWork = { entries, entriesOf, finished, isLabelled, launchesToday, gone, read, ensureEvidence, leaseCwd, sampledScorers, sessionScorers, isGone } as const;

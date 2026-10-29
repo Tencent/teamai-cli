@@ -428,11 +428,6 @@ describe('importCodebase: the extraction every import source shares', () => {
       await importCodebase({ sourceDir: repo, slug: 'svc', wikiRoot, skipEnrich: true });
       await fs.remove(path.join(wikiRoot, 'evidence', 'code', 'svc', 'source-manifest.json'));
     }],
-    ['was published by another checkout without an origin', async () => {
-      const other = await makeRepo(path.join(root, 'other'), 'svc', 'export function greet() { return "hi"; }\n');
-      git(other, 'remote', 'remove', 'origin');
-      await importCodebase({ sourceDir: other, slug: 'svc', wikiRoot, skipEnrich: true });
-    }],
   ])('leaves directory-named evidence that names no repository in place, with a warning, when it %s', async (_, publishLegacy) => {
     const repo = await makeRepo(root, 'svc', 'export function greet() { return "hi"; }\n');
     await publishLegacy(repo);
@@ -447,6 +442,32 @@ describe('importCodebase: the extraction every import source shares', () => {
     expect(await fs.readFile(path.join(legacy, 'docs', 'curated.md'), 'utf8')).toBe('# curated\n');
     expect(logs.join('\n')).toContain('teamwiki/evidence/code/svc/ names no repository, so it was left in place. '
       + 'If it is an older copy of teamwiki/evidence/code/github__acme__svc/, move any curated docs you want to keep from it, then remove it.');
+  });
+
+  it('leaves another checkout\'s directory-named evidence in place without a warning', async () => {
+    // #1502: after a suffixed checkout gained its origin and its evidence
+    // moved to the remote slug, every later import of it warned about the
+    // plain directory name — which names another checkout by its hashed
+    // root. Provenance this clear is not worth a warning on every import.
+    const other = await makeRepo(path.join(root, 'other'), 'svc', 'export function greet() { return "hi"; }\n');
+    git(other, 'remote', 'remove', 'origin');
+    await importCodebase({ sourceDir: other, slug: 'svc', wikiRoot, skipEnrich: true });
+    const legacy = path.join(wikiRoot, 'evidence', 'code', 'svc');
+    await fs.outputFile(path.join(legacy, 'docs', 'curated.md'), '# curated\n');
+
+    const repo = await makeRepo(root, 'svc', 'export function greet() { return "hi"; }\n');
+    logs.length = 0;
+
+    expect(await importCodebase({
+      sourceDir: repo, slug: 'github__acme__svc', legacySlug: 'svc', wikiRoot, skipEnrich: true,
+    })).toBe(true);
+
+    // The other checkout's evidence, with its curated docs, is untouched and
+    // the import reports nothing about it.
+    expect(await fs.readFile(path.join(legacy, 'docs', 'curated.md'), 'utf8')).toBe('# curated\n');
+    expect((await fs.readJson(path.join(legacy, 'source-manifest.json'))).localRootHash).toBeDefined();
+    expect(logs.join('\n')).not.toContain('names no repository');
+    expect(logs.join('\n')).not.toContain('evidence/code/svc/');
   });
 
   it('points the kept AI components at the moved evidence on a skipped-enrichment import', async () => {

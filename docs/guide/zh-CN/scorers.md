@@ -85,10 +85,10 @@ steps:
 ```console
 $ teamai workflow start review-and-fix --driver local     # 运行照常结束，评审从不阻塞它
 $ teamai score --next --json '{"driver":{"kind":"local","machine":"m1","workspace":"/work","can":{"judge":{"isolation":"verified","tools":["claude"]}}}}'
-{"data":{"lease":{"ref":"s5d1e07c2a9b4/a91c0d7e","subject":{"runId":"r3f9…","step":"review","pass":1},
-  "evidence":"…/scores/evidence/a91c0d7e/","prompt":"…/prompt.md","answer":{"schema":{…}},
-  "submit":"teamai score --lease s5d1e07c2a9b4/a91c0d7e --submit --stdin"}}}
-$ teamai score --lease s5d1e07c2a9b4/a91c0d7e --json '{"driver":{"kind":"local","machine":"m1","workspace":"/work"}}'
+{"data":{"lease":{"ref":"s5d1e07c2a9b4a/a91c0d7e0","subject":{"runId":"r3f9…","step":"review","pass":1},
+  "evidence":"…/scores/evidence/a91c0d7e0/","prompt":"…/prompt.md","answer":{"schema":{…}},
+  "submit":"teamai score --lease s5d1e07c2a9b4a/a91c0d7e0 --submit --stdin"}}}
+$ teamai score --lease s5d1e07c2a9b4a/a91c0d7e0 --json '{"driver":{"kind":"local","machine":"m1","workspace":"/work"}}'
 {"data":{"label":{"scorer":"review-quality","label":"good","score":1,"passed":true,…},"published":true}}
 ```
 
@@ -104,7 +104,7 @@ driver 用自己的评审者处理 `prompt.md`，只允许它读取证据目录�
 
 ```console
 $ teamai score --next --json '{"driver":{"kind":"t3","machine":"m1","workspace":"/work","can":{"judge":{"isolation":"verified","access":"read","tools":["claude"]}}},"running":[]}'
-$ teamai score --lease s5d1e07c2a9b4/a91c0d7e --submit --stdin <<'JSON'
+$ teamai score --lease s5d1e07c2a9b4a/a91c0d7e0 --submit --stdin <<'JSON'
 {"driver":{"kind":"t3","machine":"m1","workspace":"/work"},"outcome":"success",
  "answer":{"label":"good","reasoning":"…"},"judge":{"tool":"claude"}}
 JSON
@@ -286,7 +286,7 @@ daily_limit: 10                                  # 按数据目录计数：在�
 | 策略 | `attended` | `unattended` |
 |---|---|---|
 | `off` | 什么都不做。默认值。 | 什么都不做。 |
-| `ask` | 目前等同于 `off`。 | 等同于 `off`，因为没有人回答。 |
+| `ask` | 摩擦提醒提供 [`session-close`](workflow.md#session-close) 时，它提议抽样选中该会话的评分器，成员确认后由它们评判。 | 等同于 `off`，因为没有人回答。 |
 | `auto` | 会话六小时没有任何活动后，由后台评审评判。 | 在任务结束前运行 `teamai score --drain` 时评判。默认值。 |
 
 每种模式单独解析，取下面第一个设置了它的位置：成员 `config.yaml` 中的 `scoring.sessions`、生效命名空间的 `scoring.yaml`、根目录的 `scorers/scoring.yaml`、默认值。两个生效命名空间不一致时，最严格的策略生效（`off`，其次 `ask`，最后 `auto`），`daily_limit` 也取最低值。只写一种模式的映射（例如 `{ attended: ask }`）会把另一种模式留给下一级：

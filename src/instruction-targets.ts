@@ -46,6 +46,8 @@ import {
 const HEADERS: { readonly [H in BlocksHeader]: string } = {
   'always-apply': '---\nalwaysApply: true\n---\n',
   'apply-to-all': '---\napplyTo: "**"\n---\n',
+  'trigger-always-on': '---\ntrigger: always_on\n---\n',
+  'inclusion-always': '---\ninclusion: always\n---\n',
 };
 
 type MarkerPair = readonly [start: string, end: string, name: string];
@@ -625,7 +627,13 @@ async function planFile(
   const existing = await readFileSafe(target.path);
   // A retired file teamai wrote with a header, such as its own Copilot file once sharing.gitExclude is off (#915).
   const header = target.header ?? (kind === 'cleanup' ? KNOWN_HEADERS.find((known) => existing?.startsWith(known)) : undefined);
-  if (existing !== null && target.owned && !hasTeamaiBlock(existing) && existing !== (target.header ?? '')) {
+  // A tracked instruction target may have been emptied by the rule-reclaim
+  // pass above: it is still the business repository's file, but it is now
+  // deliberately available for the blocks this plan is about to write.
+  // Treating an empty target like an arbitrary member file would lose the
+  // culture/shared-instruction blocks on the same pull (#915).
+  if (existing !== null && target.owned && !hasTeamaiBlock(existing)
+    && existing.trim() !== '' && existing !== (target.header ?? '')) {
     warnings.push(`${target.path} was not written by teamai, so teamai left it unchanged. Move or rename it so teamai can deliver the team instructions there.`);
     return null;
   }

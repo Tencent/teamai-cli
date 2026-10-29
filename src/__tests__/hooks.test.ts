@@ -669,11 +669,11 @@ describe('hooks', () => {
   });
 
   describe('agent hooks (issue #238)', () => {
-    it('isAgentHookSupportedTool: a Claude or Codex settings file, or an adapter that takes agent hooks; not Cursor, Copilot, ZCode, OMP, dsh or a tool with no hook channel', () => {
-      for (const t of ['claude', 'codex', 'workbuddy', 'codebuddy', 'codex-internal', 'muse', 'openclaw', 'qclaw', 'easyclaw', 'autoclaw', 'hermes', 'opencode', 'pi', 'my-tool']) {
+    it('isAgentHookSupportedTool: a Claude or Codex settings file, or an adapter teamai\'s bridge runs hooks for; not Cursor, Copilot, ZCode, dsh or a tool with no hook channel', () => {
+      for (const t of ['claude', 'codex', 'workbuddy', 'codebuddy', 'codex-internal', 'muse', 'openclaw', 'qclaw', 'easyclaw', 'autoclaw', 'hermes', 'opencode', 'pi', 'omp', 'kiro', 'my-tool']) {
         expect(isAgentHookSupportedTool(t), t).toBe(true);
       }
-      for (const t of ['cursor', 'copilot', 'zcode', 'omp', 'dsh', 'kiro', 'trae']) {
+      for (const t of ['cursor', 'copilot', 'zcode', 'dsh', 'trae']) {
         expect(isAgentHookSupportedTool(t), t).toBe(false);
       }
     });

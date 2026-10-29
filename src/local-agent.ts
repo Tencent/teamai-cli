@@ -23,7 +23,8 @@ import {
   writeJsonAtomic,
 } from './utils/fs.js';
 import { RulesHandler, SkillsHandler } from './resources/index.js';
-import { injectHooksToAllTools, applyAgentHook, removeAgentHook, isAgentHookSupportedTool, isAgentHookEvent, isCodexTrustGatedTool, trustCodexAgentHook, OPENCLAW_TOOLS, codexTrustPolicy, type CodexTrustPolicy } from './hooks.js';
+import { isBridgedTeamHookTool } from './bridged-team-hooks.js';
+import { injectHooksToAllTools, applyAgentHook, applyBridgedAgentHook, hasBridgedAgentHook, removeAgentHook, removeBridgedAgentHook, isAgentHookSupportedTool, isAgentHookEvent, isCodexTrustGatedTool, trustCodexAgentHook, OPENCLAW_TOOLS, codexTrustPolicy, type CodexTrustPolicy } from './hooks.js';
 import { parseHookEvent } from './dashboard-collector.js';
 import { resolveHookCwd } from './utils/hook-cwd.js';
 import { isInteractive } from './utils/prompt.js';
@@ -595,7 +596,48 @@ function agentHookCodexTrust(disabled: boolean, settingsPath: string): CodexTrus
   return disabled ? { kind: 'disabled' } : { kind: 'enabled', codexHome: path.dirname(settingsPath) };
 }
 
+/**
+ * Remove an installed agent hook from where its tool keeps it, and from the
+ * file an earlier release generated for an adapter tool (a Hermes entry, an
+ * OpenClaw-family hook, an OpenCode plugin, a Pi extension).
+ */
+async function removeInstalledAgentHook(config: LocalAgentConfig | null, slug: string, rec: AgentHookRecord): Promise<void> {
+  if (isBridgedTeamHookTool(rec.tool)) await removeBridgedAgentHook(rec.tool, slug);
+  else if (!OPENCLAW_TOOLS.has(rec.tool)) await removeSettingsAgentHook(config, rec.tool, { slug, command: rec.command });
+  if (rec.tool === 'hermes') {
+    const { removeHermesAgentHook } = await import('./hermes-hooks.js');
+    await removeHermesAgentHook({ slug, event: rec.event, command: rec.command });
+  } else if (OPENCLAW_TOOLS.has(rec.tool)) {
+    const { removeOpenClawAgentHook } = await import('./openclaw-hooks.js');
+    await removeOpenClawAgentHook({ slug, tool: rec.tool });
+  } else if (rec.tool === 'opencode') {
+    const { removeOpencodeAgentHook } = await import('./opencode-hooks.js');
+    await removeOpencodeAgentHook({ slug, baseDir: getUserHome(), scope: 'user' });
+  } else if (rec.tool === 'pi') {
+    const { removePiAgentHook } = await import('./pi-hooks.js');
+    await removePiAgentHook(slug);
+  }
+}
+
 /** Remove a settings-file agent hook from every file it can sit in. */
+/**
+ * Move each agent hook an earlier release wrote in a bridged tool's own format
+ * (a Hermes config entry, an OpenClaw handler, an OpenCode plugin, a Pi
+ * extension) into the tool's bridged file, where it blocks and matches as in
+ * Claude Code. The server sends no install again for a hook already in place.
+ */
+async function moveAgentHooksToBridge(config: LocalAgentConfig): Promise<void> {
+  for (const [slug, rec] of Object.entries(await loadAgentHookManifest())) {
+    if (!isBridgedTeamHookTool(rec.tool) || await hasBridgedAgentHook(rec.tool, slug)) continue;
+    try {
+      await removeInstalledAgentHook(config, slug, rec);
+      await applyBridgedAgentHook(rec.tool, { slug, event: rec.event, command: rec.command, matcher: rec.matcher, timeout: rec.timeout ?? 10 });
+    } catch (e) {
+      log.warn(`Could not move agent hook ${slug} for ${rec.tool} to teamai's hook bridge: ${e instanceof Error ? e.message : String(e)}. The next session tries again.`);
+    }
+  }
+}
+
 async function removeSettingsAgentHook(
   config: LocalAgentConfig | null,
   tool: string,
@@ -3743,21 +3785,7 @@ async function runHookRuleCommand(
   if (command.type === 'uninstall_hook_rule') {
     const rec = manifest[slug];
     if (rec) {
-      if (rec.tool === 'hermes') {
-        const { removeHermesAgentHook } = await import('./hermes-hooks.js');
-        await removeHermesAgentHook({ slug, event: rec.event, command: rec.command });
-      } else if (OPENCLAW_TOOLS.has(rec.tool)) {
-        const { removeOpenClawAgentHook } = await import('./openclaw-hooks.js');
-        await removeOpenClawAgentHook({ slug, tool: rec.tool });
-      } else if (rec.tool === 'opencode') {
-        const { removeOpencodeAgentHook } = await import('./opencode-hooks.js');
-        await removeOpencodeAgentHook({ slug, baseDir: getUserHome(), scope: 'user' });
-      } else if (rec.tool === 'pi') {
-        const { removePiAgentHook } = await import('./pi-hooks.js');
-        await removePiAgentHook(slug);
-      } else {
-        await removeSettingsAgentHook(config, rec.tool, { slug, command: rec.command });
-      }
+      await removeInstalledAgentHook(config, slug, rec);
       delete manifest[slug];
       await saveAgentHookManifest(manifest);
     }
@@ -3788,40 +3816,15 @@ async function runHookRuleCommand(
   const prior = manifest[slug];
   if (prior) {
     try {
-      if (prior.tool === 'hermes') {
-        const { removeHermesAgentHook } = await import('./hermes-hooks.js');
-        await removeHermesAgentHook({ slug, event: prior.event, command: prior.command });
-      } else if (OPENCLAW_TOOLS.has(prior.tool)) {
-        const { removeOpenClawAgentHook } = await import('./openclaw-hooks.js');
-        await removeOpenClawAgentHook({ slug, tool: prior.tool });
-      } else if (prior.tool === 'opencode') {
-        const { removeOpencodeAgentHook } = await import('./opencode-hooks.js');
-        await removeOpencodeAgentHook({ slug, baseDir: getUserHome(), scope: 'user' });
-      } else if (prior.tool === 'pi') {
-        const { removePiAgentHook } = await import('./pi-hooks.js');
-        await removePiAgentHook(slug);
-      } else {
-        await removeSettingsAgentHook(config, prior.tool, { slug, command: prior.command });
-      }
+      await removeInstalledAgentHook(config, slug, prior);
     } catch (e) {
       log.debug(`agent hook [${slug}] prior cleanup failed: ${(e as Error).message}`);
     }
   }
 
   let codexTrust: { settingsPath: string; policy: CodexTrustPolicy } | undefined;
-  if (tool === 'hermes') {
-    const { applyHermesAgentHook } = await import('./hermes-hooks.js');
-    await applyHermesAgentHook({ slug, event, command: cmd, matcher, timeout });
-  } else if (OPENCLAW_TOOLS.has(tool)) {
-    const { applyOpenClawAgentHook } = await import('./openclaw-hooks.js');
-    await applyOpenClawAgentHook({ slug, event, command: cmd, tool, matcher, timeout });
-  } else if (tool === 'opencode') {
-    // OpenCode loads user plugins from the plugin directory of its config home.
-    const { applyOpencodeAgentHook } = await import('./opencode-hooks.js');
-    await applyOpencodeAgentHook({ slug, event, command: cmd, baseDir: getUserHome(), scope: 'user', matcher });
-  } else if (tool === 'pi') {
-    const { applyPiAgentHook } = await import('./pi-hooks.js');
-    await applyPiAgentHook({ slug, event, command: cmd, matcher, timeout });
+  if (isBridgedTeamHookTool(tool)) {
+    await applyBridgedAgentHook(tool, { slug, event, command: cmd, matcher, timeout });
   } else {
     const [settingsPath] = await agentHookSettingsPaths(config, tool);
     const policy = agentHookCodexTrust(await codexTrustDisabled(), settingsPath);
@@ -4512,6 +4515,7 @@ async function syncLocalAgent(context: LocalAgentContext): Promise<boolean> {
   // Also when the sync failed: what an install wrote is on disk either way. Also after an uninstall_teamai:
   // one that removed teamai's servers and records leaves nothing to list, and one that failed or kept the
   // shared files (another agent remains) leaves what still needs keeping out of git.
+  await moveAgentHooksToBridge(config);
   await protectWorkspaceMcpConfigs(config, context.cwd);
   await keepLocalAgentGitExclude(config, context.event?.type === 'session_start' || changedProjectCopies);
 
@@ -4834,21 +4838,7 @@ export async function removeAllAgentHooks(): Promise<Array<{ slug: string; tool:
   for (const slug of slugs) {
     const rec = manifest[slug];
     try {
-      if (rec.tool === 'hermes') {
-        const { removeHermesAgentHook } = await import('./hermes-hooks.js');
-        await removeHermesAgentHook({ slug, event: rec.event, command: rec.command });
-      } else if (OPENCLAW_TOOLS.has(rec.tool)) {
-        const { removeOpenClawAgentHook } = await import('./openclaw-hooks.js');
-        await removeOpenClawAgentHook({ slug, tool: rec.tool });
-      } else if (rec.tool === 'opencode') {
-        const { removeOpencodeAgentHook } = await import('./opencode-hooks.js');
-        await removeOpencodeAgentHook({ slug, baseDir: getUserHome(), scope: 'user' });
-      } else if (rec.tool === 'pi') {
-        const { removePiAgentHook } = await import('./pi-hooks.js');
-        await removePiAgentHook(slug);
-      } else {
-        await removeSettingsAgentHook(config, rec.tool, { slug, command: rec.command });
-      }
+      await removeInstalledAgentHook(config, slug, rec);
     } catch (e) {
       log.warn(`Could not remove agent hook ${slug} for ${rec.tool}: ${(e as Error).message}`);
       left[slug] = rec;

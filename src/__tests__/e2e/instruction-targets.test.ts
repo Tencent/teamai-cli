@@ -508,6 +508,51 @@ describe('instruction block targets on real CLI pull (#945)', () => {
     expect(fs.existsSync(path.join(home, 'AGENTS.md'))).toBe(false);
   });
 
+  it('gives Qoder, Kiro and Trae their always-on blocks in user and project scopes', async () => {
+    const user = makeUserSandbox(['.qoder', '.qoder-cn', '.kiro', '.trae', '.trae-cn']);
+    sandboxes.push(user.sandbox);
+    const userPull = await runCLI(['pull'], { HOME: user.home }, user.sandbox);
+    expect(userPull.code, userPull.output).toBe(0);
+    const userFiles = [
+      ['.qoder/rules/teamai-context.md', '---\ntrigger: always_on\n---\n'],
+      ['.qoder-cn/rules/teamai-context.md', '---\ntrigger: always_on\n---\n'],
+      ['.kiro/steering/teamai-context.md', '---\ninclusion: always\n---\n'],
+      ['.trae/user_rules/teamai-context.md', '---\nalwaysApply: true\n---\n'],
+      ['.trae-cn/user_rules/teamai-context.md', '---\nalwaysApply: true\n---\n'],
+    ] as const;
+    for (const [relative, header] of userFiles) {
+      const content = fs.readFileSync(path.join(user.home, relative), 'utf8');
+      expect(content.startsWith(`${header}\n`), relative).toBe(true);
+      expect(content).toContain('Be kind.');
+      expect(content).toContain('Shared team instructions.');
+    }
+
+    const projectSandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-1419-e2e-')));
+    sandboxes.push(projectSandbox);
+    const fixture = makeTeamAndProject(projectSandbox);
+    const member = makeProjectMember(projectSandbox, fixture, 'dev', 'developer', ['.qoder', '.qoder-cn', '.kiro', '.trae', '.trae-cn']);
+    // Qoder and Trae editions are installed from their user homes while their
+    // project rules share Qoder's and Trae's workspace directories.
+    for (const dir of ['.qoder', '.qoder-cn', '.trae', '.trae-cn']) fs.mkdirSync(path.join(member.home, dir), { recursive: true });
+    const projectPull = await pullAs(member);
+    expect(projectPull.code, projectPull.output).toBe(0);
+    const projectFiles = [
+      ['.qoder/rules/teamai-context.md', '---\ntrigger: always_on\n---\n'],
+      ['.kiro/steering/teamai-context.md', '---\ninclusion: always\n---\n'],
+      ['.trae/rules/teamai-context.md', '---\nalwaysApply: true\n---\n'],
+    ] as const;
+    for (const [relative, header] of projectFiles) {
+      const content = fs.readFileSync(path.join(member.projectRoot, relative), 'utf8');
+      expect(content.startsWith(`${header}\n`), relative).toBe(true);
+      expect(content).toContain('Be kind.');
+      expect(content).toContain('DEVELOPMENT-SENTINEL');
+    }
+
+    const removed = await runCLI(['uninstall', '--force'], { HOME: member.home }, member.projectRoot);
+    expect(removed.code, removed.output).toBe(0);
+    for (const [relative] of projectFiles) expect(fs.existsSync(path.join(member.projectRoot, relative)), relative).toBe(false);
+  });
+
   it('gives Oh My Pi its project blocks through the extension, its user blocks in RULES.md, and frees both context files', async () => {
     const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-945-e2e-')));
     sandboxes.push(sandbox);

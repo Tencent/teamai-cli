@@ -1,12 +1,53 @@
 import path from 'node:path';
-import { getDispatchCommand } from './builtin-hooks.js';
-import { listDirs, listFiles, pathExists, readFileSafe, readJsonObject, remove, writeFile } from './utils/fs.js';
+import { getDispatchCommand, getTeamHookDispatchCommand } from './builtin-hooks.js';
+import { bridgedTeamHookEvents } from './bridged-team-hooks.js';
+import { listDirs, listFiles, pathExists, readFileSafe, readJsonObject, remove, writeFile, writeIfChanged } from './utils/fs.js';
 import { getUserHome } from './utils/home.js';
 import { hookAdapterDir } from './locate.js';
 
 /** Kiro CLI V3 loads user hook files independently of the selected agent. */
 export function kiroHookFile(): string {
   return path.join(hookAdapterDir('kiro-hooks'), 'teamai.json');
+}
+
+/**
+ * The team's hooks, beside teamai's own file: Kiro loads every file in the
+ * directory, and `hasKiroHooks` compares `teamai.json` byte for byte.
+ */
+export function kiroTeamHookFile(): string {
+  return path.join(hookAdapterDir('kiro-hooks'), 'teamai-team.json');
+}
+
+/** A team hook entry's name, by which teamai recognises the file as its own. */
+const TEAM_HOOK_NAME = 'teamai-team-';
+
+/**
+ * One entry for each event the team has hooks on, which runs them through
+ * teamai's bridge (bridged-team-hooks.ts): it matches each hook's matcher,
+ * and answers as Kiro reads a hook (exit 2 blocks, stdout is context).
+ */
+function buildKiroTeamHooks(events: ReadonlyMap<string, number>): string {
+  return JSON.stringify({ version: 'v1', hooks: [...events].map(([event, timeout]) => ({
+    name: `${TEAM_HOOK_NAME}${event}`, trigger: event, enabled: true,
+    action: { type: 'command', command: getTeamHookDispatchCommand(event, 'kiro') }, timeout,
+  })) }, null, 2) + '\n';
+}
+
+async function ownsKiroTeamHooks(): Promise<boolean> {
+  const read = await readJsonObject(kiroTeamHookFile());
+  const hooks = read.kind === 'ok' ? read.value.hooks : undefined;
+  return Array.isArray(hooks) && hooks.every((hook: { name?: unknown }) => typeof hook?.name === 'string' && hook.name.startsWith(TEAM_HOOK_NAME));
+}
+
+/** Write Kiro's team hook entries from the bridged file, or remove them when the team has none. */
+export async function reconcileKiroTeamHooks(): Promise<void> {
+  const file = kiroTeamHookFile();
+  if (await pathExists(file) && !await ownsKiroTeamHooks()) {
+    throw new Error(`${file} is not owned by teamai; move it aside so Kiro gets the team's hooks.`);
+  }
+  const events = await bridgedTeamHookEvents('kiro');
+  if (events.size === 0) await remove(file);
+  else await writeIfChanged(file, buildKiroTeamHooks(events));
 }
 
 export function buildKiroHooks(): string {
@@ -91,8 +132,10 @@ export async function injectKiroHooks(projectRoot?: string): Promise<void> {
     }
   }
   await writeFile(kiroHookFile(), buildKiroHooks());
+  await reconcileKiroTeamHooks();
 }
 
 export async function removeKiroHooks(): Promise<void> {
   if (await ownsKiroHooks()) await remove(kiroHookFile());
+  if (await ownsKiroTeamHooks()) await remove(kiroTeamHookFile());
 }

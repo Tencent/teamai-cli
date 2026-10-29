@@ -158,6 +158,14 @@ same pull makes `~/.codex/hooks.json` hold one
 recorded project has hooks for, with the largest timeout, before the built-ins;
 at run time it resolves the project from the hook's `cwd` and runs that
 project's hooks from the index.
+A tool whose host reads no Claude hook file (OpenCode, Oh My Pi, Pi, OpenClaw,
+Kiro, Hermes) keeps its team hooks, and the local agent's agent hooks for it,
+in `~/.teamai/team-hooks/<tool>.json`: a Claude-shaped file the same reconcile,
+records and project gates write as a settings file. The tool's plugin,
+extension or native hook entries run
+`teamai hook-dispatch <Event> --tool <tool> --team-hooks`, which reads it.
+Uninstalling a tool removes its file; the directory stays while a project
+still uses it.
 `state.gitExcludeFiles` records, per owner, the exclude
 files holding its block. A pull nobody watches (session start, git hooks) keeps
 what it could not say about the block in `<dataHome>/git-exclude-notices.json`:

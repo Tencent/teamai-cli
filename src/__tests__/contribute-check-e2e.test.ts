@@ -76,7 +76,8 @@ function runContributeCheck(
       {
         // The directory the hook process starts in, which the gate must not read.
         cwd: processCwd,
-        env: { ...process.env, HOME: homeDir, TEAMAI_LOG_LEVEL: 'silent' },
+        // A member's own session, attended even where CI is set.
+        env: { ...process.env, HOME: homeDir, TEAMAI_LOG_LEVEL: 'silent', TEAMAI_MODE: 'attended' },
         timeout: 10000,
       },
       (error, stdout, stderr) => {
@@ -183,7 +184,7 @@ describe('contribute-check E2E', () => {
     expect(result.stdout).toBe('');
     const state = readSessionState(tmpHome, SESSION_ID)!;
     expect(state.hinted).toBe(true);
-    expect(state.pendingHint).toContain('teamai skill get share');
+    expect(state.pendingHint).toContain('teamai workflow start --describe session-close --driver skill');
     const repeated = await runContributeCheck(tmpHome, makeStdinPayload(SESSION_ID), 'codex');
     expect(repeated.stdout).toBe('');
     expect(readSessionState(tmpHome, SESSION_ID)!.pendingHint).toBe(state.pendingHint);
@@ -215,14 +216,29 @@ describe('contribute-check E2E', () => {
     expect(parsed.hookSpecificOutput.additionalContext).not.toContain(RAW_GITHUB_TOKEN);
     expect(parsed.hookSpecificOutput.additionalContext).not.toContain('50 tool calls');
     expect(parsed.hookSpecificOutput.additionalContext).not.toContain('7 different tools');
-    expect(parsed.hookSpecificOutput.additionalContext).toContain('/teamai share what this session taught me');
-    expect(parsed.hookSpecificOutput.additionalContext).toContain('teamai skill get share');
+    expect(parsed.hookSpecificOutput.additionalContext).toContain('Offer the person the session-close workflow: run `teamai workflow start --describe session-close --driver skill`');
     expect(parsed.stopReason).toBeUndefined();
+    expect(readSessionState(tmpHome, SESSION_ID)).toMatchObject({ hinted: true, offered: { publish: true, scorers: [] } });
 
     // The real CLI persists hinted=true, so a repeated Stop hook is silent.
     const repeated = await runContributeCheck(tmpHome, makeStdinPayload(SESSION_ID));
     expect(repeated.code).toBe(0);
     expect(repeated.stdout).toBe('');
+  });
+
+  it('never reminds or offers again in a session resumed after the 24 hours sweep removed its state file', async () => {
+    writeEventsFile(tmpHome, buildRichSessionEvents(SESSION_ID));
+    expect((await runContributeCheck(tmpHome, makeStdinPayload(SESSION_ID))).stdout).toContain('session-close');
+    const stateFile = path.join(tmpHome, '.teamai', 'sessions', `${SESSION_ID}.json`);
+    const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(stateFile, twoDaysAgo, twoDaysAgo);
+    await runContributeCheck(tmpHome, makeStdinPayload('another-session'));
+    expect(fs.existsSync(stateFile)).toBe(false);
+
+    const resumed = await runContributeCheck(tmpHome, makeStdinPayload(SESSION_ID));
+
+    expect(resumed.code).toBe(0);
+    expect(resumed.stdout).toBe('');
   });
 
   it('withholds the reminder where `teamai skill get share` refuses: a config that cannot be loaded', async () => {

@@ -365,6 +365,70 @@ steps:
     expect(printed).toContainEqual({ line: expect.stringMatching(new RegExp(`Run ${runId} started\\. .*teamai workflow resume ${runId}$`)), ran: false });
     expect(fs.existsSync(path.join(work, 'ran.marker'))).toBe(true);
   });
+
+  it('prints why each step failed and how to retry it on stderr when the run fails, and only the envelope on stdout', async () => {
+    const config = testConfig();
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'release.yaml'), `schemaVersion: v1alpha1
+name: release
+description: Sign the build.
+steps:
+  - id: sign
+    requires: { env: [SIGNING_KEY] }
+    command: node -e ""
+`);
+    await syncWorkflowDefinitions(config);
+    state.config = config;
+    vi.stubEnv('SIGNING_KEY', undefined);
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-workflow-start-'));
+    dirs.push(work);
+    vi.spyOn(process, 'cwd').mockReturnValue(work);
+    const printed: string[] = [];
+    vi.spyOn(console, 'error').mockImplementation((...parts: unknown[]) => {
+      printed.push(parts.map(String).join(' '));
+    });
+
+    const started = await capture(() => workflowStart('release', { driver: 'local' }));
+
+    expect(started).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const done = started.data?.done;
+    const runId = typeof done === 'object' && done !== null && 'run' in done ? String(done.run) : '';
+    expect(printed).toContainEqual(expect.stringMatching(/Step "sign" failed with missing_env: .*teamai env add SIGNING_KEY --secret .*teamai env set SIGNING_KEY/));
+    expect(printed).toContainEqual(expect.stringContaining(`Retry it with teamai workflow retry ${runId} sign, then continue the run with teamai workflow resume ${runId}`));
+  });
+
+  it('names the item that failed, not the fan-out step that failed because of it', async () => {
+    const config = testConfig();
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'release.yaml'), `schemaVersion: v1alpha1
+name: release
+description: Sign each target.
+inputs:
+  targets: [string]
+steps:
+  - id: sign
+    for_each: inputs.targets
+    requires: { env: [SIGNING_KEY] }
+    command: node -e ""
+`);
+    await syncWorkflowDefinitions(config);
+    state.config = config;
+    vi.stubEnv('SIGNING_KEY', undefined);
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-workflow-start-'));
+    dirs.push(work);
+    vi.spyOn(process, 'cwd').mockReturnValue(work);
+    const printed: string[] = [];
+    vi.spyOn(console, 'error').mockImplementation((...parts: unknown[]) => {
+      printed.push(parts.map(String).join(' '));
+    });
+
+    const started = await capture(() => workflowStart('release', { driver: 'local', inputs: '{"targets":["linux"]}' }));
+
+    expect(started).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const done = started.data?.done;
+    const runId = typeof done === 'object' && done !== null && 'run' in done ? String(done.run) : '';
+    expect(printed).toContainEqual(expect.stringMatching(/Step "sign\[0\]" failed with missing_env: /));
+    expect(printed).toContainEqual(expect.stringContaining(`Retry it with teamai workflow retry ${runId} 'sign[0]', then`));
+    expect(printed.filter((line) => line.includes('Step "sign" failed') || line.includes(`retry ${runId} sign,`))).toEqual([]);
+  });
 });
 
 describe('workflow start in a project whose cache lacks the workflow', () => {
@@ -405,6 +469,23 @@ steps:
       .toMatchObject({ data: { describe: { workflow: { name: 'ship', description: 'Ship from the user scope' } } } });
     const started = await capture(() => workflowStart('ship', {}));
     expect(started).toMatchObject({ data: { name: 'ship', status: 'running' } });
+    const runId = String(started.data?.run);
+    expect(typeof await readRun(user, runId)).toBe('object');
+    expect(await readRun(project, runId)).toBe('missing');
+  });
+
+  it('starts the user scope\'s session-close before the project\'s teamai default, and the default when neither team has one', async () => {
+    const { project, user } = await installs();
+    const userWorkflow = path.join(user.repo.localPath, 'workflows', 'session-close.yaml');
+
+    expect(await capture(() => workflowStart('session-close', { describe: true }))).toMatchObject({ data: { name: 'session-close', invoke: 'ask', source: 'default' } });
+    expect(await capture(() => workflowStart('session-close', { driver: 'skill', describe: true }))).toMatchObject({ data: { describe: { workflow: { name: 'session-close', source: 'default' } } } });
+
+    fs.writeFileSync(userWorkflow, ship('Close the session the user team way').replace('name: ship', 'name: session-close'));
+    await syncWorkflowDefinitions(user);
+    expect(await capture(() => workflowStart('session-close', { describe: true }))).toMatchObject({ data: { description: 'Close the session the user team way', source: 'team' } });
+    expect(await capture(() => workflowStart('session-close', { driver: 'skill', describe: true }))).toMatchObject({ data: { describe: { workflow: { source: 'team' } } } });
+    const started = await capture(() => workflowStart('session-close', {}));
     const runId = String(started.data?.run);
     expect(typeof await readRun(user, runId)).toBe('object');
     expect(await readRun(project, runId)).toBe('missing');

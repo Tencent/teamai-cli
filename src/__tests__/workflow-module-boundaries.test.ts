@@ -20,16 +20,17 @@ const DISCOVERY = 'src/workflow/discovery/';
 const FLAT = 'src/workflow/';
 
 /** Rule 1: what a module under `drivers/skill/` may import, besides its siblings, `zod` and `node:*`. */
-const SKILL_IMPORTS: Record<string, { typeOnly?: true; names?: string[] }> = {
+const SKILL_IMPORTS: Record<string, { typeOnly?: true; names?: string[]; values?: string[] }> = {
   'src/workflow/protocol.ts': {},
   'src/workflow/types.ts': { typeOnly: true },
-  'src/workflow/requirements.ts': { typeOnly: true },
+  // The declared env facts, and the advice a missing key gets, which the preflight prints before a start.
+  'src/workflow/requirements.ts': { typeOnly: true, values: ['envAdvice'] },
   'src/workflow/describe.ts': { typeOnly: true },
   'src/workflow/attempt-marker.ts': {},
   // The wire shapes the engine answers with, which every driver parses with the same schema.
   'src/workflow/lease-wire.ts': { names: ['LeaseWireSchema'] },
   'src/workflow/step-state.ts': { names: ['FailureSchema'] },
-  'src/workflow/store.ts': { names: ['takeRunLock', 'LockTaken', 'RunLock', 'attemptDir', 'attemptResultPath', 'skillStatePath', 'RunIdSchema', 'RunId', 'AttemptIdSchema', 'AttemptId', 'withRunnerLock', 'runnerAlive'] },
+  'src/workflow/store.ts': { names: ['takeRunLock', 'LockTaken', 'RunLock', 'attemptDir', 'attemptResultPath', 'skillStatePath', 'runsDir', 'RunIdSchema', 'RunId', 'AttemptIdSchema', 'AttemptId', 'withRunnerLock', 'runnerAlive'] },
   'src/workflow/step-model.ts': {},
   'src/env-resolution.ts': {},
   'src/env-exec.ts': { names: ['stepEnvironment'] },
@@ -49,6 +50,8 @@ const SKILL_IMPORTS: Record<string, { typeOnly?: true; names?: string[] }> = {
   // What the confined judge of the session tool can do, which the driver declares on `score --next`.
   'src/scorers/judge.ts': { names: ['isJudgeTool', 'judgeAccess'] },
   'src/scorers/label.ts': { typeOnly: true },
+  // What describe proposes for the inputs of teamai's default session-close workflow, for the calling session.
+  'src/session-close.ts': { names: ['SessionClose'] },
   // The identity every driver reports, the repository's atomic file writes, and the shared config types.
   'src/driver-identity.ts': {},
   // The run mode: whether a person attends the run, which describe answers for and every attempt's process gets.
@@ -88,7 +91,10 @@ function rule1(edges: Edge[]): RuleResult {
     if (path.posix.dirname(edge.to) === path.posix.dirname(edge.from)) return false;
     const allowed = SKILL_IMPORTS[edge.to];
     if (!allowed) return true;
-    if (allowed.typeOnly && !edge.typeOnly) return true;
+    if (allowed.typeOnly && !edge.typeOnly) {
+      // A value import is allowed only for the values the entry lists; anything else must be a type.
+      return edge.names.some((name) => !(allowed.values ?? []).includes(name));
+    }
     const names = allowed.names;
     return names !== undefined && edge.names.some((name) => !names.includes(name));
   }).map(show);

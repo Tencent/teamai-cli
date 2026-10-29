@@ -233,7 +233,7 @@ describe('skill driver preflight', () => {
         '- Optional approval at plan-review: before `node -e "process.exit(0)"`.',
         '- The recommended start lets this session\'s agent answer optional approvals and say why; "answer optional approvals automatically" answers each approval yes.',
         '- It opens a pull request from integrate into main.',
-        '- NPM_TOKEN and SLACK_TOKEN have no value on this machine: set them with teamai env set NPM_TOKEN and teamai env set SLACK_TOKEN before the steps that require them run, or those steps fail.',
+        '- NPM_TOKEN and SLACK_TOKEN have no value on this machine: set NPM_TOKEN, SLACK_TOKEN in the environment, or declare them in the team repo with teamai env add NPM_TOKEN --secret, teamai env add SLACK_TOKEN --secret and give them a value with teamai env set NPM_TOKEN, teamai env set SLACK_TOKEN before the steps that require them run, or those steps fail.',
         '- announce.post needs env SLACK_TOKEN, which a coding session keeps from its agents, and runs under a token budget, which no coding session meters for teamai, so you finish it in your own terminal with teamai workflow resume once the run reaches it.',
         '- announce may spend at most 20000 tokens each time it starts.',
         '- It stops after 2h.',
@@ -265,7 +265,7 @@ describe('skill driver preflight', () => {
     expect(await made.call({ kind: 'describe', name: 'lint' })).toMatchObject({ data: { describe: { ask: {
       kind: 'start',
       say: [
-        '- LINT_TOKEN has no value on this machine: set it with teamai env set LINT_TOKEN before the steps that require it run, or those steps fail.',
+        '- LINT_TOKEN has no value on this machine: set LINT_TOKEN in the environment, or declare it in the team repo with teamai env add LINT_TOKEN --secret and give it a value with teamai env set LINT_TOKEN before the steps that require it run, or those steps fail.',
         '- It stops after 30m.',
       ].join('\n'),
       start: 'teamai workflow start lint --driver skill',

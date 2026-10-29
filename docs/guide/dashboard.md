@@ -15,7 +15,7 @@ Open `http://localhost:3721`. The sidebar is Overview, Team Execution, Workflow 
 
 The Overview's **Session sharing** panel says, for the selected workspace, whether its sessions are published to `teamai-reports` and scored in each [run mode](workflow.md#attended-and-unattended-runs), and why:
 
-- Each mode's publish and scoring policy, and the setting it came from, such as `the default` or `teamai.yaml sessions.publish.unattended`. `ask` acts as `off` for now.
+- Each mode's publish and scoring policy, and the setting it came from, such as `the default` or `teamai.yaml sessions.publish.unattended`. Attended `ask` reads "proposed when the friction reminder offers session-close" ([session-close](workflow.md#session-close)); unattended `ask` reads "acts as off: nobody is there to confirm".
 - The sessions captured on this machine in each mode: active, waiting for a drain, kept on this machine, waiting to be archived, and archived. A session whose file is gone is not counted. Also the step sessions of ended runs that wait to be archived.
 - What waits, and the drain to run for it. A drain finishes and publishes only the sessions of its own run mode, so on an attended machine the panel names `TEAMAI_MODE=unattended teamai score --drain` for unattended sessions, or `$env:TEAMAI_MODE='unattended'; teamai score --drain` on Windows.
 - The archive, `daily_limit`, the scorers that judge sessions, the enabled tools teamai reads no sessions from, and the settings problems `teamai doctor` reports.
@@ -24,7 +24,7 @@ The Overview's **Session sharing** panel says, for the selected workspace, wheth
 
 ## Workflow Runs
 
-The Workflow Runs page has three lists for the selected workspace. **Local runs** are the run files on this machine, read live: status, the leased steps, the HITL requests waiting for an answer, and whether a settled run's record reached the team. **Team-reported history** is the run records on the `teamai-reports` branch, from every member. Each row shows the workflow, driver, status, named end, duration, tokens, team revision (absent when no pushed commit held the definitions; the source hash shows either way), and the delivered pull requests.
+The Workflow Runs page has three lists for the selected workspace. **Local runs** are the run files on this machine, read live: status, the leased steps, the HITL requests waiting for an answer, and whether a settled run's record reached the team. **Team-reported history** is the run records on the `teamai-reports` branch, from every member. Each row shows the workflow, driver, status, named end, duration, tokens, the definition it ran, and the delivered pull requests. The definition is `Team <revision>` for the team's workflow (`No team revision` when no pushed commit held it), or `teamai default <version>` for a [default workflow](workflow.md#default-workflows) such as `session-close`, with the source hash under it either way.
 
 **Handed-off runs** are the running runs someone [published](workflow.md#continue-a-run-on-another-machine), with the command that takes each one:
 
@@ -32,7 +32,7 @@ The Workflow Runs page has three lists for the selected workspace. **Local runs*
 |---|---|---|
 | `release` · Offered · alice | Needs a person: only a person can answer the approval at ship | `teamai workflow resume <run> --claim`, run by a person |
 | `ship-issue` · Offered · alice | Nothing: a runner can finish it | `teamai workflow resume --next`, in a checkout of that repository |
-| `release-docs` · Offered · alice | A runner needs: env `SIGNING_KEY`, a tool for notes. Not on this machine: sign requires env SIGNING_KEY, which has no value here → teamai env set SIGNING_KEY, or set it in the environment | `teamai workflow resume --next`, in a checkout of that repository |
+| `release-docs` · Offered · alice | A runner needs: env `SIGNING_KEY`, a tool for notes. Not on this machine: sign requires env SIGNING_KEY, which has no value here → set SIGNING_KEY in the environment, or declare it in the team repo with teamai env add SIGNING_KEY --secret and give it a value with teamai env set SIGNING_KEY | `teamai workflow resume --next`, in a checkout of that repository |
 | `nightly-report` · Held · bob | — | `teamai workflow resume <run> --claim` takes it over from bob |
 
 On the install that offered a run, the next step is `teamai workflow resume <run>` instead, which takes it back there. A local run that is offered, or that another install now holds, says so under its status. **A runner needs** (**Their machine needs** on a run that needs a person) lists the `requires.env` keys and prompt steps of the steps left: set those up on the runner, as [its job](workflow.md#take-offered-runs-from-ci) does. **Not on this machine** is what this machine lacks of them, as `teamai workflow resume` lists it as `cannot run here`. The status line counts the offered runs and the ones that need a person. The page claims nothing: the command runs a driver on the machine that takes the run.

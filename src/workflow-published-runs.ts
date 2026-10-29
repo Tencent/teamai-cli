@@ -6,6 +6,7 @@
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { DefaultWorkflows } from './default-workflows.js';
 import type { WorkflowEnv } from './env-resolution.js';
 import { log } from './utils/logger.js';
 import { getReportsDir, usesBranchWorktree, type LocalConfig } from './types.js';
@@ -16,7 +17,7 @@ import { memberTools, type MemberTool } from './tool-launch/call.js';
 import { executableOf, type LaunchTool } from './tool-launch/tools.js';
 import { resolveCliPath } from './utils/cli-path.js';
 import { sameEnvName } from './resources/env-key.js';
-import type { EnvFacts } from './workflow/requirements.js';
+import { envAdvice, type EnvFacts } from './workflow/requirements.js';
 import { definitionsOf, settledSteps } from './workflow/handoff.js';
 import { invokeRefusal, type InvokeCaller } from './workflow/protocol.js';
 import { parseSnapshot, SNAPSHOTS_DIR, snapshotPath, type HandoffOwner, type RunSnapshot } from './workflow/snapshot.js';
@@ -118,7 +119,7 @@ async function offerOf(config: LocalConfig, snapshot: RunSnapshot, at: string, {
   if (!definitions.ok) return { at, needs: [], uses: { env: [], prompts: [] }, lacks: [], refusal: { code: definitions.error.code, message: definitions.error.message } };
   const { definition, workflows } = definitions.value;
   const description = describeWorkflow({
-    definition, workflows, ceiling: ceilingOf(config), can: canFor(undefined), allow: config.workflows?.allow ?? {}, env: env.facts,
+    definition, source: DefaultWorkflows.sourceOfRun(snapshot), workflows, ceiling: ceilingOf(config), can: canFor(undefined), allow: config.workflows?.allow ?? {}, env: env.facts,
   });
   const settled = new Set(settledSteps({ definition, workflows, steps: snapshot.steps }));
   const needs = stepNeeds(description, settled);
@@ -162,7 +163,7 @@ function toolLacks(config: LocalConfig, flags: Record<string, string>, members: 
       const flag = agent === undefined ? 'default' : agent;
       const choice = launchToolFor(agent, config, flags, members);
       if (choice.ok) {
-        return isOnPath(choice.tool) ? [] : [{ reason: `${steps} run on ${choice.tool}, which is not on PATH here`, fix: `install ${choice.tool}, or pass --tools ${flag}=<tool> for one that is` }];
+        return isOnPath(choice.tool) ? [] : [{ reason: `${steps} ${prompts.length > 1 ? 'run' : 'runs'} on ${choice.tool}, which is not on PATH here`, fix: `install ${choice.tool}, or pass --tools ${flag}=<tool> for one that is` }];
       }
       if (choice.failure.code === 'tool_unconfigured') {
         return [{ reason: `no tool is configured here for ${steps}`, fix: `pass --tools ${flag}=<tool>, or set workflows.tools.${flag}` }];
@@ -186,7 +187,7 @@ function envLacks(runs: readonly StepRun[], env: EnvFacts): Lack[] {
   const one = keys.length === 1;
   return [{
     reason: `${require}, which ${one ? 'has' : 'have'} no value here`,
-    fix: `${keys.map((key) => `teamai env set ${key}`).join(', ')}, or set ${one ? 'it' : 'them'} in the environment`,
+    fix: envAdvice(keys, env.declared),
   }];
 }
 

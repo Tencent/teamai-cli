@@ -2,11 +2,13 @@
  * The skill driver: a coding session drives a run through `workflow start|next|report --driver skill`, running only
  * the literals each reply prints, while detached runners run its command steps. This module is its entry.
  */
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { resolveCliEntry } from '../../../builtin-hooks.js';
 import type { WorkflowEnv } from '../../../env-resolution.js';
 import { resolveRunMode, type RunMode } from '../../../launch-context.js';
+import { SessionClose } from '../../../session-close.js';
 import type { CommandExit } from '../../../tool-launch/process-stop.js';
 import { isToolId, TOOLS } from '../../../tools.js';
 import type { LocalConfig, TeamaiConfig, ToolId } from '../../../types.js';
@@ -14,7 +16,7 @@ import { agentSessionFromEnv } from '../../../utils/session-id.js';
 import { agentEvidence, isAttemptRunner, type AgentEvidence } from '../../attempt-marker.js';
 import { inProcessClient, invokeDeniedMessage, type ResumeClaim, type WorkflowClient } from '../../protocol.js';
 import type { WorkflowFailure } from '../../types.js';
-import { AttemptIdSchema, RunIdSchema, takeRunLock, type AttemptId, type LockTaken, type RunId, type RunLock } from '../../store.js';
+import { AttemptIdSchema, RunIdSchema, runsDir, takeRunLock, type AttemptId, type LockTaken, type RunId, type RunLock } from '../../store.js';
 import { canFor, HOST_CHOICES, type HostChoice } from './host-profiles.js';
 import { journalCall } from './journal.js';
 import { describeLiteral, invocationOf, type Invocation } from './literals.js';
@@ -139,6 +141,16 @@ export async function skillContext(input: Pick<SkillContext, 'config' | 'toolPat
 export async function sessionDrivesRun(config: LocalConfig, run: RunId): Promise<boolean> {
   const read = await readSkillState(config, run);
   return drivesRun(read.kind === 'found' ? read.state : undefined, (await agentSessionFromEnv()).id);
+}
+
+/** Whether agent session `session` drives, with the skill driver, a run of `config`'s scope whose skill.json records no end yet. */
+export async function drivesUndoneRun(config: LocalConfig, session: string): Promise<boolean> {
+  const runs = (await fs.readdir(runsDir(config)).catch(() => [])).flatMap((name) => {
+    const run = RunIdSchema.safeParse(name);
+    return run.success ? [run.data] : [];
+  });
+  const states = await Promise.all(runs.map((run) => readSkillState(config, run)));
+  return states.some((read) => read.kind === 'found' && read.state.done === undefined && drivesRun(read.state, session));
 }
 
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
@@ -377,7 +389,8 @@ async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, c
       mode: context.mode, ...(attended !== undefined ? { attended } : {}), needsTool: needsTool(description, { tool: context.tool, judged: true }),
     });
     context.trace?.(row);
-    return { data: { describe: { workflow: description, judging, ask: askFor(verdict, description, context.invocation, judging, { local: localPromptTool(context), session: call.tool }) } } };
+    const proposed = await SessionClose.proposals(context.config, description, { session: context.session, tool: call.tool ?? context.tool });
+    return { data: { describe: { workflow: description, judging, ask: askFor(verdict, description, context.invocation, judging, { local: localPromptTool(context), session: call.tool }, proposed) } } };
   }
   const check = checkStartAnswers({ description, answers: call.answers, inputs: call.inputs, ceiling, tool: context.tool });
   const judge = call.answers.judge !== false ? judgedBy(judging) : undefined;

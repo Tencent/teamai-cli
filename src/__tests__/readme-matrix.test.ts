@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ALL_MODEL_AGENTS } from '../models/profile.js';
+import { runsTeamHookOn } from '../hooks.js';
 import { isToolId, TOOLS, type Support } from '../tools.js';
 import { DEFAULT_TOOL_PATHS, type ToolId } from '../types.js';
 
@@ -61,6 +62,8 @@ describe('README agent matrix', () => {
     if (typeof d.rules.user === 'object' && d.rules.user.channel === 'inline') expect(cell(row, 'rules')).toBe('✓¹');
     expect(cell(row, 'culture')).toBe(blocks ? '✓' : '—');
     expect(cell(row, 'models')).toBe(ALL_MODEL_AGENTS.some((agent) => agent === tool) ? '✓' : '—');
+    // ✓ is teamai's hooks and the team's hooks/hooks.yaml both.
+    expect(cell(row, 'hooks')).toBe(typeof d.hooks.user === 'object' && runsTeamHookOn(tool, 'SessionStart') ? '✓' : '—');
     const usage = decided(d.features.stats);
     if (usage !== undefined) expect(cell(row, 'usage')).toBe(usage);
     // The skill driver runs workflows wherever the teamai skill reaches the session.

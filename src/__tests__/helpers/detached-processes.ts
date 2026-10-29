@@ -48,7 +48,11 @@ function runningIn(children: string): number[] {
       process.kill(pid, 0);
       return !isZombie(pid);
     } catch (e) {
-      if (!(e instanceof Error && 'code' in e && e.code === 'ESRCH')) throw e;
+      // ESRCH means the pid is gone. EPERM means it belongs to a process this
+      // runner cannot signal: on macOS a pid the kernel recycled to another
+      // user's process answers that way. It is not teamai's child any more, so
+      // it is forgotten like ESRCH (#1504).
+      if (!(e instanceof Error && 'code' in e && (e.code === 'ESRCH' || e.code === 'EPERM'))) throw e;
       fs.unlinkSync(path.join(children, String(pid)));
       return false;
     }

@@ -349,7 +349,7 @@ describe('instruction targets shared by several tools (#945)', () => {
       const legacy = path.join(projectRoot, 'AGENTS.md');
       expect((await retiredFilesOfReached(teamConfig, localConfig, ['claude'])).map((target) => target.path)).not.toContain(legacy);
       expect((await retiredFilesOfReached(teamConfig, localConfig, ['pi'])).map((target) => target.path)).not.toContain(legacy);
-      expect((await retiredFilesOfReached(teamConfig, localConfig, ['claude', 'pi'])).map((target) => target.path)).toContain(legacy);
+      expect((await retiredFilesOfReached(teamConfig, localConfig, Object.keys(teamConfig.toolPaths))).map((target) => target.path)).toContain(legacy);
     } finally {
       vi.unstubAllEnvs();
       fs.rmSync(root, { recursive: true, force: true });

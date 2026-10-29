@@ -260,6 +260,11 @@ teamai doctor          # flags tools whose hooks are missing
 teamai hooks list      # per-tool status + the settings file it checked
 ```
 
+Under each team hook, `hooks list` prints `runs in:` and `not in:`. A tool in
+`not in:` has no hook on that event (Cursor has no `PreToolUse`; OpenCode, Oh My
+Pi, Pi, OpenClaw, Kiro and Hermes run only `SessionStart`, `UserPromptSubmit`,
+`PreToolUse`, `PostToolUse` and `Stop`), so the hook does not run there.
+
 What you will typically see, and why (this is expected CLI behaviour, **not** a
 broken machine):
 

@@ -16,7 +16,7 @@
  * its own HOME, team remote (a local bare repo reached through a synthetic
  * HTTPS URL) and business repo.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -279,7 +279,11 @@ describe('moving from OpenCode V1 to V2', () => {
     fs.writeFileSync(plugin(m), `${read(plugin(m))}// an older build\n`);
     m.opencode(V2);
     m.ok(['pull']);
-    expect(read(plugin(m))).toBe(buildPluginSource(path.join(m.home, '.config', 'opencode'), CLI));
+    // The plugin names this machine's team-hook file, which sits under its HOME.
+    vi.stubEnv('HOME', m.home);
+    const current = buildPluginSource(path.join(m.home, '.config', 'opencode'), CLI);
+    vi.unstubAllEnvs();
+    expect(read(plugin(m))).toBe(current);
     expectV2Delivery(m);
     expect(m.blockLines('delivered')).not.toContain('/opencode.json');
 

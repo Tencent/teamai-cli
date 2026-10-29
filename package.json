@@ -13,6 +13,7 @@
     "!**/__pycache__",
     "!**/*.pyc",
     "agents",
+    "workflows",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"

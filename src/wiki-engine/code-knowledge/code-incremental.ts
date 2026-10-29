@@ -17,6 +17,7 @@ export async function detectCodeIncrementalChanges(
   manifestPath: string,
   project: string,
   maxFiles?: number,
+  sourceSubdir?: string,
 ): Promise<CodeIncrementalChange> {
   const previous = (await exists(manifestPath))
     ? (JSON.parse(await readFile(manifestPath, "utf8")) as {
@@ -41,7 +42,15 @@ export async function detectCodeIncrementalChanges(
   if (oldSha && newSha && manifestIsCurrent && (await isWorkingTreeClean(root))) {
     const gitChanges = await gitDiffNameStatus(root, oldSha, newSha);
     if (gitChanges !== null) {
-      const { added, changed, deleted } = gitChanges;
+      // `git diff` reports repository-root-relative paths whatever `-C`
+      // says, while the extractor stores paths relative to the imported
+      // `root`. For a subdirectory import, scope the diff into it: changes
+      // inside it keep their subdirectory-relative form, everything else
+      // in the repository does not affect this extraction (#1502).
+      const scope = scopeIntoSubdir(sourceSubdir);
+      const added = gitChanges.added.flatMap(scope);
+      const changed = gitChanges.changed.flatMap(scope);
+      const deleted = gitChanges.deleted.flatMap(scope);
       return {
         added,
         changed,
@@ -78,6 +87,20 @@ function affectedPages(project: string, files: string[]): string[] {
     pages.add(`code/${project}/component.md`);
   }
   return [...pages].sort();
+}
+
+/**
+ * A path filter for a subdirectory import: repository-root-relative diff
+ * entries become subdirectory-relative (the extractor's contract), and
+ * entries outside the subdirectory are dropped — a repository-wide change
+ * that does not touch the imported directory does not re-extract it. The
+ * prefix is segment-exact (`apps/svc/`), so a sibling like `apps/svcs/`
+ * never matches. An empty or absent subdirectory keeps every path as is.
+ */
+function scopeIntoSubdir(sourceSubdir?: string): (file: string) => string[] {
+  if (!sourceSubdir) return (file) => [file];
+  const prefix = sourceSubdir.endsWith("/") ? sourceSubdir : `${sourceSubdir}/`;
+  return (file) => (file.startsWith(prefix) ? [file.slice(prefix.length)] : []);
 }
 
 async function exists(filePath: string): Promise<boolean> {

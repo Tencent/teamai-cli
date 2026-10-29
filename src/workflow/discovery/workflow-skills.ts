@@ -16,8 +16,8 @@ import { generatedSkillAt, readGenerated } from './generated-marker.js';
 import { renderWorkflowSkill, type AdvertisedWorkflow } from './render.js';
 
 /**
- * Every cached `invoke: allow` or `ask` workflow, each with its alias only when the alias starts it. The cache is what
- * `start` resolves from, so no skill names a workflow that cannot start.
+ * Every runnable `invoke: allow` or `ask` workflow, a cached team file or teamai's default, each with its alias only when
+ * the alias starts it. The cache is what `start` resolves from, so no skill names a workflow that cannot start.
  */
 async function advertisedWorkflows(config: LocalConfig): Promise<AdvertisedWorkflow[]> {
   const advertised: AdvertisedWorkflow[] = [];
@@ -45,7 +45,8 @@ interface Root {
   guardBase: string;
 }
 
-const PREFIX = 'workflow-';
+/** The name of every skill pull generates starts with this, then the workflow name. */
+export const WORKFLOW_SKILL_PREFIX = 'workflow-';
 const WRITER = 'workflow-skills';
 
 /**
@@ -70,7 +71,7 @@ async function plan(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise
       if (!roots.has(dir)) roots.set(dir, { dir, guardBase });
     }
     for (const workflow of workflows) {
-      const skillName = `${PREFIX}${workflow.name}`;
+      const skillName = `${WORKFLOW_SKILL_PREFIX}${workflow.name}`;
       const dir = await skillTarget({ tool, skillName, ownsShared }) ?? path.join(target.skillsDir, skillName);
       if (placed.has(dir)) continue;
       placed.set(dir, { tool, workflow: workflow.name, dir, guardBase, content: renderWorkflowSkill(workflow, tool) });
@@ -96,7 +97,7 @@ function keptEdited(file: string, workflow: string, advertised: boolean): string
 async function place({ tool, workflow, dir, guardBase, content }: Placement): Promise<boolean> {
   const block = await findSkillDirectoryBlock(guardBase, dir);
   if (block) {
-    warnOnce(describeSkippedSkillDirectory(`${PREFIX}${workflow}`, tool, block));
+    warnOnce(describeSkippedSkillDirectory(`${WORKFLOW_SKILL_PREFIX}${workflow}`, tool, block));
     return false;
   }
   const file = path.join(dir, 'SKILL.md');
@@ -154,7 +155,7 @@ export async function deployWorkflowSkills({ teamConfig, localConfig, recorder }
       const entries = await fs.readdir(root.dir).catch(() => []);
       for (const entry of entries) {
         const dir = path.join(root.dir, entry);
-        if (entry.startsWith(PREFIX) && !placed.has(dir)) await prune({ ...root, dir });
+        if (entry.startsWith(WORKFLOW_SKILL_PREFIX) && !placed.has(dir)) await prune({ ...root, dir });
       }
     }
   } catch (error) {

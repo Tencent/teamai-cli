@@ -15,6 +15,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
+import { RunOriginSchema, type RunOrigin } from '../default-workflows.js';
 import { getReportsDir, usesBranchWorktree, type LocalConfig } from '../types.js';
 import { knownSecrets, resolveWorkflowEnv } from '../env-resolution.js';
 import { LabelStore, type PassScore } from '../scorers/label-store.js';
@@ -36,7 +37,7 @@ const RUN_LIMIT = 50;
  * `prs` is the delivered pull request list #1090 adds to the end record.
  */
 type ReadRecord = Pick<WorkflowRunRecord,
-  'run' | 'workflow' | 'sourceHash' | 'teamRevision' | 'driver' | 'status' | 'end' | 'startedAt' | 'endedAt' | 'durationMs' | 'stepCounts' | 'username'>
+  'run' | 'workflow' | 'sourceHash' | 'teamRevision' | 'origin' | 'driver' | 'status' | 'end' | 'startedAt' | 'endedAt' | 'durationMs' | 'stepCounts' | 'username'>
   & { steps?: StepEntry[]; prs?: unknown[] };
 type StepEntry = Pick<NonNullable<WorkflowRunRecord['steps']>[number], 'step' | 'pass' | 'outcome' | 'tokens'>
   & { answer?: { choice: string; channel: string }; outcomes?: unknown[] };
@@ -57,6 +58,7 @@ const RecordSchema: z.ZodType<ReadRecord, z.ZodTypeDef, unknown> = z.object({
   workflow: z.string(),
   sourceHash: z.string().optional(),
   teamRevision: z.string().optional(),
+  origin: RunOriginSchema.optional().catch(undefined),
   driver: z.object({ kind: z.string() }).optional(),
   status: z.enum(['running', 'succeeded', 'failed', 'cancelled']),
   end: z.string().optional(),
@@ -91,6 +93,8 @@ interface RunRow {
   sourceHash?: string;
   /** Absent when no pushed team commit holds the definitions the run used. */
   teamRevision?: string;
+  /** Whether the run ran the team's definition or teamai's default, and which teamai shipped it; absent in older records. */
+  origin?: RunOrigin;
   prs: string[];
   stepCounts?: ReadRecord['stepCounts'];
 }
@@ -156,6 +160,7 @@ function rowOf(record: ReadRecord): RunRow {
     tokens: tokenTotal(record.steps),
     ...(record.sourceHash !== undefined ? { sourceHash: record.sourceHash } : {}),
     ...(record.teamRevision !== undefined ? { teamRevision: record.teamRevision } : {}),
+    ...(record.origin ? { origin: record.origin } : {}),
     prs: (record.prs ?? []).filter(isWebUrl),
     ...(record.stepCounts ? { stepCounts: record.stepCounts } : {}),
   };

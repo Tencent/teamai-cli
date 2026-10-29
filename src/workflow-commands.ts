@@ -1,11 +1,11 @@
 import path from 'node:path';
 import { z } from 'zod';
-import { autoDetectInit, loadLocalConfigForScope, loadTeamConfig, machineWorkflowAllowProblem } from './config.js';
+import { autoDetectInit, loadTeamConfig, machineWorkflowAllowProblem } from './config.js';
 import { resolveWorkflowEnv, type WorkflowEnv } from './env-resolution.js';
 import { isLeaseRef } from './scorers/entry.js';
 import { log, setStderrOnly } from './utils/logger.js';
-import { collectEnvSecrets, redactJson } from './utils/redact.js';
-import { parseNextPayload, parseReport, parseResponsePayload, resumableSessions, withIgnored, type ParsedResponsePayload } from './workflow/engine.js';
+import { collectEnvSecrets, redact, redactJson } from './utils/redact.js';
+import { parseNextPayload, parseReport, parseResponsePayload, resumableSessions, retryCommand, withIgnored, type ParsedResponsePayload } from './workflow/engine.js';
 import { claimOffered, publishRun, resumeRun } from './workflow/handoff.js';
 import { PublishedRuns, type Lack, type PublishedRun, type ResumableRun, type Taker } from './workflow-published-runs.js';
 import { safeText } from './session-flow/session-cmd-shared.js';
@@ -19,7 +19,7 @@ import { getBusinessRoot, getDataHome, usesBranchWorktree, type LocalConfig, typ
 import { AttemptIdSchema, installOwner, readRun, RunIdSchema } from './workflow/store.js';
 import { inProcessClient, resumeRefusal, workflowNotFound, type InvokeCaller, type NextPrepare } from './workflow/protocol.js';
 import { parseInputsFlag, parseSkillCall, parseSkillResume, runSkillCall, sessionDrivesRun, skillContext } from './workflow/drivers/skill/skill-driver.js';
-import { loadCachedWorkflow } from './workflow/cache.js';
+import { loadCachedWorkflow, resolveStart } from './workflow/cache.js';
 import { findRunConfig } from './workflow/run-location.js';
 import { resolveRunMode } from './launch-context.js';
 import { memberTools } from './tool-launch/call.js';
@@ -40,13 +40,15 @@ function writeEnvelope(envelope: WorkflowEnvelope, secrets: Record<string, strin
 }
 
 /**
- * Prints what the local driver answered for a run of `config`, then, once an unattended run is done, drains the run's
+ * Prints what the local driver answered for a run of `config`, with why each step of a failed run failed, then, once an unattended run is done, drains the run's
  * scope as `teamai score --drain` does unless its unattended publishing and session scoring are both `off`. The run's
  * outcome keeps setting the exit code: what the drain could not do is printed.
  */
 async function writeDriven(config: LocalConfig, envelope: WorkflowEnvelope, secrets: Record<string, string>): Promise<void> {
   writeEnvelope(envelope, secrets);
-  if ('error' in envelope || !('done' in envelope.data) || resolveRunMode(process.env) !== 'unattended') return;
+  if ('error' in envelope || !('done' in envelope.data)) return;
+  await explainFailedSteps(config, envelope.data.done, secrets);
+  if (resolveRunMode(process.env) !== 'unattended') return;
   const { Drain } = await import('./score-drain.js');
   try {
     if (!await Drain.drainsUnattendedRun(config)) return;
@@ -54,6 +56,29 @@ async function writeDriven(config: LocalConfig, envelope: WorkflowEnvelope, secr
     Drain.print(await Drain.run([config], { mode: 'unattended' }));
   } catch (error) {
     log.error(`The drain stopped: ${error instanceof Error ? error.message : String(error)}. Run teamai score --drain to finish it.`);
+  }
+}
+
+const FailedDoneSchema = z.object({ run: z.string(), outcome: z.literal('failed') });
+
+/**
+ * On stderr, why each step of a failed run failed and the commands that retry it, since the `done` envelope carries
+ * only the outcome. A person who ran the local driver otherwise finds the reason only in the run file.
+ */
+async function explainFailedSteps(config: LocalConfig, done: unknown, secrets: Record<string, string>): Promise<void> {
+  const failed = FailedDoneSchema.safeParse(done);
+  if (!failed.success) return;
+  const { run: runId } = failed.data;
+  const run = await readRun(config, runId);
+  if (typeof run === 'string') return;
+  const failedIds = run.steps.filter((step) => step.status === 'failed').map((step) => step.id);
+  // A fan-out or workflow step fails, with no failure of its own, when a step under it fails: name that step instead.
+  const failedUnder = (id: string): boolean => failedIds.some((other) => other.startsWith(`${id}.`) || other.startsWith(`${id}[`));
+  for (const step of run.steps) {
+    if (step.status !== 'failed' || (!step.failure && failedUnder(step.id))) continue;
+    const why = step.failure ? ` with ${step.failure.code}: ${step.failure.message}` : step.message ? `: ${step.message}` : '';
+    log.error(redact(`Step "${step.id}" failed${why}`, { envSecrets: secrets, patterns: false }));
+    log.info(`Retry it with ${retryCommand(runId, step.id)}, then continue the run with teamai workflow resume ${runId}`);
   }
 }
 
@@ -132,19 +157,16 @@ async function readyConfig(): Promise<Ready | WorkflowEnvelope> {
   return { ...loaded, env, secrets: env.secrets };
 }
 
-/**
- * `readyConfig`, or the user scope's when this is a project whose cache has no runnable version of `name` and the user
- * scope's has one: the skills a user-scope pull generates show in every directory, so `start` finds what they name.
- */
+/** `readyConfig`, or the user scope's when a start of `name` runs there, as {@link resolveStart} decides. */
 async function readyStartConfig(name: string): Promise<Ready | WorkflowEnvelope> {
   const loaded = await readyConfig();
-  if (!('config' in loaded) || loaded.config.scope !== 'project' || await loadCachedWorkflow(loaded.config, name)) return loaded;
-  const user = await loadLocalConfigForScope('user', undefined, { dryRun: true });
-  if (!user || !await loadCachedWorkflow(user, name)) return loaded;
-  const teamConfig = await loadTeamConfig(user.repo.localPath);
+  if (!('config' in loaded)) return loaded;
+  const { config } = await resolveStart(loaded.config, name);
+  if (config === loaded.config) return loaded;
+  const teamConfig = await loadTeamConfig(config.repo.localPath);
   if (!teamConfig) return loaded;
-  const env = await resolveWorkflowEnv(user);
-  return { config: user, teamConfig, env, secrets: env.secrets };
+  const env = await resolveWorkflowEnv(config);
+  return { config, teamConfig, env, secrets: env.secrets };
 }
 
 /** `allowRemote`: a run no config here has is the current config's, as a call that may claim it from teamai-reports needs. */
@@ -252,7 +274,7 @@ export async function workflowStart(name: string, options: {
       return;
     }
     const { description, alias, invoke, inputs } = cached.definition;
-    writeEnvelope({ data: { name: cached.definition.name, description, ...(alias ? { alias } : {}), invoke: invoke ?? 'deny', inputs: inputs ?? {} } }, secrets);
+    writeEnvelope({ data: { name: cached.definition.name, description, ...(alias ? { alias } : {}), source: cached.source, invoke: invoke ?? 'deny', inputs: inputs ?? {} } }, secrets);
     return;
   }
   if (options.driver !== undefined && options.driver !== 'local') {

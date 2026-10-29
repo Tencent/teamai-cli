@@ -12,9 +12,9 @@ import { AgentSession } from './session-flow/agent-session.js';
 import { SessionCaptures } from './session-flow/captures.js';
 import type { SessionSubject } from './scorers/label.js';
 import { appendEvent, dataHomeKey } from './dashboard-collector.js';
-import { ATTEMPT_ENV, sessionRun } from './launch-context.js';
+import { ATTEMPT_ENV, LAUNCHED_BY_ENV, sessionRun, type SessionRun } from './launch-context.js';
 import { learningIdOf } from './outcomes.js';
-import { appendAttemptOutcome } from './workflow/store.js';
+import { appendAttemptOutcome, RunIdSchema } from './workflow/store.js';
 import { pendingLearningsDir, queueWriteRefusal, savePendingLearning } from './utils/pending-learnings.js';
 import { publishQueuedLearnings } from './utils/learnings-publish.js';
 import { indexableLearningsRoots } from './utils/learnings-roots.js';
@@ -171,9 +171,23 @@ async function recordLearningOutcome(localConfig: LocalConfig, session: Contribu
     sessionId: session.sessionId,
     ...(session.tool ? { tool: session.tool } : {}),
     dataHomeKey: await dataHomeKey(getDataHome(localConfig)),
-    ...(session.own ? sessionRun(process.env) : {}),
+    ...(session.own ? await ownSessionRun(localConfig) : {}),
     outcomes: [{ kind: 'learning', id: learningIdOf(relPath) }],
   });
+}
+
+/**
+ * The run mode of the session this process runs in, and who launched it. A command a skill driver's runner runs carries
+ * the attempt marker, which names a launcher for a session started inside the attempt; the session that drives the
+ * marker's run is the member's own, so it has none.
+ */
+async function ownSessionRun(localConfig: LocalConfig): Promise<SessionRun> {
+  const run = sessionRun(process.env);
+  const marker = process.env[ATTEMPT_ENV];
+  if (!marker || process.env[LAUNCHED_BY_ENV]) return run;
+  const runId = RunIdSchema.safeParse(marker.split('/')[0]);
+  const { sessionDrivesRun } = await import('./workflow/drivers/skill/skill-driver.js');
+  return runId.success && await sessionDrivesRun(localConfig, runId.data) ? { runMode: run.runMode } : run;
 }
 
 /**
