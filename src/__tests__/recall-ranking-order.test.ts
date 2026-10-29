@@ -161,4 +161,40 @@ describe('the order of the merged recall list', () => {
     expect(captured.indexOf('[docs] A Overview')).toBeLessThan(learningPosition);
     expect(captured.indexOf('[docs] B Architecture')).toBeLessThan(learningPosition);
   });
+
+  it('ranks the codebase page that names the module in the query above a higher-scoring one', async () => {
+    vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);
+    vi.mocked(queryCodeKnowledge).mockResolvedValueOnce([
+      { page: 'evidence/code/other/overview.md', title: 'Other Overview', score: 30, snippet: 'o', kind: 'codebase' },
+      { page: 'evidence/code/smart-sale-service/overview.md', title: 'Service Overview', score: 22, snippet: 's', kind: 'codebase' },
+    ]);
+    vi.mocked(search).mockReturnValue([]);
+
+    await recall('smart-sale-service 有多少个接口？', { dryRun: true });
+
+    const named = captured.indexOf('[docs] Service Overview');
+    const other = captured.indexOf('[docs] Other Overview');
+    expect(named).toBeGreaterThanOrEqual(0);
+    expect(other).toBeGreaterThanOrEqual(0);
+    expect(named).toBeLessThan(other);
+  });
+
+  it('does not let three codebase pages shut out a relevant learnings page', async () => {
+    vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);
+    vi.mocked(queryCodeKnowledge).mockResolvedValueOnce([
+      { page: 'evidence/code/alpha/overview.md', title: 'Alpha Overview', score: 40, snippet: 'a', kind: 'codebase' },
+      { page: 'evidence/code/beta/overview.md', title: 'Beta Overview', score: 39, snippet: 'b', kind: 'codebase' },
+      { page: 'evidence/code/gamma/overview.md', title: 'Gamma Overview', score: 38, snippet: 'g', kind: 'codebase' },
+    ]);
+    vi.mocked(search).mockReturnValue([learningHit('Deployment Timeout Retry', 14.4)]);
+
+    await recall('deployment timeout retry', { dryRun: true });
+
+    const learningPosition = captured.indexOf('[learnings] Deployment Timeout Retry');
+    const thirdCode = captured.indexOf('[docs] Gamma Overview');
+    expect(learningPosition).toBeGreaterThanOrEqual(0);
+    expect(thirdCode).toBeGreaterThanOrEqual(0);
+    expect(learningPosition).toBeLessThan(thirdCode);
+    expect(captured.indexOf('[docs] Alpha Overview')).toBeLessThan(learningPosition);
+  });
 });

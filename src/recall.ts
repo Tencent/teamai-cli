@@ -208,6 +208,9 @@ interface ScopedSearchResult extends SearchResult {
   relatedFiles?: string[];
   /** True when this result came from the codebase knowledge graph (bounded score scale). */
   fromCodebase?: boolean;
+  /** A code hit whose page or title carries an identifier the query named
+   *  verbatim; ordered above other code hits (see the merged sort). */
+  namedModule?: boolean;
 }
 
 // ─── Recall data flow ────────────────────────────────────
@@ -761,6 +764,16 @@ export async function recall(
 
   // ── Codebase knowledge graph recall ──────────────────────
   try {
+    // Identifiers the query names verbatim — "smart-sale-service",
+    // "UpdateOrderSalesRetryJob", "eventSignals". Taken from the raw query
+    // rather than from word segments, which split a hyphenated slug into
+    // "smart"/"sale"/"service": those generic pieces match every page of every
+    // codebase whose slug shares one word, while the full identifier names one
+    // module. A named module's page must beat a same-shaped overview of a
+    // different codebase (measured: "smart-sale-service 有多少个 HTTP 接口"
+    // ranked smart-task and smart-monitor overviews above it).
+    const queryIdentifiers = [...query.matchAll(/[A-Za-z][A-Za-z0-9_-]{4,}/g)]
+      .map((match) => match[0].toLowerCase());
     // A wiki codebase slug declared under `resources.wiki` but not active for
     // this directory stays out of recall, the same way docs are scoped
     // (#912). Resolved inside this try: an unreadable or malformed manifest
@@ -774,6 +787,11 @@ export async function recall(
     // B11 fix: log-dampening instead of min-max normalization
     // Codebase BM25 scores (0-50+) mapped to learnings scale (0-10) via log curve
     for (const cr of codeResults) {
+      const titleLower = String(cr.title || '').toLowerCase();
+      const pageLower = String(cr.page || '').toLowerCase();
+      const namedModule = queryIdentifiers.some(
+        (identifier) => titleLower.includes(identifier) || pageLower.includes(identifier),
+      );
       allResults.push({
         entry: {
           filename: cr.page,
@@ -794,6 +812,7 @@ export async function recall(
         sources: cr.sources,
         relatedFiles: cr.relatedFiles,
         fromCodebase: true,
+        namedModule,
       });
     }
   } catch {
@@ -813,6 +832,14 @@ export async function recall(
     // cross-source penalty must not buy that position (#1524).
     const relevanceDelta = Number(relevant(b)) - Number(relevant(a));
     if (relevanceDelta !== 0) return relevanceDelta;
+    // Among code hits only, the page that names the module the query asked
+    // about wins: codebase scores saturate, so a weaker-scoring overview of a
+    // different codebase would otherwise tie and win on insert order. Scoped
+    // to code hits so a docs page is never displaced by this rule.
+    if (a.fromCodebase && b.fromCodebase) {
+      const namedDelta = Number(b.namedModule === true) - Number(a.namedModule === true);
+      if (namedDelta !== 0) return namedDelta;
+    }
     const scoreDelta = rankingScore(b) - rankingScore(a);
     if (scoreDelta !== 0) return scoreDelta;
     return (b.entry.date || '').localeCompare(a.entry.date || '');
@@ -825,7 +852,7 @@ export async function recall(
   // the 90-question hard set: 26 of the 58 misses had exactly that shape (the
   // expected docs page at #4/#5 behind three pages of one codebase). Capping a
   // codebase at two entries and moving the extra below the relevant learnings
-  // hits lifted hard-set fact@3 33→38 while the 305-question tuning set and the
+  // hits lifted hard-set fact@3 32→38 while the 305-question tuning set and the
   // 58-question blind set were unchanged (+0 / +1). The extra page lands after
   // the last RELEVANT learnings hit, not at the end, so it stays above
   // irrelevant noise.
@@ -856,6 +883,26 @@ export async function recall(
     });
     if (insertAfter >= 0) ranked.splice(insertAfter + 1, 0, result);
     else ranked.push(result);
+  }
+
+  // Source diversity at the head of the list: three codebase pages must not
+  // shut out a learnings page that matched the query. When the first three are
+  // all code hits and a relevant learnings hit sits below them, the third code
+  // hit moves to just below that hit. A named-module page is exempt — the
+  // query asked for that module by name, so it is the answer, not filler.
+  // Measured together with the codebase cap and the named-module order:
+  // hard-set fact@3 32→50 (18 won, none lost), blind set 50→52, tuning set
+  // 286→287 (no question lost).
+  if (ranked.length > 3
+    && ranked.slice(0, 3).every((result) => result.fromCodebase)
+    && ranked[2].namedModule !== true) {
+    const learningsIndex = ranked.findIndex(
+      (candidate, index) => index >= 3 && !candidate.fromCodebase && relevant(candidate),
+    );
+    if (learningsIndex >= 3) {
+      const [demotedThird] = ranked.splice(2, 1);
+      ranked.splice(learningsIndex, 0, demotedThird);
+    }
   }
 
   if (options.check) {
