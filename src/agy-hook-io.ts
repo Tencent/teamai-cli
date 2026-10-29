@@ -10,6 +10,8 @@
  * `decision`. The team's hooks run through teamai's bridge (bridged-team-hooks.ts).
  */
 
+import { z } from 'zod';
+
 /** teamai's dispatch events and the Claude Code event each one carries. */
 const CLAUDE_EVENT: Record<string, string> = {
   'session-start': 'SessionStart',
@@ -61,9 +63,14 @@ const CLAUDE_ARG: Record<string, string> = {
   Url: 'url',
 };
 
-function objectOf(value: unknown): Record<string, unknown> | undefined {
-  return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
-}
+/** The agy fields teamai reads; a field of another shape counts as absent. */
+const AgyPayload = z.object({
+  invocationNum: z.number().optional().catch(undefined),
+  conversationId: z.string().optional().catch(undefined),
+  workspacePaths: z.array(z.string()).optional().catch(undefined),
+  lastUserInput: z.string().optional().catch(undefined),
+  toolCall: z.object({ name: z.string(), args: z.record(z.unknown()).catch({}).default({}) }).optional().catch(undefined),
+});
 
 /**
  * The agy payload with the Claude Code fields added beside agy's own, or null
@@ -71,17 +78,16 @@ function objectOf(value: unknown): Record<string, unknown> | undefined {
  * model call of a turn, and only the first (`invocationNum` 0) is the prompt.
  */
 export function agyHookPayload(event: string, payload: Record<string, unknown>): Record<string, unknown> | null {
-  if (event === 'prompt-submit' && typeof payload.invocationNum === 'number' && payload.invocationNum > 0) return null;
+  const agy = AgyPayload.parse(payload);
+  if (event === 'prompt-submit' && agy.invocationNum !== undefined && agy.invocationNum > 0) return null;
   const shaped: Record<string, unknown> = { ...payload, hook_event_name: CLAUDE_EVENT[event] ?? event };
-  if (typeof payload.conversationId === 'string') shaped.session_id = payload.conversationId;
-  const workspace = Array.isArray(payload.workspacePaths) ? payload.workspacePaths[0] : undefined;
-  if (typeof workspace === 'string') shaped.cwd = workspace;
-  if (event === 'prompt-submit' && typeof payload.lastUserInput === 'string') shaped.prompt = payload.lastUserInput;
-  const call = objectOf(payload.toolCall);
-  if (call && typeof call.name === 'string') {
-    shaped.tool_name = CLAUDE_TOOL[call.name] ?? call.name;
-    const args = objectOf(call.args) ?? {};
-    shaped.tool_input = Object.fromEntries(Object.entries(args).map(([key, value]) => [CLAUDE_ARG[key] ?? key, value]));
+  if (agy.conversationId !== undefined) shaped.session_id = agy.conversationId;
+  const workspace = agy.workspacePaths?.[0];
+  if (workspace !== undefined) shaped.cwd = workspace;
+  if (event === 'prompt-submit' && agy.lastUserInput !== undefined) shaped.prompt = agy.lastUserInput;
+  if (agy.toolCall) {
+    shaped.tool_name = CLAUDE_TOOL[agy.toolCall.name] ?? agy.toolCall.name;
+    shaped.tool_input = Object.fromEntries(Object.entries(agy.toolCall.args).map(([key, value]) => [CLAUDE_ARG[key] ?? key, value]));
   }
   return shaped;
 }
@@ -94,27 +100,34 @@ export interface AgyHookResult {
   team: string;
 }
 
-/** The context a Claude Code hook output carries: its `additionalContext`, or the text itself. */
-function contextOf(output: string): string {
+/** A Claude Code hook's JSON output, as far as it adds context. */
+const ClaudeHookOutput = z.object({ hookSpecificOutput: z.object({ additionalContext: z.string() }) });
+/** The team hooks' decision as teamai's bridge prints it. */
+const BridgeDecision = z.object({ block: z.string().optional(), context: z.string().optional() });
+
+/** `text` parsed as JSON, or undefined when it is not JSON. */
+function jsonOf(text: string): unknown {
   try {
-    const context = objectOf(objectOf(JSON.parse(output))?.hookSpecificOutput)?.additionalContext;
-    return typeof context === 'string' ? context : '';
+    return JSON.parse(text);
   } catch {
-    return output;
+    return undefined;
   }
+}
+
+/** The context a Claude Code hook output carries: its `additionalContext`, or the text itself when it is not JSON. */
+function contextOf(output: string): string {
+  const json = jsonOf(output);
+  if (json === undefined) return output;
+  const parsed = ClaudeHookOutput.safeParse(json);
+  return parsed.success ? parsed.data.hookSpecificOutput.additionalContext : '';
 }
 
 /** The stdout agy reads for `event`, or '' when there is nothing to say. */
 export function agyHookReply(event: string, result: AgyHookResult): string {
-  let decided: Record<string, unknown> = {};
-  try {
-    decided = objectOf(JSON.parse(result.team)) ?? {};
-  } catch {
-    // The team hooks decided nothing.
-  }
-  if (event === 'pre-tool-use' && typeof decided.block === 'string') return JSON.stringify({ decision: 'deny', reason: decided.block });
-  const team = typeof decided.context === 'string' ? decided.context : '';
-  const context = [contextOf(result.builtin), team].map((text) => text.trim()).filter(Boolean).join('\n\n');
+  const parsed = BridgeDecision.safeParse(jsonOf(result.team));
+  const decided = parsed.success ? parsed.data : {};
+  if (event === 'pre-tool-use' && decided.block !== undefined) return JSON.stringify({ decision: 'deny', reason: decided.block });
+  const context = [contextOf(result.builtin), decided.context ?? ''].map((text) => text.trim()).filter(Boolean).join('\n\n');
   if (!context) return '';
   // A session-start step persists across turns; a prompt's lasts only that turn.
   if (event === 'session-start') return JSON.stringify({ injectSteps: [{ systemMessage: { systemMessage: context } }] });

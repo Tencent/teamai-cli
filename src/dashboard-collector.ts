@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { z } from 'zod';
 import path from 'node:path';
 import { toolHome } from './tool-home.js';
 import readline from 'node:readline';
@@ -839,34 +840,47 @@ async function findMuseSessionLog(sessionId: string): Promise<string | null> {
  * includes `cache_read_tokens`, as Gemini's prompt count does, so the cached part
  * is moved to cacheRead.
  */
+/** A token count as agy writes it: a string of digits on 1.4.8, a number elsewhere. */
+const AgyTokenCount = z.union([z.number(), z.string().transform(Number)]).pipe(z.number().finite().nonnegative()).catch(0);
+/** One PLANNER_RESPONSE line of an agy transcript, with the counts the dashboard sums. */
+const AgyPlannerStep = z.object({
+  type: z.literal('PLANNER_RESPONSE'),
+  input_tokens: AgyTokenCount.default(0),
+  output_tokens: AgyTokenCount.default(0),
+  cache_read_tokens: AgyTokenCount.default(0),
+});
+
 async function readAgySessionTokens(sessionId: string): Promise<TokenUsage | null> {
   if (!SESSION_UUID_RE.test(sessionId)) return null;
   const { sessionStoreDir } = await import('./locate.js');
   const file = path.join(sessionStoreDir('agy', undefined), 'brain', sessionId, '.system_generated', 'logs', 'transcript.jsonl');
-  let tokens: TokenUsage | null = null;
+  let text: string;
   try {
-    for (const line of (await fs.promises.readFile(file, 'utf-8')).split('\n')) {
-      if (!line.includes('"PLANNER_RESPONSE"')) continue;
-      let step: Record<string, unknown> | null;
-      try {
-        step = asRecord(JSON.parse(line));
-      } catch {
-        continue;
-      }
-      if (step?.type !== 'PLANNER_RESPONSE') continue;
-      const count = (value: unknown): number => toNum(typeof value === 'string' ? Number(value) : value);
-      const cacheRead = count(step.cache_read_tokens);
-      tokens = addTokenUsage(tokens ?? emptyTokenUsage(), {
-        input: Math.max(0, count(step.input_tokens) - cacheRead),
-        output: count(step.output_tokens),
-        cacheRead,
-        cacheCreation: 0,
-      });
-    }
+    text = await fs.promises.readFile(file, 'utf-8');
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
+    if (!(e instanceof Error && 'code' in e && e.code === 'ENOENT')) {
       log.debug(`dashboard: could not read the Antigravity CLI transcript ${file}: ${e instanceof Error ? e.message : String(e)}`);
     }
+    return null;
+  }
+  let tokens: TokenUsage | null = null;
+  for (const line of text.split('\n')) {
+    if (!line.includes('"PLANNER_RESPONSE"')) continue;
+    let raw: unknown;
+    try {
+      raw = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const step = AgyPlannerStep.safeParse(raw);
+    if (!step.success) continue;
+    const cacheRead = step.data.cache_read_tokens;
+    tokens = addTokenUsage(tokens ?? emptyTokenUsage(), {
+      input: Math.max(0, step.data.input_tokens - cacheRead),
+      output: step.data.output_tokens,
+      cacheRead,
+      cacheCreation: 0,
+    });
   }
   return tokens;
 }
