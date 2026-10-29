@@ -307,7 +307,7 @@ export async function runLocalJudge(input: JudgeInput, { resolveTool = resolveCl
       prompt += await fs.readFile(path.join(evidence, 'prompt.md'), 'utf8');
       break;
     case 'agy':
-      args = ['--input-format=stream-json', '--output-format=stream-json', '--print=', '--mode', 'plan', '--sandbox', ...model, ...(input.model?.effort ? ['--effort', input.model.effort] : [])];
+      args = ['--input-format=stream-json', '--output-format=stream-json', '--print=', '--mode', 'plan', '--sandbox', ...model];
       prompt += await fs.readFile(path.join(evidence, 'prompt.md'), 'utf8');
       break;
     case 'opencode': {
@@ -341,10 +341,14 @@ export async function runLocalJudge(input: JudgeInput, { resolveTool = resolveCl
       const deleted = await runTool({ executable, args: ['session', 'delete', report.session, '--standalone'], cwd, env, stdin: '', timeoutMs: JUDGE_TIMEOUT_MS, detached: true });
       if (deleted.code !== 0) return { ok: false, code: 'judge_failed', message: 'OpenCode could not delete the judge session. Delete it with opencode session delete before retrying.', raw: deleted.stderr, ...spent };
     }
-    if (result.code !== 0) return { ok: false, code: 'judge_failed', message: `${input.tool} exited with code ${result.code}. See the saved output, then retry or submit the lease through another driver.`, raw: result.stdout + '\n' + result.stderr, ...spent };
+    const reported = !reading.ok && reading.message
+      ? { ok: false as const, code: 'judge_failed' as const, message: `${input.tool} reported an error: ${reading.message.replace(/\.?$/, '.')} Fix that, then retry or submit the lease through another driver.`, raw: result.stdout + '\n' + result.stderr, ...spent }
+      : undefined;
+    // agy exits 1 with the reason in its result.
+    if (result.code !== 0) return reported ?? { ok: false, code: 'judge_failed', message: `${input.tool} exited with code ${result.code}. See the saved output, then retry or submit the lease through another driver.`, raw: result.stdout + '\n' + result.stderr, ...spent };
     const answer = await answerFrom(input.tool, result.stdout, tmp);
     // pi exits 0 on a provider error, which its reply carries.
-    if (!answer && !reading.ok && reading.message) return { ok: false, code: 'judge_failed', message: `${input.tool} reported an error: ${reading.message.replace(/\.?$/, '.')} Fix that, then retry or submit the lease through another driver.`, raw: result.stdout + '\n' + result.stderr, ...spent };
+    if (!answer && reported) return reported;
     if (!answer) return { ok: false, code: 'judge_answer_invalid', message: `${input.tool} did not return JSON with label and reasoning. See the saved output, then retry.`, raw: result.stdout + '\n' + result.stderr, ...spent };
     const ranModel = observedModel({ requested: input.model?.name ?? configuredModel, reported: report?.model });
     const ranEffort = observedEffort({ requested: input.model?.effort });

@@ -297,7 +297,7 @@ it('fails a pi judge with the error pi reports, though pi exits 0', async () => 
   expect(result).toMatchObject({ ok: false, code: 'judge_failed', message: 'pi reported an error: OpenAI API error (400): model_not_found. Fix that, then retry or submit the lease through another driver.' });
 });
 
-it('runs agy in plan mode with its sandbox on, the prompt as a stream-json user event, with read access and the requested effort', async () => {
+it('runs agy in plan mode with its sandbox on, the prompt as a stream-json user event, with read access', async () => {
   root = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-judge-'));
   const evidence = path.join(root, 'evidence');
   await fs.mkdir(evidence);
@@ -309,15 +309,50 @@ it('runs agy in plan mode with its sandbox on, the prompt as a stream-json user 
   const reply = { event: 'result', result: { conversation_id: '0faf2e61-8d06-4659-8f48-e23eaa234012', status: 'SUCCESS', response: '```json\n{"label":"good","reasoning":"done"}\n```\n', usage: { input_tokens: 30180, output_tokens: 139, cache_read_tokens: 0 } } };
   const executable = await recordingFake(root, record, `console.log(${JSON.stringify(JSON.stringify(reply))});`);
 
-  const result = await runLocalJudge({ tool: 'agy', evidence, schema: { type: 'object' }, model: { name: 'gemini-3.8-flash-low', effort: 'high' } }, { resolveTool: () => executable });
+  const result = await runLocalJudge({ tool: 'agy', evidence, schema: { type: 'object' }, model: { name: 'gemini-3.8-flash-low' } }, { resolveTool: () => executable });
 
   expect(result).toMatchObject({ ok: true, answer: { label: 'good' }, judge: { tool: 'agy', access: 'read', isolation: 'best-effort', usage: { inputTokens: 30180, outputTokens: 139 } } });
   const invocation = z.object({ args: z.array(z.string()), env: z.record(z.string()), stdin: z.string(), cwd: z.string() }).parse(JSON.parse(await fs.readFile(record, 'utf8')));
-  expect(invocation.args).toEqual(['--input-format=stream-json', '--output-format=stream-json', '--print=', '--mode', 'plan', '--sandbox', '--model', 'gemini-3.8-flash-low', '--effort', 'high']);
+  expect(invocation.args).toEqual(['--input-format=stream-json', '--output-format=stream-json', '--print=', '--mode', 'plan', '--sandbox', '--model', 'gemini-3.8-flash-low']);
   expect(JSON.parse(invocation.stdin)).toMatchObject({ event: 'user', message: { role: 'user', content: expect.stringContaining('AGY-INLINE-PROMPT') } });
   expect(invocation.cwd).toBe(await fs.realpath(evidence));
   expect(invocation.env.GEMINI_API_KEY).toBe('gemini-key');
   expect(invocation.env).not.toHaveProperty('GH_TOKEN');
+});
+
+it('reports the error agy gives in its result when it exits non-zero', async () => {
+  root = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-judge-'));
+  const evidence = path.join(root, 'evidence');
+  await fs.mkdir(evidence);
+  await fs.writeFile(path.join(evidence, 'prompt.md'), 'AGY-ERROR-PROMPT');
+  // As agy 1.4.10 refuses a model id that names another effort than --effort.
+  const reply = { event: 'result', result: { conversation_id: '', status: 'ERROR', response: '', error: 'invalid model selection (--model "gemini-3.8-flash-low" --effort "high"): --model gemini-3.8-flash-low conflicts with --effort=high' } };
+  const executable = await recordingFake(root, path.join(root, 'invocation.json'), `console.log(${JSON.stringify(JSON.stringify(reply))}); process.exitCode = 1;`);
+
+  expect(await runLocalJudge({ tool: 'agy', evidence, schema: { type: 'object' } }, { resolveTool: () => executable })).toMatchObject({
+    ok: false,
+    code: 'judge_failed',
+    message: 'agy reported an error: invalid model selection (--model "gemini-3.8-flash-low" --effort "high"): --model gemini-3.8-flash-low conflicts with --effort=high. Fix that, then retry or submit the lease through another driver.',
+  });
+});
+
+it("judges with agy on the gateway a model switch gave it, over the member's own key", async () => {
+  root = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-judge-'));
+  const evidence = path.join(root, 'evidence');
+  await fs.mkdir(evidence);
+  await fs.writeFile(path.join(evidence, 'prompt.md'), 'AGY-GATEWAY-PROMPT');
+  vi.stubEnv('HOME', root);
+  vi.stubEnv('GEMINI_API_KEY', 'member-own-key');
+  await fs.mkdir(path.join(root, '.teamai', 'models'), { recursive: true });
+  await fs.writeFile(path.join(root, '.teamai', 'models', 'agy-env.sh'), `agy() { GEMINI_API_KEY='gateway-key' GOOGLE_GEMINI_BASE_URL='https://gateway.example.test' command agy "$@"; }\n`);
+  const record = path.join(root, 'invocation.json');
+  const reply = { event: 'result', result: { conversation_id: '0faf2e61-8d06-4659-8f48-e23eaa234012', status: 'SUCCESS', response: '{"label":"good","reasoning":"done"}' } };
+  const executable = await recordingFake(root, record, `console.log(${JSON.stringify(JSON.stringify(reply))});`);
+
+  expect(await runLocalJudge({ tool: 'agy', evidence, schema: { type: 'object' } }, { resolveTool: () => executable })).toMatchObject({ ok: true });
+
+  const invocation = z.object({ env: z.record(z.string()) }).parse(JSON.parse(await fs.readFile(record, 'utf8')));
+  expect(invocation.env).toMatchObject({ GEMINI_API_KEY: 'gateway-key', GOOGLE_GEMINI_BASE_URL: 'https://gateway.example.test' });
 });
 
 it('runs Cursor in ask mode with its sandbox on, the prompt on stdin, at best-effort and with full access', async () => {
