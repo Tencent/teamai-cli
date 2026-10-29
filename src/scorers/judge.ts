@@ -341,10 +341,11 @@ export async function runLocalJudge(input: JudgeInput, { resolveTool = resolveCl
       const deleted = await runTool({ executable, args: ['session', 'delete', report.session, '--standalone'], cwd, env, stdin: '', timeoutMs: JUDGE_TIMEOUT_MS, detached: true });
       if (deleted.code !== 0) return { ok: false, code: 'judge_failed', message: 'OpenCode could not delete the judge session. Delete it with opencode session delete before retrying.', raw: deleted.stderr, ...spent };
     }
-    const reported = !reading.ok && reading.message
-      ? { ok: false as const, code: 'judge_failed' as const, message: `${input.tool} reported an error: ${reading.message.replace(/\.?$/, '.')} Fix that, then retry or submit the lease through another driver.`, raw: result.stdout + '\n' + result.stderr, ...spent }
+    // agy exits 1 with the reason in its result, or on stderr when it refuses to start.
+    const toolError = !reading.ok && reading.message ? reading.message : family === 'agy' && result.code !== 0 && !result.stdout.trim() ? result.stderr.trim() : '';
+    const reported = toolError
+      ? { ok: false as const, code: 'judge_failed' as const, message: `${input.tool} reported an error: ${toolError.replace(/\.?$/, '.')} Fix that, then retry or submit the lease through another driver.`, raw: result.stdout + '\n' + result.stderr, ...spent }
       : undefined;
-    // agy exits 1 with the reason in its result.
     if (result.code !== 0) return reported ?? { ok: false, code: 'judge_failed', message: `${input.tool} exited with code ${result.code}. See the saved output, then retry or submit the lease through another driver.`, raw: result.stdout + '\n' + result.stderr, ...spent };
     const answer = await answerFrom(input.tool, result.stdout, tmp);
     // pi exits 0 on a provider error, which its reply carries.

@@ -336,6 +336,22 @@ it('reports the error agy gives in its result when it exits non-zero', async () 
   });
 });
 
+it('reports the reason agy prints when it refuses to start', async () => {
+  root = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-judge-'));
+  const evidence = path.join(root, 'evidence');
+  await fs.mkdir(evidence);
+  await fs.writeFile(path.join(evidence, 'prompt.md'), 'AGY-REFUSAL-PROMPT');
+  // As agy 1.4.10 refuses with modelProvider set and GEMINI_API_KEY empty: nothing on stdout, the reason on stderr.
+  const refusal = 'modelProvider is set to "gemini" in settings.json, but the GEMINI_API_KEY environment variable is not set. Set GEMINI_API_KEY to your Gemini API key, or remove "modelProvider" from settings.json to use the default backend.';
+  const executable = await recordingFake(root, path.join(root, 'invocation.json'), `console.error(${JSON.stringify(refusal)}); process.exitCode = 1;`);
+
+  expect(await runLocalJudge({ tool: 'agy', evidence, schema: { type: 'object' } }, { resolveTool: () => executable })).toMatchObject({
+    ok: false,
+    code: 'judge_failed',
+    message: `agy reported an error: ${refusal} Fix that, then retry or submit the lease through another driver.`,
+  });
+});
+
 it("judges with agy on the gateway a model switch gave it, over the member's own key", async () => {
   root = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-judge-'));
   const evidence = path.join(root, 'evidence');
