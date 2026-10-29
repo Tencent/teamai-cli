@@ -1268,12 +1268,12 @@ export const TOOLS = {
     features: {
       env: { cell: '✓v', note: 'agy 1.4.8 run_command inherits the environment agy starts in' },
       workflows: '✓v',
-      recall: '?',
+      recall: '✓v',
       stats: '✓v',
       aiBackend: '✓v',
-      votesJudge: '?',
-      sessionJudge: '?',
-      agentHooks: '?',
+      votesJudge: { cell: '✗v', note: 'agy 1.4.8 PostToolUse carries no tool output, so a teamai recall run never reaches the recall log' },
+      sessionJudge: { cell: '✓v', note: 'invoke_subagent starts a fresh conversation that gets only its prompt (agy 1.4.8); no session variable, so the session names its tool with --tools; the judge flow not run' },
+      agentHooks: { cell: '+t', note: 'teamai refuses agent hooks for agy: its hooks.json hands a command agy\'s payload, not the Claude one agent hooks read' },
     },
   },
 } as const satisfies Record<ToolId, ToolDescriptor>;

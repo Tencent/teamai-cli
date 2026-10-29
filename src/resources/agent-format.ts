@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import matter from 'gray-matter';
 import { stringify as stringifyToml, parse as parseToml } from 'smol-toml';
+import { agyToolsFor } from '../agy-hook-io.js';
 import { getDispatchCommand } from '../builtin-hooks.js';
 import type { AgentToolId } from '../tools.js';
 import type { Scope } from '../types.js';
@@ -389,15 +390,17 @@ export function renderForMuse(spec: AgentSpec): RenderResult {
 }
 
 /**
- * Render an AgentSpec for Antigravity CLI: name, description, then
- * `tool_extras.agy`. agy 1.4.8 skips an agent whose `model` it does not know
- * (`sonnet` included) and names its tools its own way (`run_command`,
- * `view_file`), so the team's `model` and `tools` stay out; only a model
- * resolved for agy reaches the file.
+ * Render an AgentSpec for Antigravity CLI: name, description, `tools` in agy's
+ * names, then `tool_extras.agy`. agy 1.4.8 skips an agent whose `model` it does
+ * not know (`sonnet` included), so the team's `model` stays out and only a model
+ * resolved for agy reaches the file. It gives a subagent with no `tools` no
+ * run_command, so a Bash agent would lose its shell without the mapping.
  */
 export function renderForAgy(spec: AgentSpec, resolved?: ResolvedAgentModel): RenderResult {
   const frontmatterData: Record<string, unknown> = { name: spec.name, description: spec.description };
   if (resolved?.model !== undefined) frontmatterData['model'] = resolved.model;
+  const tools = agyToolsFor(spec.tools);
+  if (tools.length > 0) frontmatterData['tools'] = tools;
   Object.assign(frontmatterData, spec.tool_extras?.agy);
   return { ext: agentFileExtensionForTool('agy'), content: matter.stringify(spec.instructions, frontmatterData) };
 }

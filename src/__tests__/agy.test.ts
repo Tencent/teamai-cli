@@ -16,8 +16,18 @@ describe('Antigravity CLI agents', () => {
   };
 
   it('writes a model resolved for agy, never the team one', () => {
-    expect(renderForTool(spec, 'agy', { model: 'gemini-3.8-flash-high' }).content)
+    expect(renderForTool({ ...spec, tools: undefined }, 'agy', { model: 'gemini-3.8-flash-high' }).content)
       .toBe('---\nname: reviewer\ndescription: Reviews a diff for bugs\nmodel: gemini-3.8-flash-high\n---\nReview the change.\n');
+  });
+
+  // agy 1.4.8 gives a subagent with no `tools` no run_command, so teamai-recall (Bash, Read, Grep, Glob) could not run `teamai recall`.
+  it("lists agy's own names for the Claude tools the agent names, and leaves out those agy has none for", () => {
+    const recall = { ...spec, tools: ['Bash', 'Read', 'Grep', 'Glob', 'mcp__jira__search'] };
+    expect(renderForTool(recall, 'agy').content).toBe([
+      '---', 'name: reviewer', 'description: Reviews a diff for bugs',
+      'tools:', '  - run_command', '  - view_file', '  - read_file', '  - grep_search', '  - find_by_name',
+      '---', 'Review the change.', '',
+    ].join('\n'));
   });
 
   it("pushes an agy file's own model and tools back as tool_extras.agy", () => {

@@ -35,6 +35,18 @@ const CLAUDE_TOOL: Record<string, string> = {
   invoke_subagent: 'Task',
 };
 
+/**
+ * agy's names for the Claude Code tools an agent lists, each once, in order; a
+ * tool agy has none for is left out. A list arrives as YAML wrote it: an array,
+ * or one comma-separated string (`tools: Bash, Read`).
+ */
+export function agyToolsFor(claudeTools: unknown): string[] {
+  const names = Array.isArray(claudeTools) ? claudeTools.map(String)
+    : typeof claudeTools === 'string' ? claudeTools.split(',').map((tool) => tool.trim()) : [];
+  const agy = names.flatMap((name) => Object.keys(CLAUDE_TOOL).filter((tool) => CLAUDE_TOOL[tool] === name));
+  return [...new Set(agy)];
+}
+
 /** agy's argument names, as Claude Code's tool input names them. */
 const CLAUDE_ARG: Record<string, string> = {
   CommandLine: 'command',

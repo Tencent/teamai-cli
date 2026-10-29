@@ -157,8 +157,8 @@ describe('Antigravity CLI resource delivery', () => {
     const context = read(path.join(config, 'rules', 'teamai-context.md'));
     expect(context.startsWith('---\ntrigger: always_on\n---\n')).toBe(true);
     expect(context).toContain('Ship small PRs.');
-    // agy skips an agent whose model it does not know, so Claude's `sonnet` and tool names stay out.
-    expect(read(path.join(config, 'agents', 'reviewer.md'))).toBe('---\nname: reviewer\ndescription: Reviews a diff for bugs\n---\nReview the change.\n');
+    // agy skips an agent whose model it does not know, so Claude's `sonnet` stays out, and the Claude tools become agy's.
+    expect(read(path.join(config, 'agents', 'reviewer.md'))).toBe('---\nname: reviewer\ndescription: Reviews a diff for bugs\ntools:\n  - view_file\n  - read_file\n  - grep_search\n  - run_command\n---\nReview the change.\n');
 
     // agy takes the transport from `command` or `url`, warns on `type`, and has no legacy SSE transport.
     expect(JSON.parse(read(path.join(config, 'mcp_config.json')))).toEqual({

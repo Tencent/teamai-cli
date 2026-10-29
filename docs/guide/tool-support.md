@@ -100,7 +100,7 @@ User scope, from #1221's matrix; a fix merged since is marked `t`, with a note. 
 | WorkBuddy | ? | ✓t | ✓t | ? | ✓t | ? | ✓t<sup>25</sup> | ? |
 | OpenCode | ? | ✓t | ✓v | ✓t<sup>2</sup> | ✓v | ? | ✓t<sup>1</sup> | ✓v<sup>26</sup> |
 | Muse Code | ✓t | +v | ✓t | ✓v | ✓v | ✓t<sup>3</sup> | ✓t<sup>1</sup> | ✓t<sup>27</sup> |
-| Antigravity CLI | ✓v<sup>28</sup> | ✓v | ? | ✓v | ✓v | ? | ? | ? |
+| Antigravity CLI | ✓v<sup>28</sup> | ✓v | ✓v | ✓v | ✓v | ✗v<sup>29</sup> | ✓v<sup>30</sup> | +t<sup>31</sup> |
 
 Notes:
 
@@ -132,3 +132,6 @@ Notes:
 26. runs from teamai's team-hook bridge, which can block a tool call; OpenCode 1.18.23 ran a team hook through it
 27. #1224 writes them to settings.json; not rerun
 28. agy 1.4.8 run_command inherits the environment agy starts in
+29. agy 1.4.8 PostToolUse carries no tool output, so a teamai recall run never reaches the recall log
+30. invoke_subagent starts a fresh conversation that gets only its prompt (agy 1.4.8); no session variable, so the session names its tool with --tools; the judge flow not run
+31. teamai refuses agent hooks for agy: its hooks.json hands a command agy's payload, not the Claude one agent hooks read
