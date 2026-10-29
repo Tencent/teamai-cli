@@ -1,4 +1,5 @@
 import fse from 'fs-extra';
+import { spawnSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -69,7 +70,7 @@ const agyFile = () => path.join(home, '.gemini', 'antigravity-cli', 'settings.js
 const agyKeyFile = () => path.join(home, '.teamai', 'models', 'agy-env.sh');
 
 describe('Antigravity CLI model switching', () => {
-  it('points agy at a Gemini route, exports the key and endpoint for new shells, and restores both', async () => {
+  it('points agy at a Gemini route, hands new shells an agy function with the key and endpoint, and restores both', async () => {
     process.env.SHELL = '/bin/zsh';
     const original = { model: 'Gemini 3.8 Flash (Low)', altScreenMode: true };
     await fse.outputJson(agyFile(), original);
@@ -81,9 +82,6 @@ describe('Antigravity CLI model switching', () => {
     expect(result.warning).toContain('open a new shell before running agy');
     // agy takes a model only from its own catalog, by display name, so the member's pick stays.
     expect(await fse.readJson(agyFile())).toEqual({ model: 'Gemini 3.8 Flash (Low)', altScreenMode: true, modelProvider: 'gemini' });
-    // agy reads the key and a custom endpoint only from its environment.
-    expect(await fse.readFile(agyKeyFile(), 'utf8'))
-      .toBe("export GEMINI_API_KEY='local-secret'\nexport GOOGLE_GEMINI_BASE_URL='https://gateway.example.test'\n");
     expect((await fse.stat(agyKeyFile())).mode & 0o777).toBe(0o600);
     expect(await fse.readFile(path.join(home, '.zshenv'), 'utf8')).toContain(`. '${agyKeyFile()}'`);
 
@@ -92,6 +90,23 @@ describe('Antigravity CLI model switching', () => {
     expect(await fse.readJson(agyFile())).toEqual(original);
     expect(await fse.pathExists(agyKeyFile())).toBe(false);
     expect(await fse.readFile(path.join(home, '.zshenv'), 'utf8')).not.toContain(agyKeyFile());
+  });
+
+  // agy reads the key and a custom endpoint only from GEMINI_API_KEY and GOOGLE_GEMINI_BASE_URL, which Gemini CLI reads too.
+  it.skipIf(process.platform === 'win32')("hands the gateway to agy alone, over the member's own key, and leaves Gemini CLI's environment alone", async () => {
+    process.env.SHELL = '/bin/zsh';
+    await fse.outputJson(agyFile(), {});
+    await switchModelProfile(routed({ gemini: ['gemini-3.8-flash'] }), ['agy']);
+    const bin = path.join(home, 'bin');
+    await fse.outputFile(path.join(bin, 'agy'), '#!/bin/sh\necho "agy: $GEMINI_API_KEY $GOOGLE_GEMINI_BASE_URL"\n', { mode: 0o755 });
+    await fse.outputFile(path.join(bin, 'gemini'), '#!/bin/sh\necho "gemini: $GEMINI_API_KEY ${GOOGLE_GEMINI_BASE_URL:-no-gateway}"\n', { mode: 0o755 });
+
+    // As zsh loads ~/.zshenv, with teamai's block, before the ~/.zshrc where the member exports their own key.
+    const shell = spawnSync('bash', ['-c', `. '${agyKeyFile()}'; export GEMINI_API_KEY=member-own-key; agy; gemini`], {
+      env: { PATH: `${bin}:/usr/bin:/bin` }, encoding: 'utf8',
+    });
+
+    expect(shell.stdout).toBe('agy: local-secret https://gateway.example.test\ngemini: member-own-key no-gateway\n');
   });
 
   it('keeps Muse Code switched when agy is restored', async () => {

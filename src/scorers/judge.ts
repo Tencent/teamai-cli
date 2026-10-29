@@ -16,6 +16,7 @@ import { LAUNCH_ADAPTERS, type CallLaunch, type JudgeLaunch } from '../tool-laun
 import { executableOf, JUDGE_TOOLS, launchAdapterIdOf, opencodeModelArgs, type JudgeTool } from '../tool-launch/tools.js';
 import { JudgeAnswerSchema, type JudgeAnswer } from './batch.js';
 import type { ScoreLabel, Isolation, JudgeAccess, JudgeUsage } from './label.js';
+import { agyGatewayEnv } from '../models/agy-gateway.js';
 
 const RecordSchema = z.record(z.unknown());
 const JUDGE_TIMEOUT_MS = 10 * 60_000;
@@ -96,6 +97,7 @@ function judgeEnv(tool: JudgeTool): NodeJS.ProcessEnv {
   return {
     ...Object.fromEntries([...COMMON_ENV, ...toolEnv].flatMap((key) => restored[key] === undefined ? [] : [[key, restored[key]]])),
     ...(variable !== undefined && moved !== null ? { [variable]: moved } : {}),
+    ...(tool === 'agy' ? agyGatewayEnv(restored) : {}),
     [LAUNCHED_BY_ENV]: 'scorer',
     [RUN_MODE_ENV]: resolveRunMode(process.env),
   };

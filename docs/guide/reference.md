@@ -275,7 +275,7 @@ profiles:
 | Pi | any but `gemini` | `~/.pi/agent/models.json` |
 | OMP | any but `gemini` | `~/.omp/agent/models.yml`, or the agent dir of `OMP_PROFILE` (or `PI_PROFILE`) and `PI_CONFIG_DIR` |
 | Muse Code | `openai-responses` | `<Muse home>/settings.json` (recorded home, else `$XDG_CONFIG_HOME/muse` or `~/.config/muse`), and the key as `META_API_KEY` in `~/.teamai/models/env.sh`, which your shell profile loads |
-| Antigravity CLI | `gemini` | `modelProvider: "gemini"` in `~/.gemini/antigravity-cli/settings.json`, and `GEMINI_API_KEY` and `GOOGLE_GEMINI_BASE_URL` in `~/.teamai/models/agy-env.sh`, which your shell profile loads |
+| Antigravity CLI | `gemini` | `modelProvider: "gemini"` in `~/.gemini/antigravity-cli/settings.json`, and an `agy` shell function in `~/.teamai/models/agy-env.sh`, which your shell profile loads, that sets `GEMINI_API_KEY` and `GOOGLE_GEMINI_BASE_URL` for agy alone |
 
 The example has no `openai-responses` group, so Codex and Muse Code are left alone, and no `gemini` group, so Antigravity CLI is too.
 
@@ -294,6 +294,21 @@ profiles:
 ```
 
 After `teamai models switch gemini-gw --agent agy`, agy sends `POST https://llm-gw.example.com/v1beta/models/gemini-3.8-flash:streamGenerateContent` with the key. The model stays the one picked in agy (`/model`): agy sends its own catalog's Gemini ids, so the gateway must serve them.
+
+Gemini CLI reads the same two variables, so teamai never exports them. It defines a function that sets them only for agy, and a key you export yourself does not replace it:
+
+```bash
+# ~/.teamai/models/agy-env.sh
+agy() { GEMINI_API_KEY="${API_KEY}" GOOGLE_GEMINI_BASE_URL='https://llm-gw.example.com' command agy "$@"; }
+```
+
+```bash
+export GEMINI_API_KEY=my-own-key   # in ~/.zshrc, for Gemini CLI
+agy                                # still uses the team key and the gateway
+gemini                             # still uses my-own-key and Google
+```
+
+teamai's own agy runs (AI calls, local workflow steps, the scorer judge) read the key and gateway from that file.
 
 ### Use a team profile
 

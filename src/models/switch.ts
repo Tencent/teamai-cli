@@ -4,6 +4,7 @@ import path from 'node:path';
 import YAML from 'yaml';
 import { parse as parseToml } from 'smol-toml';
 import { getUserHome } from '../utils/home.js';
+import { agyGatewayOf, agyKeyFilePath, agyKeyFunction } from './agy-gateway.js';
 import { toolHome } from '../tool-home.js';
 import { pathExists, writeFileAtomic, writeJsonAtomic } from '../utils/fs.js';
 import { acquireLock, releaseLock } from '../update.js';
@@ -685,7 +686,7 @@ const MUSE_KEYS: KeyFile = {
 };
 
 const AGY_KEYS: KeyFile = {
-  path: () => path.join(getUserHome(), '.teamai', 'models', 'agy-env.sh'),
+  path: agyKeyFilePath,
   start: '# [teamai:models:agy:start]',
   end: '# [teamai:models:agy:end]',
 };
@@ -1017,10 +1018,9 @@ function desiredSnapshot(agent: ModelAgent, profile: ResolvedModelProfile): unkn
   if (agent === 'agy') {
     const route = profile.routes.gemini;
     if (!route) throw new Error(`Profile ${profile.ref} serves no Gemini route for agy`);
-    const key = envRef ? `"\${${envRef}}"` : shellQuoteValue(profile.api_key_value ?? '');
     return {
       modelProvider: 'gemini',
-      keyExport: `export GEMINI_API_KEY=${key}\nexport GOOGLE_GEMINI_BASE_URL=${shellQuoteValue(route.base_url)}\n`,
+      keyExport: agyKeyFunction(envRef ? { envRef } : { value: profile.api_key_value ?? '' }, route.base_url),
     } satisfies AgySnapshot;
   }
   if (agent === 'opencode') {
@@ -1246,7 +1246,7 @@ async function switchModelProfileUnlocked(
         warning = `Shells started before this switch lack the profile's META_API_KEY: open a new shell before running muse, or Muse Code sends your saved Meta credential to ${baseUrl}`;
       }
       if (agent === 'agy') {
-        warning = "Shells started before this switch lack the profile's GEMINI_API_KEY and GOOGLE_GEMINI_BASE_URL: open a new shell before running agy, or agy refuses to start with modelProvider set";
+        warning = "Shells started before this switch lack teamai's agy function, which hands agy the profile's key and endpoint: open a new shell before running agy, or agy refuses to start with modelProvider set";
       }
       const current = await currentSnapshot(agent, roots, state ? state.lastWritten : desired);
       if (state && !sameManaged(agent, current, state.lastWritten)) {
@@ -1405,7 +1405,7 @@ async function restoreModelProfilesUnlocked(
           ? { warning: "Shells started before this restore still export the profile's META_API_KEY: open a new shell before running muse" }
           : {}),
         ...(agent === 'agy'
-          ? { warning: "Shells started before this restore still export the profile's GEMINI_API_KEY and GOOGLE_GEMINI_BASE_URL: open a new shell before running agy" }
+          ? { warning: "Shells started before this restore still define teamai's agy function, which sends agy to the profile's gateway: open a new shell before running agy" }
           : {}),
       });
     } catch (error) {
@@ -1508,7 +1508,7 @@ function writtenGatewayUrls(agent: ModelAgent, snapshot: unknown): string[] {
     return isRecord(transport) && typeof transport.base_url === 'string' ? [transport.base_url] : [];
   }
   if (agent === 'agy') {
-    const url = typeof snapshot.keyExport === 'string' ? /^export GOOGLE_GEMINI_BASE_URL='(.*)'$/m.exec(snapshot.keyExport)?.[1] : undefined;
+    const url = typeof snapshot.keyExport === 'string' ? agyGatewayOf(snapshot.keyExport, {})?.GOOGLE_GEMINI_BASE_URL : undefined;
     return url ? [url] : [];
   }
   const entries = isRecord(snapshot.entries) ? Object.values(snapshot.entries) : [];
