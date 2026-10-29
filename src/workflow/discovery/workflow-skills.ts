@@ -1,4 +1,4 @@
-/** Writes a `workflow-<name>` skill for each workflow an agent may start, into every tool's skills root. */
+/** Writes a skill for each workflow an agent may start, into every tool's skills root. */
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { builtinSkillsTarget } from '../../builtin-skills.js';
@@ -11,29 +11,53 @@ import {
 import { isAgentExcluded, scopedToolPaths, type LocalConfig, type TeamaiConfig } from '../../types.js';
 import { pathExists, readFileSafe, writeFileAtomic } from '../../utils/fs.js';
 import { warnOnce } from '../../utils/warn-once.js';
+import { DefaultWorkflows } from '../../default-workflows.js';
+import { SessionShare } from '../../session-share.js';
+import { shareBlock } from '../../skill-content.js';
 import { listCachedWorkflows, loadCachedWorkflow } from '../cache.js';
 import { generatedSkillAt, readGenerated } from './generated-marker.js';
 import { renderWorkflowSkill, type AdvertisedWorkflow } from './render.js';
 
 /**
  * Every runnable `invoke: allow` or `ask` workflow, a cached team file or teamai's default, each with its alias only when
- * the alias starts it. The cache is what `start` resolves from, so no skill names a workflow that cannot start.
+ * the alias starts it. The cache is what `start` resolves from, so no skill names a workflow that cannot start. teamai's
+ * `teamai-share-learnings` is left out while `share` is withheld, since its learning step runs `share`.
  */
-async function advertisedWorkflows(config: LocalConfig): Promise<AdvertisedWorkflow[]> {
+async function advertisedWorkflows(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<AdvertisedWorkflow[]> {
   const advertised: AdvertisedWorkflow[] = [];
-  for (const { definition } of await listCachedWorkflows(config)) {
+  const sharing = await shareBlock({ localConfig, teamConfig }) === null;
+  for (const { definition, source } of await listCachedWorkflows(localConfig)) {
     const { name, description, alias, invoke } = definition;
     if (invoke !== 'allow' && invoke !== 'ask') continue;
-    const starts = alias !== undefined && (await loadCachedWorkflow(config, alias))?.definition.name === name;
-    advertised.push({ name, description, invoke, ...(starts ? { alias } : {}) });
+    if (source === 'default' && name === SessionShare.SHARE_LEARNINGS && !sharing) continue;
+    const starts = alias !== undefined && (await loadCachedWorkflow(localConfig, alias))?.definition.name === name;
+    advertised.push({ name, description, invoke, source, skill: skillName(name, starts ? alias : undefined), ...(starts ? { alias } : {}) });
   }
   return advertised;
+}
+
+/**
+ * The skill of workflow `name`: `workflow-<alias>` when `alias` starts it, so people meet it by the name the team chose;
+ * else a name teamai ships a default under keeps that name, whoever's file runs; else `workflow-<name>`.
+ */
+function skillName(name: string, alias: string | undefined): string {
+  if (alias !== undefined) return `${WORKFLOW_SKILL_PREFIX}${alias}`;
+  return DefaultWorkflows.named(name) ? name : `${WORKFLOW_SKILL_PREFIX}${name}`;
+}
+
+/**
+ * Whether a skill directory named `dir` may be one pull generated: `workflow-<alias|name>`, or a default's name, which
+ * starts with `teamai-`. Only the marker in its SKILL.md proves it.
+ */
+export function mayBeGeneratedSkill(dir: string): boolean {
+  return dir.startsWith(WORKFLOW_SKILL_PREFIX) || dir.startsWith(DEFAULT_SKILL_PREFIX);
 }
 
 /** Where one generated skill goes, and what it holds there. */
 interface Placement {
   tool: string;
   workflow: string;
+  skill: string;
   dir: string;
   guardBase: string;
   content: string;
@@ -45,8 +69,10 @@ interface Root {
   guardBase: string;
 }
 
-/** The name of every skill pull generates starts with this, then the workflow name. */
-export const WORKFLOW_SKILL_PREFIX = 'workflow-';
+/** A skill pull generates starts with this, then the workflow's alias or name. */
+const WORKFLOW_SKILL_PREFIX = 'workflow-';
+/** The name of every default teamai ships starts with this, and so does its skill. */
+const DEFAULT_SKILL_PREFIX = 'teamai-';
 const WRITER = 'workflow-skills';
 
 /**
@@ -55,7 +81,7 @@ const WRITER = 'workflow-skills';
  * `.agents/skills`) gets the first tool's render.
  */
 async function plan(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<{ placements: Placement[]; roots: Root[] }> {
-  const workflows = await advertisedWorkflows(localConfig);
+  const workflows = await advertisedWorkflows(teamConfig, localConfig);
   const skillTarget = skillTargetsFor(teamConfig, localConfig);
   const placed = new Map<string, Placement>();
   const roots = new Map<string, Root>();
@@ -71,10 +97,9 @@ async function plan(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise
       if (!roots.has(dir)) roots.set(dir, { dir, guardBase });
     }
     for (const workflow of workflows) {
-      const skillName = `${WORKFLOW_SKILL_PREFIX}${workflow.name}`;
-      const dir = await skillTarget({ tool, skillName, ownsShared }) ?? path.join(target.skillsDir, skillName);
+      const dir = await skillTarget({ tool, skillName: workflow.skill, ownsShared }) ?? path.join(target.skillsDir, workflow.skill);
       if (placed.has(dir)) continue;
-      placed.set(dir, { tool, workflow: workflow.name, dir, guardBase, content: renderWorkflowSkill(workflow, tool) });
+      placed.set(dir, { tool, workflow: workflow.name, skill: workflow.skill, dir, guardBase, content: renderWorkflowSkill(workflow, tool) });
     }
   }
   return { placements: [...placed.values()], roots: [...roots.values()] };
@@ -94,10 +119,10 @@ function keptEdited(file: string, workflow: string, advertised: boolean): string
  * Writes `placement`, unless a link, a skill of the member's or the team's, or an edit is in the way. True when the
  * file is the generated skill now: written, or already as pull renders it.
  */
-async function place({ tool, workflow, dir, guardBase, content }: Placement): Promise<boolean> {
+async function place({ tool, workflow, skill, dir, guardBase, content }: Placement): Promise<boolean> {
   const block = await findSkillDirectoryBlock(guardBase, dir);
   if (block) {
-    warnOnce(describeSkippedSkillDirectory(`${WORKFLOW_SKILL_PREFIX}${workflow}`, tool, block));
+    warnOnce(describeSkippedSkillDirectory(skill, tool, block));
     return false;
   }
   const file = path.join(dir, 'SKILL.md');
@@ -155,7 +180,7 @@ export async function deployWorkflowSkills({ teamConfig, localConfig, recorder }
       const entries = await fs.readdir(root.dir).catch(() => []);
       for (const entry of entries) {
         const dir = path.join(root.dir, entry);
-        if (entry.startsWith(WORKFLOW_SKILL_PREFIX) && !placed.has(dir)) await prune({ ...root, dir });
+        if (mayBeGeneratedSkill(entry) && !placed.has(dir)) await prune({ ...root, dir });
       }
     }
   } catch (error) {
