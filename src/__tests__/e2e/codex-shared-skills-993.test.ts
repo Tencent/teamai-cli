@@ -325,6 +325,21 @@ describe('Codex receives all of one team\'s skills in one directory (#1501 part 
     expect(m.ok(['pull'], m.home).output).toContain('Already synced');
   });
 
+  it('skips again once the team deletes a skill whose edited copy stays in .codex/skills', () => {
+    const m = machine('one-dir-removed', LINKED);
+    const shared = path.join(m.home, '.agents', 'skills');
+    const codex = path.join(m.home, '.codex', 'skills');
+    deliver(m, 'user', m.home);
+    writeFile(path.join(shared, 'lint', 'SKILL.md'), read(path.join(codex, 'lint', 'SKILL.md')));
+    fs.appendFileSync(path.join(codex, 'review', 'SKILL.md'), '\nMy own notes.\n');
+    m.publish({ 'skills/review': null }, 'remove review');
+
+    const removed = m.ok(['pull'], m.home);
+
+    expect(read(path.join(codex, 'review', 'SKILL.md')), removed.output).toContain('My own notes.');
+    expect(m.ok(['pull'], m.home).output).toContain('Already synced');
+  });
+
   it('leaves the member\'s own skill in ~/.agents/skills and names the conflict, while the rest follow teamai\'s copy there', () => {
     const m = machine('one-dir-member', { ...LINKED, ...TEAM });
     const shared = path.join(m.home, '.agents', 'skills');

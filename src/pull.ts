@@ -1840,7 +1840,11 @@ async function pullForScope(
         currentPlaces = await placesOf(installOf(freshConfig, localConfig));
         const recordedPlaces = placesRecordOf(checkout);
         if (targetSetMatches && recordedPlaces === undefined) log.debug(`[${scopeLabel}] No record of the skills directories yet, syncing`);
-        const codexSplit = targetSetMatches && await codexSkillsSplit(freshConfig, localConfig, await deliveredHashes(localConfig, state));
+        const selectedSkills = async (): Promise<ReadonlySet<string>> => {
+          const desired = await resolveDesiredSkills(freshConfig, localConfig, roleContext);
+          return new Set(desired.kind === 'conflict' ? [] : desired.items.map((item) => item.name));
+        };
+        const codexSplit = targetSetMatches && await codexSkillsSplit(freshConfig, localConfig, await deliveredHashes(localConfig, state), selectedSkills);
         if (codexSplit) log.debug(`[${scopeLabel}] Codex has team skills in two directories, syncing`);
 
         if (targetSetMatches && recordedPlaces !== undefined && !codexSplit
