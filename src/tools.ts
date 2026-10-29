@@ -629,7 +629,7 @@ export const TOOLS = {
     },
   },
   qoder: {
-    home: { dir: '.qoder' },
+    home: { dir: '.qoder', moves: { by: [{ kind: 'env', name: 'QODER_CONFIG_DIR', evidence: 'source' }] } },
     skillLoad: { calls: [{ name: 'Skill', evidence: 'source' }] },
     skills: UNKNOWN_READS,
     installedBy: 'home-edition',
@@ -651,7 +651,7 @@ export const TOOLS = {
     },
     hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.qoder/settings.json', evidence: 'source' }] }, self: { channel: 'settings', format: 'claude', reads: [{ base: 'project', path: '.qoder/settings.json', when: 'cwdOnly', evidence: 'source' }] } },
     // Qoder CLI 1.1.78: <id>.jsonl under ~/.qoder/projects/<cwd>, moved by QODER_CONFIG_DIR.
-    sessions: 'none',
+    sessions: ['qoder'],
     launch: 'qoder',
     features: {
       env: '?',
@@ -665,7 +665,7 @@ export const TOOLS = {
     },
   },
   'qoder-cn': {
-    home: { dir: '.qoder-cn' },
+    home: { dir: '.qoder-cn', moves: { by: [{ kind: 'env', name: 'QODERCN_CONFIG_DIR', evidence: 'source' }] } },
     skillLoad: { calls: [{ name: 'Skill', evidence: 'source' }] },
     skills: UNKNOWN_READS,
     installedBy: 'home-edition',
@@ -687,7 +687,7 @@ export const TOOLS = {
     },
     hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.qoder-cn/settings.json', evidence: 'source' }] }, self: { channel: 'settings', format: 'claude', reads: [{ base: 'project', path: '.qoder/settings.json', when: 'cwdOnly', evidence: 'source' }] } },
     // Qoder CN: the same layout under ~/.qoder-cn, moved by the QODERCN_ variables.
-    sessions: 'none',
+    sessions: ['qoder-cn'],
     launch: 'none',
     features: {
       env: '?',

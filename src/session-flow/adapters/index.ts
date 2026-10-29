@@ -24,6 +24,8 @@ export const ADAPTER_REGISTRY: Record<string, AdapterFactory> = {
   // Base platforms
   'claude-code': (toolRoots) => new ClaudeCodeAdapter('claude-code', sessionStoreDir('claude-code', toolRoots)),
   codex: (toolRoots) => new CodexAdapter('codex', sessionStoreDir('codex', toolRoots)),
+  qoder: (toolRoots) => new ClaudeCodeAdapter('qoder', sessionStoreDir('qoder', toolRoots)),
+  'qoder-cn': (toolRoots) => new ClaudeCodeAdapter('qoder-cn', sessionStoreDir('qoder-cn', toolRoots)),
   // CodeBuddy has two independent stores, split into two platforms:
   //   codebuddy     = CLI (<CodeBuddy home>/projects/...)
   //   codebuddy-ide = IDE GUI (CodeBuddyExtension/.../history)
