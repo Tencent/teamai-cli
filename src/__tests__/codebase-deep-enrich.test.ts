@@ -141,6 +141,41 @@ describe('codebase deep-enrich', () => {
     expect(readme).toContain('[graph-g6-triples.md](./graph-g6-triples.md)');
   });
 
+  it('preserves transitive paths, reverse reachability, and renderable graph reports', async () => {
+    const root = createEnrichFixture();
+    const evidenceDir = path.join(root, 'teamwiki', 'evidence', 'code', 'faketest');
+    const manifestPath = path.join(evidenceDir, '_manifest.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as { edges: unknown[] };
+    manifest.edges = [
+      { from: 'Api', to: 'Service', relation: 'CALLS', confidence: 'EXTRACTED', weight: 0.9 },
+      { from: 'Service', to: 'Store', relation: 'WRITES', confidence: 'INFERRED', weight: 0.8 },
+      { from: 'Api', to: 'Store', relation: 'READS', confidence: 'EXTRACTED', weight: 0.7 },
+    ];
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+    const docsDir = path.join(evidenceDir, 'docs');
+    fs.mkdirSync(docsDir, { recursive: true });
+    fs.writeFileSync(path.join(docsDir, 'graph-g6-multihop.md'), 'stale G6 output');
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await codebaseCmd({ deepEnrich: true, project: 'faketest', output: root, json: true });
+
+    const g6 = fs.readFileSync(path.join(docsDir, 'graph-g6-triples.md'), 'utf8');
+    expect(g6).toContain('Api → (CALLS) → Service → (WRITES) → Store');
+    expect(g6).toMatch(/\| Store \| [^|]*Api → \(CALLS\) → Service → \(WRITES\) → Store/);
+    expect(g6).not.toContain('No indirect dependency path was extracted');
+    expect(g6).toContain('| EXTRACTED | 0.90 |');
+    expect(fs.existsSync(path.join(docsDir, 'graph-g6-multihop.md'))).toBe(false);
+
+    for (const file of ['graph-g4-errors.md', 'graph-g7-risks.md', 'graph-g8-config.md', 'graph-g9-constraints.md', 'graph-coverage.md']) {
+      const content = fs.readFileSync(path.join(docsDir, file), 'utf8');
+      expect(content).not.toContain('\\\\n');
+      expect(content).toContain('\n');
+    }
+    const k3 = fs.readFileSync(path.join(evidenceDir, '_review', 'k3-consistency-check.md'), 'utf8');
+    expect(k3).toContain('Contradiction comparison: deferred');
+    expect(k3).not.toContain('Contradictions: 0 detected');
+  });
+
   it.skipIf(process.platform === 'win32')('does not overwrite a file outside the teamwiki through a docs symlink', async () => {
     const root = createEnrichFixture();
     const docsDir = path.join(root, 'teamwiki', 'evidence', 'code', 'faketest', 'docs');

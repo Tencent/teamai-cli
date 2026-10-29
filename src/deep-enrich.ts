@@ -381,6 +381,7 @@ function buildG2DataflowDoc(callChains: string): string {
     '## 🤖 AI Quick Reference',
     '| Document scope | Deterministic call-chain evidence |',
     '| Core value | Shows known paths without inventing missing state machines |',
+    '| Confidence | EXTRACTED for paths emitted from deterministic call-chain evidence |',
     '',
   ];
 
@@ -401,9 +402,9 @@ function buildG2DataflowDoc(callChains: string): string {
 
   if (chainBlocks.length > 0) {
     for (const block of chainBlocks.slice(0, 15)) {
-      lines.push(`## ${block.entry}`, '');
+      lines.push(`## ${block.entry}`, '', '**Confidence: EXTRACTED**', '');
       for (const step of block.steps.slice(0, 10)) {
-        lines.push(`  ${step}`);
+        lines.push(`  [EXTRACTED] ${step}`);
       }
       lines.push('');
     }
@@ -464,7 +465,7 @@ function buildG4ErrorCodeDoc(manifest: Manifest, moduleDocs: Map<string, string>
     '',
     'No external-to-internal mapping is inferred without explicit evidence.',
     '',
-  ].join('\\n');
+  ].join('\n');
 }
 
 function buildG7RiskDoc(manifest: Manifest): string {
@@ -494,7 +495,7 @@ function buildG7RiskDoc(manifest: Manifest): string {
     '',
     'These levels are structural indicators from extracted edges, not production SLO, failure-rate, or transitive blast-radius measurements.',
     '',
-  ].join('\\n');
+  ].join('\n');
 }
 
 function buildG8ConfigDoc(components: ManifestComponent[], moduleDocs: Map<string, string>): string {
@@ -528,7 +529,7 @@ function buildG8ConfigDoc(components: ManifestComponent[], moduleDocs: Map<strin
     '',
     'Before changing a parameter, verify file location, impact scope, activation/restart, rollback, risk, and canary need from source evidence.',
     '',
-  ].join('\\n');
+  ].join('\n');
 }
 
 function buildG9ConstraintDoc(): string {
@@ -552,7 +553,7 @@ function buildG9ConstraintDoc(): string {
     '',
     '> K4 business-rule validation is deferred: this deterministic manifest contains no standardised questions or product-rule corpus. Do not infer constraints from component names.',
     '',
-  ].join('\\n');
+  ].join('\n');
 }
 
 function buildGComparisonDoc(project: string, flags: { g5Generated: boolean; g6Generated: boolean }): string {
@@ -577,7 +578,7 @@ function buildGComparisonDoc(project: string, flags: { g5Generated: boolean; g6G
     '',
     'The table is intentionally conservative: a generated placeholder or partial index is not reported as a full methodology match.',
     '',
-  ].join('\\n');
+  ].join('\n');
 }
 
 // ─── Phase 1: 组件设计文档 ─────────────────────────────────
@@ -838,20 +839,24 @@ function buildG6Content(project: string, manifest: Manifest): string {
   const nodes = [...new Set(edges.flatMap(({ from, to }) => [from, to]))].sort();
   lines.push('', '## Multi-hop dependency path index', '', '| Query pattern | Example path |', '|---------------|--------------|');
   for (const source of nodes) {
-    const visited = new Set<string>([source]);
-    const queue: Array<{ node: string; path: string[] }> = [{ node: source, path: [source] }];
+    const queue: Array<{ node: string; path: string[]; visited: Set<string> }> = [
+      { node: source, path: [source], visited: new Set([source]) },
+    ];
     let firstMultiHop: string[] | undefined;
     while (queue.length > 0 && !firstMultiHop) {
       const current = queue.shift()!;
       for (const edge of adjacency.get(current.node) ?? []) {
-        if (visited.has(edge.to)) continue;
+        // Keep separately discovered paths even when their destination is also
+        // directly reachable. Only cycles on the current path are excluded.
+        if (current.visited.has(edge.to)) continue;
         const nextPath = [...current.path, `(${edge.relation ?? 'DEPENDS_ON'})`, edge.to];
         if (nextPath.length >= 5) {
           firstMultiHop = nextPath;
           break;
         }
+        const visited = new Set(current.visited);
         visited.add(edge.to);
-        queue.push({ node: edge.to, path: nextPath });
+        queue.push({ node: edge.to, path: nextPath, visited });
       }
     }
     if (firstMultiHop) lines.push(`| What does ${source} indirectly depend on? | ${firstMultiHop.join(' → ')} |`);
@@ -862,10 +867,24 @@ function buildG6Content(project: string, manifest: Manifest): string {
 
   lines.push('', '## Reverse reachability index', '', '| Target node | Reachable paths |', '|-------------|-----------------|');
   for (const target of nodes) {
-    const direct = reverse.get(target) ?? [];
-    if (direct.length > 0) {
-      lines.push(`| ${target} | ${direct.map((edge) => `${edge.from} → (${edge.relation ?? 'DEPENDS_ON'}) → ${target}`).join('; ')} |`);
+    const paths: string[][] = [];
+    const queue: Array<{ node: string; path: string[]; visited: Set<string> }> = [
+      { node: target, path: [target], visited: new Set([target]) },
+    ];
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      for (const edge of reverse.get(current.node) ?? []) {
+        // Preserve an upstream path even if its source also has a direct edge
+        // to the target; only cycles within this individual path are excluded.
+        if (current.visited.has(edge.from)) continue;
+        const nextPath = [edge.from, `(${edge.relation ?? 'DEPENDS_ON'})`, ...current.path];
+        paths.push(nextPath);
+        const visited = new Set(current.visited);
+        visited.add(edge.from);
+        queue.push({ node: edge.from, path: nextPath, visited });
+      }
     }
+    if (paths.length > 0) lines.push(`| ${target} | ${paths.map((dependencyPath) => dependencyPath.join(' → ')).join('; ')} |`);
   }
 
   lines.push('');
@@ -890,8 +909,9 @@ async function writeQualityReports(
     `Project: ${project}`, '',
     '## Result', '',
     `- Graph documents present: ${present.length}/${graphFiles.length}`,
-    '- Contradictions: 0 detected by the deterministic structural pass.',
-    '- Semantic component-document cross-check: deferred when AI component documents are unavailable; absence of a detected contradiction is not reported as proof of consistency.',
+    `- Structural presence check: ${present.length === graphFiles.length ? 'completed; all graph files are present.' : 'incomplete; missing graph files remain.'}`,
+    '- Contradiction comparison: deferred; this pass does not compare component prose with graph semantics.',
+    '- Semantic component-document cross-check: deferred when AI component documents are unavailable; no contradiction count is claimed.',
     '- Unverified claims remain labelled in the generated G documents.',
     '',
   ].join('\n'));
@@ -923,6 +943,9 @@ async function runPhaseAiGraph(
   const g6HasEdges = (ctx.manifest.edges ?? []).length > 0;
   const g6 = buildG6Content(project, ctx.manifest);
   await writeGeneratedFile(docsDir, 'graph-g6-triples.md', g6);
+  // The former G6 filename was a different document and must not remain
+  // discoverable after the router switches to the triples document.
+  await removeIfExists(path.join(docsDir, 'graph-g6-multihop.md'));
   log.debug(`deep-enrich[${project}]: G6 knowledge-graph triples written`);
 
   const g5Path = path.join(docsDir, 'graph-g5-scenarios.md');
