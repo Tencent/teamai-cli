@@ -288,6 +288,8 @@ export const LAUNCH_ADAPTERS = {
   // `-p` would take the next flag as its prompt.
   agy: {
     step: { evidence: 'verified' },
+    // Plan mode with the sandbox reads files but runs no shell and writes nothing in the workspace (agy 1.4.10).
+    judge: { evidence: 'verified', env: ['GEMINI_API_KEY', 'GOOGLE_GEMINI_BASE_URL'], access: 'read' },
     call: {
       evidence: 'verified',
       prompt: 'stdin',

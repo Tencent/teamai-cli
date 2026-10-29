@@ -415,6 +415,7 @@ The local judge runs each tool in its own profile:
 | CodeBuddy, WorkBuddy | `best-effort` | `full` | Read-only tools, no MCP, no saved session. It lists about 70 tools whatever `--tools` says. Not signed in fails `judge_tool_unavailable`. |
 | Cursor CLI | `best-effort` | `full` | Ask mode in Cursor's sandbox. |
 | Pi Coding Agent | `best-effort` | `full` | Only its read, grep, find and ls tools; no context files, extensions or skills; no saved session. |
+| Antigravity CLI | `best-effort` | `read` | Plan mode in agy's sandbox: it reads files, runs no shell and writes nothing in the evidence. The judge's conversation stays in agy's history. |
 | Any other version | `best-effort` | as above | The same profile, unproven. |
 
 A `best-effort` tool cannot judge for a scorer that requires `verified`, nor can [your own judge](#with-your-own-judge) at a lower level than required. Prompts travel through stdin or a file. Tool login and supported model-switch settings are kept. A scorer's model that no judge tool here runs leaves the work open for another driver, without changing the workflow result. [Choose the judge's model](#choose-the-judges-model) says which tool judges.
