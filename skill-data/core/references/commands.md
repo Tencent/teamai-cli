@@ -323,7 +323,7 @@ Generated: do not edit by hand. Regenerate with
   - `teamai models list [profile]` — Show team and personal model profiles, or one profile, and the agents using them
   - `teamai models add <id>` — Add a personal model profile stored only on this machine
     - `--name <name>` — Display name
-    - `--protocol <protocols>` — Comma-separated: anthropic, openai-chat-completions, openai-responses
+    - `--protocol <protocols>` — Comma-separated: anthropic, openai-chat-completions, openai-responses, gemini
     - `--base-url <url>` — Gateway root URL (without /v1)
     - `--model <ids>` — Comma-separated model IDs; the first is the default
     - `--from-env <name>` — Read the API key from this environment variable
