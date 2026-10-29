@@ -79,6 +79,31 @@ describe('isRecordedFromTeamSkill', () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it('keeps an exact LF record distinct from a CRLF version unless normalization is needed', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'delivered-line-ending-order-'));
+    const repo = path.join(root, 'team');
+    const dest = path.join(root, 'home', 'skill');
+    const destFile = path.join(dest, 'SKILL.md');
+    const lf = '---\nname: skill\ndescription: fixture\n---\n\n# Skill\n';
+    const crlf = lf.replace(/\n/g, '\r\n');
+    try {
+      fs.mkdirSync(path.join(repo, 'skills', 'lf', 'skill'), { recursive: true });
+      fs.mkdirSync(path.join(repo, 'skills', 'crlf', 'skill'), { recursive: true });
+      fs.writeFileSync(path.join(repo, 'skills', 'lf', 'skill', 'SKILL.md'), lf);
+      fs.writeFileSync(path.join(repo, 'skills', 'crlf', 'skill', 'SKILL.md'), crlf);
+      commitTeamRepo(repo);
+      fs.mkdirSync(dest, { recursive: true });
+      fs.writeFileSync(destFile, lf);
+      const record = { [destFile]: contentHash(lf) };
+
+      expect(await isRecordedFromTeamSkill(record, dest, repo, 'skills/lf/skill', { normalizeLineEndings: false })).toBe(true);
+      expect(await isRecordedFromTeamSkill(record, dest, repo, 'skills/crlf/skill', { normalizeLineEndings: false })).toBe(false);
+      expect(await isRecordedFromTeamSkill(record, dest, repo, 'skills/crlf/skill')).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 // #993: a copy of a resource no longer delivered is removed, kept as the

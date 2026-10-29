@@ -136,6 +136,8 @@ beforeAll(() => {
   git(['commit', '-qm', 'fixture'], seed);
   git(['clone', '-q', '--bare', seed, origin]);
   git(['clone', '-q', origin, clone]);
+  git(['config', 'core.autocrlf', 'true'], clone);
+  git(['checkout', '-q', '--force', 'HEAD'], clone);
   writeFile(path.join(project, '.teamai', 'config.yaml'), YAML.stringify({
     repo: { localPath: clone, remote: origin, kind: 'git' },
     username: 'member', scope: 'project', projectRoot: project,
@@ -226,6 +228,30 @@ describe('explicit shared-root pushes (#1314)', () => {
 });
 
 describe('push an edit of a skill pull kept after a project switch (#1020)', () => {
+  it('pushes an LF-recorded edit when another namespace stores the same skill with CRLF', () => {
+    commitOnTeam('skills/svc-b/a-skill/SKILL.md', skillMd('a-skill').replace(/\n/g, '\r\n'));
+    git(['pull', '-q', 'origin', 'main'], path.join(project, '.teamai', 'team-repo'));
+    const localSkill = path.join(project, '.claude', 'skills', 'a-skill', 'SKILL.md');
+    fs.appendFileSync(localSkill, '\\nEdited after the CRLF namespace was added.\\n');
+
+    const pushed = run(['push', '--all']);
+
+    expect(pushed.output).toContain('to:   skills/svc-a/a-skill');
+    expect(pushed.output).not.toContain('matches no single one of');
+    expect(pushedFiles()).toContain('skills/svc-a/a-skill/SKILL.md');
+  });
+
+  it('pushes an edit after core.autocrlf delivered the LF team skill as CRLF', () => {
+    const skillFile = path.join(project, '.claude', 'skills', 'a-skill', 'SKILL.md');
+    const crlf = fs.readFileSync(skillFile, 'utf8').replace(/\r?\n/g, '\r\n');
+    fs.writeFileSync(skillFile, `${crlf}\r\nEdited after a CRLF delivery.\r\n`);
+
+    const pushed = run(['push', '--all']);
+
+    expect(pushed.output).toContain('to:   skills/svc-a/a-skill');
+    expect(pushedFiles()).toContain('skills/svc-a/a-skill/SKILL.md');
+  });
+
   it('pushes two tool edits to their distinct delivered destinations', () => {
     const svcB = `${skillMd('a-skill')}\nThe svc-b version.\n`;
     commitOnTeam('skills/svc-b/a-skill/SKILL.md', svcB);

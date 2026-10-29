@@ -213,7 +213,11 @@ export async function isTeamSkillAsDelivered(previous: DeliveredHashes, dest: st
  * Read-only; reads the history.
  */
 export async function isRecordedFromTeamSkill(
-  previous: DeliveredHashes, dest: string, repoPath: string, teamDir: string,
+  previous: DeliveredHashes,
+  dest: string,
+  repoPath: string,
+  teamDir: string,
+  options: { normalizeLineEndings?: boolean } = {},
 ): Promise<boolean> {
   const recorded = previous[path.join(dest, SKILL_MD)];
   if (recorded === undefined) return false;
@@ -223,7 +227,10 @@ export async function isRecordedFromTeamSkill(
     if (bytes === null) continue;
     const text = bytes.toString('utf-8');
     const written = withSkillFrontmatter(text, path.posix.basename(teamDir));
-    if (textContentHashes(written === text ? bytes : written).has(recorded)) return true;
+    const hashes = options.normalizeLineEndings === false
+      ? new Set([contentHash(written === text ? bytes : written)])
+      : textContentHashes(written === text ? bytes : written);
+    if (hashes.has(recorded)) return true;
   }
   return false;
 }
