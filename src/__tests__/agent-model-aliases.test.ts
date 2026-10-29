@@ -278,6 +278,14 @@ describe('AgentsHandler pull: model aliases', () => {
     expect(vi.mocked(log.warn)).toHaveBeenCalledWith(expect.stringContaining('"claude-opus-5[effort=high]"'));
   });
 
+  // agy picks the effort from the model id: `gemini-3.8-flash-high` (agy 1.4.10).
+  it("suggests agy's effort suffix for a dropped agy effort", async () => {
+    await writeAliases({ aliases: { strong: { agy: { model: 'gemini-3.8-flash', effort: 'high' } } } });
+    await fse.ensureDir(path.join(homeDir, '.gemini', 'config'));
+    await pullTo(['agy'], makeSpec({ model: 'strong' }));
+    expect(vi.mocked(log.warn)).toHaveBeenCalledWith(expect.stringContaining('"gemini-3.8-flash-high"'));
+  });
+
   it('warns about a dropped effort once per alias and tool in a pull', async () => {
     await writeAliases({ aliases: { strong: { kiro: { model: 'claude-opus-5', effort: 'high' } } } });
     await pullTo(['kiro'], makeSpec({ model: 'strong' }));

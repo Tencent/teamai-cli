@@ -479,7 +479,9 @@ function droppedEffortWarnings(alias: string, entries: AliasEntries, file: strin
     if (withEffort === undefined || typeof withEffort === 'string') continue;
     const hint = tool === 'cursor'
       ? `Remove it, or write it into the model in Cursor's bracket form, such as "${withEffort.model}[effort=${withEffort.effort}]".`
-      : `Remove effort from ${alias}.${tool} to silence this warning.`;
+      : tool === 'agy'
+        ? `Remove it, or name the model with its effort, as agy lists them, such as "${withEffort.model}-${withEffort.effort}".`
+        : `Remove effort from ${alias}.${tool} to silence this warning.`;
     warnings.push({ alias, file, tool, message: `${file}: alias "${alias}" sets an effort for ${tool}, but effort is not supported for `
       + `${tool} agent files, so ${tool} receives the model without it. ${hint}` });
   }
