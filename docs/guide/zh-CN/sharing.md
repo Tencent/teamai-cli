@@ -49,6 +49,26 @@ sharing:
 
 你自己的 rule 会留下。`push` 只把已有团队 rule 的正文写回仓库。
 
+Antigravity CLI 只加载带 `trigger` 的 rule，所以 pull 会加上。带 `paths:` 的 rule 会变成模型处理这些文件时才采用的 rule：
+
+```markdown
+<!-- 团队仓库里的 rules/api-errors.md -->
+---
+paths: ["src/api/**/*.ts"]
+---
+Return typed errors from API handlers.
+
+<!-- teamai pull 之后的 ~/.gemini/config/rules/api-errors.md -->
+---
+trigger: model_decision
+description: "Applies when reading or editing files matching src/api/**/*.ts"
+---
+
+Return typed errors from API handlers.
+```
+
+没有 `paths:` 的 rule 得到 `trigger: always_on`。
+
 ## Agents
 
 `agents/<name>.yaml`。`name` 与文件名一致。自己 commit，或在工具里改完后 `teamai push`。
@@ -250,7 +270,7 @@ hook 能做什么取决于事件。下表是每个运行该事件的工具都做
       not in: cursor (no PreToolUse hook there)
 ```
 
-OpenCode、Oh My Pi、Pi、OpenClaw、Kiro 和 Hermes 没有 Claude Code 那样的 hook 文件，它们的 hook 由 teamai 来跑，payload 和工具名都按 Claude Code 的（`matcher: Bash` 能匹配 OpenCode 的 `bash` 和 Hermes 的 `terminal`）。在这些工具里：
+OpenCode、Oh My Pi、Pi、OpenClaw、Kiro、Hermes 和 Antigravity CLI 没有 Claude Code 那样的 hook 文件，它们的 hook 由 teamai 来跑，payload 和工具名都按 Claude Code 的（`matcher: Bash` 能匹配 OpenCode 的 `bash` 和 Hermes 的 `terminal`）。在这些工具里：
 
 - 只跑 `SessionStart`、`UserPromptSubmit`、`PreToolUse`、`PostToolUse` 和 `Stop`。其他事件上的团队 hook，pull 会警告。
 - `UserPromptSubmit` 能加上下文，但拦不下这次输入。
@@ -309,7 +329,14 @@ servers:
 
 ZCode 的 server 写入 `~/.zcode/cli/config.json` 或项目的 `.zcode/config.json`，位于 `mcp.servers` 下。这基于 3.16.2 源码，尚未认证 3.15.1。Pull 只从 `~/.agents/mcp.json` 移走未被修改的 teamai 条目。原生配置中有 server 后，桌面应用不再读取该备用文件，doctor 会列出其中的其他 server。
 
-Antigravity CLI 的用户级 server 写入 `~/.gemini/config/mcp_config.json`。项目级 server 它只从插件读取，所以 teamai 写入 `.agents/plugins/teamai/mcp_config.json`，旁边放一个 `plugin.json`。
+Antigravity CLI 的用户级 server 写入 `~/.gemini/config/mcp_config.json`。项目级 server 它只从插件读取，所以 teamai 把它们写成一个插件：
+
+```text
+.agents/plugins/teamai/plugin.json       {"name": "teamai"}
+.agents/plugins/teamai/mcp_config.json   {"mcpServers": {"github": {"url": "https://api.githubcopilot.com/mcp/", "headers": {...}}}}
+```
+
+agy 支持 stdio 和 HTTP server，不写 `type`；`sse` server 不会写给 agy，pull 会给出警告。`agy mcp list` 只显示用户文件里的 server，插件里的 server 在会话中可用。
 
 WorkBuddy 按顺序使用第一个已存在的用户文件：`~/.workbuddy/.mcp.json`、`~/.workbuddy/mcp.json`、`~/.codebuddy.json`。`CODEBUDDY_CONFIG_DIR` 会移动最后一个文件。项目使用 `.mcp.json`，仅有 `mcp.json` 时使用后者。开启 `sharing.gitExclude` 后，server 写入 `.codebuddy.json` 的 `projects[<项目路径>].mcpServers`。这些路径基于 CodeBuddy 2.168.0 引擎，尚未认证 WorkBuddy 启动器的主目录绑定。Pull 只从旧项目文件 `.workbuddy/mcp.json` 移除未被修改的 teamai 条目。
 

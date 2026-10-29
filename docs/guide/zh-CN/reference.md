@@ -270,10 +270,10 @@ profiles:
 | --- | --- | --- |
 | Claude Code | `anthropic` | `~/.claude/settings.json` |
 | Codex | `openai-responses` | `~/.codex/config.toml` |
-| OpenCode | 任意 | `opencode.json` |
+| OpenCode | 除 `gemini` 外任意 | `opencode.json` |
 | CodeBuddy / WorkBuddy | `openai-chat-completions` | `models.json` (CodeBuddy 跟随记录的主目录) |
-| Pi | 任意 | `~/.pi/agent/models.json` |
-| OMP | 任意 | `~/.omp/agent/models.yml`，或 `OMP_PROFILE`（或 `PI_PROFILE`）和 `PI_CONFIG_DIR` 指定的 agent 目录 |
+| Pi | 除 `gemini` 外任意 | `~/.pi/agent/models.json` |
+| OMP | 除 `gemini` 外任意 | `~/.omp/agent/models.yml`，或 `OMP_PROFILE`（或 `PI_PROFILE`）和 `PI_CONFIG_DIR` 指定的 agent 目录 |
 | Muse Code | `openai-responses` | `<Muse 主目录>/settings.json`（已记录目录，否则使用 `$XDG_CONFIG_HOME/muse` 或 `~/.config/muse`），密钥以 `META_API_KEY` 写入 `~/.teamai/models/env.sh`，由 shell 配置文件加载 |
 | Antigravity CLI | `gemini` | 在 `~/.gemini/antigravity-cli/settings.json` 写 `modelProvider: "gemini"`，并把 `GEMINI_API_KEY` 和 `GOOGLE_GEMINI_BASE_URL` 写入 `~/.teamai/models/agy-env.sh`，由 shell 配置文件加载 |
 

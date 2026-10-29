@@ -270,10 +270,10 @@ profiles:
 | --- | --- | --- |
 | Claude Code | `anthropic` | `~/.claude/settings.json` |
 | Codex | `openai-responses` | `~/.codex/config.toml` |
-| OpenCode | any | `opencode.json` |
+| OpenCode | any but `gemini` | `opencode.json` |
 | CodeBuddy / WorkBuddy | `openai-chat-completions` | `models.json` (CodeBuddy follows its recorded home) |
-| Pi | any | `~/.pi/agent/models.json` |
-| OMP | any | `~/.omp/agent/models.yml`, or the agent dir of `OMP_PROFILE` (or `PI_PROFILE`) and `PI_CONFIG_DIR` |
+| Pi | any but `gemini` | `~/.pi/agent/models.json` |
+| OMP | any but `gemini` | `~/.omp/agent/models.yml`, or the agent dir of `OMP_PROFILE` (or `PI_PROFILE`) and `PI_CONFIG_DIR` |
 | Muse Code | `openai-responses` | `<Muse home>/settings.json` (recorded home, else `$XDG_CONFIG_HOME/muse` or `~/.config/muse`), and the key as `META_API_KEY` in `~/.teamai/models/env.sh`, which your shell profile loads |
 | Antigravity CLI | `gemini` | `modelProvider: "gemini"` in `~/.gemini/antigravity-cli/settings.json`, and `GEMINI_API_KEY` and `GOOGLE_GEMINI_BASE_URL` in `~/.teamai/models/agy-env.sh`, which your shell profile loads |
 

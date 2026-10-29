@@ -49,6 +49,26 @@ sharing:
 
 A rule you wrote yourself stays. `push` writes back only the body of a rule the team already has.
 
+Antigravity CLI loads only rules with a `trigger`, so pull adds one. A rule with `paths:` becomes a rule the model applies when it works on those files:
+
+```markdown
+<!-- rules/api-errors.md in the team repo -->
+---
+paths: ["src/api/**/*.ts"]
+---
+Return typed errors from API handlers.
+
+<!-- ~/.gemini/config/rules/api-errors.md after teamai pull -->
+---
+trigger: model_decision
+description: "Applies when reading or editing files matching src/api/**/*.ts"
+---
+
+Return typed errors from API handlers.
+```
+
+A rule without `paths:` gets `trigger: always_on`.
+
 ## Agents
 
 `agents/<name>.yaml`. `name` matches the filename. Commit it, or run `teamai push` after editing the copy in a tool.
@@ -250,7 +270,7 @@ What a hook can do depends on its event. Every tool that runs the event does thi
       not in: cursor (no PreToolUse hook there)
 ```
 
-OpenCode, Oh My Pi, Pi, OpenClaw, Kiro, and Hermes have no Claude Code hook file. Their hooks run through teamai, with Claude Code's payload and tool names (`matcher: Bash` matches OpenCode's `bash` and Hermes's `terminal`). There:
+OpenCode, Oh My Pi, Pi, OpenClaw, Kiro, Hermes, and Antigravity CLI have no Claude Code hook file. Their hooks run through teamai, with Claude Code's payload and tool names (`matcher: Bash` matches OpenCode's `bash` and Hermes's `terminal`). There:
 
 - Only `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, and `Stop` run. Pull warns about a team hook on any other event.
 - `UserPromptSubmit` adds context but cannot block the prompt.
@@ -309,7 +329,14 @@ Write secrets as `${VAR}` and declare the key in `env/secrets.yaml`. A server fo
 
 ZCode servers use `mcp.servers` in `~/.zcode/cli/config.json` or the project's `.zcode/config.json`. This follows the 3.16.2 source; 3.15.1 is not certified. Pull moves only unchanged teamai entries out of `~/.agents/mcp.json`. Doctor names other servers there because the desktop app stops reading that fallback once the native config has servers.
 
-Antigravity CLI takes user servers in `~/.gemini/config/mcp_config.json`. It reads a project's servers only from a plugin, so teamai writes them to `.agents/plugins/teamai/mcp_config.json` with a `plugin.json` beside it.
+Antigravity CLI takes user servers in `~/.gemini/config/mcp_config.json`. It reads a project's servers only from a plugin, so teamai writes them as one:
+
+```text
+.agents/plugins/teamai/plugin.json       {"name": "teamai"}
+.agents/plugins/teamai/mcp_config.json   {"mcpServers": {"github": {"url": "https://api.githubcopilot.com/mcp/", "headers": {...}}}}
+```
+
+agy takes stdio and HTTP servers, with no `type`; pull skips an `sse` server for agy with a warning. `agy mcp list` shows only the user file's servers; a plugin's appear in a session.
 
 WorkBuddy uses the first existing user file in `~/.workbuddy/.mcp.json`, `~/.workbuddy/mcp.json`, and `~/.codebuddy.json`. `CODEBUDDY_CONFIG_DIR` moves the last file. A project uses `.mcp.json`, or `mcp.json` when only that exists. With `sharing.gitExclude` on, its servers use `projects[<project path>].mcpServers` in `.codebuddy.json`. These paths follow the CodeBuddy 2.168.0 engine; WorkBuddy's launcher binding is not certified. Pull removes only unchanged teamai entries from the former `.workbuddy/mcp.json` project file.
 

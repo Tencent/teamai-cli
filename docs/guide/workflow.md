@@ -163,6 +163,7 @@ An agent-specific entry wins over `default`. `claude`, `claude-internal`, `tclau
 
 ```text
 teamai workflow start build --driver local
+teamai workflow start build --driver local --tools default=agy   # every step on Antigravity CLI
 ```
 
 `--driver local` runs a step with no `workspace` in the current checkout, unless an enclosing step opened a workspace. A command there is read-only: if it exits 0 and changed repository files, their permissions, a symlink target, the destination of a staged rename, a file inside a dirty submodule, the index, or HEAD, the step fails and leaves that change in place. This includes a change inside an existing untracked directory; leaving that directory unchanged does not fail the step. A step with `workspace: new` changes files on its own branch. See [Workspaces](#workspaces). Steps that share the current checkout run one at a time. Steps in different worktrees run together up to [`workflows.max_parallel`](workflow-advanced.md#run-local-commands-in-parallel). Each attempt uses `result.json` under the scope's TeamAI data directory, outside the checkout. The driver calls the same `next` and `report` operations shown below:
