@@ -618,8 +618,13 @@ steps:
 输入不同时（例如只有 `session` 和 `source`），或某个输入类型不同时（例如 `publish: string`），pull 对每个输入警告一次，不写 `teamai-share-learnings` skill，`teamai-share-learnings` 在分享任何经验之前就以 `invalid_inputs` 拒绝启动，摩擦提醒回到 `teamai skill get share`：
 
 ```text
+# 只有 session 和 source
 ⚠ [workflows] teamai's default teamai-share-learnings cannot start: step "share-session" with.publish is not an input workflow "teamai-share-session" declares
+# publish: string
+⚠ [workflows] teamai's default teamai-share-learnings cannot start: step "share-session" passes publish, which workflow "teamai-share-session" declares as another type than teamai's default teamai-share-session
 ```
+
+枚举值的顺序不限：`judge: driver | here` 与 `here | driver` 是同一类型。
 
 保留这五个输入，或者同时替换 `teamai-share-learnings`。
 

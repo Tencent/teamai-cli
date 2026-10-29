@@ -618,8 +618,13 @@ steps:
 With other inputs, such as only `session` and `source`, or one of another type, such as `publish: string`, pull warns once per input and writes no `teamai-share-learnings` skill, `teamai-share-learnings` refuses to start with `invalid_inputs` before any learning is shared, and the friction reminder goes back to `teamai skill get share`:
 
 ```text
+# only session and source
 ⚠ [workflows] teamai's default teamai-share-learnings cannot start: step "share-session" with.publish is not an input workflow "teamai-share-session" declares
+# publish: string
+⚠ [workflows] teamai's default teamai-share-learnings cannot start: step "share-session" passes publish, which workflow "teamai-share-session" declares as another type than teamai's default teamai-share-session
 ```
+
+An enum's values may come in any order: `judge: driver | here` is the same type as `here | driver`.
 
 Keep the five inputs, or replace `teamai-share-learnings` too.
 
