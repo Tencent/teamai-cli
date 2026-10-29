@@ -523,7 +523,7 @@ export const dashboardMessages: Record<string, string> = {
   "None: an HTTP team repo keeps no session archive": "无：HTTP 团队仓库不保留会话归档",
   "Judging": "评判",
   "Up to": "每天最多",
-  "sessions a day on this machine (daily_limit)": "个会话在本机评判（daily_limit）",
+  "sessions a day in this workspace (daily_limit)": "个会话在此工作区评判（daily_limit）",
   "Scorers that judge sessions": "评判会话的评分器",
   "No scorer sets sessions: true, so no session is judged.": "没有评分器设置 sessions: true，因此不会评判任何会话。",
   "Labels": "标签",

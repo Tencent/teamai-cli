@@ -42,7 +42,7 @@ function sharingNext(s) {
 function sharingFacts(s) {
  const rows=[['Archive',s.archive==='teamai-reports'?label('teamai-reports, scrubbed'):'<span class="amber">'+label('None: an HTTP team repo keeps no session archive')+'</span>']];
  rows.push(['Judging',s.scoring.state==='ok'
-  ?label('Up to')+' <b>'+number(s.scoring.dailyLimit)+'</b> '+label('sessions a day on this machine (daily_limit)')+'<small>'+label('Set by')+' <span data-verbatim>'+sharingSource(s.scoring.dailyLimitSource)+'</span></small><small>'+(s.scoring.scorers.length?label('Scorers that judge sessions')+label(': ')+'<span data-verbatim>'+s.scoring.scorers.map(e).join(', ')+'</span>':label('No scorer sets sessions: true, so no session is judged.'))+'</small>'
+  ?label('Up to')+' <b>'+number(s.scoring.dailyLimit)+'</b> '+label('sessions a day in this workspace (daily_limit)')+'<small>'+label('Set by')+' <span data-verbatim>'+sharingSource(s.scoring.dailyLimitSource)+'</span></small><small>'+(s.scoring.scorers.length?label('Scorers that judge sessions')+label(': ')+'<span data-verbatim>'+s.scoring.scorers.map(e).join(', ')+'</span>':label('No scorer sets sessions: true, so no session is judged.'))+'</small>'
   :'<span class="amber">'+e(s.scoring.reason)+'</span>']);
  if(s.pendingLabels&&!s.next.length)rows.push(['Labels','<b>'+number(s.pendingLabels)+'</b> '+label('pending on this machine')]);
  if(s.unreadTools.length)rows.push(['Never captured','<span data-verbatim>'+s.unreadTools.map(e).join(', ')+'</span><small>'+label('teamai reads no sessions from these tools, so their sessions are never published or scored.')+'</small>']);

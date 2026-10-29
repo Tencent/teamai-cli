@@ -89,8 +89,8 @@ describe('the session sharing panel', () => {
     const machine = { kind: 'setting' as const, key: '~/.teamai/config.yaml scoring.daily_limit' };
     const scoring = { ...defaults.scoring, state: 'ok' as const, policies: defaults.publish, dailyLimit: 2, dailyLimitSource: machine, scorers: ['quality'] };
 
-    expect(text(render({ ...defaults, scoring }).html)).toContain('Up to 2 sessions a day on this machine (daily_limit) Set by ~/.teamai/config.yaml scoring.daily_limit');
-    expect(text(render(defaults).html)).toContain('Up to 10 sessions a day on this machine (daily_limit) Set by the default');
+    expect(text(render({ ...defaults, scoring }).html)).toContain('Up to 2 sessions a day in this workspace (daily_limit) Set by ~/.teamai/config.yaml scoring.daily_limit');
+    expect(text(render(defaults).html)).toContain('Up to 10 sessions a day in this workspace (daily_limit) Set by the default');
   });
 
   it('has a Chinese message for every text it shows, leaving setting names as they are written', () => {
