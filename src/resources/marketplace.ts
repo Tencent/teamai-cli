@@ -24,7 +24,7 @@ interface MarketplacePlugin {
   version: string;
   category?: string;
   keywords?: string[];
-  strict: false;
+  strict?: boolean;
   [key: string]: unknown;
 }
 
@@ -99,7 +99,7 @@ export async function refreshMarketplace(repoPath: string): Promise<boolean> {
   const existingPlugins = new Map<string, MarketplacePlugin>();
   const nonAutoPlugins: MarketplacePlugin[] = []; // strict:true or no strict field
   for (const plugin of marketplace.plugins) {
-    if (!(plugin.strict ?? true)) {
+    if (plugin.strict === false) {
       existingPlugins.set(plugin.name, plugin);
     } else {
       nonAutoPlugins.push(plugin);
