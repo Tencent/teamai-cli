@@ -1044,9 +1044,14 @@ function desiredSnapshot(agent: ModelAgent, profile: ResolvedModelProfile): unkn
         };
       }
     }
-    const catalog = profile.profile.model_groups.flatMap((group) => group.models);
-    const defaultModel = profile.model ?? catalog[0];
-    return { model: `${providerOf.get(defaultModel)}/${defaultModel}`, providers } satisfies OpenCodeSnapshot;
+    // A model the profile serves only over Gemini has no OpenCode provider.
+    const reachable = profile.profile.model_groups.flatMap((group) => group.models).filter((model) => providerOf.has(model));
+    const defaultModel = profile.model ?? reachable[0];
+    const provider = defaultModel === undefined ? undefined : providerOf.get(defaultModel);
+    if (defaultModel === undefined || provider === undefined) {
+      throw new Error(`Profile ${profile.ref} serves ${defaultModel ?? 'no model'} only over Gemini, which OpenCode does not speak. Choose one of: ${reachable.join(', ')}.`);
+    }
+    return { model: `${provider}/${defaultModel}`, providers } satisfies OpenCodeSnapshot;
   }
   if (agent === 'pi' || agent === 'omp') {
     const provider = piProvider(profile)!;

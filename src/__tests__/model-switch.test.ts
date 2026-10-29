@@ -466,6 +466,21 @@ describe('OpenCode model switching', () => {
     expect(await fse.readJson(openCodeFile())).toEqual(original);
   });
 
+  it('defaults to the first model OpenCode can reach when the profile lists a Gemini-only model first', async () => {
+    await fse.ensureDir(path.dirname(openCodeFile()));
+    const profile = routed({ gemini: ['gemini-3.8-flash'], anthropic: ['claude-opus-4-8'] });
+    expect((await switchModelProfile(profile, ['opencode']))[0].status).toBe('switched');
+    expect((await fse.readJson(openCodeFile())).model).toBe('teamai-anthropic/claude-opus-4-8');
+  });
+
+  it('refuses a chosen model OpenCode cannot reach', async () => {
+    await fse.ensureDir(path.dirname(openCodeFile()));
+    const profile = routed({ gemini: ['gemini-3.8-flash'], anthropic: ['claude-opus-4-8'] }, { model: 'gemini-3.8-flash' });
+    const [result] = await switchModelProfile(profile, ['opencode']);
+    expect(result.status).not.toBe('switched');
+    expect(JSON.stringify(result)).toContain('gemini-3.8-flash');
+  });
+
   it('selects the chosen default model and references an environment key', async () => {
     await fse.ensureDir(path.dirname(openCodeFile()));
     process.env.TEAMAI_TEST_MODEL_KEY = 'from-env';
