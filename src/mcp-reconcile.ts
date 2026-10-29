@@ -843,10 +843,20 @@ export function spliceCodexBlock(source: string, name: string, block: string | n
  */
 function codexBlockRe(name: string): RegExp {
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const header = codexHeaderStart(String.raw`(?:${escaped}|"${escaped}"|'${escaped}')`);
   return new RegExp(
-    String.raw`^\[mcp_servers\.${escaped}\]\s*$[\s\S]*?(?=^\[(?!mcp_servers\.${escaped}[.\]])|(?![\s\S]))`,
+    String.raw`^\[${header}\]\s*(?:#.*)?$[\s\S]*?(?=^\[(?!${header}[.\]])|(?![\s\S]))`,
     'm',
   );
+}
+
+/**
+ * What follows the `[` of a `[mcp_servers.<name>]` header as TOML allows it to
+ * be written: with spaces inside the brackets or a quoted name. A comment may
+ * follow the closing bracket.
+ */
+function codexHeaderStart(name: string): string {
+  return String.raw`\s*mcp_servers\s*\.\s*${name}\s*`;
 }
 
 /**
@@ -863,7 +873,8 @@ export function codexBlockIn(source: string, name: string): string | null {
 /** Extract the names of all `[mcp_servers.X]` tables present in a config.toml. */
 export function codexServerNames(source: string): string[] {
   const names = new Set<string>();
-  for (const m of source.matchAll(/^\[mcp_servers\.([A-Za-z0-9_-]+)\]\s*$/gm)) names.add(m[1]);
+  const header = codexHeaderStart(String.raw`(?:([A-Za-z0-9_-]+)|"([A-Za-z0-9_-]+)"|'([A-Za-z0-9_-]+)')`);
+  for (const m of source.matchAll(new RegExp(String.raw`^\[${header}\]\s*(?:#.*)?$`, 'gm'))) names.add(m[1] ?? m[2] ?? m[3]);
   return [...names];
 }
 
