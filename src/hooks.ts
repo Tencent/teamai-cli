@@ -682,6 +682,28 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
+/** Quote a value for a PowerShell single-quoted string. */
+function powershellQuote(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+function powershellPathPrefix(root: string): string {
+  return /[\\/]$/.test(root) ? root : `${root}\\`;
+}
+
+function powershellPathCondition(root: string): string {
+  const quoted = powershellQuote(root);
+  const prefix = powershellQuote(powershellPathPrefix(root));
+  return `($teamaiPwd.Equals(${quoted}, [StringComparison]::OrdinalIgnoreCase) -or $teamaiPwd.StartsWith(${prefix}, [StringComparison]::OrdinalIgnoreCase))`;
+}
+
+function powershellProjectGate(command: string, projectRoot: string, childRoots: readonly string[]): string {
+  const rootCondition = powershellPathCondition(projectRoot);
+  const childCondition = childRoots.map((child) => powershellPathCondition(canonicalProjectRoot(child))).map((condition) => `-not (${condition})`).join(' -and ');
+  const run = childCondition ? `if (${childCondition}) { ${command} }` : command;
+  return `$teamaiPwd = $PWD.Path; if (${rootCondition}) { ${run} }`;
+}
+
 export function canonicalProjectRoot(projectRoot: string): string {
   try { return realpathSync.native(projectRoot); } catch { return path.resolve(projectRoot); }
 }
@@ -772,9 +794,15 @@ function cmdProjectGate(root: string): string {
  * Legacy cmd.exe gates are still recognised on read by isGatedForProject(), so
  * a re-render replaces 0.26.0's cmd gate instead of stacking a second one.
  */
-function gateTeamHookCommand(command: string, projectRoot: string | undefined, childRoots: readonly string[] = []): string {
+function gateTeamHookCommand(
+  command: string,
+  projectRoot: string | undefined,
+  childRoots: readonly string[] = [],
+  shell?: HookDef['shell'],
+): string {
   if (!projectRoot) return command;
   const root = canonicalProjectRoot(projectRoot);
+  if (shell === 'powershell') return powershellProjectGate(command, root, childRoots);
   const msys = msysProjectRoot(root);
   const quoted = shellQuote(root);
   // In a workspace, a child's folders are the child's own scope (#913): the
@@ -801,6 +829,25 @@ function gateTeamHookCommand(command: string, projectRoot: string | undefined, c
 function regateTeamHookCommand(command: string, projectRoot: string, childRoots: readonly string[]): string | null {
   const codebuddy = regateCodebuddyTeamHookCommand(command, projectRoot, childRoots);
   if (codebuddy !== null) return codebuddy;
+
+  // PowerShell gates are intentionally recognised by their stable assignment
+  // prefix. The payload may itself contain braces, so the final `} }` is the
+  // delimiter emitted by powershellProjectGate rather than a shallow parser.
+  const powershellPrefix = '$teamaiPwd = $PWD.Path; if (';
+  const powershellSuffix = ' }';
+  if (command.startsWith(powershellPrefix) && command.endsWith(powershellSuffix)) {
+    const bodyStart = command.indexOf(') { ', powershellPrefix.length);
+    if (bodyStart >= 0) {
+      let payload = command.slice(bodyStart + 4, -powershellSuffix.length);
+      const childPrefix = 'if (-not (';
+      if (payload.startsWith(childPrefix)) {
+        const childBody = payload.indexOf(') { ');
+        if (childBody >= 0 && payload.endsWith(' }')) payload = payload.slice(childBody + 4, -2);
+      }
+      return gateTeamHookCommand(payload, projectRoot, childRoots, 'powershell');
+    }
+  }
+
   const [head, tail] = gateTeamHookCommand('\0', projectRoot).split('(\0)');
   if (!command.startsWith(head) || !command.endsWith(tail)) return null;
   const run = command.slice(head.length, command.length - tail.length);
@@ -892,7 +939,9 @@ function heldEntryCheck(
 /** Recognise a project gate written by either renderer (entries outlive a platform switch). */
 function isGatedForProject(command: string, projectRoot: string): boolean {
   const root = canonicalProjectRoot(projectRoot);
+  const powershellPrefix = powershellProjectGate('\0', root, []).split('\0')[0];
   return isCodebuddyTeamGateForProject(command, root)
+    || command.startsWith(powershellPrefix)
     || command.startsWith(`if [ "$PWD" = ${shellQuote(root)} ]`)
     || command.startsWith(cmdProjectGate(root));
 }
@@ -1511,7 +1560,7 @@ function scopedTeamDefs(
       ),
     }));
   }
-  return prepared.map((def) => ({ ...def, command: gateTeamHookCommand(def.command, projectRoot, childRoots) }));
+  return prepared.map((def) => ({ ...def, command: gateTeamHookCommand(def.command, projectRoot, childRoots, def.shell) }));
 }
 
 function manifestRecordsForTool(

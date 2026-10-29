@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
+import { spawnSync } from 'node:child_process';
 
 vi.mock('../utils/logger.js', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
@@ -187,6 +188,78 @@ describe('Claude team-hook shell on Windows', () => {
       shell: 'powershell',
     });
     await expect(shellFor('absent')).resolves.toMatchObject({ command: expect.stringContaining('$env:CURSOR_VERSION') });
+  });
+
+  it('uses and executes a PowerShell project gate when Git Bash is unavailable', async () => {
+    const hostPlatform = process.platform;
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    vi.stubEnv('HOME', tmp);
+    vi.stubEnv('ProgramFiles', path.join(tmp, 'missing-pf'));
+    vi.stubEnv('ProgramFiles(x86)', path.join(tmp, 'missing-pf86'));
+    vi.stubEnv('LOCALAPPDATA', path.join(tmp, 'missing-local'));
+    const projectRoot = path.join(tmp, 'project');
+    const childRoot = path.join(projectRoot, 'child');
+    const laterChildRoot = path.join(projectRoot, 'later-child');
+    fs.mkdirSync(childRoot, { recursive: true });
+    const hooksPath = path.join(tmp, 'project-gated.json');
+    const manifestPath = path.join(tmp, 'managed-hooks.json');
+    const powershellTeam: HookDef = {
+      ...team,
+      command: 'Write-Output TEAMAI_POWERSHELL_GATE',
+    };
+    const readEntry = (): { command: string; shell?: string } => {
+      const parsed = JSON.parse(fs.readFileSync(hooksPath, 'utf8')) as ClaudeHooksFile;
+      const entry = parsed.hooks.SessionStart.find((matcher) => matcher.description === team.description)?.hooks[0];
+      if (!entry) throw new Error('missing project-gated team hook');
+      return entry;
+    };
+
+    await reconcileHooks(hooksPath, 'claude', [powershellTeam], {
+      manifestPath,
+      teamHookProjectRoot: projectRoot,
+      teamHookChildRoots: [childRoot],
+    });
+    let entry = readEntry();
+    expect(entry.shell).toBe('powershell');
+    expect(entry.command).toContain('$teamaiPwd = $PWD.Path; if (');
+    expect(entry.command).toContain('Write-Output TEAMAI_POWERSHELL_GATE');
+    expect(entry.command).not.toContain('if [ "$PWD"');
+    expect(entry.command).toContain('child');
+
+    // A held entry can outlive its manifest record. Re-gating it for a later
+    // workspace child must preserve the PowerShell form instead of appending a
+    // POSIX wrapper that Claude cannot parse.
+    fs.mkdirSync(laterChildRoot, { recursive: true });
+    fs.writeFileSync(manifestPath, '{}');
+    await reconcileHooks(hooksPath, 'claude', [], {
+      manifestPath,
+      teamHookProjectRoot: projectRoot,
+      teamHookChildRoots: [childRoot, laterChildRoot],
+      heldTeamHookIds: [powershellTeam.key],
+      teamHookHistory: async () => [powershellTeam],
+    });
+    entry = readEntry();
+    expect(entry.shell).toBe('powershell');
+    expect(entry.command).toContain('later-child');
+    expect(entry.command).not.toContain('if [ "$PWD"');
+
+    if (hostPlatform === 'win32') {
+      const probe = spawnSync('powershell.exe', ['-NoProfile', '-Command', '$PSVersionTable.PSVersion.ToString()'], { encoding: 'utf8' });
+      if (!probe.error) {
+        const inside = spawnSync('powershell.exe', ['-NoProfile', '-Command', entry.command], { cwd: projectRoot, encoding: 'utf8' });
+        const child = spawnSync('powershell.exe', ['-NoProfile', '-Command', entry.command], { cwd: childRoot, encoding: 'utf8' });
+        const laterChild = spawnSync('powershell.exe', ['-NoProfile', '-Command', entry.command], { cwd: laterChildRoot, encoding: 'utf8' });
+        expect(inside.error).toBeUndefined();
+        expect(inside.status).toBe(0);
+        expect(inside.stdout).toContain('TEAMAI_POWERSHELL_GATE');
+        expect(child.error).toBeUndefined();
+        expect(child.status).toBe(0);
+        expect(child.stdout).not.toContain('TEAMAI_POWERSHELL_GATE');
+        expect(laterChild.error).toBeUndefined();
+        expect(laterChild.status).toBe(0);
+        expect(laterChild.stdout).not.toContain('TEAMAI_POWERSHELL_GATE');
+      }
+    }
   });
 });
 
