@@ -159,9 +159,9 @@ describe('assigned roles (#1186)', () => {
 
     const pull = await runCLI(['pull', '--force'], homeDir, projectRoot);
     expect(pull.code, pull.output).toBe(0);
-    // `teamai` is the CLI's own discovery skill, and `workflow-session-close` the skill pull generates for its
+    // `teamai` is the CLI's own discovery skill, and `teamai-share-session` the skill pull generates for its
     // default workflow, both delivered to every member.
-    expect(deliveredSkills(projectRoot)).toEqual(['frontend-only', 'teamai', 'workflow-session-close']);
+    expect(deliveredSkills(projectRoot)).toEqual(['frontend-only', 'teamai', 'teamai-share-session']);
 
     // The refused `roles set` left the config file alone, and so did the pull.
     const config = fs.readFileSync(path.join(projectRoot, '.teamai', 'config.yaml'), 'utf8');
@@ -184,7 +184,7 @@ describe('assigned roles (#1186)', () => {
     git(['commit', '-qam', 'assign bob to frontend'], remoteRepo);
     const first = await runCLI(['pull', '--force'], homeDir, projectRoot);
     expect(first.code, first.output).toBe(0);
-    expect(deliveredSkills(projectRoot)).toEqual(['frontend-only', 'teamai', 'workflow-session-close']);
+    expect(deliveredSkills(projectRoot)).toEqual(['frontend-only', 'teamai', 'teamai-share-session']);
 
     fs.writeFileSync(path.join(remoteRepo, 'manifest', 'members.yaml'), [
       'version: 1',
@@ -199,7 +199,7 @@ describe('assigned roles (#1186)', () => {
     // A plain pull, as a session start runs it: one pull, no --force.
     const second = await runCLI(['pull'], homeDir, projectRoot);
     expect(second.code, second.output).toBe(0);
-    expect(deliveredSkills(projectRoot), second.output).toEqual(['backend-only', 'teamai', 'workflow-session-close']);
+    expect(deliveredSkills(projectRoot), second.output).toEqual(['backend-only', 'teamai', 'teamai-share-session']);
     const list = await runCLI(['roles', 'list', '--json'], homeDir, projectRoot);
     expect(JSON.parse(list.output)).toMatchObject({ roles: ['backend'] });
   });
@@ -214,7 +214,7 @@ describe('assigned roles (#1186)', () => {
     expect(pull.code, pull.output).toBe(0);
     // Without the assignments file this role-less member would receive every
     // namespace — both of these skills. `default: []` closes that.
-    expect(deliveredSkills(projectRoot)).toEqual(['teamai', 'workflow-session-close']);
+    expect(deliveredSkills(projectRoot)).toEqual(['teamai', 'teamai-share-session']);
   });
 
   // The file is read from origin/<default>, so the clone's copy is not a way
@@ -241,7 +241,7 @@ describe('assigned roles (#1186)', () => {
     const projectRoot = project('dave-project', 'dave');
     const pin = await runCLI(['pull', '--team-ref', 'pin-1186'], homeDir, projectRoot);
     expect(pin.code, pin.output).toBe(0);
-    expect(deliveredSkills(projectRoot)).toEqual(['teamai', 'workflow-session-close']);
+    expect(deliveredSkills(projectRoot)).toEqual(['teamai', 'teamai-share-session']);
 
     const members = fs.readFileSync(path.join(remoteRepo, 'manifest', 'members.yaml'), 'utf8');
     fs.writeFileSync(path.join(remoteRepo, 'manifest', 'members.yaml'), members.replace('default: []', '  dave: [backend]\ndefault: []'));
@@ -250,7 +250,7 @@ describe('assigned roles (#1186)', () => {
     const second = await runCLI(['pull'], homeDir, projectRoot);
     expect(second.code, second.output).toBe(0);
     expect(second.output).not.toContain('Already synced');
-    expect(deliveredSkills(projectRoot)).toEqual(['backend-only', 'teamai', 'workflow-session-close']);
+    expect(deliveredSkills(projectRoot)).toEqual(['backend-only', 'teamai', 'teamai-share-session']);
     const list = await runCLI(['roles', 'list', '--json'], homeDir, projectRoot);
     expect(JSON.parse(list.output)).toMatchObject({ roles: ['backend'], source: 'assigned' });
   });
@@ -267,7 +267,7 @@ describe('assigned roles (#1186)', () => {
     const projectRoot = project('erin-project', 'erin');
     const pin = await runCLI(['pull', '--team-ref', 'pin-1186-open'], homeDir, projectRoot);
     expect(pin.code, pin.output).toBe(0);
-    expect(deliveredSkills(projectRoot)).toEqual(['backend-only', 'frontend-only', 'teamai', 'workflow-session-close']);
+    expect(deliveredSkills(projectRoot)).toEqual(['backend-only', 'frontend-only', 'teamai', 'teamai-share-session']);
 
     fs.writeFileSync(membersFile, members);
     git(['add', 'manifest/members.yaml'], remoteRepo);
@@ -276,7 +276,7 @@ describe('assigned roles (#1186)', () => {
     const second = await runCLI(['pull'], homeDir, projectRoot);
     expect(second.code, second.output).toBe(0);
     expect(second.output).not.toContain('Already synced');
-    expect(deliveredSkills(projectRoot), second.output).toEqual(['teamai', 'workflow-session-close']);
+    expect(deliveredSkills(projectRoot), second.output).toEqual(['teamai', 'teamai-share-session']);
     const list = await runCLI(['roles', 'list', '--json'], homeDir, projectRoot);
     expect(JSON.parse(list.output)).toMatchObject({ roles: [], source: 'default' });
   });
@@ -370,7 +370,7 @@ describe('hai fallback (#1392)', () => {
 
     const pull = await run(['pull', '--force']);
     expect(pull.code, pull.output).toBe(0);
-    expect(delivered(), pull.output).toEqual(['hai-only', 'teamai', 'workflow-session-close']);
+    expect(delivered(), pull.output).toEqual(['hai-only', 'teamai', 'teamai-share-session']);
     expect(fs.readFileSync(configFile, 'utf8')).toBe(before);
     const list = await run(['roles', 'list', '--json']);
     expect(JSON.parse(list.output)).toMatchObject({ roles: ['hai'], source: 'local' });
@@ -381,18 +381,18 @@ describe('hai fallback (#1392)', () => {
 
     const first = await run(['pull', '--force']);
     expect(first.code, first.output).toBe(0);
-    expect(delivered()).toEqual(['frontend-only', 'teamai', 'workflow-session-close']);
+    expect(delivered()).toEqual(['frontend-only', 'teamai', 'teamai-share-session']);
 
     git(['rm', '-q', 'manifest/members.yaml'], remote);
     git(['commit', '-qm', 'stop assigning roles'], remote);
 
     const second = await run(['pull']);
     expect(second.code, second.output).toBe(0);
-    expect(delivered(), second.output).toEqual(['hai-only', 'teamai', 'workflow-session-close']);
+    expect(delivered(), second.output).toEqual(['hai-only', 'teamai', 'teamai-share-session']);
 
     const third = await run(['pull']);
     expect(third.code, third.output).toBe(0);
-    expect(delivered(), third.output).toEqual(['hai-only', 'teamai', 'workflow-session-close']);
+    expect(delivered(), third.output).toEqual(['hai-only', 'teamai', 'teamai-share-session']);
     const list = await run(['roles', 'list', '--json']);
     expect(JSON.parse(list.output)).toMatchObject({ roles: ['hai'], source: 'local' });
   });
