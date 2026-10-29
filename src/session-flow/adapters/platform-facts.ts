@@ -29,6 +29,8 @@ export interface SessionPlatformFacts {
   legacyIdWithoutWorkspace: boolean;
   sqliteRegistrationOnWindows: boolean;
   idFormat: 'uuid' | 'opencode';
+  /** The tool resumes only from a store TeamAI cannot write, so its sessions are read and never written. */
+  readOnly?: true;
 }
 
 export const SESSION_PLATFORM_FACTS = {
@@ -156,6 +158,17 @@ export const SESSION_PLATFORM_FACTS = {
     legacyIdWithoutWorkspace: false,
     sqliteRegistrationOnWindows: false,
     idFormat: 'opencode',
+  },
+  'agy': {
+    // agy 1.4.8 keeps its conversations beside its config root: ~/.gemini/antigravity-cli.
+    store: { in: 'tool-home', home: 'agy', dir: '../antigravity-cli' },
+    resume: (id) => `agy --conversation ${id}`,
+    thinking: true, images: false,
+    nativeTools: new Set(['bash', 'read_file', 'write_file', 'edit_file', 'grep', 'glob', 'web_search', 'web_fetch', 'task']),
+    legacyIdWithoutWorkspace: false,
+    sqliteRegistrationOnWindows: false,
+    idFormat: 'uuid',
+    readOnly: true,
   },
 } satisfies Record<string, SessionPlatformFacts>;
 

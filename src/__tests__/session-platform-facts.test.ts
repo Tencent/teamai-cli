@@ -12,7 +12,11 @@ describe('session platform facts (#1140)', () => {
     for (const [platform, facts] of Object.entries(SESSION_PLATFORM_FACTS)) {
       expect(AgentSession.platformForTool(AgentSession.toolForPlatform(platform))).toBe(platform);
       expect(AgentSession.platformForTool(platform)).toBe(platform);
-      expect(Boolean(noAdapter(platform, 'write', 'win32'))).toBe(facts.sqliteRegistrationOnWindows);
+      const readOnly = 'readOnly' in facts && facts.readOnly;
+      expect(Boolean(noAdapter(platform, 'write', 'win32'))).toBe(facts.sqliteRegistrationOnWindows || readOnly);
+      // A platform TeamAI only reads is refused as a target on every OS, and still read.
+      expect(Boolean(noAdapter(platform, 'write', 'darwin'))).toBe(readOnly);
+      expect(noAdapter(platform, 'read', 'darwin')).toBeUndefined();
     }
     expect(AgentSession.platformForTool('unsupported')).toBeUndefined();
   });

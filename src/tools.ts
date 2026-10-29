@@ -1263,7 +1263,7 @@ export const TOOLS = {
       project: { format: 'agy', reads: [{ base: 'project', path: '.agents/plugins/teamai/mcp_config.json', when: 'workspaceUnder', evidence: 'verified' }] },
     },
     hooks: { user: { channel: 'adapter', adapter: 'agy-hooks', evidence: 'verified' }, self: 'user' },
-    sessions: 'unknown',
+    sessions: ['agy'],
     launch: 'none',
     features: {
       env: '?',

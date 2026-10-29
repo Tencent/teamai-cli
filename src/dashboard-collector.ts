@@ -806,7 +806,7 @@ export function resolveCopilotUsageTranscript(
 }
 
 const MUSE_USAGE_EVENT = 'goal_usage_attribution';
-const MUSE_SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const SESSION_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * Muse Code's log of `sessionId`, `$XDG_DATA_HOME/muse/sessions/YYYY/MM/DD/<id>/session.jsonl`
@@ -816,7 +816,7 @@ const MUSE_SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-
  * onto the event there, so no later reader without the variable has to find the tree.
  */
 async function findMuseSessionLog(sessionId: string): Promise<string | null> {
-  if (!MUSE_SESSION_ID_RE.test(sessionId)) return null;
+  if (!SESSION_UUID_RE.test(sessionId)) return null;
   const dataHome = process.env.XDG_DATA_HOME?.trim() || path.join(getUserHome(), '.local', 'share');
   const root = path.join(dataHome, 'muse', 'sessions');
   const subdirs = async (dir: string) => (await fs.promises.readdir(dir).catch(() => [] as string[]))
@@ -830,6 +830,45 @@ async function findMuseSessionLog(sessionId: string): Promise<string | null> {
     }
   }
   return null;
+}
+
+/**
+ * An Antigravity CLI session's token totals from the PLANNER_RESPONSE steps of
+ * its transcript (`<store>/brain/<id>/.system_generated/logs/transcript.jsonl`),
+ * or null with none. agy writes the counts as strings, and its `input_tokens`
+ * includes `cache_read_tokens`, as Gemini's prompt count does, so the cached part
+ * is moved to cacheRead.
+ */
+async function readAgySessionTokens(sessionId: string): Promise<TokenUsage | null> {
+  if (!SESSION_UUID_RE.test(sessionId)) return null;
+  const { sessionStoreDir } = await import('./locate.js');
+  const file = path.join(sessionStoreDir('agy', undefined), 'brain', sessionId, '.system_generated', 'logs', 'transcript.jsonl');
+  let tokens: TokenUsage | null = null;
+  try {
+    for (const line of (await fs.promises.readFile(file, 'utf-8')).split('\n')) {
+      if (!line.includes('"PLANNER_RESPONSE"')) continue;
+      let step: Record<string, unknown> | null;
+      try {
+        step = asRecord(JSON.parse(line));
+      } catch {
+        continue;
+      }
+      if (step?.type !== 'PLANNER_RESPONSE') continue;
+      const count = (value: unknown): number => toNum(typeof value === 'string' ? Number(value) : value);
+      const cacheRead = count(step.cache_read_tokens);
+      tokens = addTokenUsage(tokens ?? emptyTokenUsage(), {
+        input: Math.max(0, count(step.input_tokens) - cacheRead),
+        output: count(step.output_tokens),
+        cacheRead,
+        cacheCreation: 0,
+      });
+    }
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
+      log.debug(`dashboard: could not read the Antigravity CLI transcript ${file}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  return tokens;
 }
 
 /**
@@ -1370,6 +1409,14 @@ export async function parseHookEvent(
       }));
       if (records.length) event.requestDaily = aggregateRequestDaily(records);
       await reconcileRequestLog(records);
+    }
+  }
+
+  if (eventType === 'stop' && tool.toLowerCase() === 'agy') {
+    const tokens = await readAgySessionTokens(sessionId);
+    if (tokens) {
+      event.tokens = tokens;
+      event.tokenScope = 'session';
     }
   }
 
