@@ -299,6 +299,7 @@ Gemini CLI reads the same two variables, so teamai never exports them. It define
 
 ```bash
 # ~/.teamai/models/agy-env.sh
+unalias agy 2>/dev/null || true
 agy() { GEMINI_API_KEY="${API_KEY}" GOOGLE_GEMINI_BASE_URL='https://llm-gw.example.com' command agy "$@"; }
 ```
 
@@ -309,6 +310,8 @@ gemini                             # still uses my-own-key and Google
 ```
 
 teamai's own agy runs (AI calls, local workflow steps, the scorer judge) read the key and gateway from that file.
+
+A script does not inherit a shell function, so `bash deploy.sh` that calls `agy` runs it without the gateway. Source the file first: `. ~/.teamai/models/agy-env.sh`.
 
 ### Use a team profile
 

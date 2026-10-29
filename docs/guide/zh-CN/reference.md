@@ -299,6 +299,7 @@ Gemini CLI 也读这两个变量，所以 teamai 从不 export 它们，而是�
 
 ```bash
 # ~/.teamai/models/agy-env.sh
+unalias agy 2>/dev/null || true
 agy() { GEMINI_API_KEY="${API_KEY}" GOOGLE_GEMINI_BASE_URL='https://llm-gw.example.com' command agy "$@"; }
 ```
 
@@ -309,6 +310,8 @@ gemini                             # 仍然用 my-own-key 和 Google
 ```
 
 teamai 自己运行的 agy（AI 调用、本地工作流步骤、评分 judge）从这个文件读取密钥和网关。
+
+脚本不会继承 shell 函数，所以 `bash deploy.sh` 里调用的 `agy` 不走网关。先在脚本里 source 这个文件：`. ~/.teamai/models/agy-env.sh`。
 
 ### 使用团队配置
 
