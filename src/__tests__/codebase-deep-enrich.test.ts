@@ -211,6 +211,46 @@ describe('codebase deep-enrich', () => {
     expect(g2).not.toContain('## Dependency Paths');
   });
 
+  it('writes every graph doc table with a header delimiter row', async () => {
+    const withEvidence = createEnrichFixture();
+    const withEvidenceDir = path.join(withEvidence, 'teamwiki', 'evidence', 'code', 'faketest');
+    fs.writeFileSync(path.join(withEvidenceDir, 'dependency-paths.md'), [
+      '## POST /orders',
+      '',
+      '- [entry] `createOrder` ← src/api.ts:10',
+      '',
+    ].join('\n'));
+    fs.writeFileSync(path.join(withEvidenceDir, 'interfaces.md'), [
+      '| Component | Type | Count | Confidence | Patterns |',
+      '|-----------|------|-------|------------|----------|',
+      '| Auth | http | 1 | EXTRACTED | `GET /login` |',
+      '',
+    ].join('\n'));
+    const withoutEdges = createEnrichFixture();
+    const withoutEdgesDir = path.join(withoutEdges, 'teamwiki', 'evidence', 'code', 'faketest');
+    const manifestPath = path.join(withoutEdgesDir, '_manifest.json');
+    fs.writeFileSync(manifestPath, JSON.stringify({ ...JSON.parse(fs.readFileSync(manifestPath, 'utf8')), edges: [] }));
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await codebaseCmd({ deepEnrich: true, project: 'faketest', output: withEvidence, json: true });
+    await codebaseCmd({ deepEnrich: true, project: 'faketest', output: withoutEdges, json: true });
+
+    // A Markdown table renders only when its second row is the delimiter row.
+    const tablesWithoutDelimiter: string[] = [];
+    for (const docsDir of [path.join(withEvidenceDir, 'docs'), path.join(withoutEdgesDir, 'docs')]) {
+      for (const file of fs.readdirSync(docsDir).filter(name => name.startsWith('graph-'))) {
+        const docLines = fs.readFileSync(path.join(docsDir, file), 'utf8').split('\n');
+        docLines.forEach((line, index) => {
+          const startsTable = line.startsWith('|') && !docLines[index - 1]?.startsWith('|');
+          if (startsTable && !/^\|(\s*:?-+:?\s*\|)+$/.test(docLines[index + 1] ?? '')) {
+            tablesWithoutDelimiter.push(`${file}: ${line}`);
+          }
+        });
+      }
+    }
+    expect(tablesWithoutDelimiter).toEqual([]);
+  });
+
   it('bounds reverse reachability output for a layered DAG', async () => {
     const root = createEnrichFixture();
     const evidenceDir = path.join(root, 'teamwiki', 'evidence', 'code', 'faketest');

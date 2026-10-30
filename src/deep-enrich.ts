@@ -298,6 +298,8 @@ function buildG1RelationsDoc(manifest: Manifest): string {
       '<!-- search-anchor: 依赖, 关系, 上游, 下游, DEPENDS_ON, imports, 模块关系 -->',
       '',
       '## 🤖 AI Quick Reference',
+      '| Dimension | Key Information |',
+      '|-----------|-----------------|',
       '| Document scope | Answers who depends on X and what X depends on |',
       '| Core value | No extracted edges are available in this run |',
       '',
@@ -330,6 +332,8 @@ function buildG1RelationsDoc(manifest: Manifest): string {
     '<!-- search-anchor: 依赖, 关系, 上游, 下游, DEPENDS_ON, imports, 模块关系 -->',
     '',
     '## 🤖 AI Quick Reference',
+    '| Dimension | Key Information |',
+    '|-----------|-----------------|',
     '| Document scope | Answers who depends on X and what X depends on |',
     '| Core value | Forward/reverse dependency index with evidence confidence |',
     '| Coverage | Extracted manifest edges only; absent relations are not proof of absence |',
@@ -371,7 +375,7 @@ function buildG1RelationsDoc(manifest: Manifest): string {
 
 function buildG2DataflowDoc(callChains: string): string {
   if (!callChains.trim()) {
-    return '# 数据流图\n<!-- search-anchor: 调用链, 数据流, 请求路径, entry, flow, 入口, 链路 -->\n\n## 🤖 AI Quick Reference\n| Document scope | Deterministic call-chain evidence |\n| Core value | Shows known paths without inventing missing state machines |\n| Coverage | No call-chain evidence was extracted in this run |\n\n（暂无调用链数据）\n\n> 可能原因：代码中未检测到入口→服务→数据层的多层调用链。\n> 常见于纯库项目或单层架构项目。\n';
+    return '# 数据流图\n<!-- search-anchor: 调用链, 数据流, 请求路径, entry, flow, 入口, 链路 -->\n\n## 🤖 AI Quick Reference\n| Dimension | Key Information |\n|-----------|-----------------|\n| Document scope | Deterministic call-chain evidence |\n| Core value | Shows known paths without inventing missing state machines |\n| Coverage | No call-chain evidence was extracted in this run |\n\n（暂无调用链数据）\n\n> 可能原因：代码中未检测到入口→服务→数据层的多层调用链。\n> 常见于纯库项目或单层架构项目。\n';
   }
 
   const lines = [
@@ -379,6 +383,8 @@ function buildG2DataflowDoc(callChains: string): string {
     '<!-- search-anchor: 调用链, 数据流, 请求路径, entry, flow, 入口, 链路 -->',
     '',
     '## 🤖 AI Quick Reference',
+    '| Dimension | Key Information |',
+    '|-----------|-----------------|',
     '| Document scope | Deterministic call-chain evidence |',
     '| Core value | Shows known paths without inventing missing state machines |',
     '| Confidence | EXTRACTED for paths emitted from deterministic call-chain evidence |',
@@ -429,9 +435,9 @@ function buildG2DataflowDoc(callChains: string): string {
 
 function buildG3InterfacesDoc(interfacesMd: string): string {
   if (!interfacesMd.trim()) {
-    return '# 接口映射表\n<!-- search-anchor: data flow, storage dependencies, MQ topology, cache, 数据流, 存储 -->\n\n## 🤖 AI Quick Reference\n| Document scope | Extracted interface evidence only |\n| Core value | Shows known interface inventory without inventing storage behaviour |\n| Coverage | No interface evidence was extracted in this run |\n\n（暂无接口数据）\n\n> 可能原因：未检测到 HTTP/gRPC/MQ 等对外接口定义。\n> 仅当代码中存在路由注册、Proto 定义或消息队列声明时才会提取接口。\n';
+    return '# 接口映射表\n<!-- search-anchor: data flow, storage dependencies, MQ topology, cache, 数据流, 存储 -->\n\n## 🤖 AI Quick Reference\n| Dimension | Key Information |\n|-----------|-----------------|\n| Document scope | Extracted interface evidence only |\n| Core value | Shows known interface inventory without inventing storage behaviour |\n| Coverage | No interface evidence was extracted in this run |\n\n（暂无接口数据）\n\n> 可能原因：未检测到 HTTP/gRPC/MQ 等对外接口定义。\n> 仅当代码中存在路由注册、Proto 定义或消息队列声明时才会提取接口。\n';
   }
-  return `# 接口映射表\n<!-- search-anchor: data flow, storage dependencies, MQ topology, cache, 数据流, 存储 -->\n\n## 🤖 AI Quick Reference\n| Document scope | Extracted interface evidence only |\n| Core value | Routes interface questions to the evidence inventory |\n| Coverage | Extracted interface evidence only; storage and MQ semantics remain unverified |\n\n${interfacesMd}\n`;
+  return `# 接口映射表\n<!-- search-anchor: data flow, storage dependencies, MQ topology, cache, 数据流, 存储 -->\n\n## 🤖 AI Quick Reference\n| Dimension | Key Information |\n|-----------|-----------------|\n| Document scope | Extracted interface evidence only |\n| Core value | Routes interface questions to the evidence inventory |\n| Coverage | Extracted interface evidence only; storage and MQ semantics remain unverified |\n\n${interfacesMd}\n`;
 }
 
 function buildG4ErrorCodeDoc(manifest: Manifest, moduleDocs: Map<string, string>): string {
@@ -455,6 +461,8 @@ function buildG4ErrorCodeDoc(manifest: Manifest, moduleDocs: Map<string, string>
     '<!-- search-anchor: error code, error mapping, InvalidParameter, 错误码, 故障排查 -->',
     '',
     '## 🤖 AI Quick Reference',
+    '| Dimension | Key Information |',
+    '|-----------|-----------------|',
     '| Document scope | Explicit error-code ownership evidence |',
     '| Core value | Routes troubleshooting without guessing ownership |',
     '',
@@ -485,6 +493,8 @@ function buildG7RiskDoc(manifest: Manifest): string {
     '<!-- search-anchor: architecture risk, blast radius, impact surface, 架构风险, 影响范围 -->',
     '',
     '## 🤖 AI Quick Reference',
+    '| Dimension | Key Information |',
+    '|-----------|-----------------|',
     '| Document scope | Deterministic structural impact indicators |',
     '| Core value | Estimates direct graph impact without claiming runtime failure probability |',
     '',
@@ -519,6 +529,8 @@ function buildG8ConfigDoc(components: ManifestComponent[], moduleDocs: Map<strin
     '<!-- search-anchor: config parameters, config index, config changes, 配置参数, 配置变更 -->',
     '',
     '## 🤖 AI Quick Reference',
+    '| Dimension | Key Information |',
+    '|-----------|-----------------|',
     '| Document scope | Explicit configuration references from component evidence |',
     '| Core value | Locates config references while leaving defaults and effect mode unverified |',
     '',
@@ -541,6 +553,8 @@ function buildG9ConstraintDoc(): string {
     '<!-- search-anchor: business rules, constraint matrix, operation constraints, AI reasoning, 业务规则 -->',
     '',
     '## 🤖 AI Quick Reference',
+    '| Dimension | Key Information |',
+    '|-----------|-----------------|',
     '| Document scope | Explicit operation constraints from evidence |',
     '| Core value | Prevents unsupported yes/no answers when evidence is absent |',
     '',
