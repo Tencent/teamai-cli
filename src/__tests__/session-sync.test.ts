@@ -555,6 +555,29 @@ describe('session pull (gitPull + rebuildIndex) on a team checkout', () => {
     expect(git(alice, 'status', '--porcelain')).toBe(`?? sessions/repos/${encodeRepoIdentity(identity)}/notes.txt`);
   });
 
+  it('leaves a %-escaped repository directory in place while it holds uncommitted edits, and publishes none of them', async () => {
+    const alice = path.join(repoRoot, 'alice');
+    git(repoRoot, 'init', '-q', '-b', 'main', alice);
+    initCheckout(alice, 'alice');
+    const first = new SyncManager(alice);
+    await first.saveSession(mkSession(), mkMeta());
+    expect(first.gitCommit('push').status).toBe('committed');
+    git(alice, 'mv', `sessions/repos/${encodeRepoIdentity(identity)}`, 'sessions/repos/github.com%2Forg%2Falpha');
+    git(alice, 'commit', '-qm', 'previous layout');
+    const edited = 'sessions/repos/github.com%2Forg%2Falpha/alice/claude-code_fix-payment_20260102.jsonl';
+    const original = git(alice, 'show', `HEAD:${edited}`);
+    fs.appendFileSync(path.join(alice, edited), 'local edit\n');
+
+    const mgr = new SyncManager(alice);
+    await mgr.saveSession(mkSession({ sessionId: 's-2', title: 'add refunds' }), mkMeta({ sessionId: 's-2' }));
+    expect(mgr.gitCommit('push').status).toBe('committed');
+
+    expect(git(alice, 'show', `HEAD:${edited}`)).toBe(original);
+    expect(git(alice, 'diff', '--name-only')).toBe(edited);
+    expect(git(alice, 'diff', '--cached', '--name-only')).toBe('');
+    expect(mgr.listSessions(identity).map((s) => s.sessionId).sort()).toEqual(['s-1', 's-2']);
+  });
+
   it('leaves a %-escaped repository directory for the next push to move when rebuilding every index', async () => {
     const alice = path.join(repoRoot, 'alice');
     git(repoRoot, 'init', '-q', '-b', 'main', alice);

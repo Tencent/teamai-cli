@@ -522,7 +522,8 @@ export class SyncManager {
   /**
    * Move a `%XX`-named archive to encodeRepoIdentity's name, recording each file HEAD still holds under the old name
    * (and its new path) so `gitCommit` stages the rename. Reading HEAD, not the disk, finds the move again on the retry
-   * after a failed commit, and leaves files the archive never committed out of it.
+   * after a failed commit, and leaves files the archive never committed out of it. A directory with uncommitted
+   * changes to its tracked files stays where it is, since staging the move would publish them.
    */
   private moveRepoDirToCurrentName(repoIdentity: string | null): void {
     if (!repoIdentity) return;
@@ -531,12 +532,14 @@ export class SyncManager {
     if (fromName === toName) return;
     const from = path.join(this.sessionsDir, 'repos', fromName);
     const to = path.join(this.sessionsDir, 'repos', toName);
+    const fromRel = `sessions/repos/${fromName}/`;
     if (this.repoDir(repoIdentity) === from) {
+      if (this.runGit(['status', '--porcelain', '--untracked-files=no', '--', fromRel], false)) return;
       assertNoSymlinkedAncestors(from, this.repoRoot);
       assertNoSymlinkedAncestors(to, this.repoRoot);
       fs.renameSync(from, to);
     }
-    const fromRel = `sessions/repos/${fromName}/`;
+    if (fs.existsSync(from)) return;
     const committed = this.runGit(['ls-tree', '-r', '-z', '--name-only', 'HEAD', fromRel], false);
     for (const file of committed.split('\0').filter(Boolean)) {
       const moved = `sessions/repos/${toName}/${file.slice(fromRel.length)}`;
