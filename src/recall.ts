@@ -196,6 +196,9 @@ function namesIdentifier(page: string, title: string, identifier: string): boole
 /** The subset of a merged result that decides its position in the output. */
 export interface RankableResult {
   score: number;
+  /** Ordering score from `search` (title length-normalized); absent means
+   *  order by `score`. */
+  rankScore?: number;
   fromCodebase?: boolean;
   idfBaseline?: number;
 }
@@ -211,7 +214,7 @@ export interface RankableResult {
 export function rankingScoreOf(result: RankableResult, idfBaseline: number): number {
   return result.fromCodebase
     ? result.score * CODE_HIT_RANKING_PENALTY
-    : normalizeLearningsScoreForRanking(result.score, result.idfBaseline ?? idfBaseline);
+    : normalizeLearningsScoreForRanking(result.rankScore ?? result.score, result.idfBaseline ?? idfBaseline);
 }
 
 /** Search result with scope label for merged output. */

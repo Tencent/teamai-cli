@@ -61,10 +61,10 @@ describe('search scoring', () => {
     });
     const results = search('订单', index([hub, short]), 5);
     expect(results.map((r) => r.entry.filename)).toEqual(['short.md', 'hub.md']);
-    expect(results[0].score).toBeGreaterThan(results[1].score);
+    expect(results[0].rankScore).toBeGreaterThan(results[1].rankScore ?? Infinity);
   });
 
-  it('divides the title score by sqrt(title length / TITLE_LENGTH_SCALE)', () => {
+  it('divides the title score by sqrt(title length / TITLE_LENGTH_SCALE) for ordering only', () => {
     const title = '订单排查手册：查不到、查得慢、数据不一致（L4 runbook）';
     // Only the title token matches, so the score is the title contribution
     // alone and the ratio of the two scores is the ratio of the divisors.
@@ -75,8 +75,10 @@ describe('search scoring', () => {
     const shortResult = results.find((r) => r.entry.filename === 'short.md')!;
     const longFactor = Math.sqrt(Math.max(1, title.length / TITLE_LENGTH_SCALE));
     const shortFactor = Math.sqrt(Math.max(1, '订单'.length / TITLE_LENGTH_SCALE));
-    // The long title's contribution is divided by a larger factor, so it scores
+    // The long title's contribution is divided by a larger factor, so it ranks
     // lower by exactly that ratio.
-    expect(longResult.score / shortResult.score).toBeCloseTo(shortFactor / longFactor, 6);
+    expect((longResult.rankScore ?? 0) / (shortResult.rankScore ?? Infinity)).toBeCloseTo(shortFactor / longFactor, 6);
+    // The relevance score recall thresholds judge is not length-normalized.
+    expect(longResult.score).toBeCloseTo(shortResult.score, 10);
   });
 });

@@ -1062,7 +1062,13 @@ export async function loadIndex(indexPath?: string): Promise<SearchIndex | null>
 /** A single search result with relevance score. */
 export interface SearchResult {
   entry: SearchIndexEntry;
+  /** Relevance score on the scale recall's thresholds and `--check` judge. */
   score: number;
+  /** Score that orders results: `score` with the title field's length
+   *  normalization applied (see TITLE_LENGTH_SCALE). Kept apart from `score`
+   *  so a long title changes the order without dropping a hit below the
+   *  relevance threshold. Set by `search`; absent means order by `score`. */
+  rankScore?: number;
   /** Query words matching this entry's title or tags. Absent for codebase-graph
    *  hits, which are scored by BM25 over pages rather than per-term coverage. */
   matchedTerms?: string[];
@@ -1128,16 +1134,17 @@ const QUERY_STOP_TOKENS = new Set([
  * Search the index with a query string.
  *
  * Scoring (P1.4 domain-weighted):
- * - Title token match: 3 points, divided by sqrt(title length / TITLE_LENGTH_SCALE) so a long
- *   hub title ("订单排查手册：查不到、查得慢、数据不一致（L4 runbook）") does not
- *   out-score a short topic title on the same matched token
+ * - Title token match: 3 points. For `rankScore` only, divided by
+ *   sqrt(title length / TITLE_LENGTH_SCALE) so a long hub title
+ *   ("订单排查手册：查不到、查得慢、数据不一致（L4 runbook）") does not out-rank
+ *   a short topic title on the same matched token
  * - Tag token match: 2 points
  * - Body token match: 1 point
  * - Vote bonus: +0.5 per vote (caps at 5 points)
  * - Domain multiplier: technical ×1.0, neutral ×0.85, ops ×0.5, support ×0.3
  * - Type bonus: skills/rules ×1.1 (curated high-confidence knowledge)
  *
- * @returns Results sorted by score descending, limited to top N.
+ * @returns Results sorted by rankScore descending, limited to top N.
  */
 export function search(
   query: string,
@@ -1196,7 +1203,7 @@ export function search(
   // Relevance is the caller's judgement; search only states what it covers.
   const wordTokens = wordSegments(query).map((w) => ({ word: w, tokens: tokenize(w) }));
 
-  const results: SearchResult[] = [];
+  const results: Array<SearchResult & { rankScore: number }> = [];
 
   for (const entry of index.entries) {
     let titleScore = 0;
@@ -1222,44 +1229,52 @@ export function search(
         bodyScore += 1 * idf(qt, entryDomain);
       }
     }
-    // BM25-style length normalization for the title field: without it a hub
-    // page whose title names the whole domain matches the same query token as a
-    // focused page, at the same weight.
-    let score = titleScore / Math.sqrt(Math.max(1, (entry.title ?? '').length / TITLE_LENGTH_SCALE)) + tagScore + bodyScore;
+    const matchScore = titleScore + tagScore + bodyScore;
 
     // Require at least one title or tag match to filter out body-only noise.
     // Docs (type === 'docs') often lack tags and have generic titles, so allow body-only
     // matches for them — the IDF weighting naturally demotes low-relevance hits.
     const isDocsEntry = entry.type === 'docs';
-    if (score > 0 && (hasTitleOrTagMatch || isDocsEntry)) {
-      // Normalize the token-match sum by query length before adding absolute
-      // bonuses, so cross-query scores share a scale (see lengthNorm above).
-      score /= lengthNorm;
-      // Vote bonus: +0.5 per vote, max 5 points (unchanged).
-      score += Math.min(entry.votes * 0.5, 5);
+    if (matchScore > 0 && (hasTitleOrTagMatch || isDocsEntry)) {
+      const finalize = (sum: number): number => {
+        // Normalize the token-match sum by query length before adding absolute
+        // bonuses, so cross-query scores share a scale (see lengthNorm above).
+        let score = sum / lengthNorm;
+        // Vote bonus: +0.5 per vote, max 5 points (unchanged).
+        score += Math.min(entry.votes * 0.5, 5);
 
-      // Query-aware domain weight (改动 A) × type bonus (unchanged).
-      // Missing domain degrades gracefully to 'neutral'.
-      const domainMultiplier = domainWeightRow[entry.domain ?? 'neutral'];
-      const typeMultiplier = TYPE_BONUS[entry.type];
-      score *= domainMultiplier * typeMultiplier;
+        // Query-aware domain weight (改动 A) × type bonus (unchanged).
+        // Missing domain degrades gracefully to 'neutral'.
+        const domainMultiplier = domainWeightRow[entry.domain ?? 'neutral'];
+        const typeMultiplier = TYPE_BONUS[entry.type];
+        score *= domainMultiplier * typeMultiplier;
 
-      // codebase-index.md 额外权重 boost，确保章节摘要优先于普通 docs 返回。
-      if (path.basename(entry.path ?? '') === CODEBASE_INDEX_FILENAME) {
-        score *= CODEBASE_INDEX_WEIGHT_BOOST;
-      }
+        // codebase-index.md 额外权重 boost，确保章节摘要优先于普通 docs 返回。
+        if (path.basename(entry.path ?? '') === CODEBASE_INDEX_FILENAME) {
+          score *= CODEBASE_INDEX_WEIGHT_BOOST;
+        }
 
-      // Hot/cold penalty: entries with low confidence get demoted.
-      if (entry.hotness !== undefined && entry.hotness < 1.0) {
-        score *= entry.hotness;
-      }
+        // Hot/cold penalty: entries with low confidence get demoted.
+        if (entry.hotness !== undefined && entry.hotness < 1.0) {
+          score *= entry.hotness;
+        }
+        return score;
+      };
+      const score = finalize(matchScore);
+      // BM25-style length normalization for the title field: without it a hub
+      // page whose title names the whole domain matches the same query token as
+      // a focused page, at the same weight. It orders results only; `score`
+      // stays on the scale the relevance threshold is set on.
+      const rankScore = finalize(
+        titleScore / Math.sqrt(Math.max(1, (entry.title ?? '').length / TITLE_LENGTH_SCALE)) + tagScore + bodyScore,
+      );
 
       // Coverage per query word: matched when any of its tokens hits title/tag.
       // Skipped for entries admitted only by the codebase exemption — those are
       // scored on body text, so every term would read as missing and the caller
       // would discard a legitimate hit as uncovered.
       if (!hasTitleOrTagMatch) {
-        results.push({ entry, score });
+        results.push({ entry, score, rankScore });
         continue;
       }
 
@@ -1270,13 +1285,13 @@ export function search(
         (hit ? matchedTerms : missingTerms).push(word);
       }
 
-      results.push({ entry, score, matchedTerms, missingTerms });
+      results.push({ entry, score, rankScore, matchedTerms, missingTerms });
     }
   }
 
-  // Sort by score descending, then by date descending for ties.
+  // Sort by ordering score descending, then by date descending for ties.
   results.sort((a, b) => {
-    if (b.score !== a.score) return b.score - a.score;
+    if (b.rankScore !== a.rankScore) return b.rankScore - a.rankScore;
     return (b.entry.date || '').localeCompare(a.entry.date || '');
   });
 

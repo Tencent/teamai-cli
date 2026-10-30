@@ -194,6 +194,65 @@ describe('recall --check precheck mode', () => {
     expect(captured).toContain('title="API Technical Reference"');
   });
 
+  it('keeps a long-titled learning relevant when only its title names the query', async () => {
+    vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);
+    const learningsDir = path.join(projectConfig.repo.localPath, 'learnings');
+    await fse.remove(path.join(learningsDir, 'proj-deploy-2026-05-01-ccc.md'));
+    await fse.writeFile(
+      path.join(learningsDir, 'order-runbook.md'),
+      [
+        '---',
+        'title: "订单排查手册：查不到、查得慢、数据不一致（L4 runbook）"',
+        'author: tester',
+        'date: 2026-05-01',
+        '---',
+        '',
+        'General operational notes with no additional query matches.',
+        '',
+      ].join('\n'),
+    );
+    await fse.writeFile(
+      path.join(learningsDir, 'unrelated.md'),
+      ['---', 'title: "Unrelated Background Record"', 'author: tester', 'date: 2026-05-01', '---', '', 'Onboarding notes.', ''].join('\n'),
+    );
+    await buildIndex({
+      learningsDir,
+      indexPath: path.join(getTeamaiHome('project', projectRoot), 'search-index.json'),
+    });
+
+    await recall('查不到', { check: true });
+
+    expect(captured).toMatch(/^RELEVANT /);
+    expect(captured).toContain('title="订单排查手册：查不到、查得慢、数据不一致（L4 runbook）"');
+  });
+
+  it('orders a short topic title above a long hub title that out-scores it only on title length', async () => {
+    vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);
+    const learningsDir = path.join(projectConfig.repo.localPath, 'learnings');
+    await fse.remove(path.join(learningsDir, 'proj-deploy-2026-05-01-ccc.md'));
+    const write = (filename: string, frontmatter: string[], body: string) => fse.writeFile(
+      path.join(learningsDir, filename),
+      ['---', ...frontmatter, 'author: tester', 'date: 2026-05-01', '---', '', body, ''].join('\n'),
+    );
+    // Both titles name every query word; the hub also carries a matching tag,
+    // so its relevance score is higher. Only the title length should put the
+    // focused page first.
+    await write('hub.md', ['title: "订单排查手册：查不到、查得慢、数据不一致（L4 runbook）"', 'tags: [订单]'], 'General operational notes.');
+    await write('topic.md', ['title: "订单数据查不到"'], 'Check the consumer offset first.');
+    await write('unrelated.md', ['title: "Unrelated Background Record"'], 'Onboarding notes.');
+    await buildIndex({
+      learningsDir,
+      indexPath: path.join(getTeamaiHome('project', projectRoot), 'search-index.json'),
+    });
+
+    await recall('订单 数据 查不到', { dryRun: true });
+
+    const topicPosition = captured.indexOf('[learnings] 订单数据查不到');
+    const hubPosition = captured.indexOf('[learnings] 订单排查手册');
+    expect(topicPosition).toBeGreaterThanOrEqual(0);
+    expect(hubPosition).toBeGreaterThan(topicPosition);
+  });
+
   it('check mode does not record recall quality (no side effects)', async () => {
     vi.stubEnv('CLAUDE_SESSION_ID', 'recall-check-no-side-effect');
     vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);
