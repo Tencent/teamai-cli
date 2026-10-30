@@ -64,6 +64,8 @@ Generate G1~G9 in order (serially, Write each one as soon as it is complete):
 # {project_name} Component Dependency Matrix
 <!-- search-anchor: component dependencies, dependency matrix, communication method, call relationships -->
 ## 🤖 AI Quick Reference
+| Dimension | Key Information |
+|-----------|-----------------|
 | Document scope | Answers the retrieval question "who depends on X? what does X depend on?" |
 | Core value | N×N communication matrix + forward/reverse dependency index |
 | Use cases | Change impact assessment, service dependency review, architecture refactoring planning |
@@ -97,6 +99,8 @@ Example: `RPC[E]` = EXTRACTED, `MQ[I:0.8]` = INFERRED 0.8, `RPC[A]` = AMBIGUOUS
 # {project_name} Component Call Chain Overview and State Machines
 <!-- search-anchor: call chain, state machine, end-to-end chain, API chain -->
 ## 🤖 AI Quick Reference
+| Dimension | Key Information |
+|-----------|-----------------|
 | Document scope | Answers the retrieval question "which modules does API X pass through? how do entity states transition?" |
 | Core value | End-to-end chains of core APIs + complete state machines + operation-state constraint matrix |
 
