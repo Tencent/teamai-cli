@@ -15,6 +15,7 @@ function isScoped(file) {
 function dangerousText(value) {
   if (typeof value !== 'string') return false;
   return /^(?:merge|merge[-_]?pulls?|(?:pr|mr)\s+merge)$/i.test(value)
+    || /(?:^|[\s;&|])(?:gh|glab|hub|gitlab)\s+(?:pr|mr)\s+merge(?:\s|$)/i.test(value)
     || /\/merge\b(?!\s+requests?)/i.test(value)
     || /\/accept\b/i.test(value)
     || /auto_?merge|merge_when_pipeline_succeeds|mergePullRequest/i.test(value);

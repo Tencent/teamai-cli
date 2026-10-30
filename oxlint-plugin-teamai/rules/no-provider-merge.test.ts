@@ -21,6 +21,10 @@ async function finish(client) {
 }
 `, (output) => expect(output).toContain('must not merge'));
 
+  rule.invalid('rejects a merge command embedded in a shell string', `
+exec('gh pr merge 123 --squash');
+`);
+
   rule.invalid('rejects an accept endpoint', `
 const endpoint = '/projects/acme/accept';
 `);
