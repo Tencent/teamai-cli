@@ -32,7 +32,7 @@ export function ruleHarness(rule: `teamai/${string}`, defaults: { filename: stri
     fs.writeFileSync(file, source);
     const config = path.join(root, '.oxlintrc.json');
     fs.writeFileSync(config, JSON.stringify({
-      jsPlugins: [path.join(PLUGIN_ROOT, 'index.ts')],
+      jsPlugins: [path.join(PLUGIN_ROOT, 'index.js')],
       categories: { correctness: 'off' },
       rules: { [rule]: 'error' },
     }));

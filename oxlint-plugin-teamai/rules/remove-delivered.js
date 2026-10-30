@@ -1,6 +1,6 @@
 import { defineRule } from '@oxlint/plugins';
 
-import { isOneOf } from '../utils.ts';
+import { isOneOf } from '../utils.js';
 
 /** The files where pull deletes the copies it delivered (#1577). */
 const PULL_SIDE_FILES = ['src/pull.ts', 'src/resources/skills.ts', 'src/resources/rules.ts', 'src/resources/agents.ts'];

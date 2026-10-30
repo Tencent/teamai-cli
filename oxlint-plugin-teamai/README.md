@@ -4,11 +4,11 @@ This repository's own lint rules. `npm run lint` loads them through `jsPlugins` 
 
 | Rule | What it stops |
 |---|---|
-| `teamai/remove-delivered` | A bare `remove(` of a delivered copy in pull's files, which leaves a stale entry on the delivery record (#1577). Use `removeDelivered(ledger, dest)`. |
+| `teamai/remove-delivered` | A bare `remove(` of a delivered copy in pull's files, which leaves a stale entry on the delivery record (#1577). Use `removeDelivered(ledger, dest)`. It checks only the files in `PULL_SIDE_FILES`: a new file that deletes delivered copies must be added there. |
 
 ## Add a rule
 
-1. Write `rules/<rule>.ts` with `defineRule`, and register it in `index.ts`.
+1. Write `rules/<rule>.js` with `defineRule`, and register it in `index.js`. oxlint imports these files with plain Node, so they are JavaScript (`npm run lint` runs on Node 20 in CI); `npm run typecheck` checks them through their JSDoc types.
 2. Turn it on in `.oxlintrc.json`: `"teamai/<rule>": "error"`.
 3. Test it with real oxlint in `rules/<rule>.test.ts`:
 

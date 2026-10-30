@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "jsPlugins": ["./oxlint-plugin-teamai/index.ts"],
+  "jsPlugins": ["./oxlint-plugin-teamai/index.js"],
   "categories": {
     "suspicious": "warn",
     "perf": "warn"

@@ -24,7 +24,7 @@ npx vitest run --coverage
 npm run test:e2e       # Build and run E2E tests; remote cases require credentials
 ```
 
-`npm run lint` needs Node ^20.19 or >=22.18: oxlint needs ^20.19 or >=22.12, and the repository's own rules in `oxlint-plugin-teamai/` are TypeScript, which Node runs without a flag from those versions. The CLI itself still supports Node 20.
+`npm run lint` needs Node ^20.19 or >=22.12 (oxlint's requirement); the CLI itself still supports Node 20.
 
 ### Running your local build
 

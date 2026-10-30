@@ -3,8 +3,10 @@
   "compilerOptions": {
     "noEmit": true,
     "rootDir": ".",
+    "allowJs": true,
+    "checkJs": true,
     "allowImportingTsExtensions": true,
     "types": ["node"]
   },
-  "include": ["**/*.ts"]
+  "include": ["**/*.ts", "**/*.js"]
 }
