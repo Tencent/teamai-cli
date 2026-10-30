@@ -1178,6 +1178,10 @@ export function sessionStoreDir(
   toolRoots: Readonly<Record<string, string>> | undefined,
   host: Host = realHost(),
 ): string {
+  if ((platform === 'pi' || platform === 'omp') && host.env.PI_CODING_AGENT_SESSION_DIR) {
+    const configured = host.env.PI_CODING_AGENT_SESSION_DIR;
+    return host.path.isAbsolute(configured) ? configured : host.path.resolve(host.cwd(), configured);
+  }
   const { store } = SESSION_PLATFORM_FACTS[platform];
   const p = host.path;
   switch (store.in) {

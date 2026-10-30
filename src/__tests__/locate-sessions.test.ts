@@ -6,6 +6,8 @@ import { describeLocateMatrix, type FilesRow, type OtherRow } from './helpers/lo
 
 const CODEBUDDY_SOURCE = '@tencent-ai/codebuddy-code 2.176.0 dist/codebuddy.js: resolveCliHomeDir() is CODEBUDDY_CONFIG_DIR, else ~/.codebuddy; getHomeProjectsDir() joins "projects", "all project transcripts (.jsonl)"';
 const OPENCODE_SOURCE = 'opencode v2.1.2 binary, Global.Path: data = (XDG_DATA_HOME || ~/.local/share)/opencode';
+const PI_SOURCE = 'Pi 1.4.0: v3 JSONL under PI_CODING_AGENT_SESSION_DIR, else the resolved agent home/sessions';
+const OMP_SOURCE = 'Oh My Pi 18.12.6: Pi v3 JSONL under PI_CODING_AGENT_SESSION_DIR, else the resolved profile agent home/sessions';
 const IGNORED_ROOT = 'toolRoots takes claude, codex, cursor-data and cursor-config only (RELOCATABLE_TOOLS): an entry for an internal build is ignored for its store as for its other files';
 
 const store = (tool: string, at: `~/${string}` | `/${string}`, rest: Omit<Partial<FilesRow>, 'tool' | 'writes' | 'reads'> = {}): FilesRow => ({
@@ -49,7 +51,18 @@ const ROWS: readonly (FilesRow | OtherRow)[] = [
   store('opencode', '/data/opencode', { env: { XDG_DATA_HOME: '/data' }, source: OPENCODE_SOURCE }),
   store('opencode', '~/.local/share/opencode', { env: { XDG_CONFIG_HOME: '/xdg' }, source: `${OPENCODE_SOURCE}: the config home does not move the data directory` }),
   { tool: 'copilot', scope: 'user', channel: 'none', existingDirs: [], installed: null, gates: 'none', source: 'issue #1221 matrix: Copilot keeps sessions teamai reads none of (+s)' },
-  { tool: 'pi', scope: 'user', channel: 'none', existingDirs: [], installed: null, gates: 'none', source: 'Pi 0.99 dist/core/session-manager.js: JSONL under ~/.pi/agent/sessions, which teamai reads none of' },
+  store('pi', '~/.pi/agent/sessions', { source: PI_SOURCE }),
+  store('pi', '/pi-agent/sessions', { env: { PI_CODING_AGENT_DIR: '/pi-agent' }, source: PI_SOURCE }),
+  store('pi', '/pi-agent/sessions', { scope: 'project', env: { PI_CODING_AGENT_DIR: '/pi-agent' }, source: `${PI_SOURCE}; project sessions use the user-view store` }),
+  store('pi', '/pi-sessions', { env: { PI_CODING_AGENT_SESSION_DIR: '/pi-sessions' }, source: PI_SOURCE }),
+  store('pi', '/pi-sessions', { scope: 'project', env: { PI_CODING_AGENT_SESSION_DIR: '/pi-sessions' }, source: `${PI_SOURCE}; project sessions use the user-view store` }),
+  store('omp', '~/.omp/agent/sessions', { source: OMP_SOURCE }),
+  store('omp', '~/.omp/profiles/work/agent/sessions', { envLiterals: { OMP_PROFILE: 'work' }, source: OMP_SOURCE }),
+  store('omp', '~/.omp/profiles/work/agent/sessions', { scope: 'project', envLiterals: { OMP_PROFILE: 'work' }, source: `${OMP_SOURCE}; project sessions use the user-view store` }),
+  store('omp', '~/.omp-alt/profiles/work/agent/sessions', { envLiterals: { PI_CONFIG_DIR: '.omp-alt', PI_PROFILE: 'work' }, source: OMP_SOURCE }),
+  store('omp', '~/.omp-alt/profiles/work/agent/sessions', { scope: 'project', envLiterals: { PI_CONFIG_DIR: '.omp-alt', PI_PROFILE: 'work' }, source: `${OMP_SOURCE}; project sessions use the user-view store` }),
+  store('omp', '/omp-sessions', { env: { PI_CODING_AGENT_SESSION_DIR: '/omp-sessions' }, source: OMP_SOURCE }),
+  store('omp', '/omp-sessions', { scope: 'project', env: { PI_CODING_AGENT_SESSION_DIR: '/omp-sessions' }, source: `${OMP_SOURCE}; project sessions use the user-view store` }),
   store('joycode', '~/.joycode/sessions', { source: 'JoyCode: rollout JSONL under ~/.joycode/sessions (session-flow/adapters/codex.ts)' }),
   store('joycode', '/joycode/sessions', { env: { JOYCODE_HOME: '/joycode' }, source: 'JoyCode Desktop: JOYCODE_HOME moves the rollout store' }),
   store('joycode', '/joycode/sessions', { scope: 'project', env: { JOYCODE_HOME: '/joycode' }, source: 'JoyCode Desktop: project sessions use the user-view store under JOYCODE_HOME' }),
