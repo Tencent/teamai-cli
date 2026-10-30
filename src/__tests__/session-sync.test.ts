@@ -616,6 +616,33 @@ describe('session pull (gitPull + rebuildIndex) on a team checkout', () => {
     expect(fs.readFileSync(path.join(alice, session), 'utf-8').trim()).toBe(original);
   });
 
+  it('keeps a session under the percent-escaped name when the current name holds it only as untracked files', async () => {
+    const alice = path.join(repoRoot, 'alice');
+    git(repoRoot, 'init', '-q', '-b', 'main', alice);
+    initCheckout(alice, 'alice');
+    const first = new SyncManager(alice);
+    await first.saveSession(mkSession({ sessionId: 's-2', title: 'add refunds' }), mkMeta({ sessionId: 's-2' }));
+    expect(first.gitCommit('push').status).toBe('committed');
+    // With no committed index under the current name, its repair reads the local-only copy below as held.
+    git(alice, 'rm', '-q', `sessions/repos/${encodeRepoIdentity(identity)}/_index.json`);
+    git(alice, 'commit', '-qm', 'lose the index');
+    // An older CLI pushed s-1 under the %XX name; a local-only copy of it sits under the current name.
+    const older = path.join(repoRoot, 'older');
+    await new SyncManager(older).saveSession(mkSession(), mkMeta());
+    const olderDir = path.join(older, 'sessions', 'repos', encodeRepoIdentity(identity));
+    fs.cpSync(olderDir, path.join(alice, 'sessions', 'repos', 'github.com%2Forg%2Falpha'), { recursive: true });
+    git(alice, 'add', '-A');
+    git(alice, 'commit', '-qm', 'older CLI push');
+    fs.cpSync(path.join(olderDir, 'alice'), path.join(repoDirOf(identity).replace(repoRoot, alice), 'alice'), { recursive: true });
+
+    const mgr = new SyncManager(alice);
+    await mgr.saveSession(mkSession({ sessionId: 's-3', title: 'add invoices' }), mkMeta({ sessionId: 's-3' }));
+    expect(mgr.gitCommit('push').status).toBe('committed');
+
+    const committed = git(alice, 'ls-tree', '-r', '--name-only', 'HEAD', 'sessions/repos').split('\n');
+    expect(committed.filter((p) => p.includes('/claude-code_fix-payment_20260102') && p.endsWith('.jsonl'))).toHaveLength(1);
+  });
+
   it('folds a session held under the current name once, even when that directory has no index', async () => {
     const alice = path.join(repoRoot, 'alice');
     git(repoRoot, 'init', '-q', '-b', 'main', alice);

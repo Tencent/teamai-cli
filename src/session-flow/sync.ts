@@ -547,7 +547,7 @@ export class SyncManager {
     const committedTo = new Set(committedUnder(toRel));
     let added: string[];
     if (isFold) {
-      added = this.foldPercentRepoDir(repoIdentity, from, new Set(committed));
+      added = this.foldPercentRepoDir(repoIdentity, from, { committedFrom: new Set(committed), committedTo });
     } else {
       fs.renameSync(from, to);
       added = committed.map((file) => `${toRel}${file.slice(fromRel.length)}`);
@@ -576,9 +576,13 @@ export class SyncManager {
    * Fold the committed sessions an older CLI pushed under `%XX` after the move into the current directory, and return
    * the paths it wrote there. A session that directory already holds (same platform, author and source session id)
    * keeps the later push; any other session moves under a free name, since the file name (platform, title slug, date)
-   * does not identify a session.
+   * does not identify a session. A session the current directory holds only as local files stays where it is.
    */
-  private foldPercentRepoDir(repoIdentity: string, from: string, committed: Set<string>): string[] {
+  private foldPercentRepoDir(
+    repoIdentity: string,
+    from: string,
+    { committedFrom: committed, committedTo }: { committedFrom: Set<string>; committedTo: Set<string> },
+  ): string[] {
     const relative = (file: string) => path.relative(this.repoRoot, file).split(path.sep).join('/');
     const added: string[] = [];
     const sessionKey = (platform: string, author: string, sessionId: string) => `${platform}\0${author}\0${sessionId}`;
@@ -615,6 +619,7 @@ export class SyncManager {
           author,
           existing?.sessionName ?? this.resolveNameConflict(repoIdentity, author, sessionName),
         );
+        if (existing && !committedTo.has(relative(target.meta))) continue;
         // Only committed files take part: a local-only sibling stays where it is.
         const kinds = (['jsonl', 'meta'] as const).filter((kind) => committed.has(relative(source[kind])));
         if (existing && (meta.sync.pushedAt ?? '') <= pushedAt(target.meta)) {
