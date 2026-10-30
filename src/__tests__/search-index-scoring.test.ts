@@ -47,8 +47,13 @@ describe('search scoring', () => {
     expect(withFiller[0].score).toBeCloseTo(plain[0].score, 10);
   });
 
-  it('returns nothing when the query is only question words', () => {
-    const idx = index([deployment]);
+  it('returns nothing when the query is only question words, even for a title that contains them', () => {
+    const faq = entry({
+      filename: 'faq.md',
+      title: '为什么部署应该可以回滚',
+      tokens: ['title:为什么', '为什么', 'title:部署', '部署', 'title:应该', '应该', 'title:可以', '可以'],
+    });
+    const idx = index([deployment, faq]);
     expect(search('为什么 应该 可以', idx, 5)).toEqual([]);
   });
 
