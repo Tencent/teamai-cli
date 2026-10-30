@@ -619,7 +619,7 @@ export class SyncManager {
           author,
           existing?.sessionName ?? this.resolveNameConflict(repoIdentity, author, sessionName),
         );
-        if (existing && !committedTo.has(relative(target.meta))) continue;
+        if (existing && ![target.jsonl, target.meta].every((f) => committedTo.has(relative(f)))) continue;
         // Only committed files take part: a local-only sibling stays where it is.
         const kinds = (['jsonl', 'meta'] as const).filter((kind) => committed.has(relative(source[kind])));
         if (existing && (meta.sync.pushedAt ?? '') <= pushedAt(target.meta)) {
