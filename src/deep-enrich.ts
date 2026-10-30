@@ -865,74 +865,61 @@ function buildG6Content(project: string, manifest: Manifest): string {
     lines.push('| No indirect dependency path was extracted | — |');
   }
 
-  const MAX_REVERSE_REPRESENTATIVE_PATHS = 32;
-  // Prefer expanding predecessors that have their own incoming edges first.
-  // This keeps a useful multi-hop representative (Api → Service → Store) when
-  // the same source also has a direct edge to the target.
-  for (const incoming of reverse.values()) {
-    incoming.sort((a, b) => {
-      const aDepth = reverse.get(a.from)?.length ?? 0;
-      const bDepth = reverse.get(b.from)?.length ?? 0;
-      return bDepth - aDepth || a.from.localeCompare(b.from);
-    });
-  }
-
+  const MAX_REVERSE_PREDECESSORS = 32;
+  const MAX_REVERSE_PATHS = 8;
   lines.push(
     '',
     '## Reverse reachability index',
     '',
-    '| Target node | Reachable predecessor nodes | Representative paths (max 32) |',
-    '|-------------|----------------------------|--------------------------------|',
+    `| Target node | Reachable predecessors | Nearest predecessors (max ${MAX_REVERSE_PREDECESSORS}) | Representative paths (max ${MAX_REVERSE_PATHS}) |`,
+    '|-------------|------------------------|-------------------------------|------------------------------|',
   );
   for (const target of nodes) {
-    // Discover each reachable predecessor once. Parent pointers keep memory
-    // linear in the graph instead of retaining every simple path, which can be
-    // exponential in a layered DAG. The output still includes complete node
-    // reachability and only a bounded set of human-readable path examples.
-    const discovered = new Set<string>([target]);
-    const discoveryOrder: string[] = [];
-    const parent = new Map<string, { node: string; relation: string }>();
-    const stack: Array<{ node: string; nextEdge: number }> = [{ node: target, nextEdge: 0 }];
-
-    while (stack.length > 0) {
-      const frame = stack[stack.length - 1];
-      const incoming = reverse.get(frame.node) ?? [];
-      if (frame.nextEdge >= incoming.length) {
-        stack.pop();
-        continue;
+    // Breadth-first over incoming edges: each predecessor is reached once, by a
+    // shortest route, so work stays linear in the graph and the nearest
+    // predecessors come first. Rows show the full count, a bounded sample of
+    // names, and routes for the nearest few.
+    const hop = new Map<string, { distance: number; next: string; relation: string }>();
+    let frontier = [target];
+    for (let distance = 1; frontier.length > 0; distance++) {
+      const nextFrontier: string[] = [];
+      for (const node of frontier) {
+        for (const edge of reverse.get(node) ?? []) {
+          if (edge.from === target || hop.has(edge.from)) continue;
+          hop.set(edge.from, { distance, next: node, relation: edge.relation ?? 'DEPENDS_ON' });
+          nextFrontier.push(edge.from);
+        }
       }
-      const edge = incoming[frame.nextEdge++];
-      if (discovered.has(edge.from)) continue;
-      discovered.add(edge.from);
-      discoveryOrder.push(edge.from);
-      parent.set(edge.from, { node: frame.node, relation: edge.relation ?? 'DEPENDS_ON' });
-      stack.push({ node: edge.from, nextEdge: 0 });
+      frontier = nextFrontier;
     }
 
-    if (discoveryOrder.length === 0) continue;
+    if (hop.size === 0) continue;
 
-    const pathFor = (node: string): string[] => {
-      const segments: string[] = [node];
+    const routeFrom = (node: string): string => {
+      const segments = [node];
       let current = node;
-      while (current !== target) {
-        const link = parent.get(current);
-        if (!link) break;
-        segments.push(`(${link.relation})`, link.node);
-        current = link.node;
+      // A one-hop route repeats a triple listed above. When a direct
+      // predecessor also reaches the target through another direct
+      // predecessor (Api → Service → Store), show that route instead.
+      const bridge = hop.get(node)?.distance === 1
+        ? adjacency.get(node)?.find(edge => edge.to !== node && hop.get(edge.to)?.distance === 1)
+        : undefined;
+      if (bridge) {
+        segments.push(`(${bridge.relation ?? 'DEPENDS_ON'})`, bridge.to);
+        current = bridge.to;
       }
-      return segments;
+      for (let link = hop.get(current); link; link = hop.get(current)) {
+        segments.push(`(${link.relation})`, link.next);
+        current = link.next;
+      }
+      return segments.join(' → ');
     };
-    const representativePaths = discoveryOrder
-      .slice(0, MAX_REVERSE_REPRESENTATIVE_PATHS)
-      .map(node => pathFor(node).join(' → '));
-    if (discoveryOrder.length > MAX_REVERSE_REPRESENTATIVE_PATHS) {
-      representativePaths.push(
-        `… representative paths truncated after ${MAX_REVERSE_REPRESENTATIVE_PATHS}; all reachable predecessors are listed`,
-      );
-    }
-    lines.push(
-      `| ${target} | ${discoveryOrder.join(', ')} | ${representativePaths.join('; ')} |`,
-    );
+    const shown = [...hop.keys()].slice(0, MAX_REVERSE_PREDECESSORS);
+    const hidden = hop.size - shown.length;
+    const names = hidden > 0 ? `${shown.join(', ')}, … (+${hidden} more)` : shown.join(', ');
+    const routes = shown.slice(0, MAX_REVERSE_PATHS).map(routeFrom);
+    if (hop.size > routes.length) routes.push(`… ${routes.length} of ${hop.size} routes shown`);
+    lines.push(`| ${target} | ${hop.size} | ${names} | ${routes.join('; ')} |`);
   }
 
   lines.push('');

@@ -188,7 +188,7 @@ Requirement: >=10 scenarios, covering the main write operations and key read ope
 | "Which tables does A ultimately write to?" | A→(CALLS)→B→(WRITES)→Table |
 
 ## Reverse reachability index
-| Target node | Reachable paths |
+| Target node | Reachable predecessors | Nearest predecessors (max 32) | Representative paths (max 8) |
 ```
 
 ---

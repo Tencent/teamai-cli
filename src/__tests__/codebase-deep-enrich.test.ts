@@ -161,7 +161,7 @@ describe('codebase deep-enrich', () => {
 
     const g6 = fs.readFileSync(path.join(docsDir, 'graph-g6-triples.md'), 'utf8');
     expect(g6).toContain('Api → (CALLS) → Service → (WRITES) → Store');
-    expect(g6).toMatch(/\| Store \| [^|]*\| [^|]*Api → \(CALLS\) → Service → \(WRITES\) → Store/);
+    expect(g6).toContain('| Store | 2 | Service, Api | Service → (WRITES) → Store; Api → (CALLS) → Service → (WRITES) → Store |');
     expect(g6).not.toContain('No indirect dependency path was extracted');
     expect(g6).toContain('| EXTRACTED | 0.90 |');
     expect(fs.existsSync(path.join(docsDir, 'graph-g6-multihop.md'))).toBe(false);
@@ -202,9 +202,11 @@ describe('codebase deep-enrich', () => {
     await codebaseCmd({ deepEnrich: true, project: 'faketest', output: root, json: true });
 
     const g6 = fs.readFileSync(path.join(evidenceDir, 'docs', 'graph-g6-triples.md'), 'utf8');
-    expect(g6.length).toBeLessThan(120_000);
-    expect(g6).toContain('all reachable predecessors are listed');
-    expect(g6).toContain('representative paths truncated after 32');
+    expect(g6.length).toBeLessThan(60_000);
+    const lastRow = g6.split('\n').find(line => line.startsWith('| L18A |'));
+    expect(lastRow).toMatch(/^\| L18A \| 35 \| L17A, L17B, L16A, L16B, .*, L2A, L2B, … \(\+3 more\) \| /);
+    expect(lastRow).toContain('; L14B → (DEPENDS_ON) → L15A → (DEPENDS_ON) → L16A → (DEPENDS_ON) → L17A → (DEPENDS_ON) → L18A; … 8 of 35 routes shown |');
+    expect(lastRow).not.toContain('Root');
   });
 
   it.skipIf(process.platform === 'win32')('does not overwrite a file outside the teamwiki through a docs symlink', async () => {
