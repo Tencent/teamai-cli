@@ -390,7 +390,9 @@ function buildG2DataflowDoc(callChains: string): string {
   let currentBlock: { entry: string; steps: string[] } | null = null;
 
   for (const line of rawLines) {
-    const entryMatch = line.match(/^##?\s+(.+)/);
+    // Each `## entry` opens a chain; the `# Dependency Paths` title and its
+    // intro lines are not relations and must not be labelled as such.
+    const entryMatch = line.match(/^##\s+(.+)/);
     if (entryMatch) {
       if (currentBlock) chainBlocks.push(currentBlock);
       currentBlock = { entry: entryMatch[1], steps: [] };

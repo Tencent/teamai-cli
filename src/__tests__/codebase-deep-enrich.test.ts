@@ -168,12 +168,46 @@ describe('codebase deep-enrich', () => {
 
     for (const file of ['graph-g4-errors.md', 'graph-g7-risks.md', 'graph-g8-config.md', 'graph-g9-constraints.md', 'graph-coverage.md']) {
       const content = fs.readFileSync(path.join(docsDir, file), 'utf8');
-      expect(content).not.toContain('\\\\n');
+      expect(content).not.toContain('\\n');
       expect(content).toContain('\n');
     }
     const k3 = fs.readFileSync(path.join(evidenceDir, '_review', 'k3-consistency-check.md'), 'utf8');
     expect(k3).toContain('Contradiction comparison: deferred');
     expect(k3).not.toContain('Contradictions: 0 detected');
+  });
+
+  it('labels G2 call-chain steps but not the dependency-paths intro', async () => {
+    const root = createEnrichFixture();
+    const evidenceDir = path.join(root, 'teamwiki', 'evidence', 'code', 'faketest');
+    fs.writeFileSync(path.join(evidenceDir, 'dependency-paths.md'), [
+      '---',
+      'title: faketest dependency paths',
+      'domain: code-knowledge',
+      '---',
+      '',
+      '# Dependency Paths',
+      '',
+      'Static import dependency paths (not runtime call traces).',
+      '',
+      '1 dependency path(s) traced from entry points (max depth 4).',
+      '',
+      '## POST /orders',
+      '',
+      '- [entry] `createOrder` ← src/api.ts:10',
+      '    - [service] `placeOrder` ← src/service.ts:20',
+      '',
+    ].join('\n'));
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await codebaseCmd({ deepEnrich: true, project: 'faketest', output: root, json: true });
+
+    const g2 = fs.readFileSync(path.join(evidenceDir, 'docs', 'graph-g2-dataflow.md'), 'utf8');
+    expect(g2).toContain('## POST /orders');
+    expect(g2).toContain('[EXTRACTED] - [entry] `createOrder` ← src/api.ts:10');
+    expect(g2).toContain('[EXTRACTED] - [service] `placeOrder` ← src/service.ts:20');
+    expect(g2).not.toContain('[EXTRACTED] Static import');
+    expect(g2).not.toContain('[EXTRACTED] 1 dependency path(s)');
+    expect(g2).not.toContain('## Dependency Paths');
   });
 
   it('bounds reverse reachability output for a layered DAG', async () => {
