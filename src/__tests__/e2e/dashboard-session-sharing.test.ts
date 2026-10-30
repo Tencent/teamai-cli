@@ -64,7 +64,7 @@ describe('dashboard session sharing (offline)', () => {
     const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null' }, stdio: 'pipe' });
     git('init', '-b', 'main'); git('config', 'user.name', 'Sharing Test'); git('config', 'user.email', 'test@example.invalid'); git('add', '.'); git('commit', '-m', 'fixture');
     await fs.writeFile(path.join(teamHome, 'config.yaml'), YAML.stringify({
-      repo: { kind: 'git', localPath: repo, remote: 'https://example.invalid/team.git' }, username: 'fixture', scope: 'user', enabledAgents: ['claude', 'pi'],
+      repo: { kind: 'git', localPath: repo, remote: 'https://example.invalid/team.git' }, username: 'fixture', scope: 'user', enabledAgents: ['claude', 'copilot'],
     }));
     const app = path.join(sandbox, 'app');
     await captured(home, app, '7c1e0000-0000-4000-8000-000000000001', 'attended', 7);
@@ -80,9 +80,11 @@ describe('dashboard session sharing (offline)', () => {
       runMode: { mode: 'attended', source: 'default' },
       archive: 'teamai-reports',
       publish: { attended: { policy: 'ask' }, unattended: { policy: 'auto' } },
-      unreadTools: ['pi'],
+      unreadTools: ['copilot'],
       captured: { attended: { active: 0, finished: 1 }, unattended: { waitingForDrain: 1 } },
-      next: [{ mode: 'unattended', command: 'TEAMAI_MODE=unattended teamai score --drain' }],
+      next: [{ mode: 'unattended', command: process.platform === 'win32'
+        ? "$env:TEAMAI_MODE='unattended'; teamai score --drain"
+        : 'TEAMAI_MODE=unattended teamai score --drain' }],
     });
     for (const secret of [PROMPT, ANSWER, 'PROMPT-SECRET', '7c1e0000-0000-4000-8000', app, home]) expect(served).not.toContain(secret);
     expect(await (await fetch(`${base}/api/session-sharing?workspace=unassigned-missing`)).json()).toEqual({ error: 'Unknown workspace' });

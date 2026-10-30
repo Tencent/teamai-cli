@@ -206,7 +206,7 @@ export const SESSION_PLATFORM_FACTS = {
     readOnly: true,
   },
   'pi': {
-    // Pi 1.4.0: <PI_CODING_AGENT_DIR or ~/.pi/agent>/sessions/<encoded-cwd>/<timestamp>_<id>.jsonl.
+    // Pi 1.4.0: PI_CODING_AGENT_SESSION_DIR or settings.sessionDir, else <PI_CODING_AGENT_DIR or ~/.pi/agent>/sessions.
     store: { in: 'tool-home', home: 'pi', dir: 'sessions' },
     resume: (id) => `pi --resume ${id}`,
     thinking: true, images: true,

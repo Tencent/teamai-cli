@@ -61,6 +61,23 @@ describe('PiAdapter', () => {
     expect((await adapter.readSession({ sessionId: id })).title).toBe('Renamed');
   });
 
+  it('uses the latest model event in active-branch order', async () => {
+    const { adapter, id } = fixture('pi', [{
+      type: 'model_change', id: 'm1', parentId: 'a2', timestamp: '2026-01-02T03:04:06Z',
+      provider: 'provider-b', modelId: 'model-c', activeLeafId: 'm1',
+    }]);
+    expect((await adapter.readSession({ sessionId: id })).metadata?.model).toBe('provider-b/model-c');
+  });
+
+  it('falls back to the newest entry when activeLeafId is dangling', async () => {
+    const { adapter, id } = fixture('pi', [{
+      type: 'message', id: 'a3', parentId: 'a2', timestamp: '2026-01-02T03:04:06Z', activeLeafId: 'missing',
+      message: { role: 'assistant', model: 'provider/model-c', content: 'latest' },
+    }]);
+    const session = await adapter.readSession({ sessionId: id });
+    expect(session.messages.at(-1)?.content).toEqual([{ type: 'text', text: 'latest' }]);
+  });
+
   it('filters by the cwd stored in the header and rejects unsafe ids', async () => {
     const { adapter, id, cwd } = fixture('pi');
     expect(await adapter.existingSessionId(id, cwd)).toBe(id);
