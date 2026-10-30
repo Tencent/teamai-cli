@@ -4422,6 +4422,14 @@ describe('spliceCodexBlock', () => {
     expect(spliceCodexBlock(out, 'a', '[mcp_servers.a]\ncommand = "new"\n')).toBe(out);
   });
 
+  it('drops CRLF blank lines when deleting a block before a member comment', () => {
+    const src =
+      '[mcp_servers.a]\r\ncommand = "x"\r\n\r\n# note: keep this\r\n[projects."/y"]\r\ntrust_level = "trusted"\r\n';
+    expect(spliceCodexBlock(src, 'a', null)).toBe(
+      '# note: keep this\r\n[projects."/y"]\r\ntrust_level = "trusted"\r\n',
+    );
+  });
+
   it('removes a comment between the block own keys with the block', () => {
     const src =
       '[mcp_servers.a]\ncommand = "x"\n# why this command\nargs = ["--flag"]\n\n[projects."/y"]\ntrust_level = "trusted"\n';

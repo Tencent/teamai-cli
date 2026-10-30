@@ -843,7 +843,7 @@ export function spliceCodexBlock(source: string, name: string, block: string | n
   if (match && match.index !== undefined) {
     const owned = ownedCodexBlock(match[0]);
     const before = source.slice(0, match.index);
-    const after = source.slice(match.index + owned.length).replace(/^\n+/, '');
+    const after = source.slice(match.index + owned.length).replace(/^(?:\r?\n)+/, '');
     if (padded === null) return before + after;
     return before + padded + after;
   }
