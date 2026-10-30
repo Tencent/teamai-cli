@@ -4395,6 +4395,14 @@ describe('spliceCodexBlock', () => {
     expect(out).toContain('[projects."/y"]');
   });
 
+  it('deletes only the server block, preserving blank lines in other TOML values', () => {
+    const before = 'developer_instructions = """first\n\n\nlast"""\n\n';
+    const after = '[projects."/y"]\ntrust_level = "trusted"\n';
+    const src = `${before}[mcp_servers.a]\ncommand = "x"\n\n${after}`;
+
+    expect(spliceCodexBlock(src, 'a', null)).toBe(before + after);
+  });
+
   // Regression: the end-of-input branch was originally written as \z, which JS
   // reads as a literal "z", so a trailing block could never be matched.
   it('deletes a block sitting at end-of-file', () => {

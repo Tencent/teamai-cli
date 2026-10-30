@@ -17,7 +17,7 @@ function runCLI(home: string, args: string[]): Promise<{ code: number | null; ou
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [CLI, 'mcp', ...args], {
       cwd: home,
-      env: { ...process.env, HOME: home, USERPROFILE: home, FORCE_COLOR: '0' },
+      env: { ...process.env, HOME: home, USERPROFILE: home, CODEX_HOME: path.join(home, '.codex'), FORCE_COLOR: '0' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let output = '';
@@ -103,5 +103,43 @@ describe.each([
     const servers = tool === 'claude' ? JSON.parse(content).mcpServers : parseToml(content.replace(/^\uFEFF/, '')).mcp_servers;
     if (command === 'inject') expect(servers['team-mcp'].url).toBe('https://example.com/updated');
     else expect(servers?.['team-mcp']).toBeUndefined();
+  });
+});
+
+describe('removing a Codex MCP server (real CLI)', () => {
+  it.each(['remove', 'inject'])('%s keeps the member\'s multiline instructions and other servers', async (command) => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-codex-mcp-whitespace-'));
+    sandboxes.push(home);
+    execFileSync('git', ['init', '-q', home]);
+    const dataHome = path.join(home, '.teamai');
+    const repo = path.join(dataHome, 'team-repo');
+    const file = path.join(home, '.codex', 'config.toml');
+    fs.mkdirSync(path.join(repo, 'mcp'), { recursive: true });
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'teamai.yaml'), 'team: mcp-test\nrepo: https://example.com/team.git\nprovider: git\n');
+    const definitions = path.join(repo, 'mcp', 'mcp.yaml');
+    fs.writeFileSync(definitions, 'servers:\n  - name: team-mcp\n    transport: http\n    url: https://example.com/mcp\n    tools: [codex]\n');
+    fs.writeFileSync(path.join(dataHome, 'config.yaml'), [
+      'repo:', `  localPath: ${repo}`, '  remote: https://example.com/team.git',
+      'username: e2e-user', 'scope: user', 'enabledAgents: [codex]',
+    ].join('\n'));
+    const original = 'developer_instructions = """first\n\n\nlast"""\n\n[mcp_servers.personal]\ncommand = "member-server"\n\n';
+    fs.writeFileSync(file, original);
+
+    const injected = await runCLI(home, ['inject']);
+    expect(injected.code, injected.output).toBe(0);
+    const installed = fs.readFileSync(file, 'utf8');
+    expect(parseToml(installed)).toMatchObject({ mcp_servers: { 'team-mcp': { url: 'https://example.com/mcp' } } });
+    if (command === 'inject') fs.writeFileSync(definitions, 'servers: []\n');
+
+    const removed = await runCLI(home, [command]);
+    expect(removed.code, removed.output).toBe(0);
+    expect(removed.output).toMatch(/removed\s+codex\/team-mcp/);
+    const result = fs.readFileSync(file, 'utf8');
+    expect(result).toBe(original);
+    expect(parseToml(result)).toMatchObject({
+      developer_instructions: 'first\n\n\nlast',
+      mcp_servers: { personal: { command: 'member-server' } },
+    });
   });
 });

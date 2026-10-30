@@ -822,10 +822,7 @@ export function spliceCodexBlock(source: string, name: string, block: string | n
   const padded = block === null ? null : block.endsWith('\n') ? block + '\n' : block + '\n\n';
 
   if (match) {
-    if (padded === null) {
-      const cleaned = source.replace(re, '');
-      return cleaned.replace(/\n{3,}/g, '\n\n');
-    }
+    if (padded === null) return source.replace(re, '');
     return source.replace(re, padded);
   }
 
