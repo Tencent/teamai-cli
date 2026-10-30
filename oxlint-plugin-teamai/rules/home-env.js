@@ -28,7 +28,10 @@ export default defineRule({
         if (node.object.type !== 'MemberExpression' || node.object.computed) return;
         if (node.object.object.type !== 'Identifier' || node.object.object.name !== 'process') return;
         if (node.object.property.type !== 'Identifier' || node.object.property.name !== 'env') return;
-        if (node.property.type !== 'Identifier' || node.property.name !== 'HOME') return;
+        const readsHome = node.computed
+          ? node.property.type === 'Literal' && node.property.value === 'HOME'
+          : node.property.type === 'Identifier' && node.property.name === 'HOME';
+        if (!readsHome) return;
         context.report({
           node,
           message: 'Read the user home through getUserHome() in src/utils/home.ts so USERPROFILE and platform fallbacks remain supported.',

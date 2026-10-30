@@ -20,6 +20,15 @@ export function getConfigDir(): string | undefined {
 }
 `, { filename: 'src/config.ts' });
 
+rule.valid('does not treat a computed environment variable name as HOME', `
+const HOME = 'XDG_CONFIG_HOME';
+export const configDir = process.env[HOME];
+`, { filename: 'src/config.ts' });
+
+rule.invalid('rejects a computed HOME string literal', `
+export const home = process.env['HOME'];
+`, undefined, { filename: 'src/config.ts' });
+
 rule.invalid('rejects a direct HOME read outside the canonical resolver', `
 export function cacheDir(): string {
   return process.env.HOME + '/.cache/teamai';
