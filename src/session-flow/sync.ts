@@ -520,10 +520,13 @@ export class SyncManager {
   }
 
   /**
-   * Move a `%XX`-named archive to encodeRepoIdentity's name, recording each file HEAD still holds under the old name
-   * (and its new path) so `gitCommit` stages the rename. Reading HEAD, not the disk, finds the move again on the retry
-   * after a failed commit, and leaves files the archive never committed out of it. A directory with uncommitted
-   * changes to its tracked files stays where it is, since staging the move would publish them.
+   * Move a `%XX`-named archive to encodeRepoIdentity's name, recording the files HEAD holds under the old name and
+   * where they went, so `gitCommit` stages the move with this run's files and leaves files the archive never
+   * committed out of it. The old directory stays where it is while it has any local change, staged or not, deletions
+   * included, since staging the move would publish it.
+   *
+   * A commit that failed after a move leaves it staged under both names: the retry records exactly those staged
+   * paths, sessions the fold renamed included, instead of moving again.
    *
    * When both names exist, an older CLI pushed under `%XX` after the move: see foldPercentRepoDir.
    */
@@ -535,28 +538,30 @@ export class SyncManager {
     const from = path.join(this.sessionsDir, 'repos', fromName);
     const to = path.join(this.sessionsDir, 'repos', toName);
     const fromRel = `sessions/repos/${fromName}/`;
+    const toRel = `sessions/repos/${toName}/`;
     const committed = this.runGit(['ls-tree', '-r', '-z', '--name-only', 'HEAD', fromRel], false).split('\0').filter(Boolean);
-    if (fs.existsSync(from)) {
-      // Any unstaged change, or a staged one other than a removal: a failed commit of this move leaves only removals.
-      const hasLocalChanges =
-        this.runGit(['diff', '--name-only', '--', fromRel], false) !== '' ||
-        this.runGit(['diff', '--cached', '--name-only', '--diff-filter=d', '--', fromRel], false) !== '';
-      if (hasLocalChanges) return;
-      assertNoSymlinkedAncestors(from, this.repoRoot);
-      assertNoSymlinkedAncestors(to, this.repoRoot);
-      if (fs.existsSync(to)) {
-        // The fold can replace a session's files there, so it waits for any local change to them as well.
-        if (this.runGit(['status', '--porcelain', '--untracked-files=no', '--', `sessions/repos/${toName}/`], false) !== '') return;
-        this.foldPercentRepoDir(repoIdentity, from, new Set(committed));
-      } else {
-        fs.renameSync(from, to);
-      }
+    if (committed.length === 0 && !fs.existsSync(from)) return;
+    const stagedUnder = (rel: string) =>
+      this.runGit(['diff', '--cached', '--relative', '--name-only', '-z', '--', rel], false).split('\0').filter(Boolean);
+    const stagedFrom = stagedUnder(fromRel);
+    const stagedTo = stagedUnder(toRel);
+    if (stagedFrom.length > 0 && stagedTo.length > 0) {
+      for (const file of [...stagedFrom, ...stagedTo]) this.writtenPaths.add(file);
+      return;
     }
-    for (const file of committed) {
-      const moved = `sessions/repos/${toName}/${file.slice(fromRel.length)}`;
-      this.writtenPaths.add(file);
-      if (fs.existsSync(path.join(this.repoRoot, moved))) this.writtenPaths.add(moved);
+    const hasLocalChanges = stagedFrom.length > 0 || this.runGit(['diff', '--name-only', '--', fromRel], false) !== '';
+    if (hasLocalChanges || !fs.existsSync(from)) return;
+    assertNoSymlinkedAncestors(from, this.repoRoot);
+    assertNoSymlinkedAncestors(to, this.repoRoot);
+    if (fs.existsSync(to)) {
+      // The fold can replace a session's files there, so it waits for any local change to them as well.
+      if (this.runGit(['status', '--porcelain', '--untracked-files=no', '--', toRel], false) !== '') return;
+      this.foldPercentRepoDir(repoIdentity, from, new Set(committed));
+    } else {
+      fs.renameSync(from, to);
+      for (const file of committed) this.writtenPaths.add(`${toRel}${file.slice(fromRel.length)}`);
     }
+    for (const file of committed) this.writtenPaths.add(file);
   }
 
   /**
