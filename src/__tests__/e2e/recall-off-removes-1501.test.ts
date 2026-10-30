@@ -112,4 +112,19 @@ describe('recall off removes the recall agent and rule (#1501 part 1)', () => {
     expect(fs.existsSync(agent)).toBe(true);
     expect(fs.existsSync(rule)).toBe(true);
   });
+
+  it('keeps recall copies the repository tracks', () => {
+    const dir = path.join(sandbox, 'biz');
+    const agent = path.join(dir, '.claude', 'agents', 'teamai-recall.md');
+    const rule = path.join(dir, '.claude', 'rules', 'teamai-recall.md');
+    teamaiOk(['pull'], dir);
+    expect(fs.existsSync(agent)).toBe(true);
+    expect(fs.existsSync(rule)).toBe(true);
+    gitOk(['add', '-f', agent, rule], dir);
+    gitOk(['commit', '-q', '-m', 'track recall copies'], dir);
+
+    teamaiOk(['pull'], dir, { TEAMAI_RECALL_DISABLED: '1' });
+    expect(fs.existsSync(agent)).toBe(true);
+    expect(fs.existsSync(rule)).toBe(true);
+  });
 });

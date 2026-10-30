@@ -198,15 +198,15 @@ describe('pull agents cleanup after role change', () => {
     expect(vi.mocked(log.warn).mock.calls.some(([msg]) => /Kept agent "vr-reviewer"/.test(String(msg)))).toBe(true);
   });
 
-  it('never touches built-in or hand-added agents', async () => {
-    await fse.writeFile(path.join(homeDir, '.claude/agents', 'teamai-recall.md'), '# builtin placeholder\n');
+  it('never touches agents it did not install (other teamai-named or hand-added)', async () => {
+    await fse.writeFile(path.join(homeDir, '.claude/agents', 'teamai-other.md'), '# other placeholder\n');
     await fse.writeFile(path.join(homeDir, '.claude/agents', 'my-own.md'), '# mine\n');
 
     await pull({});
     vi.mocked(loadLocalConfigForScope).mockResolvedValue(configFor('devops'));
     await pull({});
 
-    expect(await fse.pathExists(path.join(homeDir, '.claude/agents', 'teamai-recall.md'))).toBe(true);
+    expect(await fse.pathExists(path.join(homeDir, '.claude/agents', 'teamai-other.md'))).toBe(true);
     expect(await fse.pathExists(path.join(homeDir, '.claude/agents', 'my-own.md'))).toBe(true);
   });
 });

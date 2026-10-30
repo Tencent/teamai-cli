@@ -2,6 +2,7 @@ import path from 'node:path';
 import { autoDetectInit, markMemberSettingsWritten, saveLocalConfigForScope } from './config.js';
 import { log } from './utils/logger.js';
 import { remove, pathExists } from './utils/fs.js';
+import { keepsTrackedCopy } from './resources/delivered-copies.js';
 import { applyInstructionPlan, planInstructionFiles, registerOpencodeContext, resolveInstructionTargets } from './instruction-targets.js';
 import { agentFileExtensionForTool } from './resources/agent-format.js';
 import { isAgentToolId } from './tools.js';
@@ -20,7 +21,8 @@ import {
 /**
  * Remove the `teamai-recall` rule and agent by name, in every place teamai may
  * have written them (including earlier tool homes and the `.md` copy older
- * layouts left in a `.mdc` rules folder). Shared by `recall disable` and by a
+ * layouts left in a `.mdc` rules folder), keeping a copy the repository
+ * tracks (#915). Shared by `recall disable` and by a
  * pull that finds recall off, so both leave the same files behind.
  */
 export async function removeRecallAgentAndRule(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
@@ -34,6 +36,7 @@ export async function removeRecallAgentAndRule(teamConfig: TeamaiConfig, localCo
       for (const extension of extensions) {
         const ruleFile = path.join(rulesDir.path, `teamai-recall${extension}`);
         if (await pathExists(ruleFile)) {
+          if (await keepsTrackedCopy(ruleFile)) continue;
           await remove(ruleFile);
           log.debug(`Removed recall rule from ${tool}`);
         }
@@ -48,6 +51,7 @@ export async function removeRecallAgentAndRule(teamConfig: TeamaiConfig, localCo
       for (const extension of extensions) {
         const agentFile = path.join(agentsDir, `teamai-recall${extension}`);
         if (await pathExists(agentFile)) {
+          if (await keepsTrackedCopy(agentFile)) continue;
           await remove(agentFile);
           log.debug(`Removed recall agent from ${tool}`);
         }
