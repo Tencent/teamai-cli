@@ -203,8 +203,9 @@ describe('codebase deep-enrich', () => {
 
     const g2 = fs.readFileSync(path.join(evidenceDir, 'docs', 'graph-g2-dataflow.md'), 'utf8');
     expect(g2).toContain('## POST /orders');
-    expect(g2).toContain('[EXTRACTED] - [entry] `createOrder` ← src/api.ts:10');
-    expect(g2).toContain('[EXTRACTED] - [service] `placeOrder` ← src/service.ts:20');
+    // Each step stays a Markdown list item, with the label after the marker.
+    expect(g2).toMatch(/^- \[EXTRACTED\] \[entry\] `createOrder` ← src\/api\.ts:10$/m);
+    expect(g2).toMatch(/^- \[EXTRACTED\] \[service\] `placeOrder` ← src\/service\.ts:20$/m);
     expect(g2).not.toContain('[EXTRACTED] Static import');
     expect(g2).not.toContain('[EXTRACTED] 1 dependency path(s)');
     expect(g2).not.toContain('## Dependency Paths');

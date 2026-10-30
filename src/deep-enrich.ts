@@ -406,7 +406,8 @@ function buildG2DataflowDoc(callChains: string): string {
     for (const block of chainBlocks.slice(0, 15)) {
       lines.push(`## ${block.entry}`, '', '**Confidence: EXTRACTED**', '');
       for (const step of block.steps.slice(0, 10)) {
-        lines.push(`  [EXTRACTED] ${step}`);
+        // Keep the producer's `- ` marker first so each step stays a list item.
+        lines.push(`- [EXTRACTED] ${step.replace(/^- /, '')}`);
       }
       lines.push('');
     }
