@@ -223,10 +223,10 @@ necessarily the project's manifest id.
 
 With `sharing.gitExclude.enabled: true` in `teamai.yaml`, each member's pull lists
 the skills and rules (one file per line, never a skill's directory, so a file a
-member adds to a delivered skill stays visible), agents, `CLAUDE.md` instruction
-files (including `.claude-internal/CLAUDE.md` and `.tclaude/CLAUDE.md`),
-`teamai-context` files, hook files and team docs (one file per line) it delivered
-into a project, and each shared config file (MCP, `.codex/hooks.json`, OpenCode's)
+member adds to a delivered skill stays visible), agents, `teamai-context`
+files, hook files and team docs (one file per line) it delivered into a project,
+and each shared config file (MCP, `.codex/hooks.json`, OpenCode's) and `CLAUDE.md`
+instruction files (including `.claude-internal/CLAUDE.md` and `.tclaude/CLAUDE.md`)
 while it holds only teamai's entries, in teamai's `delivered` block in the clone's
 `.git/info/exclude` (local to the clone, never committed), so `git add -A` does
 not commit them; a member's own files, and copies they edited, stay visible. `init` writes it for a
