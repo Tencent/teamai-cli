@@ -118,6 +118,37 @@ describe('a deleted copy leaves the delivery record (#1577)', () => {
     expect(recorded(root).filter((file) => file.startsWith(`${dest}${path.sep}`))).toEqual([]);
   });
 
+  it('a pull that is already synced deletes a tombstoned copy and takes it off the record', () => {
+    const { root, teamai } = project();
+    const dest = path.join(root, '.claude', 'rules', 'commit-style.md');
+    const localRepo = path.join(root, '.teamai', 'team-repo');
+    const stateFile = path.join(root, '.teamai', 'state.json');
+    // The team tombstones the rule in a remote of this checkout's own, and an
+    // older CLI moved the checkout there without deleting the copy: the
+    // revision on record is the new one, so this pull takes the fast path.
+    const teamRemote = path.join(sandbox, `tombstone-${attempt}`);
+    git(['clone', '-q', remoteRepo, teamRemote], sandbox);
+    fs.rmSync(path.join(teamRemote, 'rules', 'commit-style.md'));
+    writeFile(path.join(teamRemote, 'rules', '.removed'), 'commit-style\n');
+    git(['add', '-A'], teamRemote);
+    git(['commit', '-q', '-m', 'tombstone commit-style'], teamRemote);
+    git(['remote', 'set-url', 'origin', teamRemote], localRepo);
+    git(['pull', '-q', 'origin', 'main'], localRepo);
+    const config = path.join(root, '.teamai', 'config.yaml');
+    fs.writeFileSync(config, fs.readFileSync(config, 'utf8').replace(`remote: ${remoteRepo}`, `remote: ${teamRemote}`));
+    const state = fs.readFileSync(stateFile, 'utf8');
+    const before = (JSON.parse(state) as { lastPullRev: string }).lastPullRev;
+    const after = execFileSync('git', ['rev-parse', `--short=${before.length}`, 'HEAD'], { cwd: localRepo, encoding: 'utf8' }).trim();
+    fs.writeFileSync(stateFile, state.replaceAll(`"${before}"`, `"${after}"`));
+
+    const pull = teamai(['pull']);
+
+    expect(pull.code, pull.output).toBe(0);
+    expect(pull.output).toContain('Already synced');
+    expect(fs.existsSync(dest)).toBe(false);
+    expect(recorded(root)).not.toContain(dest);
+  });
+
   it('uninstall --agent deletes that tool\'s copies and takes them off the record', () => {
     const { root, teamai } = project();
     const claudeDir = path.join(root, '.claude');

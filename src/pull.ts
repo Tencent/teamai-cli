@@ -1249,15 +1249,19 @@ async function openCheckoutLedger(localConfig: LocalConfig, state?: State, recor
 }
 
 /**
- * This checkout's delivery record as a ledger, for `teamai remove`: a copy it
- * deletes through `removeDelivered` leaves the record too once `save` runs,
- * as pull's removals do (#1577). A checkout with no record gets none.
+ * This checkout's delivery record as a ledger, for `teamai remove` and the
+ * fast path's cleanups: a copy deleted through `removeDelivered` leaves the
+ * record too once `save` runs, as a full pull's removals do (#1577). A
+ * checkout with no record gets none, and `save` writes nothing when the
+ * record did not change.
  */
 export async function editDeliveryRecord(localConfig: LocalConfig): Promise<{ ledger: DeliveryLedger; save: () => Promise<void> }> {
   const ledger = await openCheckoutLedger(localConfig);
+  const opened = JSON.stringify(ledger.hashes);
   return {
     ledger,
     save: async () => {
+      if (JSON.stringify(ledger.hashes) === opened) return;
       const key = await checkoutRecordKey(localConfig);
       const state = await loadStateForScope(localConfig);
       const record = key ? state.lastPullByWorkspace?.[key] : undefined;
@@ -1918,9 +1922,9 @@ async function pullForScope(
           // holds the path the instructions go to; reclaim it first (#945).
           if (resourceTypes.includes('rules')) {
             try {
-              await (getHandler('rules') as RulesHandler).reclaimReservedRuleCopies(
-                freshConfig, localConfig, openLedger(await deliveredHashes(localConfig, state)),
-              );
+              const record = await editDeliveryRecord(localConfig);
+              await (getHandler('rules') as RulesHandler).reclaimReservedRuleCopies(freshConfig, localConfig, record.ledger);
+              await record.save();
             } catch (error) {
               log.warn(`[${scopeLabel}] The earlier copy of the team rule teamai-context was not reclaimed: ${(error as Error).message}. Run \`teamai pull --force\` to retry.`);
             }
@@ -1930,7 +1934,9 @@ async function pullForScope(
           // Same reason: a machine that already pulled a tombstone with an older
           // CLI keeps the copies that CLI failed to delete, and its stored rev
           // never moves again. Re-run the cleanup so the upgrade reaches it (#576).
-          await cleanupTombstonedResources(freshConfig, localConfig, scopeLabel, openLedger(await deliveredHashes(localConfig, state)));
+          const tombstoned = await editDeliveryRecord(localConfig);
+          await cleanupTombstonedResources(freshConfig, localConfig, scopeLabel, tombstoned.ledger);
+          await tombstoned.save();
           // Same reason: a CLI that moves a tool's user team rules into a file
           // only it reads (Codex's AGENTS.md, #938; ZCode, DeepSeek Harness,
           // OpenClaw, Pi and JoyCode, #946) writes that block here, and
