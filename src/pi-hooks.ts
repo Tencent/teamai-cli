@@ -16,9 +16,10 @@
  * `hooks remove`) therefore deletes this one global copy outright, same as
  * the OMP adapter. The extension bridges TeamAI's built-in lifecycle events,
  * and runs the team's hooks/hooks.yaml entries through bridged-team-hooks.ts:
- * a PreToolUse hook can block a tool call on `tool_call`. Pi profile overrides (`PI_CODING_AGENT_DIR` /
- * `PI_CONFIG_DIR`), which relocate the agent directory, are not supported —
- * same as the OMP adapter — and the default `~/.pi/agent/` layout is used.
+ * a PreToolUse hook can block a tool call on `tool_call`. Pi's
+ * `PI_CODING_AGENT_DIR` override is resolved by `hookAdapterDir`, so the
+ * extension follows the moved agent directory; Pi's `PI_CONFIG_DIR` belongs
+ * to Oh My Pi and is intentionally not used for Pi.
  */
 
 import path from 'node:path';
