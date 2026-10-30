@@ -54,7 +54,10 @@
     // Pull deletes a delivered copy and its record entry together (#1577).
     "teamai/remove-delivered": "error",
     // getUserHome owns the HOME / USERPROFILE fallback that keeps Windows paths safe.
-    "teamai/home-env": "error"
+    "teamai/home-env": "error",
+    // Workflow delivery may create a PR/MR but never merges, accepts, or
+    // enables automatic merging for one (#1590).
+    "teamai/no-provider-merge": "error"
   },
   "overrides": [
     {
