@@ -27,7 +27,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
-async function team(workflows: Record<string, string>, tools: TeamaiConfig['toolPaths'] = { claude: { skills: '.claude/skills' } }) {
+async function team(workflows: Record<string, string>, tools: TeamaiConfig['toolPaths'] = { claude: { skills: '.claude/skills' } }, { recall = false } = {}) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-workflow-skills-')));
   roots.push(root);
   const home = path.join(root, 'home');
@@ -40,7 +40,7 @@ async function team(workflows: Record<string, string>, tools: TeamaiConfig['tool
   const localConfig: LocalConfig = { repo: { localPath: repo, remote: 'local' }, username: 'test', scope: 'user', additionalRoles: [], dataHome: path.join(root, 'data') };
   const teamConfig: TeamaiConfig = {
     team: 'test', description: '', repo: 'local', provider: 'git', reviewers: [],
-    sharing: { skills: {}, rules: { enforced: [] }, docs: { localDir: '' }, env: { injectShellProfile: true } },
+    sharing: { skills: {}, rules: { enforced: [] }, docs: { localDir: '' }, env: { injectShellProfile: true }, ...(recall ? { recall: { enabled: true } } : {}) },
     toolPaths: tools,
   };
   await syncWorkflowDefinitions(localConfig);
@@ -50,9 +50,10 @@ async function team(workflows: Record<string, string>, tools: TeamaiConfig['tool
     else fs.writeFileSync(file, yaml);
     await syncWorkflowDefinitions(localConfig);
   };
-  const skill = (name: string) => path.join(home, '.claude', 'skills', `workflow-${name}`, 'SKILL.md');
+  const skillAt = (dir: string) => path.join(home, '.claude', 'skills', dir, 'SKILL.md');
+  const skill = (name: string) => skillAt(`workflow-${name}`);
   const owned = (name: string) => isTeamaiSkillCopy(path.dirname(skill(name)), skillOrigin(repo, `workflow-${name}`));
-  return { owned, deploy: (recorder?: DeliveryRecorder) => deployWorkflowSkills({ teamConfig, localConfig, recorder }), skill, home, put, shadowed: () => shadowedWorkflowSkills({ teamConfig, localConfig }) };
+  return { owned, skillAt, teamConfig, deploy: (recorder?: DeliveryRecorder) => deployWorkflowSkills({ teamConfig, localConfig, recorder }), skill, home, put, shadowed: () => shadowedWorkflowSkills({ teamConfig, localConfig }) };
 }
 
 describe('generated workflow skills', () => {
@@ -61,8 +62,9 @@ describe('generated workflow skills', () => {
       check: workflow('check', 'allow', 'alias: lint\n'), gated: workflow('gated', 'ask'), private: workflow('private', 'deny'),
     });
     await deploy();
-    const written = fs.readFileSync(skill('check'), 'utf8');
-    expect(written).toContain('name: workflow-check\n');
+    expect(fs.existsSync(skill('check'))).toBe(false);
+    const written = fs.readFileSync(skill('lint'), 'utf8');
+    expect(written).toContain('name: workflow-lint\n');
     expect(written).toContain('description: "Lint the change. Alias: lint. A team workflow: prefer it over doing the task ad hoc."\n');
     expect(written).toContain('allowed-tools: Bash(teamai workflow start check --driver skill:*), Bash(teamai workflow start lint --driver skill:*), Bash(npx teamai-cli workflow start check --driver skill:*), Bash(npx teamai-cli workflow start lint --driver skill:*)\n');
     expect(written).toContain('Run `teamai skill get workflow` and follow it for the workflow `check`.');
@@ -75,7 +77,7 @@ describe('generated workflow skills', () => {
     expect(readGenerated(gated)).toEqual({ kind: 'ours', name: 'gated', edited: false });
     expect(fs.existsSync(skill('private'))).toBe(false);
     await deploy();
-    expect(fs.readFileSync(skill('check'), 'utf8')).toBe(written);
+    expect(fs.readFileSync(skill('lint'), 'utf8')).toBe(written);
     expect(fs.readFileSync(skill('gated'), 'utf8')).toBe(gated);
   });
 
@@ -153,31 +155,31 @@ describe('generated workflow skills', () => {
   });
 
   it('reports each skill it wrote or confirmed, so a prune drops its git exclude line', async () => {
-    const { deploy, skill, put } = await team({ check: workflow('check', 'allow'), gated: workflow('gated', 'ask') });
+    const { deploy, skill, skillAt, put } = await team({ check: workflow('check', 'allow'), gated: workflow('gated', 'ask') });
     fs.mkdirSync(path.dirname(skill('mine')), { recursive: true });
     fs.writeFileSync(skill('mine'), '---\nname: workflow-mine\ndescription: Mine.\n---\n');
     await put('mine', workflow('mine', 'allow'));
     const first = createDeliveryRecorder();
     await deploy(first);
     const listed = await first.merge(undefined);
-    expect(listed).toEqual({ 'workflow-skills': [skill('check'), skill('gated'), skill('session-close')] });
+    expect(listed).toEqual({ 'workflow-skills': [skillAt('teamai-share-session'), skill('check'), skill('gated')] });
     const confirmed = createDeliveryRecorder();
     await deploy(confirmed);
     expect(await confirmed.merge(listed)).toEqual(listed);
     await put('gated', null);
     const pruned = createDeliveryRecorder();
     await deploy(pruned);
-    expect(await pruned.merge(listed)).toEqual({ 'workflow-skills': [skill('check'), skill('session-close')] });
+    expect(await pruned.merge(listed)).toEqual({ 'workflow-skills': [skillAt('teamai-share-session'), skill('check')] });
   });
 
-  it('writes a skill for teamai\'s default session-close, and none once the team overrides it with invoke: deny', async () => {
-    const { deploy, skill, put } = await team({});
+  it('writes a skill for teamai\'s default teamai-share-session, and none once the team overrides it with invoke: deny', async () => {
+    const { deploy, skillAt, put } = await team({});
     await deploy();
-    expect(fs.readFileSync(skill('session-close'), 'utf8')).toContain('Use when the person asks to close the session, share a learning, publish or archive the session, or score or judge it.');
+    expect(fs.readFileSync(skillAt('teamai-share-session'), 'utf8')).toContain('Use when the person asks to publish or archive the session, or to score or judge it.');
 
-    await put('session-close', workflow('session-close', 'deny'));
+    await put('teamai-share-session', workflow('teamai-share-session', 'deny'));
     await deploy();
-    expect(fs.existsSync(skill('session-close'))).toBe(false);
+    expect(fs.existsSync(skillAt('teamai-share-session'))).toBe(false);
   });
 
   it('never writes or removes through a link', async () => {
@@ -214,5 +216,78 @@ describe('generated workflow skills', () => {
     fs.appendFileSync(skill('build'), 'Mine.\n');
     fs.writeFileSync(path.join(path.dirname(skill('lint')), 'notes.md'), 'Mine.\n');
     expect([await owned('check'), await owned('build'), await owned('lint')]).toEqual([true, false, false]);
+  });
+});
+
+describe('generated skills of teamai\'s default workflows', () => {
+  it('names a default\'s skill by the default\'s own name, and says it is teamai\'s default', async () => {
+    const { deploy, skillAt } = await team({}, undefined, { recall: true });
+    await deploy();
+
+    const session = fs.readFileSync(skillAt('teamai-share-session'), 'utf8');
+    expect(session).toContain('name: teamai-share-session\n');
+    expect(session).toContain('teamai\'s default workflow, which the team can replace: prefer it over doing the task ad hoc.');
+    expect(session).not.toContain('A team workflow');
+    expect(readGenerated(session)).toEqual({ kind: 'ours', name: 'teamai-share-session', edited: false });
+    expect(fs.readFileSync(skillAt('teamai-share-learnings'), 'utf8')).toContain('name: teamai-share-learnings\n');
+    expect(fs.existsSync(skillAt('workflow-teamai-share-session'))).toBe(false);
+  });
+
+  it('offers no teamai-share-learnings skill while recall is off, since its learning step needs the share skill', async () => {
+    const { deploy, skillAt } = await team({}, undefined, { recall: false });
+    await deploy();
+
+    expect(fs.existsSync(skillAt('teamai-share-session'))).toBe(true);
+    expect(fs.existsSync(skillAt('teamai-share-learnings'))).toBe(false);
+  });
+
+  it('offers no skill for a team copy of teamai-share-learnings while recall is off, whatever its alias', async () => {
+    const { deploy, skillAt } = await team({ 'teamai-share-learnings': workflow('teamai-share-learnings', 'ask', 'alias: learnings\n') }, undefined, { recall: false });
+    await deploy();
+
+    expect(fs.existsSync(skillAt('workflow-learnings'))).toBe(false);
+    expect(fs.existsSync(skillAt('teamai-share-learnings'))).toBe(false);
+  });
+
+  it('offers no teamai-share-learnings skill while the team\'s teamai-share-session does not take the inputs it passes', async () => {
+    const { deploy, skillAt } = await team({ 'teamai-share-session': workflow('teamai-share-session', 'ask', 'inputs: { session: string, source: string }\n') }, undefined, { recall: true });
+    await deploy();
+
+    expect(fs.existsSync(skillAt('teamai-share-learnings'))).toBe(false);
+    expect(fs.existsSync(skillAt('teamai-share-session'))).toBe(true);
+  });
+
+  it('offers no skill while recall is off for a team workflow whose alias replaces teamai-share-learnings', async () => {
+    const { deploy, skillAt } = await team({ 'close-session': workflow('close-session', 'ask', 'alias: teamai-share-learnings\n') }, undefined, { recall: false });
+    await deploy();
+
+    expect(fs.existsSync(skillAt('workflow-teamai-share-learnings'))).toBe(false);
+    expect(fs.existsSync(skillAt('teamai-share-learnings'))).toBe(false);
+    expect(fs.existsSync(skillAt('teamai-share-session'))).toBe(true);
+  });
+
+  it('removes the teamai-share-learnings skill once recall is turned off', async () => {
+    const { deploy, skillAt, teamConfig } = await team({}, undefined, { recall: true });
+    await deploy();
+    expect(fs.existsSync(skillAt('teamai-share-learnings'))).toBe(true);
+
+    teamConfig.sharing.recall = { enabled: false };
+    await deploy();
+
+    expect(fs.existsSync(skillAt('teamai-share-learnings'))).toBe(false);
+    expect(fs.existsSync(skillAt('teamai-share-session'))).toBe(true);
+  });
+
+  it('keeps the default\'s name for a team file that replaces it without an alias, and moves to workflow-<alias> once it has one', async () => {
+    const { deploy, skillAt, put } = await team({ 'teamai-share-session': workflow('teamai-share-session', 'ask') }, undefined, { recall: true });
+    await deploy();
+    const replaced = fs.readFileSync(skillAt('teamai-share-session'), 'utf8');
+    expect(replaced).toContain('description: "Lint the change. A team workflow: prefer it over doing the task ad hoc."\n');
+
+    await put('teamai-share-session', workflow('teamai-share-session', 'ask', 'alias: share-session\n'));
+    await deploy();
+
+    expect(fs.existsSync(skillAt('teamai-share-session'))).toBe(false);
+    expect(fs.readFileSync(skillAt('workflow-share-session'), 'utf8')).toContain('name: workflow-share-session\n');
   });
 });

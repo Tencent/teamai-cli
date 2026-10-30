@@ -497,7 +497,7 @@ function localCan(config: LocalConfig, hitl: boolean): Required<DriverCan> {
  * terminal. A terminal alone is not a person: an unattended run under a pseudo-terminal asks nobody.
  */
 export function personAnswers(mode: RunMode): boolean {
-  return mode === 'attended' && process.stdin.isTTY === true && process.stderr.isTTY === true;
+  return mode === 'attended' && Boolean(process.stdin.isTTY) && Boolean(process.stderr.isTTY);
 }
 
 async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options: LocalDriverOptions): Promise<WorkflowEnvelope> {

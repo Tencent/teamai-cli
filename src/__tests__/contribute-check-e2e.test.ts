@@ -184,7 +184,7 @@ describe('contribute-check E2E', () => {
     expect(result.stdout).toBe('');
     const state = readSessionState(tmpHome, SESSION_ID)!;
     expect(state.hinted).toBe(true);
-    expect(state.pendingHint).toContain('teamai workflow start --describe session-close --driver skill');
+    expect(state.pendingHint).toContain('teamai workflow start --describe teamai-share-learnings --driver skill');
     const repeated = await runContributeCheck(tmpHome, makeStdinPayload(SESSION_ID), 'codex');
     expect(repeated.stdout).toBe('');
     expect(readSessionState(tmpHome, SESSION_ID)!.pendingHint).toBe(state.pendingHint);
@@ -216,7 +216,7 @@ describe('contribute-check E2E', () => {
     expect(parsed.hookSpecificOutput.additionalContext).not.toContain(RAW_GITHUB_TOKEN);
     expect(parsed.hookSpecificOutput.additionalContext).not.toContain('50 tool calls');
     expect(parsed.hookSpecificOutput.additionalContext).not.toContain('7 different tools');
-    expect(parsed.hookSpecificOutput.additionalContext).toContain('Offer the person the session-close workflow: run `teamai workflow start --describe session-close --driver skill`');
+    expect(parsed.hookSpecificOutput.additionalContext).toContain('Offer the person the teamai-share-learnings workflow: run `teamai workflow start --describe teamai-share-learnings --driver skill`');
     expect(parsed.stopReason).toBeUndefined();
     expect(readSessionState(tmpHome, SESSION_ID)).toMatchObject({ hinted: true, offered: { publish: true, scorers: [] } });
 
@@ -228,7 +228,7 @@ describe('contribute-check E2E', () => {
 
   it('never reminds or offers again in a session resumed after the 24 hours sweep removed its state file', async () => {
     writeEventsFile(tmpHome, buildRichSessionEvents(SESSION_ID));
-    expect((await runContributeCheck(tmpHome, makeStdinPayload(SESSION_ID))).stdout).toContain('session-close');
+    expect((await runContributeCheck(tmpHome, makeStdinPayload(SESSION_ID))).stdout).toContain('teamai-share-learnings');
     const stateFile = path.join(tmpHome, '.teamai', 'sessions', `${SESSION_ID}.json`);
     const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
     fs.utimesSync(stateFile, twoDaysAgo, twoDaysAgo);

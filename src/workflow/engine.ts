@@ -5,7 +5,7 @@ import { DriverSchema, sameDriver } from '../driver-identity.js';
 import { RunModeSchema, type RunMode } from '../launch-context.js';
 import { log } from '../utils/logger.js';
 import type { LocalConfig } from '../types.js';
-import { loadCachedWorkflow, loadWorkflowTree } from './cache.js';
+import { loadCachedWorkflow, loadWorkflowTree, startingAlias } from './cache.js';
 import { claimedAway, claimRun, publishRunEnd, reconcileTakenCopies } from './handoff.js';
 import {
   evaluateExpression, expressionPaths, isRecord, isTruthy, parseExpression, resolvePath,
@@ -905,10 +905,12 @@ export async function startRun(
   const holdsSecret = secretMismatch(inputs, pinned, secrets);
   if (holdsSecret) return error('invalid_inputs', holdsSecret);
   const now = new Date().toISOString();
+  const alias = await startingAlias(config, cached.definition);
   const run: RunState = {
     schemaVersion: 'v1alpha1',
     id: generateRunId(),
     name: cached.definition.name,
+    ...(alias !== undefined ? { alias } : {}),
     revision: 1,
     status: 'running',
     ...(cached.definition.inputs ? { inputs: inputs as Record<string, unknown> } : {}),

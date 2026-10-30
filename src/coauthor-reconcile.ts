@@ -424,7 +424,7 @@ export async function coAuthorLocalSettingsFile(
   const settings = scopedToolPaths(teamConfig, localConfig).claude?.settings;
   if (localConfig.scope !== 'project' || !settings) return { kind: 'none' };
   const file = path.join(resolveBaseDir(localConfig), path.dirname(settings), 'settings.local.json');
-  if (managed[file] !== false) return { kind: 'none' };
+  if (managed[file] ?? true) return { kind: 'none' };
   const read = await readJsonObject(file);
   if (read.kind === 'invalid') return { kind: 'unreadable', file };
   const attribution = read.kind === 'ok' ? read.value.attribution : undefined;
@@ -463,7 +463,7 @@ export async function reconcileCoAuthorForConfig(
       : undefined;
     if (intent === undefined && !moveTo) continue;
     const recorded = managed[file];
-    const wroteStrip = recorded === false;
+    const wroteStrip = !recorded && recorded !== undefined;
     delete managed[file];
     try {
       const next = wroteStrip ? await withoutPreFixAttribution(file) : { kind: 'none' as const };

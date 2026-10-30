@@ -187,7 +187,7 @@ describe('Trae support', () => {
       },
     });
     expect(split.success).toBe(false);
-    expect(split.success === false && split.error.issues[0]?.message).toContain('one shared ownership record');
+    expect(!split.success && split.error.issues[0]?.message).toContain('one shared ownership record');
 
     const shared = TeamaiConfigSchema.safeParse({
       team: 'test',

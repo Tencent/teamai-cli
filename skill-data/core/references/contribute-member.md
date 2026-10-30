@@ -17,7 +17,7 @@ thing now.
 
 - **A learning** (a lesson, a gotcha, how you solved something) → this is
   **automatic** once recall is on (off by default) and the teamai config loads: TeamAI prompts at the end of a session worth sharing and
-  offers the `session-close` workflow, whose learning step runs the `share` skill
+  offers the `teamai-share-learnings` workflow, whose learning step runs the `share` skill
   (`teamai skill get share`) to summarize the session before `teamai contribute`. The user does not come through this flow
   for it. (Step A below is only a manual fallback for while recall is off.)
 - **A reusable skill** (a `SKILL.md` others invoke) → author the skill, then

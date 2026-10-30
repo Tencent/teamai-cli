@@ -68,42 +68,9 @@ function whereOnWindows(cmd: string): string | null {
 }
 
 /**
- * POSIX 侧的策略链，依次尝试各 shell 环境，返回第一个解析成功且真实存在的路径：
- *   1. `bash -lc command -v <cmd>` —— login shell，覆盖 ~/.nvm/ 等路径
- *   2. `zsh -lc command -v <cmd>`  —— macOS 默认 shell fallback
- *   3. `which <cmd>` —— 最终 fallback，使用 process.env.PATH 直接查找
- *
- * @param cmd  候选命令名
- * @returns    存在的绝对路径；三种策略都失败时返回 null
+ * Prefer the caller's PATH, then try login shells for desktop-launched callers.
  */
 function whichOnPosix(cmd: string): string | null {
-  // 策略 1：bash login shell（shell: false 是 execFileSync 默认行为，此处显式标注）
-  try {
-    const p = execFileSync('bash', ['-lc', `command -v ${cmd}`], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      shell: false,
-      timeout: CLI_DETECT_TIMEOUT_MS,
-    }).trim();
-    if (p && existsSync(p)) return p;
-  } catch {
-    // 继续尝试下一策略
-  }
-
-  // 策略 2：zsh login shell（macOS 默认 shell / bash 不可用时）
-  try {
-    const p = execFileSync('zsh', ['-lc', `command -v ${cmd}`], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      shell: false,
-      timeout: CLI_DETECT_TIMEOUT_MS,
-    }).trim();
-    if (p && existsSync(p)) return p;
-  } catch {
-    // 继续尝试下一策略
-  }
-
-  // 策略 3：which 命令（使用 process.env.PATH，覆盖 fish / CI 容器等环境）
   try {
     const p = execFileSync('which', [cmd], {
       encoding: 'utf8',
@@ -113,7 +80,21 @@ function whichOnPosix(cmd: string): string | null {
     }).trim();
     if (p && existsSync(p)) return p;
   } catch {
-    // 三种策略都不可用
+    // Desktop hooks may need the PATH configured by a login shell.
+  }
+
+  for (const shell of ['bash', 'zsh']) {
+    try {
+      const p = execFileSync(shell, ['-lc', 'command -v "$1"', 'teamai-cli', cmd], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        shell: false,
+        timeout: CLI_DETECT_TIMEOUT_MS,
+      }).trim();
+      if (p && existsSync(p)) return p;
+    } catch {
+      // Try the next shell.
+    }
   }
 
   return null;

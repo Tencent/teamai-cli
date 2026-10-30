@@ -3780,12 +3780,12 @@ describe('uninstall', () => {
     vi.stubEnv('HOME', homeDir);
     vi.stubEnv('SHELL', '/bin/zsh');
     const skills = path.join(homeDir, '.claude', 'skills');
-    const generated = path.join(skills, 'workflow-session-close');
+    const generated = path.join(skills, 'teamai-share-session');
     await fse.outputFile(path.join(generated, 'SKILL.md'),
-      renderWorkflowSkill({ name: 'session-close', description: 'Close the session', invoke: 'ask' }, 'claude'));
+      renderWorkflowSkill({ name: 'teamai-share-session', description: 'Share the session', invoke: 'ask', source: 'default', skill: 'teamai-share-session' }, 'claude'));
     const edited = path.join(skills, 'workflow-release');
     await fse.outputFile(path.join(edited, 'SKILL.md'),
-      `${renderWorkflowSkill({ name: 'release', description: 'Cut a release', invoke: 'ask' }, 'claude')}My own step.\n`);
+      `${renderWorkflowSkill({ name: 'release', description: 'Cut a release', invoke: 'ask', source: 'team', skill: 'workflow-release' }, 'claude')}My own step.\n`);
     mockAutoDetectInit.mockResolvedValue({ localConfig: makeLocalConfig(homeDir, repoPath), teamConfig: makeTeamConfig() });
 
     const printed: string[] = [];

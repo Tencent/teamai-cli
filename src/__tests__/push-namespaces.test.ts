@@ -127,28 +127,28 @@ describe('resolveProjectNamespace', () => {
   it('fails naming the type and the axis when the project declares none', () => {
     const result = resolveProjectNamespace(manifest, 'bare', 'rules');
     expect(result.ok).toBe(false);
-    expect(result.ok === false && result.message).toContain('rules');
-    expect(result.ok === false && result.message).toContain('knowledge');
-    expect(result.ok === false && result.message).toContain('bare');
+    expect(!result.ok && result.message).toContain('rules');
+    expect(!result.ok && result.message).toContain('knowledge');
+    expect(!result.ok && result.message).toContain('bare');
   });
 
   it('fails rather than guessing when the axis is multi-valued', () => {
     const result = resolveProjectNamespace(manifest, 'multi', 'rules');
     expect(result.ok).toBe(false);
-    expect(result.ok === false && result.message).toContain('k1, k2');
-    expect(result.ok === false && result.message).toContain('--role');
+    expect(!result.ok && result.message).toContain('k1, k2');
+    expect(!result.ok && result.message).toContain('--role');
   });
 
   it('rejects a namespace that is not a single safe path segment', () => {
     const result = resolveProjectNamespace(manifest, 'unsafe', 'rules');
     expect(result.ok).toBe(false);
-    expect(result.ok === false && result.message).toContain('../../evil');
+    expect(!result.ok && result.message).toContain('../../evil');
   });
 
   it('fails on an unknown project instead of throwing', () => {
     const result = resolveProjectNamespace(manifest, 'nope', 'rules');
     expect(result.ok).toBe(false);
-    expect(result.ok === false && result.message).toMatch(/unknown project/i);
+    expect(!result.ok && result.message).toMatch(/unknown project/i);
   });
 });
 

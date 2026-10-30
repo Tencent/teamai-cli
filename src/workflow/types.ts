@@ -273,6 +273,8 @@ export interface RunState {
   failure?: WorkflowFailure;
   /** The validated `--inputs`, stored when the workflow declares inputs. */
   inputs?: Record<string, unknown>;
+  /** The alias that started the workflow when the run started: the name people use for it. Absent when it had none, or its alias started another workflow. */
+  alias?: string;
   /** Covers `definition` and every workflow in `workflows`. */
   sourceHash: string;
   /** Remote-reachable team commit shared by every cached workflow in this run. */

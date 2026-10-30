@@ -232,7 +232,7 @@ export async function resolveTeamHooks(
     }
   }
 
-  if (opts.auto && sharing.autoApply === false && defs.length > 0) {
+  if (opts.auto && !(sharing.autoApply ?? true) && defs.length > 0) {
     log.info(`${defs.length} team hook(s) pending — run 'teamai hooks inject' to apply (sharing.hooks.autoApply=false)`);
     return { ok: true, defs: [], builtin, ...held };
   }

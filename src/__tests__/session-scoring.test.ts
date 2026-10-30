@@ -31,6 +31,7 @@ import { scoreSession, type OwnJudge, type SessionDemand } from '../session-flow
 import { getTeamSecretsPath, writeSecretStore } from '../secret-store.js';
 import { submitJudgeLease } from '../workflow/scoring.js';
 import type { WorkflowEnvelope } from '../workflow/types.js';
+import * as cliPaths from '../utils/cli-path.js';
 
 const SCORER = `---
 labels:
@@ -47,6 +48,10 @@ const SESSION = '7c1e0000-0000-4000-8000-000000000001';
 let root = '';
 beforeEach(() => {
   root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-session-scoring-')));
+  vi.spyOn(cliPaths, 'resolveCliPath').mockImplementation((cmd) => {
+    const executable = path.join(root, 'bin', cmd);
+    return fs.existsSync(executable) ? executable : null;
+  });
   mocks.home = path.join(root, 'home');
   fs.mkdirSync(path.join(mocks.home, '.claude', 'projects'), { recursive: true });
   for (const name of AGENT_SESSION_ENV) vi.stubEnv(name, '');

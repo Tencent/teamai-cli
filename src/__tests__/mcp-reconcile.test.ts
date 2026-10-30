@@ -4440,4 +4440,16 @@ describe('spliceCodexBlock', () => {
     const src = '[mcp_servers.a]\n\n[mcp_servers.b]\n\n[mcp_servers.b.env]\nX = "1"\n';
     expect(codexServerNames(src).sort()).toEqual(['a', 'b']);
   });
+
+  it.each([
+    ['a comment after the header', '[mcp_servers.a] # mine'],
+    ['spaces inside the brackets', '[ mcp_servers.a ]'],
+    ['a quoted name', '[mcp_servers."a"]'],
+  ])('finds and replaces a header written with %s', (_label, header) => {
+    const src = `model = "gpt-5"\n\n${header}\ncommand = "old"\n`;
+    expect(codexServerNames(src)).toEqual(['a']);
+    const out = spliceCodexBlock(src, 'a', '[mcp_servers.a]\ncommand = "new"\n');
+    expect(out).not.toContain('command = "old"');
+    expect(out.match(/mcp_servers/g)).toHaveLength(1);
+  });
 });

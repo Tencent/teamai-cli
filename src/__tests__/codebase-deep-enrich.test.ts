@@ -554,18 +554,18 @@ describe('codebase deep-enrich in a team repo', () => {
     expect((await createGit(clone).status()).isClean()).toBe(true);
     expect(log.mock.calls.flat().join('\n')).toContain(`Pushed to team knowledge repo (${remote})`);
     for (const name of ['graph-g1-relations.md', 'graph-g2-dataflow.md', 'graph-g3-interfaces.md']) {
-      expect(await createGit(clone).raw(['--git-dir', remote, 'cat-file', '-e', `main:teamwiki/evidence/code/auth/docs/${name}`])).toBe('');
+      expect(await createGit(remote).raw(['cat-file', '-e', `main:teamwiki/evidence/code/auth/docs/${name}`])).toBe('');
     }
   });
 
   it('does not publish when previewing with --dry-run', async () => {
     const { clone, remote } = await createTeamDeepEnrichFixture();
     vi.spyOn(console, 'log').mockImplementation(() => undefined);
-    const head = await createGit(clone).raw(['--git-dir', remote, 'rev-parse', 'main']);
+    const head = await createGit(remote).raw(['rev-parse', 'main']);
 
     await codebaseCmd({ deepEnrich: true, project: 'auth', dryRun: true });
 
-    expect(await createGit(clone).raw(['--git-dir', remote, 'rev-parse', 'main'])).toBe(head);
+    expect(await createGit(remote).raw(['rev-parse', 'main'])).toBe(head);
     expect((await createGit(clone).status()).isClean()).toBe(true);
   });
 });

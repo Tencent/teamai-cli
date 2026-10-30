@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import simpleGit from 'simple-git';
+import { simpleGit } from 'simple-git';
 import { commitPaths, commitSkippingHooks, createGit } from '../utils/git.js';
 
 // Real-git tests: TeamAI-managed isolated commits skip hooks; ordinary

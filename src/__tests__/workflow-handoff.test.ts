@@ -1834,7 +1834,7 @@ steps:
     const bob = await acme.member('bob');
     const inputs = { session: 's1', source: 'claude', publish: false, scorers: [], judge: 'here' };
     const startClose = async (): Promise<string> => {
-      const started = await startRun(alice.config, 'session-close', inputs, { secrets: await knownSecrets(alice.config) });
+      const started = await startRun(alice.config, 'teamai-share-session', inputs, { secrets: await knownSecrets(alice.config) });
       if ('error' in started) throw new Error(started.error.message);
       const runId = String(started.data.run);
       await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout });
@@ -1854,7 +1854,7 @@ steps:
 
     expect(await claimRun(bob.config, older, { checkout: bob.checkout })).toMatchObject({
       ok: false,
-      error: { code: 'definition_mismatch', message: `Run ${older} runs teamai's default workflow "session-close" of teamai 0.0.1, which differs from the one teamai ${PACKAGE_VERSION} ships. Continue it on a machine with teamai 0.0.1, or start a new run.` },
+      error: { code: 'definition_mismatch', message: `Run ${older} runs teamai's default workflow "teamai-share-session" of teamai 0.0.1, which differs from the one teamai ${PACKAGE_VERSION} ships. Continue it on a machine with teamai 0.0.1, or start a new run.` },
     });
     expect(await readRun(bob.config, older)).toBe('missing');
   });

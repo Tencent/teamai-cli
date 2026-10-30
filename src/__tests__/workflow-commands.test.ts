@@ -474,18 +474,18 @@ steps:
     expect(await readRun(project, runId)).toBe('missing');
   });
 
-  it('starts the user scope\'s session-close before the project\'s teamai default, and the default when neither team has one', async () => {
+  it('starts the user scope\'s teamai-share-session before the project\'s teamai default, and the default when neither team has one', async () => {
     const { project, user } = await installs();
-    const userWorkflow = path.join(user.repo.localPath, 'workflows', 'session-close.yaml');
+    const userWorkflow = path.join(user.repo.localPath, 'workflows', 'teamai-share-session.yaml');
 
-    expect(await capture(() => workflowStart('session-close', { describe: true }))).toMatchObject({ data: { name: 'session-close', invoke: 'ask', source: 'default' } });
-    expect(await capture(() => workflowStart('session-close', { driver: 'skill', describe: true }))).toMatchObject({ data: { describe: { workflow: { name: 'session-close', source: 'default' } } } });
+    expect(await capture(() => workflowStart('teamai-share-session', { describe: true }))).toMatchObject({ data: { name: 'teamai-share-session', invoke: 'ask', source: 'default' } });
+    expect(await capture(() => workflowStart('teamai-share-session', { driver: 'skill', describe: true }))).toMatchObject({ data: { describe: { workflow: { name: 'teamai-share-session', source: 'default' } } } });
 
-    fs.writeFileSync(userWorkflow, ship('Close the session the user team way').replace('name: ship', 'name: session-close'));
+    fs.writeFileSync(userWorkflow, ship('Close the session the user team way').replace('name: ship', 'name: teamai-share-session'));
     await syncWorkflowDefinitions(user);
-    expect(await capture(() => workflowStart('session-close', { describe: true }))).toMatchObject({ data: { description: 'Close the session the user team way', source: 'team' } });
-    expect(await capture(() => workflowStart('session-close', { driver: 'skill', describe: true }))).toMatchObject({ data: { describe: { workflow: { source: 'team' } } } });
-    const started = await capture(() => workflowStart('session-close', {}));
+    expect(await capture(() => workflowStart('teamai-share-session', { describe: true }))).toMatchObject({ data: { description: 'Close the session the user team way', source: 'team' } });
+    expect(await capture(() => workflowStart('teamai-share-session', { driver: 'skill', describe: true }))).toMatchObject({ data: { describe: { workflow: { source: 'team' } } } });
+    const started = await capture(() => workflowStart('teamai-share-session', {}));
     const runId = String(started.data?.run);
     expect(typeof await readRun(user, runId)).toBe('object');
     expect(await readRun(project, runId)).toBe('missing');

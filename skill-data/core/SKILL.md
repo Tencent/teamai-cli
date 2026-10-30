@@ -16,7 +16,7 @@ do not skip, reorder, or invent commands.
 Look at what the user typed after `/teamai`.
 
 **If they gave NO scenario right after a TeamAI friction reminder** (the
-`[teamai]` line that offers the `session-close` workflow, or suggests
+`[teamai]` line that offers the `teamai-share-learnings` workflow, or suggests
 `/teamai share what this session taught me`), that reminder is the scenario:
 do what it says.
 

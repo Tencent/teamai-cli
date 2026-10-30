@@ -12,10 +12,10 @@ afterEach(() => {
 const SESSION_CALL = { evidence: { kind: 'session', variable: 'CLAUDE_CODE_SESSION_ID' }, session: '7c1e-session', tool: 'claude' } as const;
 const NO_SESSION = { evidence: { kind: 'session', variable: 'CLAUDE_CODE_SESSION_ID' }, session: undefined, tool: undefined } as const;
 
-/** A team override of session-close with `inputs` and one step that reads none of them. */
+/** A team override of teamai-share-learnings with `inputs` and one step that reads none of them. */
 const override = (inputs: string) => `schemaVersion: v1alpha1
-name: session-close
-description: Close the session our way.
+name: teamai-share-learnings
+description: Share the session our way.
 invoke: ask
 inputs: { ${inputs} }
 steps:
@@ -23,19 +23,20 @@ steps:
     command: node -e "console.log('closed')"
 `;
 
-/** The inputs describe's question lists for `session-close`, from a session or `NO_SESSION`. */
-async function proposedInputs(workflows: Record<string, string>, caller: typeof SESSION_CALL | typeof NO_SESSION = SESSION_CALL): Promise<unknown[]> {
+/** The inputs describe's question lists for `name`, from a session or `NO_SESSION`. */
+async function proposedInputs(workflows: Record<string, string>, caller: typeof SESSION_CALL | typeof NO_SESSION = SESSION_CALL, name = 'teamai-share-learnings'): Promise<unknown[]> {
   const harness = await skillHarness(workflows);
   roots.push(harness.root);
-  const described = await harness.call({ kind: 'describe', name: 'session-close' }, caller);
+  const described = await harness.call({ kind: 'describe', name }, caller);
   if (!('data' in described) || !('describe' in described.data) || described.data.describe.ask.kind !== 'ask') throw new Error(JSON.stringify(described));
   return described.data.describe.ask.question.inputs;
 }
 
-describe('describe of session-close', () => {
-  it('proposes a value and why for each input of the contract, for the calling session', async () => {
+describe('describe of teamai-share-learnings and teamai-share-session', () => {
+  it('proposes a value and why for each input of the contract, for the calling session, for both defaults', async () => {
+    expect(await proposedInputs({}, SESSION_CALL, 'teamai-share-session')).toEqual(await proposedInputs({}));
     expect(await proposedInputs({})).toEqual([
-      { name: 'session', type: { type: 'string' }, value: '7c1e-session', why: 'The session to close: this one.' },
+      { name: 'session', type: { type: 'string' }, value: '7c1e-session', why: 'The session to share: this one.' },
       { name: 'source', type: { type: 'string' }, value: 'claude-code', why: 'This session\'s tool, as teamai session list names it.' },
       {
         name: 'publish', type: { type: 'boolean' }, value: true,
@@ -60,7 +61,7 @@ describe('describe of session-close', () => {
   });
 
   it('fills the contract inputs a team override keeps by name and type, and leaves the others to the person', async () => {
-    const inputs = await proposedInputs({ 'session-close': override('sessionId: string, source: string, scorers: string, judge: driver | here, ticket: string') });
+    const inputs = await proposedInputs({ 'teamai-share-learnings': override('sessionId: string, source: string, scorers: string, judge: driver | here, ticket: string') });
 
     expect(inputs).toEqual([
       { name: 'sessionId', type: { type: 'string' } },
@@ -72,7 +73,7 @@ describe('describe of session-close', () => {
   });
 
   it('proposes nothing for a team workflow of another name with the same inputs', async () => {
-    const harness = await skillHarness({ 'close-out': override('session: string, source: string').replace('name: session-close', 'name: close-out') });
+    const harness = await skillHarness({ 'close-out': override('session: string, source: string').replace('name: teamai-share-learnings', 'name: close-out') });
     roots.push(harness.root);
 
     const described = await harness.call({ kind: 'describe', name: 'close-out' }, SESSION_CALL);

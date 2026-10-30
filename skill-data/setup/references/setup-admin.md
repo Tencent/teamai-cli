@@ -287,10 +287,10 @@ day-to-day work — they can keep letting the AI run things for them:
   `/teamai Share this <skill-name> skill with my team` — see
   `"$(teamai skill path core)/references/contribute-member.md"`.
 - Sharing a **session's learnings** needs no command from them: TeamAI prompts on
-  its own at the end of a session worth sharing and offers the `session-close`
+  its own at the end of a session worth sharing and offers the `teamai-share-learnings`
   workflow, whose learning step runs the `share` skill (`teamai skill get share`)
   with them; once they confirm, it can also publish and score the session. A team
-  replaces it with its own `workflows/session-close.yaml`. (Only once recall is on — off by default;
+  replaces it with its own `workflows/teamai-share-learnings.yaml`. (Only once recall is on — off by default;
   turn it on team-wide with `sharing.recall.enabled: true` in `teamai.yaml`, then
   `teamai push`. Never on a read-only HTTP source, or while a member's teamai
   config cannot be loaded. A team that works in English also sets `language: en`

@@ -50,8 +50,8 @@ const SKILL_IMPORTS: Record<string, { typeOnly?: true; names?: string[]; values?
   // What the confined judge of the session tool can do, which the driver declares on `score --next`.
   'src/scorers/judge.ts': { names: ['isJudgeTool', 'judgeAccess'] },
   'src/scorers/label.ts': { typeOnly: true },
-  // What describe proposes for the inputs of teamai's default session-close workflow, for the calling session.
-  'src/session-close.ts': { names: ['SessionClose'] },
+  // What describe proposes for the inputs of teamai's default share workflows, for the calling session.
+  'src/session-share.ts': { names: ['SessionShare'] },
   // The identity every driver reports, the repository's atomic file writes, and the shared config types.
   'src/driver-identity.ts': {},
   // The run mode: whether a person attends the run, which describe answers for and every attempt's process gets.

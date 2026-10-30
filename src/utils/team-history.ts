@@ -73,6 +73,20 @@ export async function readBlob(repoPath: string, blob: string): Promise<Buffer |
   }
 }
 
+/**
+ * The bytes Git would write for a historical `path` in this checkout, or null
+ * when it cannot read that version. `--filters` applies the checkout's eol
+ * attributes and core.autocrlf, which is what pull copied into its delivery
+ * record rather than the blob's canonical bytes. The path is repo-relative.
+ */
+export async function readRenderedBlob(repoPath: string, blob: string, path: string): Promise<Buffer | null> {
+  try {
+    return Buffer.from(await createGit(repoPath).binaryCatFile(['--filters', `--path=${path}`, blob]) as Uint8Array);
+  } catch {
+    return null;
+  }
+}
+
 const objectFormats = new Map<string, Promise<string>>();
 
 /** The id git gives `content` as a blob of `repoPath` (sha1, or sha256 in a sha256 repository). */

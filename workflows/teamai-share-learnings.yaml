@@ -1,0 +1,24 @@
+schemaVersion: v1alpha1
+name: teamai-share-learnings
+description: Close out this session with the person - share what it taught as team learnings, one or several, then publish and score it with teamai-share-session. Use when the person asks to close the session, or to share what it taught.
+invoke: ask
+inputs: { session: string, source: string, publish: boolean, scorers: [string], judge: here | driver }
+steps:
+  - id: learning
+    interactive: true
+    prompt: "Run `teamai skill get share` and follow it with the person for the {{ inputs.source }} session {{ inputs.session }}. Write each learning the person wants to share to its own file outside the repository, and return them as learnings, each with its path, its title, and its learnings namespace (an empty string for the shared root). If the person finds nothing worth sharing, return an empty list."
+    output: { learnings: [{ title: string, file: string, namespace: string }] }
+  - id: approve
+    needs: [learning]
+    if: length(steps.learning.outputs.learnings) > 0
+    approve: "Share these {{ length(steps.learning.outputs.learnings) }} learnings with the team? {{ steps.learning.outputs.learnings }}"
+  - id: contribute
+    needs: [learning, approve]
+    if: steps.approve.outcome == 'success'
+    for_each: steps.learning.outputs.learnings
+    command: teamai contribute --file "$FILE" --title "$TITLE" --namespace "$NS" --session-id "$SESSION"
+    env: { FILE: "{{ item.file }}", TITLE: "{{ item.title }}", NS: "{{ item.namespace }}", SESSION: "{{ inputs.session }}" }
+  - id: share-session
+    needs: []
+    workflow: teamai-share-session
+    with: { session: "{{ inputs.session }}", source: "{{ inputs.source }}", publish: "{{ inputs.publish }}", scorers: "{{ inputs.scorers }}", judge: "{{ inputs.judge }}" }

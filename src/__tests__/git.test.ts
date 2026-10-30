@@ -27,8 +27,10 @@ const mockGit = {
 // Capture the options every createGit() call passes to simple-git, so tests
 // can assert the hang guards (block timeout + GIT_TERMINAL_PROMPT) are present.
 const simpleGitCalls: unknown[][] = [];
+const mockExecCommand = vi.hoisted(() => vi.fn());
+vi.mock('../utils/exec.js', () => ({ execCommand: mockExecCommand }));
 vi.mock('simple-git', () => ({
-  default: (...args: unknown[]) => {
+  simpleGit: (...args: unknown[]) => {
     simpleGitCalls.push(args);
     return mockGit;
   },
@@ -165,20 +167,24 @@ describe('disableGitTerminalPrompt', () => {
 describe('gitCommonDir', () => {
   it('asks git each time when no repository on disk vouches for the answer', async () => {
     const cwd = path.resolve('common-dir-unstamped');
-    mockGit.revparse.mockClear().mockResolvedValueOnce('.git').mockResolvedValue('other/.git');
+    mockExecCommand.mockReset()
+      .mockResolvedValueOnce({ code: 0, stdout: '.git\n', stderr: '' })
+      .mockResolvedValue({ code: 0, stdout: 'other/.git\n', stderr: '' });
 
     expect(await gitCommonDir(cwd)).toBe(path.join(cwd, '.git'));
     expect(await gitCommonDir(cwd)).toBe(path.join(cwd, 'other', '.git'));
-    expect(mockGit.revparse).toHaveBeenCalledTimes(2);
+    expect(mockExecCommand).toHaveBeenCalledTimes(2);
   });
 
   it('retries when a repository becomes available after a failed probe', async () => {
     const cwd = path.resolve('common-dir-retry');
-    mockGit.revparse.mockClear().mockRejectedValueOnce(new Error('not a repository')).mockResolvedValue('.git');
+    mockExecCommand.mockReset()
+      .mockResolvedValueOnce({ code: 128, stdout: '', stderr: 'not a repository' })
+      .mockResolvedValue({ code: 0, stdout: '.git\n', stderr: '' });
 
     expect(await gitCommonDir(cwd)).toBeNull();
     expect(await gitCommonDir(cwd)).toBe(path.join(cwd, '.git'));
-    expect(mockGit.revparse).toHaveBeenCalledTimes(2);
+    expect(mockExecCommand).toHaveBeenCalledTimes(2);
   });
 });
 

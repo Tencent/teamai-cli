@@ -759,7 +759,7 @@ function mergeWorkspaceBindings(
 export async function loadLocalAgentConfig(
   options: { dryRun?: boolean; envFallback?: boolean } = {},
 ): Promise<LocalAgentConfig | null> {
-  const fileConfig = await readJson<LocalAgentConfig | { disabled: true }>(getConfigPath());
+  const fileConfig = await readJson<LocalAgentConfig | { disabled?: boolean }>(getConfigPath());
   // A removed source must not reconnect through legacy config or environment fallback.
   if (fileConfig && 'disabled' in fileConfig && fileConfig.disabled === true) return null;
   if (fileConfig && 'endpoint' in fileConfig && fileConfig.endpoint) {

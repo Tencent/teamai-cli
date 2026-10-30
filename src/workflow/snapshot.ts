@@ -39,6 +39,7 @@ function withCommitIds<T extends z.ZodTypeAny>(schema: T): z.ZodEffects<T> {
 const BodySchema = z.object({
   schemaVersion: z.literal('v1alpha1'),
   name: z.string(),
+  alias: z.string().optional(),
   revision: z.number().int(),
   status: z.enum(['running', 'succeeded', 'failed', 'cancelled']),
   end: z.string().optional(),
@@ -212,7 +213,7 @@ type FieldRules<T> = { readonly [K in KeysOfUnion<T>]-?: 'publish' | 'drop' | 'r
 type Rewrites<T, R> = { readonly [K in keyof R as R[K] extends 'rewrite' ? K : never]: (value: T) => Record<string, unknown> };
 
 const RUN_RULES = {
-  schemaVersion: 'publish', id: 'rewrite', name: 'publish', revision: 'publish', status: 'publish', driver: 'drop',
+  schemaVersion: 'publish', id: 'rewrite', name: 'publish', alias: 'publish', revision: 'publish', status: 'publish', driver: 'drop',
   end: 'publish', failure: 'rewrite', inputs: 'publish', sourceHash: 'publish', teamRevision: 'publish', runMode: 'publish', origin: 'publish',
   definition: 'rewrite', workflows: 'rewrite', scorers: 'rewrite', steps: 'rewrite', settledAttempts: 'rewrite', settledCount: 'rewrite',
   endRecordQueued: 'drop', cancelledAttempts: 'rewrite', archive: 'rewrite', round: 'publish', base: 'publish',

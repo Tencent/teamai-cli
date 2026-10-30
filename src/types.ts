@@ -2366,15 +2366,15 @@ export interface ContributeState {
    */
   pendingHint?: string;
   /**
-   * What the reminder offered with the session-close workflow (#1388), set in the write that sets `hinted`: whether to
+   * What the reminder offered with the teamai-share-learnings workflow (#1388), set in the write that sets `hinted`: whether to
    * publish the session, and the scorers to judge it with. Absent when the reminder named no workflow.
    */
-  offered?: SessionCloseOffered;
+  offered?: SessionShareOffered;
 }
 
-/** What the friction reminder offers a session with the session-close workflow, as the session's state keeps it. */
-export const SessionCloseOfferedSchema = z.object({ publish: z.boolean(), scorers: z.array(z.string()) });
-export type SessionCloseOffered = z.infer<typeof SessionCloseOfferedSchema>;
+/** What the friction reminder offers a session with the teamai-share-learnings workflow, as the session's state keeps it. */
+export const SessionShareOfferedSchema = z.object({ publish: z.boolean(), scorers: z.array(z.string()) });
+export type SessionShareOffered = z.infer<typeof SessionShareOfferedSchema>;
 
 /**
  * Layer 1 (fast-path) threshold: if toolCount < this, skip reading events.jsonl.

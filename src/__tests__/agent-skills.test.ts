@@ -26,6 +26,7 @@ import {
 } from '../agent-skills.js';
 import { detectInstalledAgents, getEffectiveAgents } from '../known-agents.js';
 import { BUILTIN_SKILL_NAMES } from '../builtin-skills.js';
+import { markerLines, signGenerated } from '../workflow/discovery/generated-marker.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
 
 interface Fixture {
@@ -327,6 +328,24 @@ describe('scanAgentSkills', () => {
     const names = view.skills.map((s) => s.name);
     expect(names).toContain('real-skill');
     expect(names).not.toContain('not-a-skill');
+  });
+
+  it('labels a skill pull generated for a workflow [workflow], even under a name a pre-stub release used', async () => {
+    const claudeSkillsDir = path.join(fx.homeDir, '.claude', 'skills');
+    for (const name of ['teamai-share-learnings', 'teamai-share-session', 'workflow-fix']) {
+      await fse.outputFile(path.join(claudeSkillsDir, name, 'SKILL.md'), signGenerated(['---', `name: ${name}`, 'description: A workflow.', ...markerLines(name), '---', ''].join('\n'), name));
+    }
+
+    const ctx = await buildClassifyContext(fx.localConfig);
+    const claude = (await detectInstalledAgents(fx.localConfig, fx.teamConfig)).find((a) => a.id === 'claude');
+    if (!claude) throw new Error('claude is not detected');
+    const view = await scanAgentSkills(claude, ctx);
+
+    expect(view.skills.map((s) => [s.name, formatSkillSource(s.source)])).toEqual([
+      ['teamai-share-learnings', '[workflow]'],
+      ['teamai-share-session', '[workflow]'],
+      ['workflow-fix', '[workflow]'],
+    ]);
   });
 
   it('lists manifest-declared nested installs without treating bundled modules as skills', async () => {

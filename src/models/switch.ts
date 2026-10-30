@@ -837,7 +837,7 @@ type BuddyAgent = 'codebuddy' | 'workbuddy';
 
 interface BuddySnapshot {
   entries: Record<string, unknown | null>;
-  allowed?: Record<string, boolean>;
+  allowed?: Record<string, boolean | undefined>;
 }
 
 async function buddyDoc(agent: BuddyAgent): Promise<{
@@ -872,7 +872,7 @@ function buddyAllowed(availableModels: string[] | undefined, ids: string[]): Rec
   return Object.fromEntries(ids.map((id) => [id, availableModels?.includes(id) ?? false]));
 }
 
-function reconcileBuddyAllowed(availableModels: string[] | undefined, allowed: Record<string, boolean> | undefined): string[] | undefined {
+function reconcileBuddyAllowed(availableModels: string[] | undefined, allowed: Record<string, boolean | undefined> | undefined): string[] | undefined {
   if (!availableModels || !allowed) return availableModels;
   const next = availableModels.filter((id) => allowed[id] !== false);
   for (const [id, enabled] of Object.entries(allowed)) {
