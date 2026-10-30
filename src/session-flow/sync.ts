@@ -539,15 +539,31 @@ export class SyncManager {
     const to = path.join(this.sessionsDir, 'repos', toName);
     const fromRel = `sessions/repos/${fromName}/`;
     const toRel = `sessions/repos/${toName}/`;
-    const committed = this.runGit(['ls-tree', '-r', '-z', '--name-only', 'HEAD', fromRel], false).split('\0').filter(Boolean);
+    // `<mode> blob <sha>\t<path>` for each file HEAD holds under the old name.
+    const headFiles = this.runGit(['ls-tree', '-r', '-z', 'HEAD', fromRel], false)
+      .split('\0')
+      .filter(Boolean)
+      .map((entry) => ({ file: entry.slice(entry.indexOf('\t') + 1), blob: entry.split(' ')[2] }));
+    const committed = headFiles.map((f) => f.file);
     if (committed.length === 0 && !fs.existsSync(from)) return;
     const stagedUnder = (rel: string, ...filter: string[]) =>
-      this.runGit(['diff', '--cached', '--relative', '--name-only', '-z', ...filter, '--', rel], false).split('\0').filter(Boolean);
+      this.runGit(['diff', '--cached', '--no-renames', '--relative', '--name-only', '-z', ...filter, '--', rel], false).split('\0').filter(Boolean);
     const stagedFrom = stagedUnder(fromRel);
     const stagedTo = stagedUnder(toRel);
-    // A move leaves only removals staged under the old name; anything else there is a local change.
-    const isStagedMove = stagedTo.length > 0 && stagedFrom.length > 0 && stagedUnder(fromRel, '--diff-filter=d').length === 0;
-    if (isStagedMove) {
+    // A failed move leaves only removals staged under the old name, and under the new one only added files, the index,
+    // and content HEAD had under the old name; and nothing changed in either since. Anything else is a local change.
+    const isStagedMove = (): boolean => {
+      if (stagedTo.length === 0 || stagedFrom.length === 0 || stagedUnder(fromRel, '--diff-filter=d').length > 0) return false;
+      const movedBlobs = new Set(headFiles.map((f) => f.blob));
+      // `:<mode> <mode> <sha> <sha> <status>` then the path, for each staged change under the new name.
+      const raw = this.runGit(['diff', '--cached', '--raw', '--no-abbrev', '--no-renames', '--relative', '-z', '--', toRel], false).split('\0');
+      for (let i = 0; i + 1 < raw.length; i += 2) {
+        const [, , , blob, status] = raw[i].split(' ');
+        if (status !== 'A' && raw[i + 1] !== `${toRel}_index.json` && !movedBlobs.has(blob)) return false;
+      }
+      return this.runGit(['diff', '--name-only', '--', fromRel, toRel], false) === '';
+    };
+    if (isStagedMove()) {
       for (const file of [...stagedFrom, ...stagedTo]) this.writtenPaths.add(file);
       return;
     }

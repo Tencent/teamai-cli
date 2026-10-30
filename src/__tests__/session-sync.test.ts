@@ -655,6 +655,64 @@ describe('session pull (gitPull + rebuildIndex) on a team checkout', () => {
     expect(edited.map((file) => git(alice, 'show', `HEAD:${file}`))).toEqual(originals);
   });
 
+  it('publishes neither a staged deletion under the percent-escaped name nor a staged edit under the current one', async () => {
+    const alice = path.join(repoRoot, 'alice');
+    git(repoRoot, 'init', '-q', '-b', 'main', alice);
+    initCheckout(alice, 'alice');
+    const first = new SyncManager(alice);
+    await first.saveSession(mkSession(), mkMeta());
+    expect(first.gitCommit('push').status).toBe('committed');
+    const older = path.join(repoRoot, 'older');
+    await new SyncManager(older).saveSession(mkSession({ sessionId: 's-3', title: 'add invoices' }), mkMeta({ sessionId: 's-3' }));
+    fs.cpSync(
+      path.join(older, 'sessions', 'repos', encodeRepoIdentity(identity)),
+      path.join(alice, 'sessions', 'repos', 'github.com%2Forg%2Falpha'),
+      { recursive: true },
+    );
+    git(alice, 'add', '-A');
+    git(alice, 'commit', '-qm', 'older CLI push');
+    const deleted = 'sessions/repos/github.com%2Forg%2Falpha/alice/claude-code_add-invoices_20260102.jsonl';
+    const edited = `sessions/repos/${encodeRepoIdentity(identity)}/alice/claude-code_fix-payment_20260102.jsonl`;
+    const originals = [deleted, edited].map((file) => git(alice, 'show', `HEAD:${file}`));
+    git(alice, 'rm', '-q', deleted);
+    fs.appendFileSync(path.join(alice, edited), 'local edit\n');
+    git(alice, 'add', edited);
+
+    const mgr = new SyncManager(alice);
+    await mgr.saveSession(mkSession({ sessionId: 's-2', title: 'add refunds' }), mkMeta({ sessionId: 's-2' }));
+    expect(mgr.gitCommit('push').status).toBe('committed');
+
+    expect([deleted, edited].map((file) => git(alice, 'show', `HEAD:${file}`))).toEqual(originals);
+  });
+
+  it('publishes no edit made to a moved session between a rejected commit and its retry', async () => {
+    const alice = path.join(repoRoot, 'alice');
+    git(repoRoot, 'init', '-q', '-b', 'main', alice);
+    initCheckout(alice, 'alice');
+    const first = new SyncManager(alice);
+    await first.saveSession(mkSession(), mkMeta());
+    expect(first.gitCommit('push').status).toBe('committed');
+    git(alice, 'mv', `sessions/repos/${encodeRepoIdentity(identity)}`, 'sessions/repos/github.com%2Forg%2Falpha');
+    git(alice, 'commit', '-qm', 'previous layout');
+    const original = git(alice, 'show', 'HEAD:sessions/repos/github.com%2Forg%2Falpha/alice/claude-code_fix-payment_20260102.jsonl');
+    const hook = path.join(alice, '.git', 'hooks', 'pre-commit');
+    fs.writeFileSync(hook, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    const rejected = new SyncManager(alice);
+    await rejected.saveSession(mkSession({ sessionId: 's-2', title: 'add refunds' }), mkMeta({ sessionId: 's-2' }));
+    expect(rejected.gitCommit('push').status).toBe('failed');
+    fs.rmSync(hook);
+    const moved = `sessions/repos/${encodeRepoIdentity(identity)}/alice/claude-code_fix-payment_20260102.jsonl`;
+    fs.appendFileSync(path.join(alice, moved), 'local edit\n');
+
+    const retry = new SyncManager(alice);
+    await retry.saveSession(mkSession({ sessionId: 's-3', title: 'add invoices' }), mkMeta({ sessionId: 's-3' }));
+    expect(retry.gitCommit('push').status).toBe('committed');
+
+    const committed = git(alice, 'ls-tree', '-r', '--name-only', 'HEAD', 'sessions/repos').split('\n');
+    const copies = committed.filter((p) => p.endsWith('claude-code_fix-payment_20260102.jsonl'));
+    expect(copies.map((file) => git(alice, 'show', `HEAD:${file}`))).toEqual([original]);
+  });
+
   it('leaves sessions an older CLI pushed under the percent-escaped name in place while the current directory holds local edits', async () => {
     const alice = path.join(repoRoot, 'alice');
     git(repoRoot, 'init', '-q', '-b', 'main', alice);
