@@ -524,6 +524,8 @@ export class SyncManager {
    * (and its new path) so `gitCommit` stages the rename. Reading HEAD, not the disk, finds the move again on the retry
    * after a failed commit, and leaves files the archive never committed out of it. A directory with uncommitted
    * changes to its tracked files stays where it is, since staging the move would publish them.
+   *
+   * When both names exist, an older CLI pushed under `%XX` after the move: see foldPercentRepoDir.
    */
   private moveRepoDirToCurrentName(repoIdentity: string | null): void {
     if (!repoIdentity) return;
@@ -533,19 +535,90 @@ export class SyncManager {
     const from = path.join(this.sessionsDir, 'repos', fromName);
     const to = path.join(this.sessionsDir, 'repos', toName);
     const fromRel = `sessions/repos/${fromName}/`;
-    if (this.repoDir(repoIdentity) === from) {
-      if (this.runGit(['status', '--porcelain', '--untracked-files=no', '--', fromRel], false)) return;
+    const committed = this.runGit(['ls-tree', '-r', '-z', '--name-only', 'HEAD', fromRel], false).split('\0').filter(Boolean);
+    if (fs.existsSync(from)) {
+      // Any unstaged change, or a staged one other than a removal: a failed commit of this move leaves only removals.
+      const hasLocalChanges =
+        this.runGit(['diff', '--name-only', '--', fromRel], false) !== '' ||
+        this.runGit(['diff', '--cached', '--name-only', '--diff-filter=d', '--', fromRel], false) !== '';
+      if (hasLocalChanges) return;
       assertNoSymlinkedAncestors(from, this.repoRoot);
       assertNoSymlinkedAncestors(to, this.repoRoot);
-      fs.renameSync(from, to);
+      if (fs.existsSync(to)) {
+        // The fold can replace a session's files there, so it waits for any local change to them as well.
+        if (this.runGit(['status', '--porcelain', '--untracked-files=no', '--', `sessions/repos/${toName}/`], false) !== '') return;
+        this.foldPercentRepoDir(repoIdentity, from, new Set(committed));
+      } else {
+        fs.renameSync(from, to);
+      }
     }
-    if (fs.existsSync(from)) return;
-    const committed = this.runGit(['ls-tree', '-r', '-z', '--name-only', 'HEAD', fromRel], false);
-    for (const file of committed.split('\0').filter(Boolean)) {
+    for (const file of committed) {
       const moved = `sessions/repos/${toName}/${file.slice(fromRel.length)}`;
       this.writtenPaths.add(file);
       if (fs.existsSync(path.join(this.repoRoot, moved))) this.writtenPaths.add(moved);
     }
+  }
+
+  /**
+   * Fold the sessions an older CLI pushed under `%XX` after the move into the current directory. A session it already
+   * holds (same platform, author and source session id) keeps the later push; any other session moves under a free
+   * name, since the file name (platform, title slug, date) does not identify a session. Committed files are recorded
+   * at their new path so `gitCommit` stages them.
+   */
+  private foldPercentRepoDir(repoIdentity: string, from: string, committed: Set<string>): void {
+    const sessionKey = (platform: string, author: string, sessionId: string) => `${platform}\0${author}\0${sessionId}`;
+    const held = new Map(
+      this.readIndex(repoIdentity).sessions
+        .filter((e) => e.sessionId)
+        .map((e) => [sessionKey(e.platform, e.author, e.sessionId ?? ''), e]),
+    );
+    const pushedAt = (metaPath: string): string => {
+      try {
+        return (JSON.parse(fs.readFileSync(metaPath, 'utf-8')) as SessionSyncMeta).sync.pushedAt ?? '';
+      } catch {
+        return ''; // unreadable: the folded copy replaces it
+      }
+    };
+    for (const authorName of fs.readdirSync(from)) {
+      const authorDir = path.join(from, authorName);
+      if (isIndexFileName(authorName) || !fs.lstatSync(authorDir).isDirectory()) continue;
+      for (const file of fs.readdirSync(authorDir)) {
+        if (!file.endsWith('.meta.json')) continue;
+        const sessionName = file.slice(0, -'.meta.json'.length);
+        const source = { jsonl: path.join(authorDir, `${sessionName}.jsonl`), meta: path.join(authorDir, file) };
+        let meta: SessionSyncMeta;
+        try {
+          meta = JSON.parse(fs.readFileSync(source.meta, 'utf-8')) as SessionSyncMeta;
+        } catch {
+          continue; // unreadable: left where it is
+        }
+        const { platform, author, sessionId } = meta.origin;
+        const existing = sessionId ? held.get(sessionKey(platform, author, sessionId)) : undefined;
+        const target = this.sessionPaths(
+          repoIdentity,
+          author,
+          existing?.sessionName ?? this.resolveNameConflict(repoIdentity, author, sessionName),
+        );
+        if (existing && (meta.sync.pushedAt ?? '') <= pushedAt(target.meta)) {
+          fs.rmSync(source.jsonl, { force: true });
+          fs.rmSync(source.meta, { force: true });
+          continue;
+        }
+        for (const kind of ['jsonl', 'meta'] as const) {
+          if (!fs.existsSync(source[kind])) continue;
+          assertNoSymlinkedAncestors(target[kind], this.repoRoot);
+          fs.mkdirSync(path.dirname(target[kind]), { recursive: true });
+          fs.renameSync(source[kind], target[kind]);
+          if (committed.has(path.relative(this.repoRoot, source[kind]).split(path.sep).join('/'))) {
+            this.writtenPaths.add(path.relative(this.repoRoot, target[kind]).split(path.sep).join('/'));
+          }
+        }
+      }
+    }
+    fs.rmSync(path.join(from, '_index.json'), { force: true });
+    const hasFilesLeft = fs.readdirSync(from, { recursive: true }).some((p) => fs.statSync(path.join(from, String(p))).isFile());
+    if (!hasFilesLeft) fs.rmSync(from, { recursive: true });
+    this.rebuildIndexLocked(repoIdentity);
   }
 
   private indexPath(repoIdentity: string | null): string {

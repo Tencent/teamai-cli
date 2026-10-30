@@ -555,7 +555,73 @@ describe('session pull (gitPull + rebuildIndex) on a team checkout', () => {
     expect(git(alice, 'status', '--porcelain')).toBe(`?? sessions/repos/${encodeRepoIdentity(identity)}/notes.txt`);
   });
 
-  it('leaves a %-escaped repository directory in place while it holds uncommitted edits, and publishes none of them', async () => {
+  it('folds sessions an older CLI pushed under the %-escaped name after the move into the current directory, once each', async () => {
+    const alice = path.join(repoRoot, 'alice');
+    git(repoRoot, 'init', '-q', '-b', 'main', alice);
+    initCheckout(alice, 'alice');
+    const first = new SyncManager(alice);
+    await first.saveSession(mkSession(), mkMeta());
+    expect(first.gitCommit('push').status).toBe('committed');
+    // An older CLI pushes, under the %XX name next to the moved directory: s-1 again after its title changed,
+    // s-3, and s-4, whose title and date give it the file name s-1 has in the current directory.
+    const older = path.join(repoRoot, 'older');
+    const olderMgr = new SyncManager(older);
+    await olderMgr.saveSession(mkSession({ title: 'fix payment retries' }), mkMeta());
+    await olderMgr.saveSession(mkSession({ sessionId: 's-3', title: 'add invoices' }), mkMeta({ sessionId: 's-3' }));
+    await olderMgr.saveSession(mkSession({ sessionId: 's-4' }), mkMeta({ sessionId: 's-4' }));
+    fs.cpSync(
+      path.join(older, 'sessions', 'repos', encodeRepoIdentity(identity)),
+      path.join(alice, 'sessions', 'repos', 'github.com%2Forg%2Falpha'),
+      { recursive: true },
+    );
+    git(alice, 'add', '-A');
+    git(alice, 'commit', '-qm', 'older CLI push');
+
+    const mgr = new SyncManager(alice);
+    await mgr.saveSession(mkSession({ sessionId: 's-2', title: 'add refunds' }), mkMeta({ sessionId: 's-2' }));
+    expect(mgr.gitCommit('push').status).toBe('committed');
+
+    const committed = git(alice, 'ls-tree', '-r', '--name-only', 'HEAD', 'sessions/repos').split('\n');
+    expect(committed.filter((p) => p.includes('%'))).toEqual([]);
+    expect(committed.filter((p) => p.endsWith('.jsonl'))).toHaveLength(4);
+    expect(git(alice, 'status', '--porcelain')).toBe('');
+    expect(new SyncManager(alice).listSessions(identity).map((s) => s.sessionId).sort()).toEqual(['s-1', 's-2', 's-3', 's-4']);
+  });
+
+  it('leaves sessions an older CLI pushed under the percent-escaped name in place while the current directory holds local edits', async () => {
+    const alice = path.join(repoRoot, 'alice');
+    git(repoRoot, 'init', '-q', '-b', 'main', alice);
+    initCheckout(alice, 'alice');
+    const first = new SyncManager(alice);
+    await first.saveSession(mkSession(), mkMeta());
+    expect(first.gitCommit('push').status).toBe('committed');
+    // An older CLI pushes s-1 again, later, under the %XX name.
+    const older = path.join(repoRoot, 'older');
+    await new SyncManager(older).saveSession(mkSession(), mkMeta());
+    const percentDir = path.join(alice, 'sessions', 'repos', 'github.com%2Forg%2Falpha');
+    fs.cpSync(path.join(older, 'sessions', 'repos', encodeRepoIdentity(identity)), percentDir, { recursive: true });
+    const olderMeta = path.join(percentDir, 'alice', 'claude-code_fix-payment_20260102.meta.json');
+    const meta = JSON.parse(fs.readFileSync(olderMeta, 'utf-8')) as { sync: { pushedAt: string } };
+    meta.sync.pushedAt = '2099-01-01T00:00:00.000Z';
+    fs.writeFileSync(olderMeta, JSON.stringify(meta));
+    git(alice, 'add', '-A');
+    git(alice, 'commit', '-qm', 'older CLI push');
+    const edited = path.join(repoDirOf(identity).replace(repoRoot, alice), 'alice', 'claude-code_fix-payment_20260102.jsonl');
+    fs.appendFileSync(edited, 'local edit\n');
+
+    const mgr = new SyncManager(alice);
+    await mgr.saveSession(mkSession({ sessionId: 's-2', title: 'add refunds' }), mkMeta({ sessionId: 's-2' }));
+    expect(mgr.gitCommit('push').status).toBe('committed');
+
+    expect(fs.readFileSync(edited, 'utf-8')).toContain('local edit');
+    const committed = git(alice, 'ls-tree', '-r', '--name-only', 'HEAD', 'sessions/repos').split('\n');
+    expect(committed.filter((p) => p.includes('%'))).toHaveLength(3);
+  });
+
+  it.each([
+    { state: 'unstaged', isStaged: false },
+    { state: 'staged', isStaged: true },
+  ])('leaves a percent-escaped repository directory in place while it holds $state edits, and publishes none of them', async ({ isStaged }) => {
     const alice = path.join(repoRoot, 'alice');
     git(repoRoot, 'init', '-q', '-b', 'main', alice);
     initCheckout(alice, 'alice');
@@ -567,14 +633,14 @@ describe('session pull (gitPull + rebuildIndex) on a team checkout', () => {
     const edited = 'sessions/repos/github.com%2Forg%2Falpha/alice/claude-code_fix-payment_20260102.jsonl';
     const original = git(alice, 'show', `HEAD:${edited}`);
     fs.appendFileSync(path.join(alice, edited), 'local edit\n');
+    if (isStaged) git(alice, 'add', edited);
 
     const mgr = new SyncManager(alice);
     await mgr.saveSession(mkSession({ sessionId: 's-2', title: 'add refunds' }), mkMeta({ sessionId: 's-2' }));
     expect(mgr.gitCommit('push').status).toBe('committed');
 
     expect(git(alice, 'show', `HEAD:${edited}`)).toBe(original);
-    expect(git(alice, 'diff', '--name-only')).toBe(edited);
-    expect(git(alice, 'diff', '--cached', '--name-only')).toBe('');
+    expect(git(alice, 'diff', '--name-only', 'HEAD')).toBe(edited);
     expect(mgr.listSessions(identity).map((s) => s.sessionId).sort()).toEqual(['s-1', 's-2']);
   });
 
