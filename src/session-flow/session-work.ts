@@ -355,7 +355,7 @@ async function sampler(config: LocalConfig, now: string, scorers?: readonly Sess
 
 /**
  * The scorers that sample session `subject` as the background judge picks them (#1179), each open, or leased while a
- * judge holds it, whether or not the session is finished or its mode's policy is `auto`. The session-close offer
+ * judge holds it, whether or not the session is finished or its mode's policy is `auto`. The teamai-share-learnings offer
  * proposes the open ones (#1388).
  */
 async function sampledScorers(config: LocalConfig, subject: SessionSubject, now: string): Promise<SampledScorer[]> {

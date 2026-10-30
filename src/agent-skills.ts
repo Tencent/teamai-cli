@@ -2,6 +2,7 @@ import path from 'node:path';
 import { listDirs, pathExists, readFileSafe } from './utils/fs.js';
 import { detectInstalledAgents, type ResolvedAgent } from './known-agents.js';
 import { isCliOwnedSkillName } from './builtin-skills.js';
+import { generatedSkillAt } from './workflow/discovery/generated-marker.js';
 import type { LocalConfig, TeamaiConfig } from './types.js';
 import { parseFrontmatter } from './utils/frontmatter.js';
 import { log } from './utils/logger.js';
@@ -20,6 +21,8 @@ export type SkillSource =
   | { kind: 'team'; namespace?: string }
   | { kind: 'builtin' }
   | { kind: 'source'; name: string }
+  /** A skill pull generated for a workflow, by the marker in its SKILL.md. */
+  | { kind: 'workflow' }
   | { kind: 'local-only' };
 
 export interface AgentSkill {
@@ -126,6 +129,14 @@ export function classifySkill(name: string, ctx: ClassifyContext, skillPath?: st
   return { kind: 'local-only' };
 }
 
+/**
+ * `classifySkill` of the skill installed at `skillDir`, unless pull generated it for a workflow: its marker tells, also
+ * under a name a pre-stub release used, such as teamai-share-learnings.
+ */
+export async function classifyInstalledSkill(name: string, ctx: ClassifyContext, skillDir: string): Promise<SkillSource> {
+  return (await generatedSkillAt(skillDir)).kind === 'ours' ? { kind: 'workflow' } : classifySkill(name, ctx, skillDir);
+}
+
 /** Pretty-print a SkillSource for terminal output. */
 export function formatSkillSource(source: SkillSource): string {
   switch (source.kind) {
@@ -135,6 +146,8 @@ export function formatSkillSource(source: SkillSource): string {
       return '[builtin]';
     case 'source':
       return `[source:${source.name}]`;
+    case 'workflow':
+      return '[workflow]';
     case 'local-only':
       return '[local-only]';
   }
@@ -179,7 +192,7 @@ export async function scanAgentSkills(agent: ResolvedAgent, ctx: ClassifyContext
       name,
       description,
       path: skillDir,
-      source: classifySkill(name, ctx, skillDir),
+      source: await classifyInstalledSkill(name, ctx, skillDir),
     });
   }
 

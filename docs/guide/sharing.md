@@ -49,6 +49,28 @@ sharing:
 
 A rule you wrote yourself stays. `push` writes back only the body of a rule the team already has.
 
+Antigravity means all three here: the CLI (`agy`), Antigravity 2.0 and Antigravity IDE read the same `~/.gemini/config` and `.agents`, so one pull serves them.
+
+Antigravity loads only rules with a `trigger`, so pull adds one. A rule with `paths:` becomes a rule the model applies when it works on those files:
+
+```markdown
+<!-- rules/api-errors.md in the team repo -->
+---
+paths: ["src/api/**/*.ts"]
+---
+Return typed errors from API handlers.
+
+<!-- ~/.gemini/config/rules/api-errors.md after teamai pull -->
+---
+trigger: model_decision
+description: "Applies when reading or editing files matching src/api/**/*.ts"
+---
+
+Return typed errors from API handlers.
+```
+
+A rule without `paths:` gets `trigger: always_on`.
+
 ## Agents
 
 `agents/<name>.yaml`. `name` matches the filename. Commit it, or run `teamai push` after editing the copy in a tool.
@@ -72,6 +94,8 @@ teamai remove agents code-reviewer
 ```
 
 `pull` writes each tool's own format into that tool's agents directory: `<name>.toml` for the Codex family, `<name>.agent.md` for Copilot, `<name>.json` for Kiro, and `<name>.md` for the rest. Trae and Trae CN load `.trae/agents` only while the Beta setting "Enable Subagents Directory" is on, and accept only their own model ids, so their copy leaves out the agent's `model`. Trae CN's user copy in `~/.trae-cn/agents` takes one an alias or `tool_extras.trae-cn` gives it. A project's `.trae/agents` is read by both editions, so it never gets a `model`, and it takes the other keys of both `tool_extras.trae` and `tool_extras.trae-cn`; an agent whose two editions give one key different values is skipped there, with a warning naming the key. `push` refuses an edit to that file that changes or removes a key the other edition gives.
+
+Antigravity's copy keeps no team `model` (agy skips an agent whose model it does not know), only one an alias maps for agy, and lists agy's own names for the agent's tools: `tools: [Bash, Read]` becomes `run_command`, `view_file` and `read_file`. Without them an agy subagent has no shell. In a project, `.agents/agents` is agy's, so Muse Code gets no copy there while agy is installed. The CLI and Antigravity 2.0 run the agent as a subagent; Antigravity IDE has none, so its model can only hand the work to `agy --agent <name>` when the CLI is installed.
 
 In single-repo mode, your root copy of an agent placed in a namespace is pushed to the placed file. Changing it from `.md` to `.yaml` retires the original file, even while your checkout is behind its own merged PR. Either way, TeamAI compares the placed file with the blob your last merged push delivered there. If the team edited it since, the push stops and prints a `teamai push --carried <path>@<blob>` command. Carry that edit into your root copy, then run it. The option accepts only that version, so a plain retry or a later team edit stops the push again. An agent deleted by the team is not re-added from your root copy. An older placement record without a blob catches a team edit only while your checkout is behind it, until your first edit through it merges and records its blob.
 
@@ -248,7 +272,7 @@ What a hook can do depends on its event. Every tool that runs the event does thi
       not in: cursor (no PreToolUse hook there)
 ```
 
-OpenCode, Oh My Pi, Pi, OpenClaw, Kiro, and Hermes have no Claude Code hook file. Their hooks run through teamai, with Claude Code's payload and tool names (`matcher: Bash` matches OpenCode's `bash` and Hermes's `terminal`). There:
+OpenCode, Oh My Pi, Pi, OpenClaw, Kiro, Hermes, and Antigravity have no Claude Code hook file. Their hooks run through teamai, with Claude Code's payload and tool names (`matcher: Bash` matches OpenCode's `bash` and Hermes's `terminal`). There:
 
 - Only `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, and `Stop` run. Pull warns about a team hook on any other event.
 - `UserPromptSubmit` adds context but cannot block the prompt.
@@ -264,6 +288,20 @@ sharing:
 ```
 
 Turn team hooks off on this machine with `TEAMAI_HOOKS_DISABLED=1`.
+
+Antigravity runs them too, in the CLI, Antigravity 2.0 and Antigravity IDE alike, through teamai's own hook in `~/.gemini/config/hooks.json`. A hook gets the Claude Code payload (`tool_name: Bash`, `tool_input.command`), and exit 2 blocks the call, so one hook serves both tools:
+
+```yaml
+hooks:
+  - id: block-rm-rf
+    description: Block recursive deletes
+    event: PreToolUse
+    matcher: Bash
+    command: 'grep -q "rm -rf" && { echo "rm -rf is blocked; run git clean -n first." >&2; exit 2; } || exit 0'
+    tools: [claude, agy]
+```
+
+agy then refuses the command with `tool call denied by pre-tool hook: rm -rf is blocked; run git clean -n first.`
 
 ## MCP servers
 
@@ -293,6 +331,15 @@ Write secrets as `${VAR}` and declare the key in `env/secrets.yaml`. A server fo
 
 ZCode servers use `mcp.servers` in `~/.zcode/cli/config.json` or the project's `.zcode/config.json`. This follows the 3.16.2 source; 3.15.1 is not certified. Pull moves only unchanged teamai entries out of `~/.agents/mcp.json`. Doctor names other servers there because the desktop app stops reading that fallback once the native config has servers.
 
+Antigravity takes user servers in `~/.gemini/config/mcp_config.json`. It reads a project's servers only from a plugin, so teamai writes them as one:
+
+```text
+.agents/plugins/teamai/plugin.json       {"name": "teamai"}
+.agents/plugins/teamai/mcp_config.json   {"mcpServers": {"github": {"url": "https://api.githubcopilot.com/mcp/", "headers": {...}}}}
+```
+
+agy takes stdio and HTTP servers, with no `type`; pull skips an `sse` server for agy with a warning. `agy mcp list` shows only the user file's servers; a plugin's appear in a session.
+
 WorkBuddy uses the first existing user file in `~/.workbuddy/.mcp.json`, `~/.workbuddy/mcp.json`, and `~/.codebuddy.json`. `CODEBUDDY_CONFIG_DIR` moves the last file. A project uses `.mcp.json`, or `mcp.json` when only that exists. With `sharing.gitExclude` on, its servers use `projects[<project path>].mcpServers` in `.codebuddy.json`. These paths follow the CodeBuddy 2.168.0 engine; WorkBuddy's launcher binding is not certified. Pull removes only unchanged teamai entries from the former `.workbuddy/mcp.json` project file.
 
 When `.workbuddy-ai/` exists in the home or project (WorkBuddy 5.7+), the default skills path moves to `.workbuddy-ai/skills`. Every other surface still waits for `.workbuddy/`, so a member with only `.workbuddy-ai/` gets no rules, team instructions, agents, MCP servers or hooks, and `teamai doctor` fails `workbuddy receives ...` with the ones held.
@@ -307,7 +354,7 @@ teamai mcp inject
 teamai mcp remove
 ```
 
-`mcp inject` and `mcp remove` exit with code 1 when a tool's config cannot be read or parsed, including with `--dry-run`. Other tools may still be updated; the command lists those changes and reports that the operation is incomplete. Fix the config named in the warning, then rerun the command. The unreadable config and its ownership records are kept for the retry.
+`mcp inject` and `mcp remove` exit with code 1 when a tool's config cannot be read or parsed, including with `--dry-run`. This includes invalid TOML in Codex's `config.toml`; a leading UTF-8 BOM is accepted. Other tools may still be updated; the command lists those changes and reports that the operation is incomplete. Fix the config named in the warning, then rerun the command. The unreadable config and its ownership records are kept for the retry. `uninstall` also preserves the records and exits 1 until the config is repaired.
 
 Muse reordering JSON object keys does not make a managed server a personal edit. Removal compares its recorded content, including nested objects, while preserving real command, argument or environment changes. Older records without that content fingerprint need a matching original definition in team Git history; if that proof is unavailable, removal keeps the server and warns.
 
@@ -372,7 +419,7 @@ sessions:
   publish: { attended: ask, unattended: auto }
 ```
 
-Attended `ask` proposes publishing when the friction reminder offers [`session-close`](workflow.md#session-close), and the person confirms it twice: at the start, and again from their own terminal or the dashboard before the transcript goes out. Otherwise a person's sessions are archived only by a command such as `teamai session push`. Unattended `ask` acts as `off`, since nobody is there to confirm. Attended `auto` archives a session once nothing has happened in it for six hours, in the background pass that judges finished sessions. Publishing always scrubs. An HTTP team keeps no session archive, so there `sessions.publish` acts as `off`, and `teamai doctor` says so.
+Attended `ask` proposes publishing when the friction reminder offers [`teamai-share-learnings`](workflow.md#teamai-share-learnings-and-teamai-share-session), and the person confirms it twice: at the start, and again from their own terminal or the dashboard before the transcript goes out. Otherwise a person's sessions are archived only by a command such as `teamai session push`. Unattended `ask` acts as `off`, since nobody is there to confirm. Attended `auto` archives a session once nothing has happened in it for six hours, in the background pass that judges finished sessions. Publishing always scrubs. An HTTP team keeps no session archive, so there `sessions.publish` acts as `off`, and `teamai doctor` says so.
 
 A member's `config.yaml` wins, one mode at a time. A mode it does not name falls through to `teamai.yaml`:
 

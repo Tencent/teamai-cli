@@ -674,7 +674,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       }
       // The adapter returning false means it confirmed nothing was deleted (session does not exist).
       // Previously a checkmark was printed whether or not it existed, so a silent no-op reported success and scripts could not tell whether it took effect.
-      if (deleted === false) {
+      if (!deleted) {
         console.log(`\n  · Session not found: ${opts.platform}/${sessionId}, no changes (may have already been deleted)\n`);
         return;
       }

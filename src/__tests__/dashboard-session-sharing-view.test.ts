@@ -44,7 +44,7 @@ describe('the session sharing panel', () => {
     expect(shown).toContain('Attended Neither published nor scored');
     expect(shown).toContain('Unattended Published and scored');
     expect(shown).toContain('by teamai score --drain before the job ends');
-    expect(shown).toContain('Publish ask proposed when the friction reminder offers session-close Set by the default');
+    expect(shown).toContain('Publish ask proposed when the friction reminder offers teamai-share-learnings Set by the default');
     expect(shown).toContain('Score auto Set by the default');
     expect(shown).toMatch(/1 waiting for a drain/);
     expect(shown).toMatch(/3 archived/i);
@@ -61,7 +61,7 @@ describe('the session sharing panel', () => {
       scoring: { state: 'ok', policies: { attended: { policy: 'ask', source: { kind: 'default' } }, unattended: { policy: 'ask', source: { kind: 'default' } } }, dailyLimit: 10, dailyLimitSource: { kind: 'default' }, scorers: ['quality'] },
     }).html);
 
-    expect(shown).toContain('Score ask proposed when the friction reminder offers session-close Set by the default');
+    expect(shown).toContain('Score ask proposed when the friction reminder offers teamai-share-learnings Set by the default');
     expect(shown).toContain('Publish ask acts as off: nobody is there to confirm Set by the default');
     expect(shown).toContain('Score ask acts as off: nobody is there to confirm Set by the default');
   });

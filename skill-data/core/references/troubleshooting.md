@@ -348,6 +348,10 @@ where 5.7 reads hooks, so it writes none, and `teamai doctor` names them under
 
 Hooks go in the `hooks` block of `~/.config/muse/settings.json` (`$XDG_CONFIG_HOME/muse/settings.json` when that is set), which Muse runs in every workspace; a project's `.muse/hooks.json` runs only once the workspace is trusted. Muse starts each hook with an emptied environment, so a variable set only on the command that launched `muse` (such as `TEAMAI_HOOKS_DISABLED=1 muse`) does not reach the hook. The hook command runs `bash -lc`, so export it in `~/.bash_profile` or `~/.profile` instead.
 
+### Antigravity
+
+The agy CLI, Antigravity 2.0 and Antigravity IDE read hooks only from `~/.gemini/config/hooks.json`, in every workspace, so teamai's are user-wide: one named hook, `teamai`, beside the member's own. Team hooks with `tools: [agy]` run through it and get the Claude Code payload. When the file is not valid JSON, pull leaves it as it is and warns; fix the JSON, then run `teamai hooks inject`. A hook named `hooks` with `teamai hook-dispatch` commands is what a team's own `toolPaths.agy` wrote before agy was built in; the next pull removes those commands.
+
 ### Tools without a writable hook surface
 
 Gemini CLI, JoyCode, and similar tools have no TeamAI-writable hook surface —
@@ -373,6 +377,8 @@ session's runs, recalled docs and adopted docs. Per agent:
   TeamAI subagent.
 - **OpenClaw, Hermes, Kiro, JoyCode, Trae**: no PostToolUse hook, so recalls never
   vote.
+- **Antigravity**: its PostToolUse carries no tool output, so a recall never
+  reaches the recall log and never votes.
 
 A read after the session's last Stop is credited at SubagentStop, at Copilot CLI's
 SessionEnd, or at the next `teamai pull`.

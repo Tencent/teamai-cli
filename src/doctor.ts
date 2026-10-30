@@ -408,6 +408,12 @@ async function buildHookChecks(
       checks.push({ name: 'teamai hooks in Kiro standalone hook file (requires Kiro CLI V3)', source: 'local', check: hasKiroHooks, fix: 'Run `teamai hooks inject`; standalone hooks require Kiro CLI V3.' });
       continue;
     }
+    if (tool === 'agy') {
+      if (!isInstalledFor(await locate(tool, 'hooks', install))) continue;
+      const { hasAgyHooks } = await import('./agy-hooks.js');
+      checks.push({ name: 'teamai hooks in Antigravity hooks.json', source: 'local', check: hasAgyHooks, fix: 'Run `teamai hooks inject` to inject/update hooks' });
+      continue;
+    }
     if (tool === 'pi') {
       if (!isInstalledFor(await locate(tool, 'hooks', install))) continue;
       checks.push({

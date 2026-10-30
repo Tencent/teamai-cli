@@ -331,12 +331,11 @@ describe('import --dir', () => {
     expect(process.exitCode).toBe(1);
     const output = lines.join('\n');
     expect(output).toContain('Deep enrich failed for my-project: Cannot deep-enrich through a symbolic link: docs/README.md');
-    // Only the import publishes to the team repo, so it is what the retry re-runs.
-    expect(output).toContain(`Deep enrich incomplete: my-project. Run \`teamai import --dir ${projectDir}\` to retry.`);
+    expect(output).toContain('Deep enrich incomplete: my-project. Run `teamai codebase --deep-enrich --project my-project` to retry.');
     expect(await fs.pathExists(path.join(teamRepoDir, 'teamwiki', 'evidence', 'code', 'my-project', 'index.md'))).toBe(true);
   });
 
-  it('names an import of the same directory and file cap as the retry in a team repo, quoting a path with a space', async () => {
+  it('names the same deep-enrich project slug as the retry in a team repo, quoting a path with a space', async () => {
     const spacedDir = path.join(tmpDir, 'my project');
     await fs.copy(projectDir, spacedDir);
     vi.mocked(deepEnrich).mockImplementation(async ({ project }) => (
@@ -351,8 +350,7 @@ describe('import --dir', () => {
     }
 
     expect(process.exitCode).toBe(1);
-    // Without --incremental, so an unchanged source is extracted and enriched again.
-    expect(lines.join('\n')).toContain(`Run \`teamai import --dir '${spacedDir}' --max-files 500\` to retry.`);
+    expect(lines.join('\n')).toContain("Run `teamai codebase --deep-enrich --project 'my project'` to retry.");
   });
 
   it('--incremental keeps the published evidence and pushes nothing when the source is unchanged', async () => {

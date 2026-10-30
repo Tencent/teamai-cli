@@ -104,11 +104,46 @@ describe('dashboard workflow runs', () => {
 
     const config = scope('self');
     fs.mkdirSync(config.repo.localPath, { recursive: true });
-    const started = await startRun(config, 'session-close', { session: '7c1e-session', source: 'claude-code', publish: false, scorers: [], judge: 'here' }, { secrets: {} });
+    const started = await startRun(config, 'teamai-share-session', { session: '7c1e-session', source: 'claude-code', publish: false, scorers: [], judge: 'here' }, { secrets: {} });
     if ('error' in started) throw new Error(started.error.message);
     const [row] = await listLocalRuns(config);
-    expect(row).toMatchObject({ workflow: 'session-close', origin: { source: 'default', teamaiVersion: PACKAGE_VERSION } });
+    expect(row).toMatchObject({ workflow: 'teamai-share-session', origin: { source: 'default', teamaiVersion: PACKAGE_VERSION } });
     expect(row).not.toHaveProperty('teamRevision');
+  });
+
+  it('names a run by its workflow\'s alias, and publishes the alias with the run record', async () => {
+    const config = scope('self');
+    fs.mkdirSync(path.join(config.repo.localPath, 'workflows'), { recursive: true });
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows/review-and-fix.yaml'), [
+      'schemaVersion: v1alpha1', 'name: review-and-fix', 'alias: fix', 'description: Review the change, then fix it.', 'steps:', '  - id: review', '    command: echo review',
+    ].join('\n'));
+    expect((await syncWorkflowDefinitions(config)).invalid).toEqual([]);
+    const started = await startRun(config, 'fix', {}, { secrets: {} });
+    if ('error' in started) throw new Error(started.error.message);
+
+    const [row] = await listLocalRuns(config);
+    expect(row).toMatchObject({ workflow: 'review-and-fix', alias: 'fix' });
+    const run = await readRun(config, String(started.data.run));
+    if (typeof run !== 'object') throw new Error('the run was not stored');
+    const { buildStartRecord } = await import('../workflow/records.js');
+    expect(buildStartRecord(run, undefined, 'tester')).toMatchObject({ workflow: 'review-and-fix', alias: 'fix' });
+  });
+
+  it('names a run by its workflow\'s name while its alias starts another workflow', async () => {
+    const config = scope('self');
+    fs.mkdirSync(path.join(config.repo.localPath, 'workflows'), { recursive: true });
+    const write = (name: string, alias?: string) => fs.writeFileSync(path.join(config.repo.localPath, `workflows/${name}.yaml`), [
+      'schemaVersion: v1alpha1', `name: ${name}`, ...(alias ? [`alias: ${alias}`] : []), 'description: Review the change.', 'steps:', '  - id: review', '    command: echo review',
+    ].join('\n'));
+    write('review-and-fix', 'fix');
+    write('fix');
+    await syncWorkflowDefinitions(config);
+    const started = await startRun(config, 'review-and-fix', {}, { secrets: {} });
+    if ('error' in started) throw new Error(started.error.message);
+
+    const [row] = await listLocalRuns(config);
+    expect(row).toMatchObject({ workflow: 'review-and-fix' });
+    expect(row).not.toHaveProperty('alias');
   });
 
   it('refuses an answer to a pass the page no longer shows, and a repeated one', async () => {
@@ -152,12 +187,33 @@ describe('dashboard workflow runs', () => {
 
     it('reads where a record\'s definition came from, and drops an origin it cannot read', async () => {
       const config = scope('http');
-      publish(config, record('r0000000000000002', { workflow: 'session-close', origin: { source: 'default', teamaiVersion: '0.22.0' }, startedAt: '2026-10-02T10:00:00.000Z' }));
+      publish(config, record('r0000000000000002', { workflow: 'teamai-share-session', origin: { source: 'default', teamaiVersion: '0.22.0' }, startedAt: '2026-10-02T10:00:00.000Z' }));
       publish(config, record('r0000000000000001', { origin: { source: 'elsewhere' } }));
       const rows = await listReportedRuns(config);
-      expect(rows[0]).toMatchObject({ workflow: 'session-close', origin: { source: 'default', teamaiVersion: '0.22.0' } });
+      expect(rows[0]).toMatchObject({ workflow: 'teamai-share-session', origin: { source: 'default', teamaiVersion: '0.22.0' } });
       expect(rows[1]).toMatchObject({ run: 'r0000000000000001' });
       expect(rows[1]).not.toHaveProperty('origin');
+    });
+
+    it('lists the learnings a run shared, from every pass that recorded one, once each', async () => {
+      const config = scope('http');
+      const learning = (id: string) => ({ kind: 'learning', id });
+      publish(config, record('r0000000000000001', { workflow: 'teamai-share-learnings', steps: [
+        { step: 'learning', pass: 1, outcome: 'success' },
+        { step: 'contribute[0]', pass: 1, outcome: 'success', outcomes: [learning('delay-the-readiness-probe-2026-10-29-k3x9qa')] },
+        { step: 'contribute[1]', pass: 1, outcome: 'success', outcomes: [learning('rollout-status-hides-init-2026-10-29-p0z7mf'), { kind: 'commit', sha: 'c'.repeat(40) }] },
+        { step: 'contribute[1]', pass: 2, outcome: 'success', outcomes: [learning('rollout-status-hides-init-2026-10-29-p0z7mf')] },
+      ] }));
+
+      expect((await listReportedRuns(config))[0]?.learnings).toEqual([
+        'delay-the-readiness-probe-2026-10-29-k3x9qa', 'rollout-status-hides-init-2026-10-29-p0z7mf',
+      ]);
+    });
+
+    it('reads the alias a record names its workflow by', async () => {
+      const config = scope('http');
+      publish(config, record('r0000000000000001', { workflow: 'review-and-fix', alias: 'fix' }));
+      expect((await listReportedRuns(config))[0]).toMatchObject({ workflow: 'review-and-fix', alias: 'fix' });
     });
 
     it('lists every delivered pull request of a record, newest run first, and only web links', async () => {

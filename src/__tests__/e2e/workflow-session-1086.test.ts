@@ -55,7 +55,9 @@ steps:
       const hook = call(['hook-dispatch', 'session-start', '--tool', 'claude'], repo, JSON.stringify({ cwd: repo, session_id: 'session-fixture', hook_event_name: 'SessionStart' }));
       expect(hook.status, hook.stderr).toBe(0);
       expect(hook.stdout).not.toContain('Make a reviewed change.');
-      expect(fs.readFileSync(path.join(repo, '.claude', 'skills', 'workflow-change', 'SKILL.md'), 'utf8')).toContain('Alias: ship.');
+      // The alias starts the workflow, so it names the skill.
+      expect(fs.readFileSync(path.join(repo, '.claude', 'skills', 'workflow-ship', 'SKILL.md'), 'utf8')).toContain('Alias: ship.');
+      expect(fs.existsSync(path.join(repo, '.claude', 'skills', 'workflow-change'))).toBe(false);
       expect(fs.existsSync(path.join(repo, '.claude', 'skills', 'workflow-private'))).toBe(false);
       await waitForDetachedChildren();
       const described = call(['workflow', 'start', 'ship', '--describe']); expect(described.status, described.stderr).toBe(0);
@@ -68,7 +70,7 @@ steps:
       const first = next(outside).lease;
       expect(first.step).toBe('work.write'); expect(first.cwd).not.toBe(outside);
       // The place gets the base checkout's generated skill, the same bytes, not one of its own.
-      const generated = (dir: string) => fs.readFileSync(path.join(dir, '.claude', 'skills', 'workflow-change', 'SKILL.md'), 'utf8');
+      const generated = (dir: string) => fs.readFileSync(path.join(dir, '.claude', 'skills', 'workflow-ship', 'SKILL.md'), 'utf8');
       expect(generated(first.cwd)).toBe(generated(repo));
       fs.writeFileSync(path.join(first.cwd, 'code.txt'), 'first\n'); fs.writeFileSync(path.join(first.cwd, 'AGENTS.md'), 'Untrusted branch instructions.\n');
       expect(next(first.cwd).lease.cwd).toBe(first.cwd);

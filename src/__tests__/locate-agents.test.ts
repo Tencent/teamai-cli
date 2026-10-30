@@ -160,6 +160,16 @@ const ROWS: readonly MatrixRow[] = [
     source: 'Qoder CLI source: user agents in ~/.qoder/agents; #1221 matrix user Agents ✓s',
   },
   {
+    tool: 'qoder', scope: 'user', env: { QODER_CONFIG_DIR: '/qoder' },
+    writes: ['/qoder/agents'], existingDirs: ['/qoder'], installed: { probe: '/qoder', met: true },
+    reads: [{ at: '/qoder/agents', when: 'always' }], source: 'QODER_CONFIG_DIR moves Qoder user agents',
+  },
+  {
+    tool: 'qoder', scope: 'user', env: { QODER_CLI_HOME: '/qoder-cli' },
+    writes: ['/qoder-cli/.qoder/agents'], existingDirs: ['/qoder-cli/.qoder'], installed: { probe: '/qoder-cli/.qoder', met: true },
+    reads: [{ at: '/qoder-cli/.qoder/agents', when: 'always' }], source: 'QODER_CLI_HOME supplies the parent of Qoder user agents',
+  },
+  {
     tool: 'qoder', scope: 'project',
     writes: ['<root>/.qoder/agents'],
     existingDirs: ['~/.qoder'], installed: { probe: '~/.qoder', met: true },
@@ -179,6 +189,16 @@ const ROWS: readonly MatrixRow[] = [
     existingDirs: ['~/.qoder-cn'], installed: { probe: '~/.qoder-cn', met: true },
     reads: [{ at: '<root>/.qoder/agents', when: 'workspaceUnder' }],
     source: 'Assumed: Qoder CN shares Qoder\'s project .qoder/agents (types.ts qoder-cn)',
+  },
+  {
+    tool: 'qoder-cn', scope: 'user', env: { QODERCN_CONFIG_DIR: '/qodercn' },
+    writes: ['/qodercn/agents'], existingDirs: ['/qodercn'], installed: { probe: '/qodercn', met: true },
+    reads: [{ at: '/qodercn/agents', when: 'always' }], source: 'QODERCN_CONFIG_DIR moves Qoder CN user agents',
+  },
+  {
+    tool: 'qoder-cn', scope: 'user', env: { QODERCN_CLI_HOME: '/qodercn-cli' },
+    writes: ['/qodercn-cli/.qoder-cn/agents'], existingDirs: ['/qodercn-cli/.qoder-cn'], installed: { probe: '/qodercn-cli/.qoder-cn', met: true },
+    reads: [{ at: '/qodercn-cli/.qoder-cn/agents', when: 'always' }], source: 'QODERCN_CLI_HOME supplies the parent of Qoder CN user agents',
   },
   {
     tool: 'kiro', scope: 'user',
@@ -430,6 +450,13 @@ const ROWS: readonly MatrixRow[] = [
     existingDirs: ['/xdg/muse'], installed: { probe: '/xdg/muse', met: true },
     reads: 'unknown',
     source: '#1221 matrix workspace Agents ?v: Muse\'s project agents read is not established; its home says it is installed',
+  },
+  {
+    tool: 'muse', scope: 'project', install: { enabledAgents: ['muse', 'agy'] },
+    channel: 'unknown',
+    existingDirs: ['~/.config/muse', '~/.gemini/config'], installed: { probe: '~/.config/muse', met: true },
+    source: 'agy 1.4.8 reads <root>/.agents/agents, where Muse\'s project copy would land in Muse\'s render (model kept): '
+      + 'with both installed the dir is agy\'s, and nothing is retired there, since the files in it are agy\'s',
   },
 ];
 

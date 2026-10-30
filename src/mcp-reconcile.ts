@@ -23,6 +23,7 @@ import {
   resolveBaseDir,
 } from './types.js';
 import YAML from 'yaml';
+import { parse as parseToml } from 'smol-toml';
 import {
   supportsTransport,
   supportsEnvExpansion,
@@ -77,6 +78,7 @@ import {
 } from './mcp-git-exclude.js';
 import { gitTracks, gitUntracked, realFilePath } from './git-exclude.js';
 import { opencodeDeliversThroughPlugin } from './opencode-hooks.js';
+import { ensureAgyPluginManifest, removeAgyPluginManifest } from './resources/agy-plugin.js';
 import { createGit, getFileContentAtRev } from './utils/git.js';
 import {
   readResolvedMcpFiles,
@@ -841,10 +843,20 @@ export function spliceCodexBlock(source: string, name: string, block: string | n
  */
 function codexBlockRe(name: string): RegExp {
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const header = codexHeaderStart(String.raw`(?:${escaped}|"${escaped}"|'${escaped}')`);
   return new RegExp(
-    String.raw`^\[mcp_servers\.${escaped}\]\s*$[\s\S]*?(?=^\[(?!mcp_servers\.${escaped}[.\]])|(?![\s\S]))`,
+    String.raw`^\[${header}\]\s*(?:#.*)?$[\s\S]*?(?=^\[(?!${header}[.\]])|(?![\s\S]))`,
     'm',
   );
+}
+
+/**
+ * What follows the `[` of a `[mcp_servers.<name>]` header as TOML allows it to
+ * be written: with spaces inside the brackets or a quoted name. A comment may
+ * follow the closing bracket.
+ */
+function codexHeaderStart(name: string): string {
+  return String.raw`\s*mcp_servers\s*\.\s*${name}\s*`;
 }
 
 /**
@@ -861,7 +873,8 @@ export function codexBlockIn(source: string, name: string): string | null {
 /** Extract the names of all `[mcp_servers.X]` tables present in a config.toml. */
 export function codexServerNames(source: string): string[] {
   const names = new Set<string>();
-  for (const m of source.matchAll(/^\[mcp_servers\.([A-Za-z0-9_-]+)\]\s*$/gm)) names.add(m[1]);
+  const header = codexHeaderStart(String.raw`(?:([A-Za-z0-9_-]+)|"([A-Za-z0-9_-]+)"|'([A-Za-z0-9_-]+)')`);
+  for (const m of source.matchAll(new RegExp(String.raw`^\[${header}\]\s*(?:#.*)?$`, 'gm'))) names.add(m[1] ?? m[2] ?? m[3]);
   return [...names];
 }
 
@@ -2544,7 +2557,8 @@ async function reconcileTargets(
         if (result) {
           written.add(target.file);
           // A project config a pull leaves with no team server goes, as one a cleanup empties.
-          if (!removeAll && target.projectScope && target.projectKey === undefined) {
+          // agy's plugin directory is teamai's alone, so an uninstall takes it too.
+          if ((!removeAll || target.format === 'agy') && target.projectScope && target.projectKey === undefined) {
             await deleteEmptiedMcpFile(target.file, target.format === 'codex' ? null : mcpKeyOf(target));
           }
         }
@@ -2891,6 +2905,7 @@ async function applyJson(
   if (target.format === 'muse' && !target.projectScope && doc.data.schema_version === undefined) {
     doc.data = { schema_version: 1, ...doc.data };
   }
+  if (target.format === 'agy' && target.projectScope) await ensureAgyPluginManifest(target.file);
   await writeJsonDoc(target.file, serverKey, doc, holdsResolvedValue ? { mode: 0o600 } : undefined);
   if (!restoreConfigs.has(snapshotKey)) {
     restoreConfigs.set(snapshotKey, existed
@@ -3363,6 +3378,7 @@ export async function deleteEmptiedMcpFile(file: string, serverKey: string | Mcp
   }
   if (await keepsTrackedCopy(file) || (await gitTracks(file)).kind === 'unknown') return false;
   await fs.promises.rm(file, { force: true });
+  await removeAgyPluginManifest(file);
   return true;
 }
 
@@ -3522,9 +3538,16 @@ async function moveOpencodeServersOut(
   return result || deleted;
 }
 
-/** A Codex config.toml: null when it does not exist, undefined when it cannot be read. */
+/** A Codex config.toml: null when absent, undefined when unreadable or invalid TOML. */
 async function readCodexConfig(file: string): Promise<string | null | undefined> {
-  return await readFileIfExists(file).catch(() => undefined);
+  try {
+    const source = await readFileIfExists(file);
+    // Codex accepts a leading BOM; keep it in the original text for writes.
+    if (source !== null) parseToml(source.replace(/^\uFEFF/, ''));
+    return source;
+  } catch {
+    return undefined;
+  }
 }
 
 async function applyCodex(
@@ -3541,7 +3564,7 @@ async function applyCodex(
 ): Promise<boolean | null> {
   const previous = await readCodexConfig(target.file);
   if (previous === undefined) {
-    log.warn(`Could not read ${target.file} — teamai left its MCP servers for ${target.tool} unchanged`);
+    log.warn(`Could not read or parse ${target.file} — teamai left its MCP servers for ${target.tool} unchanged`);
     return null;
   }
   let source = previous ?? '';

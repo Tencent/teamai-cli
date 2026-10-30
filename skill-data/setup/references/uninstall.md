@@ -112,8 +112,8 @@ and give it your team repo URL."*
   and retry the same uninstall command. Uninstall reports failure and keeps
   its ownership record and shared data directory, even for the last tool.
 - Project uninstall keeps the global Pi and Oh My Pi extensions, Hermes
-  plugin and config, OpenCode's user plugin, and the Codex family's
-  user-level hooks, which the user
+  plugin and config, OpenCode's user plugin, Antigravity's `teamai` hook in
+  `~/.gemini/config/hooks.json`, and the Codex family's user-level hooks, which the user
   scope, the HTTP agent or another project may use, and names them. If none
   does, run `teamai hooks remove` in the project first: it removes them.
   Targeted project Codex uninstall keeps project config and records its

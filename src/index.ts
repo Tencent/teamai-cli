@@ -1062,7 +1062,7 @@ modelsCmd
   .command('add <id>')
   .description('Add a personal model profile stored only on this machine')
   .option('--name <name>', 'Display name')
-  .option('--protocol <protocols>', 'Comma-separated: anthropic, openai-chat-completions, openai-responses')
+  .option('--protocol <protocols>', 'Comma-separated: anthropic, openai-chat-completions, openai-responses, gemini')
   .option('--base-url <url>', 'Gateway root URL (without /v1)')
   .option('--model <ids>', 'Comma-separated model IDs; the first is the default')
   .option('--from-env <name>', 'Read the API key from this environment variable')

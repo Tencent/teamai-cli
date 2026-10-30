@@ -1563,12 +1563,13 @@ setInterval(() => {}, 1000);
 });
 
 describe('the model a prompt step runs on', () => {
-  type FakeTool = 'claude' | 'codex' | 'opencode';
+  type FakeTool = 'claude' | 'codex' | 'opencode' | 'agy';
 
   const AGENT_FILES: Record<FakeTool, { dir: string; ext: string }> = {
     claude: { dir: '.claude/agents', ext: '.md' },
     codex: { dir: '.codex/agents', ext: '.toml' },
     opencode: { dir: '.opencode/agents', ext: '.md' },
+    agy: { dir: '.agents/agents', ext: '.md' },
   };
 
   /** What each tool prints in its JSON mode, so the adapter reads stdout as it would from the real tool. */
@@ -1576,6 +1577,7 @@ describe('the model a prompt step runs on', () => {
     claude: '{"type":"system","subtype":"init","model":"claude-opus-4-1-20250805"}\n{"type":"result","result":"done","session_id":"session-1"}',
     codex: '{"type":"thread.started","thread_id":"thread-1"}',
     opencode: '{"type":"step_finish","sessionID":"session-1"}',
+    agy: '{"event":"result","result":{"conversation_id":"3fa76afc-bf4b-4fab-b887-502589d2f711","status":"SUCCESS","response":"done"}}',
   };
 
   const TEAM_ALIASES = `aliases:
@@ -1616,6 +1618,7 @@ describe('the model a prompt step runs on', () => {
       fs.writeFileSync(path.join(os.homedir(), '.teamai', 'models', 'aliases.yaml'), options.localAliases);
     }
     const argvFile = path.join(root, 'argv.jsonl');
+    const gatewayFile = path.join(root, 'gateway.json');
     const executable = path.join(root, `fake-${tool}`);
     fs.writeFileSync(executable, `#!/usr/bin/env node
 const fs = require('node:fs');
@@ -1625,6 +1628,7 @@ if (process.argv[2] === '--version') {
 }
 fs.readFileSync(0);
 fs.appendFileSync(${JSON.stringify(argvFile)}, JSON.stringify(process.argv.slice(2)) + '\\n');
+fs.writeFileSync(${JSON.stringify(gatewayFile)}, JSON.stringify({ key: process.env.GEMINI_API_KEY, url: process.env.GOOGLE_GEMINI_BASE_URL }));
 fs.writeFileSync(process.env.TEAMAI_WORKFLOW_RESULT, '{"output":{"ok":true}}');
 process.stdout.write(${JSON.stringify(STDOUT[tool])} + '\\n');
 `, { mode: 0o755 });
@@ -1635,9 +1639,10 @@ process.stdout.write(${JSON.stringify(STDOUT[tool])} + '\\n');
     const argv = fs.existsSync(argvFile)
       ? fs.readFileSync(argvFile, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as string[])
       : undefined;
+    const gateway: unknown = fs.existsSync(gatewayFile) ? JSON.parse(fs.readFileSync(gatewayFile, 'utf8')) : undefined;
     const run = await readRun(config, runId);
     if (typeof run !== 'object') throw new Error('run was not stored');
-    return { done, argv, run, workspace };
+    return { done, argv, gateway, run, workspace };
   }
 
   function oneStep(fields: string, header = ''): string {
@@ -1822,6 +1827,25 @@ steps:
       ['-p', prompt('Review it.'), '--output-format', 'stream-json', '--verbose', '--agent', 'reviewer'],
       ['-p', prompt('Summarize it.'), '--output-format', 'stream-json', '--verbose', '--model', 'opus', '--effort', 'high'],
     ]);
+  });
+
+  it("runs an agy definition on the model pull gave it, over defaults.model", async () => {
+    const reviewer = '---\nname: reviewer\ndescription: Reviews changes.\nmodel: gemini-3.8-flash-high\n---\nFollow the review checklist.\n';
+    const { argv } = await runOn('agy', oneStep('    agent: reviewer\n', 'defaults:\n  model: gemini-3.8-flash-low\n'), { agents: { reviewer } });
+
+    expect(argv?.[0]).toEqual(expect.arrayContaining(['--agent', 'reviewer', '--model', 'gemini-3.8-flash-high']));
+    expect(argv?.[0]).not.toContain('gemini-3.8-flash-low');
+  });
+
+  // A model switch hands agy its gateway through a shell function; the driver's launch runs no shell.
+  it("runs an agy step on the gateway a model switch gave it, over the member's own key", async () => {
+    vi.stubEnv('GEMINI_API_KEY', 'member-own-key');
+    fs.mkdirSync(path.join(os.homedir(), '.teamai', 'models'), { recursive: true });
+    fs.writeFileSync(path.join(os.homedir(), '.teamai', 'models', 'agy-env.sh'), `agy() { GEMINI_API_KEY='gateway-key' GOOGLE_GEMINI_BASE_URL='https://gateway.example.test' command agy "$@"; }\n`);
+
+    const { gateway } = await runOn('agy', oneStep(''));
+
+    expect(gateway).toEqual({ key: 'gateway-key', url: 'https://gateway.example.test' });
   });
 
   it('passes --variant for an OpenCode agent, and fails an OpenCode 1 step on its primary agent\'s own model with no effort when the agent sets a variant', async () => {

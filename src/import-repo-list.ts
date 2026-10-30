@@ -135,12 +135,6 @@ export async function importFromRepoList(
                 failIncompleteDeepEnrich({
                     slug: repoSlugForUrl(entry.url),
                     output,
-                    importArgs: [
-                        '--from-repo', entry.url,
-                        ...(entryForceSsh ? ['--ssh'] : []),
-                        ...(entry.domain ? ['--domain', entry.domain] : []),
-                        ...(maxFiles !== undefined ? ['--max-files', String(maxFiles)] : []),
-                    ],
                 });
             }
             succeeded.push(1);

@@ -173,6 +173,16 @@ const ROWS: readonly MatrixRow[] = [
     source: "Qoder CLI 1.1.73's loader run on teamai's output",
   },
   {
+    tool: 'qoder', scope: 'user', env: { QODER_CONFIG_DIR: '/qoder' },
+    writes: ['/qoder/rules'], existingDirs: ['/qoder'], installed: { probe: '/qoder', met: true },
+    reads: [{ at: '/qoder/rules', when: 'always' }], source: 'QODER_CONFIG_DIR moves Qoder user rules',
+  },
+  {
+    tool: 'qoder', scope: 'user', env: { QODER_CLI_HOME: '/qoder-cli' },
+    writes: ['/qoder-cli/.qoder/rules'], existingDirs: ['/qoder-cli/.qoder'], installed: { probe: '/qoder-cli/.qoder', met: true },
+    reads: [{ at: '/qoder-cli/.qoder/rules', when: 'always' }], source: 'QODER_CLI_HOME supplies the parent of Qoder user rules',
+  },
+  {
     tool: 'qoder', scope: 'project',
     writes: ['<root>/.qoder/rules'],
     existingDirs: ['~/.qoder'], installed: { probe: '~/.qoder', met: true },
@@ -192,6 +202,16 @@ const ROWS: readonly MatrixRow[] = [
     existingDirs: ['~/.qoder-cn'], installed: { probe: '~/.qoder-cn', met: true },
     reads: [{ at: '<root>/.qoder/rules', when: 'workspaceUnder' }],
     source: "Qoder CLI 1.1.73's loader: Qoder CN shares the project's .qoder with Qoder",
+  },
+  {
+    tool: 'qoder-cn', scope: 'user', env: { QODERCN_CONFIG_DIR: '/qodercn' },
+    writes: ['/qodercn/rules'], existingDirs: ['/qodercn'], installed: { probe: '/qodercn', met: true },
+    reads: [{ at: '/qodercn/rules', when: 'always' }], source: 'QODERCN_CONFIG_DIR moves Qoder CN user rules',
+  },
+  {
+    tool: 'qoder-cn', scope: 'user', env: { QODERCN_CLI_HOME: '/qodercn-cli' },
+    writes: ['/qodercn-cli/.qoder-cn/rules'], existingDirs: ['/qodercn-cli/.qoder-cn'], installed: { probe: '/qodercn-cli/.qoder-cn', met: true },
+    reads: [{ at: '/qodercn-cli/.qoder-cn/rules', when: 'always' }], source: 'QODERCN_CLI_HOME supplies the parent of Qoder CN user rules',
   },
   {
     tool: 'kiro', scope: 'user',

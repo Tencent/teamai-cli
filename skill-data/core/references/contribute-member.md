@@ -17,7 +17,7 @@ thing now.
 
 - **A learning** (a lesson, a gotcha, how you solved something) → this is
   **automatic** once recall is on (off by default) and the teamai config loads: TeamAI prompts at the end of a session worth sharing and
-  offers the `session-close` workflow, whose learning step runs the `share` skill
+  offers the `teamai-share-learnings` workflow, whose learning step runs the `share` skill
   (`teamai skill get share`) to summarize the session before `teamai contribute`. The user does not come through this flow
   for it. (Step A below is only a manual fallback for while recall is off.)
 - **A reusable skill** (a `SKILL.md` others invoke) → author the skill, then
@@ -138,7 +138,7 @@ The doc lands in the team's `learnings/` and appears for teammates on their next
 Before listing rules, `push` refreshes copies whose bodies still match a recorded
 sync revision. The header teamai generates for a tool's own rules format
 (Cursor `.mdc`, JoyCode's own `.mdc`, Copilot `applyTo`, Kiro `inclusion`, Qoder
-`trigger`, Trae `globs`/`alwaysApply`, CodeBuddy and WorkBuddy `alwaysApply`, Oh My Pi `alwaysApply`/`globs`) does not count as a local edit: unedited old copies update in that
+`trigger`, Trae `globs`/`alwaysApply`, CodeBuddy and WorkBuddy `alwaysApply`, Oh My Pi `alwaysApply`/`globs`, Antigravity `trigger`) does not count as a local edit: unedited old copies update in that
 format, including under `COPILOT_HOME` in user scope. Genuine local body edits remain push candidates.
 Rule pre-sync leaves tools excluded by `enabledAgents` or `disabledAgents` untouched.
 When only team `paths` change, `applyTo` refreshes if the local file still matches
@@ -155,7 +155,7 @@ team repo, then run `teamai pull`. Doctor also reports team-owned OpenCode globs
 or inline blocks left after the last rule is removed.
 
 A new file in the rules directory of a tool with a rules format of its own
-(Cursor, JoyCode, Copilot, Kiro, Qoder, Trae, CodeBuddy, WorkBuddy, Oh My Pi) is the
+(Cursor, JoyCode, Copilot, Kiro, Qoder, Trae, CodeBuddy, WorkBuddy, Oh My Pi, Antigravity) is the
 member's own rule in that tool's format: push never offers it, and pull leaves
 it. To author a new team rule, write it as a plain `.md` in `.claude/rules/`
 (scope it with `paths:` frontmatter, which teamai renders into each tool's

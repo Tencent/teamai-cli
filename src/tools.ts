@@ -23,6 +23,10 @@ export type SkillLoad =
 /** One way a machine moves a tool's home. */
 export type HomeMove =
   | { readonly kind: 'env'; readonly name: string; readonly evidence: Evidence }
+  /** Qoder: `QODER_CONFIG_DIR`, or `.qoder` inside `QODER_CLI_HOME`. */
+  | { readonly kind: 'qoder-home'; readonly evidence: Evidence }
+  /** Qoder CN: `QODERCN_CONFIG_DIR`, or `.qoder-cn` inside `QODERCN_CLI_HOME`. */
+  | { readonly kind: 'qoder-cn-home'; readonly evidence: Evidence }
   /** `$XDG_CONFIG_HOME/<child>`. */
   | { readonly kind: 'xdg'; readonly child: string; readonly evidence: Evidence }
   /**
@@ -212,7 +216,7 @@ export type HookFormat = 'claude' | 'cursor' | 'codex' | 'copilot' | 'zcode';
 export type HookSettings<R> = { readonly channel: 'settings'; readonly format: HookFormat; readonly reads: Reads<R> };
 
 /** A file or directory of teamai's own the tool loads from its home, written by the tool's own adapter. */
-export type HookAdapterId = 'opencode-plugin' | 'pi-extension' | 'omp-extension' | 'hermes-plugin' | 'openclaw-hook' | 'dsh-hooks' | 'kiro-hooks';
+export type HookAdapterId = 'opencode-plugin' | 'pi-extension' | 'omp-extension' | 'hermes-plugin' | 'openclaw-hook' | 'dsh-hooks' | 'kiro-hooks' | 'agy-hooks';
 export type HookAdapter = { readonly channel: 'adapter'; readonly adapter: HookAdapterId; readonly evidence: Evidence };
 
 /**
@@ -629,7 +633,7 @@ export const TOOLS = {
     },
   },
   qoder: {
-    home: { dir: '.qoder' },
+    home: { dir: '.qoder', moves: { by: [{ kind: 'qoder-home', evidence: 'source' }] } },
     skillLoad: { calls: [{ name: 'Skill', evidence: 'source' }] },
     skills: UNKNOWN_READS,
     installedBy: 'home-edition',
@@ -650,8 +654,8 @@ export const TOOLS = {
       project: { format: 'claude', reads: [{ base: 'project', path: '.qoder/settings.json', when: 'workspaceUnder', evidence: 'source' }] },
     },
     hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.qoder/settings.json', evidence: 'source' }] }, self: { channel: 'settings', format: 'claude', reads: [{ base: 'project', path: '.qoder/settings.json', when: 'cwdOnly', evidence: 'source' }] } },
-    // Qoder CLI 1.1.78: <id>.jsonl under ~/.qoder/projects/<cwd>, moved by QODER_CONFIG_DIR.
-    sessions: 'none',
+    // Qoder CLI 1.1.78: <id>.jsonl under <QODER_CONFIG_DIR or QODER_CLI_HOME/.qoder or ~/.qoder>/projects/<cwd>.
+    sessions: ['qoder'],
     launch: 'qoder',
     features: {
       env: '?',
@@ -665,7 +669,7 @@ export const TOOLS = {
     },
   },
   'qoder-cn': {
-    home: { dir: '.qoder-cn' },
+    home: { dir: '.qoder-cn', moves: { by: [{ kind: 'qoder-cn-home', evidence: 'source' }] } },
     skillLoad: { calls: [{ name: 'Skill', evidence: 'source' }] },
     skills: UNKNOWN_READS,
     installedBy: 'home-edition',
@@ -686,8 +690,8 @@ export const TOOLS = {
       project: { format: 'claude', reads: [{ base: 'project', path: '.qoder/settings.json', when: 'workspaceUnder', evidence: 'assumed' }] },
     },
     hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.qoder-cn/settings.json', evidence: 'source' }] }, self: { channel: 'settings', format: 'claude', reads: [{ base: 'project', path: '.qoder/settings.json', when: 'cwdOnly', evidence: 'source' }] } },
-    // Qoder CN: the same layout under ~/.qoder-cn, moved by the QODERCN_ variables.
-    sessions: 'none',
+    // Qoder CN: the same layout under ~/.qoder-cn, moved by QODERCN_CONFIG_DIR.
+    sessions: ['qoder-cn'],
     launch: 'none',
     features: {
       env: '?',
@@ -1236,6 +1240,46 @@ export const TOOLS = {
       agentHooks: { cell: '✓t', note: '#1224 writes them to settings.json; not rerun' },
     },
   },
+  // agy 1.4.8 runs: ~/.gemini/config holds the user customizations, <root>/.agents a project's.
+  agy: {
+    home: { dir: '.gemini/config' },
+    installedBy: 'home',
+    // A skill loads as a read of its SKILL.md (`view_file` or `read_file`).
+    skillLoad: { calls: [] },
+    skills: {
+      user: [{ base: 'home', path: '.gemini/config/skills', evidence: 'verified' }, { base: 'home', path: '.agents/skills', evidence: 'verified' }],
+      project: [{ base: 'project', path: '.agents/skills', when: 'workspaceUnder', evidence: 'verified' }],
+    },
+    rules: {
+      user: { channel: 'dir', format: 'agy', reads: [{ base: 'home', path: '.gemini/config/rules', evidence: 'verified' }] },
+      project: { channel: 'dir', format: 'agy', reads: [{ base: 'project', path: '.agents/rules', when: 'workspaceUnder', evidence: 'verified' }] },
+    },
+    blocks: {
+      user: { channel: 'file', file: { in: 'rules-dir', name: 'teamai-context.md', owned: true, header: 'trigger-always-on' }, reads: [{ base: 'home', path: '.gemini/config/rules', evidence: 'verified' }] },
+      project: { channel: 'file', file: { in: 'rules-dir', name: 'teamai-context.md', owned: true, header: 'trigger-always-on' }, reads: [{ base: 'project', path: '.agents/rules', when: 'workspaceUnder', evidence: 'verified' }] },
+    },
+    agents: {
+      user: { reads: [{ base: 'home', path: '.gemini/config/agents', evidence: 'verified' }] },
+      project: { reads: [{ base: 'project', path: '.agents/agents', when: 'workspaceUnder', evidence: 'verified' }] },
+    },
+    mcp: {
+      user: { format: 'agy', reads: [{ base: 'home', path: '.gemini/config/mcp_config.json', evidence: 'verified' }] },
+      project: { format: 'agy', reads: [{ base: 'project', path: '.agents/plugins/teamai/mcp_config.json', when: 'workspaceUnder', evidence: 'verified' }] },
+    },
+    hooks: { user: { channel: 'adapter', adapter: 'agy-hooks', evidence: 'verified' }, self: 'user' },
+    sessions: ['agy'],
+    launch: 'agy',
+    features: {
+      env: { cell: '✓v', note: 'agy 1.4.8 run_command inherits the environment agy starts in' },
+      workflows: '✓v',
+      recall: '✓v',
+      stats: '✓v',
+      aiBackend: '✓v',
+      votesJudge: { cell: '✗v', note: 'agy 1.4.8 PostToolUse carries no tool output, so a teamai recall run never reaches the recall log' },
+      sessionJudge: { cell: '✓t', note: 'invoke_subagent starts a fresh conversation that gets only its prompt (agy 1.4.8); no session variable, so the session names its tool with --tools; not run' },
+      agentHooks: { cell: '✓t', note: 'runs from teamai\'s team-hook bridge, which can block a tool call; the dispatcher hands it a Claude payload' },
+    },
+  },
 } as const satisfies Record<ToolId, ToolDescriptor>;
 
 export function isToolId(value: string): value is ToolId {
@@ -1255,6 +1299,10 @@ export function homeVariables(tool: ToolId): readonly string[] {
     switch (move.kind) {
       case 'env':
         return [move.name];
+      case 'qoder-home':
+        return ['QODER_CONFIG_DIR', 'QODER_CLI_HOME'];
+      case 'qoder-cn-home':
+        return ['QODERCN_CONFIG_DIR', 'QODERCN_CLI_HOME'];
       case 'xdg':
         return ['XDG_CONFIG_HOME'];
       case 'openclaw-state':

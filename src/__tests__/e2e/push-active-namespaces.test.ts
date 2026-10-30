@@ -110,7 +110,9 @@ beforeAll(() => {
   fs.mkdirSync(path.join(project, '.claude'), { recursive: true });
   env = {
     ...process.env,
-    HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: path.join(home, '.config'),
+    HOME: home, USERPROFILE: home,
+    LOCALAPPDATA: path.join(home, 'AppData', 'Local'), APPDATA: path.join(home, 'AppData', 'Roaming'),
+    HERMES_HOME: path.join(home, '.hermes'), XDG_CONFIG_HOME: path.join(home, '.config'),
     GIT_CONFIG_GLOBAL: path.join(home, '.gitconfig'), GIT_CONFIG_NOSYSTEM: '1',
     GIT_AUTHOR_NAME: 'member', GIT_AUTHOR_EMAIL: 'member@example.invalid',
     GIT_COMMITTER_NAME: 'member', GIT_COMMITTER_EMAIL: 'member@example.invalid',
@@ -143,12 +145,30 @@ beforeAll(() => {
   }));
   const pulled = run(['pull']);
   expect(pulled.code, pulled.output).toBe(0);
+  // The first pull may materialise tracked text through its own writer. Reset
+  // the team checkout to the filtered HEAD before the edit scenarios so the
+  // fixture tests origin routing, not unrelated checkout dirtiness.
+  git(['reset', '--hard', 'HEAD'], clone);
   fs.renameSync(sandbox, template);
 });
 
 beforeEach(() => {
   fs.cpSync(template, sandbox, { recursive: true, preserveTimestamps: true, verbatimSymlinks: true });
 });
+
+/** Rebuild only the current test's team checkout as a real CRLF clone. */
+function useCrlfTeamCheckout(): void {
+  const clone = path.join(project, '.teamai', 'team-repo');
+  fs.rmSync(clone, { recursive: true, force: true });
+  git(['-c', 'core.autocrlf=true', 'clone', '-q', origin, clone]);
+  // Keep the same setting for the Git reads teamai performs after clone.
+  git(['config', 'core.autocrlf', 'true'], clone);
+  fs.rmSync(path.join(project, '.claude', 'skills', 'a-skill'), { recursive: true, force: true });
+  const pulled = run(['pull', '--force']);
+  expect(pulled.code, pulled.output).toBe(0);
+  expect(fs.readFileSync(path.join(project, '.claude', 'skills', 'a-skill', 'SKILL.md'), 'utf8'))
+    .toContain('\r\n');
+}
 
 afterEach(() => fs.rmSync(sandbox, { recursive: true, force: true }));
 
@@ -226,6 +246,47 @@ describe('explicit shared-root pushes (#1314)', () => {
 });
 
 describe('push an edit of a skill pull kept after a project switch (#1020)', () => {
+  it('pushes an LF-recorded edit when another namespace stores the same skill with CRLF', () => {
+    commitOnTeam('skills/svc-b/a-skill/SKILL.md', skillMd('a-skill').replace(/\n/g, '\r\n'));
+    git(['pull', '-q', 'origin', 'main'], path.join(project, '.teamai', 'team-repo'));
+    const localSkill = path.join(project, '.claude', 'skills', 'a-skill', 'SKILL.md');
+    expect(fs.readFileSync(localSkill, 'utf8')).not.toContain('\r\n');
+    expect(fs.readFileSync(path.join(project, '.teamai', 'team-repo', 'skills', 'svc-b', 'a-skill', 'SKILL.md'), 'utf8')).toContain('\r\n');
+    fs.appendFileSync(localSkill, '\nEdited after the CRLF namespace was added.\n');
+
+    const pushed = run(['push', '--all']);
+
+    expect(pushed.output).toContain('to:   skills/svc-a/a-skill');
+    expect(pushed.output).not.toContain('matches no single one of');
+    expect(pushedFiles()).toContain('skills/svc-a/a-skill/SKILL.md');
+  });
+
+  it('pushes an edit after core.autocrlf delivered the LF team skill as CRLF', () => {
+    useCrlfTeamCheckout();
+    const skillFile = path.join(project, '.claude', 'skills', 'a-skill', 'SKILL.md');
+    expect(fs.readFileSync(skillFile, 'utf8')).toContain('\r\n');
+    fs.appendFileSync(skillFile, '\r\nEdited after a CRLF delivery.\r\n');
+
+    const pushed = run(['push', '--skill', path.dirname(skillFile)]);
+
+    expect(pushed.output).toContain('to:   skills/svc-a/a-skill');
+    expect(pushedFiles()).toContain('skills/svc-a/a-skill/SKILL.md');
+  });
+
+  it('does not route a CRLF-delivered edit to a same-named CRLF candidate from another namespace', () => {
+    commitOnTeam('skills/svc-b/a-skill/SKILL.md', skillMd('a-skill').replace(/\n/g, '\r\n'));
+    useCrlfTeamCheckout();
+    const skillFile = path.join(project, '.claude', 'skills', 'a-skill', 'SKILL.md');
+    expect(fs.readFileSync(skillFile, 'utf8')).toContain('\r\n');
+    fs.appendFileSync(skillFile, '\r\nEdited with duplicate CRLF candidate.\r\n');
+
+    const pushed = run(['push', '--skill', path.dirname(skillFile)]);
+
+    expect(pushed.output).toContain('matches no single one of');
+    expect(pushed.output).not.toContain('to:   skills/svc-b/a-skill');
+    expect(pushedFiles()).toEqual([]);
+  });
+
   it('pushes two tool edits to their distinct delivered destinations', () => {
     const svcB = `${skillMd('a-skill')}\nThe svc-b version.\n`;
     commitOnTeam('skills/svc-b/a-skill/SKILL.md', svcB);

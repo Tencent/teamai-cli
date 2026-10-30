@@ -7,7 +7,7 @@ import type { AgentModelRecords, CopyOrigin, DeliveryTarget, ResourceItem } from
 import { fileHash, listFilesRecursive } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { resolveReal } from '../utils/path-safety.js';
-import { historicalVersions, matchesHistory, readBlob } from '../utils/team-history.js';
+import { historicalVersions, matchesHistory, readBlob, readRenderedBlob } from '../utils/team-history.js';
 import { isUneditedGeneratedSkill } from '../workflow/discovery/generated-marker.js';
 import { warnOnce } from '../utils/warn-once.js';
 
@@ -125,6 +125,15 @@ export function contentHash(content: string | Buffer): string {
   return crypto.createHash('sha256').update(content).digest('hex');
 }
 
+/** Hashes of the LF and CRLF forms of a text file, for Git/worktree comparisons. */
+function textContentHashes(content: string | Buffer): Set<string> {
+  const normalized = content.toString('utf8').replace(/\r\n/g, '\n');
+  return new Set([
+    contentHash(normalized),
+    contentHash(normalized.replace(/\n/g, '\r\n')),
+  ]);
+}
+
 /** The recorded paths of the copy at `dest`: the file, or every file under the skill directory. */
 export function recordedUnder(hashes: DeliveredHashes, dest: string): string[] {
   return Object.keys(hashes).filter((file) => file === dest || file.startsWith(dest + path.sep));
@@ -204,17 +213,25 @@ export async function isTeamSkillAsDelivered(previous: DeliveredHashes, dest: st
  * Read-only; reads the history.
  */
 export async function isRecordedFromTeamSkill(
-  previous: DeliveredHashes, dest: string, repoPath: string, teamDir: string,
+  previous: DeliveredHashes,
+  dest: string,
+  repoPath: string,
+  teamDir: string,
+  options: { normalizeLineEndings?: boolean } = {},
 ): Promise<boolean> {
   const recorded = previous[path.join(dest, SKILL_MD)];
   if (recorded === undefined) return false;
   const { withSkillFrontmatter } = await import('./skills.js');
   for (const version of await historicalVersions(repoPath, `${teamDir}/${SKILL_MD}`, { currentLifetime: true }) ?? []) {
-    const bytes = await readBlob(repoPath, version.blob);
+    const source = await readBlob(repoPath, version.blob);
+    const bytes = source === null ? null : await readRenderedBlob(repoPath, version.blob, version.path) ?? source;
     if (bytes === null) continue;
     const text = bytes.toString('utf-8');
     const written = withSkillFrontmatter(text, path.posix.basename(teamDir));
-    if (contentHash(written === text ? bytes : written) === recorded) return true;
+    const hashes = options.normalizeLineEndings === false
+      ? new Set([contentHash(written === text ? bytes : written)])
+      : textContentHashes(written === text ? bytes : written);
+    if (hashes.has(recorded)) return true;
   }
   return false;
 }

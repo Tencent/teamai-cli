@@ -869,6 +869,22 @@ async function reconcileEnvForUnchangedRepo(
 }
 
 /**
+ * With recall off, a `teamai-recall` agent and rule an earlier pull wrote would
+ * keep the agent calling recall: remove them by name, as `recall disable` does.
+ * That includes a copy written by an older release or edited by the member.
+ */
+async function removeRecallFilesQuietly(teamConfig: TeamaiConfig, localConfig: LocalConfig, scopeLabel: string, dryRun?: boolean): Promise<void> {
+  if (dryRun) return;
+  try {
+    const { removeRecallAgentAndRule } = await import('./recall-toggle.js');
+    const removed = await removeRecallAgentAndRule(teamConfig, localConfig);
+    if (removed > 0) log.info(`[${scopeLabel}] Removed the teamai-recall agent and rule: recall is off.`);
+  } catch (e) {
+    log.debug(`Recall agent and rule removal skipped: ${(e as Error).message}`);
+  }
+}
+
+/**
  * The stub is the agent's only way into TeamAI, so a failure to deploy it is
  * not silent. A SessionStart pull runs detached with its output discarded, so
  * debug.log keeps the record.
@@ -1857,6 +1873,7 @@ async function pullForScope(
           const { recorder } = policy;
           try { const { deployBuiltinAgents } = await import('./builtin-agents.js'); await deployBuiltinAgents(freshConfig, localConfig, { skipRecall, recorder }); } catch {}
           try { const { deployBuiltinRules } = await import('./builtin-rules.js'); await deployBuiltinRules(freshConfig, localConfig, { skipRecall, recorder }); } catch {}
+          if (skipRecall) await removeRecallFilesQuietly(freshConfig, localConfig, scopeLabel);
           try {
             const { deployBuiltinSkills } = await import('./builtin-skills.js');
             await deployBuiltinSkills(freshConfig, localConfig, { recorder });
@@ -2456,6 +2473,7 @@ async function pullForScope(
     recorder?.failed('builtin');
     log.debug(`[${scopeLabel}] Built-in agents deployment skipped: ${(e as Error).message}`);
   }
+  if (!isRecallEnabled(localConfig, freshConfig)) await removeRecallFilesQuietly(freshConfig, localConfig, scopeLabel, dryRun);
   recorder?.succeeded('builtin');
 
   if (await checkoutRemoved()) return;

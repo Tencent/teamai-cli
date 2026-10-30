@@ -691,6 +691,19 @@ export const DEFAULT_TOOL_PATHS = {
     agents: '.agents/agents',
     userScope: { skills: '.config/muse/skills', settings: '.config/muse/settings.json', agents: '.config/muse/agents' },
   },
+  // Antigravity CLI (Google, binary `agy`) reads user customizations from
+  // ~/.gemini/config and a project's from <root>/.agents. Its rules need a
+  // `trigger` frontmatter. ~/.gemini/skills and ~/.gemini/GEMINI.md belong to
+  // Gemini CLI, so nothing here points at them.
+  agy: {
+    skills: '.agents/skills',
+    rules: '.agents/rules',
+    agents: '.agents/agents',
+    // agy reads a project's MCP servers only from a plugin, so teamai's ride a plugin of its own.
+    mcp: '.gemini/config/mcp_config.json',
+    mcpProject: '.agents/plugins/teamai/mcp_config.json',
+    userScope: { skills: '.gemini/config/skills', rules: '.gemini/config/rules', agents: '.gemini/config/agents' },
+  },
 } satisfies Record<string, z.infer<typeof ToolPathsSchema>>;
 
 /** A built-in tool. Custom tools in a team's `toolPaths` stay plain strings. */
@@ -2353,15 +2366,15 @@ export interface ContributeState {
    */
   pendingHint?: string;
   /**
-   * What the reminder offered with the session-close workflow (#1388), set in the write that sets `hinted`: whether to
+   * What the reminder offered with the teamai-share-learnings workflow (#1388), set in the write that sets `hinted`: whether to
    * publish the session, and the scorers to judge it with. Absent when the reminder named no workflow.
    */
-  offered?: SessionCloseOffered;
+  offered?: SessionShareOffered;
 }
 
-/** What the friction reminder offers a session with the session-close workflow, as the session's state keeps it. */
-export const SessionCloseOfferedSchema = z.object({ publish: z.boolean(), scorers: z.array(z.string()) });
-export type SessionCloseOffered = z.infer<typeof SessionCloseOfferedSchema>;
+/** What the friction reminder offers a session with the teamai-share-learnings workflow, as the session's state keeps it. */
+export const SessionShareOfferedSchema = z.object({ publish: z.boolean(), scorers: z.array(z.string()) });
+export type SessionShareOffered = z.infer<typeof SessionShareOfferedSchema>;
 
 /**
  * Layer 1 (fast-path) threshold: if toolCount < this, skip reading events.jsonl.

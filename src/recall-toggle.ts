@@ -2,6 +2,7 @@ import path from 'node:path';
 import { autoDetectInit, markMemberSettingsWritten, saveLocalConfigForScope } from './config.js';
 import { log } from './utils/logger.js';
 import { remove, pathExists } from './utils/fs.js';
+import { keepsTrackedCopy } from './resources/delivered-copies.js';
 import { applyInstructionPlan, planInstructionFiles, registerOpencodeContext, resolveInstructionTargets } from './instruction-targets.js';
 import { agentFileExtensionForTool } from './resources/agent-format.js';
 import { isAgentToolId } from './tools.js';
@@ -17,9 +18,18 @@ import {
   type LocalConfig,
 } from './types.js';
 
-async function removeRecallArtifacts(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
+/**
+ * Remove the `teamai-recall` rule and agent by name, in every place teamai may
+ * have written them (including earlier tool homes and the `.md` copy older
+ * layouts left in a `.mdc` rules folder), keeping a copy the repository
+ * tracks (#915). Shared by `recall disable` and by a
+ * pull that finds recall off, so both leave the same files behind. Returns the
+ * number of files removed.
+ */
+export async function removeRecallAgentAndRule(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<number> {
   const install = installOf(teamConfig, localConfig);
-  for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
+  let removed = 0;
+  for (const tool of Object.keys(scopedToolPaths(teamConfig, localConfig))) {
     // Remove recall rule file
     const rulesDir = ownOf(await locate(tool, 'rules', install));
     if (rulesDir?.kind === 'dir') {
@@ -28,21 +38,12 @@ async function removeRecallArtifacts(teamConfig: TeamaiConfig, localConfig: Loca
       for (const extension of extensions) {
         const ruleFile = path.join(rulesDir.path, `teamai-recall${extension}`);
         if (await pathExists(ruleFile)) {
+          if (await keepsTrackedCopy(ruleFile)) continue;
           await remove(ruleFile);
+          removed++;
           log.debug(`Removed recall rule from ${tool}`);
         }
       }
-    }
-
-    // Remove the legacy recall skill an earlier release deployed. The served
-    // `share` workflow is gated at run time, but a member who upgrades and
-    // disables recall before pulling still has the old directory.
-    // Same resolver and gates as deployment: an uninstalled Codex must not have
-    // the shared .agents/skills root pruned on its behalf, and OpenClaw and
-    // Hermes are pruned where their skills actually live.
-    if (toolPath.skills && !isAgentExcluded(localConfig, tool)) {
-      const target = await builtinSkillsTarget(tool, teamConfig, localConfig);
-      if (target) await pruneLegacyBuiltinSkills(tool, target, LEGACY_RECALL_SKILL_NAMES);
     }
 
     for (const { path: agentsDir } of cleanupOf(await locate(tool, 'agents', install))) {
@@ -53,10 +54,29 @@ async function removeRecallArtifacts(teamConfig: TeamaiConfig, localConfig: Loca
       for (const extension of extensions) {
         const agentFile = path.join(agentsDir, `teamai-recall${extension}`);
         if (await pathExists(agentFile)) {
+          if (await keepsTrackedCopy(agentFile)) continue;
           await remove(agentFile);
+          removed++;
           log.debug(`Removed recall agent from ${tool}`);
         }
       }
+    }
+  }
+  return removed;
+}
+
+async function removeRecallArtifacts(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
+  await removeRecallAgentAndRule(teamConfig, localConfig);
+  for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
+    // Remove the legacy recall skill an earlier release deployed. The served
+    // `share` workflow is gated at run time, but a member who upgrades and
+    // disables recall before pulling still has the old directory.
+    // Same resolver and gates as deployment: an uninstalled Codex must not have
+    // the shared .agents/skills root pruned on its behalf, and OpenClaw and
+    // Hermes are pruned where their skills actually live.
+    if (toolPath.skills && !isAgentExcluded(localConfig, tool)) {
+      const target = await builtinSkillsTarget(tool, teamConfig, localConfig);
+      if (target) await pruneLegacyBuiltinSkills(tool, target, LEGACY_RECALL_SKILL_NAMES);
     }
   }
 
@@ -108,7 +128,14 @@ export async function recallDisable(opts: GlobalOptions): Promise<void> {
   await saveLocalConfigForScope(updated, localConfig.scope, localConfig.projectRoot);
 
   await removeRecallArtifacts(teamConfig, localConfig);
+  await redeployWorkflowSkills(teamConfig, updated);
   log.success('Recall disabled. AI tools will no longer auto-search the knowledge base.');
+}
+
+/** teamai-share-learnings runs `share`, which recall gates, so its skill follows the setting. */
+async function redeployWorkflowSkills(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
+  const { deployWorkflowSkills } = await import('./workflow/discovery/workflow-skills.js');
+  await deployWorkflowSkills({ teamConfig, localConfig });
 }
 
 export async function recallEnable(opts: GlobalOptions): Promise<void> {
@@ -123,6 +150,7 @@ export async function recallEnable(opts: GlobalOptions): Promise<void> {
   await saveLocalConfigForScope(updated, localConfig.scope, localConfig.projectRoot);
 
   await deployRecallArtifacts(teamConfig, localConfig);
+  await redeployWorkflowSkills(teamConfig, updated);
   log.success('Recall enabled. AI tools will auto-search the knowledge base before tasks.');
 }
 

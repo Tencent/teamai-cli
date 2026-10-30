@@ -37,7 +37,7 @@ const RUN_LIMIT = 50;
  * `prs` is the delivered pull request list #1090 adds to the end record.
  */
 type ReadRecord = Pick<WorkflowRunRecord,
-  'run' | 'workflow' | 'sourceHash' | 'teamRevision' | 'origin' | 'driver' | 'status' | 'end' | 'startedAt' | 'endedAt' | 'durationMs' | 'stepCounts' | 'username'>
+  'run' | 'workflow' | 'alias' | 'sourceHash' | 'teamRevision' | 'origin' | 'driver' | 'status' | 'end' | 'startedAt' | 'endedAt' | 'durationMs' | 'stepCounts' | 'username'>
   & { steps?: StepEntry[]; prs?: unknown[] };
 type StepEntry = Pick<NonNullable<WorkflowRunRecord['steps']>[number], 'step' | 'pass' | 'outcome' | 'tokens'>
   & { answer?: { choice: string; channel: string }; outcomes?: unknown[] };
@@ -56,6 +56,7 @@ function isWebUrl(value: unknown): value is string {
 const RecordSchema: z.ZodType<ReadRecord, z.ZodTypeDef, unknown> = z.object({
   run: z.string().refine(isRunId),
   workflow: z.string(),
+  alias: z.string().optional().catch(undefined),
   sourceHash: z.string().optional(),
   teamRevision: z.string().optional(),
   origin: RunOriginSchema.optional().catch(undefined),
@@ -82,6 +83,8 @@ const RecordSchema: z.ZodType<ReadRecord, z.ZodTypeDef, unknown> = z.object({
 interface RunRow {
   run: string;
   workflow: string;
+  /** The name people use for the workflow, which the page shows first; absent when it has none, and in older records. */
+  alias?: string;
   driver?: string;
   status: WorkflowRunRecord['status'];
   end?: string;
@@ -96,6 +99,8 @@ interface RunRow {
   /** Whether the run ran the team's definition or teamai's default, and which teamai shipped it; absent in older records. */
   origin?: RunOrigin;
   prs: string[];
+  /** The ids of the learnings its passes recorded, once each, in the order they appear. */
+  learnings: string[];
   stepCounts?: ReadRecord['stepCounts'];
 }
 
@@ -147,10 +152,19 @@ function tokenTotal(steps: StepEntry[] | undefined): number {
   return (steps ?? []).reduce((sum, entry) => sum + (entry.tokens?.input ?? 0) + (entry.tokens?.output ?? 0), 0);
 }
 
+function learningsOf(steps: StepEntry[] | undefined): string[] {
+  const ids = (steps ?? []).flatMap((entry) => (entry.outcomes ?? []).flatMap((outcome) => {
+    const parsed = WorkOutcomeSchema.safeParse(outcome);
+    return parsed.success && parsed.data.kind === 'learning' ? [parsed.data.id] : [];
+  }));
+  return [...new Set(ids)];
+}
+
 function rowOf(record: ReadRecord): RunRow {
   return {
     run: record.run,
     workflow: record.workflow,
+    ...(record.alias !== undefined ? { alias: record.alias } : {}),
     ...(record.driver ? { driver: record.driver.kind } : {}),
     status: record.status,
     ...(record.end !== undefined ? { end: record.end } : {}),
@@ -162,6 +176,7 @@ function rowOf(record: ReadRecord): RunRow {
     ...(record.teamRevision !== undefined ? { teamRevision: record.teamRevision } : {}),
     ...(record.origin ? { origin: record.origin } : {}),
     prs: (record.prs ?? []).filter(isWebUrl),
+    learnings: learningsOf(record.steps),
     ...(record.stepCounts ? { stepCounts: record.stepCounts } : {}),
   };
 }

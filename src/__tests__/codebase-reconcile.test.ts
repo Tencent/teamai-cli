@@ -93,9 +93,9 @@ describe('codebase reconciliation', () => {
     await codebaseCmd({ reconcile: true });
 
     expect(process.exitCode).toBeUndefined();
-    const published = JSON.parse(await createGit(clone).raw(['--git-dir', remote, 'show', 'main:teamwiki/.indices/graph-index.json'])) as GraphIndex;
+    const published = JSON.parse(await createGit(remote).raw(['show', 'main:teamwiki/.indices/graph-index.json'])) as GraphIndex;
     expect(published.edges.filter((edge) => edge.source === 'bridge-reconcile')).toHaveLength(1);
-    expect(await createGit(clone).raw(['--git-dir', remote, 'ls-tree', '--name-only', 'main', 'teamwiki/product/'])).not.toContain('draft.md');
+    expect(await createGit(remote).raw(['ls-tree', '--name-only', 'main', 'teamwiki/product/'])).not.toContain('draft.md');
     expect((await createGit(clone).status()).files.map((file) => file.path)).toEqual(['teamwiki/product/draft.md']);
     expect(log.mock.calls.flat().join('\n')).toContain(`Pushed to team knowledge repo (${remote})`);
   });
@@ -108,7 +108,7 @@ describe('codebase reconciliation', () => {
 
     await codebaseCmd({ reconcile: true });
 
-    expect(await createGit(clone).raw(['--git-dir', remote, 'ls-tree', '--name-only', 'main', 'teamwiki/product/'])).not.toContain('draft.md');
+    expect(await createGit(remote).raw(['ls-tree', '--name-only', 'main', 'teamwiki/product/'])).not.toContain('draft.md');
     expect((await createGit(clone).status()).staged).toEqual(['teamwiki/product/draft.md']);
   });
 
@@ -123,20 +123,20 @@ describe('codebase reconciliation', () => {
     await codebaseCmd({ reconcile: true });
 
     expect(process.exitCode).toBeUndefined();
-    const published = JSON.parse(await git.raw(['--git-dir', remote, 'show', 'main:teamwiki/.indices/graph-index.json'])) as GraphIndex;
+    const published = JSON.parse(await createGit(remote).raw(['show', 'main:teamwiki/.indices/graph-index.json'])) as GraphIndex;
     expect(published.edges.filter((edge) => edge.source === 'bridge-reconcile')).toHaveLength(1);
   });
 
   it('pushes nothing when a second run in the team repo finds nothing new', async () => {
-    const { clone, remote } = await createTeamFixture();
+    const { remote } = await createTeamFixture();
     vi.spyOn(console, 'log').mockImplementation(() => undefined);
     await codebaseCmd({ reconcile: true });
-    const head = await createGit(clone).raw(['--git-dir', remote, 'rev-parse', 'main']);
+    const head = await createGit(remote).raw(['rev-parse', 'main']);
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
 
     await codebaseCmd({ reconcile: true });
 
-    expect(await createGit(clone).raw(['--git-dir', remote, 'rev-parse', 'main'])).toBe(head);
+    expect(await createGit(remote).raw(['rev-parse', 'main'])).toBe(head);
     expect(log.mock.calls.flat().join('\n')).not.toContain('Pushed to team knowledge repo');
   });
 
@@ -161,11 +161,11 @@ describe('codebase reconciliation', () => {
   it('publishes nothing on a dry run in the team repo', async () => {
     const { clone, remote } = await createTeamFixture();
     vi.spyOn(console, 'log').mockImplementation(() => undefined);
-    const head = await createGit(clone).raw(['--git-dir', remote, 'rev-parse', 'main']);
+    const head = await createGit(remote).raw(['rev-parse', 'main']);
 
     await codebaseCmd({ reconcile: true, dryRun: true });
 
-    expect(await createGit(clone).raw(['--git-dir', remote, 'rev-parse', 'main'])).toBe(head);
+    expect(await createGit(remote).raw(['rev-parse', 'main'])).toBe(head);
     expect((await createGit(clone).status()).isClean()).toBe(true);
   });
 

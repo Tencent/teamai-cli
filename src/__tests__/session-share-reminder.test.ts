@@ -7,7 +7,7 @@ import { z } from 'zod';
 import { loadLocalConfigForScope } from '../config.js';
 import { readContributeState, writeContributeState } from '../contribute-check.js';
 import { buildHandlerRegistry } from '../hook-handlers.js';
-import { SessionClose } from '../session-close.js';
+import { SessionShare } from '../session-share.js';
 import type { LocalConfig } from '../types.js';
 import { CONTRIBUTE_BASE_THRESHOLD, CONTRIBUTE_SMART_THRESHOLD } from '../types.js';
 import { AGENT_SESSION_ENV } from '../utils/session-id.js';
@@ -15,14 +15,14 @@ import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { skillHarness } from './helpers/skill-harness.js';
 
 const SESSION = '7c1e0000-0000-4000-8000-000000000003';
-const DESCRIBE = 'teamai workflow start --describe session-close --driver skill';
+const DESCRIBE = 'teamai workflow start --describe teamai-share-learnings --driver skill';
 
 const stop = buildHandlerRegistry().find(({ handler }) => handler.name === 'contribute-check')?.handler;
 
 let home = '';
 let project = '';
 beforeEach(() => {
-  home = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-close-reminder-')));
+  home = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-share-reminder-')));
   project = path.join(home, 'app');
   fs.mkdirSync(project);
   for (const name of AGENT_SESSION_ENV) vi.stubEnv(name, '');
@@ -68,13 +68,13 @@ async function stopOf(tool: string, config: LocalConfig | null, payload: Record<
   return parsed.success ? parsed.data.hookSpecificOutput.additionalContext : null;
 }
 
-describe('the friction reminder offers session-close', () => {
+describe('the friction reminder offers teamai-share-learnings', () => {
   it('names the describe command, carries no inputs, and records what it offered in the same state', async () => {
     await frictionSession();
 
     const reminder = await stopOf('claude', await memberConfig());
 
-    expect(reminder).toContain(`Offer the person the session-close workflow: run \`${DESCRIBE}\` and start it with the inputs it proposes, once the person confirms them.`);
+    expect(reminder).toContain(`Offer the person the teamai-share-learnings workflow: run \`${DESCRIBE}\` and start it with the inputs it proposes, once the person confirms them.`);
     expect(reminder).not.toContain('skill get share');
     expect(reminder).not.toContain('publish');
     expect(await readContributeState(SESSION)).toMatchObject({ hinted: true, offered: { publish: true, scorers: [] } });
@@ -111,7 +111,7 @@ describe('the friction reminder keeps today\'s text, offering nothing,', () => {
     await frictionSession();
     const reminder = await stopOf('claude', config, payload);
     expect(reminder).toContain('teamai skill get share');
-    expect(reminder).not.toContain('session-close');
+    expect(reminder).not.toContain('teamai-share-learnings');
     const state = await readContributeState(SESSION);
     expect(state.hinted).toBe(true);
     expect(state.offered).toBeUndefined();
@@ -138,18 +138,28 @@ describe('the friction reminder keeps today\'s text, offering nothing,', () => {
     await expectTodaysReminder(await memberConfig());
   });
 
-  it('where the team overrides session-close with invoke: deny', async () => {
+  it('where the team overrides teamai-share-learnings with invoke: deny', async () => {
     const config = await memberConfig();
     const workflows = path.join(config.repo.localPath, 'workflows');
     fs.mkdirSync(workflows);
-    fs.writeFileSync(path.join(workflows, 'session-close.yaml'), 'schemaVersion: v1alpha1\nname: session-close\ndescription: Our close-out, started by hand only.\ninvoke: deny\nsteps:\n  - id: note\n    command: node -e "console.log(\'closed\')"\n');
-    expect((await syncWorkflowDefinitions(config)).cached).toEqual(['session-close']);
+    fs.writeFileSync(path.join(workflows, 'teamai-share-learnings.yaml'), 'schemaVersion: v1alpha1\nname: teamai-share-learnings\ndescription: Our close-out, started by hand only.\ninvoke: deny\nsteps:\n  - id: note\n    command: node -e "console.log(\'closed\')"\n');
+    expect((await syncWorkflowDefinitions(config)).cached).toEqual(['teamai-share-learnings']);
+
+    await expectTodaysReminder(config);
+  });
+
+  it('where the team\'s teamai-share-session does not take the inputs teamai-share-learnings passes it', async () => {
+    const config = await memberConfig();
+    const workflows = path.join(config.repo.localPath, 'workflows');
+    fs.mkdirSync(workflows);
+    fs.writeFileSync(path.join(workflows, 'teamai-share-session.yaml'), 'schemaVersion: v1alpha1\nname: teamai-share-session\nalias: wrap-up\ndescription: Publish this session our way.\ninputs: { session: string, source: string }\nsteps:\n  - id: note\n    command: node -e "console.log(\'wrapped\')"\n');
+    expect((await syncWorkflowDefinitions(config)).cached).toEqual(['teamai-share-session']);
 
     await expectTodaysReminder(config);
   });
 });
 
-describe('the session-close offer of a session that drives a skill-driven run', () => {
+describe('the teamai-share-learnings offer of a session that drives a skill-driven run', () => {
   const NOTE = `schemaVersion: v1alpha1
 name: note
 description: Write a note
@@ -164,7 +174,7 @@ steps:
     onTestFinished(() => fs.rmSync(harness.root, { recursive: true, force: true }));
     const started = await harness.call({ kind: 'start', name: 'note', answers: { confirmed: false }, inputs: undefined }, { session: SESSION });
     if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
-    const offerTo = (sessionId: string) => SessionClose.reminderOffer(harness.config, { tool: 'claude', sessionId, cwd: harness.work, run: { runMode: 'attended' } }, { judgeTools: () => [] });
+    const offerTo = (sessionId: string) => SessionShare.reminderOffer(harness.config, { tool: 'claude', sessionId, cwd: harness.work, run: { runMode: 'attended' } }, { judgeTools: () => [] });
 
     expect(await offerTo(SESSION)).toBeUndefined();
     expect(await offerTo('another-session')).toEqual({ publish: true, scorers: [] });
@@ -193,7 +203,7 @@ steps:
     if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
     const inProject: LocalConfig = { ...user, scope: 'project', projectRoot: project, dataHome: path.join(project, '.teamai') };
 
-    expect(await SessionClose.reminderOffer(inProject, { tool: 'claude', sessionId: SESSION, cwd: project, run: { runMode: 'attended' } }, { judgeTools: () => [] })).toBeUndefined();
+    expect(await SessionShare.reminderOffer(inProject, { tool: 'claude', sessionId: SESSION, cwd: project, run: { runMode: 'attended' } }, { judgeTools: () => [] })).toBeUndefined();
   });
 
   it('is nothing outside any project while the session drives a run of a project on this machine', async () => {
@@ -214,6 +224,6 @@ steps:
     const started = await harness.call({ kind: 'start', name: 'note', answers: { confirmed: false }, inputs: undefined }, { session: SESSION });
     if (!('data' in started) || !('turn' in started.data)) throw new Error(JSON.stringify(started));
 
-    expect(await SessionClose.reminderOffer(user, { tool: 'claude', sessionId: SESSION, cwd: home, run: { runMode: 'attended' } }, { judgeTools: () => [] })).toBeUndefined();
+    expect(await SessionShare.reminderOffer(user, { tool: 'claude', sessionId: SESSION, cwd: home, run: { runMode: 'attended' } }, { judgeTools: () => [] })).toBeUndefined();
   });
 });

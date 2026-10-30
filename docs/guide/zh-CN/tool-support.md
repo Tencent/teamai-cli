@@ -21,8 +21,8 @@ teamai 为每个工具把每类资源写到哪里，以及工具读取哪里，�
 | Cursor | `~/.cursor` | written; reads ? | `~/.cursor/rules` v from a session under ~ | `~/.cursor/rules` v from a session under ~ | `~/.cursor/agents` s | `~/.cursor/hooks.json` s | `~/.cursor/mcp.json` s | cursor |
 | Copilot | `~/.copilot` `$COPILOT_HOME` | `~/.copilot/skills` v | `~/.copilot/instructions` v | `~/.copilot/copilot-instructions.md` v | `~/.copilot/agents` s | `~/.copilot/hooks/teamai.json` s | `~/.copilot/mcp-config.json` v | — |
 | JoyCode | `~/.joycode` | written; reads ? | in the blocks file (JoyCode rules.txt) | `~/.joycode/rules.txt` s | written; reads ? | — | — | ? |
-| Qoder | `~/.qoder` | written; reads ? | `~/.qoder/rules` v | `~/.qoder/rules` s | `~/.qoder/agents` s | `~/.qoder/settings.json` s | `~/.qoder/settings.json` s | — |
-| Qoder CN | `~/.qoder-cn` | written; reads ? | `~/.qoder-cn/rules` v | `~/.qoder-cn/rules` t | `~/.qoder-cn/agents` s | `~/.qoder-cn/settings.json` s | `~/.qoder-cn/settings.json` s | — |
+| Qoder | `~/.qoder` `$QODER_CONFIG_DIR` `$QODER_CLI_HOME/.qoder` | written; reads ? | `~/.qoder/rules` v | `~/.qoder/rules` s | `~/.qoder/agents` s | `~/.qoder/settings.json` s | `~/.qoder/settings.json` s | qoder |
+| Qoder CN | `~/.qoder-cn` `$QODERCN_CONFIG_DIR` `$QODERCN_CLI_HOME/.qoder-cn` | written; reads ? | `~/.qoder-cn/rules` v | `~/.qoder-cn/rules` t | `~/.qoder-cn/agents` s | `~/.qoder-cn/settings.json` s | `~/.qoder-cn/settings.json` s | qoder-cn |
 | Kiro | `~/.kiro` | written; reads ? | `~/.kiro/steering` d | `~/.kiro/steering` d | `~/.kiro/agents` d | kiro-hooks d | `~/.kiro/settings/mcp.json` d | — |
 | Trae | `~/.trae` | written; reads ? | written; reads ? | `~/.trae/user_rules` d | ? | ? | — | — |
 | Trae CN | `~/.trae-cn` | written; reads ? | written; reads ? | `~/.trae-cn/user_rules` d | `~/.trae-cn/agents` d | ? | — | — |
@@ -36,6 +36,7 @@ teamai 为每个工具把每类资源写到哪里，以及工具读取哪里，�
 | WorkBuddy | `~/.workbuddy` | written; reads ? | `~/.workbuddy/rules` t | `~/.workbuddy/rules` t | `~/.workbuddy/agents` t | `~/.workbuddy/settings.json` t | first of `~/.workbuddy/.mcp.json`, `~/.workbuddy/mcp.json`, `~/.codebuddy.json` (in `$CODEBUDDY_CONFIG_DIR` when set) s | workbuddy |
 | OpenCode | `~/.config/opencode` `$OPENCODE_CONFIG_DIR` `$XDG_CONFIG_HOME/opencode` | `~/.config/opencode/skills` v<br>`~/.claude/skills` v | `~/.config/opencode/rules` v | `~/.config/opencode/teamai-context.md` v | `~/.config/opencode/agents` v | opencode-plugin s | `~/.config/opencode/opencode.json` v | opencode |
 | Muse Code | `~/.config/muse` `$XDG_CONFIG_HOME/muse` | `~/.config/muse/skills` v<br>`~/.agents/skills` v<br>`~/.claude/skills` v | in the blocks file (Muse Code AGENTS.md) | `~/.config/muse/AGENTS.md` v | `~/.config/muse/agents` s | `~/.config/muse/settings.json` v | `~/.config/muse/settings.json` s | — |
+| Antigravity | `~/.gemini/config` | `~/.gemini/config/skills` v<br>`~/.agents/skills` v | `~/.gemini/config/rules` v | `~/.gemini/config/rules` v | `~/.gemini/config/agents` v | agy-hooks v | `~/.gemini/config/mcp_config.json` v | agy |
 
 ## 项目范围
 
@@ -67,6 +68,7 @@ teamai 为每个工具把每类资源写到哪里，以及工具读取哪里，�
 | WorkBuddy | written; reads ? | written; reads ? | written; reads ? | `.workbuddy/agents` t cwd only | written; reads ? | first of `.mcp.json`, `mcp.json` s cwd only |
 | OpenCode | `.opencode/skills` v<br>`.claude/skills` v | `.opencode/rules` v | `.opencode/teamai-context.md` v | `.opencode/agents` v | user hooks | `opencode.json` v<br>`.opencode/teamai-mcp.json` v |
 | Muse Code | `.agents/skills` v | session hook v | session hook v | written; reads ? | `.muse/hooks.json` v | `.mcp.json` s |
+| Antigravity | `.agents/skills` v | `.agents/rules` v | `.agents/rules` v | `.agents/agents` v | user hooks | `.agents/plugins/teamai/mcp_config.json` v |
 
 ## 运行时与 teamai 自身的 AI
 
@@ -98,6 +100,7 @@ teamai 为每个工具把每类资源写到哪里，以及工具读取哪里，�
 | WorkBuddy | ? | ✓t | ✓t | ? | ✓t | ? | ✓t<sup>25</sup> | ? |
 | OpenCode | ? | ✓t | ✓v | ✓t<sup>2</sup> | ✓v | ? | ✓t<sup>1</sup> | ✓v<sup>26</sup> |
 | Muse Code | ✓t | +v | ✓t | ✓v | ✓v | ✓t<sup>3</sup> | ✓t<sup>1</sup> | ✓t<sup>27</sup> |
+| Antigravity | ✓v<sup>28</sup> | ✓v | ✓v | ✓v | ✓v | ✗v<sup>29</sup> | ✓t<sup>30</sup> | ✓t<sup>31</sup> |
 
 注：
 
@@ -128,3 +131,7 @@ teamai 为每个工具把每类资源写到哪里，以及工具读取哪里，�
 25. CodeBuddy's engine, whose session judges its skill-driven run; not run
 26. runs from teamai's team-hook bridge, which can block a tool call; OpenCode 1.18.23 ran a team hook through it
 27. #1224 writes them to settings.json; not rerun
+28. agy 1.4.8 run_command inherits the environment agy starts in
+29. agy 1.4.8 PostToolUse carries no tool output, so a teamai recall run never reaches the recall log
+30. invoke_subagent starts a fresh conversation that gets only its prompt (agy 1.4.8); no session variable, so the session names its tool with --tools; not run
+31. runs from teamai's team-hook bridge, which can block a tool call; the dispatcher hands it a Claude payload

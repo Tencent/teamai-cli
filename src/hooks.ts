@@ -2716,6 +2716,13 @@ async function rewireBridgedTeamHooks(tool: string): Promise<void> {
       await refreshOpenClawTeamHooks();
       return;
     }
+    // PreToolUse is in agy's hooks.json only while a hook needs it. Only a pull installs teamai's hook there, so an
+    // uninstall that removes it before the agent hooks does not get it back.
+    case 'agy-hooks': {
+      const { hasAgyHooks, reconcileAgyHooks } = await import('./agy-hooks.js');
+      if (await hasAgyHooks()) await reconcileAgyHooks();
+      return;
+    }
     case 'opencode-plugin':
     case 'omp-extension':
     case 'pi-extension':
@@ -3075,6 +3082,7 @@ async function isBridgedToolInstalled(tool: string, baseDir: string, installedBa
     case 'kiro-hooks': return pathExists(path.join(getUserHome(), '.kiro'));
     case 'hermes-plugin': return pathExists(toolHome('hermes'));
     case 'openclaw-hook': return await openclawWorkspaceDir() !== null;
+    case 'agy-hooks': return pathExists(toolHome('agy'));
     case 'dsh-hooks': return false;
     default: {
       const unhandled: never = channel.adapter;
@@ -3241,6 +3249,13 @@ export async function injectHooksToAllTools(toolPaths: Record<string, { settings
         await injectKiroHooks(resolvedBaseDir);
       } catch (e) {
         log.warn(`Failed to inject Kiro hooks: ${(e as Error).message}`);
+      }
+    } else if (tool === 'agy') {
+      try {
+        const { reconcileAgyHooks } = await import('./agy-hooks.js');
+        if (await pathExists(toolHome('agy'))) await reconcileAgyHooks();
+      } catch (e) {
+        log.warn(`Failed to inject Antigravity hooks: ${(e as Error).message}`);
       }
     } else if (tool === 'pi') {
       try {
@@ -3487,6 +3502,27 @@ export async function reconcileHooksToAllTools(
         await reconcileOmpExtension(opts.removeAll);
       } catch (e) {
         log.warn(`Failed to reconcile OMP hooks: ${(e as Error).message}`);
+        opts.unwritten?.push(tool);
+      }
+      continue;
+    }
+    // Antigravity CLI keeps every hook in one user-wide hooks.json: one entry per event runs the
+    // dispatcher, which runs the team's hooks through teamai's bridge.
+    if (tool === 'agy') {
+      if (opts.settingsOnly) continue;
+      try {
+        // A team's own `toolPaths.agy`, from before agy was built in, took Claude-format hooks in its `settings`
+        // file, most often hooks.json, where agy runs a "hooks" key as one more named hook. Clear teamai's from it,
+        // and from hooks.json after the team drops that key. The records stay: they are the bridge's now.
+        const { agyHookFile, reconcileAgyHooks } = await import('./agy-hooks.js');
+        const legacy = new Set([agyHookFile(), ...paths.settings ? [hookSettingsFile(tool, baseDir, paths.settings)] : []].map((file) => path.resolve(file)));
+        for (const file of legacy) {
+          if (await pathExists(file)) await reconcileHooks(file, tool, [], { removeAll: true, manifestPath, keepRecords: true });
+        }
+        await reconcileBridged(tool);
+        if (opts.removeAll || await pathExists(toolHome('agy'))) await reconcileAgyHooks({ removeAll: opts.removeAll });
+      } catch (e) {
+        log.warn(`Failed to reconcile Antigravity hooks: ${(e as Error).message}`);
         opts.unwritten?.push(tool);
       }
       continue;

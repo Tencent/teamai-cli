@@ -17,7 +17,7 @@ const mockGit = {
 };
 
 vi.mock('simple-git', () => ({
-  default: () => mockGit,
+  simpleGit: () => mockGit,
 }));
 
 vi.mock('yaml', () => ({

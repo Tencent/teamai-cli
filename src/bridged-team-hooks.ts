@@ -1,6 +1,6 @@
 /**
  * Team hooks for the tools whose hosts cannot run a Claude hook file
- * (OpenCode, OMP, Pi, Kiro, Hermes, OpenClaw).
+ * (OpenCode, OMP, Pi, Kiro, Hermes, OpenClaw, Antigravity CLI).
  *
  * teamai keeps each such tool's team hooks in a Claude-shaped file of its own
  * (`~/.teamai/team-hooks/<tool>.json`), written by the same reconcile, records
@@ -69,6 +69,9 @@ const BRIDGES: Readonly<Record<HookAdapterId, Bridge | null>> = {
     reply: 'hermes',
     tools: { terminal: 'Bash', read_file: 'Read', write_file: 'Write', patch: 'Edit', search_files: 'Grep' },
   },
+  // agy's one hooks.json entry per event runs the dispatcher, which hands the bridge a payload that already names
+  // agy's tools as Claude does (agy-hook-io.ts) and turns its reply into agy's.
+  'agy-hooks': { reply: 'bridge', tools: {} },
   'dsh-hooks': null,
 };
 

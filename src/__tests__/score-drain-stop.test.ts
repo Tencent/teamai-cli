@@ -25,6 +25,7 @@ vi.mock('node:child_process', async (importOriginal) => ({
 vi.mock('../pull.js', () => ({ pull: vi.fn(async () => undefined), settleLateUsageReport: vi.fn(async () => undefined) }));
 vi.mock('../update.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../update.js')>()), doUpdate: vi.fn(async () => undefined) }));
 vi.mock('../local-agent.js', () => ({ reportAndSyncFromHook: vi.fn(async () => null) }));
+vi.mock('../utils/cli-path.js', () => ({ resolveCliPath: () => null }));
 
 const { hookDispatchCli } = await import('../hook-dispatch-cli.js');
 const { loadLocalConfig } = await import('../config.js');

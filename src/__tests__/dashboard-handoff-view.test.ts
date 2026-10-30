@@ -57,6 +57,11 @@ describe('the Handed-off runs panel', () => {
     expect(html).toContain('This install drives it');
   });
 
+  it('names a run by its workflow\'s alias, with the workflow\'s name under it', () => {
+    const { html } = render([{ ...row('r0000000000000001', { isMine: false, offer: RUNNABLE }), alias: 'ship' }]);
+    expect(html).toContain('<span data-verbatim>ship</span><small><span data-verbatim>ship-issue</span> · <span data-verbatim>r0000000000000001</span></small>');
+  });
+
   it('says what a runner needs for the steps left, and what this machine lacks of it with what gives it', () => {
     const { html } = render([row('r0000000000000001', { isMine: false, offer: SIGNED })]);
     expect(html).toContain('A runner needs');

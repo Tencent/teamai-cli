@@ -187,6 +187,18 @@ const ROWS: readonly MatrixRow[] = [
     source: 'Qoder CLI 1.1.78 and IDE Always Apply rules: ~/.qoder/rules loads trigger: always_on files at startup',
   },
   {
+    tool: 'qoder', scope: 'user', env: { QODER_CONFIG_DIR: '/qoder' },
+    writes: [{ at: '/qoder/rules/teamai-context.md', owned: true, header: 'trigger-always-on' }],
+    existingDirs: ['/qoder'], installed: { probe: '/qoder', met: true }, reads: [{ at: '/qoder/rules', when: 'always' }],
+    source: 'QODER_CONFIG_DIR moves Qoder user instruction blocks',
+  },
+  {
+    tool: 'qoder', scope: 'user', env: { QODER_CLI_HOME: '/qoder-cli' },
+    writes: [{ at: '/qoder-cli/.qoder/rules/teamai-context.md', owned: true, header: 'trigger-always-on' }],
+    existingDirs: ['/qoder-cli/.qoder'], installed: { probe: '/qoder-cli/.qoder', met: true }, reads: [{ at: '/qoder-cli/.qoder/rules', when: 'always' }],
+    source: 'QODER_CLI_HOME supplies the parent of Qoder user instruction blocks',
+  },
+  {
     tool: 'qoder', scope: 'project',
     writes: [{ at: '<root>/.qoder/rules/teamai-context.md', owned: true, header: 'trigger-always-on' }],
     existingDirs: ['~/.qoder'], installed: { probe: '~/.qoder', met: true },
@@ -206,6 +218,19 @@ const ROWS: readonly MatrixRow[] = [
     existingDirs: ['~/.qoder-cn'], installed: { probe: '~/.qoder-cn', met: true },
     reads: [{ at: '<root>/.qoder/rules', when: 'workspaceUnder' }],
     source: 'Qoder CN shares Qoder project rules and the always-on rule format',
+  },
+  {
+    tool: 'qoder-cn', scope: 'user', env: { QODERCN_CONFIG_DIR: '/qodercn' },
+    writes: [{ at: '/qodercn/rules/teamai-context.md', owned: true, header: 'trigger-always-on' }],
+    existingDirs: ['/qodercn'], installed: { probe: '/qodercn', met: true }, reads: [{ at: '/qodercn/rules', when: 'always' }],
+    source: 'QODERCN_CONFIG_DIR moves Qoder CN user instruction blocks',
+  },
+  {
+    tool: 'qoder-cn', scope: 'user', env: { QODERCN_CLI_HOME: '/qodercn-cli' },
+    writes: [{ at: '/qodercn-cli/.qoder-cn/rules/teamai-context.md', owned: true, header: 'trigger-always-on' }],
+    existingDirs: ['/qodercn-cli/.qoder-cn'], installed: { probe: '/qodercn-cli/.qoder-cn', met: true },
+    reads: [{ at: '/qodercn-cli/.qoder-cn/rules', when: 'always' }],
+    source: 'QODERCN_CLI_HOME supplies the parent of Qoder CN user instruction blocks',
   },
   {
     tool: 'kiro', scope: 'user',

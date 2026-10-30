@@ -49,6 +49,28 @@ sharing:
 
 你自己的 rule 会留下。`push` 只把已有团队 rule 的正文写回仓库。
 
+这里的 Antigravity 指三者：CLI（`agy`）、Antigravity 2.0 和 Antigravity IDE 读取同样的 `~/.gemini/config` 和 `.agents`，所以一次 pull 三者都能用。
+
+Antigravity 只加载带 `trigger` 的 rule，所以 pull 会加上。带 `paths:` 的 rule 会变成模型处理这些文件时才采用的 rule：
+
+```markdown
+<!-- 团队仓库里的 rules/api-errors.md -->
+---
+paths: ["src/api/**/*.ts"]
+---
+Return typed errors from API handlers.
+
+<!-- teamai pull 之后的 ~/.gemini/config/rules/api-errors.md -->
+---
+trigger: model_decision
+description: "Applies when reading or editing files matching src/api/**/*.ts"
+---
+
+Return typed errors from API handlers.
+```
+
+没有 `paths:` 的 rule 得到 `trigger: always_on`。
+
 ## Agents
 
 `agents/<name>.yaml`。`name` 与文件名一致。自己 commit，或在工具里改完后 `teamai push`。
@@ -72,6 +94,8 @@ teamai remove agents code-reviewer
 ```
 
 `pull` 按工具自己的格式写入它的 agents 目录：Codex 系列是 `<name>.toml`，Copilot 是 `<name>.agent.md`，Kiro 是 `<name>.json`，其余是 `<name>.md`。Trae 和 Trae CN 只在 Beta 设置“启用 Subagents 目录”打开时加载 `.trae/agents`，且只接受自己的模型 id，所以它们的副本不写 agent 的 `model`。Trae CN 在 `~/.trae-cn/agents` 的用户副本会写别名或 `tool_extras.trae-cn` 给出的模型。项目的 `.trae/agents` 两个版本都会读，所以从不写 `model`，其他键则同时取自 `tool_extras.trae` 和 `tool_extras.trae-cn`；两个版本给同一个键不同的值时，该 agent 在那里会被跳过，并给出点名该键的警告。`push` 会拒绝在该文件里修改或删除另一个版本给出的键。
+
+Antigravity 的副本不带团队的 `model`（agy 会跳过它不认识模型的 agent），只写别名为 agy 映射的模型；工具名换成 agy 自己的：`tools: [Bash, Read]` 变成 `run_command`、`view_file` 和 `read_file`。没有这些，agy 的 subagent 就没有 shell。项目里的 `.agents/agents` 归 agy，所以装了 agy 时 Muse Code 不在那里写副本。CLI 和 Antigravity 2.0 把 agent 当作 subagent 运行；Antigravity IDE 没有 subagent，装了 CLI 时它的模型只能把活交给 `agy --agent <name>`。
 
 单仓库模式下，已放入命名空间的 agent 的根目录副本会推送到放置后的文件。把它从 `.md` 转为 `.yaml` 会移除原文件，即使当前检出落后于自己已合并的 PR 也是如此。两种情况下，TeamAI 都会把放置后的文件与你上次合并的推送写入的 blob 对比。团队之后又编辑过该文件时，推送会停止并给出 `teamai push --carried <path>@<blob>` 命令。把这次修改带入根目录副本，再运行该命令。该选项只接受这一版本，直接重试或团队之后再次编辑都会再次停止推送。团队已删除的 agent 不会从根目录副本重新添加。没有 blob 的旧放置记录，只有在检出落后于团队修改时才能发现这次修改；你通过它推送的第一次编辑合并后，该记录会补上这次的 blob。
 
@@ -248,7 +272,7 @@ hook 能做什么取决于事件。下表是每个运行该事件的工具都做
       not in: cursor (no PreToolUse hook there)
 ```
 
-OpenCode、Oh My Pi、Pi、OpenClaw、Kiro 和 Hermes 没有 Claude Code 那样的 hook 文件，它们的 hook 由 teamai 来跑，payload 和工具名都按 Claude Code 的（`matcher: Bash` 能匹配 OpenCode 的 `bash` 和 Hermes 的 `terminal`）。在这些工具里：
+OpenCode、Oh My Pi、Pi、OpenClaw、Kiro、Hermes 和 Antigravity 没有 Claude Code 那样的 hook 文件，它们的 hook 由 teamai 来跑，payload 和工具名都按 Claude Code 的（`matcher: Bash` 能匹配 OpenCode 的 `bash` 和 Hermes 的 `terminal`）。在这些工具里：
 
 - 只跑 `SessionStart`、`UserPromptSubmit`、`PreToolUse`、`PostToolUse` 和 `Stop`。其他事件上的团队 hook，pull 会警告。
 - `UserPromptSubmit` 能加上下文，但拦不下这次输入。
@@ -264,6 +288,20 @@ sharing:
 ```
 
 本机全部停用团队 hook：`TEAMAI_HOOKS_DISABLED=1`。
+
+Antigravity 也会运行这些 hook（CLI、Antigravity 2.0 和 Antigravity IDE 都一样），经由 teamai 写在 `~/.gemini/config/hooks.json` 里的 hook。hook 收到的是 Claude Code 的 payload（`tool_name: Bash`、`tool_input.command`），退出码 2 会拦下这次调用，所以同一个 hook 两个工具都能用：
+
+```yaml
+hooks:
+  - id: block-rm-rf
+    description: Block recursive deletes
+    event: PreToolUse
+    matcher: Bash
+    command: 'grep -q "rm -rf" && { echo "rm -rf is blocked; run git clean -n first." >&2; exit 2; } || exit 0'
+    tools: [claude, agy]
+```
+
+agy 随后拒绝该命令：`tool call denied by pre-tool hook: rm -rf is blocked; run git clean -n first.`
 
 ## MCP Server
 
@@ -293,6 +331,15 @@ servers:
 
 ZCode 的 server 写入 `~/.zcode/cli/config.json` 或项目的 `.zcode/config.json`，位于 `mcp.servers` 下。这基于 3.16.2 源码，尚未认证 3.15.1。Pull 只从 `~/.agents/mcp.json` 移走未被修改的 teamai 条目。原生配置中有 server 后，桌面应用不再读取该备用文件，doctor 会列出其中的其他 server。
 
+Antigravity 的用户级 server 写入 `~/.gemini/config/mcp_config.json`。项目级 server 它只从插件读取，所以 teamai 把它们写成一个插件：
+
+```text
+.agents/plugins/teamai/plugin.json       {"name": "teamai"}
+.agents/plugins/teamai/mcp_config.json   {"mcpServers": {"github": {"url": "https://api.githubcopilot.com/mcp/", "headers": {...}}}}
+```
+
+agy 支持 stdio 和 HTTP server，不写 `type`；`sse` server 不会写给 agy，pull 会给出警告。`agy mcp list` 只显示用户文件里的 server，插件里的 server 在会话中可用。
+
 WorkBuddy 按顺序使用第一个已存在的用户文件：`~/.workbuddy/.mcp.json`、`~/.workbuddy/mcp.json`、`~/.codebuddy.json`。`CODEBUDDY_CONFIG_DIR` 会移动最后一个文件。项目使用 `.mcp.json`，仅有 `mcp.json` 时使用后者。开启 `sharing.gitExclude` 后，server 写入 `.codebuddy.json` 的 `projects[<项目路径>].mcpServers`。这些路径基于 CodeBuddy 2.168.0 引擎，尚未认证 WorkBuddy 启动器的主目录绑定。Pull 只从旧项目文件 `.workbuddy/mcp.json` 移除未被修改的 teamai 条目。
 
 主目录或项目中存在 `.workbuddy-ai/` 时（WorkBuddy 5.7+），默认技能路径改为 `.workbuddy-ai/skills`。其他内容仍要等 `.workbuddy/` 存在才写入，所以只有 `.workbuddy-ai/` 的成员收不到规则、团队指令、agent、MCP server 和钩子，`teamai doctor` 会以 `workbuddy receives ...` 失败并列出被搁置的项。
@@ -307,7 +354,7 @@ teamai mcp inject
 teamai mcp remove
 ```
 
-`mcp inject` 和 `mcp remove` 遇到无法读取或解析的工具配置时返回退出码 1，`--dry-run` 也一样。其他工具仍可能更新；命令会列出这些变更，并报告操作未完成。修复警告中指出的配置后，重新运行该命令。无法读取的配置及其归属记录会保留，供重试使用。
+`mcp inject` 和 `mcp remove` 遇到无法读取或解析的工具配置时返回退出码 1，`--dry-run` 也一样，包括 Codex 的 `config.toml` 存在 TOML 语法错误的情况；文件开头的 UTF-8 BOM 可以正常处理。其他工具仍可能更新；命令会列出这些变更，并报告操作未完成。修复警告中指出的配置后，重新运行该命令。无法读取的配置及其归属记录会保留，供重试使用。`uninstall` 同样保留归属记录并返回退出码 1，直到配置修复后重试。
 
 Muse 调整 JSON 对象的键顺序不会被视为个人修改。移除时会核对记录的内容（包括嵌套对象），仍会保留实际修改过命令、参数或环境变量的 server。旧记录如果没有内容指纹，需要团队 Git 历史中与原 hash 匹配的定义作为依据；无法证明时会保留 server 并提示。
 
@@ -372,7 +419,7 @@ sessions:
   publish: { attended: ask, unattended: auto }
 ```
 
-有人值守的 `ask` 会在摩擦提醒提供 [`session-close`](workflow.md#session-close) 时提议发布，成员要确认两次：启动时一次，转录发出前再在自己的终端或仪表盘确认一次。除此之外，成员的会话只会通过 `teamai session push` 等命令归档。无人值守的 `ask` 等同于 `off`，因为没有人在场确认。有人值守的 `auto` 在会话六小时没有任何活动后归档它，由评判已结束会话的后台任务完成。发布总会脱敏。HTTP 团队没有会话归档，因此在那里 `sessions.publish` 等同于 `off`，`teamai doctor` 会说明这一点。
+有人值守的 `ask` 会在摩擦提醒提供 [`teamai-share-learnings`](workflow.md#teamai-share-learnings-和-teamai-share-session) 时提议发布，成员要确认两次：启动时一次，转录发出前再在自己的终端或仪表盘确认一次。除此之外，成员的会话只会通过 `teamai session push` 等命令归档。无人值守的 `ask` 等同于 `off`，因为没有人在场确认。有人值守的 `auto` 在会话六小时没有任何活动后归档它，由评判已结束会话的后台任务完成。发布总会脱敏。HTTP 团队没有会话归档，因此在那里 `sessions.publish` 等同于 `off`，`teamai doctor` 会说明这一点。
 
 成员的 `config.yaml` 优先，按模式分别生效。它没有写的模式沿用 `teamai.yaml`：
 

@@ -22,7 +22,7 @@ import { realHost, toolHome, type Host } from './tool-home.js';
  * against the user's HOME in non-interactive contexts. Order is the display order.
  * Kept small on purpose — the common coding agents, not the full KNOWN_AGENTS list.
  */
-export const SELF_MODE_AGENT_CHOICES = ['claude', 'codex', 'cursor', 'copilot', 'pi', 'joycode', 'codebuddy', 'workbuddy', 'muse'] as const satisfies readonly ToolId[];
+export const SELF_MODE_AGENT_CHOICES = ['claude', 'codex', 'cursor', 'copilot', 'pi', 'joycode', 'codebuddy', 'workbuddy', 'muse', 'agy'] as const satisfies readonly ToolId[];
 
 /**
  * Normalize the `--agent` option into a deduplicated id list.
@@ -114,6 +114,7 @@ export const KNOWN_AGENTS: KnownAgent[] = [
   { id: 'windsurf', displayName: 'Windsurf', category: 'coding', skillsPath: '.windsurf/skills' },
   { id: 'zcode', displayName: 'ZCode', category: 'coding', skillsPath: '.zcode/skills' },
   { id: 'muse', displayName: 'Muse Code', category: 'coding', skillsPath: '.config/muse/skills' },
+  { id: 'agy', displayName: 'Antigravity', category: 'coding', skillsPath: '.gemini/config/skills' },
 
   // Lobster family
   { id: 'openclaw', displayName: 'OpenClaw', category: 'lobster', skillsPath: '.openclaw/skills' },

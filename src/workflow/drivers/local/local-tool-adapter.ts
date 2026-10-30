@@ -13,6 +13,7 @@ import { toolStdout, type TokenUsage, type ToolReport } from '../../../tool-laun
 import { executableOf, launchAdapterIdOf, opencodeModelArgs, type LaunchTool } from '../../../tool-launch/tools.js';
 import type { StepModel } from '../../step-model.js';
 import type { WorkflowFailure } from '../../types.js';
+import { agyGatewayEnv } from '../../../models/agy-gateway.js';
 
 export interface LocalToolRun {
   prompt: string;
@@ -101,6 +102,13 @@ function invocation(tool: LaunchTool, input: LocalToolRun, opencodeMajor: number
     case 'opencode':
       if (interactive) return [...agent, ...model, '--prompt', prompt];
       return ['run', '--format', 'json', prompt, ...agent, ...opencodeModelArgs(input.model, opencodeMajor)];
+    case 'agy': {
+      const conversation = input.resume ? ['--conversation', input.resume] : [];
+      const agyEffort = effort ? ['--effort', effort] : [];
+      if (interactive) return [...agent, ...model, ...agyEffort, ...conversation, '--prompt-interactive', prompt];
+      // `--print=` keeps the prompt attached: a bare `-p` takes its next argument as the prompt, even a flag.
+      return ['--output-format=stream-json', ...agent, ...model, ...agyEffort, ...conversation, `--print=${prompt}`];
+    }
     default: {
       const unhandled: never = family;
       throw new Error(`No workflow step profile for adapter ${String(unhandled)}`);
@@ -207,7 +215,13 @@ export function createLocalToolAdapter(
         try {
           child = spawnTool(executable, args, {
             cwd: input.cwd,
-            env: { ...input.env ?? process.env, ...(input.launch ? launchEnv(input.launch) : {}), TEAMAI_WORKFLOW_RESULT: input.resultPath },
+            env: {
+              ...input.env ?? process.env,
+              // A model switch hands agy its gateway through a shell function, and this launch runs no shell.
+              ...(launchAdapterIdOf(tool) === 'agy' ? agyGatewayEnv(input.env ?? process.env) : {}),
+              ...(input.launch ? launchEnv(input.launch) : {}),
+              TEAMAI_WORKFLOW_RESULT: input.resultPath,
+            },
             // OpenCode waits for the end of a piped stdin before it starts.
             stdio: interactive ? 'inherit' : ['ignore', 'pipe', 'pipe'],
             detached: !interactive && process.platform !== 'win32',

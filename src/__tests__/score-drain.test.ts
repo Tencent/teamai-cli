@@ -29,6 +29,7 @@ import { SessionWork } from '../session-flow/session-work.js';
 import { getReportsDir, REPORTS_LOCK_FILENAME, type LocalConfig } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { AGENT_SESSION_ENV } from '../utils/session-id.js';
+import * as cliPaths from '../utils/cli-path.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, parseReport, reportAttempt, startRun } from '../workflow/engine.js';
 import { nextJudgeLease, submitJudgeLease } from '../workflow/scoring.js';
@@ -71,6 +72,11 @@ beforeEach(() => {
   vi.stubEnv('USERPROFILE', mocks.home);
   // No judge tool of this machine: a test that judges puts its fake one first.
   vi.stubEnv('PATH', ['/usr/bin', '/bin'].join(path.delimiter));
+  // Login shells can add system tool directories even with this isolated HOME.
+  vi.spyOn(cliPaths, 'resolveCliPath').mockImplementation((cmd) => {
+    const fixture = path.join(root, 'bin', cmd);
+    return fs.existsSync(fixture) ? fixture : null;
+  });
 });
 afterEach(() => {
   vi.unstubAllEnvs();

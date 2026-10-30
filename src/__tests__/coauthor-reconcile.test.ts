@@ -119,8 +119,8 @@ describe('co-author reconcile', () => {
     const cursor = await fse.readJson(cursorConfig());
     expect(cursor.attribution).toEqual({ attributeCommitsToAgent: false });
 
-    expect(changes.every((c) => c.action === 'updated' && c.enabled === false)).toBe(true);
-    expect(Object.values(managed).every((v) => v === false)).toBe(true);
+    expect(changes.every((c) => c.action === 'updated' && !c.enabled)).toBe(true);
+    expect(Object.values(managed).every((v) => !v)).toBe(true);
   });
 
   it('leaves Muse Code settings alone: Muse documents no co-author setting', async () => {

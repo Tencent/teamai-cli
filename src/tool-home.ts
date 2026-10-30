@@ -92,6 +92,10 @@ function moveOf(move: HomeMove, host: Host): EnvToolHome | null {
       const value = host.env[move.name]?.trim();
       return value ? { dir: absoluteOn(value, host), variable: move.name, kind: 'own' } : null;
     }
+    case 'qoder-home':
+      return qoderHome(host);
+    case 'qoder-cn-home':
+      return qoderCnHome(host);
     case 'xdg': {
       const dir = absoluteEnv(host, 'XDG_CONFIG_HOME');
       return dir === null ? null : { dir: host.path.join(dir, move.child), variable: 'XDG_CONFIG_HOME', kind: 'xdg' };
@@ -107,6 +111,22 @@ function moveOf(move: HomeMove, host: Host): EnvToolHome | null {
       return unhandled;
     }
   }
+}
+
+/** Qoder gives QODER_CONFIG_DIR precedence; QODER_CLI_HOME holds its `.qoder` store otherwise. */
+function qoderHome(host: Host): EnvToolHome | null {
+  const config = host.env.QODER_CONFIG_DIR?.trim();
+  if (config) return { dir: absoluteOn(config, host), variable: 'QODER_CONFIG_DIR', kind: 'own' };
+  const cliHome = host.env.QODER_CLI_HOME?.trim();
+  return cliHome ? { dir: host.path.join(absoluteOn(cliHome, host), '.qoder'), variable: 'QODER_CLI_HOME', kind: 'own' } : null;
+}
+
+/** Qoder CN gives QODERCN_CONFIG_DIR precedence; QODERCN_CLI_HOME holds its `.qoder-cn` store otherwise. */
+function qoderCnHome(host: Host): EnvToolHome | null {
+  const config = host.env.QODERCN_CONFIG_DIR?.trim();
+  if (config) return { dir: absoluteOn(config, host), variable: 'QODERCN_CONFIG_DIR', kind: 'own' };
+  const cliHome = host.env.QODERCN_CLI_HOME?.trim();
+  return cliHome ? { dir: host.path.join(absoluteOn(cliHome, host), '.qoder-cn'), variable: 'QODERCN_CLI_HOME', kind: 'own' } : null;
 }
 
 function openclawState(host: Host): EnvToolHome | null {

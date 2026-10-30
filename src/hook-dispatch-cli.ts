@@ -442,7 +442,13 @@ export async function hookDispatchCli(
     const raw = stdinFile ? readStdinFile(stdinFile)
       : fromGit ? JSON.stringify({ cwd: process.cwd(), git_args: options.hookArgs ?? [] })
         : await readStdin();
-    const stdin = parseStdin(raw, event);
+    const parsed = parseStdin(raw, event);
+    // Antigravity CLI speaks its own hook payload; the detached child gets it already translated.
+    const agy = tool === 'agy' && !stdinFile ? await import('./agy-hook-io.js') : undefined;
+    const stdin = agy ? agy.agyHookPayload(event, parsed) : parsed;
+    if (stdin === null) return;
+    // What the team's hooks read, before the dispatcher adds its own keys.
+    const teamPayload = agy ? JSON.stringify(stdin) : raw;
 
     // Dynamic imports and handlers may resolve paths through process.cwd().
     // A removed worktree has no usable process cwd. Preserve a supplied payload
@@ -556,7 +562,15 @@ export async function hookDispatchCli(
       settling = spawnBackground(event, tool, matcher, JSON.stringify(stdin), cwd);
     }
 
-    const output = await runDispatch(dispatcher, event, matcher, stdin, tool, 'foreground');
+    let output = await runDispatch(dispatcher, event, matcher, stdin, tool, 'foreground');
+
+    // agy's one hooks.json entry runs the team's hooks too, through the bridge, and agy reads its own reply shape.
+    if (agy) {
+      const { runBridgedTeamHooks } = await import('./bridged-team-hooks.js');
+      const team = await runBridgedTeamHooks(tool, String(stdin.hook_event_name), teamPayload);
+      if (team.stderr) process.stderr.write(team.stderr);
+      output = agy.agyHookReply(event, { builtin: output ?? '', team: team.stdout });
+    }
 
     if (output) {
       await new Promise<void>((resolve) => process.stdout.write(output, () => resolve()));

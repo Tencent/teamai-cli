@@ -18,7 +18,7 @@ const LABELS: Readonly<Record<string, ToolId>> = {
   'Claude Code': 'claude', Codex: 'codex', Cursor: 'cursor', CodeBuddy: 'codebuddy', WorkBuddy: 'workbuddy',
   'GitHub Copilot CLI': 'copilot', OpenCode: 'opencode', 'Pi Coding Agent': 'pi', 'Oh My Pi': 'omp', OpenClaw: 'openclaw',
   Hermes: 'hermes', 'DeepSeek Harness': 'dsh', Qoder: 'qoder', 'Qoder CN': 'qoder-cn', Kiro: 'kiro', Trae: 'trae',
-  'Trae CN': 'trae-cn', ZCode: 'zcode', JoyCode: 'joycode', 'Muse Code': 'muse',
+  'Trae CN': 'trae-cn', ZCode: 'zcode', JoyCode: 'joycode', 'Muse Code': 'muse', 'Antigravity': 'agy',
 };
 /** Internal builds the README leaves out. */
 const UNLISTED: ReadonlySet<ToolId> = new Set(['claude-internal', 'codex-internal', 'tclaude', 'tcodex']);

@@ -195,14 +195,19 @@ describe('doctor — MCP servers delivered on disk', () => {
     expect(check.fix).toContain("not the team's definition: docs");
   });
 
-  it('reports a tool config that cannot be parsed', async () => {
-    await fse.writeFile(path.join(homeDir, '.claude.json'), '{ not json');
+  it.each([
+    ['claude', '.claude.json', '{ not json', 'JSON'],
+    ['codex', '.codex/config.toml', 'model = [', 'TOML'],
+  ])('reports a %s config that cannot be parsed, with its repair format', async (tool, relativePath, broken, format) => {
+    teamConfig.toolPaths!.codex = { skills: '.codex/skills', mcp: '.codex/config.toml' };
+    const file = path.join(homeDir, relativePath);
+    await fse.outputFile(file, broken);
 
-    const check = await mcpCheck();
+    const check = await mcpCheck(tool);
     expect(await check.check()).toBe(false);
     expect(check.fix).toContain('could not be parsed');
-    expect(check.fix!.split(path.join(homeDir, '.claude.json')).length - 1).toBe(1);
-    expect(check.fix).toContain('Fix the JSON, or move the file aside, then run `teamai pull`');
+    expect(check.fix!.split(file).length - 1).toBe(1);
+    expect(check.fix).toContain(`Fix the ${format}, or move the file aside, then run \`teamai pull\``);
     expect(check.fix).not.toContain('env/env.yaml');
   });
 

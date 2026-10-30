@@ -12,7 +12,11 @@ describe('session platform facts (#1140)', () => {
     for (const [platform, facts] of Object.entries(SESSION_PLATFORM_FACTS)) {
       expect(AgentSession.platformForTool(AgentSession.toolForPlatform(platform))).toBe(platform);
       expect(AgentSession.platformForTool(platform)).toBe(platform);
-      expect(Boolean(noAdapter(platform, 'write', 'win32'))).toBe(facts.sqliteRegistrationOnWindows);
+      const readOnly = 'readOnly' in facts && facts.readOnly;
+      expect(Boolean(noAdapter(platform, 'write', 'win32'))).toBe(facts.sqliteRegistrationOnWindows || readOnly);
+      // A platform TeamAI only reads is refused as a target on every OS, and still read.
+      expect(Boolean(noAdapter(platform, 'write', 'darwin'))).toBe(readOnly);
+      expect(noAdapter(platform, 'read', 'darwin')).toBeUndefined();
     }
     expect(AgentSession.platformForTool('unsupported')).toBeUndefined();
   });
@@ -45,7 +49,9 @@ describe('session platform facts (#1140)', () => {
   });
 
   it('reads no session platform for a tool whose sessions are none or unknown', () => {
-    for (const tool of ['copilot', 'muse', 'pi', 'kiro', 'qoder', 'openclaw', 'joycode']) expect(AgentSession.platformForTool(tool)).toBeUndefined();
+    for (const tool of ['copilot', 'muse', 'pi', 'kiro', 'openclaw', 'joycode']) expect(AgentSession.platformForTool(tool)).toBeUndefined();
+    expect(AgentSession.platformForTool('qoder')).toBe('qoder');
+    expect(AgentSession.platformForTool('qoder-cn')).toBe('qoder-cn');
   });
 
   it('prints the resume command each CLI accepts', () => {
@@ -53,6 +59,8 @@ describe('session platform facts (#1140)', () => {
     expect(resumeCommand('codex', 'id1')).toBe('codex resume id1');
     expect(resumeCommand('opencode', 'ses_1')).toBe('opencode --session ses_1');
     expect(resumeCommand('codebuddy', 'id1')).toBe('codebuddy --resume id1');
+    expect(resumeCommand('qoder', 'id1')).toBe('qodercli --resume id1');
+    expect(resumeCommand('qoder-cn', 'id1')).toBe('qoderclicn --resume id1');
   });
 
   it('rejects inherited object keys as platform names', () => {

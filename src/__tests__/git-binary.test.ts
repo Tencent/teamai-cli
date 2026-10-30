@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -10,6 +10,7 @@ describe('gitBinary', () => {
   const dirs: string[] = [];
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
   });
 
@@ -122,5 +123,34 @@ describe('gitBinary', () => {
     const repo = tempDir();
     await createGit(repo).init();
     expect(fs.realpathSync((await createGit(repo).revparse(['--show-toplevel'])).trim())).toBe(repo);
+  });
+
+  it('rejects configuration includes passed through git arguments', async () => {
+    const repo = tempDir();
+    await createGit(repo).init();
+    const includedConfig = path.join(tempDir(), 'included.config');
+    fs.writeFileSync(includedConfig, '[core]\n  filemode = false\n');
+
+    await expect(createGit(repo).raw(['-c', `include.path=${includedConfig}`, 'status', '--porcelain']))
+      .rejects.toThrow(/unsafe|include/i);
+  });
+
+  it('preserves the caller author identity for git commands', async () => {
+    const repo = tempDir();
+    vi.stubEnv('GIT_AUTHOR_NAME', 'TeamAI security fixture');
+    vi.stubEnv('GIT_AUTHOR_EMAIL', 'security-fixture@teamai.test');
+    await createGit(repo).init();
+
+    expect(await createGit(repo).raw(['var', 'GIT_AUTHOR_IDENT']))
+      .toMatch(/^TeamAI security fixture <security-fixture@teamai\.test>/);
+  });
+
+  posixIt('preserves the no-prompt setting in the git child', async () => {
+    const bin = gitDir();
+    fs.writeFileSync(path.join(bin, 'git'), '#!/bin/sh\nprintf "%s" "${GIT_TERMINAL_PROMPT-unset}"\n');
+    vi.stubEnv('PATH', onPath(bin, process.env.PATH ?? ''));
+    vi.stubEnv('GIT_TERMINAL_PROMPT', '0');
+
+    expect(await createGit(tempDir()).raw(['status'])).toBe('0');
   });
 });

@@ -270,13 +270,48 @@ profiles:
 | --- | --- | --- |
 | Claude Code | `anthropic` | `~/.claude/settings.json` |
 | Codex | `openai-responses` | `~/.codex/config.toml` |
-| OpenCode | 任意 | `opencode.json` |
+| OpenCode | 除 `gemini` 外任意 | `opencode.json` |
 | CodeBuddy / WorkBuddy | `openai-chat-completions` | `models.json` (CodeBuddy 跟随记录的主目录) |
-| Pi | 任意 | `~/.pi/agent/models.json` |
-| OMP | 任意 | `~/.omp/agent/models.yml`，或 `OMP_PROFILE`（或 `PI_PROFILE`）和 `PI_CONFIG_DIR` 指定的 agent 目录 |
+| Pi | 除 `gemini` 外任意 | `~/.pi/agent/models.json` |
+| OMP | 除 `gemini` 外任意 | `~/.omp/agent/models.yml`，或 `OMP_PROFILE`（或 `PI_PROFILE`）和 `PI_CONFIG_DIR` 指定的 agent 目录 |
 | Muse Code | `openai-responses` | `<Muse 主目录>/settings.json`（已记录目录，否则使用 `$XDG_CONFIG_HOME/muse` 或 `~/.config/muse`），密钥以 `META_API_KEY` 写入 `~/.teamai/models/env.sh`，由 shell 配置文件加载 |
+| Antigravity CLI | `gemini` | 在 `~/.gemini/antigravity-cli/settings.json` 写 `modelProvider: "gemini"`，并在 `~/.teamai/models/agy-env.sh` 里定义一个 `agy` shell 函数（由 shell 配置文件加载），只为 agy 设置 `GEMINI_API_KEY` 和 `GOOGLE_GEMINI_BASE_URL` |
 
-上面的例子没有 `openai-responses`，所以不会改 Codex 和 Muse Code。
+上面的例子没有 `openai-responses`，所以不会改 Codex 和 Muse Code；也没有 `gemini`，所以也不会改 Antigravity CLI。
+
+提供 Gemini API 的网关可以接到 Antigravity CLI：
+
+```yaml
+profiles:
+  - id: gemini-gw
+    name: Team Gemini gateway
+    base_url: https://llm-gw.example.com
+    api_key: ${API_KEY}
+    model_groups:
+      - protocols: [gemini]
+        models:
+          - gemini-3.8-flash
+```
+
+执行 `teamai models switch gemini-gw --agent agy` 后，agy 会带着密钥发送 `POST https://llm-gw.example.com/v1beta/models/gemini-3.8-flash:streamGenerateContent`。模型仍是在 agy 里选的那个（`/model`）：agy 发送的是它自己目录里的 Gemini 模型 id，所以网关需要提供这些模型。
+
+Gemini CLI 也读这两个变量，所以 teamai 从不 export 它们，而是定义一个只为 agy 设置它们的函数；你自己 export 的密钥也不会替换它：
+
+```bash
+# ~/.teamai/models/agy-env.sh
+unalias agy 2>/dev/null || true
+agy() { GEMINI_API_KEY="${API_KEY}" GOOGLE_GEMINI_BASE_URL='https://llm-gw.example.com' command agy "$@"; }
+```
+
+```bash
+export GEMINI_API_KEY=my-own-key   # 写在 ~/.zshrc 里，给 Gemini CLI 用
+agy                                # 仍然用团队密钥和网关
+gemini                             # 仍然用 my-own-key 和 Google
+```
+
+teamai 自己运行的 agy（AI 调用、本地工作流步骤、评分 judge）从这个文件读取密钥和网关。
+
+脚本不会继承 shell 函数，所以 `bash deploy.sh` 里调用的 `agy` 不走网关。先在脚本里 source 这个文件：`. ~/.teamai/models/agy-env.sh`。
 
 ### 使用团队配置
 

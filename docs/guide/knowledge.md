@@ -10,26 +10,26 @@ Team Context is learnings, the codebase graph, and teamwiki. `teamai recall` sea
 
 ### Contributing knowledge
 
-When you correct the AI, deny a tool call, or the AI retries a failing command, the session ends with a reminder that offers teamai's [`session-close`](workflow.md#session-close) workflow:
+When you correct the AI, deny a tool call, or the AI retries a failing command, the session ends with a reminder that offers teamai's [`teamai-share-learnings`](workflow.md#teamai-share-learnings-and-teamai-share-session) workflow:
 
 ```text
 [teamai] This session may contain a problem worth documenting: you interrupted the AI twice, the AI retried failing tools 6 times.
 
 Task: The payments pod restarts in a loop after deploy; find out why
 
-Offer the person the session-close workflow: run `teamai workflow start --describe session-close --driver skill` and start it with the inputs it proposes, once the person confirms them.
+Offer the person the teamai-share-learnings workflow: run `teamai workflow start --describe teamai-share-learnings --driver skill` and start it with the inputs it proposes, once the person confirms them.
 ```
 
-The agent shows you what it proposes: share a learning, publish the transcript, score the session. You confirm or change it, and then it runs. What happens to each offer:
+The agent shows you what it proposes: share what the session taught, one learning or several, publish the transcript, score the session. You confirm or change it, and then it runs. What happens to each offer:
 
 | Offer | Who decides |
 |---|---|
-| The learning | You, while you work it with the agent: say what to share and under which namespace, or that nothing is worth sharing |
-| `Share "<title>" with the team?` | The agent under the recommended start, or you when you pick "ask me at optional approvals" |
+| The learnings | You, while you work them with the agent: say what to share, each under which namespace, or that nothing is worth sharing |
+| `Share these 2 learnings with the team? [...]` | The agent under the recommended start, or you when you pick "ask me at optional approvals" |
 | `Publish this session, scrubbed, to the team?` | Only you, in your own terminal or `teamai dashboard` |
 | Scorers | Nobody asks again: they judge the scorers you confirmed at the start |
 
-Each session is offered this at most once. The reminder keeps its old text, "Consider running `/teamai share what this session taught me` … (or run `teamai skill get share`)", where `session-close` cannot run: in a session teamai launched (a workflow step or a judge), in a workflow worktree, in an unattended session, while the session drives a workflow run that is not done, and when the team's `workflows/session-close.yaml` sets `invoke: deny`.
+Each session is offered this at most once. The reminder keeps its old text, "Consider running `/teamai share what this session taught me` … (or run `teamai skill get share`)", where `teamai-share-learnings` cannot run: in a session teamai launched (a workflow step or a judge), in a workflow worktree, in an unattended session, while the session drives a workflow run that is not done, and when the team's `workflows/teamai-share-learnings.yaml` sets `invoke: deny`. While recall is off there is no reminder, and pull writes no `teamai-share-learnings` skill; `/teamai-share-session` still publishes and scores the session.
 
 Or hand in a note yourself:
 
@@ -94,7 +94,7 @@ teamai recall disable
 teamai recall status
 ```
 
-One machine overrides this with `recallEnabled` in `~/.teamai/config.yaml`. `TEAMAI_RECALL_DISABLED=1` forces it off, and `teamai recall status` names it when it does. While it is off, pull does not install recall. `teamai recall` still searches. The variable changes files that every shell in the scope shares: a pull from a shell with it set removes the recall files and the CLAUDE.md recall block for the whole scope, and a pull from a shell without it puts them back.
+One machine overrides this with `recallEnabled` in `~/.teamai/config.yaml`. `TEAMAI_RECALL_DISABLED=1` forces it off, and `teamai recall status` names it when it does. While it is off, pull does not install recall and removes the recall agent and rule an earlier pull installed. `teamai recall` still searches. The variable changes files that every shell in the scope shares: a pull from a shell with it set removes the recall files and the CLAUDE.md recall block for the whole scope, and a pull from a shell without it puts them back.
 
 Turning recall off does not silence the SessionStart hint for recently merged MRs. That hint points to `teamai import --from-mr`, which can capture and publish a learning before the team enables recall. It has its own switch, so a team can turn it off without touching `contributeHint`:
 
@@ -198,7 +198,7 @@ $ teamai import --dir ./orders-api
 ...
 ✔ Pushed to team knowledge repo (https://git.example.com/acme/team-ai.git)
 ✔ Local directory orders-api import complete
-⚠ Deep enrich incomplete: orders-api. Run `teamai import --dir ./orders-api` to retry.
+⚠ Deep enrich incomplete: orders-api. Run `teamai codebase --deep-enrich --project orders-api` to retry.
 $ echo $?
 1
 ```
@@ -206,7 +206,7 @@ $ echo $?
 A `--from-repo-list` or `--from-org` batch prints one line for each repo that did not finish:
 
 ```text
-⚠ Deep enrich incomplete: github__acme__billing. Run `teamai import --from-repo https://github.com/acme/billing` to retry.
+⚠ Deep enrich incomplete: github__acme__billing. Run `teamai codebase --deep-enrich --project github__acme__billing` to retry.
 ```
 
 With `--output`, the retry is `teamai codebase --deep-enrich` on that directory:

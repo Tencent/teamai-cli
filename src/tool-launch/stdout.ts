@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import type { LaunchAdapterId } from './adapters.js';
 
 export interface TokenUsage {
@@ -129,8 +130,52 @@ export function readToolMetadata(stdout: string): ToolReport | null {
   return found;
 }
 
+const AgyInit = z.object({ event: z.literal('init'), init: z.object({ model: z.string() }) });
+const AgyResult = z.object({
+  event: z.literal('result'),
+  result: z.object({
+    conversation_id: z.string().optional(),
+    status: z.string(),
+    response: z.string().optional(),
+    error: z.string().optional(),
+    usage: z.object({ input_tokens: z.number(), output_tokens: z.number(), cache_read_tokens: z.number() }).partial().optional(),
+  }),
+});
+
+/** The run agy's stream-json output reports: the model its `init` event names, and the last `result` event. */
+export function agyRun(stdout: string): { model?: string; result?: z.infer<typeof AgyResult>['result']; tokens?: TokenUsage } {
+  const events = jsonRecords(stdout);
+  const model = events.flatMap((event) => { const init = AgyInit.safeParse(event); return init.success ? [init.data.init.model] : []; }).at(0);
+  const result = events.flatMap((event) => { const parsed = AgyResult.safeParse(event); return parsed.success ? [parsed.data.result] : []; }).at(-1);
+  const usage = result?.usage;
+  const tokens: TokenUsage = {
+    ...(usage?.input_tokens !== undefined ? { input: usage.input_tokens } : {}),
+    ...(usage?.output_tokens !== undefined ? { output: usage.output_tokens } : {}),
+    ...(usage?.cache_read_tokens !== undefined ? { cachedInput: usage.cache_read_tokens } : {}),
+  };
+  return { ...(model ? { model } : {}), ...(result ? { result } : {}), ...(Object.keys(tokens).length > 0 ? { tokens } : {}) };
+}
+
+function agyStdout(stdout: string): ToolReport | null {
+  const { model, result, tokens } = agyRun(stdout);
+  if (!result) return null;
+  let output: unknown;
+  try {
+    output = result.response === undefined ? undefined : JSON.parse(result.response) as unknown;
+  } catch {
+    output = undefined;
+  }
+  return {
+    ...(output !== undefined ? { output } : {}),
+    ...(model !== undefined ? { model } : {}),
+    ...(result.conversation_id ? { session: result.conversation_id } : {}),
+    ...(tokens ? { tokens } : {}),
+  };
+}
+
 /** What stdout of a tool on this adapter reports. CodeBuddy prints Claude's result record. */
 export function toolStdout(adapter: LaunchAdapterId, stdout: string): ToolReport | null {
   if (adapter === 'claude' || adapter === 'codebuddy') return claudeStdout(stdout);
+  if (adapter === 'agy') return agyStdout(stdout);
   return readToolMetadata(stdout);
 }

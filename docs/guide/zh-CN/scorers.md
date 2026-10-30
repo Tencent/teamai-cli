@@ -286,7 +286,7 @@ daily_limit: 10                                  # 按数据目录计数：在�
 | 策略 | `attended` | `unattended` |
 |---|---|---|
 | `off` | 什么都不做。默认值。 | 什么都不做。 |
-| `ask` | 摩擦提醒提供 [`session-close`](workflow.md#session-close) 时，它提议抽样选中该会话的评分器，成员确认后由它们评判。 | 等同于 `off`，因为没有人回答。 |
+| `ask` | 摩擦提醒提供 [`teamai-share-learnings`](workflow.md#teamai-share-learnings-和-teamai-share-session) 时，它提议抽样选中该会话的评分器，成员确认后由它们评判。 | 等同于 `off`，因为没有人回答。 |
 | `auto` | 会话六小时没有任何活动后，由后台评审评判。 | 在任务结束前运行 `teamai score --drain` 时评判。默认值。 |
 
 每种模式单独解析，取下面第一个设置了它的位置：成员 `config.yaml` 中的 `scoring.sessions`、生效命名空间的 `scoring.yaml`、根目录的 `scorers/scoring.yaml`、默认值。两个生效命名空间不一致时，最严格的策略生效（`off`，其次 `ask`，最后 `auto`），`daily_limit` 也取最低值。只写一种模式的映射（例如 `{ attended: ask }`）会把另一种模式留给下一级：
@@ -415,6 +415,7 @@ Judge tools here: claude 2.1.308 (Claude Code) is verified, codebuddy 2.3.0 is b
 | CodeBuddy、WorkBuddy | `best-effort` | `full` | 只读工具，不加载 MCP，不保存会话。无论 `--tools` 如何设置，它都会列出约 70 个工具。未登录时以 `judge_tool_unavailable` 失败。 |
 | Cursor CLI | `best-effort` | `full` | 在 Cursor 沙箱中以 ask 模式运行。 |
 | Pi Coding Agent | `best-effort` | `full` | 只开放 read、grep、find 和 ls 工具；不加载上下文文件、扩展和技能；不保存会话。 |
+| Antigravity CLI | `best-effort` | `read` | 在 agy 沙箱中以 plan 模式运行：可以读文件，不运行 shell，不在证据目录中写入。评判对话会留在 agy 的历史记录中。 |
 | 其他版本 | `best-effort` | 同上 | 相同配置，未经验证。 |
 
 `best-effort` 工具不能评判要求 `verified` 的评分器，[你自己的评审者](#用自己的评审者)低于所需级别时也不能。提示通过标准输入或文件传入。保留工具登录和受支持的模型切换设置。本机没有评审工具能运行评分器的模型时，评审任务保持打开，留给其他 driver，不改变工作流结果。由哪个工具评审见[选择评审者的模型](#选择评审者的模型)。

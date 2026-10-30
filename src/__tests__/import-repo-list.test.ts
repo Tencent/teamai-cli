@@ -161,8 +161,8 @@ describe('importFromRepoList', () => {
 
         expect(process.exitCode).toBe(1);
         const output = lines.join('\n');
-        expect(output).toContain('Deep enrich incomplete: github__org__repo-1. Run `teamai import --from-repo https://github.com/org/repo-1 --max-files 500` to retry.');
-        expect(output).toContain('Deep enrich incomplete: github__org__repo-2. Run `teamai import --from-repo https://github.com/org/repo-2 --ssh --domain billing --max-files 500` to retry.');
+        expect(output).toContain('Deep enrich incomplete: github__org__repo-1. Run `teamai codebase --deep-enrich --project github__org__repo-1` to retry.');
+        expect(output).toContain('Deep enrich incomplete: github__org__repo-2. Run `teamai codebase --deep-enrich --project github__org__repo-2` to retry.');
     });
 
     it('加载 yaml → 调度 → 汇总数字正确（2 个成功）', async () => {

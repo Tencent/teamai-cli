@@ -127,7 +127,10 @@ path (measured here from a 77-character one).
   `team-wiki-codebase` and `teamai-share-learnings` classify as `[builtin]` and
   are skipped by the push scan by name alone (`isCliOwnedSkillName`), because a
   tree with that name is one a pre-stub release wrote until the first pull has
-  pruned it. That rule retires with `LEGACY_BUILTIN_SKILL_NAMES`.
+  pruned it. That rule retires with `LEGACY_BUILTIN_SKILL_NAMES`. A tree whose
+  SKILL.md carries the generated-workflow marker classifies as `[workflow]`
+  first: pull now writes the default workflow `teamai-share-learnings` under
+  that name.
 - **`skill get` has no `--json`.** #678 sketched one; the content is markdown for
   an agent to read, and the machine-readable half is `skill list --json`. An
   unknown flag on `skill get`, `--json` included, is warned about on stderr and

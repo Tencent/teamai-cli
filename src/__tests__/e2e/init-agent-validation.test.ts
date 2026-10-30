@@ -151,13 +151,13 @@ describe('init --agent validates ids against built-in and team agents', () => {
   });
 
   it('accepts a team-declared custom tool and creates its user root', () => {
-    const fixture = newTeamRepo('custom-agent', { agy: { skills: '.agy/skills' } });
+    const fixture = newTeamRepo('custom-agent', { 'my-ide': { skills: '.my-ide/skills' } });
 
-    const result = initTeam(fixture, 'agy');
+    const result = initTeam(fixture, 'my-ide');
 
     expect(result.code, result.output).toBe(0);
-    expect((YAML.parse(fs.readFileSync(configPath(fixture.home), 'utf8')) as { enabledAgents?: string[] }).enabledAgents).toEqual(['agy']);
-    expect(fs.existsSync(path.join(fixture.home, '.agy', 'skills'))).toBe(true);
+    expect((YAML.parse(fs.readFileSync(configPath(fixture.home), 'utf8')) as { enabledAgents?: string[] }).enabledAgents).toEqual(['my-ide']);
+    expect(fs.existsSync(path.join(fixture.home, '.my-ide', 'skills'))).toBe(true);
   });
 
   it('accepts every built-in tool id and every KNOWN_AGENTS id', () => {
@@ -174,13 +174,13 @@ describe('init --agent validates ids against built-in and team agents', () => {
     const { home, env } = newHome('http-custom-agent');
 
     const result = teamai([
-      'init', '--http', 'http://127.0.0.1:9/team', '--agent', 'agy', '--scope', 'user', '--force',
+      'init', '--http', 'http://127.0.0.1:9/team', '--agent', 'my-ide', '--scope', 'user', '--force',
     ], home, env);
 
     expect(result.code, result.output).toBe(0);
-    expect(result.output).toContain('agy');
+    expect(result.output).toContain('my-ide');
     expect(result.output).toContain('team config is unavailable');
-    expect((YAML.parse(fs.readFileSync(configPath(home), 'utf8')) as { enabledAgents?: string[] }).enabledAgents).toEqual(['agy']);
+    expect((YAML.parse(fs.readFileSync(configPath(home), 'utf8')) as { enabledAgents?: string[] }).enabledAgents).toEqual(['my-ide']);
   });
 
   it('rejects an unknown id in single-repo git init before saving config', () => {

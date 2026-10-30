@@ -10,26 +10,26 @@
 
 ### 贡献知识
 
-会话里纠正过 AI、拒绝过工具调用，或 AI 反复重试失败的命令时，结束时会有一条提醒，提供 teamai 的 [`session-close`](workflow.md#session-close) 工作流：
+会话里纠正过 AI、拒绝过工具调用，或 AI 反复重试失败的命令时，结束时会有一条提醒，提供 teamai 的 [`teamai-share-learnings`](workflow.md#teamai-share-learnings-和-teamai-share-session) 工作流：
 
 ```text
 [teamai] This session may contain a problem worth documenting: you interrupted the AI twice, the AI retried failing tools 6 times.
 
 Task: The payments pod restarts in a loop after deploy; find out why
 
-Offer the person the session-close workflow: run `teamai workflow start --describe session-close --driver skill` and start it with the inputs it proposes, once the person confirms them.
+Offer the person the teamai-share-learnings workflow: run `teamai workflow start --describe teamai-share-learnings --driver skill` and start it with the inputs it proposes, once the person confirms them.
 ```
 
-agent 会给你看它的提议：分享一条经验、发布转录、为会话评分。你确认或修改后它才运行。每项提议的去向：
+agent 会给你看它的提议：分享会话学到的东西（一条或多条经验）、发布转录、为会话评分。你确认或修改后它才运行。每项提议的去向：
 
 | 提议 | 由谁决定 |
 |---|---|
-| 经验 | 你，和 agent 一起完成时：说明要分享什么、放在哪个 namespace，或者没什么值得分享 |
-| `Share "<title>" with the team?` | 推荐启动下由 agent 决定；选“ask me at optional approvals”时由你决定 |
+| 经验 | 你，和 agent 一起完成时：说明要分享什么、每条放在哪个 namespace，或者没什么值得分享 |
+| `Share these 2 learnings with the team? [...]` | 推荐启动下由 agent 决定；选“ask me at optional approvals”时由你决定 |
 | `Publish this session, scrubbed, to the team?` | 只有你，在自己的终端或 `teamai dashboard` 中 |
 | 评分器 | 不再询问：按启动时你确认的评分器评审 |
 
-每个会话最多提供一次。在 `session-close` 无法运行的地方，提醒保持原来的文字“Consider running `/teamai share what this session taught me` …（or run `teamai skill get share`）”：teamai 启动的会话（工作流步骤或评审）、工作流 worktree、无人值守的会话、会话正在驱动一个未完成的工作流运行时，以及团队的 `workflows/session-close.yaml` 设置了 `invoke: deny` 时。
+每个会话最多提供一次。在 `teamai-share-learnings` 无法运行的地方，提醒保持原来的文字“Consider running `/teamai share what this session taught me` …（or run `teamai skill get share`）”：teamai 启动的会话（工作流步骤或评审）、工作流 worktree、无人值守的会话、会话正在驱动一个未完成的工作流运行时，以及团队的 `workflows/teamai-share-learnings.yaml` 设置了 `invoke: deny` 时。recall 关闭时没有提醒，pull 也不写 `teamai-share-learnings` 的 skill；`/teamai-share-session` 仍可发布会话并为它评分。
 
 也可以直接交一份笔记：
 
@@ -94,7 +94,7 @@ teamai recall disable
 teamai recall status
 ```
 
-本机覆盖写在 `~/.teamai/config.yaml` 的 `recallEnabled`。`TEAMAI_RECALL_DISABLED=1` 强制关掉，此时 `teamai recall status` 会指出是这个变量关掉的。关掉之后 pull 不再安装 recall；直接运行 `teamai recall` 仍然可以搜。这个变量改的是同一作用域内所有 shell 共用的文件：在设了它的 shell 里 pull，会把整个作用域的 recall 文件和 CLAUDE.md 里的 recall 段删掉；在没设它的 shell 里再 pull，又会装回来。
+本机覆盖写在 `~/.teamai/config.yaml` 的 `recallEnabled`。`TEAMAI_RECALL_DISABLED=1` 强制关掉，此时 `teamai recall status` 会指出是这个变量关掉的。关掉之后 pull 不再安装 recall，并会删掉之前 pull 装下的 recall agent 和规则；直接运行 `teamai recall` 仍然可以搜。这个变量改的是同一作用域内所有 shell 共用的文件：在设了它的 shell 里 pull，会把整个作用域的 recall 文件和 CLAUDE.md 里的 recall 段删掉；在没设它的 shell 里再 pull，又会装回来。
 
 关闭 recall 不会隐藏 SessionStart 的近期已合入 MR 提示。这条提示指向 `teamai import --from-mr`，团队在开启 recall 前也可以先提炼并发布 learning。它有自己的开关，关闭它不会影响 `contributeHint`：
 
@@ -198,7 +198,7 @@ $ teamai import --dir ./orders-api
 ...
 ✔ Pushed to team knowledge repo (https://git.example.com/acme/team-ai.git)
 ✔ Local directory orders-api import complete
-⚠ Deep enrich incomplete: orders-api. Run `teamai import --dir ./orders-api` to retry.
+⚠ Deep enrich incomplete: orders-api. Run `teamai codebase --deep-enrich --project orders-api` to retry.
 $ echo $?
 1
 ```
@@ -206,7 +206,7 @@ $ echo $?
 `--from-repo-list` 或 `--from-org` 批量导入时，每个没完成的仓库各打印一行：
 
 ```text
-⚠ Deep enrich incomplete: github__acme__billing. Run `teamai import --from-repo https://github.com/acme/billing` to retry.
+⚠ Deep enrich incomplete: github__acme__billing. Run `teamai codebase --deep-enrich --project github__acme__billing` to retry.
 ```
 
 用了 `--output` 时，重试命令是对该目录执行 `teamai codebase --deep-enrich`：

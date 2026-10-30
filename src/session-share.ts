@@ -1,7 +1,8 @@
 /**
- * What teamai proposes to close one attended session with its default `session-close` workflow (#1388): whether to
- * publish the session, which scorers judge it, and who judges. The Stop hook's friction reminder records the offer it
- * made from these values, and `workflow start --describe` proposes them, each with why, as the workflow's inputs.
+ * What teamai proposes to share one attended session with its default workflows `teamai-share-learnings` and
+ * `teamai-share-session` (#1388): whether to publish the session, which scorers judge it, and who judges. The Stop
+ * hook's friction reminder offers `teamai-share-learnings` and records the offer it made from these values, and
+ * `workflow start --describe` proposes them, each with why, as the inputs of either workflow.
  */
 import { loadLocalConfigForScope, loadTeamConfig } from './config.js';
 import type { SessionRun } from './launch-context.js';
@@ -11,14 +12,18 @@ import { scopeScoring } from './scorers/settings.js';
 import { AgentSession } from './session-flow/agent-session.js';
 import { SessionPolicy, type SessionPolicies } from './session-flow/session-policy.js';
 import { SessionWork, type SampledScorer } from './session-flow/session-work.js';
-import { getDataHome, type LocalConfig, type SessionCloseOffered } from './types.js';
+import { getDataHome, type LocalConfig, type SessionShareOffered } from './types.js';
 import { nestedStart } from './workflow/attempt-marker.js';
-import { resolveStart } from './workflow/cache.js';
+import { loadWorkflowTree, resolveStart } from './workflow/cache.js';
 import { projectPartitions } from './workflow/run-location.js';
 import type { OutputSchema } from './workflow/types.js';
 
-/** The name of teamai's default close-out workflow, and of a team file that replaces it. */
-const NAME = 'session-close';
+/** teamai's default that shares what a session taught, then the session: the one the friction reminder offers. */
+const SHARE_LEARNINGS = 'teamai-share-learnings';
+/** teamai's default that publishes and scores a session, which `teamai-share-learnings` runs as a step. */
+const SHARE_SESSION = 'teamai-share-session';
+/** The workflows whose inputs describe proposes, by name: the defaults, and a team file that replaces one. */
+const PROPOSED_FOR = new Set([SHARE_LEARNINGS, SHARE_SESSION]);
 
 /** A value teamai proposes for one input, and why it proposes that value. */
 interface Proposal<T> {
@@ -29,8 +34,8 @@ interface Proposal<T> {
 /** Who judges the session: teamai's own judge on this machine, or the session's agent. */
 type Judge = 'here' | 'driver';
 
-/** What teamai proposes for each input of the session-close input contract, for one session. */
-interface SessionCloseOffer {
+/** What teamai proposes for each input of the input contract the share workflows have, for one session. */
+interface SessionShareOffer {
   session: Proposal<string>;
   source: Proposal<string>;
   publish: Proposal<boolean>;
@@ -113,7 +118,7 @@ interface OfferOptions {
 }
 
 /**
- * What teamai proposes to close session `sessionId` of `tool` in this scope at `now`, with the judge left to compute:
+ * What teamai proposes to share session `sessionId` of `tool` in this scope at `now`, with the judge left to compute:
  * publishing while the attended publish policy is `ask`, the open scorers that sample it while the attended scoring
  * policy is `ask`, and teamai's own judge when one of `judgeTools` is installed here, else the session's agent. A tool
  * teamai reads no sessions from gets neither publishing nor scorers, since `session push` and `score` cannot read its
@@ -123,7 +128,7 @@ async function propose(
   config: LocalConfig,
   { tool, sessionId }: { tool: string; sessionId: string },
   { now = new Date().toISOString(), judgeTools = () => installedJudgeTools([]) }: OfferOptions,
-): Promise<Omit<SessionCloseOffer, 'judge'> & { judge: () => Proposal<Judge> }> {
+): Promise<Omit<SessionShareOffer, 'judge'> & { judge: () => Proposal<Judge> }> {
   let found: Proposal<Judge> | undefined;
   const judge = (): Proposal<Judge> => {
     if (found) return found;
@@ -134,7 +139,7 @@ async function propose(
     return found;
   };
   const platform = AgentSession.platformForTool(tool);
-  const session = { value: sessionId, why: 'The session to close: this one.' };
+  const session = { value: sessionId, why: 'The session to share: this one.' };
   if (platform === undefined) {
     return {
       session, source: { value: tool, why: 'This session\'s tool.' }, judge,
@@ -164,7 +169,7 @@ async function propose(
 }
 
 /** Every proposal for session `sessionId` of `tool`, as describe gives them. */
-async function offer(config: LocalConfig, session: { tool: string; sessionId: string }, options: OfferOptions = {}): Promise<SessionCloseOffer> {
+async function offer(config: LocalConfig, session: { tool: string; sessionId: string }, options: OfferOptions = {}): Promise<SessionShareOffer> {
   const proposed = await propose(config, session, options);
   return { ...proposed, judge: proposed.judge() };
 }
@@ -173,18 +178,21 @@ async function offer(config: LocalConfig, session: { tool: string; sessionId: st
  * What the friction reminder offers session `sessionId` of `tool`, whose Stop hook runs under `config` in `cwd`, in a
  * session of `run`: the `publish` and `scorers` describe proposes for it. Undefined, so the reminder stays today's, in
  * a session teamai launched, one that runs unattended, one in a workflow place, where no start is allowed, one that
- * drives a skill-driven run not done yet in this machine's data homes, its own session-close included, and where session-close resolves to no
- * definition or to one whose `invoke` is deny. The values are those of the scope a start would run in. It looks for
+ * drives a skill-driven run not done yet in this machine's data homes, its own share run included, and where teamai-share-learnings resolves to no
+ * definition, to one whose `invoke` is deny, or to one that cannot start, such as with a team teamai-share-session of
+ * other inputs. The values are those of the scope a start would run in. It looks for
  * judge tools only when a sampled scorer needs verified isolation.
  */
 async function reminderOffer(
   config: LocalConfig,
   { tool, sessionId, cwd, run }: { tool: string; sessionId: string; cwd: string; run: SessionRun },
   options: OfferOptions = {},
-): Promise<SessionCloseOffered | undefined> {
+): Promise<SessionShareOffered | undefined> {
   if (run.launchedBy !== undefined || run.runMode === 'unattended' || (await nestedStart(process.env, cwd)) !== undefined) return undefined;
-  const start = await resolveStart(config, NAME);
-  if ((start.workflow?.definition.invoke ?? 'deny') === 'deny') return undefined;
+  const start = await resolveStart(config, SHARE_LEARNINGS);
+  if (!start.workflow || (start.workflow.definition.invoke ?? 'deny') === 'deny') return undefined;
+  // A sub-workflow the team replaced with other inputs would fail the run after its learnings were shared.
+  if ('failed' in await loadWorkflowTree(start.config, start.workflow)) return undefined;
   // The skill driver imports this module for describe, so this one loads it only here.
   const { drivesUndoneRun } = await import('./workflow/drivers/skill/skill-driver.js');
   // A run lives in the data home of the scope it was started in, and a session drives it from any directory.
@@ -205,9 +213,9 @@ const CONTRACT = {
   publish: { type: 'boolean' },
   scorers: { type: 'array', items: { type: 'string' } },
   judge: { type: 'enum', values: ['here', 'driver'] },
-} as const satisfies Record<keyof SessionCloseOffer, OutputSchema>;
+} as const satisfies Record<keyof SessionShareOffer, OutputSchema>;
 
-function isContractInput(name: string): name is keyof SessionCloseOffer {
+function isContractInput(name: string): name is keyof SessionShareOffer {
   return Object.hasOwn(CONTRACT, name);
 }
 
@@ -219,7 +227,7 @@ function sameType(left: OutputSchema, right: OutputSchema): boolean {
 const NO_SESSION_WHY = 'No agent session found: give the session and its tool.';
 
 /**
- * What describe proposes for the declared `inputs` of the workflow `name` resolves to, by input: for `session-close`,
+ * What describe proposes for the declared `inputs` of the workflow `name` resolves to, by input: for either share workflow,
  * each input the contract names with the same type, from {@link offer} for the calling session; with no agent session,
  * only why for `session` and `source`. Nothing for another workflow or another input.
  */
@@ -228,7 +236,7 @@ async function proposals(
   { name, inputs }: { name: string; inputs: Readonly<Record<string, OutputSchema>> },
   caller: { session: string | undefined; tool: string | undefined },
 ): Promise<Record<string, { value?: unknown; why: string }>> {
-  if (name !== NAME) return {};
+  if (!PROPOSED_FOR.has(name)) return {};
   const matching = Object.entries(inputs).flatMap(([input, type]) => (isContractInput(input) && sameType(type, CONTRACT[input]) ? [input] : []));
   if (matching.length === 0) return {};
   if (caller.session === undefined || caller.tool === undefined) {
@@ -238,4 +246,4 @@ async function proposals(
   return Object.fromEntries(matching.map((input) => [input, proposed[input]]));
 }
 
-export const SessionClose = { NAME, offer, reminderOffer, proposals } as const;
+export const SessionShare = { SHARE_LEARNINGS, offer, reminderOffer, proposals } as const;

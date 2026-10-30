@@ -119,6 +119,33 @@ describe('doctor — where a tool takes agents', () => {
     expect(await check?.check()).toBe(true);
   });
 
+  it('rejects an unread custom directory even when the last pull wrote exactly there', async () => {
+    await fse.ensureDir(path.join(homeDir, '.config', 'opencode'));
+    teamConfig.toolPaths.opencode!.agents = 'unread/agents';
+    const wrote = path.join(homeDir, 'unread', 'agents');
+    await fse.ensureDir(wrote);
+    await recordAgentsPlaces(homeDir, { opencode: [wrote] });
+
+    const readCheck = (await failing()).find((c) => c.name === 'opencode reads the agents teamai writes');
+    expect(readCheck?.fix).toContain(`opencode does not read ${wrote}`);
+    expect(readCheck?.fix).toContain('toolPaths.opencode.agents');
+    const placed = (await checks()).find((c) => c.name === 'opencode agents are where the last pull wrote them');
+    expect(await placed?.check()).toBe(true);
+  });
+
+  it('checks an unread destination before the first delivery record exists', async () => {
+    await fse.ensureDir(path.join(homeDir, '.config', 'opencode'));
+    teamConfig.toolPaths.opencode!.agents = 'unread/agents';
+    await fse.ensureDir(path.join(homeDir, 'unread', 'agents'));
+    expect((await failing()).some((c) => c.name === 'opencode reads the agents teamai writes')).toBe(true);
+  });
+
+  it('accepts the known loader directory without requiring a previous pull', async () => {
+    await fse.ensureDir(path.join(homeDir, '.config', 'opencode'));
+    const check = (await checks()).find((c) => c.name === 'opencode reads the agents teamai writes');
+    expect(await check?.check()).toBe(true);
+  });
+
   it('notes nothing left in OpenCode\'s default home once its agents follow the moved one (#1221)', async () => {
     const xdg = path.join(tempDir, 'xdg');
     await fse.ensureDir(path.join(xdg, 'opencode'));

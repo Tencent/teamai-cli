@@ -197,12 +197,6 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
         failIncompleteDeepEnrich({
           slug: repoSlugForUrl(fromRepo),
           output: opts.output,
-          importArgs: [
-            '--from-repo', fromRepo,
-            ...(opts.ssh ? ['--ssh'] : []),
-            ...(opts.domain ? ['--domain', opts.domain] : []),
-            ...(opts.maxFiles ? ['--max-files', opts.maxFiles] : []),
-          ],
         });
       }
       return;
@@ -512,7 +506,6 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
           failIncompleteDeepEnrich({
             slug,
             output: opts.output,
-            importArgs: ['--dir', opts.dir, ...(opts.maxFiles ? ['--max-files', opts.maxFiles] : [])],
           });
         }
       } finally {

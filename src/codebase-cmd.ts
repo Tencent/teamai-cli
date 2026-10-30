@@ -144,27 +144,52 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
             }
             return;
         }
-        const { deepEnrich } = await import('./deep-enrich.js');
-        const result = await deepEnrich({ project, evidenceDir, wikiRoot: teamwikiDir });
-        if (opts.json) {
-            console.log(JSON.stringify({
-                project,
-                evidenceDir,
-                complete: result.complete,
-                missingComponents: result.missingComponents,
-                missingArchitecture: result.missingArchitecture,
-            }, null, 2));
-        } else if (result.complete) {
-            console.log(`Deep enrichment complete: project=${project}`);
-        } else {
-            const parts: string[] = [];
-            if (result.missingComponents.length > 0) {
-                parts.push(`missing component docs: ${result.missingComponents.join(', ')}`);
+        // In the team repo, write under the import lock and publish deep-enrich
+        // output the way `teamai import` does, so the next `teamai push` does not
+        // find the clone dirty.
+        const team = target.team;
+        const { lockTeamwiki } = await import('./utils/teamwiki-root.js');
+        const releaseLock = team ? await lockTeamwiki(target) : async () => {};
+        try {
+            const { deepEnrich } = await import('./deep-enrich.js');
+            const result = await deepEnrich({ project, evidenceDir, wikiRoot: teamwikiDir });
+            if (opts.json) {
+                console.log(JSON.stringify({
+                    project,
+                    evidenceDir,
+                    complete: result.complete,
+                    missingComponents: result.missingComponents,
+                    missingArchitecture: result.missingArchitecture,
+                }, null, 2));
+            } else if (result.complete) {
+                console.log(`Deep enrichment complete: project=${project}`);
+            } else {
+                const parts: string[] = [];
+                if (result.missingComponents.length > 0) {
+                    parts.push(`missing component docs: ${result.missingComponents.join(', ')}`);
+                }
+                if (result.missingArchitecture) parts.push('missing architecture.md');
+                console.log(`Deep enrichment incomplete: project=${project}, ${parts.join(', ')}`);
             }
-            if (result.missingArchitecture) parts.push('missing architecture.md');
-            console.log(`Deep enrichment incomplete: project=${project}, ${parts.join(', ')}`);
+            if (!result.complete) process.exitCode = 1;
+            if (team) {
+                const repoPath = team.localConfig.repo.localPath;
+                const publishPaths = [
+                    path.relative(repoPath, evidenceDir),
+                    path.relative(repoPath, path.join(teamwikiDir, 'router.md')),
+                    path.relative(repoPath, path.join(teamwikiDir, 'index.md')),
+                ].filter((rel) => rel && !rel.startsWith('..'));
+                const { autoPushTeamRepo } = await import('./utils/git.js');
+                const pushed = await autoPushTeamRepo(
+                    repoPath,
+                    `[teamai] Deep enrich: ${project}`,
+                    publishPaths,
+                );
+                if (pushed && !opts.json) log.success(`Pushed to team knowledge repo (${team.localConfig.repo.remote})`);
+            }
+        } finally {
+            await releaseLock();
         }
-        if (!result.complete) process.exitCode = 1;
         return;
     }
 

@@ -12,10 +12,11 @@ import { resolveCliPath } from '../utils/cli-path.js';
 import { execCommand, probeBinary } from '../utils/exec.js';
 import { runTool } from '../tool-launch/run.js';
 import { toolStdout } from '../tool-launch/stdout.js';
-import { LAUNCH_ADAPTERS, type JudgeLaunch } from '../tool-launch/adapters.js';
+import { LAUNCH_ADAPTERS, type CallLaunch, type JudgeLaunch } from '../tool-launch/adapters.js';
 import { executableOf, JUDGE_TOOLS, launchAdapterIdOf, opencodeModelArgs, type JudgeTool } from '../tool-launch/tools.js';
 import { JudgeAnswerSchema, type JudgeAnswer } from './batch.js';
 import type { ScoreLabel, Isolation, JudgeAccess, JudgeUsage } from './label.js';
+import { agyGatewayEnv } from '../models/agy-gateway.js';
 
 const RecordSchema = z.record(z.unknown());
 const JUDGE_TIMEOUT_MS = 10 * 60_000;
@@ -96,6 +97,7 @@ function judgeEnv(tool: JudgeTool): NodeJS.ProcessEnv {
   return {
     ...Object.fromEntries([...COMMON_ENV, ...toolEnv].flatMap((key) => restored[key] === undefined ? [] : [[key, restored[key]]])),
     ...(variable !== undefined && moved !== null ? { [variable]: moved } : {}),
+    ...(tool === 'agy' ? agyGatewayEnv(restored) : {}),
     [LAUNCHED_BY_ENV]: 'scorer',
     [RUN_MODE_ENV]: resolveRunMode(process.env),
   };
@@ -216,8 +218,9 @@ async function answerFrom(tool: JudgeTool, stdout: string, tmp: string): Promise
       });
       return parseAnswer(texts.join('\n'));
     }
-    case 'pi': {
-      const reading = LAUNCH_ADAPTERS.pi.call.read({ stdout, lastMessage: undefined });
+    case 'pi':
+    case 'agy': {
+      const reading = LAUNCH_ADAPTERS[family].call.read({ stdout, lastMessage: undefined });
       return reading.ok ? parseAnswer(reading.text) : undefined;
     }
     default: {
@@ -303,6 +306,10 @@ export async function runLocalJudge(input: JudgeInput, { resolveTool = resolveCl
       args = ['-p', '--mode', 'json', '--tools', 'read,grep,find,ls', '--no-context-files', '--no-extensions', '--no-skills', '--no-session', ...model];
       prompt += await fs.readFile(path.join(evidence, 'prompt.md'), 'utf8');
       break;
+    case 'agy':
+      args = ['--input-format=stream-json', '--output-format=stream-json', '--print=', '--mode', 'plan', '--sandbox', ...model];
+      prompt += await fs.readFile(path.join(evidence, 'prompt.md'), 'utf8');
+      break;
     case 'opencode': {
       await fs.cp(evidence, cwd, { recursive: true, dereference: false });
       const entries = await fs.readdir(cwd, { recursive: true, withFileTypes: true });
@@ -318,7 +325,8 @@ export async function runLocalJudge(input: JudgeInput, { resolveTool = resolveCl
       throw new Error(`No judge profile for adapter ${String(unhandled)}`);
     }
     }
-    const result = await runTool({ executable, args, cwd, env, stdin: prompt, timeoutMs: JUDGE_TIMEOUT_MS, detached: true, group: input.group });
+    const { stdinOf }: CallLaunch = LAUNCH_ADAPTERS[family].call;
+    const result = await runTool({ executable, args, cwd, env, stdin: stdinOf ? stdinOf(prompt) : prompt, timeoutMs: JUDGE_TIMEOUT_MS, detached: true, group: input.group });
     if (family === 'codebuddy' && /Authentication required/.test(result.stdout + result.stderr)) {
       return { ok: false, code: 'judge_tool_unavailable', message: 'CodeBuddy is not signed in. Sign in with codebuddy /login or set CODEBUDDY_API_KEY, then retry, or submit this lease through another driver.', raw: result.stdout + '\n' + result.stderr };
     }
@@ -333,10 +341,15 @@ export async function runLocalJudge(input: JudgeInput, { resolveTool = resolveCl
       const deleted = await runTool({ executable, args: ['session', 'delete', report.session, '--standalone'], cwd, env, stdin: '', timeoutMs: JUDGE_TIMEOUT_MS, detached: true });
       if (deleted.code !== 0) return { ok: false, code: 'judge_failed', message: 'OpenCode could not delete the judge session. Delete it with opencode session delete before retrying.', raw: deleted.stderr, ...spent };
     }
-    if (result.code !== 0) return { ok: false, code: 'judge_failed', message: `${input.tool} exited with code ${result.code}. See the saved output, then retry or submit the lease through another driver.`, raw: result.stdout + '\n' + result.stderr, ...spent };
+    // agy exits 1 with the reason in its result, or on stderr when it refuses to start.
+    const toolError = !reading.ok && reading.message ? reading.message : family === 'agy' && result.code !== 0 && !result.stdout.trim() ? result.stderr.trim() : '';
+    const reported = toolError
+      ? { ok: false as const, code: 'judge_failed' as const, message: `${input.tool} reported an error: ${toolError.replace(/\.?$/, '.')} Fix that, then retry or submit the lease through another driver.`, raw: result.stdout + '\n' + result.stderr, ...spent }
+      : undefined;
+    if (result.code !== 0) return reported ?? { ok: false, code: 'judge_failed', message: `${input.tool} exited with code ${result.code}. See the saved output, then retry or submit the lease through another driver.`, raw: result.stdout + '\n' + result.stderr, ...spent };
     const answer = await answerFrom(input.tool, result.stdout, tmp);
     // pi exits 0 on a provider error, which its reply carries.
-    if (!answer && !reading.ok && reading.message) return { ok: false, code: 'judge_failed', message: `${input.tool} reported an error: ${reading.message.replace(/\.?$/, '.')} Fix that, then retry or submit the lease through another driver.`, raw: result.stdout + '\n' + result.stderr, ...spent };
+    if (!answer && reported) return reported;
     if (!answer) return { ok: false, code: 'judge_answer_invalid', message: `${input.tool} did not return JSON with label and reasoning. See the saved output, then retry.`, raw: result.stdout + '\n' + result.stderr, ...spent };
     const ranModel = observedModel({ requested: input.model?.name ?? configuredModel, reported: report?.model });
     const ranEffort = observedEffort({ requested: input.model?.effort });

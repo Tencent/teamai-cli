@@ -183,6 +183,28 @@ describe.skipIf(process.platform === 'win32')('teamai init does not pull team re
     expect(fs.existsSync(path.join(home, '.claude.json'))).toBe(false);
   }, 90_000);
 
+  it('pull delivers a skill when the caller supplies the remote mapping through GIT_CONFIG_GLOBAL', async () => {
+    const cwd = path.join(sandbox, 'caller-config');
+    fs.mkdirSync(cwd, { recursive: true });
+    const callerConfig = path.join(home, 'caller.gitconfig');
+    fs.renameSync(path.join(home, '.gitconfig'), callerConfig);
+    const env = { GIT_CONFIG_GLOBAL: callerConfig };
+    const initialized = await runCLI(['init', FAKE_URL, '--provider', 'git', '--scope', 'user', '--agent', 'claude', '--force'], cwd, env);
+    expect(initialized.code, initialized.output).toBe(0);
+
+    const seed = path.join(sandbox, 'seed');
+    const skill = 'skills/caller-config-skill/SKILL.md';
+    const content = '---\nname: caller-config-skill\ndescription: Caller Git configuration fixture\n---\n\n# Caller configuration\n';
+    writeSeed(seed, skill, content);
+    git(['add', skill], seed);
+    git(['commit', '-q', '-m', 'add caller-config skill'], seed);
+    git(['push', '-q', remote, 'main'], seed);
+
+    const pulled = await runCLI(['pull'], cwd, env);
+    expect(pulled.code, pulled.output).toBe(0);
+    expect(fs.readFileSync(path.join(home, '.claude', skill), 'utf8')).toBe(content);
+  }, 90_000);
+
   it('user scope: init promotes a settings-only machine config without setting it aside', async () => {
     const cwd = path.join(sandbox, 'elsewhere');
     fs.mkdirSync(cwd, { recursive: true });

@@ -190,6 +190,16 @@ const COMPLETE_ROWS: readonly MatrixRow[] = [
     source: 'Qoder CLI 1.1.73 loader source, issue #1221 Matrix',
   },
   {
+    tool: 'qoder', scope: 'user', env: { QODER_CONFIG_DIR: '/qoder' },
+    writes: [{ at: '/qoder/settings.json', key: ['mcpServers'] }], existingDirs: ['/qoder'], installed: { probe: '/qoder', met: true },
+    reads: [{ at: '/qoder/settings.json', key: ['mcpServers'], when: 'always' }], source: 'QODER_CONFIG_DIR moves Qoder user MCP settings',
+  },
+  {
+    tool: 'qoder', scope: 'user', env: { QODER_CLI_HOME: '/qoder-cli' },
+    writes: [{ at: '/qoder-cli/.qoder/settings.json', key: ['mcpServers'] }], existingDirs: ['/qoder-cli/.qoder'], installed: { probe: '/qoder-cli/.qoder', met: true },
+    reads: [{ at: '/qoder-cli/.qoder/settings.json', key: ['mcpServers'], when: 'always' }], source: 'QODER_CLI_HOME supplies the parent of Qoder user MCP settings',
+  },
+  {
     tool: 'qoder', scope: 'project',
     writes: [{ at: '<root>/.qoder/settings.json', key: ['mcpServers'] }],
     existingDirs: ['~/.qoder'],
@@ -214,6 +224,16 @@ const COMPLETE_ROWS: readonly MatrixRow[] = [
     source: 'Qoder CLI 1.1.73 loader; CN shares project config, assumed',
   },
   {
+    tool: 'qoder-cn', scope: 'user', env: { QODERCN_CONFIG_DIR: '/qodercn' },
+    writes: [{ at: '/qodercn/settings.json', key: ['mcpServers'] }], existingDirs: ['/qodercn'], installed: { probe: '/qodercn', met: true },
+    reads: [{ at: '/qodercn/settings.json', key: ['mcpServers'], when: 'always' }], source: 'QODERCN_CONFIG_DIR moves Qoder CN user MCP settings',
+  },
+  {
+    tool: 'qoder-cn', scope: 'user', env: { QODERCN_CLI_HOME: '/qodercn-cli' },
+    writes: [{ at: '/qodercn-cli/.qoder-cn/settings.json', key: ['mcpServers'] }], existingDirs: ['/qodercn-cli/.qoder-cn'], installed: { probe: '/qodercn-cli/.qoder-cn', met: true },
+    reads: [{ at: '/qodercn-cli/.qoder-cn/settings.json', key: ['mcpServers'], when: 'always' }], source: 'QODERCN_CLI_HOME supplies the parent of Qoder CN user MCP settings',
+  },
+  {
     tool: 'kiro', scope: 'user',
     writes: [{ at: '~/.kiro/settings/mcp.json', key: ['mcpServers'] }],
     existingDirs: ['~/.kiro'],
@@ -228,6 +248,22 @@ const COMPLETE_ROWS: readonly MatrixRow[] = [
     installed: { probe: '<root>/.kiro', met: true },
     reads: [{ at: '<root>/.kiro/settings/mcp.json', key: ['mcpServers'], when: 'workspaceUnder' }],
     source: 'Kiro docs MCP configuration, issue #1221 Matrix',
+  },
+  {
+    tool: 'agy', scope: 'user',
+    writes: [{ at: '~/.gemini/config/mcp_config.json', key: ['mcpServers'] }],
+    existingDirs: ['~/.gemini/config'],
+    installed: { probe: '~/.gemini/config', met: true },
+    reads: [{ at: '~/.gemini/config/mcp_config.json', key: ['mcpServers'], when: 'always' }],
+    source: 'agy 1.4.8: `agy mcp list` in an isolated HOME',
+  },
+  {
+    tool: 'agy', scope: 'project',
+    writes: [{ at: '<root>/.agents/plugins/teamai/mcp_config.json', key: ['mcpServers'] }],
+    existingDirs: ['~/.gemini/config'],
+    installed: { probe: '~/.gemini/config', met: true },
+    reads: [{ at: '<root>/.agents/plugins/teamai/mcp_config.json', key: ['mcpServers'], when: 'workspaceUnder' }],
+    source: "agy 1.4.8 session: a project plugin's MCP tool answered; <root>/.agents/mcp_config.json is not read",
   },
   {
     tool: 'omp', scope: 'user',

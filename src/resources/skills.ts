@@ -565,10 +565,19 @@ export async function recordedOrigin<TCopy extends { dir: string }>(
 async function recordedOrigins<TCopy extends { dir: string }>(
   copies: readonly TCopy[], record: { delivered: DeliveredHashes; dest: string; repoPath: string },
 ): Promise<TCopy[]> {
+  const exact = await matchingRecordedOrigins(copies, record, { normalizeLineEndings: false });
+  return exact.length > 0 ? exact : matchingRecordedOrigins(copies, record);
+}
+
+async function matchingRecordedOrigins<TCopy extends { dir: string }>(
+  copies: readonly TCopy[],
+  record: { delivered: DeliveredHashes; dest: string; repoPath: string },
+  options?: { normalizeLineEndings?: boolean },
+): Promise<TCopy[]> {
   const matched: TCopy[] = [];
   for (const copy of copies) {
     const teamDir = path.relative(record.repoPath, copy.dir).split(path.sep).join('/');
-    if (await isRecordedFromTeamSkill(record.delivered, record.dest, record.repoPath, teamDir)) matched.push(copy);
+    if (await isRecordedFromTeamSkill(record.delivered, record.dest, record.repoPath, teamDir, options)) matched.push(copy);
   }
   return matched;
 }

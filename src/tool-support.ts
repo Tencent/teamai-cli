@@ -107,6 +107,8 @@ function runTime(value: RunTime): string {
 function homeMove(move: HomeMove, dir: string): string {
   switch (move.kind) {
     case 'env': return `\`$${move.name}\``;
+    case 'qoder-home': return '`$QODER_CONFIG_DIR` `$QODER_CLI_HOME/.qoder`';
+    case 'qoder-cn-home': return '`$QODERCN_CONFIG_DIR` `$QODERCN_CLI_HOME/.qoder-cn`';
     case 'xdg': return `\`$XDG_CONFIG_HOME/${move.child}\``;
     case 'openclaw-state': return `\`$OPENCLAW_STATE_DIR\` \`$OPENCLAW_HOME/${dir}[-$OPENCLAW_PROFILE]\``;
     case 'omp-agent': return '`~/$PI_CONFIG_DIR/agent` `~/$PI_CONFIG_DIR/profiles/$OMP_PROFILE/agent` (or `$PI_PROFILE`)';

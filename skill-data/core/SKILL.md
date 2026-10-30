@@ -16,7 +16,7 @@ do not skip, reorder, or invent commands.
 Look at what the user typed after `/teamai`.
 
 **If they gave NO scenario right after a TeamAI friction reminder** (the
-`[teamai]` line that offers the `session-close` workflow, or suggests
+`[teamai]` line that offers the `teamai-share-learnings` workflow, or suggests
 `/teamai share what this session taught me`), that reminder is the scenario:
 do what it says.
 
@@ -178,7 +178,7 @@ aliases:
 in that tool's own field: `effort` for the Claude family, CodeBuddy, Qoder and Qoder CN,
 `model_reasoning_effort` for the Codex family, `variant` for OpenCode. Cursor takes
 effort inside its model string (`claude-opus-5[effort=high]`); Copilot, Kiro, WorkBuddy,
-JoyCode, ZCode, OMP and Muse Code take none, and pull warns and drops an effort mapped for them.
+JoyCode, ZCode, OMP, Muse Code and Antigravity CLI take none, and pull warns and drops an effort mapped for them.
 Qoder CN uses the `qoder` entry; only the Claude and Codex variants and Qoder CN inherit
 an entry, so never expect a `claude` model in Qoder or ZCode. A tool the alias does
 not map gets no `model` and uses its default; a concrete model such as `opus` is

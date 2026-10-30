@@ -7,6 +7,7 @@ import { cleanupOf, installOf, ownOf, unreadWrites, writable, writesOf, type Ent
 import { envToolHome, movedToolHome, toolHome, type Host } from '../tool-home.js';
 import { isToolId, TOOLS } from '../tools.js';
 import { samePlaces } from '../resources/places.js';
+import type { ToolId } from '../types.js';
 
 function linuxHost(env: Record<string, string>, existing: readonly string[] = ['/new/hermes', '/x/opencode', '/home/m/.openclaw']): Host {
   return {
@@ -147,9 +148,10 @@ describe('nextToolHomes on Windows', () => {
 
 describe('envToolHome', () => {
   const atWork = (env: Record<string, string>): Host => ({ ...linuxHost(env), cwd: () => '/home/m/work' });
-  const cases = Object.keys(TOOLS).filter(isToolId).flatMap((tool) => {
+  type MoveCase = { tool: ToolId; env: Record<string, string>; dir: string | null };
+  const cases: MoveCase[] = Object.keys(TOOLS).filter(isToolId).flatMap<MoveCase>((tool) => {
     const { home } = TOOLS[tool];
-    return 'moves' in home ? home.moves.by.flatMap((move) => {
+    return 'moves' in home ? home.moves.by.flatMap<MoveCase>((move) => {
       switch (move.kind) {
         case 'env':
           return [
@@ -157,6 +159,20 @@ describe('envToolHome', () => {
             { tool, env: { [move.name]: '~/home' }, dir: '/home/m/home' },
             { tool, env: { [move.name]: '/abs/home' }, dir: '/abs/home' },
             { tool, env: { [move.name]: ' ' }, dir: null },
+          ];
+        case 'qoder-home':
+          return [
+            { tool, env: { QODER_CONFIG_DIR: 'rel/home', QODER_CLI_HOME: 'rel/cli' }, dir: '/home/m/work/rel/home' },
+            { tool, env: { QODER_CONFIG_DIR: '/abs/home', QODER_CLI_HOME: '/abs/cli' }, dir: '/abs/home' },
+            { tool, env: { QODER_CONFIG_DIR: ' ', QODER_CLI_HOME: '/abs/cli' }, dir: '/abs/cli/.qoder' },
+            { tool, env: { QODER_CONFIG_DIR: ' ', QODER_CLI_HOME: ' ' }, dir: null },
+          ];
+        case 'qoder-cn-home':
+          return [
+            { tool, env: { QODERCN_CONFIG_DIR: 'rel/home', QODERCN_CLI_HOME: 'rel/cli' }, dir: '/home/m/work/rel/home' },
+            { tool, env: { QODERCN_CONFIG_DIR: '/abs/home', QODERCN_CLI_HOME: '/abs/cli' }, dir: '/abs/home' },
+            { tool, env: { QODERCN_CONFIG_DIR: ' ', QODERCN_CLI_HOME: '/abs/cli' }, dir: '/abs/cli/.qoder-cn' },
+            { tool, env: { QODERCN_CONFIG_DIR: ' ', QODERCN_CLI_HOME: ' ' }, dir: null },
           ];
         case 'xdg':
           return [

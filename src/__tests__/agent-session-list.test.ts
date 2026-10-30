@@ -115,17 +115,27 @@ describe('AgentSession.list', () => {
     expect(listed.sessions.map((s) => [s.sessionId, s.cwd])).toEqual([[id, cwd]]);
   });
 
-  it('lists every installed tool when no tool is named, and nothing for the others', async () => {
+  it('lists every installed tool when no tool is named, including Qoder editions in their moved stores', async () => {
     fs.mkdirSync(path.join(mocks.home, '.claude', 'projects'), { recursive: true });
     fs.mkdirSync(path.join(mocks.home, '.codex', 'sessions'), { recursive: true });
+    const qoderRoot = path.join(mocks.home, 'qoder-config');
+    const qoderCnRoot = path.join(mocks.home, 'qodercn-config');
+    vi.stubEnv('QODER_CONFIG_DIR', qoderRoot);
+    vi.stubEnv('QODERCN_CONFIG_DIR', qoderCnRoot);
+    fs.mkdirSync(path.join(qoderRoot, 'projects'), { recursive: true });
+    fs.mkdirSync(path.join(qoderCnRoot, 'projects'), { recursive: true });
     const claudeId = await plant('claude-code', workspace('alpha'), 'claude work', '2026-09-24T10:00:05.000Z');
     const codexId = await plant('codex', workspace('beta'), 'codex work', '2026-09-25T10:00:05.000Z');
+    const qoderId = await plant('qoder', workspace('gamma'), 'qoder work', '2026-09-26T10:00:05.000Z');
+    const qoderCnId = await plant('qoder-cn', workspace('delta'), 'qoder cn work', '2026-09-27T10:00:05.000Z');
 
     const listed = await AgentSession.list();
 
     expect(listed.failures).toEqual([]);
     expect(listed.sessions.map((s) => [s.platform, s.sessionId])).toEqual([
       ['codex', codexId],
+      ['qoder-cn', qoderCnId],
+      ['qoder', qoderId],
       ['claude-code', claudeId],
     ]);
   });
@@ -163,6 +173,8 @@ describe('AgentSession.list', () => {
   // A session being written, or a damaged one, must not look absent: a lookup reports it unreadable.
   const READS_A_HEAD = [
     ['claude-code', ['.claude', 'projects']],
+    ['qoder', ['.qoder', 'projects']],
+    ['qoder-cn', ['.qoder-cn', 'projects']],
     ['codebuddy', ['.codebuddy', 'projects']],
     ['cursor', ['.cursor', 'projects']],
     ['workbuddy', ['.workbuddy', 'projects']],

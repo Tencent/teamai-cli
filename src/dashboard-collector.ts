@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { z } from 'zod';
 import path from 'node:path';
 import { toolHome } from './tool-home.js';
 import readline from 'node:readline';
@@ -806,7 +807,7 @@ export function resolveCopilotUsageTranscript(
 }
 
 const MUSE_USAGE_EVENT = 'goal_usage_attribution';
-const MUSE_SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const SESSION_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * Muse Code's log of `sessionId`, `$XDG_DATA_HOME/muse/sessions/YYYY/MM/DD/<id>/session.jsonl`
@@ -816,7 +817,7 @@ const MUSE_SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-
  * onto the event there, so no later reader without the variable has to find the tree.
  */
 async function findMuseSessionLog(sessionId: string): Promise<string | null> {
-  if (!MUSE_SESSION_ID_RE.test(sessionId)) return null;
+  if (!SESSION_UUID_RE.test(sessionId)) return null;
   const dataHome = process.env.XDG_DATA_HOME?.trim() || path.join(getUserHome(), '.local', 'share');
   const root = path.join(dataHome, 'muse', 'sessions');
   const subdirs = async (dir: string) => (await fs.promises.readdir(dir).catch(() => [] as string[]))
@@ -830,6 +831,63 @@ async function findMuseSessionLog(sessionId: string): Promise<string | null> {
     }
   }
   return null;
+}
+
+/**
+ * An Antigravity CLI session's token totals from the PLANNER_RESPONSE steps of
+ * its transcript (`<store>/brain/<id>/.system_generated/logs/transcript.jsonl`),
+ * or null with none. agy writes the counts as strings, and its `input_tokens`
+ * includes `cache_read_tokens`, as Gemini's prompt count does, so the cached part
+ * is moved to cacheRead.
+ */
+/** A token count as agy writes it: a string of digits on 1.4.8, a number elsewhere. */
+const AgyTokenCount = z.union([z.number(), z.string().transform(Number)]).pipe(z.number().finite().nonnegative()).catch(0);
+/** One PLANNER_RESPONSE line of an agy transcript, with the counts the dashboard sums. */
+const AgyPlannerStep = z.object({
+  type: z.literal('PLANNER_RESPONSE'),
+  input_tokens: AgyTokenCount.default(0),
+  output_tokens: AgyTokenCount.default(0),
+  cache_read_tokens: AgyTokenCount.default(0),
+});
+
+async function readAgySessionTokens(sessionId: string): Promise<TokenUsage | null> {
+  if (!SESSION_UUID_RE.test(sessionId)) return null;
+  const { sessionStoreDir } = await import('./locate.js');
+  const { agyStoreRoots } = await import('./session-flow/adapters/agy.js');
+  // The CLI's store first, then the Antigravity app's: a conversation id is in one of them.
+  let text: string | undefined;
+  for (const store of agyStoreRoots(sessionStoreDir('agy', undefined))) {
+    const file = path.join(store, 'brain', sessionId, '.system_generated', 'logs', 'transcript.jsonl');
+    try {
+      text = await fs.promises.readFile(file, 'utf-8');
+      break;
+    } catch (e) {
+      if (!(e instanceof Error && 'code' in e && e.code === 'ENOENT')) {
+        log.debug(`dashboard: could not read the Antigravity transcript ${file}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+  }
+  if (text === undefined) return null;
+  let tokens: TokenUsage | null = null;
+  for (const line of text.split('\n')) {
+    if (!line.includes('"PLANNER_RESPONSE"')) continue;
+    let raw: unknown;
+    try {
+      raw = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const step = AgyPlannerStep.safeParse(raw);
+    if (!step.success) continue;
+    const cacheRead = step.data.cache_read_tokens;
+    tokens = addTokenUsage(tokens ?? emptyTokenUsage(), {
+      input: Math.max(0, step.data.input_tokens - cacheRead),
+      output: step.data.output_tokens,
+      cacheRead,
+      cacheCreation: 0,
+    });
+  }
+  return tokens;
 }
 
 /**
@@ -1370,6 +1428,14 @@ export async function parseHookEvent(
       }));
       if (records.length) event.requestDaily = aggregateRequestDaily(records);
       await reconcileRequestLog(records);
+    }
+  }
+
+  if (eventType === 'stop' && tool.toLowerCase() === 'agy') {
+    const tokens = await readAgySessionTokens(sessionId);
+    if (tokens) {
+      event.tokens = tokens;
+      event.tokenScope = 'session';
     }
   }
 

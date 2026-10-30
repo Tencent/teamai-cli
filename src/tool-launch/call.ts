@@ -10,6 +10,7 @@ import { log } from '../utils/logger.js';
 import { runTool } from './run.js';
 import type { TokenUsage } from './stdout.js';
 import { executableOf, LAUNCH_ORDER, launchAdapterOf, type LaunchOrderTool } from './tools.js';
+import { agyGatewayEnv } from '../models/agy-gateway.js';
 
 const DEFAULT_TIMEOUT_MS = 600_000;
 const DEFAULT_CONCURRENCY = 3;
@@ -104,10 +105,10 @@ export function isOverrideInvalid(error: unknown): error is CallError & { kind: 
 type Picked = { tool: LaunchOrderTool; executable: string };
 
 /** The environment a call's tool runs in: the member's own, marked as teamai's launch, without an outer launch's checkout. */
-function callEnv(launchedBy: LaunchedBy): NodeJS.ProcessEnv {
+function callEnv(launchedBy: LaunchedBy, tool: string): NodeJS.ProcessEnv {
   const { TEAMAI_LAUNCHED_TOOL: _tool, TEAMAI_LAUNCHED_CHECKOUT: _checkout, ...env } = process.env;
   // Our own session, not the user's: its hooks would print the share-learnings hint into the answer we read.
-  return { ...env, TEAMAI_CONTRIBUTE_HINT_DISABLED: '1', [LAUNCHED_BY_ENV]: launchedBy, [RUN_MODE_ENV]: resolveRunMode(process.env) };
+  return { ...env, ...(tool === 'agy' ? agyGatewayEnv(env) : {}), TEAMAI_CONTRIBUTE_HINT_DISABLED: '1', [LAUNCHED_BY_ENV]: launchedBy, [RUN_MODE_ENV]: resolveRunMode(process.env) };
 }
 
 /** A caller that resolves its tool once per scope and reuses it for every call there. */
@@ -162,7 +163,7 @@ export function createToolCaller({ resolveTool = resolveCliPath, resolveScope = 
         const promptFile = path.join(scratch, 'prompt.md');
         if (call.prompt === 'file') await fs.writeFile(promptFile, prompt);
         const args = call.args({ prompt, promptFile, lastMessageFile });
-        const run = await runTool({ executable, args, cwd: process.cwd(), env: callEnv(launchedBy), stdin: call.prompt === 'stdin' ? prompt : '', timeoutMs: timeout, detached: false });
+        const run = await runTool({ executable, args, cwd: process.cwd(), env: callEnv(launchedBy, tool), stdin: call.prompt !== 'stdin' ? '' : 'stdinOf' in call ? call.stdinOf(prompt) : prompt, timeoutMs: timeout, detached: false });
         if (run.timedOut) throw new CallError('call_failed', `AI call timed out after ${Math.round(timeout / 1000)}s (tool: ${tool})`);
         const lastMessage = await fs.readFile(lastMessageFile, 'utf8').catch(() => undefined);
         const reading = call.read({ stdout: run.stdout, lastMessage });

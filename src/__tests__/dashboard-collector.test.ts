@@ -1582,6 +1582,43 @@ describe('parseHookEvent: Muse Code session tokens', () => {
   });
 });
 
+describe('parseHookEvent: Antigravity CLI session tokens', () => {
+  const sessionId = '06073d60-63d2-43f8-a8c2-062189a4ddd2';
+  const transcript = () => path.join(tmpDir, '.gemini', 'antigravity-cli', 'brain', sessionId, '.system_generated', 'logs', 'transcript.jsonl');
+  const stop = () => parseHookEvent(JSON.stringify({ hook_event_name: 'Stop', session_id: sessionId, cwd: '/work/project' }), 'agy');
+
+  it('sums the model steps of the transcript into session tokens, cached input apart', async () => {
+    fs.mkdirSync(path.dirname(transcript()), { recursive: true });
+    // As agy 1.4.8 writes them: counts are strings, on each PLANNER_RESPONSE.
+    fs.writeFileSync(transcript(), [
+      { step_index: '0', source: 'USER_EXPLICIT', type: 'USER_INPUT', content: '<USER_REQUEST>\nhi\n</USER_REQUEST>' },
+      { step_index: '1', source: 'MODEL', type: 'PLANNER_RESPONSE', input_tokens: '14518', cache_read_tokens: '0', output_tokens: '39' },
+      { step_index: '2', source: 'MODEL', type: 'GENERIC', content: 'Showing lines 1-5 of 5' },
+      { step_index: '3', source: 'MODEL', type: 'PLANNER_RESPONSE', input_tokens: '14706', cache_read_tokens: '12000', output_tokens: '49' },
+    ].map((step) => JSON.stringify(step)).join('\n') + '\n');
+
+    expect(await stop()).toEqual(expect.objectContaining({
+      type: 'stop',
+      tool: 'agy',
+      tokens: { input: 17224, output: 88, cacheRead: 12000, cacheCreation: 0 },
+      tokenScope: 'session',
+    }));
+  });
+
+  it('reads a session of the Antigravity app from its own store', async () => {
+    const appTranscript = path.join(tmpDir, '.gemini', 'antigravity', 'brain', sessionId, '.system_generated', 'logs', 'transcript.jsonl');
+    fs.mkdirSync(path.dirname(appTranscript), { recursive: true });
+    // As the Antigravity app 2.24 writes them: counts are numbers.
+    fs.writeFileSync(appTranscript, JSON.stringify({ step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', input_tokens: 9100, cache_read_tokens: 100, output_tokens: 18 }) + '\n');
+
+    expect((await stop())?.tokens).toEqual({ input: 9000, output: 18, cacheRead: 100, cacheCreation: 0 });
+  });
+
+  it('records no tokens when the session has no transcript', async () => {
+    expect((await stop())?.tokens).toBeUndefined();
+  });
+});
+
 describe('local request log', () => {
   it('deduplicates requests and prunes details older than 90 days', async () => {
     const old = { id: 'old', timestamp: '2026-05-01T00:00:00Z', model: 'claude-sonnet-5', inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0, costMicros: 1, priceVersion: 'v1' };
