@@ -1,40 +1,45 @@
 import { defineRule } from '@oxlint/plugins';
 
-import { lintedPath } from '../utils.js';
+import { isOneOf, lintedPath } from '../utils.js';
 
-function isLearningsSegment(node) {
-  return node.type === 'Literal' && (node.value === 'learnings' || node.value === '/learnings');
-}
+const ALLOWED_FILES = [
+  'src/utils/learnings-roots.ts',
+  'src/utils/learnings-publish.ts',
+  'src/utils/pending-learnings.ts',
+  'src/types.ts',
+  'src/init.ts',
+];
+const OPT_OUT = /\/\/ learnings-root ok: \S/;
+const MANUAL_ROOT = /path\.(?:join|resolve)\([^;\n]*\blearnings\b/;
+const ABSOLUTE_SUFFIX = /\/learnings\b/;
 
-/** Require production callers to use the shared learnings-root accessor (#485). */
+/** Move the existing source guard into the lint phase without changing its boundary. */
 export default defineRule({
   meta: {
     type: 'problem',
-    docs: { description: 'Use the shared accessor instead of rebuilding a learnings root path.' },
+    docs: { description: 'Use one shared accessor for learnings root paths.' },
   },
   create(context) {
     const file = lintedPath(context);
-    if (!file.includes('/src/') || file.includes('/src/__tests__/')) return {};
-
+    if (!file.includes('/src/') || file.includes('/src/__tests__/') || isOneOf(context, ALLOWED_FILES)) return {};
     return {
-      CallExpression(node) {
-        if (node.callee.type !== 'MemberExpression'
-          || node.callee.object.type !== 'Identifier'
-          || node.callee.object.name !== 'path'
-          || node.callee.property.type !== 'Identifier'
-          || !['join', 'resolve'].includes(node.callee.property.name)
-          || !node.arguments.some(isLearningsSegment)) return;
-        context.report({
-          node,
-          message: 'Use learningsRoots(localConfig) instead of rebuilding a learnings root. If this call intentionally defines a raw root, disable this line and say why.',
-        });
-      },
-      TemplateLiteral(node) {
-        if (!node.quasis.some((quasi) => quasi.value.raw.includes('/learnings'))) return;
-        context.report({
-          node,
-          message: 'Use learningsRoots(localConfig) instead of building a `/learnings` template path.',
-        });
+      /** @param {any} node */
+      Program(node) {
+        const lines = context.sourceCode.text.split('\n');
+        const offenders = [];
+        for (let index = 0; index < lines.length; index += 1) {
+          const line = lines[index];
+          if (OPT_OUT.test(line) || OPT_OUT.test(lines[index - 1] ?? '')) continue;
+          if (MANUAL_ROOT.test(line) || ABSOLUTE_SUFFIX.test(line)) {
+            offenders.push(`${index + 1}: ${line.trim()}`);
+          }
+        }
+        if (offenders.length > 0) {
+          context.report({
+            node,
+            message: `Use learningsRoots(localConfig) instead of rebuilding a learnings path: ${offenders.join(' | ')}`,
+          });
+        }
       },
     };
   },
