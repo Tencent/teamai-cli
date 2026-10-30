@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
+import { withoutTomlBom } from '../utils/toml.js';
 import { observedEffort, observedModel } from '../agent-observation.js';
 import { LAUNCHED_BY_ENV, resolveRunMode, RUN_MODE_ENV } from '../launch-context.js';
 import { opencodeMajorVersion } from '../opencode-hooks.js';
@@ -128,7 +129,7 @@ function credentialEnv(key: string): string | undefined {
 async function codexSettings(tool: JudgeTool, env: NodeJS.ProcessEnv) {
   const text = await optionalFile(path.join(env.CODEX_HOME || toolHome(tool), 'config.toml'));
   if (!text) return { args: [], model: undefined };
-  const config = z.object({ model: z.string().optional(), model_provider: z.string().optional(), model_providers: z.record(z.string(), z.object({ name: z.string().optional(), base_url: z.string().optional(), wire_api: z.string().optional(), env_key: z.string().optional(), experimental_bearer_token: z.string().optional() })).optional() }).parse(parseToml(text));
+  const config = z.object({ model: z.string().optional(), model_provider: z.string().optional(), model_providers: z.record(z.string(), z.object({ name: z.string().optional(), base_url: z.string().optional(), wire_api: z.string().optional(), env_key: z.string().optional(), experimental_bearer_token: z.string().optional() })).optional() }).parse(parseToml(withoutTomlBom(text)));
   const model = config.model ? ['-c', `model=${JSON.stringify(config.model)}`] : [];
   const provider = config.model_provider && config.model_providers?.[config.model_provider];
   if (!provider) return { args: model, model: config.model };

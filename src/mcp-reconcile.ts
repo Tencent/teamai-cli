@@ -24,6 +24,7 @@ import {
 } from './types.js';
 import YAML from 'yaml';
 import { parse as parseToml } from 'smol-toml';
+import { withoutTomlBom } from './utils/toml.js';
 import {
   supportsTransport,
   supportsEnvExpansion,
@@ -836,6 +837,8 @@ function ownedCodexBlock(text: string): string {
  * block again changes nothing.
  */
 export function spliceCodexBlock(source: string, name: string, block: string | null): string {
+  const bom = source.startsWith('\uFEFF') ? '\uFEFF' : '';
+  source = withoutTomlBom(source);
   const re = codexBlockRe(name);
   const match = source.match(re);
   const padded = block === null ? null : block.endsWith('\n') ? block + '\n' : block + '\n\n';
@@ -844,13 +847,13 @@ export function spliceCodexBlock(source: string, name: string, block: string | n
     const owned = ownedCodexBlock(match[0]);
     const before = source.slice(0, match.index);
     const after = source.slice(match.index + owned.length).replace(/^(?:\r?\n)+/, '');
-    if (padded === null) return before + after;
-    return before + padded + after;
+    if (padded === null) return bom + before + after;
+    return bom + before + padded + after;
   }
 
-  if (padded === null) return source;
+  if (padded === null) return bom + source;
   const sep = source.length === 0 || source.endsWith('\n\n') ? '' : source.endsWith('\n') ? '\n' : '\n\n';
-  return source + sep + padded;
+  return bom + source + sep + padded;
 }
 
 /**
@@ -885,13 +888,13 @@ function codexHeaderStart(name: string): string {
  * table.
  */
 export function codexBlockIn(source: string, name: string): string | null {
-  const match = source.match(codexBlockRe(name));
-  if (match === null) return null;
-  return ownedCodexBlock(match[0]).trimEnd() + '\n';
+  const match = withoutTomlBom(source).match(codexBlockRe(name));
+  return match === null ? null : ownedCodexBlock(match[0]).trimEnd() + '\n';
 }
 
 /** Extract the names of all `[mcp_servers.X]` tables present in a config.toml. */
 export function codexServerNames(source: string): string[] {
+  source = withoutTomlBom(source);
   const names = new Set<string>();
   const header = codexHeaderStart(String.raw`(?:([A-Za-z0-9_-]+)|"([A-Za-z0-9_-]+)"|'([A-Za-z0-9_-]+)')`);
   for (const m of source.matchAll(new RegExp(String.raw`^\[${header}\]\s*(?:#.*)?$`, 'gm'))) names.add(m[1] ?? m[2] ?? m[3]);
@@ -3563,7 +3566,7 @@ async function readCodexConfig(file: string): Promise<string | null | undefined>
   try {
     const source = await readFileIfExists(file);
     // Codex accepts a leading BOM; keep it in the original text for writes.
-    if (source !== null) parseToml(source.replace(/^\uFEFF/, ''));
+    if (source !== null) parseToml(withoutTomlBom(source));
     return source;
   } catch {
     return undefined;

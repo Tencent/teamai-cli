@@ -4363,6 +4363,17 @@ servers:
 });
 
 describe('spliceCodexBlock', () => {
+  it('replaces the first MCP block in a BOM-prefixed config without adding a duplicate', () => {
+    const src = '\uFEFF[mcp_servers.a]\ncommand = "old"\n';
+
+    const out = spliceCodexBlock(src, 'a', '[mcp_servers.a]\ncommand = "new"\n');
+
+    expect(out.startsWith('\uFEFF')).toBe(true);
+    expect(out).toContain('command = "new"');
+    expect(out).not.toContain('command = "old"');
+    expect([...out.matchAll(/\[mcp_servers\.a\]/g)]).toHaveLength(1);
+  });
+
   it('replaces a block and its nested env sub-table, leaving neighbours intact', () => {
     const src = [
       '# header comment',

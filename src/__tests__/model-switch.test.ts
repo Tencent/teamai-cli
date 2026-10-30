@@ -321,6 +321,16 @@ describe('Codex model switching', () => {
     expect(config).not.toContain('from-env');
   });
 
+  it('switches and restores a BOM-prefixed Codex config without dropping its BOM', async () => {
+    const initial = '\uFEFF# member settings\nmodel = "personal"\n';
+    await fse.outputFile(codexFile(), initial);
+
+    expect((await switchModelProfile(routed({ 'openai-responses': ['gpt-team'] }), ['codex']))[0].status).toBe('switched');
+    expect((await fse.readFile(codexFile(), 'utf8')).startsWith('\uFEFF')).toBe(true);
+    expect((await restoreModelProfiles(['codex']))[0].status).toBe('restored');
+    expect(await fse.readFile(codexFile(), 'utf8')).toBe(initial);
+  });
+
   it('preserves Codex comments and never touches auth.json', async () => {
     await fse.outputFile(codexFile(), '# keep this comment\napproval_policy = "on-request"\n\n[profiles.personal]\nmodel = "keep-profile-model"\n');
     await fse.writeJson(path.join(home, '.codex', 'auth.json'), { OPENAI_API_KEY: 'official' });

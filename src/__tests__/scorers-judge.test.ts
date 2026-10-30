@@ -54,7 +54,7 @@ it.each(['codex-cli 0.163.0', '', 'codex-cli 9.9.9'])('confines Codex %s to the 
   const home = path.join(root, 'codex');
   await fs.mkdir(evidence); await fs.mkdir(home);
   await fs.writeFile(path.join(home, 'auth.json'), '{"login":"fixture"}');
-  await fs.writeFile(path.join(home, 'config.toml'), 'model="gateway-model"\nmodel_provider="teamai"\n[model_providers.teamai]\nname="Gateway"\nbase_url="https://gateway.test"\nwire_api="responses"\nenv_key="JUDGE_GATEWAY_TOKEN"\n');
+  await fs.writeFile(path.join(home, 'config.toml'), '\uFEFFmodel="gateway-model"\nmodel_provider="teamai"\n[model_providers.teamai]\nname="Gateway"\nbase_url="https://gateway.test"\nwire_api="responses"\nenv_key="JUDGE_GATEWAY_TOKEN"\n');
   vi.stubEnv('JUDGE_GATEWAY_TOKEN', 'gateway-credential');
   await fs.writeFile(path.join(home, 'AGENTS.md'), 'MUST NOT LOAD');
   await fs.writeFile(path.join(evidence, 'prompt.md'), 'CODEX-INLINE-PROMPT');

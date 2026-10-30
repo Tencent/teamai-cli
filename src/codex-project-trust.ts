@@ -6,6 +6,7 @@
  */
 import type { ReadGate } from './locate.js';
 import { pathExists, readFileSafe } from './utils/fs.js';
+import { withoutTomlBom } from './utils/toml.js';
 
 export type CodexProjectTrust =
   | { readonly kind: 'trusted' }
@@ -33,7 +34,7 @@ export async function codexProjectTrust(gate: ReadGate): Promise<CodexProjectTru
   let projects: unknown;
   try {
     const { parse } = await import('smol-toml');
-    projects = parse(raw).projects;
+    projects = parse(withoutTomlBom(raw)).projects;
   } catch (error) {
     return { kind: 'unreadable', reason: `could not be parsed (${error instanceof Error ? error.message.split('\n')[0] : String(error)})` };
   }

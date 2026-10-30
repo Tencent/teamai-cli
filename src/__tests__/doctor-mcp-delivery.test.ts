@@ -975,6 +975,12 @@ describe('doctor — MCP servers delivered on disk', () => {
       expect(await (await trustCheck())?.check()).toBe(true);
     });
 
+    it('accepts a BOM-prefixed config that trusts the project', async () => {
+      await writeCodexConfig('\uFEFF' + trusted(await fse.realpath(projectRoot)));
+
+      expect(await (await trustCheck())?.check()).toBe(true);
+    });
+
     it('fails when Codex marks the project untrusted, and says which entry decides', async () => {
       const real = await fse.realpath(projectRoot);
       await writeCodexConfig(trusted(real, 'untrusted'));

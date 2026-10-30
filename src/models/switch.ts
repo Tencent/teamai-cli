@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
 import { parse as parseToml } from 'smol-toml';
+import { withoutTomlBom } from '../utils/toml.js';
 import { getUserHome } from '../utils/home.js';
 import { agyGatewayOf, agyKeyFilePath, agyKeyFunction } from './agy-gateway.js';
 import { toolHome } from '../tool-home.js';
@@ -581,7 +582,7 @@ const CODEX_PROVIDER_BLOCK_RE = /^\[model_providers\.teamai\]\s*$[\s\S]*?(?=^\[(
 
 function parseCodex(source: string): Record<string, unknown> {
   try {
-    return parseToml(source) as Record<string, unknown>;
+    return parseToml(withoutTomlBom(source)) as Record<string, unknown>;
   } catch (error) {
     throw new Error(`Cannot parse Codex config.toml: ${(error as Error).message}`, { cause: error });
   }
@@ -597,7 +598,7 @@ function codexSnapshot(source: string): CodexSnapshot {
   return {
     model: parsed.model as string | undefined,
     model_provider: parsed.model_provider as string | undefined,
-    providerBlock: source.match(CODEX_PROVIDER_BLOCK_RE)?.[0].replace(/\n+$/, ''),
+    providerBlock: withoutTomlBom(source).match(CODEX_PROVIDER_BLOCK_RE)?.[0].replace(/\n+$/, ''),
   };
 }
 
@@ -607,21 +608,22 @@ function setTopLevelString(source: string, key: string, value: string | undefine
   const top = firstTable < 0 ? source : source.slice(0, firstTable);
   const tables = firstTable < 0 ? '' : source.slice(firstTable);
   if (re.test(top)) {
-    const updated = top.replace(re, (line, prefix: string, oldValue: string) => {
-      if (value === undefined) return '';
-      let quote: '"' | "'" | null = null;
-      let escaped = false;
-      let comment = '';
-      for (let i = 0; i < oldValue.length; i++) {
-        const char = oldValue[i];
-        if (escaped) { escaped = false; continue; }
-        if (quote === '"' && char === '\\') { escaped = true; continue; }
-        if (quote) { if (char === quote) quote = null; continue; }
-        if (char === '"' || char === "'") { quote = char; continue; }
-        if (char === '#') { comment = oldValue.slice(i).trimEnd(); break; }
-      }
-      return `${prefix}${JSON.stringify(value)}${comment ? ` ${comment}` : ''}`;
-    });
+    const updated = value === undefined
+      ? top.replace(new RegExp(`${re.source}(?:\\r?\\n|$)`, 'm'), '')
+      : top.replace(re, (line, prefix: string, oldValue: string) => {
+        let quote: '"' | "'" | null = null;
+        let escaped = false;
+        let comment = '';
+        for (let i = 0; i < oldValue.length; i++) {
+          const char = oldValue[i];
+          if (escaped) { escaped = false; continue; }
+          if (quote === '"' && char === '\\') { escaped = true; continue; }
+          if (quote) { if (char === quote) quote = null; continue; }
+          if (char === '"' || char === "'") { quote = char; continue; }
+          if (char === '#') { comment = oldValue.slice(i).trimEnd(); break; }
+        }
+        return `${prefix}${JSON.stringify(value)}${comment ? ` ${comment}` : ''}`;
+      });
     return updated + tables;
   }
   if (value === undefined) return source;
@@ -632,7 +634,8 @@ function setTopLevelString(source: string, key: string, value: string | undefine
 
 function setCodexProviderBlock(source: string, block: string | undefined): string {
   if (CODEX_PROVIDER_BLOCK_RE.test(source)) {
-    return source.replace(CODEX_PROVIDER_BLOCK_RE, block ? `${block}\n\n` : '');
+    const updated = source.replace(CODEX_PROVIDER_BLOCK_RE, block ? `${block}\n\n` : '');
+    return block === undefined ? updated.replace(/\n{2,}$/, '\n') : updated;
   }
   if (!block) return source;
   return `${source.trimEnd()}${source.trim() ? '\n\n' : ''}${block}\n`;
@@ -641,6 +644,8 @@ function setCodexProviderBlock(source: string, block: string | undefined): strin
 async function writeCodex(snapshot: CodexSnapshot, roots: AgentRoots): Promise<void> {
   const file = codexSettingsPath(roots);
   let source = (await readOptionalFile(file)) ?? '';
+  const bom = source.startsWith('\uFEFF') ? '\uFEFF' : '';
+  source = withoutTomlBom(source);
   source = setTopLevelString(source, 'model', snapshot.model);
   source = setTopLevelString(source, 'model_provider', snapshot.model_provider);
   source = setCodexProviderBlock(source, snapshot.providerBlock);
@@ -650,7 +655,7 @@ async function writeCodex(snapshot: CodexSnapshot, roots: AgentRoots): Promise<v
   const unsafe = new Error(`Cannot safely update ${file}; set model, model_provider, and [model_providers.teamai] manually`);
   let parsed: Record<string, unknown>;
   try {
-    parsed = parseToml(source) as Record<string, unknown>;
+    parsed = parseToml(withoutTomlBom(source)) as Record<string, unknown>;
   } catch {
     throw unsafe;
   }
@@ -661,7 +666,7 @@ async function writeCodex(snapshot: CodexSnapshot, roots: AgentRoots): Promise<v
   if (parsed.model !== snapshot.model || parsed.model_provider !== snapshot.model_provider || !equal(providers.teamai, wantedProvider)) {
     throw unsafe;
   }
-  await writeFileAtomic(await writableTarget(file), source, { mode: 0o600 });
+  await writeFileAtomic(await writableTarget(file), bom + source, { mode: 0o600 });
 }
 
 // ─── Key files: Muse Code, Antigravity CLI ────────────────
