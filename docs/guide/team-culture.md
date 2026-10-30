@@ -38,7 +38,7 @@ They are not written into the project's `AGENTS.md`. Each tool gets its own file
 | Kiro | `~/.kiro/steering/teamai-context.md` | `.kiro/steering/teamai-context.md` |
 | Trae | `~/.trae/user_rules/teamai-context.md` | `.trae/rules/teamai-context.md` |
 | Trae CN | `~/.trae-cn/user_rules/teamai-context.md` | shared `.trae/rules/teamai-context.md` |
-| OpenCode | `${XDG_CONFIG_HOME:-~/.config}/opencode/teamai-context.md` (or the configured `OPENCODE_CONFIG_DIR`) | `.opencode/teamai-context.md` |
+| OpenCode | `$OPENCODE_CONFIG_DIR/teamai-context.md` when set, otherwise `${XDG_CONFIG_HOME:-~/.config}/opencode/teamai-context.md` | `.opencode/teamai-context.md` |
 | Pi | `~/.pi/agent/AGENTS.override.md` when present, otherwise `AGENTS.md` | an extension adds them to the system prompt |
 | Oh My Pi | its user file | an extension adds them to the system prompt |
 | Hermes | `$HERMES_HOME/SOUL.md` | the Hermes plugin |
