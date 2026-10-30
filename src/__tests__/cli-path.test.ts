@@ -98,11 +98,28 @@ describe('resolveCliPath', () => {
     expect(mockedExecFileSync.mock.calls.map((call) => call[0])).toEqual(['where']);
   });
 
-  it('falls through bash → zsh on POSIX', () => {
-    mockedExecFileSync
-      .mockImplementationOnce(() => { throw new Error('no bash'); })
-      .mockImplementationOnce(() => '/opt/homebrew/bin/gh\n');
-    expect(resolveCliPath('gh', 'darwin')).toBe('/opt/homebrew/bin/gh');
+  it('uses the current PATH on POSIX without a login shell overriding it', () => {
+    mockedExecFileSync.mockReturnValue('/fixture/bin/gh\n');
+    expect(resolveCliPath('gh', 'darwin')).toBe('/fixture/bin/gh');
+    expect(mockedExecFileSync.mock.calls.map((call) => call[0])).toEqual(['which']);
+  });
+
+  it('falls back to a login shell when the current PATH misses the tool', () => {
+    mockedExecFileSync.mockImplementation((command: string) => {
+      if (command === 'which') throw new Error('not found');
+      return '/login/bin/gh\n';
+    });
+    expect(resolveCliPath('gh', 'darwin')).toBe('/login/bin/gh');
+    expect(mockedExecFileSync.mock.calls.map((call) => call[0])).toEqual(['which', 'bash']);
+  });
+
+  it('tries zsh when bash cannot find the tool', () => {
+    mockedExecFileSync.mockImplementation((command: string) => {
+      if (command !== 'zsh') throw new Error('not found');
+      return '/login/bin/gh\n';
+    });
+    expect(resolveCliPath('gh', 'darwin')).toBe('/login/bin/gh');
+    expect(mockedExecFileSync.mock.calls.map((call) => call[0])).toEqual(['which', 'bash', 'zsh']);
   });
 
   it('returns null when the tool is absent', () => {

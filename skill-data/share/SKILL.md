@@ -3,12 +3,32 @@ name: share
 description: >-
   Turn a session into a team learning: summarize what was solved, discovered or worked around,
   and publish it to the team knowledge base with `teamai contribute`. Loaded on demand by the
-  teamai discovery stub, and by the friction reminder that ends a session worth sharing.
+  teamai discovery stub, by the learning step of the teamai-share-learnings workflow, and by the
+  friction reminder where teamai-share-learnings is not offered.
 ---
 
 # Contribute — share what a session taught you with the team
 
 Summarize what this AI coding session taught you and push it to the team knowledge base.
+
+## Who sent you here
+
+- **The `learning` step of a `teamai-share-learnings` run** (its brief names this skill): work
+  steps 1–3 of How It Works with the person, in this session rather than a sub-agent. The session
+  may have taught more than one thing: write each learning the person wants to share to its own
+  document outside the repository, and return them as the list the brief asks for, each with its
+  path, title and learnings namespace; return an empty list when nothing is worth sharing. Do not
+  run `teamai contribute`: the run's `contribute` step runs it for each one after its approval.
+- **The friction reminder** (its `[teamai]` text names `teamai skill get share`): teamai already
+  found that `teamai-share-learnings` cannot run here. Follow How It Works to the end.
+- **The person asked to share what this session taught, or to close it**: start the
+  `teamai-share-learnings` workflow (to only publish or score it, `teamai-share-session`). Run
+  `teamai workflow start --describe teamai-share-learnings --driver skill`,
+  give the person each proposed input with its `why`, and start it with those values once they
+  confirm or change them (`teamai skill get workflow` covers the run). Its `learning` step brings
+  you back here. When describe refuses it (`invoke_denied`, `unattended_denied`,
+  `nested_workflow`), tell the person why and follow How It Works to the end.
+- **Anything else in When to Use**: follow How It Works to the end.
 
 **Write the document in Simplified Chinese**, as earlier releases required. Commands, flags,
 URLs, paths and code identifiers stay as they are.
@@ -50,7 +70,7 @@ teamai contribute --file /tmp/session-summary.md --title "Debugging K8s pod star
 
 ## Important
 
-- Run this as a **sub-agent** (Agent tool) to avoid polluting the main session's context
+- Outside a `teamai-share-learnings` run, run this as a **sub-agent** (Agent tool) to avoid polluting the main session's context
 - The document is pushed to the team repo's `teamai-learnings` branch, under `learnings/`, with no pull request
 - Team members will see it on their next `teamai pull`
 - Keep summaries concise and actionable — this is a knowledge base, not a diary

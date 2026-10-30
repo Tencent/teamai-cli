@@ -9,9 +9,11 @@ import {
   type CodexTrustPolicy, type MainCheckoutHooks, type SharedHooksManifest, type TeamHookHistory,
 } from './hooks.js';
 import { codexTeamHookIndexPath } from './codex-team-hooks.js';
+import { bridgedTeamHookDir, bridgedTeamHookFile, isBridgedTeamHookTool } from './bridged-team-hooks.js';
 import {
   removeOpenClawHooks,
   removeOpenClawHookEntry,
+  removeOpenClawTeamHooks,
   OPENCLAW_HOOK_DIR,
   OPENCLAW_HOOK_KEY,
   resolveOpenClawHooksDir,
@@ -73,6 +75,8 @@ import { channelsOf, hookFormatOf } from './tools.js';
 import { CODEX_TOOL_IDS } from './utils/tool-names.js';
 import { allowsSkillDirectory, CODEX_TOOL, describeOutsideSkillLink, describeSkillDirectoryBlock, findSkillDirectoryBlock, skillOrigin } from './resources/skills.js';
 import { describeKeptDir, describeMembersDirLeft, isLink, keepsTrackedCopy, ownsSkillDir, teamaiSkillFiles } from './resources/delivered-copies.js';
+import { generatedSkillAt } from './workflow/discovery/generated-marker.js';
+import { mayBeGeneratedSkill } from './workflow/discovery/workflow-skills.js';
 import { clearInstructionFile, resolveInstructionTargets } from './instruction-targets.js';
 import {
   pathExists,
@@ -118,10 +122,13 @@ interface RemovalPlan {
   /** teamai's OMP extension in every profile that has one (~/.omp/agent/extensions/teamai-hooks.ts, ~/.omp/profiles/<name>/agent/…). */
   ompHookFiles: string[];
   kiroHookFile: string | null;
+  agyHookFile: string | null;
   /** Pi extension files owned by this scope (global for user, legacy project copy for project). */
   piHookFiles: string[];
   /** DeepSeek Harness home mount, generated hook config, or legacy overlay, if present. */
   dshHookFile: string | null;
+  /** The team hooks teamai's bridge runs for a tool (~/.teamai/team-hooks/<tool>.json). */
+  bridgedTeamHookFiles: string[];
   /** Manifest used by the primary hook injection scope. */
   hookManifestPath: string;
   /** The team's hooks at every revision: an unrecorded entry equal to exactly one of them is teamai's (#993). */
@@ -251,8 +258,10 @@ interface ToolResources {
   opencodePluginDirs: string[];
   ompHookFiles: string[];
   kiroHookFile: string | null;
+  agyHookFile: string | null;
   piHookFiles: string[];
   dshHookFile: string | null;
+  bridgedTeamHookFiles: string[];
   claudeMdFiles: string[];
   /** Files an earlier release wrote this tool's instruction blocks to; no tool reads them now (#945). */
   retiredInstructionFiles: string[];
@@ -284,8 +293,10 @@ function hasToolResources(r: ToolResources): boolean {
     r.opencodePluginDirs.length > 0 ||
     r.ompHookFiles.length > 0 ||
     r.kiroHookFile !== null ||
+    r.agyHookFile !== null ||
     r.piHookFiles.length > 0 ||
     r.dshHookFile !== null ||
+    r.bridgedTeamHookFiles.length > 0 ||
     r.claudeMdFiles.length > 0 ||
     r.retiredInstructionFiles.length > 0 ||
     r.opencodeInstructions.length > 0 ||
@@ -488,7 +499,7 @@ async function discoverToolResources(
   globalAdapters = scope === 'user',
 ): Promise<ToolResources> {
   const res: ToolResources = {
-    hookFiles: [], openclawHookDirs: [], opencodePluginDirs: [], ompHookFiles: [], kiroHookFile: null, piHookFiles: [], dshHookFile: null,
+    hookFiles: [], openclawHookDirs: [], opencodePluginDirs: [], ompHookFiles: [], kiroHookFile: null, agyHookFile: null, piHookFiles: [], dshHookFile: null, bridgedTeamHookFiles: [],
     claudeMdFiles: [], retiredInstructionFiles: [], opencodeInstructions: [], keptGlobal: [], skillDirs: [], keptSkillDirs: [], keptFiles: [], ruleFiles: [], keptRuleFiles: [], opencodeOwnedGlobs: [], agentFiles: [],
   };
 
@@ -549,6 +560,13 @@ async function discoverToolResources(
     if (await ownsKiroHooks()) {
       if (globalAdapters) res.kiroHookFile = kiroHookFile();
       else res.keptGlobal.push(kiroHookFile());
+    }
+  } else if (tool === 'agy') {
+    // One user-wide hooks.json; teamai's entry is the one named `teamai`.
+    const { hasAgyHooks, agyHookFile } = await import('./agy-hooks.js');
+    if (await hasAgyHooks()) {
+      if (globalAdapters) res.agyHookFile = agyHookFile();
+      else res.keptGlobal.push(agyHookFile());
     }
   } else if (tool === 'omp') {
     // OMP hooks are a single teamai-managed TS extension in the user agent dir
@@ -664,6 +682,17 @@ async function discoverToolResources(
       }
     }
   }
+  // The team hooks teamai's bridge runs for the tool, as machine-wide as its adapter. A project
+  // takes out the team hooks gated to it, as for ZCode, and keeps the file for the others.
+  const bridgedFile = isBridgedTeamHookTool(tool) ? bridgedTeamHookFile(tool) : null;
+  if (bridgedFile && await pathExists(bridgedFile)) {
+    const home = hookTargets.find((target) => target.teamOnly && target.fileFor?.(tool) === bridgedFile);
+    if (globalAdapters) res.bridgedTeamHookFiles.push(bridgedFile);
+    else if (home && await hasTeamaiHooks(bridgedFile, tool, home.manifestPath)) {
+      res.hookFiles.push({ path: bridgedFile, tool, manifestPath: home.manifestPath, teamOnly: true,
+        ...(home.teamHookProjectRoot ? { teamHookProjectRoot: home.teamHookProjectRoot } : {}) });
+    } else res.keptGlobal.push(bridgedFile);
+  }
 
   // (b) CLAUDE.md teamai section blocks. OpenCode's instructions entry goes
   // only when teamai recorded adding it (buildRemovalPlan): an entry the
@@ -692,8 +721,10 @@ async function discoverToolResources(
       if (await pathExists(skillsDir)) {
         const dirs = await listDirs(skillsDir);
         for (const dir of dirs) {
-          if (!teamSkillNames.has(dir)) continue;
           const skillDir = path.join(skillsDir, dir);
+          // A skill pull generated from a workflow has no team name, only its marker; `ownsSkill` keeps an edited one.
+          const isGenerated = mayBeGeneratedSkill(dir) && (await generatedSkillAt(skillDir)).kind === 'ours';
+          if (!isGenerated && !teamSkillNames.has(dir)) continue;
           // Delivery's rule: a root linked out of the checkout is not deleted through.
           if (!await allowsSkillDirectory(rootBase, skillDir, { keepSkillLink: true })) {
             res.keptSkillDirs.push(describeOutsideSkillLink(skillDir));
@@ -794,6 +825,7 @@ async function keptForProjects(): Promise<KeptForProjects> {
   const shared = [
     getUserManagedHooksPath(),
     codexTeamHookIndexPath(),
+    bridgedTeamHookDir(),
     ...await secretsFor(readers),
     ...await sourceRecordsFor(readers),
   ];
@@ -879,7 +911,7 @@ async function sourceRecordsFor(readers: ReadonlyArray<LocalConfig[] | null>): P
 
 /** Each of `homes` holding teamai's Hermes hook, plugin or config.yaml entries, with what goes from it. */
 async function hermesHooksIn(homes: readonly string[]): Promise<RemovalPlan['hermesHomes']> {
-  const { getInstructionsPluginDir, getReportScriptPath, hasHermesHooks, ownsInstructionsPlugin } = await import('./hermes-hooks.js');
+  const { getInstructionsPluginDir, getReportScriptPath, getTeamHookScriptPath, hasHermesHooks, ownsInstructionsPlugin } = await import('./hermes-hooks.js');
   const { getHermesAllowlistPath, getHermesConfigPath } = await import('./hermes-config.js');
   const found: RemovalPlan['hermesHomes'] = [];
   for (const home of homes) {
@@ -887,6 +919,7 @@ async function hermesHooksIn(homes: readonly string[]): Promise<RemovalPlan['her
     const plugin = getInstructionsPluginDir(home);
     const lines = [
       ...await pathExists(getReportScriptPath(home)) ? [getReportScriptPath(home)] : [],
+      ...await pathExists(getTeamHookScriptPath(home)) ? [getTeamHookScriptPath(home)] : [],
       ...await pathExists(plugin) && await ownsInstructionsPlugin(home) ? [`${plugin}/`] : [],
     ];
     const entries: string[] = [];
@@ -994,6 +1027,7 @@ async function buildRemovalPlan(
   // A tool that keeps its user hooks in a project (ZCode) reads them from HOME; a project removes only its gated team hooks.
   const hookPaths = hookToolPathsForConfig(teamConfig, localConfig);
   const homeHookFile = (tool: string): string | null => {
+    if (isBridgedTeamHookTool(tool)) return bridgedTeamHookFile(tool);
     const settings = channelsOf(tool).hooks.self === 'user' ? hookPaths[tool]?.settings : undefined;
     return settings ? path.join(getUserHome(), settings) : null;
   };
@@ -1267,8 +1301,10 @@ async function buildRemovalPlan(
     opencodePluginDirs: [],
     ompHookFiles: [],
     kiroHookFile: null,
+    agyHookFile: null,
     piHookFiles: [],
     dshHookFile: null,
+    bridgedTeamHookFiles: [],
     hookManifestPath: hookTargets[0].manifestPath,
     teamHookHistory: hookHistory,
     claudeMdFiles: [],
@@ -1366,7 +1402,9 @@ async function buildRemovalPlan(
     plan.openclawHookDirs.push(...res.openclawHookDirs);
     plan.opencodePluginDirs.push(...res.opencodePluginDirs);
     plan.ompHookFiles.push(...res.ompHookFiles);
+    plan.bridgedTeamHookFiles.push(...res.bridgedTeamHookFiles);
     if (res.kiroHookFile) plan.kiroHookFile = res.kiroHookFile;
+    if (res.agyHookFile) plan.agyHookFile = res.agyHookFile;
     plan.piHookFiles.push(...res.piHookFiles);
     if (res.dshHookFile) plan.dshHookFile = res.dshHookFile;
     plan.opencodeInstructions.push(...res.opencodeInstructions);
@@ -1537,7 +1575,9 @@ function isPlanEmpty(plan: RemovalPlan): boolean {
     plan.openclawHookDirs.length === 0 &&
     plan.opencodePluginDirs.length === 0 &&
     plan.ompHookFiles.length === 0 &&
+    plan.bridgedTeamHookFiles.length === 0 &&
     plan.kiroHookFile === null &&
+    plan.agyHookFile === null &&
     plan.piHookFiles.length === 0 &&
     plan.dshHookFile === null &&
     plan.hermesHomes.length === 0 &&
@@ -1622,6 +1662,11 @@ function printSummary(plan: RemovalPlan, agentFilter?: string): void {
     console.log('');
   }
   if (plan.kiroHookFile !== null) console.log(`   Kiro Hooks: ${plan.kiroHookFile}`);
+  if (plan.agyHookFile !== null) console.log(`   Antigravity Hooks: ${plan.agyHookFile} (the "teamai" entry)`);
+  if (plan.bridgedTeamHookFiles.length > 0) {
+    console.log(`   Team hooks teamai runs (${plan.bridgedTeamHookFiles.length} files):`);
+    for (const file of plan.bridgedTeamHookFiles) console.log(`     ${file}`);
+  }
 
   if (plan.piHookFiles.length > 0) {
     console.log(`   Pi Hooks (${plan.piHookFiles.length} files):`);
@@ -2247,6 +2292,15 @@ async function executeRemoval(
     await removeKiroHooks();
   }
 
+  if (plan.agyHookFile !== null) {
+    try {
+      const { reconcileAgyHooks } = await import('./agy-hooks.js');
+      await reconcileAgyHooks({ removeAll: true });
+    } catch (e) {
+      log.warn(`Failed to remove Antigravity hooks from ${plan.agyHookFile}: ${(e as Error).message}`);
+    }
+  }
+
   // (a2c) Remove the generated Pi extension.
   for (const hookFile of plan.piHookFiles) {
     try {
@@ -2265,6 +2319,23 @@ async function executeRemoval(
       await reconcileDshHooks([], { manifestPath: plan.hookManifestPath, removeAll: true });
     } catch (e) {
       log.warn(`Failed to remove DeepSeek Harness hooks: ${(e as Error).message}`);
+    }
+  }
+
+  // (a2e) Remove the team hooks teamai's bridge runs, and OpenClaw's plugin that runs them.
+  for (const file of plan.bridgedTeamHookFiles) {
+    try {
+      await remove(file);
+      log.success(`Removed the team hooks teamai runs from ${file}`);
+    } catch (e) {
+      log.warn(`Failed to remove ${file}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  if (plan.openclawHookDirs.some(({ tool }) => tool === 'openclaw')) {
+    try {
+      await removeOpenClawTeamHooks();
+    } catch (e) {
+      log.warn(`Failed to remove the teamai OpenClaw team hooks plugin: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -2829,7 +2900,7 @@ async function removeConfirmed(
 
   if (incomplete) {
     const files = [...pendingOpencode.map((ref) => ref.config), ...hooksLeft.map((hook) => hook.what), ...blocksLeft, ...filesLeft];
-    log.warn(`Uninstall incomplete: kept ${plan.teamaiHome} and the ownership records so removal can be retried. Repair permissions or JSON in ${files.join(', ')}, then run the same uninstall command again.`);
+    log.warn(`Uninstall incomplete: kept ${plan.teamaiHome} and the ownership records so removal can be retried. Repair permissions, JSON or TOML in ${files.join(', ')}, then run the same uninstall command again.`);
     process.exitCode = 1;
   } else {
     log.success('teamai uninstalled');

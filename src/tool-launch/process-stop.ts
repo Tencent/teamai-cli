@@ -25,37 +25,74 @@ export interface ProcessGroup {
 
 const ProcessGroupSchema = z.object({ pid: z.number().int().positive(), start: z.string().min(1) });
 
-/** The file in a directory that records the last process group started for it. */
-const GROUP_FILE = 'group.json';
+/** The file a teamai before #1523 wrote in a directory: the last process group started there. */
+const LEGACY_GROUP_FILE = 'group.json';
+/** The prefix of the files that record a process group started in a directory, one file per group. */
+const GROUP_PREFIX = 'group-';
+/** The name of the file that records one process group, by its pid. */
+const GROUP_FILE = /^group-\d+\.json$/;
 
 /**
  * Records in `dir` the process group `child` leads, for `stopRecordedGroup` to stop once whatever started it is gone.
  * Synchronous on purpose: a starter killed right after the spawn still leaves the record, which an await would widen.
+ *
+ * One file per group: a setup and the command of one attempt each start a group in the same directory, and the second
+ * must not displace the first, or a stop of the attempt leaves the first running (#1523).
  */
 export function recordGroup(child: ChildProcess, dir: string): void {
   const start = child.pid === undefined ? undefined : processStarts()?.get(child.pid);
   if (child.pid === undefined || start === undefined) return;
-  const file = path.join(dir, GROUP_FILE);
+  const body = JSON.stringify({ pid: child.pid, start });
+  writeGroup(path.join(dir, `${GROUP_PREFIX}${child.pid}.json`), body);
+  // A teamai before #1523 reads only `group.json`, so the latest group is written there as well: a release that
+  // predates the per-group files then stops one group rather than none. It reads the same group twice here, which
+  // stops nothing twice.
+  writeGroup(path.join(dir, LEGACY_GROUP_FILE), body);
+}
+
+/** Writes the record of one process group, so a reader never sees half of it. */
+function writeGroup(file: string, body: string): void {
   const temporary = `${file}.${process.pid}.tmp`;
   try {
-    fs.writeFileSync(temporary, JSON.stringify({ pid: child.pid, start }));
+    fs.writeFileSync(temporary, body);
     fs.renameSync(temporary, file);
   } catch {
     // The starter still stops its child itself; only a starter killed with it would leave the group running.
   }
 }
 
-/** Stops the process group `recordGroup` last recorded in `dir`, when one is, and removes the record. */
+/**
+ * Stops every process group recorded in `dir`, and removes the records. A setup and the command of one attempt each
+ * start a group there, and a stop of the attempt has to reach both.
+ */
 export async function stopRecordedGroup(dir: string): Promise<void> {
-  const file = path.join(dir, GROUP_FILE);
-  let recorded: ProcessGroup;
-  try {
-    recorded = ProcessGroupSchema.parse(JSON.parse(await fs.promises.readFile(file, 'utf8')));
-  } catch {
-    return;
+  for (const file of await recordedGroups(dir)) {
+    const recorded = await readGroup(file);
+    if (recorded !== undefined) await stopGroup(recorded);
+    await fs.promises.rm(file, { force: true });
   }
-  await stopGroup(recorded);
-  await fs.promises.rm(file, { force: true });
+}
+
+/** The files in `dir` that record a process group: one per group, and the one a teamai before #1523 wrote. */
+async function recordedGroups(dir: string): Promise<string[]> {
+  let names: string[];
+  try {
+    names = await fs.promises.readdir(dir);
+  } catch {
+    return [];
+  }
+  return names
+    .filter((name) => GROUP_FILE.test(name) || name === LEGACY_GROUP_FILE)
+    .map((name) => path.join(dir, name));
+}
+
+/** What the file `file` records, undefined when it records nothing readable. */
+async function readGroup(file: string): Promise<ProcessGroup | undefined> {
+  try {
+    return ProcessGroupSchema.parse(JSON.parse(await fs.promises.readFile(file, 'utf8')));
+  } catch {
+    return undefined;
+  }
 }
 
 /** Whether a signal reached any process of group `pid`. */

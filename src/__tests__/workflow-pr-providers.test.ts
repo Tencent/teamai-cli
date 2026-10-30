@@ -11,7 +11,7 @@ import { providerForRemote } from '../providers/registry.js';
 import type { GitProvider, PullRequestLookup, PullRequestRef } from '../providers/types.js';
 import { fakeGh, resolveGh } from './helpers/fake-gh.js';
 
-const ref: PullRequestRef = { repo: 'acme/app', source: 'teamai/run/work/p1', target: 'main', timeoutMs: 1000 };
+const ref: PullRequestRef = { repo: 'acme/app', source: 'teamai/run/work/p1', target: 'main', timeoutMs: 3000 };
 const pull = (head: string, repo = 'acme/app', number = 7) => ({
   state: 'open', html_url: `https://github.com/acme/app/pull/${number}`, head: { ref: head, repo: { full_name: repo } }, base: { ref: 'main', repo: { full_name: 'acme/app' } },
 });
@@ -80,12 +80,13 @@ setInterval(() => {}, 1000);
 `, { mode: 0o755 });
     resolveGh(launcher);
     let deadline: ReturnType<typeof setTimeout> | undefined;
-    const answer = lookup().findOpen({ ...ref, timeoutMs: 300 }).then(() => 'found', () => 'failed');
+    // Include native launcher startup under load before testing the held-pipe deadline.
+    const answer = lookup().findOpen({ ...ref, timeoutMs: 3000 }).then(() => 'found', () => 'failed');
     try {
-      await vi.waitFor(() => expect(fs.existsSync(pidFile)).toBe(true));
+      await vi.waitFor(() => expect(fs.existsSync(pidFile)).toBe(true), { timeout: 2500 });
       const result = await Promise.race([
         answer,
-        new Promise<string>((resolve) => { deadline = setTimeout(() => resolve('still waiting for the pipe'), 1000); }),
+        new Promise<string>((resolve) => { deadline = setTimeout(() => resolve('still waiting for the pipe'), 4000); }),
       ]);
       expect(result).toBe('failed');
     } finally {

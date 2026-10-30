@@ -230,6 +230,22 @@ const COMPLETE_ROWS: readonly MatrixRow[] = [
     source: 'Kiro docs MCP configuration, issue #1221 Matrix',
   },
   {
+    tool: 'agy', scope: 'user',
+    writes: [{ at: '~/.gemini/config/mcp_config.json', key: ['mcpServers'] }],
+    existingDirs: ['~/.gemini/config'],
+    installed: { probe: '~/.gemini/config', met: true },
+    reads: [{ at: '~/.gemini/config/mcp_config.json', key: ['mcpServers'], when: 'always' }],
+    source: 'agy 1.4.8: `agy mcp list` in an isolated HOME',
+  },
+  {
+    tool: 'agy', scope: 'project',
+    writes: [{ at: '<root>/.agents/plugins/teamai/mcp_config.json', key: ['mcpServers'] }],
+    existingDirs: ['~/.gemini/config'],
+    installed: { probe: '~/.gemini/config', met: true },
+    reads: [{ at: '<root>/.agents/plugins/teamai/mcp_config.json', key: ['mcpServers'], when: 'workspaceUnder' }],
+    source: "agy 1.4.8 session: a project plugin's MCP tool answered; <root>/.agents/mcp_config.json is not read",
+  },
+  {
     tool: 'omp', scope: 'user',
     writes: [{ at: '~/.omp/agent/mcp.json', key: ['mcpServers'] }],
     existingDirs: ['~/.omp'],

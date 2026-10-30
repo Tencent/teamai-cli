@@ -10,10 +10,46 @@ import type { TeamaiInit } from './config.js';
 import { log } from './utils/logger.js';
 import { remotesMatch } from './utils/git.js';
 import { assertSafeResourceName } from './utils/path-safety.js';
+import { shellQuoteValue } from './utils/shell-profile.js';
 import { isOverrideInvalid } from './tool-launch/call.js';
 
 /** The caches an incremental extraction reuses, kept with each codebase's evidence. */
 const INCREMENTAL_CACHES = ['facts-cache.json', 'interfaces-cache.json'] as const;
+
+/**
+ * Serialises root source-manifest.json publishes inside this process.
+ *
+ * `--from-repo-list` imports up to `--concurrency` repos in one process, and
+ * every import publishes its staging manifest over the shared
+ * `teamwiki/source-manifest.json`. `fs.copy(..., { overwrite: true })`
+ * unlinks the destination before writing, so two repos reaching that line
+ * together raced: one unlinked the file the other had just unlinked and the
+ * import failed with ENOENT. The root manifest is a single-project baseline
+ * (the latest publish wins by design), so the fix is to serialise the
+ * publish, not to merge entries. Each codebase keeps its own baseline in
+ * `evidence/code/<slug>/source-manifest.json`.
+ */
+let manifestPublishQueue: Promise<void> = Promise.resolve();
+let manifestPublishSeq = 0;
+
+async function publishRootManifest(stagingManifest: string, wikiRoot: string): Promise<void> {
+  const target = path.join(wikiRoot, 'source-manifest.json');
+  const publish = manifestPublishQueue.then(async () => {
+    // Copy next to the target, then rename over it: a reader never sees a
+    // half-written manifest, and a failed copy cannot destroy the previous one.
+    const tmp = `${target}.tmp-${process.pid}-${manifestPublishSeq++}`;
+    try {
+      await fs.copyFile(stagingManifest, tmp);
+      await fs.rename(tmp, target);
+    } catch (err) {
+      await fs.remove(tmp).catch(() => {});
+      throw err;
+    }
+  });
+  // A failed publish must not wedge the queue for the repos still importing.
+  manifestPublishQueue = publish.catch(() => {});
+  await publish;
+}
 
 export interface ImportCodebaseOptions {
   /** Source checkout to extract (a local dir, a clone-cache dir, or a CI checkout). */
@@ -507,7 +543,7 @@ export async function importCodebase(opts: ImportCodebaseOptions): Promise<boole
     }
     const stagingManifest = path.join(stagingWiki, 'source-manifest.json');
     if (await fs.pathExists(stagingManifest)) {
-      await fs.copy(stagingManifest, path.join(wikiRoot, 'source-manifest.json'), { overwrite: true });
+      await publishRootManifest(stagingManifest, wikiRoot);
     }
     return true;
   } finally {
@@ -517,14 +553,17 @@ export async function importCodebase(opts: ImportCodebaseOptions): Promise<boole
 
 /**
  * Reconcile product docs with code knowledge, then deep-enrich the codebase.
- * Both are non-blocking; deep enrich runs only when `_manifest.json` exists.
+ * Reconcile is non-blocking; deep enrich runs only when `_manifest.json` exists.
+ *
+ * @returns false when deep enrich ran and did not finish; what is missing, or
+ *   the error, is already printed as a warning
  */
 export async function reconcileAndDeepEnrich(params: {
   slug: string;
   wikiRoot: string;
   sourceDir: string;
   skipEnrich: boolean;
-}): Promise<void> {
+}): Promise<boolean> {
   const { slug, wikiRoot, sourceDir, skipEnrich } = params;
   try {
     const { reconcileKnowledge } = await import('./wiki-engine/adapters/index.js');
@@ -537,15 +576,38 @@ export async function reconcileAndDeepEnrich(params: {
   }
 
   const evidenceDir = path.join(wikiRoot, 'evidence', 'code', slug);
-  if (skipEnrich || !(await fs.pathExists(path.join(evidenceDir, '_manifest.json')))) return;
+  if (skipEnrich || !(await fs.pathExists(path.join(evidenceDir, '_manifest.json')))) return true;
   try {
     const { deepEnrich } = await import('./deep-enrich.js');
-    await deepEnrich({ project: slug, evidenceDir, wikiRoot, cacheDir: sourceDir });
-    log.info(`Deep enrich complete: ${slug}`);
+    const result = await deepEnrich({ project: slug, evidenceDir, wikiRoot, cacheDir: sourceDir });
+    if (result.complete) log.info(`Deep enrich complete: ${slug}`);
+    return result.complete;
   } catch (err) {
     if (isOverrideInvalid(err)) throw err;
-    log.debug(`deep-enrich failed for ${slug} (non-blocking): ${(err as Error).message}`);
+    log.warn(`Deep enrich failed for ${slug}: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
   }
+}
+
+/**
+ * Fail the import a person ran whose deep enrich did not finish, and say how to
+ * resume it. The extracted evidence stays published.
+ */
+export function failIncompleteDeepEnrich({ slug, output }: {
+  slug: string;
+  output: string | undefined;
+}): void {
+  const project = shellArg(slug);
+  const retry = output
+    ? `teamai codebase --deep-enrich --project ${project} --output ${shellArg(output)}`
+    : `teamai codebase --deep-enrich --project ${project}`;
+  log.warn(`Deep enrich incomplete: ${slug}. Run \`${retry}\` to retry.`);
+  process.exitCode = 1;
+}
+
+/** Quoted only when needed, so a printed command can be copied as is. */
+function shellArg(value: string): string {
+  return /^[\w@%+=:,./-]+$/.test(value) ? value : shellQuoteValue(value);
 }
 
 /** Rebuild the global graph and router.md / index.md after evidence changed. */
@@ -583,18 +645,21 @@ export async function publishTeamwikiViaMR(team: TeamaiInit, message: string): P
  * `teamai import --dir`, and the teamwiki update of `teamai ci extract-mr`:
  * import a checkout, reconcile and deep-enrich it, and refresh the indexes.
  *
- * @returns whether the teamwiki changed
+ * @returns whether the teamwiki changed, and for a change whether deep enrich
+ *   finished (true when it did not run)
  */
-export async function importLocalCheckout(opts: ImportCodebaseOptions): Promise<boolean> {
+export async function importLocalCheckout(
+  opts: ImportCodebaseOptions,
+): Promise<{ updated: false } | { updated: true; deepEnrichComplete: boolean }> {
   const updated = await importCodebase(opts);
   if (!updated) {
     log.info(`${opts.slug}: no source changes since the last import, teamwiki unchanged`);
-    return false;
+    return { updated: false };
   }
   log.info(`teamwiki/ knowledge graph updated: ${opts.slug}`);
-  await reconcileAndDeepEnrich({
+  const deepEnrichComplete = await reconcileAndDeepEnrich({
     slug: opts.slug, wikiRoot: opts.wikiRoot, sourceDir: opts.sourceDir, skipEnrich: opts.skipEnrich ?? false,
   });
   await refreshTeamwikiIndexes(opts.wikiRoot);
-  return true;
+  return { updated: true, deepEnrichComplete };
 }

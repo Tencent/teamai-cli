@@ -9,8 +9,15 @@ export type Evidence = 'verified' | 'source' | 'docs' | 'assumed';
 /** The host's dedicated skill tool, by its raw name. */
 export type SkillCall = { readonly name: string; readonly evidence: Evidence };
 
+/**
+ * How a prompt that loads a skill with no tool call reaches teamai: a `$name`
+ * Codex resolves, the `<skill>` block Pi expands `/skill:name` into, the
+ * `@command://name` the CodeBuddy plugin sends, or the `/name` most tools take.
+ */
+export type PromptForm = '$name' | 'skill-block' | 'command-uri' | '/name';
+
 export type SkillLoad =
-  | { readonly calls: readonly SkillCall[]; readonly promptForm?: '$name' | 'skill-block' }
+  | { readonly calls: readonly SkillCall[]; readonly promptForm?: PromptForm | readonly PromptForm[] }
   | 'unknown';
 
 /** One way a machine moves a tool's home. */
@@ -205,8 +212,8 @@ export type HookFormat = 'claude' | 'cursor' | 'codex' | 'copilot' | 'zcode';
 export type HookSettings<R> = { readonly channel: 'settings'; readonly format: HookFormat; readonly reads: Reads<R> };
 
 /** A file or directory of teamai's own the tool loads from its home, written by the tool's own adapter. */
-export type HookAdapterId = 'opencode-plugin' | 'pi-extension' | 'omp-extension' | 'hermes-plugin' | 'openclaw-hook' | 'dsh-hooks' | 'kiro-hooks';
-export type HookAdapter = { readonly channel: 'adapter'; readonly adapter: HookAdapterId; readonly evidence: Evidence; /** The adapter also runs the team's custom hooks, not only the built-ins. */ readonly teamHooks?: boolean };
+export type HookAdapterId = 'opencode-plugin' | 'pi-extension' | 'omp-extension' | 'hermes-plugin' | 'openclaw-hook' | 'dsh-hooks' | 'kiro-hooks' | 'agy-hooks';
+export type HookAdapter = { readonly channel: 'adapter'; readonly adapter: HookAdapterId; readonly evidence: Evidence };
 
 /**
  * Where teamai installs the tool's hooks. A workspace takes the user hooks
@@ -726,7 +733,7 @@ export const TOOLS = {
       aiBackend: '✓d',
       votesJudge: '?',
       sessionJudge: { cell: '✓d', note: 'a subagent works in its own context window, without the conversation; not run' },
-      agentHooks: '?',
+      agentHooks: { cell: '✓d', note: 'runs from teamai\'s team-hook bridge, which can block a tool call; Kiro\'s hook docs' },
     },
   },
   // Trae keeps user MCP servers in its app-support directory, which teamai does not write.
@@ -870,7 +877,7 @@ export const TOOLS = {
       user: { format: 'claude', reads: [{ base: 'home', path: '.omp/agent/mcp.json', evidence: 'verified' }] },
       project: { format: 'claude', reads: [{ base: 'project', path: '.omp/mcp.json', when: 'cwdOnly', evidence: 'verified' }] },
     },
-    hooks: { user: { channel: 'adapter', adapter: 'omp-extension', evidence: 'verified', teamHooks: true }, self: 'user' },
+    hooks: { user: { channel: 'adapter', adapter: 'omp-extension', evidence: 'verified' }, self: 'user' },
     sessions: 'none',
     launch: 'omp',
     features: {
@@ -881,7 +888,7 @@ export const TOOLS = {
       aiBackend: '✓d',
       votesJudge: '?',
       sessionJudge: { cell: '✓s', note: 'the task tool starts each child as a new agent session (omp 18.12.6); not run' },
-      agentHooks: '—t',
+      agentHooks: { cell: '✓s', note: 'runs from teamai\'s team-hook bridge, which can block a tool call; OMP\'s extension source' },
     },
   },
   pi: {
@@ -917,14 +924,23 @@ export const TOOLS = {
       aiBackend: '✓s',
       votesJudge: '?',
       sessionJudge: { cell: '◐s', note: 'bare Pi starts no subagent, so its session answers h4 and does not judge; the subagent example extension adds one (since 0.24.0); not run' },
-      agentHooks: '?',
+      agentHooks: { cell: '✓s', note: 'runs from teamai\'s team-hook bridge, which can block a tool call; Pi\'s extension source' },
     },
   },
   // Model switching follows the same recorded home for models.json.
-  // The CodeBuddy IDE sends `skill` (src/utils/tool-names.ts). CODEBUDDY_CONFIG_DIR replaces ~/.codebuddy, and ~/.codebuddy.json moves into it.
+  // CODEBUDDY_CONFIG_DIR replaces ~/.codebuddy, and ~/.codebuddy.json moves into it.
+  // Two hosts share this home: the IDE sends the tool name `skill`
+  // (src/utils/tool-names.ts), while the VSCode plugin's own skill tool is
+  // `use_skill` (#1516). A manual slash command lands as `@command://name`
+  // rather than `/name`, so the prompt form is that.
   codebuddy: {
     home: { dir: '.codebuddy', moves: { by: [{ kind: 'env', name: 'CODEBUDDY_CONFIG_DIR', evidence: 'verified' }], defaultHomeLeftovers: true } },
-    skillLoad: { calls: [{ name: 'Skill', evidence: 'verified' }, { name: 'skill', evidence: 'assumed' }] },
+    skillLoad: {
+      calls: [{ name: 'Skill', evidence: 'verified' }, { name: 'skill', evidence: 'assumed' }, { name: 'use_skill', evidence: 'source' }],
+      // The plugin lands a manual slash command as `@command://name` (#1516);
+      // the generic `/name` counts too, for a build that sends that.
+      promptForm: ['/name', 'command-uri'],
+    },
     skills: { user: [{ base: 'home', path: '.codebuddy/skills', evidence: 'verified' }], project: 'unknown' },
     rules: {
       user: { channel: 'dir', format: 'codebuddy', reads: [{ base: 'home', path: '.codebuddy/rules', evidence: 'verified' }] },
@@ -1000,7 +1016,7 @@ export const TOOLS = {
       aiBackend: '✓d',
       votesJudge: '—t',
       sessionJudge: { cell: '◐s', note: 'sessions_spawn with isolated context, in the coding and messaging tool profiles; a tool policy can remove it; not run' },
-      agentHooks: '◐s',
+      agentHooks: { cell: '✓s', note: 'runs from teamai\'s team-hook bridge, which can block a tool call; OpenClaw\'s plugin source' },
     },
   },
   // hermes_constants.py and hermes_cli/main.py at 68134629 (the same rules at 7e9eb8d9). Hermes reads its home in either scope.
@@ -1032,7 +1048,7 @@ export const TOOLS = {
       aiBackend: '✓s',
       votesJudge: '—t',
       sessionJudge: { cell: '✓s', note: 'delegate_task starts a child agent with a fresh conversation; not run' },
-      agentHooks: { cell: '✓t', note: '#1224 maps the events to Hermes\'s; not rerun' },
+      agentHooks: { cell: '✓s', note: 'runs from teamai\'s team-hook bridge, which can block a tool call; Hermes\'s shell-hook source' },
     },
   },
   dsh: {
@@ -1162,7 +1178,7 @@ export const TOOLS = {
         ],
       },
     },
-    hooks: { user: { channel: 'adapter', adapter: 'opencode-plugin', evidence: 'source', teamHooks: true }, self: 'user' },
+    hooks: { user: { channel: 'adapter', adapter: 'opencode-plugin', evidence: 'source' }, self: 'user' },
     sessions: ['opencode'],
     launch: 'opencode',
     features: {
@@ -1173,7 +1189,7 @@ export const TOOLS = {
       aiBackend: '✓v',
       votesJudge: '?',
       sessionJudge: { cell: '✓t', note: '#1386 the session judges its skill-driven run; not rerun' },
-      agentHooks: '◐t',
+      agentHooks: { cell: '✓v', note: 'runs from teamai\'s team-hook bridge, which can block a tool call; OpenCode 1.18.23 ran a team hook through it' },
     },
   },
   // muse-bin 1.4.11: $XDG_CONFIG_HOME/muse, else ~/.config/muse; with XDG_CONFIG_HOME set, ~/.config/muse is never read.
@@ -1218,6 +1234,46 @@ export const TOOLS = {
       votesJudge: { cell: '✓t', note: '#1374 judges the reply in its Stop payload; not rerun' },
       sessionJudge: { cell: '✓t', note: '#1386 the session judges its skill-driven run; not rerun' },
       agentHooks: { cell: '✓t', note: '#1224 writes them to settings.json; not rerun' },
+    },
+  },
+  // agy 1.4.8 runs: ~/.gemini/config holds the user customizations, <root>/.agents a project's.
+  agy: {
+    home: { dir: '.gemini/config' },
+    installedBy: 'home',
+    // A skill loads as a read of its SKILL.md (`view_file` or `read_file`).
+    skillLoad: { calls: [] },
+    skills: {
+      user: [{ base: 'home', path: '.gemini/config/skills', evidence: 'verified' }, { base: 'home', path: '.agents/skills', evidence: 'verified' }],
+      project: [{ base: 'project', path: '.agents/skills', when: 'workspaceUnder', evidence: 'verified' }],
+    },
+    rules: {
+      user: { channel: 'dir', format: 'agy', reads: [{ base: 'home', path: '.gemini/config/rules', evidence: 'verified' }] },
+      project: { channel: 'dir', format: 'agy', reads: [{ base: 'project', path: '.agents/rules', when: 'workspaceUnder', evidence: 'verified' }] },
+    },
+    blocks: {
+      user: { channel: 'file', file: { in: 'rules-dir', name: 'teamai-context.md', owned: true, header: 'trigger-always-on' }, reads: [{ base: 'home', path: '.gemini/config/rules', evidence: 'verified' }] },
+      project: { channel: 'file', file: { in: 'rules-dir', name: 'teamai-context.md', owned: true, header: 'trigger-always-on' }, reads: [{ base: 'project', path: '.agents/rules', when: 'workspaceUnder', evidence: 'verified' }] },
+    },
+    agents: {
+      user: { reads: [{ base: 'home', path: '.gemini/config/agents', evidence: 'verified' }] },
+      project: { reads: [{ base: 'project', path: '.agents/agents', when: 'workspaceUnder', evidence: 'verified' }] },
+    },
+    mcp: {
+      user: { format: 'agy', reads: [{ base: 'home', path: '.gemini/config/mcp_config.json', evidence: 'verified' }] },
+      project: { format: 'agy', reads: [{ base: 'project', path: '.agents/plugins/teamai/mcp_config.json', when: 'workspaceUnder', evidence: 'verified' }] },
+    },
+    hooks: { user: { channel: 'adapter', adapter: 'agy-hooks', evidence: 'verified' }, self: 'user' },
+    sessions: ['agy'],
+    launch: 'agy',
+    features: {
+      env: { cell: '✓v', note: 'agy 1.4.8 run_command inherits the environment agy starts in' },
+      workflows: '✓v',
+      recall: '✓v',
+      stats: '✓v',
+      aiBackend: '✓v',
+      votesJudge: { cell: '✗v', note: 'agy 1.4.8 PostToolUse carries no tool output, so a teamai recall run never reaches the recall log' },
+      sessionJudge: { cell: '✓t', note: 'invoke_subagent starts a fresh conversation that gets only its prompt (agy 1.4.8); no session variable, so the session names its tool with --tools; not run' },
+      agentHooks: { cell: '✓t', note: 'runs from teamai\'s team-hook bridge, which can block a tool call; the dispatcher hands it a Claude payload' },
     },
   },
 } as const satisfies Record<ToolId, ToolDescriptor>;

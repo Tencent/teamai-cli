@@ -1,11 +1,11 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
 import { localAliasesPath } from '../models/aliases.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { scorerNotes } from '../doctor-scorers.js';
-import type { LocalConfig } from '../types.js';
+import { getUserConfigPath, type LocalConfig } from '../types.js';
 
 const dirs: string[] = [];
 
@@ -46,7 +46,7 @@ describe('scorerNotes', () => {
     const inRepo = { ...config, dataHome: path.join(config.projectRoot ?? '', '.teamai') };
 
     expect(await scorerNotes(inRepo)).toEqual([expect.stringMatching(/^Scoring is off for this project: its teamai data is still in .*\.teamai, inside the repository.*Run teamai pull/)]);
-    expect(await scorerNotes(config, { resolveTool: () => null })).toEqual(['Scoring isolation: best-effort, the default.', 'Judge tools here: none on PATH. Install one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, cursor, pi to judge on this machine.']);
+    expect(await scorerNotes(config, { resolveTool: () => null })).toEqual(['Scoring isolation: best-effort, the default.', 'Judge tools here: none on PATH. Install one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, cursor, pi, agy to judge on this machine.']);
   });
 
   it('prints a scoring sessions value it ignores', async () => {
@@ -63,14 +63,14 @@ describe('scorerNotes', () => {
   ])('prints the isolation every judge needs and what sets it: %o %o', async (files, machine, line) => {
     const config = { ...teamRepo({ 'scorers/q.md': SCORER, ...files }), ...machine };
 
-    expect(await scorerNotes(config, { resolveTool: () => null })).toEqual([line, 'Judge tools here: none on PATH. Install one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, cursor, pi to judge on this machine.']);
+    expect(await scorerNotes(config, { resolveTool: () => null })).toEqual([line, 'Judge tools here: none on PATH. Install one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, cursor, pi, agy to judge on this machine.']);
   });
 
   it('names each scorer file that asks for more isolation than the team and this machine', async () => {
     const verified = SCORER.replace('passingScore: 0.5', 'passingScore: 0.5\nisolation: verified');
     const config = teamRepo({ 'scorers/q.md': SCORER, 'scorers/ops/strict.md': verified, 'scorers/strict-too.md': verified });
 
-    expect(await scorerNotes(config, { resolveTool: () => null })).toEqual(['Scoring isolation: best-effort, the default. scorers/ops/strict.md and scorers/strict-too.md ask for verified for their own work.', 'Judge tools here: none on PATH. Install one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, cursor, pi to judge on this machine.']);
+    expect(await scorerNotes(config, { resolveTool: () => null })).toEqual(['Scoring isolation: best-effort, the default. scorers/ops/strict.md and scorers/strict-too.md ask for verified for their own work.', 'Judge tools here: none on PATH. Install one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, cursor, pi, agy to judge on this machine.']);
   });
 
   it('warns about a cached scorer whose alias no installed judge tool maps, and notes one the member sends to the tool default', async () => {
@@ -108,8 +108,21 @@ describe('scorerNotes', () => {
     ]);
     expect(await scorerNotes(config, { resolveTool: () => null })).toEqual([
       'Scoring isolation: best-effort, the default.',
-      'Judge tools here: none on PATH. Install one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, cursor, pi to judge on this machine.',
+      'Judge tools here: none on PATH. Install one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, cursor, pi, agy to judge on this machine.',
     ]);
+  });
+
+  it('prints what sets session judging in each run mode and the daily limit, once a setting does', async () => {
+    const machineFile = getUserConfigPath();
+    fs.mkdirSync(path.dirname(machineFile), { recursive: true });
+    fs.writeFileSync(machineFile, 'scoring:\n  sessions: { unattended: off }\n  daily_limit: 2\n');
+    onTestFinished(() => fs.rmSync(machineFile, { force: true }));
+    const config = teamRepo({ 'scorers/q.md': SCORER, 'scorers/scoring.yaml': 'sessions: { attended: auto }\n' });
+
+    expect(await scorerNotes(config, { resolveTool: () => null })).toContain(
+      'Session judging: attended auto, set by scorers/scoring.yaml sessions.attended; unattended off, set by ~/.teamai/config.yaml scoring.sessions.unattended; '
+      + 'up to 2 sessions a day, set by ~/.teamai/config.yaml scoring.daily_limit.',
+    );
   });
 
   it('says nothing when every scorer is valid and known', async () => {

@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import { realpath } from 'node:fs/promises';
 import path from 'node:path';
 import fse from 'fs-extra';
-import simpleGit, { type SimpleGit, type outputHandler } from 'simple-git';
+import { simpleGit, type SimpleGit, type outputHandler } from 'simple-git';
 import { z } from 'zod';
 import { execCommand } from './exec.js';
 import { GitAnswers } from './git-answers.js';
@@ -127,6 +127,11 @@ function isNativeExecutable(file: string): boolean {
  */
 const NO_PROMPT_VAR = 'GIT_TERMINAL_PROMPT' as const;
 const NO_PROMPT_VAL = '0' as const;
+const GIT_ENVIRONMENT = [
+  NO_PROMPT_VAR,
+  'GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_AUTHOR_DATE',
+  'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL', 'GIT_COMMITTER_DATE',
+];
 
 /**
  * Set `GIT_TERMINAL_PROMPT=0` process-wide so no git subprocess can block on
@@ -178,9 +183,17 @@ export function gitBlockTimeoutMs(): number {
  * instead of hanging on a prompt that can never be answered.
  */
 export function createGit(basePath?: string, abort?: AbortSignal): SimpleGit {
-  const git = basePath
-    ? simpleGit({ baseDir: basePath, binary: gitBinary(), abort })
-    : simpleGit({ binary: gitBinary(), abort });
+  // Role filtering happens after checkout: an inactive skill's long path can
+  // otherwise block the whole pull. Keep this override in the Git process.
+  const config = process.platform === 'win32' ? ['core.longpaths=true'] : [];
+  const git = simpleGit({
+    ...(basePath ? { baseDir: basePath } : {}),
+    binary: gitBinary(),
+    abort,
+    config,
+    // The caller owns ambient Git configuration; the guard still checks explicit .env() additions.
+    allowEnvironment: [...GIT_ENVIRONMENT, ...Object.keys(process.env)],
+  });
   return git.outputHandler(markOutputSeen);
 }
 
@@ -205,10 +218,17 @@ export function createGitWithBlockTimeout(basePath?: string): SimpleGit {
   // connection, and the CLI with it, until the server dropped it. curl's own
   // stall limit ends the helper, a second after the kill so the kill still
   // decides how the command fails.
-  const config = ['http.lowSpeedLimit=1', `http.lowSpeedTime=${Math.ceil(block / 1000) + 1}`];
-  const git = basePath
-    ? simpleGit({ baseDir: basePath, binary: gitBinary(), timeout: { block }, config })
-    : simpleGit({ binary: gitBinary(), timeout: { block }, config });
+  const config = [
+    ...(process.platform === 'win32' ? ['core.longpaths=true'] : []),
+    'http.lowSpeedLimit=1', `http.lowSpeedTime=${Math.ceil(block / 1000) + 1}`,
+  ];
+  const git = simpleGit({
+    ...(basePath ? { baseDir: basePath } : {}),
+    binary: gitBinary(),
+    timeout: { block },
+    config,
+    allowEnvironment: [...GIT_ENVIRONMENT, ...Object.keys(process.env)],
+  });
   return git.outputHandler(markOutputSeen);
 }
 
@@ -449,8 +469,9 @@ export async function hasCommits(localPath: string): Promise<boolean> {
 }
 
 /**
- * Stage the given pathspecs and commit them on the current branch of the repo at
- * localPath. Best-effort helper for single-repo init: it seeds the business repo
+ * Stage and commit the given literal paths instead of the user's entire index.
+ * Git hooks still run and may change the commit contents.
+ * Best-effort helper for single-repo init: it seeds the business repo
  * with a base commit carrying the committed .teamai/ knowledge skeleton so later
  * knowledge PRs (which branch off HEAD) have something to branch from.
  *
@@ -469,19 +490,23 @@ export async function commitPaths(
   // explicitly-gitignored path (it errors "Use -f if you really want to add
   // them"). Callers should not pass ignored paths, but a stray one must not
   // abort the whole commit. `--` guards against paths that look like options.
-  let added = 0;
+  const added: string[] = [];
   for (const f of existing) {
     try {
-      await git.add(['--', f]);
-      added++;
+      await git.raw(['--literal-pathspecs', 'add', '--', f]);
+      added.push(f);
     } catch {
       // ignored/unaddable path — skip it
     }
   }
-  if (added === 0) return false;
-  const status = await git.status();
-  if (status.staged.length === 0) return false;
-  await git.commit(message);
+  if (added.length === 0) return false;
+  const staged = (await git.raw([
+    '--literal-pathspecs', 'diff', '--cached', '--name-only', '--no-renames', '-z', '--', ...added,
+  ])).split('\0').filter(Boolean);
+  if (staged.length === 0) return false;
+  // A path-limited commit leaves the rest of the user's index intact, including
+  // partially staged files. Use literal, NUL-delimited names from the index.
+  await git.raw(['--literal-pathspecs', 'commit', '--only', '-m', message, '--', ...staged]);
   return true;
 }
 
@@ -635,13 +660,18 @@ export async function getDefaultBranch(localPath: string): Promise<string> {
  *
  * `opts.initPush` selects the spawn-level block timeout factory used by init
  * (see {@link createGitWithBlockTimeout}); other callers get the plain factory.
+ *
+ * Only `files` are committed: anything else already staged stays staged. Commits
+ * an earlier push left behind are pushed even when `files` hold nothing new.
+ *
+ * @returns false when there was nothing to push
  */
 export async function pushRepoDirectly(
   localPath: string,
   message: string,
   files: string[],
   opts: { initPush?: boolean } = {},
-): Promise<void> {
+): Promise<boolean> {
   const git = opts.initPush ? createGitWithBlockTimeout(localPath) : createGit(localPath);
   await assertAttachedTeamRepo(git, localPath);
   const existingFiles = [];
@@ -651,18 +681,30 @@ export async function pushRepoDirectly(
   }
   if (existingFiles.length === 0) {
     log.debug('No files to add');
-    return;
+    return false;
   }
   await git.add(existingFiles);
-  const status = await git.status();
-  if (status.staged.length === 0) {
+  const staged = (await git.raw(['diff', '--cached', '--name-only', '--', ...existingFiles])).trim();
+  if (staged) {
+    await git.commit(message, existingFiles);
+  } else if (!(await hasUnpushedCommits(git))) {
     log.debug('Nothing to commit');
-    return;
+    return false;
   }
-  await git.commit(message);
   // Use --set-upstream for first push on repos initialized from empty remotes
   const branch = (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();
   await git.push(['-u', 'origin', branch]);
+  return true;
+}
+
+/** Whether HEAD has commits its `origin` branch lacks; false before a first commit or push. */
+async function hasUnpushedCommits(git: SimpleGit): Promise<boolean> {
+  try {
+    const branch = (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();
+    return (await git.raw(['rev-list', '--count', `origin/${branch}..HEAD`])).trim() !== '0';
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -701,16 +743,27 @@ export async function pushLearningToOrigin(
 }
 
 /**
- * Best-effort push all changes in a team repo clone.
- * Logs other push failures; refuses detached team clones.
+ * Push the changes under `files` (all of them by default) in a team repo clone.
+ * Refuses detached team clones. Throws when the push fails (a moved `main`, a protected
+ * branch, a hook rejection), so a caller never reports a publish that did not happen.
+ * @returns false when there was nothing to commit
  * @deprecated Use autoPushViaMR instead for import flows.
  */
-export async function autoPushTeamRepo(repoPath: string, message: string): Promise<void> {
+export async function autoPushTeamRepo(repoPath: string, message: string, files: string[] = ['.']): Promise<boolean> {
   try {
-    await pushRepoDirectly(repoPath, message, ['.']);
+    return await pushRepoDirectly(repoPath, message, files);
   } catch (err) {
     DetachedTeamRepoError.rethrow(err);
-    log.warn(`[git] autoPush failed (non-blocking): ${(err as Error).message}`);
+    const lines = (err as Error).message.split('\n').map(line => line.trim()).filter(Boolean);
+    // Keep the lines that say why git refused: the `! [rejected]` ref line (fetch first,
+    // pre-receive hook declined, protected branch), the hook's `remote:` output and the generic
+    // error:/fatal: line. git prints the remote URL first, which is not a cause.
+    const reasonLines = lines.filter(line => /^(error|fatal|remote):/.test(line) || /^!\s/.test(line) || /\[(remote )?rejected\]/.test(line));
+    const reason = (reasonLines.length > 0 ? reasonLines : lines.slice(0, 1)).join('\n') || 'unknown error';
+    // Only a stale clone is fixed by pulling; a protected branch or a hook rejection is not.
+    const stale = /\(fetch first\)|\(non-fast-forward\)/.test((err as Error).message);
+    const advice = stale ? '\nRun `teamai pull`, then rerun this command.' : '';
+    throw new Error(`Push to the team repo failed: ${reason}${advice}`, { cause: err });
   }
 }
 
@@ -1090,8 +1143,9 @@ export async function resolveAnchors(cwd?: string): Promise<ProjectAnchors | nul
 async function readAnchors(cwd?: string): Promise<ProjectAnchors | null> {
   if (await gitFindsNoRepository(cwd ?? process.cwd())) return null;
   try {
-    const git = createGit(cwd);
-    const toplevel = (await checkoutLocation(cwd ?? process.cwd()))?.toplevel ?? (await git.revparse(['--show-toplevel'])).trim();
+    const dir = cwd ?? process.cwd();
+    const located = await checkoutLocation(dir);
+    const toplevel = located?.toplevel ?? (await execCommand('git', ['rev-parse', '--show-toplevel'], { cwd: dir, timeoutMs: 10_000 })).stdout.trim();
     const entries = await readWorktreeList(cwd) ?? await readWorktreeList(cwd, true);
     const first = entries?.[0];
     if (!toplevel || !first) return null;
@@ -1100,11 +1154,12 @@ async function readAnchors(cwd?: string): Promise<ProjectAnchors | null> {
     const commonDir = await gitCommonDir(workspaceRoot);
     let mainCheckout: string | null = first.bare ? null : projectAnchor;
     if (!first.bare && projectAnchor === commonDir) {
-      const worktree = await git.raw(['--git-dir', commonDir, 'config', '--get', 'core.worktree']).catch(() => '');
+      const worktree = await execCommand('git', ['--git-dir', commonDir, 'config', '--get', 'core.worktree'], { cwd: workspaceRoot, timeoutMs: 10_000 })
+        .then(({ code, stdout }) => code === 0 ? stdout : '').catch(() => '');
       if (worktree.trim()) {
         mainCheckout = await realpath(path.resolve(commonDir, worktree.trim()));
       } else {
-        const gitDir = await realpath(path.resolve(cwd ?? process.cwd(), (await git.revparse(['--git-dir'])).trim()));
+        const gitDir = await realpath(path.resolve(dir, (await execCommand('git', ['rev-parse', '--git-dir'], { cwd: dir, timeoutMs: 10_000 })).stdout.trim()));
         mainCheckout = gitDir === commonDir ? workspaceRoot : null;
       }
     }
@@ -1213,9 +1268,9 @@ export async function gitCommonDir(cwd: string): Promise<string | null> {
   const located = await checkoutLocation(cwd);
   if (located) return located.commonDir;
   try {
-    // Inside the try: simple-git throws at once for a directory that does not exist.
-    const out = (await createGit(cwd).revparse(['--git-common-dir'])).replace(/\r?\n$/, '');
-    return await realpath(path.resolve(await realpath(cwd), out));
+    const result = await execCommand('git', ['rev-parse', '--git-common-dir'], { cwd, timeoutMs: 10_000 });
+    if (result.code !== 0) return null;
+    return await realpath(path.resolve(await realpath(cwd), result.stdout.replace(/\r?\n$/, '')));
   } catch {
     return null;
   }
@@ -1299,8 +1354,9 @@ async function readWorktreeList(cwd?: string, newlineSplit = false): Promise<Lis
   const linked = commonDir === null ? null : await linkedWorktreesStamp(commonDir);
   const readList = async (): Promise<string | null> => {
     try {
-      // Inside the try: simple-git throws at once for a directory that does not exist.
-      return await createGit(cwd).raw(['worktree', 'list', '--porcelain', ...newlineSplit ? [] : ['-z']]);
+      // Discovery must use the same repository environment as checkoutLocation.
+      const result = await execCommand('git', ['worktree', 'list', '--porcelain', ...newlineSplit ? [] : ['-z']], { cwd: dir, timeoutMs: 10_000 });
+      return result.code === 0 ? result.stdout : null;
     } catch {
       return null;
     }

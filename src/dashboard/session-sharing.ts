@@ -7,7 +7,7 @@ import { loadTeamConfig } from '../config.js';
 import { explainRunMode, RUN_MODE_ENV, RUN_MODES, type ExplainedRunMode, type RunMode } from '../launch-context.js';
 import { scoringUnavailable } from '../scorers/home.js';
 import { LabelStore } from '../scorers/label-store.js';
-import { scopeScoring } from '../scorers/settings.js';
+import { scopeScoring, type SessionScoring } from '../scorers/settings.js';
 import { AgentSession, sessionKey } from '../session-flow/agent-session.js';
 import { SessionCaptures } from '../session-flow/captures.js';
 import { sessionArchiveRoot } from '../session-flow/session-cmd-shared.js';
@@ -32,7 +32,7 @@ export type SessionSharing =
     archive: 'teamai-reports' | 'none';
     publish: SessionPolicies;
     /** Scoring as this scope resolves it, with the scorers that set `sessions: true`; unavailable when it cannot score. */
-    scoring: { state: 'ok'; policies: SessionPolicies; dailyLimit: number; scorers: string[] } | { state: 'unavailable'; reason: string };
+    scoring: ({ state: 'ok'; scorers: string[] } & SessionScoring) | { state: 'unavailable'; reason: string };
     /** Each problem of the session settings, as `teamai doctor` prints it. */
     problems: string[];
     /** The enabled tools teamai reads no sessions from: their sessions are never captured, published or judged. */
@@ -138,7 +138,7 @@ export async function readSessionSharing(config: LocalConfig, { env, platform, n
     archive: sessionArchiveRoot(config) ? 'teamai-reports' : 'none',
     publish: publish.policies,
     scoring: scored.ok
-      ? { state: 'ok', policies: scored.sessions.policies, dailyLimit: scored.sessions.dailyLimit, scorers: scorers.map(({ scorer }) => scorer).sort() }
+      ? { state: 'ok', ...scored.sessions, scorers: scorers.map(({ scorer }) => scorer).sort() }
       : { state: 'unavailable', reason: scored.reason },
     captured,
     stepSessionsWaitingToArchive,

@@ -607,7 +607,7 @@ steps:
 
 | Key | What it does | A driver that cannot do it |
 |---|---|---|
-| `requires.env` | Gives the step these [team env](sharing.md#env-environment-variables) keys. Every other team env key, and every key another step of the run requires, is kept from it. Only key names enter the run. A key with no value on this machine fails the step `missing_env` before it runs; the message offers `teamai env set` only for a key the team declares, and otherwise the environment, or `teamai env add KEY --secret` to declare it. A step `env:` entry that names a team secret or a required key fails `env_conflict`. | The step waits. |
+| `requires.env` | Gives the step these [team env](sharing.md#env-environment-variables) keys. Every other team env key, and every key another step of the run requires, is kept from it. Only key names enter the run. A key with no value on this machine fails the step `missing_env` before it runs, and the message names what gives it one: see [A required key with no value here](#a-required-key-with-no-value-here). A step `env:` entry that names a team secret or a required key fails `env_conflict`. | The step waits. |
 | `requires.network` | `false` asks that the step get no network. | The step runs, and its `unenforced` lists `network`. The local driver cannot deny the network. |
 | `requires.isolation` | `none`, `worktree`, or `sandbox`. A step with a workspace has at least `worktree`. | The step runs, and its `unenforced` lists `isolation`. |
 | `setup` | The driver runs `command` in each workspace it creates, before the step. Setup gets its `requires.env` keys; a step gets them only if it requires them too. Setup fails the step without running it, and the workspace is removed, when it exits non-zero (`setup_failed`), changes a file git would commit (`setup_dirty`), or leaves the value of one of its keys in a file it wrote, ignored files included (`setup_secret`). The step's `timeout` bounds setup. | Steps with a workspace wait. |
@@ -650,6 +650,58 @@ A driver other than `local` declares what it can do in `driver.can` on each `nex
 | `isolation` | Keeps every step at this level: `none`, `worktree`, or `sandbox`. |
 
 An omitted key means the driver cannot. `next` lists any other key in `ignored`. The skill driver of a [coding session](workflow.md#run-from-a-coding-session) declares `hitl`, every `workspace` mode, `env: "commands"`, and `setup`. It never declares `tokens`, `max_turns`, or `network`, and its `isolation` is `none`.
+
+### A required key with no value here
+
+The `sign` step needs a signing key that nobody on the team has declared yet:
+
+```yaml
+schemaVersion: v1alpha1
+name: sign-release
+description: Build the release, then sign it.
+steps:
+  - id: build
+    command: npm run build
+  - id: sign
+    needs: [build]
+    requires: { env: [SIGNING_KEY] }
+    command: npm run sign
+```
+
+On a machine without `SIGNING_KEY`, `sign` fails before it runs:
+
+```text
+$ teamai workflow start sign-release --driver local
+ℹ Run r55b0e3a6017968bf started. If it stops before it ends, continue it with: teamai workflow resume r55b0e3a6017968bf
+{"data":{"done":{"run":"r55b0e3a6017968bf","outcome":"failed","record":"published"},"cancelled":[]}}
+✖ Step "sign" failed with missing_env: Step "sign" requires env SIGNING_KEY, which has no value on this machine. Set SIGNING_KEY in the environment, or declare it in the team repo with teamai env add SIGNING_KEY --secret and give it a value with teamai env set SIGNING_KEY, then retry the step.
+ℹ Retry it with teamai workflow retry r55b0e3a6017968bf sign, then continue the run with teamai workflow resume r55b0e3a6017968bf
+```
+
+Declare it, set your own value, and finish the run. `build` does not run again:
+
+```text
+$ teamai env add SIGNING_KEY --secret -d "Release signing key"
+✔ Up to date
+✔ Declared secret: SIGNING_KEY
+ℹ Run `teamai push` to sync to team repo.
+$ teamai env set SIGNING_KEY
+Value for SIGNING_KEY:
+✔ Set SIGNING_KEY for this team (~/.teamai/secrets/teams/<team>.json).
+$ teamai workflow retry r55b0e3a6017968bf sign
+{"data":{"retried":{"step":"sign","pass":2},"reopened":true,"run":{"id":"r55b0e3a6017968bf","status":"running","revision":3},"resume":"teamai workflow resume r55b0e3a6017968bf"}}
+$ teamai workflow resume r55b0e3a6017968bf
+{"data":{"done":{"run":"r55b0e3a6017968bf","outcome":"succeeded","record":"published"},"cancelled":[]}}
+```
+
+The run here does not wait for `teamai push`. Push so teammates get the declaration, and with it the shorter advice below.
+
+| Situation | What the failed step says | What to run |
+|---|---|---|
+| The team declares the key, and you have not set it on this machine | `Run teamai env set SIGNING_KEY, or set it in the environment, then retry the step.` | `teamai env set SIGNING_KEY`, then retry and resume |
+| The value lives in a password manager, and should not be stored by teamai | either message | retry, then `SIGNING_KEY="$(op read op://release/signing-key/password)" teamai workflow resume <run>` |
+| A CI job takes the run | either message, in the job log | export the key in the job's `env`, as [the CI job](workflow.md#take-offered-runs-from-ci) does |
+| A step needs two keys, and the team declares only one | one clause per key, joined with `;`, such as `Run teamai env set NPM_TOKEN, or set it in the environment; set SIGNING_KEY in the environment, or declare it …` | each key's own fix |
 
 ## HITL (human in the loop)
 
@@ -721,7 +773,7 @@ History stays in `passes` and the archive, so `length(steps.x.passes)` counts fa
 
 A single-step `cancel` stops pending, waiting, leased, running, or delivering work. Its open descendants stop too. Cancelled steps count as stopped, so dependents skip unless an `if` reads their outcome for recovery. The run normally fails. A whole-run cancel ends immediately with run outcome `cancelled`, without starting another loop round. Cancel does not bump the revision. A late report returns `lease_cancelled`; `next.cancelled` tells drivers which tools to stop.
 
-`resume` drives the run locally after a retry, response, Ctrl-C, or closed terminal. `workflow start --driver local` prints the run id on stderr when the run starts, with the `resume` command that continues it. It uses this machine's open local lease workspace first, then the workspace of the latest driver that called `next` when that driver was local on this machine, then the current directory. Resuming after a retry from a subdirectory therefore keeps the original local workspace. Only one local driver can drive a run at a time. A second resume returns `driver_running` with the owning process id; stop that driver or wait. Locks from dead processes are reclaimed automatically. A settled run returns `done`. Failed and cancelled local runs exit 1; successful control commands exit 0 even when their answer describes a failed or cancelled run.
+`resume` drives the run locally after a retry, response, Ctrl-C, or closed terminal. `workflow start --driver local` prints the run id on stderr when the run starts, with the `resume` command that continues it. It uses this machine's open local lease workspace first, then the workspace of the latest driver that called `next` when that driver was local on this machine, then the current directory. Resuming after a retry from a subdirectory therefore keeps the original local workspace. Only one local driver can drive a run at a time. A second resume returns `driver_running` with the owning process id; stop that driver or wait. Locks from dead processes are reclaimed automatically. A settled run returns `done`. When a local run fails, `start`, `resume` and `resume --next` print on stderr why each step failed and its `retry` and `resume` commands, as in [A required key with no value here](#a-required-key-with-no-value-here). Failed and cancelled local runs exit 1; successful control commands exit 0 even when their answer describes a failed or cancelled run.
 
 ## Publish and claim
 

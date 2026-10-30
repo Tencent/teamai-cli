@@ -20,6 +20,17 @@ teamai hooks list                   # 各工具的内置钩子集合
 
 每个事件做什么，见[基础 Harness](sharing.md#hooks)。
 
+## 拉取时的长路径
+
+TeamAI 在 Windows 上为共享 Git 客户端启用 `core.longpaths`，不会修改全局或仓库的 Git 配置。
+团队仓库刷新先检出文件，再按角色过滤，因此未启用的命名空间中层级很深的 skill 资源也需要长路径支持。
+其他 Git 命令和工具可能仍需要单独配置长路径支持。
+
+如果 Git 配置显式设置了 `core.longpaths=false`，部分 Git 版本仍需要将该设置改为 `true`。
+
+首次 `teamai init` 克隆使用独立的 provider 路径。如果团队仓库已有长路径，请先运行
+`git config --global core.longpaths true` 启用支持。
+
 ## 钩子仍不触发
 
 - **没装 Git for Windows。** 没有它时派发命令退化为裸 `bash`，Windows 会解析到 WSL 启动器；

@@ -4,6 +4,7 @@ import path from 'node:path';
 import YAML from 'yaml';
 import { parse as parseToml } from 'smol-toml';
 import { getUserHome } from '../utils/home.js';
+import { agyGatewayOf, agyKeyFilePath, agyKeyFunction } from './agy-gateway.js';
 import { toolHome } from '../tool-home.js';
 import { pathExists, writeFileAtomic, writeJsonAtomic } from '../utils/fs.js';
 import { acquireLock, releaseLock } from '../update.js';
@@ -146,6 +147,11 @@ function museSettingsPath(): string {
   return path.join(toolHome('muse'), 'settings.json');
 }
 
+/** Antigravity CLI keeps its settings beside its config root, in ~/.gemini/antigravity-cli. */
+function agySettingsPath(): string {
+  return path.join(toolHome('agy'), '..', 'antigravity-cli', 'settings.json');
+}
+
 function agentSettingsPath(agent: ModelAgent, roots: AgentRoots): string {
   if (agent === 'claude') return claudeSettingsPath(roots);
   if (agent === 'codex') return codexSettingsPath(roots);
@@ -155,6 +161,7 @@ function agentSettingsPath(agent: ModelAgent, roots: AgentRoots): string {
 /** The settings file of an agent no `toolRoots` entry moves. */
 function ownSettingsPath(agent: Exclude<ModelAgent, 'claude' | 'codex'>): string {
   if (agent === 'muse') return museSettingsPath();
+  if (agent === 'agy') return agySettingsPath();
   if (agent === 'opencode') return openCodeSettingsPath();
   if (agent === 'pi') return piSettingsPath();
   if (agent === 'omp') return ompSettingsPath();
@@ -352,8 +359,11 @@ async function installed(agent: ModelAgent, roots: AgentRoots): Promise<boolean>
 function supportedRoute(agent: ModelAgent, profile: ResolvedModelProfile): boolean {
   if (agent === 'claude') return !!profile.routes.anthropic;
   if (agent === 'codex' || agent === 'muse') return !!profile.routes['openai-responses'];
-  // OpenCode, Pi and OMP name an api per model, so any serves any protocol.
-  if (agent === 'opencode' || agent === 'pi' || agent === 'omp') return Object.keys(profile.routes).length > 0;
+  if (agent === 'agy') return !!profile.routes.gemini;
+  // OpenCode, Pi and OMP name an api per model, so any serves an Anthropic or OpenAI protocol.
+  if (agent === 'opencode' || agent === 'pi' || agent === 'omp') {
+    return !!(profile.routes.anthropic || profile.routes['openai-responses'] || profile.routes['openai-chat-completions']);
+  }
   return !!profile.routes['openai-chat-completions'];
 }
 
@@ -654,26 +664,79 @@ async function writeCodex(snapshot: CodexSnapshot, roots: AgentRoots): Promise<v
   await writeFileAtomic(await writableTarget(file), source, { mode: 0o600 });
 }
 
-// ─── Muse Code ────────────────────────────────────────────
+// ─── Key files: Muse Code, Antigravity CLI ────────────────
 //
-// Muse Code has no settings key for the API key: it reads META_API_KEY, else
-// the Meta credential it saved at login. So the key goes into a file of its
+// Muse Code and Antigravity CLI have no settings key for the API key: they
+// read it from the environment. So the key goes into a file of the agent's
 // own that a shell profile block sources, and only shells started after a
-// switch see it. The block has markers of its own: the team env block's
+// switch see it. Each block has markers of its own: the team env block's
 // markers belong to `teamai pull`, which rewrites or removes that block.
 
-const MUSE_KEY_BLOCK_START = '# [teamai:models:start]';
-const MUSE_KEY_BLOCK_END = '# [teamai:models:end]';
+/** An agent's file of exports, and the markers of the profile block that sources it. */
+interface KeyFile {
+  readonly path: () => string;
+  readonly start: string;
+  readonly end: string;
+}
+
+const MUSE_KEYS: KeyFile = {
+  path: () => path.join(getUserHome(), '.teamai', 'models', 'env.sh'),
+  start: '# [teamai:models:start]',
+  end: '# [teamai:models:end]',
+};
+
+const AGY_KEYS: KeyFile = {
+  path: agyKeyFilePath,
+  start: '# [teamai:models:agy:start]',
+  end: '# [teamai:models:agy:end]',
+};
+
+function withoutKeyBlock(content: string, keys: KeyFile): string {
+  const start = content.indexOf(keys.start);
+  if (start === -1) return content;
+  const end = content.indexOf(keys.end, start);
+  if (end === -1) return content;
+  const head = content.slice(0, start).replace(/\n$/, '');
+  const tail = content.slice(end + keys.end.length).replace(/^\n/, '');
+  return head && tail ? `${head}\n${tail}` : head ? `${head}\n` : tail;
+}
+
+/**
+ * Write `keyExport` to the agent's key file and source it from the shell profile,
+ * or with null remove both; `writeSettings` points the agent at the gateway after
+ * the key lands, and back before the key goes.
+ */
+async function writeKeyExport(keys: KeyFile, keyExport: string | null, writeSettings: () => Promise<void>): Promise<void> {
+  const keyFile = keys.path();
+  // The file the block goes in for zsh may be under ZDOTDIR.
+  const profiles = [...new Set([...SHELL_PROFILE_CANDIDATE_NAMES.map((name) => path.join(getUserHome(), name)), await detectShellProfile()])];
+  if (keyExport === null) {
+    await writeSettings();
+    await fs.promises.rm(keyFile, { force: true });
+    for (const profile of profiles) {
+      const content = await readOptionalFile(profile);
+      if (content !== null && content.includes(keys.start)) {
+        await writeFileAtomic(profile, withoutKeyBlock(content, keys));
+      }
+    }
+    return;
+  }
+  await writeFileAtomic(keyFile, keyExport, { mode: 0o600 });
+  await writeSettings();
+  const sourced = await Promise.all(profiles.map(async (profile) => (await readOptionalFile(profile))?.includes(keys.start)));
+  if (sourced.some(Boolean)) return;
+  const profile = await detectShellProfile();
+  const content = (await readOptionalFile(profile)) ?? '';
+  const quoted = shellQuoteValue(toGeneratedForm(keyFile));
+  const block = `${keys.start}\n[ -f ${quoted} ] && . ${quoted}\n${keys.end}\n`;
+  await writeFileAtomic(profile, `${content}${content && !content.endsWith('\n') ? '\n' : ''}${block}`);
+}
 
 interface MuseSnapshot {
   model?: unknown;
   endpoint_transport?: unknown;
-  /** The content of `museKeyFilePath()`; null when there is none. */
+  /** The content of Muse's key file; null when there is none. */
   keyExport: string | null;
-}
-
-function museKeyFilePath(): string {
-  return path.join(getUserHome(), '.teamai', 'models', 'env.sh');
 }
 
 async function museSnapshot(): Promise<MuseSnapshot> {
@@ -681,18 +744,8 @@ async function museSnapshot(): Promise<MuseSnapshot> {
   return {
     model: settings.model,
     endpoint_transport: settings.endpoint_transport,
-    keyExport: await readOptionalFile(museKeyFilePath()),
+    keyExport: await readOptionalFile(MUSE_KEYS.path()),
   };
-}
-
-function withoutMuseKeyBlock(content: string): string {
-  const start = content.indexOf(MUSE_KEY_BLOCK_START);
-  if (start === -1) return content;
-  const end = content.indexOf(MUSE_KEY_BLOCK_END, start);
-  if (end === -1) return content;
-  const head = content.slice(0, start).replace(/\n$/, '');
-  const tail = content.slice(end + MUSE_KEY_BLOCK_END.length).replace(/^\n/, '');
-  return head && tail ? `${head}\n${tail}` : head ? `${head}\n` : tail;
 }
 
 async function writeMuse(snapshot: MuseSnapshot): Promise<void> {
@@ -703,30 +756,35 @@ async function writeMuse(snapshot: MuseSnapshot): Promise<void> {
     if (snapshot[key] === undefined) delete settings[key];
     else settings[key] = snapshot[key];
   }
-  const keyFile = museKeyFilePath();
-  // The file the block goes in for zsh may be under ZDOTDIR.
-  const profiles = [...new Set([...SHELL_PROFILE_CANDIDATE_NAMES.map((name) => path.join(getUserHome(), name)), await detectShellProfile()])];
-  if (snapshot.keyExport === null) {
-    await writeAgentJson(file, settings);
-    await fs.promises.rm(keyFile, { force: true });
-    for (const profile of profiles) {
-      const content = await readOptionalFile(profile);
-      if (content !== null && content.includes(MUSE_KEY_BLOCK_START)) {
-        await writeFileAtomic(profile, withoutMuseKeyBlock(content));
-      }
-    }
-    return;
-  }
-  // The key lands before settings.json points Muse at the gateway.
-  await writeFileAtomic(keyFile, snapshot.keyExport, { mode: 0o600 });
-  await writeAgentJson(file, settings);
-  const sourced = await Promise.all(profiles.map(async (profile) => (await readOptionalFile(profile))?.includes(MUSE_KEY_BLOCK_START)));
-  if (sourced.some(Boolean)) return;
-  const profile = await detectShellProfile();
-  const content = (await readOptionalFile(profile)) ?? '';
-  const quoted = shellQuoteValue(toGeneratedForm(keyFile));
-  const block = `${MUSE_KEY_BLOCK_START}\n[ -f ${quoted} ] && . ${quoted}\n${MUSE_KEY_BLOCK_END}\n`;
-  await writeFileAtomic(profile, `${content}${content && !content.endsWith('\n') ? '\n' : ''}${block}`);
+  await writeKeyExport(MUSE_KEYS, snapshot.keyExport, () => writeAgentJson(file, settings));
+}
+
+/**
+ * Antigravity CLI uses a gateway when settings.json says `modelProvider: "gemini"`;
+ * the key comes from GEMINI_API_KEY and the endpoint from GOOGLE_GEMINI_BASE_URL.
+ * Its `model` names an entry of agy's own catalog by display name, and agy sends
+ * that entry's Gemini model id whatever the gateway serves, so it is left to the member.
+ */
+interface AgySnapshot {
+  modelProvider?: unknown;
+  /** The content of agy's key file; null when there is none. */
+  keyExport: string | null;
+}
+
+async function agySnapshot(): Promise<AgySnapshot> {
+  const settings = await jsonObject(agySettingsPath());
+  return { modelProvider: settings.modelProvider, keyExport: await readOptionalFile(AGY_KEYS.path()) };
+}
+
+/** Write a snapshot `agySnapshot` or `desiredSnapshot` made, read back from the manifest as it was saved. */
+async function writeAgy(snapshot: unknown): Promise<void> {
+  const recorded = isRecord(snapshot) ? snapshot : {};
+  const file = agySettingsPath();
+  const settings = await jsonObject(file);
+  if (recorded.modelProvider === undefined) delete settings.modelProvider;
+  else settings.modelProvider = recorded.modelProvider;
+  const keyExport = typeof recorded.keyExport === 'string' ? recorded.keyExport : null;
+  await writeKeyExport(AGY_KEYS, keyExport, () => writeAgentJson(file, settings));
 }
 
 // ─── OpenCode ─────────────────────────────────────────────
@@ -779,7 +837,7 @@ type BuddyAgent = 'codebuddy' | 'workbuddy';
 
 interface BuddySnapshot {
   entries: Record<string, unknown | null>;
-  allowed?: Record<string, boolean>;
+  allowed?: Record<string, boolean | undefined>;
 }
 
 async function buddyDoc(agent: BuddyAgent): Promise<{
@@ -814,7 +872,7 @@ function buddyAllowed(availableModels: string[] | undefined, ids: string[]): Rec
   return Object.fromEntries(ids.map((id) => [id, availableModels?.includes(id) ?? false]));
 }
 
-function reconcileBuddyAllowed(availableModels: string[] | undefined, allowed: Record<string, boolean> | undefined): string[] | undefined {
+function reconcileBuddyAllowed(availableModels: string[] | undefined, allowed: Record<string, boolean | undefined> | undefined): string[] | undefined {
   if (!availableModels || !allowed) return availableModels;
   const next = availableModels.filter((id) => allowed[id] !== false);
   for (const [id, enabled] of Object.entries(allowed)) {
@@ -879,6 +937,7 @@ async function currentSnapshot(agent: ModelAgent, roots: AgentRoots, reference?:
   if (agent === 'codex') return codexSnapshot((await readOptionalFile(codexSettingsPath(roots))) ?? '');
   if (agent === 'opencode') return openCodeSnapshot(await jsonObject(openCodeSettingsPath()));
   if (agent === 'muse') return museSnapshot();
+  if (agent === 'agy') return agySnapshot();
   if (agent === 'pi' || agent === 'omp') return piSnapshot(await piDoc(agent), reference);
   const written = reference as BuddySnapshot | undefined;
   const { models, availableModels } = await buddyDoc(agent);
@@ -901,6 +960,7 @@ async function writeSnapshot(
   if (agent === 'codex') return writeCodex(snapshot as CodexSnapshot, roots);
   if (agent === 'opencode') return writeOpenCode(snapshot as OpenCodeSnapshot);
   if (agent === 'muse') return writeMuse(snapshot as MuseSnapshot);
+  if (agent === 'agy') return writeAgy(snapshot);
   if (agent === 'pi' || agent === 'omp') return writePi(agent, snapshot as PiSnapshot, previousManaged);
   return replaceBuddy(agent, previousManaged as BuddySnapshot | undefined, snapshot as BuddySnapshot, keepAppMetadata, released);
 }
@@ -955,6 +1015,14 @@ function desiredSnapshot(agent: ModelAgent, profile: ResolvedModelProfile): unkn
       keyExport: `export META_API_KEY=${envRef ? `"\${${envRef}}"` : shellQuoteValue(profile.api_key_value ?? '')}\n`,
     } satisfies MuseSnapshot;
   }
+  if (agent === 'agy') {
+    const route = profile.routes.gemini;
+    if (!route) throw new Error(`Profile ${profile.ref} serves no Gemini route for agy`);
+    return {
+      modelProvider: 'gemini',
+      keyExport: agyKeyFunction(envRef ? { envRef } : { value: profile.api_key_value ?? '' }, route.base_url),
+    } satisfies AgySnapshot;
+  }
   if (agent === 'opencode') {
     const providers: Record<string, unknown> = Object.fromEntries(OPENCODE_PROVIDER_IDS.map((id) => [id, null]));
     const providerOf = new Map<string, string>();
@@ -976,9 +1044,14 @@ function desiredSnapshot(agent: ModelAgent, profile: ResolvedModelProfile): unkn
         };
       }
     }
-    const catalog = profile.profile.model_groups.flatMap((group) => group.models);
-    const defaultModel = profile.model ?? catalog[0];
-    return { model: `${providerOf.get(defaultModel)}/${defaultModel}`, providers } satisfies OpenCodeSnapshot;
+    // A model the profile serves only over Gemini has no OpenCode provider.
+    const reachable = profile.profile.model_groups.flatMap((group) => group.models).filter((model) => providerOf.has(model));
+    const defaultModel = profile.model ?? reachable[0];
+    const provider = defaultModel === undefined ? undefined : providerOf.get(defaultModel);
+    if (defaultModel === undefined || provider === undefined) {
+      throw new Error(`Profile ${profile.ref} serves ${defaultModel ?? 'no model'} only over Gemini, which OpenCode does not speak. Choose one of: ${reachable.join(', ')}.`);
+    }
+    return { model: `${provider}/${defaultModel}`, providers } satisfies OpenCodeSnapshot;
   }
   if (agent === 'pi' || agent === 'omp') {
     const provider = piProvider(profile)!;
@@ -1172,6 +1245,9 @@ async function switchModelProfileUnlocked(
         const { base_url: baseUrl } = (desired as MuseSnapshot).endpoint_transport as { base_url: string };
         warning = `Shells started before this switch lack the profile's META_API_KEY: open a new shell before running muse, or Muse Code sends your saved Meta credential to ${baseUrl}`;
       }
+      if (agent === 'agy') {
+        warning = "Shells started before this switch lack teamai's agy function, which hands agy the profile's key and endpoint: open a new shell before running agy, or agy refuses to start with modelProvider set";
+      }
       const current = await currentSnapshot(agent, roots, state ? state.lastWritten : desired);
       if (state && !sameManaged(agent, current, state.lastWritten)) {
         results.push({ agent, status: 'skipped', message: `${agent} model settings changed outside TeamAI; leaving them untouched` });
@@ -1328,6 +1404,9 @@ async function restoreModelProfilesUnlocked(
         ...(agent === 'muse'
           ? { warning: "Shells started before this restore still export the profile's META_API_KEY: open a new shell before running muse" }
           : {}),
+        ...(agent === 'agy'
+          ? { warning: "Shells started before this restore still define teamai's agy function, which sends agy to the profile's gateway: open a new shell before running agy" }
+          : {}),
       });
     } catch (error) {
       results.push({ agent, status: 'failed', message: `${agent} restore failed: ${(error as Error).message}` });
@@ -1427,6 +1506,10 @@ function writtenGatewayUrls(agent: ModelAgent, snapshot: unknown): string[] {
   if (agent === 'muse') {
     const transport = snapshot.endpoint_transport;
     return isRecord(transport) && typeof transport.base_url === 'string' ? [transport.base_url] : [];
+  }
+  if (agent === 'agy') {
+    const url = typeof snapshot.keyExport === 'string' ? agyGatewayOf(snapshot.keyExport, {})?.GOOGLE_GEMINI_BASE_URL : undefined;
+    return url ? [url] : [];
   }
   const entries = isRecord(snapshot.entries) ? Object.values(snapshot.entries) : [];
   return entries.flatMap((entry) => (isRecord(entry) && typeof entry.url === 'string' ? [entry.url] : []));

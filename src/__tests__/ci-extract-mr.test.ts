@@ -228,7 +228,7 @@ describe('ciExtractMr write: the teamwiki update goes through teamai import', ()
     mockPushRepoDirectly.mockReset();
     mockImportLocalCheckout.mockReset();
     mockImportFromMR.mockResolvedValue({ learning: undefined, repoUrl: 'https://github.com/org/repo' });
-    mockImportLocalCheckout.mockResolvedValue(true);
+    mockImportLocalCheckout.mockResolvedValue({ updated: true, deepEnrichComplete: true });
   });
 
   afterEach(async () => {
@@ -256,7 +256,7 @@ describe('ciExtractMr write: the teamwiki update goes through teamai import', ()
   });
 
   it('pushes no teamwiki/ when the import changed nothing', async () => {
-    mockImportLocalCheckout.mockResolvedValue(false);
+    mockImportLocalCheckout.mockResolvedValue({ updated: false, deepEnrichComplete: true });
     const teamRepo = path.join(tmpDir, 'team-repo');
     await fse.ensureDir(teamRepo);
 

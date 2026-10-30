@@ -30,6 +30,9 @@ function runCLI(args: string[], env: Record<string, string>, cwd: string, stdin 
   });
 }
 
+/** Bindings enrolling `dir`, as `teamai bind-project` there does: the local agent stays silent in a workspace without one. */
+const enrolled = (dir: string) => ({ [dir]: { projectId: 0, projectName: '__pending__', boundAt: '2026-01-01T00:00:00.000Z' } });
+
 describe('local-agent rules (#993)', () => {
   const sandboxes: string[] = [];
   beforeAll(() => {
@@ -77,7 +80,7 @@ describe('local-agent rules (#993)', () => {
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     endpoint = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
-    fs.writeFileSync(path.join(agentDir, 'config.json'), JSON.stringify({ endpoint, createdAt: 'x', workspaceBindings: {} }));
+    fs.writeFileSync(path.join(agentDir, 'config.json'), JSON.stringify({ endpoint, createdAt: 'x', workspaceBindings: enrolled(sandbox) }));
     const run = runCLI(operation === 'plugin reconciliation' ? ['source', 'reconcile-plugins']
       : ['hook-dispatch', 'stop', '--tool', 'workbuddy', '--bg-only'], env, sandbox,
       JSON.stringify({ cwd: sandbox, hook_event_name: 'Stop', session_id: 'http-shutdown' }));
@@ -163,7 +166,7 @@ describe('local-agent rules (#993)', () => {
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const endpoint = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
-    fs.writeFileSync(path.join(agentDir, 'config.json'), JSON.stringify({ endpoint, createdAt: 'x', workspaceBindings: {} }));
+    fs.writeFileSync(path.join(agentDir, 'config.json'), JSON.stringify({ endpoint, createdAt: 'x', workspaceBindings: enrolled(sandbox) }));
     try {
       const startedAt = Date.now();
       const synced = await runCLI(['hook-dispatch', 'stop', '--tool', 'workbuddy', '--bg-only'], env, sandbox,
@@ -228,7 +231,7 @@ describe('local-agent rules (#993)', () => {
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const endpoint = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
     const env = { HOME: home, TEAMAI_HTTP_ENDPOINT: endpoint };
-    fs.writeFileSync(path.join(agentDir, 'config.json'), JSON.stringify({ endpoint, token: 'fixture-token', createdAt: 'x', workspaceBindings: {} }));
+    fs.writeFileSync(path.join(agentDir, 'config.json'), JSON.stringify({ endpoint, token: 'fixture-token', createdAt: 'x', workspaceBindings: enrolled(sandbox) }));
     // Older HTTP installations can restore config.json from this file.
     fs.writeFileSync(path.join(home, '.teamai', 'config.yaml'), [
       'username: tester', 'updatePolicy: skip', 'repo:', '  kind: http', `  url: ${endpoint}`,
@@ -326,7 +329,7 @@ describe('local-agent rules (#993)', () => {
       const agentDir = path.join(home, '.teamai', 'local-agent');
       fs.mkdirSync(agentDir, { recursive: true });
       fs.writeFileSync(path.join(agentDir, 'config.json'), JSON.stringify({ endpoint, token: 'fixture-token',
-        localAgentId: 'fixture', createdAt: '2026-01-01T00:00:00.000Z', workspaceBindings: {},
+        localAgentId: 'fixture', createdAt: '2026-01-01T00:00:00.000Z', workspaceBindings: enrolled(project),
       }));
       const teamStyle = path.join(project, '.claude', 'rules', 'team-style.md');
       const mine = path.join(project, '.claude', 'rules', 'mine.md');

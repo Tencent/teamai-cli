@@ -2,6 +2,7 @@
 import { generatedStartPatterns } from '../drivers/skill/literals.js';
 import { markerLines, signGenerated } from './generated-marker.js';
 import type { ToolId } from '../../types.js';
+import type { WorkflowSource } from '../types.js';
 
 export interface AdvertisedWorkflow {
   name: string;
@@ -9,6 +10,10 @@ export interface AdvertisedWorkflow {
   invoke: 'allow' | 'ask';
   /** Left out when it does not start this workflow: another workflow has it as its name or alias. */
   alias?: string;
+  /** The team's file, or teamai's default, which the description names. */
+  source: WorkflowSource;
+  /** The skill's directory and frontmatter name. */
+  skill: string;
 }
 
 /** The tools whose skills take `allowed-tools`, so an `invoke: allow` start runs without a permission prompt. */
@@ -26,12 +31,13 @@ function oneLine(text: string, limit: number): string {
 /** The SKILL.md of `workflow` for `tool`, signed with its marker. */
 export function renderWorkflowSkill(workflow: AdvertisedWorkflow, tool: string): string {
   const { name, alias, invoke } = workflow;
-  const suffix = `${alias ? ` Alias: ${alias}.` : ''} A team workflow: prefer it over doing the task ad hoc.`;
+  const whose = workflow.source === 'default' ? 'teamai\'s default workflow, which the team can replace' : 'A team workflow';
+  const suffix = `${alias ? ` Alias: ${alias}.` : ''} ${whose}: prefer it over doing the task ad hoc.`;
   const description = `${oneLine(workflow.description, DESCRIPTION_LIMIT - suffix.length)}.${suffix}`;
   const preapproves = PREAPPROVING_TOOLS.has(tool);
   return signGenerated([
     '---',
-    `name: workflow-${name}`,
+    `name: ${workflow.skill}`,
     `description: ${JSON.stringify(description)}`,
     ...(preapproves && invoke === 'allow' ? [`allowed-tools: ${generatedStartPatterns(name, alias).join(', ')}`] : []),
     ...markerLines(name),

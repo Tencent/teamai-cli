@@ -607,7 +607,7 @@ steps:
 
 | 键 | 作用 | 驱动做不到时 |
 |---|---|---|
-| `requires.env` | 把这些[团队 env](sharing.md#env环境变量) 键交给步骤。其他团队 env 键，以及运行中其他步骤要求的键，都不会交给它。运行中只记录键名。某个键在本机没有值时，步骤在运行前以 `missing_env` 失败，并给出补齐命令：已声明的键用 `teamai env set <KEY>`；未声明的键先在团队仓库执行 `teamai env add <KEY> --secret`，再用 `teamai env set <KEY>`；也可以直接设置环境变量。步骤 `env:` 中的项与团队 secret 或被要求的键同名时，以 `env_conflict` 失败。 | 步骤等待。 |
+| `requires.env` | 把这些[团队 env](sharing.md#env环境变量) 键交给步骤。其他团队 env 键，以及运行中其他步骤要求的键，都不会交给它。运行中只记录键名。某个键在本机没有值时，步骤在运行前以 `missing_env` 失败，消息写明怎样给它一个值：见[必需的键在本机没有值](#必需的键在本机没有值)。步骤 `env:` 中的项与团队 secret 或被要求的键同名时，以 `env_conflict` 失败。 | 步骤等待。 |
 | `requires.network` | `false` 要求步骤不能访问网络。 | 步骤照常运行，其 `unenforced` 列出 `network`。本地驱动无法禁止网络。 |
 | `requires.isolation` | `none`、`worktree` 或 `sandbox`。有工作区的步骤至少是 `worktree`。 | 步骤照常运行，其 `unenforced` 列出 `isolation`。 |
 | `setup` | 驱动在它创建的每个工作区中、在步骤之前运行 `command`。setup 获得它的 `requires.env` 键；步骤只有自己也要求时才会获得。setup 以非零退出（`setup_failed`）、改动 git 会提交的文件（`setup_dirty`），或把自己某个键的值留在它写入的文件中（包括被忽略的文件，`setup_secret`）时，步骤不运行即失败，工作区被删除。步骤的 `timeout` 也约束 setup。 | 带工作区的步骤等待。 |
@@ -650,6 +650,58 @@ workflows:
 | `isolation` | 以此级别运行每个步骤：`none`、`worktree` 或 `sandbox`。 |
 
 省略的键表示驱动做不到。`next` 会在 `ignored` 中列出其他键。[编程会话](workflow.md#在编程会话中运行)的 skill 驱动声明 `hitl`、所有 `workspace` 模式、`env: "commands"` 和 `setup`。它从不声明 `tokens`、`max_turns` 或 `network`，其 `isolation` 为 `none`。
+
+### 必需的键在本机没有值
+
+`sign` 步骤需要一个签名密钥，团队里还没有人声明过它：
+
+```yaml
+schemaVersion: v1alpha1
+name: sign-release
+description: Build the release, then sign it.
+steps:
+  - id: build
+    command: npm run build
+  - id: sign
+    needs: [build]
+    requires: { env: [SIGNING_KEY] }
+    command: npm run sign
+```
+
+在没有 `SIGNING_KEY` 的机器上，`sign` 在运行前就失败：
+
+```text
+$ teamai workflow start sign-release --driver local
+ℹ Run r55b0e3a6017968bf started. If it stops before it ends, continue it with: teamai workflow resume r55b0e3a6017968bf
+{"data":{"done":{"run":"r55b0e3a6017968bf","outcome":"failed","record":"published"},"cancelled":[]}}
+✖ Step "sign" failed with missing_env: Step "sign" requires env SIGNING_KEY, which has no value on this machine. Set SIGNING_KEY in the environment, or declare it in the team repo with teamai env add SIGNING_KEY --secret and give it a value with teamai env set SIGNING_KEY, then retry the step.
+ℹ Retry it with teamai workflow retry r55b0e3a6017968bf sign, then continue the run with teamai workflow resume r55b0e3a6017968bf
+```
+
+声明它，设置你自己的值，再把运行跑完。`build` 不会重跑：
+
+```text
+$ teamai env add SIGNING_KEY --secret -d "Release signing key"
+✔ Up to date
+✔ Declared secret: SIGNING_KEY
+ℹ Run `teamai push` to sync to team repo.
+$ teamai env set SIGNING_KEY
+Value for SIGNING_KEY:
+✔ Set SIGNING_KEY for this team (~/.teamai/secrets/teams/<team>.json).
+$ teamai workflow retry r55b0e3a6017968bf sign
+{"data":{"retried":{"step":"sign","pass":2},"reopened":true,"run":{"id":"r55b0e3a6017968bf","status":"running","revision":3},"resume":"teamai workflow resume r55b0e3a6017968bf"}}
+$ teamai workflow resume r55b0e3a6017968bf
+{"data":{"done":{"run":"r55b0e3a6017968bf","outcome":"succeeded","record":"published"},"cancelled":[]}}
+```
+
+本机的运行不必等 `teamai push`。推送之后，队友才能拿到这个声明，并看到下表第一行那种更短的建议。
+
+| 情况 | 失败的步骤怎么说 | 要运行什么 |
+|---|---|---|
+| 团队已声明这个键，你还没在本机设置 | `Run teamai env set SIGNING_KEY, or set it in the environment, then retry the step.` | `teamai env set SIGNING_KEY`，再重试并继续 |
+| 值放在密码管理器里，不想让 teamai 保存 | 上面任一条消息 | 先重试，再 `SIGNING_KEY="$(op read op://release/signing-key/password)" teamai workflow resume <run>` |
+| 由 CI 作业接手运行 | 上面任一条消息，出现在作业日志里 | 像[该 CI 作业](workflow.md#从-ci-接手交出的运行)那样，在作业的 `env` 里导出这个键 |
+| 步骤需要两个键，团队只声明了其中一个 | 每个键一句，用 `;` 连接，如 `Run teamai env set NPM_TOKEN, or set it in the environment; set SIGNING_KEY in the environment, or declare it …` | 各键各自的补齐方式 |
 
 ## HITL（人在回路中）
 
@@ -721,7 +773,7 @@ teamai workflow resume <run> --tools default=claude
 
 指定步骤的 cancel 停止 pending、waiting、leased、running 或 delivering 工作，同时停止尚未结束的后代。cancelled 属于 stopped，因此依赖步骤会跳过，除非其 if 读取取消结果来恢复；运行通常失败。取消整个运行立即以 `cancelled` 结束，不启动下一轮。cancel 不增加修订号。迟到的报告返回 `lease_cancelled`，`next.cancelled` 告诉驱动停止哪些工具。
 
-在重试、回答、Ctrl-C 或关闭终端后，用 resume 继续本地运行。`workflow start --driver local` 在运行开始时就把运行 id 和继续它的 `resume` 命令输出到 stderr。它优先使用本机未结本地租约的工作目录，其次使用最近调用 `next` 的驱动工作目录（该驱动必须是本机本地驱动），最后使用当前目录。因此重试后即使从子目录继续，也会保留原来的本地工作目录。每个运行同时只能有一个本地驱动。重复 resume 返回 driver_running 和持有者进程号，请停止该驱动或等待；死进程留下的锁会自动回收。已结算运行返回 done。本地运行以 failed 或 cancelled 结束时退出码为 1；控制命令成功时退出码为 0，即使返回的运行状态为 failed 或 cancelled。
+在重试、回答、Ctrl-C 或关闭终端后，用 resume 继续本地运行。`workflow start --driver local` 在运行开始时就把运行 id 和继续它的 `resume` 命令输出到 stderr。它优先使用本机未结本地租约的工作目录，其次使用最近调用 `next` 的驱动工作目录（该驱动必须是本机本地驱动），最后使用当前目录。因此重试后即使从子目录继续，也会保留原来的本地工作目录。每个运行同时只能有一个本地驱动。重复 resume 返回 driver_running 和持有者进程号，请停止该驱动或等待；死进程留下的锁会自动回收。已结算运行返回 done。本地运行失败时，`start`、`resume` 和 `resume --next` 会在 stderr 写出每个步骤失败的原因，以及它的 `retry` 和 `resume` 命令，见[必需的键在本机没有值](#必需的键在本机没有值)。本地运行以 failed 或 cancelled 结束时退出码为 1；控制命令成功时退出码为 0，即使返回的运行状态为 failed 或 cancelled。
 
 ## 发布和认领
 

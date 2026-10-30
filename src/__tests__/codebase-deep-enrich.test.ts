@@ -15,9 +15,17 @@ vi.mock('../tool-launch/call.js', async (importOriginal) => ({
   }),
 }));
 
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
+  autoDetectInit: vi.fn(),
+}));
+
 import { callTool, callToolParallel } from '../tool-launch/call.js';
 import { codebaseCmd } from '../codebase-cmd.js';
 import { runHiddenDeepEnrich } from '../deep-enrich.js';
+import { autoDetectInit } from '../config.js';
+import { LocalConfigSchema, TeamaiConfigSchema } from '../types.js';
+import { createGit } from '../utils/git.js';
 
 const temporaryDirectories: string[] = [];
 
@@ -123,7 +131,7 @@ describe('codebase deep-enrich', () => {
     fs.symlinkSync(outside, docsDir, process.platform === 'win32' ? 'junction' : 'dir');
 
     await expect(runHiddenDeepEnrich({ project: 'faketest', wikiRoot: path.join(root, 'teamwiki') }))
-      .rejects.toThrow(/symbolic link/i);
+      .rejects.toThrow(`Cannot deep-enrich through a symbolic link: ${docsDir}. Replace it with a regular file or directory before retrying.`);
     expect(fs.readdirSync(outside)).toEqual([]);
   });
 
@@ -385,5 +393,82 @@ describe('codebase deep-enrich', () => {
 
     expect(process.exitCode).toBe(1);
     expect(log.mock.calls.flat().join('\n')).toMatch(/outside|traversal/i);
+  });
+});
+
+function writeDeepEnrichManifest(evidenceDir: string, project: string): void {
+  fs.mkdirSync(evidenceDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(evidenceDir, '_manifest.json'),
+    JSON.stringify({
+      schemaVersion: 'team-wiki.codebase-output-manifest.v2',
+      project,
+      generatedAt: '2026-01-01T00:00:00Z',
+      components: [
+        {
+          slug: 'Auth',
+          docPath: `evidence/code/${project}/Auth.md`,
+          title: 'Auth',
+          category: 'component',
+          confidence: 'INFERRED',
+          responsibilities: ['Authenticate users'],
+          entrypoints: [],
+        },
+      ],
+      edges: [],
+    }, null, 2),
+  );
+}
+
+/** Team clone of a bare remote with extracted evidence, as after `teamai import`. */
+async function createTeamDeepEnrichFixture(project = 'auth'): Promise<{ clone: string; remote: string }> {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-deep-enrich-team-'));
+  temporaryDirectories.push(root);
+  const remote = path.join(root, 'remote.git');
+  const clone = path.join(root, 'clone');
+  await createGit(root).raw(['init', '--bare', '-b', 'main', remote]);
+  await createGit(root).clone(remote, clone);
+  const git = createGit(clone);
+  await git.addConfig('user.name', 'Test');
+  await git.addConfig('user.email', 'test@example.com');
+  fs.mkdirSync(path.join(clone, 'teamwiki'), { recursive: true });
+  fs.writeFileSync(path.join(clone, 'teamwiki', 'router.md'), '# Router\n');
+  fs.writeFileSync(path.join(clone, 'teamwiki', 'index.md'), '# Index\n');
+  writeDeepEnrichManifest(path.join(clone, 'teamwiki', 'evidence', 'code', project), project);
+  fs.writeFileSync(path.join(clone, 'teamai.yaml'), 'team: test\n');
+  await git.add('.');
+  await git.commit('team');
+  await git.push(['-u', 'origin', 'main']);
+  vi.mocked(autoDetectInit).mockResolvedValue({
+    localConfig: LocalConfigSchema.parse({ repo: { localPath: clone, remote }, username: 'member', scope: 'user' }),
+    teamConfig: TeamaiConfigSchema.parse({ team: 'test', repo: remote }),
+  });
+  return { clone, remote };
+}
+
+describe('codebase deep-enrich in a team repo', () => {
+  it('publishes generated docs and leaves the clone clean', async () => {
+    const { clone, remote } = await createTeamDeepEnrichFixture();
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await codebaseCmd({ deepEnrich: true, project: 'auth' });
+
+    expect(process.exitCode).toBe(1);
+    expect((await createGit(clone).status()).isClean()).toBe(true);
+    expect(log.mock.calls.flat().join('\n')).toContain(`Pushed to team knowledge repo (${remote})`);
+    for (const name of ['graph-g1-relations.md', 'graph-g2-dataflow.md', 'graph-g3-interfaces.md']) {
+      expect(await createGit(remote).raw(['cat-file', '-e', `main:teamwiki/evidence/code/auth/docs/${name}`])).toBe('');
+    }
+  });
+
+  it('does not publish when previewing with --dry-run', async () => {
+    const { clone, remote } = await createTeamDeepEnrichFixture();
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const head = await createGit(remote).raw(['rev-parse', 'main']);
+
+    await codebaseCmd({ deepEnrich: true, project: 'auth', dryRun: true });
+
+    expect(await createGit(remote).raw(['rev-parse', 'main'])).toBe(head);
+    expect((await createGit(clone).status()).isClean()).toBe(true);
   });
 });

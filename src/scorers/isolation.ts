@@ -1,8 +1,8 @@
 /**
- * How isolated a judge must be. The team (`scorers/scoring.yaml` `isolation`), a scorer (`isolation`) and this machine
- * (`config.yaml` `scoring.isolation`) may each ask; the strictest wins, and nobody asking means `best-effort`.
+ * How isolated a judge must be. The team (`scorers/scoring.yaml` `isolation`), a scorer (`isolation`), this scope
+ * (`config.yaml` `scoring.isolation`) and this machine (~/.teamai/config.yaml `scoring.isolation`) may each ask; the
+ * strictest wins, and nobody asking means `best-effort`.
  */
-import type { LocalConfig } from '../types.js';
 import { ISOLATIONS, type Isolation } from './label.js';
 
 export function scorerIsolationSource(scorer: string, relativePath = `scorers/${scorer}.md`): string {
@@ -21,11 +21,6 @@ export interface RequiredIsolation {
   setBy: string[];
   /** Settings whose value is not an isolation teamai knows. Each counts as `verified`. */
   unknown: Array<{ source: string; value: string }>;
-}
-
-/** What this scope's `config.yaml` asks of every judge. */
-export function machineIsolation(config: LocalConfig): IsolationSetting {
-  return { source: 'config.yaml scoring.isolation', value: config.scoring?.isolation };
 }
 
 function levelOf(value: string): Isolation {

@@ -31,7 +31,7 @@ import { scrubSession } from './scrub.js';
 export type AgentSessionRef = { platform: string; sessionId: string; cwd?: string; filePath?: string };
 
 export type AgentSessionFailure =
-  | { code: 'no_adapter'; platform: string; reason: 'unknown tool' | 'unsupported on win32'; message: string }
+  | { code: 'no_adapter'; platform: string; reason: 'unknown tool' | 'unsupported on win32' | 'read-only'; message: string }
   | { code: 'tool_unavailable'; platform: string; message: string }
   | { code: 'list_failed'; platform: string; message: string }
   | { code: 'not_found'; ref: AgentSessionRef; message: string }
@@ -151,6 +151,14 @@ export function noAdapter(
       platform,
       reason: 'unknown tool',
       message: `Unknown platform "${platform}". Known platforms: ${known.join(', ')}.`,
+    };
+  }
+  if (use === 'write' && sessionPlatformFacts(platform)?.readOnly) {
+    return {
+      code: 'no_adapter',
+      platform,
+      reason: 'read-only',
+      message: `TeamAI cannot write ${platform} sessions: ${platform} resumes a conversation only from a store of its own. Pick another target platform.`,
     };
   }
   if (use === 'write' && os === 'win32' && sessionPlatformFacts(platform)?.sqliteRegistrationOnWindows) {
@@ -438,7 +446,7 @@ async function copy({ from, to, scrub = false, toolRootsFor = recordedToolRoots 
       platform: to.platform,
       message:
         `Target platform "${to.platform}" is not installed or its storage directory was not found. ` +
-        `Install the client first, or pick another target (available: ${listInstalledPlatforms(targetToolRoots).join(', ') || 'none'}).`,
+        `Install the client first, or pick another target (available: ${listInstalledPlatforms(targetToolRoots).filter((platform) => !noAdapter(platform, 'write')).join(', ') || 'none'}).`,
     });
   }
 

@@ -9,10 +9,9 @@
  * started teamai, then runs the payload with the same Git Bash.
  */
 
-import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { findGitBashWindows } from './bundled-runtime.js';
+import { runHookCommand } from './hook-command.js';
 
 export interface CodebuddyProjectGate {
   root: string;
@@ -99,13 +98,6 @@ export function isCodebuddyTeamGateForProject(command: string, root: string): bo
   return rendered !== null && resolvedPath(rendered.gate.root) === resolvedPath(root);
 }
 
-interface HookRun {
-  code: number | null;
-  stdout: string;
-  stderr: string;
-  timedOut: boolean;
-}
-
 /** Read the host payload before forwarding it to the declared team command. */
 async function readHookPayload(): Promise<string> {
   if (process.stdin.isTTY) return '';
@@ -129,77 +121,6 @@ async function readHookPayload(): Promise<string> {
   }
   if (timedOut && !process.stdin.destroyed) process.stdin.destroy();
   return Buffer.concat(chunks).toString('utf8');
-}
-
-/** Run one payload through the host-compatible shell and retain its exact exit status. */
-function runHook(command: string, cwd: string, timeout: number | undefined, stdin: string): Promise<HookRun> {
-  return new Promise((resolve) => {
-    const group = process.platform !== 'win32';
-    const gitBash = process.platform === 'win32' ? findGitBashWindows() : null;
-    const shell = process.platform === 'win32' ? (gitBash ?? true) : true;
-    const spawnArgs = process.platform === 'win32' && gitBash ? ['-lc', command] : [];
-    const stdoutChunks: Buffer[] = [];
-    const stderrChunks: Buffer[] = [];
-    let settled = false;
-    let timeoutTriggered = false;
-    const finish = (code: number | null, timedOut = false) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve({
-        code,
-        stdout: Buffer.concat(stdoutChunks).toString('utf8'),
-        stderr: Buffer.concat(stderrChunks).toString('utf8'),
-        timedOut,
-      });
-    };
-    const child = spawn(shell === true ? command : shell, spawnArgs, {
-      ...(shell === true ? { shell: true } : {}),
-      cwd,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
-      detached: group,
-    });
-    const kill = (): void => {
-      try {
-        child.kill('SIGKILL');
-      } catch {
-        // The child already exited.
-      }
-    };
-    const timer = setTimeout(() => {
-      timeoutTriggered = true;
-      if (process.platform === 'win32' && child.pid) {
-        // Killing Git Bash alone leaves its foreground children alive. Wait for
-        // taskkill's /T tree termination before returning a timeout to the host.
-        try {
-          const taskkill = spawn('taskkill.exe', ['/pid', String(child.pid), '/T', '/F'], {
-            stdio: 'ignore',
-            windowsHide: true,
-          });
-          taskkill.once('error', () => { kill(); finish(null, true); });
-          taskkill.once('close', () => finish(null, true));
-        } catch {
-          kill();
-          finish(null, true);
-        }
-      } else {
-        try {
-          if (group && child.pid) process.kill(-child.pid, 'SIGKILL');
-          else kill();
-        } catch {
-          // The child already exited.
-        }
-        finish(null, true);
-      }
-    }, (timeout ?? 60) * 1_000);
-    child.stdout?.on('data', (chunk: Buffer | string) => { stdoutChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); });
-    child.stderr?.on('data', (chunk: Buffer | string) => { stderrChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); });
-    child.on('error', (error) => { stderrChunks.push(Buffer.from(error.message)); finish(null, timeoutTriggered); });
-    child.on('close', (code) => { if (!timeoutTriggered) finish(code); });
-    child.stdin?.on('error', () => {});
-    child.stdin?.end(stdin);
-  });
 }
 
 /**
@@ -229,7 +150,7 @@ export async function runCodebuddyTeamHook(
   }
   if (!command) return 0;
 
-  const result = await runHook(command, cwd, timeout, await readHookPayload());
+  const result = await runHookCommand(command, { cwd, timeout: timeout ?? 60, stdin: await readHookPayload() });
   if (result.stdout) await new Promise<void>((resolve) => process.stdout.write(result.stdout, () => resolve()));
   if (result.stderr) await new Promise<void>((resolve) => process.stderr.write(result.stderr, () => resolve()));
   if (result.timedOut) {

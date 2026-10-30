@@ -77,6 +77,7 @@ function machine(name: string) {
     git(['commit', '-q', '-m', dir], root);
     return fs.realpathSync.native(root);
   };
+  const enrolled = new Set<string>();
   return {
     base,
     home,
@@ -86,8 +87,11 @@ function machine(name: string) {
     /** A committed repository with teamai initialized in HTTP mode, project scope, for Claude and WorkBuddy, its git exclude flag on. */
     async project(dir: string): Promise<string> {
       const root = repository(dir);
-      const init = await cli(['init', '--http', server.url, '--token', API_KEY, '--scope', 'project', '--agent', 'claude,workbuddy', '--force'], root);
-      expect(init.code, init.output).toBe(0);
+      // An access token works for one agent, so each tool takes the token on its own.
+      for (const tool of ['claude', 'workbuddy']) {
+        const init = await cli(['init', '--http', server.url, '--token', API_KEY, '--scope', 'project', '--agent', tool, '--force'], root);
+        expect(init.code, init.output).toBe(0);
+      }
       const projects = path.join(home, '.teamai', 'projects');
       const config = fs.readdirSync(projects).map((d) => path.join(projects, d, 'config.yaml'))
         .find((file) => fs.existsSync(file) && fs.readFileSync(file, 'utf8').includes(`projectRoot: ${root}\n`));
@@ -96,6 +100,12 @@ function machine(name: string) {
       return root;
     },
     async sessionStart(cwd: string, tool: string, commands: MockCommand[]): Promise<void> {
+      // The local agent serves only a workspace enrolled by `teamai bind-project`.
+      if (!enrolled.has(cwd)) {
+        const enroll = await cli(['bind-project', '--skip'], cwd);
+        expect(enroll.code, enroll.output).toBe(0);
+        enrolled.add(cwd);
+      }
       server.seedCommands(commands);
       const run = await cli(['hook-dispatch', 'session-start', '--tool', tool], cwd,
         JSON.stringify({ cwd, session_id: `s-${path.basename(cwd)}-${tool}`, hook_event_name: 'SessionStart', source: 'startup' }));
@@ -205,8 +215,10 @@ describe.skipIf(process.platform === 'win32')('removing the HTTP local agent rem
 
   it('remove-http removes a project prompt from the instruction file of every tool it reached, and their lines', async () => {
     const m = machine('prompt');
-    const user = await m.cli(['init', '--http', server.url, '--token', API_KEY, '--scope', 'user', '--agent', 'claude,workbuddy', '--force'], m.home);
-    expect(user.code, user.output).toBe(0);
+    for (const tool of ['claude', 'workbuddy']) {
+      const user = await m.cli(['init', '--http', server.url, '--token', API_KEY, '--scope', 'user', '--agent', tool, '--force'], m.home);
+      expect(user.code, user.output).toBe(0);
+    }
     fs.appendFileSync(path.join(m.home, '.teamai', 'config.yaml'), 'gitExcludeEnabled: true\n');
     // A repository with no teamai project of its own: no project pull rewrites the files.
     const app = m.repository('app');
@@ -295,7 +307,10 @@ describe.skipIf(process.platform === 'win32')('removing the HTTP local agent rem
     const app = await m.project('app');
     await m.sessionStart(app, 'claude', [installRule('home-rule', app), installSkill('home-skill', app)]);
     expect(block(app)).toEqual(['/.claude/rules/home-rule.md', '/.claude/skills/home-skill/SKILL.md']);
-    expect(block(app, 'delivered')).toEqual(['/.claude/skills/teamai/SKILL.md', '/.workbuddy/skills/teamai/SKILL.md']);
+    expect(block(app, 'delivered')).toEqual([
+      '/.claude/skills/teamai-share-session/SKILL.md', '/.claude/skills/teamai/SKILL.md',
+      '/.workbuddy/skills/teamai-share-session/SKILL.md', '/.workbuddy/skills/teamai/SKILL.md',
+    ]);
     // The member removed WorkBuddy's copy of the CLI's skill.
     fs.rmSync(path.join(app, '.workbuddy', 'skills'), { recursive: true });
     const exclude = path.join(app, '.git', 'info', 'exclude');
@@ -309,9 +324,11 @@ describe.skipIf(process.platform === 'win32')('removing the HTTP local agent rem
     expect(fs.readdirSync(path.join(m.home, '.teamai')).sort(), out.output).toEqual(['env-loader.sh', 'env-scopes', 'projects']);
     expect(block(app), out.output).toBeNull();
     expect(fs.existsSync(path.join(app, '.claude', 'rules', 'home-rule.md'))).toBe(false);
-    // This uninstall leaves the CLI's skill in the project: its line stays, named.
-    expect(block(app, 'delivered'), out.output).toEqual(['/.claude/skills/teamai/SKILL.md']);
-    expect(out.output).toContain(`Kept /.claude/skills/teamai/SKILL.md in ${exclude}, so git still ignores ${path.join(app, '.claude', 'skills', 'teamai', 'SKILL.md')}`);
+    // This uninstall leaves the CLI's skill and pull's generated workflow skill in the project: their lines stay, named.
+    expect(block(app, 'delivered'), out.output).toEqual(['/.claude/skills/teamai-share-session/SKILL.md', '/.claude/skills/teamai/SKILL.md']);
+    const skillFile = (name: string): string => path.join(app, '.claude', 'skills', name, 'SKILL.md');
+    expect(out.output).toContain(`Kept /.claude/skills/teamai-share-session/SKILL.md, /.claude/skills/teamai/SKILL.md in ${exclude}, `
+      + `so git still ignores ${skillFile('teamai-share-session')}, ${skillFile('teamai')}`);
     expect(m.git(['status', '--porcelain', '-uall'], app).out, out.output).toBe('');
   }, 180_000);
 });

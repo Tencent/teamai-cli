@@ -1,6 +1,7 @@
 import path from 'node:path';
 import YAML from 'yaml';
 import { autoDetectInit, loadStateForScope } from './config.js';
+import { listCachedWorkflows, resolveStart, startingAlias } from './workflow/cache.js';
 import { summarizeWorkspaceChildren } from './workspace-children.js';
 import { teamRefNotice } from './team-ref.js';
 import { getDefaultBranch, getHeadRev, getRepoStatus } from './utils/git.js';
@@ -419,6 +420,12 @@ async function printRepoSection(
   const handler = getAllHandlers().find((h) => h.type === t);
   if (!handler) return;
 
+  if (t === 'workflows') {
+    const files = await handler.scanTeamForPull(teamConfig, localConfig);
+    for (const line of await workflowSourceLines(localConfig, files, options)) console.log(line);
+    return;
+  }
+
   const items = await handler.scanTeamForPull(teamConfig, localConfig);
   if (items.length === 0) {
     console.log('  (none)');
@@ -437,6 +444,30 @@ async function printRepoSection(
       console.log(`    path: ${item.sourcePath}`);
     }
   }
+}
+
+/**
+ * One line per workflow name, with what `workflow start` runs for it: `team` for a valid team version, in this scope or,
+ * from a project, in the user scope, `default` for teamai's default, and `not runnable` for a team file with neither.
+ * A workflow whose alias starts it shows as `alias (name)`, the alias being the name people use.
+ */
+async function workflowSourceLines(
+  localConfig: Awaited<ReturnType<typeof autoDetectInit>>['localConfig'],
+  files: ReadonlyArray<{ name: string; sourcePath: string }>,
+  options: ListOptions,
+): Promise<string[]> {
+  const paths = new Map(files.map((file) => [file.name.replace(/\.yaml$/, ''), file.sourcePath]));
+  const names = [...new Set([...paths.keys(), ...(await listCachedWorkflows(localConfig)).map(({ definition }) => definition.name)])].sort();
+  if (names.length === 0) return ['  (none)'];
+  const shown = await Promise.all(names.map(async (name) => {
+    const start = await resolveStart(localConfig, name);
+    const alias = start.workflow ? await startingAlias(start.config, start.workflow.definition) : undefined;
+    return { label: alias !== undefined ? `${alias} (${name})` : name, source: start.workflow?.source ?? 'not runnable' };
+  }));
+  return names.flatMap((name, index) => {
+    const sourcePath = paths.get(name);
+    return [`  ${shown[index].label}  (${shown[index].source})`, ...(options.verbose && sourcePath ? [`    path: ${sourcePath}`] : [])];
+  });
 }
 
 async function printLocalAgentsSection(

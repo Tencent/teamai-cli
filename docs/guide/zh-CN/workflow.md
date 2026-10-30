@@ -159,10 +159,11 @@ workflows:
     implementer: codex
 ```
 
-有 agent 专用配置时优先于 `default`。支持 `claude`、`claude-internal`、`tclaude`、`codex`、`codex-internal`、`tcodex`、`opencode`、`codebuddy` 和 `workbuddy`。CI 可以在单次启动时用 `--tools default=claude,implementer=codex` 覆盖。没有专用配置的步骤依次使用 `TEAMAI_AI_TOOL`、`default`、运行所在 workspace 配置中的 [`ai.tool`](./reference.md#ai-工具aitool)、`~/.teamai/config.yaml` 中的 `ai.tool`。`TEAMAI_AI_TOOL` 或 `ai.tool` 指定的工具不能运行步骤时，步骤会跳过它并给出警告；指定的名称根本不是 teamai 能启动的工具时，步骤以 `tool_unsupported` 失败。命名 agent 从 `teamai pull` 已经部署到该工具、该 scope 目录里的文件读取。
+有 agent 专用配置时优先于 `default`。支持 `claude`、`claude-internal`、`tclaude`、`codex`、`codex-internal`、`tcodex`、`opencode`、`codebuddy`、`workbuddy` 和 `agy`（Antigravity CLI）。CI 可以在单次启动时用 `--tools default=claude,implementer=codex` 覆盖。没有专用配置的步骤依次使用 `TEAMAI_AI_TOOL`、`default`、运行所在 workspace 配置中的 [`ai.tool`](./reference.md#ai-工具aitool)、`~/.teamai/config.yaml` 中的 `ai.tool`。`TEAMAI_AI_TOOL` 或 `ai.tool` 指定的工具不能运行步骤时，步骤会跳过它并给出警告；指定的名称根本不是 teamai 能启动的工具时，步骤以 `tool_unsupported` 失败。命名 agent 从 `teamai pull` 已经部署到该工具、该 scope 目录里的文件读取。
 
 ```text
 teamai workflow start build --driver local
+teamai workflow start build --driver local --tools default=agy   # 所有步骤都在 Antigravity CLI 上运行
 ```
 
 `--driver local` 在当前检出目录里运行没有 `workspace` 的步骤，除非外层步骤打开了工作区。这里的命令是只读的：退出码为 0，且改了仓库文件、文件权限、符号链接目标、已暂存重命名的新路径、已脏子模块里的文件、暂存区或 HEAD 时，步骤失败，改动留在原地。已有未跟踪目录里的文件变化也算；该目录保持不变时，步骤不会因此失败。`workspace: new` 的步骤在自己的分支上改文件。见[工作区](#工作区)。共用当前检出目录的步骤一次只运行一个。不同工作树里的步骤可以一起运行，上限是 [`workflows.max_parallel`](workflow-advanced.md#并行运行本地命令)。每次 attempt 的 `result.json` 位于当前 scope 的 TeamAI 数据目录中，不在产品检出目录内。驱动调用的 `next` 和 `report` 与下面相同：
@@ -175,7 +176,15 @@ teamai workflow report <run> --json '{"attempt":"<attempt>","revision":1,"outcom
 
 `outcome` 可以是 `success`、`failed` 或 `released`。`released` 把步骤退回 pending，不消耗重试。已经上报过的 attempt 返回 `repeated_report`，revision 旧了也一样。运行状态会记住最近上报过的 attempt。更早的 attempt 走其余检查：revision 旧了返回 `stale_revision`，revision 是当前值但不是当前租约的 attempt 时返回 `wrong_attempt`。其他驱动返回 `wrong_driver`。`changes` 的 `branch` 或 `base` 与租约不符时返回 `invalid_report`，步骤仍处于租约中。工作区里的只读步骤上报 `read`（`branch`、`base` 和它读取的 `commit`），而不是 `changes`。它上报 `changes`、成功时没有 `read`、其他步骤上报 `read`，或 `read` 与租约不符时，同样返回 `invalid_report`。`used`（`{"skills":["review-notes"]}`）写明该轮次加载过的团队技能，供它的[评分标签](scorers.md#任意-driver)使用。不是技能名的值会被丢弃，其他形状的 `used` 返回 `invalid_report`。`next` 上的 `runMode`（`attended` 或 `unattended`）是驱动运行其租约时的[运行模式](#有人值守与无人值守的运行)。租约会保留它，所以无论轮次如何结束（包括超时或取消），轮次及其标签都会保留它。其他值返回 `invalid_json`。CLI 不读取的 payload 字段——例如把 `tokens` 拼成 `tokenz`，或来自更新协议版本的字段——会被接受但回报出来：`next`、`report` 和 `respond --json` 的成功信封会带上 `ignored`，先列顶层字段、再列 `driver.<字段>` 和 `changes.<字段>`，只有名字、没有值。没有未读字段时不带这个键，错误信封保持原样。
 
-运行状态保存在所属 scope 的 TeamAI 数据目录里。`next`、`report`、`respond` 和运行控制命令按 id 跨本机已配置 scope 查找，工作流 worktree 内或产品仓库外也可以使用。两个 scope 中都有的 id 返回 `ambiguous_run`。命令结束后进程就退出。本地运行以 `failed` 或 `cancelled` 结束时，退出码是 1。不会留下常驻的工作流进程。
+运行状态保存在所属 scope 的 TeamAI 数据目录里。`next`、`report`、`respond` 和运行控制命令按 id 跨本机已配置 scope 查找，工作流 worktree 内或产品仓库外也可以使用。两个 scope 中都有的 id 返回 `ambiguous_run`。命令结束后进程就退出。本地运行以 `failed` 或 `cancelled` 结束时，退出码是 1。不会留下常驻的工作流进程。运行失败时，stderr 会列出每个失败的步骤、失败原因，以及重试它的命令：
+
+```text
+$ teamai workflow start build --driver local
+ℹ Run re907e4818f6db47b started. If it stops before it ends, continue it with: teamai workflow resume re907e4818f6db47b
+{"data":{"done":{"run":"re907e4818f6db47b","outcome":"failed","record":"published"},"cancelled":[]}}
+✖ Step "test" failed: command exited with status 1: FAIL parseVersion handles a leading v: expected "1.2.0", got "v1.2.0"
+ℹ Retry it with teamai workflow retry re907e4818f6db47b test, then continue the run with teamai workflow resume re907e4818f6db47b
+```
 
 等待 HITL 请求用 `workflow respond <run> <step> <choice>` 回答，失败或卡住的步骤用 `workflow retry <run> <step>` 重试，`workflow cancel <run> [step]` 停止工作，`workflow resume <run>` 继续本地执行，`workflow publish <run>` 让另一台机器接着运行（见[在另一台机器上继续运行](#在另一台机器上继续运行)）。next 返回 lease、hitl、wait 或 done。参见[HITL](workflow-advanced.md#hitl人在回路中)和[重试、取消和继续运行](workflow-advanced.md#重试取消和继续运行)。本地运行以 failed 或 cancelled 结束时退出码为 1。结束运行的操作在锁内排队写入结束记录，在释放锁后发布；重试后仍更新同一路径。回答记录只发布 choice、channel 和 agent，备注、回答时间和回答驱动身份只保存在本地。
 
@@ -431,7 +440,7 @@ $ teamai workflow resume --next --tools default=claude     # crontab，未设置
 
 开启[使用统计上报](reporting.md)时，每次运行都会向团队的 `teamai-reports` 分支发布一条保护隐私的记录：开始时一次，结束时一次。关闭后不发布任何记录，返回中也不带 `record`。记录存放在 `workflows/runs/<run id>.json`，以 run id 为键，重试的发布会更新同一条记录而不是产生副本。
 
-记录只包含：run id、工作流名、`sourceHash`、可选的 `teamRevision`、阶段（`start` 或 `end`）、驱动的 kind、运行启动时的模式（`runMode`）、状态、运行到达的 end（到达时才有）、未到达 end 就失败的运行的失败代码（仅限 teamai 设定的代码，如循环用完次数时的 `loop_exhausted`，或本地驱动找不到工具时的 `tool_unavailable`，不含失败消息）、开始和结束时间、时长、逐步条目（step 路径如 `check.classify`、agent、tool、model、outcome、tokens，驱动在 `next` 上发送了时该 pass 的 `runMode`，以及该 pass 的产出（`outcomes`：它分支上的 commit 哈希、为它交付的拉取请求，以及 `teamai contribute` 在它的 attempt 中记录的经验 ID）——混合 agent 的运行会分别记录每步自己的字段；`tool` 仅在是本地驱动的工具之一时保留，`model` 是驱动报告的名称，仅在形如模型名时保留）、步骤汇总计数（succeeded、failed、skipped、cancelled）、累计已结算 attempt 数、运行交付的 pull request（`prs`），以及发布者用户名。`sourceHash` 标识实际运行的工作流和提示文件的精确字节。只有一个远端可达的团队提交同时保存父工作流和所有子工作流的这些精确字节时，才写入 `teamRevision`；本地或未推送的修改以及混合缓存版本都会省略它。每条条目都带 `pass` 编号，循环运行了多次的步骤每个 pass 各有一条条目。`for_each` 的项按该项自己运行的次数计 `pass`，所以前面某个 pass 的项较少时，项的 `pass` 可能比所属步骤的小。被取消步骤的条目 outcome 为 `cancelled`，被跳过的步骤没有 outcome。汇总计数按运行结束时的状态，每个步骤只计一次。从未开始的子工作流里的步骤不计入。提示词、命令文本、输入值、`env` 值、输出、diff、秘密值、本地工作区路径、会话 id 和主机名没有可落地的字段——记录由白名单构建，而不是从运行状态里过滤。
+记录只包含：run id、工作流名、定义里有别名时的 `alias`、`sourceHash`、可选的 `teamRevision`、`origin`（团队的定义，或[默认工作流](#默认工作流)及发布它的 teamai 版本）、阶段（`start` 或 `end`）、驱动的 kind、运行启动时的模式（`runMode`）、状态、运行到达的 end（到达时才有）、未到达 end 就失败的运行的失败代码（仅限 teamai 设定的代码，如循环用完次数时的 `loop_exhausted`，或本地驱动找不到工具时的 `tool_unavailable`，不含失败消息）、开始和结束时间、时长、逐步条目（step 路径如 `check.classify`、agent、tool、model、outcome、tokens，驱动在 `next` 上发送了时该 pass 的 `runMode`，以及该 pass 的产出（`outcomes`：它分支上的 commit 哈希、为它交付的拉取请求，以及 `teamai contribute` 在它的 attempt 中记录的经验 ID）——混合 agent 的运行会分别记录每步自己的字段；`tool` 仅在是本地驱动的工具之一时保留，`model` 是驱动报告的名称，仅在形如模型名时保留）、步骤汇总计数（succeeded、failed、skipped、cancelled）、累计已结算 attempt 数、运行交付的 pull request（`prs`），以及发布者用户名。`sourceHash` 标识实际运行的工作流和提示文件的精确字节。只有一个远端可达的团队提交同时保存父工作流和所有子工作流的这些精确字节时，才写入 `teamRevision`；本地或未推送的修改以及混合缓存版本都会省略它。每条条目都带 `pass` 编号，循环运行了多次的步骤每个 pass 各有一条条目。`for_each` 的项按该项自己运行的次数计 `pass`，所以前面某个 pass 的项较少时，项的 `pass` 可能比所属步骤的小。被取消步骤的条目 outcome 为 `cancelled`，被跳过的步骤没有 outcome。汇总计数按运行结束时的状态，每个步骤只计一次。从未开始的子工作流里的步骤不计入。提示词、命令文本、输入值、`env` 值、输出、diff、秘密值、本地工作区路径、会话 id 和主机名没有可落地的字段——记录由白名单构建，而不是从运行状态里过滤。
 
 条目的 `agent` 是该 pass 实际运行时观察到的组合：步骤的 `agent:` 定义及工具如何拿到它（工具自己读取 agent 文件时为 `main`，指令拼接到提示词前时为 `prompt`）、工具及其版本、启动时请求的模型和 effort、工具报告的模型、检出最近一次 pull 的团队提交以及之后是否改过已下发的文件、项目提交、TeamAI 版本和驱动的 kind。没有观察到的值不写。`fingerprint` 对定义、工具、模型、effort 和团队提交做哈希，fingerprint 相同的两个 pass 记录下来的这些部分相同。模型或团队提交未知，或改过已下发的文件时，不写 `fingerprint`。没有任何观察的 pass，以及旧版 TeamAI 写的记录，只带定义的名称。步骤运行期间，如果该检出最近一次 pull 已完整下发到步骤启动的工具，该工具以及它在同一检出中启动的会话都会跳过会话开始时的 pull，步骤因此保持它记录的团队提交。
 
@@ -459,7 +468,14 @@ Claude Code、Codex 等编程会话可以替与它协作的人运行团队工作
 
 `resume`、`next --takeover` 和驱动在 `next` 中的认领遵循同一规则。
 
-`alias` 是 `workflow start` 可选的第二个名称，必须是单个 token。别名若与另一个工作流的别名或名称相同，就不启动任何工作流（`alias_conflict`）。请用名称启动这些工作流。
+`alias` 是 `workflow start` 可选的第二个名称，必须是单个 token，也是人们看到的名称：生成的 skill、`teamai list workflows` 和仪表盘都先显示它。别名若与另一个工作流的别名或名称相同，就不启动任何工作流（`alias_conflict`）。请用名称启动这些工作流。
+
+```console
+$ teamai list workflows
+
+=== REPO WORKFLOWS ===
+  session-fix (session-change)  (team)
+```
 
 ```yaml
 schemaVersion: v1alpha1
@@ -482,9 +498,21 @@ steps:
 
 ### 工作流 skill
 
-`teamai pull` 为每个 `invoke: allow` 或 `ask` 的工作流写入一个 `workflow-<name>` skill。会话通过它找到工作流：skill 带有工作流的描述和别名，并引导 agent 读取 `teamai skill get workflow`，即已安装 CLI 提供的指令。它不带任何步骤、提示词或命令。在 Claude Code 和 CodeBuddy 中，`allow` 工作流的 skill 会预先批准它的 `workflow start` 命令。用户级安装的 pull 会把这些 skill 写入你的主目录，所有会话都能看到。在没有同名可运行工作流的项目中，`workflow start` 会启动用户级安装的那个工作流，该运行属于用户级安装。
+`teamai pull` 为每个 `invoke: allow` 或 `ask` 的工作流写入一个 skill。会话通过它找到工作流：skill 带有工作流的描述和别名，并引导 agent 读取 `teamai skill get workflow`，即已安装 CLI 提供的指令。它不带任何步骤、提示词或命令。在 Claude Code 和 CodeBuddy 中，`allow` 工作流的 skill 会预先批准它的 `workflow start` 命令。用户级安装的 pull 会把这些 skill 写入你的主目录，所有会话都能看到。在没有同名可运行工作流的项目中，`workflow start` 会启动用户级安装的那个工作流，该运行属于用户级安装。
 
-请修改工作流，而不是 skill。工作流变化时，pull 会重写未改动过的 skill；工作流被删除或改为 `deny` 时，pull 会删除它。被你编辑过的 skill 会保留，并给出警告。没有生成标记、名为 `workflow-<name>` 的团队或成员 skill 会取代它，`teamai doctor` 会列出这种情况。`teamai push` 从不发布生成的 skill。`push --skill` 拒绝生成的 skill，也拒绝 CLI 自有的 skill，如 `teamai`。在项目中，pull 会把生成的 skill 列入 `.git/info/exclude`。
+skill 以人们对工作流的称呼命名：
+
+| 工作流 | Skill |
+|---|---|
+| `name: session-change`，`alias: session-fix` | `/workflow-session-fix` |
+| `name: release-notes`，没有别名 | `/workflow-release-notes` |
+| teamai 的[默认工作流](#默认工作流) `teamai-share-session` | `/teamai-share-session` |
+| 你的 `workflows/teamai-share-session.yaml`，没有别名 | `/teamai-share-session` |
+| 你的 `workflows/teamai-share-session.yaml`，带 `alias: wrap-up` | `/workflow-wrap-up` |
+
+冲突的别名（`alias_conflict`）不指向任何工作流，所以在冲突解决之前，它的 skill 回到 `workflow-<name>`，默认工作流则回到它自己的名字，例如 `teamai-share-session`。
+
+请修改工作流，而不是 skill。工作流变化时，pull 会重写未改动过的 skill；别名变化时重命名它；工作流被删除或改为 `deny` 时，pull 会删除它。被你编辑过的 skill 会保留，并给出警告。没有生成标记的同名团队或成员 skill 会取代它，`teamai doctor` 会列出这种情况。`teamai push` 从不发布生成的 skill。`push --skill` 拒绝生成的 skill，也拒绝 CLI 自有的 skill，如 `teamai`。在项目中，pull 会把生成的 skill 列入 `.git/info/exclude`。
 
 self 模式下，工作流 worktree 中的团队文件是已提交的版本。会话要在 worktree 中运行某个工作流前，先提交该工作流，否则那里没有它的 skill。
 
@@ -537,3 +565,231 @@ skill 驱动声明 `env: "commands"`（见[要求和限制](workflow-advanced.md
 
 - 在 Windows 上，后台 runner 被杀掉后，它启动的命令会一直运行到结束。TeamAI 不会停止它。
 - 提示词步骤的 `timeout` 在会话下一次调用 `next` 或轮询时才被发现，而不是在超时的那一刻。
+
+## 默认工作流
+
+teamai 自带两个工作流，团队不用自己编写就能使用。它们都以 `teamai-` 开头，方便和团队的工作流区分：
+
+| 工作流 | 作用 | 它的 skill 何时出现 |
+|---|---|---|
+| `teamai-share-learnings` | 把会话学到的东西分享为团队经验（一条或多条），然后运行 `teamai-share-session` | [recall](knowledge.md) 开启且来源可写时，因为它的第一步运行 `teamai skill get share`；团队的同名副本也一样 |
+| `teamai-share-session` | 发布会话的转录（已脱敏），并用团队的评分器给它评分 | 始终 |
+
+团队写一个同名文件就会取代默认工作流：
+
+```console
+$ teamai list workflows
+
+=== REPO WORKFLOWS ===
+  release-notes  (team)
+  teamai-share-learnings  (default)
+  teamai-share-session  (default)
+
+# 团队推送带 alias: wrap-up 的 workflows/teamai-share-session.yaml、你运行 teamai pull 之后
+$ teamai list workflows
+
+=== REPO WORKFLOWS ===
+  release-notes  (team)
+  teamai-share-learnings  (default)
+  wrap-up (teamai-share-session)  (team)
+```
+
+同一个名字取第一个可运行的版本：项目的团队文件，其次用户级安装的团队文件，最后是 teamai 的默认工作流。别名是某个默认工作流名称的团队工作流也会取代它。默认工作流来自已安装的 teamai，从不写入团队仓库或工作流缓存；它和 `invoke` 相同的团队工作流一样会生成[工作流 skill](#工作流-skill)。团队文件没有可运行版本时，默认工作流继续生效，pull 会说明：
+
+```text
+⚠ [workflows] workflows/teamai-share-session.yaml has no runnable version, so teamai's default teamai-share-session stays in effect
+```
+
+`teamai-share-learnings` 用它的五个输入运行 `teamai-share-session`，所以团队的 `teamai-share-session`（或别名为 `teamai-share-session` 的团队工作流）要声明同样的五个输入，类型也相同，用不到的也要声明：
+
+```yaml
+schemaVersion: v1alpha1
+name: teamai-share-session
+alias: wrap-up
+description: Publish this session our way.
+invoke: ask
+inputs: { session: string, source: string, publish: boolean, scorers: [string], judge: here | driver }
+steps:
+  - id: archive
+    command: ./scripts/archive-session.sh "$SESSION"
+    env: { SESSION: "{{ inputs.session }}" }
+```
+
+输入不同时（例如只有 `session` 和 `source`），或某个输入类型不同时（例如 `publish: string`），pull 对每个输入警告一次，不写 `teamai-share-learnings` skill，`teamai-share-learnings` 在分享任何经验之前就以 `invalid_inputs` 拒绝启动，摩擦提醒回到 `teamai skill get share`：
+
+```text
+# 只有 session 和 source
+⚠ [workflows] teamai's default teamai-share-learnings cannot start: step "share-session" with.publish is not an input workflow "teamai-share-session" declares
+# publish: string
+⚠ [workflows] teamai's default teamai-share-learnings cannot start: step "share-session" passes publish, which workflow "teamai-share-session" declares as another type than teamai's default teamai-share-session
+```
+
+枚举值的顺序不限：`judge: driver | here` 与 `here | driver` 是同一类型。
+
+保留这五个输入，或者同时替换 `teamai-share-learnings`。
+
+`workflow start --describe` 用 `source`（`team` 或 `default`）说明启动的是哪一个。运行把它作为 `origin` 保存在状态和[运行记录](#运行记录)中：`{"source":"team"}` 与 `teamRevision` 并列，或 `{"source":"default","teamaiVersion":"0.29.0"}`。[仪表盘](dashboard.md#工作流运行workflow-runs)显示 `团队 7a6134a25e74` 或 `teamai 默认 0.29.0`。默认工作流的运行只能在 teamai 自带同一文件的机器上继续；否则以 `definition_mismatch` 拒绝，并说明两个版本。
+
+### teamai-share-learnings 和 teamai-share-session
+
+`teamai-share-learnings` 和本人一起收尾一个编程会话。[摩擦提醒](knowledge.md#贡献知识)会提供它，本人也可以随时让 agent 运行它（“结束这个会话”“分享我们学到的东西”）。`teamai-share-session` 是它的最后一步；本人只想发布或评分时（“发布这个会话”“用 style 给它评分”），它也可以单独运行。
+
+```text
+teamai-share-learnings
+inputs: { session: string, source: string, publish: boolean, scorers: [string], judge: here | driver }
+
+learning         interactive：会话的 agent 和本人一起运行 `teamai skill get share`
+                 → { learnings: [{ title, file, namespace }, …] }，没什么可分享时为 []
+└─ approve       有一条或更多经验时运行。可选审批：Share these N learnings with the team? [每条的标题、文件和命名空间]
+   └─ contribute 每条经验一次 → teamai contribute --file … --title … --namespace … --session-id <session>
+share-session    用相同输入运行 teamai-share-session：
+  publish        只在 publish: true 时运行。必需审批：只有本人能回答
+                 → teamai session push --scrub --session <session> --source <source>
+  score          只在 judge: here 时运行，每个评分器一次 → teamai score --session <session> --scorer <scorer>
+  score-driver   只在 judge: driver 时运行，每个评分器一次 → 会话的 agent 领取评审租约，best-effort 评审
+```
+
+`learning` 和 `share-session` 互不等待。`scorers: []` 时不运行任何评审。每次 `teamai contribute` 都把它的经验记为该会话的产出，所以分享了三条经验的会话在仪表盘上三条都会显示。定义文件是已安装包中的 `workflows/teamai-share-learnings.yaml` 和 `workflows/teamai-share-session.yaml`。
+
+agent 运行 describe，它为调用它的会话给每个输入提议一个 `value` 和一个 `why`，两个工作流相同。下面是在 Claude Code 会话中、团队使用默认策略时一次真实运行的输入：
+
+| 输入 | 提议值 | `why` |
+|---|---|---|
+| `session` | `"7c1e5a2b-…"` | The session to share: this one. |
+| `source` | `"claude-code"` | This session's tool, as teamai session list names it. |
+| `publish` | `true` | Archive this session's transcript, scrubbed, for the team. Proposed because the attended publish policy (the default) is ask. You confirm it again from your own terminal or the dashboard before it runs. |
+| `scorers` | `[]` | Scorers that judge this session now. None proposed: the attended scoring policy (the default) is off. Name any scorer to judge with it. |
+| `judge` | `"here"` | claude is installed here, so teamai's own judge scores it. |
+
+提议值取决于团队的[发布策略](sharing.md#会话)和[评分策略](scorers.md#已结束的会话)，以及这台机器：
+
+| 输入 | 情况 | 提议值 |
+|---|---|---|
+| `publish` | 有人值守的发布策略为 `ask`（默认） | `true` |
+| | `off`；或 `auto`，会话空闲 6 小时后反正会发布 | `false` |
+| `scorers` | 有人值守的评分策略为 `ask` | 设置了 `sessions: true` 且抽样选中该会话的评分器，与 `auto` 下后台评审选中的相同 |
+| | `off` 或 `auto` | `[]` |
+| | `judge: driver`，且某评分器要求 `verified` 隔离 | 不提议该评分器，`why` 说明是哪个文件要求的 |
+| `publish`、`scorers` | teamai 不读取其会话的工具 | `false`、`[]` |
+| `judge` | 本机装有 teamai 能运行的评审工具（claude、codex、opencode、codebuddy） | `here` |
+| | 没有，例如只装了 Cursor 的机器 | `driver` |
+| `session`、`source` | describe 找不到 agent 会话 | 不提议：由本人给出 |
+
+启动前，本人可以保留、修改或清空每个值。几个例子：
+
+```text
+# 一次很长的调试会话结束，摩擦提醒触发。Claude Code，默认策略
+agent   proposes teamai-share-learnings {"session":"7c1e…","source":"claude-code","publish":true,"scorers":[],"judge":"here"}
+person  go ahead
+agent   learning   → two learnings the person picked:
+                     "Delay the payments readiness probe until the cache warms"   (namespace payments)
+                     "kubectl rollout status hides the failing init container"   (shared root)
+        approve    → answers yes (recommended start)
+        contribute[0], contribute[1] → two files on teamai-learnings, both outcomes of session 7c1e…
+        share-session.publish → "Only you can answer this approval"; the person clicks yes in teamai dashboard
+                   → session pushed, scrubbed, to teamai-reports. Run succeeded.
+
+# 没什么可分享，只归档转录
+person  nothing to share, just archive it
+agent   starts teamai-share-session {…,"publish":true,"scorers":[]}  → publish asks the person; no learning step at all
+
+# 机器上只有 Cursor，加一个抽样没选中的评分器
+person  score this session with style
+agent   proposes teamai-share-session {"session":"7c1e…","source":"cursor","publish":false,"scorers":[],"judge":"driver"}
+person  add style
+agent   starts with "scorers":["style"] → score-driver: the agent takes the judge lease for style, best-effort
+
+# 团队关闭了 recall
+pull    writes /teamai-share-session only: teamai-share-learnings would send the agent to a share skill that says no
+person  close this session
+agent   proposes teamai-share-session: publish and score, no learnings
+```
+
+谁回答每个审批：
+
+| 审批 | 由谁回答 |
+|---|---|
+| `approve`（可选） | 推荐启动（`--hitl recommend`）下由 agent 回答；选“ask me at optional approvals”（`--hitl person`）时由本人回答；选“answer optional approvals automatically”（`--auto-approve`）时回答 yes |
+| `share-session.publish`（必需） | 只有本人：在自己的终端运行 `teamai workflow respond <run> share-session.publish yes --pass 1`，或在 `teamai dashboard` 中点 yes。来自 agent 会话的回答以 `agent_in_path` 拒绝 |
+
+无人值守的会话从不提供这两个默认工作流，无人值守的 describe 也会拒绝它们：`invoke: ask` 需要有人在场。
+
+### 覆盖默认工作流
+
+从包里自带的文件开始，修改、推送，再 pull：
+
+```bash
+cp "$(npm root -g)/teamai-cli/workflows/teamai-share-learnings.yaml" workflows/teamai-share-learnings.yaml
+```
+
+对名字和类型与默认工作流相同的输入，describe 仍然提议值；其他输入留给本人填写：
+
+| 你的 `workflows/teamai-share-learnings.yaml` | describe 提议 |
+|---|---|
+| 五个输入不变，步骤或提示词不同 | 全部五个 |
+| 新增 `ticket: string` | 那五个；`ticket` 由本人给出 |
+| 只保留 `session` 和 `source` | 这两个 |
+| 把 `session` 改名为 `sessionId`，或把 `scorers` 改为 `string` | 除它之外的全部 |
+| 设置 `invoke: deny` | 不提议：摩擦提醒恢复为 `teamai skill get share` |
+
+在会话处理的工单上为每条分享的经验留言：保留默认工作流，加一个输入，
+
+```yaml
+inputs: { session: string, source: string, publish: boolean, scorers: [string], judge: here | driver, ticket: string }
+```
+
+再在 `contribute` 之后加一个步骤：
+
+```yaml
+  - id: link
+    needs: [learning, contribute]
+    if: steps.contribute.outcome == 'success'
+    for_each: steps.learning.outputs.learnings
+    command: 'gh issue comment "$TICKET" --body "Shared as a team learning: $TITLE"'
+    env: { TICKET: "{{ inputs.ticket }}", TITLE: "{{ item.title }}" }
+```
+
+本人什么都不分享或回答 no 时，`link` 和 `contribute` 一起被跳过。命令里含有 `: ` 时要加引号，否则 YAML 会把它读成映射，pull 会保留默认工作流。
+
+给团队的版本起一个大家已经在用的名字。有了别名，它的 skill 以别名命名，`teamai list workflows` 也先显示别名：
+
+```yaml
+schemaVersion: v1alpha1
+name: teamai-share-learnings
+alias: wrap-up
+description: Share what this session taught, then publish it. Use when the person asks to wrap up or close the session.
+invoke: ask
+# … 默认工作流的输入和步骤
+```
+
+```console
+$ teamai list workflows
+  wrap-up (teamai-share-learnings)  (team)
+```
+
+会话现在找到的是 `/workflow-wrap-up`，而不是 `/teamai-share-learnings`。
+
+只分享经验，每次都由本人批准，从不发布或评分：
+
+```yaml
+schemaVersion: v1alpha1
+name: teamai-share-learnings
+description: Share what this session taught as team learnings, once the person approves them. Use when the person asks to close the session or share what it taught.
+invoke: ask
+inputs: { session: string, source: string }
+steps:
+  - id: learning
+    interactive: true
+    prompt: "Run `teamai skill get share` and follow it with the person for the {{ inputs.source }} session {{ inputs.session }}. Write each learning the person wants to share to its own file outside the repository, and return them as learnings, each with its path, its title, and its learnings namespace (an empty string for the shared root). If the person finds nothing worth sharing, return an empty list."
+    output: { learnings: [{ title: string, file: string, namespace: string }] }
+  - id: approve
+    needs: [learning]
+    if: length(steps.learning.outputs.learnings) > 0
+    approve: { message: "Share these {{ length(steps.learning.outputs.learnings) }} learnings with the team? {{ steps.learning.outputs.learnings }}", required: true }
+  - id: contribute
+    needs: [learning, approve]
+    if: steps.approve.outcome == 'success'
+    for_each: steps.learning.outputs.learnings
+    command: teamai contribute --file "$FILE" --title "$TITLE" --namespace "$NS" --session-id "$SESSION"
+    env: { FILE: "{{ item.file }}", TITLE: "{{ item.title }}", NS: "{{ item.namespace }}", SESSION: "{{ inputs.session }}" }
+```

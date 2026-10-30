@@ -84,6 +84,28 @@ describe('importCodebase: the extraction every import source shares', () => {
     expect(pages.join('\n')).toContain('greet');
   });
 
+  it('publishes the shared root manifest for parallel batch imports without racing', async () => {
+    const names = ['svc-1', 'svc-2', 'svc-3', 'svc-4'];
+    const repos = await Promise.all(
+      names.map((name) => makeRepo(root, name, `export function ${name.replace('-', '')}() { return 1; }\n`)),
+    );
+    // The race needs an existing destination: fs-extra's copy unlinks it first.
+    await fs.outputFile(
+      path.join(wikiRoot, 'source-manifest.json'),
+      JSON.stringify({ project: 'seed', headSha: 'seed' }),
+    );
+
+    const results = await Promise.all(repos.map((dir, i) => run(dir, `github__acme__${names[i]}`)));
+
+    expect(results).toEqual([true, true, true, true]);
+    const rootManifest = await fs.readJson(path.join(wikiRoot, 'source-manifest.json'));
+    expect(names.map((name) => `github__acme__${name}`)).toContain(rootManifest.project);
+    expect(rootManifest.files.length).toBeGreaterThan(0);
+    // The temp file used for the atomic publish is gone.
+    const leftovers = (await fs.readdir(wikiRoot)).filter((entry) => entry.includes('.tmp-'));
+    expect(leftovers).toEqual([]);
+  });
+
   it('extracts incrementally from the codebase\'s own baseline after another repo was imported into the same teamwiki', async () => {
     const a = await makeRepo(root, 'svc-a', 'export function originalGreeting() { return "hi"; }\n');
     const b = await makeRepo(root, 'svc-b', 'export function other() { return 1; }\n');

@@ -7,8 +7,9 @@
  *                  also by any reader a longer shell command names (namedReads)
  *                  when the output shows that skill (showsSkill),
  *                  or OMP's `read skill://<name>`
- *   prompt-submit  a mention: `/name` at the start, Codex `$name`, or the
- *                  `<skill>` block Pi expands `/skill:name` into
+ *   prompt-submit  a mention: `/name` at the start, Codex `$name`, the
+ *                  `<skill>` block Pi expands `/skill:name` into, or the
+ *                  `@command://name` the CodeBuddy plugin sends (#1516)
  *
  * Each candidate must be an installed skill, then claims its (session, turn)
  * slot in `~/.teamai/sessions/<sid>-skills.json`; only a first claim is
@@ -25,7 +26,7 @@ import { recordedUnchanged, type DeliveredHashes } from './resources/delivered-c
 import type { SubagentsRead } from './session-flow/adapters/base.js';
 import type { ContentBlock, Message, Session } from './session-flow/ir.js';
 import { typedText } from './session-flow/title.js';
-import { isToolId, TOOLS, type SkillLoad } from './tools.js';
+import { isToolId, TOOLS, type PromptForm, type SkillLoad } from './tools.js';
 import { SKILL_NAME_CHARS, type LocalConfig } from './types.js';
 import { withFileLock } from './update.js';
 import {
@@ -134,34 +135,45 @@ function showsSkill(output: string | undefined, skill: string): boolean {
   return output !== undefined && [...output.matchAll(NAME_LINE)].some((match) => match[1] === skill);
 }
 
-function promptFormOf(tool: string): '$name' | 'skill-block' | '/name' {
+function promptFormsOf(tool: string): readonly PromptForm[] {
   const load = skillLoadOf(tool);
-  return load === undefined || load === 'unknown' ? '/name' : load.promptForm ?? '/name';
+  if (load === undefined || load === 'unknown') return ['/name'];
+  const form = load.promptForm ?? '/name';
+  return typeof form === 'string' ? [form] : form;
 }
 
 /** The skills a prompt mentions, before the existence gate. */
 function promptCandidates(prompt: string, tool: string): SkillCandidate[] {
-  const form = promptFormOf(tool);
-  let pattern: RegExp;
-  switch (form) {
-    case '$name':
-      // Codex resolves a `$name` anywhere in the prompt.
-      pattern = new RegExp(`(?:^|\\s)\\$(${NAME})`, 'g');
-      break;
-    case 'skill-block': {
-      const block = PI_SKILL_BLOCK.exec(prompt);
-      return block ? [{ skill: block[1], file: block[2] }] : [];
+  const candidates: SkillCandidate[] = [];
+  for (const form of promptFormsOf(tool)) {
+    let pattern: RegExp;
+    switch (form) {
+      case '$name':
+        // Codex resolves a `$name` anywhere in the prompt.
+        pattern = new RegExp(`(?:^|\\s)\\$(${NAME})`, 'g');
+        break;
+      case 'skill-block': {
+        const block = PI_SKILL_BLOCK.exec(prompt);
+        return block ? [{ skill: block[1], file: block[2] }] : [];
+      }
+      case 'command-uri':
+        // The CodeBuddy plugin lands a manual slash command as `@command://name`
+        // (#1516). Anchored at the start, so a command URI quoted in the
+        // conversation is not a skill use.
+        pattern = new RegExp(`^@command://(${NAME})(?=\\s|$)`, 'g');
+        break;
+      case '/name':
+        // A whole token at the start, so a prompt beginning with an absolute path is not a skill use.
+        pattern = new RegExp(`^/(${NAME})(?=\\s|$)`, 'g');
+        break;
+      default: {
+        const unhandled: never = form;
+        return unhandled;
+      }
     }
-    case '/name':
-      // A whole token at the start, so a prompt beginning with an absolute path is not a skill use.
-      pattern = new RegExp(`^/(${NAME})(?=\\s|$)`, 'g');
-      break;
-    default: {
-      const unhandled: never = form;
-      return unhandled;
-    }
+    candidates.push(...[...prompt.matchAll(pattern)].map((match) => ({ skill: match[1] })));
   }
-  return [...prompt.matchAll(pattern)].map((match) => ({ skill: match[1] }));
+  return candidates;
 }
 
 /** What the member typed in a block of a session message, or '' when the block holds none. */

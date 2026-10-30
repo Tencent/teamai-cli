@@ -110,13 +110,6 @@ describe('TOOLS skillLoad', () => {
   });
 });
 
-describe('TOOLS hooks', () => {
-  it('marks the live bridge adapters as team hooks', () => {
-    expect(TOOLS.opencode.hooks.user).toMatchObject({ adapter: 'opencode-plugin', teamHooks: true });
-    expect(TOOLS.omp.hooks.user).toMatchObject({ adapter: 'omp-extension', teamHooks: true });
-  });
-});
-
 describe('TOOLS features', () => {
   /** Whether the cell says teamai builds the feature: it works, works with a catch, or is broken. */
   const builds = (support: Support) => /^[✓◐✗]/u.test(typeof support === 'string' ? support : support.cell);

@@ -20,6 +20,20 @@ teamai hooks list                   # the built-in hook set per tool
 
 What each event does is in [Core Harness](sharing.md#hooks).
 
+## Long paths during pull
+
+TeamAI enables `core.longpaths` for its shared Git clients on Windows without
+changing your global or repository Git configuration. A team-repo refresh
+checks out paths before role filtering, so even an inactive namespace's deeply
+nested skill assets need long-path support. Other Git commands and tools may
+still need their own long-path configuration.
+
+If your Git configuration explicitly sets `core.longpaths=false`, some Git
+versions still require changing that setting to `true`.
+
+The first `teamai init` clone uses a separate provider path: if the team repo
+already contains long paths, enable support first with `git config --global core.longpaths true`.
+
 ## If hooks still do not fire
 
 - **Git for Windows is missing.** Without it the dispatch commands degrade to a

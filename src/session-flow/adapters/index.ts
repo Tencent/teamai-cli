@@ -13,6 +13,7 @@ import { CodeBuddyIdeAdapter } from './codebuddy-ide.js';
 import { WorkBuddyAdapter } from './workbuddy.js';
 import { CursorAdapter } from './cursor.js';
 import { OpencodeAdapter } from './opencode.js';
+import { AgyAdapter, agyStoreRoots } from './agy.js';
 import type { SessionPlatform } from './platform-facts.js';
 import { sessionStoreDir } from '../../locate.js';
 
@@ -31,6 +32,7 @@ export const ADAPTER_REGISTRY: Record<string, AdapterFactory> = {
   workbuddy: (toolRoots) => new WorkBuddyAdapter(sessionStoreDir('workbuddy', toolRoots)),
   cursor: (toolRoots) => new CursorAdapter('cursor', sessionStoreDir('cursor', toolRoots)),
   opencode: (toolRoots) => new OpencodeAdapter(sessionStoreDir('opencode', toolRoots)),
+  agy: (toolRoots) => new AgyAdapter(agyStoreRoots(sessionStoreDir('agy', toolRoots))),
   // TeamAI variants (different path prefixes, identical format)
   'claude-internal': (toolRoots) => new ClaudeCodeAdapter('claude-internal', sessionStoreDir('claude-internal', toolRoots)),
   tclaude: (toolRoots) => new ClaudeCodeAdapter('tclaude', sessionStoreDir('tclaude', toolRoots)),
@@ -71,3 +73,4 @@ export { CodeBuddyIdeAdapter } from './codebuddy-ide.js';
 export { WorkBuddyAdapter } from './workbuddy.js';
 export { CursorAdapter } from './cursor.js';
 export { OpencodeAdapter } from './opencode.js';
+export { AgyAdapter } from './agy.js';

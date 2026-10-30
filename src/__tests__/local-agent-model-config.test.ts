@@ -573,7 +573,8 @@ describe('local-agent: apply_model_config', () => {
     });
 
     const { reportAndSyncLocalAgent } = await import('../local-agent.js');
-    await reportAndSyncLocalAgent({ cwd: workspace, tool: 'workbuddy', status: 'running' });
+    // Run outside the workspace: a session inside an unenrolled one does not sync at all.
+    await reportAndSyncLocalAgent({ tool: 'workbuddy', status: 'running' });
 
     expect(acks[0]).toMatchObject({
       id: 47,

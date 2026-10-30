@@ -30,6 +30,19 @@ teamai init https://gitlab.example.com/yourgroup/yourrepo --provider git
 teamai init --http https://your-team-host/api --token <api-key>
 ```
 
+Agent 接入凭证（`sk-`）只能给一个 Agent 用。用 `--agent <tool>` 指明是哪个 Agent，每个 Agent 各存各的。某个 Agent 现有的凭证还能用时，再给它新凭证不会启用，已下发的模型继续可用。
+
+然后把要同步的工作区纳入管理：在每个工作区里跑一次 `teamai bind-project`。绑定 ClawPro 项目是可选的，不绑定就加 `--skip`（以后不再提示）。同一个仓库的 worktree 会继承主检出的选择。没跑过这条命令的工作区，HTTP Agent 不会上报也不会同步，每个会话会提示一次；已纳管但还没绑定项目的工作区，每个新会话（以及隔了一段时间后）都会再提示，直到绑定或选择不绑定；在脚本等非交互环境里跑 `teamai bind-project` 会直接列出账号下的项目，供脚本执行者展示给用户。
+
+用同一个地址和 key 再运行一次，会保留它们。换到另一个地址或 key 需要 `--force`，不加时什么都不会改：
+
+```text
+$ teamai init --http https://new-host.example/api --token <new-key>
+...
+✖ The HTTP local agent already uses https://your-team-host/api. Re-run with --force to replace it with https://new-host.example/api.
+$ teamai init --http https://new-host.example/api --token <new-key> --force
+```
+
 ```bash
 teamai doctor
 teamai list

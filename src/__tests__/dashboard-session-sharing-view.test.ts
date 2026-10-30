@@ -24,7 +24,7 @@ const defaults: Extract<SessionSharing, { configured: true }> = {
   runMode: { mode: 'attended', source: 'default' },
   archive: 'teamai-reports',
   publish: { attended: { policy: 'ask', source: { kind: 'default' } }, unattended: { policy: 'auto', source: { kind: 'default' } } },
-  scoring: { state: 'ok', policies: { attended: { policy: 'off', source: { kind: 'default' } }, unattended: { policy: 'auto', source: { kind: 'default' } } }, dailyLimit: 10, scorers: ['quality'] },
+  scoring: { state: 'ok', policies: { attended: { policy: 'off', source: { kind: 'default' } }, unattended: { policy: 'auto', source: { kind: 'default' } } }, dailyLimit: 10, dailyLimitSource: { kind: 'default' }, scorers: ['quality'] },
   problems: ['teamai.yaml sessions.publish.unattended is "<b>yes</b>", not off, ask or auto, so it is ignored.'],
   unreadTools: ['pi'],
   captured: {
@@ -44,7 +44,7 @@ describe('the session sharing panel', () => {
     expect(shown).toContain('Attended Neither published nor scored');
     expect(shown).toContain('Unattended Published and scored');
     expect(shown).toContain('by teamai score --drain before the job ends');
-    expect(shown).toContain('Publish ask acts as off for now Set by the default');
+    expect(shown).toContain('Publish ask proposed when the friction reminder offers teamai-share-learnings Set by the default');
     expect(shown).toContain('Score auto Set by the default');
     expect(shown).toMatch(/1 waiting for a drain/);
     expect(shown).toMatch(/3 archived/i);
@@ -52,6 +52,18 @@ describe('the session sharing panel', () => {
     expect(shown).toContain('pi');
     expect(html).toContain('&lt;b&gt;yes&lt;/b&gt;');
     expect(html).not.toContain('<b>yes</b>');
+  });
+
+  it('says ask does nothing in an unattended session, where nobody is there to confirm', () => {
+    const shown = text(render({
+      ...defaults,
+      publish: { ...defaults.publish, unattended: { policy: 'ask', source: { kind: 'default' } } },
+      scoring: { state: 'ok', policies: { attended: { policy: 'ask', source: { kind: 'default' } }, unattended: { policy: 'ask', source: { kind: 'default' } } }, dailyLimit: 10, dailyLimitSource: { kind: 'default' }, scorers: ['quality'] },
+    }).html);
+
+    expect(shown).toContain('Score ask proposed when the friction reminder offers teamai-share-learnings Set by the default');
+    expect(shown).toContain('Publish ask acts as off: nobody is there to confirm Set by the default');
+    expect(shown).toContain('Score ask acts as off: nobody is there to confirm Set by the default');
   });
 
   it('lists pending labels once: with what waits while a drain takes them, else as kept on this machine', () => {
@@ -71,6 +83,14 @@ describe('the session sharing panel', () => {
     expect(shown).toMatch(/Unattended .* 2 step sessions waiting to be archived .*Waiting/);
     expect(shown).toContain('Step sessions waiting to be archived: 2');
     expect(text(render({ ...defaults, stepSessionsWaitingToArchive: { attended: 0, unattended: 1 } }).html)).toContain(' 1 step session waiting to be archived ');
+  });
+
+  it('names the setting behind the daily limit, such as the machine file a workspace takes it from', () => {
+    const machine = { kind: 'setting' as const, key: '~/.teamai/config.yaml scoring.daily_limit' };
+    const scoring = { ...defaults.scoring, state: 'ok' as const, policies: defaults.publish, dailyLimit: 2, dailyLimitSource: machine, scorers: ['quality'] };
+
+    expect(text(render({ ...defaults, scoring }).html)).toContain('Up to 2 sessions a day in this workspace (daily_limit) Set by ~/.teamai/config.yaml scoring.daily_limit');
+    expect(text(render(defaults).html)).toContain('Up to 10 sessions a day in this workspace (daily_limit) Set by the default');
   });
 
   it('has a Chinese message for every text it shows, leaving setting names as they are written', () => {

@@ -7,6 +7,7 @@ import { sameEnvName } from './env-key.js';
 //  One McpServerDef renders into three different on-disk shapes:
 //
 //    claude family   { "type": "http", "url", "headers" }
+//    agy             { "url", "headers" }                     (no type at all)
 //    cursor          { "url", "headers" }                     (type omitted)
 //    copilot         { "type": "local"|"http", ..., "tools": ["*"] }
 //    buddy family    { "transportType": "streamable-http", … } (+ timeout)
@@ -15,7 +16,7 @@ import { sameEnvName } from './env-key.js';
 //  Keeping the differences here — rather than in the reconcile engine — is the
 //  same split agents uses between agent-format.ts and its handler.
 
-export type McpFormat = 'claude' | 'cursor' | 'buddy' | 'codex' | 'opencode' | 'copilot' | 'pi' | 'muse';
+export type McpFormat = 'claude' | 'cursor' | 'buddy' | 'codex' | 'opencode' | 'copilot' | 'pi' | 'muse' | 'agy';
 
 const COPILOT_ALL_TOOLS = '*';
 
@@ -27,6 +28,7 @@ const COPILOT_ALL_TOOLS = '*';
 export const MCP_SERVER_KEY: Record<Exclude<McpFormat, 'codex'>, string> = {
   pi: 'mcpServers',
   muse: 'mcpServers',
+  agy: 'mcpServers',
   claude: 'mcpServers',
   cursor: 'mcpServers',
   buddy: 'mcpServers',
@@ -46,6 +48,8 @@ const SUPPORTED_TRANSPORTS: Record<McpFormat, Set<McpTransport>> = {
   // Muse Code fails startup validation on a single `type: sse` server and then
   // loads no MCP server at all.
   muse: new Set<McpTransport>(['stdio', 'http']),
+  // Antigravity CLI speaks stdio and streamable HTTP; it has no legacy SSE transport.
+  agy: new Set<McpTransport>(['stdio', 'http']),
   claude: new Set<McpTransport>(['stdio', 'http', 'sse']),
   cursor: new Set<McpTransport>(['stdio', 'http', 'sse']),
   buddy: new Set<McpTransport>(['stdio', 'http', 'sse']),
@@ -220,6 +224,12 @@ function renderCursor(def: McpServerDef): McpJsonEntry {
   return e;
 }
 
+/** Antigravity CLI takes the transport from `command` or `url`, and warns on a `type` key. */
+function renderAgy(def: McpServerDef): McpJsonEntry {
+  const { type: _transport, ...entry } = renderClaude(def);
+  return entry;
+}
+
 function renderBuddy(def: McpServerDef): McpJsonEntry {
   const e: McpJsonEntry = {};
   if (def.transport === 'stdio') {
@@ -290,6 +300,7 @@ export function renderJsonEntry(format: Exclude<McpFormat, 'codex'>, def: McpSer
     return entry;
   }
   if (format === 'claude' || format === 'muse') return renderClaude(def);
+  if (format === 'agy') return renderAgy(def);
   if (format === 'cursor') return renderCursor(def);
   if (format === 'opencode') return renderOpencode(def);
   if (format === 'copilot') return renderCopilot(def);

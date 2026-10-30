@@ -148,15 +148,23 @@ export async function shareGate(cwd?: string, options: { dryRun?: boolean } = {}
 
 /** The share gate on a team already detected, for a command that needs the team too. */
 async function gateFor(team: TeamDetection): Promise<ShareGate> {
-  const { isRecallEnabled } = await import('./types.js');
   if (team.kind === 'none') return { block: null, config: null };
   if (team.kind === 'unusable') return { block: { reason: 'config', detail: team.detail }, config: null };
-  const { localConfig, teamConfig } = team.init;
+  const block = await shareBlock(team.init);
+  return block ? { block, config: null } : { block: null, config: team.init };
+}
+
+/**
+ * What withholds `share` from a team whose config is loaded, or null. `teamai pull` asks it too, so it offers no
+ * workflow skill whose learning step would reach a `share` that says no.
+ */
+export async function shareBlock({ localConfig, teamConfig }: TeamaiInit): Promise<SkillBlock | null> {
+  const { isRecallEnabled } = await import('./types.js');
   // `teamai contribute` refuses a read-only source (read-only.ts), so the
   // workflow would fail at its last step after the agent did all the work.
-  if (localConfig.repo?.kind === 'http') return { block: { reason: 'read-only' }, config: null };
-  if (!isRecallEnabled(localConfig, teamConfig)) return { block: { reason: 'recall' }, config: null };
-  return { block: null, config: team.init };
+  if (localConfig.repo?.kind === 'http') return { reason: 'read-only' };
+  if (!isRecallEnabled(localConfig, teamConfig)) return { reason: 'recall' };
+  return null;
 }
 
 /** The first line of an error, without the colon that introduces its code frame. */

@@ -27,7 +27,6 @@ import {
   getDataHome,
   isGitExcludeEnabled,
   getTeamaiHome,
-  getBusinessRoot,
   isAgentExcluded,
   isSelfMode,
   managedMcpManifestKey,
@@ -40,11 +39,10 @@ import { builtinHookDefs, applyBuiltinOverride, getCodebuddyTeamHookDispatchComm
 import { encodeCodebuddyProjectGate, isCodebuddyTeamGateForProject, parseCodebuddyTeamGate, regateCodebuddyTeamHookCommand } from './codebuddy-team-hooks.js';
 import type { BuiltinHookOverride } from './builtin-hooks.js';
 import { parseTeamHooks, readBuiltinOverride, resolveTeamHooks, teamHookToDef } from './resources/hooks.js';
-import { recordAppliedTeamHooks } from './team-hook-bridges.js';
 import { entryLayout } from './namespaced-entries.js';
 import { historicalContents } from './utils/team-history.js';
 import { getUserHome } from './utils/home.js';
-import { LEGACY_CLAUDE_HOOK_OTHER_HOST_SKIP, claudeHookOtherHostSkip, copilotRunsEntries } from './claude-hook-host.js';
+import { LEGACY_CLAUDE_HOOK_OTHER_HOST_SKIP, claudeHookOtherHostSkip, claudeHookUsesPowerShell, copilotRunsEntries } from './claude-hook-host.js';
 import { gitCommonDir, listWorktrees, resolveAnchors } from './utils/git.js';
 import {
   codexBuildSkewMessage, codexBuildsIdentity, keepCodexHookTrust, readCodexHookTrust, removeOwnedCodexProjectTrust, trustCodexHooks,
@@ -52,7 +50,8 @@ import {
 } from './codex-trust.js';
 import { codexDispatcherCheckouts, codexDispatcherProjects, dispatchedCodexHooks, isCodexTeamHookDispatcher, reconcileCodexDispatchers, runsFromCodexDispatcher, setCodexDispatcherHooks } from './codex-team-hooks.js';
 import type { CodexTeamHook } from './codex-team-hooks.js';
-import { channelsOf, hookFormatOf, hookSettingsFormatOf, type HookAdapterId, type HookFormat } from './tools.js';
+import { channelsOf, hookFormatOf, hookSettingsFormatOf, type HookFormat } from './tools.js';
+import { BRIDGED_TEAM_HOOK_EVENTS, bridgedTeamHookFile, isBridgedTeamHookTool } from './bridged-team-hooks.js';
 import { earlierHookAdapterDir, hookSettingsFile, installOf, locate, openclawWorkspaceDir, ownOf, workspaceHooksOf } from './locate.js';
 import { toolHome } from './tool-home.js';
 
@@ -102,6 +101,8 @@ export const CLAUDE_TO_COPILOT_EVENTS: Record<string, string> = {
 interface HookEntry {
   type: string;
   command: string;
+  /** Explicit shell for a command that differs from Claude's detected default. */
+  shell?: 'powershell';
   /** Per-hook timeout in seconds. Falls back to the tool default if omitted. */
   timeout?: number;
 }
@@ -309,7 +310,8 @@ function desiredDefs(
   teamDefs: HookDef[],
   opts: { builtinOverride?: BuiltinHookOverride; teamOnly?: boolean },
 ): HookDef[] {
-  const builtins = opts.teamOnly ? [] : applyBuiltinOverride(builtinHookDefs(tool), opts.builtinOverride);
+  // A bridged tool's file holds its team hooks alone: its bridge dispatches the built-ins itself.
+  const builtins = opts.teamOnly || isBridgedTeamHookTool(tool) ? [] : applyBuiltinOverride(builtinHookDefs(tool), opts.builtinOverride);
   return [...builtins, ...teamDefsForTool(teamDefs, tool)];
 }
 
@@ -680,6 +682,28 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
+/** Quote a value for a PowerShell single-quoted string. */
+function powershellQuote(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+function powershellPathPrefix(root: string): string {
+  return /[\\/]$/.test(root) ? root : `${root}\\`;
+}
+
+function powershellPathCondition(root: string): string {
+  const quoted = powershellQuote(root);
+  const prefix = powershellQuote(powershellPathPrefix(root));
+  return `($teamaiPwd.Equals(${quoted}, [StringComparison]::OrdinalIgnoreCase) -or $teamaiPwd.StartsWith(${prefix}, [StringComparison]::OrdinalIgnoreCase))`;
+}
+
+function powershellProjectGate(command: string, projectRoot: string, childRoots: readonly string[]): string {
+  const rootCondition = powershellPathCondition(projectRoot);
+  const childCondition = childRoots.map((child) => powershellPathCondition(canonicalProjectRoot(child))).map((condition) => `-not (${condition})`).join(' -and ');
+  const run = childCondition ? `if (${childCondition}) { ${command} }` : command;
+  return `$teamaiPwd = $PWD.Path; if (${rootCondition}) { ${run} }`;
+}
+
 export function canonicalProjectRoot(projectRoot: string): string {
   try { return realpathSync.native(projectRoot); } catch { return path.resolve(projectRoot); }
 }
@@ -770,9 +794,15 @@ function cmdProjectGate(root: string): string {
  * Legacy cmd.exe gates are still recognised on read by isGatedForProject(), so
  * a re-render replaces 0.26.0's cmd gate instead of stacking a second one.
  */
-function gateTeamHookCommand(command: string, projectRoot: string | undefined, childRoots: readonly string[] = []): string {
+function gateTeamHookCommand(
+  command: string,
+  projectRoot: string | undefined,
+  childRoots: readonly string[] = [],
+  shell?: HookDef['shell'],
+): string {
   if (!projectRoot) return command;
   const root = canonicalProjectRoot(projectRoot);
+  if (shell === 'powershell') return powershellProjectGate(command, root, childRoots);
   const msys = msysProjectRoot(root);
   const quoted = shellQuote(root);
   // In a workspace, a child's folders are the child's own scope (#913): the
@@ -799,6 +829,25 @@ function gateTeamHookCommand(command: string, projectRoot: string | undefined, c
 function regateTeamHookCommand(command: string, projectRoot: string, childRoots: readonly string[]): string | null {
   const codebuddy = regateCodebuddyTeamHookCommand(command, projectRoot, childRoots);
   if (codebuddy !== null) return codebuddy;
+
+  // PowerShell gates are intentionally recognised by their stable assignment
+  // prefix. The payload may itself contain braces, so the final `} }` is the
+  // delimiter emitted by powershellProjectGate rather than a shallow parser.
+  const powershellPrefix = '$teamaiPwd = $PWD.Path; if (';
+  const powershellSuffix = ' }';
+  if (command.startsWith(powershellPrefix) && command.endsWith(powershellSuffix)) {
+    const bodyStart = command.indexOf(') { ', powershellPrefix.length);
+    if (bodyStart >= 0) {
+      let payload = command.slice(bodyStart + 4, -powershellSuffix.length);
+      const childPrefix = 'if (-not (';
+      if (payload.startsWith(childPrefix)) {
+        const childBody = payload.indexOf(') { ');
+        if (childBody >= 0 && payload.endsWith(' }')) payload = payload.slice(childBody + 4, -2);
+      }
+      return gateTeamHookCommand(payload, projectRoot, childRoots, 'powershell');
+    }
+  }
+
   const [head, tail] = gateTeamHookCommand('\0', projectRoot).split('(\0)');
   if (!command.startsWith(head) || !command.endsWith(tail)) return null;
   const run = command.slice(head.length, command.length - tail.length);
@@ -890,13 +939,16 @@ function heldEntryCheck(
 /** Recognise a project gate written by either renderer (entries outlive a platform switch). */
 function isGatedForProject(command: string, projectRoot: string): boolean {
   const root = canonicalProjectRoot(projectRoot);
+  const powershellPrefix = powershellProjectGate('\0', root, []).split('\0')[0];
   return isCodebuddyTeamGateForProject(command, root)
+    || command.startsWith(powershellPrefix)
     || command.startsWith(`if [ "$PWD" = ${shellQuote(root)} ]`)
     || command.startsWith(cmdProjectGate(root));
 }
 
 function isProjectGatedCommand(command: string): boolean {
   return parseCodebuddyTeamGate(command) !== null
+    || command.startsWith('$teamaiPwd = $PWD.Path; if (')
     || command.startsWith('if [ "$PWD" = ') || command.startsWith('cd| findstr ');
 }
 
@@ -1492,6 +1544,8 @@ function scopedTeamDefs(
   const prepared = teamDefs.map((def) => ({
     ...def,
     command: skipWhenAnotherHostLoadsClaudeSettings(def, tool, legacyGuard),
+    ...(tool === 'claude' && def.source === 'team' && process.platform === 'win32' && !legacyGuard
+      && claudeHookUsesPowerShell() ? { shell: 'powershell' as const } : {}),
   }));
   if (!projectRoot) return prepared;
   if (tool === 'codebuddy' && process.platform === 'win32' && codebuddyDualRunner) {
@@ -1507,7 +1561,7 @@ function scopedTeamDefs(
       ),
     }));
   }
-  return prepared.map((def) => ({ ...def, command: gateTeamHookCommand(def.command, projectRoot, childRoots) }));
+  return prepared.map((def) => ({ ...def, command: gateTeamHookCommand(def.command, projectRoot, childRoots, def.shell) }));
 }
 
 function manifestRecordsForTool(
@@ -1537,6 +1591,7 @@ function toClaudeEntry(def: HookDef): HookMatcher {
       {
         type: 'command',
         command: def.command,
+        ...(def.shell ? { shell: def.shell } : {}),
         ...(def.timeout !== undefined ? { timeout: def.timeout } : {}),
       },
     ],
@@ -2434,10 +2489,6 @@ export interface AgentHookDef {
 
 /** Which hook settings formats an agent hook is written in: a new format is refused until it is decided here. */
 const AGENT_HOOK_FORMATS: Readonly<Record<HookFormat, boolean>> = { claude: true, codex: true, cursor: false, copilot: false, zcode: false };
-/** Which hook adapters take an agent hook (local-agent.ts dispatches each): a new adapter is refused until it is decided here. */
-const AGENT_HOOK_ADAPTERS: Readonly<Record<HookAdapterId, boolean>> = {
-  'hermes-plugin': true, 'openclaw-hook': true, 'opencode-plugin': true, 'pi-extension': true, 'omp-extension': false, 'dsh-hooks': false, 'kiro-hooks': false,
-};
 
 /** Whether teamai installs an agent hook for `tool`, from its user-scope hook channel. */
 export function isAgentHookSupportedTool(tool: string): boolean {
@@ -2445,7 +2496,35 @@ export function isAgentHookSupportedTool(tool: string): boolean {
   if (typeof channel !== 'object') return false;
   switch (channel.channel) {
     case 'settings': return AGENT_HOOK_FORMATS[channel.format];
-    case 'adapter': return AGENT_HOOK_ADAPTERS[channel.adapter];
+    // Beside the team's hooks, in the file teamai's bridge runs them from.
+    case 'adapter': return isBridgedTeamHookTool(tool);
+    default: {
+      const unhandled: never = channel;
+      return unhandled;
+    }
+  }
+}
+
+/**
+ * Whether `tool` runs a team hook on the Claude `event`, from what teamai
+ * writes for it: a Cursor or Copilot file has no entry for some events, and a
+ * bridge runs BRIDGED_TEAM_HOOK_EVENTS only.
+ */
+export function runsTeamHookOn(tool: string, event: string): boolean {
+  const channel = channelsOf(tool).hooks.user;
+  if (typeof channel !== 'object') return false;
+  switch (channel.channel) {
+    case 'settings':
+      switch (channel.format) {
+        case 'cursor': return Object.hasOwn(CLAUDE_TO_CURSOR_EVENTS, event);
+        case 'copilot': return Object.hasOwn(CLAUDE_TO_COPILOT_EVENTS, event);
+        case 'claude': case 'codex': case 'zcode': return true;
+        default: {
+          const unhandled: never = channel.format;
+          return unhandled;
+        }
+      }
+    case 'adapter': return !isBridgedTeamHookTool(tool) || BRIDGED_TEAM_HOOK_EVENTS.has(event);
     default: {
       const unhandled: never = channel;
       return unhandled;
@@ -2588,6 +2667,70 @@ export async function removeAgentHook(
     if (changed) {
       await writeJson(expanded, settings);
       log.success(`Removed agent hook [${opts.slug}] from ${settingsPath}`);
+    }
+  }
+}
+
+/**
+ * Install an agent hook for a tool whose hooks teamai's bridge runs: in its
+ * bridged file, beside the team's, so it blocks, matches and adds context as
+ * in Claude Code. Then rewire the hosts that register one entry per event.
+ */
+export async function applyBridgedAgentHook(tool: string, def: AgentHookDef): Promise<void> {
+  await applyAgentHook(bridgedTeamHookFile(tool), tool, def, { kind: 'disabled' });
+  await rewireBridgedTeamHooks(tool);
+}
+
+/** Whether `tool`'s bridged file holds the agent hook `slug`. */
+export async function hasBridgedAgentHook(tool: string, slug: string): Promise<boolean> {
+  const settings = await readHookFile<ClaudeSettingsJson>(bridgedTeamHookFile(tool), {});
+  return Object.values(settings.hooks ?? {}).some((entries) => entries.some((entry) => isAgentClaudeEntry(entry, slug)));
+}
+
+/** Remove an agent hook `applyBridgedAgentHook` installed. */
+export async function removeBridgedAgentHook(tool: string, slug: string): Promise<void> {
+  await removeAgentHook(bridgedTeamHookFile(tool), tool, { slug }, { kind: 'disabled' });
+  await rewireBridgedTeamHooks(tool);
+}
+
+/**
+ * Kiro, Hermes and OpenClaw register an entry for each event the bridged file has hooks on; the others read the file as they run.
+ * Only those entries change: teamai's own hooks there stay as they are, removed by an uninstall included.
+ */
+async function rewireBridgedTeamHooks(tool: string): Promise<void> {
+  const channel = channelsOf(tool).hooks.user;
+  if (typeof channel !== 'object' || channel.channel !== 'adapter') return;
+  switch (channel.adapter) {
+    case 'kiro-hooks': {
+      const { reconcileKiroTeamHooks } = await import('./kiro-hooks.js');
+      await reconcileKiroTeamHooks();
+      return;
+    }
+    case 'hermes-plugin': {
+      const { refreshHermesTeamHooks } = await import('./hermes-hooks.js');
+      await refreshHermesTeamHooks();
+      return;
+    }
+    case 'openclaw-hook': {
+      const { refreshOpenClawTeamHooks } = await import('./openclaw-hooks.js');
+      await refreshOpenClawTeamHooks();
+      return;
+    }
+    // PreToolUse is in agy's hooks.json only while a hook needs it. Only a pull installs teamai's hook there, so an
+    // uninstall that removes it before the agent hooks does not get it back.
+    case 'agy-hooks': {
+      const { hasAgyHooks, reconcileAgyHooks } = await import('./agy-hooks.js');
+      if (await hasAgyHooks()) await reconcileAgyHooks();
+      return;
+    }
+    case 'opencode-plugin':
+    case 'omp-extension':
+    case 'pi-extension':
+    case 'dsh-hooks':
+      return;
+    default: {
+      const unhandled: never = channel.adapter;
+      return unhandled;
     }
   }
 }
@@ -2921,14 +3064,30 @@ async function reconcileOpencodePlugin(baseDir: string, removeAll = false, insta
     await removeOpencodeHooks(home, 'user');
     return;
   }
-  const homeInstalled = await pathExists(toolHome('opencode'));
-  const projectInstalled = installedBaseDir
-    ? await pathExists(path.join(installedBaseDir, '.opencode'))
-    : false;
-  if (homeInstalled || projectInstalled) {
-    await injectOpencodeHooks(home, 'user');
-    const earlier = await earlierHookAdapterDir('opencode-plugin');
-    if (earlier) await removeOpencodePlugin(earlier);
+  if (!await isBridgedToolInstalled('opencode', baseDir, installedBaseDir)) return;
+  await injectOpencodeHooks(home, 'user');
+  const earlier = await earlierHookAdapterDir('opencode-plugin');
+  if (earlier) await removeOpencodePlugin(earlier);
+}
+
+/** Whether `tool`'s hook adapter is installed here: the gate its reconcile applies, and the bridged file follows. */
+async function isBridgedToolInstalled(tool: string, baseDir: string, installedBaseDir: string | undefined): Promise<boolean> {
+  const channel = channelsOf(tool).hooks.user;
+  if (typeof channel !== 'object' || channel.channel !== 'adapter') return false;
+  switch (channel.adapter) {
+    case 'opencode-plugin':
+      return await pathExists(toolHome('opencode')) || (!!installedBaseDir && await pathExists(path.join(installedBaseDir, '.opencode')));
+    case 'omp-extension': return await pathExists(path.join(getUserHome(), '.omp')) || await pathExists(toolHome('omp'));
+    case 'pi-extension': return isPiInstalled(baseDir, installedBaseDir);
+    case 'kiro-hooks': return pathExists(path.join(getUserHome(), '.kiro'));
+    case 'hermes-plugin': return pathExists(toolHome('hermes'));
+    case 'openclaw-hook': return await openclawWorkspaceDir() !== null;
+    case 'agy-hooks': return pathExists(toolHome('agy'));
+    case 'dsh-hooks': return false;
+    default: {
+      const unhandled: never = channel.adapter;
+      return unhandled;
+    }
   }
 }
 
@@ -2955,6 +3114,34 @@ async function clearEarlierHomeHooks(target: {
 }
 
 /**
+ * The team hooks `tool` would get on an event its bridge does not run, said
+ * aloud. A reconcile leaves them out; a dry run, which stops before it, repeats
+ * the report so its "Would apply" line promises no hook a tool will not run.
+ */
+function reportUnbridgedTeamHooks(tool: string, defs: HookDef[]): HookDef[] {
+  const unbridged = teamDefsForTool(defs, tool).filter((d) => !BRIDGED_TEAM_HOOK_EVENTS.has(d.event));
+  if (unbridged.length > 0) {
+    log.warn(`${tool} runs team hooks on ${[...BRIDGED_TEAM_HOOK_EVENTS].join(', ')} only; skipping `
+      + `${unbridged.map((d) => `${d.key} (${d.event})`).join(', ')} from hooks/hooks.yaml`);
+  }
+  return unbridged;
+}
+
+/**
+ * Reconcile the team hooks `tool`'s bridge runs (bridged-team-hooks.ts) in
+ * their own file, with the records and project gates of a settings file. A
+ * team hook on an event no bridge runs is reported and left out.
+ */
+async function reconcileBridgedTeamHooks(
+  tool: string,
+  defs: HookDef[],
+  opts: Pick<ReconcileHooksOptions, 'manifestPath' | 'removeAll' | 'teamHookProjectRoot' | 'teamHookChildRoots' | 'heldTeamHookIds' | 'teamHookHistory' | 'keepRecords' | 'teamOnly'>,
+): Promise<void> {
+  const unbridged = opts.removeAll ? [] : reportUnbridgedTeamHooks(tool, defs);
+  await reconcileHooks(bridgedTeamHookFile(tool), tool, defs.filter((d) => !unbridged.includes(d)), opts);
+}
+
+/**
  * Reconcile the single teamai OMP extension.
  *
  * OMP auto-loads extensions from BOTH ~/.omp/agent/extensions (user) and
@@ -2971,9 +3158,7 @@ async function reconcileOmpExtension(removeAll = false): Promise<void> {
     await removeOmpHooks();
     return;
   }
-  if (await pathExists(path.join(getUserHome(), '.omp')) || await pathExists(toolHome('omp'))) {
-    await injectOmpHooks();
-  }
+  if (await isBridgedToolInstalled('omp', getUserHome(), undefined)) await injectOmpHooks();
 }
 
 /** True when Pi looks installed at the user root, its moved agent directory, or the resolved project root. */
@@ -2983,34 +3168,26 @@ async function isPiInstalled(baseDir: string, installedBaseDir?: string): Promis
 }
 
 /**
- * Pi cannot run custom team hooks — it supports built-in lifecycle hooks only —
- * so anything the team scoped to Pi is skipped, and a real reconcile says so.
+ * Pi's extension dispatches the built-in hooks as it was generated, so the
+ * team's `builtin:` overrides are skipped there, and a real reconcile says so.
  * Extracted from the reconcile loop so a dry run, which stops before the
- * per-tool stage, prints the same report without writing anything and its
- * "Would apply" line does not promise hooks no tool will run.
+ * per-tool stage, prints the same report without writing anything.
  *
  * Only warns when Pi is actually installed: Pi is in every team's default
  * toolPaths, so without this gate teammates who never use Pi see this warning
- * on every reconcile whenever the team defines a Pi-targeted hook.
+ * on every reconcile.
  */
-async function reportPiSkippedTeamHooks(
-  defs: HookDef[],
+async function reportPiSkippedBuiltinOverrides(
   baseDir: string,
   installedBaseDir: string | undefined,
   builtinOverride: BuiltinHookOverride | undefined,
 ): Promise<void> {
   if (!await isPiInstalled(baseDir, installedBaseDir)) return;
-  const applicableTeamDefs = teamDefsForTool(defs, 'pi');
-  if (applicableTeamDefs.length > 0) {
-    log.warn(
-      `Pi supports built-in lifecycle hooks only; skipping ${applicableTeamDefs.length} custom team hook(s) from hooks/hooks.yaml`,
-    );
-  }
   const builtinOverrideCount = (builtinOverride?.disabled?.length ?? 0)
     + Object.keys(builtinOverride?.overrides ?? {}).length;
   if (builtinOverrideCount > 0) {
     log.warn(
-      `Pi supports built-in lifecycle hooks only; skipping ${builtinOverrideCount} built-in hook override(s) from hooks/hooks.yaml`,
+      `Pi runs teamai's built-in hooks as generated; skipping ${builtinOverrideCount} built-in hook override(s) from hooks/hooks.yaml`,
     );
   }
 }
@@ -3072,6 +3249,13 @@ export async function injectHooksToAllTools(toolPaths: Record<string, { settings
         await injectKiroHooks(resolvedBaseDir);
       } catch (e) {
         log.warn(`Failed to inject Kiro hooks: ${(e as Error).message}`);
+      }
+    } else if (tool === 'agy') {
+      try {
+        const { reconcileAgyHooks } = await import('./agy-hooks.js');
+        if (await pathExists(toolHome('agy'))) await reconcileAgyHooks();
+      } catch (e) {
+        log.warn(`Failed to inject Antigravity hooks: ${(e as Error).message}`);
       }
     } else if (tool === 'pi') {
       try {
@@ -3165,7 +3349,7 @@ export async function reconcileHooksToAllTools(
   teamDefs: HookDef[],
   manifestPath: string,
   opts: {
-    removeAll?: boolean; builtinOverride?: BuiltinHookOverride; filterAgents?: string[]; settingsOnly?: boolean; installedBaseDir?: string; teamHookProjectRoot?: string; /** The project key OpenCode/OMP record their applied hooks under; self mode's business repo has no partition root (#1492). */ teamHookBridgeRoot?: string; teamHookChildRoots?: readonly string[]; heldTeamHookIds?: readonly string[]; scope?: Scope; builtinsOnly?: BuiltinsOnly; mainCheckout?: MainCheckoutHooks | null; teamHookHistory?: TeamHookHistory; codebuddyDualRunner?: boolean;
+    removeAll?: boolean; builtinOverride?: BuiltinHookOverride; filterAgents?: string[]; settingsOnly?: boolean; installedBaseDir?: string; teamHookProjectRoot?: string; teamHookChildRoots?: readonly string[]; heldTeamHookIds?: readonly string[]; scope?: Scope; builtinsOnly?: BuiltinsOnly; mainCheckout?: MainCheckoutHooks | null; teamHookHistory?: TeamHookHistory; codebuddyDualRunner?: boolean;
     /**
      * The active config's `toolRoots`, so the gate probes a member's recorded
      * root rather than the path's two-segment shape (see `toolGateRoot`).
@@ -3215,6 +3399,22 @@ export async function reconcileHooksToAllTools(
   // limit of sharing a project scope, not a bug this pass can fix.
   const claimedSettingsFiles = new Set<string>();
   const reconciledMainTools = new Set<string>();
+  // A bridged tool keeps its user hooks in HOME, so a project install gates its team hooks there, as for ZCode.
+  // Before the adapter: Kiro's and Hermes's hook entries are written from this file.
+  const reconcileBridged = async (tool: string): Promise<void> => {
+    if (!opts.removeAll && !await isBridgedToolInstalled(tool, baseDir, opts.installedBaseDir)) return;
+    const homeHooks = opts.scope === 'project';
+    await reconcileBridgedTeamHooks(tool, defs, {
+      manifestPath: teamManifestPath,
+      removeAll: opts.removeAll,
+      teamHookProjectRoot: homeHooks ? opts.installedBaseDir ?? baseDir : opts.teamHookProjectRoot,
+      ...(homeHooks && opts.removeAll ? { teamOnly: true } : {}),
+      ...(opts.teamHookChildRoots ? { teamHookChildRoots: opts.teamHookChildRoots } : {}),
+      heldTeamHookIds: opts.heldTeamHookIds,
+      teamHookHistory: opts.teamHookHistory,
+      keepRecords: opts.keepRecordsFor?.has(tool),
+    });
+  };
   for (const [tool, paths] of Object.entries(toolPaths)) {
     if (opts.filterAgents && !opts.filterAgents.includes(tool)) continue;
     if (skipped.has(tool)) continue;
@@ -3222,6 +3422,7 @@ export async function reconcileHooksToAllTools(
       if (opts.settingsOnly) continue;
       try {
         const { injectKiroHooks, removeKiroHooks } = await import('./kiro-hooks.js');
+        await reconcileBridged(tool);
         if (opts.removeAll) await removeKiroHooks();
         else await injectKiroHooks(opts.installedBaseDir ?? baseDir);
       } catch (e) {
@@ -3237,6 +3438,7 @@ export async function reconcileHooksToAllTools(
       if (opts.settingsOnly) continue;
       try {
         const hermesRoot = toolHome('hermes');
+        await reconcileBridged(tool);
         if (opts.removeAll) {
           const { removeHermesHooks } = await import('./hermes-hooks.js');
           await removeHermesHooks();
@@ -3260,11 +3462,13 @@ export async function reconcileHooksToAllTools(
     if (tool === 'openclaw') {
       if (opts.settingsOnly) continue;
       try {
+        await reconcileBridged(tool);
         if (opts.removeAll) {
-          const { removeOpenClawHooks, removeOpenClawHookEntry } = await import('./openclaw-hooks.js');
+          const { removeOpenClawHooks, removeOpenClawHookEntry, removeOpenClawTeamHooks } = await import('./openclaw-hooks.js');
           const wsDir = await openclawWorkspaceDir();
           if (wsDir) await removeOpenClawHooks(path.join(wsDir, 'hooks'));
           await removeOpenClawHookEntry();
+          await removeOpenClawTeamHooks();
         } else {
           const { injectOpenClawHooks } = await import('./openclaw-hooks.js');
           await injectOpenClawHooks(tool);
@@ -3281,13 +3485,7 @@ export async function reconcileHooksToAllTools(
     if (tool === 'opencode') {
       if (opts.settingsOnly) continue;
       try {
-        if (!opts.builtinsOnly) {
-          await recordAppliedTeamHooks('opencode', defs.filter((d) => !opts.heldTeamHookIds?.includes(d.key)), {
-            scope: opts.scope ?? (opts.teamHookProjectRoot ? 'project' : 'user'),
-            projectRoot: opts.teamHookBridgeRoot ?? opts.teamHookProjectRoot,
-            removeAll: opts.removeAll,
-          });
-        }
+        await reconcileBridged(tool);
         await reconcileOpencodePlugin(baseDir, opts.removeAll, opts.installedBaseDir);
       } catch (e) {
         log.warn(`Failed to reconcile OpenCode hooks: ${(e as Error).message}`);
@@ -3300,16 +3498,31 @@ export async function reconcileHooksToAllTools(
     if (tool === 'omp') {
       if (opts.settingsOnly) continue;
       try {
-        if (!opts.builtinsOnly) {
-          await recordAppliedTeamHooks('omp', defs.filter((d) => !opts.heldTeamHookIds?.includes(d.key)), {
-            scope: opts.scope ?? (opts.teamHookProjectRoot ? 'project' : 'user'),
-            projectRoot: opts.teamHookBridgeRoot ?? opts.teamHookProjectRoot,
-            removeAll: opts.removeAll,
-          });
-        }
+        await reconcileBridged(tool);
         await reconcileOmpExtension(opts.removeAll);
       } catch (e) {
         log.warn(`Failed to reconcile OMP hooks: ${(e as Error).message}`);
+        opts.unwritten?.push(tool);
+      }
+      continue;
+    }
+    // Antigravity CLI keeps every hook in one user-wide hooks.json: one entry per event runs the
+    // dispatcher, which runs the team's hooks through teamai's bridge.
+    if (tool === 'agy') {
+      if (opts.settingsOnly) continue;
+      try {
+        // A team's own `toolPaths.agy`, from before agy was built in, took Claude-format hooks in its `settings`
+        // file, most often hooks.json, where agy runs a "hooks" key as one more named hook. Clear teamai's from it,
+        // and from hooks.json after the team drops that key. The records stay: they are the bridge's now.
+        const { agyHookFile, reconcileAgyHooks } = await import('./agy-hooks.js');
+        const legacy = new Set([agyHookFile(), ...paths.settings ? [hookSettingsFile(tool, baseDir, paths.settings)] : []].map((file) => path.resolve(file)));
+        for (const file of legacy) {
+          if (await pathExists(file)) await reconcileHooks(file, tool, [], { removeAll: true, manifestPath, keepRecords: true });
+        }
+        await reconcileBridged(tool);
+        if (opts.removeAll || await pathExists(toolHome('agy'))) await reconcileAgyHooks({ removeAll: opts.removeAll });
+      } catch (e) {
+        log.warn(`Failed to reconcile Antigravity hooks: ${(e as Error).message}`);
         opts.unwritten?.push(tool);
       }
       continue;
@@ -3318,8 +3531,9 @@ export async function reconcileHooksToAllTools(
       if (opts.settingsOnly) continue;
       try {
         if (!opts.removeAll) {
-          await reportPiSkippedTeamHooks(defs, baseDir, opts.installedBaseDir, opts.builtinOverride);
+          await reportPiSkippedBuiltinOverrides(baseDir, opts.installedBaseDir, opts.builtinOverride);
         }
+        await reconcileBridged(tool);
         await reconcilePiExtension(baseDir, opts.removeAll, opts.installedBaseDir);
       } catch (e) {
         log.warn(`Failed to reconcile Pi hooks: ${(e as Error).message}`);
@@ -4004,7 +4218,13 @@ export async function reconcileTeamHooksForConfig(
   if (opts.dryRun) {
     if (!opts.removeAll) await installProjectGitHook(localConfig, { dryRun: true });
     if (!opts.removeAll && 'pi' in hookToolPaths && (!filterAgents || filterAgents.includes('pi'))) {
-      await reportPiSkippedTeamHooks(teamDefs, baseDir, localConfig.scope === 'project' ? (localConfig.projectRoot ?? baseDir) : undefined, builtin);
+      await reportPiSkippedBuiltinOverrides(baseDir, localConfig.scope === 'project' ? (localConfig.projectRoot ?? baseDir) : undefined, builtin);
+    }
+    for (const tool of Object.keys(hookToolPaths)) {
+      if (opts.removeAll || !isBridgedTeamHookTool(tool) || (filterAgents && !filterAgents.includes(tool))) continue;
+      if (await isBridgedToolInstalled(tool, baseDir, localConfig.scope === 'project' ? (localConfig.projectRoot ?? baseDir) : undefined)) {
+        reportUnbridgedTeamHooks(tool, teamDefs);
+      }
     }
     return resolved.ok ? { ok: true, defs: teamDefs } : { ok: false, builtins: builtinsOnly ?? 'with-overrides' };
   }
@@ -4034,12 +4254,6 @@ export async function reconcileTeamHooksForConfig(
     filterAgents,
     teamHookProjectRoot: localConfig.scope === 'project' && !isSelfMode(localConfig)
       ? localConfig.projectRoot
-      : undefined,
-    // Self mode has no partition projectRoot, but its project install's team
-    // repo is the business repo: OpenCode/OMP need a project key to record what
-    // pull applied. This is only the bridge record, never a settings gate.
-    teamHookBridgeRoot: localConfig.scope === 'project'
-      ? (isSelfMode(localConfig) ? getBusinessRoot(localConfig) : localConfig.projectRoot)
       : undefined,
     ...(localConfig.children ? { teamHookChildRoots: localConfig.children.roots } : {}),
     ...(heldTeamHookIds ? { heldTeamHookIds } : {}),

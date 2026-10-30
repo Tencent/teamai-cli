@@ -83,6 +83,7 @@ function machine(name: string) {
     child.stdin.end(input ?? '');
   });
   const readJson = (file: string): ToolJson => JSON.parse(fs.readFileSync(file, 'utf8')) as ToolJson;
+  const enrolled = new Set<string>();
   return {
     base,
     home,
@@ -104,8 +105,11 @@ function machine(name: string) {
       // HTTP mode delivers nothing to a tool with no root in the project.
       fs.mkdirSync(path.join(real, '.claude'));
       fs.mkdirSync(path.join(real, '.codebuddy'));
-      const init = await cli(['init', '--http', server.url, '--token', API_KEY, '--scope', 'project', '--agent', 'claude,codebuddy', '--force'], real);
-      expect(init.code, init.output).toBe(0);
+      // An access token works for one agent, so each tool takes the token on its own.
+      for (const tool of ['claude', 'codebuddy']) {
+        const init = await cli(['init', '--http', server.url, '--token', API_KEY, '--scope', 'project', '--agent', tool, '--force'], real);
+        expect(init.code, init.output).toBe(0);
+      }
       // What the member already has in both tools' local scopes: none of it is teamai's.
       for (const file of [claudeJson, codebuddyJson]) {
         fs.writeFileSync(file, JSON.stringify({ numStartups: 3, projects: { ...ELSEWHERE, [real]: { allowedTools: [], mcpServers: { 'my-local': MY_LOCAL } } } }, null, 2));
@@ -122,6 +126,12 @@ function machine(name: string) {
       fs.writeFileSync(config, [...lines.filter(Boolean), `gitExcludeEnabled: ${on}`, ''].join('\n'));
     },
     async sessionStart(cwd: string, tool: 'claude' | 'codebuddy', commands: MockCommand[]): Promise<Run> {
+      // The local agent serves only a workspace enrolled by `teamai bind-project`.
+      if (!enrolled.has(cwd)) {
+        const enroll = await cli(['bind-project', '--skip'], cwd);
+        expect(enroll.code, enroll.output).toBe(0);
+        enrolled.add(cwd);
+      }
       server.seedCommands(commands);
       const run = await cli(['hook-dispatch', 'session-start', '--tool', tool], cwd,
         JSON.stringify({ cwd, session_id: `s-${path.basename(cwd)}`, hook_event_name: 'SessionStart', source: 'startup' }));

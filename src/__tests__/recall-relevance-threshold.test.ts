@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isRelevantScore, computeIdfBaseline, normalizeLearningsScoreForRanking } from '../recall.js';
+import { isRelevantScore, computeIdfBaseline, normalizeLearningsScoreForRanking, rankingScoreOf, LEARNINGS_RELEVANCE_RATIO, LEARNINGS_ABSOLUTE_FLOOR } from '../recall.js';
 import type { SearchIndex } from '../types.js';
 
 // ─── Helpers ──────────────────────────────────────────────
@@ -122,7 +122,7 @@ describe('computeIdfBaseline', () => {
 describe('normalizeLearningsScoreForRanking', () => {
   it('maps the corpus-aware learnings relevance threshold to the codebase threshold', () => {
     for (const baseline of [1, 8]) {
-      const threshold = Math.max(baseline * 1.35, 4.0);
+      const threshold = Math.max(baseline * LEARNINGS_RELEVANCE_RATIO, LEARNINGS_ABSOLUTE_FLOOR);
       expect(normalizeLearningsScoreForRanking(threshold, baseline)).toBeCloseTo(4.0, 5);
     }
   });
@@ -134,7 +134,7 @@ describe('normalizeLearningsScoreForRanking', () => {
   });
 
   it('is monotonic and bounded, with irrelevant learnings below the relevance threshold', () => {
-    const threshold = Math.max(8 * 1.35, 4.0);
+    const threshold = Math.max(8 * LEARNINGS_RELEVANCE_RATIO, LEARNINGS_ABSOLUTE_FLOOR);
     const below = normalizeLearningsScoreForRanking(threshold - 1, 8);
     const at = normalizeLearningsScoreForRanking(threshold, 8);
     const above = normalizeLearningsScoreForRanking(threshold * 8, 8);
@@ -145,6 +145,38 @@ describe('normalizeLearningsScoreForRanking', () => {
 
   it('uses the cold-start baseline for missing or invalid IDF baselines', () => {
     expect(normalizeLearningsScoreForRanking(8, 0)).toBeCloseTo(6, 5);
+  });
+});
+
+describe('rankingScoreOf', () => {
+  // A codebase graph score >= 31 saturates the shared 0-10 scale, which is why
+  // generated module overviews used to outrank the hand-written deep pages that
+  // actually answer the question. The penalty exists to break that tie in the
+  // docs' favour without touching either relevance threshold.
+  const SATURATED_CODE_SCORE = Math.min(10, Math.log2(31 + 1) * 2);
+
+  it('ranks a saturated learnings hit above a saturated codebase hit', () => {
+    const baseline = 8;
+    const code = rankingScoreOf({ score: SATURATED_CODE_SCORE, fromCodebase: true }, baseline);
+    const docs = rankingScoreOf({ score: baseline * 64, idfBaseline: baseline }, baseline);
+    expect(docs).toBe(10);
+    expect(code).toBeLessThan(docs);
+  });
+
+  it('keeps the order among codebase hits intact', () => {
+    const weak = rankingScoreOf({ score: 5, fromCodebase: true }, 8);
+    const strong = rankingScoreOf({ score: 9, fromCodebase: true }, 8);
+    expect(weak).toBeLessThan(strong);
+  });
+
+  it('does not change the score that --check and the output report see', () => {
+    // A codebase hit just above the 4.0 bar: the relevance check reads the raw
+    // score, so it stays relevant, while the penalized score it is ordered by
+    // falls below that bar. The two must not be confused.
+    const result = { score: 4.1, fromCodebase: true };
+    expect(isRelevantScore(result.score, true, 8)).toBe(true);
+    expect(rankingScoreOf(result, 8)).toBeLessThan(4.0);
+    expect(result.score).toBe(4.1); // the raw score is what isRelevantScore compares
   });
 });
 

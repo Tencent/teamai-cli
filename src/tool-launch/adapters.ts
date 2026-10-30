@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { JudgeAccess } from '../scorers/label.js';
 import type { Evidence } from '../tools.js';
-import { readToolMetadata, type TokenUsage } from './stdout.js';
+import { agyRun, readToolMetadata, type TokenUsage } from './stdout.js';
 
 /** What a headless call printed: its answer, or the error the tool reported, when it reported one. */
 export type CallReading = { ok: true; text: string; tokens?: TokenUsage } | { ok: false; message?: string };
@@ -26,6 +26,8 @@ export interface CallLaunch {
   readonly evidence: Evidence;
   /** How the prompt reaches the tool: on stdin, in `promptFile`, or as an argument `args` places. */
   readonly prompt: 'stdin' | 'file' | 'argv';
+  /** What goes on stdin for a `stdin` prompt, when the tool takes it wrapped rather than as is. */
+  stdinOf?(prompt: string): string;
   args(input: CallInput): string[];
   read(output: CallOutput): CallReading;
 }
@@ -195,6 +197,15 @@ function readMuseExec({ stdout }: CallOutput): CallReading {
   return { ok: true, text, ...(Object.keys(tokens).length > 0 ? { tokens } : {}) };
 }
 
+/** agy's stream-json output ends with a `result` event: the response on SUCCESS, else the error, and the turn's usage. */
+function readAgyStream({ stdout }: CallOutput): CallReading {
+  const { result, tokens } = agyRun(stdout);
+  if (!result) return { ok: false };
+  const text = result.response?.trim();
+  if (result.status !== 'SUCCESS' || !text) return { ok: false, ...(result.error ? { message: result.error } : {}) };
+  return { ok: true, text, ...(tokens ? { tokens } : {}) };
+}
+
 /** A tool that prints only its reply, as plain text. */
 function readPlainReply({ stdout }: CallOutput): CallReading {
   const text = stdout.trim();
@@ -272,6 +283,20 @@ export const LAUNCH_ADAPTERS = {
   },
   hermes: {
     call: { evidence: 'source', prompt: 'argv', args: ({ prompt }) => ['-z', prompt], read: readPlainReply },
+  },
+  // agy reads stdin only as stream-json user events. `--print=` is print mode with the prompt left to them; a bare
+  // `-p` would take the next flag as its prompt.
+  agy: {
+    step: { evidence: 'verified' },
+    // Plan mode with the sandbox reads files but runs no shell and writes nothing in the workspace (agy 1.4.10).
+    judge: { evidence: 'verified', env: ['GEMINI_API_KEY', 'GOOGLE_GEMINI_BASE_URL'], access: 'read' },
+    call: {
+      evidence: 'verified',
+      prompt: 'stdin',
+      stdinOf: (prompt) => `${JSON.stringify({ event: 'user', message: { role: 'user', content: prompt } })}\n`,
+      args: () => ['--input-format=stream-json', '--output-format=stream-json', '--print='],
+      read: readAgyStream,
+    },
   },
 } as const satisfies Record<string, LaunchAdapter>;
 

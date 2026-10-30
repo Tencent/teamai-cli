@@ -13,6 +13,10 @@ function git(args: string[]) {
   execFileSync('git', args, { cwd: dir, stdio: 'ignore' });
 }
 
+function gitOutput(args: string[]): string {
+  return execFileSync('git', args, { cwd: dir, encoding: 'utf8' });
+}
+
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-commitpaths-'));
   git(['init', '-q', '-b', 'main']);
@@ -72,5 +76,86 @@ describe('commitPaths', () => {
     const tracked = execFileSync('git', ['ls-tree', '-r', '--name-only', 'HEAD'], { cwd: dir, encoding: 'utf-8' });
     expect(tracked).toContain('kept/y');
     expect(tracked).not.toContain('ignored-dir/x');
+  });
+
+  it.each(['existing', 'unborn'])('preserves unrelated staged and unstaged changes with an %s HEAD', async (head) => {
+    const business = path.join(dir, 'business.ts');
+    if (head === 'existing') {
+      fs.writeFileSync(business, 'committed business\n');
+      fs.writeFileSync(path.join(dir, 'deleted.txt'), 'keep this deletion staged\n');
+      git(['add', '.']);
+      git(['commit', '-qm', 'seed']);
+      git(['rm', 'deleted.txt']);
+    }
+    fs.writeFileSync(business, 'staged business\n');
+    fs.writeFileSync(path.join(dir, 'added.txt'), 'staged addition\n');
+    git(['add', 'business.ts', 'added.txt']);
+    fs.writeFileSync(business, 'unstaged business\n');
+    const businessPaths = ['business.ts', 'added.txt', 'deleted.txt'];
+    const stagedBefore = gitOutput(['diff', '--cached', '--binary', '--no-renames', '--', ...businessPaths]);
+    fs.mkdirSync(path.join(dir, '.teamai', 'skills'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.teamai', 'skills', '.gitkeep'), '');
+
+    expect(await commitPaths(dir, 'init skeleton', ['.teamai/skills'])).toBe(true);
+
+    expect(gitOutput(['diff-tree', '--root', '--no-commit-id', '--name-only', '-r', 'HEAD']).trim())
+      .toBe('.teamai/skills/.gitkeep');
+    expect(gitOutput(['diff', '--cached', '--binary', '--no-renames', '--', ...businessPaths])).toBe(stagedBefore);
+    expect(gitOutput(['show', ':business.ts'])).toBe('staged business\n');
+    expect(fs.readFileSync(business, 'utf8')).toBe('unstaged business\n');
+  });
+
+  it('does not commit unrelated staged changes when the selected files are unchanged', async () => {
+    fs.writeFileSync(path.join(dir, 'skeleton.txt'), 'skeleton\n');
+    git(['add', '.']);
+    git(['commit', '-qm', 'seed']);
+    const head = gitOutput(['rev-parse', 'HEAD']);
+    fs.writeFileSync(path.join(dir, 'business.ts'), 'staged business\n');
+    git(['add', 'business.ts']);
+    const stagedBefore = gitOutput(['diff', '--cached', '--binary']);
+
+    expect(await commitPaths(dir, 'nothing new', ['skeleton.txt'])).toBe(false);
+
+    expect(gitOutput(['rev-parse', 'HEAD'])).toBe(head);
+    expect(gitOutput(['diff', '--cached', '--binary'])).toBe(stagedBefore);
+  });
+
+  it('commits selected additions and deletions without treating filenames as pathspecs', async () => {
+    const skills = path.join(dir, '.teamai', 'skills');
+    fs.mkdirSync(skills, { recursive: true });
+    fs.writeFileSync(path.join(skills, 'old.md'), 'old\n');
+    fs.writeFileSync(path.join(skills, '.gitkeep'), '');
+    git(['add', '.']);
+    git(['commit', '-qm', 'seed']);
+    fs.unlinkSync(path.join(skills, 'old.md'));
+    fs.writeFileSync(path.join(skills, '[notes] space.md'), 'new\n');
+    fs.writeFileSync(path.join(skills, 'n space.md'), 'another selected file\n');
+    fs.mkdirSync(path.join(dir, 'empty'));
+
+    expect(await commitPaths(dir, 'update skeleton', ['.teamai/skills', 'empty'])).toBe(true);
+
+    expect(gitOutput(['show', 'HEAD:.teamai/skills/[notes] space.md'])).toBe('new\n');
+    expect(gitOutput(['diff-tree', '--no-commit-id', '--name-status', '-r', 'HEAD']))
+      .toContain('D\t.teamai/skills/old.md');
+    expect(gitOutput(['status', '--porcelain'])).toBe('');
+  });
+
+  it.each(['untracked', 'staged'])('treats the requested path literally when a matching unrelated file is %s', async (state) => {
+    const selected = 'dir[1]/settings.json';
+    const unrelated = 'dir1/settings.json';
+    fs.mkdirSync(path.join(dir, 'dir[1]'));
+    fs.mkdirSync(path.join(dir, 'dir1'));
+    fs.writeFileSync(path.join(dir, selected), 'selected\n');
+    fs.writeFileSync(path.join(dir, unrelated), 'unrelated staged content\n');
+    if (state === 'staged') git(['--literal-pathspecs', 'add', '--', unrelated]);
+    fs.writeFileSync(path.join(dir, unrelated), 'unrelated working content\n');
+    const stagedBefore = gitOutput(['diff', '--cached', '--binary', '--', unrelated]);
+
+    expect(await commitPaths(dir, 'init settings', [selected])).toBe(true);
+
+    expect(gitOutput(['ls-tree', '-r', '--name-only', 'HEAD']).trim()).toBe(selected);
+    expect(gitOutput(['diff', '--cached', '--binary', '--', unrelated])).toBe(stagedBefore);
+    expect(fs.readFileSync(path.join(dir, unrelated), 'utf8')).toBe('unrelated working content\n');
+    if (state === 'untracked') expect(gitOutput(['ls-files', '--others', '--exclude-standard']).trim()).toBe(unrelated);
   });
 });

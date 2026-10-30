@@ -1,5 +1,6 @@
 /** Workflow types for the v1alpha1 local-driver subset. */
 
+import type { RunOrigin } from '../default-workflows.js';
 import type { RunMode } from '../launch-context.js';
 import type { PinnedScorer } from '../scorers/pin.js';
 import type { DeliveryReceipt, UnresolvedCreate } from './delivery-schema.js';
@@ -272,12 +273,16 @@ export interface RunState {
   failure?: WorkflowFailure;
   /** The validated `--inputs`, stored when the workflow declares inputs. */
   inputs?: Record<string, unknown>;
+  /** The alias that started the workflow when the run started: the name people use for it. Absent when it had none, or its alias started another workflow. */
+  alias?: string;
   /** Covers `definition` and every workflow in `workflows`. */
   sourceHash: string;
   /** Remote-reachable team commit shared by every cached workflow in this run. */
   teamRevision?: string;
   /** The run mode `workflow start` resolved. A claim keeps it. Absent on runs started before it was recorded. */
   runMode?: RunMode;
+  /** Whether `definition` is the team's or teamai's default. A claim keeps it. Absent on runs started before it was recorded, all team runs. */
+  origin?: RunOrigin;
   definition: WorkflowDefinition;
   /** The sub-workflows the run uses, by name, as they were cached when it started. */
   workflows?: Record<string, WorkflowDefinition>;
@@ -368,6 +373,12 @@ export interface CachedWorkflow {
   definition: WorkflowDefinition;
   validatedAt: string;
 }
+
+/** Where a workflow `start` runs comes from: a team file `teamai pull` validated, or a default this teamai ships. */
+export type WorkflowSource = 'team' | 'default';
+
+/** A workflow as the cache resolves a name: a team version first, else teamai's default. */
+export type ResolvedWorkflow = CachedWorkflow & { source: WorkflowSource };
 
 export type WorkflowEnvelope =
   | { data: Record<string, unknown> }

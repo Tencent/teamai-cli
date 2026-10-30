@@ -1,7 +1,5 @@
-import { readFile } from 'node:fs/promises';
 import { Parser } from 'acorn';
 import { defineConfig, type Options } from 'tsup';
-import type { Plugin } from 'esbuild';
 
 // V8 keeps a source holding any non-ASCII character as two bytes per
 // character, so one em dash made every run decode the 5.5 MB bundle into
@@ -41,33 +39,6 @@ const asciiOutput: NonNullable<Options['plugins']>[number] = {
   },
 };
 
-// simple-git settles a command on `close`, or 50 ms after `exit` when `close`
-// never comes (a grandchild such as an ssh ControlPersist master holding the
-// pipe). That 50 ms timer is left running after `close` wins, so a command
-// that ends on its own waited up to 50 ms after its last git call. Unref'd, it
-// no longer holds the process; a held pipe still keeps it alive until it fires.
-const SIMPLE_GIT_EXIT_FALLBACK = '(flag === true ? event.promise : event.promise.then(() => delay(flag))).then(timeout.done);';
-const simpleGitExitFallbackUnref: Plugin = {
-  name: 'simple-git-exit-fallback-unref',
-  setup(build) {
-    let patched = 0;
-    build.onEnd((result) => {
-      if (result.errors.length === 0 && patched === 0) throw new Error('simple-git exit fallback patch matched no file: re-check its filter in tsup.config.ts');
-    });
-    build.onLoad({ filter: /[\\/]simple-git[\\/]dist[\\/](esm|cjs)[\\/]index\.js$/ }, async (args) => {
-      const source = await readFile(args.path, 'utf8');
-      if (!source.includes(SIMPLE_GIT_EXIT_FALLBACK)) {
-        throw new Error(`simple-git changed its completion plugin: re-check the exit fallback patch in tsup.config.ts (${args.path})`);
-      }
-      patched++;
-      return {
-        contents: source.replace(SIMPLE_GIT_EXIT_FALLBACK, '(flag === true ? event.promise : event.promise.then(() => new Promise((done) => setTimeout(done, flag).unref()))).then(timeout.done);'),
-        loader: 'js',
-      };
-    });
-  },
-};
-
 export default defineConfig({
   // `index` is the executable: it turns on Node's compile cache, then loads
   // `cli`, the CLI itself, which the cache can only cover as a separate file.
@@ -84,7 +55,6 @@ export default defineConfig({
   // and the compile cache covers one file whole. web-tree-sitter stays out:
   // it loads its .wasm from its own package directory.
   noExternal: [/^(?!web-tree-sitter$)/],
-  esbuildPlugins: [simpleGitExitFallbackUnref],
   plugins: [asciiOutput],
   banner: {
     // `require` for the CommonJS dependencies bundled into this ES module.

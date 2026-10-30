@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { stepEnvironment } from '../../env-exec.js';
+import type { WorkflowEnv } from '../../env-resolution.js';
 import type { RunMode } from '../../launch-context.js';
 import type { LocalConfig } from '../../types.js';
 import { gitCommonDir } from '../../utils/git.js';
@@ -301,18 +302,18 @@ async function settle(config: LocalConfig, record: PlaceRecordBase): Promise<Pla
 }
 
 /**
- * Runs the setup of a place `preparePlace` left `staged`, with the env `values` resolved for it, then makes it ready.
+ * Runs the setup of a place `preparePlace` left `staged`, with the team env resolved for it, then makes it ready.
  * Setup gets its own keys and none of the step's, the attempt marker and the run's `mode`. `signal` stops setup, which then fails, and the worktree it was
  * preparing is removed, or, when the host made it, gets the branch agent files back. Nothing to do for any other place.
  */
-export async function runPlaceSetup(input: { config: LocalConfig; run: RunId; attempt: AttemptId; mode: RunMode; values: ReadonlyMap<string, string>; signal?: AbortSignal }): Promise<WorkflowFailure | undefined> {
-  const { config, run, attempt, mode, values, signal } = input;
+export async function runPlaceSetup(input: { config: LocalConfig; run: RunId; attempt: AttemptId; mode: RunMode; env: Pick<WorkflowEnv, 'values' | 'facts'>; signal?: AbortSignal }): Promise<WorkflowFailure | undefined> {
+  const { config, run, attempt, mode, env, signal } = input;
   const read = await readPlaceRecord(config, run, attempt);
   const recorded = read.kind === 'found' ? read.record : undefined;
   if (recorded?.phase !== 'staged') return undefined;
   const { setup, expiresAt } = recorded;
   const scope = setup.envScope ?? { provide: [], withhold: [] };
-  const scoped = await stepEnvironment(values, scope);
+  const scoped = await stepEnvironment(env, scope);
   if (!scoped.ok) return setupFailed(config, recorded, scoped.failure);
   // The mark stays in the place until setup finishes, so a place the host made is not adopted again after a setup that did not.
   await markSetup(recorded.dir, 'unfinished');

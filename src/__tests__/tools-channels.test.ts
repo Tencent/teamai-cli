@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { AGY_RULE_FORMAT } from '../resources/agy-rule.js';
 import { CODEBUDDY_RULE_FORMAT } from '../resources/codebuddy-rule.js';
 import { COPILOT_INSTRUCTIONS_FORMAT } from '../resources/copilot-instructions.js';
 import { CURSOR_MDC_FORMAT } from '../resources/cursor-mdc.js';
@@ -37,17 +38,18 @@ const BEFORE: {
     codebuddy: CODEBUDDY_RULE_FORMAT,
     workbuddy: CODEBUDDY_RULE_FORMAT,
     omp: OMP_RULE_FORMAT,
+    agy: AGY_RULE_FORMAT,
   },
   sessionHookRules: ['codex', 'codex-internal', 'tcodex', 'zcode', 'dsh', 'muse'],
   extensionRules: ['pi'],
   mcpFormats: {
     claude: 'claude', 'claude-internal': 'claude', tclaude: 'claude', qoder: 'claude', 'qoder-cn': 'claude', kiro: 'claude',
     zcode: 'claude', omp: 'claude', trae: 'claude', 'trae-cn': 'claude', cursor: 'cursor', codex: 'codex', 'codex-internal': 'codex',
-    tcodex: 'codex', codebuddy: 'buddy', workbuddy: 'buddy', opencode: 'opencode', copilot: 'copilot', pi: 'pi', muse: 'muse',
+    tcodex: 'codex', codebuddy: 'buddy', workbuddy: 'buddy', opencode: 'opencode', copilot: 'copilot', pi: 'pi', muse: 'muse', agy: 'agy',
   },
   agentTools: [
     'claude', 'claude-internal', 'tclaude', 'codebuddy', 'codex', 'codex-internal', 'tcodex', 'cursor', 'copilot', 'joycode',
-    'qoder', 'qoder-cn', 'kiro', 'zcode', 'omp', 'opencode', 'workbuddy', 'muse',
+    'qoder', 'qoder-cn', 'kiro', 'zcode', 'omp', 'opencode', 'workbuddy', 'muse', 'agy',
   ],
   hookFormats: { copilot: 'copilot', codex: 'codex', 'codex-internal': 'codex', tcodex: 'codex', muse: 'codex', zcode: 'zcode', cursor: 'cursor' },
 };

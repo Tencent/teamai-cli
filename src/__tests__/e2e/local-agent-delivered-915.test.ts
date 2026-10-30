@@ -68,6 +68,7 @@ function machine(name: string) {
     child.on('close', (code) => resolve({ code, output }));
     child.stdin.end(input ?? '');
   });
+  const enrolled = new Set<string>();
   return {
     home,
     git,
@@ -95,6 +96,12 @@ function machine(name: string) {
       fs.writeFileSync(config, [...lines.filter(Boolean), `gitExcludeEnabled: ${on}`, ''].join('\n'));
     },
     async sessionStart(cwd: string, commands: MockCommand[]): Promise<void> {
+      // The local agent serves only a workspace enrolled by `teamai bind-project`.
+      if (!enrolled.has(cwd)) {
+        const enroll = await cli(['bind-project', '--skip'], cwd);
+        expect(enroll.code, enroll.output).toBe(0);
+        enrolled.add(cwd);
+      }
       server.seedCommands(commands);
       const run = await cli(['hook-dispatch', 'session-start', '--tool', 'claude'], cwd,
         JSON.stringify({ cwd, session_id: `s-${path.basename(cwd)}`, hook_event_name: 'SessionStart', source: 'startup' }));

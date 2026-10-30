@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
@@ -57,7 +58,10 @@ async function runResponse(
 ): Promise<Array<Record<string, unknown>>> {
   // 确保 tool 目录存在，使 isToolInstalled 检查通过
   await fse.ensureDir(path.join(tmpDir, `.${tool}`, 'skills'));
-  await setupConfig();
+  // A workspace syncs only once enrolled (`teamai bind-project` ran in it).
+  await setupConfig(cwd === tmpDir ? {} : {
+    [fs.realpathSync.native(cwd)]: { projectId: 0, projectName: '__pending__', boundAt: '2026-01-01T00:00:00.000Z' },
+  });
   const acks: Array<Record<string, unknown>> = [];
   const fetchMock = vi.fn(async (input: string | URL, init?: { body?: string }) => {
     const url = String(input);
@@ -330,10 +334,10 @@ describe('local-agent: MCP install/uninstall commands', () => {
       slug: COPILOT_SERVER, version: '1.0.0',
       mcp_config: { transport: 'http', url: 'https://team.example/mcp' },
     };
-    const fs = await import('../utils/fs.js');
-    const write = fs.writeJsonAtomic;
+    const fsUtils = await import('../utils/fs.js');
+    const write = fsUtils.writeJsonAtomic;
     let writes = 0;
-    const spy = vi.spyOn(fs, 'writeJsonAtomic').mockImplementation(async (file, ...args) => {
+    const spy = vi.spyOn(fsUtils, 'writeJsonAtomic').mockImplementation(async (file, ...args) => {
       if (source === 'failed placement write' && file.endsWith('/managed-mcp.json') && ++writes === 2) {
         throw new Error('simulated placement write failure');
       }
@@ -420,10 +424,10 @@ describe('local-agent: MCP install/uninstall commands', () => {
     }
     const original = await fse.readJson(configFile);
     const replacement = { ...command, id: 9041, mcp_config: { transport: 'stdio', command: 'replacement-server' } };
-    const fs = await import('../utils/fs.js');
-    const write = fs.writeJsonAtomic;
+    const fsUtils = await import('../utils/fs.js');
+    const write = fsUtils.writeJsonAtomic;
     let configWritten = false;
-    const spy = vi.spyOn(fs, 'writeJsonAtomic').mockImplementation(async (file, ...args) => {
+    const spy = vi.spyOn(fsUtils, 'writeJsonAtomic').mockImplementation(async (file, ...args) => {
       if (failure === 'config' && file.endsWith('/.github/mcp.json')) throw new Error('simulated MCP config write failure');
       if (failure === 'manifest' && file.endsWith('/managed-mcp.json') && configWritten) throw new Error('simulated manifest write failure');
       await write(file, ...args);
@@ -475,9 +479,9 @@ describe('local-agent: MCP install/uninstall commands', () => {
       : path.join(wsDir, (await fse.readdir(wsDir))[0], 'managed-mcp.json');
     const before = await fse.readJson(manifestFile);
     const original = await fse.readFile(configFile, 'utf-8');
-    const fs = await import('../utils/fs.js');
-    const write = fs.writeJsonAtomic;
-    const spy = vi.spyOn(fs, 'writeJsonAtomic').mockImplementation(async (file, ...args) => {
+    const fsUtils = await import('../utils/fs.js');
+    const write = fsUtils.writeJsonAtomic;
+    const spy = vi.spyOn(fsUtils, 'writeJsonAtomic').mockImplementation(async (file, ...args) => {
       if ((failure === 'config' && file.endsWith(tool === 'copilot' ? '/.github/mcp.json' : '/.mcp.json')) || (failure === 'manifest' && file.endsWith('/managed-mcp.json'))) {
         throw new Error(`simulated ${failure} write failure`);
       }
@@ -568,10 +572,10 @@ describe('local-agent: MCP install/uninstall commands', () => {
     };
     expect((await runResponse({ cmds: [command] }, 'copilot'))[0].status).toBe('success');
     const original = await fse.readJson(configFile);
-    const fs = await import('../utils/fs.js');
-    const write = fs.writeJsonAtomic;
+    const fsUtils = await import('../utils/fs.js');
+    const write = fsUtils.writeJsonAtomic;
     let configWritten = false;
-    const spy = vi.spyOn(fs, 'writeJsonAtomic').mockImplementation(async (file, ...args) => {
+    const spy = vi.spyOn(fsUtils, 'writeJsonAtomic').mockImplementation(async (file, ...args) => {
       if (file.endsWith('/managed-mcp.json')) throw new Error('simulated manifest write failure');
       if (file.endsWith('/.github/mcp.json') && configWritten) throw new Error('simulated restoration failure');
       await write(file, ...args);
@@ -1066,9 +1070,9 @@ describe('local-agent: MCP install/uninstall commands', () => {
       const original = { mcpServers: { mine: { command: 'my-server' } } };
       await fse.writeJson(path.join(wsPath, '.mcp.json'), original);
       const excludeBefore = await fse.readFile(path.join(wsPath, '.git', 'info', 'exclude'), 'utf-8');
-      const fs = await import('../utils/fs.js');
-      const write = fs.writeJsonAtomic;
-      vi.spyOn(fs, 'writeJsonAtomic').mockImplementation(async (file, ...args) => {
+      const fsUtils = await import('../utils/fs.js');
+      const write = fsUtils.writeJsonAtomic;
+      vi.spyOn(fsUtils, 'writeJsonAtomic').mockImplementation(async (file, ...args) => {
         if (file.endsWith('/managed-mcp.json')) throw new Error('simulated manifest write failure');
         return write(file, ...args);
       });

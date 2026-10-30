@@ -24,7 +24,7 @@ interface MarketplacePlugin {
   version: string;
   category?: string;
   keywords?: string[];
-  strict: false;
+  strict?: boolean;
   [key: string]: unknown;
 }
 

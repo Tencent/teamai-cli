@@ -301,4 +301,4 @@ teamai source list
 teamai source remove-http
 ```
 
-An install has one HTTP source. `add-http` is unavailable when the main repo is already `init --http`. The API is the [ClawPro HTTP backend](./http-contract.md).
+An install has one HTTP source. `add-http` is unavailable when the main repo is already `init --http`. The API is the [ClawPro HTTP backend](./http-contract.md). Pass `--agent <tool>` with an agent access token (`sk-`): it works for one agent only, so each agent keeps its own. It syncs only a workspace where `teamai bind-project` ran once; `--skip` enrolls such a workspace without a project.

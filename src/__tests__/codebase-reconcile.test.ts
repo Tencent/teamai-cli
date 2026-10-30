@@ -4,7 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { codebaseCmd } from '../codebase-cmd.js';
+import { autoDetectInit } from '../config.js';
 import { aggregateGlobalGraph } from '../graph-aggregate.js';
+import { LocalConfigSchema, TeamaiConfigSchema } from '../types.js';
+import { createGit } from '../utils/git.js';
 import {
   loadGraphIndex,
   validateGraph,
@@ -30,6 +33,11 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   };
 });
 
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
+  autoDetectInit: vi.fn(),
+}));
+
 const temporaryDirectories: string[] = [];
 
 function createWikiFixture(): string {
@@ -54,7 +62,113 @@ afterEach(() => {
   }
 });
 
+/** A team clone of a bare remote whose main holds the wiki fixture, as `teamai init` leaves it. */
+async function createTeamFixture(): Promise<{ clone: string; remote: string }> {
+  const root = createWikiFixture();
+  const remote = path.join(root, 'remote.git');
+  const clone = path.join(root, 'clone');
+  await createGit(root).raw(['init', '--bare', '-b', 'main', remote]);
+  await createGit(root).clone(remote, clone);
+  const git = createGit(clone);
+  await git.addConfig('user.name', 'Test');
+  await git.addConfig('user.email', 'test@example.com');
+  fs.cpSync(path.join(root, 'teamwiki'), path.join(clone, 'teamwiki'), { recursive: true });
+  fs.writeFileSync(path.join(clone, 'teamai.yaml'), 'team: test\n');
+  await git.add('.');
+  await git.commit('team');
+  await git.push(['-u', 'origin', 'main']);
+  vi.mocked(autoDetectInit).mockResolvedValue({
+    localConfig: LocalConfigSchema.parse({ repo: { localPath: clone, remote }, username: 'member', scope: 'user' }),
+    teamConfig: TeamaiConfigSchema.parse({ team: 'test', repo: remote }),
+  });
+  return { clone, remote };
+}
+
 describe('codebase reconciliation', () => {
+  it('publishes only the reconciled graph to the team repo, leaving a product page the member is writing', async () => {
+    const { clone, remote } = await createTeamFixture();
+    fs.writeFileSync(path.join(clone, 'teamwiki', 'product', 'draft.md'), '# Draft\n');
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await codebaseCmd({ reconcile: true });
+
+    expect(process.exitCode).toBeUndefined();
+    const published = JSON.parse(await createGit(remote).raw(['show', 'main:teamwiki/.indices/graph-index.json'])) as GraphIndex;
+    expect(published.edges.filter((edge) => edge.source === 'bridge-reconcile')).toHaveLength(1);
+    expect(await createGit(remote).raw(['ls-tree', '--name-only', 'main', 'teamwiki/product/'])).not.toContain('draft.md');
+    expect((await createGit(clone).status()).files.map((file) => file.path)).toEqual(['teamwiki/product/draft.md']);
+    expect(log.mock.calls.flat().join('\n')).toContain(`Pushed to team knowledge repo (${remote})`);
+  });
+
+  it('leaves a product page the member staged out of the commit, and still staged', async () => {
+    const { clone, remote } = await createTeamFixture();
+    fs.writeFileSync(path.join(clone, 'teamwiki', 'product', 'draft.md'), '# Draft\n');
+    await createGit(clone).add('teamwiki/product/draft.md');
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await codebaseCmd({ reconcile: true });
+
+    expect(await createGit(remote).raw(['ls-tree', '--name-only', 'main', 'teamwiki/product/'])).not.toContain('draft.md');
+    expect((await createGit(clone).status()).staged).toEqual(['teamwiki/product/draft.md']);
+  });
+
+  it('publishes the graph a failed push left committed when the command is run again', async () => {
+    const { clone, remote } = await createTeamFixture();
+    const git = createGit(clone);
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    await git.remote(['set-url', 'origin', path.join(path.dirname(remote), 'unreachable.git')]);
+    await expect(codebaseCmd({ reconcile: true })).rejects.toThrow('Push to the team repo failed');
+    await git.remote(['set-url', 'origin', remote]);
+
+    await codebaseCmd({ reconcile: true });
+
+    expect(process.exitCode).toBeUndefined();
+    const published = JSON.parse(await createGit(remote).raw(['show', 'main:teamwiki/.indices/graph-index.json'])) as GraphIndex;
+    expect(published.edges.filter((edge) => edge.source === 'bridge-reconcile')).toHaveLength(1);
+  });
+
+  it('pushes nothing when a second run in the team repo finds nothing new', async () => {
+    const { remote } = await createTeamFixture();
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    await codebaseCmd({ reconcile: true });
+    const head = await createGit(remote).raw(['rev-parse', 'main']);
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await codebaseCmd({ reconcile: true });
+
+    expect(await createGit(remote).raw(['rev-parse', 'main'])).toBe(head);
+    expect(log.mock.calls.flat().join('\n')).not.toContain('Pushed to team knowledge repo');
+  });
+
+  it('fails, naming the next step, when another member pushed to the team repo first', async () => {
+    const { clone, remote } = await createTeamFixture();
+    const other = path.join(path.dirname(clone), 'other');
+    await createGit(path.dirname(clone)).clone(remote, other);
+    const otherGit = createGit(other);
+    await otherGit.addConfig('user.name', 'Other');
+    await otherGit.addConfig('user.email', 'other@example.com');
+    fs.writeFileSync(path.join(other, 'notes.md'), 'other\n');
+    await otherGit.add('.');
+    await otherGit.commit('other');
+    await otherGit.push(['origin', 'main']);
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await expect(codebaseCmd({ reconcile: true })).rejects.toThrow('Run `teamai pull`, then rerun this command.');
+
+    expect(log.mock.calls.flat().join('\n')).not.toContain('Pushed to team knowledge repo');
+  });
+
+  it('publishes nothing on a dry run in the team repo', async () => {
+    const { clone, remote } = await createTeamFixture();
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const head = await createGit(remote).raw(['rev-parse', 'main']);
+
+    await codebaseCmd({ reconcile: true, dryRun: true });
+
+    expect(await createGit(remote).raw(['rev-parse', 'main'])).toBe(head);
+    expect((await createGit(clone).status()).isClean()).toBe(true);
+  });
+
   it('sets a failing exit code when the requested output has no teamwiki', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-reconcile-missing-'));
     temporaryDirectories.push(root);
@@ -90,6 +204,19 @@ describe('codebase reconciliation', () => {
     const graph = await loadGraphIndex(path.join(root, 'teamwiki'));
     expect(graph).not.toBeNull();
     expect(validateGraph(graph as GraphIndex)).toEqual({ valid: true, issues: [] });
+  });
+
+  it('keeps the graph file as it is when a second run finds nothing new', async () => {
+    const root = createWikiFixture();
+    const graphPath = path.join(root, 'teamwiki', '.indices', 'graph-index.json');
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    await codebaseCmd({ reconcile: true, output: root, json: true });
+    const first = fs.readFileSync(graphPath, 'utf8');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    await codebaseCmd({ reconcile: true, output: root, json: true });
+
+    expect(fs.readFileSync(graphPath, 'utf8')).toBe(first);
   });
 
   it('replaces stale reconciliation edges when the pages no longer match', async () => {

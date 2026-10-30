@@ -1241,8 +1241,10 @@ describe('instruction block targets on real CLI pull (#945)', () => {
     try {
       const agentDir = path.join(member.home, '.teamai', 'local-agent');
       fs.mkdirSync(agentDir, { recursive: true });
+      // The workspace is enrolled (`teamai bind-project` ran there): the local agent serves no other.
       fs.writeFileSync(path.join(agentDir, 'config.json'), JSON.stringify({ endpoint, token: 'fixture-token',
-        localAgentId: 'fixture', createdAt: '2026-01-01T00:00:00.000Z', workspaceBindings: {},
+        localAgentId: 'fixture', createdAt: '2026-01-01T00:00:00.000Z',
+        workspaceBindings: { [fs.realpathSync.native(member.projectRoot)]: { projectId: 0, projectName: '__pending__', boundAt: '2026-01-01T00:00:00.000Z' } },
       }));
       const first = await runCLI(['hook-dispatch', 'session-start', '--tool', 'codex'], { HOME: member.home, NODE_OPTIONS: `--require ${JSON.stringify(preload)}` }, member.projectRoot,
         JSON.stringify({ cwd: member.projectRoot, session_id: 'first-http', hook_event_name: 'SessionStart', source: 'startup' }));

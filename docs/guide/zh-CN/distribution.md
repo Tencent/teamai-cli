@@ -301,4 +301,4 @@ teamai source list
 teamai source remove-http
 ```
 
-每个安装只能有一个 HTTP 源。主仓已经是 `init --http` 时，不能再 `add-http`。接口见 [ClawPro HTTP 后端](./http-contract.md)。
+每个安装只能有一个 HTTP 源。主仓已经是 `init --http` 时，不能再 `add-http`。接口见 [ClawPro HTTP 后端](./http-contract.md)。用 Agent 接入凭证（`sk-`）时加 `--agent <tool>`：这种凭证只能给一个 Agent 用，每个 Agent 各存各的。只有跑过一次 `teamai bind-project` 的工作区才会同步；不绑定项目就加 `--skip`。

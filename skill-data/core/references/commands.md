@@ -22,7 +22,7 @@ Generated: do not edit by hand. Regenerate with
   - `--http <url>` — Git-free HTTP team repo (read-only consumer; only needs an API key)
   - `--provider <name>` — Git provider for the team repo on this machine: tgit, github, cnb, gitlab, gitcode, or git. Skips auto-detection. `git` uses your existing Git auth and needs no platform token, but opens no PR/MR.
   - `--self` — Single-repo mode: the current git repo is the team repo (equivalent to `teamai init .`). Knowledge lives on main under .teamai/; reports go to the teamai-reports orphan branch.
-  - `--token <key>` — API key for HTTP team repo / status reporting (stored 0600, never committed). Also reads TEAMAI_API_TOKEN.
+  - `--token <key>` — API key for HTTP team repo / status reporting (stored 0600, never committed). Also reads TEAMAI_API_TOKEN. With --http and a single --agent, an agent access token (sk-) is kept for that agent only, next to the other agents' tokens (--force keeps them too); while that agent's current token still works it is kept and the new one is not used. Without --agent on a machine where one agent already holds a token, that agent takes it, or — keeping its working one — the new token serves the tools without a token of their own.
   - `--scope <scope>` — Install scope: workspace (default, <cwd>/.teamai + <cwd>/.claude) or user (~/.teamai + ~/.claude); project is the older name for workspace
   - `--inherit-user-scope` — In workspace scope, also sync safe user-scope resources, load its env variables (not its secrets) in the workspace, and search its knowledge
   - `--no-inherit-user-scope` — Disable user-scope inheritance for this workspace
@@ -56,7 +56,7 @@ Generated: do not edit by hand. Regenerate with
 
 ## list
 
-- `teamai list [type]` — List resources (skills|rules|docs|env|agents|hooks|mcp). For skills, --source local/all also scans installed AI agent skill directories.
+- `teamai list [type]` — List resources (skills|rules|docs|env|agents|hooks|mcp|workflows). For skills, --source local/all also scans installed AI agent skill directories. Workflows show their source: team, teamai's default, or not runnable.
   - `--source <src>` — Where to look for skills: repo | local | all
   - `--agent <name>` — Filter local agents by id (only applies to skills)
   - `--reveal` — Show env values in plaintext (default: masked)
@@ -176,6 +176,7 @@ Generated: do not edit by hand. Regenerate with
   - `teamai source remove <name>` — Remove a source and clean up its skills
   - `teamai source add-http <endpoint>` — Add an HTTP source (report/sync/ack) alongside a git main repo
     - `--token <key>` — API token for the HTTP endpoint (stored 0600, never committed)
+    - `--agent <name>` — The AI tool this token is for (e.g. codebuddy, claude); hooks are injected into that tool only. An agent access token (sk-) works for one agent only, so each agent keeps its own; while that agent's current token still works it is kept and the new one is not used.
     - `--force` — Overwrite an existing HTTP source config
   - `teamai source remove-http` — Remove the HTTP source and clean up its resources
   - `teamai source list` — List all configured sources
@@ -273,7 +274,7 @@ Generated: do not edit by hand. Regenerate with
 ## score
 
 - `teamai score` — Judge workflow passes with team scorers (scorers/<name>.md). Any driver takes judge work with --next, runs its own judge on the lease prompt with the lease evidence directory as its only readable root and settles it with --lease <ref> --submit, or judges it here with --lease <ref>. --run <id> --step <path> --scorer <name> judges a pass on demand. --scorer <name> [--session <id>] judges a finished agent session here: the one --session names, or, inside a session, the one its agent session variable names; it never guesses. --team-session <name> judges a session a member pushed instead. --label <value> labels the session by hand instead of judging it. With --json, it leases that session to the driver's own judge instead. workflow next never hands out judge work, and a driver never lists a judge ref in workflow next running. Prints one JSON envelope; --drain prints lines.
-  - `--next` — Take judge work: workflow passes first, then finished sessions of each run mode whose scoring.sessions policy is auto (config.yaml, else scorers/scoring.yaml; by default off attended, auto unattended). An attended session is finished 6 hours after its last activity, an unattended one once a score --drain reached it. A lease has ref, source (workflow or session), scorer, subject, evidence, prompt, answer.schema, expiresAt, the cwd to submit from and a submit command line; else idle with counts. A batch lease, for scorers of one pass that share a judge call, has scorers and batched: true instead of scorer. --json {"driver":{"kind":"t3","machine":"host","workspace":"/work","can":{"judge":{"isolation":"verified","access":"read","tools":["claude"]}}},"running":["<ref>"]}. isolation is verified or best-effort; access is what your judge can do, answer (no tools), read (reads the evidence) or full (any tool), default full, and its labels record it; tools in your order of preference. running lists the judge refs you still run, which renews them; a live workflow lease of yours left out is handed back, and a session lease left out lapses: a session is judged once. A lease lapses 30 minutes after it was taken or renewed. Optional: run, a run id, to take only that run's workflow passes and never a session, from any directory, since the run's scope is found by its id; canTakeLease, false to renew running and take nothing, not even a lease handed back.
+  - `--next` — Take judge work: workflow passes first, then finished sessions of each run mode whose scoring.sessions policy is auto (config.yaml, else scorers/scoring.yaml, which ~/.teamai/config.yaml can only make stricter; by default off attended, auto unattended). An attended session is finished 6 hours after its last activity, an unattended one once a score --drain reached it. A lease has ref, source (workflow or session), scorer, subject, evidence, prompt, answer.schema, expiresAt, the cwd to submit from and a submit command line; else idle with counts. A batch lease, for scorers of one pass that share a judge call, has scorers and batched: true instead of scorer. --json {"driver":{"kind":"t3","machine":"host","workspace":"/work","can":{"judge":{"isolation":"verified","access":"read","tools":["claude"]}}},"running":["<ref>"]}. isolation is verified or best-effort; access is what your judge can do, answer (no tools), read (reads the evidence) or full (any tool), default full, and its labels record it; tools in your order of preference. running lists the judge refs you still run, which renews them; a live workflow lease of yours left out is handed back, and a session lease left out lapses: a session is judged once. A lease lapses 30 minutes after it was taken or renewed. Optional: run, a run id, to take only that run's workflow passes and never a session, from any directory, since the run's scope is found by its id; canTakeLease, false to renew running and take nothing, not even a lease handed back.
   - `--lease <ref>` — The judge lease, as --next printed it (s<13 hex>/a<8 hex>). Without --submit, judge it here with the tool the lease names, in a confined profile, and settle it through the submit path: --json {"driver":{…same as --next…}}.
   - `--submit` — Settle --lease <ref> with the payload {"driver":{…same as --next…},"outcome":"success","answer":{"label":"<one of answer.schema>","reasoning":"…"},"judge":{"tool":"claude","model":"…","usage":{"inputTokens":0,"outputTokens":0}}}. For a batch lease, answer is {"<scorer>":{"label":"…","reasoning":"…"},…} with one entry per scorer. outcome is success, failed, or released. A label a scorer does not list is refused, the whole answer with it, and the lease stays open; teamai computes score and passed.
   - `--json <payload>` — The payload as a JSON string
@@ -322,7 +323,7 @@ Generated: do not edit by hand. Regenerate with
   - `teamai models list [profile]` — Show team and personal model profiles, or one profile, and the agents using them
   - `teamai models add <id>` — Add a personal model profile stored only on this machine
     - `--name <name>` — Display name
-    - `--protocol <protocols>` — Comma-separated: anthropic, openai-chat-completions, openai-responses
+    - `--protocol <protocols>` — Comma-separated: anthropic, openai-chat-completions, openai-responses, gemini
     - `--base-url <url>` — Gateway root URL (without /v1)
     - `--model <ids>` — Comma-separated model IDs; the first is the default
     - `--from-env <name>` — Read the API key from this environment variable
@@ -414,9 +415,9 @@ Generated: do not edit by hand. Regenerate with
 
 ## bind-project
 
-- `teamai bind-project` — Bind the current workspace to a ClawPro project for HTTP local-agent sync
+- `teamai bind-project` — Enroll the current workspace in HTTP local-agent sync and bind it to a ClawPro project. A workspace where this never ran is left alone
   - `--project-id <id>` — Project ID from /projects/mine
-  - `--skip` — Mark current workspace as skipped (never prompt again)
+  - `--skip` — Enroll the current workspace without a project (never prompt again)
 
 ## contribute
 

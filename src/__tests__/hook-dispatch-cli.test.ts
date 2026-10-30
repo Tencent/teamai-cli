@@ -61,14 +61,14 @@ describe('deriveDispatchSessionId', () => {
 
 describe('hookDispatchCli', () => {
   it.each(['scorer', 'recall-promote', 'codebase'])('skips the hooks of a session teamai launched for %s before reading stdin or resolving config, including background children', async (launchedBy) => {
-    const resolveConfig = vi.spyOn(await import('../dashboard-collector.js'), 'resolveHookConfig');
+    const resolveScope = vi.spyOn(await import('../dashboard-collector.js'), 'resolveHookScopeFor');
     const readFile = vi.spyOn(fs, 'readFileSync');
     vi.stubEnv('TEAMAI_LAUNCHED_BY', launchedBy);
     try {
       for (const bgOnly of [false, true]) await hookDispatchCli('SessionStart', 'claude', '*', { bgOnly, stdinFile: '/missing-judge-payload' });
-      expect(resolveConfig).not.toHaveBeenCalled();
+      expect(resolveScope).not.toHaveBeenCalled();
       expect(readFile).not.toHaveBeenCalledWith('/missing-judge-payload', expect.anything());
-    } finally { resolveConfig.mockRestore(); readFile.mockRestore(); vi.unstubAllEnvs(); }
+    } finally { resolveScope.mockRestore(); readFile.mockRestore(); vi.unstubAllEnvs(); }
   });
 
   it('records why a Git hook cannot sync an unreadable project config, without dispatching', async () => {
@@ -123,7 +123,7 @@ describe('hookDispatchCli', () => {
 
     const runPrefix = (extra: NodeJS.ProcessEnv, event?: string, matcher?: string): string => execFileSync(
       'sh',
-      ['-c', `${claudeHookOtherHostSkip(event, matcher, 'echo RAN')}echo RAN`],
+      ['-c', `${claudeHookOtherHostSkip(event, matcher, 'echo RAN', 'linux')}echo RAN`],
       { env: { PATH: process.env.PATH ?? '', HOME: bare, ...extra }, encoding: 'utf8' },
     );
     expect(runPrefix({ CURSOR_VERSION: '1.2.3' }, 'Stop')).toBe('RAN\n');
@@ -239,7 +239,7 @@ describe('hookDispatchCli', () => {
       ['entry not a command', file({ ...builtin, type: 'prompt' }), file({ ...team, type: 'prompt' }), false],
     ];
     const env = { COPILOT_PROJECT_DIR: project, COPILOT_HOME: copilotHome, HOME: root };
-    const guard = (): string => execFileSync('sh', ['-c', `${claudeHookOtherHostSkip('Stop', undefined, 'echo RAN')}echo RAN`],
+    const guard = (): string => execFileSync('sh', ['-c', `${claudeHookOtherHostSkip('Stop', undefined, 'echo RAN', 'linux')}echo RAN`],
       { env: { PATH: process.env.PATH ?? '', ...env }, encoding: 'utf8' });
     try {
       for (const [name, builtinFile, teamFile, runs] of rows) {
@@ -359,7 +359,7 @@ describe('hookDispatchCli', () => {
     await recordDelivery(config, { rev, targets: ['claude'] });
     const stdinFile = path.join(root, 'payload.json');
     fs.writeFileSync(stdinFile, JSON.stringify({ hook_event_name: 'SessionStart', session_id: 'c1', cwd: project, source: 'startup', teamai_capture: 'from-host' }));
-    const resolveConfig = vi.spyOn(await import('../dashboard-collector.js'), 'resolveHookConfig').mockResolvedValue(config);
+    const resolveConfig = vi.spyOn(await import('../dashboard-collector.js'), 'resolveHookScopeFor').mockResolvedValue({ config, dir: project });
     const capturesDir = path.join(root, 'data', 'sessions', 'captures', 'claude-code', 'c1');
     let detachedPayload = '';
     let capturedFirst: string[] = [];

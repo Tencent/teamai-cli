@@ -1,4 +1,5 @@
 import { hookToolPathsForConfig } from './types.js';
+import os from 'node:os';
 import path from 'node:path';
 import { readFile, realpath, stat } from 'node:fs/promises';
 import { isDeepStrictEqual } from 'node:util';
@@ -29,8 +30,9 @@ import {
   resolveDesiredDocs, resolveDocsDestination,
 } from './resources/docs.js';
 import { ResourceHandler } from './resources/base.js';
-import { CODEX_TOOL, mayDeleteSkillCopy, skillOrigin } from './resources/skills.js';
-import { installOf, locate, ownOf, SHARED_AGENT_SKILLS_PATH, writable, writesOf } from './locate.js';
+import { CODEX_TOOL, codexSkillsSplit, mayDeleteSkillCopy, skillOrigin } from './resources/skills.js';
+import { installOf, locate, ownOf, SHARED_AGENT_SKILLS_PATH, writable, writesOf, type Install } from './locate.js';
+import { isWithin } from './utils/agent-path.js';
 import { describeToolHomeChange, recordToolHomes } from './tool-home-record.js';
 import { describeInvalidToolHomes, realHost } from './tool-home.js';
 import { placesOf, placesRecordOf, placesUnmoved, recordPlaces, type PlacesRecord, type SessionToolHomes } from './resources/places.js';
@@ -41,7 +43,7 @@ import {
   type DeliveredHashes, type DeliveryLedger,
 } from './resources/delivered-copies.js';
 import { BUILTIN_SKILL_NAMES } from './builtin-skills.js';
-import type { AgentModelRecords, CodexBuildSkew, GlobalOptions, ResourceType, ResourceItem, TeamaiConfig, LocalConfig, State } from './types.js';
+import type { AgentModelRecords, CodexBuildSkew, CopyOrigin, GlobalOptions, ResourceType, ResourceItem, TeamaiConfig, LocalConfig, State } from './types.js';
 import {
   getUserLearningsDir,
   TEAMAI_CULTURE_START,
@@ -409,6 +411,21 @@ export async function cleanupInactiveNamespaceSkills(
 }
 
 /**
+ * Whether only `install` writes `tool`'s skills directory. Hermes and OpenClaw
+ * keep one directory that the user scope and every project on the machine
+ * write, so this install's record there does not show that no other install
+ * still delivers a skill (#1501). Each install writes alone when a project
+ * would write inside its own root. Asked of a stand-in project, so a project
+ * rooted where the tool keeps that directory (OpenClaw's workspace) is not
+ * taken for one that writes alone.
+ */
+async function writesSkillsAlone(tool: string, install: Install): Promise<boolean> {
+  const asProject: Install = { ...install, scope: 'project', projectRoot: path.join(os.tmpdir(), 'teamai-project-probe'), repo: 'team', workspaceChildren: false };
+  const dir = ownOf(await locate(tool, 'skills', asProject))?.path;
+  return dir !== undefined && isWithin(dir, asProject.projectRoot);
+}
+
+/**
  * Remove teamai's copies of the skills `swept` names from Codex's shared
  * `.agents/skills` (#915), where pull delivers a skill whose copy there is
  * teamai's: the sweeps of the configured skills directory never look there.
@@ -418,32 +435,53 @@ export async function cleanupInactiveNamespaceSkills(
  */
 async function sweepSharedSkillCopies(
   localConfig: LocalConfig,
-  swept: (name: string) => boolean,
+  swept: (name: string, dir: string) => boolean,
   ledger: DeliveryLedger | undefined,
   scopeLabel: string,
 ): Promise<string[]> {
   const sharedDir = path.join(resolveBaseDir(localConfig), SHARED_AGENT_SKILLS_PATH);
   const removed: string[] = [];
   for (const name of await listDirs(sharedDir)) {
-    if (BUILTIN_SKILL_NAMES.has(name) || !swept(name)) continue;
     const dir = path.join(sharedDir, name);
-    const removal = await judgeRemoval(ledger?.previous, dir, skillOrigin(localConfig.repo.localPath, name), ledger?.otherRecords);
-    if (removal === 'edited') {
-      warnOnce(`[${scopeLabel}] Kept ${dir}: teamai no longer delivers ${name} here, but you changed this copy. Delete it when you no longer need it.`);
-      continue;
-    }
-    if (removal === 'notTeamais') {
-      warnOnce(`[${scopeLabel}] ${describeMembersDirLeft(dir, `skills/${name}`, 'pull')}`);
-      continue;
-    }
-    if (await keepsTrackedCopy(dir)) continue;
-    if (!await mayDeleteSkillCopy(localConfig, dir)) continue;
-    await remove(dir);
-    if (ledger) forgetDelivered(ledger.hashes, dir);
+    if (BUILTIN_SKILL_NAMES.has(name) || !swept(name, dir)) continue;
+    if (!await removeUndeliveredSkillCopy(localConfig, { dir, name, origin: skillOrigin(localConfig.repo.localPath, name) }, ledger, scopeLabel)) continue;
     removed.push(name);
     log.debug(`[${scopeLabel}] Removed skill ${name} from ${SHARED_AGENT_SKILLS_PATH}: no longer delivered here`);
   }
   return removed;
+}
+
+/**
+ * Remove the copy `dir` of skill `name`, which pull no longer delivers there,
+ * when `judgeRemoval` proves it teamai's and unchanged and the repository it
+ * sits in does not track it. An edited copy, or one that is not teamai's, is
+ * kept and named once. Returns whether it removed the copy.
+ */
+async function removeUndeliveredSkillCopy(
+  localConfig: LocalConfig,
+  copy: { dir: string; name: string; origin?: CopyOrigin },
+  ledger: DeliveryLedger | undefined,
+  scopeLabel: string,
+): Promise<boolean> {
+  const { dir, name, origin } = copy;
+  if (await hasVcsMetadataRecursive(dir)) {
+    warnOnce(`[${scopeLabel}] Kept ${dir}: teamai no longer delivers ${name} here, but it has local VCS metadata (.git) that may hold unpushed history. Back it up, then delete it manually.`);
+    return false;
+  }
+  const removal = await judgeRemoval(ledger?.previous, dir, origin, ledger?.otherRecords);
+  if (removal === 'edited') {
+    warnOnce(`[${scopeLabel}] Kept ${dir}: teamai no longer delivers ${name} here, but you changed this copy. Delete it when you no longer need it.`);
+    return false;
+  }
+  if (removal === 'notTeamais') {
+    warnOnce(`[${scopeLabel}] ${describeMembersDirLeft(dir, `skills/${name}`, 'pull')}`);
+    return false;
+  }
+  if (await keepsTrackedCopy(dir)) return false;
+  if (!await mayDeleteSkillCopy(localConfig, dir)) return false;
+  await remove(dir);
+  if (ledger) forgetDelivered(ledger.hashes, dir);
+  return true;
 }
 
 /**
@@ -1817,8 +1855,14 @@ async function pullForScope(
         currentPlaces = await placesOf(installOf(freshConfig, localConfig));
         const recordedPlaces = placesRecordOf(checkout);
         if (targetSetMatches && recordedPlaces === undefined) log.debug(`[${scopeLabel}] No record of the skills directories yet, syncing`);
+        const selectedSkills = async (): Promise<ReadonlySet<string>> => {
+          const desired = await resolveDesiredSkills(freshConfig, localConfig, roleContext);
+          return new Set(desired.kind === 'conflict' ? [] : desired.items.map((item) => item.name));
+        };
+        const codexSplit = targetSetMatches && await codexSkillsSplit(freshConfig, localConfig, await deliveredHashes(localConfig, state), selectedSkills);
+        if (codexSplit) log.debug(`[${scopeLabel}] Codex has team skills in two directories, syncing`);
 
-        if (targetSetMatches && recordedPlaces !== undefined
+        if (targetSetMatches && recordedPlaces !== undefined && !codexSplit
           && await placesUnmoved({ places: recordedPlaces, sessionToolHomes: checkout?.sessionToolHomes }, currentPlaces)) {
           if (await checkoutRemoved()) return;
           log.success(`[${scopeLabel}] Already synced at ${currentRev}, skipping`);
@@ -2279,11 +2323,18 @@ async function pullForScope(
   // Step 3b: Clean up local skills not in the desired union set (role + tags)
   if (!options.dryRun && desiredSkillNames && knownRepoSkillNames) {
     const install = installOf(freshConfig, localConfig);
+    const removedByTeam = new Set([...await getHandler('skills').readTombstones(localConfig), ...revisionRemovals?.skills ?? []]);
     for (const tool of Object.keys(install.toolPaths)) {
       const skillsDir = writable(await locate(tool, 'skills', install))?.path ?? null;
       if (skillsDir === null) continue;
+      // On record here, in a directory no other install writes, and not a skill
+      // the team removed, which Step 3 has judged and named already.
+      const alone = await writesSkillsAlone(tool, install);
+      const isOtherTeamsSkill = (name: string, dir: string): boolean =>
+        alone && !removedByTeam.has(name) && recordedUnder(ledger.previous ?? {}, dir).length > 0;
       if (tool === CODEX_TOOL) {
-        const swept = (name: string): boolean => !desiredSkillNames.has(name) && knownRepoSkillNames.has(name);
+        const swept = (name: string, dir: string): boolean =>
+          !desiredSkillNames.has(name) && (knownRepoSkillNames.has(name) || isOtherTeamsSkill(name, dir));
         for (const name of await sweepSharedSkillCopies(localConfig, swept, ledger, scopeLabel)) {
           if (excludedSkills.has(name)) continue;
           undeliveredSkills.add(name);
@@ -2296,8 +2347,17 @@ async function pullForScope(
       for (const dir of localDirs) {
         if (BUILTIN_SKILL_NAMES.has(dir)) continue;
         if (desiredSkillNames.has(dir)) continue;
-        if (!knownRepoSkillNames.has(dir)) continue;
         const skillDir = path.join(skillsDir, dir);
+        if (!knownRepoSkillNames.has(dir)) {
+          // A skill an earlier pull delivered from a team repo this checkout no
+          // longer pulls, as after `init <other team> --force` (#1501): only the
+          // record proves it teamai's, so only an unchanged copy goes.
+          if (!isOtherTeamsSkill(dir, skillDir)) continue;
+          if (!await removeUndeliveredSkillCopy(localConfig, { dir: skillDir, name: dir }, ledger, scopeLabel)) continue;
+          undeliveredSkills.add(dir);
+          log.debug(`[${scopeLabel}] Removed skill ${dir} from ${tool}: no longer delivered here`);
+          continue;
+        }
         // Same data-safety gate as cleanupInactiveNamespaceSkills: never delete a
         // deployed skill that differs from its team-repo source (local edits or
         // unpushed files). Keep + warn instead of silently destroying work.

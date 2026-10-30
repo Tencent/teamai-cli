@@ -828,6 +828,11 @@ async function locateAgents(tool: string, install: Install, host: Host): Promise
   const own: DirPlace | null = dir === null ? null : { kind: 'dir', path: dir };
   // An earlier release copied team agents verbatim into any configured agents directory.
   if (channel === 'none' || channel === 'unknown') return { channel, retired: own === null ? [] : [{ place: own, was: 'configured' }], gates };
+  // Two tools' renders of one agent differ, so a shared directory is the tool's known to read it (Muse's project
+  // copy would land in agy's `.agents/agents`). Nothing is retired there: the files in it are the other tool's.
+  if (own !== null && channel.reads === 'unknown' && await knownAgentsReader(tool, own.path, install, host)) {
+    return { channel: 'unknown', retired: [], gates };
+  }
   return {
     channel: 'files',
     own,
@@ -836,6 +841,18 @@ async function locateAgents(tool: string, install: Install, host: Host): Promise
     retired: [],
     gates,
   };
+}
+
+/** Whether another selected, installed tool is known to read its agents from `dir`. */
+async function knownAgentsReader(tool: string, dir: string, install: Install, host: Host): Promise<boolean> {
+  for (const other of Object.keys(install.toolPaths)) {
+    const channel = channelsOf(other).agents[install.scope];
+    if (other === tool || typeof channel !== 'object' || channel.reads === 'unknown') continue;
+    const roots = rootsOf(other, install, host);
+    if (roots.configured('agents') !== dir) continue;
+    if ((await gatesOf(other, install, host, roots)).every((gate) => gate.met)) return true;
+  }
+  return false;
 }
 
 function mcpKeyOf(channel: Pick<McpUser, 'format' | 'key'>): readonly [string, ...string[]] {
@@ -1054,6 +1071,9 @@ function adapterDirIn(adapter: Exclude<HookAdapterId, 'openclaw-hook'>, homeOf: 
       return p.join(homeOf('hermes'), 'hooks');
     case 'kiro-hooks':
       return p.join(homeOf('kiro'), 'hooks');
+    // agy reads `hooks.json` from its config root itself.
+    case 'agy-hooks':
+      return homeOf('agy');
     // The bridge config lives with teamai; dsh loads it through the row teamai keeps in `$DSH_HOME/cordis.patch.yml`.
     case 'dsh-hooks':
       return p.join(host.home, '.teamai', 'dsh');

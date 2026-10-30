@@ -15,16 +15,29 @@ Open `http://localhost:3721`. The sidebar is Overview, Team Execution, Workflow 
 
 The Overview's **Session sharing** panel says, for the selected workspace, whether its sessions are published to `teamai-reports` and scored in each [run mode](workflow.md#attended-and-unattended-runs), and why:
 
-- Each mode's publish and scoring policy, and the setting it came from, such as `the default` or `teamai.yaml sessions.publish.unattended`. `ask` acts as `off` for now.
+- Each mode's publish and scoring policy, and the setting it came from, such as `the default` or `teamai.yaml sessions.publish.unattended`. Attended `ask` reads "proposed when the friction reminder offers teamai-share-learnings" ([teamai-share-learnings](workflow.md#teamai-share-learnings-and-teamai-share-session)); unattended `ask` reads "acts as off: nobody is there to confirm".
 - The sessions captured on this machine in each mode: active, waiting for a drain, kept on this machine, waiting to be archived, and archived. A session whose file is gone is not counted. Also the step sessions of ended runs that wait to be archived.
 - What waits, and the drain to run for it. A drain finishes and publishes only the sessions of its own run mode, so on an attended machine the panel names `TEAMAI_MODE=unattended teamai score --drain` for unattended sessions, or `$env:TEAMAI_MODE='unattended'; teamai score --drain` on Windows.
-- The archive, `daily_limit`, the scorers that judge sessions, the enabled tools teamai reads no sessions from, and the settings problems `teamai doctor` reports.
+- The archive, `daily_limit` and the setting it came from, the scorers that judge sessions, the enabled tools teamai reads no sessions from, and the settings problems `teamai doctor` reports.
 
 **This machine** is the run mode of the shell that started `teamai dashboard`. The panel shows counts and setting names, never a session's text, and changes no setting. The settings are in [Sessions](sharing.md#sessions) and [Finished sessions](scorers.md#finished-sessions).
 
+## Member settings
+
+The Overview's **Member settings** panel lists, for the selected workspace, each [member setting](reference.md#member-settings) some level sets, as `teamai doctor` does: the value in effect, the level and file that set it, and what the levels below say.
+
+| Setting | In effect | Set by | Also set |
+|---|---|---|---|
+| `ai.tool` | `claude` | This workspace, `~/.teamai/projects/<slug>/config.yaml` | This machine `codex` |
+| `workflows.tools.default` | `codex` | This machine, `~/.teamai/config.yaml` | — |
+| `recallEnabled` | `false` | This workspace, `~/.teamai/projects/<slug>/config.yaml` | This machine `true`, Team `false` |
+| `updatePolicy` | `skip` | User config, `~/.teamai/config.yaml` | This workspace `auto`, not used |
+
+`not used` marks this workspace's own `updatePolicy` or `autoCompactTokens` when the user scope decides them. `scoring` is not listed, because the machine's only makes judging stricter: Session sharing shows what set each mode and the daily limit. **Not read** lists the keys of a `~/.teamai/config.yaml` with no user-scope install that are not member settings, such as `excludedSkills`. Pick another workspace in the sidebar to compare. The panel changes no setting: edit the file it names.
+
 ## Workflow Runs
 
-The Workflow Runs page has three lists for the selected workspace. **Local runs** are the run files on this machine, read live: status, the leased steps, the HITL requests waiting for an answer, and whether a settled run's record reached the team. **Team-reported history** is the run records on the `teamai-reports` branch, from every member. Each row shows the workflow, driver, status, named end, duration, tokens, team revision (absent when no pushed commit held the definitions; the source hash shows either way), and the delivered pull requests.
+The Workflow Runs page has three lists for the selected workspace. **Local runs** are the run files on this machine, read live: status, the leased steps, the HITL requests waiting for an answer, and whether a settled run's record reached the team. **Team-reported history** is the run records on the `teamai-reports` branch, from every member. Each row shows the workflow by its alias when it has one, with its name under it, then the driver, status, named end, duration, tokens, the definition it ran, and its outcomes: the delivered pull requests and the learnings it shared, such as the two a `teamai-share-learnings` run contributed. The definition is `Team <revision>` for the team's workflow (`No team revision` when no pushed commit held it), or `teamai default <version>` for a [default workflow](workflow.md#default-workflows) such as `teamai-share-session`, with the source hash under it either way.
 
 **Handed-off runs** are the running runs someone [published](workflow.md#continue-a-run-on-another-machine), with the command that takes each one:
 
@@ -129,10 +142,11 @@ The local copy goes to `~/.teamai/session-logs/<year-month>.md`. `--push` sends 
 
 `teamai session` moves a full transcript between tools, or archives it in the team repo. `session save` remains the scrubbed summary.
 
-Platforms: `claude-code`, `codex`, `codebuddy`, `codebuddy-ide`, `cursor`, `workbuddy`, and `opencode` (through the `opencode` CLI, version 2 or later; an OpenCode target workspace must exist). `teamai session platforms` lists what is installed here. CodeBuddy CLI and WorkBuddy project directory names longer than 255 UTF-8 bytes use the native 180-byte prefix and hash, so listing, reading and migration work for long workspace paths as well. On Windows, `cursor` and `workbuddy` cannot be a migrate or resume target: they list a session only once the `sqlite3` CLI registers it, so TeamAI refuses instead of writing a copy they never show.
+Platforms: `claude-code`, `codex`, `codebuddy`, `codebuddy-ide`, `cursor`, `workbuddy`, `opencode` (through the `opencode` CLI, version 2 or later; an OpenCode target workspace must exist), and `agy` (the Antigravity CLI and Antigravity 2.0, whose conversations it reads from `~/.gemini/antigravity-cli` and `~/.gemini/antigravity`; Antigravity IDE keeps no workspace for a conversation, so its sessions are not listed; a source only, since agy resumes a conversation only from a store teamai cannot write; reading it needs the `sqlite3` CLI). `teamai session platforms` lists what is installed here. CodeBuddy CLI and WorkBuddy project directory names longer than 255 UTF-8 bytes use the native 180-byte prefix and hash, so listing, reading and migration work for long workspace paths as well. On Windows, `cursor` and `workbuddy` cannot be a migrate or resume target: they list a session only once the `sqlite3` CLI registers it, so TeamAI refuses instead of writing a copy they never show.
 
 ```bash
 teamai session migrate <sessionId> -s codebuddy-ide -t claude-code
+teamai session migrate <conversationId> -s agy -t claude-code   # continue an agy or Antigravity 2.0 conversation in Claude Code
 teamai session migrate --all -s codebuddy -t claude-code   # --limit caps it
 teamai session rollback <id> --platform claude-code
 teamai session push --source codebuddy                     # --all: every workspace

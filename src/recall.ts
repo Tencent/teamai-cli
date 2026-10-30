@@ -24,6 +24,32 @@ import type { EnvAgentSession } from './utils/session-id.js';
  *  normalization that applies to learnings scores. */
 const CODEBASE_RELEVANCE_THRESHOLD = 4.0;
 
+/**
+ * Ranking penalty applied to codebase-graph hits when they compete with
+ * learnings/docs hits on the shared 0-10 scale.
+ *
+ * Codebase scores are log-compressed and saturate that scale easily (any graph
+ * score >= 31 maps to the cap), so a code hit usually outranks a docs hit
+ * that matched the query terms explicitly — the hand-written deep page that
+ * answers the question loses to a generated module overview.
+ *
+ * Applied when ordering the merged list only (see `rankingScoreOf`); the
+ * stored score keeps its raw value so the relevance check, quality tracking
+ * and printed output are unaffected.
+ *
+ * A hit that clears its own relevance bar is ordered above one that does not,
+ * whatever their penalized scores: `--check` reads the first result only, so an
+ * irrelevant hit at the top of the list would make it report "nothing
+ * relevant" while a relevant hit sits below it.
+ *
+ * Measured on a 363-entry team knowledge base (58-question blind set, plus a
+ * 305-question tuning set):
+ *   penalty 1.00 → blind fact@3 45/58, tuning fact@3 300/305
+ *   penalty 0.80 → blind fact@3 49/58, tuning fact@3 299/305
+ *   penalty 0.75 → blind fact@3 51/58, tuning fact@3 282/305 (too aggressive)
+ */
+const CODE_HIT_RANKING_PENALTY = 0.8;
+
 /** Relevance threshold for learnings/docs hits, expressed as a fraction of the
  *  theoretical single-token-match baseline rather than an absolute score.
  *  Learnings scores are unbounded TF-IDF sums whose magnitude scales with
@@ -40,13 +66,17 @@ const CODEBASE_RELEVANCE_THRESHOLD = 4.0;
  *  cutoff, while unrelated queries scored 0 — they are excluded by the
  *  title/tag gate in `search` rather than by this threshold.
  *
- *  IMPORTANT: this ratio is only "stricter" for N ≳ 20 (where baseline×1.35 >
- *  4.0). For small corpora (N=1–5) the ratio gives a cutoff of 1.35–3.57, which
- *  is significantly looser than 4.0. That is why LEARNINGS_ABSOLUTE_FLOOR exists:
- *  isRelevantScore uses max(baseline*ratio, floor) so cold-start corpora are
- *  held to the same strict bar as historical code, and the relative threshold
- *  only takes effect once N is large enough (~20+) to push it above the floor. */
-const LEARNINGS_RELEVANCE_RATIO = 1.35;
+ *  IMPORTANT: this ratio is only "stricter" for N ≳ 20 (where baseline×ratio >
+ *  floor). For small corpora (N=1–5) the ratio gives a cutoff below the floor,
+ *  which is why LEARNINGS_ABSOLUTE_FLOOR exists: isRelevantScore uses
+ *  max(baseline*ratio, floor) so cold-start corpora are held to the same strict
+ *  bar as historical code, and the relative threshold only takes effect once N
+ *  is large enough (~20+) to push it above the floor.
+ *
+ *  The ratio is exported so tests can assert against the shipped value instead
+ *  of hardcoding it — changing a constant must not require rewriting the
+ *  expectations that encode the invariant below. */
+export const LEARNINGS_RELEVANCE_RATIO = 1.35;
 
 /** Absolute floor for learnings relevance, applied when the corpus is too small
  *  for the relative threshold to be meaningful.
@@ -57,8 +87,10 @@ const LEARNINGS_RELEVANCE_RATIO = 1.35;
  *  keeps the stricter pre-existing behavior until the corpus is large enough
  *  (N >= ~20) for the relative threshold to exceed the floor on its own.
  *
- *  Like the ratio above, this compares against query-length-normalized scores. */
-const LEARNINGS_ABSOLUTE_FLOOR = 4.0;
+ *  Like the ratio above, this compares against query-length-normalized scores.
+ *
+ *  Exported for the same reason as the ratio above. */
+export const LEARNINGS_ABSOLUTE_FLOOR = 4.0;
 
 /**
  * Decide whether a top-1 recall result clears the relevance bar.
@@ -142,6 +174,46 @@ export function normalizeLearningsScoreForRanking(score: number, idfBaseline: nu
   return Math.min(10, Math.max(0, 4 + 2 * Math.log2(score / threshold)));
 }
 
+/**
+ * True when `identifier` names a whole path segment, slug or file stem of the
+ * page, or a whole word of its title — not merely a substring of one. A
+ * wiki codebase page is `evidence/code/gitlab__znkf__<slug>/<path>`, so the
+ * module name is one of the `__`-separated parts of that segment.
+ */
+function namesIdentifier(page: string, title: string, identifier: string): boolean {
+  if (!identifier) return false;
+  for (const segment of page.toLowerCase().split('/')) {
+    const stem = segment.replace(/\.[a-z0-9]+$/, '');
+    if (stem === identifier || stem.split('__').includes(identifier)) return true;
+  }
+  // Hyphens and underscores belong to the identifier, matching the character
+  // class identifiers are extracted with: `smart-sale-service` must not match
+  // a page titled `smart-sale-service-api overview`.
+  const escaped = identifier.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(^|[^a-z0-9_-])${escaped}([^a-z0-9_-]|$)`).test(title.toLowerCase());
+}
+
+/** The subset of a merged result that decides its position in the output. */
+export interface RankableResult {
+  score: number;
+  fromCodebase?: boolean;
+  idfBaseline?: number;
+}
+
+/**
+ * Score used to order the merged codebase + learnings result list.
+ *
+ * Deliberately separate from `result.score`: the stored score is what
+ * `--check`, quality tracking and the printed output report, and those must
+ * keep seeing the raw codebase score (its relevance threshold is 4.0 on that
+ * scale). Only the ordering gets the cross-source penalty.
+ */
+export function rankingScoreOf(result: RankableResult, idfBaseline: number): number {
+  return result.fromCodebase
+    ? result.score * CODE_HIT_RANKING_PENALTY
+    : normalizeLearningsScoreForRanking(result.score, result.idfBaseline ?? idfBaseline);
+}
+
 /** Search result with scope label for merged output. */
 interface ScopedSearchResult extends SearchResult {
   scope?: 'user' | 'project';
@@ -155,6 +227,9 @@ interface ScopedSearchResult extends SearchResult {
   relatedFiles?: string[];
   /** True when this result came from the codebase knowledge graph (bounded score scale). */
   fromCodebase?: boolean;
+  /** A code hit whose page or title carries an identifier the query named
+   *  verbatim; ordered above other code hits (see the merged sort). */
+  namedModule?: boolean;
 }
 
 // ─── Recall data flow ────────────────────────────────────
@@ -708,6 +783,19 @@ export async function recall(
 
   // ── Codebase knowledge graph recall ──────────────────────
   try {
+    // Identifiers the query names verbatim — "smart-sale-service",
+    // "UpdateOrderSalesRetryJob", "eventSignals", "task_type_config". Taken
+    // from the raw query rather than from word segments, which split a
+    // hyphenated slug into "smart"/"sale"/"service": those generic pieces
+    // match every codebase whose slug shares one word, while the full
+    // identifier names one module. Only identifier-shaped tokens count — a
+    // hyphen, underscore, digit or inner capital — so ordinary words
+    // ("service", "payment", "retry") never name a module.
+    const queryIdentifiers = [...query.matchAll(/[A-Za-z][A-Za-z0-9_-]{3,}/g)]
+      .map((match) => match[0])
+      .filter((token) => token.length >= 5
+        && (/[-_\d]/.test(token) || /[a-z][A-Z]/.test(token)))
+      .map((token) => token.toLowerCase());
     // A wiki codebase slug declared under `resources.wiki` but not active for
     // this directory stays out of recall, the same way docs are scoped
     // (#912). Resolved inside this try: an unreadable or malformed manifest
@@ -721,6 +809,9 @@ export async function recall(
     // B11 fix: log-dampening instead of min-max normalization
     // Codebase BM25 scores (0-50+) mapped to learnings scale (0-10) via log curve
     for (const cr of codeResults) {
+      const namedModule = queryIdentifiers.some(
+        (identifier) => namesIdentifier(String(cr.page || ''), String(cr.title || ''), identifier),
+      );
       allResults.push({
         entry: {
           filename: cr.page,
@@ -741,31 +832,116 @@ export async function recall(
         sources: cr.sources,
         relatedFiles: cr.relatedFiles,
         fromCodebase: true,
+        namedModule,
       });
     }
   } catch {
     log.warn('recall: code graph retrieval unavailable, run teamai codebase --lint to diagnose');
   }
 
-  // Re-sort merged results by normalized score descending, then date descending.
-  // Keep each result's original score for --check, quality tracking, and output.
-  const rankingScore = (result: ScopedSearchResult): number => result.fromCodebase
-    ? result.score
-    : normalizeLearningsScoreForRanking(result.score, result.idfBaseline ?? idfBaseline);
+  // Re-sort merged results: the relevant ones first, then by normalized score
+  // descending, then by date descending. Keep each result's original score for
+  // --check, quality tracking, and output.
+  const rankingScore = (result: ScopedSearchResult): number => rankingScoreOf(result, idfBaseline);
+  const relevant = (result: ScopedSearchResult): boolean =>
+    isRelevantScore(result.score, result.fromCodebase ?? false, result.idfBaseline ?? idfBaseline);
+  // Among code hits, the page that names the module the query asked about wins:
+  // codebase scores saturate, so a weaker-scoring overview of a different
+  // codebase would otherwise tie and win on input order. Expressed as a small,
+  // bounded bonus on the ordering score rather than a comparator branch, so the
+  // comparison stays a total order: a learnings hit more than this much ahead
+  // keeps its place, and a code page can never jump a learnings hit it lost to
+  // by more than the tie-break band. The stored score and `--check` are
+  // unaffected — only the merged ordering sees the bonus.
+  const NAMED_MODULE_RANK_BONUS = 0.5;
+  const orderScore = (result: ScopedSearchResult): number =>
+    rankingScore(result)
+    + (result.fromCodebase && result.namedModule === true ? NAMED_MODULE_RANK_BONUS : 0);
   allResults.sort((a, b) => {
-    const scoreDelta = rankingScore(b) - rankingScore(a);
+    // A relevant hit outranks an irrelevant one whatever their scores. `--check`
+    // reads the first result only, so an irrelevant hit at the top makes it
+    // report "nothing relevant" while a relevant hit sits below it — the
+    // cross-source penalty must not buy that position (#1524).
+    const relevanceDelta = Number(relevant(b)) - Number(relevant(a));
+    if (relevanceDelta !== 0) return relevanceDelta;
+    const scoreDelta = orderScore(b) - orderScore(a);
     if (scoreDelta !== 0) return scoreDelta;
     return (b.entry.date || '').localeCompare(a.entry.date || '');
   });
 
+  // Diversify by codebase. A code hit's score saturates the 0-10 scale easily
+  // (any graph score >= 31 caps out), so three pages of ONE codebase — an
+  // overview, an architecture note, a module page — can fill the top 3 at the
+  // same 8.0 and push a runbook that matched the query terms to #4. Measured on
+  // the 90-question hard set: 26 of the 58 misses had exactly that shape (the
+  // expected docs page at #4/#5 behind three pages of one codebase). Capping a
+  // codebase at two entries and moving the extra below the relevant learnings
+  // hits lifted hard-set fact@3 32→38 while the 305-question tuning set and the
+  // 58-question blind set were unchanged (+0 / +1).
+  //
+  // The extra page only ever moves DOWN: it lands after the last relevant
+  // learnings hit below its own position, and stays where it is when no such
+  // hit exists. Moving it up, or past irrelevant hits, would lift it above a
+  // better page of its own codebase or drop a relevant code hit out of the
+  // five shown while irrelevant learnings take its place.
+  const CODEBASE_ENTRIES_IN_TOP = 2;
+  const codebaseOf = (result: ScopedSearchResult): string | undefined =>
+    result.fromCodebase
+      ? result.entry.filename.match(/^evidence\/code\/([^/]+)\//)?.[1]
+      : undefined;
+  const ranked: ScopedSearchResult[] = [];
+  const extras: Array<{ result: ScopedSearchResult; predecessor: ScopedSearchResult | undefined }> = [];
+  const codebaseCounts = new Map<string, number>();
+  for (const result of allResults) {
+    const codebase = codebaseOf(result);
+    if (codebase) {
+      const seen = codebaseCounts.get(codebase) ?? 0;
+      if (seen >= CODEBASE_ENTRIES_IN_TOP) {
+        extras.push({ result, predecessor: ranked[ranked.length - 1] });
+        continue;
+      }
+      codebaseCounts.set(codebase, seen + 1);
+    }
+    ranked.push(result);
+  }
+  for (const { result, predecessor } of extras) {
+    const predecessorIndex = predecessor ? ranked.indexOf(predecessor) : -1;
+    let insertAt = predecessorIndex + 1;
+    for (let index = predecessorIndex + 1; index < ranked.length; index += 1) {
+      const candidate = ranked[index];
+      if (!candidate.fromCodebase && relevant(candidate)) insertAt = index + 1;
+    }
+    ranked.splice(insertAt, 0, result);
+  }
+
+  // Source diversity at the head of the list: three codebase pages must not
+  // shut out a learnings page that matched the query. When the first three are
+  // all code hits and a relevant learnings hit sits below them, the third code
+  // hit moves to just below that hit (downward only). A named-module page is
+  // exempt — the query asked for that module by name, so it is the answer, not
+  // filler. Measured together with the codebase cap and the named-module order:
+  // hard-set fact@3 32→50 (18 won, none lost), blind set 50→52, tuning set
+  // 286→289 (no question lost).
+  if (ranked.length > 3
+    && ranked.slice(0, 3).every((result) => result.fromCodebase)
+    && ranked[2].namedModule !== true) {
+    const learningsIndex = ranked.findIndex(
+      (candidate, index) => index >= 3 && !candidate.fromCodebase && relevant(candidate),
+    );
+    if (learningsIndex >= 3) {
+      const [demotedThird] = ranked.splice(2, 1);
+      ranked.splice(learningsIndex, 0, demotedThird);
+    }
+  }
+
   if (options.check) {
-    const top = allResults.length > 0 ? allResults[0] : undefined;
+    const top = ranked.length > 0 ? ranked[0] : undefined;
     emitCheckVerdict(top?.score ?? 0, top?.fromCodebase ?? false, top?.idfBaseline ?? idfBaseline, top);
     return;
   }
 
   // Limit to top 5
-  const topResults = allResults.slice(0, 5);
+  const topResults = ranked.slice(0, 5);
   // Hash only codebase sources that will be shown. This stays after the
   // --check early return so the relevance precheck remains filesystem-cheap.
   await annotateCodebaseSourceFreshness(topResults, wikiRoot).catch(() => {

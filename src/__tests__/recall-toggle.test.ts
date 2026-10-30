@@ -90,6 +90,22 @@ describe('recall toggle native agent cleanup', () => {
     expect(await fse.pathExists(legacyMarkdownAgent)).toBe(false);
   });
 
+  it('enable writes the teamai-share-learnings skill, and disable removes it, without a word about the legacy skill of that name', async () => {
+    const { localConfig, teamConfig } = await mockAutoDetectInit();
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig: { ...teamConfig, toolPaths: { claude: { skills: '.claude/skills' } } } });
+    await fse.ensureDir(path.join(homeDir, '.claude'));
+    const skill = path.join(homeDir, '.claude', 'skills', 'teamai-share-learnings', 'SKILL.md');
+
+    await recallEnable({});
+    expect(await fse.readFile(skill, 'utf-8')).toContain('name: teamai-share-learnings\n');
+
+    await recallDisable({});
+    expect(await fse.pathExists(skill)).toBe(false);
+    expect(await fse.pathExists(path.join(homeDir, '.claude', 'skills', 'teamai-share-session', 'SKILL.md'))).toBe(true);
+    const { log } = await import('../utils/logger.js');
+    expect(vi.mocked(log.warn).mock.calls.flat().join('\n')).not.toContain('teamai-share-learnings');
+  });
+
   it('disable removes the legacy share skill an earlier release deployed, and nothing beside it', async () => {
     const { localConfig, teamConfig } = await mockAutoDetectInit();
     mockAutoDetectInit.mockResolvedValue({

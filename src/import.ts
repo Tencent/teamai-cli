@@ -5,7 +5,7 @@ import { autoDetectInit } from './config.js';
 import { scanCandidates, classifyWithAI, interactiveReview, pushAccepted } from './import-local.js';
 import { importFromIWiki } from './import-iwiki.js';
 import { importFromMR } from './import-mr.js';
-import { importFromRepo } from './import-repo.js';
+import { importFromRepo, repoSlugForUrl } from './import-repo.js';
 import { importFromRepoList } from './import-repo-list.js';
 import { importFromOrg } from './import-org.js';
 import { importFromIWikiDual } from './iwiki-dual.js';
@@ -166,13 +166,15 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
       return;
     } else if (opts.fromRepo) {
       // 分支：--from-repo <url>，拉取远端仓库并生成单仓 codebase 摘要
+      const fromRepo = opts.fromRepo;
+      let deepEnrichComplete = true;
       const tasks = new Listr([
         {
           title: 'Import remote repository',
           task: async (ctx, task) => {
-            task.output = `Repository: ${opts.fromRepo}`;
-            await importFromRepo({
-              url: opts.fromRepo!,
+            task.output = `Repository: ${fromRepo}`;
+            deepEnrichComplete = await importFromRepo({
+              url: fromRepo,
               depth: opts.depth ? parseInt(opts.depth, 10) : 1,
               forceSsh: opts.ssh ?? false,
               explicitDomain: opts.domain,
@@ -190,6 +192,13 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
         exitOnError: true,
       });
       await tasks.run();
+      if (!deepEnrichComplete) {
+        const { failIncompleteDeepEnrich } = await import('./import-codebase.js');
+        failIncompleteDeepEnrich({
+          slug: repoSlugForUrl(fromRepo),
+          output: opts.output,
+        });
+      }
       return;
     } else if (opts.fromRepoList) {
       // 分支：--from-repo-list <yaml>，批量导入
@@ -357,7 +366,6 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
           skip: (ctx) => !ctx.items.some((item) => item.repoUrl) || !!opts.dryRun || !!opts.output,
           task: async (ctx, task) => {
             const teamwikiRoot = path.join(localConfig.repo.localPath, 'teamwiki');
-            const { repoSlugForUrl } = await import('./import-repo.js');
             // One update per repository, with every MR of this run that named it
             // as its provenance.
             const mrUrlsByRepo = new Map<string, string[]>();
@@ -444,7 +452,9 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
 
       // <output>/teamwiki, else the team repo's teamwiki/; never the source directory.
       const { lockTeamwiki, resolveTeamwiki } = await import('./utils/teamwiki-root.js');
-      const { importLocalCheckout, localCheckoutSlug, ownLegacySlug } = await import('./import-codebase.js');
+      const {
+        failIncompleteDeepEnrich, importLocalCheckout, localCheckoutSlug, ownLegacySlug,
+      } = await import('./import-codebase.js');
 
       if (opts.dryRun) {
         // The slug depends on the evidence already published, so the preview reads
@@ -467,7 +477,7 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
           ? await ownLegacySlug({ sourceDir: dirPath, slug: checkoutSlug, wikiRoot })
           : checkoutSlug;
         log.info(`Scanning local directory: ${dirPath} (project: ${slug})`);
-        const updated = await importLocalCheckout({
+        const imported = await importLocalCheckout({
           sourceDir: dirPath,
           slug,
           // A suffixed slug is a new codebase; the directory-named evidence is another source's.
@@ -487,11 +497,17 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
         }
         if (!team) {
           log.info(`Output written: ${wikiRoot}`);
-        } else if (updated) {
+        } else if (imported.updated) {
           await autoPushTeamRepo(team.localConfig.repo.localPath, `[teamai] Import from local dir: ${slug}`);
           log.success(`Pushed to team knowledge repo (${team.localConfig.repo.remote})`);
         }
         log.success(`Local directory ${slug} import complete`);
+        if (imported.updated && !imported.deepEnrichComplete) {
+          failIncompleteDeepEnrich({
+            slug,
+            output: opts.output,
+          });
+        }
       } finally {
         await releaseImportLock();
       }
@@ -509,10 +525,10 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
         dryRun: opts.dryRun,
         outputDir: opts.output,
       });
-      log.success('Import complete');
       if (pushed > 0 && !opts.dryRun && !opts.output) {
         await autoPushTeamRepo(localConfig.repo.localPath, `[teamai] Import from local: claude-rules`);
       }
+      log.success('Import complete');
     } else {
       // 默认：未指定来源，提示用户
       log.info('Please specify import source: --dir <path>, --from-repo <url>, --from-repo-list <yaml>, --from-org <org>, --from-mr <url>, or --from-iwiki <id>');

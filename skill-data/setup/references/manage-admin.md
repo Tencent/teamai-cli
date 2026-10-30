@@ -88,6 +88,8 @@ workspace also lists a file an older local agent wrote a credential into; `teama
 
 ZCode servers use `mcp.servers` in `~/.zcode/cli/config.json` or the project's `.zcode/config.json`. This follows the 3.16.2 source; 3.15.1 is not certified. Pull moves only unchanged teamai entries out of `~/.agents/mcp.json`. Doctor names other servers there because the desktop app stops reading that fallback once the native config has servers.
 
+Antigravity takes user servers in `~/.gemini/config/mcp_config.json`. It reads a project's servers only from a plugin, so teamai writes them to `.agents/plugins/teamai/mcp_config.json` with a `plugin.json` (`{"name": "teamai"}`) beside it. agy takes stdio and HTTP servers; pull skips an `sse` server for agy with a warning. `agy mcp list` shows only the user file's servers.
+
 WorkBuddy uses the first existing user file in `~/.workbuddy/.mcp.json`, `~/.workbuddy/mcp.json`, and `~/.codebuddy.json`. `CODEBUDDY_CONFIG_DIR` moves the last file. A project uses `.mcp.json`, or `mcp.json` when only that exists. With `sharing.gitExclude` on, its servers use `projects[<project path>].mcpServers` in `.codebuddy.json`. These paths follow the CodeBuddy 2.168.0 engine; WorkBuddy's launcher binding is not certified. Pull removes only unchanged teamai entries from the former `.workbuddy/mcp.json` project file.
 
 When `.workbuddy-ai/` exists in the home or project (WorkBuddy 5.7+), the default skills path moves to `.workbuddy-ai/skills`. Every other surface still waits for `.workbuddy/`, so a member with only `.workbuddy-ai/` gets no rules, team instructions, agents, MCP servers or hooks, and `teamai doctor` fails `workbuddy receives ...` with the ones held.
@@ -329,9 +331,10 @@ has no session-start hook, they run `teamai pull` manually.
 Turning a tricky fix into team knowledge is **automatic** once recall is on for
 the team (`sharing.recall.enabled: true` in `teamai.yaml`, then `teamai push`; it is
 off by default, and `teamai recall enable` turns it on for one machine only): at the end of a session
-worth sharing, TeamAI prompts the member and the dedicated
-`share` workflow (`teamai skill get share`) summarizes the session and runs
-`teamai contribute`. Nobody has to invoke it by hand. (A member whose teamai config
+worth sharing, TeamAI prompts the member and offers the `teamai-share-learnings` workflow:
+its learning step runs the `share` skill (`teamai skill get share`) to summarize the
+session, and its contribute step runs `teamai contribute` for each learning. A team file
+`workflows/teamai-share-learnings.yaml` replaces teamai's default. Nobody has to invoke it by hand. (A member whose teamai config
 cannot be loaded gets no prompt; `teamai skill get share` names the file and the error.)
 
 Teams that work in English set `language: en` in `teamai.yaml` and `teamai push`.

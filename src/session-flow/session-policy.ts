@@ -2,9 +2,12 @@
  * What teamai does with a member's captured sessions in each run mode (#1385): `off` does nothing, `ask` offers it to
  * the person (#1388), `auto` does it unasked. Scoring reads its policies from `scorers/scoring.yaml` `sessions`,
  * publishing from `teamai.yaml` `sessions.publish`; a member's `config.yaml` overrides either, one mode at a time.
+ * Below a workspace or self scope, ~/.teamai/config.yaml `sessions` stands in for the member's own when it sets none,
+ * and its `scoring` can only make judging stricter (`scopeScoring`).
  */
 import { z } from 'zod';
 import { RunModeSchema, type RunMode } from '../launch-context.js';
+import { ownMemberSettings } from '../config.js';
 import { usesBranchWorktree, type LocalConfig, type TeamaiConfig } from '../types.js';
 
 /** Most restrictive first: where two files of one level disagree, the earlier policy wins. */
@@ -15,6 +18,22 @@ const MappingSchema = z.record(z.string(), z.unknown());
 
 /** What set a policy: its default, the setting `key` (such as `teamai.yaml sessions.publish.unattended`), or an HTTP team repo, which keeps no session archive. */
 export type PolicySource = { kind: 'default' } | { kind: 'setting'; key: string } | { kind: 'http-team' };
+
+/** What set a policy, as a reason names it. */
+function setBy(source: PolicySource): string {
+  switch (source.kind) {
+    case 'default':
+      return 'the default';
+    case 'setting':
+      return source.key;
+    case 'http-team':
+      return 'the team repo, an HTTP repo that keeps no session archive';
+    default: {
+      const unhandled: never = source;
+      return unhandled;
+    }
+  }
+}
 
 /** The policy of each run mode, with what set it. */
 export type SessionPolicies = Record<RunMode, { policy: SessionPolicy; source: PolicySource }>;
@@ -74,11 +93,14 @@ function readPublish(file: string, sessions: unknown): { set: Partial<SessionPol
 const publishDefaults = { attended: 'ask', unattended: 'auto' } as const satisfies Record<RunMode, SessionPolicy>;
 
 /**
- * Each run mode's `sessions.publish` policy for this member: its `config.yaml`, else `teamai.yaml`, else the default.
- * An HTTP team keeps no session archive, so there every mode is `off`, with a problem while one would publish.
+ * Each run mode's `sessions.publish` policy for this member: its `config.yaml`, else ~/.teamai/config.yaml below a
+ * workspace or self scope, else `teamai.yaml`, else the default. An HTTP team keeps no session archive, so there every
+ * mode is `off`, with a problem while one would publish.
  */
 function publish(config: LocalConfig, team: TeamaiConfig | null): { policies: SessionPolicies; problems: string[] } {
-  const member = readPublish('config.yaml', config.sessions);
+  // A workspace that sets no `sessions` holds the machine's, which its own file does not.
+  const fromMachine = config.sessions !== undefined && ownMemberSettings(config).sessions === undefined;
+  const member = readPublish(fromMachine ? '~/.teamai/config.yaml' : 'config.yaml', config.sessions);
   const ofTeam = readPublish('teamai.yaml', team?.sessions);
   const policies = resolve([[member.set], [ofTeam.set]], publishDefaults);
   const problems = [...member.problems, ...ofTeam.problems];
@@ -91,4 +113,4 @@ function publish(config: LocalConfig, team: TeamaiConfig | null): { policies: Se
   };
 }
 
-export const SessionPolicy = { read, resolve, readPublish, publish, publishDefaults } as const;
+export const SessionPolicy = { read, resolve, readPublish, publish, publishDefaults, setBy } as const;

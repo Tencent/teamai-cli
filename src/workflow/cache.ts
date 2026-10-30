@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { loadLocalConfigForScope } from '../config.js';
 import { syncScorerDefinitions, type SyncScorerOptions, type SyncScorerResult } from '../scorers/cache.js';
 import { log } from '../utils/logger.js';
 import { pathExists, readFileSafe, remove, writeJsonAtomic } from '../utils/fs.js';
@@ -19,7 +20,8 @@ import {
 import { LineCounter, parseDocument } from 'yaml';
 import { formatDiagnostic, parseWorkflow, promptFileDiagnostics, stepField } from './parse.js';
 import { locate, valueNode, type WorkflowFiles } from './parse-context.js';
-import type { CachedWorkflow, WorkflowDefinition, WorkflowDiagnostic, WorkflowStep } from './types.js';
+import type { CachedWorkflow, OutputSchema, ResolvedWorkflow, WorkflowDefinition, WorkflowDiagnostic, WorkflowStep } from './types.js';
+import { DefaultWorkflows } from '../default-workflows.js';
 import { assertSafePath, assertWithinRoot } from '../utils/path-safety.js';
 import { createGit } from '../utils/git.js';
 import {
@@ -114,17 +116,54 @@ async function readCache(config: LocalConfig, name: string): Promise<CachedWorkf
   }
 }
 
-/** The last validated definition for `name`, or null when this file has never been valid. */
-export async function loadCachedWorkflow(config: LocalConfig, name: string): Promise<CachedWorkflow | null> {
+/**
+ * The last validated team definition for `name`, by name then by alias, else teamai's default of that name; null when
+ * neither runs.
+ */
+export async function loadCachedWorkflow(config: LocalConfig, name: string): Promise<ResolvedWorkflow | null> {
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) return null;
   const direct = await readCache(config, name);
-  if (direct) return direct;
-  const aliases = (await listCachedWorkflows(config)).filter((entry) => entry.definition.alias === name);
-  return aliases.length === 1 ? aliases[0] : null;
+  if (direct) return { ...direct, source: 'team' };
+  const team = await listTeamWorkflows(config);
+  const aliases = team.filter((entry) => entry.definition.alias === name);
+  if (aliases.length === 1) return { ...aliases[0], source: 'team' };
+  const shipped = DefaultWorkflows.named(name);
+  return shipped && aliases.length === 0 ? { ...shipped, source: 'default' } : null;
 }
 
-/** All runnable cached files in stable name order, without resolving aliases recursively. */
-export async function listCachedWorkflows(config: LocalConfig): Promise<CachedWorkflow[]> {
+/** `definition`'s alias when a start by that alias runs it, else undefined: another workflow has the alias as its name or alias. */
+export async function startingAlias(config: LocalConfig, { name, alias }: { name: string; alias?: string }): Promise<string | undefined> {
+  return alias !== undefined && (await loadCachedWorkflow(config, alias))?.definition.name === name ? alias : undefined;
+}
+
+/**
+ * Where a start of workflow `name` from `config`'s directory runs, and what it runs: a team version in `config`'s scope,
+ * else, from a project, one in the user scope, whose generated skills show in every directory, else teamai's default in
+ * `config`'s scope. `workflow` is null when none of them runs.
+ */
+export async function resolveStart(config: LocalConfig, name: string): Promise<{ config: LocalConfig; workflow: ResolvedWorkflow | null }> {
+  const here = await loadCachedWorkflow(config, name);
+  if (here?.source === 'team' || config.scope !== 'project') return { config, workflow: here };
+  const user = await loadLocalConfigForScope('user', undefined, { dryRun: true });
+  const there = user ? await loadCachedWorkflow(user, name) : null;
+  return user && there?.source === 'team' ? { config: user, workflow: there } : { config, workflow: here };
+}
+
+/**
+ * Every runnable workflow in stable name order, without resolving aliases recursively: the cached team files, and each
+ * default no team file or alias takes the name of.
+ */
+export async function listCachedWorkflows(config: LocalConfig): Promise<ResolvedWorkflow[]> {
+  const team = await listTeamWorkflows(config);
+  const taken = new Set(team.flatMap(({ definition }) => [definition.name, ...(definition.alias ? [definition.alias] : [])]));
+  return [
+    ...team.map((entry) => ({ ...entry, source: 'team' as const })),
+    ...DefaultWorkflows.all().filter(({ definition }) => !taken.has(definition.name)).map((entry) => ({ ...entry, source: 'default' as const })),
+  ].sort((left, right) => (left.definition.name < right.definition.name ? -1 : 1));
+}
+
+/** The cached team files in name order. */
+async function listTeamWorkflows(config: LocalConfig): Promise<CachedWorkflow[]> {
   let files: string[];
   try { files = await fs.readdir(cacheDir(config)); } catch { return []; }
   const entries = await Promise.all(files.filter((file) => file.endsWith('.json')).sort().map((file) => readCache(config, file.slice(0, -5))));
@@ -362,7 +401,9 @@ export async function syncWorkflowDefinitions(
       log.warn(`[workflows] Kept the last valid version of ${stem}; this revision was not cached`);
     } else {
       result.unrunnable.push(relativePath);
-      log.warn(`[workflows] ${relativePath} has no runnable version`);
+      log.warn(DefaultWorkflows.named(stem)
+        ? `[workflows] ${relativePath} has no runnable version, so teamai's default ${stem} stays in effect`
+        : `[workflows] ${relativePath} has no runnable version`);
     }
   };
   let wrote = 0;
@@ -409,6 +450,30 @@ export async function syncWorkflowDefinitions(
   });
   result.aliasConflicts = aliasConflicts(versions);
   for (const conflict of result.aliasConflicts) log.warn(`[workflows] ${formatDiagnostic(conflict)}`);
+  // A default is checked against the team versions this sync settled on, as a team file is, so a team replacement of a
+  // workflow it runs that takes other inputs is reported here, not by a run that fails after its first steps.
+  // Resolved as `loadCachedWorkflow` resolves a start: the team file of that name, else the one team alias, else the default.
+  const settledTeam = (name: string): WorkflowDefinition | null | undefined => {
+    const named = versions.find(({ definition }) => definition.name === name);
+    if (named) return named.definition;
+    const aliased = versions.filter(({ definition }) => definition.alias === name);
+    return aliased.length === 1 ? aliased[0]?.definition : aliased.length > 1 ? null : undefined;
+  };
+  const runnable = (name: string): WorkflowDefinition | null => {
+    const team = settledTeam(name);
+    return team === undefined ? DefaultWorkflows.named(name)?.definition ?? null : team;
+  };
+  for (const shipped of DefaultWorkflows.all()) {
+    if (settledTeam(shipped.definition.name) !== undefined || shipped.content === undefined) continue;
+    const parsed = parseWorkflow(shipped.relativePath, shipped.content, { runnable, cycle: () => undefined });
+    const retypedBy = workflowsRunBy(shipped.definition).flatMap((run) => {
+      const child = runnable(run.workflow);
+      return child ? retypedInputs(shipped.definition, run, child) : [];
+    });
+    for (const reason of [...(parsed.ok ? [] : parsed.diagnostics.map(({ message }) => message)), ...retypedBy]) {
+      log.warn(`[workflows] teamai's default ${shipped.definition.name} cannot start: ${reason}`);
+    }
+  }
 
   const scope = options.scopeLabel ?? config.scope;
   if (options.dryRun && result.cached.length > 0) {
@@ -450,9 +515,9 @@ function dropsKeptVersion(diagnostics: WorkflowDiagnostic[]): boolean {
  * with the path of the step that runs each one, such as `group.run-b`.
  * Every walk across files, at pull and at start, follows references through here.
  */
-export function workflowsRunBy(definition: { steps: WorkflowStep[] }, prefix = ''): Array<{ step: string; workflow: string }> {
+export function workflowsRunBy(definition: { steps: WorkflowStep[] }, prefix = ''): Array<{ step: string; workflow: string; with?: Record<string, unknown> }> {
   return definition.steps.flatMap((step) => (typeof step.workflow === 'object' ? workflowsRunBy(step.workflow, `${prefix}${step.id}.`)
-    : step.workflow === undefined ? [] : [{ step: `${prefix}${step.id}`, workflow: step.workflow }]));
+    : step.workflow === undefined ? [] : [{ step: `${prefix}${step.id}`, workflow: step.workflow, ...(step.with ? { with: step.with } : {}) }]));
 }
 
 /** The workflows a cached workflow runs, by name, and one hash over its sources and theirs. */
@@ -463,7 +528,67 @@ export interface WorkflowTree {
   teamRevision?: string;
 }
 
-type TreeFailure = { code: 'workflow_recursion' | 'workflow_not_found'; message: string };
+type TreeFailure = { code: 'workflow_recursion' | 'workflow_not_found' | 'invalid_inputs'; message: string };
+
+/**
+ * Why step `step` of workflow `parent` cannot start `child` with the inputs its `with` names, or undefined when they
+ * fit. Every declared input is required, so the names alone tell, before any value renders: a run that would fail
+ * there, after the steps before it already ran, never starts.
+ */
+function withMismatch(parent: string, { step, with: passed }: { step: string; with?: Record<string, unknown> }, child: WorkflowDefinition): TreeFailure | undefined {
+  const names = Object.keys(passed ?? {});
+  const declared = Object.keys(child.inputs ?? {});
+  const extra = names.filter((name) => !declared.includes(name));
+  const missing = declared.filter((name) => !names.includes(name));
+  const message = extra.length > 0
+    ? `Workflow "${parent}" step "${step}" passes ${extra.join(', ')} to workflow "${child.name}", which does not declare them. Make the two agree, then pull again.`
+    : missing.length > 0
+      ? `Workflow "${parent}" step "${step}" does not pass ${missing.join(', ')}, which workflow "${child.name}" declares. Make the two agree, then pull again.`
+      : undefined;
+  return message === undefined ? undefined : { code: 'invalid_inputs', message };
+}
+
+/** Whether `left` and `right` accept the same values: an enum's values in any order, an object's fields in any order. */
+function sameType(left: OutputSchema, right: OutputSchema): boolean {
+  switch (left.type) {
+    case 'string':
+    case 'number':
+    case 'boolean':
+      return right.type === left.type;
+    case 'enum':
+      return right.type === 'enum' && left.values.every((value) => right.values.includes(value)) && right.values.every((value) => left.values.includes(value));
+    case 'array':
+      return right.type === 'array' && sameType(left.items, right.items);
+    case 'object': {
+      if (right.type !== 'object') return false;
+      const names = Object.keys(left.fields);
+      return names.length === Object.keys(right.fields).length
+        && names.every((name) => { const other = right.fields[name]; const own = left.fields[name]; return own !== undefined && other !== undefined && sameType(own, other); });
+    }
+    default: {
+      const unhandled: never = left;
+      return unhandled;
+    }
+  }
+}
+
+/**
+ * Why step `step` of teamai's default `parent` cannot pass `child` what it passes, one reason per input, when `child`
+ * replaces the default the step runs and declares one of those inputs as another type. `parent` renders its `with`
+ * for teamai's own definition of that workflow, so a value of the default's type would fail `child` at the step,
+ * after the steps before it ran. Team workflows are matched by input name only.
+ */
+function retypedInputs(parent: WorkflowDefinition, { step, workflow, with: passed }: { step: string; workflow: string; with?: Record<string, unknown> }, child: WorkflowDefinition): string[] {
+  const shipped = DefaultWorkflows.named(workflow)?.definition;
+  if (DefaultWorkflows.named(parent.name)?.definition !== parent || !shipped || shipped === child) return [];
+  return Object.keys(passed ?? {})
+    .filter((input) => {
+      const declared = child.inputs?.[input];
+      const expected = shipped.inputs?.[input];
+      return declared !== undefined && expected !== undefined && !sameType(declared, expected);
+    })
+    .map((input) => `step "${step}" passes ${input}, which workflow "${child.name}" declares as another type than teamai's default ${workflow}`);
+}
 
 /** Every workflow `cached` runs through its steps, directly or not, from the cache, and one hash over all of their sources. */
 export async function loadWorkflowTree(
@@ -473,17 +598,29 @@ export async function loadWorkflowTree(
   const workflows: Record<string, WorkflowDefinition> = {};
   const hashes: Array<[string, string]> = [];
   const revisions: Array<string | undefined> = [cached.teamRevision];
+  const retyped = (parent: WorkflowDefinition, run: { step: string; workflow: string; with?: Record<string, unknown> }, child: WorkflowDefinition): TreeFailure | undefined => {
+    const [reason] = retypedInputs(parent, run, child);
+    return reason === undefined ? undefined : { code: 'invalid_inputs', message: `Workflow "${parent.name}" ${reason}. Make the two agree, then pull again.` };
+  };
   const visit = async (definition: WorkflowDefinition, through: string[]): Promise<TreeFailure | undefined> => {
-    for (const { step, workflow } of workflowsRunBy(definition)) {
+    for (const run of workflowsRunBy(definition)) {
+      const { step, workflow } = run;
       if (through.includes(workflow)) {
         const cycle = [...through.slice(through.indexOf(workflow)), workflow].join(' -> ');
         return { code: 'workflow_recursion', message: `Workflow "${cached.definition.name}" cannot start: its sub-workflows run in a cycle: ${cycle}` };
       }
-      if (Object.hasOwn(workflows, workflow)) continue;
+      const loaded = Object.hasOwn(workflows, workflow) ? workflows[workflow] : undefined;
+      if (loaded) {
+        const unfit = withMismatch(definition.name, run, loaded) ?? retyped(definition, run, loaded);
+        if (unfit) return unfit;
+        continue;
+      }
       const child = await loadCachedWorkflow(config, workflow);
       if (!child) {
         return { code: 'workflow_not_found', message: `Workflow "${definition.name}" step "${step}" runs workflow "${workflow}", which has no runnable version. Check workflows/${workflow}.yaml and pull again.` };
       }
+      const unfit = withMismatch(definition.name, run, child.definition) ?? retyped(definition, run, child.definition);
+      if (unfit) return unfit;
       workflows[workflow] = child.definition;
       hashes.push([workflow, child.sourceHash]);
       revisions.push(child.teamRevision);
@@ -570,11 +707,13 @@ function checkReferences(checked: Checked[], kept: Map<string, CachedWorkflow | 
     candidates.has(stem) ? [[stem, 'revision']] : kept.get(stem) ? [[stem, 'kept']] : [])));
   const revisionProblems = new Map<string, WorkflowDiagnostic[]>();
   const keptProblems = new Map<string, WorkflowDiagnostic[]>();
-  const runs = (workflow: string): WorkflowDefinition | null => {
+  const own = (workflow: string): WorkflowDefinition | null => {
     const version = chosen.get(workflow);
     if (version === 'revision') return candidates.get(workflow)?.definition ?? null;
     return version === 'kept' ? kept.get(workflow)?.definition ?? null : null;
   };
+  // A name no team version is chosen for runs teamai's default of that name, as `loadCachedWorkflow` resolves it.
+  const runs = (workflow: string): WorkflowDefinition | null => own(workflow) ?? DefaultWorkflows.named(workflow)?.definition ?? null;
   // Every workflow a file runs at its version, directly or not; the file itself when it runs in a cycle.
   const reach = (stem: string): Set<string> => {
     const found = new Set<string>();
@@ -655,7 +794,7 @@ function checkReferences(checked: Checked[], kept: Map<string, CachedWorkflow | 
       }
     }
   }
-  return (stem) => ({ definition: runs(stem), revision: revisionProblems.get(stem) ?? [], kept: keptProblems.get(stem) ?? [] });
+  return (stem) => ({ definition: own(stem), revision: revisionProblems.get(stem) ?? [], kept: keptProblems.get(stem) ?? [] });
 }
 
 /** Resolves every `prompt_file`, including those inside inline workflows. */

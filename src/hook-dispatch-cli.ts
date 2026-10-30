@@ -442,7 +442,13 @@ export async function hookDispatchCli(
     const raw = stdinFile ? readStdinFile(stdinFile)
       : fromGit ? JSON.stringify({ cwd: process.cwd(), git_args: options.hookArgs ?? [] })
         : await readStdin();
-    const stdin = parseStdin(raw, event);
+    const parsed = parseStdin(raw, event);
+    // Antigravity CLI speaks its own hook payload; the detached child gets it already translated.
+    const agy = tool === 'agy' && !stdinFile ? await import('./agy-hook-io.js') : undefined;
+    const stdin = agy ? agy.agyHookPayload(event, parsed) : parsed;
+    if (stdin === null) return;
+    // What the team's hooks read, before the dispatcher adds its own keys.
+    const teamPayload = agy ? JSON.stringify(stdin) : raw;
 
     // Dynamic imports and handlers may resolve paths through process.cwd().
     // A removed worktree has no usable process cwd. Preserve a supplied payload
@@ -464,9 +470,17 @@ export async function hookDispatchCli(
     // working directory wins (#264), so filterHandlersForConfig can honour a
     // project-level repo.kind; a host that sends no cwd (OpenClaw) runs the
     // hook in its workspace, so the process cwd stands in. A cwd that is gone
-    // (a removed worktree) keeps the scope its session recorded (#810).
-    const { resolveHookConfig } = await import('./dashboard-collector.js');
-    const cwd = resolveHookCwd(stdin);
+    // (a removed worktree) keeps the scope its session recorded (#810). A host
+    // that sends its own directory (the CodeBuddy plugin sends the extension
+    // host's, #1516) names a place no teamai scope lives in, so it takes the
+    // workspace the session recorded — that host only, so every other host's
+    // payload keeps the scope its own directory holds.
+    const { resolveHookScopeFor } = await import('./dashboard-collector.js');
+    const { config: localConfig, dir: scopeDir } = await resolveHookScopeFor(stdin, tool);
+    // The workspace the session recorded is the directory the handlers work in,
+    // so the payload's own is replaced when it named no scope.
+    if (scopeDir && scopeDir !== resolveHookCwd(stdin)) stdin.cwd = scopeDir;
+    const cwd = scopeDir ?? resolveHookCwd(stdin);
     if (cwd) {
       try {
         process.chdir(cwd);
@@ -482,7 +496,12 @@ export async function hookDispatchCli(
         return;
       }
     }
-    const localConfig = await resolveHookConfig(stdin, tool);
+    if (!localConfig) {
+      // Nothing was found to work in: the payload's directory and the session's
+      // own are both without a teamai scope. Said out loud, because it is
+      // otherwise silent (#1516).
+      log.debug(`hook-dispatch: no teamai scope for ${resolveHookCwd(stdin) ?? 'no cwd'} (process cwd ${process.cwd()})`);
+    }
     // A self project's overrides and local hooks remain authoritative where
     // Copilot loaded them, so the global built-ins step aside there.
     const copilotProject = process.env.COPILOT_PROJECT_DIR?.trim();
@@ -543,7 +562,15 @@ export async function hookDispatchCli(
       settling = spawnBackground(event, tool, matcher, JSON.stringify(stdin), cwd);
     }
 
-    const output = await runDispatch(dispatcher, event, matcher, stdin, tool, 'foreground');
+    let output = await runDispatch(dispatcher, event, matcher, stdin, tool, 'foreground');
+
+    // agy's one hooks.json entry runs the team's hooks too, through the bridge, and agy reads its own reply shape.
+    if (agy) {
+      const { runBridgedTeamHooks } = await import('./bridged-team-hooks.js');
+      const team = await runBridgedTeamHooks(tool, String(stdin.hook_event_name), teamPayload);
+      if (team.stderr) process.stderr.write(team.stderr);
+      output = agy.agyHookReply(event, { builtin: output ?? '', team: team.stdout });
+    }
 
     if (output) {
       await new Promise<void>((resolve) => process.stdout.write(output, () => resolve()));

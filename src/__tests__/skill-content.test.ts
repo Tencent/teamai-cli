@@ -399,7 +399,7 @@ describe('npm package contents', () => {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
     });
-    const files = (JSON.parse(packed) as Array<{ files: Array<{ path: string }> }>)[0]
+    const files = Object.values(JSON.parse(packed) as Record<string, { files: Array<{ path: string }> }>)[0]
       .files.map((f) => f.path);
 
     expect(files).toContain('skills/teamai/SKILL.md');

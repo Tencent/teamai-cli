@@ -93,6 +93,18 @@ function isExpectedSelfLoop(edge: GraphEdge): boolean {
     && !!edge.source && REPAIRABLE_CODE_EDGE_SOURCES.has(edge.source);
 }
 
+/**
+ * Whether graph-index.json already holds `graph` apart from `generatedAt`, so a
+ * run that finds nothing new leaves the file, and a team repo gets no commit.
+ */
+async function graphUnchanged(wikiRoot: string, graph: GraphIndex): Promise<boolean> {
+  const raw = await readFile(path.join(wikiRoot, '.indices', 'graph-index.json'), 'utf8').catch(() => null);
+  if (raw === null) return false;
+  const saved: unknown = JSON.parse(raw);
+  if (typeof saved !== 'object' || saved === null || !('generatedAt' in saved) || typeof saved.generatedAt !== 'string') return false;
+  return JSON.stringify({ ...graph, generatedAt: saved.generatedAt }, null, 2) === raw;
+}
+
 async function loadReconciliationBase(wikiRoot: string): Promise<GraphIndex> {
   const graphPath = path.join(wikiRoot, '.indices', 'graph-index.json');
   const graph = await loadGraphIndex(wikiRoot);
@@ -484,7 +496,7 @@ export async function reconcileKnowledge(options: ReconcileOptions): Promise<Rec
       createGraphIndex(refreshedNodes, newEdges),
       createGraphIndex([], baseEdges),
     );
-    await saveGraphIndex(wikiRoot, merged);
+    if (!(await graphUnchanged(wikiRoot, merged))) await saveGraphIndex(wikiRoot, merged);
   }
 
   const durationMs = Date.now() - startMs;

@@ -19,7 +19,7 @@ The local driver runs a whole run in one process on this machine: each command s
 2. Start the run: `teamai workflow start <name> --driver local`, with the inputs as one JSON object in `--inputs`. `teamai workflow start --help` lists the other options, such as answering optional approvals and picking the prompt tool.
 3. To continue a run that stopped, run `teamai workflow resume <run>`.
 
-The command exits when the run ends: 0 when it succeeded, 1 when it failed or was cancelled. Done when it has exited and the outcome, the failing step's message and the pull requests the run opened are reported where the person reads them: the job log, or your reply.
+The command exits when the run ends: 0 when it succeeded, 1 when it failed or was cancelled. A failed run names each failed step, its message and its `teamai workflow retry` command on stderr. Done when it has exited and the outcome, the failing step's message and the pull requests the run opened are reported where the person reads them: the job log, or your reply.
 
 ## Approvals
 
@@ -37,7 +37,7 @@ Inside a workflow step, every `teamai workflow` command that changes a run answe
 
 ## Env and secrets
 
-A step gets the team env keys its `requires.env` lists, and no other team key. A key with no value on this machine fails the step `missing_env` before it runs; the message offers `teamai env set` only for a key the team declares, and otherwise the environment, or `teamai env add KEY --secret` to declare it. A CI job exports each secret under its key name instead. TeamAI masks the value of every key in `env/secrets.yaml` in run files and output.
+A step gets the team env keys its `requires.env` lists, and no other team key. A key with no value on this machine fails the step `missing_env` before it runs, and the message names the fix: `teamai env set KEY` for a key the team declares; for one it does not, the environment, or `teamai env add KEY --secret` followed by `teamai env set KEY`. The person runs `env set` in their own terminal. A CI job exports each secret under its key name instead. TeamAI masks the value of every key in `env/secrets.yaml` in run files and output.
 
 ## CI
 

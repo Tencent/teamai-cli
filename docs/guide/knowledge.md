@@ -10,13 +10,26 @@ Team Context is learnings, the codebase graph, and teamwiki. `teamai recall` sea
 
 ### Contributing knowledge
 
-When you correct the AI, deny a tool call, or the AI retries a failing command, the session ends with a prompt to share it:
+When you correct the AI, deny a tool call, or the AI retries a failing command, the session ends with a reminder that offers teamai's [`teamai-share-learnings`](workflow.md#teamai-share-learnings-and-teamai-share-session) workflow:
 
 ```text
-[teamai] This session may contain a problem worth documenting: you interrupted the AI twice.
+[teamai] This session may contain a problem worth documenting: you interrupted the AI twice, the AI retried failing tools 6 times.
 
-Consider running `/teamai share what this session taught me` to summarize what you learned and share it with your team (or run `teamai skill get share`).
+Task: The payments pod restarts in a loop after deploy; find out why
+
+Offer the person the teamai-share-learnings workflow: run `teamai workflow start --describe teamai-share-learnings --driver skill` and start it with the inputs it proposes, once the person confirms them.
 ```
+
+The agent shows you what it proposes: share what the session taught, one learning or several, publish the transcript, score the session. You confirm or change it, and then it runs. What happens to each offer:
+
+| Offer | Who decides |
+|---|---|
+| The learnings | You, while you work them with the agent: say what to share, each under which namespace, or that nothing is worth sharing |
+| `Share these 2 learnings with the team? [...]` | The agent under the recommended start, or you when you pick "ask me at optional approvals" |
+| `Publish this session, scrubbed, to the team?` | Only you, in your own terminal or `teamai dashboard` |
+| Scorers | Nobody asks again: they judge the scorers you confirmed at the start |
+
+Each session is offered this at most once. The reminder keeps its old text, "Consider running `/teamai share what this session taught me` … (or run `teamai skill get share`)", where `teamai-share-learnings` cannot run: in a session teamai launched (a workflow step or a judge), in a workflow worktree, in an unattended session, while the session drives a workflow run that is not done, and when the team's `workflows/teamai-share-learnings.yaml` sets `invoke: deny`. While recall is off there is no reminder, and pull writes no `teamai-share-learnings` skill; `/teamai-share-session` still publishes and scores the session.
 
 Or hand in a note yourself:
 
@@ -167,6 +180,48 @@ teamai codebase --lint
 ```
 
 Without a team repo, add `--output <dir>` to both `teamai import` and `teamai codebase`; both then use `<dir>/teamwiki/`.
+
+In a team repo, `--reconcile` commits and pushes the graph it updates. It leaves your `teamwiki/product/` pages as they are, and pushes nothing when the graph did not change:
+
+```text
+$ teamai codebase --reconcile
+Reconciliation complete: mappings=3, gaps=1, conflicts=0
+✔ Pushed to team knowledge repo (https://git.example.com/acme/team-ai.git)
+```
+
+`import` also runs this deep enrich with your AI tool. When it cannot finish, the evidence is still published, but `import` exits 1 and prints the command that resumes it. In a team repo that is the same import, which publishes the docs it adds:
+
+```text
+$ teamai import --dir ./orders-api
+...
+⚠ deep-enrich[orders-api]: incomplete — missing component docs: billing, architecture: true
+...
+✔ Pushed to team knowledge repo (https://git.example.com/acme/team-ai.git)
+✔ Local directory orders-api import complete
+⚠ Deep enrich incomplete: orders-api. Run `teamai codebase --deep-enrich --project orders-api` to retry.
+$ echo $?
+1
+```
+
+A `--from-repo-list` or `--from-org` batch prints one line for each repo that did not finish:
+
+```text
+⚠ Deep enrich incomplete: github__acme__billing. Run `teamai codebase --deep-enrich --project github__acme__billing` to retry.
+```
+
+With `--output`, the retry is `teamai codebase --deep-enrich` on that directory:
+
+```text
+$ teamai import --dir ./orders-api --output ./wiki
+...
+⚠ Deep enrich incomplete: orders-api. Run `teamai codebase --deep-enrich --project orders-api --output ./wiki` to retry.
+```
+
+A job that needs only the extraction, with no AI tool on the runner, skips the AI step and exits 0:
+
+```bash
+teamai import --from-repo https://github.com/acme/orders-api --skip-enrich
+```
 
 `teamai codebase --extract` is removed; use `teamai import --dir`.
 

@@ -4,7 +4,9 @@ import path from 'node:path';
 import os from 'node:os';
 import YAML from 'yaml';
 import * as builtinHooks from '../builtin-hooks.js';
-import { injectHermesHooks, removeHermesHooks, hasHermesHooks, getReportScriptPath, getInstructionsPluginDir } from '../hermes-hooks.js';
+import { injectHermesHooks, removeHermesHooks, hasHermesHooks, getReportScriptPath, getInstructionsPluginDir, getTeamHookScriptPath } from '../hermes-hooks.js';
+import { bridgedTeamHookFile } from '../bridged-team-hooks.js';
+import { shellQuoteValue } from '../utils/shell-profile.js';
 import { log } from '../utils/logger.js';
 import { channelReadiness } from '../instruction-targets.js';
 
@@ -156,5 +158,57 @@ describe('the teamai-instructions plugin (#945)', () => {
     await removeHermesHooks();
     expect(fs.readdirSync(dir).sort()).toEqual(['__init__.py', 'notes.txt', 'plugin.yaml']);
     expect(config()).toContain('- teamai-instructions');
+  });
+});
+
+describe('Hermes: the team\'s hooks', () => {
+  const savedHome = process.env.HOME;
+  beforeEach(() => { process.env.HOME = path.join(tmpDir, 'home'); });
+  afterEach(() => { process.env.HOME = savedHome; });
+
+  const teamHooksOn = (hooks: Record<string, number | undefined>) => {
+    const file = bridgedTeamHookFile('hermes');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ hooks: Object.fromEntries(Object.entries(hooks).map(([event, timeout]) =>
+      [event, [{ matcher: '*', hooks: [{ type: 'command', command: 'true', ...(timeout ? { timeout } : {}) }] }]])) }));
+  };
+  const hooks = () => YAML.parse(fs.readFileSync(path.join(tmpDir, 'config.yaml'), 'utf8')).hooks as Record<string, { command: string; timeout: number }[]>;
+  const approvals = () => JSON.parse(fs.readFileSync(path.join(tmpDir, 'shell-hooks-allowlist.json'), 'utf8')).approvals as { event: string; command: string }[];
+
+  it('gives a first turn time for its SessionStart and UserPromptSubmit hooks, which run one after the other', async () => {
+    vi.spyOn(log, 'success').mockImplementation(() => {});
+    teamHooksOn({ SessionStart: 90, UserPromptSubmit: undefined });
+    await injectHermesHooks();
+    expect(hooks().pre_llm_call).toEqual([expect.objectContaining({ timeout: 150 })]);
+  });
+
+  it('gives each Hermes event the team has hooks on one approved entry that runs them through teamai', async () => {
+    vi.spyOn(log, 'success').mockImplementation(() => {});
+    teamHooksOn({ PreToolUse: 400, SessionStart: undefined, Stop: 20 });
+    await injectHermesHooks();
+    const script = getTeamHookScriptPath();
+    // Hermes tokenizes the command itself, so on Windows the path is double-quoted.
+    const quoted = process.platform === 'win32' ? `"${script}"` : shellQuoteValue(script);
+    const command = (event: string) => `${quoted} ${event}`;
+    expect(hooks()).toMatchObject({
+      pre_tool_call: [{ command: command('PreToolUse'), timeout: 300 }],
+      pre_llm_call: [{ command: command('UserPromptSubmit'), timeout: 60 }],
+      on_session_end: [{ command: command('Stop'), timeout: 20 }],
+    });
+    expect(approvals()).toEqual(expect.arrayContaining([
+      { event: 'pre_tool_call', command: command('PreToolUse') },
+      { event: 'pre_llm_call', command: command('UserPromptSubmit') },
+      { event: 'on_session_end', command: command('Stop') },
+    ]));
+    expect(fs.readFileSync(script, 'utf8')).toContain('hook-dispatch "$1" --tool hermes --team-hooks');
+
+    teamHooksOn({ PreToolUse: 10 });
+    await injectHermesHooks();
+    expect(Object.keys(hooks()).sort()).toEqual(['on_session_start', 'pre_tool_call']);
+    expect(approvals().map((a) => a.event).sort()).toEqual(['on_session_start', 'pre_tool_call']);
+
+    await removeHermesHooks();
+    expect(hooks()).toBeUndefined();
+    expect(fs.existsSync(script)).toBe(false);
   });
 });

@@ -2,7 +2,7 @@ import { hookToolPathsForConfig } from './types.js';
 import { hookAdapterDir, hookSettingsFile, installOf, locate, openclawWorkspaceDir, ownOf, workspaceHooksOf } from './locate.js';
 import path from 'node:path';
 import { autoDetectInit } from './config.js';
-import { codexTrustPolicy, migrateLegacyManagedHooks, reconcileHooks, reconcileHooksToAllTools, reconcileTeamHooksForConfig, removeCopilotGlobalBuiltins, sweepLegacyProjectHooks, getHookStatus, reportCodexTrust, resolveMainCheckoutHooks, teamHookHistory, trustCodexForScope, type HookStatus } from './hooks.js';
+import { codexTrustPolicy, migrateLegacyManagedHooks, reconcileHooks, reconcileHooksToAllTools, reconcileTeamHooksForConfig, removeCopilotGlobalBuiltins, sweepLegacyProjectHooks, getHookStatus, reportCodexTrust, resolveMainCheckoutHooks, runsTeamHookOn, teamHookHistory, trustCodexForScope, type HookStatus } from './hooks.js';
 import { applyBuiltinOverride, installedBuiltinHookDefs } from './builtin-hooks.js';
 import { resolveTeamHookEntries } from './resources/hooks.js';
 import { describeEntryFailure, describeOrigin, reportUndeliveredEntryNotices } from './namespaced-entries.js';
@@ -109,6 +109,7 @@ async function removeAdapterHooks(adapter: HookAdapterId, dir: string): Promise<
         case 'openclaw-hook':
         case 'dsh-hooks':
         case 'kiro-hooks':
+        case 'agy-hooks':
             return;
         default: {
             const unhandled: never = adapter;
@@ -195,6 +196,12 @@ export async function hooksList(_options: GlobalOptions): Promise<void> {
         if (tool === 'kiro') {
             if (!await pathExists(path.join(getUserHome(), '.kiro'))) continue;
             rows.push({ tool, status: await hasKiroHooks() ? 'installed' : 'missing', settingsPath: formatDisplayPath(kiroHookFile()), builtinDefs: installedBuiltinHookDefs(tool, false) });
+            continue;
+        }
+        if (tool === 'agy') {
+            if (!await pathExists(hookAdapterDir('agy-hooks'))) continue;
+            const { agyHookFile, hasAgyHooks } = await import('./agy-hooks.js');
+            rows.push({ tool, status: await hasAgyHooks() ? 'installed' : 'missing', settingsPath: formatDisplayPath(agyHookFile()), builtinDefs: installedBuiltinHookDefs(tool, false) });
             continue;
         }
         if (tool === 'pi') {
@@ -290,6 +297,8 @@ export async function hooksList(_options: GlobalOptions): Promise<void> {
         console.log(`  ${describeEntryFailure(teamHooks.failure)}`);
     } else {
         console.log(`Team hooks (B) — hooks/ (${teamHooks.entries.length}):`);
+        // The tools listed above with a hook surface.
+        const hookTools = rows.filter((row) => row.status !== 'not configured').map((row) => row.tool);
         if (teamHooks.entries.length === 0) console.log('  (none)');
         for (const resolved of teamHooks.entries) {
             const h = resolved.entry;
@@ -297,6 +306,11 @@ export async function hooksList(_options: GlobalOptions): Promise<void> {
             const tools = h.tools && h.tools.length > 0 ? h.tools.join(',') : 'all';
             const roles = h.roles ? `, roles: ${h.roles.length > 0 ? h.roles.join(',') : 'nobody'} (deprecated)` : '';
             console.log(`  [${h.id}] ${h.event}${matcher}  →  ${h.command}  (tools: ${tools}${roles})  from ${describeOrigin(resolved)}`);
+            const wanted = hookTools.filter((tool) => !h.tools || h.tools.length === 0 || h.tools.includes(tool));
+            const runIn = wanted.filter((tool) => runsTeamHookOn(tool, h.event));
+            const notIn = wanted.filter((tool) => !runIn.includes(tool));
+            console.log(`      runs in: ${runIn.length > 0 ? runIn.join(', ') : 'no enabled tool'}`);
+            if (notIn.length > 0) console.log(`      not in: ${notIn.join(', ')} (no ${h.event} hook there)`);
         }
     }
     console.log('');
@@ -396,6 +410,10 @@ export async function hooksRemove(_options: GlobalOptions): Promise<void> {
         await removePiHooks();
     }
     if (teamConfig.toolPaths.kiro) await removeKiroHooks();
+    if (teamConfig.toolPaths.agy) {
+        const { reconcileAgyHooks } = await import('./agy-hooks.js');
+        await reconcileAgyHooks({ removeAll: true });
+    }
 
     const left = new Set([...keepRecordsFor, ...unwritten]);
     if (left.size > 0) {

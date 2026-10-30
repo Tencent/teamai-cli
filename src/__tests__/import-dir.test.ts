@@ -28,10 +28,15 @@ vi.mock('../config.js', async (importOriginal) => ({
   autoDetectInit: vi.fn(),
 }));
 
+vi.mock('../deep-enrich.js', () => ({
+  deepEnrich: vi.fn(),
+}));
+
 import { defaultProjectSlug, extractCodebase, sourceRepositoryMetadata } from '../codebase-extract.js';
 import { aggregateGlobalGraph } from '../graph-aggregate.js';
 import { autoPushTeamRepo } from '../utils/git.js';
 import { autoDetectInit } from '../config.js';
+import { deepEnrich } from '../deep-enrich.js';
 
 describe('import --dir', () => {
   let tmpDir: string;
@@ -67,6 +72,8 @@ describe('import --dir', () => {
       const evidenceDir = path.join(wikiRoot, 'evidence', 'code', opts.project ?? 'my-project');
       await fs.ensureDir(evidenceDir);
       await fs.writeFile(path.join(evidenceDir, 'index.md'), '# test\n');
+      // Deep enrich runs on an extraction that wrote a manifest.
+      await fs.writeJson(path.join(evidenceDir, '_manifest.json'), { components: [{ slug: 'src' }] });
       // The source the real extraction records, by which the next import recognises it.
       await fs.writeJson(path.join(evidenceDir, 'source-manifest.json'), await sourceRepositoryMetadata(opts.path));
       await fs.ensureDir(path.join(wikiRoot, '.indices'));
@@ -76,15 +83,19 @@ describe('import --dir', () => {
 
     (aggregateGlobalGraph as ReturnType<typeof vi.fn>).mockResolvedValue({ nodes: 1, edges: 0 });
     (autoPushTeamRepo as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+    vi.mocked(deepEnrich).mockImplementation(async ({ project }) => (
+      { project, complete: true, missingComponents: [], missingArchitecture: false }
+    ));
   });
 
   afterEach(async () => {
+    process.exitCode = undefined;
     await fs.remove(tmpDir);
   });
 
-  async function runImportDir(opts: { dir: string; dryRun?: boolean; output?: string; skipEnrich?: boolean; incremental?: boolean }) {
+  async function runImportDir(opts: { dir: string; dryRun?: boolean; output?: string; skipEnrich?: boolean; incremental?: boolean; maxFiles?: string }) {
     const { importCmd } = await import('../import.js');
-    await importCmd({ dir: opts.dir, dryRun: opts.dryRun, output: opts.output, skipEnrich: opts.skipEnrich, incremental: opts.incremental });
+    await importCmd({ dir: opts.dir, dryRun: opts.dryRun, output: opts.output, skipEnrich: opts.skipEnrich, incremental: opts.incremental, maxFiles: opts.maxFiles });
   }
 
   it('calls extractCodebase with outputRoot (not source dir) and skipEnrich', { timeout: 60_000 }, async () => {
@@ -269,6 +280,79 @@ describe('import --dir', () => {
     expect(autoPushTeamRepo).not.toHaveBeenCalled();
   });
 
+  it('exits 1 and names the retry command when deep enrich leaves AI docs missing, still publishing the evidence', async () => {
+    const outputDir = path.join(tmpDir, 'output');
+    vi.mocked(deepEnrich).mockImplementation(async ({ project }) => (
+      { project, complete: false, missingComponents: ['src'], missingArchitecture: true }
+    ));
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
+    try {
+      await runImportDir({ dir: projectDir, output: outputDir });
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(process.exitCode).toBe(1);
+    const output = lines.join('\n');
+    expect(output).toContain(
+      `Deep enrich incomplete: my-project. Run \`teamai codebase --deep-enrich --project my-project --output ${outputDir}\` to retry.`,
+    );
+    expect(output).not.toContain('Deep enrich complete');
+    expect(await fs.pathExists(path.join(outputDir, 'teamwiki', 'evidence', 'code', 'my-project', 'index.md'))).toBe(true);
+  });
+
+  it('quotes an --output path with a space in the retry command', async () => {
+    const outputDir = path.join(tmpDir, 'my wiki');
+    vi.mocked(deepEnrich).mockImplementation(async ({ project }) => (
+      { project, complete: false, missingComponents: ['src'], missingArchitecture: false }
+    ));
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
+    try {
+      await runImportDir({ dir: projectDir, output: outputDir });
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(lines.join('\n')).toContain(`--project my-project --output '${outputDir}'\` to retry.`);
+  });
+
+  it('exits 1 and prints the error when deep enrich throws', async () => {
+    vi.mocked(deepEnrich).mockRejectedValue(new Error('Cannot deep-enrich through a symbolic link: docs/README.md'));
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
+    try {
+      await runImportDir({ dir: projectDir });
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(process.exitCode).toBe(1);
+    const output = lines.join('\n');
+    expect(output).toContain('Deep enrich failed for my-project: Cannot deep-enrich through a symbolic link: docs/README.md');
+    expect(output).toContain('Deep enrich incomplete: my-project. Run `teamai codebase --deep-enrich --project my-project` to retry.');
+    expect(await fs.pathExists(path.join(teamRepoDir, 'teamwiki', 'evidence', 'code', 'my-project', 'index.md'))).toBe(true);
+  });
+
+  it('names the same deep-enrich project slug as the retry in a team repo, quoting a path with a space', async () => {
+    const spacedDir = path.join(tmpDir, 'my project');
+    await fs.copy(projectDir, spacedDir);
+    vi.mocked(deepEnrich).mockImplementation(async ({ project }) => (
+      { project, complete: false, missingComponents: ['src'], missingArchitecture: false }
+    ));
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
+    try {
+      await runImportDir({ dir: spacedDir, incremental: true, maxFiles: '500' });
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(process.exitCode).toBe(1);
+    expect(lines.join('\n')).toContain("Run `teamai codebase --deep-enrich --project 'my project'` to retry.");
+  });
+
   it('--incremental keeps the published evidence and pushes nothing when the source is unchanged', async () => {
     await runImportDir({ dir: projectDir });
     const evidence = path.join(teamRepoDir, 'teamwiki', 'evidence', 'code', 'my-project', 'index.md');
@@ -298,6 +382,29 @@ describe('import --dir', () => {
 
     expect(staging).toContain(path.join(os.tmpdir(), 'teamai-extract-'));
     expect(await fs.pathExists(staging!)).toBe(false);
+  });
+
+  it('does not report a publish when the push to the team repo fails', async () => {
+    (autoPushTeamRepo as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('Push to the team repo failed: rejected. Run `teamai pull`, then rerun this command.'),
+    );
+    const lines: string[] = [];
+    const logSpy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+    let exitCode: unknown;
+    try {
+      await runImportDir({ dir: projectDir });
+      exitCode = exitSpy.mock.calls[0]?.[0];
+    } finally {
+      logSpy.mockRestore();
+      errorSpy.mockRestore();
+      exitSpy.mockRestore();
+    }
+
+    expect(exitCode).toBe(1);
+    expect(lines.join('\n')).not.toContain('Pushed to team knowledge repo');
+    expect(lines.join('\n')).not.toContain('import complete');
   });
 
   it('source directory is not polluted with teamwiki/', async () => {

@@ -99,21 +99,80 @@ A member setting is read in this order. The first level that sets it wins:
 4. The team's `teamai.yaml`, where the setting has a team key.
 5. The default.
 
-The member settings are `ai.tool`, `workflows.*`, `recallEnabled`, `contributeHintEnabled`, `mrHintEnabled`, `coAuthorEnabled`, `usageReportEnabled`, `codexTrustEnabled`, `modelAliases`, `sessions`, `autoCompactTokens` and `updatePolicy`. In `workflows.tools`, `workflows.allow` and `modelAliases`, each entry counts on its own. `updatePolicy` and `autoCompactTokens` act on the whole machine, so one scope decides them: the user scope when there is one, else the scope that runs. Every other key belongs to one install and is never read from the machine. `doctor` names such a key in a `~/.teamai/config.yaml` that holds no install.
+The member settings are `ai.tool`, `workflows.*`, `recallEnabled`, `contributeHintEnabled`, `mrHintEnabled`, `coAuthorEnabled`, `usageReportEnabled`, `codexTrustEnabled`, `modelAliases`, `sessions`, `scoring`, `autoCompactTokens` and `updatePolicy`. In `workflows.tools`, `workflows.allow` and `modelAliases`, each entry counts on its own. `scoring` from `~/.teamai/config.yaml` only makes session judging stricter than the team's ([Finished sessions](./scorers.md#finished-sessions)). `updatePolicy` and `autoCompactTokens` act on the whole machine, so one scope decides them: the user scope when there is one, else the scope that runs. Every other key belongs to one install and is never read from the machine. `doctor` names such a key in a `~/.teamai/config.yaml` that holds no install.
+
+| You want | Write | In |
+|---|---|---|
+| Codex for one command | `TEAMAI_AI_TOOL=codex teamai import --dir .` | the shell |
+| Codex for teamai's AI calls in every workspace | `ai: { tool: codex }` | `~/.teamai/config.yaml` |
+| Claude in one workspace all the same | `ai: { tool: claude }` | that workspace's `~/.teamai/projects/<slug>/config.yaml` |
+| Recall on for the whole team | `sharing: { recall: { enabled: true } }` | the team's `teamai.yaml` |
+| No judging of the sessions you run by hand, in any workspace | `scoring: { sessions: { attended: off } }` | `~/.teamai/config.yaml` |
+
+`teamai doctor` names the file of the workspace it runs in. The dashboard's [Member settings](./dashboard.md#member-settings) panel shows the same for the workspace you select.
+
+**One machine default, one workspace that differs.** Ana runs teamai's AI calls and workflow steps on Codex, with recall on. A client's repository stays on Claude, without recall:
 
 ```yaml
 # ~/.teamai/config.yaml: this machine, no install needed
+ai: { tool: codex }
 recallEnabled: true
 workflows:
   tools: { default: codex }
 ```
 
 ```yaml
-# ~/.teamai/projects/<slug>/config.yaml: this workspace only
+# ~/.teamai/projects/<slug>/config.yaml: ~/work/client only
+ai: { tool: claude }
 recallEnabled: false
 ```
 
-A value of the wrong type in `~/.teamai/config.yaml` is skipped with a warning, and the next level decides. `workflows.allow` is the exception: a bad value there, or a file that cannot be read or parsed, stops workflow commands until you fix it. A save never copies a machine value into a workspace's file; `recall enable` and `recall disable` write theirs. `teamai doctor` lists each member setting some level sets, with the level that set it and the values below it.
+```console
+$ cd ~/work/client && teamai doctor
+ℹ Member settings:
+  ai.tool: claude, from the workspace config /home/ana/.teamai/projects/<slug>/config.yaml (the machine says codex)
+  workflows.tools.default: codex, from the machine config /home/ana/.teamai/config.yaml
+  recallEnabled: false, from the workspace config /home/ana/.teamai/projects/<slug>/config.yaml (the machine says true, the team false)
+$ cd ~/work/api && teamai import --dir .   # runs on codex, from the machine config
+```
+
+**One entry of a map.** A workspace that sets one `workflows.tools` entry keeps the machine's others:
+
+```yaml
+# ~/.teamai/config.yaml
+workflows:
+  tools: { default: codex, reviewer: claude }
+```
+
+```yaml
+# ~/.teamai/projects/<slug>/config.yaml
+workflows:
+  tools: { implementer: claude }
+```
+
+In that workspace `implementer` and `reviewer` run on Claude, and every other agent on Codex.
+
+**Share less from one laptop than the team asks.** The team publishes and judges every session. On her laptop Ana keeps the sessions she runs by hand off `teamai-reports`, judges none from the jobs it runs, and caps judging at two sessions a day in each workspace:
+
+```yaml
+# ~/.teamai/config.yaml
+sessions:
+  publish: { attended: off }
+scoring:
+  sessions: { unattended: off }
+  daily_limit: 2
+```
+
+```console
+$ cd ~/work/api && teamai doctor
+ℹ Member settings:
+  sessions.publish.attended: off, from the machine config /home/ana/.teamai/config.yaml (the team says auto)
+ℹ Session judging: attended auto, set by scorers/scoring.yaml sessions; unattended off, set by ~/.teamai/config.yaml scoring.sessions.unattended; up to 2 sessions a day, set by ~/.teamai/config.yaml scoring.daily_limit.
+```
+
+A machine `scoring` never turns judging on or raises the limit: where the team says `off`, a machine `auto` changes nothing. A workspace's own `scoring` still wins, one mode at a time.
+
+A value of the wrong type in `~/.teamai/config.yaml` is skipped with a warning, and the next level decides. `workflows.allow` is the exception: a bad value there, or a file that cannot be read or parsed, stops workflow commands until you fix it. A save never copies a machine value into a workspace's file; `recall enable` and `recall disable` write theirs.
 
 #### AI tool (`ai.tool`)
 
@@ -211,13 +270,48 @@ profiles:
 | --- | --- | --- |
 | Claude Code | `anthropic` | `~/.claude/settings.json` |
 | Codex | `openai-responses` | `~/.codex/config.toml` |
-| OpenCode | any | `opencode.json` |
+| OpenCode | any but `gemini` | `opencode.json` |
 | CodeBuddy / WorkBuddy | `openai-chat-completions` | `models.json` (CodeBuddy follows its recorded home) |
-| Pi | any | `~/.pi/agent/models.json` |
-| OMP | any | `~/.omp/agent/models.yml`, or the agent dir of `OMP_PROFILE` (or `PI_PROFILE`) and `PI_CONFIG_DIR` |
+| Pi | any but `gemini` | `~/.pi/agent/models.json` |
+| OMP | any but `gemini` | `~/.omp/agent/models.yml`, or the agent dir of `OMP_PROFILE` (or `PI_PROFILE`) and `PI_CONFIG_DIR` |
 | Muse Code | `openai-responses` | `<Muse home>/settings.json` (recorded home, else `$XDG_CONFIG_HOME/muse` or `~/.config/muse`), and the key as `META_API_KEY` in `~/.teamai/models/env.sh`, which your shell profile loads |
+| Antigravity CLI | `gemini` | `modelProvider: "gemini"` in `~/.gemini/antigravity-cli/settings.json`, and an `agy` shell function in `~/.teamai/models/agy-env.sh`, which your shell profile loads, that sets `GEMINI_API_KEY` and `GOOGLE_GEMINI_BASE_URL` for agy alone |
 
-The example has no `openai-responses` group, so Codex and Muse Code are left alone.
+The example has no `openai-responses` group, so Codex and Muse Code are left alone, and no `gemini` group, so Antigravity CLI is too.
+
+A gateway that serves the Gemini API reaches Antigravity CLI:
+
+```yaml
+profiles:
+  - id: gemini-gw
+    name: Team Gemini gateway
+    base_url: https://llm-gw.example.com
+    api_key: ${API_KEY}
+    model_groups:
+      - protocols: [gemini]
+        models:
+          - gemini-3.8-flash
+```
+
+After `teamai models switch gemini-gw --agent agy`, agy sends `POST https://llm-gw.example.com/v1beta/models/gemini-3.8-flash:streamGenerateContent` with the key. The model stays the one picked in agy (`/model`): agy sends its own catalog's Gemini ids, so the gateway must serve them.
+
+Gemini CLI reads the same two variables, so teamai never exports them. It defines a function that sets them only for agy, and a key you export yourself does not replace it:
+
+```bash
+# ~/.teamai/models/agy-env.sh
+unalias agy 2>/dev/null || true
+agy() { GEMINI_API_KEY="${API_KEY}" GOOGLE_GEMINI_BASE_URL='https://llm-gw.example.com' command agy "$@"; }
+```
+
+```bash
+export GEMINI_API_KEY=my-own-key   # in ~/.zshrc, for Gemini CLI
+agy                                # still uses the team key and the gateway
+gemini                             # still uses my-own-key and Google
+```
+
+teamai's own agy runs (AI calls, local workflow steps, the scorer judge) read the key and gateway from that file.
+
+A script does not inherit a shell function, so `bash deploy.sh` that calls `agy` runs it without the gateway. Source the file first: `. ~/.teamai/models/agy-env.sh`.
 
 ### Use a team profile
 
@@ -278,4 +372,4 @@ Doctor measures the serialized project-rules reply in UTF-8 bytes against `hooks
 
 ## Kiro lifecycle hooks
 
-Kiro CLI V3 loads `~/.kiro/hooks/teamai.json` for every agent, including the default agent. Pull and hook injection install its SessionStart hook without requiring a team agent. Before enabling it, they remove only TeamAI’s old agentSpawn command from existing Kiro agents, including member-edited copies, preserving personal hooks and agent fields. `hooks list` and `doctor` check it; hook removal and user uninstall remove it. Project uninstall preserves this shared user hook. A same-named personal file is kept and reported. Pull removes the old managed `agentSpawn` entry from rendered team agents while preserving custom hooks. Lifecycle integration requires V3; Kiro 2.x does not load this standalone hook.
+Kiro CLI V3 loads `~/.kiro/hooks/teamai.json` for every agent, including the default agent. Pull and hook injection install its SessionStart hook without requiring a team agent. Before enabling it, they remove only TeamAI’s old agentSpawn command from existing Kiro agents, including member-edited copies, preserving personal hooks and agent fields. `hooks list` and `doctor` check it; hook removal and user uninstall remove it. Project uninstall preserves this shared user hook. A same-named personal file is kept and reported. Pull removes the old managed `agentSpawn` entry from rendered team agents while preserving custom hooks. Lifecycle integration requires V3; Kiro 2.x does not load this standalone hook. When the team has hooks for Kiro, pull also writes `~/.kiro/hooks/teamai-team.json`, one entry per event that runs them through teamai; hook removal and uninstall remove it too.

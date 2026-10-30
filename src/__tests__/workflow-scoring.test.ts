@@ -21,6 +21,7 @@ import { installOwner, readRun, updateRun } from '../workflow/store.js';
 import type { StepState } from '../workflow/step-state.js';
 import type { DriverIdentity, RunState, WorkflowEnvelope } from '../workflow/types.js';
 import { knownSecrets } from '../env-resolution.js';
+import * as cliPaths from '../utils/cli-path.js';
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -51,6 +52,10 @@ steps:
 function fixture(scorerText: string, overrides: Partial<LocalConfig> = {}): LocalConfig {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-workflow-scoring-'));
   dirs.push(root);
+  vi.spyOn(cliPaths, 'resolveCliPath').mockImplementation((cmd) => {
+    const executable = path.join(root, 'bin', cmd);
+    return fs.existsSync(executable) ? executable : null;
+  });
   const knowledge = path.join(root, 'knowledge');
   fs.mkdirSync(path.join(knowledge, 'workflows'), { recursive: true });
   fs.mkdirSync(path.join(knowledge, 'scorers'), { recursive: true });

@@ -30,6 +30,19 @@ Read-only, no git:
 teamai init --http https://your-team-host/api --token <api-key>
 ```
 
+An agent access token (`sk-`) works for one agent only. Pass that agent with `--agent <tool>`; each agent then keeps its own token. While an agent's current token still works, a new one for the same agent is not used, so its delivered models keep working.
+
+Then enroll each workspace you want synced: run `teamai bind-project` once there. Binding it to a ClawPro project is optional — add `--skip` to stay unbound, and no prompt asks again. A worktree inherits its main checkout's choice. The HTTP agent leaves a workspace where this never ran alone, saying so once per session; a workspace enrolled but still pending a project keeps asking in each new chat (and after a pause) until it is bound or skipped, and a non-interactive `teamai bind-project` lists the account's projects so a setup script can act on them.
+
+Running it again with the same endpoint and key keeps them. Moving to another endpoint or key needs `--force`, and without it nothing is changed:
+
+```text
+$ teamai init --http https://new-host.example/api --token <new-key>
+...
+✖ The HTTP local agent already uses https://your-team-host/api. Re-run with --force to replace it with https://new-host.example/api.
+$ teamai init --http https://new-host.example/api --token <new-key> --force
+```
+
 ```bash
 teamai doctor
 teamai list

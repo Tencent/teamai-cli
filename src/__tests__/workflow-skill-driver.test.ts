@@ -853,7 +853,10 @@ ${timeout}    command: node -e "require('fs').writeFileSync('built.txt', 'B')"
     expect(typeof stored === 'object' && stored.steps.find((item) => item.id === 'build')).toMatchObject(step);
   });
 
-  it('stops the setup a killed runner left running, as it stops a command one left', async () => {
+  // The setup runs in a process group of its own: the test waits until it has really started, so the group it
+  // recorded is the one the stop has to reach. The harness's clock is a fake one, so this waits for the wall
+  // clock, and a loaded runner needs more than the default budget to get there (#1504).
+  it('stops the setup a killed runner left running, as it stops a command one left', { timeout: 60_000 }, async () => {
     const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-setup-group-'));
     roots.push(scratch);
     const pidFile = path.join(scratch, 'sleep.pid');
@@ -882,12 +885,25 @@ steps:
     const run = RunIdSchema.parse(started.data.turn.run);
     const attempt = AttemptIdSchema.parse(started.data.turn.running[0]?.attempt);
     await harness.context.runners.sleep(1_000);
-    const pid = Number(fs.readFileSync(pidFile, 'utf8'));
+    // The setup writes the pid of the process it left running: wait for that file to hold it, so the process is
+    // the one the setup really started. A file that exists but is empty reads as 0, and `kill(0, 0)` succeeds
+    // for every pid there is.
+    let pid = 0;
+    for (let wait = 0; wait < 600 && pid === 0; wait += 1) {
+      const written = fs.existsSync(pidFile) ? Number(fs.readFileSync(pidFile, 'utf8')) : 0;
+      if (written > 0) pid = written;
+      else await new Promise((resolve) => { setTimeout(resolve, 50); });
+    }
+    expect(pid).toBeGreaterThan(0);
     const alive = (): boolean => { try { return process.kill(pid, 0); } catch { return false; } };
     expect(alive()).toBe(true);
 
     const { runners } = await skillContext({ config: harness.config, toolPaths: harness.context.toolPaths, env: harness.context.env, cwd: harness.work, aiTools: [] });
     await runners.stopLeft(run, attempt);
+    // A stop is asynchronous: the signal reaches the group, and the process leaves it a moment later. On macOS
+    // the pid of a process that is gone stays killable for a few milliseconds, so the process is waited for
+    // rather than looked at once (#1504).
+    for (let wait = 0; wait < 500 && alive(); wait += 1) await new Promise((resolve) => { setTimeout(resolve, 10); });
     expect(alive()).toBe(false);
     expect(await setup).toMatchObject({ code: 'setup_failed' });
   });

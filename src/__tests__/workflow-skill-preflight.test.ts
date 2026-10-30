@@ -151,47 +151,6 @@ steps:
     command: node -e "console.log(process.env.NAME)"
 `;
 
-// The default session-close, as #1388 defines it.
-const SESSION_CLOSE = `schemaVersion: v1alpha1
-name: session-close
-description: Close out this session with the person - share what it taught as a team learning, publish its transcript to the team, score it with the team's scorers. Use when the person asks to close the session, share a learning, publish or archive the session, or score or judge it.
-invoke: ask
-inputs: { session: string, source: string, publish: boolean, scorers: [string], judge: here | driver }
-steps:
-  - id: learning
-    interactive: true
-    prompt: "Run \`teamai skill get share\` and follow it with the person for the {{ inputs.source }} session {{ inputs.session }}. If the person finds nothing worth sharing, return verdict skip. Otherwise write the learning to a file outside the repository and return verdict share, its path, its title, and the learnings namespace (an empty string for the shared root)."
-    output: { verdict: share | skip, title: string, file: string, namespace: string }
-  - id: contribute
-    needs: [learning]
-    if: steps.learning.outputs.verdict == 'share'
-    approve: Share "{{ steps.learning.outputs.title }}" with the team?
-    command: teamai contribute --file "$FILE" --title "$TITLE" --namespace "$NS" --session-id "$SESSION"
-    env: { FILE: "{{ steps.learning.outputs.file }}", TITLE: "{{ steps.learning.outputs.title }}", NS: "{{ steps.learning.outputs.namespace }}", SESSION: "{{ inputs.session }}" }
-  - id: publish
-    needs: []
-    if: inputs.publish
-    approve: { message: "Publish this session, scrubbed, to the team?", required: true }
-    command: teamai session push --scrub --session "$SESSION" --source "$SOURCE"
-    env: { SESSION: "{{ inputs.session }}", SOURCE: "{{ inputs.source }}" }
-  - id: score
-    needs: []
-    if: inputs.judge == 'here'
-    for_each: inputs.scorers
-    command: teamai score --session "$SESSION" --source "$SOURCE" --scorer "$SCORER"
-    env: { SESSION: "{{ inputs.session }}", SOURCE: "{{ inputs.source }}", SCORER: "{{ item }}" }
-  - id: score-driver
-    needs: []
-    if: inputs.judge == 'driver'
-    for_each: inputs.scorers
-    prompt: |
-      Judge the {{ inputs.source }} session {{ inputs.session }} with the scorer {{ item }}. Take the judge work with
-      teamai score --scorer {{ item }} --session {{ inputs.session }} --source {{ inputs.source }} --json '{"driver":{"kind":"{{ inputs.source }}","machine":"local","workspace":".","can":{"judge":{"isolation":"best-effort","access":"read","tools":["<your tool>"]}}}}'
-      Read only the lease's prompt file and evidence directory, answer with the lease's answer schema, and send the answer with the lease's submit command and the same driver. Return the label it stored.
-      In tools, declare the id of your own tool (claude, codex, cursor, …), not the session's platform. If teamai answers isolation_unmet, judge_model_unavailable or busy, return an empty label.
-    output: { label: string }
-`;
-
 const SCORERS = { 'review-quality': `---
 labels:
   - { value: thorough, score: 1, description: Did the work it was asked for }
@@ -471,10 +430,10 @@ describe('skill driver preflight of optional gates', () => {
     ].join('\n') } } } } });
   });
 
-  it('names the contribute command session-close asks to share a learning before', async () => {
-    expect(await questionOf({ 'session-close': SESSION_CLOSE }, 'session-close')).toMatchObject({ data: { describe: { ask: { kind: 'ask', question: { text: expect.stringContaining([
-      '- Only you can answer the approval at publish, from your own terminal or teamai dashboard.',
-      '- Optional approval at contribute: before `teamai contribute --file "$FILE" --title "$TITLE" --namespace "$NS" --session-id…`.',
+  it('names the approval teamai-share-learnings asks before it shares the learnings, and the one its teamai-share-session step asks', async () => {
+    expect(await questionOf({}, 'teamai-share-learnings')).toMatchObject({ data: { describe: { ask: { kind: 'ask', question: { text: expect.stringContaining([
+      '- Only you can answer the approval at share-session.publish, from your own terminal or teamai dashboard.',
+      '- Optional approval at approve: no action; contribute waits for it.',
       approvalsAnswer,
       '- The team asks that you agree before it starts.',
     ].join('\n')) } } } } });

@@ -19,6 +19,7 @@ import {
   getDataHome,
   MemberSettingsSchema,
   MemberWorkflowSettingsSchema,
+  WorkflowToolSchema,
   type MemberSettings,
   type MemberWorkflowSettings,
   SELF_BRANCH_HOME_DIRNAME,
@@ -339,7 +340,7 @@ function readMachineWorkflowSettings(raw: Record<string, unknown>, configPath: s
   if (tools) {
     const accepted: Record<string, string> = {};
     for (const [name, value] of Object.entries(tools)) {
-      const parsed = z.string().min(1).safeParse(value);
+      const parsed = WorkflowToolSchema.safeParse(value);
       if (parsed.success) accepted[name] = parsed.data;
       else warnOnce(`Ignoring workflows.tools.${name} in ${configPath}: ${describeConfigError(parsed.error)}.`);
     }
@@ -425,9 +426,11 @@ function applyMachineSettings(config: LocalConfig, machine: MemberSettings): Loc
   const local = MemberSettingsSchema.parse(config);
   // `ai.tool` has a dedicated precedence reader (`aiToolSettings`) used by
   // tool-launch. Do not inject the machine copy into every workspace config;
-  // keeping it in this overlay would create a second, stale reader.
-  const { ai: _machineAi, ...machineWithoutAi } = machine;
-  const { ai: _localAi, ...localWithoutAi } = local;
+  // keeping it in this overlay would create a second, stale reader. The
+  // machine's `scoring` only restricts, so `scopeScoring` reads it beside the
+  // scope's own instead of letting it stand in for that.
+  const { ai: _machineAi, scoring: _machineScoring, ...machineWithoutAi } = machine;
+  const { ai: _localAi, scoring: _localScoring, ...localWithoutAi } = local;
   const merged: MemberSettings = { ...machineWithoutAi, ...localWithoutAi };
 
   const mergedWorkflows = machine.workflows || local.workflows

@@ -691,6 +691,19 @@ export const DEFAULT_TOOL_PATHS = {
     agents: '.agents/agents',
     userScope: { skills: '.config/muse/skills', settings: '.config/muse/settings.json', agents: '.config/muse/agents' },
   },
+  // Antigravity CLI (Google, binary `agy`) reads user customizations from
+  // ~/.gemini/config and a project's from <root>/.agents. Its rules need a
+  // `trigger` frontmatter. ~/.gemini/skills and ~/.gemini/GEMINI.md belong to
+  // Gemini CLI, so nothing here points at them.
+  agy: {
+    skills: '.agents/skills',
+    rules: '.agents/rules',
+    agents: '.agents/agents',
+    // agy reads a project's MCP servers only from a plugin, so teamai's ride a plugin of its own.
+    mcp: '.gemini/config/mcp_config.json',
+    mcpProject: '.agents/plugins/teamai/mcp_config.json',
+    userScope: { skills: '.gemini/config/skills', rules: '.gemini/config/rules', agents: '.gemini/config/agents' },
+  },
 } satisfies Record<string, z.infer<typeof ToolPathsSchema>>;
 
 /** A built-in tool. Custom tools in a team's `toolPaths` stay plain strings. */
@@ -820,37 +833,85 @@ export type MemberConfig = z.infer<typeof MemberConfigSchema>;
 
 // ─── Member settings overlay (~/.teamai/config.yaml) ───────
 
+/** One `workflows.tools` entry: the tool a step role runs on. */
+export const WorkflowToolSchema = z.string().min(1);
+
 /**
  * Settings a member may place in the machine config. These are deliberately
  * separate from install metadata: a workspace/self config overlays them at
  * runtime, but never persists the machine value into its own file.
  */
 export const MemberWorkflowSettingsSchema = z.object({
-  tools: z.record(z.string(), z.string().min(1)).optional(),
+  tools: z.record(z.string(), WorkflowToolSchema).default({}),
+  /** How many command steps the local driver runs at once. Unset means 1. */
   max_parallel: z.number().int().positive().optional(),
+  /** Whether a driver without HITL automatically answers optional approve requests and uses choose defaults. Unset means false. */
   auto_approve: z.boolean().optional(),
+  /** This host contains what it runs, such as a CI VM or a container, so the local driver declares `sandbox` isolation. */
   sandbox: z.boolean().optional(),
+  /** What a workflow step may use on this machine, whatever driver runs it. An unset key allows. */
   allow: AllowSchema.optional(),
 });
 
 export type MemberWorkflowSettings = z.infer<typeof MemberWorkflowSettingsSchema>;
 
 export const MemberSettingsSchema = z.object({
-  // Keep the member-settings shape compatible with LocalConfigSchema. An empty
-  // local ai.tool is treated as unset by aiToolSettings; it must not make an
-  // otherwise valid workspace config unreadable during overlay parsing.
+  /**
+   * The AI tool teamai's own calls run on this machine; TEAMAI_AI_TOOL overrides it. Checked when a call runs. An empty
+   * tool is unset (`aiToolSettings`), not an error, so it never makes a config unreadable.
+   */
   ai: z.object({ tool: z.string().optional() }).optional(),
+  /** User-level override for recall feature. When set, takes precedence over team config. */
   recallEnabled: z.boolean().optional(),
+  /** User-level override for the share-learnings hint. When set, takes precedence over team config. */
   contributeHintEnabled: z.boolean().optional(),
+  /** User-level override for the SessionStart MR hint. When set, takes precedence over team config. */
   mrHintEnabled: z.boolean().optional(),
+  /** Per-machine override of the team's `usageReport`. When set, takes
+   *  precedence over the team config. Undefined defers to the team. */
   usageReportEnabled: z.boolean().optional(),
+  /** Per-machine override for the co-author trailer in AI-tool commits. When set,
+   *  takes precedence over the team `sharing.coAuthor` default. Undefined means
+   *  "defer to the team" (see resolveCoAuthor). */
   coAuthorEnabled: z.boolean().optional(),
+  /** Per-machine override of the team's `sharing.autoCompact.tokens`. 0 opts
+   *  out; undefined defers to the team (see resolveAutoCompactTokens). */
   autoCompactTokens: z.number().int().min(0).optional(),
+  /** Per-machine opt-out of trusting in Codex what teamai writes for it: the
+   *  hooks (`hooks.state`) and, for project hooks, the project (#955).
+   *  Undefined means on. */
   codexTrustEnabled: z.boolean().optional(),
   updatePolicy: z.enum(['auto', 'prompt', 'skip']).optional(),
+  /**
+   * Per-machine map from a gateway/proxy model alias to a known Claude model
+   * name, so cost/cache estimation works when the transcript records an opaque
+   * alias (e.g. `gateway-model-42`) instead of `claude-opus-...`. The value must
+   * contain a token the price table matches (opus / sonnet / haiku / fable /
+   * mythos + version). Unset means "match the raw model name only".
+   */
   modelAliases: z.record(z.string(), z.string()).optional(),
+  /**
+   * What happens to this member's sessions, per run mode, over the team's `teamai.yaml` `sessions`:
+   * `publish: { attended?, unattended? }` of off, ask or auto. Kept as written; `doctor` reports a value it cannot use.
+   */
   sessions: z.unknown().optional(),
+  /** Per-machine tool selection for locally executed workflow prompt steps. */
   workflows: MemberWorkflowSettingsSchema.optional(),
+  /**
+   * How this scope judges sessions. In ~/.teamai/config.yaml below a workspace or self scope, a value applies only where
+   * it is stricter than what the team sets (`scopeScoring`), so a machine never starts paid judging.
+   */
+  scoring: z.object({
+    /** The least isolation a judge of this scope needs, raising the team's and the scorer's. A value teamai does not know counts as `verified`. */
+    isolation: z.string().optional().catch(({ input }) => JSON.stringify(input)),
+    /**
+     * Judge this scope's finished agent sessions, per run mode: `{ attended?, unattended? }` of off, ask or auto, or true
+     * or false for auto or off in both. Kept as written; the scope's scoring settings report a value they cannot use.
+     */
+    sessions: z.unknown().optional(),
+    /** How many sessions a local day may lease for judging; 0 turns session scoring off. Another value is kept as its text, which sets nothing. */
+    daily_limit: z.union([z.number().int().nonnegative(), z.string()]).optional().catch(({ input }) => JSON.stringify(input)),
+  }).optional(),
 });
 export type MemberSettings = z.infer<typeof MemberSettingsSchema>;
 
@@ -898,7 +959,6 @@ export const LocalConfigSchema = z.object({
    * so a member of a GitLab team needs no GITLAB_TOKEN. Absent = the team's.
    */
   provider: ProviderNameSchema.optional(),
-  updatePolicy: z.enum(['auto', 'prompt', 'skip']).optional(),
   // Read-compat default for historical configs that omit `scope` (pre-project era).
   // NOT the write default for `teamai init` — init defaults to workspace (issue #250).
   scope: InstallScopeSchema.default('user'),
@@ -922,29 +982,9 @@ export const LocalConfigSchema = z.object({
   subscribedTags: z.array(z.string()).optional(),
   /** Skills to exclude from local sync (per-user, does not affect team repo). */
   excludedSkills: z.array(z.string()).optional(),
-  /** User-level override for recall feature. When set, takes precedence over team config. */
-  recallEnabled: z.boolean().optional(),
   /** Per-machine override of the team's `sharing.gitExclude.enabled` (#915),
    *  hand-edited in the partition config. Undefined defers to the team. */
   gitExcludeEnabled: z.boolean().optional(),
-  /** User-level override for the share-learnings hint. When set, takes precedence over team config. */
-  contributeHintEnabled: z.boolean().optional(),
-  /** User-level override for the SessionStart MR hint. When set, takes precedence over team config. */
-  mrHintEnabled: z.boolean().optional(),
-  /** Per-machine override of the team's `usageReport`. When set, takes
-   *  precedence over the team config. Undefined defers to the team. */
-  usageReportEnabled: z.boolean().optional(),
-  /** Per-machine override for the co-author trailer in AI-tool commits. When set,
-   *  takes precedence over the team `sharing.coAuthor` default. Undefined means
-   *  "defer to the team" (see resolveCoAuthor). */
-  coAuthorEnabled: z.boolean().optional(),
-  /** Per-machine override of the team's `sharing.autoCompact.tokens`. 0 opts
-   *  out; undefined defers to the team (see resolveAutoCompactTokens). */
-  autoCompactTokens: z.number().int().min(0).optional(),
-  /** Per-machine opt-out of trusting in Codex what teamai writes for it: the
-   *  hooks (`hooks.state`) and, for project hooks, the project (#955).
-   *  Undefined means on. */
-  codexTrustEnabled: z.boolean().optional(),
   /** When set, only inject hooks into these agents. Additive across multiple init --agent runs. */
   enabledAgents: z.array(z.string()).optional(),
   /**
@@ -961,44 +1001,7 @@ export const LocalConfigSchema = z.object({
   toolRoots: z.record(z.string(), z.string()).optional(),
   /** Tools explicitly excluded from all teamai sync (set by `uninstall --agent`). Removed again by `init --agent`. */
   disabledAgents: z.array(z.string()).optional(),
-  /** The AI tool teamai's own calls run on this machine; TEAMAI_AI_TOOL overrides it. Checked when a call runs. */
-  ai: z.object({ tool: z.string().optional() }).optional(),
-  /** Per-machine tool selection for locally executed workflow prompt steps. */
-  workflows: z.object({
-    tools: z.record(z.string(), z.string().min(1)).default({}),
-    /** How many command steps the local driver runs at once. Unset means 1. */
-    max_parallel: z.number().int().positive().optional(),
-    /** Whether a driver without HITL automatically answers optional approve requests and uses choose defaults. Unset means false. */
-    auto_approve: z.boolean().optional(),
-    /** This host contains what it runs, such as a CI VM or a container, so the local driver declares `sandbox` isolation. */
-    sandbox: z.boolean().optional(),
-    /** What a workflow step may use on this machine, whatever driver runs it. An unset key allows. */
-    allow: AllowSchema.optional(),
-  }).optional(),
-  /**
-   * Per-machine map from a gateway/proxy model alias to a known Claude model
-   * name, so cost/cache estimation works when the transcript records an opaque
-   * alias (e.g. `gateway-model-42`) instead of `claude-opus-...`. The value must
-   * contain a token the price table matches (opus / sonnet / haiku / fable /
-   * mythos + version). Unset means "match the raw model name only".
-   */
-  modelAliases: z.record(z.string(), z.string()).optional(),
-  /**
-   * What happens to this member's sessions, per run mode, over the team's `teamai.yaml` `sessions`:
-   * `publish: { attended?, unattended? }` of off, ask or auto. Kept as written; `doctor` reports a value it cannot use.
-   */
-  sessions: z.unknown().optional(),
-  scoring: z.object({
-    /** The least isolation a judge of this scope needs, raising the team's and the scorer's. A value teamai does not know counts as `verified`. */
-    isolation: z.string().optional().catch(({ input }) => JSON.stringify(input)),
-    /**
-     * Judge this scope's finished agent sessions, per run mode: `{ attended?, unattended? }` of off, ask or auto, or true
-     * or false for auto or off in both. Kept as written; the scope's scoring settings report a value they cannot use.
-     */
-    sessions: z.unknown().optional(),
-    /** How many sessions a local day may lease for judging; 0 turns session scoring off. Another value is kept as its text, which sets nothing. */
-    daily_limit: z.union([z.number().int().nonnegative(), z.string()]).optional().catch(({ input }) => JSON.stringify(input)),
-  }).optional(),
+  ...MemberSettingsSchema.shape,
 });
 
 /** Local-config keys that remain specific to one install rather than overlaying from the machine. */
@@ -1006,7 +1009,7 @@ export const LOCAL_CONFIG_INSTALL_KEYS = [
   'repo', 'username', 'provider', 'scope', 'primaryRole', 'additionalRoles',
   'projects', 'resourceProfileVersion', 'projectRoot', 'inheritUserScope',
   'subscribedTags', 'excludedSkills', 'gitExcludeEnabled', 'enabledAgents',
-  'toolRoots', 'disabledAgents', 'scoring',
+  'toolRoots', 'disabledAgents',
 ] as const satisfies readonly Exclude<keyof z.infer<typeof LocalConfigSchema>, keyof MemberSettings>[];
 
 /**
@@ -1507,6 +1510,8 @@ export interface HookDef {
   matcher?: string;
   /** Shell command to run. */
   command: string;
+  /** Claude command-hook shell override; set when the generated guard is PowerShell on Windows. */
+  shell?: 'powershell';
   /** Per-hook timeout in seconds (tool-specific; omitted = tool default). */
   timeout?: number;
   /**
@@ -2360,7 +2365,16 @@ export interface ContributeState {
    * that deliver the hint directly through the Stop hook.
    */
   pendingHint?: string;
+  /**
+   * What the reminder offered with the teamai-share-learnings workflow (#1388), set in the write that sets `hinted`: whether to
+   * publish the session, and the scorers to judge it with. Absent when the reminder named no workflow.
+   */
+  offered?: SessionShareOffered;
 }
+
+/** What the friction reminder offers a session with the teamai-share-learnings workflow, as the session's state keeps it. */
+export const SessionShareOfferedSchema = z.object({ publish: z.boolean(), scorers: z.array(z.string()) });
+export type SessionShareOffered = z.infer<typeof SessionShareOfferedSchema>;
 
 /**
  * Layer 1 (fast-path) threshold: if toolCount < this, skip reading events.jsonl.

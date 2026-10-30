@@ -209,6 +209,7 @@ servers:
   it.each([
     ['no config.toml', null],
     ['a config.toml of the member\'s', 'model = "gpt-5"\n'],
+    ['a config.toml with a UTF-8 BOM and CRLF', '\uFEFF# member settings\r\nmodel = "gpt-5"\r\n'],
   ])('is idempotent for Codex — a second run over %s changes nothing', async (_label, initial) => {
     const configToml = path.join(homeDir, '.codex', 'config.toml');
     await fse.ensureDir(path.join(homeDir, '.codex', 'skills'));
@@ -223,6 +224,7 @@ servers:
 
     expect((await reconcileMcpForConfig(teamConfig, localConfig)).wrote).toBe(true);
     const written = await fse.readFile(configToml, 'utf-8');
+    if (initial !== null) expect(written.startsWith(initial)).toBe(true);
 
     const second = await reconcileMcpForConfig(teamConfig, localConfig);
     expect(second.changes).toEqual([]);
@@ -3782,20 +3784,29 @@ servers:
     expect(after).toContain('command = "my-mcp"');
   });
 
-  it('leaves an unparseable config file alone rather than clobbering it', async () => {
-    const claudeJson = path.join(homeDir, '.claude.json');
-    await fse.writeFile(claudeJson, '{ this is not valid json');
+  it.each([
+    ['claude', '.claude.json', '{ this is not valid json'],
+    ['codex', '.codex/config.toml', 'model = ['],
+    ['codex', '.codex/config.toml', '\uFEFFmodel = ['],
+  ])('leaves an unparseable %s config alone and reports an incomplete reconcile', async (tool, relativePath, broken) => {
+    const file = path.join(homeDir, relativePath);
+    await fse.ensureDir(path.dirname(file));
+    await fse.writeFile(file, broken);
 
     await writeMcpYaml(`
 servers:
   - name: s1
     transport: http
     url: https://example.com/mcp
-    tools: [claude]
+    tools: [${tool}]
 `);
 
-    await reconcileMcpForConfig(teamConfig, localConfig);
-    expect(await fse.readFile(claudeJson, 'utf-8')).toBe('{ this is not valid json');
+    const result = await reconcileMcpForConfig(teamConfig, localConfig);
+    expect(result.unparsed).toBe(true);
+    expect(await fse.readFile(file, 'utf-8')).toBe(broken);
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining(
+      `${tool === 'codex' ? 'Could not read or parse' : 'Could not parse'} ${file}`,
+    ));
   });
 
   it('enforces the allowedHosts policy', async () => {
@@ -4428,5 +4439,17 @@ describe('spliceCodexBlock', () => {
   it('lists existing server names', () => {
     const src = '[mcp_servers.a]\n\n[mcp_servers.b]\n\n[mcp_servers.b.env]\nX = "1"\n';
     expect(codexServerNames(src).sort()).toEqual(['a', 'b']);
+  });
+
+  it.each([
+    ['a comment after the header', '[mcp_servers.a] # mine'],
+    ['spaces inside the brackets', '[ mcp_servers.a ]'],
+    ['a quoted name', '[mcp_servers."a"]'],
+  ])('finds and replaces a header written with %s', (_label, header) => {
+    const src = `model = "gpt-5"\n\n${header}\ncommand = "old"\n`;
+    expect(codexServerNames(src)).toEqual(['a']);
+    const out = spliceCodexBlock(src, 'a', '[mcp_servers.a]\ncommand = "new"\n');
+    expect(out).not.toContain('command = "old"');
+    expect(out.match(/mcp_servers/g)).toHaveLength(1);
   });
 });

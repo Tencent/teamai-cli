@@ -144,7 +144,7 @@ function userRow(tool: ToolId, d: ToolDescriptor): string[] {
     channel(d.rules.user, (c) => c.channel === 'inline' ? `in the blocks file (${c.label})` : reads(c.reads)),
     channel(d.blocks.user, (c) => reads(c.reads)),
     channel(d.agents.user, (c) => reads(c.reads)),
-    channel(hooks.user, (c) => c.channel === 'settings' ? reads(c.reads) : `${c.adapter}${c.teamHooks ? ' incl. team hooks' : ''} ${EVIDENCE[c.evidence]}`),
+    channel(hooks.user, (c) => c.channel === 'settings' ? reads(c.reads) : `${c.adapter} ${EVIDENCE[c.evidence]}`),
     channel(d.mcp.user, (c) => reads(c.reads)),
     typeof d.sessions === 'string' ? channel(d.sessions, () => '') : d.sessions.join(', '),
   ];

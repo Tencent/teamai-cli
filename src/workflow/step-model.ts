@@ -68,18 +68,26 @@ function unavailable(message: string): StepModelChoice {
   return { ok: false, failure: { code: 'model_unavailable', message } };
 }
 
+/** The model the definition sets for `tool`. agy's own model reads back into `tool_extras.agy`, never the team's `model`. */
+function definitionModel(agent: AgentSpec | undefined, tool: ToolName): string | undefined {
+  if (agent === undefined) return undefined;
+  const own = tool === 'agy' ? toolExtrasFor(agent, 'agy')?.['model'] : undefined;
+  return typeof own === 'string' ? own : agent.model;
+}
+
 export async function chooseStepModel(request: StepModelRequest): Promise<StepModelChoice> {
   const { step, tool, agent } = request;
+  const defined = definitionModel(agent, tool);
   const chosen: { origin: ModelOrigin; value: string } | undefined = request.model !== undefined
     ? { origin: 'step', value: request.model }
-    : agent?.model === undefined && request.defaultModel !== undefined ? { origin: 'defaults', value: request.defaultModel } : undefined;
+    : defined === undefined && request.defaultModel !== undefined ? { origin: 'defaults', value: request.defaultModel } : undefined;
   if (!chosen) {
     // A tool teamai does not launch starts the agent itself, from the file it reads the model from.
     const family = isLaunchTool(tool) ? launchAdapterIdOf(tool) : undefined;
     // Claude and CodeBuddy read it from the agent file `--agent` names.
-    if (!agent?.model || family === undefined || family === 'claude' || family === 'codebuddy') return { ok: true };
+    if (!agent || !defined || family === undefined || family === 'claude' || family === 'codebuddy') return { ok: true };
     const variant = family === 'opencode' ? toolExtrasFor(agent, 'opencode')?.['variant'] : undefined;
-    return { ok: true, by: 'definition', model: { name: agent.model, ...(variant !== undefined ? { effort: String(variant) } : {}) } };
+    return { ok: true, by: 'definition', model: { name: defined, ...(variant !== undefined ? { effort: String(variant) } : {}) } };
   }
   const aliases = await loadModelAliases(request.config);
   const resolution = resolveModelValue(aliases, chosen.value, tool);

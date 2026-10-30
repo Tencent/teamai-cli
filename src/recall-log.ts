@@ -64,7 +64,7 @@ export interface RunLine {
    * True when the environment held a single session id. A run settles by its
    * first valid claim, or else by `session` only when this is true.
    */
-  unambiguous: boolean;
+  unambiguous: boolean | undefined;
   /** `--caller`: `teamai-recall` when the recall subagent ran it. */
   caller?: string;
   docs: RecalledDoc[];
@@ -78,7 +78,7 @@ export interface ClaimLine extends Actor {
    * Whether the shell command itself ran `teamai recall`, rather than only
    * printing a recall's output. Only a direct claim can settle its run.
    */
-  direct: boolean;
+  direct: boolean | undefined;
   /** The agent whose hook sent the claim: its dispatch tool id. */
   agent?: string;
 }
@@ -92,7 +92,7 @@ export interface EvidenceLine extends Actor {
   /** A failed read is never recorded. `unknown` when the agent reports no status, as Codex's shell. */
   status: 'success' | 'unknown';
   /** True when the read was the call's only command, not the head of a pipeline. */
-  simple: boolean;
+  simple: boolean | undefined;
 }
 
 /**

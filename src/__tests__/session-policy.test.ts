@@ -2,8 +2,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import YAML from 'yaml';
-import { afterEach, describe, expect, it } from 'vitest';
-import { loadTeamConfig } from '../config.js';
+import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
+import { loadTeamConfig, refreshRoleAssignment } from '../config.js';
 import { SessionPolicy } from '../session-flow/session-policy.js';
 import { LocalConfigSchema, type LocalConfig } from '../types.js';
 
@@ -72,5 +72,19 @@ describe('SessionPolicy.publish', () => {
       problems: ['Sessions are not published: the team repo is an HTTP repo, which keeps no session archive, so sessions.publish acts as off'],
     });
     expect(SessionPolicy.publish({ ...config, sessions: { publish: { attended: 'off', unattended: 'off' } } }, team)).toMatchObject({ problems: [] });
+  });
+
+  it('names ~/.teamai/config.yaml for a value a workspace takes from it', async () => {
+    const machineFile = path.join(process.env.HOME ?? '', '.teamai', 'config.yaml');
+    fs.mkdirSync(path.dirname(machineFile), { recursive: true });
+    fs.writeFileSync(machineFile, 'sessions:\n  publish: { unattended: off, attended: never }\n');
+    onTestFinished(() => fs.rmSync(machineFile, { force: true }));
+    const { config, team } = await scope({ memberYaml: 'scope: workspace\nprojectRoot: /tmp/ws\n' });
+    await refreshRoleAssignment(config);
+
+    expect(SessionPolicy.publish(config, team)).toEqual({
+      policies: { attended: { policy: 'ask', source: { kind: 'default' } }, unattended: { policy: 'off', source: { kind: 'setting', key: '~/.teamai/config.yaml sessions.publish.unattended' } } },
+      problems: ['~/.teamai/config.yaml sessions.publish.attended is "never", not off, ask or auto, so it is ignored'],
+    });
   });
 });

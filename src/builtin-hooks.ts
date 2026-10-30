@@ -483,6 +483,16 @@ export function builtinHookDefs(tool: string): HookDef[] {
  */
 const ADAPTER_BUILTIN_HOOKS: Record<string, { keys: string[]; suffix?: string }> = {
   kiro: { keys: ['Hook dispatch session-start'] },
+  // agy-hooks.ts maps the same four events as OMP into agy's hooks.json
+  // (SessionStart, PreInvocation, PostToolUse, Stop).
+  agy: {
+    keys: [
+      'Hook dispatch session-start',
+      'Hook dispatch stop',
+      'Hook dispatch post-tool-use wildcard',
+      'Hook dispatch prompt-submit',
+    ],
+  },
   // hermes-hooks.ts registers one on_session_start script whose single line is
   // the dispatch command with errors swallowed (buildReportScript).
   hermes: { keys: ['Hook dispatch session-start'], suffix: ' >/dev/null 2>&1 || true' },

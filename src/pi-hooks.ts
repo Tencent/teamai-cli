@@ -14,31 +14,24 @@
  * `cwd` on STDIN only lets downstream handlers resolve the right project
  * context, not opt a project out. A targeted removal (scoped `uninstall` or
  * `hooks remove`) therefore deletes this one global copy outright, same as
- * the OMP adapter. The extension bridges TeamAI's built-in lifecycle events
- * only; custom team hooks declared in hooks/hooks.yaml are outside this
- * adapter's current scope. Pi profile overrides (`PI_CODING_AGENT_DIR` /
+ * the OMP adapter. The extension bridges TeamAI's built-in lifecycle events,
+ * and runs the team's hooks/hooks.yaml entries through bridged-team-hooks.ts:
+ * a PreToolUse hook can block a tool call on `tool_call`. Pi profile overrides (`PI_CODING_AGENT_DIR` /
  * `PI_CONFIG_DIR`), which relocate the agent directory, are not supported —
  * same as the OMP adapter — and the default `~/.pi/agent/` layout is used.
  */
 
 import path from 'node:path';
-import { generatedFileState, writeFile, writeIfChanged, ensureDir, remove } from './utils/fs.js';
+import { generatedFileState, writeIfChanged, remove } from './utils/fs.js';
 import { earlierHookAdapterDir, hookAdapterDir } from './locate.js';
 import { log } from './utils/logger.js';
 import { resolveCliEntry } from './builtin-hooks.js';
+import { bridgedTeamHookFile } from './bridged-team-hooks.js';
 
 /** Filename of the TeamAI-managed Pi extension. */
 export const PI_HOOK_FILE = 'teamai-hooks.ts';
 
 const TEAMAI_MARKER = '[teamai]';
-
-const CLAUDE_TO_PI_EVENTS: Record<string, string> = {
-  SessionStart: 'session_start',
-  UserPromptSubmit: 'before_agent_start',
-  PreToolUse: 'tool_execution_start',
-  PostToolUse: 'tool_execution_end',
-  Stop: 'agent_settled',
-};
 
 /** Project-local Pi extension directory used only to clean up legacy copies. */
 export function resolvePiProjectExtensionsDir(baseDir: string): string {
@@ -54,12 +47,17 @@ export function buildPiExtensionSource(entry = resolveCliEntry()): string {
 // point. The child process receives the same JSON payload as shell-based hooks
 // (cwd / session_id / tool_name / tool_input / prompt, and on post-tool-use the
 // tool's text output and status). Errors and timeouts are swallowed so a
-// missing teamai binary never blocks the Pi session.
+// missing teamai binary never blocks the Pi session. The team's hooks run only
+// on the events the team has one on: a PreToolUse hook can block a tool call.
 
 import { spawn } from "node:child_process";
+import fs from "node:fs";
 
 const NODE = ${JSON.stringify(process.execPath)};
 const ENTRY = ${JSON.stringify(entry)};
+const TEAM_HOOKS_FILE = ${JSON.stringify(bridgedTeamHookFile('pi'))};
+/** Pi waits for a handler with no limit; the team hooks keep their own timeouts, this bounds the dispatch. */
+const TEAM_HOOKS_TIMEOUT_MS = 600000;
 
 /** The host session id (Pi's bash tool exports it as PI_SESSION_ID), read defensively. */
 const sessionOf = (ctx) => {
@@ -149,21 +147,84 @@ export default function teamaiHooks(pi) {
     }
   });
 
+  // The team's hooks for a Claude event (hooks/hooks.yaml), run by
+  // \`teamai hook-dispatch <Event> --tool pi --team-hooks\` when the team has
+  // one on it: {block} for a PreToolUse hook that refuses, {context} for what
+  // a SessionStart or UserPromptSubmit hook adds, else undefined. What a hook
+  // that failed or timed out wrote on stderr goes to Pi's console. Never
+  // rejects: Pi blocks a tool call whose handler throws.
+  const teamHooks = (event, ctx, payload) => new Promise((resolve) => {
+    try {
+      const hooks = JSON.parse(fs.readFileSync(TEAM_HOOKS_FILE, "utf8")).hooks;
+      if (!hooks || !Array.isArray(hooks[event]) || hooks[event].length === 0) return resolve(undefined);
+      const cwd = ctx.cwd;
+      const child = spawn(NODE, [ENTRY, "hook-dispatch", event, "--tool", "pi", "--team-hooks"], {
+        cwd,
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
+        shell: false,
+      });
+      let out = "";
+      let err = "";
+      const finish = () => {
+        clearTimeout(timer);
+        if (err.trim()) console.error(err.trimEnd());
+        err = "";
+        try {
+          resolve(out.trim() ? JSON.parse(out) : undefined);
+        } catch {
+          resolve(undefined);
+        }
+      };
+      const timer = setTimeout(() => {
+        try { child.kill(); } catch {}
+        out = "";
+        finish();
+      }, TEAM_HOOKS_TIMEOUT_MS);
+      child.stdout?.on("data", (chunk) => { out += chunk; });
+      child.stderr?.on("data", (chunk) => { err += chunk; });
+      child.stdin?.on("error", () => {});
+      child.stdin?.end(JSON.stringify({ cwd, ...sessionOf(ctx), ...(payload || {}) }));
+      child.once("close", finish);
+      child.once("error", () => { out = ""; finish(); });
+    } catch {
+      resolve(undefined);
+    }
+  });
+
+  // What the team's SessionStart hooks added at the session's start, for its first run.
+  let started;
+
   pi.on("session_start", async (_event, ctx) => {
     await dispatch("session-start", ctx);
     instructions = loadInstructions(ctx);
+    started = teamHooks("SessionStart", ctx);
   });
 
   pi.on("agent_settled", async (_event, ctx) => {
     await dispatch("stop", ctx);
+    await teamHooks("Stop", ctx);
   });
 
   // Pi renders the system prompt again for every run, so adding the blocks
-  // to this run's prompt reaches the model once, without piling up.
+  // to this run's prompt reaches the model once, without piling up. For the
+  // same reason the SessionStart hooks run again each run after the first:
+  // what they print follows what a prompt hook changed (#1492).
   pi.on("before_agent_start", async (event, ctx) => {
+    const session = started ?? teamHooks("SessionStart", ctx);
+    started = undefined;
     await dispatch("prompt-submit", ctx, { prompt: event.prompt });
     const text = await (instructions ??= loadInstructions(ctx));
-    return text ? { systemPrompt: \`\${event.systemPrompt}\\n\\n\${text}\` } : undefined;
+    // A run an extension starts (messageType "custom") carries no user prompt.
+    const prompt = typeof event.prompt === "string" ? await teamHooks("UserPromptSubmit", ctx, { prompt: event.prompt }) : undefined;
+    const added = [text, (await session)?.context, prompt?.context].filter((part) => typeof part === "string" && part);
+    return added.length ? { systemPrompt: [event.systemPrompt, ...added].join("\\n\\n") } : undefined;
+  });
+
+  // Fires before the tool runs, unlike tool_execution_start, and a {block} result stops it.
+  pi.on("tool_call", async (event, ctx) => {
+    const decision = await teamHooks("PreToolUse", ctx, { tool_name: event.toolName, tool_input: event.input });
+    return decision && typeof decision.block === "string" ? { block: true, reason: decision.block } : undefined;
   });
 
   pi.on("tool_execution_start", async (event) => {
@@ -173,13 +234,15 @@ export default function teamaiHooks(pi) {
   // The result is what the model saw; isError is set for a failed call,
   // including a bash command that exits non-zero.
   pi.on("tool_execution_end", async (event, ctx) => {
-    await dispatch("post-tool-use", ctx, {
+    const payload = {
       tool_name: event.toolName,
       tool_input: toolInputs.get(event.toolCallId) || {},
       tool_response: textOf(event.result && event.result.content),
       tool_status: event.isError === true ? "failure" : event.isError === false ? "success" : "unknown",
-    });
+    };
     toolInputs.delete(event.toolCallId);
+    await dispatch("post-tool-use", ctx, payload);
+    await teamHooks("PostToolUse", ctx, payload);
   });
 }
 `;
@@ -226,39 +289,6 @@ function assertSafeSlug(slug: string): void {
   }
 }
 
-/** Build a Pi extension for one HTTP-source agent hook. */
-export function buildPiAgentHookExtensionSource(
-  slug: string,
-  event: string,
-  command: string,
-  matcher?: string,
-  timeout = 10,
-): string {
-  const piEvent = CLAUDE_TO_PI_EVENTS[event];
-  if (!piEvent) return '';
-  const toolEvent = piEvent === 'tool_execution_start' || piEvent === 'tool_execution_end';
-  const matcherGate = toolEvent && matcher && matcher !== '*'
-    ? piEvent === 'tool_execution_end'
-      ? `\n    if (String(event.toolName || '').toLowerCase() !== ${JSON.stringify(matcher.toLowerCase())}) { toolInputs.delete(event.toolCallId); return; }`
-      : `\n    if (String(event.toolName || '').toLowerCase() !== ${JSON.stringify(matcher.toLowerCase())}) return;`
-    : '';
-  const timeoutMs = Math.max(1, timeout) * 1000;
-  const captureToolStart = piEvent === 'tool_execution_end'
-    ? '  pi.on("tool_execution_start", async (event) => {\n    toolInputs.set(event.toolCallId, event.args || {});\n  });\n'
-    : '';
-  const payload = piEvent === 'before_agent_start'
-    ? '{ prompt: event.prompt }'
-    : piEvent === 'tool_execution_start'
-      ? '{ tool_name: event.toolName, tool_input: event.args || {} }'
-      : piEvent === 'tool_execution_end'
-        ? '{ tool_name: event.toolName, tool_input: toolInputs.get(event.toolCallId) || {} }'
-        : '{}';
-  const cleanupToolInput = piEvent === 'tool_execution_end'
-    ? '\n    toolInputs.delete(event.toolCallId);'
-    : '';
-  return `// ${TEAMAI_MARKER} agent hook [${slug}] — generated by teamai, do not edit by hand.\nimport { spawn } from "node:child_process";\n\nexport default function teamaiAgentHook(pi) {\n  const toolInputs = new Map();\n  const run = async (cwd, payload) => {\n    try {\n      const shell = process.platform === "win32" ? "cmd.exe" : "sh";\n      const args = process.platform === "win32" ? ["/d", "/s", "/c", ${JSON.stringify(command)}] : ["-c", ${JSON.stringify(command)}];\n      const child = spawn(shell, args, { cwd, stdio: ["pipe", "ignore", "ignore"], windowsHide: true });\n      child.stdin?.on("error", () => {});\n      child.stdin?.end(JSON.stringify({ cwd, ...(payload || {}) }));\n      await new Promise((resolve) => {\n        const timer = setTimeout(() => { try { child.kill(); } catch {} resolve(undefined); }, ${timeoutMs});\n        child.once("close", () => { clearTimeout(timer); resolve(undefined); });\n        child.once("error", () => { clearTimeout(timer); resolve(undefined); });\n      });\n    } catch {}\n  };\n${captureToolStart}  pi.on(${JSON.stringify(piEvent)}, async (event, ctx) => {${matcherGate}\n    await run(ctx.cwd, ${payload});${cleanupToolInput}\n  });\n}\n`;
-}
-
 /** Filename of one HTTP-source agent-hook extension, keyed by slug. */
 function piAgentHookFile(slug: string, dir = hookAdapterDir('pi-extension')): string {
   return path.join(dir, `teamai-agent-${slug}.ts`);
@@ -275,37 +305,7 @@ export async function hasPiAgentHook(slug: string, dir?: string): Promise<boolea
 
 const piAgentHookState = (slug: string, dir?: string) => generatedFileState(piAgentHookFile(slug, dir), `${TEAMAI_MARKER} agent hook [${slug}]`);
 
-/**
- * Install one HTTP-source agent hook as a Pi extension.
- *
- * Throws instead of warn-and-skip on both the unsupported-event and
- * marker-collision cases: the caller (runHookRuleCommand) acks this back to
- * the server and writes the local manifest only after this resolves, so a
- * silent no-op here would leave both sides believing the hook is installed
- * when the file was never touched.
- */
-export async function applyPiAgentHook(def: {
-  slug: string;
-  event: string;
-  command: string;
-  matcher?: string;
-  timeout?: number;
-}): Promise<void> {
-  assertSafeSlug(def.slug);
-  const source = buildPiAgentHookExtensionSource(def.slug, def.event, def.command, def.matcher, def.timeout);
-  if (!source) {
-    throw new Error(`Pi does not support event "${def.event}" — skipping hook [${def.slug}]`);
-  }
-  const file = piAgentHookFile(def.slug);
-  if (await piAgentHookState(def.slug) === 'foreign') {
-    throw new Error(`Skipping Pi agent hook [${def.slug}]: ${file} exists without the TeamAI marker`);
-  }
-  await ensureDir(hookAdapterDir('pi-extension'));
-  await writeFile(file, source);
-  log.success(`Installed Pi agent hook [${def.slug}]`);
-}
-
-/** Remove one HTTP-source agent-hook extension. */
+/** Remove the agent-hook extension an earlier release installed for Pi; agent hooks now run from teamai's extension. */
 export async function removePiAgentHook(slug: string): Promise<void> {
   assertSafeSlug(slug);
   // And the copy an earlier release left under the default home, which Pi reads once its home stops moving (#1221).

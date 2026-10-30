@@ -1,8 +1,9 @@
 import fse from 'fs-extra';
+import { spawnSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { ModelProfileSchema, resolveProfile } from '../models/profile.js';
+import { ModelProfileSchema, profileAgents, resolveProfile } from '../models/profile.js';
 import { activeModelProfiles, refusedLegacyValueKeys, refuseLegacyValue, restoreModelProfiles, switchModelProfile } from '../models/switch.js';
 import { entryHash } from '../resources/mcp-format.js';
 import { saveToolHomes } from '../tool-home.js';
@@ -65,6 +66,87 @@ const openCodeFile = () => path.join(home, '.config', 'opencode', 'opencode.json
 const piFile = () => path.join(home, '.pi', 'agent', 'models.json');
 const museFile = () => path.join(home, '.config', 'muse', 'settings.json');
 const museKeyFile = () => path.join(home, '.teamai', 'models', 'env.sh');
+const agyFile = () => path.join(home, '.gemini', 'antigravity-cli', 'settings.json');
+const agyKeyFile = () => path.join(home, '.teamai', 'models', 'agy-env.sh');
+
+describe('Antigravity CLI model switching', () => {
+  it('points agy at a Gemini route, hands new shells an agy function with the key and endpoint, and restores both', async () => {
+    process.env.SHELL = '/bin/zsh';
+    const original = { model: 'Gemini 3.8 Flash (Low)', altScreenMode: true };
+    await fse.outputJson(agyFile(), original);
+
+    expect((await switchModelProfile(routed({ 'openai-responses': ['glm-5.3'] }), ['agy']))[0].status).toBe('unsupported');
+
+    const [result] = await switchModelProfile(routed({ gemini: ['gemini-3.8-flash', 'gemini-4-argon'] }), ['agy']);
+    expect(result.status).toBe('switched');
+    expect(result.warning).toContain('open a new shell before running agy');
+    // agy takes a model only from its own catalog, by display name, so the member's pick stays.
+    expect(await fse.readJson(agyFile())).toEqual({ model: 'Gemini 3.8 Flash (Low)', altScreenMode: true, modelProvider: 'gemini' });
+    expect((await fse.stat(agyKeyFile())).mode & 0o777).toBe(0o600);
+    expect(await fse.readFile(path.join(home, '.zshenv'), 'utf8')).toContain(`. '${agyKeyFile()}'`);
+
+    const [restored] = await restoreModelProfiles(['agy']);
+    expect(restored.status).toBe('restored');
+    expect(await fse.readJson(agyFile())).toEqual(original);
+    expect(await fse.pathExists(agyKeyFile())).toBe(false);
+    expect(await fse.readFile(path.join(home, '.zshenv'), 'utf8')).not.toContain(agyKeyFile());
+  });
+
+  // agy reads the key and a custom endpoint only from GEMINI_API_KEY and GOOGLE_GEMINI_BASE_URL, which Gemini CLI reads too.
+  it.skipIf(process.platform === 'win32')("hands the gateway to agy alone, over the member's own key, and leaves Gemini CLI's environment alone", async () => {
+    process.env.SHELL = '/bin/zsh';
+    await fse.outputJson(agyFile(), {});
+    await switchModelProfile(routed({ gemini: ['gemini-3.8-flash'] }), ['agy']);
+    const bin = path.join(home, 'bin');
+    await fse.outputFile(path.join(bin, 'agy'), '#!/bin/sh\necho "agy: $GEMINI_API_KEY $GOOGLE_GEMINI_BASE_URL"\n', { mode: 0o755 });
+    await fse.outputFile(path.join(bin, 'gemini'), '#!/bin/sh\necho "gemini: $GEMINI_API_KEY ${GOOGLE_GEMINI_BASE_URL:-no-gateway}"\n', { mode: 0o755 });
+
+    // As zsh loads ~/.zshenv, with teamai's block, before the ~/.zshrc where the member exports their own key.
+    const shell = spawnSync('bash', ['-c', `. '${agyKeyFile()}'; export GEMINI_API_KEY=member-own-key; agy; gemini`], {
+      env: { PATH: `${bin}:/usr/bin:/bin` }, encoding: 'utf8',
+    });
+
+    expect(shell.stdout).toBe('agy: local-secret https://gateway.example.test\ngemini: member-own-key no-gateway\n');
+  });
+
+  it.skipIf(process.platform === 'win32')('hands the gateway to agy when the member defined an agy alias before the block', async () => {
+    process.env.SHELL = '/bin/zsh';
+    await fse.outputJson(agyFile(), {});
+    await switchModelProfile(routed({ gemini: ['gemini-3.8-flash'] }), ['agy']);
+    const bin = path.join(home, 'bin');
+    await fse.outputFile(path.join(bin, 'agy'), '#!/bin/sh\necho "agy: $GEMINI_API_KEY $GOOGLE_GEMINI_BASE_URL"\n', { mode: 0o755 });
+
+    // An alias is expanded as each line is read, so it would turn the block's function definition into a syntax error.
+    const shell = spawnSync('bash', ['-c', `shopt -s expand_aliases\nalias agy='agy --resume'\n. '${agyKeyFile()}'\nagy`], {
+      env: { HOME: home, PATH: `${bin}:/usr/bin:/bin` }, encoding: 'utf8',
+    });
+
+    expect(shell.stderr).not.toContain('syntax error');
+    expect(shell.stdout).toBe('agy: local-secret https://gateway.example.test\n');
+  });
+
+  it('keeps Muse Code switched when agy is restored', async () => {
+    process.env.SHELL = '/bin/zsh';
+    await fse.outputJson(museFile(), { schema_version: 1 });
+    await fse.outputJson(agyFile(), {});
+    await switchModelProfile(routed({ 'openai-responses': ['glm-5.3'] }), ['muse']);
+    await switchModelProfile(routed({ gemini: ['gemini-3.8-flash'] }, { id: 'gemini-hub' }), ['agy']);
+
+    await restoreModelProfiles(['agy']);
+    const zshenv = await fse.readFile(path.join(home, '.zshenv'), 'utf8');
+    expect(zshenv).toContain(`. '${museKeyFile()}'`);
+    expect(zshenv).not.toContain(agyKeyFile());
+    expect(await fse.readFile(museKeyFile(), 'utf8')).toBe("export META_API_KEY='local-secret'\n");
+  });
+
+  it('is not offered a profile that serves no Gemini route, and OpenCode, Pi and OMP are not offered a Gemini-only one', () => {
+    const geminiOnly = ModelProfileSchema.parse({
+      id: 'g', name: 'G', base_url: 'https://gateway.example.test', api_key: '${API_KEY}',
+      model_groups: [{ protocols: ['gemini'], models: ['gemini-3.8-flash'] }],
+    });
+    expect(profileAgents(geminiOnly)).toEqual(['agy']);
+  });
+});
 
 describe('Claude model switching', () => {
   it('offers all Anthropic route models in modelPicker and restores prior settings', async () => {
@@ -413,6 +495,21 @@ describe('OpenCode model switching', () => {
     expect(active.provider['teamai-chat'].options).toEqual({ baseURL: 'https://gateway.example.test/v1', apiKey: 'local-secret' });
     expect((await restoreModelProfiles(['opencode']))[0].status).toBe('restored');
     expect(await fse.readJson(openCodeFile())).toEqual(original);
+  });
+
+  it('defaults to the first model OpenCode can reach when the profile lists a Gemini-only model first', async () => {
+    await fse.ensureDir(path.dirname(openCodeFile()));
+    const profile = routed({ gemini: ['gemini-3.8-flash'], anthropic: ['claude-opus-4-8'] });
+    expect((await switchModelProfile(profile, ['opencode']))[0].status).toBe('switched');
+    expect((await fse.readJson(openCodeFile())).model).toBe('teamai-anthropic/claude-opus-4-8');
+  });
+
+  it('refuses a chosen model OpenCode cannot reach', async () => {
+    await fse.ensureDir(path.dirname(openCodeFile()));
+    const profile = routed({ gemini: ['gemini-3.8-flash'], anthropic: ['claude-opus-4-8'] }, { model: 'gemini-3.8-flash' });
+    const [result] = await switchModelProfile(profile, ['opencode']);
+    expect(result.status).not.toBe('switched');
+    expect(JSON.stringify(result)).toContain('gemini-3.8-flash');
   });
 
   it('selects the chosen default model and references an environment key', async () => {

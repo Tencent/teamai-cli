@@ -1,10 +1,11 @@
 import { randomBytes } from 'node:crypto';
 import { parseReportedAgent, parseReportedUsed, settleObservation, type ReportedAgent, type Used } from '../agent-observation.js';
+import { DefaultWorkflows } from '../default-workflows.js';
 import { DriverSchema, sameDriver } from '../driver-identity.js';
 import { RunModeSchema, type RunMode } from '../launch-context.js';
 import { log } from '../utils/logger.js';
 import type { LocalConfig } from '../types.js';
-import { loadCachedWorkflow, loadWorkflowTree } from './cache.js';
+import { loadCachedWorkflow, loadWorkflowTree, startingAlias } from './cache.js';
 import { claimedAway, claimRun, publishRunEnd, reconcileTakenCopies } from './handoff.js';
 import {
   evaluateExpression, expressionPaths, isRecord, isTruthy, parseExpression, resolvePath,
@@ -225,8 +226,16 @@ function hitlMessage(scope: Scope, states: StepState[], state: StepState, defini
  * a placeholder such as `<option>`. A fan-out step path such as `items[0].ask` is quoted.
  */
 export function respondCommand(run: string, step: string, choice: string, pass: number): string {
-  const stepArgument = /^[A-Za-z0-9_.-]+$/.test(step) ? step : `'${step}'`;
-  return `teamai workflow respond ${run} ${stepArgument} ${choice} --pass ${pass}`;
+  return `teamai workflow respond ${run} ${stepArgument(step)} ${choice} --pass ${pass}`;
+}
+
+/** The command the person runs to retry step `step` of run `run`, quoted as `respondCommand` quotes it. */
+export function retryCommand(run: string, step: string): string {
+  return `teamai workflow retry ${run} ${stepArgument(step)}`;
+}
+
+function stepArgument(step: string): string {
+  return /^[A-Za-z0-9_.-]+$/.test(step) ? step : `'${step}'`;
 }
 
 function waitingHitl(run: RunState): Record<string, unknown> | undefined {
@@ -896,16 +905,19 @@ export async function startRun(
   const holdsSecret = secretMismatch(inputs, pinned, secrets);
   if (holdsSecret) return error('invalid_inputs', holdsSecret);
   const now = new Date().toISOString();
+  const alias = await startingAlias(config, cached.definition);
   const run: RunState = {
     schemaVersion: 'v1alpha1',
     id: generateRunId(),
     name: cached.definition.name,
+    ...(alias !== undefined ? { alias } : {}),
     revision: 1,
     status: 'running',
     ...(cached.definition.inputs ? { inputs: inputs as Record<string, unknown> } : {}),
     sourceHash: tree.sourceHash,
     ...(tree.teamRevision ? { teamRevision: tree.teamRevision } : {}),
     ...(options.runMode ? { runMode: options.runMode } : {}),
+    origin: DefaultWorkflows.originOf(cached),
     definition: cached.definition,
     ...(Object.keys(tree.workflows).length > 0 ? { workflows: tree.workflows } : {}),
     ...(Object.keys(scorers).length > 0 ? { scorers } : {}),

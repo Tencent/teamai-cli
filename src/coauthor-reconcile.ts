@@ -109,10 +109,10 @@ async function resolveTargets(
   for (const [tool, paths] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     if (disabled.has(tool)) continue;
     if (whitelist && !whitelist.includes(tool)) continue;
-    // ZCode and Muse Code expose no documented attribution setting — writing
-    // one into their shared config file would be an unknown key the tool never
-    // reads.
-    if (tool === 'zcode' || tool === 'muse') continue;
+    // ZCode, Muse Code and Antigravity CLI expose no documented attribution
+    // setting — writing one into their shared config file would be an unknown
+    // key the tool never reads.
+    if (tool === 'zcode' || tool === 'muse' || tool === 'agy') continue;
     const family = familyOf(tool);
 
     // Installation probe: the tool's root dir (parent of its resource dir), same
@@ -424,7 +424,7 @@ export async function coAuthorLocalSettingsFile(
   const settings = scopedToolPaths(teamConfig, localConfig).claude?.settings;
   if (localConfig.scope !== 'project' || !settings) return { kind: 'none' };
   const file = path.join(resolveBaseDir(localConfig), path.dirname(settings), 'settings.local.json');
-  if (managed[file] !== false) return { kind: 'none' };
+  if (managed[file] ?? true) return { kind: 'none' };
   const read = await readJsonObject(file);
   if (read.kind === 'invalid') return { kind: 'unreadable', file };
   const attribution = read.kind === 'ok' ? read.value.attribution : undefined;
@@ -463,7 +463,7 @@ export async function reconcileCoAuthorForConfig(
       : undefined;
     if (intent === undefined && !moveTo) continue;
     const recorded = managed[file];
-    const wroteStrip = recorded === false;
+    const wroteStrip = !recorded && recorded !== undefined;
     delete managed[file];
     try {
       const next = wroteStrip ? await withoutPreFixAttribution(file) : { kind: 'none' as const };

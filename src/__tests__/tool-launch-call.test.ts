@@ -89,7 +89,7 @@ it('fails with no_tool when no tool teamai launches is on PATH', async () => {
   vi.stubEnv('TEAMAI_AI_TOOL', '');
   const caller = createToolCaller({ resolveTool: () => null, resolveScope: async () => undefined });
 
-  await expect(caller.callTool('hi', { launchedBy: 'codebase' })).rejects.toMatchObject({ kind: 'no_tool', message: 'No AI tool teamai launches is on PATH. Install one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, openclaw, cursor, copilot, qoder, kiro, pi, omp, muse, hermes, or set TEAMAI_AI_TOOL to one you have.' });
+  await expect(caller.callTool('hi', { launchedBy: 'codebase' })).rejects.toMatchObject({ kind: 'no_tool', message: 'No AI tool teamai launches is on PATH. Install one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, openclaw, cursor, copilot, qoder, kiro, pi, omp, muse, hermes, agy, or set TEAMAI_AI_TOOL to one you have.' });
 });
 
 it('picks the tool again on the next call when no tool was on PATH, so a long-lived process sees one installed since', async () => {
@@ -247,6 +247,60 @@ it('fails with the reason a muse run ends without completing', async () => {
   await expect(only('muse', muse.executable).callTool('Classify', { launchedBy: 'recall-promote' })).rejects.toMatchObject({ kind: 'call_failed', message: 'AI call failed (tool: muse): provider refused the request' });
 });
 
+/** What `agy --output-format=stream-json --print=` prints, as agy 1.4.8 does: an init event, step updates, the result. */
+function agyEvents(result: Record<string, unknown>): string {
+  return [
+    { event: 'init', conversation_id: 'c1', init: { model: 'gemini-3.8-flash-low', cwd: '/work' } },
+    { event: 'step_update', step_update: { conversation_id: 'c1', step_index: 1, state: 'DONE', step_type: 'agent_response', text_delta: 'rules' } },
+    { event: 'result', result: { conversation_id: 'c1', duration_seconds: 3.2, num_turns: 1, ...result } },
+  ].map((event) => JSON.stringify(event)).join('\n') + '\n';
+}
+
+it('runs agy with the prompt as a stream-json user message on stdin, and reads the answer and usage of the result', async () => {
+  const agy = await fakeTool('agy', { stdout: agyEvents({ status: 'SUCCESS', response: 'rules\n', usage: { input_tokens: 14057, output_tokens: 4, thinking_tokens: 0, cache_read_tokens: 9000, total_tokens: 14061 } }) });
+
+  const answer = await only('agy', agy.executable).callTool('Classify "this"\nentry', { launchedBy: 'recall-promote' });
+
+  expect(answer).toEqual({ text: 'rules', tool: 'agy', tokens: { input: 14057, output: 4, cachedInput: 9000 } });
+  const { args, stdin } = await agy.invocation();
+  expect(args).toEqual(['--input-format=stream-json', '--output-format=stream-json', '--print=']);
+  // A prompt of any size goes on stdin: agy takes one only as a user event there, or as an argument.
+  expect(stdin).toBe(`${JSON.stringify({ event: 'user', message: { role: 'user', content: 'Classify "this"\nentry' } })}\n`);
+});
+
+// A model switch hands agy its gateway through a shell function; teamai's own launch runs no shell.
+it("runs agy on the gateway a model switch gave it, over the member's own key", async () => {
+  const agy = await fakeTool('agy', { stdout: agyEvents({ status: 'SUCCESS', response: 'ok\n' }) });
+  vi.stubEnv('HOME', root);
+  vi.stubEnv('GEMINI_API_KEY', 'member-own-key');
+  await fs.mkdir(path.join(root, '.teamai', 'models'), { recursive: true });
+  await fs.writeFile(path.join(root, '.teamai', 'models', 'agy-env.sh'), `agy() { GEMINI_API_KEY='gateway-key' GOOGLE_GEMINI_BASE_URL='https://gateway.example.test' command agy "$@"; }\n`);
+
+  await only('agy', agy.executable).callTool('hi', { launchedBy: 'recall-promote' });
+
+  expect((await agy.invocation()).env).toMatchObject({ GEMINI_API_KEY: 'gateway-key', GOOGLE_GEMINI_BASE_URL: 'https://gateway.example.test' });
+});
+
+it('never hands the gateway the member\'s own key when the variable the profile keeps its key in is unset', async () => {
+  const agy = await fakeTool('agy', { stdout: agyEvents({ status: 'SUCCESS', response: 'ok\n' }) });
+  vi.stubEnv('HOME', root);
+  vi.stubEnv('GEMINI_API_KEY', 'member-own-key');
+  vi.stubEnv('TEAM_GATEWAY_KEY', undefined);
+  await fs.mkdir(path.join(root, '.teamai', 'models'), { recursive: true });
+  await fs.writeFile(path.join(root, '.teamai', 'models', 'agy-env.sh'), `agy() { GEMINI_API_KEY="\${TEAM_GATEWAY_KEY}" GOOGLE_GEMINI_BASE_URL='https://gateway.example.test' command agy "$@"; }\n`);
+
+  await only('agy', agy.executable).callTool('hi', { launchedBy: 'recall-promote' });
+
+  // As the shell function does: an unset variable gives agy an empty key.
+  expect((await agy.invocation()).env).toMatchObject({ GEMINI_API_KEY: '', GOOGLE_GEMINI_BASE_URL: 'https://gateway.example.test' });
+});
+
+it('fails with the error agy reports in its result', async () => {
+  const agy = await fakeTool('agy', { stdout: agyEvents({ status: 'ERROR', response: '', error: 'model no-such-model is not recognized' }), exitCode: 1 });
+
+  await expect(only('agy', agy.executable).callTool('hi', { launchedBy: 'codebase' })).rejects.toMatchObject({ kind: 'call_failed', message: 'AI call failed (tool: agy): model no-such-model is not recognized' });
+});
+
 it('runs Cursor through its cursor-agent executable, read-only, with the prompt on stdin', async () => {
   const cursor = await fakeTool('cursor-agent', { stdout: JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'skills', session_id: 's1' }) });
   const caller = createToolCaller({ resolveTool: (command) => command === 'cursor-agent' ? cursor.executable : null, resolveScope: async () => undefined });
@@ -396,10 +450,10 @@ it('runs the tool the member names now, in a scope where a call ran on the one n
 });
 
 it.each([
-  { level: 'TEAMAI_AI_TOOL', named: 'gemini', message: () => 'TEAMAI_AI_TOOL is "gemini", which is not a tool teamai launches. Set it to one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, openclaw, cursor, copilot, qoder, kiro, pi, omp, muse, hermes. Or unset it.' },
+  { level: 'TEAMAI_AI_TOOL', named: 'gemini', message: () => 'TEAMAI_AI_TOOL is "gemini", which is not a tool teamai launches. Set it to one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, openclaw, cursor, copilot, qoder, kiro, pi, omp, muse, hermes, agy. Or unset it.' },
   { level: 'TEAMAI_AI_TOOL', named: 'kiro', message: () => 'TEAMAI_AI_TOOL is "kiro", which is not on PATH. Install kiro, or unset TEAMAI_AI_TOOL to use the next setting or the first installed tool.' },
   { level: 'TEAMAI_AI_TOOL', named: 'trae', message: () => 'TEAMAI_AI_TOOL is "trae", which is not a tool teamai launches.' },
-  { level: 'project', named: 'gemini', message: (file: string) => `ai.tool in the workspace config ${file} is "gemini", which is not a tool teamai launches. Set it to one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, openclaw, cursor, copilot, qoder, kiro, pi, omp, muse, hermes. Or remove it.` },
+  { level: 'project', named: 'gemini', message: (file: string) => `ai.tool in the workspace config ${file} is "gemini", which is not a tool teamai launches. Set it to one of: claude, claude-internal, tclaude, codex, codex-internal, tcodex, opencode, codebuddy, workbuddy, openclaw, cursor, copilot, qoder, kiro, pi, omp, muse, hermes, agy. Or remove it.` },
   { level: 'project', named: 'kiro', message: (file: string) => `ai.tool in the workspace config ${file} is "kiro", which is not on PATH. Install kiro, or remove it to use the next setting or the first installed tool.` },
   { level: 'machine', named: 'kiro', message: (file: string) => `ai.tool in the machine config ${file} is "kiro", which is not on PATH. Install kiro, or remove it to use the next setting or the first installed tool.` },
 ] as const)('fails the call when $level names $named, naming the setting to change, rather than run another tool', async ({ level, named, message }) => {

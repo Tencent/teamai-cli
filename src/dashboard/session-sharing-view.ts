@@ -6,6 +6,7 @@ export const sessionSharingView = `
 const sharingModeNames = { attended: 'Attended', unattended: 'Unattended' };
 const sharingModeSources = { TEAMAI_MODE: 'set by TEAMAI_MODE', CI: 'set by CI', default: 'neither TEAMAI_MODE nor CI is set' };
 const sharingWhen = { attended: 'in the background, once a session has been idle for 6 hours', unattended: 'by teamai score --drain before the job ends' };
+const sharingAsk = { attended: 'proposed when the friction reminder offers teamai-share-learnings', unattended: 'acts as off: nobody is there to confirm' };
 const sharingStates = {
  attended: [['active','active'],['finished','kept on this machine'],['waitingToArchive','waiting to be archived'],['archived','archived']],
  unattended: [['waitingForDrain','waiting for a drain'],['finished','kept on this machine'],['waitingToArchive','waiting to be archived'],['archived','archived']]
@@ -16,12 +17,12 @@ function sharingPolicy(name, cell, note) { return '<dt>'+label(name)+'</dt><dd><
 function sharingMode(s, mode) {
  const publish=s.publish[mode], scoring=s.scoring.state==='ok'?s.scoring:null, score=scoring&&scoring.policies[mode];
  const published=publish.policy==='auto', judged=!!score&&score.policy==='auto'&&scoring.scorers.length>0, counts=s.captured[mode], steps=s.stepSessionsWaitingToArchive[mode];
- const scoreRow=score?sharingPolicy('Score',score,score.policy==='ask'?'acts as off for now':score.policy==='auto'&&!scoring.scorers.length?'no scorer sets sessions: true':'')
+ const scoreRow=score?sharingPolicy('Score',score,score.policy==='ask'?sharingAsk[mode]:score.policy==='auto'&&!scoring.scorers.length?'no scorer sets sessions: true':'')
   :'<dt>'+label('Score')+'</dt><dd><b>off</b><small class="amber">'+label('Scoring is unavailable here')+'</small></dd>';
  return '<article class="sharing-mode'+(s.runMode.mode===mode?' here':'')+'"><h3>'+label(sharingModeNames[mode])+'</h3>'
   +'<p class="verdict'+(published||judged?' on':'')+'">'+label(sharingVerdict(published,judged))+'</p>'
   +(published||judged?'<p class="label">'+label(sharingWhen[mode])+'</p>':'')
-  +'<dl class="sharing-policies">'+sharingPolicy('Publish',publish,publish.policy==='ask'?'acts as off for now':'')+scoreRow+'</dl>'
+  +'<dl class="sharing-policies">'+sharingPolicy('Publish',publish,publish.policy==='ask'?sharingAsk[mode]:'')+scoreRow+'</dl>'
   +'<ul class="sharing-counts">'+sharingStates[mode].map(([key,name])=>'<li class="'+(!counts[key]?'muted':key.startsWith('waiting')?'amber':'')+'"><b>'+number(counts[key])+'</b> '+label(name)+'</li>').join('')
   +(steps?'<li class="amber"><b>'+number(steps)+'</b> '+label(steps===1?'step session waiting to be archived':'step sessions waiting to be archived')+'</li>':'')+'</ul></article>';
 }
@@ -41,7 +42,7 @@ function sharingNext(s) {
 function sharingFacts(s) {
  const rows=[['Archive',s.archive==='teamai-reports'?label('teamai-reports, scrubbed'):'<span class="amber">'+label('None: an HTTP team repo keeps no session archive')+'</span>']];
  rows.push(['Judging',s.scoring.state==='ok'
-  ?label('Up to')+' <b>'+number(s.scoring.dailyLimit)+'</b> '+label('sessions a day on this machine (daily_limit)')+'<small>'+(s.scoring.scorers.length?label('Scorers that judge sessions')+label(': ')+'<span data-verbatim>'+s.scoring.scorers.map(e).join(', ')+'</span>':label('No scorer sets sessions: true, so no session is judged.'))+'</small>'
+  ?label('Up to')+' <b>'+number(s.scoring.dailyLimit)+'</b> '+label('sessions a day in this workspace (daily_limit)')+'<small>'+label('Set by')+' <span data-verbatim>'+sharingSource(s.scoring.dailyLimitSource)+'</span></small><small>'+(s.scoring.scorers.length?label('Scorers that judge sessions')+label(': ')+'<span data-verbatim>'+s.scoring.scorers.map(e).join(', ')+'</span>':label('No scorer sets sessions: true, so no session is judged.'))+'</small>'
   :'<span class="amber">'+e(s.scoring.reason)+'</span>']);
  if(s.pendingLabels&&!s.next.length)rows.push(['Labels','<b>'+number(s.pendingLabels)+'</b> '+label('pending on this machine')]);
  if(s.unreadTools.length)rows.push(['Never captured','<span data-verbatim>'+s.unreadTools.map(e).join(', ')+'</span><small>'+label('teamai reads no sessions from these tools, so their sessions are never published or scored.')+'</small>']);

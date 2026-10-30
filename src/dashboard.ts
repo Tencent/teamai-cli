@@ -449,6 +449,21 @@ export async function startDashboard(port?: number): Promise<void> {
       return;
     }
 
+    if (url.pathname === '/api/member-settings') {
+      // Each member setting a level sets for the workspace, as `teamai doctor` lists them (#1459).
+      try {
+        const { readMemberSettingsPanel } = await import('./dashboard/member-settings.js');
+        const settings = workspace?.config ? await readMemberSettingsPanel(workspace.config) : { configured: false };
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify(settings));
+      } catch (e) {
+        log.debug(`dashboard: /api/member-settings failed: ${e instanceof Error ? e.message : String(e)}`);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Failed to load member settings.' }));
+      }
+      return;
+    }
+
     if (url.pathname === '/api/resources/rules') {
       // Rules inventory for the Resources page (#1028): names and metadata
       // only, never rule bodies or environment values. The user scope and the

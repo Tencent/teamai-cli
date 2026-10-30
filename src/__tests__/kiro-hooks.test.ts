@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import os from 'node:os';
 import path from 'node:path';
 import fse from 'fs-extra';
-import { getDispatchCommand } from '../builtin-hooks.js';
+import { getDispatchCommand, getTeamHookDispatchCommand } from '../builtin-hooks.js';
 import { reconcileHooksToAllTools } from '../hooks.js';
 import { TeamaiConfigSchema } from '../types.js';
 
@@ -72,4 +72,24 @@ it('installs Kiro V3 SessionStart independently of custom agents and removes onl
   } finally {
     await fse.remove(home);
   }
+});
+
+it('gives Kiro one entry per event the team has hooks on, which runs them through teamai, and removes it with the hooks', async () => {
+  const home = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-kiro-team-'));
+  vi.stubEnv('HOME', home);
+  const file = path.join(home, '.kiro/hooks/teamai-team.json');
+  const manifest = path.join(home, '.teamai/managed-hooks.json');
+  const hook = (key: string, event: string, timeout?: number) => ({
+    source: 'team' as const, key, event, matcher: 'Bash', command: 'true', description: `[teamai:hook:${key}]`, ...(timeout ? { timeout } : {}),
+  });
+  try {
+    await fse.ensureDir(path.join(home, '.kiro'));
+    await reconcileHooksToAllTools({ kiro: {} }, home, [hook('scan', 'PreToolUse', 15), hook('lint', 'PreToolUse', 90), hook('note', 'SessionStart')], manifest);
+    expect(await fse.readJson(file)).toEqual({ version: 'v1', hooks: [
+      { name: 'teamai-team-PreToolUse', trigger: 'PreToolUse', enabled: true, action: { type: 'command', command: getTeamHookDispatchCommand('PreToolUse', 'kiro') }, timeout: 90 },
+      { name: 'teamai-team-SessionStart', trigger: 'SessionStart', enabled: true, action: { type: 'command', command: getTeamHookDispatchCommand('SessionStart', 'kiro') }, timeout: 60 },
+    ] });
+    await reconcileHooksToAllTools({ kiro: {} }, home, [], manifest);
+    expect(await fse.pathExists(file)).toBe(false);
+  } finally { await fse.remove(home); }
 });

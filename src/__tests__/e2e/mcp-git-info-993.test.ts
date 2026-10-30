@@ -268,8 +268,10 @@ describe('a repository without .git/info/ (#993 bug 5)', () => {
       await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
       const endpoint = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
       try {
+        // The workspace is enrolled (`teamai bind-project` ran there): the local agent serves no other.
         writeFile(path.join(home, '.teamai', 'local-agent', 'config.json'), JSON.stringify({
-          endpoint, token: 'fixture-token', localAgentId: 'fixture', createdAt: '2026-01-01T00:00:00.000Z', workspaceBindings: {},
+          endpoint, token: 'fixture-token', localAgentId: 'fixture', createdAt: '2026-01-01T00:00:00.000Z',
+          workspaceBindings: { [fs.realpathSync.native(dir)]: { projectId: 0, projectName: '__pending__', boundAt: '2026-01-01T00:00:00.000Z' } },
         }));
         // Async: the server above answers on this process's event loop.
         const child = spawn(process.execPath, [CLI, 'hook-dispatch', 'session-start', '--tool', 'claude'], { cwd: dir, env: env(), stdio: ['pipe', 'pipe', 'pipe'] });

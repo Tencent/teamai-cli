@@ -553,6 +553,9 @@ describe.skipIf(process.platform === 'win32')('uninstall in HTTP mode (#915)', (
     const app = fs.realpathSync.native(project);
     const initRun = await cli(['init', '--http', server.url, '--token', API_KEY, '--scope', 'project', '--agent', 'claude', '--force'], app);
     expect(initRun.code, initRun.output).toBe(0);
+    // The local agent serves only a workspace enrolled by `teamai bind-project`.
+    const enroll = await cli(['bind-project', '--skip'], app);
+    expect(enroll.code, enroll.output).toBe(0);
 
     const install = (id: number, slug: string) => ({
       id, type: 'install_skill', skill_slug: slug, skill_version: '1.0.0',
