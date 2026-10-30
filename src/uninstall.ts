@@ -2086,8 +2086,8 @@ async function forgetUninstalledToolPaths(
   tool: string,
   options: { keepExisting?: boolean } = {},
 ): Promise<void> {
-  const projectRoot = localConfig.scope === 'project' ? localConfig.projectRoot : getUserHome();
-  if (!projectRoot) return;
+  const scopeRoot = localConfig.scope === 'project' ? localConfig.projectRoot : getUserHome();
+  if (!scopeRoot) return;
   const toolPaths = scopedToolPaths(teamConfig, localConfig);
   const pathsOf = (id: string): string[] => {
     const paths = toolPaths[id] ?? {};
@@ -2101,7 +2101,7 @@ async function forgetUninstalledToolPaths(
     id === tool || isAgentExcluded(localConfig, id) ? [] : [...pathsOf(id), ...codexShared(id)]);
   const state = await loadStateForScope(localConfig);
   const records = state.lastPullByWorkspace ?? {};
-  const checkouts = [...new Set([await realpath(projectRoot).catch(() => projectRoot), ...Object.values(records).flatMap(({ root }) => root ? [root] : [])])];
+  const checkouts = [...new Set([await realpath(scopeRoot).catch(() => scopeRoot), ...Object.values(records).flatMap(({ root }) => root ? [root] : [])])];
   const inside = (rels: string[]) => {
     const dirs = checkouts.flatMap((checkout) => rels.map((rel) => path.join(checkout, rel)));
     return (file: string): boolean => dirs.some((dir) => file === dir || file.startsWith(`${dir}${path.sep}`));
