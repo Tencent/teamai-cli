@@ -2174,6 +2174,12 @@ async function pullForScope(
       }
       items = desired.items;
       skippedByTags = desired.skippedByTags;
+      for (const { name, skipped, kept } of desired.shadowed) {
+        const namespace = path.basename(path.dirname(skipped));
+        log.warn(kept === `skills/${name}`
+          ? `[${scopeLabel}] Skipped ${skipped}: the shared ${kept} has the same name. Set a role that receives ${namespace} to get it instead: teamai roles set <role-id>.`
+          : `[${scopeLabel}] Skipped ${skipped}: ${kept} has the same name. Set a role that receives ${namespace} to get it instead: teamai roles set <role-id>.`);
+      }
       // A skill a workspace holds back keeps its installed copy (#913).
       desiredSkillNames = new Set([...items.map((i) => i.name), ...desired.held]);
       workspaceHeldSkills = desired.held.length > 0;

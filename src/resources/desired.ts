@@ -239,7 +239,36 @@ export type DesiredSkills = Extract<DesiredItems, { kind: 'resolved' }> & {
    * for a scope without children.
    */
   readonly memberSources: ReadonlyMap<string, readonly string[]>;
+  /** Without a role, the same-name copies left out for the one delivered (#1577). */
+  readonly shadowed: readonly ShadowedSkill[];
 };
+
+/** A same-name skill pull left out without a role, and the copy it delivers instead (#1577). */
+export interface ShadowedSkill {
+  readonly name: string;
+  /** Team-repo path of the copy left out, e.g. `skills/dev/release`. */
+  readonly skipped: string;
+  /** Team-repo path of the copy delivered under that name, e.g. `skills/release`. */
+  readonly kept: string;
+}
+
+/**
+ * Without a role, one skill of each name, the same on every machine (#1577):
+ * the shared root copy first, then namespaces in name order, whatever order
+ * the filesystem lists them in.
+ */
+function sharedFirst(items: readonly ResourceItem[]): { items: ResourceItem[]; shadowed: ShadowedSkill[] } {
+  const ordered = [...items].sort((a, b) => Number(a.namespace !== undefined) - Number(b.namespace !== undefined)
+    || (a.relativePath < b.relativePath ? -1 : a.relativePath > b.relativePath ? 1 : 0));
+  const kept = new Map<string, ResourceItem>();
+  const shadowed: ShadowedSkill[] = [];
+  for (const item of ordered) {
+    const winner = kept.get(item.name);
+    if (winner) shadowed.push({ name: item.name, skipped: item.relativePath, kept: winner.relativePath });
+    else kept.set(item.name, item);
+  }
+  return { items: [...kept.values()], shadowed };
+}
 
 /**
  * Resolve the skills this member should have: role namespaces ∪ subscribed
@@ -265,12 +294,13 @@ export async function resolveDesiredSkills(
   const excludedSkills = new Set(localConfig.excludedSkills ?? []);
 
   let directoryItems: ResourceItem[];
+  let shadowed: ShadowedSkill[] = [];
   if (roleContext) {
     const scanned = await scanRoleAwareSkills(localConfig, roleContext.activeNamespaces);
     if (scanned.kind === 'conflict') return scanned;
     directoryItems = scanned.items;
   } else {
-    directoryItems = await withSkillMd(await handler.scanTeamForPull(teamConfig, localConfig));
+    ({ items: directoryItems, shadowed } = sharedFirst(await withSkillMd(await handler.scanTeamForPull(teamConfig, localConfig))));
   }
 
   const teamItems = await withSkillMd(await handler.scanTeamForPull(teamConfig, localConfig));
@@ -317,7 +347,11 @@ export async function resolveDesiredSkills(
     })
     : [];
 
-  return { kind: 'resolved', items, overrides, teamItems, skippedByTags, held: [], memberSources: new Map() };
+  // An excluded name is not delivered in any copy, so no copy of it was skipped for another.
+  return {
+    kind: 'resolved', items, overrides, teamItems, skippedByTags, held: [], memberSources: new Map(),
+    shadowed: shadowed.filter((skill) => !excludedSkills.has(skill.name)),
+  };
 }
 
 /**
@@ -384,6 +418,10 @@ async function resolveWorkspaceSkills(
     // A held name the workspace excludes is not kept: cleanup decides its copy.
     held: held.map((item) => item.name).filter((name) => !excluded.has(name)),
     memberSources,
+    // A copy one member skips is not skipped when another member delivers it.
+    shadowed: [...new Map(resolved.flatMap((desired) => desired.shadowed)
+      .filter((skill) => !sources.has(skill.skipped) && !excluded.has(skill.name))
+      .map((skill) => [skill.skipped, skill] as const)).values()],
   };
 }
 
