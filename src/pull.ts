@@ -1857,6 +1857,13 @@ async function pullForScope(
           const { recorder } = policy;
           try { const { deployBuiltinAgents } = await import('./builtin-agents.js'); await deployBuiltinAgents(freshConfig, localConfig, { skipRecall, recorder }); } catch {}
           try { const { deployBuiltinRules } = await import('./builtin-rules.js'); await deployBuiltinRules(freshConfig, localConfig, { skipRecall, recorder }); } catch {}
+          // The fast path is where a member who only turned recall off lands:
+          // the repo is unchanged, so removing the stale agent and rule here is
+          // what makes that pull take effect (#1501).
+          if (skipRecall) {
+            try { const { removeRecallRuleIfDelivered } = await import('./builtin-rules.js'); await removeRecallRuleIfDelivered(freshConfig, localConfig); } catch {}
+            try { const { removeRecallAgentIfDelivered } = await import('./builtin-agents.js'); await removeRecallAgentIfDelivered(freshConfig, localConfig); } catch {}
+          }
           try {
             const { deployBuiltinSkills } = await import('./builtin-skills.js');
             await deployBuiltinSkills(freshConfig, localConfig, { recorder });
@@ -2432,10 +2439,10 @@ async function pullForScope(
   }
 
   // Step 4.5: Deploy CLI built-in rules
+  const recallOff = !isRecallEnabled(localConfig, freshConfig);
   try {
     const { deployBuiltinRules } = await import('./builtin-rules.js');
-    const skipRecall = !isRecallEnabled(localConfig, freshConfig);
-    const deployed = await deployBuiltinRules(freshConfig, localConfig, { skipRecall, recorder, dryRun, toolsMissingRules: ledger.toolsMissingRules });
+    const deployed = await deployBuiltinRules(freshConfig, localConfig, { skipRecall: recallOff, recorder, dryRun, toolsMissingRules: ledger.toolsMissingRules });
     if (deployed > 0 && !dryRun) {
       log.debug(`[${scopeLabel}] Deployed built-in rules to ${deployed} tool(s)`);
     }
@@ -2447,14 +2454,29 @@ async function pullForScope(
   // Step 4.6: Deploy CLI built-in agents (e.g. teamai-recall subagent)
   try {
     const { deployBuiltinAgents } = await import('./builtin-agents.js');
-    const skipRecall = !isRecallEnabled(localConfig, freshConfig);
-    const deployed = await deployBuiltinAgents(freshConfig, localConfig, { skipRecall, recorder, dryRun, toolsMissingAgents: ledger.toolsMissingAgents });
+    const deployed = await deployBuiltinAgents(freshConfig, localConfig, { skipRecall: recallOff, recorder, dryRun, toolsMissingAgents: ledger.toolsMissingAgents });
     if (deployed > 0 && !dryRun) {
       log.debug(`[${scopeLabel}] Deployed built-in agents to ${deployed} location(s)`);
     }
   } catch (e) {
     recorder?.failed('builtin');
     log.debug(`[${scopeLabel}] Built-in agents deployment skipped: ${(e as Error).message}`);
+  }
+  // Recall resolving off removes what an earlier on-pull installed (#1501);
+  // not writing it again left the agent and rule calling recall behind.
+  if (recallOff && !dryRun) {
+    try {
+      const { removeRecallRuleIfDelivered } = await import('./builtin-rules.js');
+      await removeRecallRuleIfDelivered(freshConfig, localConfig);
+    } catch (e) {
+      log.debug(`[${scopeLabel}] Recall rule removal skipped: ${(e as Error).message}`);
+    }
+    try {
+      const { removeRecallAgentIfDelivered } = await import('./builtin-agents.js');
+      await removeRecallAgentIfDelivered(freshConfig, localConfig);
+    } catch (e) {
+      log.debug(`[${scopeLabel}] Recall agent removal skipped: ${(e as Error).message}`);
+    }
   }
   recorder?.succeeded('builtin');
 

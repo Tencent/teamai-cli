@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { ensureDir, writeFile, pathExists } from './utils/fs.js';
+import { ensureDir, writeFile, pathExists, readFileSafe, remove } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { renderRuleForTool, ruleFileExtensionForTool } from './resources/rule-format.js';
 import type { TeamaiConfig, LocalConfig } from './types.js';
@@ -44,6 +44,45 @@ export const EXCLUDED_RULE_NAMES = new Set<string>([
     ...LEGACY_RULE_NAMES,
     TEAMAI_CONTEXT_RULE_NAME,
 ]);
+
+/**
+ * Remove the `teamai-recall` rule files a pull wrote, now that recall resolves
+ * off (#1501). `skipRecall` only stops the next write; without this the copies
+ * the last on-pull keeps calling recall until they go. The ownership check is
+ * the one the rules scan uses: a body exactly like one some teamai version
+ * deployed is teamai's and goes; a member's edit stays, named once.
+ *
+ * @returns Number of `teamai-recall` rule files removed.
+ */
+export async function removeRecallRuleIfDelivered(
+    teamConfig: TeamaiConfig,
+    localConfig?: LocalConfig,
+): Promise<number> {
+    const install: Install = localConfig === undefined
+        ? { toolPaths: teamConfig.toolPaths, agents: {}, toolRoots: {}, gitExclude: false, scope: 'user' }
+        : installOf(teamConfig, localConfig);
+    let removed = 0;
+    for (const tool of Object.keys(install.toolPaths)) {
+        const location = await locate(tool, 'rules', install);
+        const own = writable(location);
+        if (own === null || !await pathExists(own.path)) continue;
+        const ext = ruleFileExtensionForTool(tool);
+        // Cursor and JoyCode carry `.mdc`; older layouts also left `.md` files.
+        for (const extension of new Set<string>([ext, '.md'])) {
+            const ruleFile = path.join(own.path, `teamai-recall${extension}`);
+            const content = await readFileSafe(ruleFile);
+            if (content === null) continue;
+            if (!isDeployedRecallRule(content)) {
+                log.info(`Kept ${ruleFile}: it differs from every teamai-recall body teamai deployed, so teamai treats it as yours; \`teamai recall disable\` removes it.`);
+                continue;
+            }
+            await remove(ruleFile);
+            removed++;
+            log.debug(`Removed built-in rule teamai-recall from ${tool} (recall off)`);
+        }
+    }
+    return removed;
+}
 
 /**
  * Deploy CLI built-in rules to all configured AI tool rules directories.

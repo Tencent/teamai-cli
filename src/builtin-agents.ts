@@ -90,6 +90,60 @@ async function removeStaleAgentSiblings(targetAgentsDir: string, stem: string, t
   }
 }
 
+/**
+ * Remove the `teamai-recall` agent files a pull wrote, now that recall
+ * resolves off (#1501). The file this teamai version would deploy is teamai's
+ * copy and goes; anything else stays as the member's, named once, so an edit
+ * (or a copy only an older version wrote) is never deleted silently. A file a
+ * repository tracks also stays, as deploy's own sibling cleanup keeps it.
+ *
+ * @returns Number of `teamai-recall` agent files removed.
+ */
+export async function removeRecallAgentIfDelivered(
+  teamConfig: TeamaiConfig,
+  localConfig: LocalConfig,
+): Promise<number> {
+  const builtinDir = getBuiltinAgentsDir();
+  const src = path.join(builtinDir, 'teamai-recall.md');
+  const source = await pathExists(src) ? await readFileSafe(src) : null;
+  const parsed = source ? reverseFromClaude(src, source) : null;
+  const install = installOf(teamConfig, localConfig);
+  let removed = 0;
+
+  for (const tool of Object.keys(install.toolPaths)) {
+    const where = await locate(tool, 'agents', install);
+    if (!where.gates.every((gate) => gate.met)) continue;
+    if (!isAgentToolId(tool)) continue;
+    const targetAgentsDir = writable(where)?.path;
+    if (targetAgentsDir === undefined) continue;
+
+    let rendered: { content: string } | null = null;
+    if (parsed?.ok) {
+      try {
+        rendered = renderForTool(parsed.spec, tool, undefined, localConfig.scope);
+      } catch {
+        rendered = null;
+      }
+    }
+
+    for (const file of await listFiles(targetAgentsDir).catch(() => [] as string[])) {
+      if (agentStemFromFilename(file) !== 'teamai-recall') continue;
+      const full = path.join(targetAgentsDir, file);
+      const content = await readFileSafe(full);
+      if (content === null) continue;
+      if (rendered === null || content !== rendered.content) {
+        log.info(`Kept ${full}: it differs from the built-in teamai-recall agent this teamai version deploys, so teamai treats it as yours; \`teamai recall disable\` removes it.`);
+        continue;
+      }
+      if (await keepsTrackedCopy(full)) continue;
+      await remove(full);
+      removed++;
+      log.debug(`Removed built-in agent teamai-recall from ${tool} (recall off)`);
+    }
+  }
+  return removed;
+}
+
 export async function deployBuiltinAgents(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
