@@ -5401,7 +5401,7 @@ export async function bindCurrentProject(options?: { projectId?: number; skip?: 
     // Skip the whole project (main checkout + all its worktrees), not just this
     // one checkout, so sibling worktrees are not re-prompted.
     await persistWorkspaceBinding(config, options?.cwd ?? process.cwd(), workspacePath, 0, '__skipped__');
-    log.info(`已跳过绑定，以后不再提示此工作区。`);
+    log.info('Skipped binding; this workspace will not be prompted again.');
     return;
   }
   // Running bind-project in a workspace enrolls it. Keep any existing entry

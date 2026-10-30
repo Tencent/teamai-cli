@@ -328,6 +328,9 @@ describe('local-agent: bindCurrentProject --skip', () => {
     expect(binding.projectId).toBe(0);
     expect(binding.projectName).toBe('__skipped__');
     expect(binding.boundAt).toBeTruthy();
+    const { log } = await import('../utils/logger.js');
+    expect(vi.mocked(log.info).mock.calls.map((call) => call.join(' ')).join('\n'))
+      .toContain('Skipped binding; this workspace will not be prompted again.');
   });
 
   it('skips the whole project (main + all worktrees) when run from a worktree', async () => {
