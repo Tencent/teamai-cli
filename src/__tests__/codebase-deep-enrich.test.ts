@@ -20,7 +20,7 @@ vi.mock('../config.js', async (importOriginal) => ({
   autoDetectInit: vi.fn(),
 }));
 
-import { callTool, callToolParallel } from '../tool-launch/call.js';
+import { CallError, callTool, callToolParallel } from '../tool-launch/call.js';
 import { codebaseCmd } from '../codebase-cmd.js';
 import { runHiddenDeepEnrich } from '../deep-enrich.js';
 import { autoDetectInit } from '../config.js';
@@ -249,6 +249,27 @@ describe('codebase deep-enrich', () => {
       }
     }
     expect(tablesWithoutDelimiter).toEqual([]);
+  });
+
+  it('stops the component phase after the first batch finds no AI tool on PATH', async () => {
+    const root = createEnrichFixture();
+    const manifestPath = path.join(root, 'teamwiki', 'evidence', 'code', 'faketest', '_manifest.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    const slugs = Array.from({ length: 12 }, (_, index) => `Comp${index}`);
+    manifest.components = slugs.map(slug => ({ ...manifest.components[0], slug, title: slug, docPath: `evidence/code/faketest/${slug}.md` }));
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+    const noTool = new CallError('no_tool', 'No AI tool teamai launches is on PATH.');
+    vi.mocked(callToolParallel).mockRejectedValue(noTool);
+    vi.mocked(callTool).mockRejectedValue(noTool);
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await codebaseCmd({ deepEnrich: true, project: 'faketest', output: root, json: true });
+
+    // Each lookup spawns a PATH probe per launcher, so a miss is not retried per component or batch.
+    expect(callToolParallel).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(callTool).mock.calls.filter(([prompt]) => slugs.some(slug => prompt.includes(`模块: ${slug}\n`)))).toEqual([]);
+    const report = JSON.parse(String(log.mock.calls.at(-1)?.[0]));
+    expect(report.missingComponents).toEqual(slugs);
   });
 
   it('bounds reverse reachability output for a layered DAG', async () => {

@@ -2,7 +2,7 @@ import { readFile, writeFile, readdir, mkdir, unlink, lstat, rename } from 'node
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { pathExists } from './utils/fs.js';
-import { callTool, callToolParallel, isOverrideInvalid } from './tool-launch/call.js';
+import { CallError, callTool, callToolParallel, isOverrideInvalid } from './tool-launch/call.js';
 import { log } from './utils/logger.js';
 import { assertSafeResourceName, assertWithinRoot } from './utils/path-safety.js';
 
@@ -657,6 +657,12 @@ async function runPhaseComponents(
       results = await callToolParallel(tasks, { launchedBy: 'deep-enrich', concurrency: BATCH });
     } catch (e) {
       if (isOverrideInvalid(e)) throw e;
+      // No AI tool is on PATH. Every retry would probe PATH again for each
+      // launcher, so skip the remaining components instead.
+      if (e instanceof CallError && e.kind === 'no_tool') {
+        log.warn(`deep-enrich[${project}]: Skipping ${pending.length - i} component docs: ${e.message}`);
+        return;
+      }
       // AggregateError — 部分可能成功，graceful fallback
       log.warn(`deep-enrich[${project}]: batch[${i}] partially failed, falling back to sequential`);
       results = await Promise.all(
