@@ -2174,6 +2174,15 @@ async function pullForScope(
       }
       items = desired.items;
       skippedByTags = desired.skippedByTags;
+      for (const item of desired.skipped) {
+        const selection = item.namespace === undefined
+          ? 'another copy was already selected'
+          : `another skill named ${item.name} was already selected`;
+        const routing = item.namespace === undefined
+          ? ''
+          : ` Give this member a role or project that receives ${item.namespace} to select it instead.`;
+        log.info(`[${scopeLabel}] Skipped ${item.relativePath}: ${selection}.${routing}`);
+      }
       // A skill a workspace holds back keeps its installed copy (#913).
       desiredSkillNames = new Set([...items.map((i) => i.name), ...desired.held]);
       workspaceHeldSkills = desired.held.length > 0;

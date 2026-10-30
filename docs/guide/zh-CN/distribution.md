@@ -245,6 +245,8 @@ teamai roles list --json
 
 Namespace 只对设置了角色的成员过滤：`primaryRole` 未设置的成员会同步全部技能，因此只有 `manifest/roles.yaml` 并不限定任何人。有了 `manifest/members.yaml` 这个缺口就被补上——未列出的成员只接收共享资源。`teamai init` 会让新成员选择角色；manifest 之前入队的成员需要执行一次 `teamai roles set <role-id>`。之后的 pull 会收回新 namespace 之外、由 teamai 下发的副本（本地改过的保留）。
 
+如果没有角色的成员会同时遇到共享根目录 skill 和 namespace 中的同名 skill，共享 skill 会稳定优先；`pull` 会报告被跳过的 namespace 副本。让成员获得接收该 namespace 的角色或项目，即可选择 namespace 版本。
+
 要提醒一直没设角色的成员，可以用强制规则让 agent 检查 `teamai roles list` 并催促设置——强制规则成员不可删除：
 
 ```yaml

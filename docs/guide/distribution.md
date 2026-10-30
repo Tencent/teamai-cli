@@ -245,6 +245,8 @@ This is not a boundary against a determined process running as the member: the a
 
 Namespaces only filter for members who have set a role: a member with no `primaryRole` syncs everything, so `manifest/roles.yaml` alone restricts no one. With `manifest/members.yaml` in place that gap is closed — an unlisted member receives shared resources only. `teamai init` makes new members pick a role; members from before the manifest need `teamai roles set <role-id>` once. Their next pull withdraws teamai-delivered copies outside the new namespaces (locally modified copies are kept).
 
+If a role-less member would receive a shared skill and a namespace skill with the same name, the shared skill wins consistently; `pull` reports the namespace copy it skipped. Give the member a role or project that receives that namespace to select the namespace copy.
+
 To remind members who never set a role, enforce a rule that asks the agent to check `teamai roles list` and prompt them — enforced rules cannot be deleted:
 
 ```yaml

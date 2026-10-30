@@ -196,6 +196,26 @@ async function withSkillMd(items: ResourceItem[]): Promise<ResourceItem[]> {
   return skills;
 }
 
+/**
+ * Legacy delivery has no active namespace selection. A root skill therefore
+ * wins a same-name namespace copy, regardless of filesystem enumeration.
+ */
+export function selectLegacySkills(items: readonly ResourceItem[]): Pick<DesiredSkills, 'items' | 'skipped'> {
+  const selected = new Map<string, ResourceItem>();
+  const skipped: ResourceItem[] = [];
+  for (const item of [...items].sort((a, b) => {
+    const rootFirst = Number(a.namespace !== undefined) - Number(b.namespace !== undefined);
+    return rootFirst || a.relativePath.localeCompare(b.relativePath);
+  })) {
+    if (selected.has(item.name)) {
+      skipped.push(item);
+    } else {
+      selected.set(item.name, item);
+    }
+  }
+  return { items: [...selected.values()], skipped };
+}
+
 export async function scanRoleAwareSkills(
   localConfig: LocalConfig,
   namespaces: ResourceNamespaces,
@@ -239,6 +259,8 @@ export type DesiredSkills = Extract<DesiredItems, { kind: 'resolved' }> & {
    * for a scope without children.
    */
   readonly memberSources: ReadonlyMap<string, readonly string[]>;
+  /** Skills omitted because a role-less legacy delivery had the same name. */
+  readonly skipped: readonly ResourceItem[];
 };
 
 /**
@@ -265,12 +287,15 @@ export async function resolveDesiredSkills(
   const excludedSkills = new Set(localConfig.excludedSkills ?? []);
 
   let directoryItems: ResourceItem[];
+  let skipped: ResourceItem[] = [];
   if (roleContext) {
     const scanned = await scanRoleAwareSkills(localConfig, roleContext.activeNamespaces);
     if (scanned.kind === 'conflict') return scanned;
     directoryItems = scanned.items;
   } else {
-    directoryItems = await withSkillMd(await handler.scanTeamForPull(teamConfig, localConfig));
+    const selected = selectLegacySkills(await withSkillMd(await handler.scanTeamForPull(teamConfig, localConfig)));
+    directoryItems = [...selected.items];
+    skipped = [...selected.skipped];
   }
 
   const teamItems = await withSkillMd(await handler.scanTeamForPull(teamConfig, localConfig));
@@ -317,7 +342,7 @@ export async function resolveDesiredSkills(
     })
     : [];
 
-  return { kind: 'resolved', items, overrides, teamItems, skippedByTags, held: [], memberSources: new Map() };
+  return { kind: 'resolved', items, overrides, teamItems, skippedByTags, held: [], memberSources: new Map(), skipped };
 }
 
 /**
@@ -384,6 +409,7 @@ async function resolveWorkspaceSkills(
     // A held name the workspace excludes is not kept: cleanup decides its copy.
     held: held.map((item) => item.name).filter((name) => !excluded.has(name)),
     memberSources,
+    skipped: [],
   };
 }
 

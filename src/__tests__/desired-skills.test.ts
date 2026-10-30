@@ -3,7 +3,7 @@ import fse from 'fs-extra';
 import os from 'node:os';
 import path from 'node:path';
 
-import { describeDeliveryConflict, resolveDesiredSkills, type DesiredSkills } from '../resources/desired.js';
+import { describeDeliveryConflict, resolveDesiredSkills, selectLegacySkills, type DesiredSkills } from '../resources/desired.js';
 
 /** The resolved skills, failing the test on a namespace collision. */
 function resolved(result: Awaited<ReturnType<typeof resolveDesiredSkills>>): DesiredSkills {
@@ -91,6 +91,19 @@ describe('resolveDesiredSkills', () => {
     const { items } = resolved(await resolveDesiredSkills(teamConfig, localConfig, rolesOver(['common'])));
 
     expect(items.map((i) => i.name)).toEqual(['shared-skill']);
+  });
+
+  it('selects the shared skill before a same-name namespace skill deterministically', () => {
+    const root = { name: 'release', type: 'skills', sourcePath: 'root', relativePath: 'skills/release' } as const;
+    const namespaced = { name: 'release', type: 'skills', sourcePath: 'dev', relativePath: 'skills/dev/release', namespace: 'dev' } as const;
+
+    const forward = selectLegacySkills([namespaced, root]);
+    const reverse = selectLegacySkills([root, namespaced]);
+
+    expect(forward.items).toEqual([root]);
+    expect(reverse.items).toEqual([root]);
+    expect(forward.skipped).toEqual([namespaced]);
+    expect(reverse.skipped).toEqual([namespaced]);
   });
 
   it('without a role context, every skill in the repo is desired', async () => {
