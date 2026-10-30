@@ -357,14 +357,19 @@ describe('push an edit of a skill pull kept after a project switch (#1020)', () 
   });
 
   it('resolves a legacy delivered duplicate against every namespace, not only the first', () => {
-    commitOnTeam('skills/z-archive/a-skill/SKILL.md', `${skillMd('a-skill')}\nDelivered from z-archive.\n`);
+    const legacy = `${skillMd('a-skill')}\nDelivered from z-archive.\n`;
+    commitOnTeam('skills/z-archive/a-skill/SKILL.md', legacy);
     commitOnTeam('manifest/projects.yaml', null);
     setConfig({ projects: [], primaryRole: undefined });
 
     const pulled = run(['pull']);
     expect(pulled.code, pulled.output).toBe(0);
+    // An older CLI delivered whichever copy the filesystem listed first; pull
+    // now delivers the same one on every machine (#1577), so the copy that
+    // CLI could leave is written here with its record entry.
     const localSkill = path.join(project, '.claude', 'skills', 'a-skill', 'SKILL.md');
-    expect(fs.readFileSync(localSkill, 'utf8')).toContain('Delivered from z-archive.');
+    writeFile(localSkill, legacy);
+    recordDeliveredCopies({ [fs.realpathSync(localSkill)]: contentHash(legacy) });
     fs.appendFileSync(localSkill, '\nEdited after the legacy pull.\n');
 
     const pushed = run(['push', '--all']);
