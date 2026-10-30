@@ -286,6 +286,8 @@ $ teamai pull
 
 To deliver both copies to everyone, rename one: `skills/dev/release-staging/`. The dashboard's Resources page shows the same: the skipped copy, the copy delivered instead, and the roles that would deliver it.
 
+A machine whose checkout is already at the team's latest commit keeps the copy it has until the next team commit. To switch it now, run `teamai pull --force`.
+
 ## Tags
 
 A tag is on a skill or a rule, in the team repo's `tags.yaml`. A member subscribes on their own machine. With no subscription, tags do nothing. After a subscription, skills and rules that carry those tags are pulled too. Untagged ones still follow roles and projects.
