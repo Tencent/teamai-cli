@@ -520,13 +520,10 @@ export class SyncManager {
   }
 
   /**
-   * Move a `%XX`-named archive to encodeRepoIdentity's name, recording the files HEAD holds under the old name and
-   * where they went, so `gitCommit` stages the move with this run's files and leaves files the archive never
-   * committed out of it. The old directory stays where it is while it has any local change, staged or not, deletions
-   * included, since staging the move would publish it.
-   *
-   * A commit that failed after a move leaves it staged under both names: the retry records exactly those staged
-   * paths, sessions the fold renamed included, instead of moving again.
+   * Move a `%XX`-named archive to encodeRepoIdentity's name in a commit of its own, which the push that follows
+   * publishes. A failed commit undoes the move, so nothing is ever left half moved. Both directories stay where they
+   * are while either holds a local change to a committed file, staged or not, since the move would publish or
+   * overwrite it; files the archive never committed are not part of the commit.
    *
    * When both names exist, an older CLI pushed under `%XX` after the move: see foldPercentRepoDir.
    */
@@ -537,58 +534,51 @@ export class SyncManager {
     if (fromName === toName) return;
     const from = path.join(this.sessionsDir, 'repos', fromName);
     const to = path.join(this.sessionsDir, 'repos', toName);
+    if (!fs.existsSync(from)) return;
     const fromRel = `sessions/repos/${fromName}/`;
     const toRel = `sessions/repos/${toName}/`;
-    // `<mode> blob <sha>\t<path>` for each file HEAD holds under the old name.
-    const headFiles = this.runGit(['ls-tree', '-r', '-z', 'HEAD', fromRel], false)
-      .split('\0')
-      .filter(Boolean)
-      .map((entry) => ({ file: entry.slice(entry.indexOf('\t') + 1), blob: entry.split(' ')[2] }));
-    const committed = headFiles.map((f) => f.file);
-    if (committed.length === 0 && !fs.existsSync(from)) return;
-    const stagedUnder = (rel: string, ...filter: string[]) =>
-      this.runGit(['diff', '--cached', '--no-renames', '--relative', '--name-only', '-z', ...filter, '--', rel], false).split('\0').filter(Boolean);
-    const stagedFrom = stagedUnder(fromRel);
-    const stagedTo = stagedUnder(toRel);
-    // A failed move leaves only removals staged under the old name, and under the new one only added files, the index,
-    // and content HEAD had under the old name; and nothing changed in either since. Anything else is a local change.
-    const isStagedMove = (): boolean => {
-      if (stagedTo.length === 0 || stagedFrom.length === 0 || stagedUnder(fromRel, '--diff-filter=d').length > 0) return false;
-      const movedBlobs = new Set(headFiles.map((f) => f.blob));
-      // `:<mode> <mode> <sha> <sha> <status>` then the path, for each staged change under the new name.
-      const raw = this.runGit(['diff', '--cached', '--raw', '--no-abbrev', '--no-renames', '--relative', '-z', '--', toRel], false).split('\0');
-      for (let i = 0; i + 1 < raw.length; i += 2) {
-        const [, , , blob, status] = raw[i].split(' ');
-        if (status !== 'A' && raw[i + 1] !== `${toRel}_index.json` && !movedBlobs.has(blob)) return false;
-      }
-      return this.runGit(['diff', '--name-only', '--', fromRel, toRel], false) === '';
-    };
-    if (isStagedMove()) {
-      for (const file of [...stagedFrom, ...stagedTo]) this.writtenPaths.add(file);
-      return;
-    }
-    const hasLocalChanges = stagedFrom.length > 0 || this.runGit(['diff', '--name-only', '--', fromRel], false) !== '';
-    if (hasLocalChanges || !fs.existsSync(from)) return;
+    const hasLocalChanges = (rel: string) => this.runGit(['status', '--porcelain', '--untracked-files=no', '--', rel], false) !== '';
+    if (hasLocalChanges(fromRel) || hasLocalChanges(toRel)) return;
     assertNoSymlinkedAncestors(from, this.repoRoot);
     assertNoSymlinkedAncestors(to, this.repoRoot);
-    if (fs.existsSync(to)) {
-      // The fold can replace a session's files there, so it waits for any local change to them as well.
-      if (this.runGit(['status', '--porcelain', '--untracked-files=no', '--', toRel], false) !== '') return;
-      this.foldPercentRepoDir(repoIdentity, from, new Set(committed));
+    const committedUnder = (rel: string) => this.runGit(['ls-tree', '-r', '-z', '--name-only', 'HEAD', rel], false).split('\0').filter(Boolean);
+    const committed = committedUnder(fromRel);
+    const isFold = fs.existsSync(to);
+    const committedTo = new Set(committedUnder(toRel));
+    let added: string[];
+    if (isFold) {
+      added = this.foldPercentRepoDir(repoIdentity, from, new Set(committed));
     } else {
       fs.renameSync(from, to);
-      for (const file of committed) this.writtenPaths.add(`${toRel}${file.slice(fromRel.length)}`);
+      added = committed.map((file) => `${toRel}${file.slice(fromRel.length)}`);
     }
-    for (const file of committed) this.writtenPaths.add(file);
+    if (committed.length === 0) return; // the archive tracks nothing there: no move to commit
+    const moved = [...committed, ...added];
+    try {
+      this.runGit(['add', '--', ...added]);
+      this.runGit(['commit', '-q', '-m', `sessions: move ${fromName} to ${toName}`, '--', ...moved]);
+    } catch (err) {
+      this.runGit(['reset', '-q', '--', ...moved], false);
+      if (isFold) {
+        this.runGit(['checkout', 'HEAD', '--', fromRel, toRel], false);
+        for (const file of added) if (!committedTo.has(file)) fs.rmSync(path.join(this.repoRoot, file), { force: true });
+      } else {
+        fs.renameSync(to, from);
+      }
+      const reason = err instanceof Error ? err.message.split('\n')[0] : String(err);
+      console.warn(`Warning: could not commit moving ${fromRel} to ${toRel}, so it stays under its old name: ${reason}`);
+    }
   }
 
   /**
-   * Fold the sessions an older CLI pushed under `%XX` after the move into the current directory. A session it already
-   * holds (same platform, author and source session id) keeps the later push; any other session moves under a free
-   * name, since the file name (platform, title slug, date) does not identify a session. Committed files are recorded
-   * at their new path so `gitCommit` stages them.
+   * Fold the committed sessions an older CLI pushed under `%XX` after the move into the current directory, and return
+   * the paths it wrote there. A session that directory already holds (same platform, author and source session id)
+   * keeps the later push; any other session moves under a free name, since the file name (platform, title slug, date)
+   * does not identify a session.
    */
-  private foldPercentRepoDir(repoIdentity: string, from: string, committed: Set<string>): void {
+  private foldPercentRepoDir(repoIdentity: string, from: string, committed: Set<string>): string[] {
+    const relative = (file: string) => path.relative(this.repoRoot, file).split(path.sep).join('/');
+    const added: string[] = [];
     const sessionKey = (platform: string, author: string, sessionId: string) => `${platform}\0${author}\0${sessionId}`;
     const held = new Map(
       this.readIndex(repoIdentity).sessions
@@ -609,6 +599,7 @@ export class SyncManager {
         if (!file.endsWith('.meta.json')) continue;
         const sessionName = file.slice(0, -'.meta.json'.length);
         const source = { jsonl: path.join(authorDir, `${sessionName}.jsonl`), meta: path.join(authorDir, file) };
+        if (!committed.has(relative(source.meta))) continue; // never committed: not part of the move
         let meta: SessionSyncMeta;
         try {
           meta = JSON.parse(fs.readFileSync(source.meta, 'utf-8')) as SessionSyncMeta;
@@ -632,9 +623,7 @@ export class SyncManager {
           assertNoSymlinkedAncestors(target[kind], this.repoRoot);
           fs.mkdirSync(path.dirname(target[kind]), { recursive: true });
           fs.renameSync(source[kind], target[kind]);
-          if (committed.has(path.relative(this.repoRoot, source[kind]).split(path.sep).join('/'))) {
-            this.writtenPaths.add(path.relative(this.repoRoot, target[kind]).split(path.sep).join('/'));
-          }
+          added.push(relative(target[kind]));
         }
       }
     }
@@ -642,6 +631,8 @@ export class SyncManager {
     const hasFilesLeft = fs.readdirSync(from, { recursive: true }).some((p) => fs.statSync(path.join(from, String(p))).isFile());
     if (!hasFilesLeft) fs.rmSync(from, { recursive: true });
     this.rebuildIndexLocked(repoIdentity);
+    added.push(relative(this.indexPath(repoIdentity)));
+    return added;
   }
 
   private indexPath(repoIdentity: string | null): string {
@@ -1318,12 +1309,8 @@ export class SyncManager {
     const paths = [...this.writtenPaths];
     // When this run wrote no paths, fall back to a directory-level add (for example a commit after an index rebuild),
     // but still only operate inside sessions/.
-    const present = paths.filter((p) => fs.existsSync(path.join(this.repoRoot, p)));
-    const addArgs = paths.length > 0 ? ['add', '--', ...present] : ['add', 'sessions/'];
-    if (paths.length === 0 || present.length > 0) this.runGit(addArgs);
-    // A moved-away path: `git add` rejects one whose removal an earlier failed commit already staged.
-    const removed = paths.filter((p) => !present.includes(p));
-    if (removed.length > 0) this.runGit(['rm', '-q', '--cached', '--ignore-unmatch', '--', ...removed]);
+    const addArgs = paths.length > 0 ? ['add', '--', ...paths] : ['add', 'sessions/'];
+    this.runGit(addArgs);
 
     const scopeArgs = paths.length > 0 ? ['--', ...paths] : ['--', 'sessions/'];
     const staged = this.runGit(['status', '--porcelain', ...scopeArgs], false);

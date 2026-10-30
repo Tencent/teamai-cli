@@ -528,7 +528,7 @@ describe('session pull (gitPull + rebuildIndex) on a team checkout', () => {
     expect(new SyncManager(alice).listSessions(identity).map((s) => s.sessionId).sort()).toEqual(['s-1', 's-2']);
   });
 
-  it('commits the whole move on the retry after a rejected commit, and leaves unrelated files out', async () => {
+  it('undoes a move whose commit is rejected, and moves the archive on a later push, leaving unrelated files out', async () => {
     const alice = path.join(repoRoot, 'alice');
     git(repoRoot, 'init', '-q', '-b', 'main', alice);
     initCheckout(alice, 'alice');
@@ -540,18 +540,23 @@ describe('session pull (gitPull + rebuildIndex) on a team checkout', () => {
     fs.writeFileSync(path.join(alice, 'sessions', 'repos', 'github.com%2Forg%2Falpha', 'notes.txt'), 'local only\n');
     const hook = path.join(alice, '.git', 'hooks', 'pre-commit');
     fs.writeFileSync(hook, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    const before = git(alice, 'rev-parse', 'HEAD');
 
     const rejected = new SyncManager(alice);
     await rejected.saveSession(mkSession({ sessionId: 's-2', title: 'add refunds' }), mkMeta({ sessionId: 's-2' }));
     expect(rejected.gitCommit('push').status).toBe('failed');
+    expect(git(alice, 'rev-parse', 'HEAD')).toBe(before);
+    expect(fs.existsSync(repoDirOf(identity).replace(repoRoot, alice))).toBe(false);
     fs.rmSync(hook);
-    const retry = new SyncManager(alice);
-    await retry.saveSession(mkSession({ sessionId: 's-2', title: 'add refunds' }), mkMeta({ sessionId: 's-2' }));
-    expect(retry.gitCommit('push').status).toBe('committed');
+    for (const sessionId of ['s-2', 's-3']) {
+      const mgr = new SyncManager(alice);
+      await mgr.saveSession(mkSession({ sessionId, title: `session ${sessionId}` }), mkMeta({ sessionId }));
+      expect(mgr.gitCommit('push').status).toBe('committed');
+    }
 
     const committed = git(alice, 'ls-tree', '-r', '--name-only', 'HEAD', 'sessions/repos').split('\n');
     expect(committed.filter((p) => p.includes('%') || p.endsWith('notes.txt'))).toEqual([]);
-    expect(committed.filter((p) => p.endsWith('.jsonl'))).toHaveLength(2);
+    expect(committed.filter((p) => p.endsWith('.jsonl'))).toHaveLength(3);
     expect(git(alice, 'status', '--porcelain')).toBe(`?? sessions/repos/${encodeRepoIdentity(identity)}/notes.txt`);
   });
 
@@ -588,7 +593,7 @@ describe('session pull (gitPull + rebuildIndex) on a team checkout', () => {
     expect(new SyncManager(alice).listSessions(identity).map((s) => s.sessionId).sort()).toEqual(['s-1', 's-2', 's-3', 's-4']);
   });
 
-  it('commits a fold that renamed a session on the retry after a rejected commit', async () => {
+  it('undoes a fold whose commit is rejected while a push updates a held session, and folds on a later push', async () => {
     const alice = path.join(repoRoot, 'alice');
     git(repoRoot, 'init', '-q', '-b', 'main', alice);
     initCheckout(alice, 'alice');
@@ -607,19 +612,28 @@ describe('session pull (gitPull + rebuildIndex) on a team checkout', () => {
     git(alice, 'commit', '-qm', 'older CLI push');
     const hook = path.join(alice, '.git', 'hooks', 'pre-commit');
     fs.writeFileSync(hook, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    const before = git(alice, 'rev-parse', 'HEAD');
+    const updated = mkSession({
+      messages: [...mkSession().messages, { role: 'user', content: [{ type: 'text', text: 'and refunds' }] }],
+    });
 
     const rejected = new SyncManager(alice);
-    await rejected.saveSession(mkSession({ sessionId: 's-2', title: 'add refunds' }), mkMeta({ sessionId: 's-2' }));
+    await rejected.saveSession(updated, mkMeta());
     expect(rejected.gitCommit('push').status).toBe('failed');
+    expect(git(alice, 'rev-parse', 'HEAD')).toBe(before);
+    expect(fs.readdirSync(path.join(repoDirOf(identity).replace(repoRoot, alice), 'alice')).filter((f) => f.endsWith('_1.jsonl'))).toEqual([]);
     fs.rmSync(hook);
-    const retry = new SyncManager(alice);
-    await retry.saveSession(mkSession({ sessionId: 's-2', title: 'add refunds' }), mkMeta({ sessionId: 's-2' }));
-    expect(retry.gitCommit('push').status).toBe('committed');
+    for (const [session, sessionId] of [[updated, 's-1'], [mkSession({ sessionId: 's-3', title: 'add invoices' }), 's-3']] as const) {
+      const mgr = new SyncManager(alice);
+      await mgr.saveSession(session, mkMeta({ sessionId }));
+      expect(mgr.gitCommit('push').status).toBe('committed');
+    }
 
     const committed = git(alice, 'ls-tree', '-r', '--name-only', 'HEAD', 'sessions/repos').split('\n');
     expect(committed.filter((p) => p.includes('%'))).toEqual([]);
     expect(committed.filter((p) => p.endsWith('.jsonl'))).toHaveLength(3);
     expect(git(alice, 'status', '--porcelain')).toBe('');
+    expect(new SyncManager(alice).listSessions(identity).map((s) => s.sessionId).sort()).toEqual(['s-1', 's-3', 's-4']);
   });
 
   it('publishes none of the edits staged under both repository directory names', async () => {
@@ -685,7 +699,7 @@ describe('session pull (gitPull + rebuildIndex) on a team checkout', () => {
     expect([deleted, edited].map((file) => git(alice, 'show', `HEAD:${file}`))).toEqual(originals);
   });
 
-  it('publishes no edit made to a moved session between a rejected commit and its retry', async () => {
+  it('publishes no edit made between a rejected move and the next push', async () => {
     const alice = path.join(repoRoot, 'alice');
     git(repoRoot, 'init', '-q', '-b', 'main', alice);
     initCheckout(alice, 'alice');
@@ -701,8 +715,8 @@ describe('session pull (gitPull + rebuildIndex) on a team checkout', () => {
     await rejected.saveSession(mkSession({ sessionId: 's-2', title: 'add refunds' }), mkMeta({ sessionId: 's-2' }));
     expect(rejected.gitCommit('push').status).toBe('failed');
     fs.rmSync(hook);
-    const moved = `sessions/repos/${encodeRepoIdentity(identity)}/alice/claude-code_fix-payment_20260102.jsonl`;
-    fs.appendFileSync(path.join(alice, moved), 'local edit\n');
+    // The rejected move was undone, so the session is back under the old name.
+    fs.appendFileSync(path.join(alice, 'sessions/repos/github.com%2Forg%2Falpha/alice/claude-code_fix-payment_20260102.jsonl'), 'local edit\n');
 
     const retry = new SyncManager(alice);
     await retry.saveSession(mkSession({ sessionId: 's-3', title: 'add invoices' }), mkMeta({ sessionId: 's-3' }));
