@@ -118,6 +118,16 @@ describe('resolveDesiredSkills', () => {
       expect(items.filter((item) => item.name === 'oncall').map((item) => item.relativePath)).toEqual(['skills/dev/oncall']);
       expect(shadowed).toEqual([{ name: 'oncall', namespace: 'ops', skipped: 'skills/ops/oncall', kept: 'skills/dev/oncall', receivingRoles: [] }]);
     });
+
+    it('orders by namespace name, so dev wins over dev-prod', async () => {
+      await writeSkill('dev-prod', 'release');
+      await writeSkill('dev', 'release');
+      listDirectories(order);
+
+      const { items } = resolved(await resolveDesiredSkills(teamConfig, localConfig, null));
+
+      expect(items.filter((item) => item.name === 'release').map((item) => item.relativePath)).toEqual(['skills/dev/release']);
+    });
   });
 
   it('takes the union of the active role namespaces and the subscribed tags', async () => {

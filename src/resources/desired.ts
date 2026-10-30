@@ -262,8 +262,10 @@ export interface ShadowedSkill {
  * the filesystem lists them in.
  */
 async function sharedFirst(repoPath: string, items: readonly ResourceItem[]): Promise<{ items: ResourceItem[]; shadowed: ShadowedSkill[] }> {
+  const byCodePoint = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+  // By namespace name, not path: `skills/dev-prod/` sorts before `skills/dev/`.
   const ordered = [...items].sort((a, b) => Number(a.namespace !== undefined) - Number(b.namespace !== undefined)
-    || (a.relativePath < b.relativePath ? -1 : a.relativePath > b.relativePath ? 1 : 0));
+    || byCodePoint(a.namespace ?? '', b.namespace ?? '') || byCodePoint(a.relativePath, b.relativePath));
   const kept = new Map<string, ResourceItem>();
   const skipped: { item: ResourceItem & { namespace: string }; kept: ResourceItem }[] = [];
   for (const item of ordered) {
