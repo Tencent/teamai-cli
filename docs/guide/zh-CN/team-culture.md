@@ -38,7 +38,7 @@ team:
 | Kiro | `~/.kiro/steering/teamai-context.md` | `.kiro/steering/teamai-context.md` |
 | Trae | `~/.trae/user_rules/teamai-context.md` | `.trae/rules/teamai-context.md` |
 | Trae CN | `~/.trae-cn/user_rules/teamai-context.md` | 共用 `.trae/rules/teamai-context.md` |
-| OpenCode | `~/.config/opencode/teamai-context.md` | `.opencode/teamai-context.md` |
+| OpenCode | `${XDG_CONFIG_HOME:-~/.config}/opencode/teamai-context.md`（或配置的 `OPENCODE_CONFIG_DIR`） | `.opencode/teamai-context.md` |
 | Pi | 存在时写入 `~/.pi/agent/AGENTS.override.md`，否则写入 `AGENTS.md` | 扩展加进系统提示 |
 | Oh My Pi | 它的用户文件 | 扩展加进系统提示 |
 | Hermes | `$HERMES_HOME/SOUL.md` | Hermes 插件 |
