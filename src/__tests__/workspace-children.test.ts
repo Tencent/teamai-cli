@@ -345,6 +345,25 @@ describe('delivered selection of a workspace with children', () => {
     expect(warn.mock.calls.flat().join('\n')).toContain('Skill "differs" differs between skills/svc-a/differs and skills/svc-b/differs');
   });
 
+  it('names no skipped same-name copy when the workspace holds that name back (#1577)', async () => {
+    fs.rmSync(path.join(repo, 'manifest', 'projects.yaml'));
+    fs.writeFileSync(path.join(repo, 'manifest', 'roles.yaml'), YAML.stringify({
+      version: 1,
+      roles: [{ id: 'backend', resources: { skills: ['dev'], knowledge: ['dev'] } }],
+    }));
+    skill(repo, null, 'release', 'shared\n');
+    skill(repo, 'dev', 'release', 'dev\n');
+    repoChild(path.join(ws, 'svc-a'), { primaryRole: 'backend' });
+    repoChild(path.join(ws, 'svc-b'));
+    vi.spyOn(log, 'warn').mockImplementation(() => {});
+    const delivered = await readWorkspaceChildren(workspace);
+
+    const desired = await resolveDesiredSkills(teamConfig, delivered, await buildRolePullContext(delivered));
+
+    expect(desired.kind === 'resolved' && desired.held).toEqual(['release']);
+    expect(desired.kind === 'resolved' && desired.shadowed).toEqual([]);
+  });
+
   it('does not hold back a name the workspace excludes, so pull can take its copy out', async () => {
     skill(repo, 'svc-a', 'differs', 'version a\n');
     skill(repo, 'svc-b', 'differs', 'version b\n');

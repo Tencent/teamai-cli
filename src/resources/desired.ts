@@ -420,6 +420,7 @@ async function resolveWorkspaceSkills(
   }
   const delivered = items.filter((item) => !excluded.has(item.name));
   const sources = new Set(delivered.map((item) => item.relativePath));
+  const deliveredNames = new Map(delivered.map((item) => [item.name, item.relativePath]));
   const overrides = [...new Map(resolved.flatMap((desired) => desired.overrides)
     .filter((override) => sources.has(override.source))
     .map((override) => [override.source, override] as const)).values()];
@@ -432,10 +433,12 @@ async function resolveWorkspaceSkills(
     // A held name the workspace excludes is not kept: cleanup decides its copy.
     held: held.map((item) => item.name).filter((name) => !excluded.has(name)),
     memberSources,
-    // A copy one member skips is not skipped when another member delivers it.
-    shadowed: [...new Map(resolved.flatMap((desired) => desired.shadowed)
-      .filter((skill) => !sources.has(skill.skipped) && !excluded.has(skill.name))
-      .map((skill) => [skill.skipped, skill] as const)).values()],
+    // A copy one member skips is not skipped when another member delivers it,
+    // and a name the workspace holds back delivers no copy in its place.
+    shadowed: [...new Map(resolved.flatMap((desired) => desired.shadowed).flatMap((skill) => {
+      const kept = deliveredNames.get(skill.name);
+      return kept && !sources.has(skill.skipped) ? [[skill.skipped, { ...skill, kept }] as const] : [];
+    })).values()],
   };
 }
 
