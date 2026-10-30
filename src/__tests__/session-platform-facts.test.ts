@@ -60,7 +60,7 @@ describe('session platform facts (#1140)', () => {
     expect(resumeCommand('opencode', 'ses_1')).toBe('opencode --session ses_1');
     expect(resumeCommand('codebuddy', 'id1')).toBe('codebuddy --resume id1');
     expect(resumeCommand('qoder', 'id1')).toBe('qodercli --resume id1');
-    expect(resumeCommand('qoder-cn', 'id1')).toBe('qodercli --resume id1');
+    expect(resumeCommand('qoder-cn', 'id1')).toBe('qoderclicn --resume id1');
   });
 
   it('rejects inherited object keys as platform names', () => {

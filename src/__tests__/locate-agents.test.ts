@@ -160,6 +160,16 @@ const ROWS: readonly MatrixRow[] = [
     source: 'Qoder CLI source: user agents in ~/.qoder/agents; #1221 matrix user Agents ✓s',
   },
   {
+    tool: 'qoder', scope: 'user', env: { QODER_CONFIG_DIR: '/qoder' },
+    writes: ['/qoder/agents'], existingDirs: ['/qoder'], installed: { probe: '/qoder', met: true },
+    reads: [{ at: '/qoder/agents', when: 'always' }], source: 'QODER_CONFIG_DIR moves Qoder user agents',
+  },
+  {
+    tool: 'qoder', scope: 'user', env: { QODER_CLI_HOME: '/qoder-cli' },
+    writes: ['/qoder-cli/.qoder/agents'], existingDirs: ['/qoder-cli/.qoder'], installed: { probe: '/qoder-cli/.qoder', met: true },
+    reads: [{ at: '/qoder-cli/.qoder/agents', when: 'always' }], source: 'QODER_CLI_HOME supplies the parent of Qoder user agents',
+  },
+  {
     tool: 'qoder', scope: 'project',
     writes: ['<root>/.qoder/agents'],
     existingDirs: ['~/.qoder'], installed: { probe: '~/.qoder', met: true },
@@ -179,6 +189,11 @@ const ROWS: readonly MatrixRow[] = [
     existingDirs: ['~/.qoder-cn'], installed: { probe: '~/.qoder-cn', met: true },
     reads: [{ at: '<root>/.qoder/agents', when: 'workspaceUnder' }],
     source: 'Assumed: Qoder CN shares Qoder\'s project .qoder/agents (types.ts qoder-cn)',
+  },
+  {
+    tool: 'qoder-cn', scope: 'user', env: { QODERCN_CONFIG_DIR: '/qodercn' },
+    writes: ['/qodercn/agents'], existingDirs: ['/qodercn'], installed: { probe: '/qodercn', met: true },
+    reads: [{ at: '/qodercn/agents', when: 'always' }], source: 'QODERCN_CONFIG_DIR moves Qoder CN user agents',
   },
   {
     tool: 'kiro', scope: 'user',

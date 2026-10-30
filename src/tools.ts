@@ -23,6 +23,10 @@ export type SkillLoad =
 /** One way a machine moves a tool's home. */
 export type HomeMove =
   | { readonly kind: 'env'; readonly name: string; readonly evidence: Evidence }
+  /** Qoder: `QODER_CONFIG_DIR`, or `.qoder` inside `QODER_CLI_HOME`. */
+  | { readonly kind: 'qoder-home'; readonly evidence: Evidence }
+  /** Qoder CN: `QODERCN_CONFIG_DIR`, or the default `.qoder-cn` home. */
+  | { readonly kind: 'qoder-cn-home'; readonly evidence: Evidence }
   /** `$XDG_CONFIG_HOME/<child>`. */
   | { readonly kind: 'xdg'; readonly child: string; readonly evidence: Evidence }
   /**
@@ -629,7 +633,7 @@ export const TOOLS = {
     },
   },
   qoder: {
-    home: { dir: '.qoder', moves: { by: [{ kind: 'env', name: 'QODER_CONFIG_DIR', evidence: 'source' }] } },
+    home: { dir: '.qoder', moves: { by: [{ kind: 'qoder-home', evidence: 'source' }] } },
     skillLoad: { calls: [{ name: 'Skill', evidence: 'source' }] },
     skills: UNKNOWN_READS,
     installedBy: 'home-edition',
@@ -650,7 +654,7 @@ export const TOOLS = {
       project: { format: 'claude', reads: [{ base: 'project', path: '.qoder/settings.json', when: 'workspaceUnder', evidence: 'source' }] },
     },
     hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.qoder/settings.json', evidence: 'source' }] }, self: { channel: 'settings', format: 'claude', reads: [{ base: 'project', path: '.qoder/settings.json', when: 'cwdOnly', evidence: 'source' }] } },
-    // Qoder CLI 1.1.78: <id>.jsonl under ~/.qoder/projects/<cwd>, moved by QODER_CONFIG_DIR.
+    // Qoder CLI 1.1.78: <id>.jsonl under <QODER_CONFIG_DIR or QODER_CLI_HOME/.qoder or ~/.qoder>/projects/<cwd>.
     sessions: ['qoder'],
     launch: 'qoder',
     features: {
@@ -665,7 +669,7 @@ export const TOOLS = {
     },
   },
   'qoder-cn': {
-    home: { dir: '.qoder-cn', moves: { by: [{ kind: 'env', name: 'QODERCN_CONFIG_DIR', evidence: 'source' }] } },
+    home: { dir: '.qoder-cn', moves: { by: [{ kind: 'qoder-cn-home', evidence: 'source' }] } },
     skillLoad: { calls: [{ name: 'Skill', evidence: 'source' }] },
     skills: UNKNOWN_READS,
     installedBy: 'home-edition',
@@ -686,7 +690,7 @@ export const TOOLS = {
       project: { format: 'claude', reads: [{ base: 'project', path: '.qoder/settings.json', when: 'workspaceUnder', evidence: 'assumed' }] },
     },
     hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.qoder-cn/settings.json', evidence: 'source' }] }, self: { channel: 'settings', format: 'claude', reads: [{ base: 'project', path: '.qoder/settings.json', when: 'cwdOnly', evidence: 'source' }] } },
-    // Qoder CN: the same layout under ~/.qoder-cn, moved by the QODERCN_ variables.
+    // Qoder CN: the same layout under ~/.qoder-cn, moved by QODERCN_CONFIG_DIR.
     sessions: ['qoder-cn'],
     launch: 'none',
     features: {
@@ -1295,6 +1299,10 @@ export function homeVariables(tool: ToolId): readonly string[] {
     switch (move.kind) {
       case 'env':
         return [move.name];
+      case 'qoder-home':
+        return ['QODER_CONFIG_DIR', 'QODER_CLI_HOME'];
+      case 'qoder-cn-home':
+        return ['QODERCN_CONFIG_DIR'];
       case 'xdg':
         return ['XDG_CONFIG_HOME'];
       case 'openclaw-state':

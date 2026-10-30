@@ -98,7 +98,7 @@ export const SESSION_PLATFORM_FACTS = {
     idFormat: 'uuid',
   },
   'qoder': {
-    // Qoder CLI 1.1.78 stores Claude Code-shaped transcripts under <QODER_CONFIG_DIR or ~/.qoder>/projects.
+    // Qoder CLI 1.1.78 stores Claude Code-shaped transcripts under <QODER_CONFIG_DIR or QODER_CLI_HOME/.qoder or ~/.qoder>/projects.
     store: { in: 'tool-home', home: 'qoder', dir: 'projects' },
     resume: (id) => `qodercli --resume ${id}`,
     thinking: true, images: true,
@@ -111,9 +111,9 @@ export const SESSION_PLATFORM_FACTS = {
     idFormat: 'uuid',
   },
   'qoder-cn': {
-    // Qoder CN uses the same transcript format under <QODERCN_CONFIG_DIR or ~/.qoder-cn>/projects.
+    // Qoder CN stores transcripts under <QODERCN_CONFIG_DIR or ~/.qoder-cn>/projects.
     store: { in: 'tool-home', home: 'qoder-cn', dir: 'projects' },
-    resume: (id) => `qodercli --resume ${id}`,
+    resume: (id) => `qoderclicn --resume ${id}`,
     thinking: true, images: true,
     nativeTools: new Set([
       'read_file', 'write_file', 'edit_file', 'multi_edit', 'bash', 'glob', 'grep',

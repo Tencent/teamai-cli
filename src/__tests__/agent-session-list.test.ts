@@ -173,6 +173,8 @@ describe('AgentSession.list', () => {
   // A session being written, or a damaged one, must not look absent: a lookup reports it unreadable.
   const READS_A_HEAD = [
     ['claude-code', ['.claude', 'projects']],
+    ['qoder', ['.qoder', 'projects']],
+    ['qoder-cn', ['.qoder-cn', 'projects']],
     ['codebuddy', ['.codebuddy', 'projects']],
     ['cursor', ['.cursor', 'projects']],
     ['workbuddy', ['.workbuddy', 'projects']],

@@ -190,6 +190,16 @@ const COMPLETE_ROWS: readonly MatrixRow[] = [
     source: 'Qoder CLI 1.1.73 loader source, issue #1221 Matrix',
   },
   {
+    tool: 'qoder', scope: 'user', env: { QODER_CONFIG_DIR: '/qoder' },
+    writes: [{ at: '/qoder/settings.json', key: ['mcpServers'] }], existingDirs: ['/qoder'], installed: { probe: '/qoder', met: true },
+    reads: [{ at: '/qoder/settings.json', key: ['mcpServers'], when: 'always' }], source: 'QODER_CONFIG_DIR moves Qoder user MCP settings',
+  },
+  {
+    tool: 'qoder', scope: 'user', env: { QODER_CLI_HOME: '/qoder-cli' },
+    writes: [{ at: '/qoder-cli/.qoder/settings.json', key: ['mcpServers'] }], existingDirs: ['/qoder-cli/.qoder'], installed: { probe: '/qoder-cli/.qoder', met: true },
+    reads: [{ at: '/qoder-cli/.qoder/settings.json', key: ['mcpServers'], when: 'always' }], source: 'QODER_CLI_HOME supplies the parent of Qoder user MCP settings',
+  },
+  {
     tool: 'qoder', scope: 'project',
     writes: [{ at: '<root>/.qoder/settings.json', key: ['mcpServers'] }],
     existingDirs: ['~/.qoder'],
@@ -212,6 +222,11 @@ const COMPLETE_ROWS: readonly MatrixRow[] = [
     installed: { probe: '~/.qoder-cn', met: true },
     reads: [{ at: '<root>/.qoder/settings.json', key: ['mcpServers'], when: 'workspaceUnder' }],
     source: 'Qoder CLI 1.1.73 loader; CN shares project config, assumed',
+  },
+  {
+    tool: 'qoder-cn', scope: 'user', env: { QODERCN_CONFIG_DIR: '/qodercn' },
+    writes: [{ at: '/qodercn/settings.json', key: ['mcpServers'] }], existingDirs: ['/qodercn'], installed: { probe: '/qodercn', met: true },
+    reads: [{ at: '/qodercn/settings.json', key: ['mcpServers'], when: 'always' }], source: 'QODERCN_CONFIG_DIR moves Qoder CN user MCP settings',
   },
   {
     tool: 'kiro', scope: 'user',

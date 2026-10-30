@@ -504,7 +504,7 @@ async function installedGateOf(tool: string, install: Install, host: Host, roots
   if (home && installedBy !== undefined) {
     switch (installedBy) {
       case 'home-edition':
-        return probe(join(host.home, home.root), enabled || undefined);
+        return probe(home.dir, enabled || undefined);
       case 'home':
         return probe(home.dir);
       case 'own-root':

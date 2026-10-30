@@ -94,6 +94,8 @@ beforeEach(() => {
   mocks.home = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-find-')));
   for (const dir of [
     ['.claude', 'projects'],
+    ['.qoder', 'projects'],
+    ['.qoder-cn', 'projects'],
     ['.codebuddy', 'projects'],
     ['.codex', 'sessions'],
     ['.cursor', 'projects'],
