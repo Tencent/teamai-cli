@@ -4403,6 +4403,34 @@ describe('spliceCodexBlock', () => {
     expect(spliceCodexBlock(src, 'a', null)).toBe(before + after);
   });
 
+  it('keeps a member comment that follows the block when deleting it', () => {
+    const src = '[mcp_servers.a]\ncommand = "x"\n\n# note: keep this\n[projects."/y"]\ntrust_level = "trusted"\n';
+    const out = spliceCodexBlock(src, 'a', null);
+    expect(out).not.toContain('mcp_servers.a');
+    expect(out).toContain('# note: keep this');
+    expect(out).toContain('[projects."/y"]');
+  });
+
+  it('keeps a member comment that follows the block when replacing it', () => {
+    const src =
+      '[mcp_servers.a]\ncommand = "old"\n\n# note: keep this\n[projects."/y"]\ntrust_level = "trusted"\n';
+    const out = spliceCodexBlock(src, 'a', '[mcp_servers.a]\ncommand = "new"\n');
+    expect(out).toContain('command = "new"');
+    expect(out).not.toContain('command = "old"');
+    expect(out).toContain('# note: keep this');
+    expect(out).toContain('[projects."/y"]');
+    expect(spliceCodexBlock(out, 'a', '[mcp_servers.a]\ncommand = "new"\n')).toBe(out);
+  });
+
+  it('removes a comment between the block own keys with the block', () => {
+    const src =
+      '[mcp_servers.a]\ncommand = "x"\n# why this command\nargs = ["--flag"]\n\n[projects."/y"]\ntrust_level = "trusted"\n';
+    const out = spliceCodexBlock(src, 'a', null);
+    expect(out).not.toContain('mcp_servers.a');
+    expect(out).not.toContain('why this command');
+    expect(out).toContain('[projects."/y"]');
+  });
+
   // Regression: the end-of-input branch was originally written as \z, which JS
   // reads as a literal "z", so a trailing block could never be matched.
   it('deletes a block sitting at end-of-file', () => {

@@ -811,6 +811,25 @@ async function removeCreatedMcpFile(file: string): Promise<void> {
 // ─── Codex TOML target I/O ───────────────────────────────────
 
 /**
+ * The part of a matched block teamai owns: from its header through its last line
+ * that is neither blank nor a comment. A comment after that last key line sits
+ * between the block and the next table but was not written by `renderCodexBlock`,
+ * so it belongs to the member and splicing must leave it in place. A comment
+ * between the block's own keys stays inside this extent and goes with the block.
+ */
+function ownedCodexBlock(text: string): string {
+  let end = 0;
+  let offset = 0;
+  for (const line of text.split('\n')) {
+    offset += line.length + 1;
+    const trimmed = line.trim();
+    if (trimmed === '' || trimmed.startsWith('#')) continue;
+    end = Math.min(offset, text.length);
+  }
+  return text.slice(0, end);
+}
+
+/**
  * Replace or delete a `[mcp_servers.<name>]` block by text surgery, leaving the
  * rest of config.toml byte-identical (comments included). A written block
  * always ends in a blank line, appended or replaced, so splicing the same
@@ -821,9 +840,12 @@ export function spliceCodexBlock(source: string, name: string, block: string | n
   const match = source.match(re);
   const padded = block === null ? null : block.endsWith('\n') ? block + '\n' : block + '\n\n';
 
-  if (match) {
-    if (padded === null) return source.replace(re, '');
-    return source.replace(re, padded);
+  if (match && match.index !== undefined) {
+    const owned = ownedCodexBlock(match[0]);
+    const before = source.slice(0, match.index);
+    const after = source.slice(match.index + owned.length).replace(/^\n+/, '');
+    if (padded === null) return before + after;
+    return before + padded + after;
   }
 
   if (padded === null) return source;
@@ -864,7 +886,8 @@ function codexHeaderStart(name: string): string {
  */
 export function codexBlockIn(source: string, name: string): string | null {
   const match = source.match(codexBlockRe(name));
-  return match === null ? null : match[0].trimEnd() + '\n';
+  if (match === null) return null;
+  return ownedCodexBlock(match[0]).trimEnd() + '\n';
 }
 
 /** Extract the names of all `[mcp_servers.X]` tables present in a config.toml. */
