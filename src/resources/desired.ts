@@ -13,7 +13,7 @@ import {
 } from '../namespace-resolver.js';
 import { placedResourcePath } from '../push-namespaces.js';
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
-import type { ResourceNamespaces } from '../roles.js';
+import { loadRolesManifestIfPresent, type ResourceNamespaces } from '../roles.js';
 import type { LocalConfig, ResourceItem, TeamaiConfig } from '../types.js';
 import { dirContentEqual, fileContentEqual, listDirs, listFiles, pathExists, readFileSafe } from '../utils/fs.js';
 import type { BuildIndexOptions, IndexedSkills } from '../utils/search-index.js';
@@ -246,10 +246,14 @@ export type DesiredSkills = Extract<DesiredItems, { kind: 'resolved' }> & {
 /** A same-name skill pull left out without a role, and the copy it delivers instead (#1577). */
 export interface ShadowedSkill {
   readonly name: string;
+  /** The namespace of the copy left out. */
+  readonly namespace: string;
   /** Team-repo path of the copy left out, e.g. `skills/dev/release`. */
   readonly skipped: string;
   /** Team-repo path of the copy delivered under that name, e.g. `skills/release`. */
   readonly kept: string;
+  /** Roles in `manifest/roles.yaml` whose skills include that namespace: setting one delivers the copy. */
+  readonly receivingRoles: readonly string[];
 }
 
 /**
@@ -257,16 +261,26 @@ export interface ShadowedSkill {
  * the shared root copy first, then namespaces in name order, whatever order
  * the filesystem lists them in.
  */
-function sharedFirst(items: readonly ResourceItem[]): { items: ResourceItem[]; shadowed: ShadowedSkill[] } {
+async function sharedFirst(repoPath: string, items: readonly ResourceItem[]): Promise<{ items: ResourceItem[]; shadowed: ShadowedSkill[] }> {
   const ordered = [...items].sort((a, b) => Number(a.namespace !== undefined) - Number(b.namespace !== undefined)
     || (a.relativePath < b.relativePath ? -1 : a.relativePath > b.relativePath ? 1 : 0));
   const kept = new Map<string, ResourceItem>();
-  const shadowed: ShadowedSkill[] = [];
+  const skipped: { item: ResourceItem & { namespace: string }; kept: ResourceItem }[] = [];
   for (const item of ordered) {
     const winner = kept.get(item.name);
-    if (winner) shadowed.push({ name: item.name, skipped: item.relativePath, kept: winner.relativePath });
-    else kept.set(item.name, item);
+    if (!winner) kept.set(item.name, item);
+    // Root copies sort first and one name has one root copy, so a skipped copy is namespaced.
+    else if (item.namespace !== undefined) skipped.push({ item: { ...item, namespace: item.namespace }, kept: winner });
   }
+  // A member with no role reaches here only when the manifest is absent or parsed.
+  const roles = skipped.length > 0 ? (await loadRolesManifestIfPresent(repoPath))?.roles ?? [] : [];
+  const shadowed = skipped.map(({ item, kept: winner }) => ({
+    name: item.name,
+    namespace: item.namespace,
+    skipped: item.relativePath,
+    kept: winner.relativePath,
+    receivingRoles: roles.filter((role) => role.resources.skills.includes(item.namespace)).map((role) => role.id),
+  }));
   return { items: [...kept.values()], shadowed };
 }
 
@@ -300,7 +314,7 @@ export async function resolveDesiredSkills(
     if (scanned.kind === 'conflict') return scanned;
     directoryItems = scanned.items;
   } else {
-    ({ items: directoryItems, shadowed } = sharedFirst(await withSkillMd(await handler.scanTeamForPull(teamConfig, localConfig))));
+    ({ items: directoryItems, shadowed } = await sharedFirst(localConfig.repo.localPath, await withSkillMd(await handler.scanTeamForPull(teamConfig, localConfig))));
   }
 
   const teamItems = await withSkillMd(await handler.scanTeamForPull(teamConfig, localConfig));

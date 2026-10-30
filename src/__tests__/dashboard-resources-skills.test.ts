@@ -165,17 +165,25 @@ describe('collectSkillsInventory', () => {
     const skills = (await collectSkillsInventory(teamConfig, localConfig, roleContext)).skills;
     const byPath = new Map(skills.map((skill) => [skill.path, skill]));
     expect(byPath.get('skills/backend/review')).toMatchObject({ delivered: true, undeliveredReason: undefined });
-    expect(byPath.get('skills/review')).toMatchObject({ delivered: false, undeliveredReason: 'replaced' });
+    expect(byPath.get('skills/review')).toMatchObject({ delivered: false, undeliveredReason: 'replaced', deliveredInstead: 'skills/backend/review' });
   });
 
-  it('labels the losing same-name copy replaced without a role context too', async () => {
-    // No roles: the name-keyed merge keeps the scan-order winner (the root
-    // copy here); the namespaced twin's truthful label is `replaced`.
+  it('labels the namespace copy skipped for the shared one without a role, naming the copy delivered (#1577)', async () => {
     await writeSkill('backend/review', '---\nname: review\ndescription: Namespaced copy\n---\n');
     const skills = (await collectSkillsInventory(teamConfig, localConfig, null)).skills;
     const byPath = new Map(skills.map((skill) => [skill.path, skill]));
-    expect(byPath.get('skills/review')).toMatchObject({ delivered: true, undeliveredReason: undefined });
-    expect(byPath.get('skills/backend/review')).toMatchObject({ delivered: false, undeliveredReason: 'replaced' });
+    expect(byPath.get('skills/review')).toMatchObject({ delivered: true, undeliveredReason: undefined, deliveredInstead: null });
+    expect(byPath.get('skills/backend/review')).toMatchObject({ delivered: false, undeliveredReason: 'shadowed', deliveredInstead: 'skills/review', receivingRoles: [] });
+  });
+
+  it('names the roles that would deliver a namespace copy skipped without a role (#1577)', async () => {
+    await writeSkill('backend/review', '---\nname: review\ndescription: Namespaced copy\n---\n');
+    await fse.ensureDir(path.join(repoPath, 'manifest'));
+    await fse.writeFile(path.join(repoPath, 'manifest', 'roles.yaml'), 'version: 1\nroles:\n  - id: api\n    resources: { knowledge: [], skills: [backend] }\n');
+    const skills = (await collectSkillsInventory(teamConfig, localConfig, null)).skills;
+    const byPath = new Map(skills.map((skill) => [skill.path, skill]));
+    expect(byPath.get('skills/backend/review')).toMatchObject({ undeliveredReason: 'shadowed', receivingRoles: ['api'] });
+    expect(byPath.get('skills/review')).toMatchObject({ delivered: true, receivingRoles: [] });
   });
 
   it('marks a personally excluded skill and lets exclusion win over delivery', async () => {

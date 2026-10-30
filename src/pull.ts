@@ -6,7 +6,7 @@ import { isDeepStrictEqual } from 'node:util';
 import matter from 'gray-matter';
 import {
   buildRolePullContext, collectClaudemdFiles, describeDeliveryConflict, indexedRuleFiles,
-  indexedSkills, resolveDesiredAgents, resolveDesiredRules, resolveDesiredSkills, type RolePullContext,
+  indexedSkills, resolveDesiredAgents, resolveDesiredRules, resolveDesiredSkills, type RolePullContext, type ShadowedSkill,
 } from './resources/desired.js';
 import type { IndexedSkills, UnreadableFile } from './utils/search-index.js';
 import { detectProjectConfig, describeUnreadableConfig, loadLocalConfigForScope, loadTeamConfig, loadStateForScope, refreshRoleAssignment, saveStateForScope, saveLocalConfigForScope } from './config.js';
@@ -768,6 +768,20 @@ async function cleanupTombstonedResources(
       }
     }
   }
+}
+
+/**
+ * The line pull prints for a same-name skill it skipped without a role (#1577),
+ * naming the roles that would deliver the skipped copy.
+ */
+function describeShadowedSkill(skill: ShadowedSkill): string {
+  const kept = skill.kept === `skills/${skill.name}` ? `the shared ${skill.kept}` : skill.kept;
+  const [onlyRole, ...otherRoles] = skill.receivingRoles;
+  if (onlyRole === undefined) {
+    return `Skipped ${skill.skipped}: ${kept} has the same name, and no role receives ${skill.namespace}. Rename one of them in the team repo to deliver both.`;
+  }
+  const roleArg = otherRoles.length === 0 ? onlyRole : `<${skill.receivingRoles.join('|')}>`;
+  return `Skipped ${skill.skipped}: ${kept} has the same name. To get it instead, set a role that receives ${skill.namespace}: teamai roles set ${roleArg}.`;
 }
 
 /** The env namespaces active for this member, or null in legacy mode. */
@@ -2174,12 +2188,7 @@ async function pullForScope(
       }
       items = desired.items;
       skippedByTags = desired.skippedByTags;
-      for (const { name, skipped, kept } of desired.shadowed) {
-        const namespace = path.basename(path.dirname(skipped));
-        log.warn(kept === `skills/${name}`
-          ? `[${scopeLabel}] Skipped ${skipped}: the shared ${kept} has the same name. Set a role that receives ${namespace} to get it instead: teamai roles set <role-id>.`
-          : `[${scopeLabel}] Skipped ${skipped}: ${kept} has the same name. Set a role that receives ${namespace} to get it instead: teamai roles set <role-id>.`);
-      }
+      for (const skill of desired.shadowed) log.warn(`[${scopeLabel}] ${describeShadowedSkill(skill)}`);
       // A skill a workspace holds back keeps its installed copy (#913).
       desiredSkillNames = new Set([...items.map((i) => i.name), ...desired.held]);
       workspaceHeldSkills = desired.held.length > 0;

@@ -35,8 +35,16 @@ export interface DashboardSkill {
   /** Agents with the skill directory on disk right now. */
   installedAgents: string[];
   delivered: boolean;
-  /** Why pull leaves the skill out; only set on an undelivered skill. */
-  undeliveredReason: 'namespace' | 'tags' | 'replaced' | 'excluded' | undefined;
+  /**
+   * Why pull leaves the skill out; only set on an undelivered skill.
+   * `replaced`: an active namespace skill of the same name delivers instead.
+   * `shadowed`: without a role, a same-name copy delivers instead (#1577).
+   */
+  undeliveredReason: 'namespace' | 'tags' | 'replaced' | 'shadowed' | 'excluded' | undefined;
+  /** Path of the same-name copy pull delivers in this skill's place, or null. */
+  deliveredInstead: string | null;
+  /** For a `shadowed` skill, the roles that would deliver it; empty otherwise. */
+  receivingRoles: readonly string[];
   /** Whether this workspace's personal exclude list holds the skill. */
   excluded: boolean;
 }
@@ -108,10 +116,10 @@ export async function collectSkillsInventory(
   // the copy actually delivers (#1143 review).
   const delivered = new Set(resolved.kind === 'resolved' ? resolved.items.map((item) => item.relativePath) : []);
   // Delivery is name-keyed in resolveDesiredSkills: among same-name skills
-  // (a root copy and a namespaced one) exactly one wins the merge — with
-  // roles the namespace copy, without them the scan-order winner. The
-  // loser's truthful label is `replaced`: a same-name skill stands in for
-  // it. This covers both directions and the overrides the resolver reports.
+  // exactly one wins the merge. With roles an active namespace copy replaces
+  // the root one; without them the resolver names each copy it skipped for
+  // the one it kept (#1577).
+  const shadowed = new Map(resolved.kind === 'resolved' ? resolved.shadowed.map((skill) => [skill.skipped, skill] as const) : []);
   const winnerByName = new Map(resolved.kind === 'resolved' ? resolved.items.map((item) => [item.name, item] as const) : []);
   const excludedSkills = new Set(localConfig.excludedSkills ?? []);
   const tagsConfig = await loadTagsConfig(localConfig.repo.localPath);
@@ -134,7 +142,8 @@ export async function collectSkillsInventory(
     else if (excluded) undeliveredReason = 'excluded';
     else {
       const winner = winnerByName.get(item.name);
-      if (winner && winner.relativePath !== item.relativePath) undeliveredReason = 'replaced';
+      if (shadowed.has(item.relativePath)) undeliveredReason = 'shadowed';
+      else if (winner && winner.relativePath !== item.relativePath) undeliveredReason = 'replaced';
       else if (catalogued.has(item.name)) undeliveredReason = 'tags';
       else if (roleContext) undeliveredReason = 'namespace';
       else undeliveredReason = 'tags';
@@ -149,6 +158,10 @@ export async function collectSkillsInventory(
       installedAgents: await installedAgentsFor(teamConfig, localConfig, item.name),
       delivered: undeliveredReason === undefined,
       undeliveredReason,
+      deliveredInstead: undeliveredReason === 'replaced' || undeliveredReason === 'shadowed'
+        ? winnerByName.get(item.name)?.relativePath ?? null
+        : null,
+      receivingRoles: shadowed.get(item.relativePath)?.receivingRoles ?? [],
       excluded,
     });
   }

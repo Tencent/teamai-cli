@@ -105,7 +105,7 @@ describe('resolveDesiredSkills', () => {
 
       const { shadowed } = resolved(await resolveDesiredSkills(teamConfig, localConfig, null));
 
-      expect(shadowed).toEqual([{ name: 'release', skipped: 'skills/dev/release', kept: 'skills/release' }]);
+      expect(shadowed).toEqual([{ name: 'release', namespace: 'dev', skipped: 'skills/dev/release', kept: 'skills/release', receivingRoles: [] }]);
     });
 
     it('keeps the namespace that sorts first when no shared copy has the name', async () => {
@@ -116,7 +116,7 @@ describe('resolveDesiredSkills', () => {
       const { items, shadowed } = resolved(await resolveDesiredSkills(teamConfig, localConfig, null));
 
       expect(items.filter((item) => item.name === 'oncall').map((item) => item.relativePath)).toEqual(['skills/dev/oncall']);
-      expect(shadowed).toEqual([{ name: 'oncall', skipped: 'skills/ops/oncall', kept: 'skills/dev/oncall' }]);
+      expect(shadowed).toEqual([{ name: 'oncall', namespace: 'ops', skipped: 'skills/ops/oncall', kept: 'skills/dev/oncall', receivingRoles: [] }]);
     });
   });
 
@@ -126,6 +126,27 @@ describe('resolveDesiredSkills', () => {
     const { items } = resolved(await resolveDesiredSkills(teamConfig, localConfig, rolesOver(['common'])));
 
     expect(items.map((i) => i.name).sort()).toEqual(['frontend-skill', 'shared-skill']);
+  });
+
+  it('names the roles that would deliver a skipped copy, from the roles manifest', async () => {
+    await writeSkill('', 'release');
+    await writeSkill('dev', 'release');
+    await fse.ensureDir(path.join(repoPath, 'manifest'));
+    await fse.writeFile(path.join(repoPath, 'manifest', 'roles.yaml'), [
+      'version: 1',
+      'roles:',
+      '  - id: backend',
+      '    resources: { knowledge: [backend], skills: [backend, dev] }',
+      '  - id: platform',
+      '    resources: { knowledge: [], skills: [dev] }',
+      '  - id: design',
+      '    resources: { knowledge: [], skills: [frontend] }',
+      '',
+    ].join('\n'));
+
+    const { shadowed } = resolved(await resolveDesiredSkills(teamConfig, localConfig, null));
+
+    expect(shadowed).toEqual([{ name: 'release', namespace: 'dev', skipped: 'skills/dev/release', kept: 'skills/release', receivingRoles: ['backend', 'platform'] }]);
   });
 
   it('with a role that receives the namespace, delivers its copy over the shared one (#707)', async () => {

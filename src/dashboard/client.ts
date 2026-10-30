@@ -117,8 +117,13 @@ function ruleState(r) {
 function skillState(k) {
  if(k.excluded)return '<span class="amber">'+label('Excluded by you')+'</span><small>'+label('Applies on the next pull')+'</small>';
  if(k.delivered)return '<span class="good">'+label('Delivered')+'</span>';
- var reasons={namespace:'Outside the active namespaces',tags:'Omitted by tag subscriptions',replaced:'Replaced by an active namespace skill',excluded:'Excluded by you'};
- return '<span class="amber">'+label('Not delivered')+'</span><small>'+label(reasons[k.undeliveredReason]||'')+'</small>';
+ var reasons={namespace:'Outside the active namespaces',tags:'Omitted by tag subscriptions',replaced:'Replaced by an active namespace skill',shadowed:'A same-name skill is delivered instead',excluded:'Excluded by you'};
+ // Name the copy that takes this one's place, and for a skipped namespace copy how to get it (#1577).
+ var instead=k.deliveredInstead?'<small>'+label('Delivered instead:')+' <code data-verbatim>'+e(k.deliveredInstead)+'</code></small>':'';
+ var how=k.undeliveredReason!=='shadowed'?'':k.receivingRoles&&k.receivingRoles.length
+  ?'<small>'+label('Set one of these roles to get this copy:')+' '+k.receivingRoles.map(r=>'<code data-verbatim>'+e(r)+'</code>').join(', ')+'</small>'+link('distribution','Choose roles')
+  :'<small>'+label('No role receives this namespace. Rename one copy in the team repo to deliver both.')+'</small>';
+ return '<span class="amber">'+label('Not delivered')+'</span><small>'+label(reasons[k.undeliveredReason]||'')+'</small>'+instead+how;
 }
 function skillAgents(k) {
  if(!k.installedAgents||!k.installedAgents.length)return '—';
@@ -142,8 +147,8 @@ function skillsPanel() {
  +'<div class="filters"><select id="skill-delivery"><option value="">'+label('All delivery states')+'</option><option value="delivered"'+(skillFilterDelivery==='delivered'?' selected':'')+'>'+label('Delivered')+'</option><option value="undelivered"'+(skillFilterDelivery==='undelivered'?' selected':'')+'>'+label('Not delivered')+'</option></select>'
  +'<select id="skill-namespace"><option value="">'+label('All namespaces')+'</option>'+namespaces.map(ns=>'<option value="'+e(ns)+'"'+(skillFilterNamespace===ns?' selected':'')+'>'+e(ns)+'</option>').join('')+'</select>'
  +'<select id="skill-agent"><option value="">'+label('All agents')+'</option>'+agents.map(a=>'<option value="'+e(a)+'"'+(skillFilterAgent===a?' selected':'')+'>'+e(a)+'</option>').join('')+'</select></div>'
- +'<div class="table-scroll"><table class="session-table"><thead><tr>'+['SKILL','NAMESPACE','DESCRIPTION','AGENTS','DELIVERY',''].map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
- +shown.map(k=>'<tr><td data-verbatim>'+e(k.name)+'</td><td>'+(k.namespace?e(k.namespace):label('Root'))+'</td><td>'+e(k.description||'—')+'</td><td>'+skillAgents(k)+'</td><td>'+skillState(k)+'</td><td>'+skillExcludeButton(k)+'</td></tr>').join('')
+ +'<div class="table-scroll"><table class="session-table skills-table"><thead><tr>'+['SKILL','NAMESPACE','DESCRIPTION','AGENTS','DELIVERY',''].map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
+ +shown.map(k=>'<tr><td data-verbatim>'+e(k.name)+'</td><td data-label="'+label('NAMESPACE')+'">'+(k.namespace?e(k.namespace):label('Root'))+'</td><td data-label="'+label('DESCRIPTION')+'">'+e(k.description||'—')+'</td><td data-label="'+label('AGENTS')+'">'+skillAgents(k)+'</td><td data-label="'+label('DELIVERY')+'">'+skillState(k)+'</td><td>'+skillExcludeButton(k)+'</td></tr>').join('')
  +(shown.length?'':'<tr><td colspan="6"><div class="empty">'+label('No skills match these filters')+'</div></td></tr>')
  +'</tbody></table></div><p class="hint">'+label('Exclusions apply to this workspace only, on the next pull. They never touch the team repository.')+'</p></section>';
 }

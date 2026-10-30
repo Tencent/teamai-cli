@@ -105,7 +105,7 @@ describe('shared skill wins without a role (#1577)', () => {
     fs.writeFileSync(path.join(remoteRepo, 'manifest', 'roles.yaml'), [
       'version: 1',
       'roles:',
-      '  - id: dev',
+      '  - id: backend',
       '    resources:',
       '      knowledge: [dev]',
       '      skills: [dev]',
@@ -132,11 +132,11 @@ describe('shared skill wins without a role (#1577)', () => {
     expect(deliveredRelease(projectRoot)).toContain('Shared release checklist');
     const skipLines = pull.output.split('\n').filter((line) => line.includes('Skipped skills/dev/release'));
     expect(skipLines).toHaveLength(1);
-    expect(skipLines[0]).toContain('Skipped skills/dev/release: the shared skills/release has the same name. Set a role that receives dev to get it instead: teamai roles set <role-id>.');
+    expect(skipLines[0]).toContain('Skipped skills/dev/release: the shared skills/release has the same name. To get it instead, set a role that receives dev: teamai roles set backend.');
   });
 
   it('delivers the namespace skill to a member whose role receives it (#707)', async () => {
-    const projectRoot = project('dev-member', 'dev');
+    const projectRoot = project('backend-member', 'backend');
 
     const pull = await runCLI(['pull', '--force'], homeDir, projectRoot);
 
