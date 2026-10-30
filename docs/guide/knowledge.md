@@ -94,7 +94,7 @@ teamai recall disable
 teamai recall status
 ```
 
-One machine overrides this with `recallEnabled` in `~/.teamai/config.yaml`. `TEAMAI_RECALL_DISABLED=1` forces it off, and `teamai recall status` names it when it does. While it is off, pull does not install recall. `teamai recall` still searches. The variable changes files that every shell in the scope shares: a pull from a shell with it set removes the recall files and the CLAUDE.md recall block for the whole scope, and a pull from a shell without it puts them back.
+One machine overrides this with `recallEnabled` in `~/.teamai/config.yaml`. `TEAMAI_RECALL_DISABLED=1` forces it off, and `teamai recall status` names it when it does. While it is off, pull does not install recall and removes the recall agent and rule an earlier pull installed. `teamai recall` still searches. The variable changes files that every shell in the scope shares: a pull from a shell with it set removes the recall files and the CLAUDE.md recall block for the whole scope, and a pull from a shell without it puts them back.
 
 Turning recall off does not silence the SessionStart hint for recently merged MRs. That hint points to `teamai import --from-mr`, which can capture and publish a learning before the team enables recall. It has its own switch, so a team can turn it off without touching `contributeHint`:
 
