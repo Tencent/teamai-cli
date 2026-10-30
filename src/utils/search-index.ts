@@ -1104,11 +1104,15 @@ function dedupKey(r: SearchResult): string {
 
 /**
  * Scale of the title field's length normalization. In `rankScore` a title
- * match is divided by `sqrt(length / TITLE_LENGTH_SCALE)`, so a title of this
- * many characters keeps its full weight and a longer one is discounted.
+ * match is divided by `sqrt(tokens / TITLE_LENGTH_SCALE)`, where tokens is
+ * the entry's `title:` token count (`tokenize(title).length`), so a title of
+ * this many tokens keeps its full weight and a longer one is discounted.
+ * Counting tokens rather than characters gives English and Chinese titles of
+ * the same word count the same discount. 4.5 keeps the discount the 32-character, 12-token hub title
+ * "订单排查手册：查不到、查得慢、数据不一致（L4 runbook）" had at 12 characters.
  * Exported so the scoring test can name the value it asserts against.
  */
-export const TITLE_LENGTH_SCALE = 12;
+export const TITLE_LENGTH_SCALE = 4.5;
 
 /**
  * Query words that carry the question's phrasing, not its subject: dropping
@@ -1135,7 +1139,7 @@ const QUERY_STOP_TOKENS = new Set([
  *
  * Scoring (P1.4 domain-weighted):
  * - Title token match: 3 points. For `rankScore` only, divided by
- *   sqrt(title length / TITLE_LENGTH_SCALE) so a long hub title
+ *   sqrt(title tokens / TITLE_LENGTH_SCALE) so a long hub title
  *   ("订单排查手册：查不到、查得慢、数据不一致（L4 runbook）") does not out-rank
  *   a short topic title on the same matched token
  * - Tag token match: 2 points
@@ -1264,9 +1268,15 @@ export function search(
       // BM25-style length normalization for the title field: without it a hub
       // page whose title names the whole domain matches the same query token as
       // a focused page, at the same weight. It orders results only; `score`
-      // stays on the scale the relevance threshold is set on.
+      // stays on the scale the relevance threshold is set on. The index stores
+      // tokenize(title) as `title:` tokens, so counting them avoids
+      // tokenizing the title again on every search.
+      let titleTokenCount = 0;
+      for (const token of entry.tokens) {
+        if (token.startsWith('title:')) titleTokenCount++;
+      }
       const rankScore = finalize(
-        titleScore / Math.sqrt(Math.max(1, (entry.title ?? '').length / TITLE_LENGTH_SCALE)) + tagScore + bodyScore,
+        titleScore / Math.sqrt(Math.max(1, titleTokenCount / TITLE_LENGTH_SCALE)) + tagScore + bodyScore,
       );
 
       // Coverage per query word: matched when any of its tokens hits title/tag.

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { search, TITLE_LENGTH_SCALE } from '../utils/search-index.js';
+import { search, tokenize, TITLE_LENGTH_SCALE } from '../utils/search-index.js';
 import type { SearchIndex, SearchIndexEntry } from '../types.js';
 
 // Scoring behavior that the hard-set measurements depend on:
@@ -11,12 +11,14 @@ function entry(over: Partial<SearchIndexEntry> & { filename: string; title: stri
     author: 'tester',
     date: '2026-05-01',
     tags: [],
-    tokens: [],
     votes: 0,
     type: 'docs',
     domain: 'technical',
     path: `/kb/docs/${over.filename}`,
     ...over,
+    // A built entry carries every title token; search counts them for the
+    // title length.
+    tokens: [...new Set([...tokenize(over.title).map((t) => `title:${t}`), ...(over.tokens ?? [])])],
   };
 }
 
@@ -69,7 +71,23 @@ describe('search scoring', () => {
     expect(results[0].rankScore).toBeGreaterThan(results[1].rankScore ?? Infinity);
   });
 
-  it('divides the title score by sqrt(title length / TITLE_LENGTH_SCALE) for ordering only', () => {
+  it('measures title length in words, so a title of fewer long words outranks one of more short words', () => {
+    // 4 words in 42 characters against 10 words in 34 characters.
+    const focused = entry({
+      filename: 'focused.md',
+      title: 'Kafka consumer rebalancing troubleshooting',
+      tokens: ['title:kafka', 'kafka'],
+    });
+    const question = entry({
+      filename: 'question.md',
+      title: 'How do I fix a Kafka lag in my app',
+      tokens: ['title:kafka', 'kafka'],
+    });
+    const results = search('kafka', index([question, focused]), 5);
+    expect(results.map((r) => r.entry.filename)).toEqual(['focused.md', 'question.md']);
+  });
+
+  it('divides the title score by sqrt(title tokens / TITLE_LENGTH_SCALE) for ordering only', () => {
     const title = '订单排查手册：查不到、查得慢、数据不一致（L4 runbook）';
     // Only the title token matches, so the score is the title contribution
     // alone and the ratio of the two scores is the ratio of the divisors.
@@ -78,8 +96,8 @@ describe('search scoring', () => {
     const results = search('订单', index([long, short]), 5);
     const longResult = results.find((r) => r.entry.filename === 'long.md')!;
     const shortResult = results.find((r) => r.entry.filename === 'short.md')!;
-    const longFactor = Math.sqrt(Math.max(1, title.length / TITLE_LENGTH_SCALE));
-    const shortFactor = Math.sqrt(Math.max(1, '订单'.length / TITLE_LENGTH_SCALE));
+    const longFactor = Math.sqrt(Math.max(1, tokenize(title).length / TITLE_LENGTH_SCALE));
+    const shortFactor = Math.sqrt(Math.max(1, tokenize('订单').length / TITLE_LENGTH_SCALE));
     // The long title's contribution is divided by a larger factor, so it ranks
     // lower by exactly that ratio.
     expect((longResult.rankScore ?? 0) / (shortResult.rankScore ?? Infinity)).toBeCloseTo(shortFactor / longFactor, 6);
