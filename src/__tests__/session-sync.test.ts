@@ -81,7 +81,7 @@ function mkMeta(o: { sessionId?: string; author?: string; repoIdentity?: string 
   );
 }
 
-/** 与 SyncManager.repoDir 相同的编码规则（非白名单字符 → %XX）。 */
+/** 与 SyncManager.repoDir 相同的编码规则（非白名单字符 → ~XX）。 */
 function repoDirOf(identity: string): string {
   return path.join(repoRoot, 'sessions', 'repos', encodeRepoIdentity(identity));
 }
@@ -505,6 +505,71 @@ describe('session pull (gitPull + rebuildIndex) on a team checkout', () => {
     expect(git(bob, 'status', '--porcelain')).toBe('');
     expect(new SyncManager(bob).listSessions(identity).map((s) => s.sessionId).sort()).toEqual(['s-1', 's-2']);
   });
+
+  it('moves a %-escaped repository directory to its current name in the next push', async () => {
+    const remote = path.join(repoRoot, 'team.git');
+    git(repoRoot, 'init', '-q', '--bare', '-b', 'main', remote);
+    const alice = path.join(repoRoot, 'alice');
+    git(repoRoot, 'init', '-q', '-b', 'main', alice);
+    initCheckout(alice, 'alice');
+    git(alice, 'remote', 'add', 'origin', remote);
+    await pushSession(alice, 's-1', 'fix payment');
+    // The archive as the previous encoder named it.
+    git(alice, 'mv', `sessions/repos/${encodeRepoIdentity(identity)}`, 'sessions/repos/github.com%2Forg%2Falpha');
+    git(alice, 'commit', '-qm', 'previous layout');
+    git(alice, 'push', '-q', 'origin', 'main');
+    fs.writeFileSync(path.join(alice, 'sessions', 'repos', 'github.com%2Forg%2Falpha', 'notes.txt'), 'local only\n');
+
+    await pushSession(alice, 's-2', 'add refunds');
+
+    const pushed = git(remote, 'ls-tree', '-r', '--name-only', 'main', 'sessions/repos').split('\n');
+    expect(pushed.filter((p) => p.includes('%') || p.endsWith('notes.txt'))).toEqual([]);
+    expect(git(alice, 'status', '--porcelain')).toBe(`?? sessions/repos/${encodeRepoIdentity(identity)}/notes.txt`);
+    expect(new SyncManager(alice).listSessions(identity).map((s) => s.sessionId).sort()).toEqual(['s-1', 's-2']);
+  });
+
+  it('commits the whole move on the retry after a rejected commit, and leaves unrelated files out', async () => {
+    const alice = path.join(repoRoot, 'alice');
+    git(repoRoot, 'init', '-q', '-b', 'main', alice);
+    initCheckout(alice, 'alice');
+    const first = new SyncManager(alice);
+    await first.saveSession(mkSession(), mkMeta());
+    expect(first.gitCommit('push').status).toBe('committed');
+    git(alice, 'mv', `sessions/repos/${encodeRepoIdentity(identity)}`, 'sessions/repos/github.com%2Forg%2Falpha');
+    git(alice, 'commit', '-qm', 'previous layout');
+    fs.writeFileSync(path.join(alice, 'sessions', 'repos', 'github.com%2Forg%2Falpha', 'notes.txt'), 'local only\n');
+    const hook = path.join(alice, '.git', 'hooks', 'pre-commit');
+    fs.writeFileSync(hook, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+
+    const rejected = new SyncManager(alice);
+    await rejected.saveSession(mkSession({ sessionId: 's-2', title: 'add refunds' }), mkMeta({ sessionId: 's-2' }));
+    expect(rejected.gitCommit('push').status).toBe('failed');
+    fs.rmSync(hook);
+    const retry = new SyncManager(alice);
+    await retry.saveSession(mkSession({ sessionId: 's-2', title: 'add refunds' }), mkMeta({ sessionId: 's-2' }));
+    expect(retry.gitCommit('push').status).toBe('committed');
+
+    const committed = git(alice, 'ls-tree', '-r', '--name-only', 'HEAD', 'sessions/repos').split('\n');
+    expect(committed.filter((p) => p.includes('%') || p.endsWith('notes.txt'))).toEqual([]);
+    expect(committed.filter((p) => p.endsWith('.jsonl'))).toHaveLength(2);
+    expect(git(alice, 'status', '--porcelain')).toBe(`?? sessions/repos/${encodeRepoIdentity(identity)}/notes.txt`);
+  });
+
+  it('leaves a %-escaped repository directory for the next push to move when rebuilding every index', async () => {
+    const alice = path.join(repoRoot, 'alice');
+    git(repoRoot, 'init', '-q', '-b', 'main', alice);
+    initCheckout(alice, 'alice');
+    const mgr = new SyncManager(alice);
+    await mgr.saveSession(mkSession(), mkMeta());
+    expect(mgr.gitCommit('push').status).toBe('committed');
+    git(alice, 'mv', `sessions/repos/${encodeRepoIdentity(identity)}`, 'sessions/repos/github.com%2Forg%2Falpha');
+    git(alice, 'commit', '-qm', 'previous layout');
+
+    written(await new SyncManager(alice).rebuildAllIndexes());
+
+    expect(git(alice, 'status', '--porcelain')).toBe('');
+    expect(new SyncManager(alice).listSessions(identity).map((s) => s.sessionId)).toEqual(['s-1']);
+  });
 });
 
 describe('canonicalizeRemote', () => {
@@ -537,9 +602,14 @@ describe('encodeRepoIdentity', () => {
     expect(new Set(encoded).size).toBe(ids.length);
   });
 
+  it('leaves no % in the name, which GitHub and GitLab URL-decode back into a separator', () => {
+    expect(encodeRepoIdentity('github.com/org/repo')).not.toContain('%');
+  });
+
   it('round-trips through decodeRepoIdentity', () => {
-    for (const id of ['github.com/org/repo', 'gitlab.company.com/g/a_b']) {
+    for (const id of ['github.com/org/repo', 'gitlab.company.com/g/a_b', 'github.com/org/a~b', 'github.com/org/中']) {
       expect(decodeRepoIdentity(encodeRepoIdentity(id))).toBe(id);
     }
+    expect(decodeRepoIdentity('github.com%2Forg%2Fa~41')).toBe('github.com/org/a~41');
   });
 });

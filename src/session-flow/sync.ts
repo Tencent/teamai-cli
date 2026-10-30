@@ -133,18 +133,32 @@ export function canonicalizeRemote(remote: string): string {
 /**
  * Encode a canonical remote into a directory-safe string, reversibly.
  *
- * Every character outside `[A-Za-z0-9._-]` becomes `%XX` (uppercase hex), so
- * the mapping is injective: `github.com/org/a/b`, `github.com/org/a_b` and
- * `github.com/org/a:b` all get their own directory. The previous scheme folded
- * every separator onto `_`, which merged distinct repositories into one
- * archive directory and one index.
+ * Every character outside `[A-Za-z0-9._-]` becomes `~XX` per UTF-8 byte
+ * (uppercase hex), so the mapping is injective: `github.com/org/a/b`,
+ * `github.com/org/a_b` and `github.com/org/a:b` all get their own directory.
+ * The previous scheme folded every separator onto `_`, which merged distinct
+ * repositories into one archive directory and one index.
+ *
+ * The escape is `~`, not `%`: GitHub and GitLab URL-decode a path once, so a
+ * `%2F` directory name resolved to a path that does not exist, and the archive
+ * 404ed in the web UI and the contents API.
  *
  * Reversible via decodeRepoIdentity.
  */
 export function encodeRepoIdentity(identity: string): string {
-  // Per character: charCodeAt().toString(16) emitted %4E2D for U+4E2D (one CJK character), which the
-  // 2-hex-digit decoder read back as 'N' + '2D'. encodeURIComponent gives the
-  // UTF-8 bytes (%E4%B8%AD) that decodeURIComponent reverses exactly.
+  let out = '';
+  for (const ch of identity) {
+    if (/^[A-Za-z0-9._-]$/.test(ch)) {
+      out += ch;
+      continue;
+    }
+    for (const byte of Buffer.from(ch, 'utf8')) out += `~${byte.toString(16).toUpperCase().padStart(2, '0')}`;
+  }
+  return out;
+}
+
+/** The previous `%XX` directory name: still read, and moved to encodeRepoIdentity's name on the next save. */
+function percentEncodedRepoDirName(identity: string): string {
   let out = '';
   for (const ch of identity) {
     out += /^[A-Za-z0-9._-]$/.test(ch) ? ch : encodeURIComponent(ch);
@@ -152,10 +166,11 @@ export function encodeRepoIdentity(identity: string): string {
   return out;
 }
 
-/** Undo encodeRepoIdentity (used for display; the canonical id stays in meta). */
+/** Undo encodeRepoIdentity, or the previous `%XX` form (used for display; the canonical id stays in meta). */
 export function decodeRepoIdentity(encoded: string): string {
   try {
-    return decodeURIComponent(encoded);
+    // The `%XX` form left `~` literal; the `~XX` form never contains `%`.
+    return decodeURIComponent(encoded.includes('%') ? encoded : encoded.replace(/~/g, '%'));
   } catch {
     // A malformed escape (hand-edited index, legacy '_'-folded name): fall back
     // to the raw string rather than throwing out of a listing command.
@@ -345,7 +360,7 @@ function isSessionIndexPath(relPath: string): boolean {
  * because the old rule treated every `_` as a separator and is itself ambiguous (`a_b` and `a/b` encode the same).
  */
 function decodeLegacyRepoDirName(dirName: string): string {
-  return dirName.includes('%') ? decodeRepoIdentity(dirName) : dirName.replace(/_/g, '/');
+  return /[%~]/.test(dirName) ? decodeRepoIdentity(dirName) : dirName.replace(/_/g, '/');
 }
 
 /**
@@ -494,12 +509,40 @@ export class SyncManager {
   // Path resolution
   // ------------------------------------------------------------------
 
-  /** Repo subdirectory path. null identity → _unattributed */
+  /** Repo subdirectory path. null identity → _unattributed; an archive still under its `%XX` name is read there. */
   private repoDir(repoIdentity: string | null): string {
     if (!repoIdentity) {
       return path.join(this.sessionsDir, '_unattributed');
     }
-    return path.join(this.sessionsDir, 'repos', encodeRepoIdentity(repoIdentity));
+    const dir = path.join(this.sessionsDir, 'repos', encodeRepoIdentity(repoIdentity));
+    const percentDir = path.join(this.sessionsDir, 'repos', percentEncodedRepoDirName(repoIdentity));
+    return !fs.existsSync(dir) && fs.existsSync(percentDir) ? percentDir : dir;
+  }
+
+  /**
+   * Move a `%XX`-named archive to encodeRepoIdentity's name, recording each file HEAD still holds under the old name
+   * (and its new path) so `gitCommit` stages the rename. Reading HEAD, not the disk, finds the move again on the retry
+   * after a failed commit, and leaves files the archive never committed out of it.
+   */
+  private moveRepoDirToCurrentName(repoIdentity: string | null): void {
+    if (!repoIdentity) return;
+    const fromName = percentEncodedRepoDirName(repoIdentity);
+    const toName = encodeRepoIdentity(repoIdentity);
+    if (fromName === toName) return;
+    const from = path.join(this.sessionsDir, 'repos', fromName);
+    const to = path.join(this.sessionsDir, 'repos', toName);
+    if (this.repoDir(repoIdentity) === from) {
+      assertNoSymlinkedAncestors(from, this.repoRoot);
+      assertNoSymlinkedAncestors(to, this.repoRoot);
+      fs.renameSync(from, to);
+    }
+    const fromRel = `sessions/repos/${fromName}/`;
+    const committed = this.runGit(['ls-tree', '-r', '-z', '--name-only', 'HEAD', fromRel], false);
+    for (const file of committed.split('\0').filter(Boolean)) {
+      const moved = `sessions/repos/${toName}/${file.slice(fromRel.length)}`;
+      this.writtenPaths.add(file);
+      if (fs.existsSync(path.join(this.repoRoot, moved))) this.writtenPaths.add(moved);
+    }
   }
 
   private indexPath(repoIdentity: string | null): string {
@@ -704,6 +747,7 @@ export class SyncManager {
   private saveSessionLocked(session: Session, meta: SessionSyncMeta): string {
     const repoId = meta.origin.repoIdentity;
     const author = meta.origin.author;
+    this.moveRepoDirToCurrentName(repoId);
 
     let sessionName = generateSessionName(session.platform, session.title, session.createdAt);
     // P8 dedup: when the same origin.sessionId + author is pushed again, reuse the original sessionName
@@ -1098,7 +1142,8 @@ export class SyncManager {
         // the encoded name once, then both sides agree.
         let dirForIdentity = full;
         if (identity) {
-          const expected = path.join(reposDir, encodeRepoIdentity(identity));
+          // A `%XX` directory resolves to itself: renaming it here would leave the move uncommitted, so the next save moves it.
+          const expected = this.repoDir(identity);
           if (expected !== full) {
             if (fs.existsSync(expected)) {
               console.warn(
@@ -1174,8 +1219,12 @@ export class SyncManager {
     const paths = [...this.writtenPaths];
     // When this run wrote no paths, fall back to a directory-level add (for example a commit after an index rebuild),
     // but still only operate inside sessions/.
-    const addArgs = paths.length > 0 ? ['add', '--', ...paths] : ['add', 'sessions/'];
-    this.runGit(addArgs);
+    const present = paths.filter((p) => fs.existsSync(path.join(this.repoRoot, p)));
+    const addArgs = paths.length > 0 ? ['add', '--', ...present] : ['add', 'sessions/'];
+    if (paths.length === 0 || present.length > 0) this.runGit(addArgs);
+    // A moved-away path: `git add` rejects one whose removal an earlier failed commit already staged.
+    const removed = paths.filter((p) => !present.includes(p));
+    if (removed.length > 0) this.runGit(['rm', '-q', '--cached', '--ignore-unmatch', '--', ...removed]);
 
     const scopeArgs = paths.length > 0 ? ['--', ...paths] : ['--', 'sessions/'];
     const staged = this.runGit(['status', '--porcelain', ...scopeArgs], false);
