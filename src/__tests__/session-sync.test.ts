@@ -10,6 +10,7 @@ import {
   encodeRepoIdentity,
   decodeRepoIdentity,
   canonicalizeRemote,
+  archivedCwd,
   type ArchiveWriteResult,
   withSessionIndexLock,
   withSessionPublicationLock,
@@ -96,6 +97,80 @@ function readRepoIndex(identity: string): { sessions: Array<Record<string, unkno
 }
 
 const unattrDir = () => path.join(repoRoot, 'sessions', '_unattributed');
+
+describe('archivedCwd', () => {
+  it('stores a git workspace root as dot and keeps its monorepo subdirectory', async () => {
+    const workspace = path.join(repoRoot, 'workspace');
+    const nested = path.join(workspace, 'packages', 'api');
+    fs.mkdirSync(nested, { recursive: true });
+    execFileSync('git', ['init', '-q', workspace]);
+    execFileSync('git', ['-C', workspace, 'config', 'user.email', 'test@example.com']);
+    execFileSync('git', ['-C', workspace, 'config', 'user.name', 'Test']);
+    execFileSync('git', ['-C', workspace, 'commit', '--allow-empty', '-qm', 'init']);
+
+    await expect(archivedCwd(workspace)).resolves.toBe('.');
+    await expect(archivedCwd(nested)).resolves.toBe('packages/api');
+  });
+
+  it('uses the configured non-git project root and omits paths with no known boundary', async () => {
+    const project = path.join(repoRoot, 'plain-project');
+    const nested = path.join(project, 'backend');
+    fs.mkdirSync(nested, { recursive: true });
+
+    await expect(archivedCwd(nested, project)).resolves.toBe('backend');
+    await expect(archivedCwd(path.join(repoRoot, 'scratch'))).resolves.toBe('');
+    await expect(archivedCwd('md5:3f2a')).resolves.toBe('');
+  });
+
+  it('keeps a valid child whose name starts with two dots', async () => {
+    const project = path.join(repoRoot, 'plain-project');
+    const nested = path.join(project, '..cache');
+    fs.mkdirSync(nested, { recursive: true });
+
+    await expect(archivedCwd(nested, project)).resolves.toBe('..cache');
+    await expect(archivedCwd(path.join(project, '..', 'outside'), project)).resolves.toBe('');
+  });
+
+  it('resolves a symlinked cwd against the real workspace root', async () => {
+    const project = path.join(repoRoot, 'plain-project');
+    const nested = path.join(project, 'packages', 'api');
+    const link = path.join(repoRoot, 'workspace-link');
+    fs.mkdirSync(nested, { recursive: true });
+    try {
+      fs.symlinkSync(project, link, process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (error) {
+      if (process.platform === 'win32' && (error as NodeJS.ErrnoException).code === 'EPERM') return;
+      throw error;
+    }
+
+    await expect(archivedCwd(path.join(link, 'packages', 'api'), project)).resolves.toBe('packages/api');
+  });
+
+  it('stores the normalized cwd in both saved metadata and a rebuilt index', async () => {
+    const workspace = path.join(repoRoot, 'workspace');
+    const nested = path.join(workspace, 'packages', 'api');
+    fs.mkdirSync(nested, { recursive: true });
+    execFileSync('git', ['init', '-q', workspace]);
+    execFileSync('git', ['-C', workspace, 'config', 'user.email', 'test@example.com']);
+    execFileSync('git', ['-C', workspace, 'config', 'user.name', 'Test']);
+    execFileSync('git', ['-C', workspace, 'commit', '--allow-empty', '-qm', 'init']);
+
+    const identity = 'github.com/org/alpha';
+    const mgr = new SyncManager(repoRoot);
+    const saved = written(await mgr.saveSession(
+      mkSession({ cwd: nested }),
+      defaultSyncMeta({
+        platform: 'claude-code', author: 'alice', cwd: nested, sessionId: 'relative-cwd', repoIdentity: identity,
+      }, '2026-01-02T03:04:05.000Z'),
+    ));
+    const entry = mgr.listSessions(identity)[0];
+    expect(entry.cwd).toBe('packages/api');
+    expect(mgr.loadSession(identity, path.basename(saved, '.jsonl'), 'alice').meta.origin.cwd).toBe('packages/api');
+
+    await mgr.rebuildIndex(identity);
+    expect(mgr.listSessions(identity)[0].cwd).toBe('packages/api');
+  });
+});
 
 describe('archive save rollback', () => {
   it.each([false, true].flatMap((existing) => ['index', 'metadata'].map((failure) => ({ existing, failure }))))('restores the previous pair after a $failure rename fails (existing: $existing)', async ({ existing, failure }) => {

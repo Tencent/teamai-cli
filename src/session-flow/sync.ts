@@ -33,6 +33,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { getTeamaiHomeDir } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
+import { resolveAnchors } from '../utils/git.js';
 import type { Session } from './ir.js';
 import { messageToDict, messageFromDict } from './ir.js';
 
@@ -42,6 +43,38 @@ import { messageToDict, messageFromDict } from './ir.js';
 
 function utcNow(): string {
   return new Date().toISOString();
+}
+
+/**
+ * Return the path stored for a published session instead of the machine's
+ * absolute path. The archive key still uses the native cwd; this only changes
+ * the human-readable `origin.cwd` field and the index projection.
+ *
+ * Git top-level is preferred because it preserves monorepo subdirectories.
+ * For a non-git TeamAI project, `projectRoot` is the same stable boundary.
+ * Encoded/placeholder paths (for example `md5:<hash>`) and paths outside a
+ * known root deliberately become empty rather than leaking a guessed path.
+ */
+export async function archivedCwd(cwd: string, projectRoot?: string): Promise<string> {
+  if (cwd.startsWith('md5:') || !path.isAbsolute(cwd)) return '';
+  const canonicalCwd = await fs.promises.realpath(cwd).catch(() => path.resolve(cwd));
+  const anchors = await resolveAnchors(canonicalCwd);
+  let config = anchors || projectRoot ? undefined : await import('../config.js')
+    .then(({ detectProjectConfig }) => detectProjectConfig(canonicalCwd, undefined, { dryRun: true, selfHeal: false }));
+  if (!anchors && !projectRoot && !config) {
+    const { detectProjectConfig } = await import('../config.js');
+    for (let dir = canonicalCwd; ; dir = path.dirname(dir)) {
+      config = await detectProjectConfig(dir, undefined, { dryRun: true, selfHeal: false });
+      if (config?.projectRoot || path.dirname(dir) === dir) break;
+    }
+  }
+  const root = anchors?.workspaceRoot ?? projectRoot ?? config?.projectRoot;
+  if (!root) return '';
+  const canonicalRoot = await fs.promises.realpath(root).catch(() => path.resolve(root));
+  const relative = path.relative(canonicalRoot, canonicalCwd);
+  if (relative === '') return '.';
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return '';
+  return relative.split(path.sep).join('/');
 }
 
 /**
@@ -462,8 +495,16 @@ export class SyncManager {
   }
 
   /** Save through the archive lock, including deduplication and index repair. */
-  saveSession(session: Session, meta: SessionSyncMeta): Promise<ArchiveWriteResult<string>> {
-    return this.writeArchive(() => this.saveSessionLocked(session, meta));
+  async saveSession(session: Session, meta: SessionSyncMeta): Promise<ArchiveWriteResult<string>> {
+    const archivedCwdValue = await archivedCwd(meta.origin.cwd);
+    const archivedMeta: SessionSyncMeta = {
+      ...meta,
+      origin: { ...meta.origin, cwd: archivedCwdValue },
+    };
+    return this.writeArchive(() => this.saveSessionLocked(
+      { ...session, cwd: archivedCwdValue },
+      archivedMeta,
+    ));
   }
 
   rebuildIndex(repoIdentity: string | null, dirOverride?: string): Promise<ArchiveWriteResult<number>> {
@@ -845,6 +886,9 @@ export class SyncManager {
     const repoId = meta.origin.repoIdentity;
     const author = meta.origin.author;
     this.moveRepoDirToCurrentName(repoId);
+    // `origin.cwd` is converted by callers before entering the archive lock.
+    // Keep this method free of filesystem-dependent metadata work so save and
+    // index writes remain a single synchronous transaction.
 
     let sessionName = generateSessionName(session.platform, session.title, session.createdAt);
     // P8 dedup: when the same origin.sessionId + author is pushed again, reuse the original sessionName
@@ -1194,16 +1238,25 @@ export class SyncManager {
     const rank = (e: IndexEntry) => knownAt.get(key(e))?.i ?? known.length;
     entries.sort((a, b) => rank(a) - rank(b));
 
-    this.writeIndex(
+    const rebuilt: RepoIndex = {
+      version: 1,
       repoIdentity,
-      {
-        version: 1,
-        repoIdentity,
-        updatedAt: utcNow(),
-        sessions: entries,
-      },
-      dirOverride,
-    );
+      updatedAt: utcNow(),
+      sessions: entries,
+    };
+    const indexPath = path.join(dir, '_index.json');
+    // An unchanged archive must remain clean after pull. `updatedAt` records
+    // an index rebuild, not a session change, so retain the committed bytes
+    // when its session projection is already identical.
+    try {
+      const current = JSON.parse(fs.readFileSync(indexPath, 'utf-8')) as RepoIndex;
+      if (JSON.stringify({ ...current, updatedAt: undefined }) === JSON.stringify({ ...rebuilt, updatedAt: undefined })) {
+        return entries.length;
+      }
+    } catch {
+      // No readable index yet: write the rebuilt projection below.
+    }
+    this.writeIndex(repoIdentity, rebuilt, dirOverride);
 
     return entries.length;
   }
