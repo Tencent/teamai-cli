@@ -149,6 +149,25 @@ describe('resolveDesiredSkills', () => {
     expect(shadowed).toEqual([{ name: 'release', namespace: 'dev', skipped: 'skills/dev/release', kept: 'skills/release', receivingRoles: ['backend', 'platform'] }]);
   });
 
+  it('names no role that receives a second namespace with the same skill name, since that role cannot deliver either copy', async () => {
+    await writeSkill('ops', 'release');
+    await writeSkill('dev', 'release');
+    await fse.ensureDir(path.join(repoPath, 'manifest'));
+    await fse.writeFile(path.join(repoPath, 'manifest', 'roles.yaml'), [
+      'version: 1',
+      'roles:',
+      '  - id: fullstack',
+      '    resources: { knowledge: [], skills: [dev, ops] }',
+      '  - id: sre',
+      '    resources: { knowledge: [], skills: [ops] }',
+      '',
+    ].join('\n'));
+
+    const { shadowed } = resolved(await resolveDesiredSkills(teamConfig, localConfig, null));
+
+    expect(shadowed).toEqual([{ name: 'release', namespace: 'ops', skipped: 'skills/ops/release', kept: 'skills/dev/release', receivingRoles: ['sre'] }]);
+  });
+
   it('with a role that receives the namespace, delivers its copy over the shared one (#707)', async () => {
     await writeSkill('', 'release');
     await writeSkill('dev', 'release');

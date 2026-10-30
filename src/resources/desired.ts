@@ -252,7 +252,7 @@ export interface ShadowedSkill {
   readonly skipped: string;
   /** Team-repo path of the copy delivered under that name, e.g. `skills/release`. */
   readonly kept: string;
-  /** Roles in `manifest/roles.yaml` whose skills include that namespace: setting one delivers the copy. */
+  /** Roles in `manifest/roles.yaml` whose skills include that namespace and no other holding the name: setting one delivers the copy. */
   readonly receivingRoles: readonly string[];
 }
 
@@ -274,12 +274,16 @@ async function sharedFirst(repoPath: string, items: readonly ResourceItem[]): Pr
   }
   // A member with no role reaches here only when the manifest is absent or parsed.
   const roles = skipped.length > 0 ? (await loadRolesManifestIfPresent(repoPath))?.roles ?? [] : [];
+  // A role that receives two namespaces holding the name delivers neither copy (#707).
+  const namespacesOf = (name: string): string[] => items.flatMap((other) => (other.name === name && other.namespace ? [other.namespace] : []));
   const shadowed = skipped.map(({ item, kept: winner }) => ({
     name: item.name,
     namespace: item.namespace,
     skipped: item.relativePath,
     kept: winner.relativePath,
-    receivingRoles: roles.filter((role) => role.resources.skills.includes(item.namespace)).map((role) => role.id),
+    receivingRoles: roles
+      .filter(({ resources: { skills } }) => namespacesOf(item.name).every((namespace) => skills.includes(namespace) === (namespace === item.namespace)))
+      .map((role) => role.id),
   }));
   return { items: [...kept.values()], shadowed };
 }
