@@ -1103,10 +1103,10 @@ function dedupKey(r: SearchResult): string {
 }
 
 /**
- * Scale of the title field's length normalization. A title is divided by
- * `sqrt(length / TITLE_LENGTH_SCALE)`, so a title of this many characters
- * keeps its full weight and a longer one is discounted. Exported so the
- * scoring test can name the value it asserts against.
+ * Scale of the title field's length normalization. In `rankScore` a title
+ * match is divided by `sqrt(length / TITLE_LENGTH_SCALE)`, so a title of this
+ * many characters keeps its full weight and a longer one is discounted.
+ * Exported so the scoring test can name the value it asserts against.
  */
 export const TITLE_LENGTH_SCALE = 12;
 
@@ -1120,7 +1120,7 @@ export const TITLE_LENGTH_SCALE = 12;
  * Measured with the real CLI on the same index, on the 90-question hard set,
  * the 305-question tuning set and the 58-question blind set: hard fact@3
  * 50→52, tuning 289→290, blind unchanged at 52. Adding "哪些" to this list
- * lost a blind-set question for no gain, so it stays in.
+ * lost a blind-set question for no gain, so it stays out.
  */
 const QUERY_STOP_TOKENS = new Set([
   '什么', '怎么', '怎样', '怎么样', '如何', '哪个', '哪里', '多少', '多久',
