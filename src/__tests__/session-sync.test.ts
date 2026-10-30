@@ -593,6 +593,55 @@ describe('session pull (gitPull + rebuildIndex) on a team checkout', () => {
     expect(new SyncManager(alice).listSessions(identity).map((s) => s.sessionId).sort()).toEqual(['s-1', 's-2', 's-3', 's-4']);
   });
 
+  it('restores the percent-escaped directory when a rejected fold had only untracked files under the current name', async () => {
+    const alice = path.join(repoRoot, 'alice');
+    git(repoRoot, 'init', '-q', '-b', 'main', alice);
+    initCheckout(alice, 'alice');
+    const first = new SyncManager(alice);
+    await first.saveSession(mkSession(), mkMeta());
+    expect(first.gitCommit('push').status).toBe('committed');
+    git(alice, 'mv', `sessions/repos/${encodeRepoIdentity(identity)}`, 'sessions/repos/github.com%2Forg%2Falpha');
+    git(alice, 'commit', '-qm', 'previous layout');
+    const current = repoDirOf(identity).replace(repoRoot, alice);
+    fs.mkdirSync(current, { recursive: true });
+    fs.writeFileSync(path.join(current, 'notes.txt'), 'local only\n');
+    const session = 'sessions/repos/github.com%2Forg%2Falpha/alice/claude-code_fix-payment_20260102.jsonl';
+    const original = git(alice, 'show', `HEAD:${session}`);
+    fs.writeFileSync(path.join(alice, '.git', 'hooks', 'pre-commit'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+
+    const rejected = new SyncManager(alice);
+    await rejected.saveSession(mkSession({ sessionId: 's-2', title: 'add refunds' }), mkMeta({ sessionId: 's-2' }));
+    expect(rejected.gitCommit('push').status).toBe('failed');
+
+    expect(fs.readFileSync(path.join(alice, session), 'utf-8').trim()).toBe(original);
+  });
+
+  it('folds a session held under the current name once, even when that directory has no index', async () => {
+    const alice = path.join(repoRoot, 'alice');
+    git(repoRoot, 'init', '-q', '-b', 'main', alice);
+    initCheckout(alice, 'alice');
+    const first = new SyncManager(alice);
+    await first.saveSession(mkSession(), mkMeta());
+    expect(first.gitCommit('push').status).toBe('committed');
+    git(alice, 'rm', '-q', `sessions/repos/${encodeRepoIdentity(identity)}/_index.json`);
+    git(alice, 'commit', '-qm', 'lose the index');
+    // An older CLI pushes s-1 again, later, under the %XX name.
+    const older = path.join(repoRoot, 'older');
+    await new SyncManager(older).saveSession(mkSession(), mkMeta());
+    const percentDir = path.join(alice, 'sessions', 'repos', 'github.com%2Forg%2Falpha');
+    fs.cpSync(path.join(older, 'sessions', 'repos', encodeRepoIdentity(identity)), percentDir, { recursive: true });
+    git(alice, 'add', '-A');
+    git(alice, 'commit', '-qm', 'older CLI push');
+
+    const mgr = new SyncManager(alice);
+    await mgr.saveSession(mkSession({ sessionId: 's-2', title: 'add refunds' }), mkMeta({ sessionId: 's-2' }));
+    expect(mgr.gitCommit('push').status).toBe('committed');
+
+    const committed = git(alice, 'ls-tree', '-r', '--name-only', 'HEAD', 'sessions/repos').split('\n');
+    expect(committed.filter((p) => p.endsWith('.jsonl'))).toHaveLength(2);
+    expect(mgr.listSessions(identity).map((s) => s.sessionId).sort()).toEqual(['s-1', 's-2']);
+  });
+
   it('undoes a fold whose commit is rejected while a push updates a held session, and folds on a later push', async () => {
     const alice = path.join(repoRoot, 'alice');
     git(repoRoot, 'init', '-q', '-b', 'main', alice);

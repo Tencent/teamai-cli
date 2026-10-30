@@ -560,7 +560,9 @@ export class SyncManager {
     } catch (err) {
       this.runGit(['reset', '-q', '--', ...moved], false);
       if (isFold) {
-        this.runGit(['checkout', 'HEAD', '--', fromRel, toRel], false);
+        // One checkout per name: a pathspec HEAD has no file under fails the whole checkout.
+        this.runGit(['checkout', 'HEAD', '--', fromRel], false);
+        if (committedTo.size > 0) this.runGit(['checkout', 'HEAD', '--', toRel], false);
         for (const file of added) if (!committedTo.has(file)) fs.rmSync(path.join(this.repoRoot, file), { force: true });
       } else {
         fs.renameSync(to, from);
@@ -581,7 +583,7 @@ export class SyncManager {
     const added: string[] = [];
     const sessionKey = (platform: string, author: string, sessionId: string) => `${platform}\0${author}\0${sessionId}`;
     const held = new Map(
-      this.readIndex(repoIdentity).sessions
+      this.readIndexForWrite(repoIdentity).sessions
         .filter((e) => e.sessionId)
         .map((e) => [sessionKey(e.platform, e.author, e.sessionId ?? ''), e]),
     );
@@ -613,13 +615,13 @@ export class SyncManager {
           author,
           existing?.sessionName ?? this.resolveNameConflict(repoIdentity, author, sessionName),
         );
+        // Only committed files take part: a local-only sibling stays where it is.
+        const kinds = (['jsonl', 'meta'] as const).filter((kind) => committed.has(relative(source[kind])));
         if (existing && (meta.sync.pushedAt ?? '') <= pushedAt(target.meta)) {
-          fs.rmSync(source.jsonl, { force: true });
-          fs.rmSync(source.meta, { force: true });
+          for (const kind of kinds) fs.rmSync(source[kind], { force: true });
           continue;
         }
-        for (const kind of ['jsonl', 'meta'] as const) {
-          if (!fs.existsSync(source[kind])) continue;
+        for (const kind of kinds) {
           assertNoSymlinkedAncestors(target[kind], this.repoRoot);
           fs.mkdirSync(path.dirname(target[kind]), { recursive: true });
           fs.renameSync(source[kind], target[kind]);
