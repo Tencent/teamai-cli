@@ -155,6 +155,18 @@ describe('a pull and the agents of a moved home', () => {
       expect(warned.filter((line) => line.includes('teamai-recall'))).toEqual([]);
     });
 
+    it('says once when a pull removes them, and not when there is nothing left to remove', async () => {
+      const says = () => vi.mocked(log.info).mock.calls.map(([message]) => String(message)).filter((line) => line.includes('teamai-recall agent and rule'));
+      config.recallEnabled = false;
+
+      await pull({});
+      expect(says()).toEqual(['[user] Removed the teamai-recall agent and rule: recall is off.']);
+
+      vi.mocked(log.info).mockClear();
+      await pull({});
+      expect(says()).toEqual([]);
+    });
+
     it('writes both back when recall is turned on again', async () => {
       config.recallEnabled = false;
       await pull({});

@@ -23,10 +23,12 @@ import {
  * have written them (including earlier tool homes and the `.md` copy older
  * layouts left in a `.mdc` rules folder), keeping a copy the repository
  * tracks (#915). Shared by `recall disable` and by a
- * pull that finds recall off, so both leave the same files behind.
+ * pull that finds recall off, so both leave the same files behind. Returns the
+ * number of files removed.
  */
-export async function removeRecallAgentAndRule(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
+export async function removeRecallAgentAndRule(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<number> {
   const install = installOf(teamConfig, localConfig);
+  let removed = 0;
   for (const tool of Object.keys(scopedToolPaths(teamConfig, localConfig))) {
     // Remove recall rule file
     const rulesDir = ownOf(await locate(tool, 'rules', install));
@@ -38,6 +40,7 @@ export async function removeRecallAgentAndRule(teamConfig: TeamaiConfig, localCo
         if (await pathExists(ruleFile)) {
           if (await keepsTrackedCopy(ruleFile)) continue;
           await remove(ruleFile);
+          removed++;
           log.debug(`Removed recall rule from ${tool}`);
         }
       }
@@ -53,11 +56,13 @@ export async function removeRecallAgentAndRule(teamConfig: TeamaiConfig, localCo
         if (await pathExists(agentFile)) {
           if (await keepsTrackedCopy(agentFile)) continue;
           await remove(agentFile);
+          removed++;
           log.debug(`Removed recall agent from ${tool}`);
         }
       }
     }
   }
+  return removed;
 }
 
 async function removeRecallArtifacts(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
