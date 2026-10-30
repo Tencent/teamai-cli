@@ -101,6 +101,17 @@ Labels from sessions and workflow runs show how the tools did on the work that c
 
 The Resources page lists every rule in the team repo for the selected workspace: its name, namespace, description, and whether `pull` delivers it there. Root rules reach everyone; namespaced rules follow the active knowledge namespaces, and a root rule is marked replaced when an active namespace rule of the same name stands for it. Rules left out by tag subscriptions are marked too.
 
+Skills are listed the same way. A skill left out because a copy of the same name is delivered names that copy, and the roles that would deliver it, as [`pull` does](distribution.md#one-skill-name-in-the-root-and-in-namespaces):
+
+```text
+oncall   sre   Not delivered
+               A same-name skill is delivered instead
+               Delivered instead: skills/ops/oncall
+               Set one of these roles to get this copy: sre    Choose roles →
+```
+
+Below 1100 px wide the list shows one card per skill.
+
 ## Human Intervention Metrics
 
 Each session counts three things: an interrupt mid-run (`interrupt`), a denied tool call (`toolReject`), and a correction right after the agent stops, such as "wrong" or "redo" (`correction`).

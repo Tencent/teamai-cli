@@ -256,6 +256,36 @@ sharing:
 
 标签从不做限定：订阅只会额外拉取匹配标签的技能。限定用 namespace + 角色，标签用于自愿加法。
 
+### 根目录和命名空间里有同名技能
+
+每个技能名只落到一个目录，所以同名技能成员只拿到一份。以下面的团队仓库为例，角色 `dev`（`skills: [dev]`）和 `sre`（`skills: [sre]`）：
+
+```text
+skills/release/SKILL.md              changelog、打 tag、发布到 npm
+skills/dev/release/SKILL.md          把功能分支发布到 staging registry
+skills/ops/oncall/SKILL.md           呼叫 ops 值班
+skills/sre/oncall/SKILL.md           SRE 升级：排查看板、状态页
+skills/code-review/SKILL.md          团队检查清单
+skills/legacy/code-review/SKILL.md   旧 monorepo 的清单；没有角色列出 legacy
+```
+
+| 成员 | `release` | `oncall` | `code-review` |
+|---|---|---|---|
+| 无角色 | `skills/release` | `skills/ops/oncall` | `skills/code-review` |
+| 角色 `dev` | `skills/dev/release` | 无 | 无 |
+| 角色 `sre` | 无 | `skills/sre/oncall` | 无 |
+
+有角色的成员拿到角色接收的命名空间；根目录技能只能通过[标签](#标签)到达，且活跃命名空间里的同名副本会取代它。没有角色也没有项目的成员拿到全部技能：根目录那份优先，两个命名空间之间名称排序靠前的优先。每台机器拿到的副本都一样，`pull` 会逐条说明跳过了哪一份：
+
+```text
+$ teamai pull
+⚠ [user] Skipped skills/dev/release: the shared skills/release has the same name. To get it instead, set a role that receives dev: teamai roles set dev.
+⚠ [user] Skipped skills/legacy/code-review: the shared skills/code-review has the same name, and no role receives legacy. Rename one of them in the team repo to deliver both.
+⚠ [user] Skipped skills/sre/oncall: skills/ops/oncall has the same name. To get it instead, set a role that receives sre: teamai roles set sre.
+```
+
+要让所有人同时拿到两份，把其中一份改名，例如 `skills/dev/release-staging/`。仪表盘的资源页显示同样的信息：被跳过的副本、改为交付的副本，以及能交付它的角色。
+
 ## 标签
 
 标签打在 skill 或 rule 上，存在团队仓库的 `tags.yaml`。成员在自己机器上订阅。没订阅任何标签时，标签不参与。订阅之后，带这些标签的 skill 和 rule 也会拉下来。没打标签的仍按角色和项目发。

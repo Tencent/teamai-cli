@@ -83,7 +83,7 @@ describe('resolveDesiredSkills', () => {
     vi.spyOn(fse, 'readdir').mockImplementation((async (dir: string, options?: unknown) => {
       const entries = (await readdir(dir, options as { withFileTypes: true })) as unknown as { name: string }[];
       const sorted = [...entries].sort((a, b) => a.name.localeCompare(b.name));
-      return order === 'ascending' ? sorted : sorted.reverse();
+      return order === 'ascending' ? sorted : sorted.toReversed();
     }) as unknown as typeof fse.readdir);
   }
 

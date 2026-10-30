@@ -201,6 +201,9 @@ a namespace every role activates: `rules/code-style.md` is replaced by
 `rules/common/code-style.md` would reach them alongside it. The same skill or
 agent name in two namespaces one member has active is an error naming both
 files; two namespace rules or claudemd files of one name are both delivered.
+A member with no role or project gets every skill namespace: there the root
+skill wins over a namespace skill of its name, then the namespace that sorts
+first, and `pull` names each copy it skipped and the role that would deliver it.
 A replacement must be usable to replace anything: a skill directory needs its
 `SKILL.md` (pull names one without it), and while an agent file does not parse
 the root agent stays installed. `teamai doctor` lists each replacement as a note. Teams without roles or

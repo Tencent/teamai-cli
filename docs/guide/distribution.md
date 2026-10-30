@@ -256,6 +256,36 @@ sharing:
 
 Tags never restrict: a subscription only adds matching tagged skills. Restrict with namespaces + roles; use tags for opt-in extras.
 
+### One skill name in the root and in namespaces
+
+Each skill name lands in one directory, so a member gets one copy of each name. Take this team repo, with roles `dev` (`skills: [dev]`) and `sre` (`skills: [sre]`):
+
+```text
+skills/release/SKILL.md              changelog, tag, publish to npm
+skills/dev/release/SKILL.md          release a feature branch to the staging registry
+skills/ops/oncall/SKILL.md           page the ops rotation
+skills/sre/oncall/SKILL.md           SRE escalation: triage dashboards, status page
+skills/code-review/SKILL.md          the team checklist
+skills/legacy/code-review/SKILL.md   the old monorepo checklist; no role lists legacy
+```
+
+| Member | `release` | `oncall` | `code-review` |
+|---|---|---|---|
+| no role | `skills/release` | `skills/ops/oncall` | `skills/code-review` |
+| role `dev` | `skills/dev/release` | none | none |
+| role `sre` | none | `skills/sre/oncall` | none |
+
+A member with a role gets the namespaces the role receives; a root skill reaches them only through a [tag](#tags), and an active namespace copy replaces it. A member with no role and no project gets every skill: the root copy wins, and between two namespaces the one whose name sorts first wins. Every machine gets the same copy, and `pull` names each one it skipped:
+
+```text
+$ teamai pull
+⚠ [user] Skipped skills/dev/release: the shared skills/release has the same name. To get it instead, set a role that receives dev: teamai roles set dev.
+⚠ [user] Skipped skills/legacy/code-review: the shared skills/code-review has the same name, and no role receives legacy. Rename one of them in the team repo to deliver both.
+⚠ [user] Skipped skills/sre/oncall: skills/ops/oncall has the same name. To get it instead, set a role that receives sre: teamai roles set sre.
+```
+
+To deliver both copies to everyone, rename one: `skills/dev/release-staging/`. The dashboard's Resources page shows the same: the skipped copy, the copy delivered instead, and the roles that would deliver it.
+
 ## Tags
 
 A tag is on a skill or a rule, in the team repo's `tags.yaml`. A member subscribes on their own machine. With no subscription, tags do nothing. After a subscription, skills and rules that carry those tags are pulled too. Untagged ones still follow roles and projects.
