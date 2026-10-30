@@ -24,9 +24,24 @@ import path from 'node:path';
 const root = path.join(base, 'skills');
 `);
 
+  rule.valid('allows imports of learnings accessors', `
+import { learningsRoots } from './utils/learnings-roots.js';
+const root = learningsRoots(localConfig);
+`);
+
+  rule.valid('allows similarly named learnings files', `
+import path from 'node:path';
+const index = path.join(base, 'learnings-index.json');
+`);
+
+  rule.valid('allows an explained exception outside the accessor allowlist', `
+import path from 'node:path';
+// learnings-root ok: this migration keeps a legacy root temporarily
+const root = path.join(getKnowledgeDir(config), 'learnings');
+`);
+
   rule.valid('allows intentional root definitions', `
 import path from 'node:path';
-// learnings-root ok: the shared accessor defines the inherited root
 const root = path.join(getKnowledgeDir(config), 'learnings');
 `, { filename: 'src/utils/learnings-roots.ts' });
 });
