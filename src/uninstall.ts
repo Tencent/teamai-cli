@@ -2077,16 +2077,17 @@ async function keepsCredentialLine(plan: RemovalPlan, line: string, excludeFile:
  * path field of its `scopedToolPaths`, and `.agents/skills` for Codex) from
  * every checkout's list, unless another tool still in use shares the root,
  * then sync the `delivered` blocks with what is left. `keepExisting` (an
- * incomplete uninstall) keeps a path still on disk.
+ * incomplete uninstall) keeps a path still on disk. A copy uninstall deleted
+ * under those roots leaves the delivery record too (#1577), in either scope.
  */
-async function dropToolGitExcludePaths(
+async function forgetUninstalledToolPaths(
   localConfig: LocalConfig,
   teamConfig: TeamaiConfig,
   tool: string,
   options: { keepExisting?: boolean } = {},
 ): Promise<void> {
-  const projectRoot = localConfig.projectRoot;
-  if (localConfig.scope !== 'project' || !projectRoot) return;
+  const projectRoot = localConfig.scope === 'project' ? localConfig.projectRoot : getUserHome();
+  if (!projectRoot) return;
   const toolPaths = scopedToolPaths(teamConfig, localConfig);
   const pathsOf = (id: string): string[] => {
     const paths = toolPaths[id] ?? {};
@@ -2109,7 +2110,12 @@ async function dropToolGitExcludePaths(
   const underOther = inside(others);
   let changed = false;
   for (const record of Object.values(records)) {
-    if (!record.gitExcludePaths) continue;
+    for (const file of Object.keys(record.delivered ?? {})) {
+      if (!underTool(file) || underOther(file) || await pathExists(file)) continue;
+      delete record.delivered?.[file];
+      changed = true;
+    }
+    if (localConfig.scope !== 'project' || !record.gitExcludePaths) continue;
     const kept: Record<string, string[]> = {};
     for (const [writer, files] of Object.entries(record.gitExcludePaths)) {
       const left: string[] = [];
@@ -2122,7 +2128,7 @@ async function dropToolGitExcludePaths(
     record.gitExcludePaths = kept;
   }
   if (changed) await saveStateForScope(state, localConfig);
-  await syncDeliveredGitExclude(localConfig, createDeliveryRecorder());
+  if (localConfig.scope === 'project') await syncDeliveredGitExclude(localConfig, createDeliveryRecorder());
 }
 
 /** The partition's sync lock, as pull and push take it; null when the scope has none (HTTP). */
@@ -2732,7 +2738,7 @@ async function removeConfirmed(
 ): Promise<void> {
   if (exclusionOnly) {
     // Exclusion is a config write even when there are no local files to delete.
-    await dropToolGitExcludePaths(localConfig, teamConfig, agentKey!);
+    await forgetUninstalledToolPaths(localConfig, teamConfig, agentKey!);
     await excludeUninstalledAgent(localConfig, agentKey!);
     const dispatchLeft = agentKey === 'codex' ? await stopCodexDispatch(teamConfig, localConfig) : null;
     if (dispatchLeft) {
@@ -2867,7 +2873,7 @@ async function removeConfirmed(
   const incomplete = pendingOpencode.length > 0 || hooksLeft.length > 0 || blocksLeft.length > 0 || filesLeft.length > 0;
 
   // The tool's files are gone: its lines go from every checkout's list (#915).
-  if (!plan.includeShared && agentKey) await dropToolGitExcludePaths(localConfig, teamConfig, agentKey, { keepExisting: incomplete });
+  if (!plan.includeShared && agentKey) await forgetUninstalledToolPaths(localConfig, teamConfig, agentKey, { keepExisting: incomplete });
 
   // The OpenCode entries uninstall removed are no longer teamai's to track;
   // one still listed (the write failed) stays recorded for the next try.

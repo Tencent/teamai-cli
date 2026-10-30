@@ -201,13 +201,15 @@ a namespace every role activates: `rules/code-style.md` is replaced by
 `rules/common/code-style.md` would reach them alongside it. The same skill or
 agent name in two namespaces one member has active is an error naming both
 files; two namespace rules or claudemd files of one name are both delivered.
-A member with no role or project gets every skill namespace: there the root
-skill wins over a namespace skill of its name, then the namespace that sorts
-first, and `pull` names each copy it skipped and the role that would deliver it.
 A replacement must be usable to replace anything: a skill directory needs its
 `SKILL.md` (pull names one without it), and while an agent file does not parse
-the root agent stays installed. `teamai doctor` lists each replacement as a note. Teams without roles or
-projects are unaffected.
+the root agent stays installed. `teamai doctor` lists each replacement as a note.
+
+A member with no role or project (on a team without `manifest/projects.yaml`)
+gets every skill namespace, so nothing replaces anything: the root skill wins
+over a namespace skill of its name, then the namespace that sorts first, and
+`pull` names each copy it skipped and the role that would deliver it
+(`docs/guide/distribution.md`, "One skill name in the root and in namespaces").
 
 Docs have no override. A top-level `docs/<ns>/` that any role or project lists
 under `resources.docs` reaches only members with that namespace active; a

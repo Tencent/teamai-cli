@@ -19,7 +19,7 @@ import { recordedNamespace } from '../utils/pending-push.js';
 import { itemCandidate, resolveNamespacedItems, type NamespaceResolution } from '../namespace-resolver.js';
 import { getFileContentAtRev, getFileContentWhenAdded, isPastVersionOf } from '../utils/git.js';
 import {
-  describeMembersDirLeft, forgetDelivered, isLink, isTeamaiCopy, judgeRemoval, keepsEditedCopy, keepsTrackedCopy, recordDelivered, recordedUnchanged,
+  describeMembersDirLeft, removeDelivered, isLink, isTeamaiCopy, judgeRemoval, keepsEditedCopy, keepsTrackedCopy, recordDelivered, recordedUnchanged,
   type DeliveredHashes, type DeliveryLedger,
 } from './delivered-copies.js';
 import { debugOnce, warnOnce } from '../utils/warn-once.js';
@@ -704,6 +704,7 @@ export class AgentsHandler extends ResourceHandler {
       const retired = path.resolve(localConfig.repo.localPath, agentItem.supersedes);
       assertWithinRoot(path.join(localConfig.repo.localPath, 'agents'), retired,
         `Invalid superseded agent path outside team repo agents directory: ${agentItem.supersedes}`);
+      // oxlint-disable-next-line teamai/remove-delivered -- a team-repo file push retires, which pull never records
       if (retired !== dest) await remove(retired);
     }
     log.debug(`Copied agent ${item.name} → team repo (${ext} verbatim)`);
@@ -874,6 +875,7 @@ export class AgentsHandler extends ResourceHandler {
       ? path.relative(localConfig.repo.localPath, located[0].path).split(path.sep).join('/')
       : `agents/${name}.yaml`;
     for (const { path: teamFile } of located) {
+      // oxlint-disable-next-line teamai/remove-delivered -- the team repo's source, which pull never records
       await remove(teamFile);
       removed.push(teamFile);
     }
@@ -908,6 +910,7 @@ export class AgentsHandler extends ResourceHandler {
         for (const ext of ['.yaml', '.md'] as const) {
           const filePath = path.join(activeAgentsDir, `${localName}${ext}`);
           if (await pathExists(filePath)) {
+            // oxlint-disable-next-line teamai/remove-delivered -- the author's source in .teamai/agents, which pull never records
             await remove(filePath);
             removed.push(filePath);
           }
@@ -917,8 +920,8 @@ export class AgentsHandler extends ResourceHandler {
 
     // What this checkout's pulls recorded writing: a copy with no record is
     // teamai's only on proof, here as in pull (#993).
-    const { deliveredHashes } = await import('../pull.js');
-    const previous = await deliveredHashes(localConfig);
+    const record = await (await import('../pull.js')).editDeliveryRecord(localConfig);
+    const { previous } = record.ledger;
     const install = installOf(teamConfig, localConfig);
     for (const tool of Object.keys(install.toolPaths)) {
       // A tool the member excluded is not ours to write to, so it is not ours
@@ -938,7 +941,7 @@ export class AgentsHandler extends ResourceHandler {
               continue;
             }
             if (await pathExists(filePath) && !await keepsTrackedCopy(filePath)) {
-              await remove(filePath);
+              await removeDelivered(record.ledger, filePath);
               removed.push(filePath);
               log.debug(`Removed agent ${localName} from ${tool}`);
             }
@@ -946,6 +949,7 @@ export class AgentsHandler extends ResourceHandler {
         }
       }
     }
+    await record.save();
 
     return removed;
   }
@@ -1045,6 +1049,7 @@ export class AgentsHandler extends ResourceHandler {
     teamConfig: TeamaiConfig,
     localConfig: LocalConfig,
     activeNamespaces: string[],
+    ledger?: DeliveryLedger,
   ): Promise<void> {
     const items = await this.scanTeamForPull(teamConfig, localConfig);
     // The same selection `pull` delivers with, records and overrides included:
@@ -1098,7 +1103,7 @@ export class AgentsHandler extends ResourceHandler {
           continue;
         }
         if (await keepsTrackedCopy(deployed)) continue;
-        await remove(deployed);
+        await removeDelivered(ledger, deployed);
         log.debug(`[${installScopeName(localConfig.scope)}] Removed inactive role-scoped agent ${item.name} from ${tool}`);
       }
     }
@@ -1844,8 +1849,7 @@ async function removeStaleAgentSiblings(
       continue;
     }
     if (await keepsTrackedCopy(sibling, path.join(agentsDir, `${stem}${targetExt}`))) continue;
-    await remove(sibling);
-    if (ledger) forgetDelivered(ledger.hashes, sibling);
+    await removeDelivered(ledger, sibling);
     log.debug(`Removed stale agent sibling ${file} for ${stem}`);
   }
 }

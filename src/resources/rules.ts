@@ -19,7 +19,7 @@ import { getFileContentAtRev, isPastVersionOf, listFilesAtRev } from '../utils/g
 import { gitUntracked } from '../git-exclude.js';
 import { historicalVersions } from '../utils/team-history.js';
 import {
-  adoptRecord, contentHash, describeMembersDirLeft, describeMembersLink, forgetDelivered, holdsNonRegular, isLink, isTeamaiCopy, keepsEditedCopy, openLedger, recordDelivered, recordedUnchanged,
+  adoptRecord, contentHash, describeMembersDirLeft, describeMembersLink, forgetDelivered, removeDelivered, holdsNonRegular, isLink, isTeamaiCopy, keepsEditedCopy, recordDelivered, recordedUnchanged,
   judgeRemoval, keepsTrackedCopy, reportKept,
   type DeliveredHashes, type DeliveryLedger,
 } from './delivered-copies.js';
@@ -448,8 +448,7 @@ export class RulesHandler extends ResourceHandler {
         const legacyCopy = path.join(destDir, `${path.basename(dest, path.extname(dest))}.md`);
         if (dest !== legacyCopy && await isLegacyLayoutCopy(legacyCopy, item.relativePath, ledger?.previous, localConfig.repo.localPath)
           && !await keepsTrackedCopy(legacyCopy, dest)) {
-          await remove(legacyCopy);
-          if (ledger) forgetDelivered(ledger.hashes, legacyCopy);
+          await removeDelivered(ledger, legacyCopy);
         }
         // The namespaced copy an earlier pull wrote beside the author's root
         // copy: the same rule twice, for a tool that loads rules recursively.
@@ -462,8 +461,7 @@ export class RulesHandler extends ResourceHandler {
           const recorded = ledger?.previous?.[supersedes];
           if (disk !== null && (disk === recorded || disk === contentHash(content))) {
             if (!await keepsTrackedCopy(supersedes, dest)) {
-              await remove(supersedes);
-              if (ledger) forgetDelivered(ledger.hashes, supersedes);
+              await removeDelivered(ledger, supersedes);
             }
           } else if (disk !== null && recorded !== undefined) {
             warnOnce(`Kept ${supersedes}: you edited it after teamai delivered it, and ${tool} also reads ${dest}, the same rule. `
@@ -474,8 +472,7 @@ export class RulesHandler extends ResourceHandler {
           if (!await isLink(supersedes) && (ledger?.previous?.[supersedes] !== undefined
             || await isTeamaiCopy(supersedes, ruleOrigin(tool, localConfig.repo.localPath, item.relativePath)))) {
             if (!await keepsTrackedCopy(supersedes, dest)) {
-              await remove(supersedes);
-              if (ledger) forgetDelivered(ledger.hashes, supersedes);
+              await removeDelivered(ledger, supersedes);
             }
           } else {
             warnOnce(describeMembersDirLeft(supersedes, item.relativePath, 'pull'));
@@ -581,10 +578,11 @@ export class RulesHandler extends ResourceHandler {
 
     // OMP's flat copies, judged against the team rule before it goes.
     const teamFile = path.join(localConfig.repo.localPath, 'rules', `${name}.md`);
-    const { deliveredHashes } = await import('../pull.js');
     // What this checkout's pulls recorded writing: a file with no record is
-    // teamai's only on proof, here as in pull (#993).
-    const ledger = openLedger(await deliveredHashes(localConfig));
+    // teamai's only on proof, here as in pull (#993). A copy removed below
+    // leaves the record too (#1577).
+    const record = await (await import('../pull.js')).editDeliveryRecord(localConfig);
+    const { ledger } = record;
     const flatCopies = await this.ownedFlatCopies(
       teamConfig, localConfig, [{ name, type: 'rules', sourcePath: teamFile, relativePath: `rules/${name}.md` }],
       ledger.previous,
@@ -596,12 +594,13 @@ export class RulesHandler extends ResourceHandler {
 
     // Remove from team repo (always `.md`)
     if (await pathExists(teamFile)) {
+      // oxlint-disable-next-line teamai/remove-delivered -- the team repo's source, which pull never records
       await remove(teamFile);
       removed.push(teamFile);
     }
     for (const { file } of flatCopies.owned) {
       if (await keepsTrackedCopy(file)) continue;
-      await remove(file);
+      await removeDelivered(ledger, file);
       removed.push(file);
     }
     for (const { file } of flatCopies.edited) {
@@ -654,7 +653,7 @@ export class RulesHandler extends ResourceHandler {
             continue;
           }
           if (await pathExists(filePath) && !await keepsTrackedCopy(filePath)) {
-            await remove(filePath);
+            await removeDelivered(ledger, filePath);
             removed.push(filePath);
             log.debug(`Removed rule ${localName} from ${tool}`);
           }
@@ -668,6 +667,7 @@ export class RulesHandler extends ResourceHandler {
     const { items, replaced } = await resolveDesiredRules(teamConfig, localConfig, await buildRolePullContext(localConfig));
     await this.pullAllRules(teamConfig, localConfig, items, replaced, ledger);
     reportKept(ledger, installScopeName(localConfig.scope));
+    await record.save();
 
     return removed;
   }
@@ -715,8 +715,7 @@ export class RulesHandler extends ResourceHandler {
         log.info(`Cleared ${file}, the tracked copy of the team rule ${TEAMAI_CONTEXT_RULE_NAME} an earlier release delivered: the team instructions go there now`);
         continue;
       }
-      await remove(file);
-      if (ledger) forgetDelivered(ledger.hashes, file);
+      await removeDelivered(ledger, file);
       log.info(`Removed ${file}, the copy of the team rule ${TEAMAI_CONTEXT_RULE_NAME} an earlier release delivered: the team instructions go there now`);
     }
   }
@@ -873,8 +872,7 @@ export class RulesHandler extends ResourceHandler {
             if (await recordedUnchanged(ledger?.previous, fullPath)
               || (nestedOf && await isUneditedNestedCopy(tool, fullPath, nestedOf, ledger?.previous, localConfig.repo.localPath, await deliveredRevs()))) {
               if (await keepsTrackedCopy(fullPath, flatCopy !== undefined && await pathExists(flatCopy) ? flatCopy : undefined)) continue;
-              await remove(fullPath);
-              if (ledger) forgetDelivered(ledger.hashes, fullPath);
+              await removeDelivered(ledger, fullPath);
               log.debug(`Removed stale rule ${localFile} from ${tool}`);
             } else if (nestedOf && flatCopy) {
               log.warn(keptNestedCopyMessage(tool, fullPath, ruleName, flatCopy));
@@ -884,7 +882,7 @@ export class RulesHandler extends ResourceHandler {
           const deployed = path.join(destDir, localFile);
           if (await isDeliveredRender(deliveredRenders(tool), deployed, replaced, localConfig.repo.localPath, await deliveredRevs())) {
             if (await keepsTrackedCopy(deployed)) continue;
-            await remove(deployed);
+            await removeDelivered(ledger, deployed);
             log.debug(`Removed ${localFile} from ${tool}: a namespace rule replaces it`);
           } else {
             log.warn(
@@ -905,8 +903,7 @@ export class RulesHandler extends ResourceHandler {
           const current = `${legacyFile.slice(0, -'.md'.length)}${ext}`;
           if (await isLegacyLayoutCopy(legacyFile, `rules/${ruleName}.md`, ledger?.previous, localConfig.repo.localPath)
             && !await keepsTrackedCopy(legacyFile, await pathExists(current) ? current : undefined)) {
-            await remove(legacyFile);
-            if (ledger) forgetDelivered(ledger.hashes, legacyFile);
+            await removeDelivered(ledger, legacyFile);
             log.debug(`Removed legacy .md rule ${localFile} from ${tool}`);
           }
           continue;
@@ -936,8 +933,7 @@ export class RulesHandler extends ResourceHandler {
             continue;
           }
           if (await keepsTrackedCopy(fullPath)) continue;
-          await remove(fullPath);
-          if (ledger) forgetDelivered(ledger.hashes, fullPath);
+          await removeDelivered(ledger, fullPath);
           log.debug(`Removed stale rule ${localFile} from ${tool}`);
         }
       }
@@ -1107,8 +1103,7 @@ export class RulesHandler extends ResourceHandler {
           continue;
         }
         if (await keepsTrackedCopy(file, target?.content === undefined ? undefined : target.dest)) continue;
-        await remove(file);
-        if (ledger) forgetDelivered(ledger.hashes, file);
+        await removeDelivered(ledger, file);
         changed++;
         removed++;
         log.debug(`Removed ${file}: ${entry.why}`);
@@ -1356,8 +1351,7 @@ export class RulesHandler extends ResourceHandler {
         if (supersedes) continue;
         if (!await isDeliveredRender(deliveredRenders(tool), dest, item, localConfig.repo.localPath, deliveredRevs)) continue;
         if (await keepsTrackedCopy(dest)) continue;
-        await remove(dest);
-        if (ledger) forgetDelivered(ledger.hashes, dest);
+        await removeDelivered(ledger, dest);
         const location = locations.get(tool);
         const dir = location === undefined ? null : rulesDirOf(location);
         if (dir !== null) touchedDirs.add(dir);
@@ -1378,6 +1372,7 @@ export class RulesHandler extends ResourceHandler {
       const remainingDirs = await listDirs(subPath);
       // A link the member put there is not listed, and keeps the directory (#993).
       if (remaining.length === 0 && remainingDirs.length === 0 && !await holdsNonRegular(subPath)) {
+        // oxlint-disable-next-line teamai/remove-delivered -- an empty directory, which the record never names
         await remove(subPath);
       }
     }
@@ -1508,8 +1503,7 @@ async function reclaimMovedCopy(
     return;
   }
   if (await keepsTrackedCopy(movedFrom, target.dest)) return;
-  await remove(movedFrom);
-  forgetDelivered(ledger.hashes, movedFrom);
+  await removeDelivered(ledger, movedFrom);
   await pruneEmptyDirs(path.dirname(movedFrom));
   log.debug(`Removed ${movedFrom}: ${target.tool} now reads it at ${target.dest}`);
 }

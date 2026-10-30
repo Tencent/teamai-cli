@@ -4,7 +4,7 @@ import fse from 'fs-extra';
 import { gitTracks, gitUntracked } from '../git-exclude.js';
 import type { DeliveryRecorder } from '../git-exclude-delivered.js';
 import type { AgentModelRecords, CopyOrigin, DeliveryTarget, ResourceItem } from '../types.js';
-import { fileHash, listFilesRecursive } from '../utils/fs.js';
+import { fileHash, listFilesRecursive, remove } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { resolveReal } from '../utils/path-safety.js';
 import { historicalVersions, matchesHistory, readBlob, readRenderedBlob } from '../utils/team-history.js';
@@ -700,6 +700,16 @@ export function adoptRecord(ledger: DeliveryLedger, file: string, hash: string):
 
 export function forgetDelivered(hashes: DeliveredHashes, dest: string): void {
   for (const file of recordedUnder(hashes, dest)) delete hashes[file];
+}
+
+/**
+ * Delete teamai's copy at `dest` and take it off the record this pull writes,
+ * so the record never names a file that is gone (#1577). Without a ledger
+ * there is no record to update.
+ */
+export async function removeDelivered(ledger: DeliveryLedger | undefined, dest: string): Promise<void> {
+  await remove(dest);
+  if (ledger) forgetDelivered(ledger.hashes, dest);
 }
 
 /**

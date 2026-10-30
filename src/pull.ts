@@ -16,7 +16,7 @@ import { pendingLearningsDir } from './utils/pending-learnings.js';
 import { indexableLearningsRoots } from './utils/learnings-roots.js';
 import { log, spinner } from './utils/logger.js';
 import { DetachedRecoveryError, transitionTeamRepo, teamRefBlocker, teamRefNotice, removedTeamResources, type RemovedTeamResources } from './team-ref.js';
-import { pathExists, readJson, writeJson, remove, listFiles, listDirs, listFilesRecursive, readFileSafe, dirContentEqual, hasVcsMetadataRecursive } from './utils/fs.js';
+import { pathExists, readJson, writeJson, listFiles, listDirs, listFilesRecursive, readFileSafe, dirContentEqual, hasVcsMetadataRecursive } from './utils/fs.js';
 import { reconcilePlacementRecords } from './utils/pending-push.js';
 import {
   applyInstructionPlan, channelReadiness, holdsInstructionBlocks, hookLimitProblem, instructionHookChannelInstallable, instructionHookText,
@@ -39,7 +39,7 @@ import { placesOf, placesRecordOf, placesUnmoved, recordPlaces, type PlacesRecor
 import { flatStemsOfRemoved, ruleFileExtensionForTool, ruleFormatForTool, ruleStemsForTool } from './resources/rule-format.js';
 import { AGENT_FILE_EXTENSIONS } from './resources/agent-format.js';
 import {
-  blockingEntries, deliveredSkillFiles, describeMembersDirLeft, forgetDelivered, holdsNonRegular, judgeCopy, judgeRemoval, keepsTrackedCopy, notTeamaisReason, openLedger, recordedUnder, reportKept,
+  blockingEntries, deliveredSkillFiles, describeMembersDirLeft, removeDelivered, holdsNonRegular, judgeCopy, judgeRemoval, keepsTrackedCopy, notTeamaisReason, openLedger, recordedUnder, reportKept,
   type DeliveredHashes, type DeliveryLedger,
 } from './resources/delivered-copies.js';
 import { BUILTIN_SKILL_NAMES } from './builtin-skills.js';
@@ -402,7 +402,7 @@ export async function cleanupInactiveNamespaceSkills(
       if (await keepsTrackedCopy(localSkillDir)) continue;
       if (!await mayDeleteSkillCopy(localConfig, localSkillDir)) continue;
 
-      await remove(localSkillDir);
+      await removeDelivered(ledger, localSkillDir);
       removed.add(skillName);
       log.debug(`[${installScopeName(localConfig.scope)}] Removed inactive role-scoped skill ${skillName} from ${tool}`);
     }
@@ -479,8 +479,7 @@ async function removeUndeliveredSkillCopy(
   }
   if (await keepsTrackedCopy(dir)) return false;
   if (!await mayDeleteSkillCopy(localConfig, dir)) return false;
-  await remove(dir);
-  if (ledger) forgetDelivered(ledger.hashes, dir);
+  await removeDelivered(ledger, dir);
   return true;
 }
 
@@ -719,8 +718,7 @@ async function cleanupTombstonedResources(
           continue;
         }
         if (await keepsTrackedCopy(localPath)) continue;
-        await remove(localPath);
-        forgetDelivered(ledger.hashes, localPath);
+        await removeDelivered(ledger, localPath);
         log.debug(`[${scopeLabel}] Cleaned up tombstoned rules copy ${stem} from ${dir}`);
       }
 
@@ -758,8 +756,7 @@ async function cleanupTombstonedResources(
           }
           if (await keepsTrackedCopy(localPath)) continue;
           if (type === 'skills' && !await mayDeleteSkillCopy(localConfig, localPath)) continue;
-          await remove(localPath);
-          forgetDelivered(ledger.hashes, localPath);
+          await removeDelivered(ledger, localPath);
           log.debug(`[${scopeLabel}] Cleaned up tombstoned ${type} ${name} from ${dir}`);
         }
       }
@@ -1249,6 +1246,26 @@ async function openCheckoutLedger(localConfig: LocalConfig, state?: State, recor
     .map(([, other]) => other.delivered ?? {}));
   const ledger = openLedger(record?.delivered, record?.agentModels, otherRecords);
   return recorder ? { ...ledger, recorder } : ledger;
+}
+
+/**
+ * This checkout's delivery record as a ledger, for `teamai remove`: a copy it
+ * deletes through `removeDelivered` leaves the record too once `save` runs,
+ * as pull's removals do (#1577). A checkout with no record gets none.
+ */
+export async function editDeliveryRecord(localConfig: LocalConfig): Promise<{ ledger: DeliveryLedger; save: () => Promise<void> }> {
+  const ledger = await openCheckoutLedger(localConfig);
+  return {
+    ledger,
+    save: async () => {
+      const key = await checkoutRecordKey(localConfig);
+      const state = await loadStateForScope(localConfig);
+      const record = key ? state.lastPullByWorkspace?.[key] : undefined;
+      if (!record) return;
+      record.delivered = ledger.hashes;
+      await saveStateForScope(state, localConfig);
+    },
+  };
 }
 
 /**
@@ -2331,6 +2348,7 @@ async function pullForScope(
         freshConfig,
         localConfig,
         roleContext.activeNamespaces.agents,
+        ledger,
       );
     }
   }
@@ -2383,7 +2401,7 @@ async function pullForScope(
         }
         if (await keepsTrackedCopy(skillDir)) continue;
         if (!await mayDeleteSkillCopy(localConfig, skillDir)) continue;
-        await remove(skillDir);
+        await removeDelivered(ledger, skillDir);
         if (excludedSkills.has(dir)) {
           log.debug(`Removed excluded skill ${dir} from ${tool}`);
         } else {
@@ -2413,8 +2431,7 @@ async function pullForScope(
             }
             if (await keepsTrackedCopy(nestedSkillDir)) continue;
             if (!await mayDeleteSkillCopy(localConfig, nestedSkillDir)) continue;
-            await remove(nestedSkillDir);
-            forgetDelivered(ledger.hashes, nestedSkillDir);
+            await removeDelivered(ledger, nestedSkillDir);
             log.debug(`Removed excluded skill ${namespace}/${skillName} from ${tool}`);
           }
         }

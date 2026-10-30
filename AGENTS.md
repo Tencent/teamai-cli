@@ -2,7 +2,7 @@
 
 CLI for managing a team's skills, rules, agents, learnings, models, MCP, and other AI assets in a git repo, and syncing them into AI coding tools. Package: [`teamai-cli`](https://www.npmjs.com/package/teamai-cli).
 
-TypeScript, Node 20+ (`npm run lint` needs ^20.19 or >=22.12), tsup (ESM), Vitest. Commands: `npm run build`, `npx tsc --noEmit`, `npm run lint`, `npx vitest run`, `npm run test:e2e`.
+TypeScript, Node 20+ (`npm run lint` needs ^20.19 or >=22.18), tsup (ESM), Vitest. Commands: `npm run build`, `npm run typecheck`, `npm run lint`, `npx vitest run`, `npm run test:e2e`.
 
 ## Git
 

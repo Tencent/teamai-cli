@@ -1,5 +1,6 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "jsPlugins": ["./oxlint-plugin-teamai/index.ts"],
   "categories": {
     "suspicious": "warn",
     "perf": "warn"
@@ -49,7 +50,9 @@
     // `_resetState`).
     "no-underscore-dangle": "off",
     // Micro-optimization, not worth the churn.
-    "oxc/no-map-spread": "off"
+    "oxc/no-map-spread": "off",
+    // Pull deletes a delivered copy and its record entry together (#1577).
+    "teamai/remove-delivered": "error"
   },
   "overrides": [
     {

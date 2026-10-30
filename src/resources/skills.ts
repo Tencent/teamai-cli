@@ -23,7 +23,7 @@ import { openPrDestinations, recordedNamespace } from '../utils/pending-push.js'
 import { splitFrontmatter, stringifyFrontmatter } from '../utils/frontmatter.js';
 import {
   blockingEntries, deliveredSkillFiles, describeKeptDir, describeMembersDirLeft, describeMembersFile, describeMembersLink, describeSkippedLink, isLink, judgeCopy, judgeRemoval, keepsEditedCopy, keepsTrackedCopy,
-  forgetDelivered, isRecordedFromTeamSkill, isTeamaiSkillCopy, isTeamSkillAsDelivered, isUneditedSkillCopy, membersLinkAt, ownsSkillDir, recordDelivered, recordedUnder, teamaiSkillFiles,
+  forgetDelivered, removeDelivered, isRecordedFromTeamSkill, isTeamaiSkillCopy, isTeamSkillAsDelivered, isUneditedSkillCopy, membersLinkAt, ownsSkillDir, recordDelivered, recordedUnder, teamaiSkillFiles,
   type DeliveredHashes, type DeliveryLedger,
 } from './delivered-copies.js';
 
@@ -210,6 +210,7 @@ export async function resolveSkillDestination(
   skillName: string,
   ownsShared: SharedSkillOwnership,
   sourcePath?: string,
+  ledger?: DeliveryLedger,
 ): Promise<string> {
   const configuredDestination = path.join(baseDir, configuredSkillsPath, skillName);
   if (tool === CODEX_TOOL) {
@@ -232,7 +233,7 @@ export async function resolveSkillDestination(
         log.warn(describeMembersLink(configuredDestination, `skills/${skillName}`));
       } else if (await dirContentEqual(sharedDestination, configuredDestination) && await dirContentEqual(configuredDestination, sourcePath)) {
         if (!await keepsTrackedCopy(configuredDestination, sharedDestination)) {
-          await remove(configuredDestination);
+          await removeDelivered(ledger, configuredDestination);
           log.debug(`Removed identical TeamAI skill ${skillName} from ${configuredSkillsPath}`);
         }
       } else {
@@ -274,6 +275,7 @@ export function skillTargetsFor(
   teamConfig: Pick<TeamaiConfig, 'toolPaths'>,
   localConfig: LocalConfig,
   teamSkills?: Pick<DeliveryLedger, 'previous'>,
+  ledger?: DeliveryLedger,
 ): (request: SkillTargetRequest) => Promise<string | null> {
   const install = installOf(teamConfig, localConfig);
   const toolPaths = scopedToolPaths(teamConfig, localConfig);
@@ -304,14 +306,14 @@ export function skillTargetsFor(
         if (await judgeRemoval(undefined, configuredDestination, skillOrigin(localConfig.repo.localPath, skillName)) !== 'remove') {
           log.warn(`Codex skill conflict for ${skillName}: keeping different copies in ${SHARED_AGENT_SKILLS_PATH} and ${configuredSkillsPath}`);
         } else if (!await keepsTrackedCopy(configuredDestination, sharedDestination) && await mayDeleteSkillCopy(localConfig, configuredDestination)) {
-          await remove(configuredDestination);
+          await removeDelivered(ledger, configuredDestination);
           log.debug(`Removed TeamAI skill ${skillName} from ${configuredSkillsPath}: Codex reads it from ${SHARED_AGENT_SKILLS_PATH}`);
         }
       }
       return sharedDestination;
     }
     // Codex's directories are `locate`'s writes: it has no home moves, so they hang off the scope's base.
-    return resolveSkillDestination(tool, configuredSkillsPath, resolveBaseDir(localConfig), skillName, ownsShared, sourcePath);
+    return resolveSkillDestination(tool, configuredSkillsPath, resolveBaseDir(localConfig), skillName, ownsShared, sourcePath, ledger);
   };
 }
 
@@ -734,13 +736,14 @@ async function otherVersionFiles(repoPath: string, item: ResourceItem): Promise<
  * one behind. Any other file is the member's own, and stays: push does not
  * count such an extra as a change, so it may never have been pushed. One at a
  * path another version has is named, since it may be an edited leftover.
- * `delivered` tells them apart (#822): a file still as teamai recorded writing
+ * The ledger's record tells them apart (#822): a file still as teamai recorded writing
  * it is a leftover, and one it has no record of is the member's own. So a file
  * the team deleted from this skill goes too, or the next push would add it back.
  */
 async function removeLeftoverVersionFiles(
-  source: string, dest: string, otherVersions: Map<string, string[]>, delivered: DeliveredHashes | undefined,
+  source: string, dest: string, otherVersions: Map<string, string[]>, ledger: DeliveryLedger | undefined,
 ): Promise<void> {
+  const delivered = ledger?.previous;
   if (otherVersions.size === 0 && delivered === undefined) return;
   const sourceFiles = new Set(await listFilesRecursive(source));
   let removed = false;
@@ -760,7 +763,7 @@ async function removeLeftoverVersionFiles(
       continue;
     }
     if (await keepsTrackedCopy(installed)) continue;
-    await remove(installed);
+    await removeDelivered(ledger, installed);
     removed = true;
   }
   if (removed) await pruneEmptyDirs(dest);
@@ -1271,6 +1274,7 @@ export class SkillsHandler extends ResourceHandler {
     const teamFiles = await listFilesRecursive(dest);
     for (const relativePath of teamFiles) {
       if (sourceFiles.has(relativePath) || relativePath === CONTRIBUTORS_FILE) continue;
+      // oxlint-disable-next-line teamai/remove-delivered -- a team-repo file push replaces, which pull never records
       await remove(path.join(dest, relativePath));
     }
     await pruneEmptyDirs(dest);
@@ -1313,7 +1317,7 @@ export class SkillsHandler extends ResourceHandler {
     const origin = skillOrigin(localConfig.repo.localPath, item.name);
     const targets: DeliveryTarget[] = [];
     const install = installOf(teamConfig, localConfig);
-    const skillTarget = skillTargetsFor(teamConfig, localConfig, { previous: ledger?.previous });
+    const skillTarget = skillTargetsFor(teamConfig, localConfig, { previous: ledger?.previous }, ledger);
     for (const tool of Object.keys(install.toolPaths)) {
       const where = await locate(tool, 'skills', install);
       const skillsDir = writable(where)?.path ?? null;
@@ -1378,7 +1382,7 @@ export class SkillsHandler extends ResourceHandler {
           else warnOnce(describeMembersFile(entry, `${item.relativePath}/${rel}`));
         }
         await copyDir(item.sourcePath, dest, (link) => warnOnce(describeSkippedLink(link, item.relativePath)), blocked);
-        await removeLeftoverVersionFiles(item.sourcePath, dest, otherVersions, ledger?.previous);
+        await removeLeftoverVersionFiles(item.sourcePath, dest, otherVersions, ledger);
         await ensureSkillFrontmatter(dest, item.name);
         if (ledger) await recordDelivered(ledger.hashes, dest, item.sourcePath);
         // The files it wrote, never the directory, nor an entry of the member's it delivered around (#915).
@@ -1412,7 +1416,8 @@ export class SkillsHandler extends ResourceHandler {
       if (!await pathExists(teamDir)) continue;
       sources.push({ name, type: 'skills', sourcePath: teamDir, relativePath: path.relative(localConfig.repo.localPath, teamDir).split(path.sep).join('/') });
     }
-    const previous = await (await import('../pull.js')).deliveredHashes(localConfig);
+    const record = await (await import('../pull.js')).editDeliveryRecord(localConfig);
+    const { previous } = record.ledger;
     const origin = skillOrigin(localConfig.repo.localPath, name);
     const owned: { tool: string; skillDir: string; files?: string[]; packagedBase?: string }[] = [];
     const install = installOf(teamConfig, localConfig);
@@ -1451,6 +1456,7 @@ export class SkillsHandler extends ResourceHandler {
 
     // Remove from team repo
     for (const { sourcePath } of sources) {
+      // oxlint-disable-next-line teamai/remove-delivered -- the team repo's source, which pull never records
       await remove(sourcePath);
       removed.push(sourcePath);
     }
@@ -1462,22 +1468,23 @@ export class SkillsHandler extends ResourceHandler {
       // Any file of it the repository tracks keeps the whole directory, named once.
       if (await keepsTrackedCopy(skillDir)) continue;
       if (packagedBase) {
-        for (const file of files ?? []) await remove(file);
+        for (const file of files ?? []) await removeDelivered(record.ledger, file);
         removed.push(...files ?? []);
         const result = await removeOwnedFiles(skillDir, await ownedSkillFiles(name), packagedBase);
         if (prunedWhole(result)) removed.push(skillDir);
         else if (result.notRemoved.length > 0) log.warn(`Could not delete packaged files under ${skillDir}. First: ${result.notRemoved[0].file} — ${result.notRemoved[0].error}. Fix the permissions and run \`teamai remove\` again, or delete the directory yourself.`);
         else log.warn(`Kept ${skillDir}: it holds files TeamAI did not put there. The packaged files were removed; delete the rest yourself once you have saved what you need.`);
       } else if (files) {
-        for (const file of files) await remove(file);
+        for (const file of files) await removeDelivered(record.ledger, file);
         await pruneEmptyDirs(skillDir);
         removed.push(...files);
       } else {
-        await remove(skillDir);
+        await removeDelivered(record.ledger, skillDir);
         removed.push(skillDir);
       }
       log.debug(`Removed skill ${name} from ${tool}`);
     }
+    await record.save();
 
     return removed;
   }

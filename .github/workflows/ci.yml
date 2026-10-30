@@ -47,7 +47,7 @@ jobs:
         run: npm run lint
 
       - name: Type check
-        run: npx tsc --noEmit
+        run: npm run typecheck
 
       # Coverage only where it is uploaded: it costs the other legs time and nothing reads it.
       - name: Unit tests
