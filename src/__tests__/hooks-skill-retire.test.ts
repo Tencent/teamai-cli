@@ -52,6 +52,20 @@ function withoutSkillHook(value: unknown): unknown {
   return value;
 }
 
+/** Keep the fixture comparison aligned with the Codex commandWindows migration. */
+function currentCodexWindows(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(currentCodexWindows);
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, inner]) => {
+      if (key === 'commandWindows' && typeof inner === 'string' && inner.startsWith('teamai hook-dispatch ')) {
+        return [key, `cmd.exe /d /s /c "${inner.replace(/ & exit 0$/, ' & exit /b 0')}"`];
+      }
+      return [key, currentCodexWindows(inner)];
+    }));
+  }
+  return value;
+}
+
 const FAMILIES = [
   { name: 'claude', file: 'settings.json' },
   { name: 'codex', file: 'hooks.json' },
@@ -72,7 +86,10 @@ describe('reconcile retires the Skill dispatch hook (#1221)', () => {
 
     const after = fs.readFileSync(settings, 'utf-8');
     // ZCode intentionally upgrades -lc to its clean process runner (#1221).
-    if (name !== 'zcode') expect(JSON.parse(after)).toEqual(withoutSkillHook(JSON.parse(before)));
+    if (name !== 'zcode') {
+      const expected = name === 'codex' ? currentCodexWindows(withoutSkillHook(JSON.parse(before))) : withoutSkillHook(JSON.parse(before));
+      expect(JSON.parse(after)).toEqual(expected);
+    }
     await expect(after).toMatchFileSnapshot(path.join(FIXTURES, `${name}.after.json`));
   });
 
