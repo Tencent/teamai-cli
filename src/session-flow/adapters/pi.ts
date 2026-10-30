@@ -60,19 +60,38 @@ function activeEntries(entries: Json[]): Json[] {
   if (entries.length === 0) return [];
   const byId = new Map(entries.flatMap((entry) => typeof entry.id === 'string' ? [[entry.id, entry] as const] : []));
   const last = entries.at(-1)!;
-  let id = last.activeLeafId === null ? undefined
+  const leaf = last.activeLeafId === null ? undefined
     : typeof last.activeLeafId === 'string' ? last.activeLeafId
       : typeof last.id === 'string' ? last.id : undefined;
-  const branch: Json[] = [];
-  const seen = new Set<string>();
-  while (id && !seen.has(id)) {
-    seen.add(id);
-    const entry = byId.get(id);
-    if (!entry) break;
-    branch.push(entry);
-    id = typeof entry.parentId === 'string' ? entry.parentId : undefined;
+  const follow = (start: string | undefined): Json[] => {
+    let id = start;
+    const branch: Json[] = [];
+    const seen = new Set<string>();
+    while (id && !seen.has(id)) {
+      seen.add(id);
+      const entry = byId.get(id);
+      if (!entry) break;
+      branch.push(entry);
+      id = typeof entry.parentId === 'string' ? entry.parentId : undefined;
+    }
+    return branch.toReversed();
+  };
+  const active = follow(leaf);
+  return active.length > 0 ? active : follow(typeof last.id === 'string' ? last.id : undefined);
+}
+
+function modelOf(entries: Json[]): string | undefined {
+  let model: string | undefined;
+  for (const entry of entries) {
+    if (entry.type === 'model_change') {
+      const changed = text(entry.model) ?? [text(entry.provider), text(entry.modelId)].filter(Boolean).join('/');
+      if (changed) model = changed;
+    } else if (entry.type === 'message') {
+      const stored = object(entry.message);
+      if (stored?.role === 'assistant' && typeof stored.model === 'string') model = stored.model;
+    }
   }
-  return branch.toReversed();
+  return model;
 }
 
 function image(block: Json): ContentBlock | undefined {
@@ -229,8 +248,7 @@ export class PiAdapter extends AgentAdapter {
     const stat = fs.statSync(parsed.filePath);
     const createdAt = iso(parsed.header.timestamp) ?? messages[0]?.timestamp ?? stat.birthtime.toISOString();
     const updatedAt = branch.toReversed().map((entry) => iso(entry.timestamp)).find(Boolean) ?? stat.mtime.toISOString();
-    const model = messages.toReversed().map((message) => message.metadata?.model).find((value): value is string => typeof value === 'string')
-      ?? branch.toReversed().map((entry) => entry.type === 'model_change' ? text(entry.model) ?? [text(entry.provider), text(entry.modelId)].filter(Boolean).join('/') : undefined).find(Boolean);
+    const model = modelOf(branch);
     return {
       sessionId: text(parsed.header.id)!, title: titleOf(parsed, branch, messages), cwd: text(parsed.header.cwd) ?? '',
       platform: this.id, createdAt, updatedAt, messages, ...(model ? { metadata: { model } } : {}),

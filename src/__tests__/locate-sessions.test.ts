@@ -56,6 +56,8 @@ const ROWS: readonly (FilesRow | OtherRow)[] = [
   store('pi', '/pi-agent/sessions', { scope: 'project', env: { PI_CODING_AGENT_DIR: '/pi-agent' }, source: `${PI_SOURCE}; project sessions use the user-view store` }),
   store('pi', '/pi-sessions', { env: { PI_CODING_AGENT_SESSION_DIR: '/pi-sessions' }, source: PI_SOURCE }),
   store('pi', '/pi-sessions', { scope: 'project', env: { PI_CODING_AGENT_SESSION_DIR: '/pi-sessions' }, source: `${PI_SOURCE}; project sessions use the user-view store` }),
+  store('pi', '~/pi-settings-sessions', { texts: [{ at: '~/.pi/agent/settings.json', text: '{"sessionDir":"~/pi-settings-sessions"}' }], source: `${PI_SOURCE}; sessionDir in settings.json follows the same path expansion` }),
+  store('pi', '~/pi-settings-sessions', { scope: 'project', texts: [{ at: '~/.pi/agent/settings.json', text: '{"sessionDir":"~/pi-settings-sessions"}' }], source: `${PI_SOURCE}; project sessions use the user-view setting` }),
   store('omp', '~/.omp/agent/sessions', { source: OMP_SOURCE }),
   store('omp', '~/.omp/profiles/work/agent/sessions', { envLiterals: { OMP_PROFILE: 'work' }, source: OMP_SOURCE }),
   store('omp', '~/.omp/profiles/work/agent/sessions', { scope: 'project', envLiterals: { OMP_PROFILE: 'work' }, source: `${OMP_SOURCE}; project sessions use the user-view store` }),
