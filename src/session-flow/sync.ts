@@ -541,11 +541,13 @@ export class SyncManager {
     const toRel = `sessions/repos/${toName}/`;
     const committed = this.runGit(['ls-tree', '-r', '-z', '--name-only', 'HEAD', fromRel], false).split('\0').filter(Boolean);
     if (committed.length === 0 && !fs.existsSync(from)) return;
-    const stagedUnder = (rel: string) =>
-      this.runGit(['diff', '--cached', '--relative', '--name-only', '-z', '--', rel], false).split('\0').filter(Boolean);
+    const stagedUnder = (rel: string, ...filter: string[]) =>
+      this.runGit(['diff', '--cached', '--relative', '--name-only', '-z', ...filter, '--', rel], false).split('\0').filter(Boolean);
     const stagedFrom = stagedUnder(fromRel);
     const stagedTo = stagedUnder(toRel);
-    if (stagedFrom.length > 0 && stagedTo.length > 0) {
+    // A move leaves only removals staged under the old name; anything else there is a local change.
+    const isStagedMove = stagedTo.length > 0 && stagedFrom.length > 0 && stagedUnder(fromRel, '--diff-filter=d').length === 0;
+    if (isStagedMove) {
       for (const file of [...stagedFrom, ...stagedTo]) this.writtenPaths.add(file);
       return;
     }
