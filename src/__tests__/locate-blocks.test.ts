@@ -226,6 +226,13 @@ const ROWS: readonly MatrixRow[] = [
     source: 'QODERCN_CONFIG_DIR moves Qoder CN user instruction blocks',
   },
   {
+    tool: 'qoder-cn', scope: 'user', env: { QODERCN_CLI_HOME: '/qodercn-cli' },
+    writes: [{ at: '/qodercn-cli/.qoder-cn/rules/teamai-context.md', owned: true, header: 'trigger-always-on' }],
+    existingDirs: ['/qodercn-cli/.qoder-cn'], installed: { probe: '/qodercn-cli/.qoder-cn', met: true },
+    reads: [{ at: '/qodercn-cli/.qoder-cn/rules', when: 'always' }],
+    source: 'QODERCN_CLI_HOME supplies the parent of Qoder CN user instruction blocks',
+  },
+  {
     tool: 'kiro', scope: 'user',
     writes: [{ at: '~/.kiro/steering/teamai-context.md', owned: true, header: 'inclusion-always' }],
     existingDirs: ['~/.kiro'], installed: { probe: '~/.kiro', met: true },

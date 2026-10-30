@@ -121,9 +121,12 @@ function qoderHome(host: Host): EnvToolHome | null {
   return cliHome ? { dir: host.path.join(absoluteOn(cliHome, host), '.qoder'), variable: 'QODER_CLI_HOME', kind: 'own' } : null;
 }
 
+/** Qoder CN gives QODERCN_CONFIG_DIR precedence; QODERCN_CLI_HOME holds its `.qoder-cn` store otherwise. */
 function qoderCnHome(host: Host): EnvToolHome | null {
   const config = host.env.QODERCN_CONFIG_DIR?.trim();
-  return config ? { dir: absoluteOn(config, host), variable: 'QODERCN_CONFIG_DIR', kind: 'own' } : null;
+  if (config) return { dir: absoluteOn(config, host), variable: 'QODERCN_CONFIG_DIR', kind: 'own' };
+  const cliHome = host.env.QODERCN_CLI_HOME?.trim();
+  return cliHome ? { dir: host.path.join(absoluteOn(cliHome, host), '.qoder-cn'), variable: 'QODERCN_CLI_HOME', kind: 'own' } : null;
 }
 
 function openclawState(host: Host): EnvToolHome | null {

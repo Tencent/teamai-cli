@@ -229,6 +229,11 @@ const COMPLETE_ROWS: readonly MatrixRow[] = [
     reads: [{ at: '/qodercn/settings.json', key: ['mcpServers'], when: 'always' }], source: 'QODERCN_CONFIG_DIR moves Qoder CN user MCP settings',
   },
   {
+    tool: 'qoder-cn', scope: 'user', env: { QODERCN_CLI_HOME: '/qodercn-cli' },
+    writes: [{ at: '/qodercn-cli/.qoder-cn/settings.json', key: ['mcpServers'] }], existingDirs: ['/qodercn-cli/.qoder-cn'], installed: { probe: '/qodercn-cli/.qoder-cn', met: true },
+    reads: [{ at: '/qodercn-cli/.qoder-cn/settings.json', key: ['mcpServers'], when: 'always' }], source: 'QODERCN_CLI_HOME supplies the parent of Qoder CN user MCP settings',
+  },
+  {
     tool: 'kiro', scope: 'user',
     writes: [{ at: '~/.kiro/settings/mcp.json', key: ['mcpServers'] }],
     existingDirs: ['~/.kiro'],

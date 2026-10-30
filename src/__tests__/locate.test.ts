@@ -169,9 +169,10 @@ describe('envToolHome', () => {
           ];
         case 'qoder-cn-home':
           return [
-            { tool, env: { QODERCN_CONFIG_DIR: 'rel/home' }, dir: '/home/m/work/rel/home' },
-            { tool, env: { QODERCN_CONFIG_DIR: '/abs/home' }, dir: '/abs/home' },
-            { tool, env: { QODERCN_CONFIG_DIR: ' ' }, dir: null },
+            { tool, env: { QODERCN_CONFIG_DIR: 'rel/home', QODERCN_CLI_HOME: 'rel/cli' }, dir: '/home/m/work/rel/home' },
+            { tool, env: { QODERCN_CONFIG_DIR: '/abs/home', QODERCN_CLI_HOME: '/abs/cli' }, dir: '/abs/home' },
+            { tool, env: { QODERCN_CONFIG_DIR: ' ', QODERCN_CLI_HOME: '/abs/cli' }, dir: '/abs/cli/.qoder-cn' },
+            { tool, env: { QODERCN_CONFIG_DIR: ' ', QODERCN_CLI_HOME: ' ' }, dir: null },
           ];
         case 'xdg':
           return [

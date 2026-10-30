@@ -238,6 +238,13 @@ const ROWS: readonly FilesRow[] = [
     source: 'Qoder CN: QODERCN_CONFIG_DIR moves the .qoder-cn user store; the skills lookup is not independently verified',
   },
   {
+    tool: 'qoder-cn', scope: 'user', env: { QODERCN_CLI_HOME: '/qodercn-cli' },
+    writes: ['/qodercn-cli/.qoder-cn/skills'],
+    existingDirs: ['/qodercn-cli/.qoder-cn'], installed: { probe: '/qodercn-cli/.qoder-cn', met: true },
+    reads: 'unknown',
+    source: 'Qoder CN: QODERCN_CLI_HOME supplies the parent of the .qoder-cn user store; the skills lookup is not independently verified',
+  },
+  {
     tool: 'codex', scope: 'user',
     writes: ['~/.codex/skills', '~/.agents/skills'],
     existingDirs: ['~/.codex'], installed: { probe: '~/.codex', met: true },

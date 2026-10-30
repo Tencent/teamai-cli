@@ -209,6 +209,11 @@ const ROWS: readonly MatrixRow[] = [
     reads: [{ at: '/qodercn/rules', when: 'always' }], source: 'QODERCN_CONFIG_DIR moves Qoder CN user rules',
   },
   {
+    tool: 'qoder-cn', scope: 'user', env: { QODERCN_CLI_HOME: '/qodercn-cli' },
+    writes: ['/qodercn-cli/.qoder-cn/rules'], existingDirs: ['/qodercn-cli/.qoder-cn'], installed: { probe: '/qodercn-cli/.qoder-cn', met: true },
+    reads: [{ at: '/qodercn-cli/.qoder-cn/rules', when: 'always' }], source: 'QODERCN_CLI_HOME supplies the parent of Qoder CN user rules',
+  },
+  {
     tool: 'kiro', scope: 'user',
     writes: ['~/.kiro/steering'],
     existingDirs: ['~/.kiro'], installed: { probe: '~/.kiro', met: true },

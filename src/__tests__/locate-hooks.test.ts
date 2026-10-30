@@ -113,8 +113,14 @@ const ROWS: readonly (FilesRow | OtherRow)[] = [
   settings('qoder-cn', 'user', '/qodercn/settings.json', '/qodercn', {
     env: { QODERCN_CONFIG_DIR: '/qodercn' }, reads: [{ at: '/qodercn/settings.json', when: 'always', key: HOOK_LIST }], source: 'QODERCN_CONFIG_DIR moves Qoder CN user hooks',
   }),
+  settings('qoder-cn', 'user', '/qodercn-cli/.qoder-cn/settings.json', '/qodercn-cli/.qoder-cn', {
+    env: { QODERCN_CLI_HOME: '/qodercn-cli' }, reads: [{ at: '/qodercn-cli/.qoder-cn/settings.json', when: 'always', key: HOOK_LIST }], source: 'QODERCN_CLI_HOME supplies the parent of Qoder CN user hooks',
+  }),
   settings('qoder-cn', 'project', '/qodercn/settings.json', '/qodercn', {
     env: { QODERCN_CONFIG_DIR: '/qodercn' }, reads: [{ at: '/qodercn/settings.json', when: 'always', key: HOOK_LIST }], source: 'QODERCN_CONFIG_DIR moves the project install user hook file',
+  }),
+  settings('qoder-cn', 'project', '/qodercn-cli/.qoder-cn/settings.json', '/qodercn-cli/.qoder-cn', {
+    env: { QODERCN_CLI_HOME: '/qodercn-cli' }, reads: [{ at: '/qodercn-cli/.qoder-cn/settings.json', when: 'always', key: HOOK_LIST }], source: 'QODERCN_CLI_HOME supplies the parent of the Qoder CN project install user hook file',
   }),
   selfSettings('qoder-cn', '<root>/.qoder/settings.json', '~/.qoder-cn', 'cwdOnly', {
     broken: { 'project-subdir': { reason: 'cwd-only', issue: '#1221' } },

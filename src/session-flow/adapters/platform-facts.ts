@@ -111,7 +111,7 @@ export const SESSION_PLATFORM_FACTS = {
     idFormat: 'uuid',
   },
   'qoder-cn': {
-    // Qoder CN stores transcripts under <QODERCN_CONFIG_DIR or ~/.qoder-cn>/projects.
+    // Qoder CN stores transcripts under <QODERCN_CONFIG_DIR or QODERCN_CLI_HOME/.qoder-cn or ~/.qoder-cn>/projects.
     store: { in: 'tool-home', home: 'qoder-cn', dir: 'projects' },
     resume: (id) => `qoderclicn --resume ${id}`,
     thinking: true, images: true,

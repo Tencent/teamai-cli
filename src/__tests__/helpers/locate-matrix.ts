@@ -245,7 +245,7 @@ function moveSettingsOf(tool: ToolId, move: HomeMove): MoveSetting[] {
     case 'qoder-home':
       return [setting('QODER_CONFIG_DIR', '/moved'), setting('QODER_CLI_HOME', '/moved')];
     case 'qoder-cn-home':
-      return [setting('QODERCN_CONFIG_DIR', '/moved')];
+      return [setting('QODERCN_CONFIG_DIR', '/moved'), setting('QODERCN_CLI_HOME', '/moved')];
     case 'xdg':
       return [setting('XDG_CONFIG_HOME', '/moved')];
     case 'openclaw-state':

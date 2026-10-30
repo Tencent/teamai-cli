@@ -25,7 +25,7 @@ export type HomeMove =
   | { readonly kind: 'env'; readonly name: string; readonly evidence: Evidence }
   /** Qoder: `QODER_CONFIG_DIR`, or `.qoder` inside `QODER_CLI_HOME`. */
   | { readonly kind: 'qoder-home'; readonly evidence: Evidence }
-  /** Qoder CN: `QODERCN_CONFIG_DIR`, or the default `.qoder-cn` home. */
+  /** Qoder CN: `QODERCN_CONFIG_DIR`, or `.qoder-cn` inside `QODERCN_CLI_HOME`. */
   | { readonly kind: 'qoder-cn-home'; readonly evidence: Evidence }
   /** `$XDG_CONFIG_HOME/<child>`. */
   | { readonly kind: 'xdg'; readonly child: string; readonly evidence: Evidence }
@@ -1302,7 +1302,7 @@ export function homeVariables(tool: ToolId): readonly string[] {
       case 'qoder-home':
         return ['QODER_CONFIG_DIR', 'QODER_CLI_HOME'];
       case 'qoder-cn-home':
-        return ['QODERCN_CONFIG_DIR'];
+        return ['QODERCN_CONFIG_DIR', 'QODERCN_CLI_HOME'];
       case 'xdg':
         return ['XDG_CONFIG_HOME'];
       case 'openclaw-state':
