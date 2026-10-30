@@ -1637,24 +1637,22 @@ function toCodexEntry(def: HookDef): CodexHookMatcher {
 const BUILTIN_DISPATCH_COMMAND_RE = /^("[^"]+"|bash) -lc "(teamai hook-dispatch [^"]+) 2>\/dev\/null" \|\| true$/;
 
 /**
- * The `commandWindows` of a built-in Codex entry: the cmd.exe form of its
- * dispatch. Codex runs hook commands through `%COMSPEC% /C` on Windows
- * (codex-rs/hooks/src/engine/command_runner.rs, `default_shell_command`) —
- * not PowerShell, so the pre-#1215 PowerShell syntax never ran correctly:
- * `2>$null` created a file named `$null` and `;` is an argument delimiter in
- * cmd, not a separator, so `exit 0` arrived as junk arguments. The cmd form
- * redirects to `nul` and separates with `&`, which also restores the
- * not-found fail-open (`&` runs the second command whatever the first did),
- * mirroring `|| true` on the POSIX side. Carrying it in Codex's Windows-only
- * override keeps `command` the POSIX form on every platform, so a project
- * `.codex/hooks.json` a repository commits reads the same after a Windows
- * pull and after a Linux pull. A team hook keeps the single command its
- * author wrote.
+ * The `commandWindows` of a built-in Codex entry. `commandWindows` selects the
+ * Windows command text, not necessarily its outer shell: Codex can run it from
+ * an explicitly configured PowerShell session as well as its cmd.exe fallback.
+ * Keep the cmd-specific redirect and fail-open separator inside an explicit
+ * cmd.exe invocation so PowerShell never interprets its `&` as a background
+ * operator and writes job-table output into the hook response.
+ *
+ * Carrying this shell-neutral wrapper in Codex's Windows-only override keeps
+ * `command` in POSIX form on every platform, so a committed project
+ * `.codex/hooks.json` remains stable after Windows and Linux pulls. A team hook
+ * keeps the single command its author wrote because its exit status can block.
  */
 function codexWindowsCommand(command: string): string | undefined {
   const match = command.match(BUILTIN_DISPATCH_COMMAND_RE);
   if (!match) return undefined;
-  return `${match[2]} 2>nul & exit 0`;
+  return `cmd.exe /d /s /c "${match[2]} 2>nul & exit /b 0"`;
 }
 
 /** Render a valid PowerShell equivalent for TeamAI's generated bash wrapper. */

@@ -290,12 +290,11 @@ export function getCodebuddyTeamHookDispatchCommand(
 
 /**
  * The `commandWindows` of a team-hook dispatcher entry: the bare dispatch,
- * without the POSIX form's bash wrapper. Codex runs hook commands through
- * `%COMSPEC% /C` on Windows — cmd.exe, not PowerShell (#1215) — which cannot
- * resolve `bash`, so the wrapper has to go. Nothing else is added: cmd /C
- * propagates the child's exit code and stderr natively, so the dispatcher's
- * block contract (exit 2 blocks the run, stderr reaches the user) passes
- * through the same way the bash form passes it on POSIX (#1209).
+ * without the POSIX form's bash wrapper. Unlike the built-in fail-open command,
+ * this form contains no shell metacharacters, so it is safe for both Codex's
+ * cmd.exe fallback and an explicitly configured PowerShell shell. Keeping it
+ * bare also preserves the dispatcher's block contract: exit 2 and stderr must
+ * reach the host instead of being swallowed (#1209, #1215).
  */
 export function getTeamHookDispatchCommandWindows(event: string, tool: string): string {
   return `teamai hook-dispatch ${event} --tool ${tool} --team-hooks`;
