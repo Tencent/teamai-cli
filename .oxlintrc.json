@@ -16,6 +16,8 @@
     ],
     "typescript/no-floating-promises": "warn",
     "typescript/no-misused-promises": "warn",
+    // Reject adjacent literal concatenation; template literals are clearer.
+    "no-useless-concat": "warn",
     // Prefer includes() when checking for a collection member.
     "unicorn/prefer-includes": "warn",
     // Prefer a predicate search when only the existence of a match matters.
