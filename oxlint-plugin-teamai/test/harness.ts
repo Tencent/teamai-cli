@@ -38,6 +38,7 @@ export function ruleHarness(rule: `teamai/${string}`, defaults: { filename: stri
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, source);
     const root = path.join(dir, String(fixtures.length));
+    fs.writeFileSync(path.join(root, 'package.json'), '{}');
     for (const [relative, contents] of Object.entries(files)) {
       const dependency = path.join(root, relative);
       fs.mkdirSync(path.dirname(dependency), { recursive: true });

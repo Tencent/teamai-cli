@@ -1,20 +1,10 @@
-/** @import { Context } from '@oxlint/plugins' */
 
 import { defineRule } from '@oxlint/plugins';
 
-import { isOneOf, lintedPath } from '../utils.js';
+import { inProductionSource, isOneOf } from '../utils.js';
 
 /** The one module that owns raw HOME reads. */
 const HOME_OWNER = 'src/utils/home.ts';
-
-/** The legacy source guard scans production source, not its test fixtures.
- * @param {Context} context
- */
-function isProductionSource(context) {
-  const file = lintedPath(context);
-  const inSource = file === 'src' || file.startsWith('src/') || file.includes('/src/');
-  return inSource && !file.includes('/src/__tests__/') && !file.startsWith('src/__tests__/');
-}
 
 export default defineRule({
   meta: {
@@ -22,7 +12,7 @@ export default defineRule({
     docs: { description: 'Use getUserHome instead of reading process.env.HOME directly.' },
   },
   create(context) {
-    if (!isProductionSource(context) || isOneOf(context, [HOME_OWNER])) return {};
+    if (!inProductionSource(context) || isOneOf(context, [HOME_OWNER])) return {};
     return {
       MemberExpression(node) {
         if (node.object.type !== 'MemberExpression' || node.object.computed) return;

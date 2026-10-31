@@ -1,6 +1,6 @@
 import { defineRule } from '@oxlint/plugins';
 
-import { isOneOf, lintedPath } from '../utils.js';
+import { inProductionSource, isOneOf } from '../utils.js';
 
 export default defineRule({
   meta: {
@@ -8,8 +8,7 @@ export default defineRule({
     docs: { description: 'Use one shared accessor for learnings root paths.' },
   },
   create(context) {
-    const file = lintedPath(context);
-    if (!file.includes('/src/') || file.includes('/src/__tests__/') || isOneOf(context, ['src/utils/learnings-roots.ts'])) return {};
+    if (!inProductionSource(context) || isOneOf(context, ['src/utils/learnings-roots.ts'])) return {};
 
     const message = 'Use learningsRoots(localConfig) instead of rebuilding a learnings root.';
 

@@ -1,12 +1,11 @@
 /** @import { ESTree } from '@oxlint/plugins' */
 import { defineRule } from '@oxlint/plugins';
-import { isOneOf, lintedPath } from '../utils.js';
+import { inProductionSource, isOneOf } from '../utils.js';
 
 export default defineRule({
   meta: { type: 'problem', docs: { description: 'Resolve configured tool paths through locate.' } },
   create(context) {
-    const file = lintedPath(context);
-    if (!file.includes('/src/') || file.includes('/src/__tests__/') || isOneOf(context, ['src/locate.ts'])) return {};
+    if (!inProductionSource(context) || isOneOf(context, ['src/locate.ts'])) return {};
     const reported = new Set();
     return {
       MemberExpression(node) {

@@ -1,7 +1,7 @@
 /** @import { ESTree } from '@oxlint/plugins' */
 
 import { defineRule } from '@oxlint/plugins';
-import { lintedPath } from '../utils.js';
+import { inProductionSource, isOneOf } from '../utils.js';
 
 const OPTIONS_INDEX = new Map([['loadLocalConfig', 0], ['autoDetectInit', 1], ['loadLocalConfigForScope', 2]]);
 
@@ -32,8 +32,7 @@ export default defineRule({
     docs: { description: 'Make configuration migration preview policy explicit at each load.' },
   },
   create(context) {
-    const file = lintedPath(context);
-    if (!file.includes('/src/') || file.includes('/__tests__/') || file.endsWith('/src/config.ts')) return {};
+    if (!inProductionSource(context) || isOneOf(context, ['src/config.ts'])) return {};
     return {
       CallExpression(node) {
         if (node.callee.type !== 'Identifier') return;

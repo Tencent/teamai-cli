@@ -17,3 +17,4 @@ rule.valid('recognizes a quoted preview property', `await loadLocalConfig({ 'dry
 rule.invalid('rejects a quoted unrelated option', `await loadLocalConfig({ 'children': false });`);
 rule.valid('forwards options held by the command context', `await loadLocalConfig(command.loadOptions);`);
 rule.valid('forwards options returned by a preview policy helper', `await loadLocalConfig(previewOptions());`);
+rule.valid('scopes to src/ of the checkout, not of a parent directory', `await loadLocalConfig();`, { filename: 'src/teamai-cli/scripts/check.ts', files: { 'src/teamai-cli/package.json': '{}' } });

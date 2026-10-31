@@ -10,3 +10,4 @@ rule.valid('allows literal directory names', `const root = path.join(base, 'skil
 rule.valid('allows test fixtures', `const root = path.join(base, tool.skills);`, { filename: 'src/__tests__/locate.test.ts' });
 rule.valid('allows explained exceptions', `// oxlint-disable-next-line teamai/configured-tool-paths -- compares an old installed path
 const root = path.join(base, tool.skills);`);
+rule.valid('scopes to src/ of the checkout, not of a parent directory', `import path from 'node:path'; const root = path.join(base, toolPath.skills);`, { filename: 'src/teamai-cli/scripts/check.ts', files: { 'src/teamai-cli/package.json': '{}' } });

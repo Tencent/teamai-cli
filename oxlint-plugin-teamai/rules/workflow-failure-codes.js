@@ -1,13 +1,13 @@
 /** @import { ESTree } from '@oxlint/plugins' */
 import { defineRule } from '@oxlint/plugins';
 import { KNOWN_FAILURE_CODES } from '../failure-codes.js';
-import { lintedPath } from '../utils.js';
+import { inProductionSource, lintedPath } from '../utils.js';
 
 export default defineRule({
   meta: { type: 'problem', docs: { description: 'Classify workflow failure producers before publishing records.' } },
   create(context) {
     const file = lintedPath(context);
-    if (!file.includes('/src/') || file.includes('/src/__tests__/')) return {};
+    if (!inProductionSource(context)) return {};
     if (!/\/src\/(?:workflow|scorers)\//.test(file) && !/from ['"](?:\.\.?\/)+scorers\/|\bWorkflowEnvelope\b/.test(context.sourceCode.text)) return {};
     const message = 'Classify this workflow failure code in records.ts or the command-only failure policy before emitting it.';
     return {

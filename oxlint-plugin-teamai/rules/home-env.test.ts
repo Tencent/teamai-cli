@@ -43,3 +43,4 @@ const second = process.env.HOME;
 `, (output) => {
   expect(output).toContain('2 errors');
 }, { filename: 'src/paths.ts' });
+rule.valid('scopes to src/ of the checkout, not of a parent directory', `const home = process.env.HOME;`, { filename: 'src/teamai-cli/scripts/check.ts', files: { 'src/teamai-cli/package.json': '{}' } });

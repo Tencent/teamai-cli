@@ -9,3 +9,4 @@ rule.valid('allows command-only failures', `return error('invalid_arguments', 'b
 rule.valid('allows explicitly explained forwarding', `// oxlint-disable-next-line teamai/workflow-failure-codes -- producer already classified
 return error(answer.code, answer.message);`);
 rule.valid('leaves unrelated domain codes alone', `const answer = { code: 'unrelated' };`, { filename: 'src/unrelated.ts' });
+rule.valid('scopes to src/ of the checkout, not of a parent directory', `const failure: WorkflowEnvelope = { code: 'new_unclassified_failure', message: 'failed' };`, { filename: 'src/teamai-cli/scripts/check.ts', files: { 'src/teamai-cli/package.json': '{}' } });
