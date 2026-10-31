@@ -13,7 +13,7 @@ function sessionsChanged() { if(page==='tokens')return loadTokens(); tokenStale=
 async function loadTokens() {
  if(tokenLoading)return; const generation=workspaceGeneration, days=tokenDays; tokenLoading=true;tokenStale=false;
  try{ const data=await json(apiQuery('/api/tokens',{days:String(days)})); if(generation===workspaceGeneration&&days===tokenDays){tokenData=data;tokenError=false;} }
- catch{ if(generation===workspaceGeneration)tokenError=true; }
+ catch{ if(generation===workspaceGeneration&&days===tokenDays)tokenError=true; }
  finally{ if(generation===workspaceGeneration){tokenLoading=false;if(page==='tokens')render();} }
 }
 const usd = micros => new Intl.NumberFormat(language,{style:'currency',currency:'USD',minimumFractionDigits:micros>0&&micros<1000000?4:2,maximumFractionDigits:micros>0&&micros<1000000?4:2}).format((micros||0)/1000000);
@@ -53,7 +53,7 @@ function tokensPage() {
  if(!tokenData)return windows+'<div class="empty" role="status">'+label('Loading token usage…')+'</div>';
  const s=tokenData, all=s.totals, used=tokenSum(all.tokens);
  if(!all.requests)return windows+'<section class="panel"><div class="empty"><h2>'+label('No requests in this window')+'</h2><p>'+label('Token usage appears here after a session of a supported AI tool stops. See the Tokens & cost column of the tool support page.')+'</p></div></section>';
- const unpriced=s.byModel.filter(m=>!m.pricedRequests);
+ const unpriced=s.byModel.filter(m=>m.model&&!m.pricedRequests);
  const kpis='<div class="kpis token-kpis">'
   +'<article class="card kpi"><h2>'+label('Estimated cost')+'</h2><div class="big">'+usd(all.costMicros)+'</div>'+tokenChange(all.costMicros,s.previous)+'</article>'
   +'<article class="card kpi"><h2>'+label('Tokens')+'</h2><div class="big">'+compact(used)+'</div><span class="label">'+label('Input')+' '+compact(all.tokens.input)+' · '+label('Output')+' '+compact(all.tokens.output)+' · '+label('Cache')+' '+compact(all.tokens.cacheRead+all.tokens.cacheCreation)+'</span></article>'
@@ -64,7 +64,7 @@ function tokensPage() {
  const tools='<section class="panel sessions"><div class="panelhead"><h2>'+label('By AI tool')+' <span class="count">'+number(s.byTool.length)+'</span></h2></div>'
   +tokenTable(['AI TOOL','REQUESTS','TOKENS','COST','SHARE'],s.byTool.map(r=>['<span data-verbatim>'+e(r.tool)+'</span>',number(r.requests),compact(tokenSum(r.tokens)),tokenCost(r),tokenShare(r.costMicros,all.costMicros)]))+'</section>';
  const models='<section class="panel sessions"><div class="panelhead"><h2>'+label('By model')+' <span class="count">'+number(s.byModel.length)+'</span></h2></div>'
-  +tokenTable(['MODEL','AI TOOL','REQUESTS','TOKENS','COST'],s.byModel.map(r=>['<span data-verbatim>'+e(r.model)+'</span>','<span data-verbatim>'+r.tools.map(e).join(', ')+'</span>',number(r.requests),compact(tokenSum(r.tokens)),tokenCost(r)]))
+  +tokenTable(['MODEL','AI TOOL','REQUESTS','TOKENS','COST'],s.byModel.map(r=>[r.model?'<span data-verbatim>'+e(r.model)+'</span>':'<span class="label">'+label('Model not recorded')+'</span>','<span data-verbatim>'+r.tools.map(e).join(', ')+'</span>',number(r.requests),compact(tokenSum(r.tokens)),tokenCost(r)]))
   +(unpriced.length?'<p class="scorer-hint">'+label('No price list knows')+' <span data-verbatim>'+unpriced.map(m=>e(m.model)).join(', ')+'</span>. '+label('If one is another name for a listed model, map it under modelAliases in your teamai config; the session prices its requests at its next stop. For example')+' <code class="cmd">'+e(unpriced[0].model)+': claude-sonnet-5-5</code></p>':'')+'</section>';
  const top='<section class="panel sessions"><div class="panelhead"><h2>'+label('Sessions that cost the most')+'</h2></div>'
   +tokenTable(['SESSION','AI TOOL','REQUESTS','TOKENS','COST'],s.topSessions.map(r=>[tokenSessionCell(r),'<span data-verbatim>'+e(r.tool)+'</span>',number(r.requests),compact(tokenSum(r.tokens)),tokenCost(r)]))+'</section>';

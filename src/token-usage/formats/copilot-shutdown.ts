@@ -37,7 +37,7 @@ function fromUsage(usage: z.infer<typeof ModelUsage>): TokenUsage | undefined {
 
 /**
  * The totals of a Copilot `session.shutdown` record, and one request per model
- * from its `modelMetrics`. Copilot writes it when a run ends, so finding the
+ * from its `modelMetrics` that sums that model's calls. Copilot writes it when a run ends, so finding the
  * record of a run stays with the dashboard collector. Undefined for any other
  * record; `tokens` is absent from a shutdown without counters.
  */
@@ -47,7 +47,7 @@ export function readCopilotShutdown(record: unknown): { tokens?: TokenUsage; req
   const { id, timestamp, data } = shutdown.data;
   const requests: TokenRequest[] = Object.entries(data.modelMetrics ?? {}).flatMap(([model, metrics]) => {
     const tokens = fromDetails(metrics.tokenDetails) ?? fromUsage(metrics.usage);
-    return tokens ? [{ key: `${id}:${model}`, timestamp, model, speed: 'standard' as const, tokens }] : [];
+    return tokens ? [{ key: `${id}:${model}`, timestamp, model, speed: 'standard' as const, tokens, combinesCalls: true as const }] : [];
   });
   const tokens = fromDetails(data.tokenDetails);
   return tokens ? { tokens, requests } : { requests };

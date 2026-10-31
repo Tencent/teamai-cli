@@ -98,6 +98,8 @@ jobs:
           git push --force origin "$BRANCH"
           if [ "$(gh pr view "$BRANCH" --json state --jq .state 2>/dev/null)" = "OPEN" ]; then
             gh pr edit "$BRANCH" --title "chore(pricing): update model prices to $version" --body-file "$RUNNER_TEMP/body.md"
+            # A draft while its checks fail, ready again once they pass.
+            gh pr ready "$BRANCH" $([ "$CHECKS" = passed ] || echo --undo)
           else
             gh pr create --base main --head "$BRANCH" --title "chore(pricing): update model prices to $version" --body-file "$RUNNER_TEMP/body.md" $([ "$CHECKS" = passed ] || echo --draft)
           fi

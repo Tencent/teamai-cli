@@ -568,6 +568,7 @@ export const dashboardMessages: Record<string, string> = {
   "requests": "次请求",
   "By AI tool": "按 AI 工具",
   "Tokens only": "仅 token",
+  "Model not recorded": "未记录模型",
   "REQUESTS": "请求",
   "TOKENS": "TOKENS",
   "COST": "费用",

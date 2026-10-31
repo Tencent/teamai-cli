@@ -21,6 +21,7 @@ import {
   dedupeEvents,
   dashboardReport,
   GIT_AT_START_PAYLOAD_KEY,
+  readLocalRequestRecords,
 } from '../dashboard-collector.js';
 import { collectSession } from '../session-collector.js';
 import type { DashboardEvent } from '../types.js';
@@ -1618,6 +1619,20 @@ describe('parseHookEvent: Antigravity CLI session tokens', () => {
     fs.writeFileSync(appTranscript, JSON.stringify({ step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', input_tokens: 9100, cache_read_tokens: 100, output_tokens: 18 }) + '\n');
 
     expect((await stop())?.tokens).toEqual({ input: 9000, output: 18, cacheRead: 100, cacheCreation: 0 });
+  });
+
+  it('logs the session as one unpriced request without a model, updated at each Stop', async () => {
+    const step = (input: number) => JSON.stringify({ step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', input_tokens: input, cache_read_tokens: 0, output_tokens: 10 }) + '\n';
+    fs.mkdirSync(path.dirname(transcript()), { recursive: true });
+    fs.writeFileSync(transcript(), step(1_000));
+    await stop();
+    fs.appendFileSync(transcript(), step(2_000));
+    await stop();
+
+    const logged = [...(await readLocalRequestRecords()).values()];
+    expect(logged).toEqual([expect.objectContaining({
+      tool: 'agy', sessionId, model: '', inputTokens: 3_000, outputTokens: 20, costMicros: null, priceVersion: null,
+    })]);
   });
 
   it('records no tokens when the session has no transcript', async () => {

@@ -365,12 +365,12 @@ describe('readCopilotShutdown', () => {
     },
   };
 
-  it('reads the session totals and one request per model', () => {
+  it('reads the session totals and one request per model, which sums its calls', () => {
     expect(readCopilotShutdown(shutdown)).toEqual({
       tokens: { input: 15_311, output: 1_034, cacheRead: 1_280, cacheCreation: 0 },
       requests: [
-        { key: 'e7c1:mai-code-1.1-flash', timestamp: '2026-10-30T18:04:11.902Z', model: 'mai-code-1.1-flash', speed: 'standard', tokens: { input: 13_311, output: 934, cacheRead: 1_280, cacheCreation: 0 } },
-        { key: 'e7c1:gpt-6.1-sol', timestamp: '2026-10-30T18:04:11.902Z', model: 'gpt-6.1-sol', speed: 'standard', tokens: { input: 2_000, output: 100, cacheRead: 0, cacheCreation: 0 } },
+        { key: 'e7c1:mai-code-1.1-flash', timestamp: '2026-10-30T18:04:11.902Z', model: 'mai-code-1.1-flash', speed: 'standard', tokens: { input: 13_311, output: 934, cacheRead: 1_280, cacheCreation: 0 }, combinesCalls: true },
+        { key: 'e7c1:gpt-6.1-sol', timestamp: '2026-10-30T18:04:11.902Z', model: 'gpt-6.1-sol', speed: 'standard', tokens: { input: 2_000, output: 100, cacheRead: 0, cacheCreation: 0 }, combinesCalls: true },
       ],
     });
   });

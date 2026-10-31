@@ -38,12 +38,14 @@ function ratesFor(price: ModelPrice, speed: TokenSpeed, promptTokens: number): T
  * What one request cost, in micro-dollars: the cost the tool reported, else
  * the bundled catalog's API list price for its model, its fast, long-prompt
  * and one-hour cache-write rates included (`cacheCreation1h` is the part of
- * `tokens.cacheCreation` written to the one-hour cache). `aliases` maps a gateway's model name to the
+ * `tokens.cacheCreation` written to the one-hour cache). `combinesCalls`: the
+ * tokens are the totals of several calls, so no call's prompt size is known and
+ * the standard rates apply. `aliases` maps a gateway's model name to the
  * model it serves. Null when neither is known. Subscription and enterprise
  * discounts are not applied.
  */
 export function priceTokens(
-  request: { model: string; tokens: TokenUsage; cacheCreation1h?: number; speed?: TokenSpeed; reportedCostMicros?: number },
+  request: { model: string; tokens: TokenUsage; cacheCreation1h?: number; speed?: TokenSpeed; reportedCostMicros?: number; combinesCalls?: true },
   aliases?: Record<string, string>,
 ): PricedTokens | null {
   if (request.reportedCostMicros !== undefined) {
@@ -53,7 +55,7 @@ export function priceTokens(
   const price = CATALOG.models[model.trim().toLowerCase()] ?? CATALOG.models[canonicalModelName(model)];
   if (!price) return null;
   const { input, output, cacheRead, cacheCreation } = request.tokens;
-  const rates = ratesFor(price, request.speed ?? 'standard', input + cacheRead + cacheCreation);
+  const rates = ratesFor(price, request.speed ?? 'standard', request.combinesCalls ? 0 : input + cacheRead + cacheCreation);
   const hour = Math.min(request.cacheCreation1h ?? 0, cacheCreation);
   return {
     costMicros: Math.round(

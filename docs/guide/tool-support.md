@@ -83,24 +83,24 @@ User scope, from #1221's matrix; a fix merged since is marked `t`, with a note. 
 | TClaude | ? | ✓t | ? | ? | ✓t | ✓t | ? | ? | ? |
 | TCodex | ? | ✓t | ? | ? | ✓t | ✓t | ? | ? | ? |
 | Cursor | ? | +s<sup>5</sup> | ✗v<sup>6</sup> | ✓v<sup>7</sup> | +d<sup>8</sup> | ✓d | +s | ✓t<sup>1</sup> | +t<sup>9</sup> |
-| Copilot | ? | +s | ✓v | ✓t<sup>2</sup> | ✓v | ✓d | ? | ✓t<sup>1</sup> | —t |
+| Copilot | ? | +s | ✓v | ✓t<sup>2</sup> | ✓t<sup>10</sup> | ✓d | ? | ✓t<sup>1</sup> | —t |
 | JoyCode | ? | ? | ◐s | ✓t<sup>2</sup> | ✓t | ? | ? | ✓t<sup>1</sup> | ? |
-| Qoder | ? | ? | ◐s | ✓s | ◐t<sup>10</sup> | ✓d | ? | ✓s<sup>11</sup> | ✓s |
-| Qoder CN | ? | ? | ◐s | ✓s | ◐t<sup>10</sup> | ? | ? | ✓s<sup>11</sup> | ✓t<sup>12</sup> |
-| Kiro | ? | ? | ◐d | ? | ? | ✓d | ? | ✓d<sup>13</sup> | ✓d<sup>14</sup> |
-| Trae | ? | ? | ? | ? | ? | ? | ? | ✓s<sup>15</sup> | ? |
-| Trae CN | ? | ? | ? | ? | ? | ? | ? | ✓s<sup>15</sup> | ? |
-| ZCode | ✓t | +s | ✓s | ✓s | ? | +s | ✓t<sup>3</sup> | ✓d<sup>16</sup> | +t<sup>17</sup> |
-| Oh My Pi | ✓s | +s | ✓v | ✓t<sup>2</sup> | ✓t | ✓d | ? | ✓s<sup>18</sup> | ✓s<sup>19</sup> |
-| Pi Coding Agent | ✓s | +v | ✓v | ✓t<sup>2</sup> | ✓t | ✓s | ? | ◐s<sup>20</sup> | ✓s<sup>21</sup> |
+| Qoder | ? | ? | ◐s | ✓s | ◐t<sup>11</sup> | ✓d | ? | ✓s<sup>12</sup> | ✓s |
+| Qoder CN | ? | ? | ◐s | ✓s | ◐t<sup>11</sup> | ? | ? | ✓s<sup>12</sup> | ✓t<sup>13</sup> |
+| Kiro | ? | ? | ◐d | ? | ? | ✓d | ? | ✓d<sup>14</sup> | ✓d<sup>15</sup> |
+| Trae | ? | ? | ? | ? | ? | ? | ? | ✓s<sup>16</sup> | ? |
+| Trae CN | ? | ? | ? | ? | ? | ? | ? | ✓s<sup>16</sup> | ? |
+| ZCode | ✓t | +s | ✓s | ✓s | ? | +s | ✓t<sup>3</sup> | ✓d<sup>17</sup> | +t<sup>18</sup> |
+| Oh My Pi | ✓s | +s | ✓v | ✓t<sup>2</sup> | ✓t | ✓d | ? | ✓s<sup>19</sup> | ✓s<sup>20</sup> |
+| Pi Coding Agent | ✓s | +v | ✓v | ✓t<sup>2</sup> | ✓t | ✓s | ? | ◐s<sup>21</sup> | ✓s<sup>22</sup> |
 | CodeBuddy | ? | ✓d | ✓s | ✓v | ✓t | ✓d | +v | ✓t<sup>1</sup> | ✓s |
-| OpenClaw | ◐d | +d | ✓s | +s | +s<sup>22</sup> | ✓d | —t | ◐s<sup>23</sup> | ✓s<sup>24</sup> |
-| Hermes | ◐s | +s | ✓v | +s | +s<sup>22</sup> | ✓s | —t | ✓s<sup>25</sup> | ✓s<sup>26</sup> |
-| DeepSeek Harness | ✗s | +s | ✓s | ✓t<sup>2</sup> | +s<sup>27</sup> | +s | ? | ◐s<sup>28</sup> | —t |
-| WorkBuddy | ? | ✓t | ✓t | ? | ✓t | ✓t | ? | ✓t<sup>29</sup> | ? |
-| OpenCode | ? | ✓t | ✓v | ✓t<sup>2</sup> | ✓v | ✓v | ? | ✓t<sup>1</sup> | ✓v<sup>30</sup> |
-| Muse Code | ✓t | +v | ✓t | ✓v | ✓t | ✓v | ✓t<sup>3</sup> | ✓t<sup>1</sup> | ✓t<sup>31</sup> |
-| Antigravity | ✓v<sup>32</sup> | ✓v | ✓v | ✓v | ✓v | ✓v | ✗v<sup>33</sup> | ✓t<sup>34</sup> | ✓t<sup>35</sup> |
+| OpenClaw | ◐d | +d | ✓s | +s | +s<sup>23</sup> | ✓d | —t | ◐s<sup>24</sup> | ✓s<sup>25</sup> |
+| Hermes | ◐s | +s | ✓v | +s | +s<sup>23</sup> | ✓s | —t | ✓s<sup>26</sup> | ✓s<sup>27</sup> |
+| DeepSeek Harness | ✗s | +s | ✓s | ✓t<sup>2</sup> | +s<sup>28</sup> | +s | ? | ◐s<sup>29</sup> | —t |
+| WorkBuddy | ? | ✓t | ✓t | ? | ✓t | ✓t | ? | ✓t<sup>30</sup> | ? |
+| OpenCode | ? | ✓t | ✓v | ✓t<sup>2</sup> | ✓v | ✓v | ? | ✓t<sup>1</sup> | ✓v<sup>31</sup> |
+| Muse Code | ✓t | +v | ✓t | ✓v | ✓t | ✓v | ✓t<sup>3</sup> | ✓t<sup>1</sup> | ✓t<sup>32</sup> |
+| Antigravity | ✓v<sup>33</sup> | ✓v | ✓v | ✓v | ◐v<sup>34</sup> | ✓v | ✗v<sup>35</sup> | ✓t<sup>36</sup> | ✓t<sup>37</sup> |
 
 Notes:
 
@@ -113,29 +113,31 @@ Notes:
 7. Cursor IDE: ✓t
 8. usage is in the Cursor account dashboard only
 9. teamai refuses agent hooks in the Cursor hook format
-10. Qoder bills credits and can write zero token counts
-11. Claude Code-style subagents, transcripts under <id>/subagents/ (qodercli 1.1.78); not run
-12. #1224 writes ~/.qoder-cn/settings.json; not rerun
-13. a subagent works in its own context window, without the conversation; not run
-14. runs from teamai's team-hook bridge, which can block a tool call; Kiro's hook docs
-15. the Task tool starts a fresh subagent; no session variable, so the session names its tool with --tools; not run
-16. the built-in general-purpose subagent works in its own context; not run
-17. refused until teamai writes the hooks.events shape (#1224)
-18. the task tool starts each child as a new agent session (omp 18.12.6); not run
-19. runs from teamai's team-hook bridge, which can block a tool call; OMP's extension source
-20. bare Pi starts no subagent, so its session answers h4 and does not judge; the subagent example extension adds one (since 0.24.0); not run
-21. runs from teamai's team-hook bridge, which can block a tool call; Pi's extension source
-22. no Stop hook reaches the dashboard
-23. sessions_spawn with isolated context, in the coding and messaging tool profiles; a tool policy can remove it; not run
-24. runs from teamai's team-hook bridge, which can block a tool call; OpenClaw's plugin source
-25. delegate_task starts a child agent with a fresh conversation; not run
-26. runs from teamai's team-hook bridge, which can block a tool call; Hermes's shell-hook source
-27. zstd session files need a newer Node than 20
-28. the subagent tool with the fresh spawn backend, not fork; the minimal preset leaves it out; not run
-29. CodeBuddy's engine, whose session judges its skill-driven run; not run
-30. runs from teamai's team-hook bridge, which can block a tool call; OpenCode 1.18.23 ran a team hook through it
-31. #1224 writes them to settings.json; not rerun
-32. agy 1.4.8 run_command inherits the environment agy starts in
-33. agy 1.4.8 PostToolUse carries no tool output, so a teamai recall run never reaches the recall log
-34. invoke_subagent starts a fresh conversation that gets only its prompt (agy 1.4.8); no session variable, so the session names its tool with --tools; not run
-35. runs from teamai's team-hook bridge, which can block a tool call; the dispatcher hands it a Claude payload
+10. one request per model from the session.shutdown totals, priced without long-prompt rates; not run
+11. Qoder bills credits and can write zero token counts
+12. Claude Code-style subagents, transcripts under <id>/subagents/ (qodercli 1.1.78); not run
+13. #1224 writes ~/.qoder-cn/settings.json; not rerun
+14. a subagent works in its own context window, without the conversation; not run
+15. runs from teamai's team-hook bridge, which can block a tool call; Kiro's hook docs
+16. the Task tool starts a fresh subagent; no session variable, so the session names its tool with --tools; not run
+17. the built-in general-purpose subagent works in its own context; not run
+18. refused until teamai writes the hooks.events shape (#1224)
+19. the task tool starts each child as a new agent session (omp 18.12.6); not run
+20. runs from teamai's team-hook bridge, which can block a tool call; OMP's extension source
+21. bare Pi starts no subagent, so its session answers h4 and does not judge; the subagent example extension adds one (since 0.24.0); not run
+22. runs from teamai's team-hook bridge, which can block a tool call; Pi's extension source
+23. no Stop hook reaches the dashboard
+24. sessions_spawn with isolated context, in the coding and messaging tool profiles; a tool policy can remove it; not run
+25. runs from teamai's team-hook bridge, which can block a tool call; OpenClaw's plugin source
+26. delegate_task starts a child agent with a fresh conversation; not run
+27. runs from teamai's team-hook bridge, which can block a tool call; Hermes's shell-hook source
+28. zstd session files need a newer Node than 20
+29. the subagent tool with the fresh spawn backend, not fork; the minimal preset leaves it out; not run
+30. CodeBuddy's engine, whose session judges its skill-driven run; not run
+31. runs from teamai's team-hook bridge, which can block a tool call; OpenCode 1.18.23 ran a team hook through it
+32. #1224 writes them to settings.json; not rerun
+33. agy 1.4.8 run_command inherits the environment agy starts in
+34. agy 1.4.8 transcript tokens (#1548); it names no model, so they show unpriced
+35. agy 1.4.8 PostToolUse carries no tool output, so a teamai recall run never reaches the recall log
+36. invoke_subagent starts a fresh conversation that gets only its prompt (agy 1.4.8); no session variable, so the session names its tool with --tools; not run
+37. runs from teamai's team-hook bridge, which can block a tool call; the dispatcher hands it a Claude payload

@@ -34,6 +34,8 @@ export type TokenRequest = {
   /** The part of `tokens.cacheCreation` written to a one-hour cache, which costs more than a five-minute one. */
   cacheCreation1h?: number;
   speed: TokenSpeed;
+  /** The totals of several calls, as Copilot writes per model: priced without long-prompt rates. */
+  combinesCalls?: true;
   /** What the tool says the request cost, in micro-dollars. */
   reportedCostMicros?: number;
 };

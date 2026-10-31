@@ -72,6 +72,13 @@ describe('the Tokens & cost page', () => {
     expect(shown).toContain('big-pickle: claude-sonnet-5-5');
   });
 
+  it('shows usage whose model the tool does not record, with no alias to suggest for it', async () => {
+    const agy = { model: '', tools: ['agy'], requests: 1, pricedRequests: 0, costMicros: 0, tokens: usage(17_224, 88, 12_000, 0) };
+    const shown = text((await renderPage({ ...WEEK, byModel: [WEEK.byModel[0], agy] })).html);
+    expect(shown).toContain('Model not recorded agy 1 29.3K Tokens only');
+    expect(shown).not.toContain('No price list knows');
+  });
+
   it('names a costly session the dashboard knows by its first prompt, and links it to its details', async () => {
     const { html } = await renderPage(WEEK);
     expect(html).toContain('data-session="b2f4c1d0-3a9e-4c55-9d2a-61c0f7e8a912">Move the refund job off the request thread ↗</button>');

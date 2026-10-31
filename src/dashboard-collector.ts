@@ -1029,7 +1029,11 @@ export async function parseHookEvent(
       event.tokens = reading.tokens;
       if (reading.scope) event.tokenScope = reading.scope;
     }
-    await recordTokenRequests(event, reading.requests, stopTranscript ?? `${tool}:${sessionId}`, options);
+    // A session total that names no model (agy, Muse's rollup) is logged as one unpriced request, updated at each Stop.
+    const requests = !reading.requests.length && reading.scope === 'session' && totalTokens(reading.tokens) > 0
+      ? [{ key: 'session', timestamp: event.timestamp, model: '', tokens: reading.tokens, speed: 'standard' as const }]
+      : reading.requests;
+    await recordTokenRequests(event, requests, stopTranscript ?? `${tool}:${sessionId}`, options);
   }
 
   // SessionStart and SessionEnd run in separate processes. Capture the log

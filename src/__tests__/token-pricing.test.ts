@@ -41,6 +41,11 @@ describe('priceTokens', () => {
     expect(cost('gpt-6.1-sol', { input: 300_000, output: 1_000, cacheRead: 0, cacheCreation: 0 })).toBe(1_215_000);
   });
 
+  it('prices the totals of several calls at the standard rates, since no single prompt size is known', () => {
+    // Two 150,000-token calls: input $0.60 + output $0.01
+    expect(cost('gpt-6.1-sol', { input: 300_000, output: 1_000, cacheRead: 0, cacheCreation: 0 }, { combinesCalls: true })).toBe(610_000);
+  });
+
   it('prices one-hour cache writes at their own rate', () => {
     // Opus 5.5: input $0.004 + output $0.004 + cache read $0.001 + 1h cache write $0.0032
     expect(cost('claude-opus-5-5', USAGE, { cacheCreation1h: 400 })).toBe(12_200);
