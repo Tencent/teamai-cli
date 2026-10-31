@@ -93,7 +93,10 @@ export default defineRule({
       if (from === 'src/workflow/pr-delivery.ts' && to === 'src/workflow/engine.ts') violation = true;
       if (violation) context.report({ node, message: `Workflow module boundary forbids ${from} -> ${to}. Use the declared entry module or an explained inline disable.` });
       if (from === 'src/workflow/snapshot.ts' && !typeOnly && resolved) {
-        const reached = reachesSource(resolved, (file) => file.split('\\').join('/').includes('/src/providers/') || file.endsWith('/src/workflow/pr-delivery.ts'), false);
+        const reached = reachesSource(resolved, (native) => {
+          const file = native.split('\\').join('/');
+          return file.includes('/src/providers/') || file.endsWith('/src/workflow/pr-delivery.ts');
+        }, false);
         if (reached) context.report({ node, message: `Run snapshot must not load delivery or provider code: ${reached.slice(root.length)}.` });
       }
       if (skill && resolved) {
