@@ -1,3 +1,5 @@
+/** @import { Context } from '@oxlint/plugins' */
+
 import { defineRule } from '@oxlint/plugins';
 
 import { isOneOf } from '../utils.js';
@@ -44,6 +46,10 @@ export const WINDOWS_TEST_FILES = [
 const SHELLS = new Set(['sh', 'bash', 'zsh']);
 const SHELL_COMMAND = /^(?:ba|z)?sh(?:\s|$)/;
 const POSIX_APIS = new Set(['chmod', 'chmodSync', 'symlink', 'symlinkSync']);
+const SHEBANG = /#!\/(?:usr\/)?bin\//;
+const BASH_LC = /\bbash -lc\b/;
+const SH_C = /\bsh -c\b/;
+const BASH_RENDERING_GUARD = /vi\.spyOn\(process,\s*['"]platform['"]|\bcommandWindows\b/;
 
 /** @param {any} node */
 function literalText(node) {
@@ -65,6 +71,18 @@ export default defineRule({
   create(context) {
     if (!isOneOf(context, WINDOWS_TEST_FILES)) return {};
     return {
+      Program(node) {
+        const source = context.sourceCode.text;
+        if (SHEBANG.test(source)) {
+          context.report({ node, message: 'Windows test allow-list must not contain a POSIX shebang fixture.' });
+        }
+        if (SH_C.test(source)) {
+          context.report({ node, message: 'Windows test allow-list must not contain a sh -c rendering.' });
+        }
+        if (BASH_LC.test(source) && !BASH_RENDERING_GUARD.test(source)) {
+          context.report({ node, message: 'Windows test allow-list must platform-pin a bash -lc rendering or provide commandWindows.' });
+        }
+      },
       /** @param {any} node */
       CallExpression(node) {
         const expression = /** @type {any} */ (node);

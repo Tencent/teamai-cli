@@ -13,6 +13,19 @@ export function check(): string {
 
 describe('teamai/windows-test-safety', () => {
   rule.valid('allows Windows-safe subprocesses in the allow-list', valid);
+  rule.valid('allows a bash rendering with a Windows counterpart', `
+const commandWindows = 'powershell -Command run';
+expect(rendered).toBe('bash -lc run');
+`);
+  rule.invalid('rejects POSIX shebang fixtures', `
+const fixture = '#!/usr/bin/env node';
+`, (output) => expect(output).toContain('POSIX shebang'));
+  rule.invalid('requires bash renderings to be platform-pinned', `
+expect(rendered).toBe('bash -lc run');
+`, (output) => expect(output).toContain('platform-pin'));
+  rule.invalid('rejects sh renderings', `
+expect(rendered).toBe('sh -c run');
+`, (output) => expect(output).toContain('sh -c rendering'));
   rule.invalid('rejects bash subprocesses', `
 import { spawnSync } from 'node:child_process';
 spawnSync('bash', ['-lc', 'echo ok']);
@@ -26,6 +39,7 @@ import { chmod } from 'node:fs/promises';
 await chmod('fixture.sh', 0o755);
 `, (output) => expect(output).toContain('chmod()'));
   rule.valid('does not inspect non-Windows test files', `
+const fixture = '#!/usr/bin/env node';
 import { spawnSync } from 'node:child_process';
 spawnSync('bash', ['-lc', 'echo ok']);
 `, { filename: 'src/__tests__/linux-only.test.ts' });
