@@ -3940,6 +3940,30 @@ describe('uninstall', () => {
     expect(await fse.pathExists(stub)).toBe(false);
   });
 
+  it('removes skills and hooks from the OpenCode home a re-init replaced (#1221)', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    const oldXdg = path.join(tmpDir, 'xdg-old');
+    const newXdg = path.join(tmpDir, 'xdg-new');
+    const oldHome = path.join(oldXdg, 'opencode');
+    const newHome = path.join(newXdg, 'opencode');
+    const oldSkill = path.join(oldHome, 'skills', 'teamai', 'SKILL.md');
+    const oldPlugin = path.join(oldHome, 'plugin', 'teamai-hooks.ts');
+    await fse.outputFile(oldSkill, shipped('teamai', 'SKILL.md'));
+    await fse.outputFile(oldPlugin, '// [teamai] OpenCode hook plugin');
+    await fse.outputJson(path.join(homeDir, '.teamai', 'tool-homes.json'), { opencode: newHome });
+    await fse.outputJson(path.join(homeDir, '.teamai', 'tool-homes-history.json'), { opencode: [oldHome] });
+    vi.stubEnv('XDG_CONFIG_HOME', newXdg);
+
+    const teamConfig = makeTeamConfig();
+    teamConfig.toolPaths.opencode = { skills: '.config/opencode/skills' };
+    mockAutoDetectInit.mockResolvedValue({ localConfig: makeLocalConfig(homeDir, repoPath), teamConfig });
+    await uninstall({ force: true, agent: 'opencode' });
+
+    expect(await fse.pathExists(oldSkill)).toBe(false);
+    expect(await fse.pathExists(oldPlugin)).toBe(false);
+  });
   it('removes the Hermes hook and plugin from the home init recorded, from a shell without HERMES_HOME (#1221)', async () => {
     const { homeDir, repoPath } = await setupFixture(tmpDir);
     vi.stubEnv('HOME', homeDir);

@@ -534,7 +534,10 @@ async function discoverToolResources(
     const projectDirs = scope === 'project' && path.resolve(baseDir) !== path.resolve(getUserHome())
       ? [resolveOpencodePluginDir(baseDir, 'project')]
       : [];
-    for (const pluginDir of [...hookDirs, ...projectDirs]) {
+    const historicalPluginDirs = globalAdapters
+      ? (await toolHomesAcrossProfiles('opencode')).map((home) => path.join(home, 'plugin'))
+      : [];
+    for (const pluginDir of [...hookDirs, ...projectDirs, ...historicalPluginDirs]) {
       // The user plugin carries hooks, rules and instructions to every OpenCode project and the user
       // scope (#993): only a user-scope uninstall removes it, as for the other global adapters (#945).
       if (!projectDirs.includes(pluginDir) && !globalAdapters) {
@@ -1116,11 +1119,11 @@ async function buildRemovalPlan(
     const hooks = await locate(tool, 'hooks', install);
     const skillLocation = await locate(tool, 'skills', install);
     const skillWrites = new Set(writesOf(skillLocation).map((place) => place.path));
-    // Hermes and Oh My Pi can keep writing skills in an earlier home after a
-    // re-init/profile switch. The home history is authoritative for those
-    // adapters, so uninstall must inspect their native skills roots as well as
-    // the currently resolved location.
-    if (tool === 'hermes' || tool === 'omp') {
+    // Hermes, Oh My Pi and OpenCode can keep writing skills in an earlier home
+    // after a re-init/profile switch. The home history is authoritative for
+    // these adapters, so uninstall must inspect their native skills roots as
+    // well as the currently resolved location.
+    if (tool === 'hermes' || tool === 'omp' || tool === 'opencode') {
       for (const home of await toolHomesAcrossProfiles(tool)) skillWrites.add(path.join(home, 'skills'));
     }
     perTool.set(
