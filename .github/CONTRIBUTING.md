@@ -109,6 +109,21 @@ Your PR also gets an informational `Code Erosion` report (SlopCodeBench verbosit
 - Mock external I/O (git, fetch, child_process) at the module boundary.
 - Avoid relying on real network access unless guarded by an env variable (like `TEAMAI_TEST_TOKEN`).
 
+What `npm run lint` reports, and the fix:
+
+| You wrote | `npm run lint` says | Fix |
+|---|---|---|
+| `path.join(process.env.HOME ?? '', '.teamai')` in `src/sync-cache.ts` | `teamai(home-env): Read the user home through getUserHome() in src/utils/home.ts so USERPROFILE and platform fallbacks remain supported.` | `path.join(getUserHome(), '.teamai')` |
+| `execFileSync('gh', ['pr', 'merge', String(pr), '--auto'])` in `src/providers/github/` | `teamai(no-provider-merge): Providers and workflow delivery must not merge, accept or enable auto-merge on pull requests.` | Leave merging to a maintainer; providers only find and create requests. |
+| `import { startRun } from '../../engine.js'` in `src/workflow/drivers/skill/report.ts` | `teamai(workflow-boundaries): Workflow module boundary forbids src/workflow/drivers/skill/report.ts -> src/workflow/engine.ts.` | Import from `protocol.ts`, which the skill driver may use. |
+
+A line that has to break a rule says why, and `--report-unused-disable-directives` fails the comment once the line no longer needs it (from `src/viz.ts`):
+
+```ts
+// oxlint-disable-next-line teamai/learnings-root -- an explicit --repo path, with no config to resolve
+learningsDir: path.join(root, 'learnings'),
+```
+
 For example, `teamai/remove-delivered` enforces the helper at pull call sites while `delivered-copies.test.ts` checks deletion and ledger behavior. A change covered by that enabled rule and helper test needs:
 
 ```bash
