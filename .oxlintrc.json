@@ -44,6 +44,7 @@
     // All prod sort sites sort a local array built in the same function;
     // none mutates a caller's array, so the in-place warning doesn't apply.
     "unicorn/no-array-sort": "off",
+    "unicorn/no-array-reverse": "warn",
     // Moves closures to outer scope; a style preference, not a bug class.
     "unicorn/consistent-function-scoping": "off",
     // Conflicts with this repo's own `_` convention (`_setLogFilePath`,

@@ -168,7 +168,7 @@ export function startGroupedCommand(input: { command: string; cwd: string; env: 
 /** Stops a detached process group or an attached process tree, with a five-second grace period before SIGKILL. */
 export function stopProcess<T>(child: ChildProcess, exit: Promise<T>, detached: boolean): (signal?: NodeJS.Signals) => Promise<T> {
   let stopping: Promise<T> | undefined;
-  const descendants: { pid: number; start: string }[] = [];
+  let descendants: { pid: number; start: string }[] = [];
   /** Whether the signal reached any process in the group or tree. */
   const signal = (name: NodeJS.Signals | 0): boolean => {
     try {
@@ -216,7 +216,7 @@ export function stopProcess<T>(child: ChildProcess, exit: Promise<T>, detached: 
         descendants.push(descendant);
         pending.push(...children.get(descendant.pid) ?? []);
       }
-      descendants.reverse();
+      descendants = descendants.toReversed();
     }
     signal(initial);
     let timer: NodeJS.Timeout | undefined;
