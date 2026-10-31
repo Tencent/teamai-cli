@@ -228,7 +228,7 @@ describe('the session sharing read model', () => {
     const config = await team({ 'scorers/style.md': SCORER.replace('sessions: true\n', '') });
 
     expect(await readSessionSharing({ ...config, enabledAgents: ['claude', 'pi', 'copilot'] }, { env: {}, platform: 'linux', now: NOW })).toMatchObject({
-      unreadTools: ['copilot', 'pi'],
+      unreadTools: ['copilot'],
       scoring: { state: 'ok', scorers: ['quality'] },
     });
   });

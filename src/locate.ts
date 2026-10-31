@@ -21,7 +21,7 @@ import {
   WORKBUDDY_NEW_GENERATION_ROOT, WORKBUDDY_TOOL_ID, WORKBUDDY_TOOL_ROOT,
   type HomePaths, type LocalConfig, type Scope, type TeamaiConfig, type ToolId,
 } from './types.js';
-import { defaultToolHome, homeRoot, movedToolHome, realHost, toolHome, type Host } from './tool-home.js';
+import { absoluteOn, defaultToolHome, homeRoot, movedToolHome, realHost, toolHome, type Host } from './tool-home.js';
 import { resolveOpenclawConfigPath, resolveOpenclawWorkspace, type OpenclawWorkspace } from './openclaw-home.js';
 import { hasWorkspaceChildren } from './workspace-children.js';
 
@@ -1174,12 +1174,24 @@ export function sessionStoreDir(
   toolRoots: Readonly<Record<string, string>> | undefined,
   host: Host = realHost(),
 ): string {
+  if ((platform === 'pi' || platform === 'omp') && host.env.PI_CODING_AGENT_SESSION_DIR) {
+    return absoluteOn(host.env.PI_CODING_AGENT_SESSION_DIR, host);
+  }
   const { store } = SESSION_PLATFORM_FACTS[platform];
   const p = host.path;
   switch (store.in) {
     case 'tool-home': {
       const dir = recordedToolRootDir('root' in store ? store.root : store.home, toolRoots, host)
         ?? toolHome(store.home, { ...host, home: host.profileHome });
+      if (platform === 'pi') {
+        try {
+          const settings = JSON.parse(host.readTextNow(p.join(dir, 'settings.json')) ?? 'null') as unknown;
+          if (settings && typeof settings === 'object' && 'sessionDir' in settings
+            && typeof settings.sessionDir === 'string' && settings.sessionDir.trim()) return absoluteOn(settings.sessionDir, host);
+        } catch {
+          // Pi ignores an unreadable settings file here; use its ordinary session store too.
+        }
+      }
       return p.join(dir, store.dir);
     }
     case 'xdg-data':
