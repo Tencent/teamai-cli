@@ -1,0 +1,19 @@
+import { ruleHarness } from '../test/harness.ts';
+
+const rule = ruleHarness('teamai/config-load-options', { filename: 'src/new-command.ts' });
+rule.invalid('requires preview options at a config load', `await loadLocalConfig();`);
+rule.invalid('requires dryRun in object options', `await autoDetectInit(undefined, { children: false });`);
+rule.invalid('requires options for scoped configuration', `await loadLocalConfigForScope('project', root);`);
+rule.invalid('rejects an explicit undefined policy', `await loadLocalConfig(undefined);`);
+rule.invalid('requires policy on both conditional branches', `await autoDetectInit(undefined, readOnly ? { dryRun: true } : {});`);
+rule.valid('forwards command preview options', `await autoDetectInit(undefined, { dryRun: options.dryRun });`);
+rule.valid('reads without migrations', `await loadLocalConfigForScope('user', undefined, { dryRun: true });`);
+rule.valid('forwards an already typed options object', `await loadLocalConfig(options);`);
+rule.valid('preserves a spread options object', `await autoDetectInit(cwd, { ...options, children: false });`);
+rule.valid('keeps default behavior inside the loader owner', `await loadLocalConfig();`, { filename: 'src/config.ts' });
+rule.valid('allows a fixture to exercise default migration behavior', `await loadLocalConfig();`, { filename: 'src/__tests__/config.test.ts' });
+rule.valid('allows a locally explained write path', `// oxlint-disable-next-line teamai/config-load-options -- this command always writes and refuses dry-run before loading\nawait loadLocalConfig();`);
+rule.valid('recognizes a quoted preview property', `await loadLocalConfig({ 'dryRun': true });`);
+rule.invalid('rejects a quoted unrelated option', `await loadLocalConfig({ 'children': false });`);
+rule.valid('forwards options held by the command context', `await loadLocalConfig(command.loadOptions);`);
+rule.valid('forwards options returned by a preview policy helper', `await loadLocalConfig(previewOptions());`);

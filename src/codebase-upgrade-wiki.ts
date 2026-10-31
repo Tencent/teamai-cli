@@ -83,6 +83,7 @@ export async function upgradeCodebaseWiki(opts: UpgradeCodebaseWikiOptions): Pro
   }
 
   if (!opts.dryRun && result.migrated.length > 0) {
+    // oxlint-disable-next-line teamai/config-load-options -- this publishing branch runs only when opts.dryRun is false
     const team = await autoDetectInit();
     await refreshTeamwikiIndexes(path.join(team.localConfig.repo.localPath, 'teamwiki'));
     await publishTeamwikiViaMR(team, '[teamai] Migrate docs/team-codebase to teamwiki');

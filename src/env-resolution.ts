@@ -141,6 +141,7 @@ export async function resolveTeamEnv(
   if (localConfig.scope === 'project' && localConfig.inheritUserScope === true) {
     // Whatever its source: the user scope's own pull writes its env.sh from
     // this same resolution, an HTTP team repo's included, and shells load it.
+    // oxlint-disable-next-line teamai/config-load-options -- inherited environment resolution retains its existing migration policy; this helper has no preview option
     const userConfig = await loadLocalConfigForScope('user');
     if (userConfig) {
       const userEnv = await resolveTeamEnv(userConfig, undefined, env);

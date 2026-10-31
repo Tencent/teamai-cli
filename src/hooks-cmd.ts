@@ -321,6 +321,7 @@ export async function hooksList(_options: GlobalOptions): Promise<void> {
  * Removes built-in (A) + team (B) teamai hooks from all configured AI tool settings.
  */
 export async function hooksRemove(_options: GlobalOptions): Promise<void> {
+    // oxlint-disable-next-line teamai/config-load-options -- hooks remove is a write-only command; the CLI refuses dry-run before this handler
     const { localConfig, teamConfig } = await autoDetectInit();
     // An index an older release left in the tree still owns Copilot's team hooks (#993).
     await migrateLegacyManagedHooks(localConfig);

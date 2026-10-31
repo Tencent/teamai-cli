@@ -595,6 +595,7 @@ async function agentHookSettingsPaths(config: LocalAgentConfig | null, tool: str
 
 async function memberCodexTrust(): Promise<CodexTrustPolicy> {
   const { loadLocalConfig, loadMemberSettings } = await import('./config.js');
+  // oxlint-disable-next-line teamai/config-load-options -- Codex trust reconciliation retains normal config migration and has no preview option
   const local = await loadLocalConfig();
   const settings = local?.scope === 'user' ? local : { ...(await loadMemberSettings()), ...local };
   return codexTrustPolicy(settings);
@@ -603,6 +604,7 @@ async function memberCodexTrust(): Promise<CodexTrustPolicy> {
 /** The member turned off teamai's Codex trust writes (`codexTrustEnabled: false`). */
 async function codexTrustDisabled(): Promise<boolean> {
   const { loadLocalConfig, loadMemberSettings } = await import('./config.js');
+  // oxlint-disable-next-line teamai/config-load-options -- Codex trust reconciliation retains normal config migration and has no preview option
   const local = await loadLocalConfig();
   const settings = local?.scope === 'user' ? local : { ...(await loadMemberSettings()), ...local };
   return settings.codexTrustEnabled === false;

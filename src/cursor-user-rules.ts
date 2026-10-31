@@ -56,6 +56,7 @@ export async function cursorUserRulesText(teamConfig: TeamaiConfig, userConfig: 
  * delivers its own rules into the workspace, so the user scope is loaded apart.
  */
 export async function cursorUserRulesContext(workspace: string, config: LocalConfig): Promise<string | null> {
+  // oxlint-disable-next-line teamai/config-load-options -- session-start rules context retains normal user-scope migration and has no preview option
   const userConfig = config.scope === 'user' ? config : await loadLocalConfig();
   if (!userConfig || isAgentExcluded(userConfig, 'cursor')) return null;
   const teamConfig = await loadTeamConfig(userConfig.repo.localPath);

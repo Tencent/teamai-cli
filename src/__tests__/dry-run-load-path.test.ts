@@ -39,7 +39,6 @@ import { envExec } from '../env-exec.js';
 import { resolveDoctorContext } from '../doctor.js';
 import { excludeList } from '../exclude.js';
 import { hooksList } from '../hooks-cmd.js';
-import { importCmd } from '../import.js';
 import { mcpInject, mcpList } from '../mcp-cmd.js';
 import { maybeMigrate, queueKeptInCheckout } from '../migrate.js';
 import { modelsList, modelsSwitch } from '../models-cmd.js';
@@ -51,11 +50,10 @@ import { push } from '../push.js';
 import { recall } from '../recall.js';
 import { recallStatus } from '../recall-toggle.js';
 import { registerSessionFlowCommands } from '../session-flow/session-cmd.js';
-import { remove } from '../remove.js';
-import { rolesAdd, rolesInit, rolesList, rolesRemove, rolesSet, rolesUpdate } from '../roles-cmd.js';
+import { rolesList, rolesSet } from '../roles-cmd.js';
 import { skillList, skillShow } from '../skill-cmd.js';
 import { skillGet, skillPath } from '../skill-content.js';
-import { sourceAdd, sourceAddHttp, sourceBrowse, sourceList, sourceRemove } from '../source.js';
+import { sourceBrowse, sourceList } from '../source.js';
 import { list, status } from '../status.js';
 import { tagsAdd, tagsList, tagsRemove, tagsSubscribe, tagsUnsubscribe } from '../tags.js';
 import { uninstall } from '../uninstall.js';
@@ -341,37 +339,16 @@ describe('--dry-run through the loaders the commands share (#850)', () => {
     expect(providerCalls).toEqual([]);
   });
 
-  // The rest of #893: commands that honour `--dry-run` in their own logic but
-  // loaded the scope bare. Each one reaches the loader before anything this
-  // fixture lacks (a team repo remote, a provider, a network) stops it, so the
-  // test asserts only what the loader decides: whether `config.yaml` is
-  // rewritten. The same call without the flag is the positive control: it DOES
-  // migrate, so an unchanged file under the flag is a result, not a command that
-  // failed before it loaded anything. Writes these commands make on their own
-  // dry-run path, past the loader, are out of scope here.
+  // These wrapper paths are not proven by the direct config-load rule.
   const PREVIEWS: Array<[string, (dryRun: boolean) => Promise<unknown>]> = [
-    ['mcp inject', (dryRun) => mcpInject({ dryRun })],
-    ['roles init', (dryRun) => rolesInit({ dryRun })],
-    ['roles add', (dryRun) => rolesAdd('ops', { dryRun, namespaces: 'ops' })],
-    ['roles remove', (dryRun) => rolesRemove('pm', { dryRun })],
-    ['roles update', (dryRun) => rolesUpdate('pm', { dryRun, description: 'x' })],
+    ['models switch', (dryRun) => modelsSwitch('p', { dryRun })],
     ['projects add', (dryRun) => projectsAdd('checkout', { dryRun, namespaces: 'checkout' })],
-    ['tags add', (dryRun) => tagsAdd('skills', 'x', ['a'], { dryRun })],
-    ['tags remove', (dryRun) => tagsRemove('skills', 'x', ['a'], { dryRun })],
-    ['source add', (dryRun) => sourceAdd('https://github.com/acme/other.git', { dryRun })],
-    ['source remove', (dryRun) => sourceRemove('x', { dryRun })],
-    ['source add-http', (dryRun) => sourceAddHttp('https://h.test', { dryRun, token: 't' })],
-    ['remove', (dryRun) => remove('skills', ['x'], { dryRun })],
-    ['packages install', (dryRun) => pkgInstall(undefined, { dryRun })],
-    ['import --from-iwiki', (dryRun) => importCmd({ fromIwiki: 'x', dryRun })],
-    ['import --from-mr', (dryRun) => importCmd({ fromMr: 'https://github.com/acme/app/pull/1', dryRun })],
-    ['codebase --reconcile', (dryRun) => codebaseCmd({ reconcile: true, dryRun })],
     ['projects update', (dryRun) => projectsUpdate('checkout', { dryRun, description: 'x' })],
     ['projects remove', (dryRun) => projectsRemove('checkout', { dryRun })],
-    // No candidates on this fixture: covers the scan's load, not the one after review.
-    ['import --from-claude', (dryRun) => importCmd({ fromClaude: true, all: true, dryRun })],
+    ['tags add', (dryRun) => tagsAdd('skills', 'x', ['a'], { dryRun })],
+    ['tags remove', (dryRun) => tagsRemove('skills', 'x', ['a'], { dryRun })],
+    ['codebase --reconcile', (dryRun) => codebaseCmd({ reconcile: true, dryRun })],
     ['codebase --deep-enrich', (dryRun) => codebaseCmd({ deepEnrich: true, project: 'x', dryRun })],
-    ['models switch', (dryRun) => modelsSwitch('p', { dryRun })],
   ];
 
   describe.each(PREVIEWS)('%s', (_command, run) => {

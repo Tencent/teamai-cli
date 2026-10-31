@@ -105,6 +105,7 @@ function refuseSkill(envelope: WorkflowEnvelope): void {
 
 async function loadConfig(readOnly = false): Promise<{ config: LocalConfig; teamConfig: TeamaiConfig } | WorkflowEnvelope> {
   try {
+    // oxlint-disable-next-line teamai/config-load-options -- the read-only branch suppresses migration; mutating workflow calls retain normal migration
     const { localConfig, teamConfig } = await autoDetectInit(undefined, readOnly ? { dryRun: true, selfHeal: false, suppressMigrationNotice: true } : {});
     return { config: localConfig, teamConfig };
   } catch (error) {

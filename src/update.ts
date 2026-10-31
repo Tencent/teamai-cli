@@ -708,6 +708,7 @@ export async function doUpdate(runningScope: LocalConfig | null): Promise<void> 
 
   // Load configs for update policy. Team config is the default; local
   // config overrides (user always wins).
+  // oxlint-disable-next-line teamai/config-load-options -- automatic update policy retains normal config migration and has no preview option
   const localConfig = (await loadLocalConfig()) ?? runningScope;
   const teamConfig = localConfig
     ? await loadTeamConfig(localConfig.repo.localPath)

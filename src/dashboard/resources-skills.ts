@@ -291,7 +291,9 @@ async function setSkillExclusionSerialized(
 /** The scope's config as last saved on disk; null when unreadable. */
 async function reloadLocalConfig(localConfig: LocalConfig): Promise<LocalConfig | null> {
   if (localConfig.scope === 'project') {
+    // oxlint-disable-next-line teamai/config-load-options -- reload follows a persisted dashboard edit; this path has no preview mode
     return loadLocalConfigForScope('project', localConfig.projectRoot);
   }
+  // oxlint-disable-next-line teamai/config-load-options -- reload follows a persisted dashboard edit; this path has no preview mode
   return loadLocalConfig();
 }

@@ -4233,6 +4233,7 @@ async function reconcileAutoCompactPastSkippedUser(projectConfig: LocalConfig | 
     return;
   }
   try {
+    // oxlint-disable-next-line teamai/config-load-options -- the function returns before acquiring the lock when options.dryRun is true
     await reconcileAutoCompact((await loadLocalConfigForScope('user')) ?? projectConfig, options);
   } finally {
     await releaseLock(lock);

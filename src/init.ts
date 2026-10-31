@@ -708,6 +708,7 @@ async function resolveInitContext(scopeFlag: string | undefined) {
   const resolved = resolveInitScope(scopeFlag, root, getUserHome());
   const inside = resolved.scope === 'project' && resolved.projectRoot !== cwd;
   // A rejected init must not migrate roles, adopt a partition or bootstrap the ancestor.
+  // oxlint-disable-next-line teamai/config-load-options -- init writes configuration; ancestor rejection uses its own read-only branch
   const existingLocalConfig = await loadLocalConfigForScope(resolved.scope, resolved.projectRoot,
     inside ? { dryRun: true, suppressMigrationNotice: true, selfHeal: false } : undefined);
   const existingFile = inside && resolved.projectRoot && (
@@ -880,6 +881,7 @@ export async function initHttp(
 
   // Persist --agent into enabledAgents (additive across runs)
   if (requestedAgents.length > 0) {
+    // oxlint-disable-next-line teamai/config-load-options -- init writes configuration; ancestor rejection uses its own read-only branch
     const existing = await loadLocalConfigForScope(scope, projectRoot);
     const prev = existing?.enabledAgents ?? [];
     localConfig.enabledAgents = [...new Set([...prev, ...requestedAgents])];
@@ -894,6 +896,7 @@ export async function initHttp(
   // A project-scope config with no record of its own starts from the user-scope
   // one: the root is a fact about this machine, and project hooks land in HOME.
   const carriedToolRoots = existingLocalConfig?.toolRoots
+    // oxlint-disable-next-line teamai/config-load-options -- init writes configuration; ancestor rejection uses its own read-only branch
     ?? (scope === 'project' ? (await loadLocalConfigForScope('user'))?.toolRoots : undefined);
   if (carriedToolRoots) localConfig.toolRoots = { ...carriedToolRoots };
   recordToolRoots(localConfig);
@@ -1363,6 +1366,7 @@ export async function initSelfRepo(options: GlobalOptions & {
   let preInitConfig: LocalConfig | null;
   let inheritUserScope: boolean | undefined;
   try {
+    // oxlint-disable-next-line teamai/config-load-options -- init writes configuration; ancestor rejection uses its own read-only branch
     preInitConfig = await loadLocalConfigForScope('project', businessRepoRoot, { selfHeal: false });
     inheritUserScope = resolveInheritUserScope('project', options.inheritUserScope, preInitConfig?.inheritUserScope);
   } catch (e) {
@@ -2494,6 +2498,7 @@ export async function init(options: GlobalOptions & {
   // A project-scope config with no record of its own starts from the user-scope
   // one: the root is a fact about this machine, and project hooks land in HOME.
   const carriedToolRoots = carriedConfig?.toolRoots
+    // oxlint-disable-next-line teamai/config-load-options -- init writes configuration; ancestor rejection uses its own read-only branch
     ?? (scope === 'project' ? (await loadLocalConfigForScope('user'))?.toolRoots : undefined);
   if (carriedToolRoots) localConfig.toolRoots = { ...carriedToolRoots };
   recordToolRoots(localConfig);

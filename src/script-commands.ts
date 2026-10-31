@@ -18,6 +18,7 @@ export async function scriptRun(eventName: string): Promise<void> {
     return;
   }
 
+  // oxlint-disable-next-line teamai/config-load-options -- script execution retains normal config migration; it has no preview mode
   const local = (await detectProjectConfig(process.cwd())) ?? (await loadLocalConfig());
   if (!local) {
     log.error('No teamai config here. Run `teamai init` first.');

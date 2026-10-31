@@ -104,6 +104,7 @@ function sessionDemandOf(options: ScoreOptions): SessionDemand | WorkflowEnvelop
 
 async function localConfig(): Promise<{ ok: true; config: LocalConfig } | { ok: false; envelope: WorkflowEnvelope }> {
   try {
+    // oxlint-disable-next-line teamai/config-load-options -- scoring retains normal config migration; its command has no preview mode
     return { ok: true, config: (await autoDetectInit()).localConfig };
   } catch (e) {
     return { ok: false, envelope: failure('not_initialized', e instanceof Error ? e.message : String(e)) };

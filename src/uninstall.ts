@@ -2008,6 +2008,7 @@ async function removeHomeLocalScopeMcpServers(skip: readonly string[] = []): Pro
     const checkout = anchor ? await checkoutForProjectAnchor(anchor) : null;
     const toolRoots = checkout
       ? await resolveMemberToolRoots(checkout, { selfHeal: false })
+      // oxlint-disable-next-line teamai/config-load-options -- MCP removal runs after the uninstall preview has returned
       : (await loadLocalConfig())?.toolRoots;
     for (const file of await removeLocalScopeMcpServers(dataHome, toolRoots)) left.add(file);
   }

@@ -46,6 +46,7 @@ async function loadPackageContext(cwd: string): Promise<{
   localConfig: LocalConfig;
   manifest: PackageManifest;
 } | null> {
+  // oxlint-disable-next-line teamai/config-load-options -- session-start package hints retain normal config migration and have no preview option
   const localConfig = await detectProjectConfig(cwd) ?? await loadLocalConfig();
   if (!localConfig || localConfig.repo.kind === 'http') return null;
   const manifest = await loadPackageManifest(localConfig.repo.localPath);

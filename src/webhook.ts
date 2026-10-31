@@ -14,6 +14,7 @@ export async function sendWebhook(
   config?: WebhookConfig,
 ): Promise<void> {
   if (!config) {
+    // oxlint-disable-next-line teamai/config-load-options -- notification sending retains normal config migration and has no preview option
     const { teamConfig } = await autoDetectInit();
     config = getWebhookSharing(teamConfig);
   }

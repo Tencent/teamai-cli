@@ -97,6 +97,7 @@ export async function scoreSessions(configs: readonly LocalConfig[], { clock = (
 export async function reachedScopes(cwd?: string): Promise<LocalConfig[]> {
   const detected = cwd === undefined || await pathExists(cwd) ? await detectProjectConfig(cwd).catch(() => null) : null;
   const project = detected && await readWorkspaceChildren(detected);
+  // oxlint-disable-next-line teamai/config-load-options -- scoring scope discovery retains its existing migration policy and has no preview option
   const user = await loadLocalConfig();
   const homes = new Set<string>();
   const scopes: LocalConfig[] = [];
