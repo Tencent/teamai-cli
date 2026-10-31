@@ -1,18 +1,25 @@
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { parse } from '@babel/parser';
+import { isIdentifier } from '@babel/types';
 
 /** Literal codes stay owned by their runtime declarations, including LIMIT_FAILURES. */
-/** @param {string} file @param {string} name @returns {string[]} */
-function literalStrings(file, name) {
+/** @param {string} file @param {string} name */
+function policyArray(file, name) {
   const source = fs.readFileSync(fileURLToPath(new URL('../' + file, import.meta.url)), 'utf8');
   const declarations = parse(source, { sourceType: 'module', plugins: ['typescript'] }).program.body
-    .flatMap((statement) => statement.type === 'ExportNamedDeclaration' && statement.declaration ? [statement.declaration] : [statement])
-    .flatMap((statement) => statement.type === 'VariableDeclaration' ? statement.declarations : []);
-  const declaration = declarations.find((candidate) => candidate.id.type === 'Identifier' && candidate.id.name === name);
-  const array = declaration?.init?.type === 'TSAsExpression' ? declaration.init.expression : declaration?.init;
+    .map((statement) => statement.type === 'ExportNamedDeclaration' ? statement.declaration : statement)
+    .flatMap((statement) => statement?.type === 'VariableDeclaration' ? statement.declarations : []);
+  const declaration = declarations.find((candidate) => isIdentifier(candidate.id, { name }));
+  const initializer = declaration?.init;
+  const array = initializer?.type === 'TSAsExpression' ? initializer.expression : initializer;
   if (array?.type !== 'ArrayExpression') throw new Error(`Failure-code policy cannot read ${name} in ${file}. Keep its literal array declaration available to lint.`);
-  return array.elements.flatMap((element) => {
+  return array;
+}
+
+/** @param {string} file @param {string} name @returns {string[]} */
+function literalStrings(file, name) {
+  return policyArray(file, name).elements.flatMap((element) => {
     if (element?.type === 'StringLiteral') return [element.value];
     if (element?.type === 'SpreadElement' && element.argument.type === 'Identifier' && element.argument.name === 'LIMIT_FAILURES') return literalStrings('src/workflow/requirements.ts', 'LIMIT_FAILURES');
     throw new Error(`Failure-code policy cannot resolve a nonliteral entry in ${name}.`);

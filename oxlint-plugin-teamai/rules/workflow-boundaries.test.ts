@@ -32,3 +32,15 @@ rule.valid('allows provider types in the snapshot', `import type { Snapshot } fr
   'src/snapshot-helper.ts': `export { Snapshot } from './providers/new/adapter.js';`,
   'src/providers/new/adapter.ts': `export type Snapshot = string;`,
 } });
+rule.invalid('rejects a local driver mocked by a transitive dependency', `import { protocol } from '../../protocol.js';`, undefined, { files: {
+  'src/workflow/protocol.ts': `vi.mock('./drivers/local/local-driver.js'); export const protocol = 1;`,
+  'src/workflow/drivers/local/local-driver.ts': `export const local = 1;`,
+} });
+rule.invalid('rejects export-star access to private entries', `export * from './workflow/drivers/skill/tick.js';`, undefined, { filename: 'src/pull.ts' });
+rule.valid('leaves unrelated calls and dynamic mock names alone', `log.info('ready'); vi.fn(); vi['fn'](); vi.mock(modulePath); getMocker().mock('module'); flush();`);
+rule.valid('allows default and namespace type imports from the shared types', `import type Context from '../../../types.js'; import type * as Shapes from '../../../types.js';`);
+rule.valid('follows a shared TSX dependency without crossing the local driver', `import { protocol } from '../../protocol.js'; import { attempt } from '../../attempt-marker.js';`, { files: {
+  'src/workflow/protocol.ts': `export { guide as protocol } from '../guide.js';`,
+  'src/workflow/attempt-marker.ts': `export { guide as attempt } from '../guide.js';`,
+  'src/guide.tsx': `export const guide = <span />;`,
+} });
