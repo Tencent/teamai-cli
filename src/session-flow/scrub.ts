@@ -52,52 +52,80 @@ const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/
 /** A directory below a filesystem root: `/`, `C:\` and the like would rewrite every path. */
 const isBelowFilesystemRoot = (dir: string): boolean => !/^(?:[A-Za-z]:)?[\\/]*$/.test(dir);
 
-/** A character of a file or directory name: a root never runs into one on either side. */
+/** A character of a file or directory name: a root never runs into one after it. */
 const NAME_CHAR = '[\\p{L}\\p{N}_@%+~#$-]';
+
+/** Before a root only an ASCII name character counts: Chinese or Japanese prose runs straight into a path (`看一下/Users/…`). */
+const ASCII_NAME_CHAR = '[A-Za-z0-9_@%+~#$-]';
 
 /**
  * A root matches only as whole path segments: `/Users/alice/app` is not in `/Users/alice/app2`, `/Users/alice/app@2`,
  * `/Users/alice/app.old` or `/mnt/Users/alice/app`, but is in `ls /Users/alice/app.`, Markdown emphasis around it,
- * `--cwd=/Users/alice/app` and `file:///Users/alice/app`. `_` and `__` next to it are Markdown emphasis when no other
- * name character is beyond them.
+ * `--cwd=/Users/alice/app`, `file:///Users/alice/app` and `看一下/Users/alice/app`. `_` and `__` next to it are
+ * Markdown emphasis when no other name character is beyond them.
  */
-const SEGMENT_START = `(?:(?<!${NAME_CHAR})|(?<=(?:^|(?!${NAME_CHAR}).)__?))`;
+const SEGMENT_START = `(?:(?<!${ASCII_NAME_CHAR})|(?<=(?:^|(?!${ASCII_NAME_CHAR}).)__?))`;
 const SEGMENT_END = `(?:(?!${NAME_CHAR}|\\.${NAME_CHAR})|(?=__?(?!${NAME_CHAR}|\\.${NAME_CHAR})))`;
+
+/** The directory name Claude Code encodes a path as (`/Users/alice/app` → `-Users-alice-app`). */
+const encodedDir = (dir: string): string => dir.replace(/[^a-zA-Z0-9]/g, '-');
+
+/**
+ * Each spelling `root` may appear in, and whether it is matched ignoring case. A POSIX root as written and as a file URL
+ * percent-encodes it (`/Users/José` → `/Users/Jos%C3%A9`). A Windows root, whose paths are case-insensitive, also with
+ * forward slashes, escaped in JSON a tool returned (`C:\\Users`), as Git Bash prints it (`/c/Users`) and percent-encoded.
+ */
+function spellingsOf(root: string): Array<{ spelling: string; ignoresCase: boolean }> {
+  const trimmed = root.replace(/[\\/]+$/, '');
+  const drive = /^([A-Za-z]):[\\/](.*)$/.exec(trimmed);
+  if (!drive) return [...new Set([trimmed, encodeURI(trimmed)])].map((spelling) => ({ spelling, ignoresCase: false }));
+  const forward = trimmed.replaceAll('\\', '/');
+  const rest = drive[2].replaceAll('\\', '/');
+  return [...new Set([trimmed, forward, trimmed.replaceAll('\\', '\\\\'), `/${drive[1]}/${rest}`, encodeURI(forward)])].map((spelling) => ({ spelling, ignoresCase: true }));
+}
 
 /**
  * Rewrites the paths under `roots` in a text: the repository to `<repo>`, the temp roots to `<tmp>`, the rest of the
- * home directory to `~`, the longest root first. The directory name a tool encodes a workspace as
- * (`-Users-alice-app`) becomes `<project>`. `title` also rewrites a path the title was cut inside at its end
- * (`… and /Users/alice/ap`), as the shortest root it starts.
+ * home directory to `~`, the longest root first. The directory name a tool encodes the workspace as
+ * (`-Users-alice-app`) becomes `<project>`, and another one under the home directory starts with `~`
+ * (`~-other-project`). `title` also rewrites a path the title was cut inside at its end (`… and /Users/alice/ap`), as
+ * the shortest root it starts.
  */
 function pathRewriter({ repo, home, tmp, workdir }: LocalPathRoots, cwd: string): { text: (text: string) => string; title: (title: string) => string } {
-  // A Windows root also as forward slashes, and as JSON escapes it, as a tool result that holds JSON text does.
-  const spellings = (root: string): string[] => (root.includes('\\') ? [root, root.replaceAll('\\', '/'), root.replaceAll('\\', '\\\\')] : [root]);
-  // Windows paths are case-insensitive (`c:\users\…`): matched ignoring case and keyed by lower case. POSIX ones are not.
-  const isWindows = (root: string): boolean => /^[A-Za-z]:/.test(root);
-  const keyOf = (root: string): string => (isWindows(root) ? root.toLowerCase() : root);
   const workdirName = workdir && (workdir.archived === '' ? '<cwd>' : workdir.archived === '.' ? '<repo>' : `<repo>/${workdir.archived}`);
+  // Keyed as matched: a spelling matched ignoring case by its lower case.
   const named = new Map<string, string>();
+  const ignoringCase = new Set<string>();
   for (const [roots, name] of [[home, '~'], [tmp, '<tmp>'], [repo, '<repo>'], ...(workdir && workdirName ? [[workdir.spellings, workdirName] as const] : [])] as const) {
-    for (const root of roots.flatMap(spellings)) if (isBelowFilesystemRoot(root)) named.set(keyOf(root.replace(/[\\/]+$/, '')), name);
+    for (const { spelling, ignoresCase } of roots.flatMap(spellingsOf)) {
+      if (!isBelowFilesystemRoot(spelling)) continue;
+      const key = ignoresCase ? spelling.toLowerCase() : spelling;
+      named.set(key, name);
+      if (ignoresCase) ignoringCase.add(key);
+    }
   }
   if (named.size === 0) return { text: (text) => text, title: (title) => title };
   const byLength = (left: string, right: string): number => right.length - left.length;
   const roots = [...named.keys()].sort(byLength);
   const matcher = (some: string[], flags: string): RegExp | undefined =>
     some.length > 0 ? new RegExp(`${SEGMENT_START}(?:${some.map(escapeRegExp).join('|')})${SEGMENT_END}`, flags) : undefined;
-  const rooted = [matcher(roots.filter(isWindows), 'giu'), matcher(roots.filter((root) => !isWindows(root)), 'gu')];
-  const nameOf = (root: string): string | undefined => named.get(keyOf(root));
-  const projects = [...new Set([cwd, ...repo].filter((dir) => isBelowFilesystemRoot(dir) && /^(?:\/|[A-Za-z]:[\\/])/.test(dir)).map((dir) => dir.replace(/[^a-zA-Z0-9]/g, '-')))];
-  const project = new RegExp(`(?<=[\\\\/])(?:${projects.sort(byLength).map(escapeRegExp).join('|')})(?=$|[\\\\/])`, 'g');
+  const rooted = [matcher(roots.filter((root) => ignoringCase.has(root)), 'giu'), matcher(roots.filter((root) => !ignoringCase.has(root)), 'gu')];
+  const nameOf = (root: string): string | undefined => named.get(root) ?? named.get(root.toLowerCase());
+  const encoded = (dirs: readonly string[]): string[] => [...new Set(dirs.filter((dir) => isBelowFilesystemRoot(dir) && /^(?:\/|[A-Za-z]:[\\/])/.test(dir)).map(encodedDir))].sort(byLength);
+  const slug = (dirs: string[], after: string): RegExp | undefined =>
+    dirs.length > 0 ? new RegExp(`(?<=[\\\\/])(?:${dirs.map(escapeRegExp).join('|')})(?=${after})`, 'g') : undefined;
+  const project = slug(encoded([cwd, ...repo]), '$|[\\\\/]');
+  const homeSlug = slug(encoded(home), '$|[\\\\/-]');
   const text = (value: string): string => {
     const next = rooted.reduce((current, pattern) => (pattern ? current.replace(pattern, (root) => nameOf(root) ?? root) : current), value);
-    return projects.length > 0 ? next.replace(project, '<project>') : next;
+    const projected = project ? next.replace(project, '<project>') : next;
+    return homeSlug ? projected.replace(homeSlug, '~') : projected;
   };
   const title = (value: string): string => {
     const cut = /(?:[A-Za-z]:)?[\\/][^\s<]{2,}$/.exec(value);
     if (!cut || nameOf(cut[0]) !== undefined) return text(value);
-    const root = roots.findLast((candidate) => candidate.length > cut[0].length && candidate.startsWith(keyOf(cut[0])));
+    const starts = (candidate: string): boolean => candidate.startsWith(ignoringCase.has(candidate) ? cut[0].toLowerCase() : cut[0]);
+    const root = roots.findLast((candidate) => candidate.length > cut[0].length && starts(candidate));
     return root ? text(value.slice(0, cut.index)) + (named.get(root) ?? '') : text(value);
   };
   return { text, title };

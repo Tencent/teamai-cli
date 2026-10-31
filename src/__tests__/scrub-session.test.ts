@@ -161,6 +161,9 @@ describe('scrubSession with localPaths, for a session published to the team arch
     ['Read **/Users/me/app/x.ts**, *~/a* or [/Users/me/app]', 'Read **<repo>/x.ts**, *~/a* or [<repo>]'],
     ['Read __/Users/me/app/x.ts__ or _/Users/me/app_, not /x_/Users/me/app', 'Read __<repo>/x.ts__ or _<repo>_, not /x_/Users/me/app'],
     ['/Users/me/appé/x.ts and /Users/me/app_old/x.ts', '~/appé/x.ts and ~/app_old/x.ts'],
+    ['看一下/Users/me/app/src/retry.ts', '看一下<repo>/src/retry.ts'],
+    ['文件在/Users/me/app/x.ts，请看', '文件在<repo>/x.ts，请看'],
+    ['~/.claude/projects/-Users-me-other-project/x.jsonl', '~/.claude/projects/~-other-project/x.jsonl'],
     ['ls /Users/me/app.', 'ls <repo>.'],
     ['/private/tmp/claude-502/-Users-me-app/6e64/tasks/b.output', '<tmp>/<project>/6e64/tasks/b.output'],
     ['file:///Users/me/app/README.md', 'file://<repo>/README.md'],
@@ -188,6 +191,21 @@ describe('scrubSession with localPaths, for a session published to the team arch
     const { session } = scrubSession(said('open C:\\Users\\me\\app\\src\\sync.ts', 'C:\\Users\\me\\app'), { localPaths: windows });
 
     expect(textOf(session)).toEqual({ type: 'text', text: 'open <repo>\\src\\sync.ts' });
+  });
+
+  it.each([
+    ['cat /c/Users/me/app/src/retry.ts', 'cat <repo>/src/retry.ts'],
+    ['ls /c/Users/me/x and /C/Users/me/app', 'ls ~/x and <repo>'],
+  ])('rewrites a Windows path as Git Bash spells it: %s', (before, after) => {
+    expect(textOf(scrubSession(said(before, 'C:\\Users\\me\\app'), { localPaths: windows }).session)).toEqual({ type: 'text', text: after });
+  });
+
+  it('rewrites a root with a space or an accent as a file URL percent-encodes it', () => {
+    const roots = { repo: ['/Users/José/My App'], home: ['/Users/José'], tmp: [] };
+
+    const { session } = scrubSession(said('open file:///Users/Jos%C3%A9/My%20App/README.md and file:///Users/Jos%C3%A9/notes.md', '/Users/José/My App'), { localPaths: roots });
+
+    expect(textOf(session)).toEqual({ type: 'text', text: 'open file://<repo>/README.md and file://~/notes.md' });
   });
 
   it('rewrites a Windows path spelled in another case, or escaped in JSON a tool returned', () => {
