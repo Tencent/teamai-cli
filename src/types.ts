@@ -885,11 +885,11 @@ export const MemberSettingsSchema = z.object({
   codexTrustEnabled: z.boolean().optional(),
   updatePolicy: z.enum(['auto', 'prompt', 'skip']).optional(),
   /**
-   * Per-machine map from a gateway/proxy model alias to a known Claude model
-   * name, so cost/cache estimation works when the transcript records an opaque
-   * alias (e.g. `gateway-model-42`) instead of `claude-opus-...`. The value must
-   * contain a token the price table matches (opus / sonnet / haiku / fable /
-   * mythos + version). Unset means "match the raw model name only".
+   * Per-machine map from a gateway/proxy model alias to a model the price
+   * catalog (`src/token-usage/model-prices.json`) lists, so the dashboard can
+   * price requests whose transcript records an opaque alias (e.g.
+   * `gateway-model-42`) instead of `claude-opus-5-5`. Unset means "match the
+   * raw model name only".
    */
   modelAliases: z.record(z.string(), z.string()).optional(),
   /**

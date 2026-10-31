@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { log } from './utils/logger.js';
 import { ensureDir } from './utils/fs.js';
-import { dataHomeKey, readEvents, readSessionOutcomes, rebuildSessions, appendEvent, memberEvents, sessionRuns } from './dashboard-collector.js';
+import { dataHomeKey, readEvents, readLocalRequestRecords, readSessionOutcomes, rebuildSessions, appendEvent, memberEvents, sessionRuns } from './dashboard-collector.js';
 import { isProcessAlive } from './pid-monitor.js';
 import {
   DASHBOARD_DEFAULT_PORT,
@@ -20,6 +20,7 @@ import type { VizSummary } from './viz.js';
 import { aggregateDailySessions, computeDailyStatsDelta, summarizeTrendWindow, summarizeSessionCosts } from './session-trends.js';
 import { HttpError, isLocalWrite, readJsonBody } from './dashboard/http.js';
 import { SessionOutcomes } from './session-outcomes.js';
+import { summarizeTokenCosts } from './dashboard/token-costs.js';
 import type { ReportedHistory } from './dashboard/workflow-runs.js';
 
 // ─── Dashboard server architecture ──────────────────────
@@ -427,6 +428,27 @@ export async function startDashboard(port?: number): Promise<void> {
       } catch (e) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: (e as Error).message }));
+      }
+      return;
+    }
+
+    if (url.pathname === '/api/tokens') {
+      // The member's requests over 7, 30 or 90 days, from the local request log.
+      try {
+        const days = Number(url.searchParams.get('days') ?? 7);
+        if (![7, 30, 90].includes(days)) throw new HttpError(400, 'days must be 7, 30 or 90');
+        // A workspace's requests are those its data home recorded; older ones, those of its sessions still in the event log.
+        const scope = workspace ? {
+          ...(workspace.config ? { dataHomeKey: await dataHomeKey(getDataHome(workspace.config)) } : {}),
+          sessionIds: new Set(memberEvents(await scopedEvents(scopeId)).map((event) => event.sessionId)),
+        } : undefined;
+        const records = [...(await readLocalRequestRecords()).values()];
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(summarizeTokenCosts(records, { days, now: new Date(), scope })));
+      } catch (e) {
+        const status = e instanceof HttpError ? e.status : 500;
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
       }
       return;
     }

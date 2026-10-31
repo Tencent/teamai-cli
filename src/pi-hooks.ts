@@ -70,6 +70,16 @@ const sessionOf = (ctx) => {
   }
 };
 
+/** The session file, as \`transcript_path\`, for the stop dispatch; empty when Pi keeps the session in memory only. */
+const transcriptOf = (ctx) => {
+  try {
+    const file = ctx && ctx.sessionManager && ctx.sessionManager.getSessionFile && ctx.sessionManager.getSessionFile();
+    return typeof file === "string" && file ? { transcript_path: file } : {};
+  } catch {
+    return {};
+  }
+};
+
 /** A tool result's text parts, joined; undefined when it has no content list. */
 const textOf = (content) => Array.isArray(content)
   ? content.filter((part) => part && part.type === "text" && typeof part.text === "string").map((part) => part.text).join("\\n")
@@ -203,7 +213,7 @@ export default function teamaiHooks(pi) {
   });
 
   pi.on("agent_settled", async (_event, ctx) => {
-    await dispatch("stop", ctx);
+    await dispatch("stop", ctx, transcriptOf(ctx));
     await teamHooks("Stop", ctx);
   });
 

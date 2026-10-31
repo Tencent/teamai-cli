@@ -9,7 +9,7 @@ teamai dashboard
 teamai dashboard --port 8080
 ```
 
-Open `http://localhost:3721`. The sidebar is Overview, Team Execution, Workflow Runs, Scorers, Team Context, Resources, Distribution, and Team Improvement. The numbers are from this machine.
+Open `http://localhost:3721`. The sidebar is Overview, Team Execution, Tokens & Cost, Workflow Runs, Scorers, Team Context, Resources, Distribution, and Team Improvement. The numbers are from this machine.
 
 ## Session sharing
 
@@ -131,6 +131,55 @@ New prompts pick this up after the next `pull`. What reaches the team is the cou
 A session row shows how many prompts were sent and how many tokens were used. A tool that does not report usage shows 0 tokens.
 
 The 7-day trends count only your own sessions: a session teamai launched, such as a workflow step, is left out. Below them, the sessions that ended in the last 7 days are split by [run mode](workflow.md#attended-and-unattended-runs): attended, unattended, and `not recorded` for sessions recorded before modes were. See [Usage reporting](reporting.md#your-sessions-by-run-mode).
+
+## Tokens & Cost
+
+The **Tokens & Cost** page answers "what did my AI tools cost this week, and where did it go?" for the selected workspace, over 7, 30 or 90 days (UTC):
+
+```text
+Tokens & Cost · 7 days
+Estimated cost     $3.29    Prior: $2.74 · +20%
+Tokens             6M       Input 235.7K · Output 120.7K · Cache 5.6M
+Saved by caching   $14.97   Cache reads: 94% of the prompt
+Requests priced    92%      107 / 116 · $0.4936 reported by the tool
+```
+
+Below the cards: a bar per day, then the cost by AI tool, by model and the ten sessions that cost the most. A session the dashboard knows is named by its first prompt and opens its details:
+
+```text
+By model            AI tool   Requests  Tokens  Cost
+claude-opus-5-5     claude    35        1.8M    $1.40
+gpt-6.1-sol         codex     20        732.8K  $0.4280
+gpt-5.6-sol         pi        8         726.1K  $0.4936
+big-pickle          opencode  9         116.8K  Tokens only
+```
+
+Where the numbers come from:
+
+- When a session stops, teamai reads the tokens and the model of each request from the tool's own session record: Claude Code, Codex, CodeBuddy, WorkBuddy, Copilot CLI, OpenCode, Pi, Oh My Pi, Muse Code and agy. agy records no model, so its sessions show as tokens without a cost. The **Tokens & cost** column of [Tool support](tool-support.md) says which tools are covered and how that was checked.
+- Each request is priced at API list prices from [LiteLLM's price list](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json), bundled with teamai; the page footer names the version. Long prompts, fast mode, Codex's flex tier and one-hour cache writes are priced at their own rates. A cost the tool reports itself, as Pi and OpenCode do, is used as is.
+- A request keeps the cost it was recorded with, so a later price change does not rewrite past weeks. A subscription plan bills differently: read the cost as what the same work would cost on the API.
+- **Saved by caching** is what the cache reads would have cost as plain input.
+
+A model no price list knows shows **Tokens only**. When it is another name for a listed model, such as a company gateway, map it in `~/.teamai/config.yaml` (or a workspace's config) and the session's next stop prices the requests that had no price:
+
+```yaml
+modelAliases:
+  corp-gateway-large: claude-opus-5-5
+  corp-gateway-fast: gpt-6.1-sol
+```
+
+The requests are kept for 90 days in `~/.teamai/dashboard/requests.jsonl`, one line each, with no prompt or reply:
+
+```json
+{"id":"6f1c…","timestamp":"2026-10-30T09:15:02.118Z","tool":"claude","sessionId":"c1a0de00-…","model":"claude-opus-5-5","inputTokens":40,"outputTokens":600,"cacheReadTokens":30000,"cacheCreationTokens":1500,"costMicros":25660,"costSource":"catalog","priceVersion":"litellm-2026-10-31-b264711","cacheSavingsMicros":114000}
+```
+
+The page reads `/api/tokens`, which scripts can read too. The models of the last 30 days that have no price yet:
+
+```bash
+curl -s 'http://localhost:3721/api/tokens?days=30' | jq -r '.byModel[] | select(.pricedRequests == 0) | .model'
+```
 
 ## Session Outcomes
 

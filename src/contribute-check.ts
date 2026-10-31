@@ -665,7 +665,7 @@ export async function contributeCheckForSession(
     const allEvents = await readEvents();
     const sessionEvents = allEvents.filter((e) => e.sessionId === sessionId);
     if (transcriptPath) {
-      const scan = await scanTranscriptStop(transcriptPath, { frictionOnly: true });
+      const scan = await scanTranscriptStop(transcriptPath);
       friction = extractFriction(sessionEvents, sessionId, {
         interrupt: scan.interrupt,
         toolReject: scan.toolReject,

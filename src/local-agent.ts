@@ -4814,7 +4814,8 @@ export async function reportAndSyncFromHook(
   tool: string,
 ): Promise<string | null> {
   const raw = JSON.stringify(stdin);
-  const event = await parseHookEvent(raw, tool);
+  // The dashboard-report handler reads the session's usage; this needs only the event.
+  const event = await parseHookEvent(raw, tool, { readUsage: false });
   // parseHookEvent resolves cwd via resolveHookCwd too, so event?.cwd would be
   // identical here — resolve once and fall back to process.cwd().
   const cwd = resolveHookCwd(stdin) ?? process.cwd();

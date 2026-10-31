@@ -7,7 +7,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { log } from './utils/logger.js';
 import { deriveDispatchSessionId } from './utils/session-id.js';
 import { resolveHookCwd } from './utils/hook-cwd.js';
-import { ensureDir, pathExists } from './utils/fs.js';
+import { ensureDir } from './utils/fs.js';
 import { repoKeys, repoLabel } from './utils/repo-attribution.js';
 import { isProcessAlive, resolveMonitorPid } from './pid-monitor.js';
 import { normalizeToolName } from './utils/tool-names.js';
@@ -26,7 +26,6 @@ import {
   stripInjectedPrompt,
   TRANSCRIPT_REJECT_MARKERS,
   COPILOT_TOOL_ID,
-  MUSE_TOOL_ID,
   getDataHome,
   emptyTokenUsage,
   addTokenUsage,
@@ -35,7 +34,6 @@ import {
   type DashboardEventType,
   type DashboardSession,
   type TokenUsage,
-  type TokenSnapshotScope,
   type SessionMetrics,
   type RequestCostMetrics,
   type LocalConfig,
@@ -44,7 +42,10 @@ import { getUserHome } from './utils/home.js';
 import type { HeadState } from './utils/git.js';
 import type { SessionRun } from './launch-context.js';
 import { SessionOutcomeEventSchema, uniqueOutcomes, type SessionOutcomeEvent, type WorkOutcome } from './outcomes.js';
-import { estimateClaudeRequest } from './model-pricing.js';
+import { readCopilotShutdown } from './token-usage/formats/copilot-shutdown.js';
+import { isTokenFormatId, readTokenUsage, type TokenRequest } from './token-usage/index.js';
+import { priceTokens } from './token-usage/pricing.js';
+import { isToolId, TOOLS, type ToolDescriptor } from './tools.js';
 
 // ─── Event collection data flow ─────────────────────────
 //
@@ -144,31 +145,127 @@ export interface TranscriptScanResult {
    * scoring. Distinct from toolReject (human deny).
    */
   toolError: number;
-  tokens: TokenUsage;
-  /** Scope of a Codex cumulative snapshot; absent for other transcript formats. */
-  tokenScope?: TokenSnapshotScope;
   /**
    * Cumulative count of genuine human prompt turns in the transcript. Sourced here
    * (not from compactable prompt_submit events) so the reported baseline stays
    * monotonic across compaction + same-session resume — same guarantee as `tokens`.
    */
   prompts: number;
-  /** Cumulative API-equivalent request cost for recognized Claude models. */
-  requestMetrics?: RequestCostMetrics;
-  /** Priced request details retained locally; no prompt or response content. */
-  requestRecords?: LocalRequestRecord[];
 }
 
-export interface LocalRequestRecord {
-  id: string;
-  timestamp: string;
-  model: string;
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheCreationTokens: number;
-  costMicros: number;
-  priceVersion: string;
+/** How many days the request log keeps a request. */
+export const REQUEST_LOG_RETENTION_DAYS = 90;
+
+const RequestCount = z.number().finite().nonnegative();
+/**
+ * One request in `~/.teamai/dashboard/requests.jsonl`: its tokens and model,
+ * and its cost when a price was known, kept as recorded so a later catalog
+ * does not reprice it. Records written before teamai logged unpriced requests
+ * have no tool, session or cost source; their cost came from the catalog.
+ */
+const LocalRequestRecordSchema = z.object({
+  id: z.string().min(1),
+  timestamp: z.string().refine((value) => Number.isFinite(Date.parse(value))),
+  tool: z.string().optional(),
+  sessionId: z.string().optional(),
+  /** The data home of the scope that recorded it (`dataHomeKey`), so a workspace finds it after compaction dropped its session. */
+  dataHomeKey: z.string().optional(),
+  model: z.string(),
+  inputTokens: RequestCount,
+  outputTokens: RequestCount,
+  cacheReadTokens: RequestCount,
+  cacheCreationTokens: RequestCount,
+}).and(z.union([
+  z.object({
+    costMicros: RequestCount,
+    /** Absent on records from before reported costs were kept: the catalog's. */
+    costSource: z.enum(['reported', 'catalog']).optional(),
+    priceVersion: z.string(),
+    /** What the cache reads saved against paying for them as input, at the catalog price. */
+    cacheSavingsMicros: RequestCount.optional(),
+  }),
+  z.object({ costMicros: z.null(), priceVersion: z.null() }),
+]));
+export type LocalRequestRecord = z.infer<typeof LocalRequestRecordSchema>;
+type PricedRequestRecord = Extract<LocalRequestRecord, { costMicros: number }>;
+
+const isPriced = (record: LocalRequestRecord): record is PricedRequestRecord => record.costMicros !== null;
+
+/**
+ * Where the dashboard reads `tool`'s token usage: its TOOLS entry's `tokens`.
+ * A tool TOOLS does not list is read as a Claude transcript, as every Stop
+ * transcript was before tools named their format.
+ */
+function tokenSourceOf(tool: string): ToolDescriptor['tokens'] {
+  const id = tool.toLowerCase();
+  return isToolId(id) ? TOOLS[id].tokens : 'claude-jsonl';
+}
+
+/** A request's catalog cost with its cache reads billed as input, less its catalog cost. */
+function cacheSavingsMicros(request: TokenRequest, aliases?: Record<string, string>): number | undefined {
+  if (request.tokens.cacheRead === 0) return undefined;
+  const { reportedCostMicros: _reported, ...estimate } = request;
+  const actual = priceTokens(estimate, aliases);
+  const uncached = priceTokens({ ...estimate, tokens: { ...request.tokens, input: request.tokens.input + request.tokens.cacheRead, cacheRead: 0 } }, aliases);
+  return actual && uncached ? Math.max(0, uncached.costMicros - actual.costMicros) : undefined;
+}
+
+/**
+ * Log `requests` to the request log, keyed by `scope` (the transcript, or the
+ * tool and session), and stamp the cost of the priced ones on `event`. A
+ * request logged with a cost keeps it; an unpriced one is priced again, so a
+ * newer catalog or a `modelAliases` entry prices it.
+ */
+async function recordTokenRequests(
+  event: DashboardEvent,
+  requests: readonly TokenRequest[],
+  scope: string,
+  options: ParseHookEventOptions | undefined,
+): Promise<void> {
+  const aliases = options?.modelAliases;
+  if (!requests.length) return;
+  const logged = await readLocalRequestRecords();
+  const records = requests.map((request): LocalRequestRecord => {
+    const id = createHash('sha256').update(`${scope}\0${request.key}`).digest('hex');
+    const kept = logged.get(id);
+    // A request stays with the workspace that first recorded it, even when its session resumes in another.
+    const dataHome = kept?.dataHomeKey ?? options?.dataHomeKey;
+    const owner = { tool: kept?.tool ?? event.tool, sessionId: kept?.sessionId ?? event.sessionId, ...(dataHome ? { dataHomeKey: dataHome } : {}) };
+    if (kept && isPriced(kept)) return { ...kept, ...owner };
+    const base = {
+      id,
+      timestamp: Number.isFinite(Date.parse(request.timestamp)) ? new Date(request.timestamp).toISOString() : event.timestamp,
+      ...owner,
+      model: request.model,
+      inputTokens: request.tokens.input,
+      outputTokens: request.tokens.output,
+      cacheReadTokens: request.tokens.cacheRead,
+      cacheCreationTokens: request.tokens.cacheCreation,
+    };
+    const priced = priceTokens(request, aliases);
+    if (!priced) return { ...base, costMicros: null, priceVersion: null };
+    const savings = cacheSavingsMicros(request, aliases);
+    return {
+      ...base,
+      costMicros: priced.costMicros,
+      costSource: priced.source,
+      priceVersion: priced.priceVersion,
+      ...(savings === undefined ? {} : { cacheSavingsMicros: savings }),
+    };
+  });
+  const priced = records.filter(isPriced);
+  if (priced.length) {
+    const daily = aggregateRequestDaily(priced);
+    event.requestDaily = daily;
+    event.requestMetrics = Object.values(daily).reduce((sum, day) => ({
+      pricedRequests: sum.pricedRequests + day.pricedRequests,
+      costMicros: sum.costMicros + day.costMicros,
+      cacheReadTokens: sum.cacheReadTokens + day.cacheReadTokens,
+      cacheEligibleInputTokens: sum.cacheEligibleInputTokens + day.cacheEligibleInputTokens,
+      priceVersion: day.priceVersion,
+    }));
+  }
+  await reconcileRequestLog(records);
 }
 
 /**
@@ -176,61 +273,23 @@ export interface LocalRequestRecord {
  * snapshots of:
  * - interrupt:  user message whose text starts with "[Request interrupted by user"
  * - toolReject: tool_result with is_error=true marked as a user rejection
- * - tokens:     Claude usage summed across deduplicated assistant messages, or the
- *               latest cumulative Codex token snapshot. Modern
- *               `token_usage_record` is session-scoped; legacy
- *               `event_msg/token_count` is scoped to one transcript/rollout file.
  * - prompts:    genuine human prompt turns (user entries with real text, excluding
  *               interrupts, tool_results, and meta/sidechain entries).
  *
- * Uses a streaming line reader so large transcripts don't load fully into memory.
- * Returns zero counts on any error (file missing, too large, permission denied).
- *
- * Set `opts.frictionOnly` to true for low-latency foreground callers (e.g.
- * contribute-check) that only need friction signals. On the CodeBuddy index.json
- * path this skips the token-flush retry loop — friction comes from a single blob
- * scan that completes before the retry, so no token wait is required. It also
- * skips the Codex post-Stop flush wait. The Claude JSONL path is a single streaming
- * scan with no retry, so the flag is a no-op there.
+ * Token usage is read by `readTokenUsage` (src/token-usage/) in the format the
+ * tool's `TOOLS` entry names. Uses a streaming line reader so large transcripts
+ * don't load fully into memory. Returns zero counts on any error (file missing,
+ * too large, permission denied).
  */
-export async function scanTranscriptStop(
-  transcriptPath: string,
-  opts?: { frictionOnly?: boolean; tool?: string; modelAliases?: Record<string, string> },
-): Promise<TranscriptScanResult> {
-  // CodeBuddy persists its transcript as a single `index.json` document (a JSON
-  // object with `requests[].usage` + `messages[]`), NOT the JSONL schema used by
-  // Claude and Codex. Detect and parse that shape separately.
+export async function scanTranscriptStop(transcriptPath: string): Promise<TranscriptScanResult> {
+  // CodeBuddy persists its transcript as a single `index.json` document, not JSONL.
   if (path.basename(transcriptPath) === 'index.json') {
-    const cb = await scanCodebuddyIndex(transcriptPath, opts?.frictionOnly ?? false);
+    const cb = await scanCodebuddyIndex(transcriptPath);
     if (cb) return cb;
   }
-
-  const initial = await scanJsonlTranscriptOnce(transcriptPath, opts?.modelAliases);
-  if (opts?.frictionOnly || !isCodexTool(opts?.tool)) return initial.result;
-
-  // Codex can append the final cumulative usage record shortly after firing Stop.
-  // Keep the full-scan friction/prompt result, but poll only a small file tail for
-  // a newer token snapshot so a previous turn's non-zero total is not mistaken for
-  // the just-finished turn. This is bounded to ~1.75s and never loads the whole file
-  // repeatedly.
-  const flushedSnapshot = await waitForCodexUsageFlush(transcriptPath, initial.codexSnapshot);
-  return flushedSnapshot
-    ? { ...initial.result, tokens: flushedSnapshot.tokens, tokenScope: flushedSnapshot.scope }
-    : initial.result;
+  return scanJsonlTranscriptOnce(transcriptPath);
 }
 
-interface CodexTokenSnapshot {
-  tokens: TokenUsage;
-  scope: TokenSnapshotScope;
-}
-
-interface JsonlTranscriptScan {
-  result: TranscriptScanResult;
-  /** Preferred cumulative Codex snapshot encountered, if this is a Codex transcript. */
-  codexSnapshot: CodexTokenSnapshot | null;
-}
-
-/** Scan the Claude/Codex JSONL transcript once. */
 /**
  * Whether a Claude transcript entry is a human turn, what the Stop scan counts
  * as a prompt: plain-string user content, or user content with text that is
@@ -255,29 +314,18 @@ export function isHumanPromptEntry(entry: unknown): boolean {
   });
 }
 
-async function scanJsonlTranscriptOnce(transcriptPath: string, modelAliases?: Record<string, string>): Promise<JsonlTranscriptScan> {
+async function scanJsonlTranscriptOnce(transcriptPath: string): Promise<TranscriptScanResult> {
   let interrupt = 0;
   let toolReject = 0;
   let toolError = 0;
   let prompts = 0;
-  const tokens = emptyTokenUsage();
-  let requestMetrics: RequestCostMetrics | undefined;
-  const requestRecords: LocalRequestRecord[] = [];
-  let codexSessionSnapshot: CodexTokenSnapshot | null = null;
-  let codexTranscriptSnapshot: CodexTokenSnapshot | null = null;
-  // Dedup assistant usage per message (one turn spans many JSONL lines that repeat
-  // the same usage). Prefer message.id; fall back to the top-level requestId.
-  const countedUsageKeys = new Set<string>();
-  const historicalRequests = await readLocalRequestRecords();
 
   try {
     const stat = await fs.promises.stat(transcriptPath);
-    if (stat.size === 0) {
-      return { result: { interrupt, toolReject, toolError, tokens, prompts }, codexSnapshot: null };
-    }
+    if (stat.size === 0) return { interrupt, toolReject, toolError, prompts };
     if (stat.size > INTERVENTION_SCAN_MAX_BYTES) {
       log.warn(`dashboard: transcript too large to scan (${stat.size} bytes)`);
-      return { result: { interrupt, toolReject, toolError, tokens, prompts }, codexSnapshot: null };
+      return { interrupt, toolReject, toolError, prompts };
     }
 
     const rl = readline.createInterface({
@@ -287,97 +335,18 @@ async function scanJsonlTranscriptOnce(transcriptPath: string, modelAliases?: Re
 
     for await (const line of rl) {
       const trimmed = line.trim();
-      // Cheap pre-filter: Claude uses user/assistant records; modern Codex emits
-      // token_usage_record and legacy Codex emits event_msg/token_count records.
-      if (
-        !trimmed || (
-          !trimmed.includes('"user"') &&
-          !trimmed.includes('"assistant"') &&
-          !trimmed.includes('"token_usage_record"') &&
-          !trimmed.includes('"token_count"')
-        )
-      ) continue;
+      // Cheap pre-filter: friction and prompts are on user records only.
+      if (!trimmed || !trimmed.includes('"user"')) continue;
 
       let entry: {
         type?: string;
         isMeta?: unknown;
         isSidechain?: unknown;
-        requestId?: unknown;
-        timestamp?: unknown;
-        payload?: unknown;
-        message?: { content?: unknown; id?: unknown; model?: unknown; usage?: Record<string, unknown> };
+        message?: { content?: unknown };
       };
       try {
         entry = JSON.parse(trimmed);
       } catch {
-        continue;
-      }
-
-      const codexUsage = parseCodexCumulativeUsage(entry);
-      if (codexUsage) {
-        // Replace within the matching scope. A session-scoped thread record is
-        // authoritative when both formats are present; the legacy transcript-scoped
-        // counter must not be added to it.
-        if (codexUsage.scope === 'session') codexSessionSnapshot = codexUsage;
-        else codexTranscriptSnapshot = codexUsage;
-        continue;
-      }
-
-      if (entry.type === 'assistant') {
-        const usage = entry.message?.usage;
-        const dedupKey = typeof entry.message?.id === 'string'
-          ? entry.message.id
-          : typeof entry.requestId === 'string'
-            ? entry.requestId
-            : undefined;
-        if (usage && dedupKey && !countedUsageKeys.has(dedupKey)) {
-          countedUsageKeys.add(dedupKey);
-          const requestTokens: TokenUsage = {
-            input: toNum(usage.input_tokens),
-            output: toNum(usage.output_tokens),
-            cacheRead: toNum(usage.cache_read_input_tokens),
-            cacheCreation: toNum(usage.cache_creation_input_tokens),
-          };
-          tokens.input += requestTokens.input;
-          tokens.output += requestTokens.output;
-          tokens.cacheRead += requestTokens.cacheRead;
-          tokens.cacheCreation += requestTokens.cacheCreation;
-          if (typeof entry.message?.model === 'string') {
-            const id = createHash('sha256').update(`${transcriptPath}\0${dedupKey}`).digest('hex');
-            const historical = historicalRequests.get(id);
-            const priced = historical
-              ? {
-                costMicros: historical.costMicros,
-                cacheReadTokens: historical.cacheReadTokens,
-                cacheEligibleInputTokens: historical.inputTokens + historical.cacheReadTokens + historical.cacheCreationTokens,
-                priceVersion: historical.priceVersion,
-              }
-              : estimateClaudeRequest(entry.message.model, requestTokens, modelAliases);
-            if (priced) {
-              requestMetrics = {
-                pricedRequests: (requestMetrics?.pricedRequests ?? 0) + 1,
-                costMicros: (requestMetrics?.costMicros ?? 0) + priced.costMicros,
-                cacheReadTokens: (requestMetrics?.cacheReadTokens ?? 0) + priced.cacheReadTokens,
-                cacheEligibleInputTokens: (requestMetrics?.cacheEligibleInputTokens ?? 0) + priced.cacheEligibleInputTokens,
-                priceVersion: priced.priceVersion,
-              };
-              const timestamp = typeof entry.timestamp === 'string' && Number.isFinite(Date.parse(entry.timestamp))
-                ? new Date(entry.timestamp).toISOString()
-                : '';
-              requestRecords.push({
-                id,
-                timestamp,
-                model: entry.message.model,
-                inputTokens: requestTokens.input,
-                outputTokens: requestTokens.output,
-                cacheReadTokens: requestTokens.cacheRead,
-                cacheCreationTokens: requestTokens.cacheCreation,
-                costMicros: priced.costMicros,
-                priceVersion: priced.priceVersion,
-              });
-            }
-          }
-        }
         continue;
       }
 
@@ -411,18 +380,7 @@ async function scanJsonlTranscriptOnce(transcriptPath: string, modelAliases?: Re
     log.warn(`dashboard: failed to scan transcript: ${(e as Error).message}`);
   }
 
-  const codexSnapshot = codexSessionSnapshot ?? codexTranscriptSnapshot;
-  const result: TranscriptScanResult = {
-    interrupt,
-    toolReject,
-    toolError,
-    tokens: codexSnapshot?.tokens ?? tokens,
-    prompts,
-    ...(requestMetrics ? { requestMetrics } : {}),
-    ...(requestRecords.length ? { requestRecords } : {}),
-    ...(codexSnapshot ? { tokenScope: codexSnapshot.scope } : {}),
-  };
-  return { result, codexSnapshot };
+  return { interrupt, toolReject, toolError, prompts };
 }
 
 /** Narrow an unknown JSON value to an object record. */
@@ -432,120 +390,8 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-/**
- * Convert Codex's inclusive input token count into TeamAI's disjoint buckets.
- * Codex input_tokens includes cached/cache-write tokens; output_tokens already
- * includes reasoning output, so neither subset may be added a second time.
- */
-function codexUsageToTokenUsage(usage: Record<string, unknown>): TokenUsage {
-  const inclusiveInput = toNum(usage.input_tokens);
-  const cacheRead = toNum(usage.cached_input_tokens);
-  const cacheCreation = toNum(usage.cache_write_input_tokens);
-  return {
-    input: Math.max(0, inclusiveInput - cacheRead - cacheCreation),
-    output: toNum(usage.output_tokens),
-    cacheRead,
-    cacheCreation,
-  };
-}
-
-/** Parse one cumulative Codex usage record (modern or legacy), if present. */
-function parseCodexCumulativeUsage(entry: { type?: string; payload?: unknown }): CodexTokenSnapshot | null {
-  const payload = asRecord(entry.payload);
-
-  if (entry.type === 'token_usage_record') {
-    const usage = asRecord(payload?.thread_token_usage);
-    return usage ? { tokens: codexUsageToTokenUsage(usage), scope: 'session' } : null;
-  }
-
-  if (entry.type === 'event_msg' && payload?.type === 'token_count') {
-    const usage = asRecord(asRecord(payload.info)?.total_token_usage);
-    return usage ? { tokens: codexUsageToTokenUsage(usage), scope: 'transcript' } : null;
-  }
-
-  return null;
-}
-
-const CODEX_USAGE_TAIL_BYTES = 256 * 1024;
-const CODEX_USAGE_MAX_ATTEMPTS = 8;
-const CODEX_USAGE_RETRY_MS = 250;
-
 function isCodexTool(tool: string | undefined): boolean {
   return typeof tool === 'string' && tool.toLowerCase().includes('codex');
-}
-
-function codexSnapshotEquals(a: CodexTokenSnapshot | null, b: CodexTokenSnapshot): boolean {
-  return a !== null && a.scope === b.scope
-    && a.tokens.input === b.tokens.input && a.tokens.output === b.tokens.output
-    && a.tokens.cacheRead === b.tokens.cacheRead
-    && a.tokens.cacheCreation === b.tokens.cacheCreation;
-}
-
-/** Prefer session-scoped records; otherwise keep the latest record in the same scope. */
-function preferCodexSnapshot(
-  current: CodexTokenSnapshot | null,
-  observed: CodexTokenSnapshot,
-): CodexTokenSnapshot {
-  if (current?.scope === 'session' && observed.scope === 'transcript') return current;
-  return observed;
-}
-
-/** Read only the transcript tail and return its latest cumulative Codex snapshot. */
-async function readLatestCodexUsageFromTail(transcriptPath: string): Promise<CodexTokenSnapshot | null> {
-  try {
-    const stat = await fs.promises.stat(transcriptPath);
-    if (stat.size === 0) return null;
-    const readSize = Math.min(stat.size, CODEX_USAGE_TAIL_BYTES);
-    const offset = stat.size - readSize;
-    const fh = await fs.promises.open(transcriptPath, 'r');
-    try {
-      const buffer = Buffer.alloc(readSize);
-      await fh.read(buffer, 0, readSize, offset);
-      const lines = buffer.toString('utf-8').split('\n');
-      // When reading a tail slice, the first line may start in the middle of JSON.
-      if (offset > 0) lines.shift();
-      let latestSession: CodexTokenSnapshot | null = null;
-      let latestTranscript: CodexTokenSnapshot | null = null;
-      for (const line of lines) {
-        if (!line.includes('"token_usage_record"') && !line.includes('"token_count"')) continue;
-        try {
-          const parsed = JSON.parse(line) as { type?: string; payload?: unknown };
-          const snapshot = parseCodexCumulativeUsage(parsed);
-          if (snapshot?.scope === 'session') latestSession = snapshot;
-          else if (snapshot) latestTranscript = snapshot;
-        } catch {
-          // The final line can be mid-write; a later retry will see it completed.
-        }
-      }
-      return latestSession ?? latestTranscript;
-    } finally {
-      await fh.close();
-    }
-  } catch {
-    return null;
-  }
-}
-
-/** Wait for Codex's post-Stop cumulative token record without rescanning the file. */
-async function waitForCodexUsageFlush(
-  transcriptPath: string,
-  initial: CodexTokenSnapshot | null,
-): Promise<CodexTokenSnapshot | null> {
-  let latest = initial;
-  for (let attempt = 1; attempt < CODEX_USAGE_MAX_ATTEMPTS; attempt++) {
-    await new Promise((resolve) => setTimeout(resolve, CODEX_USAGE_RETRY_MS));
-    const observed = await readLatestCodexUsageFromTail(transcriptPath);
-    if (!observed) continue;
-    latest = preferCodexSnapshot(latest, observed);
-
-    // A changed cumulative snapshot is the record for the turn that just stopped.
-    // For a first-turn session, the transition from no record to non-zero is enough.
-    if (!codexSnapshotEquals(initial, latest)
-      && (initial !== null || totalTokenCount(latest.tokens) > 0)) {
-      return latest;
-    }
-  }
-  return latest;
 }
 
 const COPILOT_USAGE_TAIL_BYTES = 256 * 1024;
@@ -561,6 +407,8 @@ interface CopilotUsageObservation {
   shutdownObserved: boolean;
   shutdownOffset?: number;
   tokens?: TokenUsage;
+  /** One per model, from the shutdown record. */
+  requests?: TokenRequest[];
 }
 
 function copilotUsageEquals(
@@ -575,35 +423,10 @@ function copilotUsageEquals(
     && first.tokens.cacheCreation === second.tokens.cacheCreation;
 }
 
-/** Parse only Copilot's final aggregate token counters from a shutdown record. */
+/** Parse only Copilot's final token counters from a shutdown record. */
 function parseCopilotShutdown(entry: unknown): CopilotUsageObservation {
-  const record = asRecord(entry);
-  if (record?.type !== COPILOT_SHUTDOWN_EVENT) return { shutdownObserved: false };
-
-  const details = asRecord(asRecord(record.data)?.tokenDetails);
-  if (!details) return { shutdownObserved: true };
-  const tokenCount = (bucket: string): number | undefined => {
-    const value = asRecord(details[bucket])?.tokenCount;
-    return typeof value === 'number' && Number.isFinite(value) && value >= 0
-      ? value
-      : undefined;
-  };
-  const input = tokenCount('input');
-  const output = tokenCount('output');
-  const cacheRead = tokenCount('cache_read');
-  const cacheCreation = tokenCount('cache_write');
-  if ([input, output, cacheRead, cacheCreation].every((value) => value === undefined)) {
-    return { shutdownObserved: true };
-  }
-  return {
-    shutdownObserved: true,
-    tokens: {
-      input: input ?? 0,
-      output: output ?? 0,
-      cacheRead: cacheRead ?? 0,
-      cacheCreation: cacheCreation ?? 0,
-    },
-  };
+  const shutdown = readCopilotShutdown(entry);
+  return shutdown ? { shutdownObserved: true, ...shutdown } : { shutdownObserved: false };
 }
 
 /** Read a bounded tail without retaining any prompt, output, or request fields. */
@@ -806,194 +629,29 @@ export function resolveCopilotUsageTranscript(
   );
 }
 
-const MUSE_USAGE_EVENT = 'goal_usage_attribution';
-const SESSION_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 /**
- * Muse Code's log of `sessionId`, `$XDG_DATA_HOME/muse/sessions/YYYY/MM/DD/<id>/session.jsonl`
- * (`~/.local/share` when unset; muse 1.4.6 honors XDG_DATA_HOME, #1138), found by its id
- * alone: Muse's hooks send `transcript_path: null`. The variable is read live — the only
- * reader is muse's own stop hook, which inherits muse's environment, and tokens are stamped
- * onto the event there, so no later reader without the variable has to find the tree.
+ * The human turns of a CodeBuddy `index.json` transcript: its `messages[]`
+ * entries with role `user`. Null when the file is missing, too large,
+ * unparseable (read mid-write) or not a CodeBuddy index document.
  */
-async function findMuseSessionLog(sessionId: string): Promise<string | null> {
-  if (!SESSION_UUID_RE.test(sessionId)) return null;
-  const dataHome = process.env.XDG_DATA_HOME?.trim() || path.join(getUserHome(), '.local', 'share');
-  const root = path.join(dataHome, 'muse', 'sessions');
-  const subdirs = async (dir: string) => (await fs.promises.readdir(dir).catch(() => [] as string[]))
-    .filter((name) => /^\d+$/.test(name)).sort().toReversed().map((name) => path.join(dir, name));
-  for (const year of await subdirs(root)) {
-    for (const month of await subdirs(year)) {
-      for (const day of await subdirs(month)) {
-        const file = path.join(day, sessionId, 'session.jsonl');
-        if (await pathExists(file)) return file;
-      }
-    }
-  }
-  return null;
-}
-
-/**
- * An Antigravity CLI session's token totals from the PLANNER_RESPONSE steps of
- * its transcript (`<store>/brain/<id>/.system_generated/logs/transcript.jsonl`),
- * or null with none. agy writes the counts as strings, and its `input_tokens`
- * includes `cache_read_tokens`, as Gemini's prompt count does, so the cached part
- * is moved to cacheRead.
- */
-/** A token count as agy writes it: a string of digits on 1.4.8, a number elsewhere. */
-const AgyTokenCount = z.union([z.number(), z.string().transform(Number)]).pipe(z.number().finite().nonnegative()).catch(0);
-/** One PLANNER_RESPONSE line of an agy transcript, with the counts the dashboard sums. */
-const AgyPlannerStep = z.object({
-  type: z.literal('PLANNER_RESPONSE'),
-  input_tokens: AgyTokenCount.default(0),
-  output_tokens: AgyTokenCount.default(0),
-  cache_read_tokens: AgyTokenCount.default(0),
+/** The parts of a CodeBuddy `index.json` the prompt count reads; `requests` tells it from other JSON. */
+const CodebuddyIndex = z.object({
+  requests: z.array(z.unknown()),
+  messages: z.array(z.object({ role: z.unknown() }).catch({ role: undefined })).catch([]).default([]),
 });
 
-async function readAgySessionTokens(sessionId: string): Promise<TokenUsage | null> {
-  if (!SESSION_UUID_RE.test(sessionId)) return null;
-  const { sessionStoreDir } = await import('./locate.js');
-  const { agyStoreRoots } = await import('./session-flow/adapters/agy.js');
-  // The CLI's store first, then the Antigravity app's: a conversation id is in one of them.
-  let text: string | undefined;
-  for (const store of agyStoreRoots(sessionStoreDir('agy', undefined))) {
-    const file = path.join(store, 'brain', sessionId, '.system_generated', 'logs', 'transcript.jsonl');
-    try {
-      text = await fs.promises.readFile(file, 'utf-8');
-      break;
-    } catch (e) {
-      if (!(e instanceof Error && 'code' in e && e.code === 'ENOENT')) {
-        log.debug(`dashboard: could not read the Antigravity transcript ${file}: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    }
-  }
-  if (text === undefined) return null;
-  let tokens: TokenUsage | null = null;
-  for (const line of text.split('\n')) {
-    if (!line.includes('"PLANNER_RESPONSE"')) continue;
-    let raw: unknown;
-    try {
-      raw = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    const step = AgyPlannerStep.safeParse(raw);
-    if (!step.success) continue;
-    const cacheRead = step.data.cache_read_tokens;
-    tokens = addTokenUsage(tokens ?? emptyTokenUsage(), {
-      input: Math.max(0, step.data.input_tokens - cacheRead),
-      output: step.data.output_tokens,
-      cacheRead,
-      cacheCreation: 0,
-    });
-  }
-  return tokens;
-}
-
-/**
- * The session's token totals from the `goal_usage_attribution` records of its
- * main log, or null with none. Subagent logs (`subagent/<id>/`) are not read,
- * as Claude's are not. Muse reports `input_tokens` inclusive of `cached_tokens`,
- * as Codex does, so the cached part is moved to cacheRead.
- */
-async function readMuseSessionTokens(sessionId: string): Promise<TokenUsage | null> {
-  const file = await findMuseSessionLog(sessionId);
-  if (!file) return null;
-  let tokens: TokenUsage | null = null;
-  const stream = fs.createReadStream(file, { encoding: 'utf-8' });
-  const lines = readline.createInterface({ input: stream, crlfDelay: Infinity });
-  try {
-    for await (const line of lines) {
-      if (!line.includes(`"${MUSE_USAGE_EVENT}"`)) continue;
-      let entry: unknown;
-      try {
-        entry = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      const event = asRecord(asRecord(asRecord(entry)?.payload)?.event);
-      if (event?.kind !== MUSE_USAGE_EVENT) continue;
-      const quantity = asRecord(asRecord(event.record)?.quantity);
-      if (quantity?.unit !== 'tokens') continue;
-      const cacheRead = toNum(quantity.cached_tokens);
-      tokens = addTokenUsage(tokens ?? emptyTokenUsage(), {
-        input: Math.max(0, toNum(quantity.input_tokens) - cacheRead),
-        output: toNum(quantity.output_tokens),
-        cacheRead,
-        cacheCreation: 0,
-      });
-    }
-  } catch (e) {
-    log.debug(`dashboard: could not read the Muse Code session log ${file}: ${e instanceof Error ? e.message : String(e)}`);
-  } finally {
-    lines.close();
-    stream.destroy();
-  }
-  return tokens && totalTokens(tokens) > 0 ? tokens : null;
-}
-
-/**
- * Read a CodeBuddy `index.json` transcript once. CodeBuddy's schema differs from
- * Claude Code:
- *
- *   {
- *     "messages": [{ "role": "user" | "assistant" | "tool", ... }],
- *     "requests": [{ "usage": { "inputTokens", "outputTokens", "totalTokens" } }]
- *   }
- *
- * - tokens:  summed across `requests[].usage` (same per-turn accumulation model as
- *            the Claude scan, so re-sent context is counted each request). CodeBuddy
- *            reports no cache-read/creation split at the request level, so those map
- *            to 0 and `input + output` matches CodeBuddy's own `totalTokens`.
- * - prompts: count of `messages[]` entries with role === 'user' (human turns).
- *
- * Returns null when the file is missing, too large, unparseable (e.g. read mid-write),
- * or not a CodeBuddy index document.
- */
-async function readCodebuddyIndexOnce(
-  transcriptPath: string,
-): Promise<TranscriptScanResult | null> {
+async function readCodebuddyIndexPrompts(transcriptPath: string): Promise<number | null> {
   try {
     const stat = await fs.promises.stat(transcriptPath);
     if (stat.size === 0 || stat.size > INTERVENTION_SCAN_MAX_BYTES) return null;
-
-    const content = await fs.promises.readFile(transcriptPath, 'utf-8');
-    const data = JSON.parse(content) as {
-      messages?: Array<{ role?: unknown }>;
-      requests?: Array<{ usage?: Record<string, unknown> }>;
-    };
-    if (!data || !Array.isArray(data.requests)) return null;
-
-    const tokens = emptyTokenUsage();
-    for (const req of data.requests) {
-      const usage = req?.usage;
-      if (!usage) continue;
-      tokens.input += toNum(usage.inputTokens);
-      tokens.output += toNum(usage.outputTokens);
-    }
-
-    const prompts = Array.isArray(data.messages)
-      ? data.messages.filter((m) => m?.role === 'user').length
-      : 0;
-
-    // CodeBuddy index.json carries no interrupt marker (kept 0). toolReject /
-    // toolError are extracted by scanCodebuddyIndex from messages/ blobs, so this
-    // function returns 0 for both and lets the outer layer overwrite them.
-    return { interrupt: 0, toolReject: 0, toolError: 0, tokens, prompts };
+    const index = CodebuddyIndex.safeParse(JSON.parse(await fs.promises.readFile(transcriptPath, 'utf-8')));
+    return index.success ? index.data.messages.filter((m) => m.role === 'user').length : null;
   } catch (e) {
     log.warn(`dashboard: failed to scan CodeBuddy index: ${(e as Error).message}`);
     return null;
   }
 }
 
-/** Total token count across all four buckets. */
-function totalTokenCount(t: TokenUsage): number {
-  return t.input + t.output + t.cacheRead + t.cacheCreation;
-}
-
-/** Retry budget for waiting on CodeBuddy's post-Stop token-usage flush. */
-const CODEBUDDY_USAGE_MAX_ATTEMPTS = 8;
-const CODEBUDDY_USAGE_RETRY_MS = 250;
 /** Cap on CodeBuddy message blobs scanned for friction, to bound Stop-hook IO. */
 const CODEBUDDY_BLOB_MAX_COUNT = 2000;
 /** User-rejection marker CodeBuddy writes into a cancelled tool's result.errorMessage. */
@@ -1123,79 +781,20 @@ async function scanCodebuddyBlobs(
 }
 
 /**
- * Scan a CodeBuddy `index.json` for a cumulative, idempotent token + prompt
- * snapshot, with a bounded retry.
- *
- * CodeBuddy flushes per-request token usage into `index.json` *shortly after* it
- * fires the Stop hook, so the first read frequently sees the human `messages`
- * already written (prompts are captured) but `requests[].usage` still zero. Without
- * a retry, single-turn / last-turn sessions would permanently record 0 tokens. We
- * re-read (up to ~1.75s, well within the 60s hook timeout) until usage appears.
- * This retry path is only exercised by background dashboard callers with a lax hook
- * timeout; foreground low-latency callers (e.g. contribute-check) pass `frictionOnly`
- * (see {@link scanTranscriptStop}) and skip the retry loop entirely.
- *
- * Friction signals (toolReject / toolError) are extracted once from the sibling
- * `messages/` blob directory (see {@link scanCodebuddyBlobs}) and merged into the
- * result. Blob contents don't change during the token-flush retry window, so they
- * are scanned a single time before the loop to avoid amplifying IO. `interrupt`
- * stays 0 — CodeBuddy has no on-disk marker for it.
- *
- * Returns null only when the file never parses as a CodeBuddy index — the caller
- * then falls back to the Claude JSONL scanner.
+ * Friction and prompts of a CodeBuddy `index.json` transcript. Friction
+ * (toolReject / toolError) comes from the sibling `messages/` blobs (see
+ * {@link scanCodebuddyBlobs}), even while `index.json` is unreadable or
+ * mid-write, when prompts count 0; `interrupt` stays 0, as CodeBuddy has no
+ * on-disk marker for it. Null when the file does not parse as a CodeBuddy
+ * index and no blob shows friction, so the caller falls back to the JSONL scanner.
  */
-async function scanCodebuddyIndex(
-  transcriptPath: string,
-  frictionOnly = false,
-): Promise<TranscriptScanResult | null> {
-  const messagesDir = path.join(path.dirname(transcriptPath), 'messages');
-  const friction = await scanCodebuddyBlobs(messagesDir);
-
-  // Friction-only callers (e.g. the foreground contribute-check Stop hook) don't
-  // need token usage, so skip the token-flush retry loop entirely — friction is
-  // already complete from the single blob scan above. Saves up to ~1.75s of
-  // foreground hook budget.
-  if (frictionOnly) {
-    const once = await readCodebuddyIndexOnce(transcriptPath);
-    if (once) {
-      return { ...once, toolReject: friction.toolReject, toolError: friction.toolError };
-    }
-    // index.json unreadable, but we still have friction from the blobs.
-    return {
-      interrupt: 0,
-      toolReject: friction.toolReject,
-      toolError: friction.toolError,
-      tokens: emptyTokenUsage(),
-      prompts: 0,
-    };
-  }
-
-  let last: TranscriptScanResult | null = null;
-  for (let attempt = 0; attempt < CODEBUDDY_USAGE_MAX_ATTEMPTS; attempt++) {
-    const result = await readCodebuddyIndexOnce(transcriptPath);
-    if (result) {
-      last = result;
-      // Usage has been flushed — the snapshot is complete, stop waiting.
-      if (totalTokenCount(result.tokens) > 0) {
-        return { ...result, toolReject: friction.toolReject, toolError: friction.toolError };
-      }
-    }
-    if (attempt < CODEBUDDY_USAGE_MAX_ATTEMPTS - 1) {
-      await new Promise((resolve) => setTimeout(resolve, CODEBUDDY_USAGE_RETRY_MS));
-    }
-  }
-  // Never observed non-zero usage: return the best (zero-token) snapshot we have
-  // (with friction merged in), or null so the caller falls back to the Claude
-  // JSONL scanner.
-  if (last) {
-    return { ...last, toolReject: friction.toolReject, toolError: friction.toolError };
-  }
-  return last;
-}
-
-/** Coerce an unknown usage field to a non-negative finite number (0 otherwise). */
-function toNum(v: unknown): number {
-  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0;
+async function scanCodebuddyIndex(transcriptPath: string): Promise<TranscriptScanResult | null> {
+  const [prompts, friction] = await Promise.all([
+    readCodebuddyIndexPrompts(transcriptPath),
+    scanCodebuddyBlobs(path.join(path.dirname(transcriptPath), 'messages')),
+  ]);
+  if (prompts === null && friction.toolReject + friction.toolError === 0) return null;
+  return { interrupt: 0, ...friction, prompts: prompts ?? 0 };
 }
 
 /**
@@ -1268,8 +867,16 @@ function mapEventType(hookEventName: string): DashboardEventType | null {
 export interface ParseHookEventOptions {
   /** Team keywords (`sharing.intervention.correctionKeywords`) merged with the built-in list. */
   correctionKeywords?: readonly string[];
-  /** Per-machine gateway model-alias → known Claude model name, for cost/cache estimation. */
+  /** Per-machine gateway model alias → a model the price catalog lists, for cost estimation. */
   modelAliases?: Record<string, string>;
+  /**
+   * `false`: leave token usage unread and the request log unwritten, for a
+   * caller that needs only the event's type and session (the local agent),
+   * so it does not log the requests again without the scope's aliases.
+   */
+  readUsage?: false;
+  /** The recording scope's `dataHomeKey`, kept on each request it logs. */
+  dataHomeKey?: string;
 }
 
 function codexReplyText(prompt: string): string {
@@ -1393,16 +1000,20 @@ export async function parseHookEvent(
     event.transcriptPath = hookData.transcript_path;
   }
 
-  // Extract transcript path, AI output and intervention counts from Stop event
-  if (eventType === 'stop' && !isCopilot && typeof hookData.transcript_path === 'string') {
-    event.transcriptPath = hookData.transcript_path;
-    const output = await readLastAssistantOutput(hookData.transcript_path);
+  // Extract transcript path, AI output and intervention counts from Stop event.
+  // DSH sends an empty transcript_path.
+  const stopTranscript = eventType === 'stop' && !isCopilot
+    && typeof hookData.transcript_path === 'string' && hookData.transcript_path
+    ? hookData.transcript_path : undefined;
+  if (stopTranscript) {
+    event.transcriptPath = stopTranscript;
+    const output = await readLastAssistantOutput(stopTranscript);
     if (output) {
       event.stoppedOutput = output;
     }
-    // Full-transcript snapshot of interrupt/tool_reject counts + token usage +
-    // human prompt count (all idempotent, sourced from the non-compactable transcript).
-    const scan = await scanTranscriptStop(hookData.transcript_path, { tool, modelAliases: options?.modelAliases });
+    // Full-transcript snapshot of interrupt/tool_reject counts + human prompt
+    // count (idempotent, sourced from the non-compactable transcript).
+    const scan = await scanTranscriptStop(stopTranscript);
     if (scan.interrupt > 0 || scan.toolReject > 0 || scan.toolError > 0) {
       event.interventions = {
         interrupt: scan.interrupt,
@@ -1410,41 +1021,24 @@ export async function parseHookEvent(
         toolError: scan.toolError,
       };
     }
-    if (scan.tokens.input > 0 || scan.tokens.output > 0
-      || scan.tokens.cacheRead > 0 || scan.tokens.cacheCreation > 0) {
-      event.tokens = scan.tokens;
-      if (scan.tokenScope) event.tokenScope = scan.tokenScope;
-    }
     if (scan.prompts > 0) {
       event.prompts = scan.prompts;
     }
-    if (scan.requestMetrics) {
-      event.requestMetrics = scan.requestMetrics;
-    }
-    {
-      const records = (scan.requestRecords ?? []).map((record) => ({
-        ...record,
-        timestamp: record.timestamp || event.timestamp,
-      }));
-      if (records.length) event.requestDaily = aggregateRequestDaily(records);
-      await reconcileRequestLog(records);
-    }
   }
 
-  if (eventType === 'stop' && tool.toLowerCase() === 'agy') {
-    const tokens = await readAgySessionTokens(sessionId);
-    if (tokens) {
-      event.tokens = tokens;
-      event.tokenScope = 'session';
+  // Token usage, in the format the tool's TOOLS entry names.
+  const tokenSource = tokenSourceOf(tool);
+  if (eventType === 'stop' && options?.readUsage !== false && isTokenFormatId(tokenSource)) {
+    const reading = await readTokenUsage(tokenSource, { transcriptPath: stopTranscript, sessionId });
+    if (totalTokens(reading.tokens) > 0) {
+      event.tokens = reading.tokens;
+      if (reading.scope) event.tokenScope = reading.scope;
     }
-  }
-
-  if (eventType === 'stop' && tool.toLowerCase() === MUSE_TOOL_ID) {
-    const tokens = await readMuseSessionTokens(sessionId);
-    if (tokens) {
-      event.tokens = tokens;
-      event.tokenScope = 'session';
-    }
+    // A session total that names no model (agy, Muse's rollup) is logged as one unpriced request, updated at each Stop.
+    const requests = !reading.requests.length && reading.scope === 'session' && totalTokens(reading.tokens) > 0
+      ? [{ key: 'session', timestamp: event.timestamp, model: '', tokens: reading.tokens, speed: 'standard' as const }]
+      : reading.requests;
+    await recordTokenRequests(event, requests, stopTranscript ?? `${tool}:${sessionId}`, options);
   }
 
   // SessionStart and SessionEnd run in separate processes. Capture the log
@@ -1501,7 +1095,7 @@ export async function parseHookEvent(
   // Copilot's session log contains prompts, tool arguments, assistant output,
   // and auth-bearing request metadata. Follow opaque event IDs, extract only
   // final shutdown counters, and never persist paths or transcript content.
-  if (eventType === 'session_end' && isCopilot) {
+  if (eventType === 'session_end' && tokenSource === 'copilot-shutdown' && options?.readUsage !== false) {
     const transcriptPath = resolveCopilotUsageTranscript(sessionId);
     if (transcriptPath) {
       const history = await readEventsRaw(getEventsPath());
@@ -1552,6 +1146,8 @@ export async function parseHookEvent(
         event.tokens = usage.tokens;
         event.tokenScope = 'session';
       }
+      // Request ids hash the session id, so the request log keeps no Copilot path.
+      await recordTokenRequests(event, usage.requests ?? [], `${COPILOT_TOOL_ID}:${sessionId}`, options);
     }
   }
 
@@ -1569,17 +1165,25 @@ function getRequestsPath(): string {
   return path.join(getUserHome(), '.teamai', 'dashboard', 'requests.jsonl');
 }
 
-async function readLocalRequestRecords(): Promise<Map<string, LocalRequestRecord>> {
+/** A request log line, or undefined for a partial or malformed one. */
+function parseRequestLine(line: string): LocalRequestRecord | undefined {
+  if (!line.trim()) return undefined;
+  try {
+    const record = LocalRequestRecordSchema.safeParse(JSON.parse(line));
+    return record.success ? record.data : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The local request log, by request id; empty before the first request. */
+export async function readLocalRequestRecords(): Promise<Map<string, LocalRequestRecord>> {
   const records = new Map<string, LocalRequestRecord>();
   try {
     const content = await fs.promises.readFile(getRequestsPath(), 'utf-8');
     for (const line of content.split('\n')) {
-      try {
-        const record = JSON.parse(line) as LocalRequestRecord;
-        if (record.id && record.timestamp) records.set(record.id, record);
-      } catch {
-        // Skip partial or malformed lines.
-      }
+      const record = parseRequestLine(line);
+      if (record) records.set(record.id, record);
     }
   } catch {
     // No local request history yet.
@@ -1587,7 +1191,7 @@ async function readLocalRequestRecords(): Promise<Map<string, LocalRequestRecord
   return records;
 }
 
-function aggregateRequestDaily(records: LocalRequestRecord[]): Record<string, RequestCostMetrics> {
+function aggregateRequestDaily(records: readonly PricedRequestRecord[]): Record<string, RequestCostMetrics> {
   const daily: Record<string, RequestCostMetrics> = {};
   for (const record of records) {
     const date = record.timestamp.slice(0, 10);
@@ -1615,7 +1219,7 @@ export async function reconcileRequestLog(
 ): Promise<void> {
   const requestsPath = getRequestsPath();
   const lockPath = `${requestsPath}.lock`;
-  const cutoff = now.getTime() - 90 * 86_400_000;
+  const cutoff = now.getTime() - REQUEST_LOG_RETENTION_DAYS * 86_400_000;
   let lock: fs.promises.FileHandle | undefined;
   try {
     await ensureDir(path.dirname(requestsPath));
@@ -1636,17 +1240,11 @@ export async function reconcileRequestLog(
     }
     const records = new Map<string, LocalRequestRecord>();
     for (const line of existing.split('\n')) {
-      try {
-        const record = JSON.parse(line) as LocalRequestRecord;
-        if (record.id && Number.isFinite(Date.parse(record.timestamp)) && Date.parse(record.timestamp) >= cutoff) {
-          records.set(record.id, record);
-        }
-      } catch {
-        // Skip partial or malformed lines.
-      }
+      const record = parseRequestLine(line);
+      if (record && Date.parse(record.timestamp) >= cutoff) records.set(record.id, record);
     }
     for (const record of incoming) {
-      if (record.id && Number.isFinite(Date.parse(record.timestamp)) && Date.parse(record.timestamp) >= cutoff) {
+      if (Date.parse(record.timestamp) >= cutoff) {
         records.set(record.id, record);
       }
     }
@@ -2771,10 +2369,11 @@ export async function dashboardReport(toolArg?: string): Promise<void> {
     return;
   }
 
-  const event = await parseHookEvent(raw, toolArg ?? 'claude');
+  const scopeKey = await dataHomeKey(getDataHome(config));
+  const event = await parseHookEvent(raw, toolArg ?? 'claude', { modelAliases: config.modelAliases, dataHomeKey: scopeKey });
   if (!event) return;
 
-  event.dataHomeKey = await dataHomeKey(getDataHome(config));
+  event.dataHomeKey = scopeKey;
   const [projectAnchor] = await Promise.all([
     eventProjectAnchor(event.cwd, event.sessionId),
     addGitStateAtStart(event, gitStateIn(hookData)),

@@ -1873,25 +1873,25 @@ describe('dashboard-report team correction keywords', () => {
     fs.writeFileSync(path.join(teamRepo, 'teamai.yaml'),
       'team: test\nrepo: r\nsharing:\n  intervention:\n    correctionKeywords: [rehazlo]\n');
     await handler().execute({ hook_event_name: 'UserPromptSubmit', session_id: 's', prompt: 'rehazlo' }, 'claude', scopeWithTeam());
-    expect(mockParseHookEvent).toHaveBeenCalledWith(expect.any(String), 'claude', { correctionKeywords: ['rehazlo'] });
+    expect(mockParseHookEvent).toHaveBeenCalledWith(expect.any(String), 'claude', { correctionKeywords: ['rehazlo'], dataHomeKey: 'key' });
   });
 
   it('falls back to built-in keywords only when the scope\'s team config cannot be read', async () => {
     await handler().execute({ hook_event_name: 'UserPromptSubmit', session_id: 's', prompt: 'wrong' }, 'claude', scopeWithTeam());
-    expect(mockParseHookEvent).toHaveBeenCalledWith(expect.any(String), 'claude', { correctionKeywords: [] });
+    expect(mockParseHookEvent).toHaveBeenCalledWith(expect.any(String), 'claude', { correctionKeywords: [], dataHomeKey: 'key' });
   });
 
   it('uses no team keywords for hooks without a prompt', async () => {
     fs.writeFileSync(path.join(teamRepo, 'teamai.yaml'),
       'team: test\nrepo: r\nsharing:\n  intervention:\n    correctionKeywords: [rehazlo]\n');
     await handler().execute({ hook_event_name: 'Stop', session_id: 's' }, 'claude', scopeWithTeam());
-    expect(mockParseHookEvent).toHaveBeenCalledWith(expect.any(String), 'claude', { correctionKeywords: [] });
+    expect(mockParseHookEvent).toHaveBeenCalledWith(expect.any(String), 'claude', { correctionKeywords: [], dataHomeKey: 'key' });
   });
 
   it("prices a stop with the model aliases of the hook's own scope", async () => {
     const workspace: LocalConfig = { ...scopeWithTeam(), scope: 'project', projectRoot: teamRepo, modelAliases: { 'gw-sonnet': 'claude-sonnet-4' } };
     await handler().execute({ hook_event_name: 'Stop', session_id: 's' }, 'claude', workspace);
-    expect(mockParseHookEvent).toHaveBeenCalledWith(expect.any(String), 'claude', { correctionKeywords: [], modelAliases: { 'gw-sonnet': 'claude-sonnet-4' } });
+    expect(mockParseHookEvent).toHaveBeenCalledWith(expect.any(String), 'claude', { correctionKeywords: [], modelAliases: { 'gw-sonnet': 'claude-sonnet-4' }, dataHomeKey: 'key' });
   });
 });
 

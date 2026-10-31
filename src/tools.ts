@@ -1,6 +1,7 @@
 import type { McpFormat } from './resources/mcp-format.js';
 import type { RuleFormatId } from './resources/rule-format.js';
 import type { SessionPlatform, StoredSessionPlatform } from './session-flow/adapters/platform-facts.js';
+import type { TokenFormatId } from './token-usage/index.js';
 import type { LaunchAdapterId } from './tool-launch/adapters.js';
 import type { ToolId } from './types.js';
 
@@ -271,6 +272,8 @@ export type ToolFeatures = {
   readonly recall: Support;
   /** The tool's skill calls are recorded for usage stats. */
   readonly stats: Support;
+  /** The dashboard reads the tokens and model of each of the tool's requests (`tokens`), and prices them. */
+  readonly tokens: Support;
   /** teamai's own AI calls (enrich, codebase, import, maintenance) run on the tool's CLI (`tool-launch/call.ts`). */
   readonly aiBackend: Support;
   /** The votes judge reads the tool's session replies. */
@@ -308,6 +311,13 @@ export type ToolDescriptor = {
   readonly sessions: readonly [StoredSessionPlatform, ...StoredSessionPlatform[]] | 'none' | 'unknown';
   /** The adapter teamai launches the tool headless with (`src/tool-launch/adapters.ts`), or `'none'` when teamai never launches it. */
   readonly launch: LaunchAdapterId | 'none';
+  /**
+   * Where the dashboard reads the tool's token usage: a format of
+   * `src/token-usage/`, or `copilot-shutdown`, the totals Copilot writes when
+   * a session ends. `'none'`: teamai reads no usage of the tool. `'unknown'`:
+   * where the tool keeps it is unknown.
+   */
+  readonly tokens: TokenFormatId | 'copilot-shutdown' | 'none' | 'unknown';
   /** Data only: nothing reads it but the support page (`scripts/tool-support.ts`). */
   readonly features: ToolFeatures;
 };
@@ -361,11 +371,13 @@ export const TOOLS = {
     hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.claude/settings.json', evidence: 'verified' }] }, self: { channel: 'settings', format: 'claude', reads: [{ base: 'project', path: '.claude/settings.json', when: 'workspaceUnder', evidence: 'verified' }, { base: 'project', path: '.claude/settings.local.json', when: 'workspaceUnder', evidence: 'verified' }] } },
     sessions: ['claude-code'],
     launch: 'claude',
+    tokens: 'claude-jsonl',
     features: {
       env: '✓t',
       workflows: '✓v',
       recall: '✓v',
       stats: '✓v',
+      tokens: '✓v',
       aiBackend: '✓v',
       votesJudge: '✓v',
       sessionJudge: { cell: '✓t', note: '#1386 the session judges its skill-driven run; not rerun' },
@@ -400,11 +412,13 @@ export const TOOLS = {
     hooks: { user: { channel: 'settings', format: 'codex', reads: [{ base: 'home', path: '.codex/hooks.json', evidence: 'verified' }] }, self: { channel: 'settings', format: 'codex', reads: [{ base: 'project', path: '.codex/hooks.json', when: 'workspaceUnder', evidence: 'verified' }] } },
     sessions: ['codex'],
     launch: 'codex',
+    tokens: 'codex-rollout',
     features: {
       env: '✓t',
       workflows: '✓t',
       recall: '✓v',
       stats: { cell: '✓t', note: 'A1 (#1245) records its skill loads; not rerun' },
+      tokens: '✓v',
       aiBackend: '✓v',
       votesJudge: { cell: '✓t', note: '#1374 judges the reply in its Stop payload; not rerun' },
       sessionJudge: { cell: '✓t', note: '#1386 the session judges its skill-driven run; not rerun' },
@@ -426,11 +440,13 @@ export const TOOLS = {
     hooks: { user: { channel: 'settings', format: 'codex', reads: [{ base: 'home', path: '.codex-internal/hooks.json', evidence: 'assumed' }] }, self: { channel: 'settings', format: 'codex', reads: 'unknown' } },
     sessions: ['codex-internal'],
     launch: 'codex',
+    tokens: 'codex-rollout',
     features: {
       env: '?',
       workflows: '✓t',
       recall: '?',
       stats: '?',
+      tokens: '✓t',
       aiBackend: '✓t',
       votesJudge: '?',
       sessionJudge: '?',
@@ -448,11 +464,13 @@ export const TOOLS = {
     hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.claude-internal/settings.json', evidence: 'assumed' }] }, self: { channel: 'settings', format: 'claude', reads: 'unknown' } },
     sessions: ['claude-internal'],
     launch: 'claude',
+    tokens: 'claude-jsonl',
     features: {
       env: '?',
       workflows: '✓t',
       recall: '?',
       stats: '?',
+      tokens: '✓t',
       aiBackend: '✓t',
       votesJudge: '?',
       sessionJudge: '?',
@@ -473,11 +491,13 @@ export const TOOLS = {
     hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.tclaude/settings.json', evidence: 'assumed' }] }, self: { channel: 'settings', format: 'claude', reads: 'unknown' } },
     sessions: ['tclaude'],
     launch: 'claude',
+    tokens: 'claude-jsonl',
     features: {
       env: '?',
       workflows: '✓t',
       recall: '?',
       stats: '?',
+      tokens: '✓t',
       aiBackend: '✓t',
       votesJudge: '?',
       sessionJudge: '?',
@@ -499,11 +519,13 @@ export const TOOLS = {
     hooks: { user: { channel: 'settings', format: 'codex', reads: [{ base: 'home', path: '.tcodex/hooks.json', evidence: 'assumed' }] }, self: { channel: 'settings', format: 'codex', reads: 'unknown' } },
     sessions: ['tcodex'],
     launch: 'codex',
+    tokens: 'codex-rollout',
     features: {
       env: '?',
       workflows: '✓t',
       recall: '?',
       stats: '?',
+      tokens: '✓t',
       aiBackend: '✓t',
       votesJudge: '?',
       sessionJudge: '?',
@@ -543,11 +565,13 @@ export const TOOLS = {
     hooks: { user: { channel: 'settings', format: 'cursor', reads: [{ base: 'home', path: '.cursor/hooks.json', evidence: 'source' }] }, self: { channel: 'settings', format: 'cursor', reads: [{ base: 'project', path: '.cursor/hooks.json', when: 'workspaceUnder', evidence: 'source' }] } },
     sessions: ['cursor'],
     launch: 'cursor',
+    tokens: 'none',
     features: {
       env: '?',
       workflows: { cell: '+s', note: 'Cursor IDE: —' },
       recall: { cell: '✗v', note: 'Cursor IDE: ✓v' },
       stats: { cell: '✓v', note: 'Cursor IDE: ✓t' },
+      tokens: { cell: '+d', note: 'usage is in the Cursor account dashboard only' },
       aiBackend: '✓d',
       votesJudge: '+s',
       sessionJudge: { cell: '✓t', note: '#1386 the session judges its skill-driven run; not rerun' },
@@ -592,11 +616,13 @@ export const TOOLS = {
     },
     sessions: 'none',
     launch: 'copilot',
+    tokens: 'copilot-shutdown',
     features: {
       env: '?',
       workflows: '+s',
       recall: '✓v',
       stats: { cell: '✓t', note: 'A1 (#1245) records its skill loads; not rerun' },
+      tokens: { cell: '✓t', note: 'one request per model from the session.shutdown totals, priced without long-prompt rates; not run' },
       aiBackend: '✓d',
       votesJudge: '?',
       sessionJudge: { cell: '✓t', note: '#1386 the session judges its skill-driven run; not rerun' },
@@ -625,11 +651,13 @@ export const TOOLS = {
     hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.joycode/hooks.json', evidence: 'source' }] }, self: { channel: 'settings', format: 'claude', reads: [{ base: 'project', path: '.joycode/hooks.json', when: 'workspaceUnder', evidence: 'source' }] } },
     sessions: ['joycode'],
     launch: 'none',
+    tokens: 'codex-rollout',
     features: {
       env: '?',
       workflows: '?',
       recall: '◐s',
       stats: { cell: '✓t', note: 'A1 (#1245) records its skill loads; not rerun' },
+      tokens: '✓t',
       aiBackend: '?',
       votesJudge: '?',
       sessionJudge: { cell: '✓t', note: '#1386 the session judges its skill-driven run; not rerun' },
@@ -661,11 +689,13 @@ export const TOOLS = {
     // Qoder CLI 1.1.78: <id>.jsonl under <QODER_CONFIG_DIR or QODER_CLI_HOME/.qoder or ~/.qoder>/projects/<cwd>.
     sessions: ['qoder'],
     launch: 'qoder',
+    tokens: 'claude-jsonl',
     features: {
       env: '?',
       workflows: '?',
       recall: '◐s',
       stats: '✓s',
+      tokens: { cell: '◐t', note: 'Qoder bills credits and can write zero token counts' },
       aiBackend: '✓d',
       votesJudge: '?',
       sessionJudge: { cell: '✓s', note: 'Claude Code-style subagents, transcripts under <id>/subagents/ (qodercli 1.1.78); not run' },
@@ -697,11 +727,13 @@ export const TOOLS = {
     // Qoder CN: the same layout under ~/.qoder-cn, moved by QODERCN_CONFIG_DIR.
     sessions: ['qoder-cn'],
     launch: 'none',
+    tokens: 'claude-jsonl',
     features: {
       env: '?',
       workflows: '?',
       recall: '◐s',
       stats: '✓s',
+      tokens: { cell: '◐t', note: 'Qoder bills credits and can write zero token counts' },
       aiBackend: '?',
       votesJudge: '?',
       sessionJudge: { cell: '✓s', note: 'Claude Code-style subagents, transcripts under <id>/subagents/ (qodercli 1.1.78); not run' },
@@ -733,11 +765,13 @@ export const TOOLS = {
     // Kiro CLI docs: sessions under ~/.kiro, moved by KIRO_HOME.
     sessions: 'none',
     launch: 'kiro',
+    tokens: 'none',
     features: {
       env: '?',
       workflows: '?',
       recall: '◐d',
       stats: '?',
+      tokens: '?',
       aiBackend: '✓d',
       votesJudge: '?',
       sessionJudge: { cell: '✓d', note: 'a subagent works in its own context window, without the conversation; not run' },
@@ -772,11 +806,13 @@ export const TOOLS = {
     // Trae docs: chat history in the IDE's ModularData database, which no variable moves.
     sessions: 'none',
     launch: 'none',
+    tokens: 'none',
     features: {
       env: '?',
       workflows: '?',
       recall: '?',
       stats: '?',
+      tokens: '?',
       aiBackend: '?',
       votesJudge: '?',
       sessionJudge: { cell: '✓s', note: 'the Task tool starts a fresh subagent; no session variable, so the session names its tool with --tools; not run' },
@@ -809,11 +845,13 @@ export const TOOLS = {
     // Trae CN docs: the same database under Trae CN's application data.
     sessions: 'none',
     launch: 'none',
+    tokens: 'none',
     features: {
       env: '?',
       workflows: '?',
       recall: '?',
       stats: '?',
+      tokens: '?',
       aiBackend: '?',
       votesJudge: '?',
       sessionJudge: { cell: '✓s', note: 'the Task tool starts a fresh subagent; no session variable, so the session names its tool with --tools; not run' },
@@ -846,11 +884,13 @@ export const TOOLS = {
     hooks: { user: { channel: 'settings', format: 'zcode', reads: [{ base: 'home', path: '.zcode/cli/config.json', evidence: 'source' }] }, self: 'user' },
     sessions: 'none',
     launch: 'none',
+    tokens: 'unknown',
     features: {
       env: '✓t',
       workflows: '+s',
       recall: '✓s',
       stats: '✓s',
+      tokens: '?',
       aiBackend: '+s',
       votesJudge: { cell: '✓t', note: '#1374 judges the reply in its Stop payload; not rerun' },
       sessionJudge: { cell: '✓d', note: 'the built-in general-purpose subagent works in its own context; not run' },
@@ -888,11 +928,13 @@ export const TOOLS = {
     hooks: { user: { channel: 'adapter', adapter: 'omp-extension', evidence: 'verified' }, self: 'user' },
     sessions: 'none',
     launch: 'omp',
+    tokens: 'pi-session',
     features: {
       env: '✓s',
       workflows: '+s',
       recall: '✓v',
       stats: { cell: '✓t', note: 'A1 (#1245) records its skill loads; not rerun' },
+      tokens: '✓t',
       aiBackend: '✓d',
       votesJudge: '?',
       sessionJudge: { cell: '✓s', note: 'the task tool starts each child as a new agent session (omp 18.12.6); not run' },
@@ -924,11 +966,13 @@ export const TOOLS = {
     // Pi 0.99: <ts>_<uuid>.jsonl under ~/.pi/agent/sessions/<cwd>, moved by PI_CODING_AGENT_SESSION_DIR or PI_CODING_AGENT_DIR.
     sessions: 'none',
     launch: 'pi',
+    tokens: 'pi-session',
     features: {
       env: '✓s',
       workflows: '+v',
       recall: '✓v',
       stats: { cell: '✓t', note: 'A1 (#1245) records its skill loads; not rerun' },
+      tokens: '✓t',
       aiBackend: '✓s',
       votesJudge: '?',
       sessionJudge: { cell: '◐s', note: 'bare Pi starts no subagent, so its session answers h4 and does not judge; the subagent example extension adds one (since 0.24.0); not run' },
@@ -981,11 +1025,13 @@ export const TOOLS = {
     hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.codebuddy/settings.json', evidence: 'source' }] }, self: { channel: 'settings', format: 'claude', reads: [{ base: 'project', path: '.codebuddy/settings.json', when: 'cwdOnly', evidence: 'source' }] } },
     sessions: ['codebuddy'],
     launch: 'codebuddy',
+    tokens: 'codebuddy',
     features: {
       env: '?',
       workflows: '✓d',
       recall: '✓s',
       stats: '✓v',
+      tokens: '✓t',
       aiBackend: '✓d',
       votesJudge: '+v',
       sessionJudge: { cell: '✓t', note: '#1386 the session judges its skill-driven run; not rerun' },
@@ -1016,11 +1062,13 @@ export const TOOLS = {
     // OpenClaw 2026.10: rows in ~/.openclaw/agents/<id>/agent/openclaw-agent.sqlite, moved by OPENCLAW_STATE_DIR.
     sessions: 'none',
     launch: 'openclaw',
+    tokens: 'none',
     features: {
       env: '◐d',
       workflows: '+d',
       recall: '✓s',
       stats: '+s',
+      tokens: { cell: '+s', note: 'no Stop hook reaches the dashboard' },
       aiBackend: '✓d',
       votesJudge: '—t',
       sessionJudge: { cell: '◐s', note: 'sessions_spawn with isolated context, in the coding and messaging tool profiles; a tool policy can remove it; not run' },
@@ -1048,11 +1096,13 @@ export const TOOLS = {
     hooks: { user: { channel: 'adapter', adapter: 'hermes-plugin', evidence: 'verified' }, self: 'user' },
     sessions: 'none',
     launch: 'hermes',
+    tokens: 'none',
     features: {
       env: '◐s',
       workflows: '+s',
       recall: '✓v',
       stats: '+s',
+      tokens: { cell: '+s', note: 'no Stop hook reaches the dashboard' },
       aiBackend: '✓s',
       votesJudge: '—t',
       sessionJudge: { cell: '✓s', note: 'delegate_task starts a child agent with a fresh conversation; not run' },
@@ -1076,11 +1126,13 @@ export const TOOLS = {
     hooks: { user: { channel: 'adapter', adapter: 'dsh-hooks', evidence: 'source' }, self: 'user' },
     sessions: 'none',
     launch: 'none',
+    tokens: 'none',
     features: {
       env: '✗s',
       workflows: '+s',
       recall: '✓s',
       stats: { cell: '✓t', note: 'A1 (#1245) records its skill loads; not rerun' },
+      tokens: { cell: '+s', note: 'zstd session files need a newer Node than 20' },
       aiBackend: '+s',
       votesJudge: '?',
       sessionJudge: { cell: '◐s', note: 'the subagent tool with the fresh spawn backend, not fork; the minimal preset leaves it out; not run' },
@@ -1125,11 +1177,13 @@ export const TOOLS = {
     hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.workbuddy/settings.json', evidence: 'assumed' }] }, self: { channel: 'settings', format: 'claude', reads: 'unknown' } },
     sessions: ['workbuddy'],
     launch: 'codebuddy',
+    tokens: 'codebuddy',
     features: {
       env: '?',
       workflows: '✓t',
       recall: '✓t',
       stats: '?',
+      tokens: '✓t',
       aiBackend: '✓t',
       votesJudge: '?',
       sessionJudge: { cell: '✓t', note: 'CodeBuddy\'s engine, whose session judges its skill-driven run; not run' },
@@ -1189,11 +1243,13 @@ export const TOOLS = {
     hooks: { user: { channel: 'adapter', adapter: 'opencode-plugin', evidence: 'source' }, self: 'user' },
     sessions: ['opencode'],
     launch: 'opencode',
+    tokens: 'opencode-db',
     features: {
       env: '?',
       workflows: '✓t',
       recall: '✓v',
       stats: { cell: '✓t', note: 'A1 (#1245) records its skill loads; not rerun' },
+      tokens: '✓v',
       aiBackend: '✓v',
       votesJudge: '?',
       sessionJudge: { cell: '✓t', note: '#1386 the session judges its skill-driven run; not rerun' },
@@ -1233,11 +1289,13 @@ export const TOOLS = {
     hooks: { user: { channel: 'settings', format: 'codex', reads: [{ base: 'home', path: '.config/muse/settings.json', evidence: 'verified' }] }, self: { channel: 'settings', format: 'codex', reads: [{ base: 'project', path: '.muse/hooks.json', when: 'workspaceUnder', evidence: 'verified' }] } },
     sessions: 'none',
     launch: 'muse',
+    tokens: 'muse-session',
     features: {
       env: '✓t',
       workflows: '+v',
       recall: '✓t',
       stats: '✓v',
+      tokens: '✓t',
       aiBackend: '✓v',
       votesJudge: { cell: '✓t', note: '#1374 judges the reply in its Stop payload; not rerun' },
       sessionJudge: { cell: '✓t', note: '#1386 the session judges its skill-driven run; not rerun' },
@@ -1273,11 +1331,13 @@ export const TOOLS = {
     hooks: { user: { channel: 'adapter', adapter: 'agy-hooks', evidence: 'verified' }, self: 'user' },
     sessions: ['agy'],
     launch: 'agy',
+    tokens: 'agy-transcript',
     features: {
       env: { cell: '✓v', note: 'agy 1.4.8 run_command inherits the environment agy starts in' },
       workflows: '✓v',
       recall: '✓v',
       stats: '✓v',
+      tokens: { cell: '◐v', note: 'agy 1.4.10 session read 2026-10-31; it names no model, so its tokens show unpriced' },
       aiBackend: '✓v',
       votesJudge: { cell: '✗v', note: 'agy 1.4.8 PostToolUse carries no tool output, so a teamai recall run never reaches the recall log' },
       sessionJudge: { cell: '✓t', note: 'invoke_subagent starts a fresh conversation that gets only its prompt (agy 1.4.8); no session variable, so the session names its tool with --tools; not run' },
