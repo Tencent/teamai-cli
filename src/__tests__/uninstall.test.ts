@@ -3948,6 +3948,8 @@ describe('uninstall', () => {
     vi.stubEnv('HERMES_HOME', hermesHome);
     const { injectHermesHooks } = await import('../hermes-hooks.js');
     await injectHermesHooks();
+    const oldSkill = path.join(hermesHome, 'skills', 'teamai', 'SKILL.md');
+    await fse.outputFile(oldSkill, shipped('teamai', 'SKILL.md'));
     await fse.outputJson(path.join(homeDir, '.teamai', 'tool-homes.json'), { hermes: hermesHome });
     vi.stubEnv('HERMES_HOME', '');
 
@@ -3958,6 +3960,7 @@ describe('uninstall', () => {
 
     expect(await fse.pathExists(path.join(hermesHome, 'hooks', 'teamai-status-report.sh'))).toBe(false);
     expect(await fse.pathExists(path.join(hermesHome, 'plugins', 'teamai-instructions'))).toBe(false);
+    expect(await fse.pathExists(oldSkill)).toBe(false);
     expect(YAML.parse(await fse.readFile(path.join(hermesHome, 'config.yaml'), 'utf8')) ?? {}).toEqual({});
     expect(await fse.readJson(path.join(hermesHome, 'shell-hooks-allowlist.json'))).toEqual({ approvals: [] });
   });
