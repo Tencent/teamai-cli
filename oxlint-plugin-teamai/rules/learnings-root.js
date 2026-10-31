@@ -19,14 +19,15 @@ export default defineRule({
           || node.callee.object.name !== 'path'
           || node.callee.property.type !== 'Identifier'
           || !['join', 'resolve'].includes(node.callee.property.name)
-          || !node.arguments.some((argument) => argument.type === 'Literal'
-            && (argument.value === 'learnings' || argument.value === '/learnings'))) return;
+          || !node.arguments.some((argument) => argument.type === 'Literal' && argument.value === 'learnings')) return;
         context.report({ node, message });
       },
+      // A `/learnings` suffix however it is attached: joined, concatenated or templated.
+      Literal(node) {
+        if (node.value === '/learnings') context.report({ node, message });
+      },
       TemplateLiteral(node) {
-        if (node.expressions.length === 0
-          || node.quasis.at(-1)?.value.raw !== '/learnings') return;
-        context.report({ node, message });
+        if (node.quasis.at(-1)?.value.raw === '/learnings') context.report({ node, message });
       },
     };
   },

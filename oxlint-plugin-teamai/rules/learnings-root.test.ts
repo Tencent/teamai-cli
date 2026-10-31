@@ -48,3 +48,5 @@ const root = path.join(getKnowledgeDir(config), 'learnings');
 
 rule.invalid('rejects legacy whole-file exceptions', `const root = path.join(base, 'learnings');`, undefined, { filename: 'src/init.ts' });
 rule.valid('scopes to src/ of the checkout, not of a parent directory', `import path from 'node:path'; const root = path.join(repo, 'learnings');`, { filename: 'src/teamai-cli/scripts/check.ts', files: { 'src/teamai-cli/package.json': '{}' } });
+rule.invalid('rejects a concatenated learnings root', `const root = getKnowledgeDir(config) + '/learnings';`);
+rule.invalid('rejects a learnings suffix in a plain template', 'const suffix = `/learnings`;');
