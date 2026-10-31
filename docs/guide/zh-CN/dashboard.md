@@ -174,6 +174,62 @@ teamai session resume <name> --platform claude-code
 
 `--dry-run` 只预览。`--scrub` 先脱敏再归档；不加时，交互运行会询问，脚本需要 `-y`。`--all` 超过 10 条要确认（push 为 5 条）。`push --session <id>` 只推送 `--source` 的这一个会话，不限工作区，总会脱敏，也不询问。归档在团队仓库 `teamai-reports` 分支的 `sessions/repos/<repo>/<author>/`，按会话自己的 git remote；否则归入 `_unattributed`。工作流步骤在自己工作树里运行的会话，归到该工作树所属检出目录的仓库下。
 
+### 脱敏后的会话保留什么
+
+`--scrub`，以及 teamai 自己发起的每次推送（`push --session`、`workflow publish --sessions`、`score --drain`），还会改写本机路径。一位成员在 `/Users/me/app/packages/api` 里运行了一个会话：
+
+| 成员的记录里 | 归档里 |
+|---|---|
+| `/Users/me/app/packages/api/src/retry.ts` | `<repo>/packages/api/src/retry.ts` |
+| `cat /Users/me/app/skills/review/SKILL.md` | `cat <repo>/skills/review/SKILL.md` |
+| `/Users/me/.claude/settings.json` | `~/.claude/settings.json` |
+| `/Users/me/other-project/notes.md` | `~/other-project/notes.md` |
+| `/private/tmp/claude-502/-Users-me-app/6e64…/tasks/b.output` | `<tmp>/<project>/6e64…/tasks/b.output` |
+| `C:\Users\me\app\src\retry.ts` | `<repo>\src\retry.ts` |
+| `file:///Users/me/app/README.md` | `file://<repo>/README.md` |
+| `src/retry.ts`、`/api/v1/users`、`https://github.com/acme/app` | 不变 |
+
+`<repo>` 是会话运行所在的仓库（不在 git 里时是工作区根目录），`~` 是主目录，`<tmp>` 是临时目录。标题、消息、思考、工具调用和工具结果都会改写。不加 `--scrub` 的推送保持记录原样。
+
+它的 `meta.json` 保存相对于仓库的目录，以及会话启动 hook 在该成员机器上捕获的运行配置：
+
+```json
+{
+  "origin": { "platform": "claude-code", "author": "<git user.name>", "cwd": "packages/api", "repoIdentity": "github.com/acme/app", "...": "..." },
+  "agent": {
+    "v": 1,
+    "tool": { "name": "claude", "version": "2.1.301" },
+    "model": { "requested": "claude-opus-5-5", "reported": "claude-opus-5-5" },
+    "team": { "revision": "7a6134a25e74…", "localChanges": false, "selection": { "primaryRole": "backend" } },
+    "project": { "commit": "8e04ff430…", "dirty": true },
+    "teamai": "0.29.0",
+    "driver": "session",
+    "fingerprint": "…"
+  }
+}
+```
+
+| 会话运行时的 `cwd` | 归档的 `cwd` |
+|---|---|
+| `/Users/me/app`（仓库根目录） | `.` |
+| `/Users/me/app/packages/api` | `packages/api` |
+| `/Users/me/tmp/scratch`（没有仓库，也没有 teamai 工作区） | `""` |
+| 已删除的工作流步骤工作树 | `""` |
+
+`session resume` 和工作流交接都恢复到你指定的目录，所以相对 `cwd` 就够了。`_index.json` 里该会话带有 `"teamRevision": "7a6134a25e74…"`。队友可以据此读到该会话当时的技能，或列出在 `main` 以外的团队版本上运行的会话：
+
+```bash
+# 在团队仓库克隆中
+git show 7a6134a25e74:skills/review/SKILL.md
+
+git fetch -q origin main teamai-reports
+git show origin/teamai-reports:sessions/repos/github.com~2Facme~2Fapp/_index.json \
+  | jq -r --arg main "$(git rev-parse origin/main)" \
+      '.sessions[] | select(.teamRevision and .teamRevision != $main) | "\(.teamRevision[0:7])  \(.sessionName)"'
+```
+
+会话的各次捕获不一致，或本机没有捕获时，不写 `agent`：会话在安装 hook 之前就开始了、它的工具不运行会话启动 hook，或捕获已随会话一起清理。工作流步骤的会话没有 `agent`，因为运行记录了每一轮的 `agent`；`session migrate --push` 归档的副本也没有。会话自己的 pull 交付了另一个团队版本时，`agent` 不含 `team`。
+
 session 命令使用本项目安装的团队仓库克隆，没有时使用用户级安装的克隆，所以只有要指向另一个克隆时才需要 `--repo-root`。没有任何安装时，它们输出 `teamai is not set up for this directory.`，提示 `teamai init` 和 `--repo-root`，并以退出码 1 退出。
 
 旧版 teamai 归档在默认分支上的会话仍可在那里读取。`session list`、`search` 和 `pull` 会读取两处，先读 `teamai-reports`，两处都有的会话只列出一次。`session resume` 先读 `teamai-reports`，再读旧归档。teamai 0.28.0 及更早版本只读取默认分支，因此要让每位成员都升级，才能看到队友归档在 `teamai-reports` 上的会话。无人值守任务用 `teamai score --drain` 归档自己的会话（见[会话](sharing.md#会话)）。

@@ -453,6 +453,7 @@ describe('session commands without --repo-root outside a workspace install', () 
   it('archive none of this machine\'s paths with push --scrub, in the transcript, its title, meta or index', async () => {
     const team = await userInstall();
     const { checkout } = repository('product');
+    git(checkout, 'remote', 'set-url', 'origin', 'https://github.com/acme/product.git');
     const home = os.homedir();
     const uid = process.getuid?.() ?? 502;
     const answers = [
@@ -460,6 +461,8 @@ describe('session commands without --repo-root outside a workspace install', () 
       `Your settings are in ${home}/.claude/settings.json, the other project in ${home}/other-project/x.ts.`,
       `Output is being written to: /private/tmp/claude-${uid}/${encodeCwdClaude(checkout)}/6e64/tasks/b.output`,
       `Open file://${checkout}/README.md, not src/sync.ts or https://github.com/acme/app.`,
+      // macOS links /tmp and /var to /private/...: a tool records the resolved cwd, a prompt often has the other spelling.
+      `Also see ${checkout.replace(/^\/private\//, '/')}/packages/api/src/retry.ts.`,
     ];
     await claudeSession(path.join(checkout, 'packages', 'api'), { title: `Review ${checkout}/packages/api`, answers });
 
@@ -472,7 +475,8 @@ describe('session commands without --repo-root outside a workspace install', () 
     expect(archive).toContain('Your settings are in ~/.claude/settings.json, the other project in ~/other-project/x.ts.');
     expect(archive).toContain('Output is being written to: <tmp>/<project>/6e64/tasks/b.output');
     expect(archive).toContain('Open file://<repo>/README.md, not src/sync.ts or https://github.com/acme/app.');
-    for (const local of [checkout, home, fs.realpathSync(os.tmpdir())]) expect(archive).not.toContain(local);
+    expect(archive).toContain('Also see <repo>/packages/api/src/retry.ts.');
+    for (const local of [checkout, home, fs.realpathSync(os.tmpdir())]) expect(archive).not.toContain(local.replace(/^\/private\//, '/'));
     expect(archive).not.toMatch(/claude-[0-9]+\//);
   });
 

@@ -91,10 +91,12 @@ async function sessionRoot(cwd: string, projectRoot?: string): Promise<{ root: s
  * `cwd` is relative to, the home directory and the per-user temp roots, each as written and resolved.
  */
 export async function publishedPathRoots(cwd: string): Promise<LocalPathRoots> {
-  const resolved = async (dir: string): Promise<string[]> => [...new Set([dir, await fs.promises.realpath(dir).catch(() => dir)])];
+  // macOS links `/tmp`, `/var` and `/etc` to `/private/...`: a tool records the resolved path, and a prompt often names
+  // the other.
+  const spellings = (dirs: string[]): string[] => [...new Set(dirs.flatMap((dir) => [dir, dir.replace(/^\/private(?=\/(?:tmp|var|etc)\/)/, '')]))];
+  const resolved = async (dir: string): Promise<string[]> => spellings([dir, await fs.promises.realpath(dir).catch(() => dir)]);
   const rooted = await sessionRoot(cwd);
-  // The root as `cwd` spells it too, when `cwd` reaches it through a link (`/tmp` → `/private/tmp`).
-  const repo = rooted ? [...new Set([rooted.root, path.resolve(cwd, path.relative(rooted.cwd, rooted.root))])] : [];
+  const repo = rooted ? spellings([rooted.root, path.resolve(cwd, path.relative(rooted.cwd, rooted.root))]) : [];
   const uid = process.getuid?.();
   const claudeTmp = uid === undefined ? [] : [`/private/tmp/claude-${uid}`, `/tmp/claude-${uid}`];
   return { repo, home: await resolved(os.homedir()), tmp: [...await resolved(os.tmpdir()), ...claudeTmp] };

@@ -143,26 +143,34 @@ describe('scrubSession', () => {
 });
 
 describe('scrubSession with localPaths, for a session published to the team archive', () => {
-  const machine = { repo: ['/Users/alice/app'], home: ['/Users/alice'], tmp: ['/private/tmp/claude-502'] };
-  const windows = { repo: ['C:\\Users\\alice\\app'], home: ['C:\\Users\\alice'], tmp: [] };
-  const said = (text: string, cwd = '/Users/alice/app'): Session => ({ ...makeSession(), title: 'paths', cwd, messages: [{ role: 'user', content: [{ type: 'text', text }] }] });
+  const machine = { repo: ['/Users/me/app'], home: ['/Users/me'], tmp: ['/private/tmp/claude-502'] };
+  const windows = { repo: ['C:\\Users\\me\\app'], home: ['C:\\Users\\me'], tmp: [] };
+  const said = (text: string, cwd = '/Users/me/app'): Session => ({ ...makeSession(), title: 'paths', cwd, messages: [{ role: 'user', content: [{ type: 'text', text }] }] });
   const textOf = (session: Session): unknown => session.messages[0].content[0];
 
   it.each([
-    ['/Users/alice/app/src/sync.ts', '<repo>/src/sync.ts'],
-    ['/Users/alice/app', '<repo>'],
-    ['/Users/alice/.claude/settings.json', '~/.claude/settings.json'],
-    ['/Users/alice/other-project/x.ts', '~/other-project/x.ts'],
-    ['/Users/alice/app2/x.ts', '~/app2/x.ts'],
-    ['/private/tmp/claude-502/-Users-alice-app/6e64/tasks/b.output', '<tmp>/<project>/6e64/tasks/b.output'],
-    ['file:///Users/alice/app/README.md', 'file://<repo>/README.md'],
+    ['/Users/me/app/src/sync.ts', '<repo>/src/sync.ts'],
+    ['/Users/me/app', '<repo>'],
+    ['/Users/me/.claude/settings.json', '~/.claude/settings.json'],
+    ['/Users/me/other-project/x.ts', '~/other-project/x.ts'],
+    ['/Users/me/app2/x.ts', '~/app2/x.ts'],
+    ['/private/tmp/claude-502/-Users-me-app/6e64/tasks/b.output', '<tmp>/<project>/6e64/tasks/b.output'],
+    ['file:///Users/me/app/README.md', 'file://<repo>/README.md'],
     ['src/sync.ts, /api/v1/users, https://github.com/acme/app', 'src/sync.ts, /api/v1/users, https://github.com/acme/app'],
   ])('rewrites %s to %s', (before, after) => {
     expect(textOf(scrubSession(said(`see ${before}`), { localPaths: machine }).session)).toEqual({ type: 'text', text: `see ${after}` });
   });
 
+  it.each([
+    ['Review /Users/me/app/packages/api/src/retry.ts and /Users/me/ap', 'Review <repo>/packages/api/src/retry.ts and <repo>'],
+    ['Compare /Users/m', 'Compare ~'],
+    ['Clean /private/tmp/claude-5', 'Clean <tmp>'],
+  ])('rewrites a path the title was cut inside: %s', (title, published) => {
+    expect(scrubSession({ ...said('hi'), title }, { localPaths: machine }).session.title).toBe(published);
+  });
+
   it('rewrites a Windows path under the repository', () => {
-    const { session } = scrubSession(said('open C:\\Users\\alice\\app\\src\\sync.ts', 'C:\\Users\\alice\\app'), { localPaths: windows });
+    const { session } = scrubSession(said('open C:\\Users\\me\\app\\src\\sync.ts', 'C:\\Users\\me\\app'), { localPaths: windows });
 
     expect(textOf(session)).toEqual({ type: 'text', text: 'open <repo>\\src\\sync.ts' });
   });
@@ -170,9 +178,9 @@ describe('scrubSession with localPaths, for a session published to the team arch
   it('rewrites the title, thinking, tool results and string metadata', () => {
     const session: Session = {
       ...makeSession(),
-      title: 'fix /Users/alice/app/src/sync.ts',
+      title: 'fix /Users/me/app/src/sync.ts',
       messages: [
-        { role: 'assistant', content: [{ type: 'thinking', text: 'read /Users/alice/app/a.ts', signature: 'sig' }], metadata: { model: 'claude-opus-5-5', cwd: '/Users/alice/app/packages/api' } },
+        { role: 'assistant', content: [{ type: 'thinking', text: 'read /Users/me/app/a.ts', signature: 'sig' }], metadata: { model: 'claude-opus-5-5', cwd: '/Users/me/app/packages/api' } },
         { role: 'user', content: [{ type: 'tool_result', callId: 't1', content: 'Output is being written to: /private/tmp/claude-502/x.output', isError: false }] },
       ],
     };
@@ -187,8 +195,8 @@ describe('scrubSession with localPaths, for a session published to the team arch
   it('rewrites a path in tool call arguments that hold no secret, Windows paths included', () => {
     const session: Session = {
       ...makeSession(),
-      cwd: 'C:\\Users\\alice\\app',
-      messages: [{ role: 'assistant', content: [{ type: 'tool_call', toolName: 'Read', callId: 't1', arguments: { file_path: 'C:\\Users\\alice\\app\\src\\sync.ts', limit: 20, paths: ['C:\\Users\\alice\\notes.md'] } }] }],
+      cwd: 'C:\\Users\\me\\app',
+      messages: [{ role: 'assistant', content: [{ type: 'tool_call', toolName: 'Read', callId: 't1', arguments: { file_path: 'C:\\Users\\me\\app\\src\\sync.ts', limit: 20, paths: ['C:\\Users\\me\\notes.md'] } }] }],
     };
 
     const { session: published } = scrubSession(session, { localPaths: windows });
@@ -197,8 +205,8 @@ describe('scrubSession with localPaths, for a session published to the team arch
   });
 
   it('keeps local paths when no localPaths are given, as a native read for scoring needs them', () => {
-    const { session } = scrubSession(said('cat /Users/alice/app/skills/review/SKILL.md'));
+    const { session } = scrubSession(said('cat /Users/me/app/skills/review/SKILL.md'));
 
-    expect(textOf(session)).toEqual({ type: 'text', text: 'cat /Users/alice/app/skills/review/SKILL.md' });
+    expect(textOf(session)).toEqual({ type: 'text', text: 'cat /Users/me/app/skills/review/SKILL.md' });
   });
 });

@@ -174,6 +174,62 @@ For a script, `migrate <sessionId> -s <tool> -t <tool> --json` prints one line o
 
 `--dry-run` previews. `--scrub` redacts before an archive; without it, an interactive run asks and a script needs `-y`. `--all` confirms above 10 sessions (push: 5). `push --session <id>` pushes exactly that session of `--source`, from any workspace, always scrubbed and without a prompt. Archives go to `sessions/repos/<repo>/<author>/` on the team repo's `teamai-reports` branch, under the session's own git remote, or `_unattributed`. A session that a workflow step ran in its own worktree goes under the repository of the checkout that the worktree came from.
 
+### What a scrubbed session keeps
+
+`--scrub`, and every push teamai makes on its own (`push --session`, `workflow publish --sessions`, `score --drain`), also rewrites this machine's paths. A member ran a session in `/Users/me/app/packages/api`:
+
+| In the member's transcript | In the archive |
+|---|---|
+| `/Users/me/app/packages/api/src/retry.ts` | `<repo>/packages/api/src/retry.ts` |
+| `cat /Users/me/app/skills/review/SKILL.md` | `cat <repo>/skills/review/SKILL.md` |
+| `/Users/me/.claude/settings.json` | `~/.claude/settings.json` |
+| `/Users/me/other-project/notes.md` | `~/other-project/notes.md` |
+| `/private/tmp/claude-502/-Users-me-app/6e64…/tasks/b.output` | `<tmp>/<project>/6e64…/tasks/b.output` |
+| `C:\Users\me\app\src\retry.ts` | `<repo>\src\retry.ts` |
+| `file:///Users/me/app/README.md` | `file://<repo>/README.md` |
+| `src/retry.ts`, `/api/v1/users`, `https://github.com/acme/app` | unchanged |
+
+`<repo>` is the repository the session ran in (the workspace root outside git), `~` the home directory, `<tmp>` the temp directory. The title, messages, thinking, tool calls and tool results are rewritten. A push without `--scrub` keeps the transcript as it is.
+
+Its `meta.json` stores the directory relative to the repository, and what the session ran as, as its session-start hook captured it on the member's machine:
+
+```json
+{
+  "origin": { "platform": "claude-code", "author": "<git user.name>", "cwd": "packages/api", "repoIdentity": "github.com/acme/app", "...": "..." },
+  "agent": {
+    "v": 1,
+    "tool": { "name": "claude", "version": "2.1.301" },
+    "model": { "requested": "claude-opus-5-5", "reported": "claude-opus-5-5" },
+    "team": { "revision": "7a6134a25e74…", "localChanges": false, "selection": { "primaryRole": "backend" } },
+    "project": { "commit": "8e04ff430…", "dirty": true },
+    "teamai": "0.29.0",
+    "driver": "session",
+    "fingerprint": "…"
+  }
+}
+```
+
+| `cwd` the session ran in | Archived `cwd` |
+|---|---|
+| `/Users/me/app` (repository root) | `.` |
+| `/Users/me/app/packages/api` | `packages/api` |
+| `/Users/me/tmp/scratch` (no repository, no teamai workspace) | `""` |
+| A workflow step worktree that was removed | `""` |
+
+`session resume` and a workflow handover restore into the directory you give them, so a relative `cwd` is enough. `_index.json` lists the session with `"teamRevision": "7a6134a25e74…"`. With that, a teammate can read the skill as that session had it, or list the sessions that ran on another team revision than `main`'s:
+
+```bash
+# In the team repo clone
+git show 7a6134a25e74:skills/review/SKILL.md
+
+git fetch -q origin main teamai-reports
+git show origin/teamai-reports:sessions/repos/github.com~2Facme~2Fapp/_index.json \
+  | jq -r --arg main "$(git rev-parse origin/main)" \
+      '.sessions[] | select(.teamRevision and .teamRevision != $main) | "\(.teamRevision[0:7])  \(.sessionName)"'
+```
+
+`agent` is left out when the session's captures disagree, or this machine has none: the session started before the hook was installed, its tool runs no session-start hook, or its captures were removed with it. A workflow step session has none, since its run records the `agent` of each pass, and neither does a copy `session migrate --push` archives. When the session's own pull delivered another team revision, `agent` has no `team`.
+
 Session commands use the team repo clone of this project's install, else of the user install, so you need `--repo-root` only to point at another clone. With no install, they print `teamai is not set up for this directory.`, name `teamai init` and `--repo-root`, and exit 1.
 
 Sessions archived on the default branch by an older teamai stay readable there. `session list`, `search` and `pull` read both places, `teamai-reports` first, and list a session in both once. `session resume` reads `teamai-reports`, then the old archive. teamai 0.28.0 and earlier read only the default branch, so upgrade every member to see the sessions teammates archive on `teamai-reports`. An unattended job archives its own sessions with `teamai score --drain` ([Sessions](sharing.md#sessions)).

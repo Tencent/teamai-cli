@@ -49,23 +49,31 @@ const SEGMENT_END = '(?![A-Za-z0-9._-])';
 /**
  * Rewrites the paths under `roots` in a text: the repository to `<repo>`, the temp roots to `<tmp>`, the rest of the
  * home directory to `~`, the longest root first. The directory name a tool encodes a workspace as
- * (`-Users-alice-app`) becomes `<project>`.
+ * (`-Users-alice-app`) becomes `<project>`. `title` also rewrites a path the title was cut inside at its end
+ * (`… and /Users/alice/ap`), as the shortest root it starts.
  */
-function pathRewriter({ repo, home, tmp }: LocalPathRoots, cwd: string): (text: string) => string {
+function pathRewriter({ repo, home, tmp }: LocalPathRoots, cwd: string): { text: (text: string) => string; title: (title: string) => string } {
   const spellings = (root: string): string[] => (root.includes('\\') ? [root, root.replaceAll('\\', '/')] : [root]);
   const named = new Map<string, string>();
   for (const [roots, name] of [[home, '~'], [tmp, '<tmp>'], [repo, '<repo>']] as const) {
     for (const root of roots.flatMap(spellings)) if (root.length > 3) named.set(root.replace(/[\\/]+$/, ''), name);
   }
-  if (named.size === 0) return (text) => text;
+  if (named.size === 0) return { text: (text) => text, title: (title) => title };
   const byLength = (left: string, right: string): number => right.length - left.length;
-  const rooted = new RegExp(`(?:${[...named.keys()].sort(byLength).map(escapeRegExp).join('|')})${SEGMENT_END}`, 'g');
+  const roots = [...named.keys()].sort(byLength);
+  const rooted = new RegExp(`(?:${roots.map(escapeRegExp).join('|')})${SEGMENT_END}`, 'g');
   const projects = [...new Set([cwd, ...repo].filter((dir) => dir.length > 3 && /^(?:\/|[A-Za-z]:[\\/])/.test(dir)).map((dir) => dir.replace(/[^a-zA-Z0-9]/g, '-')))];
   const project = new RegExp(`(?<=[\\\\/])(?:${projects.sort(byLength).map(escapeRegExp).join('|')})(?=$|[\\\\/])`, 'g');
-  return (text) => {
-    const next = text.replace(rooted, (root) => named.get(root) ?? root);
+  const text = (value: string): string => {
+    const next = value.replace(rooted, (root) => named.get(root) ?? root);
     return projects.length > 0 ? next.replace(project, '<project>') : next;
   };
+  const title = (value: string): string => {
+    const cut = /(?:[A-Za-z]:)?[\\/][^\s<]{2,}$/.exec(value);
+    const root = cut && roots.findLast((candidate) => candidate.length > cut[0].length && candidate.startsWith(cut[0]));
+    return cut && root ? text(value.slice(0, cut.index)) + (named.get(root) ?? '') : text(value);
+  };
+  return { text, title };
 }
 
 /** `value` with `rewrite` applied to each string it holds, keys left as they are. */
@@ -180,7 +188,8 @@ export function scrubSession(
   const dropImagePaths = opts.dropImagePaths !== false;
   const envSecrets = { ...collectEnvSecrets(), ...opts.secrets };
   const mask = (text: string): string => redact(text, { envSecrets });
-  const rewrite = opts.localPaths ? pathRewriter(opts.localPaths, session.cwd) : (text: string): string => text;
+  const paths = opts.localPaths ? pathRewriter(opts.localPaths, session.cwd) : undefined;
+  const rewrite = paths?.text ?? ((text: string): string => text);
   let redactedCount = 0;
 
   const messages: Message[] = session.messages.map((msg) => {
@@ -196,7 +205,8 @@ export function scrubSession(
   });
 
   // Masking a whole value changes the title's length, so the cut is checked first.
-  const title = rewrite(mask(maskCutSecret(session.title, opts.secrets ?? {})));
+  const masked = mask(maskCutSecret(session.title, opts.secrets ?? {}));
+  const title = paths ? paths.title(masked) : masked;
 
   return {
     session: { ...session, title, messages },
