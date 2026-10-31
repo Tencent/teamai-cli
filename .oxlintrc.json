@@ -16,6 +16,8 @@
     ],
     "typescript/no-floating-promises": "warn",
     "typescript/no-misused-promises": "warn",
+    // Prefer flat() when a mapped array only needs one level of flattening.
+    "unicorn/prefer-array-flat": "warn",
     // Prefer includes() when checking for a collection member.
     "unicorn/prefer-includes": "warn",
     // Prefer a predicate search when only the existence of a match matters.
