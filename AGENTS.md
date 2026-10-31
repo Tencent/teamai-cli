@@ -14,17 +14,26 @@ TypeScript, Node 20+ (`npm run lint` needs ^20.19 or >=22.12), tsup (ESM), Vites
 
 - **Occam's razor**: do not add a new CLI command early. Skip it unless it is necessary. Reuse or extend an existing command or option.
 - CLI user-facing output must be English. No Chinese in production code. Tests assert English output.
-- **Doc layout**: user-facing docs are bilingual. Top-level files are `name.md` / `name.zh-CN.md`. Guide pages are `docs/guide/<page>.md` (English) and `docs/guide/zh-CN/<page>.md` (Chinese). A behavior change updates both. `docs/guide/tool-support.md` and its Chinese page are generated from the tool descriptor (`src/tools.ts`): regenerate them with `npx vitest run tool-support -u`; their cell text stays English on both pages. `docs/designs/` (design notes: a `> Status:` line at the top, and a status entry in `docs/designs/README.md`) and `docs/dev/` (maintainer docs) are English only. Behavior changes must update every affected doc; grep old wording before opening the PR.
+- **Doc layout**: user-facing docs are bilingual. Top-level files are `name.md` / `name.zh-CN.md`. Guide pages are `docs/guide/<page>.md` (English) and `docs/guide/zh-CN/<page>.md` (Chinese). A behavior change updates both. `docs/guide/tool-support.md` and its Chinese page are generated from the tool descriptor (`src/tools.ts`): regenerate them with `node scripts/check-docs.mjs --write`; their cell text stays English on both pages. `docs/designs/` (design notes: a `> Status:` line at the top, and a status entry in `docs/designs/README.md`) and `docs/dev/` (maintainer docs) are English only. Behavior changes must update every affected doc; grep old wording before opening the PR.
 - **Change docs rarely**: leave them alone when you can. A bugfix that does not change behavior a user runs into does not need a doc change. When you do edit docs, write them so you can understand them. Do not make them complicated.
-- **Keep the README short**: change it as little as possible. When a change is required, update every language (`README.md` and every `README.*.md`; run `ls README*` first) and keep them consistent. `readme-matrix.test.ts` checks that the agent matrix is the same in every README, and checks its culture, models, usage and scorers cells and the ✓¹ mark against `TOOLS`.
+- **Keep the README short**: change it as little as possible. When a change is required, update every language (`README.md` and every `README.*.md`; run `ls README*` first) and keep them consistent. `scripts/doc-checks/readme-matrix.ts` checks that the agent matrix is the same in every README, and checks its culture, models, usage and scorers cells and the ✓¹ mark against `TOOLS`.
 - **Treat `skill-data/` like docs**: that is what the agent actually reads. A behavior change must update the affected skills (`core` / `setup` / `wiki` / `share`), and grep the old wording before the PR.
-- `skill-data/core/references/commands.md` is generated from the Commander command table. After changing a command or flag, regenerate it with `npx vitest run commands-reference -u`.
+- `skill-data/core/references/commands.md` is generated from the Commander command table. After changing a command or flag, regenerate it with `node scripts/check-docs.mjs --write`.
 - **Leave the teamai skill body alone**: the source of truth for usage and flags is the CLI help (`teamai --help`, `teamai <cmd> --help`) and the generated `commands.md`. To make an agent better at a command, clarify that command's `description` and option help, and point the skill at help, instead of copying usage into the skill. Edit the skill body only when the workflow itself changes.
 - Only `skills/teamai/SKILL.md` (the discovery entry) is deployed to the agent. Keep it version-independent: a new workflow is a directory under `skill-data/` plus one line in the stub. Do not put the content in the stub.
 
 ## Testing before a PR
 
-A PR that changes runtime behavior (anything other than docs-only / tests-only) must, after `npm run build`, verify the change end to end with the real CLI. Type check and unit tests are not enough. **One representative real-CLI run is enough.** Paste the record of what actually passed into the PR. A docs-only or tests-only change needs no e2e record.
+Import boundaries, banned APIs, and required helper calls belong in `oxlint-plugin-teamai`, with fixtures using `ruleHarness`. Do not scan source with `fs` or `web-tree-sitter` in `src/__tests__/`, or repeat helper wiring checks in per-command E2E files. For example, `teamai/remove-delivered` rejects bare deletion at pull call sites; `delivered-copies.test.ts` checks the helper's file and ledger behavior.
+
+Documentation checks run in `npm run lint`. After changing a command or tool descriptor:
+
+```sh
+node scripts/check-docs.mjs --write
+node scripts/check-docs.mjs
+```
+
+A PR that changes CLI runtime behavior must, after `npm run build`, verify the change end to end with the real CLI. Type check and unit tests are not enough. **One representative real-CLI run is enough.** Paste the record of what actually passed into the PR. A docs-only, tests-only, or static guard change needs no real-CLI record. For a required helper call enforced by an enabled `teamai/*` rule, run `npm run lint` and the helper unit test; do not add an E2E file for each command.
 
 Iterate with `npm run test:e2e -- <test-file>`; run the full suite only when changing the E2E runner, shared fixtures, or test isolation ([CONTRIBUTING.md](.github/CONTRIBUTING.md#testing-guidelines)).
 
@@ -41,10 +50,12 @@ shared state, list every reader and every writer.
 ## Code Review Rules
 
 - The PR description must document sufficient testing. For a PR that changes
-  runtime behavior (anything beyond a docs-only or tests-only diff), that
+  CLI runtime behavior, that
   includes an end-to-end / real-CLI verification record, not only unit tests
   or type checks — flag such a PR that lacks one as `[P1 blocking]`. A
-  docs-only or tests-only PR needs no e2e record; do not flag it for that.
+  docs-only, tests-only, or static guard PR needs no real-CLI record. An enabled
+  `teamai/*` rule plus its helper unit test requires lint and that test, not
+  a new E2E file per command; do not flag it for lacking those E2Es.
   Do NOT require a full provider × agent matrix — one representative real-CLI
   run is enough. Missing coverage of extra providers (`gitlab`/`github`) or
   agents (`Codex`/`CodeBuddy`/`OpenCode`) is at most `[P3 nit]` when the author

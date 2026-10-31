@@ -16,8 +16,6 @@ import {
   type PackagedSkill,
   type PackagedSkillRoots,
 } from '../skill-content.js';
-import { readSkillDescription } from '../agent-skills.js';
-import { listFilesRecursive } from '../utils/fs.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -300,76 +298,6 @@ describe('the shipped skill-data content', () => {
       .toEqual(['core', 'setup', 'share', 'wiki', 'workflow', 'workflow-local']);
   });
 
-  it('names every skill after its directory, and promises no permissions it cannot grant', async () => {
-    for (const skill of await listServableSkills()) {
-      const text = fs.readFileSync(path.join(skill.dir, 'SKILL.md'), 'utf8');
-      // A frontmatter name that disagrees with the directory makes the skill
-      // undiscoverable for the agent and unresolvable for `skill get`.
-      expect(text, skill.name).toMatch(new RegExp(`^name: ${skill.name}$`, 'm'));
-      // `skill get` prints this frontmatter as command output; the agent never
-      // processes it as skill metadata, so an `allowed-tools` line here would
-      // claim grants that do not happen. Only the deployed stub's counts.
-      expect(text, skill.name).not.toMatch(/^allowed-tools:/m);
-    }
-  });
-
-  it('keeps the deployed stub declaring its own name and tools', () => {
-    const stub = fs.readFileSync(path.join(ROOT, 'skills/teamai/SKILL.md'), 'utf8');
-    expect(stub).toMatch(/^name: teamai$/m);
-    // The stub is the always-loaded unit, so it pre-approves only the read-only
-    // `teamai skill …` commands it asks for and the skill driver's calls that
-    // cannot start a run (workflow-skill-literals.test.ts pins those). Everything
-    // else a served workflow runs goes through the agent's own permission prompt.
-    expect(stub).toMatch(/^allowed-tools: Bash\(teamai skill:\*\), Bash\(npx teamai-cli skill:\*\), /m);
-  });
-
-  it('quotes {SKILL_DIR} and $(teamai skill path …) in every command it tells the agent to run', async () => {
-    // The placeholder resolves to the install path, which can hold a space
-    // ("Program Files", "~/Library/Application Support", a user's full name) or
-    // be a Windows path used through Bash. An unquoted occurrence in a command
-    // line splits into two arguments there and the documented invocation fails.
-    const offenders: string[] = [];
-    for (const skill of await listServableSkills()) {
-      const files = [
-        'SKILL.md',
-        ...(await listFilesRecursive(path.join(skill.dir, 'references'))).map((f) => `references/${f}`),
-      ];
-      for (const relative of files) {
-        if (!relative.endsWith('.md')) continue;
-        const text = fs.readFileSync(path.join(skill.dir, relative), 'utf8');
-        text.split('\n').forEach((line, i) => {
-          // A command word followed by the bare placeholder: `python3 {SKILL_DIR}/…`.
-          // Prose and reference tables name the path without running it, and a
-          // quoted occurrence is already correct.
-          if (/(?:^|[`\s(])(?:python3?|node|bash|sh|cp|mv|cat|ls|rm)\s+\{SKILL_DIR\}/.test(line)) {
-            offenders.push(`${skill.name}/${relative}:${i + 1}: ${line.trim()}`);
-          }
-          // `$(teamai skill path …)` is word-split in a shell command just the
-          // same, so it is always written inside double quotes.
-          if (/(?<!")\$\(teamai skill path /.test(line)) {
-            offenders.push(`${skill.name}/${relative}:${i + 1}: ${line.trim()}`);
-          }
-        });
-      }
-    }
-    expect(offenders).toEqual([]);
-  });
-
-  it('ships no Chinese text in the deployed stub or the served content', async () => {
-    // Both reach the agent as CLI output (`teamai skill get` prints skill-data/),
-    // which the repo rule keeps English; the agent translates for the user.
-    const offenders: string[] = [];
-    for (const root of ['skills', 'skill-data']) {
-      for (const relative of await listFilesRecursive(path.join(ROOT, root))) {
-        const text = fs.readFileSync(path.join(ROOT, root, relative), 'utf8');
-        text.split('\n').forEach((line, i) => {
-          if (/[\u3000-\u303f\u3400-\u9fff\uf900-\ufaff\uff00-\uffef]/.test(line)) offenders.push(`${root}/${relative}:${i + 1}`);
-        });
-      }
-    }
-    expect(offenders).toEqual([]);
-  });
-
   it('keeps the tests\' stand-in for shipped content on the paths the real digests record', async () => {
     // The prune tests mock the digest table; a path they know and the real
     // table does not (or the reverse) would test a prune that never runs.
@@ -380,13 +308,7 @@ describe('the shipped skill-data content', () => {
     expect(paths(shippedSkillDigestsMock().PACKAGED_SKILL_DIGESTS)).toEqual(paths(PACKAGED_SKILL_DIGESTS));
   });
 
-  it('keeps the stub description within the 1024-character budget agents load it under', async () => {
-    // With one deployed skill, this description is the only text an agent sees
-    // at selection time, and hosts cap it at 1024 characters.
-    const description = await readSkillDescription(path.join(ROOT, 'skills/teamai/SKILL.md'));
-    expect(description.length).toBeGreaterThan(0);
-    expect(description.length).toBeLessThanOrEqual(1024);
-  });
+
 });
 
 describe('npm package contents', () => {

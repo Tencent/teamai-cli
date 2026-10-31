@@ -144,21 +144,21 @@ path (measured here from a 77-character one).
 
 ## Drift guards
 
-Two tests, both in the unit suite:
+`node scripts/check-docs.mjs` runs these checks as part of `npm run lint`:
 
-- `commands-reference.test.ts` renders `skill-data/core/references/commands.md`
+- `scripts/commands-reference.ts` renders `skill-data/core/references/commands.md`
   from the Commander table and diffs it. Regenerate with
-  `npx vitest run commands-reference -u`.
-- `skill-commands-exist.test.ts` resolves every `teamai …` string written
+  `node scripts/check-docs.mjs --write`.
+- `scripts/doc-checks/skill-commands-exist.ts` resolves every `teamai …` string written
   anywhere under `skill-data/` against that same table, and fails on an unknown
-  command, subcommand or flag. It carries cases proving it catches
+  command, subcommand or flag. The command tests prove it catches
   `teamai extract graph`, the command the wiki skill advertised for four
   releases, and a misspelled subcommand inside a group (`teamai skill gett`).
 
-A third, in `skill-content.test.ts`, asserts through `npm pack` that both
+A package acceptance test in `skill-content.test.ts` asserts through `npm pack` that both
 `skills/` and `skill-data/` are in the published tarball. Without it, a missing
 `package.json` "files" entry passes every other test and serves nothing once
-installed. The same file fails on Chinese text under `skills/` or `skill-data/`:
+installed. The documentation command also fails on Chinese text under `skills/` or `skill-data/`:
 both reach the agent as CLI output, which the repo keeps English.
 
 ## Migration

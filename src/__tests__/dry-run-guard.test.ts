@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { Command } from 'commander';
 import { DRY_RUN_PREVIEW, NO_DRY_RUN_PREVIEW, dryRunRefusal } from '../dry-run-guard.js';
-import { loadCommandTable } from './helpers/command-table.js';
+import { loadCommandTable } from '../../scripts/command-table.js';
 
 /**
  * Every command path that runs an action. A group without its own action

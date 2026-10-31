@@ -12,7 +12,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { ciRecipesOf, runCommandsOf, type CiRecipe } from '../helpers/ci-recipe.js';
+import { ciRecipesOf, runCommandsOf, type CiRecipe } from '../../../scripts/ci-recipe.js';
 import { waitForDetachedChildren } from '../helpers/detached-processes.js';
 import { fakeGhHost, type FakeGh } from '../helpers/fake-gh.js';
 

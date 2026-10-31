@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { loadCommandTable } from './helpers/command-table.js';
+import { loadCommandTable } from '../../scripts/command-table.js';
 
 const { status, list, push, logError, logDebug } = vi.hoisted(() => ({
   status: vi.fn(),

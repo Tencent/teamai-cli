@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { loadCommandTable } from './helpers/command-table.js';
+import { loadCommandTable } from '../../scripts/command-table.js';
 
 // Which commands move a checkout's `.teamai/` into the partition before they
 // run (#808): a mode that never writes this project's queue has no reason to,

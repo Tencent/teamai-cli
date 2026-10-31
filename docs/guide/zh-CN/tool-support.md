@@ -2,7 +2,7 @@
 
 teamai 为每个工具把每类资源写到哪里，以及工具读取哪里，以 teamai 的工具描述（`src/tools.ts`）为准。
 
-此文件由生成器生成，请勿手动编辑。修改描述后运行 `npx vitest run tool-support -u` 重新生成。
+此文件由生成器生成，请勿手动编辑。修改描述后运行 `node scripts/check-docs.mjs --write` 重新生成。
 
 - 路径是工具读取的位置，后面是依据：`v` 真实运行过该工具，或在 teamai 的输出上运行过工具自己的加载器；`s` 工具源码；`d` 工具文档；`t` 仅 teamai 自身代码。
 - `—` teamai 不写入：工具没有这个通道，或 teamai 不使用它。`?` 未知：teamai 不写入。`written; reads ?`：teamai 写入配置的路径，但工具从哪里读取未知。

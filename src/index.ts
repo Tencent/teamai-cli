@@ -1807,7 +1807,7 @@ async function publishMaintenance(localConfig: LocalConfig, message: string, cha
  * The command table doubles as the source of truth for the generated skill
  * command reference (skill-data/core/references/commands.md). Importing this
  * module with TEAMAI_COMMAND_TABLE_ONLY set yields `program` without running
- * the CLI. Test-only: tests load the table through helpers/command-table.ts.
+ * the CLI. Documentation checks and tests load the table through scripts/command-table.ts.
  */
 export { program };
 

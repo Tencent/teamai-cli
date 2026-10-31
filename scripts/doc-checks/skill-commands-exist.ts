@@ -1,11 +1,12 @@
-import { describe, it, expect } from 'vitest';
+import assert from 'node:assert/strict';
+import { check } from '../doc-check.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import type { Command } from 'commander';
-import { loadCommandTable } from './helpers/command-table.js';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+import type { Command } from 'commander';
+import { loadCommandTable } from '../command-table.js';
+
+const ROOT = process.cwd();
 const SKILL_DATA = path.join(ROOT, 'skill-data');
 /** The deployed stub is the one file agents always hold, so its commands are checked too. */
 const DEPLOYED_STUB = path.join(ROOT, 'skills', 'teamai', 'SKILL.md');
@@ -59,9 +60,7 @@ function resolveCommand(program: Command, tokens: string[]): { command: Command;
   let command = program;
   let index = 0;
   while (index < tokens.length) {
-    const next = command.commands.find(
-      (c) => c.name() === tokens[index] || c.aliases().includes(tokens[index]),
-    );
+    const next = command.commands.find((c) => c.name() === tokens[index] || c.aliases().includes(tokens[index]));
     if (!next) break;
     command = next;
     index += 1;
@@ -98,8 +97,11 @@ function validate(program: Command, invocations: Invocation[]): string[] {
     // not exist. Placeholders such as `<name>` stand for one and are skipped.
     const next = rest[0];
     if (
-      next !== undefined && command.commands.length > 0 && command.registeredArguments.length === 0
-      && !next.startsWith('-') && !/[<>[\]{}"'…]/.test(next)
+      next !== undefined &&
+      command.commands.length > 0 &&
+      command.registeredArguments.length === 0 &&
+      !next.startsWith('-') &&
+      !/[<>[\]{}"'…]/.test(next)
     ) {
       problems.push(`${where}  → unknown subcommand "${next}" for \`teamai ${command.name()}\``);
       continue;
@@ -122,32 +124,9 @@ function validate(program: Command, invocations: Invocation[]): string[] {
   return problems;
 }
 
-describe('commands named by the served skill content', () => {
-  it('all exist in the CLI command table', async () => {
-    const program = await loadCommandTable();
+await check('all exist in the CLI command table', async () => {
+  const program = await loadCommandTable();
 
-    const problems = validate(program, collectInvocations());
-    expect(problems, `\n${problems.join('\n')}\n`).toEqual([]);
-  });
-
-  it('catches the drift it exists to catch', async () => {
-    const program = await loadCommandTable();
-
-    // `teamai extract graph` is the command the wiki skill advertised until this
-    // change (issue #678, defect D1); the flag is invented.
-    const problems = validate(program, [
-      { file: 'synthetic.md', line: 1, text: 'teamai extract graph' },
-      { file: 'synthetic.md', line: 2, text: 'teamai codebase --no-such-flag' },
-      // A misspelled or renamed subcommand inside a group: the group matches, so
-      // without its own check the typo is read as an argument.
-      { file: 'synthetic.md', line: 3, text: 'teamai skill gett core' },
-      // A group that takes an argument of its own is left alone: `enabel` is a query.
-      { file: 'synthetic.md', line: 4, text: 'teamai recall enabel' },
-    ]);
-
-    expect(problems).toHaveLength(3);
-    expect(problems[0]).toContain('unknown command "extract"');
-    expect(problems[1]).toContain('unknown flag "--no-such-flag"');
-    expect(problems[2]).toContain('unknown subcommand "gett" for `teamai skill`');
-  });
+  const problems = validate(program, collectInvocations());
+  assert.deepEqual(problems, [], `\n${problems.join('\n')}\n`);
 });

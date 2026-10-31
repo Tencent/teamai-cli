@@ -1,5 +1,3 @@
-import fs from 'node:fs';
-import path from 'node:path';
 import type { Command } from 'commander';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { attemptEnv } from '../workflow/attempt-marker.js';
@@ -9,17 +7,10 @@ import {
   ackLiteral, adoptLiteral, chooseHostLiteral, describeLiteral, generatedStartPatterns, INVOCATIONS, localStartLiteral, nextLiteral, personRespondLiteral, pollLiteral,
   reportLiteral, respondLiteral, resumeLiteral, runnerArgs, skillResumeLiteral, startLiteral, takeoverLiteral, unavailableLiteral, type Invocation,
 } from '../workflow/drivers/skill/literals.js';
-import { loadCommandTable } from './helpers/command-table.js';
+import { loadCommandTable } from '../../scripts/command-table.js';
 
-const ROOT = path.join(import.meta.dirname, '../..');
 const RUN = RunIdSchema.parse('r0123456789abcdef');
 const ATTEMPT = AttemptIdSchema.parse('a01234567');
-
-/** The `allowed-tools` patterns the teamai stub pre-approves. */
-function stubPatterns(): string[] {
-  const stub = fs.readFileSync(path.join(ROOT, 'skills/teamai/SKILL.md'), 'utf8');
-  return (stub.match(/^allowed-tools: (.*)$/m)?.[1] ?? '').split(', ');
-}
 
 let program: Command;
 beforeAll(async () => { program = await loadCommandTable(); });
@@ -112,10 +103,9 @@ describe.each(INVOCATIONS)('skill driver literals run as %s', (invocation) => {
     expect(skillCall(trailing, invocation)).toEqual({ kind: 'describe', name: 'check' });
   });
 
-  it('pre-approve no call that starts a run, and start only the workflow a generated skill names', () => {
+  it('start only the workflow a generated skill names', () => {
     const prefixes = (patterns: string[]) => patterns.map((pattern) => pattern.replace(/^Bash\((.*):\*\)$/, '$1'));
     const starts = [startLiteral(invocation, 'ship'), startLiteral(invocation, 'ship', { parallel: 2, confirmed: true, inputs: true })];
-    for (const prefix of prefixes(stubPatterns())) expect(starts.filter((literal) => literal.startsWith(prefix)), prefix).toEqual([]);
     const generated = prefixes(generatedStartPatterns('ship', 'go')).filter((prefix) => prefix.startsWith(`${invocation} `));
     expect(generated).toEqual([`${invocation} workflow start ship --driver skill`, `${invocation} workflow start go --driver skill`]);
     for (const literal of starts) expect(generated.some((prefix) => literal.startsWith(prefix)), literal).toBe(true);
@@ -204,18 +194,5 @@ describe('the runner', () => {
       .toEqual({ kind: 'report', run: RUN, attempt: ATTEMPT, role: 'runner' });
     expect(parseSkillCall({ kind: 'report', run: operands[0] ?? '', options }, attemptEnv(RUN, 'a76543210', 'attended')))
       .toEqual({ kind: 'report', run: RUN, attempt: ATTEMPT, role: 'agent', modelUnavailable: false });
-  });
-});
-
-describe('the files an agent reads', () => {
-  it('the teamai stub pre-approves the skill commands and the skill driver calls, and nothing else', () => {
-    // None of the workflow calls can start a run: `--describe` comes before the name.
-    const calls = ['skill', 'workflow start --describe', 'workflow next', 'workflow report', 'workflow respond'];
-    expect([...stubPatterns()].sort()).toEqual(INVOCATIONS.flatMap((invocation) => calls.map((call) => `Bash(${invocation} ${call}:*)`)).sort());
-  });
-
-  it('the workflow guide starts with the describe literal', () => {
-    const guide = fs.readFileSync(path.join(ROOT, 'skill-data/workflow/SKILL.md'), 'utf8');
-    expect(guide).toContain(`\`${describeLiteral('teamai', '<name>')}\``);
   });
 });

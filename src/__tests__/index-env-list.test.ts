@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } fr
 import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
-import { loadCommandTable } from './helpers/command-table.js';
+import { loadCommandTable } from '../../scripts/command-table.js';
 import type { LocalConfig } from '../types.js';
 
 vi.mock('../config.js', async (importOriginal) => ({

@@ -1,15 +1,15 @@
-import { KNOWN_AGENTS } from './known-agents.js';
+import { KNOWN_AGENTS } from '../src/known-agents.js';
 import {
   isToolId, TOOLS,
   type CodebuddyConfigFile, type Evidence, type FirstExistingRead, type HomeMove, type HomeRead, type ProjectRead,
   type RunTime, type Support, type ToolDescriptor, type ToolFeatures,
-} from './tools.js';
-import { DEFAULT_TOOL_PATHS, type ToolId } from './types.js';
+} from '../src/tools.js';
+import { DEFAULT_TOOL_PATHS, type ToolId } from '../src/types.js';
 
 // ─── Generated support page ──────────────────────────────
 //
 //  docs/guide/tool-support.md and its Chinese page are rendered from
-//  `TOOLS`, and a snapshot test regenerates and diffs them, so the page
+//  `TOOLS`, and the documentation command regenerates and diffs them, so the page
 //  cannot drift from the descriptor. Headers and the legend are
 //  translated; cell text stays English on both pages (AGENTS.md).
 //
@@ -29,7 +29,7 @@ const TEXT = {
     title: '# Tool support',
     intro: [
       'Where teamai writes each resource for each tool, and what the tool reads, as teamai\'s tool descriptor (`src/tools.ts`) records it.',
-      'Generated: do not edit by hand. Regenerate with `npx vitest run tool-support -u` after changing the descriptor.',
+      'Generated: do not edit by hand. Regenerate with `node scripts/check-docs.mjs --write` after changing the descriptor.',
     ],
     legend: [
       'A path is the place the tool reads, then the evidence for it: `v` a real tool run, or the tool\'s own loader run on teamai\'s output; `s` the tool\'s source; `d` its docs; `t` teamai\'s code only.',
@@ -51,7 +51,7 @@ const TEXT = {
     title: '# 工具支持',
     intro: [
       'teamai 为每个工具把每类资源写到哪里，以及工具读取哪里，以 teamai 的工具描述（`src/tools.ts`）为准。',
-      '此文件由生成器生成，请勿手动编辑。修改描述后运行 `npx vitest run tool-support -u` 重新生成。',
+      '此文件由生成器生成，请勿手动编辑。修改描述后运行 `node scripts/check-docs.mjs --write` 重新生成。',
     ],
     legend: [
       '路径是工具读取的位置，后面是依据：`v` 真实运行过该工具，或在 teamai 的输出上运行过工具自己的加载器；`s` 工具源码；`d` 工具文档；`t` 仅 teamai 自身代码。',

@@ -30,7 +30,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit && tsc -p oxlint-plugin-teamai",
-    "lint": "oxlint --type-aware --deny-warnings --report-unused-disable-directives",
+    "lint": "oxlint --type-aware --deny-warnings --report-unused-disable-directives && node scripts/check-docs.mjs",
     "release": "standard-version",
     "prepublishOnly": "npm run build"
   },

@@ -2,7 +2,7 @@
 
 Where teamai writes each resource for each tool, and what the tool reads, as teamai's tool descriptor (`src/tools.ts`) records it.
 
-Generated: do not edit by hand. Regenerate with `npx vitest run tool-support -u` after changing the descriptor.
+Generated: do not edit by hand. Regenerate with `node scripts/check-docs.mjs --write` after changing the descriptor.
 
 - A path is the place the tool reads, then the evidence for it: `v` a real tool run, or the tool's own loader run on teamai's output; `s` the tool's source; `d` its docs; `t` teamai's code only.
 - `—` teamai writes nothing there: the tool has no such channel, or teamai does not use it. `?` unknown: teamai writes nothing there. `written; reads ?`: teamai writes the configured path, and where the tool reads is unknown.

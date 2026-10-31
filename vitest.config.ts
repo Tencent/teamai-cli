@@ -4,7 +4,7 @@ export default defineConfig({
   test: {
     clearMocks: true,
     globalSetup: ['src/__tests__/helpers/assert-safe-tmpdir.ts'],
-    include: ['src/__tests__/**/*.test.ts', 'oxlint-plugin-teamai/**/*.test.ts'],
+    include: ['src/__tests__/**/*.test.ts', 'oxlint-plugin-teamai/**/*.test.ts', 'scripts/**/*.test.ts'],
     exclude: ['src/__tests__/e2e/**', 'src/__tests__/*-e2e.test.ts'],
     // Applied before setupFiles: clear-agent-session-env.ts must remove each,
     // which workflow-test-env.test.ts checks.

@@ -8,7 +8,7 @@ import type { Command, Option } from 'commander';
 //  changed under it.
 //
 //  The command table is the only real ground truth, so the
-//  reference is rendered from it and checked by a test that
+//  reference is rendered from it and checked by the documentation command that
 //  regenerates and diffs. Adding a command without updating
 //  the reference now fails the build.
 //
@@ -24,7 +24,7 @@ never something to type. Flags marked \`(hidden)\` work but are absent from
 \`--help\`, so treat this file — not \`--help\` — as the complete list of flags.
 
 Generated: do not edit by hand. Regenerate with
-\`npx vitest run commands-reference -u\` after changing a command or a flag.
+\`node scripts/check-docs.mjs --write\` after changing a command or a flag.
 `;
 
 function renderOption(option: Option): string {

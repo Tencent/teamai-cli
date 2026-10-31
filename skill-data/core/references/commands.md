@@ -6,7 +6,7 @@ never something to type. Flags marked `(hidden)` work but are absent from
 `--help`, so treat this file — not `--help` — as the complete list of flags.
 
 Generated: do not edit by hand. Regenerate with
-`npx vitest run commands-reference -u` after changing a command or a flag.
+`node scripts/check-docs.mjs --write` after changing a command or a flag.
 
 
 ## Global options
