@@ -79,6 +79,10 @@ describe('unified dashboard', () => {
       totalEntries: 1, totalRecalls: 0, overallCoveragePct: 0, contributorCount: 1,
       coverage: [{ type: 'docs', total: 1, covered: 0, coveragePct: 0 }], topRecalled: [],
       silent: [{ docId: 'x', title: '<img src=x onerror=alert(1)>', author: '<script>bad</script>', type: 'docs', date: '', tags: [], recalledCount: 0, upvotedCount: 0, lastRecalledAt: null }],
+      relations: {
+        assetCount: 2, relationCount: 1, withoutRelation: ['docs/<script>lonely</script>'],
+        unresolved: ['rules/x.md REFERENCES docs/<script>missing</script>'], silentAndWithoutRelation: [],
+      },
       trend: [], authors: [{ author: '<script>bad</script>', entries: 1, totalRecalled: 0 }],
       maintenance: { promote: [], prune: [], stale: [] },
     };
@@ -111,6 +115,10 @@ describe('unified dashboard', () => {
       coverage: [{ type: 'docs', total: 3, covered: 2, coveragePct: 60 }],
       topRecalled: [{ docId: 'a', title: 'A', author: 'x', type: 'docs', date: '', tags: [], recalledCount: 5, upvotedCount: 1, lastRecalledAt: null }],
       silent: [{ docId: 'b', title: 'B', author: 'x', type: 'docs', date: '', tags: [], recalledCount: 0, upvotedCount: 0, lastRecalledAt: null }],
+      relations: {
+        assetCount: 3, relationCount: 2, withoutRelation: ['docs/b.md'],
+        unresolved: ['rules/a.md MAPS_TO teamwiki/evidence/code/x/m.md'], silentAndWithoutRelation: ['docs/b.md'],
+      },
       trend: [{ period: '2026-08', count: 1 }, { period: '2026-09', count: 2 }],
       authors: [{ author: 'x', entries: 3, totalRecalled: 5 }],
       maintenance: {
