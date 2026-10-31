@@ -60,6 +60,10 @@ const FORMATS = {
 /** A transcript format teamai reads token usage from. */
 export type TokenFormatId = keyof typeof FORMATS;
 
+export function isTokenFormatId(format: string): format is TokenFormatId {
+  return Object.hasOwn(FORMATS, format);
+}
+
 /** Read a session's token usage in `format`. A source that is missing or unreadable reads as no usage. */
 export function readTokenUsage(format: TokenFormatId, source: TokenSource): Promise<TokenReading> {
   return FORMATS[format](source);

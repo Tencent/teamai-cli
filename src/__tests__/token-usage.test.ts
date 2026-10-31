@@ -4,6 +4,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { readCopilotShutdown } from '../token-usage/formats/copilot-shutdown.js';
 import { readTokenUsage } from '../token-usage/index.js';
 
 let dir: string;
@@ -317,7 +318,8 @@ describe.skipIf(!HAS_SQLITE3)('readTokenUsage: opencode-db', () => {
     const data = path.join(dir, 'opencode');
     fs.mkdirSync(data, { recursive: true });
     const v1 = { role: 'assistant', modelID: 'claude-sonnet-5-5', providerID: 'anthropic', cost: 0.0213, time: { created: 1_793_000_000_000 }, tokens: { input: 1_200, output: 300, reasoning: 100, cache: { read: 40_000, write: 2_000 } } };
-    const v2 = { role: 'assistant', model: { id: 'big-pickle', providerID: 'opencode' }, cost: 0, time: { created: 1_793_000_060_000 }, tokens: { input: 17_835, output: 87, reasoning: 229, cache: { read: 1_941, write: 0 } } };
+    // OpenCode 2.1 keeps the role in the row's type, not in its data.
+    const v2 = { agent: 'build', model: { id: 'big-pickle', providerID: 'opencode' }, finish: 'stop', cost: 0, time: { created: 1_793_000_060_000 }, tokens: { input: 17_835, output: 87, reasoning: 229, cache: { read: 1_941, write: 0 } } };
     const sql = [
       'CREATE TABLE message (id text PRIMARY KEY, session_id text, time_created integer, time_updated integer, data text);',
       'CREATE TABLE session_message (id text PRIMARY KEY, session_id text, type text, seq integer, time_created integer, time_updated integer, data text);',
@@ -326,6 +328,7 @@ describe.skipIf(!HAS_SQLITE3)('readTokenUsage: opencode-db', () => {
       `INSERT INTO message VALUES ('msg_other', 'ses_other', 1, 1, '${JSON.stringify(v1)}');`,
       // Newer OpenCode writes the same message to both tables.
       `INSERT INTO session_message VALUES ('msg_a', 'ses_7Hq2', 'assistant', 1, 1, 1, '${JSON.stringify(v1)}');`,
+      `INSERT INTO session_message VALUES ('msg_s', 'ses_7Hq2', 'system', 3, 1, 1, '${JSON.stringify({ ...v2, model: undefined })}');`,
       `INSERT INTO session_message VALUES ('msg_b', 'ses_7Hq2', 'assistant', 2, 1, 1, '${JSON.stringify(v2)}');`,
     ].join('\n');
     expect(spawnSync('sqlite3', [path.join(data, 'opencode.db')], { input: sql }).status).toBe(0);
@@ -342,5 +345,38 @@ describe.skipIf(!HAS_SQLITE3)('readTokenUsage: opencode-db', () => {
     } finally {
       if (xdg === undefined) delete process.env.XDG_DATA_HOME; else process.env.XDG_DATA_HOME = xdg;
     }
+  });
+});
+
+describe('readCopilotShutdown', () => {
+  // A session.shutdown record as Copilot CLI 1.0 writes it, trimmed to the fields teamai reads.
+  const shutdown = {
+    type: 'session.shutdown', id: 'e7c1', timestamp: '2026-10-30T18:04:11.902Z',
+    data: {
+      tokenDetails: { input: { tokenCount: 15_311 }, cache_read: { tokenCount: 1_280 }, cache_write: { tokenCount: 0 }, output: { tokenCount: 1_034 } },
+      modelMetrics: {
+        'mai-code-1.1-flash': {
+          usage: { inputTokens: 14_591, outputTokens: 934, cacheReadTokens: 1_280, cacheWriteTokens: 0 },
+          tokenDetails: { input: { tokenCount: 13_311 }, cache_read: { tokenCount: 1_280 }, cache_write: { tokenCount: 0 }, output: { tokenCount: 934 } },
+        },
+        // Without per-model details, the usage counts the cached input inside inputTokens.
+        'gpt-6.1-sol': { usage: { inputTokens: 2_000, outputTokens: 100, cacheReadTokens: 0, cacheWriteTokens: 0 } },
+      },
+    },
+  };
+
+  it('reads the session totals and one request per model', () => {
+    expect(readCopilotShutdown(shutdown)).toEqual({
+      tokens: { input: 15_311, output: 1_034, cacheRead: 1_280, cacheCreation: 0 },
+      requests: [
+        { key: 'e7c1:mai-code-1.1-flash', timestamp: '2026-10-30T18:04:11.902Z', model: 'mai-code-1.1-flash', speed: 'standard', tokens: { input: 13_311, output: 934, cacheRead: 1_280, cacheCreation: 0 } },
+        { key: 'e7c1:gpt-6.1-sol', timestamp: '2026-10-30T18:04:11.902Z', model: 'gpt-6.1-sol', speed: 'standard', tokens: { input: 2_000, output: 100, cacheRead: 0, cacheCreation: 0 } },
+      ],
+    });
+  });
+
+  it('tells a shutdown without counters from another record', () => {
+    expect(readCopilotShutdown({ type: 'session.shutdown', id: 'e7c2', data: {} })).toEqual({ requests: [] });
+    expect(readCopilotShutdown({ type: 'assistant.message', id: 'e7c3', data: {} })).toBeUndefined();
   });
 });

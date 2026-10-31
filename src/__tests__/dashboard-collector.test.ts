@@ -17,6 +17,7 @@ import {
   compactEvents,
   memberEvents,
   reconcileRequestLog,
+  type LocalRequestRecord,
   dedupeEvents,
   dashboardReport,
   GIT_AT_START_PAYLOAD_KEY,
@@ -190,6 +191,9 @@ describe('parseHookEvent', () => {
           cache_read: { tokenCount: 17 },
           cache_write: { tokenCount: 3 },
         },
+        modelMetrics: {
+          'claude-sonnet-5': { tokenDetails: { input: { tokenCount: 101 }, output: { tokenCount: 29 }, cache_read: { tokenCount: 17 }, cache_write: { tokenCount: 3 } } },
+        },
         prompt: secret,
       },
     });
@@ -209,6 +213,8 @@ describe('parseHookEvent', () => {
         tokens: { input: 101, output: 29, cacheRead: 17, cacheCreation: 3 },
         tokenScope: 'session',
       }));
+      // Sonnet 5 at $2 / $10 / $0.20 / $2.50 per million tokens, rounded to the micro-dollar.
+      expect(event?.requestMetrics).toMatchObject({ pricedRequests: 1, costMicros: 503 });
       expect(event?.transcriptPath).toBeUndefined();
       expect(event?.stoppedOutput).toBeUndefined();
       expect(JSON.stringify(event)).not.toContain(secret);
@@ -1620,6 +1626,76 @@ describe('parseHookEvent: Antigravity CLI session tokens', () => {
 });
 
 describe('local request log', () => {
+  const requestLog = () => fs.readFileSync(path.join(tmpDir, '.teamai', 'dashboard', 'requests.jsonl'), 'utf-8')
+    .trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
+  const claudeRequest = (id: string, model: string) => JSON.stringify({
+    type: 'assistant', timestamp: '2026-10-30T09:15:02.118Z',
+    message: { id, model, usage: { input_tokens: 1_000, output_tokens: 200, cache_read_input_tokens: 5_000, cache_creation_input_tokens: 400 }, content: [] },
+  });
+
+  it('logs every request of a Stop with its tool and session, and prices an unknown model once an alias names it', async () => {
+    const transcriptPath = path.join(tmpDir, 'gateway.jsonl');
+    fs.writeFileSync(transcriptPath, [claudeRequest('msg_1', 'claude-sonnet-5'), claudeRequest('msg_2', 'gateway-model-42')].join('\n') + '\n');
+    const stop = (modelAliases?: Record<string, string>) => parseHookEvent(JSON.stringify({
+      hook_event_name: 'Stop', session_id: 'sess-gateway', transcript_path: transcriptPath,
+    }), 'claude', { modelAliases });
+
+    // Sonnet 5: input $0.002 + output $0.002 + cache read $0.001 + 5m cache write $0.001
+    expect((await stop())?.requestMetrics).toMatchObject({ pricedRequests: 1, costMicros: 6_000 });
+    expect(requestLog().map(({ tool, sessionId, model, costMicros, costSource }) => ({ tool, sessionId, model, costMicros, costSource }))).toEqual([
+      { tool: 'claude', sessionId: 'sess-gateway', model: 'claude-sonnet-5', costMicros: 6_000, costSource: 'catalog' },
+      { tool: 'claude', sessionId: 'sess-gateway', model: 'gateway-model-42', costMicros: null, costSource: undefined },
+    ]);
+    // 5,000 cache reads billed as input would cost $0.009 more ($2 instead of $0.20 per million).
+    expect(requestLog()[0].cacheSavingsMicros).toBe(9_000);
+
+    expect((await stop({ 'gateway-model-42': 'claude-sonnet-5' }))?.requestMetrics).toMatchObject({ pricedRequests: 2, costMicros: 12_000 });
+  });
+
+  it('keeps the cost a request was logged with when prices change', async () => {
+    const transcriptPath = path.join(tmpDir, 'priced.jsonl');
+    fs.writeFileSync(transcriptPath, claudeRequest('msg_1', 'claude-sonnet-5') + '\n');
+    const stop = () => parseHookEvent(JSON.stringify({ hook_event_name: 'Stop', session_id: 's', transcript_path: transcriptPath }), 'claude');
+    await stop();
+    const [logged] = requestLog();
+    await reconcileRequestLog([{ ...(logged as LocalRequestRecord), costMicros: 4_000, priceVersion: 'litellm-2026-01-05-aaaaaaa' }]);
+
+    expect((await stop())?.requestMetrics).toMatchObject({ costMicros: 4_000, priceVersion: 'litellm-2026-01-05-aaaaaaa' });
+  });
+
+  it('keeps the cost Pi reported for each request', async () => {
+    const transcriptPath = path.join(tmpDir, 'pi-session.jsonl');
+    fs.writeFileSync(transcriptPath, JSON.stringify({
+      type: 'message', id: '8b1d4e6a', timestamp: '2026-09-01T15:01:51.019Z',
+      message: { role: 'assistant', provider: 'openai-codex', model: 'gpt-5.6-sol', usage: { input: 2_039, output: 921, cacheRead: 87_808, cacheWrite: 0, cost: { total: 0.0616992 } } },
+    }) + '\n');
+
+    const event = await parseHookEvent(JSON.stringify({ hook_event_name: 'Stop', session_id: 'pi-sess', transcript_path: transcriptPath }), 'pi');
+
+    expect(event?.tokens).toEqual({ input: 2_039, output: 921, cacheRead: 87_808, cacheCreation: 0 });
+    expect(event?.requestMetrics).toMatchObject({ pricedRequests: 1, costMicros: 61_699, priceVersion: 'reported' });
+    expect(requestLog()[0]).toMatchObject({ tool: 'pi', model: 'gpt-5.6-sol', costSource: 'reported' });
+  });
+
+  it('leaves usage and the request log alone for a caller that needs only the event', async () => {
+    const transcriptPath = path.join(tmpDir, 'skip.jsonl');
+    fs.writeFileSync(transcriptPath, claudeRequest('msg_1', 'claude-sonnet-5') + '\n');
+
+    const event = await parseHookEvent(JSON.stringify({ hook_event_name: 'Stop', session_id: 's', transcript_path: transcriptPath }), 'claude', { readUsage: false });
+
+    expect(event).toMatchObject({ type: 'stop', sessionId: 's' });
+    expect(event?.tokens).toBeUndefined();
+    expect(fs.existsSync(path.join(tmpDir, '.teamai', 'dashboard', 'requests.jsonl'))).toBe(false);
+  });
+
+  it('reads no transcript for an empty transcript_path', async () => {
+    const event = await parseHookEvent(JSON.stringify({ hook_event_name: 'Stop', session_id: 'dsh-sess', transcript_path: '' }), 'dsh');
+
+    expect(event?.type).toBe('stop');
+    expect(event?.transcriptPath).toBeUndefined();
+    expect(event?.tokens).toBeUndefined();
+  });
+
   it('deduplicates requests and prunes details older than 90 days', async () => {
     const old = { id: 'old', timestamp: '2026-05-01T00:00:00Z', model: 'claude-sonnet-5', inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0, costMicros: 1, priceVersion: 'v1' };
     const current = { ...old, id: 'current', timestamp: '2026-09-01T00:00:00Z' };

@@ -11,9 +11,8 @@ import { log } from '../../utils/logger.js';
 import type { TokenReading, TokenRequest, TokenSource } from '../index.js';
 
 const Count = z.number().finite().nonnegative().catch(0).default(0);
-/** An assistant message as OpenCode stores it: `modelID` before 2.x, `model.id` after. */
+/** An assistant message's data as OpenCode stores it: `modelID` before 2.x, `model.id` after. */
 const Message = z.object({
-  role: z.literal('assistant'),
   modelID: z.string().min(1).optional(),
   model: z.object({ id: z.string().min(1) }).optional().catch(undefined),
   cost: z.number().finite().nonnegative().catch(0).default(0),
@@ -25,7 +24,9 @@ const Message = z.object({
     cache: z.object({ read: Count, write: Count }).catch({ read: 0, write: 0 }).default({ read: 0, write: 0 }),
   }),
 });
-const Row = z.object({ id: z.string().min(1), data: z.string() });
+/** OpenCode 2 keeps a message's role in the `type` column; older `message` rows keep it as `data.role`. */
+const Row = z.object({ id: z.string().min(1), type: z.string().nullable(), data: z.string() });
+const Role = z.object({ role: z.string() }).catch({ role: '' });
 
 /**
  * OpenCode's assistant messages for `sessionId`, from `opencode.db` in its
@@ -48,7 +49,7 @@ export async function readOpencodeDb(source: TokenSource): Promise<TokenReading>
     .stdout.split('\n').map((name) => name.trim()).filter(Boolean);
   if (!tables.length) return { tokens, requests };
   const sql = tables
-    .map((table) => `SELECT id, data FROM ${table} WHERE session_id = '${source.sessionId}'`)
+    .map((table) => `SELECT id, ${table === 'session_message' ? 'type' : 'NULL AS type'}, data FROM ${table} WHERE session_id = '${source.sessionId}'`)
     .join(' UNION ALL ') + ';';
   const result = await execCommand(sqlite3, ['-readonly', '-json', db, sql], { timeoutMs: 30_000 });
   if (result.code !== 0) {
@@ -66,6 +67,7 @@ export async function readOpencodeDb(source: TokenSource): Promise<TokenReading>
     } catch {
       continue;
     }
+    if ((row.data.type ?? Role.parse(data).role) !== 'assistant') continue;
     const message = Message.safeParse(data);
     if (!message.success) continue;
     counted.add(row.data.id);

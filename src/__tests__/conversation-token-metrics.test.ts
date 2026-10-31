@@ -7,6 +7,7 @@ import {
   aggregateSessionMetrics,
   rebuildSessions,
 } from '../dashboard-collector.js';
+import { readTokenUsage } from '../token-usage/index.js';
 import { computePromptTokenDelta, droppedRollouts, mergePromptTokenStats } from '../team-push.js';
 import { summarizeConversation, formatTokenCount } from '../digest.js';
 import type { DashboardEvent, SessionMetrics, TokenUsage, UserStats } from '../types.js';
@@ -50,15 +51,15 @@ function writeTranscript(lines: string[]): string {
   return p;
 }
 
-// ─── scanTranscriptStop: token summing + dedup ──────────
+// ─── readTokenUsage: token summing + dedup ──────────
 
-describe('scanTranscriptStop — token usage', () => {
+describe('readTokenUsage — session totals', () => {
   it('sums input/output/cache tokens across assistant messages', async () => {
     const p = writeTranscript([
       assistantLine('msg_1', { input: 100, output: 20, cacheRead: 50, cacheCreation: 10 }),
       assistantLine('msg_2', { input: 40, output: 5, cacheRead: 0, cacheCreation: 3 }),
     ]);
-    const { tokens } = await scanTranscriptStop(p);
+    const { tokens } = await readTokenUsage('claude-jsonl', { transcriptPath: p, sessionId: 's', settled: true });
     expect(tokens).toEqual({ input: 140, output: 25, cacheRead: 50, cacheCreation: 13 });
   });
 
@@ -67,13 +68,13 @@ describe('scanTranscriptStop — token usage', () => {
     const dup = assistantLine('msg_dup', { input: 1000, output: 200, cacheRead: 300, cacheCreation: 50 });
     const dupToolBlock = assistantLine('msg_dup', { input: 1000, output: 200, cacheRead: 300, cacheCreation: 50 }, 'tool_use');
     const p = writeTranscript([dup, dupToolBlock, dup]);
-    const { tokens } = await scanTranscriptStop(p);
+    const { tokens } = await readTokenUsage('claude-jsonl', { transcriptPath: p, sessionId: 's', settled: true });
     expect(tokens).toEqual({ input: 1000, output: 200, cacheRead: 300, cacheCreation: 50 });
   });
 
   it('returns zero tokens for a transcript with no usage', async () => {
     const p = writeTranscript([JSON.stringify({ type: 'user', message: { content: [{ type: 'text', text: 'hi' }] } })]);
-    const { tokens } = await scanTranscriptStop(p);
+    const { tokens } = await readTokenUsage('claude-jsonl', { transcriptPath: p, sessionId: 's', settled: true });
     expect(tokens).toEqual({ input: 0, output: 0, cacheRead: 0, cacheCreation: 0 });
   });
 
@@ -81,7 +82,7 @@ describe('scanTranscriptStop — token usage', () => {
     const p = writeTranscript([
       JSON.stringify({ type: 'assistant', message: { id: 'm', usage: { input_tokens: 'oops', output_tokens: 7 }, content: [] } }),
     ]);
-    const { tokens } = await scanTranscriptStop(p);
+    const { tokens } = await readTokenUsage('claude-jsonl', { transcriptPath: p, sessionId: 's', settled: true });
     expect(tokens).toEqual({ input: 0, output: 7, cacheRead: 0, cacheCreation: 0 });
   });
 
@@ -114,7 +115,7 @@ describe('scanTranscriptStop — token usage', () => {
       }, 'resp_2'),
     ]);
 
-    const { tokens, tokenScope } = await scanTranscriptStop(p);
+    const { tokens, scope: tokenScope } = await readTokenUsage('codex-rollout', { transcriptPath: p, sessionId: 's', settled: true });
     // input_tokens includes both cache buckets and output_tokens includes reasoning.
     expect(tokens).toEqual({ input: 1100, output: 80, cacheRead: 400, cacheCreation: 100 });
     expect(tokenScope).toBe('session');
@@ -134,7 +135,7 @@ describe('scanTranscriptStop — token usage', () => {
       tokenCount({ input_tokens: 900, cached_input_tokens: 350, output_tokens: 45 }),
     ]);
 
-    const { tokens, tokenScope } = await scanTranscriptStop(p);
+    const { tokens, scope: tokenScope } = await readTokenUsage('codex-rollout', { transcriptPath: p, sessionId: 's', settled: true });
     expect(tokens).toEqual({ input: 550, output: 45, cacheRead: 350, cacheCreation: 0 });
     expect(tokenScope).toBe('transcript');
   });
@@ -169,7 +170,7 @@ describe('scanTranscriptStop — token usage', () => {
       }),
     ]);
 
-    const { tokens, tokenScope } = await scanTranscriptStop(p);
+    const { tokens, scope: tokenScope } = await readTokenUsage('codex-rollout', { transcriptPath: p, sessionId: 's', settled: true });
     expect(tokens).toEqual({ input: 600, output: 50, cacheRead: 300, cacheCreation: 100 });
     expect(tokenScope).toBe('session');
   });
@@ -204,7 +205,7 @@ describe('scanTranscriptStop — token usage', () => {
       }) + '\n');
     }, 300);
 
-    const { tokens, tokenScope } = await scanTranscriptStop(p, { tool: 'codex' });
+    const { tokens, scope: tokenScope } = await readTokenUsage('codex-rollout', { transcriptPath: p, sessionId: 's' });
     clearTimeout(timer);
     expect(tokens).toEqual({ input: 280, output: 60, cacheRead: 100, cacheCreation: 20 });
     expect(tokenScope).toBe('session');
@@ -227,9 +228,8 @@ describe('scanTranscriptStop — token usage', () => {
         { usage: { inputTokens: 215609, outputTokens: 2967, totalTokens: 218576 } },
       ],
     }));
-    const { tokens, prompts } = await scanTranscriptStop(p);
+    const { tokens } = await readTokenUsage('codebuddy', { transcriptPath: p, sessionId: 's', settled: true });
     expect(tokens).toEqual({ input: 215609, output: 2967, cacheRead: 0, cacheCreation: 0 });
-    expect(prompts).toBe(2);
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
@@ -247,10 +247,9 @@ describe('scanTranscriptStop — token usage', () => {
       fs.writeFileSync(p, JSON.stringify({ messages, requests: [{ usage: { inputTokens: 1200, outputTokens: 88 } }] }));
     }, 300);
 
-    const { tokens, prompts } = await scanTranscriptStop(p);
+    const { tokens } = await readTokenUsage('codebuddy', { transcriptPath: p, sessionId: 's' });
     clearTimeout(timer);
     expect(tokens).toEqual({ input: 1200, output: 88, cacheRead: 0, cacheCreation: 0 });
-    expect(prompts).toBe(1);
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
@@ -262,7 +261,7 @@ describe('scanTranscriptStop — token usage', () => {
     });
     // Same requestId across two content-block lines → counted once.
     const p = writeTranscript([line({ type: 'text', text: 'a' }), line({ type: 'tool_use', id: 't' })]);
-    const { tokens } = await scanTranscriptStop(p);
+    const { tokens } = await readTokenUsage('claude-jsonl', { transcriptPath: p, sessionId: 's', settled: true });
     expect(tokens).toEqual({ input: 100, output: 10, cacheRead: 0, cacheCreation: 0 });
   });
 });
