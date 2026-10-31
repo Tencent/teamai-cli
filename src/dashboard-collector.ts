@@ -43,9 +43,9 @@ import type { HeadState } from './utils/git.js';
 import type { SessionRun } from './launch-context.js';
 import { SessionOutcomeEventSchema, uniqueOutcomes, type SessionOutcomeEvent, type WorkOutcome } from './outcomes.js';
 import { readCopilotShutdown } from './token-usage/formats/copilot-shutdown.js';
-import { isTokenFormatId, readTokenUsage, type TokenFormatId, type TokenRequest } from './token-usage/index.js';
+import { isTokenFormatId, readTokenUsage, type TokenRequest } from './token-usage/index.js';
 import { priceTokens } from './token-usage/pricing.js';
-import { isToolId, TOOLS } from './tools.js';
+import { isToolId, TOOLS, type ToolDescriptor } from './tools.js';
 
 // ─── Event collection data flow ─────────────────────────
 //
@@ -153,6 +153,9 @@ export interface TranscriptScanResult {
   prompts: number;
 }
 
+/** How many days the request log keeps a request. */
+export const REQUEST_LOG_RETENTION_DAYS = 90;
+
 const RequestCount = z.number().finite().nonnegative();
 /**
  * One request in `~/.teamai/dashboard/requests.jsonl`: its tokens and model,
@@ -186,12 +189,14 @@ type PricedRequestRecord = Extract<LocalRequestRecord, { costMicros: number }>;
 
 const isPriced = (record: LocalRequestRecord): record is PricedRequestRecord => record.costMicros !== null;
 
-/** The TOOLS token format the dashboard reads for `tool`, when it reads one. */
-function tokenFormatOf(tool: string): TokenFormatId | undefined {
+/**
+ * Where the dashboard reads `tool`'s token usage: its TOOLS entry's `tokens`.
+ * A tool TOOLS does not list is read as a Claude transcript, as every Stop
+ * transcript was before tools named their format.
+ */
+function tokenSourceOf(tool: string): ToolDescriptor['tokens'] {
   const id = tool.toLowerCase();
-  if (!isToolId(id)) return undefined;
-  const format: string = TOOLS[id].tokens;
-  return isTokenFormatId(format) ? format : undefined;
+  return isToolId(id) ? TOOLS[id].tokens : 'claude-jsonl';
 }
 
 /** A request's catalog cost with its cache reads billed as input, less its catalog cost. */
@@ -624,16 +629,18 @@ export function resolveCopilotUsageTranscript(
  * entries with role `user`. Null when the file is missing, too large,
  * unparseable (read mid-write) or not a CodeBuddy index document.
  */
+/** The parts of a CodeBuddy `index.json` the prompt count reads; `requests` tells it from other JSON. */
+const CodebuddyIndex = z.object({
+  requests: z.array(z.unknown()),
+  messages: z.array(z.object({ role: z.unknown() }).catch({ role: undefined })).catch([]).default([]),
+});
+
 async function readCodebuddyIndexPrompts(transcriptPath: string): Promise<number | null> {
   try {
     const stat = await fs.promises.stat(transcriptPath);
     if (stat.size === 0 || stat.size > INTERVENTION_SCAN_MAX_BYTES) return null;
-    const data = JSON.parse(await fs.promises.readFile(transcriptPath, 'utf-8')) as {
-      messages?: Array<{ role?: unknown }>;
-      requests?: unknown;
-    };
-    if (!data || !Array.isArray(data.requests)) return null;
-    return Array.isArray(data.messages) ? data.messages.filter((m) => m?.role === 'user').length : 0;
+    const index = CodebuddyIndex.safeParse(JSON.parse(await fs.promises.readFile(transcriptPath, 'utf-8')));
+    return index.success ? index.data.messages.filter((m) => m.role === 'user').length : null;
   } catch (e) {
     log.warn(`dashboard: failed to scan CodeBuddy index: ${(e as Error).message}`);
     return null;
@@ -1010,9 +1017,9 @@ export async function parseHookEvent(
   }
 
   // Token usage, in the format the tool's TOOLS entry names.
-  const tokenFormat = eventType === 'stop' && options?.readUsage !== false ? tokenFormatOf(tool) : undefined;
-  if (tokenFormat) {
-    const reading = await readTokenUsage(tokenFormat, { transcriptPath: stopTranscript, sessionId });
+  const tokenSource = tokenSourceOf(tool);
+  if (eventType === 'stop' && options?.readUsage !== false && isTokenFormatId(tokenSource)) {
+    const reading = await readTokenUsage(tokenSource, { transcriptPath: stopTranscript, sessionId });
     if (totalTokens(reading.tokens) > 0) {
       event.tokens = reading.tokens;
       if (reading.scope) event.tokenScope = reading.scope;
@@ -1074,7 +1081,7 @@ export async function parseHookEvent(
   // Copilot's session log contains prompts, tool arguments, assistant output,
   // and auth-bearing request metadata. Follow opaque event IDs, extract only
   // final shutdown counters, and never persist paths or transcript content.
-  if (eventType === 'session_end' && isCopilot && options?.readUsage !== false) {
+  if (eventType === 'session_end' && tokenSource === 'copilot-shutdown' && options?.readUsage !== false) {
     const transcriptPath = resolveCopilotUsageTranscript(sessionId);
     if (transcriptPath) {
       const history = await readEventsRaw(getEventsPath());
@@ -1198,7 +1205,7 @@ export async function reconcileRequestLog(
 ): Promise<void> {
   const requestsPath = getRequestsPath();
   const lockPath = `${requestsPath}.lock`;
-  const cutoff = now.getTime() - 90 * 86_400_000;
+  const cutoff = now.getTime() - REQUEST_LOG_RETENTION_DAYS * 86_400_000;
   let lock: fs.promises.FileHandle | undefined;
   try {
     await ensureDir(path.dirname(requestsPath));

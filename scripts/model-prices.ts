@@ -4,6 +4,7 @@
  * tools run models from. Run `node scripts/update-model-prices.mjs`; a weekly
  * workflow runs it and opens a pull request when prices change.
  */
+import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 
 import { canonicalModelName } from '../src/token-usage/model-name.js';
@@ -121,6 +122,19 @@ export function catalogFromLiteLlm(document: unknown, source: { revision: string
   };
 }
 
+const RatesSchema = z.object({ input: Rate, output: Rate, cacheRead: Rate, cacheWrite: Rate, cacheWrite1h: Rate.optional() });
+const TieredSchema = RatesSchema.extend({ above: z.array(RatesSchema.extend({ tokens: Rate })).optional() });
+const CatalogSchema = z.object({
+  version: z.string(),
+  source: z.string(),
+  models: z.record(z.string(), TieredSchema.extend({ fast: TieredSchema.optional() })),
+});
+
+/** A catalog file as `formatCatalog` writes it; throws on any other shape. */
+export function parseCatalog(json: unknown): PriceCatalog {
+  return CatalogSchema.parse(json);
+}
+
 /** One model per line, so the weekly pull request reads as a per-model diff. */
 export function formatCatalog(catalog: PriceCatalog): string {
   const lines = Object.entries(catalog.models).map(([name, price]) => `    ${JSON.stringify(name)}: ${JSON.stringify(price)}`);
@@ -136,7 +150,7 @@ export function describeCatalogChange(before: PriceCatalog, after: PriceCatalog)
   for (const name of [...new Set([...Object.keys(before.models), ...Object.keys(after.models)])].sort()) {
     const old = before.models[name];
     const now = after.models[name];
-    if (old && now && JSON.stringify(old) === JSON.stringify(now)) continue;
+    if (old && now && isDeepStrictEqual(old, now)) continue;
     const change = !old ? 'added' : !now ? 'removed' : 'repriced';
     counts[change] += 1;
     const cells = RATE_COLUMNS.map((column) => {

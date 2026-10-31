@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 
-import { emptyTokenUsage, type TokenUsage } from '../../types.js';
+import { addTokenUsage, emptyTokenUsage } from '../../types.js';
 import { pathExists } from '../../utils/fs.js';
 import { getUserHome } from '../../utils/home.js';
 import type { TokenReading, TokenRequest, TokenSource } from '../index.js';
@@ -63,26 +63,18 @@ const Rollup = z.object({
   }),
 });
 
-const add = (sum: TokenUsage, used: TokenUsage) => {
-  sum.input += used.input;
-  sum.output += used.output;
-  sum.cacheRead += used.cacheRead;
-  sum.cacheCreation += used.cacheCreation;
-};
-
 /**
  * Muse Code's session log: one request per `model_completed` or
  * `automated_review_completed` event, with its model. A log with none of
  * those (Muse 1.4.6) totals its `goal_usage_attribution` rollups instead,
- * with no model. Subagent logs (`subagent/<id>/`) are not read, as Claude's
- * sidechains were not before.
+ * with no model. Subagent logs (`subagent/<id>/`) are not read.
  */
 export async function readMuseSession(source: TokenSource): Promise<TokenReading> {
   const file = await findSessionLog(source.sessionId);
   if (!file) return { tokens: emptyTokenUsage(), requests: [] };
   const requests: TokenRequest[] = [];
   const counted = new Set<string>();
-  const rollup = emptyTokenUsage();
+  let rollup = emptyTokenUsage();
   await forEachJsonLine(file, ['"model_completed"', '"automated_review_completed"', '"goal_usage_attribution"'], (entry) => {
     const call = Call.safeParse(entry);
     if (call.success) {
@@ -101,9 +93,8 @@ export async function readMuseSession(source: TokenSource): Promise<TokenReading
     if (!total.success) return;
     const { input_tokens: input, output_tokens: output, cached_tokens: cached } = total.data.payload.event.record.quantity;
     const cacheRead = Math.min(input, cached);
-    add(rollup, { input: input - cacheRead, output, cacheRead, cacheCreation: 0 });
+    rollup = addTokenUsage(rollup, { input: input - cacheRead, output, cacheRead, cacheCreation: 0 });
   });
-  const tokens = emptyTokenUsage();
-  for (const request of requests) add(tokens, request.tokens);
+  const tokens = requests.reduce((sum, request) => addTokenUsage(sum, request.tokens), emptyTokenUsage());
   return { tokens: requests.length ? tokens : rollup, scope: 'session', requests };
 }

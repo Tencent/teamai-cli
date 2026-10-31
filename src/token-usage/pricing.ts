@@ -24,12 +24,10 @@ export const PRICE_CATALOG_VERSION = CATALOG.version;
 /** Fast mode (Claude's `speed: "fast"`, Codex's priority tier) bills at the model's fast rates. */
 export type TokenSpeed = 'standard' | 'fast';
 
-export type PricedTokens = {
-  costMicros: number;
-  /** `reported`: the tool recorded what the request cost. `catalog`: estimated from the bundled price list. */
-  source: 'reported' | 'catalog';
-  priceVersion: string;
-};
+/** `reported`: the tool recorded what the request cost. `catalog`: estimated from the bundled price list at `priceVersion`. */
+export type PricedTokens =
+  | { costMicros: number; source: 'reported'; priceVersion: 'reported' }
+  | { costMicros: number; source: 'catalog'; priceVersion: string };
 
 function ratesFor(price: ModelPrice, speed: TokenSpeed, promptTokens: number): TokenRates {
   const tiered = (speed === 'fast' && price.fast) || price;

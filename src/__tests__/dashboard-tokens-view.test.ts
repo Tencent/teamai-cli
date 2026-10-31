@@ -77,6 +77,12 @@ describe('the Tokens & cost page', () => {
     expect(text(html)).toContain('acme/payments · 2026-10-30T09:16:40Z');
   });
 
+  it('says a 90-day window has no prior period to compare with', async () => {
+    const { html, keys } = await renderPage({ ...WEEK, days: 90, previous: null }, 'zh-CN');
+    expect(html).toContain('请求只保留 90 天');
+    expect(keys.filter((key) => !Object.hasOwn(dashboardMessages, key))).toEqual([]);
+  });
+
   it('says where usage comes from when the window has no request', async () => {
     const empty = { ...WEEK, totals: { ...WEEK.totals, requests: 0 } };
     expect(text((await renderPage(empty)).html)).toContain('No requests in this window');

@@ -16,7 +16,9 @@ async function loadTokens() {
 const usd = micros => new Intl.NumberFormat(language,{style:'currency',currency:'USD',minimumFractionDigits:micros>0&&micros<1000000?4:2,maximumFractionDigits:micros>0&&micros<1000000?4:2}).format((micros||0)/1000000);
 const tokenSum = tokens => tokens.input+tokens.output+tokens.cacheRead+tokens.cacheCreation;
 const compact = value => new Intl.NumberFormat(language,{notation:'compact',maximumFractionDigits:1}).format(value||0);
-function tokenChange(now, before) {
+function tokenChange(now, previous) {
+ if(!previous)return '<span class="label">'+label('Requests are kept for 90 days, so this window has no prior period')+'</span>';
+ const before=previous.costMicros;
  if(!before)return '<span class="label">'+label('No cost in the prior period')+'</span>';
  const change=Math.round((now-before)/before*100);
  return '<span class="label">'+label('Prior')+': '+usd(before)+' · <span class="'+(change>0?'amber':'good')+'">'+(change>0?'+':'')+number(change)+'%</span></span>';
@@ -50,7 +52,7 @@ function tokensPage() {
  if(!all.requests)return windows+'<section class="panel"><div class="empty"><h2>'+label('No requests in this window')+'</h2><p>'+label('Token usage appears here after a session of a supported AI tool stops. See the Tokens & cost column of the tool support page.')+'</p></div></section>';
  const unpriced=s.byModel.filter(m=>!m.pricedRequests);
  const kpis='<div class="kpis token-kpis">'
-  +'<article class="card kpi"><h2>'+label('Estimated cost')+'</h2><div class="big">'+usd(all.costMicros)+'</div>'+tokenChange(all.costMicros,s.previous.costMicros)+'</article>'
+  +'<article class="card kpi"><h2>'+label('Estimated cost')+'</h2><div class="big">'+usd(all.costMicros)+'</div>'+tokenChange(all.costMicros,s.previous)+'</article>'
   +'<article class="card kpi"><h2>'+label('Tokens')+'</h2><div class="big">'+compact(used)+'</div><span class="label">'+label('Input')+' '+compact(all.tokens.input)+' · '+label('Output')+' '+compact(all.tokens.output)+' · '+label('Cache')+' '+compact(all.tokens.cacheRead+all.tokens.cacheCreation)+'</span></article>'
   +'<article class="card kpi"><h2>'+label('Saved by caching')+'</h2><div class="big good">'+usd(all.cacheSavingsMicros)+'</div><span class="label">'+label('Cache reads')+': '+tokenShare(all.tokens.cacheRead,all.tokens.input+all.tokens.cacheRead+all.tokens.cacheCreation)+' '+label('of the prompt')+'</span></article>'
   +'<article class="card kpi"><h2>'+label('Requests priced')+'</h2><div class="big">'+tokenShare(all.pricedRequests,all.requests)+'</div><span class="label">'+number(all.pricedRequests)+' / '+number(all.requests)+(all.reportedCostMicros?' · '+usd(all.reportedCostMicros)+' '+label('reported by the tool'):'')+'</span></article>'
@@ -60,7 +62,7 @@ function tokensPage() {
   +tokenTable(['AI TOOL','REQUESTS','TOKENS','COST','SHARE'],s.byTool.map(r=>['<span data-verbatim>'+e(r.tool)+'</span>',number(r.requests),compact(tokenSum(r.tokens)),tokenCost(r),tokenShare(r.costMicros,all.costMicros)]))+'</section>';
  const models='<section class="panel sessions"><div class="panelhead"><h2>'+label('By model')+' <span class="count">'+number(s.byModel.length)+'</span></h2></div>'
   +tokenTable(['MODEL','AI TOOL','REQUESTS','TOKENS','COST'],s.byModel.map(r=>['<span data-verbatim>'+e(r.model)+'</span>','<span data-verbatim>'+r.tools.map(e).join(', ')+'</span>',number(r.requests),compact(tokenSum(r.tokens)),tokenCost(r)]))
-  +(unpriced.length?'<p class="scorer-hint">'+label('No price list knows')+' <span data-verbatim>'+unpriced.map(m=>e(m.model)).join(', ')+'</span>. '+label('If one is another name for a listed model, map it under modelAliases in your teamai config, for example')+' <code class="cmd">'+e(unpriced[0].model)+': claude-sonnet-5-5</code></p>':'')+'</section>';
+  +(unpriced.length?'<p class="scorer-hint">'+label('No price list knows')+' <span data-verbatim>'+unpriced.map(m=>e(m.model)).join(', ')+'</span>. '+label('If one is another name for a listed model, map it under modelAliases in your teamai config; the session prices its requests at its next stop. For example')+' <code class="cmd">'+e(unpriced[0].model)+': claude-sonnet-5-5</code></p>':'')+'</section>';
  const top='<section class="panel sessions"><div class="panelhead"><h2>'+label('Sessions that cost the most')+'</h2></div>'
   +tokenTable(['SESSION','AI TOOL','REQUESTS','TOKENS','COST'],s.topSessions.map(r=>[tokenSessionCell(r),'<span data-verbatim>'+e(r.tool)+'</span>',number(r.requests),compact(tokenSum(r.tokens)),tokenCost(r)]))+'</section>';
  return windows+(tokenError?errorPanel('Could not refresh token usage. Any displayed values are the last successful result.','tokens'):'')+kpis+chart+'<div class="token-split">'+tools+models+'</div>'+top

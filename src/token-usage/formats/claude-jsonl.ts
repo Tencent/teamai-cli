@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 
-import { emptyTokenUsage, type TokenUsage } from '../../types.js';
+import { addTokenUsage, emptyTokenUsage, type TokenUsage } from '../../types.js';
 import type { TokenReading, TokenRequest, TokenSource } from '../index.js';
 import { forEachJsonLine } from './jsonl.js';
 
@@ -50,14 +50,11 @@ function tokensOf(usage: z.infer<typeof Usage>): TokenUsage {
  * under `<session>/subagents/`, which count toward the session.
  */
 export async function readClaudeJsonl(source: TokenSource): Promise<TokenReading> {
-  const tokens = emptyTokenUsage();
+  let tokens = emptyTokenUsage();
   const requests: TokenRequest[] = [];
   const counted = new Set<string>();
   const add = (request: Omit<TokenRequest, 'model'> & { model?: string }) => {
-    tokens.input += request.tokens.input;
-    tokens.output += request.tokens.output;
-    tokens.cacheRead += request.tokens.cacheRead;
-    tokens.cacheCreation += request.tokens.cacheCreation;
+    tokens = addTokenUsage(tokens, request.tokens);
     if (request.model && request.model !== SYNTHETIC_MODEL) requests.push({ ...request, model: request.model });
   };
   if (!source.transcriptPath) return { tokens, requests };

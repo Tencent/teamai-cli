@@ -9,10 +9,10 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 
-import type { PriceCatalog } from '../src/token-usage/pricing.js';
-import { catalogFromLiteLlm, describeCatalogChange, formatCatalog } from './model-prices.js';
+import { catalogFromLiteLlm, describeCatalogChange, formatCatalog, parseCatalog } from './model-prices.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const TARGET = path.join(ROOT, 'src/token-usage/model-prices.json');
@@ -33,10 +33,14 @@ const catalog = catalogFromLiteLlm(await (await fetchOk(raw, 'application/json')
   revision: latest.sha,
   date: latest.commit.committer.date.slice(0, 10),
 });
-const previous = JSON.parse(await fs.readFile(TARGET, 'utf8')) as PriceCatalog;
-await fs.writeFile(TARGET, formatCatalog(catalog));
+const previous = parseCatalog(JSON.parse(await fs.readFile(TARGET, 'utf8')));
+// A new LiteLLM revision that changes no price leaves the file, and so the weekly pull request, alone.
+const repriced = !isDeepStrictEqual(previous.models, catalog.models);
+if (repriced) await fs.writeFile(TARGET, formatCatalog(catalog));
 const summary = describeCatalogChange(previous, catalog);
 const summaryAt = process.argv.indexOf('--summary');
 if (summaryAt !== -1 && process.argv[summaryAt + 1]) await fs.writeFile(process.argv[summaryAt + 1], `${summary}\n`);
-console.log(`Wrote ${Object.keys(catalog.models).length} models (${catalog.version}) to ${path.relative(ROOT, TARGET)}`);
+console.log(repriced
+  ? `Wrote ${Object.keys(catalog.models).length} models (${catalog.version}) to ${path.relative(ROOT, TARGET)}`
+  : `Kept ${path.relative(ROOT, TARGET)} (${previous.version}): no price changed in ${catalog.version}`);
 console.log(summary.split('\n')[0]);

@@ -8,7 +8,9 @@ name: Model prices
 # A pull request opened with the default GITHUB_TOKEN starts no other
 # workflow, so this job runs the checks the catalog can break first. Set the
 # MODEL_PRICES_TOKEN secret (a token that can push branches and open pull
-# requests) to have CI run on the pull request as well.
+# requests) to have CI run on the pull request as well. Without it, the
+# repository setting "Allow GitHub Actions to create and approve pull
+# requests" must be on.
 
 on:
   schedule:
@@ -60,17 +62,34 @@ jobs:
             exit 0
           fi
           echo "changed=true" >> "$GITHUB_OUTPUT"
-          npm run typecheck
-          npx vitest run src/__tests__/token-pricing.test.ts src/__tests__/token-usage.test.ts scripts/model-prices.test.ts
+          # Some tests pin today's prices. A failure still opens the pull
+          # request, as a draft that says which expectations to update.
+          if npm run typecheck > "$RUNNER_TEMP/checks.log" 2>&1 \
+            && npx vitest run src/__tests__/token-pricing.test.ts src/__tests__/token-usage.test.ts src/__tests__/dashboard-collector.test.ts scripts/model-prices.test.ts >> "$RUNNER_TEMP/checks.log" 2>&1; then
+            echo "checks=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "checks=failed" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Open or update the pull request
         if: steps.changed.outputs.changed == 'true'
+        env:
+          CHECKS: ${{ steps.changed.outputs.checks }}
         run: |
           version=$(node -p "require('./src/token-usage/model-prices.json').version")
           {
             cat "$RUNNER_TEMP/model-prices.md"
             echo
-            echo "Built by the weekly \`Model prices\` workflow with \`node scripts/update-model-prices.mjs\`; typecheck and the pricing tests passed on it."
+            echo "Built by the weekly \`Model prices\` workflow with \`node scripts/update-model-prices.mjs\`."
+            if [ "$CHECKS" = passed ]; then
+              echo "Typecheck and the pricing tests passed on it."
+            else
+              echo "Typecheck or the pricing tests failed on it: a test that pins a price this update changed needs its expectation updated."
+              echo
+              echo '```text'
+              tail -n 60 "$RUNNER_TEMP/checks.log"
+              echo '```'
+            fi
           } > "$RUNNER_TEMP/body.md"
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
@@ -80,5 +99,5 @@ jobs:
           if [ "$(gh pr view "$BRANCH" --json state --jq .state 2>/dev/null)" = "OPEN" ]; then
             gh pr edit "$BRANCH" --title "chore(pricing): update model prices to $version" --body-file "$RUNNER_TEMP/body.md"
           else
-            gh pr create --base main --head "$BRANCH" --title "chore(pricing): update model prices to $version" --body-file "$RUNNER_TEMP/body.md"
+            gh pr create --base main --head "$BRANCH" --title "chore(pricing): update model prices to $version" --body-file "$RUNNER_TEMP/body.md" $([ "$CHECKS" = passed ] || echo --draft)
           fi

@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { sessionStoreDir } from '../../locate.js';
 import { isSafeSessionFileId } from '../../session-flow/ids.js';
 import { findSqlite3 } from '../../session-flow/sqlite.js';
-import { emptyTokenUsage } from '../../types.js';
+import { addTokenUsage, emptyTokenUsage } from '../../types.js';
 import { execCommand } from '../../utils/exec.js';
 import { log } from '../../utils/logger.js';
 import type { TokenReading, TokenRequest, TokenSource } from '../index.js';
@@ -35,7 +35,7 @@ const Role = z.object({ role: z.string() }).catch({ role: '' });
  * are billed as output, and the cost OpenCode reports is kept when above zero.
  */
 export async function readOpencodeDb(source: TokenSource): Promise<TokenReading> {
-  const tokens = emptyTokenUsage();
+  let tokens = emptyTokenUsage();
   const requests: TokenRequest[] = [];
   const db = path.join(sessionStoreDir('opencode', undefined), 'opencode.db');
   // A safe id is a single path segment of letters, digits, `-` and `_`, so it cannot break out of the quotes.
@@ -73,10 +73,7 @@ export async function readOpencodeDb(source: TokenSource): Promise<TokenReading>
     counted.add(row.data.id);
     const { tokens: used, cost, time } = message.data;
     const usage = { input: used.input, output: used.output + used.reasoning, cacheRead: used.cache.read, cacheCreation: used.cache.write };
-    tokens.input += usage.input;
-    tokens.output += usage.output;
-    tokens.cacheRead += usage.cacheRead;
-    tokens.cacheCreation += usage.cacheCreation;
+    tokens = addTokenUsage(tokens, usage);
     const model = message.data.model?.id ?? message.data.modelID;
     if (!model) continue;
     requests.push({

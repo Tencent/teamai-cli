@@ -269,6 +269,15 @@ describe('readTokenUsage — session totals', () => {
 // ─── scanTranscriptStop: human prompt counting ──────────
 
 describe('scanTranscriptStop — prompt counting', () => {
+  it('counts the user messages of a CodeBuddy index.json as prompts', async () => {
+    const p = path.join(tmpDir, 'index.json');
+    fs.writeFileSync(p, JSON.stringify({
+      messages: [{ id: 'a', role: 'user' }, { id: 'b', role: 'assistant' }, { id: 'c', role: 'tool' }, { id: 'd', role: 'user' }],
+      requests: [{ usage: { inputTokens: 215609, outputTokens: 2967 } }],
+    }));
+    expect((await scanTranscriptStop(p)).prompts).toBe(2);
+  });
+
   const userText = (text: string) => JSON.stringify({ type: 'user', message: { content: [{ type: 'text', text }] } });
   const userString = (text: string) => JSON.stringify({ type: 'user', message: { content: text } });
   const toolResult = () => JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't', content: 'ok' }] } });

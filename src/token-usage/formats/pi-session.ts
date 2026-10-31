@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { emptyTokenUsage, type TokenUsage } from '../../types.js';
+import { addTokenUsage, emptyTokenUsage, type TokenUsage } from '../../types.js';
 import type { TokenReading, TokenRequest, TokenSource } from '../index.js';
 import { forEachJsonLine } from './jsonl.js';
 
@@ -33,7 +33,7 @@ const Entry = z.union([
  * Pi writes 0 for a model it has no price for.
  */
 export async function readPiSession(source: TokenSource): Promise<TokenReading> {
-  const tokens: TokenUsage = emptyTokenUsage();
+  let tokens: TokenUsage = emptyTokenUsage();
   const requests: TokenRequest[] = [];
   if (!source.transcriptPath) return { tokens, requests };
   const counted = new Set<string>();
@@ -45,10 +45,7 @@ export async function readPiSession(source: TokenSource): Promise<TokenReading> 
     if (key && counted.has(key)) return;
     if (key) counted.add(key);
     const used = { input: usage.input, output: usage.output, cacheRead: usage.cacheRead, cacheCreation: usage.cacheWrite };
-    tokens.input += used.input;
-    tokens.output += used.output;
-    tokens.cacheRead += used.cacheRead;
-    tokens.cacheCreation += used.cacheCreation;
+    tokens = addTokenUsage(tokens, used);
     if (!key || !model) return;
     const cost = usage.cost?.total;
     requests.push({

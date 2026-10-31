@@ -1,6 +1,6 @@
-import type { LocalRequestRecord } from '../dashboard-collector.js';
+import { REQUEST_LOG_RETENTION_DAYS, type LocalRequestRecord } from '../dashboard-collector.js';
 import { PRICE_CATALOG_VERSION } from '../token-usage/pricing.js';
-import { emptyTokenUsage, type TokenUsage } from '../types.js';
+import { emptyTokenUsage, totalTokens, type TokenUsage } from '../types.js';
 
 const DAY_MS = 86_400_000;
 const TOP_SESSIONS = 10;
@@ -16,8 +16,8 @@ export type TokenCostSummary = {
   /** The price catalog new requests are priced with. */
   catalogVersion: string;
   totals: Usage & { reportedCostMicros: number; cacheSavingsMicros: number };
-  /** The window of the same length before this one. */
-  previous: { requests: number; costMicros: number };
+  /** The window of the same length before this one; null when the request log does not keep it. */
+  previous: { requests: number; costMicros: number } | null;
   daily: Array<{ date: string; requests: number; costMicros: number; tokens: number }>;
   byTool: Array<Usage & { tool: string }>;
   /** A model with no priced request is one no price list knows: tokens only. */
@@ -39,8 +39,7 @@ function add(usage: Usage, record: LocalRequestRecord): void {
   usage.tokens.cacheCreation += record.cacheCreationTokens;
 }
 
-const total = (tokens: TokenUsage) => tokens.input + tokens.output + tokens.cacheRead + tokens.cacheCreation;
-const byCost = (a: Usage, b: Usage) => b.costMicros - a.costMicros || total(b.tokens) - total(a.tokens);
+const byCost = (a: Usage, b: Usage) => b.costMicros - a.costMicros || totalTokens(b.tokens) - totalTokens(a.tokens);
 
 function group<T extends Usage>(map: Map<string, T>, key: string, create: () => T): T {
   const found = map.get(key);
@@ -106,10 +105,10 @@ export function summarizeTokenCosts(
     to: dates.at(-1) ?? '',
     catalogVersion: PRICE_CATALOG_VERSION,
     totals,
-    previous,
+    previous: options.days * 2 <= REQUEST_LOG_RETENTION_DAYS ? previous : null,
     daily: dates.map((date) => {
       const day = daily.get(date) ?? emptyUsage();
-      return { date, requests: day.requests, costMicros: day.costMicros, tokens: total(day.tokens) };
+      return { date, requests: day.requests, costMicros: day.costMicros, tokens: totalTokens(day.tokens) };
     }),
     byTool: [...tools.values()].sort(byCost),
     byModel: [...models.values()].sort(byCost),

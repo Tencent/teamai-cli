@@ -73,6 +73,11 @@ describe('summarizeTokenCosts', () => {
     ]);
   });
 
+  it('has no prior period for a window longer than half of the 90 days the log keeps', () => {
+    expect(summarizeTokenCosts(WEEK, { days: 90, now: NOW }).previous).toBeNull();
+    expect(summarizeTokenCosts(WEEK, { days: 30, now: NOW }).previous).toEqual({ requests: 0, costMicros: 0 });
+  });
+
   it('keeps only a workspace\'s sessions when given them', () => {
     const scoped = summarizeTokenCosts(WEEK, { days: 7, now: NOW, sessionIds: new Set(['s-codex']) });
     expect(scoped.totals.requests).toBe(1);

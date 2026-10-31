@@ -3,7 +3,7 @@ import path from 'node:path';
 import { z } from 'zod';
 
 import { log } from '../../utils/logger.js';
-import { emptyTokenUsage, INTERVENTION_SCAN_MAX_BYTES, type TokenUsage } from '../../types.js';
+import { addTokenUsage, emptyTokenUsage, INTERVENTION_SCAN_MAX_BYTES, type TokenUsage } from '../../types.js';
 import type { TokenReading, TokenRequest, TokenSource } from '../index.js';
 import { forEachJsonLine } from './jsonl.js';
 
@@ -56,7 +56,7 @@ const iso = (ms: number | undefined) => (ms === undefined ? '' : new Date(ms).to
  * `messageId`. Subagent transcripts under `<id>/subagents/` count too.
  */
 async function readCliJsonl(file: string): Promise<TokenReading> {
-  const tokens = emptyTokenUsage();
+  let tokens = emptyTokenUsage();
   const requests: TokenRequest[] = [];
   const counted = new Set<string>();
   const visit = (entry: unknown) => {
@@ -66,10 +66,7 @@ async function readCliJsonl(file: string): Promise<TokenReading> {
     if ((!data.rawUsage && !data.usage) || counted.has(data.messageId)) return;
     counted.add(data.messageId);
     const used = tokensOf(data.rawUsage ?? {}, data.usage ?? {});
-    tokens.input += used.input;
-    tokens.output += used.output;
-    tokens.cacheRead += used.cacheRead;
-    tokens.cacheCreation += used.cacheCreation;
+    tokens = addTokenUsage(tokens, used);
     const model = data.requestModelId ?? data.model;
     if (model) requests.push({ key: data.messageId, timestamp: iso(item.data.timestamp), model, tokens: used, speed: 'standard' });
   };
@@ -114,13 +111,12 @@ async function readIdeIndex(file: string): Promise<TokenReading | undefined> {
     const { size } = await fs.promises.stat(file);
     if (size === 0 || size > INTERVENTION_SCAN_MAX_BYTES) return undefined;
     const document = IndexDocument.parse(JSON.parse(await fs.promises.readFile(file, 'utf-8')));
-    const tokens = emptyTokenUsage();
+    let tokens = emptyTokenUsage();
     const requests: TokenRequest[] = [];
     for (const [index, request] of document.requests.entries()) {
       const used = { input: request.usage?.inputTokens ?? 0, output: request.usage?.outputTokens ?? 0, cacheRead: 0, cacheCreation: 0 };
       if (used.input + used.output === 0) continue;
-      tokens.input += used.input;
-      tokens.output += used.output;
+      tokens = addTokenUsage(tokens, used);
       let model: string | undefined;
       for (const id of request.messages.toReversed()) {
         model = await blobModel(path.dirname(file), id);

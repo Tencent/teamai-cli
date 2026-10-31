@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { PriceCatalog } from '../src/token-usage/pricing.js';
-import { catalogFromLiteLlm, describeCatalogChange } from './model-prices.js';
+import { catalogFromLiteLlm, describeCatalogChange, formatCatalog, parseCatalog } from './model-prices.js';
 
 // Entries copied from LiteLLM's model_prices_and_context_window.json.
 const HAIKU_5_5 = {
@@ -140,5 +140,21 @@ describe('describeCatalogChange', () => {
   it('says so when nothing changed', () => {
     const same = catalog('litellm-2026-10-31-bbbbbbb', { 'claude-opus-5-5': opus });
     expect(describeCatalogChange(same, same)).toBe('Model prices unchanged at litellm-2026-10-31-bbbbbbb.');
+  });
+});
+
+describe('parseCatalog', () => {
+  it('reads back the catalog formatCatalog wrote', () => {
+    const catalog = catalogFromLiteLlm({ 'claude-opus-5-5': OPUS_5_5, 'gpt-6.1-sol': GPT_6_1_SOL }, SOURCE);
+    expect(parseCatalog(JSON.parse(formatCatalog(catalog)))).toEqual(catalog);
+  });
+
+  it('reads back a catalog that says nothing changed against the one it came from', () => {
+    const catalog = catalogFromLiteLlm({ 'claude-opus-5-5': OPUS_5_5, 'claude-haiku-5-5': HAIKU_5_5 }, SOURCE);
+    expect(describeCatalogChange(parseCatalog(JSON.parse(formatCatalog(catalog))), catalog)).toBe('Model prices unchanged at litellm-2026-10-31-0123456.');
+  });
+
+  it('rejects a catalog whose rates are not numbers', () => {
+    expect(() => parseCatalog({ version: 'v', source: '', models: { 'claude-opus-5-5': { input: '4' } } })).toThrow();
   });
 });

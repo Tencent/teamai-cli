@@ -1688,6 +1688,16 @@ describe('local request log', () => {
     expect(fs.existsSync(path.join(tmpDir, '.teamai', 'dashboard', 'requests.jsonl'))).toBe(false);
   });
 
+  it('reads a tool teamai does not list as a Claude transcript, as before tools named their format', async () => {
+    const transcriptPath = path.join(tmpDir, 'wrapper.jsonl');
+    fs.writeFileSync(transcriptPath, claudeRequest('msg_1', 'claude-sonnet-5') + '\n');
+
+    const event = await parseHookEvent(JSON.stringify({ hook_event_name: 'Stop', session_id: 's', transcript_path: transcriptPath }), 'acme-claude-wrapper');
+
+    expect(event?.tokens).toEqual({ input: 1_000, output: 200, cacheRead: 5_000, cacheCreation: 400 });
+    expect(event?.requestMetrics).toMatchObject({ pricedRequests: 1, costMicros: 6_000 });
+  });
+
   it('reads no transcript for an empty transcript_path', async () => {
     const event = await parseHookEvent(JSON.stringify({ hook_event_name: 'Stop', session_id: 'dsh-sess', transcript_path: '' }), 'dsh');
 

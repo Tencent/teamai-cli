@@ -4,7 +4,7 @@ The dashboard prices each request from `src/token-usage/model-prices.json`, buil
 
 ## Refresh
 
-The `Model prices` workflow (`.github/workflows/model-prices.yml`) runs every Monday and on demand (Actions → Model prices → Run workflow). When any price changed it pushes `chore/model-prices` and opens or updates one pull request whose body lists the models added, removed and repriced:
+The `Model prices` workflow (`.github/workflows/model-prices.yml`) runs every Monday and on demand (Actions → Model prices → Run workflow). When any price changed it pushes `chore/model-prices` and opens or updates one pull request whose body lists the models added, removed and repriced. A new LiteLLM revision that changes no price leaves the catalog as it is and opens nothing:
 
 ```text
 Model prices from litellm-2026-10-24-a1b2c3d to litellm-2026-10-31-b264711: 3 added, 0 removed, 1 repriced.
@@ -14,7 +14,9 @@ Model prices from litellm-2026-10-24-a1b2c3d to litellm-2026-10-31-b264711: 3 ad
 | claude-opus-5-5 | repriced | $4 | $25 → $20 | $0.2 | $5 |
 ```
 
-Before it opens the pull request the workflow runs the type check and the pricing tests, because a pull request opened with the default `GITHUB_TOKEN` starts no other workflow. To have the full CI run on it, add a repository secret `MODEL_PRICES_TOKEN`: a fine-grained token on this repository with Contents and Pull requests read and write.
+Before it opens the pull request the workflow runs the type check and the pricing tests, because a pull request opened with the default `GITHUB_TOKEN` starts no other workflow. Some tests pin today's prices, such as Opus 5.5 at $4 / $20 per million tokens; when an update changes one, the pull request opens as a draft with the failing output in its body, and the fix is to update that expectation in the same pull request.
+
+To have the full CI run on the pull request, add a repository secret `MODEL_PRICES_TOKEN`: a fine-grained token on this repository with Contents and Pull requests read and write. Without it, the repository setting "Allow GitHub Actions to create and approve pull requests" must be on for the workflow to open the pull request.
 
 To refresh by hand:
 
