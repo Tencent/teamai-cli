@@ -631,7 +631,7 @@ const READ_CONCURRENCY = 32;
  * `files`, as a sequential read would leave them: that order breaks score ties.
  */
 async function entriesFromMdFiles(
-  files: readonly { absPath: string; id: string }[],
+  files: readonly { absPath: string; id: string; treePath?: string }[],
   type: KnowledgeType,
   reads: BuildReads,
   treePathOf?: (id: string) => string,
@@ -642,7 +642,7 @@ async function entriesFromMdFiles(
   const worker = async (): Promise<void> => {
     for (const [i, file] of next) {
       const own: BuildReads = { ...reads, unreadable: unreadable[i] = [] };
-      out[i] = await entryFromMdFile(file.absPath, file.id, type, own, treePathOf?.(file.id));
+      out[i] = await entryFromMdFile(file.absPath, file.id, type, own, file.treePath ?? treePathOf?.(file.id));
     }
   };
   await Promise.all(Array.from({ length: Math.min(READ_CONCURRENCY, files.length) }, worker));
@@ -742,7 +742,9 @@ async function collectLearningsEntries(
         files.map((rel) => ({ absPath: path.join(nsDir, rel), id: path.join(ns, rel) })),
         'learnings',
         reads,
-        (id) => `learnings/${id.replace(/\.md$/i, '')}`,
+        // Backslashes from a Windows `path.join` must not reach the tree path:
+        // relation targets normalize to `/` and could not match them.
+        (id) => `learnings/${id.replace(/\.md$/i, '').replace(/\\/g, '/')}`,
       );
       return [...kept, ...newEntries];
     },
@@ -754,18 +756,28 @@ async function collectLearningsEntries(
  * Collect entries from a recursive *.md directory (used for `docs` and
  * `rules`, which may have subdirectories like `rules/common/`).
  */
+/**
+ * Collect entries from a recursive *.md directory (used for `docs` and
+ * `rules`, which may have subdirectories like `rules/common/`).
+ * `treePathPrefix` is the directory's place in the team tree (`rules/`,
+ * `docs/`); left undefined for collections that are not team assets, so
+ * their entries stay unaddressable by relations.
+ */
 async function collectRecursiveMdEntries(
   dir: string,
   type: KnowledgeType,
   reads: BuildReads,
+  treePathPrefix?: string,
 ): Promise<SearchIndexEntry[]> {
   const { files, kept } = await listMdFilesUnder(dir, type, reads);
   // Use the relative path as the filename so the entry id is unique
   // across subdirectories, e.g. `common/coding-style.md`.
-  // Only rules and docs live at a known place in the team tree; other
-  // recursive collections (a local codebase docs dir) get no tree path.
-  const treePathOf = type === 'rules' || type === 'docs' ? (rel: string) => `${type}/${rel}` : undefined;
-  return [...kept, ...await entriesFromMdFiles(files.map((rel) => ({ absPath: path.join(dir, rel), id: rel })), type, reads, treePathOf)];
+  return [...kept, ...await entriesFromMdFiles(
+    files.map((rel) => ({ absPath: path.join(dir, rel), id: rel })),
+    type,
+    reads,
+    treePathPrefix ? (rel: string) => `${treePathPrefix}${rel}` : undefined,
+  )];
 }
 
 /** `collectRecursiveMdEntries` over an explicit list of paths relative to `dir`. */
@@ -833,6 +845,21 @@ export type IndexedSkills =
   };
 
 /**
+ * The team-tree path of a skill source directory delivered for indexing: the
+ * path below the repo's `skills/` root, namespace included (`skills/pay/
+ * release`). Delivered dirs are team-repo source paths (#707), so the last
+ * `skills/` segment locates the root; a directory outside any `skills/` root
+ * (a plain copy) falls back to its basename, matching the historical id.
+ */
+function skillDirTreePath(dir: string): string {
+  const segments = dir.split(/[\\/]/);
+  const root = segments.lastIndexOf('skills');
+  return root >= 0 && root < segments.length - 1
+    ? `skills/${segments.slice(root + 1).join('/')}`
+    : `skills/${segments[segments.length - 1]}`;
+}
+
+/**
  * Entries for an explicit list of skill directories, each `<dir>/SKILL.md`,
  * named after the directory (doc_id = skill name) as `collectSkillEntries` does.
  * Pull delivers only directories with a `SKILL.md`, so a missing one is unreadable.
@@ -842,11 +869,10 @@ async function collectSkillDirEntries(
   reads: BuildReads,
 ): Promise<SearchIndexEntry[]> {
   return entriesFromMdFiles(
-    dirs.map((dir) => ({ absPath: path.join(dir, 'SKILL.md'), id: `${path.basename(dir)}.md` })), 'skills', reads,
-    // Delivered copies are flat per skill (#707), so the tree path is the
-    // skill directory's basename; only the recursive `skillsDir` walk knows
-    // namespaces.
-    (id) => `skills/${id.replace(/\.md$/i, '')}`);
+    dirs.map((dir) => ({ absPath: path.join(dir, 'SKILL.md'), id: `${path.basename(dir)}.md`, treePath: skillDirTreePath(dir) })),
+    'skills',
+    reads,
+  );
 }
 
 /** Options for the multi-category build. */
@@ -1009,12 +1035,12 @@ export async function indexInMemory(opts: BuildIndexOptions): Promise<SearchInde
   if (opts.docsDir && opts.docFiles) {
     entries.push(...await collectListedMdEntries(opts.docsDir, opts.docFiles, 'docs', reads));
   } else if (opts.docsDir) {
-    entries.push(...await collectRecursiveMdEntries(opts.docsDir, 'docs', reads));
+    entries.push(...await collectRecursiveMdEntries(opts.docsDir, 'docs', reads, 'docs/'));
   }
   if (opts.rulesDir && opts.ruleFiles) {
     entries.push(...await collectListedMdEntries(opts.rulesDir, opts.ruleFiles, 'rules', reads));
   } else if (opts.rulesDir) {
-    entries.push(...await collectRecursiveMdEntries(opts.rulesDir, 'rules', reads));
+    entries.push(...await collectRecursiveMdEntries(opts.rulesDir, 'rules', reads, 'rules/'));
   }
   if (opts.skills?.kind === 'dirs') {
     entries.push(...await collectSkillDirEntries(opts.skills.dirs, reads));
@@ -1024,6 +1050,8 @@ export async function indexInMemory(opts: BuildIndexOptions): Promise<SearchInde
     entries.push(...await collectSkillEntries(opts.skillsDir, reads));
   }
   if (opts.codebaseDir) {
+    // Local codebase pages are not team assets: no tree path, so relations
+    // never point at them and they cannot shadow a team doc's tree path.
     entries.push(...await collectRecursiveMdEntries(opts.codebaseDir, 'docs', reads));
   }
   // The index follows what the member receives (#1006): of the previous index,

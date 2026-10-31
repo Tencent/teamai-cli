@@ -168,6 +168,17 @@ async function relationsFindings(resources: ReviewResource[], readText: (p: stri
     try {
       rawRelated = matter(content).data['related'];
     } catch {
+      // Unparseable frontmatter (a duplicate key, for instance). Only a file
+      // that actually tries to declare relations fails this check — a
+      // tolerated non-strict block (an unquoted glob, #946) with no
+      // `related:` key stays silent here like everywhere else.
+      const { raw } = splitFrontmatter(content);
+      if (/^related[ \t]*:/m.test(raw)) {
+        findings.push({
+          level: 'fail', check: 'relations', path: resource.relativePath,
+          message: `${resource.relativePath}: "related" could not be parsed; all of it is ignored.`,
+        });
+      }
       continue;
     }
     const sourceKind = resource.type === 'rules' ? 'rule' : 'doc';

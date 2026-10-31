@@ -262,6 +262,10 @@ async function relationWarningsForLearning(localConfig: LocalConfig, relPath: st
   try {
     rawRelated = matter(content).data['related'];
   } catch {
+    const { raw } = splitFrontmatter(content);
+    if (/^related[ \t]*:/m.test(raw)) {
+      warnings.push('related: could not be parsed; all of it is ignored.');
+    }
     return warnings;
   }
   parseRelatedBlock(rawRelated, 'learning', ownTreePath, 'warn', targetExists,

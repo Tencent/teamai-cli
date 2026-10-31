@@ -89,9 +89,10 @@ export function classifyTreePath(treePath: string): AssetKind | null {
  * A target path as written in `related:` or in a link, brought to its
  * canonical team-tree form: posix separators, `.md` present for the file kinds
  * (`rules/`, `docs/`, `teamwiki/`) and absent for `learnings/<id>` and
- * `skills/<dir>`. Returns null when the path is absolute, climbs out with
- * `..` after normalising, or has no known prefix — such a path never becomes
- * a relation.
+ * `skills/<dir>` — a link to a skill's `SKILL.md` canonicalizes to the skill
+ * directory, the form the index keys skills by. Returns null when the path is
+ * absolute, climbs out with `..` after normalising, or has no known prefix —
+ * such a path never becomes a relation.
  */
 export function normalizeTargetPath(raw: string): string | null {
   if (!raw || path.isAbsolute(raw) || /^[a-zA-Z]:[\\/]/.test(raw)) return null;
@@ -101,6 +102,9 @@ export function normalizeTargetPath(raw: string): string | null {
   if (!kind) return null;
   if (kind === 'rule' || kind === 'doc' || kind === 'teamwiki') {
     return normalized.endsWith('.md') ? normalized : `${normalized}.md`;
+  }
+  if (kind === 'skill') {
+    return normalized.replace(/\/SKILL\.md$/i, '');
   }
   return normalized.replace(/\.md$/i, '');
 }
@@ -196,7 +200,18 @@ export function parseRelatedBlock(
   return out;
 }
 
-/** The relations implied by the local links of a file: a link that lands on an asset becomes `REFERENCES`. */
+/** The team-tree prefixes a link target may name absolutely; anything else is resolved against the linking file's own directory. */
+const TEAM_ROOT_PREFIXES = ['rules/', 'docs/', 'learnings/', 'skills/', 'teamwiki/'];
+
+/**
+ * The relations implied by the local links of a file: a link that lands on an
+ * asset becomes `REFERENCES`. A target written as a team-root path
+ * (`docs/x.md`) is taken as written; a bare relative destination
+ * (`payments-overview.md`) resolves against the file's own directory, so
+ * `[overview](payments-overview.md)` in `docs/payments.md` names
+ * `docs/payments-overview.md` — the file's place in the team's tree, never
+ * its location on disk.
+ */
 export function relationsFromLinks(
   markdown: string,
   ownTreePath: string,
@@ -205,9 +220,11 @@ export function relationsFromLinks(
   const out: StoredRelation[] = [];
   const seen = new Set<string>();
   for (const raw of linkTargets(markdown)) {
-    const target = normalizeTargetPath(raw.startsWith('./') || raw.startsWith('../')
-      ? path.posix.normalize(path.posix.join(path.posix.dirname(ownTreePath), raw))
-      : raw);
+    const rooted = TEAM_ROOT_PREFIXES.some((prefix) => raw.startsWith(prefix));
+    const resolved = rooted
+      ? raw
+      : path.posix.normalize(path.posix.join(path.posix.dirname(ownTreePath), raw));
+    const target = normalizeTargetPath(resolved);
     if (target === null || target === ownTreePath) continue;
     if (seen.has(target)) continue;
     seen.add(target);

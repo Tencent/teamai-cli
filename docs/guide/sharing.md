@@ -88,7 +88,8 @@ related:
 prints each declared relation as a `Related:` line on the hit, so a session
 that recalls one end of the relation starts with the other end too.
 `teamai review --branch` fails a rule or doc whose `related:` block uses a
-relation outside that table or points at an asset that is not on the branch.
+relation outside that table; a relation that points at an asset not on the
+branch is a warning, not a failure.
 
 ## Agents
 

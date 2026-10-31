@@ -186,15 +186,34 @@ describe('relationsFromLinks', () => {
     expect(rels).toEqual([{ relation: 'REFERENCES', target: 'docs/payments-overview.md', via: 'link' }]);
   });
 
+  it('resolves a bare relative destination against the linking file directory', () => {
+    const rels = relationsFromLinks('[overview](payments-overview.md)', 'docs/payments.md', localLinkTargets);
+    expect(rels).toEqual([{ relation: 'REFERENCES', target: 'docs/payments-overview.md', via: 'link' }]);
+  });
+
   it('keeps an absolute-in-tree target as written', () => {
     const rels = relationsFromLinks('[x](rules/payments.md)', 'docs/a.md', localLinkTargets);
     expect(rels).toEqual([{ relation: 'REFERENCES', target: 'rules/payments.md', via: 'link' }]);
   });
 
-  it('skips links to URLs, code, and itself', () => {
+  it('canonicalizes a link to a skill SKILL.md to the skill directory', () => {
+    const rels = relationsFromLinks('[s](../skills/release/SKILL.md)', 'docs/a.md', localLinkTargets);
+    expect(rels).toEqual([{ relation: 'REFERENCES', target: 'skills/release', via: 'link' }]);
+  });
+
+  it('skips links to URLs, code, and itself; ordinary prose resolves relative and is kept as a candidate', () => {
     const md = '[u](https://x.test/a) [c](`code`) [self](./payments.md) [plain](ordinary-prose)';
     const rels = relationsFromLinks(md, 'rules/payments.md', localLinkTargets);
-    expect(rels).toEqual([]);
+    // A relative link to something that is not an asset is stored as a
+    // candidate; recall prints it only when the target exists in the index.
+    expect(rels).toEqual([{ relation: 'REFERENCES', target: 'rules/ordinary-prose.md', via: 'link' }]);
+  });
+});
+
+describe('normalizeTargetPath — skills', () => {
+  it('canonicalizes a declared skills/<dir>/SKILL.md to the skill directory', () => {
+    expect(normalizeTargetPath('skills/release/SKILL.md')).toBe('skills/release');
+    expect(normalizeTargetPath('skills/pay/release')).toBe('skills/pay/release');
   });
 });
 
@@ -263,6 +282,23 @@ describe('buildIndex — tree paths and stored relations', () => {
       expect(learning?.related).toEqual([
         { relation: 'SUPERSEDES', target: 'docs/payments-overview.md', via: 'declared' },
       ]);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('indexes a delivered namespaced skill directory under its full team-tree path', async () => {
+    const tmp = makeTmpDir();
+    const skillRoot = path.join(tmp, 'repo', 'skills', 'pay', 'release');
+    fs.mkdirSync(skillRoot, { recursive: true });
+    try {
+      fs.writeFileSync(path.join(skillRoot, 'SKILL.md'), '---\nname: release\ndescription: d\n---\n\n# Release\n');
+      const index = await indexInMemory({
+        indexPath: path.join(tmp, 'index.json'),
+        skills: { kind: 'dirs', dirs: [skillRoot] },
+      });
+      const skill = index.entries.find((e) => e.type === 'skills');
+      expect(skill?.treePath).toBe('skills/pay/release');
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
@@ -442,6 +478,26 @@ describe('formatResults — Related: lines', () => {
         score: 5.1, scope: 'user',
       },
     ]);
+    expect(output).not.toContain('Related:');
+  });
+
+  it('never borrows another scope context for a hit with an explicit scope', () => {
+    // The project index is empty (no project ctx). A user rule's relation must
+    // not appear on a workspace teamwiki hit: the project scope sees nothing.
+    const userCtx = ctx({
+      byTreePath: new Map([['rules/payments.md', entry({ filename: 'payments.md', treePath: 'rules/payments.md', path: '/user/rules/payments.md' })]]),
+      incoming: new Map([['teamwiki/evidence/code/pay/m.md', [{ from: 'rules/payments.md', relation: 'MAPS_TO', via: 'declared' }]]]),
+    });
+    const relations = new Map<string, RelationContext>([['user', userCtx]]);
+    const output = formatResults([
+      {
+        entry: entry({
+          filename: 'evidence/code/pay/m.md', treePath: 'teamwiki/evidence/code/pay/m.md',
+          path: '/repo/teamwiki/evidence/code/pay/m.md', type: 'docs',
+        }),
+        score: 6.1, scope: 'project',
+      },
+    ], undefined, relations);
     expect(output).not.toContain('Related:');
   });
 });

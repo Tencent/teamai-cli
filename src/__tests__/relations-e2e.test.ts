@@ -47,12 +47,13 @@ function writeTeamFiles(root: string): void {
   fs.mkdirSync(path.join(root, 'rules'), { recursive: true });
   fs.mkdirSync(path.join(root, 'docs'), { recursive: true });
   fs.mkdirSync(path.join(root, 'skills', 'release'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'skills', 'pay', 'deploy'), { recursive: true });
   fs.mkdirSync(path.join(root, 'teamwiki', 'evidence', 'code', 'pay', 'modules'), { recursive: true });
   fs.writeFileSync(path.join(root, 'rules', 'payments.md'), [
     '---',
     'related:',
     '  MAPS_TO: teamwiki/evidence/code/pay/modules/ledger-receipts.md',
-    '  REFERENCES: [docs/payments-overview.md, skills/release]',
+    '  REFERENCES: [docs/payments-overview.md, skills/release, skills/pay/deploy]',
     '---',
     'Every payment goes through ledger receipts; no direct writes to ledger.',
     'The flow is in [the overview](../docs/payments-overview.md).',
@@ -60,6 +61,7 @@ function writeTeamFiles(root: string): void {
   ].join('\n'));
   fs.writeFileSync(path.join(root, 'docs', 'payments-overview.md'), 'How the payment flow works.\n');
   fs.writeFileSync(path.join(root, 'skills', 'release', 'SKILL.md'), '---\nname: release\ndescription: Release workflow\n---\n\n# Release\n');
+  fs.writeFileSync(path.join(root, 'skills', 'pay', 'deploy', 'SKILL.md'), '---\nname: deploy\ndescription: Pay deploy workflow\n---\n\n# Pay deploy\n');
   fs.writeFileSync(path.join(root, 'teamwiki', 'evidence', 'code', 'pay', 'modules', 'ledger-receipts.md'), [
     '---', 'title: ledger-receipts', '---', '', '# Ledger receipts module', '',
   ].join('\n'));
@@ -108,6 +110,8 @@ describe('asset relations e2e (#1552 first slice)', () => {
     expect(withRelations).toContain(`Related: → MAPS_TO ${wikiPath}`);
     expect(withRelations).toContain(`Related: → REFERENCES ${docPath}`);
     expect(withRelations).toContain(`Related: → REFERENCES ${path.join(teamRepo, 'skills', 'release', 'SKILL.md')}`);
+    // A namespaced skill resolves under its full team-tree path.
+    expect(withRelations).toContain(`Related: → REFERENCES ${path.join(teamRepo, 'skills', 'pay', 'deploy', 'SKILL.md')}`);
     // Declared REFERENCES beats the same link-derived relation.
     expect(withRelations.match(new RegExp(`Related: → REFERENCES ${docPath.replace(/[/.]/g, '\\$&')}`, 'g'))?.length).toBe(1);
     // The other ends answer with ←.
@@ -175,5 +179,31 @@ describe('asset relations e2e (#1552 first slice)', () => {
     expect(result.stdout + result.stderr).toContain('"GOVERNS" is not a relation. Use MAPS_TO, REFERENCES, SUPERSEDES or CONFLICTS_WITH.');
     expect(result.stdout + result.stderr).toContain('IMPLEMENTS relates code to code and cannot be declared on a rule.');
     expect(result.stdout + result.stderr).toContain('REFERENCES docs/payment-overview.md names no team asset on this branch; this relation is ignored.');
+  });
+
+  it('review --branch fails a related block that does not parse, like a duplicate key', () => {
+    const branch = 'fix/payments-dup-key';
+    git(['checkout', '-q', 'main'], teamRepo);
+    try { git(['branch', '-D', branch], teamRepo); } catch { /* not there */ }
+    git(['checkout', '-q', '-b', branch, 'main'], teamRepo);
+    fs.writeFileSync(path.join(teamRepo, 'docs', 'payments-overview.md'), [
+      '---',
+      'related:',
+      '  REFERENCES: rules/payments.md',
+      '  REFERENCES: skills/release',
+      '---',
+      'How the payment flow works.',
+      '',
+    ].join('\n'));
+    git(['add', '-A'], teamRepo);
+    git(['commit', '-q', '-m', 'duplicate key'], teamRepo);
+
+    const result = spawnSync(process.execPath, [CLI, 'review', '--branch', branch], {
+      cwd: projectRoot,
+      encoding: 'utf8',
+      env: { ...process.env, ...GIT_ENV, FORCE_COLOR: '0' },
+    });
+    expect(result.status).toBe(1);
+    expect(result.stdout + result.stderr).toContain('[relations] docs/payments-overview.md: "related" could not be parsed; all of it is ignored.');
   });
 });

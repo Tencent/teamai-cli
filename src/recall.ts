@@ -486,9 +486,11 @@ export function formatResults(
     }
     lines.push(`File: ${printedPath(results[i])}`);
     if (relationContexts) {
-      // Relations resolve inside the scope the hit came from; a hit without a
-      // scope label falls back to the only context there is.
-      const ctx = (scope !== undefined ? relationContexts.get(scope) : undefined) ?? fallbackCtx;
+      // Relations resolve inside the scope the hit came from. A hit with an
+      // explicit scope never borrows another scope's context: when that
+      // scope has no index there is nothing it can see, and falling back
+      // would attach a user relation to a workspace page.
+      const ctx = scope !== undefined ? relationContexts.get(scope) : fallbackCtx;
       if (ctx) lines.push(...relationLines(ctx, entry));
     }
     if (sources && sources.length > 0) {
