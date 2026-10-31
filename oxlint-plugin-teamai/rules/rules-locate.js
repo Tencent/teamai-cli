@@ -1,9 +1,11 @@
 import { defineRule } from '@oxlint/plugins';
-import { isOneOf } from '../utils.js';
+import { isOneOf, scopedFiles } from '../utils.js';
+
+const SCOPE = scopedFiles(['src/resources/rules.ts']);
 export default defineRule({
   meta: { type: 'problem', docs: { description: 'Keep rules activation independent of MCP paths.' } },
   create(context) {
-    if (!isOneOf(context, ['src/resources/rules.ts'])) return {};
+    if (!isOneOf(context, SCOPE)) return {};
     return {
       CallExpression(node) {
         const resource = node.arguments[1];

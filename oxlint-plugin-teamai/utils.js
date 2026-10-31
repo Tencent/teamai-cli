@@ -50,3 +50,14 @@ export function inProductionSource(context) {
   const relative = root === undefined ? file : path.posix.relative(root, file);
   return relative.startsWith('src/') && !relative.startsWith('src/__tests__/');
 }
+
+/**
+ * The repository files a rule is scoped to. A rename throws when lint loads the rule, instead of leaving it guarding nothing.
+ * @param {readonly string[]} files relative to the repository root
+ * @returns {readonly string[]}
+ */
+export function scopedFiles(files) {
+  const missing = files.filter((file) => !fs.existsSync(new URL(`../${file}`, import.meta.url)));
+  if (missing.length > 0) throw new Error(`Lint rule scope file missing: ${missing.join(', ')}. Point the rule at the file's new path.`);
+  return files;
+}
