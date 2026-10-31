@@ -167,6 +167,13 @@ const ROWS: readonly MatrixRow[] = [
     source: 'JoyCode 3.8.71 source: user rules and context are one plain text file, ~/.joycode/rules.txt',
   },
   {
+    tool: 'joycode', scope: 'user', env: { JOYCODE_HOME: '/joycode' },
+    writes: [{ at: '/joycode/rules.txt', owned: false, header: null }],
+    existingDirs: ['/joycode'], installed: { probe: '/joycode', met: true },
+    reads: [{ at: '/joycode/rules.txt', when: 'always' }],
+    source: 'JoyCode Desktop: JOYCODE_HOME moves its user context file',
+  },
+  {
     tool: 'joycode', scope: 'project',
     channel: 'none',
     existingDirs: ['<root>/.joycode'], installed: { probe: '<root>/.joycode', met: true },

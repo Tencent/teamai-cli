@@ -51,6 +51,8 @@ const ROWS: readonly (FilesRow | OtherRow)[] = [
   { tool: 'copilot', scope: 'user', channel: 'none', existingDirs: [], installed: null, gates: 'none', source: 'issue #1221 matrix: Copilot keeps sessions teamai reads none of (+s)' },
   { tool: 'pi', scope: 'user', channel: 'none', existingDirs: [], installed: null, gates: 'none', source: 'Pi 0.99 dist/core/session-manager.js: JSONL under ~/.pi/agent/sessions, which teamai reads none of' },
   store('joycode', '~/.joycode/sessions', { source: 'JoyCode: rollout JSONL under ~/.joycode/sessions (session-flow/adapters/codex.ts)' }),
+  store('joycode', '/joycode/sessions', { env: { JOYCODE_HOME: '/joycode' }, source: 'JoyCode Desktop: JOYCODE_HOME moves the rollout store' }),
+  store('joycode', '/joycode/sessions', { scope: 'project', env: { JOYCODE_HOME: '/joycode' }, source: 'JoyCode Desktop: project sessions use the user-view store under JOYCODE_HOME' }),
   { tool: 'my-tool', scope: 'user', channel: 'unknown', existingDirs: [], installed: null, gates: 'none', source: 'a custom tool id has no descriptor' },
 ];
 

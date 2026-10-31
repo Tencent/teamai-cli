@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { KNOWN_AGENTS } from '../known-agents.js';
 import { ruleFileExtensionForTool, usesMdcRules } from '../resources/rule-format.js';
 import { scopedToolPaths, TeamaiConfigSchema } from '../types.js';
-import { AGENT_TOOLS, channelsOf, sessionPlatformsOf } from '../tools.js';
+import { AGENT_TOOLS, channelsOf, homeVariables, sessionPlatformsOf } from '../tools.js';
 import { builtinHookDefs } from '../builtin-hooks.js';
 import { getAdapter } from '../session-flow/adapters/index.js';
 import { CodexAdapter } from '../session-flow/adapters/codex.js';
@@ -10,6 +10,10 @@ import { SESSION_PLATFORM_FACTS } from '../session-flow/adapters/platform-facts.
 import { AgentSession } from '../session-flow/agent-session.js';
 
 describe('JoyCode support', () => {
+  it('follows JOYCODE_HOME for user-scope resources', () => {
+    expect(homeVariables('joycode')).toEqual(['JOYCODE_HOME']);
+  });
+
   it('ships the standard .joycode resource paths', () => {
     const config = TeamaiConfigSchema.parse({ team: 'test', repo: 'test/repo' });
 

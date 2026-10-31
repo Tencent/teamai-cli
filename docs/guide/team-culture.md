@@ -44,7 +44,7 @@ They are not written into the project's `AGENTS.md`. Each tool gets its own file
 | Hermes | `$HERMES_HOME/SOUL.md` | the Hermes plugin |
 | ZCode | `~/.zcode/AGENTS.md` | session-start hook |
 | DeepSeek Harness | `$DSH_HOME/AGENTS.md` (`~/.dsh/AGENTS.md` when unset) | session-start hook |
-| JoyCode | `~/.joycode/rules.txt` | none |
+| JoyCode | `$JOYCODE_HOME/rules.txt` when set, otherwise `~/.joycode/rules.txt` | none |
 | Muse Code | `~/.config/muse/AGENTS.md` | session-start hook |
 | Antigravity | `~/.gemini/config/rules/teamai-context.md` | `.agents/rules/teamai-context.md` |
 

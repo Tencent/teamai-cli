@@ -10,6 +10,7 @@ const HOOK_LIST = ['hooks'] as const;
 const CODEBUDDY_SOURCE = 'CodeBuddy 2.176.0 bundle: CODEBUDDY_CONFIG_DIR replaces ~/.codebuddy, settings.json included (issue #1221, `codebuddy mcp list` at 2.168.0)';
 const MUSE_SOURCE = 'muse-bin 1.4.11: $XDG_CONFIG_HOME/muse, else ~/.config/muse; with XDG_CONFIG_HOME set, ~/.config/muse is never read';
 const OPENCODE_SOURCE = 'opencode v2.1.1 Global.Path: OPENCODE_CONFIG_DIR, else (XDG_CONFIG_HOME || ~/.config)/opencode; plugins load from its plugin directory';
+const JOYCODE_SOURCE = 'JoyCode Desktop 0.6.0: JOYCODE_HOME moves the user hooks file';
 const HERMES_SOURCE = 'hermes-agent hermes_constants.py:51-58: HERMES_HOME, else %LOCALAPPDATA%\\hermes on Windows, else ~/.hermes; shell hooks registered in config.yaml';
 const SELF = 'issue #1221 matrix, Self scope';
 const TEAM = 'resolveHookScope: a workspace takes the user hooks (#264)';
@@ -260,6 +261,8 @@ const ROWS: readonly (FilesRow | OtherRow)[] = [
     source: 'a custom tool takes Claude-shaped hooks in its configured settings file, as it always has',
   },
   settings('joycode', 'user', '~/.joycode/hooks.json', '~/.joycode', { source: 'JoyCode Desktop 0.6.0 bundle and lifecycle component: ~/.joycode/hooks.json takes Claude-shaped hooks (source)' }),
+  settings('joycode', 'user', '/joycode/hooks.json', '/joycode', { env: { JOYCODE_HOME: '/joycode' }, source: JOYCODE_SOURCE }),
+  settings('joycode', 'project', '/joycode/hooks.json', '/joycode', { env: { JOYCODE_HOME: '/joycode' }, source: 'resolveHookScope: a workspace takes JoyCode user hooks' }),
   selfSettings('joycode', '<root>/.joycode/hooks.json', '<root>/.joycode', 'workspaceUnder', { source: 'JoyCode Desktop 0.6.0 lifecycle component: <project>/.joycode/hooks.json (source)' }),
   adapter('kiro', 'user', '~/.kiro/hooks', '~/.kiro', { source: 'Kiro CLI V3 docs: hook files in ~/.kiro/hooks load for every agent (#1341)' }),
   { tool: 'trae', scope: 'user', channel: 'unknown', existingDirs: [], installed: { probe: '~/.trae', met: false }, source: 'issue #1221 matrix: Trae hooks ?t' },

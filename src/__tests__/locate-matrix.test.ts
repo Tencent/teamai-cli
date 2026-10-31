@@ -9,6 +9,7 @@ const OMP_SOURCE = 'Oh My Pi a70f001c utils/src/dirs.ts: profile = OMP_PROFILE i
 const OPENCODE_SOURCE = 'opencode v2.1.1 bundle, Global.Path: config = OPENCODE_CONFIG_DIR ?? (XDG_CONFIG_HOME || ~/.config)/opencode';
 const MUSE_SOURCE = 'muse-bin 1.4.11 strings: $XDG_CONFIG_HOME/muse, else $HOME/.config/muse; with XDG_CONFIG_HOME set, $HOME/.config/muse is never read';
 const HERMES_SOURCE = 'hermes-agent hermes_constants.py:51-58: HERMES_HOME, else %LOCALAPPDATA%\\hermes on Windows, else ~/.hermes';
+const JOYCODE_SOURCE = 'JoyCode Desktop: JOYCODE_HOME moves the user home';
 const OPENCLAW_SOURCE = 'OpenClaw agents/agent-scope-config.ts and agents/workspace-default-path.ts, as src/openclaw-home.ts records them: state dir OPENCLAW_STATE_DIR, else ~/.openclaw-<profile>, else ~/.openclaw; workspace agents.defaults.workspace in OPENCLAW_CONFIG_PATH or <state>/openclaw.json, resolved against the cwd, else OPENCLAW_WORKSPACE_DIR, else <state>/workspace';
 
 const ROWS: readonly FilesRow[] = [
@@ -60,6 +61,13 @@ const ROWS: readonly FilesRow[] = [
     existingDirs: ['<root>/.opencode'], installed: { probe: '<root>/.opencode', met: true },
     reads: [{ at: '<root>/.opencode/skills', when: 'workspaceUnder' }, { at: '<root>/.claude/skills', when: 'workspaceUnder' }],
     source: OPENCODE_SOURCE,
+  },
+  {
+    tool: 'joycode', scope: 'user', env: { JOYCODE_HOME: '/joycode' },
+    writes: ['/joycode/skills'],
+    existingDirs: ['/joycode'], installed: { probe: '/joycode', met: true },
+    reads: 'unknown',
+    source: `${JOYCODE_SOURCE}; where it reads skills remains unknown`,
   },
   {
     tool: 'muse', scope: 'user',

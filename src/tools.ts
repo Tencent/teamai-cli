@@ -604,7 +604,7 @@ export const TOOLS = {
     },
   },
   joycode: {
-    home: { dir: '.joycode' },
+    home: { dir: '.joycode', moves: { by: [{ kind: 'env', name: 'JOYCODE_HOME', evidence: 'source' }] } },
     skillLoad: { calls: [] },
     skills: UNKNOWN_READS,
     rules: {

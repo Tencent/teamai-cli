@@ -146,6 +146,13 @@ const ROWS: readonly MatrixRow[] = [
     source: '#1221 matrix user Agents ✗s: JoyCode loads an agent only through its .joycode/agent.json index',
   },
   {
+    tool: 'joycode', scope: 'user', env: { JOYCODE_HOME: '/joycode' },
+    writes: ['/joycode/agents'],
+    existingDirs: ['/joycode'], installed: { probe: '/joycode', met: true },
+    reads: 'unknown',
+    source: 'JoyCode Desktop bundle: JOYCODE_HOME moves the user home; the agent index remains unverified',
+  },
+  {
     tool: 'joycode', scope: 'project',
     writes: ['<root>/.joycode/agents'],
     existingDirs: ['<root>/.joycode'], installed: { probe: '<root>/.joycode', met: true },
