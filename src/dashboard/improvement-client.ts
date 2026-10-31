@@ -9,8 +9,8 @@ let impPriorOk = true;
 const impMoney = micros => new Intl.NumberFormat(language,{style:'currency',currency:'USD',maximumFractionDigits:micros>=100e6?0:2}).format((micros||0)/1e6);
 const impPct = v => v==null?'—':(Math.round(v*1000)/10)+'%';
 const impDay = d => d.slice(5).replace('-','/');
-function impSum(days){ const s={ended:0,succeeded:0,corrected:0,prompts:0,durationMs:0,costMicros:0,priced:0,cacheRead:0,cacheEligible:0}; for(const d of days)for(const k in s)s[k]+=d[k]||0; return s; }
-function impRates(s){ return { success:s.ended?s.succeeded/s.ended:null, correction:s.ended?s.corrected/s.ended:null, costPer:s.ended?s.costMicros/s.ended:null, promptsPer:s.ended?s.prompts/s.ended:null, cache:s.cacheEligible?s.cacheRead/s.cacheEligible:null, minutes:s.ended?s.durationMs/s.ended/60000:null }; }
+function impSum(days){ const n=days.length; const s={ended:0,succeeded:0,corrected:0,prompts:0,durationMs:0,costMicros:0,priced:0,cacheRead:0,cacheEligible:0}; for(const d of days)for(const k in s)s[k]+=d[k]||0; s.days=n; return s; }
+function impRates(s){ return { costPerDay:s.days?s.costMicros/s.days:null, success:s.ended?s.succeeded/s.ended:null, correction:s.ended?s.corrected/s.ended:null,  promptsPer:s.ended?s.prompts/s.ended:null, cache:s.cacheEligible?s.cacheRead/s.cacheEligible:null, minutes:s.ended?s.durationMs/s.ended/60000:null }; }
 function impDelta(cur, prev, kind, betterUp){
   if(!impPriorOk)return '<span class="imp-delta">'+label('Too few sessions in prior period to compare')+'</span>';
   if(cur==null||prev==null||(kind!=='pp'&&!prev))return '<span class="imp-delta">'+label('No prior data')+'</span>';
@@ -38,12 +38,12 @@ function impActions(d, cur, prev){
   const a=[], m=d.maintenance, cr=impRates(cur), pr=impRates(prev);
   const add=(kind,title,why,cmd,target)=>a.push({kind,title,why,cmd,target});
   if(impPriorOk&&cr.correction!=null&&pr.correction!=null&&cr.correction-pr.correction>=0.02)add('Watch',t('Correction rate rose')+' '+impPct(pr.correction)+' → '+impPct(cr.correction),t('Sessions that needed a correction went up in this period. Open recent sessions to see where agents went off track.'),'','execution');
-  if(impPriorOk&&cr.costPer!=null&&pr.costPer&&cr.costPer/pr.costPer>=1.2)add('Watch',t('Cost per session rose')+' '+impMoney(pr.costPer)+' → '+impMoney(cr.costPer),t('Average known cost per priced session grew by 20% or more.'),'','imp-cost');
+  if(impPriorOk&&cr.costPerDay!=null&&pr.costPerDay&&cr.costPerDay/pr.costPerDay>=1.2)add('Watch',t('Known cost per day rose')+' '+impMoney(pr.costPerDay)+' → '+impMoney(cr.costPerDay),t('Average known cost per day grew by 20% or more. Only requests with a known price count, so pricing more models also raises it.'),'','imp-cost');
   if(m.prune.length)add('To do',number(m.prune.length)+' '+t('learnings suggested for archive'),t('Below the confidence threshold or inactive for more than 180 days.'),'teamai recall maintenance --prune --archive','imp-maint');
   if(m.stale.length)add('To do',number(m.stale.length)+' '+t('entries recalled often but rarely upvoted'),t('Likely stale or low quality; refresh them.'),'teamai recall maintenance --update-quality','imp-maint');
   if(m.promote.length)add('Opportunity',number(m.promote.length)+' '+t('learnings ready to promote'),t('High confidence and adopted by several people.'),'teamai recall promote '+m.promote[0].docId+' --category '+m.promote[0].category,'imp-maint');
   if(d.skills.unused.length)add('Review',number(d.skills.unused.length)+' / '+number(d.skills.teamTotal)+' '+t('team skills unused in 30 days'),t('Check whether they are still needed, discoverable, or should be merged.'),'teamai skill list','imp-skills');
-  if(d.skills.outside.length)add('Opportunity',number(d.skills.outside.length)+' '+t('skills used by several members but not in the team repo'),t('Candidates to share with the whole team.'),'','imp-skills');
+  if(d.skills.outside.length)add('Opportunity',number(d.skills.outside.length)+' '+t('skills used by several members but no longer in the team repo'),t('Published before the team-skill filter or since removed from the repo. Restore them to the repo or retire them.'),'','imp-skills');
   if(m.silent)add('Review',number(m.silent)+' '+t('knowledge entries never recalled'),t('Never recalled does not mean useless; check their tags and wording.'),'','context');
   return a;
 }
@@ -63,14 +63,14 @@ function improvement(){
     +impTile('Sessions ended',number(cur.ended),label('Peak active members / day')+' '+number(peak),impDelta(cur.ended,prev.ended,'rel',null))
     +impTile('Success rate',impPct(cr.success),number(cur.succeeded)+' '+label('succeeded'),impDelta(cr.success,pr.success,'pp',true))
     +impTile('Correction rate',impPct(cr.correction),number(cur.corrected)+' '+label('sessions corrected'),impDelta(cr.correction,pr.correction,'pp',false))
-    +impTile('Known cost',impMoney(cur.costMicros),label('Per session')+' '+(cr.costPer==null?'—':impMoney(cr.costPer)),impDelta(cur.costMicros,prev.costMicros,'rel',null))
+    +impTile('Known cost',impMoney(cur.costMicros),label('Per day')+' '+(cr.costPerDay==null?'—':impMoney(cr.costPerDay)),impDelta(cur.costMicros,prev.costMicros,'rel',null))
     +impTile('Prompt turns',number(cur.prompts),label('Per session')+' '+(cr.promptsPer==null?'—':(Math.round(cr.promptsPer*10)/10)),impDelta(cur.prompts,prev.prompts,'rel',null))
     +impTile('Cache read share',impPct(cr.cache),label('Avg session')+' '+(cr.minutes==null?'—':Math.round(cr.minutes)+' '+label('min')),impDelta(cr.cache,pr.cache,'pp',true))
     +'</div>';
   const n=v=>number(Math.round(v));
   const charts='<div class="imp-charts">'
     +impChart('imp-sessions','Sessions per day',days,[{name:'Without correction',value:x=>x.ended-x.corrected},{name:'Needed correction',value:x=>x.corrected}],n)
-    +impChart('imp-cost','Known cost per day',days,[{name:'Cost',value:x=>x.costMicros}],(v,axis)=>axis?'$'+n(v/1e6):impMoney(v),label('Only requests with a known price are counted.'))
+    +impChart('imp-cost','Known cost per day',days,[{name:'Cost',value:x=>x.costMicros}],(v,axis)=>axis&&v%1e6===0?'$'+n(v/1e6):impMoney(v),label('Only requests with a known price are counted.'))
     +impChart('imp-prompts','Prompt turns per day',days,[{name:'Prompt turns',value:x=>x.prompts}],n)
     +impChart('imp-members','Active members per day',days,[{name:'Members',value:x=>x.members}],n,label('Members who ended at least one session that day.'))
     +'</div>';
@@ -78,12 +78,12 @@ function improvement(){
   const actionHtml='<section class="panel imp-section"><div class="panelhead"><h2>'+label('Suggested next steps')+' <span class="count">'+number(actions.length)+'</span></h2><span class="tag">'+label('Derived from the data on this page')+'</span></div>'
     +(actions.length?'<ol class="imp-actions">'+actions.map(x=>'<li><span class="imp-kind">'+label(x.kind)+'</span><div><strong>'+e(x.title)+'</strong><p>'+e(x.why)+'</p>'+(x.cmd?'<div class="imp-cmd"><code>'+e(x.cmd)+'</code><button class="link copy" data-copy="'+e(x.cmd)+'" aria-label="'+label('Copy command')+'">'+label('Copy')+'</button></div>':'')+'</div>'+(x.target?(x.target.startsWith('imp-')?'<a class="link" href="#improvement" data-imp-jump="'+x.target+'">'+label('View')+' →</a>':link(x.target,'View')):'')+'</li>').join('')+'</ol>':'<div class="empty">'+label('Nothing needs attention right now.')+'</div>')+'</section>';
   const skillRow=s=>'<tr><td>'+e(s.name)+(s.namespace?' <span class="imp-ns">'+e(s.namespace)+'</span>':'')+'</td><td>'+number(s.users)+'</td><td>'+number(s.uses)+'</td><td>'+(s.lastUsed?e(s.lastUsed.slice(0,10)):'—')+'</td></tr>';
-  const skillTable=(rows,limit)=>'<table><thead><tr><th>'+label('Skill')+'</th><th>'+label('Members')+'</th><th>'+label('Uses')+'</th><th>'+label('Last used')+'</th></tr></thead><tbody>'+rows.slice(0,limit).map(skillRow).join('')+'</tbody></table>'+(rows.length>limit?'<details class="imp-more" data-imp-key="more-'+rows.length+'-'+(rows[0]?.name||'')+'"><summary>'+label('Show all')+' ('+number(rows.length)+')</summary><table><tbody>'+rows.slice(limit).map(skillRow).join('')+'</tbody></table></details>':'');
+  const skillTable=(key,rows,limit)=>'<table><thead><tr><th>'+label('Skill')+'</th><th>'+label('Members')+'</th><th>'+label('All-time uses')+'</th><th>'+label('Last used')+'</th></tr></thead><tbody>'+rows.slice(0,limit).map(skillRow).join('')+'</tbody></table>'+(rows.length>limit?'<details class="imp-more" data-imp-key="more-'+e(key)+'"><summary>'+label('Show all')+' ('+number(rows.length)+')</summary><table><tbody>'+rows.slice(limit).map(skillRow).join('')+'</tbody></table></details>':'');
   const usedPct=d.skills.teamTotal?Math.round(d.skills.used.length/d.skills.teamTotal*100):0;
   const skillsHtml='<section class="panel imp-section" id="imp-skills"><div class="panelhead"><h2>'+label('Team skill adoption')+'</h2><span class="tag">'+label('Last 30 days')+' · '+number(d.skills.used.length)+' / '+number(d.skills.teamTotal)+' '+label('used')+' ('+usedPct+'%)</span></div>'
     +'<div class="imp-meter" role="img" aria-label="'+usedPct+'%"><span style="width:'+usedPct+'%"></span></div>'
-    +'<div class="imp-cols"><div><h3>'+label('Most used team skills')+'</h3>'+(d.skills.used.length?skillTable(d.skills.used,8):'<p class="imp-note">'+label('No team skill was used in this period.')+'</p>')+'</div>'
-    +'<div><h3>'+label('Used by several members, not in the team repo')+'</h3>'+(d.skills.outside.length?skillTable(d.skills.outside,8):'<p class="imp-note">'+label('None right now.')+'</p>')+'</div></div>'
+    +'<div class="imp-cols"><div><h3>'+label('Most used team skills')+'</h3>'+(d.skills.used.length?skillTable('used',d.skills.used,8):'<p class="imp-note">'+label('No team skill was used in this period.')+'</p>')+'</div>'
+    +'<div><h3>'+label('Used by several members, no longer in the team repo')+'</h3>'+(d.skills.outside.length?skillTable('outside',d.skills.outside,8):'<p class="imp-note">'+label('None right now.')+'</p>')+'</div></div>'
     +'<details class="imp-more imp-unused" data-imp-key="unused"><summary>'+label('Team skills unused in 30 days')+' ('+number(d.skills.unused.length)+')</summary><div class="imp-chips">'+d.skills.unused.map(s=>'<span>'+e(s.name)+(s.namespace?' <small>'+e(s.namespace)+'</small>':'')+'</span>').join('')+'</div></details></section>';
   const f=d.friction, per=v=>f.sessions?(Math.round(v/f.sessions*1000)/10)+'%':'—', fmax=Math.max(1,f.interrupt,f.toolReject,f.correction);
   const fRow=(name,v,why)=>'<div class="imp-frow"><div><strong>'+label(name)+'</strong><p>'+label(why)+'</p></div><div class="imp-fbar"><span style="width:'+(v/fmax*100)+'%"></span></div><div class="imp-fval">'+number(v)+'<small>'+per(v)+' '+label('of sessions')+'</small></div></div>';

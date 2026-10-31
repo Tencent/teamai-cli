@@ -15,10 +15,10 @@ Open `http://localhost:3721`. The sidebar is Overview, then three groups: Execut
 
 The Improvement Center reads what members publish to `teamai-reports` with `teamai push`, so it is only as current as the latest member who pushed. Pick 7, 30 or 90 days:
 
-- **Team usage**: sessions ended, success rate, correction rate, known cost, prompt turns and cache read share, each against the period before it. When the period before has too few sessions, no change is shown.
+- **Team usage**: sessions ended, success rate, correction rate, known cost (with its daily average), prompt turns and cache read share, each against the period before it. When the period before has too few sessions, no change is shown.
 - **Daily charts**: sessions (with and without a correction), known cost, prompt turns and active members. Hover a bar for the day, or open the chart as a table.
 - **Suggested next steps**: what the numbers on the page point to, each with the command to run.
-- **Team skill adoption**: which team skills were used in the last 30 days, which were not, and skills several members use that are not in the team repo.
+- **Team skill adoption**: which team skills were used in the last 30 days, which were not, and skills several members still use that are no longer in the team repo. The use count is all-time, because stats record each skill's total and last use, not daily uses; the list is ordered by members, then most recent use.
 - **Friction signals**: the team's corrections, interrupts and rejected tool calls, as a share of sessions.
 - **Knowledge maintenance**: the archive, refresh and promote candidates, with the command for each. The page runs nothing.
 

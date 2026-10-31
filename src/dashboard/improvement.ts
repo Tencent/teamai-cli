@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
+import { BUILTIN_SKILL_NAMES, LEGACY_BUILTIN_SKILL_NAMES } from '../builtin-skills.js';
 
 const WINDOW_DAYS = 30;
 const HISTORY_DAYS = 180;
@@ -11,6 +12,7 @@ const LIST_LIMIT = 200;
 const NOT_SKILLS = new Set(['Users', 'users', 'root', 'home', 'data', 'tmp', 'private', 'var', 'opt']);
 
 export interface DayPoint { date: string; ended: number; succeeded: number; corrected: number; prompts: number; durationMs: number; costMicros: number; priced: number; cacheRead: number; cacheEligible: number; members: number }
+/** `uses` is the all-time count members published; stats carry no per-day skill counts. */
 export interface SkillUse { name: string; namespace?: string; uses: number; users: number; lastUsed: string | null }
 
 export interface ImprovementData {
@@ -43,6 +45,9 @@ interface MaintenanceInput {
 
 const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
 const isoDay = (d: Date): string => d.toISOString().slice(0, 10);
+const isDay = (day: string): boolean => /^\d{4}-\d{2}-\d{2}$/.test(day) && !Number.isNaN(Date.parse(`${day}T00:00:00Z`));
+// A published day counts once any counter on it is positive: a day with prompts or cost but no ended session is still data.
+const hasActivity = (v: unknown): boolean => !!v && typeof v === 'object' && Object.values(v as Record<string, unknown>).some((x) => num(x) > 0);
 
 async function readStats(statsDir: string): Promise<StatsFile[]> {
   let names: string[];
@@ -76,7 +81,7 @@ async function teamSkills(knowledgeRoot: string): Promise<Map<string, string>> {
 /**
  * Aggregate the team's published daily stats for the last 180 days, enough for a 90-day view
  * against the 90 before it; skill adoption uses the last 30. The window ends at the newest day
- * any member published, not at "now", so a team that has not pushed lately still shows its days.
+ * any member published activity for, not at "now", so a team that has not pushed lately still shows its days.
  */
 export async function buildImprovement(
   paths: { statsDir: string; knowledgeRoot: string },
@@ -87,7 +92,7 @@ export async function buildImprovement(
   let latest = '';
   let latestStats: string | null = null;
   for (const f of files) {
-    for (const [day, v] of Object.entries(f.daily ?? {})) if (num(v?.sessionsEnded) > 0 && day > latest) latest = day;
+    for (const [day, v] of Object.entries(f.daily ?? {})) if (isDay(day) && hasActivity(v) && day > latest) latest = day;
     if (f.updatedAt && (!latestStats || f.updatedAt > latestStats)) latestStats = f.updatedAt;
   }
   const end = latest ? new Date(latest + 'T00:00:00Z') : new Date(isoDay(new Date()) + 'T00:00:00Z');
@@ -143,7 +148,11 @@ export async function buildImprovement(
     const u = usage.get(name);
     return { name, ...(team.has(name) && team.get(name) ? { namespace: team.get(name) } : {}), uses: u?.uses ?? 0, users: u?.users.size ?? 0, lastUsed: u?.lastUsed || null };
   };
-  const byUse = (a: SkillUse, b: SkillUse) => b.users - a.users || b.uses - a.uses || a.name.localeCompare(b.name);
+  // Uses are all-time, so recency (not the cumulative count) breaks ties after member count.
+  const byUse = (a: SkillUse, b: SkillUse) => b.users - a.users || (b.lastUsed ?? '').localeCompare(a.lastUsed ?? '') || a.name.localeCompare(b.name);
+  // Since #1055 push only publishes team-repo skills and the CLI built-ins, so a name outside the repo is a
+  // built-in (not team content), or a skill published before that filter or since removed from the repo.
+  const builtin = (n: string) => BUILTIN_SKILL_NAMES.has(n) || LEGACY_BUILTIN_SKILL_NAMES.has(n);
   const teamNames = [...team.keys()];
 
   return {
@@ -155,7 +164,7 @@ export async function buildImprovement(
       teamTotal: team.size,
       used: teamNames.filter((n) => usage.has(n)).map(toUse).sort(byUse),
       unused: teamNames.filter((n) => !usage.has(n)).map(toUse).sort((a, b) => (a.namespace ?? '').localeCompare(b.namespace ?? '') || a.name.localeCompare(b.name)),
-      outside: [...usage.keys()].filter((n) => !team.has(n) && (usage.get(n)?.users.size ?? 0) >= 2).map(toUse).sort(byUse),
+      outside: [...usage.keys()].filter((n) => !team.has(n) && !builtin(n) && (usage.get(n)?.users.size ?? 0) >= 2).map(toUse).sort(byUse),
     },
     maintenance: {
       promote: maintenance.promote.slice(0, LIST_LIMIT).map((c) => ({ docId: c.docId, title: c.title, category: c.suggestedCategory, confidence: c.confidence, upvoted: c.upvotedCount, users: c.userCount })),
