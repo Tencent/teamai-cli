@@ -283,7 +283,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
           // mid-batch must not fall through to a commit that publishes a
           // half-archive.
           try {
-            const write = await syncMgr.saveSession(session, meta);
+            const write = await syncMgr.saveSession(session, meta, { pathsRewritten: Boolean(opts.scrub) });
             if (write.status === 'busy') {
               reportArchiveBusy(archiveRoot, write.lockPath);
               return undefined;

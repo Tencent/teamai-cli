@@ -556,15 +556,18 @@ export class SyncManager {
     return result.status === 'busy' ? result : { status: 'written', value: result.value };
   }
 
-  /** Save through the archive lock, including deduplication and index repair. */
-  async saveSession(session: Session, meta: SessionSyncMeta): Promise<ArchiveWriteResult<string>> {
+  /**
+   * Save through the archive lock, including deduplication and index repair. `pathsRewritten` says the caller rewrote
+   * this machine's paths (`--scrub`): a session pushed before under a title that spelled one then moves to its new name.
+   */
+  async saveSession(session: Session, meta: SessionSyncMeta, opts: { pathsRewritten?: boolean } = {}): Promise<ArchiveWriteResult<string>> {
     const archivedCwdValue = await archivedCwd(meta.origin.cwd);
     const archivedMeta: SessionSyncMeta = {
       ...meta,
       origin: { ...meta.origin, cwd: archivedCwdValue },
     };
-    const roots = await publishedPathRoots(meta.origin.cwd);
-    const spellsLocalPath = (title: string) => titleSpellsLocalPath(title, roots, meta.origin.cwd);
+    const roots = opts.pathsRewritten ? await publishedPathRoots(meta.origin.cwd) : undefined;
+    const spellsLocalPath = (title: string) => roots !== undefined && titleSpellsLocalPath(title, roots, meta.origin.cwd);
     return this.writeArchive(() => this.saveSessionLocked(
       { ...session, cwd: archivedCwdValue },
       archivedMeta,
@@ -959,9 +962,9 @@ export class SyncManager {
     // P8 dedup: when the same origin.sessionId + author is pushed again, reuse the original sessionName
     // and overwrite (upsertIndexEntry updates the existing entry in place on sessionName:author),
     // instead of resolveNameConflict creating an `xxx_1` copy. A session first pushed under a title that
-    // spelled a local path (before --scrub rewrote it) moves to the current title's name when that one does not.
+    // spelled a local path moves to the current title's name once its paths are rewritten (--scrub).
     const existing = this.findByOriginSessionId(repoId, meta.origin.sessionId, author, session.platform);
-    const retired = existing && spellsLocalPath(existing.title) && !spellsLocalPath(session.title) ? existing.sessionName : undefined;
+    const retired = existing && spellsLocalPath(existing.title) ? existing.sessionName : undefined;
     const sessionName = existing && !retired ? existing.sessionName : this.resolveNameConflict(repoId, author, generated);
 
     const paths = this.sessionPaths(repoId, author, sessionName);

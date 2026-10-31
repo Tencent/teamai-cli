@@ -491,7 +491,7 @@ async function migrateSession(sessionId: string | undefined, opts: MigrationOpti
           meta.migration.targetPlatform = target;
           meta.migration.fidelityScore = t.fidelityScore;
           try {
-            const write = await syncMgr.saveSession(session, meta);
+            const write = await syncMgr.saveSession(session, meta, { pathsRewritten: Boolean(opts.scrub) });
             if (write.status === 'busy') {
               stopped = archiveFailed('busy', `${archiveBusyMessage(root, write.lockPath)} Run it again once that has finished.`, t);
               return undefined;

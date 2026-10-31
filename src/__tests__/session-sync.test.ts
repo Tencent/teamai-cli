@@ -312,7 +312,7 @@ describe('saveSession dedup (origin sessionId + author)', () => {
     const leaked = `fix ${path.join(os.homedir(), 'app/src/retry.ts')}`;
     const before = written(await mgr.saveSession(mkSession({ title: leaked }), mkMeta({ title: leaked })));
 
-    const after = written(await mgr.saveSession(mkSession({ title: 'fix ~/app/src/retry.ts' }), mkMeta({ title: 'fix ~/app/src/retry.ts' })));
+    const after = written(await mgr.saveSession(mkSession({ title: 'fix ~/app/src/retry.ts' }), mkMeta({ title: 'fix ~/app/src/retry.ts' }), { pathsRewritten: true }));
 
     expect(path.basename(after)).toBe('claude-code_fix-app-src-retry-ts_20260102.jsonl');
     expect(fs.existsSync(path.join(repoRoot, before))).toBe(false);
@@ -320,6 +320,16 @@ describe('saveSession dedup (origin sessionId + author)', () => {
     expect(mgr.listSessions('github.com/org/alpha').map((entry) => entry.sessionName)).toEqual([path.basename(after, '.jsonl')]);
     await mgr.rebuildIndex('github.com/org/alpha');
     expect(mgr.listSessions('github.com/org/alpha').map((entry) => entry.sessionName)).toEqual([path.basename(after, '.jsonl')]);
+  });
+
+  it('keeps the name of a session re-pushed without rewriting its paths, even when its title moved off a path', async () => {
+    const mgr = new SyncManager(repoRoot);
+    const leaked = `fix ${path.join(os.homedir(), 'app/src/retry.ts')}`;
+    const before = written(await mgr.saveSession(mkSession({ title: leaked }), mkMeta({ title: leaked })));
+
+    const after = written(await mgr.saveSession(mkSession({ title: 'fix retries' }), mkMeta({ title: 'fix retries' })));
+
+    expect(after).toBe(before);
   });
 
   it('treats the same sessionId under a different author as a separate session', async () => {

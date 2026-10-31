@@ -256,7 +256,7 @@ async function saveAll(
 ): Promise<string | undefined> {
   for (const { session, meta } of sessions) {
     try {
-      const saved = await archive.saveSession(session, meta);
+      const saved = await archive.saveSession(session, meta, { pathsRewritten: true });
       if (saved.status === 'busy') return archiveBusyMessage(root, saved.lockPath);
     } catch (error) {
       return error instanceof Error ? error.message : String(error);
