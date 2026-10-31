@@ -224,6 +224,11 @@ function scrubBlock(
   }
 }
 
+/** Whether `title` spells one of `roots` as the scrubber matches it (any spelling, a Windows root in any case, cut at the end). */
+export function titleSpellsLocalPath(title: string, roots: LocalPathRoots, cwd: string): boolean {
+  return pathRewriter(roots, cwd).title(title) !== title;
+}
+
 /**
  * Redact a session (pure function; the input is not mutated).
  *

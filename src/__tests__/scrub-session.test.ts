@@ -2,7 +2,7 @@
  * scrub.test.ts — 迁移脱敏（--scrub）。
  */
 import { describe, expect, it } from 'vitest';
-import { scrubSession } from '../session-flow/scrub.js';
+import { scrubSession, titleSpellsLocalPath } from '../session-flow/scrub.js';
 import type { Session } from '../session-flow/ir.js';
 
 function makeSession(): Session {
@@ -179,6 +179,17 @@ describe('scrubSession with localPaths, for a session published to the team arch
     ['Check /Users/me', 'Check ~'],
   ])('rewrites a path the title was cut inside: %s', (title, published) => {
     expect(scrubSession({ ...said('hi'), title }, { localPaths: machine }).session.title).toBe(published);
+  });
+
+  it.each([
+    ['fix C:/Users/me/app/src/retry.ts', windows, true],
+    ['fix c:\\users\\me\\app\\src\\retry.ts', windows, true],
+    ['fix /c/Users/me/app/src/retry.ts', windows, true],
+    ['Compare /Users/m', machine, true],
+    ['fix <repo>/src/retry.ts', machine, false],
+    ['fix /Users/me/app/src/retry.ts', { repo: ['/Users/you/app'], home: ['/Users/you'], tmp: [] }, false],
+  ])('tells whether a title spells a local path: %s', (title, roots, spells) => {
+    expect(titleSpellsLocalPath(title, roots, '/Users/me/app')).toBe(spells);
   });
 
   it('rewrites a path under a short repository root, and never treats a filesystem root as one', () => {

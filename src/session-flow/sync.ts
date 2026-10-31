@@ -37,7 +37,7 @@ import { acquireLock, releaseLock } from '../update.js';
 import { resolveAnchors } from '../utils/git.js';
 import { AgentObservationSchema, type AgentObservation } from '../agent-observation.js';
 import type { Session } from './ir.js';
-import type { LocalPathRoots } from './scrub.js';
+import { titleSpellsLocalPath, type LocalPathRoots } from './scrub.js';
 import { messageToDict, messageFromDict } from './ir.js';
 
 // ---------------------------------------------------------------------------
@@ -564,7 +564,7 @@ export class SyncManager {
       origin: { ...meta.origin, cwd: archivedCwdValue },
     };
     const roots = await publishedPathRoots(meta.origin.cwd);
-    const spellsLocalPath = (title: string) => [...roots.repo, ...roots.home, ...roots.tmp].some((root) => title.includes(root));
+    const spellsLocalPath = (title: string) => titleSpellsLocalPath(title, roots, meta.origin.cwd);
     return this.writeArchive(() => this.saveSessionLocked(
       { ...session, cwd: archivedCwdValue },
       archivedMeta,
