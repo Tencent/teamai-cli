@@ -158,6 +158,8 @@ describe('scrubSession with localPaths, for a session published to the team arch
     ['/Users/me/app@2/x.ts and /Users/me/app (copy)/x.ts', '~/app@2/x.ts and <repo> (copy)/x.ts'],
     ['("/Users/me/app/x.ts"), `/Users/me/app`: done', '("<repo>/x.ts"), `<repo>`: done'],
     ['/mnt/Users/me/app/x.ts and --cwd=/Users/me/app', '/mnt/Users/me/app/x.ts and --cwd=<repo>'],
+    ['Read **/Users/me/app/x.ts**, *~/a* or [/Users/me/app]', 'Read **<repo>/x.ts**, *~/a* or [<repo>]'],
+    ['/Users/me/appé/x.ts and /Users/me/app_old/x.ts', '~/appé/x.ts and ~/app_old/x.ts'],
     ['ls /Users/me/app.', 'ls <repo>.'],
     ['/private/tmp/claude-502/-Users-me-app/6e64/tasks/b.output', '<tmp>/<project>/6e64/tasks/b.output'],
     ['file:///Users/me/app/README.md', 'file://<repo>/README.md'],

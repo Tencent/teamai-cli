@@ -52,21 +52,16 @@ const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/
 /** A directory below a filesystem root: `/`, `C:\` and the like would rewrite every path. */
 const isBelowFilesystemRoot = (dir: string): boolean => !/^(?:[A-Za-z]:)?[\\/]*$/.test(dir);
 
-/** What can follow a path in text: a separator, whitespace, a quote, a bracket or punctuation. */
-const PATH_TERMINATOR = '[\\s/\\\\"\'`()\\[\\]{}<>,;:|]';
+/** A character of a file or directory name: a root never runs into one on either side. */
+const NAME_CHAR = '[\\p{L}\\p{N}_@%+~#$-]';
 
 /**
- * A root matches only as a whole path segment, followed by the end, a separator or text around the path:
- * `/Users/alice/app` is not the start of `/Users/alice/app2`, `/Users/alice/app@2` or `/Users/alice/app.old`, but is
- * in `ls /Users/alice/app.` at the end of a sentence.
+ * A root matches only as whole path segments: `/Users/alice/app` is not in `/Users/alice/app2`, `/Users/alice/app@2`,
+ * `/Users/alice/app.old` or `/mnt/Users/alice/app`, but is in `ls /Users/alice/app.`, Markdown emphasis around it,
+ * `--cwd=/Users/alice/app` and `file:///Users/alice/app`.
  */
-const SEGMENT_END = `(?=$|${PATH_TERMINATOR}|\\.(?:$|${PATH_TERMINATOR}))`;
-
-/**
- * A root also starts a path: at the start, after text around it or `=` (`--cwd=/Users/alice/app`), or after `file://`.
- * `/mnt/Users/alice/app` is another directory, not the repository.
- */
-const SEGMENT_START = '(?<=^|[\\s"\'`()\\[\\]{}<>,;:|=]|file://)';
+const SEGMENT_START = `(?<!${NAME_CHAR})`;
+const SEGMENT_END = `(?!${NAME_CHAR}|\\.${NAME_CHAR})`;
 
 /**
  * Rewrites the paths under `roots` in a text: the repository to `<repo>`, the temp roots to `<tmp>`, the rest of the
@@ -90,7 +85,7 @@ function pathRewriter({ repo, home, tmp, workdir }: LocalPathRoots, cwd: string)
   const roots = [...named.keys()].sort(byLength);
   const matcher = (some: string[], flags: string): RegExp | undefined =>
     some.length > 0 ? new RegExp(`${SEGMENT_START}(?:${some.map(escapeRegExp).join('|')})${SEGMENT_END}`, flags) : undefined;
-  const rooted = [matcher(roots.filter(isWindows), 'gi'), matcher(roots.filter((root) => !isWindows(root)), 'g')];
+  const rooted = [matcher(roots.filter(isWindows), 'giu'), matcher(roots.filter((root) => !isWindows(root)), 'gu')];
   const nameOf = (root: string): string | undefined => named.get(keyOf(root));
   const projects = [...new Set([cwd, ...repo].filter((dir) => isBelowFilesystemRoot(dir) && /^(?:\/|[A-Za-z]:[\\/])/.test(dir)).map((dir) => dir.replace(/[^a-zA-Z0-9]/g, '-')))];
   const project = new RegExp(`(?<=[\\\\/])(?:${projects.sort(byLength).map(escapeRegExp).join('|')})(?=$|[\\\\/])`, 'g');
