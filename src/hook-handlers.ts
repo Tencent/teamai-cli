@@ -442,16 +442,18 @@ const dashboardReportHandler: HookHandler = {
     const { parseHookEvent, appendEvent, compactEvents, dataHomeKey, eventProjectAnchor, addGitStateAtStart, addGitHeadAtStop, gitStateIn } = await import('./dashboard-collector.js');
     const { getDataHome } = await import('./types.js');
     const raw = JSON.stringify(stdin);
+    // The dispatcher's scope, which knows the project even when the event
+    // records no cwd (Copilot) or a symlinked one (#785).
+    const scopeKey = await dataHomeKey(getDataHome(config));
     const event = await parseHookEvent(raw, tool, {
       correctionKeywords: await teamCorrectionKeywords(stdin, config),
       // The gateway model-alias map of the hook's scope, its own entries over this
       // machine's, prices requests that record an alias instead of a model name.
       modelAliases: config.modelAliases,
+      dataHomeKey: scopeKey,
     });
     if (event) {
-      // The dispatcher's scope, which knows the project even when the event
-      // records no cwd (Copilot) or a symlinked one (#785).
-      event.dataHomeKey = await dataHomeKey(getDataHome(config));
+      event.dataHomeKey = scopeKey;
       const [projectAnchor] = await Promise.all([
         eventProjectAnchor(event.cwd, event.sessionId),
         addGitStateAtStart(event, gitStateIn(stdin)),

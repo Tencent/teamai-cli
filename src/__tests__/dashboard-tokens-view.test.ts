@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { dashboardMessages } from '../dashboard/locales.js';
 import type { TokenCostSummary } from '../dashboard/token-costs.js';
@@ -49,12 +49,14 @@ async function renderPage(summary: TokenCostSummary, language: 'en' | 'zh-CN' = 
   page.tokensPage();
   await page.loadTokens();
   keys.length = 0;
-  return { html: page.tokensPage(), keys, requested };
+  return { html: page.tokensPage(), keys, requested, page };
 }
 
 const text = (html: string) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
 
 describe('the Tokens & cost page', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
   it('shows the window\'s cost against the prior one, the tokens, what caching saved and how much is priced', async () => {
     const { html, requested } = await renderPage(WEEK);
     const shown = text(html);
@@ -81,6 +83,16 @@ describe('the Tokens & cost page', () => {
     const { html, keys } = await renderPage({ ...WEEK, days: 90, previous: null }, 'zh-CN');
     expect(html).toContain('请求只保留 90 天');
     expect(keys.filter((key) => !Object.hasOwn(dashboardMessages, key))).toEqual([]);
+  });
+
+  it('fetches again once the shown data is a minute old, so a session that stops since then shows up', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const { page, requested } = await renderPage(WEEK);
+    page.tokensPage();
+    expect(requested).toHaveLength(1);
+    vi.advanceTimersByTime(61_000);
+    page.tokensPage();
+    expect(requested).toHaveLength(2);
   });
 
   it('says where usage comes from when the window has no request', async () => {

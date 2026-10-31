@@ -51,13 +51,13 @@ function group<T extends Usage>(map: Map<string, T>, key: string, create: () => 
 
 /**
  * Sum `records` over the `days` UTC days ending today: totals, a point per
- * day, and rankings by tool, model and session. `sessionIds` keeps a
- * workspace's sessions only; a record from before requests named their
- * session is then left out.
+ * day, and rankings by tool, model and session. `scope` keeps a workspace's
+ * requests only: those its data home recorded, and, for a request recorded
+ * before requests named their data home, those of its `sessionIds`.
  */
 export function summarizeTokenCosts(
   records: readonly LocalRequestRecord[],
-  options: { days: number; now: Date; sessionIds?: ReadonlySet<string> },
+  options: { days: number; now: Date; scope?: { dataHomeKey?: string; sessionIds: ReadonlySet<string> } },
 ): TokenCostSummary {
   const today = Date.UTC(options.now.getUTCFullYear(), options.now.getUTCMonth(), options.now.getUTCDate());
   const start = today - (options.days - 1) * DAY_MS;
@@ -73,7 +73,10 @@ export function summarizeTokenCosts(
   const sessions = new Map<string, Usage & { sessionId: string; tool: string; lastAt: string }>();
 
   for (const record of records) {
-    if (options.sessionIds && !(record.sessionId && options.sessionIds.has(record.sessionId))) continue;
+    const { scope } = options;
+    if (scope && !(scope.dataHomeKey && record.dataHomeKey
+      ? record.dataHomeKey === scope.dataHomeKey
+      : record.sessionId !== undefined && scope.sessionIds.has(record.sessionId))) continue;
     const at = Date.parse(record.timestamp);
     if (at >= previousStart && at < start) {
       previous.requests += 1;

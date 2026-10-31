@@ -105,7 +105,8 @@ export function catalogFromLiteLlm(document: unknown, source: { revision: string
     if (!price) continue;
     const name = canonicalModelName(key);
     const group = byName.get(name) ?? { resold: [] };
-    if (key.trim().toLowerCase() === name) group.own = price;
+    // The provider's own listing: the bare name, however its version is spelled (`gpt-4.1`).
+    if (key.trim().toLowerCase().replace(/(\d)\.(?=\d)/g, '$1-') === name) group.own = price;
     else group.resold.push(price);
     byName.set(name, group);
   }

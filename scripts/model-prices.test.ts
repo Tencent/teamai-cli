@@ -82,6 +82,12 @@ describe('catalogFromLiteLlm', () => {
     expect(catalog.models['claude-opus-4-1'].input).toBe(15);
   });
 
+  it('takes the provider\'s own price for a model named with a dot', () => {
+    const gpt = (input: number) => ({ mode: 'chat', input_cost_per_token: input, output_cost_per_token: 8e-6 });
+    const catalog = catalogFromLiteLlm({ 'gpt-4.1': gpt(2e-6), 'azure/gpt-4.1': gpt(2.2e-6), 'openrouter/openai/gpt-4.1': gpt(2.2e-6) }, SOURCE);
+    expect(catalog.models['gpt-4-1']?.input).toBe(2);
+  });
+
   it('prices a model only resellers list at the price most of them charge', () => {
     const kimi = (input: number, output: number) => ({ mode: 'chat', input_cost_per_token: input, output_cost_per_token: output });
     const catalog = catalogFromLiteLlm({

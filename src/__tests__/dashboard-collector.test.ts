@@ -1638,7 +1638,7 @@ describe('local request log', () => {
     fs.writeFileSync(transcriptPath, [claudeRequest('msg_1', 'claude-sonnet-5'), claudeRequest('msg_2', 'gateway-model-42')].join('\n') + '\n');
     const stop = (modelAliases?: Record<string, string>) => parseHookEvent(JSON.stringify({
       hook_event_name: 'Stop', session_id: 'sess-gateway', transcript_path: transcriptPath,
-    }), 'claude', { modelAliases });
+    }), 'claude', { modelAliases, dataHomeKey: 'acme-home' });
 
     // Sonnet 5: input $0.002 + output $0.002 + cache read $0.001 + 5m cache write $0.001
     expect((await stop())?.requestMetrics).toMatchObject({ pricedRequests: 1, costMicros: 6_000 });
@@ -1648,6 +1648,8 @@ describe('local request log', () => {
     ]);
     // 5,000 cache reads billed as input would cost $0.009 more ($2 instead of $0.20 per million).
     expect(requestLog()[0].cacheSavingsMicros).toBe(9_000);
+    // The recording scope, so its workspace finds the request after compaction.
+    expect(requestLog()[0].dataHomeKey).toBe('acme-home');
 
     expect((await stop({ 'gateway-model-42': 'claude-sonnet-5' }))?.requestMetrics).toMatchObject({ pricedRequests: 2, costMicros: 12_000 });
   });

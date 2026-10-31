@@ -78,8 +78,19 @@ describe('summarizeTokenCosts', () => {
     expect(summarizeTokenCosts(WEEK, { days: 30, now: NOW }).previous).toEqual({ requests: 0, costMicros: 0 });
   });
 
+  it('keeps a workspace\'s requests by the scope that recorded them, after compaction dropped their sessions', () => {
+    const recorded = [
+      priced('2026-10-30T09:15:02Z', 'claude-opus-5-5', { costMicros: 11_000, dataHomeKey: 'acme', sessionId: 'compacted' }),
+      priced('2026-10-30T09:16:02Z', 'claude-opus-5-5', { costMicros: 11_000, dataHomeKey: 'other', sessionId: 's-codex' }),
+      // Recorded before requests named their scope: matched by session.
+      priced('2026-10-30T09:17:02Z', 'gpt-6.1-sol', { costMicros: 4_500, sessionId: 's-codex' }),
+    ];
+    const scoped = summarizeTokenCosts(recorded, { days: 7, now: NOW, scope: { dataHomeKey: 'acme', sessionIds: new Set(['s-codex']) } });
+    expect(scoped.totals.costMicros).toBe(15_500);
+  });
+
   it('keeps only a workspace\'s sessions when given them', () => {
-    const scoped = summarizeTokenCosts(WEEK, { days: 7, now: NOW, sessionIds: new Set(['s-codex']) });
+    const scoped = summarizeTokenCosts(WEEK, { days: 7, now: NOW, scope: { sessionIds: new Set(['s-codex']) } });
     expect(scoped.totals.requests).toBe(1);
     expect(scoped.byTool.map(({ tool }) => tool)).toEqual(['codex']);
   });

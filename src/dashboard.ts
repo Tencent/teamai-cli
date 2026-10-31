@@ -437,10 +437,14 @@ export async function startDashboard(port?: number): Promise<void> {
       try {
         const days = Number(url.searchParams.get('days') ?? 7);
         if (![7, 30, 90].includes(days)) throw new HttpError(400, 'days must be 7, 30 or 90');
-        const sessionIds = scopeId ? new Set(memberEvents(await scopedEvents(scopeId)).map((event) => event.sessionId)) : undefined;
+        // A workspace's requests are those its data home recorded; older ones, those of its sessions still in the event log.
+        const scope = workspace ? {
+          ...(workspace.config ? { dataHomeKey: await dataHomeKey(getDataHome(workspace.config)) } : {}),
+          sessionIds: new Set(memberEvents(await scopedEvents(scopeId)).map((event) => event.sessionId)),
+        } : undefined;
         const records = [...(await readLocalRequestRecords()).values()];
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(summarizeTokenCosts(records, { days, now: new Date(), sessionIds })));
+        res.end(JSON.stringify(summarizeTokenCosts(records, { days, now: new Date(), scope })));
       } catch (e) {
         const status = e instanceof HttpError ? e.status : 500;
         res.writeHead(status, { 'Content-Type': 'application/json' });

@@ -5,11 +5,11 @@
  * `sessions` and `workspaceGeneration`.
  */
 export const tokensView = `
-let tokenDays = 7, tokenData = null, tokenError = false, tokenLoading = false;
+let tokenDays = 7, tokenData = null, tokenError = false, tokenLoading = false, tokenLoadedAt = 0;
 function resetTokens() { tokenData=null;tokenError=false;tokenLoading=false; }
 async function loadTokens() {
  if(tokenLoading)return; const generation=workspaceGeneration, days=tokenDays; tokenLoading=true;
- try{ const data=await json(apiQuery('/api/tokens',{days:String(days)})); if(generation===workspaceGeneration&&days===tokenDays){tokenData=data;tokenError=false;} }
+ try{ const data=await json(apiQuery('/api/tokens',{days:String(days)})); if(generation===workspaceGeneration&&days===tokenDays){tokenData=data;tokenError=false;tokenLoadedAt=Date.now();} }
  catch{ if(generation===workspaceGeneration)tokenError=true; }
  finally{ if(generation===workspaceGeneration){tokenLoading=false;if(page==='tokens')render();} }
 }
@@ -44,7 +44,8 @@ function tokenSessionCell(s) {
  return (known?'<button class="link" data-session="'+e(s.sessionId)+'">'+name+' ↗</button>':name)+meta;
 }
 function tokensPage() {
- if(page==='tokens'&&!tokenData&&!tokenLoading&&!tokenError)loadTokens();
+ // A render follows every live update, so data older than a minute is fetched again behind the shown one.
+ if(page==='tokens'&&!tokenLoading&&(!tokenData&&!tokenError||tokenData&&Date.now()-tokenLoadedAt>60000))loadTokens();
  const windows='<div class="chips token-window" role="group" aria-label="'+e(t('Window'))+'">'+[7,30,90].map(d=>'<button class="chip'+(d===tokenDays?' active':'')+'" data-token-days="'+d+'" aria-pressed="'+(d===tokenDays)+'">'+label(d+' days')+'</button>').join('')+'</div>';
  if(tokenError&&!tokenData)return windows+errorPanel('Could not load token usage.','tokens');
  if(!tokenData)return windows+'<div class="empty" role="status">'+label('Loading token usage…')+'</div>';

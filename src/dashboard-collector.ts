@@ -168,6 +168,8 @@ const LocalRequestRecordSchema = z.object({
   timestamp: z.string().refine((value) => Number.isFinite(Date.parse(value))),
   tool: z.string().optional(),
   sessionId: z.string().optional(),
+  /** The data home of the scope that recorded it (`dataHomeKey`), so a workspace finds it after compaction dropped its session. */
+  dataHomeKey: z.string().optional(),
   model: z.string(),
   inputTokens: RequestCount,
   outputTokens: RequestCount,
@@ -218,19 +220,20 @@ async function recordTokenRequests(
   event: DashboardEvent,
   requests: readonly TokenRequest[],
   scope: string,
-  aliases?: Record<string, string>,
+  options: ParseHookEventOptions | undefined,
 ): Promise<void> {
+  const aliases = options?.modelAliases;
   if (!requests.length) return;
   const logged = await readLocalRequestRecords();
   const records = requests.map((request): LocalRequestRecord => {
     const id = createHash('sha256').update(`${scope}\0${request.key}`).digest('hex');
     const kept = logged.get(id);
-    if (kept && isPriced(kept)) return { ...kept, tool: event.tool, sessionId: event.sessionId };
+    const owner = { tool: event.tool, sessionId: event.sessionId, ...(options?.dataHomeKey ? { dataHomeKey: options.dataHomeKey } : {}) };
+    if (kept && isPriced(kept)) return { ...kept, ...owner };
     const base = {
       id,
       timestamp: Number.isFinite(Date.parse(request.timestamp)) ? new Date(request.timestamp).toISOString() : event.timestamp,
-      tool: event.tool,
-      sessionId: event.sessionId,
+      ...owner,
       model: request.model,
       inputTokens: request.tokens.input,
       outputTokens: request.tokens.output,
@@ -867,6 +870,8 @@ export interface ParseHookEventOptions {
    * so it does not log the requests again without the scope's aliases.
    */
   readUsage?: false;
+  /** The recording scope's `dataHomeKey`, kept on each request it logs. */
+  dataHomeKey?: string;
 }
 
 function codexReplyText(prompt: string): string {
@@ -1024,7 +1029,7 @@ export async function parseHookEvent(
       event.tokens = reading.tokens;
       if (reading.scope) event.tokenScope = reading.scope;
     }
-    await recordTokenRequests(event, reading.requests, stopTranscript ?? `${tool}:${sessionId}`, options?.modelAliases);
+    await recordTokenRequests(event, reading.requests, stopTranscript ?? `${tool}:${sessionId}`, options);
   }
 
   // SessionStart and SessionEnd run in separate processes. Capture the log
@@ -1133,7 +1138,7 @@ export async function parseHookEvent(
         event.tokenScope = 'session';
       }
       // Request ids hash the session id, so the request log keeps no Copilot path.
-      await recordTokenRequests(event, usage.requests ?? [], `${COPILOT_TOOL_ID}:${sessionId}`, options?.modelAliases);
+      await recordTokenRequests(event, usage.requests ?? [], `${COPILOT_TOOL_ID}:${sessionId}`, options);
     }
   }
 
@@ -2355,10 +2360,11 @@ export async function dashboardReport(toolArg?: string): Promise<void> {
     return;
   }
 
-  const event = await parseHookEvent(raw, toolArg ?? 'claude', { modelAliases: config.modelAliases });
+  const scopeKey = await dataHomeKey(getDataHome(config));
+  const event = await parseHookEvent(raw, toolArg ?? 'claude', { modelAliases: config.modelAliases, dataHomeKey: scopeKey });
   if (!event) return;
 
-  event.dataHomeKey = await dataHomeKey(getDataHome(config));
+  event.dataHomeKey = scopeKey;
   const [projectAnchor] = await Promise.all([
     eventProjectAnchor(event.cwd, event.sessionId),
     addGitStateAtStart(event, gitStateIn(hookData)),
