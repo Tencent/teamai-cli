@@ -8,6 +8,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
+import type { AgentObservation } from '../agent-observation.js';
 import { knownSecrets } from '../env-resolution.js';
 import { RUN_MODES, type RunMode } from '../launch-context.js';
 import { AttemptStore, type AttemptRecord } from '../scorers/attempts.js';
@@ -104,11 +105,13 @@ export interface JudgedSession {
  * Reads `found` for a judge once: its transcript with its subagents', its first prompt, the agent its captures agree on
  * with the one model its messages name, and the team skills it used, all redacted with `mask`.
  */
-export function judgeSession({ platform, found, captures, mask }: {
+export function judgeSession({ platform, found, captures, mask, agent: archived }: {
   platform: string;
   found: { session: Session; subagents?: SubagentsRead };
   captures: readonly SessionCapture[];
   mask: (text: string) => string;
+  /** What a pushed session ran as, as its archive records it: it has no captures here. */
+  agent?: AgentObservation;
 }): JudgedSession {
   const { session } = found;
   const transcript = judgedTranscript(found, { session: Number.POSITIVE_INFINITY, subagent: Number.POSITIVE_INFINITY });
@@ -121,9 +124,7 @@ export function judgeSession({ platform, found, captures, mask }: {
     ...('skills' in skills ? { skills: skills.skills } : {}),
   };
   const framing = `## evidence.json\n\n${JSON.stringify(manifest)}\n\n## transcripts/session.md\n\n`.length;
-  const models = new Set(session.messages.flatMap((message) => message.metadata?.model ?? []));
-  const [reportedModel] = models.size === 1 ? models : [];
-  const agent = SessionCaptures.agentOf(captures, reportedModel);
+  const agent = archived ?? SessionCaptures.agentOf(captures, SessionCaptures.reportedModelOf(session));
   const runMode = SessionCaptures.runModeOf(captures);
   return {
     subject,

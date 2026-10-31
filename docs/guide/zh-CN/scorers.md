@@ -200,7 +200,7 @@ Sessions for github.com/acme/app:
   1 session(s)
 
 $ teamai score --team-session claude-code_fix-the-retry-loop-in-sync-ts_20261021 --scorer review-quality --label missed-bug --push
-ℹ Labelling claude-code session 7c1e… in /home/alice/app
+ℹ Labelling claude-code session 7c1e… in packages/api
 ℹ Pushed by alice
 ℹ First prompt: Fix the retry loop in sync.ts
 ℹ review-quality: missed-bug (score 0, did not pass), by hand. No judge ran.
@@ -210,7 +210,7 @@ $ teamai score --team-session claude-code_fix-the-retry-loop-in-sync-ts_20261021
 
 ```console
 $ teamai score --team-session claude-code_fix-the-retry-loop-in-sync-ts_20261021 --scorer review-quality
-ℹ Scoring claude-code session 7c1e… in /home/alice/app
+ℹ Scoring claude-code session 7c1e… in packages/api
 ℹ Pushed by alice
 ℹ First prompt: Fix the retry loop in sync.ts
 ℹ review-quality: good (score 1, passed). Reasoning: ~/.teamai/scores/reasoning/2b7d….md
@@ -222,7 +222,7 @@ $ teamai score --team-session claude-code_fix-the-retry-loop-in-sync-ts_20261021
 $ teamai score --team-session claude-code_fix-the-retry-loop-in-sync-ts_20261021 --author bob --scorer review-quality --label good
 ```
 
-`--team-session` 在 `teamai-reports` 上读取为当前目录所在项目推送的会话。在 git 团队上，只有 `teamai-reports` 中没有该名称的会话时，才读取 teamai 以前保存在默认分支上的会话；`--author` 只在找到该名称的位置推送过它的成员中选择。它不能与 `--session`、`--source` 或 `--json` 同时使用。评审者读取前会对会话脱敏，即使推送时没有使用 `--scrub`。它的标签没有 `agent`，因为会话的运行配置只记录在运行它的机器上，所以评分器页面按工具和模型分组时将其计为“未记录”。
+`--team-session` 在 `teamai-reports` 上读取为当前目录所在项目推送的会话。在 git 团队上，只有 `teamai-reports` 中没有该名称的会话时，才读取 teamai 以前保存在默认分支上的会话；`--author` 只在找到该名称的位置推送过它的成员中选择。它不能与 `--session`、`--source` 或 `--json` 同时使用。评审者读取前会对会话脱敏，即使推送时没有使用 `--scrub`。它显示的目录是会话运行时相对于仓库的目录。它的标签从归档中取 `agent`（见[脱敏后的会话保留什么](dashboard.md#脱敏后的会话保留什么)），所以评分器页面按工具、模型和团队版本分组时，它与在运行机器上评分的会话归在一起。归档中没有 `agent` 的会话（例如 teamai 0.28 及更早版本推送的）在那里计为“未记录”。
 
 ### 评分器变更时
 

@@ -35,6 +35,7 @@ import { isInteractive } from '../utils/prompt.js';
 import { updateReports } from '../utils/reports-branch.js';
 import { knownSecrets } from '../env-resolution.js';
 import { pushSession } from './archive.js';
+import { SessionCaptures } from './captures.js';
 import { registerMigrationCommand } from './session-migrate-cmd.js';
 import {
   REPORTS_ARCHIVE_BUSY,
@@ -132,7 +133,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
     .option('--limit <n>', 'Max sessions to push (default: 5; ignored with --all or --session)', '5')
     .option('--all', 'Push every session of the platform across all workspace directories (ignores --limit)')
     .option('-y, --yes', 'Skip confirmation prompts, including archiving unredacted transcripts (--all)')
-    .option('--scrub', 'Redact secrets before archiving (archived sessions are team-readable)')
+    .option('--scrub', 'Redact secrets and rewrite local paths (<repo>, ~, <tmp>) before archiving (archived sessions are team-readable)')
     .action(async (opts) => {
       try {
       const source = opts.source;
@@ -237,7 +238,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
 
       const toolRootsFor = toolRootsLookup();
       // The team's declared secrets are known only for the teamai install's own archive, not for a --repo-root clone.
-      const scrub = opts.scrub ? { secrets: reports ? await knownSecrets(reports) : {} } : false;
+      const scrub = opts.scrub ? { secrets: reports ? await knownSecrets(reports) : {}, rewriteLocalPaths: true } : false;
       const commitMessage = (saved: number) => `sync: push ${saved} session(s) from ${source}${opts.all ? ' (all workspaces)' : ''}`;
       /** Saves the selected sessions into the archive at `root`: how many, or undefined once a failure that stops the push was reported. */
       const archiveInto = async (syncMgr: SyncManager, archiveRoot: string): Promise<number | undefined> => {
@@ -274,6 +275,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
               sessionId: m.sessionId,
               repoIdentity: deriveArchiveIdentity(session, source),
               title: session.title,
+              agent: await SessionCaptures.agentOfSession(source, session, reports),
             },
             session.createdAt,
           );
@@ -281,7 +283,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
           // mid-batch must not fall through to a commit that publishes a
           // half-archive.
           try {
-            const write = await syncMgr.saveSession(session, meta);
+            const write = await syncMgr.saveSession(session, meta, { pathsRewritten: Boolean(opts.scrub) });
             if (write.status === 'busy') {
               reportArchiveBusy(archiveRoot, write.lockPath);
               return undefined;
