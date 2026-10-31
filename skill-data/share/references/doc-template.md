@@ -9,6 +9,8 @@ title: "<short title naming the core problem or finding>"
 author: <username>
 date: <YYYY-MM-DD>
 tags: [tag1, tag2, tag3]
+related:
+  REFERENCES: [skills/skill-name-1, skills/skill-name-2]
 ---
 
 ## Context
@@ -20,10 +22,6 @@ How did you solve it? What were the key steps?
 ## Lessons
 - Lesson 1
 - Lesson 2
-
-## Related Skills
-- skill-name-1
-- skill-name-2
 ```
 
 ### Frontmatter fields
@@ -34,6 +32,7 @@ How did you solve it? What were the key steps?
 | author | yes | Contributor's username | jeffyxu |
 | date | yes | Date as YYYY-MM-DD | 2026-03-28 |
 | tags | yes | 2-5 key tags | [k8s, oom, troubleshooting] |
+| related | no | Relations to other team assets, shown on recall hits. A learning may use `REFERENCES` (any asset), `MAPS_TO` (a teamwiki page), `SUPERSEDES` and `CONFLICTS_WITH` (a doc or learning). Disagreeing with a rule is `CONFLICTS_WITH`: `teamai contribute` publishes without review | REFERENCES: [docs/payments-overview.md] |
 | session | no | The session the learning came from. Leave it out: `teamai contribute` writes it | { platform: claude-code, sessionId: 7c1e… } |
 
 ### Choosing tags

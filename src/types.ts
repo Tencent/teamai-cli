@@ -2517,10 +2517,19 @@ export interface SearchIndexEntry {
   confidence?: number;
   /** Snippet from codebase graph recall (depth-dependent content preview). */
   snippet?: string;
+  /**
+   * The asset's path in the team tree (e.g. `rules/payments.md`,
+   * `learnings/<id>`, `skills/<namespace>/<skill>`), set at index build time.
+   * Relations resolve against this, never against the absolute `path`, which
+   * differs per member and per checkout (#1552).
+   */
+  treePath?: string;
+  /** Outgoing asset relations declared in `related:` frontmatter or derived from local links (#1552). */
+  related?: import('./asset-relations.js').StoredRelation[];
 }
 
 /** Schema version of the on-disk search-index.json (bump on breaking change). */
-export const SEARCH_INDEX_VERSION = 7;
+export const SEARCH_INDEX_VERSION = 8;
 
 /** Per-file derivation only; votes and selection are recomputed on every build. */
 export interface SearchIndexFileCache {
