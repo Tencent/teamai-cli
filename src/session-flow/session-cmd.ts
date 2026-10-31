@@ -133,7 +133,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
     .option('--limit <n>', 'Max sessions to push (default: 5; ignored with --all or --session)', '5')
     .option('--all', 'Push every session of the platform across all workspace directories (ignores --limit)')
     .option('-y, --yes', 'Skip confirmation prompts, including archiving unredacted transcripts (--all)')
-    .option('--scrub', 'Redact secrets before archiving (archived sessions are team-readable)')
+    .option('--scrub', 'Redact secrets and rewrite local paths (<repo>, ~, <tmp>) before archiving (archived sessions are team-readable)')
     .action(async (opts) => {
       try {
       const source = opts.source;

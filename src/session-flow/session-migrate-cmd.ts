@@ -601,7 +601,7 @@ export function registerMigrationCommand(sessionCmd: Command, isDryRun: () => bo
     .option('--target-cwd <path>', 'Override cwd for the target session')
     .option('--push', 'Also push the migrated session to the team repo')
     .option('--repo-root <path>', 'Team repo clone to archive into with --push (default: the teamai install for this directory, else your user install)')
-    .option('--scrub', 'Redact secrets (tokens/keys/passwords) from the session before writing it')
+    .option('--scrub', 'Redact secrets (tokens/keys/passwords) from the session before writing it; with --push, also rewrite local paths in the archived copy')
     .option('--all', 'Migrate every session from source (not just the 5 most recent)')
     .option('--limit <n>', 'Max sessions to migrate (only caps --all; ignored otherwise)')
     .option('-y, --yes', 'Skip confirmation prompts, including archiving unredacted transcripts')
