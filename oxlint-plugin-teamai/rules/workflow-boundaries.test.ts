@@ -11,6 +11,8 @@ describe('teamai/workflow-boundaries', () => {
   rule.valid('allows a dynamic import from an unrestricted skill helper', `await import('../../protocol.js');`, { filename: 'src/workflow/drivers/skill/skill-driver.ts' });
   rule.valid('allows a flat module to import an ordinary workflow helper', `import { x } from './protocol.js';`, { filename: 'src/workflow/engine.ts' });
   rule.valid('allows a type-only flat helper', `import type { X } from '../../types.js';`);
+  rule.valid('allows an aliased permitted re-export', `export { takeRunLock as lock } from '../../store.js';`, { filename: 'src/workflow/drivers/skill/skill-driver.ts' });
+  rule.valid('allows a type-only wildcard re-export', `export type * from '../../types.js';`, { filename: 'src/workflow/drivers/skill/skill-driver.ts' });
   rule.valid('allows the canonical boundary test fixture', `import fs from 'node:fs';`, { filename: 'src/__tests__/workflow-module-boundaries.test.ts' });
 
   rule.invalid('rejects skill driver importing the local driver', `import { run } from '../local/local-driver.js';`);

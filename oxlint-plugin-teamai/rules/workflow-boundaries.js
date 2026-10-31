@@ -98,12 +98,16 @@ function sourceValue(node) {
 /** @param {any} node @returns {Array<{ name: string, typeOnly: boolean }> | undefined} */
 function specifiersOf(node) {
   const specifiers = node.specifiers ?? [];
-  if (specifiers.length === 0) return undefined;
+  if (specifiers.length === 0) {
+    if (node.type === 'ExportAllDeclaration' && node.exportKind === 'type') return [{ name: '*', typeOnly: true }];
+    return undefined;
+  }
   const declarationType = node.importKind === 'type' || node.exportKind === 'type';
   return specifiers.map(/** @param {any} specifier */ (specifier) => ({
     name: specifier.imported?.name
+      ?? specifier.local?.name
       ?? specifier.exported?.name
-      ?? (specifier.type === 'ImportNamespaceSpecifier' ? '*' : specifier.type === 'ImportDefaultSpecifier' ? 'default' : specifier.local?.name ?? ''),
+      ?? (specifier.type === 'ImportNamespaceSpecifier' ? '*' : specifier.type === 'ImportDefaultSpecifier' ? 'default' : ''),
     typeOnly: declarationType || specifier.importKind === 'type' || specifier.exportKind === 'type',
   }));
 }
