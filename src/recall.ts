@@ -444,8 +444,12 @@ export async function buildRelationContext(args: {
   };
 }
 
-/** The printed path of a relation's other end, or null when this scope cannot see it. */
-function resolveRelationTarget(ctx: RelationContext, target: string): string | null {
+/**
+ * The printed path of a relation's other end, or null when this scope cannot
+ * see it. Exported for the viz health view's relation counts (#1562 part 2),
+ * which reuse it as the resolved predicate.
+ */
+export function resolveRelationTarget(ctx: RelationContext, target: string): string | null {
   if (classifyTreePath(target) === 'teamwiki') {
     if (ctx.withheld === null) return null;
     const slug = teamwikiCodebaseSlug(target);
