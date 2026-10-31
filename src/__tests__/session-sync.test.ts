@@ -1002,3 +1002,44 @@ describe('encodeRepoIdentity', () => {
     expect(decodeRepoIdentity('github.com%2Forg%2Fa~41')).toBe('github.com/org/a~41');
   });
 });
+
+describe('what an archived session ran as', () => {
+  const agent = {
+    v: 1 as const,
+    tool: { name: 'claude', version: '2.1.301' },
+    model: { requested: 'claude-opus-5-5', reported: 'claude-opus-5-5' },
+    team: { revision: '7a6134a25e74c0de7a6134a25e74c0de7a6134a2', localChanges: false },
+    project: { commit: '8e04ff4308e04ff4308e04ff4308e04ff4308e04', dirty: true },
+    teamai: '0.31.0',
+    driver: 'session',
+  };
+
+  it('keeps the agent in meta.json and its team revision in the index entry, which a rebuild gives again', async () => {
+    const mgr = new SyncManager(repoRoot);
+    const saved = written(await mgr.saveSession(mkSession(), { ...mkMeta(), agent }));
+
+    expect(mgr.loadSession('github.com/org/alpha', path.basename(saved, '.jsonl'), 'alice').meta.agent).toEqual(agent);
+    expect(mgr.listSessions('github.com/org/alpha')[0].teamRevision).toBe(agent.team.revision);
+    await mgr.rebuildIndex('github.com/org/alpha');
+    expect(mgr.listSessions('github.com/org/alpha')[0].teamRevision).toBe(agent.team.revision);
+  });
+
+  it('records no team revision for a session that has no agent', async () => {
+    const mgr = new SyncManager(repoRoot);
+    await mgr.saveSession(mkSession(), mkMeta());
+
+    expect(mgr.listSessions('github.com/org/alpha')[0]).not.toHaveProperty('teamRevision');
+  });
+
+  it('reads an agent that is not an observation, such as one with a path in it, as absent', async () => {
+    const mgr = new SyncManager(repoRoot);
+    const saved = written(await mgr.saveSession(mkSession(), { ...mkMeta(), agent }));
+    const metaFile = path.join(repoRoot, saved.replace(/\.jsonl$/, '.meta.json'));
+    const meta = JSON.parse(fs.readFileSync(metaFile, 'utf8')) as Record<string, unknown>;
+    fs.writeFileSync(metaFile, JSON.stringify({ ...meta, agent: { ...agent, tool: { name: '/Users/alice/bin/claude' } } }));
+
+    expect(mgr.loadSession('github.com/org/alpha', path.basename(saved, '.jsonl'), 'alice').meta).not.toHaveProperty('agent');
+    await mgr.rebuildIndex('github.com/org/alpha');
+    expect(mgr.listSessions('github.com/org/alpha')[0]).not.toHaveProperty('teamRevision');
+  });
+});

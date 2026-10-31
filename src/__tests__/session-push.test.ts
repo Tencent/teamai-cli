@@ -11,7 +11,7 @@ import { openSessionArchive } from '../session-flow/archive.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';
 import { registerSessionFlowCommands } from '../session-flow/session-cmd.js';
 import { encodeRepoIdentity, withSessionPublicationLock } from '../session-flow/sync.js';
-import { getReportsDir, REPORTS_LOCK_FILENAME, type LocalConfig } from '../types.js';
+import { getDataHome, getReportsDir, REPORTS_LOCK_FILENAME, type LocalConfig } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { ensureReportsWorktree, updateReports } from '../utils/reports-branch.js';
 import { worktreePath } from '../workflow/worktree.js';
@@ -516,6 +516,39 @@ describe('session commands without --repo-root outside a workspace install', () 
     const found = await AgentSession.find({ platform: 'claude-code', sessionId: 'sessionId' in restored ? restored.sessionId : '', cwd: other }, { scrub: false });
     expect(found).toMatchObject({ status: 'done', session: { cwd: other } });
     expect(JSON.stringify(found)).toContain('The second one is in the parser.');
+  });
+
+  it('record what the session ran as from its one capture here, and nothing for a session no hook captured', async () => {
+    const team = await userInstall();
+    const { checkout } = repository('product');
+    const captured = await claudeSession(checkout, { id: 'captured-1', title: 'Captured review' });
+    await claudeSession(checkout, { id: 'uncaptured-1', title: 'Uncaptured review' });
+    const config = await loadLocalConfig();
+    if (!config) throw new Error('the user install was not saved');
+    const revision = '7a6134a25e74c0de7a6134a25e74c0de7a6134a2';
+    const captureId = '0b6f2a52-5d7e-4c7e-9a43-6a3c1d0e2f10';
+    const dir = path.join(getDataHome(config), 'sessions', 'captures', 'claude-code', captured);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${captureId}.json`), JSON.stringify({
+      captureId, platform: 'claude-code', sessionId: captured, capturedAt: '2026-10-01T10:00:00.000Z',
+      agent: { v: 1, tool: { name: 'claude', version: '2.1.301' }, model: { requested: 'claude-opus-5-5' }, team: { revision, localChanges: false },
+        project: { commit: '8e04ff4308e04ff4308e04ff4308e04ff4308e04', dirty: true }, teamai: '0.31.0', driver: 'session' },
+    }));
+
+    const pushed = await session('push', '--source', 'claude-code', '--cwd', checkout, '--scrub');
+
+    expect(pushed.code, pushed.stderr).toBe(0);
+    const files = archived(team.origin, 'teamai-reports');
+    const read = (suffix: string, title: string) => JSON.parse(git(team.checkout, 'show', `origin/teamai-reports:${files.find((file) => file.includes(title) && file.endsWith(suffix))}`)) as Record<string, unknown>;
+    expect(read('.meta.json', 'captured-review')).toMatchObject({
+      agent: { tool: { name: 'claude', version: '2.1.301' }, model: { requested: 'claude-opus-5-5' }, team: { revision }, driver: 'session', fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/) },
+    });
+    expect(read('.meta.json', 'uncaptured-review')).not.toHaveProperty('agent');
+    const index = JSON.parse(git(team.checkout, 'show', `origin/teamai-reports:${files.find((file) => file.endsWith('_index.json'))}`)) as { sessions: Array<{ title: string; teamRevision?: string }> };
+    expect(index.sessions.map(({ title, teamRevision }) => ({ title, teamRevision })).sort((a, b) => a.title.localeCompare(b.title))).toEqual([
+      { title: 'Captured review', teamRevision: revision },
+      { title: 'Uncaptured review', teamRevision: undefined },
+    ]);
   });
 
   it('throw that teamai is not set up when there is no install at all', async () => {

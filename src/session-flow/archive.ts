@@ -13,6 +13,7 @@ import { log } from '../utils/logger.js';
 import { updateReports } from '../utils/reports-branch.js';
 import { getAdapter } from './adapters/index.js';
 import { AgentSession, noAdapter, recordedToolRoots, writeCopyOnce } from './agent-session.js';
+import { SessionCaptures } from './captures.js';
 import type { Session } from './ir.js';
 import { degradeThinkingBlocks } from './migrate.js';
 import { archiveBusyMessage, authorForCwd, deriveArchiveIdentity, sessionArchiveRoot } from './session-cmd-shared.js';
@@ -157,6 +158,7 @@ export async function archiveSessions<T extends ArchiveSessionRef>(
       const { session } = found;
       const meta = defaultSyncMeta({
         platform: ref.platform, author, cwd: session.cwd || checkout, sessionId: ref.sessionId, repoIdentity, title: session.title,
+        agent: await SessionCaptures.agentOfSession(ref.platform, session, config),
       }, session.createdAt);
       newest = { ref, session, meta };
       break;
@@ -193,6 +195,7 @@ export async function pushSession(config: LocalConfig, ref: ArchiveSessionRef): 
     sessionId: ref.sessionId,
     repoIdentity: deriveArchiveIdentity(session, ref.platform),
     title: session.title,
+    agent: await SessionCaptures.agentOfSession(ref.platform, session, config),
   }, session.createdAt);
   return archiveOnReports(config, [{ session, meta }], `sync: push 1 session(s) from ${ref.platform}`);
 }

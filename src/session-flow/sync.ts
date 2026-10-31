@@ -35,6 +35,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { getTeamaiHomeDir } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { resolveAnchors } from '../utils/git.js';
+import { AgentObservationSchema, type AgentObservation } from '../agent-observation.js';
 import type { Session } from './ir.js';
 import type { LocalPathRoots } from './scrub.js';
 import { messageToDict, messageFromDict } from './ir.js';
@@ -301,6 +302,25 @@ export interface SessionSyncMeta {
     pushedAt: string | null;
   };
   status: 'active' | 'archived';
+  /**
+   * What the session ran as, from the captures its session-start hook wrote on the machine that pushed it
+   * (`SessionCaptures.agentOf`). Absent when they disagree, or there are none.
+   */
+  agent?: AgentObservation;
+}
+
+/** A meta.json as read from the archive: an `agent` that is not an observation is left out, as if absent. */
+function readSyncMeta(file: string): SessionSyncMeta {
+  const meta = JSON.parse(fs.readFileSync(file, 'utf-8')) as SessionSyncMeta;
+  if (meta.agent === undefined) return meta;
+  const { agent, ...rest } = meta;
+  const parsed = AgentObservationSchema.safeParse(agent);
+  return parsed.success ? { ...rest, agent: parsed.data } : rest;
+}
+
+/** The index entry's `teamRevision`: the team revision the session ran with, when its meta records one. */
+function teamRevisionOf(meta: SessionSyncMeta): Pick<IndexEntry, 'teamRevision'> {
+  return meta.agent?.team ? { teamRevision: meta.agent.team.revision } : {};
 }
 
 /**
@@ -320,10 +340,12 @@ export function defaultSyncMeta(
     repoIdentity?: string | null;
     /** Persisted verbatim into origin.title (the file name slug is lossy). */
     title?: string;
+    agent?: AgentObservation;
   },
   createdAt?: string,
 ): SessionSyncMeta {
   return {
+    ...(partial.agent ? { agent: partial.agent } : {}),
     origin: {
       platform: partial.platform,
       title: partial.title,
@@ -371,6 +393,8 @@ export interface IndexEntry {
    * lack this field until rebuilt, and dedup then falls back to the old name-conflict behavior.
    */
   sessionId?: string;
+  /** The team revision the session ran with (`agent.team.revision` of its meta), when that is recorded. */
+  teamRevision?: string;
 }
 
 interface RepoIndex {
@@ -960,6 +984,7 @@ export class SyncManager {
         updatedAt: session.updatedAt,
         status: meta.status,
         sessionId: meta.origin.sessionId,
+        ...teamRevisionOf(meta),
       }, index);
       committed = true;
     } catch (error) {
@@ -1009,7 +1034,7 @@ export class SyncManager {
     }
 
     // Read meta
-    const meta = JSON.parse(fs.readFileSync(paths.meta, 'utf-8')) as SessionSyncMeta;
+    const meta = readSyncMeta(paths.meta);
 
     // Read JSONL → rebuild Session
     const content = fs.readFileSync(paths.jsonl, 'utf-8');
@@ -1216,7 +1241,7 @@ export class SyncManager {
         const jsonlPath = path.join(authorDir, `${sessionName}.jsonl`);
 
         try {
-          const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8')) as SessionSyncMeta;
+          const meta = readSyncMeta(metaPath);
           const msgCount = fs.existsSync(jsonlPath)
             ? fs.readFileSync(jsonlPath, 'utf-8').split('\n').filter((l) => l.trim()).length
             : 0;
@@ -1237,6 +1262,7 @@ export class SyncManager {
             updatedAt: meta.sync.pushedAt ?? meta.origin.createdAt,
             status: meta.status,
             sessionId: meta.origin.sessionId,
+            ...teamRevisionOf(meta),
           });
         } catch {
           // skip corrupted entries

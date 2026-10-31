@@ -35,6 +35,7 @@ import { isInteractive } from '../utils/prompt.js';
 import { updateReports } from '../utils/reports-branch.js';
 import { knownSecrets } from '../env-resolution.js';
 import { pushSession } from './archive.js';
+import { SessionCaptures } from './captures.js';
 import { registerMigrationCommand } from './session-migrate-cmd.js';
 import {
   REPORTS_ARCHIVE_BUSY,
@@ -274,6 +275,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
               sessionId: m.sessionId,
               repoIdentity: deriveArchiveIdentity(session, source),
               title: session.title,
+              agent: await SessionCaptures.agentOfSession(source, session, reports),
             },
             session.createdAt,
           );

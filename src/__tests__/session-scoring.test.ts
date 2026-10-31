@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import type { AgentObservation } from '../agent-observation.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -1473,12 +1474,12 @@ describe('teamai score --team-session', () => {
   const ALICE_SESSION = 'a11ce000-0000-4000-8000-000000000001';
 
   /** Archives a Claude Code session `author` ran, as `teamai session push` does, in the archive at `archive`; returns its session name. */
-  async function pushed(archive: string, { author, sessionId = ALICE_SESSION, prompt = 'fix the retry loop in sync.ts' }: { author: string; sessionId?: string; prompt?: string }): Promise<string> {
+  async function pushed(archive: string, { author, sessionId = ALICE_SESSION, prompt = 'fix the retry loop in sync.ts', agent }: { author: string; sessionId?: string; prompt?: string; agent?: AgentObservation }): Promise<string> {
     const session: Session = {
       sessionId, title: 'fix the retry loop', cwd: '/home/alice/app', platform: 'claude-code', createdAt: '2026-10-20T10:00:00.000Z', updatedAt: '2026-10-20T11:00:00.000Z',
       messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }, { role: 'assistant', content: [{ type: 'text', text: 'Added the retries.' }] }],
     };
-    const meta = defaultSyncMeta({ platform: 'claude-code', author, cwd: session.cwd, sessionId, repoIdentity: getRepoIdentity(process.cwd()), title: session.title }, session.createdAt);
+    const meta = defaultSyncMeta({ platform: 'claude-code', author, cwd: session.cwd, sessionId, repoIdentity: getRepoIdentity(process.cwd()), title: session.title, agent }, session.createdAt);
     const saved = await new SyncManager(archive).saveSession(session, meta);
     if (saved.status !== 'written') throw new Error('the archive is busy');
     return path.basename(saved.value, '.jsonl');
@@ -1502,6 +1503,18 @@ describe('teamai score --team-session', () => {
       { subject: { platform: 'claude-code', sessionId: ALICE_SESSION }, judge: 'human', agent: undefined },
       { subject: { platform: 'claude-code', sessionId: ALICE_SESSION }, judge: 'model', agent: undefined },
     ]);
+  });
+
+  it('labels a pushed session with the agent its archive records, so it groups by tool, model and team revision', async () => {
+    const config = await fixture(undefined, 'git');
+    const agent: AgentObservation = { v: 1, tool: { name: 'claude', version: '2.1.301' }, model: { requested: 'claude-opus-5-5', reported: 'claude-opus-5-5' },
+      team: { revision: 'a'.repeat(40), localChanges: false }, project: { commit: 'b'.repeat(40), dirty: false }, teamai: '0.31.0', driver: 'session', fingerprint: 'f'.repeat(64) };
+    const name = await pushed(getReportsDir(config), { author: 'alice', agent });
+    fakeClaude('good');
+
+    data(await scoreSession(config, { teamSession: { name }, scorers: ['quality'] }));
+    const [label] = parseScoreLabels(fs.readFileSync(path.join(root, 'data', 'scores', 'labels.jsonl'), 'utf8'));
+    expect(label).toMatchObject({ label: 'good', agent });
   });
 
   it('redacts a session pushed without --scrub before the judge reads it', async () => {

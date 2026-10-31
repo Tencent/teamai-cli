@@ -4,7 +4,7 @@
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { observedModel } from '../agent-observation.js';
+import { observedModel, type AgentObservation } from '../agent-observation.js';
 import { knownSecrets } from '../env-resolution.js';
 import { loadModelAliases } from '../models/aliases.js';
 import { AttemptStore, newAttemptId, scoresDir } from '../scorers/attempts.js';
@@ -35,7 +35,7 @@ import type { SubagentsRead } from './adapters/base.js';
 import { SessionCaptures } from './captures.js';
 import { safeText, sessionArchives } from './session-cmd-shared.js';
 import { scrubSession } from './scrub.js';
-import { getRepoIdentity, SyncManager } from './sync.js';
+import { getRepoIdentity, SyncManager, type SessionSyncMeta } from './sync.js';
 import { firstPromptOnly, judgeSession, sessionLabel, writeSessionEvidence, type JudgedSession } from './session-work.js';
 import type { Session } from './ir.js';
 
@@ -132,6 +132,8 @@ interface NamedSession {
   found: { session: Session; subagents?: SubagentsRead };
   config: LocalConfig;
   pushedBy?: string;
+  /** What a pushed session ran as, as its archive records it. */
+  agent?: AgentObservation;
 }
 
 /** The session of a tool on this machine that `--session`, or the agent session variable, names. */
@@ -179,13 +181,14 @@ async function pushedSession(config: LocalConfig, { name, author }: TeamSession)
       return failure('session_ambiguous', `--team-session ${name} names sessions pushed by ${held.map((one) => safeText(one.author)).join(', ')}. Pass --author with one of them.`);
     }
     let session: Session;
+    let meta: SessionSyncMeta;
     try {
-      ({ session } = archive.loadSession(repoIdentity, name, entry.author));
+      ({ session, meta } = archive.loadSession(repoIdentity, name, entry.author));
     } catch (e) {
       return failure('session_not_found', `The pushed session ${name} could not be read: ${e instanceof Error ? e.message : String(e)}`);
     }
     if (!session.platform || !session.sessionId) return failure('session_not_found', `The pushed session ${name} records no platform or session id it ran as, so it cannot be scored.`);
-    return { platform: session.platform, found: { session: scrubSession(session).session }, config, pushedBy: entry.author };
+    return { platform: session.platform, found: { session: scrubSession(session).session }, config, pushedBy: entry.author, ...(meta.agent ? { agent: meta.agent } : {}) };
   }
   return failure('session_not_found', `No session ${name} is pushed for ${repoIdentity ?? 'this directory'}. Run teamai session list to see the pushed sessions, after teamai session pull for the newest.`);
 }
@@ -275,7 +278,7 @@ export async function scoreSession(from: LocalConfig, demand: SessionDemand, now
   }
   const named = demand.teamSession ? await pushedSession(from, demand.teamSession) : await nativeSession(from, demand);
   if ('error' in named) return named;
-  const { platform, found, config, pushedBy } = named;
+  const { platform, found, config, pushedBy, agent } = named;
   const { session } = found;
   const unavailable = scoringUnavailable(config);
   if (unavailable) return failure('scoring_unavailable', unavailable);
@@ -309,7 +312,7 @@ export async function scoreSession(from: LocalConfig, demand: SessionDemand, now
   const envSecrets = await knownSecrets(config);
   const mask = (text: string): string => redact(text, { envSecrets });
   const captures = pushedBy === undefined ? await SessionCaptures.read(config, platform, session.sessionId) : [];
-  const judged = judgeSession({ platform, found, captures, mask });
+  const judged = judgeSession({ platform, found, captures, mask, agent });
   const { subject, context: { prompt, used } } = judged;
   log.info(`First prompt: ${safeText(prompt) || '(none)'}`);
   if (byHand) {
