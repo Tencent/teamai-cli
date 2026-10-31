@@ -28,6 +28,7 @@
  */
 
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
@@ -35,6 +36,7 @@ import { getTeamaiHomeDir } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { resolveAnchors } from '../utils/git.js';
 import type { Session } from './ir.js';
+import type { LocalPathRoots } from './scrub.js';
 import { messageToDict, messageFromDict } from './ir.js';
 
 // ---------------------------------------------------------------------------
@@ -56,7 +58,17 @@ function utcNow(): string {
  * known root deliberately become empty rather than leaking a guessed path.
  */
 export async function archivedCwd(cwd: string, projectRoot?: string): Promise<string> {
-  if (cwd.startsWith('md5:') || !path.isAbsolute(cwd)) return '';
+  const rooted = await sessionRoot(cwd, projectRoot);
+  if (!rooted) return '';
+  const relative = path.relative(rooted.root, rooted.cwd);
+  if (relative === '') return '.';
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return '';
+  return relative.split(path.sep).join('/');
+}
+
+/** The root `archivedCwd` makes `cwd` relative to, and `cwd` itself, both resolved; undefined when there is none. */
+async function sessionRoot(cwd: string, projectRoot?: string): Promise<{ root: string; cwd: string } | undefined> {
+  if (cwd.startsWith('md5:') || !path.isAbsolute(cwd)) return undefined;
   const canonicalCwd = await fs.promises.realpath(cwd).catch(() => path.resolve(cwd));
   const anchors = await resolveAnchors(canonicalCwd);
   let config = anchors || projectRoot ? undefined : await import('../config.js')
@@ -69,12 +81,22 @@ export async function archivedCwd(cwd: string, projectRoot?: string): Promise<st
     }
   }
   const root = anchors?.workspaceRoot ?? projectRoot ?? config?.projectRoot;
-  if (!root) return '';
-  const canonicalRoot = await fs.promises.realpath(root).catch(() => path.resolve(root));
-  const relative = path.relative(canonicalRoot, canonicalCwd);
-  if (relative === '') return '.';
-  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return '';
-  return relative.split(path.sep).join('/');
+  if (!root) return undefined;
+  return { root: await fs.promises.realpath(root).catch(() => path.resolve(root)), cwd: canonicalCwd };
+}
+
+/**
+ * The directories of this machine a session that ran in `cwd` must not name once published: the root its archived
+ * `cwd` is relative to, the home directory and the per-user temp roots, each as written and resolved.
+ */
+export async function publishedPathRoots(cwd: string): Promise<LocalPathRoots> {
+  const resolved = async (dir: string): Promise<string[]> => [...new Set([dir, await fs.promises.realpath(dir).catch(() => dir)])];
+  const rooted = await sessionRoot(cwd);
+  // The root as `cwd` spells it too, when `cwd` reaches it through a link (`/tmp` → `/private/tmp`).
+  const repo = rooted ? [...new Set([rooted.root, path.resolve(cwd, path.relative(rooted.cwd, rooted.root))])] : [];
+  const uid = process.getuid?.();
+  const claudeTmp = uid === undefined ? [] : [`/private/tmp/claude-${uid}`, `/tmp/claude-${uid}`];
+  return { repo, home: await resolved(os.homedir()), tmp: [...await resolved(os.tmpdir()), ...claudeTmp] };
 }
 
 /**

@@ -140,7 +140,7 @@ export async function archiveSessions<T extends ArchiveSessionRef>(
   const toolRoots = recordedToolRoots(checkout);
   const repoIdentity = getRepoIdentity(checkout);
   const author = authorForCwd(checkout, config.username);
-  const scrub = { secrets: await knownSecrets(config) };
+  const scrub = { secrets: await knownSecrets(config), localPaths: true };
   const read: Array<{ session: Session; meta: SessionSyncMeta }> = [];
   const archived: T[] = [];
   const skipped: T[] = [];
@@ -183,7 +183,7 @@ export async function archiveSessions<T extends ArchiveSessionRef>(
  */
 export async function pushSession(config: LocalConfig, ref: ArchiveSessionRef): Promise<SessionPush> {
   if (!sessionArchiveRoot(config)) return { status: 'failed', message: 'This team keeps no session archive.' };
-  const found = await AgentSession.find(ref, { scrub: { secrets: await knownSecrets(config) } });
+  const found = await AgentSession.find(ref, { scrub: { secrets: await knownSecrets(config), localPaths: true } });
   if (found.status === 'failed') return { status: 'failed', message: found.failure.message };
   const { session } = found;
   const meta = defaultSyncMeta({

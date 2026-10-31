@@ -446,6 +446,32 @@ describe('session commands without --repo-root outside a workspace install', () 
     }
   });
 
+  it('archive none of this machine\'s paths with push --scrub, in the transcript, its title, meta or index', async () => {
+    const team = await userInstall();
+    const { checkout } = repository('product');
+    const home = os.homedir();
+    const uid = process.getuid?.() ?? 502;
+    const answers = [
+      `Edited ${checkout}/src/sync.ts and ${path.join(checkout, 'README.md')}.`,
+      `Your settings are in ${home}/.claude/settings.json, the other project in ${home}/other-project/x.ts.`,
+      `Output is being written to: /private/tmp/claude-${uid}/${encodeCwdClaude(checkout)}/6e64/tasks/b.output`,
+      `Open file://${checkout}/README.md, not src/sync.ts or https://github.com/acme/app.`,
+    ];
+    await claudeSession(path.join(checkout, 'packages', 'api'), { title: `Review ${checkout}/packages/api`, answers });
+
+    const pushed = await session('push', '--source', 'claude-code', '--cwd', path.join(checkout, 'packages', 'api'), '--scrub');
+
+    expect(pushed.code, pushed.stderr).toBe(0);
+    const files = archived(team.origin, 'teamai-reports');
+    const archive = files.map((file) => git(team.checkout, 'show', `origin/teamai-reports:${file}`)).join('\n');
+    expect(archive).toContain('Edited <repo>/src/sync.ts and <repo>/README.md.');
+    expect(archive).toContain('Your settings are in ~/.claude/settings.json, the other project in ~/other-project/x.ts.');
+    expect(archive).toContain('Output is being written to: <tmp>/<project>/6e64/tasks/b.output');
+    expect(archive).toContain('Open file://<repo>/README.md, not src/sync.ts or https://github.com/acme/app.');
+    for (const local of [checkout, home, fs.realpathSync(os.tmpdir())]) expect(archive).not.toContain(local);
+    expect(archive).not.toMatch(/claude-[0-9]+\//);
+  });
+
   it('throw that teamai is not set up when there is no install at all', async () => {
     const { checkout } = repository('product');
     await claudeSession(checkout);

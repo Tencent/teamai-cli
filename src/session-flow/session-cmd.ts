@@ -237,7 +237,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
 
       const toolRootsFor = toolRootsLookup();
       // The team's declared secrets are known only for the teamai install's own archive, not for a --repo-root clone.
-      const scrub = opts.scrub ? { secrets: reports ? await knownSecrets(reports) : {} } : false;
+      const scrub = opts.scrub ? { secrets: reports ? await knownSecrets(reports) : {}, localPaths: true } : false;
       const commitMessage = (saved: number) => `sync: push ${saved} session(s) from ${source}${opts.all ? ' (all workspaces)' : ''}`;
       /** Saves the selected sessions into the archive at `root`: how many, or undefined once a failure that stops the push was reported. */
       const archiveInto = async (syncMgr: SyncManager, archiveRoot: string): Promise<number | undefined> => {
