@@ -1382,11 +1382,17 @@ describe('doctor — the recorded Codex root', () => {
 });
 
 describe('doctor — Oh My Pi with Pi relocated (#1221)', () => {
-    const CHECK_NAME = 'Oh My Pi uses its own home when PI_CODING_AGENT_DIR is set';
+    const CHECK_NAME = 'Oh My Pi shares Pi’s default agent home';
+    const originalOmpProfile = process.env.OMP_PROFILE;
+    const originalPiProfile = process.env.PI_PROFILE;
 
     afterEach(() => {
         if (originalPiCodingAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
         else process.env.PI_CODING_AGENT_DIR = originalPiCodingAgentDir;
+        if (originalOmpProfile === undefined) delete process.env.OMP_PROFILE;
+        else process.env.OMP_PROFILE = originalOmpProfile;
+        if (originalPiProfile === undefined) delete process.env.PI_PROFILE;
+        else process.env.PI_PROFILE = originalPiProfile;
     });
 
     async function checkFor(localOverrides: Record<string, unknown> = {}) {
@@ -1401,12 +1407,24 @@ describe('doctor — Oh My Pi with Pi relocated (#1221)', () => {
         return (await buildChecks(ctx)).find((check) => check.name === CHECK_NAME);
     }
 
-    it('warns that OMP deliberately does not deliver into Pi\'s relocated home', async () => {
+    it('warns that OMP deliberately does not deliver into Pi\'s relocated default-profile home', async () => {
         const check = await checkFor();
         expect(check).toBeDefined();
         expect(await check!.check()).toBe(false);
         expect(check!.fix).toContain('/tmp/pi-agent');
-        expect(check!.fix).toContain('PI_CONFIG_DIR');
+        expect(check!.fix).toContain('OMP_PROFILE');
+        expect(check!.fix).toContain('teamai uninstall --agent omp');
+    });
+
+    it.each(['OMP_PROFILE', 'PI_PROFILE'])('stays silent for a named %s', async (variable) => {
+        process.env[variable] = 'work';
+        expect(await checkFor()).toBeUndefined();
+    });
+
+    it('keeps OMP_PROFILE precedence when it selects the default profile', async () => {
+        process.env.OMP_PROFILE = '';
+        process.env.PI_PROFILE = 'work';
+        expect(await checkFor()).toBeDefined();
     });
 
     it('stays silent when Oh My Pi is disabled, Pi is enabled, or Pi is not relocated', async () => {

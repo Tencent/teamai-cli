@@ -35,7 +35,7 @@ import {
 } from './types.js';
 import { hookSettingsFile, installOf, isInstalledFor, locate, ownOf, writable, type Gate, type Install } from './locate.js';
 import { samePlace } from './resources/places.js';
-import { describeInvalidToolHomes, envToolHome, realHost, reloadToolHomes, toolHomesPath } from './tool-home.js';
+import { describeInvalidToolHomes, envToolHome, ompProfile, realHost, reloadToolHomes, toolHomesPath } from './tool-home.js';
 import { isToolId } from './tools.js';
 import { isCodexTool } from './utils/tool-names.js';
 import { TEAMAI_HOOK_SUBCOMMANDS, isCodexTrustGatedTool, codexTrustReminder, keptTeamHookEntries, readCodexHookTrustForScope } from './hooks.js';
@@ -352,17 +352,18 @@ function buildOhMyPiPiHomeCheck(localConfig: LocalConfig, teamConfig: TeamaiConf
   if (!teamConfig?.toolPaths.omp || isAgentExcluded(localConfig, 'omp') || !isAgentExcluded(localConfig, 'pi')) return [];
   const piHome = process.env.PI_CODING_AGENT_DIR?.trim();
   if (!piHome) return [];
-  // Oh My Pi consults Pi's directory for its default profile, but teamai must
-  // keep OMP's files under its own home: the two tools otherwise overwrite the
-  // same extension and agent paths. Say so before a green doctor implies OMP
-  // is receiving the files teamai deliberately leaves out of Pi's directory.
+  // Oh My Pi's own resolver gives a named OMP_PROFILE precedence over Pi's
+  // default-agent fallback. PI_CONFIG_DIR alone still selects the default
+  // profile, so it does not make this overlap safe.
+  const { variable: selector, name: profile } = ompProfile(process.env);
+  if (profile !== null && profile !== 'default') return [];
   return [{
-    name: 'Oh My Pi uses its own home when PI_CODING_AGENT_DIR is set',
+    name: 'Oh My Pi shares Pi’s default agent home',
     source: 'local',
     check: async () => false,
     fix: `PI_CODING_AGENT_DIR is ${piHome}; Oh My Pi also reads that directory for its default profile, but it belongs to Pi. `
       + 'teamai keeps Oh My Pi files under its own OMP home to avoid overwriting Pi files. '
-      + 'Use PI_CONFIG_DIR or an OMP_PROFILE/PI_PROFILE for an Oh My Pi home, or disable Oh My Pi in this TeamAI install.',
+      + `Set ${selector ?? 'OMP_PROFILE'} to a named profile, or run \`teamai uninstall --agent omp\` to stop syncing Oh My Pi in this install.`,
   }];
 }
 
