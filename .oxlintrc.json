@@ -54,7 +54,9 @@
     // Pull deletes a delivered copy and its record entry together (#1577).
     "teamai/remove-delivered": "error",
     // getUserHome owns the HOME / USERPROFILE fallback that keeps Windows paths safe.
-    "teamai/home-env": "error"
+    "teamai/home-env": "error",
+    // locate() owns configured skills, rules, and claudemd paths, including moved tool roots.
+    "teamai/configured-tool-paths": "error"
   },
   "overrides": [
     {

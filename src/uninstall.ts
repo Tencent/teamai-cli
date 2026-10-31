@@ -707,7 +707,8 @@ async function discoverToolResources(
 
   // (c) Skills — only those matching team repo
   if (toolPath.skills) {
-    // Skills root → the base the link guard starts from.
+    // The configured root is a link-guard boundary, not a delivery target.
+    // oxlint-disable-next-line teamai/configured-tool-paths -- uninstall must compare this configured legacy root with locate() write targets.
     const configuredSkills = path.join(baseDir, toolPath.skills);
     const skillRoots = new Map([[configuredSkills, await skillsGuardBase(scopeRoot, configuredSkills)]]);
     for (const skillsDir of skillWrites) skillRoots.set(skillsDir, await skillsGuardBase(scopeRoot, skillsDir));

@@ -960,6 +960,7 @@ async function pullSingleSource(
           continue;
         }
       }
+      // oxlint-disable-next-line teamai/configured-tool-paths -- compare the configured Codex root with skillTarget()'s shared-root choice.
       if (tool === CODEX_TOOL && target !== path.join(baseDir, toolPath.skills, skill.name)) codexSkillsPath = toolPath.skills;
       targets.push(target);
     }
