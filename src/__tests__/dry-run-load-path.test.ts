@@ -39,21 +39,23 @@ import { envExec } from '../env-exec.js';
 import { resolveDoctorContext } from '../doctor.js';
 import { excludeList } from '../exclude.js';
 import { hooksList } from '../hooks-cmd.js';
+import { importCmd } from '../import.js';
 import { mcpInject, mcpList } from '../mcp-cmd.js';
 import { maybeMigrate, queueKeptInCheckout } from '../migrate.js';
 import { modelsList, modelsSwitch } from '../models-cmd.js';
 import { pkgInstall } from '../pkg/commands.js';
 import { listMembers } from '../members.js';
-import { projectsAdd, projectsList, projectsRemove, projectsUpdate } from '../projects-cmd.js';
+import { projectsAdd, projectsList, projectsMembers, projectsRemove, projectsUpdate } from '../projects-cmd.js';
 import { pull } from '../pull.js';
 import { push } from '../push.js';
 import { recall } from '../recall.js';
 import { recallStatus } from '../recall-toggle.js';
 import { registerSessionFlowCommands } from '../session-flow/session-cmd.js';
-import { rolesList, rolesSet } from '../roles-cmd.js';
+import { remove } from '../remove.js';
+import { rolesAdd, rolesInit, rolesList, rolesRemove, rolesSet, rolesUpdate } from '../roles-cmd.js';
 import { skillList, skillShow } from '../skill-cmd.js';
 import { skillGet, skillPath } from '../skill-content.js';
-import { sourceBrowse, sourceList } from '../source.js';
+import { sourceAdd, sourceAddHttp, sourceBrowse, sourceList, sourceRemove } from '../source.js';
 import { list, status } from '../status.js';
 import { tagsAdd, tagsList, tagsRemove, tagsSubscribe, tagsUnsubscribe } from '../tags.js';
 import { uninstall } from '../uninstall.js';
@@ -339,16 +341,37 @@ describe('--dry-run through the loaders the commands share (#850)', () => {
     expect(providerCalls).toEqual([]);
   });
 
-  // These wrapper paths are not proven by the direct config-load rule.
+  // The rest of #893: commands that honour `--dry-run` in their own logic but
+  // loaded the scope bare. Each one reaches the loader before anything this
+  // fixture lacks (a team repo remote, a provider, a network) stops it, so the
+  // test asserts only what the loader decides: whether `config.yaml` is
+  // rewritten. The same call without the flag is the positive control: it DOES
+  // migrate, so an unchanged file under the flag is a result, not a command that
+  // failed before it loaded anything. Writes these commands make on their own
+  // dry-run path, past the loader, are out of scope here.
   const PREVIEWS: Array<[string, (dryRun: boolean) => Promise<unknown>]> = [
-    ['models switch', (dryRun) => modelsSwitch('p', { dryRun })],
+    ['mcp inject', (dryRun) => mcpInject({ dryRun })],
+    ['roles init', (dryRun) => rolesInit({ dryRun })],
+    ['roles add', (dryRun) => rolesAdd('ops', { dryRun, namespaces: 'ops' })],
+    ['roles remove', (dryRun) => rolesRemove('pm', { dryRun })],
+    ['roles update', (dryRun) => rolesUpdate('pm', { dryRun, description: 'x' })],
     ['projects add', (dryRun) => projectsAdd('checkout', { dryRun, namespaces: 'checkout' })],
-    ['projects update', (dryRun) => projectsUpdate('checkout', { dryRun, description: 'x' })],
-    ['projects remove', (dryRun) => projectsRemove('checkout', { dryRun })],
     ['tags add', (dryRun) => tagsAdd('skills', 'x', ['a'], { dryRun })],
     ['tags remove', (dryRun) => tagsRemove('skills', 'x', ['a'], { dryRun })],
+    ['source add', (dryRun) => sourceAdd('https://github.com/acme/other.git', { dryRun })],
+    ['source remove', (dryRun) => sourceRemove('x', { dryRun })],
+    ['source add-http', (dryRun) => sourceAddHttp('https://h.test', { dryRun, token: 't' })],
+    ['remove', (dryRun) => remove('skills', ['x'], { dryRun })],
+    ['packages install', (dryRun) => pkgInstall(undefined, { dryRun })],
+    ['import --from-iwiki', (dryRun) => importCmd({ fromIwiki: 'x', dryRun })],
+    ['import --from-mr', (dryRun) => importCmd({ fromMr: 'https://github.com/acme/app/pull/1', dryRun })],
     ['codebase --reconcile', (dryRun) => codebaseCmd({ reconcile: true, dryRun })],
+    ['projects update', (dryRun) => projectsUpdate('checkout', { dryRun, description: 'x' })],
+    ['projects remove', (dryRun) => projectsRemove('checkout', { dryRun })],
+    // No candidates on this fixture: covers the scan's load, not the one after review.
+    ['import --from-claude', (dryRun) => importCmd({ fromClaude: true, all: true, dryRun })],
     ['codebase --deep-enrich', (dryRun) => codebaseCmd({ deepEnrich: true, project: 'x', dryRun })],
+    ['models switch', (dryRun) => modelsSwitch('p', { dryRun })],
   ];
 
   describe.each(PREVIEWS)('%s', (_command, run) => {
@@ -381,13 +404,19 @@ describe('--dry-run through the loaders the commands share (#850)', () => {
     });
   });
 
-  // This wrapper fails past the load because the fixture has no reports branch.
-  it('members migrates nothing it loads (#893)', async () => {
+  // Read-only commands that, past the load, fail on this fixture: there is no
+  // reports branch to read members from. Only the load is asserted.
+  const READ_ONLY_PAST_THE_LOAD: Array<[string, () => Promise<unknown>]> = [
+    ['members', () => listMembers({})],
+    ['projects members', () => projectsMembers('checkout', {})],
+  ];
+
+  it.each(READ_ONLY_PAST_THE_LOAD)('%s migrates nothing it loads (#893)', async (_command, run) => {
     const { configPath } = legacyRoot();
     const info = vi.spyOn(log, 'info').mockImplementation(() => {});
     vi.spyOn(console, 'log').mockImplementation(() => {});
     const before = fs.readFileSync(configPath, 'utf-8');
-    await listMembers({}).catch(() => {});
+    await run().catch(() => {});
     providerCalls.length = 0;
     expect(info).toHaveBeenCalledWith(PREVIEWED);
     expect(fs.readFileSync(configPath, 'utf-8')).toBe(before);
