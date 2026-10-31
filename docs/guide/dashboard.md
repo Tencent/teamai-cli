@@ -9,7 +9,18 @@ teamai dashboard
 teamai dashboard --port 8080
 ```
 
-Open `http://localhost:3721`. The sidebar is Overview, Team Execution, Workflow Runs, Scorers, Team Context, Resources, Distribution, and Team Improvement. The numbers are from this machine.
+Open `http://localhost:3721`. The sidebar is Overview, then three groups: Execution (Sessions, Workflow Runs, Scorers), Context (Knowledge Base, Resources, Distribution), and Improvement (Improvement Center). Sessions and trends are from this machine; the Knowledge Base and the Improvement Center read the team repo.
+
+## Improvement Center
+
+The Improvement Center reads what members publish to `teamai-reports` with `teamai push`, so it is only as current as the latest member who pushed. Pick 7, 30 or 90 days:
+
+- **Team usage**: sessions ended, success rate, correction rate, known cost, prompt turns and cache read share, each against the period before it. When the period before has too few sessions, no change is shown.
+- **Daily charts**: sessions (with and without a correction), known cost, prompt turns and active members. Hover a bar for the day, or open the chart as a table.
+- **Suggested next steps**: what the numbers on the page point to, each with the command to run.
+- **Team skill adoption**: which team skills were used in the last 30 days, which were not, and skills several members use that are not in the team repo.
+- **Friction signals**: the team's corrections, interrupts and rejected tool calls, as a share of sessions.
+- **Knowledge maintenance**: the archive, refresh and promote candidates, with the command for each. The page runs nothing.
 
 ## Session sharing
 
