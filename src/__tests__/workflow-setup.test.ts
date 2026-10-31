@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+// oxlint-disable-next-line teamai/workflow-boundaries -- tests the setup unit place.ts runs directly
 import { runSetup } from '../workflow/place/setup.js';
 
 const TOKEN = 'setup-token-value-1082';

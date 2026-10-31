@@ -11,9 +11,9 @@ const OXLINT = path.join(PLUGIN_ROOT, '..', 'node_modules', '.bin', process.plat
 
 interface RuleHarness {
   /** The source lints clean with only this rule on. */
-  readonly valid: (name: string, source: string, options?: { filename?: string }) => void;
+  readonly valid: (name: string, source: string, options?: { filename?: string; files?: Readonly<Record<string, string>> }) => void;
   /** The source fails this rule; `assertion` checks the reported output. */
-  readonly invalid: (name: string, source: string, assertion?: (output: string) => void, options?: { filename?: string }) => void;
+  readonly invalid: (name: string, source: string, assertion?: (output: string) => void, options?: { filename?: string; files?: Readonly<Record<string, string>> }) => void;
 }
 
 /**
@@ -33,10 +33,16 @@ export function ruleHarness(rule: `teamai/${string}`, defaults: { filename: stri
     rules: { [rule]: 'error' },
   }));
 
-  const fixture = (source: string, filename: string): string => {
+  const fixture = (source: string, filename: string, files: Readonly<Record<string, string>> = {}): string => {
     const file = path.join(dir, String(fixtures.length), filename);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, source);
+    const root = path.join(dir, String(fixtures.length));
+    for (const [relative, contents] of Object.entries(files)) {
+      const dependency = path.join(root, relative);
+      fs.mkdirSync(path.dirname(dependency), { recursive: true });
+      fs.writeFileSync(dependency, contents);
+    }
     fixtures.push(file);
     return file;
   };
@@ -47,9 +53,12 @@ export function ruleHarness(rule: `teamai/${string}`, defaults: { filename: stri
     });
     expect(lint.error, lint.stderr).toBeUndefined();
     expect([0, 1], lint.stdout + lint.stderr).toContain(lint.status);
-    const report = z.object({ diagnostics: z.array(z.object({
+    const parsed = z.object({ diagnostics: z.array(z.object({
       filename: z.string(), code: z.string(), message: z.string(), severity: z.string(),
-    }).passthrough()) }).parse(JSON.parse(lint.stdout));
+    }).passthrough()) }).safeParse(JSON.parse(lint.stdout));
+    expect(parsed.success, lint.stdout + lint.stderr).toBe(true);
+    if (!parsed.success) throw parsed.error;
+    const report = parsed.data;
     for (const diagnostic of report.diagnostics) {
       const file = path.resolve(diagnostic.filename);
       expect(fixtures).toContain(file);
@@ -63,13 +72,13 @@ export function ruleHarness(rule: `teamai/${string}`, defaults: { filename: stri
 
   return {
     valid: (name, source, options) => {
-      const file = fixture(source, options?.filename ?? defaults.filename);
+      const file = fixture(source, options?.filename ?? defaults.filename, options?.files);
       it(`valid: ${name}`, () => {
         expect(diagnostics.get(file) ?? []).toEqual([]);
       });
     },
     invalid: (name, source, assertion, options) => {
-      const file = fixture(source, options?.filename ?? defaults.filename);
+      const file = fixture(source, options?.filename ?? defaults.filename, options?.files);
       it(`invalid: ${name}`, () => {
         const messages = diagnostics.get(file) ?? [];
         const output = `${messages.join('\n')}\n${messages.length} errors`;

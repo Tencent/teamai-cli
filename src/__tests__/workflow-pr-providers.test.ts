@@ -1,3 +1,4 @@
+import { expectTypeOf } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -272,4 +273,8 @@ describe('the provider of a checkout origin', () => {
   it('a generic git host has no pull request lookup', () => {
     expect(new GenericGitProvider().pullRequests).toBeNull();
   });
+});
+
+it('request lookup exposes only finding open requests', () => {
+  expectTypeOf<keyof PullRequestLookup>().toEqualTypeOf<'findOpen'>();
 });

@@ -64,7 +64,9 @@
     "teamai/home-env": "error",
     "teamai/learnings-root": "error",
     "teamai/configured-tool-paths": "error",
-    "teamai/launch-env": "error"
+    "teamai/launch-env": "error",
+    "teamai/workflow-boundaries": "error",
+    "teamai/no-provider-merge": "error"
   },
   "overrides": [
     {

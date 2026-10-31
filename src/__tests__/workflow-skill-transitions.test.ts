@@ -20,6 +20,7 @@ import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { syncScorerDefinitions } from '../scorers/cache.js';
 import type { Runners } from '../workflow/drivers/skill/skill-driver.js';
 // The doc comparison reads the table itself; every behaviour below goes through runSkillCall.
+// oxlint-disable-next-line teamai/workflow-boundaries -- compares transitions with the documentation tables
 import { TRANSITIONS, type TransitionRow } from '../workflow/drivers/skill/transitions.js';
 import { fakeJudge, githubOrigin, sharedTeam, skillHarness, untilStopped } from './helpers/skill-harness.js';
 

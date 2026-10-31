@@ -77,6 +77,8 @@
     "esbuild": "^0.28.2"
   },
   "devDependencies": {
+    "@babel/parser": "7.29.11",
+    "@babel/types": "7.29.11",
     "@oxlint/plugins": "1.85.0",
     "@types/cross-spawn": "^6.0.6",
     "@types/fs-extra": "^11.0.4",

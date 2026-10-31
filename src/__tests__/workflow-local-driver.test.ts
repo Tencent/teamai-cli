@@ -24,6 +24,7 @@ import { _setDriverPollMs, runLocalDriver } from '../workflow/drivers/local/loca
 import { driverIdentity } from '../driver-identity.js';
 import { pendingRecords, type WorkflowRunRecord } from '../workflow/records.js';
 import { attemptDir, driverLockPath, readRun, RunIdSchema } from '../workflow/store.js';
+// oxlint-disable-next-line teamai/workflow-boundaries -- fails the snapshot taken by a reader in the checkout
 import * as worktreeSnapshot from '../workflow/place/worktree-snapshot.js';
 import type { DriverIdentity } from '../workflow/types.js';
 import { commitFile, fakeClaude, git, recordDelivery } from './helpers/delivered-checkout.js';
