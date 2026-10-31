@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import { dashboardMessages } from '../dashboard/locales.js';
 import type { TokenCostSummary } from '../dashboard/token-costs.js';
@@ -34,29 +34,28 @@ async function renderPage(summary: TokenCostSummary, language: 'en' | 'zh-CN' = 
   const e = (value: unknown) => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   const label = (text: string) => e(t(text));
   const requested: string[] = [];
+  let failing = false;
   const scope = {
     t, e, label, language: 'en',
     number: (value: number) => new Intl.NumberFormat('en').format(value),
     when: (value: string) => value,
-    json: async (route: string) => { requested.push(route); return summary; },
+    json: async (route: string) => { requested.push(route); if (failing) throw new Error('offline'); return summary; },
     apiQuery: (route: string, params: Record<string, string>) => `${route}?${new URLSearchParams(params)}`,
     errorPanel: (text: string) => text, render: () => undefined, page: 'tokens', workspaceGeneration: 0,
     sessions: [{ sessionId: 'b2f4c1d0-3a9e-4c55-9d2a-61c0f7e8a912', repoLabel: 'acme/payments', prompts: ['Move the refund job off the request thread'] }],
     document: { addEventListener: () => undefined },
   };
   const names = Object.keys(scope);
-  const page = new Function(...names, `${tokensView}\nreturn { tokensPage, loadTokens };`)(...Object.values(scope)) as { tokensPage: () => string; loadTokens: () => Promise<void> };
+  const page = new Function(...names, `${tokensView}\nreturn { tokensPage, loadTokens, sessionsChanged };`)(...Object.values(scope)) as { tokensPage: () => string; loadTokens: () => Promise<void>; sessionsChanged: () => Promise<void> };
   page.tokensPage();
   await page.loadTokens();
   keys.length = 0;
-  return { html: page.tokensPage(), keys, requested, page };
+  return { html: page.tokensPage(), keys, requested, page, fail: () => { failing = true; } };
 }
 
 const text = (html: string) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
 
 describe('the Tokens & cost page', () => {
-  afterEach(() => { vi.useRealTimers(); });
-
   it('shows the window\'s cost against the prior one, the tokens, what caching saved and how much is priced', async () => {
     const { html, requested } = await renderPage(WEEK);
     const shown = text(html);
@@ -85,12 +84,19 @@ describe('the Tokens & cost page', () => {
     expect(keys.filter((key) => !Object.hasOwn(dashboardMessages, key))).toEqual([]);
   });
 
-  it('fetches again once the shown data is a minute old, so a session that stops since then shows up', async () => {
-    vi.useFakeTimers({ toFake: ['Date'] });
+  it('fetches again when a live session update arrives, and not on a plain render', async () => {
     const { page, requested } = await renderPage(WEEK);
     page.tokensPage();
     expect(requested).toHaveLength(1);
-    vi.advanceTimersByTime(61_000);
+    await page.sessionsChanged();
+    expect(requested).toHaveLength(2);
+  });
+
+  it('waits for the next update after a failed refresh instead of retrying', async () => {
+    const { page, requested, fail } = await renderPage(WEEK);
+    fail();
+    await page.sessionsChanged();
+    page.tokensPage();
     page.tokensPage();
     expect(requested).toHaveLength(2);
   });

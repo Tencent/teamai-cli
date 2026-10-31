@@ -460,6 +460,7 @@ function receive(data) {
  if(haveSessions && JSON.stringify(sessions)===JSON.stringify(data))return;
  sessions=data;haveSessions=true;filters();
  if(['overview','execution'].includes(page))render();
+ sessionsChanged();
  if(selectedSession&&$('session-dialog').open){
   const updated=sessions.find(s=>s.sessionId===selectedSession);
   if(updated&&JSON.stringify(updated)!==JSON.stringify(selectedSnapshot)){const scroll=$('session-dialog').scrollTop;showDetails(selectedSession);$('session-dialog').scrollTop=scroll;}
