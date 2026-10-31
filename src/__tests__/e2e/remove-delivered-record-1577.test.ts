@@ -106,6 +106,18 @@ describe('a deleted copy leaves the delivery record (#1577)', () => {
     if (sandbox) fs.rmSync(sandbox, { recursive: true, force: true });
   });
 
+  it('pull deletes a skill the member excludes and takes it off the record', () => {
+    const { root, teamai } = project();
+    const dest = path.join(root, '.claude', 'skills', 'release');
+    fs.appendFileSync(path.join(root, '.teamai', 'config.yaml'), 'excludedSkills:\n  - release\n');
+
+    const pull = teamai(['pull', '--force']);
+
+    expect(pull.code, pull.output).toBe(0);
+    expect(fs.existsSync(dest)).toBe(false);
+    expect(recorded(root).filter((file) => file.startsWith(`${dest}${path.sep}`))).toEqual([]);
+  });
+
   it('a pull that is already synced deletes a tombstoned copy and takes it off the record', () => {
     const { root, teamai } = project();
     const dest = path.join(root, '.claude', 'rules', 'commit-style.md');
