@@ -92,7 +92,7 @@ teamai recall feedback --negative <docId>
 
 重建索引会复用未变文件的解析和分词结果；文件修改、删除、来源选择和票数仍在每次构建时生效。`~/.teamai/debug.log` 会记录复用、重建和移除的文件数。旧索引或不同的 Node/ICU 版本会触发一次完整解析。
 
-`teamai stats` 在有记录时，会列出最近 10 个跑过 recall 的会话。
+`teamai stats` 在有记录时，会列出最近 10 个跑过 recall 的会话：各会话的运行次数、召回与采纳的文档数，以及会话从 `Related:` 行打开相关文件的运行次数。
 
 ### 开启 / 关闭 Recall
 
