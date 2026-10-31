@@ -960,6 +960,7 @@ async function pullSingleSource(
           continue;
         }
       }
+      // oxlint-disable-next-line teamai/configured-tool-paths -- compare Codex own directory with the shared destination
       if (tool === CODEX_TOOL && target !== path.join(baseDir, toolPath.skills, skill.name)) codexSkillsPath = toolPath.skills;
       targets.push(target);
     }

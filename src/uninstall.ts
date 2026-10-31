@@ -708,6 +708,7 @@ async function discoverToolResources(
   // (c) Skills — only those matching team repo
   if (toolPath.skills) {
     // Skills root → the base the link guard starts from.
+    // oxlint-disable-next-line teamai/configured-tool-paths -- remove the legacy configured root written before locate
     const configuredSkills = path.join(baseDir, toolPath.skills);
     const skillRoots = new Map([[configuredSkills, await skillsGuardBase(scopeRoot, configuredSkills)]]);
     for (const skillsDir of skillWrites) skillRoots.set(skillsDir, await skillsGuardBase(scopeRoot, skillsDir));
