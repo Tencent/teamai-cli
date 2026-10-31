@@ -52,16 +52,19 @@ const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/
 /** A directory below a filesystem root: `/`, `C:\` and the like would rewrite every path. */
 const isBelowFilesystemRoot = (dir: string): boolean => !/^(?:[A-Za-z]:)?[\\/]*$/.test(dir);
 
-/** A character of a file or directory name: a root never runs into one after it. */
-const NAME_CHAR = '[\\p{L}\\p{N}_@%+~#$-]';
+/**
+ * A character of a file or directory name: a root never runs into one after it. Chinese, Japanese and Korean prose runs
+ * straight on from a path (`/Users/…的配置`), so their characters end a root instead.
+ */
+const NAME_CHAR = '(?:(?![\\p{sc=Han}\\p{sc=Hiragana}\\p{sc=Katakana}\\p{sc=Hangul}])[\\p{L}\\p{N}_@%+~#$-])';
 
-/** Before a root only an ASCII name character counts: Chinese or Japanese prose runs straight into a path (`看一下/Users/…`). */
+/** Before a root only an ASCII name character counts: prose in any script runs straight into a path (`看一下/Users/…`). */
 const ASCII_NAME_CHAR = '[A-Za-z0-9_@%+~#$-]';
 
 /**
  * A root matches only as whole path segments: `/Users/alice/app` is not in `/Users/alice/app2`, `/Users/alice/app@2`,
  * `/Users/alice/app.old` or `/mnt/Users/alice/app`, but is in `ls /Users/alice/app.`, Markdown emphasis around it,
- * `--cwd=/Users/alice/app`, `file:///Users/alice/app` and `看一下/Users/alice/app`. `_` and `__` next to it are
+ * `--cwd=/Users/alice/app`, `file:///Users/alice/app`, `看一下/Users/alice/app` and `/Users/alice/app下面`. `_` and `__` next to it are
  * Markdown emphasis when no other name character is beyond them.
  */
 const SEGMENT_START = `(?:(?<!${ASCII_NAME_CHAR})|(?<=(?:^|(?!${ASCII_NAME_CHAR}).)__?))`;
