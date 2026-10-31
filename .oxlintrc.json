@@ -51,6 +51,9 @@
     "no-underscore-dangle": "off",
     // Micro-optimization, not worth the churn.
     "oxc/no-map-spread": "off",
+    // Make the collection-membership policy explicit; the pinned perf category
+    // already enforces this rule, but the named entry keeps the intent visible.
+    "unicorn/prefer-set-has": "warn",
     // Pull deletes a delivered copy and its record entry together (#1577).
     "teamai/remove-delivered": "error",
     // getUserHome owns the HOME / USERPROFILE fallback that keeps Windows paths safe.
