@@ -4,6 +4,7 @@ import path from 'node:path';
 import chalk from 'chalk';
 
 import { pathExists } from './utils/fs.js';
+import type { LintAssetGraph } from './lint-asset-graph.js';
 import type { GraphIndex } from './wiki-engine/adapters/index.js';
 
 export type WikiLintSeverity = 'high' | 'medium' | 'low' | 'info';
@@ -30,6 +31,11 @@ export interface WikiLintReport {
     orphanNodes: number;
     connectivity: number;
   };
+  /**
+   * The member's asset-relation counts (#1562). Absent with standalone
+   * `--output` or when there is no member: then there is no asset data.
+   */
+  assetGraph?: LintAssetGraph;
 }
 
 export async function lintTeamwiki(opts: {
@@ -224,6 +230,7 @@ export function formatWikiLintReport(report: WikiLintReport): string {
   lines.push('');
 
   if (report.issues.length === 0) {
+<<<<<<< HEAD
     lines.push(chalk.green('✓ No issues'));
     return lines.join('\n');
   }
@@ -241,10 +248,41 @@ export function formatWikiLintReport(report: WikiLintReport): string {
       const sevColor = issue.severity === 'high' ? chalk.red
         : issue.severity === 'medium' ? chalk.yellow : chalk.dim;
       lines.push(`  ${sevColor(`[${issue.severity}]`)} ${issue.location}: ${issue.message}`);
+=======
+    lines.push(chalk.green('✓ 无问题'));
+  } else {
+    const byCategory = new Map<string, WikiLintIssue[]>();
+    for (const issue of report.issues) {
+      const existing = byCategory.get(issue.category) ?? [];
+      existing.push(issue);
+      byCategory.set(issue.category, existing);
+>>>>>>> b2d38bf4 (feat(lint): codebase --lint counts the member's asset relations (#1562 part 1))
     }
-    lines.push('');
+
+    for (const [category, categoryIssues] of byCategory) {
+      lines.push(chalk.bold(`[${category}] (${categoryIssues.length})`));
+      for (const issue of categoryIssues) {
+        const sevColor = issue.severity === 'high' ? chalk.red
+          : issue.severity === 'medium' ? chalk.yellow : chalk.dim;
+        lines.push(`  ${sevColor(`[${issue.severity}]`)} ${issue.location}: ${issue.message}`);
+      }
+      lines.push('');
+    }
+
+    lines.push(`总计: ${report.summary.high} high, ${report.summary.medium} medium, ${report.summary.low} low, ${report.summary.info} info`);
   }
 
+<<<<<<< HEAD
   lines.push(`Total: ${report.summary.high} high, ${report.summary.medium} medium, ${report.summary.low} low, ${report.summary.info} info`);
+=======
+  if (report.assetGraph) {
+    lines.push(formatAssetGraphLine(report.assetGraph));
+  }
+>>>>>>> b2d38bf4 (feat(lint): codebase --lint counts the member's asset relations (#1562 part 1))
   return lines.join('\n');
+}
+
+/** The one asset-count line `--lint` prints after the report (#1562). */
+export function formatAssetGraphLine(graph: LintAssetGraph): string {
+  return `Assets: ${graph.assetCount}, relations: ${graph.relationCount}, without a relation: ${graph.withoutRelation.length}, unresolved: ${graph.unresolved.length}`;
 }
