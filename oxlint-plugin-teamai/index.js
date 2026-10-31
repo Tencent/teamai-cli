@@ -6,10 +6,13 @@ import learningsRoot from './rules/learnings-root.js';
 
 import configuredToolPaths from './rules/configured-tool-paths.js';
 
+import launchEnv from './rules/launch-env.js';
+
 export default definePlugin({
   meta: { name: 'teamai' },
   rules: {
     'configured-tool-paths': configuredToolPaths,
+    'launch-env': launchEnv,
     'home-env': homeEnv,
     'remove-delivered': removeDelivered,
     'learnings-root': learningsRoot,

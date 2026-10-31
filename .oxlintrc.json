@@ -63,7 +63,8 @@
     // getUserHome owns the HOME / USERPROFILE fallback that keeps Windows paths safe.
     "teamai/home-env": "error",
     "teamai/learnings-root": "error",
-    "teamai/configured-tool-paths": "error"
+    "teamai/configured-tool-paths": "error",
+    "teamai/launch-env": "error"
   },
   "overrides": [
     {
