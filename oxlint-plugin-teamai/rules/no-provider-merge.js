@@ -19,6 +19,11 @@ export default defineRule({
       Identifier(node) {
         if (/^(?:auto_?merge|merge_when_pipeline_succeeds|mergePullRequest)$/i.test(node.name)) context.report({ node, message });
       },
+      MemberExpression(node) {
+        if (!node.computed && node.property.type === 'Identifier' && /^(?:merge|accept)$/i.test(node.property.name)) {
+          context.report({ node: node.property, message });
+        }
+      },
     };
   },
 });
