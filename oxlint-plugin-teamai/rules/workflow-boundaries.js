@@ -12,7 +12,7 @@ const FLAT = 'src/workflow/';
 
 /** @typedef {{ typeOnly?: true, valueNames?: readonly string[], names?: readonly string[] }} ImportAllowance */
 
-/** The imports skill-driver modules may make outside their own folder. */
+/** The imports skill-driver modules may make outside their own folder. Aliases are checked by imported name. */
 /** @type {Map<string, ImportAllowance>} */
 const SKILL_IMPORTS = new Map([
   ['src/workflow/protocol.ts', {}],
@@ -95,18 +95,20 @@ function sourceValue(node) {
   const value = source?.value ?? source?.rawValue;
   return typeof value === 'string' ? value : undefined;
 }
-/** @param {any} node @returns {string[]} */
-function namesOf(node) {
-  return (node.specifiers ?? []).map(/** @param {any} specifier */ (specifier) => specifier.local?.name ?? specifier.imported?.name ?? specifier.exported?.name ?? '').filter(Boolean);
-}
-/** @param {any} node */
-function typeOnly(node) {
+/** @param {any} node @returns {Array<{ name: string, typeOnly: boolean }> | undefined} */
+function specifiersOf(node) {
   const specifiers = node.specifiers ?? [];
-  return node.importKind === 'type' || node.exportKind === 'type'
-    || (specifiers.length > 0 && specifiers.every(/** @param {any} specifier */ (specifier) => specifier.importKind === 'type' || specifier.exportKind === 'type'));
+  if (specifiers.length === 0) return undefined;
+  const declarationType = node.importKind === 'type' || node.exportKind === 'type';
+  return specifiers.map(/** @param {any} specifier */ (specifier) => ({
+    name: specifier.imported?.name
+      ?? specifier.exported?.name
+      ?? (specifier.type === 'ImportNamespaceSpecifier' ? '*' : specifier.type === 'ImportDefaultSpecifier' ? 'default' : specifier.local?.name ?? ''),
+    typeOnly: declarationType || specifier.importKind === 'type' || specifier.exportKind === 'type',
+  }));
 }
-/** @param {string} from @param {string} to @param {boolean} typeOnlyValue @param {string[]} names */
-function violatesBoundary(from, to, typeOnlyValue, names) {
+/** @param {string} from @param {string} to @param {Array<{ name: string, typeOnly: boolean }> | undefined} specifiers */
+function violatesBoundary(from, to, specifiers) {
   if (to === 'zod' || to.startsWith('node:') || !to.startsWith('src/')) return false;
   const fromDir = from.slice(0, from.lastIndexOf('/'));
   const toDir = to.slice(0, to.lastIndexOf('/'));
@@ -115,8 +117,14 @@ function violatesBoundary(from, to, typeOnlyValue, names) {
   if (under(from, SKILL)) {
     const allowed = SKILL_IMPORTS.get(to);
     if (allowed === undefined) return true;
-    if (allowed.typeOnly && !typeOnlyValue && names.some((name) => !allowed.valueNames?.includes(name))) return true;
-    return allowed.names !== undefined && names.some((name) => !allowed.names?.includes(name));
+    if (allowed.typeOnly) {
+      const values = allowed.valueNames ?? [];
+      if (specifiers === undefined || specifiers.some((specifier) => !specifier.typeOnly && !values.includes(specifier.name))) return true;
+    }
+    if (allowed.names !== undefined) {
+      if (specifiers === undefined || specifiers.some((specifier) => !allowed.names?.includes(specifier.name))) return true;
+    }
+    return false;
   }
 
   for (const guard of ENTRY_RULES) {
@@ -124,7 +132,8 @@ function violatesBoundary(from, to, typeOnlyValue, names) {
     const entry = to.slice(guard.folder.length);
     if (isTest(from)) return !guard.tests.has(entry);
     const allowed = guard.entries.get(entry);
-    return allowed === undefined || (allowed !== 'any' && !allowed.split('|').includes(from));
+    if (allowed === undefined || (allowed !== 'any' && !allowed.split('|').includes(from))) return true;
+    break;
   }
 
   if (isFlat(from) && under(to, FLAT)) {
@@ -148,7 +157,7 @@ export default defineRule({
       if (value === undefined) return;
       const from = repoPath(context);
       const to = pathFromSpecifier(from, value);
-      if (violatesBoundary(from, to, typeOnly(node), namesOf(node)) && !ALLOWED.has(edgeKey(from, to))) {
+      if (violatesBoundary(from, to, specifiersOf(node)) && !ALLOWED.has(edgeKey(from, to))) {
         context.report({
           node,
           message: `Workflow module boundary: ${from} must not import ${to}. Keep the engine, drivers and feature modules separated.`,
