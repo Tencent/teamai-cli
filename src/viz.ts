@@ -12,8 +12,9 @@ import os from 'node:os';
 import { loadIndex, buildIndex, type BuildIndexOptions } from './utils/search-index.js';
 import { readUserVotes } from './votes.js';
 import { BROKEN_CONFIG_ADVICE, findUnreadableProjectConfig, resolveConfigForDir } from './config.js';
-import { classifyTreePath } from './asset-relations.js';
-import { buildRelationContext, resolveRelationTarget } from './recall.js';
+import type { AssetKind } from './asset-relations.js';
+import { buildRelationContext } from './recall.js';
+import { computeLintAssetGraph } from './lint-asset-graph.js';
 import {
   getTeamaiHomeDir,
   getUserVotesDir,
@@ -449,75 +450,38 @@ function buildAuthors(metrics: EntryMetric[]): AuthorStat[] {
 
 /**
  * The #1562 part-2 relation counts over the report's own index, so the lists
- * never disagree with what this view shows. Resolution reuses recall's
- * RelationContext — the same visibility rules (withheld teamwiki codebases) as
- * `Related:` lines — and an unresolved declared target follows contribute's
- * existence check: the team clone on disk or the learnings roots.
+ * never disagree with what this view shows — and never with `codebase
+ * --lint`, since both count through `computeLintAssetGraph` (#1562 part 1):
+ * resolution reuses recall's RelationContext (withheld teamwiki codebases and
+ * all), and an unresolved declared target follows contribute's existence
+ * check: the team clone on disk or the learnings roots.
  */
 async function computeRelationStats(
   entries: SearchIndexEntry[],
   paths: VizPaths,
   isSilent: (entry: SearchIndexEntry) => boolean,
 ): Promise<RelationStats> {
-  // Teamwiki pages reach the index with type 'docs'; only their treePath says what they are.
-  const assets = entries.filter(
-    (e): e is SearchIndexEntry & { treePath: string } =>
-      !!e.treePath && classifyTreePath(e.treePath) !== null && classifyTreePath(e.treePath) !== 'teamwiki',
-  );
   const ctx = await buildRelationContext({
     index: { builtAt: '', elapsedMs: 0, entries } as SearchIndex,
     // --repo and the ~/.teamai fallback have no LocalConfig; the knowledge root
     // is the team-tree root in both, which is all relation resolution reads.
     config: paths.scope ?? ({ repo: { localPath: paths.knowledgeRoot } } as LocalConfig),
   });
-  const targetExists = (treePath: string): boolean => {
-    const kind = classifyTreePath(treePath);
-    if (kind === null) return false;
+  const targetExists = (kind: AssetKind, treePath: string): boolean => {
     const rel = kind === 'learning' ? `${treePath.slice('learnings/'.length)}.md` : treePath;
     const roots = kind === 'learning' ? paths.indexLearningsDirs : [paths.knowledgeRoot];
     return roots.some((root) => existsSync(path.join(root, ...rel.split('/'))));
   };
-
-  const connected = new Set<string>();
-  const edges = new Set<string>();
-  const unresolved: string[] = [];
-  let relationCount = 0;
-  for (const entry of assets) {
-    const own = entry.related ?? [];
-    if (own.length === 0) continue;
-    // A declared relation to a target beats a link to it, as on the recall lines.
-    const declaredTargets = new Set(own.filter((r) => r.via === 'declared').map((r) => r.target));
-    for (const r of own) {
-      if (r.via === 'link' && declaredTargets.has(r.target)) continue;
-      if (resolveRelationTarget(ctx, r.target) === null) {
-        if (r.via === 'declared' && !targetExists(r.target)) {
-          unresolved.push(`${entry.treePath} ${r.relation} ${r.target}`);
-        }
-        continue;
-      }
-      const edge = JSON.stringify([entry.treePath, r.target].sort());
-      const key = `${r.relation} ${edge}`;
-      if (edges.has(key)) continue;
-      edges.add(key);
-      relationCount++;
-      connected.add(entry.treePath);
-      connected.add(r.target);
-    }
-  }
-
-  const withoutRelation = assets
-    .filter((a) => !connected.has(a.treePath))
-    .map((a) => a.treePath)
-    .sort();
+  const graph = computeLintAssetGraph([{ ctx, targetExists }]);
+  const silentPaths = new Set(
+    entries.filter(isSilent).map((e) => e.treePath).filter((p): p is string => typeof p === 'string'),
+  );
   return {
-    assetCount: assets.length,
-    relationCount,
-    withoutRelation,
-    unresolved: unresolved.sort(),
-    silentAndWithoutRelation: assets
-      .filter((a) => !connected.has(a.treePath) && isSilent(a))
-      .map((a) => a.treePath)
-      .sort(),
+    assetCount: graph.assetCount,
+    relationCount: graph.relationCount,
+    withoutRelation: graph.withoutRelation,
+    unresolved: graph.unresolved.map((u) => `${u.from} ${u.relation} ${u.target}`),
+    silentAndWithoutRelation: graph.withoutRelation.filter((p) => silentPaths.has(p)),
   };
 }
 
