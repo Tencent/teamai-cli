@@ -39,15 +39,23 @@ function packageRoot(dir) {
 }
 
 /**
+ * The linted file's path from its package root, so a checkout cloned under some `src/` directory keeps `scripts/` out.
+ * @param {Context} context
+ * @returns {string}
+ */
+export function sourcePath(context) {
+  const file = lintedPath(context);
+  const root = packageRoot(path.posix.dirname(file));
+  return root === undefined ? file : path.posix.relative(root, file);
+}
+
+/**
  * Whether the linted file is production source: under `src/` of its package, outside `src/__tests__/`.
- * Measured from the package root, so a checkout cloned under some `src/` directory keeps `scripts/` out.
  * @param {Context} context
  * @returns {boolean}
  */
 export function inProductionSource(context) {
-  const file = lintedPath(context);
-  const root = packageRoot(path.posix.dirname(file));
-  const relative = root === undefined ? file : path.posix.relative(root, file);
+  const relative = sourcePath(context);
   return relative.startsWith('src/') && !relative.startsWith('src/__tests__/');
 }
 
