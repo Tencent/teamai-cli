@@ -1,0 +1,106 @@
+name: Model prices
+
+# Every Monday, rebuild src/token-usage/model-prices.json from LiteLLM's price
+# list and open (or refresh) one pull request when any price changed. Costs
+# teamai already recorded keep the prices they were recorded with, so merging
+# changes only what later sessions are priced at.
+#
+# A pull request opened with the default GITHUB_TOKEN starts no other
+# workflow, so this job runs the checks the catalog can break first. Set the
+# MODEL_PRICES_TOKEN secret (a token that can push branches and open pull
+# requests) to have CI run on the pull request as well. Without it, the
+# repository setting "Allow GitHub Actions to create and approve pull
+# requests" must be on.
+
+on:
+  schedule:
+    - cron: '23 3 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: model-prices
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update:
+    name: Update model prices
+    if: github.repository == 'Tencent/teamai-cli'
+    runs-on: ubuntu-latest
+    env:
+      BRANCH: chore/model-prices
+    steps:
+      # The token that pushes and opens the pull request is only in the last step.
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Rebuild the catalog
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/update-model-prices.mjs --summary "$RUNNER_TEMP/model-prices.md"
+
+      - name: Check the new catalog
+        id: changed
+        run: |
+          if git diff --quiet -- src/token-usage/model-prices.json; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            cat "$RUNNER_TEMP/model-prices.md" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          # Some tests pin today's prices. A failure still opens the pull
+          # request, as a draft that says which expectations to update.
+          if npm run typecheck > "$RUNNER_TEMP/checks.log" 2>&1 \
+            && npx vitest run src/__tests__/token-pricing.test.ts src/__tests__/token-usage.test.ts src/__tests__/dashboard-collector.test.ts scripts/model-prices.test.ts >> "$RUNNER_TEMP/checks.log" 2>&1; then
+            echo "checks=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "checks=failed" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open or update the pull request
+        if: steps.changed.outputs.changed == 'true'
+        env:
+          CHECKS: ${{ steps.changed.outputs.checks }}
+          GH_TOKEN: ${{ secrets.MODEL_PRICES_TOKEN || github.token }}
+        run: |
+          version=$(node -p "require('./src/token-usage/model-prices.json').version")
+          {
+            cat "$RUNNER_TEMP/model-prices.md"
+            echo
+            echo "Built by the weekly \`Model prices\` workflow with \`node scripts/update-model-prices.mjs\`."
+            if [ "$CHECKS" = passed ]; then
+              echo "Typecheck and the pricing tests passed on it."
+            else
+              echo "Typecheck or the pricing tests failed on it: a test that pins a price this update changed needs its expectation updated."
+              echo
+              echo '```text'
+              tail -n 60 "$RUNNER_TEMP/checks.log"
+              echo '```'
+            fi
+          } > "$RUNNER_TEMP/body.md"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -C "$BRANCH"
+          git commit -am "chore(pricing): update model prices to $version"
+          git push --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BRANCH"
+          if [ "$(gh pr view "$BRANCH" --json state --jq .state 2>/dev/null)" = "OPEN" ]; then
+            gh pr edit "$BRANCH" --title "chore(pricing): update model prices to $version" --body-file "$RUNNER_TEMP/body.md"
+            # A draft while its checks fail, ready again once they pass. Either is a no-op when the PR is already in it.
+            gh pr ready "$BRANCH" $([ "$CHECKS" = passed ] || echo --undo)
+          else
+            gh pr create --base main --head "$BRANCH" --title "chore(pricing): update model prices to $version" --body-file "$RUNNER_TEMP/body.md" $([ "$CHECKS" = passed ] || echo --draft)
+          fi
