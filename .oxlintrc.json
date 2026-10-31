@@ -28,6 +28,9 @@
     // A switch default already handles the generic JSON webhook; a duplicate
     // `case 'json'` obscures that there is no separate JSON branch.
     "unicorn/no-useless-switch-case": "warn",
+    // Exact string lookups should use indexOf() rather than allocating a
+    // predicate for findIndex().
+    "unicorn/prefer-array-index-of": "warn",
     "typescript/no-base-to-string": "off",
     "typescript/no-duplicate-type-constituents": "off",
     "typescript/no-implied-eval": "off",
