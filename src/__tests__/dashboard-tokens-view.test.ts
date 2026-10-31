@@ -99,6 +99,16 @@ describe('the Tokens & cost page', () => {
     expect(requested).toHaveLength(2);
   });
 
+  it('fetches again after the pending fetch when a live update arrives during it', async () => {
+    const { page, requested } = await renderPage(WEEK);
+    const pending = page.sessionsChanged();
+    await page.sessionsChanged();
+    await pending;
+    // The dashboard renders the page once the pending fetch settles.
+    page.tokensPage();
+    expect(requested).toHaveLength(3);
+  });
+
   it('fetches once on return when a live update arrived while another page was open', async () => {
     const { page, requested, show } = await renderPage(WEEK);
     show('overview');

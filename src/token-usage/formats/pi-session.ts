@@ -24,12 +24,13 @@ const Entry = z.union([
   }).transform(({ id, timestamp, message }) => ({ id, timestamp, model: message.responseModel ?? message.model, usage: message.usage })),
   z.object({ type: z.literal('model_usage'), id: z.string().min(1), timestamp: z.string().catch(''), model: Model, usage: Usage }),
   // A compaction or branch summary has usage but no model.
-  z.object({ type: z.string(), usage: Usage }).transform(({ usage }) => ({ id: undefined, timestamp: '', model: undefined, usage })),
+  z.object({ type: z.string(), id: z.string().min(1).optional().catch(undefined), timestamp: z.string().catch(''), usage: Usage })
+    .transform(({ id, timestamp, usage }) => ({ id, timestamp, model: undefined, usage })),
 ]);
 
 /**
  * Pi's and Oh My Pi's session file: one request per assistant message and
- * per `model_usage` entry. The cost Pi reports is kept when it is above zero;
+ * per `model_usage` entry, and one without a model per compaction. The cost Pi reports is kept when it is above zero;
  * Pi writes 0 for a model it has no price for.
  */
 export async function readPiSession(source: TokenSource): Promise<TokenReading> {
@@ -46,10 +47,10 @@ export async function readPiSession(source: TokenSource): Promise<TokenReading> 
     if (key) counted.add(key);
     const used = { input: usage.input, output: usage.output, cacheRead: usage.cacheRead, cacheCreation: usage.cacheWrite };
     tokens = addTokenUsage(tokens, used);
-    if (!key || !model) return;
+    if (!key) return;
     const cost = usage.cost?.total;
     requests.push({
-      key, timestamp, model, tokens: used, speed: 'standard',
+      key, timestamp, model: model ?? '', tokens: used, speed: 'standard',
       reportedCostMicros: cost ? Math.round(cost * 1_000_000) : undefined,
     });
   });

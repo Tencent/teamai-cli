@@ -305,8 +305,9 @@ describe('readTokenUsage: pi-session', () => {
       // A cost of 0 means Pi had no price for it, not that it was free.
       { model: 'kimi-k3', tokens: { input: 300, output: 40, cacheRead: 0, cacheCreation: 0 }, reportedCostMicros: undefined },
       { model: 'claude-haiku-5-5', tokens: { input: 50, output: 5, cacheRead: 0, cacheCreation: 0 }, reportedCostMicros: undefined },
+      // A compaction's summary call names no model, so it is a request no price applies to.
+      { model: '', tokens: { input: 9_000, output: 700, cacheRead: 0, cacheCreation: 0 }, reportedCostMicros: undefined },
     ]);
-    // A compaction's summary call has no model, so it counts in the tokens only.
     expect(reading.tokens).toEqual({ input: 11_389, output: 1_666, cacheRead: 87_808, cacheCreation: 0 });
   });
 });
