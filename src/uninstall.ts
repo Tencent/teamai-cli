@@ -2497,7 +2497,9 @@ async function executeRemoval(
       const indexPath = plan.joycodeAgentIndexes.find((candidate) => path.dirname(candidate) === path.dirname(path.dirname(agentFile)));
       if (indexPath !== undefined) {
         try {
-          await updateJoycodeAgentIndex({ kind: 'file', path: indexPath, owned: true, header: null }, { kind: 'remove', file: path.basename(agentFile) });
+          await updateJoycodeAgentIndex({
+            kind: 'file', path: indexPath, owned: true, header: null, agentsDir: path.dirname(agentFile),
+          }, { kind: 'remove', file: path.basename(agentFile) });
         } catch (e) {
           filesLeft.push(indexPath);
           log.warn(`Failed to clean JoyCode agent index ${indexPath}: ${(e as Error).message}`);

@@ -304,6 +304,39 @@ describe('uninstall', () => {
     ]);
   });
 
+  it('removes a JoyCode custom-agent index entry on uninstall', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    const defaults = TeamaiConfigSchema.parse({ team: 'test', repo: 'https://example.invalid/test.git' }).toolPaths;
+    const agentsDir = path.join(homeDir, '.joycode', 'custom-agents');
+    const indexPath = path.join(homeDir, '.joycode', 'agent.json');
+    await fse.outputFile(path.join(repoPath, 'agents', 'reviewer.yaml'), 'name: reviewer\ndescription: Review changes\ninstructions: Review the patch.\n');
+    const { recordDelivered } = await import('../resources/delivered-copies.js');
+    const delivered: Record<string, string> = {};
+    await fse.outputFile(path.join(agentsDir, 'reviewer.md'), '# Reviewer\n');
+    await recordDelivered(delivered, path.join(agentsDir, 'reviewer.md'));
+    await fse.writeJson(indexPath, {
+      version: '1.0.0',
+      agents: [{
+        agentId: 'teamai-095d6a6d', name: 'reviewer', source: 'global',
+        contentPath: 'custom-agents/reviewer.md', isActive: true,
+      }],
+    });
+    const localConfig = makeLocalConfig(homeDir, repoPath, { enabledAgents: ['joycode'] });
+    const teamConfig = makeTeamConfig({ toolPaths: { joycode: { ...defaults.joycode, agents: '.joycode/custom-agents' } } });
+    const state = await loadStateForScope(localConfig);
+    state.lastPullByWorkspace = { [await checkoutKey(homeDir)]: { rev: 'r1', targets: [], delivered } };
+    await saveStateForScope(state, localConfig);
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
+    commitTeamRepo(repoPath);
+
+    await uninstall({ force: true, agent: 'joycode' });
+
+    expect(await fse.pathExists(path.join(agentsDir, 'reviewer.md'))).toBe(false);
+    expect(await fse.pathExists(indexPath)).toBe(false);
+  });
+
   it('完整卸载移除所有资源', async () => {
     const { homeDir, repoPath, teamaiHome } = await setupFixture(tmpDir);
     vi.stubEnv('HOME', homeDir);
