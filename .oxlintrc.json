@@ -25,6 +25,9 @@
     "unicorn/prefer-array-flat": "warn",
     "unicorn/prefer-array-flat-map": "warn",
     "unicorn/prefer-string-trim-start-end": "warn",
+    // A switch default already handles the generic JSON webhook; a duplicate
+    // `case 'json'` obscures that there is no separate JSON branch.
+    "unicorn/no-useless-switch-case": "warn",
     "typescript/no-base-to-string": "off",
     "typescript/no-duplicate-type-constituents": "off",
     "typescript/no-implied-eval": "off",
