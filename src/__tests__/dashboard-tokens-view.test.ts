@@ -46,7 +46,7 @@ async function renderPage(summary: TokenCostSummary, language: 'en' | 'zh-CN' = 
     document: { addEventListener: () => undefined },
   };
   const names = Object.keys(scope);
-  const page = new Function(...names, `${tokensView}\nreturn { tokensPage, loadTokens, sessionsChanged, setPage: (name) => { page = name; } };`)(...Object.values(scope)) as { tokensPage: () => string; loadTokens: () => Promise<void>; sessionsChanged: () => Promise<void>; setPage: (name: string) => void };
+  const page = new Function(...names, `${tokensView}\nreturn { tokensPage, loadTokens, sessionsChanged, resetTokens, setPage: (name) => { page = name; } };`)(...Object.values(scope)) as { tokensPage: () => string; loadTokens: () => Promise<void>; sessionsChanged: () => Promise<void>; resetTokens: () => void; setPage: (name: string) => void };
   page.tokensPage();
   await page.loadTokens();
   keys.length = 0;
@@ -105,6 +105,19 @@ describe('the Tokens & cost page', () => {
     await page.sessionsChanged();
     await pending;
     // The dashboard renders the page once the pending fetch settles.
+    page.tokensPage();
+    expect(requested).toHaveLength(3);
+  });
+
+  it('fetches on return when a live update arrived on another page while the first fetch was pending', async () => {
+    const { page, requested, show } = await renderPage(WEEK);
+    // As after a workspace switch: no data yet.
+    page.resetTokens();
+    const pending = page.loadTokens();
+    show('overview');
+    await page.sessionsChanged();
+    await pending;
+    show('tokens');
     page.tokensPage();
     expect(requested).toHaveLength(3);
   });

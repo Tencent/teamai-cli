@@ -9,7 +9,7 @@ let tokenDays = 7, tokenData = null, tokenError = false, tokenLoading = false, t
 function resetTokens() { tokenData=null;tokenError=false;tokenLoading=false;tokenStale=false; }
 // A live session update may come from a stop that logged requests: fetch again behind the shown data,
 // after a fetch already under way, or, on another page, when the Tokens page is next shown.
-function sessionsChanged() { if(page!=='tokens'){tokenStale=!!tokenData;return Promise.resolve();} tokenStale=true; return loadTokens(); }
+function sessionsChanged() { if(page!=='tokens'){tokenStale=!!tokenData||tokenLoading;return Promise.resolve();} tokenStale=true; return loadTokens(); }
 async function loadTokens() {
  if(tokenLoading)return; const generation=workspaceGeneration, days=tokenDays; tokenLoading=true;tokenStale=false;
  try{ const data=await json(apiQuery('/api/tokens',{days:String(days)})); if(generation===workspaceGeneration&&days===tokenDays){tokenData=data;tokenError=false;} }
