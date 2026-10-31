@@ -446,7 +446,7 @@ async function migrateSession(sessionId: string | undefined, opts: MigrationOpti
       }
       const { root: repoRoot, reports } = archive;
       // The team's declared secrets are known only for the teamai install's own archive, not for a --repo-root clone.
-      const scrub = opts.scrub ? { secrets: reports ? await knownSecrets(reports) : {}, localPaths: true } : false;
+      const scrub = opts.scrub ? { secrets: reports ? await knownSecrets(reports) : {}, rewriteLocalPaths: true } : false;
       // When expanded across directories, sessions do not belong to workCwd; author should come from the repo the session actually lives in
       const authorCwd = migratedTargets.find((t) => t.cwd)?.cwd ?? workCwd;
       const author = getGitAuthor(authorCwd);

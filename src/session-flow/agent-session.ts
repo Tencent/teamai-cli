@@ -72,10 +72,10 @@ export type AgentSessionCopyRequest = {
 
 export type AgentSessionFindOptions = {
   /**
-   * Redact secret-looking values, and the given `secrets` besides; on by default. `localPaths` also rewrites this
+   * Redact secret-looking values, and the given `secrets` besides; on by default. `rewriteLocalPaths` also rewrites this
    * machine's paths, for a session published to the team archive.
    */
-  scrub?: boolean | { secrets: Record<string, string>; localPaths?: boolean };
+  scrub?: boolean | { secrets: Record<string, string>; rewriteLocalPaths?: boolean };
   /** Where the recorded tool roots come from; a run that reads many sessions passes one `toolRootsLookup()`. */
   toolRootsFor?: ToolRootsLookup;
   /** Also read the agents the session started, into `subagents`; off by default, so the session itself is unchanged. */
@@ -419,7 +419,7 @@ async function find(
   const agents = subagents ? { subagents: await readSubagents(source, session, ref) } : {};
   if (!scrub) return { status: 'done', session, ...agents };
   const secrets = scrub === true ? {} : scrub.secrets;
-  const localPaths = scrub !== true && scrub.localPaths ? await publishedPathRoots(session.cwd) : undefined;
+  const localPaths = scrub !== true && scrub.rewriteLocalPaths ? await publishedPathRoots(session.cwd) : undefined;
   const scrubbed = scrubSession(session, { secrets, localPaths });
   if (agents.subagents?.status !== 'read') return { status: 'done', session: scrubbed.session, redactedCount: scrubbed.redactedCount, ...agents };
   const read = agents.subagents.agents.map((agent) => ({ agent, scrubbed: scrubSession(agent.session, { secrets, localPaths }) }));

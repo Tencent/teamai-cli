@@ -1517,6 +1517,22 @@ describe('teamai score --team-session', () => {
     expect(label).toMatchObject({ label: 'good', agent });
   });
 
+  it('scores a session archived before cwd was relative and agent was recorded, with no agent', async () => {
+    const config = await fixture(undefined, 'git');
+    const name = await pushed(getReportsDir(config), { author: 'alice' });
+    const metaFile = (fs.readdirSync(getReportsDir(config), { recursive: true }) as string[]).find((file) => file.endsWith(`${name}.meta.json`));
+    const file = path.join(getReportsDir(config), metaFile ?? `${name}.meta.json`);
+    const meta = JSON.parse(fs.readFileSync(file, 'utf8')) as { origin: Record<string, unknown> };
+    fs.writeFileSync(file, JSON.stringify({ ...meta, origin: { ...meta.origin, cwd: '/home/dev/app' } }));
+    fakeClaude('good');
+
+    data(await scoreSession(config, { teamSession: { name }, scorers: ['quality'] }));
+
+    const [label] = parseScoreLabels(fs.readFileSync(path.join(root, 'data', 'scores', 'labels.jsonl'), 'utf8'));
+    expect(label).toMatchObject({ label: 'good', subject: { platform: 'claude-code', sessionId: ALICE_SESSION } });
+    expect(label).not.toHaveProperty('agent');
+  });
+
   it('redacts a session pushed without --scrub before the judge reads it', async () => {
     const config = await fixture(undefined, 'git');
     const token = `glpat-${'x1'.repeat(12)}`;

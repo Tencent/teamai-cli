@@ -18,7 +18,7 @@
  * the result before archiving; this matches the caveat on `session save`.
  */
 
-import type { Session, Message, ContentBlock } from './ir.js';
+import type { Session, Message, ContentBlock, MessageMetadata } from './ir.js';
 import { collectEnvSecrets, redact, redactJson } from '../utils/redact.js';
 import { imagePlaceholderText } from './ir.js';
 import { maskCutSecret } from './title.js';
@@ -43,6 +43,9 @@ export interface LocalPathRoots {
 
 const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+/** A directory below a filesystem root: `/`, `C:\` and the like would rewrite every path. */
+const isBelowFilesystemRoot = (dir: string): boolean => dir.length > 3;
+
 /**
  * A root matches only as a whole path segment: `/Users/alice/app` is not the start of `/Users/alice/app2` or
  * `/Users/alice/app.old`, but is in `ls /Users/alice/app.` at the end of a sentence.
@@ -59,13 +62,13 @@ function pathRewriter({ repo, home, tmp }: LocalPathRoots, cwd: string): { text:
   const spellings = (root: string): string[] => (root.includes('\\') ? [root, root.replaceAll('\\', '/')] : [root]);
   const named = new Map<string, string>();
   for (const [roots, name] of [[home, '~'], [tmp, '<tmp>'], [repo, '<repo>']] as const) {
-    for (const root of roots.flatMap(spellings)) if (root.length > 3) named.set(root.replace(/[\\/]+$/, ''), name);
+    for (const root of roots.flatMap(spellings)) if (isBelowFilesystemRoot(root)) named.set(root.replace(/[\\/]+$/, ''), name);
   }
   if (named.size === 0) return { text: (text) => text, title: (title) => title };
   const byLength = (left: string, right: string): number => right.length - left.length;
   const roots = [...named.keys()].sort(byLength);
   const rooted = new RegExp(`(?:${roots.map(escapeRegExp).join('|')})${SEGMENT_END}`, 'g');
-  const projects = [...new Set([cwd, ...repo].filter((dir) => dir.length > 3 && /^(?:\/|[A-Za-z]:[\\/])/.test(dir)).map((dir) => dir.replace(/[^a-zA-Z0-9]/g, '-')))];
+  const projects = [...new Set([cwd, ...repo].filter((dir) => isBelowFilesystemRoot(dir) && /^(?:\/|[A-Za-z]:[\\/])/.test(dir)).map((dir) => dir.replace(/[^a-zA-Z0-9]/g, '-')))];
   const project = new RegExp(`(?<=[\\\\/])(?:${projects.sort(byLength).map(escapeRegExp).join('|')})(?=$|[\\\\/])`, 'g');
   const text = (value: string): string => {
     const next = value.replace(rooted, (root) => named.get(root) ?? root);
@@ -77,6 +80,12 @@ function pathRewriter({ repo, home, tmp }: LocalPathRoots, cwd: string): { text:
     return cut && root ? text(value.slice(0, cut.index)) + (named.get(root) ?? '') : text(value);
   };
   return { text, title };
+}
+
+/** `metadata` with `rewrite` applied to its string values, or `metadata` itself when that changes none. */
+function rewriteMetadata(metadata: MessageMetadata, rewrite: (text: string) => string): MessageMetadata {
+  const changed = Object.entries(metadata).flatMap(([key, value]) => (typeof value === 'string' && rewrite(value) !== value ? [[key, rewrite(value)]] : []));
+  return changed.length === 0 ? metadata : { ...metadata, ...Object.fromEntries(changed) };
 }
 
 /** `value` with `rewrite` applied to each string it holds, keys left as they are. */
@@ -203,7 +212,7 @@ export function scrubSession(
       if (next !== block) contentChanged = true;
       return next;
     });
-    const metadata = msg.metadata && opts.localPaths ? mapStrings(msg.metadata, rewrite) as typeof msg.metadata : msg.metadata;
+    const metadata = msg.metadata && paths ? rewriteMetadata(msg.metadata, paths.text) : msg.metadata;
     return contentChanged || metadata !== msg.metadata ? { ...msg, content, ...(metadata ? { metadata } : {}) } : msg;
   });
 

@@ -1043,3 +1043,23 @@ describe('what an archived session ran as', () => {
     expect(mgr.listSessions('github.com/org/alpha')[0]).not.toHaveProperty('teamRevision');
   });
 });
+
+describe('an archive written before cwd was relative and agent was recorded', () => {
+  it('lists, loads and rebuilds with its absolute cwd and no agent or team revision', async () => {
+    const mgr = new SyncManager(repoRoot);
+    const saved = written(await mgr.saveSession(mkSession(), mkMeta()));
+    const metaFile = path.join(repoRoot, saved.replace(/\.jsonl$/, '.meta.json'));
+    const meta = JSON.parse(fs.readFileSync(metaFile, 'utf8')) as { origin: Record<string, unknown> };
+    fs.writeFileSync(metaFile, JSON.stringify({ ...meta, origin: { ...meta.origin, cwd: '/home/dev/alpha' } }));
+    fs.rmSync(path.join(path.dirname(path.dirname(metaFile)), '_index.json'));
+
+    await mgr.rebuildIndex('github.com/org/alpha');
+
+    const [entry] = mgr.listSessions('github.com/org/alpha');
+    expect(entry).toMatchObject({ cwd: '/home/dev/alpha', sessionId: 's-1' });
+    expect(entry).not.toHaveProperty('teamRevision');
+    const loaded = mgr.loadSession('github.com/org/alpha', entry.sessionName, entry.author);
+    expect(loaded.session).toMatchObject({ cwd: '/home/dev/alpha', messages: [{ role: 'user' }, { role: 'assistant' }] });
+    expect(loaded.meta).not.toHaveProperty('agent');
+  });
+});
