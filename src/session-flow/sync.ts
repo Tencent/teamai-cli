@@ -563,9 +563,12 @@ export class SyncManager {
       ...meta,
       origin: { ...meta.origin, cwd: archivedCwdValue },
     };
+    const roots = await publishedPathRoots(meta.origin.cwd);
+    const spellsLocalPath = (title: string) => [...roots.repo, ...roots.home, ...roots.tmp].some((root) => title.includes(root));
     return this.writeArchive(() => this.saveSessionLocked(
       { ...session, cwd: archivedCwdValue },
       archivedMeta,
+      spellsLocalPath,
     ));
   }
 
@@ -944,7 +947,7 @@ export class SyncManager {
    * @param meta Sync metadata
    * @returns Path of the written jsonl file (relative to repoRoot)
    */
-  private saveSessionLocked(session: Session, meta: SessionSyncMeta): string {
+  private saveSessionLocked(session: Session, meta: SessionSyncMeta, spellsLocalPath: (title: string) => boolean): string {
     const repoId = meta.origin.repoIdentity;
     const author = meta.origin.author;
     this.moveRepoDirToCurrentName(repoId);
@@ -952,20 +955,18 @@ export class SyncManager {
     // Keep this method free of filesystem-dependent metadata work so save and
     // index writes remain a single synchronous transaction.
 
-    let sessionName = generateSessionName(session.platform, session.title, session.createdAt);
+    const generated = generateSessionName(session.platform, session.title, session.createdAt);
     // P8 dedup: when the same origin.sessionId + author is pushed again, reuse the original sessionName
     // and overwrite (upsertIndexEntry updates the existing entry in place on sessionName:author),
-    // instead of resolveNameConflict creating an `xxx_1` copy.
+    // instead of resolveNameConflict creating an `xxx_1` copy. A session first pushed under a title that
+    // spelled a local path (before --scrub rewrote it) moves to the current title's name when that one does not.
     const existing = this.findByOriginSessionId(repoId, meta.origin.sessionId, author, session.platform);
-    if (existing) {
-      sessionName = existing.sessionName;
-    } else {
-      sessionName = this.resolveNameConflict(repoId, author, sessionName);
-    }
+    const retired = existing && spellsLocalPath(existing.title) && !spellsLocalPath(session.title) ? existing.sessionName : undefined;
+    const sessionName = existing && !retired ? existing.sessionName : this.resolveNameConflict(repoId, author, generated);
 
     const paths = this.sessionPaths(repoId, author, sessionName);
-    this.guardWrite(paths.jsonl);
-    this.guardWrite(paths.meta);
+    const retiredPaths = retired ? this.sessionPaths(repoId, author, retired) : undefined;
+    for (const file of [paths.jsonl, paths.meta, retiredPaths?.jsonl, retiredPaths?.meta]) if (file) this.guardWrite(file);
 
     // Resolve/repair the index before installing the pair: a rebuild must
     // never adopt half of this transaction as an existing archive.
@@ -976,18 +977,22 @@ export class SyncManager {
     const files = [
       { file: paths.jsonl, content: session.messages.map((m) => JSON.stringify(messageToDict(m))).join('\n') + '\n' },
       { file: paths.meta, content: JSON.stringify(meta, null, 2) },
-    ].map((file) => ({ ...file, temp: `${file.file}.${token}.tmp`, backup: `${file.file}.${token}.bak`, backedUp: false, installed: false }));
+      // A retired pair has no content: it is backed up like a replaced file, then dropped on commit.
+      ...(retiredPaths ? [{ file: retiredPaths.jsonl }, { file: retiredPaths.meta }] : []),
+    ].map((file: { file: string; content?: string }) => ({ ...file, temp: `${file.file}.${token}.tmp`, backup: `${file.file}.${token}.bak`, backedUp: false, installed: false }));
     let committed = false;
     try {
-      for (const file of files) fs.writeFileSync(file.temp, file.content, { encoding: 'utf-8', flag: 'wx' });
+      for (const file of files) if (file.content !== undefined) fs.writeFileSync(file.temp, file.content, { encoding: 'utf-8', flag: 'wx' });
       for (const file of files) {
         if (fs.existsSync(file.file)) {
           fs.renameSync(file.file, file.backup);
           file.backedUp = true;
         }
+        if (file.content === undefined) continue;
         fs.renameSync(file.temp, file.file);
         file.installed = true;
       }
+      if (retired) index.sessions = index.sessions.filter((s) => !(s.sessionName === retired && s.author === author));
       this.upsertIndexEntry(repoId, {
         sessionName,
         author,

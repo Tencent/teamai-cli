@@ -307,6 +307,21 @@ describe('saveSession dedup (origin sessionId + author)', () => {
     });
   });
 
+  it('renames a re-pushed session whose old name spelled a local path, and leaves no old copy', async () => {
+    const mgr = new SyncManager(repoRoot);
+    const leaked = `fix ${path.join(os.homedir(), 'app/src/retry.ts')}`;
+    const before = written(await mgr.saveSession(mkSession({ title: leaked }), mkMeta({ title: leaked })));
+
+    const after = written(await mgr.saveSession(mkSession({ title: 'fix ~/app/src/retry.ts' }), mkMeta({ title: 'fix ~/app/src/retry.ts' })));
+
+    expect(path.basename(after)).toBe('claude-code_fix-app-src-retry-ts_20260102.jsonl');
+    expect(fs.existsSync(path.join(repoRoot, before))).toBe(false);
+    expect(fs.existsSync(path.join(repoRoot, before.replace(/\.jsonl$/, '.meta.json')))).toBe(false);
+    expect(mgr.listSessions('github.com/org/alpha').map((entry) => entry.sessionName)).toEqual([path.basename(after, '.jsonl')]);
+    await mgr.rebuildIndex('github.com/org/alpha');
+    expect(mgr.listSessions('github.com/org/alpha').map((entry) => entry.sessionName)).toEqual([path.basename(after, '.jsonl')]);
+  });
+
   it('treats the same sessionId under a different author as a separate session', async () => {
     const mgr = new SyncManager(repoRoot);
     await mgr.saveSession(mkSession({ sessionId: 'shared-1', title: 'shared' }), mkMeta({ sessionId: 'shared-1', author: 'alice' }));
