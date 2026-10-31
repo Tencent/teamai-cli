@@ -308,9 +308,9 @@ export const LEGACY_RULE_DIRS: readonly LegacyRuleDir[] = [
     scopes: ['user'],
     dir: '.pi/agent/rules',
     ext: '.md',
-    why: 'Pi does not read ~/.pi/agent/rules (team rules now reach it through ~/.pi/agent/AGENTS.md)',
+    why: 'Pi does not read ~/.pi/agent/rules (team rules now reach it through ~/.pi/agent/AGENTS.override.md when present, otherwise AGENTS.md)',
     toolPathsFix: 'remove `userScope.rules` (and `rules`) from toolPaths.pi',
-    advice: 'Delete what you did not edit; to keep your changes, move them into ~/.pi/agent/AGENTS.md outside the teamai markers, then delete the copy.',
+    advice: 'Delete what you did not edit; to keep your changes, move them into the user AGENTS.override.md when present, otherwise AGENTS.md, outside the teamai markers, then delete the copy.',
   },
   {
     tool: 'pi',

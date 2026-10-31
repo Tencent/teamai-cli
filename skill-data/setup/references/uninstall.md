@@ -88,7 +88,7 @@ and give it your team repo URL."*
 - Uninstall removes the team-rules block from the file a tool with no rules
   format reads in user scope (`~/.codex/AGENTS.md`, `~/.zcode/AGENTS.md`,
   `$DSH_HOME/AGENTS.md`, the OpenClaw workspace `AGENTS.md`,
-  `~/.pi/agent/AGENTS.override.md` when present, otherwise `~/.pi/agent/AGENTS.md`, `~/.joycode/rules.txt`, `~/.config/muse/AGENTS.md`), and the file when teamai
+  `~/.pi/agent/AGENTS.override.md` when present, otherwise `~/.pi/agent/AGENTS.md`, `$JOYCODE_HOME/rules.txt` when set, otherwise `~/.joycode/rules.txt`, `~/.config/muse/AGENTS.md`), and the file when teamai
   created it for the block alone.
 - Uninstall cleans legacy Codex rule copies at the recorded `toolRoots`
   location, including publishers' bare local filenames, and the copies earlier
