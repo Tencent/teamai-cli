@@ -9,7 +9,7 @@ teamai dashboard
 teamai dashboard --port 8080
 ```
 
-浏览器打开 `http://localhost:3721`。侧栏是总览、团队执行、工作流运行、评分器、团队上下文、资源、分发、团队改进。数据是这台机器上的。
+浏览器打开 `http://localhost:3721`。侧栏是总览、团队执行、Token 与费用、工作流运行、评分器、团队上下文、资源、分发、团队改进。数据是这台机器上的。
 
 ## 会话共享（Session sharing）
 
@@ -131,6 +131,55 @@ sharing:
 会话行上有对话轮数和 token。拿不到用量的工具，token 显示为 0。
 
 7 天趋势只统计你自己的会话：teamai 启动的会话（如工作流步骤）不计入。趋势下方按[运行模式](workflow.md#有人值守与无人值守的运行)拆分最近 7 天结束的会话：有人值守、无人值守，以及记录模式之前的会话 `not recorded`。参见[使用统计上报](reporting.md#按运行模式统计你的会话)。
+
+## Token 与费用（Tokens & Cost）
+
+**Token 与费用**页面回答"这周我的 AI 工具花了多少钱、花在哪里"，范围是所选工作区的最近 7、30 或 90 天（UTC）：
+
+```text
+Tokens & Cost · 7 days
+Estimated cost     $3.29    Prior: $2.74 · +20%
+Tokens             6M       Input 235.7K · Output 120.7K · Cache 5.6M
+Saved by caching   $14.97   Cache reads: 94% of the prompt
+Requests priced    92%      107 / 116 · $0.4936 reported by the tool
+```
+
+卡片下方是每日柱状图，然后是按 AI 工具、按模型的费用，以及费用最高的十个会话。看板认识的会话以第一条提示词命名，点开可看详情：
+
+```text
+By model            AI tool   Requests  Tokens  Cost
+claude-opus-5-5     claude    35        1.8M    $1.40
+gpt-6.1-sol         codex     20        732.8K  $0.4280
+gpt-5.6-sol         pi        8         726.1K  $0.4936
+big-pickle          opencode  9         116.8K  Tokens only
+```
+
+数字的来源：
+
+- 会话停止时，teamai 从工具自己的会话记录读取每个请求的 token 和模型：Claude Code、Codex、CodeBuddy、WorkBuddy、Copilot CLI、OpenCode、Pi、Oh My Pi、Muse Code 和 agy。[工具支持](tool-support.md)的 **Tokens & cost** 列列出覆盖了哪些工具、如何验证的。
+- 每个请求按 [LiteLLM 价格表](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json)中的 API 标价计价。价格表随 teamai 发布、每周更新，页脚写明版本。长提示词、fast 模式和一小时缓存写入按各自的价格计算。工具自己上报的费用（如 Pi 和 OpenCode）按原值使用。
+- 每个请求保留记录时的费用，之后价格变化不会改写过去的数据。订阅套餐的计费方式不同：把这里的费用理解为同样的工作走 API 的价格。
+- **缓存节省**是缓存读取按普通输入计价时会多花的钱。
+
+价格表里没有的模型显示**仅 token**。如果它是某个已列出模型的别名（例如公司网关），在 `~/.teamai/config.yaml`（或某个工作区的配置）中映射，该会话下次停止时会为之前没有价格的请求计价：
+
+```yaml
+modelAliases:
+  corp-gateway-large: claude-opus-5-5
+  corp-gateway-fast: gpt-6.1-sol
+```
+
+请求在 `~/.teamai/dashboard/requests.jsonl` 中保留 90 天，每行一个，不含提示词和回复：
+
+```json
+{"id":"6f1c…","timestamp":"2026-10-30T09:15:02.118Z","tool":"claude","sessionId":"c1a0de00-…","model":"claude-opus-5-5","inputTokens":40,"outputTokens":600,"cacheReadTokens":30000,"cacheCreationTokens":1500,"costMicros":25660,"costSource":"catalog","priceVersion":"litellm-2026-10-31-b264711","cacheSavingsMicros":114000}
+```
+
+页面读取 `/api/tokens`，脚本也可以读。最近 30 天还没有价格的模型：
+
+```bash
+curl -s 'http://localhost:3721/api/tokens?days=30' | jq -r '.byModel[] | select(.pricedRequests == 0) | .model'
+```
 
 ## 会话产出（Session Outcomes）
 

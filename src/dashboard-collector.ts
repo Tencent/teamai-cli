@@ -852,7 +852,7 @@ function mapEventType(hookEventName: string): DashboardEventType | null {
 export interface ParseHookEventOptions {
   /** Team keywords (`sharing.intervention.correctionKeywords`) merged with the built-in list. */
   correctionKeywords?: readonly string[];
-  /** Per-machine gateway model-alias → known Claude model name, for cost/cache estimation. */
+  /** Per-machine gateway model alias → a model the price catalog lists, for cost estimation. */
   modelAliases?: Record<string, string>;
   /**
    * `false`: leave token usage unread and the request log unwritten, for a
