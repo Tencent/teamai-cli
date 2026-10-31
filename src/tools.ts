@@ -615,8 +615,11 @@ export const TOOLS = {
       user: { channel: 'file', file: { in: 'home', path: '.joycode/rules.txt' }, reads: [{ base: 'home', path: '.joycode/rules.txt', evidence: 'source' }] },
       project: 'none',
     },
-    // JoyCode loads an agent only through its `.joycode/agent.json` index, which teamai does not write.
-    agents: { user: { reads: 'unknown' }, project: { reads: 'unknown' } },
+    // JoyCode 3.8.71 loads Markdown agents named by `.joycode/agent.json`; TeamAI maintains that index beside the rendered files.
+    agents: {
+      user: { reads: [{ base: 'home', path: '.joycode/agents', evidence: 'source' }] },
+      project: { reads: [{ base: 'project', path: '.joycode/agents', when: 'workspaceUnder', evidence: 'source' }] },
+    },
     mcp: NONE,
     // ~/.joycode/hooks.json and <project>/.joycode/hooks.json take Claude-shaped hooks (command type, timeout in seconds).
     hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.joycode/hooks.json', evidence: 'source' }] }, self: { channel: 'settings', format: 'claude', reads: [{ base: 'project', path: '.joycode/hooks.json', when: 'workspaceUnder', evidence: 'source' }] } },

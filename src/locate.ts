@@ -170,6 +170,9 @@ export type Retired<P extends Place> = {
 
 type Common<P extends Place> = { readonly retired: readonly Retired<P>[]; readonly gates: readonly Gate[] };
 
+/** A tool-owned sidecar kept in sync with the resource's rendered files. */
+export type SidecarFile = { readonly kind: 'file'; readonly path: string; readonly owned: true; readonly header: null };
+
 /**
  * teamai writes `own`: null when the tool has no place in the scope (no
  * configured path, no OpenClaw workspace). Present whether or not the gates
@@ -207,7 +210,7 @@ type LocationOf = {
     readonly retiredActivation?: EntryPlace | null;
   }) | RunTimeChannel<PlaceOf['rules']> | SilentChannel<PlaceOf['rules']>;
   readonly blocks: (FilesChannel<FilePlace> & Activated) | RunTimeChannel<FilePlace> | SilentChannel<FilePlace>;
-  readonly agents: FilesChannel<DirPlace> | SilentChannel<DirPlace>;
+  readonly agents: (FilesChannel<DirPlace> & { readonly sidecar: SidecarFile | null }) | SilentChannel<DirPlace>;
   readonly mcp: (FilesChannel<EntryPlace> & {
     /** Where teamai writes instead of `own` when OpenCode V2's plugin delivers; that choice needs a version probe `locate` does not run. */
     readonly alternate: EntryPlace | null;
@@ -838,6 +841,7 @@ async function locateAgents(tool: string, install: Install, host: Host): Promise
     own,
     reads: await readsOf(channel.reads, roots, host),
     readGates: await readGatesOf(channel.readGates, install, host),
+    sidecar: own === null || tool !== 'joycode' ? null : { kind: 'file', path: host.path.join(host.path.dirname(own.path), 'agent.json'), owned: true, header: null },
     retired: [],
     gates,
   };
