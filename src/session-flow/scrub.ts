@@ -43,8 +43,11 @@ export interface LocalPathRoots {
 
 const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-/** A root matches only as a whole path segment: `/Users/alice/app` is not the start of `/Users/alice/app2`. */
-const SEGMENT_END = '(?![A-Za-z0-9._-])';
+/**
+ * A root matches only as a whole path segment: `/Users/alice/app` is not the start of `/Users/alice/app2` or
+ * `/Users/alice/app.old`, but is in `ls /Users/alice/app.` at the end of a sentence.
+ */
+const SEGMENT_END = '(?![A-Za-z0-9_-]|\\.[A-Za-z0-9_-])';
 
 /**
  * Rewrites the paths under `roots` in a text: the repository to `<repo>`, the temp roots to `<tmp>`, the rest of the

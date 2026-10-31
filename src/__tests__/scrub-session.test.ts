@@ -154,6 +154,8 @@ describe('scrubSession with localPaths, for a session published to the team arch
     ['/Users/me/.claude/settings.json', '~/.claude/settings.json'],
     ['/Users/me/other-project/x.ts', '~/other-project/x.ts'],
     ['/Users/me/app2/x.ts', '~/app2/x.ts'],
+    ['/Users/me/app.old/x.ts', '~/app.old/x.ts'],
+    ['ls /Users/me/app.', 'ls <repo>.'],
     ['/private/tmp/claude-502/-Users-me-app/6e64/tasks/b.output', '<tmp>/<project>/6e64/tasks/b.output'],
     ['file:///Users/me/app/README.md', 'file://<repo>/README.md'],
     ['src/sync.ts, /api/v1/users, https://github.com/acme/app', 'src/sync.ts, /api/v1/users, https://github.com/acme/app'],
