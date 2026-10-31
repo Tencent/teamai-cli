@@ -14,6 +14,19 @@ export default defineRule({
       TemplateLiteral(node) {
         if (node.expressions.length === 0 && VARIABLES.has(node.quasis[0]?.value.raw ?? '')) context.report({ node, message });
       },
+      MemberExpression(node) {
+        if (
+          !node.computed &&
+          node.object.type === 'MemberExpression' &&
+          !node.object.computed &&
+          node.object.object.type === 'Identifier' &&
+          node.object.object.name === 'process' &&
+          node.object.property.type === 'Identifier' &&
+          node.object.property.name === 'env' &&
+          node.property.type === 'Identifier' &&
+          VARIABLES.has(node.property.name)
+        ) context.report({ node: node.property, message });
+      },
     };
   },
 });
