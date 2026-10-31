@@ -39,13 +39,13 @@ They are not written into the project's `AGENTS.md`. Each tool gets its own file
 | Trae | `~/.trae/user_rules/teamai-context.md` | `.trae/rules/teamai-context.md` |
 | Trae CN | `~/.trae-cn/user_rules/teamai-context.md` | shared `.trae/rules/teamai-context.md` |
 | OpenCode | `$OPENCODE_CONFIG_DIR/teamai-context.md` when set, otherwise `${XDG_CONFIG_HOME:-~/.config}/opencode/teamai-context.md` | `.opencode/teamai-context.md` |
-| Pi | `~/.pi/agent/AGENTS.override.md` when present, otherwise `AGENTS.md` | an extension adds them to the system prompt |
+| Pi | `$PI_CODING_AGENT_DIR/AGENTS.override.md` when set and present, otherwise `$PI_CODING_AGENT_DIR/AGENTS.md`; the same paths under `~/.pi/agent` when unset | an extension adds them to the system prompt |
 | Oh My Pi | its user file | an extension adds them to the system prompt |
 | Hermes | `$HERMES_HOME/SOUL.md` | the Hermes plugin |
 | ZCode | `~/.zcode/AGENTS.md` | session-start hook |
 | DeepSeek Harness | `$DSH_HOME/AGENTS.md` (`~/.dsh/AGENTS.md` when unset) | session-start hook |
 | JoyCode | `$JOYCODE_HOME/rules.txt` when set, otherwise `~/.joycode/rules.txt` | none |
-| Muse Code | `~/.config/muse/AGENTS.md` | session-start hook |
+| Muse Code | `${XDG_CONFIG_HOME:-~/.config}/muse/AGENTS.md` | session-start hook |
 | Antigravity | `~/.gemini/config/rules/teamai-context.md` | `.agents/rules/teamai-context.md` |
 
 ## Viewing the result
