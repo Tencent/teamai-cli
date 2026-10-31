@@ -44,6 +44,8 @@
     // All prod sort sites sort a local array built in the same function;
     // none mutates a caller's array, so the in-place warning doesn't apply.
     "unicorn/no-array-sort": "off",
+    // Unlike sorting, reversal is required to stay non-mutating so future
+    // callers cannot observe an incidental in-place change to a local copy.
     "unicorn/no-array-reverse": "warn",
     // Moves closures to outer scope; a style preference, not a bug class.
     "unicorn/consistent-function-scoping": "off",
