@@ -2827,6 +2827,12 @@ describe('countInterventions (CodeBuddy index.json)', () => {
     expect(iv.interrupt).toBe(0);
   });
 
+  it('still counts friction from the blobs while index.json is mid-write', async () => {
+    const p = writeCodebuddySession('mid-write', INDEX_WITH_USAGE, [rejectedAssistantBlob('call_reject_1'), errorToolBlob('call_err_1')]);
+    fs.writeFileSync(p, '{"messages":[{"id":"m1","role":"us');
+    expect(await countInterventions(p)).toEqual({ interrupt: 0, toolReject: 1, toolError: 1 });
+  });
+
   it('counts a genuine tool error as toolError', async () => {
     const p = writeCodebuddySession('error', INDEX_WITH_USAGE, [errorToolBlob('call_err_1')]);
     const iv = await countInterventions(p);

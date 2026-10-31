@@ -783,15 +783,18 @@ async function scanCodebuddyBlobs(
 /**
  * Friction and prompts of a CodeBuddy `index.json` transcript. Friction
  * (toolReject / toolError) comes from the sibling `messages/` blobs (see
- * {@link scanCodebuddyBlobs}); `interrupt` stays 0, as CodeBuddy has no
+ * {@link scanCodebuddyBlobs}), even while `index.json` is unreadable or
+ * mid-write, when prompts count 0; `interrupt` stays 0, as CodeBuddy has no
  * on-disk marker for it. Null when the file does not parse as a CodeBuddy
- * index, so the caller falls back to the JSONL scanner.
+ * index and no blob shows friction, so the caller falls back to the JSONL scanner.
  */
 async function scanCodebuddyIndex(transcriptPath: string): Promise<TranscriptScanResult | null> {
-  const prompts = await readCodebuddyIndexPrompts(transcriptPath);
-  if (prompts === null) return null;
-  const friction = await scanCodebuddyBlobs(path.join(path.dirname(transcriptPath), 'messages'));
-  return { interrupt: 0, ...friction, prompts };
+  const [prompts, friction] = await Promise.all([
+    readCodebuddyIndexPrompts(transcriptPath),
+    scanCodebuddyBlobs(path.join(path.dirname(transcriptPath), 'messages')),
+  ]);
+  if (prompts === null && friction.toolReject + friction.toolError === 0) return null;
+  return { interrupt: 0, ...friction, prompts: prompts ?? 0 };
 }
 
 /**
