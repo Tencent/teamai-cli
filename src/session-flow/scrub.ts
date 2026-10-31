@@ -58,10 +58,11 @@ const NAME_CHAR = '[\\p{L}\\p{N}_@%+~#$-]';
 /**
  * A root matches only as whole path segments: `/Users/alice/app` is not in `/Users/alice/app2`, `/Users/alice/app@2`,
  * `/Users/alice/app.old` or `/mnt/Users/alice/app`, but is in `ls /Users/alice/app.`, Markdown emphasis around it,
- * `--cwd=/Users/alice/app` and `file:///Users/alice/app`.
+ * `--cwd=/Users/alice/app` and `file:///Users/alice/app`. `_` and `__` next to it are Markdown emphasis when no other
+ * name character is beyond them.
  */
-const SEGMENT_START = `(?<!${NAME_CHAR})`;
-const SEGMENT_END = `(?!${NAME_CHAR}|\\.${NAME_CHAR})`;
+const SEGMENT_START = `(?:(?<!${NAME_CHAR})|(?<=(?:^|(?!${NAME_CHAR}).)__?))`;
+const SEGMENT_END = `(?:(?!${NAME_CHAR}|\\.${NAME_CHAR})|(?=__?(?!${NAME_CHAR}|\\.${NAME_CHAR})))`;
 
 /**
  * Rewrites the paths under `roots` in a text: the repository to `<repo>`, the temp roots to `<tmp>`, the rest of the
