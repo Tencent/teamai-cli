@@ -840,11 +840,11 @@ export function spliceCodexBlock(source: string, name: string, block: string | n
   const bom = source.startsWith('\uFEFF') ? '\uFEFF' : '';
   source = withoutTomlBom(source);
   const re = codexBlockRe(name);
-  const match = source.match(re);
+  const match = maskIndentedValueHeaders(source).match(re);
   const padded = block === null ? null : block.endsWith('\n') ? block + '\n' : block + '\n\n';
 
   if (match && match.index !== undefined) {
-    const owned = ownedCodexBlock(match[0]);
+    const owned = ownedCodexBlock(source.slice(match.index, match.index + match[0].length));
     const before = source.slice(0, match.index);
     const after = source.slice(match.index + owned.length).replace(/^(?:\r?\n)+/, '');
     if (padded === null) return bom + before + after;
@@ -854,6 +854,19 @@ export function spliceCodexBlock(source: string, name: string, block: string | n
   if (padded === null) return bom + source;
   const sep = source.length === 0 || source.endsWith('\n\n') ? '' : source.endsWith('\n') ? '\n' : '\n\n';
   return bom + source + sep + padded;
+}
+
+/** Mask indented header-like lines inside multiline values, preserving source offsets. */
+function maskIndentedValueHeaders(source: string): string {
+  return source.replace(/^[ \t]+\[/gm, (header, offset: number) => {
+    try {
+      // A real table follows a complete TOML prefix; a line inside a multiline value does not.
+      parseToml(source.slice(0, offset));
+      return header;
+    } catch {
+      return header.slice(0, -1) + ' ';
+    }
+  });
 }
 
 /**
@@ -867,7 +880,7 @@ function codexBlockRe(name: string): RegExp {
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const header = codexHeaderStart(String.raw`(?:${escaped}|"${escaped}"|'${escaped}')`);
   return new RegExp(
-    String.raw`^\[${header}\]\s*(?:#.*)?$[\s\S]*?(?=^\[(?!${header}[.\]])|(?![\s\S]))`,
+    String.raw`^[ \t]*\[${header}\]\s*(?:#.*)?$[\s\S]*?(?=^[ \t]*\[(?!${header}[.\]])|(?![\s\S]))`,
     'm',
   );
 }
@@ -888,16 +901,19 @@ function codexHeaderStart(name: string): string {
  * table.
  */
 export function codexBlockIn(source: string, name: string): string | null {
-  const match = withoutTomlBom(source).match(codexBlockRe(name));
-  return match === null ? null : ownedCodexBlock(match[0]).trimEnd() + '\n';
+  source = withoutTomlBom(source);
+  const match = maskIndentedValueHeaders(source).match(codexBlockRe(name));
+  return match === null || match.index === undefined
+    ? null
+    : ownedCodexBlock(source.slice(match.index, match.index + match[0].length)).trimEnd() + '\n';
 }
 
 /** Extract the names of all `[mcp_servers.X]` tables present in a config.toml. */
 export function codexServerNames(source: string): string[] {
-  source = withoutTomlBom(source);
+  source = maskIndentedValueHeaders(withoutTomlBom(source));
   const names = new Set<string>();
   const header = codexHeaderStart(String.raw`(?:([A-Za-z0-9_-]+)|"([A-Za-z0-9_-]+)"|'([A-Za-z0-9_-]+)')`);
-  for (const m of source.matchAll(new RegExp(String.raw`^\[${header}\]\s*(?:#.*)?$`, 'gm'))) names.add(m[1] ?? m[2] ?? m[3]);
+  for (const m of source.matchAll(new RegExp(String.raw`^[ \t]*\[${header}\]\s*(?:#.*)?$`, 'gm'))) names.add(m[1] ?? m[2] ?? m[3]);
   return [...names];
 }
 

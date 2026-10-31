@@ -143,3 +143,71 @@ describe('removing a Codex MCP server (real CLI)', () => {
     });
   });
 });
+
+describe('indented Codex TOML tables (real CLI)', () => {
+  function fixture(): { home: string; file: string; definitions: string } {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-codex-mcp-indent-'));
+    sandboxes.push(home);
+    execFileSync('git', ['init', '-q', home]);
+    const dataHome = path.join(home, '.teamai');
+    const repo = path.join(dataHome, 'team-repo');
+    const file = path.join(home, '.codex', 'config.toml');
+    const definitions = path.join(repo, 'mcp', 'mcp.yaml');
+    fs.mkdirSync(path.dirname(definitions), { recursive: true });
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'teamai.yaml'), 'team: mcp-test\nrepo: https://example.com/team.git\nprovider: git\n');
+    fs.writeFileSync(definitions, 'servers:\n  - name: team-mcp\n    transport: http\n    url: https://example.com/mcp\n    tools: [codex]\n');
+    fs.writeFileSync(path.join(dataHome, 'config.yaml'), [
+      'repo:', `  localPath: ${repo}`, '  remote: https://example.com/team.git',
+      'username: e2e-user', 'scope: user', 'enabledAgents: [codex]',
+    ].join('\n'));
+    return { home, file, definitions };
+  }
+
+  it('keeps an indented personal server with the same name', async () => {
+    const { home, file } = fixture();
+    const original = '\t[mcp_servers.team-mcp]\ncommand = "personal-server"\n';
+    fs.writeFileSync(file, original);
+
+    const result = await runCLI(home, ['inject']);
+
+    expect(result.code, result.output).toBe(0);
+    expect(result.output).toMatch(/skipped\s+codex\/team-mcp/);
+    expect(fs.readFileSync(file, 'utf8')).toBe(original);
+    expect(parseToml(original)).toMatchObject({ mcp_servers: { 'team-mcp': { command: 'personal-server' } } });
+  });
+
+  it('keeps an indented example in instructions when adding and updating a server', async () => {
+    const { home, file, definitions } = fixture();
+    const instructions = 'developer_instructions = """\nExample:\n  [mcp_servers.team-mcp]\n  command = "sample"\n"""\n\n';
+    fs.writeFileSync(file, instructions);
+
+    const installed = await runCLI(home, ['inject']);
+    expect(installed.code, installed.output).toBe(0);
+    fs.writeFileSync(definitions, 'servers:\n  - name: team-mcp\n    transport: http\n    url: https://example.com/updated\n    tools: [codex]\n');
+    const updated = await runCLI(home, ['inject']);
+
+    expect(updated.code, updated.output).toBe(0);
+    expect(updated.output).toMatch(/updated\s+codex\/team-mcp/);
+    const result = fs.readFileSync(file, 'utf8');
+    expect(result.startsWith(instructions)).toBe(true);
+    expect(parseToml(result)).toMatchObject({ mcp_servers: { 'team-mcp': { url: 'https://example.com/updated' } } });
+  });
+
+  it.each(['remove', 'inject'])('%s keeps an indented table after the managed server', async (command) => {
+    const { home, file, definitions } = fixture();
+    fs.writeFileSync(file, 'model = "gpt-5"\n');
+    const installed = await runCLI(home, ['inject']);
+    expect(installed.code, installed.output).toBe(0);
+    fs.appendFileSync(file, '\n  [projects."/work"]\ntrust_level = "trusted"\n');
+    if (command === 'inject') fs.writeFileSync(definitions, 'servers: []\n');
+
+    const result = await runCLI(home, [command]);
+
+    expect(result.code, result.output).toBe(0);
+    expect(result.output).toMatch(/removed\s+codex\/team-mcp/);
+    const remaining = fs.readFileSync(file, 'utf8');
+    expect(remaining).toContain('  [projects."/work"]\ntrust_level = "trusted"\n');
+    expect(parseToml(remaining)).toMatchObject({ model: 'gpt-5', projects: { '/work': { trust_level: 'trusted' } } });
+  });
+});

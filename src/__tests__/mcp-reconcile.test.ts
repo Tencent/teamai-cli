@@ -56,7 +56,7 @@ vi.mock('../utils/fs.js', async (importOriginal) => {
 });
 
 import { _setExcludeLockRetryMs } from '../git-exclude.js';
-import { reconcileMcpForConfig, releaseCleanMcpGitExcludes, resolveMcpTargets, spliceCodexBlock, codexServerNames, writeCodexAtomic } from '../mcp-reconcile.js';
+import { reconcileMcpForConfig, releaseCleanMcpGitExcludes, resolveMcpTargets, spliceCodexBlock, codexBlockIn, codexServerNames, writeCodexAtomic } from '../mcp-reconcile.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { log } from '../utils/logger.js';
 import { resetWarnOnce } from '../utils/warn-once.js';
@@ -4494,6 +4494,38 @@ describe('spliceCodexBlock', () => {
   it('lists existing server names', () => {
     const src = '[mcp_servers.a]\n\n[mcp_servers.b]\n\n[mcp_servers.b.env]\nX = "1"\n';
     expect(codexServerNames(src).sort()).toEqual(['a', 'b']);
+  });
+
+  it.each(['  ', '\t', ' \t'])('finds and replaces a server with leading whitespace %j', (indent) => {
+    const src = `${indent}[mcp_servers.a]\ncommand = "old"\n${indent}[mcp_servers.a.env]\nOLD = "1"\n`;
+    const block = '[mcp_servers.a]\ncommand = "new"\n';
+    expect(codexServerNames(src)).toEqual(['a']);
+    const out = spliceCodexBlock(src, 'a', block);
+    expect(out).toBe(`${block}\n`);
+    expect(spliceCodexBlock(out, 'a', block)).toBe(out);
+  });
+
+  it.each(['  ', '\t'])('preserves a following table with leading whitespace %j', (indent) => {
+    const after = `${indent}[projects."/work"]\r\ntrust_level = "trusted"\r\n`;
+    const src = `[mcp_servers.a]\r\ncommand = "old"\r\n\r\n${after}`;
+    expect(spliceCodexBlock(src, 'a', null)).toBe(after);
+    expect(spliceCodexBlock(src, 'a', '[mcp_servers.a]\ncommand = "new"\n')).toContain(after);
+  });
+
+  it('does not treat an indented example in multiline instructions as a server', () => {
+    const instructions = 'developer_instructions = """\nExample:\n  [mcp_servers.a]\n  command = "example"\n"""\n\n';
+    const src = `${instructions}[mcp_servers.a]\ncommand = "old"\n`;
+    const block = '[mcp_servers.a]\ncommand = "new"\n';
+    expect(spliceCodexBlock(src, 'a', block)).toBe(`${instructions}${block}\n`);
+    expect(spliceCodexBlock(instructions, 'a', block)).toBe(`${instructions}${block}\n`);
+    expect(codexServerNames(instructions)).toEqual([]);
+  });
+
+  it('does not end a server at an indented example inside its multiline value', () => {
+    const block = '[mcp_servers.a]\ncommand = """\nexample\n  [projects.example]\n"""\n';
+    const src = `${block}\n[projects.real]\nvalue = 1\n`;
+    expect(codexBlockIn(src, 'a')).toBe(block);
+    expect(spliceCodexBlock(src, 'a', null)).toBe('[projects.real]\nvalue = 1\n');
   });
 
   it.each([
