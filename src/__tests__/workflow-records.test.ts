@@ -1,9 +1,7 @@
-import { JUDGE_FAILURES } from '../scorers/attempts.js';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { simpleGit } from 'simple-git';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import YAML from 'yaml';
@@ -24,7 +22,7 @@ import {
 import { acquireLock, releaseLock } from '../update.js';
 import { generateRunId, isRunId, runLockPath } from '../workflow/store.js';
 import { PrUrlSchema } from '../workflow/pr-url.js';
-import type { DriverIdentity, RunState, WorkflowDefinition, WorkflowDiagnostic } from '../workflow/types.js';
+import type { DriverIdentity, RunState, WorkflowDefinition } from '../workflow/types.js';
 
 const dirs: string[] = [];
 
@@ -203,64 +201,19 @@ describe('#1083 workflow run records', () => {
     expect(JSON.stringify(buildEndRecord(failed('secret-x'), driver, 'tester'))).not.toContain('secret-x');
   });
 
-  it('publishes the failure code of every step failure teamai writes, and only codes it can name', () => {
-    // Codes a module writes, as `code: '…'`, `error('…', …)` or `failure('…', …)`, that never become a run's failure: every module of src/workflow and src/scorers, and every other one that imports src/scorers or answers a WorkflowEnvelope.
-    const diagnostics = ['unknown_key', 'missing_needs', 'false_if', 'bad_template', 'dotted_name', 'undeclared_output', 'undeclared_end', 'bad_loop', 'bad_workspace', 'workflow_namespace_conflict', 'prompt_namespace_conflict', 'bad_delivery', 'bad_invoke', 'bad_alias', 'alias_conflict'] satisfies Array<WorkflowDiagnostic['code']>;
-    const answers = ['invalid_json', 'driver_running', 'invalid_run', 'repeated_response', 'agent_in_path', 'stale_response', 'retried', 'end_reached', 'repeated_report', 'wrong_attempt', 'invalid_report', 'lease_cancelled', 'interrupted', 'run_unreadable', 'driver_stuck', 'ambiguous_run', 'busy', 'workflow_recursion', 'workflow_not_found',
-      // Refusals of a run handover, answered to the command or driver that asked for it.
-      'not_owner', 'unsupported_repo', 'reports_unreachable', 'reports_failed', 'run_not_found', 'run_not_published', 'run_mismatch',
-      'state_conflict', 'state_moved', 'definition_mismatch', 'records_pending', 'snapshot_unsupported', 'secret_detected', 'local_path_detected', 'origin_unavailable', 'commit_missing',
-      'branch_diverged', 'sessions_not_archived', 'judge_lease',
-      // Refusals of a driver's or member's request about a run that is already past it.
-      'stale_revision', 'wrong_driver', 'run_settled', 'step_not_found', 'not_hitl', 'not_waiting', 'invalid_choice', 'not_cancellable', 'not_retryable',
-      // Refusals of a judge submit, answered to the driver; the lease and the run stay as they were.
-      'lease_unknown', 'lease_settled', 'lease_judging', 'entry_closed', 'label_invalid', 'isolation_unmet', 'scoring_settings_invalid',
-      // Work the driver's judge tools cannot run the scorer's model for; it stays open for another driver.
-      'judge_model_unavailable',
-      // Refusals of a teamai score or teamai workflow command line before it reads any run or judge work.
-      'invalid_arguments', 'invalid_pass', 'not_initialized', 'unsupported_driver', 'invalid_tools',
-      // Refusals of teamai workflow start for a run whose pull requests would have no branch to target.
-      'no_base_branch',
-      // Refusals of a start from an agent session that the workflow's invoke does not let start it.
-      'invoke_denied',
-      // Refusals of an agent's start of an invoke: ask workflow in an unattended run, where no person can agree.
-      'unattended_denied',
-      // Refusals of a workflow command from inside a workflow attempt, or of a start from a workflow's place.
-      'nested_workflow',
-      // A place the host made that a prepare cannot adopt; the attempt stays leased.
-      'adopt_mismatch',
-      // Refusals of a --driver skill call, answered to the agent with the command it can run instead.
-      'confirm_needed', 'needs_local_driver', 'not_skill_run', 'orchestrator_active', 'choice_pending', 'unknown_choice', 'unknown_offer', 'unknown_attempt', 'not_dispatched', 'tool_needed',
-      // An error thrown inside a --driver skill call, answered to the agent as one envelope with its message.
-      'skill_call_failed',
-      // Why the skill driver stopped judging a run, told to the agent in a judging-off event.
-      'judge_runner_gone', 'no_child_agent',
-      // Refusals of teamai score --run, answered to the member who asked for a pass to be judged.
-      'scoring_unavailable', 'pass_not_found', 'scorer_not_found', 'entry_leased',
-      // Refusals of teamai score --session, answered to the member who asked for a session to be judged.
-      'session_required', 'source_required', 'session_not_found', 'session_ambiguous', 'scorer_invalid',
-      // Why a judge attempt closed: kept with the attempt under scores/, never on a run.
-      ...JUDGE_FAILURES];
-    const src = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
-    const files = fs.readdirSync(src, { recursive: true, encoding: 'utf8' })
-      .filter((file) => file.endsWith('.ts') && !file.startsWith('__tests__'))
-      .map((file) => ({ file, text: fs.readFileSync(path.join(src, file), 'utf8') }))
-      .filter(({ file, text }) => /^(workflow|scorers)\//.test(file) || /from '(?:\.\.?\/)+scorers\//.test(text) || /\bWorkflowEnvelope\b/.test(text));
-    const written = new Set(files.flatMap(({ text }) => [
-      ...[...text.matchAll(/\bcode: ('[^']+'(?:\s*\|\s*'[^']+')*)/g)].flatMap((match) => [...(match[1] ?? '').matchAll(/'([^']+)'/g)].flatMap((code) => code[1] ?? [])),
-      ...[...text.matchAll(/(?<![.\w]|function )(?:error|failure)\('([^']+)'/g)].flatMap((match) => match[1] ?? []),
-    ]));
-    // An `error(…)` whose code is not a literal passes on a code written as a literal elsewhere; each one is named here.
-    const passedOn = ['session-flow/scoring.ts: result.code', 'workflow/engine.ts: tree.failed.code', 'workflow/engine.ts: undeliverable.code', 'workflow/scoring.ts: built.code', 'workflow/scoring.ts: result.code'];
-    const unnamed = files.flatMap(({ file, text }) => [...text.matchAll(/(?<![.\w]|function )(?:error|failure)\((?!')([^,)]+)/g)].map((match) => `${file}: ${match[1]}`)).sort();
-    const failedWith = (code: string): RunState => runState({
+  it.each([
+    'cancelled', 'hitl_required', 'loop_exhausted', 'invalid_output', 'invalid_template',
+    'invalid_inputs', 'invalid_items', 'item_cycle', 'tool_failed', 'tool_unavailable',
+    'agent_unavailable', 'model_unavailable', 'read_only_dirty', 'tool_unconfigured', 'tool_unsupported',
+    'merge_conflict', 'base_config', 'push_failed', 'workspace_base', 'bad_session',
+    'missing_env', 'env_unavailable', 'env_conflict', 'timeout', 'budget_exceeded', 'budget_unmeasured',
+    'setup_failed', 'setup_dirty', 'setup_secret', 'delivery_failed', 'protected_path',
+  ])('publishes the classified step failure %s', (code) => {
+    const failed = runState({
       status: 'failed',
-      steps: [{ id: 'one', status: 'failed', outcome: 'failed', attempt: 'a1', settledAt: 2, failure: { code, message: 'm' } }],
+      steps: [{ id: 'one', status: 'failed', outcome: 'failed', attempt: 'a1', settledAt: 2, failure: { code, message: 'private detail' } }],
     });
-
-    expect(unnamed).toEqual(passedOn);
-    expect([...diagnostics, ...answers].filter((code) => !written.has(code) && !JUDGE_FAILURES.some((failure) => failure === code))).toEqual([]);
-    expect([...written].filter((code) => ![...diagnostics, ...answers].includes(code) && buildEndRecord(failedWith(code), driver, 'tester').failure?.code !== code)).toEqual([]);
+    expect(buildEndRecord(failed, driver, 'tester').failure).toEqual({ code });
   });
 
   it('publishes the first failure teamai can name, under a top-level step whose own code it cannot', () => {

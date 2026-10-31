@@ -229,6 +229,7 @@ async function judgeOnce(config: LocalConfig, judged: JudgedSession, members: re
     }
     return { ok: false, envelope: result.ok
       ? failure('judge_answer_invalid', `The judge's answer names no label of the scorer: ${verdicts && !verdicts.ok ? verdicts.message : ''} No label was written.${saved}`)
+      // oxlint-disable-next-line teamai/workflow-failure-codes -- forwards a code from a classified workflow or scorer producer
       : failure(result.code, result.message + (result.code === 'judge_tool_unavailable' && required.level === 'verified' ? ` ${required.setBy.join(' and ')} asks for verified.` : '') + saved) };
   } finally {
     await fs.rm(evidence, { recursive: true, force: true, maxRetries: 3 });

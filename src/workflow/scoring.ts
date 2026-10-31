@@ -1207,6 +1207,7 @@ export async function judgeLease(
     ? await buildEvidence(config, lease.run, lease.members[0].attempt.subject, rubrics, evidence)
     : await SessionWork.ensureEvidence(config, lease.members[0].attempt.subject, rubrics, evidence);
   if (!built.ok) {
+    // oxlint-disable-next-line teamai/workflow-failure-codes -- forwards a code from a classified workflow or scorer producer
     return error(built.code, lease.source === 'workflow'
       ? 'No recorded evidence could be read for this pass. Restore its commits or session, then retry.'
       : `Session ${lease.members[0].attempt.subject.sessionId} can no longer be read. The lease lapses and the session is not judged.`);
@@ -1239,6 +1240,7 @@ export async function judgeLease(
     const closed = lease.source === 'session' ? ' The session lease closed, and the session is not judged again.' : '';
     return result.ok
       ? error('judge_answer_invalid', `The judge's answer does not fit the lease: ${verdicts && !verdicts.ok ? verdicts.message : ''}${closed || ' Retry or submit a valid answer.'}${saved}`)
+      // oxlint-disable-next-line teamai/workflow-failure-codes -- forwards a code from a classified workflow or scorer producer
       : error(result.code, closed ? `The session lease closed, and the session is not judged again. The judge reported: ${result.message}${saved}` : result.message + saved);
   }
   const { access, model, effort, ...judge } = result.judge;

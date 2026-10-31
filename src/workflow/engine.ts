@@ -894,8 +894,10 @@ export async function startRun(
   const mismatch = inputsMismatch(cached.definition.name, cached.definition.inputs, inputs);
   if (mismatch) return error('invalid_inputs', mismatch);
   const tree = await loadWorkflowTree(config, cached);
+  // oxlint-disable-next-line teamai/workflow-failure-codes -- forwards a code from a classified workflow or scorer producer
   if ('failed' in tree) return error(tree.failed.code, tree.failed.message);
   const undeliverable = deliveryProblem(cached.definition, tree.workflows, options.base);
+  // oxlint-disable-next-line teamai/workflow-failure-codes -- forwards a code from a classified workflow or scorer producer
   if (undeliverable) return error(undeliverable.code, undeliverable.message);
   const scorers = await pinScorers(config, listedScorers([cached.definition, ...Object.values(tree.workflows)]));
   const pinned = Object.fromEntries([
