@@ -2734,6 +2734,44 @@ describe('uninstall', () => {
     expect(await fse.readJson(rootConfig)).toEqual({ theme: 'dark' });
   });
 
+  it('keeps user-scope OpenCode skills during a project uninstall (#1645)', async () => {
+    const homeDir = path.join(tmpDir, 'oc-home');
+    const repoPath = path.join(tmpDir, 'oc-team-repo');
+    const projectRoot = path.join(tmpDir, 'oc-project');
+    await fse.outputFile(path.join(repoPath, 'skills', 'team-skill', 'SKILL.md'), '# Team Skill');
+    const userSkill = path.join(homeDir, '.config', 'opencode', 'skills', 'team-skill', 'SKILL.md');
+    const projectSkill = path.join(projectRoot, '.opencode', 'skills', 'team-skill', 'SKILL.md');
+    const memberSkill = path.join(homeDir, '.config', 'opencode', 'skills', 'member-skill', 'SKILL.md');
+    await fse.outputFile(userSkill, '# Team Skill');
+    await fse.outputFile(projectSkill, '# Team Skill');
+    await fse.outputFile(memberSkill, '# Member Skill');
+
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    const teamConfig = makeTeamConfig({
+      toolPaths: {
+        opencode: {
+          skills: '.opencode/skills',
+          userScope: { skills: '.config/opencode/skills' },
+        },
+      },
+    });
+    const localConfig = makeLocalConfig(homeDir, repoPath, {
+      scope: 'project',
+      projectRoot,
+      enabledAgents: ['opencode'],
+      repo: { localPath: repoPath, remote: '', kind: 'self', businessRepoRoot: projectRoot },
+    });
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
+    commitTeamRepo(repoPath);
+
+    await uninstall({ force: true, agent: 'opencode' });
+
+    expect(await fse.pathExists(projectSkill)).toBe(false);
+    expect(await fse.pathExists(userSkill)).toBe(true);
+    expect(await fse.pathExists(memberSkill)).toBe(true);
+  });
+
   it('deletes the .opencode/opencode.json the rules glob alone filled, and keeps the root opencode.json (#946)', async () => {
     const homeDir = path.join(tmpDir, 'oc-home');
     const repoPath = path.join(tmpDir, 'oc-team-repo');

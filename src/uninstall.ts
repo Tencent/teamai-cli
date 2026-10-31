@@ -1123,7 +1123,7 @@ async function buildRemovalPlan(
     // after a re-init/profile switch. The home history is authoritative for
     // these adapters, so uninstall must inspect their native skills roots as
     // well as the currently resolved location.
-    if (tool === 'hermes' || tool === 'omp' || tool === 'opencode') {
+    if (globalAdapters && (tool === 'hermes' || tool === 'omp' || tool === 'opencode')) {
       for (const home of await toolHomesAcrossProfiles(tool)) skillWrites.add(path.join(home, 'skills'));
     }
     perTool.set(
