@@ -34,6 +34,7 @@
     "typescript/no-unnecessary-type-conversion": "off",
     "typescript/consistent-return": "off",
     "typescript/no-unnecessary-boolean-literal-compare": "warn",
+    "no-shadow": "warn",
     "typescript/no-unnecessary-template-expression": "off",
     "typescript/no-unnecessary-type-arguments": "off",
     "typescript/no-unnecessary-type-parameters": "off",
