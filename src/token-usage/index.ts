@@ -29,6 +29,7 @@ export type TokenRequest = {
   key: string;
   /** ISO time of the request; empty when the tool records none. */
   timestamp: string;
+  /** Empty when the tool records none, so no price applies. */
   model: string;
   tokens: TokenUsage;
   /** The part of `tokens.cacheCreation` written to a one-hour cache, which costs more than a five-minute one. */
@@ -45,7 +46,7 @@ export type TokenReading = {
   tokens: TokenUsage;
   /** For a tool that writes cumulative totals: whether they cover the session or this transcript file. */
   scope?: TokenSnapshotScope;
-  /** The requests a model name is known for; the ones that can be priced. */
+  /** The session's requests, each priced by its model when it names one. */
   requests: TokenRequest[];
 };
 

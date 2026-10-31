@@ -68,7 +68,7 @@ async function readCliJsonl(file: string): Promise<TokenReading> {
     const used = tokensOf(data.rawUsage ?? {}, data.usage ?? {});
     tokens = addTokenUsage(tokens, used);
     const model = data.requestModelId ?? data.model;
-    if (model) requests.push({ key: data.messageId, timestamp: iso(item.data.timestamp), model, tokens: used, speed: 'standard' });
+    requests.push({ key: data.messageId, timestamp: iso(item.data.timestamp), model: model ?? '', tokens: used, speed: 'standard' });
   };
   await forEachJsonLine(file, ['"providerData"'], visit);
   const subagents = path.join(file.replace(/\.jsonl$/, ''), 'subagents');
@@ -104,7 +104,7 @@ async function blobModel(conversation: string, messageId: string): Promise<strin
 /**
  * CodeBuddy IDE's `index.json`: `requests[].usage` holds input and output
  * only, with no cache split. A request's model is in the `extra` of the
- * message blobs it lists.
+ * message blobs it lists; a request whose blobs name none has an empty model.
  */
 async function readIdeIndex(file: string): Promise<TokenReading | undefined> {
   try {
@@ -122,7 +122,7 @@ async function readIdeIndex(file: string): Promise<TokenReading | undefined> {
         model = await blobModel(path.dirname(file), id);
         if (model) break;
       }
-      if (model) requests.push({ key: request.id ?? `request:${index}`, timestamp: iso(request.startedAt), model, tokens: used, speed: 'standard' });
+      requests.push({ key: request.id ?? `request:${index}`, timestamp: iso(request.startedAt), model: model ?? '', tokens: used, speed: 'standard' });
     }
     return { tokens, requests };
   } catch (e) {

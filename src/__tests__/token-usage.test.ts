@@ -230,7 +230,7 @@ describe('readTokenUsage: codebuddy', () => {
     expect(reading.tokens).toEqual({ input: 7_000, output: 380, cacheRead: 9_000, cacheCreation: 0 });
   });
 
-  it('reads the IDE\'s index.json, with each request\'s model from its messages', async () => {
+  it('reads the IDE\'s index.json, with each request\'s model from its messages when they name one', async () => {
     const conversation = path.join(dir, 'conv-1');
     fs.mkdirSync(path.join(conversation, 'messages'), { recursive: true });
     fs.writeFileSync(path.join(conversation, 'messages', 'a2.json'), JSON.stringify({
@@ -242,13 +242,15 @@ describe('readTokenUsage: codebuddy', () => {
       requests: [
         { id: 'r0', startedAt: 1_793_000_000_000, messages: [], usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 } },
         { id: 'r1', startedAt: 1_793_000_000_000, messages: ['u1', 'a2'], usage: { inputTokens: 215_609, outputTokens: 2_967, totalTokens: 218_576 } },
+        // Its message blob names no model: still a request, with no price.
+        { id: 'r2', startedAt: 1_793_000_000_000, messages: ['u1'], usage: { inputTokens: 1_000, outputTokens: 20, totalTokens: 1_020 } },
       ],
     }));
 
     const reading = await readTokenUsage('codebuddy', { transcriptPath: index, sessionId: 'conv-1', settled: true });
 
-    expect(reading.tokens).toEqual({ input: 215_609, output: 2_967, cacheRead: 0, cacheCreation: 0 });
-    expect(reading.requests.map(({ key, model }) => [key, model])).toEqual([['r1', 'hunyuan-t2']]);
+    expect(reading.tokens).toEqual({ input: 216_609, output: 2_987, cacheRead: 0, cacheCreation: 0 });
+    expect(reading.requests.map(({ key, model }) => [key, model])).toEqual([['r1', 'hunyuan-t2'], ['r2', '']]);
   });
 });
 
