@@ -19,9 +19,34 @@ import {
 import type { RelationSeverity, StoredRelation } from '../asset-relations.js';
 import { indexInMemory } from '../utils/search-index.js';
 import { localLinkTargets } from '../utils/markdown-links.js';
-import { formatResults, relationLines } from '../recall.js';
+import { formatResults, relationLines, computeDerivedRelations } from '../recall.js';
 import type { RelationContext } from '../recall.js';
+import { matchGlob } from '../utils/glob.js';
 import type { SearchIndexEntry } from '../types.js';
+
+describe('matchGlob', () => {
+  it('matches within and across segments', () => {
+    expect(matchGlob('src/ledger/receipts.ts', 'src/ledger/receipts.ts')).toBe(true);
+    expect(matchGlob('src/ledger/*.ts', 'src/ledger/receipts.ts')).toBe(true);
+    expect(matchGlob('src/ledger/*.ts', 'src/ledger/a/b.ts')).toBe(false);
+    expect(matchGlob('src/*/receipts.ts', 'src/ledger/receipts.ts')).toBe(true);
+    expect(matchGlob('src/ledger/receipt?.ts', 'src/ledger/receipts.ts')).toBe(true);
+  });
+
+  it('** crosses any depth, including zero', () => {
+    expect(matchGlob('src/ledger/**', 'src/ledger/receipts.ts')).toBe(true);
+    expect(matchGlob('src/ledger/**', 'src/ledger/a/b/c.ts')).toBe(true);
+    expect(matchGlob('src/**/receipts.ts', 'src/receipts.ts')).toBe(true);
+    expect(matchGlob('src/**/receipts.ts', 'src/ledger/receipts.ts')).toBe(true);
+    expect(matchGlob('**/receipts.ts', 'a/b/c/receipts.ts')).toBe(true);
+    expect(matchGlob('src/ledger/**', 'src/other/receipts.ts')).toBe(false);
+  });
+
+  it('ignores a leading ./ or /', () => {
+    expect(matchGlob('./src/**', 'src/a.ts')).toBe(true);
+    expect(matchGlob('/src/**', 'src/a.ts')).toBe(true);
+  });
+});
 
 // ─── normalizeTargetPath ─────────────────────────────────
 
@@ -505,5 +530,85 @@ describe('formatResults — Related: lines', () => {
 describe('ASSET_RELATIONS', () => {
   it('is the four declarable relation names', () => {
     expect(ASSET_RELATIONS).toEqual(['MAPS_TO', 'REFERENCES', 'SUPERSEDES', 'CONFLICTS_WITH']);
+  });
+});
+
+// ─── path-derived relations (#1563 part 1) ───────────────
+
+describe('computeDerivedRelations — rule paths to code page sources', () => {
+  // The source: frontmatter is read from the page file on disk; write it.
+  function pageWithSources(tmp: string, slugPath: string, sources: string[]): { entry: SearchIndexEntry; fromCodebase: boolean } {
+    const treePath = `teamwiki/evidence/code/${slugPath}`;
+    const abs = path.join(tmp, treePath);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, ['---', 'title: p', 'source:', ...sources.map((s) => `  - ${s}`), '---', '', '# P', ''].join('\n'));
+    return { entry: { filename: slugPath, title: 'p', author: '', date: '', tags: [], tokens: [], votes: 0, type: 'docs', path: abs, treePath }, fromCodebase: true };
+  }
+
+  it('a glob matching one visible codebase page gives one edge in each direction', () => {
+    const tmp = makeTmpDir();
+    try {
+      const pg = pageWithSources(tmp, 'pay/modules/ledger.md', ['src/ledger/receipts.ts']);
+      const contexts = new Map<string, RelationContext>([['project', ctx({
+        ruleGlobs: new Map([['rules/payments.md', ['src/ledger/**']]]),
+      })]]);
+      const derived = computeDerivedRelations([pg], contexts);
+      expect([...derived.out.get('rules/payments.md') ?? []]).toEqual(['teamwiki/evidence/code/pay/modules/ledger.md']);
+      expect([...derived.in.get('teamwiki/evidence/code/pay/modules/ledger.md') ?? []]).toEqual(['rules/payments.md']);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('a glob matching pages in two codebases gives no edge; no match gives none', () => {
+    const tmp = makeTmpDir();
+    try {
+      const a = pageWithSources(tmp, 'pay/modules/ledger.md', ['src/ledger/receipts.ts']);
+      const b = pageWithSources(tmp, 'shop/modules/ledger.md', ['src/ledger/shop.ts']);
+      const contexts = new Map<string, RelationContext>([['project', ctx({
+        ruleGlobs: new Map([['rules/payments.md', ['src/ledger/**']]]),
+      })]]);
+      const derived = computeDerivedRelations([a, b], contexts);
+      expect(derived.out.size).toBe(0);
+      expect(derived.in.size).toBe(0);
+
+      const none = computeDerivedRelations([a], ctxMap('src/other/**'));
+      expect(none.out.size).toBe(0);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  function ctxMap(glob: string): Map<string, RelationContext> {
+    return new Map([['project', ctx({ ruleGlobs: new Map([['rules/payments.md', [glob]]]) })]]);
+  }
+
+  it('relationLines renders derived edges and a declared relation wins', () => {
+    const tmp = makeTmpDir();
+    try {
+      const treePath = 'teamwiki/evidence/code/pay/modules/ledger.md';
+      const pg = pageWithSources(tmp, 'pay/modules/ledger.md', ['src/ledger/receipts.ts']);
+      const context = ctx({
+        byTreePath: new Map([
+          [treePath, pg.entry],
+          ['rules/payments.md', entry({ filename: 'payments.md', treePath: 'rules/payments.md', path: '/repo/rules/payments.md' })],
+        ]),
+        teamwikiRoot: path.join(tmp, 'teamwiki'),
+        withheld: new Set(),
+      });
+      const derived = { out: new Set([treePath]) };
+      expect(relationLines(context, entry({ filename: 'payments.md', treePath: 'rules/payments.md', path: '/repo/rules/payments.md' }), derived))
+        .toEqual([`Related: → MAPS_TO ${pg.entry.path}`]);
+
+      // Declared MAPS_TO to the same page beats the derived one.
+      const declared = entry({
+        filename: 'payments.md', treePath: 'rules/payments.md', path: '/repo/rules/payments.md',
+        related: [{ relation: 'MAPS_TO', target: treePath, via: 'declared' }],
+      });
+      const lines = relationLines(context, declared, derived);
+      expect(lines.filter((l) => l.includes('MAPS_TO'))).toHaveLength(1);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
