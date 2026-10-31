@@ -489,7 +489,7 @@ Generated: do not edit by hand. Regenerate with
 - `teamai codebase` — Inspect and maintain the teamwiki that `teamai import` writes
   - `--project <name>` (hidden) — Codebase slug under teamwiki/evidence/code/, required for --deep-enrich
   - `--upgrade-wiki` (hidden) — Migrate docs/team-codebase/ to teamwiki/ graph format
-  - `--lint` — Run global consistency lint over the teamwiki knowledge graph
+  - `--lint` — Run global consistency lint over the teamwiki knowledge graph, and count the member's asset relations (assets, relations, without a relation, unresolved)
   - `--reconcile` — Reconcile product and code knowledge in teamwiki
   - `--deep-enrich` — Generate deep knowledge docs from extracted evidence
   - `--fix` (hidden) — Deprecated: teamwiki lint has no autofix; runs lint in report-only mode

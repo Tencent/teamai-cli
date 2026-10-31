@@ -70,7 +70,7 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
         console.log('teamai codebase — team codebase knowledge management');
         console.log('');
         console.log('Usage:');
-        console.log('  teamai codebase --lint                  Run teamwiki consistency lint');
+        console.log('  teamai codebase --lint                  Run teamwiki consistency lint; also counts the member\'s asset relations (assets, relations, without a relation, unresolved)');
         console.log('  teamai codebase --lint --json           Output JSON report (for CI)');
         console.log('  teamai codebase --lint --severity high  Only report high-severity issues');
         console.log('  teamai codebase --reconcile             Reconcile product and code knowledge');
@@ -94,6 +94,10 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
     }
 
     if (!target || !(await pathExists(target.wikiRoot))) {
+        if (opts.lint) {
+            await lintWithoutTeamwiki(opts);
+            return;
+        }
         console.log('No teamwiki found. Run `teamai import` first.');
         if (opts.reconcile || opts.deepEnrich) process.exitCode = 1;
         return;
@@ -240,13 +244,41 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
     }
 
     const { lintTeamwiki, formatWikiLintReport } = await import('./codebase-wiki-lint.js');
+    // Standalone `--output` names no member, so there is no asset data (#1562).
+    const assetGraph = opts.output ? null : await lintAssetGraphForMember();
     const report = await lintTeamwiki({ wikiRoot: teamwikiDir, severity: opts.severity });
+    if (assetGraph) report.assetGraph = assetGraph;
     if (opts.json) {
         console.log(JSON.stringify(report, null, 2));
     } else {
         console.log(formatWikiLintReport(report));
     }
     if (report.summary.high > 0) process.exitCode = 1;
+}
+
+/**
+ * `--lint` without a teamwiki: the graph checks are skipped, but the member's
+ * asset counts still print (#1562). With standalone `--output` there is no
+ * member, so there is no assetGraph and the output is unchanged.
+ */
+async function lintWithoutTeamwiki(opts: CodebaseCmdOptions): Promise<void> {
+    const assetGraph = opts.output ? null : await lintAssetGraphForMember();
+    if (!assetGraph) {
+        console.log('No teamwiki found. Run `teamai import` first.');
+        return;
+    }
+    if (opts.json) {
+        console.log(JSON.stringify({ assetGraph }, null, 2));
+    } else {
+        const { formatAssetGraphLine } = await import('./codebase-wiki-lint.js');
+        console.log(formatAssetGraphLine(assetGraph));
+    }
+}
+
+// `--lint` only ever reads: the loaders must preview, not persist, a migration (#850).
+async function lintAssetGraphForMember(): Promise<import('./lint-asset-graph.js').LintAssetGraph | null> {
+    const { lintAssetGraph } = await import('./lint-asset-graph.js');
+    return lintAssetGraph({ dryRun: true }).catch(() => null);
 }
 
 /**
