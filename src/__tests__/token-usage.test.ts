@@ -318,6 +318,15 @@ describe('readTokenUsage: agy-transcript', () => {
 
     expect(reading).toEqual({ tokens: { input: 907, output: 294, cacheRead: 82_432, cacheCreation: 0 }, scope: 'session', requests: [] });
   });
+
+  it('reads numeric counts as excluding the cached part even when input is the larger one', async () => {
+    const sessionId = '6f1c2a0e-3b4d-4e5f-8a9b-0c1d2e3f4a5c';
+    const logs = path.join(process.env.HOME ?? '', '.gemini', 'antigravity-cli', 'brain', sessionId, '.system_generated', 'logs');
+    fs.mkdirSync(logs, { recursive: true });
+    fs.writeFileSync(path.join(logs, 'transcript.jsonl'), JSON.stringify({ step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', input_tokens: 1_000, cache_read_tokens: 500, output_tokens: 20 }) + '\n');
+
+    expect((await readTokenUsage('agy-transcript', { sessionId, settled: true })).tokens).toEqual({ input: 1_000, output: 20, cacheRead: 500, cacheCreation: 0 });
+  });
 });
 
 describe('readTokenUsage: pi-session', () => {
