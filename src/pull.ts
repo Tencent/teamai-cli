@@ -23,7 +23,7 @@ import {
   planInstructionFiles, registerOpencodeContext, resolveInstructionTargets, retiredFilesOfReached, type InstructionBlocks, type InstructionTarget,
 } from './instruction-targets.js';
 import { getHandler, RulesHandler, DocsHandler, EnvHandler, AgentsHandler } from './resources/index.js';
-import { removedAgentOrigin, reportHeldAgents, type RedeployedCopy } from './resources/agents.js';
+import { removedAgentOrigin, reportHeldAgents, updateJoycodeAgentIndex, type RedeployedCopy } from './resources/agents.js';
 import { ruleOrigin, rulesReceivingTools } from './resources/rules.js';
 import {
   deliveredDocFiles, describeLinkedDocsRoot, isLinkedDocsRoot, isTeamDocsDirectory, keepDocsSearchWhitelist, listStaleDocDirectories, membersDocs,
@@ -757,6 +757,9 @@ async function cleanupTombstonedResources(
           if (await keepsTrackedCopy(localPath)) continue;
           if (type === 'skills' && !await mayDeleteSkillCopy(localConfig, localPath)) continue;
           await removeDelivered(ledger, localPath);
+          if (type === 'agents' && tool === 'joycode') {
+            await updateJoycodeAgentIndex({ kind: 'file', path: path.join(path.dirname(typeDir), 'agent.json'), owned: true, header: null }, { kind: 'remove', file: path.basename(localPath) }, ledger);
+          }
           log.debug(`[${scopeLabel}] Cleaned up tombstoned ${type} ${name} from ${dir}`);
         }
       }

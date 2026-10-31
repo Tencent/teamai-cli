@@ -150,7 +150,7 @@ const ROWS: readonly MatrixRow[] = [
     writes: ['/joycode/agents'],
     existingDirs: ['/joycode'], installed: { probe: '/joycode', met: true },
     reads: [{ at: '/joycode/agents', when: 'always' }],
-    source: 'JoyCode 3.8.71 bundle: JOYCODE_HOME moves the home and agent.json indexes its agents directory',
+    source: 'TeamAI #1622 implements JOYCODE_HOME; JoyCode 3.8.71 bundle indexes its agents directory',
   },
   {
     tool: 'joycode', scope: 'project',

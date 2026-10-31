@@ -56,7 +56,7 @@ import { BUILTIN_RULE_NAMES, TEAMAI_CONTEXT_RULE_NAME } from './builtin-rules.js
 import { isLegacyCursorRuleFile, keptLegacyCopiesWarning, ruleStemFromFilename, usesMdcRules, type InstructionBlock, type LegacyRuleDir } from './resources/rule-format.js';
 import { agentStemFromFilename } from './resources/agent-format.js';
 import { resolveDocsDestination } from './resources/docs.js';
-import { listTeamAgentDirs, ownsAgentCopy } from './resources/agents.js';
+import { listTeamAgentDirs, ownsAgentCopy, updateJoycodeAgentIndex } from './resources/agents.js';
 import { RulesHandler, inlineRulesLabelOf, inlineRulesLocationOf, isLegacyLayoutCopy, ownsRuleCopy } from './resources/rules.js';
 import { deliveredHashes, projectCheckouts, syncDeliveredGitExclude } from './pull.js';
 import { BUILTIN_AGENT_NAMES } from './builtin-agents.js';
@@ -156,6 +156,8 @@ interface RemovalPlan {
   opencodeOwnedGlobs: OpencodeRuleGlobEntries[];
   /** Built-in agent .md files deployed by the CLI (e.g. teamai-recall). */
   agentFiles: string[];
+  /** JoyCode indexes that must drop entries for agent files this plan deletes. */
+  joycodeAgentIndexes: string[];
   /** teamai-managed MCP servers from managed-mcp.json (`tool/server` or `tool:project/server`). */
   mcpServers: string[];
   /** Shell profile paths carrying a teamai env block (usually one, but see #682/#693). */
@@ -276,6 +278,8 @@ interface ToolResources {
   keptRuleFiles: { files: string[]; entry: LegacyRuleDir }[];
   opencodeOwnedGlobs: OpencodeRuleGlobEntries[];
   agentFiles: string[];
+  /** JoyCode agent indexes beside directories that have TeamAI-owned agent files to remove. */
+  joycodeAgentIndexes: string[];
 }
 
 /** The `instructions` entries teamai owns in one opencode.json. */
@@ -500,7 +504,7 @@ async function discoverToolResources(
 ): Promise<ToolResources> {
   const res: ToolResources = {
     hookFiles: [], openclawHookDirs: [], opencodePluginDirs: [], ompHookFiles: [], kiroHookFile: null, agyHookFile: null, piHookFiles: [], dshHookFile: null, bridgedTeamHookFiles: [],
-    claudeMdFiles: [], retiredInstructionFiles: [], opencodeInstructions: [], keptGlobal: [], skillDirs: [], keptSkillDirs: [], keptFiles: [], ruleFiles: [], keptRuleFiles: [], opencodeOwnedGlobs: [], agentFiles: [],
+    claudeMdFiles: [], retiredInstructionFiles: [], opencodeInstructions: [], keptGlobal: [], skillDirs: [], keptSkillDirs: [], keptFiles: [], ruleFiles: [], keptRuleFiles: [], opencodeOwnedGlobs: [], agentFiles: [], joycodeAgentIndexes: [],
   };
 
   // (a) Hooks — settings.json / hooks.json
@@ -782,6 +786,10 @@ async function discoverToolResources(
       if (name === null) continue;
       if (!teamAgentNames.has(name) && !BUILTIN_AGENT_NAMES.has(name)) continue;
       res.agentFiles.push(path.join(agentsDir, file));
+      if (tool === 'joycode') {
+        const indexPath = path.join(path.dirname(agentsDir), 'agent.json');
+        if (!res.joycodeAgentIndexes.includes(indexPath)) res.joycodeAgentIndexes.push(indexPath);
+      }
     }
   }
 
@@ -1188,6 +1196,7 @@ async function buildRemovalPlan(
       else res.keptFiles.push(describeMembersDirLeft(file, teamAgentNames.get(stem) ?? `agents/${stem}.yaml`, 'uninstall'));
     }
     res.agentFiles.splice(0, res.agentFiles.length, ...ownedAgents);
+    if (ownedAgents.length === 0) res.joycodeAgentIndexes.splice(0);
   }
 
   // OpenCode's instructions entry is teamai's only when pull recorded adding
@@ -1328,6 +1337,7 @@ async function buildRemovalPlan(
     keptFiles: [],
     opencodeOwnedGlobs: [],
     agentFiles: [],
+    joycodeAgentIndexes: [],
     mcpServers: [],
     shellProfiles: [],
     envScope: null,
@@ -1452,6 +1462,9 @@ async function buildRemovalPlan(
     }
     plan.keptRuleFiles.push(...res.keptRuleFiles);
     plan.opencodeOwnedGlobs.push(...res.opencodeOwnedGlobs);
+    for (const indexPath of res.joycodeAgentIndexes) {
+      if (!plan.joycodeAgentIndexes.includes(indexPath)) plan.joycodeAgentIndexes.push(indexPath);
+    }
     for (const file of res.agentFiles) {
       if (retainedAgentFiles.has(file)) retainedSharedEntries++;
       else if (!plan.agentFiles.includes(file)) plan.agentFiles.push(file);
@@ -2476,10 +2489,20 @@ async function executeRemoval(
     }
   }
 
-  // (d2) Remove built-in agent files (e.g. teamai-recall)
+  // (d2) Remove built-in agent files (e.g. teamai-recall). JoyCode also needs
+  // its index updated after, not before, its rendered Markdown file is gone.
   for (const agentFile of plan.agentFiles) {
     try {
       await remove(agentFile);
+      const indexPath = plan.joycodeAgentIndexes.find((candidate) => path.dirname(candidate) === path.dirname(path.dirname(agentFile)));
+      if (indexPath !== undefined) {
+        try {
+          await updateJoycodeAgentIndex({ kind: 'file', path: indexPath, owned: true, header: null }, { kind: 'remove', file: path.basename(agentFile) });
+        } catch (e) {
+          filesLeft.push(indexPath);
+          log.warn(`Failed to clean JoyCode agent index ${indexPath}: ${(e as Error).message}`);
+        }
+      }
     } catch (e) {
       filesLeft.push(agentFile);
       log.warn(`Failed to remove agent ${agentFile}: ${(e as Error).message}`);

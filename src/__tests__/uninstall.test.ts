@@ -268,6 +268,42 @@ describe('uninstall', () => {
     expect(YAML.parse(patch)).toEqual([{ id: 'telemetry', disabled: true }]);
   });
 
+  it('removes JoyCode TeamAI index entries with their agent files but preserves member entries', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    const defaults = TeamaiConfigSchema.parse({ team: 'test', repo: 'https://example.invalid/test.git' }).toolPaths;
+    const agentsDir = path.join(homeDir, '.joycode', 'agents');
+    const indexPath = path.join(homeDir, '.joycode', 'agent.json');
+    await fse.outputFile(path.join(repoPath, 'agents', 'reviewer.yaml'), 'name: reviewer\ndescription: Review changes\ninstructions: Review the patch.\n');
+    const { recordDelivered } = await import('../resources/delivered-copies.js');
+    const delivered: Record<string, string> = {};
+    await fse.outputFile(path.join(agentsDir, 'reviewer.md'), '# Reviewer\n');
+    await recordDelivered(delivered, path.join(agentsDir, 'reviewer.md'));
+    await fse.ensureDir(path.join(homeDir, '.joycode'));
+    await fse.writeJson(indexPath, {
+      version: '1.0.0',
+      agents: [
+        { agentId: 'teamai-2ac42e5a', name: 'reviewer', source: 'global', contentPath: 'agents/reviewer.md', isActive: true },
+        { agentId: 'member-agent', name: 'Member', source: 'project', contentPath: 'agents/member.md', isActive: false },
+      ],
+    });
+    const localConfig = makeLocalConfig(homeDir, repoPath, { enabledAgents: ['joycode'] });
+    const teamConfig = makeTeamConfig({ toolPaths: { joycode: { ...defaults.joycode, agents: '.joycode/agents' } } });
+    const state = await loadStateForScope(localConfig);
+    state.lastPullByWorkspace = { [await checkoutKey(homeDir)]: { rev: 'r1', targets: [], delivered } };
+    await saveStateForScope(state, localConfig);
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
+    commitTeamRepo(repoPath);
+
+    await uninstall({ force: true, agent: 'joycode' });
+
+    expect(await fse.pathExists(path.join(agentsDir, 'reviewer.md'))).toBe(false);
+    expect((await fse.readJson(indexPath)).agents).toEqual([
+      { agentId: 'member-agent', name: 'Member', source: 'project', contentPath: 'agents/member.md', isActive: false },
+    ]);
+  });
+
   it('完整卸载移除所有资源', async () => {
     const { homeDir, repoPath, teamaiHome } = await setupFixture(tmpDir);
     vi.stubEnv('HOME', homeDir);

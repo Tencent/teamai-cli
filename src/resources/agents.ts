@@ -1402,13 +1402,25 @@ export async function updateJoycodeAgentIndex(
     const value = objectValue(entry);
     return value?.agentId !== agentId && value?.contentPath === contentPath;
   });
-  // Never create a duplicate index entry for a file a member already chose to
-  // expose. Their entry still makes JoyCode load the rendered Markdown file.
-  if (change.kind === 'upsert' && memberAlreadyIndexesFile) return;
   // Remove only the stable id TeamAI owns. A member can intentionally index
   // the same Markdown file, and their entry must survive our cleanup.
   const entries = originalEntries.filter((entry) => objectValue(entry)?.agentId !== agentId);
-  if (change.kind === 'remove' && entries.length === originalEntries.length) return;
+  // A member entry wins for the same file. Drop a prior TeamAI entry instead
+  // of leaving both entries behind, then preserve the member's own metadata.
+  if (change.kind === 'upsert' && memberAlreadyIndexesFile) {
+    if (entries.length === originalEntries.length) return;
+    await writeFile(sidecar.path, `${JSON.stringify({ ...index, version: typeof index.version === 'string' ? index.version : '1.0.0', agents: entries }, null, 2)}\n`);
+    ledger?.recorder?.report('agents', sidecar.path);
+    return;
+  }
+  if (change.kind === 'remove') {
+    if (entries.length === originalEntries.length) return;
+    if (entries.length === 0) {
+      await remove(sidecar.path);
+      ledger?.recorder?.report('agents', sidecar.path);
+      return;
+    }
+  }
 
   if (change.kind === 'upsert') {
     let frontmatter: Record<string, unknown> = {};

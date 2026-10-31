@@ -86,6 +86,39 @@ describe('JoyCode support', () => {
     }
   });
 
+  it('yields a TeamAI index entry to a member entry for the same file', async () => {
+    const root = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-joycode-member-index-'));
+    try {
+      const sidecar = { kind: 'file' as const, path: path.join(root, 'agent.json'), owned: true as const, header: null };
+      await updateJoycodeAgentIndex(sidecar, { kind: 'upsert', file: 'team.md', scope: 'user', content: '# Team reviewer' });
+      const before = JSON.parse(await fse.readFile(sidecar.path, 'utf8')) as { agents: Array<Record<string, unknown>> };
+      await fse.writeFile(sidecar.path, JSON.stringify({
+        version: '1.0.0',
+        agents: [...before.agents, { agentId: 'member-team', name: 'Member reviewer', source: 'project', contentPath: 'agents/team.md', isActive: false }],
+      }));
+
+      await updateJoycodeAgentIndex(sidecar, { kind: 'upsert', file: 'team.md', scope: 'user', content: '# Updated Team reviewer' });
+
+      expect(JSON.parse(await fse.readFile(sidecar.path, 'utf8')).agents).toEqual([
+        { agentId: 'member-team', name: 'Member reviewer', source: 'project', contentPath: 'agents/team.md', isActive: false },
+      ]);
+    } finally {
+      await fse.remove(root);
+    }
+  });
+
+  it('removes an index that held only the TeamAI entry', async () => {
+    const root = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-joycode-empty-index-'));
+    try {
+      const sidecar = { kind: 'file' as const, path: path.join(root, 'agent.json'), owned: true as const, header: null };
+      await updateJoycodeAgentIndex(sidecar, { kind: 'upsert', file: 'team.md', scope: 'user', content: '# Team reviewer' });
+      await updateJoycodeAgentIndex(sidecar, { kind: 'remove', file: 'team.md' });
+      expect(await fse.pathExists(sidecar.path)).toBe(false);
+    } finally {
+      await fse.remove(root);
+    }
+  });
+
   it('writes an index beside an agent pulled for JoyCode', async () => {
     const root = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-joycode-pull-'));
     try {
