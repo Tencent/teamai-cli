@@ -5,13 +5,15 @@
  * Resolves filesystem paths, aggregates per-user vote data, builds index entries,
  * and assembles the complete VizData payload used by the HTML renderer.
  */
-import { promises as fs } from 'node:fs';
+import { existsSync, promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
 import { loadIndex, buildIndex, type BuildIndexOptions } from './utils/search-index.js';
 import { readUserVotes } from './votes.js';
 import { BROKEN_CONFIG_ADVICE, findUnreadableProjectConfig, resolveConfigForDir } from './config.js';
+import { classifyTreePath } from './asset-relations.js';
+import { buildRelationContext, resolveRelationTarget } from './recall.js';
 import {
   getTeamaiHomeDir,
   getUserVotesDir,
@@ -21,7 +23,7 @@ import {
   getReportsDir,
   getProjectSearchIndexPath,
 } from './types.js';
-import type { LocalConfig, SearchIndexEntry } from './types.js';
+import type { LocalConfig, SearchIndex, SearchIndexEntry } from './types.js';
 import { findPromotionCandidates, type PromotionCandidate } from './maintenance/promote.js';
 import { findPruneCandidates, type PruneCandidate } from './maintenance/prune.js';
 import { findStaleEntries, type StaleEntry } from './maintenance/quality-update.js';
@@ -90,6 +92,26 @@ export interface VizSource {
   label: string;
 }
 
+/**
+ * Relation-derived health counts over the report's own index (#1562 part 2),
+ * computed with the same definitions as `codebase --lint`'s asset graph.
+ */
+export interface RelationStats {
+  /** Indexed rules, docs, learnings and skills; teamwiki pages are not assets. */
+  assetCount: number;
+  /**
+   * Resolved relations, each counted once (not per direction), links included,
+   * declared beating a link between the same two assets, and no recall line cap.
+   */
+  relationCount: number;
+  /** Team-tree paths of assets with no resolved relation in either direction, sorted. */
+  withoutRelation: string[];
+  /** `<from> <RELATION> <target>` lines for declared targets naming nothing on disk, sorted. */
+  unresolved: string[];
+  /** Intersection of withoutRelation with the never-recalled entries, sorted. */
+  silentAndWithoutRelation: string[];
+}
+
 /** Complete data payload for the HTML visualization report. */
 export interface VizData {
   generatedAt: string;
@@ -104,6 +126,8 @@ export interface VizData {
   topRecalled: EntryMetric[];
   /** All entries with recalledCount === 0. */
   silent: EntryMetric[];
+  /** Relation counts and the assets behind each, resolved for this report's scope. */
+  relations: RelationStats;
   /** Monthly recall activity, ascending by period. */
   trend: TrendPoint[];
   /** Top 15 authors by totalRecalled. */
@@ -423,6 +447,80 @@ function buildAuthors(metrics: EntryMetric[]): AuthorStat[] {
     .slice(0, 15);
 }
 
+/**
+ * The #1562 part-2 relation counts over the report's own index, so the lists
+ * never disagree with what this view shows. Resolution reuses recall's
+ * RelationContext — the same visibility rules (withheld teamwiki codebases) as
+ * `Related:` lines — and an unresolved declared target follows contribute's
+ * existence check: the team clone on disk or the learnings roots.
+ */
+async function computeRelationStats(
+  entries: SearchIndexEntry[],
+  paths: VizPaths,
+  isSilent: (entry: SearchIndexEntry) => boolean,
+): Promise<RelationStats> {
+  // Teamwiki pages reach the index with type 'docs'; only their treePath says what they are.
+  const assets = entries.filter(
+    (e): e is SearchIndexEntry & { treePath: string } =>
+      !!e.treePath && classifyTreePath(e.treePath) !== null && classifyTreePath(e.treePath) !== 'teamwiki',
+  );
+  const ctx = await buildRelationContext({
+    index: { builtAt: '', elapsedMs: 0, entries } as SearchIndex,
+    // --repo and the ~/.teamai fallback have no LocalConfig; the knowledge root
+    // is the team-tree root in both, which is all relation resolution reads.
+    config: paths.scope ?? ({ repo: { localPath: paths.knowledgeRoot } } as LocalConfig),
+  });
+  const targetExists = (treePath: string): boolean => {
+    const kind = classifyTreePath(treePath);
+    if (kind === null) return false;
+    const rel = kind === 'learning' ? `${treePath.slice('learnings/'.length)}.md` : treePath;
+    const roots = kind === 'learning' ? paths.indexLearningsDirs : [paths.knowledgeRoot];
+    return roots.some((root) => existsSync(path.join(root, ...rel.split('/'))));
+  };
+
+  const connected = new Set<string>();
+  const edges = new Set<string>();
+  const unresolved: string[] = [];
+  let relationCount = 0;
+  for (const entry of assets) {
+    const own = entry.related ?? [];
+    if (own.length === 0) continue;
+    // A declared relation to a target beats a link to it, as on the recall lines.
+    const declaredTargets = new Set(own.filter((r) => r.via === 'declared').map((r) => r.target));
+    for (const r of own) {
+      if (r.via === 'link' && declaredTargets.has(r.target)) continue;
+      if (resolveRelationTarget(ctx, r.target) === null) {
+        if (r.via === 'declared' && !targetExists(r.target)) {
+          unresolved.push(`${entry.treePath} ${r.relation} ${r.target}`);
+        }
+        continue;
+      }
+      const edge = JSON.stringify([entry.treePath, r.target].sort());
+      const key = `${r.relation} ${edge}`;
+      if (edges.has(key)) continue;
+      edges.add(key);
+      relationCount++;
+      connected.add(entry.treePath);
+      connected.add(r.target);
+    }
+  }
+
+  const withoutRelation = assets
+    .filter((a) => !connected.has(a.treePath))
+    .map((a) => a.treePath)
+    .sort();
+  return {
+    assetCount: assets.length,
+    relationCount,
+    withoutRelation,
+    unresolved: unresolved.sort(),
+    silentAndWithoutRelation: assets
+      .filter((a) => !connected.has(a.treePath) && isSilent(a))
+      .map((a) => a.treePath)
+      .sort(),
+  };
+}
+
 // ─── Core build function ──────────────────────────────────────────────────────
 
 /**
@@ -461,6 +559,11 @@ export async function buildVizData(paths: VizPaths): Promise<VizData> {
   const silent = metrics.filter((m) => m.recalledCount === 0);
   const trend = buildTrend(metrics);
   const authors = buildAuthors(metrics);
+  const relations = await computeRelationStats(
+    entries,
+    paths,
+    (entry) => (votesAgg[entry.filename.replace(/\.md$/i, '')]?.recalledCount ?? 0) === 0,
+  );
 
   const namespaces = paths.learningsNamespaces.ok ? paths.learningsNamespaces.namespaces : undefined;
   const [promote, prune, stale] = await Promise.all([
@@ -493,6 +596,7 @@ export async function buildVizData(paths: VizPaths): Promise<VizData> {
     coverage,
     topRecalled,
     silent,
+    relations,
     trend,
     authors,
     maintenance: { promote, prune, stale },
@@ -554,6 +658,12 @@ export async function getDashboardContext(opts: VizOptions = {}) {
     totalEntries: data.totalEntries,
     overallCoveragePct: data.overallCoveragePct,
     silentCount: data.silent.length,
+    relationCounts: {
+      assets: data.relations.assetCount,
+      relations: data.relations.relationCount,
+      withoutRelation: data.relations.withoutRelation.length,
+      unresolved: data.relations.unresolved.length,
+    },
     maintenanceCounts: {
       promote: data.maintenance.promote.length,
       prune: data.maintenance.prune.length,
