@@ -1513,8 +1513,8 @@ async function membersFileInTheWay(target: string, sourcePath: string, repoDir: 
 }
 
 /**
- * Earlier releases put source skills in the scope root's `.hermes/skills` and
- * `.openclaw/skills`, which neither tool reads (#993 bug 8). A recorded copy
+ * Earlier releases put source skills in the scope root's Hermes and OpenClaw
+ * skill directories, which neither tool reads (#993 bug 8). A recorded copy
  * there is deleted when it is a copy of the source skill, else kept, named,
  * and left on record, so push still treats it as the source's.
  */

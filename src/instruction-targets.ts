@@ -417,11 +417,12 @@ export async function resolveInstructionTargets(
   const stale = [...retired.values()].filter((t) => !current.has(t.path) && !inUse.has(t.path));
   const opencode = [...targets.values()].find((target) => target.tools.includes('opencode'));
   if (install.scope !== 'user' || opencode === undefined) return { targets: [...targets.values()], hooks, stale, opencodeFallback: null, opencodeFallbackStale: false };
-  // OpenCode V1 reads ~/.claude/CLAUDE.md while its own user AGENTS.md does
-  // not exist; when Claude's blocks are there, listing OpenCode's file too
-  // would duplicate them. That holds for blocks an excluded Claude left there
-  // too: V1 reads them all the same. V2 reads neither CLAUDE.md nor
-  // `instructions`, so OpenCode's file is still written for teamai's plugin.
+  // OpenCode V1 reads the user's Claude context file while its own user
+  // instruction file does not exist; when Claude's blocks are there, listing
+  // OpenCode's file too would duplicate them. That also holds for blocks an
+  // excluded Claude left there: V1 reads them all the same. V2 reads neither
+  // Claude's context file nor `instructions`, so OpenCode's file is still
+  // written for teamai's plugin.
   const claude = writable(await locate('claude', 'blocks', install));
   const claudeFile = opencodeV1ClaudeFile(getUserHome());
   const claudeDelivers = claude !== null && claude.path === claudeFile && targets.get(claudeFile)?.tools.includes('claude') === true;
