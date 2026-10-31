@@ -20,6 +20,11 @@
     "unicorn/prefer-includes": "warn",
     // Prefer a predicate search when only the existence of a match matters.
     "unicorn/prefer-array-some": "warn",
+    // These anti-slop rules are not covered by the pinned categories; keep
+    // their policy explicit even while the current tree is clean.
+    "unicorn/prefer-array-flat": "warn",
+    "unicorn/prefer-array-flat-map": "warn",
+    "unicorn/prefer-string-trim-start-end": "warn",
     "typescript/no-base-to-string": "off",
     "typescript/no-duplicate-type-constituents": "off",
     "typescript/no-implied-eval": "off",
