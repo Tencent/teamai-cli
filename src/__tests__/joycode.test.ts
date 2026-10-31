@@ -119,6 +119,31 @@ describe('JoyCode support', () => {
     }
   });
 
+  it('indexes an agent relative to a configured JoyCode agents directory', async () => {
+    const root = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-joycode-custom-agents-'));
+    try {
+      const sidecar = { kind: 'file' as const, path: path.join(root, 'agent.json'), owned: true as const, header: null, agentsDir: path.join(root, 'custom-agents') };
+      await updateJoycodeAgentIndex(sidecar, { kind: 'upsert', file: 'reviewer.md', scope: 'user', content: '# Reviewer' });
+      expect(JSON.parse(await fse.readFile(sidecar.path, 'utf8')).agents).toEqual([
+        expect.objectContaining({ contentPath: 'custom-agents/reviewer.md' }),
+      ]);
+    } finally {
+      await fse.remove(root);
+    }
+  });
+
+  it('keeps member metadata when removing the last TeamAI index entry', async () => {
+    const root = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-joycode-index-metadata-'));
+    try {
+      const sidecar = { kind: 'file' as const, path: path.join(root, 'agent.json'), owned: true as const, header: null };
+      await fse.writeFile(sidecar.path, JSON.stringify({ version: '1.0.0', favoriteView: 'review', agents: [] }));
+      await updateJoycodeAgentIndex(sidecar, { kind: 'upsert', file: 'team.md', scope: 'user', content: '# Team reviewer' });
+      await updateJoycodeAgentIndex(sidecar, { kind: 'remove', file: 'team.md' });
+      expect(JSON.parse(await fse.readFile(sidecar.path, 'utf8'))).toEqual({ version: '1.0.0', favoriteView: 'review', agents: [] });
+    } finally {
+      await fse.remove(root);
+    }
+  });
   it('writes an index beside an agent pulled for JoyCode', async () => {
     const root = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-joycode-pull-'));
     try {

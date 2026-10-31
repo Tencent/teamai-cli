@@ -796,7 +796,7 @@ export class AgentsHandler extends ResourceHandler {
           await removeStaleAgentSiblings(destDir, item.name, render.ext, ledger, origin);
         }
         await writeFile(dest, render.content);
-        if (sidecar !== null) await updateJoycodeAgentIndex(sidecar, { kind: 'upsert', file: path.basename(dest), content: render.content, scope: localConfig.scope }, ledger);
+        if (sidecar !== null) await updateJoycodeAgentIndex(joycodeIndexSidecar(sidecar, destDir), { kind: 'upsert', file: path.basename(dest), content: render.content, scope: localConfig.scope }, ledger);
         if (ledger) {
           await recordDelivered(ledger.hashes, dest);
           recordAgentModel(ledger.agentModels, item.name, tool, render.model?.recorded);
@@ -946,7 +946,7 @@ export class AgentsHandler extends ResourceHandler {
             }
             if (await pathExists(filePath) && !await keepsTrackedCopy(filePath)) {
               await removeDelivered(record.ledger, filePath);
-              if (sidecar !== null) await updateJoycodeAgentIndex(sidecar, { kind: 'remove', file: path.basename(filePath) }, record.ledger);
+              if (sidecar !== null) await updateJoycodeAgentIndex(joycodeIndexSidecar(sidecar, agentsDir), { kind: 'remove', file: path.basename(filePath) }, record.ledger);
               removed.push(filePath);
               log.debug(`Removed agent ${localName} from ${tool}`);
             }
@@ -1109,7 +1109,7 @@ export class AgentsHandler extends ResourceHandler {
         }
         if (await keepsTrackedCopy(deployed)) continue;
         await removeDelivered(ledger, deployed);
-        if (sidecar !== null) await updateJoycodeAgentIndex(sidecar, { kind: 'remove', file: path.basename(deployed) }, ledger);
+        if (sidecar !== null) await updateJoycodeAgentIndex(joycodeIndexSidecar(sidecar, destDir), { kind: 'remove', file: path.basename(deployed) }, ledger);
         log.debug(`[${installScopeName(localConfig.scope)}] Removed inactive role-scoped agent ${item.name} from ${tool}`);
       }
     }
@@ -1365,6 +1365,8 @@ type JoycodeIndexChange =
   | { readonly kind: 'upsert'; readonly file: string; readonly content: string; readonly scope: Scope }
   | { readonly kind: 'remove'; readonly file: string };
 
+type JoycodeIndexSidecar = SidecarFile & { readonly agentsDir?: string };
+
 function joycodeAgentId(contentPath: string): string {
   return `teamai-${createHash('sha1').update(contentPath).digest('hex').slice(0, 8)}`;
 }
@@ -1373,9 +1375,19 @@ function objectValue(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
+/** The agent path relative to the JoyCode index, always with JoyCode's forward slashes. */
+function relativePath(agentsDir: string, file: string): string {
+  return path.relative(path.dirname(agentsDir), path.join(agentsDir, file)).split(path.sep).join('/');
+}
+
+/** The index sits beside an agents directory, including a member-configured one. */
+function joycodeIndexSidecar(sidecar: SidecarFile, agentsDir: string): JoycodeIndexSidecar {
+  return { ...sidecar, agentsDir };
+}
+
 /** Update only TeamAI's JoyCode index entry, preserving the member's own agents and metadata. */
 export async function updateJoycodeAgentIndex(
-  sidecar: SidecarFile | null,
+  sidecar: JoycodeIndexSidecar | null,
   change: JoycodeIndexChange,
   ledger?: DeliveryLedger,
 ): Promise<void> {
@@ -1395,7 +1407,7 @@ export async function updateJoycodeAgentIndex(
       return;
     }
   }
-  const contentPath = `agents/${change.file}`;
+  const contentPath = relativePath(sidecar.agentsDir ?? path.join(path.dirname(sidecar.path), 'agents'), change.file);
   const agentId = joycodeAgentId(contentPath);
   const originalEntries = Array.isArray(index.agents) ? index.agents : [];
   const memberAlreadyIndexesFile = originalEntries.some((entry) => {
@@ -1415,8 +1427,13 @@ export async function updateJoycodeAgentIndex(
   }
   if (change.kind === 'remove') {
     if (entries.length === originalEntries.length) return;
-    if (entries.length === 0) {
-      await remove(sidecar.path);
+    // `version` and `agents` are JoyCode's own fields. Any other top-level
+    // value belongs to the member, so leave an empty index rather than erase it.
+    const hasMemberMetadata = Object.keys(index).some((key) => key !== 'version' && key !== 'agents');
+    if (entries.length === 0 && !hasMemberMetadata) {
+      if (ledger) await removeDelivered(ledger, sidecar.path);
+      // oxlint-disable-next-line teamai/remove-delivered -- no ledger means this sidecar was not a delivered copy
+      else await remove(sidecar.path);
       ledger?.recorder?.report('agents', sidecar.path);
       return;
     }
