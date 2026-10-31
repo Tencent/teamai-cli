@@ -28,11 +28,13 @@ function readRates(entry: Record<string, unknown>, suffix: string): TokenRates |
   // A provider without a separate cache price bills those tokens as input.
   const cacheRead = Rate.safeParse(entry[`cache_read_input_token_cost${suffix}`]);
   const cacheWrite = Rate.safeParse(entry[`cache_creation_input_token_cost${suffix}`]);
+  const cacheWrite1h = Rate.safeParse(entry[`cache_creation_input_token_cost_above_1hr${suffix}`]);
   return {
     input: perMillion(input.data),
     output: perMillion(output.data),
     cacheRead: perMillion(cacheRead.success ? cacheRead.data : input.data),
     cacheWrite: perMillion(cacheWrite.success ? cacheWrite.data : input.data),
+    ...(cacheWrite1h.success ? { cacheWrite1h: perMillion(cacheWrite1h.data) } : {}),
   };
 }
 
@@ -50,11 +52,13 @@ function readTiered(entry: Record<string, unknown>, speed: '' | '_priority'): Ti
 }
 
 function scaled(rates: TieredRates, multiple: number): TieredRates {
+  const times = (rate: number) => perMillion((rate * multiple) / 1_000_000);
   const scale = (r: TokenRates): TokenRates => ({
-    input: perMillion((r.input * multiple) / 1_000_000),
-    output: perMillion((r.output * multiple) / 1_000_000),
-    cacheRead: perMillion((r.cacheRead * multiple) / 1_000_000),
-    cacheWrite: perMillion((r.cacheWrite * multiple) / 1_000_000),
+    input: times(r.input),
+    output: times(r.output),
+    cacheRead: times(r.cacheRead),
+    cacheWrite: times(r.cacheWrite),
+    ...(r.cacheWrite1h === undefined ? {} : { cacheWrite1h: times(r.cacheWrite1h) }),
   });
   const base = scale(rates);
   return rates.above ? { ...base, above: rates.above.map((tier) => ({ tokens: tier.tokens, ...scale(tier) })) } : base;

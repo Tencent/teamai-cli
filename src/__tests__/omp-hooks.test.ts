@@ -409,6 +409,15 @@ describe('OMP extension: bridge payloads (#884)', () => {
     expect(lifecycle(dispatches).every((d) => d.args.join(' ').endsWith('--tool omp'))).toBe(true);
   });
 
+  it('names the session file on stop, where the dashboard reads the session\'s token usage', async () => {
+    const { on, dispatches } = loadOmpExtension();
+    const withFile = { ...main, sessionManager: { getSessionId: () => 'omp-main', getSessionFile: () => '/home/u/.omp/agent/sessions/s.jsonl' } };
+    await on.session_stop({}, withFile);
+    expect(lifecycle(dispatches).map((d) => [d.args[1], d.payload])).toEqual([
+      ['stop', { cwd: '/work/proj', session_id: 'omp-main', transcript_path: '/home/u/.omp/agent/sessions/s.jsonl' }],
+    ]);
+  });
+
   it('sends the text output and the status on post-tool-use', async () => {
     const { on, dispatches } = loadOmpExtension();
     await on.tool_result({ type: 'tool_result', toolCallId: 'c1', toolName: 'bash', input: { command: 'ls' },

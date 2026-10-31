@@ -5,13 +5,23 @@
  * `priceTokens` (./pricing.ts) prices its requests.
  */
 import type { TokenSnapshotScope, TokenUsage } from '../types.js';
+import { readAgyTranscript } from './formats/agy-transcript.js';
 import { readClaudeJsonl } from './formats/claude-jsonl.js';
+import { readCodebuddy } from './formats/codebuddy.js';
+import { readCodexRollout } from './formats/codex-rollout.js';
+import { readMuseSession } from './formats/muse-session.js';
+import { readOpencodeDb } from './formats/opencode-db.js';
+import { readPiSession } from './formats/pi-session.js';
 import type { TokenSpeed } from './pricing.js';
 
 export type { TokenSpeed } from './pricing.js';
 
-/** Where a session's usage is: the transcript its Stop hook names, and the session id for stores looked up by id. */
-export type TokenSource = { transcriptPath?: string; sessionId: string };
+/**
+ * Where a session's usage is: the transcript its Stop hook names, and the
+ * session id for stores looked up by id. `settled`: the tool is done writing,
+ * so a format that waits for usage written just after Stop reads once.
+ */
+export type TokenSource = { transcriptPath?: string; sessionId: string; settled?: boolean };
 
 /** One model request. */
 export type TokenRequest = {
@@ -21,6 +31,8 @@ export type TokenRequest = {
   timestamp: string;
   model: string;
   tokens: TokenUsage;
+  /** The part of `tokens.cacheCreation` written to a one-hour cache, which costs more than a five-minute one. */
+  cacheCreation1h?: number;
   speed: TokenSpeed;
   /** What the tool says the request cost, in micro-dollars. */
   reportedCostMicros?: number;
@@ -37,6 +49,12 @@ export type TokenReading = {
 
 const FORMATS = {
   'claude-jsonl': readClaudeJsonl,
+  'codex-rollout': readCodexRollout,
+  codebuddy: readCodebuddy,
+  'muse-session': readMuseSession,
+  'agy-transcript': readAgyTranscript,
+  'pi-session': readPiSession,
+  'opencode-db': readOpencodeDb,
 } satisfies Record<string, (source: TokenSource) => Promise<TokenReading>>;
 
 /** A transcript format teamai reads token usage from. */

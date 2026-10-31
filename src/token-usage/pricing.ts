@@ -2,8 +2,11 @@ import type { TokenUsage } from '../types.js';
 import { canonicalModelName } from './model-name.js';
 import catalogJson from './model-prices.json';
 
-/** Rates in USD per million tokens, so tokens × rate is micro-dollars. */
-export type TokenRates = { input: number; output: number; cacheRead: number; cacheWrite: number };
+/**
+ * Rates in USD per million tokens, so tokens × rate is micro-dollars.
+ * `cacheWrite` is a five-minute cache write, `cacheWrite1h` a one-hour one.
+ */
+export type TokenRates = { input: number; output: number; cacheRead: number; cacheWrite: number; cacheWrite1h?: number };
 
 /** Rates that rise once a request's prompt (input, cache reads and writes) is over `tokens`. */
 export type TieredRates = TokenRates & { above?: Array<TokenRates & { tokens: number }> };
@@ -35,13 +38,14 @@ function ratesFor(price: ModelPrice, speed: TokenSpeed, promptTokens: number): T
 
 /**
  * What one request cost, in micro-dollars: the cost the tool reported, else
- * the bundled catalog's API list price for its model, its fast and
- * long-prompt rates included. `aliases` maps a gateway's model name to the
+ * the bundled catalog's API list price for its model, its fast, long-prompt
+ * and one-hour cache-write rates included (`cacheCreation1h` is the part of
+ * `tokens.cacheCreation` written to the one-hour cache). `aliases` maps a gateway's model name to the
  * model it serves. Null when neither is known. Subscription and enterprise
  * discounts are not applied.
  */
 export function priceTokens(
-  request: { model: string; tokens: TokenUsage; speed?: TokenSpeed; reportedCostMicros?: number },
+  request: { model: string; tokens: TokenUsage; cacheCreation1h?: number; speed?: TokenSpeed; reportedCostMicros?: number },
   aliases?: Record<string, string>,
 ): PricedTokens | null {
   if (request.reportedCostMicros !== undefined) {
@@ -52,8 +56,12 @@ export function priceTokens(
   if (!price) return null;
   const { input, output, cacheRead, cacheCreation } = request.tokens;
   const rates = ratesFor(price, request.speed ?? 'standard', input + cacheRead + cacheCreation);
+  const hour = Math.min(request.cacheCreation1h ?? 0, cacheCreation);
   return {
-    costMicros: Math.round(input * rates.input + output * rates.output + cacheRead * rates.cacheRead + cacheCreation * rates.cacheWrite),
+    costMicros: Math.round(
+      input * rates.input + output * rates.output + cacheRead * rates.cacheRead
+      + (cacheCreation - hour) * rates.cacheWrite + hour * (rates.cacheWrite1h ?? rates.cacheWrite),
+    ),
     source: 'catalog',
     priceVersion: PRICE_CATALOG_VERSION,
   };

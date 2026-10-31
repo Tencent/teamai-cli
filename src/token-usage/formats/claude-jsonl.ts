@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { z } from 'zod';
 
 import { emptyTokenUsage, type TokenUsage } from '../../types.js';
@@ -14,6 +16,7 @@ const Usage = z.object({
   cache_read_input_tokens: Count,
   cache_creation_input_tokens: Count,
   speed: z.unknown().optional(),
+  cache_creation: z.object({ ephemeral_1h_input_tokens: Count }).optional().catch(undefined),
   iterations: z.array(z.unknown()).catch([]).default([]),
 });
 const Advisor = Usage.extend({ type: z.literal('advisor_message'), model: z.string().min(1) });
@@ -43,7 +46,8 @@ function tokensOf(usage: z.infer<typeof Usage>): TokenUsage {
  * Claude-format tools'): one request per assistant message. Every content
  * block of a message repeats the same `usage`, so a message counts once, by
  * `message.id`, else `requestId`. An advisor call (`usage.iterations`) runs on
- * another model and is its own request.
+ * another model and is its own request. Subagents write their own transcripts
+ * under `<session>/subagents/`, which count toward the session.
  */
 export async function readClaudeJsonl(source: TokenSource): Promise<TokenReading> {
   const tokens = emptyTokenUsage();
@@ -57,7 +61,7 @@ export async function readClaudeJsonl(source: TokenSource): Promise<TokenReading
     if (request.model && request.model !== SYNTHETIC_MODEL) requests.push({ ...request, model: request.model });
   };
   if (!source.transcriptPath) return { tokens, requests };
-  await forEachJsonLine(source.transcriptPath, ['"assistant"'], (entry) => {
+  const visit = (entry: unknown) => {
     const line = AssistantLine.safeParse(entry);
     if (!line.success) return;
     const { message, requestId, timestamp, costUSD } = line.data;
@@ -65,14 +69,22 @@ export async function readClaudeJsonl(source: TokenSource): Promise<TokenReading
     if (!key || counted.has(key)) return;
     counted.add(key);
     const speed = message.usage.speed === 'fast' ? 'fast' : 'standard';
+    const hour = message.usage.cache_creation?.ephemeral_1h_input_tokens;
     add({
       key, timestamp, model: message.model, tokens: tokensOf(message.usage), speed,
+      ...(hour ? { cacheCreation1h: hour } : {}),
       ...(costUSD === undefined ? {} : { reportedCostMicros: Math.round(costUSD * 1_000_000) }),
     });
     message.usage.iterations.forEach((iteration, index) => {
       const advisor = Advisor.safeParse(iteration);
       if (advisor.success) add({ key: `${key}:advisor:${index}`, timestamp, model: advisor.data.model, tokens: tokensOf(advisor.data), speed });
     });
-  });
+  };
+  await forEachJsonLine(source.transcriptPath, ['"assistant"'], visit);
+  const subagents = path.join(source.transcriptPath.replace(/\.jsonl$/, ''), 'subagents');
+  const files = await fs.promises.readdir(subagents).catch(() => []);
+  for (const file of files.filter((name) => name.endsWith('.jsonl')).sort()) {
+    await forEachJsonLine(path.join(subagents, file), ['"assistant"'], visit);
+  }
   return { tokens, requests };
 }

@@ -15,7 +15,7 @@ const HAIKU_5_5 = {
 const OPUS_5_5 = {
   litellm_provider: 'anthropic', mode: 'chat',
   input_cost_per_token: 4e-6, output_cost_per_token: 2e-5,
-  cache_read_input_token_cost: 2e-7, cache_creation_input_token_cost: 5e-6,
+  cache_read_input_token_cost: 2e-7, cache_creation_input_token_cost: 5e-6, cache_creation_input_token_cost_above_1hr: 8e-6,
   provider_specific_entry: { us: 1.1, fast: 2 },
 };
 const GPT_6_1_SOL = {
@@ -40,11 +40,11 @@ describe('catalogFromLiteLlm', () => {
     });
   });
 
-  it('prices fast mode from the provider multiplier', () => {
+  it('prices fast mode from the provider multiplier, and one-hour cache writes', () => {
     const catalog = catalogFromLiteLlm({ 'claude-opus-5-5': OPUS_5_5 }, SOURCE);
     expect(catalog.models['claude-opus-5-5']).toEqual({
-      input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5,
-      fast: { input: 8, output: 40, cacheRead: 0.4, cacheWrite: 10 },
+      input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5, cacheWrite1h: 8,
+      fast: { input: 8, output: 40, cacheRead: 0.4, cacheWrite: 10, cacheWrite1h: 16 },
     });
   });
 

@@ -41,6 +41,13 @@ describe('priceTokens', () => {
     expect(cost('gpt-6.1-sol', { input: 300_000, output: 1_000, cacheRead: 0, cacheCreation: 0 })).toBe(1_215_000);
   });
 
+  it('prices one-hour cache writes at their own rate', () => {
+    // Opus 5.5: input $0.004 + output $0.004 + cache read $0.001 + 1h cache write $0.0032
+    expect(cost('claude-opus-5-5', USAGE, { cacheCreation1h: 400 })).toBe(12_200);
+    // Part of the writes at each duration: 100 at 5m ($0.0005) and 300 at 1h ($0.0024).
+    expect(cost('claude-opus-5-5', USAGE, { cacheCreation1h: 300 })).toBe(11_900);
+  });
+
   it('prices fast mode at the provider\'s fast rates', () => {
     // Opus 5.5 fast mode is twice the standard price.
     expect(cost('claude-opus-5-5', USAGE, { speed: 'fast' })).toBe(22_000);

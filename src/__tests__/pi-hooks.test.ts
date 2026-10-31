@@ -481,6 +481,15 @@ describe('Pi extension: bridge payloads (#884)', () => {
     expect(lifecycle(dispatches).every((d) => d.args.join(' ').endsWith('--tool pi'))).toBe(true);
   });
 
+  it('names the session file on stop, where the dashboard reads the session\'s token usage', async () => {
+    const { on, dispatches } = loadPiExtension();
+    const withFile = { cwd: '/work/proj', sessionManager: { getSessionId: () => 'pi-sess', getSessionFile: () => '/home/u/.pi/agent/sessions/s.jsonl' } };
+    await on.agent_settled({}, withFile);
+    expect(lifecycle(dispatches).map((d) => [d.args[1], d.payload])).toEqual([
+      ['stop', { cwd: '/work/proj', session_id: 'pi-sess', transcript_path: '/home/u/.pi/agent/sessions/s.jsonl' }],
+    ]);
+  });
+
   it('sends the cached input, the text output and the status on post-tool-use', async () => {
     const { on, dispatches } = loadPiExtension();
     const end = async (toolCallId: string, isError: boolean | undefined, content: unknown[]) => {
