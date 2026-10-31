@@ -63,6 +63,12 @@ const PATH_TERMINATOR = '[\\s/\\\\"\'`()\\[\\]{}<>,;:|]';
 const SEGMENT_END = `(?=$|${PATH_TERMINATOR}|\\.(?:$|${PATH_TERMINATOR}))`;
 
 /**
+ * A root also starts a path: at the start, after text around it or `=` (`--cwd=/Users/alice/app`), or after `file://`.
+ * `/mnt/Users/alice/app` is another directory, not the repository.
+ */
+const SEGMENT_START = '(?<=^|[\\s"\'`()\\[\\]{}<>,;:|=]|file://)';
+
+/**
  * Rewrites the paths under `roots` in a text: the repository to `<repo>`, the temp roots to `<tmp>`, the rest of the
  * home directory to `~`, the longest root first. The directory name a tool encodes a workspace as
  * (`-Users-alice-app`) becomes `<project>`. `title` also rewrites a path the title was cut inside at its end
@@ -83,7 +89,7 @@ function pathRewriter({ repo, home, tmp, workdir }: LocalPathRoots, cwd: string)
   const byLength = (left: string, right: string): number => right.length - left.length;
   const roots = [...named.keys()].sort(byLength);
   const matcher = (some: string[], flags: string): RegExp | undefined =>
-    some.length > 0 ? new RegExp(`(?:${some.map(escapeRegExp).join('|')})${SEGMENT_END}`, flags) : undefined;
+    some.length > 0 ? new RegExp(`${SEGMENT_START}(?:${some.map(escapeRegExp).join('|')})${SEGMENT_END}`, flags) : undefined;
   const rooted = [matcher(roots.filter(isWindows), 'gi'), matcher(roots.filter((root) => !isWindows(root)), 'g')];
   const nameOf = (root: string): string | undefined => named.get(keyOf(root));
   const projects = [...new Set([cwd, ...repo].filter((dir) => isBelowFilesystemRoot(dir) && /^(?:\/|[A-Za-z]:[\\/])/.test(dir)).map((dir) => dir.replace(/[^a-zA-Z0-9]/g, '-')))];
