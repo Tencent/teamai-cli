@@ -31,6 +31,9 @@ interface RecallCache {
 /** Session recall cache file TTL (24 hours). */
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
+/** Keep at most this many recent queries per session cache file. */
+const MAX_TRACKED_QUERIES = 20;
+
 function sanitizeSessionId(sessionId: string): string {
     return sessionId.replace(/[^a-zA-Z0-9._-]/g, '_');
 }
@@ -88,8 +91,12 @@ function writeCache(sessionId: string, cache: RecallCache): void {
 /**
  * Record the outcome of a `teamai recall` search for quality tracking.
  * Best-effort: never throws, never blocks the caller.
+ *
+ * `query` is stored (bounded to the most recent MAX_TRACKED_QUERIES) so
+ * downstream tooling can audit what was actually asked, not just whether
+ * anything came back. Local only — the cache file never leaves the machine.
  */
-export function recordRecallQuality(sessionId: string, results: SearchResult[]): void {
+export function recordRecallQuality(sessionId: string, results: SearchResult[], query?: string): void {
     try {
         const cache = readCache(sessionId) ?? {
             queries: [],
@@ -99,6 +106,9 @@ export function recordRecallQuality(sessionId: string, results: SearchResult[]):
             hitCount: 0,
             missCount: 0,
         };
+        if (query !== undefined) {
+            cache.queries = [...cache.queries, query].slice(-MAX_TRACKED_QUERIES);
+        }
         const bestScore = results.length > 0 ? results[0].score : 0;
         const updated: RecallCache = {
             ...cache,

@@ -44,6 +44,35 @@ describe('recordRecallQuality', () => {
 
         expect(readRecallQuality('session-c')).toEqual({ topScore: 9.0, hitCount: 2, missCount: 1 });
     });
+
+    it('stores the query text in the session cache file', () => {
+        recordRecallQuality('session-d', fakeResults(5.0), 'how do retries work');
+
+        const cachePath = path.join(tmpDir, '.teamai', 'sessions', 'session-d-recall-cache.json');
+        const cache = JSON.parse(fs.readFileSync(cachePath, 'utf-8'));
+        expect(cache.queries).toEqual(['how do retries work']);
+        expect(cache.count).toBe(1);
+    });
+
+    it('appends queries across calls and keeps only the most recent 20', () => {
+        for (let i = 1; i <= 25; i++) {
+            recordRecallQuality('session-e', fakeResults(1.0), `query-${i}`);
+        }
+
+        const cachePath = path.join(tmpDir, '.teamai', 'sessions', 'session-e-recall-cache.json');
+        const cache = JSON.parse(fs.readFileSync(cachePath, 'utf-8'));
+        expect(cache.queries).toHaveLength(20);
+        expect(cache.queries[0]).toBe('query-6');
+        expect(cache.queries[19]).toBe('query-25');
+    });
+
+    it('leaves queries untouched when no query is passed', () => {
+        recordRecallQuality('session-f', fakeResults(5.0));
+
+        const cachePath = path.join(tmpDir, '.teamai', 'sessions', 'session-f-recall-cache.json');
+        const cache = JSON.parse(fs.readFileSync(cachePath, 'utf-8'));
+        expect(cache.queries).toEqual([]);
+    });
 });
 
 describe('readRecallQuality', () => {

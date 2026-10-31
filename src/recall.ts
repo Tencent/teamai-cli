@@ -963,7 +963,7 @@ export async function recall(
   let runId: string | undefined;
   if (process.env.TEAMAI_RECALL_DISABLED !== '1' && !options.dryRun) {
     const session = await agentSessionFromEnv();
-    recordRecallQuality(session.id ?? deriveSessionId({}), topResults);
+    recordRecallQuality(session.id ?? deriveSessionId({}), topResults, query);
     const activeConfig = projectConfig ?? scopeIndexes[0]?.config;
     if (activeConfig && !projectUnreadable) {
       runId = await recordRun(activeConfig, topResults, session, options.caller, projectConfig !== null);
