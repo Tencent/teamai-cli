@@ -14,6 +14,8 @@ import workflowBoundaries from './rules/workflow-boundaries.js';
 
 import windowsTests from './rules/windows-tests.js';
 
+import rulesLocate from './rules/rules-locate.js';
+
 export default definePlugin({
   meta: { name: 'teamai' },
   rules: {
@@ -22,6 +24,7 @@ export default definePlugin({
     'no-provider-merge': noProviderMerge,
     'workflow-boundaries': workflowBoundaries,
     'windows-tests': windowsTests,
+    'rules-locate': rulesLocate,
     'home-env': homeEnv,
     'remove-delivered': removeDelivered,
     'learnings-root': learningsRoot,

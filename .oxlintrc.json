@@ -67,7 +67,8 @@
     "teamai/launch-env": "error",
     "teamai/workflow-boundaries": "error",
     "teamai/no-provider-merge": "error",
-    "teamai/windows-tests": "error"
+    "teamai/windows-tests": "error",
+    "teamai/rules-locate": "error"
   },
   "overrides": [
     {

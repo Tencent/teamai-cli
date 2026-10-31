@@ -1076,15 +1076,6 @@ scope: 'user',
   });
 });
 
-describe('OpenCode rules activation does not ask locate for mcp', () => {
-  it('rules.ts does not call locate with resource mcp', async () => {
-    const source = await fse.readFile(new URL('../resources/rules.ts', import.meta.url), 'utf8');
-    const resources = [...source.matchAll(/\blocate\s*\(\s*[^,]+,\s*(['"])([^'"]+)\1/g)].map((match) => match[2]);
-    expect(resources).toContain('rules');
-    expect(resources).not.toContain('mcp');
-  });
-});
-
 describe('RulesHandler.pullAllRules — OpenCode instructions activation', () => {
   let tmpDir: string;
   let homeDir: string;
