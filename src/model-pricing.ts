@@ -15,13 +15,23 @@ interface TokenRates {
   cacheWrite: number;
 }
 
-const RATES: Array<{ match: RegExp; rates: TokenRates }> = [
+/** Claude Haiku 5.5 charges the higher `longPrompt` rates once a request's prompt exceeds this. */
+const LONG_PROMPT_TOKENS = 100_000;
+
+const RATES: Array<{ match: RegExp; rates: TokenRates; longPrompt?: TokenRates }> = [
   { match: /(?:fable|mythos)[-_ ]?5[-_.]?1/i, rates: { input: 10, output: 50, cacheRead: 0.25, cacheWrite: 12.5 } },
   { match: /(?:fable|mythos)[-_ ]?5/i, rates: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 } },
+  { match: /opus[-_ ]?5[-_.]?5/i, rates: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 } },
   { match: /opus[-_ ]?(?:5|4[-_.]?(?:8|7|6|5))/i, rates: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } },
   { match: /opus[-_ ]?4(?:[-_.]?1)?/i, rates: { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 } },
+  { match: /sonnet[-_ ]?5[-_.]?5/i, rates: { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 } },
   { match: /sonnet[-_ ]?5/i, rates: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 } },
   { match: /sonnet[-_ ]?4(?:[-_.]?(?:6|5))?/i, rates: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 } },
+  {
+    match: /haiku[-_ ]?5[-_.]?5/i,
+    rates: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 },
+    longPrompt: { input: 0.5, output: 2.5, cacheRead: 0.05, cacheWrite: 0.625 },
+  },
   { match: /haiku[-_ ]?4[-_.]?5/i, rates: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 } },
   { match: /haiku[-_ ]?3[-_.]?5/i, rates: { input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1 } },
 ];
@@ -43,7 +53,9 @@ export function estimateClaudeRequest(
   const resolved = aliases?.[model] ?? model;
   const entry = RATES.find(({ match }) => match.test(resolved));
   if (!entry) return null;
-  const { rates } = entry;
+  // A Haiku 5.5 request is priced on its own prompt length, cache reads and writes included.
+  const promptTokens = usage.input + usage.cacheRead + usage.cacheCreation;
+  const rates = entry.longPrompt && promptTokens > LONG_PROMPT_TOKENS ? entry.longPrompt : entry.rates;
   return {
     pricedRequests: 1,
     // At a USD-per-million-token rate, tokens × rate equals micro-US-dollars.

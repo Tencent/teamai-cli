@@ -74,6 +74,8 @@ const WITH_PATH = /^with\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+|\[[^\]]*\]?)*$/;
 const ANY_BRACES = /\{\{((?:(?!\{\{)[\s\S])*?)\}\}/g;
 /** Those not preceded by `$`. */
 const BRACES = new RegExp(`(?<!\\$)${ANY_BRACES.source}`, 'g');
+/** `\{{`: a literal `{{`. Only the backslash is dropped, and nothing after it is read as a template. */
+const ESCAPED = '\\{{';
 
 const WITH_MESSAGE = 'with is read only as one path, such as with.<name>; an expression reads only inputs, steps and item';
 
@@ -100,8 +102,9 @@ function readOf(inner: string): { expression: Expression } | { path: WithPath } 
 
 /**
  * Splits `text` into literal text and reads. A `{{ … }}` that starts with a path is a template, and so is one between
- * them that reads like an expression, as written or with a mistake in it; every template must parse. `item` is
- * whether an item is bound where the text renders; where none is, `{{ item }}` is literal text.
+ * them that reads like an expression, as written or with a mistake in it; every template must parse. `\{{` is a
+ * literal `{{`, so `text.replaceAll('{{', '\\{{')` renders as `text`. `item` is whether an item is bound where the
+ * text renders; where none is, `{{ item }}` is literal text.
  */
 export function parseTemplate(text: string, item: boolean): TemplateParse {
   const { recognized, path } = item ? SYNTAX.bound : SYNTAX.unbound;
@@ -122,13 +125,19 @@ export function parseTemplate(text: string, item: boolean): TemplateParse {
     }
     if (index < segment.length) template.push(segment.slice(index));
   };
-  let index = 0;
-  for (const match of text.matchAll(recognized)) {
-    literal(text.slice(index, match.index));
-    read(match[0], match[1] ?? '');
-    index = match.index + match[0].length;
-  }
-  literal(text.slice(index));
+  const scan = (piece: string): void => {
+    let index = 0;
+    for (const match of piece.matchAll(recognized)) {
+      literal(piece.slice(index, match.index));
+      read(match[0], match[1] ?? '');
+      index = match.index + match[0].length;
+    }
+    literal(piece.slice(index));
+  };
+  text.split(ESCAPED).forEach((piece, at) => {
+    if (at > 0) template.push('{{');
+    scan(piece);
+  });
   return errors.length > 0 ? { ok: false, errors } : { ok: true, template };
 }
 

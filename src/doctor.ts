@@ -35,7 +35,7 @@ import {
 } from './types.js';
 import { hookSettingsFile, installOf, isInstalledFor, locate, ownOf, writable, type Gate, type Install } from './locate.js';
 import { samePlace } from './resources/places.js';
-import { describeInvalidToolHomes, envToolHome, realHost, reloadToolHomes, toolHomesPath } from './tool-home.js';
+import { describeInvalidToolHomes, envToolHome, ompProfile, realHost, reloadToolHomes, toolHomesPath } from './tool-home.js';
 import { isToolId } from './tools.js';
 import { isCodexTool } from './utils/tool-names.js';
 import { TEAMAI_HOOK_SUBCOMMANDS, isCodexTrustGatedTool, codexTrustReminder, keptTeamHookEntries, readCodexHookTrustForScope } from './hooks.js';
@@ -344,6 +344,27 @@ function buildToolRootChecks(localConfig: LocalConfig, teamConfig: TeamaiConfig 
     });
   }
   return checks;
+}
+
+function buildOhMyPiPiHomeCheck(localConfig: LocalConfig, teamConfig: TeamaiConfig | null): Check[] {
+  // This is only a gap when the member enabled OMP without Pi: with both
+  // selected, the Pi-owned directory is expected to receive Pi's own files.
+  if (!teamConfig?.toolPaths.omp || isAgentExcluded(localConfig, 'omp') || !isAgentExcluded(localConfig, 'pi')) return [];
+  const piHome = process.env.PI_CODING_AGENT_DIR?.trim();
+  if (!piHome) return [];
+  // Oh My Pi's own resolver gives a named OMP_PROFILE precedence over Pi's
+  // default-agent fallback. PI_CONFIG_DIR alone still selects the default
+  // profile, so it does not make this overlap safe.
+  const { variable: selector, name: profile } = ompProfile(process.env);
+  if (profile !== null && profile !== 'default') return [];
+  return [{
+    name: 'Oh My Pi shares Pi’s default agent home',
+    source: 'local',
+    check: async () => false,
+    fix: `PI_CODING_AGENT_DIR is ${piHome}; Oh My Pi also reads that directory for its default profile, but it belongs to Pi. `
+      + 'teamai keeps Oh My Pi files under its own OMP home to avoid overwriting Pi files. '
+      + `Set ${selector ?? 'OMP_PROFILE'} to a named profile, or run \`teamai uninstall --agent omp\` to stop syncing Oh My Pi in this install.`,
+  }];
 }
 
 function buildToolHomeChecks(localConfig: LocalConfig): Check[] {
@@ -798,6 +819,7 @@ export async function buildChecks(ctx: DoctorContext, stage: CheckStage = 'docto
     ...await buildGitHookChecks(localConfig, stage),
     ...await buildTrackedHookIndexCheck(localConfig),
     ...buildToolRootChecks(localConfig, teamConfig),
+    ...buildOhMyPiPiHomeCheck(localConfig, teamConfig),
     ...buildToolHomeChecks(localConfig),
     ...await buildEnabledToolChecks(ctx),
     ...await buildHeldSurfaceChecks(ctx),

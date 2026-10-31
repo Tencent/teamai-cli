@@ -142,12 +142,17 @@ function openclawState(host: Host): EnvToolHome | null {
   return profile ? { dir: host.path.join(host.home, dir), variable: 'OPENCLAW_PROFILE', kind: 'own' } : null;
 }
 
+/** OMP_PROFILE wins whenever it is defined, even blank; a named profile does not use Pi's default agent directory. */
+export function ompProfile(env: Readonly<Record<string, string | undefined>>): { readonly variable: 'OMP_PROFILE' | 'PI_PROFILE' | null; readonly name: string | null } {
+  const variable = env.OMP_PROFILE !== undefined ? 'OMP_PROFILE' : env.PI_PROFILE !== undefined ? 'PI_PROFILE' : null;
+  return { variable, name: variable === null ? null : env[variable]?.trim() || null };
+}
+
 function ompAgentDir(host: Host): EnvToolHome | null {
   const p = host.path;
   const { env } = host;
   const base = p.join(host.home, env.PI_CONFIG_DIR || '.omp');
-  const selector = env.OMP_PROFILE !== undefined ? 'OMP_PROFILE' : env.PI_PROFILE !== undefined ? 'PI_PROFILE' : null;
-  const profile = selector === null ? undefined : env[selector]?.trim();
+  const { variable: selector, name: profile } = ompProfile(env);
   if (selector !== null && profile && profile !== 'default') return { dir: p.join(base, 'profiles', profile, 'agent'), variable: selector, kind: 'own' };
   if (env.PI_CONFIG_DIR) return { dir: p.join(base, 'agent'), variable: 'PI_CONFIG_DIR', kind: 'own' };
   return selector !== null && profile ? { dir: p.join(base, 'agent'), variable: selector, kind: 'own' } : null;
@@ -221,8 +226,9 @@ function followsActiveProfile(tool: ToolId): boolean {
  */
 export async function toolHomesAcrossProfiles(tool: 'hermes' | 'omp', host: Host = realHost()): Promise<string[]> {
   const p = host.path;
-  const moves = [recordedHomes(host)[tool], envToolHome(tool, host)?.dir].filter((home) => home !== undefined);
-  const homes = [toolHome(tool, host)];
+  const history = reloadToolHomesHistory()[tool] ?? [];
+  const moves = [recordedHomes(host)[tool], envToolHome(tool, host)?.dir, ...history].filter((home): home is string => home !== undefined);
+  const homes = [toolHome(tool, host), ...history];
   switch (tool) {
     case 'hermes':
       // A `profiles/<name>` home sits in a root that holds the default and the other profiles.
@@ -297,6 +303,46 @@ export function expandHomeOn(value: string, host: Pick<Host, 'home' | 'platform'
 /** The tool homes init and pull recorded on this machine: one file for every scope, as the homes are the machine's. */
 export function toolHomesPath(): string {
   return path.join(getUserHome(), '.teamai', 'tool-homes.json');
+}
+
+/** Homes replaced by a later `init`, retained so uninstall can clean every location teamai wrote. */
+export function toolHomesHistoryPath(): string {
+  return path.join(getUserHome(), '.teamai', 'tool-homes-history.json');
+}
+
+export type ToolHomesHistory = Readonly<Record<string, readonly string[]>>;
+
+const ToolHomesHistorySchema = z.record(
+  z.string(),
+  z.array(z.string().refine((dir) => path.isAbsolute(dir), 'must be an absolute directory')),
+);
+
+/** Read the old homes retained across re-init, treating a missing file as an empty history. */
+export function reloadToolHomesHistory(): ToolHomesHistory {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(toolHomesHistoryPath(), 'utf8');
+  } catch (e) {
+    if (e instanceof Error && 'code' in e && e.code === 'ENOENT') return {};
+    return {};
+  }
+  try {
+    const parsed = ToolHomesHistorySchema.safeParse(JSON.parse(raw));
+    return parsed.success ? parsed.data : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Retain a replaced home once; the caller holds the tool-homes lock. */
+export async function rememberToolHome(tool: string, home: string): Promise<void> {
+  const history: Record<string, string[]> = Object.fromEntries(
+    Object.entries(reloadToolHomesHistory()).map(([key, homes]) => [key, [...homes]]),
+  );
+  const homes = history[tool] ?? [];
+  if (homes.includes(home)) return;
+  history[tool] = [...homes, home];
+  await writeJsonAtomic(toolHomesHistoryPath(), history);
 }
 
 export function describeInvalidToolHomes(error: string): string {

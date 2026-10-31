@@ -6,7 +6,7 @@ import { resolveOpenclawStateDir } from '../openclaw-home.js';
 import type { LocalConfig } from '../types.js';
 import { skillRoots } from '../usage-tracker.js';
 import { getUserHome } from '../utils/home.js';
-import { realHost, saveToolHomes, toolHome, toolHomesPath } from '../tool-home.js';
+import { realHost, reloadToolHomesHistory, saveToolHomes, toolHome, toolHomesHistoryPath, toolHomesPath } from '../tool-home.js';
 import { recordToolHomes } from '../tool-home-record.js';
 
 describe('tool homes from a session whose directory was removed (#810)', () => {
@@ -64,6 +64,19 @@ describe('a home recorded on this machine', () => {
 
     expect(await recordToolHomes('pull')).toEqual([]);
     expect(toolHome('hermes')).toBe(winner);
+  });
+
+  it('keeps a replaced home in history so uninstall can find it after re-init', async () => {
+    const oldHome = path.join(tmp, 'hermes-old');
+    const newHome = path.join(tmp, 'hermes-new');
+    fs.mkdirSync(oldHome, { recursive: true });
+    vi.stubEnv('HERMES_HOME', oldHome);
+    await recordToolHomes('init');
+    vi.stubEnv('HERMES_HOME', newHome);
+    await recordToolHomes('init');
+
+    expect(reloadToolHomesHistory()).toEqual({ hermes: [oldHome] });
+    expect(fs.existsSync(toolHomesHistoryPath())).toBe(true);
   });
 
   it('is the one a pull read under the lock, even when the file kept its size and time', async () => {

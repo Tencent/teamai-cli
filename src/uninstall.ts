@@ -1134,6 +1134,15 @@ async function buildRemovalPlan(
     const rulesDirs = cleanupOf(await locate(tool, 'rules', install)).flatMap((place) => place.kind === 'dir' ? [place.path] : []);
     rulesDirsByTool.set(tool, rulesDirs);
     const hooks = await locate(tool, 'hooks', install);
+    const skillLocation = await locate(tool, 'skills', install);
+    const skillWrites = new Set(writesOf(skillLocation).map((place) => place.path));
+    // Hermes and Oh My Pi can keep writing skills in an earlier home after a
+    // re-init/profile switch. The home history is authoritative for those
+    // adapters, so uninstall must inspect their native skills roots as well as
+    // the currently resolved location.
+    if (tool === 'hermes' || tool === 'omp') {
+      for (const home of await toolHomesAcrossProfiles(tool)) skillWrites.add(path.join(home, 'skills'));
+    }
     perTool.set(
       tool,
       await discoverToolResources(
@@ -1142,7 +1151,7 @@ async function buildRemovalPlan(
         // User-scope Copilot skills are relative to its home.
         tool === COPILOT_TOOL_ID && localConfig.scope === 'user' ? toolHome(COPILOT_TOOL_ID) : resolveBaseDir(localConfig),
         baseDir,
-        writesOf(await locate(tool, 'skills', install)).map((place) => place.path),
+        [...skillWrites],
         await locate(tool, 'blocks', install),
         rulesDirs,
         cleanupOf(hooks).flatMap((place) => place.kind === 'dir' ? [place.path] : []),
