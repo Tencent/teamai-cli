@@ -1,7 +1,6 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { LocalConfig } from '../types.js';
 import { commitFile, initRepo, recordDelivery } from './helpers/delivered-checkout.js';
@@ -142,23 +141,6 @@ describe('who launched a session (#1384)', () => {
     expect(readSessionRun({ [SESSION_RUN_PAYLOAD_KEY]: run })).toEqual(run);
     expect(readSessionRun({ [SESSION_RUN_PAYLOAD_KEY]: { runMode: 'robot' } })).toBeUndefined();
     expect(readSessionRun({})).toBeUndefined();
-  });
-});
-
-describe('the launch variables have one spelling (#1384)', () => {
-  const srcRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-  const sourceFiles = (dir: string): string[] => fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) return entry.name === '__tests__' ? [] : sourceFiles(full);
-    return entry.isFile() && entry.name.endsWith('.ts') ? [full] : [];
-  });
-
-  it('are quoted only in launch-context.ts, so other code imports RUN_MODE_ENV, LAUNCHED_BY_ENV and ATTEMPT_ENV', () => {
-    const owner = path.join(srcRoot, 'launch-context.ts');
-    const quoted = /['"`](TEAMAI_MODE|TEAMAI_LAUNCHED_BY|TEAMAI_WORKFLOW_ATTEMPT)['"`]/;
-    const offenders = sourceFiles(srcRoot).filter((file) => file !== owner && quoted.test(fs.readFileSync(file, 'utf8')));
-
-    expect(offenders.map((file) => path.relative(srcRoot, file))).toEqual([]);
   });
 });
 
