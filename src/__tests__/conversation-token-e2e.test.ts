@@ -16,6 +16,7 @@ import {
 } from '../dashboard-collector.js';
 import { computePromptTokenDelta, mergePromptTokenStats } from '../team-push.js';
 import { summarizeConversation } from '../digest.js';
+import { PRICE_CATALOG_VERSION } from '../token-usage/pricing.js';
 import type { UserStats } from '../types.js';
 
 // ─── End-to-end: conversation-turn count + token usage ───
@@ -110,7 +111,7 @@ describe('conversation + token metric — end to end', () => {
     const stopEvent = events.find((e) => e.type === 'stop')!;
     // msg_A counted once (not twice) + msg_B:
     expect(stopEvent.tokens).toEqual({ input: 120, output: 130, cacheRead: 2500, cacheCreation: 200 });
-    expect(stopEvent.requestMetrics).toMatchObject({ pricedRequests: 2, priceVersion: 'anthropic-2026-09-09' });
+    expect(stopEvent.requestMetrics).toMatchObject({ pricedRequests: 2, priceVersion: PRICE_CATALOG_VERSION });
     expect(stopEvent.requestDaily).toMatchObject({
       '2026-09-01': { pricedRequests: 1 },
       '2026-09-02': { pricedRequests: 1 },
