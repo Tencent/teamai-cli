@@ -317,7 +317,8 @@ describe('session push of a session a workflow step ran', () => {
     const files = archived(team.origin, 'main');
     expect(files.filter((file) => file.endsWith('.jsonl')), files.join('\n')).toEqual([
       expect.stringContaining(`sessions/repos/${encodeRepoIdentity('github.com/acme/product')}/`),
-    ]);    const [index] = files.filter((file) => file.endsWith('_index.json'));
+    ]);
+    const index = files.find((file) => file.endsWith('_index.json'));
     expect(JSON.parse(git(team.checkout, 'show', `origin/main:${index}`))).toMatchObject({ sessions: [{ cwd: '' }] });
   });
 });
@@ -481,7 +482,7 @@ describe('session commands without --repo-root outside a workspace install', () 
     const answers = ['Found two problems.', 'The second one is in the parser.'];
     await claudeSession(path.join(checkout, 'packages', 'api'), { answers });
     expect((await session('push', '--source', 'claude-code', '--cwd', path.join(checkout, 'packages', 'api'), '-y')).code).toBe(0);
-    const [meta] = archived(team.origin, 'teamai-reports').filter((file) => file.endsWith('.meta.json'));
+    const meta = archived(team.origin, 'teamai-reports').find((file) => file.endsWith('.meta.json')) ?? '';
     expect(JSON.parse(git(team.checkout, 'show', `origin/teamai-reports:${meta}`))).toMatchObject({ origin: { cwd: 'packages/api' } });
     const other = path.join(tmp, 'other-machine');
     git(tmp, 'clone', '-q', origin, other);
