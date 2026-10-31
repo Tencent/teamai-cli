@@ -1,6 +1,6 @@
 import type { TokenUsage } from '../types.js';
 import { canonicalModelName } from './model-name.js';
-import catalogJson from './model-prices.json';
+import catalogJson from './model-prices.json' with { type: 'json' };
 
 /**
  * Rates in USD per million tokens, so tokens × rate is micro-dollars.
