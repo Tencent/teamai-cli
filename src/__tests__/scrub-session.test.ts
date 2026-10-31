@@ -183,6 +183,21 @@ describe('scrubSession with localPaths, for a session published to the team arch
     expect(textOf(session)).toEqual({ type: 'text', text: 'open <repo>\\src\\sync.ts' });
   });
 
+  it('rewrites a Windows path spelled in another case, or escaped in JSON a tool returned', () => {
+    const session: Session = {
+      ...said('open c:\\users\\me\\app\\src\\sync.ts', 'C:\\Users\\me\\app'),
+      messages: [
+        { role: 'user', content: [{ type: 'text', text: 'open c:\\users\\me\\app\\src\\sync.ts' }] },
+        { role: 'user', content: [{ type: 'tool_result', callId: 't1', content: JSON.stringify({ file: 'C:\\Users\\me\\app\\src\\retry.ts' }), isError: false }] },
+      ],
+    };
+
+    const { session: published } = scrubSession(session, { localPaths: windows });
+
+    expect(published.messages[0].content[0]).toEqual({ type: 'text', text: 'open <repo>\\src\\sync.ts' });
+    expect(published.messages[1].content[0]).toMatchObject({ content: JSON.stringify({ file: '<repo>\\src\\retry.ts' }) });
+  });
+
   it('rewrites the title, thinking, tool results and string metadata', () => {
     const session: Session = {
       ...makeSession(),

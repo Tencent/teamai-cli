@@ -59,24 +59,26 @@ const SEGMENT_END = '(?![A-Za-z0-9_-]|\\.[A-Za-z0-9_-])';
  * (`… and /Users/alice/ap`), as the shortest root it starts.
  */
 function pathRewriter({ repo, home, tmp }: LocalPathRoots, cwd: string): { text: (text: string) => string; title: (title: string) => string } {
-  const spellings = (root: string): string[] => (root.includes('\\') ? [root, root.replaceAll('\\', '/')] : [root]);
+  // A Windows root also as forward slashes, and as JSON escapes it, as a tool result that holds JSON text does.
+  const spellings = (root: string): string[] => (root.includes('\\') ? [root, root.replaceAll('\\', '/'), root.replaceAll('\\', '\\\\')] : [root]);
+  // Keyed by lower case and matched ignoring case: Windows and macOS paths are case-insensitive (`c:\users\…`).
   const named = new Map<string, string>();
   for (const [roots, name] of [[home, '~'], [tmp, '<tmp>'], [repo, '<repo>']] as const) {
-    for (const root of roots.flatMap(spellings)) if (isBelowFilesystemRoot(root)) named.set(root.replace(/[\\/]+$/, ''), name);
+    for (const root of roots.flatMap(spellings)) if (isBelowFilesystemRoot(root)) named.set(root.replace(/[\\/]+$/, '').toLowerCase(), name);
   }
   if (named.size === 0) return { text: (text) => text, title: (title) => title };
   const byLength = (left: string, right: string): number => right.length - left.length;
   const roots = [...named.keys()].sort(byLength);
-  const rooted = new RegExp(`(?:${roots.map(escapeRegExp).join('|')})${SEGMENT_END}`, 'g');
+  const rooted = new RegExp(`(?:${roots.map(escapeRegExp).join('|')})${SEGMENT_END}`, 'gi');
   const projects = [...new Set([cwd, ...repo].filter((dir) => isBelowFilesystemRoot(dir) && /^(?:\/|[A-Za-z]:[\\/])/.test(dir)).map((dir) => dir.replace(/[^a-zA-Z0-9]/g, '-')))];
   const project = new RegExp(`(?<=[\\\\/])(?:${projects.sort(byLength).map(escapeRegExp).join('|')})(?=$|[\\\\/])`, 'g');
   const text = (value: string): string => {
-    const next = value.replace(rooted, (root) => named.get(root) ?? root);
+    const next = value.replace(rooted, (root) => named.get(root.toLowerCase()) ?? root);
     return projects.length > 0 ? next.replace(project, '<project>') : next;
   };
   const title = (value: string): string => {
     const cut = /(?:[A-Za-z]:)?[\\/][^\s<]{2,}$/.exec(value);
-    const root = cut && roots.findLast((candidate) => candidate.length > cut[0].length && candidate.startsWith(cut[0]));
+    const root = cut && roots.findLast((candidate) => candidate.length > cut[0].length && candidate.startsWith(cut[0].toLowerCase()));
     return cut && root ? text(value.slice(0, cut.index)) + (named.get(root) ?? '') : text(value);
   };
   return { text, title };
