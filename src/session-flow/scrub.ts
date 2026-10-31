@@ -51,11 +51,15 @@ const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/
 /** A directory below a filesystem root: `/`, `C:\` and the like would rewrite every path. */
 const isBelowFilesystemRoot = (dir: string): boolean => !/^(?:[A-Za-z]:)?[\\/]*$/.test(dir);
 
+/** What can follow a path in text: a separator, whitespace, a quote, a bracket or punctuation. */
+const PATH_TERMINATOR = '[\\s/\\\\"\'`()\\[\\]{}<>,;:|]';
+
 /**
- * A root matches only as a whole path segment: `/Users/alice/app` is not the start of `/Users/alice/app2` or
- * `/Users/alice/app.old`, but is in `ls /Users/alice/app.` at the end of a sentence.
+ * A root matches only as a whole path segment, followed by the end, a separator or text around the path:
+ * `/Users/alice/app` is not the start of `/Users/alice/app2`, `/Users/alice/app@2` or `/Users/alice/app.old`, but is
+ * in `ls /Users/alice/app.` at the end of a sentence.
  */
-const SEGMENT_END = '(?![A-Za-z0-9_-]|\\.[A-Za-z0-9_-])';
+const SEGMENT_END = `(?=$|${PATH_TERMINATOR}|\\.(?:$|${PATH_TERMINATOR}))`;
 
 /**
  * Rewrites the paths under `roots` in a text: the repository to `<repo>`, the temp roots to `<tmp>`, the rest of the
