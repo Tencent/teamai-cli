@@ -107,7 +107,7 @@ Local feedback affects ranking on the next index rebuild (for example, `teamai p
 
 Index rebuilds reuse unchanged files' parsed tokens. Changes, deletions, source selection and votes still take effect on every build. `~/.teamai/debug.log` reports how many files were reused, rebuilt or dropped. Older indexes and a different Node/ICU version trigger a full parse once.
 
-When the log has runs, `teamai stats` lists the last 10 sessions that ran recall.
+When the log has runs, `teamai stats` lists the last 10 sessions that ran recall: their runs, the docs recalled and adopted, and how many runs the session opened a `Related:` line's file from.
 
 ### Enabling / Disabling Recall
 

@@ -20,6 +20,7 @@ import type { EnvAgentSession } from './utils/session-id.js';
 import { classifyTreePath, teamwikiCodebaseSlug } from './asset-relations.js';
 import type { AssetRelationType, RelationVia } from './asset-relations.js';
 import { caseFoldKey } from './manifest-schema.js';
+import type { RelatedRef } from './recall-log.js';
 import type { SearchIndexEntry } from './types.js';
 import { rulePaths } from './resources/team-rule.js';
 import { matchGlob } from './utils/glob.js';
@@ -463,6 +464,58 @@ export function resolveRelationTarget(ctx: RelationContext, target: string): str
 }
 
 /**
+ * One relation of a hit, as printed: the stdout line and the ref a run
+ * records for it (#1562). The two are built together so the recall log can
+ * only ever hold exactly what stdout showed.
+ */
+interface PrintedRelation {
+  /** `Related: → RELATION path` (or `←`). */
+  line: string;
+  ref: RelatedRef;
+}
+
+/**
+ * The printed relations for one hit, in print order (see
+ * {@link relationLines}), capped at {@link RELATION_LINES_CAP}.
+ */
+function printedRelations(
+  ctx: RelationContext,
+  entry: SearchIndexEntry,
+  derived?: { out?: ReadonlySet<string>; in?: ReadonlySet<string> },
+): PrintedRelation[] {
+  if (!entry.treePath) return [];
+  const relations: PrintedRelation[] = [];
+  const seen = new Set<string>();
+  const push = (direction: 'out' | 'in', relation: AssetRelationType, otherEnd: string): void => {
+    const printed = resolveRelationTarget(ctx, otherEnd);
+    if (printed === null) return;
+    const key = `${direction}${relation}${otherEnd}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    relations.push({
+      line: `Related: ${direction === 'out' ? '→' : '←'} ${relation} ${printed}`,
+      ref: { relation, direction, path: printed },
+    });
+  };
+  const own = entry.related ?? [];
+  const incoming = [...(ctx.incoming.get(entry.treePath) ?? [])].sort((a, b) => a.from.localeCompare(b.from));
+  for (const r of own) if (r.via === 'declared') push('out', r.relation, r.target);
+  for (const r of incoming) if (r.via === 'declared') push('in', r.relation, r.from);
+  // A declared relation to the same asset wins over a derived or linked one.
+  const declaredOut = new Set(own.filter((r) => r.via === 'declared').map((r) => r.target));
+  const declaredIn = new Set(incoming.filter((r) => r.via === 'declared').map((r) => r.from));
+  for (const target of [...(derived?.out ?? [])].sort()) {
+    if (!declaredOut.has(target)) push('out', 'MAPS_TO', target);
+  }
+  for (const from of [...(derived?.in ?? [])].sort()) {
+    if (!declaredIn.has(from)) push('in', 'MAPS_TO', from);
+  }
+  for (const r of own) if (r.via === 'link' && !declaredOut.has(r.target)) push('out', r.relation, r.target);
+  for (const r of incoming) if (r.via === 'link' && !declaredIn.has(r.from)) push('in', r.relation, r.from);
+  return relations.slice(0, RELATION_LINES_CAP);
+}
+
+/**
  * The `Related:` lines for one hit: declared outgoing first, then declared
  * incoming, then path-derived, then link outgoing, then link incoming; within
  * each group outgoing keeps the file's order and incoming sorts by the
@@ -475,33 +528,41 @@ export function relationLines(
   entry: SearchIndexEntry,
   derived?: { out?: ReadonlySet<string>; in?: ReadonlySet<string> },
 ): string[] {
-  if (!entry.treePath) return [];
-  const lines: string[] = [];
-  const seen = new Set<string>();
-  const push = (arrow: '→' | '←', relation: AssetRelationType, otherEnd: string): void => {
-    const printed = resolveRelationTarget(ctx, otherEnd);
-    if (printed === null) return;
-    const key = `${arrow}${relation}${otherEnd}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    lines.push(`Related: ${arrow} ${relation} ${printed}`);
-  };
-  const own = entry.related ?? [];
-  const incoming = [...(ctx.incoming.get(entry.treePath) ?? [])].sort((a, b) => a.from.localeCompare(b.from));
-  for (const r of own) if (r.via === 'declared') push('→', r.relation, r.target);
-  for (const r of incoming) if (r.via === 'declared') push('←', r.relation, r.from);
-  // A declared relation to the same asset wins over a derived or linked one.
-  const declaredOut = new Set(own.filter((r) => r.via === 'declared').map((r) => r.target));
-  const declaredIn = new Set(incoming.filter((r) => r.via === 'declared').map((r) => r.from));
-  for (const target of [...(derived?.out ?? [])].sort()) {
-    if (!declaredOut.has(target)) push('→', 'MAPS_TO', target);
-  }
-  for (const from of [...(derived?.in ?? [])].sort()) {
-    if (!declaredIn.has(from)) push('←', 'MAPS_TO', from);
-  }
-  for (const r of own) if (r.via === 'link' && !declaredOut.has(r.target)) push('→', r.relation, r.target);
-  for (const r of incoming) if (r.via === 'link' && !declaredIn.has(r.from)) push('←', r.relation, r.from);
-  return lines.slice(0, RELATION_LINES_CAP);
+  return printedRelations(ctx, entry, derived).map((p) => p.line);
+}
+
+/**
+ * The printed relations of every result, in print order: what
+ * {@link formatResults} shows and a run records (#1562). Computed once per
+ * recall so stdout and the log cannot diverge.
+ */
+function resultsRelations(
+  results: ScopedSearchResult[],
+  relationContexts: ReadonlyMap<string, RelationContext>,
+): PrintedRelation[][] {
+  const fallbackCtx = relationContexts.values().next().value as RelationContext | undefined;
+  // Path-derived rule→page edges, computed once over the pages this recall
+  // already loaded (#1563 part 1). Never stored.
+  const derived = computeDerivedRelations(results, relationContexts);
+  return results.map(({ entry, scope }) => {
+    // Relations resolve inside the scope the hit came from. A hit with an
+    // explicit scope never borrows another scope's context: when that
+    // scope has no index there is nothing it can see, and falling back
+    // would attach a user relation to a workspace page.
+    const ctx = scope !== undefined ? relationContexts.get(scope) : fallbackCtx;
+    if (!ctx) return [];
+    return printedRelations(ctx, entry, derived && entry.treePath
+      ? { out: derived.out.get(entry.treePath), in: derived.in.get(entry.treePath) }
+      : undefined);
+  });
+}
+
+/** The {@link RelatedRef}s of every result, as the run line records them (#1562). */
+export function relatedRefsOf(
+  results: ScopedSearchResult[],
+  relationContexts: ReadonlyMap<string, RelationContext>,
+): RelatedRef[][] {
+  return resultsRelations(results, relationContexts).map((list) => list.map((p) => p.ref));
 }
 
 /**
@@ -564,10 +625,8 @@ export function formatResults(
   const lines: string[] = [];
   lines.push(`--- [teamai:recall:start] --- (${results.length} result${results.length !== 1 ? 's' : ''})${runId ? ` run=${runId}` : ''}`);
   lines.push('');
-  const fallbackCtx = relationContexts?.values().next().value as RelationContext | undefined;
-  // Path-derived rule→page edges, computed once over the pages this recall
-  // already loaded (#1563 part 1). Never stored.
-  const derived = relationContexts ? computeDerivedRelations(results, relationContexts) : undefined;
+  // What this render prints and a run records, per result (#1562).
+  const relations = relationContexts ? resultsRelations(results, relationContexts) : undefined;
 
   for (let i = 0; i < results.length; i++) {
     const { entry, score, scope, sources, matchedTerms, missingTerms } = results[i];
@@ -590,17 +649,8 @@ export function formatResults(
       lines.push(`Matched: ${matchedStr} | Missing: ${missingTerms.join(', ')}`);
     }
     lines.push(`File: ${printedPath(results[i])}`);
-    if (relationContexts) {
-      // Relations resolve inside the scope the hit came from. A hit with an
-      // explicit scope never borrows another scope's context: when that
-      // scope has no index there is nothing it can see, and falling back
-      // would attach a user relation to a workspace page.
-      const ctx = scope !== undefined ? relationContexts.get(scope) : fallbackCtx;
-      if (ctx) {
-        lines.push(...relationLines(ctx, entry, derived && entry.treePath
-          ? { out: derived.out.get(entry.treePath), in: derived.in.get(entry.treePath) }
-          : undefined));
-      }
+    if (relations) {
+      lines.push(...relations[i].map((p) => p.line));
     }
     if (sources && sources.length > 0) {
       lines.push(`Sources: ${sources.map((s) => s.desc ? `${s.path} (${s.desc})` : s.path).join(', ')}`);
@@ -680,7 +730,8 @@ export async function autoUpvote(
  * environment names (its agent family, and whether it was the only
  * candidate), the `--caller` that ran it and each returned doc as
  * printed, never the query. While a project is active an inherited user-scope
- * doc is not eligible: it stays read-only, as for recalled_count. Returns the
+ * doc is not eligible: it stays read-only, as for recalled_count. `related`
+ * carries, per result, the `Related:` refs stdout showed (#1562). Returns the
  * run id, or undefined when the line could not be written, so no id is printed
  * that nothing can join.
  */
@@ -690,6 +741,7 @@ async function recordRun(
   session: EnvAgentSession,
   caller: string | undefined,
   projectActive: boolean,
+  related?: ReadonlyArray<readonly RelatedRef[]>,
 ): Promise<string | undefined> {
   const { appendRecallLine, recallLogPath } = await import('./recall-log.js');
   const run = randomUUID();
@@ -703,7 +755,7 @@ async function recordRun(
       via: session.id ? 'env' : 'none',
       unambiguous: session.unambiguous,
       ...(caller ? { caller } : {}),
-      docs: results.map((r) => {
+      docs: results.map((r, i) => {
         const scope = r.scope ?? config.scope;
         return {
           key: voteKey(r),
@@ -712,6 +764,9 @@ async function recordRun(
           path: printedPath(r),
           score: Math.round(r.score * 10) / 10,
           eligible: !(projectActive && scope === 'user'),
+          // Exactly what stdout showed for this doc (#1562); nothing recorded
+          // for a doc with no Related: line, so old readers see no change.
+          ...(related?.[i] && related[i].length > 0 ? { related: [...related[i]] } : {}),
         };
       }),
     });
@@ -1231,6 +1286,16 @@ export async function recall(
     }
   });
 
+  // The relations this recall prints are computed before the run is recorded,
+  // so the log can hold exactly what stdout shows (#1562). No results: nothing
+  // to print or record, and the contexts are not built.
+  let relationContexts: Map<string, RelationContext> | undefined;
+  let relatedByResult: RelatedRef[][] | undefined;
+  if (topResults.length > 0) {
+    relationContexts = await buildRelationContexts(scopeIndexes, projectEntryKeys);
+    relatedByResult = relatedRefsOf(topResults, relationContexts);
+  }
+
   // Record quality signal for contribute-check's knowledge-gap detection,
   // misses included. The run, a miss included, goes to the active scope's
   // recall log, where the hooks join it to the docs the session then opens
@@ -1242,7 +1307,7 @@ export async function recall(
     recordRecallQuality(session.id ?? deriveSessionId({}), topResults);
     const activeConfig = projectConfig ?? scopeIndexes[0]?.config;
     if (activeConfig && !projectUnreadable) {
-      runId = await recordRun(activeConfig, topResults, session, options.caller, projectConfig !== null);
+      runId = await recordRun(activeConfig, topResults, session, options.caller, projectConfig !== null, relatedByResult);
     }
   }
 
@@ -1253,7 +1318,6 @@ export async function recall(
   }
 
   // Output results (STDOUT — AI reads this)
-  const relationContexts = await buildRelationContexts(scopeIndexes, projectEntryKeys);
   const output = formatResults(topResults, runId, relationContexts);
   process.stdout.write(output + '\n');
 

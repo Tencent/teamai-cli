@@ -173,20 +173,26 @@ function segments(p: string): string[] {
 }
 
 /**
- * The docs a read of `evidencePath` opened. An absolute path must name the
- * printed one, however either is written (agent-path). A relative path had
- * no base: it matches by its trailing segments (at least the parent and the
- * file name), and only when a single printed path has them.
+ * The paths of `paths` a read of `evidencePath` opened. An absolute path must
+ * name the printed one, however either is written (agent-path). A relative
+ * path had no base: it matches by its trailing segments (at least the parent
+ * and the file name), and only when a single printed path has them.
  */
-function docsOpened(evidencePath: string, docs: RecalledDoc[]): RecalledDoc[] {
-  if (isAbsolutePath(evidencePath)) return docs.filter((d) => samePath(d.path, evidencePath));
+function openedPaths(evidencePath: string, paths: string[]): string[] {
+  if (isAbsolutePath(evidencePath)) return paths.filter((p) => samePath(p, evidencePath));
   const tail = segments(evidencePath);
   if (tail.length < 2) return [];
-  const hits = docs.filter((d) => {
-    const segs = segments(d.path);
+  const hits = paths.filter((p) => {
+    const segs = segments(p);
     return segs.length >= tail.length && tail.every((s, i) => segs[segs.length - tail.length + i] === s);
   });
-  return new Set(hits.map((d) => segments(d.path).join('/'))).size === 1 ? hits : [];
+  return new Set(hits.map((p) => segments(p).join('/'))).size === 1 ? hits : [];
+}
+
+/** The docs a read of `evidencePath` opened. */
+function docsOpened(evidencePath: string, docs: RecalledDoc[]): RecalledDoc[] {
+  const opened = new Set(openedPaths(evidencePath, docs.map((d) => d.path)));
+  return docs.filter((d) => opened.has(d.path));
 }
 
 /** What the reducer reads off the whole log, once per pass. */
@@ -276,6 +282,8 @@ interface RootView {
   recalled: number;
   /** Distinct docs consumed reads credited. */
   adopted: number;
+  /** Runs a countable read opened a recorded related path of, within the run's window (#1562). */
+  viaRelation: number;
   /** The root's reads whose status lets them count. */
   evidence: EvidenceLine[];
   /** The eligible docs a read opened, of the runs whose window it falls in and whose own reads it may count for. */
@@ -321,7 +329,22 @@ function viewRoot(index: LogIndex, target: string): RootView {
     && (e.status === 'success' || (e.status === 'unknown' && e.simple === true)));
   const credited = evidence.filter((e) => consumed.has(e.id)).flatMap(opened);
   const done = new Set(credited.map(creditOf));
-  return { runs, recalled, adopted: new Set(credited.map((d) => d.key)).size, evidence, opened, creditOf, done };
+  // A run counts once when any countable read — credited or still pending —
+  // opens any related path the run recorded, within its window and under the
+  // same marked-actor rule as adoption (#1562). Related opens never credit,
+  // so unlike `done` this set never feeds the votes ledger.
+  const relatedPathsOf = (r: RunLine): string[] => [...new Set(r.docs.flatMap((d) => (d.related ?? []).map((x) => x.path)))];
+  const viaRelationRuns = new Set<string>();
+  for (const e of evidence) {
+    const at = Date.parse(e.ts);
+    for (const r of runs) {
+      if (viaRelationRuns.has(r.run) || !inWindow(at, r)) continue;
+      const actor = markedActor.get(r);
+      if (actor && actor.session === e.session && actor.agentId === (e.agentId ?? null)) continue;
+      if (openedPaths(e.path, relatedPathsOf(r)).length > 0) viaRelationRuns.add(r.run);
+    }
+  }
+  return { runs, recalled, adopted: new Set(credited.map((d) => d.key)).size, viaRelation: viaRelationRuns.size, evidence, opened, creditOf, done };
 }
 
 async function creditRoot(config: LocalConfig, index: LogIndex, sessionId: string): Promise<AdoptionResult> {
@@ -434,6 +457,12 @@ export interface RecallSessionSummary {
   recalled: number;
   /** Distinct docs the reducer credited: a read still pending is not counted. */
   adopted: number;
+  /**
+   * Runs in which a countable read opened at least one of the related paths
+   * the run recorded, within its window (#1562). A run counts once, however
+   * many related paths open; a pending read counts as an open.
+   */
+  viaRelation: number;
   /** The newest run's time. */
   last: string;
 }
@@ -455,14 +484,14 @@ export async function recallSessions(config: LocalConfig, limit: number): Promis
     if (!seen || line.ts > seen.ts) newest.set(root, line);
   }
   return [...newest].sort(([, a], [, b]) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0)).slice(0, limit).map(([session, last]) => {
-    const { runs, recalled, adopted } = viewRoot(index, session);
+    const { runs, recalled, adopted, viaRelation } = viewRoot(index, session);
     // A run's agent is the one whose hook claimed it, else its environment's
     // family when the run settled to the session that environment named.
     const agentOf = (r: RunLine) => index.claimOf.get(r.run)?.agent ?? (index.ownerOf(r) === r.session ? r.agent : undefined);
     const named = runs.filter((r) => agentOf(r));
     const agent = named.reduce<RunLine | undefined>((a, r) => (!a || r.ts > a.ts ? r : a), undefined);
     const family = agent ? agentOf(agent) : undefined;
-    return { session, ...(family ? { agent: family } : {}), runs: runs.length, recalled, adopted, last: last.ts };
+    return { session, ...(family ? { agent: family } : {}), runs: runs.length, recalled, adopted, viaRelation, last: last.ts };
   });
 }
 

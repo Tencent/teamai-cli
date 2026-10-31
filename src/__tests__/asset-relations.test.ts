@@ -19,7 +19,7 @@ import {
 import type { RelationSeverity, StoredRelation } from '../asset-relations.js';
 import { indexInMemory } from '../utils/search-index.js';
 import { localLinkTargets } from '../utils/markdown-links.js';
-import { formatResults, relationLines, computeDerivedRelations } from '../recall.js';
+import { formatResults, relationLines, computeDerivedRelations, relatedRefsOf } from '../recall.js';
 import type { RelationContext } from '../recall.js';
 import { matchGlob } from '../utils/glob.js';
 import type { SearchIndexEntry } from '../types.js';
@@ -524,6 +524,52 @@ describe('formatResults — Related: lines', () => {
       },
     ], undefined, relations);
     expect(output).not.toContain('Related:');
+  });
+});
+
+describe('relatedRefsOf — the run line records what stdout shows (#1562)', () => {
+  it('returns one ref per printed Related: line, in print order, with direction', () => {
+    const docEntry = entry({
+      filename: 'overview.md', treePath: 'docs/overview.md', path: '/repo/docs/overview.md', type: 'docs',
+    });
+    const ruleHit = {
+      entry: entry({
+        filename: 'payments.md', treePath: 'rules/payments.md', path: '/repo/rules/payments.md',
+        related: [{ relation: 'SUPERSEDES', target: 'docs/overview.md', via: 'declared' }],
+      }),
+      score: 5.1, scope: 'user' as const,
+    };
+    const docHit = { entry: docEntry, score: 5.0, scope: 'user' as const };
+    const relations = new Map<string, RelationContext>([['user', ctx({
+      byTreePath: new Map([
+        ['docs/overview.md', docEntry],
+        ['rules/payments.md', ruleHit.entry],
+      ]),
+      incoming: new Map([['docs/overview.md', [{ from: 'rules/payments.md', relation: 'SUPERSEDES', via: 'declared' }]]]),
+    })]]);
+
+    const output = formatResults([ruleHit, docHit], undefined, relations);
+    const refs = relatedRefsOf([ruleHit, docHit], relations);
+
+    const printed = output.split('\n').filter((l) => l.startsWith('Related:'));
+    expect(printed).toHaveLength(2);
+    expect(refs).toHaveLength(2);
+    expect(refs[0]).toEqual([{ relation: 'SUPERSEDES', direction: 'out', path: '/repo/docs/overview.md' }]);
+    expect(refs[1]).toEqual([{ relation: 'SUPERSEDES', direction: 'in', path: '/repo/rules/payments.md' }]);
+    // Each ref rebuilds exactly the line stdout showed.
+    const lineOf = (r: { relation: string; direction: string; path: string }): string =>
+      `Related: ${r.direction === 'out' ? '→' : '←'} ${r.relation} ${r.path}`;
+    expect(refs.flat().map(lineOf)).toEqual(printed);
+  });
+
+  it('returns no refs for a hit with no printed relations', () => {
+    const hit = {
+      entry: entry({ filename: 'overview.md', treePath: 'docs/overview.md', path: '/repo/docs/overview.md', type: 'docs' }),
+      score: 5.0, scope: 'user' as const,
+    };
+    const relations = new Map<string, RelationContext>([['user', ctx()]]);
+    expect(relatedRefsOf([hit], relations)).toEqual([[]]);
+    expect(formatResults([hit], undefined, relations)).not.toContain('Related:');
   });
 });
 
