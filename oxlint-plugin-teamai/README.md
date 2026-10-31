@@ -5,6 +5,7 @@ This repository's own lint rules. `npm run lint` loads them through `jsPlugins` 
 | Rule | What it stops |
 |---|---|
 | `teamai/remove-delivered` | A bare `remove(` of a delivered copy in pull's files, which leaves a stale entry on the delivery record (#1577). Use `removeDelivered(ledger, dest)`. It checks only the files in `PULL_SIDE_FILES`: a new file that deletes delivered copies must be added there. |
+| `teamai/windows-test-safety` | POSIX-only shell/process and filesystem calls in the Windows CI test allow-list. Keep platform-specific fixtures out of `WINDOWS_TESTS`; `windows-test-list.test.ts` keeps the plugin's Node-readable list synchronized. |
 
 ## Add a rule
 
