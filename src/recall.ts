@@ -248,8 +248,8 @@ interface ScopedSearchResult extends SearchResult {
 //      ├─ formatResults(results)
 //      │   └─ STDOUT (AI-consumable format)
 //      │
-//      ├─ recordRecallQuality(sessionId, results)
-//      │   └─ ~/.teamai/sessions/<sid>-recall-cache.json
+//      ├─ recordRecallQuality(sessionId, results, query)
+//      │   └─ ~/.teamai/sessions/<sid>-recall-cache.json (0600)
 //      │      (read by contribute-check's knowledge-gap detection)
 //      │
 //      ├─ recordRun(activeConfig, results, session, caller)
@@ -963,7 +963,7 @@ export async function recall(
   let runId: string | undefined;
   if (process.env.TEAMAI_RECALL_DISABLED !== '1' && !options.dryRun) {
     const session = await agentSessionFromEnv();
-    recordRecallQuality(session.id ?? deriveSessionId({}), topResults);
+    recordRecallQuality(session.id ?? deriveSessionId({}), topResults, query);
     const activeConfig = projectConfig ?? scopeIndexes[0]?.config;
     if (activeConfig && !projectUnreadable) {
       runId = await recordRun(activeConfig, topResults, session, options.caller, projectConfig !== null);
