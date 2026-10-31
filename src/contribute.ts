@@ -261,10 +261,11 @@ async function relationWarningsForLearning(localConfig: LocalConfig, relPath: st
   let rawRelated: unknown;
   try {
     rawRelated = matter(content).data['related'];
-  } catch {
+  } catch (e) {
     const { raw } = splitFrontmatter(content);
     if (/^related[ \t]*:/m.test(raw)) {
-      warnings.push('related: could not be parsed; all of it is ignored.');
+      const detail = e instanceof Error ? e.message.split('\n')[0] : String(e);
+      warnings.push(`related: could not be parsed (${detail}); all of it is ignored.`);
     }
     return warnings;
   }

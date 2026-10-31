@@ -204,6 +204,8 @@ describe('asset relations e2e (#1552 first slice)', () => {
       env: { ...process.env, ...GIT_ENV, FORCE_COLOR: '0' },
     });
     expect(result.status).toBe(1);
-    expect(result.stdout + result.stderr).toContain('[relations] docs/payments-overview.md: "related" could not be parsed; all of it is ignored.');
+    expect(result.stdout + result.stderr).toContain('[relations] docs/payments-overview.md: "related" could not be parsed (');
+expect(result.stdout + result.stderr).toContain('duplicated mapping key');
+expect(result.stdout + result.stderr).toContain('); all of it is ignored.');
   });
 });

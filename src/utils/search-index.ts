@@ -755,10 +755,6 @@ async function collectLearningsEntries(
 /**
  * Collect entries from a recursive *.md directory (used for `docs` and
  * `rules`, which may have subdirectories like `rules/common/`).
- */
-/**
- * Collect entries from a recursive *.md directory (used for `docs` and
- * `rules`, which may have subdirectories like `rules/common/`).
  * `treePathPrefix` is the directory's place in the team tree (`rules/`,
  * `docs/`); left undefined for collections that are not team assets, so
  * their entries stay unaddressable by relations.
