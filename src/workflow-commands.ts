@@ -1,3 +1,4 @@
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { autoDetectInit, loadTeamConfig, machineWorkflowAllowProblem } from './config.js';
@@ -12,18 +13,25 @@ import { safeText } from './session-flow/session-cmd-shared.js';
 import type { HandoffOwner } from './workflow/snapshot.js';
 import { getRepoIdentity } from './session-flow/sync.js';
 import { readableReportsWorktree } from './utils/reports-branch.js';
-import { callerProvenance, cancelRun, respondProvenance, respondToHitl, retryStep } from './workflow/run-controls.js';
-import { personAnswers, runLocalDriver, withDriverLock } from './workflow/drivers/local/local-driver.js';
+import { callerProvenance, cancelRun, respondProvenance, respondToHitl, restartCommand, retryStep } from './workflow/run-controls.js';
+import { isIsolated } from './workflow/workspace.js';
+import { localStrictCan, personAnswers, runLocalDriver, withDriverLock } from './workflow/drivers/local/local-driver.js';
 import { driverIdentity } from './driver-identity.js';
 import { getBusinessRoot, getDataHome, usesBranchWorktree, type LocalConfig, type TeamaiConfig } from './types.js';
-import { AttemptIdSchema, installOwner, readRun, RunIdSchema } from './workflow/store.js';
+import { AttemptIdSchema, installOwner, readRun, RunIdSchema, runsDir } from './workflow/store.js';
 import { inProcessClient, resumeRefusal, workflowNotFound, type InvokeCaller, type NextPrepare } from './workflow/protocol.js';
 import { parseInputsFlag, parseSkillCall, parseSkillResume, runSkillCall, sessionDrivesRun, skillContext } from './workflow/drivers/skill/skill-driver.js';
-import { loadCachedWorkflow, resolveStart } from './workflow/cache.js';
+import { loadCachedWorkflow, namespaceConflictOf, resolveStart } from './workflow/cache.js';
+import { durationMs } from './workflow/parse.js';
 import { findRunConfig } from './workflow/run-location.js';
 import { resolveRunMode } from './launch-context.js';
 import { memberTools } from './tool-launch/call.js';
 import { agentEvidence, isAttemptRunner, nestedCall, nestedStart, nestedWorkflowError, type Nested } from './workflow/attempt-marker.js';
+import { planBenchmark, planStep, tryBenchmarkTask } from './benchmark/start.js';
+import { reportBenchmark } from './benchmark/report.js';
+import { regressionOf, type Regression } from './benchmark/history.js';
+import { benchmarkRecordFile, BenchmarkRunRecordSchema } from './benchmark/result.js';
+import { runCheckStep } from './benchmark/trial.js';
 import type { WorkflowEnvelope, WorkflowFailure } from './workflow/types.js';
 
 /** Prints `envelope` with each of `secrets` masked, and sets the exit code from the envelope as the operation returned it. */
@@ -72,14 +80,17 @@ async function explainFailedSteps(config: LocalConfig, done: unknown, secrets: R
   const run = await readRun(config, runId);
   if (typeof run === 'string') return;
   const failedIds = run.steps.filter((step) => step.status === 'failed').map((step) => step.id);
+  const isolated = isIsolated(run);
   // A fan-out or workflow step fails, with no failure of its own, when a step under it fails: name that step instead.
   const failedUnder = (id: string): boolean => failedIds.some((other) => other.startsWith(`${id}.`) || other.startsWith(`${id}[`));
   for (const step of run.steps) {
     if (step.status !== 'failed' || (!step.failure && failedUnder(step.id))) continue;
     const why = step.failure ? ` with ${step.failure.code}: ${step.failure.message}` : step.message ? `: ${step.message}` : '';
     log.error(redact(`Step "${step.id}" failed${why}`, { envSecrets: secrets, patterns: false }));
-    log.info(`Retry it with ${retryCommand(runId, step.id)}, then continue the run with teamai workflow resume ${runId}`);
+    if (!isolated) log.info(`Retry it with ${retryCommand(runId, step.id)}, then continue the run with teamai workflow resume ${runId}`);
   }
+  // An isolated run refuses a retry: what it admitted or measured would change.
+  if (isolated) log.info(`Run ${runId} is isolated, so its steps do not run again. Start a new run: ${restartCommand(run)}`);
 }
 
 /**
@@ -239,21 +250,37 @@ async function skillAnswer(raw: Parameters<typeof parseSkillCall>[0]): Promise<{
   return { envelope: await runSkillCall(call, context), secrets: loaded.secrets };
 }
 
+const TIMEOUT_MESSAGE = '--timeout must be a positive duration, such as 500ms, 30s, 10m, or 2h';
+
 /** The flags of `workflow start` and `resume` without `--driver skill`. The skill driver's flags are refused, the first given in this order. */
 const NonSkillRunOptionsSchema = z.object({
+  timeout: z.string().transform((text, ctx) => durationMs(text) ?? (ctx.addIssue({ code: z.ZodIssueCode.custom, message: TIMEOUT_MESSAGE }), z.NEVER)).optional(),
   parallel: z.undefined({ error: '--parallel needs --driver skill' }).optional(),
   hitl: z.undefined({ error: '--hitl needs --driver skill' }).optional(),
   judge: z.boolean().optional().refine((judged) => judged !== false, '--no-judge needs --driver skill'),
 });
 
-/** `judge` is false with `--no-judge`. */
-export async function workflowStart(name: string, options: {
+type StartOptions = {
   driver?: string; tools?: string; inputs?: string; autoApprove?: boolean; describe?: boolean; parallel?: string; confirmed?: boolean; hitl?: string; judge?: boolean;
-}): Promise<void> {
-  if (refusedNested(await nestedStart(process.env, process.cwd()), options.driver === 'skill')) return;
+  sandbox?: boolean; timeout?: string;
+};
+
+/** `judge` is false with `--no-judge`. */
+export async function workflowStart(name: string, options: StartOptions): Promise<void> {
+  await startWorkflow(name, options);
+}
+
+/** `workflow start`, answering what the local driver ended a run it drove with; undefined for every other answer, which it printed. */
+async function startWorkflow(name: string, options: StartOptions): Promise<WorkflowEnvelope | undefined> {
+  if (refusedNested(await nestedStart(process.env, process.cwd()), options.driver === 'skill')) return undefined;
   if (options.driver === 'skill') {
-    const { driver: _skill, ...rest } = options;
-    await workflowSkill({ kind: 'start', name, options: rest });
+    const { driver: _skill, timeout, ...rest } = options;
+    const timeoutMs = timeout === undefined ? undefined : durationMs(timeout);
+    if (timeout !== undefined && timeoutMs === undefined) {
+      refuseSkill({ error: { code: 'invalid_arguments', message: TIMEOUT_MESSAGE } });
+      return;
+    }
+    await workflowSkill({ kind: 'start', name, options: rest, ...(timeoutMs !== undefined ? { timeoutMs } : {}) });
     return;
   }
   setStderrOnly(true);
@@ -262,6 +289,7 @@ export async function workflowStart(name: string, options: {
     refuseOptions(nonSkill.error);
     return;
   }
+  const { timeout } = nonSkill.data;
   const loaded = await readyStartConfig(name);
   if (!('config' in loaded)) {
     refuse(loaded);
@@ -294,7 +322,8 @@ export async function workflowStart(name: string, options: {
   }
   const { inputs } = read;
   const caller = invokeCaller(options.confirmed);
-  const started = await inProcessClient({ config, env }).start(name, { inputs, checkout: process.cwd(), caller });
+  const alone = options.driver === 'local' ? { alone: localStrictCan(config, options) } : {};
+  const started = await inProcessClient({ config, env }).start(name, { inputs, checkout: process.cwd(), caller, ...alone, ...(timeout !== undefined ? { timeout } : {}) });
   if ('error' in started || options.driver !== 'local') {
     writeEnvelope(started, secrets);
     return;
@@ -304,8 +333,17 @@ export async function workflowStart(name: string, options: {
     writeEnvelope({ error: { code: 'run_unreadable', message: 'The new run id was missing' } }, secrets);
     return;
   }
-  log.info(`Run ${runId} started. If it stops before it ends, continue it with: teamai workflow resume ${runId}`);
-  await writeDriven(config, await runLocalDriver(config, runId, process.cwd(), { tools, toolPaths: teamConfig.toolPaths, autoApprove: options.autoApprove }), secrets);
+  log.info(`Run ${runId} started. If it stops before it ends, continue it with: teamai workflow resume ${runId}${options.sandbox ? ' --sandbox' : ''}`);
+  const driven = await runLocalDriver(config, runId, process.cwd(), { tools, toolPaths: teamConfig.toolPaths, autoApprove: options.autoApprove, sandbox: options.sandbox });
+  await writeDriven(config, driven, secrets);
+  return driven;
+}
+
+/** Aborts on the first SIGINT or SIGTERM, so `teamai benchmark try` stops the setup or check it runs. A second one ends the process. */
+function interruptSignal(): AbortSignal {
+  const controller = new AbortController();
+  for (const name of ['SIGINT', 'SIGTERM'] as const) process.once(name, () => controller.abort(name));
+  return controller.signal;
 }
 
 /** Refuses `--driver <kind>` on `command`, which takes only `--driver skill`, naming the kind given. */
@@ -527,7 +565,7 @@ export async function workflowPublish(runId: string, options: { sessions?: boole
 }
 
 type ResumeOptions = {
-  driver?: string; tools?: string; autoApprove?: boolean; claim?: boolean; confirmed?: boolean; parallel?: string; hitl?: string; judge?: boolean; next?: boolean;
+  driver?: string; tools?: string; autoApprove?: boolean; claim?: boolean; confirmed?: boolean; parallel?: string; hitl?: string; judge?: boolean; next?: boolean; sandbox?: boolean;
 };
 
 /**
@@ -591,7 +629,7 @@ export async function workflowResume(runId: string | undefined, options: ResumeO
     const lease = stored.steps.find((step) => step.status === 'leased' && step.lease.driver.kind === 'local' && step.lease.driver.machine === local.machine);
     const cwd = lease?.status === 'leased' ? lease.lease.driver.workspace
       : stored.driver?.kind === 'local' && stored.driver.machine === local.machine ? stored.driver.workspace : process.cwd();
-    return drive(cwd, { tools, toolPaths: loaded.teamConfig.toolPaths, autoApprove: options.autoApprove });
+    return drive(cwd, { tools, toolPaths: loaded.teamConfig.toolPaths, autoApprove: options.autoApprove, sandbox: options.sandbox });
   }), secrets);
 }
 
@@ -677,7 +715,7 @@ async function takeNext(loaded: Ready, taker: Taker, options: ResumeOptions): Pr
   for (const run of candidates) {
     const taken = taker.driver === 'skill'
       ? await skillAnswer({ kind: 'resume', run: run.run, options: { ...withoutDriver(options), next: true } })
-      : { envelope: await driveOffered(loaded, run, { tools: taker.tools, autoApprove: options.autoApprove }), secrets };
+      : { envelope: await driveOffered(loaded, run, { tools: taker.tools, autoApprove: options.autoApprove, sandbox: options.sandbox }), secrets };
     if ('error' in taken.envelope && taken.envelope.error.code === 'state_moved') {
       moved += 1;
       continue;
@@ -699,12 +737,12 @@ function withoutDriver(options: ResumeOptions): Omit<ResumeOptions, 'driver' | '
 }
 
 /** Claims offered run `run` under this machine's driver lock, as `resume <run>` does, and drives it with the local driver. */
-async function driveOffered({ config, teamConfig }: Ready, run: PublishedRun, options: { tools: Record<string, string>; autoApprove?: boolean }): Promise<WorkflowEnvelope> {
+async function driveOffered({ config, teamConfig }: Ready, run: PublishedRun, options: { tools: Record<string, string>; autoApprove?: boolean; sandbox?: boolean }): Promise<WorkflowEnvelope> {
   return withDriverLock(config, run.run, async (drive) => {
     const claimed = await claimOffered(config, run.run, { checkout: process.cwd() });
     if (!claimed.ok) return { error: claimed.error };
     saidClaimed(run);
-    return drive(process.cwd(), { tools: options.tools, toolPaths: teamConfig.toolPaths, autoApprove: options.autoApprove });
+    return drive(process.cwd(), { tools: options.tools, toolPaths: teamConfig.toolPaths, autoApprove: options.autoApprove, sandbox: options.sandbox });
   });
 }
 
@@ -796,3 +834,161 @@ function table(rows: string[][]): string {
   const widths = cells[0]?.map((_, column) => Math.max(...cells.map((row) => row[column]?.length ?? 0))) ?? [];
   return cells.map((row) => row.map((cell, column) => (column === row.length - 1 ? cell : cell.padEnd(widths[column] ?? 0))).join('  ')).join('\n').concat('\n');
 }
+
+/**
+ * `teamai benchmark check --baseline|--trial`, the command of a benchmark run's baseline and trial check steps: prints
+ * `{"result":"passed"|"failed"|"could_not_run"}`, the step's output, and exits 0 once the check ran, whatever it said.
+ * Exits 1, naming why on stderr, when the check could not be set up. A stop signal stops the check first.
+ */
+export async function benchmarkCheck(options: { baseline?: boolean; trial?: boolean }): Promise<void> {
+  setStderrOnly(true);
+  if (options.baseline === options.trial) {
+    log.error('Pass exactly one of --baseline and --trial: the check of a task\'s baseline, or of a trial.');
+    process.exitCode = 1;
+    return;
+  }
+  const stop = new AbortController();
+  const onSignal = (signal: NodeJS.Signals): void => stop.abort(signal);
+  for (const signal of CHECK_STOP_SIGNALS) process.on(signal, onSignal);
+  try {
+    const checked = await runCheckStep({ mode: options.baseline ? 'baseline' : 'trial', env: process.env, cwd: process.cwd(), signal: stop.signal });
+    if ('failure' in checked) {
+      log.error(`${checked.failure.code}: ${checked.failure.message}`);
+      process.exitCode = 1;
+      return;
+    }
+    process.stdout.write(`${JSON.stringify({ result: checked.result })}\n`);
+  } finally {
+    for (const signal of CHECK_STOP_SIGNALS) process.off(signal, onSignal);
+  }
+}
+
+const CHECK_STOP_SIGNALS: readonly NodeJS.Signals[] = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+
+/** A benchmark verb that runs as a step: what it prints on stdout, or why it failed, on stderr with exit 1. */
+function writeStepOutput(answer: { failure: WorkflowFailure } | { output: unknown }): void {
+  if ('failure' in answer) {
+    log.error(`${answer.failure.code}: ${answer.failure.message}`);
+    process.exitCode = 1;
+    return;
+  }
+  process.stdout.write(`${JSON.stringify(answer.output)}\n`);
+}
+
+/** `teamai benchmark plan <suite>`: the step that plans a benchmark run. */
+export async function benchmarkPlan(suite: string, options: { aliases?: string }): Promise<void> {
+  setStderrOnly(true);
+  const aliases = options.aliases ?? 'team';
+  if (aliases !== 'team' && aliases !== 'member') {
+    writeStepOutput({ failure: { code: 'invalid_arguments', message: `--aliases takes team, the team's models/aliases.yaml, or member, your ~/.teamai/models/aliases.yaml over the team's; got ${aliases}.` } });
+    return;
+  }
+  const planned = await planStep(suite, process.env, { memberAliases: aliases === 'member' });
+  writeStepOutput('failure' in planned ? planned : { output: planned.planned });
+}
+
+/** `teamai benchmark report`: the `finally` step that reports a benchmark run. */
+export async function benchmarkReport(): Promise<void> {
+  setStderrOnly(true);
+  const reported = await reportBenchmark(process.env, collectEnvSecrets());
+  writeStepOutput('failure' in reported ? reported : { output: reported.report });
+}
+
+const BenchmarkDoneSchema = z.object({
+  run: z.string().optional(),
+  outputs: z.object({ text: z.string() }).partial().passthrough().optional(),
+  finally: z.array(z.object({ id: z.string() }).passthrough()).optional(),
+}).passthrough();
+
+/**
+ * `teamai benchmark run <suite>`: plans the suite once without a run, so a suite that cannot run leaves none, then
+ * starts the workflow `teamai-benchmark`, the team's or teamai's default, with the suite as its input and the suite's timeout as
+ * the run's, on the local driver unless `--driver` names another. Exits as `workflow start` does for the run's outcome,
+ * and also 1 when a `finally` step, the report, failed or was cancelled, or with `failOnRegression` when an arm dropped
+ * against the newest earlier comparable record on teamai-reports. A record still pending never changes it.
+ */
+export async function benchmarkRun(suite: string, options: { driver?: string; sandbox?: boolean; memberAliases?: boolean; failOnRegression?: boolean }): Promise<void> {
+  setStderrOnly(true);
+  const loaded = await readyStartConfig(BENCHMARK_WORKFLOW);
+  if (!('config' in loaded)) {
+    refuse(loaded);
+    return;
+  }
+  const { config, secrets } = loaded;
+  const memberAliases = options.memberAliases === true;
+  // The plan step decides unattended trials from the step that runs its plan; refusals do not depend on it.
+  const preflight = await planBenchmark(config, suite, { checkout: process.cwd(), memberAliases, unattended: false });
+  if ('refused' in preflight) {
+    writeEnvelope(preflight.refused, secrets);
+    return;
+  }
+  const workflow = await loadCachedWorkflow(config, BENCHMARK_WORKFLOW);
+  if (!workflow) {
+    const conflict = await namespaceConflictOf(config, BENCHMARK_WORKFLOW);
+    writeEnvelope({ error: conflict === undefined ? workflowNotFound(BENCHMARK_WORKFLOW) : { code: 'workflow_namespace_conflict', message: conflict } }, secrets);
+    return;
+  }
+  if (workflow.source === 'team') {
+    if (workflow.definition.inputs?.suite === undefined) {
+      writeEnvelope({ error: { code: 'invalid_inputs', message: `The team's ${workflow.relativePath} replaces teamai's benchmark workflow and takes no input suite, so teamai benchmark run cannot give it the suite. Add inputs: { suite: string } to it, or remove it to run teamai's default.` } }, secrets);
+      return;
+    }
+    if (memberAliases && workflow.definition.inputs?.aliases === undefined) {
+      writeEnvelope({ error: { code: 'invalid_inputs', message: `The team's ${workflow.relativePath} replaces teamai's benchmark workflow and takes no input aliases, so teamai benchmark run cannot give it --member-aliases. Add aliases: string to its inputs and pass it to teamai benchmark plan --aliases, or run without --member-aliases.` } }, secrets);
+      return;
+    }
+    log.info(`Running the team's ${workflow.relativePath}, which replaces teamai's benchmark workflow.`);
+  }
+  // A team workflow without input aliases plans with the team's aliases, as teamai benchmark plan does without --aliases.
+  const aliases = workflow.definition.inputs?.aliases === undefined ? {} : { aliases: memberAliases ? 'member' : 'team' };
+  const done = await startWorkflow(BENCHMARK_WORKFLOW, {
+    driver: options.driver ?? 'local', inputs: JSON.stringify({ suite, ...aliases }), timeout: `${preflight.timeoutMs}ms`, ...(options.sandbox ? { sandbox: true } : {}),
+  });
+  const ended = done && 'data' in done ? BenchmarkDoneSchema.safeParse(done.data.done) : undefined;
+  if (!ended?.success) return;
+  if (ended.data.outputs?.text !== undefined) process.stderr.write(`${ended.data.outputs.text}\n`);
+  // The report is a finally step: one that failed or was cancelled is listed, and the results it owed are missing.
+  if ((ended.data.finally ?? []).length > 0) process.exitCode = 1;
+  if (options.failOnRegression && ended.data.run !== undefined) await failOnRegression(config, ended.data.run);
+}
+
+/**
+ * `--fail-on-regression`: run `runId`'s record, from its run directory so a record pending publication counts, against
+ * the published records Compare reads, and exit 1 when an arm dropped. A run whose report wrote no record is left to the
+ * report's own exit.
+ */
+async function failOnRegression(config: LocalConfig, runId: string): Promise<void> {
+  const text = await fs.readFile(benchmarkRecordFile(runsDir(config), runId), 'utf8').catch(() => undefined);
+  const record = text === undefined ? undefined : BenchmarkRunRecordSchema.safeParse(JSON.parse(text));
+  if (!record?.success) return;
+  const { publishedBenchmarkRuns } = await import('./dashboard/benchmarks.js');
+  const current = { run: record.data.run, source: 'local' as const, startedAt: record.data.startedAt, outcome: record.data.outcome, benchmark: record.data };
+  const regression = regressionOf(current, await publishedBenchmarkRuns(config, { refresh: true }));
+  for (const line of regressionLines(regression, record.data.suite.name)) process.stderr.write(`${line}\n`);
+  if (regression.kind === 'dropped') process.exitCode = 1;
+}
+
+function regressionLines(regression: Regression, suite: string): string[] {
+  const points = (fraction: number): number => Math.round(fraction * 100);
+  switch (regression.kind) {
+    case 'no_comparable':
+      return [`No earlier succeeded run of suite ${suite} ran the same tasks on the same arms on teamai-reports: recording is off, or nothing comparable has been published yet. --fail-on-regression has nothing to compare with.`];
+    case 'held':
+      return [`No arm's pass rate dropped by more than chance against run ${regression.against}.`];
+    case 'dropped':
+      return regression.arms.map(({ arm, pairs, rates, difference }) => `Arm "${arm}" passed ${rates.to.passed}/${pairs} paired trials, against ${rates.from.passed}/${pairs} in run ${regression.against}: a drop of ${points(-difference.value)} points, with a 95% interval of ${points(difference.low)} to ${points(difference.high)} points.`);
+    default: {
+      const unhandled: never = regression;
+      return unhandled;
+    }
+  }
+}
+
+/** `teamai benchmark try <task-file>`: whether a task's check tells its fix from no change. Needs no init and no run. */
+export async function benchmarkTry(file: string): Promise<void> {
+  setStderrOnly(true);
+  writeEnvelope(await tryBenchmarkTask(file, { checkout: process.cwd(), signal: interruptSignal(), progress: (line) => log.info(line) }), collectEnvSecrets());
+}
+
+/** The workflow `teamai benchmark run` starts: teamai's default, or the team's file of the same name. */
+const BENCHMARK_WORKFLOW = 'teamai-benchmark';

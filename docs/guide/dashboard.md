@@ -9,7 +9,7 @@ teamai dashboard
 teamai dashboard --port 8080
 ```
 
-Open `http://localhost:3721`. The sidebar is Overview, Team Execution, Workflow Runs, Scorers, Team Context, Resources, Distribution, and Team Improvement. The numbers are from this machine.
+Open `http://localhost:3721`. The sidebar is Overview, Team Execution, Workflow Runs, Scorers, Benchmarks, Team Context, Resources, Distribution, and Team Improvement. The numbers are from this machine.
 
 ## Session sharing
 
@@ -50,7 +50,7 @@ The Workflow Runs page has three lists for the selected workspace. **Local runs*
 
 On the install that offered a run, the next step is `teamai workflow resume <run>` instead, which takes it back there. A local run that is offered, or that another install now holds, says so under its status. **A runner needs** (**Their machine needs** on a run that needs a person) lists the `requires.env` keys and prompt steps of the steps left: set those up on the runner, as [its job](workflow.md#take-offered-runs-from-ci) does. **Not on this machine** is what this machine lacks of them, as `teamai workflow resume` lists it as `cannot run here`. The status line counts the offered runs and the ones that need a person. The page claims nothing: the command runs a driver on the machine that takes the run.
 
-The page shows what a run record publishes, plus each step's live status and the options of a waiting HITL request. Inputs, `for_each` items, outputs, prompts, HITL messages, and local paths stay in the run file. Read a HITL question where the run's driver asks it. A run's details show what each pass delivered: the commits on its branch, the pull request delivered for it, and the learnings `teamai contribute` recorded inside its attempt.
+The page shows what a run record publishes, plus each step's live status and the options of a waiting HITL request. Inputs, `for_each` items, outputs, prompts, HITL messages, and local paths stay in the run file. Read a HITL question where the run's driver asks it. A run's details show what each pass delivered: the commits on its branch, the pull request delivered for it, and the learnings `teamai contribute` recorded inside its attempt. The details of a [benchmark](benchmarks.md) run that ended show its results, usage and task × arm tables, as the CLI prints them.
 
 A waiting approve or choose request can be answered from the run's details. The answer goes through the same `respond` operation as the CLI, with channel `dashboard` and `agent: false`, so it can answer a required approval. A dashboard started inside an agent session records `agent: true`, as an answer from that shell would, and cannot answer a required approval. It carries the pass the page showed: if that request was answered or replaced in the meantime, the page shows the refusal and reloads. Another website cannot send an answer. A request without an `Origin` header, such as a plain `curl`, is refused too. This marks an answer as sent from a browser; it does not stop a local script that sets the header.
 
@@ -96,6 +96,45 @@ Here the Codex judge passed two sessions the team failed, so its pass rate reads
 Labels from benchmark runs are left out. The page reads labels and recorded configuration only. It never reads or shows a judge's reasoning, a prompt, a transcript, a diff, or a session's own id.
 
 Labels from sessions and workflow runs show how the tools did on the work that came along. To compare tools, models or team assets on the same tasks, run a benchmark.
+
+## Benchmarks
+
+The Benchmarks page shows every ended [benchmark](benchmarks.md) run of the selected workspace: the runs on this machine and the run records on `teamai-reports`, over 30, 90 or 365 days. Pick a suite in **Suites**. Each question below names the panel that answers it, with what that panel showed for a team that ran `fix-auth` every week and `migrate-db` on three Claude models:
+
+| Question | Panel | What it showed |
+|---|---|---|
+| Should the team switch its auth fixes to claude? | **Leading arm** | `claude 67% · 95% 57%–75% · not separated from codex`. Codex has 56% (47%–65%). The intervals overlap, so these 7 runs do not tell the two apart. Add repetitions or tasks before you switch. |
+| Did the auth skill we merged on October 7 help? | **Pass rate per run** | A dotted line, `Team assets changed · 62432de`, marks the first run with the skill. Compare each arm's points on either side. The **Runs** table marks that run's team revision `changed`. |
+| Which model is worth paying for on `migrate-db`? | **Pass rate against cost**, on **Cost** | sonnet passes 73% for 0.31 USD a trial, opus 78% for 0.89 USD, and their intervals overlap. The dashed line joins the arms nothing beats on both pass rate and cost: haiku, sonnet, opus. |
+| Which task needs fixing, in the code or in the suite? | **Tasks by arm** | `refresh-race` has 7/7 under **Unstable runs**: in every run, some arm both passed and failed it, so one trial says little. `session-fixation` is 0% to 19% on every arm: read its check before blaming the tools. |
+| Why did the September 23 run drop to 27%? | **Tasks per run** and **Runs** | `login-copy` is a hatched cell in that run's column, and **Runs** shows `1 not measured` under its pass rate: the task's check passed without changes in that run, so its [baseline](benchmarks.md#baselines) was invalid, and its trials count as planned but not passed. **Tasks by arm** marks it `not measured in 1/7`. Open the run from **Runs** to read its trials. |
+
+**Last run** shows the newest run's trials by result for each arm, with its usage, deviations and the tasks it did not measure. **Open the run** opens its details on the Workflow Runs page.
+
+The panels above are the **Arms** tab. Two more tabs answer what changed between arms, and between team revisions. Here, for `onboarding-docs`, a [matrix](benchmarks.md#cross-tools-with-team-assets) of claude and codex with the pulled team assets and with none, and for `fix-auth` again:
+
+| Question | Tab and panel | What it showed |
+|---|---|---|
+| How much do our team assets help on onboarding docs? | **Compare**, by **Team assets** | `pulled team against no team assets +41 pp · 95% +16 pp to +59 pp` on claude, over 27 paired trials, and `−60%` cost per passed trial. |
+| Do they help codex as much? | **Difference per pair of arms** | codex gains +15 pp, but its interval crosses zero: these runs do not tell its two arms apart. |
+| Which task do the assets fix? | **Each task** | `oncall-runbook` goes from 1/9 to 7/9 with the assets; `first-pr-guide` barely moves. |
+| Did the auth-tokens skill help claude on `fix-auth`? | **Team changes**, on `claude · claude-opus-5-5` | 67%, 62%, 70% over three team revisions, in commit order, none told apart from the one before it. Click `67ee2ce · Add the auth-tokens skill and a security reviewer`: it changed three files, and `session-fixation` went from 1/12 to 3/12. |
+| Did a tool update move the numbers? | **Arms**, **Pass rate per run** | A dashed `Tool updated · claude 2.4.0` line marks the first run on the new version. |
+
+**Compare** lists each two arms of the suite's current version that differ only in their team assets, tool, model or workflow, and pairs their trials by run, task and repetition. **Team changes** follows one tool, model and workflow across the team revisions it ran on with the pulled assets or a ref, and names each revision from this machine's team clone, with the files outside `benchmarks/` it changed since the one before it.
+
+How the numbers are counted:
+
+- A pass rate is passed trials over planned trials, as the run's own table prints it.
+- The pooled numbers, the task tables and the leader count only the runs of the suite's current version: the suite files of its newest run. **Pass rate per run** also draws the older runs, after a dashed `Suite changed` line.
+- An arm is its name, tool, model, effort and team assets. When one of them changed, the older runs are a separate line, marked `earlier configuration`.
+- **Pass rate by arm** also counts the arm's deviations and trials not verified over those runs, as each run's table counts them. A deviation is a trial whose prompt ran on another tool, model or team revision than its arm's.
+- The interval is a 95% Wilson score interval. Two arms whose intervals overlap are not told apart by these runs.
+- A difference in **Compare** is over paired trials, with a 95% interval for paired proportions (Newcombe). One whose interval crosses zero is `not separated`.
+- Usage is the median over the trials whose tool reported it. Cost is per trial.
+- A run on this machine that was also published shows once, from this machine.
+
+The page shows what a run record publishes. It never shows a prompt, a diff, or a transcript.
 
 ## Resources
 

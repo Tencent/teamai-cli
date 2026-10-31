@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { ENV_KEY_RE, sameEnvName } from '../resources/env-key.js';
-import { WORKSPACE_MODES, type WorkflowDefaults, type WorkflowFailure, type WorkflowStep } from './types.js';
+import { stepWorkflow, WORKSPACE_MODES, type WorkflowDefaults, type WorkflowFailure, type WorkflowStep } from './types.js';
 import type { WorkspaceMode } from './workspace.js';
 
 /** How far a driver keeps a step from the member's machine, weakest first. A workspace contract is at least `worktree`. */
@@ -13,13 +13,70 @@ const EnvKeySchema = z.string().regex(ENV_KEY_RE, 'must be an environment variab
 /**
  * `requires:` on a step, and `defaults.requires` in a workflow file, which acts as if written on every step of it.
  * A step that needs a person says `interactive: true`. `env` lists team env keys by name; values never enter the run.
+ * `strict: true` makes the block's `isolation` and `network` strict, and a floor for every level inside it.
  */
 export const RequirementsSchema = z.object({
   network: z.boolean().optional(),
   isolation: IsolationSchema.optional(),
   env: z.array(EnvKeySchema).optional(),
+  strict: z.boolean().optional(),
 });
 export type Requirements = z.infer<typeof RequirementsSchema>;
+
+/**
+ * What reaching a step's `timeout`, `max_turns` or `budget` does. `fail`, the default, fails the step. `end_turn` ends
+ * the agent's turn there, and the step succeeds with the limit it reached.
+ */
+export const ON_LIMIT = ['end_turn', 'fail'] as const;
+export type OnLimit = typeof ON_LIMIT[number];
+
+/** The limit that ended an agent's turn under `on_limit: end_turn`, as a report names it. */
+export const LimitSchema = z.enum(['timeout', 'budget', 'max_turns']);
+export type Limit = z.infer<typeof LimitSchema>;
+
+/**
+ * The lease `limits` of a prompt under `on_limit: end_turn`, for a driver with `can.end_turn`: they count from the
+ * tool's launch, and the driver stops the tool at the first it reaches and reports it as `limit`, or reports each it
+ * cannot hold the tool to in `unenforced`. An absent key is no limit.
+ */
+export const TurnLimitsSchema = z.object({
+  timeoutMs: z.number().int().positive().optional(),
+  maxTurns: z.number().int().positive().optional(),
+  /** Input plus output tokens, as a budget counts them. */
+  budget: z.object({ tokens: z.number().int().positive() }).optional(),
+  onLimit: z.literal('end_turn'),
+});
+export type TurnLimits = z.infer<typeof TurnLimitsSchema>;
+
+/** Whether `limits` sets `limit`. */
+export function setsLimit(limits: TurnLimits, limit: Limit): boolean {
+  switch (limit) {
+    case 'timeout':
+      return limits.timeoutMs !== undefined;
+    case 'budget':
+      return limits.budget !== undefined;
+    case 'max_turns':
+      return limits.maxTurns !== undefined;
+    default: {
+      const unhandled: never = limit;
+      return unhandled;
+    }
+  }
+}
+
+/** What strict levels set: the `isolation` and `network` no level inside them goes below. */
+export type Floor = Pick<Requirements, 'isolation' | 'network'>;
+
+/** The requirements in effect at a level, each at least its `floor`, which only strict levels set. */
+export type InEffect = Omit<Requirements, 'strict'> & { floor?: Floor };
+
+/**
+ * The names a strict `isolation: sandbox` keeps from every process teamai starts for the step, setup and the clone's
+ * git included: what the step could push, publish or authenticate with. They win over any `requires.env`.
+ */
+export const SANDBOX_WITHHELD_ENV = [
+  'GITHUB_TOKEN', 'GH_TOKEN', 'GITLAB_TOKEN', 'GL_TOKEN', 'CI_JOB_TOKEN', 'SSH_AUTH_SOCK', 'GIT_ASKPASS', 'SSH_ASKPASS',
+] as const;
 
 /** The keys `requires:` takes; pull reports any other as `unknown_key`. */
 export const REQUIREMENT_KEYS: ReadonlySet<string> = new Set(Object.keys(RequirementsSchema.shape));
@@ -36,8 +93,8 @@ export type Setup = z.infer<typeof SetupSchema>;
 
 /**
  * What a step needs from the driver that runs it. A strict requirement holds the step until a driver that declares it
- * asks; a best-effort one is granted anyway and recorded as not enforced. The `satisfies` makes a new requirement fail
- * the type check until it is classified.
+ * asks; a best-effort one is granted anyway and recorded as not enforced. `isolation` and `network` are strict where a
+ * `strict` level sets them. The `satisfies` makes a new requirement fail the type check until it is classified.
  */
 const ENFORCEMENT = {
   /** `interactive: true`: a person in the tool. */
@@ -53,9 +110,17 @@ const ENFORCEMENT = {
   budget: 'bestEffort',
   /** Capping the agent turns of a prompt step's tool. */
   max_turns: 'bestEffort',
+  /** Ending a prompt's turn at its limits under `on_limit: end_turn`, which only a driver with `can.end_turn` does. */
+  on_limit: 'bestEffort',
   /** Running the workflow's `setup` in each workspace the driver creates, before the step. */
   setup: 'strict',
-} as const satisfies Record<string, 'strict' | 'bestEffort'> & Record<keyof Requirements, 'strict' | 'bestEffort'>;
+  /** A prompt step that names its `tool`: `can.tools` lists it. */
+  tools: 'strict',
+  /** A prompt step with `permissions: unattended`: the driver launches its tool in that tool's unattended mode. */
+  unattended: 'strict',
+  /** A step in a clone is leased only through `next --prepare`, so teamai made its clone. Process-only. */
+  prepare: 'strict',
+} as const satisfies Record<string, 'strict' | 'bestEffort'> & Record<keyof Floor | 'env', 'strict' | 'bestEffort'>;
 type Enforcement = typeof ENFORCEMENT;
 type KeysOf<E extends Enforcement[keyof Enforcement]> = { [K in keyof Enforcement]: Enforcement[K] extends E ? K : never }[keyof Enforcement];
 export type StrictKey = KeysOf<'strict'>;
@@ -74,6 +139,12 @@ type BestEffortKey = KeysOf<'bestEffort'>;
  * - `setup`: in each workspace it creates, the driver runs `lease.setup` before the step with only setup's keys, and
  *   fails the step without running it when setup exits non-zero (`setup_failed`), changes a tracked or non-ignored path
  *   (`setup_dirty`), or leaves a value of one of its keys in a file it created or changed (`setup_secret`).
+ * - `tools`: the tools the driver launches a prompt step on that names its `tool`. Omitted: no such step.
+ * - `end_turn`: the driver holds a prompt leased with `limits` to them from its tool's launch, stops the tool at the
+ *   first it reaches and reports it as `limit`, with `durationMs`. Without it, such a prompt gets the `on_limit: fail`
+ *   lease, and its pass records `on_limit` as not enforced.
+ * - `unattended`: the driver launches a prompt leased with `permissions: 'unattended'` in its tool's own mode for
+ *   editing and running commands without asking, and fails the step rather than launch a tool that has none.
  */
 export const CanSchema = z.object({
   hitl: z.boolean().optional(),
@@ -84,6 +155,9 @@ export const CanSchema = z.object({
   tokens: z.boolean().optional(),
   max_turns: z.boolean().optional(),
   setup: z.boolean().optional(),
+  tools: z.array(z.string().min(1)).optional(),
+  end_turn: z.boolean().optional(),
+  unattended: z.boolean().optional(),
 });
 export type DriverCan = z.infer<typeof CanSchema>;
 
@@ -100,7 +174,7 @@ export const AllowSchema = z.object({
 export type Allow = z.infer<typeof AllowSchema>;
 
 /** What a held step lacks, as `wait.held[].missing` lists it: a capability, or what the member's policy allows. */
-export type Missing = StrictKey | `workspace.${WorkspaceMode}` | `policy.${keyof Allow}`;
+export type Missing = StrictKey | keyof Floor | `workspace.${WorkspaceMode}` | `policy.${keyof Allow}`;
 
 /** The failure codes a step's requirements and the run's limits set. Records carry them. */
 export const LIMIT_FAILURES = [
@@ -124,8 +198,13 @@ export const UnenforcedSchema = z.discriminatedUnion('requirement', [
   /** The run's env keys a driver whose `can.env` does not cover the step may have passed to it. */
   z.object({ requirement: z.literal('withhold'), keys: z.array(z.string()) }),
   z.object({ requirement: z.literal('max_turns'), asked: z.number().int().positive() }),
-  /** An interactive prompt under a budget whose report had no tokens, so the budget did not count what it spent. */
+  /**
+   * A budget nothing held the step to: an interactive prompt's whose report had no tokens, or a benchmark trial's whose
+   * tool its driver could not stop once it passed the budget.
+   */
   z.object({ requirement: z.literal('budget') }),
+  /** A prompt under `on_limit: end_turn` leased to a driver that cannot end its turn, so it ran under `on_limit: fail`. */
+  z.object({ requirement: z.literal('on_limit') }),
 ]) satisfies z.ZodType<{ requirement: BestEffortKey }>;
 export type Unenforced = z.infer<typeof UnenforcedSchema>;
 
@@ -133,17 +212,24 @@ export type Unenforced = z.infer<typeof UnenforcedSchema>;
  * What a report's `unenforced` may name: a best-effort requirement whose enforcement the driver learns only once it
  * runs the step, such as the tool it picked not capping turns.
  */
-export const ReportedUnenforcedSchema = z.array(z.enum(['max_turns'])) satisfies z.ZodType<BestEffortKey[]>;
+export const ReportedUnenforcedSchema = z.array(z.enum(['max_turns', 'budget'])) satisfies z.ZodType<BestEffortKey[]>;
 export type ReportedUnenforced = z.infer<typeof ReportedUnenforcedSchema>;
 
-/** The entries a report's `unenforced` adds, or why it names a requirement the step did not ask for. */
-export function reportedUnenforced(keys: ReportedUnenforced, asked: { maxTurns?: number }): Unenforced[] | string {
+/**
+ * The entries a report's `unenforced` adds, or why it names a requirement the step did not ask for. `tokens` is a
+ * benchmark trial's budget: a run's budget is counted by teamai, never by a driver.
+ */
+export function reportedUnenforced(keys: ReportedUnenforced, asked: { maxTurns?: number; tokens?: number }): Unenforced[] | string {
   const entries: Unenforced[] = [];
   for (const key of keys) {
     switch (key) {
       case 'max_turns':
         if (asked.maxTurns === undefined) return 'unenforced names max_turns, which the step does not set';
         entries.push({ requirement: 'max_turns', asked: asked.maxTurns });
+        break;
+      case 'budget':
+        if (asked.tokens === undefined) return 'unenforced names budget, which the step does not set';
+        entries.push({ requirement: 'budget' });
         break;
       default: {
         const unknown: never = key;
@@ -162,12 +248,31 @@ export type EnvScope = z.infer<typeof EnvScopeSchema>;
 export const LeaseSetupSchema = z.object({ command: z.string(), envScope: EnvScopeSchema.optional() });
 export type LeaseSetup = z.infer<typeof LeaseSetupSchema>;
 
-/** The requirements in effect at a level: each level's keys replace the earlier ones, and `env` lists add up. */
-export function mergeRequirements(...levels: ReadonlyArray<Requirements | undefined>): Requirements {
-  const merged: Requirements = Object.assign({}, ...levels.map((level) => level ?? {}));
-  const env = [...new Set(levels.flatMap((level) => level?.env ?? []))];
+/**
+ * The requirements in effect at a level: each level's keys replace the earlier ones, and `env` lists add up. The
+ * `isolation` and `network` of a strict level, or of a level's `floor`, join the floor, and a value below it is raised.
+ */
+export function mergeRequirements(...levels: ReadonlyArray<(Requirements & Pick<InEffect, 'floor'>) | undefined>): InEffect {
+  const given = levels.filter((level) => level !== undefined);
+  const merged: InEffect = {};
+  let floor: Floor = {};
+  for (const { network, isolation, strict, floor: inner = {} } of given) {
+    if (network !== undefined) merged.network = network;
+    if (isolation !== undefined) merged.isolation = isolation;
+    floor = raised(raised(floor, inner), strict ? { network, isolation } : {});
+  }
+  const env = [...new Set(given.flatMap((level) => level.env ?? []))];
   if (env.length > 0) merged.env = env;
-  return merged;
+  if (floor.isolation === undefined && floor.network === undefined) return merged;
+  return { ...raised(merged, floor), floor };
+}
+
+/** `values` with each of `isolation` and `network` raised to `floor`'s, where `floor` sets it higher. */
+function raised<T extends Floor>(values: T, floor: Floor): T {
+  const isolation = floor.isolation !== undefined && (values.isolation === undefined || rank(values.isolation) < rank(floor.isolation)) ? floor.isolation : values.isolation;
+  // Denying the network keeps a step further from the member's machine, so only a floor of `false` raises a value.
+  const network = floor.network === false ? false : values.network;
+  return { ...values, ...(isolation !== undefined ? { isolation } : {}), ...(network !== undefined ? { network } : {}) };
 }
 
 /**
@@ -209,7 +314,7 @@ function envCovers(env: DriverCan['env'], executor: Executor): { step: boolean; 
 export interface Offer {
   step: string;
   executor: Executor;
-  requires: Requirements;
+  requires: InEffect;
   interactive: boolean;
   /** The lease runs in a copy of its own, which is at least `worktree` isolation. */
   hasContract: boolean;
@@ -221,16 +326,29 @@ export interface Offer {
   budgeted: boolean;
   /** The step's `max_turns`. */
   maxTurns?: number;
+  /** The limits that end the prompt's turn, under its own `on_limit: end_turn` or a workflow step's allowance. */
+  endTurn?: TurnLimits;
   /** The workflow's setup, when the lease names a workspace the driver may create. */
   setup?: Setup;
+  /** The tool a prompt step names. */
+  tool?: string;
+  /** A prompt step with `permissions: unattended`. */
+  unattended: boolean;
+  /** The lease runs in a clone, which only teamai prepares. */
+  clone: boolean;
+  /** The caller asked `next --prepare`. */
+  prepare: boolean;
 }
 
 /** What a granted lease carries besides the step itself. */
 export interface Terms {
-  requires: Requirements;
+  /** The values in effect, raised to their floor. */
+  requires: Omit<Requirements, 'strict'>;
   envScope?: EnvScope;
-  /** Only for a driver that can cap turns. */
+  /** Only for a driver that can cap turns, on a lease without `limits`. */
   maxTurns?: number;
+  /** Only for a driver that can end the turn. */
+  limits?: TurnLimits;
   setup?: LeaseSetup;
   unenforced: Unenforced[];
 }
@@ -249,21 +367,33 @@ export type Negotiation =
  * would provide it; else the step is granted, with each best-effort gap listed in `unenforced`.
  */
 export function negotiate(offer: Offer, can: DriverCan, allow: Allow, env: EnvFacts): Negotiation {
-  const guarded = [...env.declared, ...offer.runEnvKeys];
+  const { floor = {}, ...requires } = offer.requires;
+  const sealed = floor.isolation === 'sandbox';
+  // A strict sandbox's strip list wins over every requires.env, so no step under it is handed a credential.
+  const stripped: readonly string[] = sealed ? SANDBOX_WITHHELD_ENV : [];
+  const guarded = [...env.declared, ...offer.runEnvKeys, ...stripped];
   const shadowed = offer.envKeys.filter((key) => sameEnvName([...env.secrets, ...offer.runEnvKeys], key) !== undefined);
   if (shadowed.length > 0) {
     return { kind: 'fail', failure: { code: 'env_conflict', message: `Step "${offer.step}" sets env ${shadowed.join(', ')}, which a team secret or a requires.env of the run names. Rename the step's variable, or remove it from env:.` } };
   }
-  const required = offer.requires.env ?? [];
-  const setupKeys = offer.setup?.requires?.env ?? [];
+  const allowed = (keys: readonly string[]): string[] => keys.filter((key) => sameEnvName(stripped, key) === undefined);
+  const required = allowed(requires.env ?? []);
+  const setupKeys = allowed(offer.setup?.requires?.env ?? []);
   const covers = envCovers(can.env, offer.executor);
   const policy: Missing[] = [];
-  if (allow.network === false && offer.requires.network === true) policy.push('policy.network');
+  if (allow.network === false && requires.network === true) policy.push('policy.network');
   if (allow.env && [...required, ...setupKeys].some((key) => sameEnvName(allow.env ?? [], key) === undefined)) policy.push('policy.env');
+  const provided = providedIsolation(can, offer.hasContract);
   const gaps: Missing[] = policy.length > 0 ? policy : [
+    ...(offer.tool !== undefined && lacksTool(offer.tool, can) ? ['tools' as const] : []),
+    ...(offer.unattended && !can.unattended ? ['unattended' as const] : []),
+    ...(floor.isolation !== undefined && rank(floor.isolation) > rank(provided) ? ['isolation' as const] : []),
+    ...(floor.network === false && !can.network ? ['network' as const] : []),
+    ...(offer.clone && !offer.prepare ? ['prepare' as const] : []),
     ...(offer.interactive && !can.hitl ? ['hitl' as const] : []),
     ...(offer.setup && !can.setup ? ['setup' as const] : []),
-    ...((required.length > 0 && !covers.step) || (setupKeys.length > 0 && !covers.setup) ? ['env' as const] : []),
+    // A strict sandbox keeps its strip list from every process of the step, which only a driver with `can.env: true` does.
+    ...((required.length > 0 && !covers.step) || (setupKeys.length > 0 && !covers.setup) || (sealed && can.env !== true) ? ['env' as const] : []),
     ...(offer.budgeted && !offer.interactive && !can.tokens ? ['tokens' as const] : []),
   ];
   const [first, ...rest] = gaps;
@@ -273,20 +403,21 @@ export function negotiate(offer: Offer, can: DriverCan, allow: Allow, env: EnvFa
     if (unavailable) return { kind: 'fail', failure: unavailable };
   }
   const unenforced: Unenforced[] = [];
-  if (offer.requires.network === false && !can.network) unenforced.push({ requirement: 'network', asked: false });
-  const asked = offer.requires.isolation;
-  const provided = providedIsolation(can, offer.hasContract);
+  if (requires.network === false && !can.network) unenforced.push({ requirement: 'network', asked: false });
+  const asked = requires.isolation;
   if (asked !== undefined && asked !== 'none' && rank(asked) > rank(provided)) unenforced.push({ requirement: 'isolation', asked, provided });
   const withhold = [...new Set(guarded)].filter((key) => sameEnvName(required, key) === undefined).sort();
   if (!covers.step && withhold.length > 0) unenforced.push({ requirement: 'withhold', keys: withhold });
   if (offer.maxTurns !== undefined && !can.max_turns) unenforced.push({ requirement: 'max_turns', asked: offer.maxTurns });
+  if (offer.endTurn && !can.end_turn) unenforced.push({ requirement: 'on_limit' });
+  const limits = offer.endTurn && can.end_turn ? { limits: offer.endTurn } : {};
   const envScope = covers.step && (required.length > 0 || withhold.length > 0) ? { envScope: { provide: required, withhold } } : {};
-  const maxTurns = offer.maxTurns !== undefined && can.max_turns ? { maxTurns: offer.maxTurns } : {};
+  const maxTurns = offer.maxTurns !== undefined && can.max_turns && !limits.limits ? { maxTurns: offer.maxTurns } : {};
   const setupWithhold = [...new Set(guarded)].filter((key) => sameEnvName(setupKeys, key) === undefined).sort();
   const setup = offer.setup && {
     setup: { command: offer.setup.command, ...(covers.setup && (setupKeys.length > 0 || setupWithhold.length > 0) ? { envScope: { provide: setupKeys, withhold: setupWithhold } } : {}) },
   };
-  return { kind: 'grant', terms: { requires: offer.requires, ...envScope, ...maxTurns, ...setup, unenforced } };
+  return { kind: 'grant', terms: { requires, ...envScope, ...maxTurns, ...limits, ...setup, unenforced } };
 }
 
 /**
@@ -308,6 +439,11 @@ export function envAdvice(keys: readonly string[], declared: ReadonlySet<string>
     advice.push(`set ${unknown.join(', ')} in the environment, or declare ${them} in the team repo with ${adds} and give ${them} a value with ${sets}`);
   }
   return advice.join('; ');
+}
+
+/** Whether a driver that declares `can` is held from a step that names `tool`. */
+export function lacksTool(tool: string, can: Pick<DriverCan, 'tools'>): boolean {
+  return !(can.tools ?? []).includes(tool);
 }
 
 /** Why `keys`, which `who` requires, cannot be given here: the team env cannot be read, or a key has no value. */
@@ -332,10 +468,11 @@ function providedIsolation(can: DriverCan, hasContract: boolean): Isolation {
   return hasContract && rank(declared) < rank('worktree') ? 'worktree' : declared;
 }
 
-/** What a handed-back lease records: what it already had, then what this driver adds. The list only grows. */
+/** What a handed-back lease records: what it already had, then what this driver adds, each requirement once. The list only grows. */
 export function unionUnenforced(stored: readonly Unenforced[], added: readonly Unenforced[]): Unenforced[] {
-  const has = (entry: Unenforced): boolean => stored.some((item) => item.requirement === entry.requirement);
-  return [...stored, ...added.filter((entry) => !has(entry))];
+  const union = [...stored];
+  for (const entry of added) if (!union.some((item) => item.requirement === entry.requirement)) union.push(entry);
+  return union;
 }
 
 /** Every key a step or the setup of these workflow files requires, `defaults.requires` and inline workflows included. */
@@ -344,7 +481,8 @@ export function requiredEnvKeys(definitions: ReadonlyArray<{ defaults?: Workflow
   const visit = (steps: readonly WorkflowStep[]): void => {
     for (const step of steps) {
       for (const key of step.requires?.env ?? []) keys.add(key);
-      if (typeof step.workflow === 'object') visit(step.workflow.steps);
+      const child = stepWorkflow(step);
+      if (child?.kind === 'inline') visit(child.workflow.steps);
     }
   };
   for (const definition of definitions) {

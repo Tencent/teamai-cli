@@ -92,7 +92,7 @@ $ teamai score --lease s5d1e07c2a9b4a/a91c0d7e0 --json '{"driver":{"kind":"local
 {"data":{"label":{"scorer":"review-quality","label":"good","score":1,"passed":true,…},"published":true}}
 ```
 
-`samplingRate` picks the succeeded passes to judge, the same way on every machine. `workflow next` never hands out judge work. `--lease <ref>` judges here with the tool the lease names, in a [confined profile](#isolation), and settles the lease like any driver's answer. A failed judge leaves the lease open.
+`samplingRate` picks the succeeded passes to judge, the same way on every machine. `workflow next` never hands out judge work. `--lease <ref>` judges here with the tool the lease names, in a [confined profile](#isolation), and settles the lease like any driver's answer. A failed judge leaves the lease open. A step whose `scorers` sets `sampling: all` is the exception: its scorers judge every succeeded pass, and the run waits for them before its `finally` steps and its end, while `workflow next` answers `wait` with `judging`, the judge entries still open. The local driver judges them itself and settles a failed judge at once; another driver's are judged with `teamai score --next` on the install that ran them. A [benchmark](benchmarks.md) judges its trials this way.
 
 The label records `used.skills`, the team skills the pass or its subagents loaded, found as for [a session](#score-a-session) from what the checkout held as teamai delivered it when the pass started. A `workflow:` step's label lists every skill its child passes recorded, and has no `used` when none of them recorded one.
 
@@ -319,7 +319,7 @@ Session judging: attended auto, set by scorers/scoring.yaml sessions; unattended
 
 | What is judged | Set by |
 |---|---|
-| A workflow step's passes | The step's `scorers`, sampled by each scorer's `samplingRate`. `sessions` plays no part. |
+| A workflow step's passes | The step's `scorers`, sampled by each scorer's `samplingRate`, or every pass under `sampling: all`. `sessions` plays no part. |
 | A captured session: yours, or one a `CI` or `TEAMAI_MODE` job ran that teamai did not launch | `sessions` for the session's run mode, for every scorer with `sessions: true`, sampled by its `samplingRate`. |
 | A session teamai launched, such as a workflow step or a judge | Nothing. It writes no capture, and its step is judged as a pass. |
 | A session of a tool teamai reads no sessions from, such as Pi | Nothing. `teamai doctor` notes each such tool the team enables, in each mode whose publish or scoring policy is not `off`. With the defaults, that is both modes. |
@@ -350,7 +350,7 @@ Every unattended driver ends with `teamai score --drain`. The local driver runs 
 1. In unattended mode, every session this data home captured as unattended counts as finished, the calling session included. Attended sessions keep the six-hour rule.
 2. It judges every open judge entry this machine can judge: sampled step passes, and sampled sessions the policies allow, within `daily_limit`. While another judge pass runs on this machine, such as the background judge, it judges nothing and says so. Run the drain again once that pass ends.
 3. It publishes every pending label, as `score --push` does, and the workflow run records a run could not publish, as `teamai pull` does.
-4. With `publish: auto` for the current mode, it archives on `teamai-reports`, scrubbed, the finished captured sessions of that mode and the step sessions of the runs driven here that are not archived yet. A step session it cannot archive from here, because teamai reads no sessions from its tool or this machine cannot read it, is listed once as skipped with the reason, and never tried again. The other step sessions of that run are still archived.
+4. With `publish: auto` for the current mode, it archives on `teamai-reports`, scrubbed, the finished captured sessions of that mode and the step sessions of the runs driven here that are not archived yet. A step session it cannot archive from here, because teamai reads no sessions from its tool or this machine cannot read it, is listed once as skipped with the reason, and never tried again. The other step sessions of that run are still archived. The trial sessions of a [benchmark](benchmarks.md) run stay on the machine that ran it.
 5. It reports usage to `stats/<member>.yaml`, as `teamai pull` does, so the counts of an ephemeral runner reach the team.
 6. It prints what is left: entries whose scorer pins a model no judge tool here runs (`judge_model_unavailable`), or whose isolation this machine does not meet, and every open entry when no judge tool is installed here. Those wait for another driver's `score --next`.
 
@@ -430,4 +430,4 @@ A `best-effort` tool cannot judge for a scorer that requires `verified`, nor can
 | `<dataHome>/sessions/captures/` | What each session started as, written by the session-start hook. Removed a day after the session's file is gone. |
 | `scores/<member>/<YYYY-MM>.jsonl` on `teamai-reports` | Published labels, the newest per scorer, rubric, subject and judge kind. Labels wait in `<dataHome>/scores/pending/` until a push lands, and stay there while usage reporting is off. |
 
-Labels never enter the run or its record. Workflow Runs shows each pass's labels, and what judging cost apart from the run's own tokens. For a run on this machine that counts every judge attempt; for a run a member published, only the labelled ones. The dashboard's [Scorers page](dashboard.md#scorers) shows each scorer's pass rate over time and by configuration.
+Labels never enter a workflow run or its record. A benchmark run freezes each trial's verdict when it ends, and its record carries the trial's result, not the label. Workflow Runs shows each pass's labels, and what judging cost apart from the run's own tokens. For a run on this machine that counts every judge attempt; for a run a member published, only the labelled ones. The dashboard's [Scorers page](dashboard.md#scorers) shows each scorer's pass rate over time and by configuration.

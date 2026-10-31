@@ -137,10 +137,12 @@ export async function status(options: GlobalOptions): Promise<void> {
   count('mcp', await resolveEntriesFor(mcpEntryReader, localConfig));
 
   // Repo-backed types: count what's in the team repo tree.
-  for (const type of ['models', 'claudemd', 'learnings', 'wiki', 'workflows', 'prompts', 'scorers'] as const) {
+  for (const type of ['models', 'claudemd', 'learnings', 'wiki', 'workflows', 'prompts', 'scorers', 'benchmarks'] as const) {
     try {
       counts[type] = (await getHandler(type).scanTeamForPull(teamConfig, localConfig))
-        .filter((item) => type !== 'scorers' || path.posix.basename(item.relativePath) !== SCORING_FILE).length;
+        .filter((item) => type !== 'scorers' || path.posix.basename(item.relativePath) !== SCORING_FILE)
+        // A suite is its directory: count its suite.yaml, not its task files.
+        .filter((item) => type !== 'benchmarks' || path.posix.basename(item.relativePath) === 'suite.yaml').length;
     } catch {
       counts[type] = 0;
     }

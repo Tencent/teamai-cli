@@ -9,8 +9,12 @@ import { resolveCliPath } from '../../../utils/cli-path.js';
 import { writeJsonAtomic } from '../../../utils/fs.js';
 import { log } from '../../../utils/logger.js';
 import { stopProcess } from '../../../tool-launch/process-stop.js';
-import { toolStdout, type TokenUsage, type ToolReport } from '../../../tool-launch/stdout.js';
-import { executableOf, launchAdapterIdOf, opencodeModelArgs, type LaunchTool } from '../../../tool-launch/tools.js';
+import { tokenMeter, toolStdout, type TokenUsage, type ToolReport } from '../../../tool-launch/stdout.js';
+import type { LaunchAdapter } from '../../../tool-launch/adapters.js';
+import { executableOf, launchAdapterIdOf, launchAdapterOf, opencodeModelArgs, type LaunchTool } from '../../../tool-launch/tools.js';
+import { budgeted } from '../../limits.js';
+import type { Limit } from '../../requirements.js';
+import { MAX_TIMER_DELAY } from '../../shell-command.js';
 import type { StepModel } from '../../step-model.js';
 import type { WorkflowFailure } from '../../types.js';
 import { agyGatewayEnv } from '../../../models/agy-gateway.js';
@@ -31,6 +35,12 @@ export interface LocalToolRun {
   env?: NodeJS.ProcessEnv;
   /** The most agent turns headless Claude may take. Other tools have no such flag. */
   maxTurns?: number;
+  /** The most tokens the run may bill, counted as a budget counts them: once its stdout states more, it is stopped. */
+  budget?: number;
+  /** How long the tool may run from its spawn before it is stopped. */
+  timeoutMs?: number;
+  /** Launch the tool in its own mode for editing and running commands without asking (`permissions: unattended`). */
+  unattended?: true;
 }
 
 /**
@@ -47,6 +57,13 @@ export type LocalToolResult =
     model?: string;
     session?: string;
     tokens?: TokenUsage;
+    /** What the tool said the run cost, as it said it. */
+    cost?: ToolReport['cost'];
+    /**
+     * The limit that ended the run: the first one at which the adapter stopped the tool, its timeout or its budget, or
+     * the turn cap, at which headless Claude ends itself with `error_max_turns`.
+     */
+    stoppedBy?: Limit;
     failure?: WorkflowFailure;
   }
   | { started: false; exitCode: number; failure: WorkflowFailure };
@@ -73,8 +90,17 @@ function promptHandoff(tool: LaunchTool, input: LocalToolRun, opencodeMajor: num
   return family === 'codex' || (family === 'opencode' && opencodeMajor < 2 && input.agent?.settings?.['mode'] === 'subagent');
 }
 
+/** The arguments that launch `tool` unattended, or `'none'` when teamai knows no such mode of it. */
+function unattendedArgs(tool: LaunchTool): readonly string[] | 'none' {
+  const adapter: LaunchAdapter = launchAdapterOf(tool);
+  const unattended = adapter.step?.unattended ?? 'none';
+  return unattended === 'none' ? 'none' : unattended.args;
+}
+
 function invocation(tool: LaunchTool, input: LocalToolRun, opencodeMajor: number, interactive: boolean): string[] {
   const family = launchAdapterIdOf(tool);
+  const modeArgs = input.unattended ? unattendedArgs(tool) : [];
+  const unattended = modeArgs === 'none' ? [] : modeArgs;
   const viaPrompt = promptHandoff(tool, input, opencodeMajor);
   const agentPrompt = input.agent?.instructions
     ? `${input.agent.instructions}\n\n${input.prompt}`
@@ -87,27 +113,28 @@ function invocation(tool: LaunchTool, input: LocalToolRun, opencodeMajor: number
   const turns = input.maxTurns !== undefined ? ['--max-turns', String(input.maxTurns)] : [];
   switch (family) {
     case 'claude':
-      if (interactive) return [...agent, ...model, ...(effort ? ['--effort', effort] : []), ...resume, prompt];
-      return ['-p', prompt, '--output-format', 'stream-json', '--verbose', ...turns, ...agent, ...model, ...(effort ? ['--effort', effort] : []), ...resume];
+      if (interactive) return [...unattended, ...agent, ...model, ...(effort ? ['--effort', effort] : []), ...resume, prompt];
+      // Only partial messages state each message's final usage as it ends, which the budget meter counts.
+      return ['-p', prompt, '--output-format', 'stream-json', '--verbose', ...(input.budget !== undefined ? ['--include-partial-messages'] : []), ...unattended, ...turns, ...agent, ...model, ...(effort ? ['--effort', effort] : []), ...resume];
     case 'codebuddy':
       // Claude's flags, with no --effort.
-      if (interactive) return [...agent, ...model, ...resume, prompt];
-      return ['-p', prompt, '--output-format', 'stream-json', '--verbose', ...turns, ...agent, ...model, ...resume];
+      if (interactive) return [...unattended, ...agent, ...model, ...resume, prompt];
+      return ['-p', prompt, '--output-format', 'stream-json', '--verbose', ...unattended, ...turns, ...agent, ...model, ...resume];
     case 'codex': {
-      if (interactive) return [...(input.resume ? ['resume', input.resume] : []), ...model, ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []), prompt];
+      if (interactive) return [...(input.resume ? ['resume', input.resume] : []), ...unattended, ...model, ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []), prompt];
       const codexModel = input.model?.name ?? input.agent?.model;
       const codexResume = input.resume ? ['resume', input.resume] : [];
-      return ['exec', ...codexResume, '--json', ...(codexModel ? ['--model', codexModel] : []), ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []), prompt];
+      return ['exec', ...codexResume, '--json', ...unattended, ...(codexModel ? ['--model', codexModel] : []), ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []), prompt];
     }
     case 'opencode':
-      if (interactive) return [...agent, ...model, '--prompt', prompt];
-      return ['run', '--format', 'json', prompt, ...agent, ...opencodeModelArgs(input.model, opencodeMajor)];
+      if (interactive) return [...unattended, ...agent, ...model, '--prompt', prompt];
+      return ['run', '--format', 'json', ...unattended, prompt, ...agent, ...opencodeModelArgs(input.model, opencodeMajor)];
     case 'agy': {
       const conversation = input.resume ? ['--conversation', input.resume] : [];
       const agyEffort = effort ? ['--effort', effort] : [];
-      if (interactive) return [...agent, ...model, ...agyEffort, ...conversation, '--prompt-interactive', prompt];
+      if (interactive) return [...unattended, ...agent, ...model, ...agyEffort, ...conversation, '--prompt-interactive', prompt];
       // `--print=` keeps the prompt attached: a bare `-p` takes its next argument as the prompt, even a flag.
-      return ['--output-format=stream-json', ...agent, ...model, ...agyEffort, ...conversation, `--print=${prompt}`];
+      return ['--output-format=stream-json', ...unattended, ...agent, ...model, ...agyEffort, ...conversation, `--print=${prompt}`];
     }
     default: {
       const unhandled: never = family;
@@ -161,6 +188,7 @@ function combineResults(fileResult: ResultFile | null, reported: ToolReport | nu
   if (reported?.model) result.model = reported.model;
   if (reported?.session) result.session = reported.session;
   if (reported?.tokens) result.tokens = reported.tokens;
+  if (reported?.cost) result.cost = reported.cost;
   return result;
 }
 
@@ -177,6 +205,13 @@ export function createLocalToolAdapter(
           started: false,
           exitCode: 1,
           failure: { code: 'tool_unavailable', message: `The ${tool} executable is not available on PATH` },
+        };
+      }
+      if (input.unattended && unattendedArgs(tool) === 'none') {
+        return {
+          started: false,
+          exitCode: 1,
+          failure: { code: 'tool_unavailable', message: `The step sets permissions: unattended, and ${tool} has no unattended mode teamai knows. Run the step on a tool that has one, or remove permissions from the step.` },
         };
       }
       const opencode = launchAdapterIdOf(tool) === 'opencode';
@@ -210,6 +245,14 @@ export function createLocalToolAdapter(
       const applied = input.agent ? { applied: promptHandoff(tool, input, opencodeMajor) ? 'prompt' as const : 'main' as const } : {};
       let started = false;
       let childProcess: ChildProcess | undefined;
+      const meter = input.budget !== undefined ? tokenMeter(launchAdapterIdOf(tool)) : undefined;
+      let metered: TokenUsage | undefined;
+      // The first reason a stop was sent, so a limit crossed while the tool shuts down does not replace it.
+      let stopCause: 'timeout' | 'budget' | 'aborted' | undefined;
+      const stopAt = (limit: 'timeout' | 'budget'): void => {
+        stopCause ??= limit;
+        void stop?.();
+      };
       const closed = new Promise<{ exitCode: number; stdout: string; error?: NodeJS.ErrnoException }>((resolve) => {
         let child: ChildProcess;
         try {
@@ -232,25 +275,51 @@ export function createLocalToolAdapter(
           return;
         }
         childProcess = child;
+        const timer = input.timeoutMs !== undefined && input.timeoutMs <= MAX_TIMER_DELAY
+          ? setTimeout(() => stopAt('timeout'), input.timeoutMs)
+          : undefined;
         let stdout = '';
+        let partial = '';
         const decoder = new StringDecoder('utf8');
         child.on('spawn', () => { started = true; });
-        child.stdout?.on('data', (chunk: Buffer) => { stdout += decoder.write(chunk); });
+        child.stdout?.on('data', (chunk: Buffer) => {
+          const text = decoder.write(chunk);
+          stdout += text;
+          if (!meter || input.budget === undefined) return;
+          // A long line arrives over many chunks: only the chunk that ends it is split.
+          const end = text.lastIndexOf('\n');
+          if (end === -1) {
+            partial += text;
+            return;
+          }
+          const lines = `${partial}${text.slice(0, end)}`.split('\n');
+          partial = text.slice(end + 1);
+          for (const line of lines) metered = meter(line);
+          if (budgeted(metered) > input.budget) stopAt('budget');
+        });
         child.stderr?.resume();
-        child.on('error', (error: NodeJS.ErrnoException) => resolve({ exitCode: 1, stdout, error }));
-        child.on('close', (code) => resolve({ exitCode: code ?? 1, stdout: stdout + decoder.end() }));
+        child.on('error', (error: NodeJS.ErrnoException) => {
+          clearTimeout(timer);
+          resolve({ exitCode: 1, stdout, error });
+        });
+        child.on('close', (code) => {
+          clearTimeout(timer);
+          resolve({ exitCode: code ?? 1, stdout: stdout + decoder.end() });
+        });
       });
       const stop = childProcess && stopProcess(childProcess, closed, !interactive && process.platform !== 'win32');
       const abort = (): void => {
         const reason: unknown = signal?.reason;
         const forwarded = reason === 'SIGINT' || reason === 'SIGQUIT' || reason === 'SIGTERM' || reason === 'SIGHUP' ? reason : undefined;
+        stopCause ??= 'aborted';
         void stop?.(interactive ? forwarded : undefined);
       };
       signal?.addEventListener('abort', abort, { once: true });
       if (signal?.aborted) abort();
       const completed = await closed;
-      if (signal?.aborted) await stop?.();
+      if (stopCause !== undefined) await stop?.();
       signal?.removeEventListener('abort', abort);
+      const stopped = stopCause === 'aborted' ? undefined : stopCause;
       if (!started || completed.error?.code === 'ENOENT') {
         return {
           started: false,
@@ -265,17 +334,25 @@ export function createLocalToolAdapter(
           started: true,
           exitCode: completed.exitCode,
           ...applied,
+          ...(stopped ? { stoppedBy: stopped } : {}),
           failure: { code: 'tool_failed', message: `${tool} could not be started` },
         };
       }
       const fileResult = await readResultFile(input.resultPath);
-      const reported = toolStdout(launchAdapterIdOf(tool), completed.stdout);
+      const printed = toolStdout(launchAdapterIdOf(tool), completed.stdout);
+      // Only a tool stopped at a limit may end before its result: one that ended there on its own wrote none.
+      const stated = printed?.unfinished && !stopped ? null : printed;
+      // A tool stopped mid-run, such as Claude before its final result, states no total: what the meter counted stands in.
+      const reported = metered && !stated?.tokens ? { ...stated, tokens: metered } : stated;
       const result = combineResults(fileResult, reported) ?? (interactive ? {} : null);
+      const stoppedBy: Limit | undefined = stopped ?? (stated?.reachedMaxTurns ? 'max_turns' : undefined);
+      const ended = stoppedBy ? { stoppedBy } : {};
       if (!result) {
         return {
           started: true,
           exitCode: completed.exitCode,
           ...applied,
+          ...ended,
           failure: { code: 'tool_failed', message: `${tool} did not write a valid workflow result` },
         };
       }
@@ -284,7 +361,7 @@ export function createLocalToolAdapter(
         result.failure = { code: 'tool_failed', message: `${tool} exited with status ${completed.exitCode}` };
       }
       if (!fileResult) await persistFallback(input.resultPath, result);
-      return { started: true, exitCode: completed.exitCode, ...applied, ...result };
+      return { started: true, exitCode: completed.exitCode, ...applied, ...ended, ...result };
     };
   return {
     run(tool, input, signal) {

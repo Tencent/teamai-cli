@@ -154,24 +154,34 @@ function isOnPath(tool: LaunchTool): boolean {
 }
 
 /**
- * {@link ToolLacks} for the local driver here with `--tools` `flags`: the tool a prompt step of each agent runs on, as the
- * driver picks it, and whether its executable is on PATH.
+ * {@link ToolLacks} for the local driver here with `--tools` `flags`: the tool a prompt step of each agent, or its own
+ * `tool`, runs on, as the driver picks it, and whether its executable is on PATH.
  */
 function toolLacks(config: LocalConfig, flags: Record<string, string>, members: MemberTool[]): ToolLacks {
   return (runs) => {
-    const byAgent = new Map<string | undefined, StepRun[]>();
-    for (const run of runs) if (run.executor === 'prompt') byAgent.set(run.agent, [...byAgent.get(run.agent) ?? [], run]);
-    return [...byAgent].flatMap(([agent, prompts]): Lack[] => {
+    const byChoice = new Map<string, { agent: string | undefined; tool: string | undefined; prompts: StepRun[] }>();
+    for (const run of runs) {
+      if (run.executor !== 'prompt') continue;
+      const key = JSON.stringify([run.agent, run.tool]);
+      const group = byChoice.get(key) ?? { agent: run.agent, tool: run.tool, prompts: [] };
+      byChoice.set(key, { ...group, prompts: [...group.prompts, run] });
+    }
+    return [...byChoice.values()].flatMap(({ agent, tool, prompts }): Lack[] => {
       const steps = `the prompt step${prompts.length > 1 ? 's' : ''} ${listOf(prompts.map((run) => run.step))}`;
       const flag = agent === undefined ? 'default' : agent;
-      const choice = launchToolFor(agent, config, flags, members);
+      const choice = launchToolFor({ agent, tool }, config, flags, members);
       if (choice.ok) {
-        return isOnPath(choice.tool) ? [] : [{ reason: `${steps} ${prompts.length > 1 ? 'run' : 'runs'} on ${choice.tool}, which is not on PATH here`, fix: `install ${choice.tool}, or pass --tools ${flag}=<tool> for one that is` }];
+        // A step's own tool wins over --tools, so only installing it helps.
+        const fix = tool === undefined ? `install ${choice.tool}, or pass --tools ${flag}=<tool> for one that is` : `install ${choice.tool}`;
+        return isOnPath(choice.tool) ? [] : [{ reason: `${steps} ${prompts.length > 1 ? 'run' : 'runs'} on ${choice.tool}, which is not on PATH here`, fix }];
       }
       if (choice.failure.code === 'tool_unconfigured') {
         return [{ reason: `no tool is configured here for ${steps}`, fix: `pass --tools ${flag}=<tool>, or set workflows.tools.${flag}` }];
       }
-      return [{ reason: `${steps} ${prompts.length > 1 ? 'have' : 'has'} no tool teamai launches here (${choice.failure.message.replace(/\.$/, '')})`, fix: `pass --tools ${flag}=<tool> with a tool teamai launches` }];
+      const fix = tool === undefined
+        ? `pass --tools ${flag}=<tool> with a tool teamai launches`
+        : `its workflow names tool ${tool}, which teamai does not launch here; continue it with a driver that launches ${tool}`;
+      return [{ reason: `${steps} ${prompts.length > 1 ? 'have' : 'has'} no tool teamai launches here (${choice.failure.message.replace(/\.$/, '')})`, fix }];
     });
   };
 }

@@ -74,6 +74,20 @@ describe('entryState', () => {
     expect(entryState(input).kind).toBe(kind);
   });
 
+  it('labels an entry with the newest answer since it was last asked for', () => {
+    const judged = (attempt: string, settledAt: string, answer: string, passed: boolean): RunAttempt => ({
+      ...leased(attempt, minutes(30)), status: 'succeeded', leasedAt: settledAt, settledAt, labelId: `l${attempt}`,
+      verdict: { label: answer, score: passed ? 1 : 0, passed, version: '1' },
+    });
+    const first = judged('a00000001', minutes(-30), 'correct', true);
+    const again = judged('a00000002', minutes(-5), 'incorrect', false);
+
+    expect(entryState({ ...facts, attempts: [first, again], requestedAt: minutes(-10) })).toEqual({ kind: 'labelled', verdict: { label: 'incorrect', passed: false } });
+    expect(entryState({ ...facts, attempts: [first, again] })).toEqual({ kind: 'labelled', verdict: { label: 'incorrect', passed: false } });
+    expect(entryState({ ...facts, labels: [{ ...label('model'), label: 'bad', passed: false, scoredAt: minutes(-1) }], attempts: [first] }))
+      .toEqual({ kind: 'labelled', verdict: { label: 'bad', passed: false } });
+  });
+
   it('fails the fourth lapse as lease_expired', () => {
     const attempts = ['a00000001', 'a00000002', 'a00000003', 'a00000004'].map((id) => leased(id, minutes(-1)));
     expect(entryState({ ...facts, attempts })).toEqual({ kind: 'failed', code: 'lease_expired' });

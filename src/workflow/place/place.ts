@@ -9,11 +9,15 @@ import { gitCommonDir } from '../../utils/git.js';
 import { redactJson } from '../../utils/redact.js';
 import { attemptEnv } from '../attempt-marker.js';
 import type { LeaseWire } from '../lease-wire.js';
-import { attemptDir, AttemptIdSchema, attemptsDir, type AttemptId, type RunId, type RunLock } from '../store.js';
-import type { WorkflowFailure } from '../types.js';
+import type { ReportInput } from '../engine.js';
+import type { RunPass } from '../loop.js';
+import { stageEvidence } from '../scoring-evidence.js';
+import { attemptDir, AttemptIdSchema, attemptsDir, readRun, type AttemptId, type RunId, type RunLock } from '../store.js';
+import type { RunState, WorkflowFailure } from '../types.js';
 import type { WorkspaceContract } from '../workspace.js';
 import { clearWorktreeHooks, headCommit, markReadCopy, markSetup, removeWorktree, reopenConfigConflicts, stepCheckout, worktreePath } from '../worktree.js';
 import { adoptRefusal, takeAdopted } from './adopted.js';
+import { cloneEnv, cloneKeyOf, commitClone, markCloneReady, openClone, removeClone } from './clone.js';
 import { openWorktree } from './created.js';
 import { applyOverlay, restoreOverlay, unrestoredConfig } from './overlay.js';
 import { finishReader, leaveReadCopy, readCopyFailure, stageReader } from './reader.js';
@@ -32,9 +36,12 @@ export async function placeRoot({ cwd, checkout }: { cwd: string; checkout: stri
   return here !== null && here !== there ? cwd : checkout;
 }
 
-/** The place key two attempts of one driver must not share: the copy of the lease's branch, else the checkout. */
-export function placeOf(lease: { cwd?: string; workspace?: Pick<WorkspaceContract, 'branch'> }, root: string): string {
-  return lease.cwd ?? stepCheckout(root, lease.workspace?.branch);
+export { cloneDelivery, cloneHead, commitCacheOf, freshClone, preparedClone, scratchCloneRoot, stageSettledEvidence, sweepClones } from './clone.js';
+
+/** The place key two attempts of one driver must not share: the copy of the lease's branch, its clone, else the checkout. */
+export function placeOf(lease: { cwd?: string; workspace?: WorkspaceContract }, root: string): string {
+  if (lease.cwd !== undefined) return lease.cwd;
+  return lease.workspace?.mode !== 'read-only' && lease.workspace?.clone ? cloneKeyOf(lease.workspace.branch) : stepCheckout(root, lease.workspace?.branch);
 }
 
 /**
@@ -73,15 +80,20 @@ export async function adoptedPlaceOf(input: { config: LocalConfig; run: RunId; b
   return last?.dir;
 }
 
-/** The lease fields a place reads. Its `expiresAt` bounds setup. */
-export type PlaceLease = Pick<LeaseWire, 'attempt' | 'step' | 'prompt' | 'interactive' | 'readOnly' | 'workspace' | 'setup' | 'expiresAt'> & { executor: 'command' | 'prompt' };
+/**
+ * The lease fields a place reads. Its `expiresAt` bounds setup. A clone gets the step's `tool` installed, and keeps
+ * `envScope.withhold` from its git and its install.
+ */
+export type PlaceLease = Pick<LeaseWire, 'attempt' | 'step' | 'prompt' | 'interactive' | 'readOnly' | 'workspace' | 'setup' | 'expiresAt' | 'tool' | 'envScope'> & { executor: 'command' | 'prompt' };
 
 /** The place fields of `lease`, a lease `next` answered with. */
 export function placeLeaseOf(lease: LeaseWire): PlaceLease {
-  const { attempt, step, command, prompt, interactive, readOnly, workspace, setup, expiresAt } = lease;
+  const { attempt, step, command, prompt, interactive, readOnly, workspace, setup, expiresAt, tool, envScope } = lease;
   return {
     attempt, step, executor: command !== undefined ? 'command' : 'prompt',
     ...(prompt !== undefined ? { prompt } : {}),
+    ...(tool !== undefined ? { tool } : {}),
+    ...(envScope ? { envScope } : {}),
     ...(interactive ? { interactive: true } : {}),
     ...(readOnly ? { readOnly: true } : {}),
     ...(workspace ? { workspace } : {}),
@@ -147,8 +159,11 @@ export async function preparePlace(input: { config: LocalConfig; lock: RunLock; 
     }
     recorded = given.abandoned;
   }
-  const reopened = recorded?.phase === 'opening' ? recorded : undefined;
   const { workspace } = lease;
+  if (workspace && workspace.mode !== 'read-only' && workspace.clone) {
+    return prepareClone({ config, run, root, lease, workspace: { ...workspace, clone: workspace.clone }, recorded });
+  }
+  const reopened = recorded?.phase === 'opening' ? recorded : undefined;
   const hosted = workspace ? await adoptedPlaceOf({ config, run, branch: workspace.branch }) : undefined;
   // A prepare killed while it adopted a place goes on in that place.
   const asked = input.adopt !== undefined ? path.resolve(input.adopt) : reopened?.adopted ? reopened.dir : undefined;
@@ -179,6 +194,57 @@ export async function preparePlace(input: { config: LocalConfig; lock: RunLock; 
   // The step does not run in a place the host made whose prepare failed, so the host's own hooks run there again.
   if (prepared.kind === 'failed' && adopt !== undefined) await clearWorktreeHooks(adopt);
   return prepared;
+}
+
+/**
+ * Prepares the clone `workspace` names: the one an earlier step prepared, or a fresh one, which is set up when the lease
+ * carries setup. A clone this attempt made and could not prepare is given up with it, and one it made before it was
+ * prepared again is replaced.
+ */
+async function prepareClone(input: {
+  config: LocalConfig; run: RunId; root: string; lease: PlaceLease; recorded: PlaceRecord | undefined;
+  workspace: Extract<WorkspaceContract, { mode: 'new' | 'continue' }> & { clone: NonNullable<Extract<WorkspaceContract, { mode: 'new' | 'continue' }>['clone']> };
+}): Promise<PlacePrepared> {
+  const { config, run, root, lease, workspace, recorded } = input;
+  // An attempt prepared again made its clone, and what it ran there before is not this run of it: it gets a fresh one.
+  if (recorded && recorded.phase !== 'opening' && recorded.phase !== 'abandoned' && recorded.place.role === 'clone' && recorded.place.created) {
+    await removeClone(config, run, workspace.branch);
+  } else {
+    const result = await recordedResult(config, recorded, lease.prompt);
+    if (result) return result;
+  }
+  const base: OpeningBase = {
+    version: 1, run, attempt: lease.attempt, step: lease.step, executor: lease.executor, root,
+    ...(lease.interactive ? { interactive: true as const } : {}),
+  };
+  // No opening record: the clone's receipt names its root before anything under it exists, for the sweep.
+  const withhold = lease.envScope?.withhold ?? [];
+  const opened = await openClone({
+    config, run, checkout: root,
+    lease: {
+      attempt: lease.attempt, step: lease.step, branch: workspace.branch, clone: workspace.clone, start: workspace.start.commit, withhold,
+      ...(lease.tool !== undefined ? { tool: lease.tool } : {}), ...(lease.expiresAt !== undefined ? { expiresAt: lease.expiresAt } : {}),
+    },
+  });
+  const place = {
+    role: 'clone' as const, workspace, rangeFrom: workspace.start.commit, withhold,
+    ...('created' in opened && opened.created ? { created: true as const } : {}), ...(lease.expiresAt !== undefined ? { expiresAt: lease.expiresAt } : {}),
+  };
+  const { dir } = opened;
+  if ('failure' in opened) {
+    await removeClone(config, run, workspace.branch);
+    await writePlaceRecord(config, { ...base, dir, place, phase: 'abandoned', at: new Date().toISOString() });
+    return { kind: 'failed', failure: opened.failure };
+  }
+  if (opened.created && lease.setup) {
+    const staged: PlaceRecord = { ...base, dir, place, phase: 'staged', setup: lease.setup, ...(lease.expiresAt !== undefined ? { expiresAt: lease.expiresAt } : {}) };
+    await writePlaceRecord(config, staged);
+    return preparedOf(staged, lease.prompt);
+  }
+  if (opened.created) await markCloneReady(config, run, workspace.branch);
+  const ready: Placed = { ...base, dir, place, phase: 'ready' };
+  await writePlaceRecord(config, ready);
+  return preparedOf(ready, lease.prompt);
 }
 
 /** The place a prepare recorded for the attempt before, unless it gave the place up or left its git undone. */
@@ -278,6 +344,7 @@ async function settle(config: LocalConfig, record: PlaceRecordBase): Promise<Pla
   let settled = record;
   switch (place.role) {
     case 'checkout':
+    case 'clone':
       break;
     case 'reader': {
       const before = await stageReader(record.dir, files.snapshot);
@@ -322,6 +389,7 @@ export async function runPlaceSetup(input: { config: LocalConfig; run: RunId; at
   const failure = await runSetup({ command: setup.command, dir: recorded.dir, env: { ...scoped.env, ...attemptEnv(run, attempt, mode) }, keys: scope.provide, signal, groupDir: attemptDir(config, run, attempt), ...(expiresAt !== undefined ? { expiresAt } : {}) });
   if (failure) return setupFailed(config, settingUp, failure);
   await markSetup(recorded.dir, 'finished');
+  if (recorded.place.role === 'clone') await markCloneReady(config, run, recorded.place.workspace.branch);
   const ready = await settle(config, baseOf(recorded));
   return 'code' in ready ? ready : undefined;
 }
@@ -342,7 +410,8 @@ async function giveUpSetup(config: LocalConfig, record: Extract<PlaceRecord, { p
   const { place, dir } = record;
   const { overlay } = placeFiles(config, record.run, record.attempt);
   let unrestored: string | undefined;
-  if (record.adopted && place.role !== 'checkout') {
+  if (place.role === 'clone') await removeClone(config, record.run, place.workspace.branch);
+  else if (record.adopted && place.role !== 'checkout') {
     unrestored = await restoreOverlay({ dir, configCommit: place.workspace.configCommit, saved: overlay });
     await clearWorktreeHooks(dir);
   } else await removeWorktree(record.root, dir);
@@ -390,6 +459,38 @@ export async function finishPlace(input: { config: LocalConfig; lock: RunLock; a
   return finished;
 }
 
+/**
+ * Stages, from the clone attempt `attempt` ran in, the evidence the judges of its pass read, before `report`, the
+ * report finishing the place made of it, settles the pass: the clone may be gone once it does. Answers the directory
+ * staged, which the caller removes when the pass does not settle `success`.
+ */
+export async function stagePassEvidence(input: { config: LocalConfig; lock: RunLock; attempt: AttemptId; report: ReportInput }): Promise<string | undefined> {
+  const { config, lock, attempt, report } = input;
+  if (report.outcome !== 'success') return undefined;
+  const ran = await cloneRan(config, lock.run, attempt);
+  const leased = ran && ran.run.steps.find((step) => step.status === 'leased' && step.attempt === attempt);
+  if (!ran || !leased) return undefined;
+  const pass = leased.pass ?? 1;
+  const settling: RunPass = {
+    step: leased.id, pass, attempt, outcome: 'success', tool: report.tool, session: report.session,
+    ...(report.changes ? { changes: report.changes } : {}), ...(report.outputs !== undefined ? { outputs: report.outputs } : {}),
+  };
+  return stageEvidence(config, ran.run, { runId: lock.run, step: leased.id, pass }, { ...ran.source, settling });
+}
+
+/** The clone attempt `attempt` ran in, when its place is one, the run read now, and how git reads the clone. */
+async function cloneRan(config: LocalConfig, runId: RunId, attempt: AttemptId): Promise<{ run: RunState; source: { checkout: string; untrustedEnv: NodeJS.ProcessEnv; expiresAt?: string } } | undefined> {
+  const read = await readPlaceRecord(config, runId, attempt);
+  const place = read.kind === 'found' && read.record.phase !== 'opening' ? read.record.place : undefined;
+  if (read.kind !== 'found' || place?.role !== 'clone') return undefined;
+  const [run, scoped] = await Promise.all([readRun(config, runId), cloneEnv(place.withhold)]);
+  if (typeof run !== 'object' || !scoped.ok) return undefined;
+  return {
+    run,
+    source: { checkout: read.record.dir, untrustedEnv: scoped.env, ...(place.expiresAt !== undefined ? { expiresAt: place.expiresAt } : {}) },
+  };
+}
+
 /** Why a place in `phase` has nothing to finish. */
 function unfinishedPlace(phase: 'opening' | 'preparing' | 'staged' | 'setting-up' | 'abandoned'): string {
   switch (phase) {
@@ -429,6 +530,13 @@ async function finishRole(files: { snapshot: string; overlay: string }, record: 
       const copy = readCopyFailure(left, [own && end.message !== undefined ? `${end.message}.` : '', said].filter((part) => part !== '').join(' '));
       if (!own || copy.code === 'workspace_base') return { outcome: 'failed', message: copy.message, failure: copy, read: left.read };
       return { ...end, message: copy.message, ...(end.failure ? { failure: { ...end.failure, message: copy.message } } : {}), read: left.read };
+    }
+    case 'clone': {
+      const committed = await commitClone({
+        dir, branch: place.workspace.branch, step, base: place.workspace.base.commit, start: place.rangeFrom, withhold: place.withhold,
+        ...(place.expiresAt !== undefined ? { expiresAt: place.expiresAt } : {}),
+      });
+      return 'code' in committed ? { outcome: 'failed', message: committed.message, failure: committed } : { ...end, changes: committed.changes };
     }
     case 'writer': {
       const written = await finishWriter({
@@ -483,6 +591,10 @@ export async function abandonPlace(input: { config: LocalConfig; lock: RunLock; 
   switch (place.role) {
     case 'checkout':
       break;
+    case 'clone':
+      // A clone this attempt made has no step's work yet, so the next attempt gets a fresh one.
+      if (place.created) await removeClone(config, run, place.workspace.branch);
+      break;
     case 'reader':
       unrestored = await restoreOverlay({ dir, configCommit: place.workspace.configCommit, saved: files.overlay });
       // The copy keeps its mark while the branch agent files are not back, so later steps there are refused.
@@ -512,7 +624,7 @@ export async function placeRecorded(input: { config: LocalConfig; run: RunId; at
 export async function releasePlace(input: { config: LocalConfig; lock: RunLock; attempt: AttemptId }): Promise<'removed' | 'left'> {
   const read = await readPlaceRecord(input.config, input.lock.run, input.attempt);
   const recorded = read.kind === 'found' ? read.record : undefined;
-  if (!recorded || recorded.phase === 'opening' || recorded.place.role === 'checkout' || recorded.adopted) return 'left';
+  if (!recorded || recorded.phase === 'opening' || recorded.place.role === 'checkout' || recorded.place.role === 'clone' || recorded.adopted) return 'left';
   await removeWorktree(recorded.root, recorded.dir);
   return 'removed';
 }

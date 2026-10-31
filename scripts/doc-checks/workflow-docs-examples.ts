@@ -16,6 +16,7 @@ import { leaseNext, reportAttempt, startRun } from '../../src/workflow/engine.js
 import { formatDiagnostic } from '../../src/workflow/parse.js';
 import type { DriverIdentity, WorkflowEnvelope } from '../../src/workflow/types.js';
 import { knownSecrets } from '../../src/env-resolution.js';
+import { parseSuite, type SourceFile } from '../../src/benchmark/suite.js';
 
 const ROOT = process.cwd();
 const GUIDE = path.join(ROOT, 'docs', 'guide');
@@ -31,6 +32,7 @@ function guidePages(name: RegExp): string[] {
 
 const PAGES = guidePages(/^workflow.*\.md$/);
 const SCORER_PAGES = guidePages(/^scorers.*\.md$/);
+const BENCHMARK_PAGES = guidePages(/^benchmarks.*\.md$/);
 
 interface Example {
   label: string;
@@ -428,7 +430,7 @@ for (const page of ADVANCED) {
   );
 }
 
-for (const page of PAGES) {
+for (const page of [...PAGES, ...BENCHMARK_PAGES]) {
   await check(
     `${page}: every job of a GitHub Actions workflow it shows says what it runs on`,
     () => {
@@ -459,7 +461,7 @@ await check(
   cleanup,
 );
 
-for (const page of [...PAGES, ...SCORER_PAGES]) {
+for (const page of [...PAGES, ...SCORER_PAGES, ...BENCHMARK_PAGES]) {
   await check(
     `${page}: every relative link to a .md file resolves`,
     () => {
@@ -501,3 +503,69 @@ for (const page of SCORER_PAGES) {
     cleanup,
   );
 }
+
+/** Each team file a page shows: a yaml fence whose first line is `# benchmarks/<path>.yaml`. */
+function benchmarkFilesOf(page: string): SourceFile[] {
+  return examplesOf(page).flatMap(({ source }) => {
+    const relativePath = /^# (benchmarks\/\S+\.yaml)\n/.exec(source)?.[1];
+    return relativePath === undefined ? [] : [{ relativePath, content: source }];
+  });
+}
+
+/** The `npx teamai-cli` commands of the GitLab CI jobs a page shows: a yaml fence whose top-level job has a `script`. */
+function gitlabCommandsOf(page: string): string[] {
+  const JobsSchema = z.record(z.string(), z.unknown()).transform((jobs) =>
+    Object.values(jobs).flatMap((job) => {
+      const script = z.object({ script: z.array(z.string()) }).safeParse(job);
+      return script.success ? [script.data.script] : [];
+    }),
+  );
+  return examplesOf(page).flatMap(({ source }) => JobsSchema.parse(parseDocument(source).toJS() ?? {}).flat());
+}
+
+const teamaiCommands = (commands: string[]): string[] => commands.filter((command) => command.startsWith('npx teamai-cli '));
+
+await check('finds the English and Chinese benchmark pages', () => {
+  assert.deepEqual(BENCHMARK_PAGES, ['docs/guide/benchmarks.md', 'docs/guide/zh-CN/benchmarks.md']);
+});
+
+for (const page of BENCHMARK_PAGES) {
+  await check(`${page}: each yaml block parses, and its suite and task files pass pull`, () => {
+    for (const example of examplesOf(page)) assert.deepEqual(parseDocument(example.source).errors, [], example.label);
+    const files = benchmarkFilesOf(page);
+    const [suite, ...others] = files.filter((file) => file.relativePath.endsWith('/suite.yaml'));
+    if (!suite || others.length > 0) throw new Error(`${page} shows ${others.length + (suite ? 1 : 0)} suite files, not one`);
+    const tasks = files.filter((file) => file !== suite);
+    assert.deepEqual(
+      tasks.map((task) => path.posix.dirname(task.relativePath)),
+      tasks.map(() => `${path.posix.dirname(suite.relativePath)}/tasks`),
+      page,
+    );
+
+    const parsed = parseSuite({ suite, tasks });
+
+    assert.deepEqual(parsed.diagnostics.map(formatDiagnostic), []);
+    assert.deepEqual(parsed.ok && parsed.warnings.map(formatDiagnostic), []);
+    assert.equal(parsed.ok && parsed.suite.tasks.length, tasks.length);
+  });
+
+  await check(`${page}: the GitLab CI job runs the teamai commands of the GitHub Actions job`, () => {
+    const github = teamaiCommands(ciRecipesOf(path.join(ROOT, page)).flatMap(runCommandsOf));
+    assert.ok(github.length > 0, `${page} shows a GitHub Actions job that runs teamai`);
+    assert.deepEqual(teamaiCommands(gitlabCommandsOf(page)), github);
+  });
+}
+
+await check('shows the same benchmark files and CI commands in every language', () => {
+  const [english, ...others] = BENCHMARK_PAGES.map((page) => ({
+    page,
+    files: benchmarkFilesOf(page),
+    commands: ciRecipesOf(path.join(ROOT, page)).map(runCommandsOf),
+    gitlab: gitlabCommandsOf(page),
+  }));
+  for (const other of others) {
+    assert.deepEqual(other.files, english?.files, other.page);
+    assert.deepEqual(other.commands, english?.commands, other.page);
+    assert.deepEqual(other.gitlab, english?.gitlab, other.page);
+  }
+});

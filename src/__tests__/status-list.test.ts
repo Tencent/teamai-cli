@@ -267,7 +267,7 @@ describe('teamai list / status resource coverage', () => {
 
     await list('workflows', { source: 'repo' });
     expect(lines).toEqual([
-      '', '=== REPO WORKFLOWS ===', '  broken  (not runnable)', '  fix (review-and-fix)  (team)', '  teamai-share-learnings  (default)', '  teamai-share-session  (default)', '',
+      '', '=== REPO WORKFLOWS ===', '  broken  (not runnable)', '  fix (review-and-fix)  (team)', '  teamai-benchmark  (default)', '  teamai-share-learnings  (default)', '  teamai-share-session  (default)', '',
     ]);
 
     await fse.outputFile(path.join(repoPath, 'workflows', 'teamai-share-session.yaml'), workflow('teamai-share-session', 'alias: share-session\n'));
@@ -276,7 +276,7 @@ describe('teamai list / status resource coverage', () => {
 
     await list('workflows', { source: 'repo' });
     expect(lines).toEqual([
-      '', '=== REPO WORKFLOWS ===', '  broken  (not runnable)', '  fix (review-and-fix)  (team)', '  teamai-share-learnings  (default)', '  share-session (teamai-share-session)  (team)', '',
+      '', '=== REPO WORKFLOWS ===', '  broken  (not runnable)', '  fix (review-and-fix)  (team)', '  teamai-benchmark  (default)', '  teamai-share-learnings  (default)', '  share-session (teamai-share-session)  (team)', '',
     ]);
   });
 

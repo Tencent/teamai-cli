@@ -1413,7 +1413,8 @@ export type ResourceType =
   | 'wiki'
   | 'workflows'
   | 'prompts'
-  | 'scorers';
+  | 'scorers'
+  | 'benchmarks';
 
 export type ResourceItemStatus = 'new' | 'modified';
 
@@ -1798,6 +1799,7 @@ export const RESOURCE_TYPES: ResourceType[] = [
   'workflows',
   'prompts',
   'scorers',
+  'benchmarks',
 ];
 
 export const TEAMAI_RULES_START = '<!-- [teamai:rules:start] -->';

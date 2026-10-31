@@ -74,33 +74,33 @@ Paths are relative to the project root. `cwd only`: the tool reads it only from 
 
 User scope, from #1221's matrix; a fix merged since is marked `t`, with a note. `✓` works. `◐` works by default, and a condition breaks it while doctor still reports it delivered. `✗` broken in the default setup. `+` the tool supports it and teamai does not build it. `—` the tool has no such feature. `?` unknown. The letter after the mark is the evidence, as above.
 
-| Tool | Env | Workflows (local driver) | Recall | Stats | AI backend | Votes judge | Session judge | HTTP agent hooks |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Claude Code | ✓t | ✓v | ✓v | ✓v | ✓v | ✓v | ✓t<sup>1</sup> | ✓v |
-| Codex CLI | ✓t | ✓t | ✓v | ✓t<sup>2</sup> | ✓v | ✓t<sup>3</sup> | ✓t<sup>1</sup> | ✓t<sup>4</sup> |
-| Codex CLI Internal | ? | ✓t | ? | ? | ✓t | ? | ? | ? |
-| Claude Code Internal | ? | ✓t | ? | ? | ✓t | ? | ? | ? |
-| TClaude | ? | ✓t | ? | ? | ✓t | ? | ? | ? |
-| TCodex | ? | ✓t | ? | ? | ✓t | ? | ? | ? |
-| Cursor | ? | +s<sup>5</sup> | ✗v<sup>6</sup> | ✓v<sup>7</sup> | ✓d | +s | ✓t<sup>1</sup> | +t<sup>8</sup> |
-| Copilot | ? | +s | ✓v | ✓t<sup>2</sup> | ✓d | ? | ✓t<sup>1</sup> | —t |
-| JoyCode | ? | ? | ◐s | ✓t<sup>2</sup> | ? | ? | ✓t<sup>1</sup> | ? |
-| Qoder | ? | ? | ◐s | ✓s | ✓d | ? | ✓s<sup>9</sup> | ✓s |
-| Qoder CN | ? | ? | ◐s | ✓s | ? | ? | ✓s<sup>9</sup> | ✓t<sup>10</sup> |
-| Kiro | ? | ? | ◐d | ? | ✓d | ? | ✓d<sup>11</sup> | ✓d<sup>12</sup> |
-| Trae | ? | ? | ? | ? | ? | ? | ✓s<sup>13</sup> | ? |
-| Trae CN | ? | ? | ? | ? | ? | ? | ✓s<sup>13</sup> | ? |
-| ZCode | ✓t | +s | ✓s | ✓s | +s | ✓t<sup>3</sup> | ✓d<sup>14</sup> | +t<sup>15</sup> |
-| Oh My Pi | ✓s | +s | ✓v | ✓t<sup>2</sup> | ✓d | ? | ✓s<sup>16</sup> | ✓s<sup>17</sup> |
-| Pi Coding Agent | ✓s | +v | ✓v | ✓t<sup>2</sup> | ✓s | ? | ◐s<sup>18</sup> | ✓s<sup>19</sup> |
-| CodeBuddy | ? | ✓d | ✓s | ✓v | ✓d | +v | ✓t<sup>1</sup> | ✓s |
-| OpenClaw | ◐d | +d | ✓s | +s | ✓d | —t | ◐s<sup>20</sup> | ✓s<sup>21</sup> |
-| Hermes | ◐s | +s | ✓v | +s | ✓s | —t | ✓s<sup>22</sup> | ✓s<sup>23</sup> |
-| DeepSeek Harness | ✗s | +s | ✓s | ✓t<sup>2</sup> | +s | ? | ◐s<sup>24</sup> | —t |
-| WorkBuddy | ? | ✓t | ✓t | ? | ✓t | ? | ✓t<sup>25</sup> | ? |
-| OpenCode | ? | ✓t | ✓v | ✓t<sup>2</sup> | ✓v | ? | ✓t<sup>1</sup> | ✓v<sup>26</sup> |
-| Muse Code | ✓t | +v | ✓t | ✓v | ✓v | ✓t<sup>3</sup> | ✓t<sup>1</sup> | ✓t<sup>27</sup> |
-| Antigravity | ✓v<sup>28</sup> | ✓v | ✓v | ✓v | ✓v | ✗v<sup>29</sup> | ✓t<sup>30</sup> | ✓t<sup>31</sup> |
+| Tool | Env | Workflows (local driver) | Unattended prompts | Recall | Stats | AI backend | Votes judge | Session judge | HTTP agent hooks |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Claude Code | ✓t | ✓v | ✓v | ✓v | ✓v | ✓v | ✓v | ✓t<sup>1</sup> | ✓v |
+| Codex CLI | ✓t | ✓t | ✓d | ✓v | ✓t<sup>2</sup> | ✓v | ✓t<sup>3</sup> | ✓t<sup>1</sup> | ✓t<sup>4</sup> |
+| Codex CLI Internal | ? | ✓t | ✓t | ? | ? | ✓t | ? | ? | ? |
+| Claude Code Internal | ? | ✓t | ✓t | ? | ? | ✓t | ? | ? | ? |
+| TClaude | ? | ✓t | ✓t | ? | ? | ✓t | ? | ? | ? |
+| TCodex | ? | ✓t | ✓t | ? | ? | ✓t | ? | ? | ? |
+| Cursor | ? | +s<sup>5</sup> | ? | ✗v<sup>6</sup> | ✓v<sup>7</sup> | ✓d | +s | ✓t<sup>1</sup> | +t<sup>8</sup> |
+| Copilot | ? | +s | ? | ✓v | ✓t<sup>2</sup> | ✓d | ? | ✓t<sup>1</sup> | —t |
+| JoyCode | ? | ? | ? | ◐s | ✓t<sup>2</sup> | ? | ? | ✓t<sup>1</sup> | ? |
+| Qoder | ? | ? | ? | ◐s | ✓s | ✓d | ? | ✓s<sup>9</sup> | ✓s |
+| Qoder CN | ? | ? | ? | ◐s | ✓s | ? | ? | ✓s<sup>9</sup> | ✓t<sup>10</sup> |
+| Kiro | ? | ? | ? | ◐d | ? | ✓d | ? | ✓d<sup>11</sup> | ✓d<sup>12</sup> |
+| Trae | ? | ? | ? | ? | ? | ? | ? | ✓s<sup>13</sup> | ? |
+| Trae CN | ? | ? | ? | ? | ? | ? | ? | ✓s<sup>13</sup> | ? |
+| ZCode | ✓t | +s | ? | ✓s | ✓s | +s | ✓t<sup>3</sup> | ✓d<sup>14</sup> | +t<sup>15</sup> |
+| Oh My Pi | ✓s | +s | ? | ✓v | ✓t<sup>2</sup> | ✓d | ? | ✓s<sup>16</sup> | ✓s<sup>17</sup> |
+| Pi Coding Agent | ✓s | +v | ? | ✓v | ✓t<sup>2</sup> | ✓s | ? | ◐s<sup>18</sup> | ✓s<sup>19</sup> |
+| CodeBuddy | ? | ✓d | ✓d | ✓s | ✓v | ✓d | +v | ✓t<sup>1</sup> | ✓s |
+| OpenClaw | ◐d | +d | ? | ✓s | +s | ✓d | —t | ◐s<sup>20</sup> | ✓s<sup>21</sup> |
+| Hermes | ◐s | +s | ? | ✓v | +s | ✓s | —t | ✓s<sup>22</sup> | ✓s<sup>23</sup> |
+| DeepSeek Harness | ✗s | +s | ? | ✓s | ✓t<sup>2</sup> | +s | ? | ◐s<sup>24</sup> | —t |
+| WorkBuddy | ? | ✓t | ✓t | ✓t | ? | ✓t | ? | ✓t<sup>25</sup> | ? |
+| OpenCode | ? | ✓t | ✓d | ✓v | ✓t<sup>2</sup> | ✓v | ? | ✓t<sup>1</sup> | ✓v<sup>26</sup> |
+| Muse Code | ✓t | +v | ? | ✓t | ✓v | ✓v | ✓t<sup>3</sup> | ✓t<sup>1</sup> | ✓t<sup>27</sup> |
+| Antigravity | ✓v<sup>28</sup> | ✓v | ✓d | ✓v | ✓v | ✓v | ✗v<sup>29</sup> | ✓t<sup>30</sup> | ✓t<sup>31</sup> |
 
 Notes:
 

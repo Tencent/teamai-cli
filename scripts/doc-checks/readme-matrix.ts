@@ -5,6 +5,7 @@ import path from 'node:path';
 
 import { ALL_MODEL_AGENTS } from '../../src/models/profile.js';
 import { runsTeamHookOn } from '../../src/hooks.js';
+import { isLaunchTool } from '../../src/tool-launch/tools.js';
 import { isToolId, TOOLS, type Support } from '../../src/tools.js';
 import { DEFAULT_TOOL_PATHS, type ToolId } from '../../src/types.js';
 
@@ -28,6 +29,7 @@ const COLUMNS = [
   'usage',
   'sessions',
   'scorers',
+  'benchmarks',
 ] as const;
 type Column = (typeof COLUMNS)[number];
 
@@ -115,5 +117,7 @@ for (const [label, row] of matrix) {
     const sessionJudge = decided(d.features.sessionJudge) === '✓';
     // Without a session reader, a tool whose session judges its skill-driven runs scores only those (✓³).
     assert.equal(cell(row, 'scorers'), Array.isArray(d.sessions) ? '✓' : sessionJudge ? '✓³' : '—');
+    // A benchmark arm runs on a tool the local driver launches.
+    assert.equal(cell(row, 'benchmarks'), isLaunchTool(tool) ? '✓' : '—');
   });
 }

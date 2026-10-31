@@ -351,6 +351,12 @@ export interface ReconcileHooksOptions {
   teamOnly?: boolean;
   /** Render CodeBuddy project hooks through its Windows IDE/CLI dual-runner dispatcher. */
   codebuddyDualRunner?: boolean;
+  /**
+   * With `removeAll`, leave the built-in entries: another install runs them
+   * from the same file. Read by the settings.json format, the one a
+   * workspace shares with the user scope in HOME.
+   */
+  keepBuiltins?: boolean;
   /** Shared main-checkout ownership to reconcile before changing this file. */
   mainCheckout?: MainCheckoutHooks;
   /** The team's hooks at every revision, to recognize entries the manifest does not record (#993). */
@@ -1842,7 +1848,7 @@ async function reconcileClaudeFormat(
       if (index >= 0 && opts.removeAll) unreleased.splice(index, 1);
       return index >= 0;
     }
-    if (isBuiltinClaudeEntry(e) || (!!opts.removeAll && isAgentClaudeEntry(e))) return true;
+    if ((!opts.keepBuiltins && isBuiltinClaudeEntry(e)) || (!!opts.removeAll && isAgentClaudeEntry(e))) return true;
     if (!teamActive || !isTeamClaudeEntry(e)) return false;
     // Project-scope hooks share HOME with other projects. Only remove entries
     // recorded for this project (or desired by this reconcile); otherwise a

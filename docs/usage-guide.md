@@ -14,6 +14,7 @@ Start with [Getting Started](guide/getting-started.md): set up a team, join one,
 - [Workflows](guide/workflow.md) — command steps in `workflows/*.yaml`: pull, start, next, and report
 - [Advanced workflows](guide/workflow-advanced.md) — parallel steps, loops, `for_each`, ends that cancel open steps, and the expression reference
 - [Scorers](guide/scorers.md) — rubrics in `scorers/*.md` that judge workflow steps
+- [Benchmarks](guide/benchmarks.md) — suites in `benchmarks/` that compare tools and models on your own tasks, and their CI jobs
 - [Team Context](guide/knowledge.md) — learnings, the codebase graph, teamwiki, and CI
 - [Team Culture](guide/team-culture.md) — Company and team culture injected into every agent
 - [Dashboard](guide/dashboard.md) — Local dashboard and session save

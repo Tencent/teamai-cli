@@ -267,6 +267,8 @@ export type ToolFeatures = {
   readonly env: Support;
   /** The local driver (`teamai workflow start --driver local`) runs prompt steps on the tool. */
   readonly workflows: Support;
+  /** The local driver runs a prompt step with `permissions: unattended` in the tool's own mode for editing and running commands without asking. */
+  readonly unattended: Support;
   /** The recall skill and its session-start reminder. */
   readonly recall: Support;
   /** The tool's skill calls are recorded for usage stats. */
@@ -364,6 +366,7 @@ export const TOOLS = {
     features: {
       env: '✓t',
       workflows: '✓v',
+      unattended: '✓v',
       recall: '✓v',
       stats: '✓v',
       aiBackend: '✓v',
@@ -403,6 +406,7 @@ export const TOOLS = {
     features: {
       env: '✓t',
       workflows: '✓t',
+      unattended: '✓d',
       recall: '✓v',
       stats: { cell: '✓t', note: 'A1 (#1245) records its skill loads; not rerun' },
       aiBackend: '✓v',
@@ -429,6 +433,7 @@ export const TOOLS = {
     features: {
       env: '?',
       workflows: '✓t',
+      unattended: '✓t',
       recall: '?',
       stats: '?',
       aiBackend: '✓t',
@@ -451,6 +456,7 @@ export const TOOLS = {
     features: {
       env: '?',
       workflows: '✓t',
+      unattended: '✓t',
       recall: '?',
       stats: '?',
       aiBackend: '✓t',
@@ -476,6 +482,7 @@ export const TOOLS = {
     features: {
       env: '?',
       workflows: '✓t',
+      unattended: '✓t',
       recall: '?',
       stats: '?',
       aiBackend: '✓t',
@@ -502,6 +509,7 @@ export const TOOLS = {
     features: {
       env: '?',
       workflows: '✓t',
+      unattended: '✓t',
       recall: '?',
       stats: '?',
       aiBackend: '✓t',
@@ -546,6 +554,7 @@ export const TOOLS = {
     features: {
       env: '?',
       workflows: { cell: '+s', note: 'Cursor IDE: —' },
+      unattended: '?',
       recall: { cell: '✗v', note: 'Cursor IDE: ✓v' },
       stats: { cell: '✓v', note: 'Cursor IDE: ✓t' },
       aiBackend: '✓d',
@@ -595,6 +604,7 @@ export const TOOLS = {
     features: {
       env: '?',
       workflows: '+s',
+      unattended: '?',
       recall: '✓v',
       stats: { cell: '✓t', note: 'A1 (#1245) records its skill loads; not rerun' },
       aiBackend: '✓d',
@@ -625,6 +635,7 @@ export const TOOLS = {
     features: {
       env: '?',
       workflows: '?',
+      unattended: '?',
       recall: '◐s',
       stats: { cell: '✓t', note: 'A1 (#1245) records its skill loads; not rerun' },
       aiBackend: '?',
@@ -661,6 +672,7 @@ export const TOOLS = {
     features: {
       env: '?',
       workflows: '?',
+      unattended: '?',
       recall: '◐s',
       stats: '✓s',
       aiBackend: '✓d',
@@ -697,6 +709,7 @@ export const TOOLS = {
     features: {
       env: '?',
       workflows: '?',
+      unattended: '?',
       recall: '◐s',
       stats: '✓s',
       aiBackend: '?',
@@ -733,6 +746,7 @@ export const TOOLS = {
     features: {
       env: '?',
       workflows: '?',
+      unattended: '?',
       recall: '◐d',
       stats: '?',
       aiBackend: '✓d',
@@ -772,6 +786,7 @@ export const TOOLS = {
     features: {
       env: '?',
       workflows: '?',
+      unattended: '?',
       recall: '?',
       stats: '?',
       aiBackend: '?',
@@ -809,6 +824,7 @@ export const TOOLS = {
     features: {
       env: '?',
       workflows: '?',
+      unattended: '?',
       recall: '?',
       stats: '?',
       aiBackend: '?',
@@ -846,6 +862,7 @@ export const TOOLS = {
     features: {
       env: '✓t',
       workflows: '+s',
+      unattended: '?',
       recall: '✓s',
       stats: '✓s',
       aiBackend: '+s',
@@ -888,6 +905,7 @@ export const TOOLS = {
     features: {
       env: '✓s',
       workflows: '+s',
+      unattended: '?',
       recall: '✓v',
       stats: { cell: '✓t', note: 'A1 (#1245) records its skill loads; not rerun' },
       aiBackend: '✓d',
@@ -924,6 +942,7 @@ export const TOOLS = {
     features: {
       env: '✓s',
       workflows: '+v',
+      unattended: '?',
       recall: '✓v',
       stats: { cell: '✓t', note: 'A1 (#1245) records its skill loads; not rerun' },
       aiBackend: '✓s',
@@ -981,6 +1000,7 @@ export const TOOLS = {
     features: {
       env: '?',
       workflows: '✓d',
+      unattended: '✓d',
       recall: '✓s',
       stats: '✓v',
       aiBackend: '✓d',
@@ -1016,6 +1036,7 @@ export const TOOLS = {
     features: {
       env: '◐d',
       workflows: '+d',
+      unattended: '?',
       recall: '✓s',
       stats: '+s',
       aiBackend: '✓d',
@@ -1048,6 +1069,7 @@ export const TOOLS = {
     features: {
       env: '◐s',
       workflows: '+s',
+      unattended: '?',
       recall: '✓v',
       stats: '+s',
       aiBackend: '✓s',
@@ -1076,6 +1098,7 @@ export const TOOLS = {
     features: {
       env: '✗s',
       workflows: '+s',
+      unattended: '?',
       recall: '✓s',
       stats: { cell: '✓t', note: 'A1 (#1245) records its skill loads; not rerun' },
       aiBackend: '+s',
@@ -1125,6 +1148,7 @@ export const TOOLS = {
     features: {
       env: '?',
       workflows: '✓t',
+      unattended: '✓t',
       recall: '✓t',
       stats: '?',
       aiBackend: '✓t',
@@ -1189,6 +1213,7 @@ export const TOOLS = {
     features: {
       env: '?',
       workflows: '✓t',
+      unattended: '✓d',
       recall: '✓v',
       stats: { cell: '✓t', note: 'A1 (#1245) records its skill loads; not rerun' },
       aiBackend: '✓v',
@@ -1233,6 +1258,7 @@ export const TOOLS = {
     features: {
       env: '✓t',
       workflows: '+v',
+      unattended: '?',
       recall: '✓t',
       stats: '✓v',
       aiBackend: '✓v',
@@ -1273,6 +1299,7 @@ export const TOOLS = {
     features: {
       env: { cell: '✓v', note: 'agy 1.4.8 run_command inherits the environment agy starts in' },
       workflows: '✓v',
+      unattended: '✓d',
       recall: '✓v',
       stats: '✓v',
       aiBackend: '✓v',

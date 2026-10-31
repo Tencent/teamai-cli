@@ -335,6 +335,36 @@ export async function startDashboard(port?: number): Promise<void> {
       json(500, { error: 'Failed to load scorer results.' });
     }
   };
+  const benchmarksRefreshed = new Map<string, number>();
+  const handleBenchmarks = async (req: http.IncomingMessage, res: http.ServerResponse, url: URL, workspace: DashboardWorkspace | undefined) => {
+    const json = (status: number, body: unknown) => {
+      res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify(body));
+    };
+    if (req.method !== 'GET') {
+      json(405, { error: 'Not supported.' });
+      return;
+    }
+    if (!workspace?.config) {
+      json(200, { configured: false });
+      return;
+    }
+    try {
+      const { parseBenchmarkQuery, benchmarkHistory } = await import('./dashboard/benchmarks.js');
+      const query = parseBenchmarkQuery(url.searchParams);
+      const refresh = Date.now() - (benchmarksRefreshed.get(workspace.id) ?? 0) > KB_SUMMARY_TTL_MS;
+      const view = await benchmarkHistory({ config: workspace.config, query, refresh });
+      if (refresh) benchmarksRefreshed.set(workspace.id, Date.now());
+      json(200, { configured: true, ...view });
+    } catch (e) {
+      if (e instanceof HttpError) {
+        json(e.status, { error: e.message });
+        return;
+      }
+      log.debug(`dashboard: ${url.pathname} failed: ${e instanceof Error ? e.message : String(e)}`);
+      json(500, { error: 'Failed to load benchmark runs.' });
+    }
+  };
 
   const handleRequest = async (req: http.IncomingMessage, res: http.ServerResponse) => {
     const url = new URL(req.url ?? '/', `http://localhost:${serverPort}`);
@@ -508,6 +538,11 @@ export async function startDashboard(port?: number): Promise<void> {
 
     if (url.pathname === '/api/scorers') {
       await handleScorers(req, res, url, workspace);
+      return;
+    }
+
+    if (url.pathname === '/api/benchmarks') {
+      await handleBenchmarks(req, res, url, workspace);
       return;
     }
 

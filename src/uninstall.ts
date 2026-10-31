@@ -113,8 +113,9 @@ interface UninstallOptions extends GlobalOptions {
 
 interface RemovalPlan {
   /** Tool settings files that contain teamai hooks (each with the manifest that
-   *  recorded its team hooks — HOME/user or a legacy <projectRoot>/project one). */
-  hookFiles: Array<{ path: string; tool: string; manifestPath: string; teamOnly?: boolean; legacyManifestPath?: string; teamHookProjectRoot?: string; mainCheckout?: MainCheckoutHooks; keepRecords?: boolean }>;
+   *  recorded its team hooks — HOME/user or a legacy <projectRoot>/project one).
+   *  `keepBuiltins`: another install still runs the built-ins there. */
+  hookFiles: Array<{ path: string; tool: string; manifestPath: string; teamOnly?: boolean; legacyManifestPath?: string; teamHookProjectRoot?: string; mainCheckout?: MainCheckoutHooks; keepRecords?: boolean; keepBuiltins?: boolean }>;
   /** OpenClaw-style hook dirs (<base>/.<tool>/hooks) holding teamai HOOK.md+handler.ts. */
   openclawHookDirs: Array<{ hooksDir: string; tool: string }>;
   /** OpenCode teamai plugin files (.opencode/plugin/teamai-*.ts) to delete. */
@@ -253,7 +254,7 @@ interface OpencodeInstruction {
 }
 
 interface ToolResources {
-  hookFiles: Array<{ path: string; tool: string; manifestPath: string; teamOnly?: boolean; legacyManifestPath?: string; teamHookProjectRoot?: string; mainCheckout?: MainCheckoutHooks; keepRecords?: boolean }>;
+  hookFiles: RemovalPlan['hookFiles'];
   openclawHookDirs: Array<{ hooksDir: string; tool: string }>;
   opencodePluginDirs: string[];
   ompHookFiles: string[];
@@ -848,6 +849,25 @@ function printKeptForProjects({ projects, paths }: KeptForProjects): void {
 }
 
 /**
+ * The other installs on this machine that run HOME's built-in hooks: the user
+ * scope and each workspace partition but the one in `dataHome`. A config that
+ * cannot be read counts as none.
+ */
+async function installsSharingHome(dataHome: string): Promise<LocalConfig[]> {
+  const { projectsRootDir, readAnchorFile } = await import('./utils/partition.js');
+  const installs: LocalConfig[] = [];
+  const user = await loadLocalConfig({ dryRun: true, suppressMigrationNotice: true });
+  if (user) installs.push(user);
+  for (const dir of await listDirs(projectsRootDir())) {
+    const partition = path.join(projectsRootDir(), dir);
+    if (path.resolve(partition) === path.resolve(dataHome)) continue;
+    const config = await readConfigFrom(partition, await readAnchorFile(partition) ?? partition, undefined, undefined, { selfHeal: false });
+    if (config) installs.push(config);
+  }
+  return installs;
+}
+
+/**
  * The configs the project in `dataHome` reads its team with: one per checkout
  * in self mode, where each checkout's own `.teamai` is the team checkout.
  * Null when they cannot all be known: the config does not parse, or a
@@ -1145,9 +1165,17 @@ async function buildRemovalPlan(
   // A project uninstall leaves Copilot's shared built-ins available to other projects.
   if (localConfig.scope === 'project' && primaryHookScope.scope === 'user') {
     const file = hookToolPaths.copilot?.hooks === undefined ? undefined : ownOf(await locate(COPILOT_TOOL_ID, 'hooks', install))?.path;
-    const res = perTool.get('copilot');
-    if (file !== undefined && res) {
-      if (await pathExists(file) && await hasTeamaiHooks(file, 'copilot')) res.keptGlobal.push(file);
+    const copilot = perTool.get('copilot');
+    if (file !== undefined && copilot) {
+      if (await pathExists(file) && await hasTeamaiHooks(file, 'copilot')) copilot.keptGlobal.push(file);
+    }
+    // The user scope and other workspaces dispatch from the same HOME settings: their built-ins stay, this project's team hooks go.
+    const otherInstalls = await installsSharingHome(getDataHome(localConfig));
+    for (const [tool, result] of perTool) {
+      if (!otherInstalls.some((other) => !isAgentExcluded(other, tool))) continue;
+      for (const hookFile of result.hookFiles) {
+        if (!hookFile.teamOnly && hookFile.manifestPath === primaryHookScope.manifestPath) hookFile.keepBuiltins = true;
+      }
     }
   }
 
@@ -2200,10 +2228,11 @@ async function executeRemoval(
   const hooksLeft: Array<{ what: string; tool: string }> = [...alreadyLeft.hooks ?? []];
   // A default-home copy that fails keeps the records the moved copy's pass would consume (#1221).
   const failedRecords = new Set<string>();
-  for (const { path: settingsPath, tool, manifestPath, teamOnly, legacyManifestPath, teamHookProjectRoot, mainCheckout, keepRecords } of plan.hookFiles) {
+  for (const { path: settingsPath, tool, manifestPath, teamOnly, legacyManifestPath, teamHookProjectRoot, mainCheckout, keepRecords, keepBuiltins } of plan.hookFiles) {
     const records = `${manifestPath}\0${tool}`;
     try {
       await reconcileHooks(settingsPath, tool, [], { removeAll: true, manifestPath, keepRecords: keepRecords || failedRecords.has(records), teamHookHistory: plan.teamHookHistory, codexTrust,
+        ...(keepBuiltins ? { keepBuiltins } : {}),
         ...(teamOnly ? { teamOnly, legacyManifestPath,
           // Uninstalling a partition removes this tool for the whole installation.
           mainCheckout: plan.sharedPartition && !mainCheckout?.worktreeScoped ? undefined : mainCheckout,

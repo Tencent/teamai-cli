@@ -1,13 +1,13 @@
 /** The model the child of a prompt step must run, as `chooseStepModel` resolves it for the session's tool. */
 import { isAgentToolId } from '../../../tools.js';
 import type { LocalConfig, TeamaiConfig, ToolId } from '../../../types.js';
-import { chooseStepModel, loadDeployedAgent } from '../../step-model.js';
+import { chooseStepModel, loadDeployedAgent, type StepModel } from '../../step-model.js';
 import type { WorkflowFailure } from '../../types.js';
 import type { ModelPick } from './skill-state.js';
 
 /**
  * The step's `model`, else the model the team agent's definition deployed for `tool` sets, else `defaults.model`,
- * aliases resolved for `tool`. A step whose agent definition cannot be read skips `defaults.model`: the host runs
+ * aliases resolved for `tool`; a step's exact model as written. A step whose agent definition cannot be read skips `defaults.model`: the host runs
  * that agent with whatever model its file sets.
  */
 export async function pickChildModel(input: {
@@ -17,11 +17,13 @@ export async function pickChildModel(input: {
   step: string;
   /** The session's tool, undefined when its host names none. */
   tool: ToolId | undefined;
-  model?: string;
+  model?: string | StepModel;
   defaultModel?: string;
   agent?: string;
 }): Promise<{ ok: true; model: ModelPick } | { ok: false; failure: WorkflowFailure }> {
   const { config, toolPaths, step, tool, model, agent } = input;
+  // An exact model needs no tool to resolve it for.
+  if (typeof model === 'object') return { ok: true, model: { by: 'step', ...model } };
   // Agent files and model aliases exist only for a tool teamai renders agents for.
   const agentTool = tool !== undefined && isAgentToolId(tool) ? tool : undefined;
   const definition = agent !== undefined && agentTool !== undefined ? await loadDeployedAgent({ tool: agentTool, name: agent, config, toolPaths }) : null;

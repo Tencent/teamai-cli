@@ -6,38 +6,47 @@ import net from 'node:net';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import { resolveProjectDataHome } from '../../config.js';
 import type { RunState, WorkflowEnvelope } from '../../workflow/types.js';
+import { benchmarkFixture, envelope, said, type BenchmarkFixture } from '../helpers/benchmark-fixture.js';
 
 const CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../dist/index.js');
 let dashboard: ChildProcess | undefined;
 let repo = '';
+const fixtures: BenchmarkFixture[] = [];
 afterEach(async () => {
   if (dashboard && dashboard.exitCode === null) { const exited = once(dashboard, 'exit'); dashboard.kill('SIGTERM'); await exited; }
   dashboard = undefined;
   if (repo) fs.rmSync(repo, { recursive: true, force: true });
+  for (const fixture of fixtures.splice(0)) fixture.remove();
 });
 
 function cli(args: string[]): Record<string, unknown> {
   const stdout = execFileSync(process.execPath, [CLI, ...args], { cwd: repo, env: { ...process.env, FORCE_COLOR: '0' }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-  const envelope = JSON.parse(stdout.trim().split('\n').findLast((line) => line.startsWith('{')) ?? '{}') as WorkflowEnvelope;
-  if ('error' in envelope) throw new Error(envelope.error.message);
-  return envelope.data;
+  const answer = JSON.parse(stdout.trim().split('\n').findLast((line) => line.startsWith('{')) ?? '{}') as WorkflowEnvelope;
+  if ('error' in answer) throw new Error(answer.error.message);
+  return answer.data;
 }
 async function freePort(): Promise<number> {
   const server = net.createServer(); server.listen(0, '127.0.0.1'); await once(server, 'listening');
   const port = (server.address() as net.AddressInfo).port;
   await new Promise<void>((resolve) => server.close(() => resolve())); return port;
 }
-async function startDashboard(): Promise<string> {
+async function startDashboard(cwd = repo, env = process.env): Promise<string> {
   const port = await freePort();
-  dashboard = spawn(process.execPath, [CLI, 'dashboard', '--port', String(port)], { cwd: repo, env: { ...process.env, NO_COLOR: '1' }, stdio: 'pipe' });
+  dashboard = spawn(process.execPath, [CLI, 'dashboard', '--port', String(port)], { cwd, env: { ...env, NO_COLOR: '1' }, stdio: 'pipe' });
   let output = ''; dashboard.stdout?.on('data', (b: Buffer) => { output += b.toString(); }); dashboard.stderr?.on('data', (b: Buffer) => { output += b.toString(); });
   const deadline = Date.now() + 15000;
   while (!output.includes('Dashboard running') && Date.now() < deadline) { if (dashboard.exitCode !== null) throw Error(output); await new Promise((r) => setTimeout(r, 50)); }
   expect(output).toContain('Dashboard running');
   return `http://localhost:${port}`;
 }
+
+const WorkspacesSchema = z.array(z.object({ id: z.string(), scope: z.string(), root: z.string() }));
+const BenchmarkDetailSchema = z.object({
+  benchmark: z.object({ results: z.object({ rows: z.array(z.array(z.string())) }), matrix: z.unknown(), caption: z.string() }).passthrough().optional(),
+});
 
 // The Workflow Runs page (#1088) through the real CLI: a run started and
 // polled by `teamai workflow`, shown and answered by `teamai dashboard`.
@@ -90,4 +99,41 @@ describe('dashboard workflow runs', () => {
     expect(JSON.parse(await list())).toMatchObject({ local: [{ run, waiting: [] }] });
     expect(cli(['workflow', 'next', run, '--json', JSON.stringify({ driver })])).toMatchObject({ lease: { step: 'ship' } });
   }, 60_000);
+
+  it('shows the results, usage and task by arm matrix of an ended benchmark run, from this machine and from the team reports, and lists it once on the Benchmarks page', async () => {
+    const fixture = await benchmarkFixture({ tool: 'fixes', sandbox: true });
+    fixtures.push(fixture);
+    const started = await fixture.teamai(['benchmark', 'run', 'fix']);
+    expect(started.code, said(started)).toBe(0);
+    const { run } = z.object({ run: z.string() }).parse(envelope(started).data?.done);
+
+    const base = await startDashboard(fixture.work, fixture.env);
+    const html = await (await fetch(base)).text();
+    const workspaces = WorkspacesSchema.parse(await (await fetch(`${base}/api/workspaces`)).json());
+    const workspace = workspaces.find((w) => w.scope === 'project' && w.root === fixture.work)?.id;
+    const detail = async (source: 'local' | 'reported') => BenchmarkDetailSchema.parse(await (await fetch(`${base}/api/workflows/run?workspace=${workspace}&source=${source}&id=${run}`)).json());
+    const local = await detail('local');
+    const reported = await detail('reported');
+
+    expect(html).toContain("detailSection('Benchmark results'");
+    expect(workspace).toEqual(expect.any(String));
+    expect(local.benchmark?.matrix).toEqual({ header: ['Task', 'claude'], rows: [['fix', '100% (1/1)']] });
+    expect(local.benchmark?.results.rows.map((row) => [row[0], row.at(-1)])).toEqual([['claude', '100% (1/1)']]);
+    expect(local.benchmark?.caption).toBe('These results hold for these tasks, this run and this machine.');
+    expect(reported.benchmark).toEqual(local.benchmark);
+
+    const history = await (await fetch(`${base}/api/benchmarks?workspace=${workspace}&window=30`)).json();
+    expect(html).toContain("benchmarks: 'Benchmarks'");
+    expect(history).toMatchObject({
+      configured: true,
+      suites: [{ suite: 'fix', runs: 1, tasks: 1, arms: 1, leader: { arm: 'claude', passed: 1, planned: 1 } }],
+      selected: {
+        suite: 'fix',
+        arms: [{ arm: 'claude', tool: 'claude', isCurrent: true, pooled: { passed: 1, planned: 1, runs: 1 } }],
+        tasks: [{ task: 'fix', disagreedRuns: 0, unmeasuredRuns: 0 }],
+        runs: [{ run, source: 'local', passed: 1, planned: 1, unmeasuredTasks: 0 }],
+        latest: { run, source: 'local', table: { matrix: [{ task: 'fix', arms: [{ arm: 'claude', passRate: { passed: 1, planned: 1 } }] }] } },
+      },
+    });
+  }, 120_000);
 });

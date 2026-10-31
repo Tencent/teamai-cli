@@ -1,4 +1,4 @@
-import type { ConformanceOperation, ConformanceScenario, DriverProfile } from '../conformance-interpreter.js';
+import type { ConformanceOperation, WorkflowScenario, DriverProfile } from '../conformance-interpreter.js';
 
 /** What the checkout of every place scenario holds on `main`, which origin has too. */
 export const PLACE_CHECKOUT_FILES: Record<string, string> = { 'README.md': '# fixture\n', 'AGENTS.md': 'Trusted base instructions.\n' };
@@ -66,7 +66,7 @@ steps:
 `;
 
 /** A driver that took a lease prepares that attempt later, and only that attempt. */
-function prepareLeasedAttempt(profile: DriverProfile): ConformanceScenario {
+function prepareLeasedAttempt(profile: DriverProfile): WorkflowScenario {
   return {
     name: `prepare-leased-attempt (${profile}): next --prepare --attempt prepares the attempt it names, never another, and refuses one the run no longer leases`,
     workflowName: 'build',
@@ -97,7 +97,7 @@ steps:
 `;
 
 /** A host makes the place of a leased attempt, and TeamAI adopts it, or refuses it and keeps the attempt leased. */
-function adoptHostPlace(profile: DriverProfile): ConformanceScenario {
+function adoptHostPlace(profile: DriverProfile): WorkflowScenario {
   const refused = (adopt: string): ConformanceOperation => ({
     kind: 'next', saveAs: 'work', as: profile, prepare: true, attempt: 'work', adopt,
     expect: { error: { code: 'adopt_mismatch' } }, state: { steps: [{ id: 'work', status: 'leased' }] },
@@ -125,7 +125,7 @@ function adoptHostPlace(profile: DriverProfile): ConformanceScenario {
   };
 }
 
-export const workflowPlaceConformanceScenarios: ConformanceScenario[] = [
+export const workflowPlaceConformanceScenarios: WorkflowScenario[] = [
   ...(['local', 'session', 'external'] as const).flatMap((profile) => [prepareLeasedAttempt(profile), adoptHostPlace(profile)]),
   {
     name: 'a prepared lease is reported from another process, which commits and pushes its changes and puts the branch agent files back',

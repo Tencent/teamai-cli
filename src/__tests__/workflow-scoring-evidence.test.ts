@@ -12,7 +12,7 @@ vi.mock('node:os', async (importOriginal) => {
 });
 
 import type { LocalConfig } from '../types.js';
-import { evidencePlan } from '../workflow/scoring-evidence.js';
+import { collectEvidence, evidencePlan } from '../workflow/scoring-evidence.js';
 import { readRun } from '../workflow/store.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';
 import { AgentSession } from '../session-flow/agent-session.js';
@@ -24,6 +24,7 @@ import { worktreePath } from '../workflow/worktree.js';
 import type { DriverIdentity, WorkflowEnvelope } from '../workflow/types.js';
 import { knownSecrets } from '../env-resolution.js';
 import { getTeamSecretsPath, writeSecretStore } from '../secret-store.js';
+import { removeSubjectEvidence, subjectEvidenceDirOf } from '../scorers/evidence.js';
 
 const SECRET = 'sk-ABCDEFGH1234567890abcdefghij';
 
@@ -212,6 +213,19 @@ describe('judge evidence', () => {
     expect(prompt).toContain('+export const run = () => { for (let i = 0; i < 3; i++)');
   });
 
+  it('reads nothing from the checkout once the run deadline passed, and says the change is missing', async () => {
+    const { config, runId, checkout } = await scoredRun();
+    const run = await readRun(config, runId);
+    if (typeof run !== 'object') throw new Error(String(run));
+    const dir = path.join(root, 'late-evidence');
+
+    await collectEvidence(config, run, { runId, step: 'write', pass: 1 }, dir, { checkout, sessionCwd: checkout, expiresAt: new Date(Date.now() - 1000).toISOString() });
+
+    expect(fs.existsSync(path.join(dir, 'diff.patch'))).toBe(false);
+    expect(fs.readdirSync(path.join(dir, 'repo'))).toEqual([]);
+    expect(json(path.join(dir, 'evidence.json'))).toMatchObject({ gaps: ['commit_missing'] });
+  });
+
   it('redacts every file it writes, and leaves out a file it cannot read as text and says which', async () => {
     const { config } = await scoredRun('external', { 'service.config': `api_key=${SECRET}\n`, 'logo.png': Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff, 0xfe]) });
 
@@ -341,5 +355,20 @@ describe('judge evidence', () => {
     expect(prompt.length).toBeLessThan(210_000);
     expect(prompt).toContain('HEAD-MARK');
     expect(prompt).toMatch(/characters? of evidence (were )?cut/);
+  });
+});
+
+describe('subject evidence removal', () => {
+  it('also removes what a collection stopped midway left beside the evidence', async () => {
+    const scores = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-subject-evidence-'));
+    const subject = { runId: 'r0123456789abcdef', step: 'trials.r1.t.a.prompt', pass: 1 };
+    const other = subjectEvidenceDirOf(scores, { ...subject, pass: 2 });
+    const dir = subjectEvidenceDirOf(scores, subject);
+    for (const each of [dir, `${dir}.tmp-1-abcdef`, other]) fs.mkdirSync(each, { recursive: true });
+
+    await removeSubjectEvidence(scores, [subject]);
+
+    expect(fs.readdirSync(path.dirname(dir))).toEqual([path.basename(other)]);
+    fs.rmSync(scores, { recursive: true, force: true });
   });
 });

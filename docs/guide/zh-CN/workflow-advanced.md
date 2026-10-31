@@ -439,6 +439,78 @@ steps:
 
 带 `loop` 的工作流不能包含带 `loop` 的步骤。请把其中一个循环放进子工作流。
 
+## finally 步骤
+
+```yaml
+schemaVersion: v1alpha1
+name: nightly-e2e
+description: Run the end-to-end suite, then always summarize it.
+timeout: 1h
+steps:
+  - id: e2e
+    command: npm run e2e
+finally:
+  - id: summary
+    command: node scripts/e2e-summary.js
+    output: { text: string }
+outputs: { summary: steps.summary.outputs.text }
+```
+
+`finally` 步骤在运行的步骤都结束后运行，无论它们如何结束：成功、失败、超时或被取消。它们是命令，只读，没有自己的工作区，只带 `id`、`needs`、`if`、`command`、`env`、`output` 和 `timeout`。它们运行期间，运行保持 `running`，最多 10 分钟，然后以其步骤达到的结果结束：失败的 `finally` 步骤从不改变它。`done.finally` 列出每个失败或被取消的 `finally` 步骤及其失败原因。在它们运行期间执行 `workflow cancel` 会结束它们和这次运行。带 `finally` 的工作流只能作为独立的运行运行，从不作为另一个工作流的步骤。
+
+`done.outputs` 带工作流的顶层 `outputs`，在 `finally` 之后解析，所以它们可以读取 `finally` 步骤。所属步骤失败的输出会被省略。
+
+```text
+teamai workflow start nightly-e2e --driver local --timeout 30m
+```
+
+使用 `--driver local` 或 `--driver skill` 时，`--timeout` 把运行限制在它和文件的 `timeout` 中较短的那个。超过后运行以 `timeout` 失败，它的 `finally` 步骤仍会运行。
+
+## 运行步骤打印的工作流
+
+```yaml
+schemaVersion: v1alpha1
+name: shard-tests
+description: Plan one test job per changed package, then run them.
+steps:
+  - id: plan
+    command: node scripts/plan-shards.js
+    output: { definition: workflow, notes: json }
+  - id: shards
+    needs: [plan]
+    workflow: { from: plan }
+```
+
+`plan` 把它的输出以 JSON 打印出来，其中包括一个工作流：
+
+```text
+{"definition":{"definition":{"schemaVersion":"v1alpha1","name":"shards","description":"One job per package.","steps":[{"id":"api","command":"npm test -w api"},{"id":"web","command":"npm test -w web"}]}},"notes":{"packages":2}}
+```
+
+| 输出类型 | 包含 |
+| --- | --- |
+| `workflow` | 一个 bundle：`definition`，即要运行的工作流；以及可选的 `workflows`，它运行的具名工作流；`scorers`，生成的评分器固定版本；`teamRevision`，它使用其评分器的团队提交。 |
+| `json` | 任意 JSON 值。表达式无法读取其内部；顶层 `outputs` 可以整个传递它。 |
+
+`workflow: { from: <step> }` 运行它 `needs` 的某个步骤的 bundle。该步骤报告时，teamai 像 `workflow start` 检查文件一样检查这个 bundle，固定它，并在运行期间保留它。无法接受的 bundle，例如包含秘密值、`from` 步骤或 `prompt_file` 步骤的 bundle，会让产生它的步骤以 `invalid_output` 失败并给出原因。产生 bundle 的步骤只运行一次，不在任何循环或 `for_each` 中。带 `from` 步骤的运行是[隔离的](#隔离运行)。
+
+## 克隆工作区
+
+```yaml
+  - id: try-fix
+    workspace:
+      clone:
+        commit: 3f2c9a7d1e0b4c6a8f5d2e1b0c9a8f7e6d5c4b3a
+        team: { treatment: none }
+    prompt: Fix the failing test.
+```
+
+带 `workspace: { clone: { commit, repo?, team } }` 的步骤在检出目录之外、`commit` 的全新克隆中运行：有自己的 git 数据，没有远程仓库，hook 关闭。`team` 指明为它安装的团队资产，安装在它自己的 home 下：`{ treatment: none }`，或 `{ revision, selection, treatment }`，其中 `treatment` 为 `pulled`、一个 ref 或 `{ without: [<path>, ...] }`。`selection` 包含与你的配置同名的 `primaryRole`、`additionalRoles`、`projects`、`subscribedTags` 和 `excludedSkills`，以及 `enabledAgents`，即资产安装到的工具：默认为打开克隆的步骤的工具，否则为你启用的 agent。teamai 离线创建克隆，来源是运行的检出目录或提交缓存；`repo` 只指明缓存，从不是 URL。打开克隆的 workflow 步骤拥有它，供其下每个 `continue` 步骤使用。克隆中的任何内容都不会被推送或交付。[Benchmark](benchmarks.md) 会为你写出这些步骤。
+
+### 隔离运行
+
+某个步骤打开克隆或运行 `workflow: { from }` 时，运行就是隔离的。它只在启动它的机器上运行：`workflow publish` 和 `--claim` 以 `isolated_run` 拒绝它，`workflow retry` 拒绝它并给出启动新运行的命令。它的记录带 `isolated: true`，使用统计上报开启时仍会到达 `teamai-reports`，并且不计入任何工作流总量。
+
 ## 表达式参考
 
 `if` 是一个表达式。它能读取哪些步骤、哪些值为真，见 [工作流](workflow.md)。
@@ -580,7 +652,7 @@ steps:
 
 ## 要求和限制
 
-步骤在 `requires` 中声明它需要什么。工作流文件中的 `defaults.requires` 作用于其中每个步骤。步骤自己的键会替换这些键，`env` 列表则会合并。工作流文件还可以设置 `setup`、`timeout` 和 `budget`，prompt 步骤可以设置 `max_turns`。
+步骤在 `requires` 中声明它需要什么。工作流文件中的 `defaults.requires` 作用于其中每个步骤。步骤自己的键会替换这些键，`env` 列表则会合并。工作流文件还可以设置 `setup`、`timeout` 和 `budget`，prompt 步骤可以设置 `max_turns`、`on_limit` 和 `permissions`。
 
 ```yaml
 schemaVersion: v1alpha1
@@ -610,10 +682,13 @@ steps:
 | `requires.env` | 把这些[团队 env](sharing.md#env环境变量) 键交给步骤。其他团队 env 键，以及运行中其他步骤要求的键，都不会交给它。运行中只记录键名。某个键在本机没有值时，步骤在运行前以 `missing_env` 失败，消息写明怎样给它一个值：见[必需的键在本机没有值](#必需的键在本机没有值)。步骤 `env:` 中的项与团队 secret 或被要求的键同名时，以 `env_conflict` 失败。 | 步骤等待。 |
 | `requires.network` | `false` 要求步骤不能访问网络。 | 步骤照常运行，其 `unenforced` 列出 `network`。本地驱动无法禁止网络。 |
 | `requires.isolation` | `none`、`worktree` 或 `sandbox`。有工作区的步骤至少是 `worktree`。 | 步骤照常运行，其 `unenforced` 列出 `isolation`。 |
+| `requires.strict` | `true` 让这一级的 `isolation` 和 `network` 成为下限：其下每个步骤至少得到它们，无论内层要求什么。严格的 `isolation: sandbox` 还会让步骤的每个进程都拿不到 `GITHUB_TOKEN`、`GH_TOKEN`、`GITLAB_TOKEN`、`GL_TOKEN`、`CI_JOB_TOKEN`、`SSH_AUTH_SOCK`、`GIT_ASKPASS` 和 `SSH_ASKPASS`，其下某个步骤的 `requires.env` 指定了其中之一时，pull 会拒绝它。使用 `--driver local` 时，本地驱动永远无法运行的启动会以 `requirement_unmet` 被拒绝。 | 步骤等待。严格的 sandbox 还需要 `can.env: true`。 |
 | `setup` | 驱动在它创建的每个工作区中、在步骤之前运行 `command`。setup 获得它的 `requires.env` 键；步骤只有自己也要求时才会获得。setup 以非零退出（`setup_failed`）、改动 git 会提交的文件（`setup_dirty`），或把自己某个键的值留在它写入的文件中（包括被忽略的文件，`setup_secret`）时，步骤不运行即失败，工作区被删除。步骤的 `timeout` 也约束 setup。 | 带工作区的步骤等待。 |
 | `timeout` | `500ms`、`30s`、`10m` 或 `2h`，写在步骤或工作流文件上。超时的步骤被停止，结果为 `timeout`。写在 workflow 步骤上时，会停止其中每个步骤。写在工作流文件上时，运行以 `failed` 结束，失败码为 `timeout`。重试会重新开始计时。 | 不是能力。每个驱动都会在租约上拿到 `expiresAt`。 |
-| `budget` | `{ tokens: N }`，写在工作流文件或 workflow 步骤上。其下每个步骤的输入和输出 token 从它开始时计入：运行从开始时算起，workflow 步骤从每次开始时算起，例如循环的下一轮。重试会重新开始计算预算。超过 `N` 时，其中未结束的步骤停止，并以 `budget_exceeded` 失败。 | 预算内的非交互 prompt 步骤等待，它没有 token 的成功报告以 `budget_unmeasured` 失败。交互式 prompt 由人操作，照常运行；它的报告没有 token 时，其 `unenforced` 列出 `budget`。 |
+| `budget` | `{ tokens: N }`，写在工作流文件、workflow 步骤或带 `on_limit: end_turn` 的 prompt 步骤上。其下每个步骤的输入和输出 token 从它开始时计入：运行从开始时算起，workflow 步骤从每次开始时算起，例如循环的下一轮。重试会重新开始计算预算。超过 `N` 时，其中未结束的步骤停止，并以 `budget_exceeded` 失败。 | 预算内的非交互 prompt 步骤等待，它没有 token 的成功报告以 `budget_unmeasured` 失败。交互式 prompt 由人操作，照常运行；它的报告没有 token 时，其 `unenforced` 列出 `budget`。 |
 | `max_turns` | 限制 prompt 步骤的智能体轮数。本地驱动只把它传给无头 Claude。 | 步骤照常运行，其 `unenforced` 列出 `max_turns`。 |
+| `permissions` | prompt 步骤上的 `unattended`：它的工具无需询问就编辑文件和运行命令。只能在严格的 `isolation: sandbox` 之下使用，可以写在步骤本身、外层步骤、`defaults`，或运行其工作流的步骤上：没有它时，启动以 `unattended_unsandboxed` 被拒绝；[步骤打印的工作流](#运行步骤打印的工作流)没有它时，该步骤以 `invalid_output` 失败。见[无人值守的 prompt](#无人值守的-prompt)。 | 步骤等待。运行唯一的驱动没有 `can.unattended` 时，该步骤以 `tool_unavailable` 失败。 |
+| `on_limit` | 在带 `timeout`、`max_turns` 或 `budget` 的 prompt 步骤上为 `end_turn`：从工具启动算起达到其中之一时，结束智能体的这一轮，而不是让步骤失败。步骤以设置了 `limit` 的状态成功并保留它的工作，所以它之后的步骤仍会运行。在带 `timeout` 或 `budget` 的 workflow 步骤上，这些是其中的 prompt 加起来可以花费的量，每次只运行一个 prompt：用完后，其未运行的步骤被跳过。`fail` 是默认值，在达到限制时让步骤失败。交还的步骤保持其第一次租约的截止时间。 | 没有 `can.end_turn` 时，步骤按 `fail` 运行，其 `unenforced` 列出 `on_limit`。 |
 
 `unenforced` 出现在租约、步骤和运行记录中。每个 `interactive: true` 步骤还需要支持 HITL 的驱动，见 [HITL](#hitl人在回路中)。
 
@@ -629,7 +704,7 @@ workflows:
 ```
 
 - `allow.network: false` 会暂缓每个要求 `network: true` 的步骤。`allow.env` 会暂缓 `requires.env`（或其 setup 的 `requires.env`）中含有未列出键的步骤。`wait.held[].missing` 指出 `policy.network` 或 `policy.env`。`~/.teamai/config.yaml` 中错误的 `allow` 会让工作流命令停止运行，直到修正为止，因此拼写错误不会解除限制。
-- `sandbox: true` 表示本机会隔离它运行的内容，例如 CI 虚拟机或容器，因此本地驱动声明 `sandbox` 隔离。
+- `sandbox: true` 表示本机会隔离它运行的内容，例如 CI 虚拟机或容器，因此本地驱动声明 `sandbox` 隔离。此时设置 [`permissions: unattended`](#无人值守的-prompt) 的步骤运行其工具时不再询问，无论该步骤使用哪个工作区，包括你自己的 checkout。`teamai workflow start` 和 `resume` 接受 `--sandbox`，只为当前进程声明。
 - `max_parallel` 还限制本机上所有驱动同时持有同一运行的租约数。
 
 `allow.network` 筛选步骤显式声明的网络请求。v1 的 setup 仅声明环境变量键，不会从该设置继承网络限制。如需保证 setup 和步骤都无法联网，请使用能约束每个进程的驱动和运行环境。
@@ -641,15 +716,45 @@ workflows:
 | `driver.can` 键 | 驱动 |
 |---|---|
 | `hitl` | 让人回答 HITL 请求并在交互步骤中工作。 |
-| `workspace` | 接受这些工作区模式的租约：`read-only`、`new`、`continue`。 |
+| `workspace` | 接受这些工作区模式的租约：`read-only`、`new`、`continue`、`clone`。克隆步骤只通过 [`next --prepare`](#在自己的驱动里使用克隆工作区) 租出。 |
 | `env` | `true`：自己解析 `lease.envScope.provide`，移除 `lease.envScope.withhold`，并且不把值交给运行步骤的程序。`"commands"`：只对命令步骤和 setup 这样做，所以带 `requires.env` 的提示词步骤会等待。由智能体运行步骤的驱动不要声明它；如果命令由驱动自己启动，可以发送 `"commands"`。0.28.0 之前的 teamai 对 `"commands"` 返回 `invalid_json`。 |
 | `setup` | 在它创建的每个工作区以及 setup 未完成的工作区中，用 `lease.setup.envScope` 运行 `lease.setup.command`，并以上述失败码让步骤失败。工作流声明了 `setup` 时，每个带工作区的租约都携带 `setup`。 |
 | `tokens` | 报告每个成功的非交互 prompt 步骤的 token。 |
 | `max_turns` | 把 `lease.maxTurns` 传给它能限制的工具，对其他工具报告 `"unenforced":["max_turns"]`。 |
 | `network` | 能禁止步骤访问网络。 |
 | `isolation` | 以此级别运行每个步骤：`none`、`worktree` 或 `sandbox`。 |
+| `tools` | 在这些工具上启动指定了 `tool` 的 prompt 步骤，例如 `["claude"]`。没有它，就不会拿到这样的步骤。 |
+| `end_turn` | 在 `lease.limits` 处结束 prompt 的这一轮，并报告它停在的 `limit` 和 `durationMs`。 |
+| `unattended` | 对租约带 `permissions: "unattended"` 的 prompt，以其工具自己的无需询问即可编辑和运行命令的模式启动它；工具没有这种模式时让步骤失败，而不是照常启动。 |
 
-省略的键表示驱动做不到。`next` 会在 `ignored` 中列出其他键。[编程会话](workflow.md#在编程会话中运行)的 skill 驱动声明 `hitl`、所有 `workspace` 模式、`env: "commands"` 和 `setup`。它从不声明 `tokens`、`max_turns` 或 `network`，其 `isolation` 为 `none`。
+省略的键表示驱动做不到。隔离是尽力而为，除非 `strict: true` 让它成为下限。`next` 会在 `ignored` 中列出其他键。[编程会话](workflow.md#在编程会话中运行)的 skill 驱动声明 `hitl`、所有 `workspace` 模式、`env: "commands"` 和 `setup`。它从不声明 `tokens`、`max_turns`、`network` 或 `unattended`，其 `isolation` 为 `none`：编程会话绝不绕过使用者自己的权限。
+
+### 无人值守的 prompt
+
+以无头方式启动的工具在编辑文件或运行命令前会先询问，没有人回答时，步骤什么也做不了。`permissions: unattended` 让 prompt 的工具直接执行，所以只在可以丢弃的机器上使用：
+
+```yaml
+schemaVersion: v1alpha1
+name: unattended-fix
+description: Fix a failing test on a disposable machine.
+steps:
+  - id: work
+    prompt: Fix the failing test.
+    permissions: unattended
+    requires: { isolation: sandbox, strict: true }
+```
+
+本地驱动随后以工具自己的这种模式启动它：
+
+| 工具 | 启动参数 |
+|---|---|
+| Claude Code，以及使用其参数的工具 | `--permission-mode bypassPermissions` |
+| CodeBuddy、WorkBuddy | `--permission-mode bypassPermissions` |
+| Codex CLI，以及使用其参数的工具 | `--dangerously-bypass-approvals-and-sandbox` |
+| OpenCode | `--auto`，权限规则拒绝的操作仍然被拒绝 |
+| agy | `--dangerously-skip-permissions` |
+
+对于 teamai 不知道有这种模式的工具，步骤以 `tool_unavailable` 失败，工具绝不会在没有该模式的情况下启动。[工具支持](tool-support.md)的 `Unattended prompts` 列说明哪些工具有这种模式，以及依据。租约带 `permissions: "unattended"`，所以你自己的驱动能看到它；只有声明了 `can.unattended` 的驱动才会拿到该步骤。
 
 ### 必需的键在本机没有值
 
@@ -928,6 +1033,22 @@ teamai workflow next <run> --json '{"claim":true,"driver":{"kind":"script","mach
 要准备驱动已经领取的 attempt，运行 `next <run> --prepare --attempt <attempt>`。运行不再把该 attempt 租给这个驱动时，返回 `wrong_attempt`。加上 `--adopt <dir>` 时，attempt 改在宿主创建的位置运行：该仓库的一个干净 worktree，位于租约的工作区分支上，或分离在其起点，就像 `git worktree add` 创建的那样。不符合的位置返回 `adopt_mismatch`，attempt 仍保持租约。TeamAI 在那里像在自己的 worktree 中一样 commit 和 push，但从不删除该位置。
 
 TeamAI 为准备 attempt 记录的内容只保存在本机：路径和文件指纹，不含提示词、env 值或图。
+
+## 在自己的驱动里使用克隆工作区
+
+```text
+teamai workflow next <run> --prepare --json '{"driver":{"kind":"script","machine":"runner","workspace":"/work","can":{"workspace":["read-only","new","continue","clone"],"isolation":"sandbox","env":true,"setup":true,"tools":["claude"],"end_turn":true}},"running":[]}'
+```
+
+带上 `--prepare` 时，teamai 在本机为[克隆步骤](#克隆工作区)创建克隆、安装其团队资产并运行 setup，然后返回带 `cwd`（即该克隆）的租约。一次调用可能要等 setup 运行完。驱动未在 `workspace` 中列出 `clone`，或没有用 `--prepare` 请求时，克隆步骤会被暂缓，`wait.held[].missing` 列出 `workspace.clone` 或 `prepare`。
+
+对每个租约，驱动：
+
+1. 运行每个进程时带上 `lease.env` 和 `TEAMAI_WORKFLOW_ATTEMPT=<run>/<attempt>`，这样从中发出的 `teamai` 调用不会改变任何运行，并去掉 `lease.envScope.withhold` 里的名字。它在 `cwd` 中运行命令租约（例如 `teamai benchmark check`），没有 `cwd` 的租约则在它自己的工作区中运行，并把命令打印的 JSON 作为 `outputs` 报告。
+2. 在 `cwd` 中以 `lease.prompt` 启动 prompt 租约的 `lease.tool`，按原样使用 `lease.model`，并从工具启动起让它遵守 `lease.limits`。
+3. 报告 prompt 时带上 `tool`、工具报告的 `model`、`session` 和 `tokens`、只围绕工具启动测得的 `durationMs`，以及仅在工具给出时才带的 `cost`（`{"amount":0.12,"unit":"USD"}`）。某个限制停止了工具时，报告带 `outcome: "success"` 和 `limit`：`timeout`、`budget` 或 `max_turns`；驱动无法让工具遵守的 `budget` 或 `max_turns` 列在 `unenforced` 中。`limit` 是租约没有设置的限制时，报告返回 `invalid_report`；带有 `changes` 或 `read`（由 teamai 从克隆中填写）的报告也一样。
+
+`src/__tests__/e2e/benchmark-driver-contract.test.ts` 用这份约定检查运行 [benchmark](benchmarks.md#在自己的驱动里运行) 的驱动。
 
 ## 在自己的驱动里评审
 

@@ -58,10 +58,17 @@ function prepareArgs(prepare: NextPrepare | undefined): string[] {
   return ['--prepare', '--attempt', prepare.attempt, ...(prepare.adopt !== undefined ? ['--adopt', prepare.adopt] : [])];
 }
 
-/** A scenario's client over the `workflow` calls `call` makes with the built CLI, each with `extra` added to its env. */
-export function cliConformanceClient(call: (args: string[], extra?: Record<string, string>) => Promise<WorkflowEnvelope>): ConformanceClient {
+/**
+ * A scenario's client over the `workflow` calls `call` makes with the built CLI, each with `extra` added to its env.
+ * `startBenchmark` starts a benchmark run, which takes a team install; without it, every suite is not found.
+ */
+export function cliConformanceClient(
+  call: (args: string[], extra?: Record<string, string>) => Promise<WorkflowEnvelope>,
+  startBenchmark: ConformanceClient['startBenchmark'] = async (suite) => ({ error: { code: 'benchmark_not_found', message: `No benchmark suite "${suite}" in this client` } }),
+): ConformanceClient {
   return {
     start: (name, options = {}) => call(['start', name, ...(options.driver !== undefined ? ['--driver', options.driver] : []), ...(options.confirmed ? ['--confirmed'] : [])], options.env),
+    startBenchmark,
     next: (run, body, options) => call(['next', run, ...prepareArgs(options?.prepare), '--json', JSON.stringify(body)]),
     report: (run, body) => call(['report', run, '--json', JSON.stringify(body)]),
     respond: (run, step, choice, options) => call(['respond', run, step, choice, ...(options.note !== undefined ? ['--note', options.note] : []), ...(options.pass !== undefined ? ['--pass', String(options.pass)] : []), ...(options.json !== undefined ? ['--json', JSON.stringify(options.json)] : [])], options.env),

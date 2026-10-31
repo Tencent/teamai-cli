@@ -18,6 +18,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { z } from 'zod';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -31,6 +32,9 @@ const GIT_ENV = {
 };
 
 interface Run { code: number | null; output: string }
+
+/** The checkout records of a state.json: the files each says teamai delivered. */
+const RecordsSchema = z.object({ lastPullByWorkspace: z.record(z.string(), z.object({ delivered: z.record(z.string(), z.string()).optional() })).optional() });
 
 let sandbox: string;
 /** Keeps a retried case off the directories its first attempt left. */
@@ -70,11 +74,25 @@ const notTeamais = (dir: string, command: string): string =>
 /** One member's machine: a HOME with Claude Code and Codex installed, a team remote, and a business repo. */
 interface Machine {
   dir: string;
+  home: string;
   run(args: string[]): Run;
   ok(args: string[]): Run;
+  /** Commit `changed` to the team repo and push it, as a maintainer would. */
+  publish(changed: Record<string, string>): void;
 }
 
-function machine(base: string, files: Record<string, string>, businessFiles: Record<string, string>): Machine {
+/** Each file the checkout's delivery record names, relative to the checkout. */
+function recorded(m: Machine): string[] {
+  const projects = path.join(m.home, '.teamai', 'projects');
+  return fs.readdirSync(projects).flatMap((partition) => {
+    const file = path.join(projects, partition, 'state.json');
+    if (!fs.existsSync(file)) return [];
+    const { lastPullByWorkspace } = RecordsSchema.parse(JSON.parse(read(file)));
+    return Object.values(lastPullByWorkspace ?? {}).flatMap((record) => Object.keys(record.delivered ?? {}));
+  }).map((file) => path.relative(m.dir, file)).sort();
+}
+
+function machine(base: string, files: Record<string, string>, businessFiles: Record<string, string>, initArgs: string[] = []): Machine {
   const name = `${base}-${++attempt}`;
   const home = path.join(sandbox, `${name}-home`);
   fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
@@ -112,9 +130,15 @@ function machine(base: string, files: Record<string, string>, businessFiles: Rec
     if (r.code !== 0) throw new Error(`teamai ${args.join(' ')} failed: ${r.output}`);
     return r;
   };
-  ok(['init', url, '--provider', 'git', '--agent', 'claude,codex', '--scope', 'project', '--force']);
+  const publish = (changed: Record<string, string>): void => {
+    for (const [rel, content] of Object.entries(changed)) writeFile(path.join(seed, rel), content);
+    gitOk(['add', '-A'], seed);
+    gitOk(['commit', '-q', '-m', 'update'], seed);
+    gitOk(['push', '-q', remote, 'main'], seed);
+  };
+  ok(['init', url, '--provider', 'git', '--agent', 'claude,codex', '--scope', 'project', '--force', ...initArgs]);
   ok(['pull']);
-  return { dir: realDir, run: teamai, ok };
+  return { dir: realDir, home, run: teamai, ok, publish };
 }
 
 describe('teamai deletes only its own skill directories (#993)', () => {
@@ -138,6 +162,31 @@ describe('teamai deletes only its own skill directories (#993)', () => {
     const pulled = m.ok(['pull', '--force']);
     expect(fs.existsSync(path.join(m.dir, '.claude', 'skills', 'old-ns', 'fe-skill')), pulled.output).toBe(false);
     expect(read(path.join(m.dir, '.claude', 'skills', 'my-ns', 'fe-skill', 'SKILL.md'))).toBe(MY_SKILL);
+  });
+
+  it('pull removes a delivered skill the member then excludes, and takes its copies off the delivery record', () => {
+    const m = machine('excluded', TEAM, {});
+    expect(recorded(m).filter((file) => file.includes('fe-skill'))).not.toEqual([]);
+
+    m.ok(['skill', 'exclude', 'add', 'fe-skill']);
+    const pulled = m.ok(['pull']);
+
+    expect(fs.existsSync(path.join(m.dir, '.claude', 'skills', 'fe-skill')), pulled.output).toBe(false);
+    expect(recorded(m).filter((file) => file.includes('fe-skill'))).toEqual([]);
+    expect(recorded(m)).toContain(path.join('.claude', 'skills', 'other-skill', 'SKILL.md'));
+  });
+
+  it('pull removes a skill of a namespace the member\'s role stops receiving, and takes its copies off the delivery record', () => {
+    // Role ops keeps receiving dev, so dev stays a namespace some role declares.
+    const roles = (eng: string): string => `version: 1\nroles:\n  - id: eng\n    resources:\n      knowledge: []\n      skills: ${eng}\n  - id: ops\n    resources:\n      knowledge: []\n      skills: [dev]\n`;
+    const m = machine('revoked', { ...TEAM, 'manifest/roles.yaml': roles('[dev]'), 'skills/dev/dev-skill/SKILL.md': skillMd('dev-skill', 'Dev skill.') }, {}, ['--role', 'eng']);
+    expect(recorded(m).filter((file) => file.includes('dev-skill'))).not.toEqual([]);
+
+    m.publish({ 'manifest/roles.yaml': roles('[]') });
+    const pulled = m.ok(['pull']);
+
+    expect(fs.existsSync(path.join(m.dir, '.claude', 'skills', 'dev-skill')), pulled.output).toBe(false);
+    expect(recorded(m).filter((file) => file.includes('dev-skill'))).toEqual([]);
   });
 
   it('teamai remove deletes teamai\'s copies of the skill and keeps the member\'s own, naming it', () => {

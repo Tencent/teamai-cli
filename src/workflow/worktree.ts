@@ -4,10 +4,12 @@
  * so a hook committed on a branch does not run.
  */
 import { createHash } from 'node:crypto';
-import { execFile, spawn } from 'node:child_process';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
+import { stopProcess } from '../tool-launch/process-stop.js';
 import { TeamaiConfigBaseSchema } from '../types.js';
 import { pathExists, writeJsonAtomic } from '../utils/fs.js';
 
@@ -58,6 +60,9 @@ export interface GitResult {
   stderr: string;
 }
 
+type GitOptions = { input: string; timeoutMs?: number } | { timeoutMs: number; env?: NodeJS.ProcessEnv };
+export type Git = (cwd: string, args: string[], options?: GitOptions) => Promise<GitResult>;
+
 // `git worktree add` writes a new worktree's entry under `.git/worktrees/` one file at a time and takes no lock, so a
 // command that reads every worktree (`fetch`, `branch`, `worktree add`, `worktree list`) dies on an entry it finds half
 // written (#1526). Each dies before it changes anything, all but `worktree add -b`, and git finishes the entry within a
@@ -67,44 +72,113 @@ const HALF_WRITTEN_WORKTREE = /[\\/]worktrees[\\/][^\\/\r\n]+[\\/]commondir\b/;
 const HALF_WRITTEN_RETRY = { forMs: 5_000, everyMs: 50 };
 
 /**
- * Runs git in `cwd`, writing `input` to its stdin, or stopping it once `timeoutMs` passed. Waits out a worktree entry
+ * Runs git in `cwd`, writing `input` to its stdin, and stopping it once `timeoutMs` passed. Waits out a worktree entry
  * another `git worktree add` in the repository is still writing.
  */
-export async function git(cwd: string, args: string[], options?: { input: string } | { timeoutMs: number; env?: NodeJS.ProcessEnv }): Promise<GitResult> {
+export function git(cwd: string, args: string[], options?: GitOptions): Promise<GitResult> {
+  return gitWith(process.env, cwd, args, options);
+}
+
+/** `git` with `base` instead of this process's environment. */
+async function gitWith(base: NodeJS.ProcessEnv, cwd: string, args: string[], options: GitOptions | undefined): Promise<GitResult> {
   const deadline = Date.now() + HALF_WRITTEN_RETRY.forMs;
   for (;;) {
-    const result = await gitOnce(cwd, args, options);
+    const result = await spawnGit(cwd, args, options, base);
     if (result.code === 0 || !HALF_WRITTEN_WORKTREE.test(result.stderr) || Date.now() >= deadline) return result;
     await new Promise((resolve) => setTimeout(resolve, HALF_WRITTEN_RETRY.everyMs));
   }
 }
 
-function gitOnce(cwd: string, args: string[], options?: { input: string } | { timeoutMs: number; env?: NodeJS.ProcessEnv }): Promise<GitResult> {
-  if (options === undefined || !('input' in options)) {
+/** `git`, stopped past `expiresAt` with every process it started, as `untrustedGit` is, with `env` instead of this process's environment. */
+export function boundedGit(expiresAt: string | undefined, env: NodeJS.ProcessEnv = process.env): Git {
+  return (cwd, args, options) => gitWith(env, cwd, args, boundedBy(options, expiresAt));
+}
+
+/**
+ * The settings git starts with in a checkout another process controls. `-c` outranks every config file that process can
+ * edit, so no hook and no fsmonitor it names runs, and an object id means that object, never a replacement it set.
+ */
+export const UNTRUSTED_CONFIG: readonly string[] = ['-c', `core.hooksPath=${os.devNull}`, '-c', 'core.fsmonitor=false', '-c', 'core.useReplaceRefs=false'];
+
+/**
+ * git in a checkout another process controls, such as a benchmark trial's clone after its tool ran: `UNTRUSTED_CONFIG`
+ * first, then every hook its config names turned off, and `env` instead of this process's environment, for git and for
+ * whatever its config still starts, such as a filter. Past `expiresAt`, each git it started is stopped, so a filter
+ * that never returns holds its caller no longer than that.
+ */
+export function untrustedGit(env: NodeJS.ProcessEnv, expiresAt?: string): Git {
+  return async (cwd, args, options) => {
+    const off = await hooksOff(cwd, env, expiresAt);
+    return 'error' in off ? off.error : spawnGit(cwd, [...UNTRUSTED_CONFIG, ...off.args, ...args], boundedBy(options, expiresAt), { ...env, [HOOK_OFF]: 'false' });
+  };
+}
+
+/** `options` with its timeout cut to the time left before `expiresAt`, at least 1 ms: a timeout of 0 never stops git. */
+function boundedBy(options: GitOptions | undefined, expiresAt: string | undefined): GitOptions | undefined {
+  if (expiresAt === undefined) return options;
+  const left = Math.max(1, Date.parse(expiresAt) - Date.now());
+  const timeoutMs = options?.timeoutMs === undefined ? left : Math.min(options.timeoutMs, left);
+  return { ...options, timeoutMs };
+}
+
+/** What each `--config-env` that turns a configured hook off reads. */
+const HOOK_OFF = 'TEAMAI_GIT_HOOK_ENABLED';
+
+/**
+ * The options that turn off each hook the config in `cwd` names, `hook.<name>.command` (Git 2.54 and later), which runs
+ * beside the script hooks `core.hooksPath` turns off. `--config-env` reads the key up to its last `=`, which `-c` does
+ * not, so a hook whose name holds one is turned off too.
+ */
+async function hooksOff(cwd: string, env: NodeJS.ProcessEnv, expiresAt: string | undefined): Promise<{ args: string[] } | { error: GitResult }> {
+  // Bounded too: a config can include a file that never ends, such as a pipe no one writes.
+  const listed = await spawnGit(cwd, ['config', '--null', '--get-regexp', '^hook\\..*\\.'], boundedBy(undefined, expiresAt), env);
+  // git config exits 1 when no key matches.
+  if (listed.code === 1) return { args: [] };
+  if (listed.code !== 0) return { error: listed };
+  const names = new Set(listed.stdout.split('\0').flatMap((entry) => /^hook\.(.+)\.[^.]+$/.exec(entry.split('\n')[0] ?? '')?.[1] ?? []));
+  return { args: [...names].map((name) => `--config-env=hook.${name}.enabled=${HOOK_OFF}`) };
+}
+
+/**
+ * Settles a git that a signal stopped, such as at its timeout, once it exits: a filter it started that is still exiting,
+ * or that left its tree, holds its output open, so waiting for that output to close would wait on the filter.
+ */
+function settleOnSignal(child: ChildProcess): void {
+  child.once('exit', (_code, signal) => {
+    if (signal === null) return;
+    child.stdout?.destroy();
+    child.stderr?.destroy();
+  });
+}
+
+function spawnGit(cwd: string, args: string[], options: GitOptions | undefined, base: NodeJS.ProcessEnv): Promise<GitResult> {
+  if (options === undefined) {
     return new Promise((resolve) => {
-      execFile('git', args, { cwd, env: { ...process.env, ...options?.env }, windowsHide: true, timeout: options?.timeoutMs }, (error, stdout, stderr) => {
+      execFile('git', args, { cwd, env: base, windowsHide: true }, (error, stdout, stderr) => {
         const code = typeof error?.code === 'number' ? error.code : error ? 1 : 0;
         resolve({ code, stdout: String(stdout), stderr: String(stderr) });
       });
     });
   }
-  return new Promise((resolve) => {
-    const child = spawn('git', args, { cwd, env: process.env, windowsHide: true });
-    let stdout = '';
-    let stderr = '';
-    let settled = false;
-    const finish = (code: number): void => {
-      if (settled) return;
-      settled = true;
-      resolve({ code, stdout, stderr });
-    };
-    child.stdout.setEncoding('utf8');
-    child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (chunk: string) => { stdout += chunk; });
-    child.stderr.on('data', (chunk: string) => { stderr += chunk; });
-    child.on('error', () => finish(1));
-    child.on('close', (code) => finish(code ?? 1));
-    child.stdin.end(options.input);
+  const child = spawn('git', args, { cwd, env: 'env' in options ? { ...base, ...options.env } : base, windowsHide: true });
+  settleOnSignal(child);
+  let stdout = '';
+  let stderr = '';
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  child.stdout.on('data', (chunk: string) => { stdout += chunk; });
+  child.stderr.on('data', (chunk: string) => { stderr += chunk; });
+  const exited = new Promise<number>((resolve) => {
+    child.on('error', () => resolve(1));
+    child.on('close', (code) => resolve(code ?? 1));
+  });
+  // At its timeout git stops with every process it started, such as a filter that never returns.
+  const timer = options.timeoutMs === undefined ? undefined : setTimeout(() => { void stopProcess(child, exited, false)(); }, options.timeoutMs);
+  child.stdin.on('error', () => {});
+  child.stdin.end('input' in options ? options.input : undefined);
+  return exited.then((code) => {
+    clearTimeout(timer);
+    return { code, stdout, stderr };
   });
 }
 
@@ -357,13 +431,7 @@ export async function applyBaseConfig(
   if (!kept) {
     await fs.mkdir(copying);
     await fs.writeFile(path.join(copying, '_conflicts'), (await git(dir, ['ls-files', '-u', '-z', '--', ...AGENT_PATHS])).stdout);
-    for (const relative of AGENT_PATHS) {
-      try {
-        await copyEntry(path.join(dir, relative), path.join(copying, relative));
-      } catch {
-        // The branch does not have this path.
-      }
-    }
+    await saveConfig(dir, copying);
     await fs.rename(copying, saved);
   }
   // Read back, so a resumed prepare puts back the conflicts the branch had, which the base checkout cleared.
@@ -446,6 +514,29 @@ export async function reopenConfigConflicts(dir: string, saved: string): Promise
   if (paths.length > 0) await restoreConflictStages(dir, conflicts, paths);
 }
 
+/** Copies the agent configuration `dir` has into `saved`: the copy `restoreUneditedConfig` puts back. */
+export async function saveConfig(dir: string, saved: string): Promise<void> {
+  for (const relative of AGENT_PATHS) {
+    try {
+      await copyEntry(path.join(dir, relative), path.join(saved, relative));
+    } catch {
+      // The branch does not have this path.
+    }
+  }
+}
+
+/** Puts the agent configuration `from` holds in place of `dir`'s, path by path. */
+export async function replaceConfig(dir: string, from: string): Promise<void> {
+  for (const relative of AGENT_PATHS) {
+    await fs.rm(path.join(dir, relative), { recursive: true, force: true });
+    try {
+      await copyEntry(path.join(from, relative), path.join(dir, relative));
+    } catch {
+      // `from` does not have this path.
+    }
+  }
+}
+
 /** Records the agent files present after team delivery, so that delivery is not a step edit. */
 export async function recordConfigOverlay(dir: string, saved: string): Promise<void> {
   await fs.writeFile(path.join(saved, '_overlay.json'), JSON.stringify(await fileManifest(dir)));
@@ -454,12 +545,13 @@ export async function recordConfigOverlay(dir: string, saved: string): Promise<v
 
 /**
  * Puts back each branch agent file that the step left unchanged. A file the step edited stays. When git cannot list the
- * worktree's files, nothing is put back, `saved` is kept, and the reason is returned as a clause.
+ * worktree's files, nothing is put back, `saved` is kept, and the reason is returned as a clause. `runGit` runs every
+ * git call.
  */
-export async function restoreUneditedConfig(dir: string, _commit: string, saved: string): Promise<string | undefined> {
+export async function restoreUneditedConfig(dir: string, _commit: string, saved: string, runGit: Git = git): Promise<string | undefined> {
   // Listed before anything changes. The index stays as it is until the files are back.
-  const unmergedListed = await gitPaths(dir, ['diff', '--name-only', '--diff-filter=U']);
-  const indexed = await gitPaths(dir, ['ls-files', '--', ...AGENT_PATHS]);
+  const unmergedListed = await gitPaths(dir, ['diff', '--name-only', '--diff-filter=U'], runGit);
+  const indexed = await gitPaths(dir, ['ls-files', '--', ...AGENT_PATHS], runGit);
   const unlisted = [unmergedListed, indexed].find((listed) => listed.code !== 0);
   if (unlisted) {
     return `git could not list the files in ${dir} (${unlisted.stderr.trim() || 'no message'}); the branch's agent files are still in ${saved}`;
@@ -507,8 +599,8 @@ export async function restoreUneditedConfig(dir: string, _commit: string, saved:
   // `checkout` of the base copies staged those paths. Put the index back with the files, or a step that
   // edits nothing still looks dirty and the empty commit fails it.
   const present = await presentAgentPaths(dir, indexed.paths);
-  if (present.length > 0) await git(dir, ['add', '-A', '--', ...present]);
-  if (unresolved.length > 0) await restoreConflictStages(dir, conflicts, unresolved);
+  if (present.length > 0) await runGit(dir, ['add', '-A', '--', ...present]);
+  if (unresolved.length > 0) await restoreConflictStages(dir, conflicts, unresolved, runGit);
   return undefined;
 }
 
@@ -525,8 +617,8 @@ async function presentAgentPaths(dir: string, indexed: string[]): Promise<string
   return present;
 }
 
-async function gitPaths(dir: string, args: string[]): Promise<{ code: number; stderr: string; paths: string[] }> {
-  const listed = await git(dir, [...args.slice(0, 1), '-z', ...args.slice(1)]);
+async function gitPaths(dir: string, args: string[], runGit: Git = git): Promise<{ code: number; stderr: string; paths: string[] }> {
+  const listed = await runGit(dir, [...args.slice(0, 1), '-z', ...args.slice(1)]);
   return { code: listed.code, stderr: listed.stderr, paths: listed.stdout.split('\0').filter((file) => file !== '') };
 }
 
@@ -544,13 +636,13 @@ function conflictPaths(conflicts: string): string[] {
 }
 
 /** Puts unmerged stages back so `git add` does not publish conflict markers as a resolution. */
-async function restoreConflictStages(dir: string, conflicts: string, paths: string[]): Promise<void> {
+async function restoreConflictStages(dir: string, conflicts: string, paths: string[], runGit: Git = git): Promise<void> {
   const wanted = new Set(paths);
   const lines = conflictRecords(conflicts).filter((record) => wanted.has(record.path)).map((record) => record.line);
   // `git rm --cached` leaves stage 0 in place beside the restored stages, and then `git add` cannot clear them.
   const removal = paths.map((relative) => `0 ${'0'.repeat(40)}\t${relative}`);
   const payload = [...removal, ...lines];
-  if (payload.length > 0) await git(dir, ['update-index', '--index-info'], { input: `${payload.join('\n')}\n` });
+  if (payload.length > 0) await runGit(dir, ['update-index', '--index-info'], { input: `${payload.join('\n')}\n` });
 }
 
 async function fileManifest(root: string): Promise<Record<string, string>> {
@@ -580,32 +672,33 @@ async function fileManifest(root: string): Promise<Record<string, string>> {
 }
 
 /** Stages every change. `git add -A` skips a submodule whose `ignore` is `all`, so each submodule is also staged by name. */
-async function stageAll(dir: string): Promise<GitResult> {
-  const added = await git(dir, ['add', '-A']);
+async function stageAll(dir: string, runGit: Git = git): Promise<GitResult> {
+  const added = await runGit(dir, ['add', '-A']);
   if (added.code !== 0) return added;
-  const listed = await git(dir, ['ls-files', '-s', '-z']);
+  const listed = await runGit(dir, ['ls-files', '-s', '-z']);
   if (listed.code !== 0) return listed;
   const modules = gitlinkLines(listed.stdout).map((line) => line.slice(line.indexOf('\t') + 1));
-  return modules.length > 0 ? git(dir, ['add', '-f', '--', ...modules]) : added;
+  return modules.length > 0 ? runGit(dir, ['add', '-f', '--', ...modules]) : added;
 }
 
+/** Commits every change in `dir`, with `runGit` running every git call. */
 export async function commitWork(
-  dir: string, message: string, fromCommit?: string,
+  dir: string, message: string, fromCommit?: string, runGit: Git = git,
 ): Promise<{ from: string; to: string; commits: string[] } | { error: string }> {
-  const before = fromCommit === undefined ? await git(dir, ['rev-parse', 'HEAD']) : { code: 0, stdout: fromCommit, stderr: '' };
+  const before = fromCommit === undefined ? await runGit(dir, ['rev-parse', 'HEAD']) : { code: 0, stdout: fromCommit, stderr: '' };
   if (before.code !== 0) return { error: before.stderr.trim() || 'HEAD could not be read' };
   const from = before.stdout.trim();
-  const merging = (await git(dir, ['rev-parse', '--verify', '--quiet', 'MERGE_HEAD'])).code === 0;
-  const added = await stageAll(dir);
+  const merging = (await runGit(dir, ['rev-parse', '--verify', '--quiet', 'MERGE_HEAD'])).code === 0;
+  const added = await stageAll(dir, runGit);
   if (added.code !== 0) return { error: added.stderr.trim() || 'git add failed' };
-  const staged = await git(dir, ['diff', '--cached', '--quiet', '--ignore-submodules=none', '--no-ext-diff']);
+  const staged = await runGit(dir, ['diff', '--cached', '--quiet', '--ignore-submodules=none', '--no-ext-diff']);
   if (staged.code !== 0 || merging) {
-    const committed = await git(dir, ['-c', 'user.name=TeamAI', '-c', 'user.email=teamai@localhost', 'commit', '-m', message]);
+    const committed = await runGit(dir, ['-c', 'user.name=TeamAI', '-c', 'user.email=teamai@localhost', 'commit', '-m', message]);
     if (committed.code !== 0) return { error: committed.stderr.trim() || committed.stdout.trim() || 'git commit failed' };
   }
-  const after = await git(dir, ['rev-parse', 'HEAD']);
+  const after = await runGit(dir, ['rev-parse', 'HEAD']);
   const to = after.stdout.trim();
-  const listed = to === from ? { stdout: '' } : await git(dir, ['rev-list', '--reverse', `${from}..${to}`]);
+  const listed = to === from ? { stdout: '' } : await runGit(dir, ['rev-list', '--reverse', `${from}..${to}`]);
   return { from, to, commits: listed.stdout.split('\n').map((commit) => commit.trim()).filter((commit) => commit !== '') };
 }
 

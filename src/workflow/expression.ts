@@ -570,6 +570,11 @@ export function fieldsText(fields: PathField[]): string {
 
 /** Reads a path. Anything missing along the way, including a step that has not settled, is `null`. */
 export function resolvePath(path: ExpressionPath, context: ExpressionContext): unknown {
+  return pathValue(path, context) ?? null;
+}
+
+/** Reads a path as `resolvePath` does, but anything missing along the way is undefined, so a null that is there stays apart. */
+export function pathValue(path: ExpressionPath, context: ExpressionContext): unknown {
   if (path.root === 'inputs') return readFields(context.inputs, path.fields);
   if (path.root === 'item') return readFields(context.item, path.fields);
   const step = Object.hasOwn(context.steps, path.step) ? context.steps[path.step] : undefined;
@@ -598,7 +603,7 @@ function readFields(value: unknown, fields: PathField[]): unknown {
     if (typeof field === 'number') current = Array.isArray(current) ? current[field] : undefined;
     else current = isRecord(current) && Object.hasOwn(current, field) ? current[field] : undefined;
   }
-  return current ?? null;
+  return current;
 }
 
 /** The falsy values are `false`, `null`, `0` and `''`. Everything else, `[]` and `{}` included, is truthy. */
@@ -659,7 +664,7 @@ export function evaluateExpression(expression: Expression, context: ExpressionCo
         case 'filter': return list.filter(holds);
       }
     }
-    case 'element': return readFields(context.element, expression.fields);
+    case 'element': return readFields(context.element, expression.fields) ?? null;
   }
 }
 

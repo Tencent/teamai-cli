@@ -1,12 +1,13 @@
 import { isMap, isScalar, isSeq, LineCounter, parseDocument, type Node, type YAMLMap } from 'yaml';
+import { z } from 'zod';
 import { fieldsText, parseExpression, type ExpressionPath } from './expression.js';
 import {
   findTemplate, parseTemplate, stepExpressions, templatedTexts, templateExpressions, templateWithPaths, type StepExpression, type Template,
 } from './template.js';
 import type {
-  Budget, EndOutcome, ForEach, InlineWorkflow, OutputSchema, StepLoop, StepScorers, WorkflowDefaults, WorkflowDefinition, WorkflowDiagnostic, WorkflowLoop, WorkflowStep,
+  Budget, EndOutcome, ForEach, InlineWorkflow, OutputSchema, StepLoop, StepScorers, StepWorkspace, WorkflowDefaults, WorkflowDefinition, WorkflowDiagnostic, WorkflowLoop, WorkflowStep,
 } from './types.js';
-import { INVOKE_VALUES, STEP_ACTIONS } from './types.js';
+import { INVOKE_VALUES, STEP_ACTIONS, stepWorkflow } from './types.js';
 import {
   isYamlNode, locate, position, scalarString, unknownKey, valueNode, unavailableField, undeclaredField, undeclaredOutput,
   type Child, type GraphNode, type ParseContext, type WorkflowFiles,
@@ -15,9 +16,12 @@ import {
   conditionDiagnostics, endDiagnostics, expressionSite, readDiagnostics, readScope, splitReads, type ConditionNode, type Ending, type ReadSite,
 } from './reads.js';
 import { parseHitl } from './parse-hitl.js';
-import { loopProblems } from './loop.js';
+import { loopProblems, stepLoops } from './loop.js';
 import { modelValueProblem } from '../models/aliases.js';
-import { REQUIREMENT_KEYS, RequirementsSchema, SetupSchema, type Requirements, type Setup } from './requirements.js';
+import type { StepModel } from './step-model.js';
+import { ClonePlaceSchema } from './clone.js';
+import { mergeRequirements, ON_LIMIT, REQUIREMENT_KEYS, RequirementsSchema, SANDBOX_WITHHELD_ENV, SetupSchema, type InEffect, type OnLimit, type Requirements, type Setup } from './requirements.js';
+import { sameEnvName } from '../resources/env-key.js';
 
 /**
  * The first release that reads `invoke` and `alias`. An older CLI refuses either as an unknown key and drops the
@@ -25,18 +29,23 @@ import { REQUIREMENT_KEYS, RequirementsSchema, SetupSchema, type Requirements, t
  */
 export const INVOKE_ALIAS_SINCE = '0.28.0';
 
-const HEADER_KEYS = new Set(['schemaVersion', 'name', 'description', 'inputs', 'defaults', 'ends', 'outputs', 'loop', 'timeout', 'budget', 'setup', 'steps', 'invoke', 'alias']);
+const HEADER_KEYS = new Set(['schemaVersion', 'name', 'description', 'inputs', 'defaults', 'ends', 'outputs', 'loop', 'timeout', 'budget', 'setup', 'steps', 'finally', 'invoke', 'alias']);
 const ACTION_KEYS = Object.keys(STEP_ACTIONS);
-const STEP_KEYS = new Set(['id', 'needs', 'if', ...ACTION_KEYS, 'env', 'with', 'agent', 'model', 'output', 'end', 'loop', 'break', 'for_each', 'approve', 'choose', 'interactive', 'workspace', 'session', 'scorers', 'requires', 'timeout', 'budget', 'max_turns', 'deliver']);
+const STEP_KEYS = new Set(['id', 'needs', 'if', ...ACTION_KEYS, 'env', 'with', 'agent', 'tool', 'model', 'output', 'end', 'loop', 'break', 'for_each', 'approve', 'choose', 'interactive', 'workspace', 'session', 'scorers', 'requires', 'timeout', 'budget', 'max_turns', 'on_limit', 'permissions', 'deliver']);
+const EXACT_MODEL_KEYS: ReadonlySet<string> = new Set(['name', 'effort']);
 const STEP_LOOP_KEYS = new Set(['back_to', 'while', 'max_iterations']);
 const FOR_EACH_KEYS = new Set(['items', 'max_parallel']);
 const WORKFLOW_LOOP_KEYS = new Set(['while', 'max_iterations']);
 /** Keys a step without an action may carry. */
 const ACTIONLESS_KEYS = new Set(['id', 'needs', 'if', 'end', 'approve', 'choose', 'loop', 'break']);
+/** What a `finally` step may carry: it runs a command, read-only, in no workspace of its own. */
+const FINALLY_STEP_KEYS = new Set(['id', 'needs', 'if', 'command', 'env', 'output', 'timeout']);
 /** The actions as a sentence: `command, prompt, prompt_file, or workflow`. */
 const ACTION_LIST = `${ACTION_KEYS.slice(0, -1).join(', ')}, or ${ACTION_KEYS.at(-1)}`;
 const TYPE_NAMES = new Set(['string', 'number', 'boolean']);
 const TOKEN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+/** A scorer a step lists: a token, the name of a file in scorers/, or a scorer a run generates, whose name holds a colon. */
+const SCORER_NAME = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const DURATION = /^(\d+)(ms|s|m|h)$/;
 const DURATION_UNITS = new Map([['ms', 1], ['s', 1000], ['m', 60_000], ['h', 3_600_000]]);
@@ -59,8 +68,17 @@ function dottedName(file: string, lineCounter: LineCounter, node: Node | null | 
   return { ...locate(file, lineCounter, node, field, `${name} cannot contain "."; a path reads "." as a separator`), code: 'dotted_name' };
 }
 
-function parseOutput(node: Node, field: string, ctx: ParseContext): OutputSchema | undefined {
+/**
+ * Where a type shorthand sits: in `inputs`; as a step's whole `output`; as a field of that output's object; or deeper.
+ * Only a step output may be `json`, and only a field of its object a `workflow`.
+ */
+type OutputPlace = 'input' | 'output' | 'field' | 'nested';
+
+const WORKFLOW_PLACE = 'a workflow is only a field of a step output, such as output: { definition: workflow }';
+
+function parseOutput(node: Node, field: string, ctx: ParseContext, place: OutputPlace): OutputSchema | undefined {
   const { file, lineCounter, diagnostics } = ctx;
+  const inner: OutputPlace = place === 'input' ? 'input' : 'nested';
   if (isScalar(node)) {
     if (typeof node.value !== 'string') {
       diagnostics.push(locate(file, lineCounter, node, field, 'output shorthand must be string, number, boolean, a literal union, an object, or an array'));
@@ -69,6 +87,16 @@ function parseOutput(node: Node, field: string, ctx: ParseContext): OutputSchema
     const parts = node.value.split('|').map((part) => part.trim()).filter((part) => part.length > 0);
     if (parts.length === 1 && TYPE_NAMES.has(parts[0])) {
       return { type: parts[0] as 'string' | 'number' | 'boolean' };
+    }
+    if (parts.length === 1 && parts[0] === 'json') {
+      if (place !== 'input') return { type: 'json' };
+      diagnostics.push(locate(file, lineCounter, node, field, 'an input cannot be json; only a step output can'));
+      return undefined;
+    }
+    if (parts.length === 1 && parts[0] === 'workflow') {
+      if (place === 'field') return { type: 'workflow' };
+      diagnostics.push(locate(file, lineCounter, node, field, place === 'input' ? 'an input cannot be a workflow; only a field of a step output can' : WORKFLOW_PLACE));
+      return undefined;
     }
     if (parts.length >= 2 && parts.every((part) => TOKEN.test(part) && !TYPE_NAMES.has(part))) {
       return { type: 'enum', values: parts };
@@ -86,7 +114,7 @@ function parseOutput(node: Node, field: string, ctx: ParseContext): OutputSchema
       diagnostics.push(locate(file, lineCounter, node, field, 'an array shorthand has exactly one item type'));
       return undefined;
     }
-    const items = parseOutput(item, `${field}[]`, ctx);
+    const items = parseOutput(item, `${field}[]`, ctx, inner);
     return items ? { type: 'array', items } : undefined;
   }
   if (isMap(node)) {
@@ -95,6 +123,7 @@ function parseOutput(node: Node, field: string, ctx: ParseContext): OutputSchema
       return undefined;
     }
     const fields: Record<string, OutputSchema> = {};
+    let bundleField: string | undefined;
     for (const pair of node.items) {
       const keyNode = isYamlNode(pair.key) ? pair.key : undefined;
       const fieldValueNode = isYamlNode(pair.value) ? pair.value : undefined;
@@ -107,7 +136,12 @@ function parseOutput(node: Node, field: string, ctx: ParseContext): OutputSchema
         diagnostics.push(locate(file, lineCounter, keyNode ?? node, field, 'output field names must be tokens'));
         continue;
       }
-      const child = parseOutput(fieldValueNode, `${field}.${key}`, ctx);
+      const child = parseOutput(fieldValueNode, `${field}.${key}`, ctx, place === 'output' ? 'field' : inner);
+      if (child?.type === 'workflow' && bundleField !== undefined) {
+        diagnostics.push(locate(file, lineCounter, fieldValueNode, `${field}.${key}`, `a step output has at most one workflow field; "${bundleField}" is one already`));
+        continue;
+      }
+      if (child?.type === 'workflow') bundleField = key;
       if (child) fields[key] = child;
     }
     return Object.keys(fields).length === node.items.length ? { type: 'object', fields } : undefined;
@@ -194,7 +228,7 @@ export function parseWorkflow(file: string, content: string, files?: WorkflowFil
   if (inputsPair && !isMap(inputsPair.value)) {
     diagnostics.push(locate(file, lineCounter, inputsPair.value ?? inputsPair.key ?? root, 'inputs', 'inputs must map each input name to a type'));
   } else if (inputsPair) {
-    const schema = parseOutput(inputsPair.value as Node, 'inputs', ctx);
+    const schema = parseOutput(inputsPair.value as Node, 'inputs', ctx, 'input');
     if (schema?.type === 'object') inputs = schema.fields;
   }
 
@@ -208,7 +242,16 @@ export function parseWorkflow(file: string, content: string, files?: WorkflowFil
   const setup = setupPair ? parseSetup(setupPair.value ?? setupPair.key, ctx) : undefined;
 
   // A malformed inputs header is already reported; checking reads against it would only add noise.
-  const { workflow: { ends, outputs, loop, steps } } = parseBody(root, '', 'workflow', ctx, inputsPair && !inputs ? undefined : inputs ?? {}, false);
+  const readInputs = inputsPair && !inputs ? undefined : inputs ?? {};
+  // `finally` steps are read-only commands that run once the graph ends, whatever its outcome. They read the inputs and
+  // each other, never `steps`; the outputs may read them.
+  const finallySteps = valueNode(root, 'finally') === undefined ? undefined
+    : parseBody(root, '', 'finally', ctx, readInputs, false, { list: 'finally' }).workflow.steps;
+  const { workflow: { ends, outputs, loop, steps } } = parseBody(root, '', 'workflow', ctx, readInputs, false, { finally: finallySteps });
+  for (const step of finallySteps ?? []) {
+    if (steps.some((item) => item.id === step.id)) diagnostics.push(locate(file, lineCounter, valueNode(root, 'finally') ?? root, 'finally', `finally step id "${step.id}" is also a step in steps`));
+  }
+  if (diagnostics.length === 0) withheldEnvRequired(root, { defaults, steps }, '', {}, ctx, { says: '', runs: [] });
 
   if (diagnostics.length > 0 || !name || !description) return { ok: false, diagnostics };
   return {
@@ -216,9 +259,21 @@ export function parseWorkflow(file: string, content: string, files?: WorkflowFil
     definition: {
       schemaVersion: 'v1alpha1', name, description, ...(invoke ? { invoke } : {}), ...(alias ? { alias } : {}), ...(inputs ? { inputs } : {}), ...(ends ? { ends } : {}), ...(outputs ? { outputs } : {}),
       ...(loop ? { loop } : {}), ...(defaults ? { defaults } : {}), ...(timeout !== undefined ? { timeout } : {}), ...(budget ? { budget } : {}), ...(setup ? { setup } : {}), steps,
+      ...(finallySteps ? { finally: finallySteps } : {}),
     },
     promptFileLocations,
   };
+}
+
+/** How `parseBody` reads a workflow's steps. */
+interface BodyOptions {
+  /** For an inline workflow: the steps of the workflow around it, and what the step that runs it needs. */
+  parent?: { steps: WorkflowStep[]; needs?: string[] };
+  checks?: Array<() => void>;
+  /** `finally`: the top-level `finally` list alone, which has no `ends`, `outputs` or `loop` of its own. */
+  list?: 'steps' | 'finally';
+  /** The top-level `finally` steps, which the workflow's `outputs` may read too. */
+  finally?: WorkflowStep[];
 }
 
 /**
@@ -233,18 +288,18 @@ function parseBody(
   ctx: ParseContext,
   inputs: Record<string, OutputSchema> | undefined,
   itemBound: boolean,
-  parent?: { steps: WorkflowStep[]; needs?: string[] },
-  checks?: Array<() => void>,
+  { parent, checks, list = 'steps', finally: finallySteps = [] }: BodyOptions = {},
 ): { workflow: InlineWorkflow; outer: ReadSite[] } {
   const { file, lineCounter, diagnostics, promptFileLocations, files } = ctx;
-  const endsPair = root.items.find((pair) => scalarString(pair.key) === 'ends');
+  const header = (key: string): (typeof root.items)[number] | undefined => (list === 'steps' ? root.items.find((pair) => scalarString(pair.key) === key) : undefined);
+  const endsPair = header('ends');
   const ends = endsPair ? parseEnds(endsPair.value ?? endsPair.key, at, ctx) : undefined;
 
-  const outputsPair = root.items.find((pair) => scalarString(pair.key) === 'outputs');
+  const outputsPair = header('outputs');
   const outputEntries = outputsPair ? parseOutputs(outputsPair.value ?? outputsPair.key, at, ctx) : undefined;
   const outputs = outputEntries && Object.fromEntries(outputEntries.map((entry) => [entry.name, entry.source]));
 
-  const loopPair = root.items.find((pair) => scalarString(pair.key) === 'loop');
+  const loopPair = header('loop');
   const loop = loopPair ? parseLoop(loopPair.value ?? loopPair.key, `${at}loop`, label, ctx, false) : undefined;
   const loopWhile = loop?.while === undefined ? undefined : parseExpression(loop.while);
   const loopSite: ReadSite | undefined = loopWhile?.ok ? {
@@ -253,15 +308,17 @@ function parseBody(
     code: 'bad_loop',
   } : undefined;
 
-  const stepsPair = root.items.find((pair) => scalarString(pair.key) === 'steps');
+  const stepsPair = root.items.find((pair) => scalarString(pair.key) === list);
   const stepsNode = stepsPair?.value;
   const steps: WorkflowStep[] = [];
   let outer: ReadSite[] = [];
   if (!isSeq(stepsNode) || stepsNode.items.length === 0) {
-    diagnostics.push(locate(file, lineCounter, stepsNode ?? stepsPair?.key ?? root, `${at}steps`, 'steps must be a non-empty list'));
+    diagnostics.push(locate(file, lineCounter, stepsNode ?? stepsPair?.key ?? root, `${at}${list}`, `${list} must be a non-empty list`));
   } else {
     const queue = checks ?? [];
     const sessions: Array<{ id: string; from: string; node: Node; field: string }> = [];
+    const fromSites: FromSite[] = [];
+    const producers: Producer[] = [];
     const seen = new Set<string>();
     const graph: GraphNode[] = [];
     const conditions: ConditionNode[] = [];
@@ -270,7 +327,7 @@ function parseBody(
     const references: Array<{ id: string; workflow: string }> = [];
     const placed = new Map<string, { field: string; item: YAMLMap }>();
     stepsNode.items.forEach((item, index) => {
-      const field = `${at}steps[${index}]`;
+      const field = `${at}${list}[${index}]`;
       if (!isMap(item)) {
         diagnostics.push(locate(file, lineCounter, item, field, 'a step must be a mapping with exactly one action'));
         return;
@@ -279,6 +336,8 @@ function parseBody(
         const key = scalarString(pair.key);
         if (!key || !STEP_KEYS.has(key)) {
           diagnostics.push(unknownKey(file, lineCounter, pair.key ?? item, `${field}.${key ?? 'key'}`, key ?? 'key'));
+        } else if (list === 'finally' && !FINALLY_STEP_KEYS.has(key)) {
+          diagnostics.push(locate(file, lineCounter, pair.key ?? item, `${field}.${key}`, `a finally step runs a read-only command, so it carries only ${[...FINALLY_STEP_KEYS].join(', ')}`));
         }
       }
       const idPair = item.items.find((pair) => scalarString(pair.key) === 'id');
@@ -333,9 +392,18 @@ function parseBody(
       const forEachPair = item.items.find((pair) => scalarString(pair.key) === 'for_each');
       // The step's templates and the inline workflow it runs render once per item, so they read item as a template.
       const bindsItem = itemBound || forEachPair !== undefined;
-      const inline = isMap(workflowPair?.value)
-        ? parseInline(workflowPair.value, `${field}.workflow`, stepLabel, ctx, inputs, bindsItem, { steps, needs }, queue)
+      const workflowMap = isMap(workflowPair?.value) ? workflowPair.value : undefined;
+      const workflowFromPair = workflowMap?.items.find((pair) => scalarString(pair.key) === 'from');
+      const fromStep = scalarString(workflowFromPair?.value)?.trim();
+      const runsFrom = workflowMap?.items.length === 1 && fromStep !== undefined && TOKEN.test(fromStep) ? { from: fromStep } : undefined;
+      const inline = workflowMap && !workflowFromPair
+        ? parseInline(workflowMap, `${field}.workflow`, stepLabel, ctx, inputs, bindsItem, { parent: { steps, needs }, checks: queue })
         : undefined;
+      if (workflowFromPair && !runsFrom) {
+        diagnostics.push(locate(file, lineCounter, workflowMap, `${field}.workflow`, `${stepLabel} workflow must be the name of a workflow in workflows/, an inline workflow, or { from: <step> }`));
+      } else if (runsFrom && id) {
+        fromSites.push({ id, from: runsFrom.from, needs, node: (workflowFromPair?.value ?? workflowMap) as Node, field: `${field}.workflow.from` });
+      }
       const approvePair = item.items.find((pair) => scalarString(pair.key) === 'approve');
       const choosePair = item.items.find((pair) => scalarString(pair.key) === 'choose');
       const approval = approvePair ? parseHitl('approve', approvePair.value, `${field}.approve`, ctx) : undefined;
@@ -369,7 +437,7 @@ function parseBody(
       if (actions.length > 1 || (actions.length === 0 && !endPair && !approvePair && !choosePair)) {
         diagnostics.push(locate(file, lineCounter, item, field, actions.length > 1 ? `a step has exactly one action: ${ACTION_LIST}` : `a step has exactly one action: ${ACTION_LIST}; or no action with end, approve, or choose`));
       }
-      if (workflowPair && !inline && (!workflow || !TOKEN.test(workflow))) {
+      if (workflowPair && !inline && !workflowFromPair && (!workflow || !TOKEN.test(workflow))) {
         diagnostics.push(locate(file, lineCounter, workflowPair.value ?? workflowPair.key ?? item, `${field}.workflow`, `${stepLabel} workflow must be the name of a workflow in workflows/`));
       }
       if (commandPair && (command === undefined || command.trim() === '')) {
@@ -398,8 +466,15 @@ function parseBody(
       } else if (agentPair && (commandPair || workflowPair)) {
         diagnostics.push(locate(file, lineCounter, agentPair.key ?? item, `${field}.agent`, 'agent is only allowed on a prompt or prompt_file step'));
       }
+      const toolPair = item.items.find((pair) => scalarString(pair.key) === 'tool');
+      const tool = scalarString(toolPair?.value)?.trim();
+      if (toolPair && (commandPair || workflowPair)) {
+        diagnostics.push(locate(file, lineCounter, toolPair.key ?? item, `${field}.tool`, 'tool is only allowed on a prompt or prompt_file step'));
+      } else if (toolPair && (!tool || !TOKEN.test(tool))) {
+        diagnostics.push(locate(file, lineCounter, toolPair.value ?? toolPair.key ?? item, `${field}.tool`, 'tool must be the id of a tool, such as claude or codex, written as is'));
+      }
       const modelPair = item.items.find((pair) => scalarString(pair.key) === 'model');
-      const model = modelPair ? parseModel(modelPair.value ?? modelPair.key, `${field}.model`, ctx) : undefined;
+      const model = modelPair ? parseStepModel(modelPair.value ?? modelPair.key, `${field}.model`, ctx) : undefined;
       if (modelPair && model !== undefined && (commandPair || workflowPair)) {
         diagnostics.push(locate(file, lineCounter, modelPair.key ?? item, `${field}.model`, 'model is only allowed on a prompt or prompt_file step'));
       }
@@ -422,8 +497,21 @@ function parseBody(
       } else if (maxTurnsPair && actions.length > 0 && !promptPair && !promptFilePair) {
         diagnostics.push(locate(file, lineCounter, maxTurnsPair.key, `${field}.max_turns`, `${stepLabel} max_turns is only allowed on a prompt or prompt_file step`));
       }
-      if (budgetPair && actions.length > 0 && !workflowPair) {
-        diagnostics.push(locate(file, lineCounter, budgetPair.key, `${field}.budget`, `${stepLabel} budget is only allowed on a workflow step; a workflow spends it over all its steps`));
+      const permissionsPair = item.items.find((pair) => scalarString(pair.key) === 'permissions');
+      const permissions = scalarString(permissionsPair?.value) === 'unattended' ? 'unattended' as const : undefined;
+      if (permissionsPair && permissions === undefined) {
+        diagnostics.push(locate(file, lineCounter, permissionsPair.value ?? permissionsPair.key, `${field}.permissions`, `${stepLabel} permissions must be unattended, which lets the tool edit and run commands without asking`));
+      } else if (permissionsPair && !promptPair && !promptFilePair) {
+        diagnostics.push(locate(file, lineCounter, permissionsPair.key, `${field}.permissions`, `${stepLabel} permissions is only allowed on a prompt or prompt_file step`));
+      }
+      const onLimitPair = item.items.find((pair) => scalarString(pair.key) === 'on_limit');
+      const onLimit = onLimitPair ? parseOnLimit(onLimitPair.value ?? onLimitPair.key, {
+        field: `${field}.on_limit`, stepLabel, ends: forEachPair ? 'fan-out' : promptPair || promptFilePair ? 'prompt' : workflowPair && actions.length === 1 ? 'workflow' : actions.length > 0 ? 'none' : undefined,
+        limits: { timeout: stepTimeoutPair !== undefined, budget: budgetPair !== undefined, maxTurns: maxTurnsPair !== undefined },
+      }, ctx) : undefined;
+      const endsPromptTurn = onLimit === 'end_turn' && (promptPair !== undefined || promptFilePair !== undefined);
+      if (budgetPair && actions.length > 0 && !workflowPair && !endsPromptTurn) {
+        diagnostics.push(locate(file, lineCounter, budgetPair.key, `${field}.budget`, `${stepLabel} budget is only allowed on a workflow step, or on a prompt step with on_limit: end_turn`));
       }
       const envPair = item.items.find((pair) => scalarString(pair.key) === 'env');
       const env = envPair ? parseEnv(envPair.value ?? envPair.key, `${field}.env`, stepLabel, ctx) : undefined;
@@ -523,16 +611,18 @@ function parseBody(
       if (outputPair && workflowPair) {
         diagnostics.push(locate(file, lineCounter, outputPair.key as Node, `${field}.output`, `${stepLabel} output is not allowed on a workflow step; declare outputs in the workflow it runs`));
       } else if (outputPair?.value) {
-        output = parseOutput(outputPair.value, `${field}.output`, ctx);
+        output = parseOutput(outputPair.value, `${field}.output`, ctx, 'output');
+        if (output && workflowField(output) !== undefined && id) {
+          producers.push({ id, node: outputPair.value, field: `${field}.output`, repeats: bindsItem || loop !== undefined });
+        }
       } else if (outputPair) {
         diagnostics.push(locate(file, lineCounter, outputPair.key ?? item, `${field}.output`, 'output must be a shorthand type'));
       }
       const workspacePair = item.items.find((pair) => scalarString(pair.key) === 'workspace');
-      const workspaceText = scalarString(workspacePair?.value)?.trim();
-      const workspace = workspaceText === 'read-only' || workspaceText === 'new' || workspaceText === 'continue' ? workspaceText : undefined;
+      const workspace = parseStepWorkspace(workspacePair?.value);
       if (workspacePair && !workspace) {
         diagnostics.push({
-          ...locate(file, lineCounter, workspacePair.value ?? workspacePair.key ?? item, `${field}.workspace`, `${stepLabel} workspace must be read-only, new, or continue`),
+          ...locate(file, lineCounter, workspacePair.value ?? workspacePair.key ?? item, `${field}.workspace`, `${stepLabel} workspace must be read-only, new, continue, or { clone: { commit, repo?, team } } with a full commit and team { treatment: none } or { revision, selection, treatment }`),
           code: 'bad_workspace',
         });
       }
@@ -587,15 +677,19 @@ function parseBody(
           ...(prompt ? { prompt } : {}),
           ...(promptFile ? { promptFile } : {}),
           ...(inline ? { workflow: inline.workflow } : {}),
+          ...(runsFrom ? { workflow: runsFrom } : {}),
           ...(workflow ? { workflow } : {}),
           ...(withValues ? { with: withValues } : {}),
           ...(agent ? { agent } : {}),
+          ...(tool ? { tool } : {}),
           ...(model !== undefined ? { model } : {}),
           ...(scorers ? { scorers } : {}),
           ...(requires ? { requires } : {}),
           ...(timeout !== undefined ? { timeout } : {}),
           ...(budget ? { budget } : {}),
           ...(maxTurns !== undefined ? { maxTurns } : {}),
+          ...(permissions ? { permissions } : {}),
+          ...(onLimit ? { onLimit } : {}),
           ...(output ? { output } : {}),
           ...(end ? { end } : {}),
           ...(stepLoop ? { loop: stepLoop } : {}),
@@ -608,12 +702,13 @@ function parseBody(
       }
     });
     queue.push(() => diagnostics.push(...sessionProblems(file, lineCounter, steps, parent, sessions)));
+    queue.push(() => diagnostics.push(...fromProblems(ctx, steps, fromSites, producers)));
     if (!checks) for (const check of queue) check();
     diagnostics.push(...graphDiagnostics(ctx, graph, seen));
     diagnostics.push(...conditionDiagnostics(ctx, conditions, reads));
     const needsById = new Map(graph.map((step) => [step.id, step.needs]));
     // An inline workflow that is reported has no step here, so reads of it are not checked.
-    const children = childrenOf([...references, ...steps.filter((step) => typeof step.workflow === 'object')], files);
+    const children = childrenOf([...references, ...steps.filter((step) => stepWorkflow(step)?.kind === 'inline')], files);
     // A malformed inputs header is already reported; checking reads against it would only add noise.
     // An inline workflow's reads of steps that are not its own are checked by the workflow around it.
     const split = splitReads(reads, at === '' ? undefined : seen);
@@ -626,7 +721,8 @@ function parseBody(
     }
     // A malformed ends header is already reported; checking steps against it would only add noise.
     if (!endsPair || ends) diagnostics.push(...endDiagnostics(ctx, ends, endsPair?.value, at, endings, graph));
-    diagnostics.push(...outputDiagnostics(ctx, outputEntries ?? [], at, seen, steps, children));
+    const readable = [...steps, ...finallySteps];
+    diagnostics.push(...outputDiagnostics(ctx, outputEntries ?? [], at, new Set(readable.map((step) => step.id)), readable, children));
   }
   return { workflow: { ...(ends ? { ends } : {}), ...(outputs ? { outputs } : {}), ...(loop ? { loop } : {}), steps }, outer };
 }
@@ -649,8 +745,7 @@ function parseInline(
   ctx: ParseContext,
   inputs: Record<string, OutputSchema> | undefined,
   itemBound: boolean,
-  parent?: { steps: WorkflowStep[]; needs?: string[] },
-  checks?: Array<() => void>,
+  options: BodyOptions,
 ): { workflow: InlineWorkflow; outer: ReadSite[] } {
   const { file, lineCounter, diagnostics } = ctx;
   for (const pair of node.items) {
@@ -664,7 +759,7 @@ function parseInline(
       diagnostics.push(locate(file, lineCounter, pair.key, `${field}.${key}`, `${label} runs an inline workflow, which carries only steps, outputs, ends, and loop`));
     }
   }
-  return parseBody(node, `${field}.`, `${label} workflow`, ctx, inputs, itemBound, parent, checks);
+  return parseBody(node, `${field}.`, `${label} workflow`, ctx, inputs, itemBound, options);
 }
 
 function needsReach(start: string[] | undefined, target: string, steps: Map<string, WorkflowStep>): boolean {
@@ -711,6 +806,56 @@ function sessionProblems(
   return problems;
 }
 
+/** A step that runs `workflow: { from }`, with what it needs as written. */
+interface FromSite {
+  id: string;
+  from: string;
+  needs: string[] | undefined;
+  node: Node;
+  field: string;
+}
+
+/** A step whose output has a workflow field, and whether it runs per item or in a workflow loop. */
+interface Producer {
+  id: string;
+  node: Node;
+  field: string;
+  repeats: boolean;
+}
+
+/** The field of `output` that holds a workflow, or undefined when it has none. */
+export function workflowField(output: OutputSchema | undefined): string | undefined {
+  if (output?.type !== 'object') return undefined;
+  return Object.entries(output.fields).find(([, schema]) => schema.type === 'workflow')?.[0];
+}
+
+/**
+ * A `from` step runs the workflow output of a step it needs directly. A step with a workflow output runs once: the run
+ * admits its workflow when it reports and never replaces it, so it may not run per item or in a loop.
+ */
+function fromProblems({ file, lineCounter }: ParseContext, steps: WorkflowStep[], sites: FromSite[], producers: Producer[]): WorkflowDiagnostic[] {
+  const local = new Map(steps.map((step) => [step.id, step]));
+  const loops = stepLoops(steps);
+  const problems: WorkflowDiagnostic[] = [];
+  for (const site of sites) {
+    if (!site.needs?.includes(site.from)) {
+      problems.push(locate(file, lineCounter, site.node, site.field, `step "${site.id}" workflow.from names "${site.from}", which is not a step it needs`));
+      continue;
+    }
+    const producer = local.get(site.from);
+    // A producer that is not a step, or that has a problem of its own, is reported already.
+    if (producer && workflowField(producer.output) === undefined) {
+      problems.push(locate(file, lineCounter, site.node, site.field, `step "${site.id}" workflow.from names "${site.from}", whose output has no workflow field`));
+    }
+  }
+  for (const producer of producers) {
+    if (producer.repeats || [...loops.ranges.values()].some((range) => range.has(producer.id))) {
+      problems.push(locate(file, lineCounter, producer.node, producer.field, `step "${producer.id}" outputs a workflow, so it runs once; it may not repeat in a loop or run per item of a for_each`));
+    }
+  }
+  return problems;
+}
+
 /** A step that runs a workflow file by name. */
 interface Reference {
   label: string;
@@ -731,6 +876,10 @@ function referenceDiagnostics({ file, lineCounter }: ParseContext, files: Workfl
     return [locate(file, lineCounter, node, `${field}.workflow`,
       `${label} runs workflow "${workflow}", which has no runnable version; fix or add workflows/${workflow}.yaml`)];
   }
+  if (child.finally) {
+    return [locate(file, lineCounter, node, `${field}.workflow`,
+      `${label} runs workflow "${workflow}", which has finally steps; only a run of that workflow runs them, so start it with teamai workflow start`)];
+  }
   if (!reference.with) return [];
   const inputs = child.inputs ?? {};
   const passed = new Set(reference.with.keys.map((key) => key.name));
@@ -746,15 +895,17 @@ function referenceDiagnostics({ file, lineCounter }: ParseContext, files: Workfl
  * The workflow each step runs: an inline one as written, a file as a sync knows it.
  * A step whose reference is reported has none, so its reads are not checked.
  */
-function childrenOf(steps: Array<{ id: string; workflow?: string | InlineWorkflow }>, files: WorkflowFiles | undefined): Map<string, Child> {
+function childrenOf(steps: Array<Pick<WorkflowStep, 'id' | 'workflow'>>, files: WorkflowFiles | undefined): Map<string, Child> {
   const children = new Map<string, Child>();
-  for (const { id, workflow } of steps) {
-    if (typeof workflow === 'object') {
-      children.set(id, { label: `the inline workflow of step "${id}"`, outputs: workflow.outputs, ends: workflow.ends });
+  for (const step of steps) {
+    const { id } = step;
+    const runs = stepWorkflow(step);
+    if (runs?.kind === 'inline') {
+      children.set(id, { label: `the inline workflow of step "${id}"`, outputs: runs.workflow.outputs, ends: runs.workflow.ends });
       continue;
     }
-    if (!files || workflow === undefined || files.cycle(workflow)) continue;
-    const child = files.runnable(workflow);
+    if (!files || runs?.kind !== 'named' || files.cycle(runs.name)) continue;
+    const child = files.runnable(runs.name);
     if (child) children.set(id, { label: `workflow "${child.name}"`, outputs: child.outputs, ends: child.ends });
   }
   return children;
@@ -845,6 +996,23 @@ function parseModel(node: Node | null | undefined, field: string, ctx: ParseCont
   return model;
 }
 
+/**
+ * A step's `model`: an alias or a model name, as `parseModel` reads it, or the exact model, `{ name, effort? }`, which
+ * the lease carries as written and no driver resolves through models/aliases.yaml.
+ */
+function parseStepModel(node: Node | null | undefined, field: string, ctx: ParseContext): string | StepModel | undefined {
+  if (!isMap(node)) return parseModel(node, field, ctx);
+  const name = scalarString(valueNode(node, 'name'));
+  const effortNode = valueNode(node, 'effort');
+  const effort = scalarString(effortNode);
+  const known = node.items.every((pair) => isScalar(pair.key) && EXACT_MODEL_KEYS.has(String(pair.key.value)));
+  if (name === undefined || !known || modelValueProblem(name) !== undefined || (effortNode !== undefined && modelValueProblem(effort) !== undefined)) {
+    ctx.diagnostics.push(locate(ctx.file, ctx.lineCounter, node, field, 'model must be an alias or a model name, or { name, effort? } with the exact model'));
+    return undefined;
+  }
+  return { name, ...(effort !== undefined ? { effort } : {}) };
+}
+
 function parseDefaults(node: Node | null | undefined, ctx: ParseContext): WorkflowDefaults | undefined {
   const { file, lineCounter, diagnostics } = ctx;
   if (!isMap(node)) {
@@ -889,11 +1057,12 @@ function parseDefaultScorers(node: Node | undefined, ctx: ParseContext): { batch
   return batch === undefined ? undefined : { batch };
 }
 
-/** A step's `scorers`: a list of names, or `{ names, batch }`. */
+/** A step's `scorers`: a list of names, or `{ names, batch, sampling }`. */
 function parseScorers(node: Node | null | undefined, field: string, ctx: ParseContext): StepScorers | undefined {
   const { file, lineCounter, diagnostics } = ctx;
   let list: Node | null | undefined = node;
   let batch: boolean | undefined;
+  let sampling: 'all' | undefined;
   if (isMap(node)) {
     list = undefined;
     for (const pair of node.items) {
@@ -901,6 +1070,7 @@ function parseScorers(node: Node | null | undefined, field: string, ctx: ParseCo
       const key = scalarString(keyNode);
       if (key === 'names') list = valueNode(node, 'names');
       else if (key === 'batch') batch = parseBatch(valueNode(node, 'batch'), `${field}.batch`, ctx);
+      else if (key === 'sampling') sampling = parseSampling(valueNode(node, 'sampling'), `${field}.sampling`, ctx);
       else diagnostics.push(unknownKey(file, lineCounter, keyNode ?? node, `${field}.${key ?? 'key'}`, key ?? 'key'));
     }
   }
@@ -911,7 +1081,7 @@ function parseScorers(node: Node | null | undefined, field: string, ctx: ParseCo
   const names: string[] = [];
   for (const item of list.items) {
     const name = isScalar(item) ? String(item.value) : undefined;
-    if (name === undefined || !TOKEN.test(name)) {
+    if (name === undefined || !SCORER_NAME.test(name)) {
       diagnostics.push(locate(file, lineCounter, list, field, `scorer ${name === undefined ? 'names' : `"${name}"`} must be a token, the name of a file in scorers/`));
     } else if (names.includes(name)) {
       diagnostics.push(locate(file, lineCounter, list, field, `scorers lists "${name}" twice`));
@@ -919,7 +1089,13 @@ function parseScorers(node: Node | null | undefined, field: string, ctx: ParseCo
       names.push(name);
     }
   }
-  return { names, ...(batch !== undefined ? { batch } : {}) };
+  return { names, ...(batch !== undefined ? { batch } : {}), ...(sampling ? { sampling } : {}) };
+}
+
+function parseSampling(node: Node | undefined, field: string, ctx: ParseContext): 'all' | undefined {
+  if (isScalar(node) && node.value === 'all') return 'all';
+  ctx.diagnostics.push(locate(ctx.file, ctx.lineCounter, node, field, 'sampling must be all, which judges every pass; leave it out to use each scorer\'s samplingRate'));
+  return undefined;
 }
 
 /**
@@ -947,6 +1123,64 @@ function parseRequires(node: Node | null | undefined, field: string, ctx: ParseC
     }
   }
   return parsed.success && diagnostics.length === before ? parsed.data : undefined;
+}
+
+/** How the walk reached a level: through the workflow files on the way, from the step of this file that runs them. */
+interface Caller {
+  /** How the message reaches the level, such as `steps[1].workflow runs workflow "check", whose `. */
+  says: string;
+  /** The workflow files on the way there, so a cycle among them ends the walk. */
+  runs: readonly string[];
+  /** Where to report a level in another file: the `workflow` of the step that runs it. */
+  at?: { node: Node | undefined; field: string };
+}
+
+/**
+ * Reports each level of `workflow`, parsed from `node`, whose own `requires.env` names a credential that the strict
+ * sandbox in effect there withholds anyway: its `defaults`, its steps, inline workflows, and, with `files`, the
+ * workflow files its steps run, reported at the step of this file that runs them.
+ */
+function withheldEnvRequired(node: Node | undefined, workflow: { defaults?: WorkflowDefaults; steps: readonly WorkflowStep[] }, at: string, outer: InEffect, ctx: ParseContext, caller: Caller): void {
+  const report = (requires: InEffect, level: unknown, field: string, env: readonly string[] | undefined): void => {
+    const withheld = withheldKeys(requires, env);
+    if (withheld.length === 0) return;
+    const where = caller.at ?? { node: valueNode(valueNode(level, 'requires'), 'env') ?? node, field: `${field}.requires.env` };
+    ctx.diagnostics.push(locate(ctx.file, ctx.lineCounter, where.node, where.field,
+      `${caller.says}${field}.requires.env names ${withheld.join(', ')}, which the strict sandbox it runs in withholds from every step. Remove ${withheld.length > 1 ? 'them' : 'it'} from requires.env, or drop strict.`));
+  };
+  const scope = mergeRequirements(outer, workflow.defaults?.requires);
+  report(scope, valueNode(node, 'defaults'), `${at}defaults`, workflow.defaults?.requires?.env);
+  const steps = valueNode(node, 'steps');
+  workflow.steps.forEach((step, index) => {
+    const item = isSeq(steps) ? steps.items[index] : undefined;
+    const field = `${at}steps[${index}]`;
+    const requires = mergeRequirements(scope, step.requires);
+    report(requires, item, field, step.requires?.env);
+    const runs = stepWorkflow(step);
+    if (runs?.kind === 'inline') withheldEnvRequired(valueNode(item, 'workflow'), runs.workflow, `${field}.workflow.`, requires, ctx, caller);
+    if (runs?.kind !== 'named' || caller.runs.includes(runs.name)) return;
+    const child = ctx.files?.runnable(runs.name);
+    if (child) {
+      withheldEnvRequired(undefined, child, '', requires, ctx, {
+        says: `${caller.says}${field}.workflow runs workflow "${runs.name}", whose `, runs: [...caller.runs, runs.name],
+        at: caller.at ?? { node: valueNode(item, 'workflow'), field: `${field}.workflow` },
+      });
+    }
+  });
+}
+
+/** The keys of a level's own `requires.env` that the strict sandbox in effect there withholds. */
+function withheldKeys(requires: InEffect, env: readonly string[] = []): string[] {
+  return requires.floor?.isolation === 'sandbox' ? env.filter((key) => sameEnvName(SANDBOX_WITHHELD_ENV, key) !== undefined) : [];
+}
+
+/** A step's `workspace`: `read-only`, `new`, `continue`, or `{ clone: … }`; undefined when it is none of them. */
+function parseStepWorkspace(node: Node | null | undefined): StepWorkspace | undefined {
+  const text = scalarString(node)?.trim();
+  if (text === 'read-only' || text === 'new' || text === 'continue') return text;
+  if (!isMap(node)) return undefined;
+  const parsed = z.object({ clone: ClonePlaceSchema }).strict().safeParse(node.toJSON());
+  return parsed.success ? parsed.data : undefined;
 }
 
 /** `setup: { command, requires: { env } }`. A key this version does not know, at either level, is `unknown_key`. */
@@ -980,13 +1214,53 @@ function parseSetup(node: Node | null | undefined, ctx: ParseContext): Setup | u
   return parsed.success && diagnostics.length === before ? parsed.data : undefined;
 }
 
-/** A `timeout`: a whole number of `ms`, `s`, `m`, or `h`, such as `30s` or `2h`, read as milliseconds. */
-function parseTimeout(node: Node | null | undefined, field: string, ctx: ParseContext): number | undefined {
-  const [, amount = '', unit = ''] = DURATION.exec(scalarString(node)?.trim() ?? '') ?? [];
+/** A positive whole number of `ms`, `s`, `m`, or `h`, such as `30s` or `2h`, read as milliseconds; undefined otherwise. */
+export function durationMs(text: string): number | undefined {
+  const [, amount = '', unit = ''] = DURATION.exec(text.trim()) ?? [];
   const ms = Number(amount) * (DURATION_UNITS.get(unit) ?? 0);
-  if (ms > 0 && Number.isSafeInteger(ms)) return ms;
+  return ms > 0 && Number.isSafeInteger(ms) ? ms : undefined;
+}
+
+/** A `timeout`, read with durationMs. */
+function parseTimeout(node: Node | null | undefined, field: string, ctx: ParseContext): number | undefined {
+  const ms = durationMs(scalarString(node) ?? '');
+  if (ms !== undefined) return ms;
   ctx.diagnostics.push(locate(ctx.file, ctx.lineCounter, node, field, `${field} must be a positive duration, such as 500ms, 30s, 10m, or 2h`));
   return undefined;
+}
+
+/**
+ * A step's `on_limit`, or undefined when it is not one. `ends` is what the step runs: a prompt's turn ends at its
+ * `timeout`, `max_turns` or `budget`; a workflow step's `timeout` and `budget` are the allowance its prompts spend.
+ */
+function parseOnLimit(
+  node: Node | null | undefined, { field, stepLabel, ends, limits }: { field: string; stepLabel: string; ends: 'prompt' | 'workflow' | 'fan-out' | 'none' | undefined; limits: { timeout: boolean; budget: boolean; maxTurns: boolean } },
+  ctx: ParseContext,
+): OnLimit | undefined {
+  const value = scalarString(node);
+  const problem = (message: string): undefined => {
+    ctx.diagnostics.push(locate(ctx.file, ctx.lineCounter, node, field, `${stepLabel} ${message}`));
+    return undefined;
+  };
+  const onLimit = ON_LIMIT.find((known) => known === value);
+  if (onLimit === undefined) return problem('on_limit must be end_turn or fail');
+  switch (ends) {
+    // A step with no action already reports every key it may not carry.
+    case undefined:
+      return onLimit;
+    case 'none':
+      return problem('on_limit is only allowed on a prompt, prompt_file or workflow step');
+    case 'fan-out':
+      return problem('on_limit is not allowed on a for_each step');
+    case 'prompt':
+      return limits.timeout || limits.budget || limits.maxTurns ? onLimit : problem('on_limit needs a timeout, max_turns or budget to end the turn at');
+    case 'workflow':
+      return limits.timeout || limits.budget ? onLimit : problem('on_limit on a workflow step needs a timeout or budget, which its prompts spend');
+    default: {
+      const unhandled: never = ends;
+      return unhandled;
+    }
+  }
 }
 
 /** A `budget`: `{ tokens: <positive whole number> }`. A key this version does not know is `unknown_key`. */
@@ -1201,9 +1475,10 @@ export function promptFileDiagnostics(
   const runners: WorkflowStep[] = [];
   for (const index of trail.slice(0, -1)) {
     const runner = levels[levels.length - 1]?.[index];
-    if (typeof runner?.workflow !== 'object') return [];
+    const runs = runner && stepWorkflow(runner);
+    if (runs?.kind !== 'inline') return [];
     runners.push(runner);
-    levels.push(runner.workflow.steps);
+    levels.push(runs.workflow.steps);
   }
   const step = levels[levels.length - 1]?.[trail[trail.length - 1] ?? -1];
   if (!step) return [];

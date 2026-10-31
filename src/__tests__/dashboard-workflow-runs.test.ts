@@ -8,9 +8,11 @@ import { HttpError } from '../dashboard/http.js';
 import { getReportsDir, type LocalConfig } from '../types.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, startRun } from '../workflow/engine.js';
-import { readRun } from '../workflow/store.js';
+import { readRun, runsDir } from '../workflow/store.js';
 import type { RunState } from '../workflow/types.js';
 import { knownSecrets } from '../env-resolution.js';
+import type { BenchmarkRunRecord } from '../benchmark/result.js';
+import { fixRecord } from './helpers/benchmark-fixture.js';
 
 const roots: string[] = [];
 const driver = { kind: 'ide', machine: 'host-7f3a', workspace: '/private/work/checkout' };
@@ -46,6 +48,17 @@ async function waitingRun(hitl = 'approve: { message: "Ship {{ inputs.ticket }}?
   expect(asked).toMatchObject({ data: { hitl: { step: 'ship', pass: 1 } } });
   return { config, id, state: async () => await readRun(config, id) as RunState };
 }
+
+/** Writes `record` where `teamai benchmark report` writes a run's benchmark record on this machine. */
+function reportLocally(config: LocalConfig, record: BenchmarkRunRecord): void {
+  const file = path.join(runsDir(config), record.run, 'benchmark.json');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(record));
+}
+
+const RESULTS_HEADER = ['Arm', 'Tool', 'Model (source)', 'Planned', 'Passed', 'Failed', 'Error', 'Unscored', 'Not run', 'Stopped by a limit', 'Deviations', 'Not verified', 'Pass rate'];
+const USAGE_HEADER = ['Arm', 'Median tokens (input + output)', 'Median duration', 'Cost'];
+const CAPTION = 'These results hold for these tasks, this run and this machine.';
 
 async function refusal(promise: Promise<unknown>): Promise<{ status: number; message: string }> {
   const error = await promise.then(() => null, (e: unknown) => e);
@@ -162,9 +175,28 @@ describe('dashboard workflow runs', () => {
       .toEqual({ status: 400, message: expect.stringContaining('yes, no') });
   });
 
+  it("shows a run's benchmark results, usage and task by arm matrix once its report wrote the record, and no table before", async () => {
+    const run = await waitingRun();
+    expect(await workflowRunDetail(run.config, 'local', run.id)).not.toHaveProperty('benchmark');
+
+    reportLocally(run.config, fixRecord(run.id, { startedAt: new Date().toISOString(), result: 'not_run' }));
+
+    expect((await workflowRunDetail(run.config, 'local', run.id))?.benchmark).toEqual({
+      results: { header: RESULTS_HEADER, rows: [['claude', 'claude', 'tool default (team)', '1', '0', '0', '0', '0', '1', '0', '0', '0', '0% (0/1)']] },
+      usage: { header: USAGE_HEADER, rows: [['claude', 'unknown (0)', 'unknown (0)', 'unknown (0)']] },
+      matrix: { header: ['Task', 'claude'], rows: [['fix', '0% (0/1)']] },
+      caption: CAPTION,
+    });
+  });
+
   describe('team-reported history', () => {
     function publish(config: LocalConfig, record: Record<string, unknown>): void {
       const dir = path.join(getReportsDir(config), 'workflows/runs');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, `${String(record.run)}.json`), JSON.stringify(record));
+    }
+    function publishBenchmark(config: LocalConfig, record: Record<string, unknown>): void {
+      const dir = path.join(getReportsDir(config), 'benchmarks/runs');
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(path.join(dir, `${String(record.run)}.json`), JSON.stringify(record));
     }
@@ -248,6 +280,28 @@ describe('dashboard workflow runs', () => {
       const rows = await listReportedRuns(config);
       expect(rows.map((row) => row.run)).toEqual(['r0000000000000001']);
       expect(JSON.stringify(rows)).not.toMatch(/TICKET-SECRET-42|private\/work|publishedAt/);
+    });
+
+    it("shows a published run's benchmark tables from its benchmark record, and lists one whose benchmark record it cannot read without them", async () => {
+      const config = scope('http');
+      const published = fixRecord('r0000000000000003', { startedAt: '2026-10-01T10:00:00.000Z' });
+      const [trial] = published.trials;
+      if (!trial) throw new Error('the record has no trial');
+      publish(config, record('r0000000000000003', { isolated: true }));
+      publishBenchmark(config, { ...published, trials: [{ ...trial, agent: { v: 1, tool: { name: 'codex' }, teamai: '0.0.0', driver: 'local' } }] });
+      publish(config, record('r0000000000000004', { isolated: true }));
+      publishBenchmark(config, { run: 'r0000000000000004', arms: 'broken' });
+
+      const rows = await listReportedRuns(config);
+
+      expect(rows.map((row) => row.run).sort()).toEqual(['r0000000000000003', 'r0000000000000004']);
+      expect((await workflowRunDetail(config, 'reported', 'r0000000000000003'))?.benchmark).toEqual({
+        results: { header: RESULTS_HEADER, rows: [['claude', 'claude', 'tool default (team)', '1', '1', '0', '0', '0', '0', '0', '1', '0', '100% (1/1)']] },
+        usage: { header: USAGE_HEADER, rows: [['claude', 'unknown (0)', 'unknown (0)', 'unknown (0)']] },
+        matrix: { header: ['Task', 'claude'], rows: [['fix', '100% (1/1)']] },
+        caption: CAPTION,
+      });
+      expect(await workflowRunDetail(config, 'reported', 'r0000000000000004')).not.toHaveProperty('benchmark');
     });
 
     it('reads no run from another repository\'s reports checkout left at this scope\'s path', async () => {

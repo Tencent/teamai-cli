@@ -9,6 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import { REPORTS_LOCK_FILENAME } from '../../types.js';
 import { acquireLock, releaseLock } from '../../update.js';
 
@@ -38,6 +39,20 @@ steps:
     needs: [write]
     workspace: continue
     command: node -e "const fs=require('fs'); fs.writeFileSync('more.txt', 'M'); const hold=process.env.HOLD_AT; if (hold && fs.existsSync(hold)) { fs.writeFileSync(hold + '.held', ''); setInterval(() => {}, 1000); }"
+`;
+
+/** Checks, in a step that continues the clone, that the clone is `commit` with no remotes, then edits it. */
+const CLEAN = (commit: string): string => `schemaVersion: v1alpha1
+name: clean
+description: Edit a clean clone of the business commit.
+steps:
+  - id: trial
+    workspace: { clone: { commit: ${commit}, team: { treatment: none } } }
+    workflow:
+      steps:
+        - id: edit
+          workspace: continue
+          command: node -e "const g = (...a) => require('child_process').execFileSync('git', a).toString().trim(); if (g('rev-parse', 'HEAD') !== '${commit}' || g('remote') !== '') process.exit(1); require('fs').writeFileSync('clean.txt', 'C')"
 `;
 
 const QUICK = `schemaVersion: v1alpha1
@@ -97,6 +112,24 @@ steps:
   - id: notes
     needs: [build]
     prompt: Write the release notes.
+`;
+
+const PINNED = `schemaVersion: v1alpha1
+name: pinned
+description: Write the release notes on codex.
+steps:
+  - id: notes
+    prompt: Write the release notes.
+    tool: codex
+`;
+
+const FOREIGN = `schemaVersion: v1alpha1
+name: foreign
+description: Write the release notes on aider.
+steps:
+  - id: notes
+    prompt: Write the release notes.
+    tool: aider
 `;
 
 const REVIEW = `schemaVersion: v1alpha1
@@ -239,13 +272,14 @@ describe('workflow publish and resume across members', () => {
     businessOrigin = path.join(sandbox, 'business.git');
     git(sandbox, ['init', '-q', '--bare', '-b', 'main', teamOrigin]);
     git(sandbox, ['init', '-q', '--bare', '-b', 'main', businessOrigin]);
+    seed(path.join(sandbox, 'seed-business'), { 'README.md': '# business\n' }, 'business repo', businessOrigin);
     seed(path.join(sandbox, 'seed-team'), {
       'teamai.yaml': `team: acme\nrepo: ${TEAM_URL}\nprovider: github\n`,
       'workflows/ship.yaml': SHIP,
       'workflows/edit.yaml': EDIT,
       'workflows/review.yaml': REVIEW,
+      'workflows/clean.yaml': CLEAN(originGit(businessOrigin, 'rev-parse', 'main')),
     }, 'team repo', teamOrigin);
-    seed(path.join(sandbox, 'seed-business'), { 'README.md': '# business\n' }, 'business repo', businessOrigin);
     // Both members join before anything is published, so nothing published reaches bob through a pull.
     await join('alice');
     await join('bob');
@@ -471,6 +505,22 @@ describe('workflow publish and resume across members', () => {
     expect(copy).toContain('Found two problems.');
     expect(copy).not.toContain(token);
   }, 180_000);
+
+  it('runs a workflow that opens a clone in a fresh clone of its commit, and refuses to publish the run, as it is isolated', async () => {
+    const before = git(workOf('alice'), ['status', '--porcelain']);
+
+    const started = await teamai('alice', ['workflow', 'start', 'clean', '--driver', 'local']);
+    expect(started.code, said(started)).toBe(0);
+    const { data } = started.envelope();
+    expect(data).toMatchObject({ done: { outcome: 'succeeded' } });
+    const run = z.object({ done: z.object({ run: z.string() }) }).parse(data).done.run;
+    const published = await teamai('alice', ['workflow', 'publish', run]);
+
+    expect(published.code, said(published)).toBe(1);
+    expect(published.envelope()).toMatchObject({ error: { code: 'isolated_run', message: expect.stringContaining(`Run ${run} is isolated`) } });
+    expect(git(workOf('alice'), ['status', '--porcelain'])).toBe(before);
+    expect(git(workOf('alice'), ['branch', '--list', `teamai/${run}/*`])).toBe('');
+  }, 120_000);
 });
 
 describe('workflow resume lists the runs a checkout can resume, and --next takes an offered one (#1390)', () => {
@@ -486,6 +536,8 @@ describe('workflow resume lists the runs a checkout can resume, and --next takes
       'workflows/release.yaml': RELEASE,
       'workflows/sign.yaml': SIGN,
       'workflows/docs.yaml': DOCS,
+      'workflows/pinned.yaml': PINNED,
+      'workflows/foreign.yaml': FOREIGN,
       'workflows/signed-release.yaml': SIGNED_RELEASE,
     }, 'team repo', teamOrigin);
     seed(path.join(sandbox, 'seed-business'), { 'README.md': '# business\n' }, 'business repo', businessOrigin);
@@ -616,6 +668,43 @@ describe('workflow resume lists the runs a checkout can resume, and --next takes
     expect(taken.code, said(taken)).toBe(0);
     expect(taken.stderr).toContain(`Claimed ${docs} (docs) from alice`);
     expect(taken.envelope()).toMatchObject({ data: { done: { run: docs, outcome: 'succeeded' } } });
+  }, 180_000);
+
+  it('leaves a run whose prompt step names a tool not on PATH, whatever --tools gives, and lists why', async () => {
+    const pinned = await offer('pinned');
+    const bin = path.join(homeOf('runner'), 'pinned-bin');
+    fs.mkdirSync(bin, { recursive: true });
+    fs.symlinkSync(execFileSync('which', ['git'], { encoding: 'utf8' }).trim(), path.join(bin, 'git'));
+    const runner = { TEAMAI_MODE: 'unattended', PATH: [bin, '/usr/bin', '/bin'].join(path.delimiter) };
+    const claude = ['--tools', 'default=claude'];
+    const why = 'the prompt step notes runs on codex, which is not on PATH here: install codex';
+
+    const listed = await teamai('runner', ['workflow', 'resume', ...claude], { env: runner });
+    expect(listed.code, said(listed)).toBe(0);
+    expect(rowsOf(listed)).toEqual(expect.arrayContaining([
+      expect.stringMatching(new RegExp(`^${pinned} +pinned +cannot run here +${OWNER('alice')} +offered on teamai-reports, ${why}; then teamai workflow resume --next$`)),
+    ]));
+
+    const idle = await teamai('runner', ['workflow', 'resume', '--next', ...claude], { env: runner });
+    expect(idle.code, said(idle)).toBe(0);
+    expect(idle.stderr).toContain(`Left ${pinned} (pinned) offered: ${why}`);
+    expect(publishedState(pinned)).toMatchObject({ status: 'running', offered: { at: expect.any(String) } });
+  }, 180_000);
+
+  it('leaves a run whose prompt step names a tool teamai does not launch, and says which driver can continue it', async () => {
+    const foreign = await offer('foreign');
+    const bin = path.join(homeOf('runner'), 'foreign-bin');
+    fs.mkdirSync(bin, { recursive: true });
+    fs.symlinkSync(execFileSync('which', ['git'], { encoding: 'utf8' }).trim(), path.join(bin, 'git'));
+    const runner = { TEAMAI_MODE: 'unattended', PATH: [bin, '/usr/bin', '/bin'].join(path.delimiter) };
+    const claude = ['--tools', 'default=claude'];
+    const why = 'the prompt step notes has no tool teamai launches here (The local workflow tool "aider" is not supported): '
+      + 'its workflow names tool aider, which teamai does not launch here; continue it with a driver that launches aider';
+
+    const idle = await teamai('runner', ['workflow', 'resume', '--next', ...claude], { env: runner });
+    expect(idle.code, said(idle)).toBe(0);
+    expect(idle.stderr).toContain(`Left ${foreign} (foreign) offered: ${why}`);
+    expect(publishedState(foreign)).toMatchObject({ status: 'running', offered: { at: expect.any(String) } });
   }, 180_000);
 
   it('lists a run that needs a person and env with no value here as cannot run here, so no person claims it here', async () => {

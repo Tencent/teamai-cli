@@ -74,33 +74,33 @@ teamai 为每个工具把每类资源写到哪里，以及工具读取哪里，�
 
 用户范围，取自 #1221 的矩阵；之后合入的修复标为 `t` 并附注。`✓` 可用。`◐` 默认可用，但某个条件会让它失效，而 doctor 仍报告已送达。`✗` 默认配置下不可用。`+` 工具支持，teamai 尚未实现。`—` 工具没有此功能。`?` 未知。标记后的字母是依据，含义同上。
 
-| 工具 | 环境变量 | 工作流（本地驱动） | Recall | 统计 | AI 后端 | 投票评审 | 会话评审 | HTTP agent hooks |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Claude Code | ✓t | ✓v | ✓v | ✓v | ✓v | ✓v | ✓t<sup>1</sup> | ✓v |
-| Codex CLI | ✓t | ✓t | ✓v | ✓t<sup>2</sup> | ✓v | ✓t<sup>3</sup> | ✓t<sup>1</sup> | ✓t<sup>4</sup> |
-| Codex CLI Internal | ? | ✓t | ? | ? | ✓t | ? | ? | ? |
-| Claude Code Internal | ? | ✓t | ? | ? | ✓t | ? | ? | ? |
-| TClaude | ? | ✓t | ? | ? | ✓t | ? | ? | ? |
-| TCodex | ? | ✓t | ? | ? | ✓t | ? | ? | ? |
-| Cursor | ? | +s<sup>5</sup> | ✗v<sup>6</sup> | ✓v<sup>7</sup> | ✓d | +s | ✓t<sup>1</sup> | +t<sup>8</sup> |
-| Copilot | ? | +s | ✓v | ✓t<sup>2</sup> | ✓d | ? | ✓t<sup>1</sup> | —t |
-| JoyCode | ? | ? | ◐s | ✓t<sup>2</sup> | ? | ? | ✓t<sup>1</sup> | ? |
-| Qoder | ? | ? | ◐s | ✓s | ✓d | ? | ✓s<sup>9</sup> | ✓s |
-| Qoder CN | ? | ? | ◐s | ✓s | ? | ? | ✓s<sup>9</sup> | ✓t<sup>10</sup> |
-| Kiro | ? | ? | ◐d | ? | ✓d | ? | ✓d<sup>11</sup> | ✓d<sup>12</sup> |
-| Trae | ? | ? | ? | ? | ? | ? | ✓s<sup>13</sup> | ? |
-| Trae CN | ? | ? | ? | ? | ? | ? | ✓s<sup>13</sup> | ? |
-| ZCode | ✓t | +s | ✓s | ✓s | +s | ✓t<sup>3</sup> | ✓d<sup>14</sup> | +t<sup>15</sup> |
-| Oh My Pi | ✓s | +s | ✓v | ✓t<sup>2</sup> | ✓d | ? | ✓s<sup>16</sup> | ✓s<sup>17</sup> |
-| Pi Coding Agent | ✓s | +v | ✓v | ✓t<sup>2</sup> | ✓s | ? | ◐s<sup>18</sup> | ✓s<sup>19</sup> |
-| CodeBuddy | ? | ✓d | ✓s | ✓v | ✓d | +v | ✓t<sup>1</sup> | ✓s |
-| OpenClaw | ◐d | +d | ✓s | +s | ✓d | —t | ◐s<sup>20</sup> | ✓s<sup>21</sup> |
-| Hermes | ◐s | +s | ✓v | +s | ✓s | —t | ✓s<sup>22</sup> | ✓s<sup>23</sup> |
-| DeepSeek Harness | ✗s | +s | ✓s | ✓t<sup>2</sup> | +s | ? | ◐s<sup>24</sup> | —t |
-| WorkBuddy | ? | ✓t | ✓t | ? | ✓t | ? | ✓t<sup>25</sup> | ? |
-| OpenCode | ? | ✓t | ✓v | ✓t<sup>2</sup> | ✓v | ? | ✓t<sup>1</sup> | ✓v<sup>26</sup> |
-| Muse Code | ✓t | +v | ✓t | ✓v | ✓v | ✓t<sup>3</sup> | ✓t<sup>1</sup> | ✓t<sup>27</sup> |
-| Antigravity | ✓v<sup>28</sup> | ✓v | ✓v | ✓v | ✓v | ✗v<sup>29</sup> | ✓t<sup>30</sup> | ✓t<sup>31</sup> |
+| 工具 | 环境变量 | 工作流（本地驱动） | 无人值守提示 | Recall | 统计 | AI 后端 | 投票评审 | 会话评审 | HTTP agent hooks |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Claude Code | ✓t | ✓v | ✓v | ✓v | ✓v | ✓v | ✓v | ✓t<sup>1</sup> | ✓v |
+| Codex CLI | ✓t | ✓t | ✓d | ✓v | ✓t<sup>2</sup> | ✓v | ✓t<sup>3</sup> | ✓t<sup>1</sup> | ✓t<sup>4</sup> |
+| Codex CLI Internal | ? | ✓t | ✓t | ? | ? | ✓t | ? | ? | ? |
+| Claude Code Internal | ? | ✓t | ✓t | ? | ? | ✓t | ? | ? | ? |
+| TClaude | ? | ✓t | ✓t | ? | ? | ✓t | ? | ? | ? |
+| TCodex | ? | ✓t | ✓t | ? | ? | ✓t | ? | ? | ? |
+| Cursor | ? | +s<sup>5</sup> | ? | ✗v<sup>6</sup> | ✓v<sup>7</sup> | ✓d | +s | ✓t<sup>1</sup> | +t<sup>8</sup> |
+| Copilot | ? | +s | ? | ✓v | ✓t<sup>2</sup> | ✓d | ? | ✓t<sup>1</sup> | —t |
+| JoyCode | ? | ? | ? | ◐s | ✓t<sup>2</sup> | ? | ? | ✓t<sup>1</sup> | ? |
+| Qoder | ? | ? | ? | ◐s | ✓s | ✓d | ? | ✓s<sup>9</sup> | ✓s |
+| Qoder CN | ? | ? | ? | ◐s | ✓s | ? | ? | ✓s<sup>9</sup> | ✓t<sup>10</sup> |
+| Kiro | ? | ? | ? | ◐d | ? | ✓d | ? | ✓d<sup>11</sup> | ✓d<sup>12</sup> |
+| Trae | ? | ? | ? | ? | ? | ? | ? | ✓s<sup>13</sup> | ? |
+| Trae CN | ? | ? | ? | ? | ? | ? | ? | ✓s<sup>13</sup> | ? |
+| ZCode | ✓t | +s | ? | ✓s | ✓s | +s | ✓t<sup>3</sup> | ✓d<sup>14</sup> | +t<sup>15</sup> |
+| Oh My Pi | ✓s | +s | ? | ✓v | ✓t<sup>2</sup> | ✓d | ? | ✓s<sup>16</sup> | ✓s<sup>17</sup> |
+| Pi Coding Agent | ✓s | +v | ? | ✓v | ✓t<sup>2</sup> | ✓s | ? | ◐s<sup>18</sup> | ✓s<sup>19</sup> |
+| CodeBuddy | ? | ✓d | ✓d | ✓s | ✓v | ✓d | +v | ✓t<sup>1</sup> | ✓s |
+| OpenClaw | ◐d | +d | ? | ✓s | +s | ✓d | —t | ◐s<sup>20</sup> | ✓s<sup>21</sup> |
+| Hermes | ◐s | +s | ? | ✓v | +s | ✓s | —t | ✓s<sup>22</sup> | ✓s<sup>23</sup> |
+| DeepSeek Harness | ✗s | +s | ? | ✓s | ✓t<sup>2</sup> | +s | ? | ◐s<sup>24</sup> | —t |
+| WorkBuddy | ? | ✓t | ✓t | ✓t | ? | ✓t | ? | ✓t<sup>25</sup> | ? |
+| OpenCode | ? | ✓t | ✓d | ✓v | ✓t<sup>2</sup> | ✓v | ? | ✓t<sup>1</sup> | ✓v<sup>26</sup> |
+| Muse Code | ✓t | +v | ? | ✓t | ✓v | ✓v | ✓t<sup>3</sup> | ✓t<sup>1</sup> | ✓t<sup>27</sup> |
+| Antigravity | ✓v<sup>28</sup> | ✓v | ✓d | ✓v | ✓v | ✓v | ✗v<sup>29</sup> | ✓t<sup>30</sup> | ✓t<sup>31</sup> |
 
 注：
 
