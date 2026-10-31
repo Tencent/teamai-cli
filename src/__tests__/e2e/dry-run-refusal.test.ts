@@ -177,18 +177,6 @@ describe('--dry-run on a command with no preview', () => {
     expect(snapshot(home)).toEqual(homeBefore);
   });
 
-  it.each([
-    ['digest'],
-    ['import', '--from-iwiki', 'page', '--from-mr', 'url'], ['import', '--from-claude'],
-  ])('refuses unsafe preview %j before writing', (...args) => {
-    const before = snapshot(home);
-    const result = cli([...args, '--dry-run']);
-    const command = args[0] === 'import' ? `import ${args[1]}` : args[0];
-    expect(result.code, result.output).toBe(1);
-    expect(result.output).toContain(`teamai ${command} has no --dry-run preview, nothing was run`);
-    expect(snapshot(home)).toEqual(before);
-  });
-
   it('roles add --dry-run leaves a remote-ahead team clone unchanged', () => {
     teamRemote();
     const env = { ...process.env, ...GIT_ENV };

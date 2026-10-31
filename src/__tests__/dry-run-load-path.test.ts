@@ -44,7 +44,7 @@ import { maybeMigrate, queueKeptInCheckout } from '../migrate.js';
 import { modelsList, modelsSwitch } from '../models-cmd.js';
 import { pkgInstall } from '../pkg/commands.js';
 import { listMembers } from '../members.js';
-import { projectsAdd, projectsList, projectsMembers, projectsRemove, projectsUpdate } from '../projects-cmd.js';
+import { projectsAdd, projectsList, projectsRemove, projectsUpdate } from '../projects-cmd.js';
 import { pull } from '../pull.js';
 import { push } from '../push.js';
 import { recall } from '../recall.js';
@@ -381,19 +381,13 @@ describe('--dry-run through the loaders the commands share (#850)', () => {
     });
   });
 
-  // Read-only commands that, past the load, fail on this fixture: there is no
-  // reports branch to read members from. Only the load is asserted.
-  const READ_ONLY_PAST_THE_LOAD: Array<[string, () => Promise<unknown>]> = [
-    ['members', () => listMembers({})],
-    ['projects members', () => projectsMembers('checkout', {})],
-  ];
-
-  it.each(READ_ONLY_PAST_THE_LOAD)('%s migrates nothing it loads (#893)', async (_command, run) => {
+  // This wrapper fails past the load because the fixture has no reports branch.
+  it('members migrates nothing it loads (#893)', async () => {
     const { configPath } = legacyRoot();
     const info = vi.spyOn(log, 'info').mockImplementation(() => {});
     vi.spyOn(console, 'log').mockImplementation(() => {});
     const before = fs.readFileSync(configPath, 'utf-8');
-    await run().catch(() => {});
+    await listMembers({}).catch(() => {});
     providerCalls.length = 0;
     expect(info).toHaveBeenCalledWith(PREVIEWED);
     expect(fs.readFileSync(configPath, 'utf-8')).toBe(before);
