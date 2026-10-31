@@ -182,6 +182,22 @@ describe('readTokenUsage: codex-rollout', () => {
     expect(reading.tokens).toEqual({ input: 550, output: 45, cacheRead: 350, cacheCreation: 0 });
     expect(reading.scope).toBe('transcript');
   });
+
+  it('keeps the older calls of a rollout resumed after Codex started writing per-response records', async () => {
+    const file = transcript([
+      codex.meta(), codex.turn('gpt-5.1-codex'),
+      codex.count(codexUsage(500, 200, 25), codexUsage(500, 200, 25), '2026-01-05T10:00:01.000Z'),
+      // Resumed on a newer Codex: each response's record comes before its token count.
+      codex.turn('gpt-6.1-sol'),
+      codex.record('resp_1', codexUsage(1_000, 500, 10), codexUsage(1_500, 700, 35)),
+      codex.count(codexUsage(1_000, 500, 10), codexUsage(1_500, 700, 35)),
+    ], 'rollout.jsonl');
+    const reading = await readTokenUsage('codex-rollout', { transcriptPath: file, sessionId: THREAD, settled: true });
+    expect(reading.requests.map(({ model, tokens }) => ({ model, tokens }))).toEqual([
+      { model: 'gpt-5.1-codex', tokens: { input: 300, output: 25, cacheRead: 200, cacheCreation: 0 } },
+      { model: 'gpt-6.1-sol', tokens: { input: 500, output: 10, cacheRead: 500, cacheCreation: 0 } },
+    ]);
+  });
 });
 
 describe('readTokenUsage: codebuddy', () => {

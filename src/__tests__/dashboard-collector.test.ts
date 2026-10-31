@@ -1680,6 +1680,17 @@ describe('local request log', () => {
     expect((await stop())?.requestMetrics).toMatchObject({ costMicros: 4_000, priceVersion: 'litellm-2026-01-05-aaaaaaa' });
   });
 
+  it('keeps a request in the workspace that recorded it when its session resumes in another', async () => {
+    const transcriptPath = path.join(tmpDir, 'resumed.jsonl');
+    fs.writeFileSync(transcriptPath, claudeRequest('msg_1', 'claude-sonnet-5') + '\n');
+    const stop = (dataHomeKey: string) => parseHookEvent(JSON.stringify({ hook_event_name: 'Stop', session_id: 's', transcript_path: transcriptPath }), 'claude', { dataHomeKey });
+    await stop('workspace-a');
+    fs.appendFileSync(transcriptPath, claudeRequest('msg_2', 'claude-sonnet-5') + '\n');
+    await stop('workspace-b');
+
+    expect(requestLog().map((record) => record.dataHomeKey)).toEqual(['workspace-a', 'workspace-b']);
+  });
+
   it('keeps the cost Pi reported for each request', async () => {
     const transcriptPath = path.join(tmpDir, 'pi-session.jsonl');
     fs.writeFileSync(transcriptPath, JSON.stringify({

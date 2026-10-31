@@ -62,6 +62,8 @@ async function readOnce(file: string): Promise<{ reading: TokenReading; snapshot
   const responses: TokenRequest[] = [];
   const counted: TokenRequest[] = [];
   let lastTotal = '';
+  // Once Codex writes per-response records, each response's token count repeats its record.
+  let perResponse = false;
   await forEachJsonLine(file, ['"session_meta"', '"turn_context"', '"thread_settings_applied"', '"token_usage_record"', '"token_count"'], (entry) => {
     const line = Line.safeParse(entry);
     if (!line.success) return;
@@ -73,6 +75,7 @@ async function readOnce(file: string): Promise<{ reading: TokenReading; snapshot
     const snapshot = snapshotOf(type, payload);
     if (snapshot?.scope === 'session') session = snapshot;
     else if (snapshot) transcript = snapshot;
+    if (type === 'token_usage_record') perResponse = true;
     if (!model) return;
     if (type === 'token_usage_record') {
       // Codex 0.153 and later: one record per model response, its id the key.
@@ -81,8 +84,8 @@ async function readOnce(file: string): Promise<{ reading: TokenReading; snapshot
       if (usage && own && typeof payload.response_id === 'string' && usage.input_tokens + usage.output_tokens > 0) {
         responses.push({ key: payload.response_id, timestamp, model, tokens: tokensOf(usage), speed });
       }
-    } else if (snapshot?.scope === 'transcript') {
-      // Older rollouts: a token count per response, re-emitted unchanged when only rate limits update.
+    } else if (snapshot?.scope === 'transcript' && !perResponse) {
+      // Older rollouts, and the calls before a resume on a newer Codex: a token count per response, re-emitted unchanged when only rate limits update.
       const info = z.object({ last_token_usage: z.unknown(), total_token_usage: z.unknown() }).safeParse(payload.info);
       const last = info.success ? parseUsage(info.data.last_token_usage) : undefined;
       const total = info.success ? JSON.stringify(info.data.total_token_usage) : '';
@@ -96,7 +99,7 @@ async function readOnce(file: string): Promise<{ reading: TokenReading; snapshot
     reading: {
       tokens: snapshot?.tokens ?? emptyTokenUsage(),
       ...(snapshot ? { scope: snapshot.scope } : {}),
-      requests: responses.length ? responses : counted,
+      requests: [...counted, ...responses],
     },
     snapshot,
   };

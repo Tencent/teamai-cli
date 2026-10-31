@@ -228,7 +228,9 @@ async function recordTokenRequests(
   const records = requests.map((request): LocalRequestRecord => {
     const id = createHash('sha256').update(`${scope}\0${request.key}`).digest('hex');
     const kept = logged.get(id);
-    const owner = { tool: event.tool, sessionId: event.sessionId, ...(options?.dataHomeKey ? { dataHomeKey: options.dataHomeKey } : {}) };
+    // A request stays with the workspace that first recorded it, even when its session resumes in another.
+    const dataHome = kept?.dataHomeKey ?? options?.dataHomeKey;
+    const owner = { tool: kept?.tool ?? event.tool, sessionId: kept?.sessionId ?? event.sessionId, ...(dataHome ? { dataHomeKey: dataHome } : {}) };
     if (kept && isPriced(kept)) return { ...kept, ...owner };
     const base = {
       id,
