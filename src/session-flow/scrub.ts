@@ -44,7 +44,7 @@ export interface LocalPathRoots {
 const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /** A directory below a filesystem root: `/`, `C:\` and the like would rewrite every path. */
-const isBelowFilesystemRoot = (dir: string): boolean => dir.length > 3;
+const isBelowFilesystemRoot = (dir: string): boolean => !/^(?:[A-Za-z]:)?[\\/]*$/.test(dir);
 
 /**
  * A root matches only as a whole path segment: `/Users/alice/app` is not the start of `/Users/alice/app2` or

@@ -171,6 +171,12 @@ describe('scrubSession with localPaths, for a session published to the team arch
     expect(scrubSession({ ...said('hi'), title }, { localPaths: machine }).session.title).toBe(published);
   });
 
+  it('rewrites a path under a short repository root, and never treats a filesystem root as one', () => {
+    const { session } = scrubSession(said('see /ws/src/index.ts and /etc/hosts', '/ws'), { localPaths: { repo: ['/ws'], home: ['/'], tmp: ['C:\\'] } });
+
+    expect(textOf(session)).toEqual({ type: 'text', text: 'see <repo>/src/index.ts and /etc/hosts' });
+  });
+
   it('rewrites a Windows path under the repository', () => {
     const { session } = scrubSession(said('open C:\\Users\\me\\app\\src\\sync.ts', 'C:\\Users\\me\\app'), { localPaths: windows });
 
