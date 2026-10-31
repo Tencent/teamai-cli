@@ -308,7 +308,7 @@ export type ToolDescriptor = {
   readonly sessions: readonly [StoredSessionPlatform, ...StoredSessionPlatform[]] | 'none' | 'unknown';
   /** The adapter teamai launches the tool headless with (`src/tool-launch/adapters.ts`), or `'none'` when teamai never launches it. */
   readonly launch: LaunchAdapterId | 'none';
-  /** Data only: nothing reads it but the support page (`tool-support.ts`). */
+  /** Data only: nothing reads it but the support page (`scripts/tool-support.ts`). */
   readonly features: ToolFeatures;
 };
 

@@ -33,7 +33,7 @@ node scripts/check-docs.mjs --write
 node scripts/check-docs.mjs
 ```
 
-A PR that changes CLI runtime behavior must, after `npm run build`, verify the change end to end with the real CLI. Type check and unit tests are not enough. **One representative real-CLI run is enough.** Paste the record of what actually passed into the PR. A docs-only, tests-only, or static guard change needs no real-CLI record. For a required helper call enforced by an enabled `teamai/*` rule, run `npm run lint` and the helper unit test; do not add an E2E file for each command.
+A PR that changes runtime behavior (anything other than docs-only / tests-only / lint-rule-only) must, after `npm run build`, verify the change end to end with the real CLI. Type check and unit tests are not enough. **One representative real-CLI run is enough.** Paste the record of what actually passed into the PR. A docs-only, tests-only, or lint-rule-only change (no runtime code touched) needs no real-CLI record. For a required helper call enforced by an enabled `teamai/*` rule, run `npm run lint` and the helper unit test; do not add an E2E file for each command.
 
 Iterate with `npm run test:e2e -- <test-file>`; run the full suite only when changing the E2E runner, shared fixtures, or test isolation ([CONTRIBUTING.md](.github/CONTRIBUTING.md#testing-guidelines)).
 
@@ -50,10 +50,11 @@ shared state, list every reader and every writer.
 ## Code Review Rules
 
 - The PR description must document sufficient testing. For a PR that changes
-  CLI runtime behavior, that
-  includes an end-to-end / real-CLI verification record, not only unit tests
+  runtime behavior (anything beyond a docs-only, tests-only, or lint-rule-only
+  diff), that includes an end-to-end / real-CLI verification record, not only unit tests
   or type checks — flag such a PR that lacks one as `[P1 blocking]`. A
-  docs-only, tests-only, or static guard PR needs no real-CLI record. An enabled
+  docs-only, tests-only, or lint-rule-only PR (no runtime code touched) needs
+  no real-CLI record; do not flag it for that. An enabled
   `teamai/*` rule plus its helper unit test requires lint and that test, not
   a new E2E file per command; do not flag it for lacking those E2Es.
   Do NOT require a full provider × agent matrix — one representative real-CLI

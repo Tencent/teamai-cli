@@ -234,7 +234,8 @@ jobs:
         run: npm run build
 
       # The list lives in src/__tests__/helpers/windows-tests.ts;
-      # windows-test-list.test.ts, in the suite on every OS, keeps it honest.
+      # windows-test-list.test.ts checks its entries exist, and the
+      # teamai/windows-tests lint rule keeps POSIX-only code out of them.
       - name: Windows-safe unit tests
         run: npx vitest run --config vitest.windows.config.ts
 
