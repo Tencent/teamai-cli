@@ -1,0 +1,84 @@
+name: Model prices
+
+# Every Monday, rebuild src/token-usage/model-prices.json from LiteLLM's price
+# list and open (or refresh) one pull request when any price changed. Costs
+# teamai already recorded keep the prices they were recorded with, so merging
+# changes only what later sessions are priced at.
+#
+# A pull request opened with the default GITHUB_TOKEN starts no other
+# workflow, so this job runs the checks the catalog can break first. Set the
+# MODEL_PRICES_TOKEN secret (a token that can push branches and open pull
+# requests) to have CI run on the pull request as well.
+
+on:
+  schedule:
+    - cron: '23 3 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: model-prices
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update:
+    name: Update model prices
+    if: github.repository == 'Tencent/teamai-cli'
+    runs-on: ubuntu-latest
+    env:
+      BRANCH: chore/model-prices
+      GH_TOKEN: ${{ secrets.MODEL_PRICES_TOKEN || github.token }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.MODEL_PRICES_TOKEN || github.token }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Rebuild the catalog
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/update-model-prices.mjs --summary "$RUNNER_TEMP/model-prices.md"
+
+      - name: Check the new catalog
+        id: changed
+        run: |
+          if git diff --quiet -- src/token-usage/model-prices.json; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            cat "$RUNNER_TEMP/model-prices.md" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          npm run typecheck
+          npx vitest run src/__tests__/token-pricing.test.ts src/__tests__/token-usage.test.ts scripts/model-prices.test.ts
+
+      - name: Open or update the pull request
+        if: steps.changed.outputs.changed == 'true'
+        run: |
+          version=$(node -p "require('./src/token-usage/model-prices.json').version")
+          {
+            cat "$RUNNER_TEMP/model-prices.md"
+            echo
+            echo "Built by the weekly \`Model prices\` workflow with \`node scripts/update-model-prices.mjs\`; typecheck and the pricing tests passed on it."
+          } > "$RUNNER_TEMP/body.md"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -C "$BRANCH"
+          git commit -am "chore(pricing): update model prices to $version"
+          git push --force origin "$BRANCH"
+          if [ "$(gh pr view "$BRANCH" --json state --jq .state 2>/dev/null)" = "OPEN" ]; then
+            gh pr edit "$BRANCH" --title "chore(pricing): update model prices to $version" --body-file "$RUNNER_TEMP/body.md"
+          else
+            gh pr create --base main --head "$BRANCH" --title "chore(pricing): update model prices to $version" --body-file "$RUNNER_TEMP/body.md"
+          fi

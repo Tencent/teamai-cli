@@ -44,7 +44,7 @@ import { getUserHome } from './utils/home.js';
 import type { HeadState } from './utils/git.js';
 import type { SessionRun } from './launch-context.js';
 import { SessionOutcomeEventSchema, uniqueOutcomes, type SessionOutcomeEvent, type WorkOutcome } from './outcomes.js';
-import { estimateClaudeRequest } from './model-pricing.js';
+import { priceTokens } from './token-usage/pricing.js';
 
 // ─── Event collection data flow ─────────────────────────
 //
@@ -352,7 +352,15 @@ async function scanJsonlTranscriptOnce(transcriptPath: string, modelAliases?: Re
                 cacheEligibleInputTokens: historical.inputTokens + historical.cacheReadTokens + historical.cacheCreationTokens,
                 priceVersion: historical.priceVersion,
               }
-              : estimateClaudeRequest(entry.message.model, requestTokens, modelAliases);
+              : (() => {
+                const estimate = priceTokens({ model: entry.message.model, tokens: requestTokens }, modelAliases);
+                return estimate && {
+                  costMicros: estimate.costMicros,
+                  cacheReadTokens: requestTokens.cacheRead,
+                  cacheEligibleInputTokens: requestTokens.input + requestTokens.cacheRead + requestTokens.cacheCreation,
+                  priceVersion: estimate.priceVersion,
+                };
+              })();
             if (priced) {
               requestMetrics = {
                 pricedRequests: (requestMetrics?.pricedRequests ?? 0) + 1,
