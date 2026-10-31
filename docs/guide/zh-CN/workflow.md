@@ -98,7 +98,7 @@ CI 里用一步拦住这个分支：
 
 工作流可以用和 `output` 相同的简写声明 `inputs`，例如 `inputs: { issue: number, title: string }`。每个输入都必填。用 JSON 对象传入：`teamai workflow start fix --driver local --inputs '{"issue":42,"title":"Crash"}'`。缺少、多出或类型不对的输入会返回 `invalid_inputs` 并指出字段，且不会创建运行。`if` 可以读取 `inputs.<name>`。
 
-`{{ inputs.<name> }}` 和 `{{ steps.<id>.outputs.<field> }}`（或 `.outcome`）会在步骤开始时填入 `prompt`、`prompt_file` 的文本和 `env` 的值。模板也可以像 `if` 一样对表达式求值，例如 `{{ length(steps.review.outputs.files) }}`。其他 `{{ ... }}` 文本，例如 `${{ secrets.TOKEN }}`，保持原样。紧跟在 `$` 后面的 `{{` 也保持原样，例如讲解 GitHub Actions 的提示词中的 `${{ inputs.version }}`。要在 `$` 后面填入值，请加一个空格：`$ {{ inputs.price }}`。字符串原样填入，数字和布尔值填入其文本，对象和数组填入 JSON，`null` 或不存在的值填入空文本。模板只能读取该步骤的 `if` 能读取的内容。
+`{{ inputs.<name> }}` 和 `{{ steps.<id>.outputs.<field> }}`（或 `.outcome`）会在步骤开始时填入 `prompt`、`prompt_file` 的文本和 `env` 的值。模板也可以像 `if` 一样对表达式求值，例如 `{{ length(steps.review.outputs.files) }}`。其他 `{{ ... }}` 文本，例如 `${{ secrets.TOKEN }}`，保持原样。紧跟在 `$` 后面的 `{{` 也保持原样，例如讲解 GitHub Actions 的提示词中的 `${{ inputs.version }}`。要在 `$` 后面填入值，请加一个空格：`$ {{ inputs.price }}`。要让任意 `{{` 保持原样，在它前面加一个反斜杠：`\{{ inputs.customer }}` 会填入为 `{{ inputs.customer }}`。字符串原样填入，数字和布尔值填入其文本，对象和数组填入 JSON，`null` 或不存在的值填入空文本。模板只能读取该步骤的 `if` 能读取的内容。
 
 `command` 永远不会被填充。通过 `env` 把值传给命令，只有命令步骤可以有 `env`：
 

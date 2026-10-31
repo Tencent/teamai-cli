@@ -151,6 +151,26 @@ describe('workflow templates', () => {
   });
 
   it.each([
+    ['a path to an input no workflow declares', 'Fix the literal {{ inputs.customer }} placeholder'],
+    ['an expression', "Keep {{ filter(inputs.labels, . == 'p1') }} as written"],
+    ['a template that does not parse', 'Keep {{ inputs.a b }} as written'],
+    ['a third brace', 'Keep {{{ inputs.title }}} as written'],
+    ['a template after a $', 'Keep ${{ inputs.title }} as written'],
+    ['a backslash before braces', String.raw`Keep \{{ inputs.title }} as written`],
+    ['an item where one is bound', 'Keep {{ item }} as written'],
+  ])('renders text escaped with \\{{ as written: %s', (_case, text) => {
+    const escaped = text.replaceAll('{{', '\\{{');
+
+    expect(renderText(template(escaped, true), { ...context, item: 'x' })).toBe(text);
+    expect(renderValue(template(escaped, true), { ...context, item: 'x' })).toBe(text);
+  });
+
+  it('reads templates after an escaped {{, and still finds one in a command, which would receive the backslash', () => {
+    expect(renderText(template(String.raw`\{{ inputs.issue }} is {{ inputs.issue }}`), context)).toBe('{{ inputs.issue }} is 42');
+    expect(findTemplate(String.raw`echo \{{ inputs.title }}`, false)).toBe('{{ inputs.title }}');
+  });
+
+  it.each([
     ['{{ with.task == 1 }}'],
     ['{{ with. }}'],
   ])('rejects %s, since with is read only as one path', (text) => {
