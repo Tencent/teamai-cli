@@ -16,6 +16,8 @@
     ],
     "typescript/no-floating-promises": "warn",
     "typescript/no-misused-promises": "warn",
+    // Prefer includes() when checking for a collection member.
+    "unicorn/prefer-includes": "warn",
     "typescript/no-base-to-string": "off",
     "typescript/no-duplicate-type-constituents": "off",
     "typescript/no-implied-eval": "off",

@@ -423,7 +423,7 @@ describe('fidelity sweep (QA, writes report to /tmp/session-fidelity-report.json
         expectedFileOrder: ['user:Q1', 'assistant:A1', 'user:Q2-main', 'assistant:A1-branch2', 'user:SIDECHAIN-Q', 'assistant:A2', 'user:ORPHAN-Q'],
         actualReadOrder: outline,
         sidechainDropped: !outline.some((o) => o.includes('SIDECHAIN-Q')),
-        branchInterleaved: outline.indexOf('assistant:A1-branch2') > -1 && outline.indexOf('assistant:A1-branch2') < outline.indexOf('assistant:A2'),
+        branchInterleaved: outline.includes('assistant:A1-branch2') && outline.indexOf('assistant:A1-branch2') < outline.indexOf('assistant:A2'),
         orphanKept: outline.some((o) => o.includes('ORPHAN-Q')),
       };
     } finally {
