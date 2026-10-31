@@ -39,6 +39,11 @@ export interface LocalPathRoots {
   repo: readonly string[];
   home: readonly string[];
   tmp: readonly string[];
+  /**
+   * The directory the session ran in, as written through a link that places it elsewhere than under a spelling of
+   * `repo` (`/opt/api` → `/srv/app/packages/api`), and its archived `cwd` (`packages/api`).
+   */
+  workdir?: { spellings: readonly string[]; archived: string };
 }
 
 const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -58,28 +63,35 @@ const SEGMENT_END = '(?![A-Za-z0-9_-]|\\.[A-Za-z0-9_-])';
  * (`-Users-alice-app`) becomes `<project>`. `title` also rewrites a path the title was cut inside at its end
  * (`… and /Users/alice/ap`), as the shortest root it starts.
  */
-function pathRewriter({ repo, home, tmp }: LocalPathRoots, cwd: string): { text: (text: string) => string; title: (title: string) => string } {
+function pathRewriter({ repo, home, tmp, workdir }: LocalPathRoots, cwd: string): { text: (text: string) => string; title: (title: string) => string } {
   // A Windows root also as forward slashes, and as JSON escapes it, as a tool result that holds JSON text does.
   const spellings = (root: string): string[] => (root.includes('\\') ? [root, root.replaceAll('\\', '/'), root.replaceAll('\\', '\\\\')] : [root]);
-  // Keyed by lower case and matched ignoring case: Windows and macOS paths are case-insensitive (`c:\users\…`).
+  // Windows paths are case-insensitive (`c:\users\…`): matched ignoring case and keyed by lower case. POSIX ones are not.
+  const isWindows = (root: string): boolean => /^[A-Za-z]:/.test(root);
+  const keyOf = (root: string): string => (isWindows(root) ? root.toLowerCase() : root);
+  const workdirName = workdir && (workdir.archived === '.' ? '<repo>' : `<repo>/${workdir.archived}`);
   const named = new Map<string, string>();
-  for (const [roots, name] of [[home, '~'], [tmp, '<tmp>'], [repo, '<repo>']] as const) {
-    for (const root of roots.flatMap(spellings)) if (isBelowFilesystemRoot(root)) named.set(root.replace(/[\\/]+$/, '').toLowerCase(), name);
+  for (const [roots, name] of [[home, '~'], [tmp, '<tmp>'], [repo, '<repo>'], ...(workdir && workdirName ? [[workdir.spellings, workdirName] as const] : [])] as const) {
+    for (const root of roots.flatMap(spellings)) if (isBelowFilesystemRoot(root)) named.set(keyOf(root.replace(/[\\/]+$/, '')), name);
   }
   if (named.size === 0) return { text: (text) => text, title: (title) => title };
   const byLength = (left: string, right: string): number => right.length - left.length;
   const roots = [...named.keys()].sort(byLength);
-  const rooted = new RegExp(`(?:${roots.map(escapeRegExp).join('|')})${SEGMENT_END}`, 'gi');
+  const matcher = (some: string[], flags: string): RegExp | undefined =>
+    some.length > 0 ? new RegExp(`(?:${some.map(escapeRegExp).join('|')})${SEGMENT_END}`, flags) : undefined;
+  const rooted = [matcher(roots.filter(isWindows), 'gi'), matcher(roots.filter((root) => !isWindows(root)), 'g')];
+  const nameOf = (root: string): string | undefined => named.get(keyOf(root));
   const projects = [...new Set([cwd, ...repo].filter((dir) => isBelowFilesystemRoot(dir) && /^(?:\/|[A-Za-z]:[\\/])/.test(dir)).map((dir) => dir.replace(/[^a-zA-Z0-9]/g, '-')))];
   const project = new RegExp(`(?<=[\\\\/])(?:${projects.sort(byLength).map(escapeRegExp).join('|')})(?=$|[\\\\/])`, 'g');
   const text = (value: string): string => {
-    const next = value.replace(rooted, (root) => named.get(root.toLowerCase()) ?? root);
+    const next = rooted.reduce((current, pattern) => (pattern ? current.replace(pattern, (root) => nameOf(root) ?? root) : current), value);
     return projects.length > 0 ? next.replace(project, '<project>') : next;
   };
   const title = (value: string): string => {
     const cut = /(?:[A-Za-z]:)?[\\/][^\s<]{2,}$/.exec(value);
-    const root = cut && roots.findLast((candidate) => candidate.length > cut[0].length && candidate.startsWith(cut[0].toLowerCase()));
-    return cut && root ? text(value.slice(0, cut.index)) + (named.get(root) ?? '') : text(value);
+    if (!cut || nameOf(cut[0]) !== undefined) return text(value);
+    const root = roots.findLast((candidate) => candidate.length > cut[0].length && candidate.startsWith(keyOf(cut[0])));
+    return root ? text(value.slice(0, cut.index)) + (named.get(root) ?? '') : text(value);
   };
   return { text, title };
 }

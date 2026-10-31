@@ -480,6 +480,23 @@ describe('session commands without --repo-root outside a workspace install', () 
     expect(archive).not.toMatch(/claude-[0-9]+\//);
   });
 
+  it('archive no path of a session run through a link to a directory of the repository with push --scrub', async () => {
+    const team = await userInstall();
+    const { checkout } = repository('product');
+    git(checkout, 'remote', 'set-url', 'origin', 'https://github.com/acme/product.git');
+    fs.mkdirSync(path.join(checkout, 'packages', 'api'), { recursive: true });
+    const link = path.join(tmp, 'opt-api');
+    fs.symlinkSync(path.join(checkout, 'packages', 'api'), link, process.platform === 'win32' ? 'junction' : 'dir');
+    await claudeSession(link, { answers: [`Edited ${link}/src/retry.ts.`] });
+
+    const pushed = await session('push', '--source', 'claude-code', '--cwd', link, '--scrub');
+
+    expect(pushed.code, pushed.stderr).toBe(0);
+    const archive = archived(team.origin, 'teamai-reports').map((file) => git(team.checkout, 'show', `origin/teamai-reports:${file}`)).join('\n');
+    expect(archive).toContain('Edited <repo>/packages/api/src/retry.ts.');
+    expect(archive).not.toContain(link);
+  });
+
   it('resume a session archived relative to its repository in another clone of it, with its turns', async () => {
     const team = await userInstall();
     const { origin, checkout } = repository('product');

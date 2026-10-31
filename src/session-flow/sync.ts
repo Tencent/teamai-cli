@@ -96,10 +96,20 @@ export async function publishedPathRoots(cwd: string): Promise<LocalPathRoots> {
   const spellings = (dirs: string[]): string[] => [...new Set(dirs.flatMap((dir) => [dir, dir.replace(/^\/private(?=\/(?:tmp|var|etc)\/)/, '')]))];
   const resolved = async (dir: string): Promise<string[]> => spellings([dir, await fs.promises.realpath(dir).catch(() => dir)]);
   const rooted = await sessionRoot(cwd);
-  const repo = rooted ? spellings([rooted.root, path.resolve(cwd, path.relative(rooted.cwd, rooted.root))]) : [];
   const uid = process.getuid?.();
   const claudeTmp = uid === undefined ? [] : [`/private/tmp/claude-${uid}`, `/tmp/claude-${uid}`];
-  return { repo, home: await resolved(os.homedir()), tmp: [...await resolved(os.tmpdir()), ...claudeTmp] };
+  const machine = { home: await resolved(os.homedir()), tmp: [...await resolved(os.tmpdir()), ...claudeTmp] };
+  if (!rooted) return { repo: [], ...machine };
+  // `cwd` as written may reach the repository through a link: its root is spelled that way too when the link sits
+  // above the root, and `cwd` itself is rewritten to where it is in the repository either way.
+  const written = path.resolve(cwd);
+  const inside = path.relative(rooted.root, rooted.cwd);
+  const writtenRoot = inside === '' ? written : written.endsWith(`${path.sep}${inside}`) ? written.slice(0, -inside.length - 1) : undefined;
+  return {
+    repo: spellings([rooted.root, ...(writtenRoot ? [writtenRoot] : [])]),
+    ...(written === rooted.cwd ? {} : { workdir: { spellings: spellings([written]), archived: inside.split(path.sep).join('/') || '.' } }),
+    ...machine,
+  };
 }
 
 /**

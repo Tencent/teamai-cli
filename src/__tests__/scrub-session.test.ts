@@ -167,6 +167,7 @@ describe('scrubSession with localPaths, for a session published to the team arch
     ['Review /Users/me/app/packages/api/src/retry.ts and /Users/me/ap', 'Review <repo>/packages/api/src/retry.ts and <repo>'],
     ['Compare /Users/m', 'Compare ~'],
     ['Clean /private/tmp/claude-5', 'Clean <tmp>'],
+    ['Check /Users/me', 'Check ~'],
   ])('rewrites a path the title was cut inside: %s', (title, published) => {
     expect(scrubSession({ ...said('hi'), title }, { localPaths: machine }).session.title).toBe(published);
   });
@@ -196,6 +197,20 @@ describe('scrubSession with localPaths, for a session published to the team arch
 
     expect(published.messages[0].content[0]).toEqual({ type: 'text', text: 'open <repo>\\src\\sync.ts' });
     expect(published.messages[1].content[0]).toMatchObject({ content: JSON.stringify({ file: '<repo>\\src\\retry.ts' }) });
+  });
+
+  it('keeps a POSIX path that differs from the repository only in case, which is another directory', () => {
+    const { session } = scrubSession(said('see /srv/app/src/retry.ts and /srv/App/src/retry.ts', '/srv/App'), { localPaths: { repo: ['/srv/App'], home: [], tmp: [] } });
+
+    expect(textOf(session)).toEqual({ type: 'text', text: 'see /srv/app/src/retry.ts and <repo>/src/retry.ts' });
+  });
+
+  it('rewrites the directory the session ran in as written through a link, as where it is in the repository', () => {
+    const roots = { repo: ['/srv/app'], home: [], tmp: [], workdir: { spellings: ['/opt/api'], archived: 'packages/api' } };
+
+    const { session } = scrubSession(said('edit /opt/api/src/retry.ts', '/opt/api'), { localPaths: roots });
+
+    expect(textOf(session)).toEqual({ type: 'text', text: 'edit <repo>/packages/api/src/retry.ts' });
   });
 
   it('rewrites the title, thinking, tool results and string metadata', () => {
