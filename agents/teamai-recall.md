@@ -279,6 +279,9 @@ Return your output in **this exact format** to the main conversation:
 
 1. **[<type>] <doc_id>** — <file path>
    <one-sentence summary>
+   Related: <→|←> <RELATION> <path>   (only when the recall output shows a
+   Related: line for this entry; at most 2 per entry, declared relations
+   first; they count toward the response size cap)
    Confidence: <high | medium | low>
 
 2. ...
@@ -290,6 +293,8 @@ Return your output in **this exact format** to the main conversation:
 - Depended by: <list>
 - Core components: `Foo`, `Bar`, `Baz` (top 5 by reference count)
 - Architecture: <one sentence from overview.md if available>
+- Related: <→|←> <RELATION> <path>   (only when the recall output shows
+  one for this module; at most 2, declared first)
 
 ### Change entry points (edit queries only)
 
@@ -362,6 +367,10 @@ rather than dropping the reasoning.
 - `<type>` is one of `skills` / `learnings` / `docs` / `rules` / `codebase`
 - `<doc_id>` is the filename without extension (e.g. `api-timeout-fix`).
   For codebase hits, use the relative path within teamwiki/ (e.g. `evidence/code/hai_api/modules/business`)
+- **Related: lines**: when a recall hit carries `Related:` lines (relations
+  between team assets, #1552), pass through at most 2 per entry, declared
+  relations first. They are part of the response and count toward its size
+  cap. The LOW shortcut carries none: `--check` output has no Related lines.
 - **Codebase context section**: when a codebase hit is returned, include
   the module's dependency direction and top 5 components **inline** — the
   main conversation should not need a second Read to understand the module.
