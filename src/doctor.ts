@@ -346,6 +346,26 @@ function buildToolRootChecks(localConfig: LocalConfig, teamConfig: TeamaiConfig 
   return checks;
 }
 
+function buildOhMyPiPiHomeCheck(localConfig: LocalConfig, teamConfig: TeamaiConfig | null): Check[] {
+  // This is only a gap when the member enabled OMP without Pi: with both
+  // selected, the Pi-owned directory is expected to receive Pi's own files.
+  if (!teamConfig?.toolPaths.omp || isAgentExcluded(localConfig, 'omp') || !isAgentExcluded(localConfig, 'pi')) return [];
+  const piHome = process.env.PI_CODING_AGENT_DIR?.trim();
+  if (!piHome) return [];
+  // Oh My Pi consults Pi's directory for its default profile, but teamai must
+  // keep OMP's files under its own home: the two tools otherwise overwrite the
+  // same extension and agent paths. Say so before a green doctor implies OMP
+  // is receiving the files teamai deliberately leaves out of Pi's directory.
+  return [{
+    name: 'Oh My Pi uses its own home when PI_CODING_AGENT_DIR is set',
+    source: 'local',
+    check: async () => false,
+    fix: `PI_CODING_AGENT_DIR is ${piHome}; Oh My Pi also reads that directory for its default profile, but it belongs to Pi. `
+      + 'teamai keeps Oh My Pi files under its own OMP home to avoid overwriting Pi files. '
+      + 'Use PI_CONFIG_DIR or an OMP_PROFILE/PI_PROFILE for an Oh My Pi home, or disable Oh My Pi in this TeamAI install.',
+  }];
+}
+
 function buildToolHomeChecks(localConfig: LocalConfig): Check[] {
   const file = toolHomesPath();
   const read = reloadToolHomes();
@@ -798,6 +818,7 @@ export async function buildChecks(ctx: DoctorContext, stage: CheckStage = 'docto
     ...await buildGitHookChecks(localConfig, stage),
     ...await buildTrackedHookIndexCheck(localConfig),
     ...buildToolRootChecks(localConfig, teamConfig),
+    ...buildOhMyPiPiHomeCheck(localConfig, teamConfig),
     ...buildToolHomeChecks(localConfig),
     ...await buildEnabledToolChecks(ctx),
     ...await buildHeldSurfaceChecks(ctx),

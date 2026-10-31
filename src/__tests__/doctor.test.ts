@@ -136,11 +136,13 @@ const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 // The describes that cover the checks set the variables themselves.
 const originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
 const originalCodexHome = process.env.CODEX_HOME;
+const originalPiCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
 
 beforeEach(() => {
     vi.clearAllMocks();
     delete process.env.CLAUDE_CONFIG_DIR;
     delete process.env.CODEX_HOME;
+    delete process.env.PI_CODING_AGENT_DIR;
     delete process.env.TEAMAI_AI_TOOL;
     delete process.env.TEAMAI_RECALL_DISABLED;
     delete process.env.TEAMAI_CONTRIBUTE_HINT_DISABLED;
@@ -1376,6 +1378,47 @@ describe('doctor — the recorded Codex root', () => {
     it('passes for an unrecorded CODEX_HOME=~/.codex, where recording would move nothing', async () => {
         process.env.CODEX_HOME = path.join(home, '.codex');
         expect(await (await checkFor())!.check()).toBe(true);
+    });
+});
+
+describe('doctor — Oh My Pi with Pi relocated (#1221)', () => {
+    const CHECK_NAME = 'Oh My Pi uses its own home when PI_CODING_AGENT_DIR is set';
+
+    afterEach(() => {
+        if (originalPiCodingAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+        else process.env.PI_CODING_AGENT_DIR = originalPiCodingAgentDir;
+    });
+
+    async function checkFor(localOverrides: Record<string, unknown> = {}) {
+        process.env.PI_CODING_AGENT_DIR = '/tmp/pi-agent';
+        mockedLoadLocalConfig.mockResolvedValue({ ...mockLocalConfig, disabledAgents: ['pi'], ...localOverrides });
+        mockedLoadTeamConfig.mockResolvedValue({
+            ...mockTeamConfig,
+            toolPaths: { ...mockTeamConfig.toolPaths, omp: { skills: '.omp/agent/skills' } },
+        });
+        const ctx = await resolveDoctorContext();
+        if (!ctx) throw new Error('expected a resolved doctor context');
+        return (await buildChecks(ctx)).find((check) => check.name === CHECK_NAME);
+    }
+
+    it('warns that OMP deliberately does not deliver into Pi\'s relocated home', async () => {
+        const check = await checkFor();
+        expect(check).toBeDefined();
+        expect(await check!.check()).toBe(false);
+        expect(check!.fix).toContain('/tmp/pi-agent');
+        expect(check!.fix).toContain('PI_CONFIG_DIR');
+    });
+
+    it('stays silent when Oh My Pi is disabled, Pi is enabled, or Pi is not relocated', async () => {
+        expect(await checkFor({ disabledAgents: ['omp'] })).toBeUndefined();
+        expect(await checkFor({ disabledAgents: [] })).toBeUndefined();
+        delete process.env.PI_CODING_AGENT_DIR;
+        mockedLoadTeamConfig.mockResolvedValue({
+            ...mockTeamConfig,
+            toolPaths: { ...mockTeamConfig.toolPaths, omp: { skills: '.omp/agent/skills' } },
+        });
+        const ctx = await resolveDoctorContext();
+        expect((await buildChecks(ctx!)).find((check) => check.name === CHECK_NAME)).toBeUndefined();
     });
 });
 
