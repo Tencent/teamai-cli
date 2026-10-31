@@ -17,7 +17,8 @@ import { CommitSchema, TeamPathSchema } from '../workflow/clone.js';
 import { BENCHMARK_NAME, BenchmarkNameSchema, type TrialLimits } from './terms.js';
 
 /** The project the tasks start from. A URL, never a local path or a URL with credentials: it travels in plan and record. */
-const RepoUrlSchema = z.string().url().refine((value) => {
+const RepoUrlSchema = z.string().refine((value) => {
+  if (!URL.canParse(value)) return false;
   const url = new URL(value);
   return ['https:', 'ssh:', 'git:'].includes(url.protocol) && url.username === '' && url.password === '';
 }, 'must be an https, ssh or git URL without credentials');

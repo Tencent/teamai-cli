@@ -65,6 +65,7 @@ describe('parseSuite', () => {
   it.each([
     ['a suite with 7 arms', suiteText({ arms: `[${['a', 'b', 'c', 'd', 'e', 'f', 'g'].map((name) => `{ name: ${name}, tool: ${name} }`).join(', ')}]` }), 'arms', 'a suite has 1 to 6 arms'],
     ['a suite without timeout', suiteText({ timeout: '' }), 'timeout', 'timeout is required: the run\'s timeout, such as 6h'],
+    ['a repo that is not a URL', suiteText({ repo: 'not-a-url' }), 'repo', 'must be an https, ssh or git URL without credentials'],
     ['an arm that changes tool and model', suiteText({ arms: '[{ name: baseline }, { name: codex, tool: codex, model: fast }]' }), 'arms.1', 'arm "codex" changes tool and model; an arm changes at most one of the defaults keys'],
     ['two arms of one name', suiteText({ arms: '[{ name: baseline }, { name: baseline, tool: codex }]' }), 'arms.1.name', 'arm "baseline" is named twice; arm names are unique'],
     ['two arms that change nothing', suiteText({ arms: '[{ name: baseline }, { name: same, tool: claude }]' }), 'arms.1', 'arm "same" changes none of the defaults keys, and neither does arm "baseline"; at most one arm changes none'],
