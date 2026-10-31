@@ -1,0 +1,10 @@
+import { ruleHarness } from '../test/harness.ts';
+const rule = ruleHarness('teamai/windows-tests', { filename: 'src/__tests__/locate-matrix.test.ts' });
+rule.invalid('rejects a POSIX shell in a Windows-selected test', `spawnSync('bash', ['-c', 'true']);`);
+rule.invalid('rejects POSIX fixture shebangs', `const fixture = '#!/usr/bin/env node';`);
+rule.invalid('rejects chmod', `fs.chmodSync(file, 0o755);`);
+rule.invalid('rejects symlinks', `await symlink(source, destination);`);
+rule.invalid('rejects a pinned POSIX hook', `const command = 'bash -lc echo';`);
+rule.valid('allows an explicit Windows counterpart', `const commandWindows = 'bash.exe'; const command = 'bash -lc echo';`);
+rule.valid('allows portable node fixtures', `spawnSync(process.execPath, ['-e', 'process.exit(0)']);`);
+rule.valid('leaves POSIX tests outside the Windows selection alone', `spawnSync('bash', ['-c', 'true']);`, { filename: 'src/__tests__/posix-only.test.ts' });

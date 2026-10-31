@@ -12,6 +12,8 @@ import noProviderMerge from './rules/no-provider-merge.js';
 
 import workflowBoundaries from './rules/workflow-boundaries.js';
 
+import windowsTests from './rules/windows-tests.js';
+
 export default definePlugin({
   meta: { name: 'teamai' },
   rules: {
@@ -19,6 +21,7 @@ export default definePlugin({
     'launch-env': launchEnv,
     'no-provider-merge': noProviderMerge,
     'workflow-boundaries': workflowBoundaries,
+    'windows-tests': windowsTests,
     'home-env': homeEnv,
     'remove-delivered': removeDelivered,
     'learnings-root': learningsRoot,

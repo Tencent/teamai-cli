@@ -1,7 +1,7 @@
 /**
  * The unit test files the Windows CI job runs (vitest.windows.config.ts): the
- * ones that pass on a real Windows runner. Alphabetical. windows-test-list.test.ts
- * runs on every OS and fails a listed file that gains a POSIX-only construct.
+ * ones that pass on a real Windows runner. Alphabetical. teamai/windows-tests
+ * rejects POSIX-only constructs in these files during lint.
  */
 export const WINDOWS_TESTS = [
   'src/__tests__/buddy-windows-cwd.test.ts',
