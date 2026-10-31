@@ -61,6 +61,22 @@ teamai recall --check "API 超时"
 
 `--check` 只回答 `RELEVANT` 或 `NOT_RELEVANT`。代码库结果可能多一行 `Source freshness:`，状态含义见下面的[代码知识图谱](#代码知识图谱)。
 
+### 资产之间的关系
+
+规则、文档或 learning 可以在 frontmatter 的 `related:` 块中声明与其他团队资产的关系；指向另一个资产的本地 Markdown 链接会自动成为指向它的 `REFERENCES` 关系：
+
+```markdown
+---
+related:
+  MAPS_TO: teamwiki/evidence/code/pay/modules/ledger-receipts.md
+  REFERENCES: [docs/payments-overview.md, skills/release]
+---
+```
+
+可声明的关系有四种：`MAPS_TO`（本文件描述了那个 teamwiki 代码页面）、`REFERENCES`（任意资产）、`SUPERSEDES` 和 `CONFLICTS_WITH`（规则、文档或 learning——learning 与规则意见相左时用 `CONFLICTS_WITH`，因为 `teamai contribute` 发布 learning 不经评审）。skill 和 teamwiki 页面只能作为被指向的目标，不能主动声明。代码图的另外三种关系（`DEPENDS_ON`、`CONTAINS`、`IMPLEMENTS`）是代码与代码之间的关系，不能在资产上声明。
+
+`teamai recall` 会把每条关系作为 `Related:` 行打印在命中结果的 `File:` 行之后——`→` 表示该命中声明的关系，`←` 表示对端资产声明的关系，每条命中最多 5 行。对端在本次 recall 中不可见时（其他 scope 的资产、被 withheld 的代码库页面、不存在的目标）不打印任何内容。命中结果、顺序和分数不变。`teamai review --branch` 会判定 frontmatter 的 `related:` 块声明了表格外内容的规则或文档为失败；`teamai contribute` 把同样的问题打印为警告，仍会照常发布。
+
 ### Recall 采纳与 upvote
 
 设置 `TEAMAI_UPVOTE_JUDGE=1` 后，可选 judge 也能为通过摘要采纳的指导计分。Claude 系工具使用 transcript；Codex、Muse 和 ZCode 使用 Stop 事件的最终回复与本会话已确认的 recall 日志。只有本作用域允许计分的已召回文档能获得 upvote，每个会话至多一次。
@@ -76,7 +92,7 @@ teamai recall feedback --negative <docId>
 
 重建索引会复用未变文件的解析和分词结果；文件修改、删除、来源选择和票数仍在每次构建时生效。`~/.teamai/debug.log` 会记录复用、重建和移除的文件数。旧索引或不同的 Node/ICU 版本会触发一次完整解析。
 
-`teamai stats` 在有记录时，会列出最近 10 个跑过 recall 的会话。
+`teamai stats` 在有记录时，会列出最近 10 个跑过 recall 的会话：各会话的运行次数、召回与采纳的文档数，以及会话从 `Related:` 行打开相关文件的运行次数。
 
 ### 开启 / 关闭 Recall
 

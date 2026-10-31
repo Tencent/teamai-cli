@@ -61,6 +61,37 @@ teamai recall --check "API timeout"
 
 `--check` answers only `RELEVANT` or `NOT_RELEVANT`. A codebase hit may add a `Source freshness:` line. The statuses are in [Codebase Knowledge Graph](#codebase-knowledge-graph) below.
 
+### Relations between assets
+
+A rule, a doc or a learning can declare relations to other team assets in a
+`related:` frontmatter block, and a local Markdown link to another asset
+becomes a `REFERENCES` relation on its own:
+
+```markdown
+---
+related:
+  MAPS_TO: teamwiki/evidence/code/pay/modules/ledger-receipts.md
+  REFERENCES: [docs/payments-overview.md, skills/release]
+---
+```
+
+Four relations are declarable: `MAPS_TO` (this describes that teamwiki code
+page), `REFERENCES` (any asset), `SUPERSEDES` and `CONFLICTS_WITH` (a rule,
+doc or learning — a learning that disagrees with a rule uses
+`CONFLICTS_WITH`, because `teamai contribute` publishes learnings without
+review). Skills and teamwiki pages are targets only: they never declare.
+The other code-graph relations (`DEPENDS_ON`, `CONTAINS`, `IMPLEMENTS`)
+relate code to code and cannot be declared on an asset.
+
+`teamai recall` prints each relation as a `Related:` line after the hit's
+`File:` line — `→` for a relation the hit declares, `←` for one the other
+asset declares, at most 5 per hit. A relation whose other end this recall
+cannot see (another scope's asset, a withheld codebase's page, a target that
+does not exist) prints nothing. Hits, their order and their scores do not
+change. `teamai review --branch` fails a rule or doc whose `related:` block
+declares something outside the table; `teamai contribute` prints the same
+problems as warnings and still publishes.
+
 ### Recall adoption and upvotes
 
 With `TEAMAI_UPVOTE_JUDGE=1`, the optional judge can also credit guidance used through a summary. Claude-family tools use their transcript; Codex, Muse and ZCode use the Stop payload's final reply and this session's settled recall log. Only eligible recalled docs can receive a vote, once per session.
@@ -76,7 +107,7 @@ Local feedback affects ranking on the next index rebuild (for example, `teamai p
 
 Index rebuilds reuse unchanged files' parsed tokens. Changes, deletions, source selection and votes still take effect on every build. `~/.teamai/debug.log` reports how many files were reused, rebuilt or dropped. Older indexes and a different Node/ICU version trigger a full parse once.
 
-When the log has runs, `teamai stats` lists the last 10 sessions that ran recall.
+When the log has runs, `teamai stats` lists the last 10 sessions that ran recall: their runs, the docs recalled and adopted, and how many runs the session opened a `Related:` line's file from.
 
 ### Enabling / Disabling Recall
 

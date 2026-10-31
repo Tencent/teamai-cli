@@ -5,13 +5,16 @@
  * Resolves filesystem paths, aggregates per-user vote data, builds index entries,
  * and assembles the complete VizData payload used by the HTML renderer.
  */
-import { promises as fs } from 'node:fs';
+import { existsSync, promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
 import { loadIndex, buildIndex, type BuildIndexOptions } from './utils/search-index.js';
 import { readUserVotes } from './votes.js';
 import { BROKEN_CONFIG_ADVICE, findUnreadableProjectConfig, resolveConfigForDir } from './config.js';
+import type { AssetKind } from './asset-relations.js';
+import { buildRelationContext } from './recall.js';
+import { computeLintAssetGraph } from './lint-asset-graph.js';
 import {
   getTeamaiHomeDir,
   getUserVotesDir,
@@ -21,7 +24,7 @@ import {
   getReportsDir,
   getProjectSearchIndexPath,
 } from './types.js';
-import type { LocalConfig, SearchIndexEntry } from './types.js';
+import type { LocalConfig, SearchIndex, SearchIndexEntry } from './types.js';
 import { findPromotionCandidates, type PromotionCandidate } from './maintenance/promote.js';
 import { findPruneCandidates, type PruneCandidate } from './maintenance/prune.js';
 import { findStaleEntries, type StaleEntry } from './maintenance/quality-update.js';
@@ -90,6 +93,26 @@ export interface VizSource {
   label: string;
 }
 
+/**
+ * Relation-derived health counts over the report's own index (#1562 part 2),
+ * computed with the same definitions as `codebase --lint`'s asset graph.
+ */
+export interface RelationStats {
+  /** Indexed rules, docs, learnings and skills; teamwiki pages are not assets. */
+  assetCount: number;
+  /**
+   * Resolved relations, each counted once (not per direction), links included,
+   * declared beating a link between the same two assets, and no recall line cap.
+   */
+  relationCount: number;
+  /** Team-tree paths of assets with no resolved relation in either direction, sorted. */
+  withoutRelation: string[];
+  /** `<from> <RELATION> <target>` lines for declared targets naming nothing on disk, sorted. */
+  unresolved: string[];
+  /** Intersection of withoutRelation with the never-recalled entries, sorted. */
+  silentAndWithoutRelation: string[];
+}
+
 /** Complete data payload for the HTML visualization report. */
 export interface VizData {
   generatedAt: string;
@@ -104,6 +127,8 @@ export interface VizData {
   topRecalled: EntryMetric[];
   /** All entries with recalledCount === 0. */
   silent: EntryMetric[];
+  /** Relation counts and the assets behind each, resolved for this report's scope. */
+  relations: RelationStats;
   /** Monthly recall activity, ascending by period. */
   trend: TrendPoint[];
   /** Top 15 authors by totalRecalled. */
@@ -423,6 +448,43 @@ function buildAuthors(metrics: EntryMetric[]): AuthorStat[] {
     .slice(0, 15);
 }
 
+/**
+ * The #1562 part-2 relation counts over the report's own index, so the lists
+ * never disagree with what this view shows — and never with `codebase
+ * --lint`, since both count through `computeLintAssetGraph` (#1562 part 1):
+ * resolution reuses recall's RelationContext (withheld teamwiki codebases and
+ * all), and an unresolved declared target follows contribute's existence
+ * check: the team clone on disk or the learnings roots.
+ */
+async function computeRelationStats(
+  entries: SearchIndexEntry[],
+  paths: VizPaths,
+  isSilent: (entry: SearchIndexEntry) => boolean,
+): Promise<RelationStats> {
+  const ctx = await buildRelationContext({
+    index: { builtAt: '', elapsedMs: 0, entries } as SearchIndex,
+    // --repo and the ~/.teamai fallback have no LocalConfig; the knowledge root
+    // is the team-tree root in both, which is all relation resolution reads.
+    config: paths.scope ?? ({ repo: { localPath: paths.knowledgeRoot } } as LocalConfig),
+  });
+  const targetExists = (kind: AssetKind, treePath: string): boolean => {
+    const rel = kind === 'learning' ? `${treePath.slice('learnings/'.length)}.md` : treePath;
+    const roots = kind === 'learning' ? paths.indexLearningsDirs : [paths.knowledgeRoot];
+    return roots.some((root) => existsSync(path.join(root, ...rel.split('/'))));
+  };
+  const graph = computeLintAssetGraph([{ ctx, targetExists }]);
+  const silentPaths = new Set(
+    entries.filter(isSilent).map((e) => e.treePath).filter((p): p is string => typeof p === 'string'),
+  );
+  return {
+    assetCount: graph.assetCount,
+    relationCount: graph.relationCount,
+    withoutRelation: graph.withoutRelation,
+    unresolved: graph.unresolved.map((u) => `${u.from} ${u.relation} ${u.target}`),
+    silentAndWithoutRelation: graph.withoutRelation.filter((p) => silentPaths.has(p)),
+  };
+}
+
 // ─── Core build function ──────────────────────────────────────────────────────
 
 /**
@@ -461,6 +523,11 @@ export async function buildVizData(paths: VizPaths): Promise<VizData> {
   const silent = metrics.filter((m) => m.recalledCount === 0);
   const trend = buildTrend(metrics);
   const authors = buildAuthors(metrics);
+  const relations = await computeRelationStats(
+    entries,
+    paths,
+    (entry) => (votesAgg[entry.filename.replace(/\.md$/i, '')]?.recalledCount ?? 0) === 0,
+  );
 
   const namespaces = paths.learningsNamespaces.ok ? paths.learningsNamespaces.namespaces : undefined;
   const [promote, prune, stale] = await Promise.all([
@@ -493,6 +560,7 @@ export async function buildVizData(paths: VizPaths): Promise<VizData> {
     coverage,
     topRecalled,
     silent,
+    relations,
     trend,
     authors,
     maintenance: { promote, prune, stale },
@@ -549,6 +617,12 @@ export async function getDashboardContext(opts: VizOptions = {}) {
     totalEntries: data.totalEntries,
     overallCoveragePct: data.overallCoveragePct,
     silentCount: data.silent.length,
+    relationCounts: {
+      assets: data.relations.assetCount,
+      relations: data.relations.relationCount,
+      withoutRelation: data.relations.withoutRelation.length,
+      unresolved: data.relations.unresolved.length,
+    },
     maintenanceCounts: {
       promote: data.maintenance.promote.length,
       prune: data.maintenance.prune.length,
