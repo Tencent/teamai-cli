@@ -15,6 +15,7 @@
       }
     ],
     "preserve-caught-error": "warn",
+    "no-unmodified-loop-condition": "warn",
     "typescript/no-floating-promises": "warn",
     "typescript/no-misused-promises": "warn",
     "typescript/no-base-to-string": "off",
