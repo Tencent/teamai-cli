@@ -66,7 +66,7 @@ describe('a home recorded on this machine', () => {
     expect(toolHome('hermes')).toBe(winner);
   });
 
-  it('keeps a replaced home in history so uninstall can find it after re-init', async () => {
+  it('keeps a replaced Hermes home in history so uninstall can find it after re-init', async () => {
     const oldHome = path.join(tmp, 'hermes-old');
     const newHome = path.join(tmp, 'hermes-new');
     fs.mkdirSync(oldHome, { recursive: true });
@@ -79,6 +79,19 @@ describe('a home recorded on this machine', () => {
     expect(fs.existsSync(toolHomesHistoryPath())).toBe(true);
   });
 
+  it('keeps a replaced OpenCode XDG home in history when both homes exist', async () => {
+    const oldXdg = path.join(tmp, 'xdg-old');
+    const newXdg = path.join(tmp, 'xdg-new');
+    const oldHome = path.join(oldXdg, 'opencode');
+    const newHome = path.join(newXdg, 'opencode');
+    fs.mkdirSync(oldHome, { recursive: true });
+    fs.mkdirSync(newHome, { recursive: true });
+    vi.stubEnv('XDG_CONFIG_HOME', oldXdg);
+    await recordToolHomes('init');
+    vi.stubEnv('XDG_CONFIG_HOME', newXdg);
+    await recordToolHomes('init');
+    expect(reloadToolHomesHistory()).toEqual({ opencode: [oldHome] });
+  });
   it('is the one a pull read under the lock, even when the file kept its size and time', async () => {
     const winner = path.join(tmp, 'hermes-b'); const loser = path.join(tmp, 'hermes-a');
     fs.mkdirSync(loser, { recursive: true });

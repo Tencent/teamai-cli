@@ -221,10 +221,10 @@ function followsActiveProfile(tool: ToolId): boolean {
 /**
  * Every home of `tool` teamai may have written on this machine: the default, recorded and env homes,
  * the one it uses now, and each profile under them, as Hermes and Oh My Pi run profiles side by side
- * and a pull before a move or a profile switch wrote another. Only the ones on disk; uninstall cleans
- * them all (#1221).
+ * and a pull before a move or a profile switch wrote another. OpenCode has no profiles, but its
+ * recorded history still names old XDG/config homes. Only the ones on disk; uninstall cleans them all.
  */
-export async function toolHomesAcrossProfiles(tool: 'hermes' | 'omp', host: Host = realHost()): Promise<string[]> {
+export async function toolHomesAcrossProfiles(tool: 'hermes' | 'omp' | 'opencode', host: Host = realHost()): Promise<string[]> {
   const p = host.path;
   const history = reloadToolHomesHistory()[tool] ?? [];
   const moves = [recordedHomes(host)[tool], envToolHome(tool, host)?.dir, ...history].filter((home): home is string => home !== undefined);
@@ -247,6 +247,9 @@ export async function toolHomesAcrossProfiles(tool: 'hermes' | 'omp', host: Host
       for (const base of new Set([p.dirname(defaultToolHome(tool, host)), p.join(host.home, host.env.PI_CONFIG_DIR || '.omp'), ...roots])) {
         homes.push(p.join(base, 'agent'), ...(await subdirs(p.join(base, 'profiles'))).map((name) => p.join(base, 'profiles', name, 'agent')));
       }
+      break;
+    case 'opencode':
+      homes.push(defaultToolHome(tool, host), ...moves);
       break;
     default: {
       const unhandled: never = tool;
