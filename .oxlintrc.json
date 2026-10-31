@@ -14,6 +14,7 @@
         "ignoreRestSiblings": true
       }
     ],
+    "preserve-caught-error": "warn",
     "typescript/no-floating-promises": "warn",
     "typescript/no-misused-promises": "warn",
     "typescript/no-base-to-string": "off",
