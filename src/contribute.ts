@@ -1,7 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
+import matter from 'gray-matter';
 import { requireInit, detectProjectConfig, loadLocalConfigForScope } from './config.js';
+import { parseRelatedBlock } from './asset-relations.js';
+import type { AssetKind } from './asset-relations.js';
 import { assertNotReadOnly } from './read-only.js';
 import { pathExists } from './utils/fs.js';
 import { log, spinner } from './utils/logger.js';
@@ -233,6 +236,40 @@ function withSessionField(content: string, session: SessionSubject): string {
 }
 
 /**
+ * Warnings for the `related:` block of the learning being published (#1552).
+ * Every finding is a warning — contribute still publishes. A target exists
+ * when it is in the team clone on disk (rules, docs, skills, teamwiki pages)
+ * or in the learnings roots.
+ */
+async function relationWarningsForLearning(localConfig: LocalConfig, relPath: string, content: string): Promise<string[]> {
+  const warnings: string[] = [];
+  const ownTreePath = `learnings/${relPath.replace(/\.md$/i, '')}`;
+  let learningRoots: string[] = [];
+  try {
+    learningRoots = [pendingLearningsDir(localConfig), ...await indexableLearningsRoots(localConfig, [])];
+  } catch {
+    learningRoots = [pendingLearningsDir(localConfig)];
+  }
+  const repoRoot = localConfig.repo.localPath;
+  const targetExists = (kind: AssetKind, treePath: string): boolean => {
+    const rel = kind === 'learning'
+      ? `${treePath.slice('learnings/'.length)}.md`
+      : treePath;
+    const roots = kind === 'learning' ? learningRoots : [repoRoot];
+    return roots.some((root) => fs.existsSync(path.join(root, ...rel.split('/'))));
+  };
+  let rawRelated: unknown;
+  try {
+    rawRelated = matter(content).data['related'];
+  } catch {
+    return warnings;
+  }
+  parseRelatedBlock(rawRelated, 'learning', ownTreePath, 'warn', targetExists,
+    (_severity, message) => warnings.push(`related: ${message}`));
+  return warnings;
+}
+
+/**
  * Handle `teamai contribute --file <path> [--title <title>]`.
  *
  * The contribution is written to the durable queue first and published from
@@ -311,6 +348,10 @@ export async function contribute(
   }
   // Keep the chosen path in the queue so retries publish to the same namespace.
   const relPath = learningsSubdir ? path.posix.join(learningsSubdir, filename) : filename;
+
+  for (const warning of await relationWarningsForLearning(localConfig, relPath, content).catch(() => [])) {
+    log.warn(warning);
+  }
 
   if (options.dryRun) {
     log.info(`[dry-run] Would push: learnings/${relPath} (${content.length} bytes)`);

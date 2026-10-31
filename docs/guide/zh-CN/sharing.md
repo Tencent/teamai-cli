@@ -71,6 +71,18 @@ Return typed errors from API handlers.
 
 没有 `paths:` 的 rule 得到 `trigger: always_on`。
 
+rule 还可以在 frontmatter 的 `related:` 块中声明与其他团队资产的关系（doc 也可以；learning 在贡献时同样这样声明）：
+
+```markdown
+---
+related:
+  MAPS_TO: teamwiki/evidence/code/pay/modules/ledger-receipts.md
+  REFERENCES: [docs/payments-overview.md]
+---
+```
+
+`MAPS_TO` 指向 teamwiki 代码页面，`REFERENCES` 指向任意资产，`SUPERSEDES` / `CONFLICTS_WITH` 指向规则、文档或 learning。`teamai recall` 会把每条声明的关系作为 `Related:` 行打印在命中结果上，会话拿到关系的一端时也就看到了另一端。`teamai review --branch` 会判定 `related:` 块使用了表格外关系、或指向了分支上不存在资产的规则或文档为失败。
+
 ## Agents
 
 `agents/<name>.yaml`。`name` 与文件名一致。自己 commit，或在工具里改完后 `teamai push`。

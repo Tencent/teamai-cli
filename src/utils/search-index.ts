@@ -24,6 +24,9 @@ import {
 } from '../types.js';
 import { getUserHome } from './home.js';
 import { walkLearningsTree } from './learnings-roots.js';
+import { parseRelatedBlock, relationsFromLinks } from '../asset-relations.js';
+import type { StoredRelation } from '../asset-relations.js';
+import { localLinkTargets } from './markdown-links.js';
 
 /**
  * Self mode keeps one index per checkout, but every checkout shares the
@@ -495,6 +498,7 @@ async function entryFromMdFile(
   filenameForId: string,
   type: KnowledgeType,
   reads: BuildReads,
+  treePath?: string,
 ): Promise<SearchIndexEntry | null> {
   // 若当前文件是全量 codebase.md，且同目录存在 codebase-index.md，则跳过以避免重复命中。
   const basename = path.basename(absPath);
@@ -578,6 +582,30 @@ async function entryFromMdFile(
 
   const docId = filenameForId.replace(/\.md$/i, '');
 
+  // Asset relations (#1552): a rule, doc or learning declares outgoing
+  // relations in a `related:` frontmatter block; a local link to another
+  // asset becomes REFERENCES. Existence of the target is not checked here —
+  // the build order (learnings before skills) would reject valid targets —
+  // recall resolves a stored relation against what this scope can see and
+  // prints nothing when the other end does not resolve. Malformed input is
+  // ignored silently here; `review --branch` and `contribute` report it.
+  let related: StoredRelation[] | undefined;
+  if (treePath && (type === 'rules' || type === 'docs' || type === 'learnings')) {
+    const sourceKind = type === 'rules' ? 'rule' : type === 'docs' ? 'doc' : 'learning';
+    const rawRelated = (() => {
+      try {
+        return (matter(content).data['related'] as unknown);
+      } catch {
+        return undefined;
+      }
+    })();
+    related = [
+      ...parseRelatedBlock(rawRelated, sourceKind, treePath, 'warn', () => true, () => {}),
+      ...relationsFromLinks(content, treePath, localLinkTargets),
+    ];
+    if (related.length === 0) related = undefined;
+  }
+
   return remember({
     filename: filenameForId,
     title,
@@ -589,6 +617,8 @@ async function entryFromMdFile(
     type,
     domain,
     path: absPath,
+    treePath,
+    related,
   });
 }
 
@@ -604,6 +634,7 @@ async function entriesFromMdFiles(
   files: readonly { absPath: string; id: string }[],
   type: KnowledgeType,
   reads: BuildReads,
+  treePathOf?: (id: string) => string,
 ): Promise<SearchIndexEntry[]> {
   const out: (SearchIndexEntry | null)[] = [];
   const unreadable: UnreadableFile[][] = [];
@@ -611,7 +642,7 @@ async function entriesFromMdFiles(
   const worker = async (): Promise<void> => {
     for (const [i, file] of next) {
       const own: BuildReads = { ...reads, unreadable: unreadable[i] = [] };
-      out[i] = await entryFromMdFile(file.absPath, file.id, type, own);
+      out[i] = await entryFromMdFile(file.absPath, file.id, type, own, treePathOf?.(file.id));
     }
   };
   await Promise.all(Array.from({ length: Math.min(READ_CONCURRENCY, files.length) }, worker));
@@ -680,7 +711,7 @@ async function collectFlatMdEntries(
   if (!entries) return keptUnder(dir, type, reads, (rel) => !rel.includes(path.sep) && rel.endsWith('.md'));
   const files = entries.filter((entry) => entry.isFile() && entry.name.endsWith('.md'))
     .map((entry) => ({ absPath: path.join(dir, entry.name), id: entry.name }));
-  return entriesFromMdFiles(files, type, reads);
+  return entriesFromMdFiles(files, type, reads, (id) => `learnings/${id.replace(/\.md$/i, '')}`);
 }
 
 /**
@@ -711,6 +742,7 @@ async function collectLearningsEntries(
         files.map((rel) => ({ absPath: path.join(nsDir, rel), id: path.join(ns, rel) })),
         'learnings',
         reads,
+        (id) => `learnings/${id.replace(/\.md$/i, '')}`,
       );
       return [...kept, ...newEntries];
     },
@@ -730,7 +762,10 @@ async function collectRecursiveMdEntries(
   const { files, kept } = await listMdFilesUnder(dir, type, reads);
   // Use the relative path as the filename so the entry id is unique
   // across subdirectories, e.g. `common/coding-style.md`.
-  return [...kept, ...await entriesFromMdFiles(files.map((rel) => ({ absPath: path.join(dir, rel), id: rel })), type, reads)];
+  // Only rules and docs live at a known place in the team tree; other
+  // recursive collections (a local codebase docs dir) get no tree path.
+  const treePathOf = type === 'rules' || type === 'docs' ? (rel: string) => `${type}/${rel}` : undefined;
+  return [...kept, ...await entriesFromMdFiles(files.map((rel) => ({ absPath: path.join(dir, rel), id: rel })), type, reads, treePathOf)];
 }
 
 /** `collectRecursiveMdEntries` over an explicit list of paths relative to `dir`. */
@@ -740,8 +775,9 @@ async function collectListedMdEntries(
   type: KnowledgeType,
   reads: BuildReads,
 ): Promise<SearchIndexEntry[]> {
+  const treePathOf = type === 'rules' || type === 'docs' ? (rel: string) => `${type}/${rel}` : undefined;
   return entriesFromMdFiles(
-    files.filter((rel) => rel.endsWith('.md')).map((rel) => ({ absPath: path.join(dir, rel), id: rel })), type, reads);
+    files.filter((rel) => rel.endsWith('.md')).map((rel) => ({ absPath: path.join(dir, rel), id: rel })), type, reads, treePathOf);
 }
 
 /**
@@ -758,24 +794,28 @@ async function collectSkillEntries(
   const out: SearchIndexEntry[] = [];
 
   // A directory listing `SKILL.md`, as a file or as a link, is a skill; any
-  // other is a namespace, walked the same way.
-  async function walk(current: string, name: string | undefined): Promise<void> {
+  // other is a namespace, walked the same way. `relDir` is the directory's
+  // path relative to `dir` in posix form: it is the skill's place in the
+  // team tree, which the basename alone loses for a namespaced skill.
+  async function walk(current: string, name: string | undefined, relDir: string): Promise<void> {
     const entries = await listDir(current, reads);
     if (!entries) {
       out.push(...await keptUnder(current, 'skills', reads, (rel) => path.basename(rel) === 'SKILL.md'));
       return;
     }
     if (name !== undefined && entries.some((entry) => entry.name === 'SKILL.md')) {
-      const e = await entryFromMdFile(path.join(current, 'SKILL.md'), `${name}.md`, 'skills', reads);
+      const e = await entryFromMdFile(path.join(current, 'SKILL.md'), `${name}.md`, 'skills', reads, `skills/${relDir}`);
       if (e) out.push(e);
       return;
     }
     for (const entry of entries) {
-      if (entry.isDirectory() && !entry.name.startsWith('.')) await walk(path.join(current, entry.name), entry.name);
+      if (entry.isDirectory() && !entry.name.startsWith('.')) {
+        await walk(path.join(current, entry.name), entry.name, relDir ? `${relDir}/${entry.name}` : entry.name);
+      }
     }
   }
 
-  await walk(dir, undefined);
+  await walk(dir, undefined, '');
   return out;
 }
 
@@ -802,7 +842,11 @@ async function collectSkillDirEntries(
   reads: BuildReads,
 ): Promise<SearchIndexEntry[]> {
   return entriesFromMdFiles(
-    dirs.map((dir) => ({ absPath: path.join(dir, 'SKILL.md'), id: `${path.basename(dir)}.md` })), 'skills', reads);
+    dirs.map((dir) => ({ absPath: path.join(dir, 'SKILL.md'), id: `${path.basename(dir)}.md` })), 'skills', reads,
+    // Delivered copies are flat per skill (#707), so the tree path is the
+    // skill directory's basename; only the recursive `skillsDir` walk knows
+    // namespaces.
+    (id) => `skills/${id.replace(/\.md$/i, '')}`);
 }
 
 /** Options for the multi-category build. */

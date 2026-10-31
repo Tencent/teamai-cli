@@ -16,6 +16,10 @@ import { deliveredLearningsNamespaces, formatProjectsManifestWarning, readWorksp
 import { recordRecallQuality } from './recall-quality.js';
 import { agentSessionFromEnv, deriveSessionId } from './utils/session-id.js';
 import type { EnvAgentSession } from './utils/session-id.js';
+import { classifyTreePath, teamwikiCodebaseSlug } from './asset-relations.js';
+import type { AssetRelationType, RelationVia } from './asset-relations.js';
+import { caseFoldKey } from './manifest-schema.js';
+import type { SearchIndexEntry } from './types.js';
 
 /** Relevance threshold for codebase graph hits.
  *  These are log-compressed to a bounded [0,10] range (see `queryCodeKnowledge`
@@ -299,14 +303,166 @@ function voteKey(result: SearchResult): string {
   return result.entry.filename.replace(/\.md$/i, '');
 }
 
+// ── Asset relations (#1552) ──────────────────────────────
+//
+// A relation stays inside its owner: each scope resolves relations against its
+// own search index and its own teamwiki, and incoming relations are derived at
+// query time from the outgoing ones stored on entries — never cached, so
+// removing a relation on A removes the `←` line on B after the next index
+// build. A relation whose other end this recall cannot see prints nothing.
+
+/** The maximum number of `Related:` lines printed for one hit. */
+const RELATION_LINES_CAP = 5;
+
+/** A relation another entry of the same scope declares or links to a tree path. */
+interface IncomingRelation {
+  /** The declaring entry's team-tree path. */
+  from: string;
+  relation: AssetRelationType;
+  via: RelationVia;
+}
+
+/** Per-scope resolution state for `Related:` lines. */
+export interface RelationContext {
+  /** Canonical team-tree path → entry, for rule/doc/learning/skill targets. */
+  readonly byTreePath: ReadonlyMap<string, SearchIndexEntry>;
+  /** team-tree path → relations other entries of this scope point at it, sorted by source path. */
+  readonly incoming: ReadonlyMap<string, readonly IncomingRelation[]>;
+  /** `<repo.localPath>/teamwiki`; a `teamwiki/…` target resolves under it. */
+  readonly teamwikiRoot: string;
+  /** Case-folded withheld codebase slugs. `null` when the list cannot be read:
+   *  then no teamwiki target resolves — never "everything allowed". */
+  readonly withheld: ReadonlySet<string> | null;
+  readonly learningsBase?: string;
+}
+
+/**
+ * One relation context per scope that has an index. A user-scope entry the
+ * project shadows contributes nothing: it is not visible in this recall, so
+ * neither its outgoing relations nor relations pointing at it resolve.
+ */
+async function buildRelationContexts(
+  scopeIndexes: Array<{ index: SearchIndex; scope: 'user' | 'project'; config: LocalConfig; learningsBase: string }>,
+  projectEntryKeys: ReadonlySet<string>,
+): Promise<Map<string, RelationContext>> {
+  const contexts = new Map<string, RelationContext>();
+  await Promise.all(scopeIndexes.map(async ({ index, scope, config, learningsBase }) => {
+    try {
+      contexts.set(scope, await buildRelationContext({
+        index,
+        config,
+        learningsBase,
+        hidden: scope === 'user' ? projectEntryKeys : undefined,
+      }));
+    } catch (e) {
+      log.debug(`recall: relations unavailable for ${installScopeName(scope)}: ${(e as Error).message}`);
+    }
+  }));
+  return contexts;
+}
+
+/**
+ * The relation state of one scope: the assets its index holds (minus the
+ * entries another scope shadows) and the relations they declare or link.
+ */
+export async function buildRelationContext(args: {
+  index: SearchIndex;
+  config: LocalConfig;
+  learningsBase?: string;
+  /** `${type}:${filename}` keys this scope cannot see: another scope shadows them. */
+  hidden?: ReadonlySet<string>;
+}): Promise<RelationContext> {
+  const { index, config, learningsBase, hidden } = args;
+  const byTreePath = new Map<string, SearchIndexEntry>();
+  const incoming = new Map<string, IncomingRelation[]>();
+  for (const entry of index.entries) {
+    if (!entry.treePath || hidden?.has(`${entry.type}:${entry.filename}`)) continue;
+    byTreePath.set(entry.treePath, entry);
+    for (const r of entry.related ?? []) {
+      const list = incoming.get(r.target) ?? [];
+      list.push({ from: entry.treePath, relation: r.relation, via: r.via });
+      incoming.set(r.target, list);
+    }
+  }
+  for (const list of incoming.values()) list.sort((a, b) => a.from.localeCompare(b.from));
+  // Withheld codebases: a resolved context contributes its inactive wiki
+  // namespaces; a null context means the team filters nothing, so nothing is
+  // withheld — the unfiltered "sync everything" state, matching recall's own
+  // `?? []` above. Only a read that THROWS is "cannot be read": then no
+  // teamwiki target resolves, never "everything allowed".
+  let withheld: ReadonlySet<string> | null;
+  try {
+    const ns = await resolveResourceNamespaces(config);
+    withheld = new Set((ns?.inactiveWikiNamespaces ?? []).map((namespace) => caseFoldKey(namespace)));
+  } catch {
+    withheld = null;
+  }
+  return {
+    byTreePath,
+    incoming,
+    teamwikiRoot: path.join(config.repo.localPath, 'teamwiki'),
+    withheld,
+    learningsBase,
+  };
+}
+
+/** The printed path of a relation's other end, or null when this scope cannot see it. */
+function resolveRelationTarget(ctx: RelationContext, target: string): string | null {
+  if (classifyTreePath(target) === 'teamwiki') {
+    if (ctx.withheld === null) return null;
+    const slug = teamwikiCodebaseSlug(target);
+    if (slug !== null && ctx.withheld.has(caseFoldKey(slug))) return null;
+    const abs = path.join(ctx.teamwikiRoot, target.slice('teamwiki/'.length));
+    return existsSync(abs) ? abs : null;
+  }
+  const entry = ctx.byTreePath.get(target);
+  if (!entry) return null;
+  return resolveReadablePath(entry.path, entry.filename, ctx.learningsBase);
+}
+
+/**
+ * The `Related:` lines for one hit: declared outgoing first, then declared
+ * incoming, then link outgoing, then link incoming; within each group
+ * outgoing keeps the file's order and incoming sorts by the source's tree
+ * path. A declared relation beats a link between the same two assets in the
+ * same direction. Capped at {@link RELATION_LINES_CAP}.
+ */
+export function relationLines(ctx: RelationContext, entry: SearchIndexEntry): string[] {
+  if (!entry.treePath) return [];
+  const lines: string[] = [];
+  const seen = new Set<string>();
+  const push = (arrow: '→' | '←', relation: AssetRelationType, otherEnd: string): void => {
+    const printed = resolveRelationTarget(ctx, otherEnd);
+    if (printed === null) return;
+    const key = `${arrow}${relation}${otherEnd}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    lines.push(`Related: ${arrow} ${relation} ${printed}`);
+  };
+  const own = entry.related ?? [];
+  const incoming = [...(ctx.incoming.get(entry.treePath) ?? [])].sort((a, b) => a.from.localeCompare(b.from));
+  for (const r of own) if (r.via === 'declared') push('→', r.relation, r.target);
+  for (const r of incoming) if (r.via === 'declared') push('←', r.relation, r.from);
+  const declaredOut = new Set(own.filter((r) => r.via === 'declared').map((r) => r.target));
+  const declaredIn = new Set(incoming.filter((r) => r.via === 'declared').map((r) => r.from));
+  for (const r of own) if (r.via === 'link' && !declaredOut.has(r.target)) push('→', r.relation, r.target);
+  for (const r of incoming) if (r.via === 'link' && !declaredIn.has(r.from)) push('←', r.relation, r.from);
+  return lines.slice(0, RELATION_LINES_CAP);
+}
+
 /**
  * `runId`, when the run was recorded, follows the result count on the start
  * line. Older CLIs find the region by the prefix before it (#884).
  */
-export function formatResults(results: ScopedSearchResult[], runId?: string): string {
+export function formatResults(
+  results: ScopedSearchResult[],
+  runId?: string,
+  relationContexts?: ReadonlyMap<string, RelationContext>,
+): string {
   const lines: string[] = [];
   lines.push(`--- [teamai:recall:start] --- (${results.length} result${results.length !== 1 ? 's' : ''})${runId ? ` run=${runId}` : ''}`);
   lines.push('');
+  const fallbackCtx = relationContexts?.values().next().value as RelationContext | undefined;
 
   for (let i = 0; i < results.length; i++) {
     const { entry, score, scope, sources, matchedTerms, missingTerms } = results[i];
@@ -329,6 +485,12 @@ export function formatResults(results: ScopedSearchResult[], runId?: string): st
       lines.push(`Matched: ${matchedStr} | Missing: ${missingTerms.join(', ')}`);
     }
     lines.push(`File: ${printedPath(results[i])}`);
+    if (relationContexts) {
+      // Relations resolve inside the scope the hit came from; a hit without a
+      // scope label falls back to the only context there is.
+      const ctx = (scope !== undefined ? relationContexts.get(scope) : undefined) ?? fallbackCtx;
+      if (ctx) lines.push(...relationLines(ctx, entry));
+    }
     if (sources && sources.length > 0) {
       lines.push(`Sources: ${sources.map((s) => s.desc ? `${s.path} (${s.desc})` : s.path).join(', ')}`);
       const freshnessSources = sources.filter((source) => source.freshness);
@@ -828,6 +990,9 @@ export async function recall(
           domain: 'technical' as const,
           path: path.join(wikiRoot, cr.page),
           snippet: cr.snippet,
+          // A code hit is a teamwiki page; its team-tree path is what asset
+          // relations point at, so incoming relations can render on it.
+          treePath: `teamwiki/${cr.page}`,
         },
         score: Math.min(10, Math.log2(cr.score + 1) * 2),
         scope: projectConfig ? 'project' : 'user',
@@ -977,7 +1142,8 @@ export async function recall(
   }
 
   // Output results (STDOUT — AI reads this)
-  const output = formatResults(topResults, runId);
+  const relationContexts = await buildRelationContexts(scopeIndexes, projectEntryKeys);
+  const output = formatResults(topResults, runId, relationContexts);
   process.stdout.write(output + '\n');
 
   // Auto-upvote (best-effort, non-blocking for dry-run). Each scope keeps its

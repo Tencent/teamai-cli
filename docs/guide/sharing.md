@@ -71,6 +71,25 @@ Return typed errors from API handlers.
 
 A rule without `paths:` gets `trigger: always_on`.
 
+A rule can also declare relations to other team assets in a `related:`
+frontmatter block (a doc can too; a learning declares them the same way when
+it is contributed):
+
+```markdown
+---
+related:
+  MAPS_TO: teamwiki/evidence/code/pay/modules/ledger-receipts.md
+  REFERENCES: [docs/payments-overview.md]
+---
+```
+
+`MAPS_TO` points at a teamwiki code page, `REFERENCES` at any asset, and
+`SUPERSEDES` / `CONFLICTS_WITH` at a rule, doc or learning. `teamai recall`
+prints each declared relation as a `Related:` line on the hit, so a session
+that recalls one end of the relation starts with the other end too.
+`teamai review --branch` fails a rule or doc whose `related:` block uses a
+relation outside that table or points at an asset that is not on the branch.
+
 ## Agents
 
 `agents/<name>.yaml`. `name` matches the filename. Commit it, or run `teamai push` after editing the copy in a tool.
