@@ -215,6 +215,14 @@ describe('scrubSession with localPaths, for a session published to the team arch
     expect(textOf(session)).toEqual({ type: 'text', text: 'edit <repo>/packages/api/src/retry.ts' });
   });
 
+  it('rewrites the directory of a session that ran outside any repository as <cwd>', () => {
+    const roots = { repo: [], home: ['/home/dev'], tmp: ['/tmp'], workdir: { spellings: ['/srv/scratch'], archived: '' } };
+
+    const { session } = scrubSession(said('edit /srv/scratch/a.ts', '/srv/scratch'), { localPaths: roots });
+
+    expect(textOf(session)).toEqual({ type: 'text', text: 'edit <cwd>/a.ts' });
+  });
+
   it('rewrites the title, thinking, tool results and string metadata', () => {
     const session: Session = {
       ...makeSession(),

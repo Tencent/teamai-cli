@@ -187,9 +187,10 @@ teamai session resume <name> --platform claude-code
 | `/private/tmp/claude-502/-Users-me-app/6e64…/tasks/b.output` | `<tmp>/<project>/6e64…/tasks/b.output` |
 | `C:\Users\me\app\src\retry.ts` | `<repo>\src\retry.ts` |
 | `file:///Users/me/app/README.md` | `file://<repo>/README.md` |
+| `/srv/scratch/a.ts`（会话在 `/srv/scratch` 运行，不在任何仓库里） | `<cwd>/a.ts` |
 | `src/retry.ts`、`/api/v1/users`、`https://github.com/acme/app` | 不变 |
 
-`<repo>` 是会话运行所在的仓库（不在 git 里时是工作区根目录），`~` 是主目录，`<tmp>` 是临时目录。标题、消息、思考、工具调用和工具结果都会改写。不加 `--scrub` 的推送保持记录原样。
+`<repo>` 是会话运行所在的仓库（不在 git 里时是工作区根目录），`<cwd>` 是不在任何仓库里的会话所在的目录，`~` 是主目录，`<tmp>` 是临时目录。标题、消息、思考、工具调用和工具结果都会改写。不加 `--scrub` 的推送保持记录原样。
 
 它的 `meta.json` 保存相对于仓库的目录，以及会话启动 hook 在该成员机器上捕获的运行配置：
 

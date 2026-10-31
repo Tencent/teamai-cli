@@ -497,6 +497,19 @@ describe('session commands without --repo-root outside a workspace install', () 
     expect(archive).not.toContain(link);
   });
 
+  it('archive the directory of a session outside any repository as <cwd> with push --scrub', async () => {
+    const team = await userInstall();
+    const scratch = path.join(tmp, 'scratch');
+    await claudeSession(scratch, { answers: [`Edited ${scratch}/a.ts.`] });
+
+    const pushed = await session('push', '--source', 'claude-code', '--cwd', scratch, '--scrub');
+
+    expect(pushed.code, pushed.stderr).toBe(0);
+    const archive = archived(team.origin, 'teamai-reports').map((file) => git(team.checkout, 'show', `origin/teamai-reports:${file}`)).join('\n');
+    expect(archive).toContain('Edited <cwd>/a.ts.');
+    expect(archive).not.toContain(scratch);
+  });
+
   it('resume a session archived relative to its repository in another clone of it, with its turns', async () => {
     const team = await userInstall();
     const { origin, checkout } = repository('product');

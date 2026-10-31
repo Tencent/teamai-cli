@@ -41,7 +41,8 @@ export interface LocalPathRoots {
   tmp: readonly string[];
   /**
    * The directory the session ran in, as written through a link that places it elsewhere than under a spelling of
-   * `repo` (`/opt/api` → `/srv/app/packages/api`), and its archived `cwd` (`packages/api`).
+   * `repo` (`/opt/api` → `/srv/app/packages/api`), and its archived `cwd` (`packages/api`). A session outside any
+   * repository archives `cwd` as `""`, and its directory is rewritten to `<cwd>`.
    */
   workdir?: { spellings: readonly string[]; archived: string };
 }
@@ -73,7 +74,7 @@ function pathRewriter({ repo, home, tmp, workdir }: LocalPathRoots, cwd: string)
   // Windows paths are case-insensitive (`c:\users\…`): matched ignoring case and keyed by lower case. POSIX ones are not.
   const isWindows = (root: string): boolean => /^[A-Za-z]:/.test(root);
   const keyOf = (root: string): string => (isWindows(root) ? root.toLowerCase() : root);
-  const workdirName = workdir && (workdir.archived === '.' ? '<repo>' : `<repo>/${workdir.archived}`);
+  const workdirName = workdir && (workdir.archived === '' ? '<cwd>' : workdir.archived === '.' ? '<repo>' : `<repo>/${workdir.archived}`);
   const named = new Map<string, string>();
   for (const [roots, name] of [[home, '~'], [tmp, '<tmp>'], [repo, '<repo>'], ...(workdir && workdirName ? [[workdir.spellings, workdirName] as const] : [])] as const) {
     for (const root of roots.flatMap(spellings)) if (isBelowFilesystemRoot(root)) named.set(keyOf(root.replace(/[\\/]+$/, '')), name);

@@ -187,9 +187,10 @@ For a script, `migrate <sessionId> -s <tool> -t <tool> --json` prints one line o
 | `/private/tmp/claude-502/-Users-me-app/6e64…/tasks/b.output` | `<tmp>/<project>/6e64…/tasks/b.output` |
 | `C:\Users\me\app\src\retry.ts` | `<repo>\src\retry.ts` |
 | `file:///Users/me/app/README.md` | `file://<repo>/README.md` |
+| `/srv/scratch/a.ts`, in a session run in `/srv/scratch`, outside any repository | `<cwd>/a.ts` |
 | `src/retry.ts`, `/api/v1/users`, `https://github.com/acme/app` | unchanged |
 
-`<repo>` is the repository the session ran in (the workspace root outside git), `~` the home directory, `<tmp>` the temp directory. The title, messages, thinking, tool calls and tool results are rewritten. A push without `--scrub` keeps the transcript as it is.
+`<repo>` is the repository the session ran in (the workspace root outside git), `<cwd>` the directory of a session outside any repository, `~` the home directory, `<tmp>` the temp directory. The title, messages, thinking, tool calls and tool results are rewritten. A push without `--scrub` keeps the transcript as it is.
 
 Its `meta.json` stores the directory relative to the repository, and what the session ran as, as its session-start hook captured it on the member's machine:
 

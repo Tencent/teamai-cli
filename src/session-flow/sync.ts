@@ -99,7 +99,11 @@ export async function publishedPathRoots(cwd: string): Promise<LocalPathRoots> {
   const uid = process.getuid?.();
   const claudeTmp = uid === undefined ? [] : [`/private/tmp/claude-${uid}`, `/tmp/claude-${uid}`];
   const machine = { home: await resolved(os.homedir()), tmp: [...await resolved(os.tmpdir()), ...claudeTmp] };
-  if (!rooted) return { repo: [], ...machine };
+  if (!rooted) {
+    // No root to be relative to: the directory itself is still this machine's.
+    const placed = path.isAbsolute(cwd) ? { workdir: { spellings: await resolved(path.resolve(cwd)), archived: '' } } : {};
+    return { repo: [], ...placed, ...machine };
+  }
   // `cwd` as written may reach the repository through a link: its root is spelled that way too when the link sits
   // above the root, and `cwd` itself is rewritten to where it is in the repository either way.
   const written = path.resolve(cwd);
