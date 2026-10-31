@@ -36,7 +36,7 @@ const index = path.join(base, 'learnings-index.json');
 
   rule.valid('allows an explained exception outside the accessor allowlist', `
 import path from 'node:path';
-// learnings-root ok: this migration keeps a legacy root temporarily
+// oxlint-disable-next-line teamai/learnings-root -- this migration keeps a legacy root temporarily
 const root = path.join(getKnowledgeDir(config), 'learnings');
 `);
 
@@ -45,3 +45,5 @@ import path from 'node:path';
 const root = path.join(getKnowledgeDir(config), 'learnings');
 `, { filename: 'src/utils/learnings-roots.ts' });
 });
+
+rule.invalid('rejects legacy whole-file exceptions', `const root = path.join(base, 'learnings');`, undefined, { filename: 'src/init.ts' });

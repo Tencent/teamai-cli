@@ -2587,6 +2587,7 @@ export interface UserVotesV2 {
 // route through getDataHome(); these remain the user-scope global landing.
 /** User-scope learnings mirror dir, `~/.teamai/learnings`. Evaluated at call time. */
 export function getUserLearningsDir(): string {
+  // oxlint-disable-next-line teamai/learnings-root -- user-scope mirror definition, independent of the repository learnings roots
   return path.join(getTeamaiHomeDir(), 'learnings');
 }
 /** User-scope search index, `~/.teamai/search-index.json`. Evaluated at call time. */

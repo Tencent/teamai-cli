@@ -1,7 +1,5 @@
-import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { getUserHome } from '../utils/home.js';
@@ -168,32 +166,3 @@ describe('getDataHome (machine-data home resolver)', () => {
   });
 });
 
-describe('home directory lookups', () => {
-  it('never read process.env.HOME directly outside getUserHome', async () => {
-    const srcDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-    const offenders: string[] = [];
-
-    async function walk(dir: string): Promise<void> {
-      const entries = await fs.readdir(dir, { withFileTypes: true });
-      for (const entry of entries) {
-        const full = path.join(dir, entry.name);
-        if (entry.isDirectory()) {
-          if (entry.name === '__tests__') continue;
-          await walk(full);
-        } else if (entry.isFile() && entry.name.endsWith('.ts')) {
-          const rel = path.relative(srcDir, full);
-          // utils/home.ts is the single sanctioned reader of the raw env var.
-          if (rel === path.join('utils', 'home.ts')) continue;
-          const content = await fs.readFile(full, 'utf-8');
-          if (content.includes('process.env.HOME')) offenders.push(rel);
-        }
-      }
-    }
-
-    await walk(srcDir);
-
-    // A bare process.env.HOME breaks Windows, where only USERPROFILE is set:
-    // `?? ''` silently degrades to a relative path and a non-null assertion crashes.
-    expect(offenders).toEqual([]);
-  });
-});

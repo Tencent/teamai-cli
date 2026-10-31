@@ -533,6 +533,7 @@ async function publishToLearningsBranch(
         unreadable.push(relPath);
         continue;
       }
+      // oxlint-disable-next-line teamai/learnings-root -- publishing writes into the locked orphan worktree supplied by learningsBranch.update
       const destAbs = path.join(worktree, 'learnings', relPath);
       await ensureDir(path.dirname(destAbs));
       await fs.promises.writeFile(destAbs, content, 'utf-8');

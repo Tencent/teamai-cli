@@ -285,7 +285,7 @@ function resolveReadablePath(
   if (indexedPath && existsSync(indexedPath)) return indexedPath;
   const underBase = learningsBase ? path.join(learningsBase, filename) : null;
   if (underBase && existsSync(underBase)) return underBase;
-  // learnings-root ok: a display-only hint when nothing on disk matches
+  // oxlint-disable-next-line teamai/learnings-root -- a display-only hint when nothing on disk matches
   return indexedPath ?? underBase ?? path.join('~', '.teamai', 'learnings', filename);
 }
 

@@ -163,11 +163,11 @@ export async function resolveVizRoot(opts: VizOptions): Promise<VizPaths> {
       root,
       knowledgeRoot: root,
       votesDir: path.join(root, 'votes'),
-      // learnings-root ok: an explicit --repo path, with no config to resolve
+      // oxlint-disable-next-line teamai/learnings-root -- an explicit --repo path, with no config to resolve
       learningsDir: path.join(root, 'learnings'),
-      // learnings-root ok: same explicit --repo path
+      // oxlint-disable-next-line teamai/learnings-root -- same explicit --repo path
       learningsDirs: [path.join(root, 'learnings')],
-      // learnings-root ok: same explicit --repo path
+      // oxlint-disable-next-line teamai/learnings-root -- same explicit --repo path
       indexLearningsDirs: [path.join(root, 'learnings')],
       learningsNamespaces: { ok: true, namespaces: [] },
       statsDir: path.join(root, 'stats'),

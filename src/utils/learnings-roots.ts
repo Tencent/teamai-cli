@@ -57,7 +57,6 @@ export interface LearningsRoots {
  * is copied out of it and nothing is deleted from it (#485).
  */
 function inheritedRoot(localConfig: LocalConfig): string {
-  // learnings-root ok: this IS the inherited root's definition
   return path.join(getKnowledgeDir(localConfig), 'learnings');
 }
 
@@ -67,7 +66,6 @@ function inheritedRoot(localConfig: LocalConfig): string {
  * write and inherited roots collapse into one.
  */
 function writeRoot(localConfig: LocalConfig): string {
-  // learnings-root ok: the write root's definition, inside the branch worktree
   return path.join(learningsBranch.dir(localConfig), 'learnings');
 }
 

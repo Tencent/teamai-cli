@@ -123,7 +123,7 @@ async function writeKnowledgeToRepo(
       .slice(0, 50);
     const dateStr = new Date().toISOString().slice(0, 10);
     const filename = `${dateStr}-${safeTitle}.md`;
-    // learnings-root ok: CI runs against a bare checkout, with no LocalConfig
+    // oxlint-disable-next-line teamai/learnings-root -- CI runs against a bare checkout, with no LocalConfig
     const learningsDir = path.join(teamRepo, 'learnings');
     const learningPath = path.join(learningsDir, filename);
 
@@ -259,7 +259,7 @@ export async function ciExtractMr(opts: CiExtractMrOptions): Promise<void> {
   const result = await importFromMR({
     url: opts.url,
     all: true,
-    // learnings-root ok: CI runs against a bare checkout, with no LocalConfig
+    // oxlint-disable-next-line teamai/learnings-root -- CI runs against a bare checkout, with no LocalConfig
     learningsDirs: opts.teamRepo ? [path.join(opts.teamRepo, 'learnings')] : undefined,
     dryRun: true, // importFromMR writes nothing; this function controls the writes
     discussions: opts.discussions,

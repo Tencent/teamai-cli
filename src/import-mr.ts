@@ -14,6 +14,7 @@ import { log, spinner } from './utils/logger.js';
 import { getUserHome } from './utils/home.js';
 
 /** Default directory for storing learnings. */
+// oxlint-disable-next-line teamai/learnings-root -- standalone import default has no LocalConfig and writes to the user mirror
 const DEFAULT_LEARNINGS_DIR = path.join(getUserHome(), '.teamai', 'learnings');
 
 /**
