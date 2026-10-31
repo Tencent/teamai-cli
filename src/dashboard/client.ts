@@ -1,4 +1,5 @@
 import { scorersClient } from './scorers-client.js';
+import { improvementClient } from './improvement-client.js';
 import { handoffView } from './handoff-view.js';
 import { sessionSharingView } from './session-sharing-view.js';
 import { memberSettingsView } from './member-settings-view.js';
@@ -17,7 +18,8 @@ const t = text => language === 'zh-CN' ? (Object.hasOwn(messages,text) ? message
 const e = value => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 const label = text => e(t(text));
 const escapeHtml = e;
-const pageNames = { overview: 'Overview', execution: 'Team Execution', tokens: 'Tokens & Cost', workflows: 'Workflow Runs', scorers: 'Scorers', context: 'Team Context', resources: 'Resources', distribution: 'Distribution', improvement: 'Team Improvement' };
+const pageNames = { overview: 'Overview', execution: 'Sessions', tokens: 'Tokens & Cost', workflows: 'Workflow Runs', scorers: 'Scorers', context: 'Knowledge Base', resources: 'Resources', distribution: 'Distribution', improvement: 'Improvement Center' };
+const navGroups = [[null,['overview']],['Execution',['execution','tokens','workflows','scorers']],['Context',['context','resources','distribution']],['Improvement',['improvement']]];
 const statusNames = { running:'Working', waiting_for_input:'Your turn', error:'Error', idle:'Idle', stopped:'Ended' };
 let page = Object.hasOwn(pageNames,location.hash.slice(1)) ? location.hash.slice(1) : 'overview';
 let sessions = [], haveSessions = false, connected = false, trends = null, kb = null;
@@ -109,7 +111,6 @@ function execution() { const data=scopeSessions(); return '<div class="statuslin
 function knowledge() {
  return '<div class="actions">'+source()+'<button class="link" data-retry="kb">'+label('Refresh report')+'</button>'+link('improvement','View maintenance')+'</div>'+(kbError?errorPanel('Could not refresh KB Health. Any displayed report is the last successful result.','kb'):'')+(kb?'<div class="report" id="kb-content">'+kb.context+'</div>':kbError?'':'<div class="empty">'+label('Loading…')+'</div>');
 }
-function improvement() { return trendPanel()+'<div class="actions">'+source()+'<button class="link" data-retry="kb">'+label('Refresh report')+'</button></div>'+(kbError?errorPanel('Could not refresh KB Health. Any displayed report is the last successful result.','kb'):'')+(kb?'<div class="report" id="kb-content">'+kb.maintenance+'</div>':'<div class="empty">'+label('Loading…')+'</div>'); }
 // Rules the current workspace receives, and why the rest stay out (#1028).
 function ruleState(r) {
  if(r.delivered)return '<span class="good">'+label('Delivered')+'</span>';
@@ -315,17 +316,20 @@ function localizeReport() {
  }
 }
 ${scorersClient}
+${improvementClient}
 function render() {
  const focus=document.activeElement;
  const focusKey=focus?.dataset.session, retryKey=focus?.dataset.retry, runFocus=focus?.dataset.run;
  const fieldId=focus?.id&&focus.closest('#view')?focus.id:'', caret=fieldId&&typeof focus.selectionStart==='number'?[focus.selectionStart,focus.selectionEnd]:null;
  const opened=[...document.querySelectorAll('#kb-content details[open]')].map(d=>[...d.parentElement.children].indexOf(d));
- $('nav').innerHTML=Object.keys(pageNames).map(key=>'<button data-page="'+key+'" class="'+(page===key?'active':'')+'" '+(page===key?'aria-current="page"':'')+'>'+icon(key)+label(pageNames[key])+'</button>').join('');
+ const impOpened=[...document.querySelectorAll('#view details[open][data-imp-key]')].map(d=>d.dataset.impKey);
+ $('nav').innerHTML=navGroups.map(([group,keys])=>(group?'<div class="nav-group">'+label(group)+'</div>':'')+keys.map(key=>'<button data-page="'+key+'" class="'+(page===key?'active':'')+'" '+(page===key?'aria-current="page"':'')+'>'+icon(key)+label(pageNames[key])+'</button>').join('')).join('');
  $('title').textContent=t(pageNames[page]);$('crumb').textContent=t(pageNames[page]);
  document.querySelector('.filters').hidden=page!=='execution';
  $('view').innerHTML=({overview,execution,tokens:tokensPage,workflows:workflowRuns,scorers:scorersPage,context:knowledge,resources,distribution,improvement})[page]();tickRunDurations();
  localizeReport();connection();
  document.querySelectorAll('#kb-content details').forEach(d=>{if(opened.includes([...d.parentElement.children].indexOf(d)))d.open=true;});
+ document.querySelectorAll('#view details[data-imp-key]').forEach(d=>{if(impOpened.includes(d.dataset.impKey))d.open=true;});
  if(focusKey) [...document.querySelectorAll('[data-session]')].find(el=>el.dataset.session===focusKey)?.focus({preventScroll:true});
  else if(retryKey) document.querySelector('[data-retry="'+retryKey+'"]')?.focus({preventScroll:true});
  else if(runFocus) [...document.querySelectorAll('[data-run]')].find(el=>el.dataset.run===runFocus)?.focus({preventScroll:true});

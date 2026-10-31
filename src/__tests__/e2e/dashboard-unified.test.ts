@@ -79,6 +79,8 @@ describe('built dashboard CLI (offline provider fixtures)', () => {
       expect(context.source.scope).toBe('team');expect(context.totalEntries).toBeGreaterThan(0);
       expect(context.context).toContain('Provider guide');expect(context.context).toContain('Author Contributions');
       expect(context.maintenance).toContain('teamai recall maintenance --prune --archive');
+      expect(context.improvement.window.days).toBe(30);expect(context.improvement.daily).toHaveLength(180);
+      expect(html).toContain('Improvement Center');expect(html).toContain('nav-group');
       expect(await (await fetch(base+'/kb-report')).text()).toContain('Knowledge Base');
       expect((await (await fetch(base+'/api/kb-summary')).json()).source.scope).toBe('team');
       const stream=await fetch(base+'/events',{signal:AbortSignal.timeout(15000)}),reader=stream.body!.getReader();
