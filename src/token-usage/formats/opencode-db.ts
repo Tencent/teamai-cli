@@ -74,8 +74,7 @@ export async function readOpencodeDb(source: TokenSource): Promise<TokenReading>
     const { tokens: used, cost, time } = message.data;
     const usage = { input: used.input, output: used.output + used.reasoning, cacheRead: used.cache.read, cacheCreation: used.cache.write };
     tokens = addTokenUsage(tokens, usage);
-    const model = message.data.model?.id ?? message.data.modelID;
-    if (!model) continue;
+    const model = message.data.model?.id ?? message.data.modelID ?? '';
     requests.push({
       key: row.data.id,
       timestamp: time ? new Date(time.created).toISOString() : '',

@@ -103,6 +103,18 @@ describe('readTokenUsage: claude-jsonl', () => {
     const reading = await readTokenUsage('claude-jsonl', { transcriptPath: path.join(dir, 'gone.jsonl'), sessionId: 's-1' });
     expect(reading).toEqual({ tokens: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, requests: [] });
   });
+
+  it('reads nothing from a transcript that exists but cannot be read', async () => {
+    const reading = await readTokenUsage('claude-jsonl', { transcriptPath: dir, sessionId: 's-1' });
+    expect(reading).toEqual({ tokens: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, requests: [] });
+  });
+
+  it('keeps a request whose message names no model, with an empty model', async () => {
+    const { message: { model: _model, ...message }, ...line } = claudeTurn('a', 'claude-sonnet-5', { input_tokens: 100, output_tokens: 10 });
+    const turn = { ...line, message };
+    const { requests } = await readTokenUsage('claude-jsonl', { transcriptPath: transcript([turn]), sessionId: 's-1' });
+    expect(requests.map(({ model, tokens }) => ({ model, tokens }))).toEqual([{ model: '', tokens: { input: 100, output: 10, cacheRead: 0, cacheCreation: 0 } }]);
+  });
 });
 
 // Codex rollout lines, trimmed to the fields teamai reads (Codex 0.165).

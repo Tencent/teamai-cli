@@ -137,7 +137,7 @@ teamai 为每个工具把每类资源写到哪里，以及工具读取哪里，�
 31. runs from teamai's team-hook bridge, which can block a tool call; OpenCode 1.18.23 ran a team hook through it
 32. #1224 writes them to settings.json; not rerun
 33. agy 1.4.8 run_command inherits the environment agy starts in
-34. agy 1.4.8 transcript tokens (#1548); it names no model, so they show unpriced
+34. agy 1.4.10 session read 2026-10-31; it names no model, so its tokens show unpriced
 35. agy 1.4.8 PostToolUse carries no tool output, so a teamai recall run never reaches the recall log
 36. invoke_subagent starts a fresh conversation that gets only its prompt (agy 1.4.8); no session variable, so the session names its tool with --tools; not run
 37. runs from teamai's team-hook bridge, which can block a tool call; the dispatcher hands it a Claude payload

@@ -1337,7 +1337,7 @@ export const TOOLS = {
       workflows: '✓v',
       recall: '✓v',
       stats: '✓v',
-      tokens: { cell: '◐v', note: 'agy 1.4.8 transcript tokens (#1548); it names no model, so they show unpriced' },
+      tokens: { cell: '◐v', note: 'agy 1.4.10 session read 2026-10-31; it names no model, so its tokens show unpriced' },
       aiBackend: '✓v',
       votesJudge: { cell: '✗v', note: 'agy 1.4.8 PostToolUse carries no tool output, so a teamai recall run never reaches the recall log' },
       sessionJudge: { cell: '✓t', note: 'invoke_subagent starts a fresh conversation that gets only its prompt (agy 1.4.8); no session variable, so the session names its tool with --tools; not run' },

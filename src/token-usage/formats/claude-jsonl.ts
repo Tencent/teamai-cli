@@ -55,7 +55,7 @@ export async function readClaudeJsonl(source: TokenSource): Promise<TokenReading
   const counted = new Set<string>();
   const add = (request: Omit<TokenRequest, 'model'> & { model?: string }) => {
     tokens = addTokenUsage(tokens, request.tokens);
-    if (request.model && request.model !== SYNTHETIC_MODEL) requests.push({ ...request, model: request.model });
+    if (request.model !== SYNTHETIC_MODEL) requests.push({ ...request, model: request.model ?? '' });
   };
   if (!source.transcriptPath) return { tokens, requests };
   const visit = (entry: unknown) => {
