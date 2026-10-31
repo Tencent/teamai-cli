@@ -28,13 +28,16 @@
  */
 
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { getTeamaiHomeDir } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { resolveAnchors } from '../utils/git.js';
+import { AgentObservationSchema, type AgentObservation } from '../agent-observation.js';
 import type { Session } from './ir.js';
+import { titleSpellsLocalPath, type LocalPathRoots } from './scrub.js';
 import { messageToDict, messageFromDict } from './ir.js';
 
 // ---------------------------------------------------------------------------
@@ -56,7 +59,17 @@ function utcNow(): string {
  * known root deliberately become empty rather than leaking a guessed path.
  */
 export async function archivedCwd(cwd: string, projectRoot?: string): Promise<string> {
-  if (cwd.startsWith('md5:') || !path.isAbsolute(cwd)) return '';
+  const rooted = await sessionRoot(cwd, projectRoot);
+  if (!rooted) return '';
+  const relative = path.relative(rooted.root, rooted.cwd);
+  if (relative === '') return '.';
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return '';
+  return relative.split(path.sep).join('/');
+}
+
+/** The root `archivedCwd` makes `cwd` relative to, and `cwd` itself, both resolved; undefined when there is none. */
+async function sessionRoot(cwd: string, projectRoot?: string): Promise<{ root: string; cwd: string } | undefined> {
+  if (cwd.startsWith('md5:') || !path.isAbsolute(cwd)) return undefined;
   const canonicalCwd = await fs.promises.realpath(cwd).catch(() => path.resolve(cwd));
   const anchors = await resolveAnchors(canonicalCwd);
   let config = anchors || projectRoot ? undefined : await import('../config.js')
@@ -69,12 +82,38 @@ export async function archivedCwd(cwd: string, projectRoot?: string): Promise<st
     }
   }
   const root = anchors?.workspaceRoot ?? projectRoot ?? config?.projectRoot;
-  if (!root) return '';
-  const canonicalRoot = await fs.promises.realpath(root).catch(() => path.resolve(root));
-  const relative = path.relative(canonicalRoot, canonicalCwd);
-  if (relative === '') return '.';
-  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return '';
-  return relative.split(path.sep).join('/');
+  if (!root) return undefined;
+  return { root: await fs.promises.realpath(root).catch(() => path.resolve(root)), cwd: canonicalCwd };
+}
+
+/**
+ * The directories of this machine a session that ran in `cwd` must not name once published: the root its archived
+ * `cwd` is relative to, the home directory and the per-user temp roots, each as written and resolved.
+ */
+export async function publishedPathRoots(cwd: string): Promise<LocalPathRoots> {
+  // macOS links `/tmp`, `/var` and `/etc` to `/private/...`: a tool records the resolved path, and a prompt often names
+  // the other.
+  const spellings = (dirs: string[]): string[] => [...new Set(dirs.flatMap((dir) => [dir, dir.replace(/^\/private(?=\/(?:tmp|var|etc)\/)/, '')]))];
+  const resolved = async (dir: string): Promise<string[]> => spellings([dir, await fs.promises.realpath(dir).catch(() => dir)]);
+  const rooted = await sessionRoot(cwd);
+  const uid = process.getuid?.();
+  const claudeTmp = uid === undefined ? [] : [`/private/tmp/claude-${uid}`, `/tmp/claude-${uid}`];
+  const machine = { home: await resolved(os.homedir()), tmp: [...await resolved(os.tmpdir()), ...claudeTmp] };
+  if (!rooted) {
+    // No root to be relative to: the directory itself is still this machine's.
+    const placed = path.isAbsolute(cwd) ? { workdir: { spellings: await resolved(path.resolve(cwd)), archived: '' } } : {};
+    return { repo: [], ...placed, ...machine };
+  }
+  // `cwd` as written may reach the repository through a link: its root is spelled that way too when the link sits
+  // above the root, and `cwd` itself is rewritten to where it is in the repository either way.
+  const written = path.resolve(cwd);
+  const inside = path.relative(rooted.root, rooted.cwd);
+  const writtenRoot = inside === '' ? written : written.endsWith(`${path.sep}${inside}`) ? written.slice(0, -inside.length - 1) : undefined;
+  return {
+    repo: spellings([rooted.root, ...(writtenRoot ? [writtenRoot] : [])]),
+    ...(written === rooted.cwd ? {} : { workdir: { spellings: spellings([written]), archived: inside.split(path.sep).join('/') || '.' } }),
+    ...machine,
+  };
 }
 
 /**
@@ -279,6 +318,25 @@ export interface SessionSyncMeta {
     pushedAt: string | null;
   };
   status: 'active' | 'archived';
+  /**
+   * What the session ran as, from the captures its session-start hook wrote on the machine that pushed it
+   * (`SessionCaptures.agentOf`). Absent when they disagree, or there are none.
+   */
+  agent?: AgentObservation;
+}
+
+/** A meta.json as read from the archive: an `agent` that is not an observation is left out, as if absent. */
+function readSyncMeta(file: string): SessionSyncMeta {
+  const meta = JSON.parse(fs.readFileSync(file, 'utf-8')) as SessionSyncMeta;
+  if (meta.agent === undefined) return meta;
+  const { agent, ...rest } = meta;
+  const parsed = AgentObservationSchema.safeParse(agent);
+  return parsed.success ? { ...rest, agent: parsed.data } : rest;
+}
+
+/** The index entry's `teamRevision`: the team revision the session ran with, when its meta records one. */
+function teamRevisionOf(meta: SessionSyncMeta): Pick<IndexEntry, 'teamRevision'> {
+  return meta.agent?.team ? { teamRevision: meta.agent.team.revision } : {};
 }
 
 /**
@@ -298,10 +356,12 @@ export function defaultSyncMeta(
     repoIdentity?: string | null;
     /** Persisted verbatim into origin.title (the file name slug is lossy). */
     title?: string;
+    agent?: AgentObservation;
   },
   createdAt?: string,
 ): SessionSyncMeta {
   return {
+    ...(partial.agent ? { agent: partial.agent } : {}),
     origin: {
       platform: partial.platform,
       title: partial.title,
@@ -349,6 +409,8 @@ export interface IndexEntry {
    * lack this field until rebuilt, and dedup then falls back to the old name-conflict behavior.
    */
   sessionId?: string;
+  /** The team revision the session ran with (`agent.team.revision` of its meta), when that is recorded. */
+  teamRevision?: string;
 }
 
 interface RepoIndex {
@@ -494,16 +556,22 @@ export class SyncManager {
     return result.status === 'busy' ? result : { status: 'written', value: result.value };
   }
 
-  /** Save through the archive lock, including deduplication and index repair. */
-  async saveSession(session: Session, meta: SessionSyncMeta): Promise<ArchiveWriteResult<string>> {
+  /**
+   * Save through the archive lock, including deduplication and index repair. `pathsRewritten` says the caller rewrote
+   * this machine's paths (`--scrub`): a session pushed before under a title that spelled one then moves to its new name.
+   */
+  async saveSession(session: Session, meta: SessionSyncMeta, opts: { pathsRewritten?: boolean } = {}): Promise<ArchiveWriteResult<string>> {
     const archivedCwdValue = await archivedCwd(meta.origin.cwd);
     const archivedMeta: SessionSyncMeta = {
       ...meta,
       origin: { ...meta.origin, cwd: archivedCwdValue },
     };
+    const roots = opts.pathsRewritten ? await publishedPathRoots(meta.origin.cwd) : undefined;
+    const spellsLocalPath = (title: string) => roots !== undefined && titleSpellsLocalPath(title, roots, meta.origin.cwd);
     return this.writeArchive(() => this.saveSessionLocked(
       { ...session, cwd: archivedCwdValue },
       archivedMeta,
+      spellsLocalPath,
     ));
   }
 
@@ -882,7 +950,7 @@ export class SyncManager {
    * @param meta Sync metadata
    * @returns Path of the written jsonl file (relative to repoRoot)
    */
-  private saveSessionLocked(session: Session, meta: SessionSyncMeta): string {
+  private saveSessionLocked(session: Session, meta: SessionSyncMeta, spellsLocalPath: (title: string) => boolean): string {
     const repoId = meta.origin.repoIdentity;
     const author = meta.origin.author;
     this.moveRepoDirToCurrentName(repoId);
@@ -890,20 +958,18 @@ export class SyncManager {
     // Keep this method free of filesystem-dependent metadata work so save and
     // index writes remain a single synchronous transaction.
 
-    let sessionName = generateSessionName(session.platform, session.title, session.createdAt);
+    const generated = generateSessionName(session.platform, session.title, session.createdAt);
     // P8 dedup: when the same origin.sessionId + author is pushed again, reuse the original sessionName
     // and overwrite (upsertIndexEntry updates the existing entry in place on sessionName:author),
-    // instead of resolveNameConflict creating an `xxx_1` copy.
+    // instead of resolveNameConflict creating an `xxx_1` copy. A session first pushed under a title that
+    // spelled a local path moves to the current title's name once its paths are rewritten (--scrub).
     const existing = this.findByOriginSessionId(repoId, meta.origin.sessionId, author, session.platform);
-    if (existing) {
-      sessionName = existing.sessionName;
-    } else {
-      sessionName = this.resolveNameConflict(repoId, author, sessionName);
-    }
+    const retired = existing && spellsLocalPath(existing.title) ? existing.sessionName : undefined;
+    const sessionName = existing && !retired ? existing.sessionName : this.resolveNameConflict(repoId, author, generated);
 
     const paths = this.sessionPaths(repoId, author, sessionName);
-    this.guardWrite(paths.jsonl);
-    this.guardWrite(paths.meta);
+    const retiredPaths = retired ? this.sessionPaths(repoId, author, retired) : undefined;
+    for (const file of [paths.jsonl, paths.meta, retiredPaths?.jsonl, retiredPaths?.meta]) if (file) this.guardWrite(file);
 
     // Resolve/repair the index before installing the pair: a rebuild must
     // never adopt half of this transaction as an existing archive.
@@ -914,18 +980,22 @@ export class SyncManager {
     const files = [
       { file: paths.jsonl, content: session.messages.map((m) => JSON.stringify(messageToDict(m))).join('\n') + '\n' },
       { file: paths.meta, content: JSON.stringify(meta, null, 2) },
-    ].map((file) => ({ ...file, temp: `${file.file}.${token}.tmp`, backup: `${file.file}.${token}.bak`, backedUp: false, installed: false }));
+      // A retired pair has no content: it is backed up like a replaced file, then dropped on commit.
+      ...(retiredPaths ? [{ file: retiredPaths.jsonl }, { file: retiredPaths.meta }] : []),
+    ].map((file: { file: string; content?: string }) => ({ ...file, temp: `${file.file}.${token}.tmp`, backup: `${file.file}.${token}.bak`, backedUp: false, installed: false }));
     let committed = false;
     try {
-      for (const file of files) fs.writeFileSync(file.temp, file.content, { encoding: 'utf-8', flag: 'wx' });
+      for (const file of files) if (file.content !== undefined) fs.writeFileSync(file.temp, file.content, { encoding: 'utf-8', flag: 'wx' });
       for (const file of files) {
         if (fs.existsSync(file.file)) {
           fs.renameSync(file.file, file.backup);
           file.backedUp = true;
         }
+        if (file.content === undefined) continue;
         fs.renameSync(file.temp, file.file);
         file.installed = true;
       }
+      if (retired) index.sessions = index.sessions.filter((s) => !(s.sessionName === retired && s.author === author));
       this.upsertIndexEntry(repoId, {
         sessionName,
         author,
@@ -938,6 +1008,7 @@ export class SyncManager {
         updatedAt: session.updatedAt,
         status: meta.status,
         sessionId: meta.origin.sessionId,
+        ...teamRevisionOf(meta),
       }, index);
       committed = true;
     } catch (error) {
@@ -987,7 +1058,7 @@ export class SyncManager {
     }
 
     // Read meta
-    const meta = JSON.parse(fs.readFileSync(paths.meta, 'utf-8')) as SessionSyncMeta;
+    const meta = readSyncMeta(paths.meta);
 
     // Read JSONL → rebuild Session
     const content = fs.readFileSync(paths.jsonl, 'utf-8');
@@ -1194,7 +1265,7 @@ export class SyncManager {
         const jsonlPath = path.join(authorDir, `${sessionName}.jsonl`);
 
         try {
-          const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8')) as SessionSyncMeta;
+          const meta = readSyncMeta(metaPath);
           const msgCount = fs.existsSync(jsonlPath)
             ? fs.readFileSync(jsonlPath, 'utf-8').split('\n').filter((l) => l.trim()).length
             : 0;
@@ -1215,6 +1286,7 @@ export class SyncManager {
             updatedAt: meta.sync.pushedAt ?? meta.origin.createdAt,
             status: meta.status,
             sessionId: meta.origin.sessionId,
+            ...teamRevisionOf(meta),
           });
         } catch {
           // skip corrupted entries

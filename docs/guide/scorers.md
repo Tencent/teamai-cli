@@ -200,7 +200,7 @@ Sessions for github.com/acme/app:
   1 session(s)
 
 $ teamai score --team-session claude-code_fix-the-retry-loop-in-sync-ts_20261021 --scorer review-quality --label missed-bug --push
-ℹ Labelling claude-code session 7c1e… in /home/alice/app
+ℹ Labelling claude-code session 7c1e… in packages/api
 ℹ Pushed by alice
 ℹ First prompt: Fix the retry loop in sync.ts
 ℹ review-quality: missed-bug (score 0, did not pass), by hand. No judge ran.
@@ -210,7 +210,7 @@ The label is about the session Alice ran, so it pairs with the judge's label fro
 
 ```console
 $ teamai score --team-session claude-code_fix-the-retry-loop-in-sync-ts_20261021 --scorer review-quality
-ℹ Scoring claude-code session 7c1e… in /home/alice/app
+ℹ Scoring claude-code session 7c1e… in packages/api
 ℹ Pushed by alice
 ℹ First prompt: Fix the retry loop in sync.ts
 ℹ review-quality: good (score 1, passed). Reasoning: ~/.teamai/scores/reasoning/2b7d….md
@@ -222,7 +222,7 @@ When two members pushed a session with that name, the command fails and lists th
 $ teamai score --team-session claude-code_fix-the-retry-loop-in-sync-ts_20261021 --author bob --scorer review-quality --label good
 ```
 
-`--team-session` reads the sessions pushed for the project of the current directory on `teamai-reports`. On a git team it reads where teamai kept sessions on the default branch before only when `teamai-reports` has no session of that name, and `--author` picks among the members who pushed the name where it was found. It cannot be combined with `--session`, `--source` or `--json`. The session is redacted before the judge reads it, also when it was pushed without `--scrub`. Its label has no `agent`, because what a session ran as is recorded only on the machine that ran it, so the Scorers page counts it as `Not recorded` by tool and model.
+`--team-session` reads the sessions pushed for the project of the current directory on `teamai-reports`. On a git team it reads where teamai kept sessions on the default branch before only when `teamai-reports` has no session of that name, and `--author` picks among the members who pushed the name where it was found. It cannot be combined with `--session`, `--source` or `--json`. The session is redacted before the judge reads it, also when it was pushed without `--scrub`. The directory it names is the one the session ran in, relative to its repository. Its label takes `agent` from the archive ([what a scrubbed session keeps](dashboard.md#what-a-scrubbed-session-keeps)), so the Scorers page groups it by tool, model and team revision with the sessions scored where they ran. A session archived without one, such as one pushed by teamai 0.28 or earlier, counts as `Not recorded` there.
 
 ### When the scorer changes
 

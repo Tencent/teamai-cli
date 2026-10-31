@@ -307,6 +307,31 @@ describe('saveSession dedup (origin sessionId + author)', () => {
     });
   });
 
+  it('renames a re-pushed session whose old name spelled a local path, and leaves no old copy', async () => {
+    const mgr = new SyncManager(repoRoot);
+    const leaked = `fix ${path.join(os.homedir(), 'app/src/retry.ts')}`;
+    const before = written(await mgr.saveSession(mkSession({ title: leaked }), mkMeta({ title: leaked })));
+
+    const after = written(await mgr.saveSession(mkSession({ title: 'fix ~/app/src/retry.ts' }), mkMeta({ title: 'fix ~/app/src/retry.ts' }), { pathsRewritten: true }));
+
+    expect(path.basename(after)).toBe('claude-code_fix-app-src-retry-ts_20260102.jsonl');
+    expect(fs.existsSync(path.join(repoRoot, before))).toBe(false);
+    expect(fs.existsSync(path.join(repoRoot, before.replace(/\.jsonl$/, '.meta.json')))).toBe(false);
+    expect(mgr.listSessions('github.com/org/alpha').map((entry) => entry.sessionName)).toEqual([path.basename(after, '.jsonl')]);
+    await mgr.rebuildIndex('github.com/org/alpha');
+    expect(mgr.listSessions('github.com/org/alpha').map((entry) => entry.sessionName)).toEqual([path.basename(after, '.jsonl')]);
+  });
+
+  it('keeps the name of a session re-pushed without rewriting its paths, even when its title moved off a path', async () => {
+    const mgr = new SyncManager(repoRoot);
+    const leaked = `fix ${path.join(os.homedir(), 'app/src/retry.ts')}`;
+    const before = written(await mgr.saveSession(mkSession({ title: leaked }), mkMeta({ title: leaked })));
+
+    const after = written(await mgr.saveSession(mkSession({ title: 'fix retries' }), mkMeta({ title: 'fix retries' })));
+
+    expect(after).toBe(before);
+  });
+
   it('treats the same sessionId under a different author as a separate session', async () => {
     const mgr = new SyncManager(repoRoot);
     await mgr.saveSession(mkSession({ sessionId: 'shared-1', title: 'shared' }), mkMeta({ sessionId: 'shared-1', author: 'alice' }));
@@ -1000,5 +1025,66 @@ describe('encodeRepoIdentity', () => {
       expect(decodeRepoIdentity(encodeRepoIdentity(id))).toBe(id);
     }
     expect(decodeRepoIdentity('github.com%2Forg%2Fa~41')).toBe('github.com/org/a~41');
+  });
+});
+
+describe('what an archived session ran as', () => {
+  const agent = {
+    v: 1 as const,
+    tool: { name: 'claude', version: '2.1.301' },
+    model: { requested: 'claude-opus-5-5', reported: 'claude-opus-5-5' },
+    team: { revision: '7a6134a25e74c0de7a6134a25e74c0de7a6134a2', localChanges: false },
+    project: { commit: '8e04ff4308e04ff4308e04ff4308e04ff4308e04', dirty: true },
+    teamai: '0.31.0',
+    driver: 'session',
+  };
+
+  it('keeps the agent in meta.json and its team revision in the index entry, which a rebuild gives again', async () => {
+    const mgr = new SyncManager(repoRoot);
+    const saved = written(await mgr.saveSession(mkSession(), { ...mkMeta(), agent }));
+
+    expect(mgr.loadSession('github.com/org/alpha', path.basename(saved, '.jsonl'), 'alice').meta.agent).toEqual(agent);
+    expect(mgr.listSessions('github.com/org/alpha')[0].teamRevision).toBe(agent.team.revision);
+    await mgr.rebuildIndex('github.com/org/alpha');
+    expect(mgr.listSessions('github.com/org/alpha')[0].teamRevision).toBe(agent.team.revision);
+  });
+
+  it('records no team revision for a session that has no agent', async () => {
+    const mgr = new SyncManager(repoRoot);
+    await mgr.saveSession(mkSession(), mkMeta());
+
+    expect(mgr.listSessions('github.com/org/alpha')[0]).not.toHaveProperty('teamRevision');
+  });
+
+  it('reads an agent that is not an observation, such as one with a path in it, as absent', async () => {
+    const mgr = new SyncManager(repoRoot);
+    const saved = written(await mgr.saveSession(mkSession(), { ...mkMeta(), agent }));
+    const metaFile = path.join(repoRoot, saved.replace(/\.jsonl$/, '.meta.json'));
+    const meta = JSON.parse(fs.readFileSync(metaFile, 'utf8')) as Record<string, unknown>;
+    fs.writeFileSync(metaFile, JSON.stringify({ ...meta, agent: { ...agent, tool: { name: '/Users/alice/bin/claude' } } }));
+
+    expect(mgr.loadSession('github.com/org/alpha', path.basename(saved, '.jsonl'), 'alice').meta).not.toHaveProperty('agent');
+    await mgr.rebuildIndex('github.com/org/alpha');
+    expect(mgr.listSessions('github.com/org/alpha')[0]).not.toHaveProperty('teamRevision');
+  });
+});
+
+describe('an archive written before cwd was relative and agent was recorded', () => {
+  it('lists, loads and rebuilds with its absolute cwd and no agent or team revision', async () => {
+    const mgr = new SyncManager(repoRoot);
+    const saved = written(await mgr.saveSession(mkSession(), mkMeta()));
+    const metaFile = path.join(repoRoot, saved.replace(/\.jsonl$/, '.meta.json'));
+    const meta = JSON.parse(fs.readFileSync(metaFile, 'utf8')) as { origin: Record<string, unknown> };
+    fs.writeFileSync(metaFile, JSON.stringify({ ...meta, origin: { ...meta.origin, cwd: '/home/dev/alpha' } }));
+    fs.rmSync(path.join(path.dirname(path.dirname(metaFile)), '_index.json'));
+
+    await mgr.rebuildIndex('github.com/org/alpha');
+
+    const [entry] = mgr.listSessions('github.com/org/alpha');
+    expect(entry).toMatchObject({ cwd: '/home/dev/alpha', sessionId: 's-1' });
+    expect(entry).not.toHaveProperty('teamRevision');
+    const loaded = mgr.loadSession('github.com/org/alpha', entry.sessionName, entry.author);
+    expect(loaded.session).toMatchObject({ cwd: '/home/dev/alpha', messages: [{ role: 'user' }, { role: 'assistant' }] });
+    expect(loaded.meta).not.toHaveProperty('agent');
   });
 });

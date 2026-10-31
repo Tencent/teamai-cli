@@ -9,7 +9,7 @@ teamai dashboard
 teamai dashboard --port 8080
 ```
 
-浏览器打开 `http://localhost:3721`。侧栏是总览、团队执行、工作流运行、评分器、基准测试、团队上下文、资源、分发、团队改进。数据是这台机器上的。
+浏览器打开 `http://localhost:3721`。侧栏是总览、团队执行、Token 与费用、工作流运行、评分器、基准测试、团队上下文、资源、分发、团队改进。数据是这台机器上的。
 
 ## 会话共享（Session sharing）
 
@@ -171,6 +171,55 @@ sharing:
 
 7 天趋势只统计你自己的会话：teamai 启动的会话（如工作流步骤）不计入。趋势下方按[运行模式](workflow.md#有人值守与无人值守的运行)拆分最近 7 天结束的会话：有人值守、无人值守，以及记录模式之前的会话 `not recorded`。参见[使用统计上报](reporting.md#按运行模式统计你的会话)。
 
+## Token 与费用（Tokens & Cost）
+
+**Token 与费用**页面回答"这周我的 AI 工具花了多少钱、花在哪里"，范围是所选工作区的最近 7、30 或 90 天（UTC）：
+
+```text
+Tokens & Cost · 7 days
+Estimated cost     $3.29    Prior: $2.74 · +20%
+Tokens             6M       Input 235.7K · Output 120.7K · Cache 5.6M
+Saved by caching   $14.97   Cache reads: 94% of the prompt
+Requests priced    92%      107 / 116 · $0.4936 reported by the tool
+```
+
+卡片下方是每日柱状图，然后是按 AI 工具、按模型的费用，以及费用最高的十个会话。看板认识的会话以第一条提示词命名，点开可看详情：
+
+```text
+By model            AI tool   Requests  Tokens  Cost
+claude-opus-5-5     claude    35        1.8M    $1.40
+gpt-6.1-sol         codex     20        732.8K  $0.4280
+gpt-5.6-sol         pi        8         726.1K  $0.4936
+big-pickle          opencode  9         116.8K  Tokens only
+```
+
+数字的来源：
+
+- 会话停止时，teamai 从工具自己的会话记录读取每个请求的 token 和模型：Claude Code、Codex、CodeBuddy、WorkBuddy、Copilot CLI、OpenCode、Pi、Oh My Pi、Muse Code 和 agy。agy 不记录模型，所以它的会话只显示 token，没有费用。[工具支持](tool-support.md)的 **Tokens & cost** 列列出覆盖了哪些工具、如何验证的。
+- 每个请求按 [LiteLLM 价格表](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json)中的 API 标价计价。价格表随 teamai 发布，页脚写明版本。长提示词、fast 模式、Codex 的 flex 层级和一小时缓存写入按各自的价格计算。工具自己上报的费用（如 Pi 和 OpenCode）按原值使用。
+- 每个请求保留记录时的费用，之后价格变化不会改写过去的数据。订阅套餐的计费方式不同：把这里的费用理解为同样的工作走 API 的价格。
+- **缓存节省**是缓存读取按普通输入计价时会多花的钱。
+
+价格表里没有的模型显示**仅 token**。如果它是某个已列出模型的别名（例如公司网关），在 `~/.teamai/config.yaml`（或某个工作区的配置）中映射，该会话下次停止时会为之前没有价格的请求计价：
+
+```yaml
+modelAliases:
+  corp-gateway-large: claude-opus-5-5
+  corp-gateway-fast: gpt-6.1-sol
+```
+
+请求在 `~/.teamai/dashboard/requests.jsonl` 中保留 90 天，每行一个，不含提示词和回复：
+
+```json
+{"id":"6f1c…","timestamp":"2026-10-30T09:15:02.118Z","tool":"claude","sessionId":"c1a0de00-…","model":"claude-opus-5-5","inputTokens":40,"outputTokens":600,"cacheReadTokens":30000,"cacheCreationTokens":1500,"costMicros":25660,"costSource":"catalog","priceVersion":"litellm-2026-10-31-b264711","cacheSavingsMicros":114000}
+```
+
+页面读取 `/api/tokens`，脚本也可以读。最近 30 天还没有价格的模型：
+
+```bash
+curl -s 'http://localhost:3721/api/tokens?days=30' | jq -r '.byModel[] | select(.pricedRequests == 0) | .model'
+```
+
 ## 会话产出（Session Outcomes）
 
 总览的**已结束会话的产出**面板显示当前工作区最近 30 天内被使用统计上报计入的会话：产出了 commit、拉取请求或经验的会话占比；按运行模式和产出分行，带每个会话的 token 和干预次数（参见[使用统计上报](reporting.md#你的会话产出了什么)）；以及最近的会话和它们的 commit、拉取请求链接和经验。
@@ -212,6 +261,64 @@ teamai session resume <name> --platform claude-code
 脚本可用 `migrate <sessionId> -s <工具> -t <工具> --json`：stdout 只输出一行，格式与 `teamai workflow` 相同，即 `{ "data": ... }` 或 `{ "error": { "code", "message" } }`；进度信息走 stderr。`data` 包含目标 `sessionId`、`cwd`、`reused` 和 `fidelity` 报告。`error.code` 标明失败原因，如 `no_adapter`（未知工具）、`tool_unavailable`（源工具或目标工具未安装，或其 CLI 无法运行）、`not_found`、`unreadable`，退出码为 1。`--json` 从不询问：缺少会话 id、`-s` 或 `-t` 时以 `prompt_refused` 失败，`--push` 需要 `-y` 或 `--scrub`。
 
 `--dry-run` 只预览。`--scrub` 先脱敏再归档；不加时，交互运行会询问，脚本需要 `-y`。`--all` 超过 10 条要确认（push 为 5 条）。`push --session <id>` 只推送 `--source` 的这一个会话，不限工作区，总会脱敏，也不询问。归档在团队仓库 `teamai-reports` 分支的 `sessions/repos/<repo>/<author>/`，按会话自己的 git remote；否则归入 `_unattributed`。工作流步骤在自己工作树里运行的会话，归到该工作树所属检出目录的仓库下。
+
+### 脱敏后的会话保留什么
+
+`--scrub`，以及 teamai 自己发起的每次推送（`push --session`、`workflow publish --sessions`、`score --drain`），还会改写本机路径。一位成员在 `/Users/me/app/packages/api` 里运行了一个会话：
+
+| 成员的记录里 | 归档里 |
+|---|---|
+| `/Users/me/app/packages/api/src/retry.ts` | `<repo>/packages/api/src/retry.ts` |
+| `cat /Users/me/app/skills/review/SKILL.md` | `cat <repo>/skills/review/SKILL.md` |
+| `/Users/me/.claude/settings.json` | `~/.claude/settings.json` |
+| `/Users/me/other-project/notes.md` | `~/other-project/notes.md` |
+| `/private/tmp/claude-502/-Users-me-app/6e64…/tasks/b.output` | `<tmp>/<project>/6e64…/tasks/b.output` |
+| `C:\Users\me\app\src\retry.ts` | `<repo>\src\retry.ts` |
+| `cat /c/Users/me/app/src/retry.ts` (Git Bash) | `cat <repo>/src/retry.ts` |
+| `file:///Users/me/app/README.md` | `file://<repo>/README.md` |
+| `/srv/scratch/a.ts`（会话在 `/srv/scratch` 运行，不在任何仓库里） | `<cwd>/a.ts` |
+| `src/retry.ts`、`/api/v1/users`、`https://github.com/acme/app` | 不变 |
+
+`<repo>` 是会话运行所在的仓库（不在 git 里时是工作区根目录），`<cwd>` 是不在任何仓库里的会话所在的目录，`~` 是主目录，`<tmp>` 是临时目录。标题、消息、思考、工具调用和工具结果都会改写。不加 `--scrub` 的推送保持记录原样。之前推送时标题里带路径的会话，下一次带脱敏的推送会按改写后的标题重命名：`claude-code_fix-users-me-app-src-retry-ts_20261031` 变成 `claude-code_fix-repo-src-retry-ts_20261031`。
+
+它的 `meta.json` 保存相对于仓库的目录，以及会话启动 hook 在该成员机器上捕获的运行配置：
+
+```json
+{
+  "origin": { "platform": "claude-code", "author": "<git user.name>", "cwd": "packages/api", "repoIdentity": "github.com/acme/app", "...": "..." },
+  "agent": {
+    "v": 1,
+    "tool": { "name": "claude", "version": "2.1.301" },
+    "model": { "requested": "claude-opus-5-5", "reported": "claude-opus-5-5" },
+    "team": { "revision": "7a6134a25e74…", "localChanges": false, "selection": { "primaryRole": "backend" } },
+    "project": { "commit": "8e04ff430…", "dirty": true },
+    "teamai": "0.29.0",
+    "driver": "session",
+    "fingerprint": "…"
+  }
+}
+```
+
+| 会话运行时的 `cwd` | 归档的 `cwd` |
+|---|---|
+| `/Users/me/app`（仓库根目录） | `.` |
+| `/Users/me/app/packages/api` | `packages/api` |
+| `/Users/me/tmp/scratch`（没有仓库，也没有 teamai 工作区） | `""` |
+| 已删除的工作流步骤工作树 | `""` |
+
+`session resume` 和工作流交接都恢复到你指定的目录，所以相对 `cwd` 就够了。`_index.json` 里该会话带有 `"teamRevision": "7a6134a25e74…"`。队友可以据此读到该会话当时的技能，或列出在 `main` 以外的团队版本上运行的会话：
+
+```bash
+# 在团队仓库克隆中
+git show 7a6134a25e74:skills/review/SKILL.md
+
+git fetch -q origin main teamai-reports
+git show origin/teamai-reports:sessions/repos/github.com~2Facme~2Fapp/_index.json \
+  | jq -r --arg main "$(git rev-parse origin/main)" \
+      '.sessions[] | select(.teamRevision and .teamRevision != $main) | "\(.teamRevision[0:7])  \(.sessionName)"'
+```
+
+会话的各次捕获不一致，或本机没有捕获时，不写 `agent`：会话在安装 hook 之前就开始了、它的工具不运行会话启动 hook，或捕获已随会话一起清理。工作流步骤的会话没有 `agent`，因为运行记录了每一轮的 `agent`；`session migrate --push` 归档的副本也没有。会话自己的 pull 交付了另一个团队版本时，`agent` 不含 `team`。
 
 session 命令使用本项目安装的团队仓库克隆，没有时使用用户级安装的克隆，所以只有要指向另一个克隆时才需要 `--repo-root`。没有任何安装时，它们输出 `teamai is not set up for this directory.`，提示 `teamai init` 和 `--repo-root`，并以退出码 1 退出。
 

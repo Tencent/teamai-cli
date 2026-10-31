@@ -22,7 +22,7 @@ export const TOOL_SUPPORT_PAGES = {
 
 export type ToolSupportLang = keyof typeof TOOL_SUPPORT_PAGES;
 
-const FEATURE_KEYS = ['env', 'workflows', 'unattended', 'recall', 'stats', 'aiBackend', 'votesJudge', 'sessionJudge', 'agentHooks'] as const satisfies readonly (keyof ToolFeatures)[];
+const FEATURE_KEYS = ['env', 'workflows', 'unattended', 'recall', 'stats', 'tokens', 'aiBackend', 'votesJudge', 'sessionJudge', 'agentHooks'] as const satisfies readonly (keyof ToolFeatures)[];
 
 const TEXT = {
   en: {
@@ -44,7 +44,7 @@ const TEXT = {
     notes: 'Notes:',
     columns: {
       tool: 'Tool', home: 'Home', skills: 'Skills', rules: 'Rules', blocks: 'Instruction blocks', agents: 'Agents', hooks: 'Hooks', mcp: 'MCP', sessions: 'Sessions',
-      env: 'Env', workflows: 'Workflows (local driver)', unattended: 'Unattended prompts', recall: 'Recall', stats: 'Stats', aiBackend: 'AI backend', votesJudge: 'Votes judge', sessionJudge: 'Session judge', agentHooks: 'HTTP agent hooks',
+      env: 'Env', workflows: 'Workflows (local driver)', unattended: 'Unattended prompts', recall: 'Recall', stats: 'Stats', tokens: 'Tokens & cost', aiBackend: 'AI backend', votesJudge: 'Votes judge', sessionJudge: 'Session judge', agentHooks: 'HTTP agent hooks',
     },
   },
   'zh-CN': {
@@ -66,7 +66,7 @@ const TEXT = {
     notes: '注：',
     columns: {
       tool: '工具', home: '主目录', skills: '技能', rules: '规则', blocks: '指令块', agents: 'Agents', hooks: 'Hooks', mcp: 'MCP', sessions: '会话',
-      env: '环境变量', workflows: '工作流（本地驱动）', unattended: '无人值守提示', recall: 'Recall', stats: '统计', aiBackend: 'AI 后端', votesJudge: '投票评审', sessionJudge: '会话评审', agentHooks: 'HTTP agent hooks',
+      env: '环境变量', workflows: '工作流（本地驱动）', unattended: '无人值守提示', recall: 'Recall', stats: '统计', tokens: 'Token 与费用', aiBackend: 'AI 后端', votesJudge: '投票评审', sessionJudge: '会话评审', agentHooks: 'HTTP agent hooks',
     },
   },
 } as const satisfies Record<ToolSupportLang, unknown>;
@@ -137,6 +137,14 @@ function table(header: readonly string[], rows: readonly (readonly string[])[]):
   return [row(header), row(header.map(() => '---')), ...rows.map(row)];
 }
 
+function agentsRead(d: ToolDescriptor, scope: 'user' | 'project'): string {
+  const value = d.agents[scope];
+  if (value === 'none') return '—';
+  if (value === 'unknown') return '?';
+  const result = reads(value.reads);
+  return d === TOOLS.joycode ? `${result}<br>indexed by \`agent.json\`` : result;
+}
+
 function userRow(tool: ToolId, d: ToolDescriptor): string[] {
   const { hooks } = d;
   return [
@@ -145,7 +153,7 @@ function userRow(tool: ToolId, d: ToolDescriptor): string[] {
     reads(d.skills.user),
     channel(d.rules.user, (c) => c.channel === 'inline' ? `in the blocks file (${c.label})` : reads(c.reads)),
     channel(d.blocks.user, (c) => reads(c.reads)),
-    channel(d.agents.user, (c) => reads(c.reads)),
+    agentsRead(d, 'user'),
     channel(hooks.user, (c) => c.channel === 'settings' ? reads(c.reads) : `${c.adapter} ${EVIDENCE[c.evidence]}`),
     channel(d.mcp.user, (c) => reads(c.reads)),
     typeof d.sessions === 'string' ? channel(d.sessions, () => '') : d.sessions.join(', '),
@@ -159,7 +167,7 @@ function projectRow(tool: ToolId, d: ToolDescriptor): string[] {
     reads(d.skills.project),
     channel(d.rules.project, (c) => 'probe' in c ? runTime(c) : reads(c.reads)),
     channel(d.blocks.project, (c) => 'probe' in c ? runTime(c) : reads(c.reads)),
-    channel(d.agents.project, (c) => reads(c.reads)),
+    agentsRead(d, 'project'),
     hooks.self === 'user' ? 'user hooks' : channel(hooks.self, (c) => reads(c.reads)),
     channel(d.mcp.project, (c) => reads(c.reads)),
   ];

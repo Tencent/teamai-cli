@@ -130,6 +130,16 @@ const sessionOf = (ctx) => {
   return fields;
 };
 
+/** The session file, as \`transcript_path\`, for the stop dispatch; empty when Pi keeps the session in memory only. */
+const transcriptOf = (ctx) => {
+  try {
+    const file = ctx && ctx.sessionManager && ctx.sessionManager.getSessionFile && ctx.sessionManager.getSessionFile();
+    return typeof file === "string" && file ? { transcript_path: file } : {};
+  } catch {
+    return {};
+  }
+};
+
 /** How much of a session file is read for its header lines. */
 const HEADER_READ_BYTES = 65536;
 
@@ -242,7 +252,7 @@ export default function teamaiHooks(pi) {
   });
 
   pi.on("session_stop", async (_event, ctx) => {
-    await dispatch("stop", ctx);
+    await dispatch("stop", ctx, transcriptOf(ctx));
     await teamHooks("Stop", ctx);
   });
 

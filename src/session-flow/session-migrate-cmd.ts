@@ -446,7 +446,7 @@ async function migrateSession(sessionId: string | undefined, opts: MigrationOpti
       }
       const { root: repoRoot, reports } = archive;
       // The team's declared secrets are known only for the teamai install's own archive, not for a --repo-root clone.
-      const scrub = opts.scrub ? { secrets: reports ? await knownSecrets(reports) : {} } : false;
+      const scrub = opts.scrub ? { secrets: reports ? await knownSecrets(reports) : {}, rewriteLocalPaths: true } : false;
       // When expanded across directories, sessions do not belong to workCwd; author should come from the repo the session actually lives in
       const authorCwd = migratedTargets.find((t) => t.cwd)?.cwd ?? workCwd;
       const author = getGitAuthor(authorCwd);
@@ -491,7 +491,7 @@ async function migrateSession(sessionId: string | undefined, opts: MigrationOpti
           meta.migration.targetPlatform = target;
           meta.migration.fidelityScore = t.fidelityScore;
           try {
-            const write = await syncMgr.saveSession(session, meta);
+            const write = await syncMgr.saveSession(session, meta, { pathsRewritten: Boolean(opts.scrub) });
             if (write.status === 'busy') {
               stopped = archiveFailed('busy', `${archiveBusyMessage(root, write.lockPath)} Run it again once that has finished.`, t);
               return undefined;
@@ -601,7 +601,7 @@ export function registerMigrationCommand(sessionCmd: Command, isDryRun: () => bo
     .option('--target-cwd <path>', 'Override cwd for the target session')
     .option('--push', 'Also push the migrated session to the team repo')
     .option('--repo-root <path>', 'Team repo clone to archive into with --push (default: the teamai install for this directory, else your user install)')
-    .option('--scrub', 'Redact secrets (tokens/keys/passwords) from the session before writing it')
+    .option('--scrub', 'Redact secrets (tokens/keys/passwords) from the session before writing it; with --push, also rewrite local paths in the archived copy')
     .option('--all', 'Migrate every session from source (not just the 5 most recent)')
     .option('--limit <n>', 'Max sessions to migrate (only caps --all; ignored otherwise)')
     .option('-y, --yes', 'Skip confirmation prompts, including archiving unredacted transcripts')

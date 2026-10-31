@@ -13,6 +13,7 @@ import { log } from '../utils/logger.js';
 import { updateReports } from '../utils/reports-branch.js';
 import { getAdapter } from './adapters/index.js';
 import { AgentSession, noAdapter, recordedToolRoots, writeCopyOnce } from './agent-session.js';
+import { SessionCaptures } from './captures.js';
 import type { Session } from './ir.js';
 import { degradeThinkingBlocks } from './migrate.js';
 import { archiveBusyMessage, authorForCwd, deriveArchiveIdentity, sessionArchiveRoot } from './session-cmd-shared.js';
@@ -140,7 +141,7 @@ export async function archiveSessions<T extends ArchiveSessionRef>(
   const toolRoots = recordedToolRoots(checkout);
   const repoIdentity = getRepoIdentity(checkout);
   const author = authorForCwd(checkout, config.username);
-  const scrub = { secrets: await knownSecrets(config) };
+  const scrub = { secrets: await knownSecrets(config), rewriteLocalPaths: true };
   const read: Array<{ session: Session; meta: SessionSyncMeta }> = [];
   const archived: T[] = [];
   const skipped: T[] = [];
@@ -157,6 +158,7 @@ export async function archiveSessions<T extends ArchiveSessionRef>(
       const { session } = found;
       const meta = defaultSyncMeta({
         platform: ref.platform, author, cwd: session.cwd || checkout, sessionId: ref.sessionId, repoIdentity, title: session.title,
+        agent: await SessionCaptures.agentOfSession(ref.platform, session, config),
       }, session.createdAt);
       newest = { ref, session, meta };
       break;
@@ -183,7 +185,7 @@ export async function archiveSessions<T extends ArchiveSessionRef>(
  */
 export async function pushSession(config: LocalConfig, ref: ArchiveSessionRef): Promise<SessionPush> {
   if (!sessionArchiveRoot(config)) return { status: 'failed', message: 'This team keeps no session archive.' };
-  const found = await AgentSession.find(ref, { scrub: { secrets: await knownSecrets(config) } });
+  const found = await AgentSession.find(ref, { scrub: { secrets: await knownSecrets(config), rewriteLocalPaths: true } });
   if (found.status === 'failed') return { status: 'failed', message: found.failure.message };
   const { session } = found;
   const meta = defaultSyncMeta({
@@ -193,6 +195,7 @@ export async function pushSession(config: LocalConfig, ref: ArchiveSessionRef): 
     sessionId: ref.sessionId,
     repoIdentity: deriveArchiveIdentity(session, ref.platform),
     title: session.title,
+    agent: await SessionCaptures.agentOfSession(ref.platform, session, config),
   }, session.createdAt);
   return archiveOnReports(config, [{ session, meta }], `sync: push 1 session(s) from ${ref.platform}`);
 }
@@ -253,7 +256,7 @@ async function saveAll(
 ): Promise<string | undefined> {
   for (const { session, meta } of sessions) {
     try {
-      const saved = await archive.saveSession(session, meta);
+      const saved = await archive.saveSession(session, meta, { pathsRewritten: true });
       if (saved.status === 'busy') return archiveBusyMessage(root, saved.lockPath);
     } catch (error) {
       return error instanceof Error ? error.message : String(error);

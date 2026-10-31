@@ -386,7 +386,7 @@ Generated: do not edit by hand. Regenerate with
     - `--target-cwd <path>` — Override cwd for the target session
     - `--push` — Also push the migrated session to the team repo
     - `--repo-root <path>` — Team repo clone to archive into with --push (default: the teamai install for this directory, else your user install)
-    - `--scrub` — Redact secrets (tokens/keys/passwords) from the session before writing it
+    - `--scrub` — Redact secrets (tokens/keys/passwords) from the session before writing it; with --push, also rewrite local paths in the archived copy
     - `--all` — Migrate every session from source (not just the 5 most recent)
     - `--limit <n>` — Max sessions to migrate (only caps --all; ignored otherwise)
     - `-y, --yes` — Skip confirmation prompts, including archiving unredacted transcripts
@@ -399,7 +399,7 @@ Generated: do not edit by hand. Regenerate with
     - `--limit <n>` — Max sessions to push (default: 5; ignored with --all or --session)
     - `--all` — Push every session of the platform across all workspace directories (ignores --limit)
     - `-y, --yes` — Skip confirmation prompts, including archiving unredacted transcripts (--all)
-    - `--scrub` — Redact secrets before archiving (archived sessions are team-readable)
+    - `--scrub` — Redact secrets and rewrite local paths (<repo>, ~, <tmp>) before archiving (archived sessions are team-readable)
   - `teamai session pull` — Pull team sessions for the current project
     - `--repo-root <path>` — Team repo clone that holds the session archive (default: the teamai install for this directory, else your user install)
     - `--cwd <path>` — Working directory (defaults to current directory)

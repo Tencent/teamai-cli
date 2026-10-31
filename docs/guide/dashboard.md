@@ -9,7 +9,7 @@ teamai dashboard
 teamai dashboard --port 8080
 ```
 
-Open `http://localhost:3721`. The sidebar is Overview, Team Execution, Workflow Runs, Scorers, Benchmarks, Team Context, Resources, Distribution, and Team Improvement. The numbers are from this machine.
+Open `http://localhost:3721`. The sidebar is Overview, Team Execution, Tokens & Cost, Workflow Runs, Scorers, Benchmarks, Team Context, Resources, Distribution, and Team Improvement. The numbers are from this machine.
 
 ## Session sharing
 
@@ -171,6 +171,55 @@ A session row shows how many prompts were sent and how many tokens were used. A 
 
 The 7-day trends count only your own sessions: a session teamai launched, such as a workflow step, is left out. Below them, the sessions that ended in the last 7 days are split by [run mode](workflow.md#attended-and-unattended-runs): attended, unattended, and `not recorded` for sessions recorded before modes were. See [Usage reporting](reporting.md#your-sessions-by-run-mode).
 
+## Tokens & Cost
+
+The **Tokens & Cost** page answers "what did my AI tools cost this week, and where did it go?" for the selected workspace, over 7, 30 or 90 days (UTC):
+
+```text
+Tokens & Cost · 7 days
+Estimated cost     $3.29    Prior: $2.74 · +20%
+Tokens             6M       Input 235.7K · Output 120.7K · Cache 5.6M
+Saved by caching   $14.97   Cache reads: 94% of the prompt
+Requests priced    92%      107 / 116 · $0.4936 reported by the tool
+```
+
+Below the cards: a bar per day, then the cost by AI tool, by model and the ten sessions that cost the most. A session the dashboard knows is named by its first prompt and opens its details:
+
+```text
+By model            AI tool   Requests  Tokens  Cost
+claude-opus-5-5     claude    35        1.8M    $1.40
+gpt-6.1-sol         codex     20        732.8K  $0.4280
+gpt-5.6-sol         pi        8         726.1K  $0.4936
+big-pickle          opencode  9         116.8K  Tokens only
+```
+
+Where the numbers come from:
+
+- When a session stops, teamai reads the tokens and the model of each request from the tool's own session record: Claude Code, Codex, CodeBuddy, WorkBuddy, Copilot CLI, OpenCode, Pi, Oh My Pi, Muse Code and agy. agy records no model, so its sessions show as tokens without a cost. The **Tokens & cost** column of [Tool support](tool-support.md) says which tools are covered and how that was checked.
+- Each request is priced at API list prices from [LiteLLM's price list](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json), bundled with teamai; the page footer names the version. Long prompts, fast mode, Codex's flex tier and one-hour cache writes are priced at their own rates. A cost the tool reports itself, as Pi and OpenCode do, is used as is.
+- A request keeps the cost it was recorded with, so a later price change does not rewrite past weeks. A subscription plan bills differently: read the cost as what the same work would cost on the API.
+- **Saved by caching** is what the cache reads would have cost as plain input.
+
+A model no price list knows shows **Tokens only**. When it is another name for a listed model, such as a company gateway, map it in `~/.teamai/config.yaml` (or a workspace's config) and the session's next stop prices the requests that had no price:
+
+```yaml
+modelAliases:
+  corp-gateway-large: claude-opus-5-5
+  corp-gateway-fast: gpt-6.1-sol
+```
+
+The requests are kept for 90 days in `~/.teamai/dashboard/requests.jsonl`, one line each, with no prompt or reply:
+
+```json
+{"id":"6f1c…","timestamp":"2026-10-30T09:15:02.118Z","tool":"claude","sessionId":"c1a0de00-…","model":"claude-opus-5-5","inputTokens":40,"outputTokens":600,"cacheReadTokens":30000,"cacheCreationTokens":1500,"costMicros":25660,"costSource":"catalog","priceVersion":"litellm-2026-10-31-b264711","cacheSavingsMicros":114000}
+```
+
+The page reads `/api/tokens`, which scripts can read too. The models of the last 30 days that have no price yet:
+
+```bash
+curl -s 'http://localhost:3721/api/tokens?days=30' | jq -r '.byModel[] | select(.pricedRequests == 0) | .model'
+```
+
 ## Session Outcomes
 
 The Overview's **What finished sessions delivered** panel shows the sessions the usage report counted in the last 30 days for the selected workspace: the share that delivered a commit, pull request or learning, the rows per run mode and outcome with tokens and interventions per session (see [Usage reporting](reporting.md#what-your-sessions-delivered)), and the latest sessions with their commits, pull request links and learnings.
@@ -212,6 +261,64 @@ A migration never overwrites. If the target workspace already has a copy of the 
 For a script, `migrate <sessionId> -s <tool> -t <tool> --json` prints one line on stdout, the same `{ "data": ... }` or `{ "error": { "code", "message" } }` shape as `teamai workflow`; progress goes to stderr. `data` has the target `sessionId`, `cwd`, `reused`, and the `fidelity` report. `error.code` names the failure, such as `no_adapter` (unknown tool), `tool_unavailable` (the source or target tool is not installed, or its CLI cannot run), `not_found`, or `unreadable`, and the exit code is 1. `--json` never prompts: a missing id, `-s`, or `-t` fails with `prompt_refused`, and `--push` needs `-y` or `--scrub`.
 
 `--dry-run` previews. `--scrub` redacts before an archive; without it, an interactive run asks and a script needs `-y`. `--all` confirms above 10 sessions (push: 5). `push --session <id>` pushes exactly that session of `--source`, from any workspace, always scrubbed and without a prompt. Archives go to `sessions/repos/<repo>/<author>/` on the team repo's `teamai-reports` branch, under the session's own git remote, or `_unattributed`. A session that a workflow step ran in its own worktree goes under the repository of the checkout that the worktree came from.
+
+### What a scrubbed session keeps
+
+`--scrub`, and every push teamai makes on its own (`push --session`, `workflow publish --sessions`, `score --drain`), also rewrites this machine's paths. A member ran a session in `/Users/me/app/packages/api`:
+
+| In the member's transcript | In the archive |
+|---|---|
+| `/Users/me/app/packages/api/src/retry.ts` | `<repo>/packages/api/src/retry.ts` |
+| `cat /Users/me/app/skills/review/SKILL.md` | `cat <repo>/skills/review/SKILL.md` |
+| `/Users/me/.claude/settings.json` | `~/.claude/settings.json` |
+| `/Users/me/other-project/notes.md` | `~/other-project/notes.md` |
+| `/private/tmp/claude-502/-Users-me-app/6e64…/tasks/b.output` | `<tmp>/<project>/6e64…/tasks/b.output` |
+| `C:\Users\me\app\src\retry.ts` | `<repo>\src\retry.ts` |
+| `cat /c/Users/me/app/src/retry.ts` (Git Bash) | `cat <repo>/src/retry.ts` |
+| `file:///Users/me/app/README.md` | `file://<repo>/README.md` |
+| `/srv/scratch/a.ts`, in a session run in `/srv/scratch`, outside any repository | `<cwd>/a.ts` |
+| `src/retry.ts`, `/api/v1/users`, `https://github.com/acme/app` | unchanged |
+
+`<repo>` is the repository the session ran in (the workspace root outside git), `<cwd>` the directory of a session outside any repository, `~` the home directory, `<tmp>` the temp directory. The title, messages, thinking, tool calls and tool results are rewritten. A push without `--scrub` keeps the transcript as it is. A session pushed before with a path in its title is renamed after the rewritten title on its next scrubbed push: `claude-code_fix-users-me-app-src-retry-ts_20261031` becomes `claude-code_fix-repo-src-retry-ts_20261031`.
+
+Its `meta.json` stores the directory relative to the repository, and what the session ran as, as its session-start hook captured it on the member's machine:
+
+```json
+{
+  "origin": { "platform": "claude-code", "author": "<git user.name>", "cwd": "packages/api", "repoIdentity": "github.com/acme/app", "...": "..." },
+  "agent": {
+    "v": 1,
+    "tool": { "name": "claude", "version": "2.1.301" },
+    "model": { "requested": "claude-opus-5-5", "reported": "claude-opus-5-5" },
+    "team": { "revision": "7a6134a25e74…", "localChanges": false, "selection": { "primaryRole": "backend" } },
+    "project": { "commit": "8e04ff430…", "dirty": true },
+    "teamai": "0.29.0",
+    "driver": "session",
+    "fingerprint": "…"
+  }
+}
+```
+
+| `cwd` the session ran in | Archived `cwd` |
+|---|---|
+| `/Users/me/app` (repository root) | `.` |
+| `/Users/me/app/packages/api` | `packages/api` |
+| `/Users/me/tmp/scratch` (no repository, no teamai workspace) | `""` |
+| A workflow step worktree that was removed | `""` |
+
+`session resume` and a workflow handover restore into the directory you give them, so a relative `cwd` is enough. `_index.json` lists the session with `"teamRevision": "7a6134a25e74…"`. With that, a teammate can read the skill as that session had it, or list the sessions that ran on another team revision than `main`'s:
+
+```bash
+# In the team repo clone
+git show 7a6134a25e74:skills/review/SKILL.md
+
+git fetch -q origin main teamai-reports
+git show origin/teamai-reports:sessions/repos/github.com~2Facme~2Fapp/_index.json \
+  | jq -r --arg main "$(git rev-parse origin/main)" \
+      '.sessions[] | select(.teamRevision and .teamRevision != $main) | "\(.teamRevision[0:7])  \(.sessionName)"'
+```
+
+`agent` is left out when the session's captures disagree, or this machine has none: the session started before the hook was installed, its tool runs no session-start hook, or its captures were removed with it. A workflow step session has none, since its run records the `agent` of each pass, and neither does a copy `session migrate --push` archives. When the session's own pull delivered another team revision, `agent` has no `team`.
 
 Session commands use the team repo clone of this project's install, else of the user install, so you need `--repo-root` only to point at another clone. With no install, they print `teamai is not set up for this directory.`, name `teamai init` and `--repo-root`, and exit 1.
 

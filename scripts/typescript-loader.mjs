@@ -18,6 +18,6 @@ export async function resolve(specifier, context, nextResolve) {
 export async function load(url, context, nextLoad) {
   if (!url.startsWith('file:') || !url.endsWith('.ts')) return nextLoad(url, context);
   const source = await fs.readFile(new URL(url), 'utf8');
-  const compiled = await transform(source, { loader: 'ts', format: 'esm', target: 'node20', sourcefile: fileURLToPath(url), sourcemap: 'inline' });
+  const compiled = await transform(source, { loader: 'ts', format: 'esm', target: 'node20.19', sourcefile: fileURLToPath(url), sourcemap: 'inline' });
   return { format: 'module', source: compiled.code, shortCircuit: true };
 }

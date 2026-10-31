@@ -16,6 +16,7 @@ import { getDataHome, type DeliverySelection, type LocalConfig } from '../types.
 import { acquireLock, releaseLock } from '../update.js';
 import { log } from '../utils/logger.js';
 import { AgentSession } from './agent-session.js';
+import type { Session } from './ir.js';
 
 export const SessionCaptureSchema = z.object({
   captureId: z.string().uuid(),
@@ -305,9 +306,27 @@ function agentOf(captures: readonly SessionCapture[], reportedModel: string | un
   return settled && { ...settled, teamai };
 }
 
+/** The one model the messages of `session` name, if they name one: the `reportedModel` of `agentOf`. */
+function reportedModelOf(session: Session): string | undefined {
+  const models = new Set(session.messages.flatMap((message) => message.metadata?.model ?? []));
+  const [model] = models.size === 1 ? models : [];
+  return model;
+}
+
+/**
+ * What `session` of `platform` ran as, as a label of it takes it: `agentOf` its captures in the data home of the scope
+ * its hooks resolved from its directory, else of `fallback`. Undefined when they disagree or there are none.
+ */
+async function agentOfSession(platform: string, session: Session, fallback: LocalConfig | undefined): Promise<AgentObservation | undefined> {
+  const { resolveHookConfig } = await import('../dashboard-collector.js');
+  const scope = session.cwd ? await resolveHookConfig({ cwd: session.cwd, session_id: session.sessionId }, AgentSession.toolForPlatform(platform)) : null;
+  const config = scope ?? fallback;
+  return config && agentOf(await read(config, platform, session.sessionId), reportedModelOf(session));
+}
+
 /** The run mode every capture of a session recorded, or undefined when they differ or one recorded none. */
 function runModeOf(captures: readonly SessionCapture[]): RunMode | undefined {
   return agreedRunMode(captures.map((capture) => capture.runMode));
 }
 
-export const SessionCaptures = { atStart, addToolVersion, checkoutDelivery, markTeamChanged, read, list, markDrained, platformsOf, agentOf, runModeOf, sweep } as const;
+export const SessionCaptures = { atStart, addToolVersion, checkoutDelivery, markTeamChanged, read, list, markDrained, platformsOf, agentOf, agentOfSession, reportedModelOf, runModeOf, sweep } as const;

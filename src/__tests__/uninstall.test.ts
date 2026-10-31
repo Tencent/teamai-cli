@@ -268,6 +268,75 @@ describe('uninstall', () => {
     expect(YAML.parse(patch)).toEqual([{ id: 'telemetry', disabled: true }]);
   });
 
+  it('removes JoyCode TeamAI index entries with their agent files but preserves member entries', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    const defaults = TeamaiConfigSchema.parse({ team: 'test', repo: 'https://example.invalid/test.git' }).toolPaths;
+    const agentsDir = path.join(homeDir, '.joycode', 'agents');
+    const indexPath = path.join(homeDir, '.joycode', 'agent.json');
+    await fse.outputFile(path.join(repoPath, 'agents', 'reviewer.yaml'), 'name: reviewer\ndescription: Review changes\ninstructions: Review the patch.\n');
+    const { recordDelivered } = await import('../resources/delivered-copies.js');
+    const delivered: Record<string, string> = {};
+    await fse.outputFile(path.join(agentsDir, 'reviewer.md'), '# Reviewer\n');
+    await recordDelivered(delivered, path.join(agentsDir, 'reviewer.md'));
+    await fse.ensureDir(path.join(homeDir, '.joycode'));
+    await fse.writeJson(indexPath, {
+      version: '1.0.0',
+      agents: [
+        { agentId: 'teamai-2ac42e5a', name: 'reviewer', source: 'global', contentPath: 'agents/reviewer.md', isActive: true },
+        { agentId: 'member-agent', name: 'Member', source: 'project', contentPath: 'agents/member.md', isActive: false },
+      ],
+    });
+    const localConfig = makeLocalConfig(homeDir, repoPath, { enabledAgents: ['joycode'] });
+    const teamConfig = makeTeamConfig({ toolPaths: { joycode: { ...defaults.joycode, agents: '.joycode/agents' } } });
+    const state = await loadStateForScope(localConfig);
+    state.lastPullByWorkspace = { [await checkoutKey(homeDir)]: { rev: 'r1', targets: [], delivered } };
+    await saveStateForScope(state, localConfig);
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
+    commitTeamRepo(repoPath);
+
+    await uninstall({ force: true, agent: 'joycode' });
+
+    expect(await fse.pathExists(path.join(agentsDir, 'reviewer.md'))).toBe(false);
+    expect((await fse.readJson(indexPath)).agents).toEqual([
+      { agentId: 'member-agent', name: 'Member', source: 'project', contentPath: 'agents/member.md', isActive: false },
+    ]);
+  });
+
+  it('removes a JoyCode custom-agent index entry on uninstall', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    const defaults = TeamaiConfigSchema.parse({ team: 'test', repo: 'https://example.invalid/test.git' }).toolPaths;
+    const agentsDir = path.join(homeDir, '.joycode', 'custom-agents');
+    const indexPath = path.join(homeDir, '.joycode', 'agent.json');
+    await fse.outputFile(path.join(repoPath, 'agents', 'reviewer.yaml'), 'name: reviewer\ndescription: Review changes\ninstructions: Review the patch.\n');
+    const { recordDelivered } = await import('../resources/delivered-copies.js');
+    const delivered: Record<string, string> = {};
+    await fse.outputFile(path.join(agentsDir, 'reviewer.md'), '# Reviewer\n');
+    await recordDelivered(delivered, path.join(agentsDir, 'reviewer.md'));
+    await fse.writeJson(indexPath, {
+      version: '1.0.0',
+      agents: [{
+        agentId: 'teamai-095d6a6d', name: 'reviewer', source: 'global',
+        contentPath: 'custom-agents/reviewer.md', isActive: true,
+      }],
+    });
+    const localConfig = makeLocalConfig(homeDir, repoPath, { enabledAgents: ['joycode'] });
+    const teamConfig = makeTeamConfig({ toolPaths: { joycode: { ...defaults.joycode, agents: '.joycode/custom-agents' } } });
+    const state = await loadStateForScope(localConfig);
+    state.lastPullByWorkspace = { [await checkoutKey(homeDir)]: { rev: 'r1', targets: [], delivered } };
+    await saveStateForScope(state, localConfig);
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
+    commitTeamRepo(repoPath);
+
+    await uninstall({ force: true, agent: 'joycode' });
+
+    expect(await fse.pathExists(path.join(agentsDir, 'reviewer.md'))).toBe(false);
+    expect(await fse.pathExists(indexPath)).toBe(false);
+  });
+
   it('完整卸载移除所有资源', async () => {
     const { homeDir, repoPath, teamaiHome } = await setupFixture(tmpDir);
     vi.stubEnv('HOME', homeDir);
@@ -2734,6 +2803,44 @@ describe('uninstall', () => {
     expect(await fse.readJson(rootConfig)).toEqual({ theme: 'dark' });
   });
 
+  it('keeps user-scope OpenCode skills during a project uninstall (#1645)', async () => {
+    const homeDir = path.join(tmpDir, 'oc-home');
+    const repoPath = path.join(tmpDir, 'oc-team-repo');
+    const projectRoot = path.join(tmpDir, 'oc-project');
+    await fse.outputFile(path.join(repoPath, 'skills', 'team-skill', 'SKILL.md'), '# Team Skill');
+    const userSkill = path.join(homeDir, '.config', 'opencode', 'skills', 'team-skill', 'SKILL.md');
+    const projectSkill = path.join(projectRoot, '.opencode', 'skills', 'team-skill', 'SKILL.md');
+    const memberSkill = path.join(homeDir, '.config', 'opencode', 'skills', 'member-skill', 'SKILL.md');
+    await fse.outputFile(userSkill, '# Team Skill');
+    await fse.outputFile(projectSkill, '# Team Skill');
+    await fse.outputFile(memberSkill, '# Member Skill');
+
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    const teamConfig = makeTeamConfig({
+      toolPaths: {
+        opencode: {
+          skills: '.opencode/skills',
+          userScope: { skills: '.config/opencode/skills' },
+        },
+      },
+    });
+    const localConfig = makeLocalConfig(homeDir, repoPath, {
+      scope: 'project',
+      projectRoot,
+      enabledAgents: ['opencode'],
+      repo: { localPath: repoPath, remote: '', kind: 'self', businessRepoRoot: projectRoot },
+    });
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
+    commitTeamRepo(repoPath);
+
+    await uninstall({ force: true, agent: 'opencode' });
+
+    expect(await fse.pathExists(projectSkill)).toBe(false);
+    expect(await fse.pathExists(userSkill)).toBe(true);
+    expect(await fse.pathExists(memberSkill)).toBe(true);
+  });
+
   it('deletes the .opencode/opencode.json the rules glob alone filled, and keeps the root opencode.json (#946)', async () => {
     const homeDir = path.join(tmpDir, 'oc-home');
     const repoPath = path.join(tmpDir, 'oc-team-repo');
@@ -4027,6 +4134,30 @@ describe('uninstall', () => {
     expect(await fse.pathExists(stub)).toBe(false);
   });
 
+  it('removes skills and hooks from the OpenCode home a re-init replaced (#1221)', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    const oldXdg = path.join(tmpDir, 'xdg-old');
+    const newXdg = path.join(tmpDir, 'xdg-new');
+    const oldHome = path.join(oldXdg, 'opencode');
+    const newHome = path.join(newXdg, 'opencode');
+    const oldSkill = path.join(oldHome, 'skills', 'teamai', 'SKILL.md');
+    const oldPlugin = path.join(oldHome, 'plugin', 'teamai-hooks.ts');
+    await fse.outputFile(oldSkill, shipped('teamai', 'SKILL.md'));
+    await fse.outputFile(oldPlugin, '// [teamai] OpenCode hook plugin');
+    await fse.outputJson(path.join(homeDir, '.teamai', 'tool-homes.json'), { opencode: newHome });
+    await fse.outputJson(path.join(homeDir, '.teamai', 'tool-homes-history.json'), { opencode: [oldHome] });
+    vi.stubEnv('XDG_CONFIG_HOME', newXdg);
+
+    const teamConfig = makeTeamConfig();
+    teamConfig.toolPaths.opencode = { skills: '.config/opencode/skills' };
+    mockAutoDetectInit.mockResolvedValue({ localConfig: makeLocalConfig(homeDir, repoPath), teamConfig });
+    await uninstall({ force: true, agent: 'opencode' });
+
+    expect(await fse.pathExists(oldSkill)).toBe(false);
+    expect(await fse.pathExists(oldPlugin)).toBe(false);
+  });
   it('removes the Hermes hook and plugin from the home init recorded, from a shell without HERMES_HOME (#1221)', async () => {
     const { homeDir, repoPath } = await setupFixture(tmpDir);
     vi.stubEnv('HOME', homeDir);
