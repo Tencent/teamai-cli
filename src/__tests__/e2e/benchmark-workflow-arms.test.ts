@@ -6,7 +6,7 @@
 import { execFileSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { benchmarkFixture, driveCommands, envelope, PRODUCT_URL, said, type BenchmarkFixture, type BenchmarkFixtureOptions } from '../helpers/benchmark-fixture.js';
+import { benchmarkFixture, driveCommands, envelope, fixTask, PRODUCT_URL, said, type BenchmarkFixture, type BenchmarkFixtureOptions } from '../helpers/benchmark-fixture.js';
 
 const SUITE = `schemaVersion: v1alpha1
 name: fix
@@ -235,6 +235,18 @@ steps:
       { arm: 'flow', result: 'error', unenforced: ['max_turns'] },
       { arm: 'prompt', result: 'passed', unenforced: undefined },
     ]);
+  }, 240_000);
+
+  it('runs a task whose text holds a workflow read on a prompt arm and a workflow arm, as plain text', async () => {
+    const task = fixTask('{{startingCommit}}', '"Replace the literal {{ inputs.customer }} placeholder, then make node test.js pass."');
+    const fixture = await fixtureWith(SUITE, { fixer: FIXER, 'fix-once': FIX_ONCE }, { tasks: { fix: task } });
+
+    const ran = await fixture.teamai(['benchmark', 'run', 'fix']);
+
+    expect(ran.code, said(ran)).toBe(0);
+    const runId = z.object({ run: z.string() }).parse(envelope(ran).data?.done).run;
+    const { trials } = RecordSchema.parse(fixture.benchmarkRecord(runId));
+    expect(trials.map(({ arm, result }) => ({ arm, result }))).toEqual([{ arm: 'prompt', result: 'passed' }, { arm: 'flow', result: 'passed' }]);
   }, 240_000);
 
   it('judges a criteria task on the workflow step, from the evidence of its prompt passes', async () => {

@@ -245,10 +245,12 @@ export function compileBundle(
     const pinned = armWorkflows.get(arm.name);
     // A workflow step's timeout and budget are an allowance its prompts spend; no allowance caps turns.
     const ends = { ...limits, ...(pinned ? { maxTurns: undefined } : {}) };
+    // Both fields are templates; escaped, the task's text renders as written, braces and all.
+    const text = task.prompt.replaceAll('{{', '\\{{');
     return {
       ...(pinned
-        ? { id: 'workflow', workflow: pinned.key, with: { task: task.prompt } }
-        : { id: 'prompt', prompt: task.prompt, tool: arm.tool, ...(arm.model ? { model: { name: arm.model, ...(arm.effort ? { effort: arm.effort } : {}) } } : {}), ...(unattended ? { permissions: 'unattended' } : {}) }),
+        ? { id: 'workflow', workflow: pinned.key, with: { task: text } }
+        : { id: 'prompt', prompt: text, tool: arm.tool, ...(arm.model ? { model: { name: arm.model, ...(arm.effort ? { effort: arm.effort } : {}) } } : {}), ...(unattended ? { permissions: 'unattended' } : {}) }),
       workspace: 'continue',
       ...(ends.timeoutMs !== undefined ? { timeout: `${ends.timeoutMs}ms` } : {}),
       ...(ends.maxTurns !== undefined ? { max_turns: ends.maxTurns } : {}),

@@ -34,15 +34,15 @@ afterEach(() => {
 /**
  * A check suite of `tasks` tasks t01.. and `arms` arms a01.., arm i on `tools[i]`, and on claude past them; an arm after
  * the first with no tool or team (`teams[i]`) of its own runs model m<i>, as each arm changes one of the defaults.
- * `trial` is the suite's `trial` value.
+ * `trial` is the suite's `trial` value, and `prompt` every task's.
  */
-function suiteOf({ tasks = 1, arms = 1, repetitions = 1, tools = [] as string[], teams = [] as string[], trial = '', parallel = 1 } = {}): BenchmarkSuiteFiles {
+function suiteOf({ tasks = 1, arms = 1, repetitions = 1, tools = [] as string[], teams = [] as string[], trial = '', parallel = 1, prompt = 'Make the test pass.' } = {}): BenchmarkSuiteFiles {
   const names = (prefix: string, count: number): string[] => Array.from({ length: count }, (_, index) => `${prefix}${String(index + 1).padStart(2, '0')}`);
   return {
     name: 'fix',
     suite: `schemaVersion: v1alpha1\nname: fix\nrepo: https://github.com/fixture/app.git\ndefaults: { tool: claude }\narms: [${names('a', arms).map((name, index) => `{ name: ${name}${tools[index] ? `, tool: ${tools[index]}` : teams[index] ? `, team: ${teams[index]}` : index > 0 ? `, model: m${index + 1}` : ''} }`).join(', ')}]\nrepetitions: ${repetitions}\nparallel: ${parallel}\ntimeout: 10m\n${trial ? `trial: ${trial}\n` : ''}`,
     tasks: Object.fromEntries(names('t', tasks).map((name) => [name,
-      "schemaVersion: v1alpha1\ntitle: Fix it\nprompt: Make the test pass.\nstartingCommit: '{{startingCommit}}'\ncheck: { run: node test.js, protect: [test.js] }\n"])),
+      `schemaVersion: v1alpha1\ntitle: Fix it\nprompt: ${JSON.stringify(prompt)}\nstartingCommit: '{{startingCommit}}'\ncheck: { run: node test.js, protect: [test.js] }\n`])),
   };
 }
 
@@ -104,6 +104,18 @@ describe('benchmark plan run', () => {
       tool: 'claude',
       workspace: { base: { commit: RUN_START }, configCommit: RUN_START, clone: { commit: RUN_START, team: { revision: RUN_TEAM, treatment: 'pulled' } } },
     } } });
+  });
+
+  it.each([
+    'Fix the literal {{ inputs.customer }} placeholder.',
+    'Keep \\{{ steps.build.outputs.text }} and ${{ inputs.ref }} as they are.',
+  ])('leases a trial prompt as its task wrote it, a workflow read in it included: %s', async (prompt) => {
+    const { config, runId } = await startFix({ prompt });
+    await settleBaselines(config, runId, driver, can);
+
+    const next = await leaseNext(config, runId, driver, { can, prepare: true });
+
+    expect(next).toMatchObject({ data: { lease: { step: 'trials.r1.t01.a01.prompt', prompt } } });
   });
 
   it.each([
