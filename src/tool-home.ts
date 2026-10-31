@@ -142,12 +142,17 @@ function openclawState(host: Host): EnvToolHome | null {
   return profile ? { dir: host.path.join(host.home, dir), variable: 'OPENCLAW_PROFILE', kind: 'own' } : null;
 }
 
+/** OMP_PROFILE wins whenever it is defined, even blank; a named profile does not use Pi's default agent directory. */
+export function ompProfile(env: Readonly<Record<string, string | undefined>>): { readonly variable: 'OMP_PROFILE' | 'PI_PROFILE' | null; readonly name: string | null } {
+  const variable = env.OMP_PROFILE !== undefined ? 'OMP_PROFILE' : env.PI_PROFILE !== undefined ? 'PI_PROFILE' : null;
+  return { variable, name: variable === null ? null : env[variable]?.trim() || null };
+}
+
 function ompAgentDir(host: Host): EnvToolHome | null {
   const p = host.path;
   const { env } = host;
   const base = p.join(host.home, env.PI_CONFIG_DIR || '.omp');
-  const selector = env.OMP_PROFILE !== undefined ? 'OMP_PROFILE' : env.PI_PROFILE !== undefined ? 'PI_PROFILE' : null;
-  const profile = selector === null ? undefined : env[selector]?.trim();
+  const { variable: selector, name: profile } = ompProfile(env);
   if (selector !== null && profile && profile !== 'default') return { dir: p.join(base, 'profiles', profile, 'agent'), variable: selector, kind: 'own' };
   if (env.PI_CONFIG_DIR) return { dir: p.join(base, 'agent'), variable: 'PI_CONFIG_DIR', kind: 'own' };
   return selector !== null && profile ? { dir: p.join(base, 'agent'), variable: selector, kind: 'own' } : null;
