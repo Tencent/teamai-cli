@@ -137,6 +137,14 @@ function table(header: readonly string[], rows: readonly (readonly string[])[]):
   return [row(header), row(header.map(() => '---')), ...rows.map(row)];
 }
 
+function agentsRead(d: ToolDescriptor, scope: 'user' | 'project'): string {
+  const value = d.agents[scope];
+  if (value === 'none') return '—';
+  if (value === 'unknown') return '?';
+  const result = reads(value.reads);
+  return d === TOOLS.joycode ? `${result}<br>indexed by \`agent.json\`` : result;
+}
+
 function userRow(tool: ToolId, d: ToolDescriptor): string[] {
   const { hooks } = d;
   return [
@@ -145,7 +153,7 @@ function userRow(tool: ToolId, d: ToolDescriptor): string[] {
     reads(d.skills.user),
     channel(d.rules.user, (c) => c.channel === 'inline' ? `in the blocks file (${c.label})` : reads(c.reads)),
     channel(d.blocks.user, (c) => reads(c.reads)),
-    channel(d.agents.user, (c) => reads(c.reads)),
+    agentsRead(d, 'user'),
     channel(hooks.user, (c) => c.channel === 'settings' ? reads(c.reads) : `${c.adapter} ${EVIDENCE[c.evidence]}`),
     channel(d.mcp.user, (c) => reads(c.reads)),
     typeof d.sessions === 'string' ? channel(d.sessions, () => '') : d.sessions.join(', '),
@@ -159,7 +167,7 @@ function projectRow(tool: ToolId, d: ToolDescriptor): string[] {
     reads(d.skills.project),
     channel(d.rules.project, (c) => 'probe' in c ? runTime(c) : reads(c.reads)),
     channel(d.blocks.project, (c) => 'probe' in c ? runTime(c) : reads(c.reads)),
-    channel(d.agents.project, (c) => reads(c.reads)),
+    agentsRead(d, 'project'),
     hooks.self === 'user' ? 'user hooks' : channel(hooks.self, (c) => reads(c.reads)),
     channel(d.mcp.project, (c) => reads(c.reads)),
   ];

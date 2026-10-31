@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { parse as parseYaml } from 'yaml';
 import matter from 'gray-matter';
@@ -9,7 +10,7 @@ import { log } from '../utils/logger.js';
 import { installScopeName, isAgentExcluded, isSelfMode } from '../types.js';
 import { BUILTIN_AGENT_NAMES } from '../builtin-agents.js';
 import { isAgentToolId } from '../tools.js';
-import { cleanupOf, installOf, locate, ownOf, writable } from '../locate.js';
+import { cleanupOf, installOf, locate, ownOf, writable, type SidecarFile } from '../locate.js';
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
 import { isSafeNamespaceSegment } from '../manifest-schema.js';
 import { assertWithinRoot } from '../utils/path-safety.js';
@@ -778,7 +779,7 @@ export class AgentsHandler extends ResourceHandler {
       log.warn(`[agents] Skipped ${item.name} for ${tool}: ${reason}`);
       ledger?.toolsMissingAgents.add(tool);
     }
-    for (const { tool, dest, render, origin } of renders) {
+    for (const { tool, dest, render, origin, sidecar } of renders) {
       const destDir = path.dirname(dest);
       try {
         if (ledger && await keepsEditedCopy(ledger, item, { tool, dest, content: render.content, origin })) {
@@ -795,6 +796,7 @@ export class AgentsHandler extends ResourceHandler {
           await removeStaleAgentSiblings(destDir, item.name, render.ext, ledger, origin);
         }
         await writeFile(dest, render.content);
+        if (sidecar !== null) await updateJoycodeAgentIndex(sidecar, { kind: 'upsert', file: path.basename(dest), content: render.content, scope: localConfig.scope }, ledger);
         if (ledger) {
           await recordDelivered(ledger.hashes, dest);
           recordAgentModel(ledger.agentModels, item.name, tool, render.model?.recorded);
@@ -927,7 +929,9 @@ export class AgentsHandler extends ResourceHandler {
       // A tool the member excluded is not ours to write to, so it is not ours
       // to delete from either. This is the gate pull's tombstone pass applies.
       if (isAgentExcluded(localConfig, tool)) continue;
-      for (const { path: agentsDir } of cleanupOf(await locate(tool, 'agents', install))) {
+      const location = await locate(tool, 'agents', install);
+      const sidecar = location.channel === 'files' && 'sidecar' in location ? location.sidecar : null;
+      for (const { path: agentsDir } of cleanupOf(location)) {
         // Try every native agent extension: the render format varies per tool.
         for (const localName of localNames) {
           for (const ext of AGENT_FILE_EXTENSIONS) {
@@ -942,6 +946,7 @@ export class AgentsHandler extends ResourceHandler {
             }
             if (await pathExists(filePath) && !await keepsTrackedCopy(filePath)) {
               await removeDelivered(record.ledger, filePath);
+              if (sidecar !== null) await updateJoycodeAgentIndex(sidecar, { kind: 'remove', file: path.basename(filePath) }, record.ledger);
               removed.push(filePath);
               log.debug(`Removed agent ${localName} from ${tool}`);
             }
@@ -1076,7 +1081,7 @@ export class AgentsHandler extends ResourceHandler {
     const { recordedAgentModels } = await import('../pull.js');
     const records = await recordedAgentModels(localConfig);
 
-    for (const { tool, dir: destDir } of await this.agentToolDirs(teamConfig, localConfig)) {
+    for (const { tool, dir: destDir, sidecar } of await this.agentToolDirs(teamConfig, localConfig)) {
       const activeDestinations = new Set<string>();
       // Held while its model cannot be resolved: the copy on disk may be its
       // own, and a root agent it replaces stays until it can be delivered.
@@ -1104,6 +1109,7 @@ export class AgentsHandler extends ResourceHandler {
         }
         if (await keepsTrackedCopy(deployed)) continue;
         await removeDelivered(ledger, deployed);
+        if (sidecar !== null) await updateJoycodeAgentIndex(sidecar, { kind: 'remove', file: path.basename(deployed) }, ledger);
         log.debug(`[${installScopeName(localConfig.scope)}] Removed inactive role-scoped agent ${item.name} from ${tool}`);
       }
     }
@@ -1124,9 +1130,9 @@ export class AgentsHandler extends ResourceHandler {
     item: ResourceItem,
     aliases?: ModelAliases,
     recorded?: Readonly<Record<string, RecordedAgentModel>>,
-  ): Promise<{ tool: ToolName; dest: string; render: AgentRender; origin: CopyOrigin }[]> {
+  ): Promise<{ tool: ToolName; dest: string; render: AgentRender; origin: CopyOrigin; sidecar: SidecarFile | null }[]> {
     const agentItem = item as AgentResourceItem;
-    const renders: { tool: ToolName; dest: string; render: AgentRender; origin: CopyOrigin }[] = [];
+    const renders: { tool: ToolName; dest: string; render: AgentRender; origin: CopyOrigin; sidecar: SidecarFile | null }[] = [];
     const modelAliases = aliases ?? await loadModelAliases(localConfig);
     const spec = await this.parsedSpec(agentItem);
 
@@ -1136,7 +1142,9 @@ export class AgentsHandler extends ResourceHandler {
       if (!render) continue;
 
       const origin = agentOrigin(localConfig.repo.localPath, item.name, tool, modelAliases, localConfig.scope);
-      renders.push({ tool, dest: path.join(dir, `${item.name}${render.ext}`), render, origin });
+      const location = await locate(tool, 'agents', installOf(teamConfig, localConfig));
+      const sidecar = location.channel === 'files' && 'sidecar' in location ? location.sidecar : null;
+      renders.push({ tool, dest: path.join(dir, `${item.name}${render.ext}`), render, origin, sidecar });
     }
 
     return renders;
@@ -1154,8 +1162,8 @@ export class AgentsHandler extends ResourceHandler {
   async agentToolDirs(
     teamConfig: TeamaiConfig,
     localConfig: LocalConfig,
-  ): Promise<{ tool: ToolName; dir: string }[]> {
-    const dirs: { tool: ToolName; dir: string }[] = [];
+  ): Promise<{ tool: ToolName; dir: string; sidecar: SidecarFile | null }[]> {
+    const dirs: { tool: ToolName; dir: string; sidecar: SidecarFile | null }[] = [];
     const install = installOf(teamConfig, localConfig);
     for (const tool of Object.keys(install.toolPaths)) {
       if (!isAgentToolId(tool)) continue;
@@ -1165,7 +1173,8 @@ export class AgentsHandler extends ResourceHandler {
         if (ownOf(where) !== null && !isAgentExcluded(localConfig, tool)) debugOnce(`Skipping agent sync for ${tool} in ${localConfig.scope} scope: tool not installed`);
         continue;
       }
-      dirs.push({ tool, dir });
+      const sidecar = where.channel === 'files' && 'sidecar' in where ? where.sidecar : null;
+      dirs.push({ tool, dir, sidecar });
     }
     return dirs;
   }
@@ -1350,6 +1359,80 @@ function reportHeld(held: DeliveryLedger['held'], lead = '[agents] Held'): void 
 
 /** Tools that receive a legacy `agents/<name>.md` copied verbatim. */
 const LEGACY_MD_TOOLS = new Set(['claude', 'claude-internal', 'tclaude', 'codebuddy', 'joycode', 'omp']);
+
+/** The TeamAI-owned entry that makes JoyCode load a rendered Markdown agent. */
+type JoycodeIndexChange =
+  | { readonly kind: 'upsert'; readonly file: string; readonly content: string; readonly scope: Scope }
+  | { readonly kind: 'remove'; readonly file: string };
+
+function joycodeAgentId(contentPath: string): string {
+  return `teamai-${createHash('sha1').update(contentPath).digest('hex').slice(0, 8)}`;
+}
+
+function objectValue(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+/** Update only TeamAI's JoyCode index entry, preserving the member's own agents and metadata. */
+export async function updateJoycodeAgentIndex(
+  sidecar: SidecarFile | null,
+  change: JoycodeIndexChange,
+  ledger?: DeliveryLedger,
+): Promise<void> {
+  if (sidecar === null) return;
+  let index: Record<string, unknown> = {};
+  const raw = await readFileSafe(sidecar.path);
+  if (raw !== null) {
+    try {
+      const parsed = objectValue(JSON.parse(raw));
+      if (parsed === null || (parsed.agents !== undefined && !Array.isArray(parsed.agents))) {
+        log.warn(`[agents] Kept JoyCode agent index ${sidecar.path}: it is not an object with an agents array.`);
+        return;
+      }
+      index = parsed;
+    } catch {
+      log.warn(`[agents] Kept JoyCode agent index ${sidecar.path}: it is not valid JSON.`);
+      return;
+    }
+  }
+  const contentPath = `agents/${change.file}`;
+  const agentId = joycodeAgentId(contentPath);
+  const originalEntries = Array.isArray(index.agents) ? index.agents : [];
+  const memberAlreadyIndexesFile = originalEntries.some((entry) => {
+    const value = objectValue(entry);
+    return value?.agentId !== agentId && value?.contentPath === contentPath;
+  });
+  // Never create a duplicate index entry for a file a member already chose to
+  // expose. Their entry still makes JoyCode load the rendered Markdown file.
+  if (change.kind === 'upsert' && memberAlreadyIndexesFile) return;
+  // Remove only the stable id TeamAI owns. A member can intentionally index
+  // the same Markdown file, and their entry must survive our cleanup.
+  const entries = originalEntries.filter((entry) => objectValue(entry)?.agentId !== agentId);
+  if (change.kind === 'remove' && entries.length === originalEntries.length) return;
+
+  if (change.kind === 'upsert') {
+    let frontmatter: Record<string, unknown> = {};
+    try { frontmatter = matter(change.content).data as Record<string, unknown>; } catch { /* the rendered file is still indexed by filename */ }
+    const name = typeof frontmatter.name === 'string' && frontmatter.name.trim() ? frontmatter.name : path.basename(change.file, '.md');
+    const entry: Record<string, unknown> = {
+      agentId,
+      name,
+      source: change.scope === 'user' ? 'global' : 'project',
+      contentPath,
+      isActive: true,
+      taskInstructions: '',
+      mcpList: [],
+      ragList: [],
+    };
+    if (typeof frontmatter.description === 'string' && frontmatter.description.trim()) entry.whenToUse = frontmatter.description;
+    if (typeof frontmatter.model === 'string' && frontmatter.model.trim()) entry.model = frontmatter.model;
+    entries.push(entry);
+  }
+
+  entries.sort((a, b) => String(objectValue(a)?.contentPath ?? '').localeCompare(String(objectValue(b)?.contentPath ?? '')));
+  await writeFile(sidecar.path, `${JSON.stringify({ ...index, version: typeof index.version === 'string' ? index.version : '1.0.0', agents: entries }, null, 2)}\n`);
+  ledger?.recorder?.report('agents', sidecar.path);
+}
 
 type TeamAgentDir = { dir: string; namespace?: string };
 

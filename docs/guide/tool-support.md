@@ -20,7 +20,7 @@ Generated: do not edit by hand. Regenerate with `node scripts/check-docs.mjs --w
 | TCodex | `~/.tcodex` | written; reads ? | in the blocks file (Codex AGENTS.md) | written; reads ? | written; reads ? | `~/.tcodex/hooks.json` t | ? | tcodex |
 | Cursor | `~/.cursor` | written; reads ? | `~/.cursor/rules` v from a session under ~ | `~/.cursor/rules` v from a session under ~ | `~/.cursor/agents` s | `~/.cursor/hooks.json` s | `~/.cursor/mcp.json` s | cursor |
 | Copilot | `~/.copilot` `$COPILOT_HOME` | `~/.copilot/skills` v | `~/.copilot/instructions` v | `~/.copilot/copilot-instructions.md` v | `~/.copilot/agents` s | `~/.copilot/hooks/teamai.json` s | `~/.copilot/mcp-config.json` v | — |
-| JoyCode | `~/.joycode` `$JOYCODE_HOME` | written; reads ? | in the blocks file (JoyCode rules.txt) | `~/.joycode/rules.txt` s | written; reads ? | `~/.joycode/hooks.json` s | — | joycode |
+| JoyCode | `~/.joycode` `$JOYCODE_HOME` | written; reads ? | in the blocks file (JoyCode rules.txt) | `~/.joycode/rules.txt` s | `~/.joycode/agents` s<br>indexed by `agent.json` | `~/.joycode/hooks.json` s | — | joycode |
 | Qoder | `~/.qoder` `$QODER_CONFIG_DIR` `$QODER_CLI_HOME/.qoder` | written; reads ? | `~/.qoder/rules` v | `~/.qoder/rules` s | `~/.qoder/agents` s | `~/.qoder/settings.json` s | `~/.qoder/settings.json` s | qoder |
 | Qoder CN | `~/.qoder-cn` `$QODERCN_CONFIG_DIR` `$QODERCN_CLI_HOME/.qoder-cn` | written; reads ? | `~/.qoder-cn/rules` v | `~/.qoder-cn/rules` t | `~/.qoder-cn/agents` s | `~/.qoder-cn/settings.json` s | `~/.qoder-cn/settings.json` s | qoder-cn |
 | Kiro | `~/.kiro` | written; reads ? | `~/.kiro/steering` d | `~/.kiro/steering` d | `~/.kiro/agents` d | kiro-hooks d | `~/.kiro/settings/mcp.json` d | — |
@@ -52,7 +52,7 @@ Paths are relative to the project root. `cwd only`: the tool reads it only from 
 | TCodex | written; reads ? | session hook t | session hook t | written; reads ? | written; reads ? | ? |
 | Cursor | written; reads ? | `.cursor/rules` v | `.cursor/rules` v | `.cursor/agents` v | `.cursor/hooks.json` s | `.cursor/mcp.json` s |
 | Copilot | `.github/skills` v | `.github/instructions` v | `.github/copilot-instructions.md` v<br>`.github/instructions` v | `.github/agents` s | `.github/hooks/teamai.json` s | `.github/mcp.json` v |
-| JoyCode | written; reads ? | `.joycode/rules` v | — | written; reads ? | `.joycode/hooks.json` s | — |
+| JoyCode | written; reads ? | `.joycode/rules` v | — | `.joycode/agents` s<br>indexed by `agent.json` | `.joycode/hooks.json` s | — |
 | Qoder | written; reads ? | `.qoder/rules` v | `.qoder/rules` s | `.qoder/agents` s | `.qoder/settings.json` s cwd only | `.qoder/settings.json` s |
 | Qoder CN | written; reads ? | `.qoder/rules` v | `.qoder/rules` t | `.qoder/agents` t | `.qoder/settings.json` s cwd only | `.qoder/settings.json` t |
 | Kiro | written; reads ? | `.kiro/steering` d | `.kiro/steering` d | `.kiro/agents` d | user hooks | `.kiro/settings/mcp.json` d |
