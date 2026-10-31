@@ -54,6 +54,13 @@ describe('recordRecallQuality', () => {
         expect(cache.count).toBe(1);
     });
 
+    it('writes the cache file 0600: it holds raw query text that may carry a secret', () => {
+        recordRecallQuality('session-perms', fakeResults(5.0), 'token=abc');
+
+        const cachePath = path.join(tmpDir, '.teamai', 'sessions', 'session-perms-recall-cache.json');
+        expect((fs.statSync(cachePath).mode & 0o777)).toBe(0o600);
+    });
+
     it('appends queries across calls and keeps only the most recent 20', () => {
         for (let i = 1; i <= 25; i++) {
             recordRecallQuality('session-e', fakeResults(1.0), `query-${i}`);

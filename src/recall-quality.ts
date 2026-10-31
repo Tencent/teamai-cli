@@ -82,7 +82,16 @@ function writeCache(sessionId: string, cache: RecallCache): void {
         if (!fs.existsSync(dir)) {
             fs.mkdirSync(dir, { recursive: true });
         }
-        fs.writeFileSync(cachePath, JSON.stringify(cache), 'utf-8');
+        // 0600: the cache now holds the raw query text, which can carry a
+        // secret; it is a local-only diagnostic and no reader needs group or
+        // world access. chmod also normalizes files written before the mode
+        // existed. Best-effort, like the write itself.
+        fs.writeFileSync(cachePath, JSON.stringify(cache), { encoding: 'utf-8', mode: 0o600 });
+        try {
+            fs.chmodSync(cachePath, 0o600);
+        } catch {
+            // A filesystem without chmod (some Windows volumes): the write above set what it could.
+        }
     } catch {
         // Best-effort, don't block the caller on cache write failure
     }

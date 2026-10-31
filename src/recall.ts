@@ -248,8 +248,8 @@ interface ScopedSearchResult extends SearchResult {
 //      ├─ formatResults(results)
 //      │   └─ STDOUT (AI-consumable format)
 //      │
-//      ├─ recordRecallQuality(sessionId, results)
-//      │   └─ ~/.teamai/sessions/<sid>-recall-cache.json
+//      ├─ recordRecallQuality(sessionId, results, query)
+//      │   └─ ~/.teamai/sessions/<sid>-recall-cache.json (0600)
 //      │      (read by contribute-check's knowledge-gap detection)
 //      │
 //      ├─ recordRun(activeConfig, results, session, caller)
