@@ -1,6 +1,6 @@
 import { withFileLock } from './update.js';
 import { homeVariables, isToolId, TOOLS } from './tools.js';
-import { envToolHome, realHost, type EnvToolHome, recordedHomes, reloadToolHomes, saveToolHomes, toolHomesPath, type Host } from './tool-home.js';
+import { envToolHome, realHost, type EnvToolHome, recordedHomes, reloadToolHomes, rememberToolHome, saveToolHomes, toolHomesPath, type Host } from './tool-home.js';
 import type { ToolId } from './types.js';
 import { log } from './utils/logger.js';
 
@@ -68,8 +68,15 @@ export async function recordToolHomes(by: 'init' | 'pull', host: Host = realHost
       log.warn(`Did not record the tool homes this shell moves: ${file} is not a tool-homes record (${read.error}). Fix or delete it.`);
       return [];
     }
-    const next = await nextToolHomes(read.kind === 'ok' ? read.homes : {}, host, by);
-    if (next.changes.length > 0) await saveToolHomes(next.homes);
+    const before = read.kind === 'ok' ? read.homes : {};
+    const next = await nextToolHomes(before, host, by);
+    if (next.changes.length > 0) {
+      for (const change of next.changes) {
+        const previous = before[change.tool];
+        if (previous !== undefined && previous !== change.dir) await rememberToolHome(change.tool, previous);
+      }
+      await saveToolHomes(next.homes);
+    }
     return next.changes;
   });
   if (recorded.held) return recorded.value;
