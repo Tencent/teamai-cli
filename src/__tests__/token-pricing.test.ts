@@ -41,6 +41,11 @@ describe('priceTokens', () => {
     expect(cost('gpt-6.1-sol', { input: 300_000, output: 1_000, cacheRead: 0, cacheCreation: 0 })).toBe(1_215_000);
   });
 
+  it('prices the flex tier at its own rates', () => {
+    // GPT-6.1 Sol flex: input $0.001 + output $0.001 + cached input $0.00025
+    expect(cost('gpt-6.1-sol', { input: 1_000, output: 200, cacheRead: 5_000, cacheCreation: 0 }, { speed: 'flex' })).toBe(2_250);
+  });
+
   it('prices the totals of several calls at the standard rates, since no single prompt size is known', () => {
     // Two 150,000-token calls: input $0.60 + output $0.01
     expect(cost('gpt-6.1-sol', { input: 300_000, output: 1_000, cacheRead: 0, cacheCreation: 0 }, { combinesCalls: true })).toBe(610_000);

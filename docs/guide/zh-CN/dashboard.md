@@ -157,7 +157,7 @@ big-pickle          opencode  9         116.8K  Tokens only
 数字的来源：
 
 - 会话停止时，teamai 从工具自己的会话记录读取每个请求的 token 和模型：Claude Code、Codex、CodeBuddy、WorkBuddy、Copilot CLI、OpenCode、Pi、Oh My Pi、Muse Code 和 agy。agy 不记录模型，所以它的会话只显示 token，没有费用。[工具支持](tool-support.md)的 **Tokens & cost** 列列出覆盖了哪些工具、如何验证的。
-- 每个请求按 [LiteLLM 价格表](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json)中的 API 标价计价。价格表随 teamai 发布，页脚写明版本。长提示词、fast 模式和一小时缓存写入按各自的价格计算。工具自己上报的费用（如 Pi 和 OpenCode）按原值使用。
+- 每个请求按 [LiteLLM 价格表](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json)中的 API 标价计价。价格表随 teamai 发布，页脚写明版本。长提示词、fast 模式、Codex 的 flex 层级和一小时缓存写入按各自的价格计算。工具自己上报的费用（如 Pi 和 OpenCode）按原值使用。
 - 每个请求保留记录时的费用，之后价格变化不会改写过去的数据。订阅套餐的计费方式不同：把这里的费用理解为同样的工作走 API 的价格。
 - **缓存节省**是缓存读取按普通输入计价时会多花的钱。
 

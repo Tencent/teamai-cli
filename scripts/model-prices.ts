@@ -38,7 +38,7 @@ function readRates(entry: Record<string, unknown>, suffix: string): TokenRates |
   };
 }
 
-function readTiered(entry: Record<string, unknown>, speed: '' | '_priority'): TieredRates | undefined {
+function readTiered(entry: Record<string, unknown>, speed: '' | '_priority' | '_flex'): TieredRates | undefined {
   const base = readRates(entry, speed);
   if (!base) return undefined;
   const above = Object.keys(entry)
@@ -75,7 +75,8 @@ function readModel(raw: unknown): ModelPrice | undefined {
   const fast = multiplier.success && multiplier.data.fast
     ? scaled(standard, multiplier.data.fast)
     : readTiered(entry, '_priority');
-  return fast ? { ...standard, fast } : standard;
+  const flex = readTiered(entry, '_flex');
+  return { ...standard, ...(fast ? { fast } : {}), ...(flex ? { flex } : {}) };
 }
 
 /**
@@ -127,7 +128,7 @@ const TieredSchema = RatesSchema.extend({ above: z.array(RatesSchema.extend({ to
 const CatalogSchema = z.object({
   version: z.string(),
   source: z.string(),
-  models: z.record(z.string(), TieredSchema.extend({ fast: TieredSchema.optional() })),
+  models: z.record(z.string(), TieredSchema.extend({ fast: TieredSchema.optional(), flex: TieredSchema.optional() })),
 });
 
 /** A catalog file as `formatCatalog` writes it; throws on any other shape. */

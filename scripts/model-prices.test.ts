@@ -57,6 +57,8 @@ describe('catalogFromLiteLlm', () => {
         input: 4, output: 20, cacheRead: 0.2, cacheWrite: 4,
         above: [{ tokens: 272_000, input: 8, output: 30, cacheRead: 0.4, cacheWrite: 8 }],
       },
+      // Flex is billed at its own, lower rates.
+      flex: { input: 1, output: 5, cacheRead: 1, cacheWrite: 1 },
     });
   });
 

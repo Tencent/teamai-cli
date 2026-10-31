@@ -157,7 +157,7 @@ big-pickle          opencode  9         116.8K  Tokens only
 Where the numbers come from:
 
 - When a session stops, teamai reads the tokens and the model of each request from the tool's own session record: Claude Code, Codex, CodeBuddy, WorkBuddy, Copilot CLI, OpenCode, Pi, Oh My Pi, Muse Code and agy. agy records no model, so its sessions show as tokens without a cost. The **Tokens & cost** column of [Tool support](tool-support.md) says which tools are covered and how that was checked.
-- Each request is priced at API list prices from [LiteLLM's price list](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json), bundled with teamai; the page footer names the version. Long prompts, fast mode and one-hour cache writes are priced at their own rates. A cost the tool reports itself, as Pi and OpenCode do, is used as is.
+- Each request is priced at API list prices from [LiteLLM's price list](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json), bundled with teamai; the page footer names the version. Long prompts, fast mode, Codex's flex tier and one-hour cache writes are priced at their own rates. A cost the tool reports itself, as Pi and OpenCode do, is used as is.
 - A request keeps the cost it was recorded with, so a later price change does not rewrite past weeks. A subscription plan bills differently: read the cost as what the same work would cost on the API.
 - **Saved by caching** is what the cache reads would have cost as plain input.
 

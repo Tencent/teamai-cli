@@ -50,5 +50,8 @@ export function readCopilotShutdown(record: unknown): { tokens?: TokenUsage; req
     return tokens ? [{ key: `${id}:${model}`, timestamp, model, speed: 'standard' as const, tokens, combinesCalls: true as const }] : [];
   });
   const tokens = fromDetails(data.tokenDetails);
-  return tokens ? { tokens, requests } : { requests };
+  if (!tokens) return { requests };
+  // Totals no model claims are still usage: one request with no model, so no price.
+  if (!requests.length) requests.push({ key: `${id}:session`, timestamp, model: '', speed: 'standard', tokens, combinesCalls: true });
+  return { tokens, requests };
 }

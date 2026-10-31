@@ -30,8 +30,8 @@ const parseUsage = (value: unknown): Usage | undefined => {
   return usage.success ? usage.data : undefined;
 };
 
-/** `fast` and `priority` bill at the priority rates; `default`, `flex` and no tier at standard ones. */
-const speedOf = (tier: unknown): TokenSpeed => (tier === 'priority' || tier === 'fast' ? 'fast' : 'standard');
+/** `fast` and `priority` bill at the priority rates, `flex` at the flex rates; `default` and no tier at standard ones. */
+const speedOf = (tier: unknown): TokenSpeed => (tier === 'priority' || tier === 'fast' ? 'fast' : tier === 'flex' ? 'flex' : 'standard');
 
 type Snapshot = { tokens: TokenUsage; scope: TokenSnapshotScope };
 

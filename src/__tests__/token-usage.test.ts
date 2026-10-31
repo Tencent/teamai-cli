@@ -157,6 +157,15 @@ describe('readTokenUsage: codex-rollout', () => {
     expect(reading.scope).toBe('session');
   });
 
+  it('prices the flex tier at flex rates', async () => {
+    const file = transcript([
+      codex.meta(), codex.tier('flex'), codex.turn('gpt-6.1-sol'),
+      codex.record('resp_1', codexUsage(1_000, 0, 10), codexUsage(1_000, 0, 10)),
+    ], 'rollout.jsonl');
+    const [request] = (await readTokenUsage('codex-rollout', { transcriptPath: file, sessionId: THREAD, settled: true })).requests;
+    expect(request.speed).toBe('flex');
+  });
+
   it('prices the priority tier as fast mode', async () => {
     const file = transcript([
       codex.meta(), codex.tier('priority'), codex.turn('gpt-6.1-sol'),
@@ -404,6 +413,13 @@ describe('readCopilotShutdown', () => {
         { key: 'e7c1:gpt-6.1-sol', timestamp: '2026-10-30T18:04:11.902Z', model: 'gpt-6.1-sol', speed: 'standard', tokens: { input: 2_000, output: 100, cacheRead: 0, cacheCreation: 0 }, combinesCalls: true },
       ],
     });
+  });
+
+  it('keeps the session totals as one request without a model when no model has counters', () => {
+    const totals = { type: 'session.shutdown', id: 'e7c4', timestamp: '2026-10-30T18:04:11.902Z', data: { tokenDetails: { input: { tokenCount: 900 }, output: { tokenCount: 40 } } } };
+    expect(readCopilotShutdown(totals)?.requests).toEqual([
+      { key: 'e7c4:session', timestamp: '2026-10-30T18:04:11.902Z', model: '', speed: 'standard', tokens: { input: 900, output: 40, cacheRead: 0, cacheCreation: 0 }, combinesCalls: true },
+    ]);
   });
 
   it('tells a shutdown without counters from another record', () => {
