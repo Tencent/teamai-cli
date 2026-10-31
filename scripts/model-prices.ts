@@ -1,8 +1,7 @@
 /**
  * Builds teamai's model price catalog (`src/token-usage/model-prices.json`)
  * from LiteLLM's community price list, which covers every provider teamai's
- * tools run models from. Run `node scripts/update-model-prices.mjs`; a weekly
- * workflow runs it and opens a pull request when prices change.
+ * tools run models from. Refresh it with `node scripts/update-model-prices.mjs`.
  */
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
@@ -136,7 +135,7 @@ export function parseCatalog(json: unknown): PriceCatalog {
   return CatalogSchema.parse(json);
 }
 
-/** One model per line, so the weekly pull request reads as a per-model diff. */
+/** One model per line, so a price update reads as a per-model diff. */
 export function formatCatalog(catalog: PriceCatalog): string {
   const lines = Object.entries(catalog.models).map(([name, price]) => `    ${JSON.stringify(name)}: ${JSON.stringify(price)}`);
   return `{\n  "version": ${JSON.stringify(catalog.version)},\n  "source": ${JSON.stringify(catalog.source)},\n  "models": {\n${lines.join(',\n')}\n  }\n}\n`;
@@ -144,7 +143,7 @@ export function formatCatalog(catalog: PriceCatalog): string {
 
 const RATE_COLUMNS = ['input', 'output', 'cacheRead', 'cacheWrite'] as const;
 
-/** A Markdown summary of what a catalog update changes, for the weekly pull request. */
+/** A Markdown summary of what a catalog update changes, for a price update's pull request. */
 export function describeCatalogChange(before: PriceCatalog, after: PriceCatalog): string {
   const rows: string[] = [];
   const counts = { added: 0, removed: 0, repriced: 0 };

@@ -4,7 +4,7 @@
  * rerun with nothing new upstream rewrites the same bytes.
  *
  * Usage: node scripts/update-model-prices.mjs [--summary <file>]
- *   --summary  also write a Markdown summary of the change (the weekly pull request's body)
+ *   --summary  also write a Markdown summary of the change (a price update's pull request body)
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -34,7 +34,7 @@ const catalog = catalogFromLiteLlm(await (await fetchOk(raw, 'application/json')
   date: latest.commit.committer.date.slice(0, 10),
 });
 const previous = parseCatalog(JSON.parse(await fs.readFile(TARGET, 'utf8')));
-// A new LiteLLM revision that changes no price leaves the file, and so the weekly pull request, alone.
+// A new LiteLLM revision that changes no price leaves the file alone.
 const repriced = !isDeepStrictEqual(previous.models, catalog.models);
 if (repriced) await fs.writeFile(TARGET, formatCatalog(catalog));
 const summary = describeCatalogChange(previous, catalog);
