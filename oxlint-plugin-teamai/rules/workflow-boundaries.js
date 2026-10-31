@@ -2,7 +2,7 @@
 
 import { defineRule } from '@oxlint/plugins';
 
-import { isOneOf, lintedPath } from '../utils.js';
+import { lintedPath } from '../utils.js';
 
 const SKILL = 'src/workflow/drivers/skill/';
 const LOCAL = 'src/workflow/drivers/local/';
@@ -87,7 +87,7 @@ function pathFromSpecifier(file, value) {
     if (!part || part === '.') continue;
     if (part === '..') out.pop(); else out.push(part);
   }
-  return `${out.join('/')}.ts`;
+  return value.endsWith('.ts') ? out.join('/') : `${out.join('/')}.ts`;
 }
 /** @param {any} node @returns {string | undefined} */
 function sourceValue(node) {
@@ -104,10 +104,12 @@ function specifiersOf(node) {
   }
   const declarationType = node.importKind === 'type' || node.exportKind === 'type';
   return specifiers.map(/** @param {any} specifier */ (specifier) => ({
-    name: specifier.imported?.name
-      ?? specifier.local?.name
-      ?? specifier.exported?.name
-      ?? (specifier.type === 'ImportNamespaceSpecifier' ? '*' : specifier.type === 'ImportDefaultSpecifier' ? 'default' : ''),
+    name: specifier.type === 'ImportNamespaceSpecifier' ? '*'
+      : specifier.type === 'ImportDefaultSpecifier' ? 'default'
+        : specifier.imported?.name
+          ?? specifier.local?.name
+          ?? specifier.exported?.name
+          ?? '',
     typeOnly: declarationType || specifier.importKind === 'type' || specifier.exportKind === 'type',
   }));
 }
@@ -153,7 +155,7 @@ export default defineRule({
     docs: { description: 'Keep workflow module boundaries in the engine and drivers.' },
   },
   create(context) {
-    if (!lintedPath(context).includes('/src/') || isOneOf(context, ['src/__tests__/workflow-module-boundaries.test.ts'])) return {};
+    if (!lintedPath(context).includes('/src/')) return {};
 
     /** @param {any} node */
     const check = (node) => {
@@ -163,7 +165,7 @@ export default defineRule({
       const to = pathFromSpecifier(from, value);
       if (violatesBoundary(from, to, specifiersOf(node)) && !ALLOWED.has(edgeKey(from, to))) {
         context.report({
-          node,
+          node: node.reportNode ?? node,
           message: `Workflow module boundary: ${from} must not import ${to}. Keep the engine, drivers and feature modules separated.`,
         });
       }
@@ -180,7 +182,7 @@ export default defineRule({
           || node.callee.property.type !== 'Identifier' || node.callee.property.name !== 'mock') return;
         const source = node.arguments[0];
         if (!source || source.type !== 'Literal' || typeof source.value !== 'string') return;
-        check({ source });
+        check({ source, reportNode: source });
       },
     };
   },

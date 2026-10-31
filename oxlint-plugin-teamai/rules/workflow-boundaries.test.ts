@@ -13,9 +13,12 @@ describe('teamai/workflow-boundaries', () => {
   rule.valid('allows a type-only flat helper', `import type { X } from '../../types.js';`);
   rule.valid('allows an aliased permitted re-export', `export { takeRunLock as lock } from '../../store.js';`, { filename: 'src/workflow/drivers/skill/skill-driver.ts' });
   rule.valid('allows a type-only wildcard re-export', `export type * from '../../types.js';`, { filename: 'src/workflow/drivers/skill/skill-driver.ts' });
-  rule.valid('allows the canonical boundary test fixture', `import fs from 'node:fs';`, { filename: 'src/__tests__/workflow-module-boundaries.test.ts' });
+  rule.valid('preserves an explicit TypeScript extension for a permitted entry', `import { place } from '../../place/place.ts';`, { filename: 'src/workflow/drivers/local/local-driver.ts' });
+  rule.valid('allows the canonical boundary test fixture', `import fs from 'node:fs';`, { filename: 'src/__tests__/workflow-x.test.ts' });
 
   rule.invalid('rejects skill driver importing the local driver', `import { run } from '../local/local-driver.js';`);
+  rule.invalid('rejects namespace imports from a symbol-limited skill helper', `import * as takeRunLock from '../../store.js';`, undefined, { filename: 'src/workflow/drivers/skill/skill-driver.ts' });
+  rule.invalid('rejects a forbidden vi mock with a source location', `vi.mock('./drivers/local/local-driver.js');`, undefined, { filename: 'src/workflow/engine.ts' });
   rule.invalid('rejects unrestricted import into a type-only skill helper', `await import('../../types.js');`, undefined, { filename: 'src/workflow/drivers/skill/skill-driver.ts' });
   rule.invalid('rejects unrestricted export from a symbol-limited skill helper', `export * from '../../store.js';`, undefined, { filename: 'src/workflow/drivers/skill/skill-driver.ts' });
   rule.invalid('rejects a flat engine module importing a driver', `import { run } from './drivers/local/local-driver.js';`, undefined, { filename: 'src/workflow/engine.ts' });
