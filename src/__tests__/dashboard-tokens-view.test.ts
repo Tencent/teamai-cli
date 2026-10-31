@@ -46,11 +46,11 @@ async function renderPage(summary: TokenCostSummary, language: 'en' | 'zh-CN' = 
     document: { addEventListener: () => undefined },
   };
   const names = Object.keys(scope);
-  const page = new Function(...names, `${tokensView}\nreturn { tokensPage, loadTokens, sessionsChanged };`)(...Object.values(scope)) as { tokensPage: () => string; loadTokens: () => Promise<void>; sessionsChanged: () => Promise<void> };
+  const page = new Function(...names, `${tokensView}\nreturn { tokensPage, loadTokens, sessionsChanged, setPage: (name) => { page = name; } };`)(...Object.values(scope)) as { tokensPage: () => string; loadTokens: () => Promise<void>; sessionsChanged: () => Promise<void>; setPage: (name: string) => void };
   page.tokensPage();
   await page.loadTokens();
   keys.length = 0;
-  return { html: page.tokensPage(), keys, requested, page, fail: () => { failing = true; } };
+  return { html: page.tokensPage(), keys, requested, page, fail: () => { failing = true; }, show: (name: string) => page.setPage(name) };
 }
 
 const text = (html: string) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
@@ -89,6 +89,17 @@ describe('the Tokens & cost page', () => {
     page.tokensPage();
     expect(requested).toHaveLength(1);
     await page.sessionsChanged();
+    expect(requested).toHaveLength(2);
+  });
+
+  it('fetches once on return when a live update arrived while another page was open', async () => {
+    const { page, requested, show } = await renderPage(WEEK);
+    show('overview');
+    await page.sessionsChanged();
+    expect(requested).toHaveLength(1);
+    show('tokens');
+    page.tokensPage();
+    page.tokensPage();
     expect(requested).toHaveLength(2);
   });
 
