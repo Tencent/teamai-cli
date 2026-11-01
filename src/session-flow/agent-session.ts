@@ -394,7 +394,7 @@ async function listPlatform(platform: string, cwd: string | undefined, toolRoots
 async function list({ platforms, cwd, updatedSince, archived = false }: AgentSessionListQuery = {}): Promise<AgentSessionList> {
   const toolRoots = await recordedToolRoots(cwd);
   const listed = await Promise.all(
-    (platforms ?? listInstalledPlatforms(toolRoots)).map((platform) => listPlatform(platform, cwd, toolRoots, archived)),
+    (platforms ?? listInstalledPlatforms(toolRoots, cwd)).map((platform) => listPlatform(platform, cwd, toolRoots, archived)),
   );
   const since = updatedSince === undefined ? undefined : Date.parse(updatedSince);
   const sessions = listed

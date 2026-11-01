@@ -26,7 +26,7 @@ const defaults: Extract<SessionSharing, { configured: true }> = {
   publish: { attended: { policy: 'ask', source: { kind: 'default' } }, unattended: { policy: 'auto', source: { kind: 'default' } } },
   scoring: { state: 'ok', policies: { attended: { policy: 'off', source: { kind: 'default' } }, unattended: { policy: 'auto', source: { kind: 'default' } } }, dailyLimit: 10, dailyLimitSource: { kind: 'default' }, scorers: ['quality'] },
   problems: ['teamai.yaml sessions.publish.unattended is "<b>yes</b>", not off, ask or auto, so it is ignored.'],
-  unreadTools: ['pi'],
+  unreadTools: ['copilot'],
   captured: {
     attended: { active: 2, finished: 1, waitingToArchive: 0, archived: 0 },
     unattended: { waitingForDrain: 1, finished: 0, waitingToArchive: 0, archived: 3 },
@@ -49,7 +49,7 @@ describe('the session sharing panel', () => {
     expect(shown).toMatch(/1 waiting for a drain/);
     expect(shown).toMatch(/3 archived/i);
     expect(text(html.match(/<code class="command">(.*?)<\/code>/)?.[1] ?? '').trim()).toBe('TEAMAI_MODE=unattended teamai score --drain');
-    expect(shown).toContain('pi');
+    expect(shown).toContain('copilot');
     expect(html).toContain('&lt;b&gt;yes&lt;/b&gt;');
     expect(html).not.toContain('<b>yes</b>');
   });
