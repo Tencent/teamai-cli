@@ -203,6 +203,58 @@ describe('computeLintAssetGraph', () => {
     expect(graph.withoutRelation).toEqual([]);
   });
 
+  it('counts path-derived rule→page edges from the scope code-page pool, with declared beating derived', () => {
+    const pool = [{ treePath: PAGE, slug: 'pay', sources: ['src/ledger/receipts.ts'] }];
+    const scoped = entry({
+      filename: 'ledger-scoped.md', treePath: 'rules/ledger-scoped.md',
+    });
+    const graph = computeLintAssetGraph([{
+      ctx: ctx({
+        byTreePath: new Map([['rules/ledger-scoped.md', scoped]]),
+        ruleGlobs: new Map([['rules/ledger-scoped.md', ['src/ledger/**']]]),
+        codePages: pool,
+      }),
+      targetExists: existsOnly([]),
+    }]);
+    expect(graph.relationCount).toBe(1);
+    expect(graph.withoutRelation).toEqual([]);
+  });
+
+  it('a glob spanning two codebases derives no counted edge, as recall renders none', () => {
+    const pool = [
+      { treePath: PAGE, slug: 'pay', sources: ['src/ledger/receipts.ts'] },
+      { treePath: 'teamwiki/evidence/code/shop/modules/till.md', slug: 'shop', sources: ['src/ledger/shop.ts'] },
+    ];
+    const scoped = entry({ filename: 'ledger-scoped.md', treePath: 'rules/ledger-scoped.md' });
+    const graph = computeLintAssetGraph([{
+      ctx: ctx({
+        byTreePath: new Map([['rules/ledger-scoped.md', scoped]]),
+        ruleGlobs: new Map([['rules/ledger-scoped.md', ['src/ledger/**']]]),
+        codePages: pool,
+      }),
+      targetExists: existsOnly([]),
+    }]);
+    expect(graph.relationCount).toBe(0);
+    expect(graph.withoutRelation).toEqual(['rules/ledger-scoped.md']);
+  });
+
+  it('a declared relation from the rule to the page beats the derived edge', () => {
+    const pool = [{ treePath: PAGE, slug: 'pay', sources: ['src/ledger/receipts.ts'] }];
+    const rule = entry({
+      filename: 'payments.md', treePath: 'rules/payments.md',
+      related: [{ relation: 'MAPS_TO', target: PAGE, via: 'declared' }],
+    });
+    const graph = computeLintAssetGraph([{
+      ctx: ctx({
+        byTreePath: new Map([['rules/payments.md', rule]]),
+        ruleGlobs: new Map([['rules/payments.md', ['src/ledger/**']]]),
+        codePages: pool,
+      }),
+      targetExists: existsOnly([PAGE]),
+    }]);
+    expect(graph.relationCount).toBe(1); // declared only, not declared + derived
+  });
+
   it('a declared REFERENCES the target links back to counts two: declared + link, as recall prints', () => {
     const rule = entry({
       filename: 'a.md', treePath: 'rules/a.md',
