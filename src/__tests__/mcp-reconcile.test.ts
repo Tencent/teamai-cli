@@ -4512,8 +4512,8 @@ describe('spliceCodexBlock', () => {
     expect(spliceCodexBlock(src, 'a', '[mcp_servers.a]\ncommand = "new"\n')).toContain(after);
   });
 
-  it('does not treat an indented example in multiline instructions as a server', () => {
-    const instructions = 'developer_instructions = """\nExample:\n  [mcp_servers.a]\n  command = "example"\n"""\n\n';
+  it.each(['', '  '])('does not treat an example with indent %j in multiline instructions as a server', (indent) => {
+    const instructions = `developer_instructions = """\nExample:\n${indent}[mcp_servers.a]\n${indent}command = "example"\n"""\n\n`;
     const src = `${instructions}[mcp_servers.a]\ncommand = "old"\n`;
     const block = '[mcp_servers.a]\ncommand = "new"\n';
     expect(spliceCodexBlock(src, 'a', block)).toBe(`${instructions}${block}\n`);
@@ -4521,11 +4521,20 @@ describe('spliceCodexBlock', () => {
     expect(codexServerNames(instructions)).toEqual([]);
   });
 
-  it('does not end a server at an indented example inside its multiline value', () => {
-    const block = '[mcp_servers.a]\ncommand = """\nexample\n  [projects.example]\n"""\n';
+  it.each(['', '  '])('does not end a server at an example with indent %j inside its multiline value', (indent) => {
+    const block = `[mcp_servers.a]\ncommand = """\nexample\n${indent}[projects.example]\n"""\n`;
     const src = `${block}\n[projects.real]\nvalue = 1\n`;
     expect(codexBlockIn(src, 'a')).toBe(block);
     expect(spliceCodexBlock(src, 'a', null)).toBe('[projects.real]\nvalue = 1\n');
+  });
+
+  it('preserves an unindented example in a CRLF multiline literal string', () => {
+    const instructions = "developer_instructions = '''\r\n[mcp_servers.a]\r\ncommand = \"example\"\r\n'''\r\n\r\n";
+    const block = '[mcp_servers.a]\ncommand = "new"\n';
+    const out = spliceCodexBlock(instructions, 'a', block);
+    expect(codexServerNames(instructions)).toEqual([]);
+    expect(codexServerNames(out)).toEqual(['a']);
+    expect(spliceCodexBlock(out, 'a', null)).toBe(instructions + '\n');
   });
 
   it.each([

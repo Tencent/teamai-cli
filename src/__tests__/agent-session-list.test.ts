@@ -154,6 +154,25 @@ describe('AgentSession.list', () => {
     expect(recent.sessions.map((s) => s.sessionId)).toEqual([newBeta, newAlpha]);
   });
 
+  it('lists Pi from a project-only store outside the process cwd', async () => {
+    const cwd = workspace('pi-project-only');
+    const store = path.join(mocks.home, 'pi-project-sessions');
+    const sessionId = '123e4567-e89b-12d3-a456-426614174000';
+    fs.mkdirSync(path.join(cwd, '.pi'), { recursive: true });
+    fs.mkdirSync(store, { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.pi', 'settings.json'), JSON.stringify({ sessionDir: store }));
+    fs.writeFileSync(path.join(store, `${sessionId}.jsonl`), [
+      { type: 'session', version: 3, id: sessionId, timestamp: '2026-09-24T10:00:00.000Z', cwd },
+      { type: 'message', id: 'u1', parentId: null, timestamp: '2026-09-24T10:00:01.000Z', message: { role: 'user', content: 'project only' } },
+      { type: 'message', id: 'a1', parentId: 'u1', timestamp: '2026-09-24T10:00:02.000Z', activeLeafId: 'a1', message: { role: 'assistant', content: 'ok' } },
+    ].map((record) => JSON.stringify(record)).join('\n'));
+
+    const listed = await AgentSession.list({ platforms: ['pi'], cwd });
+
+    expect(listed.failures).toEqual([]);
+    expect(listed.sessions).toEqual([expect.objectContaining({ platform: 'pi', sessionId, cwd })]);
+  });
+
   it('lists one id in two workspaces as two sessions, each of which find reads exactly', async () => {
     fs.mkdirSync(path.join(mocks.home, '.claude', 'projects'), { recursive: true });
     const shared = '7d6c0f8e-1c2b-4a5d-9e8f-0a1b2c3d4e5f';

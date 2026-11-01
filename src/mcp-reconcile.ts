@@ -840,7 +840,7 @@ export function spliceCodexBlock(source: string, name: string, block: string | n
   const bom = source.startsWith('\uFEFF') ? '\uFEFF' : '';
   source = withoutTomlBom(source);
   const re = codexBlockRe(name);
-  const match = maskIndentedValueHeaders(source).match(re);
+  const match = maskValueHeaders(source).match(re);
   const padded = block === null ? null : block.endsWith('\n') ? block + '\n' : block + '\n\n';
 
   if (match && match.index !== undefined) {
@@ -856,9 +856,9 @@ export function spliceCodexBlock(source: string, name: string, block: string | n
   return bom + source + sep + padded;
 }
 
-/** Mask indented header-like lines inside multiline values, preserving source offsets. */
-function maskIndentedValueHeaders(source: string): string {
-  return source.replace(/^[ \t]+\[/gm, (header, offset: number) => {
+/** Mask header-like lines inside multiline values, preserving source offsets. */
+function maskValueHeaders(source: string): string {
+  return source.replace(/^[ \t]*\[/gm, (header, offset: number) => {
     try {
       // A real table follows a complete TOML prefix; a line inside a multiline value does not.
       parseToml(source.slice(0, offset));
@@ -902,7 +902,7 @@ function codexHeaderStart(name: string): string {
  */
 export function codexBlockIn(source: string, name: string): string | null {
   source = withoutTomlBom(source);
-  const match = maskIndentedValueHeaders(source).match(codexBlockRe(name));
+  const match = maskValueHeaders(source).match(codexBlockRe(name));
   return match === null || match.index === undefined
     ? null
     : ownedCodexBlock(source.slice(match.index, match.index + match[0].length)).trimEnd() + '\n';
@@ -910,7 +910,7 @@ export function codexBlockIn(source: string, name: string): string | null {
 
 /** Extract the names of all `[mcp_servers.X]` tables present in a config.toml. */
 export function codexServerNames(source: string): string[] {
-  source = maskIndentedValueHeaders(withoutTomlBom(source));
+  source = maskValueHeaders(withoutTomlBom(source));
   const names = new Set<string>();
   const header = codexHeaderStart(String.raw`(?:([A-Za-z0-9_-]+)|"([A-Za-z0-9_-]+)"|'([A-Za-z0-9_-]+)')`);
   for (const m of source.matchAll(new RegExp(String.raw`^[ \t]*\[${header}\]\s*(?:#.*)?$`, 'gm'))) names.add(m[1] ?? m[2] ?? m[3]);

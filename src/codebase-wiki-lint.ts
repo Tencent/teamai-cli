@@ -70,7 +70,7 @@ export async function lintTeamwiki(opts: {
       severity: 'high',
       category: 'graph-missing',
       location: 'teamwiki/.indices/graph-index.json',
-      message: 'graph-index.json 不存在，知识图谱未构建',
+      message: 'graph-index.json does not exist; the knowledge graph has not been built',
     });
   } else {
     try {
@@ -81,7 +81,7 @@ export async function lintTeamwiki(opts: {
         severity: 'high',
         category: 'graph-corrupt',
         location: graphPath,
-        message: 'graph-index.json 解析失败',
+        message: 'Failed to parse graph-index.json',
       });
     }
   }
@@ -93,7 +93,7 @@ export async function lintTeamwiki(opts: {
       severity: 'high',
       category: 'evidence-missing',
       location: 'teamwiki/evidence/code/',
-      message: 'evidence 目录不存在，无代码事实页',
+      message: 'The evidence directory does not exist; no code fact pages are available',
     });
   } else {
     const projects = await readdir(evidenceDir);
@@ -102,7 +102,7 @@ export async function lintTeamwiki(opts: {
         severity: 'medium',
         category: 'evidence-empty',
         location: 'teamwiki/evidence/code/',
-        message: 'evidence 目录为空，未提取任何项目',
+        message: 'The evidence directory is empty; no projects have been extracted',
       });
     }
 
@@ -111,7 +111,7 @@ export async function lintTeamwiki(opts: {
       const pStat = await stat(projectDir).catch(() => null);
       if (!pStat?.isDirectory()) {
         if (!pStat) {
-          addIssue({ severity: 'low', category: 'stat-failed', location: `evidence/code/${project}`, message: '无法读取目录状态' });
+          addIssue({ severity: 'low', category: 'stat-failed', location: `evidence/code/${project}`, message: 'Could not read the directory status' });
         }
         continue;
       }
@@ -122,7 +122,7 @@ export async function lintTeamwiki(opts: {
           severity: 'low',
           category: 'missing-index',
           location: `evidence/code/${project}/`,
-          message: '缺少 index.md 总索引页',
+          message: 'The project index.md page is missing',
         });
       }
     }
@@ -135,7 +135,7 @@ export async function lintTeamwiki(opts: {
         severity: 'low',
         category: 'nav-missing',
         location: `teamwiki/${navFile}`,
-        message: `导航文件 ${navFile} 不存在，知识库入口不完整`,
+        message: `Navigation file ${navFile} does not exist; the knowledge base entry point is incomplete`,
       });
     }
   }
@@ -147,7 +147,7 @@ export async function lintTeamwiki(opts: {
       severity: 'low',
       category: 'manifest-missing',
       location: 'teamwiki/source-manifest.json',
-      message: 'source-manifest.json 不存在，增量更新不可用',
+      message: 'source-manifest.json does not exist; incremental updates are unavailable',
     });
   } else {
     try {
@@ -169,7 +169,7 @@ export async function lintTeamwiki(opts: {
         severity: 'low',
         category: 'manifest-corrupt',
         location: manifestPath,
-        message: 'source-manifest.json 解析失败',
+        message: 'Failed to parse source-manifest.json',
       });
     }
   }
@@ -200,7 +200,7 @@ export async function lintTeamwiki(opts: {
         severity: 'medium',
         category: 'low-connectivity',
         location: 'teamwiki/.indices/graph-index.json',
-        message: `图谱连通性 ${(connectivity * 100).toFixed(0)}% 过低（${orphans.length} 个孤立节点）`,
+        message: `Graph connectivity is too low at ${(connectivity * 100).toFixed(0)}% (${orphans.length} orphan nodes)`,
       });
     }
 
@@ -209,7 +209,7 @@ export async function lintTeamwiki(opts: {
         severity: 'high',
         category: 'no-edges',
         location: 'teamwiki/.indices/graph-index.json',
-        message: `图谱有 ${graph.nodes.length} 个节点但 0 条边，图谱构建可能失败`,
+        message: `The graph has ${graph.nodes.length} nodes but no edges; graph construction may have failed`,
       });
     }
   }
@@ -228,20 +228,20 @@ export async function lintTeamwiki(opts: {
 export function formatWikiLintReport(report: WikiLintReport): string {
   const lines: string[] = [];
 
-  lines.push(chalk.bold('=== teamwiki/ 知识图谱健康度检查 ==='));
+  lines.push(chalk.bold('=== teamwiki/ knowledge graph health check ==='));
   lines.push('');
   if (report.graphHealth === null) {
     lines.push('graph: not checked (graph-index.json missing or corrupt)');
   } else {
-    lines.push(`图谱: ${report.graphHealth.nodeCount} nodes, ${report.graphHealth.edgeCount} edges, 连通性 ${(report.graphHealth.connectivity * 100).toFixed(0)}%`);
+    lines.push(`Graph: ${report.graphHealth.nodeCount} nodes, ${report.graphHealth.edgeCount} edges, connectivity ${(report.graphHealth.connectivity * 100).toFixed(0)}%`);
     if (report.graphHealth.orphanNodes > 0) {
-      lines.push(chalk.dim(`  (${report.graphHealth.orphanNodes} 个孤立节点)`));
+      lines.push(chalk.dim(`  (${report.graphHealth.orphanNodes} orphan nodes)`));
     }
   }
   lines.push('');
 
   if (report.issues.length === 0) {
-    lines.push(chalk.green('✓ 无问题'));
+    lines.push(chalk.green('✓ No issues'));
   } else {
     const byCategory = new Map<string, WikiLintIssue[]>();
     for (const issue of report.issues) {
@@ -260,7 +260,7 @@ export function formatWikiLintReport(report: WikiLintReport): string {
       lines.push('');
     }
 
-    lines.push(`总计: ${report.summary.high} high, ${report.summary.medium} medium, ${report.summary.low} low, ${report.summary.info} info`);
+    lines.push(`Total: ${report.summary.high} high, ${report.summary.medium} medium, ${report.summary.low} low, ${report.summary.info} info`);
   }
 
   if (report.assetGraph) {

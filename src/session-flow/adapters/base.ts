@@ -128,8 +128,8 @@ export abstract class AgentAdapter {
    */
   abstract deleteSession(sessionId: string, projectPath?: string): Promise<boolean>;
 
-  /** Check whether this adapter instance's storage path is usable (instance method; variants may override). */
-  isReady(): boolean {
+  /** Check whether this adapter instance has a usable global or project-scoped storage path. */
+  isReady(_projectPath?: string): boolean {
     return false;
   }
 }

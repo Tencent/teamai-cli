@@ -926,7 +926,8 @@ export const TOOLS = {
       project: { format: 'claude', reads: [{ base: 'project', path: '.omp/mcp.json', when: 'cwdOnly', evidence: 'verified' }] },
     },
     hooks: { user: { channel: 'adapter', adapter: 'omp-extension', evidence: 'verified' }, self: 'user' },
-    sessions: 'none',
+    // Oh My Pi 18.12.6: Pi v3 JSONL with a leading title record under the resolved profile agent root.
+    sessions: ['omp'],
     launch: 'omp',
     tokens: 'pi-session',
     features: {
@@ -963,8 +964,8 @@ export const TOOLS = {
       project: { format: 'pi', reads: [{ base: 'project', path: '.pi/mcp.json', when: 'cwdOnly', evidence: 'verified' }] },
     },
     hooks: { user: { channel: 'adapter', adapter: 'pi-extension', evidence: 'verified' }, self: 'user' },
-    // Pi 0.99: <ts>_<uuid>.jsonl under ~/.pi/agent/sessions/<cwd>, moved by PI_CODING_AGENT_SESSION_DIR or PI_CODING_AGENT_DIR.
-    sessions: 'none',
+    // Pi 1.4.0: v3 JSONL under --session-dir > PI_CODING_AGENT_SESSION_DIR > the sessionDir setting > PI_CODING_AGENT_DIR/sessions.
+    sessions: ['pi'],
     launch: 'pi',
     tokens: 'pi-session',
     features: {

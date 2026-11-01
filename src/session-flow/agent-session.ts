@@ -361,7 +361,7 @@ async function listedFilePath(target: AgentAdapter, sessionId: string, cwd: stri
 async function listPlatform(platform: string, cwd: string | undefined, toolRoots: ToolRoots, archived: boolean): Promise<AgentSessionList> {
   const adapter = adapterFor(platform, 'read', toolRoots);
   if ('code' in adapter) return { sessions: [], failures: [adapter] };
-  if (!adapter.isReady()) {
+  if (!adapter.isReady(cwd)) {
     const message = `${platform} is not installed or its session storage directory was not found.`;
     return { sessions: [], failures: [{ code: 'tool_unavailable', platform, message }] };
   }
@@ -394,7 +394,7 @@ async function listPlatform(platform: string, cwd: string | undefined, toolRoots
 async function list({ platforms, cwd, updatedSince, archived = false }: AgentSessionListQuery = {}): Promise<AgentSessionList> {
   const toolRoots = await recordedToolRoots(cwd);
   const listed = await Promise.all(
-    (platforms ?? listInstalledPlatforms(toolRoots)).map((platform) => listPlatform(platform, cwd, toolRoots, archived)),
+    (platforms ?? listInstalledPlatforms(toolRoots, cwd)).map((platform) => listPlatform(platform, cwd, toolRoots, archived)),
   );
   const since = updatedSince === undefined ? undefined : Date.parse(updatedSince);
   const sessions = listed
