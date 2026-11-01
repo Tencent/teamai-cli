@@ -10,7 +10,8 @@
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 
-import { classifyTreePath, normalizeTargetPath, type AssetKind, type AssetRelationType, type RelationVia } from './asset-relations.js';
+import { classifyTreePath, normalizeTargetPath, teamwikiCodebaseSlug, type AssetKind, type AssetRelationType, type RelationVia } from './asset-relations.js';
+import { caseFoldKey } from './manifest-schema.js';
 import { detectProjectConfig, loadLocalConfigForScope, requireInit } from './config.js';
 import { buildRelationContext, type RelationContext } from './recall.js';
 import { getProjectSearchIndexPath, getUserSearchIndexPath, type LocalConfig, type SearchIndex } from './types.js';
@@ -46,25 +47,34 @@ export interface LintScopeGraph {
 }
 
 /**
- * Count the asset relations of the given scopes. A relation counts when its
- * target is an asset of the same scope — a teamwiki page is a target, not an
- * asset, so a relation to one resolves for recall but is not counted here
- * (#1562). Existence, not visibility, decides `unresolved`: a declared target
- * that exists on disk but is not visible to this member is neither counted
- * nor unresolved, the same check `contribute` makes (#1552).
+ * Count the asset relations of the given scopes, with recall's rules: a
+ * relation counts when it resolves — for an asset target, visibility in the
+ * scope; for a teamwiki page, existence on disk and an unwithheld codebase —
+ * and a local link to a target that also has a declared relation from the
+ * same entry is prose, not a second edge. Existence, not visibility, decides
+ * `unresolved`: a declared target that exists on disk but is not visible to
+ * this member is neither counted nor unresolved, the same check `contribute`
+ * makes (#1552).
  */
 export function computeLintAssetGraph(scopes: readonly LintScopeGraph[]): LintAssetGraph {
   const assets = new Set<string>();
-  // Declared beats link between the same assets in the same direction, as in
-  // recall's renderer; keyed by the ordered triple before the unordered-pair
-  // dedup below.
+  // Declared beats link by target, as recall renders it, before the
+  // unordered-pair dedup below; keyed by the ordered triple.
   const ordered = new Map<string, { from: string; relation: AssetRelationType; target: string; via: RelationVia }>();
   const unresolved = new Map<string, LintUnresolvedRelation>();
 
   for (const { ctx, targetExists } of scopes) {
     for (const [treePath, entry] of ctx.byTreePath) {
+      // A teamwiki page can hold a treePath only in exotic index builds; it
+      // is a target, never an asset.
+      if (classifyTreePath(treePath) === 'teamwiki') continue;
       assets.add(treePath);
-      for (const r of entry.related ?? []) {
+      const own = entry.related ?? [];
+      // A local link to an asset that also has a declared relation from this
+      // entry is prose, not a second edge — the same declared-beats-link rule
+      // recall renders (#1562 review).
+      const declaredTargets = new Set(own.filter((r) => r.via === 'declared').map((r) => r.target));
+      for (const r of own) {
         const kind = classifyTreePath(r.target);
         if (r.via === 'declared' && kind !== null) {
           const normalized = normalizeTargetPath(r.target);
@@ -74,8 +84,20 @@ export function computeLintAssetGraph(scopes: readonly LintScopeGraph[]): LintAs
             });
           }
         }
-        if (kind === null || kind === 'teamwiki') continue;
-        if (!ctx.byTreePath.has(r.target)) continue;
+        if (r.via === 'link' && declaredTargets.has(r.target)) continue;
+        // A relation to a teamwiki page counts when the page exists on disk
+        // and its codebase is not withheld — the same visibility recall
+        // renders. The page stays out of `assets` and `withoutRelation`: a
+        // page is a target, not an asset (#1562).
+        if (kind === 'teamwiki') {
+          if (ctx.withheld === null) continue;
+          const slug = teamwikiCodebaseSlug(r.target);
+          if (slug !== null && ctx.withheld.has(caseFoldKey(slug))) continue;
+          if (!targetExists('teamwiki', r.target)) continue;
+          ordered.set(`${treePath}|${r.relation}|${r.target}`, { from: treePath, relation: r.relation, target: r.target, via: r.via });
+          continue;
+        }
+        if (kind === null || !ctx.byTreePath.has(r.target)) continue;
         const key = `${treePath}|${r.relation}|${r.target}`;
         if (ordered.get(key)?.via === 'declared') continue;
         ordered.set(key, { from: treePath, relation: r.relation, target: r.target, via: r.via });
@@ -83,9 +105,9 @@ export function computeLintAssetGraph(scopes: readonly LintScopeGraph[]): LintAs
     }
   }
 
-  // Each relation counts once per unordered asset pair, relation and via:
-  // A→B and the B←A view of the same edge are one relation, and recall's
-  // 5-line output cap does not apply here (#1562).
+  // Each relation counts once per unordered pair, relation and via: A→B and
+  // the B←A view of the same edge are one relation, and recall's 5-line
+  // output cap does not apply here (#1562).
   const relations = new Set<string>();
   const connected = new Set<string>();
   for (const edge of ordered.values()) {

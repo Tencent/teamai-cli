@@ -337,11 +337,17 @@ function viewRoot(index: LogIndex, target: string): RootView {
   const viaRelationRuns = new Set<string>();
   for (const e of evidence) {
     const at = Date.parse(e.ts);
-    for (const r of runs) {
-      if (viaRelationRuns.has(r.run) || !inWindow(at, r)) continue;
+    const applicable = runs.filter((r) => {
+      if (viaRelationRuns.has(r.run) || !inWindow(at, r)) return false;
       const actor = markedActor.get(r);
-      if (actor && actor.session === e.session && actor.agentId === (e.agentId ?? null)) continue;
-      if (openedPaths(e.path, relatedPathsOf(r)).length > 0) viaRelationRuns.add(r.run);
+      return !actor || actor.session !== e.session || actor.agentId !== (e.agentId ?? null);
+    });
+    // The ambiguity check pools every applicable run's related paths, the
+    // same way `opened` pools their docs: a relative read that could name a
+    // path in two runs' different roots credits neither run (#1562 review).
+    const matched = new Set(openedPaths(e.path, applicable.flatMap(relatedPathsOf)));
+    for (const r of applicable) {
+      if (relatedPathsOf(r).some((p) => matched.has(p))) viaRelationRuns.add(r.run);
     }
   }
   return { runs, recalled, adopted: new Set(credited.map((d) => d.key)).size, viaRelation: viaRelationRuns.size, evidence, opened, creditOf, done };

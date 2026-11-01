@@ -600,8 +600,11 @@ function resultsRelations(
     // would attach a user relation to a workspace page.
     const ctx = scope !== undefined ? relationContexts.get(scope) : fallbackCtx;
     if (!ctx) return [];
-    return printedRelations(ctx, entry, derived && entry.treePath
-      ? { out: derived.out.get(entry.treePath), in: derived.in.get(entry.treePath) }
+    // Derived edges belong to the hit's scope like every other relation.
+    const derivedForScope = (scope !== undefined ? derived.get(scope) : undefined)
+      ?? (scope === undefined ? derived.values().next().value as DerivedEdges | undefined : undefined);
+    return printedRelations(ctx, entry, derivedForScope && entry.treePath
+      ? { out: derivedForScope.out.get(entry.treePath), in: derivedForScope.in.get(entry.treePath) }
       : undefined);
   });
 }

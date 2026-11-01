@@ -58,7 +58,6 @@ function exampleScope(overrides: Partial<LintScopeGraph> = {}): LintScopeGraph {
       { relation: 'MAPS_TO', target: PAGE, via: 'declared' },
       { relation: 'REFERENCES', target: 'docs/payments-overview.md', via: 'declared' },
       { relation: 'REFERENCES', target: 'skills/release', via: 'declared' },
-      { relation: 'REFERENCES', target: 'learnings/ledger-timeout', via: 'declared' },
       // The typo from #1562 part 1: no such doc on disk.
       { relation: 'REFERENCES', target: 'docs/payment-overview.md', via: 'declared' },
     ],
@@ -96,22 +95,55 @@ describe('computeLintAssetGraph', () => {
     });
   });
 
-  it('does not count a relation to a teamwiki page: a page is a target, not an asset', () => {
+  it('counts a relation to a teamwiki page when the page exists and is not withheld', () => {
     // The MAPS_TO to the page is the only relation of a lone rule.
     const rule = entry({
       filename: 'payments.md', treePath: 'rules/payments.md',
       related: [{ relation: 'MAPS_TO', target: PAGE, via: 'declared' }],
     });
-    const graph = computeLintAssetGraph([{
+    const visible = computeLintAssetGraph([{
       ctx: ctx({ byTreePath: new Map([['rules/payments.md', rule]]) }),
       targetExists: existsOnly([PAGE]),
     }]);
-    expect(graph).toEqual({
+    expect(visible).toEqual({
       assetCount: 1,
-      relationCount: 0,
-      withoutRelation: ['rules/payments.md'],
+      relationCount: 1,
+      withoutRelation: [],
       unresolved: [],
     });
+    // A withheld codebase's page gives no relation; a page the clone does not
+    // hold resolves for nobody, so the declared relation is unresolved.
+    const withheld = computeLintAssetGraph([{
+      ctx: ctx({ byTreePath: new Map([['rules/payments.md', rule]]), withheld: new Set(['pay']) }),
+      targetExists: existsOnly([PAGE]),
+    }]);
+    expect(withheld.relationCount).toBe(0);
+    expect(withheld.withoutRelation).toEqual(['rules/payments.md']);
+    const missing = computeLintAssetGraph([{
+      ctx: ctx({ byTreePath: new Map([['rules/payments.md', rule]]) }),
+      targetExists: existsOnly([]),
+    }]);
+    expect(missing.relationCount).toBe(0);
+    expect(missing.unresolved).toEqual([
+      { from: 'rules/payments.md', relation: 'MAPS_TO', target: PAGE, reason: 'no-asset' },
+    ]);
+  });
+
+  it('declared beats link by target: a link to a declared target is prose', () => {
+    const learning = entry({
+      filename: 'ledger-timeout.md', treePath: 'learnings/ledger-timeout', type: 'learnings',
+      related: [
+        { relation: 'SUPERSEDES', target: 'docs/payments-overview.md', via: 'declared' },
+        { relation: 'REFERENCES', target: 'docs/payments-overview.md', via: 'link' },
+      ],
+    });
+    const doc = entry({ filename: 'payments-overview.md', treePath: 'docs/payments-overview.md', type: 'docs' });
+    const graph = computeLintAssetGraph([{
+      ctx: ctx({ byTreePath: new Map([['learnings/ledger-timeout', learning], ['docs/payments-overview.md', doc]]) }),
+      targetExists: existsOnly(['docs/payments-overview.md']),
+    }]);
+    expect(graph.relationCount).toBe(1);
+    expect(graph.withoutRelation).toEqual([]);
   });
 
   it('reports a declared relation to a teamwiki page that does not exist on disk as unresolved', () => {
@@ -238,7 +270,6 @@ function writeTeamAssets(clone: string, opts: { withTeamwiki?: boolean } = {}): 
     '  REFERENCES:',
     '    - docs/payments-overview.md',
     '    - skills/release',
-    '    - learnings/ledger-timeout',
     // The typo from #1562 part 1.
     '    - docs/payment-overview.md',
     '---',
@@ -373,7 +404,7 @@ describe('codebase --lint asset counts (#1562 part 1)', () => {
 
     // The declared MAPS_TO names a page this clone does not hold, so it is
     // unresolved too — the graph checks are skipped, the counts are not.
-    expect(log.mock.calls.flat().join('\n')).toBe('Assets: 4, relations: 4, without a relation: 0, unresolved: 2');
+    expect(log.mock.calls.flat().join('\n')).toBe('Assets: 4, relations: 3, without a relation: 0, unresolved: 2');
   });
 
   it('still embeds assetGraph in JSON without a teamwiki', async () => {
@@ -384,7 +415,7 @@ describe('codebase --lint asset counts (#1562 part 1)', () => {
 
     const { assetGraph } = JSON.parse(String(log.mock.calls[0][0]));
     expect(assetGraph.assetCount).toBe(4);
-    expect(assetGraph.relationCount).toBe(4);
+    expect(assetGraph.relationCount).toBe(3);
     expect(assetGraph.withoutRelation).toEqual([]);
     expect(assetGraph.unresolved).toEqual([
       { from: 'rules/payments.md', relation: 'MAPS_TO', target: 'teamwiki/evidence/code/pay/modules/ledger-receipts.md', reason: 'no-asset' },

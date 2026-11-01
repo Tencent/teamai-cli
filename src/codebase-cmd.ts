@@ -268,7 +268,15 @@ async function lintWithoutTeamwiki(opts: CodebaseCmdOptions): Promise<void> {
         return;
     }
     if (opts.json) {
-        console.log(JSON.stringify({ assetGraph }, null, 2));
+        // The full report shape, with the graph checks empty: a script
+        // reading `.summary` sees the same structure with and without a
+        // teamwiki (#1562 review).
+        console.log(JSON.stringify({
+            issues: [],
+            summary: { total: 0, high: 0, medium: 0, low: 0, info: 0 },
+            graphHealth: { nodeCount: 0, edgeCount: 0, orphanNodes: 0, connectivity: 0 },
+            assetGraph,
+        }, null, 2));
     } else {
         const { formatAssetGraphLine } = await import('./codebase-wiki-lint.js');
         console.log(formatAssetGraphLine(assetGraph));
