@@ -25,12 +25,16 @@ export interface WikiLintReport {
     low: number;
     info: number;
   };
+  /**
+   * Graph metrics from `.indices/graph-index.json`; `null` when the graph is
+   * missing or corrupt — "not checked", never a measured 0% (#1637 review).
+   */
   graphHealth: {
     nodeCount: number;
     edgeCount: number;
     orphanNodes: number;
     connectivity: number;
-  };
+  } | null;
   /**
    * The member's asset-relation counts (#1562). Absent with standalone
    * `--output` or when there is no member: then there is no asset data.
@@ -168,8 +172,9 @@ export async function lintTeamwiki(opts: {
     }
   }
 
-  // Graph health metrics
-  let graphHealth = { nodeCount: 0, edgeCount: 0, orphanNodes: 0, connectivity: 0 };
+  // Graph health metrics; null stays "not checked" when the graph is missing
+  // or corrupt, so a JSON reader never mistakes it for a measured 0% (#1637).
+  let graphHealth: { nodeCount: number; edgeCount: number; orphanNodes: number; connectivity: number } | null = null;
   if (graph) {
     const connectedNodes = new Set<string>();
     for (const edge of graph.edges) {
@@ -223,40 +228,24 @@ export function formatWikiLintReport(report: WikiLintReport): string {
 
   lines.push(chalk.bold('=== teamwiki/ knowledge graph health check ==='));
   lines.push('');
-  lines.push(`Graph: ${report.graphHealth.nodeCount} nodes, ${report.graphHealth.edgeCount} edges, connectivity ${(report.graphHealth.connectivity * 100).toFixed(0)}%`);
-  if (report.graphHealth.orphanNodes > 0) {
-    lines.push(chalk.dim(`  (${report.graphHealth.orphanNodes} orphan nodes)`));
+  if (report.graphHealth === null) {
+    lines.push('graph: not checked (graph-index.json missing or corrupt)');
+  } else {
+    lines.push(`Graph: ${report.graphHealth.nodeCount} nodes, ${report.graphHealth.edgeCount} edges, connectivity ${(report.graphHealth.connectivity * 100).toFixed(0)}%`);
+    if (report.graphHealth.orphanNodes > 0) {
+      lines.push(chalk.dim(`  (${report.graphHealth.orphanNodes} orphan nodes)`));
+    }
   }
   lines.push('');
 
   if (report.issues.length === 0) {
-<<<<<<< HEAD
     lines.push(chalk.green('✓ No issues'));
-    return lines.join('\n');
-  }
-
-  const byCategory = new Map<string, WikiLintIssue[]>();
-  for (const issue of report.issues) {
-    const existing = byCategory.get(issue.category) ?? [];
-    existing.push(issue);
-    byCategory.set(issue.category, existing);
-  }
-
-  for (const [category, categoryIssues] of byCategory) {
-    lines.push(chalk.bold(`[${category}] (${categoryIssues.length})`));
-    for (const issue of categoryIssues) {
-      const sevColor = issue.severity === 'high' ? chalk.red
-        : issue.severity === 'medium' ? chalk.yellow : chalk.dim;
-      lines.push(`  ${sevColor(`[${issue.severity}]`)} ${issue.location}: ${issue.message}`);
-=======
-    lines.push(chalk.green('✓ 无问题'));
   } else {
     const byCategory = new Map<string, WikiLintIssue[]>();
     for (const issue of report.issues) {
       const existing = byCategory.get(issue.category) ?? [];
       existing.push(issue);
       byCategory.set(issue.category, existing);
->>>>>>> b2d38bf4 (feat(lint): codebase --lint counts the member's asset relations (#1562 part 1))
     }
 
     for (const [category, categoryIssues] of byCategory) {
@@ -269,16 +258,12 @@ export function formatWikiLintReport(report: WikiLintReport): string {
       lines.push('');
     }
 
-    lines.push(`总计: ${report.summary.high} high, ${report.summary.medium} medium, ${report.summary.low} low, ${report.summary.info} info`);
+    lines.push(`Total: ${report.summary.high} high, ${report.summary.medium} medium, ${report.summary.low} low, ${report.summary.info} info`);
   }
 
-<<<<<<< HEAD
-  lines.push(`Total: ${report.summary.high} high, ${report.summary.medium} medium, ${report.summary.low} low, ${report.summary.info} info`);
-=======
   if (report.assetGraph) {
     lines.push(formatAssetGraphLine(report.assetGraph));
   }
->>>>>>> b2d38bf4 (feat(lint): codebase --lint counts the member's asset relations (#1562 part 1))
   return lines.join('\n');
 }
 

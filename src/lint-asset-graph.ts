@@ -107,7 +107,10 @@ export function computeLintAssetGraph(scopes: readonly LintScopeGraph[]): LintAs
 
   // Each relation counts once per unordered pair, relation and via: A→B and
   // the B←A view of the same edge are one relation, and recall's 5-line
-  // output cap does not apply here (#1562).
+  // output cap does not apply here (#1562). The count follows what recall
+  // prints — one per relation line — so a declared REFERENCES the target
+  // links back to counts twice (declared + link), not once per pair (#1637
+  // review).
   const relations = new Set<string>();
   const connected = new Set<string>();
   for (const edge of ordered.values()) {
