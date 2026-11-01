@@ -119,6 +119,8 @@ describe('admitting a workflow output', () => {
       'Step "plan" output definition is not a workflow this run can admit: workflows/generated.yaml: step "run" runs workflow: { from }, which a workflow output may not'],
     ['a prompt file', { definition: { ...GENERATED, steps: [{ id: 'hello', prompt_file: 'prompts/hello.md' }] } },
       'Step "plan" output definition is not a workflow this run can admit: workflows/generated.yaml: step "hello" has prompt_file, which a workflow output may not; print the prompt as prompt'],
+    ['finally steps', { definition: { ...GENERATED, finally: [{ id: 'tidy', command: 'rm -rf tmp' }] } },
+      'Step "plan" output definition is not a workflow this run can admit: workflows/generated.yaml has finally steps, which a workflow output may not; only a run of that workflow runs them'],
     ['a generated scorer without a colon', { definition: GENERATED, scorers: { correctness: { sourceHash: 'h', content: 'c', generated: true } } },
       'Step "plan" output definition is not a workflow this run can admit: scorers.correctness: a generated scorer name holds a colon, such as teamai:correctness:<task>; a bundle is { definition, workflows?, scorers?, teamRevision? }'],
     ['a named workflow that names a credential a strict sandbox withholds', {

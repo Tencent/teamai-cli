@@ -115,7 +115,8 @@ function pinnedSecret(pinned: Record<string, unknown>, secrets: Record<string, s
 /**
  * A bundle's definition and its workflows, each written as YAML and parsed as the workflow file `workflows/<key>.yaml`,
  * so a step that runs one by name is checked against it, as a pull checks the team's files. A bundle's workflows run
- * no `from` step and read no prompt file: the run has no producer for the one, and no team file for the other.
+ * no `from` step, read no prompt file, and have no `finally`: the run has no producer for the first, no team file for
+ * the second, and runs only its own workflow's `finally`.
  */
 function parseBundle(
   definition: Record<string, unknown>, workflows: Record<string, Record<string, unknown>>,
@@ -147,6 +148,7 @@ function parseBundle(
     const files: WorkflowFiles = { runnable: runs, cycle: (workflow) => cycleBack(workflow, key) };
     const parsed = parseWorkflow(`workflows/${key}.yaml`, content, files);
     if (!parsed.ok) return parsed.diagnostics.map(formatDiagnostic).join('; ');
+    if (parsed.definition.finally) return `workflows/${key}.yaml has finally steps, which a workflow output may not; only a run of that workflow runs them`;
     const unrunnable = unrunnableStep(parsed.definition.steps);
     return unrunnable ? `workflows/${key}.yaml: ${unrunnable}` : parsed.definition;
   };
