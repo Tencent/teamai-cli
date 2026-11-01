@@ -14,7 +14,7 @@ import { readUserVotes } from './votes.js';
 import { BROKEN_CONFIG_ADVICE, findUnreadableProjectConfig, resolveConfigForDir } from './config.js';
 import type { AssetKind } from './asset-relations.js';
 import { buildRelationContext } from './recall.js';
-import { computeLintAssetGraph } from './lint-asset-graph.js';
+import { computeLintAssetGraph, memberScopeGraphs } from './lint-asset-graph.js';
 import {
   getTeamaiHomeDir,
   getUserVotesDir,
@@ -449,30 +449,35 @@ function buildAuthors(metrics: EntryMetric[]): AuthorStat[] {
 }
 
 /**
- * The #1562 part-2 relation counts over the report's own index, so the lists
- * never disagree with what this view shows — and never with `codebase
- * --lint`, since both count through `computeLintAssetGraph` (#1562 part 1):
- * resolution reuses recall's RelationContext (withheld teamwiki codebases and
- * all), and an unresolved declared target follows contribute's existence
- * check: the team clone on disk or the learnings roots.
+ * The #1562 part-2 relation counts. A report with a member scope counts
+ * through {@link memberScopeGraphs} — the same saved indexes and scope
+ * selection `codebase --lint` uses — so the health view and `--lint` cannot
+ * disagree about the inputs (#1637 review). A report without one (`--repo`,
+ * the ~/.teamai fallback) counts its own entries. The silent intersection
+ * still filters by what this view lists.
  */
 async function computeRelationStats(
   entries: SearchIndexEntry[],
   paths: VizPaths,
   isSilent: (entry: SearchIndexEntry) => boolean,
 ): Promise<RelationStats> {
-  const ctx = await buildRelationContext({
-    index: { builtAt: '', elapsedMs: 0, entries } as SearchIndex,
-    // --repo and the ~/.teamai fallback have no LocalConfig; the knowledge root
-    // is the team-tree root in both, which is all relation resolution reads.
-    config: paths.scope ?? ({ repo: { localPath: paths.knowledgeRoot } } as LocalConfig),
-  });
-  const targetExists = (kind: AssetKind, treePath: string): boolean => {
-    const rel = kind === 'learning' ? `${treePath.slice('learnings/'.length)}.md` : treePath;
-    const roots = kind === 'learning' ? paths.indexLearningsDirs : [paths.knowledgeRoot];
-    return roots.some((root) => existsSync(path.join(root, ...rel.split('/'))));
-  };
-  const graph = computeLintAssetGraph([{ ctx, targetExists }]);
+  const memberGraphs = paths.scope ? await memberScopeGraphs({ dryRun: true }) : null;
+  const graph = memberGraphs
+    ? computeLintAssetGraph(memberGraphs)
+    : await (async () => {
+        const ctx = await buildRelationContext({
+          index: { builtAt: '', elapsedMs: 0, entries } as SearchIndex,
+          // --repo and the ~/.teamai fallback have no LocalConfig; the knowledge root
+          // is the team-tree root in both, which is all relation resolution reads.
+          config: { repo: { localPath: paths.knowledgeRoot } } as LocalConfig,
+        });
+        const targetExists = (kind: AssetKind, treePath: string): boolean => {
+          const rel = kind === 'learning' ? `${treePath.slice('learnings/'.length)}.md` : treePath;
+          const roots = kind === 'learning' ? paths.indexLearningsDirs : [paths.knowledgeRoot];
+          return roots.some((root) => existsSync(path.join(root, ...rel.split('/'))));
+        };
+        return computeLintAssetGraph([{ ctx, targetExists }]);
+      })();
   const silentPaths = new Set(
     entries.filter(isSilent).map((e) => e.treePath).filter((p): p is string => typeof p === 'string'),
   );
