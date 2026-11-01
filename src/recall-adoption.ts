@@ -337,18 +337,18 @@ function viewRoot(index: LogIndex, target: string): RootView {
   const viaRelationRuns = new Set<string>();
   for (const e of evidence) {
     const at = Date.parse(e.ts);
-    // The pool keeps every in-window run — counted runs included — and only
-    // the adding loop skips them. Dropping counted runs from the pool shrinks
-    // the ambiguity check: an absolute read of run A's related path credits
-    // A, and a later relative read naming a path in both A's and B's roots
-    // then sees only B and credits it, 2 where adoption gives 1 (#1637
-    // review).
+    // The ambiguity pool holds every in-window run's recalled paths and
+    // related paths: a relative read that could name one of each credits
+    // nothing — it is plausibly an ordinary read of the recalled doc
+    // itself, not a related open (#1637 review). Counted runs stay in the
+    // pool; only the adding loop skips them.
     const pool = runs.filter((r) => {
       if (!inWindow(at, r)) return false;
       const actor = markedActor.get(r);
       return !actor || actor.session !== e.session || actor.agentId !== (e.agentId ?? null);
     });
-    const matched = new Set(openedPaths(e.path, pool.flatMap(relatedPathsOf)));
+    const poolPathsOf = (r: RunLine): string[] => [...new Set([...r.docs.map((d) => d.path), ...relatedPathsOf(r)])];
+    const matched = new Set(openedPaths(e.path, pool.flatMap(poolPathsOf)));
     for (const r of pool) {
       if (viaRelationRuns.has(r.run)) continue;
       if (relatedPathsOf(r).some((p) => matched.has(p))) viaRelationRuns.add(r.run);

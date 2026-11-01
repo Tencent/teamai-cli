@@ -461,7 +461,7 @@ async function computeRelationStats(
   paths: VizPaths,
   isSilent: (entry: SearchIndexEntry) => boolean,
 ): Promise<RelationStats> {
-  const memberGraphs = paths.scope ? await memberScopeGraphs({ dryRun: true }) : null;
+  const memberGraphs = paths.scope ? await memberScopeGraphs({ dryRun: true, config: paths.scope }) : null;
   const graph = memberGraphs
     ? computeLintAssetGraph(memberGraphs)
     : await (async () => {

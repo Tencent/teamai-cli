@@ -2656,5 +2656,30 @@ describe('recall attribution acceptance (#884)', () => {
 
       expect(recallRows(await h.stats())).toEqual([['sess-mai', 'claude', '2', '2', '0', '1']]);
     });
+
+    it('a relative read naming a recalled path and a related path credits nothing: it is plausibly the plain read (#1637 review)', async () => {
+      await h.setUp();
+      const ts = (offsetHours: number) => new Date(T0 + offsetHours * 3_600_000).toISOString();
+      const line = (value: unknown): string => JSON.stringify(value);
+      fs.mkdirSync(path.dirname(recallLogPath(h.project)), { recursive: true });
+      fs.appendFileSync(recallLogPath(h.project), [
+        line({
+          kind: 'run', ts: ts(0), run: '00000000-0000-4000-8000-0000000000c3', session: SESSION, agent: 'claude', via: 'env', unambiguous: true,
+          docs: [{
+            key: 'doc-b', type: 'docs', scope: 'project',
+            path: '/rootB/docs/setup.md', score: 5.1, eligible: true,
+            related: [{ relation: 'REFERENCES', direction: 'out', path: '/rootA/docs/setup.md' }],
+          }],
+        }),
+        line({ kind: 'claim', ts: ts(0), run: '00000000-0000-4000-8000-0000000000c3', session: SESSION, direct: true }),
+        // Relative read: the tail matches both the run's recalled doc and its
+        // related path, so the open is ambiguous — an ordinary read of the
+        // recalled doc, not a related open. Crediting it would count a read
+        // the doc's own recall already explains.
+        line({ kind: 'evidence', ts: ts(1), id: 'ev-rel', session: SESSION, path: 'docs/setup.md', status: 'success', simple: true }),
+      ].join('\n') + '\n');
+
+      expect(recallRows(await h.stats())).toEqual([['sess-mai', 'claude', '1', '1', '0', '0']]);
+    });
   });
 });
