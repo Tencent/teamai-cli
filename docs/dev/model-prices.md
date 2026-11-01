@@ -14,7 +14,7 @@ Model prices from litellm-2026-10-24-a1b2c3d to litellm-2026-10-31-b264711: 3 ad
 | claude-opus-5-5 | repriced | $4 | $25 → $20 | $0.2 | $5 |
 ```
 
-Before it opens the pull request the workflow runs the type check and the pricing tests, because a pull request opened with the default `GITHUB_TOKEN` starts no other workflow. Some tests pin today's prices, such as Opus 5.5 at $4 / $20 per million tokens; when an update changes one, the pull request opens as a draft with the failing output in its body. The fix is to update that expectation on the pull request's branch, then mark it ready for review; the push runs CI. While that pull request is open, later runs add their catalog on top of its branch, so a fix pushed to it stays, and a run whose checks fail turns it back into a draft.
+Before it opens the pull request the workflow runs the type check and the pricing tests, because a pull request opened with the default `GITHUB_TOKEN` starts no other workflow. Some tests pin today's prices, such as Opus 5.5 at $4 / $20 per million tokens; when an update changes one, the pull request opens as a draft with the failing output in its body. The fix is to update that expectation on the pull request's branch. While that pull request is open, every run checks its branch: it adds a new catalog on top, so a fix pushed to it stays, and marks the pull request ready once the checks pass, or a draft again when they fail.
 
 To have the full CI run on the pull request, add a repository secret `MODEL_PRICES_TOKEN`: a fine-grained token on this repository with Contents and Pull requests read and write. Without it, the repository setting "Allow GitHub Actions to create and approve pull requests" must be on for the workflow to open the pull request.
 

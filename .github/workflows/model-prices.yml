@@ -59,13 +59,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cat "$RUNNER_TEMP/model-prices.md" >> "$GITHUB_STEP_SUMMARY"
-          if git diff --quiet -- src/token-usage/model-prices.json; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
           # An open refresh pull request keeps what was pushed to it, such as a
           # pinned price's test expectation: build on its branch, replacing only
-          # the catalog, and run the checks on that tree.
+          # the catalog, and run the checks on that tree, even with no new catalog,
+          # so a fixed draft becomes ready.
           cp src/token-usage/model-prices.json "$RUNNER_TEMP/model-prices.json"
           git checkout -- src/token-usage/model-prices.json
           if [ "$(gh pr view "$BRANCH" --json state --jq .state 2>/dev/null)" = "OPEN" ]; then
@@ -77,11 +74,11 @@ jobs:
             git switch -C "$BRANCH"
           fi
           cp "$RUNNER_TEMP/model-prices.json" src/token-usage/model-prices.json
-          if git diff --quiet -- src/token-usage/model-prices.json; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
+          if ! git diff --quiet -- src/token-usage/model-prices.json; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          elif [ "$(grep -c '^open=true' "$GITHUB_OUTPUT")" = 0 ]; then
             exit 0
           fi
-          echo "changed=true" >> "$GITHUB_OUTPUT"
           # Some tests pin today's prices. A failure still opens the pull
           # request, as a draft that says which expectations to update.
           if npm run typecheck > "$RUNNER_TEMP/checks.log" 2>&1 \
@@ -92,12 +89,18 @@ jobs:
           fi
 
       - name: Open or update the pull request
-        if: steps.changed.outputs.changed == 'true'
+        if: steps.changed.outputs.changed == 'true' || steps.changed.outputs.open == 'true'
         env:
+          CHANGED: ${{ steps.changed.outputs.changed }}
           CHECKS: ${{ steps.changed.outputs.checks }}
           OPEN: ${{ steps.changed.outputs.open }}
           GH_TOKEN: ${{ secrets.MODEL_PRICES_TOKEN || github.token }}
         run: |
+          # A draft while its checks fail, ready again once they pass. Either is a no-op when the PR is already in it.
+          if [ "$CHANGED" != true ]; then
+            gh pr ready "$BRANCH" $([ "$CHECKS" = passed ] || echo --undo)
+            exit 0
+          fi
           version=$(node -p "require('./src/token-usage/model-prices.json').version")
           {
             cat "$RUNNER_TEMP/model-prices.md"
@@ -120,7 +123,6 @@ jobs:
           git push $([ "$OPEN" = true ] || echo --force) "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BRANCH"
           if [ "$OPEN" = true ]; then
             gh pr edit "$BRANCH" --title "chore(pricing): update model prices to $version" --body-file "$RUNNER_TEMP/body.md"
-            # A draft while its checks fail, ready again once they pass. Either is a no-op when the PR is already in it.
             gh pr ready "$BRANCH" $([ "$CHECKS" = passed ] || echo --undo)
           else
             gh pr create --base main --head "$BRANCH" --title "chore(pricing): update model prices to $version" --body-file "$RUNNER_TEMP/body.md" $([ "$CHECKS" = passed ] || echo --draft)
