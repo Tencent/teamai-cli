@@ -586,7 +586,7 @@ describe('teamai score --drain', () => {
     const { origin, config } = await team({ 'workflows/review.yaml': WORKFLOW.replace('    scorers: [quality]\n', '') });
     claudeSession(STEP_SESSION, `Reviewed it. The deploy token is ${TOKEN}.`);
     const archivedRun = await settledRun(config, 'unattended', { tool: 'claude', session: STEP_SESSION });
-    const skippedRun = await settledRun(config, 'unattended', { tool: 'pi', session: 'pi-1' });
+    const skippedRun = await settledRun(config, 'unattended', { tool: 'copilot', session: 'copilot-1' });
     await settledRun(config, 'attended', { tool: 'claude', session: '7c1e0000-0000-4000-8000-000000000022' });
     vi.stubEnv('CI', 'true');
 
@@ -595,7 +595,7 @@ describe('teamai score --drain', () => {
     expect(drained.code, drained.lines.join('\n')).toBe(0);
     expect(drained.lines).toEqual(expect.arrayContaining([
       `✔ Archived 1 step session of ${archivedRun} to teamai-reports (scrubbed)`,
-      `ℹ Skipped 1 step session of ${skippedRun}: teamai reads no sessions from pi (review, pass 1)`,
+      `ℹ Skipped 1 step session of ${skippedRun}: teamai reads no sessions from copilot (review, pass 1)`,
     ]));
     const [archived, ...more] = onReports(origin, 'sessions').filter((file) => file.endsWith('.jsonl'));
     expect(more).toEqual([]);
