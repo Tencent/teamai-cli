@@ -48,15 +48,26 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Reads LiteLLM's public price list; no token.
       - name: Rebuild the catalog
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/update-model-prices.mjs --summary "$RUNNER_TEMP/model-prices.md"
+
+      # The only use of a token before the last step: the checks below run without one.
+      - name: Find an open refresh pull request
+        id: open
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$(gh pr view "$BRANCH" --json state --jq .state 2>/dev/null)" = "OPEN" ]; then
+            echo "open=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "open=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Check the new catalog
         id: changed
         env:
-          GH_TOKEN: ${{ github.token }}
+          OPEN: ${{ steps.open.outputs.open }}
         run: |
           cat "$RUNNER_TEMP/model-prices.md" >> "$GITHUB_STEP_SUMMARY"
           # An open refresh pull request keeps what was pushed to it, such as a
@@ -65,18 +76,16 @@ jobs:
           # so a fixed draft becomes ready.
           cp src/token-usage/model-prices.json "$RUNNER_TEMP/model-prices.json"
           git checkout -- src/token-usage/model-prices.json
-          if [ "$(gh pr view "$BRANCH" --json state --jq .state 2>/dev/null)" = "OPEN" ]; then
-            echo "open=true" >> "$GITHUB_OUTPUT"
+          if [ "$OPEN" = true ]; then
             git fetch --quiet origin "$BRANCH"
             git switch -C "$BRANCH" FETCH_HEAD
           else
-            echo "open=false" >> "$GITHUB_OUTPUT"
             git switch -C "$BRANCH"
           fi
           cp "$RUNNER_TEMP/model-prices.json" src/token-usage/model-prices.json
           if ! git diff --quiet -- src/token-usage/model-prices.json; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
-          elif [ "$(grep -c '^open=true' "$GITHUB_OUTPUT")" = 0 ]; then
+          elif [ "$OPEN" != true ]; then
             exit 0
           fi
           # Some tests pin today's prices. A failure still opens the pull
@@ -89,18 +98,15 @@ jobs:
           fi
 
       - name: Open or update the pull request
-        if: steps.changed.outputs.changed == 'true' || steps.changed.outputs.open == 'true'
+        if: steps.changed.outputs.changed == 'true' || steps.open.outputs.open == 'true'
         env:
           CHANGED: ${{ steps.changed.outputs.changed }}
           CHECKS: ${{ steps.changed.outputs.checks }}
-          OPEN: ${{ steps.changed.outputs.open }}
+          OPEN: ${{ steps.open.outputs.open }}
           GH_TOKEN: ${{ secrets.MODEL_PRICES_TOKEN || github.token }}
         run: |
-          # A draft while its checks fail, ready again once they pass. Either is a no-op when the PR is already in it.
-          if [ "$CHANGED" != true ]; then
-            gh pr ready "$BRANCH" $([ "$CHECKS" = passed ] || echo --undo)
-            exit 0
-          fi
+          # The summary compares main's catalog with LiteLLM's, which is what the
+          # pull request's branch holds, so it stays the body's table on every run.
           version=$(node -p "require('./src/token-usage/model-prices.json').version")
           {
             cat "$RUNNER_TEMP/model-prices.md"
@@ -116,13 +122,16 @@ jobs:
               echo '```'
             fi
           } > "$RUNNER_TEMP/body.md"
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -am "chore(pricing): update model prices to $version"
-          # On an open pull request's branch the commit goes on top; a branch left from a closed one is replaced.
-          git push $([ "$OPEN" = true ] || echo --force) "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BRANCH"
+          if [ "$CHANGED" = true ]; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git commit -am "chore(pricing): update model prices to $version"
+            # On an open pull request's branch the commit goes on top; a branch left from a closed one is replaced.
+            git push $([ "$OPEN" = true ] || echo --force) "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BRANCH"
+          fi
           if [ "$OPEN" = true ]; then
             gh pr edit "$BRANCH" --title "chore(pricing): update model prices to $version" --body-file "$RUNNER_TEMP/body.md"
+            # A draft while its checks fail, ready again once they pass. Either is a no-op when the PR is already in it.
             gh pr ready "$BRANCH" $([ "$CHECKS" = passed ] || echo --undo)
           else
             gh pr create --base main --head "$BRANCH" --title "chore(pricing): update model prices to $version" --body-file "$RUNNER_TEMP/body.md" $([ "$CHECKS" = passed ] || echo --draft)
