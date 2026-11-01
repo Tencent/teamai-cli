@@ -144,7 +144,7 @@ describe('removing a Codex MCP server (real CLI)', () => {
   });
 });
 
-describe('indented Codex TOML tables (real CLI)', () => {
+describe('Codex TOML table boundaries (real CLI)', () => {
   function fixture(): { home: string; file: string; definitions: string } {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-codex-mcp-indent-'));
     sandboxes.push(home);
@@ -177,9 +177,9 @@ describe('indented Codex TOML tables (real CLI)', () => {
     expect(parseToml(original)).toMatchObject({ mcp_servers: { 'team-mcp': { command: 'personal-server' } } });
   });
 
-  it('keeps an indented example in instructions when adding and updating a server', async () => {
+  it.each(['', '  '])('keeps an example with indent %j in instructions when adding and updating a server', async (indent) => {
     const { home, file, definitions } = fixture();
-    const instructions = 'developer_instructions = """\nExample:\n  [mcp_servers.team-mcp]\n  command = "sample"\n"""\n\n';
+    const instructions = `developer_instructions = """\nExample:\n${indent}[mcp_servers.team-mcp]\n${indent}command = "sample"\n"""\n\n`;
     fs.writeFileSync(file, instructions);
 
     const installed = await runCLI(home, ['inject']);
@@ -192,6 +192,9 @@ describe('indented Codex TOML tables (real CLI)', () => {
     const result = fs.readFileSync(file, 'utf8');
     expect(result.startsWith(instructions)).toBe(true);
     expect(parseToml(result)).toMatchObject({ mcp_servers: { 'team-mcp': { url: 'https://example.com/updated' } } });
+    const removed = await runCLI(home, ['remove']);
+    expect(removed.code, removed.output).toBe(0);
+    expect(fs.readFileSync(file, 'utf8')).toBe(instructions);
   });
 
   it.each(['remove', 'inject'])('%s keeps an indented table after the managed server', async (command) => {
