@@ -203,6 +203,25 @@ describe('computeLintAssetGraph', () => {
     expect(graph.withoutRelation).toEqual([]);
   });
 
+  it('a declared REFERENCES the target links back to counts two: declared + link, as recall prints', () => {
+    const rule = entry({
+      filename: 'a.md', treePath: 'rules/a.md',
+      related: [{ relation: 'REFERENCES', target: 'docs/b.md', via: 'declared' }],
+    });
+    const doc = entry({
+      filename: 'b.md', treePath: 'docs/b.md', type: 'docs',
+      related: [{ relation: 'REFERENCES', target: 'rules/a.md', via: 'link' }],
+    });
+    const graph = computeLintAssetGraph([{
+      ctx: ctx({ byTreePath: new Map([['rules/a.md', rule], ['docs/b.md', doc]]) }),
+      targetExists: existsOnly(['docs/b.md']),
+    }]);
+    // The count follows what recall renders — one per relation line — not
+    // one per unordered pair: the via stays in the key (#1637 review).
+    expect(graph.relationCount).toBe(2);
+    expect(graph.withoutRelation).toEqual([]);
+  });
+
   it('does not resolve a target that exists on disk but is not in the index, and does not call it unresolved', () => {
     const rule = entry({
       filename: 'a.md', treePath: 'rules/a.md',

@@ -25,12 +25,16 @@ export interface WikiLintReport {
     low: number;
     info: number;
   };
+  /**
+   * Graph metrics from `.indices/graph-index.json`; `null` when the graph is
+   * missing or corrupt — "not checked", never a measured 0% (#1637 review).
+   */
   graphHealth: {
     nodeCount: number;
     edgeCount: number;
     orphanNodes: number;
     connectivity: number;
-  };
+  } | null;
   /**
    * The member's asset-relation counts (#1562). Absent with standalone
    * `--output` or when there is no member: then there is no asset data.
@@ -168,8 +172,9 @@ export async function lintTeamwiki(opts: {
     }
   }
 
-  // Graph health metrics
-  let graphHealth = { nodeCount: 0, edgeCount: 0, orphanNodes: 0, connectivity: 0 };
+  // Graph health metrics; null stays "not checked" when the graph is missing
+  // or corrupt, so a JSON reader never mistakes it for a measured 0% (#1637).
+  let graphHealth: { nodeCount: number; edgeCount: number; orphanNodes: number; connectivity: number } | null = null;
   if (graph) {
     const connectedNodes = new Set<string>();
     for (const edge of graph.edges) {
@@ -223,9 +228,13 @@ export function formatWikiLintReport(report: WikiLintReport): string {
 
   lines.push(chalk.bold('=== teamwiki/ 知识图谱健康度检查 ==='));
   lines.push('');
-  lines.push(`图谱: ${report.graphHealth.nodeCount} nodes, ${report.graphHealth.edgeCount} edges, 连通性 ${(report.graphHealth.connectivity * 100).toFixed(0)}%`);
-  if (report.graphHealth.orphanNodes > 0) {
-    lines.push(chalk.dim(`  (${report.graphHealth.orphanNodes} 个孤立节点)`));
+  if (report.graphHealth === null) {
+    lines.push('图谱: 未检查（graph-index.json 缺失或损坏）');
+  } else {
+    lines.push(`图谱: ${report.graphHealth.nodeCount} nodes, ${report.graphHealth.edgeCount} edges, 连通性 ${(report.graphHealth.connectivity * 100).toFixed(0)}%`);
+    if (report.graphHealth.orphanNodes > 0) {
+      lines.push(chalk.dim(`  (${report.graphHealth.orphanNodes} 个孤立节点)`));
+    }
   }
   lines.push('');
 

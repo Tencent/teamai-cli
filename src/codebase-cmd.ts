@@ -268,13 +268,14 @@ async function lintWithoutTeamwiki(opts: CodebaseCmdOptions): Promise<void> {
         return;
     }
     if (opts.json) {
-        // The full report shape, with the graph checks empty: a script
+        // The full report shape, with the graph checks absent: graphHealth
+        // null reads as "not checked", never a measured 0%, and a script
         // reading `.summary` sees the same structure with and without a
-        // teamwiki (#1562 review).
+        // teamwiki (#1562/#1637 review).
         console.log(JSON.stringify({
             issues: [],
             summary: { total: 0, high: 0, medium: 0, low: 0, info: 0 },
-            graphHealth: { nodeCount: 0, edgeCount: 0, orphanNodes: 0, connectivity: 0 },
+            graphHealth: null,
             assetGraph,
         }, null, 2));
     } else {

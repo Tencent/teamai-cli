@@ -2626,5 +2626,35 @@ describe('recall attribution acceptance (#884)', () => {
 
       expect(recallRows(await h.stats())).toEqual([['sess-mai', 'claude', '2', '2', '0', '0']]);
     });
+
+    it('a counted run stays in the ambiguity pool: an absolute read credits A, a later relative read credits no second run (#1637 review)', async () => {
+      await h.setUp();
+      const ts = (offsetHours: number) => new Date(T0 + offsetHours * 3_600_000).toISOString();
+      const line = (value: unknown): string => JSON.stringify(value);
+      fs.mkdirSync(path.dirname(recallLogPath(h.project)), { recursive: true });
+      const relatedDoc = (root: string, run: string, offsetHours: number): string[] => [
+        line({
+          kind: 'run', ts: ts(offsetHours), run, session: SESSION, agent: 'claude', via: 'env', unambiguous: true,
+          docs: [{
+            key: `doc-${run.slice(-1)}`, type: 'docs', scope: 'project',
+            path: `${root}/docs/setup.md`, score: 5.1, eligible: true,
+            related: [{ relation: 'REFERENCES', direction: 'out', path: `${root}/docs/setup.md` }],
+          }],
+        }),
+        line({ kind: 'claim', ts: ts(offsetHours), run, session: SESSION, direct: true }),
+      ];
+      fs.appendFileSync(recallLogPath(h.project), [
+        ...relatedDoc('/rootA', '00000000-0000-4000-8000-0000000000a1', 0),
+        ...relatedDoc('/rootB', '00000000-0000-4000-8000-0000000000b2', 1),
+        // Absolute read: run A's related path only, so A counts.
+        line({ kind: 'evidence', ts: ts(2), id: 'ev-abs', session: SESSION, path: '/rootA/docs/setup.md', status: 'success', simple: true }),
+        // Relative read: matches the tail of both runs' related paths. A is
+        // already counted but stays in the pool, so the read is ambiguous and
+        // B is not credited: 1 where dropping A from the pool would give 2.
+        line({ kind: 'evidence', ts: ts(3), id: 'ev-rel', session: SESSION, path: 'docs/setup.md', status: 'success', simple: true }),
+      ].join('\n') + '\n');
+
+      expect(recallRows(await h.stats())).toEqual([['sess-mai', 'claude', '2', '2', '0', '1']]);
+    });
   });
 });
