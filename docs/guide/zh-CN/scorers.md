@@ -289,6 +289,15 @@ daily_limit: 10                                  # 按数据目录计数：在�
 | `ask` | 摩擦提醒提供 [`teamai-share-learnings`](workflow.md#teamai-share-learnings-和-teamai-share-session) 时，它提议抽样选中该会话的评分器，成员确认后由它们评判。 | 等同于 `off`，因为没有人回答。 |
 | `auto` | 会话六小时没有任何活动后，由后台评审评判。 | 在任务结束前运行 `teamai score --drain` 时评判。默认值。 |
 
+`skill_routing` 为 `sessions` 已经在评判的会话开启 #1469 的路由问题，默认关闭：
+
+```yaml
+# scorers/scoring.yaml，或 scorers/<namespace>/scoring.yaml
+skill_routing: true
+```
+
+每个完结的会话随后按它自己的 captures 交付过的团队技能各生成一个问题——根技能是 `teamai:routing:<skill>`，带命名空间的是 `teamai:routing:<namespace>:<skill>`——无论技能描述写什么，都由同一份评分规则评判：fit（加载了，且会话需要它）和 idle（没加载，且会话不需要）通过，extra（加载了但不需要）和 missed（需要但没加载）不通过。交付记录说不出命名空间的技能没有问题：评判它可能评到同名的另一个技能。这些问题从不抽样，无论多少个都共用一次评审调用，计入同一个 `daily_limit`；开着 `batch` 时一个会话仍只花一次调用。这些名字也可以按需解析，不受 `skill_routing` 影响——`teamai score --session <id> --scorer teamai:routing:<namespace>:<skill>`——但只对出现在该会话 `skills.available` 里的技能有效，否则 `scorer_not_found`。
+
 每种模式单独解析，取下面第一个设置了它的位置：成员 `config.yaml` 中的 `scoring.sessions`、生效命名空间的 `scoring.yaml`、根目录的 `scorers/scoring.yaml`、默认值。两个生效命名空间不一致时，最严格的策略生效（`off`，其次 `ask`，最后 `auto`），`daily_limit` 也取最低值。只写一种模式的映射（例如 `{ attended: ask }`）会把另一种模式留给下一级：
 
 ```yaml

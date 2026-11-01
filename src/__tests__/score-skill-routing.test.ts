@@ -55,7 +55,7 @@ console.log(JSON.stringify({ type: 'result', structured_output: ${JSON.stringify
 }
 
 /** A session planted under `<root>/app` with a capture that delivered `skills`, idle for seven hours. */
-function plantSession(config: LocalConfig, skills: Record<string, { namespace?: string; description?: string }> | null): string {
+function plantSession(config: LocalConfig, skills: Record<string, { namespace?: string; namespaceUnknown?: boolean; description?: string }> | null): string {
   const cwd = path.join(root, 'app');
   const project = path.join(mocks.home, '.claude', 'projects', encodeCwdClaude(cwd));
   fs.mkdirSync(project, { recursive: true });
@@ -166,6 +166,12 @@ Judge the session.
     plantSession(unknown, null);
     const noSkills = await scoreSession(unknown, { session: SESSION, source: 'claude-code', scorers: ['teamai:routing:review-notes'] });
     expect('error' in noSkills && noSkills.error).toMatchObject({ code: 'scorer_not_found' });
+
+    const untellable = await fixture();
+    plantSession(untellable, { legacy: { namespaceUnknown: true, description: 'which namespace?' } });
+    const noNamespace = await scoreSession(untellable, { session: SESSION, source: 'claude-code', scorers: ['teamai:routing:legacy'] });
+    expect('error' in noNamespace && noNamespace.error).toMatchObject({ code: 'scorer_not_found', message: expect.stringContaining('cannot tell the namespace') });
+    expect(labels(untellable)).toEqual([]);
   });
 });
 

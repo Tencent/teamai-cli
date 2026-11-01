@@ -315,11 +315,15 @@ export async function scoreSession(from: LocalConfig, demand: SessionDemand, now
     const parsedName = parseRoutingScorer(value);
     const skill = parsedName && routingAvailable !== undefined ? routingSkillOf(parsedName, routingAvailable) : undefined;
     if (!parsedName || skill === undefined) {
+      const tellable = (routingAvailable ?? []).filter(({ namespaceUnknown }) => !namespaceUnknown);
+      const untellable = parsedName && (routingAvailable ?? []).some(({ name, namespaceUnknown }) => namespaceUnknown && name === parsedName.skill);
       const why = routingAvailable === undefined
         ? 'The session\'s captures record no delivered team skills, so no routing question can name one.'
         : routingAvailable.length === 0
           ? 'The session\'s checkout held no team skills.'
-          : `It names no team skill in this session's skills.available: ${routingAvailable.map(({ name, namespace }) => (namespace === undefined ? `teamai:routing:${name}` : `teamai:routing:${namespace}:${name}`)).join(', ')}.`;
+          : untellable
+            ? `Its delivery record cannot tell the namespace of team skill ${parsedName.skill}, so judging it could judge another skill of the same name: it has no routing question.`
+            : `It names no team skill in this session's skills.available: ${tellable.map(({ name, namespace }) => (namespace === undefined ? `teamai:routing:${name}` : `teamai:routing:${namespace}:${name}`)).join(', ')}.`;
       return failure('scorer_not_found', `Scorer ${value} is not a routing question of ${platform} session ${session.sessionId}. ${why}`);
     }
     const question = routingScorer(skill);

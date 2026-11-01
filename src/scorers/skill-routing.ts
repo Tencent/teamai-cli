@@ -35,9 +35,11 @@ export function parseRoutingScorer(value: string): { skill: string; namespace?: 
   return namespace === undefined ? { skill } : { namespace, skill };
 }
 
-/** The skill in `available` the parsed name names, or undefined: matched by name and, when the name says one, namespace. */
+/** The skill in `available` the parsed name names, or undefined: matched by name and, when the name says one, namespace.
+ * A skill whose namespace the delivery record cannot tell is never named: judging it could judge another skill of the
+ * same name, so it has no routing question on any path. */
 export function routingSkillOf(name: { skill: string; namespace?: string }, available: readonly AvailableSkill[]): AvailableSkill | undefined {
-  return available.find((skill) => skill.name === name.skill && (name.namespace === undefined ? skill.namespace === undefined : skill.namespace === name.namespace));
+  return available.find((skill) => !skill.namespaceUnknown && skill.name === name.skill && (name.namespace === undefined ? skill.namespace === undefined : skill.namespace === name.namespace));
 }
 
 /** The rubric of `skill`'s routing question. It names the skill and says where to read it; the description the judge

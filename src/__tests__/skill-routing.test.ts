@@ -31,6 +31,12 @@ describe('routing question names (#1469)', () => {
     expect(routingSkillOf({ skill: 'release', namespace: 'sre' }, available)).toBeUndefined();
     expect(routingSkillOf({ skill: 'absent' }, available)).toBeUndefined();
   });
+
+  it('never names a skill whose namespace the record cannot tell, on demand either', () => {
+    const unknown: AvailableSkill = { name: 'legacy', namespaceUnknown: true, description: 'which namespace?' };
+    expect(routingSkillOf({ skill: 'legacy' }, [unknown, reviewNotes])).toBeUndefined();
+    expect(routingSkillOf({ skill: 'legacy', namespace: 'ops' }, [unknown])).toBeUndefined();
+  });
 });
 
 describe('a routing question rubric (#1469)', () => {
