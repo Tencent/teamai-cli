@@ -2007,4 +2007,41 @@ steps:
       'workflows/build.yaml:16: field "steps[2].output": step "each" outputs a workflow, so it runs once; it may not repeat in a loop or run per item of a for_each',
     ]);
   });
+
+  it('refuses a workflow output on a step of an inline workflow that a loop around it runs again', () => {
+    expect(problems(`schemaVersion: v1alpha1
+name: build
+description: Plan inside a looping workflow and a looping step range.
+loop:
+  while: "steps.inner.outputs.done != 'yes'"
+  max_iterations: 2
+steps:
+  - id: inner
+    workflow:
+      outputs: { done: steps.plan.outputs.definition }
+      steps:
+        - id: plan
+          command: node plan.js
+          output: { definition: workflow }
+`)).toEqual([
+      'workflows/build.yaml:14: field "steps[0].workflow.steps[0].output": step "plan" outputs a workflow, so it runs once; it may not repeat in a loop or run per item of a for_each',
+    ]);
+    expect(problems(`schemaVersion: v1alpha1
+name: build
+description: Plan inside a step loop.
+steps:
+  - id: inner
+    workflow:
+      steps:
+        - id: plan
+          command: node plan.js
+          output: { definition: workflow }
+  - id: check
+    needs: [inner]
+    command: node check.js
+    loop: { back_to: inner, max_iterations: 2 }
+`)).toEqual([
+      'workflows/build.yaml:10: field "steps[0].workflow.steps[0].output": step "plan" outputs a workflow, so it runs once; it may not repeat in a loop or run per item of a for_each',
+    ]);
+  });
 });

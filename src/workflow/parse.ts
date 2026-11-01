@@ -274,6 +274,8 @@ interface BodyOptions {
   list?: 'steps' | 'finally';
   /** The top-level `finally` steps, which the workflow's `outputs` may read too. */
   finally?: WorkflowStep[];
+  /** Whether a loop around an inline workflow runs it again; asked once every step around it is parsed. */
+  runsAgain?: () => boolean;
 }
 
 /**
@@ -288,7 +290,7 @@ function parseBody(
   ctx: ParseContext,
   inputs: Record<string, OutputSchema> | undefined,
   itemBound: boolean,
-  { parent, checks, list = 'steps', finally: finallySteps = [] }: BodyOptions = {},
+  { parent, checks, list = 'steps', finally: finallySteps = [], runsAgain = () => false }: BodyOptions = {},
 ): { workflow: InlineWorkflow; outer: ReadSite[] } {
   const { file, lineCounter, diagnostics, promptFileLocations, files } = ctx;
   const header = (key: string): (typeof root.items)[number] | undefined => (list === 'steps' ? root.items.find((pair) => scalarString(pair.key) === key) : undefined);
@@ -397,7 +399,10 @@ function parseBody(
       const fromStep = scalarString(workflowFromPair?.value)?.trim();
       const runsFrom = workflowMap?.items.length === 1 && fromStep !== undefined && TOKEN.test(fromStep) ? { from: fromStep } : undefined;
       const inline = workflowMap && !workflowFromPair
-        ? parseInline(workflowMap, `${field}.workflow`, stepLabel, ctx, inputs, bindsItem, { parent: { steps, needs }, checks: queue })
+        ? parseInline(workflowMap, `${field}.workflow`, stepLabel, ctx, inputs, bindsItem, {
+          parent: { steps, needs }, checks: queue,
+          runsAgain: () => runsAgain() || loop !== undefined || [...stepLoops(steps).ranges.values()].some((range) => range.has(id ?? '')),
+        })
         : undefined;
       if (workflowFromPair && !runsFrom) {
         diagnostics.push(locate(file, lineCounter, workflowMap, `${field}.workflow`, `${stepLabel} workflow must be the name of a workflow in workflows/, an inline workflow, or { from: <step> }`));
@@ -702,7 +707,7 @@ function parseBody(
       }
     });
     queue.push(() => diagnostics.push(...sessionProblems(file, lineCounter, steps, parent, sessions)));
-    queue.push(() => diagnostics.push(...fromProblems(ctx, steps, fromSites, producers)));
+    queue.push(() => diagnostics.push(...fromProblems(ctx, steps, fromSites, producers, runsAgain())));
     if (!checks) for (const check of queue) check();
     diagnostics.push(...graphDiagnostics(ctx, graph, seen));
     diagnostics.push(...conditionDiagnostics(ctx, conditions, reads));
@@ -831,9 +836,10 @@ export function workflowField(output: OutputSchema | undefined): string | undefi
 
 /**
  * A `from` step runs the workflow output of a step it needs directly. A step with a workflow output runs once: the run
- * admits its workflow when it reports and never replaces it, so it may not run per item or in a loop.
+ * admits its workflow when it reports and never replaces it, so it may not run per item or in a loop, its own workflow's
+ * or one around it (`runsAgain`).
  */
-function fromProblems({ file, lineCounter }: ParseContext, steps: WorkflowStep[], sites: FromSite[], producers: Producer[]): WorkflowDiagnostic[] {
+function fromProblems({ file, lineCounter }: ParseContext, steps: WorkflowStep[], sites: FromSite[], producers: Producer[], runsAgain: boolean): WorkflowDiagnostic[] {
   const local = new Map(steps.map((step) => [step.id, step]));
   const loops = stepLoops(steps);
   const problems: WorkflowDiagnostic[] = [];
@@ -849,7 +855,7 @@ function fromProblems({ file, lineCounter }: ParseContext, steps: WorkflowStep[]
     }
   }
   for (const producer of producers) {
-    if (producer.repeats || [...loops.ranges.values()].some((range) => range.has(producer.id))) {
+    if (runsAgain || producer.repeats || [...loops.ranges.values()].some((range) => range.has(producer.id))) {
       problems.push(locate(file, lineCounter, producer.node, producer.field, `step "${producer.id}" outputs a workflow, so it runs once; it may not repeat in a loop or run per item of a for_each`));
     }
   }
