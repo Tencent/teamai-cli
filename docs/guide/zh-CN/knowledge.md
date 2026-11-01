@@ -205,6 +205,18 @@ Reconciliation complete: mappings=3, gaps=1, conflicts=0
 ✔ Pushed to team knowledge repo (https://git.example.com/acme/team-ai.git)
 ```
 
+`--dry-run` 不写任何文件，还会额外打印关系候选：把团队的规则和文档与代码页面按共享的关键词做匹配，提议写成资产 frontmatter 里的 `related:` 声明——你把自己接受的候选复制进资产，走普通 PR 合入（`review --branch` 会检查）。候选在被合入资产之前不会在 recall 中出现：
+
+```text
+$ teamai codebase --reconcile --dry-run
+Reconciliation complete: mappings=0, gaps=1, conflicts=0
+
+Relation candidates (copy the ones you accept into the asset's related:)
+  docs/payments-overview.md  MAPS_TO  teamwiki/evidence/code/pay/modules/ledger-receipts.md   term "LedgerReceipts", confidence 0.9
+```
+
+规则的 `paths:` glob 也能不经手写派生关系：当 glob 匹配到且仅匹配到一个代码库的某个代码页面的 `source:` 文件时，recall 会显示与声明关系相同的 `Related: → MAPS_TO` / `← MAPS_TO` 对。匹配到两个代码库页面的 glob 存在歧义（glob 是仓库相对路径），不会产生关系。
+
 `import` 也会用你的 AI 工具执行这一步 deep enrich。没能完成时，evidence 照样发布，但 `import` 以 1 退出，并打印继续执行的命令。在团队仓库里，这条命令就是同一次 import，它会把补上的文档一起发布：
 
 ```text

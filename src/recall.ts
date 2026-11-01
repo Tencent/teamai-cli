@@ -503,10 +503,16 @@ export function relationLines(
 /**
  * Path-derived relations (#1563 part 1): a rule's `paths:` glob that matches
  * the `source:` files of a code page this recall already loaded is an edge
- * with an explicit basis, computed at render time and never stored. A glob
- * matching pages of two codebases is ambiguous (globs are
- * repository-relative) and gives no edge; pages of withheld codebases never
- * appear here, because recall never loads them.
+ * with an explicit basis, computed at render time and never stored.
+ *
+ * Edges are computed and kept PER SCOPE: a relation stays inside its owner
+ * (#1552), so a user rule's glob never marks a workspace rule or page — each
+ * scope's rules match independently, and a hit renders only its own scope's
+ * edges. Ambiguity is judged per glob: a glob matching pages of two
+ * codebases is repository-relative and ambiguous, so that glob gives no
+ * edge, while another glob of the same rule that matches one codebase still
+ * does. Pages of withheld codebases never appear here, because recall never
+ * loads them.
  */
 export interface DerivedEdges {
   /** rule tree path → page tree paths its globs derive a `MAPS_TO` to */
@@ -521,10 +527,11 @@ function addEdge(map: Map<string, Set<string>>, from: string, to: string): void 
   map.set(from, set);
 }
 
+/** The derived edges of each scope, keyed like `relationContexts`. */
 export function computeDerivedRelations(
   results: ReadonlyArray<{ entry: SearchIndexEntry; fromCodebase?: boolean }>,
   contexts: ReadonlyMap<string, RelationContext>,
-): DerivedEdges {
+): Map<string, DerivedEdges> {
   const pages = results
     .filter((r) => r.fromCodebase && r.entry.treePath)
     .map((r) => ({
@@ -532,20 +539,26 @@ export function computeDerivedRelations(
       slug: teamwikiCodebaseSlug(r.entry.treePath as string),
       sources: pageSourcePaths(r.entry.path),
     }));
-  const out = new Map<string, Set<string>>();
-  const inn = new Map<string, Set<string>>();
-  for (const ctx of contexts.values()) {
+  const byScope = new Map<string, DerivedEdges>();
+  for (const [scope, ctx] of contexts) {
+    const out = new Map<string, Set<string>>();
+    const inn = new Map<string, Set<string>>();
     for (const [rule, globs] of ctx.ruleGlobs ?? []) {
-      const matched = pages.filter((pg) => pg.sources.some((s) => globs.some((g) => matchGlob(g, s))));
-      const slugs = new Set(matched.map((m) => m.slug).filter((s): s is string => typeof s === 'string'));
-      if (slugs.size !== 1) continue; // no match, or ambiguous across codebases
-      for (const pg of matched) {
-        addEdge(out, rule, pg.treePath);
-        addEdge(inn, pg.treePath, rule);
+      // Each glob is judged on its own: two globs matching two different
+      // codebases are two certain edges, not one ambiguous pair.
+      for (const glob of globs) {
+        const matched = pages.filter((pg) => pg.sources.some((s) => matchGlob(glob, s)));
+        const slugs = new Set(matched.map((m) => m.slug).filter((s): s is string => typeof s === 'string'));
+        if (slugs.size !== 1) continue; // no match, or this glob spans codebases
+        for (const pg of matched) {
+          addEdge(out, rule, pg.treePath);
+          addEdge(inn, pg.treePath, rule);
+        }
       }
     }
+    byScope.set(scope, { out, in: inn });
   }
-  return { out, in: inn };
+  return byScope;
 }
 
 /**
@@ -593,8 +606,12 @@ export function formatResults(
       // would attach a user relation to a workspace page.
       const ctx = scope !== undefined ? relationContexts.get(scope) : fallbackCtx;
       if (ctx) {
-        lines.push(...relationLines(ctx, entry, derived && entry.treePath
-          ? { out: derived.out.get(entry.treePath), in: derived.in.get(entry.treePath) }
+        // Derived edges belong to the hit's scope like every other relation:
+        // a hit never borrows another scope's rules (#1552).
+        const derivedForScope = (scope !== undefined ? derived?.get(scope) : undefined)
+          ?? (scope === undefined ? derived?.values().next().value as DerivedEdges | undefined : undefined);
+        lines.push(...relationLines(ctx, entry, derivedForScope && entry.treePath
+          ? { out: derivedForScope.out.get(entry.treePath), in: derivedForScope.in.get(entry.treePath) }
           : undefined));
       }
     }

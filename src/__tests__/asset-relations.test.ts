@@ -552,9 +552,10 @@ describe('computeDerivedRelations — rule paths to code page sources', () => {
       const contexts = new Map<string, RelationContext>([['project', ctx({
         ruleGlobs: new Map([['rules/payments.md', ['src/ledger/**']]]),
       })]]);
-      const derived = computeDerivedRelations([pg], contexts);
-      expect([...derived.out.get('rules/payments.md') ?? []]).toEqual(['teamwiki/evidence/code/pay/modules/ledger.md']);
-      expect([...derived.in.get('teamwiki/evidence/code/pay/modules/ledger.md') ?? []]).toEqual(['rules/payments.md']);
+      const derived = computeDerivedRelations([pg], contexts).get('project');
+      expect(derived).toBeDefined();
+      expect([...derived!.out.get('rules/payments.md') ?? []]).toEqual(['teamwiki/evidence/code/pay/modules/ledger.md']);
+      expect([...derived!.in.get('teamwiki/evidence/code/pay/modules/ledger.md') ?? []]).toEqual(['rules/payments.md']);
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
@@ -568,12 +569,12 @@ describe('computeDerivedRelations — rule paths to code page sources', () => {
       const contexts = new Map<string, RelationContext>([['project', ctx({
         ruleGlobs: new Map([['rules/payments.md', ['src/ledger/**']]]),
       })]]);
-      const derived = computeDerivedRelations([a, b], contexts);
-      expect(derived.out.size).toBe(0);
-      expect(derived.in.size).toBe(0);
+      const derived = computeDerivedRelations([a, b], contexts).get('project');
+      expect(derived!.out.size).toBe(0);
+      expect(derived!.in.size).toBe(0);
 
-      const none = computeDerivedRelations([a], ctxMap('src/other/**'));
-      expect(none.out.size).toBe(0);
+      const none = computeDerivedRelations([a], ctxMap('src/other/**')).get('project');
+      expect(none!.out.size).toBe(0);
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
@@ -582,6 +583,41 @@ describe('computeDerivedRelations — rule paths to code page sources', () => {
   function ctxMap(glob: string): Map<string, RelationContext> {
     return new Map([['project', ctx({ ruleGlobs: new Map([['rules/payments.md', [glob]]]) })]]);
   }
+
+  it('ambiguity is judged per glob: two globs matching two codebases each give their edge', () => {
+    const tmp = makeTmpDir();
+    try {
+      const a = pageWithSources(tmp, 'pay/modules/ledger.md', ['src/pay/receipts.ts']);
+      const b = pageWithSources(tmp, 'shop/modules/ledger.md', ['src/shop/till.ts']);
+      const contexts = new Map<string, RelationContext>([['project', ctx({
+        ruleGlobs: new Map([['rules/payments.md', ['src/pay/**', 'src/shop/**']]]),
+      })]]);
+      const derived = computeDerivedRelations([a, b], contexts).get('project');
+      expect([...derived!.out.get('rules/payments.md') ?? []].sort()).toEqual([
+        'teamwiki/evidence/code/pay/modules/ledger.md',
+        'teamwiki/evidence/code/shop/modules/ledger.md',
+      ]);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('edges stay inside their scope: a user rule never marks a project hit', () => {
+    const tmp = makeTmpDir();
+    try {
+      const pg = pageWithSources(tmp, 'pay/modules/ledger.md', ['src/ledger/receipts.ts']);
+      const contexts = new Map<string, RelationContext>([
+        ['project', ctx({ byTreePath: new Map([['rules/payments.md', entry({ filename: 'payments.md', treePath: 'rules/payments.md', path: '/repo/rules/payments.md' })]]) })],
+        ['user', ctx({ ruleGlobs: new Map([['rules/payments.md', ['src/ledger/**']]]) })],
+      ]);
+      const derived = computeDerivedRelations([pg], contexts);
+      // The user rule's glob matches the page, but only the user scope bucket holds it.
+      expect([...derived.get('user')!.out.get('rules/payments.md') ?? []]).toEqual(['teamwiki/evidence/code/pay/modules/ledger.md']);
+      expect(derived.get('project')!.out.size).toBe(0);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 
   it('relationLines renders derived edges and a declared relation wins', () => {
     const tmp = makeTmpDir();
