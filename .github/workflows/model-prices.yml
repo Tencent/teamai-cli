@@ -57,12 +57,11 @@ jobs:
         id: open
         env:
           GH_TOKEN: ${{ github.token }}
+        # `gh pr list` prints 0 when none is open and fails on an API error, which
+        # stops the job before a push could replace an open pull request's branch.
         run: |
-          if [ "$(gh pr view "$BRANCH" --json state --jq .state 2>/dev/null)" = "OPEN" ]; then
-            echo "open=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "open=false" >> "$GITHUB_OUTPUT"
-          fi
+          count=$(gh pr list --head "$BRANCH" --state open --json number --jq length)
+          echo "open=$([ "$count" -gt 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
       - name: Check the new catalog
         id: changed
