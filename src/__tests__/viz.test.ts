@@ -377,7 +377,7 @@ describe('buildVizData relation counts', () => {
       '---',
       'related:',
       '  MAPS_TO: teamwiki/evidence/code/pay/modules/ledger-receipts.md',
-      '  REFERENCES: [docs/payments-overview.md, docs/payment-overview.md, skills/pay/release, learnings/ledger-timeout]',
+      '  REFERENCES: [docs/payments-overview.md, docs/payment-overview.md, skills/pay/release]',
       '---',
       'Every payment goes through ledger receipts.',
       'The flow is in [the overview](../docs/payments-overview.md).',
@@ -402,9 +402,8 @@ describe('buildVizData relation counts', () => {
     // rules/payments.md, docs/payments-overview.md, skills/pay/release,
     // learnings/ledger-timeout — teamwiki pages are not assets.
     expect(data.relations.assetCount).toBe(4);
-    // REFERENCES doc + skill + learning + SUPERSEDES from the learning; the
-    // MAPS_TO to a teamwiki page resolves for recall but a page is a target,
-    // not an asset, so it does not count — and the rule's link to the doc
+    // MAPS_TO to the page (it exists and is not withheld) + REFERENCES doc +
+    // skill + SUPERSEDES from the learning; the rule's link to the doc
     // deduplicates under its declared REFERENCES.
     expect(data.relations.relationCount).toBe(4);
     expect(data.relations.withoutRelation).toEqual([]);

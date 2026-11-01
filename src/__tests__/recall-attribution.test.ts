@@ -2598,5 +2598,33 @@ describe('recall attribution acceptance (#884)', () => {
 
       expect(recallRows(await h.stats())).toEqual([['sess-mai', 'claude', '1', '1', '0', '0']]);
     });
+
+    it('a relative read that could name related paths of two runs credits neither', async () => {
+      await h.setUp();
+      const ts = (offsetHours: number) => new Date(T0 + offsetHours * 3_600_000).toISOString();
+      const line = (value: unknown): string => JSON.stringify(value);
+      fs.mkdirSync(path.dirname(recallLogPath(h.project)), { recursive: true });
+      const relatedDoc = (root: string, run: string, offsetHours: number): string[] => [
+        line({
+          kind: 'run', ts: ts(offsetHours), run, session: SESSION, agent: 'claude', via: 'env', unambiguous: true,
+          docs: [{
+            key: `doc-${run.slice(-1)}`, type: 'docs', scope: 'project',
+            path: `${root}/docs/setup.md`, score: 5.1, eligible: true,
+            related: [{ relation: 'REFERENCES', direction: 'out', path: `${root}/docs/setup.md` }],
+          }],
+        }),
+        line({ kind: 'claim', ts: ts(offsetHours), run, session: SESSION, direct: true }),
+      ];
+      fs.appendFileSync(recallLogPath(h.project), [
+        ...relatedDoc('/rootA', '00000000-0000-4000-8000-0000000000a1', 0),
+        ...relatedDoc('/rootB', '00000000-0000-4000-8000-0000000000b2', 1),
+        // A relative read matches the tail of both runs' related paths; pooled
+        // across the applicable runs it names nothing uniquely, so neither
+        // run counts — the same ambiguity rule adoption uses (#1562 review).
+        line({ kind: 'evidence', ts: ts(2), id: 'ev-rel', session: SESSION, path: 'docs/setup.md', status: 'success', simple: true }),
+      ].join('\n') + '\n');
+
+      expect(recallRows(await h.stats())).toEqual([['sess-mai', 'claude', '2', '2', '0', '0']]);
+    });
   });
 });
