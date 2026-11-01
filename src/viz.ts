@@ -541,9 +541,14 @@ export async function getVizSummary(opts: VizOptions = {}): Promise<VizSummary> 
 
 /** Read-only dashboard payload; report HTML is escaped by the existing renderer. */
 export async function getDashboardContext(opts: VizOptions = {}) {
-  const data = await buildVizData(await resolveVizRoot(opts));
+  const paths = await resolveVizRoot(opts);
+  const data = await buildVizData(paths);
   const { renderDashboardReport } = await import('./viz-render.js');
+  const { buildImprovement } = await import('./dashboard/improvement.js');
+  // A broken stats file must not take the knowledge report down with it; the page falls back to the plain maintenance list.
+  const improvement = await buildImprovement(paths, data.maintenance, data.silent.length).catch(() => null);
   return {
+    improvement,
     generatedAt: data.generatedAt,
     source: data.source,
     totalEntries: data.totalEntries,
