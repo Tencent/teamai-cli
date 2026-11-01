@@ -672,7 +672,7 @@ class Harness {
 }
 
 const RECALL_SECTION = 'Recall (last 10 sessions):';
-const RECALL_HEADER = ['session', 'agent', 'runs', 'recalled', 'adopted'];
+const RECALL_HEADER = ['session', 'agent', 'runs', 'recalled', 'adopted', 'via', 'relation'];
 
 /** The rows of `stats`' recall section, split into columns, or null when it has none. */
 function recallRows(output: string): string[][] | null {
@@ -2030,7 +2030,7 @@ const ROWS: Row[] = [
       expect(output).toMatch(/No matching learnings found for "kubernetes"\. run=[0-9a-f-]{36}\n$/);
       expect(run).toMatch(/^[0-9a-f-]{36}$/);
       await h.stop();
-      expect(recallRows(await h.stats())).toEqual([['sess-mai', 'claude', '1', '0', '0']]);
+      expect(recallRows(await h.stats())).toEqual([['sess-mai', 'claude', '1', '0', '0', '0']]);
     },
     project: {},
   },
@@ -2039,7 +2039,7 @@ const ROWS: Row[] = [
     trace: async (h) => {
       const { output } = await h.recall('kubernetes', { env: NESTED_ENV, claim: false });
       await h.shell('teamai recall "kubernetes"', output.replace('ℹ ', '\u001b[34mℹ\u001b[39m '), { session: CODEX, tool: 'codex' });
-      expect(recallRows(await h.stats())).toEqual([[CODEX.slice(0, 8), 'codex', '1', '0', '0']]);
+      expect(recallRows(await h.stats())).toEqual([[CODEX.slice(0, 8), 'codex', '1', '0', '0', '0']]);
     },
     project: {},
   },
@@ -2059,7 +2059,7 @@ const ROWS: Row[] = [
       const { run } = await h.ompRecall('kubernetes', OMP, { agent: OMP_MAIN_AGENT });
       expect(run).toBeDefined();
       await h.bridge('omp', 'session_stop', {}, OMP, OMP_MAIN_AGENT);
-      expect(recallRows(await h.stats())).toEqual([['omp-main', 'omp', '1', '0', '0']]);
+      expect(recallRows(await h.stats())).toEqual([['omp-main', 'omp', '1', '0', '0', '0']]);
     },
     project: {},
   },
@@ -2428,8 +2428,8 @@ describe('recall attribution acceptance (#884)', () => {
       await h.recall('kubernetes');
       const recalled = new Set([...first.files, ...second.files]).size;
       expect(recallRows(await h.stats())).toEqual([
-        ['sess-mai', 'claude', '3', String(recalled), '1'],
-        ['sess-cod', 'codex', '1', String(codex.files.length), '0'],
+        ['sess-mai', 'claude', '3', String(recalled), '1', '0'],
+        ['sess-cod', 'codex', '1', String(codex.files.length), '0', '0'],
       ]);
     });
 
@@ -2449,11 +2449,11 @@ describe('recall attribution acceptance (#884)', () => {
       await h.recall('setup', { env: NESTED_ENV, claim: false });
       const { files } = await h.recall('redis timeout');
       await h.read(files[0]);
-      expect(recallRows(await h.stats())).toEqual([['sess-mai', 'claude', '1', String(files.length), '0']]);
+      expect(recallRows(await h.stats())).toEqual([['sess-mai', 'claude', '1', String(files.length), '0', '0']]);
       await h.stop();
       await h.read(files[0]);
       await h.stop();
-      expect(recallRows(await h.stats())).toEqual([['sess-mai', 'claude', '1', String(files.length), '1']]);
+      expect(recallRows(await h.stats())).toEqual([['sess-mai', 'claude', '1', String(files.length), '1', '0']]);
     });
 
     it('shows a linked child session\'s runs under its root session only', async () => {
@@ -2462,7 +2462,7 @@ describe('recall attribution acceptance (#884)', () => {
       await h.openCodeTask(OPENCODE, OPENCODE_CHILD);
       await h.openCodeRead(OPENCODE, files[0]);
       await h.openCodeIdle(OPENCODE);
-      expect(recallRows(await h.stats())).toEqual([['ses_pare', 'opencode', '1', String(files.length), '1']]);
+      expect(recallRows(await h.stats())).toEqual([['ses_pare', 'opencode', '1', String(files.length), '1', '0']]);
     });
 
     it('names the agent whose hook claimed the run, even when the environment named another (Dan)', async () => {
@@ -2471,7 +2471,7 @@ describe('recall attribution acceptance (#884)', () => {
       await h.shell('teamai recall "redis timeout"', output, { session: CODEX, tool: 'codex' });
       await h.read(files[0], { session: CODEX });
       await h.stop(CODEX);
-      expect(recallRows(await h.stats())).toEqual([[CODEX.slice(0, 8), 'codex', '1', String(files.length), '1']]);
+      expect(recallRows(await h.stats())).toEqual([[CODEX.slice(0, 8), 'codex', '1', String(files.length), '1', '0']]);
     });
 
     it('prints the same output with a missing log, an empty one, and one without settled runs', async () => {
@@ -2495,9 +2495,191 @@ describe('recall attribution acceptance (#884)', () => {
       process.chdir(process.env.HOME!);
       expect(recallRows(await h.stats())).toBeNull();
       await h.recall('cache warmup', { env: { CLAUDE_CODE_SESSION_ID: 'sess-user' }, claim: false });
-      expect(recallRows(await h.stats())).toEqual([['sess-use', 'claude', '1', '1', '0']]);
+      expect(recallRows(await h.stats())).toEqual([['sess-use', 'claude', '1', '1', '0', '0']]);
       process.chdir(h.root);
-      expect(recallRows(await h.stats())).toEqual([['sess-mai', 'claude', '1', '1', '0']]);
+      expect(recallRows(await h.stats())).toEqual([['sess-mai', 'claude', '1', '1', '0', '0']]);
+    });
+  });
+
+  describe('via relation (#1562)', () => {
+    /** A learning whose SUPERSEDES points at the setup learning, added to the project scope. */
+    const relatedLearning = async (): Promise<void> => {
+      await h.addLearning('redis-slow.md', [
+        '---',
+        'title: "Redis slow pool"',
+        'author: tester',
+        'date: 2026-05-01',
+        'tags: [redis]',
+        'related:',
+        '  SUPERSEDES: learnings/setup',
+        '---',
+        '',
+        'The pool drains under burst traffic.',
+        '',
+      ].join('\n'));
+    };
+
+    it('the run line records exactly the printed Related: refs: present with a relation, absent without', async () => {
+      await h.setUp();
+      await relatedLearning();
+      const { output } = await h.recall('redis pool');
+      expect(output).toContain(`Related: → SUPERSEDES ${h.docs.setup}`);
+
+      const run = (await readRecallLog(h.project)).find((l) => l.kind === 'run');
+      if (run?.kind !== 'run') throw new Error('expected a run line');
+      const docOf = (key: string) => run.docs.find((d) => d.key === key);
+      expect(docOf('redis-slow')?.related)
+        .toEqual([{ relation: 'SUPERSEDES', direction: 'out', path: h.docs.setup }]);
+      // A doc with no Related: line records nothing.
+      expect(docOf('redis-timeout')?.related).toBeUndefined();
+    });
+
+    it('opening a related path counts the run once, votes for nothing, and marks nothing consumed', async () => {
+      await h.setUp();
+      await relatedLearning();
+      await h.recall('redis pool');
+      await h.read(h.docs.setup);
+      await h.stop();
+
+      expect(recallRows(await h.stats())).toEqual([['sess-mai', 'claude', '1', '2', '0', '1']]);
+      expect(await h.upvotes(h.project)).toEqual({});
+      // The pending read of a related path is not consumed: the next trigger sees it.
+      await h.pull();
+      expect(recallRows(await h.stats())).toEqual([['sess-mai', 'claude', '1', '2', '0', '1']]);
+    });
+
+    it('counts a run once however many of its related paths open', async () => {
+      await h.setUp();
+      const notes = await h.addLearning('install-notes.md', doc('Install notes', ['install'], 'Run the installer twice.'));
+      await h.addLearning('redis-slow.md', [
+        '---',
+        'title: "Redis slow pool"',
+        'author: tester',
+        'date: 2026-05-01',
+        'tags: [redis]',
+        'related:',
+        '  SUPERSEDES: learnings/setup',
+        '  REFERENCES: learnings/install-notes',
+        '---',
+        '',
+        'The pool drains under burst traffic.',
+        '',
+      ].join('\n'));
+      await h.recall('redis pool');
+      await h.read(h.docs.setup);
+      await h.read(notes);
+
+      expect(recallRows(await h.stats())).toEqual([['sess-mai', 'claude', '1', '2', '0', '1']]);
+    });
+
+    it('counts a related open only within the adoption window', async () => {
+      await h.setUp();
+      await relatedLearning();
+      await h.recall('redis pool');
+      h.at(25);
+      await h.read(h.docs.setup);
+      await h.stop();
+
+      expect(recallRows(await h.stats())).toEqual([['sess-mai', 'claude', '1', '2', '0', '0']]);
+    });
+
+    it('reads a log written before related existed: docs without it contribute 0', async () => {
+      await h.setUp();
+      const run = '00000000-0000-4000-8000-000000000001';
+      const ts = new Date(T0).toISOString();
+      fs.mkdirSync(path.dirname(recallLogPath(h.project)), { recursive: true });
+      fs.appendFileSync(recallLogPath(h.project), [
+        JSON.stringify({
+          kind: 'run', ts, run, session: SESSION, agent: 'claude', via: 'env', unambiguous: true,
+          docs: [{ key: 'redis-timeout', type: 'learnings', scope: 'project', path: h.docs['redis-timeout'], score: 5.1, eligible: true }],
+        }),
+        JSON.stringify({ kind: 'claim', ts, run, session: SESSION, direct: true }),
+      ].join('\n') + '\n');
+
+      expect(recallRows(await h.stats())).toEqual([['sess-mai', 'claude', '1', '1', '0', '0']]);
+    });
+
+    it('a relative read that could name related paths of two runs credits neither', async () => {
+      await h.setUp();
+      const ts = (offsetHours: number) => new Date(T0 + offsetHours * 3_600_000).toISOString();
+      const line = (value: unknown): string => JSON.stringify(value);
+      fs.mkdirSync(path.dirname(recallLogPath(h.project)), { recursive: true });
+      const relatedDoc = (root: string, run: string, offsetHours: number): string[] => [
+        line({
+          kind: 'run', ts: ts(offsetHours), run, session: SESSION, agent: 'claude', via: 'env', unambiguous: true,
+          docs: [{
+            key: `doc-${run.slice(-1)}`, type: 'docs', scope: 'project',
+            path: `${root}/docs/setup.md`, score: 5.1, eligible: true,
+            related: [{ relation: 'REFERENCES', direction: 'out', path: `${root}/docs/setup.md` }],
+          }],
+        }),
+        line({ kind: 'claim', ts: ts(offsetHours), run, session: SESSION, direct: true }),
+      ];
+      fs.appendFileSync(recallLogPath(h.project), [
+        ...relatedDoc('/rootA', '00000000-0000-4000-8000-0000000000a1', 0),
+        ...relatedDoc('/rootB', '00000000-0000-4000-8000-0000000000b2', 1),
+        // A relative read matches the tail of both runs' related paths; pooled
+        // across the applicable runs it names nothing uniquely, so neither
+        // run counts — the same ambiguity rule adoption uses (#1562 review).
+        line({ kind: 'evidence', ts: ts(2), id: 'ev-rel', session: SESSION, path: 'docs/setup.md', status: 'success', simple: true }),
+      ].join('\n') + '\n');
+
+      expect(recallRows(await h.stats())).toEqual([['sess-mai', 'claude', '2', '2', '0', '0']]);
+    });
+
+    it('a counted run stays in the ambiguity pool: an absolute read credits A, a later relative read credits no second run (#1637 review)', async () => {
+      await h.setUp();
+      const ts = (offsetHours: number) => new Date(T0 + offsetHours * 3_600_000).toISOString();
+      const line = (value: unknown): string => JSON.stringify(value);
+      fs.mkdirSync(path.dirname(recallLogPath(h.project)), { recursive: true });
+      const relatedDoc = (root: string, run: string, offsetHours: number): string[] => [
+        line({
+          kind: 'run', ts: ts(offsetHours), run, session: SESSION, agent: 'claude', via: 'env', unambiguous: true,
+          docs: [{
+            key: `doc-${run.slice(-1)}`, type: 'docs', scope: 'project',
+            path: `${root}/docs/setup.md`, score: 5.1, eligible: true,
+            related: [{ relation: 'REFERENCES', direction: 'out', path: `${root}/docs/setup.md` }],
+          }],
+        }),
+        line({ kind: 'claim', ts: ts(offsetHours), run, session: SESSION, direct: true }),
+      ];
+      fs.appendFileSync(recallLogPath(h.project), [
+        ...relatedDoc('/rootA', '00000000-0000-4000-8000-0000000000a1', 0),
+        ...relatedDoc('/rootB', '00000000-0000-4000-8000-0000000000b2', 1),
+        // Absolute read: run A's related path only, so A counts.
+        line({ kind: 'evidence', ts: ts(2), id: 'ev-abs', session: SESSION, path: '/rootA/docs/setup.md', status: 'success', simple: true }),
+        // Relative read: matches the tail of both runs' related paths. A is
+        // already counted but stays in the pool, so the read is ambiguous and
+        // B is not credited: 1 where dropping A from the pool would give 2.
+        line({ kind: 'evidence', ts: ts(3), id: 'ev-rel', session: SESSION, path: 'docs/setup.md', status: 'success', simple: true }),
+      ].join('\n') + '\n');
+
+      expect(recallRows(await h.stats())).toEqual([['sess-mai', 'claude', '2', '2', '0', '1']]);
+    });
+
+    it('a relative read naming a recalled path and a related path credits nothing: it is plausibly the plain read (#1637 review)', async () => {
+      await h.setUp();
+      const ts = (offsetHours: number) => new Date(T0 + offsetHours * 3_600_000).toISOString();
+      const line = (value: unknown): string => JSON.stringify(value);
+      fs.mkdirSync(path.dirname(recallLogPath(h.project)), { recursive: true });
+      fs.appendFileSync(recallLogPath(h.project), [
+        line({
+          kind: 'run', ts: ts(0), run: '00000000-0000-4000-8000-0000000000c3', session: SESSION, agent: 'claude', via: 'env', unambiguous: true,
+          docs: [{
+            key: 'doc-b', type: 'docs', scope: 'project',
+            path: '/rootB/docs/setup.md', score: 5.1, eligible: true,
+            related: [{ relation: 'REFERENCES', direction: 'out', path: '/rootA/docs/setup.md' }],
+          }],
+        }),
+        line({ kind: 'claim', ts: ts(0), run: '00000000-0000-4000-8000-0000000000c3', session: SESSION, direct: true }),
+        // Relative read: the tail matches both the run's recalled doc and its
+        // related path, so the open is ambiguous — an ordinary read of the
+        // recalled doc, not a related open. Crediting it would count a read
+        // the doc's own recall already explains.
+        line({ kind: 'evidence', ts: ts(1), id: 'ev-rel', session: SESSION, path: 'docs/setup.md', status: 'success', simple: true }),
+      ].join('\n') + '\n');
+
+      expect(recallRows(await h.stats())).toEqual([['sess-mai', 'claude', '1', '1', '0', '0']]);
     });
   });
 });
