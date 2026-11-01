@@ -11,11 +11,6 @@ import {
 import type { GraphIndex, GraphNode, GraphEdge, GraphEdgeSource, RelationType } from './core/graph-index.schema.js';
 import type { WikiConfidence } from './core/wiki-protocol.js';
 import { buildConfidence } from './reconciler-v2-types.js';
-
-/** A repo-relative path in posix form, the shape `related:` targets use. */
-function toPosix(relPath: string): string {
-  return relPath.split(path.sep).join('/');
-}
 import type {
   ConfidenceFactor,
   ApiInterfaceMatch,
@@ -23,6 +18,11 @@ import type {
   ReconcileStaleWarning,
   ReconcileStats,
 } from './reconciler-v2-types.js';
+
+/** A repo-relative path in posix form, the shape `related:` targets use. */
+function toPosix(relPath: string): string {
+  return relPath.split(path.sep).join('/');
+}
 
 // ─── Public interfaces ───────────────────────────────────────────────────────
 
@@ -391,7 +391,8 @@ export async function reconcileKnowledge(options: ReconcileOptions): Promise<Rec
     }
 
     // Phase 3 — API endpoints with doc but no impl
-    const endpoints = extractApiEndpoints(productPage.text);    for (const endpoint of endpoints) {
+    const endpoints = extractApiEndpoints(productPage.text);
+    for (const endpoint of endpoints) {
       const pathPart = endpoint.split(' ')[1];
       const hasImpl = codePages.some(cp => cp.text.includes(pathPart));
       if (!hasImpl) {

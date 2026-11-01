@@ -84,8 +84,8 @@ The other code-graph relations (`DEPENDS_ON`, `CONTAINS`, `IMPLEMENTS`)
 relate code to code and cannot be declared on an asset.
 
 `teamai recall` prints each relation as a `Related:` line after the hit's
-`File:` line — `→` for a relation the hit declares, `←` for one the other
-asset declares, at most 5 per hit. A `→ MAPS_TO` / `← MAPS_TO` pair can also
+`File:` line — `→` for a relation from the hit, `←` for one the other asset
+declares, at most 5 per hit. A `→ MAPS_TO` / `← MAPS_TO` pair can also
 be derived from a rule's `paths:` glob (below), not only declared. A relation whose other end this recall
 cannot see (another scope's asset, a withheld codebase's page, a target that
 does not exist) prints nothing. Hits, their order and their scores do not

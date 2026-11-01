@@ -75,7 +75,7 @@ related:
 
 可声明的关系有四种：`MAPS_TO`（本文件描述了那个 teamwiki 代码页面）、`REFERENCES`（任意资产）、`SUPERSEDES` 和 `CONFLICTS_WITH`（规则、文档或 learning——learning 与规则意见相左时用 `CONFLICTS_WITH`，因为 `teamai contribute` 发布 learning 不经评审）。skill 和 teamwiki 页面只能作为被指向的目标，不能主动声明。代码图的另外三种关系（`DEPENDS_ON`、`CONTAINS`、`IMPLEMENTS`）是代码与代码之间的关系，不能在资产上声明。
 
-`teamai recall` 会把每条关系作为 `Related:` 行打印在命中结果的 `File:` 行之后——`→` 表示该命中声明的关系，`←` 表示对端资产声明的关系，每条命中最多 5 行。`→ MAPS_TO` / `← MAPS_TO` 对也能由规则的 `paths:` glob 派生（见下文），不一定是手写声明。对端在本次 recall 中不可见时（其他 scope 的资产、被 withheld 的代码库页面、不存在的目标）不打印任何内容。命中结果、顺序和分数不变。`teamai review --branch` 会判定 frontmatter 的 `related:` 块声明了表格外内容的规则或文档为失败；`teamai contribute` 把同样的问题打印为警告，仍会照常发布。
+`teamai recall` 会把每条关系作为 `Related:` 行打印在命中结果的 `File:` 行之后——`→` 表示来自该命中的关系，`←` 表示对端资产声明的关系，每条命中最多 5 行。`→ MAPS_TO` / `← MAPS_TO` 对也能由规则的 `paths:` glob 派生（见下文），不一定是手写声明。对端在本次 recall 中不可见时（其他 scope 的资产、被 withheld 的代码库页面、不存在的目标）不打印任何内容。命中结果、顺序和分数不变。`teamai review --branch` 会判定 frontmatter 的 `related:` 块声明了表格外内容的规则或文档为失败；`teamai contribute` 把同样的问题打印为警告，仍会照常发布。
 
 ### Recall 采纳与 upvote
 

@@ -479,7 +479,9 @@ export async function buildRelationContext(args: {
     withheld = null;
   }
   const teamwikiRoot = path.join(config.repo.localPath, 'teamwiki');
-  const codePages = collectCodePages(teamwikiRoot, withheld);
+  // Teams without scoped rules never look at code pages; skipping the walk
+  // saves ~65 ms per recall at 3,000 pages (#1636 review).
+  const codePages = ruleGlobs.size > 0 ? collectCodePages(teamwikiRoot, withheld) : [];
   return {
     byTreePath,
     incoming,
