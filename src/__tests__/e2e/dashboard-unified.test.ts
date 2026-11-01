@@ -29,6 +29,8 @@ describe('built dashboard CLI (offline provider fixtures)', () => {
       await fs.mkdir(path.join(teamHome, 'dashboard'), { recursive: true });
       await fs.mkdir(path.join(repo, 'docs'), { recursive: true });
       await fs.writeFile(path.join(repo, 'teamai.yaml'), YAML.stringify({ team: 'dashboard-test', repo: 'https://example.invalid/team.git', provider }));
+      await fs.mkdir(path.join(repo, 'skills', 'fixture-skill'), { recursive: true });
+      await fs.writeFile(path.join(repo, 'skills', 'fixture-skill', 'SKILL.md'), '# fixture\n');
       await fs.writeFile(path.join(repo, 'docs', 'guide.md'), '---\ntitle: Provider guide\nauthor: test-author\n---\nExample team knowledge.\n');
       const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null' }, stdio: 'pipe' });
       git('init','-b','main');git('config','user.name','Dashboard Test');git('config','user.email','test@example.invalid');git('add','.');git('commit','-m','fixture');
@@ -37,6 +39,8 @@ describe('built dashboard CLI (offline provider fixtures)', () => {
       await fs.writeFile(path.join(teamHome,'reports-wt','votes','fixture.yaml'),'version: 2\nvotes: {}\ndeltas: {}\n');
       await fs.writeFile(path.join(teamHome,'config.yaml'),YAML.stringify({repo:{kind:'git',localPath:repo,remote:'https://example.invalid/team.git'},username:'fixture',scope:'user'}));
       const now = Date.now(), stamp=(offset: number)=>new Date(now+offset).toISOString();
+      await fs.mkdir(path.join(teamHome,'reports-wt','stats'),{recursive:true});
+      await fs.writeFile(path.join(teamHome,'reports-wt','stats','fixture.yaml'),YAML.stringify({username:'fixture',updatedAt:stamp(0),daily:{'2026-10-22':{sessionsEnded:2,promptTurns:5}},skills:{'fixture-skill':{count:3,lastUsed:'2026-10-22T00:00:00.000Z'}}}));
       const events = ['claude','codex','codebuddy','opencode'].flatMap((tool,index)=>[
         {type:'session_start',sessionId:tool,tool,cwd:path.join(sandbox,tool),timestamp:stamp(-60_000)},
         {type:'prompt_submit',sessionId:tool,tool,promptSummary:`Inspect ${tool} <script>not-code</script>`,timestamp:stamp(-59_000)},
@@ -62,7 +66,7 @@ describe('built dashboard CLI (offline provider fixtures)', () => {
       const deadline=Date.now()+15000;
       while(!output.includes('Dashboard running')&&Date.now()<deadline){if(child.exitCode!==null)throw Error(output);await new Promise(r=>setTimeout(r,50));}
       expect(output).toContain('Dashboard running');
-      const html=await (await fetch(base)).text();expect(html).toContain('Team Execution');expect(html).not.toContain('SAMPLE DATA');
+      const html=await (await fetch(base)).text();expect(html).toContain('Sessions');expect(html).not.toContain('SAMPLE DATA');
       const sessions=await (await fetch(base+'/api/sessions')).json();
       expect(sessions.map((s:{tool:string})=>s.tool).sort()).toEqual(['claude','codebuddy','codex','opencode']);
       for(const session of sessions){expect(session.prompts).toHaveLength(session.tool === 'codex' ? 2 : 1);expect(session.tokens.input).toBe(100);expect(session.stoppedOutput).toContain('**Ready**');}
@@ -79,6 +83,9 @@ describe('built dashboard CLI (offline provider fixtures)', () => {
       expect(context.source.scope).toBe('team');expect(context.totalEntries).toBeGreaterThan(0);
       expect(context.context).toContain('Provider guide');expect(context.context).toContain('Author Contributions');
       expect(context.maintenance).toContain('teamai recall maintenance --prune --archive');
+      expect(context.improvement.window).toMatchObject({days:30,to:'2026-10-22'});expect(context.improvement.daily).toHaveLength(180);
+      expect(context.improvement.daily.at(-1)).toMatchObject({ended:2,prompts:5});expect(context.improvement.skills.used.map((s: { name: string })=>s.name)).toEqual(['fixture-skill']);
+      expect(html).toContain('Improvement Center');expect(html).toContain('nav-group');
       expect(await (await fetch(base+'/kb-report')).text()).toContain('Knowledge Base');
       expect((await (await fetch(base+'/api/kb-summary')).json()).source.scope).toBe('team');
       const stream=await fetch(base+'/events',{signal:AbortSignal.timeout(15000)}),reader=stream.body!.getReader();

@@ -127,7 +127,6 @@ function formatMessage(
       return formatFeishuMessage(payload);
     case 'wecom':
       return formatWecomMessage(payload);
-    case 'json':
     default:
       return formatGenericJson(payload);
   }

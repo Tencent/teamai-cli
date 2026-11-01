@@ -293,4 +293,4 @@ On GitLab, comment updates search the most recently updated notes first and stop
 teamai dashboard
 ```
 
-Open Team Context, or go to `http://localhost:3721/kb-report`.
+Open the Knowledge Base page, or go to `http://localhost:3721/kb-report`.

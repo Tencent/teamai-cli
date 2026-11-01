@@ -2,16 +2,16 @@
 
 > Status: **implemented**. The dashboard described here is the one `teamai dashboard` serves today.
 
-The logo's charcoal/blue palette, four-module navigation, English/Simplified Chinese UI and light/dark/system themes replace the previous session-only layout. All data comes from the existing local collectors and KB report aggregation.
+The website's ink and single-blue palette with the official mark, grouped navigation (Overview, then Execution / Context / Improvement), English/Simplified Chinese UI and light/dark/system themes replace the previous session-only layout. All data comes from the existing local collectors and KB report aggregation.
 
 ## Functional mapping
 
 | View | Retained functionality |
 | --- | --- |
 | Overview | Local session status/counts, six current/prior 7-day metrics, KB coverage, maintenance candidate counts, session list |
-| Team Execution | All supported tools, repository (all worktrees of a repo as one)/tool filters, active and recently ended sessions, first/latest secret-redacted prompt summaries and output previews, duration, last activity/tool, intervention and token counts; keyboard-accessible Details opens all captured prompt summaries (capped at 200 characters), safely rendered Markdown output and full breakdowns |
-| Team Context | Original KB totals, coverage by type, top recalled chart, expandable never-recalled groups, last-recall month chart, author contribution table, reported data scope and report generation time |
-| Team Improvement | Local trends, original promotion/archive/stale candidate guidance and commands, digest/session-save/share-learnings command references |
+| Sessions | All supported tools, repository (all worktrees of a repo as one)/tool filters, active and recently ended sessions, first/latest secret-redacted prompt summaries and output previews, duration, last activity/tool, intervention and token counts; keyboard-accessible Details opens all captured prompt summaries (capped at 200 characters), safely rendered Markdown output and full breakdowns |
+| Knowledge Base | Original KB totals, coverage by type, top recalled chart, expandable never-recalled groups, last-recall month chart, author contribution table, reported data scope and report generation time |
+| Improvement Center | Team usage over 7/30/90 days from the published `stats/*.yaml` daily records (sessions, success and correction rates, known cost, prompt turns, cache read share, active members), daily charts with a table view, suggested next steps, team skill adoption, team friction totals, tabbed promotion/archive/stale candidates with their commands, the local 7-day trends, and digest/session-save/contribute/feedback command references |
 
 Maintenance commands remain read-only guidance. No new CLI command or browser mutation endpoint is introduced. `/kb-report` remains the complete original standalone report, including maintenance.
 
@@ -22,7 +22,7 @@ Maintenance commands remain read-only guidance. No new CLI command or browser mu
 - SSE reconnects after failure. A 15-second session reconciliation poll also applies the collector's existing idle and 30-second ended-session rules without requiring another hook event. Relative times update every five seconds without replacing the focused row.
 - Fetch failures have retry controls. Previous successful KB/trend values remain visibly marked as stale on refresh failure. No missing metric is converted into a fabricated zero.
 - Local redacted prompt summaries and output remain local and are escaped before HTML/Markdown rendering. Knowledge titles, authors, commands and session content are not translated. Locale/theme preferences are stored only in browser storage and gracefully degrade if it is blocked.
-- `generatedAt` describes report generation, not team synchronization. No cross-machine live status, recall penetration, adoption rate, automated improvement workflow or causal improvement claims are added.
+- `generatedAt` describes report generation, not team synchronization. No cross-machine live status, recall penetration, automated improvement workflow or causal improvement claims are added. Team skill adoption counts the team repo's skills that members' published stats name in the last 30 days; it is not a recall or adoption rate for knowledge entries. The Improvement Center's window ends at the newest day any member published, and it shows no change against a prior period with fewer than 20 sessions or under a quarter of the current period's.
 
 ## Cost semantics
 
@@ -49,4 +49,4 @@ The existing `avgRequestCostMicros`, request-day daily buckets and digest statis
 
 The sidebar switches between all local sessions, user scope, and installed project scopes. Project partitions are discovered from their anchor files; legacy installs are discovered from the startup directory, the repo each event recorded (`projectAnchor`), and recorded session directories. Linked Git worktrees share a project, and a removed worktree's sessions stay with it. User scope contains sessions outside installed projects. In the all-workspaces view, knowledge uses the startup scope; this is labeled explicitly. Individual scopes select their own knowledge configuration, with separate report caches and stale-response protection. Restart the dashboard after installing a new scope.
 
-The complete health report is split between Team Context (coverage, recalls, entries, authors) and Team Improvement (maintenance), with internal navigation. The legacy report URL remains compatible, but is not linked from the dashboard. Missing prior-period samples are labeled as no ended sessions, no priced sessions, or no usage data rather than collecting.
+The complete health report is split between Knowledge Base (coverage, recalls, entries, authors) and Improvement Center (maintenance), with internal navigation. The legacy report URL remains compatible, but is not linked from the dashboard. Missing prior-period samples are labeled as no ended sessions, no priced sessions, or no usage data rather than collecting.
