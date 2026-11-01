@@ -28,6 +28,8 @@ export interface WikiLintReport {
   /**
    * Graph metrics from `.indices/graph-index.json`; `null` when the graph is
    * missing or corrupt — "not checked", never a measured 0% (#1637 review).
+   * The field can be `null` in every mode, standalone `--output` included:
+   * scripts reading `graphHealth.connectivity` must handle it.
    */
   graphHealth: {
     nodeCount: number;
