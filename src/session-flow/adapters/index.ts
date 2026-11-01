@@ -36,7 +36,7 @@ export const ADAPTER_REGISTRY: Record<string, AdapterFactory> = {
   cursor: (toolRoots) => new CursorAdapter('cursor', sessionStoreDir('cursor', toolRoots)),
   opencode: (toolRoots) => new OpencodeAdapter(sessionStoreDir('opencode', toolRoots)),
   agy: (toolRoots) => new AgyAdapter(agyStoreRoots(sessionStoreDir('agy', toolRoots))),
-  pi: (toolRoots) => new PiAdapter('pi', sessionStoreDir('pi', toolRoots)),
+  pi: (toolRoots) => new PiAdapter('pi', sessionStoreDir('pi', toolRoots), !process.env.PI_CODING_AGENT_SESSION_DIR),
   omp: (toolRoots) => new PiAdapter('omp', sessionStoreDir('omp', toolRoots)),
   // TeamAI variants (different path prefixes, identical format)
   'claude-internal': (toolRoots) => new ClaudeCodeAdapter('claude-internal', sessionStoreDir('claude-internal', toolRoots)),

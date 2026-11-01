@@ -1,6 +1,7 @@
 /** Pi and Oh My Pi v3 JSONL session adapter (read-only). */
 
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { AgentAdapter, ToolUnavailableError, type SessionMeta, type SessionReadRef } from './base.js';
 import type { ContentBlock, Message, Session } from '../ir.js';
@@ -60,9 +61,9 @@ function activeEntries(entries: Json[]): Json[] {
   if (entries.length === 0) return [];
   const byId = new Map(entries.flatMap((entry) => typeof entry.id === 'string' ? [[entry.id, entry] as const] : []));
   const last = entries.at(-1)!;
-  const leaf = last.activeLeafId === null ? undefined
-    : typeof last.activeLeafId === 'string' ? last.activeLeafId
-      : typeof last.id === 'string' ? last.id : undefined;
+  if (last.activeLeafId === null) return [];
+  const leaf = typeof last.activeLeafId === 'string' ? last.activeLeafId
+    : typeof last.id === 'string' ? last.id : undefined;
   const follow = (start: string | undefined): Json[] => {
     let id = start;
     const branch: Json[] = [];
@@ -178,7 +179,11 @@ function titleOf(parsed: ParsedFile, entries: Json[], messages: Message[]): stri
 }
 
 export class PiAdapter extends AgentAdapter {
-  constructor(private readonly id: 'pi' | 'omp', private readonly storageRoot: string) {
+  constructor(
+    private readonly id: 'pi' | 'omp',
+    private readonly storageRoot: string,
+    private readonly projectSettings = true,
+  ) {
     super();
   }
 
@@ -186,8 +191,22 @@ export class PiAdapter extends AgentAdapter {
 
   isReady(): boolean { return fs.existsSync(this.storageRoot); }
 
-  private files(): string[] {
-    if (!fs.existsSync(this.storageRoot)) return [];
+  private projectStorageRoot(projectPath?: string): string {
+    if (this.id !== 'pi' || !this.projectSettings || !projectPath) return this.storageRoot;
+    try {
+      const settings = object(JSON.parse(fs.readFileSync(path.join(projectPath, '.pi', 'settings.json'), 'utf8')));
+      const configured = text(settings?.sessionDir)?.trim();
+      if (!configured) return this.storageRoot;
+      const expanded = configured === '~' || configured.startsWith('~/') || (process.platform === 'win32' && configured.startsWith('~\\'))
+        ? path.join(os.homedir(), configured.slice(1)) : configured;
+      return path.isAbsolute(expanded) ? path.resolve(expanded) : path.resolve(projectPath, expanded);
+    } catch {
+      return this.storageRoot;
+    }
+  }
+
+  private files(storageRoot: string): string[] {
+    if (!fs.existsSync(storageRoot)) return [];
     const files: string[] = [];
     const visit = (dir: string): void => {
       for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -196,13 +215,13 @@ export class PiAdapter extends AgentAdapter {
         else if (entry.isFile() && entry.name.endsWith('.jsonl')) files.push(full);
       }
     };
-    visit(this.storageRoot);
+    visit(storageRoot);
     return files;
   }
 
   private parsed(sessionId?: string, projectPath?: string): ParsedFile[] {
     const wanted = projectPath ? path.resolve(projectPath) : undefined;
-    return this.files().flatMap((file) => {
+    return this.files(this.projectStorageRoot(projectPath)).flatMap((file) => {
       const parsed = parseFile(file);
       if (!parsed) return [];
       const id = text(parsed.header.id);

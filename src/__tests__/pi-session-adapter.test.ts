@@ -78,6 +78,34 @@ describe('PiAdapter', () => {
     expect(session.messages.at(-1)?.content).toEqual([{ type: 'text', text: 'latest' }]);
   });
 
+  it('treats an explicit null active leaf as no active branch', async () => {
+    const { adapter, id } = fixture('omp', [{ type: 'session_info', id: 'i1', parentId: 'a2', activeLeafId: null }]);
+    expect((await adapter.readSession({ sessionId: id })).messages).toEqual([]);
+  });
+
+  it('reads Pi project sessionDir before the global store', async () => {
+    const { adapter, file, cwd, id } = fixture('pi');
+    const projectStore = path.join(path.dirname(path.dirname(cwd)), 'project-sessions');
+    fs.mkdirSync(projectStore, { recursive: true });
+    const moved = path.join(projectStore, path.basename(file));
+    fs.copyFileSync(file, moved);
+    fs.rmSync(file);
+    fs.mkdirSync(path.join(cwd, '.pi'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.pi', 'settings.json'), JSON.stringify({ sessionDir: projectStore }));
+
+    expect(await adapter.existingSessionId(id, cwd)).toBe(id);
+    expect((await adapter.listConversations(cwd))[0]?.filePath).toBe(moved);
+  });
+
+  it('keeps the explicit environment store ahead of project settings', async () => {
+    const { file, cwd, id } = fixture('pi');
+    fs.mkdirSync(path.join(cwd, '.pi'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.pi', 'settings.json'), JSON.stringify({ sessionDir: path.join(cwd, 'other') }));
+    const adapter = new PiAdapter('pi', path.dirname(path.dirname(file)), false);
+
+    expect((await adapter.readSession({ sessionId: id, projectPath: cwd })).sessionId).toBe(id);
+  });
+
   it('filters by the cwd stored in the header and rejects unsafe ids', async () => {
     const { adapter, id, cwd } = fixture('pi');
     expect(await adapter.existingSessionId(id, cwd)).toBe(id);
