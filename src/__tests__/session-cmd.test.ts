@@ -43,6 +43,14 @@ const mocks = vi.hoisted(() => ({
   lineArmed: null as (() => void) | null,
   /** 真实适配器回归用例的假 HOME（适配器存储路径由 os.homedir() 派生） */
   home: '',
+  /** Project roots TeamAI already knows, returned to Pi's --all scan. */
+  workspaceRoots: [] as string[],
+}));
+
+vi.mock('../dashboard/workspaces.js', () => ({
+  dashboardWorkspaces: async () => mocks.workspaceRoots.map((root, index) => ({
+    id: `project-${index}`, label: root, scope: 'project', root, roots: [root], config: null,
+  })),
 }));
 
 // 适配器存储路径全部由 os.homedir() 派生；像 codebuddy-ide-adapter.test.ts 一样
@@ -200,6 +208,7 @@ beforeEach(() => {
   mocks.copyResult = null;
   mocks.os = undefined;
   mocks.heldArchiveLock = '';
+  mocks.workspaceRoots = [];
   mocks.lineArmed = null;
   vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => {
     out.push(a.map(String).join(' '));
@@ -494,6 +503,34 @@ describe('session push --all', () => {
     expect(text).toContain('Pushed 8 session(s) from fakeplat');
     expect(text).toContain('Source: /proj/beta');
     expect(text).not.toMatch(CJK);
+  });
+
+  it('includes Pi sessionDir stores from every project workspace TeamAI knows', async () => {
+    const global = mkSession({ sessionId: 'pi-global', title: 'global', platform: 'pi', cwd: '/proj/global' });
+    const project = mkSession({ sessionId: 'pi-project', title: 'project', platform: 'pi', cwd: '/proj/beta' });
+    const sessions = new Map([['/fake/pi-global.jsonl', global], ['/fake/pi-project.jsonl', project]]);
+    const listed = (session: Session, filePath: string) => ({
+      sessionId: session.sessionId, title: session.title, cwd: session.cwd, platform: 'pi',
+      createdAt: session.createdAt, updatedAt: session.updatedAt, messageCount: session.messages.length, filePath, sizeBytes: 100,
+    });
+    const adapter = {
+      platform: 'pi', isReady: () => true,
+      listConversations: vi.fn(async (cwd?: string) => cwd === '/proj/beta'
+        ? [listed(project, '/fake/pi-project.jsonl')]
+        : cwd === undefined ? [listed(global, '/fake/pi-global.jsonl')] : []),
+      readSession: vi.fn(async ({ filePath }: SessionReadRef) => sessions.get(filePath ?? '')!),
+    };
+    mocks.adaptersByPlatform.pi = adapter;
+    mocks.workspaceRoots = ['/proj/beta'];
+    mocks.remotes['/proj/global'] = 'https://github.com/team/global.git';
+    mocks.remotes['/proj/beta'] = 'https://github.com/team/beta.git';
+
+    await runSession('push', '--source', 'pi', '--all', '--scrub', '-y', '--repo-root', repoRoot, '--cwd', '/run/dir');
+
+    expect(adapter.listConversations).toHaveBeenCalledWith(undefined);
+    expect(adapter.listConversations).toHaveBeenCalledWith('/proj/beta');
+    expect(adapter.readSession).toHaveBeenCalledTimes(2);
+    expect(out.join('\n')).toContain('Pushed 2 session(s) from pi');
   });
 
   it('asks for confirmation before pushing more than five sessions', async () => {

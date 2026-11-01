@@ -1,13 +1,15 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PiAdapter } from '../session-flow/adapters/pi.js';
 import { ToolUnavailableError } from '../session-flow/adapters/base.js';
+import { getAdapter } from '../session-flow/adapters/index.js';
 
 const roots: string[] = [];
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -104,6 +106,15 @@ describe('PiAdapter', () => {
     const adapter = new PiAdapter('pi', path.dirname(path.dirname(file)), false);
 
     expect((await adapter.readSession({ sessionId: id, projectPath: cwd })).sessionId).toBe(id);
+  });
+
+  it('wires the explicit environment store ahead of project settings through the registry', async () => {
+    const { file, cwd, id } = fixture('pi');
+    fs.mkdirSync(path.join(cwd, '.pi'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.pi', 'settings.json'), JSON.stringify({ sessionDir: path.join(cwd, 'other') }));
+    vi.stubEnv('PI_CODING_AGENT_SESSION_DIR', path.dirname(path.dirname(file)));
+
+    expect(await getAdapter('pi').existingSessionId(id, cwd)).toBe(id);
   });
 
   it('filters by the cwd stored in the header and rejects unsafe ids', async () => {

@@ -19,6 +19,7 @@
  */
 
 import type { Command } from 'commander';
+import path from 'node:path';
 import { listAvailablePlatforms, listInstalledPlatforms } from './adapters/index.js';
 import { resumeCommand } from './adapters/platform-facts.js';
 import {
@@ -37,6 +38,7 @@ import { knownSecrets } from '../env-resolution.js';
 import { pushSession } from './archive.js';
 import { SessionCaptures } from './captures.js';
 import { registerMigrationCommand } from './session-migrate-cmd.js';
+import { dashboardWorkspaces } from '../dashboard/workspaces.js';
 import {
   REPORTS_ARCHIVE_BUSY,
   archiveToReports,
@@ -80,6 +82,28 @@ function archivedSessions(
     }
   }
   return found;
+}
+
+/**
+ * Pi can move a workspace's sessions with `<workspace>/.pi/settings.json`.
+ * Its native global scan cannot discover those arbitrary directories, so --all
+ * supplements it with every installed project workspace TeamAI already knows.
+ */
+async function listPushSource(platform: string, cwd: string, all: boolean) {
+  if (!all || platform !== 'pi') return listSource({ platform, cwd: all ? undefined : cwd });
+  const global = await listSource({ platform, cwd: undefined });
+  if (!global) return undefined;
+  const workspaces = await dashboardWorkspaces([]);
+  const roots = [...new Set(workspaces.filter((workspace) => workspace.scope === 'project').flatMap((workspace) => workspace.roots))];
+  const scoped = await Promise.all(roots.map((root) => listSource({ platform, cwd: root })));
+  if (scoped.some((sessions) => sessions === undefined)) return undefined;
+  const seen = new Set<string>();
+  return [global, ...scoped].flatMap((sessions) => sessions ?? []).filter((session) => {
+    const key = session.filePath ? path.resolve(session.filePath) : JSON.stringify([session.sessionId, session.cwd]);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -178,7 +202,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       const author = getGitAuthor(workCwd);
       // --all: no workspace lists every workspace directory of that platform (P5).
       // The blast radius stays on a single platform (same as status --all); single-cwd mode keeps the old behavior.
-      const metas = await listSource({ platform: source, cwd: opts.all ? undefined : workCwd });
+      const metas = await listPushSource(source, workCwd, Boolean(opts.all));
       if (!metas) return;
       const limitRaw = parseInt(opts.limit, 10);
       // Non-numeric / 0 / negative all fall back to the default. slice(0, -1)'s negative semantics would quietly drop one result

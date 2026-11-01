@@ -208,14 +208,15 @@ export class PiAdapter extends AgentAdapter {
   private files(storageRoot: string): string[] {
     if (!fs.existsSync(storageRoot)) return [];
     const files: string[] = [];
-    const visit = (dir: string): void => {
+    const visit = (dir: string, depth: number): void => {
+      if (depth > 4) return;
       for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
         const full = path.join(dir, entry.name);
-        if (entry.isDirectory()) visit(full);
+        if (entry.isDirectory()) visit(full, depth + 1);
         else if (entry.isFile() && entry.name.endsWith('.jsonl')) files.push(full);
       }
     };
-    visit(storageRoot);
+    visit(storageRoot, 0);
     return files;
   }
 
