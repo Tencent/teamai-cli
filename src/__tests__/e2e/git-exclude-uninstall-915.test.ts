@@ -179,7 +179,7 @@ const excludeFileOf = (m: Member, dir: string): string =>
 function blockLines(file: string, owner = 'delivered'): string[] {
   const lines = fs.existsSync(file) ? read(file).split('\n') : [];
   const start = lines.findIndex((line) => line.startsWith(`# [teamai:${owner}:start]`));
-  const end = lines.findIndex((line) => line === `# [teamai:${owner}:end]`);
+  const end = lines.indexOf(`# [teamai:${owner}:end]`);
   return start < 0 || end < start ? [] : lines.slice(start + 1, end);
 }
 
