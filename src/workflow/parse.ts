@@ -536,7 +536,18 @@ function parseBody(
           withValues = withPair.value.toJSON() as Record<string, unknown>;
         }
       }
-      if (workflowPair && workflow && TOKEN.test(workflow) && id && TOKEN.test(id)) references.push({ id, workflow });
+      if (workflowPair && workflow && TOKEN.test(workflow) && id && TOKEN.test(id)) {
+        references.push({ id, workflow });
+        const child = files && !files.cycle(workflow) ? files.runnable(workflow) : null;
+        const produces = child ? producerIn(child, files) : undefined;
+        if (produces !== undefined) {
+          queue.push(() => {
+            if (!bindsItem && !runsAgain() && loop === undefined && ![...stepLoops(steps).ranges.values()].some((range) => range.has(id))) return;
+            diagnostics.push(locate(file, lineCounter, workflowPair.value as Node, `${field}.workflow`,
+              `${stepLabel} runs workflow "${workflow}", whose step "${produces}" outputs a workflow, so it runs once; ${stepLabel} may not repeat in a loop or run per item of a for_each`));
+          });
+        }
+      }
       if (workflowPair && workflow && TOKEN.test(workflow) && files) {
         // A malformed with is already reported, so its keys are not compared.
         const keys = !withPair ? [] : withValues && isMap(withPair.value)
@@ -860,6 +871,23 @@ function fromProblems({ file, lineCounter }: ParseContext, steps: WorkflowStep[]
     }
   }
   return problems;
+}
+
+/**
+ * The path of a step in `workflow`, or in a workflow it runs, inline or by name, that outputs a workflow, or undefined
+ * when none does. A named workflow in a cycle is reported already, so no workflow file is followed twice.
+ */
+function producerIn(workflow: Pick<InlineWorkflow, 'steps'>, files: WorkflowFiles | undefined, seen = new Set<string>()): string | undefined {
+  for (const step of workflow.steps) {
+    if (workflowField(step.output) !== undefined) return step.id;
+    const runs = stepWorkflow(step);
+    const named = runs?.kind === 'named' && files && !files.cycle(runs.name) && !seen.has(runs.name) ? runs.name : undefined;
+    if (named !== undefined) seen.add(named);
+    const child = runs?.kind === 'inline' ? runs.workflow : named !== undefined ? files?.runnable(named) ?? undefined : undefined;
+    const inner = child ? producerIn(child, files, seen) : undefined;
+    if (inner !== undefined) return `${step.id}.${inner}`;
+  }
+  return undefined;
 }
 
 /** A step that runs a workflow file by name. */

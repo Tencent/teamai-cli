@@ -2044,4 +2044,39 @@ steps:
       'workflows/build.yaml:10: field "steps[0].workflow.steps[0].output": step "plan" outputs a workflow, so it runs once; it may not repeat in a loop or run per item of a for_each',
     ]);
   });
+
+  it('refuses a workflow file that outputs a workflow, run by a step that a loop runs again or runs per item', () => {
+    const planner = parseWorkflow('workflows/planner.yaml', `schemaVersion: v1alpha1
+name: planner
+description: Plan.
+steps:
+  - id: plan
+    command: node plan.js
+    output: { definition: workflow }
+`, { runnable: () => null, cycle: () => undefined });
+    if (!planner.ok) throw new Error(planner.diagnostics.map(formatDiagnostic).join('\n'));
+    const files = { runnable: (name: string) => (name === 'planner' ? planner.definition : null), cycle: () => undefined };
+    const result = parseWorkflow(FILE, `schemaVersion: v1alpha1
+name: build
+description: Plan in a loop and per item.
+steps:
+  - id: again
+    workflow: planner
+  - id: check
+    needs: [again]
+    command: node check.js
+    loop: { back_to: again, max_iterations: 2 }
+  - id: each
+    needs: []
+    for_each: "[]"
+    workflow: planner
+  - id: once
+    needs: []
+    workflow: planner
+`, files);
+    expect(result.ok ? [] : result.diagnostics.map(formatDiagnostic)).toEqual([
+      'workflows/build.yaml:6: field "steps[0].workflow": step "again" runs workflow "planner", whose step "plan" outputs a workflow, so it runs once; step "again" may not repeat in a loop or run per item of a for_each',
+      'workflows/build.yaml:14: field "steps[2].workflow": step "each" runs workflow "planner", whose step "plan" outputs a workflow, so it runs once; step "each" may not repeat in a loop or run per item of a for_each',
+    ]);
+  });
 });

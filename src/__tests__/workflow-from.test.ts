@@ -278,10 +278,10 @@ outputs:`)}`);
     expect(typeof run === 'object' && run.workflows?.['inner.0123456789ab']?.steps).toEqual([{ id: 'work', command: 'node team-work.js' }]);
   });
 
-  it('fails when it runs again in a loop of the workflow that runs it, and keeps the workflow it gave first', async () => {
+  it('refuses a workflow that runs it in a loop before the run starts, as its second round could not give a workflow', async () => {
     const config = testConfig();
     team(config, 'produce', PLANNED.replace('name: planned', 'name: produce').replace(/outputs:[\s\S]*$/, ''));
-    const runId = await startPlanned(config, `schemaVersion: v1alpha1
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'planned.yaml'), `schemaVersion: v1alpha1
 name: planned
 description: Produce, then produce again.
 steps:
@@ -292,17 +292,12 @@ steps:
     command: node check.js
     loop: { back_to: round, max_iterations: 2 }
 `);
-    const first = { definition: { definition: GENERATED }, plan: { round: 1 } };
-    await settle(config, runId, 'round.plan', first);
-    await settle(config, runId, 'round.trials.hello');
-    await settle(config, runId, 'check');
 
-    const reported = await settle(config, runId, 'round.plan', { definition: { definition: GENERATED }, plan: { round: 2 } });
+    const synced = await syncWorkflowDefinitions(config);
+    const started = await startRun(config, 'planned', {}, { secrets: await knownSecrets(config) });
 
-    expect(reported).toMatchObject({ data: { step: { status: 'failed', failure: { code: 'invalid_output',
-      message: 'Step "round.plan" already gave this run a workflow, which the run keeps; a step with a workflow output runs once.' } } } });
-    const run = await readRun(config, runId);
-    expect(typeof run === 'object' && run.admitted?.['round.plan']?.output).toEqual(first);
+    expect(synced.invalid.map((diagnostic) => diagnostic.message)).toContain('step "round" runs workflow "produce", whose step "plan" outputs a workflow, so it runs once; step "round" may not repeat in a loop or run per item of a for_each');
+    expect(started).toMatchObject({ error: { code: 'workflow_not_found' } });
   });
 });
 
