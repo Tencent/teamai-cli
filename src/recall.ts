@@ -529,15 +529,19 @@ function addEdge(map: Map<string, Set<string>>, from: string, to: string): void 
 
 /** The derived edges of each scope, keyed like `relationContexts`. */
 export function computeDerivedRelations(
-  results: ReadonlyArray<{ entry: SearchIndexEntry; fromCodebase?: boolean }>,
+  results: ReadonlyArray<{ entry: SearchIndexEntry; fromCodebase?: boolean; scope?: string }>,
   contexts: ReadonlyMap<string, RelationContext>,
 ): Map<string, DerivedEdges> {
+  // Pages keep the scope of the hit that loaded them: each scope's rules
+  // match only their own pages, so a user clone's page with the same teamwiki
+  // path as a workspace one can never produce an edge to the other copy.
   const pages = results
     .filter((r) => r.fromCodebase && r.entry.treePath)
     .map((r) => ({
       treePath: r.entry.treePath as string,
       slug: teamwikiCodebaseSlug(r.entry.treePath as string),
       sources: pageSourcePaths(r.entry.path),
+      scope: r.scope,
     }));
   const byScope = new Map<string, DerivedEdges>();
   for (const [scope, ctx] of contexts) {
@@ -547,7 +551,8 @@ export function computeDerivedRelations(
       // Each glob is judged on its own: two globs matching two different
       // codebases are two certain edges, not one ambiguous pair.
       for (const glob of globs) {
-        const matched = pages.filter((pg) => pg.sources.some((s) => matchGlob(glob, s)));
+        const matched = pages.filter((pg) =>
+          (pg.scope === undefined || pg.scope === scope) && pg.sources.some((s) => matchGlob(glob, s)));
         const slugs = new Set(matched.map((m) => m.slug).filter((s): s is string => typeof s === 'string'));
         if (slugs.size !== 1) continue; // no match, or this glob spans codebases
         for (const pg of matched) {

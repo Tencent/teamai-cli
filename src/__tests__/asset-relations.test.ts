@@ -602,6 +602,24 @@ describe('computeDerivedRelations — rule paths to code page sources', () => {
     }
   });
 
+  it('pages stay inside their scope too: a user rule never matches a page of another scope', () => {
+    const tmp = makeTmpDir();
+    try {
+      const projectPage = pageWithSources(tmp, 'pay/modules/ledger.md', ['src/ledger/receipts.ts']);
+      const contexts = new Map<string, RelationContext>([
+        ['project', ctx({ byTreePath: new Map([['rules/payments.md', entry({ filename: 'payments.md', treePath: 'rules/payments.md', path: '/repo/rules/payments.md' })]]) })],
+        ['user', ctx({ ruleGlobs: new Map([['rules/payments.md', ['src/ledger/**']]]) })],
+      ]);
+      // The user rule's glob matches the project page's sources, but the page
+      // belongs to the project scope, so the user bucket stays empty.
+      const derived = computeDerivedRelations([{ ...projectPage, scope: 'project' }], contexts);
+      expect(derived.get('user')!.out.size).toBe(0);
+      expect(derived.get('project')!.out.size).toBe(0); // project bucket has no rule globs
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it('edges stay inside their scope: a user rule never marks a project hit', () => {
     const tmp = makeTmpDir();
     try {
