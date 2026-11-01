@@ -38,10 +38,13 @@ export async function placeRoot({ cwd, checkout }: { cwd: string; checkout: stri
 
 export { cloneDelivery, cloneHead, commitCacheOf, freshClone, preparedClone, scratchCloneRoot, stageSettledEvidence, sweepClones } from './clone.js';
 
-/** The place key two attempts of one driver must not share: the copy of the lease's branch, its clone, else the checkout. */
+/**
+ * The place key two attempts of one driver must not share: the copy of the lease's branch, its clone, else the checkout.
+ * A clone keeps its key once prepared, as its directory is not known before.
+ */
 export function placeOf(lease: { cwd?: string; workspace?: WorkspaceContract }, root: string): string {
-  if (lease.cwd !== undefined) return lease.cwd;
-  return lease.workspace?.mode !== 'read-only' && lease.workspace?.clone ? cloneKeyOf(lease.workspace.branch) : stepCheckout(root, lease.workspace?.branch);
+  if (lease.workspace?.mode !== 'read-only' && lease.workspace?.clone) return cloneKeyOf(lease.workspace.branch);
+  return lease.cwd ?? stepCheckout(root, lease.workspace?.branch);
 }
 
 /**

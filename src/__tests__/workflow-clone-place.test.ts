@@ -22,8 +22,8 @@ import { nextJudgeLease } from '../workflow/scoring.js';
 import { readRun, RunIdSchema } from '../workflow/store.js';
 import type { DriverCan } from '../workflow/requirements.js';
 import type { DriverIdentity } from '../workflow/types.js';
-import { branchName } from '../workflow/workspace.js';
-import { cloneHead } from '../workflow/place/place.js';
+import { branchName, WorkspaceContractSchema } from '../workflow/workspace.js';
+import { cloneHead, placeOf } from '../workflow/place/place.js';
 
 _setDriverPollMs(20);
 
@@ -149,6 +149,15 @@ describe('a clone place', () => {
     expect(setUp).toBe(true);
     expect(check).toMatchObject({ step: 'trial.check', cwd: work.cwd });
     expect(fs.readFileSync(path.join(check.cwd, 'made.txt'), 'utf8')).toBe('M');
+  });
+
+  it('keeps the place of a step in a clone once it is prepared there, so a second attempt in that clone waits for it', async () => {
+    const { config, workspace, runId } = await fixture((commit) => PROMPTED(commit));
+    const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
+
+    const lease = z.object({ data: z.object({ lease: z.object({ cwd: z.string(), workspace: WorkspaceContractSchema }) }) }).parse(await prepared(client, runId)).data.lease;
+
+    expect(placeOf(lease, workspace)).toBe(placeOf({ workspace: lease.workspace }, workspace));
   });
 
   it('gives an attempt prepared again a fresh clone, and removes the one it had', async () => {
