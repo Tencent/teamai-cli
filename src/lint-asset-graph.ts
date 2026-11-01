@@ -182,15 +182,19 @@ async function scopeTargetExists(config: LocalConfig): Promise<(kind: AssetKind,
  * when there is no member at all — standalone `--output` — and lint behaves
  * as it did before #1562.
  *
+ * `opts.config` pins the project scope to an already-resolved config: a
+ * caller reporting on an explicit scope (the viz dashboard) must not let
+ * this re-detect the current directory's (#1637 review).
+ *
  * A missing or unreadable index means the member pulled nothing recall
  * indexes; that scope contributes no assets, never a rebuild: lint only
  * reads.
  */
-export async function memberScopeGraphs(opts: { dryRun?: boolean } = {}): Promise<LintScopeGraph[] | null> {
+export async function memberScopeGraphs(opts: { dryRun?: boolean; config?: LocalConfig } = {}): Promise<LintScopeGraph[] | null> {
   const loadOpts = { dryRun: opts.dryRun ?? true };
-  let projectConfig: LocalConfig | null = null;
+  let projectConfig: LocalConfig | null = opts.config ?? null;
   try {
-    projectConfig = await detectProjectConfig(undefined, undefined, loadOpts);
+    if (!projectConfig) projectConfig = await detectProjectConfig(undefined, undefined, loadOpts);
     // A workspace searches what its children select too (#913), as recall.
     if (projectConfig) projectConfig = await readWorkspaceChildren(projectConfig);
   } catch {
@@ -199,8 +203,11 @@ export async function memberScopeGraphs(opts: { dryRun?: boolean } = {}): Promis
 
   const scopeConfigs: Array<{ config: LocalConfig; scope: 'user' | 'project' }> = [];
   if (projectConfig) {
-    scopeConfigs.push({ config: projectConfig, scope: 'project' });
-    if (projectConfig.inheritUserScope === true) {
+    // An explicitly supplied config may be user-scoped (the dashboard reports
+    // either); only a project scope can inherit the user one.
+    const scope = projectConfig.scope === 'project' ? 'project' : 'user';
+    scopeConfigs.push({ config: projectConfig, scope });
+    if (scope === 'project' && projectConfig.inheritUserScope === true) {
       try {
         const userConfig = await loadLocalConfigForScope('user', undefined, loadOpts);
         if (userConfig) scopeConfigs.push({ config: userConfig, scope: 'user' });
