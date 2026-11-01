@@ -28,6 +28,8 @@ export interface WikiLintReport {
   /**
    * Graph metrics from `.indices/graph-index.json`; `null` when the graph is
    * missing or corrupt — "not checked", never a measured 0% (#1637 review).
+   * The field can be `null` in every mode, standalone `--output` included:
+   * scripts reading `graphHealth.connectivity` must handle it.
    */
   graphHealth: {
     nodeCount: number;
@@ -229,7 +231,7 @@ export function formatWikiLintReport(report: WikiLintReport): string {
   lines.push(chalk.bold('=== teamwiki/ 知识图谱健康度检查 ==='));
   lines.push('');
   if (report.graphHealth === null) {
-    lines.push('图谱: 未检查（graph-index.json 缺失或损坏）');
+    lines.push('graph: not checked (graph-index.json missing or corrupt)');
   } else {
     lines.push(`图谱: ${report.graphHealth.nodeCount} nodes, ${report.graphHealth.edgeCount} edges, 连通性 ${(report.graphHealth.connectivity * 100).toFixed(0)}%`);
     if (report.graphHealth.orphanNodes > 0) {

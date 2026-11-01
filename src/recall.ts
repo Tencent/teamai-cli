@@ -590,9 +590,10 @@ function resultsRelations(
   relationContexts: ReadonlyMap<string, RelationContext>,
 ): PrintedRelation[][] {
   const fallbackCtx = relationContexts.values().next().value as RelationContext | undefined;
-  // Path-derived rule→page edges, computed once over the pages this recall
-  // already loaded (#1563 part 1). Never stored.
-  const derived = computeDerivedRelations(results, relationContexts);
+  // Path-derived rule→page edges, computed once over the pages each scope
+  // can see (#1563 part 1). Never stored, and independent of which pages
+  // this query returned.
+  const derived = computeDerivedRelations(relationContexts);
   return results.map(({ entry, scope }) => {
     // Relations resolve inside the scope the hit came from. A hit with an
     // explicit scope never borrows another scope's context: when that
@@ -680,12 +681,10 @@ export function formatResults(
   const lines: string[] = [];
   lines.push(`--- [teamai:recall:start] --- (${results.length} result${results.length !== 1 ? 's' : ''})${runId ? ` run=${runId}` : ''}`);
   lines.push('');
-  const fallbackCtx = relationContexts?.values().next().value as RelationContext | undefined;
-  // Path-derived rule→page edges, computed once over the pages each scope
-  // can see (#1563 part 1). Never stored, and independent of which pages
-  // this query returned.
-  const derived = relationContexts ? computeDerivedRelations(relationContexts) : undefined;
-  // What this render prints and a run records, per result (#1562).
+  // What this render prints and a run records, per result (#1562). It also
+  // computes the path-derived rule→page edges, once over the pages each
+  // scope can see (#1563 part 1) — never stored, and independent of which
+  // pages this query returned.
   const relations = relationContexts ? resultsRelations(results, relationContexts) : undefined;
 
   for (let i = 0; i < results.length; i++) {
