@@ -58,12 +58,12 @@ export function listAvailablePlatforms(): string[] {
   return Object.keys(ADAPTER_REGISTRY);
 }
 
-export function listInstalledPlatforms(toolRoots?: LocalConfig['toolRoots']): string[] {
+export function listInstalledPlatforms(toolRoots?: LocalConfig['toolRoots'], projectPath = process.cwd()): string[] {
   const installed: string[] = [];
   for (const [platform, factory] of Object.entries(ADAPTER_REGISTRY)) {
     try {
       const adapter = factory(toolRoots);
-      if (adapter.isReady()) installed.push(platform);
+      if (adapter.isReady(projectPath)) installed.push(platform);
     } catch {
       // skip
     }

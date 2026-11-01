@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PiAdapter } from '../session-flow/adapters/pi.js';
 import { ToolUnavailableError } from '../session-flow/adapters/base.js';
-import { getAdapter } from '../session-flow/adapters/index.js';
+import { ADAPTER_REGISTRY, getAdapter, listInstalledPlatforms } from '../session-flow/adapters/index.js';
 
 const roots: string[] = [];
 
@@ -97,6 +97,29 @@ describe('PiAdapter', () => {
 
     expect(await adapter.existingSessionId(id, cwd)).toBe(id);
     expect((await adapter.listConversations(cwd))[0]?.filePath).toBe(moved);
+  });
+
+  it('is ready with only a project sessionDir store', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-pi-project-only-'));
+    roots.push(root);
+    const project = path.join(root, 'project');
+    const projectStore = path.join(root, 'project-sessions');
+    const missingGlobalStore = path.join(root, 'missing-global-sessions');
+    fs.mkdirSync(path.join(project, '.pi'), { recursive: true });
+    fs.mkdirSync(projectStore);
+    fs.writeFileSync(path.join(project, '.pi', 'settings.json'), JSON.stringify({ sessionDir: projectStore }));
+
+    const adapter = new PiAdapter('pi', missingGlobalStore);
+    expect(adapter.isReady(project)).toBe(true);
+    expect(adapter.isReady(path.join(root, 'other-project'))).toBe(false);
+
+    const piFactory = ADAPTER_REGISTRY.pi;
+    ADAPTER_REGISTRY.pi = () => adapter;
+    try {
+      expect(listInstalledPlatforms(undefined, project)).toContain('pi');
+    } finally {
+      ADAPTER_REGISTRY.pi = piFactory;
+    }
   });
 
   it('keeps the explicit environment store ahead of project settings', async () => {

@@ -189,7 +189,9 @@ export class PiAdapter extends AgentAdapter {
 
   get platform(): string { return this.id; }
 
-  isReady(): boolean { return fs.existsSync(this.storageRoot); }
+  isReady(projectPath = process.cwd()): boolean {
+    return fs.existsSync(this.storageRoot) || fs.existsSync(this.projectStorageRoot(projectPath));
+  }
 
   private projectStorageRoot(projectPath?: string): string {
     if (this.id !== 'pi' || !this.projectSettings || !projectPath) return this.storageRoot;
