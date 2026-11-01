@@ -505,9 +505,12 @@ describe('session push --all', () => {
     expect(text).not.toMatch(CJK);
   });
 
-  it('includes Pi sessionDir stores from every project workspace TeamAI knows', async () => {
+  it("includes the current Pi project's sessionDir when TeamAI is not installed there", async () => {
+    const projectRoot = path.join(repoRoot, 'business');
+    fs.mkdirSync(path.join(projectRoot, '.pi'), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, '.pi', 'settings.json'), JSON.stringify({ sessionDir: path.join(projectRoot, 'sessions') }));
     const global = mkSession({ sessionId: 'pi-global', title: 'global', platform: 'pi', cwd: '/proj/global' });
-    const project = mkSession({ sessionId: 'pi-project', title: 'project', platform: 'pi', cwd: '/proj/beta' });
+    const project = mkSession({ sessionId: 'pi-project', title: 'project', platform: 'pi', cwd: projectRoot });
     const sessions = new Map([['/fake/pi-global.jsonl', global], ['/fake/pi-project.jsonl', project]]);
     const listed = (session: Session, filePath: string) => ({
       sessionId: session.sessionId, title: session.title, cwd: session.cwd, platform: 'pi',
@@ -515,20 +518,19 @@ describe('session push --all', () => {
     });
     const adapter = {
       platform: 'pi', isReady: () => true,
-      listConversations: vi.fn(async (cwd?: string) => cwd === '/proj/beta'
+      listConversations: vi.fn(async (cwd?: string) => cwd === projectRoot
         ? [listed(project, '/fake/pi-project.jsonl')]
         : cwd === undefined ? [listed(global, '/fake/pi-global.jsonl')] : []),
       readSession: vi.fn(async ({ filePath }: SessionReadRef) => sessions.get(filePath ?? '')!),
     };
     mocks.adaptersByPlatform.pi = adapter;
-    mocks.workspaceRoots = ['/proj/beta'];
     mocks.remotes['/proj/global'] = 'https://github.com/team/global.git';
-    mocks.remotes['/proj/beta'] = 'https://github.com/team/beta.git';
+    mocks.remotes[projectRoot] = 'https://github.com/team/beta.git';
 
-    await runSession('push', '--source', 'pi', '--all', '--scrub', '-y', '--repo-root', repoRoot, '--cwd', '/run/dir');
+    await runSession('push', '--source', 'pi', '--all', '--scrub', '-y', '--repo-root', repoRoot, '--cwd', projectRoot);
 
     expect(adapter.listConversations).toHaveBeenCalledWith(undefined);
-    expect(adapter.listConversations).toHaveBeenCalledWith('/proj/beta');
+    expect(adapter.listConversations).toHaveBeenCalledWith(projectRoot);
     expect(adapter.readSession).toHaveBeenCalledTimes(2);
     expect(out.join('\n')).toContain('Pushed 2 session(s) from pi');
   });

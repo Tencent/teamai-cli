@@ -19,6 +19,7 @@
  */
 
 import type { Command } from 'commander';
+import fs from 'node:fs';
 import path from 'node:path';
 import { listAvailablePlatforms, listInstalledPlatforms } from './adapters/index.js';
 import { resumeCommand } from './adapters/platform-facts.js';
@@ -87,18 +88,30 @@ function archivedSessions(
 /**
  * Pi can move a workspace's sessions with `<workspace>/.pi/settings.json`.
  * Its native global scan cannot discover those arbitrary directories, so --all
- * supplements it with every installed project workspace TeamAI already knows.
+ * supplements it with the current project and installed workspaces TeamAI knows.
  */
 async function listPushSource(platform: string, cwd: string, all: boolean) {
   if (!all || platform !== 'pi') return listSource({ platform, cwd: all ? undefined : cwd });
   const global = await listSource({ platform, cwd: undefined });
   if (!global) return undefined;
   const workspaces = await dashboardWorkspaces([]);
-  const roots = [...new Set(workspaces.filter((workspace) => workspace.scope === 'project').flatMap((workspace) => workspace.roots))];
-  const scoped = await Promise.all(roots.map((root) => listSource({ platform, cwd: root })));
-  if (scoped.some((sessions) => sessions === undefined)) return undefined;
+  const roots = [...new Set([cwd, ...workspaces.filter((workspace) => workspace.scope === 'project').flatMap((workspace) => workspace.roots)])]
+    .filter((root) => {
+      try {
+        const settings = JSON.parse(fs.readFileSync(path.join(root, '.pi', 'settings.json'), 'utf8')) as unknown;
+        return settings !== null && typeof settings === 'object' && 'sessionDir' in settings
+          && typeof settings.sessionDir === 'string' && settings.sessionDir.trim().length > 0;
+      } catch {
+        return false;
+      }
+    });
+  const scoped = await Promise.all(roots.map(async (root) => {
+    const listed = await AgentSession.list({ platforms: [platform], cwd: root });
+    for (const failure of listed.failures) console.error(`  ✗ Skipped ${safeText(root)}: ${failure.message}`);
+    return listed.sessions;
+  }));
   const seen = new Set<string>();
-  return [global, ...scoped].flatMap((sessions) => sessions ?? []).filter((session) => {
+  return [global, ...scoped].flat().filter((session) => {
     const key = session.filePath ? path.resolve(session.filePath) : JSON.stringify([session.sessionId, session.cwd]);
     if (seen.has(key)) return false;
     seen.add(key);
