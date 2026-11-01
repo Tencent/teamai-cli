@@ -278,4 +278,4 @@ GitLab 更新评论时，先查最近更新的评论，找到第一个匹配的�
 teamai dashboard
 ```
 
-打开后进团队上下文，或直接访问 `http://localhost:3721/kb-report`。
+打开后进「知识库」页，或直接访问 `http://localhost:3721/kb-report`。
