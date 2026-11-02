@@ -729,6 +729,7 @@ export async function restoreUneditedConfig(dir: string, _commit: string, saved:
     }
   }
 
+  await removeEmptiedDirs(dir, dirs, await agentDirs(saved, paths));
   await fs.rm(saved, { recursive: true, force: true });
   // `checkout` of the base copies staged those paths. Put the index back with the files, or a step that
   // edits nothing still looks dirty and the empty commit fails it.
@@ -739,6 +740,27 @@ export async function restoreUneditedConfig(dir: string, _commit: string, saved:
   if (unresolved.length > 0) await restoreConflictStages(dir, conflicts, unresolved, runGit);
 
   return undefined;
+}
+
+/**
+ * Removes each directory of the overlay, `overlayDirs`, that the branch's copy does not have and that the restore left
+ * empty, deepest first so a parent emptied by its child goes too. A directory the branch has, one the step made, or one
+ * under a symlink stays.
+ */
+async function removeEmptiedDirs(dir: string, overlayDirs: readonly string[], branchDirs: readonly string[]): Promise<void> {
+  const branch = new Set(branchDirs);
+  const delivered = overlayDirs.filter((relative) => !branch.has(relative)).sort((left, right) => right.length - left.length);
+
+  for (const relative of delivered) {
+    if (await linkedParent(dir, relative)) continue;
+    const target = path.join(dir, relative);
+
+    try {
+      if ((await fs.lstat(target)).isDirectory() && (await fs.readdir(target)).length === 0) await fs.rmdir(target);
+    } catch {
+      // Gone already, or not readable: it holds nothing of the branch's either way.
+    }
+  }
 }
 
 /**

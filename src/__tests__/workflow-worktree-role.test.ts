@@ -290,6 +290,29 @@ steps:
     expect(git(['diff', '--name-only', 'main', branch], workspace).split('\n')).toEqual(['review.md']);
   });
 
+  it("leaves no empty folder of the role's delivery in a copy kept after the step failed, and keeps the one the step made", async () => {
+    const { config, workspace, runId } = await roleWorkspace(REVIEW_IN_COPY, { tools: ['claude'] });
+    let copy = '';
+
+    const done = await runLocalDriver(config, runId, workspace, {
+      adapter: {
+        ...fakeTool(async () => undefined),
+        async run(_tool, input) {
+          copy = input.cwd;
+          fs.mkdirSync(path.join(input.cwd, '.claude', 'skills', 'step-made'), { recursive: true });
+          return { started: true, exitCode: 1 };
+        },
+      },
+    });
+
+    expect(done, JSON.stringify(done)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    expect(fs.existsSync(copy)).toBe(true);
+    const empty = fs.readdirSync(copy, { recursive: true, encoding: 'utf8' })
+      .filter((entry) => !entry.split(path.sep).includes('.git'))
+      .filter((entry) => fs.lstatSync(path.join(copy, entry)).isDirectory() && fs.readdirSync(path.join(copy, entry)).length === 0);
+    expect(empty).toEqual([path.join('.claude', 'skills', 'step-made')]);
+  });
+
   it.each([['with a role', REVIEW_IN_COPY], ['without one', REVIEW_IN_COPY.replace('    role: review\n', '')]])(
     "commits only the step's edit %s, though the copy's pull rewrites the self-mode .teamai/.gitignore the branch holds",
     async (_label, yaml) => {
