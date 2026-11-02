@@ -46,7 +46,7 @@ const SKILL_IMPORTS = {
   // What describe proposes for the inputs of teamai's default share workflows, for the calling session.
   'src/session-share.ts': { names: ['SessionShare'] },
   // What describe proposes for the inputs of teamai's default teamai-session-to-task, for the calling session.
-  'src/session-task.ts': { names: ['SessionTask'] },
+  'src/session-to-task.ts': { names: ['SessionToTask'] },
   // The identity every driver reports, the repository's atomic file writes, and the shared config types.
   'src/driver-identity.ts': {},
   // The run mode: whether a person attends the run, which describe answers for and every attempt's process gets.

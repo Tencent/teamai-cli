@@ -221,11 +221,14 @@ program
     + 'a later team edit stops the push again. Repeatable', (val: string, acc: string[]) => acc.concat(val), [] as string[])
   .action(async (cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
+    // --file and --path name one file and its destination: no scan, no placement.
+    const { isFilePush, pushFile } = await import('./push-file.js');
     const { push } = await import('./push.js');
     // Only notify when a real push actually happened — not on dry-run, cancel,
     // no-change, or a handled failure (#702 follow-up).
     const outcome = { completed: false };
-    await reportNotInitialized(() => push({ ...globalOpts, ...cmdOpts }, outcome));
+    const options = { ...globalOpts, ...cmdOpts };
+    await reportNotInitialized(() => (isFilePush(options) ? pushFile(options, outcome) : push(options, outcome)));
     if (outcome.completed) await notifyWebhook('push');
   });
 

@@ -31,6 +31,7 @@ function guideStep(header: string): { run: string; env: Record<string, string>; 
   return { run: step.run, env: step.env ?? {}, workingDirectory: step['working-directory'] ?? '.' };
 }
 
+// Each case clones the project and runs setup and the check twice per task it tries, so cases get 120 s, not the default 60 s.
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });

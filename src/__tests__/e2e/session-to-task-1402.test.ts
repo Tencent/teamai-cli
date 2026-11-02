@@ -87,7 +87,7 @@ function agentRuns(member: Member, literal: string): Record<string, unknown> {
  * A member's checkout of acme/auth-service at the commit where node test/refresh.test.js would fail, in a workspace of
  * the team acme, whose repo has the suite benchmarks/fix-auth for that project. teamai and a fake gh are on PATH.
  */
-function member(): Member {
+function newMember(): Member {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-session-to-task-')));
   roots.push(root);
   const home = path.join(root, 'home');
@@ -147,9 +147,10 @@ function proposed(inputs: Array<z.infer<typeof InputSchema>>, name: string): str
   return value;
 }
 
+// The case runs about thirty CLI calls, a pull, a push and a benchmark try, so it gets 240 s, not the default 60 s.
 describe('teamai-session-to-task from a Claude Code session', () => {
   it('keeps the fix as a task in a pull request, and the team repo CI job passes on it', async () => {
-    const m = member();
+    const m = newMember();
     const start = git(m.work, ['rev-parse', 'HEAD']);
     // The session starts: Claude Code runs teamai's SessionStart hook, which records the commit.
     const hooked = teamai(m, ['hook-dispatch', 'session-start', '--tool', 'claude'], { input: JSON.stringify({ session_id: SESSION, cwd: m.work, hook_event_name: 'SessionStart', source: 'startup' }) });

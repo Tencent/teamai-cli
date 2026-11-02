@@ -231,6 +231,24 @@ describe('teamai push --file --path', () => {
     expect(proposed(member)).toEqual({ 'tasks/pod-startup': ['benchmarks/frontend/tasks/pod-startup.yaml'] });
   });
 
+  it('updates the open pull request of the branch --branch names, rather than opening another', async () => {
+    const member = teamMember();
+    const file = localFile(member, 'pod-startup.yaml', TASK);
+    const args = ['push', '--file', file, '--path', 'benchmarks/frontend/tasks/pod-startup.yaml', '--branch', 'tasks/pod-startup'];
+    const first = teamai(member, args);
+    expect(first.code, first.output).toBe(0);
+    const reworked = TASK.replace('Make it start.', 'Make it start within 10 s.');
+    fs.writeFileSync(file, reworked);
+
+    const again = teamai(member, args);
+
+    expect(again.code, again.output).toBe(0);
+    expect(again.output).toContain('Updated pull request https://github.com/acme/team/pull/1');
+    expect(proposed(member)).toEqual({ 'tasks/pod-startup': ['benchmarks/frontend/tasks/pod-startup.yaml'] });
+    expect(git(member.origin, ['show', 'tasks/pod-startup:benchmarks/frontend/tasks/pod-startup.yaml'])).toBe(reworked.trimEnd());
+    expect(member.gh.calls().filter((call) => call.args[1] === 'create')).toHaveLength(1);
+  });
+
   it('answers no changes when the path already holds the same bytes', async () => {
     const member = teamMember();
     const file = localFile(member, 'old-bug.yaml', TASK);
