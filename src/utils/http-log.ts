@@ -12,6 +12,7 @@
 
 import { z } from 'zod';
 import { log } from './logger.js';
+import type { JsonValue } from '../types.js';
 
 /** Header names whose values must be masked before logging. */
 const SENSITIVE_HEADER_RE = /^(authorization|x-api-token|x-api-key|cookie)$/i;
@@ -31,7 +32,7 @@ export function redactHeaders(headers: Record<string, string>): Record<string, s
 }
 
 /** Truncate an over-long body string so the log file stays readable. */
-function previewBody(body: unknown, maxLen = 4096): string {
+function previewBody(body: RequestInit['body'] | JsonValue, maxLen = 4096): string {
   if (body === undefined || body === null) return '(empty)';
   const text = z.string().safeParse(body).data ?? JSON.stringify(body);
 
@@ -61,7 +62,7 @@ export function logHttpResponse(
   url: string,
   status: number,
   statusText: string,
-  body: unknown,
+  body: JsonValue,
 ): void {
   const level = status >= 400 ? 'ERROR' : 'OK';
   log.debug(`${tag} ← ${status} ${statusText} [${level}] ${method} ${url}`);

@@ -2,7 +2,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import YAML from 'yaml';
 import { ResourceHandler } from './base.js';
-import type { ResourceItem, TeamaiConfig, LocalConfig, HookDef } from '../types.js';
+import type { HookDef, JsonValue, LocalConfig, ResourceItem, TeamaiConfig } from '../types.js';
 import { TEAMAI_CUSTOM_HOOK_PREFIX, areTeamHooksDisabled, getHooksSharing } from '../types.js';
 import { pathExists } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
@@ -77,7 +77,7 @@ async function readHooksFile(absolutePath: string, relativePath: string): Promis
   if (content === null) return null;
 
   try {
-    const raw: unknown = YAML.parse(content);
+    const raw: JsonValue = YAML.parse(content);
     const topLevelProblem = missingTopLevelKeyReason(raw, HooksYamlSchema);
 
     if (topLevelProblem) return { ok: false, reason: `${relativePath} does not parse: ${topLevelProblem}` };
@@ -93,7 +93,7 @@ async function readHooksFile(absolutePath: string, relativePath: string): Promis
 /** The hooks one hooks file's text declares, or null when it does not parse: for reading a past revision. */
 export function parseTeamHooks(content: string): TeamHook[] | null {
   try {
-    const raw: unknown = YAML.parse(content);
+    const raw: JsonValue = YAML.parse(content);
 
     if (missingTopLevelKeyReason(raw, HooksYamlSchema)) return null;
 

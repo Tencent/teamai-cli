@@ -25,6 +25,7 @@ import {
 import type { RelationSeverity, StoredRelation } from '../asset-relations.js';
 import { indexInMemory } from '../utils/search-index.js';
 import { localLinkTargets } from '../utils/markdown-links.js';
+import type { FrontmatterValue } from '../utils/frontmatter.js';
 import { buildRelationContext, collectCodePages, formatResults, relationLines, computeDerivedRelations, relatedRefsOf } from '../recall.js';
 import type { RelationContext } from '../recall.js';
 import { matchGlob } from '../utils/glob.js';
@@ -101,7 +102,7 @@ describe('classifyTreePath / teamwikiCodebaseSlug', () => {
 // ─── parseRelatedBlock ───────────────────────────────────
 
 function parse(
-  rawRelated: unknown,
+  rawRelated: FrontmatterValue | undefined,
   sourceKind: 'rule' | 'doc' | 'learning' = 'rule',
   ownTreePath = 'rules/payments.md',
   exists: (kind: string, p: string) => boolean = () => true,

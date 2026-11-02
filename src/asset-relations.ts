@@ -19,6 +19,7 @@
 
 import path from 'node:path';
 import { z } from 'zod';
+import type { FrontmatterValue } from './utils/frontmatter.js';
 
 /** The relations an asset may declare. The other three code-graph relations (`DEPENDS_ON`, `CONTAINS`, `IMPLEMENTS`) relate code to code and can never be declared on an asset. */
 export const ASSET_RELATIONS = ['MAPS_TO', 'REFERENCES', 'SUPERSEDES', 'CONFLICTS_WITH'] as const;
@@ -152,7 +153,7 @@ export function teamwikiCodebaseSlug(treePath: string): string | null {
  * both stay.
  */
 export function parseRelatedBlock(
-  rawRelated: unknown,
+  rawRelated: FrontmatterValue | undefined,
   sourceKind: 'rule' | 'doc' | 'learning',
   ownTreePath: string,
   structuralSeverity: RelationSeverity,

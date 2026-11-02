@@ -16,7 +16,7 @@ import {
   entryLayout, missingTopLevelKeyReason, readEntryFileText, resolveEntries, resolveEntriesFor, unknownEntryKeys,
   writtenList, type EntryLayout, type EntryReader, type EntryResolution,
 } from '../namespaced-entries.js';
-import type { LocalConfig } from '../types.js';
+import type { JsonValue, LocalConfig } from '../types.js';
 import { ensureDir, readFileSafe, writeFile } from '../utils/fs.js';
 import { ENV_KEY_RE, envName } from './env-key.js';
 
@@ -69,7 +69,7 @@ export const secretsEntryReader: EntryReader<SecretDeclaration> = {
     if (!file.ok) return file;
 
     if (file.text === null) return null;
-    let raw: unknown;
+    let raw: JsonValue;
 
     try {
       raw = YAML.parse(file.text);

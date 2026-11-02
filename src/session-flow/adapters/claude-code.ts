@@ -38,7 +38,6 @@ import {
   dirExists,
   removeDirRecursive,
   mayReadLocalImageFile,
-  type JsonlRecord,
   coercedText,
   OptionalString,
 } from '../fs.js';
@@ -49,6 +48,7 @@ import {
   fallbackTitle,
   titleFromCandidates,
 } from '../title.js';
+import type { JsonlRecord } from '../../utils/jsonl-store.js';
 
 // ---------------------------------------------------------------------------
 // Tool-name normalization map

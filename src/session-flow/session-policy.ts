@@ -58,6 +58,7 @@ interface ResolvedPolicies {
  * to policies, or with `booleans`, `true` for `auto` and `false` for `off` in both modes. Each value it cannot use is a
  * problem that names the key and what it allows, and sets nothing, so that mode falls to the next level.
  */
+// oxlint-disable-next-line teamai/no-unknown-parameters -- the parse itself: a setting can hold any YAML value, and each one it cannot use is reported
 function read(key: string, value: unknown, { booleans = false }: { booleans?: boolean } = {}): PolicyReading {
   const flag = z.boolean().safeParse(value);
 
@@ -110,6 +111,7 @@ function resolve(levels: ReadonlyArray<ReadonlyArray<Partial<SessionPolicies>>>,
 }
 
 /** What the `sessions` setting of `file` sets for `publish`, read as {@link read} reads it. */
+// oxlint-disable-next-line teamai/no-unknown-parameters -- the parse itself: `sessions` can hold any YAML value, and one that is not a mapping is reported
 function readPublish(file: string, sessions: unknown): PolicyReading {
   if (sessions === undefined) return { set: {}, problems: [] };
   const mapping = MappingSchema.safeParse(sessions);

@@ -48,7 +48,7 @@ import { isNamespaceDir, resolveResourceNamespaces } from './resource-namespaces
 import { loadRolesManifestIfPresent, type RolesManifest } from './roles.js';
 import { AGENT_TOOLS } from './tools.js';
 import { LocalConfigSchema, type GlobalOptions, type LocalConfig, type ResourceItem, type TeamaiConfig } from './types.js';
-import { splitFrontmatter } from './utils/frontmatter.js';
+import { splitFrontmatter, type FrontmatterValue } from './utils/frontmatter.js';
 import { isIgnored, listFilesRecursive, pathExists, readFileIfExists, writeFile, ensureDir } from './utils/fs.js';
 import { getFileContentAtRev, getHeadCommit, listTreeAtRev } from './utils/git.js';
 import { isSilent, log, setSilent } from './utils/logger.js';
@@ -176,7 +176,7 @@ async function relationsFindings(resources: ReviewResource[], readText: (p: stri
     const content = await readText(resource.absolutePath);
 
     if (content === null) continue;
-    let rawRelated: unknown;
+    let rawRelated: FrontmatterValue | undefined;
 
     try {
       rawRelated = matter(content).data['related'];

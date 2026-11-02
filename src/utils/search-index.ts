@@ -28,6 +28,7 @@ import { walkLearningsTree } from './learnings-roots.js';
 import { parseRelatedBlock, relationsFromLinks } from '../asset-relations.js';
 import type { StoredRelation } from '../asset-relations.js';
 import { localLinkTargets } from './markdown-links.js';
+import type { FrontmatterValue } from './frontmatter.js';
 
 /**
  * Self mode keeps one index per checkout, but every checkout shares the
@@ -662,7 +663,7 @@ async function entryFromMdFile(
   if (treePath && (type === 'rules' || type === 'docs' || type === 'learnings')) {
     const sourceKind = type === 'rules' ? 'rule' : type === 'docs' ? 'doc' : 'learning';
 
-    const rawRelated: unknown = (() => {
+    const rawRelated: FrontmatterValue | undefined = (() => {
       try {
         return matter(content).data['related'];
       } catch {

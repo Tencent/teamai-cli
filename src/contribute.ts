@@ -10,7 +10,7 @@ import { pathExists } from './utils/fs.js';
 import { log, spinner } from './utils/logger.js';
 import { markContributed } from './contribute-check.js';
 import { agentSessionFromEnv } from './utils/session-id.js';
-import { splitFrontmatter, stringifyFrontmatter } from './utils/frontmatter.js';
+import { splitFrontmatter, stringifyFrontmatter, type FrontmatterValue } from './utils/frontmatter.js';
 import { AgentSession } from './session-flow/agent-session.js';
 import { SessionCaptures } from './session-flow/captures.js';
 import type { SessionSubject } from './scorers/label.js';
@@ -296,7 +296,7 @@ async function relationWarningsForLearning(localConfig: LocalConfig, relPath: st
     return roots.some((root) => fs.existsSync(path.join(root, ...rel.split('/'))));
   };
 
-  let rawRelated: unknown;
+  let rawRelated: FrontmatterValue | undefined;
 
   try {
     rawRelated = matter(content).data['related'];

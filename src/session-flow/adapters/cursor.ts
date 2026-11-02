@@ -39,13 +39,13 @@ import {
   coercedText,
   OptionalString,
   TextOrBlocksSchema,
-  type JsonlRecord,
 } from '../fs.js';
 import { sessionStoreDir } from '../../locate.js';
 import { cleanTitleText, fallbackTitle, titleFromCandidates, titleFromUserText, isRenderableText, visibleUserText } from '../title.js';
 import { cursorComposerExists, registerCursorComposer, unregisterCursorComposer, type CursorComposerMessage, type CursorComposerTool } from '../cursor-store.js';
 import { assertSafeSessionFileId, deriveTargetSessionId } from '../ids.js';
 import { log } from '../../utils/logger.js';
+import type { JsonlRecord } from '../../utils/jsonl-store.js';
 
 // ---------------------------------------------------------------------------
 // Tool-name normalization map

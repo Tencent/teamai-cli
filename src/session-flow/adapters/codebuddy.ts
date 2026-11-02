@@ -43,10 +43,10 @@ import {
   coercedText,
   OptionalString,
   TextOrBlocksSchema,
-  type JsonlRecord,
 } from '../fs.js';
 import { sessionStoreDir } from '../../locate.js';
 import { cutTitle, isInjectedText, fallbackTitle, titleFromCandidates } from '../title.js';
+import type { JsonlRecord } from '../../utils/jsonl-store.js';
 
 // ---------------------------------------------------------------------------
 // Tool-name normalization map

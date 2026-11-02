@@ -3991,7 +3991,7 @@ export interface WebhookPayload {
   cwd?: string;
   team?: string;
   username?: string;
-  data: Record<string, unknown>;
+  data: JsonObject;
 }
 
 /** Defaulted view of the optional `sharing.webhooks` config. */

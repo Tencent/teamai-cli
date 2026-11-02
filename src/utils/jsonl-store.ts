@@ -20,7 +20,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
-import type { JsonValue } from '../types.js';
+import { isJsonObject, type JsonObject, type JsonValue } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { ensureDir, errnoCode } from './fs.js';
 import { log } from './logger.js';
@@ -47,7 +47,7 @@ export interface JsonlStoreOptions {
 }
 
 /** A parsed record. The side-record id the store adds is never part of it. */
-export type JsonlRecord = Record<string, unknown>;
+export type JsonlRecord = JsonObject;
 
 const OWNER_ONLY = 0o600;
 
@@ -315,7 +315,7 @@ function parseLines(content: string): JsonlRecord[] {
       // JSON.parse returns `any`; what it builds is a JsonValue by construction.
       const parsed: JsonValue = JSON.parse(trimmed);
 
-      if (parsed instanceof Object && !Array.isArray(parsed)) {
+      if (isJsonObject(parsed)) {
         records.push(parsed);
         continue;
       }
