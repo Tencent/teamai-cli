@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import { realpath } from 'node:fs/promises';
 import path from 'node:path';
@@ -229,6 +229,49 @@ export function createGit(basePath?: string, abort?: AbortSignal): SimpleGit {
 const markOutputSeen: outputHandler = (_command, stdout) => {
   stdout.once('end', () => stdout.emit('data', Buffer.alloc(0)));
 };
+
+/**
+ * The bytes of each blob `specs` names in `repoPath` (an object id, or `<rev>:<path>`), in the order given, read by
+ * one `git cat-file --batch` rather than a git process per blob. Null for one git does not have or that is not a blob,
+ * and for every one when git cannot read the repository.
+ */
+export async function readBlobs(repoPath: string, specs: readonly string[]): Promise<Array<Buffer | null>> {
+  if (specs.length === 0) return [];
+
+  const out = await new Promise<Buffer | null>((resolve) => {
+    const child = execFile(gitBinary(), ['-C', repoPath, 'cat-file', '--batch'], { encoding: 'buffer', maxBuffer: 256 * 1024 * 1024 },
+      (error, stdout) => resolve(error ? null : stdout));
+
+    child.stdin?.end(`${specs.join('\n')}\n`);
+  });
+
+  if (out === null) return specs.map(() => null);
+
+  const objects: Array<Buffer | null> = [];
+  let at = 0;
+
+  // One answer per spec, in order: `<id> <type> <size>\n<bytes>\n`, or `<spec> missing\n`, where a path may hold spaces.
+  while (objects.length < specs.length) {
+    const eol = out.indexOf(0x0a, at);
+
+    if (eol === -1) break;
+    const found = /^[0-9a-f]+ (\S+) (\d+)$/.exec(out.subarray(at, eol).toString('utf8'));
+
+    at = eol + 1;
+
+    if (!found) {
+      objects.push(null);
+      continue;
+    }
+
+    const length = Number(found[2]);
+
+    objects.push(found[1] === 'blob' ? Buffer.from(out.subarray(at, at + length)) : null);
+    at += length + 1;
+  }
+
+  return specs.map((_spec, index) => objects[index] ?? null);
+}
 
 /**
  * Like {@link createGit}, but additionally kills any git subprocess that

@@ -11,7 +11,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import fse from 'fs-extra';
-import { assertAttachedTeamRepo, createGit, getDefaultBranch, getHeadCommit, hasCommits } from './git.js';
+import { assertAttachedTeamRepo, createGit, getDefaultBranch, getHeadCommit, hasCommits, readBlobs } from './git.js';
 import { pathExists } from './fs.js';
 import { log } from './logger.js';
 import {
@@ -169,6 +169,13 @@ export async function readReportsOriginFile(
   } catch {
     return null;
   }
+}
+
+/** {@link readReportsOriginFile} for each of `relPaths`, read by one git process: a writer that merges many files. */
+export async function readReportsOriginFiles(worktree: string, relPaths: readonly string[]): Promise<Map<string, string | null>> {
+  const objects = await readBlobs(worktree, relPaths.map((relPath) => `origin/${REPORTS_BRANCH}:${relPath}`));
+
+  return new Map(relPaths.map((relPath, index) => [relPath, objects[index]?.toString('utf8') ?? null]));
 }
 
 /** A reports file as origin holds it now. */
