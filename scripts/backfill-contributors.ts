@@ -77,7 +77,7 @@ for (const entry of entries) {
     console.log(`  wrote ${skillName} → ${contributors.join(', ')}`);
     updated++;
   } catch (e) {
-    console.error(`  error ${skillName}: ${(e as Error).message}`);
+    console.error(`  error ${skillName}: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
