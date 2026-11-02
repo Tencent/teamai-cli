@@ -956,13 +956,13 @@ describe('doctor — MCP servers delivered on disk', () => {
       await useCheckout(root);
     });
 
-    it('fails while Codex has no entry for the project, and gives the lines that trust it', async () => {
+    it('warns while Codex has not asked about the project yet, and gives the lines that trust it', async () => {
       const codexConfig = await writeCodexConfig('model = "gpt-5"\n');
       const real = await fse.realpath(projectRoot);
 
       const check = await trustCheck();
       if (!check) throw new Error('no Codex trust check');
-      expect(await check.check()).toBe(false);
+      expect(await check.check()).toBe('warn');
       expect(check.fix).toContain(path.join(projectRoot, '.codex', 'config.toml'));
       expect(check.fix).toContain('docs');
       expect(check.fix).toContain(codexConfig);
@@ -1033,7 +1033,7 @@ describe('doctor — MCP servers delivered on disk', () => {
       const altConfig = await writeCodexConfig('', '.codex-alt');
 
       const check = await trustCheck();
-      expect(await check?.check()).toBe(false);
+      expect(await check?.check()).toBe('warn');
       expect(check?.fix).toContain(altConfig);
     });
 
