@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
 import { execFileSync } from 'node:child_process';
+import { parse as parseToml } from 'smol-toml';
 
 vi.mock('../utils/logger.js', () => ({
   log: {
@@ -3782,6 +3783,47 @@ servers:
     expect(after).toContain('trust_level = "trusted"');
     expect(after).toContain('[mcp_servers.local-tool]');
     expect(after).toContain('command = "my-mcp"');
+  });
+
+  it('round-trips literal Codex MCP env keys through injection, repeat injection and removal', async () => {
+    const configToml = path.join(homeDir, '.codex', 'config.toml');
+    const original = '# member settings\nmodel = "gpt-5"\n\n';
+    await fse.outputFile(configToml, original);
+    const env = {
+      NORMAL_KEY: 'unchanged',
+      'BARE-KEY': 'hyphen',
+      'ProgramFiles(x86)': 'C:\\Program Files (x86)',
+      'HTTP.PROXY': 'http://localhost:8080',
+      'WITH SPACE': 'space',
+      'quoted"key': 'quote',
+      'back\\slash': 'backslash',
+      'TRAILING\n': 'newline',
+      'café': 'unicode',
+    };
+    await writeMcpYaml(`
+servers:
+  - name: local-tool
+    transport: stdio
+    command: my-mcp
+    tools: [codex]
+    env: ${JSON.stringify(env)}
+`);
+
+    const injected = await reconcileMcpForConfig(teamConfig, localConfig);
+    expect(injected.wrote).toBe(true);
+    const installed = await fse.readFile(configToml, 'utf8');
+    expect(parseToml(installed).mcp_servers).toEqual({ 'local-tool': { command: 'my-mcp', args: [], env } });
+    expect(installed.startsWith(original)).toBe(true);
+    expect(installed).toContain('NORMAL_KEY = "unchanged"');
+
+    const repeated = await reconcileMcpForConfig(teamConfig, localConfig);
+    expect(repeated.unparsed).not.toBe(true);
+    expect(repeated.wrote).toBe(false);
+    expect(await fse.readFile(configToml, 'utf8')).toBe(installed);
+
+    const removed = await reconcileMcpForConfig(teamConfig, localConfig, { removeAll: true });
+    expect(removed.wrote).toBe(true);
+    expect(await fse.readFile(configToml, 'utf8')).toBe(original);
   });
 
   it.each([
