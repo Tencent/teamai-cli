@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import matter from 'gray-matter';
 import { stringify as stringifyToml, parse as parseToml } from 'smol-toml';
+import { z } from 'zod';
 import { agyToolsFor } from '../agy-hook-io.js';
 import { getDispatchCommand } from '../builtin-hooks.js';
 import type { AgentToolId } from '../tools.js';
@@ -53,6 +54,46 @@ export function agentFileExtensionForTool(tool: ToolName): AgentFileExtension {
 // ─── Intermediate format ─────────────────────────────────────────────────────
 
 /**
+ * A value an agent file field holds: what the YAML, front matter, JSON and
+ * TOML parsers produce (front matter and TOML also give dates, TOML bigints).
+ */
+export type AgentFieldValue = string | number | bigint | boolean | null | Date | AgentFieldValue[] | AgentFields;
+
+/** Agent file fields by key, such as one tool's `tool_extras` or a parsed front matter block. */
+export interface AgentFields { [key: string]: AgentFieldValue }
+
+const AgentFieldValueSchema: z.ZodType<AgentFieldValue> = z.lazy(() => z.union([
+  z.string(),
+  z.number(),
+  z.nan(),
+  z.literal([Infinity, -Infinity]),
+  z.bigint(),
+  z.boolean(),
+  z.null(),
+  z.instanceof(Date),
+  z.array(AgentFieldValueSchema),
+  AgentFieldsSchema,
+]));
+
+export const AgentFieldsSchema: z.ZodType<AgentFields> = z.record(z.string(), AgentFieldValueSchema);
+
+/** A text field such as `name` or `description`; any other value counts as absent. */
+const AgentTextFieldSchema = z.string().optional().catch(undefined);
+
+/** `tools`: a list (each entry read as text), or one comma-separated string; any other value counts as absent. */
+const AgentToolsFieldSchema = z.union([
+  z.array(AgentFieldValueSchema).transform((tools) => tools.map(String)),
+  z.string(),
+]).optional().catch(undefined);
+
+/** `tool_extras`: each tool's fields; a tool left blank (`claude:`) has none, as does a blank `tool_extras:`. */
+const ToolExtrasFieldSchema = z.record(z.string(), AgentFieldsSchema.nullable())
+  .nullable()
+  .transform((byTool) => (byTool === null
+    ? undefined
+    : Object.fromEntries(Object.entries(byTool).flatMap(([tool, extras]) => (extras === null ? [] : [[tool, extras]])))));
+
+/**
  * Intermediate YAML representation of a subagent definition.
  * This is the canonical format stored in the team repo (agents/<name>.yaml).
  * Each tool renderer translates this into its native format.
@@ -66,14 +107,14 @@ export interface AgentSpec {
   instructions: string;
   /** Optional model override. */
   model?: string;
-  /** Optional tool whitelist (claude / codebuddy / cursor use this). */
-  tools?: string[];
+  /** Optional tool whitelist (claude / codebuddy / cursor use this): a list, or one comma-separated string. */
+  tools?: string[] | string;
   /**
    * Per-tool private fields that are not part of the common schema.
    * Passed through verbatim when rendering for the matching tool,
    * and collected when reversing from a tool's native format.
    */
-  tool_extras?: { [T in ToolName]?: Record<string, unknown> };
+  tool_extras?: { [T in ToolName]?: AgentFields };
   /**
    * Which tools this agent should be deployed to.
    * When undefined, the agent is deployed to ALL installed supported tools.
@@ -106,38 +147,58 @@ export function parseAgentYaml(content: string, filename: string): ParseResult {
   try {
     raw = parseYaml(content);
   } catch (err) {
-    return { ok: false, reason: `${filename} parse error: ${(err as Error).message}` };
+    return { ok: false, reason: `${filename} parse error: ${err instanceof Error ? err.message : String(err)}` };
   }
 
-  if (typeof raw !== 'object' || raw === null) {
-    return { ok: false, reason: `${filename} must be a YAML object` };
+  const parsed = AgentFieldsSchema.safeParse(raw);
+
+  // A YAML list has no name; anything else that is not a mapping is no agent.
+  if (!parsed.success) {
+    return { ok: false, reason: Array.isArray(raw) ? `${filename} missing required field name` : `${filename} must be a YAML object` };
   }
 
-  const obj = raw as Record<string, unknown>;
+  const obj = parsed.data;
+  const name = AgentTextFieldSchema.parse(obj['name']);
 
-  for (const field of ['name', 'description', 'instructions'] as const) {
-    if (!obj[field] || typeof obj[field] !== 'string' || (obj[field] as string).trim() === '') {
-      return { ok: false, reason: `${filename} missing required field ${field}` };
-    }
-  }
+  if (!name?.trim()) return { ok: false, reason: `${filename} missing required field name` };
+  const description = AgentTextFieldSchema.parse(obj['description']);
+
+  if (!description?.trim()) return { ok: false, reason: `${filename} missing required field description` };
+  const instructions = AgentTextFieldSchema.parse(obj['instructions']);
+
+  if (!instructions?.trim()) return { ok: false, reason: `${filename} missing required field instructions` };
 
   // A list or a number would reach every tool file as is; a blank `model:` is null.
-  if (obj['model'] !== undefined && typeof obj['model'] !== 'string') {
+  const model = z.string().optional().safeParse(obj['model']);
+
+  if (!model.success) {
     return { ok: false, reason: `${filename} field model must be a string (a model or a model alias); remove it to use each tool's default` };
   }
 
-  return {
-    ok: true,
-    spec: {
-      name: obj['name'] as string,
-      description: obj['description'] as string,
-      instructions: obj['instructions'] as string,
-      ...(obj['model'] !== undefined ? { model: obj['model'] as string } : {}),
-      ...(obj['tools'] !== undefined ? { tools: obj['tools'] as string[] } : {}),
-      ...(obj['tool_extras'] !== undefined ? { tool_extras: obj['tool_extras'] as AgentSpec['tool_extras'] } : {}),
-      ...(obj['targets'] !== undefined ? { targets: obj['targets'] as ToolName[] } : {}),
-    },
-  };
+  const extras = ToolExtrasFieldSchema.optional().safeParse(obj['tool_extras']);
+
+  if (!extras.success) {
+    return { ok: false, reason: `${filename} field tool_extras must map each tool name to that tool's fields` };
+  }
+
+  const spec: AgentSpec = { name, description, instructions };
+
+  if (model.data !== undefined) spec.model = model.data;
+  const tools = AgentToolsFieldSchema.parse(obj['tools']);
+
+  if (tools !== undefined) spec.tools = tools;
+
+  if (extras.data !== undefined) spec.tool_extras = extras.data;
+  const targets = z.array(z.string()).nullish().safeParse(obj['targets']);
+
+  if (!targets.success) return { ok: false, reason: `${filename} field targets must be a list of tool names` };
+
+  if (targets.data) {
+    // SAFETY: a checked list of strings; a name that is no ToolName is kept so push writes it back, and the delivery filters (`targets.includes(tool)`) skip it.
+    spec.targets = targets.data as ToolName[];
+  }
+
+  return { ok: true, spec };
 }
 
 // ─── Serialize intermediate YAML ─────────────────────────────────────────────
@@ -197,14 +258,35 @@ export function renderForWorkbuddy(spec: AgentSpec): RenderResult {
 /** Legacy embedded entry, recognized when migrating pre-V3 teamai agents. */
 export const KIRO_SESSION_START_COMMAND = getDispatchCommand('session-start', 'kiro');
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+const KiroCommandHookSchema = z.object({ command: z.string() });
+
+function isManagedKiroSessionHook(value: AgentFieldValue): boolean {
+  const hook = KiroCommandHookSchema.safeParse(value);
+
+  return hook.success && hook.data.command.includes('teamai hook-dispatch session-start --tool kiro');
 }
 
-function isManagedKiroSessionHook(value: unknown): boolean {
-  return isRecord(value)
-    && typeof value['command'] === 'string'
-    && value['command'].includes('teamai hook-dispatch session-start --tool kiro');
+/** Kiro extras without the teamai-managed session-start `agentSpawn` entry, dropping `hooks` once it is empty. */
+function withoutManagedKiroHooks(extras: AgentFields): AgentFields {
+  const parsed = AgentFieldsSchema.safeParse(extras['hooks']);
+
+  if (!parsed.success) return extras;
+  const hooks = { ...parsed.data };
+  const spawn = hooks['agentSpawn'];
+
+  if (Array.isArray(spawn)) {
+    const kept = spawn.filter((entry) => !isManagedKiroSessionHook(entry));
+
+    if (kept.length === 0) delete hooks['agentSpawn'];
+    else hooks['agentSpawn'] = kept;
+  }
+
+  const result = { ...extras };
+
+  if (Object.keys(hooks).length > 0) result['hooks'] = hooks;
+  else delete result['hooks'];
+
+  return result;
 }
 
 /**
@@ -213,23 +295,9 @@ function isManagedKiroSessionHook(value: unknown): boolean {
  * remove the old managed agentSpawn entry to avoid running it twice.
  */
 export function renderForKiro(spec: AgentSpec): RenderResult {
-  const extras = { ...spec.tool_extras?.['kiro'] };
+  const extras = withoutManagedKiroHooks({ ...spec.tool_extras?.['kiro'] });
 
-  if (isRecord(extras['hooks'])) {
-    const hooks = { ...extras['hooks'] };
-
-    if (Array.isArray(hooks['agentSpawn'])) {
-      const kept = hooks['agentSpawn'].filter((entry) => !isManagedKiroSessionHook(entry));
-
-      if (kept.length === 0) delete hooks['agentSpawn'];
-      else hooks['agentSpawn'] = kept;
-    }
-
-    if (Object.keys(hooks).length > 0) extras['hooks'] = hooks;
-    else delete extras['hooks'];
-  }
-
-  const json: Record<string, unknown> = {
+  const json: AgentFields = {
     name: spec.name,
     description: spec.description,
     prompt: spec.instructions,
@@ -262,7 +330,7 @@ export function renderForCodex(spec: AgentSpec): RenderResult {
  * Output: YAML frontmatter (.md) using agent_id instead of name.
  */
 export function renderForCursor(spec: AgentSpec): RenderResult {
-  const frontmatterData: Record<string, unknown> = {
+  const frontmatterData: AgentFields = {
     agent_id: spec.name,
     description: spec.description,
   };
@@ -324,7 +392,7 @@ function normalizeCopilotTools(tools: string[] | string): string[] {
 
 /** Render GitHub Copilot CLI's official `<name>.agent.md` profile. */
 export function renderForCopilot(spec: AgentSpec): RenderResult {
-  const frontmatterData: Record<string, unknown> = {
+  const frontmatterData: AgentFields = {
     name: spec.name,
     description: spec.description,
   };
@@ -372,9 +440,11 @@ const MUSE_TOOL_ALIASES = new Map<string, string>([
 ]);
 
 /** `tools` in Muse Code's names, each once, and the names it has no tool for. */
-function museTools(tools: unknown): { kept: string[]; dropped: string[] } {
-  const names = Array.isArray(tools) ? tools.map(String)
-    : typeof tools === 'string' ? tools.split(',').map((tool) => tool.trim()).filter(Boolean) : [];
+function museTools(tools: AgentFieldValue | undefined) {
+  const listed = AgentToolsFieldSchema.parse(tools);
+
+  const names = listed === undefined ? []
+    : Array.isArray(listed) ? listed : listed.split(',').map((tool) => tool.trim()).filter(Boolean);
 
   const kept = new Set<string>();
   const dropped: string[] = [];
@@ -390,7 +460,7 @@ function museTools(tools: unknown): { kept: string[]; dropped: string[] } {
 }
 
 /** What the Muse Code render of `spec` leaves out: tools it has no tool for, and `tool_extras.muse` keys it rejects. */
-export function museAgentDrops(spec: AgentSpec): { tools: string[]; extras: string[] } {
+export function museAgentDrops(spec: AgentSpec) {
   const extras = spec.tool_extras?.muse ?? {};
 
   return {
@@ -402,7 +472,7 @@ export function museAgentDrops(spec: AgentSpec): { tools: string[]; extras: stri
 /** Render an AgentSpec for Muse Code: its accepted keys only, `tools` in its names (`museAgentDrops` says what is left out). */
 export function renderForMuse(spec: AgentSpec): RenderResult {
   const extras = Object.fromEntries(Object.entries(spec.tool_extras?.muse ?? {}).filter(([key]) => MUSE_AGENT_KEYS.has(key)));
-  const frontmatterData: Record<string, unknown> = { name: spec.name, description: spec.description };
+  const frontmatterData: AgentFields = { name: spec.name, description: spec.description };
 
   if (spec.model !== undefined) frontmatterData['model'] = spec.model;
   Object.assign(frontmatterData, extras);
@@ -424,7 +494,7 @@ export function renderForMuse(spec: AgentSpec): RenderResult {
  * run_command, so a Bash agent would lose its shell without the mapping.
  */
 export function renderForAgy(spec: AgentSpec, resolved?: ResolvedAgentModel): RenderResult {
-  const frontmatterData: Record<string, unknown> = { name: spec.name, description: spec.description };
+  const frontmatterData: AgentFields = { name: spec.name, description: spec.description };
 
   if (resolved?.model !== undefined) frontmatterData['model'] = resolved.model;
   const tools = agyToolsFor(spec.tools);
@@ -441,7 +511,11 @@ export function reverseFromAgy(filePath: string, content: string): ReverseResult
 
   if (!result.ok) return result;
   const { model, tools, tool_extras, ...spec } = result.spec;
-  const extras = { ...tool_extras?.['claude'], ...(model !== undefined ? { model } : {}), ...(tools !== undefined ? { tools } : {}) };
+  const extras: AgentFields = { ...tool_extras?.['claude'] };
+
+  if (model !== undefined) extras['model'] = model;
+
+  if (tools !== undefined) extras['tools'] = tools;
 
   return { ok: true, spec: Object.keys(extras).length > 0 ? { ...spec, tool_extras: { agy: extras } } : spec };
 }
@@ -468,7 +542,7 @@ export function agentRejection({ tool, name, spec, scope }: {
 }
 
 /** Both editions' `tool_extras` but `model`, which differs per edition: what the project file they share takes. */
-function traeEditionExtras(spec: AgentSpec): { readonly trae: Record<string, unknown>; readonly cn: Record<string, unknown> } {
+function traeEditionExtras(spec: AgentSpec) {
   const { model: _trae, ...trae } = spec.tool_extras?.['trae'] ?? {};
   const { model: _cn, ...cn } = spec.tool_extras?.['trae-cn'] ?? {};
 
@@ -511,9 +585,9 @@ export function reverseFromTrae(filePath: string, content: string): ReverseResul
   const result = reverseFromClaude(filePath, content);
 
   if (!result.ok) return result;
-  const tools: unknown = result.spec.tools;
+  const tools = result.spec.tools;
 
-  if (typeof tools === 'string') result.spec.tools = tools.split(',').map((tool) => tool.trim()).filter(Boolean);
+  if (tools !== undefined && !Array.isArray(tools)) result.spec.tools = tools.split(',').map((tool) => tool.trim()).filter(Boolean);
 
   return result;
 }
@@ -527,8 +601,8 @@ export function reverseFromTrae(filePath: string, content: string): ReverseResul
  * a team that needs per-tool permissions carries them in tool_extras.opencode
  * (e.g. `permission: { edit: deny }`), which is flattened into the frontmatter.
  */
-export function renderForOpencode(spec: AgentSpec, resolved?: Record<string, unknown>): RenderResult {
-  const frontmatterData: Record<string, unknown> = {
+export function renderForOpencode(spec: AgentSpec, resolved?: AgentFields): RenderResult {
+  const frontmatterData: AgentFields = {
     description: spec.description,
     mode: 'subagent',
   };
@@ -558,8 +632,8 @@ export function renderForOpencode(spec: AgentSpec, resolved?: Record<string, unk
 /**
  * Build a gray-matter .md file: YAML frontmatter (name/description/model?/tools?/extras) + body.
  */
-function renderMarkdownAgent(spec: AgentSpec, extras?: Record<string, unknown>, resolved?: Record<string, unknown>): string {
-  const frontmatterData: Record<string, unknown> = {
+function renderMarkdownAgent(spec: AgentSpec, extras?: AgentFields, resolved?: AgentFields): string {
+  const frontmatterData: AgentFields = {
     name: spec.name,
     description: spec.description,
   };
@@ -629,8 +703,8 @@ function tomlStringLiteral(value: string): string {
  * Build a smol-toml TOML file: name/description/developer_instructions/model?/extras.
  * Note: `tools` is intentionally omitted from TOML output — Codex uses mcp_servers instead.
  */
-function renderTomlAgent(spec: AgentSpec, extras?: Record<string, unknown>, resolved?: Record<string, unknown>): string {
-  const tomlData: Record<string, unknown> = {
+function renderTomlAgent(spec: AgentSpec, extras?: AgentFields, resolved?: AgentFields): string {
+  const tomlData: AgentFields = {
     name: spec.name,
     description: spec.description,
     developer_instructions: spec.instructions,
@@ -655,8 +729,10 @@ function renderTomlAgent(spec: AgentSpec, extras?: Record<string, unknown>, reso
   const rendered = stringifyToml(tomlData);
 
   return Object.entries(tomlData)
-    .reduce((text, [key, value]) => {
-      if (typeof value !== 'string' || !canUseTomlLiteral(value)) return text;
+    .reduce((text, [key, field]) => {
+      const value = z.string().safeParse(field).data;
+
+      if (value === undefined || !canUseTomlLiteral(value)) return text;
       const escaped = `${key} = ${JSON.stringify(value)}\n`;
 
       if (!text.includes(escaped)) return text;
@@ -687,6 +763,25 @@ const COMMON_KIRO_FIELDS = new Set(['name', 'description', 'prompt', 'model', 't
 // (teamai always renders `subagent`), so it round-trips through tool_extras.opencode.
 const COMMON_OPENCODE_FIELDS = new Set(['description', 'model']);
 
+/** The front matter fields and trimmed body of a Markdown agent file, or why it cannot be read. */
+type MarkdownAgentFile = { ok: true; fields: AgentFields; body: string } | { ok: false; reason: string };
+
+function readMarkdownAgent(content: string): MarkdownAgentFile {
+  let parsed: matter.GrayMatterFile<string>;
+
+  try {
+    parsed = matter(content);
+  } catch (err) {
+    return { ok: false, reason: `parse error: ${err instanceof Error ? err.message : String(err)}` };
+  }
+
+  const fields = AgentFieldsSchema.safeParse(parsed.data);
+
+  if (!fields.success) return { ok: false, reason: 'parse error: front matter holds a value that is not text, a number, a date, a list or a mapping' };
+
+  return { ok: true, fields: fields.data, body: parsed.content.trim() };
+}
+
 /**
  * Reverse a Claude-format .md file into an AgentSpec.
  * claude-internal reuses this same function.
@@ -695,27 +790,22 @@ const COMMON_OPENCODE_FIELDS = new Set(['description', 'model']);
  * @param content  - File content string.
  */
 export function reverseFromClaude(filePath: string, content: string): ReverseResult {
-  let parsed: matter.GrayMatterFile<string>;
+  const read = readMarkdownAgent(content);
 
-  try {
-    parsed = matter(content);
-  } catch (err) {
-    return { ok: false, reason: `parse error: ${(err as Error).message}` };
-  }
+  if (!read.ok) return read;
+  const { fields: fm, body } = read;
 
-  const fm = parsed.data as Record<string, unknown>;
-  const body = parsed.content.trim();
-
-  const name = (fm['name'] as string | undefined) ?? path.basename(filePath, '.md');
+  const name = AgentTextFieldSchema.parse(fm['name']) ?? path.basename(filePath, '.md');
 
   if (!name) return { ok: false, reason: 'missing field name' };
+  const description = AgentTextFieldSchema.parse(fm['description']);
 
-  if (!fm['description']) return { ok: false, reason: 'missing field description' };
+  if (!description) return { ok: false, reason: 'missing field description' };
 
   if (!body) return { ok: false, reason: 'missing field instructions (empty body)' };
 
   // Collect non-common frontmatter fields as tool_extras
-  const extras: Record<string, unknown> = {};
+  const extras: AgentFields = {};
 
   for (const [key, value] of Object.entries(fm)) {
     if (!COMMON_CLAUDE_FIELDS.has(key)) {
@@ -725,13 +815,16 @@ export function reverseFromClaude(filePath: string, content: string): ReverseRes
 
   const spec: AgentSpec = {
     name,
-    description: fm['description'] as string,
+    description,
     instructions: body,
   };
 
-  if (fm['model'] !== undefined) spec.model = fm['model'] as string;
+  const model = AgentTextFieldSchema.parse(fm['model']);
 
-  if (fm['tools'] !== undefined) spec.tools = fm['tools'] as string[];
+  if (model !== undefined) spec.model = model;
+  const tools = AgentToolsFieldSchema.parse(fm['tools']);
+
+  if (tools !== undefined) spec.tools = tools;
 
   if (Object.keys(extras).length > 0) spec.tool_extras = { claude: extras };
 
@@ -740,26 +833,21 @@ export function reverseFromClaude(filePath: string, content: string): ReverseRes
 
 /** Reverse a Copilot `.agent.md` profile into TeamAI's canonical agent spec. */
 export function reverseFromCopilot(filePath: string, content: string): ReverseResult {
-  let parsed: matter.GrayMatterFile<string>;
+  const read = readMarkdownAgent(content);
 
-  try {
-    parsed = matter(content);
-  } catch (err) {
-    return { ok: false, reason: `parse error: ${(err as Error).message}` };
-  }
-
-  const fm = parsed.data as Record<string, unknown>;
-  const body = parsed.content.trim();
+  if (!read.ok) return read;
+  const { fields: fm, body } = read;
   const stem = agentStemFromFilename(path.basename(filePath));
-  const name = (fm['name'] as string | undefined) ?? stem;
+  const name = AgentTextFieldSchema.parse(fm['name']) ?? stem;
 
   if (!name) return { ok: false, reason: 'missing field name' };
+  const description = AgentTextFieldSchema.parse(fm['description']);
 
-  if (!fm['description']) return { ok: false, reason: 'missing field description' };
+  if (!description) return { ok: false, reason: 'missing field description' };
 
   if (!body) return { ok: false, reason: 'missing field instructions (empty body)' };
 
-  const extras: Record<string, unknown> = {};
+  const extras: AgentFields = {};
 
   for (const [key, value] of Object.entries(fm)) {
     if (!COMMON_COPILOT_FIELDS.has(key)) extras[key] = value;
@@ -767,13 +855,16 @@ export function reverseFromCopilot(filePath: string, content: string): ReverseRe
 
   const spec: AgentSpec = {
     name,
-    description: fm['description'] as string,
+    description,
     instructions: body,
   };
 
-  if (fm['model'] !== undefined) spec.model = fm['model'] as string;
+  const model = AgentTextFieldSchema.parse(fm['model']);
 
-  if (fm['tools'] !== undefined) spec.tools = fm['tools'] as string[];
+  if (model !== undefined) spec.model = model;
+  const tools = AgentToolsFieldSchema.parse(fm['tools']);
+
+  if (tools !== undefined) spec.tools = tools;
 
   if (Object.keys(extras).length > 0) spec.tool_extras = { copilot: extras };
 
@@ -848,7 +939,9 @@ export function reverseFromMuse(filePath: string, content: string): ReverseResul
   if (!result.ok) return result;
 
   const { tools, tool_extras, ...spec } = result.spec;
-  const extras = { ...tool_extras?.['claude'], ...(tools !== undefined ? { tools } : {}) };
+  const extras: AgentFields = { ...tool_extras?.['claude'] };
+
+  if (tools !== undefined) extras['tools'] = tools;
 
   return { ok: true, spec: Object.keys(extras).length > 0 ? { ...spec, tool_extras: { muse: extras } } : spec };
 }
@@ -859,54 +952,47 @@ export function reverseFromMuse(filePath: string, content: string): ReverseResul
  * returned under `tool_extras.kiro`.
  */
 export function reverseFromKiro(filePath: string, content: string): ReverseResult {
-  let parsed: Record<string, unknown>;
+  let parsed: AgentFields;
 
   try {
-    const raw = JSON.parse(content) as unknown;
+    const config = AgentFieldsSchema.safeParse(JSON.parse(content));
 
-    if (!isRecord(raw)) return { ok: false, reason: 'agent config must be a JSON object' };
-    parsed = raw;
+    if (!config.success) return { ok: false, reason: 'agent config must be a JSON object' };
+    parsed = config.data;
   } catch (err) {
-    return { ok: false, reason: `parse error: ${(err as Error).message}` };
+    return { ok: false, reason: `parse error: ${err instanceof Error ? err.message : String(err)}` };
   }
 
-  const name = (parsed['name'] as string | undefined) ?? path.basename(filePath, '.json');
+  const name = AgentTextFieldSchema.parse(parsed['name']) ?? path.basename(filePath, '.json');
 
   if (!name) return { ok: false, reason: 'missing field name' };
+  const description = AgentTextFieldSchema.parse(parsed['description']);
 
-  if (!parsed['description']) return { ok: false, reason: 'missing field description' };
+  if (!description) return { ok: false, reason: 'missing field description' };
+  const prompt = AgentTextFieldSchema.parse(parsed['prompt']);
 
-  if (!parsed['prompt']) return { ok: false, reason: 'missing field prompt' };
+  if (!prompt) return { ok: false, reason: 'missing field prompt' };
 
-  const extras: Record<string, unknown> = {};
+  const collected: AgentFields = {};
 
   for (const [key, value] of Object.entries(parsed)) {
-    if (!COMMON_KIRO_FIELDS.has(key)) extras[key] = value;
+    if (!COMMON_KIRO_FIELDS.has(key)) collected[key] = value;
   }
 
-  if (isRecord(extras['hooks'])) {
-    const hooks = { ...extras['hooks'] };
-
-    if (Array.isArray(hooks['agentSpawn'])) {
-      const remaining = hooks['agentSpawn'].filter((entry) => !isManagedKiroSessionHook(entry));
-
-      if (remaining.length > 0) hooks['agentSpawn'] = remaining;
-      else delete hooks['agentSpawn'];
-    }
-
-    if (Object.keys(hooks).length > 0) extras['hooks'] = hooks;
-    else delete extras['hooks'];
-  }
+  const extras = withoutManagedKiroHooks(collected);
 
   const spec: AgentSpec = {
     name,
-    description: parsed['description'] as string,
-    instructions: parsed['prompt'] as string,
+    description,
+    instructions: prompt,
   };
 
-  if (parsed['model'] !== undefined) spec.model = parsed['model'] as string;
+  const model = AgentTextFieldSchema.parse(parsed['model']);
 
-  if (parsed['tools'] !== undefined) spec.tools = parsed['tools'] as string[];
+  if (model !== undefined) spec.model = model;
+  const tools = AgentToolsFieldSchema.parse(parsed['tools']);
+
+  if (tools !== undefined) spec.tools = tools;
 
   if (Object.keys(extras).length > 0) spec.tool_extras = { kiro: extras };
 
@@ -921,24 +1007,26 @@ export function reverseFromKiro(filePath: string, content: string): ReverseResul
  * @param content  - File content string.
  */
 export function reverseFromCodex(filePath: string, content: string): ReverseResult {
-  let parsed: Record<string, unknown>;
+  let parsed: AgentFields;
 
   try {
-    parsed = parseToml(content) as Record<string, unknown>;
+    parsed = parseToml(content);
   } catch (err) {
-    return { ok: false, reason: `parse error: ${(err as Error).message}` };
+    return { ok: false, reason: `parse error: ${err instanceof Error ? err.message : String(err)}` };
   }
 
-  const name = (parsed['name'] as string | undefined) ?? path.basename(filePath, '.toml');
+  const name = AgentTextFieldSchema.parse(parsed['name']) ?? path.basename(filePath, '.toml');
 
   if (!name) return { ok: false, reason: 'missing field name' };
+  const description = AgentTextFieldSchema.parse(parsed['description']);
 
-  if (!parsed['description']) return { ok: false, reason: 'missing field description' };
+  if (!description) return { ok: false, reason: 'missing field description' };
+  const instructions = AgentTextFieldSchema.parse(parsed['developer_instructions']);
 
-  if (!parsed['developer_instructions']) return { ok: false, reason: 'missing field developer_instructions' };
+  if (!instructions) return { ok: false, reason: 'missing field developer_instructions' };
 
   // Collect non-common fields as tool_extras
-  const extras: Record<string, unknown> = {};
+  const extras: AgentFields = {};
 
   for (const [key, value] of Object.entries(parsed)) {
     if (!COMMON_CODEX_FIELDS.has(key)) {
@@ -948,11 +1036,13 @@ export function reverseFromCodex(filePath: string, content: string): ReverseResu
 
   const spec: AgentSpec = {
     name,
-    description: parsed['description'] as string,
-    instructions: parsed['developer_instructions'] as string,
+    description,
+    instructions,
   };
 
-  if (parsed['model'] !== undefined) spec.model = parsed['model'] as string;
+  const model = AgentTextFieldSchema.parse(parsed['model']);
+
+  if (model !== undefined) spec.model = model;
 
   if (Object.keys(extras).length > 0) spec.tool_extras = { codex: extras };
 
@@ -964,27 +1054,22 @@ export function reverseFromCodex(filePath: string, content: string): ReverseResu
  * Uses agent_id instead of name in the frontmatter.
  */
 export function reverseFromCursor(filePath: string, content: string): ReverseResult {
-  let parsed: matter.GrayMatterFile<string>;
+  const read = readMarkdownAgent(content);
 
-  try {
-    parsed = matter(content);
-  } catch (err) {
-    return { ok: false, reason: `parse error: ${(err as Error).message}` };
-  }
+  if (!read.ok) return read;
+  const { fields: fm, body } = read;
 
-  const fm = parsed.data as Record<string, unknown>;
-  const body = parsed.content.trim();
-
-  const name = (fm['agent_id'] as string | undefined) ?? path.basename(filePath, '.md');
+  const name = AgentTextFieldSchema.parse(fm['agent_id']) ?? path.basename(filePath, '.md');
 
   if (!name) return { ok: false, reason: 'missing field agent_id' };
+  const description = AgentTextFieldSchema.parse(fm['description']);
 
-  if (!fm['description']) return { ok: false, reason: 'missing field description' };
+  if (!description) return { ok: false, reason: 'missing field description' };
 
   if (!body) return { ok: false, reason: 'missing field instructions (empty body)' };
 
   // Collect non-common frontmatter fields as tool_extras
-  const extras: Record<string, unknown> = {};
+  const extras: AgentFields = {};
 
   for (const [key, value] of Object.entries(fm)) {
     if (!COMMON_CURSOR_FIELDS.has(key)) {
@@ -994,13 +1079,16 @@ export function reverseFromCursor(filePath: string, content: string): ReverseRes
 
   const spec: AgentSpec = {
     name,
-    description: fm['description'] as string,
+    description,
     instructions: body,
   };
 
-  if (fm['model'] !== undefined) spec.model = fm['model'] as string;
+  const model = AgentTextFieldSchema.parse(fm['model']);
 
-  if (fm['tools'] !== undefined) spec.tools = fm['tools'] as string[];
+  if (model !== undefined) spec.model = model;
+  const tools = AgentToolsFieldSchema.parse(fm['tools']);
+
+  if (tools !== undefined) spec.tools = tools;
 
   if (Object.keys(extras).length > 0) spec.tool_extras = { cursor: extras };
 
@@ -1014,27 +1102,22 @@ export function reverseFromCursor(filePath: string, content: string): ReverseRes
  * are collected into tool_extras.opencode.
  */
 export function reverseFromOpencode(filePath: string, content: string): ReverseResult {
-  let parsed: matter.GrayMatterFile<string>;
+  const read = readMarkdownAgent(content);
 
-  try {
-    parsed = matter(content);
-  } catch (err) {
-    return { ok: false, reason: `parse error: ${(err as Error).message}` };
-  }
-
-  const fm = parsed.data as Record<string, unknown>;
-  const body = parsed.content.trim();
+  if (!read.ok) return read;
+  const { fields: fm, body } = read;
 
   const name = path.basename(filePath, '.md');
 
   if (!name) return { ok: false, reason: 'missing agent name (empty filename)' };
+  const description = AgentTextFieldSchema.parse(fm['description']);
 
-  if (!fm['description']) return { ok: false, reason: 'missing field description' };
+  if (!description) return { ok: false, reason: 'missing field description' };
 
   if (!body) return { ok: false, reason: 'missing field instructions (empty body)' };
 
   // Collect non-common frontmatter fields as tool_extras
-  const extras: Record<string, unknown> = {};
+  const extras: AgentFields = {};
 
   for (const [key, value] of Object.entries(fm)) {
     if (!COMMON_OPENCODE_FIELDS.has(key)) {
@@ -1044,11 +1127,13 @@ export function reverseFromOpencode(filePath: string, content: string): ReverseR
 
   const spec: AgentSpec = {
     name,
-    description: fm['description'] as string,
+    description,
     instructions: body,
   };
 
-  if (fm['model'] !== undefined) spec.model = fm['model'] as string;
+  const model = AgentTextFieldSchema.parse(fm['model']);
+
+  if (model !== undefined) spec.model = model;
 
   if (Object.keys(extras).length > 0) spec.tool_extras = { opencode: extras };
 
@@ -1060,7 +1145,8 @@ export function reverseFromOpencode(filePath: string, content: string): ReverseR
 /** Conflict details when merging results from multiple tools. */
 export interface MergeConflict {
   field: string;
-  values: Record<string, unknown>;
+  /** Each side's value; an absent one is left out of the report. */
+  values: Record<string, AgentFieldValue | undefined>;
 }
 
 /** Result of merging multiple tool AgentSpecs into one canonical AgentSpec. */
@@ -1069,13 +1155,13 @@ export type MergeResult =
   | { ok: false; conflicts: MergeConflict[] };
 
 /** Common fields subject to conflict detection during merge. */
-const MERGE_COMMON_FIELDS: Array<keyof AgentSpec> = [
+const MERGE_COMMON_FIELDS = [
   'name',
   'description',
   'instructions',
   'model',
   'tools',
-];
+] as const satisfies ReadonlyArray<keyof AgentSpec>;
 
 /**
  * Merge AgentSpec results from multiple tools into a single canonical AgentSpec.
@@ -1090,6 +1176,7 @@ const MERGE_COMMON_FIELDS: Array<keyof AgentSpec> = [
 export function mergeReverseResults(
   perTool: Partial<Record<ToolName, AgentSpec>>,
 ): MergeResult {
+  // SAFETY: perTool is keyed by ToolName, and callers set a key only to a reversed spec, so each entry is a [ToolName, AgentSpec] pair.
   const entries = Object.entries(perTool) as Array<[ToolName, AgentSpec]>;
 
   if (entries.length === 0) {
@@ -1104,7 +1191,7 @@ export function mergeReverseResults(
 
   // Check each common field for discrepancies
   for (const field of MERGE_COMMON_FIELDS) {
-    const valuesByTool: Record<string, unknown> = {};
+    const valuesByTool: AgentFields = {};
 
     for (const [tool, spec] of entries) {
       const value = spec[field];
@@ -1130,16 +1217,12 @@ export function mergeReverseResults(
 
   // All common fields agree — pick values from first spec, merge tool_extras
   const baseSpec = { ...entries[0][1] };
-  const mergedExtras: AgentSpec['tool_extras'] = {};
+  const mergedExtras: Record<string, AgentFields> = {};
 
   for (const [, spec] of entries) {
     if (spec.tool_extras) {
-      for (const [toolKey, extras] of Object.entries(spec.tool_extras) as Array<[ToolName, Record<string, unknown>]>) {
-        if (!mergedExtras[toolKey]) {
-          mergedExtras[toolKey] = {};
-        }
-
-        Object.assign(mergedExtras[toolKey]!, extras);
+      for (const [toolKey, extras] of Object.entries(spec.tool_extras)) {
+        mergedExtras[toolKey] = { ...mergedExtras[toolKey], ...extras };
       }
     }
   }
@@ -1165,7 +1248,7 @@ export const EXTRAS_BASE_TOOL: Readonly<Partial<Record<ToolName, ToolName>>> = {
  * The extras `tool` renders: its own `tool_extras.<tool>`. tclaude and tcodex
  * also fill the keys they lack from `claude` and `codex`; their own value wins.
  */
-export function toolExtrasFor(spec: AgentSpec, tool: ToolName): Record<string, unknown> | undefined {
+export function toolExtrasFor(spec: AgentSpec, tool: ToolName): AgentFields | undefined {
   const extras = spec.tool_extras;
   const base = EXTRAS_BASE_TOOL[tool];
 
@@ -1178,7 +1261,7 @@ export function toolExtrasFor(spec: AgentSpec, tool: ToolName): Record<string, u
  * tool's, and in a project the other Trae edition's but `model`, as both
  * editions read one file.
  */
-export function inheritedExtras(spec: AgentSpec, tool: ToolName, scope: Scope | undefined): { readonly from: ToolName; readonly extras: Record<string, unknown> } | undefined {
+export function inheritedExtras(spec: AgentSpec, tool: ToolName, scope: Scope | undefined): { readonly from: ToolName; readonly extras: AgentFields } | undefined {
   if (scope !== 'user' && (tool === 'trae' || tool === 'trae-cn')) {
     const { trae, cn } = traeEditionExtras(spec);
 

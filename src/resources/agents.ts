@@ -3,7 +3,9 @@ import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { parse as parseYaml } from 'yaml';
 import matter from 'gray-matter';
+import { z } from 'zod';
 import { ResourceHandler, type PlacementRecords, type ScanForPushOptions } from './base.js';
+import { JsonValueSchema, type JsonValue } from '../types.js';
 import type { CopyOrigin, ResourceItem, ResourceItemStatus, DeliveryTarget, TeamaiConfig, LocalConfig, AgentModelRecords, RecordedAgentModel, Scope } from '../types.js';
 import { listFiles, listDirs, pathExists, copyFile, ensureDir, remove, fileContentEqual, getFileMtime, writeFile, readFileSafe, fileHash } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
@@ -39,8 +41,9 @@ import {
   agentStemFromFilename,
   museAgentDrops,
   agentRejection,
+  AgentFieldsSchema,
 } from './agent-format.js';
-import type { AgentSpec, ToolName, ParseResult, MergeResult, RenderResult } from './agent-format.js';
+import type { AgentFieldValue, AgentFields, AgentSpec, ToolName, ParseResult, MergeConflict, MergeResult, RenderResult } from './agent-format.js';
 
 /**
  * Extended ResourceItem for agents — carries merged spec or skip reason
@@ -201,6 +204,7 @@ export class AgentsHandler extends ResourceHandler {
       const segments = tombstone.split('/');
 
       if (segments.length !== 2) continue;
+      // SAFETY: segments.length === 2 was checked just above, so both entries exist.
       const [namespace, stem] = segments as [string, string];
 
       const deliveredHere = activeNamespaces === null || activeNamespaces.includes(namespace)
@@ -343,20 +347,23 @@ export class AgentsHandler extends ResourceHandler {
 
             if (baseExists && !supersedes && await fileContentEqual(activePath, basePath)) continue; // unchanged
 
-            directItems.push({
+            const direct: AgentResourceItem = {
               name: stem,
               type: 'agents',
               sourcePath: activePath,
               relativePath: teamRelPath,
-              status: (baseExists ? 'modified' : 'new') as ResourceItemStatus,
+              status: baseExists ? 'modified' : 'new',
               legacy: isMd,
-              ...(baseExists && teamRelPath !== `${relDir}/${file}`
-                ? { namespace: teamRelPath.split('/')[1] }
-                : {}),
-              ...(supersedes ? { supersedes } : {}),
-              ...(deliveredBlob ? { deliveredBlob } : {}),
-              ...(needsDeliveredBlob ? { needsDeliveredBlob } : {}),
-            });
+            };
+
+            if (baseExists && teamRelPath !== `${relDir}/${file}`) direct.namespace = teamRelPath.split('/')[1];
+
+            if (supersedes) direct.supersedes = supersedes;
+
+            if (deliveredBlob) direct.deliveredBlob = deliveredBlob;
+
+            if (needsDeliveredBlob) direct.needsDeliveredBlob = needsDeliveredBlob;
+            directItems.push(direct);
             directStems.add(stem);
           }
         }
@@ -517,7 +524,7 @@ export class AgentsHandler extends ResourceHandler {
 
         // Validation normalizes known fields, but unrelated canonical fields
         // must survive edits from a tool that cannot represent them.
-        canonicalSpec = { ...(parseYaml(raw!) as Record<string, unknown>), ...parsed.spec };
+        canonicalSpec = { ...AgentFieldsSchema.parse(parseYaml(raw!)), ...parsed.spec };
         // Compare like with like: native files against the rendering pull
         // writes, aliases resolved. Unchanged/untargeted copies must not join a merge.
         let unresolved: string | undefined;
@@ -653,40 +660,48 @@ export class AgentsHandler extends ResourceHandler {
           if (canonicalSpec && isDeepStrictEqual(canonicalSpec, mergeResult.spec)) {
             // Nothing else to push: the drift alone is what the member hears about.
             if (drift.length > 0) {
-              items.push({ name: stem, type: 'agents', sourcePath: bestPath, relativePath: relPath, status,
-                skipReason: drift.join(' '), ...(located?.namespace ? { namespace: located.namespace } : {}) });
+              const held: AgentResourceItem = { name: stem, type: 'agents', sourcePath: bestPath, relativePath: relPath, status,
+                skipReason: drift.join(' ') };
+
+              if (located?.namespace) held.namespace = located.namespace;
+              items.push(held);
             }
 
             continue;
           }
 
-          items.push({
+          const merged: AgentResourceItem = {
             name: stem,
             type: 'agents',
             sourcePath: bestPath,
             relativePath: relPath,
             status,
             mergedSpec: mergeResult.spec,
-            ...(drift.length > 0 ? { modelDrift: drift } : {}),
-            // Carried explicitly: an open PR records this item, and a record
-            // with no namespace reads as "shared root" to everything that
-            // later compares destinations (#649 review).
-            ...(located?.namespace ? { namespace: located.namespace } : {}),
-          });
+          };
+
+          if (drift.length > 0) merged.modelDrift = drift;
+
+          // Carried explicitly: an open PR records this item, and a record
+          // with no namespace reads as "shared root" to everything that
+          // later compares destinations (#649 review).
+          if (located?.namespace) merged.namespace = located.namespace;
+          items.push(merged);
           continue;
         }
       }
 
       // Fall back to pushing the raw md file (legacy behavior)
-      items.push({
+      const fallback: AgentResourceItem = {
         name: stem,
         type: 'agents',
         sourcePath: bestPath,
         relativePath: `${teamDir}/${stem}.md`,
         status,
         skipReason,
-        ...(located?.namespace ? { namespace: located.namespace } : {}),
-      });
+      };
+
+      if (located?.namespace) fallback.namespace = located.namespace;
+      items.push(fallback);
     }
 
     return items;
@@ -716,14 +731,17 @@ export class AgentsHandler extends ResourceHandler {
         const legacy = file.endsWith('.md');
 
         if (!legacy && !file.endsWith('.yaml')) continue;
-        items.push({
+
+        const teamItem: AgentResourceItem = {
           name: file.replace(/\.(yaml|md)$/, ''),
           type: 'agents',
           sourcePath: path.join(dir, file),
           relativePath: `${prefix}/${file}`,
           legacy,
-          ...(namespace ? { namespace } : {}),
-        });
+        };
+
+        if (namespace) teamItem.namespace = namespace;
+        items.push(teamItem);
       }
     };
 
@@ -741,7 +759,7 @@ export class AgentsHandler extends ResourceHandler {
    * Legacy fallback: copies the raw .md file.
    */
   async pushItem(item: ResourceItem, _teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
-    const agentItem = item as AgentResourceItem;
+    const agentItem: AgentResourceItem = item;
 
     if (agentItem.skipReason) {
       log.warn(`[agents] Skipped ${item.name}: ${agentItem.skipReason}`);
@@ -801,7 +819,7 @@ export class AgentsHandler extends ResourceHandler {
    * Legacy format (.md): copies .md as-is to Claude-compatible tools.
    */
   async pullItem(item: ResourceItem, teamConfig: TeamaiConfig, localConfig: LocalConfig, ledger?: DeliveryLedger): Promise<void> {
-    const agentItem = item as AgentResourceItem;
+    const agentItem: AgentResourceItem = item;
 
     // Determine format: explicit flag takes precedence; fall back to extension detection
     const content = await readFileSafe(item.sourcePath);
@@ -911,7 +929,7 @@ export class AgentsHandler extends ResourceHandler {
         log.debug(`Rendered agent ${item.name} → ${tool} (${render.ext})`);
       } catch (e) {
         ledger?.recorder?.failed('agents');
-        log.warn(`Failed to sync agent ${item.name} to ${tool}: ${(e as Error).message}`);
+        log.warn(`Failed to sync agent ${item.name} to ${tool}: ${e instanceof Error ? e.message : String(e)}`);
         ledger?.failed.push({ name: item.name, tool });
         ledger?.toolsMissingAgents.add(tool);
       }
@@ -1115,7 +1133,7 @@ export class AgentsHandler extends ResourceHandler {
     const redeploy: { item: ResourceItem; copies: RedeployedCopy[] }[] = [];
 
     for (const item of items) {
-      if (isLegacyAgent(item as AgentResourceItem)) continue;
+      if (isLegacyAgent(item)) continue;
       const copies: RedeployedCopy[] = [];
 
       for (const { tool, dest, render, origin } of await this.resolveRenders(teamConfig, localConfig, item, aliases)) {
@@ -1164,7 +1182,7 @@ export class AgentsHandler extends ResourceHandler {
     aliases: ModelAliases,
     ledger: DeliveryLedger,
   ): Promise<void> {
-    if (isLegacyAgent(item as AgentResourceItem)) return;
+    if (isLegacyAgent(item)) return;
     const content = await readFileSafe(item.sourcePath);
     const parsed = content === null ? null : parseAgentYaml(content, `${item.name}.yaml`);
 
@@ -1281,7 +1299,7 @@ export class AgentsHandler extends ResourceHandler {
     aliases?: ModelAliases,
     recorded?: Readonly<Record<string, RecordedAgentModel>>,
   ): Promise<{ tool: ToolName; dest: string; render: AgentRender; origin: CopyOrigin; sidecar: SidecarFile | null }[]> {
-    const agentItem = item as AgentResourceItem;
+    const agentItem: AgentResourceItem = item;
     const renders: { tool: ToolName; dest: string; render: AgentRender; origin: CopyOrigin; sidecar: SidecarFile | null }[] = [];
     const modelAliases = aliases ?? await loadModelAliases(localConfig);
     const spec = await this.parsedSpec(agentItem);
@@ -1365,7 +1383,7 @@ export class AgentsHandler extends ResourceHandler {
    * renders it, and why (`agentRejection`). They get no copy.
    */
   async rejectedTools(teamConfig: TeamaiConfig, localConfig: LocalConfig, item: ResourceItem): Promise<{ tool: ToolName; reason: string }[]> {
-    const spec = await this.parsedSpec(item as AgentResourceItem);
+    const spec = await this.parsedSpec(item);
 
     if (!spec) return [];
     const rejected: { tool: ToolName; reason: string }[] = [];
@@ -1466,9 +1484,12 @@ export class AgentsHandler extends ResourceHandler {
     const everyTool = heldCount === targeted;
     const loadFailure = !aliases.ok ? aliases.reason : aliases.localFailure;
 
-    return loadFailure !== undefined
-      ? [{ name, reason: loadFailure, ...(everyTool ? {} : { tools: [...heldTools.values()].flat() }), everyTool }]
-      : [...heldTools].map(([reason, tools]) => ({ name, reason, tools, everyTool }));
+    if (loadFailure === undefined) return [...heldTools].map(([reason, tools]) => ({ name, reason, tools, everyTool }));
+    const failure: DeliveryLedger['held'][number] = { name, reason: loadFailure, everyTool };
+
+    if (!everyTool) failure.tools = [...heldTools.values()].flat();
+
+    return [failure];
   }
 
   /** Whether `tool` would receive `item` but for a model that cannot be resolved. */
@@ -1521,12 +1542,23 @@ export function reportHeldAgents(ledger: DeliveryLedger, dryRunScope?: string): 
   return new Set(held.filter((hold) => hold.everyTool).map((hold) => hold.name)).size;
 }
 
+/** The agents held for one reason on one set of tools. */
+interface HeldGroup { reason: string; tools?: string[]; names: string[] }
+
+function heldGroup(reason: string, tools: string[] | undefined): HeldGroup {
+  const group: HeldGroup = { reason, names: [] };
+
+  if (tools) group.tools = tools;
+
+  return group;
+}
+
 function reportHeld(held: DeliveryLedger['held'], lead = '[agents] Held'): void {
-  const byCause = new Map<string, { reason: string; tools?: string[]; names: string[] }>();
+  const byCause = new Map<string, HeldGroup>();
 
   for (const { name, reason, tools } of held) {
     const key = `${tools?.join(',') ?? ''}\n${reason}`;
-    const group = byCause.get(key) ?? { reason, ...(tools ? { tools } : {}), names: [] };
+    const group = byCause.get(key) ?? heldGroup(reason, tools);
 
     if (!group.names.includes(name)) group.names.push(name);
     byCause.set(key, group);
@@ -1552,8 +1584,41 @@ function joycodeAgentId(contentPath: string): string {
   return `teamai-${createHash('sha1').update(contentPath).digest('hex').slice(0, 8)}`;
 }
 
-function objectValue(value: unknown): Record<string, unknown> | null {
-  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null;
+/** JoyCode's agent index: `version`, `agents`, and any metadata of the member's, all written back. */
+const JoycodeIndexSchema = z.record(z.string(), JsonValueSchema);
+
+/** The fields teamai reads from one index entry; the entry itself is written back whole. */
+const JoycodeIndexEntrySchema = z.object({ agentId: JsonValueSchema.optional(), contentPath: JsonValueSchema.optional() });
+
+/** The front matter fields an index entry copies; any other value counts as absent. */
+const JoycodeAgentFrontmatterSchema = z.object({
+  name: z.string().optional().catch(undefined),
+  description: z.string().optional().catch(undefined),
+  model: z.string().optional().catch(undefined),
+});
+
+/** One entry teamai writes into JoyCode's agent index. */
+interface JoycodeIndexEntry {
+  [key: string]: JsonValue;
+  agentId: string;
+  name: string;
+  source: 'global' | 'project';
+  contentPath: string;
+  isActive: boolean;
+  taskInstructions: string;
+  mcpList: JsonValue[];
+  ragList: JsonValue[];
+}
+
+function joycodeEntryFields(entry: JsonValue): z.infer<typeof JoycodeIndexEntrySchema> | null {
+  const fields = JoycodeIndexEntrySchema.safeParse(entry);
+
+  return fields.success ? fields.data : null;
+}
+
+/** The index's own `version` when it is text, else the one teamai writes. */
+function joycodeIndexVersion(version: JsonValue | undefined): string {
+  return z.string().catch('1.0.0').parse(version);
 }
 
 /** The agent path relative to the JoyCode index, always with JoyCode's forward slashes. */
@@ -1573,12 +1638,13 @@ export async function updateJoycodeAgentIndex(
   ledger?: DeliveryLedger,
 ): Promise<void> {
   if (sidecar === null) return;
-  let index: Record<string, unknown> = {};
+  let index: Record<string, JsonValue> = {};
   const raw = await readFileSafe(sidecar.path);
 
   if (raw !== null) {
     try {
-      const parsed = objectValue(JSON.parse(raw));
+      const read = JoycodeIndexSchema.safeParse(JSON.parse(raw));
+      const parsed = read.success ? read.data : null;
 
       if (parsed === null || (parsed.agents !== undefined && !Array.isArray(parsed.agents))) {
         log.warn(`[agents] Kept JoyCode agent index ${sidecar.path}: it is not an object with an agents array.`);
@@ -1599,20 +1665,20 @@ export async function updateJoycodeAgentIndex(
   const originalEntries = Array.isArray(index.agents) ? index.agents : [];
 
   const memberAlreadyIndexesFile = originalEntries.some((entry) => {
-    const value = objectValue(entry);
+    const value = joycodeEntryFields(entry);
 
     return value?.agentId !== agentId && value?.contentPath === contentPath;
   });
 
   // Remove only the stable id TeamAI owns. A member can intentionally index
   // the same Markdown file, and their entry must survive our cleanup.
-  const entries = originalEntries.filter((entry) => objectValue(entry)?.agentId !== agentId);
+  const entries = originalEntries.filter((entry) => joycodeEntryFields(entry)?.agentId !== agentId);
 
   // A member entry wins for the same file. Drop a prior TeamAI entry instead
   // of leaving both entries behind, then preserve the member's own metadata.
   if (change.kind === 'upsert' && memberAlreadyIndexesFile) {
     if (entries.length === originalEntries.length) return;
-    await writeFile(sidecar.path, `${JSON.stringify({ ...index, version: typeof index.version === 'string' ? index.version : '1.0.0', agents: entries }, null, 2)}\n`);
+    await writeFile(sidecar.path, `${JSON.stringify({ ...index, version: joycodeIndexVersion(index.version), agents: entries }, null, 2)}\n`);
     ledger?.recorder?.report('agents', sidecar.path);
 
     return;
@@ -1635,13 +1701,13 @@ export async function updateJoycodeAgentIndex(
   }
 
   if (change.kind === 'upsert') {
-    let frontmatter: Record<string, unknown> = {};
+    let frontmatter: z.infer<typeof JoycodeAgentFrontmatterSchema> = {};
 
-    try { frontmatter = matter(change.content).data as Record<string, unknown>; } catch { /* the rendered file is still indexed by filename */ }
+    try { frontmatter = JoycodeAgentFrontmatterSchema.parse(matter(change.content).data); } catch { /* the rendered file is still indexed by filename */ }
 
-    const name = typeof frontmatter.name === 'string' && frontmatter.name.trim() ? frontmatter.name : path.basename(change.file, '.md');
+    const name = frontmatter.name?.trim() ? frontmatter.name : path.basename(change.file, '.md');
 
-    const entry: Record<string, unknown> = {
+    const entry: JoycodeIndexEntry = {
       agentId,
       name,
       source: change.scope === 'user' ? 'global' : 'project',
@@ -1652,14 +1718,14 @@ export async function updateJoycodeAgentIndex(
       ragList: [],
     };
 
-    if (typeof frontmatter.description === 'string' && frontmatter.description.trim()) entry.whenToUse = frontmatter.description;
+    if (frontmatter.description?.trim()) entry['whenToUse'] = frontmatter.description;
 
-    if (typeof frontmatter.model === 'string' && frontmatter.model.trim()) entry.model = frontmatter.model;
+    if (frontmatter.model?.trim()) entry['model'] = frontmatter.model;
     entries.push(entry);
   }
 
-  entries.sort((a, b) => String(objectValue(a)?.contentPath ?? '').localeCompare(String(objectValue(b)?.contentPath ?? '')));
-  await writeFile(sidecar.path, `${JSON.stringify({ ...index, version: typeof index.version === 'string' ? index.version : '1.0.0', agents: entries }, null, 2)}\n`);
+  entries.sort((a, b) => String(joycodeEntryFields(a)?.contentPath ?? '').localeCompare(String(joycodeEntryFields(b)?.contentPath ?? '')));
+  await writeFile(sidecar.path, `${JSON.stringify({ ...index, version: joycodeIndexVersion(index.version), agents: entries }, null, 2)}\n`);
   ledger?.recorder?.report('agents', sidecar.path);
 }
 
@@ -1733,7 +1799,11 @@ export async function findTeamAgentFiles(teamAgentsDir: string, stem: string): P
     for (const ext of ['.yaml', '.md'] as const) {
       const candidate = path.join(dir, `${stem}${ext}`);
 
-      if (await pathExists(candidate)) found.push({ path: candidate, ext, ...(namespace ? { namespace } : {}) });
+      if (!await pathExists(candidate)) continue;
+      const file: TeamAgentFile = { path: candidate, ext };
+
+      if (namespace) file.namespace = namespace;
+      found.push(file);
     }
   }
 
@@ -1742,6 +1812,33 @@ export async function findTeamAgentFiles(teamAgentsDir: string, stem: string): P
 
 /** The spec fields reverse parsing reads from a native copy, outside `tool_extras`. */
 const ROOT_AGENT_FIELDS = ['name', 'description', 'instructions', 'model', 'tools'] as const;
+
+/** Set `field` of `target` to `source`'s, removing it when `source` has none. */
+function copyRootField(target: AgentSpec, source: AgentSpec, field: (typeof ROOT_AGENT_FIELDS)[number]): void {
+  switch (field) {
+    case 'name':
+    case 'description':
+    case 'instructions':
+      target[field] = source[field];
+
+      return;
+    case 'model':
+      if (source.model === undefined) delete target.model;
+      else target.model = source.model;
+
+      return;
+    case 'tools':
+      if (source.tools === undefined) delete target.tools;
+      else target.tools = source.tools;
+
+      return;
+    default: {
+      const unhandled: never = field;
+
+      throw new Error(`Unhandled agent field: ${String(unhandled)}`);
+    }
+  }
+}
 
 /** What push needs to tell a deployed alias model from a member's edit. */
 interface PushModelContext {
@@ -1766,20 +1863,26 @@ interface PushModelContext {
  * pinned into `tool_extras`. A copy whose values match neither the recorded
  * nor the current resolution is `drift`, reported and not pushed. Only an
  * alias name written in its place is proposed, as `model: <alias>`. */
+/** A canonical merge, and the model drift push reports instead of pushing. */
+interface CanonicalMerge {
+  merge: MergeResult;
+  drift: string[];
+}
+
 function mergeCanonicalEdits(
   canonical: AgentSpec,
   perTool: Partial<Record<ToolName, AgentSpec>>,
   context: PushModelContext,
-): { merge: MergeResult; drift: string[] } {
+): CanonicalMerge {
   const { aliases, scope } = context;
   const canonicalAlias = canonical.model !== undefined && isModelAlias(aliases, canonical.model);
   const drift: string[] = [];
   const merged = { ...canonical };
   const extras = { ...canonical.tool_extras };
-  const changes = new Map<string, { value: unknown; apply: () => void }>();
-  const conflicts: Array<{ field: string; values: Record<string, unknown> }> = [];
+  const changes = new Map<string, { value: AgentFieldValue | undefined; apply: () => void }>();
+  const conflicts: MergeConflict[] = [];
 
-  const propose = (key: string, value: unknown, apply: () => void) => {
+  const propose = (key: string, value: AgentFieldValue | undefined, apply: () => void) => {
     const previous = changes.get(key);
 
     if (previous && !isDeepStrictEqual(previous.value, value)) {
@@ -1789,6 +1892,7 @@ function mergeCanonicalEdits(
     }
   };
 
+  // SAFETY: perTool is keyed by ToolName, and push sets a key only to a reversed spec, so each entry is a [ToolName, AgentSpec] pair.
   for (const [tool, edited] of Object.entries(perTool) as Array<[ToolName, AgentSpec]>) {
     // The baseline is what pull deployed, so a resolved alias is not an edit.
     const resolved = renderResolved(canonical, tool, aliases, scope);
@@ -1798,22 +1902,23 @@ function mergeCanonicalEdits(
     const baseline = reverseByTool(tool, `${canonical.name}${rendered.ext}`, rendered.content);
 
     if (!baseline.ok) return { merge: { ok: false, conflicts: [{ field: tool, values: { error: baseline.reason } }] }, drift };
-    const before: Record<string, unknown> = { ...Object.values(baseline.spec.tool_extras ?? {})[0] };
-    const after: Record<string, unknown> = { ...Object.values(edited.tool_extras ?? {})[0] };
+    const before: AgentFields = { ...Object.values(baseline.spec.tool_extras ?? {})[0] };
+    const after: AgentFields = { ...Object.values(edited.tool_extras ?? {})[0] };
     // tclaude and tcodex also render what `claude` and `codex` carry, and a
     // project's Trae copy what the other edition carries.
     const inheritance = inheritedExtras(canonical, tool, scope);
     const base = inheritance?.from;
-    const inherited: Record<string, unknown> = inheritance?.extras ?? {};
+    const inherited: AgentFields = inheritance?.extras ?? {};
     // A model pin, the tool's own or inherited, reaches the copy as its native
     // `model`, which reverse parsing reads as the root field: compared as an
     // extras key, a change to it stays this tool's, and the root model and the
     // base tool's pin are kept. A pin the copy does not carry (a Trae
     // project file) is not compared, so it is kept.
-    const modelPin = !canonicalAlias && toolExtrasFor(canonical, tool)?.['model'] !== undefined && baseline.spec.model !== undefined;
+    const baselineModel = baseline.spec.model;
+    const modelPin = !canonicalAlias && toolExtrasFor(canonical, tool)?.['model'] !== undefined && baselineModel !== undefined;
 
     if (modelPin) {
-      before['model'] = baseline.spec.model;
+      before['model'] = baselineModel;
 
       if (edited.model !== undefined) after['model'] = edited.model;
     }
@@ -1877,12 +1982,7 @@ function mergeCanonicalEdits(
       if (field === 'model' && (canonicalAlias || aliasWroteModel || modelPin)) continue;
 
       if (isDeepStrictEqual(baseline.spec[field], edited[field])) continue;
-      propose(field, edited[field], () => {
-        const output = merged as unknown as Record<string, unknown>;
-
-        if (edited[field] === undefined) delete output[field];
-        else output[field] = edited[field];
-      });
+      propose(field, edited[field], () => { copyRootField(merged, edited, field); });
     }
 
     // Each tool owns the extras key renderForTool reads for it. For tclaude
@@ -1893,7 +1993,7 @@ function mergeCanonicalEdits(
     // Alias-owned fields are already out of `before` and `after`, and never inherited.
     if (!isDeepStrictEqual(before, after)) {
       const removed = Object.keys(inherited)
-        .filter((key) => !(key in after) && (!(ROOT_AGENT_FIELDS as readonly string[]).includes(key) || (key === 'model' && modelPin)));
+        .filter((key) => !(key in after) && (!ROOT_AGENT_FIELDS.some((field) => field === key) || (key === 'model' && modelPin)));
 
       if (base && removed.length) {
         conflicts.push({ field: `tool_extras.${tool}`, values: { inheritedFrom: `tool_extras.${base}`, removed } });
@@ -2098,13 +2198,15 @@ function renderResolved(
 function renderWithModel(spec: AgentSpec, tool: ToolName, resolved: RecordedAgentModel, scope: Scope): AgentRender {
   const replacesSpecModel = spec.model !== undefined && !KEEPS_SPEC_MODEL.has(resolved.step);
 
-  const recorded: RecordedAgentModel = {
-    step: resolved.step,
-    ...(resolved.model !== undefined ? { model: resolved.model } : {}),
-    ...(resolved.effort !== undefined ? { effort: resolved.effort } : {}),
-    ...(resolved.source !== undefined ? { source: resolved.source } : {}),
-    ...(replacesSpecModel ? { alias: spec.model } : {}),
-  };
+  const recorded: RecordedAgentModel = { step: resolved.step };
+
+  if (resolved.model !== undefined) recorded.model = resolved.model;
+
+  if (resolved.effort !== undefined) recorded.effort = resolved.effort;
+
+  if (resolved.source !== undefined) recorded.source = resolved.source;
+
+  if (replacesSpecModel) recorded.alias = spec.model;
 
   const rendered = resolved.step === 'switched' ? withoutExtrasEffort(spec, tool) : spec;
 
@@ -2197,15 +2299,15 @@ function warnAliasGone(
  * the tool as a literal model name no tool knows.
  */
 function warnLegacyAlias(item: ResourceItem, content: string, aliases: ModelAliases): void {
-  let model: unknown;
+  let model: string | undefined;
 
   try {
-    model = (matter(content).data as Record<string, unknown>)['model'];
+    model = z.string().optional().catch(undefined).parse(matter(content).data['model']);
   } catch {
     return;
   }
 
-  if (typeof model !== 'string' || !isModelAlias(aliases, model)) return;
+  if (model === undefined || !isModelAlias(aliases, model)) return;
   log.warn(`[agents] ${item.relativePath} sets model: ${model}, a model alias, but a legacy .md agent is copied as is, `
     + `so each tool receives "${model}" literally. Move it to ${item.relativePath.replace(/\.md$/, '.yaml')} to have the alias resolved.`);
 }
