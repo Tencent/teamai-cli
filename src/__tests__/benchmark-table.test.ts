@@ -267,6 +267,16 @@ describe('benchmark usage', () => {
     expect(formatBenchmarkTable(table)).toContain('| Arm | Median tokens (input + output) | Median duration | Cost |\n| --- | --- | --- | --- |\n| opus | 8 (2) | 2.0 s (3) |');
   });
 
+  it('leaves out of the medians and the cost total a trial whose passes did not all state them, as a trial that stated none', () => {
+    const table = benchmarkTable(recordOf([CLAUDE_ARM], [
+      { tokens: { input: 4, output: 2, complete: true }, cost: { amount: 0.1, unit: 'USD', complete: true } },
+      { tokens: { input: 80, output: 20, complete: false }, cost: { amount: 0.5, unit: 'USD', complete: false } },
+    ]));
+
+    expect(table.usage).toMatchObject([{ arm: 'opus', tokens: { value: 6, used: 1 }, cost: { kind: 'incomplete', amount: 0.1, unit: 'USD', used: 1, unknown: 1 } }]);
+    expect(formatBenchmarkTable(table)).toContain('| opus | 6 (1) | unknown (0) | 0.1 USD (1), incomplete: 1 unknown |');
+  });
+
   it('adds up costs in one unit only, marks a total with an unknown part incomplete, and never counts a missing cost as zero', () => {
     const arm = (name: string) => ({ ...CLAUDE_ARM, name });
     const table = benchmarkTable(recordOf([arm('known'), arm('partial'), arm('mixed'), arm('none')], [

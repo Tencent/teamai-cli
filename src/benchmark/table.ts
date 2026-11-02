@@ -120,12 +120,15 @@ export function observedTrials(record: BenchmarkTableInput): ObservedTrial[] {
   return record.benchmark.trials.map((trial) => (trial.agent ? { trial, ranAs: trial.agent } : { trial }));
 }
 
-/** The usage of `trials`: medians of what their tools stated, and the cost of the trials whose prompt ran. */
+/**
+ * The usage of `trials`: medians of what their tools stated, and the cost of the trials whose prompt ran. A trial whose
+ * passes did not all state its tokens or cost has only part of it, so it counts as one that stated none.
+ */
 export function usageOf(trials: readonly ObservedTrial[]): Omit<ArmUsage, 'arm'> {
   return {
-    tokens: { ...median(trials.flatMap(({ trial: { tokens } }) => (tokens?.input !== undefined && tokens.output !== undefined ? [tokens.input + tokens.output] : []))), components: TOKEN_COMPONENTS },
+    tokens: { ...median(trials.flatMap(({ trial: { tokens } }) => (tokens?.complete && tokens.input !== undefined && tokens.output !== undefined ? [tokens.input + tokens.output] : []))), components: TOKEN_COMPONENTS },
     durationMs: median(trials.flatMap(({ trial: { durationMs } }) => (durationMs !== undefined ? [durationMs] : []))),
-    cost: costTotal(trials.flatMap(({ trial, ranAs }) => (ranAs ? [trial.cost] : []))),
+    cost: costTotal(trials.flatMap(({ trial, ranAs }) => (ranAs ? [trial.cost?.complete ? trial.cost : undefined] : []))),
   };
 }
 
@@ -253,7 +256,7 @@ function median(values: readonly number[]): Median {
   return lower === undefined || upper === undefined ? { used: 0 } : { value: (lower + upper) / 2, used: sorted.length };
 }
 
-/** The total of `parts`, one per trial whose prompt ran: the cost it stated, or undefined when it stated none. */
+/** The total of `parts`, one per trial whose prompt ran: the whole cost it stated, or undefined when it stated none or only part. */
 function costTotal(parts: ReadonlyArray<RecordedTrial['cost']>): CostTotal {
   const known = parts.flatMap((part) => (part ? [part] : []));
   const units = [...new Set(known.map(({ unit }) => unit))].sort();
