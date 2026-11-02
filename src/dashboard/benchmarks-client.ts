@@ -9,7 +9,7 @@
 import { BENCHMARK_WINDOWS } from '../benchmark/history.js';
 
 export const benchmarksClient = `
-let benchData=null, benchError='', benchLoading=false, benchHtml='', benchRequest=0, benchAxis='tokens', benchDimension='', benchComparison='', benchConfig='', benchRevision='', benchArm='', benchProduction=null;
+let benchData=null, benchError='', benchLoading=false, benchHtml='', benchRequest=0, benchAxis='tokens', benchDimension='', benchComparison='', benchConfig='', benchRevision='', benchArm='', benchShouldRevealArm=false, benchProduction=null;
 const savedBenchView=read('teamai-dashboard-benchmark-view','arms');
 let benchView=['arms','compare','team'].includes(savedBenchView)?savedBenchView:'arms';
 const benchWindows=${JSON.stringify(BENCHMARK_WINDOWS.map(String))};
@@ -112,7 +112,7 @@ function armBars(sel){
  const arms=sel.arms.filter(a=>a.pooled);
  if(page==='benchmarks'&&arms.some(a=>a.role)&&(!benchProduction||benchProduction.key!==JSON.stringify(productionQuery())))loadBenchProduction();
  return '<section class="panel bench-panel"><div class="panelhead"><h2>'+label('Pass rate by arm')+'</h2><span class="label">'+label('Pooled over the runs of the current suite version. The line is the 95% interval: two arms whose lines overlap are not told apart by these runs.')+'</span></div><div class="arm-bars">'
-  +arms.map(a=>{const i=sel.arms.indexOf(a), rate=passOf(a.pooled); return '<div class="arm-bar'+(a.arm===benchArm?' marked" aria-current="true':'')+'" title="'+e(armTitle(a)+': '+Math.round(rate*100)+'% ('+a.pooled.passed+'/'+a.pooled.planned+'), 95% '+Math.round(a.pooled.low*100)+'–'+Math.round(a.pooled.high*100)+'%')+'"><div class="arm-label">'+armName(a,i)+'</div><div class="arm-track" role="img" aria-label="'+e(armTitle(a)+' '+Math.round(rate*100)+'%')+'"><span class="arm-fill" style="width:'+(rate*100).toFixed(1)+'%;background:'+armColor(i)+'"></span><span class="arm-ci" style="left:'+(a.pooled.low*100).toFixed(1)+'%;width:'+((a.pooled.high-a.pooled.low)*100).toFixed(1)+'%"></span></div><div class="arm-value"><b>'+pct(rate)+'</b><small>'+number(a.pooled.passed)+'/'+number(a.pooled.planned)+' · '+number(a.pooled.runs)+' '+label(a.pooled.runs===1?'run':'runs')+'</small>'+(a.pooled.deviations?'<small class="amber">'+number(a.pooled.deviations)+' '+label(a.pooled.deviations===1?'deviation':'deviations')+'</small>':'')+(a.pooled.notVerified?'<small class="muted">'+number(a.pooled.notVerified)+' '+label('not verified')+'</small>':'')+'</div>'+armProduction(a)+'</div>';}).join('')
+  +arms.map(a=>{const i=sel.arms.indexOf(a), rate=passOf(a.pooled); return '<div class="arm-bar'+(a.arm===benchArm?' marked" aria-current="true" id="bench-marked-arm" tabindex="-1':'')+'" title="'+e(armTitle(a)+': '+Math.round(rate*100)+'% ('+a.pooled.passed+'/'+a.pooled.planned+'), 95% '+Math.round(a.pooled.low*100)+'–'+Math.round(a.pooled.high*100)+'%')+'"><div class="arm-label">'+armName(a,i)+'</div><div class="arm-track" role="img" aria-label="'+e(armTitle(a)+' '+Math.round(rate*100)+'%')+'"><span class="arm-fill" style="width:'+(rate*100).toFixed(1)+'%;background:'+armColor(i)+'"></span><span class="arm-ci" style="left:'+(a.pooled.low*100).toFixed(1)+'%;width:'+((a.pooled.high-a.pooled.low)*100).toFixed(1)+'%"></span></div><div class="arm-value"><b>'+pct(rate)+'</b><small>'+number(a.pooled.passed)+'/'+number(a.pooled.planned)+' · '+number(a.pooled.runs)+' '+label(a.pooled.runs===1?'run':'runs')+'</small>'+(a.pooled.deviations?'<small class="amber">'+number(a.pooled.deviations)+' '+label(a.pooled.deviations===1?'deviation':'deviations')+'</small>':'')+(a.pooled.notVerified?'<small class="muted">'+number(a.pooled.notVerified)+' '+label('not verified')+'</small>':'')+'</div>'+armProduction(a)+'</div>';}).join('')
   +'</div></section>';
 }
 function historyChart(sel){
@@ -362,10 +362,16 @@ async function loadBenchmarks(){
   if(!response.ok)benchError=data&&data.error?data.error:t('Could not load benchmark runs.');
   else{benchData=data;benchError='';if(data.selected)benchQuery.suite=data.selected.suite;}
  }catch{if(current())benchError=t('Could not load benchmark runs.');}
- finally{if(current()){benchLoading=false;if(page==='benchmarks'){const html=benchmarksPage();if(html!==benchHtml){benchHtml=html;render();}}}}
+ finally{if(current()){benchLoading=false;if(page==='benchmarks'){const html=benchmarksPage();if(html!==benchHtml){benchHtml=html;render();}revealMarkedArm();}}}
 }
 /** Opens the page on the Arms of \`suite\` with \`arm\` marked, such as an arm another page links a role to. */
-function openBenchmarks({suite,arm}){ benchData=null;benchError='';benchView='arms';save('teamai-dashboard-benchmark-view',benchView);setBenchQuery({suite});benchArm=arm;location.hash='benchmarks'; }
+function openBenchmarks({suite,arm}){ benchData=null;benchError='';benchView='arms';save('teamai-dashboard-benchmark-view',benchView);setBenchQuery({suite});benchArm=arm;benchShouldRevealArm=true;location.hash='benchmarks'; }
+/** After the load \`openBenchmarks\` asked for, takes the reader to the marked arm, under the charts and below the fold on a phone. */
+function revealMarkedArm(){
+ const asked=benchShouldRevealArm; benchShouldRevealArm=false;
+ const bar=asked&&benchArm&&benchView==='arms'?$('bench-marked-arm'):null;
+ if(bar){bar.scrollIntoView({block:'center'});bar.focus({preventScroll:true});}
+}
 function setBenchQuery(changes){ if(changes.suite!==undefined&&changes.suite!==benchQuery.suite)resetSelection(); benchQuery={...benchQuery,...changes}; save('teamai-dashboard-benchmark-window',benchQuery.window); loadBenchmarks(); }
 document.addEventListener('change',event=>{ if(event.target.id==='bench-window')setBenchQuery({window:event.target.value}); });
 document.addEventListener('click',event=>{

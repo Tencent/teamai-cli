@@ -88,8 +88,8 @@ async function openPage(labels: ViewedLabel[], { groupBy = 'role', language = 'e
       })),
     },
   };
-  const page = new Function(...Object.keys(scope), `${agentHarnessView}\n${chartFitView}\n${scorersClient}\n${benchmarksClient}\nreturn { scorersPage, loadScorers, fitCharts: () => fitCharts() };`)(...Object.values(scope)) as {
-    scorersPage: () => string; loadScorers: () => Promise<void>; fitCharts: () => void;
+  const page = new Function(...Object.keys(scope), `${agentHarnessView}\n${chartFitView}\n${scorersClient}\n${benchmarksClient}\nreturn { scorersPage, loadScorers, fitCharts: () => fitCharts(), openScorers: (changes) => openScorers(changes) };`)(...Object.values(scope)) as {
+    scorersPage: () => string; loadScorers: () => Promise<void>; fitCharts: () => void; openScorers: (changes: Record<string, string>) => void;
   };
   let box = 0;
   await page.loadScorers();
@@ -118,7 +118,14 @@ async function openPage(labels: ViewedLabel[], { groupBy = 'role', language = 'e
     html = page.scorersPage();
     return html;
   };
-  return { html, keys, queries, moved, location: scope.location, click, resize };
+  /** Opens the page on \`changes\`, as another page links to a group, and renders it once its answer arrived. */
+  const open = async (changes: Record<string, string>) => {
+    page.openScorers(changes);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    html = page.scorersPage();
+    return html;
+  };
+  return { html, keys, queries, moved, location: scope.location, click, resize, open };
 }
 
 async function renderPage(labels: ViewedLabel[], options: Parameters<typeof openPage>[1] = {}): Promise<{ html: string; keys: string[] }> {
@@ -270,6 +277,17 @@ describe('the Scorers page of a workflow whose review step runs with a role of i
 
     expect(heading(every)).toBe('Failing labels 3');
     expect(heading(await click('data-scorer-group'))).toBe('Failing labels · review step 1');
+  });
+
+  it('takes the reader to the role group another page opens it on, below the fold on a phone', async () => {
+    const { open, moved, click } = await openPage(LABELS);
+    const html = await open({ groupBy: 'role', group: JSON.stringify(['value', 'review', null, false]) });
+
+    expect(html).toContain('<button class="link" data-scorer-group="[&quot;value&quot;,&quot;review&quot;,null,false]" aria-pressed="true" id="scorer-selected-group">');
+    expect(moved).toEqual(['scrolled to scorer-selected-group', 'focused scorer-selected-group']);
+    // A group picked on the page itself is where the reader already is.
+    await click('data-scorer-group');
+    expect(moved).toHaveLength(2);
   });
 
   it('translates every label the role groups and the failing list ask for', async () => {

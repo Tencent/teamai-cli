@@ -46,6 +46,7 @@ async function openPage(runs: BenchmarkRunInput[], { view = 'arms', dimension = 
   const queries: string[] = [];
   const clicks: Array<(event: { target: { closest: (selector: string) => unknown } }) => void> = [];
   const location = { hash: 'benchmarks' };
+  const moved: string[] = [];
   const answer = (url: string) => {
     if (!url.startsWith('/api/scorers')) return history;
     const params = new URLSearchParams(url.split('?')[1]);
@@ -64,7 +65,9 @@ async function openPage(runs: BenchmarkRunInput[], { view = 'arms', dimension = 
       queries.push(url);
       return { ok: true, json: async () => answer(url) };
     },
-    window: { innerWidth: width }, location, $: () => undefined,
+    window: { innerWidth: width }, location,
+    // Each element of the page, recording where the page scrolled and what it focused.
+    $: (id: string) => ({ scrollIntoView: () => moved.push(`scrolled to ${id}`), focus: () => moved.push(`focused ${id}`) }),
     document: {
       addEventListener: (type: string, listener: (typeof clicks)[number]) => (type === 'click' ? clicks.push(listener) : undefined),
       // Each chart the page drew, laid out in a box `box` px wide.
@@ -109,7 +112,7 @@ async function openPage(runs: BenchmarkRunInput[], { view = 'arms', dimension = 
     html = await settle();
     return html;
   };
-  return { html, queries, location, click, resize, open };
+  return { html, queries, location, moved, click, resize, open };
 }
 
 async function renderPage(runs: BenchmarkRunInput[], options: Parameters<typeof openPage>[1] = {}): Promise<string> {
@@ -234,13 +237,17 @@ describe('the Benchmarks page of a suite that compares roles', () => {
   });
 
   it('opens on the Arms of the suite another page links to, with the linked arm marked', async () => {
-    const { open, location, queries } = await openPage(runs, { view: 'compare' });
+    const { open, location, queries, moved } = await openPage(runs, { view: 'compare' });
+    expect(moved).toEqual([]);
     const html = await open({ suite: 'review-roles', arm: 'codex-review' });
 
     expect(location.hash).toBe('benchmarks');
     expect(queries.findLast((query) => query.startsWith('/api/benchmarks'))).toBe('/api/benchmarks?window=90&suite=review-roles');
     expect(html).toContain('<div class="arm-bars">');
     expect([...html.matchAll(/<div class="arm-bar marked" aria-current="true"[^>]*><div class="arm-label">(.*?)<\/div>/gs)].map(([, name]) => text(name ?? '').trim())).toEqual(['codex-review review role codex']);
+    // The arm sits under the charts, below the fold on a phone, so the page takes the reader to it.
+    expect(html).toContain('<div class="arm-bar marked" aria-current="true" id="bench-marked-arm" tabindex="-1"');
+    expect(moved).toEqual(['scrolled to bench-marked-arm', 'focused bench-marked-arm']);
   });
 
   it('labels a role in Chinese, keeping the role id as written', async () => {

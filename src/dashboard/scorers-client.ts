@@ -33,7 +33,7 @@ const DECIDER_NAMES: Record<Decider | 'not recorded', string> = {
 };
 
 export const scorersClient = `
-let scorerData=null, scorerError='', scorerLoading=false, scorerHtml='', scorerRequest=0, scorerCommitDraft='', scorerShowSplit=false, scorerArms=null;
+let scorerData=null, scorerError='', scorerLoading=false, scorerHtml='', scorerRequest=0, scorerCommitDraft='', scorerReveal='', scorerArms=null;
 const failingPage=${FAILING_PAGE}, failingMax=${FAILING_MAX};
 const scorerWindows=${JSON.stringify(SCORER_WINDOWS.map(String))};
 const scorerDimensions=${JSON.stringify(Object.fromEntries(DIMENSIONS_OFFERED.map((dimension) => [dimension, DIMENSION_NAMES[dimension]])))};
@@ -106,7 +106,7 @@ function groupsPanel(sel){
  const split=!!sel.split;
  const heads=['VALUE','LABELS','PASSED','FAILED','PASS RATE'].concat(split?['BEFORE','AFTER','NOT RECORDED']:[]);
  return '<section class="panel sessions"><div class="panelhead"><h2>'+label('By')+' '+label(scorerDimensions[sel.groupBy])+' <span class="count">'+number(sel.groups.length)+'</span></h2><span class="label">'+label('A label that lists two values counts under both. Select a row to list its failing labels.')+'</span></div><div class="table-scroll card-table"><table class="session-table scorer-groups"><thead><tr>'+heads.map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
-  +sel.groups.map(g=>'<tr class="'+(scorerQuery.group===g.key?'selected-row':'')+'">'+['<button class="link" data-scorer-group="'+e(g.key)+'" aria-pressed="'+(scorerQuery.group===g.key)+'">'+groupName(g)+'</button>'+(byRole&&g.kind==='value'?roleArms(g.value):''),number(g.stats.n),number(g.stats.passed),number(g.stats.failed),meter(g.stats.rate)+' '+pct(g.stats.rate)].concat(split?['before','after','notRecorded'].map(side=>pct(g.split[side].rate)+' <small>'+number(g.split[side].n)+'</small>'):[]).map((cell,i)=>'<td data-label="'+e(t(heads[i]))+'">'+cell+'</td>').join('')+'</tr>').join('')
+  +sel.groups.map(g=>'<tr class="'+(scorerQuery.group===g.key?'selected-row':'')+'">'+['<button class="link" data-scorer-group="'+e(g.key)+'" aria-pressed="'+(scorerQuery.group===g.key)+'"'+(scorerQuery.group===g.key?' id="scorer-selected-group"':'')+'>'+groupName(g)+'</button>'+(byRole&&g.kind==='value'?roleArms(g.value):''),number(g.stats.n),number(g.stats.passed),number(g.stats.failed),meter(g.stats.rate)+' '+pct(g.stats.rate)].concat(split?['before','after','notRecorded'].map(side=>pct(g.split[side].rate)+' <small>'+number(g.split[side].n)+'</small>'):[]).map((cell,i)=>'<td data-label="'+e(t(heads[i]))+'">'+cell+'</td>').join('')+'</tr>').join('')
   +'</tbody></table></div>'+(byRole&&scorerArms&&scorerArms.state==='error'?'<p class="scorer-hint muted">'+label('Could not load benchmark runs.')+'</p>':'')+'</section>';
 }
 function decidedPanel(sel){
@@ -219,17 +219,23 @@ async function loadScorers(){
   if(!response.ok){scorerError=data&&data.error?data.error:t('Could not load scorer results.');if(response.status===400)scorerQuery.commit=scorerData&&scorerData.selected&&scorerData.selected.split?scorerData.selected.split.commit:'';}
   else{scorerData=data;scorerError='';if(data.selected){scorerQuery.scorer=data.selected.cohort.scorer;scorerQuery.cohort=data.selected.cohort.id;}if(!data.selected||!data.selected.groups)scorerQuery.group='';}
  }catch{if(current())scorerError=t('Could not load scorer results.');}
- finally{if(current()){scorerLoading=false;if(page==='scorers'){const html=scorersPage();if(html!==scorerHtml){scorerHtml=html;render();}showSplit();}}}
+ finally{if(current()){scorerLoading=false;if(page==='scorers'){const html=scorersPage();if(html!==scorerHtml){scorerHtml=html;render();}revealAsked();}}}
 }
-/** After a split asked from a failing harness: takes the reader to the Before and after cards, far above it on a phone. */
-function showSplit(){
- const asked=scorerShowSplit; scorerShowSplit=false;
- if(!asked||!scorerData||!scorerData.selected||!scorerData.selected.split)return;
- const heading=$('scorer-split'); heading.scrollIntoView({block:'start'}); heading.focus({preventScroll:true});
+/**
+ * After the load a link asked for, takes the reader to what it opened, which a phone shows far from the link: the Before
+ * and after cards of a split asked from a failing harness (\`scorerReveal\` 'split'), or the group another page opened
+ * this one on ('group').
+ */
+function revealAsked(){
+ const asked=scorerReveal; scorerReveal='';
+ const sel=scorerData&&scorerData.selected;
+ const target=asked==='split'&&sel&&sel.split?$('scorer-split'):asked==='group'&&sel&&sel.groups&&scorerQuery.group?$('scorer-selected-group'):null;
+ if(!target)return;
+ target.scrollIntoView({block:asked==='split'?'start':'center'}); target.focus({preventScroll:true});
 }
 function setScorerQuery(changes){ scorerQuery={...scorerQuery,group:'',failing:'',...changes}; save('teamai-dashboard-scorer-window',scorerQuery.window); save('teamai-dashboard-scorer-group',scorerQuery.groupBy); loadScorers(); }
-/** Opens the Scorers page on \`changes\`, such as a role group another page links to, with no commit split. */
-function openScorers(changes){ scorerData=null;scorerError='';scorerCommitDraft='';setScorerQuery({commit:'',...changes});location.hash='scorers'; }
+/** Opens the Scorers page on \`changes\`, such as a role group another page links to, with no commit split, and takes the reader to that group. */
+function openScorers(changes){ scorerData=null;scorerError='';scorerCommitDraft='';scorerReveal=changes.group?'group':'';setScorerQuery({commit:'',...changes});location.hash='scorers'; }
 document.addEventListener('change',event=>{
  if(event.target.id==='scorer-window')setScorerQuery({window:event.target.value});
  else if(event.target.id==='scorer-group')setScorerQuery({groupBy:event.target.value});
@@ -240,7 +246,7 @@ document.addEventListener('click',event=>{
  const scorer=event.target.closest('[data-scorer]'), cohort=event.target.closest('[data-cohort]'), group=event.target.closest('[data-scorer-group]'), decided=event.target.closest('[data-decided]'), split=event.target.closest('[data-scorer-split]'), arm=event.target.closest('[data-scorer-arm]');
  if(decided){const again=scorerQuery.groupBy==='decidedBy'&&scorerQuery.group===decided.dataset.decided; save('teamai-dashboard-scorer-group','decidedBy'); scorerQuery={...scorerQuery,groupBy:'decidedBy',failing:'',group:again?'':decided.dataset.decided}; loadScorers();}
  else if(arm){const [suite,name]=JSON.parse(arm.dataset.scorerArm);openBenchmarks({suite,arm:name});}
- else if(split){scorerCommitDraft=split.dataset.scorerSplit;scorerShowSplit=true;setScorerQuery({commit:scorerCommitDraft,group:scorerQuery.group});}
+ else if(split){scorerCommitDraft=split.dataset.scorerSplit;scorerReveal='split';setScorerQuery({commit:scorerCommitDraft,group:scorerQuery.group});}
  else if(scorer)setScorerQuery({scorer:scorer.dataset.scorer,cohort:''});
  else if(cohort)setScorerQuery({cohort:cohort.dataset.cohort});
  else if(group)setScorerQuery({group:scorerQuery.group===group.dataset.scorerGroup?'':group.dataset.scorerGroup});
