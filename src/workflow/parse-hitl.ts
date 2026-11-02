@@ -1,5 +1,6 @@
 import { isMap, isScalar, isSeq, type Node } from 'yaml';
-import { isYamlNode, locate, scalarString, unknownKey, valueNode, type ParseContext } from './parse-context.js';
+import { z } from 'zod';
+import { isYamlNode, locate, scalarOf, scalarString, unknownKey, valueNode, type ParseContext } from './parse-context.js';
 import type { StepHitl } from './types.js';
 
 /** Normalizes approve and choose declarations into one HITL request while retaining YAML-key diagnostics. */
@@ -10,9 +11,11 @@ export function parseHitl(kind: StepHitl['kind'], node: Node | null | undefined,
     diagnostics.push(locate(file, lineCounter, at, key, message));
   };
 
-  if (kind === 'approve' && isScalar(node) && typeof node.value === 'string') {
-    if (!node.value.trim()) reject(node, field, 'approve must be a non-empty message');
-    else return { kind, message: node.value, options: ['yes', 'no'], required: false };
+  const shorthand = kind === 'approve' ? scalarString(node) : undefined;
+
+  if (shorthand !== undefined) {
+    if (!shorthand.trim()) reject(node, field, 'approve must be a non-empty message');
+    else return { kind, message: shorthand, options: ['yes', 'no'], required: false };
 
     return undefined;
   }
@@ -39,16 +42,17 @@ export function parseHitl(kind: StepHitl['kind'], node: Node | null | undefined,
   const requiredNode = valueNode(node, 'required');
   const required = isScalar(requiredNode) && requiredNode.value === true;
 
-  if (requiredNode && (!isScalar(requiredNode) || typeof requiredNode.value !== 'boolean')) reject(requiredNode, `${field}.required`, `${kind}.required must be a boolean`);
+  if (requiredNode && scalarOf(requiredNode, z.boolean()) === undefined) reject(requiredNode, `${field}.required`, `${kind}.required must be a boolean`);
   let options = ['yes', 'no'];
   const optionsNode = valueNode(node, 'options');
 
   if (kind === 'choose') {
     const values = isSeq(optionsNode) ? optionsNode.items.map((item) => scalarString(isYamlNode(item) ? item : undefined)) : [];
+    const names = values.filter((value): value is string => !!value && !/\s/.test(value));
 
-    if (values.length < 2 || values.some((value) => !value || /\s/.test(value)) || new Set(values).size !== values.length) {
+    if (values.length < 2 || names.length !== values.length || new Set(values).size !== values.length) {
       reject(optionsNode ?? node, `${field}.options`, 'choose.options must contain at least two unique non-empty strings without whitespace');
-    } else options = values as string[];
+    } else options = names;
   }
 
   const defaultNode = valueNode(node, 'default');
@@ -56,5 +60,10 @@ export function parseHitl(kind: StepHitl['kind'], node: Node | null | undefined,
 
   if (defaultNode && (!choice || !options.includes(choice))) reject(defaultNode, `${field}.default`, 'choose.default must be one of choose.options');
 
-  return message ? { kind, message, options, required, ...(choice !== undefined ? { default: choice } : {}) } : undefined;
+  if (!message) return undefined;
+  const hitl: StepHitl = { kind, message, options, required };
+
+  if (choice !== undefined) hitl.default = choice;
+
+  return hitl;
 }

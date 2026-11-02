@@ -82,6 +82,7 @@ export interface WorkflowStep {
    */
   workflow?: string | InlineWorkflow | WorkflowFrom;
   /** Values for the inputs of the workflow this step runs, as written; every string inside follows the template rules. */
+  // oxlint-disable-next-line teamai/no-unsafe-dictionary-type -- YAML toJSON can hold values JSON cannot, such as the Uint8Array a !!binary tag decodes to; the inputs check at start types them
   with?: Record<string, unknown>;
   /** Name in `ends` this step finishes the workflow with when it succeeds. A step with no action only ends the workflow and is never leased. */
   end?: string;
@@ -240,6 +241,16 @@ export interface InlineWorkflow {
   steps: WorkflowStep[];
 }
 
+/** The inline workflow a step's `workflow` holds, or undefined when it names a workflow file, or the step runs none. */
+export function inlineWorkflowOf(workflow: string | InlineWorkflow | undefined): InlineWorkflow | undefined {
+  return workflow instanceof Object ? workflow : undefined;
+}
+
+/** The workflow file a step's `workflow` names, or undefined when it holds an inline workflow, or the step runs none. */
+export function workflowFileOf(workflow: string | InlineWorkflow | undefined): string | undefined {
+  return workflow instanceof Object ? undefined : workflow;
+}
+
 /** Values a workflow file sets for its steps. */
 export interface WorkflowDefaults {
   /** The model of a prompt step whose step and definition choose none, as written. */
@@ -386,6 +397,7 @@ export interface RunState {
   /** Why the run failed when no end says it, such as `loop_exhausted` on a looping top-level workflow. */
   failure?: WorkflowFailure;
   /** The validated `--inputs`, stored when the workflow declares inputs. */
+  // oxlint-disable-next-line teamai/no-unsafe-dictionary-type -- engine.ts and handoff.ts write the inputs they checked as Record<string, unknown>
   inputs?: Record<string, unknown>;
   /** The alias that started the workflow when the run started: the name people use for it. Absent when it had none, or its alias started another workflow. */
   alias?: string;
@@ -514,7 +526,9 @@ export type WorkflowSource = 'team' | 'default';
 export type ResolvedWorkflow = CachedWorkflow & { source: WorkflowSource };
 
 export type WorkflowEnvelope =
+  // oxlint-disable-next-line teamai/no-unsafe-dictionary-type -- engine.ts ok() and the session-flow commands put typed records here, which are not JsonValue
   | { data: Record<string, unknown> }
+  // oxlint-disable-next-line teamai/no-unsafe-dictionary-type -- scoring and engine label records carry typed fields the error renders as JSON
   | { error: { code: string; message: string; labels?: Array<Record<string, unknown>> } };
 
 export function isWorkflowError(
