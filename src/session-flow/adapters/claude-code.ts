@@ -23,7 +23,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { z } from 'zod';
 import { AgentAdapter, type SessionMeta, type SessionReadRef, type Subagent, type SubagentsRead } from './base.js';
-import type { Session, Message, ContentBlock, ImageBlock } from '../ir.js';
+import type { Session, SessionMetadata, Message, ContentBlock, ImageBlock, ThinkingBlock, ToolArguments } from '../ir.js';
 import { assertSafeSessionFileId, deriveTargetSessionId } from '../ids.js';
 import { imagePlaceholderText } from '../ir.js';
 import {
@@ -38,7 +38,11 @@ import {
   dirExists,
   removeDirRecursive,
   mayReadLocalImageFile,
+  type JsonlRecord,
+  coercedText,
+  OptionalString,
 } from '../fs.js';
+import { JsonValueSchema, type JsonValue } from '../../types.js';
 import { sessionStoreDir } from '../../locate.js';
 import {
   cleanTitleText,
@@ -50,33 +54,31 @@ import {
 // Tool-name normalization map
 // ---------------------------------------------------------------------------
 
-const CC_TO_IR_TOOL: Record<string, string> = {
-  Read: 'read_file',
-  Write: 'write_file',
-  Edit: 'edit_file',
-  MultiEdit: 'multi_edit',
-  Bash: 'bash',
-  Glob: 'glob',
-  Grep: 'grep',
-  WebSearch: 'web_search',
-  WebFetch: 'web_fetch',
-  Task: 'task',
-  TodoWrite: 'todo_write',
-  NotebookEdit: 'notebook_edit',
-  LSP: 'lsp',
-  ListMcpResourcesTool: 'list_mcp_resources',
-};
+const CC_TO_IR_TOOL: ReadonlyMap<string, string> = new Map([
+  ['Read', 'read_file'],
+  ['Write', 'write_file'],
+  ['Edit', 'edit_file'],
+  ['MultiEdit', 'multi_edit'],
+  ['Bash', 'bash'],
+  ['Glob', 'glob'],
+  ['Grep', 'grep'],
+  ['WebSearch', 'web_search'],
+  ['WebFetch', 'web_fetch'],
+  ['Task', 'task'],
+  ['TodoWrite', 'todo_write'],
+  ['NotebookEdit', 'notebook_edit'],
+  ['LSP', 'lsp'],
+  ['ListMcpResourcesTool', 'list_mcp_resources'],
+]);
 
-const IR_TO_CC_TOOL: Record<string, string> = Object.fromEntries(
-  Object.entries(CC_TO_IR_TOOL).map(([k, v]) => [v, k]),
-);
+const IR_TO_CC_TOOL: ReadonlyMap<string, string> = new Map([...CC_TO_IR_TOOL].map(([k, v]) => [v, k]));
 
 function normalizeToolName(ccName: string): string {
-  return CC_TO_IR_TOOL[ccName] ?? ccName;
+  return CC_TO_IR_TOOL.get(ccName) ?? ccName;
 }
 
 function denormalizeToolName(irName: string): string {
-  return IR_TO_CC_TOOL[irName] ?? irName;
+  return IR_TO_CC_TOOL.get(irName) ?? irName;
 }
 
 // Default CC tool inventory (used for deferred_tools_delta.addedNames on the attachment line)
@@ -155,6 +157,62 @@ function toCcTimestamp(isoStr: string | undefined): string {
 }
 
 // ---------------------------------------------------------------------------
+// Transcript lines as Claude Code writes them
+// ---------------------------------------------------------------------------
+
+/** Anthropic image format: {type:'image', source:{type:'base64', media_type, data}} (also {type:'url', url}). */
+const CcImageSourceSchema = z.object({
+  data: OptionalString,
+  url: OptionalString,
+  media_type: coercedText('image/png'),
+});
+
+/** One content block of a message (or of a tool_result's content); a field of another type reads as absent. */
+const CcBlockSchema = z.object({
+  type: JsonValueSchema.optional(),
+  text: coercedText(),
+  thinking: coercedText(),
+  signature: JsonValueSchema.optional(),
+  name: coercedText(),
+  id: coercedText(),
+  input: z.record(z.string(), JsonValueSchema).optional().catch(undefined),
+  tool_use_id: coercedText(),
+  content: JsonValueSchema.optional(),
+  is_error: JsonValueSchema.optional(),
+  url: OptionalString,
+  source: CcImageSourceSchema.optional().catch(undefined),
+});
+
+type CcBlock = z.infer<typeof CcBlockSchema>;
+
+/** A part of a tool_result's content: a block, or a bare string read as a text block. */
+const CcResultPartSchema = z.union([z.string().transform((text) => CcBlockSchema.parse({ type: 'text', text })), CcBlockSchema]);
+
+/** A message's content: the text itself, or a list of blocks. */
+const CcContentSchema = z.union([z.string(), z.array(JsonValueSchema)]).optional().catch(undefined);
+
+/** One transcript line, the fields TeamAI reads; a field of another type reads as absent. */
+const CcRecordSchema = z.object({
+  type: OptionalString,
+  timestamp: OptionalString,
+  summary: JsonValueSchema.optional(),
+  cwd: OptionalString,
+  uuid: OptionalString,
+  parentUuid: z.string().nullish().catch(undefined),
+  isSidechain: JsonValueSchema.optional(),
+  isMeta: JsonValueSchema.optional(),
+  promptId: OptionalString,
+  message: z.object({ content: CcContentSchema, model: OptionalString }).optional().catch(undefined),
+});
+
+type CcRecord = z.infer<typeof CcRecordSchema>;
+
+/** The lines of a transcript that parse as JSON objects, each read by `CcRecordSchema`. */
+function* ccRecords(lines: Iterable<JsonlRecord>): Generator<CcRecord> {
+  for (const line of lines) yield CcRecordSchema.parse(line);
+}
+
+// ---------------------------------------------------------------------------
 // Content-block parsing (CC → IR)
 // ---------------------------------------------------------------------------
 
@@ -162,64 +220,67 @@ function toCcTimestamp(isoStr: string | undefined): string {
  * Images returned inside a tool_result (e.g. Read on a screenshot) have no slot in the IR tool_result;
  * they go to `toolResultImages` so the caller can place them after the tool-result message.
  */
-function parseCcContentBlocks(content: unknown, toolResultImages: ImageBlock[] = []): ContentBlock[] {
+function parseCcContentBlocks(content: CcRecordContent, toolResultImages: ImageBlock[] = []): ContentBlock[] {
   const blocks: ContentBlock[] = [];
 
-  if (typeof content === 'string') {
+  if (content === undefined) return blocks;
+
+  if (!Array.isArray(content)) {
     blocks.push({ type: 'text', text: content });
 
     return blocks;
   }
 
-  if (!Array.isArray(content)) return blocks;
-
   for (const block of content) {
-    if (!block || typeof block !== 'object') continue;
-    const b = block as Record<string, unknown>;
-    const btype = b.type as string;
+    const parsed = CcBlockSchema.safeParse(block);
+
+    if (!parsed.success) continue;
+    const b = parsed.data;
+    const btype = b.type;
 
     if (btype === 'thinking') {
-      blocks.push({
-        type: 'thinking',
-        text: String(b.thinking ?? ''),
-        ...(b.signature ? { signature: String(b.signature) } : {}),
-      });
+      const thinking: ThinkingBlock = { type: 'thinking', text: b.thinking };
+
+      if (b.signature) thinking.signature = String(b.signature);
+      blocks.push(thinking);
     } else if (btype === 'text') {
-      blocks.push({ type: 'text', text: String(b.text ?? '') });
+      blocks.push({ type: 'text', text: b.text });
     } else if (btype === 'tool_use') {
       blocks.push({
         type: 'tool_call',
-        toolName: normalizeToolName(String(b.name ?? '')),
-        callId: String(b.id ?? ''),
-        arguments: (b.input as Record<string, unknown>) ?? {},
+        toolName: normalizeToolName(b.name),
+        callId: b.id,
+        arguments: b.input ?? {},
       });
     } else if (btype === 'tool_result') {
-      let rawContent = b.content;
+      let rawContent: string;
 
-      if (Array.isArray(rawContent)) {
+      if (Array.isArray(b.content)) {
         const parts: string[] = [];
 
-        for (const part of rawContent) {
-          if (part && typeof part === 'object' && (part as Record<string, unknown>).type === 'text') {
-            parts.push(String((part as Record<string, unknown>).text ?? ''));
-          } else if (part && typeof part === 'object' && (part as Record<string, unknown>).type === 'image') {
-            const image = parseCcImage(part as Record<string, unknown>);
+        for (const item of b.content) {
+          const part = CcResultPartSchema.safeParse(item);
+
+          if (!part.success) continue;
+
+          if (part.data.type === 'text') {
+            parts.push(part.data.text);
+          } else if (part.data.type === 'image') {
+            const image = parseCcImage(part.data);
 
             if (image) toolResultImages.push(image);
-          } else if (typeof part === 'string') {
-            parts.push(part);
           }
         }
 
         rawContent = parts.join('\n');
-      } else if (typeof rawContent !== 'string') {
-        rawContent = rawContent == null ? '' : String(rawContent);
+      } else {
+        rawContent = String(b.content ?? '');
       }
 
       blocks.push({
         type: 'tool_result',
-        callId: String(b.tool_use_id ?? ''),
-        content: rawContent as string,
+        callId: b.tool_use_id,
+        content: rawContent,
         isError: Boolean(b.is_error ?? false),
       });
     } else if (btype === 'image') {
@@ -234,24 +295,27 @@ function parseCcContentBlocks(content: unknown, toolResultImages: ImageBlock[] =
   return blocks;
 }
 
+type CcRecordContent = z.infer<typeof CcContentSchema>;
+
 /**
  * Anthropic image format: {type:'image', source:{type:'base64', media_type, data}} (also {type:'url', url}).
  */
-function parseCcImage(b: Record<string, unknown>): ImageBlock | undefined {
-  const src = b.source as Record<string, unknown> | undefined;
-  const data = typeof src?.data === 'string' ? src.data : undefined;
-  const url = typeof b.url === 'string' ? b.url : (typeof src?.url === 'string' ? src.url : undefined);
+function parseCcImage(b: CcBlock): ImageBlock | undefined {
+  const src = b.source;
+  const data = src?.data;
+  const url = b.url ?? src?.url;
 
   if (!data && !url) return undefined;
+  const mimeType = src?.media_type ?? 'image/png';
+  const image: ImageBlock = { type: 'image', mimeType };
 
-  return {
-    type: 'image',
-    mimeType: String(src?.media_type ?? 'image/png'),
-    // Carry base64 as-is; a URL-only form keeps just the pointer (the write side degrades by target capability)
-    ...(data ? { data } : {}),
-    ...(url ? { filePath: url } : {}),
-    label: guessImageLabel(String(src?.media_type ?? 'image/png')),
-  };
+  // Carry base64 as-is; a URL-only form keeps just the pointer (the write side degrades by target capability)
+  if (data) image.data = data;
+
+  if (url) image.filePath = url;
+  image.label = guessImageLabel(mimeType);
+
+  return image;
 }
 
 /** Inline images have no filename; derive a readable placeholder from the mime type (used when writing back or degrading to a placeholder). */
@@ -265,16 +329,26 @@ function guessImageLabel(mimeType: string): string {
 // Content-block serialization (IR → CC)
 // ---------------------------------------------------------------------------
 
-function irBlockToCc(block: ContentBlock, session?: Session): Record<string, unknown> | null {
+/** A content block as TeamAI writes it to a Claude Code message. */
+type CcWrittenBlock =
+  | { type: 'text'; text: string }
+  | { type: 'thinking'; thinking: string; signature?: string }
+  | { type: 'tool_use'; id: string; name: string; input: ToolArguments }
+  | { type: 'tool_result'; tool_use_id: string; content: string; is_error: boolean }
+  | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } };
+
+function irBlockToCc(block: ContentBlock, session?: Session): CcWrittenBlock | null {
   switch (block.type) {
     case 'text':
       return { type: 'text', text: block.text };
-    case 'thinking':
-      return {
-        type: 'thinking',
-        thinking: block.text,
-        ...(block.signature ? { signature: block.signature } : {}),
-      };
+    case 'thinking': {
+      const thinking: CcWrittenBlock = { type: 'thinking', thinking: block.text };
+
+      if (block.signature) thinking.signature = block.signature;
+
+      return thinking;
+    }
+
     case 'tool_call':
       return {
         type: 'tool_use',
@@ -297,9 +371,9 @@ function irBlockToCc(block: ContentBlock, session?: Session): Record<string, unk
       // Untrusted sessions (restored from a team archive) must never read a
       // local path: an archived image block can point at any readable file,
       // and its contents would then be embedded into the restored session.
-      if (!data && mayReadLocalImageFile(session, block.filePath)) {
+      if (!data && block.filePath && mayReadLocalImageFile(session, block.filePath)) {
         try {
-          data = fs.readFileSync(block.filePath as string).toString('base64');
+          data = fs.readFileSync(block.filePath).toString('base64');
         } catch {
           data = undefined;
         }
@@ -315,15 +389,58 @@ function irBlockToCc(block: ContentBlock, session?: Session): Record<string, unk
   }
 }
 
+/** The message object of a user or assistant line TeamAI writes. */
+interface CcWrittenMessage {
+  role: Message['role'];
+  content: CcWrittenBlock[];
+  model?: string;
+}
+
+/** The fields every line on the conversation chain carries. */
+interface CcWrittenChainFields {
+  parentUuid: string | null;
+  isSidechain: false;
+  uuid: string;
+  timestamp: string;
+  cwd: string;
+  sessionId: string;
+  version: string;
+  gitBranch: string;
+  userType: 'external';
+  entrypoint: 'cli';
+}
+
+interface CcWrittenMessageLine extends CcWrittenChainFields {
+  type: Message['role'];
+  message: CcWrittenMessage;
+  isMeta?: true;
+  promptId?: string;
+}
+
+/** A line TeamAI writes to a Claude Code transcript, so Claude Code can load and resume the session. */
+type CcWrittenLine =
+  | { type: 'mode'; mode: 'normal'; sessionId: string }
+  | { type: 'permission-mode'; permissionMode: 'default'; sessionId: string }
+  | (CcWrittenChainFields & { attachment: { type: 'deferred_tools_delta'; addedNames: string[] } })
+  | CcWrittenMessageLine
+  | {
+    type: 'file-history-snapshot';
+    messageId: string;
+    snapshot: { messageId: string; trackedFileBackups: Record<string, never>; timestamp: string };
+    isSnapshotUpdate: false;
+  }
+  | { type: 'last-prompt'; lastPrompt: string; leafUuid: string | null; sessionId: string }
+  | { type: 'summary'; summary: string; leafUuid: string | null; sessionId: string };
+
 const SubagentMetaSchema = z.object({
   toolUseId: z.string().optional(),
   spawnDepth: z.number().int().positive().optional(),
   finished: z.boolean().optional(),
 });
 
-function readJsonFile(file: string): unknown {
+function readJsonFile(file: string): JsonValue | undefined {
   try {
-    return JSON.parse(fs.readFileSync(file, 'utf-8')) as unknown;
+    return JsonValueSchema.parse(JSON.parse(fs.readFileSync(file, 'utf-8')));
   } catch {
     return undefined;
   }
@@ -420,9 +537,9 @@ export class ClaudeCodeAdapter extends AgentAdapter {
     try {
       // 50 lines are often all injected blocks (system-reminder / command records / snapshot); too small a budget makes
       // sessions that do have a real question fall back to "Session <id>" as well. 200 lines matches the codex/workbuddy budget.
-      for (const record of readJsonlHead(jsonlPath, 200)) {
-        const rtype = record.type as string;
-        const ts = parseCcTimestamp(record.timestamp as string);
+      for (const record of ccRecords(readJsonlHead(jsonlPath, 200))) {
+        const rtype = record.type;
+        const ts = parseCcTimestamp(record.timestamp);
 
         if (ts) {
           if (!createdAt) createdAt = ts;
@@ -437,26 +554,27 @@ export class ClaudeCodeAdapter extends AgentAdapter {
           messageCount++;
 
           // The directory name decodes only when the path has no '-', '_', '.' or space; the record has the real one.
-          if (recordedCwd === undefined && typeof record.cwd === 'string' && path.isAbsolute(record.cwd)) {
+          if (recordedCwd === undefined && record.cwd !== undefined && path.isAbsolute(record.cwd)) {
             recordedCwd = record.cwd;
           }
 
           if (rtype === 'user' && userTextCandidates.length < 5) {
-            const msg = record.message as Record<string, unknown> | undefined;
-            const content = msg?.content;
+            const content = record.message?.content;
 
-            if (typeof content === 'string') {
-              userTextCandidates.push(content);
-            } else if (Array.isArray(content)) {
+            if (Array.isArray(content)) {
               const parts: string[] = [];
 
-              for (const block of content) {
-                if (block && typeof block === 'object' && (block as Record<string, unknown>).type === 'text') {
-                  parts.push(String((block as Record<string, unknown>).text ?? ''));
+              for (const item of content) {
+                const block = CcBlockSchema.safeParse(item);
+
+                if (block.success && block.data.type === 'text') {
+                  parts.push(block.data.text);
                 }
               }
 
               if (parts.length) userTextCandidates.push(parts.join(' '));
+            } else if (content !== undefined) {
+              userTextCandidates.push(content);
             }
           }
         }
@@ -563,12 +681,12 @@ export class ClaudeCodeAdapter extends AgentAdapter {
       decodeCwdClaude(path.basename(path.dirname(jsonlPath)));
 
     // Collect every message record
-    const rawRecords: Record<string, unknown>[] = [];
+    const rawRecords: CcRecord[] = [];
     let nativeCwd: string | undefined;
     let summaryTitle: string | undefined;
 
-    for (const record of readJsonl(jsonlPath)) {
-      const rtype = record.type as string;
+    for (const record of ccRecords(readJsonl(jsonlPath))) {
+      const rtype = record.type;
 
       if (rtype === 'summary') {
         // Title line written by writeSession (CC /resume uses it too). If the read side ignores it,
@@ -579,14 +697,14 @@ export class ClaudeCodeAdapter extends AgentAdapter {
         continue;
       }
 
-      if (SKIP_TYPES.has(rtype)) continue;
+      if (rtype === undefined || SKIP_TYPES.has(rtype)) continue;
 
       if (rtype !== 'user' && rtype !== 'assistant') continue;
 
       // Every message record carries the real cwd (absolute path). Decoding the directory name is lossy
       // (`-` may come from `/` or a space), so the archive key (repoIdentity) must prefer
       // the native cwd in the record (design doc Key invariant); if recovery fails, fall back to the decoded directory name.
-      if (nativeCwd === undefined && typeof record.cwd === 'string' && path.isAbsolute(record.cwd)) {
+      if (nativeCwd === undefined && record.cwd !== undefined && path.isAbsolute(record.cwd)) {
         nativeCwd = record.cwd;
       }
 
@@ -627,7 +745,7 @@ export class ClaudeCodeAdapter extends AgentAdapter {
     let updatedAt: string | undefined;
 
     for (const record of rawRecords) {
-      const ts = parseCcTimestamp(record.timestamp as string);
+      const ts = parseCcTimestamp(record.timestamp);
 
       if (ts) {
         if (!createdAt) createdAt = ts;
@@ -640,12 +758,11 @@ export class ClaudeCodeAdapter extends AgentAdapter {
     if (!updatedAt) updatedAt = createdAt;
 
     // Metadata
-    const metadata: Record<string, unknown> = {};
+    const metadata: SessionMetadata = {};
 
     for (let i = rawRecords.length - 1; i >= 0; i--) {
       if (rawRecords[i].type === 'assistant') {
-        const msg = rawRecords[i].message as Record<string, unknown> | undefined;
-        const model = msg?.model as string | undefined;
+        const model = rawRecords[i].message?.model;
 
         if (model) {
           metadata.model = model;
@@ -672,24 +789,24 @@ export class ClaudeCodeAdapter extends AgentAdapter {
    * Note: the parentUuid chain may pass through skipped line types (attachment/file-history-snapshot and similar),
    * which breaks the chain. Orphan nodes whose parentUuid points at a missing record are treated as roots.
    */
-  private flattenDag(rawRecords: Record<string, unknown>[], chain: 'main' | 'subagent'): Message[] {
+  private flattenDag(rawRecords: CcRecord[], chain: 'main' | 'subagent'): Message[] {
     const mainChain = rawRecords.filter((r) => Boolean(r.isSidechain) === (chain === 'subagent'));
 
     // uuid → record (main-chain records only)
-    const uuidToRecord = new Map<string, Record<string, unknown>>();
+    const uuidToRecord = new Map<string, CcRecord>();
 
     for (const record of mainChain) {
-      const uid = record.uuid as string | undefined;
+      const uid = record.uuid;
 
       if (uid) uuidToRecord.set(uid, record);
     }
 
     // parentUuid → children
-    const childrenMap = new Map<string | null, Record<string, unknown>[]>();
-    const roots: Record<string, unknown>[] = [];
+    const childrenMap = new Map<string | null, CcRecord[]>();
+    const roots: CcRecord[] = [];
 
     for (const record of mainChain) {
-      const parent = (record.parentUuid as string | null | undefined) ?? null;
+      const parent = record.parentUuid ?? null;
 
       if (parent === null) {
         roots.push(record);
@@ -704,13 +821,13 @@ export class ClaudeCodeAdapter extends AgentAdapter {
     }
 
     // Depth-first over the main chain, so each root's chain stays in one piece
-    const ordered: Record<string, unknown>[] = [];
+    const ordered: CcRecord[] = [];
     const visited = new Set<string>();
-    const stack: Record<string, unknown>[] = roots.toReversed();
+    const stack: CcRecord[] = roots.toReversed();
 
     while (stack.length > 0) {
       const record = stack.pop()!;
-      const uid = record.uuid as string | undefined;
+      const uid = record.uuid;
 
       if (uid && visited.has(uid)) continue;
 
@@ -751,36 +868,36 @@ export class ClaudeCodeAdapter extends AgentAdapter {
     return messages;
   }
 
-  private recordToMessage(record: Record<string, unknown>, toolResultImages?: ImageBlock[]): Message | null {
-    const rtype = record.type as string;
+  private recordToMessage(record: CcRecord, toolResultImages?: ImageBlock[]): Message | null {
+    const rtype = record.type;
 
     if (rtype !== 'user' && rtype !== 'assistant') return null;
 
-    const msgObj = record.message as Record<string, unknown> | undefined;
+    const msgObj = record.message;
 
-    if (!msgObj || typeof msgObj !== 'object') return null;
+    if (!msgObj) return null;
 
     const content = msgObj.content;
     const blocks = parseCcContentBlocks(content, toolResultImages);
 
-    const timestamp = parseCcTimestamp(record.timestamp as string);
-    const messageId = record.uuid as string | undefined;
-    const parentId = record.parentUuid as string | undefined;
+    const timestamp = parseCcTimestamp(record.timestamp);
+    const messageId = record.uuid;
+    const parentId = record.parentUuid ?? undefined;
 
     const metadata: Message['metadata'] = {};
 
     if (rtype === 'assistant') {
-      const model = msgObj.model as string | undefined;
+      const model = msgObj.model;
 
       if (model) metadata.model = model;
     }
 
     if (record.isMeta) metadata.isMeta = true;
 
-    if (record.promptId) metadata.promptId = record.promptId as string;
+    if (record.promptId) metadata.promptId = record.promptId;
 
     return {
-      role: rtype as 'user' | 'assistant',
+      role: rtype,
       content: blocks,
       timestamp,
       messageId,
@@ -822,8 +939,8 @@ export class ClaudeCodeAdapter extends AgentAdapter {
    * 4. Insert an attachment line before the first assistant message (empty tool inventory)
    * 5. last-prompt line (last line)
    */
-  private sessionToCcRecords(session: Session, sessionId: string, cwd: string): Record<string, unknown>[] {
-    const records: Record<string, unknown>[] = [];
+  private sessionToCcRecords(session: Session, sessionId: string, cwd: string): CcWrittenLine[] {
+    const records: CcWrittenLine[] = [];
     let parentUuid: string | null = null;
     let firstAssistantUuid: string | null = null;
     let lastUserUuid: string | null = null;
@@ -847,7 +964,7 @@ export class ClaudeCodeAdapter extends AgentAdapter {
       const msgUuid = msg.messageId ?? uuidV4();
 
       // Build content blocks
-      const ccBlocks: Record<string, unknown>[] = [];
+      const ccBlocks: CcWrittenBlock[] = [];
 
       for (const block of msg.content) {
         const ccBlock = irBlockToCc(block, session);
@@ -856,7 +973,7 @@ export class ClaudeCodeAdapter extends AgentAdapter {
       }
 
       // CC message object
-      const ccMessage: Record<string, unknown> = { role: msg.role, content: ccBlocks };
+      const ccMessage: CcWrittenMessage = { role: msg.role, content: ccBlocks };
 
       if (msg.role === 'assistant') {
         ccMessage.model = msg.metadata?.model ?? 'claude-sonnet-4-20250514';
@@ -886,7 +1003,7 @@ export class ClaudeCodeAdapter extends AgentAdapter {
       }
 
       // Message line
-      const record: Record<string, unknown> = {
+      const record: CcWrittenMessageLine = {
         parentUuid,
         isSidechain: false,
         type: msg.role,

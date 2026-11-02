@@ -34,7 +34,7 @@ function esc(value: string): string {
 }
 
 /** Run a SQL script through the sqlite3 CLI (piped in; never written to disk). */
-function runSql(dbPath: string, sql: string, timeoutMs = 30_000): { ok: boolean; reason?: string } {
+function runSql(dbPath: string, sql: string, timeoutMs = 30_000): RegisterWorkBuddyResult {
   const sqlite3 = findSqlite3();
 
   if (!sqlite3) return { ok: false, reason: 'sqlite3 CLI not found' };
@@ -52,7 +52,7 @@ function runSql(dbPath: string, sql: string, timeoutMs = 30_000): { ok: boolean;
       return { ok: false, reason: stderr.slice(0, 300) || `sqlite3 exit ${r.status}` };
     }
   } catch (e) {
-    return { ok: false, reason: (e as Error).message };
+    return { ok: false, reason: e instanceof Error ? e.message : String(e) };
   }
 
   return { ok: true };

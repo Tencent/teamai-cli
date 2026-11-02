@@ -24,8 +24,10 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { AgentAdapter, type SessionMeta, type SessionReadRef } from './base.js';
-import type { Session, Message, ContentBlock, ThinkingBlock, ToolCallBlock, ToolResultBlock } from '../ir.js';
-import { imagePlaceholderText } from '../ir.js';
+import { z } from 'zod';
+import type { Session, SessionMetadata, Message, ContentBlock, ThinkingBlock, ToolArguments, ToolCallBlock, ToolResultBlock } from '../ir.js';
+import { imagePlaceholderText, MessageMetadataSchema, toolArgumentsFrom } from '../ir.js';
+import { CbContentItemSchema, cbRecords, type CbFunctionCallProviderData, type CbRecord, type CbWrittenLine } from './codebuddy.js';
 import {
   encodeCwdCodeBuddy,
   decodeCwdGeneric,
@@ -35,6 +37,7 @@ import {
   fileExists,
   dirExists,
   removeDirRecursive,
+  OptionalString,
 } from '../fs.js';
 import { sessionStoreDir } from '../../locate.js';
 import { cleanTitleText, cutTitle, fallbackTitle, isInjectedText, titleFromCandidates, titleFromUserText } from '../title.js';
@@ -46,16 +49,16 @@ import { log } from '../../utils/logger.js';
 // Tool-name normalization map
 // ---------------------------------------------------------------------------
 
-const WB_TO_IR_TOOL: Record<string, string> = {
-  read_file: 'read_file',
-  write_file: 'write_file',
-  edit_file: 'edit_file',
-  bash: 'bash',
-  grep: 'grep',
-  glob: 'glob',
-  task: 'task',
-  todo_write: 'todo_write',
-};
+const WB_TO_IR_TOOL: ReadonlyMap<string, string> = new Map([
+  ['read_file', 'read_file'],
+  ['write_file', 'write_file'],
+  ['edit_file', 'edit_file'],
+  ['bash', 'bash'],
+  ['grep', 'grep'],
+  ['glob', 'glob'],
+  ['task', 'task'],
+  ['todo_write', 'todo_write'],
+]);
 
 /**
  * IR → WorkBuddy tool name.
@@ -63,37 +66,37 @@ const WB_TO_IR_TOOL: Record<string, string> = {
  * Isomorphic with CodeBuddy: the client looks up icons and collapsed titles by camel-case UI names (Bash / Read / Write / Edit / Grep / Glob /
  * Task / TodoWrite ...). Writing the IR names `read_file`/`bash` directly makes the tool call render blank. Source-platform aliases are folded in here too, so they are not passed through unchanged.
  */
-const IR_TO_WB_TOOL: Record<string, string> = {
-  read_file: 'Read',
-  write_file: 'Write',
-  edit_file: 'Edit',
-  bash: 'Bash',
-  grep: 'Grep',
-  glob: 'Glob',
-  task: 'Task',
-  todo_write: 'TodoWrite',
-  delete_file: 'DeleteFile',
-  web_fetch: 'WebFetch',
-  web_search: 'WebSearch',
-  semantic_search: 'SemanticSearch',
-  execute_command: 'Bash',
-  run_command: 'Bash',
-  write_to_file: 'Write',
-  replace_in_file: 'Edit',
-  multi_edit: 'Edit',
-  search_file: 'Glob',
-  search_content: 'Grep',
-  list_dir: 'Glob',
-  codebase_search: 'SemanticSearch',
-  read_lints: 'LSP',
-};
+const IR_TO_WB_TOOL: ReadonlyMap<string, string> = new Map([
+  ['read_file', 'Read'],
+  ['write_file', 'Write'],
+  ['edit_file', 'Edit'],
+  ['bash', 'Bash'],
+  ['grep', 'Grep'],
+  ['glob', 'Glob'],
+  ['task', 'Task'],
+  ['todo_write', 'TodoWrite'],
+  ['delete_file', 'DeleteFile'],
+  ['web_fetch', 'WebFetch'],
+  ['web_search', 'WebSearch'],
+  ['semantic_search', 'SemanticSearch'],
+  ['execute_command', 'Bash'],
+  ['run_command', 'Bash'],
+  ['write_to_file', 'Write'],
+  ['replace_in_file', 'Edit'],
+  ['multi_edit', 'Edit'],
+  ['search_file', 'Glob'],
+  ['search_content', 'Grep'],
+  ['list_dir', 'Glob'],
+  ['codebase_search', 'SemanticSearch'],
+  ['read_lints', 'LSP'],
+]);
 
 function normalizeToolName(name: string): string {
-  return WB_TO_IR_TOOL[name] ?? name;
+  return WB_TO_IR_TOOL.get(name) ?? name;
 }
 
 function denormalizeToolName(irName: string): string {
-  return IR_TO_WB_TOOL[irName] ?? irName;
+  return IR_TO_WB_TOOL.get(irName) ?? irName;
 }
 
 /** Session title: first real user question > cleaned source title > Session <id> (same write-side strategy as codebuddy-ide). */
@@ -113,15 +116,16 @@ function resolveSessionTitle(session: Session, sessionId: string): string {
 }
 
 /** Summary text shown for a tool call when collapsed (native providerData.argumentsDisplayText). */
-function argumentsDisplayText(name: string, args: Record<string, unknown> | undefined): string {
+function argumentsDisplayText(name: string, args: ToolArguments | undefined): string {
   if (!args) return name;
 
-  const preferred =
+  const preferred = z.string().safeParse(
     args.command ?? args.path ?? args.pattern ?? args.glob_pattern ?? args.target_directory ??
-    args.target_file ?? args.query ?? args.url ?? args.filePath;
+    args.target_file ?? args.query ?? args.url ?? args.filePath,
+  );
 
-  if (typeof preferred === 'string' && preferred.trim()) {
-    return preferred.length > 160 ? `${preferred.slice(0, 160)}…` : preferred;
+  if (preferred.success && preferred.data.trim()) {
+    return preferred.data.length > 160 ? `${preferred.data.slice(0, 160)}…` : preferred.data;
   }
 
   try {
@@ -156,14 +160,17 @@ function fromUnixMs(ms: number): string {
 // meta.json
 // ---------------------------------------------------------------------------
 
-interface WorkBuddyMeta {
-  cwd?: string;
-  createdAt?: number;
-  updatedAt?: number;
-  sourceConversationId?: string;
-  isPlayground?: boolean;
-  migratedFrom?: string;
-}
+/** `<uuid>.meta.json`; a field of another type reads as absent. */
+const WorkBuddyMetaSchema = z.object({
+  cwd: OptionalString,
+  createdAt: z.number().optional().catch(undefined),
+  updatedAt: z.number().optional().catch(undefined),
+  sourceConversationId: OptionalString,
+  isPlayground: z.boolean().optional().catch(undefined),
+  migratedFrom: OptionalString,
+});
+
+type WorkBuddyMeta = z.infer<typeof WorkBuddyMetaSchema>;
 
 /**
  * Read `<uuid>.meta.json` from the same directory as the session jsonl.
@@ -174,17 +181,8 @@ function readMeta(jsonlPath: string): WorkBuddyMeta {
 
   try {
     if (!fileExists(metaPath)) return {};
-    const parsed = JSON.parse(fs.readFileSync(metaPath, 'utf-8')) as Record<string, unknown>;
 
-    return {
-      cwd: typeof parsed.cwd === 'string' ? parsed.cwd : undefined,
-      createdAt: typeof parsed.createdAt === 'number' ? parsed.createdAt : undefined,
-      updatedAt: typeof parsed.updatedAt === 'number' ? parsed.updatedAt : undefined,
-      sourceConversationId:
-        typeof parsed.sourceConversationId === 'string' ? parsed.sourceConversationId : undefined,
-      isPlayground: typeof parsed.isPlayground === 'boolean' ? parsed.isPlayground : undefined,
-      migratedFrom: typeof parsed.migratedFrom === 'string' ? parsed.migratedFrom : undefined,
-    };
+    return WorkBuddyMetaSchema.parse(JSON.parse(fs.readFileSync(metaPath, 'utf-8')));
   } catch {
     return {};
   }
@@ -277,8 +275,8 @@ export class WorkBuddyAdapter extends AgentAdapter {
     let aiTitle = '';
 
     try {
-      for (const record of readJsonlHead(jsonlPath, 80)) {
-        const rtype = record.type as string;
+      for (const record of cbRecords(readJsonlHead(jsonlPath, 80))) {
+        const rtype = record.type;
 
         if (rtype === 'ai-title') {
           aiTitle = String(record.aiTitle ?? '');
@@ -298,7 +296,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
 
         if (rtype === 'message') {
           messageCount++;
-          const role = record.role as string;
+          const role = record.role;
 
           if (role === 'user' && userTextCandidates.length < 5) {
             const content = record.content;
@@ -306,9 +304,11 @@ export class WorkBuddyAdapter extends AgentAdapter {
             if (Array.isArray(content)) {
               const parts: string[] = [];
 
-              for (const block of content) {
-                if (block && typeof block === 'object' && (block as Record<string, unknown>).type === 'input_text') {
-                  parts.push(String((block as Record<string, unknown>).text ?? ''));
+              for (const item of content) {
+                const block = CbContentItemSchema.safeParse(item);
+
+                if (block.success && block.data.type === 'input_text') {
+                  parts.push(block.data.text);
                 }
               }
 
@@ -368,12 +368,12 @@ export class WorkBuddyAdapter extends AgentAdapter {
 
     const metaInfo = readMeta(jsonlPath);
     const cwd = metaInfo.cwd ?? decodeCwdGeneric(path.basename(path.dirname(jsonlPath)));
-    const records = [...readJsonl(jsonlPath)];
+    const records = [...cbRecords(readJsonl(jsonlPath))];
 
     let title = '';
     let createdAt = metaInfo.createdAt !== undefined ? fromUnixMs(metaInfo.createdAt) : undefined;
     let updatedAt = metaInfo.updatedAt !== undefined ? fromUnixMs(metaInfo.updatedAt) : undefined;
-    const sessionMetadata: Record<string, unknown> = {};
+    const sessionMetadata: SessionMetadata = {};
     const messages: Message[] = [];
 
     if (metaInfo.sourceConversationId) sessionMetadata.sourceConversationId = metaInfo.sourceConversationId;
@@ -384,7 +384,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
 
     // First pass: extract title / timestamps
     for (const rec of records) {
-      const rtype = rec.type as string;
+      const rtype = rec.type;
 
       if (rtype === 'ai-title') {
         // Same as the codebuddy adapter: injected-block text is occasionally stored as ai-title, and taking it as-is pollutes the migration path
@@ -407,31 +407,31 @@ export class WorkBuddyAdapter extends AgentAdapter {
 
     // Second pass: build messages
     for (const rec of records) {
-      const rtype = rec.type as string;
+      const rtype = rec.type;
 
       if (rtype === 'message') {
-        const role = rec.role as string;
+        const role = rec.role;
 
         if (role !== 'user' && role !== 'assistant') continue;
 
         const content = this.parseMessageContent(rec);
 
         const msg: Message = {
-          role: role as 'user' | 'assistant',
+          role,
           content,
-          messageId: rec.id as string | undefined,
-          parentId: rec.parentId as string | undefined,
+          messageId: OptionalString.parse(rec.id),
+          parentId: OptionalString.parse(rec.parentId),
           timestamp: rec.timestamp !== undefined ? fromUnixMs(Number(rec.timestamp)) : undefined,
         };
 
         // Keep providerData in full (including WorkBuddy extension fields such as memory references)
-        const providerData = rec.providerData as Record<string, unknown> | undefined;
+        const providerData = rec.providerData;
 
         if (providerData) {
-          const md: Record<string, unknown> = { ...providerData };
+          const md = MessageMetadataSchema.parse(providerData);
 
-          if (typeof providerData.model === 'string') {
-            if (!sessionMetadata.model) sessionMetadata.model = providerData.model;
+          if (md.model !== undefined) {
+            if (!sessionMetadata.model) sessionMetadata.model = md.model;
           }
 
           msg.metadata = md;
@@ -442,16 +442,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
         const name = String(rec.name ?? '');
         const irName = normalizeToolName(name);
         const callId = String(rec.callId ?? rec.id ?? '');
-        const providerData = rec.providerData as Record<string, unknown> | undefined;
-        let argsRaw = providerData?.arguments ?? rec.arguments;
-        let arguments_: Record<string, unknown>;
-
-        try {
-          arguments_ = typeof argsRaw === 'string' ? JSON.parse(argsRaw) : (argsRaw as Record<string, unknown>) ?? {};
-        } catch {
-          arguments_ = { _raw: String(argsRaw) };
-        }
-
+        const arguments_ = toolArgumentsFrom(rec.providerData?.arguments ?? rec.arguments);
         const block: ToolCallBlock = { type: 'tool_call', toolName: irName, callId, arguments: arguments_ };
 
         if (messages.length > 0 && messages[messages.length - 1].role === 'assistant') {
@@ -461,12 +452,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
         }
       } else if (rtype === 'function_call_result') {
         const callId = String(rec.callId ?? '');
-        const output = rec.output as Record<string, unknown> | undefined;
-        let contentStr = '';
-
-        if (output) {
-          contentStr = String(output.text ?? '');
-        }
+        const contentStr = rec.output?.text ?? '';
 
         const status = String(rec.status ?? 'completed');
         const isError = status === 'failed' || status === 'error';
@@ -478,14 +464,13 @@ export class WorkBuddyAdapter extends AgentAdapter {
           messages.push({ role: 'user', content: [block] });
         }
       } else if (rtype === 'reasoning') {
-        const rawContent = rec.rawContent as Array<Record<string, unknown>> | undefined;
         let text = '';
 
-        if (Array.isArray(rawContent)) {
-          for (const part of rawContent) {
-            if (part.type === 'reasoning_text') {
-              text += String(part.text ?? '');
-            }
+        for (const item of rec.rawContent ?? []) {
+          const part = CbContentItemSchema.safeParse(item);
+
+          if (part.success && part.data.type === 'reasoning_text') {
+            text += part.data.text;
           }
         }
 
@@ -534,23 +519,24 @@ export class WorkBuddyAdapter extends AgentAdapter {
     };
   }
 
-  private parseMessageContent(rec: Record<string, unknown>): ContentBlock[] {
+  private parseMessageContent(rec: CbRecord): ContentBlock[] {
     const blocks: ContentBlock[] = [];
     const contentArr = rec.content;
 
-    if (typeof contentArr === 'string') {
+    if (contentArr === undefined) return blocks;
+
+    if (!Array.isArray(contentArr)) {
       blocks.push({ type: 'text', text: contentArr });
 
       return blocks;
     }
 
-    if (!Array.isArray(contentArr)) return blocks;
-
     for (const item of contentArr) {
-      if (!item || typeof item !== 'object') continue;
-      const it = item as Record<string, unknown>;
-      const itemType = it.type as string;
-      const text = String(it.text ?? '');
+      const it = CbContentItemSchema.safeParse(item);
+
+      if (!it.success) continue;
+      const itemType = it.data.type;
+      const text = it.data.text;
 
       if (itemType === 'input_text' || itemType === 'output_text') {
         blocks.push({ type: 'text', text });
@@ -579,7 +565,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
     const projDir = path.join(this.storageRoot, encodeCwdCodeBuddy(cwd));
     const jsonlPath = path.join(projDir, `${sessionId}.jsonl`);
 
-    const records: Record<string, unknown>[] = [];
+    const records: CbWrittenLine[] = [];
 
     // callId → tool name: so function_call_result lines carry the real tool name (instead of always 'Agent')
     const toolNamesByCallId = new Map<string, string>();
@@ -621,7 +607,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
           type: 'reasoning',
           providerData: msg.metadata?.model ? { model: msg.metadata.model } : {},
           content: [],
-          rawContent: [{ type: 'reasoning_text', text: (tb as ThinkingBlock).text }],
+          rawContent: [{ type: 'reasoning_text', text: tb.text }],
           sessionId,
           cwd,
         });
@@ -630,7 +616,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
 
       // message line
       if (otherBlocks.length > 0) {
-        const wbContent: Record<string, unknown>[] = [];
+        const wbContent: Array<{ type: 'input_text' | 'output_text'; text: string }> = [];
         let hasText = false;
 
         for (const block of otherBlocks) {
@@ -675,6 +661,13 @@ export class WorkBuddyAdapter extends AgentAdapter {
           const fcId = block.callId || uuidV4();
           const callId = block.callId || `call_${uuidV4()}`;
           const name = denormalizeToolName(block.toolName);
+
+          const providerData: CbFunctionCallProviderData = {
+            arguments: block.arguments,
+            argumentsDisplayText: argumentsDisplayText(name, block.arguments),
+          };
+
+          if (msg.metadata?.model) providerData.model = msg.metadata.model;
           records.push({
             id: fcId,
             parentId,
@@ -683,11 +676,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
             name,
             callId,
             arguments: JSON.stringify(block.arguments ?? {}),
-            providerData: {
-              arguments: block.arguments,
-              argumentsDisplayText: argumentsDisplayText(name, block.arguments),
-              ...(msg.metadata?.model ? { model: msg.metadata.model } : {}),
-            },
+            providerData,
             sessionId,
             cwd,
           });
@@ -764,7 +753,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
         this.noteWrite(notice);
       }
     } catch (e) {
-      const notice = `WorkBuddy session list registration error: ${(e as Error).message}`;
+      const notice = `WorkBuddy session list registration error: ${e instanceof Error ? e.message : String(e)}`;
       log.debug(notice);
       this.noteWrite(notice);
     }

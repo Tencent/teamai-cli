@@ -26,9 +26,11 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import type { ContentBlock, Session } from './ir.js';
+import { z } from 'zod';
+import type { ContentBlock, Session, ToolArguments } from './ir.js';
 import { imagePlaceholderText } from './ir.js';
-import { mayReadLocalImageFile, safeFileName } from './fs.js';
+import { mayReadLocalImageFile, OptionalString, safeFileName } from './fs.js';
+import { JsonValueSchema, type JsonValue } from '../types.js';
 import { isInjectedText, titleFromUserText , visibleUserText } from './title.js';
 
 // ---------------------------------------------------------------------------
@@ -44,14 +46,41 @@ interface IdeMessageFile {
   createdAt: string;
 }
 
-/** A conversation entry in the IDE index.json. */
-export interface IdeConversation {
+/** A conversation entry TeamAI writes to the IDE index.json. */
+export type IdeConversation = {
   id: string;
   type: 'craft' | 'plan' | 'team-member';
   name: string;
   createdAt: string;
   lastMessageAt: string;
   modelMap?: Record<string, string>;
+};
+
+/** A conversation entry as TeamAI reads it from the IDE index.json; a field of another type reads as absent. */
+const IdeConversationReadSchema = z.object({
+  id: z.string(),
+  name: OptionalString,
+  type: OptionalString,
+  createdAt: OptionalString,
+  lastMessageAt: OptionalString,
+});
+
+export type IdeConversationRead = z.infer<typeof IdeConversationReadSchema>;
+
+/** The entries of an index that TeamAI can read as conversations: those with a non-empty string id. */
+function readableConversations(entries: readonly JsonValue[]): IdeConversationRead[] {
+  return entries.flatMap((entry) => {
+    const conversation = IdeConversationReadSchema.safeParse(entry);
+
+    return conversation.success && conversation.data.id ? [conversation.data] : [];
+  });
+}
+
+/** The id an index entry carries, or undefined when the entry is not an object with one. */
+function entryId(entry: JsonValue): JsonValue | undefined {
+  const parsed = z.object({ id: JsonValueSchema.optional() }).safeParse(entry);
+
+  return parsed.success ? parsed.data.id : undefined;
 }
 
 export interface IdeSyncResult {
@@ -319,7 +348,14 @@ export interface IdeAsset {
   data?: string;
 }
 
-function irToIdeMessages(session: Session): { messages: IdeMessageFile[]; assets: IdeAsset[] } {
+/** A content block TeamAI writes into an IDE message body. */
+type IdeWrittenBlock =
+  | { type: 'reasoning'; text: string }
+  | { type: 'text'; text: string }
+  | { type: 'image'; image: string }
+  | { type: 'tool-call'; toolCallId: string; toolName: string; args: ToolArguments };
+
+function irToIdeMessages(session: Session) {
   const out: IdeMessageFile[] = [];
   const assets: IdeAsset[] = [];
   const usedNames = new Set<string>();
@@ -371,7 +407,7 @@ function irToIdeMessages(session: Session): { messages: IdeMessageFile[]; assets
     });
 
     // 1) thinking + text + image + tool_call → one message
-    const content: Record<string, unknown>[] = [];
+    const content: IdeWrittenBlock[] = [];
 
     for (const b of msg.content) {
       if (b.type === 'thinking') {
@@ -417,8 +453,8 @@ function irToIdeMessages(session: Session): { messages: IdeMessageFile[]; assets
         // The message id becomes a file name (messages/<id>.json). Ids read
         // back from an archive are untrusted: accept only the safe shape and
         // fall back to a locally derived id otherwise.
-        id: /^[A-Za-z0-9_-]{1,128}$/.test(msg.messageId ?? '')
-          ? (msg.messageId as string)
+        id: msg.messageId !== undefined && /^[A-Za-z0-9_-]{1,128}$/.test(msg.messageId)
+          ? msg.messageId
           : stableId([session.sessionId, String(msgIdx), 'message']),
         extra,
         createdAt: ts,
@@ -468,11 +504,16 @@ function irToIdeMessages(session: Session): { messages: IdeMessageFile[]; assets
 // index.json read/write
 // ---------------------------------------------------------------------------
 
-interface IdeIndex {
-  conversations?: IdeConversation[];
-  current?: string;
-  [key: string]: unknown;
-}
+/**
+ * A workspace's index.json. It is written back, so every key and every conversation entry TeamAI does not read is
+ * kept as it was; `conversations` that is not a list reads as an empty one.
+ */
+const IdeIndexSchema = z.looseObject({
+  conversations: z.array(JsonValueSchema).catch([]),
+  current: JsonValueSchema.optional(),
+});
+
+type IdeIndex = z.infer<typeof IdeIndexSchema>;
 
 function readIndex(historyDir: string): IdeIndex {
   const idxPath = path.join(historyDir, 'index.json');
@@ -480,21 +521,13 @@ function readIndex(historyDir: string): IdeIndex {
   if (!fs.existsSync(idxPath)) return { conversations: [] };
 
   try {
-    const data = JSON.parse(fs.readFileSync(idxPath, 'utf-8')) as IdeIndex;
-
-    if (!Array.isArray(data.conversations)) data.conversations = [];
-
-    return data;
+    return IdeIndexSchema.parse(JSON.parse(fs.readFileSync(idxPath, 'utf-8')));
   } catch {
     // When index.json is corrupt, try to restore from the backup
     const bakPath = path.join(historyDir, '.index_bak.json');
 
     try {
-      const data = JSON.parse(fs.readFileSync(bakPath, 'utf-8')) as IdeIndex;
-
-      if (!Array.isArray(data.conversations)) data.conversations = [];
-
-      return data;
+      return IdeIndexSchema.parse(JSON.parse(fs.readFileSync(bakPath, 'utf-8')));
     } catch {
       return { conversations: [] };
     }
@@ -518,8 +551,8 @@ function writeIndex(historyDir: string, data: IdeIndex): void {
 
 function upsertConversation(historyDir: string, conv: IdeConversation): void {
   const data = readIndex(historyDir);
-  const convs = data.conversations as IdeConversation[];
-  const i = convs.findIndex((c) => c.id === conv.id);
+  const convs = data.conversations;
+  const i = convs.findIndex((c) => entryId(c) === conv.id);
 
   if (i >= 0) convs[i] = conv;
   else convs.push(conv);
@@ -534,12 +567,12 @@ function upsertConversation(historyDir: string, conv: IdeConversation): void {
 
 function removeConversation(historyDir: string, convId: string): void {
   const data = readIndex(historyDir);
-  const convs = (data.conversations as IdeConversation[]).filter((c) => c.id !== convId);
+  const convs = data.conversations.filter((c) => entryId(c) !== convId);
 
-  if (convs.length === (data.conversations as IdeConversation[]).length) return; // No change
+  if (convs.length === data.conversations.length) return; // No change
   data.conversations = convs;
 
-  if (data.current === convId) data.current = convs[convs.length - 1]?.id;
+  if (data.current === convId) data.current = convs.length === 0 ? undefined : entryId(convs[convs.length - 1]);
   writeIndex(historyDir, data);
 }
 
@@ -604,7 +637,6 @@ interface IdeRequest {
   state: string;
   /** Epoch milliseconds, matching native IDE (a number, not an ISO string) */
   startedAt: number;
-  usage?: Record<string, unknown>;
 }
 
 /**
@@ -647,6 +679,16 @@ function buildIdeRequests(session: Session, messages: IdeMessageFile[]): IdeRequ
   return requests;
 }
 
+/** A message file's `message` body; every key besides `content` is kept when it is written back. */
+const IdeMessageBodySchema = z.looseObject({
+  content: z.array(JsonValueSchema).optional().catch(undefined),
+});
+
+type IdeMessageBody = z.infer<typeof IdeMessageBodySchema>;
+
+/** An image block of an IDE message body, by the asset it references. */
+const IdeImageRefSchema = z.object({ type: z.literal('image'), image: z.string() });
+
 export function writeIdeSession(session: Session, cwd: string): IdeSyncResult {
   const dirs = findIdeHistoryDirs(cwd, true);
 
@@ -673,8 +715,9 @@ export function writeIdeSession(session: Session, cwd: string): IdeSyncResult {
     // group, so the user cannot find it at the top after migrating. The source timeline stays in
     // createdAt (list details) and in message timestamps (after the session is opened).
     lastMessageAt: new Date().toISOString(),
-    ...(model ? { modelMap: { ask: model, craft: model, plan: model } } : {}),
   };
+
+  if (model) conv.modelMap = { ask: model, craft: model, plan: model };
 
   let synced = 0;
 
@@ -737,18 +780,18 @@ export function writeIdeSession(session: Session, cwd: string): IdeSyncResult {
             const ref = `codebuddy-asset://assets/${asset.name}`;
 
             for (const m of messages) {
-              let body: { role?: string; content?: Array<Record<string, unknown>> };
+              let body: IdeMessageBody;
 
               try {
-                body = JSON.parse(m.message);
+                body = IdeMessageBodySchema.parse(JSON.parse(m.message));
               } catch {
                 continue;
               }
 
-              if (!Array.isArray(body.content)) continue;
+              if (body.content === undefined) continue;
 
               const idx = body.content.findIndex(
-                (c) => c.type === 'image' && c.image === ref,
+                (c) => IdeImageRefSchema.safeParse(c).data?.image === ref,
               );
 
               if (idx >= 0) {
@@ -763,7 +806,7 @@ export function writeIdeSession(session: Session, cwd: string): IdeSyncResult {
       // Write each message and collect the order index at the same time.
       // The conversation-level index.json is the **message order index** — the IDE uses it to decide
       // display order. Writing only messages/*.json without it opens a blank session.
-      const messageIndex: Array<Record<string, unknown>> = [];
+      const messageIndex: Array<{ id: string; type: 'text'; role: IdeMessageFile['role']; isComplete: true }> = [];
 
       for (const m of messages) {
         fs.writeFileSync(path.join(msgDir, `${m.id}.json`), JSON.stringify(m, null, 2), 'utf-8');
@@ -894,12 +937,35 @@ export function deleteIdeSession(sessionId: string, cwd?: string): number {
 // IDE → IR read (used by the codebuddy-ide adapter)
 // ---------------------------------------------------------------------------
 
+/**
+ * A content block of an IDE message body, the fields the codebuddy-ide adapter reads. Each holds whatever JSON the IDE
+ * wrote, since the adapter coerces most of them to text.
+ */
+const IdeBlockSchema = z.object({
+  type: JsonValueSchema.optional(),
+  text: JsonValueSchema.optional(),
+  reasoning: JsonValueSchema.optional(),
+  id: JsonValueSchema.optional(),
+  toolCallId: JsonValueSchema.optional(),
+  toolName: JsonValueSchema.optional(),
+  args: z.record(z.string(), JsonValueSchema).optional().catch(undefined),
+  arguments: z.record(z.string(), JsonValueSchema).optional().catch(undefined),
+  isError: JsonValueSchema.optional(),
+  result: JsonValueSchema.optional(),
+  image: JsonValueSchema.optional(),
+  url: JsonValueSchema.optional(),
+  path: JsonValueSchema.optional(),
+});
+
+export type IdeBlock = z.infer<typeof IdeBlockSchema>;
+
 /** One parsed IDE message (content is the native IDE block array). */
 export interface IdeMessageParsed {
   id: string;
-  role: 'user' | 'assistant' | 'tool';
+  /** `user`, `assistant` or `tool` as the IDE writes them; any other role is kept as it was written. */
+  role: string;
   createdAt?: string;
-  content: Array<Record<string, unknown>>;
+  content: IdeBlock[];
   model?: string;
 }
 
@@ -924,8 +990,8 @@ export interface IdeConversationEntry {
  * meanings are completely different (a workspace contains session directories; the history root
  * contains workspace directories). Passing the wrong one returns an empty list.
  */
-export function readIdeConversations(historyDir: string): IdeConversation[] {
-  return (readIndex(historyDir).conversations ?? []).filter((c) => Boolean(c?.id));
+export function readIdeConversations(historyDir: string): IdeConversationRead[] {
+  return readableConversations(readIndex(historyDir).conversations);
 }
 
 /**
@@ -956,8 +1022,7 @@ export function listIdeConversations(historyDirs?: string[]): IdeConversationEnt
         continue;
       }
 
-      for (const c of readIndex(historyDir).conversations as IdeConversation[]) {
-        if (!c?.id) continue;
+      for (const c of readableConversations(readIndex(historyDir).conversations)) {
         out.push({
           id: c.id,
           name: c.name ?? '',
@@ -975,46 +1040,71 @@ export function listIdeConversations(historyDirs?: string[]): IdeConversationEnt
   return out;
 }
 
+/** A message file as the IDE writes it; `message` and `extra` are stringified JSON. */
+const IdeMessageFileReadSchema = z.object({
+  role: OptionalString,
+  message: JsonValueSchema.optional(),
+  id: OptionalString,
+  extra: JsonValueSchema.optional(),
+  createdAt: OptionalString,
+});
+
+/** The parsed `message` of a message file; a block that is not an object is skipped. */
+const IdeMessageBodyReadSchema = z.object({
+  role: OptionalString,
+  content: z.array(JsonValueSchema).optional().catch(undefined),
+});
+
+const IdeMessageExtraSchema = z.object({ modelName: JsonValueSchema.optional() });
+
 function parseIdeMessageFile(file: string): IdeMessageParsed | null {
-  let raw: IdeMessageFile;
+  let parsedRaw;
 
   try {
-    raw = JSON.parse(fs.readFileSync(file, 'utf-8')) as IdeMessageFile;
+    parsedRaw = IdeMessageFileReadSchema.safeParse(JSON.parse(fs.readFileSync(file, 'utf-8')));
   } catch {
     return null;
   }
+
+  if (!parsedRaw.success) return null;
+  const raw = parsedRaw.data;
 
   // message is stringified JSON. When it is corrupt (a half-written file while the IDE is writing),
   // skip the whole message. Half JSON cannot be degraded to text — stitching it back only yields unreadable garbage.
-  let body: { role?: string; content?: unknown };
+  let body;
 
   try {
-    body = JSON.parse(raw.message) as { role?: string; content?: unknown };
+    body = IdeMessageBodyReadSchema.safeParse(JSON.parse(String(raw.message)));
   } catch {
     return null;
   }
 
-  const content = Array.isArray(body.content) ? (body.content as Array<Record<string, unknown>>) : [];
+  const content = (body.data?.content ?? []).flatMap((item) => {
+    const block = IdeBlockSchema.safeParse(item);
+
+    return block.success ? [block.data] : [];
+  });
 
   let model: string | undefined;
 
   try {
-    const extra = JSON.parse(raw.extra ?? '{}') as { modelName?: string };
+    const extra = IdeMessageExtraSchema.safeParse(JSON.parse(String(raw.extra ?? '{}')));
 
-    if (extra?.modelName) model = String(extra.modelName).replace(/^custom-local:/, '');
+    if (extra.data?.modelName) model = String(extra.data.modelName).replace(/^custom-local:/, '');
   } catch {
     // A missing extra does not affect the message itself
   }
 
-  const role = (raw.role ?? body.role ?? 'user') as IdeMessageParsed['role'];
-
-  return {
+  const message: IdeMessageParsed = {
     id: raw.id ?? path.basename(file, '.json'),
-    role,
+    role: raw.role ?? body.data?.role ?? 'user',
     createdAt: raw.createdAt,
     content,
-    ...(model ? { model } : {}),
   };
+
+  if (model) message.model = model;
+
+  return message;
 }
 
 /**
@@ -1024,6 +1114,9 @@ function parseIdeMessageFile(file: string): IdeMessageParsed | null {
  * order. Filename dictionary order is unrelated to the real order (message ids are content hashes/UUIDs).
  * Fall back to filename sort only when the index is missing, and append orphan files the index does not cover at the end.
  */
+/** A conversation's index.json: the order its messages are shown in. */
+const IdeMessageOrderSchema = z.object({ messages: z.array(JsonValueSchema).optional().catch(undefined) });
+
 export function readIdeConversation(convDir: string, limit?: number): IdeMessageParsed[] {
   const msgDir = path.join(convDir, 'messages');
 
@@ -1032,12 +1125,10 @@ export function readIdeConversation(convDir: string, limit?: number): IdeMessage
   let order: string[] = [];
 
   try {
-    const idx = JSON.parse(fs.readFileSync(path.join(convDir, 'index.json'), 'utf-8')) as {
-      messages?: Array<{ id?: string }>;
-    };
+    const idx = IdeMessageOrderSchema.parse(JSON.parse(fs.readFileSync(path.join(convDir, 'index.json'), 'utf-8')));
 
-    if (Array.isArray(idx.messages)) {
-      order = idx.messages.map((m) => String(m?.id ?? '')).filter(Boolean);
+    if (idx.messages !== undefined) {
+      order = idx.messages.map((m) => String(entryId(m) ?? '')).filter(Boolean);
     }
   } catch {
     order = [];

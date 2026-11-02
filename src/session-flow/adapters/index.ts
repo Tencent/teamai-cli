@@ -21,7 +21,12 @@ import { sessionStoreDir } from '../../locate.js';
 /** Builds a platform's adapter on its store, which follows the member's recorded `toolRoots` (`sessionStoreDir`). */
 export type AdapterFactory = (toolRoots?: LocalConfig['toolRoots']) => AgentAdapter;
 
-export const ADAPTER_REGISTRY: Record<string, AdapterFactory> = {
+/** Platform id → adapter factory. Open to any id so a test can register a stand-in platform. */
+export interface AdapterRegistry {
+  [platform: string]: AdapterFactory;
+}
+
+export const ADAPTER_REGISTRY: AdapterRegistry = {
   // Base platforms
   'claude-code': (toolRoots) => new ClaudeCodeAdapter('claude-code', sessionStoreDir('claude-code', toolRoots)),
   codex: (toolRoots) => new CodexAdapter('codex', sessionStoreDir('codex', toolRoots)),

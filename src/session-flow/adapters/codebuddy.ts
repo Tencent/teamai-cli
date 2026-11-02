@@ -25,8 +25,10 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { AgentAdapter, type SessionMeta, type SessionReadRef, type SubagentsRead } from './base.js';
-import type { Session, Message, ContentBlock, ThinkingBlock, ToolCallBlock, ToolResultBlock } from '../ir.js';
-import { imagePlaceholderText } from '../ir.js';
+import { z } from 'zod';
+import type { Session, SessionMetadata, Message, ContentBlock, ThinkingBlock, ToolArguments, ToolCallBlock, ToolResultBlock } from '../ir.js';
+import { imagePlaceholderText, toolArgumentsFrom } from '../ir.js';
+import { JsonValueSchema } from '../../types.js';
 import { assertSafeSessionFileId, deriveTargetSessionId } from '../ids.js';
 import {
   encodeCwdCodeBuddy,
@@ -38,6 +40,10 @@ import {
   fileExists,
   dirExists,
   removeDirRecursive,
+  coercedText,
+  OptionalString,
+  TextOrBlocksSchema,
+  type JsonlRecord,
 } from '../fs.js';
 import { sessionStoreDir } from '../../locate.js';
 import { cutTitle, isInjectedText, fallbackTitle, titleFromCandidates } from '../title.js';
@@ -46,16 +52,16 @@ import { cutTitle, isInjectedText, fallbackTitle, titleFromCandidates } from '..
 // Tool-name normalization map
 // ---------------------------------------------------------------------------
 
-const CB_TO_IR_TOOL: Record<string, string> = {
-  read_file: 'read_file',
-  write_file: 'write_file',
-  edit_file: 'edit_file',
-  bash: 'bash',
-  grep: 'grep',
-  glob: 'glob',
-  task: 'task',
-  todo_write: 'todo_write',
-};
+const CB_TO_IR_TOOL: ReadonlyMap<string, string> = new Map([
+  ['read_file', 'read_file'],
+  ['write_file', 'write_file'],
+  ['edit_file', 'edit_file'],
+  ['bash', 'bash'],
+  ['grep', 'grep'],
+  ['glob', 'glob'],
+  ['task', 'task'],
+  ['todo_write', 'todo_write'],
+]);
 
 /**
  * IR → CodeBuddy tool name.
@@ -66,50 +72,51 @@ const CB_TO_IR_TOOL: Record<string, string> = {
  * Source-platform aliases (execute_command / replace_in_file / search_file ...) are folded in here too,
  * otherwise they would land in the target file unchanged.
  */
-const IR_TO_CB_TOOL: Record<string, string> = {
-  read_file: 'Read',
-  write_file: 'Write',
-  edit_file: 'Edit',
-  bash: 'Bash',
-  grep: 'Grep',
-  glob: 'Glob',
-  task: 'Task',
-  todo_write: 'TodoWrite',
-  delete_file: 'DeleteFile',
-  web_fetch: 'WebFetch',
-  web_search: 'WebSearch',
-  semantic_search: 'SemanticSearch',
+const IR_TO_CB_TOOL: ReadonlyMap<string, string> = new Map([
+  ['read_file', 'Read'],
+  ['write_file', 'Write'],
+  ['edit_file', 'Edit'],
+  ['bash', 'Bash'],
+  ['grep', 'Grep'],
+  ['glob', 'Glob'],
+  ['task', 'Task'],
+  ['todo_write', 'TodoWrite'],
+  ['delete_file', 'DeleteFile'],
+  ['web_fetch', 'WebFetch'],
+  ['web_search', 'WebSearch'],
+  ['semantic_search', 'SemanticSearch'],
   // Source-platform aliases → CodeBuddy semantic tools
-  execute_command: 'Bash',
-  run_command: 'Bash',
-  write_to_file: 'Write',
-  replace_in_file: 'Edit',
-  multi_edit: 'Edit',
-  search_file: 'Glob',
-  search_content: 'Grep',
-  list_dir: 'Glob',
-  codebase_search: 'SemanticSearch',
-  read_lints: 'LSP',
-};
+  ['execute_command', 'Bash'],
+  ['run_command', 'Bash'],
+  ['write_to_file', 'Write'],
+  ['replace_in_file', 'Edit'],
+  ['multi_edit', 'Edit'],
+  ['search_file', 'Glob'],
+  ['search_content', 'Grep'],
+  ['list_dir', 'Glob'],
+  ['codebase_search', 'SemanticSearch'],
+  ['read_lints', 'LSP'],
+]);
 
 function normalizeToolName(cbName: string): string {
-  return CB_TO_IR_TOOL[cbName] ?? cbName;
+  return CB_TO_IR_TOOL.get(cbName) ?? cbName;
 }
 
 function denormalizeToolName(irName: string): string {
-  return IR_TO_CB_TOOL[irName] ?? irName;
+  return IR_TO_CB_TOOL.get(irName) ?? irName;
 }
 
 /** Summary text shown for a tool call when collapsed (native providerData.argumentsDisplayText). */
-function argumentsDisplayText(name: string, args: Record<string, unknown> | undefined): string {
+function argumentsDisplayText(name: string, args: ToolArguments | undefined): string {
   if (!args) return name;
 
-  const preferred =
+  const preferred = z.string().safeParse(
     args.command ?? args.path ?? args.pattern ?? args.glob_pattern ?? args.target_directory ??
-    args.target_file ?? args.query ?? args.url ?? args.filePath;
+    args.target_file ?? args.query ?? args.url ?? args.filePath,
+  );
 
-  if (typeof preferred === 'string' && preferred.trim()) {
-    return preferred.length > 160 ? `${preferred.slice(0, 160)}…` : preferred;
+  if (preferred.success && preferred.data.trim()) {
+    return preferred.data.length > 160 ? `${preferred.data.slice(0, 160)}…` : preferred.data;
   }
 
   try {
@@ -120,6 +127,101 @@ function argumentsDisplayText(name: string, args: Record<string, unknown> | unde
     return name;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Transcript lines as CodeBuddy writes them
+// ---------------------------------------------------------------------------
+
+/** One content item of a message line. */
+export const CbContentItemSchema = z.object({ type: JsonValueSchema.optional(), text: coercedText() });
+
+/**
+ * One transcript line, the fields TeamAI reads; a field of another type reads as absent. Fields that are coerced to
+ * text or a number on read keep any JSON value.
+ */
+export const CbRecordSchema = z.object({
+  type: OptionalString,
+  aiTitle: JsonValueSchema.optional(),
+  timestamp: JsonValueSchema.optional(),
+  cwd: OptionalString,
+  role: OptionalString,
+  id: JsonValueSchema.optional(),
+  parentId: JsonValueSchema.optional(),
+  content: TextOrBlocksSchema,
+  providerData: z
+    .object({ model: JsonValueSchema.optional(), arguments: JsonValueSchema.optional() })
+    .catchall(JsonValueSchema)
+    .optional()
+    .catch(undefined),
+  name: JsonValueSchema.optional(),
+  callId: JsonValueSchema.optional(),
+  arguments: JsonValueSchema.optional(),
+  output: z.object({ text: coercedText() }).optional().catch(undefined),
+  status: JsonValueSchema.optional(),
+  rawContent: z.array(JsonValueSchema).optional().catch(undefined),
+});
+
+export type CbRecord = z.infer<typeof CbRecordSchema>;
+
+/** The lines of a transcript, each read by `CbRecordSchema`. */
+export function* cbRecords(lines: Iterable<JsonlRecord>): Generator<CbRecord> {
+  for (const line of lines) yield CbRecordSchema.parse(line);
+}
+
+/** The providerData of a function_call line TeamAI writes. */
+export interface CbFunctionCallProviderData {
+  arguments: ToolArguments;
+  argumentsDisplayText: string;
+  model?: string;
+}
+
+/** The fields every line TeamAI writes after the title carries on the conversation chain. */
+interface CbWrittenChainFields {
+  id: string;
+  parentId: string | null;
+  timestamp: number;
+  sessionId: string;
+  cwd: string;
+}
+
+/** A line TeamAI writes to a CodeBuddy (or WorkBuddy) transcript. */
+export type CbWrittenLine =
+  | { timestamp: number; type: 'ai-title'; aiTitle: string; sessionId: string; cwd: string }
+  | (CbWrittenChainFields & {
+    type: 'reasoning';
+    providerData: { model?: string };
+    content: [];
+    rawContent: Array<{ type: 'reasoning_text'; text: string }>;
+  })
+  | (CbWrittenChainFields & {
+    type: 'message';
+    role: Message['role'];
+    status: 'completed';
+    content: Array<{ type: 'input_text' | 'output_text'; text: string }>;
+    providerData: { model?: string };
+  })
+  | (CbWrittenChainFields & {
+    type: 'function_call';
+    name: string;
+    callId: string;
+    arguments: string;
+    providerData: CbFunctionCallProviderData;
+  })
+  | (CbWrittenChainFields & {
+    type: 'function_call_result';
+    name: string;
+    callId: string;
+    status: 'failed' | 'completed';
+    output: { type: 'text'; text: string };
+  })
+  | {
+    id: string;
+    timestamp: number;
+    type: 'file-history-snapshot';
+    isSnapshotUpdate: false;
+    snapshot: { messageId: string; trackedFileBackups: Record<string, never> };
+    cwd: string;
+  };
 
 // ---------------------------------------------------------------------------
 // UUID / timestamp helpers
@@ -250,8 +352,8 @@ export class CodeBuddyAdapter extends AgentAdapter {
     let aiTitle = '';
 
     try {
-      for (const record of readJsonlHead(jsonlPath, 80)) {
-        const rtype = record.type as string;
+      for (const record of cbRecords(readJsonlHead(jsonlPath, 80))) {
+        const rtype = record.type;
 
         if (rtype === 'ai-title') {
           aiTitle = String(record.aiTitle ?? '');
@@ -269,7 +371,7 @@ export class CodeBuddyAdapter extends AgentAdapter {
 
         if (rtype === 'message') {
           messageCount++;
-          const role = record.role as string;
+          const role = record.role;
 
           if (role === 'user' && userTextCandidates.length < 5) {
             const content = record.content;
@@ -277,9 +379,11 @@ export class CodeBuddyAdapter extends AgentAdapter {
             if (Array.isArray(content)) {
               const parts: string[] = [];
 
-              for (const block of content) {
-                if (block && typeof block === 'object' && (block as Record<string, unknown>).type === 'input_text') {
-                  parts.push(String((block as Record<string, unknown>).text ?? ''));
+              for (const item of content) {
+                const block = CbContentItemSchema.safeParse(item);
+
+                if (block.success && block.data.type === 'input_text') {
+                  parts.push(block.data.text);
                 }
               }
 
@@ -355,7 +459,7 @@ export class CodeBuddyAdapter extends AgentAdapter {
     const sessionId = path.basename(jsonlPath, '.jsonl');
 
     const cwd = decodeCwdGeneric(path.basename(path.dirname(jsonlPath)));
-    const records = [...readJsonl(jsonlPath)];
+    const records = [...cbRecords(readJsonl(jsonlPath))];
 
     // Every line written by writeSession carries cwd (the real absolute path). Decoding the directory name is the identity function
     // (it cannot recover the real path), so the archive key (repoIdentity) must prefer the native cwd in the record
@@ -363,7 +467,7 @@ export class CodeBuddyAdapter extends AgentAdapter {
     let nativeCwd: string | undefined;
 
     for (const rec of records) {
-      if (typeof rec.cwd === 'string' && path.isAbsolute(rec.cwd)) {
+      if (rec.cwd !== undefined && path.isAbsolute(rec.cwd)) {
         nativeCwd = rec.cwd;
         break;
       }
@@ -374,12 +478,12 @@ export class CodeBuddyAdapter extends AgentAdapter {
     let title = '';
     let createdAt: string | undefined;
     let updatedAt: string | undefined;
-    const sessionMetadata: Record<string, unknown> = {};
+    const sessionMetadata: SessionMetadata = {};
     const messages: Message[] = [];
 
     // First pass: extract title / timestamps / metadata
     for (const rec of records) {
-      const rtype = rec.type as string;
+      const rtype = rec.type;
 
       if (rtype === 'ai-title') {
         // CodeBuddy sometimes stores injected-block text as ai-title. Taking it as-is pollutes the whole migration path
@@ -402,25 +506,25 @@ export class CodeBuddyAdapter extends AgentAdapter {
 
     // Second pass: build messages
     for (const rec of records) {
-      const rtype = rec.type as string;
+      const rtype = rec.type;
 
       if (rtype === 'message') {
-        const role = rec.role as string;
+        const role = rec.role;
 
         if (role !== 'user' && role !== 'assistant') continue;
 
         const content = this.parseMessageContent(rec);
 
         const msg: Message = {
-          role: role as 'user' | 'assistant',
+          role,
           content,
-          messageId: rec.id as string | undefined,
-          parentId: rec.parentId as string | undefined,
+          messageId: OptionalString.parse(rec.id),
+          parentId: OptionalString.parse(rec.parentId),
           timestamp: rec.timestamp !== undefined ? fromUnixMs(Number(rec.timestamp)) : undefined,
         };
 
         // Extract model
-        const providerData = rec.providerData as Record<string, unknown> | undefined;
+        const providerData = rec.providerData;
 
         if (providerData?.model) {
           msg.metadata = { model: String(providerData.model) };
@@ -433,16 +537,7 @@ export class CodeBuddyAdapter extends AgentAdapter {
         const name = String(rec.name ?? '');
         const irName = normalizeToolName(name);
         const callId = String(rec.callId ?? rec.id ?? '');
-        const providerData = rec.providerData as Record<string, unknown> | undefined;
-        let argsRaw = providerData?.arguments ?? rec.arguments;
-        let arguments_: Record<string, unknown>;
-
-        try {
-          arguments_ = typeof argsRaw === 'string' ? JSON.parse(argsRaw) : (argsRaw as Record<string, unknown>) ?? {};
-        } catch {
-          arguments_ = { _raw: String(argsRaw) };
-        }
-
+        const arguments_ = toolArgumentsFrom(rec.providerData?.arguments ?? rec.arguments);
         const block: ToolCallBlock = { type: 'tool_call', toolName: irName, callId, arguments: arguments_ };
 
         if (messages.length > 0 && messages[messages.length - 1].role === 'assistant') {
@@ -452,12 +547,7 @@ export class CodeBuddyAdapter extends AgentAdapter {
         }
       } else if (rtype === 'function_call_result') {
         const callId = String(rec.callId ?? '');
-        const output = rec.output as Record<string, unknown> | undefined;
-        let contentStr = '';
-
-        if (output) {
-          contentStr = String(output.text ?? '');
-        }
+        const contentStr = rec.output?.text ?? '';
 
         const status = String(rec.status ?? 'completed');
         const isError = status === 'failed' || status === 'error';
@@ -469,14 +559,13 @@ export class CodeBuddyAdapter extends AgentAdapter {
           messages.push({ role: 'user', content: [block] });
         }
       } else if (rtype === 'reasoning') {
-        const rawContent = rec.rawContent as Array<Record<string, unknown>> | undefined;
         let text = '';
 
-        if (Array.isArray(rawContent)) {
-          for (const part of rawContent) {
-            if (part.type === 'reasoning_text') {
-              text += String(part.text ?? '');
-            }
+        for (const item of rec.rawContent ?? []) {
+          const part = CbContentItemSchema.safeParse(item);
+
+          if (part.success && part.data.type === 'reasoning_text') {
+            text += part.data.text;
           }
         }
 
@@ -525,23 +614,24 @@ export class CodeBuddyAdapter extends AgentAdapter {
     };
   }
 
-  private parseMessageContent(rec: Record<string, unknown>): ContentBlock[] {
+  private parseMessageContent(rec: CbRecord): ContentBlock[] {
     const blocks: ContentBlock[] = [];
     const contentArr = rec.content;
 
-    if (typeof contentArr === 'string') {
+    if (contentArr === undefined) return blocks;
+
+    if (!Array.isArray(contentArr)) {
       blocks.push({ type: 'text', text: contentArr });
 
       return blocks;
     }
 
-    if (!Array.isArray(contentArr)) return blocks;
-
     for (const item of contentArr) {
-      if (!item || typeof item !== 'object') continue;
-      const it = item as Record<string, unknown>;
-      const itemType = it.type as string;
-      const text = String(it.text ?? '');
+      const it = CbContentItemSchema.safeParse(item);
+
+      if (!it.success) continue;
+      const itemType = it.data.type;
+      const text = it.data.text;
 
       if (itemType === 'input_text' || itemType === 'output_text') {
         blocks.push({ type: 'text', text });
@@ -567,7 +657,7 @@ export class CodeBuddyAdapter extends AgentAdapter {
     const projDir = path.join(this.storageRoot, encodeCwdCodeBuddy(cwd));
     const jsonlPath = path.join(projDir, `${sessionId}.jsonl`);
 
-    const records: Record<string, unknown>[] = [];
+    const records: CbWrittenLine[] = [];
 
     // callId → tool name: so function_call_result lines carry the real tool name (instead of always 'Agent')
     const toolNamesByCallId = new Map<string, string>();
@@ -610,7 +700,7 @@ export class CodeBuddyAdapter extends AgentAdapter {
           type: 'reasoning',
           providerData: msg.metadata?.model ? { model: msg.metadata.model } : {},
           content: [],
-          rawContent: [{ type: 'reasoning_text', text: (tb as ThinkingBlock).text }],
+          rawContent: [{ type: 'reasoning_text', text: tb.text }],
           sessionId,
           cwd,
         });
@@ -619,7 +709,7 @@ export class CodeBuddyAdapter extends AgentAdapter {
 
       // message line (text blocks)
       if (otherBlocks.length > 0) {
-        const cbContent: Record<string, unknown>[] = [];
+        const cbContent: Array<{ type: 'input_text' | 'output_text'; text: string }> = [];
         let hasText = false;
 
         for (const block of otherBlocks) {
@@ -664,6 +754,13 @@ export class CodeBuddyAdapter extends AgentAdapter {
           const fcId = block.callId || uuidV4();
           const callId = block.callId || `call_${uuidV4()}`;
           const name = denormalizeToolName(block.toolName);
+
+          const providerData: CbFunctionCallProviderData = {
+            arguments: block.arguments,
+            argumentsDisplayText: argumentsDisplayText(name, block.arguments),
+          };
+
+          if (msg.metadata?.model) providerData.model = msg.metadata.model;
           records.push({
             id: fcId,
             parentId,
@@ -672,11 +769,7 @@ export class CodeBuddyAdapter extends AgentAdapter {
             name,
             callId,
             arguments: JSON.stringify(block.arguments ?? {}),
-            providerData: {
-              arguments: block.arguments,
-              argumentsDisplayText: argumentsDisplayText(name, block.arguments),
-              ...(msg.metadata?.model ? { model: msg.metadata.model } : {}),
-            },
+            providerData,
             sessionId,
             cwd,
           });

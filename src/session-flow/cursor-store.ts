@@ -20,6 +20,10 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { z } from 'zod';
+import type { JsonValue } from '../types.js';
+import { OptionalString } from './fs.js';
+import type { ToolArguments } from './ir.js';
 import { findSqlite3 } from './sqlite.js';
 
 // ---------------------------------------------------------------------------
@@ -54,6 +58,9 @@ export function getCursorStateDbPath(): string | null {
   return root ? path.join(root, 'User', 'globalStorage', 'state.vscdb') : null;
 }
 
+/** The part of User/workspaceStorage/<hash>/workspace.json this module reads. */
+const CursorWorkspaceFileSchema = z.object({ folder: OptionalString });
+
  /** cwd -> Cursor workspaceId (resolved from workspaceStorage/<hash>/workspace.json's folder). */
 export function resolveCursorWorkspaceId(cwd: string): { id: string; uri: CursorUri } | null {
   const root = getCursorStateRoot();
@@ -80,15 +87,13 @@ export function resolveCursorWorkspaceId(cwd: string): { id: string; uri: Cursor
       continue;
     }
 
-    let parsed: { folder?: string };
+    let folder: string | undefined;
 
     try {
-      parsed = JSON.parse(raw) as { folder?: string };
+      folder = CursorWorkspaceFileSchema.parse(JSON.parse(raw)).folder;
     } catch {
       continue;
     }
-
-    const folder = parsed.folder;
 
     if (!folder) continue;
     const fsPath = decodeURIComponent(folder.replace(/^file:\/\//, ''));
@@ -146,7 +151,7 @@ function lexical(text: string): string {
 }
 
 interface BubbleTemplate {
-  [k: string]: unknown;
+  [k: string]: JsonValue;
 }
 
  /** Tool output: the native result is a JSON string (object); bare text must be wrapped, or the UI cannot parse it. */
@@ -160,7 +165,7 @@ function encodeToolResult(raw?: string): string {
 }
 
  /** Empty shape of the native composerData.context / bubble.context. */
-function emptyContext(): Record<string, unknown> {
+function emptyContext() {
   return {
     composers: [],
     selectedCommits: [],
@@ -258,7 +263,7 @@ function emptyBubble(): BubbleTemplate {
 
 export interface CursorComposerTool {
   name: string;
-  args: Record<string, unknown>;
+  args: ToolArguments;
   /**
     * Tool output. The native record keeps it on the assistant's tool bubble as
     * `toolFormerData.result` and does **not** emit a separate message -- so the
@@ -296,12 +301,21 @@ interface BubbleRecord {
   value: string;
 }
 
+/** One entry of composerData.fullConversationHeadersOnly. */
+interface ConversationHeader {
+  bubbleId: string;
+  type: 1 | 2;
+  grouping: JsonValue;
+  contentHeightHint?: number;
+  createdAt: string;
+}
+
 function buildBubbleRecords(
   composerId: string,
   messages: CursorComposerMessage[],
-): { records: BubbleRecord[]; headers: Record<string, unknown>[] } {
+) {
   const records: BubbleRecord[] = [];
-  const headers: Record<string, unknown>[] = [];
+  const headers: ConversationHeader[] = [];
   const uuid = (): string => cryptoRandomUuid();
 
   for (const msg of messages) {
@@ -396,8 +410,8 @@ function buildComposerData(
   createdMs: number,
   lastMs: number,
   ws: { id: string; uri: CursorUri },
-  headers: Record<string, unknown>[],
-): Record<string, unknown> {
+  headers: ConversationHeader[],
+) {
   return {
     _v: 18,
     composerId,
@@ -487,7 +501,7 @@ function buildHead(
   createdMs: number,
   lastMs: number,
   ws: { id: string; uri: CursorUri },
-): Record<string, unknown> {
+) {
   return {
     type: 'head',
     composerId,
@@ -654,7 +668,7 @@ export function registerCursorComposer(args: RegisterCursorComposerArgs): Regist
       return { ok: false, reason: (stderr || `sqlite3 exit ${r.status}${signal}${err}`).slice(0, 300) };
     }
   } catch (e) {
-    return { ok: false, reason: (e as Error).message };
+    return { ok: false, reason: e instanceof Error ? e.message : String(e) };
   }
 
   return { ok: true, bubbleCount: records.length };
@@ -700,7 +714,7 @@ export function cursorComposerExists(composerId: string, cwd?: string): { ok: tr
 
     return { ok: true, exists: (r.stdout?.toString() ?? '').trim().endsWith('1') };
   } catch (e) {
-    return { ok: false, reason: (e as Error).message };
+    return { ok: false, reason: e instanceof Error ? e.message : String(e) };
   }
 }
 
@@ -744,7 +758,7 @@ export function unregisterCursorComposer(composerId: string): RegisterResult {
       return { ok: false, reason: (stderr || `sqlite3 exit ${r.status}${signal}${err}`).slice(0, 300) };
     }
   } catch (e) {
-    return { ok: false, reason: (e as Error).message };
+    return { ok: false, reason: e instanceof Error ? e.message : String(e) };
   }
 
   return { ok: true };

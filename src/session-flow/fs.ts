@@ -11,6 +11,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { z } from 'zod';
+import { JsonValueSchema } from '../types.js';
+import type { Session } from './ir.js';
 
 // ---------------------------------------------------------------------------
 // cwd encode/decode
@@ -135,9 +137,23 @@ export function decodeCwdGeneric(encoded: string): string {
 // Streaming JSONL read/write
 // ---------------------------------------------------------------------------
 
-const JsonlRecord = z.record(z.string(), z.unknown());
+/** One line of a JSONL transcript: a JSON object, its values not yet read by any platform's schema. */
+const JsonlRecordSchema = z.record(z.string(), JsonValueSchema);
 
-export function* readJsonl(filePath: string): Generator<Record<string, unknown>> {
+export type JsonlRecord = z.infer<typeof JsonlRecordSchema>;
+
+/** A transcript field read the way `String(value ?? fallback)` reads it: any JSON value, coerced to text. */
+export function coercedText(fallback = '') {
+  return JsonValueSchema.optional().transform((value) => String(value ?? fallback));
+}
+
+/** A transcript field kept only when it holds a string; any other value reads as absent. */
+export const OptionalString = z.string().optional().catch(undefined);
+
+/** A message's content as transcripts store it: the text itself, or a list of blocks; anything else reads as absent. */
+export const TextOrBlocksSchema = z.union([z.string(), z.array(JsonValueSchema)]).optional().catch(undefined);
+
+export function* readJsonl(filePath: string): Generator<JsonlRecord> {
   let pending: string | undefined;
   let count = 0;
 
@@ -145,7 +161,7 @@ export function* readJsonl(filePath: string): Generator<Record<string, unknown>>
     if (!line.trim()) continue;
 
     if (pending !== undefined) {
-      yield JsonlRecord.parse(JSON.parse(pending));
+      yield JsonlRecordSchema.parse(JSON.parse(pending));
       count++;
     }
 
@@ -163,10 +179,10 @@ export function* readJsonl(filePath: string): Generator<Record<string, unknown>>
     return;
   }
 
-  yield JsonlRecord.parse(value);
+  yield JsonlRecordSchema.parse(value);
 }
 
-export function* readJsonlHead(filePath: string, maxLines: number): Generator<Record<string, unknown>> {
+export function* readJsonlHead(filePath: string, maxLines: number): Generator<JsonlRecord> {
   if (maxLines <= 0) return;
   let count = 0;
 
@@ -203,7 +219,7 @@ function* jsonlLines(filePath: string): Generator<string> {
  * The lines go to a temp file beside the target, renamed into place, so a crash or a full disk
  * never leaves a truncated transcript a tool would read as the session.
  */
-export function writeJsonl(filePath: string, records: Iterable<Record<string, unknown>>): void {
+export function writeJsonl<TRecord extends object>(filePath: string, records: Iterable<TRecord>): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const lines: string[] = [];
 
@@ -303,7 +319,7 @@ const IMAGE_FILE_RE = /\.(png|jpe?g|gif|webp|bmp)$/i;
  * - Otherwise also require an absolute path plus an image extension, so arbitrary files are not read.
  */
 export function mayReadLocalImageFile(
-  session: { metadata?: Record<string, unknown> | undefined } | undefined,
+  session: Pick<Session, 'metadata'> | undefined,
   filePath?: string,
 ): boolean {
   if (!filePath) return false;

@@ -26,25 +26,26 @@ import crossSpawn from 'cross-spawn';
 import { tmpdir } from 'node:os';
 import { z } from 'zod';
 import { AgentAdapter, ToolUnavailableError, type SessionMeta, type SessionReadRef, type Subagent, type SubagentsRead } from './base.js';
-import { imagePlaceholderText, type ContentBlock, type Message, type Session } from '../ir.js';
+import { imagePlaceholderText, ToolArgumentsSchema, type ContentBlock, type ImageBlock, type Message, type Session, type ToolArguments } from '../ir.js';
+import { JsonValueSchema } from '../../types.js';
 import { resolveRealCwd } from '../fs.js';
 import { sessionStoreDir } from '../../locate.js';
 import { deriveOpencodeMessageIds, deriveTargetSessionId } from '../ids.js';
 import { execCommand, probeBinary, type ExecResult } from '../../utils/exec.js';
 
-const OPENCODE_TO_IR_TOOL: Record<string, string> = {
-  read: 'read_file',
-  write: 'write_file',
-  edit: 'edit_file',
-  shell: 'bash',
-  bash: 'bash',
-  glob: 'glob',
-  grep: 'grep',
-  task: 'task',
-  todowrite: 'todo_write',
-  webfetch: 'web_fetch',
-  websearch: 'web_search',
-};
+const OPENCODE_TO_IR_TOOL: ReadonlyMap<string, string> = new Map([
+  ['read', 'read_file'],
+  ['write', 'write_file'],
+  ['edit', 'edit_file'],
+  ['shell', 'bash'],
+  ['bash', 'bash'],
+  ['glob', 'glob'],
+  ['grep', 'grep'],
+  ['task', 'task'],
+  ['todowrite', 'todo_write'],
+  ['webfetch', 'web_fetch'],
+  ['websearch', 'web_search'],
+]);
 
 const ChildSessions = z.union([
   z.array(z.object({ id: z.string(), parentID: z.string().optional() })),
@@ -53,19 +54,27 @@ const ChildSessions = z.union([
 
 const SERVER_READY_MS = 10_000;
 
+/** The address of a server listening on TCP; a pipe name or a closed server has no port. */
+const ListeningAddress = z.object({ port: z.number() });
+
 async function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const probe = createServer();
     probe.once('error', reject);
     probe.listen(0, '127.0.0.1', () => {
       const address = probe.address();
-      const port = typeof address === 'object' && address ? address.port : 0;
+      const port = ListeningAddress.safeParse(address).data?.port ?? 0;
       probe.close(() => resolve(port));
     });
   });
 }
 
-async function startChildServer(): Promise<{ children(parent: string): Promise<string[]>; stop(): Promise<void> } | string> {
+/** A local `opencode serve` this process started, or why it could not start one. */
+type ChildServer =
+  | { status: 'ready'; children(parent: string): Promise<string[]>; stop(): Promise<void> }
+  | { status: 'unavailable'; reason: string };
+
+async function startChildServer(): Promise<ChildServer> {
   const port = await freePort();
   const password = randomBytes(16).toString('hex');
 
@@ -97,13 +106,14 @@ async function startChildServer(): Promise<{ children(parent: string): Promise<s
     if (child.exitCode !== null || Date.now() > deadline) {
       await stop();
 
-      return `opencode serve did not answer on port ${port} within ${SERVER_READY_MS / 1000} s`;
+      return { status: 'unavailable', reason: `opencode serve did not answer on port ${port} within ${SERVER_READY_MS / 1000} s` };
     }
 
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
 
   return {
+    status: 'ready',
     async children(parent) {
       const response = await get(`parentID=${encodeURIComponent(parent)}`);
 
@@ -161,9 +171,9 @@ const ToolPart = z.object({
   name: z.string(),
   state: z.object({
     status: z.string(),
-    input: z.record(z.string(), z.unknown()).default({}),
+    input: ToolArgumentsSchema.default({}),
     content: z.array(z.object({ type: z.string(), text: z.string().optional() })).default([]),
-    error: z.unknown().optional(),
+    error: JsonValueSchema.optional(),
   }),
 });
 
@@ -179,7 +189,10 @@ function userContent(message: z.infer<typeof UserMessage>): ContentBlock[] {
 
   for (const file of message.files) {
     if (file.mime.startsWith('image/') && file.data) {
-      content.push({ type: 'image', mimeType: file.mime, data: file.data, ...(file.name ? { label: file.name } : {}) });
+      const image: ImageBlock = { type: 'image', mimeType: file.mime, data: file.data };
+
+      if (file.name) image.label = file.name;
+      content.push(image);
     } else {
       content.push({ type: 'text', text: `[file: ${file.name ?? file.uri ?? file.mime}]` });
     }
@@ -221,7 +234,7 @@ function assistantTurns(message: z.infer<typeof AssistantMessage>): Message[] {
       const tool = ToolPart.parse(part);
       assistant.push({
         type: 'tool_call',
-        toolName: OPENCODE_TO_IR_TOOL[tool.name] ?? tool.name,
+        toolName: OPENCODE_TO_IR_TOOL.get(tool.name) ?? tool.name,
         callId: tool.id,
         arguments: tool.state.input,
       });
@@ -273,18 +286,39 @@ function sessionFromExport(stdout: string): Session {
   };
 }
 
-const IR_TO_OPENCODE_TOOL: Record<string, string> = Object.fromEntries(
-  Object.entries(OPENCODE_TO_IR_TOOL)
-    .filter(([opencode]) => opencode !== 'bash')
-    .map(([opencode, ir]) => [ir, opencode]),
+const IR_TO_OPENCODE_TOOL: ReadonlyMap<string, string> = new Map(
+  [...OPENCODE_TO_IR_TOOL].flatMap(([opencode, ir]) => (opencode === 'bash' ? [] : [[ir, opencode] as const])),
 );
 
-type ExportMessage = { type: 'user' | 'assistant'; created: number; fields: Record<string, unknown> };
+/** A file attached to a user message in the export. */
+interface ExportFile {
+  mime: string;
+  data: string;
+  source: { type: 'inline' };
+  name?: string;
+}
 
-type ToolPartState = { status: string; input: Record<string, unknown>; content: Array<{ type: 'text'; text: string }> } & Record<
-  string,
-  unknown
->;
+type ToolPartState = {
+  status: string;
+  input: ToolArguments;
+  content: Array<{ type: 'text'; text: string }>;
+  error?: { type: 'tool'; message: string };
+};
+
+/** A part of an assistant message in the export. */
+type ExportPart =
+  | { type: 'text' | 'reasoning'; text: string }
+  | { type: 'tool'; id: string; name: string; state: ToolPartState; time: { created: number } };
+
+/** The fields of a user message in the export; `files` is left out when it has none. */
+interface ExportUserFields {
+  text: string;
+  files?: ExportFile[];
+}
+
+type ExportMessage =
+  | { type: 'user'; created: number; fields: ExportUserFields }
+  | { type: 'assistant'; created: number; fields: { agent: 'build'; model: { id: string; providerID: string }; content: ExportPart[] } };
 
 const NO_TOKENS = { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } };
 
@@ -295,7 +329,7 @@ const NO_TOKENS = { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 
  * An assistant message needs `time.completed`: OpenCode 2.0.29 imports one without it, then
  * drops it without a word.
  */
-function exportOf(session: Session, sessionId: string, directory: string): Record<string, unknown> {
+function exportOf(session: Session, sessionId: string, directory: string) {
   const tools = new Map<string, ToolPartState>();
 
   const answer = (block: Extract<ContentBlock, { type: 'tool_result' }>): boolean => {
@@ -304,8 +338,14 @@ function exportOf(session: Session, sessionId: string, directory: string): Recor
     if (!state) return false;
     const content = [{ type: 'text' as const, text: block.content }];
 
-    if (block.isError) Object.assign(state, { status: 'error', content, error: { type: 'tool', message: block.content } });
-    else Object.assign(state, { status: 'completed', content });
+    if (block.isError) {
+      state.status = 'error';
+      state.content = content;
+      state.error = { type: 'tool', message: block.content };
+    } else {
+      state.status = 'completed';
+      state.content = content;
+    }
 
     return true;
   };
@@ -320,24 +360,30 @@ function exportOf(session: Session, sessionId: string, directory: string): Recor
 
     if (message.role === 'user') {
       const text: string[] = [];
-      const files: Array<Record<string, unknown>> = [];
+      const files: ExportFile[] = [];
 
       for (const block of message.content) {
         if (block.type === 'tool_result') {
           if (!answer(block)) text.push(`[tool_result] ${block.content}`);
         } else if (block.type === 'image' && block.data) {
-          files.push({ mime: block.mimeType, data: block.data, source: { type: 'inline' }, ...(block.label ? { name: block.label } : {}) });
+          const file: ExportFile = { mime: block.mimeType, data: block.data, source: { type: 'inline' } };
+
+          if (block.label) file.name = block.label;
+          files.push(file);
         } else {
           text.push(blockText(block));
         }
       }
 
       if (text.length === 0 && files.length === 0) continue;
-      messages.push({ type: 'user', created, fields: { text: text.join('\n\n'), ...(files.length > 0 ? { files } : {}) } });
+      const fields: ExportUserFields = { text: text.join('\n\n') };
+
+      if (files.length > 0) fields.files = files;
+      messages.push({ type: 'user', created, fields });
       continue;
     }
 
-    const content: Array<Record<string, unknown>> = [];
+    const content: ExportPart[] = [];
 
     for (const block of message.content) {
       if (block.type === 'text') content.push({ type: 'text', text: block.text });
@@ -345,7 +391,7 @@ function exportOf(session: Session, sessionId: string, directory: string): Recor
       else if (block.type === 'tool_call') {
         const state: ToolPartState = { status: 'completed', input: block.arguments, content: [] };
         tools.set(block.callId, state);
-        content.push({ type: 'tool', id: block.callId, name: IR_TO_OPENCODE_TOOL[block.toolName] ?? block.toolName, state, time: { created } });
+        content.push({ type: 'tool', id: block.callId, name: IR_TO_OPENCODE_TOOL.get(block.toolName) ?? block.toolName, state, time: { created } });
       } else if (block.type !== 'tool_result' || !answer(block)) content.push({ type: 'text', text: blockText(block) });
     }
 
@@ -478,7 +524,7 @@ export class OpencodeAdapter extends AgentAdapter {
   async readSubagents(session: Session, _ref: SessionReadRef): Promise<SubagentsRead> {
     const server = await startChildServer();
 
-    if (typeof server === 'string') return { status: 'unread', reason: server };
+    if (server.status === 'unavailable') return { status: 'unread', reason: server.reason };
 
     try {
       const agents: Subagent[] = [];

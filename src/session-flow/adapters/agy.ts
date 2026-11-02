@@ -21,7 +21,8 @@ import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { AgentAdapter, ToolUnavailableError, type SessionMeta, type SessionReadRef } from './base.js';
 import type { ContentBlock, Message, Session } from '../ir.js';
-import { dirExists, readJsonl, readJsonlHead, resolveRealCwd } from '../fs.js';
+import { dirExists, readJsonl, readJsonlHead, resolveRealCwd, type JsonlRecord } from '../fs.js';
+import { JsonValueSchema, type JsonValue } from '../../types.js';
 import { fallbackTitle } from '../title.js';
 import { isSafeSessionFileId } from '../ids.js';
 import { findSqlite3 } from '../sqlite.js';
@@ -40,7 +41,9 @@ type SummaryRow = z.infer<typeof SummaryRow>;
 /** `workspace_uris` as agy stores it: a JSON array of URIs. */
 const WorkspaceUris = z.string().transform((text, ctx) => {
   try {
-    return JSON.parse(text) as unknown;
+    const parsed: unknown = JSON.parse(text);
+
+    return parsed;
   } catch {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'not JSON' });
 
@@ -119,8 +122,8 @@ export class AgyAdapter extends AgentAdapter {
     try {
       const copied = path.join(copy, 'conversation_summaries.db');
       await fs.promises.copyFile(db, copied);
-      await fs.promises.copyFile(`${db}-wal`, `${copied}-wal`).catch((error: unknown) => {
-        if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
+      await fs.promises.copyFile(`${db}-wal`, `${copied}-wal`).catch((cause: unknown) => {
+        if (!(cause instanceof Error && 'code' in cause && cause.code === 'ENOENT')) throw cause;
       });
       result = await execCommand(sqlite3, ['-json', copied, sql], { timeoutMs: 30_000 });
     } finally {
@@ -145,9 +148,9 @@ export class AgyAdapter extends AgentAdapter {
 
     const stored = await Promise.all(this.storeRoots.map(async (root, index) => {
       // The app's store, unlike the CLI's, is left out when it cannot be read, so the CLI's conversations still list.
-      const rows = index === 0 ? await this.summaries(root) : await this.summaries(root).catch((error: unknown) => {
-        if (error instanceof ToolUnavailableError) throw error;
-        log.debug(`session: could not read the Antigravity conversations in ${root}: ${error instanceof Error ? error.message : String(error)}`);
+      const rows = index === 0 ? await this.summaries(root) : await this.summaries(root).catch((cause: unknown) => {
+        if (cause instanceof ToolUnavailableError) throw cause;
+        log.debug(`session: could not read the Antigravity conversations in ${root}: ${cause instanceof Error ? cause.message : String(cause)}`);
 
         return [];
       });
@@ -242,19 +245,30 @@ export class AgyAdapter extends AgentAdapter {
 const READ_ONLY = 'TeamAI cannot write agy sessions: agy resumes a conversation only from its own conversations/<id>.db.';
 
 /** agy's tool names, as the IR names the same tool. */
-const IR_TOOL: Readonly<Record<string, string>> = {
-  run_command: 'bash',
-  view_file: 'read_file',
-  read_file: 'read_file',
-  write_to_file: 'write_file',
-  replace_file_content: 'edit_file',
-  multi_replace_file_content: 'edit_file',
-  grep_search: 'grep',
-  find_by_name: 'glob',
-  search_web: 'web_search',
-  read_url_content: 'web_fetch',
-  invoke_subagent: 'task',
-};
+const IR_TOOL: ReadonlyMap<string, string> = new Map([
+  ['run_command', 'bash'],
+  ['view_file', 'read_file'],
+  ['read_file', 'read_file'],
+  ['write_to_file', 'write_file'],
+  ['replace_file_content', 'edit_file'],
+  ['multi_replace_file_content', 'edit_file'],
+  ['grep_search', 'grep'],
+  ['find_by_name', 'glob'],
+  ['search_web', 'web_search'],
+  ['read_url_content', 'web_fetch'],
+  ['invoke_subagent', 'task'],
+]);
+
+/** An argument as agy stored it, JSON-encoded, decoded; a value that is not JSON is kept as it is. */
+function decodedArgument(text: string): JsonValue {
+  try {
+    return JsonValueSchema.parse(JSON.parse(text));
+  } catch {
+    return text;
+  }
+}
+
+const StoredArgument = z.union([z.string().transform(decodedArgument), JsonValueSchema]);
 
 const Step = z.object({
   step_index: z.union([z.string(), z.number()]).transform(String),
@@ -265,19 +279,8 @@ const Step = z.object({
   content: z.string().optional(),
   thinking: z.string().optional(),
   error: z.string().optional(),
-  tool_calls: z.array(z.object({ name: z.string(), args: z.record(z.string(), z.unknown()).optional() })).optional(),
+  tool_calls: z.array(z.object({ name: z.string(), args: z.record(z.string(), StoredArgument).optional() })).optional(),
 });
-
-/** An argument as agy stored it, JSON-encoded, decoded; a value that is not JSON is kept as it is. */
-function decoded(value: unknown): unknown {
-  if (typeof value !== 'string') return value;
-
-  try {
-    return JSON.parse(value);
-  } catch {
-    return value;
-  }
-}
 
 /** What the member typed: agy wraps it in `<USER_REQUEST>`, followed by metadata of its own. */
 function requestOf(content: string): string {
@@ -288,7 +291,7 @@ function requestOf(content: string): string {
  * The IR messages of an agy transcript. A model step after a PLANNER_RESPONSE with tool calls is
  * the next call's result, ERROR when the tool failed or a hook denied it.
  */
-function messagesOf(lines: Iterable<Record<string, unknown>>): Message[] {
+function messagesOf(lines: Iterable<JsonlRecord>): Message[] {
   const messages: Message[] = [];
   const pending: string[] = [];
 
@@ -312,8 +315,7 @@ function messagesOf(lines: Iterable<Record<string, unknown>>): Message[] {
       (step.tool_calls ?? []).forEach((call, i) => {
         const callId = `${step.step_index}-${i}`;
         pending.push(callId);
-        const args = Object.fromEntries(Object.entries(call.args ?? {}).map(([key, value]) => [key, decoded(value)]));
-        content.push({ type: 'tool_call', toolName: IR_TOOL[call.name] ?? call.name, callId, arguments: args });
+        content.push({ type: 'tool_call', toolName: IR_TOOL.get(call.name) ?? call.name, callId, arguments: call.args ?? {} });
       });
 
       if (content.length > 0) messages.push({ role: 'assistant', content, ...timestamp });

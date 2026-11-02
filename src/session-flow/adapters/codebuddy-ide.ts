@@ -20,7 +20,9 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { AgentAdapter, type SessionMeta, type SessionReadRef } from './base.js';
-import type { Session, Message, ContentBlock, ImageBlock, ToolResultBlock } from '../ir.js';
+import { z } from 'zod';
+import type { Session, SessionMetadata, Message, ContentBlock, ImageBlock, ToolResultBlock } from '../ir.js';
+import { JsonValueSchema } from '../../types.js';
 import {
   findIdeHistoryDirs,
   findIdeConversationDirs,
@@ -31,6 +33,7 @@ import {
   readIdeConversations,
   writeIdeSession,
   deleteIdeSession,
+  type IdeBlock,
   type IdeConversationEntry,
   type IdeMessageParsed,
 } from '../ide-history.js';
@@ -58,15 +61,15 @@ function unknownWorkspace(hash: string): string {
   return `md5:${hash}`;
 }
 
-const MIME_BY_EXT: Record<string, string> = {
-  png: 'image/png',
-  jpg: 'image/jpeg',
-  jpeg: 'image/jpeg',
-  gif: 'image/gif',
-  webp: 'image/webp',
-  svg: 'image/svg+xml',
-  bmp: 'image/bmp',
-};
+const MIME_BY_EXT: ReadonlyMap<string, string> = new Map([
+  ['png', 'image/png'],
+  ['jpg', 'image/jpeg'],
+  ['jpeg', 'image/jpeg'],
+  ['gif', 'image/gif'],
+  ['webp', 'image/webp'],
+  ['svg', 'image/svg+xml'],
+  ['bmp', 'image/bmp'],
+]);
 
 /**
  * Parse an IDE image block into an IR ImageBlock.
@@ -80,7 +83,7 @@ const MIME_BY_EXT: Record<string, string> = {
  * (writing back to the IDE copies the file, avoiding a base64 roundtrip). Return an ImageBlock even if the file cannot be read:
  * fidelity can count the block honestly, and the write side degrades to placeholder text on its own.
  */
-function parseImageBlock(block: Record<string, unknown>, convDir: string): ImageBlock | null {
+function parseImageBlock(block: IdeBlock, convDir: string): ImageBlock | null {
   const ref = String(block.image ?? block.url ?? block.path ?? '').trim();
 
   if (!ref) return null;
@@ -110,7 +113,7 @@ function parseImageBlock(block: Record<string, unknown>, convDir: string): Image
   }
 
   const ext = path.extname(filePath).replace('.', '').toLowerCase();
-  const mimeType = MIME_BY_EXT[ext] ?? 'image/png';
+  const mimeType = MIME_BY_EXT.get(ext) ?? 'image/png';
   const label = path.basename(filePath);
 
   let data: string | undefined;
@@ -123,6 +126,19 @@ function parseImageBlock(block: Record<string, unknown>, convDir: string): Image
 
   return { type: 'image', mimeType, data, filePath, label };
 }
+
+/**
+ * A tool-result's `result`: its status, and the inner result whose content is the tool's output, kept as text when the
+ * IDE wrote text and as JSON otherwise.
+ */
+const IdeToolOutcomeSchema = z.object({
+  status: JsonValueSchema.optional(),
+  success: JsonValueSchema.optional(),
+  result: z
+    .object({ content: z.union([z.string(), JsonValueSchema.transform((value) => JSON.stringify(value))]).optional() })
+    .optional()
+    .catch(undefined),
+});
 
 /**
  * How many messages to scan at most when falling back to a title.
@@ -140,8 +156,10 @@ function firstUserText(messages: IdeMessageParsed[]): string {
     if (m.role !== 'user') continue;
 
     for (const block of m.content) {
-      if (block.type !== 'text' || typeof block.text !== 'string') continue;
-      candidates.push(block.text);
+      const text = z.string().safeParse(block.text);
+
+      if (block.type !== 'text' || !text.success) continue;
+      candidates.push(text.data);
     }
 
     if (candidates.length >= 5) break;
@@ -273,7 +291,7 @@ export class CodeBuddyIdeAdapter extends AgentAdapter {
     const rawMessages = readIdeConversation(convDir);
 
     const messages: Message[] = [];
-    const sessionMetadata: Record<string, unknown> = {};
+    const sessionMetadata: SessionMetadata = {};
 
     for (const raw of rawMessages) {
       if (raw.model && !sessionMetadata.model) sessionMetadata.model = raw.model;
@@ -358,7 +376,7 @@ export class CodeBuddyIdeAdapter extends AgentAdapter {
 
         case 'tool-call': {
           const callId = String(block.toolCallId ?? block.id ?? '');
-          const args = (block.args ?? block.arguments ?? {}) as Record<string, unknown>;
+          const args = block.args ?? block.arguments ?? {};
           blocks.push({
             type: 'tool_call',
             toolName: String(block.toolName ?? ''),
@@ -394,25 +412,24 @@ export class CodeBuddyIdeAdapter extends AgentAdapter {
     return blocks;
   }
 
-  private parseToolResult(block: Record<string, unknown>): ToolResultBlock | null {
+  private parseToolResult(block: IdeBlock): ToolResultBlock | null {
     const callId = String(block.toolCallId ?? block.id ?? '');
-    const result = block.result as Record<string, unknown> | undefined;
-    const inner = result?.result as Record<string, unknown> | undefined;
+    const result = block.result;
+    const outcome = IdeToolOutcomeSchema.safeParse(result).data;
+    const inner = outcome?.result;
 
     let content = '';
 
-    if (typeof inner?.content === 'string') {
+    if (inner?.content !== undefined) {
       content = inner.content;
-    } else if (inner && typeof inner.content !== 'undefined') {
-      content = JSON.stringify(inner.content);
     } else if (result) {
       content = JSON.stringify(result);
     }
 
     const isError =
       Boolean(block.isError) ||
-      result?.status === 'failed' ||
-      result?.success === false;
+      outcome?.status === 'failed' ||
+      outcome?.success === false;
 
     return { type: 'tool_result', callId, content, isError };
   }

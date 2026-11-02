@@ -18,9 +18,11 @@
  * the result before archiving; this matches the caveat on `session save`.
  */
 
-import type { Session, Message, ContentBlock, MessageMetadata } from './ir.js';
+import { z } from 'zod';
+import type { Session, Message, ContentBlock, MessageMetadata, ToolArguments } from './ir.js';
 import { collectEnvSecrets, redact, redactJson } from '../utils/redact.js';
-import { imagePlaceholderText } from './ir.js';
+import { imagePlaceholderText, ToolArgumentsSchema } from './ir.js';
+import { JsonValueSchema, type JsonValue } from '../types.js';
 import { maskCutSecret } from './title.js';
 
 export interface ScrubResult {
@@ -96,7 +98,13 @@ function spellingsOf(root: string): Array<{ spelling: string; ignoresCase: boole
  * (`~-other-project`). `title` also rewrites a path the title was cut inside at its end (`… and /Users/alice/ap`), as
  * the shortest root it starts.
  */
-function pathRewriter({ repo, home, tmp, workdir }: LocalPathRoots, cwd: string): { text: (text: string) => string; title: (title: string) => string } {
+/** Rewrites of this machine's paths: in any text, and in a title, which may be cut inside a path. */
+interface PathRewriter {
+  text: (text: string) => string;
+  title: (title: string) => string;
+}
+
+function pathRewriter({ repo, home, tmp, workdir }: LocalPathRoots, cwd: string): PathRewriter {
   const workdirName = workdir && (workdir.archived === '' ? '<cwd>' : workdir.archived === '.' ? '<repo>' : `<repo>/${workdir.archived}`);
   // Keyed as matched: a spelling matched ignoring case by its lower case.
   const named = new Map<string, string>();
@@ -121,7 +129,9 @@ function pathRewriter({ repo, home, tmp, workdir }: LocalPathRoots, cwd: string)
 
   const rooted = [matcher(roots.filter((root) => ignoringCase.has(root)), 'giu'), matcher(roots.filter((root) => !ignoringCase.has(root)), 'gu')];
   const nameOf = (root: string): string | undefined => named.get(root) ?? named.get(root.toLowerCase());
-  const encoded = (dirs: readonly string[]): string[] => [...new Set(dirs.filter((dir) => isBelowFilesystemRoot(dir) && /^(?:\/|[A-Za-z]:[\\/])/.test(dir)).map(encodedDir))].sort(byLength);
+
+  const encoded = (dirs: readonly string[]): string[] =>
+    [...new Set(dirs.flatMap((dir) => (isBelowFilesystemRoot(dir) && /^(?:\/|[A-Za-z]:[\\/])/.test(dir) ? [encodedDir(dir)] : [])))].sort(byLength);
 
   const slug = (dirs: string[], after: string): RegExp | undefined =>
     dirs.length > 0 ? new RegExp(`(?<=[\\\\/])(?:${dirs.map(escapeRegExp).join('|')})(?=${after})`, 'g') : undefined;
@@ -151,20 +161,23 @@ function pathRewriter({ repo, home, tmp, workdir }: LocalPathRoots, cwd: string)
 
 /** `metadata` with `rewrite` applied to its string values, or `metadata` itself when that changes none. */
 function rewriteMetadata(metadata: MessageMetadata, rewrite: (text: string) => string): MessageMetadata {
-  const changed = Object.entries(metadata).flatMap(([key, value]) => (typeof value === 'string' && rewrite(value) !== value ? [[key, rewrite(value)]] : []));
+  const changed = Object.entries(metadata).flatMap(([key, value]) => {
+    const text = z.string().safeParse(value);
+
+    return text.success && rewrite(text.data) !== text.data ? [[key, rewrite(text.data)] as const] : [];
+  });
 
   return changed.length === 0 ? metadata : { ...metadata, ...Object.fromEntries(changed) };
 }
 
 /** `value` with `rewrite` applied to each string it holds, keys left as they are. */
-function mapStrings(value: unknown, rewrite: (text: string) => string): unknown {
-  if (typeof value === 'string') return rewrite(value);
-
+function mapStrings(value: JsonValue, rewrite: (text: string) => string): JsonValue {
   if (Array.isArray(value)) return value.map((item) => mapStrings(item, rewrite));
 
-  if (value !== null && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, mapStrings(item, rewrite)]));
+  if (value instanceof Object) return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, mapStrings(item, rewrite)]));
+  const text = z.string().safeParse(value);
 
-  return value;
+  return text.success ? rewrite(text.data) : value;
 }
 
 /** Count how many replacements happened between before/after strings. */
@@ -181,10 +194,16 @@ function countRedactions(before: string, after: string): number {
   return count;
 }
 
+/** A block after scrubbing (the same object when nothing changed), and how many values were replaced in it. */
+interface ScrubbedBlock {
+  block: ContentBlock;
+  count: number;
+}
+
 function scrubBlock(
   block: ContentBlock,
   { dropImagePaths, mask, rewrite, envSecrets }: { dropImagePaths: boolean; mask: (text: string) => string; rewrite: (text: string) => string; envSecrets: Record<string, string> },
-): { block: ContentBlock; count: number } {
+): ScrubbedBlock {
   switch (block.type) {
     case 'text': {
       const next = rewrite(mask(block.text));
@@ -211,14 +230,14 @@ function scrubBlock(
       // backslash is escaped in the serialized form and would not match there. Paths are rewritten in each string for
       // the same reason: a Windows path is escaped once serialized.
       const raw = JSON.stringify(block.arguments ?? {});
-      const next = mask(JSON.stringify(mapStrings(redactJson(block.arguments ?? {}, envSecrets), rewrite)));
+      const next = mask(JSON.stringify(mapStrings(JsonValueSchema.parse(redactJson(block.arguments ?? {}, envSecrets)), rewrite)));
 
       if (next === raw) return { block, count: 0 };
       const count = countRedactions(raw, next);
-      let parsed: Record<string, unknown> = {};
+      let parsed: ToolArguments;
 
       try {
-        parsed = JSON.parse(next) as Record<string, unknown>;
+        parsed = ToolArgumentsSchema.parse(JSON.parse(next));
       } catch {
         // A placeholder that replaced a number or a key left no JSON to
         // parse: keep the masked text whole, never the original arguments.
@@ -308,7 +327,12 @@ export function scrubSession(
 
     const metadata = msg.metadata && paths ? rewriteMetadata(msg.metadata, paths.text) : msg.metadata;
 
-    return contentChanged || metadata !== msg.metadata ? { ...msg, content, ...(metadata ? { metadata } : {}) } : msg;
+    if (!contentChanged && metadata === msg.metadata) return msg;
+    const scrubbed: Message = { ...msg, content };
+
+    if (metadata) scrubbed.metadata = metadata;
+
+    return scrubbed;
   });
 
   // Masking a whole value changes the title's length, so the cut is checked first.

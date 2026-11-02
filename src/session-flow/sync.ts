@@ -35,8 +35,11 @@ import { createHash, randomUUID } from 'node:crypto';
 import { getTeamaiHomeDir } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { resolveAnchors } from '../utils/git.js';
+import { z } from 'zod';
 import { AgentObservationSchema, type AgentObservation } from '../agent-observation.js';
 import type { Session } from './ir.js';
+import { OptionalString } from './fs.js';
+import { JsonValueSchema } from '../types.js';
 import { titleSpellsLocalPath, type LocalPathRoots } from './scrub.js';
 import { messageToDict, messageFromDict } from './ir.js';
 
@@ -124,11 +127,11 @@ export async function publishedPathRoots(cwd: string): Promise<LocalPathRoots> {
   const inside = path.relative(rooted.root, rooted.cwd);
   const writtenRoot = inside === '' ? written : written.endsWith(`${path.sep}${inside}`) ? written.slice(0, -inside.length - 1) : undefined;
 
-  return {
-    repo: spellings([rooted.root, ...(writtenRoot ? [writtenRoot] : [])]),
-    ...(written === rooted.cwd ? {} : { workdir: { spellings: spellings([written]), archived: inside.split(path.sep).join('/') || '.' } }),
-    ...machine,
-  };
+  const repo = spellings([rooted.root, ...(writtenRoot ? [writtenRoot] : [])]);
+
+  return written === rooted.cwd
+    ? { repo, ...machine }
+    : { repo, workdir: { spellings: spellings([written]), archived: inside.split(path.sep).join('/') || '.' }, ...machine };
 }
 
 /**
@@ -356,15 +359,40 @@ export interface SessionSyncMeta {
   agent?: AgentObservation;
 }
 
+/**
+ * A meta.json as `defaultSyncMeta` writes it, keys in its order. Every key it does not name is kept, and an `agent`
+ * that is not an observation is left out, as if absent.
+ */
+const SessionSyncMetaSchema = z.looseObject({
+  agent: AgentObservationSchema.optional().catch(undefined),
+  origin: z.looseObject({
+    platform: z.string(),
+    title: z.string().optional(),
+    author: z.string(),
+    cwd: z.string(),
+    repoIdentity: z.string().nullable(),
+    createdAt: z.string(),
+    sessionId: z.string(),
+  }),
+  migration: z.looseObject({
+    migratedAt: z.string().nullable(),
+    sourcePlatform: z.string().nullable(),
+    targetPlatform: z.string().nullable(),
+    fidelityScore: z.number(),
+    degradations: z.array(z.string()),
+  }),
+  sync: z.looseObject({ version: z.number(), pushedAt: z.string().nullable() }),
+  status: z.enum(['active', 'archived']),
+}) satisfies z.ZodType<SessionSyncMeta>;
+
+/** The push time of a meta.json, the only field a folded copy is compared by. */
+const SyncPushedAtSchema = z.object({ sync: z.object({ pushedAt: z.string().nullable() }) });
+
 /** A meta.json as read from the archive: an `agent` that is not an observation is left out, as if absent. */
 function readSyncMeta(file: string): SessionSyncMeta {
-  const meta = JSON.parse(fs.readFileSync(file, 'utf-8')) as SessionSyncMeta;
+  const { agent, ...rest } = SessionSyncMetaSchema.parse(JSON.parse(fs.readFileSync(file, 'utf-8')));
 
-  if (meta.agent === undefined) return meta;
-  const { agent, ...rest } = meta;
-  const parsed = AgentObservationSchema.safeParse(agent);
-
-  return parsed.success ? { ...rest, agent: parsed.data } : rest;
+  return agent === undefined ? rest : { ...rest, agent };
 }
 
 /** The index entry's `teamRevision`: the team revision the session ran with, when its meta records one. */
@@ -393,8 +421,7 @@ export function defaultSyncMeta(
   },
   createdAt?: string,
 ): SessionSyncMeta {
-  return {
-    ...(partial.agent ? { agent: partial.agent } : {}),
+  const meta: SessionSyncMeta = {
     origin: {
       platform: partial.platform,
       title: partial.title,
@@ -417,6 +444,8 @@ export function defaultSyncMeta(
     },
     status: 'active',
   };
+
+  return partial.agent ? { agent: partial.agent, ...meta } : meta;
 }
 
 // ---------------------------------------------------------------------------
@@ -451,6 +480,65 @@ interface RepoIndex {
   repoIdentity: string | null;
   updatedAt: string;
   sessions: IndexEntry[];
+}
+
+/**
+ * An `_index.json` entry, keys in the order they are written. A key an older or hand-edited index lacks reads as empty
+ * rather than failing the whole index, and every key it does not name is kept.
+ */
+const IndexEntrySchema = z.looseObject({
+  sessionName: z.string().default(''),
+  author: z.string().default(''),
+  platform: z.string().default(''),
+  title: z.string().default(''),
+  cwd: z.string().default(''),
+  repoIdentity: z.string().nullable().default(null),
+  messageCount: z.number().default(0),
+  createdAt: z.string().default(''),
+  updatedAt: z.string().default(''),
+  status: z.string().default(''),
+  sessionId: z.string().optional(),
+  teamRevision: z.string().optional(),
+}) satisfies z.ZodType<IndexEntry>;
+
+/** An `_index.json`, keys in the order they are written; every key it does not name is kept for the write back. */
+const RepoIndexSchema = z.looseObject({
+  version: z.number().default(1),
+  repoIdentity: z.string().nullable().default(null),
+  updatedAt: z.string().default(''),
+  sessions: z.array(IndexEntrySchema).default([]),
+}) satisfies z.ZodType<RepoIndex>;
+
+/** The identity an `_index.json` records, read without the rest of the index; a value that is not a string reads as absent. */
+const IndexIdentitySchema = z.object({ repoIdentity: OptionalString });
+
+/** The entries of an `_index.json` a rebuild keeps the order and `updatedAt` of; an entry that is not an object reads as absent. */
+const KnownSessionsSchema = z.object({
+  sessions: z
+    .array(z.object({ sessionName: JsonValueSchema.optional(), author: JsonValueSchema.optional(), updatedAt: OptionalString }).optional().catch(undefined))
+    .optional()
+    .catch(undefined),
+});
+
+type KnownSessions = NonNullable<z.infer<typeof KnownSessionsSchema>['sessions']>;
+
+/** How many repo indexes a rebuild wrote, and how many sessions they list. */
+interface IndexRebuildCount {
+  repos: number;
+  sessions: number;
+}
+
+/** The team checkout against its upstream: changed files, and commits ahead and behind. */
+export interface SyncStatus {
+  uncommitted: number;
+  ahead: number;
+  behind: number;
+}
+
+/** A session read back from the archive, with its meta.json. */
+export interface ArchivedSessionRead {
+  session: Session;
+  meta: SessionSyncMeta;
 }
 
 /** The three outcomes of `gitCommit` (committed / no changes / failed). They must not be collapsed back into null. */
@@ -765,7 +853,7 @@ export class SyncManager {
 
     const pushedAt = (metaPath: string): string => {
       try {
-        return (JSON.parse(fs.readFileSync(metaPath, 'utf-8')) as SessionSyncMeta).sync.pushedAt ?? '';
+        return SyncPushedAtSchema.parse(JSON.parse(fs.readFileSync(metaPath, 'utf-8'))).sync.pushedAt ?? '';
       } catch {
         return ''; // unreadable: the folded copy replaces it
       }
@@ -785,7 +873,7 @@ export class SyncManager {
         let meta: SessionSyncMeta;
 
         try {
-          meta = JSON.parse(fs.readFileSync(source.meta, 'utf-8')) as SessionSyncMeta;
+          meta = readSyncMeta(source.meta);
         } catch {
           continue; // unreadable: left where it is
         }
@@ -855,7 +943,7 @@ export class SyncManager {
   private readIndexFile(p: string, repoIdentity: string | null): RepoIndex {
     try {
       if (fs.existsSync(p)) {
-        return JSON.parse(fs.readFileSync(p, 'utf-8')) as RepoIndex;
+        return RepoIndexSchema.parse(JSON.parse(fs.readFileSync(p, 'utf-8')));
       }
     } catch {
       // A silent rebuild of a corrupt index (parse failure) drops the dedup key, so pushing the same session again
@@ -887,7 +975,7 @@ export class SyncManager {
     // brought index changes then refused to merge.
     try {
       const previous = fs.readFileSync(target, 'utf-8');
-      const updatedAt = (JSON.parse(previous) as RepoIndex).updatedAt;
+      const { updatedAt } = z.object({ updatedAt: JsonValueSchema.optional() }).parse(JSON.parse(previous));
 
       if (JSON.stringify({ ...index, updatedAt }, null, 2) === previous) return;
     } catch {
@@ -934,7 +1022,7 @@ export class SyncManager {
         this.rebuildIndexLocked(repoIdentity);
 
         if (fs.existsSync(p)) {
-          return JSON.parse(fs.readFileSync(p, 'utf-8')) as RepoIndex;
+          return RepoIndexSchema.parse(JSON.parse(fs.readFileSync(p, 'utf-8')));
         }
       }
 
@@ -942,12 +1030,12 @@ export class SyncManager {
     }
 
     try {
-      return JSON.parse(fs.readFileSync(p, 'utf-8')) as RepoIndex;
+      return RepoIndexSchema.parse(JSON.parse(fs.readFileSync(p, 'utf-8')));
     } catch {
       this.rebuildIndexLocked(repoIdentity);
 
       try {
-        return JSON.parse(fs.readFileSync(p, 'utf-8')) as RepoIndex;
+        return RepoIndexSchema.parse(JSON.parse(fs.readFileSync(p, 'utf-8')));
       } catch {
         throw new Error(
           `corrupted session index at ${p}; run 'teamai session pull --all --repo-root <repo-root>' to rebuild it`,
@@ -1125,7 +1213,7 @@ export class SyncManager {
       }
 
       if (failures.length > 0) {
-        throw new AggregateError([error, ...failures], `Session archive rollback failed; original files kept at ${files.filter((f) => f.backedUp).map((f) => f.backup).join(', ')}`, { cause: error });
+        throw new AggregateError([error, ...failures], `Session archive rollback failed; original files kept at ${files.flatMap((f) => (f.backedUp ? [f.backup] : [])).join(', ')}`, { cause: error });
       }
 
       throw error;
@@ -1148,7 +1236,7 @@ export class SyncManager {
     repoIdentity: string | null,
     sessionName: string,
     author?: string,
-  ): { session: Session; meta: SessionSyncMeta } {
+  ): ArchivedSessionRead {
     // The name reaches the filesystem: reject anything that is not a plain
     // file name, so `--session ../../x` cannot read outside the archive.
     if (sessionName !== path.basename(sessionName) || /^\.\.?$/.test(sessionName)) {
@@ -1175,7 +1263,7 @@ export class SyncManager {
     const messages = content
       .split('\n')
       .filter((l) => l.trim())
-      .map((l) => messageFromDict(JSON.parse(l) as Record<string, unknown>));
+      .map((l) => messageFromDict(JsonValueSchema.parse(JSON.parse(l))));
 
     // Extract the title from meta + sessionName
     // Prefer the persisted title; the file name slug is truncated + lowercased
@@ -1320,7 +1408,7 @@ export class SyncManager {
           const idxPath = path.join(full, '_index.json');
 
           if (!fs.existsSync(idxPath)) continue;
-          const index = JSON.parse(fs.readFileSync(idxPath, 'utf-8')) as RepoIndex;
+          const index = IndexIdentitySchema.parse(JSON.parse(fs.readFileSync(idxPath, 'utf-8')));
 
           if (index.repoIdentity) identities.push(index.repoIdentity);
         } catch {
@@ -1435,17 +1523,18 @@ export class SyncManager {
     // appends in push order. Keep both from the current index so rebuilding an
     // unchanged archive reproduces the committed index instead of modifying it.
     const key = (e: IndexEntry) => `${e.sessionName}:${e.author}`;
-    let known: IndexEntry[] = [];
+    let known: KnownSessions = [];
 
     try {
-      const sessions = (JSON.parse(fs.readFileSync(path.join(dir, '_index.json'), 'utf-8')) as RepoIndex).sessions;
+      const sessions = KnownSessionsSchema.parse(JSON.parse(fs.readFileSync(path.join(dir, '_index.json'), 'utf-8'))).sessions;
 
-      if (Array.isArray(sessions)) known = sessions;
+      if (sessions !== undefined) known = sessions;
     } catch {
       // No index yet, or a corrupt one: rebuild from disk alone.
     }
 
-    const knownAt = new Map(known.map((e, i) => [key(e), { i, updatedAt: e.updatedAt }]));
+    const knownAt = new Map(known.flatMap((e, i): Array<[string, { i: number; updatedAt: string | undefined }]> =>
+      (e ? [[`${String(e.sessionName)}:${String(e.author)}`, { i, updatedAt: e.updatedAt }]] : [])));
 
     for (const e of entries) e.updatedAt = knownAt.get(key(e))?.updatedAt ?? e.updatedAt;
     const rank = (e: IndexEntry) => knownAt.get(key(e))?.i ?? known.length;
@@ -1464,7 +1553,7 @@ export class SyncManager {
     // an index rebuild, not a session change, so retain the committed bytes
     // when its session projection is already identical.
     try {
-      const current = JSON.parse(fs.readFileSync(indexPath, 'utf-8')) as RepoIndex;
+      const current = z.record(z.string(), JsonValueSchema).parse(JSON.parse(fs.readFileSync(indexPath, 'utf-8')));
 
       if (JSON.stringify({ ...current, updatedAt: undefined }) === JSON.stringify({ ...rebuilt, updatedAt: undefined })) {
         return entries.length;
@@ -1485,7 +1574,7 @@ export class SyncManager {
    * so a repo with no index is skipped outright — and those are exactly the ones `pull --all` most needs to repair.
    * So walk by directory: prefer the identity stored in the index, and if it is missing, fall back to decoding the directory name.
    */
-  private rebuildAllIndexesLocked(): { repos: number; sessions: number } {
+  private rebuildAllIndexesLocked(): IndexRebuildCount {
     /** identity → actual directory (old-encoding directory names differ from the new encoding, so the directory must travel with the identity). */
     const targets: Array<{ identity: string | null; dir?: string }> = [];
     const seen = new Set<string>();
@@ -1528,7 +1617,7 @@ export class SyncManager {
                 dirForIdentity = expected;
               } catch (err) {
                 console.warn(
-                  `Warning: could not rename legacy archive directory ${path.basename(full)}: ${(err as Error).message}`,
+                  `Warning: could not rename legacy archive directory ${path.basename(full)}: ${err instanceof Error ? err.message : String(err)}`,
                 );
               }
             }
@@ -1558,7 +1647,7 @@ export class SyncManager {
       const idxPath = path.join(dir, '_index.json');
 
       if (!fs.existsSync(idxPath)) return null;
-      const index = JSON.parse(fs.readFileSync(idxPath, 'utf-8')) as RepoIndex;
+      const index = IndexIdentitySchema.parse(JSON.parse(fs.readFileSync(idxPath, 'utf-8')));
 
       return index.repoIdentity ?? null;
     } catch {
@@ -1756,9 +1845,9 @@ export class SyncManager {
   private conflictedIndexIdentity(index: string): string | null {
     for (const stage of [2, 3]) {
       try {
-        const { repoIdentity } = JSON.parse(this.runGit(['show', `:${stage}:./${index}`])) as { repoIdentity?: unknown };
+        const { repoIdentity } = IndexIdentitySchema.parse(JSON.parse(this.runGit(['show', `:${stage}:./${index}`])));
 
-        if (typeof repoIdentity === 'string' && repoIdentity) return repoIdentity;
+        if (repoIdentity) return repoIdentity;
       } catch {
         // that side deleted the index or left it unparsable
       }
@@ -1783,7 +1872,7 @@ export class SyncManager {
     return files.map((f) => (f.startsWith(prefix) ? f.slice(prefix.length) : path.posix.relative(prefix, f)));
   }
 
-  getSyncStatus(): { uncommitted: number; ahead: number; behind: number } {
+  getSyncStatus(): SyncStatus {
     const status = this.runGit(['status', '--porcelain'], false);
     const uncommitted = status ? status.split('\n').filter((l) => l.trim()).length : 0;
 
