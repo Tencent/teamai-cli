@@ -15,6 +15,7 @@ export const TEAM_ENV_RESERVED_NAMES = [
 
 export function isReservedTeamEnvKey(key: string): boolean {
   const normalized = key.toUpperCase();
+
   return TEAM_ENV_RESERVED_NAMES.some((reserved) => reserved.toUpperCase() === normalized)
     || normalized.startsWith('__TEAMAI_')
     || isEnvShMarker(key);
@@ -26,6 +27,7 @@ export function reservedTeamEnvKeys(keys: Iterable<string>): string[] {
 
 export function reservedTeamEnvWarning(keys: Iterable<string>): string | null {
   const reserved = reservedTeamEnvKeys(keys);
+
   return reserved.length === 0 ? null
     : `${reserved.join(', ')} ${reserved.length === 1 ? 'is' : 'are'} reserved for TeamAI shell routing; those team env values are ignored.`;
 }

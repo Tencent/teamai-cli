@@ -47,12 +47,14 @@ export async function dropOtherCheckoutIndexes(localConfig: LocalConfig): Promis
 export async function dropCheckoutIndexes(dataHome: string, keep?: string): Promise<void> {
   const workspaces = path.join(dataHome, 'workspaces');
   let entries: Dirent[];
+
   try {
     entries = await readdir(workspaces, { withFileTypes: true });
   } catch (e) {
     if (e instanceof Error && 'code' in e && e.code === 'ENOENT') return;
     throw e;
   }
+
   await Promise.all(
     entries
       // One directory per checkout; a stray file (`.DS_Store`) has no index.
@@ -192,16 +194,24 @@ function inferQueryDomain(queryTokens: string[]): KnowledgeDomain {
   let techScore = 0;
   let opsScore = 0;
   let supportScore = 0;
+
   for (const t of queryTokens) {
     if (TECHNICAL_TAGS.has(t)) techScore++;
+
     if (OPS_TAGS.has(t)) opsScore++;
+
     if (SUPPORT_TAGS.has(t)) supportScore++;
   }
+
   const maxScore = Math.max(techScore, opsScore, supportScore);
+
   if (maxScore === 0) return 'neutral';
+
   // Tie-breaking mirrors inferDomain: technical > ops > support.
   if (techScore === maxScore) return 'technical';
+
   if (opsScore === maxScore) return 'ops';
+
   return 'support';
 }
 
@@ -259,33 +269,44 @@ export function inferDomain(
   let techScore = 0;
   let opsScore = 0;
   let supportScore = 0;
+
   for (const tag of normalizedTags) {
     if (TECHNICAL_TAGS.has(tag)) techScore++;
+
     if (OPS_TAGS.has(tag)) opsScore++;
+
     if (SUPPORT_TAGS.has(tag)) supportScore++;
   }
+
   const maxScore = Math.max(techScore, opsScore, supportScore);
+
   if (maxScore > 0) {
     // Tie-breaking: technical > ops > support
     if (techScore === maxScore) return 'technical';
+
     if (opsScore === maxScore) return 'ops';
+
     return 'support';
   }
 
   // 3. Directory path matching
   const normalizedPath = filePath.replace(/\\/g, '/').toLowerCase();
+
   for (const pattern of TECHNICAL_PATH_PATTERNS) {
     if (normalizedPath.includes(pattern)) return 'technical';
   }
+
   for (const pattern of OPS_PATH_PATTERNS) {
     if (normalizedPath.includes(pattern)) return 'ops';
   }
+
   for (const pattern of SUPPORT_PATH_PATTERNS) {
     if (normalizedPath.includes(pattern)) return 'support';
   }
 
   // 4. Type fallback
   if (type === 'skills' || type === 'rules') return 'technical';
+
   return 'neutral';
 }
 
@@ -304,6 +325,7 @@ export function parseLearningDoc(
 
   let data: Record<string, unknown>;
   let body: string;
+
   try {
     ({ data, content: body } = matter(content));
   } catch {
@@ -356,6 +378,7 @@ interface VoteAggregation {
 async function aggregateVotes(votesDir?: string, voteScope?: LocalConfig): Promise<VoteAggregation> {
   const scores = new Map<string, number>();
   const agg = new Map<string, { recalled: number; upvoted: number; lastRecalled: string; lastUpvoted: string }>();
+
   const contents = voteScope
     ? await (await import('../votes.js')).readIndexVoteFiles(voteScope)
     : await Promise.all((votesDir ? await listFiles(votesDir) : [])
@@ -368,10 +391,12 @@ async function aggregateVotes(votesDir?: string, voteScope?: LocalConfig): Promi
     try {
       const YAML = (await import('yaml')).default;
       const parsed = YAML.parse(content) as Record<string, unknown> | null;
+
       if (!parsed?.votes) continue;
 
       if (parsed.version === 2) {
         const votes = parsed.votes as Record<string, VoteEntryV2>;
+
         for (const [docId, entry] of Object.entries(votes)) {
           const recalled = entry.recalled_count ?? 0;
           const upvoted = entry.upvoted_count ?? 0;
@@ -380,21 +405,26 @@ async function aggregateVotes(votesDir?: string, voteScope?: LocalConfig): Promi
           const existing = agg.get(docId) ?? { recalled: 0, upvoted: 0, lastRecalled: '', lastUpvoted: '' };
           existing.recalled += recalled;
           existing.upvoted += upvoted;
+
           if (entry.last_recalled_at > existing.lastRecalled) {
             existing.lastRecalled = entry.last_recalled_at;
           }
+
           if (entry.last_upvoted_at && entry.last_upvoted_at > existing.lastUpvoted) {
             existing.lastUpvoted = entry.last_upvoted_at;
           }
+
           agg.set(docId, existing);
         }
       } else {
         const votes = (parsed as unknown as UserVotes).votes;
+
         for (const [docId, entry] of Object.entries(votes)) {
           scores.set(docId, (scores.get(docId) ?? 0) + 1);
 
           const existing = agg.get(docId) ?? { recalled: 0, upvoted: 0, lastRecalled: '', lastUpvoted: '' };
           existing.recalled += 1;
+
           if (entry.at > existing.lastRecalled) existing.lastRecalled = entry.at;
           agg.set(docId, existing);
         }
@@ -406,6 +436,7 @@ async function aggregateVotes(votesDir?: string, voteScope?: LocalConfig): Promi
 
   const { computeConfidence } = await import('../maintenance/confidence.js');
   const confidenceMap = new Map<string, number>();
+
   for (const [docId, data] of agg) {
     confidenceMap.set(docId, computeConfidence({
       recalledCount: data.recalled,
@@ -451,6 +482,7 @@ const FILE_DERIVATION = `1:${SEARCH_INDEX_VERSION}:${process.versions.node}:${pr
 async function fileFingerprint(file: string): Promise<string | undefined> {
   try {
     const s = await stat(expandHome(file), { bigint: true });
+
     return [s.dev, s.ino, s.size, s.mtimeNs, s.ctimeNs].join(':');
   } catch {
     // The read below remains the source of unreadable-path handling.
@@ -461,11 +493,13 @@ async function fileFingerprint(file: string): Promise<string | undefined> {
 function derivedEntry(entry: SearchIndexEntry | null): SearchIndexEntry | null {
   if (!entry) return null;
   const { votes: _votes, hotness: _hotness, confidence: _confidence, ...derived } = entry;
+
   return { ...derived, votes: 0 };
 }
 
 function isUnder(file: string, dir: string): boolean {
   const rel = path.relative(dir, file);
+
   return !rel.startsWith('..') && !path.isAbsolute(rel);
 }
 
@@ -483,7 +517,9 @@ async function keptUnder(
 ): Promise<SearchIndexEntry[]> {
   const out = (await reads.previous()).filter((entry) => entry.type === type && entry.path !== undefined
     && !reads.kept.has(entry) && isUnder(entry.path, p) && selected(path.relative(p, entry.path)));
+
   for (const entry of out) reads.kept.add(entry);
+
   return out;
 }
 
@@ -502,44 +538,58 @@ async function entryFromMdFile(
 ): Promise<SearchIndexEntry | null> {
   // 若当前文件是全量 codebase.md，且同目录存在 codebase-index.md，则跳过以避免重复命中。
   const basename = path.basename(absPath);
+
   if (basename === CODEBASE_FULL_FILENAME) {
     const dir = path.dirname(absPath);
     const indexPath = path.join(dir, CODEBASE_INDEX_FILENAME);
+
     if (await pathExists(indexPath)) {
       log.debug(`Skipping ${absPath}: codebase-index.md exists in same directory`);
+
       return null;
     }
   }
 
   const kept = async (): Promise<SearchIndexEntry | null> =>
     (await keptUnder(absPath, type, reads, (rel) => rel === ''))[0] ?? null;
+
   if (reads.given.some((given) => isUnder(absPath, given))) return kept();
   const key = JSON.stringify([absPath, filenameForId, type]);
   const fingerprint = await fileFingerprint(absPath);
   const cached = reads.cached.get(key);
+
   const reuse = (file: CachedFile): SearchIndexEntry | null => {
     reads.files.set(key, file);
     reads.counts.reused++;
+
     return file.entry ? { ...file.entry, votes: 0 } : null;
   };
+
   if (fingerprint !== undefined && cached?.fingerprint === fingerprint) return reuse(cached);
   let content: string;
+
   try {
     content = await readFile(expandHome(absPath), 'utf-8');
   } catch (e) {
     reads.unreadable.push({ path: absPath, reason: failureReason(e) });
+
     return kept();
   }
+
   const hash = createHash('sha256').update(content).digest('hex');
   // A copy or checkout may change metadata without changing any source bytes.
   const after = await fileFingerprint(absPath);
   const stable = fingerprint !== undefined && fingerprint === after;
+
   if (stable && cached?.hash === hash) return reuse({ ...cached, fingerprint });
   reads.counts.rebuilt++;
+
   const remember = (entry: SearchIndexEntry | null): SearchIndexEntry | null => {
     if (stable) reads.files.set(key, { key, fingerprint, hash, entry: derivedEntry(entry) });
+
     return entry;
   };
+
   if (!content) return remember(null);
 
   if (Buffer.byteLength(content, 'utf-8') > MAX_DOC_BYTES) {
@@ -548,6 +598,7 @@ async function entryFromMdFile(
   }
 
   const parsed = parseLearningDoc(content, filenameForId);
+
   if (!parsed) return remember(null);
 
   const { meta, bodyExcerpt } = parsed;
@@ -564,6 +615,7 @@ async function entryFromMdFile(
       return undefined;
     }
   })();
+
   const domain = inferDomain(rawFrontmatterDomain, tags, absPath, type);
 
   const titleTokens = tokenize(title);
@@ -590,8 +642,10 @@ async function entryFromMdFile(
   // prints nothing when the other end does not resolve. Malformed input is
   // ignored silently here; `review --branch` and `contribute` report it.
   let related: StoredRelation[] | undefined;
+
   if (treePath && (type === 'rules' || type === 'docs' || type === 'learnings')) {
     const sourceKind = type === 'rules' ? 'rule' : type === 'docs' ? 'doc' : 'learning';
+
     const rawRelated = (() => {
       try {
         return (matter(content).data['related'] as unknown);
@@ -599,10 +653,12 @@ async function entryFromMdFile(
         return undefined;
       }
     })();
+
     related = [
       ...parseRelatedBlock(rawRelated, sourceKind, treePath, 'warn', () => true, () => {}),
       ...relationsFromLinks(content, treePath, localLinkTargets),
     ];
+
     if (related.length === 0) related = undefined;
   }
 
@@ -639,14 +695,17 @@ async function entriesFromMdFiles(
   const out: (SearchIndexEntry | null)[] = [];
   const unreadable: UnreadableFile[][] = [];
   const next = files.entries();
+
   const worker = async (): Promise<void> => {
     for (const [i, file] of next) {
       const own: BuildReads = { ...reads, unreadable: unreadable[i] = [] };
       out[i] = await entryFromMdFile(file.absPath, file.id, type, own, file.treePath ?? treePathOf?.(file.id));
     }
   };
+
   await Promise.all(Array.from({ length: Math.min(READ_CONCURRENCY, files.length) }, worker));
   reads.unreadable.push(...unreadable.flat());
+
   return out.filter((entry) => entry !== null);
 }
 
@@ -664,11 +723,13 @@ function failureReason(e: unknown): string {
  */
 async function listDir(dir: string, reads: BuildReads): Promise<Dirent[] | null> {
   if (reads.given.some((given) => isUnder(dir, given))) return null;
+
   try {
     return (await readdir(expandHome(dir), { withFileTypes: true })).filter((entry) => !isIgnored(entry.name));
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === 'ENOENT') return [];
     reads.unreadable.push({ path: dir, reason: failureReason(e) });
+
     return null;
   }
 }
@@ -686,10 +747,13 @@ async function listMdFilesUnder(
 ): Promise<{ files: string[]; kept: SearchIndexEntry[] }> {
   const current = path.join(dir, prefix);
   const entries = await listDir(current, reads);
+
   if (!entries) return { files: [], kept: await keptUnder(current, type, reads, (rel) => rel.endsWith('.md')) };
   const out = { files: [] as string[], kept: [] as SearchIndexEntry[] };
+
   for (const entry of entries) {
     const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+
     if (entry.isFile() && rel.endsWith('.md')) out.files.push(rel);
     else if (entry.isDirectory()) {
       const sub = await listMdFilesUnder(dir, type, reads, rel);
@@ -697,6 +761,7 @@ async function listMdFilesUnder(
       out.kept.push(...sub.kept);
     }
   }
+
   return out;
 }
 
@@ -707,10 +772,13 @@ async function collectFlatMdEntries(
   reads: BuildReads,
 ): Promise<SearchIndexEntry[]> {
   const entries = await listDir(dir, reads);
+
   // Only the files directly in `dir`, as a listing would select.
   if (!entries) return keptUnder(dir, type, reads, (rel) => !rel.includes(path.sep) && rel.endsWith('.md'));
+
   const files = entries.filter((entry) => entry.isFile() && entry.name.endsWith('.md'))
     .map((entry) => ({ absPath: path.join(dir, entry.name), id: entry.name }));
+
   return entriesFromMdFiles(files, type, reads, (id) => `learnings/${id.replace(/\.md$/i, '')}`);
 }
 
@@ -738,6 +806,7 @@ async function collectLearningsEntries(
     onRoot: (dir) => collectFlatMdEntries(dir, 'learnings', reads),
     onNamespace: async (_dir, ns, nsDir) => {
       const { files, kept } = await listMdFilesUnder(nsDir, 'learnings', reads);
+
       const newEntries = await entriesFromMdFiles(
         files.map((rel) => ({ absPath: path.join(nsDir, rel), id: path.join(ns, rel) })),
         'learnings',
@@ -746,6 +815,7 @@ async function collectLearningsEntries(
         // relation targets normalize to `/` and could not match them.
         (id) => `learnings/${id.replace(/\.md$/i, '').replace(/\\/g, '/')}`,
       );
+
       return [...kept, ...newEntries];
     },
     getId: (item) => item.filename,
@@ -766,6 +836,7 @@ async function collectRecursiveMdEntries(
   treePathPrefix?: string,
 ): Promise<SearchIndexEntry[]> {
   const { files, kept } = await listMdFilesUnder(dir, type, reads);
+
   // Use the relative path as the filename so the entry id is unique
   // across subdirectories, e.g. `common/coding-style.md`.
   return [...kept, ...await entriesFromMdFiles(
@@ -784,6 +855,7 @@ async function collectListedMdEntries(
   reads: BuildReads,
 ): Promise<SearchIndexEntry[]> {
   const treePathOf = type === 'rules' || type === 'docs' ? (rel: string) => `${type}/${rel}` : undefined;
+
   return entriesFromMdFiles(
     files.filter((rel) => rel.endsWith('.md')).map((rel) => ({ absPath: path.join(dir, rel), id: rel })), type, reads, treePathOf);
 }
@@ -807,15 +879,21 @@ async function collectSkillEntries(
   // team tree, which the basename alone loses for a namespaced skill.
   async function walk(current: string, name: string | undefined, relDir: string): Promise<void> {
     const entries = await listDir(current, reads);
+
     if (!entries) {
       out.push(...await keptUnder(current, 'skills', reads, (rel) => path.basename(rel) === 'SKILL.md'));
+
       return;
     }
+
     if (name !== undefined && entries.some((entry) => entry.name === 'SKILL.md')) {
       const e = await entryFromMdFile(path.join(current, 'SKILL.md'), `${name}.md`, 'skills', reads, `skills/${relDir}`);
+
       if (e) out.push(e);
+
       return;
     }
+
     for (const entry of entries) {
       if (entry.isDirectory() && !entry.name.startsWith('.')) {
         await walk(path.join(current, entry.name), entry.name, relDir ? `${relDir}/${entry.name}` : entry.name);
@@ -824,6 +902,7 @@ async function collectSkillEntries(
   }
 
   await walk(dir, undefined, '');
+
   return out;
 }
 
@@ -850,6 +929,7 @@ export type IndexedSkills =
 function skillDirTreePath(dir: string): string {
   const segments = dir.split(/[\\/]/);
   const root = segments.lastIndexOf('skills');
+
   return root >= 0 && root < segments.length - 1
     ? `skills/${segments.slice(root + 1).join('/')}`
     : `skills/${segments[segments.length - 1]}`;
@@ -945,11 +1025,13 @@ export async function buildIndex(
   const opts: BuildIndexOptions = typeof optionsOrLearningsDir === 'string'
     ? { learningsDir: optionsOrLearningsDir, votesDir, indexPath }
     : optionsOrLearningsDir;
+
   const index = await indexInMemory(opts);
 
   // A torn in-place write parses as null on the next loadIndex, which silently
   // wipes recall until the next rebuild — same shape as the votes file (#854).
   const target = opts.indexPath ?? getSearchIndexPath();
+
   try {
     await writeJsonAtomic(target, index, { compact: true });
   } catch (e) {
@@ -961,6 +1043,7 @@ export async function buildIndex(
       log.warn(`Search index could not be written to ${target} (${failureReason(e)}), and the previous one could not be removed. `
         + 'Recall may return what you no longer receive until you fix the cause and run `teamai pull`.');
     }
+
     throw e;
   }
 
@@ -984,6 +1067,7 @@ export async function indexInMemory(opts: BuildIndexOptions): Promise<SearchInde
 
   // Aggregate votes once and reuse across all collectors.
   let voteAgg: VoteAggregation = { scores: new Map<string, number>(), confidenceMap: new Map<string, number>() };
+
   if (opts.votesDir || opts.voteScope) {
     try {
       voteAgg = await aggregateVotes(opts.votesDir, opts.voteScope);
@@ -991,26 +1075,33 @@ export async function indexInMemory(opts: BuildIndexOptions): Promise<SearchInde
       log.warn(`Search index could not read the votes in ${opts.votesDir ?? opts.voteScope?.repo.localPath} (${failureReason(e)}); it ranks without them until the next rebuild.`);
     }
   }
+
   // One load shared by concurrent reads, so `reads.kept` sees each previous entry as one object.
   let previous: Promise<SearchIndex | null> | undefined;
+
   const previousEntries = async (): Promise<SearchIndexEntry[]> => {
     previous ??= loadIndex(opts.indexPath ?? getSearchIndexPath());
+
     return (await previous)?.entries ?? [];
   };
+
   await previousEntries();
   const prior = await previous;
   const cached = new Map<string, CachedFile>();
+
   if (prior?.version === SEARCH_INDEX_VERSION && prior.fileCache?.derivation === FILE_DERIVATION
       && Array.isArray(prior.fileCache.files)) {
     for (const file of prior.fileCache.files) {
       if (typeof file?.key !== 'string' || typeof file.fingerprint !== 'string' || typeof file.hash !== 'string') continue;
       const entry = typeof file.entry === 'number' ? prior.entries[file.entry] : file.entry;
+
       if (entry !== null && (!entry || !Array.isArray(entry.tokens)
           || !Array.isArray(entry.tags) || typeof entry.filename !== 'string'
           || JSON.stringify([entry.path, entry.filename, entry.type]) !== file.key)) continue;
       cached.set(file.key, { ...file, entry: derivedEntry(entry) });
     }
   }
+
   const reads: BuildReads = {
     voteCounts: voteAgg.scores,
     unreadable: [...opts.unreadable ?? []],
@@ -1025,19 +1116,23 @@ export async function indexInMemory(opts: BuildIndexOptions): Promise<SearchInde
   const entries: SearchIndexEntry[] = [];
 
   const learningsDirs = opts.learningsDirs ?? (opts.learningsDir ? [opts.learningsDir] : []);
+
   if (learningsDirs.length > 0) {
     entries.push(...await collectLearningsEntries(learningsDirs, opts.learningsNamespaces, reads));
   }
+
   if (opts.docsDir && opts.docFiles) {
     entries.push(...await collectListedMdEntries(opts.docsDir, opts.docFiles, 'docs', reads));
   } else if (opts.docsDir) {
     entries.push(...await collectRecursiveMdEntries(opts.docsDir, 'docs', reads, 'docs/'));
   }
+
   if (opts.rulesDir && opts.ruleFiles) {
     entries.push(...await collectListedMdEntries(opts.rulesDir, opts.ruleFiles, 'rules', reads));
   } else if (opts.rulesDir) {
     entries.push(...await collectRecursiveMdEntries(opts.rulesDir, 'rules', reads, 'rules/'));
   }
+
   if (opts.skills?.kind === 'dirs') {
     entries.push(...await collectSkillDirEntries(opts.skills.dirs, reads));
   } else if (opts.skills?.kind === 'keep-indexed') {
@@ -1045,11 +1140,13 @@ export async function indexInMemory(opts: BuildIndexOptions): Promise<SearchInde
   } else if (opts.skillsDir) {
     entries.push(...await collectSkillEntries(opts.skillsDir, reads));
   }
+
   if (opts.codebaseDir) {
     // Local codebase pages are not team assets: no tree path, so relations
     // never point at them and they cannot shadow a team doc's tree path.
     entries.push(...await collectRecursiveMdEntries(opts.codebaseDir, 'docs', reads));
   }
+
   // The index follows what the member receives (#1006): of the previous index,
   // only the entries the collectors put back for what they could not read stay.
   if (reads.unreadable.length > 0) warnUnreadable(reads.unreadable);
@@ -1060,6 +1157,7 @@ export async function indexInMemory(opts: BuildIndexOptions): Promise<SearchInde
     delete entry.confidence;
     delete entry.hotness;
   }
+
   // Annotate entries with confidence/hotness for hot/cold scoring.
   if (voteAgg.confidenceMap.size > 0) {
     try {
@@ -1074,9 +1172,11 @@ export async function indexInMemory(opts: BuildIndexOptions): Promise<SearchInde
   // Count how many *entries* contain each token (not raw term frequency).
   const df: Record<string, number> = {};
   const dfByDomain: NonNullable<SearchIndex['dfByDomain']> = {};
+
   for (const entry of entries) {
     const domain = entry.domain ?? 'neutral';
     const domainDf = dfByDomain[domain] ??= {};
+
     for (const token of new Set(entry.tokens)) {
       df[token] = (df[token] ?? 0) + 1;
       domainDf[token] = (domainDf[token] ?? 0) + 1;
@@ -1086,6 +1186,7 @@ export async function indexInMemory(opts: BuildIndexOptions): Promise<SearchInde
   const dropped = [...cached.keys()].filter((key) => !reads.files.has(key)).length;
   log.debug(`Search index files: ${reads.counts.reused} reused, ${reads.counts.rebuilt} rebuilt, ${dropped} dropped`);
   const positions = new Map(entries.map((entry, i) => [JSON.stringify([entry.path, entry.filename, entry.type]), i]));
+
   return {
     version: SEARCH_INDEX_VERSION,
     builtAt: new Date().toISOString(),
@@ -1109,7 +1210,9 @@ export async function indexInMemory(opts: BuildIndexOptions): Promise<SearchInde
  */
 export function isLegacyIndex(index: SearchIndex | null): boolean {
   if (!index) return false;
+
   if (typeof index.version !== 'number' || index.version < SEARCH_INDEX_VERSION) return true;
+
   return index.entries.some((e) => !e.type || e.domain === undefined)
     || !index.df
     || !index.dfByDomain
@@ -1121,9 +1224,11 @@ export function isLegacyIndex(index: SearchIndex | null): boolean {
  */
 export async function loadIndex(indexPath?: string): Promise<SearchIndex | null> {
   const raw = await readJson<SearchIndex>(indexPath ?? getSearchIndexPath());
+
   if (!raw || !Array.isArray(raw.entries)) {
     return null;
   }
+
   return raw;
 }
 
@@ -1226,6 +1331,7 @@ export function search(
   if (!query.trim()) return [];
 
   const queryTokens = tokenize(query).filter((token) => !QUERY_STOP_TOKENS.has(token));
+
   if (queryTokens.length === 0) return [];
 
   // Infer query domain for adaptive weighting (改动 A).
@@ -1236,10 +1342,12 @@ export function search(
   // the score of an existing entry. Older in-memory indexes keep their global
   // df behavior until the caller rebuilds the persisted index.
   const domainSizes: Partial<Record<KnowledgeDomain, number>> = {};
+
   for (const entry of index.entries) {
     const domain = entry.domain ?? 'neutral';
     domainSizes[domain] = (domainSizes[domain] ?? 0) + 1;
   }
+
   const df = index.df ?? {};
 
   /**
@@ -1248,13 +1356,17 @@ export function search(
    */
   const idf = (token: string, domain: KnowledgeDomain): number => {
     const domainDf = index.dfByDomain?.[domain];
+
     if (domainDf) {
       const n = domainSizes[domain] ?? 0;
       const docFreq = domainDf[token] ?? 0;
+
       return Math.log((n + 1) / (docFreq + 1)) + 1;
     }
+
     if (!index.df) return 1.0;
     const docFreq = df[token] ?? 0;
+
     return Math.log((index.entries.length + 1) / (docFreq + 1)) + 1;
   };
 
@@ -1293,20 +1405,24 @@ export function search(
         titleScore += 3 * idf(titleToken, entryDomain);
         hasTitleOrTagMatch = true;
       }
+
       if (entryTokens.has(tagToken)) {
         tagScore += 2 * idf(tagToken, entryDomain);
         hasTitleOrTagMatch = true;
       }
+
       if (entryTokens.has(qt)) {
         bodyScore += 1 * idf(qt, entryDomain);
       }
     }
+
     const matchScore = titleScore + tagScore + bodyScore;
 
     // Require at least one title or tag match to filter out body-only noise.
     // Docs (type === 'docs') often lack tags and have generic titles, so allow body-only
     // matches for them — the IDF weighting naturally demotes low-relevance hits.
     const isDocsEntry = entry.type === 'docs';
+
     if (matchScore > 0 && (hasTitleOrTagMatch || isDocsEntry)) {
       const finalize = (sum: number): number => {
         // Normalize the token-match sum by query length before adding absolute
@@ -1330,8 +1446,10 @@ export function search(
         if (entry.hotness !== undefined && entry.hotness < 1.0) {
           score *= entry.hotness;
         }
+
         return score;
       };
+
       const score = finalize(matchScore);
       // BM25-style length normalization for the title field: without it a hub
       // page whose title names the whole domain matches the same query token as
@@ -1340,9 +1458,11 @@ export function search(
       // tokenize(title) as `title:` tokens, so counting them avoids
       // tokenizing the title again on every search.
       let titleTokenCount = 0;
+
       for (const token of entry.tokens) {
         if (token.startsWith('title:')) titleTokenCount++;
       }
+
       const rankScore = finalize(
         titleScore / Math.sqrt(Math.max(1, titleTokenCount / TITLE_LENGTH_SCALE)) + tagScore + bodyScore,
       );
@@ -1358,6 +1478,7 @@ export function search(
 
       const matchedTerms: string[] = [];
       const missingTerms: string[] = [];
+
       for (const { word, tokens: wt } of wordTokens) {
         const hit = wt.some((t) => entryTokens.has(`title:${t}`) || entryTokens.has(`tag:${t}`));
         (hit ? matchedTerms : missingTerms).push(word);
@@ -1370,6 +1491,7 @@ export function search(
   // Sort by ordering score descending, then by date descending for ties.
   results.sort((a, b) => {
     if (b.rankScore !== a.rankScore) return b.rankScore - a.rankScore;
+
     return (b.entry.date || '').localeCompare(a.entry.date || '');
   });
 
@@ -1383,11 +1505,14 @@ export function search(
   // same content.
   const seen = new Set<string>();
   const deduped: SearchResult[] = [];
+
   for (const r of results) {
     const key = dedupKey(r);
+
     if (seen.has(key)) continue;
     seen.add(key);
     deduped.push(r);
+
     if (deduped.length === limit) break;
   }
 

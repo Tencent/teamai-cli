@@ -52,12 +52,14 @@ export async function acquireImportLock(teamRepoPath: string): Promise<() => Pro
     // First acquire: write the lock file.
     try {
       await mkdir(path.dirname(lockPath), { recursive: true });
+
       const meta: ImportLockMeta = {
         pid: process.pid,
         host: os.hostname(),
         startedAt: new Date().toISOString(),
         teamRepo: path.resolve(teamRepoPath),
       };
+
       await writeFile(lockPath, JSON.stringify(meta, null, 2), 'utf8');
     } catch (e) {
       log.debug(`[import-lock] Failed to write lock file ${lockPath}: ${(e as Error).message}`);
@@ -75,6 +77,7 @@ export async function acquireImportLock(teamRepoPath: string): Promise<() => Pro
 
     if (next === 0) {
       refCounts.delete(lockPath);
+
       try {
         await unlink(lockPath);
       } catch (e) {
@@ -107,6 +110,7 @@ export async function isImportInProgress(teamRepoPath: string): Promise<boolean>
   const lockPath = lockPathFor(teamRepoPath);
 
   let raw: string;
+
   try {
     raw = await readFile(lockPath, 'utf8');
   } catch {
@@ -115,6 +119,7 @@ export async function isImportInProgress(teamRepoPath: string): Promise<boolean>
   }
 
   let meta: ImportLockMeta;
+
   try {
     meta = JSON.parse(raw) as ImportLockMeta;
 
@@ -129,6 +134,7 @@ export async function isImportInProgress(teamRepoPath: string): Promise<boolean>
       } catch (e) {
         log.debug(`[import-lock] Failed to remove stale lock ${lockPath}: ${(e as Error).message}`);
       }
+
       return false;
     }
 
@@ -136,6 +142,7 @@ export async function isImportInProgress(teamRepoPath: string): Promise<boolean>
       // Same host: probe the locking process via signal 0.
       try {
         process.kill(meta.pid, 0);
+
         // No exception thrown — process is alive — import is in progress.
         return true;
       } catch {
@@ -147,6 +154,7 @@ export async function isImportInProgress(teamRepoPath: string): Promise<boolean>
             `[import-lock] Failed to remove dead-process lock ${lockPath}: ${(e as Error).message}`,
           );
         }
+
         return false;
       }
     }
@@ -157,15 +165,18 @@ export async function isImportInProgress(teamRepoPath: string): Promise<boolean>
     // JSON parse failed — fall back to mtime heuristic.
     try {
       const { mtimeMs } = await stat(lockPath);
+
       if (Date.now() - mtimeMs <= LOCK_TTL_MS) {
         // Fresh but unreadable — treat as active to protect uncommitted data.
         return true;
       }
+
       try {
         await unlink(lockPath);
       } catch (e) {
         log.debug(`[import-lock] Failed to remove malformed lock ${lockPath}: ${(e as Error).message}`);
       }
+
       return false;
     } catch {
       return false;

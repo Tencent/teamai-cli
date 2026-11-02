@@ -8,6 +8,7 @@
 export function canonicalModelName(model: string): string {
   let name = model.trim().toLowerCase().replace(/\[[^\]]*\]$/, '');
   name = name.slice(name.lastIndexOf('/') + 1);
+
   return name
     .replace(/^(?:us|eu|apac|au|jp|global|us-gov)\./, '')
     .replace(/^anthropic\./, '')

@@ -32,10 +32,13 @@ export interface DashboardRule {
 /** One rule's frontmatter description, or null: the page lists metadata only. */
 async function ruleDescription(sourcePath: string): Promise<string | null> {
   const raw = await readFileSafe(sourcePath);
+
   if (raw === null) return null;
+
   try {
     const { data } = matter(raw);
     const description = (data as { description?: unknown }).description;
+
     return typeof description === 'string' && description.trim() !== '' ? description.trim() : null;
   } catch {
     // Damaged frontmatter must not take the whole listing down.
@@ -53,39 +56,49 @@ export async function collectRulesInventory(
   roleContext: Awaited<ReturnType<typeof buildRolePullContext>>,
 ): Promise<DashboardRule[]> {
   const allItems = await getHandler('rules').scanTeamForPull(teamConfig, localConfig);
+
   if (allItems.length === 0) return [];
   const { items, overrides, replaced } = await resolveDesiredRules(teamConfig, localConfig, roleContext);
   const delivered = new Set(items.map((item) => item.relativePath));
+
   // A root rule an active namespace rule (or the author's own namespaced copy
   // of it, by its placed record) stands for — pull delivers that one instead.
   const superseded = new Set([
     ...replaced.map((item) => item.relativePath),
     ...overrides.map((override) => override.replaces),
   ]);
+
   // The two channels below only label what the sets above left undelivered.
   // In a workspace with children each member reads its own (#913): a rule is
   // outside the namespaces when no member's hold it, and left out by tags when
   // every member whose namespaces hold it skips it.
   const members = await deliveredMembers(localConfig);
+
   const channels = members
     ? await Promise.all(members.map(async (member) => ({ member, roleContext: await buildRolePullContext(member) })))
     : [{ member: localConfig, roleContext }];
+
   const tagsConfig = await loadTagsConfig(localConfig.repo.localPath);
   const inNamespace = new Set<string>();
   const tagIncluded = new Set<string>();
+
   for (const channel of channels) {
     const knowledgeNs = channel.roleContext ? channel.roleContext.activeNamespaces.knowledge : null;
     const namespaced = filterRulesByKnowledgeNamespaces(allItems, knowledgeNs);
+
     for (const item of namespaced) inNamespace.add(item.relativePath);
     const { included } = filterByTags(namespaced, tagsConfig, channel.member.subscribedTags, 'rules');
+
     for (const item of included) tagIncluded.add(item.relativePath);
   }
 
   const rules: DashboardRule[] = [];
+
   for (const item of allItems) {
     const [namespace] = item.name.split('/');
     const root = item.name.split('/').length === 1;
     let undeliveredReason: DashboardRule['undeliveredReason'];
+
     if (delivered.has(item.relativePath)) undeliveredReason = undefined;
     else if (superseded.has(item.relativePath)) undeliveredReason = 'replaced';
     else if (!inNamespace.has(item.relativePath)) undeliveredReason = 'namespace';
@@ -100,5 +113,6 @@ export async function collectRulesInventory(
       undeliveredReason,
     });
   }
+
   return rules.sort((a, b) => a.name.localeCompare(b.name));
 }

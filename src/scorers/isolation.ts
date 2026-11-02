@@ -30,6 +30,7 @@ function levelOf(value: string): Isolation {
 export function requiredIsolation(settings: readonly IsolationSetting[]): RequiredIsolation {
   const given = settings.flatMap(({ source, value }) => (value === undefined ? [] : [{ source, value, level: levelOf(value) }]));
   const level: Isolation = given.some((setting) => setting.level === 'verified') ? 'verified' : 'best-effort';
+
   return {
     level,
     setBy: given.filter((setting) => setting.level === level).map((setting) => setting.source),

@@ -18,15 +18,18 @@ const SENSITIVE_HEADER_RE = /^(authorization|x-api-token|x-api-key|cookie)$/i;
 /** Mask a sensitive header value, preserving an auth scheme prefix if present. */
 function redactValue(value: string): string {
   const scheme = value.match(/^(Bearer|Basic|Token)\s+/i);
+
   return scheme ? `${scheme[1]} ***` : '***';
 }
 
 /** Return a copy of headers with sensitive values replaced by "***". */
 export function redactHeaders(headers: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
+
   for (const [key, value] of Object.entries(headers)) {
     out[key] = SENSITIVE_HEADER_RE.test(key) ? redactValue(value) : value;
   }
+
   return out;
 }
 
@@ -34,6 +37,7 @@ export function redactHeaders(headers: Record<string, string>): Record<string, s
 function previewBody(body: unknown, maxLen = 4096): string {
   if (body === undefined || body === null) return '(empty)';
   const text = typeof body === 'string' ? body : JSON.stringify(body);
+
   return text.length > maxLen ? `${text.slice(0, maxLen)}… (${text.length} bytes total)` : text;
 }
 
@@ -47,6 +51,7 @@ export function logHttpRequest(
 ): void {
   log.debug(`${tag} → ${method} ${url}`);
   log.debug(`${tag}   headers: ${JSON.stringify(redactHeaders(headers))}`);
+
   if (body !== undefined) {
     log.debug(`${tag}   body: ${previewBody(body)}`);
   }

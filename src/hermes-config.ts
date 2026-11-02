@@ -16,12 +16,15 @@ export function getHermesConfigPath(home = toolHome('hermes')): string {
 /** Hermes uses an explicit cap, or a model-dependent cap with a 20,000-character floor. */
 export async function hermesContextFileBudget(): Promise<{ limit: number; explicit: boolean; error?: string }> {
   const raw = await readFileSafe(getHermesConfigPath());
+
   try {
     const config = raw ? YAML.parse(raw) as { context_file_max_chars?: unknown } | null : null;
     const value = config?.context_file_max_chars;
+
     if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
       return { limit: Math.trunc(value), explicit: true };
     }
+
     return { limit: 20_000, explicit: false };
   } catch (error) {
     return { limit: 20_000, explicit: false, error: error instanceof Error ? error.message : String(error) };
@@ -34,12 +37,15 @@ export async function hermesContextFileBudget(): Promise<{ limit: number; explic
  */
 async function readConfigDoc(home = toolHome('hermes')): Promise<YAML.Document.Parsed> {
   const content = await readFileSafe(getHermesConfigPath(home));
+
   if (!content || content.trim() === '') return new YAML.Document({}) as YAML.Document.Parsed;
   const doc = YAML.parseDocument(content);
+
   // If the top level is not a map (unexpected), start fresh to stay safe.
   if (!doc.contents || !YAML.isMap(doc.contents)) {
     return new YAML.Document({}) as YAML.Document.Parsed;
   }
+
   return doc as YAML.Document.Parsed;
 }
 
@@ -77,6 +83,7 @@ function mergeBlock(existing: string, rulesText: string): string {
     const after = existing.substring(endIdx + RULES_BLOCK_END.length).replace(/^\n+/, '');
 
     let result: string;
+
     if (block === '') {
       // Remove the managed block; stitch before and after.
       if (before === '' && after === '') {
@@ -99,12 +106,15 @@ function mergeBlock(existing: string, rulesText: string): string {
         result = `${before}\n\n${block}\n\n${after}`;
       }
     }
+
     return result.trim();
   }
 
   // No existing managed block — append.
   if (block === '') return existing.trim();
+
   if (existing.trim() === '') return block;
+
   return `${existing.trim()}\n\n${block}`;
 }
 
@@ -125,11 +135,13 @@ export async function upsertSoulRules(soulPath: string, rulesText: string): Prom
     .split('\n')
     .filter((line) => line.trim() !== RULES_BLOCK_START && line.trim() !== RULES_BLOCK_END)
     .join('\n');
+
   const existing = (await readFileSafe(soulPath)) ?? '';
   const merged = mergeBlock(existing, sanitized);
 
   if (merged === '') {
     if (await pathExists(soulPath)) await remove(soulPath);
+
     return;
   }
 
@@ -145,11 +157,14 @@ export async function upsertSoulRules(soulPath: string, rulesText: string): Prom
  */
 export async function readSoulRules(soulPath: string): Promise<string | null> {
   const content = await readFileSafe(soulPath);
+
   if (content === null) return null;
 
   const startIdx = content.indexOf(RULES_BLOCK_START);
   const endIdx = content.indexOf(RULES_BLOCK_END);
+
   if (startIdx === -1 || endIdx === -1 || endIdx < startIdx) return null;
+
   return content.slice(startIdx + RULES_BLOCK_START.length, endIdx).trim();
 }
 
@@ -204,7 +219,9 @@ export async function upsertHermesHook(
 
   // Build clean entry without undefined keys to avoid YAML null values.
   const cleanEntry: HookEntry = { command: entry.command };
+
   if (entry.matcher !== undefined) cleanEntry.matcher = entry.matcher;
+
   if (entry.timeout !== undefined) cleanEntry.timeout = entry.timeout;
 
   const newArr = [...untouched, cleanEntry];
@@ -213,6 +230,7 @@ export async function upsertHermesHook(
 
   doc.setIn(['hooks', event], newArr);
   await writeConfigDoc(doc);
+
   return true;
 }
 
@@ -230,9 +248,11 @@ export async function removeHermesHookByCommand(command: string, home = toolHome
 
   // Get hooks as a plain JS object for iteration.
   const rawHooks = doc.getIn(['hooks']);
+
   const hooks: Record<string, unknown> | null = YAML.isMap(rawHooks)
     ? (rawHooks.toJSON() as Record<string, unknown>)
     : null;
+
   if (!hooks || typeof hooks !== 'object') return;
 
   let changed = false;
@@ -240,8 +260,10 @@ export async function removeHermesHookByCommand(command: string, home = toolHome
   for (const event of Object.keys(hooks)) {
     const arr: HookEntry[] = Array.isArray(hooks[event]) ? (hooks[event] as HookEntry[]) : [];
     const filtered = arr.filter((e) => e && typeof e === 'object' && e.command !== command);
+
     if (filtered.length !== arr.length) {
       changed = true;
+
       if (filtered.length === 0) {
         doc.deleteIn(['hooks', event]);
       } else {
@@ -254,9 +276,11 @@ export async function removeHermesHookByCommand(command: string, home = toolHome
 
   // If hooks map is now empty, remove the hooks key entirely.
   const remainingRaw = doc.getIn(['hooks']);
+
   const remaining: Record<string, unknown> | null = YAML.isMap(remainingRaw)
     ? (remainingRaw.toJSON() as Record<string, unknown>)
     : null;
+
   if (!remaining || Object.keys(remaining).length === 0) {
     doc.deleteIn(['hooks']);
   }
@@ -275,14 +299,17 @@ export async function removeHermesHookByCommand(command: string, home = toolHome
 export async function addHermesAllowlist(event: string, command: string): Promise<boolean> {
   const filePath = getHermesAllowlistPath();
   const raw = await readJson<AllowlistFile>(filePath);
+
   const data: AllowlistFile =
     raw && Array.isArray(raw.approvals) ? raw : { approvals: [] };
 
   const exists = data.approvals.some((a) => a.event === event && a.command === command);
+
   if (exists) return false;
 
   data.approvals.push({ event, command });
   await writeJson(filePath, data);
+
   return true;
 }
 
@@ -291,9 +318,11 @@ export async function hasHermesHookCommands(commands: readonly string[], home = 
   const doc = await readConfigDoc(home);
   const raw = doc.getIn(['hooks']);
   const hooks = YAML.isMap(raw) ? raw.toJSON() as Record<string, unknown> : {};
+
   if (Object.values(hooks).some(entries => Array.isArray(entries)
     && entries.some((entry: HookEntry) => entry && typeof entry === 'object' && commands.includes(entry.command)))) return true;
   const approvals = await readJson<AllowlistFile>(getHermesAllowlistPath(home));
+
   return Array.isArray(approvals?.approvals) && approvals.approvals.some(entry => commands.includes(entry.command));
 }
 
@@ -307,11 +336,13 @@ export async function hasHermesHookCommands(commands: readonly string[], home = 
 export async function removeHermesAllowlist(event: string, command: string, home = toolHome('hermes')): Promise<void> {
   const filePath = getHermesAllowlistPath(home);
   const raw = await readJson<AllowlistFile>(filePath);
+
   if (!raw || !Array.isArray(raw.approvals)) return;
 
   const filtered = raw.approvals.filter(
     (a) => !(a.event === event && a.command === command),
   );
+
   if (filtered.length === raw.approvals.length) return;
 
   await writeJson(filePath, { approvals: filtered });
@@ -325,12 +356,15 @@ export async function removeHermesAllowlist(event: string, command: string, home
 export async function enableHermesPlugin(name: string): Promise<boolean> {
   const doc = await readConfigDoc();
   const disabled = doc.getIn(['plugins', 'disabled']);
+
   if (YAML.isSeq(disabled) && (disabled.toJSON() as unknown[]).includes(name)) return false;
   const enabled = doc.getIn(['plugins', 'enabled']);
   const list = YAML.isSeq(enabled) ? (enabled.toJSON() as unknown[]) : [];
+
   if (list.includes(name)) return false;
   doc.setIn(['plugins', 'enabled'], [...list, name]);
   await writeConfigDoc(doc);
+
   return true;
 }
 
@@ -338,13 +372,17 @@ export async function enableHermesPlugin(name: string): Promise<boolean> {
 export async function disableHermesPlugin(name: string, home = toolHome('hermes')): Promise<void> {
   const doc = await readConfigDoc(home);
   const enabled = doc.getIn(['plugins', 'enabled']);
+
   if (!YAML.isSeq(enabled)) return;
   const list = enabled.toJSON() as unknown[];
+
   if (!list.includes(name)) return;
   const rest = list.filter((entry) => entry !== name);
+
   if (rest.length > 0) doc.setIn(['plugins', 'enabled'], rest);
   else doc.deleteIn(['plugins', 'enabled']);
   const plugins = doc.getIn(['plugins']);
+
   if (YAML.isMap(plugins) && plugins.items.length === 0) doc.deleteIn(['plugins']);
   await writeConfigDoc(doc, home);
 }
@@ -352,11 +390,13 @@ export async function disableHermesPlugin(name: string, home = toolHome('hermes'
 /** Whether the member put `name` in `plugins.disabled`, which enabling leaves alone. */
 export async function isHermesPluginDisabled(name: string): Promise<boolean> {
   const disabled = (await readConfigDoc()).getIn(['plugins', 'disabled']);
+
   return YAML.isSeq(disabled) && (disabled.toJSON() as unknown[]).includes(name);
 }
 
 /** Whether `name` is in `plugins.enabled` of the Hermes config.yaml. */
 export async function isHermesPluginEnabled(name: string): Promise<boolean> {
   const enabled = (await readConfigDoc()).getIn(['plugins', 'enabled']);
+
   return YAML.isSeq(enabled) && (enabled.toJSON() as unknown[]).includes(name);
 }

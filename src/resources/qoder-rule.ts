@@ -22,9 +22,11 @@ import {
  */
 export function teamRuleToQoderRule(rawTeamRule: string): string {
   const globs = [...new Set(rulePaths(teamRuleData(rawTeamRule)).flatMap(expandBraces))];
+
   const frontmatter = globs.length > 0
     ? ['trigger: glob', `glob: ${globs.join(', ')}`]
     : ['trigger: always_on'];
+
   return `---\n${frontmatter.join('\n')}\n---\n\n${teamRuleBody(rawTeamRule)}\n`;
 }
 

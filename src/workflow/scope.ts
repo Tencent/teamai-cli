@@ -49,6 +49,7 @@ export interface GrantedAllowance {
 function allowancesOf(scope: Scope, state: StepState, step: WorkflowStep): Pick<Scope, 'allowances'> {
   if (step.onLimit !== 'end_turn') return { allowances: scope.allowances };
   const own = { step: state.id, ...(step.timeout !== undefined ? { timeoutMs: step.timeout } : {}), ...(step.budget ? { tokens: step.budget.tokens } : {}) };
+
   return { allowances: [...scope.allowances, own] };
 }
 
@@ -67,6 +68,7 @@ export function topScope(run: RunState): Scope {
 export function finallyScope(run: RunState): Scope {
   const top = topScope(run);
   const steps = run.definition.finally ?? [];
+
   return {
     prefix: '', definition: { steps }, inputs: run.inputs, outer: expressionSteps(top, statesIn(run, top)), loops: stepLoops(steps),
     requires: top.requires, budgeted: false, allowances: [],
@@ -87,6 +89,7 @@ function ownBudget(step: WorkflowStep): Budget | undefined {
 
 function budgetOf(outer: boolean, ...budgets: ReadonlyArray<Budget | undefined>): Pick<Scope, 'budget' | 'budgeted'> {
   const limits = budgets.flatMap((budget) => (budget ? [budget.tokens] : []));
+
   return limits.length > 0 ? { budget: Math.min(...limits), budgeted: true } : { budgeted: outer };
 }
 
@@ -96,6 +99,7 @@ function budgetOf(outer: boolean, ...budgets: ReadonlyArray<Budget | undefined>)
  */
 export function childScope(run: RunState, scope: Scope, states: StepState[], state: StepState, step: WorkflowStep): Scope | undefined {
   const runs = stepWorkflow(step);
+
   if (runs?.kind === 'inline') {
     return {
       prefix: `${state.id}.`, definition: runs.workflow, inputs: scope.inputs, outer: expressionSteps(scope, states, state),
@@ -104,7 +108,9 @@ export function childScope(run: RunState, scope: Scope, states: StepState[], sta
       ...budgetOf(scope.budgeted || step.budget !== undefined, ownBudget(step)), ...setupOf(scope.setup), ...allowancesOf(scope, state, step),
     };
   }
+
   const definition = workflowRunBy(run, step, scope.prefix);
+
   return definition && isWorkflowFile(definition) ? {
     prefix: `${state.id}.`, definition, inputs: state.inputs, loops: stepLoops(definition.steps), runner: state,
     defaultModel: definition.defaults?.model ?? scope.defaultModel,
@@ -120,12 +126,15 @@ export function childScope(run: RunState, scope: Scope, states: StepState[], sta
  */
 export function stepDefinitions(run: Pick<RunState, 'definition' | 'workflows' | 'admitted'>): (path: string) => WorkflowStep | undefined {
   const indexes = new Map<WorkflowDefinition | InlineWorkflow, Map<string, WorkflowStep>>();
+
   return (path) => {
     let workflow: WorkflowDefinition | InlineWorkflow | undefined = run.definition;
     let step: WorkflowStep | undefined;
     let prefix = '';
+
     for (const segment of path.split('.')) {
       const { id } = parseStepPath(segment)[0] ?? { id: segment };
+
       if (!workflow) return undefined;
       const index: Map<string, WorkflowStep> = indexes.get(workflow) ?? new Map(workflow.steps.map((item) => [item.id, item]));
       indexes.set(workflow, index);
@@ -133,6 +142,7 @@ export function stepDefinitions(run: Pick<RunState, 'definition' | 'workflows' |
       workflow = step && workflowRunBy(run, step, prefix);
       prefix = `${prefix}${segment}.`;
     }
+
     return step;
   };
 }
@@ -143,27 +153,35 @@ const scopeIndex = new WeakMap<readonly StepState[], Map<string, StepState[]>>()
 /** `states` by the prefix of the scope each is directly inside, in their order. A `for_each` item such as `build[0]` is in none. */
 function byScope(states: readonly StepState[]): Map<string, StepState[]> {
   const index = new Map<string, StepState[]>();
+
   for (const state of states) {
     const prefix = state.id.slice(0, state.id.lastIndexOf('.') + 1);
+
     if (parseStepPath(state.id.slice(prefix.length))[0]?.index !== undefined) continue;
     const group = index.get(prefix);
+
     if (group) group.push(state);
     else index.set(prefix, [state]);
   }
+
   return index;
 }
 
 /** The step instances directly inside a scope, in declaration order. A `for_each` item such as `build[0]` is not one. */
 export function statesIn(run: RunState, scope: Scope): StepState[] {
   let index = scopeIndex.get(run.steps);
+
   if (!index) {
     index = byScope(run.steps);
     scopeIndex.set(run.steps, index);
   }
+
   const group = index.get(scope.prefix) ?? [];
+
   // The run's steps and its `finally` steps share the top level, so each of the two scopes takes only its own.
   if (scope.prefix !== '' || (!run.definition.finally && scope.definition === run.definition)) return [...group];
   const own = new Set(scope.definition.steps.map((step) => step.id));
+
   return group.filter((state) => own.has(state.id));
 }
 
@@ -176,8 +194,10 @@ export function insertChildren(run: RunState, runner: StepState, children: StepS
   const at = old.indexOf(runner) + 1;
   run.steps = [...old.slice(0, at), ...children, ...old.slice(at)];
   const index = scopeIndex.get(old);
+
   if (!index) return;
   scopeIndex.delete(old);
+
   for (const [prefix, group] of byScope(children)) index.set(prefix, [...group, ...index.get(prefix) ?? []]);
   scopeIndex.set(run.steps, index);
 }
@@ -185,11 +205,13 @@ export function insertChildren(run: RunState, runner: StepState, children: StepS
 /** The step id an instance has inside its own workflow. */
 export function localId(scope: Scope, state: StepState): string {
   const [segment] = parseStepPath(state.id.slice(scope.prefix.length));
+
   return segment?.id ?? state.id;
 }
 
 function itemOf(scope: Scope, state: StepState | undefined): { item?: unknown } {
   if (state && isItem(state)) return { item: state.item };
+
   return Object.hasOwn(scope, 'item') ? { item: scope.item } : {};
 }
 
@@ -205,6 +227,7 @@ export function contextOf(scope: Scope, states: StepState[], reader?: StepState)
  */
 function expressionSteps(scope: Scope, states: StepState[], reader?: StepState): Record<string, ExpressionStep> {
   const previous = reader ? scope.loops.previous(localId(scope, reader)) : new Set<string>();
+
   return { ...scope.outer, ...Object.fromEntries(states.map((step) => [localId(scope, step), previous.has(localId(scope, step)) ? previousPass(step) : {
     ...(settled(step) ? { outcome: visibleOutcome(step) } : {}),
     ...('end' in step && step.end !== undefined ? { end: step.end } : {}),

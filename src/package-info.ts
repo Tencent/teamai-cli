@@ -19,6 +19,7 @@ interface PackageJsonFields {
  */
 function loadPackageJson(): PackageJsonFields {
   const require = createRequire(import.meta.url);
+
   return require('../package.json') as PackageJsonFields;
 }
 

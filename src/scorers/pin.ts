@@ -15,6 +15,7 @@ export const PinnedScorerSchema = z.object({
   /** Built by teamai for one run, such as a benchmark task's correctness scorer: no team file has it, and its key names it. */
   generated: z.literal(true).optional(),
 });
+
 export type PinnedScorer = z.infer<typeof PinnedScorerSchema>;
 
 /** The definition `pin` holds for scorer `name`, or undefined when this teamai cannot read it. A routing question's
@@ -23,5 +24,6 @@ export function pinnedDefinition(name: string, pin: PinnedScorer): ScorerDefinit
   // A generated scorer's name is reserved: it has a character no scorer file name may have.
   const file = pin.generated ? 'scorers/correctness.md' : `scorers/${isRoutingScorer(name) ? name.replaceAll(':', '-') : name}.md`;
   const parsed = parseScorer(file, pin.content);
+
   return parsed.ok ? { ...parsed.definition, name } : undefined;
 }

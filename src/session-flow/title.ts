@@ -26,12 +26,15 @@ const CUT_SECRET_MIN = 4;
  */
 export function maskCutSecret(title: string, secrets: Record<string, string>): string {
   if (title.length < TITLE_MAX) return title;
+
   for (const value of Object.values(secrets)) {
     if (value.length < MIN_ENV_VALUE_LENGTH) continue;
+
     for (let length = Math.min(value.length - 1, title.length); length >= CUT_SECRET_MIN; length--) {
       if (title.endsWith(value.slice(0, length))) return redact(`${title.slice(0, -length)}${value}`, { envSecrets: secrets }).slice(0, title.length);
     }
   }
+
   return title;
 }
 
@@ -56,13 +59,17 @@ const INJECTED_TAG = /<\/?[a-zA-Z][\w-]*(?:\s[^>]*)?\/?>/g;
  */
 export function isInjectedText(text: string): boolean {
   if (!text || !text.trim()) return true;
+
   if (INJECTED_HEAD.test(text)) return true;
   const rest = stripMetaBlocks(text).trim();
+
   if (!rest) return true;
+
   // Tags remain after stripping: when a closing tag is truncated (native data contains
   // half-written forms such as `…</t`), stripMetaBlocks fails to match, and the whole
   // message is still metadata.
   if (META_HEAD_RE.test(text) && /^[<>]|<\/?[a-zA-Z][\w-]*\b[^>]*$/.test(rest)) return true;
+
   return false;
 }
 
@@ -78,6 +85,7 @@ export function isInjectedText(text: string): boolean {
 export function titleFromCandidates(candidates: string[]): string {
   for (const text of candidates) {
     if (!text) continue;
+
     // Prefer titleFromUserText for non-injected text too: it unwraps
     // <user_query> and skips placeholder segments ([Image]/attachment paths),
     // so a session whose first message is "[Image] [Image] [Image] <user_query>
@@ -86,8 +94,10 @@ export function titleFromCandidates(candidates: string[]): string {
     const cleaned = isInjectedText(text)
       ? titleFromUserText(text)
       : titleFromUserText(text) || cleanTitleText(text);
+
     if (cleaned) return cleaned;
   }
+
   return '';
 }
 
@@ -104,7 +114,9 @@ export function cleanTitleText(text: string, maxLen = TITLE_MAX): string {
     .replace(INJECTED_TAG, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+
   if (!stripped || /[<>]/.test(stripped)) return '';
+
   return cutTitle(stripped, maxLen);
 }
 
@@ -137,11 +149,14 @@ const CODEX_AGENTS_RE = /# AGENTS\.md instructions for [^\n]*\n+<INSTRUCTIONS>[\
 
 export function stripMetaBlocks(text: string): string {
   let out = text;
+
   for (let i = 0; i < 10; i++) {
     const next = out.replace(META_BLOCK_RE, '').replace(CODEX_AGENTS_RE, '');
+
     if (next === out) break;
     out = next;
   }
+
   return out.trim();
 }
 
@@ -153,6 +168,7 @@ export function stripMetaBlocks(text: string): string {
  */
 export function extractUserText(text: string): string {
   const m = text.match(/<user_query[^>]*>([\s\S]*?)<\/user_query>/i);
+
   return stripMetaBlocks(m ? m[1] : text);
 }
 
@@ -165,12 +181,14 @@ const TYPED_COMMAND = /<command-name>(\/[^<\s]+)<\/command-name>(?:\s*<command-a
  */
 export function typedText(text: string): string {
   const command = COMMAND_RECORD.test(text) ? TYPED_COMMAND.exec(text) : null;
+
   return command ? `${command[1]} ${command[2] ?? ''}`.trim() : extractUserText(text);
 }
 
 /** The first line the member typed in a user message, as a title. */
 export function typedTitle(text: string): string {
   const line = typedText(text).split('\n').map((typed) => typed.replace(/\s+/g, ' ').trim()).find((typed) => typed !== '');
+
   return line ? cutTitle(line) : '';
 }
 
@@ -190,23 +208,30 @@ const ATTACH_INLINE_RE = /@[A-Za-z_]+:[^\s]+/g;
 export function visibleUserText(text: string): string {
   const lines = extractUserText(text).split('\n');
   const kept: string[] = [];
+
   for (const line of lines) {
     const segs = line
       .split(/\s{2,}/)
       .map((s) => s.trim())
       .filter((s) => {
         if (!s) return false;
+
         if (ATTACH_SEG_RE.test(s) || PATH_SEG_RE.test(s)) return false;
+
         // Truncated attachment path (the fragment left after splitting on spaces)
         if (/\.(png|jpe?g|gif|webp|pdf|md|txt|json|jsonl|log)\b/i.test(s) && !/[?？。！!]/.test(s.replace(/\.\w+$/, ''))) {
           return false;
         }
+
         return true;
       });
+
     if (segs.length) kept.push(segs.join(' '));
   }
+
   return kept.join('\n').replace(/[ \t]{2,}/g, ' ').trim();
 }
+
 /** Only segments that look like paths: starting with @tag: or an absolute path (http URLs in the body do not count). */
 const ATTACH_SEG_RE = /^@[A-Za-z_]+:/;
 const PATH_SEG_RE = /^(?:[A-Za-z]:)?[/\\]/;
@@ -224,14 +249,19 @@ const HYGIENE_RE = /^\[(?:tool_result|image|file|attachment)\b/i;
  */
 export function titleFromUserText(text: string, maxLen = TITLE_MAX): string {
   const cleaned = extractUserText(text).replace(ATTACH_INLINE_RE, ' ');
+
   for (const line of cleaned.split('\n')) {
     for (const seg of line.split(/\s{2,}/)) {
       const s = seg.replace(/\s+/g, ' ').replace(/^[\s\-:,，。.]+|[\s\-:,，。.]+$/g, '');
+
       if (!s || s.length < 2 || HYGIENE_RE.test(s)) continue;
+
       if (ATTACH_SEG_RE.test(s) || PATH_SEG_RE.test(s)) continue;
+
       return cutTitle(s, maxLen);
     }
   }
+
   return '';
 }
 

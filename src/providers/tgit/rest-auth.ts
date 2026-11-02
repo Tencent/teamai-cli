@@ -27,11 +27,13 @@ let cachedScheme: TGitAuthScheme | null = null;
  */
 export function getTGitToken(): { token: string; scheme: TGitAuthScheme } {
   const envToken = process.env['TGIT_TOKEN'];
+
   if (envToken && envToken.length > 0) {
     return { token: envToken, scheme: 'private-token' };
   }
 
   const oauthToken = gfGetOAuthToken();
+
   if (oauthToken) {
     return { token: oauthToken, scheme: 'bearer' };
   }
@@ -65,9 +67,11 @@ export function getTGitToken(): { token: string; scheme: TGitAuthScheme } {
  */
 export function tgitGitCloneUrl(httpsUrl: string): string | null {
   const oauthToken = gfGetOAuthToken();
+
   if (!oauthToken) {
     return null;
   }
+
   return httpsUrl.replace(/^https:\/\//, `https://oauth2:${oauthToken}@`);
 }
 
@@ -94,6 +98,7 @@ export function tgitAuthHeaders(token: string, scheme: TGitAuthScheme): Record<s
   if (scheme === 'bearer') {
     return { Authorization: `Bearer ${token}` };
   }
+
   return { 'PRIVATE-TOKEN': token };
 }
 
@@ -127,6 +132,7 @@ export async function tgitFetch(path: string, init?: RequestInit): Promise<Respo
   });
 
   const resp = await doFetch(scheme);
+
   if (resp.status !== 401 && resp.status !== 403) {
     return resp;
   }
@@ -135,10 +141,13 @@ export async function tgitFetch(path: string, init?: RequestInit): Promise<Respo
   const altScheme: TGitAuthScheme = scheme === 'bearer' ? 'private-token' : 'bearer';
   log.debug(`TGit auth scheme "${scheme}" rejected (${resp.status}); retrying with "${altScheme}"`);
   const altResp = await doFetch(altScheme);
+
   if (altResp.status !== 401 && altResp.status !== 403) {
     cachedScheme = altScheme;
+
     return altResp;
   }
+
   // Both schemes failed: the retry did not help, so the original status is the
   // meaningful one (e.g. a genuine 403 authorized-but-forbidden, not a scheme
   // mismatch). Returning it avoids inverting the caller's 401-vs-403 remedy.

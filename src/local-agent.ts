@@ -153,7 +153,9 @@ const LOCAL_AGENT_HOOK_FETCH_TIMEOUT_MS = 3_000;
 let activeFetchTimeoutMs = LOCAL_AGENT_FETCH_TIMEOUT_MS;
 
 type LocalAgentScope = 'instance' | 'user' | 'project';
+
 type ResourceKind = 'skills' | 'rules' | 'claudemd';
+
 type CommandResourceKind = 'skill' | 'rule' | 'claudemd';
 
 // Command types recognized but not yet implemented by this reporter. Skipped
@@ -334,13 +336,18 @@ interface ModelConfigManifest extends BuddyModelManifest {
 }
 
 type ModelAgentKind = 'codebuddy' | 'workbuddy' | 'claude';
+
 type BuddyAgentKind = 'codebuddy' | 'workbuddy';
 
 function modelAgentKind(tool: string | undefined): ModelAgentKind | undefined {
   const normalized = normalizeAgentType(tool ?? '');
+
   if (normalized === 'codebuddy' || normalized === 'codebuddy-internal') return 'codebuddy';
+
   if (normalized === 'workbuddy') return 'workbuddy';
+
   if (normalized === 'claude') return 'claude';
+
   return undefined;
 }
 
@@ -353,7 +360,9 @@ function modelAgentKind(tool: string | undefined): ModelAgentKind | undefined {
  */
 function isUnimplementedCommand(command: LocalAgentCommand): boolean {
   const type = command.type ?? '';
+
   if (IMPLEMENTED_HOOK_COMMAND_TYPES.has(type)) return false;
+
   return UNIMPLEMENTED_COMMAND_TYPES.has(type) || command.handle_type === 'hook';
 }
 
@@ -383,16 +392,20 @@ const LOCK_HOLDER_ENV = 'TEAMAI_LOCAL_AGENT_LOCK_HOLDER';
 /** Whether this process runs as a command of the sync that holds the lock, so holds it too. */
 async function holdsParentLocalAgentLock(): Promise<boolean> {
   if (process.env[LOCK_HOLDER_ENV] !== String(process.ppid)) return false;
+
   return (await readJson<{ pid?: number }>(localAgentLockPath()))?.pid === process.ppid;
 }
 
 async function acquireLocalAgentLock(waitMs = 0): Promise<boolean> {
   if (await acquireLock(localAgentLockPath())) return true;
   const deadline = Date.now() + waitMs;
+
   while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 100));
+
     if (await acquireLock(localAgentLockPath())) return true;
   }
+
   return false;
 }
 
@@ -414,7 +427,9 @@ function getErrorLogPath(): string {
 
 function compileClaudemdBlock(contents: string[]): string | null {
   const parts = contents.map((content) => content.trim()).filter(Boolean);
+
   if (parts.length === 0) return null;
+
   return [
     TEAMAI_CLAUDEMD_START,
     '<!-- DO NOT EDIT: This section is auto-managed by teamai -->',
@@ -432,6 +447,7 @@ function normalizeEndpoint(endpoint: string): string {
 /** Normalize a route override so it is a leading-slash path (endpoint has no trailing slash). */
 function normalizeRoute(route: string): string {
   const trimmed = route.trim();
+
   return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
 }
 
@@ -441,7 +457,9 @@ function normalizeRoute(route: string): string {
  */
 export function resolveRoute(config: Pick<LocalAgentConfig, 'routes'>, name: RouteName): string {
   const override = config.routes?.[name];
+
   if (override && override.trim()) return normalizeRoute(override);
+
   return DEFAULT_ROUTES[name];
 }
 
@@ -459,6 +477,7 @@ function resolveAgentInstallPath(agentType: string): string {
   const home = getUserHome();
   const skillsRel = createLocalAgentTeamConfig('').toolPaths[agentType]?.skills;
   const rel = skillsRel ? path.dirname(skillsRel) : `.${agentType}`;
+
   return path.join(home, rel);
 }
 
@@ -477,8 +496,10 @@ function resolveAgentInstallPath(agentType: string): string {
  */
 function resolveLocalAgentId(context: LocalAgentContext): string {
   const envOverride = process.env.TEAMAI_LOCAL_AGENT_ID;
+
   if (envOverride) return envOverride;
   const agentType = context.tool ?? 'workbuddy';
+
   return deriveLocalAgentId(agentType, getMachineId(), resolveAgentInstallPath(agentType));
 }
 
@@ -493,6 +514,7 @@ function resolveLocalAgentId(context: LocalAgentContext): string {
  */
 function isCloudStudioSandbox(): boolean {
   if (process.env.X_IDE_IS_CLOUDSTUDIO === 'TRUE') return true;
+
   try {
     return fs.existsSync('/var/run/cloudstudio');
   } catch {
@@ -507,6 +529,7 @@ function isCloudStudioSandbox(): boolean {
  */
 function localAgentTag(context: LocalAgentContext): string {
   const tool = context.tool ?? 'workbuddy';
+
   return `[${resolveLocalAgentId(context).slice(-6)}] [${tool}]`;
 }
 
@@ -520,6 +543,7 @@ function emptyManifestScope(): ManifestScope {
 
 async function loadManifest(): Promise<LocalAgentManifest> {
   const manifest = await readJson<LocalAgentManifest>(getManifestPath());
+
   return manifest ?? { scopes: {} };
 }
 
@@ -547,6 +571,7 @@ function getAgentHookManifestPath(): string {
 
 async function loadAgentHookManifest(): Promise<AgentHookManifest> {
   const data = await readJson<AgentHookManifest>(getAgentHookManifestPath());
+
   return data && typeof data === 'object' ? data : {};
 }
 
@@ -565,6 +590,7 @@ async function saveAgentHookManifest(manifest: AgentHookManifest): Promise<void>
  */
 async function memberToolRoots(workspacePath?: string): Promise<Record<string, string> | undefined> {
   const { resolveMemberToolRoots } = await import('./config.js');
+
   return resolveMemberToolRoots(workspacePath ?? process.cwd());
 }
 
@@ -585,11 +611,14 @@ async function agentHookSettingsPaths(config: LocalAgentConfig | null, tool: str
   const teamConfig = createLocalAgentTeamConfig(config?.endpoint ?? 'local-agent');
   const toolRoots = await memberToolRoots();
   const settings = scopedToolPaths(teamConfig, { scope: 'user', toolRoots })[tool]?.settings;
+
   if (!settings) {
     throw new Error(`unsupported tool: ${tool} (no settings path)`);
   }
+
   const legacy = applyToolRoots(teamConfig.toolPaths, toolRoots)[tool]?.settings;
   const home = getUserHome();
+
   return [...new Set([hookSettingsFile(tool, home, settings), ...[settings, legacy ?? settings].map((rel) => path.join(home, rel))])];
 }
 
@@ -598,6 +627,7 @@ async function memberCodexTrust(): Promise<CodexTrustPolicy> {
   // oxlint-disable-next-line teamai/config-load-options -- Codex trust reconciliation retains normal config migration and has no preview option
   const local = await loadLocalConfig();
   const settings = local?.scope === 'user' ? local : { ...(await loadMemberSettings()), ...local };
+
   return codexTrustPolicy(settings);
 }
 
@@ -607,6 +637,7 @@ async function codexTrustDisabled(): Promise<boolean> {
   // oxlint-disable-next-line teamai/config-load-options -- Codex trust reconciliation retains normal config migration and has no preview option
   const local = await loadLocalConfig();
   const settings = local?.scope === 'user' ? local : { ...(await loadMemberSettings()), ...local };
+
   return settings.codexTrustEnabled === false;
 }
 
@@ -622,6 +653,7 @@ function agentHookCodexTrust(disabled: boolean, settingsPath: string): CodexTrus
 async function removeInstalledAgentHook(config: LocalAgentConfig | null, slug: string, rec: AgentHookRecord): Promise<void> {
   if (isBridgedTeamHookTool(rec.tool)) await removeBridgedAgentHook(rec.tool, slug);
   else if (!OPENCLAW_TOOLS.has(rec.tool)) await removeSettingsAgentHook(config, rec.tool, { slug, command: rec.command });
+
   if (rec.tool === 'hermes') {
     const { removeHermesAgentHook } = await import('./hermes-hooks.js');
     await removeHermesAgentHook({ slug, event: rec.event, command: rec.command });
@@ -647,6 +679,7 @@ async function removeInstalledAgentHook(config: LocalAgentConfig | null, slug: s
 async function moveAgentHooksToBridge(config: LocalAgentConfig): Promise<void> {
   for (const [slug, rec] of Object.entries(await loadAgentHookManifest())) {
     if (!isBridgedTeamHookTool(rec.tool) || await hasBridgedAgentHook(rec.tool, slug)) continue;
+
     try {
       await removeInstalledAgentHook(config, slug, rec);
       await applyBridgedAgentHook(rec.tool, { slug, event: rec.event, command: rec.command, matcher: rec.matcher, timeout: rec.timeout ?? 10 });
@@ -662,6 +695,7 @@ async function removeSettingsAgentHook(
   opts: { slug: string; command?: string },
 ): Promise<void> {
   const disabled = await codexTrustDisabled();
+
   for (const settingsPath of await agentHookSettingsPaths(config, tool)) {
     await removeAgentHook(settingsPath, tool, opts, agentHookCodexTrust(disabled, settingsPath));
   }
@@ -686,18 +720,24 @@ async function withPluginStateLock(mutate: (m: Record<string, PluginState>) => v
   await ensureDir(path.dirname(lockPath));
   const deadline = Date.now() + 5000;
   let acquired = false;
+
   while (Date.now() <= deadline) {
     try { const fd = await fs.promises.open(lockPath, 'wx'); await fd.close(); acquired = true; break; }
     catch (e) {
       if ((e as { code?: string }).code !== 'EEXIST') throw e;
+
       try {
         const st = await fs.promises.stat(lockPath);
+
         if (Date.now() - st.mtimeMs > 30_000) { await fs.promises.rm(lockPath, { force: true }); continue; }
       } catch { /* lock vanished */ }
+
       await new Promise((r) => setTimeout(r, 50));
     }
   }
+
   if (!acquired) throw new Error('could not acquire plugin-state lock');
+
   try {
     const m = await readPluginState();
     mutate(m);
@@ -714,6 +754,7 @@ function getManifestScope(
 ): ManifestScope {
   const key = scopeKey(scope, workspacePath);
   manifest.scopes[key] ??= emptyManifestScope();
+
   return manifest.scopes[key];
 }
 
@@ -726,6 +767,7 @@ function getManifestScope(
  */
 async function canonicalizeWorkspacePath(value: string): Promise<string> {
   const absolute = path.resolve(value);
+
   try {
     return await fs.promises.realpath(absolute);
   } catch {
@@ -742,18 +784,22 @@ function mergeWorkspaceBindings(
   // pick base = whichever has a non-zero projectId; prefer existing on tie
   const existingReal = existing.projectId !== 0;
   const incomingReal = incoming.projectId !== 0;
+
   if (existingReal && incomingReal && existing.projectId !== incoming.projectId) {
     log.warn(
       `local-agent: workspace ${canonicalKey} has conflicting project bindings ` +
         `(${existing.projectId} vs ${incoming.projectId}); keeping ${existing.projectId}`,
     );
   }
+
   const base = existingReal || !incomingReal ? { ...existing } : { ...incoming };
+
   // A physical workspace tracks one owning tool (same single-owner model as
   // stampWorkspaceTool). Only backfill ideType when the base lacks one; if two
   // aliases were stamped by different tools, the base's ideType wins — the
   // other tool re-stamps itself on its next report from the canonical path.
   if (!base.ideType) base.ideType = existing.ideType ?? incoming.ideType;
+
   return base;
 }
 
@@ -762,22 +808,27 @@ export async function loadLocalAgentConfig(
   options: { dryRun?: boolean; envFallback?: boolean } = {},
 ): Promise<LocalAgentConfig | null> {
   const fileConfig = await readJson<LocalAgentConfig | { disabled?: boolean }>(getConfigPath());
+
   // A removed source must not reconnect through legacy config or environment fallback.
   if (fileConfig && 'disabled' in fileConfig && fileConfig.disabled === true) return null;
+
   if (fileConfig && 'endpoint' in fileConfig && fileConfig.endpoint) {
     const config = {
       ...fileConfig,
       endpoint: normalizeEndpoint(fileConfig.endpoint),
       workspaceBindings: fileConfig.workspaceBindings ?? {},
     };
+
     // Migrate: clear legacy group-based bindings (groupId without projectId)
     const removedLegacyPaths: string[] = [];
+
     for (const [wsPath, binding] of Object.entries(config.workspaceBindings)) {
       if ('groupId' in binding && !('projectId' in (binding as Record<string, unknown>))) {
         delete config.workspaceBindings[wsPath];
         removedLegacyPaths.push(wsPath);
       }
     }
+
     if (removedLegacyPaths.length > 0 && options.dryRun) {
       log.info(`[dry-run] Would remove ${removedLegacyPaths.length} legacy group-based workspace binding(s).`);
     } else if (removedLegacyPaths.length > 0) {
@@ -785,26 +836,34 @@ export async function loadLocalAgentConfig(
         `Removed ${removedLegacyPaths.length} legacy group-based workspace binding(s); ` +
           `you will be prompted to re-bind on the next session.`,
       );
+
       try {
         await saveLocalAgentConfig(config);
       } catch (e) {
         log.debug(`local-agent: failed to persist binding cleanup: ${(e as Error).message}`);
       }
     }
+
     // Migrate: canonicalize binding keys to their physical on-disk path so
     // case-only / symlink aliases of the same workspace collapse to one entry.
     const migrated: Record<string, WorkspaceBinding> = {};
     let migrationChanged = false;
+
     for (const [wsPath, binding] of Object.entries(config.workspaceBindings)) {
       const canonicalKey = await canonicalizeWorkspacePath(wsPath);
+
       if (canonicalKey !== wsPath) migrationChanged = true;
+
       if (migrated[canonicalKey]) migrationChanged = true;
       migrated[canonicalKey] = mergeWorkspaceBindings(migrated[canonicalKey], binding, canonicalKey);
     }
+
     config.workspaceBindings = migrated;
+
     if (migrationChanged && !options.dryRun) {
       await saveLocalAgentConfig(config);
     }
+
     return config;
   }
 
@@ -814,30 +873,37 @@ export async function loadLocalAgentConfig(
   const { resolveApiKey } = await import('./api-key.js');
   // Under `dryRun` the migrations above and this backfill stay in memory: nothing is written.
   const legacy = await loadLocalConfig(options);
+
   if (legacy?.repo?.kind === 'http' && legacy.repo.url) {
     const endpoint = normalizeEndpoint(legacy.repo.url);
     const token = resolveApiKey() ?? undefined;
+
     const backfilled: LocalAgentConfig = {
       endpoint,
       token,
       createdAt: new Date().toISOString(),
       workspaceBindings: {},
     };
+
     if (options.dryRun) return backfilled;
+
     try {
       await saveLocalAgentConfig(backfilled);
       log.debug('local-agent: backfilled config.json from legacy ~/.teamai/config.yaml (http repo)');
     } catch (e) {
       log.debug(`local-agent: backfill persist failed, using in-memory config: ${(e as Error).message}`);
     }
+
     return backfilled;
   }
 
   if (options.envFallback === false) return null;
+
   const envEndpoint =
     process.env.TEAMAI_HTTP_ENDPOINT ??
     process.env.TEAMAI_ENDPOINT ??
     process.env.TEAMAI_API_BASE_URL;
+
   if (!envEndpoint) return null;
 
   return {
@@ -874,14 +940,19 @@ function createLocalAgentTeamConfig(endpoint: string): TeamaiConfig {
 async function gitExcludeEnabledFor(workspacePath: string): Promise<boolean | { cause: string; fix: string }> {
   const { loadTeamConfig, resolveConfigForDir } = await import('./config.js');
   let unreadable: { cause: string; fix: string } | undefined;
+
   const config = await resolveConfigForDir(workspacePath, (configPath, error) => {
     unreadable = { cause: `teamai could not read ${configPath} (${error})`, fix: `Fix ${configPath}` };
   });
+
   if (unreadable) return unreadable;
+
   if (!config) return false;
   const enabled = resolveGitExclude(config, await loadTeamConfig(config.repo.localPath));
+
   if (enabled !== undefined) return enabled;
   const override = isUnmigratedDataHome(config) ? '' : `, or set \`gitExcludeEnabled\` in ${path.join(getDataHome(config), 'config.yaml')}`;
+
   return {
     cause: `teamai could not read sharing.gitExclude from the team's teamai.yaml (${path.join(config.repo.localPath, 'teamai.yaml')})`,
     fix: `Fix or restore teamai.yaml in the team repository${override}`,
@@ -897,12 +968,16 @@ async function gitExcludeEnabledFor(workspacePath: string): Promise<boolean | { 
  */
 async function localAgentTeamConfig(endpoint: string, scope: LocalAgentScope, workspacePath: string | undefined, change: string): Promise<TeamaiConfig> {
   const teamConfig = createLocalAgentTeamConfig(endpoint);
+
   if (scope !== 'project' || !workspacePath) return teamConfig;
   const enabled = await gitExcludeEnabledFor(workspacePath);
+
   if (typeof enabled === 'object') {
     throw new Error(`${enabled.cause}, so the local agent did not ${change} in ${workspacePath}: it wrote nothing there. ${enabled.fix}.`);
   }
+
   if (!enabled) return teamConfig;
+
   return { ...teamConfig, sharing: { ...teamConfig.sharing, gitExclude: { enabled: true } } };
 }
 
@@ -920,8 +995,11 @@ async function recordsCopy(
   entry: ManifestResource | undefined, tool: string, dest: string, equalsInstalled: () => Promise<boolean>,
 ): Promise<boolean> {
   if (!entry) return false;
+
   if (entry.tools) return entry.tools.includes(tool);
+
   if (entry.dir_name !== undefined && path.basename(dest) === entry.dir_name) return true;
+
   return equalsInstalled();
 }
 
@@ -939,6 +1017,7 @@ async function legacyTools(
   equalsInstalled: (target: DeliveryTarget) => Promise<boolean>,
 ): Promise<string[]> {
   const tools: string[] = [];
+
   for (const [tool, toolPath] of Object.entries(fullTeamConfig.toolPaths)) {
     for (const target of await targetsFor({ ...fullTeamConfig, toolPaths: { [tool]: toolPath } })) {
       if (await pathExists(target.dest) && await recordsCopy(entry, tool, target.dest, () => equalsInstalled(target))) {
@@ -947,12 +1026,14 @@ async function legacyTools(
       }
     }
   }
+
   return tools;
 }
 
 /** `tools`, with `tool` when every one of its `targets` is on disk after the write. */
 async function withToolIfWritten(tools: string[], tool: string, targets: DeliveryTarget[]): Promise<string[]> {
   const written = targets.length > 0 && (await Promise.all(targets.map(({ dest }) => pathExists(dest)))).every(Boolean);
+
   return [...new Set(written ? [...tools, tool] : tools)].sort();
 }
 
@@ -967,17 +1048,24 @@ async function membersRuleCopy(
   tool: string, installed: ResourceItem | undefined,
 ): Promise<string | null> {
   const handler = new RulesHandler();
+
   for (const { dest, content } of await handler.deliveryTargets(teamConfig, localConfig, item)) {
     const disk = await fileHash(dest);
+
     if (disk === null || (content !== undefined && disk === contentHash(content))) continue;
+
     const equalsInstalled = async (): Promise<boolean> => {
       if (!installed || !await pathExists(installed.sourcePath)) return false;
       const render = (await handler.deliveryTargets(teamConfig, localConfig, installed)).find((target) => target.dest === dest)?.content;
+
       return render !== undefined && disk === contentHash(render);
     };
+
     if (await recordsCopy(entry, tool, dest, equalsInstalled)) continue;
+
     return dest;
   }
+
   return null;
 }
 
@@ -995,15 +1083,19 @@ export async function localAgentCopyFiles(
   kind: 'skill' | 'rule', name: string, tool: string, dest: string, config?: LocalAgentConfig,
 ): Promise<{ teamais: string[]; members: string[] } | null> {
   config ??= await loadLocalAgentConfig({ dryRun: true }) ?? undefined;
+
   if (!config) return null;
   const fullTeamConfig = createLocalAgentTeamConfig(config.endpoint);
   const toolPath = fullTeamConfig.toolPaths[tool];
+
   if (!toolPath) return null;
   const real = async (file: string): Promise<string> => fs.promises.realpath(file).catch(() => path.resolve(file));
   const at = await real(dest);
+
   for (const [key, scopeManifest] of Object.entries((await loadManifest()).scopes)) {
     const entries = Object.entries((kind === 'skill' ? scopeManifest.skills : scopeManifest.rules) ?? {});
     const entry = entries.find(([slug, e]) => (kind === 'skill' ? e.dir_name ?? slug : slug) === name)?.[1];
+
     if (!entry || (entry.tools && !entry.tools.includes(tool))) continue;
     const { scope, workspacePath } = parseScopeKey(key);
     const repoPath = await getResourceRepoPath(scope, workspacePath);
@@ -1013,37 +1105,49 @@ export async function localAgentCopyFiles(
     const item: ResourceItem = { name, type: kind === 'skill' ? 'skills' : 'rules', sourcePath, relativePath: path.relative(repoPath, sourcePath).split(path.sep).join('/') };
     const handler = kind === 'skill' ? new SkillsHandler() : new RulesHandler();
     let target: DeliveryTarget | undefined;
+
     for (const candidate of await handler.deliveryTargets(teamConfig, localConfig, item)) {
       if (await real(candidate.dest) === at) target = candidate;
     }
+
     if (!target) continue;
+
     if (kind === 'rule') {
       const disk = await fileHash(dest);
       const teamais = disk !== null && ((target.content !== undefined && disk === contentHash(target.content)) || disk === await fileHash(sourcePath));
+
       return teamais ? { teamais: [dest], members: [] } : { teamais: [], members: [dest] };
     }
+
     if (await isLink(dest)) return { teamais: [], members: [dest] };
     // What the agent writes there today: each cached file, SKILL.md with its frontmatter repaired.
     const expected = new Map<string, string>();
+
     for (const rel of await pathExists(sourcePath) ? await listFilesRecursive(sourcePath) : []) {
       const bytes = await fse.readFile(path.join(sourcePath, rel));
       const text = bytes.toString('utf-8');
       const written = rel === 'SKILL.md' ? withSkillFrontmatter(text, name) : text;
       expected.set(rel.split(path.sep).join('/'), contentHash(written === text ? bytes : written));
     }
+
     const result = { teamais: [] as string[], members: [] as string[] };
+
     const walk = async (dir: string, rel: string): Promise<void> => {
       for (const dirEntry of await fse.readdir(dir, { withFileTypes: true }).catch(() => [])) {
         const file = path.join(dir, dirEntry.name);
         const entryRel = rel ? `${rel}/${dirEntry.name}` : dirEntry.name;
+
         if (dirEntry.isDirectory()) await walk(file, entryRel);
         else if (dirEntry.isFile() && expected.get(entryRel) === await fileHash(file)) result.teamais.push(file);
         else result.members.push(file);
       }
     };
+
     await walk(dest, '');
+
     return result;
   }
+
   return null;
 }
 
@@ -1054,6 +1158,7 @@ async function createResourceLocalConfig(
   workspacePath?: string,
 ): Promise<LocalConfig> {
   const projectScope = scope === 'project';
+
   return {
     repo: { localPath: repoPath, remote: config.endpoint },
     username: os.userInfo().username,
@@ -1081,8 +1186,10 @@ async function getResourceRepoPath(scope: LocalAgentScope, workspacePath?: strin
     // worktree A's instructions. Mirror managed-mcp's per-worktree layout.
     const { resolveDataHomeForScope } = await import('./config.js');
     const dataHome = await resolveDataHomeForScope('project', workspacePath);
+
     return path.join(dataHome, 'workspaces', managedMcpWorkspaceId(workspacePath), LOCAL_AGENT_DIR, 'resources');
   }
+
   return path.join(getLocalAgentHome(), 'resources', scope);
 }
 
@@ -1093,10 +1200,13 @@ async function ensureProjectGitignore(workspacePath: string): Promise<void> {
   await ensureDir(teamaiDir);
   const gitignorePath = path.join(teamaiDir, '.gitignore');
   const existing = await readFileSafe(gitignorePath);
+
   if (!existing) {
     await writeFile(gitignorePath, WORKSPACE_CACHE_GITIGNORE);
+
     return;
   }
+
   if (!existing.split('\n').some((line) => line.trim() === 'local-agent/')) {
     await writeFile(gitignorePath, existing.trimEnd() + '\nlocal-agent/\n');
   }
@@ -1110,8 +1220,10 @@ async function ensureProjectGitignore(workspacePath: string): Promise<void> {
  */
 async function workspaceCacheGitignore(workspacePath: string, repoPath: string): Promise<string | null> {
   const teamaiDir = path.join(workspacePath, '.teamai');
+
   if (!repoPath.startsWith(teamaiDir + path.sep)) return null;
   const file = path.join(teamaiDir, '.gitignore');
+
   return await readFileSafe(file) === WORKSPACE_CACHE_GITIGNORE ? file : null;
 }
 
@@ -1122,16 +1234,20 @@ async function workspaceCacheGitignore(workspacePath: string, repoPath: string):
  */
 export function tokenForAgent(config: Pick<LocalAgentConfig, 'token' | 'agentTokens'>, tool?: string): string | undefined {
   if (tool) return config.agentTokens?.[normalizeAgentType(tool)] ?? config.token;
+
   return config.token ?? Object.values(config.agentTokens ?? {})[0];
 }
 
 function authHeaders(token: string | undefined, json = true): Record<string, string> {
   const headers: Record<string, string> = {};
+
   if (json) headers['Content-Type'] = 'application/json';
+
   if (token) {
     headers.Authorization = `Bearer ${token}`;
     headers['X-API-Token'] = token;
   }
+
   return headers;
 }
 
@@ -1144,10 +1260,12 @@ async function localAgentFetch<T>(
 ): Promise<T> {
   const method = init?.method ?? 'GET';
   const url = `${config.endpoint}${resolveRoute(config, route)}`;
+
   const headers: Record<string, string> = {
     ...authHeaders(tokenForAgent(config, opts?.tool), init?.body !== undefined),
     ...(init?.headers as Record<string, string> | undefined),
   };
+
   logHttpRequest(tag, method, url, headers, init?.body);
 
   const response = await fetch(url, {
@@ -1155,8 +1273,10 @@ async function localAgentFetch<T>(
     headers,
     signal: init?.signal ?? AbortSignal.timeout(activeFetchTimeoutMs),
   });
+
   const text = await response.text();
   let body: unknown = null;
+
   if (text.trim()) {
     try {
       body = JSON.parse(text);
@@ -1164,13 +1284,17 @@ async function localAgentFetch<T>(
       body = text;
     }
   }
+
   logHttpResponse(tag, method, url, response.status, response.statusText, opts?.redactResponseLog ? '<redacted>' : body);
+
   if (!response.ok) {
     const message = typeof body === 'object' && body && 'error' in body
       ? String((body as { error: unknown }).error)
       : text || `${response.status} ${response.statusText}`;
+
     throw new Error(message);
   }
+
   return body as T;
 }
 
@@ -1195,6 +1319,7 @@ export async function fetchUserProjects(config: LocalAgentConfig, tool?: string)
     { method: 'GET' },
     { tool },
   );
+
   return response.projects ?? [];
 }
 
@@ -1202,6 +1327,7 @@ export async function fetchUserProjects(config: LocalAgentConfig, tool?: string)
 function redactSecrets(s: string): string {
   // Secret-bearing identifiers, matched case-insensitively in flag and key=value forms.
   const names = 'secret[_-]?(?:key|id)|api[_-]?key|access[_-]?token|token|password|passwd|pwd';
+
   return s
     .replace(new RegExp(`(--(?:${names})[= ]+)\\S+`, 'gi'), '$1***')
     .replace(new RegExp(`((?:${names})"?\\s*[:=]\\s*"?)[^"\\s,}]+`, 'gi'), '$1***')
@@ -1222,10 +1348,16 @@ export async function execPluginCommand(cmd: string, timeoutMs: number): Promise
     const child = process.platform === 'win32'
       ? spawn('cmd', ['/c', cmd], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] })
       : spawn('bash', ['-lc', cmd], { stdio: ['ignore', 'ignore', 'pipe'] });
+
     let stderr = '';
     let settled = false;
     let timer: ReturnType<typeof setTimeout>;
-    child.stderr?.on('data', (d) => { stderr += d.toString(); if (stderr.length > 8192) stderr = stderr.slice(-8192); });
+    child.stderr?.on('data', (d) => {
+      stderr += d.toString();
+
+      if (stderr.length > 8192) stderr = stderr.slice(-8192);
+    });
+
     const finish = (fn: () => void): void => {
       if (settled) return;
       settled = true;
@@ -1233,6 +1365,7 @@ export async function execPluginCommand(cmd: string, timeoutMs: number): Promise
       detachChild(child);
       fn();
     };
+
     timer = setTimeout(() => {
       child.kill('SIGKILL');
       finish(() => reject(new Error(`command timed out after ${timeoutMs}ms`)));
@@ -1241,6 +1374,7 @@ export async function execPluginCommand(cmd: string, timeoutMs: number): Promise
     child.on('exit', (code, signal) =>
       finish(() => {
         if (signal) return reject(new Error(`command killed by ${signal}`));
+
         if (code === 0) return resolve();
         const tail = stderr ? ' :: ' + redactSecrets(stderr.slice(0, 200).trim()) : '';
         reject(new Error(`command failed (exit ${code})${tail}`));
@@ -1288,14 +1422,23 @@ async function maybeReconcilePlugins(context: LocalAgentContext): Promise<void> 
   try {
     const state = (await readJson<{ lastPullAt?: number; lastFailAt?: number }>(getPluginPullStatePath())) ?? {};
     const now = Date.now();
+
     if (state.lastPullAt && now - state.lastPullAt < PLUGIN_PULL_INTERVAL_MS) return;
+
     if (state.lastFailAt && now - state.lastFailAt < PLUGIN_FAIL_BACKOFF_MS) return;
     const tool = context.tool ?? 'workbuddy';
     const localAgentId = `${tool}-${resolveLocalAgentId(context)}`;
     const { spawn } = await import('node:child_process');
-    if (!process.argv[1]) { log.debug('[local-agent] plugin reconcile: no CLI entrypoint (argv[1]), skipping'); return; }
+
+    if (!process.argv[1]) {
+      log.debug('[local-agent] plugin reconcile: no CLI entrypoint (argv[1]), skipping');
+
+      return;
+    }
+
     const child = spawn(process.execPath, [process.argv[1], 'source', 'reconcile-plugins'],
       { detached: true, windowsHide: true, stdio: 'ignore', env: { ...process.env, TEAMAI_PLUGIN_LOCAL_AGENT_ID: localAgentId, TEAMAI_PLUGIN_TOOL: tool } });
+
     child.unref();
   } catch (e) { log.debug(`[local-agent] plugin reconcile spawn skipped: ${(e as Error).message}`); }
 }
@@ -1303,22 +1446,28 @@ async function maybeReconcilePlugins(context: LocalAgentContext): Promise<void> 
 /** Detached worker: reconcile plugins while sharing the HTTP source lifecycle lock. */
 export async function runPluginReconcileWorker(): Promise<void> {
   if (!await loadLocalAgentConfig({ dryRun: true })) return;
+
   // A session-start sync spawns this worker while holding the same lifecycle lock.
   if (!await acquireLocalAgentLock(30_000)) return;
+
   try {
     const config = await loadLocalAgentConfig();
+
     if (!config) return;
     const tag = '[local-agent] [plugin-reconcile]';
     const statePath = getPluginPullStatePath();
+
     try {
       const resp = await fetchPluginConfig(config, tag, process.env.TEAMAI_PLUGIN_TOOL);
       const { vars, plugins } = parseGetConfig(resp);
       const declaredSlugs = plugins.length ? ` [${plugins.map((p) => p.slug).join(', ')}]` : '';
       log.debug(`${tag} get-config: ${plugins.length} plugin(s) declared${declaredSlugs}`);
       const laid = process.env.TEAMAI_PLUGIN_LOCAL_AGENT_ID;
+
       if (!laid) log.debug(tag + ' no local_agent_id in env; plugins needing it will be skipped');
       const allVars = { ...vars, ...(laid ? { local_agent_id: laid } : {}) };
       const resolved: typeof plugins = [];
+
       for (const p of plugins) {
         const rp = {
           ...p,
@@ -1327,19 +1476,23 @@ export async function runPluginReconcileWorker(): Promise<void> {
           uninstallCmd: substituteVars(p.uninstallCmd, allVars),
           runCmd: substituteVars(p.runCmd, allVars),
         };
+
         const missing = [...new Set([
           ...unresolvedPlaceholders(rp.installCmd),
           ...unresolvedPlaceholders(rp.runCmd),
           ...unresolvedPlaceholders(rp.uninstallCmd),
           ...(rp.updateCmd ? unresolvedPlaceholders(rp.updateCmd) : []),
         ])];
+
         if (missing.length) {
           log.warn(`${tag} plugin ${p.slug}: unresolved placeholders [${missing.join(',')}], skipping`);
           log.debug(`${tag} WARN: plugin ${p.slug}: unresolved placeholders [${missing.join(',')}], skipping`);
           continue;
         }
+
         resolved.push(rp);
       }
+
       await reconcilePlugins(resolved, buildReconcileDeps(config, tag));
       log.debug(`${tag} reconcile complete (${resolved.length} plugin(s) processed)`);
       await writeJson(statePath, { lastPullAt: Date.now() });
@@ -1365,6 +1518,7 @@ async function askViaTty(prompt: string): Promise<string | null> {
   // the prompt module only to say no is work nobody asked for.
   if (!isInteractive()) return null;
   const { askQuestion } = await import('./utils/prompt.js');
+
   return askQuestion(prompt, '');
 }
 
@@ -1383,11 +1537,13 @@ async function promptForProjectBinding(
       const desc = project.description ? ` - ${project.description}` : '';
       log.info(`  ${index + 1}. ${project.name}${desc} [id=${project.id}]`);
     });
+
     return null;
   }
 
   log.debug(`local-agent: workspace not bound: ${workspacePath}`);
   const answer = await askViaTty('是否绑定到一个项目？[y/N] ');
+
   if (!answer || answer.toLowerCase() !== 'y') return null;
 
   if (projects.length === 1) return projects[0];
@@ -1399,9 +1555,12 @@ async function promptForProjectBinding(
   });
 
   const selection = await askViaTty(`选择项目编号（1-${projects.length}，0 跳过）: `);
+
   if (selection === null || selection === '0') return null;
   const index = selection ? Number.parseInt(selection, 10) : 0;
+
   if (Number.isNaN(index) || index < 1 || index > projects.length) return null;
+
   return projects[index - 1];
 }
 
@@ -1428,11 +1587,14 @@ async function persistWorkspaceBinding(
 ): Promise<void> {
   const anchors = await resolveAnchors(cwd);
   const keys = new Set<string>([resolvedPath]);
+
   if (anchors) {
     keys.add(anchors.projectAnchor);
     keys.add(anchors.workspaceRoot);
   }
+
   const boundAt = new Date().toISOString();
+
   for (const key of keys) {
     config.workspaceBindings[key] = {
       ...config.workspaceBindings[key],
@@ -1441,6 +1603,7 @@ async function persistWorkspaceBinding(
       boundAt,
     };
   }
+
   await saveLocalAgentConfig(config);
 }
 
@@ -1457,8 +1620,10 @@ async function inheritWorktreeBinding(
   resolvedPath: string,
 ): Promise<boolean> {
   const anchors = await resolveAnchors(cwd);
+
   if (!anchors || anchors.projectAnchor === anchors.workspaceRoot) return false;
   const anchorBinding = config.workspaceBindings[anchors.projectAnchor];
+
   if (!anchorBinding) return false;
   config.workspaceBindings[resolvedPath] = {
     ...config.workspaceBindings[resolvedPath],
@@ -1467,6 +1632,7 @@ async function inheritWorktreeBinding(
     boundAt: new Date().toISOString(),
   };
   await saveLocalAgentConfig(config);
+
   return true;
 }
 
@@ -1479,6 +1645,7 @@ async function inheritWorktreeBinding(
 async function deliveredToWorkspace(workspacePath: string): Promise<boolean> {
   if ((await loadManifest()).scopes[scopeKey('project', workspacePath)]) return true;
   const models = await readJson<ModelConfigManifest>(getModelManifestPath());
+
   return Boolean(models?.workspaceModels?.[workspacePath]);
 }
 
@@ -1489,10 +1656,13 @@ async function deliveredToWorkspace(workspacePath: string): Promise<boolean> {
  */
 async function enrollWorkspace(config: LocalAgentConfig, cwd: string | undefined, workspacePath: string): Promise<boolean> {
   if (config.workspaceBindings[workspacePath]) return true;
+
   if (await inheritWorktreeBinding(config, cwd, workspacePath)) return true;
+
   if (!await deliveredToWorkspace(workspacePath)) return false;
   await persistWorkspaceBinding(config, cwd, workspacePath, 0, PENDING_BINDING_NAME);
   log.debug(`[local-agent] enrolled a workspace an earlier release delivered to: ${workspacePath}`);
+
   return true;
 }
 
@@ -1501,14 +1671,17 @@ export async function bindWorkspaceToProject(
   projectId?: number,
 ): Promise<WorkspaceBinding | null> {
   const config = await loadLocalAgentConfig();
+
   if (!config) {
     throw new Error('HTTP local agent is not initialized. Run `teamai init --http <ENDPOINT> --token <API_TOKEN>` first.');
   }
 
   const projects = await fetchUserProjects(config);
+
   const project = projectId
     ? projects.find((item) => item.id === projectId)
     : await promptForProjectBinding(workspacePath, projects);
+
   if (!project) return null;
 
   const binding: WorkspaceBinding = {
@@ -1516,10 +1689,12 @@ export async function bindWorkspaceToProject(
     projectName: project.name,
     boundAt: new Date().toISOString(),
   };
+
   // Record on the projectAnchor (shared across the repo's worktrees) and the
   // current workspaceRoot; workspacePath is already the resolved checkout root.
   await persistWorkspaceBinding(config, workspacePath, workspacePath, project.id, project.name);
   log.success(`已将工作区绑定到项目：${project.name} [id=${project.id}]`);
+
   return binding;
 }
 
@@ -1543,6 +1718,7 @@ const BINDING_MARKER_TTL_MS = 10 * 60 * 1000;
 /** Marker file for a hint key; a derived `pid-<ppid>-<cwd>` id contains path separators, so flatten it. */
 function hintMarkerPath(prefix: string, key: string): string {
   const flat = key.replace(/[^A-Za-z0-9._-]/g, '_');
+
   return path.join(os.tmpdir(), `${prefix}-${flat}`);
 }
 
@@ -1550,6 +1726,7 @@ function hintMarkerPath(prefix: string, key: string): string {
 function bindingHintMarkerFresh(marker: string): boolean {
   try {
     const stamp = Number(fs.readFileSync(marker, 'utf8'));
+
     return Number.isFinite(stamp) && Date.now() - stamp < BINDING_MARKER_TTL_MS;
   } catch {
     return false;
@@ -1569,41 +1746,50 @@ async function ensureWorkspaceBinding(
 
   // Only hint once per session — use a temp marker file keyed by sessionId
   const hintMarker = hintMarkerPath('teamai-bind-session', sessionId || `ppid-${process.ppid}`);
+
   if (bindingHintMarkerFresh(hintMarker)) return;
 
   let projects: LocalAgentProject[];
+
   try {
     projects = await fetchUserProjects(config, tool);
   } catch (e) {
     log.debug(`local-agent: failed to load user projects: ${(e as Error).message}`);
+
     return;
   }
 
   if (projects.length === 0) return;
 
   const project = await promptForProjectBinding(workspacePath, projects);
+
   if (project) {
     await persistWorkspaceBinding(config, cwd, workspacePath, project.id, project.name);
+
     return;
   }
 
   // TTY prompt failed (running as hook in background) — output context for AI to prompt user
   const projectList = projects.map((p) => `${p.name} (id=${p.id})`).join(', ');
+
   const context = [
     '[teamai] 当前工作区尚未绑定项目，无法接收项目下发的 skills/rules/claudemd 资源。',
     `可用项目: ${projectList}`,
     `请提示用户运行: teamai bind-project`,
     `或指定项目: teamai bind-project --project-id <id>`,
   ].join('\n');
+
   const hookOutput = JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'SessionStart',
       additionalContext: context,
     },
   });
+
   // Consume the hint only once it was actually emitted — a failed project
   // fetch or an empty account must not eat this session's prompt.
   try { fs.writeFileSync(hintMarker, String(Date.now())); } catch {}
+
   process.stdout.write(hookOutput + '\n');
 }
 
@@ -1615,8 +1801,10 @@ async function ensureWorkspaceBinding(
  */
 function isBindPromptEnabled(): boolean {
   const flag = process.env.TEAMAI_BIND_PROMPT_ENABLED;
+
   if (flag === undefined) return true;
   const normalized = flag.toLowerCase();
+
   return normalized !== '0' && normalized !== 'false';
 }
 
@@ -1630,6 +1818,7 @@ function isBindPromptEnabled(): boolean {
  */
 function isBindPromptTool(tool: string | undefined): boolean {
   const kind = modelAgentKind(tool);
+
   return kind === 'codebuddy' || kind === 'workbuddy';
 }
 
@@ -1643,19 +1832,23 @@ async function emitBindingHint(
 
   // Only hint once per session — use a temp marker file keyed by sessionId
   const hintMarker = hintMarkerPath('teamai-bind-hint', sessionId || `ppid-${process.ppid}`);
+
   if (bindingHintMarkerFresh(hintMarker)) return;
 
   let projects: LocalAgentProject[];
+
   try {
     projects = await fetchUserProjects(config, tool);
   } catch {
     return;
   }
+
   if (projects.length === 0) return;
 
   const skipNum = projects.length + 1;
   const choices = projects.map((p, i) => `${i + 1}. 绑定到「${p.name}」项目`);
   const actions = projects.map((p, i) => `- 用户回复 ${i + 1} → 执行 \`teamai bind-project --project-id ${p.id}\`，完成后回复"绑定完成，请开新会话生效"`);
+
   const context = [
     '[ClawPro项目 绑定提示] 你必须原样展示下面的选项列表，不得修改编号或内容。等用户回复数字后执行对应命令。',
     '',
@@ -1670,15 +1863,18 @@ async function emitBindingHint(
     ...actions,
     `- 用户回复 ${skipNum} → 执行 \`teamai bind-project --skip\`，完成后回复"已跳过，以后不再提示"`,
   ].join('\n');
+
   const hookOutput = JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'UserPromptSubmit',
       additionalContext: context,
     },
   });
+
   // Consume the hint only once it was actually emitted — a failed project
   // fetch or an empty account must not eat this session's hint.
   try { fs.writeFileSync(hintMarker, String(Date.now())); } catch {}
+
   process.stdout.write(hookOutput + '\n');
 }
 
@@ -1691,26 +1887,32 @@ async function emitBindingHint(
 function unenrolledNotice(context: LocalAgentContext, workspacePath: string): void {
   // Only notice once per session — use a temp marker file keyed by sessionId
   const marker = hintMarkerPath('teamai-unenrolled', context.event?.sessionId || `ppid-${process.ppid}`);
+
   if (bindingHintMarkerFresh(marker)) return;
 
   const text = [
     `[teamai] This workspace is not enrolled, so teamai reports and syncs nothing here: ${workspacePath}`,
     'Run `teamai bind-project` once in it to enroll — bind a ClawPro project, or `--skip` to enroll without one.',
   ].join('\n');
+
   const hookOutput = JSON.stringify({
     hookSpecificOutput: {
       hookEventName: context.event?.type === 'prompt_submit' ? 'UserPromptSubmit' : 'SessionStart',
       additionalContext: text,
     },
   });
+
   try { fs.writeFileSync(marker, String(Date.now())); } catch {}
+
   process.stdout.write(hookOutput + '\n');
 }
 
 function isEphemeralTaskDir(dir: string): boolean {
   const segments = dir.split(path.sep);
   const wbIdx = segments.lastIndexOf('WorkBuddy');
+
   if (wbIdx < 0 || wbIdx >= segments.length - 1) return false;
+
   return /^\d{4}-\d{2}-\d{2}/.test(segments[wbIdx + 1]);
 }
 
@@ -1727,15 +1929,20 @@ async function isUserHomeDir(dir: string): Promise<boolean> {
 async function resolveWorkspacePath(cwd?: string): Promise<string | undefined> {
   if (!cwd) return undefined;
   const absolute = path.resolve(cwd);
+
   if (isEphemeralTaskDir(absolute)) return undefined;
+
   if (await isUserHomeDir(absolute)) return undefined;
+
   try {
     const { stdout } = await execFileAsync('git', ['-C', absolute, 'rev-parse', '--show-toplevel']);
     const root = stdout.trim();
+
     if (root && !await isUserHomeDir(root)) return await canonicalizeWorkspacePath(root);
   } catch {
     // not inside a git repo
   }
+
   return await canonicalizeWorkspacePath(absolute);
 }
 
@@ -1767,8 +1974,10 @@ async function scanSkillsFromDisk(
   if (!(await pathExists(skillsDir))) return [];
   const dirs = (await listDirs(skillsDir)).filter((name) => !name.startsWith('.') && !name.startsWith('_'));
   const results: ReportedResource[] = [];
+
   for (const dir of dirs) {
     const skillMd = path.join(skillsDir, dir, 'SKILL.md');
+
     if (!(await pathExists(skillMd))) continue;
     const fm = await readFrontmatter(skillMd);
     const slug = typeof fm.name === 'string' && fm.name ? fm.name : dir;
@@ -1780,6 +1989,7 @@ async function scanSkillsFromDisk(
       source: resolveSource(slug, manifestSlugs),
     });
   }
+
   return results.sort((a, b) => a.slug.localeCompare(b.slug));
 }
 
@@ -1798,11 +2008,15 @@ async function scanRulesFromDisk(
   const files = await listFilesRecursive(rulesDir);
   const results: ReportedResource[] = [];
   const seen = new Set<string>();
+
   for (const file of files) {
     const slug = ruleStemFromFilename(file);
+
     if (slug === null) continue;
+
     if (seen.has(slug)) continue; // Same rule under both extensions
     seen.add(slug);
+
     // Skip CLI built-in / legacy rules (e.g. teamai-recall) so they are not
     // reported as user-installed resources — mirrors the pull/uninstall filter.
     if (EXCLUDED_RULE_NAMES.has(path.basename(slug)) || EXCLUDED_RULE_NAMES.has(slug)) continue;
@@ -1812,6 +2026,7 @@ async function scanRulesFromDisk(
       source: resolveSource(slug, manifestSlugs),
     });
   }
+
   return results.sort((a, b) => a.slug.localeCompare(b.slug));
 }
 
@@ -1823,13 +2038,17 @@ async function scanRulesFromDisk(
 function collectManifestSlugs(manifest: LocalAgentManifest): { skills: Set<string>; rules: Set<string> } {
   const skills = new Set<string>();
   const rules = new Set<string>();
+
   for (const scope of Object.values(manifest.scopes)) {
     for (const [slug, entry] of Object.entries(scope.skills ?? {})) {
       skills.add(slug);
+
       if (entry.dir_name) skills.add(entry.dir_name);
     }
+
     for (const slug of Object.keys(scope.rules ?? {})) rules.add(slug);
   }
+
   return { skills, rules };
 }
 
@@ -1857,6 +2076,7 @@ async function scanMcpFromManifest(
   // single global file. Either way every record in the loaded file belongs to this
   // scope, so no key filtering is needed.
   let manifest: ManagedMcpManifest;
+
   if (scope === 'project' && projectRoot) {
     const { loadProjectMcpManifest } = await import('./utils/mcp-manifest.js');
     ({ manifest } = await loadProjectMcpManifest(dataHome, projectRoot));
@@ -1866,15 +2086,18 @@ async function scanMcpFromManifest(
 
   const manifestKey = `${tool}${scope === 'project' ? ':project' : ''}`;
   const records = manifest[manifestKey];
+
   if (!Array.isArray(records)) return [];
 
   const seen = new Set<string>();
   const results: ReportedResource[] = [];
+
   for (const rec of records) {
     if (!rec.name || seen.has(rec.name)) continue;
     seen.add(rec.name);
     results.push({ slug: rec.name, source: 'enterprise' });
   }
+
   return results.sort((a, b) => a.slug.localeCompare(b.slug));
 }
 
@@ -1906,9 +2129,11 @@ function modelConfigDisplayPath(filePath: string): string {
   if (filePath.endsWith(`${path.sep}.codebuddy${path.sep}models.json`)) {
     return '.codebuddy/models.json';
   }
+
   if (filePath.endsWith(`${path.sep}.workbuddy${path.sep}models.json`)) {
     return '~/.workbuddy/models.json';
   }
+
   return path.basename(filePath);
 }
 
@@ -1918,24 +2143,33 @@ async function scanModelsFromDisk(tool: string, workspacePath?: string): Promise
 
   if (agentKind === 'codebuddy' || agentKind === 'workbuddy') {
     const scopeManifest = workspacePath ? manifest.workspaceModels?.[workspacePath] : manifest;
+
     const providers = scopeManifest?.providersByAgent?.[agentKind]
       ?? (!workspacePath && agentKind !== 'workbuddy' ? manifest.providers : undefined)
       ?? {};
+
     const raw = await readJson<unknown>(buddyModelsPath(agentKind, workspacePath));
+
     const entries = Array.isArray(raw)
       ? raw
       : (Array.isArray((raw as { models?: unknown } | null)?.models)
         ? (raw as { models: unknown[] }).models
         : []);
+
     const owned = (agentKind === 'codebuddy'
       ? scopeManifest?.codebuddy
       : scopeManifest?.workbuddy) ?? {};
+
     const results: ReportedModel[] = [];
+
     for (const entry of entries) {
       if (typeof entry !== 'object' || entry === null) continue;
       const { id, vendor, name } = entry as Record<string, unknown>;
+
       if (typeof id !== 'string' || !id) continue;
+
       if (typeof vendor !== 'string' || !vendor) continue;
+
       // CodeBuddy / WorkBuddy may normalize a model entry by adding capability
       // metadata. The manifest's model id is the durable proof that TeamAI
       // delivered it; requiring an exact object hash would hide such entries.
@@ -1947,23 +2181,32 @@ async function scanModelsFromDisk(tool: string, workspacePath?: string): Promise
         source: 'enterprise',
       });
     }
+
     return results;
   }
 
   if (agentKind === 'claude' && !workspacePath) {
     const providers = manifest.providersByAgent?.claude ?? manifest.providers ?? {};
+
     const settings = await readJson<{ env?: unknown }>(
       path.join(await claudeUserRoot(), 'settings.json'),
     );
+
     const env = settings?.env;
+
     if (typeof env !== 'object' || env === null || Array.isArray(env)) return [];
+
     const { ANTHROPIC_CUSTOM_MODEL_OPTION: modelId, ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: name } =
       env as Record<string, unknown>;
+
     if (typeof modelId !== 'string' || !modelId) return [];
     const managed = manifest.claudeEnv?.ANTHROPIC_CUSTOM_MODEL_OPTION;
+
     if (managed === undefined || entryHash(modelId) !== managed) return [];
     const provider = providers[modelId];
+
     if (!provider) return [];
+
     return [{
       provider,
       model_id: modelId,
@@ -1991,12 +2234,14 @@ async function scanModelsFromDisk(tool: string, workspacePath?: string): Promise
  */
 export async function pruneDeadWorkspaceBindings(config: LocalAgentConfig): Promise<boolean> {
   let changed = false;
+
   for (const workspacePath of Object.keys(config.workspaceBindings)) {
     if (await isUserHomeDir(workspacePath)) {
       delete config.workspaceBindings[workspacePath];
       changed = true;
       continue;
     }
+
     try {
       await fs.promises.stat(workspacePath);
     } catch (error) {
@@ -2014,6 +2259,7 @@ export async function pruneDeadWorkspaceBindings(config: LocalAgentConfig): Prom
       }
     }
   }
+
   return changed;
 }
 
@@ -2031,10 +2277,13 @@ export function stampWorkspaceTool(
 ): boolean {
   if (!currentPath) return false;
   const binding = config.workspaceBindings[currentPath];
+
   if (!binding) return false;
   const normalized = normalizeAgentType(tool);
+
   if (binding.ideType === normalized) return false;
   binding.ideType = normalized;
+
   return true;
 }
 
@@ -2052,10 +2301,13 @@ function selectToolWorkspaces(
   currentTool: string,
 ): string[] {
   const paths = new Set<string>(Object.keys(config.workspaceBindings));
+
   if (currentPath) paths.add(currentPath);
+
   return Array.from(paths).filter((wsPath) => {
     const b = config.workspaceBindings[wsPath];
     const wsTool = (b?.ideType || undefined) ?? (wsPath === currentPath ? currentTool : undefined);
+
     return wsTool === currentTool;
   });
 }
@@ -2099,25 +2351,31 @@ export async function buildReportPayload(
     const scope: LocalAgentScope = workspacePath ? 'project' : 'user';
     const localConfig = await createResourceLocalConfig(config, scope, workspacePath ?? getUserHome(), workspacePath);
     const toolPath = scopedToolPaths(teamConfig, localConfig)[tool];
+
     if (!toolPath) return { skills: [], rules: [] };
     const install = installOf(teamConfig, localConfig);
     const skillsDir = ownOf(await locate(tool, 'skills', install))?.path ?? null;
     const skills = skillsDir === null ? [] : await scanSkillsFromDisk(skillsDir, manifestSlugs.skills);
     const rulesDir = ownOf(await locate(tool, 'rules', install));
     const rules = rulesDir?.kind === 'dir' ? await scanRulesFromDisk(rulesDir.path, manifestSlugs.rules) : [];
+
     return { skills, rules };
   };
 
   const userScope = await scanScope();
 
   const userLevel: Record<string, unknown> = { group_id: config.userGroupId };
+
   if (userScope.skills.length > 0) userLevel.skills = userScope.skills;
+
   if (userScope.rules.length > 0) userLevel.rules = userScope.rules;
   const userMcps = await scanMcpFromManifest('user', tool);
+
   if (userMcps.length > 0) userLevel.mcps = userMcps;
   // Omitted when empty for the same full-sync reason as skills/rules: the
   // server treats a present array as a snapshot, so [] would wipe the models.
   const userModels = await scanModelsFromDisk(tool);
+
   if (userModels.length > 0) userLevel.models = userModels;
 
   const payload: Record<string, unknown> = {
@@ -2137,26 +2395,34 @@ export async function buildReportPayload(
   const currentPath = await resolveWorkspacePath(context.cwd);
   const currentTool = normalizeAgentType(tool);
   const targetPaths = selectToolWorkspaces(config, currentPath, currentTool);
+
   if (targetPaths.length > 0) {
     const workspaceResults = await Promise.all(
       targetPaths.map(async (wsPath) => {
         const wsScope = await scanScope(wsPath);
         const wsBinding = config.workspaceBindings[wsPath];
+
         const workspace: Record<string, unknown> = {
           path: wsPath,
           name: path.basename(wsPath),
           ide_type: currentTool,
           project_id: wsBinding?.projectId,
         };
+
         if (wsScope.skills.length > 0) workspace.skills = wsScope.skills;
+
         if (wsScope.rules.length > 0) workspace.rules = wsScope.rules;
         const wsMcps = await scanMcpFromManifest('project', tool, wsPath);
+
         if (wsMcps.length > 0) workspace.mcps = wsMcps;
         const wsModels = await scanModelsFromDisk(tool, wsPath);
+
         if (wsModels.length > 0) workspace.models = wsModels;
+
         return workspace;
       }),
     );
+
     payload.workspaces = workspaceResults;
   }
 
@@ -2171,12 +2437,15 @@ export async function buildSyncPayload(
     ...buildAgentIdentityPayload(context),
     status: context.status ?? 'running',
   };
+
   const currentPath = await resolveWorkspacePath(context.cwd);
   const currentTool = normalizeAgentType(context.tool ?? 'workbuddy');
   const targetPaths = selectToolWorkspaces(config, currentPath, currentTool);
+
   if (targetPaths.length > 0) {
     payload.workspaces = targetPaths.map((wsPath) => {
       const wsBinding = config.workspaceBindings[wsPath];
+
       return {
         path: wsPath,
         name: path.basename(wsPath),
@@ -2185,6 +2454,7 @@ export async function buildSyncPayload(
       };
     });
   }
+
   return payload;
 }
 
@@ -2192,20 +2462,30 @@ function commandKind(command: LocalAgentCommand): CommandResourceKind | null {
   // Unified cmds[] carries handle_type; legacy commands[] carries rule_type.
   // Both map a prompt rule to the claudemd resource kind.
   if (command.rule_type === 'prompt' || command.handle_type === 'prompt') return 'claudemd';
+
   if (command.handle_type === 'rule') return 'rule';
+
   if (command.handle_type === 'hook') return null; // defensive; skipped before dispatch
   const type = command.type ?? '';
+
   if (type.endsWith('_skill') || type === '') return 'skill';
+
   if (type.endsWith('_claudemd') || type.endsWith('_claude_md')) return 'claudemd';
+
   if (type.endsWith('_rule')) return 'rule';
+
   return null;
 }
 
 function commandAction(command: LocalAgentCommand): 'install' | 'uninstall' | null {
   const type = command.type ?? '';
+
   if (type === '') return 'install';
+
   if (type.startsWith('install_')) return 'install';
+
   if (type.startsWith('uninstall_')) return 'uninstall';
+
   return null;
 }
 
@@ -2224,6 +2504,7 @@ function validateSlug(slug: string): string {
   ) {
     throw new Error(`Invalid resource slug: ${slug}`);
   }
+
   return slug;
 }
 
@@ -2232,10 +2513,13 @@ function commandSlug(command: LocalAgentCommand, kind: CommandResourceKind): str
     kind === 'skill' ? command.skill_slug :
     kind === 'rule' ? command.rule_slug :
     (command.claudemd_slug ?? command.rule_slug);
+
   const resolved = slug ?? command.resource_slug ?? command.slug ?? command.name;
+
   if (!resolved) {
     throw new Error(`Missing ${kind} slug`);
   }
+
   return validateSlug(resolved);
 }
 
@@ -2260,9 +2544,11 @@ function commandVersion(command: LocalAgentCommand, kind: CommandResourceKind): 
  */
 function normalizeScope(raw?: string): LocalAgentScope {
   if (raw === 'workspace' || raw === 'project') return 'project';
+
   if (raw !== undefined && raw !== 'user' && raw !== 'instance') {
     log.debug(`local-agent: unknown scope "${raw}", defaulting to user`);
   }
+
   return 'user';
 }
 
@@ -2273,14 +2559,17 @@ function manifestKind(kind: CommandResourceKind): ResourceKind {
 /** Only http(s) downloads are allowed — reject file:, ftp:, gopher:, etc. */
 function assertHttpUrl(rawUrl: string): URL {
   let parsed: URL;
+
   try {
     parsed = new URL(rawUrl);
   } catch {
     throw new Error(`Invalid download URL: ${rawUrl}`);
   }
+
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     throw new Error(`Unsupported download URL scheme: ${parsed.protocol}`);
   }
+
   return parsed;
 }
 
@@ -2301,25 +2590,33 @@ async function downloadResource(downloadUrl: string): Promise<string> {
   // One timeout budget for the whole download (all redirect hops combined), so a
   // chain of slow redirects cannot exceed the intended bound.
   const signal = AbortSignal.timeout(activeFetchTimeoutMs);
+
   for (let hop = 0; ; hop++) {
     response = await fetch(current, { redirect: 'manual', signal });
+
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.get('location');
+
       if (!location) break;
+
       if (hop >= maxRedirects) {
         throw new Error(`Download failed: too many redirects (${downloadUrl})`);
       }
+
       current = assertHttpUrl(new URL(location, current).toString());
       continue;
     }
+
     break;
   }
 
   if (!response.ok) {
     throw new Error(`Download failed: ${response.status} ${response.statusText}`);
   }
+
   const buffer = Buffer.from(await response.arrayBuffer());
   await fs.promises.writeFile(filePath, buffer);
+
   return filePath;
 }
 
@@ -2327,9 +2624,11 @@ const ZIP_MAGIC = Buffer.from([0x50, 0x4b, 0x03, 0x04]);
 
 async function isZipFile(filePath: string): Promise<boolean> {
   const fd = await fs.promises.open(filePath, 'r');
+
   try {
     const buf = Buffer.alloc(4);
     await fd.read(buf, 0, 4, 0);
+
     return buf.equals(ZIP_MAGIC);
   } finally {
     await fd.close();
@@ -2339,8 +2638,10 @@ async function isZipFile(filePath: string): Promise<boolean> {
 async function resolveMarkdownFromDownload(downloadedPath: string, slug: string): Promise<string> {
   if (await isZipFile(downloadedPath)) {
     const extractDir = await extractZip(downloadedPath);
+
     return findMarkdownFile(extractDir, slug);
   }
+
   return downloadedPath;
 }
 
@@ -2348,6 +2649,7 @@ async function extractZip(zipPath: string): Promise<string> {
   const extractDir = path.join(path.dirname(zipPath), 'extracted');
   await ensureDir(extractDir);
   await execFileAsync('unzip', ['-q', zipPath, '-d', extractDir]);
+
   return extractDir;
 }
 
@@ -2356,21 +2658,28 @@ async function findFirst(
   predicate: (absolutePath: string, name: string) => Promise<boolean>,
 ): Promise<string | null> {
   const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+
   for (const entry of entries) {
     const absolute = path.join(dir, entry.name);
+
     if (await predicate(absolute, entry.name)) return absolute;
+
     if (entry.isDirectory()) {
       const nested = await findFirst(absolute, predicate);
+
       if (nested) return nested;
     }
   }
+
   return null;
 }
 
 async function findSkillRoot(extractDir: string): Promise<string> {
   if (await pathExists(path.join(extractDir, 'SKILL.md'))) return extractDir;
   const skillMd = await findFirst(extractDir, async (absolute, name) => name === 'SKILL.md' && (await pathExists(absolute)));
+
   if (!skillMd) throw new Error('Downloaded skill package does not contain SKILL.md');
+
   return path.dirname(skillMd);
 }
 
@@ -2379,16 +2688,21 @@ async function findMarkdownFile(extractDir: string, preferredName: string): Prom
     extractDir,
     async (_absolute, name) => name === `${preferredName}.md` || name === preferredName,
   );
+
   if (preferred) return preferred;
 
   const firstMd = await findFirst(extractDir, async (_absolute, name) => name.endsWith('.md'));
+
   if (!firstMd) throw new Error('Downloaded package does not contain a markdown file');
+
   return firstMd;
 }
 
 async function readFrontmatter(filePath: string): Promise<Record<string, unknown>> {
   const content = await readFileSafe(filePath);
+
   if (!content) return {};
+
   return parseFrontmatter(content).data;
 }
 
@@ -2402,12 +2716,16 @@ async function readFrontmatter(filePath: string): Promise<Record<string, unknown
 async function resolveSkillDirName(skillRoot: string, slug: string): Promise<string> {
   const fm = await readFrontmatter(path.join(skillRoot, 'SKILL.md'));
   const name = typeof fm.name === 'string' ? fm.name.trim() : '';
+
   if (!name || name === slug) return slug;
+
   try {
     assertSafeResourceName(name);
+
     return name;
   } catch {
     log.debug(`[local-agent] keeping slug "${slug}" as skill dir (SKILL.md name "${name}" failed safety check)`);
+
     return slug;
   }
 }
@@ -2426,6 +2744,7 @@ async function installDownloadedResource(input: {
   }
 
   const repoPath = await getResourceRepoPath(input.scope, input.workspacePath);
+
   if (input.scope === 'project' && input.workspacePath
       && repoPath.startsWith(path.join(input.workspacePath, '.teamai') + path.sep)) {
     // Only gitignore when the cache actually lands inside the workspace (no
@@ -2433,18 +2752,23 @@ async function installDownloadedResource(input: {
     // install keeps it under ~/.teamai, so there is nothing in the workspace to ignore.
     await ensureProjectGitignore(input.workspacePath);
   }
+
   await ensureDir(repoPath);
 
   const downloadedPath = await downloadResource(input.command.download_url);
+
   try {
     const fullTeamConfig = await localAgentTeamConfig(input.config.endpoint, input.scope, input.workspacePath, `install ${input.slug}`);
     const tool = input.tool ?? 'workbuddy';
     const toolPath = fullTeamConfig.toolPaths[tool];
+
     if (!toolPath) {
       throw new Error(`Unknown tool "${tool}": no toolPaths entry found`);
     }
+
     const teamConfig = { ...fullTeamConfig, toolPaths: { [tool]: toolPath } };
     const localConfig = await createResourceLocalConfig(input.config, input.scope, repoPath, input.workspacePath);
+
     // Ensure the tool root directory exists before dispatch so isToolInstalled
     // gate does not skip the resource when the workspace is freshly bound.
     // Restricted to project scope: user-scope installs use $HOME as baseDir and
@@ -2452,18 +2776,21 @@ async function installDownloadedResource(input: {
     if (localConfig.scope === 'project') {
       try {
         const baseDir = resolveBaseDir(localConfig);
+
         const resourceToolPath =
           input.kind === 'skill' ? toolPath.skills :
           input.kind === 'rule'  ? toolPath.rules  :
           // Default branch covers the 'claudemd' kind; if a new CommandResourceKind
           // is added, revisit this mapping so it doesn't silently fall through to claudemd.
           toolPath.claudemd;
+
         if (resourceToolPath && resourceToolPath.includes('/')) {
           const rootSegment = resourceToolPath.split('/')[0];
           await ensureDir(path.join(baseDir, rootSegment));
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
+
         if (msg.includes('resolveBaseDir')) {
           log.warn(`Cannot resolve base dir to pre-create tool root: ${msg}`);
         } else {
@@ -2471,6 +2798,7 @@ async function installDownloadedResource(input: {
         }
       }
     }
+
     const now = new Date().toISOString();
     let displayName = input.command.display_name ?? input.slug;
     // On-disk skill directory name (SKILL.md name when it differs from slug).
@@ -2497,13 +2825,17 @@ async function installDownloadedResource(input: {
       const origin = skillOrigin(repoPath, skillDirName);
       const equalsInstalled = async (copy: string): Promise<boolean> => await pathExists(dest) && ownsSkillDir(undefined, copy, origin, [item]);
       const targets = await handler.deliveryTargets(teamConfig, localConfig, downloaded);
+
       for (const { dest: copy } of targets) {
         if (!await pathExists(copy) || await ownsSkillDir(undefined, copy, origin, [downloaded])) continue;
+
         if (!await recordsCopy(recorded, tool, copy, () => equalsInstalled(copy))) throw new Error(keptMembersFile(copy, input.slug));
       }
+
       const previousTools = recorded?.tools ?? (recorded
         ? await legacyTools(recorded, fullTeamConfig, (config) => handler.deliveryTargets(config, localConfig, item), ({ dest: copy }) => equalsInstalled(copy))
         : []);
+
       await remove(dest);
       await fse.copy(skillRoot, dest, { overwrite: true });
       const fm = await readFrontmatter(path.join(dest, 'SKILL.md'));
@@ -2517,24 +2849,30 @@ async function installDownloadedResource(input: {
       const item: ResourceItem = { name: input.slug, type: 'rules', sourcePath: dest, relativePath: `rules/${input.slug}.md` };
       const downloaded: ResourceItem = { ...item, sourcePath: ruleFile };
       const members = await membersRuleCopy(teamConfig, localConfig, downloaded, recorded, tool, item);
+
       if (members) throw new Error(keptMembersFile(members, input.slug));
+
       // Before the cache takes the download: the render of the installed version.
       const previousTools = recorded?.tools ?? (recorded
         ? await legacyTools(recorded, fullTeamConfig, (config) => handler.deliveryTargets(config, localConfig, item),
           async ({ dest: copy, content }) => content !== undefined && await fileHash(copy) === contentHash(content))
         : []);
+
       await fse.ensureDir(path.dirname(dest));
       await fse.copyFile(ruleFile, dest);
       // Every rule in the cache reaches this tool; one whose copy here is the
       // member's is left out, as the installed one would be (#915).
       const scope = getManifestScope(await loadManifest(), input.scope, input.workspacePath);
       const deliver: ResourceItem[] = [];
+
       for (const cached of await handler.scanTeamForPull(teamConfig, localConfig)) {
         const kept = cached.name === input.slug ? null
           : await membersRuleCopy(teamConfig, localConfig, cached, scope.rules[cached.name], tool, cached);
+
         if (kept) log.warn(keptMembersFile(kept, cached.name));
         else deliver.push(cached);
       }
+
       await handler.pullAllRules(teamConfig, localConfig, deliver);
       tools = await withToolIfWritten(previousTools, tool, await handler.deliveryTargets(teamConfig, localConfig, item));
       reachedRules.push(...deliver.map((rule) => rule.name).filter((name) => name !== input.slug));
@@ -2544,6 +2882,7 @@ async function installDownloadedResource(input: {
       await fse.ensureDir(path.dirname(dest));
       const previous = await readFileSafe(dest);
       await fse.copyFile(mdFile, dest);
+
       try {
         reachedPrompts = await syncClaudemd(teamConfig, localConfig, repoPath, input.workspacePath, fullTeamConfig);
       } catch (error) {
@@ -2553,6 +2892,7 @@ async function installDownloadedResource(input: {
         else await fse.writeFile(dest, previous);
         throw error;
       }
+
       tools = recorded?.tools ?? [];
     }
 
@@ -2568,12 +2908,16 @@ async function installDownloadedResource(input: {
       ...(input.kind === 'skill' && skillDirName !== input.slug ? { dir_name: skillDirName } : {}),
       ...(tools ? { tools } : {}),
     };
+
     for (const name of reachedRules) {
       const entry = scopeManifest.rules[name];
+
       if (entry?.tools && !entry.tools.includes(tool)) entry.tools = [...entry.tools, tool].sort();
     }
+
     recordPromptReach(scopeManifest, reachedPrompts);
     await saveManifest(manifest);
+
     return version;
   } finally {
     await remove(path.dirname(downloadedPath));
@@ -2588,10 +2932,13 @@ async function installDownloadedResource(input: {
 async function removeSkillCopy(dest: string, name: string, files: { teamais: string[]; members: string[] }): Promise<void> {
   if (files.members.length === 0) {
     if (!await keepsTrackedCopy(dest)) await remove(dest);
+
     return;
   }
+
   for (const file of files.teamais) if (!await keepsTrackedCopy(file)) await remove(file);
   await pruneEmptyDirs(dest);
+
   for (const file of files.members) {
     log.warn(describeMembersDirLeft(file, `skills/${name}/${path.relative(dest, file).split(path.sep).join('/')}`, 'the local agent'));
   }
@@ -2606,6 +2953,7 @@ async function failOnUnjudgedCopies(dests: readonly string[]): Promise<void> {
   for (const dest of dests) {
     if (!await pathExists(dest) || await gitUntracked(dest, 'entry')) continue;
     const tracks = await gitTracks(dest, 'entry');
+
     if (tracks.kind === 'unknown') throw new Error(`kept ${dest}: git could not say whether this repository tracks it (${tracks.error})`);
   }
 }
@@ -2620,9 +2968,11 @@ async function uninstallResource(input: {
 }): Promise<void> {
   const repoPath = await getResourceRepoPath(input.scope, input.workspacePath);
   const fullTeamConfig = await localAgentTeamConfig(input.config.endpoint, input.scope, input.workspacePath, `uninstall ${input.slug}`);
+
   if (input.tool && !fullTeamConfig.toolPaths[input.tool]) {
     throw new Error(`Unknown tool "${input.tool}": no toolPaths entry found`);
   }
+
   const localConfig = await createResourceLocalConfig(input.config, input.scope, repoPath, input.workspacePath);
   const manifest = await loadManifest();
   const scopeManifest = getManifestScope(manifest, input.scope, input.workspacePath);
@@ -2633,8 +2983,10 @@ async function uninstallResource(input: {
   // file. Without an entry no copy is the agent's.
   // A claudemd entry's block is synced again for every tool it reached, or, for an older CLI's entry, the command's.
   const entry = scopeManifest[manifestKind(input.kind)][input.slug];
+
   const tools = input.kind === 'claudemd' ? entry?.tools ?? [input.tool ?? 'workbuddy']
     : entry ? entry.tools ?? Object.keys(fullTeamConfig.toolPaths) : [];
+
   const teamConfig = {
     ...fullTeamConfig,
     toolPaths: Object.fromEntries(tools.flatMap((tool) => fullTeamConfig.toolPaths[tool] ? [[tool, fullTeamConfig.toolPaths[tool]]] : [])),
@@ -2647,15 +2999,19 @@ async function uninstallResource(input: {
     const sourcePath = path.join(repoPath, 'skills', dirName);
     const item: ResourceItem = { name: dirName, type: 'skills', sourcePath, relativePath: `skills/${dirName}` };
     const copies: Array<{ dest: string; files: { teamais: string[]; members: string[] } }> = [];
+
     for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
       for (const { dest } of await new SkillsHandler().deliveryTargets({ ...teamConfig, toolPaths: { [tool]: toolPath } }, localConfig, item)) {
         const files = await pathExists(dest) ? await localAgentCopyFiles('skill', dirName, tool, dest, input.config) : null;
+
         if (files) copies.push({ dest, files });
       }
     }
+
     // The cache goes last: a copy that cannot go fails the entry while the
     // cache still proves which of its files are teamai's, for the retry.
     await failOnUnjudgedCopies(copies.map(({ dest }) => dest));
+
     for (const { dest, files } of copies) await removeSkillCopy(dest, dirName, files);
     await remove(sourcePath);
   } else if (input.kind === 'rule') {
@@ -2664,6 +3020,7 @@ async function uninstallResource(input: {
     // removeItem deletes the cached rule before its copies: one that cannot go
     // gets the cache back, which proves it teamai's on the retry.
     const cached = await readFileSafe(item.sourcePath);
+
     try {
       await new RulesHandler().removeItem(input.slug, teamConfig, localConfig);
     } catch (error) {
@@ -2674,6 +3031,7 @@ async function uninstallResource(input: {
     const dest = path.join(repoPath, 'claudemd', `${input.slug}.md`);
     const previous = await readFileSafe(dest);
     await remove(dest);
+
     try {
       recordPromptReach(scopeManifest, await syncClaudemd(teamConfig, localConfig, repoPath, input.workspacePath, fullTeamConfig));
     } catch (error) {
@@ -2706,7 +3064,9 @@ function recordPromptReach(scope: ManifestScope, reached: readonly string[]): vo
  */
 async function isLiveWorkspace(workspacePath: string): Promise<boolean> {
   const commonDir = await gitCommonDir(workspacePath);
+
   if (commonDir === null) return fse.pathExists(path.join(workspacePath, '.git'));
+
   return isLiveCheckout(workspacePath, commonDir);
 }
 
@@ -2716,6 +3076,7 @@ async function recordedProjectCopies(config: LocalAgentConfig, workspacePath: st
   const fullTeamConfig = createLocalAgentTeamConfig(config.endpoint);
   const localConfig = await createResourceLocalConfig(config, 'project', repoPath, workspacePath);
   const copies: string[] = [];
+
   const collect = async (
     entries: Record<string, ManifestResource>,
     itemFor: (slug: string, entry: ManifestResource) => ResourceItem,
@@ -2723,40 +3084,53 @@ async function recordedProjectCopies(config: LocalAgentConfig, workspacePath: st
   ) => {
     for (const [slug, entry] of Object.entries(entries ?? {})) {
       const item = itemFor(slug, entry);
+
       for (const tool of entry.tools ?? []) {
         const toolPath = fullTeamConfig.toolPaths[tool];
+
         if (!toolPath) continue;
+
         for (const { dest } of await handler.deliveryTargets({ ...fullTeamConfig, toolPaths: { [tool]: toolPath } }, localConfig, item)) {
           // A skill is the files the agent installed from its cache, never the directory: a file the member adds there stays visible.
           const files = item.type === 'skills' ? await deliveredSkillFiles(item.sourcePath, dest, await blockingEntries(dest, item.sourcePath)) : [dest];
+
           for (const file of files) if (await pathExists(file)) copies.push(file);
         }
       }
     }
   };
+
   await collect(scope.skills, (slug, entry) => {
     const name = entry.dir_name ?? slug;
+
     return { name, type: 'skills', sourcePath: path.join(repoPath, 'skills', name), relativePath: `skills/${name}` };
   }, new SkillsHandler());
   await collect(scope.rules, (slug) => ({ name: slug, type: 'rules', sourcePath: path.join(repoPath, 'rules', `${slug}.md`), relativePath: `rules/${slug}.md` }),
     new RulesHandler());
+
   // The instruction file teamai owns of each tool the claudemd block reached, while it holds teamai's blocks, as pull lists its own.
   for (const tool of new Set(Object.values(scope.claudemd ?? {}).flatMap((entry) => entry.tools ?? []))) {
     if (fullTeamConfig.toolPaths[tool] === undefined) continue;
     const own = ownOf(await locate(tool, 'blocks', { ...installOf(fullTeamConfig, localConfig), gitExclude: true }));
+
     if (own?.owned === true && await holdsInstructionBlocks(own.path)) copies.push(own.path);
   }
+
   const gitignore = await workspaceCacheGitignore(workspacePath, repoPath);
+
   if (gitignore) copies.push(gitignore);
   const dataHome = getDataHome(localConfig);
+
   if (dataHome.startsWith(path.join(workspacePath, '.teamai') + path.sep) || dataHome === path.join(workspacePath, '.teamai')) {
     const projectManifest = managedMcpManifestPath(dataHome, workspacePath);
     const { resolvedMcpFilesPath } = await import('./mcp-resolved-files.js');
+
     for (const file of [path.join(dataHome, 'managed-local-mcp.json'), projectManifest,
       resolvedMcpFilesPath(localConfig)]) {
       if (file && await pathExists(file)) copies.push(file);
     }
   }
+
   return copies;
 }
 
@@ -2779,57 +3153,76 @@ async function syncLocalAgentGitExclude(
   const notices = localAgentGitExcludeNotices();
   const failures: string[] = [];
   const changed: Array<{ excludeFile: string; dropped: string[] }> = [];
+
   try {
     const paths: string[] = [];
     const unknown: string[] = [];
     const scopes = (await loadManifest()).scopes;
+
     for (const [key, scope] of Object.entries(scopes)) {
       const { scope: kind, workspacePath } = parseScopeKey(key);
+
       if (kind !== 'project' || !workspacePath || without.includes(workspacePath) || !await isLiveWorkspace(workspacePath)) continue;
       const enabled = await gitExcludeEnabledFor(workspacePath);
+
       if (enabled === false) continue;
       const copies = await recordedProjectCopies(config, workspacePath, scope);
+
       if (enabled === true) {
         paths.push(...copies);
         continue;
       }
+
       unknown.push(...copies);
       failures.push(`${enabled.cause}, so it left the local agent's git exclude lines for ${workspacePath} as they were. `
         + `${enabled.fix}, then start a new session.`);
     }
+
     // A workspace whose flag is unknown keeps the lines it has: neither added nor dropped.
     // A path git cannot place is passed on too, so the sync only adds and drops no line.
     if (unknown.length > 0) {
       const current = await reportGitExclude(localAgentGitExcludeOwner(), unknown);
       paths.push(...current.files.flatMap((file) => file.listed), ...current.gitFailed.map((failed) => failed.path));
     }
+
     const result = await syncGitExclude(localAgentGitExcludeOwner(), paths, { dryRun });
+
     for (const { excludeFile, dropped } of result.files) if (dropped.length > 0) changed.push({ excludeFile, dropped });
+
     if (dryRun) return changed;
+
     for (const { excludeFile, write, reincluded } of result.files) {
       const why = write.kind === 'locked' ? 'another teamai command held it past the wait'
         : write.kind === 'notWritable' || write.kind === 'notReadable' ? write.message
         : write.kind === 'writeFailed' ? write.error
         : null;
+
       if (why !== null) failures.push(`Could not update the local agent's git exclude block in ${excludeFile}: ${why}. ${rerun}`);
+
       for (const { path: seen, rule } of reincluded) {
         failures.push(`git still sees ${seen}: ${rule ? `\`${rule.pattern}\` (${rule.source}:${rule.line}) re-includes it` : 'a rule in your git ignore files re-includes it'}. Remove that rule.`);
       }
     }
+
     for (const { message } of result.refused) {
       log.warn(message);
       await noticeGitExclude(notices, message, { silent: true });
     }
+
     for (const { path: failed, error } of result.gitFailed) {
       failures.push(`Could not keep ${failed} out of git: git could not place it (${error}). ${rerun}`);
     }
   } catch (e) {
     failures.push(`Could not update the local agent's git exclude blocks: ${(e as Error).message}. ${rerun}`);
   }
+
   if (dryRun) return changed;
+
   for (const failure of failures) log.warn(failure);
+
   if (failures.length > 0) await recordGitExcludeFailure(notices, failures.join(' '));
   else await clearGitExcludeFailure(notices);
+
   return changed;
 }
 
@@ -2844,7 +3237,9 @@ export async function rebuildLocalAgentGitExcludeWithout(
   workspaces: readonly string[], options: { dryRun?: boolean } = {},
 ): Promise<Array<{ excludeFile: string; dropped: string[] }> | null> {
   const config = await loadLocalAgentConfig({ dryRun: true });
+
   if (!config) return null;
+
   return syncLocalAgentGitExclude(config, { ...options, without: workspaces, rerun: 'The next session start tries again.' });
 }
 
@@ -2856,12 +3251,17 @@ export async function rebuildLocalAgentGitExcludeWithout(
 async function localAgentGitExcludeInput(): Promise<string> {
   const { projectsRootDir } = await import('./utils/partition.js');
   const projects = (await loadManifest()).scopes;
+
   const entries = Object.keys(projects).filter((key) => parseScopeKey(key).scope === 'project').sort()
     .map((key) => [key, projects[key].skills, projects[key].rules, projects[key].claudemd]);
+
   const configs = [path.join(getTeamaiHomePath(), 'config.yaml'),
     ...(await listDirs(projectsRootDir())).sort().map((dir) => path.join(projectsRootDir(), dir, 'config.yaml'))];
+
   const parts = [JSON.stringify(entries)];
+
   for (const file of configs) parts.push(file, (await readFileSafe(file)) ?? '');
+
   return contentHash(parts.join('\0'));
 }
 
@@ -2875,12 +3275,16 @@ async function keepLocalAgentGitExclude(config: LocalAgentConfig, force: boolean
   // An uninstall_teamai in this run removed the agent: nothing to keep, and nothing to recreate.
   if (!await pathExists(getConfigPath())) return;
   const synced = path.join(getLocalAgentHome(), 'git-exclude-synced.json');
+
   const input = await localAgentGitExcludeInput().catch((e: unknown) => {
     log.persist(`git exclude: could not read the local agent's git exclude input: ${e instanceof Error ? e.message : String(e)}`);
+
     return null;
   });
+
   if (!force && input !== null && (await readJson<Record<string, string>>(synced))?.['local-agent'] === input) return;
   await syncLocalAgentGitExclude(config);
+
   if (input === null) return;
   await writeJson(synced, { 'local-agent': input }).catch((e: unknown) => {
     log.persist(`git exclude: could not write ${synced}: ${e instanceof Error ? e.message : String(e)}`);
@@ -2896,25 +3300,34 @@ async function keepLocalAgentGitExclude(config: LocalAgentConfig, force: boolean
  */
 async function removeLocalAgentGitExclude(roots: string[]): Promise<string[]> {
   const left: string[] = [];
+
   try {
     const checkouts = new Set(roots);
+
     for (const file of await localAgentGitExcludeOwner().record?.files() ?? []) {
       // `<common dir>/info/exclude`: git lists the checkouts from the common directory.
       for (const root of await listWorktrees(path.dirname(path.dirname(file)))) checkouts.add(root);
     }
+
     const keep = async ({ line, excludeFile }: { line: string; excludeFile: string }): Promise<boolean> => {
       const behindFiles = await modelFilesBehind(line, excludeFile, { roots: [...checkouts] });
+
       if (behindFiles === null) return true;
+
       // A file the repository tracks is not hidden by its line.
       for (const file of behindFiles) if ((await gitTracks(file, 'entry')).kind !== 'tracked') return true;
+
       return false;
     };
+
     for (const { excludeFile, write, removed } of await removeGitExclude(localAgentGitExcludeOwner(), { keep })) {
       const why = write.kind === 'locked' ? 'another teamai command held it past the wait'
         : write.kind === 'notWritable' || write.kind === 'notReadable' ? write.message
         : write.kind === 'writeFailed' ? write.error
         : null;
+
       const lines = removed.flatMap((block) => block.lines);
+
       if (why !== null) {
         left.push(excludeFile);
         log.warn(`Kept the local agent's git exclude block in ${excludeFile}: ${why}. Delete it yourself, from \`# [teamai:local-agent:start]\` `
@@ -2925,20 +3338,26 @@ async function removeLocalAgentGitExclude(roots: string[]): Promise<string[]> {
     left.push(path.join(getLocalAgentHome(), 'git-exclude.json'));
     log.warn(`Could not remove the local agent's git exclude blocks: ${(e as Error).message}`);
   }
+
   return left;
 }
 
 /** The claudemd fragments in an HTTP resource cache, compiled into one block. */
 async function cachedClaudemdBlock(repoPath: string): Promise<{ files: string[]; block: string | null }> {
   const claudemdDir = path.join(repoPath, 'claudemd');
+
   const files = (await pathExists(claudemdDir))
     ? (await fse.readdir(claudemdDir)).filter((file) => file.endsWith('.md')).sort()
     : [];
+
   const contents: string[] = [];
+
   for (const file of files) {
     const content = await readFileSafe(path.join(claudemdDir, file));
+
     if (content) contents.push(content);
   }
+
   return { files, block: compileClaudemdBlock(contents) };
 }
 
@@ -2951,16 +3370,23 @@ async function cachedClaudemdBlock(repoPath: string): Promise<{ files: string[];
  */
 export async function localAgentInstructionText(cwd: string, tool = ''): Promise<string> {
   const workspacePath = await resolveWorkspacePath(cwd);
+
   if (!workspacePath) return '';
   const config = await loadLocalAgentConfig({ dryRun: true });
+
   if (!config) return '';
+
   if (!config.workspaceBindings[workspacePath]) {
     const anchors = await resolveAnchors(cwd);
+
     if (!(anchors && config.workspaceBindings[anchors.projectAnchor]) && !await deliveredToWorkspace(workspacePath)) return '';
   }
+
   const native = await nativeProjectInstructions(tool, workspacePath);
+
   if (native.includes(TEAMAI_CLAUDEMD_START) || native.includes(TEAMAI_CLAUDEMD_END)) return '';
   const { block } = await cachedClaudemdBlock(await getResourceRepoPath('project', workspacePath));
+
   return block ? instructionHookText({ claudemd: block }, false) : '';
 }
 
@@ -2990,34 +3416,44 @@ async function syncClaudemd(
     // plugin through `hook-dispatch instructions` (localAgentInstructionText).
     if (deliversInstructionsByHook(tool, localConfig.scope)) {
       const problem = await hookDeliveryProblem(teamConfig, localConfig, tool, block);
+
       if (problem) {
         log.debug(`local-agent: skipped CLAUDE.md sync for ${tool}: ${problem}`);
         skipped.push(problem);
         continue;
       }
+
       log.debug(`local-agent: ${tool} adds the CLAUDE.md instructions through its extension`);
       syncedAny = true;
       reached.push(tool);
       continue;
     }
+
     const location = await locate(tool, 'blocks', install);
+
     // A server-sent workspace can exist where OpenClaw's own lookup finds none.
     const sentWorkspace = tool === 'openclaw' && localConfig.scope !== 'project' && workspacePath !== undefined && await pathExists(workspacePath)
       ? workspacePath
       : null;
+
     const own: FilePlace | null = sentWorkspace !== null
       ? { kind: 'file', path: path.join(sentWorkspace, 'AGENTS.md'), owned: false, header: null }
       : ownOf(location);
+
     const unreadable = sentWorkspace === null ? unreadableConfigOf(location) : undefined;
+
     if (unreadable !== undefined) {
       const problem = `teamai cannot read ${unreadable.file} as plain JSON, so it cannot tell which workspace ${tool} reads, `
         + 'and writes no instructions there. Make that file plain JSON (no comments or trailing commas), then retry.';
+
       log.warn(problem);
       skipped.push(problem);
       continue;
     }
+
     if (own === null) continue;
     const toolInstalled = sentWorkspace !== null || writable(location) !== null;
+
     if (!toolInstalled) {
       log.debug(`Skipped CLAUDE.md sync for ${tool}: target not found`);
       continue;
@@ -3028,38 +3464,48 @@ async function syncClaudemd(
     // OpenCode V1's Claude fallback already carries the blocks, as in pull
     // (#945), so OpenCode's file is written for V2's plugin but not listed.
     const claudeUserFile = opencodeV1ClaudeFile(getUserHome());
+
     const viaClaude = tool === 'opencode' && localConfig.scope === 'user'
       && (await readFileSafe(claudeUserFile))?.includes(TEAMAI_CLAUDEMD_START) === true
       && !await pathExists(path.join(path.dirname(claudeMdPath), 'AGENTS.md'));
+
     const target = instructionTargetOf(own);
     const plan = await planInstructionFiles([target], { claudemd: block });
+
     // A warning means the file was left as it was: nothing reached the tool.
     if (plan.warnings.length > 0) {
       for (const warning of plan.warnings) log.warn(warning);
       skipped.push(...plan.warnings);
       continue;
     }
+
     const { failures, files: writtenFiles } = await applyInstructionPlan(plan, { dryRun: false });
+
     if (failures.length > 0) {
       log.warn(`Failed to sync CLAUDE.md instructions to ${tool}: ${failures.join(' ')}`);
       skipped.push(...failures);
       continue;
     }
+
     if (tool === 'opencode') {
       await registerOpencodeContext(teamConfig, localConfig, { targets: [target], stale: [], opencodeFallback: viaClaude ? claudeUserFile : null }, false, writtenFiles);
+
       // OpenCode V1 reads the file only through its `instructions` entry.
       if (block && !viaClaude) {
         const { opencodeContextReference, readOpencodeInstructionList } = await import('./resources/opencode-config.js');
         const { config, entry } = opencodeContextReference(claudeMdPath, localConfig.scope, baseDir);
+
         if (!(await readOpencodeInstructionList(config))?.includes(entry)) {
           const problem = `OpenCode does not load ${claudeMdPath}: teamai could not add "${entry}" to the instructions of ${config} `
             + '(the file is missing, unreadable or not plain JSON). Add the entry by hand, or run `teamai doctor`.';
+
           log.warn(problem);
           skipped.push(problem);
           continue;
         }
       }
     }
+
     log.debug(`local-agent: ${block ? 'synced' : 'removed'} CLAUDE.md instructions for ${tool}`);
     syncedAny = true;
     reached.push(tool);
@@ -3069,36 +3515,49 @@ async function syncClaudemd(
   // have reached the other writers. Verify current destinations rather than
   // forgetting those deliveries or trusting a receipt for an older prompt.
   const resolved = await resolveInstructionTargets(fullTeamConfig, localConfig);
+
   for (const hook of resolved.hooks) {
     if (!reached.includes(hook.tool) && !await hookDeliveryProblem(fullTeamConfig, localConfig, hook.tool, block)) {
       reached.push(hook.tool);
     }
   }
+
   for (const target of resolved.targets) {
     if (target.tools.every((tool) => reached.includes(tool))) continue;
+
     // A failed write in this command cannot become a previous delivery.
     if (target.tools.some((tool) => teamConfig.toolPaths[tool] && !reached.includes(tool))) continue;
+
     try {
       await readFileIfExists(target.path);
     } catch (error) {
       log.debug(`local-agent: retained retired instructions because ${target.path} could not be verified: ${(error as Error).message}`);
       continue;
     }
+
     const verification = await planInstructionFiles([target], { claudemd: block });
+
     if (verification.files[0]?.status !== 'current') continue;
+
     for (const tool of target.tools) {
       if (tool === 'opencode' && block && !resolved.opencodeFallback) {
         const { opencodeContextReference, readOpencodeInstructionList } = await import('./resources/opencode-config.js');
         const { config, entry } = opencodeContextReference(target.path, localConfig.scope, resolveBaseDir(localConfig));
+
         if (!(await readOpencodeInstructionList(config))?.includes(entry)) continue;
       }
+
       reached.push(tool);
     }
   }
+
   const cleanup = await planInstructionFiles([], {}, await retiredFilesOfReached(fullTeamConfig, localConfig, reached), { claudemd: block });
+
   for (const warning of cleanup.warnings) log.warn(warning);
   const { report, failures } = await applyInstructionPlan(cleanup, { dryRun: false });
+
   for (const line of report) log.info(`${line}: no installed tool loads them from this file`);
+
   for (const failure of failures) log.warn(failure);
 
   if (cleanup.warnings.length > 0 || failures.length > 0) {
@@ -3110,6 +3569,7 @@ async function syncClaudemd(
   if (!syncedAny && (files.length > 0 || skipped.length > 0)) {
     throw new Error(['CLAUDE.md sync landed on no tool: every configured target was skipped.', ...skipped].join(' '));
   }
+
   return reached;
 }
 
@@ -3126,16 +3586,21 @@ async function hookDeliveryProblem(
   block: string | null,
 ): Promise<string | null> {
   const hook = (await resolveInstructionTargets(teamConfig, localConfig)).hooks.find((entry) => entry.tool === tool);
+
   if (!hook) return `${tool} is not installed here.`;
   const channel = await channelReadiness(tool, hook.probe, { teamConfig, localConfig });
+
   if (!channel.ready) return channel.fix;
+
   if (hook.limit === undefined) return null;
   const parts = [block ? instructionHookText({ claudemd: block }, false) : ''];
   const { loadTeamConfig, resolveConfigForDir } = await import('./config.js');
   const memberConfig = localConfig.projectRoot ? await resolveConfigForDir(localConfig.projectRoot) : null;
   const memberTeam = memberConfig ? await loadTeamConfig(memberConfig.repo.localPath) : null;
+
   if (memberConfig && memberTeam) parts.unshift(await instructionHookTextFor(memberTeam, memberConfig, tool));
   const length = parts.filter(Boolean).join('\n\n').length;
+
   return length > hook.limit
     ? `${tool} cannot load this project's instructions: with the HTTP prompts they are ${length} characters, over the `
       + `${hook.limit}-character limit of its prompt section, so ${tool} skips them. Shorten the prompts for this project.`
@@ -3170,6 +3635,7 @@ function requireModelString(
   if (typeof value !== 'string' || !value.trim()) {
     throw new Error(`apply_model_config: ${field} must be a non-empty string`);
   }
+
   return value.trim();
 }
 
@@ -3178,45 +3644,57 @@ const DEFAULT_MAX_TOKENS = 4096;
 
 function optionalPositiveInteger(value: unknown, field: 'max_tokens' | 'context_window'): number | undefined {
   if (value === undefined || value === null || value === '') return undefined;
+
   const normalized = typeof value === 'string' && /^\d+$/.test(value)
     ? Number(value)
     : value;
+
   if (!Number.isSafeInteger(normalized) || (normalized as number) < 0) {
     throw new Error(`apply_model_config: ${field} must be a positive integer`);
   }
+
   // 0 is the Go zero value for an unset int, not a real output/context cap.
   if ((normalized as number) === 0) return undefined;
+
   return normalized as number;
 }
 
 function parseDeliveredModels(raw: string | undefined): { models: DeliveredModel[]; fullSnapshot: boolean } {
   if (!raw) throw new Error('apply_model_config: missing cmd');
   let parsed: unknown;
+
   try {
     parsed = JSON.parse(raw);
   } catch {
     throw new Error('apply_model_config: cmd must be valid JSON');
   }
+
   const fullSnapshot = (
     typeof parsed === 'object' &&
     parsed !== null &&
     'models' in parsed
   );
+
   const values = fullSnapshot ? (parsed as { models?: unknown }).models : [parsed];
+
   if (!Array.isArray(values)) {
     throw new Error('apply_model_config: models must be an array');
   }
 
   const seen = new Set<string>();
+
   const models = values.map((value) => {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) {
       throw new Error('apply_model_config: each model must be an object');
     }
+
     const input = value as Record<string, unknown>;
     const modelId = requireModelString(input.model_id, 'model_id');
+
     if (modelId === '__proto__' || modelId === 'prototype' || modelId === 'constructor') {
       throw new Error(`apply_model_config: reserved model_id "${modelId}"`);
     }
+
     const model: DeliveredModel = {
       provider: requireModelString(input.provider, 'provider'),
       model_id: modelId,
@@ -3226,26 +3704,34 @@ function parseDeliveredModels(raw: string | undefined): { models: DeliveredModel
       max_tokens: optionalPositiveInteger(input.max_tokens, 'max_tokens') ?? DEFAULT_MAX_TOKENS,
       context_window: optionalPositiveInteger(input.context_window, 'context_window'),
     };
+
     let parsedUrl: URL;
+
     try {
       parsedUrl = new URL(model.base_url);
     } catch {
       throw new Error('apply_model_config: base_url must be a valid URL');
     }
+
     if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
       throw new Error('apply_model_config: base_url must use http or https');
     }
+
     if (seen.has(model.model_id)) {
       throw new Error(`apply_model_config: duplicate model_id "${model.model_id}"`);
     }
+
     seen.add(model.model_id);
+
     return model;
   });
+
   return { models, fullSnapshot };
 }
 
 function buddyModelEntry(model: DeliveredModel): Record<string, unknown> {
   const baseUrl = model.base_url.replace(/\/+$/, '');
+
   return {
     id: model.model_id,
     name: model.name,
@@ -3260,12 +3746,16 @@ function buddyModelEntry(model: DeliveredModel): Record<string, unknown> {
 
 async function readJsonObject(filePath: string): Promise<Record<string, unknown>> {
   const source = await readFileSafe(filePath);
+
   if (source === null) return {};
+
   try {
     const parsed = JSON.parse(source);
+
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
       throw new Error('root must be an object');
     }
+
     return parsed as Record<string, unknown>;
   } catch (error) {
     throw new Error(
@@ -3278,6 +3768,7 @@ async function readJsonObject(filePath: string): Promise<Record<string, unknown>
 /** Atomically update a model dotfile without replacing a user-managed symlink. */
 async function writeModelJson(filePath: string, data: unknown): Promise<void> {
   let targetPath = filePath;
+
   try {
     if ((await fs.promises.lstat(filePath)).isSymbolicLink()) {
       targetPath = await fs.promises.realpath(filePath);
@@ -3285,6 +3776,7 @@ async function writeModelJson(filePath: string, data: unknown): Promise<void> {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
+
   // Set the temp file's mode before the atomic rename. A post-rename chmod
   // would introduce a symlink-following TOCTOU window.
   await writeJsonAtomic(targetPath, data, { mode: 0o600 });
@@ -3307,6 +3799,7 @@ const MODEL_KEY_RERUN = 'apply the model config again';
  */
 async function keepModelKeyOutOfGit(file: string): Promise<void> {
   const [{ result }] = await ensureGitExclude(credentialsGitExcludeOwner(), [file], { rerun: MODEL_KEY_RERUN });
+
   // Excluded, or outside any repository, where nothing could commit it.
   if (!('reason' in result)) return;
   throw new Error(`apply_model_config: withheld the model API key from ${file}: teamai could not keep the file out of git: ${result.reason}. `
@@ -3323,9 +3816,12 @@ const TEAMAI_MODEL_GITIGNORE = ['# Local model credentials', 'models.json'];
 async function removeTeamaiModelGitignore(workspacePath: string): Promise<void> {
   const file = path.join(workspacePath, '.codebuddy', '.gitignore');
   const content = await readFileSafe(file);
+
   if (content === null) return;
   const lines = content.split(/\r?\n/).map((line) => line.trimEnd()).filter(Boolean);
+
   if (lines.length !== TEAMAI_MODEL_GITIGNORE.length || lines.some((line, i) => line !== TEAMAI_MODEL_GITIGNORE[i])) return;
+
   if (!await gitUntracked(file)) return;
   await remove(file);
 }
@@ -3333,6 +3829,7 @@ async function removeTeamaiModelGitignore(workspacePath: string): Promise<void> 
 /** Whether a reconciled models document holds nothing: no model, and no other setting of the member's. */
 function holdsNoModels(document: unknown): boolean {
   if (Array.isArray(document)) return document.length === 0;
+
   return Object.entries(document as Record<string, unknown>).every(([key, value]) =>
     (key === 'models' || key === 'availableModels') && Array.isArray(value) && value.length === 0);
 }
@@ -3340,17 +3837,23 @@ function holdsNoModels(document: unknown): boolean {
 /** Whether a models file may hold an API key: it exists and is not proven to hold none. */
 async function mayHoldModelKey(file: string): Promise<boolean> {
   let content: string | null;
+
   try {
     content = await readFileSafe(file);
   } catch {
     return true;
   }
+
   if (content === null) return false;
+
   try {
     const parsed: unknown = JSON.parse(content);
     const entries = Array.isArray(parsed) ? parsed : (parsed as { models?: unknown } | null)?.models;
+
     if (entries === undefined && typeof parsed === 'object' && parsed !== null) return false;
+
     if (!Array.isArray(entries)) return true;
+
     return entries.some((entry) => typeof entry !== 'object' || entry === null
       || ((entry as { apiKey?: unknown }).apiKey !== undefined && (entry as { apiKey?: unknown }).apiKey !== ''));
   } catch {
@@ -3370,16 +3873,21 @@ export async function localAgentCheckouts(): Promise<string[]> {
   const installed = Object.keys((await loadManifest().catch(() => null))?.scopes ?? {}).flatMap((key) => parseScopeKey(key).workspacePath ?? []);
   const workspaces = new Set([...Object.keys(config?.workspaceBindings ?? {}), ...Object.keys(manifest.workspaceModels ?? {}), ...installed]);
   const roots = new Set<string>();
+
   for (const workspace of workspaces) {
     const checkout = await pathExists(path.join(workspace, '.git')) ? workspace
       : await checkoutForProjectAnchor(workspace);
+
     if (!checkout) {
       if (!await gitCommonDir(workspace)) roots.add(workspace);
       continue;
     }
+
     roots.add(checkout);
+
     for (const root of await listWorktrees(checkout)) roots.add(root);
   }
+
   return [...roots];
 }
 
@@ -3399,16 +3907,21 @@ export async function modelFilesBehind(
   const rel = mcpExcludePatternPath(line);
   let judged = false;
   const files = new Set<string>();
+
   for (const root of new Set([...options.roots ?? [], ...await localAgentCheckouts()])) {
     const placed = await gitExcludeFile(root);
+
     if (placed?.excludeFile !== excludeFile) continue;
     judged = true;
     const file = path.join(placed.root, rel);
+
     const there = options.withKey
       ? await mayHoldModelKey(file)
       : await fs.promises.lstat(file).then(() => true, () => false);
+
     if (there) files.add(file);
   }
+
   return judged ? [...files] : null;
 }
 
@@ -3419,19 +3932,25 @@ export async function modelFilesBehind(
  */
 async function releaseModelKeyLines(): Promise<string[]> {
   const left: string[] = [];
+
   try {
     // The checkouts reading each recorded exclude file, for a retry that no longer has the workspaces' records.
     const roots: string[] = [];
+
     for (const file of await credentialsGitExcludeOwner().record?.files() ?? []) roots.push(...await listWorktrees(path.dirname(path.dirname(file))));
+
     const results = await removeGitExclude(credentialsGitExcludeOwner(), {
       keep: async ({ line, excludeFile }) => (await modelFilesBehind(line, excludeFile, { roots }))?.length !== 0,
     });
+
     for (const { excludeFile, write, removed } of results) {
       const why = write.kind === 'locked' ? 'another teamai command held it past the wait'
         : write.kind === 'notWritable' || write.kind === 'notReadable' ? write.message
         : write.kind === 'writeFailed' ? write.error
         : null;
+
       const lines = removed.flatMap((block) => block.lines);
+
       if (why !== null && lines.length > 0) {
         left.push(excludeFile);
         log.warn(`Kept ${lines.join(', ')} in ${excludeFile}: ${why}. Delete it yourself, with the block's \`# [teamai:credentials:start]\` `
@@ -3442,6 +3961,7 @@ async function releaseModelKeyLines(): Promise<string[]> {
     left.push(path.join(getLocalAgentHome(), 'git-exclude.json'));
     log.warn(`Could not remove the git exclude lines of deleted model files: ${(e as Error).message}`);
   }
+
   return left;
 }
 
@@ -3452,21 +3972,27 @@ async function releaseModelKeyLines(): Promise<string[]> {
  */
 async function removeWorkspaceModels(): Promise<string[]> {
   let manifest: ModelConfigManifest;
+
   try {
     const raw = await readFileIfExists(getModelManifestPath());
     manifest = raw === null ? {} : JSON.parse(raw) as ModelConfigManifest;
+
     if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) throw new Error('not a JSON object');
   } catch (e) {
     // Without it nothing says which models are teamai's: none is taken out, and it stays.
     log.warn(`Could not read teamai's model record ${getModelManifestPath()}: ${(e as Error).message}. `
       + 'No project models file was changed.');
+
     return [getModelManifestPath()];
   }
+
   const left: string[] = [];
+
   for (const [workspacePath, scopeManifest] of Object.entries(manifest.workspaceModels ?? {})) {
     // oxlint-disable-next-line teamai/tool-facts -- the keys of a workspace's buddy models record (BuddyAgent)
     for (const agentKind of ['codebuddy', 'workbuddy'] as const) {
       if (scopeManifest[agentKind] === undefined) continue;
+
       try {
         await reconcileBuddyModels([], true, scopeManifest, agentKind, workspacePath);
       } catch (e) {
@@ -3475,6 +4001,7 @@ async function removeWorkspaceModels(): Promise<string[]> {
       }
     }
   }
+
   return left;
 }
 
@@ -3482,21 +4009,28 @@ async function readBuddyModelEntries(
   filePath: string,
 ): Promise<{ existing: unknown[]; doc?: Record<string, unknown> }> {
   const source = await readFileSafe(filePath);
+
   // The current WorkBuddy / CodeBuddy documentation uses an object wrapper.
   // Product releases also accept the legacy top-level array, so preserve that
   // shape when a user already has one instead of forcing a migration.
   if (source === null) return { existing: [], doc: {} };
+
   try {
     const parsed = JSON.parse(source);
+
     if (Array.isArray(parsed)) return { existing: parsed };
+
     if (typeof parsed !== 'object' || parsed === null) {
       throw new Error('root must be an object or array');
     }
+
     const doc = parsed as Record<string, unknown>;
     const existing = doc.models === undefined ? [] : doc.models;
+
     if (!Array.isArray(existing)) {
       throw new Error('models must be an array');
     }
+
     return { existing, doc };
   } catch (error) {
     throw new Error(
@@ -3515,29 +4049,37 @@ async function reconcileBuddyModels(
 ): Promise<void> {
   const targetFile = buddyModelsPath(agentKind, workspacePath);
   const { existing, doc } = await readBuddyModelEntries(targetFile);
+
   const previouslyManaged = (agentKind === 'codebuddy'
     ? scopeManifest.codebuddy
     : scopeManifest.workbuddy) ?? {};
+
   const nextManaged: Record<string, string> = fullSnapshot ? {} : { ...previouslyManaged };
   const incomingIds = new Set(models.map((model) => model.model_id));
   const removedManaged = new Set<string>();
   const preserved: unknown[] = [];
   const occupiedIds = new Set<string>();
+
   for (const entry of existing) {
     const id = typeof entry === 'object' && entry !== null && typeof (entry as { id?: unknown }).id === 'string'
       ? (entry as { id: string }).id
       : undefined;
+
     if (id && previouslyManaged[id] && entryHash(entry) === previouslyManaged[id]) {
       if (fullSnapshot || incomingIds.has(id)) {
         removedManaged.add(id);
         continue;
       }
+
       preserved.push(entry);
       occupiedIds.add(id);
       continue;
     }
+
     preserved.push(entry);
+
     if (id) occupiedIds.add(id);
+
     if (id && previouslyManaged[id]) delete nextManaged[id];
   }
 
@@ -3550,18 +4092,23 @@ async function reconcileBuddyModels(
 
   if (doc) {
     doc.models = preserved;
+
     if (Array.isArray(doc.availableModels) && doc.availableModels.length > 0) {
       const available = doc.availableModels.filter(
         (id): id is string => typeof id === 'string' && !removedManaged.has(id),
       );
+
       for (const id of Object.keys(nextManaged)) {
         if (!available.includes(id)) available.push(id);
       }
+
       doc.availableModels = available;
     }
   }
+
   const document = doc ?? preserved;
   const present = await fs.promises.lstat(targetFile).catch(() => null);
+
   if (workspacePath && Object.keys(nextManaged).length === 0 && holdsNoModels(document)) {
     if (!present || (scopeManifest.createdModelsFile && !present.isSymbolicLink() && await gitUntracked(targetFile))) {
       // Nothing left in a file teamai created, or no file: it goes, then its git exclude line.
@@ -3576,15 +4123,19 @@ async function reconcileBuddyModels(
   } else {
     if (workspacePath && Object.keys(nextManaged).length > 0) await keepModelKeyOutOfGit(targetFile);
     await writeModelJson(targetFile, document);
+
     if (workspacePath && !present) scopeManifest.createdModelsFile = true;
+
     if (workspacePath && Object.keys(nextManaged).length > 0) await removeTeamaiModelGitignore(workspacePath);
   }
+
   if (agentKind === 'codebuddy') scopeManifest.codebuddy = nextManaged;
   else scopeManifest.workbuddy = nextManaged;
 }
 
 function claudeEnvForModel(model: DeliveredModel): Record<string, string> {
   const baseUrl = model.base_url.replace(/\/+$/, '').replace(/\/v1$/, '');
+
   return {
     ANTHROPIC_BASE_URL: baseUrl,
     ANTHROPIC_AUTH_TOKEN: model.api_key,
@@ -3601,6 +4152,7 @@ function claudeEnvForModel(model: DeliveredModel): Record<string, string> {
  */
 export async function releaseClaudeModelConfig(claudeRoot: string): Promise<void> {
   const manifest = (await readJson<ModelConfigManifest>(getModelManifestPath())) ?? {};
+
   if (Object.keys(manifest.claudeEnv ?? {}).length === 0) return;
   await reconcileClaudeModels([], manifest, claudeRoot);
   await writeJsonAtomic(getModelManifestPath(), manifest);
@@ -3618,22 +4170,27 @@ async function reconcileClaudeModels(
   const previousHashes = manifest.claudeEnv ?? {};
   const settings = await readJsonObject(settingsPath);
   const rawEnv = settings.env === undefined ? {} : settings.env;
+
   if (typeof rawEnv !== 'object' || rawEnv === null || Array.isArray(rawEnv)) {
     throw new Error(`apply_model_config: env must be an object in ${settingsPath}`);
   }
+
   const env = { ...(rawEnv as Record<string, unknown>) };
 
   if (models.length === 0) {
     const canRemoveGateway = Object.entries(previousHashes).every(
       ([key, hash]) => entryHash(env[key]) === hash,
     );
+
     if (canRemoveGateway && Object.keys(previousHashes).length > 0) {
       for (const key of Object.keys(previousHashes)) delete env[key];
       settings.env = env;
       await writeModelJson(settingsPath, settings);
     }
+
     await remove(profilePath);
     manifest.claudeEnv = {};
+
     return;
   }
 
@@ -3656,6 +4213,7 @@ async function reconcileClaudeModels(
     'ANTHROPIC_DEFAULT_SONNET_MODEL',
     'ANTHROPIC_DEFAULT_HAIKU_MODEL',
   ]);
+
   // A value is TeamAI-managed if it matches what we recorded last time or the
   // value currently in settings.json (settings.json is our own output, so a
   // process.env var equal to it is Claude re-injecting settings.json.env into
@@ -3664,6 +4222,7 @@ async function reconcileClaudeModels(
     (previousHashes[key] !== undefined && entryHash(value) === previousHashes[key]) ||
     (env[key] !== undefined && entryHash(value) === entryHash(env[key]))
   );
+
   // The guard must see config the user set outside settings.json too. Users who
   // run Claude via shell `export ANTHROPIC_*` keep no gateway in settings.json,
   // so a settings-only check reads env[key] === undefined and wrongly seizes the
@@ -3673,10 +4232,14 @@ async function reconcileClaudeModels(
   // so would block every follow-up sync and strand the user on stale config.
   const userOwnsInShell = (key: string): boolean => {
     const value = process.env[key];
+
     if (typeof value !== 'string' || value.trim() === '') return false;
+
     return !isManagedValue(key, value);
   };
+
   const shellConflicts = [...conflictKeys].filter(userOwnsInShell);
+
   if (shellConflicts.length > 0) {
     // The user has their own gateway/model config in the shell. Skip the write,
     // but keep manifest.claudeEnv intact: this is not the user editing our
@@ -3686,6 +4249,7 @@ async function reconcileClaudeModels(
       apply_model_config: 'skipped claude gateway: user owns conflicting shell env',
       conflicts: shellConflicts,
     });
+
     return;
   }
 
@@ -3693,14 +4257,17 @@ async function reconcileClaudeModels(
     env[key] === undefined ||
     (previousHashes[key] !== undefined && entryHash(env[key]) === previousHashes[key])
   ));
+
   if (!canManage) {
     manifest.claudeEnv = {};
+
     return;
   }
 
   for (const [key, hash] of Object.entries(previousHashes)) {
     if (entryHash(env[key]) === hash) delete env[key];
   }
+
   Object.assign(env, desired);
   settings.env = env;
   await writeModelJson(settingsPath, settings);
@@ -3717,54 +4284,67 @@ async function applyModelConfig(
   const { models, fullSnapshot } = parseDeliveredModels(command.cmd);
   const manifest = (await readJson<ModelConfigManifest>(getModelManifestPath())) ?? {};
   const agentKind = modelAgentKind(context.tool);
+
   if (!agentKind) {
     throw new Error(`apply_model_config: unsupported agent "${context.tool ?? ''}"`);
   }
 
   const scope = normalizeScope(command.scope);
+
   const workspacePath = scope === 'project'
     ? await resolveWorkspacePath(command.workspace_path ?? context.cwd)
     : undefined;
+
   if (scope === 'project' && !workspacePath) {
     throw new Error('apply_model_config: workspace command is missing workspace_path');
   }
+
   if (workspacePath && config.workspaceBindings[workspacePath] === undefined) {
     throw new Error(
       `apply_model_config: workspace "${path.basename(workspacePath)}" is not a registered binding`,
     );
   }
+
   if (agentKind === 'claude' && workspacePath) {
     throw new Error('apply_model_config: workspace scope is unsupported for claude');
   }
+
   if (!workspacePath) {
     // An explicit profile switch takes precedence over server delivery. Keep
     // both the Agent config and delivery manifest intact for a later restore.
     const { isModelProfileManaged } = await import('./models/switch.js');
+
     if (await isModelProfileManaged(agentKind)) return;
   }
 
   let scopeManifest: BuddyModelManifest = manifest;
+
   if (workspacePath) {
     manifest.workspaceModels ??= {};
     manifest.workspaceModels[workspacePath] ??= {};
     scopeManifest = manifest.workspaceModels[workspacePath];
   }
+
   const previousProviders = scopeManifest.providersByAgent?.[agentKind]
     ?? (!workspacePath && agentKind !== 'workbuddy' ? manifest.providers : undefined)
     ?? {};
+
   const providers = {
     ...(fullSnapshot ? {} : previousProviders),
     ...Object.fromEntries(models.map((model) => [model.model_id, model.provider])),
   };
+
   scopeManifest.providersByAgent = {
     ...scopeManifest.providersByAgent,
     [agentKind]: providers,
   };
+
   if (agentKind === 'claude') {
     await reconcileClaudeModels(models, manifest);
   } else {
     await reconcileBuddyModels(models, fullSnapshot, scopeManifest, agentKind, workspacePath);
   }
+
   await writeJsonAtomic(getModelManifestPath(), manifest);
 }
 
@@ -3783,6 +4363,7 @@ export function parseTeamaiCmd(raw: string): string[] {
   let current = '';
   let quote: '"' | "'" | null = null;
   let hasToken = false;
+
   for (const char of raw) {
     if (quote) {
       if (char === quote) {
@@ -3790,36 +4371,46 @@ export function parseTeamaiCmd(raw: string): string[] {
       } else {
         current += char;
       }
+
       continue;
     }
+
     if (char === '"' || char === "'") {
       quote = char;
       hasToken = true;
       continue;
     }
+
     if (char === ' ' || char === '\t' || char === '\n' || char === '\r') {
       if (hasToken) {
         argv.push(current);
         current = '';
         hasToken = false;
       }
+
       continue;
     }
+
     current += char;
     hasToken = true;
   }
+
   if (quote) {
     throw new Error('Unterminated quote in cmd');
   }
+
   if (hasToken) {
     argv.push(current);
   }
+
   if (argv.length === 0) {
     throw new Error('Empty cmd');
   }
+
   if (argv[0] !== 'teamai') {
     throw new Error(`Rejected cmd: only "teamai" subcommands are allowed, got "${argv[0]}"`);
   }
+
   return argv;
 }
 
@@ -3832,9 +4423,11 @@ export function parseTeamaiCmd(raw: string): string[] {
  */
 function resolveCmdEntry(): string | null {
   const argvEntry = process.argv[1];
+
   if (argvEntry) {
     return argvEntry;
   }
+
   return resolveTeamaiEntryScript();
 }
 
@@ -3857,15 +4450,20 @@ async function runCmdCommand(
   if (process.env.TEAMAI_DISABLE_REMOTE_CMD === '1') {
     throw new Error('remote cmd disabled by client');
   }
+
   if (!command.cmd) {
     throw new Error('cmd command is missing the "cmd" field');
   }
+
   const argv = parseTeamaiCmd(command.cmd);
   const entry = resolveCmdEntry();
+
   if (!entry) {
     throw new Error('Cannot resolve teamai entry script to run cmd');
   }
+
   const tag = localAgentTag(context);
+
   try {
     const { stdout } = await execFileAsync(
       process.execPath,
@@ -3873,22 +4471,27 @@ async function runCmdCommand(
       // The sync holds the lifecycle lock until this returns; an uninstall must not wait for it.
       { timeout: 120_000, env: { ...process.env, [LOCK_HOLDER_ENV]: String(process.pid) }, maxBuffer: 4 * 1024 * 1024 },
     );
+
     const summary = stdout.trim().split('\n').slice(0, 3).join(' | ');
     log.debug(`${tag} cmd OK: ${command.cmd}${summary ? ` — ${summary}` : ''}`);
+
     return undefined;
   } catch (e) {
     const err = e as { stderr?: string; message?: string; killed?: boolean; code?: string };
+
     const detail = (err.stderr?.trim() || err.message || 'unknown error')
       .split('\n')
       .slice(0, 3)
       .join(' | ')
       .slice(0, 200);
+
     // `killed` is also set on maxBuffer overflow, so disambiguate before labeling.
     const prefix = err.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'
       ? 'cmd output too large'
       : err.killed
         ? 'cmd timed out'
         : 'cmd failed';
+
     throw new Error(`${prefix}: ${detail}`, { cause: e });
   }
 }
@@ -3913,23 +4516,30 @@ async function runHookRuleCommand(
   if (process.env.TEAMAI_DISABLE_REMOTE_CMD === '1') {
     throw new Error('remote cmd disabled by client');
   }
+
   const tool = context.tool;
+
   if (!tool) {
     throw new Error('install_hook_rule: missing current tool in context');
   }
+
   const slug = command.slug;
+
   if (!slug) {
     throw new Error(`${command.type}: missing slug`);
   }
+
   const manifest = await loadAgentHookManifest();
 
   if (command.type === 'uninstall_hook_rule') {
     const rec = manifest[slug];
+
     if (rec) {
       await removeInstalledAgentHook(config, slug, rec);
       delete manifest[slug];
       await saveAgentHookManifest(manifest);
     }
+
     return undefined;
   }
 
@@ -3937,14 +4547,18 @@ async function runHookRuleCommand(
   if (!isAgentHookSupportedTool(tool)) {
     throw new Error(`unsupported tool: ${tool}`);
   }
+
   const event = command.event;
   const cmd = command.cmd;
+
   if (!event || !cmd) {
     throw new Error('install_hook_rule: missing event or cmd');
   }
+
   if (!isAgentHookEvent(event)) {
     throw new Error(`unsupported event: ${event}`);
   }
+
   const timeout = command.timeout ?? 10;
   const matcher = command.matcher; // may be undefined → applyAgentHook defaults to '*'
 
@@ -3955,6 +4569,7 @@ async function runHookRuleCommand(
   // otherwise orphan the old entry. removeAgentHook scans all events by slug (claude)
   // and matches prior.command (codex), covering both cases.
   const prior = manifest[slug];
+
   if (prior) {
     try {
       await removeInstalledAgentHook(config, slug, prior);
@@ -3964,26 +4579,32 @@ async function runHookRuleCommand(
   }
 
   let codexTrust: { settingsPath: string; policy: CodexTrustPolicy } | undefined;
+
   if (isBridgedTeamHookTool(tool)) {
     await applyBridgedAgentHook(tool, { slug, event, command: cmd, matcher, timeout });
   } else {
     const [settingsPath] = await agentHookSettingsPaths(config, tool);
     const policy = agentHookCodexTrust(await codexTrustDisabled(), settingsPath);
     await applyAgentHook(settingsPath, tool, { slug, event, command: cmd, matcher, timeout }, policy);
+
     if (isCodexTrustGatedTool(tool)) codexTrust = { settingsPath, policy };
   }
+
   manifest[slug] = { tool, event, command: cmd, matcher, timeout };
   await saveAgentHookManifest(manifest);
+
   if (codexTrust) {
     // Recorded first, so an uninstall still finds the hook Codex will not run.
     const trust = codexTrust.policy.kind === 'disabled'
       ? { kind: 'disabled' as const }
       : await trustCodexAgentHook(codexTrust.settingsPath, event, cmd);
+
     if (trust.kind !== 'trusted') {
       const why = trust.kind === 'disabled' ? 'codexTrustEnabled is false, so approve it in Codex /hooks' : 'reason' in trust ? trust.reason : trust.kind;
       throw new Error(`Codex will not run agent hook [${slug}] until it is trusted: ${why}`);
     }
   }
+
   return undefined;
 }
 
@@ -3995,6 +4616,7 @@ function mcpConfigToDef(slug: string, cfg: NonNullable<LocalAgentCommand['mcp_co
   if (!VALID_MCP_TRANSPORTS.has(cfg.transport)) {
     throw new Error(`install_mcp: unsupported transport "${cfg.transport}" for server "${slug}"`);
   }
+
   return {
     name: slug,
     transport: cfg.transport as McpTransport,
@@ -4011,11 +4633,13 @@ function mcpConfigToDef(slug: string, cfg: NonNullable<LocalAgentCommand['mcp_co
 function updateManifestRecord(manifest: ManagedMcpManifest, key: string, record: ManagedMcpRecord): void {
   const records = manifest[key] ?? [];
   const idx = records.findIndex((r: ManagedMcpRecord) => r.name === record.name);
+
   if (idx >= 0) {
     records[idx] = record;
   } else {
     records.push(record);
   }
+
   manifest[key] = records;
 }
 
@@ -4024,6 +4648,7 @@ async function mcpPlaceOf(
 ): Promise<(McpTarget & { key: McpKey }) | null> {
   const target = (await resolveMcpTargets(teamConfig, localConfig, { includeUndetected: true }))
     .find((candidate) => candidate.tool === tool && !candidate.builtinFallback);
+
   return target === undefined ? null : { ...target, key: mcpKeyOf(target) };
 }
 
@@ -4039,6 +4664,7 @@ async function workspaceMcpLocations(
 ): Promise<{ tree: McpTarget; local: McpTarget; config: LocalConfig } | null> {
   const withRoots = { ...localConfig, toolRoots: await memberToolRoots(workspacePath) };
   const places = await projectMcpLocations(createLocalAgentTeamConfig(config.endpoint), withRoots, tool);
+
   return places && { ...places, config: withRoots };
 }
 
@@ -4056,10 +4682,13 @@ async function loadLocalAgentMcpManifest(
   if (localConfig.scope === 'project' && localConfig.projectRoot) {
     const scoped = { ...localConfig, dataHome };
     const { manifestPath, manifest } = await loadMcpManifest(scoped, false);
+
     return { manifestPath, manifest, save: () => saveMcpManifest(scoped, manifestPath, manifest) };
   }
+
   const manifestPath = managedMcpManifestPath(dataHome);
   const manifest = (await readJson<ManagedMcpManifest>(manifestPath)) ?? {};
+
   return { manifestPath, manifest, save: () => writeJsonAtomic(manifestPath, manifest) };
 }
 
@@ -4082,14 +4711,18 @@ async function leaveOtherMcpLocation(
   manifest: ManagedMcpManifest,
 ): Promise<void> {
   const fromTree = other.projectKey === undefined;
+
   const claimed = fromTree
     ? await claimedByOtherTools(
       await resolveMcpTargets(createLocalAgentTeamConfig(config.endpoint), places.config, { includeUndetected: true }), places.tree, manifest)
     : new Set<string>();
+
   let removed = false;
+
   for (const record of records) {
     if (!claimed.has(record.name)) removed = await removeMovedMcpEntry(other, serverKey, record.name, target, record.hash) || removed;
   }
+
   if (removed && fromTree) await deleteEmptiedMcpFile(other.file).catch(() => false);
 }
 
@@ -4111,20 +4744,24 @@ async function installMcpServer(
   // the member relocated (`toolRoots`) the way `teamai pull` writes it. Project
   // scope returns `mcpProject` unchanged — it belongs to the workspace.
   const localConfig = await createResourceLocalConfig(config, scope, getUserHome(), workspacePath);
+
   if (!Object.hasOwn(fullTeamConfig.toolPaths, tool)) {
     throw new Error(`install_mcp: unknown tool "${tool}"`);
   }
 
   const projectScope = scope === 'project';
   const place = await mcpPlaceOf(fullTeamConfig, localConfig, tool);
+
   if (!place) {
     throw new Error(`install_mcp: tool "${tool}" has no MCP config path for scope "${scope}"`);
   }
 
   const format = mcpFormatOf(tool);
+
   if (!format) {
     throw new Error(`install_mcp: tool "${tool}" has no known MCP format`);
   }
+
   if (!supportsTransport(format, def.transport)) {
     throw new Error(`install_mcp: tool "${tool}" does not support ${def.transport} transport`);
   }
@@ -4132,8 +4769,10 @@ async function installMcpServer(
   // A tool with a local scope writes there while the workspace's git exclude flag moves its servers, as a
   // pull's do (#915); the other place is where an earlier install may have left this server.
   const places = projectScope && workspacePath ? await workspaceMcpLocations(config, localConfig, tool, workspacePath) : null;
+
   const relocated = places !== null
     && await mcpRelocated(await localAgentTeamConfig(config.endpoint, scope, workspacePath, `install ${slug}`), places.config, tool);
+
   const active = places && (relocated ? places.local : places.tree);
   const other = places && (relocated ? places.tree : places.local);
   const mappedFile = active?.projectKey === undefined ? place.mappedFile : undefined;
@@ -4151,13 +4790,17 @@ async function installMcpServer(
   // A local scope's record that notes no file is in that scope, not in a file the project's place names.
   const recordedIn = active?.projectKey === undefined ? place : active;
   const recordedTargets = new Map(await Promise.all(records.map(async (record) => [record, await recordedMcpTarget(recordedIn, record)] as const)));
+
   const inTarget = await Promise.all(records.map(async (r: ManagedMcpRecord) => {
     const recorded = recordedTargets.get(r);
+
     return recorded === undefined ? sameMcpFile(fileOf(r), targetFile) : sameMcpPlace(recorded, { ...recordedIn, file: targetFile });
   }));
+
   const owned = records.filter((_, i) => inTarget[i]);
   const ownedNames = new Set(owned.map((r: ManagedMcpRecord) => r.name));
   const otherKey = other ? mcpManifestKey(other) : undefined;
+
   const movedFrom = records.find((r: ManagedMcpRecord, i) => r.name === slug && !inTarget[i])
     ?? (otherKey ? manifest[otherKey]?.find((r) => r.name === slug) : undefined);
 
@@ -4166,9 +4809,11 @@ async function installMcpServer(
     const hash = entryHash(block);
     let source = (await readFileIfExists(targetFile)) ?? '';
     const present = new Set(codexServerNames(source));
+
     if (present.has(slug) && !ownedNames.has(slug)) {
       throw new Error(`install_mcp: server "${slug}" exists in ${tool} config and is not managed by teamai`);
     }
+
     updateManifestRecord(manifest, manifestKey, { name: slug, hash, file: targetFile });
     await save();
     source = spliceCodexBlock(source, slug, block);
@@ -4180,12 +4825,15 @@ async function installMcpServer(
     const valueHash = format === 'muse' ? museEntryHash(entry) : undefined;
     const allowBare = format === 'copilot' && projectScope;
     const doc = await readJsonDoc(targetFile, serverKey, allowBare, active?.projectKey);
+
     if (!doc) {
       throw new Error(`install_mcp: cannot parse ${targetFile}`);
     }
+
     if (doc.servers[slug] !== undefined && !ownsJsonMcpEntry(doc, slug, owned, allowBare)) {
       throw new Error(`install_mcp: server "${slug}" exists in ${tool} config${active?.projectKey ? ` (${target})` : ''} and is not managed by teamai`);
     }
+
     // The copy a bare install left before another tool added the key would keep the old value beside this one (#882).
     // Judged by the record as it was before this install updates it.
     const bareCopy = isTeamaiBareCopy(doc, slug, owned);
@@ -4195,26 +4843,33 @@ async function installMcpServer(
     // A record of this server in the file CodeBuddy no longer reads is existing ownership too (#993).
     const previousRecord = owned.find((record) => record.name === slug) ?? movedFrom;
     const previousData = previousRecord ? structuredClone(doc.data) : undefined;
+
     // Existing ownership stays valid until the config write completes. New installs
     // still persist a provisional record before adding a Git exclusion (#882).
     if (!previousRecord) {
       updateManifestRecord(manifest, manifestKey, { name: slug, hash, ...valueHash === undefined ? {} : { valueHash }, ...projectScope ? { resolved: credential } : {}, file: targetFile });
       await save();
     }
+
     if (credential) await keepCredentialOutOfGit({ ...localConfig, dataHome }, tool, slug, targetFile, entry);
+
     if (bareCopy) delete doc.data[slug];
     doc.servers[slug] = entry;
     await writeJsonDoc(targetFile, serverKey, doc);
+
     if (allowBare || previousRecord) {
       // Placement is evidence of a completed write, not just an attempted install.
       updateManifestRecord(manifest, manifestKey, {
         name: slug, hash, ...valueHash === undefined ? {} : { valueHash }, ...projectScope ? { resolved: credential } : {}, ...allowBare ? { bare: doc.bare } : {}, file: targetFile,
       });
+
       // A record in the tool's other place goes with the copy there, once this write holds the server.
       if (otherKey && manifest[otherKey]) {
         manifest[otherKey] = manifest[otherKey].filter((r) => r.name !== slug);
+
         if (manifest[otherKey].length === 0) delete manifest[otherKey];
       }
+
       try {
         await save();
       } catch (error) {
@@ -4229,24 +4884,30 @@ async function installMcpServer(
             );
           }
         }
+
         throw error;
       }
     }
   }
+
   if (movedFrom && places && other) {
     await leaveOtherMcpLocation(config, places, other, active ? mcpKeyOf(active) : place.key, [movedFrom], target, manifest);
   } else if (movedFrom) {
     const from = recordedTargets.get(movedFrom) ?? await recordedMcpTarget(place, movedFrom);
     const relocations = [place.mappedFile, place.alternateFile, ...place.lookupFiles ?? [], ...(place.retired ?? []).map(({ file }) => file)];
+
     if (relocations.includes(from.file)) await removeMovedMcpEntry(from, mcpKeyOf(from), slug, target, movedFrom.hash);
     else logLeftMcpFiles(localConfig, { ...place, file: targetFile }, [{ ...movedFrom, file: from.file }]);
   }
+
   if (projectScope && workspacePath) {
     const resources = await loadManifest();
     getManifestScope(resources, 'project', workspacePath);
     await saveManifest(resources);
   }
+
   log.debug(`local-agent: installed MCP server "${slug}" for ${tool} (scope=${scope})`);
+
   return command.version;
 }
 
@@ -4262,22 +4923,30 @@ async function removeMovedMcpEntry(
   from: Pick<McpTarget, 'file' | 'projectKey'>, serverKey: McpKey, slug: string, target: string, recordedHash: string,
 ): Promise<boolean> {
   const file = describeMcpLocation(from);
+
   try {
     const doc = await readJsonDoc(from.file, serverKey, false, from.projectKey);
+
     if (!doc) throw new Error('it does not parse');
+
     if (doc.servers[slug] === undefined) return false;
+
     // A copy the member changed since teamai installed it is theirs: left where it is (#993).
     if (entryHash(doc.servers[slug]) !== recordedHash) {
       log.warn(`Installed MCP server ${slug} in ${target}, and kept the copy in ${file}: you changed it since teamai installed it. `
         + `Remove ${slug} from ${file} when you no longer need it.`);
+
       return false;
     }
+
     delete doc.servers[slug];
     await writeJsonDoc(from.file, serverKey, doc);
+
     return true;
   } catch (error) {
     log.warn(`Installed MCP server ${slug} in ${target}, but could not remove the copy an earlier install left in ${file}: `
       + `${error instanceof Error ? error.message : String(error)}. Remove ${slug} from ${file} yourself.`);
+
     return false;
   }
 }
@@ -4298,22 +4967,27 @@ async function keepCredentialOutOfGit(
   dryRun = false,
 ): Promise<boolean> {
   const { carriesLocalAgentCredential, ensureExcludedFromGit } = await import('./mcp-git-exclude.js');
+
   if (!carriesLocalAgentCredential(entry)) return false;
   // Commands come from the server: no pull replays one.
   const exclusion = await ensureExcludedFromGit(file, { dryRun, rerun: 'install the MCP server again' });
+
   if (exclusion.kind === 'failed') {
     throw new Error(
       `install_mcp: withheld "${slug}" from ${file}: it may carry a credential (a header, env value, argument or URL), and teamai could not keep the file `
       + `out of git: ${exclusion.reason}. The file is left as it was. ${exclusion.fix}`,
     );
   }
+
   if (dryRun) return true;
   const { trackResolvedMcpFiles } = await import('./mcp-resolved-files.js');
   // A failure does not stop the write: the exclusion protects the file.
   const result = await trackResolvedMcpFiles(localConfig, [{ tool, file }]).catch((e: unknown) => e instanceof Error ? e.message : String(e));
+
   if (result !== 'written' && result !== 'unchanged') {
     log.debug(`Did not record ${file} in managed-mcp-files.json: ${result === 'locked' ? 'another teamai command held it past the wait' : result}.`);
   }
+
   return true;
 }
 
@@ -4328,10 +5002,12 @@ async function uninstallMcpServer(
   // Removal has to look where the install wrote: same scope seam, same root.
   const localConfig = await createResourceLocalConfig(config, scope, getUserHome(), workspacePath);
   const place = await mcpPlaceOf(fullTeamConfig, localConfig, tool);
+
   if (!place) return;
 
   const projectScope = scope === 'project';
   const format = mcpFormatOf(tool);
+
   if (!format) return;
 
   const { resolveDataHomeForScope } = await import('./config.js');
@@ -4340,12 +5016,14 @@ async function uninstallMcpServer(
   // Claude's and CodeBuddy's may be in the tool's local scope or in the project's file, whichever the git exclude
   // flag picked when it was installed (#915): taken out wherever a record places it.
   const places = projectScope && workspacePath ? await workspaceMcpLocations(config, localConfig, tool, workspacePath) : null;
+
   const locations: Array<{ manifestKey: string; file?: string; projectKey?: string }> = places
     ? [places.local, places.tree].map((loc) => ({ manifestKey: mcpManifestKey(loc), file: loc.file, projectKey: loc.projectKey }))
     : [{ manifestKey: managedMcpManifestKey(tool, projectScope) }];
 
   for (const { manifestKey, file, projectKey } of locations) {
     const owned = manifest[manifestKey] ?? [];
+
     if (!owned.some((r: ManagedMcpRecord) => r.name === slug)) continue;
     // A server is in the file its record names (#993), even one a home move left; an older record names none.
     const record = owned.find((r) => r.name === slug);
@@ -4354,9 +5032,11 @@ async function uninstallMcpServer(
     const where = describeMcpLocation({ file: targetFile, projectKey });
 
     let restoreConfig: (() => Promise<void>) | undefined;
+
     if (format === 'codex') {
       const source = (await readFileIfExists(targetFile)) ?? '';
       const next = spliceCodexBlock(source, slug, null);
+
       if (next !== source) {
         await writeCodexAtomic(targetFile, next);
         restoreConfig = () => writeCodexAtomic(targetFile, source);
@@ -4365,20 +5045,27 @@ async function uninstallMcpServer(
       const serverKey = mcpKeyOf(recorded);
       const allowBare = format === 'copilot' && projectScope;
       const doc = await readJsonDoc(targetFile, serverKey, allowBare, projectKey);
+
       if (!doc) throw new Error(`uninstall_mcp: cannot parse ${targetFile}. Ownership was kept; repair the config and uninstall the server again.`);
       // Also a bare entry another tool's mcpServers now sits beside (#882).
       const bareCopy = isTeamaiBareCopy(doc, slug, owned);
       const ownsEntry = ownsJsonMcpEntry(doc, slug, owned, allowBare);
+
       if ((ownsEntry && doc.servers[slug] !== undefined) || bareCopy) {
         const previousData = structuredClone(doc.data);
+
         if (ownsEntry) delete doc.servers[slug];
+
         if (bareCopy) delete doc.data[slug];
         await writeJsonDoc(targetFile, serverKey, doc);
         restoreConfig = () => writeMcpJson(targetFile, previousData);
       }
     }
+
     manifest[manifestKey] = owned.filter((r: ManagedMcpRecord) => r.name !== slug);
+
     if (manifest[manifestKey].length === 0) delete manifest[manifestKey];
+
     try {
       await save();
     } catch (error) {
@@ -4393,9 +5080,11 @@ async function uninstallMcpServer(
           );
         }
       }
+
       throw error;
     }
   }
+
   log.debug(`local-agent: uninstalled MCP server "${slug}" from ${tool} (scope=${scope})`);
 }
 
@@ -4405,19 +5094,25 @@ async function runMcpCommand(
   context: LocalAgentContext,
 ): Promise<string | undefined> {
   const tool = context.tool;
+
   if (!tool) {
     throw new Error(`${command.type}: cannot determine current tool`);
   }
+
   const slug = command.slug;
+
   if (!slug) {
     throw new Error(`${command.type}: missing slug`);
   }
+
   assertSafeResourceName(slug);
 
   const scope = normalizeScope(command.scope);
+
   const workspacePath = scope === 'project'
     ? await resolveWorkspacePath(command.workspace_path ?? context.cwd)
     : undefined;
+
   if (scope === 'project' && !workspacePath) {
     throw new Error(`${command.type}: workspace command is missing workspace_path`);
   }
@@ -4427,6 +5122,7 @@ async function runMcpCommand(
   }
 
   await uninstallMcpServer(config, tool, slug, scope, workspacePath);
+
   return command.version;
 }
 
@@ -4437,40 +5133,50 @@ async function executeCommand(
 ): Promise<string | undefined> {
   if (command.type === 'apply_model_config') {
     await applyModelConfig(config, command, context);
+
     return;
   }
+
   // uninstall_teamai (clawpro three-phase: cmd = "teamai uninstall --force
   // --agent <tool>") executes its `cmd` string as a restricted teamai subcommand.
   if (command.type === 'uninstall_teamai') {
     return runCmdCommand(command, context);
   }
+
   if (command.type === 'install_hook_rule' || command.type === 'uninstall_hook_rule') {
     return runHookRuleCommand(config, command, context);
   }
+
   if (command.type === 'install_mcp' || command.type === 'uninstall_mcp') {
     return runMcpCommand(config, command, context);
   }
+
   const kind = commandKind(command);
   const action = commandAction(command);
+
   if (!kind || !action) {
     throw new Error(`Unsupported command type: ${command.type ?? ''}`);
   }
 
   const scope = normalizeScope(command.scope);
+
   const workspacePath = scope === 'project'
     ? await resolveWorkspacePath(command.workspace_path ?? context.cwd)
     : undefined;
+
   if (scope === 'project' && !workspacePath) {
     throw new Error('Project command is missing workspace_path');
   }
 
   const slug = commandSlug(command, kind);
   const tool = context.tool;
+
   if (action === 'install') {
     return installDownloadedResource({ config, command, kind, slug, scope, workspacePath, tool });
   }
 
   await uninstallResource({ config, kind, slug, scope, workspacePath, tool });
+
   return commandVersion(command, kind);
 }
 
@@ -4481,6 +5187,7 @@ async function processCommands(
 ): Promise<boolean> {
   const tag = localAgentTag(context);
   let modelConfigApplied = false;
+
   for (const command of commands) {
     // Keep these special types aligned with executeCommand's direct branches.
     // Resource commands are recognized generically by commandKind/action;
@@ -4497,19 +5204,24 @@ async function processCommands(
       log.debug(`${tag} skipping unimplemented command ${command.id} (${command.type})`);
       continue;
     }
+
     try {
       const version = await executeCommand(config, command, context);
       await ackCommand(config, tag, command, 'success', version, undefined, context.tool ?? 'workbuddy');
+
       if (command.type === 'apply_model_config') modelConfigApplied = true;
       log.debug(`${tag} command ${command.id} (${command.type ?? ''}) succeeded`);
+
       // Uninstall succeeded — skip remaining commands; the hook process exits naturally.
       if (command.type === 'uninstall_teamai') {
         log.debug(`${tag} uninstall_teamai completed — remaining commands skipped`);
+
         return modelConfigApplied;
       }
     } catch (e) {
       const error = (e as Error).message;
       log.error(`${tag} command ${command.id} failed: ${error}`);
+
       try {
         await ackCommand(config, tag, command, 'failed', undefined, error, context.tool ?? 'workbuddy');
       } catch (ackError) {
@@ -4517,6 +5229,7 @@ async function processCommands(
       }
     }
   }
+
   return modelConfigApplied;
 }
 
@@ -4528,10 +5241,13 @@ function changesProjectCopies(command: LocalAgentCommand): boolean {
 
 export async function reportAndSyncLocalAgent(context: LocalAgentContext): Promise<boolean> {
   if (!await loadLocalAgentConfig({ dryRun: true })) return false;
+
   if (!await acquireLocalAgentLock()) {
     log.debug('[local-agent] sync skipped: could not acquire the HTTP source lock');
+
     return false;
   }
+
   try {
     return await syncLocalAgent(context);
   } finally {
@@ -4541,6 +5257,7 @@ export async function reportAndSyncLocalAgent(context: LocalAgentContext): Promi
 
 async function syncLocalAgent(context: LocalAgentContext): Promise<boolean> {
   const config = await loadLocalAgentConfig();
+
   if (!config) return false;
 
   // Enrollment is per workspace: a workspace where `teamai bind-project` never
@@ -4550,9 +5267,12 @@ async function syncLocalAgent(context: LocalAgentContext): Promise<boolean> {
   // is enrolled. A session outside any workspace (HOME, a task dir) runs user
   // scope.
   const currentPath = await resolveWorkspacePath(context.cwd);
+
   if (currentPath && !await enrollWorkspace(config, context.cwd, currentPath)) {
     log.debug(`[local-agent] workspace not enrolled, skipping: ${currentPath}`);
+
     if (isBindPromptEnabled()) unenrolledNotice(context, currentPath);
+
     return false;
   }
 
@@ -4561,9 +5281,11 @@ async function syncLocalAgent(context: LocalAgentContext): Promise<boolean> {
   // HTTP report/sync that would produce a duplicate card.
   if (currentPath && isBindPromptEnabled() && isBindPromptTool(context.tool)) {
     const sid = context.event?.sessionId;
+
     if (context.event?.type === 'session_start') {
       await ensureWorkspaceBinding(config, currentPath, sid, context.cwd, context.tool);
     }
+
     if (context.event?.type === 'prompt_submit') {
       await emitBindingHint(config, currentPath, sid, context.tool);
     }
@@ -4575,6 +5297,7 @@ async function syncLocalAgent(context: LocalAgentContext): Promise<boolean> {
   // sync produces no card, so there is no duplicate risk.
   // TEAMAI_ALLOW_SANDBOX_REPORT=1 restores the report too (backward compatible).
   const skipReport = isCloudStudioSandbox() && process.env.TEAMAI_ALLOW_SANDBOX_REPORT !== '1';
+
   if (skipReport) {
     log.debug(
       '[local-agent] CloudStudio sandbox detected; skipping HTTP report ' +
@@ -4598,6 +5321,7 @@ async function syncLocalAgent(context: LocalAgentContext): Promise<boolean> {
 
     const pruned = await pruneDeadWorkspaceBindings(config);
     const stamped = stampWorkspaceTool(config, currentPath, context.tool ?? 'workbuddy');
+
     if (pruned || stamped) {
       await saveLocalAgentConfig(config);
     }
@@ -4605,6 +5329,7 @@ async function syncLocalAgent(context: LocalAgentContext): Promise<boolean> {
 
   let changedProjectCopies = false;
   const tool = context.tool ?? 'workbuddy';
+
   try {
     if (!skipReport) {
       const reportPayload = await buildReportPayload(config, context);
@@ -4616,6 +5341,7 @@ async function syncLocalAgent(context: LocalAgentContext): Promise<boolean> {
     }
 
     const syncPayload = await buildSyncPayload(config, context);
+
     const syncResponse = await localAgentFetch<{
       ok?: boolean;
       cmds?: LocalAgentCommand[];
@@ -4627,6 +5353,7 @@ async function syncLocalAgent(context: LocalAgentContext): Promise<boolean> {
       { method: 'POST', body: JSON.stringify(syncPayload) },
       { redactResponseLog: true, tool },
     );
+
     // Prefer the unified cmds[] (source of truth). Fall back to the legacy
     // commands[] for older backends that do not yet emit cmds. An empty cmds[]
     // is treated as "cmds not available" and falls back too — the backend sends
@@ -4636,10 +5363,12 @@ async function syncLocalAgent(context: LocalAgentContext): Promise<boolean> {
     // guarantees `cmds` on all sync responses (clawpro iwiki ch.7).
     const cmds = syncResponse.cmds;
     const commands = cmds && cmds.length > 0 ? cmds : (syncResponse.commands ?? []);
+
     if (commands.length > 0) {
       log.debug(`${tag} sync returned ${commands.length} command(s): ${commands.map((c) => `${c.type}#${c.id}`).join(', ')}`);
       changedProjectCopies = commands.some(changesProjectCopies);
       const modelConfigApplied = await processCommands(config, commands, context);
+
       if (modelConfigApplied && !skipReport) {
         const reportPayload = await buildReportPayload(config, context);
         await localAgentFetch(config, tag, 'report', {
@@ -4649,12 +5378,14 @@ async function syncLocalAgent(context: LocalAgentContext): Promise<boolean> {
         log.debug(`${tag} model config report OK`);
       }
     }
+
     log.debug(`${tag} sync OK (${commands.length} command(s))`);
   } catch (e) {
     const error = (e as Error).message;
     log.error(`${tag} sync FAILED: ${error}`);
     await appendErrorLog({ error, context });
   }
+
   // Every session start, and after project installs and uninstalls, failed ones included (a failure may have
   // written part of its copies), also when the sync failed: the manifest and the flags decide, not the backend.
   // Also when the sync failed: what an install wrote is on disk either way. Also after an uninstall_teamai:
@@ -4676,9 +5407,11 @@ async function syncLocalAgent(context: LocalAgentContext): Promise<boolean> {
  */
 async function protectWorkspaceMcpConfigs(config: LocalAgentConfig, cwd?: string): Promise<void> {
   const workspacePath = await resolveWorkspacePath(cwd);
+
   if (!workspacePath) return;
   // First, what an earlier install left in a file the tool no longer gets it from (#915).
   await moveWorkspaceMcpServers(config, workspacePath);
+
   try {
     const { resolveDataHomeForScope } = await import('./config.js');
     const dataHome = await resolveDataHomeForScope('project', workspacePath);
@@ -4707,18 +5440,23 @@ async function protectWorkspaceMcpConfigs(config: LocalAgentConfig, cwd?: string
 async function moveWorkspaceMcpServers(config: LocalAgentConfig, workspacePath: string): Promise<void> {
   // An uninstall_teamai in this run removed the agent: nothing to move.
   if (!await loadLocalAgentConfig({ dryRun: true })) return;
+
   try {
     const localConfig = await createResourceLocalConfig(config, 'project', getUserHome(), workspacePath);
     const { loadProjectMcpManifest } = await import('./utils/mcp-manifest.js');
     // Read first without writing anything: most syncs find nothing to move.
     const { manifest: recorded } = await loadProjectMcpManifest(getDataHome(localConfig), workspacePath, { dryRun: true });
+
     const tools = Object.keys(createLocalAgentTeamConfig(config.endpoint).toolPaths)
       .filter((tool) => (recorded[managedMcpManifestKey(tool, true)]?.length ?? 0) > 0);
+
     if (tools.length === 0 || await gitExcludeEnabledFor(workspacePath) !== true) return;
     const teamConfig = await localAgentTeamConfig(config.endpoint, 'project', workspacePath, 'move MCP servers');
     const { manifest, save } = await loadLocalAgentMcpManifest(localConfig, getDataHome(localConfig));
+
     for (const tool of tools) {
       const places = await workspaceMcpLocations(config, localConfig, tool, workspacePath);
+
       if (!places || !await mcpRelocated(teamConfig, places.config, tool)) continue;
       await moveToLocalScope(config, tool, places, manifest, save);
     }
@@ -4740,59 +5478,76 @@ async function moveToLocalScope(
   const treeKey = mcpManifestKey(tree);
   const localKey = mcpManifestKey(local);
   const records = manifest[treeKey] ?? [];
+
   if (records.length === 0 || tree.format === 'codex') return;
   const serverKey = mcpKeyOf(tree);
   const there = describeMcpLocation(local);
   const from = await readJsonDoc(tree.file, serverKey);
   const to = await readJsonDoc(local.file, serverKey, false, local.projectKey);
+
   if (!from || !to) {
     log.warn(`Did not move the local agent's MCP servers for ${tool} from ${tree.file} to ${there}: `
       + `${from ? local.file : tree.file} does not parse. Fix it; the next session start moves them.`);
+
     return;
   }
+
   const owned = new Set((manifest[localKey] ?? []).map((record) => record.name));
   const moved: ManagedMcpRecord[] = [];
   const edited: string[] = [];
   const left: ManagedMcpRecord[] = [];
+
   for (const record of records) {
     const entry = from.servers[record.name];
+
     // Gone from the file: nothing to move, and the record goes.
     if (entry === undefined) continue;
+
     // A copy the member changed since teamai installed it is theirs: it stays where it is, and its record goes.
     if (entryHash(entry) !== record.hash) {
       edited.push(record.name);
       continue;
     }
+
     const held = to.servers[record.name];
+
     if (held !== undefined && !owned.has(record.name) && entryHash(held) !== record.hash) {
       log.warn(`Kept MCP server ${record.name} in ${tree.file}: ${there} holds a server of that name that is not teamai's. `
         + `Rename or remove one of them; the local agent moves ${record.name} at its next sync.`);
       left.push(record);
       continue;
     }
+
     if (!owned.has(record.name)) to.servers[record.name] = entry;
     moved.push(record);
   }
+
   if (left.length === records.length) return;
 
   const previous = structuredClone(to.data);
   const wrote = moved.some((record) => !owned.has(record.name));
+
   if (wrote) await writeJsonDoc(local.file, serverKey, to);
+
   for (const record of moved) {
     if (!owned.has(record.name)) updateManifestRecord(manifest, localKey, { name: record.name, hash: record.hash, resolved: false, file: local.file });
   }
+
   if (left.length > 0) manifest[treeKey] = left;
   else delete manifest[treeKey];
+
   try {
     await save();
   } catch (error) {
     if (wrote) await writeMcpJson(local.file, previous).catch(() => undefined);
     throw error;
   }
+
   for (const name of edited) {
     log.warn(`Kept MCP server ${name} in ${tree.file}: you changed it since teamai installed it, so the local agent did not move it to ${there}. `
       + `It is yours now; remove ${name} from ${tree.file} when you no longer need it.`);
   }
+
   if (moved.length === 0) return;
   await leaveOtherMcpLocation(config, places, tree, serverKey, moved, there, manifest);
   log.info(`Moved the local agent's MCP servers for ${tool} (${moved.map((record) => record.name).join(', ')}) from ${tree.file} to ${there}: `
@@ -4801,7 +5556,9 @@ async function moveToLocalScope(
 
 function statusFromEvent(event?: DashboardEvent): string {
   if (!event) return 'running';
+
   if (event.type === 'stop' || event.type === 'process_exit') return 'stopped';
+
   return 'running';
 }
 
@@ -4831,6 +5588,7 @@ export async function reportAndSyncFromHook(
   activeFetchTimeoutMs = isForegroundEvent
     ? LOCAL_AGENT_HOOK_FETCH_TIMEOUT_MS
     : LOCAL_AGENT_FETCH_TIMEOUT_MS;
+
   try {
     await reportAndSyncLocalAgent({
       cwd,
@@ -4838,6 +5596,7 @@ export async function reportAndSyncFromHook(
       status: statusFromEvent(event ?? undefined),
       event: event ?? undefined,
     });
+
     return null;
   } finally {
     activeFetchTimeoutMs = LOCAL_AGENT_FETCH_TIMEOUT_MS;
@@ -4864,8 +5623,11 @@ async function tokenStillWorks(config: LocalAgentConfig, token: string): Promise
       headers: authHeaders(token, false),
       signal: AbortSignal.timeout(LOCAL_AGENT_FETCH_TIMEOUT_MS),
     });
+
     if (response.ok) return true;
+
     if (response.status === 401 || response.status === 403) return false;
+
     return undefined;
   } catch {
     return undefined;
@@ -4890,11 +5652,14 @@ function incomingTokenOwner(
 ): string | undefined {
   if (!isAgentToken(token)) return undefined;
   const named = filterAgents ?? [];
+
   if (named.length === 1) return normalizeAgentType(named[0]);
+
   // Several --agent name no single owner; the refusal below asks for one.
   if (named.length > 1) return undefined;
   const sameEndpoint = existing !== null && normalizeEndpoint(existing.endpoint) === endpoint;
   const held = sameEndpoint ? Object.keys(existing?.agentTokens ?? {}) : [];
+
   return held.length === 1 ? held[0] : undefined;
 }
 
@@ -4910,16 +5675,20 @@ export async function assertNoLocalAgentReplacement(options: {
 }): Promise<void> {
   // An environment endpoint is not replaced: the config init writes takes precedence over it.
   const existing = await loadLocalAgentConfig({ dryRun: true, envFallback: false });
+
   if (!existing) return;
   const endpoint = normalizeEndpoint(options.endpoint);
+
   if (existing.endpoint !== endpoint) {
     throw new Error(
       `The HTTP local agent already uses ${existing.endpoint}. Re-run with --force to replace it with ${endpoint}.`,
     );
   }
+
   // An agent's own token joins the credentials this endpoint already holds
   // instead of replacing them, so adding one needs no --force.
   if (incomingTokenOwner(existing, endpoint, options.token, options.filterAgents)) return;
+
   if (options.token !== undefined && existing.token !== options.token) {
     throw new Error(
       `The HTTP local agent already uses ${endpoint} with another token. Re-run with --force to replace the token.`,
@@ -4942,12 +5711,16 @@ async function chooseAgentToken(
   spare: boolean,
 ): Promise<string> {
   if (!current || current === incoming) return incoming;
+
   if (await tokenStillWorks(existing, current) === false) {
     log.info(`The ${agent} access token on this machine no longer works; using the new one.`);
+
     return incoming;
   }
+
   log.info(`Keeping the ${agent} access token already on this machine; the new one is ${
     spare ? 'kept for the agents without a token of their own.' : 'not used.'}`);
+
   return current;
 }
 
@@ -4957,8 +5730,10 @@ async function chooseAgentToken(
  */
 function legacyTokenAgent(config: LocalAgentConfig): string | undefined {
   if (!config.token) return undefined;
+
   const agents = new Set(Object.values(config.workspaceBindings)
     .map((binding) => binding.ideType).filter((t): t is string => Boolean(t)).map(normalizeAgentType));
+
   return agents.size === 1 ? [...agents][0] : undefined;
 }
 
@@ -4974,6 +5749,7 @@ export async function initLocalAgentHttp(options: {
   filterAgents?: string[];
 }): Promise<void> {
   const endpoint = normalizeEndpoint(options.endpoint);
+
   if (!endpoint) {
     throw new Error('HTTP endpoint is required.');
   }
@@ -5005,9 +5781,11 @@ export async function initLocalAgentHttp(options: {
   // workspace re-installs the hooks without disturbing what this machine holds.
   // A replacement is refused earlier by assertNoLocalAgentReplacement.
   const replaces = !sameEndpoint || (token !== undefined && token !== existing?.token);
+
   if (existing && configExisted && !options.force && replaces && !(perAgent && sameEndpoint)) {
     throw new Error('HTTP local agent is already initialized. Re-run with --force to overwrite.');
   }
+
   // tokenForAgent prefers an agent's own token, so a token no agent owns would
   // sit in the shared slot while every agent keeps the credential it already has.
   if (agentScoped && !agent && (namedCount > 1 || held.length > 1)) {
@@ -5019,6 +5797,7 @@ export async function initLocalAgentHttp(options: {
 
   // Another endpoint is another backend: none of the old tokens belong to it.
   const agentTokens = { ...(sameEndpoint ? existing?.agentTokens : undefined) };
+
   // Switching the agents named with --agent to a token that works for every agent:
   // the entry each has of its own is what it would keep reporting with, so drop
   // them and let them fall back to the shared one. Otherwise a revoked or rotated
@@ -5026,13 +5805,17 @@ export async function initLocalAgentHttp(options: {
   if (token && !agentScoped) {
     for (const named of options.filterAgents ?? []) delete agentTokens[normalizeAgentType(named)];
   }
+
   let sharedToken = perAgent ? (sameEndpoint ? existing?.token : undefined)
     : token ?? (sameEndpoint ? existing?.token : undefined);
+
   // `init --http` saves the key before this runs, and a missing config.json is
   // backfilled from it: that copy is this agent's token, not a shared one.
   if (perAgent && sharedToken === token) sharedToken = undefined;
+
   if (perAgent) {
     let current: string | undefined = agentTokens[agent!];
+
     // The shared token this agent took before per-agent tokens: it is copied
     // to the agent, not moved — an agent with no entry of its own (Claude,
     // Codex, Cursor on a machine where only a buddy tool ever bound a
@@ -5040,6 +5823,7 @@ export async function initLocalAgentHttp(options: {
     if (!current && sameEndpoint && legacyTokenAgent(existing!) === agent) {
       current = existing!.token;
     }
+
     // Ownership was inferred (no --agent): the incoming token may well have been
     // issued for another tool, so when this agent keeps the credential that still
     // works the new one is not dropped — the agents with no token of their own
@@ -5047,8 +5831,10 @@ export async function initLocalAgentHttp(options: {
     const spare = inferred && !sharedToken;
     const chosen = sameEndpoint ? await chooseAgentToken(existing!, agent!, current, token!, spare) : token!;
     agentTokens[agent!] = chosen;
+
     if (spare && chosen !== token) sharedToken = token;
   }
+
   // The shared token is what the agents with no entry of their own report with.
   // One the backend rejects keeps them at 401 while this run reports success, so
   // it goes, and the warning names the way to renew them one agent at a time.
@@ -5058,6 +5844,7 @@ export async function initLocalAgentHttp(options: {
       + 'Re-run with `--agent <tool>` for each of them to install a new one.');
     sharedToken = undefined;
   }
+
   const config: LocalAgentConfig = {
     endpoint,
     // Never carry a token to another endpoint: a shared one stays only here.
@@ -5071,6 +5858,7 @@ export async function initLocalAgentHttp(options: {
 
   await ensureDir(getLocalAgentHome());
   await saveLocalAgentConfig(config);
+
   if (token) {
     await writeTokenFile(getTokenPath(), perAgent ? agentTokens[agent!] : token);
   }
@@ -5113,6 +5901,7 @@ export interface LocalAgentSummary {
  */
 export async function describeLocalAgent(options: { dryRun?: boolean } = {}): Promise<LocalAgentSummary | null> {
   const config = await loadLocalAgentConfig(options);
+
   if (!config) return null;
 
   const boundProjects = Object.entries(config.workspaceBindings)
@@ -5121,6 +5910,7 @@ export async function describeLocalAgent(options: { dryRun?: boolean } = {}): Pr
 
   const manifest = await loadManifest();
   const counts = { skills: 0, rules: 0, claudemd: 0 };
+
   for (const scope of Object.values(manifest.scopes)) {
     counts.skills += Object.keys(scope.skills ?? {}).length;
     counts.rules += Object.keys(scope.rules ?? {}).length;
@@ -5135,6 +5925,7 @@ function parseScopeKey(key: string): { scope: LocalAgentScope; workspacePath?: s
   if (key.startsWith('project:')) {
     return { scope: 'project', workspacePath: key.slice('project:'.length) || undefined };
   }
+
   return { scope: key === 'instance' ? 'instance' : 'user' };
 }
 
@@ -5150,6 +5941,7 @@ function parseScopeKey(key: string): { scope: LocalAgentScope; workspacePath?: s
 export async function teardownLocalAgentPlugins(): Promise<void> {
   try {
     const config = await loadLocalAgentConfig();
+
     if (!config) return;
     await teardownAllPlugins(buildReconcileDeps(config, '[local-agent] [uninstall]'));
   } catch (e) {
@@ -5170,10 +5962,13 @@ export async function removeAllAgentHooks(): Promise<Array<{ slug: string; tool:
   const config = await loadLocalAgentConfig();
   const manifest = await loadAgentHookManifest();
   const slugs = Object.keys(manifest);
+
   if (slugs.length === 0) return [];
   const left: typeof manifest = {};
+
   for (const slug of slugs) {
     const rec = manifest[slug];
+
     try {
       await removeInstalledAgentHook(config, slug, rec);
     } catch (e) {
@@ -5181,7 +5976,9 @@ export async function removeAllAgentHooks(): Promise<Array<{ slug: string; tool:
       left[slug] = rec;
     }
   }
+
   await saveAgentHookManifest(left);
+
   return Object.entries(left).map(([slug, rec]) => ({ slug, tool: rec.tool }));
 }
 
@@ -5208,15 +6005,19 @@ export async function shutdownLocalAgentHttp(retry: string): Promise<'none' | 'r
   if (!await loadLocalAgentConfig({ dryRun: true }) && !await disabledSourceLeftovers()) return 'none';
   // A server-pushed uninstall runs while its sync holds the lock.
   const inherited = await holdsParentLocalAgentLock();
+
   if (!inherited && !await acquireLocalAgentLock()) {
     log.info('Waiting for the HTTP source sync lock before removal.');
+
     if (!await acquireLocalAgentLock(30_000)) {
       log.error(`Could not lock HTTP source state at ${localAgentLockPath()}; nothing was removed. `
         + `Wait for other HTTP source operations to finish, check directory permissions, then retry \`${retry}\`.`);
       process.exitCode = 1;
+
       return 'locked';
     }
   }
+
   try {
     return await removeLocalAgentHttpLocked(retry);
   } finally {
@@ -5231,25 +6032,32 @@ export async function shutdownLocalAgentHttp(retry: string): Promise<'none' | 'r
  */
 async function interruptedRemovalConfig(): Promise<LocalAgentConfig | null> {
   const marker = await readJson<{ disabled?: boolean; removing?: LocalAgentConfig }>(getConfigPath());
+
   return marker?.disabled === true && marker.removing?.endpoint ? marker.removing : null;
 }
 
 async function removeLocalAgentHttpLocked(retry: string): Promise<'none' | 'removed' | 'incomplete'> {
   const config = await loadLocalAgentConfig() ?? await interruptedRemovalConfig();
+
   if (!config) {
     if (!await disabledSourceLeftovers()) return 'none';
     // A retry: the caches an earlier run could not delete are still in the manifest.
     const cachesLeft: string[] = [];
+
     for (const [key, scopeManifest] of Object.entries((await loadManifest()).scopes)) {
       const { scope, workspacePath } = parseScopeKey(key);
+
       if (scope === 'project' && workspacePath && emptiedWorkspace(scopeManifest) && !await removeWorkspaceCache(workspacePath)) {
         cachesLeft.push(workspacePath);
       }
     }
+
     const blocks = await removeLocalAgentGitExclude(await localAgentCheckouts());
     const models = await removeWorkspaceModels();
+
     return finishAgentHookTeardown(retry, { models, caches: cachesLeft, blocks: [...blocks, ...await releaseModelKeyLines()] });
   }
+
   // Read before the marker and the teardown below delete what names them (#915).
   const checkouts = await localAgentCheckouts();
 
@@ -5265,8 +6073,10 @@ async function removeLocalAgentHttpLocked(retry: string): Promise<'none' | 'remo
   const kinds: CommandResourceKind[] = ['skill', 'rule', 'claudemd'];
   const manifest = await loadManifest();
   const cachesLeft: string[] = [];
+
   for (const [key, scopeManifest] of Object.entries(manifest.scopes)) {
     const { scope, workspacePath } = parseScopeKey(key);
+
     for (const kind of kinds) {
       for (const slug of Object.keys(scopeManifest[manifestKind(kind)] ?? {})) {
         try {
@@ -5276,17 +6086,21 @@ async function removeLocalAgentHttpLocked(retry: string): Promise<'none' | 'remo
         }
       }
     }
+
     const left = (await loadManifest()).scopes[key];
+
     if (scope === 'project' && workspacePath && emptiedWorkspace(left) && !await removeWorkspaceCache(workspacePath)) {
       cachesLeft.push(workspacePath);
     }
   }
+
   const entriesLeft = Object.entries((await loadManifest()).scopes).flatMap(([key, left]) =>
     kinds.flatMap((kind) => Object.keys(left?.[manifestKind(kind)] ?? {}).map((slug) => `${kind} ${slug} (${key})`)));
 
   // Before the state home goes: it records which exclude files hold the block (#915).
   const blocks = await removeLocalAgentGitExclude(checkouts);
   const models = await removeWorkspaceModels();
+
   return finishAgentHookTeardown(retry, {
     models, caches: cachesLeft, entries: entriesLeft, removing: entriesLeft.length > 0 ? config : undefined,
     // The lines of models files the teardown deleted, with any an earlier run could not write.
@@ -5309,26 +6123,34 @@ function emptiedWorkspace(scopeManifest: ManifestScope | undefined): boolean {
 async function removeWorkspaceCache(workspacePath: string): Promise<boolean> {
   const teamaiDir = path.join(workspacePath, '.teamai');
   const repoPath = await getResourceRepoPath('project', workspacePath);
+
   if (!repoPath.startsWith(teamaiDir + path.sep)) return true;
   const cache = path.dirname(repoPath);
+
   try {
     await remove(cache);
     const gitignore = await workspaceCacheGitignore(workspacePath, repoPath);
+
     // One the member committed is theirs now; one git cannot judge stays, with the record for the retry.
     if (gitignore && (await gitTracks(gitignore, 'entry')).kind !== 'tracked') {
       if (!await gitUntracked(gitignore, 'entry')) {
         log.warn(`Kept ${gitignore}: git could not say whether this repository tracks it.`);
+
         return false;
       }
+
       await remove(gitignore);
     }
+
     for (let dir = path.dirname(cache); dir.startsWith(teamaiDir); dir = path.dirname(dir)) {
       if ((await fse.readdir(dir)).length > 0) break;
       await fse.rmdir(dir);
     }
+
     return true;
   } catch (e) {
     log.warn(`Could not remove the local agent's cache in ${teamaiDir}: ${(e as Error).message}`);
+
     return false;
   }
 }
@@ -5339,13 +6161,17 @@ async function removeWorkspaceCache(workspacePath: string): Promise<boolean> {
  */
 async function disabledSourceLeftovers(): Promise<boolean> {
   if (Object.keys(await loadAgentHookManifest()).length > 0) return true;
+
   // A teardown keeps these only for what it could not remove.
   if (await pathExists(getModelManifestPath()) || await pathExists(getManifestPath())) return true;
+
   for (const owner of [localAgentGitExcludeOwner(), credentialsGitExcludeOwner()]) {
     // A record that cannot be read may name blocks still in place.
     const files = await owner.record?.files().then((list) => list, () => null);
+
     if (files === null || (files?.length ?? 0) > 0) return true;
   }
+
   return false;
 }
 
@@ -5364,17 +6190,23 @@ async function finishAgentHookTeardown(
   const hooksLeft = await removeAllAgentHooks();
   const home = getLocalAgentHome();
   const keep = new Set([path.basename(getConfigPath())]);
+
   if (hooksLeft.length > 0) keep.add(path.basename(getAgentHookManifestPath()));
+
   if (left.models.length > 0) keep.add(path.basename(getModelManifestPath()));
+
   if (left.caches.length > 0 || entries.length > 0) keep.add(path.basename(getManifestPath()));
   const gitExcludeRecord = path.join(home, 'git-exclude.json');
   // A record that cannot be read may name blocks still in place: it stays.
   const recorded = await readFileIfExists(gitExcludeRecord).then((raw) => raw === null ? {} : JSON.parse(raw) as unknown).catch(() => null);
+
   if (!recorded || typeof recorded !== 'object' || Object.keys(recorded).length > 0) keep.add(path.basename(gitExcludeRecord));
   await writeJsonAtomic(getConfigPath(), left.removing ? { disabled: true, removing: left.removing } : { disabled: true });
+
   for (const entry of await fse.readdir(home)) {
     if (!keep.has(entry)) await remove(path.join(home, entry));
   }
+
   const held = [
     ...hooksLeft.length > 0 ? [`agent hooks ${hooksLeft.map((h) => `${h.slug} (${h.tool})`).join(', ')}`] : [],
     ...left.models.length > 0 ? [`teamai's models in ${left.models.join(', ')}`] : [],
@@ -5382,44 +6214,59 @@ async function finishAgentHookTeardown(
     ...entries.length > 0 ? [`the installs ${entries.join(', ')}`] : [],
     ...blocks.length > 0 ? [`teamai's git exclude blocks in ${blocks.join(', ')}`] : [],
   ];
+
   if (held.length > 0) {
     log.warn(`HTTP source disabled, but removal is incomplete: kept the record of ${held.join('; ')} `
       + `in ${home}, as they could not be removed. Fix the files named above, then run \`${retry}\` again.`);
     process.exitCode = 1;
+
     return 'incomplete';
   }
+
   log.success('HTTP source removed (resources uninstalled, config cleared).');
+
   return 'removed';
 }
 
 export async function bindCurrentProject(options?: { projectId?: number; skip?: boolean; cwd?: string }): Promise<void> {
   const workspacePath = await resolveWorkspacePath(options?.cwd ?? process.cwd());
+
   if (!workspacePath) {
     throw new Error('Cannot resolve current workspace path.');
   }
+
   if (options?.skip) {
     const config = await loadLocalAgentConfig();
+
     if (!config) {
       throw new Error('Local agent not initialized. Run `teamai init --http` first.');
     }
+
     // Skip the whole project (main checkout + all its worktrees), not just this
     // one checkout, so sibling worktrees are not re-prompted.
     await persistWorkspaceBinding(config, options?.cwd ?? process.cwd(), workspacePath, 0, '__skipped__');
     log.info('Skipped binding; this workspace will not be prompted again.');
+
     return;
   }
+
   // Running bind-project in a workspace enrolls it. Keep any existing entry
   // (a bound project or a skip); otherwise record it as pending a project.
   const config = await loadLocalAgentConfig();
+
   if (!config) {
     throw new Error('Local agent not initialized. Run `teamai init --http` first.');
   }
+
   const cwd = options?.cwd ?? process.cwd();
+
   if (!config.workspaceBindings[workspacePath] && !await inheritWorktreeBinding(config, cwd, workspacePath)) {
     await persistWorkspaceBinding(config, cwd, workspacePath, 0, PENDING_BINDING_NAME);
     log.info(`Workspace enrolled for local-agent sync: ${workspacePath}`);
   }
+
   const binding = await bindWorkspaceToProject(workspacePath, options?.projectId);
+
   if (!binding) {
     log.info('未绑定项目。');
   }

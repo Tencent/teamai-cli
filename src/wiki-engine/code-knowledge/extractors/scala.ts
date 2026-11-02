@@ -37,17 +37,21 @@ export function extractScala(files: CodeCollectedFile[], context?: ExtractorCont
   // An incremental run re-parses only changed files; everything else is known
   // by its cached declarations, which the fresh parse then overrides.
   const declarations = new Map(context?.priorDeclarations ?? []);
+
   for (const file of files) {
     declarations.set(file.relativePath, declarationNames(file.content));
   }
+
   const extractContext: ExtractContext = { allFiles: context?.allFiles ?? files, declarations };
 
   for (const file of files) {
     const lines = file.content.split(/\r?\n/);
     const declared = declarations.get(file.relativePath);
+
     if (declared && declared.size > 0) {
       facts.push(makeFact("relation", `${SCALA_DECL_PREFIX}${[...declared].join(",")}`, file.relativePath, 1, "", "EXTRACTED"));
     }
+
     // A brace selector scalafmt wraps across lines stays open until its `}`.
     let openImport: { line: number; prefix: string; selector: string } | undefined;
 
@@ -57,11 +61,13 @@ export function extractScala(files: CodeCollectedFile[], context?: ExtractorCont
 
       if (openImport) {
         openImport.selector += ` ${line}`;
+
         if (openImport.selector.includes("}")) {
           const { line: start, prefix, selector } = openImport;
           openImport = undefined;
           pushRelations(facts, extractContext, prefix, selector.split("}")[0], file.relativePath, start, line);
         }
+
         continue;
       }
 
@@ -71,29 +77,34 @@ export function extractScala(files: CodeCollectedFile[], context?: ExtractorCont
 
       // --- Components ---
       const typeDecl = TYPE_DECL_PATTERN.exec(decl);
+
       if (typeDecl) {
         facts.push(makeFact("component", typeDecl[2], file.relativePath, lineNumber, line, "EXTRACTED"));
       }
 
       const defDecl = DEF_DECL_PATTERN.exec(decl);
+
       if (defDecl) {
         facts.push(makeFact("component", defDecl[1], file.relativePath, lineNumber, line, "EXTRACTED"));
       }
 
       // --- Interfaces ---
       const traitDecl = TRAIT_DECL_PATTERN.exec(decl);
+
       if (traitDecl) {
         facts.push(makeFact("interface", traitDecl[1], file.relativePath, lineNumber, line, "EXTRACTED"));
       }
 
       // --- Configs ---
       const envRead = /\b(?:sys\.env|System\.getenv)\s*\(\s*"([A-Z][A-Z0-9_]+)"\s*\)/u.exec(line);
+
       if (envRead) {
         facts.push(makeFact("config", envRead[1], file.relativePath, lineNumber, line, "EXTRACTED"));
       }
 
       // --- Errors ---
       const typeName = typeDecl?.[2] ?? traitDecl?.[1];
+
       if (typeName && /(?:Error|Exception)$/u.test(typeName)) {
         facts.push(makeFact("error", typeName, file.relativePath, lineNumber, line, "INFERRED"));
       }
@@ -105,22 +116,28 @@ export function extractScala(files: CodeCollectedFile[], context?: ExtractorCont
       // line (`import a.B, c.D`); a brace selector may continue on the lines
       // below, in which case it opens and waits for its `}`.
       const importHead = /^import\s+(.+)$/u.exec(decl);
+
       if (importHead) {
         let rest = importHead[1];
+
         while (rest.length > 0) {
           const clause = /^([A-Za-z_]\w*(?:\.\w+)*(?:\.\*)?)(\s*\.\s*\{([^}]*)\})?/u.exec(rest);
+
           if (!clause) {
             break;
           }
+
           // A plain clause may carry a Scala 3 rename (`a.B as Alias`) — the
           // imported name is the part before it.
           const after = rest.slice(clause[0].length);
           const plainRename = /^\s+as\s+[A-Za-z_]\w*/u.exec(after)?.[0].length ?? 0;
           const consumed = after.slice(plainRename);
+
           if (/^\s*\.\s*\{/u.test(consumed)) {
             openImport = { line: lineNumber, prefix: clause[1], selector: consumed.replace(/^\s*\.\s*\{/u, "") };
             break;
           }
+
           pushRelations(facts, extractContext, clause[1], clause[3], file.relativePath, lineNumber, line);
           rest = consumed.replace(/^\s*,\s*/u, "");
         }
@@ -132,18 +149,23 @@ export function extractScala(files: CodeCollectedFile[], context?: ExtractorCont
   // same dependency twice — keep one relation per target per file.
   const seenRelations = new Set<string>();
   const uniqueFacts: CodeFact[] = [];
+
   for (const fact of facts) {
     if (fact.kind !== "relation") {
       uniqueFacts.push(fact);
       continue;
     }
+
     const key = `${fact.file}|${fact.name}`;
+
     if (seenRelations.has(key)) {
       continue;
     }
+
     seenRelations.add(key);
     uniqueFacts.push(fact);
   }
+
   return uniqueFacts;
 }
 
@@ -192,10 +214,12 @@ function pushRelations(
   const selection = selector !== undefined ? parseSelectors(selector) : undefined;
   const wildcard = /[._*]$/u.test(dottedPrefix) || (selection?.wildcard ?? false);
   let targets: string[];
+
   if (wildcard) {
     facts.push(makeFact("relation", `${SCALA_WILDCARD_PREFIX}${packagePath}`, file, lineNumber, rawLine, "EXTRACTED"));
     const hidden = new Set(selection?.hidden ?? []);
     const expanded = expandWildcard(packagePath, context, hidden);
+
     if (expanded.length > 0) {
       targets = expanded;
     } else {
@@ -220,6 +244,7 @@ function pushRelations(
     const modulePath = toModulePath(packagePath);
     targets = [resolveSymbolPath(modulePath, file, context) ?? modulePath];
   }
+
   for (const target of targets) {
     facts.push(makeFact("relation", target, file, lineNumber, rawLine, "EXTRACTED"));
   }
@@ -243,10 +268,12 @@ interface ImportSelection {
  */
 function parseSelectors(selector: string): ImportSelection {
   const selection: ImportSelection = { wildcard: false, symbols: [], hidden: [] };
+
   for (const entry of selector.split(",")) {
     const item = entry.trim();
     const renamed = /^([A-Za-z_]\w*)\s*(?:=>|\bas\b)\s*(.+)$/u.exec(item);
     const alias = renamed?.[2].trim();
+
     if (item === "_" || item === "*") {
       selection.wildcard = true;
     } else if (renamed && alias === "_") {
@@ -257,7 +284,9 @@ function parseSelectors(selector: string): ImportSelection {
       selection.symbols.push(item);
     }
   }
+
   selection.symbols = [...new Set(selection.symbols)];
+
   return selection;
 }
 
@@ -274,11 +303,13 @@ function toPath(dotted: string): string {
 function toModulePath(path: string): string {
   const segments = path.split("/");
   let lastType = -1;
+
   for (let i = 0; i < segments.length; i++) {
     if (/^[A-Z]/u.test(segments[i])) {
       lastType = i;
     }
   }
+
   return lastType === -1 ? path : segments.slice(0, lastType + 1).join("/");
 }
 
@@ -294,9 +325,11 @@ function expandWildcard(packagePath: string, context: ExtractContext, hidden: Re
       // any live declaration still carries its other symbols. Only a file
       // with no known declarations falls back to its file name.
       const declared = context.declarations.get(candidate.relativePath);
+
       if (declared && declared.size > 0) {
         return ![...declared].every((name) => hidden.has(name));
       }
+
       return !hidden.has(fileName(candidate.relativePath));
     })
     .map((candidate) => candidate.relativePath);
@@ -310,15 +343,18 @@ function expandWildcard(packagePath: string, context: ExtractContext, hidden: Re
  */
 function resolveSymbolPath(modulePath: string, importer: string, context: ExtractContext): string | undefined {
   const segments = modulePath.split("/");
+
   for (let i = segments.length - 1; i >= 1; i--) {
     const symbol = segments[i];
     const packagePath = segments.slice(0, i).join("/");
+
     for (const candidate of packageMembers(packagePath, context.allFiles)) {
       if (candidate.relativePath !== importer && context.declarations.get(candidate.relativePath)?.has(symbol)) {
         return candidate.relativePath;
       }
     }
   }
+
   return undefined;
 }
 
@@ -332,6 +368,7 @@ function packageMembers(packagePath: string, files: CodeCollectedFile[]): CodeCo
     .filter((candidate) => /\.(?:scala|java)$/u.test(candidate.relativePath))
     .filter((candidate) => {
       const tail = afterPackage(candidate.relativePath, packagePath);
+
       return tail !== undefined && !tail.includes("/");
     });
 }
@@ -341,8 +378,10 @@ function afterPackage(relativePath: string, packagePath: string): string | undef
   if (relativePath.startsWith(`${packagePath}/`)) {
     return relativePath.slice(packagePath.length + 1);
   }
+
   const marker = `/${packagePath}/`;
   const at = relativePath.indexOf(marker);
+
   return at === -1 ? undefined : relativePath.slice(at + marker.length);
 }
 
@@ -357,45 +396,58 @@ function declarationNames(content: string): Set<string> {
   const names = new Set<string>();
   let depth = 0;
   const packageMemberIndents: number[] = []; // open package blocks (`x:` or `x {`), innermost last; -1 until its member indent is seen
+
   for (const rawLine of content.split(/\r?\n/)) {
     const trimmed = rawLine.trim();
     const indent = rawLine.length - rawLine.trimStart().length;
     const last = packageMemberIndents.length - 1;
+
     if (trimmed !== "" && last >= 0 && packageMemberIndents[last] === -1) {
       packageMemberIndents[last] = indent; // the first content line fixes the block's member indent
     }
+
     // `package x {` opens a block, not a declaration nest: its brace does not
     // count toward the depth that hides members.
     const packageOpener = /^package\s+[\w.]*\s*[:{]/u.test(trimmed);
+
     if (packageOpener) {
       packageMemberIndents.push(-1);
     } else if (trimmed !== "") {
       while (packageMemberIndents.length > 1 && packageMemberIndents[packageMemberIndents.length - 1] > indent) {
         packageMemberIndents.pop(); // dedented out of the inner block
       }
+
       const memberIndent = packageMemberIndents[packageMemberIndents.length - 1];
       const topLevel = depth === 0 && (memberIndent === undefined ? indent === 0 : indent === memberIndent);
+
       if (topLevel) {
         const decl = stripLeadingModifiers(rawLine);
         const typeDecl = TYPE_DECL_PATTERN.exec(decl);
+
         if (typeDecl) {
           names.add(typeDecl[2]);
         }
+
         const traitDecl = TRAIT_DECL_PATTERN.exec(decl);
+
         if (traitDecl) {
           names.add(traitDecl[1]);
         }
+
         const defDecl = DEF_DECL_PATTERN.exec(decl);
+
         if (defDecl) {
           names.add(defDecl[1]);
         }
       }
+
       // A package block's closing brace has no matching opener in the count
       // (openers are deliberately skipped) — clamp so later blocks still sit
       // at depth 0.
       depth = Math.max(0, depth + (rawLine.match(/\{/gu) ?? []).length - (rawLine.match(/\}/gu) ?? []).length);
     }
   }
+
   return names;
 }
 

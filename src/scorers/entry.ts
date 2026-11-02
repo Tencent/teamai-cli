@@ -27,6 +27,7 @@ export function isLeaseRef(value: string): boolean {
 
 export function parseLeaseRef(value: string): { entry: string; attempt: string } | undefined {
   const match = LEASE_REF.exec(value);
+
   return match?.[1] && match[2] ? { entry: match[1], attempt: match[2] } : undefined;
 }
 
@@ -37,6 +38,7 @@ export function leaseRefOf(attempt: Pick<AttemptRecord, 'entry' | 'attempt'>): s
 /** An entry is not offered once its run has not changed for this long. */
 export const ENTRY_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
 export const LEASE_TTL_MS = 30 * 60 * 1000;
+
 /** Leases that may lapse before the entry fails `lease_expired`: the fourth lapse fails it. */
 export const LEASE_LAPSES_ALLOWED = 3;
 
@@ -68,18 +70,26 @@ export function entryState(facts: {
   const { now, requestedAt = '' } = facts;
   const labels = facts.labels.filter((label) => label.scoredAt >= requestedAt);
   const attempts = facts.attempts.filter((attempt) => attempt.leasedAt >= requestedAt || (attempt.status === 'leased' && !hasLapsed(attempt, now)));
+
   const answers = [
     ...labels.filter((label) => label.judge.kind === 'model').map(({ scoredAt, label, passed }) => ({ at: scoredAt, label, passed })),
     ...attempts.flatMap((attempt) => (attempt.status === 'succeeded' ? [{ at: attempt.settledAt, ...attempt.verdict }] : [])),
   ];
+
   const newest = answers.sort((left, right) => right.at.localeCompare(left.at))[0];
+
   if (newest) return { kind: 'labelled', verdict: { label: newest.label, passed: newest.passed } };
   const live = attempts.find((attempt): attempt is LeasedAttempt => attempt.status === 'leased' && !hasLapsed(attempt, now));
+
   if (live) return { kind: 'leased', attempt: live };
   const failed = attempts.find((attempt) => attempt.status === 'failed');
+
   if (failed?.status === 'failed') return { kind: 'failed', code: failed.code };
+
   if (attempts.filter((attempt) => hasLapsed(attempt, now)).length > LEASE_LAPSES_ALLOWED) return { kind: 'failed', code: 'lease_expired' };
+
   if (Math.max(Date.parse(facts.subjectChangedAt), Date.parse(requestedAt) || 0) + ENTRY_WINDOW_MS <= Date.parse(now)) return { kind: 'expired' };
+
   return { kind: 'open' };
 }
 
@@ -95,9 +105,12 @@ export type SessionEntryState =
  */
 export function sessionEntryState(facts: { labels: readonly ScoreLabel[]; attempts: readonly AttemptRecord[]; now: string }): SessionEntryState {
   const { attempts, now } = facts;
+
   if (facts.labels.some((label) => label.judge.kind === 'model') || attempts.some((attempt) => attempt.status === 'succeeded')) return { kind: 'labelled' };
   const live = liveSessionLease(attempts, now);
+
   if (live) return { kind: 'leased', attempt: live };
+
   return attempts.length > 0 ? { kind: 'tried' } : { kind: 'open' };
 }
 
@@ -123,4 +136,5 @@ export const EntryVerdictSchema = z.object({
   /** What this install's attempts on the entry stated they cost, failed ones included; `complete: false` when one stated none. */
   scoringCost: z.object({ amount: z.number().nonnegative(), unit: z.string().min(1), complete: z.boolean() }).strict().optional(),
 }).strict();
+
 export type EntryVerdict = z.infer<typeof EntryVerdictSchema>;

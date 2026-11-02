@@ -42,20 +42,25 @@ const RUN_LIMIT = 50;
 type ReadRecord = Pick<WorkflowRunRecord,
   'run' | 'workflow' | 'alias' | 'sourceHash' | 'teamRevision' | 'origin' | 'driver' | 'status' | 'end' | 'startedAt' | 'endedAt' | 'durationMs' | 'stepCounts' | 'username'>
   & { steps?: StepEntry[]; prs?: unknown[] };
+
 type StepEntry = Pick<NonNullable<WorkflowRunRecord['steps']>[number], 'step' | 'pass' | 'outcome' | 'tokens' | 'agent'>
   & { answer?: { choice: string; channel: string }; outcomes?: unknown[] };
 
 const TokensSchema: z.ZodType<TokenUsage> = z.object({ input: z.number().optional(), output: z.number().optional(), cachedInput: z.number().optional() });
+
 /** Only links a browser opens as a web page; a `javascript:` URL from either source never becomes a link. */
 function isWebUrl(value: unknown): value is string {
   if (typeof value !== 'string') return false;
+
   try {
     const { protocol } = new URL(value);
+
     return protocol === 'https:' || protocol === 'http:';
   } catch {
     return false;
   }
 }
+
 const RecordSchema: z.ZodType<ReadRecord> = z.object({
   run: z.string().refine(isRunId),
   workflow: z.string(),
@@ -160,8 +165,10 @@ function tokenTotal(steps: StepEntry[] | undefined): number {
 function learningsOf(steps: StepEntry[] | undefined): string[] {
   const ids = (steps ?? []).flatMap((entry) => (entry.outcomes ?? []).flatMap((outcome) => {
     const parsed = WorkOutcomeSchema.safeParse(outcome);
+
     return parsed.success && parsed.data.kind === 'learning' ? [parsed.data.id] : [];
   }));
+
   return [...new Set(ids)];
 }
 
@@ -188,10 +195,13 @@ function rowOf(record: ReadRecord): RunRow {
 
 function stepRow(entry: StepEntry, status: string, scores: ReadonlyMap<string, PassScore[]> | undefined, gate?: Gate): StepRow {
   const passScores = scores?.get(`${entry.step}#${entry.pass}`);
+
   const outcomes = entry.outcomes?.flatMap((outcome) => {
     const parsed = WorkOutcomeSchema.safeParse(outcome);
+
     return parsed.success ? [parsed.data] : [];
   });
+
   return {
     step: entry.step,
     pass: entry.pass,
@@ -207,13 +217,16 @@ function stepRow(entry: StepEntry, status: string, scores: ReadonlyMap<string, P
 /** A local run as the record it will publish; a running run has no end time yet. */
 function localRecord(run: RunState): ReadRecord {
   const record = buildEndRecord(run, run.driver, '');
+
   if (run.status !== 'running') return record;
   const { endedAt: _endedAt, durationMs: _durationMs, ...running } = record;
+
   return running;
 }
 
 function localRow(run: RunState, records: Map<string, RecordState>): LocalRunRow {
   const record = records.get(run.id);
+
   return {
     ...rowOf(localRecord(run)),
     source: 'local',
@@ -237,6 +250,7 @@ export async function listLocalRuns(config: LocalConfig): Promise<LocalRunRow[]>
   const running = runs.filter((run) => run.status === 'running');
   const settled = runs.filter((run) => run.status !== 'running').slice(0, Math.max(0, RUN_LIMIT - running.length));
   const records = await runRecordStates(config, settled);
+
   return [...running, ...settled].map((run) => localRow(run, records));
 }
 
@@ -247,6 +261,7 @@ function recordsDir(config: LocalConfig): string {
 async function readRecord(file: string): Promise<ReadRecord | undefined> {
   try {
     const parsed = RecordSchema.safeParse(JSON.parse(await fs.readFile(file, 'utf8')));
+
     return parsed.success ? parsed.data : undefined;
   } catch {
     return undefined;
@@ -262,9 +277,11 @@ export async function listReportedRuns(config: LocalConfig): Promise<ReportedRun
     const { readableReportsWorktree } = await import('../utils/reports-branch.js');
     await readableReportsWorktree(config);
   }
+
   const dir = recordsDir(config);
   const files = (await fs.readdir(dir).catch(() => [])).filter((file) => file.endsWith('.json'));
   const records = await Promise.all(files.map((file) => readRecord(path.join(dir, file))));
+
   return newestFirst(records.filter((record) => record !== undefined).map(reportedRow)).slice(0, RUN_LIMIT);
 }
 
@@ -277,6 +294,7 @@ const PERSON: Taker = { caller: { evidence: { kind: 'none' }, confirmed: false, 
  */
 export async function listHandoffs(config: LocalConfig): Promise<HandoffRow[]> {
   const [runs, self] = await Promise.all([PublishedRuns.list(config, { taker: PERSON, env: await resolveWorkflowEnv(config) }), installOwner(config)]);
+
   return runs.map((run) => ({ ...run, isMine: run.owner.id === self.id }));
 }
 
@@ -287,6 +305,7 @@ export async function listHandoffs(config: LocalConfig): Promise<HandoffRow[]> {
 async function benchmarkOf(file: string): Promise<Pick<RunDetail, 'benchmark'>> {
   try {
     const parsed = BenchmarkRunRecordSchema.safeParse(JSON.parse(await fs.readFile(file, 'utf8')));
+
     return parsed.success ? { benchmark: benchmarkCells(benchmarkTable({ benchmark: parsed.data })) } : {};
   } catch {
     return {};
@@ -296,44 +315,57 @@ async function benchmarkOf(file: string): Promise<Pick<RunDetail, 'benchmark'>> 
 function localDetail(run: RunState, row: LocalRunRow, scores: ReadonlyMap<string, PassScore[]> | undefined, scoring: ScoringTotal): Omit<RunDetail, 'benchmark'> {
   const live = new Map(run.steps.map((state) => [`${state.id}#${state.pass ?? 1}`, state]));
   const record = localRecord(run);
+
   const steps = (record.steps ?? []).map((entry) => {
     const state = live.get(`${entry.step}#${entry.pass}`);
     const hitl = state?.status === 'waiting' ? locateStep(run, state.id)?.step.hitl : undefined;
     const gate = hitl ? { kind: hitl.kind, options: hitl.options, required: hitl.required } : undefined;
     // A record entry keeps the answer only once its pass settles; an answered step still pending shows it too.
     const answer = entry.answer ?? state?.answer;
+
     return stepRow({ ...entry, ...(answer ? { answer } : {}) }, state?.status ?? (entry.outcome ? STATUS_OF_OUTCOME[entry.outcome] : 'skipped'), scores, gate);
   });
+
   return { run: row, steps, scoring };
 }
 
 /** One run with a row per pass of each step, or undefined when the source holds no such run. */
 export async function workflowRunDetail(config: LocalConfig, source: 'local' | 'reported', runId: string): Promise<RunDetail | undefined> {
   if (!isRunId(runId)) return undefined;
+
   if (source === 'local') {
     const run = await readRun(config, runId);
+
     if (typeof run !== 'object') return undefined;
+
     const [records, scores, scoring, benchmark] = await Promise.all([
       runRecordStates(config, run.status === 'running' ? [] : [run]),
       LabelStore.ofRuns(config, [runId], { published: false }),
       LabelStore.scoringTotal(config, runId, 'local'),
       benchmarkOf(benchmarkRecordFile(runsDir(config), runId)),
     ]);
+
     return { ...localDetail(run, localRow(run, records), scores.get(runId), scoring), ...benchmark };
   }
+
   if (usesBranchWorktree(config)) {
     // The history refreshes the checkout; a detail only checks it is this repository's.
     const { readableReportsWorktree } = await import('../utils/reports-branch.js');
     await readableReportsWorktree(config, { dryRun: true });
   }
+
   const record = await readRecord(path.join(getReportsDir(config), RECORDS_DIR, `${runId}.json`));
+
   if (!record) return undefined;
+
   const [scores, scoring, benchmark] = await Promise.all([
     LabelStore.ofRuns(config, [runId], { published: true }),
     LabelStore.scoringTotal(config, runId, 'published'),
     benchmarkOf(path.join(getReportsDir(config), benchmarkRecordPath(runId))),
   ]);
+
   const passes = scores.get(runId);
+
   return {
     run: reportedRow(record),
     steps: (record.steps ?? []).map((entry) => stepRow(entry, entry.outcome ? STATUS_OF_OUTCOME[entry.outcome] : 'skipped', passes)),
@@ -360,10 +392,13 @@ const STALE_CODES = new Set(['stale_response', 'repeated_response', 'not_waiting
  */
 export async function answerFromDashboard(config: LocalConfig, body: Record<string, unknown>): Promise<{ answered: unknown }> {
   const parsed = AnswerSchema.safeParse(body);
+
   if (!parsed.success) throw new HttpError(400, 'Send run, step, pass and choice of the HITL request you answer.');
   const { run, step, pass, choice } = parsed.data;
   const provenance = respondProvenance({ kind: 'dashboard', caller: callerProvenance(process.env, process.stdin) });
   const envelope = await respondToHitl(config, run, await knownSecrets(config), { step, choice, pass, provenance });
+
   if ('error' in envelope) throw new HttpError(STALE_CODES.has(envelope.error.code) ? 409 : 400, envelope.error.message);
+
   return { answered: envelope.data.answered };
 }

@@ -79,11 +79,14 @@ export async function scanInterfaces(files: CodeCollectedFile[]): Promise<Interf
 
     // Group by type and pick dominant
     const byType = new Map<InterfaceType, { count: number; confidence: "HIGH" | "MEDIUM" | "LOW"; patterns: string[] }>();
+
     for (const match of matches) {
       const existing = byType.get(match.type);
+
       if (existing) {
         existing.count++;
         existing.confidence = higherConfidence(existing.confidence, match.confidence);
+
         if (existing.patterns.length < 5) {
           existing.patterns.push(match.line);
         }
@@ -122,11 +125,13 @@ function detectInterfaces(files: CodeCollectedFile[]): PatternMatch[] {
 
   for (const file of files) {
     const lines = file.content.split(/\r?\n/);
+
     for (const line of lines) {
       for (const rule of DETECTION_RULES) {
         if (!rule.languages.includes(file.language)) {
           continue;
         }
+
         if (rule.regex.test(line)) {
           matches.push({
             type: rule.type,
@@ -149,6 +154,7 @@ function groupByComponent(files: CodeCollectedFile[]): Map<string, CodeCollected
     // Use repo + top-level directory as component name, or just directory
     const parts = file.relativePath.split("/");
     let component: string;
+
     if (file.repo) {
       // For multi-repo: repo/top-dir
       component = parts.length > 1 ? `${file.repo}/${parts[0]}` : file.repo;
@@ -167,5 +173,6 @@ function groupByComponent(files: CodeCollectedFile[]): Map<string, CodeCollected
 
 function higherConfidence(a: "HIGH" | "MEDIUM" | "LOW", b: "HIGH" | "MEDIUM" | "LOW"): "HIGH" | "MEDIUM" | "LOW" {
   const rank = { HIGH: 3, MEDIUM: 2, LOW: 1 };
+
   return rank[a] >= rank[b] ? a : b;
 }

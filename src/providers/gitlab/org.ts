@@ -53,6 +53,7 @@ export async function gitlabListOrgRepos(
   opts?: { maxRepos?: number },
 ): Promise<OrgRepoInfo[]> {
   const token = getGitLabToken();
+
   if (!token) {
     throw new Error('GitLab token unavailable: set GITLAB_TOKEN (or GITLAB_PRIVATE_TOKEN / GITLAB_PAT).');
   }
@@ -70,14 +71,17 @@ export async function gitlabListOrgRepos(
     // drop every project nested under a subgroup of the requested group.
     const url = `${gitlabApiBase()}/groups/${encodedGroup}/projects`
       + `?per_page=${perPage}&page=${page}&include_subgroups=true`;
+
     const resp = await fetch(url, { headers, redirect: 'manual', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
 
     if (resp.status >= 300 && resp.status < 400) {
       throw new Error(`Unexpected redirect from GitLab API: ${resp.status}`);
     }
+
     if (resp.status === 404) {
       throw new Error(`GitLab group ${group} not found or no access`);
     }
+
     if (!resp.ok) {
       throw new Error(`GitLab API HTTP ${resp.status}: ${await resp.text().catch(() => '')}`);
     }
@@ -86,30 +90,39 @@ export async function gitlabListOrgRepos(
     const reader = resp.body?.getReader();
     let received = 0;
     const chunks: Uint8Array[] = [];
+
     if (reader) {
       while (true) {
         const { done, value } = await reader.read();
+
         if (done) break;
         received += value.length;
+
         if (received > MAX_RESPONSE_BYTES) {
           await reader.cancel();
           throw new Error(`GitLab API response exceeds ${MAX_RESPONSE_BYTES} bytes`);
         }
+
         chunks.push(value);
       }
     }
+
     const bodyText = Buffer.concat(chunks).toString('utf-8').trim();
+
     if (!bodyText) break;
     let items: GitLabProjectApiItem[];
+
     try {
       items = JSON.parse(bodyText) as GitLabProjectApiItem[];
     } catch {
       throw new Error(`GitLab API returned a malformed project list for group ${group}`);
     }
+
     if (!Array.isArray(items) || items.length === 0) break;
 
     for (const item of items) {
       collected.push(mapItem(item));
+
       if (collected.length >= maxRepos) break;
     }
 

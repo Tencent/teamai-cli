@@ -23,11 +23,14 @@ async function execVersion(bin: string, args: string[] = ['--version']): Promise
 
 async function readPlistVersion(appPath: string): Promise<string> {
   const plistPath = path.join(appPath, 'Contents', 'Info.plist');
+
   try {
     const content = await readFile(plistPath, 'utf-8');
+
     const match = content.match(
       /<key>CFBundleShortVersionString<\/key>\s*<string>([^<]+)<\/string>/,
     );
+
     return match?.[1] ?? '';
   } catch {
     return '';
@@ -40,12 +43,14 @@ async function detectClaudeVersion(): Promise<string> {
   const raw = await execVersion('claude');
   // "2.1.199 (Claude Code)" → "2.1.199"
   const match = raw.match(/^([\d.]+)/);
+
   return match?.[1] ?? raw;
 }
 
 async function detectCursorVersion(): Promise<string> {
   // cursor --version outputs multiple lines; version is on the first line
   const raw = await execVersion('cursor');
+
   return raw.split('\n')[0]?.trim() ?? '';
 }
 
@@ -61,8 +66,10 @@ const CODEBUDDY_IDE_PATHS = [
 async function detectCodebuddyIdeVersion(): Promise<string> {
   for (const appPath of CODEBUDDY_IDE_PATHS) {
     const ver = await readPlistVersion(appPath);
+
     if (ver) return ver;
   }
+
   return '';
 }
 
@@ -73,8 +80,10 @@ const WORKBUDDY_APP_PATHS = [
 async function detectWorkbuddyVersion(): Promise<string> {
   for (const appPath of WORKBUDDY_APP_PATHS) {
     const ver = await readPlistVersion(appPath);
+
     if (ver) return ver;
   }
+
   return '';
 }
 
@@ -82,12 +91,14 @@ async function detectHermesVersion(): Promise<string> {
   const raw = await execVersion('hermes');
   // hermes --version may output "(2026.8.7)\nProject: ..." — extract from parens or leading digits.
   const match = raw.match(/^\(?(\d+(?:\.\d+)*)\)?/);
+
   return match?.[1] ?? '';
 }
 
 async function detectOpenclawVersion(): Promise<string> {
   const raw = await execVersion('openclaw');
   const match = raw.match(/^([\d.]+)/);
+
   return match?.[1] ?? '';
 }
 
@@ -141,18 +152,21 @@ async function detectPiVersion(): Promise<string> {
 async function detectDshVersion(): Promise<string> {
   const raw = await execVersion('dsh');
   const match = raw.match(/v?(\d+(?:\.\d+)*)/);
+
   return match?.[1] ?? '';
 }
 
 async function detectMuseVersion(): Promise<string> {
   // "Muse Code 1.4.6 (1.4.6-R6000.1)" → "1.4.6"
   const raw = await execVersion('muse');
+
   return raw.match(/\d+\.\d+\.\d+/)?.[0] ?? '';
 }
 
 async function detectAgyVersion(): Promise<string> {
   // Antigravity CLI: "1.4.10"
   const raw = await execVersion('agy');
+
   return raw.match(/\d+\.\d+\.\d+/)?.[0] ?? '';
 }
 
@@ -165,6 +179,7 @@ export async function getAgentVersion(agentType: string): Promise<string> {
 
   const detector = detectorOf(agentType);
   let version = '';
+
   if (detector) {
     try {
       version = await detector();
@@ -175,6 +190,7 @@ export async function getAgentVersion(agentType: string): Promise<string> {
 
   VERSION_CACHE.set(agentType, version);
   log.debug(`[agent-version] ${agentType} → "${version}"`);
+
   return version;
 }
 

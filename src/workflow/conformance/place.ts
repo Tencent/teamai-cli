@@ -102,6 +102,7 @@ function adoptHostPlace(profile: DriverProfile): WorkflowScenario {
     kind: 'next', saveAs: 'work', as: profile, prepare: true, attempt: 'work', adopt,
     expect: { error: { code: 'adopt_mismatch' } }, state: { steps: [{ id: 'work', status: 'leased' }] },
   });
+
   return {
     name: `adopt-host-place (${profile}): a host worktree on the lease's branch is adopted, reported with its changes and left after cleanup; a wrong branch, a dirty tree and another repository answer adopt_mismatch, and the attempt stays leased`,
     workflowName: 'build',

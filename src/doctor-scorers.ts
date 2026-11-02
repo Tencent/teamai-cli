@@ -17,13 +17,16 @@ import { formatUnknownScorer } from './workflow/cache.js';
 /** What scoring in this scope follows: its isolation, what decides session judging, and the problems with its settings. */
 async function scoringNotes(localConfig: LocalConfig, verified: readonly string[]): Promise<string[]> {
   const scoring = await scopeScoring(localConfig);
+
   if (!scoring.ok) return [scoring.reason];
   const required = requiredIsolation(scoring.isolation);
   const setBy = required.setBy.length > 0 ? `set by ${required.setBy.join(' and ')}` : 'the default';
   const [only, ...more] = verified;
+
   const raising = required.level === 'best-effort' && only
     ? [more.length === 0 ? `${only} asks for verified for its own work.` : `${verified.slice(0, -1).join(', ')} and ${verified.at(-1)} ask for verified for their own work.`]
     : [];
+
   return [
     [`Scoring isolation: ${required.level}, ${setBy}.`, ...required.unknown.map((unknown) => `${unknownIsolationText(unknown)}.`), ...raising].join(' '),
     ...sessionJudgingNote(scoring.sessions),
@@ -34,15 +37,19 @@ async function scoringNotes(localConfig: LocalConfig, verified: readonly string[
 /** Each run mode's session judging policy and the daily limit, with what set each, once a setting rather than the default does. */
 function sessionJudgingNote({ policies, dailyLimit, dailyLimitSource }: SessionScoring): string[] {
   const sources = [...RUN_MODES.map((mode) => policies[mode].source), dailyLimitSource];
+
   if (sources.every((source) => source.kind === 'default')) return [];
   const named = (source: PolicySource) => (source.kind === 'default' ? 'the default' : `set by ${SessionPolicy.setBy(source)}`);
   const modes = RUN_MODES.map((mode) => `${mode} ${policies[mode].policy}, ${named(policies[mode].source)}`);
+
   return [`Session judging: ${[...modes, `up to ${dailyLimit} sessions a day, ${named(dailyLimitSource)}`].join('; ')}.`];
 }
 
 async function judgeToolsNote(resolveTool: ResolveTool | undefined): Promise<string> {
   const tools = await judgeToolLevels(resolveTool ? { resolveTool } : {});
+
   if (tools.length === 0) return `Judge tools here: none on PATH. Install one of: ${JUDGE_TOOLS.join(', ')} to judge on this machine.`;
+
   return `Judge tools here: ${tools.map(({ tool, version, isolation }) => `${tool} ${version || '(version unknown)'} is ${isolation}`).join(', ')}.`;
 }
 
@@ -52,16 +59,21 @@ async function judgeToolsNote(resolveTool: ResolveTool | undefined): Promise<str
  */
 async function scorerModelNotes(localConfig: LocalConfig, resolveTool: ResolveTool | undefined): Promise<string[]> {
   const tools = installedJudgeTools([], resolveTool ? { resolveTool } : {});
+
   if (tools.length === 0) return [];
   const aliases = await loadModelAliases(localConfig);
   const notes: string[] = [];
+
   for (const name of await cachedScorerNames(localConfig)) {
     const definition = (await loadCachedScorer(localConfig, name))?.definition;
+
     if (definition?.model === undefined) continue;
     const chosen = chooseJudgeModel(aliases, definition, tools);
     const note = chosen.ok ? chosen.note : chosen.message;
+
     if (note) notes.push(note);
   }
+
   return notes;
 }
 
@@ -76,10 +88,12 @@ type ResolveTool = (tool: string) => string | null;
 export async function scorerNotes(localConfig: LocalConfig, { resolveTool }: { resolveTool?: ResolveTool } = {}): Promise<string[]> {
   const wasSilent = isSilent();
   setSilent(true);
+
   try {
     const result = await syncTeamDefinitions(localConfig, { dryRun: true });
     const scored = result.scorers.cached.length > 0;
     const unavailable = scored ? scoringUnavailable(localConfig) : undefined;
+
     return [
       ...(unavailable ? [unavailable] : scored ? [...await scoringNotes(localConfig, result.scorers.verified), await judgeToolsNote(resolveTool)] : []),
       ...result.scorers.invalid.map((diagnostic) => `Invalid scorer: ${formatScorerDiagnostic(diagnostic)}`),

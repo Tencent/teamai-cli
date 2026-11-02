@@ -32,6 +32,7 @@ function teamaiHook(team: ReadonlyMap<string, number>): Record<string, unknown> 
   const command = (event: string, claudeEvent: string) => ({
     type: 'command', command: dispatchCommand(event), timeout: Math.max(BUILTIN_TIMEOUT, team.get(claudeEvent) ?? 0),
   });
+
   return {
     SessionStart: [command('session-start', 'SessionStart')],
     PreInvocation: [command('prompt-submit', 'UserPromptSubmit')],
@@ -45,19 +46,23 @@ function teamaiHook(team: ReadonlyMap<string, number>): Record<string, unknown> 
 export async function reconcileAgyHooks(options: { removeAll?: boolean } = {}): Promise<void> {
   const file = agyHookFile();
   const read = await readJsonObject(file);
+
   if (read.kind === 'invalid') throw new Error(`${file} is not valid JSON (${read.error}); fix it so teamai can add its hooks.`);
   const hooks = read.kind === 'ok' ? read.value : {};
+
   if (options.removeAll) {
     if (!(HOOK_NAME in hooks)) return;
     delete hooks[HOOK_NAME];
   } else {
     hooks[HOOK_NAME] = teamaiHook(await bridgedTeamHookEvents('agy'));
   }
+
   await writeJsonAtomic(file, hooks);
 }
 
 /** Whether hooks.json carries teamai's named hook. */
 export async function hasAgyHooks(): Promise<boolean> {
   const read = await readJsonObject(agyHookFile());
+
   return read.kind === 'ok' && HOOK_NAME in read.value;
 }

@@ -13,12 +13,14 @@ export const DeliveryReceiptSchema = z.object({
   step: z.string(),
   pass: z.number().int(),
 });
+
 export type DeliveryReceipt = z.infer<typeof DeliveryReceiptSchema>;
 
 /** Which delivery an outcome belongs to while the step still delivers this pass of this commit. */
 const DeliveryKeySchema = z.object({
   step: z.string(), pass: z.number().int(), settledAt: z.number().int(), branch: z.string().min(1), head: CommitIdSchema,
 });
+
 export type DeliveryKey = z.infer<typeof DeliveryKeySchema>;
 
 /** A create the host may have accepted, retained independently of the step's lifecycle. */
@@ -26,4 +28,5 @@ export const UnresolvedCreateSchema = DeliveryKeySchema.extend({
   target: z.string().min(1),
   lookups: z.object({ total: z.number().int().nonnegative(), none: z.number().int().nonnegative(), failed: z.number().int().nonnegative() }).default({ total: 0, none: 0, failed: 0 }),
 });
+
 export type UnresolvedCreate = z.infer<typeof UnresolvedCreateSchema>;

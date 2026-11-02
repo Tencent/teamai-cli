@@ -31,6 +31,7 @@ const FrontmatterSchema = z.object({
   samplingRate: number('must be a number from 0 to 100').min(0, 'must be a number from 0 to 100').max(100, 'must be a number from 0 to 100').default(25),
   model: z.string({ error: 'must be a non-empty string without spaces' }).superRefine((model, ctx) => {
     const problem = modelValueProblem(model);
+
     if (problem !== undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, message: problem });
   }).optional(),
   isolation: z.enum(['verified', 'best-effort'], { error: 'must be verified or best-effort' }).optional(),
@@ -44,6 +45,7 @@ const FrontmatterSchema = z.object({
   });
   const passing = scorer.labels.some((label) => label.score >= scorer.passingScore);
   const failing = scorer.labels.some((label) => label.score < scorer.passingScore);
+
   if (!passing || !failing) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['passingScore'], message: 'must have at least one label at or above it and one below it' });
   }
@@ -78,23 +80,32 @@ function fieldOf(at: ReadonlyArray<PropertyKey>): string {
 
 function issueMessages(issue: z.ZodIssue): string[] {
   const field = fieldOf(issue.path);
+
   if (issue.code === z.ZodIssueCode.unrecognized_keys) {
     return issue.keys.map((key) => `${field ? `${field} ` : ''}uses \`${key}\`, which this teamai does not know. Update teamai.`);
   }
+
   return [`${field} ${issue.message}`];
 }
 
 export function parseScorer(relativePath: string, content: string): ParsedScorer {
   const fail = (...messages: string[]): ParsedScorer => ({ ok: false, diagnostics: messages.map((message) => ({ file: relativePath, message })) });
   const name = path.posix.basename(relativePath, '.md');
+
   if (!TOKEN.test(name)) return fail('the file name must be a token such as review-quality.md');
+
   if (name.endsWith('.md')) return fail('a scorer\'s name cannot end in .md, since teamai score --scorer reads such a value as a scorer file');
   const { data, valid, body, raw } = splitFrontmatter(content);
+
   if (raw === '') return fail('a scorer starts with YAML frontmatter between --- lines');
+
   if (!valid) return fail('the frontmatter must be a YAML mapping');
   const parsed = FrontmatterSchema.safeParse(data);
   const problems = parsed.success ? [] : [...new Set(parsed.error.issues.flatMap(issueMessages))];
+
   if (body.trim() === '') problems.push('the prompt after the frontmatter is empty');
+
   if (!parsed.success || problems.length > 0) return fail(...problems);
+
   return { ok: true, definition: { name, ...parsed.data, prompt: body } };
 }

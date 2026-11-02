@@ -103,14 +103,18 @@ function denormalizeToolName(irName: string): string {
 /** Summary text shown for a tool call when collapsed (native providerData.argumentsDisplayText). */
 function argumentsDisplayText(name: string, args: Record<string, unknown> | undefined): string {
   if (!args) return name;
+
   const preferred =
     args.command ?? args.path ?? args.pattern ?? args.glob_pattern ?? args.target_directory ??
     args.target_file ?? args.query ?? args.url ?? args.filePath;
+
   if (typeof preferred === 'string' && preferred.trim()) {
     return preferred.length > 160 ? `${preferred.slice(0, 160)}…` : preferred;
   }
+
   try {
     const s = JSON.stringify(args);
+
     return s.length > 160 ? `${s.slice(0, 160)}…` : s;
   } catch {
     return name;
@@ -128,6 +132,7 @@ function uuidV4(): string {
 function toUnixMs(isoStr?: string): number {
   if (!isoStr) return Date.now();
   const d = new Date(isoStr);
+
   return isNaN(d.getTime()) ? Date.now() : d.getTime();
 }
 
@@ -155,23 +160,31 @@ export class CodeBuddyAdapter extends AgentAdapter {
 
   private resolveProjectDir(projectPath?: string): string {
     const root = this.storageRoot;
+
     if (projectPath) {
       return path.join(root, encodeCwdCodeBuddy(projectPath));
     }
+
     return root;
   }
 
   private findSessionFile(sessionId: string, projectPath?: string): string | null {
     if (projectPath) {
       const target = path.join(this.resolveProjectDir(projectPath), `${sessionId}.jsonl`);
+
       return fileExists(target) ? target : null;
     }
+
     const root = this.storageRoot;
+
     if (!dirExists(root)) return null;
+
     for (const projDir of fs.readdirSync(root)) {
       const candidate = path.join(root, projDir, `${sessionId}.jsonl`);
+
       if (fileExists(candidate)) return candidate;
     }
+
     return null;
   }
 
@@ -184,21 +197,28 @@ export class CodeBuddyAdapter extends AgentAdapter {
   private findAllSessionFiles(sessionId: string, projectPath?: string): string[] {
     if (projectPath) {
       const target = path.join(this.resolveProjectDir(projectPath), `${sessionId}.jsonl`);
+
       return fileExists(target) ? [target] : [];
     }
+
     const root = this.storageRoot;
+
     if (!dirExists(root)) return [];
     const out: string[] = [];
+
     for (const projDir of fs.readdirSync(root)) {
       const candidate = path.join(root, projDir, `${sessionId}.jsonl`);
+
       if (fileExists(candidate)) out.push(candidate);
     }
+
     return out;
   }
 
   async listConversations(projectPath?: string): Promise<SessionMeta[]> {
     const metas: SessionMeta[] = [];
     const root = this.storageRoot;
+
     if (!dirExists(root)) return [];
 
     const projDirs = projectPath
@@ -208,12 +228,15 @@ export class CodeBuddyAdapter extends AgentAdapter {
     for (const projDir of projDirs) {
       if (!dirExists(projDir)) continue;
       const cwd = decodeCwdGeneric(path.basename(projDir));
+
       for (const jsonlFile of fs.readdirSync(projDir).filter((f) => f.endsWith('.jsonl')).sort()) {
         const fullPath = path.join(projDir, jsonlFile);
         const meta = this.extractMeta(fullPath, cwd);
+
         if (meta) metas.push(meta);
       }
     }
+
     return metas;
   }
 
@@ -236,8 +259,10 @@ export class CodeBuddyAdapter extends AgentAdapter {
         }
 
         const tsRaw = record.timestamp;
+
         if (tsRaw !== undefined) {
           const ts = fromUnixMs(Number(tsRaw));
+
           if (!createdAt) createdAt = ts;
           updatedAt = ts;
         }
@@ -245,15 +270,19 @@ export class CodeBuddyAdapter extends AgentAdapter {
         if (rtype === 'message') {
           messageCount++;
           const role = record.role as string;
+
           if (role === 'user' && userTextCandidates.length < 5) {
             const content = record.content;
+
             if (Array.isArray(content)) {
               const parts: string[] = [];
+
               for (const block of content) {
                 if (block && typeof block === 'object' && (block as Record<string, unknown>).type === 'input_text') {
                   parts.push(String((block as Record<string, unknown>).text ?? ''));
                 }
               }
+
               if (parts.length) userTextCandidates.push(parts.join(' '));
             }
           }
@@ -265,6 +294,7 @@ export class CodeBuddyAdapter extends AgentAdapter {
 
     // No record says when: date it by the file, so a damaged session does not sort as the newest.
     if (!createdAt) createdAt = fileModifiedAt(jsonlPath);
+
     if (!updatedAt) updatedAt = createdAt;
 
     // ai-title is the title CodeBuddy itself chose, so it is the most reliable; otherwise fall back to the first user text.
@@ -277,6 +307,7 @@ export class CodeBuddyAdapter extends AgentAdapter {
     }
 
     let sizeBytes = 0;
+
     try {
       sizeBytes = fs.statSync(jsonlPath).size;
     } catch {
@@ -302,19 +333,24 @@ export class CodeBuddyAdapter extends AgentAdapter {
    */
   async readSubagents(session: Session, ref: SessionReadRef): Promise<SubagentsRead> {
     const jsonlPath = ref.filePath ?? this.findSessionFile(session.sessionId, ref.projectPath);
+
     if (!jsonlPath) return { status: 'unread', reason: `The transcript of session ${session.sessionId} was not found again` };
     const dir = path.join(path.dirname(jsonlPath), path.basename(jsonlPath, '.jsonl'), 'subagents');
+
     if (!dirExists(dir)) return { status: 'read', agents: [] };
     const files = fs.readdirSync(dir).filter((name) => name.endsWith('.jsonl')).sort();
     const agents = await Promise.all(files.map((name) => this.readSession({ sessionId: session.sessionId, filePath: path.join(dir, name) })));
+
     return { status: 'read', agents: agents.map((agent) => ({ session: agent, depth: 1 })) };
   }
 
   async readSession(ref: SessionReadRef): Promise<Session> {
     const jsonlPath = ref.filePath ?? this.findSessionFile(ref.sessionId, ref.projectPath);
+
     if (!jsonlPath) {
       throw new Error(`CodeBuddy session file not found: session_id=${ref.sessionId}`);
     }
+
     // The file name is the id: a listed file decides it, not the request.
     const sessionId = path.basename(jsonlPath, '.jsonl');
 
@@ -325,12 +361,14 @@ export class CodeBuddyAdapter extends AgentAdapter {
     // (it cannot recover the real path), so the archive key (repoIdentity) must prefer the native cwd in the record
     // (design doc Key invariant); if recovery fails, fall back to the directory name.
     let nativeCwd: string | undefined;
+
     for (const rec of records) {
       if (typeof rec.cwd === 'string' && path.isAbsolute(rec.cwd)) {
         nativeCwd = rec.cwd;
         break;
       }
     }
+
     const sessionCwd = nativeCwd ?? cwd;
 
     let title = '';
@@ -347,13 +385,16 @@ export class CodeBuddyAdapter extends AgentAdapter {
         // CodeBuddy sometimes stores injected-block text as ai-title. Taking it as-is pollutes the whole migration path
         // (preview and target-side titles are the prompt verbatim).
         const t = String(rec.aiTitle ?? '');
+
         if (t && !isInjectedText(t)) title = cutTitle(t, 100);
         continue;
       }
 
       const tsRaw = rec.timestamp;
+
       if (tsRaw !== undefined) {
         const ts = fromUnixMs(Number(tsRaw));
+
         if (!createdAt) createdAt = ts;
         updatedAt = ts;
       }
@@ -365,9 +406,11 @@ export class CodeBuddyAdapter extends AgentAdapter {
 
       if (rtype === 'message') {
         const role = rec.role as string;
+
         if (role !== 'user' && role !== 'assistant') continue;
 
         const content = this.parseMessageContent(rec);
+
         const msg: Message = {
           role: role as 'user' | 'assistant',
           content,
@@ -378,8 +421,10 @@ export class CodeBuddyAdapter extends AgentAdapter {
 
         // Extract model
         const providerData = rec.providerData as Record<string, unknown> | undefined;
+
         if (providerData?.model) {
           msg.metadata = { model: String(providerData.model) };
+
           if (!sessionMetadata.model) sessionMetadata.model = String(providerData.model);
         }
 
@@ -391,6 +436,7 @@ export class CodeBuddyAdapter extends AgentAdapter {
         const providerData = rec.providerData as Record<string, unknown> | undefined;
         let argsRaw = providerData?.arguments ?? rec.arguments;
         let arguments_: Record<string, unknown>;
+
         try {
           arguments_ = typeof argsRaw === 'string' ? JSON.parse(argsRaw) : (argsRaw as Record<string, unknown>) ?? {};
         } catch {
@@ -408,9 +454,11 @@ export class CodeBuddyAdapter extends AgentAdapter {
         const callId = String(rec.callId ?? '');
         const output = rec.output as Record<string, unknown> | undefined;
         let contentStr = '';
+
         if (output) {
           contentStr = String(output.text ?? '');
         }
+
         const status = String(rec.status ?? 'completed');
         const isError = status === 'failed' || status === 'error';
         const block: ToolResultBlock = { type: 'tool_result', callId, content: contentStr, isError };
@@ -423,6 +471,7 @@ export class CodeBuddyAdapter extends AgentAdapter {
       } else if (rtype === 'reasoning') {
         const rawContent = rec.rawContent as Array<Record<string, unknown>> | undefined;
         let text = '';
+
         if (Array.isArray(rawContent)) {
           for (const part of rawContent) {
             if (part.type === 'reasoning_text') {
@@ -430,6 +479,7 @@ export class CodeBuddyAdapter extends AgentAdapter {
             }
           }
         }
+
         const block: ThinkingBlock = { type: 'thinking', text };
 
         if (messages.length > 0 && messages[messages.length - 1].role === 'assistant') {
@@ -443,18 +493,24 @@ export class CodeBuddyAdapter extends AgentAdapter {
     if (!title) {
       // Same strategy as claude-code: unwrap candidate text together (mixed messages with an injection header plus a real question can still be recovered)
       const candidates: string[] = [];
+
       for (const msg of messages) {
         if (msg.role !== 'user') continue;
+
         for (const block of msg.content) {
           if (block.type === 'text' && block.text) candidates.push(block.text);
         }
+
         if (candidates.length >= 5) break;
       }
+
       title = titleFromCandidates(candidates);
     }
+
     if (!title) title = fallbackTitle(sessionId);
 
     if (!createdAt) createdAt = new Date().toISOString();
+
     if (!updatedAt) updatedAt = createdAt;
 
     return {
@@ -475,6 +531,7 @@ export class CodeBuddyAdapter extends AgentAdapter {
 
     if (typeof contentArr === 'string') {
       blocks.push({ type: 'text', text: contentArr });
+
       return blocks;
     }
 
@@ -490,6 +547,7 @@ export class CodeBuddyAdapter extends AgentAdapter {
         blocks.push({ type: 'text', text });
       }
     }
+
     return blocks;
   }
 
@@ -499,11 +557,13 @@ export class CodeBuddyAdapter extends AgentAdapter {
 
   async writeSession(session: Session, projectPath?: string): Promise<string> {
     const cwd = projectPath ?? session.cwd;
+
     const sessionId = deriveTargetSessionId({
       targetPlatform: this.platform,
       targetCwd: cwd,
       sourceSessionId: session.sessionId,
     });
+
     const projDir = path.join(this.storageRoot, encodeCwdCodeBuddy(cwd));
     const jsonlPath = path.join(projDir, `${sessionId}.jsonl`);
 
@@ -511,6 +571,7 @@ export class CodeBuddyAdapter extends AgentAdapter {
 
     // callId → tool name: so function_call_result lines carry the real tool name (instead of always 'Agent')
     const toolNamesByCallId = new Map<string, string>();
+
     for (const m of session.messages) {
       for (const b of m.content) {
         if (b.type === 'tool_call' && b.callId) {
@@ -518,6 +579,7 @@ export class CodeBuddyAdapter extends AgentAdapter {
         }
       }
     }
+
     const resultToolName = (callId: string): string | undefined => toolNamesByCallId.get(callId);
 
     // 1. ai-title line
@@ -559,6 +621,7 @@ export class CodeBuddyAdapter extends AgentAdapter {
       if (otherBlocks.length > 0) {
         const cbContent: Record<string, unknown>[] = [];
         let hasText = false;
+
         for (const block of otherBlocks) {
           if (block.type === 'text') {
             cbContent.push({
@@ -673,6 +736,7 @@ export class CodeBuddyAdapter extends AgentAdapter {
     const jsonlPaths = this.findAllSessionFiles(sessionId, projectPath);
 
     let cliDeleted = false;
+
     for (const jsonlPath of jsonlPaths) {
       try {
         fs.unlinkSync(jsonlPath);
@@ -683,6 +747,7 @@ export class CodeBuddyAdapter extends AgentAdapter {
 
       // Delete the same-named subdirectory (subagents and similar)
       const subdir = jsonlPath.replace(/\.jsonl$/, '');
+
       if (dirExists(subdir)) {
         removeDirRecursive(subdir);
       }

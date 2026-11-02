@@ -21,15 +21,19 @@ function parseGitCodePRUrl(url: string): ParsedGitCodePR {
   const match = url.match(
     /^https?:\/\/([^/]+)\/([^/]+)\/([^/]+)\/(?:pull|pulls|merge_requests)\/(\d+)/i,
   );
+
   if (!match) {
     throw new Error(`Invalid GitCode PR URL: ${url}`);
   }
+
   const host = match[1].toLowerCase().replace(/^www\./, '');
+
   if (host !== GITCODE_HOST) {
     throw new Error(
       `Refusing to fetch GitCode PR from "${match[1]}": only ${GITCODE_HOST} is supported.`,
     );
   }
+
   return { owner: match[2], repo: match[3], number: match[4] };
 }
 
@@ -65,6 +69,7 @@ function authHeaders(token: string): Record<string, string> {
 export async function fetchGitCodeMR(url: string): Promise<MRData> {
   const { owner, repo, number } = parseGitCodePRUrl(url);
   const token = getGitCodeToken();
+
   if (!token) {
     throw new Error('GITCODE_TOKEN is not set.');
   }
@@ -75,15 +80,19 @@ export async function fetchGitCodeMR(url: string): Promise<MRData> {
 
   // ── 1. 元信息 ─────────────────────────────────────────────
   const resp = await fetch(base, { headers, redirect: 'manual' });
+
   if (!resp.ok) {
     throw new Error(`GitCode API error ${resp.status}: ${await resp.text()}`);
   }
+
   const pr = (await resp.json()) as GitCodePR;
 
   // ── 2. 提交列表（失败非致命） ─────────────────────────────
   let commits: Array<{ hash: string; message: string }> = [];
+
   try {
     const commitsResp = await fetch(`${base}/commits?per_page=50`, { headers, redirect: 'manual' });
+
     if (commitsResp.ok) {
       const raw = (await commitsResp.json()) as GitCodeCommit[];
       commits = raw.map((c) => ({
@@ -97,8 +106,10 @@ export async function fetchGitCodeMR(url: string): Promise<MRData> {
 
   // ── 3. diff（截断 50KB，失败非致命） ──────────────────────
   let diff = '';
+
   try {
     const filesResp = await fetch(`${base}/files`, { headers, redirect: 'manual' });
+
     if (filesResp.ok) {
       const files = (await filesResp.json()) as Array<{ patch?: string; diff?: string }>;
       diff = files

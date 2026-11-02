@@ -30,6 +30,7 @@ const MIGRATION_TRIGGER_COMMANDS = new Set(['init', 'pull', 'push']);
 function queuesLearnings(command: Command): boolean {
   const name = command.name();
   const opts = command.opts();
+
   return (
     (name === 'contribute' && opts.scope !== 'user') ||
     (name === 'import' && opts.fromMr !== undefined && opts.output === undefined)
@@ -44,6 +45,7 @@ function queuesLearnings(command: Command): boolean {
  */
 function needsQueueOutOfCheckout(command: Command): boolean {
   const projectInit = command.name() === 'init' && command.parent?.parent === null && command.opts().scope !== 'user';
+
   return queuesLearnings(command) || projectInit;
 }
 
@@ -58,6 +60,7 @@ const { version } = require('../package.json');
 /** A command that needs a team says so in one line instead of a stack trace, as `env list` does. */
 async function reportNotInitialized(run: () => Promise<void>): Promise<void> {
   const { NotInitializedError } = await import('./config.js');
+
   try {
     await run();
   } catch (e) {
@@ -83,6 +86,7 @@ async function reportNotInitialized(run: () => Promise<void>): Promise<void> {
 export async function reportCommandError(e: unknown): Promise<void> {
   const error = e instanceof Error ? e : undefined;
   log.error(error?.message || error?.name || String(e));
+
   if (error?.stack) log.debug(error.stack);
   process.exitCode = 1;
 }
@@ -114,7 +118,9 @@ program
   .name('teamai')
   .description('TeamAI — Make Every Team AI Native')
   .version(version);
+
 for (const [flags, description] of GLOBAL_OPTIONS) program.option(flags, description);
+
 program
   .hook('preAction', async (thisCommand, actionCommand) => {
     // A command a step starts in its clone reads and writes under that clone's own install, as the install's pull did,
@@ -122,15 +128,19 @@ program
     if (process.env[ATTEMPT_ENV] !== undefined) {
       const { attemptCloneHome } = await import('./workflow/place/place.js');
       const home = await attemptCloneHome(process.cwd(), process.env);
+
       if (home) useInstallHome(home);
     }
+
     const opts = thisCommand.opts();
+
     if (opts.verbose) setVerbose(true);
 
     // A command with no --dry-run preview refuses the flag rather than run for
     // real (#900). First, so neither migration nor a hook command slips past.
     if (opts.dryRun) {
       const refusal = dryRunRefusal(actionCommand);
+
       if (refusal) thisCommand.error(refusal, { exitCode: 1 });
     }
 
@@ -140,15 +150,20 @@ program
     // silent path that must never move 12MB, and only write commands trigger a
     // move (read-only commands use the double-read fallback). Dry-run previews.
     const name = actionCommand.name();
+
     if (TEAMAI_HOOK_SUBCOMMANDS.includes(name as (typeof TEAMAI_HOOK_SUBCOMMANDS)[number])) return;
+
     if (!triggersMigration(actionCommand)) return;
+
     try {
       process.cwd();
     } catch {
       thisCommand.error('Current working directory is unavailable. Change to an existing directory and retry.', { exitCode: 1 });
     }
+
     const { maybeMigrate, queueKeptInCheckout } = await import('./migrate.js');
     let migration;
+
     try {
       migration = await maybeMigrate({ dryRun: !!opts.dryRun });
     } catch (e) {
@@ -160,6 +175,7 @@ program
       log.error('Your original .teamai data is unchanged. Re-run the command to retry.');
       process.exit(1);
     }
+
     // A learning queued in this checkout would go with it when the worktree is
     // removed (#808).
     if (needsQueueOutOfCheckout(actionCommand)) {
@@ -167,6 +183,7 @@ program
       // self-heal here would enable every tool in HOME before `--agent`
       // could choose them (#993).
       const kept = await queueKeptInCheckout(migration, { dryRun: !!opts.dryRun, selfHeal: name !== 'init' });
+
       if (kept) {
         log.error(kept);
         process.exit(1);
@@ -229,6 +246,7 @@ program
     const outcome = { completed: false };
     const options = { ...globalOpts, ...cmdOpts };
     await reportNotInitialized(() => (isFilePush(options) ? pushFile(options, outcome) : push(options, outcome)));
+
     if (outcome.completed) await notifyWebhook('push');
   });
 
@@ -240,6 +258,7 @@ program
   .option('--team-ref <ref>', 'Pin this workspace to a branch, tag or commit of the team repo; the default branch unpins it')
   .action(async (cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
+
     if (cmdOpts.silent) setSilent(true);
     const { pull } = await import('./pull.js');
     // Only notify when a real (non-dry-run) sync completed. The SessionStart hook
@@ -247,6 +266,7 @@ program
     // the `pull` command event (#702 follow-up).
     const outcome = { completed: false };
     await pull({ ...globalOpts, ...cmdOpts, interactive: !cmdOpts.silent }, outcome);
+
     if (!cmdOpts.silent && outcome.completed) await notifyWebhook('pull');
   });
 
@@ -400,6 +420,7 @@ program
     const globalOpts = program.opts() as GlobalOptions;
     const { doctor } = await import('./doctor.js');
     const allPassed = await doctor({ ...globalOpts, ...cmdOpts });
+
     if (!allPassed) process.exitCode = 1;
   });
 
@@ -597,10 +618,12 @@ tagsCmd
   )
   .action(async (type: string, name: string, tags: string[]) => {
     const globalOpts = program.opts() as GlobalOptions;
+
     if (type !== 'skills' && type !== 'rules') {
       console.error('Type must be "skills" or "rules"');
       process.exit(1);
     }
+
     const { tagsAdd } = await import('./tags.js');
     await tagsAdd(type, name, tags, globalOpts);
   });
@@ -618,10 +641,12 @@ tagsCmd
   )
   .action(async (type: string, name: string, tags: string[]) => {
     const globalOpts = program.opts() as GlobalOptions;
+
     if (type !== 'skills' && type !== 'rules') {
       console.error('Type must be "skills" or "rules"');
       process.exit(1);
     }
+
     const { tagsRemove } = await import('./tags.js');
     await tagsRemove(type, name, tags, globalOpts);
   });
@@ -1021,6 +1046,7 @@ hooksCmd
   .option('--silent', 'Silent mode (suppress success message)')
   .action(async (cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
+
     if (cmdOpts.silent) setSilent(true);
     const { hooksInject } = await import('./hooks-cmd.js');
     await hooksInject({ ...globalOpts, ...cmdOpts });
@@ -1082,11 +1108,15 @@ webhookCmd
   .action(async () => {
     const { listWebhooks } = await import('./webhook.js');
     const endpoints = await listWebhooks();
+
     if (endpoints.length === 0) {
       console.log('No webhook endpoints configured.');
+
       return;
     }
+
     console.log('Configured webhook endpoints:\n');
+
     for (const ep of endpoints) {
       console.log(`  URL: ${ep.url}`);
       console.log(`  Type: ${ep.type}`);
@@ -1158,6 +1188,7 @@ modelsCmd
   .option('--dry-run', 'Show what would change without writing')
   .action((profile: string | undefined, cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
+
     return runModelsCommand((m) => m.modelsSwitch(profile, { ...globalOpts, ...cmdOpts }));
   });
 
@@ -1168,6 +1199,7 @@ modelsCmd
   .option('--dry-run', 'Show what would change without writing')
   .action((cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
+
     return runModelsCommand((m) => m.modelsRestore({ ...globalOpts, ...cmdOpts }));
   });
 
@@ -1312,8 +1344,10 @@ program
     // entry by the largest of them, and exit 2 is a hook's blocking decision.
     if (cmdOpts.teamHooks) {
       let code = 0;
+
       try {
         const bridged = await import('./bridged-team-hooks.js');
+
         if (tool === 'codex') {
           const { runCodexDispatcher } = await import('./codex-team-hooks.js');
           code = await runCodexDispatcher(event);
@@ -1321,24 +1355,30 @@ program
           const { runBridgedTeamHooks } = bridged;
           const { readStdin } = await import('./hook-dispatch-cli.js');
           const reply = await runBridgedTeamHooks(tool, event, await readStdin());
+
           if (reply.stderr) process.stderr.write(reply.stderr);
+
           if (reply.stdout) await new Promise<void>((resolve) => process.stdout.write(reply.stdout, () => resolve()));
           code = reply.code;
         } else if (tool === 'codebuddy' && cmdOpts.teamHookGate && cmdOpts.teamHookCommand) {
           const parsedTimeout = cmdOpts.teamHookTimeout === undefined ? undefined : Number(cmdOpts.teamHookTimeout);
+
           if (parsedTimeout !== undefined && (!Number.isFinite(parsedTimeout) || parsedTimeout <= 0)) {
             throw new Error(`invalid CodeBuddy team hook timeout ${JSON.stringify(cmdOpts.teamHookTimeout)}`);
           }
+
           const { runCodebuddyTeamHook } = await import('./codebuddy-team-hooks.js');
           code = await runCodebuddyTeamHook(cmdOpts.teamHookGate, cmdOpts.teamHookCommand, parsedTimeout);
         }
       } catch (e) {
         process.stderr.write(`teamai: team hooks did not run: ${(e as Error).message}\n`);
+
         // CodeBuddy must report dispatcher failures to its host. Codex keeps
         // its historical fail-open wrapper: its hook runner reports the
         // diagnostic but the shared `--team-hooks` command remains successful.
         if (tool === 'codebuddy') code = 1;
       }
+
       process.exit(code);
     }
 
@@ -1356,12 +1396,14 @@ program
     // Git (`--tool git`) has no hook timeout to stay under, and a cut here
     // would stop the inline delivery mid-write; its handler bounds itself.
     let hardExit: NodeJS.Timeout | undefined;
+
     if (!bgOnly && tool !== 'git') {
       hardExit = setTimeout(() => process.exit(0), HOOK_HARD_EXIT_MS);
       hardExit.unref();
     }
 
     const { hookDispatchCli } = await import('./hook-dispatch-cli.js');
+
     try {
       await hookDispatchCli(event, tool, cmdOpts.matcher ?? '*', { ...cmdOpts, hookArgs });
     } finally {
@@ -1507,6 +1549,7 @@ program
   .addOption(new Option('--stale-days <n>', 'Threshold for stale-eviction in days (default 30)').default('30').hideHelp())
   .action(async (cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
+
     if (cmdOpts.cacheStatus || cmdOpts.cacheGc) {
       const { cacheCmd } = await import('./cache-cmd.js');
       await cacheCmd({
@@ -1517,8 +1560,10 @@ program
         staleDays: cmdOpts.staleDays,
         json: cmdOpts.json,
       });
+
       return;
     }
+
     const { importCmd } = await import('./import.js');
     await importCmd({ ...globalOpts, ...cmdOpts });
   });
@@ -1568,11 +1613,14 @@ program
     .option('--json', 'Machine-readable output (dry-run decisions include dryRun: true; ok reports validation only; --branch prints the findings object)')
     .action(async (idArg, cmdOpts) => {
         const globalOpts = program.opts() as GlobalOptions;
+
         if (cmdOpts.branch) {
             const { reviewBranchCmd } = await import('./review-branch.js');
             await reviewBranchCmd({ ...globalOpts, ...cmdOpts, branch: cmdOpts.branch });
+
             return;
         }
+
         const { reviewCmd } = await import('./review-cmd.js');
         await reviewCmd({ ...globalOpts, ...cmdOpts, idArg });
     });
@@ -1611,6 +1659,7 @@ program
   .action(async (cmdOpts: { project: string; wikiRoot?: string; maxModules?: number }) => {
     const { runHiddenDeepEnrich } = await import('./deep-enrich.js');
     const { DetachedTeamRepoError } = await import('./utils/git.js');
+
     try {
       await runHiddenDeepEnrich({
         project: cmdOpts.project,
@@ -1649,52 +1698,67 @@ recallCmd
     // command's own declaration never sets it: read it merged, as the other
     // actions do (#900).
     const cmdOpts = { ...(program.opts() as GlobalOptions), ...localOpts };
+
     if (!cmdOpts.confidenceWriteback && !cmdOpts.prune && !cmdOpts.updateQuality) {
       log.info('Usage: teamai recall maintenance --prune | --confidence-writeback | --update-quality');
+
       return;
     }
 
     const { autoDetectInit } = await import('./config.js');
     const { localConfig } = await autoDetectInit(undefined, { dryRun: cmdOpts.dryRun });
     const paths = await maintenancePathsOrExit(localConfig, { dryRun: cmdOpts.dryRun });
+
     if (!paths) return;
+
     const {
       repoPath, votesDir, learningsReadDirs, learningsWriteDir,
     } = paths;
+
     const { safeDeliveredLearningsNamespaces } = await import('./workspace-children.js');
     const learningsNamespaces = await safeDeliveredLearningsNamespaces(localConfig, 'recall maintenance');
 
     if (cmdOpts.confidenceWriteback) {
       const { computeAllConfidence, writeBackConfidence } = await import('./maintenance/index.js');
       const map = await computeAllConfidence(votesDir);
+
       const written = await writeBackConfidence(learningsReadDirs, map, learningsWriteDir, {
         dryRun: cmdOpts.dryRun,
         namespaces: learningsNamespaces,
       });
+
       if (written.length > 0 && !cmdOpts.dryRun) {
         await publishMaintenance(localConfig, `[teamai] Update confidence for ${written.length} learning(s)`, written);
       }
+
       return;
     }
 
     if (cmdOpts.prune) {
       const { findPruneCandidates, executePrune } = await import('./maintenance/index.js');
+
       const candidates = await findPruneCandidates(learningsReadDirs, votesDir, {
         threshold: cmdOpts.threshold,
         namespaces: learningsNamespaces,
       });
+
       if (candidates.length === 0) {
         log.info('No learnings below threshold. Knowledge base is healthy.');
+
         return;
       }
+
       log.info(`Found ${candidates.length} candidate(s) for pruning:`);
+
       for (const c of candidates) {
         log.info(`  - ${c.filename} (confidence: ${c.confidence.toFixed(2)}, reason: ${c.reason})`);
       }
+
       const pruned = await executePrune(learningsWriteDir, candidates, {
         dryRun: cmdOpts.dryRun,
         archive: cmdOpts.archive,
       });
+
       if (pruned.archived + pruned.removed > 0) {
         await publishMaintenance(
           localConfig,
@@ -1702,34 +1766,42 @@ recallCmd
           pruned.changed,
         );
       }
+
       return;
     }
 
     if (cmdOpts.updateQuality) {
       const { findStaleEntries, reportStaleEntries, findRelatedAdoptedLearnings, generateUpdateDraft } = await import('./maintenance/index.js');
       const { writeFile } = await import('./utils/fs.js');
+
       const entries = await findStaleEntries(votesDir, {
         docs: `${repoPath}/docs`,
         rules: `${repoPath}/rules`,
         skills: `${repoPath}/skills`,
       });
+
       reportStaleEntries(entries);
 
       if (entries.length === 0 || cmdOpts.dryRun) return;
 
       log.info('\nGenerating AI-powered update drafts...');
+
       for (const entry of entries) {
         const related = await findRelatedAdoptedLearnings(entry, votesDir, learningsReadDirs, {
           namespaces: learningsNamespaces,
         });
+
         const draft = await generateUpdateDraft(entry, related);
+
         if (draft) {
           const draftPath = `${entry.path}.draft.md`;
           await writeFile(draftPath, draft);
           log.success(`  Draft written: ${draftPath}`);
         }
       }
+
       log.info('\nReview drafts, then rename .draft.md -> .md to apply updates.');
+
       return;
     }
   });
@@ -1746,14 +1818,17 @@ recallCmd
     const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: cmdOpts.dryRun });
     const { safeDeliveredLearningsNamespaces } = await import('./workspace-children.js');
     const learningsNamespaces = await safeDeliveredLearningsNamespaces(localConfig, 'recall promote');
+
     if (learningId && !cmdOpts.dryRun) {
       const { promoteAndPublish } = await import('./maintenance/promotion-publish.js');
       await promoteAndPublish(learningId, localConfig, teamConfig, {
         category: cmdOpts.category,
         namespaces: learningsNamespaces,
       });
+
       return;
     }
+
     const {
       findPromotionCandidates,
       executePromotion,
@@ -1764,24 +1839,30 @@ recallCmd
     const { usesBranchWorktree, getKnowledgeDir } = await import('./types.js');
     const knowledgeCheckout = usesBranchWorktree(localConfig) ? getKnowledgeDir(localConfig) : undefined;
     let paths: MaintenancePaths | undefined;
+
     if (knowledgeCheckout && !cmdOpts.dryRun) {
       // A fetch beside a pull in the same clone pushes the pull into its reset
       // fallback, so the checkouts and the review branches share one hold of the sync lock.
       const refreshForListing = async () => {
         const refreshed = await maintenancePathsOrExit(localConfig, { holdsSyncLock: true });
+
         if (refreshed) {
           await fetchPromotionRefs(knowledgeCheckout).catch((e: unknown) => {
             log.warn(`Could not fetch the review branches, so candidates follow the last fetch: ${e instanceof Error ? e.message : String(e)}`);
           });
         }
+
         return refreshed;
       };
+
       const { syncLockPath } = await import('./utils/learnings-publish.js');
       const { withFileLock } = await import('./update.js');
       const lock = syncLockPath(localConfig);
+
       const listed = lock === null
         ? { held: true as const, value: await refreshForListing() }
         : await withFileLock(lock, { attempts: 1, delayMs: 0 }, refreshForListing);
+
       if (listed.held) {
         paths = listed.value;
       } else {
@@ -1792,31 +1873,40 @@ recallCmd
     } else {
       paths = await maintenancePathsOrExit(localConfig, { dryRun: cmdOpts.dryRun });
     }
+
     if (!paths) return;
+
     const {
       repoPath, votesDir, learningsReadDirs, learningsWriteDir,
     } = paths;
+
     const candidates = await findPromotionCandidates(learningsReadDirs, votesDir, knowledgeCheckout, {
       namespaces: learningsNamespaces,
     });
 
     if (candidates.length === 0) {
       log.info('No learnings eligible for promotion yet.');
+
       return;
     }
 
     if (!learningId) {
       log.info(`${candidates.length} learning(s) eligible for promotion:`);
+
       for (const c of candidates) {
         log.info(`  - ${c.docId} (confidence: ${c.confidence.toFixed(2)}, suggested: ${c.suggestedCategory})`);
       }
+
       log.info('\nRun: teamai recall promote <learning-id> [--category <cat>]');
+
       return;
     }
 
     const candidate = candidates.find((c) => c.docId === learningId);
+
     if (!candidate) {
       log.error(`Learning "${learningId}" not found or not eligible for promotion.`);
+
       return;
     }
 
@@ -1843,6 +1933,7 @@ async function maintenancePathsOrExit(
 ): Promise<MaintenancePaths | undefined> {
   const { CheckoutLockedError, CheckoutUnavailableError, SyncLockedError, resolveMaintenancePaths } = await import('./maintenance/index.js');
   const { CheckoutRefusedError } = await import('./utils/branch-worktree.js');
+
   try {
     return await resolveMaintenancePaths(localConfig, options);
   } catch (e) {
@@ -1851,7 +1942,9 @@ async function maintenancePathsOrExit(
     } else if (!(e instanceof CheckoutRefusedError)) {
       throw e;
     }
+
     process.exitCode = 1;
+
     return undefined;
   }
 }
@@ -1864,6 +1957,7 @@ async function maintenancePathsOrExit(
 async function publishMaintenance(localConfig: LocalConfig, message: string, changed: readonly string[]): Promise<void> {
   const { publishLearningsMaintenance } = await import('./utils/learnings-publish.js');
   const result = await publishLearningsMaintenance(localConfig, message, changed);
+
   if (result.status === 'published') {
     log.success('Published maintenance changes to the learnings branch');
   } else if (result.status === 'failed') {

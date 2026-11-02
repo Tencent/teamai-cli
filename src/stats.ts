@@ -29,6 +29,7 @@ export function aggregateUsage(events: UsageEvent[]): SkillStats[] {
 
     if (existing) {
       existing.count += 1;
+
       if (timestamp > existing.lastUsed) {
         existing.lastUsed = timestamp;
       }
@@ -53,22 +54,29 @@ async function loadReportedStats(dryRun = false): Promise<UserStats | null> {
   try {
     // A read: loaded as `status` and `list` load it, never migrated (#972).
     const config = await resolveConfigForDir(undefined, undefined, { dryRun: true, suppressMigrationNotice: !dryRun });
+
     if (!config) return null;
     // Non-HTTP: stats live on the teamai-reports orphan branch worktree.
     // Leftover stats/ on the default-branch clone is ignored. Read-only: never
     // publish a missing reports branch. A dry run reads the checkout as it is.
     let statsRoot = config.repo.localPath;
     const { usesBranchWorktree } = await import('./types.js');
+
     if (usesBranchWorktree(config)) {
       const { readableReportsWorktree } = await import('./utils/reports-branch.js');
       statsRoot = await readableReportsWorktree(config, { dryRun });
+
       if (dryRun) log.info('[dry-run] Reported totals come from the local reports checkout as it is; it was not refreshed.');
     }
+
     const statsPath = path.join(statsRoot, 'stats', `${config.username}.yaml`);
     const content = await readFileSafe(statsPath);
+
     if (!content) return null;
     const parsed = YAML.parse(content) as UserStats;
+
     if (parsed?.username && parsed?.skills) return parsed;
+
     return null;
   } catch {
     return null;
@@ -94,8 +102,10 @@ function mergeLocalAndReported(localStats: SkillStats[], reported: UserStats | n
 
   for (const stat of localStats) {
     const existing = map.get(stat.name);
+
     if (existing) {
       existing.count += stat.count;
+
       if (stat.lastUsed > existing.lastUsed) {
         existing.lastUsed = stat.lastUsed;
       }
@@ -118,10 +128,15 @@ function formatRelativeTime(date: Date): string {
   const diffDays = Math.floor(diffMs / 86_400_000);
 
   if (diffMin < 1) return 'just now';
+
   if (diffMin < 60) return `${diffMin}m ago`;
+
   if (diffHr < 24) return `${diffHr}h ago`;
+
   if (diffDays === 1) return 'yesterday';
+
   if (diffDays < 30) return `${diffDays}d ago`;
+
   return date.toISOString().slice(0, 10);
 }
 
@@ -137,6 +152,7 @@ interface AggregatedDashboardStats {
 function aggregateDashboardStats(metrics: Map<string, SessionMetrics>): AggregatedDashboardStats {
   let prompts = 0, interrupt = 0, toolReject = 0, correction = 0;
   let tokens = emptyTokenUsage();
+
   for (const m of metrics.values()) {
     prompts += m.prompts;
     interrupt += m.interrupt;
@@ -144,6 +160,7 @@ function aggregateDashboardStats(metrics: Map<string, SessionMetrics>): Aggregat
     correction += m.correction;
     tokens = addTokenUsage(tokens, m.tokens);
   }
+
   return { sessions: metrics.size, prompts, tokens, interrupt, toolReject, correction };
 }
 
@@ -165,6 +182,7 @@ async function unreportedDashboardStats(
     computeInterventionDelta, computePromptTokenDelta, droppedRollouts, interventionCounts, metricsAsOf, reportedBaselines,
     snapshotWrittenAt, withDroppedRollouts,
   } = await import('./team-push.js');
+
   const { aggregateDailySessions } = await import('./session-trends.js');
   // The scope's own snapshots, compared as its report compares them (#786).
   const writtenAt = await snapshotWrittenAt(config);
@@ -200,14 +218,18 @@ function mergeDashboardAndReported(
   reported: UserStats | null,
 ): AggregatedDashboardStats {
   const merged = { ...local };
+
   if (reported?.interventions) {
     merged.sessions += reported.interventions.sessions;
     merged.interrupt += reported.interventions.interrupt;
     merged.toolReject += reported.interventions.toolReject;
     merged.correction += reported.interventions.correction;
   }
+
   if (reported?.prompts) merged.prompts += reported.prompts;
+
   if (reported?.tokens) merged.tokens = addTokenUsage(merged.tokens, reported.tokens);
+
   return merged;
 }
 
@@ -246,10 +268,13 @@ export async function showStats(options: ShowStatsOptions = {}): Promise<void> {
   // same scope config as the report path (#785), and the member's own sessions only.
   const { filterEventsByScope } = await import('./dashboard-scope.js');
   const ownerState = config ? await readSessionOwnerState({ dryRun, suppressMigrationNotice: !dryRun }) : undefined;
+
   const scopedEvents = memberEvents(await filterEventsByScope(await readEvents(), config ?? undefined, {
     dryRun, suppressMigrationNotice: !dryRun, owners: ownerState?.owners,
   }));
+
   const metricsMap = aggregateSessionMetrics(scopedEvents);
+
   // Only subtract what the team already holds. Two guards, because a scope's
   // snapshot is first seeded from the machine-wide one, so it can name sessions
   // this team file never received:
@@ -268,10 +293,13 @@ export async function showStats(options: ShowStatsOptions = {}): Promise<void> {
     || (reported.prompts ?? 0) > 0
     || totalTokens(reported.tokens ?? emptyTokenUsage()) > 0
   );
+
   const localDashboard = config && teamHasReported
     ? await unreportedDashboardStats(scopedEvents, metricsMap, config, ownerState)
     : aggregateDashboardStats(metricsMap);
+
   const dashboard = mergeDashboardAndReported(localDashboard, reported);
+
   const hasDashboardData =
     dashboard.sessions > 0 || dashboard.prompts > 0 || totalTokens(dashboard.tokens) > 0;
 
@@ -290,6 +318,7 @@ export async function showStats(options: ShowStatsOptions = {}): Promise<void> {
   if (stats.length === 0 && !hasDashboardData && recallRows.length === 0) {
     console.log('No usage data yet.');
     console.log('Usage tracking starts automatically via hooks.');
+
     return;
   }
 
@@ -312,6 +341,7 @@ export async function showStats(options: ShowStatsOptions = {}): Promise<void> {
     const totalEvents = stats.reduce((sum, s) => sum + s.count, 0);
     console.log('');
     console.log(`Total: ${totalEvents} events across ${stats.length} skill(s)`);
+
     if (events.length > 0) {
       console.log(`  (${events.length} pending upload)`);
     }
@@ -322,14 +352,17 @@ export async function showStats(options: ShowStatsOptions = {}): Promise<void> {
     console.log('');
     console.log(`Recall (last ${RECALL_SESSIONS_SHOWN} sessions):`);
     console.log('');
+
     const cells = recallRows.map((r) => [
       r.session.slice(0, 8), r.agent ?? '-', String(r.runs), String(r.recalled), String(r.adopted), String(r.viaRelation),
     ]);
+
     const header = ['session', 'agent', 'runs', 'recalled', 'adopted', 'via relation'];
     const widths = header.map((h, i) => Math.max(h.length, ...cells.map((c) => c[i].length)));
     // Text columns left-aligned, counts right-aligned.
     const format = (row: string[]): string => `  ${row.map((c, i) => (i < 2 ? c.padEnd(widths[i]) : c.padStart(widths[i]))).join('  ')}`;
     console.log(format(header));
+
     for (const row of cells) console.log(format(row));
   }
 
@@ -342,24 +375,31 @@ export async function showStats(options: ShowStatsOptions = {}): Promise<void> {
     console.log(`  Conversation turns: ${dashboard.prompts}`);
 
     const total = totalTokens(dashboard.tokens);
+
     if (total > 0) {
       console.log(`  Tokens (total):     ${formatTokenCount(total)}`);
       console.log(`    Input:            ${formatTokenCount(dashboard.tokens.input)}`);
       console.log(`    Output:           ${formatTokenCount(dashboard.tokens.output)}`);
+
       if (dashboard.tokens.cacheRead > 0) {
         console.log(`    Cache read:       ${formatTokenCount(dashboard.tokens.cacheRead)}`);
       }
+
       if (dashboard.tokens.cacheCreation > 0) {
         console.log(`    Cache creation:   ${formatTokenCount(dashboard.tokens.cacheCreation)}`);
       }
     }
 
     const totalInterventions = dashboard.interrupt + dashboard.toolReject + dashboard.correction;
+
     if (totalInterventions > 0) {
       console.log('');
       console.log(`  Interventions:      ${totalInterventions}`);
+
       if (dashboard.interrupt > 0) console.log(`    Interrupts:       ${dashboard.interrupt}`);
+
       if (dashboard.toolReject > 0) console.log(`    Tool rejects:     ${dashboard.toolReject}`);
+
       if (dashboard.correction > 0) console.log(`    Corrections:      ${dashboard.correction}`);
     }
   }
@@ -367,20 +407,25 @@ export async function showStats(options: ShowStatsOptions = {}): Promise<void> {
   // ─── Per-repo breakdown (--by-repo) ───
   if (options.byRepo) {
     const repos = attributeByRepo(dashboardEvents);
+
     if (repos.length > 0) {
       console.log('');
       console.log('By Repo (local event log):');
       console.log('');
       const TOP_N = 15;
       const maxLen = Math.max(...repos.slice(0, TOP_N).map((r) => r.repo.length), 4);
+
       for (const r of repos.slice(0, TOP_N)) {
         const name = r.repo.padEnd(maxLen);
         const tok = totalTokens(r.tokens);
         const parts = [`${r.sessions} sess`, `${r.prompts} turns`, `${r.tools} tools`];
+
         if (tok > 0) parts.push(`${formatTokenCount(tok)} tok`);
+
         if (r.interventions > 0) parts.push(`${r.interventions} intv`);
         console.log(`  ${name}  ${parts.join(', ')}`);
       }
+
       if (repos.length > TOP_N) {
         console.log(`  … and ${repos.length - TOP_N} more`);
       }
@@ -390,6 +435,7 @@ export async function showStats(options: ShowStatsOptions = {}): Promise<void> {
   // ─── Time-of-day patterns (--by-time) ───
   if (options.byTime) {
     const ta = timeAnalytics(dashboardEvents);
+
     if (ta.totalEvents > 0) {
       console.log('');
       console.log('Activity by Hour (local event log):');

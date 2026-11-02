@@ -46,23 +46,29 @@ export async function envAdvisories(
   if (!resolvesTeamEnv(localConfig)) return [];
   const resolved = teamEnv ?? await resolveTeamEnv(localConfig);
   const { declarations } = resolved;
+
   if (declarations.kind === 'failed') return [];
   const variables = resolved.variables.kind === 'resolved' ? resolved.variables.entries : [];
   const ignored = ignoredExports(resolved);
+
   if (declarations.kind === 'absent' || declarations.entries.length === 0) return ignored;
   const secretKeys = declaredSecretKeys(declarations);
   const mcp = await resolveEntriesFor(mcpEntryReader, localConfig);
   const excluded = new Set(localConfig.excludedSkills ?? []);
+
   const servers = (mcp.kind === 'resolved' ? mcp.entries : [])
     .map((entry) => teamMcpToDef(entry.entry))
     .filter((server) => !excluded.has(server.name));
+
   const usedBy = (key: string): string[] =>
     servers.filter((server) => referencedVars(server).some((name) => envName(name) === envName(key))).map((server) => server.name);
 
   const advisories: EnvAdvisory[] = [];
+
   for (const secret of declarations.entries) {
     if (isReservedTeamEnvKey(secret.name)) continue;
     const state = secretState(resolved.secrets, secret.name);
+
     switch (state) {
       case 'missing':
         advisories.push({
@@ -78,10 +84,12 @@ export async function envAdvisories(
         break;
       default: {
         const unhandled: never = state;
+
         return unhandled;
       }
     }
   }
+
   if (teamConfig) {
     for (const [server, tools] of await keptMcpEntries(teamConfig, localConfig, resolved)) {
       const def = servers.find((candidate) => candidate.name === server);
@@ -89,9 +97,11 @@ export async function envAdvisories(
       advisories.push({ kind: 'kept-entry', server, tools, keys });
     }
   }
+
   for (const variable of variables) {
     if (!isReservedTeamEnvKey(variable.name) && secretKeys.has(variable.name)) advisories.push({ kind: 'secret-also-variable', key: variable.name, source: variable.source });
   }
+
   return [...advisories, ...ignored];
 }
 
@@ -110,13 +120,17 @@ export async function reportMissingSecrets(localConfig: LocalConfig, teamEnv?: T
  */
 function ignoredExports(teamEnv: TeamEnv): EnvAdvisory[] {
   const { variableValues: values, member } = teamEnv;
+
   if (values.kind === 'store-unreadable' || values.values.size === 0) return [];
   const variables = teamEnv.variables.kind === 'resolved' ? teamEnv.variables.entries : [];
+
   return variables.flatMap((variable): EnvAdvisory[] => {
     if (isReservedTeamEnvKey(variable.name)) return [];
     const resolved = values.values.get(variable.name);
+
     if (!resolved || resolved.source !== 'env.yaml' || resolved.fromEnv) return [];
     const exported = member(variable.name);
+
     return exported && exported !== resolved.value
       ? [{ kind: 'ignored-export', key: variable.name, source: variable.source }]
       : [];
@@ -129,13 +143,17 @@ export function describeEnvAdvisory(advisory: EnvAdvisory): string {
     case 'missing-secret': {
       const servers = advisory.servers.length > 0 ? `${advisory.servers.join(', ')}: ` : '';
       const { reference } = advisory;
+
       if (reference) {
         return `${servers}${advisory.key} reads ${reference.variable}, which is not set. Set ${reference.variable}, `
           + `or run \`teamai env set ${advisory.key}${reference.global ? ' --global' : ''}\` to replace the reference.`;
       }
+
       const url = advisory.url ? ` (${advisory.url})` : '';
+
       return `${servers}${advisory.key} is not set. Run \`teamai env set ${advisory.key}\`${url}.`;
     }
+
     case 'kept-entry':
       return `${advisory.server}: the entry an earlier pull wrote stays in ${advisory.tools.join(', ')} `
         + `and may hold an old ${advisory.keys.join(', ') || 'value'} until a pull finds its value.`;
@@ -147,6 +165,7 @@ export function describeEnvAdvisory(advisory: EnvAdvisory): string {
         + `Remove it from ${advisory.source} and run \`teamai push\`.`;
     default: {
       const unhandled: never = advisory;
+
       return unhandled;
     }
   }

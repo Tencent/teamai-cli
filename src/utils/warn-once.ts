@@ -12,6 +12,7 @@ export function warnOnce(message: string): boolean {
   if (shown.has(message)) return false;
   shown.add(message);
   log.warn(message);
+
   return true;
 }
 

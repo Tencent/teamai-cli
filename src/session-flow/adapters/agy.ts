@@ -34,6 +34,7 @@ const SummaryRow = z.object({
   last_modified_time: z.string(),
   workspace_uris: z.string(),
 });
+
 type SummaryRow = z.infer<typeof SummaryRow>;
 
 /** `workspace_uris` as agy stores it: a JSON array of URIs. */
@@ -42,6 +43,7 @@ const WorkspaceUris = z.string().transform((text, ctx) => {
     return JSON.parse(text) as unknown;
   } catch {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'not JSON' });
+
     return z.NEVER;
   }
 }).pipe(z.array(z.string()));
@@ -51,6 +53,7 @@ const StepTime = z.object({ created_at: z.string() });
 /** `2026-10-28 23:53:38.208141+00:00`, as agy stores a time, in ISO 8601, or undefined when it is not a time. */
 function isoOf(stored: string): string | undefined {
   const at = new Date(stored.replace(' ', 'T'));
+
   return Number.isNaN(at.getTime()) ? undefined : at.toISOString();
 }
 
@@ -58,6 +61,7 @@ function isoOf(stored: string): string | undefined {
 function workspaceOf(row: SummaryRow): string {
   const uris = WorkspaceUris.safeParse(row.workspace_uris);
   const [uri] = uris.success ? uris.data : [];
+
   return uri?.startsWith('file:') ? fileURLToPath(uri) : '';
 }
 
@@ -93,13 +97,16 @@ export class AgyAdapter extends AgentAdapter {
   private async summaries(root: string, sessionId?: string): Promise<SummaryRow[]> {
     const db = path.join(root, 'conversation_summaries.db');
     const sqlite3 = findSqlite3();
+
     if (!sqlite3) {
       throw new ToolUnavailableError(
         `The sqlite3 CLI was not found, so TeamAI cannot read the workspace and title of agy conversations from ${db}. ` +
           'Install sqlite3 and run the command again.',
       );
     }
+
     if (!fs.existsSync(db)) return [];
+
     // A safe id is a single path segment of letters, digits, `-` and `_`, so it cannot break out of the quotes.
     if (sessionId !== undefined && !isSafeSessionFileId(sessionId)) return [];
     const where = sessionId === undefined ? '' : ` WHERE conversation_id = '${sessionId}'`;
@@ -108,6 +115,7 @@ export class AgyAdapter extends AgentAdapter {
     // -shm file. A copy, with the -wal that holds what agy has not checkpointed yet, reads without writing beside agy's.
     const copy = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'teamai-agy-summaries-'));
     let result: ExecResult;
+
     try {
       const copied = path.join(copy, 'conversation_summaries.db');
       await fs.promises.copyFile(db, copied);
@@ -118,11 +126,15 @@ export class AgyAdapter extends AgentAdapter {
     } finally {
       await fs.promises.rm(copy, { recursive: true, force: true });
     }
+
     if (result.code !== 0) throw new Error(`sqlite3 could not read ${db}: ${result.stderr.trim() || `exit ${result.code}`}`);
+
     if (!result.stdout.trim()) return [];
+
     // A row of another shape is left out, so the rest still list.
     return z.array(z.unknown()).parse(JSON.parse(result.stdout)).flatMap((raw) => {
       const row = SummaryRow.safeParse(raw);
+
       return row.success ? [row.data] : [];
     });
   }
@@ -130,26 +142,33 @@ export class AgyAdapter extends AgentAdapter {
   async listConversations(projectPath?: string): Promise<SessionMeta[]> {
     const workspace = projectPath === undefined ? undefined : resolveRealCwd(projectPath);
     const metas: SessionMeta[] = [];
+
     const stored = await Promise.all(this.storeRoots.map(async (root, index) => {
       // The app's store, unlike the CLI's, is left out when it cannot be read, so the CLI's conversations still list.
       const rows = index === 0 ? await this.summaries(root) : await this.summaries(root).catch((error: unknown) => {
         if (error instanceof ToolUnavailableError) throw error;
         log.debug(`session: could not read the Antigravity conversations in ${root}: ${error instanceof Error ? error.message : String(error)}`);
+
         return [];
       });
+
       return rows.map((row) => ({ root, row }));
     }));
+
     for (const { root, row } of stored.flat()) {
       if (!isSafeSessionFileId(row.conversation_id)) continue;
       const cwd = workspaceOf(row);
+
       if (workspace !== undefined && (!cwd || resolveRealCwd(cwd) !== workspace)) continue;
       const filePath = this.transcriptOf(root, row.conversation_id);
       let sizeBytes: number;
+
       try {
         sizeBytes = fs.statSync(filePath).size;
       } catch {
         continue;
       }
+
       const updatedAt = isoOf(row.last_modified_time) ?? fs.statSync(filePath).mtime.toISOString();
       const [first] = [...readJsonlHead(filePath, 1)];
       const started = StepTime.safeParse(first);
@@ -164,6 +183,7 @@ export class AgyAdapter extends AgentAdapter {
         sizeBytes,
       });
     }
+
     return metas.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
@@ -171,22 +191,28 @@ export class AgyAdapter extends AgentAdapter {
   private async summaryOf(sessionId: string, projectPath?: string): Promise<{ row: SummaryRow; transcript: string } | undefined> {
     if (!isSafeSessionFileId(sessionId)) return undefined;
     const root = this.storeRoots.find((store) => fs.existsSync(this.transcriptOf(store, sessionId)));
+
     if (root === undefined) return undefined;
     const [row] = await this.summaries(root, sessionId);
+
     if (!row) return undefined;
     const found = { row, transcript: this.transcriptOf(root, sessionId) };
+
     if (projectPath === undefined) return found;
     const cwd = workspaceOf(row);
+
     return cwd && resolveRealCwd(cwd) === resolveRealCwd(projectPath) ? found : undefined;
   }
 
   async readSession(ref: SessionReadRef): Promise<Session> {
     const found = await this.summaryOf(ref.sessionId, ref.projectPath);
+
     if (!found) throw new Error(`No agy conversation ${ref.sessionId}${ref.projectPath ? ` in ${ref.projectPath}` : ''}.`);
     const { row } = found;
     const transcript = ref.filePath ?? found.transcript;
     const messages = messagesOf(readJsonl(transcript));
     const updatedAt = isoOf(row.last_modified_time) ?? fs.statSync(transcript).mtime.toISOString();
+
     return {
       sessionId: row.conversation_id,
       title: row.title || fallbackTitle(row.conversation_id),
@@ -245,6 +271,7 @@ const Step = z.object({
 /** An argument as agy stored it, JSON-encoded, decoded; a value that is not JSON is kept as it is. */
 function decoded(value: unknown): unknown {
   if (typeof value !== 'string') return value;
+
   try {
     return JSON.parse(value);
   } catch {
@@ -264,18 +291,23 @@ function requestOf(content: string): string {
 function messagesOf(lines: Iterable<Record<string, unknown>>): Message[] {
   const messages: Message[] = [];
   const pending: string[] = [];
+
   for (const line of lines) {
     const parsed = Step.safeParse(line);
+
     if (!parsed.success) continue;
     const step = parsed.data;
     const timestamp = step.created_at === undefined ? {} : { timestamp: step.created_at };
+
     if (step.type === 'USER_INPUT') {
       messages.push({ role: 'user', content: [{ type: 'text', text: requestOf(step.content ?? '') }], ...timestamp });
     } else if (step.type === 'SYSTEM_MESSAGE') {
       messages.push({ role: 'user', content: [{ type: 'text', text: step.content ?? '' }], ...timestamp, metadata: { isMeta: true } });
     } else if (step.type === 'PLANNER_RESPONSE') {
       const content: ContentBlock[] = [];
+
       if (step.thinking) content.push({ type: 'thinking', text: step.thinking });
+
       if (step.content) content.push({ type: 'text', text: step.content });
       (step.tool_calls ?? []).forEach((call, i) => {
         const callId = `${step.step_index}-${i}`;
@@ -283,6 +315,7 @@ function messagesOf(lines: Iterable<Record<string, unknown>>): Message[] {
         const args = Object.fromEntries(Object.entries(call.args ?? {}).map(([key, value]) => [key, decoded(value)]));
         content.push({ type: 'tool_call', toolName: IR_TOOL[call.name] ?? call.name, callId, arguments: args });
       });
+
       if (content.length > 0) messages.push({ role: 'assistant', content, ...timestamp });
     } else if (step.source === 'MODEL' && pending.length > 0) {
       const callId = pending.shift() ?? '';
@@ -291,5 +324,6 @@ function messagesOf(lines: Iterable<Record<string, unknown>>): Message[] {
       messages.push({ role: 'user', content: [{ type: 'tool_result', callId, content: text, isError }], ...timestamp });
     }
   }
+
   return messages;
 }

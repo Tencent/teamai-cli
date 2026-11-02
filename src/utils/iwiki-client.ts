@@ -103,6 +103,7 @@ export class IWikiClient {
   private async _postRaw(payload: string): Promise<string> {
     return new Promise<string>((resolve, reject) => {
       const url = new URL(MCP_URL);
+
       const options: https.RequestOptions = {
         hostname: url.hostname,
         path: url.pathname + url.search,
@@ -167,6 +168,7 @@ export class IWikiClient {
     const rawBody = await this._postRaw(payload);
 
     let response: JsonRpcResponse;
+
     try {
       response = JSON.parse(rawBody) as JsonRpcResponse;
     } catch (parseErr: unknown) {
@@ -179,18 +181,22 @@ export class IWikiClient {
 
     // MCP 标准响应格式：result.content[0].text 包含实际内容
     const result = response.result;
+
     // Tool execution failures are successful JSON-RPC responses, but their
     // content is an error description, not a document to import.
     if (result !== null && typeof result === 'object' && 'isError' in result && result.isError === true) {
       const content = 'content' in result && Array.isArray(result.content)
         ? result.content as Array<{ text?: unknown }>
         : [];
+
       const message = content
         .filter((item) => typeof item.text === 'string')
         .map((item) => item.text)
         .join('\n');
+
       throw new Error(`iWiki MCP tool "${toolName}" failed${message ? `: ${message}` : ''}`);
     }
+
     if (
       result !== null &&
       typeof result === 'object' &&
@@ -198,6 +204,7 @@ export class IWikiClient {
       Array.isArray((result as Record<string, unknown>).content)
     ) {
       const content = (result as { content: Array<{ text?: string }> }).content;
+
       if (content.length > 0 && typeof content[0].text === 'string') {
         // text 可能是 JSON 字符串，尝试再次解析
         try {
@@ -236,6 +243,7 @@ export class IWikiClient {
       }));
     } catch (err: unknown) {
       log.warn(`iWiki page tree request failed [parentid=${parentid}]: ${String(err)}`);
+
       return [];
     }
   }
@@ -257,6 +265,7 @@ export class IWikiClient {
 
     // getDocument 返回 Markdown 字符串或含 content 字段的对象
     let content = '';
+
     if (typeof contentResult === 'string') {
       content = contentResult;
     } else if (
@@ -269,6 +278,7 @@ export class IWikiClient {
 
     // metadata 返回含 title、id 等字段的对象
     let title = '';
+
     if (
       metaResult !== null &&
       typeof metaResult === 'object' &&
@@ -313,6 +323,7 @@ export class IWikiClient {
       const tryDrain = (): void => {
         if (stopped || (queue.length === 0 && running === 0)) {
           resolve();
+
           return;
         }
 
@@ -333,9 +344,12 @@ export class IWikiClient {
                       `Reached the max page limit (${maxPages}); stopped traversing. Collected ${allPages.length} page(s).`,
                     );
                   }
+
                   break;
                 }
+
                 allPages.push(page);
+
                 // 有子文档则加入 BFS 队列
                 if (page.has_children) {
                   queue.push(page.docid);
@@ -363,6 +377,7 @@ export class IWikiClient {
       // 次调用在遍历开始前就以 "rootId 队列为空" 拒绝。
       if (queue.length === 0) {
         reject(new Error('fetchAllPages: rootId is empty'));
+
         return;
       }
 

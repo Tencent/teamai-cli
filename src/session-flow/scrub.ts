@@ -81,9 +81,11 @@ const encodedDir = (dir: string): string => dir.replace(/[^a-zA-Z0-9]/g, '-');
 function spellingsOf(root: string): Array<{ spelling: string; ignoresCase: boolean }> {
   const trimmed = root.replace(/[\\/]+$/, '');
   const drive = /^([A-Za-z]):[\\/](.*)$/.exec(trimmed);
+
   if (!drive) return [...new Set([trimmed, encodeURI(trimmed)])].map((spelling) => ({ spelling, ignoresCase: false }));
   const forward = trimmed.replaceAll('\\', '/');
   const rest = drive[2].replaceAll('\\', '/');
+
   return [...new Set([trimmed, forward, trimmed.replaceAll('\\', '\\\\'), `/${drive[1]}/${rest}`, encodeURI(forward)])].map((spelling) => ({ spelling, ignoresCase: true }));
 }
 
@@ -99,52 +101,69 @@ function pathRewriter({ repo, home, tmp, workdir }: LocalPathRoots, cwd: string)
   // Keyed as matched: a spelling matched ignoring case by its lower case.
   const named = new Map<string, string>();
   const ignoringCase = new Set<string>();
+
   for (const [roots, name] of [[home, '~'], [tmp, '<tmp>'], [repo, '<repo>'], ...(workdir && workdirName ? [[workdir.spellings, workdirName] as const] : [])] as const) {
     for (const { spelling, ignoresCase } of roots.flatMap(spellingsOf)) {
       if (!isBelowFilesystemRoot(spelling)) continue;
       const key = ignoresCase ? spelling.toLowerCase() : spelling;
       named.set(key, name);
+
       if (ignoresCase) ignoringCase.add(key);
     }
   }
+
   if (named.size === 0) return { text: (text) => text, title: (title) => title };
   const byLength = (left: string, right: string): number => right.length - left.length;
   const roots = [...named.keys()].sort(byLength);
+
   const matcher = (some: string[], flags: string): RegExp | undefined =>
     some.length > 0 ? new RegExp(`${SEGMENT_START}(?:${some.map(escapeRegExp).join('|')})${SEGMENT_END}`, flags) : undefined;
+
   const rooted = [matcher(roots.filter((root) => ignoringCase.has(root)), 'giu'), matcher(roots.filter((root) => !ignoringCase.has(root)), 'gu')];
   const nameOf = (root: string): string | undefined => named.get(root) ?? named.get(root.toLowerCase());
   const encoded = (dirs: readonly string[]): string[] => [...new Set(dirs.filter((dir) => isBelowFilesystemRoot(dir) && /^(?:\/|[A-Za-z]:[\\/])/.test(dir)).map(encodedDir))].sort(byLength);
+
   const slug = (dirs: string[], after: string): RegExp | undefined =>
     dirs.length > 0 ? new RegExp(`(?<=[\\\\/])(?:${dirs.map(escapeRegExp).join('|')})(?=${after})`, 'g') : undefined;
+
   const project = slug(encoded([cwd, ...repo]), '$|[\\\\/]');
   const homeSlug = slug(encoded(home), '$|[\\\\/-]');
+
   const text = (value: string): string => {
     const next = rooted.reduce((current, pattern) => (pattern ? current.replace(pattern, (root) => nameOf(root) ?? root) : current), value);
     const projected = project ? next.replace(project, '<project>') : next;
+
     return homeSlug ? projected.replace(homeSlug, '~') : projected;
   };
+
   const title = (value: string): string => {
     const cut = /(?:[A-Za-z]:)?[\\/][^\s<]{2,}$/.exec(value);
+
     if (!cut || nameOf(cut[0]) !== undefined) return text(value);
     const starts = (candidate: string): boolean => candidate.startsWith(ignoringCase.has(candidate) ? cut[0].toLowerCase() : cut[0]);
     const root = roots.findLast((candidate) => candidate.length > cut[0].length && starts(candidate));
+
     return root ? text(value.slice(0, cut.index)) + (named.get(root) ?? '') : text(value);
   };
+
   return { text, title };
 }
 
 /** `metadata` with `rewrite` applied to its string values, or `metadata` itself when that changes none. */
 function rewriteMetadata(metadata: MessageMetadata, rewrite: (text: string) => string): MessageMetadata {
   const changed = Object.entries(metadata).flatMap(([key, value]) => (typeof value === 'string' && rewrite(value) !== value ? [[key, rewrite(value)]] : []));
+
   return changed.length === 0 ? metadata : { ...metadata, ...Object.fromEntries(changed) };
 }
 
 /** `value` with `rewrite` applied to each string it holds, keys left as they are. */
 function mapStrings(value: unknown, rewrite: (text: string) => string): unknown {
   if (typeof value === 'string') return rewrite(value);
+
   if (Array.isArray(value)) return value.map((item) => mapStrings(item, rewrite));
+
   if (value !== null && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, mapStrings(item, rewrite)]));
+
   return value;
 }
 
@@ -153,10 +172,12 @@ function countRedactions(before: string, after: string): number {
   if (before === after) return 0;
   let count = 0;
   let idx = after.indexOf(REDACTED_MARKER);
+
   while (idx >= 0) {
     count++;
     idx = after.indexOf(REDACTED_MARKER, idx + REDACTED_MARKER.length);
   }
+
   return count;
 }
 
@@ -167,18 +188,22 @@ function scrubBlock(
   switch (block.type) {
     case 'text': {
       const next = rewrite(mask(block.text));
+
       return {
         block: next === block.text ? block : { type: 'text', text: next },
         count: countRedactions(block.text, next),
       };
     }
+
     case 'thinking': {
       const next = rewrite(mask(block.text));
+
       return {
         block: next === block.text ? block : { ...block, text: next },
         count: countRedactions(block.text, next),
       };
     }
+
     case 'tool_call': {
       // Arguments are structured: serialize, redact as a whole, then parse
       // back so string fields are covered too, not just top-level strings.
@@ -187,9 +212,11 @@ function scrubBlock(
       // the same reason: a Windows path is escaped once serialized.
       const raw = JSON.stringify(block.arguments ?? {});
       const next = mask(JSON.stringify(mapStrings(redactJson(block.arguments ?? {}, envSecrets), rewrite)));
+
       if (next === raw) return { block, count: 0 };
       const count = countRedactions(raw, next);
       let parsed: Record<string, unknown> = {};
+
       try {
         parsed = JSON.parse(next) as Record<string, unknown>;
       } catch {
@@ -197,15 +224,19 @@ function scrubBlock(
         // parse: keep the masked text whole, never the original arguments.
         parsed = { redacted: next };
       }
+
       return { block: { ...block, arguments: parsed }, count };
     }
+
     case 'tool_result': {
       const next = rewrite(mask(block.content));
+
       return {
         block: next === block.content ? block : { ...block, content: next },
         count: countRedactions(block.content, next),
       };
     }
+
     case 'image': {
       // Image payloads do not participate in text redaction, but their
       // `filePath` is an absolute local path (`/Users/alice/...`) and lands in
@@ -215,9 +246,11 @@ function scrubBlock(
       // file, and dropping it would silently replace the image with a
       // placeholder on a machine that never leaves.
       if (!block.filePath || !dropImagePaths) return { block, count: 0 };
+
       if (block.data) {
         return { block: { type: 'image', mimeType: block.mimeType, data: block.data, label: block.label }, count: 1 };
       }
+
       // No inline data: keeping the block would mean keeping the path.
       return {
         block: { type: 'text', text: imagePlaceholderText(block) },
@@ -263,13 +296,18 @@ export function scrubSession(
 
   const messages: Message[] = session.messages.map((msg) => {
     let contentChanged = false;
+
     const content = msg.content.map((block) => {
       const { block: next, count } = scrubBlock(block, { dropImagePaths, mask, rewrite, envSecrets });
       redactedCount += count;
+
       if (next !== block) contentChanged = true;
+
       return next;
     });
+
     const metadata = msg.metadata && paths ? rewriteMetadata(msg.metadata, paths.text) : msg.metadata;
+
     return contentChanged || metadata !== msg.metadata ? { ...msg, content, ...(metadata ? { metadata } : {}) } : msg;
   });
 

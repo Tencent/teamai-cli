@@ -54,6 +54,7 @@ export async function skillShow(name: string, options: GlobalOptions): Promise<v
   // Read-only: the load never persists a migration (#893).
   const team = await detectTeam(undefined, { dryRun: true });
   const served = await resolveServableSkill(name, undefined, team);
+
   if (team.kind !== 'team') {
     // Only the package can answer without a team: it ships with the CLI, so
     // `teamai skill show core` still works on a machine that has never run
@@ -62,16 +63,20 @@ export async function skillShow(name: string, options: GlobalOptions): Promise<v
     // team's) are not searched, and the member is told what failed.
     if (served.kind === 'blocked') {
       refuseBlocked(served);
+
       return;
     }
+
     if (served.kind !== 'found') {
       log.error(`Skill "${name}" not found among the skills the installed CLI serves.`);
       log.dim(team.kind === 'none'
         ? 'Run `teamai init` first to search the team repo and installed agents too.'
         : `The team repo and installed agents were not searched: the teamai config could not be loaded. ${team.detail}`);
       process.exitCode = 1;
+
       return;
     }
+
     printSkillCard({
       name: served.skill.name,
       source: { kind: 'builtin' },
@@ -82,30 +87,38 @@ export async function skillShow(name: string, options: GlobalOptions): Promise<v
       primaryOrigin: 'builtin',
       installedIn: [],
     });
+
     if (team.kind === 'none') {
       log.dim('No team is set up on this machine, so contributors, tags and installed agents are not shown.');
     } else {
       log.error(`The teamai config could not be loaded, so contributors, tags and installed agents are not shown. ${team.detail}`);
       process.exitCode = 1;
     }
+
     return;
   }
+
   const { localConfig, teamConfig } = team.init;
 
   const agents = await detectInstalledAgents(localConfig, teamConfig);
   const located = await locateSkill(name, localConfig, agents, served);
+
   if (!located) {
     log.error(`Skill "${name}" not found in team repo or any installed agent.`);
     log.dim('Try `teamai list --source all` to see available skills.');
     process.exitCode = 1;
+
     return;
   }
+
   // The resolver never hands out a blocked skill, so there is no directory to
   // print here even by accident; only the refusal is left to do.
   if (located.kind === 'blocked') {
     refuseBlocked(located);
+
     return;
   }
+
   const resolved: ResolvedSkill = located;
 
   const resolvedName = resolved.name;
@@ -155,6 +168,7 @@ export async function skillList(options: GlobalOptions & { json?: boolean }): Pr
 
   if (options.json) {
     console.log(JSON.stringify({ skills: catalog }, null, 2));
+
     return;
   }
 
@@ -176,6 +190,7 @@ export async function skillList(options: GlobalOptions & { json?: boolean }): Pr
 
   console.log('=== BUILT-IN SKILLS (served by the CLI) ===');
   console.log('');
+
   if (catalog.length === 0) {
     console.log('  (none — the installed package ships no skill content)');
   } else {
@@ -185,6 +200,7 @@ export async function skillList(options: GlobalOptions & { json?: boolean }): Pr
       console.log(`    teamai skill get ${entry.name}`);
     }
   }
+
   console.log('');
 }
 
@@ -198,6 +214,7 @@ async function locateSkill(
 
   // 1. Flat layout in team repo
   const flat = path.join(teamSkillsDir, name);
+
   if (await pathExists(path.join(flat, 'SKILL.md'))) {
     return { kind: 'found', name, primaryPath: flat, primaryOrigin: 'team' };
   }
@@ -205,8 +222,10 @@ async function locateSkill(
   // 2. Namespaced layout in team repo
   if (await pathExists(teamSkillsDir)) {
     const namespaces = await listDirs(teamSkillsDir);
+
     for (const ns of namespaces) {
       const candidate = path.join(teamSkillsDir, ns, name);
+
       if (await pathExists(path.join(candidate, 'SKILL.md'))) {
         return { kind: 'found', name, primaryPath: candidate, primaryOrigin: 'team', namespace: ns };
       }
@@ -223,6 +242,7 @@ async function locateSkill(
   for (const agent of LEGACY_BUILTIN_SKILL_NAMES.has(name) ? [] : agents) {
     if (!agent.installed) continue;
     const candidate = path.join(agent.absoluteSkillsPath, name);
+
     if (await pathExists(path.join(candidate, 'SKILL.md'))) {
       return { kind: 'found', name, primaryPath: candidate, primaryOrigin: 'agent' };
     }
@@ -232,6 +252,7 @@ async function locateSkill(
   //    so it answers for the names nothing on this machine claims: `core` and
   //    `wiki` live in the package, and the agent directory holds only the stub.
   if (served.kind === 'blocked') return served;
+
   if (served.kind === 'found') {
     return { kind: 'found', name: served.skill.name, primaryPath: served.skill.dir, primaryOrigin: 'builtin' };
   }
@@ -244,13 +265,16 @@ async function collectInstalledAgents(
   agents: ResolvedAgent[],
 ): Promise<Array<{ agent: ResolvedAgent; path: string }>> {
   const matches: Array<{ agent: ResolvedAgent; path: string }> = [];
+
   for (const agent of agents) {
     if (!agent.installed) continue;
     const skillDir = path.join(agent.absoluteSkillsPath, name);
+
     if (await pathExists(path.join(skillDir, 'SKILL.md'))) {
       matches.push({ agent, path: skillDir });
     }
   }
+
   return matches;
 }
 
@@ -281,13 +305,16 @@ function printSkillCard(card: SkillCard): void {
   console.log('');
 
   console.log(`  Source       : ${formatSkillSource(card.source)}`);
+
   if (card.namespace) {
     console.log(`  Namespace    : ${card.namespace}`);
   }
+
   console.log(`  Description  : ${card.description || '(none)'}`);
   console.log(`  Contributors : ${card.contributors.length > 0 ? card.contributors.join(', ') : '(none)'}`);
   console.log(`  Tags         : ${card.tags.length > 0 ? card.tags.join(', ') : '(none)'}`);
   console.log(`  ${PRIMARY_PATH_LABEL[card.primaryOrigin]}  : ${card.primaryPath}/`);
+
   if (card.primaryOrigin === 'builtin') {
     console.log(`  Read it with : teamai skill get ${card.name}`);
   }
@@ -300,10 +327,12 @@ function printSkillCard(card: SkillCard): void {
   } else {
     const first = card.installedIn[0];
     console.log(`  Installed in : ${first.agent.id} (${first.path})`);
+
     for (let i = 1; i < card.installedIn.length; i++) {
       const entry = card.installedIn[i];
       console.log(`                 ${entry.agent.id} (${entry.path})`);
     }
   }
+
   console.log('');
 }

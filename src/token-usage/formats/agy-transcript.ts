@@ -11,6 +11,7 @@ const SESSION_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
 /** agy 1.4.8's step, whose string `input_tokens` includes the cache reads. */
 const InclusiveStep = z.object({ input_tokens: z.string() });
 const Count = z.union([z.number(), z.string().transform(Number)]).pipe(z.number().finite().nonnegative()).catch(0).default(0);
+
 const PlannerStep = z.object({
   type: z.literal('PLANNER_RESPONSE'),
   input_tokens: Count,
@@ -27,22 +28,29 @@ const PlannerStep = z.object({
  */
 export async function readAgyTranscript(source: TokenSource): Promise<TokenReading> {
   const tokens = emptyTokenUsage();
+
   if (!SESSION_UUID_RE.test(source.sessionId)) return { tokens, requests: [] };
   const { sessionStoreDir } = await import('../../locate.js');
   const { agyStoreRoots } = await import('../../session-flow/adapters/agy.js');
+
   for (const store of agyStoreRoots(sessionStoreDir('agy', undefined))) {
     const steps: Array<z.infer<typeof PlannerStep> & { inclusive: boolean }> = [];
     await forEachJsonLine(path.join(store, 'brain', source.sessionId, '.system_generated', 'logs', 'transcript.jsonl'), ['"PLANNER_RESPONSE"'], (entry) => {
       const step = PlannerStep.safeParse(entry);
+
       if (step.success) steps.push({ ...step.data, inclusive: InclusiveStep.safeParse(entry).success });
     });
+
     if (!steps.length) continue;
+
     for (const step of steps) {
       tokens.input += step.inclusive ? Math.max(0, step.input_tokens - step.cache_read_tokens) : step.input_tokens;
       tokens.output += step.output_tokens;
       tokens.cacheRead += step.cache_read_tokens;
     }
+
     return { tokens, scope: 'session', requests: [] };
   }
+
   return { tokens, requests: [] };
 }

@@ -61,6 +61,7 @@ export interface SessionSummary {
 
 /** Max characters kept from the first prompt in a summary. */
 const FIRST_PROMPT_MAX_CHARS = 160;
+
 /** A session touching at least this many distinct tools is considered substantial. */
 const SUBSTANTIAL_TOOL_COUNT = 3;
 
@@ -80,6 +81,7 @@ export function isValuable(summary: Pick<SessionSummary, 'interventionCount' | '
  */
 export function collectSession(sessionId: string, events: DashboardEvent[]): SessionSummary | null {
   const own = events.filter((e) => e.sessionId === sessionId);
+
   if (own.length === 0) return null;
 
   const toolCounts: Record<string, number> = {};
@@ -94,13 +96,19 @@ export function collectSession(sessionId: string, events: DashboardEvent[]): Ses
     if (e.type === 'session_start' && e.gitAtStart && (!gitStart || e.timestamp < gitStart.at)) {
       gitStart = { at: e.timestamp, state: e.gitAtStart };
     }
+
     if (e.tool) tool = e.tool;
+
     if (e.cwd) cwd = e.cwd;
+
     if (e.timestamp < startedAt) startedAt = e.timestamp;
+
     if (e.timestamp > endedAt) endedAt = e.timestamp;
+
     if (e.type === 'tool_use' && e.toolName) {
       toolCounts[e.toolName] = (toolCounts[e.toolName] ?? 0) + 1;
     }
+
     if (!firstPromptRaw && e.type === 'prompt_submit' && e.promptSummary) {
       firstPromptRaw = e.promptSummary;
     }
@@ -115,12 +123,15 @@ export function collectSession(sessionId: string, events: DashboardEvent[]): Ses
     toolReject: metrics.toolReject,
     correction: metrics.correction,
   };
+
   const interventionCount = interventions.interrupt + interventions.toolReject + interventions.correction;
   const toolTotal = Object.values(toolCounts).reduce((s, n) => s + n, 0);
   const distinctTools = Object.keys(toolCounts).length;
+
   const firstPrompt = firstPromptRaw
     ? redactWithEnv(firstPromptRaw).replace(/\s+/g, ' ').trim().slice(0, FIRST_PROMPT_MAX_CHARS)
     : '';
+
   const keys = repoKeys(events);
 
   return {
@@ -159,12 +170,15 @@ export interface RenderOptions {
 /** Render a single session as a self-contained markdown block. */
 export function renderSessionMarkdown(summary: SessionSummary, options: RenderOptions = {}): string {
   const date = summary.endedAt.slice(0, 10);
+
   const topTools = Object.entries(summary.toolCounts)
     .sort((a, b) => b[1] - a[1])
     .slice(0, 8)
     .map(([name, count]) => `${name}×${count}`)
     .join(', ');
+
   const iv = summary.interventions;
+
   const lines = [
     // Stable, collision-proof idempotency key: the full session id, in an HTML
     // comment so it never renders. The heading below still shows the short id
@@ -177,9 +191,12 @@ export function renderSessionMarkdown(summary: SessionSummary, options: RenderOp
     `- Prompts: ${summary.prompts} · Tools: ${summary.toolTotal} (${summary.distinctTools} distinct)`,
     `- Interventions: interrupt ${iv.interrupt}, toolReject ${iv.toolReject}, correction ${iv.correction}`,
   ];
+
   if (topTools) lines.push(`- Top tools: ${topTools}`);
+
   if (options.includePrompt && summary.firstPrompt) lines.push(`- First ask: ${summary.firstPrompt}`);
   lines.push('');
+
   return lines.join('\n');
 }
 
@@ -208,16 +225,20 @@ export async function appendMonthlyLog(
   const marker = `<!-- teamai:session ${summary.sessionId} -->`;
   const lockPath = `${file}.lock`;
   const deadline = Date.now() + 5_000;
+
   while (!(await acquireLock(lockPath))) {
     const remaining = deadline - Date.now();
+
     if (remaining <= 0) {
       throw new Error(`Cannot lock session log ${file}. Retry teamai session save later.`);
     }
+
     await new Promise((resolve) => setTimeout(resolve, Math.min(50, remaining)));
   }
 
   try {
     let existing = '';
+
     try {
       existing = await fs.promises.readFile(file, 'utf-8');
     } catch (error) {
@@ -228,6 +249,7 @@ export async function appendMonthlyLog(
 
     const header = existing ? '' : `# Session log — ${month}\n\n`;
     await writeFileAtomic(file, existing + header + block);
+
     return file;
   } finally {
     await releaseLock(lockPath);
@@ -245,18 +267,23 @@ export async function pruneMonthlyLogs(
   retentionDays = 90,
 ): Promise<string[]> {
   let entries: string[];
+
   try {
     entries = await fs.promises.readdir(dir);
   } catch {
     return [];
   }
+
   const cutoff = now.getTime() - retentionDays * 86_400_000;
   const removed: string[] = [];
+
   for (const entry of entries) {
     const m = entry.match(/^(\d{4})-(\d{2})\.md$/);
+
     if (!m) continue;
     // Compare against the *end* of that month so the current month is never pruned.
     const monthEnd = new Date(Date.UTC(Number(m[1]), Number(m[2]), 0, 23, 59, 59));
+
     if (monthEnd.getTime() < cutoff) {
       try {
         await fs.promises.unlink(path.join(dir, entry));
@@ -266,5 +293,6 @@ export async function pruneMonthlyLogs(
       }
     }
   }
+
   return removed;
 }

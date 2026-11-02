@@ -29,8 +29,11 @@ export const RepoListFileSchema = z.object({
 });
 
 export type RepoListEntry = z.infer<typeof RepoListEntrySchema>;
+
 export type RepoListOrgEntry = z.infer<typeof RepoListOrgEntrySchema>;
+
 export type RepoListItem = z.infer<typeof RepoListItemSchema>;
+
 export type RepoListFile = z.infer<typeof RepoListFileSchema>;
 
 /**

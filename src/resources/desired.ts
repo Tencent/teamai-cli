@@ -41,6 +41,7 @@ export interface RolePullContext {
 
 export async function buildRolePullContext(localConfig: LocalConfig): Promise<RolePullContext | null> {
   const resolved = await resolveResourceNamespaces(localConfig);
+
   if (!resolved) return null;
   const { activeNamespaces, allSkillNamespaces, inactiveDocsNamespaces } = resolved;
   const inactiveSkillNamespaces = [...allSkillNamespaces].filter((namespace) => !activeNamespaces.skills.includes(namespace));
@@ -51,6 +52,7 @@ export async function buildRolePullContext(localConfig: LocalConfig): Promise<Ro
   for (const namespace of activeNamespaces.skills) {
     const namespaceDir = path.join(localConfig.repo.localPath, 'skills', namespace);
     const names = await listDirs(namespaceDir);
+
     for (const name of names) {
       activeSkillNames.add(name);
     }
@@ -59,8 +61,10 @@ export async function buildRolePullContext(localConfig: LocalConfig): Promise<Ro
   for (const namespace of inactiveSkillNamespaces) {
     const namespaceDir = path.join(localConfig.repo.localPath, 'skills', namespace);
     const names = await listDirs(namespaceDir);
+
     for (const name of names) {
       inactiveSkillNames.add(name);
+
       // Record the source dir so cleanup can verify the deployed copy is
       // unmodified before deleting it. (If a name lives in multiple inactive
       // namespaces, keeping the first is fine — cleanup only needs one source to
@@ -91,8 +95,10 @@ export function filterRulesByKnowledgeNamespaces(
 
   return rules.filter((rule) => {
     const slashIndex = rule.name.indexOf('/');
+
     if (slashIndex === -1) return true; // root-level rule, always include
     const namespace = rule.name.slice(0, slashIndex);
+
     return knowledgeNamespaces.includes(namespace);
   });
 }
@@ -122,10 +128,13 @@ export type DesiredItems =
 export function describeDeliveryConflict({ type, conflict }: DeliveryConflict): string {
   const { name, first, second } = conflict;
   const files = `${first.source} and ${second.source}`;
+
   if (conflict.reason === 'duplicate') {
     const place = first.namespace === null ? 'the root' : `namespace "${first.namespace}"`;
+
     return `Duplicate ${type} "${name}" in ${place}: ${files}`;
   }
+
   return `Duplicate ${type} "${name}" found in active namespaces "${first.namespace ?? '(root)'}" `
     + `and "${second.namespace ?? '(root)'}" (${files})`;
 }
@@ -155,8 +164,10 @@ export function filterAgentsByNamespaces(
     // scan order so the message names the pair the way the scan meets it.
     const shipped = [...new Set(agents.flatMap((agent) => (agent.namespace ? [agent.namespace] : [])))];
     const resolution = resolveNamespacedItems(agents.map(itemCandidate), shipped);
+
     if (resolution.kind === 'conflict') return { kind: 'conflict', type: 'agent', conflict: resolution };
     const [clash] = resolution.items.flatMap((item) => (item.replaces ? [{ root: item.replaces, namespaced: item }] : []));
+
     if (clash) {
       return {
         kind: 'conflict',
@@ -164,12 +175,15 @@ export function filterAgentsByNamespaces(
         conflict: { kind: 'conflict', reason: 'two-namespaces', name: clash.root.name, first: clash.root, second: clash.namespaced },
       };
     }
+
     return { kind: 'resolved', items: agents, overrides: [] };
   }
 
   const resolution = resolveAgentsForDirectory(agents, agentNamespaces, placedAgents);
+
   if (resolution.kind === 'conflict') return { kind: 'conflict', type: 'agent', conflict: resolution };
   const delivered = new Set(resolution.items.map((item) => item.value));
+
   return {
     kind: 'resolved',
     items: agents.filter((agent) => delivered.has(agent)),
@@ -186,6 +200,7 @@ export function filterAgentsByNamespaces(
  */
 async function withSkillMd(items: ResourceItem[]): Promise<ResourceItem[]> {
   const skills: ResourceItem[] = [];
+
   for (const item of items) {
     if (await pathExists(path.join(item.sourcePath, 'SKILL.md'))) {
       skills.push(item);
@@ -193,6 +208,7 @@ async function withSkillMd(items: ResourceItem[]): Promise<ResourceItem[]> {
       warnOnce(`${item.relativePath} has no SKILL.md, so it is not delivered as a skill. Add SKILL.md to it in the team repo, or remove it.`);
     }
   }
+
   return skills;
 }
 
@@ -205,6 +221,7 @@ export async function scanRoleAwareSkills(
   for (const namespace of namespaces.skills) {
     const namespaceDir = path.join(localConfig.repo.localPath, 'skills', namespace);
     const dirs = await listDirs(namespaceDir);
+
     for (const dir of dirs) {
       items.push({
         name: dir,
@@ -217,7 +234,9 @@ export async function scanRoleAwareSkills(
   }
 
   const resolution = resolveNamespacedItems((await withSkillMd(items)).map(itemCandidate), namespaces.skills);
+
   if (resolution.kind === 'conflict') return { kind: 'conflict', type: 'skill', conflict: resolution };
+
   return { kind: 'resolved', items: resolution.items.map((item) => item.value) };
 }
 
@@ -263,21 +282,27 @@ export interface ShadowedSkill {
  */
 async function sharedFirst(repoPath: string, items: readonly ResourceItem[]): Promise<{ items: ResourceItem[]; shadowed: ShadowedSkill[] }> {
   const byCodePoint = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+
   // By namespace name, not path: `skills/dev-prod/` sorts before `skills/dev/`.
   const ordered = [...items].sort((a, b) => Number(a.namespace !== undefined) - Number(b.namespace !== undefined)
     || byCodePoint(a.namespace ?? '', b.namespace ?? '') || byCodePoint(a.relativePath, b.relativePath));
+
   const kept = new Map<string, ResourceItem>();
   const skipped: { item: ResourceItem & { namespace: string }; kept: ResourceItem }[] = [];
+
   for (const item of ordered) {
     const winner = kept.get(item.name);
+
     if (!winner) kept.set(item.name, item);
     // Root copies sort first and one name has one root copy, so a skipped copy is namespaced.
     else if (item.namespace !== undefined) skipped.push({ item: { ...item, namespace: item.namespace }, kept: winner });
   }
+
   // A member with no role reaches here only when the manifest is absent or parsed.
   const roles = skipped.length > 0 ? (await loadRolesManifestIfPresent(repoPath))?.roles ?? [] : [];
   // A role that receives two namespaces holding the name delivers neither copy (#707).
   const namespacesOf = (name: string): string[] => items.flatMap((other) => (other.name === name && other.namespace ? [other.namespace] : []));
+
   const shadowed = skipped.map(({ item, kept: winner }) => ({
     name: item.name,
     namespace: item.namespace,
@@ -287,6 +312,7 @@ async function sharedFirst(repoPath: string, items: readonly ResourceItem[]): Pr
       .filter(({ resources: { skills } }) => namespacesOf(item.name).every((namespace) => skills.includes(namespace) === (namespace === item.namespace)))
       .map((role) => role.id),
   }));
+
   return { items: [...kept.values()], shadowed };
 }
 
@@ -307,6 +333,7 @@ export async function resolveDesiredSkills(
   roleContext: RolePullContext | null,
 ): Promise<DesiredSkills | DeliveryConflict> {
   const members = await deliveredMembers(localConfig);
+
   if (members) return resolveWorkspaceSkills(teamConfig, localConfig, members);
   const handler = getHandler('skills');
   const tagsConfig = await loadTagsConfig(localConfig.repo.localPath);
@@ -315,8 +342,10 @@ export async function resolveDesiredSkills(
 
   let directoryItems: ResourceItem[];
   let shadowed: ShadowedSkill[] = [];
+
   if (roleContext) {
     const scanned = await scanRoleAwareSkills(localConfig, roleContext.activeNamespaces);
+
     if (scanned.kind === 'conflict') return scanned;
     directoryItems = scanned.items;
   } else {
@@ -332,11 +361,13 @@ export async function resolveDesiredSkills(
 
   let tagIncluded: ResourceItem[] = [];
   let skippedByTags = 0;
+
   if (hasActiveTagSubscriptions) {
     const tagResult = filterByTags(teamItems, tagsConfig, subscribedTags, 'skills');
     const subscribedTagSet = new Set(subscribedTags);
     tagIncluded = tagResult.included.filter((item) => {
       const itemTags = tagsConfig.skills[item.name];
+
       return itemTags?.some((tag) => subscribedTagSet.has(tag));
     });
     skippedByTags = tagResult.skipped.length;
@@ -347,8 +378,10 @@ export async function resolveDesiredSkills(
   // (#707). Tags are keyed by name alone, so among tag matches the root skill
   // — the tag catalog — wins over a same-name skill in some other namespace.
   const merged = new Map<string, ResourceItem>();
+
   for (const item of directoryItems) merged.set(item.name, item);
   const rootFirst = [...tagIncluded].sort((a, b) => Number(a.namespace !== undefined) - Number(b.namespace !== undefined));
+
   for (const item of rootFirst) {
     if (!merged.has(item.name)) merged.set(item.name, item);
   }
@@ -360,9 +393,11 @@ export async function resolveDesiredSkills(
   // A delivered namespace skill stands in for the root skill of its name,
   // whether or not a tag would have brought that one.
   const rootSkills = new Map(teamItems.flatMap((item) => (item.namespace ? [] : [[item.name, item.relativePath] as const])));
+
   const overrides = roleContext
     ? items.flatMap((item) => {
       const replaces = item.namespace ? rootSkills.get(item.name) : undefined;
+
       return replaces ? [{ name: item.name, source: item.relativePath, replaces }] : [];
     })
     : [];
@@ -381,14 +416,19 @@ export async function resolveDesiredSkills(
  */
 export async function deliveredSkillSources(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<ReadonlySet<string> | null> {
   const members = await deliveredMembers(localConfig);
+
   if (!members) return null;
   const excluded = new Set(localConfig.excludedSkills ?? []);
   const sources = new Set<string>();
+
   for (const member of members) {
     const desired = await resolveDesiredSkills(teamConfig, member, await buildRolePullContext(member));
+
     if (desired.kind !== 'resolved') continue;
+
     for (const item of desired.items) if (!excluded.has(item.name)) sources.add(path.resolve(item.sourcePath));
   }
+
   return sources;
 }
 
@@ -404,32 +444,42 @@ async function resolveWorkspaceSkills(
   members: readonly LocalConfig[],
 ): Promise<DesiredSkills | DeliveryConflict> {
   const resolved: DesiredSkills[] = [];
+
   for (const member of members) {
     const desired = await resolveDesiredSkills(teamConfig, member, await buildRolePullContext(member));
+
     if (desired.kind === 'conflict') return desired;
     resolved.push(desired);
   }
+
   const { items, held } = await unionMemberItems({
     perMember: resolved.map((desired) => desired.items),
     nameOf: (item) => item.name,
     sameContent: (a, b) => a.sourcePath === b.sourcePath || dirContentEqual(a.sourcePath, b.sourcePath),
   });
+
   const excluded = new Set(localConfig.excludedSkills ?? []);
+
   for (const { name, first, second } of held) {
     // An excluded name is not held, so pull may take its copy out; saying it keeps one would be wrong.
     if (excluded.has(name)) continue;
     warnOnce(`Skill "${name}" differs between ${first.relativePath} and ${second.relativePath}, so this workspace holds it back; an installed copy is kept. Make the copies equal in the team repo, or rename one.`);
   }
+
   const memberSources = new Map<string, string[]>();
+
   for (const item of resolved.flatMap((desired) => desired.items)) {
     memberSources.set(item.name, [...memberSources.get(item.name) ?? [], item.sourcePath]);
   }
+
   const delivered = items.filter((item) => !excluded.has(item.name));
   const sources = new Set(delivered.map((item) => item.relativePath));
   const deliveredNames = new Map(delivered.map((item) => [item.name, item.relativePath]));
+
   const overrides = [...new Map(resolved.flatMap((desired) => desired.overrides)
     .filter((override) => sources.has(override.source))
     .map((override) => [override.source, override] as const)).values()];
+
   return {
     kind: 'resolved',
     items: delivered,
@@ -443,6 +493,7 @@ async function resolveWorkspaceSkills(
     // and a name the workspace holds back delivers no copy in its place.
     shadowed: [...new Map(resolved.flatMap((desired) => desired.shadowed).flatMap((skill) => {
       const kept = deliveredNames.get(skill.name);
+
       return kept && !sources.has(skill.skipped) ? [[skill.skipped, { ...skill, kept }] as const] : [];
     })).values()],
   };
@@ -458,6 +509,7 @@ export async function indexedSkills(
   roleContext: RolePullContext | null,
 ): Promise<IndexedSkills> {
   const desired = await resolveDesiredSkills(teamConfig, localConfig, roleContext);
+
   return desired.kind === 'resolved'
     ? { kind: 'dirs', dirs: desired.items.map((item) => item.sourcePath) }
     : { kind: 'keep-indexed', reason: describeDeliveryConflict(desired) };
@@ -470,6 +522,7 @@ export async function indexedRuleFiles(
   roleContext: RolePullContext | null,
 ): Promise<string[]> {
   const { items } = await resolveDesiredRules(teamConfig, localConfig, roleContext);
+
   return items.map((item) => path.posix.relative('rules', item.relativePath));
 }
 
@@ -483,16 +536,21 @@ export async function deliveredIndexSources(
   localConfig: LocalConfig,
 ): Promise<Pick<BuildIndexOptions, 'docFiles' | 'ruleFiles' | 'skills'>> {
   const repoPath = localConfig.repo.localPath;
+
   const docFiles = await pathExists(path.join(repoPath, 'docs'))
     ? (await resolveDocsForDirectory(localConfig)).files
     : undefined;
+
   const hasRules = await pathExists(path.join(repoPath, 'rules'));
   const hasSkills = await pathExists(path.join(repoPath, 'skills'));
+
   if (!hasRules && !hasSkills) return { docFiles };
   const teamConfig = await loadTeamConfig(repoPath);
+
   // pull delivers nothing to a scope without teamai.yaml.
   if (!teamConfig) return { docFiles, ruleFiles: [], skills: { kind: 'dirs', dirs: [] } };
   const roleContext = await buildRolePullContext(localConfig);
+
   return {
     docFiles,
     ...(hasRules ? { ruleFiles: await indexedRuleFiles(teamConfig, localConfig, roleContext) } : {}),
@@ -531,17 +589,21 @@ export async function resolveDesiredRules(
   roleContext: RolePullContext | null,
 ): Promise<DesiredRules> {
   const members = await deliveredMembers(localConfig);
+
   if (members) return resolveWorkspaceRules(teamConfig, members);
   const handler = getHandler('rules');
   const tagsConfig = await loadTagsConfig(localConfig.repo.localPath);
   const allItems = await handler.scanTeamForPull(teamConfig, localConfig);
   const knowledgeNs = roleContext ? roleContext.activeNamespaces.knowledge : null;
+
   // The tag channel first: only a namespace rule this member receives
   // replaces the root rule of its name.
   const { included, skipped } = filterByTags(
     filterRulesByKnowledgeNamespaces(allItems, knowledgeNs), tagsConfig, localConfig.subscribedTags, 'rules',
   );
+
   if (!knowledgeNs) return { items: included, overrides: [], replaced: [], skippedByTags: skipped.length };
+
   return { ...await overrideRootRules(included, knowledgeNs, localConfig), skippedByTags: skipped.length };
 }
 
@@ -553,10 +615,12 @@ export async function resolveDesiredRules(
  */
 async function resolveWorkspaceRules(teamConfig: TeamaiConfig, members: readonly LocalConfig[]): Promise<DesiredRules> {
   const resolved: DesiredRules[] = [];
+
   for (const member of members) resolved.push(await resolveDesiredRules(teamConfig, member, await buildRolePullContext(member)));
   const items = [...new Map(resolved.flatMap((desired) => desired.items).map((item) => [item.relativePath, item] as const)).values()];
   const delivered = new Set(items.map((item) => item.relativePath));
   const once = <TItem>(list: TItem[], key: (item: TItem) => string): TItem[] => [...new Map(list.map((item) => [key(item), item] as const)).values()];
+
   return {
     items,
     overrides: once(resolved.flatMap((desired) => desired.overrides), (override) => `${override.source}\0${override.replaces}`).filter((override) => !delivered.has(override.replaces)),
@@ -582,28 +646,37 @@ async function overrideRootRules(
 ): Promise<Pick<DesiredRules, 'items' | 'overrides' | 'replaced'>> {
   const candidates = rules.flatMap((rule): NamespaceCandidate<ResourceItem>[] => {
     const segments = rule.name.split('/');
+
     if (segments.length === 1) return [{ name: rule.name, source: rule.relativePath, namespace: null, value: rule }];
     const [namespace, name] = segments;
+
     if (segments.length > 2 || namespace === undefined || name === undefined) return [];
+
     return [{ name, source: rule.relativePath, namespace, value: rule }];
   });
+
   const overrides = resolveRootOverrides(candidates, activeNamespaces);
   const replacedPaths = new Set(overrides.map((override) => override.replaces));
   const { placedRules } = await loadStateForScope(localConfig);
   const items: ResourceItem[] = [];
   const replaced: ResourceItem[] = [];
+
   for (const rule of rules) {
     if (replacedPaths.has(rule.relativePath)) {
       replaced.push(rule);
       continue;
     }
+
     const placed = rule.name.includes('/') ? null : placedResourcePath(placedRules, 'rules', rule.name);
+
     if (placed && await pathExists(path.join(localConfig.repo.localPath, placed))) {
       overrides.push({ name: rule.name, source: placed, replaces: rule.relativePath });
       continue;
     }
+
     items.push(rule);
   }
+
   return { items, overrides, replaced };
 }
 
@@ -618,9 +691,11 @@ export async function resolveDesiredAgents(
   roleContext: RolePullContext | null,
 ): Promise<DesiredItems> {
   const members = await deliveredMembers(localConfig);
+
   if (members) return resolveWorkspaceAgents(teamConfig, members);
   const items = await getHandler('agents').scanTeamForPull(teamConfig, localConfig);
   const { placedAgents } = await loadStateForScope(localConfig);
+
   return filterAgentsByNamespaces(
     items,
     roleContext ? roleContext.activeNamespaces.agents : null,
@@ -652,11 +727,14 @@ export async function collectClaudemdFiles(
   // The workspace's own context activates every namespace a member does, so
   // its candidates hold every member's files, in the order of one scope.
   const contents: string[] = [];
+
   for (const candidate of own.candidates) {
     if (!delivered.has(candidate.source)) continue;
     const content = await readFileSafe(candidate.value);
+
     if (content) contents.push(content);
   }
+
   return { contents, overrides };
 }
 
@@ -667,18 +745,22 @@ interface ClaudemdCandidates {
 
 async function claudemdCandidates(repoPath: string, roleContext: RolePullContext | null): Promise<ClaudemdCandidates> {
   const claudemdDir = path.join(repoPath, 'claudemd');
+
   if (!await pathExists(claudemdDir)) return { candidates: [], overrides: [] };
 
   const mdFiles = async (dir: string): Promise<string[]> => (await listFiles(dir))
     .filter((f) => f.endsWith('.md'))
     .sort();
+
   const candidates: NamespaceCandidate<string>[] = [];
+
   for (const file of await mdFiles(claudemdDir)) {
     candidates.push({ name: file, source: `claudemd/${file}`, namespace: null, value: path.join(claudemdDir, file) });
   }
 
   // Determine which namespace dirs to scan
   let namespaceDirs: string[];
+
   if (roleContext) {
     namespaceDirs = roleContext.activeNamespaces.knowledge;
   } else {
@@ -688,7 +770,9 @@ async function claudemdCandidates(repoPath: string, roleContext: RolePullContext
 
   for (const ns of namespaceDirs) {
     const nsDir = path.join(claudemdDir, ns);
+
     if (!await pathExists(nsDir)) continue;
+
     for (const file of await mdFiles(nsDir)) {
       candidates.push({ name: file, source: `claudemd/${ns}/${file}`, namespace: ns, value: path.join(nsDir, file) });
     }
@@ -699,6 +783,7 @@ async function claudemdCandidates(repoPath: string, roleContext: RolePullContext
 
 function claudemdDelivered({ candidates, overrides }: ClaudemdCandidates): { delivered: Set<string>; overrides: NamespaceOverride[] } {
   const replaced = new Set(overrides.map((override) => override.replaces));
+
   return { delivered: new Set(candidates.map((candidate) => candidate.source).filter((source) => !replaced.has(source))), overrides };
 }
 
@@ -707,11 +792,14 @@ async function workspaceClaudemd(
   members: readonly LocalConfig[],
 ): Promise<{ delivered: Set<string>; overrides: NamespaceOverride[] }> {
   const resolved: Array<ReturnType<typeof claudemdDelivered>> = [];
+
   for (const member of members) resolved.push(claudemdDelivered(await claudemdCandidates(repoPath, await buildRolePullContext(member))));
   const delivered = new Set(resolved.flatMap((one) => [...one.delivered]));
+
   const overrides = [...new Map(resolved.flatMap((one) => one.overrides)
     .map((override) => [`${override.source}\0${override.replaces}`, override] as const)).values()]
     .filter((override) => !delivered.has(override.replaces));
+
   return { delivered, overrides };
 }
 
@@ -723,20 +811,26 @@ async function workspaceClaudemd(
  */
 async function resolveWorkspaceAgents(teamConfig: TeamaiConfig, members: readonly LocalConfig[]): Promise<DesiredItems> {
   const resolved: Array<Extract<DesiredItems, { kind: 'resolved' }>> = [];
+
   for (const member of members) {
     const desired = await resolveDesiredAgents(teamConfig, member, await buildRolePullContext(member));
+
     if (desired.kind === 'conflict') return desired;
     resolved.push(desired);
   }
+
   const { items, held } = await unionMemberItems({
     perMember: resolved.map((desired) => desired.items),
     nameOf: (item) => item.name,
     sameContent: (a, b) => a.sourcePath === b.sourcePath || fileContentEqual(a.sourcePath, b.sourcePath),
   });
+
   for (const { name, first, second } of held) {
     warnOnce(`Agent "${name}" differs between ${first.relativePath} and ${second.relativePath}, so this workspace holds it back; an installed copy is kept. Make the copies equal in the team repo, or rename one.`);
   }
+
   const sources = new Set(items.map((item) => item.relativePath));
+
   return {
     kind: 'resolved',
     items,

@@ -25,9 +25,11 @@ export function assertSafeRepoCachePath(cacheDir: string): void {
     const root = path.resolve(getCacheRoot());
     const target = path.resolve(cacheDir);
     assertWithinRoot(root, target);
+
     if (target === root) {
         throw new Error('Invalid repository cache path: expected a repository below the cache root.');
     }
+
     assertSafePath(target, [root]);
 }
 
@@ -40,13 +42,16 @@ export function assertSafeRepoCachePath(cacheDir: string): void {
  */
 export function getRepoCacheDir(provider: string, owner: string, repo: string): string {
     const segments = [provider, ...owner.split('/'), repo];
+
     // URL parsers do not validate filesystem components; clone cleanup deletes this path before fetching.
     if (provider.includes('/') || repo.includes('/') || segments.some((segment) =>
         !segment || /^[. ]+$/.test(segment) || /[\\:]/.test(segment) || segment.includes('\0'))) {
         throw new Error('Invalid repository cache path: expected a provider, owner/group and repository name without traversal segments.');
     }
+
     const cacheDir = path.join(getCacheRoot(), ...segments);
     assertSafeRepoCachePath(cacheDir);
+
     return cacheDir;
 }
 
@@ -59,6 +64,7 @@ export function getRepoCacheDir(provider: string, owner: string, repo: string): 
  */
 export function getRepoSlug(provider: string, owner: string, repo: string): string {
     const safeOwner = owner.replace(/\//g, '-');
+
     return `${provider}__${safeOwner}__${repo}`;
 }
 
@@ -84,14 +90,18 @@ export async function readLastSync(
 ): Promise<{ sha: string; ts: string } | null> {
     const filePath = path.join(cacheDir, LAST_SYNC_FILE);
     const exists = await fs.pathExists(filePath);
+
     if (!exists) {
         return null;
     }
+
     const content = await fs.readFile(filePath, 'utf8');
     const lines = content.split('\n').filter((l) => l.trim());
+
     if (lines.length < 2) {
         return null;
     }
+
     return { sha: lines[0].trim(), ts: lines[1].trim() };
 }
 
@@ -101,5 +111,6 @@ export async function readLastSync(
 export async function ensureCacheRoot(): Promise<string> {
     const root = getCacheRoot();
     await fs.ensureDir(root);
+
     return root;
 }

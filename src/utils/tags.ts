@@ -15,12 +15,14 @@ const TAGS_FILE = 'tags.yaml';
  */
 export async function loadTagsConfig(repoPath: string): Promise<TagsConfig | null> {
     const content = await readFileSafe(path.join(repoPath, TAGS_FILE));
+
     if (!content) {
         return null;
     }
 
     try {
         const raw = YAML.parse(content);
+
         if (!raw || typeof raw !== 'object') {
             return null;
         }
@@ -47,6 +49,7 @@ export async function loadTagsConfig(repoPath: string): Promise<TagsConfig | nul
         return { skills, rules };
     } catch (e) {
         log.warn(`Failed to parse ${TAGS_FILE}: ${(e as Error).message}`);
+
         return null;
     }
 }
@@ -88,6 +91,7 @@ export function filterByTags(
 
         // Check if any item tag matches subscribed tags
         const hasMatch = itemTags.some((tag) => subscribedSet.has(tag));
+
         if (hasMatch) {
             included.push(item);
         } else {
@@ -103,10 +107,12 @@ export function filterByTags(
  */
 export async function saveTagsConfig(repoPath: string, config: TagsConfig): Promise<void> {
     const filePath = path.join(repoPath, TAGS_FILE);
+
     const content = YAML.stringify({
         skills: config.skills,
         rules: config.rules,
     });
+
     await writeFile(filePath, content);
 }
 

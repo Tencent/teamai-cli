@@ -16,8 +16,10 @@ import path from 'node:path';
 export function normalizeHomePath(home: string): string {
   if (process.platform !== 'win32') return home;
   const match = /^\/(?:cygdrive\/)?([a-zA-Z])(?:\/(.*))?$/.exec(home);
+
   if (!match) return home;
   const rest = (match[2] ?? '').replace(/\//g, '\\');
+
   return `${match[1].toUpperCase()}:${rest ? `\\${rest}` : '\\'}`;
 }
 
@@ -61,12 +63,14 @@ export function memberHome(): string {
   const home = process.env.HOME?.trim()
     || process.env.USERPROFILE?.trim()
     || os.homedir();
+
   if (!home) {
     throw new Error(
       'Unable to determine the user home directory: none of HOME, USERPROFILE, ' +
       'or os.homedir() is available. Set HOME explicitly before running teamai.',
     );
   }
+
   return normalizeHomePath(home);
 }
 
@@ -81,18 +85,22 @@ export function memberHome(): string {
  */
 export function legacyUserHome(): string | null {
   let platformHome: string;
+
   try {
     platformHome = os.homedir();
   } catch {
     return null;
   }
+
   if (!platformHome) return null;
   let current: string;
+
   try {
     current = getUserHome();
   } catch {
     return null;
   }
+
   return path.resolve(platformHome) === path.resolve(current)
     ? null
     : platformHome;
@@ -106,5 +114,6 @@ export function expandHome(p: string): string {
   if (p.startsWith('~/') || p === '~' || (process.platform === 'win32' && p.startsWith('~\\'))) {
     return path.join(getUserHome(), p.slice(1));
   }
+
   return p;
 }

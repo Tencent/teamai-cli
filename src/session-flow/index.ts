@@ -8,8 +8,13 @@
  * Use it through `teamai session migrate/push/pull/list/resume/search/rollback`.
  */
 export * from './ir.js';
+
 export * from './migrate.js';
+
 export * from './search.js';
+
 export * from './sync.js';
+
 export * from './fs.js';
+
 export * from './adapters/index.js';

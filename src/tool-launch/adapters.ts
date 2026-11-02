@@ -69,7 +69,9 @@ export interface LaunchAdapter {
 function jsonLines(stdout: string): unknown[] {
   return stdout.split(/\r?\n/).flatMap((line) => {
     const trimmed = line.trim();
+
     if (!trimmed.startsWith('{')) return [];
+
     try { return [JSON.parse(trimmed) as unknown]; } catch { return []; }
   });
 }
@@ -83,16 +85,24 @@ const ClaudeResult = z.object({
 
 /** Claude's `--output-format json` result record, which CodeBuddy prints too. */
 function readClaudeResult({ stdout }: CallOutput): CallReading {
-  const record = jsonLines(stdout).flatMap((line) => { const parsed = ClaudeResult.safeParse(line); return parsed.success ? [parsed.data] : []; }).at(-1);
+  const record = jsonLines(stdout).flatMap((line) => {
+    const parsed = ClaudeResult.safeParse(line);
+
+    return parsed.success ? [parsed.data] : [];
+  }).at(-1);
+
   if (!record) return { ok: false };
+
   // An error exits 1 with the reason in `result`; stderr carries only a tag such as `[claude-code:unrecognized_model]`.
   if (record.is_error || record.result === undefined) return { ok: false, ...(record.result ? { message: record.result } : {}) };
   const usage = record.usage;
+
   const tokens: TokenUsage = {
     ...(usage?.input_tokens !== undefined ? { input: usage.input_tokens } : {}),
     ...(usage?.output_tokens !== undefined ? { output: usage.output_tokens } : {}),
     ...(usage?.cache_read_input_tokens !== undefined ? { cachedInput: usage.cache_read_input_tokens } : {}),
   };
+
   return { ok: true, text: record.result.trim(), ...(Object.keys(tokens).length > 0 ? { tokens } : {}) };
 }
 
@@ -104,11 +114,19 @@ const CodexError = z.union([
 /** Codex writes its last message to the `-o` file, and prints its events, the turn's usage included, as JSON lines. */
 function readCodexExec({ stdout, lastMessage }: CallOutput): CallReading {
   const text = lastMessage?.trim();
+
   if (!text) {
-    const error = jsonLines(stdout).flatMap((line) => { const parsed = CodexError.safeParse(line); return parsed.success ? [parsed.data] : []; }).at(-1);
+    const error = jsonLines(stdout).flatMap((line) => {
+      const parsed = CodexError.safeParse(line);
+
+      return parsed.success ? [parsed.data] : [];
+    }).at(-1);
+
     return { ok: false, ...(error ? { message: error.type === 'error' ? error.message : error.error.message } : {}) };
   }
+
   const tokens = readToolMetadata(stdout)?.tokens;
+
   return { ok: true, text, ...(tokens ? { tokens } : {}) };
 }
 
@@ -119,11 +137,18 @@ const OpenCodeEvent = z.union([
 
 /** OpenCode prints the answer as `text` parts and an error as an `error` event; `step_finish` carries the tokens. */
 function readOpenCodeRun({ stdout }: CallOutput): CallReading {
-  const events = jsonLines(stdout).flatMap((line) => { const parsed = OpenCodeEvent.safeParse(line); return parsed.success ? [parsed.data] : []; });
+  const events = jsonLines(stdout).flatMap((line) => {
+    const parsed = OpenCodeEvent.safeParse(line);
+
+    return parsed.success ? [parsed.data] : [];
+  });
+
   const error = events.flatMap((event) => event.type === 'error' ? [event.error.message] : []).at(-1);
   const text = events.flatMap((event) => event.type === 'text' ? [event.part.text] : []).join('\n').trim();
+
   if (error !== undefined || !text) return { ok: false, ...(error !== undefined ? { message: error } : {}) };
   const tokens = readToolMetadata(stdout)?.tokens;
+
   return { ok: true, text, ...(tokens ? { tokens } : {}) };
 }
 
@@ -137,15 +162,21 @@ const OpenClawEnvelope = z.object({
 /** `openclaw agent exec --json` prints one envelope: `final` is the answer, `usage` the tokens, `error` the failure. */
 function readOpenClawExec({ stdout }: CallOutput): CallReading {
   let candidate: unknown;
+
   try { candidate = JSON.parse(stdout.trim()); } catch { candidate = jsonLines(stdout).at(-1); }
+
   const parsed = OpenClawEnvelope.safeParse(candidate);
+
   if (!parsed.success) return { ok: false };
   const { ok, final, usage, error } = parsed.data;
+
   if (!ok || !final?.trim()) return { ok: false, ...(error ? { message: error.message } : {}) };
+
   const tokens: TokenUsage = {
     ...(usage?.input !== undefined ? { input: usage.input } : {}),
     ...(usage?.output !== undefined ? { output: usage.output } : {}),
   };
+
   return { ok: true, text: final.trim(), ...(Object.keys(tokens).length > 0 ? { tokens } : {}) };
 }
 
@@ -162,18 +193,27 @@ const PiReply = z.object({
 
 /** pi and omp print the turn's events; the assistant's `message_end` carries the reply, its usage and any error. */
 function readPiJson({ stdout }: CallOutput): CallReading {
-  const reply = jsonLines(stdout).flatMap((line) => { const parsed = PiReply.safeParse(line); return parsed.success ? [parsed.data.message] : []; }).at(-1);
+  const reply = jsonLines(stdout).flatMap((line) => {
+    const parsed = PiReply.safeParse(line);
+
+    return parsed.success ? [parsed.data.message] : [];
+  }).at(-1);
+
   if (!reply) return { ok: false };
+
   // pi exits 0 on a provider error; the reply's stop reason says it failed.
   if (reply.stopReason === 'error' || reply.stopReason === 'aborted') return { ok: false, ...(reply.errorMessage ? { message: reply.errorMessage } : {}) };
   const text = reply.content.flatMap((part) => part.type === 'text' && part.text !== undefined ? [part.text] : []).join('\n').trim();
+
   if (!text) return { ok: false };
   const { usage } = reply;
+
   const tokens: TokenUsage = {
     ...(usage?.input !== undefined ? { input: usage.input } : {}),
     ...(usage?.output !== undefined ? { output: usage.output } : {}),
     ...(usage?.cacheRead !== undefined ? { cachedInput: usage.cacheRead } : {}),
   };
+
   return { ok: true, text, ...(Object.keys(tokens).length > 0 ? { tokens } : {}) };
 }
 
@@ -183,40 +223,57 @@ const MuseUsage = z.object({ models: z.array(z.object({ input_tokens: z.number()
 
 /** `muse exec --json` prints one record per event: the run's terminal record carries the answer, `run.usage` the tokens. */
 function readMuseExec({ stdout }: CallOutput): CallReading {
-  const records = jsonLines(stdout).flatMap((line) => { const parsed = MuseRecord.safeParse(line); return parsed.success ? [parsed.data] : []; });
+  const records = jsonLines(stdout).flatMap((line) => {
+    const parsed = MuseRecord.safeParse(line);
+
+    return parsed.success ? [parsed.data] : [];
+  });
+
   const terminal = records.flatMap((record) => {
     const parsed = record.payload_type.startsWith('run.terminal.') ? MuseTerminal.safeParse(record.payload) : undefined;
+
     return parsed?.success ? [parsed.data] : [];
   }).at(-1);
+
   if (!terminal) return { ok: false };
   const text = terminal.text?.trim();
+
   if (terminal.terminal !== 'completed' || !text) return { ok: false, ...(terminal.reason ? { message: terminal.reason } : {}) };
+
   const models = records.flatMap((record) => {
     const parsed = record.payload_type === 'run.usage' ? MuseUsage.safeParse(record.payload) : undefined;
+
     return parsed?.success ? parsed.data.models : [];
   });
+
   const sum = (key: 'input_tokens' | 'cached_tokens' | 'output_tokens') => models.some((model) => model[key] !== undefined) ? models.reduce((total, model) => total + (model[key] ?? 0), 0) : undefined;
   const [input, output, cachedInput] = [sum('input_tokens'), sum('output_tokens'), sum('cached_tokens')];
+
   const tokens: TokenUsage = {
     ...(input !== undefined ? { input } : {}),
     ...(output !== undefined ? { output } : {}),
     ...(cachedInput !== undefined ? { cachedInput } : {}),
   };
+
   return { ok: true, text, ...(Object.keys(tokens).length > 0 ? { tokens } : {}) };
 }
 
 /** agy's stream-json output ends with a `result` event: the response on SUCCESS, else the error, and the turn's usage. */
 function readAgyStream({ stdout }: CallOutput): CallReading {
   const { result, tokens } = agyRun(stdout);
+
   if (!result) return { ok: false };
   const text = result.response?.trim();
+
   if (result.status !== 'SUCCESS' || !text) return { ok: false, ...(result.error ? { message: result.error } : {}) };
+
   return { ok: true, text, ...(tokens ? { tokens } : {}) };
 }
 
 /** A tool that prints only its reply, as plain text. */
 function readPlainReply({ stdout }: CallOutput): CallReading {
   const text = stdout.trim();
+
   return text ? { ok: true, text } : { ok: false };
 }
 

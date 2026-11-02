@@ -31,17 +31,23 @@ const COMMAND_SHOWN = 80;
 /** `command` as a gate shows it: its first line, whitespace collapsed, cut after `COMMAND_SHOWN` characters. */
 function commandLine(command: string): string {
   const line = (command.split('\n')[0] ?? '').replace(/\s+/g, ' ').trim();
+
   return line.length > COMMAND_SHOWN ? `${line.slice(0, COMMAND_SHOWN)}…` : line;
 }
 
 /** What `step`, gated, guards; `steps` is the list it sits in, whose paths start with `prefix`. */
 function guardsOf(step: WorkflowStep, steps: WorkflowStep[], prefix: string): GateGuards {
   if (step.command !== undefined) return { kind: 'command', line: commandLine(step.command) };
+
   if (step.interactive) return { kind: 'interactive' };
+
   if (step.prompt !== undefined || step.promptFile !== undefined) return { kind: 'prompt' };
   const child = stepWorkflow(step);
+
   if (child) return { kind: 'workflow', ...(child.kind === 'named' ? { name: child.name } : {}) };
+
   if (step.end !== undefined) return { kind: 'end', end: step.end, ...(prefix !== '' ? { workflow: prefix.slice(0, -1) } : {}) };
+
   return { kind: 'none', waiting: steps.filter((other) => other.needs?.includes(step.id)).map((other) => `${prefix}${other.id}`) };
 }
 
@@ -114,7 +120,9 @@ interface Scope {
 /** Whether `step` leaves commits on a branch: it writes in a copy, or a step of the workflow it runs does. */
 function writes(step: WorkflowStep, ancestors: WorkflowStep[], childOf: (step: WorkflowStep) => { steps: WorkflowStep[] } | undefined): boolean {
   const child = childOf(step);
+
   if (child) return child.steps.some((inner) => writes(inner, [...ancestors, step], childOf));
+
   return (step.prompt !== undefined || step.promptFile !== undefined || (step.workspace !== undefined && step.workspace !== 'read-only')) && resolveMode(step, ancestors) !== 'read-only';
 }
 
@@ -128,6 +136,7 @@ export function describeWorkflow(input: {
 }): WorkflowDescription {
   const { definition, source, workflows, ceiling, can, allow, env, base } = input;
   const runEnvKeys = requiredEnvKeys([definition, ...Object.values(workflows)]);
+
   const facts: WorkflowDescription['facts'] = {
     prompts: [], interactive: [], modeled: [], width: 0, gates: [], inWorkspace: [], scored: [], deliver: [], ...(base !== undefined ? { base } : {}),
     requiresEnv: {
@@ -140,10 +149,12 @@ export function describeWorkflow(input: {
     runs: [],
     held: [],
   };
+
   /** By the step that opened each copy: whether the driver takes a step in it, and the first step in it the driver is held from. */
   const copies = new Map<string, { taken: boolean; held?: { step: string; missing: LocalRoute['missing'] } }>();
   // Before a run, a `from` step's workflow does not exist yet.
   const childOf = (step: WorkflowStep): { steps: WorkflowStep[] } | undefined => workflowRunBy({ workflows }, step, '');
+
   /** As the engine's `offerTerms` asks `negotiate`, so describe holds exactly what `next` would hold. */
   const offer = (step: WorkflowStep, path: string, scope: Scope): void => {
     const hasContract = !runsInCheckout(step, scope.ancestors);
@@ -151,6 +162,7 @@ export function describeWorkflow(input: {
     const executor = step.command !== undefined ? 'command' : 'prompt';
     const setupEnv = hasContract ? scope.setup?.requires?.env ?? [] : [];
     facts.runs.push({ step: path, executor, env: [...new Set([...requires.env ?? [], ...setupEnv])], ...(executor === 'prompt' && step.agent !== undefined ? { agent: step.agent } : {}), ...(executor === 'prompt' && step.tool !== undefined ? { tool: step.tool } : {}) });
+
     const negotiation = negotiate({
       // Whether the driver calls next --prepare is not part of its can: a step in a clone is described as a driver with clone takes it.
       step: path, executor, requires, prepare: false, clone: false,
@@ -159,32 +171,43 @@ export function describeWorkflow(input: {
       ...(step.tool !== undefined ? { tool: step.tool } : {}),
       unattended: step.permissions === 'unattended',
     }, can, allow, env);
+
     if (negotiation.kind === 'hold') facts.held.push({ step: path, missing: negotiation.missing, env: requires.env ?? [] });
+
     if (scope.copy === undefined || negotiation.kind === 'fail') return;
     const copy = copies.get(scope.copy) ?? { taken: false };
     copies.set(scope.copy, copy);
+
     if (negotiation.kind === 'grant') copy.taken = true;
     const missing = negotiation.kind === 'hold' ? (['env', 'tokens'] as const).find((lack) => negotiation.missing.includes(lack)) : undefined;
+
     if (missing && !copy.held) copy.held = { step: path, missing };
   };
+
   const visit = (steps: WorkflowStep[], scope: Scope): number => {
     const levels = new Map<string, number>();
     const widths: number[] = [];
     const byId = new Map(steps.map((step) => [step.id, step]));
+
     /** The first need of `step`, in `needs` order and through needs that write nothing, whose branch its copy starts from. */
     const startsFrom = (step: WorkflowStep, seen: Set<string>): WorkflowStep | undefined => {
       for (const need of step.needs ?? []) {
         const found = byId.get(need);
+
         if (!found || seen.has(need)) continue;
         seen.add(need);
         const writer = writes(found, scope.ancestors, childOf) ? found : startsFrom(found, seen);
+
         if (writer) return writer;
       }
+
       return undefined;
     };
+
     for (const step of steps) {
       const path = `${scope.prefix}${step.id}`;
       const child = childOf(step);
+
       if (step.hitl) {
         const { kind, options, required, default: defaultOption } = step.hitl;
         facts.gates.push({
@@ -192,24 +215,34 @@ export function describeWorkflow(input: {
           ...(kind === 'choose' ? { kind, options, ...(defaultOption !== undefined ? { default: defaultOption } : {}) } : { kind, ...(step.deliver === 'pr' ? { deliver: true as const } : {}) }),
         });
       }
+
       if (!child && step.end === undefined && !runsInCheckout(step, scope.ancestors)) facts.inWorkspace.push(path);
+
       if (step.prompt !== undefined || step.promptFile !== undefined) facts.prompts.push(path);
+
       if (step.interactive) facts.interactive.push(path);
+
       if ((step.prompt !== undefined || step.promptFile !== undefined) && (typeof step.model === 'string' || (step.model === undefined && step.agent === undefined && scope.defaultModel !== undefined))) facts.modeled.push(path);
+
       if (step.scorers && step.scorers.names.length > 0) facts.scored.push({ step: path, scorers: step.scorers.names });
+
       if (step.deliver === 'pr') {
         const seen = new Set<string>();
         let from = startsFrom(step, seen);
+
         while (from && from.deliver !== 'pr') from = startsFrom(from, seen);
         facts.deliver.push({ step: path, ...(from ? { onto: `${scope.prefix}${from.id}` } : {}) });
       }
+
       let own = 0;
+
       if (child) {
         const runs = stepWorkflow(step);
         const named = runs?.kind === 'named' ? workflows[runs.name] : undefined;
         const setup = named?.setup ?? scope.setup;
         const defaultModel = named?.defaults?.model ?? scope.defaultModel;
         const limits = [step.forEach ? undefined : step.budget, named?.budget].flatMap((budget) => (budget ? [budget.tokens] : []));
+
         if (limits.length > 0) facts.budgets.push({ step: path, tokens: Math.min(...limits) });
         own = visit(child.steps, {
           prefix: `${path}.`, ancestors: [...scope.ancestors, step],
@@ -226,27 +259,35 @@ export function describeWorkflow(input: {
         // Its workflow does not exist yet, but every step of it inherits what this one requires: a driver that lacks
         // that is held from the step itself, as from a step that runs in a copy of its own.
         const requires = mergeRequirements(scope.requires, step.requires);
+
         const negotiation = negotiate({
           step: path, executor: 'command', requires, prepare: true, clone: false,
           interactive: false, hasContract: true, envKeys: [], runEnvKeys, budgeted: false, unattended: false,
         }, can, allow, env);
+
         if (negotiation.kind === 'hold') facts.held.push({ step: path, missing: negotiation.missing, env: requires.env ?? [] });
       }
+
       const level = Math.max(-1, ...(step.needs ?? []).map((need) => levels.get(need) ?? -1)) + 1;
       levels.set(step.id, level);
       widths[level] = (widths[level] ?? 0) + (step.forEach ? (step.forEach.maxParallel ?? ceiling) * own : own);
     }
+
     return Math.max(0, ...widths.map((width) => width ?? 0));
   };
+
   const top: Scope = {
     prefix: '', ancestors: [], requires: mergeRequirements(definition.defaults?.requires), budgeted: definition.budget !== undefined,
     ...(definition.setup ? { setup: definition.setup } : {}),
     ...(definition.defaults?.model !== undefined ? { defaultModel: definition.defaults.model } : {}),
   };
+
   // The finally steps run under the same scope once the steps settled, never beside them.
   facts.width = Math.min(ceiling, Math.max(visit(definition.steps, top), visit(definition.finally ?? [], top)));
   const route = [...copies].find(([, copy]) => copy.taken && copy.held);
+
   if (route?.[1].held) facts.localRoute = { opener: route[0], held: route[1].held.step, missing: route[1].held.missing };
   const { name, description, alias, invoke, inputs } = definition;
+
   return { name, description, ...(alias ? { alias } : {}), source, invoke: invoke ?? 'deny', inputs: inputs ?? {}, facts };
 }

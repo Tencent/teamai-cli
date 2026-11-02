@@ -23,11 +23,13 @@ import type { CachedWorkflow, ResolvedWorkflow, WorkflowSource } from './workflo
 function defaultsDir(): string {
   const modulePath = fileURLToPath(import.meta.url);
   let moduleDir: string;
+
   try {
     moduleDir = path.dirname(fs.realpathSync(modulePath));
   } catch {
     moduleDir = path.dirname(modulePath);
   }
+
   return path.join(moduleDir, '..', 'workflows');
 }
 
@@ -44,11 +46,14 @@ function defaults(): ReadonlyMap<string, CachedWorkflow> {
   if (loaded) return loaded;
   const dir = defaultsDir();
   const found = new Map<string, CachedWorkflow>();
+
   for (const file of fs.readdirSync(dir).filter((name) => name.endsWith('.yaml')).sort()) {
     const relativePath = `workflows/${file}`;
     const content = fs.readFileSync(path.join(dir, file), 'utf8');
     const parsed = parseWorkflow(relativePath, content);
+
     if (!parsed.ok) throw new Error(`teamai's default ${relativePath} does not parse: ${parsed.diagnostics.map(formatDiagnostic).join('; ')}`);
+
     if (!parsed.definition.name.startsWith(PREFIX)) throw new Error(`teamai's default ${relativePath} is named ${parsed.definition.name}, which does not start with ${PREFIX}`);
     found.set(parsed.definition.name, {
       relativePath,
@@ -58,7 +63,9 @@ function defaults(): ReadonlyMap<string, CachedWorkflow> {
       validatedAt: new Date(0).toISOString(),
     });
   }
+
   loaded = found;
+
   return found;
 }
 
@@ -80,6 +87,7 @@ export const RunOriginSchema = z.discriminatedUnion('source', [
   z.object({ source: z.literal('team') }),
   z.object({ source: z.literal('default'), teamaiVersion: z.string().min(1) }),
 ]);
+
 export type RunOrigin = z.infer<typeof RunOriginSchema>;
 
 /** The origin a run of `resolved` records. */

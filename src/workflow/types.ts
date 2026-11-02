@@ -263,6 +263,7 @@ export interface StepScorers {
 
 /** Whether an agent session may start a workflow: on its own (`allow`), after the person's yes (`ask`), or never (`deny`). */
 export const INVOKE_VALUES = ['allow', 'ask', 'deny'] as const;
+
 export type Invoke = typeof INVOKE_VALUES[number];
 
 export interface WorkflowDefinition {
@@ -328,6 +329,7 @@ export interface WorkflowDiagnostic {
 }
 
 export type StepOutcome = 'success' | 'failed' | 'released';
+
 export type RunStatus = 'running' | 'succeeded' | 'failed' | 'cancelled';
 
 export interface StepLease {

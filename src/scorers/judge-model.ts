@@ -35,28 +35,38 @@ export function chooseJudgeModel<Tool extends string>(aliases: ModelAliases, sco
   const alias = isAlias ? { alias: model } : {};
   const unmapped: string[] = [];
   let unmappedBy: ModelResolution = { ok: true, step: 'default' };
+
   for (const tool of tools) {
     if (model === undefined) return { ok: true, choice: { tool, by: 'tool_default' } };
+
     if (!isAgentToolId(tool)) {
       unmapped.push(tool);
       continue;
     }
+
     const resolved = resolveModelValue(aliases, model, tool);
+
     if (resolved.ok && resolved.model !== undefined) {
       const effort = resolved.effort !== undefined && !NO_EFFORT.has(tool) ? { effort: resolved.effort } : {};
+
       return { ok: true, choice: { tool, by: 'scorer', model: { name: resolved.model, ...effort }, ...alias } };
     }
+
     const reason = noModelReason(resolved);
     const policy = ON_NO_MODEL[reason];
+
     if (policy) {
       return { ok: true, choice: { tool, ...policy, ...alias }, note: `Scorer "${scorer.name}" asks for ${asked}, which ${noModelCause(resolved, tool)}, so ${tool} judges with its default model.` };
     }
+
     if (reason === 'unresolved') {
       return { ok: false, code: 'judge_model_unavailable', reason, message: scorerModelUnavailableText(scorer.name, asked, noModelCause(resolved, tool), reason) };
     }
+
     unmapped.push(tool);
     unmappedBy = resolved;
   }
+
   return {
     ok: false, code: 'judge_model_unavailable', reason: 'unmapped',
     message: scorerModelUnavailableText(scorer.name, asked, noModelCause(unmappedBy, unmapped.join(', ') || 'any judge tool'), 'unmapped'),

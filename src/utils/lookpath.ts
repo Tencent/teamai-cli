@@ -31,6 +31,7 @@ function stripQuotes(dir: string): string {
   ) {
     return dir.slice(1, -1);
   }
+
   return dir;
 }
 
@@ -42,22 +43,28 @@ function candidateNames(
   if (platform !== 'win32') return [bin];
   const raw = pathExt?.trim() ? pathExt : DEFAULT_WIN_PATHEXT;
   const names = new Set<string>([bin]);
+
   for (const ext of raw.split(';')) {
     const trimmed = ext.trim();
+
     if (!trimmed) continue;
     const withDot = trimmed.startsWith('.') ? trimmed : `.${trimmed}`;
     names.add(bin + withDot);
     names.add(bin + withDot.toLowerCase());
     names.add(bin + withDot.toUpperCase());
   }
+
   return [...names];
 }
 
 function isPresent(candidate: string, requireExecute: boolean): boolean {
   try {
     const st = fs.statSync(candidate);
+
     if (!st.isFile()) return false;
+
     if (requireExecute) fs.accessSync(candidate, fs.constants.X_OK);
+
     return true;
   } catch {
     return false;
@@ -72,6 +79,7 @@ function isPresent(candidate: string, requireExecute: boolean): boolean {
 export function pathDirs(options: LookPathOptions = {}): string[] {
   const delimiter = options.delimiter ?? path.delimiter;
   const pathEnv = options.pathEnv ?? process.env.PATH ?? process.env.Path ?? '';
+
   return pathEnv.split(delimiter).map(stripQuotes).map(dir => dir.trim()).filter(Boolean);
 }
 
@@ -95,8 +103,10 @@ export function findOnPath(bin: string, options: LookPathOptions = {}): string |
   for (const dir of pathDirs(options)) {
     for (const name of names) {
       const candidate = path.join(dir, name);
+
       if (isPresent(candidate, requireExecute)) return candidate;
     }
   }
+
   return null;
 }

@@ -29,7 +29,9 @@ export function skillsEvidence(
   mask: (text: string) => string,
 ): { skills: SkillsEvidence } | { gap: 'skills_unknown' } {
   const available = availableTeamSkills(captures);
+
   if (!available) return { gap: 'skills_unknown' };
+
   return { skills: { available: available.map((skill) => ({ ...skill, ...(skill.description !== undefined ? { description: mask(skill.description) } : {}) })), used: [...used] } };
 }
 
@@ -39,9 +41,11 @@ export function skillsEvidence(
 export function availableTeamSkills(captures: SkillCaptures): AvailableSkill[] | undefined {
   if (!captures.some((capture) => capture.teamSkillInfo !== undefined)) return undefined;
   const latest = new Map<string, DeliveredSkillInfo>();
+
   for (const capture of captures) {
     for (const [name, info] of Object.entries(capture.teamSkillInfo ?? {})) latest.set(name, info);
   }
+
   return [...latest.entries()]
     .map(([name, info]): AvailableSkill => ({ name, ...info }))
     .sort((left, right) => left.name.localeCompare(right.name));

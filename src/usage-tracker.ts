@@ -29,7 +29,9 @@ import { samePath } from './utils/agent-path.js';
 function getUsagePath(config: LocalConfig): string {
   const dataHome = getDataHome(config);
   const sharedDir = getTeamaiHomeDir();
+
   if (path.resolve(dataHome) !== path.resolve(sharedDir)) return path.join(dataHome, 'usage.jsonl');
+
   return path.join(sharedDir, 'user-usage.jsonl');
 }
 
@@ -70,17 +72,21 @@ export function extractSkillName(toolInput: string | Record<string, unknown>): s
   try {
     const parsed = typeof toolInput === 'string' ? JSON.parse(toolInput) : toolInput;
     const raw: unknown = parsed?.skill ?? parsed?.name ?? parsed?.id ?? parsed?.skill_name ?? parsed?.command ?? null;
+
     if (typeof raw !== 'string') return null;
     const trimmed = raw.trim();
+
     if (!trimmed) return null;
 
     // If value looks like a path to SKILL.md, extract the parent directory name
     const skillMdMatch = trimmed.match(/\/([^/]+)\/SKILL\.md$/i);
+
     if (skillMdMatch) return skillMdMatch[1];
 
     // If value looks like a filesystem path, extract the last segment
     if (trimmed.startsWith('/') || trimmed.startsWith('~')) {
       const segments = trimmed.split('/').filter(Boolean);
+
       return segments[segments.length - 1] || null;
     }
 
@@ -124,18 +130,23 @@ export async function skillRoots({ config, toolRoots, hookCwd, tool: callingTool
   const roots = new Set([path.join(home, SHARED_AGENT_SKILLS_PATH)]);
   const installs = [installOf(team, { ...config, scope: 'user', toolRoots })];
   const project = config.scope === 'project' && config.projectRoot ? config.projectRoot : hookCwd;
+
   if (project !== undefined && path.resolve(project) !== path.resolve(home)) {
     roots.add(path.join(project, SHARED_AGENT_SKILLS_PATH));
     installs.push(installOf(team, { ...config, scope: 'project', projectRoot: project, toolRoots }));
   }
+
   for (const install of installs) {
     for (const tool of Object.keys(team.toolPaths)) {
       if (callingTool !== undefined && callingTool !== tool) continue;
       const where = await locate(tool, 'skills', install);
+
       for (const place of writesOf(where)) roots.add(place.path);
+
       if (where.reads !== 'unknown') for (const read of where.reads) roots.add(read.path);
     }
   }
+
   return [...roots];
 }
 
@@ -147,17 +158,22 @@ export async function skillExistsOnDisk(skillName: string, roots: readonly strin
   for (const root of roots) {
     if (await pathExists(path.join(root, skillName, 'SKILL.md'))) return true;
   }
+
   return false;
 }
 
 /** Whether `file` is the SKILL.md of `skillName` under one of `roots`, however either path is spelled. */
 export async function isInstalledSkillFile(skillName: string, file: string, roots: readonly string[]): Promise<boolean> {
   const real = await fs.promises.realpath(file).catch(() => null);
+
   if (real === null) return false;
+
   for (const root of roots) {
     const installed = await fs.promises.realpath(path.join(root, skillName, 'SKILL.md')).catch(() => null);
+
     if (installed !== null && samePath(installed, real)) return true;
   }
+
   return false;
 }
 
@@ -194,12 +210,14 @@ export async function appendUsageEvent(event: UsageEvent, config: LocalConfig): 
 export async function readUsageEvents(config: LocalConfig): Promise<UsageEvent[]> {
   try {
     const events: UsageEvent[] = [];
+
     // Side records count once a lock holder folds them in, as before the store.
     for (const parsed of (await readJsonl(getUsagePath(config), { includePending: false })) as Partial<UsageEvent>[]) {
       if (parsed.skill && parsed.timestamp) {
         events.push({ skill: parsed.skill, timestamp: parsed.timestamp, tool: parsed.tool } as UsageEvent);
       }
     }
+
     return events;
   } catch {
     return [];
@@ -233,12 +251,15 @@ export const USAGE_EVENT_CAP = 5_000;
  */
 export async function capUsageEvents(config: LocalConfig): Promise<void> {
   let dropped = 0;
+
   try {
     await rewriteUsageFile(config, (lines) => {
       if (lines.length <= USAGE_EVENT_CAP) return null;
       dropped = lines.length - USAGE_EVENT_CAP;
+
       return lines.slice(-USAGE_EVENT_CAP);
     });
+
     if (dropped) log.debug(`Capped usage.jsonl: dropped ${dropped} oldest events`);
   } catch (e) {
     if (typeof e === 'object' && e !== null && 'code' in e && e.code === 'ENOENT') return;
@@ -270,9 +291,11 @@ const USAGE_SIDE_FILE_PATTERNS = ['usage.jsonl.*', 'usage.pending-*.jsonl'];
 async function ignoreUsageSideFiles(config: LocalConfig, usagePath: string): Promise<void> {
   if (config.scope !== 'project' || config.repo.kind === 'self') return;
   const gitignorePath = path.join(path.dirname(usagePath), '.gitignore');
+
   try {
     const lines = (await fs.promises.readFile(gitignorePath, 'utf-8')).split('\n');
     const missing = USAGE_SIDE_FILE_PATTERNS.filter((p) => !lines.some((l) => l.trim() === p));
+
     if (!missing.length) return;
     const anchor = lines.findIndex((l) => l.trim() === 'usage.jsonl');
     const at = anchor >= 0 ? anchor + 1 : lines.length - (lines[lines.length - 1] === '' ? 1 : 0);
@@ -296,15 +319,18 @@ const KNOWN_SKILLS_LOCK_WAIT = { attempts: 20, delayMs: 50 };
 export async function updateKnownSkills(skillName: string): Promise<void> {
   const knownPath = getKnownSkillsPath();
   const lockPath = `${knownPath}.lock`;
+
   try {
     const updated = await withFileLock(lockPath, KNOWN_SKILLS_LOCK_WAIT, async () => {
       const existing = await readJson<string[]>(knownPath);
       const skills = new Set(Array.isArray(existing) ? existing : []);
+
       if (skills.has(skillName)) return;
       skills.add(skillName);
       await writeJson(knownPath, Array.from(skills).sort());
       log.debug(`Added ${skillName} to known-skills.json`);
     });
+
     if (updated.held) return;
     log.debug(`${lockPath} is still held, so ${skillName} was not added to known-skills.json; its usage event is recorded`);
   } catch (e) {
@@ -323,6 +349,7 @@ export async function readKnownSkills(): Promise<Set<string>> {
   // (Source 2 below stays machine-wide; neither leaves the machine)
   const config = await resolveConfigForDir();
   const events = config ? await readUsageEvents(config) : [];
+
   for (const event of events) {
     skills.add(event.skill);
   }
@@ -330,6 +357,7 @@ export async function readKnownSkills(): Promise<Set<string>> {
   // Source 2: known-skills.json (survives truncation)
   try {
     const known = await readJson<string[]>(getKnownSkillsPath());
+
     if (Array.isArray(known)) {
       for (const name of known) {
         if (typeof name === 'string') skills.add(name);
@@ -351,9 +379,11 @@ async function readStdin(): Promise<string> {
   if (process.stdin.isTTY) return '';
 
   const chunks: Buffer[] = [];
+
   for await (const chunk of process.stdin) {
     chunks.push(chunk as Buffer);
   }
+
   return Buffer.concat(chunks).toString('utf-8');
 }
 
@@ -363,13 +393,17 @@ async function readStdin(): Promise<string> {
  */
 export async function track(rawToolName: string, toolInput: string, tool?: string): Promise<void> {
   let input: unknown;
+
   try {
     input = JSON.parse(toolInput);
   } catch {
     log.debug('Could not parse the tool input of a track call');
+
     return;
   }
+
   const config = await resolveConfigForDir();
+
   if (!config) return;
   const { creditToolCall } = await import('./skill-use.js');
   await creditToolCall({ tool_name: rawToolName, tool_input: input }, tool ?? 'claude', config);
@@ -378,28 +412,36 @@ export async function track(rawToolName: string, toolInput: string, tool?: strin
 /** A hook payload from STDIN, or null when there is none or it is not a JSON object. */
 async function readHookStdin(): Promise<Record<string, unknown> | null> {
   const raw = await readStdin();
+
   if (!raw.trim()) {
     log.debug('No STDIN data received');
+
     return null;
   }
+
   let parsed: unknown;
+
   try {
     parsed = JSON.parse(raw);
   } catch {
     parsed = null;
   }
+
   if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) return { ...parsed };
   log.error('Failed to parse STDIN JSON');
+
   return null;
 }
 
 /** Handle the hidden `teamai track --stdin` command (a pre-hook-dispatch PostToolUse hook). */
 export async function trackFromStdin(toolArg?: string): Promise<void> {
   const hookData = await readHookStdin();
+
   if (!hookData) return;
   const tool = toolArg ?? 'claude';
   const { resolveHookConfig } = await import('./dashboard-collector.js');
   const config = await resolveHookConfig(hookData, tool);
+
   if (!config) return;
   const { creditToolCall } = await import('./skill-use.js');
   await creditToolCall(hookData, tool, config);
@@ -408,10 +450,12 @@ export async function trackFromStdin(toolArg?: string): Promise<void> {
 /** Handle the hidden `teamai track-slash --stdin` command (a pre-hook-dispatch UserPromptSubmit hook). */
 export async function trackSlashCommand(toolArg?: string): Promise<void> {
   const hookData = await readHookStdin();
+
   if (!hookData) return;
   const tool = toolArg ?? 'claude';
   const { resolveHookConfig } = await import('./dashboard-collector.js');
   const config = await resolveHookConfig(hookData, tool);
+
   if (!config) return;
   const { creditPromptMentions } = await import('./skill-use.js');
   await creditPromptMentions(hookData, tool, config);

@@ -68,35 +68,47 @@ async function freePort(): Promise<number> {
 async function startChildServer(): Promise<{ children(parent: string): Promise<string[]>; stop(): Promise<void> } | string> {
   const port = await freePort();
   const password = randomBytes(16).toString('hex');
+
   const child = crossSpawn('opencode', ['serve', '--hostname', '127.0.0.1', '--port', String(port)], {
     env: { ...process.env, OPENCODE_SERVER_PASSWORD: password },
     stdio: 'ignore',
     windowsHide: true,
   });
+
   const exited = new Promise<void>((resolve) => {
     child.once('exit', () => resolve());
     child.once('error', () => resolve());
   });
+
   const stop = async (): Promise<void> => {
     if (child.exitCode === null) child.kill('SIGTERM');
     await exited;
   };
+
   const headers = { authorization: `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}` };
   const get = (query: string): Promise<Response> => fetch(`http://127.0.0.1:${port}/api/session?${query}`, { headers, signal: AbortSignal.timeout(1000) });
   const deadline = Date.now() + SERVER_READY_MS;
+
   for (;;) {
     const ready = await get('limit=1').then((response) => response.ok, () => false);
+
     if (ready) break;
+
     if (child.exitCode !== null || Date.now() > deadline) {
       await stop();
+
       return `opencode serve did not answer on port ${port} within ${SERVER_READY_MS / 1000} s`;
     }
+
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
+
   return {
     async children(parent) {
       const response = await get(`parentID=${encodeURIComponent(parent)}`);
+
       if (!response.ok) throw new Error(`opencode serve answered ${response.status} to the children of ${parent}`);
+
       return ChildSessions.parse(await response.json()).filter((info) => info.parentID === parent).map((info) => info.id);
     },
     stop,
@@ -164,6 +176,7 @@ const iso = (epochMs: number): string => new Date(epochMs).toISOString();
 
 function userContent(message: z.infer<typeof UserMessage>): ContentBlock[] {
   const content: ContentBlock[] = message.text ? [{ type: 'text', text: message.text }] : [];
+
   for (const file of message.files) {
     if (file.mime.startsWith('image/') && file.data) {
       content.push({ type: 'image', mimeType: file.mime, data: file.data, ...(file.name ? { label: file.name } : {}) });
@@ -171,13 +184,16 @@ function userContent(message: z.infer<typeof UserMessage>): ContentBlock[] {
       content.push({ type: 'text', text: `[file: ${file.name ?? file.uri ?? file.mime}]` });
     }
   }
+
   return content;
 }
 
 function toolResultText(state: z.infer<typeof ToolPart>['state']): string {
   const text = state.content.map((c) => c.text ?? '').join('');
+
   if (text || state.error === undefined) return text;
   const error = ToolError.safeParse(state.error);
+
   return error.success ? error.data.message : JSON.stringify(state.error);
 }
 
@@ -191,12 +207,15 @@ function assistantTurns(message: z.infer<typeof AssistantMessage>): Message[] {
   const turns: Message[] = [];
   let assistant: ContentBlock[] = [];
   let results: ContentBlock[] = [];
+
   const flush = () => {
     if (assistant.length > 0) turns.push({ role: 'assistant', content: assistant, timestamp, messageId: message.id });
+
     if (results.length > 0) turns.push({ role: 'user', content: results, timestamp });
     assistant = [];
     results = [];
   };
+
   for (const part of message.content) {
     if (part.type === 'tool') {
       const tool = ToolPart.parse(part);
@@ -214,18 +233,23 @@ function assistantTurns(message: z.infer<typeof AssistantMessage>): Message[] {
       });
       continue;
     }
+
     if (part.type !== 'text' && part.type !== 'reasoning') continue;
+
     if (results.length > 0) flush();
     const { text } = TextPart.parse(part);
     assistant.push(part.type === 'text' ? { type: 'text', text } : { type: 'thinking', text });
   }
+
   flush();
+
   return turns;
 }
 
 function sessionFromExport(stdout: string): Session {
   const exported = ExportedSession.parse(JSON.parse(stdout));
   const messages: Message[] = [];
+
   for (const message of exported.messages) {
     if (message.type === 'user') {
       const user = UserMessage.parse(message);
@@ -234,7 +258,9 @@ function sessionFromExport(stdout: string): Session {
       messages.push(...assistantTurns(AssistantMessage.parse(message)));
     }
   }
+
   const { info } = exported;
+
   return {
     sessionId: info.id,
     title: info.title,
@@ -254,6 +280,7 @@ const IR_TO_OPENCODE_TOOL: Record<string, string> = Object.fromEntries(
 );
 
 type ExportMessage = { type: 'user' | 'assistant'; created: number; fields: Record<string, unknown> };
+
 type ToolPartState = { status: string; input: Record<string, unknown>; content: Array<{ type: 'text'; text: string }> } & Record<
   string,
   unknown
@@ -270,24 +297,31 @@ const NO_TOKENS = { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 
  */
 function exportOf(session: Session, sessionId: string, directory: string): Record<string, unknown> {
   const tools = new Map<string, ToolPartState>();
+
   const answer = (block: Extract<ContentBlock, { type: 'tool_result' }>): boolean => {
     const state = tools.get(block.callId);
+
     if (!state) return false;
     const content = [{ type: 'text' as const, text: block.content }];
+
     if (block.isError) Object.assign(state, { status: 'error', content, error: { type: 'tool', message: block.content } });
     else Object.assign(state, { status: 'completed', content });
+
     return true;
   };
 
   let clock = Date.parse(session.createdAt) || 0;
   const start = clock;
   const messages: ExportMessage[] = [];
+
   for (const message of session.messages) {
     clock = Math.max(clock, Date.parse(message.timestamp ?? '') || 0);
     const created = clock;
+
     if (message.role === 'user') {
       const text: string[] = [];
       const files: Array<Record<string, unknown>> = [];
+
       for (const block of message.content) {
         if (block.type === 'tool_result') {
           if (!answer(block)) text.push(`[tool_result] ${block.content}`);
@@ -297,11 +331,14 @@ function exportOf(session: Session, sessionId: string, directory: string): Recor
           text.push(blockText(block));
         }
       }
+
       if (text.length === 0 && files.length === 0) continue;
       messages.push({ type: 'user', created, fields: { text: text.join('\n\n'), ...(files.length > 0 ? { files } : {}) } });
       continue;
     }
+
     const content: Array<Record<string, unknown>> = [];
+
     for (const block of message.content) {
       if (block.type === 'text') content.push({ type: 'text', text: block.text });
       else if (block.type === 'thinking') content.push({ type: 'reasoning', text: block.text });
@@ -311,12 +348,14 @@ function exportOf(session: Session, sessionId: string, directory: string): Recor
         content.push({ type: 'tool', id: block.callId, name: IR_TO_OPENCODE_TOOL[block.toolName] ?? block.toolName, state, time: { created } });
       } else if (block.type !== 'tool_result' || !answer(block)) content.push({ type: 'text', text: blockText(block) });
     }
+
     if (content.length === 0) continue;
     const model = { id: message.metadata?.model ?? session.metadata?.model ?? 'unknown', providerID: session.platform };
     messages.push({ type: 'assistant', created, fields: { agent: 'build', model, content } });
   }
 
   const ids = deriveOpencodeMessageIds(sessionId, messages.map((m) => m.created));
+
   return {
     info: {
       id: sessionId,
@@ -351,6 +390,7 @@ function blockText(block: ContentBlock): string {
       return `[tool_result] ${block.content}`;
     default: {
       const unhandled: never = block;
+
       return unhandled;
     }
   }
@@ -376,6 +416,7 @@ export class OpencodeAdapter extends AgentAdapter {
   private async session(args: string[], cwd?: string): Promise<ExecResult> {
     const version = await probeBinary('opencode');
     const major = /(\d+)\.\d+/.exec(version)?.[1];
+
     if (!major || Number(major) < 2) {
       throw new ToolUnavailableError(
         version
@@ -383,6 +424,7 @@ export class OpencodeAdapter extends AgentAdapter {
           : 'The opencode CLI was not found on PATH. Install OpenCode 2 or later.',
       );
     }
+
     return execCommand('opencode', ['session', ...args, '--standalone'], { cwd });
   }
 
@@ -396,13 +438,17 @@ export class OpencodeAdapter extends AgentAdapter {
     if (projectPath === undefined) {
       throw new Error('OpenCode lists one workspace at a time: name the workspace to list its sessions.');
     }
+
     if (!fs.existsSync(projectPath)) return [];
     const result = await this.session(['list', '--format', 'json', '--max-count', String(LIST_MAX)], projectPath);
+
     if (result.code !== 0) throw new Error(`opencode session list failed: ${result.stderr.trim() || `exit ${result.code}`}`);
     const workspace = resolveRealCwd(projectPath);
+
     const inWorkspace = ListedSessions.parse(JSON.parse(result.stdout)).filter(
       (listed) => resolveRealCwd(listed.directory) === workspace,
     );
+
     return inWorkspace.map((listed) => ({
       sessionId: listed.id,
       title: listed.title,
@@ -418,7 +464,9 @@ export class OpencodeAdapter extends AgentAdapter {
   /** A session id names one OpenCode session in every project, so `projectPath` and `filePath` are not needed. */
   async readSession(ref: SessionReadRef): Promise<Session> {
     const result = await this.session(['export', ref.sessionId]);
+
     if (result.code !== 0) throw new Error(result.stderr.trim() || `opencode session export exited ${result.code}`);
+
     return sessionFromExport(result.stdout);
   }
 
@@ -429,9 +477,12 @@ export class OpencodeAdapter extends AgentAdapter {
    */
   async readSubagents(session: Session, _ref: SessionReadRef): Promise<SubagentsRead> {
     const server = await startChildServer();
+
     if (typeof server === 'string') return { status: 'unread', reason: server };
+
     try {
       const agents: Subagent[] = [];
+
       const visit = async (parent: string, depth: number): Promise<void> => {
         for (const id of await server.children(parent)) {
           if (agents.some((agent) => agent.session.sessionId === id)) continue;
@@ -439,7 +490,9 @@ export class OpencodeAdapter extends AgentAdapter {
           await visit(id, depth + 1);
         }
       };
+
       await visit(session.sessionId, 1);
+
       return { status: 'read', agents };
     } finally {
       await server.stop();
@@ -449,6 +502,7 @@ export class OpencodeAdapter extends AgentAdapter {
   async existingSessionId(sessionId: string, projectPath?: string): Promise<string | undefined> {
     if (!sessionId.startsWith('ses_')) return undefined;
     const result = await this.session(['export', sessionId]);
+
     if (result.code !== 0) {
       if (NOT_FOUND.test(result.stderr)) return undefined;
       // Neither absent nor present: the caller must not write, and must not report a copy either.
@@ -457,13 +511,16 @@ export class OpencodeAdapter extends AgentAdapter {
           `${result.stderr.trim() || `exit ${result.code}`}`,
       );
     }
+
     if (!projectPath) return sessionId;
     let directory: string;
+
     try {
       directory = ExportedSession.parse(JSON.parse(result.stdout)).info.location.directory;
     } catch {
       return sessionId;
     }
+
     return resolveRealCwd(directory) === resolveRealCwd(projectPath) ? sessionId : undefined;
   }
 
@@ -473,23 +530,30 @@ export class OpencodeAdapter extends AgentAdapter {
    */
   async writeSession(session: Session, projectPath?: string): Promise<string> {
     const cwd = projectPath ?? session.cwd;
+
     const sessionId = deriveTargetSessionId({
       targetPlatform: this.platform,
       targetCwd: cwd,
       sourceSessionId: session.sessionId,
       sourceCreatedAt: session.createdAt,
     });
+
     if (!fs.existsSync(cwd)) {
       throw new Error(`OpenCode imports a session only into a directory that exists, and ${cwd} does not. Create it first.`);
     }
+
     const dir = fs.mkdtempSync(path.join(tmpdir(), 'teamai-opencode-'));
+
     try {
       const file = path.join(dir, `${sessionId}.json`);
       // The real path, the one OpenCode records for a session started in that directory.
       fs.writeFileSync(file, JSON.stringify(exportOf(session, sessionId, resolveRealCwd(cwd))));
       const result = await this.session(['import', file, '--directory', resolveRealCwd(cwd)]);
+
       if (result.code !== 0) throw new Error(`opencode session import failed: ${result.stderr.trim() || `exit ${result.code}`}`);
+
       if (result.stdout.includes(`Imported session: ${sessionId}`)) return sessionId;
+
       // OpenCode reports an id it already has on stderr and exits 0. The caller looked a moment
       // ago, so another run just imported this same copy.
       if (ALREADY_EXISTS.test(result.stderr)) return sessionId;
@@ -502,7 +566,9 @@ export class OpencodeAdapter extends AgentAdapter {
   async deleteSession(sessionId: string, projectPath?: string): Promise<boolean> {
     if (!(await this.existingSessionId(sessionId, projectPath))) return false;
     const result = await this.session(['delete', sessionId]);
+
     if (result.code === 0) return true;
+
     if (NOT_FOUND.test(result.stderr)) return false;
     throw new Error(`opencode session delete ${sessionId} failed: ${result.stderr.trim() || `exit ${result.code}`}`);
   }

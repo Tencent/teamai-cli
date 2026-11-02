@@ -40,6 +40,7 @@ export function calculateSkillHealth(
  */
 export function scoreToStars(score: number): string {
   const filledStars = Math.round((score / 100) * 5);
+
   return '★'.repeat(filledStars) + '☆'.repeat(5 - filledStars);
 }
 
@@ -59,9 +60,11 @@ export function calculateTeamHealth(
 
       if (existing) {
         existing.count += data.count;
+
         if (lastUsed > existing.lastUsed) {
           existing.lastUsed = lastUsed;
         }
+
         existing.contributors.add(userStats.username);
       } else {
         skillTotals.set(skillName, {
@@ -77,6 +80,7 @@ export function calculateTeamHealth(
 
   const results = Array.from(skillTotals.entries()).map(([skill, data]) => {
     const score = calculateSkillHealth(data.count, data.lastUsed, maxCount);
+
     return {
       skill,
       score,

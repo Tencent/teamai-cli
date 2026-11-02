@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 export const PackageScopeSchema = z.enum(['user', 'project', 'local']);
+
 export type PackageScope = z.infer<typeof PackageScopeSchema>;
 
 export const NpmSpecSchema = z.object({
@@ -14,6 +15,7 @@ export const NpmSpecSchema = z.object({
   registry: z.string().refine((value) => {
     try {
       const url = new URL(value);
+
       return !url.username
         && !url.password
         && ['http:', 'https:'].includes(url.protocol);
@@ -53,6 +55,7 @@ export const PackageManifestSchema = z.object({
 }).superRefine((manifest, ctx) => {
   const marketplaces = manifest.packages.claude?.marketplaces ?? [];
   const names = new Set<string>();
+
   for (const [index, marketplace] of marketplaces.entries()) {
     if (names.has(marketplace.name)) {
       ctx.addIssue({
@@ -61,12 +64,14 @@ export const PackageManifestSchema = z.object({
         message: `duplicate Claude marketplace "${marketplace.name}"`,
       });
     }
+
     names.add(marketplace.name);
   }
 
   for (const [index, plugin] of (manifest.packages.claude?.plugins ?? []).entries()) {
     const separator = plugin.name.lastIndexOf('@');
     const marketplace = separator > 0 ? plugin.name.slice(separator + 1) : '';
+
     if (!marketplace) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -84,10 +89,15 @@ export const PackageManifestSchema = z.object({
 });
 
 export type NpmSpec = z.infer<typeof NpmSpecSchema>;
+
 export type ClaudeMarketplace = z.infer<typeof ClaudeMarketplaceSchema>;
+
 export type ClaudePluginSpec = z.infer<typeof ClaudePluginSpecSchema>;
+
 export type ClaudeEcosystem = z.infer<typeof ClaudeEcosystemSchema>;
+
 export type PackageSet = z.infer<typeof PackageSetSchema>;
+
 export type PackageManifest = z.infer<typeof PackageManifestSchema>;
 
 export const NpmLockEntrySchema = z.object({
@@ -132,8 +142,11 @@ export const PackageLockSchema = z.object({
 });
 
 export type NpmLockEntry = z.infer<typeof NpmLockEntrySchema>;
+
 export type ClaudeMarketplaceLock = z.infer<typeof ClaudeMarketplaceLockSchema>;
+
 export type ClaudePluginLock = z.infer<typeof ClaudePluginLockSchema>;
+
 export type PackageLock = z.infer<typeof PackageLockSchema>;
 
 export interface PackageStatus {

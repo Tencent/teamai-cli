@@ -32,16 +32,21 @@ export function nextDelivery(
 ): DeliveryJob | undefined {
   if (run.status !== 'running') return undefined;
   const settledRun = reconcile(run);
+
   if ('unreadable' in settledRun || 'outcome' in settledRun) return undefined;
+
   for (const step of run.steps) {
     if (step.status !== 'delivering') continue;
     const key = deliveryKey(step);
+
     if (waiting.some((ahead) => sameKey(ahead, key)) || writerLeased(run, key.branch)) continue;
     const target = deliveryTarget(run, key.branch);
+
     if (!run.checkout || !run.base || target === undefined) {
       deliveryFailed(step, deliveryFailure({ runId: run.id, key }, { kind: 'no_checkout' }));
       continue;
     }
+
     return {
       key, runId: run.id, runName: run.name, checkout: run.checkout, base: run.base.commit, target,
       recordedHead: run.copies?.[key.branch]?.commit, childWork: childWorkOff(run, step, key.branch),
@@ -49,6 +54,7 @@ export function nextDelivery(
       ...(step.delivery.reported ? { reported: step.delivery.reported } : {}),
     };
   }
+
   return undefined;
 }
 
@@ -56,6 +62,7 @@ export function nextDelivery(
 export function unresolvedCreate(run: RunState, tried: readonly Omit<UnresolvedCreate, 'lookups'>[]): { create: UnresolvedCreate; checkout: string } | undefined {
   const { checkout } = run;
   const create = run.creating?.find((listed) => !tried.some((done) => sameCreate(done, listed)));
+
   return create && checkout ? { create, checkout } : undefined;
 }
 
@@ -66,6 +73,7 @@ export function sameCreate(a: Omit<UnresolvedCreate, 'lookups'>, b: Omit<Unresol
 /** Drops `create` from the requests the run has no receipt for. */
 function forgetCreate(run: RunState, create: Omit<UnresolvedCreate, 'lookups'>): void {
   const left = run.creating?.filter((listed) => !sameCreate(listed, create));
+
   if (left?.length) run.creating = left;
   else delete run.creating;
 }
@@ -74,6 +82,7 @@ function forgetCreate(run: RunState, create: Omit<UnresolvedCreate, 'lookups'>):
 function recordReceipt(run: RunState, key: DeliveryKey, target: string, url: PrUrl): boolean {
   if (run.deliveries?.some((receipt) => receipt.url === url)) return false;
   (run.deliveries ??= []).push({ url, branch: key.branch, base: target, step: key.step, pass: key.pass });
+
   return true;
 }
 
@@ -97,12 +106,16 @@ export function completeDelivery(
   // A request this job opened gets its receipt whatever became of the branch; one it found or was told of waits.
   const taken = settles || run.creating?.some((listed) => sameCreate(listed, create)) === true;
   const receipted = outcome.ok && taken && recordReceipt(run, job.key, job.target, outcome.pr);
+
   if (outcome.ok && taken) forgetCreate(run, create);
+
   if (run.status === 'running') reconcile(run);
   const step = deliveringStep(run, job.key);
   const awaited = !outcome.ok && outcome.fault.kind === 'branch_ahead' && unchecked();
+
   if (step && outcome.ok && settles) delivered(step);
   else if (step && !outcome.ok && !awaited) deliveryFailed(step, deliveryFailure(job, outcome.fault));
+
   return { requeueEnd: receipted && run.status !== 'running' };
 }
 
@@ -112,6 +125,7 @@ export function completeDelivery(
  */
 export function resolveCreate(run: RunState, create: UnresolvedCreate, found: Awaited<ReturnType<typeof findDelivered>>): { requeueEnd: boolean } {
   const listed = run.creating?.find((item) => sameCreate(item, create));
+
   if (!listed) return { requeueEnd: false };
   const lookups = listed.lookups ?? { total: 0, none: 0, failed: 0 };
   listed.lookups = {
@@ -120,6 +134,8 @@ export function resolveCreate(run: RunState, create: UnresolvedCreate, found: Aw
     failed: lookups.failed + (found.kind === 'failed' ? 1 : 0),
   };
   const receipted = found.kind === 'found' && recordReceipt(run, create, create.target, found.pr);
+
   if (found.kind === 'found' || found.kind === 'unsafe' || listed.lookups.none >= 2 || listed.lookups.failed >= 3) forgetCreate(run, create);
+
   return { requeueEnd: receipted && run.status !== 'running' };
 }

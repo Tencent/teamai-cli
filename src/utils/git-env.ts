@@ -42,6 +42,7 @@ export const NON_INTERACTIVE_GIT_ENV: Readonly<Record<string, string>> = {
  */
 export function applyNonInteractiveGitEnv(): void {
   if (isInteractive()) return;
+
   for (const [name, value] of Object.entries(NON_INTERACTIVE_GIT_ENV)) {
     if (process.env[name] === undefined) process.env[name] = value;
   }
@@ -75,6 +76,8 @@ export const GIT_REPOSITORY_ENV = [
 /** `env` without the repository Git exported for a hook: a git child started with it acts on its cwd's repository. */
 export function withoutGitRepositoryEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const copy = { ...env };
+
   for (const name of GIT_REPOSITORY_ENV) delete copy[name];
+
   return copy;
 }

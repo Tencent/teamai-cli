@@ -29,8 +29,10 @@ export class GitHubProvider implements GitProvider {
   async authenticate(): Promise<string> {
     if (this.isAuthenticated()) {
       const username = await ghAuthWhoami();
+
       if (username) return username;
     }
+
     return ensureGhAuthenticated();
   }
 
@@ -45,6 +47,7 @@ export class GitHubProvider implements GitProvider {
       if (e instanceof GhRepoNotFoundError) {
         throw new RepoNotFoundError(repo);
       }
+
       throw e;
     }
   }

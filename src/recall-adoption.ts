@@ -59,9 +59,12 @@ function rootOptionWords(words: string[], i: number): number {
   const eq = word.startsWith('--') ? word.indexOf('=') : -1;
   const flag = eq === -1 ? word : word.slice(0, eq);
   const option = ROOT_OPTIONS.find((o) => o.short === flag || o.long === flag);
+
   if (!option) return 0;
   const takesValue = option.required || option.optional;
+
   if (eq !== -1) return takesValue ? 1 : 0;
+
   // Commander gives an optional value the next word unless it is an option.
   return option.required || (option.optional && !(words[i + 1] ?? '-').startsWith('-')) ? 2 : 1;
 }
@@ -79,14 +82,19 @@ function invokesRecall(command: string): boolean {
     const words = commandWords(simple.words);
     let i = 0;
     let name = TEAMAI_BINARY;
+
     if (words[i] === 'npx') {
       i++;
+
       while (i < words.length && words[i].startsWith('-')) i++;
       name = TEAMAI_PACKAGE;
     }
+
     if (!name.test(words[i]?.split(/[\\/]/).pop() ?? '')) return false;
     i++;
+
     for (let n = rootOptionWords(words, i); n > 0; n = rootOptionWords(words, i)) i += n;
+
     return words[i] === 'recall';
   });
 }
@@ -99,6 +107,7 @@ function nonEmpty(value: unknown): string | undefined {
 function actorOf(stdin: Record<string, unknown>, tool: string): Actor {
   const agentId = nonEmpty(stdin.agent_id);
   const agentType = nonEmpty(stdin.agent_type);
+
   return {
     session: deriveDispatchSessionId(stdin, tool),
     ...(agentId ? { agentId } : {}),
@@ -125,6 +134,7 @@ async function toolCallLines(stdin: Record<string, unknown>, tool: string, confi
   const link = stdin.session_link !== null && typeof stdin.session_link === 'object' ? stdin.session_link as Record<string, unknown> : {};
   const child = nonEmpty(link.child);
   const parent = nonEmpty(link.parent);
+
   if (child && parent && child !== parent) {
     lines.push({ kind: 'link', ts: new Date().toISOString(), child, parent });
   }
@@ -133,10 +143,13 @@ async function toolCallLines(stdin: Record<string, unknown>, tool: string, confi
 
   if (call.command !== undefined && call.output !== undefined) {
     const runs = [...new Set([...call.output.matchAll(RUN_ID_PATTERN)].map((m) => m[1]))];
+
     if (runs.length > 0) {
       const actor = actorOf(stdin, tool);
       const direct = invokesRecall(call.command);
+
       for (const run of runs) lines.push({ kind: 'claim', ts: new Date().toISOString(), run, ...actor, direct, agent: tool });
+
       return lines;
     }
   }
@@ -144,20 +157,25 @@ async function toolCallLines(stdin: Record<string, unknown>, tool: string, confi
   // A search's paths are the files its output showed lines of; the reducer keeps those a run printed.
   if ((call.category !== 'read' && call.category !== 'search') || call.status === 'failure') return lines;
   let roots: string[] | undefined;
+
   for (const file of call.paths) {
     // Recalled docs are markdown: no other path can vote, and none that is text a search printed reaches the log.
     if (!/\.md$/i.test(file)) continue;
+
     // A relative path had no base to place it under a root: it is kept for the suffix match.
     if (isAbsolutePath(file)) {
       const { knowledgeRoots, isUnderRoots } = await import('./utils/learnings-roots.js');
       roots ??= await knowledgeRoots(config);
+
       if (!isUnderRoots(file, roots)) continue;
     }
+
     lines.push({
       kind: 'evidence', ts: new Date().toISOString(), id: randomUUID(),
       ...actorOf(stdin, tool), path: file, status: call.status, simple: call.simple,
     });
   }
+
   return lines;
 }
 
@@ -181,17 +199,22 @@ function segments(p: string): string[] {
 function openedPaths(evidencePath: string, paths: string[]): string[] {
   if (isAbsolutePath(evidencePath)) return paths.filter((p) => samePath(p, evidencePath));
   const tail = segments(evidencePath);
+
   if (tail.length < 2) return [];
+
   const hits = paths.filter((p) => {
     const segs = segments(p);
+
     return segs.length >= tail.length && tail.every((s, i) => segs[segs.length - tail.length + i] === s);
   });
+
   return new Set(hits.map((p) => segments(p).join('/'))).size === 1 ? hits : [];
 }
 
 /** The docs a read of `evidencePath` opened. */
 function docsOpened(evidencePath: string, docs: RecalledDoc[]): RecalledDoc[] {
   const opened = new Set(openedPaths(evidencePath, docs.map((d) => d.path)));
+
   return docs.filter((d) => opened.has(d.path));
 }
 
@@ -213,33 +236,41 @@ function indexLog(lines: RecallLogLine[]): LogIndex {
   const claimOf = new Map<string, ClaimLine>();
   const parentOf = new Map<string, string>();
   const consumed = new Set<string>();
+
   for (const line of lines) {
     if (line.kind === 'claim') {
       if (line.direct !== true || !logged.has(line.run)) continue;
       // Earliest by time: a claim a busy lock left in a side record reads after the file's lines.
       const first = claimOf.get(line.run);
+
       if (!first || line.ts < first.ts) claimOf.set(line.run, line);
     } else if (line.kind === 'link') {
       if (!parentOf.has(line.child)) parentOf.set(line.child, line.parent);
     } else if (line.kind === 'consumed') consumed.add(line.evidence);
   }
+
   // A cycle stops where it closes.
   const rootOf = (session: string): string => {
     const seen = new Set<string>([session]);
     let root = session;
+
     for (let up = parentOf.get(root); up !== undefined && !seen.has(up); up = parentOf.get(root)) {
       seen.add(up);
       root = up;
     }
+
     return root;
   };
+
   const ownerOf = (r: RunLine): string | null => claimOf.get(r.run)?.session ?? (r.unambiguous === true ? r.session : null);
+
   return { lines, claimOf, consumed, rootOf, ownerOf };
 }
 
 /** Whether `at` falls within the adoption window after the run. */
 function inWindow(at: number, run: RunLine): boolean {
   const since = at - Date.parse(run.ts);
+
   return since >= 0 && since <= ADOPTION_WINDOW_MS;
 }
 
@@ -296,37 +327,49 @@ interface RootView {
 
 function viewRoot(index: LogIndex, target: string): RootView {
   const { lines, claimOf, consumed, rootOf, ownerOf } = index;
+
   const runs = lines.filter((l): l is RunLine => {
     if (l.kind !== 'run') return false;
     const owner = ownerOf(l);
+
     return owner !== null && rootOf(owner) === target;
   });
+
   // A marked run's actor: the session that ran it, and its claim's subagent there, or the main agent (null).
   const markedActor = new Map<RunLine, { session: string; agentId: string | null }>();
+
   for (const r of runs) {
     const claim = claimOf.get(r.run);
+
     if (r.caller === RECALL_SUBAGENT || claim?.agentType === RECALL_SUBAGENT) {
       markedActor.set(r, { session: ownerOf(r)!, agentId: claim?.agentId ?? null });
     }
   }
+
   const recalled = new Set(runs.flatMap((r) => r.docs.map((d) => d.key))).size;
   const runOf = new Map<RecalledDoc, RunLine>(runs.flatMap((r) => r.docs.map((d) => [d, r] as const)));
   const creditOf = (d: RecalledDoc): string => `${runOf.get(d)!.run}\n${d.key}`;
+
   // The eligible docs a read opened, of the runs whose window it falls in and whose own reads it may count for.
   const opened = (e: EvidenceLine): RecalledDoc[] => {
     const at = Date.parse(e.ts);
+
     const docs = runs
       .filter((r) => inWindow(at, r))
       .filter((r) => {
         const actor = markedActor.get(r);
+
         return !actor || actor.session !== e.session || actor.agentId !== (e.agentId ?? null);
       })
       .flatMap((r) => r.docs);
+
     return docsOpened(e.path, docs).filter((d) => d.eligible);
   };
+
   const evidence = lines.filter((e): e is EvidenceLine => e.kind === 'evidence' && rootOf(e.session) === target
     // A read of unknown status (Codex's shell) counts only as a simple read, never as a pipeline's head or an item of a list.
     && (e.status === 'success' || (e.status === 'unknown' && e.simple === true)));
+
   const credited = evidence.filter((e) => consumed.has(e.id)).flatMap(opened);
   const done = new Set(credited.map(creditOf));
   // A run counts once when any countable read — credited or still pending —
@@ -335,8 +378,10 @@ function viewRoot(index: LogIndex, target: string): RootView {
   // so unlike `done` this set never feeds the votes ledger.
   const relatedPathsOf = (r: RunLine): string[] => [...new Set(r.docs.flatMap((d) => (d.related ?? []).map((x) => x.path)))];
   const viaRelationRuns = new Set<string>();
+
   for (const e of evidence) {
     const at = Date.parse(e.ts);
+
     // The ambiguity pool holds every in-window run's recalled paths and
     // related paths: a relative read that could name one of each credits
     // nothing — it is plausibly an ordinary read of the recalled doc
@@ -345,39 +390,52 @@ function viewRoot(index: LogIndex, target: string): RootView {
     const pool = runs.filter((r) => {
       if (!inWindow(at, r)) return false;
       const actor = markedActor.get(r);
+
       return !actor || actor.session !== e.session || actor.agentId !== (e.agentId ?? null);
     });
+
     const poolPathsOf = (r: RunLine): string[] => [...new Set([...r.docs.map((d) => d.path), ...relatedPathsOf(r)])];
     const matched = new Set(openedPaths(e.path, pool.flatMap(poolPathsOf)));
+
     for (const r of pool) {
       if (viaRelationRuns.has(r.run)) continue;
+
       if (relatedPathsOf(r).some((p) => matched.has(p))) viaRelationRuns.add(r.run);
     }
   }
+
   return { runs, recalled, adopted: new Set(credited.map((d) => d.key)).size, viaRelation: viaRelationRuns.size, evidence, opened, creditOf, done };
 }
 
 async function creditRoot(config: LocalConfig, index: LogIndex, sessionId: string): Promise<AdoptionResult> {
   const target = index.rootOf(sessionId);
   const { runs, recalled, evidence, opened, creditOf, done } = viewRoot(index, target);
+
   if (runs.length === 0) return { credited: [], recalled };
   const { consumed } = index;
 
   const keys = new Set<string>();
   const crediting: string[] = [];
+
   for (const e of evidence) {
     if (consumed.has(e.id)) continue;
     const fresh = opened(e).filter((d) => !done.has(creditOf(d)));
+
     if (fresh.length === 0) continue;
+
     for (const d of fresh) keys.add(d.key);
     crediting.push(e.id);
   }
+
   if (keys.size === 0) return { credited: [], recalled };
 
   const { incrementUpvoted } = await import('./votes.js');
   const credited = await incrementUpvoted(path.join(getVotesDir(config), `${config.username}.yaml`), [...keys], target);
+
   if (credited === null) return { credited: null, recalled };
+
   for (const id of crediting) consumed.add(id);
+
   try {
     const ts = new Date().toISOString();
     await appendRecallLines(config, crediting.map((evidenceId) => ({ kind: 'consumed', ts, evidence: evidenceId })));
@@ -385,6 +443,7 @@ async function creditRoot(config: LocalConfig, index: LogIndex, sessionId: strin
     // The ledger still holds the credit for its window; past it this evidence could credit again.
     log.debug(`recall adoption: could not mark ${crediting.length} evidence line(s) consumed: ${(e as Error).message}`);
   }
+
   return { credited, recalled };
 }
 
@@ -392,6 +451,7 @@ async function creditRoot(config: LocalConfig, index: LogIndex, sessionId: strin
 export async function recalledDocsForSession(config: LocalConfig, sessionId: string): Promise<RecalledDoc[]> {
   const index = indexLog(await readRecallLog(config));
   const { runs } = viewRoot(index, index.rootOf(sessionId));
+
   return [...new Map(runs.flatMap(r => r.docs.filter(d => d.eligible).map(d => [d.key, d] as const))).values()];
 }
 
@@ -405,6 +465,7 @@ export async function recalledKeyOf(config: LocalConfig, sessionId: string): Pro
   const index = indexLog(await readRecallLog(config));
   const { runs } = viewRoot(index, index.rootOf(sessionId));
   const keys = new Map(runs.flatMap((r) => r.docs.map((d) => [pathKey(d.path), d.key] as const)));
+
   return (printed) => keys.get(pathKey(printed));
 }
 
@@ -441,6 +502,7 @@ export async function recalledPathOf(config: LocalConfig, sessionId: string): Pr
   const docsByBasename = new Map<string, Map<string, string>>();
   // Exact vote key → path (keys are unique), a fallback for a full-key id.
   const byKey = new Map<string, string>();
+
   for (const r of runs) {
     for (const d of r.docs) {
       if (!byKey.has(d.key)) byKey.set(d.key, d.path);
@@ -448,9 +510,12 @@ export async function recalledPathOf(config: LocalConfig, sessionId: string): Pr
       (docsByBasename.get(base) ?? docsByBasename.set(base, new Map()).get(base)!).set(pathKey(d.path), d.path);
     }
   }
+
   return (id) => {
     const docs = docsByBasename.get(id);
+
     if (docs) return docs.size === 1 ? [...docs.values()][0] : undefined;
+
     return byKey.get(id);
   };
 }
@@ -485,14 +550,18 @@ export interface RecallSessionSummary {
 export async function recallSessions(config: LocalConfig, limit: number): Promise<RecallSessionSummary[]> {
   const index = indexLog(await readRecallLog(config));
   const newest = new Map<string, RunLine>();
+
   for (const line of index.lines) {
     if (line.kind !== 'run') continue;
     const owner = index.ownerOf(line);
+
     if (owner === null) continue;
     const root = index.rootOf(owner);
     const seen = newest.get(root);
+
     if (!seen || line.ts > seen.ts) newest.set(root, line);
   }
+
   return [...newest].sort(([, a], [, b]) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0)).slice(0, limit).map(([session, last]) => {
     const { runs, recalled, adopted, viaRelation } = viewRoot(index, session);
     // A run's agent is the one whose hook claimed it, else its environment's
@@ -501,12 +570,14 @@ export async function recallSessions(config: LocalConfig, limit: number): Promis
     const named = runs.filter((r) => agentOf(r));
     const agent = named.reduce<RunLine | undefined>((a, r) => (!a || r.ts > a.ts ? r : a), undefined);
     const family = agent ? agentOf(agent) : undefined;
+
     return { session, ...(family ? { agent: family } : {}), runs: runs.length, recalled, adopted, viaRelation, last: last.ts };
   });
 }
 
 /** How long the recall log keeps a line. */
 const RECALL_LOG_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
 /** The most lines the recall log keeps, the oldest dropped first. */
 const RECALL_LOG_MAX_LINES = 5000;
 
@@ -521,6 +592,7 @@ const RECALL_LOG_MAX_LINES = 5000;
  */
 export async function drainRecallLog(config: LocalConfig): Promise<void> {
   const file = recallLogPath(config);
+
   if (config.repo.kind !== 'http') {
     try {
       await creditPendingSessions(config);
@@ -528,8 +600,10 @@ export async function drainRecallLog(config: LocalConfig): Promise<void> {
       log.debug(`recall adoption: could not credit pending sessions from ${file}: ${(e as Error).message}`);
     }
   }
+
   // Taking the lock creates its directory: a scope that never recalled gets none.
   if (!fs.existsSync(file)) return;
+
   try {
     await rewriteJsonl(file, (lines) => retainedLines(lines, Date.now()));
   } catch (e) {
@@ -546,6 +620,7 @@ export async function drainRecallLog(config: LocalConfig): Promise<void> {
 async function creditPendingSessions(config: LocalConfig): Promise<void> {
   const index = indexLog(await readRecallLog(config));
   const roots = new Set(index.lines.flatMap((l) => l.kind === 'evidence' && !index.consumed.has(l.id) ? [index.rootOf(l.session)] : []));
+
   for (const root of roots) {
     if ((await creditRoot(config, index, root)).credited === null) return;
   }
@@ -569,16 +644,20 @@ interface LogEntry {
  */
 function retainedLines(raw: string[], now: number): string[] | null {
   const entries: LogEntry[] = [];
+
   for (const text of raw) {
     let line: unknown;
+
     try {
       line = JSON.parse(text);
     } catch {
       continue;
     }
+
     if (line === null || typeof line !== 'object' || Array.isArray(line)) continue;
     const { kind, ts } = line as { kind?: unknown; ts?: unknown };
     const at = typeof ts === 'string' ? Date.parse(ts) : NaN;
+
     if (typeof kind !== 'string' || !Number.isFinite(at)) continue;
     entries.push({ text, line: line as RecallLogLine, at });
   }
@@ -586,12 +665,15 @@ function retainedLines(raw: string[], now: number): string[] | null {
   // Units in file order: each evidence with its consumed lines, at the evidence's time and place; each other line alone.
   const units: LogEntry[][] = [];
   const unitOf = new Map<string, LogEntry[]>();
+
   for (const entry of entries) {
     if (entry.line.kind !== 'evidence' || typeof entry.line.id !== 'string' || unitOf.has(entry.line.id)) continue;
     unitOf.set(entry.line.id, [entry]);
   }
+
   for (const entry of entries) {
     const { line } = entry;
+
     if (line.kind === 'consumed') {
       // A consumed line without its evidence marks nothing any more.
       unitOf.get(line.evidence)?.push(entry);
@@ -606,15 +688,19 @@ function retainedLines(raw: string[], now: number): string[] | null {
   const kept = new Set(aged);
   const needed = neededForPending(aged.flat(), now);
   let count = aged.reduce((n, unit) => n + unit.length, 0);
+
   for (const unit of aged) {
     if (count <= RECALL_LOG_MAX_LINES) break;
+
     if (unit.some((entry) => needed.has(entry))) continue;
     kept.delete(unit);
     count -= unit.length;
   }
 
   const survivors = new Set([...kept].flat());
+
   if (survivors.size === raw.length) return null;
+
   return entries.filter((entry) => survivors.has(entry)).map((entry) => entry.text);
 }
 
@@ -629,23 +715,29 @@ function neededForPending(entries: LogEntry[], now: number): Set<LogEntry> {
   const consumed = new Set(entries.flatMap(({ line }) => line.kind === 'consumed' ? [line.evidence] : []));
   const evidence = entries.filter((e): e is LogEntry & { line: EvidenceLine } => e.line.kind === 'evidence');
   const pending = evidence.filter((e) => !consumed.has(e.line.id) && now - e.at < ADOPTION_WINDOW_MS);
+
   if (pending.length === 0) return new Set();
   const opens = (e: LogEntry & { line: EvidenceLine }, run: RunLine): boolean => inWindow(e.at, run) && docsOpened(e.line.path, run.docs).length > 0;
 
   const runs = entries.filter((r): r is LogEntry & { line: RunLine } => r.line.kind === 'run'
     && Array.isArray(r.line.docs) && pending.some((e) => opens(e, r.line as RunLine)));
+
   const runIds = new Set(runs.map((r) => r.line.run));
   const claims = entries.filter((c) => c.line.kind === 'claim' && runIds.has(c.line.run));
   const reads = evidence.filter((e) => runs.some((r) => opens(e, r.line)));
   const needed = new Set<LogEntry>([...pending, ...runs, ...claims, ...reads]);
 
   const sessions = new Set<string>();
+
   for (const { line } of needed) {
     if ((line.kind === 'run' || line.kind === 'claim' || line.kind === 'evidence') && typeof line.session === 'string') sessions.add(line.session);
   }
+
   const links = entries.filter((l): l is LogEntry & { line: LinkLine } => l.line.kind === 'link');
+
   for (let grew = true; grew;) {
     grew = false;
+
     for (const link of links) {
       if (needed.has(link) || !sessions.has(link.line.child)) continue;
       needed.add(link);
@@ -653,5 +745,6 @@ function neededForPending(entries: LogEntry[], now: number): Set<LogEntry> {
       grew = true;
     }
   }
+
   return needed;
 }

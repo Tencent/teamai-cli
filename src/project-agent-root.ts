@@ -15,10 +15,14 @@ import { log } from './utils/logger.js';
 function isSafeRelativeRoot(root: string): boolean {
   if (!root) return false;
   const posix = root.replaceAll('\\', '/');
+
   if (path.isAbsolute(root) || path.isAbsolute(posix)) return false;
+
   if (posix === '~' || posix.startsWith('~/')) return false;
   const segments = posix.split('/');
+
   if (segments.some((segment) => !segment || segment === '.' || segment === '..')) return false;
+
   return segments[0].startsWith('.');
 }
 
@@ -29,8 +33,10 @@ function resolveSkillsPath(
 ): string | undefined {
   if (teamConfig) {
     const fromTeam = scopedToolPaths(teamConfig, localConfig)[tool]?.skills;
+
     if (fromTeam) return fromTeam;
   }
+
   return KNOWN_AGENTS.find((agent) => agent.id === tool)?.skillsPath;
 }
 
@@ -54,9 +60,11 @@ export async function createProjectToolRoots(options: {
   config?: LocalConfig;
 } = {}): Promise<void> {
   const requested = options.tools && normalizeIds(options.tools);
+
   if (requested?.length === 0) return;
 
   const projectConfig = options.config ?? await detectProjectConfig(options.cwd);
+
   if (!projectConfig) return;
 
   const enabled = projectConfig.enabledAgents ?? [];
@@ -65,10 +73,13 @@ export async function createProjectToolRoots(options: {
 
   const rootOf = (id: string): string | undefined => {
     if (isAgentDisabled(projectConfig, id)) return undefined;
+
     if (enabled.length > 0 && !enabled.includes(id)) return undefined;
     const skillsPath = resolveSkillsPath(id, teamConfig, projectConfig);
+
     if (!skillsPath) return undefined;
     const root = toolInstallRoot(skillsPath);
+
     return isSafeRelativeRoot(root) ? root : undefined;
   };
 
@@ -77,8 +88,10 @@ export async function createProjectToolRoots(options: {
 
   for (const id of ids) {
     const root = rootOf(id);
+
     if (!root) continue;
     const dest = path.join(baseDir, root);
+
     // A checkout removed meanwhile is not created again (#1424).
     if (!await pathExists(baseDir)) return;
     await ensureDir(dest);
@@ -98,18 +111,25 @@ async function toolsInMainCheckout(
 ): Promise<string[]> {
   const anchors = await resolveAnchors(checkout);
   let mainCheckout = anchors?.mainCheckout;
+
   // An inherited submodule clone is its own main checkout; it came from the original submodule (#1041).
   if (anchors && mainCheckout === checkout) mainCheckout = await checkoutForProjectAnchor(anchors.projectAnchor);
+
   if (!mainCheckout || mainCheckout === checkout) return [];
+
   const candidates = normalizeIds([
     ...KNOWN_AGENTS.map((agent) => agent.id),
     ...Object.keys(teamConfig?.toolPaths ?? {}),
   ]);
+
   const present: string[] = [];
+
   for (const id of candidates) {
     const root = rootOf(id);
+
     if (root && (await isDirectory(path.join(mainCheckout, root)))) present.push(id);
   }
+
   return present;
 }
 
@@ -129,11 +149,15 @@ async function isDirectory(p: string): Promise<boolean> {
  */
 export async function seedInheritedCheckoutRoots(cwd: string): Promise<'seeded' | 'not-needed' | 'source-missing'> {
   const anchors = await resolveAnchors(cwd);
+
   if (!anchors || anchors.mainCheckout !== anchors.workspaceRoot) return 'not-needed';
   const original = await checkoutForProjectAnchor(anchors.projectAnchor);
+
   if (original === anchors.workspaceRoot) return 'not-needed';
+
   if (!original) return 'source-missing';
   await createProjectToolRoots({ cwd });
+
   return 'seeded';
 }
 

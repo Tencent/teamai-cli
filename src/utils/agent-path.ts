@@ -27,6 +27,7 @@ function flavourOf(p: string): path.PlatformPath {
  */
 export function resolvePath(file: string, base?: string): string {
   if (isAbsolutePath(file)) return flavourOf(file).normalize(file);
+
   return base ? flavourOf(base).resolve(base, file) : file;
 }
 
@@ -39,6 +40,7 @@ export function resolvePath(file: string, base?: string): string {
 export function pathKey(p: string): string {
   const slashed = p.replace(/\\/g, '/').replace(/^\/([A-Za-z])(?:\/|$)/, '$1:/');
   const key = path.posix.normalize(/^[A-Za-z]:/.test(slashed) ? slashed.toLowerCase() : slashed);
+
   return key.length > 1 && key.endsWith('/') && !/^[a-z]:\/$/.test(key) ? key.slice(0, -1) : key;
 }
 
@@ -61,13 +63,18 @@ export function withoutReadSelector(p: string): string {
   const split = (s: string): [string, string] | undefined => {
     const colon = s.lastIndexOf(':');
     const floor = /^[A-Za-z]:/.test(s) ? 1 : 0;
+
     return colon > floor ? [s.slice(0, colon), s.slice(colon + 1)] : undefined;
   };
+
   const outer = split(p);
+
   if (!outer || !SELECTOR.test(outer[1])) return p;
   const inner = split(outer[0]);
   const raw = (chunk: string) => chunk.toLowerCase() === 'raw';
+
   if (inner && ((raw(inner[1]) && RANGE_ONLY.test(outer[1])) || (RANGE_ONLY.test(inner[1]) && raw(outer[1])))) return inner[0];
+
   return outer[0];
 }
 
@@ -80,5 +87,6 @@ export function samePath(a: string, b: string): boolean {
 export function isWithin(file: string, dir: string): boolean {
   const f = pathKey(file);
   const d = pathKey(dir);
+
   return f === d || f.startsWith(d.endsWith('/') ? d : `${d}/`);
 }

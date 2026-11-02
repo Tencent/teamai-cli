@@ -48,9 +48,11 @@ function isSshUrl(url: string): boolean {
  */
 function convertHttpToSsh(url: string): string {
     const match = url.match(/^https?:\/\/([^/]+)\/(.+)$/);
+
     if (match) {
         return `git@${match[1]}:${match[2]}`;
     }
+
     return url;
 }
 
@@ -79,6 +81,7 @@ function redactToken(msg: string): string {
  */
 function buildAuthHeader(token: string, username = 'x-access-token'): string {
     const encoded = Buffer.from(`${username}:${token}`).toString('base64');
+
     return `Authorization: Basic ${encoded}`;
 }
 
@@ -136,9 +139,11 @@ async function gitCmd(
     timeoutMs: number = 30_000,
 ): Promise<string> {
     const { stdout, stderr, code } = await runCommand('git', args, { cwd, timeoutMs });
+
     if (code !== 0) {
         throw new Error(`git ${args[0]} failed (exit ${code}): ${redactToken(stderr.trim())}`);
     }
+
     return stdout.trim();
 }
 
@@ -167,6 +172,7 @@ function resolveCloneAuth(
         log.debug(`shallowClone: forceAnonymous=true; cloning over anonymous HTTPS ${url}`);
     } else if (provider === 'github') {
         const token = getGitHubToken();
+
         if (token) {
             cloneUrl = url;
             extraAuthHeader = buildAuthHeader(token);
@@ -182,6 +188,7 @@ function resolveCloneAuth(
         // TGIT_TOKEN PAT 仅用于 REST API,对 git clone 无效,故此处不使用（见 tgitGitCloneUrl）。
         const httpsUrl = url.replace(/^http:\/\//, 'https://');
         const authed = tgitGitCloneUrl(httpsUrl);
+
         if (authed) {
             cloneUrl = authed;
             cloneMethod = 'https-token';
@@ -195,6 +202,7 @@ function resolveCloneAuth(
         // GitLab: PAT 走 HTTP Basic（用户名固定 oauth2）。用 http.extraHeader 注入，
         // token 不进 URL。不强制 http→https：自托管实例可能就是 http。
         const token = getGitLabToken();
+
         if (token) {
             cloneUrl = url;
             extraAuthHeader = buildAuthHeader(token, 'oauth2');
@@ -212,6 +220,7 @@ function resolveCloneAuth(
         // 已实机验证：GitCode git 端点拒绝 Bearer，仅认 Basic oauth2。公有云只有 https。
         const token = getGitCodeToken();
         cloneUrl = url.replace(/^http:\/\//, 'https://');
+
         if (token) {
             extraAuthHeader = buildAuthHeader(token, 'oauth2');
             cloneMethod = 'https-token';
@@ -269,9 +278,11 @@ export async function shallowClone(
 
     // 构建 clone 参数：若有 token 则通过 http.extraHeader 注入，避免 token 出现在 URL 中
     const cloneArgs: string[] = [];
+
     if (extraAuthHeader) {
         cloneArgs.push('-c', `http.extraHeader=${extraAuthHeader}`);
     }
+
     cloneArgs.push(
         'clone',
         `--depth=${depth}`,
@@ -282,6 +293,7 @@ export async function shallowClone(
 
     try {
         const { code, stderr } = await runCommand('git', cloneArgs, { timeoutMs });
+
         if (code !== 0) {
             // 清理失败的目录
             await removeCachedClone(localPath).catch(() => undefined);
@@ -291,6 +303,7 @@ export async function shallowClone(
         if (err instanceof Error && err.message.startsWith('git clone failed')) {
             throw err;
         }
+
         await removeCachedClone(localPath).catch(() => undefined);
         throw err;
     }
@@ -298,6 +311,7 @@ export async function shallowClone(
     // 获取 HEAD SHA 和分支名
     const sha = await gitCmd(['rev-parse', 'HEAD'], localPath);
     let branch: string;
+
     try {
         branch = await gitCmd(['rev-parse', '--abbrev-ref', 'HEAD'], localPath);
     } catch {
@@ -305,6 +319,7 @@ export async function shallowClone(
     }
 
     log.debug(`shallowClone complete: sha=${sha.slice(0, 8)}, branch=${branch}, method=${cloneMethod}`);
+
     return { sha, branch, cloneMethod };
 }
 
@@ -321,16 +336,22 @@ export async function shallowClone(
 function fetchAuthHeader(provider?: string): string | null {
     if (provider === 'github') {
         const token = getGitHubToken();
+
         return token ? buildAuthHeader(token) : null;
     }
+
     if (provider === 'gitlab') {
         const token = getGitLabToken();
+
         return token ? buildAuthHeader(token, 'oauth2') : null;
     }
+
     if (provider === 'gitcode') {
         const token = getGitCodeToken();
+
         return token ? buildAuthHeader(token, 'oauth2') : null;
     }
+
     return null;
 }
 
@@ -354,14 +375,17 @@ export async function shallowFetch(
 
     // `-c http.extraHeader=` 必须置于 fetch 子命令之前（git-level 选项）。
     const authHeader = fetchAuthHeader(opts?.provider);
+
     const fetchArgs = authHeader
         ? ['-c', `http.extraHeader=${authHeader}`, 'fetch', '--depth=50', 'origin']
         : ['fetch', '--depth=50', 'origin'];
+
     await gitCmd(fetchArgs, localPath, timeoutMs);
     assertSafeRepoCachePath(localPath);
     await gitCmd(['reset', '--hard', `origin/${branch}`], localPath, timeoutMs);
 
     const sha = await gitCmd(['rev-parse', 'HEAD'], localPath);
+
     return { sha };
 }
 
@@ -380,12 +404,15 @@ export async function remoteHeadSha(
     const cachedRepoPath = opts?.cachedRepoPath;
     let ref = 'HEAD';
     let auth: { cloneUrl: string; extraAuthHeader?: string };
+
     if (cachedRepoPath) {
         let branch = await gitCmd(['rev-parse', '--abbrev-ref', 'HEAD'], cachedRepoPath, timeoutMs);
+
         if (branch === 'HEAD') {
             branch = (await gitCmd(['symbolic-ref', 'refs/remotes/origin/HEAD'], cachedRepoPath, timeoutMs))
                 .replace('refs/remotes/origin/', '');
         }
+
         ref = `refs/heads/${branch}`;
         auth = { cloneUrl: 'origin', extraAuthHeader: fetchAuthHeader(provider) ?? undefined };
     } else {
@@ -394,30 +421,41 @@ export async function remoteHeadSha(
             forceAnonymous: opts?.forceAnonymous ?? false,
         });
     }
+
     const args = auth.extraAuthHeader ? ['-c', `http.extraHeader=${auth.extraAuthHeader}`] : [];
     args.push('ls-remote', auth.cloneUrl, ref);
     const { stdout, stderr, code } = await runCommand('git', args, { cwd: cachedRepoPath, timeoutMs });
+
     if (code !== 0) {
         throw new Error(`git ls-remote failed (exit ${code}): ${redactToken(stderr.trim())}`);
     }
+
     const sha = stdout.trim().split(/\s+/)[0];
+
     if (!sha && cachedRepoPath) {
         // shallowFetch does not request pruning. A wildcard fetch can retain a
         // deleted branch's origin ref, which its reset still uses. An explicit
         // branch refspec instead fails fetching the deleted branch; configured
         // pruning removes the ref. Both must keep the full-clone fallback.
         const config = await runCommand('git', ['config', '--get-regexp', '^remote\\.origin\\.fetch$'], { cwd: cachedRepoPath, timeoutMs });
+
         if (config.code !== 0 && config.code !== 1) throw new Error(`Could not read cached fetch settings: ${redactToken(config.stderr.trim())}`);
         const entries = config.stdout.trim().split('\n').map((line) => line.split(/\s+/));
         let prune = await runCommand('git', ['config', '--type=bool', '--get', 'remote.origin.prune'], { cwd: cachedRepoPath, timeoutMs });
+
         if (prune.code === 1) prune = await runCommand('git', ['config', '--type=bool', '--get', 'fetch.prune'], { cwd: cachedRepoPath, timeoutMs });
+
         if (prune.code !== 0 && prune.code !== 1) throw new Error(`Could not read cached prune setting: ${redactToken(prune.stderr.trim())}`);
+
         const requiresDeletedBranch = entries.some(([key, value]) => key === 'remote.origin.fetch'
             && value?.replace(/^\+/, '').split(':')[0] === ref);
+
         if (!requiresDeletedBranch && prune.stdout.trim() !== 'true') {
             return await gitCmd(['rev-parse', '--verify', ref.replace('refs/heads/', 'refs/remotes/origin/')], cachedRepoPath, timeoutMs);
         }
     }
+
     if (!sha) throw new Error(`git ls-remote found no ${ref} at ${cachedRepoPath ? 'the cached origin' : sanitizeGitUrl(url)}`);
+
     return sha;
 }

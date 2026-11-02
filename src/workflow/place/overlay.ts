@@ -10,9 +10,11 @@ import { applyBaseConfig, hooksPath, recordConfigOverlay, restoreUneditedConfig 
  */
 export async function applyOverlay({ root, dir, configCommit, saved, resume }: { root: string; dir: string; configCommit: string; saved: string; resume?: true }): Promise<WorkflowFailure | undefined> {
   const applied = await applyBaseConfig(dir, configCommit, hooksPath(root), saved, resume ? { resume } : {});
+
   if (!applied.ok) return { code: 'base_config', message: applied.message };
   await deliverTeamAssets(dir);
   await recordConfigOverlay(dir, saved);
+
   return undefined;
 }
 
@@ -24,8 +26,11 @@ export async function applyOverlay({ root, dir, configCommit, saved, resume }: {
 export async function restoreOverlay({ dir, configCommit, saved, unfinished }: { dir: string; configCommit: string; saved: string; unfinished?: true }): Promise<string | undefined> {
   // A copy aside cut short left the branch's files in the copy.
   if (unfinished) await fs.rm(`${saved}.partial`, { recursive: true, force: true });
+
   if (!await pathExists(saved)) return undefined;
+
   if (unfinished) await recordConfigOverlay(dir, saved);
+
   return restoreUneditedConfig(dir, configCommit, saved);
 }
 
@@ -40,6 +45,7 @@ export function unrestoredConfig(reason: string, dir: string): string {
  */
 async function deliverTeamAssets(dir: string): Promise<void> {
   const exitCode = process.exitCode;
+
   try {
     const { createProjectToolRoots } = await import('../../project-agent-root.js');
     await createProjectToolRoots({ cwd: dir });

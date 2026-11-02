@@ -57,14 +57,18 @@ async function migrateLegacyRoleConfig(
   options: LoadOptions = {},
 ): Promise<LocalConfig> {
   const migrated = await resolveLegacyRole(config);
+
   if (migrated.primaryRole === config.primaryRole) return migrated;
 
   if (options.dryRun) {
     if (!options.suppressMigrationNotice) log.info('[dry-run] Would migrate legacy teamai config to default role profile: hai');
+
     return migrated;
   }
+
   await writeFileAtomic(expandHome(configPath), serializeLocalConfig(migrated));
   log.info('Migrated legacy teamai config to default role profile: hai');
+
   return migrated;
 }
 
@@ -78,6 +82,7 @@ export async function resolveLegacyRole(config: LocalConfig): Promise<LocalConfi
   }
 
   let manifest;
+
   try {
     manifest = await loadRolesManifest(config.repo.localPath);
   } catch (error) {
@@ -89,10 +94,12 @@ export async function resolveLegacyRole(config: LocalConfig): Promise<LocalConfi
     // resolveResourceNamespaces, and role-scoped entries reach nobody.
     if (error instanceof RolesManifestNotFoundError) return config;
     log.warn(`Legacy role migration skipped: ${(error as Error).message}`);
+
     return { ...config, roleUnresolved: true };
   }
 
   const haiRole = manifest.roles.find((role) => role.id === 'hai');
+
   if (!haiRole) {
     return config;
   }
@@ -128,17 +135,21 @@ async function applyRoleAssignment(config: LocalConfig): Promise<LocalConfig> {
   if (config.roleAssignment) return config;
 
   let assignments;
+
   try {
     assignments = await loadRoleAssignmentsIfPresent(config.repo.localPath, config.repo);
   } catch (error) {
     warnOnce(`${ROLE_ASSIGNMENTS_FILE} could not be read: ${(error as Error).message}`);
     warnOnce(`Roles are assigned in ${ROLE_ASSIGNMENTS_FILE} while that file exists, so this run holds none. `
       + 'Fix it in the team repo, or ask a code owner of manifest/ to.');
+
     return withAssignedRoles(config, [], 'default');
   }
+
   if (!assignments) return config;
 
   const { roles, source } = resolveAssignedRoles(assignments, config.username);
+
   return withAssignedRoles(config, await declaredRoles(config.repo.localPath, roles), source);
 }
 
@@ -147,6 +158,7 @@ async function declaredRoles(repoPath: string, roles: string[]): Promise<string[
   if (roles.length === 0) return roles;
 
   let declared: Set<string>;
+
   try {
     declared = new Set(listRoleIds(await loadRolesManifest(repoPath)));
   } catch (error) {
@@ -155,24 +167,30 @@ async function declaredRoles(repoPath: string, roles: string[]): Promise<string[
     // here would deliver directories no reviewed manifest named.
     warnOnce(`${ROLE_ASSIGNMENTS_FILE} assigns ${roles.join(', ')}, but manifest/roles.yaml could not be read: `
       + `${(error as Error).message}. No role resources are delivered until it can.`);
+
     return [];
   }
 
   const unknown = roles.filter((role) => !declared.has(role));
+
   if (unknown.length > 0) {
     warnOnce(`${ROLE_ASSIGNMENTS_FILE} assigns ${unknown.join(', ')}, which manifest/roles.yaml does not declare. `
       + `Ignoring ${unknown.length === 1 ? 'it' : 'them'}; fix one file or the other in the team repo.`);
   }
+
   return roles.filter((role) => declared.has(role));
 }
 
 /** `config` with the member's own selection back in place of an overlay. */
 function withLocalRoles(config: LocalConfig): LocalConfig {
   const { roleAssignment, ...local } = config;
+
   if (!roleAssignment) return config;
   const restored: LocalConfig = { ...local, additionalRoles: roleAssignment.local.additionalRoles };
+
   if (roleAssignment.local.primaryRole) restored.primaryRole = roleAssignment.local.primaryRole;
   else delete restored.primaryRole;
+
   return restored;
 }
 
@@ -180,9 +198,12 @@ function withLocalRoles(config: LocalConfig): LocalConfig {
 function withLocalMemberSettings(config: LocalConfig): LocalConfig {
   if (!config.memberSettingsOverlay) return config;
   const { memberSettingsOverlay, ...rest } = config;
+
   for (const key of MEMBER_SETTING_KEYS) delete (rest as Record<string, unknown>)[key];
   const restored = { ...rest, ...memberSettingsOverlay.local };
+
   if (restored.workflows && !restored.workflows.tools) restored.workflows.tools = {};
+
   return restored as LocalConfig;
 }
 
@@ -196,8 +217,11 @@ function withLocalMemberSettings(config: LocalConfig): LocalConfig {
  */
 export async function refreshRoleAssignment(config: LocalConfig): Promise<void> {
   let resolved = await applyRoleAssignment(withLocalRoles(withLocalMemberSettings(config)));
+
   if (config.roleAssignment && !resolved.roleAssignment) resolved = await resolveLegacyRole(resolved);
+
   if (resolved.roleAssignment) delete resolved.roleUnresolved;
+
   if (resolved.scope !== 'user') {
     resolved = applyMachineSettings(resolved, await loadMemberSettings());
   } else {
@@ -213,6 +237,7 @@ export async function refreshRoleAssignment(config: LocalConfig): Promise<void> 
   // below deletes the values from both objects and Object.assign cannot restore
   // a local override such as recallEnabled: false.
   const refreshed = { ...resolved };
+
   for (const key of MEMBER_SETTING_KEYS) delete (config as Record<string, unknown>)[key];
   delete config.memberSettingsOverlay;
   // Role assignment is runtime-only too. Clear the old overlay before copying
@@ -227,6 +252,7 @@ export async function refreshRoleAssignment(config: LocalConfig): Promise<void> 
 /** `roles` as this member's effective selection, primary first. */
 function withAssignedRoles(config: LocalConfig, roles: string[], source: 'assigned' | 'default'): LocalConfig {
   const [primaryRole, ...additionalRoles] = roles;
+
   const assigned: LocalConfig = {
     ...config,
     additionalRoles,
@@ -238,8 +264,10 @@ function withAssignedRoles(config: LocalConfig, roles: string[], source: 'assign
       },
     },
   };
+
   if (primaryRole) assigned.primaryRole = primaryRole;
   else delete assigned.primaryRole;
+
   return assigned;
 }
 
@@ -248,15 +276,20 @@ function withAssignedRoles(config: LocalConfig, roles: string[], source: 'assign
  */
 export async function loadTeamConfig(repoPath: string): Promise<TeamaiConfig | null> {
   const content = await readFileSafe(path.join(repoPath, 'teamai.yaml'));
+
   if (!content) {
     log.debug('teamai.yaml not found in repo');
+
     return null;
   }
+
   try {
     const raw = YAML.parse(content);
+
     return TeamaiConfigSchema.parse(raw);
   } catch (e) {
     log.error(`Invalid teamai.yaml: ${describeConfigError(e)}`);
+
     return null;
   }
 }
@@ -270,6 +303,7 @@ export async function loadTeamAgentLanguage(
   config: { repo: { localPath: string } } | null,
 ): Promise<'en' | 'zh' | undefined> {
   if (!config) return undefined;
+
   return (await loadTeamConfig(config.repo.localPath))?.language;
 }
 
@@ -284,6 +318,7 @@ export async function loadTeamAgentLanguageForHook(
 ): Promise<'en' | 'zh' | undefined> {
   try {
     const { resolveHookConfig } = await import('./dashboard-collector.js');
+
     return loadTeamAgentLanguage(await resolveHookConfig(payload, tool ?? 'claude'));
   } catch {
     return undefined;
@@ -318,47 +353,62 @@ function memberSettingAt(
 ): unknown {
   if (!Object.prototype.hasOwnProperty.call(raw, key)) return undefined;
   const parsed = schema.safeParse(raw[key]);
+
   if (parsed.success) return parsed.data;
   warnOnce(`Ignoring ${key} in ${configPath}: ${describeConfigError(parsed.error)}.`);
+
   return invalidValue;
 }
 
 /** The valid values of `workflows` in a machine file, merged by key rather than as one all-or-nothing object. */
 function readMachineWorkflowSettings(raw: Record<string, unknown>, configPath: string): MemberWorkflowSettings | undefined {
   const workflow = asRecord(raw.workflows);
+
   if (!workflow) {
     if (Object.prototype.hasOwnProperty.call(raw, 'workflows')) {
       warnOnce(`Ignoring workflows in ${configPath}: expected an object.`);
     }
+
     return undefined;
   }
+
   const settings: Record<string, unknown> = {};
+
   for (const key of ['max_parallel', 'auto_approve', 'sandbox'] as const) {
     const value = memberSettingAt(workflow, key, MemberWorkflowSettingsSchema.shape[key], configPath);
+
     if (value !== undefined) settings[key] = value;
   }
 
   const tools = asRecord(workflow.tools);
+
   if (tools) {
     const accepted: Record<string, string> = {};
+
     for (const [name, value] of Object.entries(tools)) {
       const parsed = WorkflowToolSchema.safeParse(value);
+
       if (parsed.success) accepted[name] = parsed.data;
       else warnOnce(`Ignoring workflows.tools.${name} in ${configPath}: ${describeConfigError(parsed.error)}.`);
     }
+
     if (Object.keys(accepted).length > 0) settings.tools = accepted;
   } else if (Object.prototype.hasOwnProperty.call(workflow, 'tools')) {
     warnOnce(`Ignoring workflows.tools in ${configPath}: expected an object.`);
   }
 
   const allow = asRecord(workflow.allow);
+
   if (allow) {
     const accepted: Record<string, unknown> = {};
+
     for (const [key, schema] of Object.entries(AllowSchema.shape)) {
       const invalidFallback = key === 'network' ? false : [];
       const value = memberSettingAt(allow, key, schema, configPath, invalidFallback);
+
       if (value !== undefined) accepted[key] = value;
     }
+
     // A malformed policy must remain restrictive. In particular, silently
     // dropping `network: "false"` would turn a deny into the default allow.
     if (Object.keys(accepted).length > 0) settings.allow = accepted;
@@ -373,23 +423,31 @@ function readMachineWorkflowSettings(raw: Record<string, unknown>, configPath: s
 /** Read valid member settings from a machine file, whether or not it is a user-scope install. */
 export async function loadMemberSettings(configPath = expandHome(getUserConfigPath())): Promise<MemberSettings> {
   const content = await readFileSafe(configPath);
+
   if (!content) return {};
   let raw: Record<string, unknown> | undefined;
+
   try {
     raw = asRecord(YAML.parse(content));
   } catch {
     return {};
   }
+
   if (!raw) return {};
 
   const settings: Record<string, unknown> = {};
+
   for (const key of MEMBER_SETTING_KEYS) {
     if (key === 'workflows') continue;
     const value = memberSettingAt(raw, key, MemberSettingsSchema.shape[key], configPath);
+
     if (value !== undefined) settings[key] = value;
   }
+
   const workflows = readMachineWorkflowSettings(raw, configPath);
+
   if (workflows !== undefined) settings.workflows = workflows;
+
   return MemberSettingsSchema.parse(settings);
 }
 
@@ -401,23 +459,29 @@ export async function loadMemberSettings(configPath = expandHome(getUserConfigPa
 export async function machineWorkflowAllowProblem(): Promise<string | undefined> {
   const configPath = expandHome(getUserConfigPath());
   let content: string | null;
+
   try {
     content = await readFileIfExists(configPath);
   } catch (e) {
     return `${configPath} could not be read (${describeConfigError(e)}), so the workflows.allow restrictions it may set are unknown. `
       + 'A workflow does not run until it is fixed.';
   }
+
   if (!content) return undefined;
   let workflows: Record<string, unknown> | undefined;
+
   try {
     workflows = asRecord(asRecord(YAML.parse(content))?.workflows);
   } catch (e) {
     return `${configPath} is not valid YAML (${describeConfigError(e)}), so the workflows.allow restrictions it may set are unknown. `
       + 'A workflow does not run until it is fixed.';
   }
+
   if (!workflows || !Object.prototype.hasOwnProperty.call(workflows, 'allow')) return undefined;
   const parsed = AllowSchema.safeParse(workflows.allow);
+
   if (parsed.success) return undefined;
+
   return `workflows.allow in ${configPath} is not valid: ${describeConfigError(parsed.error)}. `
     + 'A workflow does not run while a restriction it sets may be lifted. Fix or remove it.';
 }
@@ -443,24 +507,30 @@ function applyMachineSettings(config: LocalConfig, machine: MemberSettings): Loc
         allow: { ...machine.workflows?.allow, ...local.workflows?.allow },
       }
     : undefined;
+
   const workflows = mergedWorkflows
     ? { ...mergedWorkflows, tools: mergedWorkflows.tools ?? {} }
     : undefined;
+
   const modelAliases = machine.modelAliases || local.modelAliases
     ? { ...machine.modelAliases, ...local.modelAliases }
     : undefined;
+
   const effective: Partial<LocalConfig> = {
     ...merged,
     ...(workflows ? { workflows } : { workflows: undefined }),
     ...(modelAliases ? { modelAliases } : { modelAliases: undefined }),
   };
+
   return { ...config, ...effective, memberSettingsOverlay: { local } };
 }
 
 /** Apply the machine settings after the role overlay, at every existing config-load seam. */
 async function applyConfigOverlays(config: LocalConfig): Promise<LocalConfig> {
   const assigned = await applyRoleAssignment(config);
+
   if (assigned.scope === 'user') return assigned;
+
   return applyMachineSettings(assigned, await loadMemberSettings());
 }
 
@@ -475,6 +545,7 @@ export function ownMemberSettings(config: LocalConfig): MemberSettings {
 /** Mark settings a command deliberately wrote, so a later save keeps them even when they equal a machine value. */
 export function markMemberSettingsWritten(config: LocalConfig, written: MemberSettings): LocalConfig {
   const local = config.memberSettingsOverlay?.local ?? MemberSettingsSchema.parse(config);
+
   const workflows = local.workflows || written.workflows
     ? {
         ...local.workflows,
@@ -483,6 +554,7 @@ export function markMemberSettingsWritten(config: LocalConfig, written: MemberSe
         allow: { ...local.workflows?.allow, ...written.workflows?.allow },
       }
     : undefined;
+
   return {
     ...config,
     ...written,
@@ -495,7 +567,9 @@ export function markMemberSettingsWritten(config: LocalConfig, written: MemberSe
 async function holdsInstall(configPath: string): Promise<boolean> {
   if (!(await pathExists(configPath))) return false;
   const content = await readFileSafe(configPath);
+
   if (content === null) return true;
+
   try {
     return !isSettingsOnlyConfig(YAML.parse(content));
   } catch {
@@ -514,14 +588,18 @@ export async function hasUserScopeInstall(): Promise<boolean> {
  */
 async function readAiSetting(configPath: string): Promise<LocalConfig['ai']> {
   const content = await readFileSafe(configPath);
+
   if (!content) return undefined;
+
   try {
     const parsed = LocalConfigSchema.pick({ ai: true }).safeParse(YAML.parse(content));
+
     if (parsed.success) return parsed.data.ai;
     log.warn(`Ignoring ai in ${configPath}: ${describeConfigError(parsed.error)}. Set it as ai: { tool: <tool id> }.`);
   } catch (e) {
     log.warn(`Ignoring ai.tool: ${configPath} is not valid YAML (${describeConfigError(e)}).`);
   }
+
   return undefined;
 }
 
@@ -532,14 +610,19 @@ async function readAiSetting(configPath: string): Promise<LocalConfig['ai']> {
 export async function loadLocalConfig(options: LoadOptions = {}): Promise<LocalConfig | null> {
   const configPath = expandHome(getUserConfigPath());
   const content = await readFileSafe(configPath);
+
   if (!content) return null;
+
   try {
     const raw = YAML.parse(content);
+
     if (isSettingsOnlyConfig(raw)) return null;
     const parsed = LocalConfigSchema.parse(raw);
+
     return await withBranchHome(await migrateLegacyRoleConfig(await applyConfigOverlays(parsed), configPath, options), options);
   } catch (e) {
     log.error(`Invalid local config: ${describeConfigError(e)}`);
+
     return null;
   }
 }
@@ -561,6 +644,7 @@ function serializeLocalConfig(config: LocalConfig, carriedSettings?: MemberSetti
   // goes, and a stale copy is exactly what a member must not be able to keep.
   const { dataHome: _dataHome, branchHome: _branchHome, roleUnresolved: _roleUnresolved, children: _children, roleAssignment: _assignment, memberSettingsOverlay: overlay, ...persisted } = withLocalRoles(config);
   const localSettings = overlay?.local ?? MemberSettingsSchema.parse(persisted);
+
   const settings = {
     ...localSettings,
     ...(localSettings.workflows ? {
@@ -571,19 +655,24 @@ function serializeLocalConfig(config: LocalConfig, carriedSettings?: MemberSetti
       },
     } : {}),
   };
+
   for (const key of MEMBER_SETTING_KEYS) delete (persisted as Record<string, unknown>)[key];
+
   return YAML.stringify({ ...carriedSettings, ...settings, ...persisted, scope: installScopeName(persisted.scope) });
 }
 
 /** Read valid member settings before user init promotes a machine file to an install. */
 async function readSettingsOnlyConfig(configPath: string): Promise<MemberSettings> {
   const content = await readFileSafe(configPath);
+
   if (!content) return {};
+
   try {
     if (!isSettingsOnlyConfig(YAML.parse(content))) return {};
   } catch {
     return {};
   }
+
   return loadMemberSettings(configPath);
 }
 
@@ -609,7 +698,9 @@ async function writeLocalConfig(configPath: string, config: LocalConfig): Promis
  */
 export async function loadState(): Promise<State> {
   const raw = await readJson<Record<string, unknown>>(expandHome(getUserStatePath()));
+
   if (!raw) return StateSchema.parse({});
+
   return StateSchema.parse(raw);
 }
 
@@ -660,9 +751,12 @@ export class UnreadableProjectConfigError extends Error {
  */
 export async function requireInit(options: LoadOptions = {}): Promise<TeamaiInit> {
   const localConfig = await loadLocalConfig(options);
+
   if (!localConfig) return throwMissingOrInvalid(expandHome(getUserConfigPath()));
   const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+
   if (!teamConfig) return throwTeamConfigMissingOrInvalid(localConfig.repo.localPath);
+
   return { localConfig, teamConfig };
 }
 
@@ -677,10 +771,13 @@ export async function throwMissingOrInvalid(configPath: string): Promise<never> 
   if (!(await holdsInstall(configPath))) {
     throw new NotInitializedError('teamai is not initialized. Run `teamai init` first.');
   }
+
   const content = await readFileSafe(configPath);
+
   const why = content === null ? 'the file could not be opened'
     : content.trim() === '' ? 'it is empty'
     : 'it is not a valid teamai config (the error is printed above)';
+
   throw new Error(`The teamai config at ${configPath} could not be read: ${why}. ${BROKEN_CONFIG_ADVICE}`);
 }
 
@@ -692,13 +789,17 @@ export async function throwMissingOrInvalid(configPath: string): Promise<never> 
  */
 async function throwTeamConfigMissingOrInvalid(repoPath: string): Promise<never> {
   const teamConfigPath = path.join(repoPath, 'teamai.yaml');
+
   if (!(await pathExists(teamConfigPath))) {
     throw new Error('Team config (teamai.yaml) not found. Check your repo path.');
   }
+
   const content = await readFileSafe(teamConfigPath);
+
   const why = content === null ? 'the file could not be opened'
     : content.trim() === '' ? 'it is empty'
     : 'it is not a valid team config (the error is printed above)';
+
   throw new Error(`The team config at ${teamConfigPath} could not be read: ${why}. Fix it in the team repo, or ask a team admin to.`);
 }
 
@@ -721,24 +822,32 @@ export async function loadLocalConfigForScope(
     // Reuse the single detection path so config location never drifts between
     // "detect the active project" and "load a named project's config".
     const detected = await findProjectConfig(projectRoot, undefined, options);
+
     if (!detected) return null;
+
     return await withBranchHome(
       await migrateLegacyRoleConfig(await applyRoleAssignment(detected), path.join(getDataHome(detected), 'config.yaml'), options),
       options,
     );
   }
+
   const dataHome = scope === 'user' && options.home !== undefined ? path.join(options.home, '.teamai') : undefined;
   const configPath = dataHome !== undefined ? path.join(dataHome, 'config.yaml') : getConfigPath(scope, projectRoot);
   const content = await readFileSafe(expandHome(configPath));
+
   if (!content) return null;
+
   try {
     const raw = YAML.parse(content);
+
     if (scope === 'user' && isSettingsOnlyConfig(raw)) return null;
     const parsed = LocalConfigSchema.parse(raw);
     const loaded = await withBranchHome(await migrateLegacyRoleConfig(await applyConfigOverlays(parsed), configPath, options), options);
+
     return dataHome !== undefined ? { ...loaded, dataHome } : loaded;
   } catch (e) {
     log.error(`Invalid ${installScopeName(scope)} config at ${configPath}: ${describeConfigError(e)}`);
+
     return null;
   }
 }
@@ -757,6 +866,7 @@ export async function saveLocalConfigForScope(
   const dataHome = getDataHome(config);
   const configPath = path.join(dataHome, 'config.yaml');
   await writeLocalConfig(expandHome(configPath), config);
+
   // If the config lives in a project partition, drop the `anchor` reverse-lookup
   // file next to it (issue #374 P3). Previously only migration wrote it, so
   // freshly-init'd partitions had no anchor and `status --all` could not resolve
@@ -765,14 +875,17 @@ export async function saveLocalConfigForScope(
   try {
     if (config.scope === 'project' && config.projectRoot) {
       const partition = await resolveProjectDataHome(config.projectRoot);
+
       if (path.resolve(expandHome(dataHome)) === path.resolve(partition)) {
         const anchors = await resolveAnchors(config.projectRoot);
+
         if (anchors) await writeAnchorFile(partition, anchors.projectAnchor);
       }
     }
   } catch {
     // anchor file is a best-effort convenience for status --all; never fail a save
   }
+
   // Nothing in the checkout says a partition project governs it until its first
   // pull registers it, so the env loader must not give it the user env meanwhile.
   if (config.scope === 'project' && config.projectRoot) {
@@ -787,7 +900,9 @@ export async function saveLocalConfigForScope(
 export async function loadStateForScope(localConfig: LocalConfig): Promise<State> {
   const statePath = getStatePath(localConfig);
   const raw = await readJson<Record<string, unknown>>(expandHome(statePath));
+
   if (!raw) return StateSchema.parse({});
+
   return StateSchema.parse(raw);
 }
 
@@ -828,6 +943,7 @@ export async function saveStateForScope(state: State, localConfig: LocalConfig):
  */
 export async function resolveProjectDataHome(projectRoot: string, options: LoadOptions = {}): Promise<string> {
   const anchors = await resolveAnchors(projectRoot);
+
   // resolvePartitionDir (not bare projectDataHome) so an install whose partition
   // predates the #546 naming widening is adopted (renamed) at init time too.
   return anchors ? resolvePartitionDir(anchors.projectAnchor, options) : path.join(projectRoot, '.teamai');
@@ -849,7 +965,9 @@ export async function resolveProjectDataHome(projectRoot: string, options: LoadO
 export async function resolveDataHomeForScope(scope: Scope, projectRoot?: string): Promise<string> {
   if (scope !== 'project' || !projectRoot) return getTeamaiHome('user');
   const detected = await detectProjectConfig(projectRoot);
+
   if (detected) return getDataHome(detected);
+
   return path.join(projectRoot, '.teamai');
 }
 
@@ -876,18 +994,25 @@ export async function resolveConfigForDir(
   options: LoadOptions = {},
 ): Promise<LocalConfig | null> {
   const target = dir ?? process.cwd();
+
   if (!(await pathExists(target))) return loadLocalConfig(options);
   const gitEntry = await nearestGitEntry(target);
+
   if (gitEntry && !(await resolveAnchors(target))) {
     onUnreadable?.(gitEntry, 'git could not read this repository, so which project governs this directory is unknown. Run `git status` here to see why');
+
     return null;
   }
+
   let unreadable = false;
+
   const project = await detectProjectConfig(target, (configPath, error) => {
     unreadable = true;
     onUnreadable?.(configPath, error);
   }, options);
+
   if (unreadable) return null;
+
   return project ?? loadLocalConfig(options);
 }
 
@@ -907,6 +1032,7 @@ export async function resolveMemberToolRoots(
   // A hook can report a directory that no longer exists (a deleted worktree);
   // git probing there throws, so it means user scope — as resolveConfigForDir.
   const project = dir === undefined || await pathExists(dir) ? await detectProjectConfig(dir, undefined, options) : null;
+
   return project?.toolRoots ?? (await loadLocalConfig(options))?.toolRoots;
 }
 
@@ -925,6 +1051,7 @@ export async function detectProjectConfig(
   // `hai` is resolved in memory: many callers are metadata lookups or dry
   // runs, which must not write the config. loadLocalConfigForScope persists it.
   const found = await findProjectConfig(cwd, onUnreadable, options);
+
   return found && resolveLegacyRole(found);
 }
 
@@ -940,6 +1067,7 @@ async function findProjectConfig(
   // legacy `.teamai/` must resolve to the SAME config whether run from the root
   // or a subdirectory. resolveAnchors returns null outside a git repo.
   const anchors = await resolveAnchors(dir);
+
   if (anchors) {
     const legacyDir = path.join(anchors.workspaceRoot, '.teamai');
     // Strict, cwd-independent order:
@@ -954,13 +1082,16 @@ async function findProjectConfig(
     // detection — and every command after it — keeps finding the config.
     const partitionDir = await resolvePartitionDir(anchors.projectAnchor, options);
     const fromPartition = await readConfigFrom(partitionDir, anchors.workspaceRoot, undefined, onUnreadable);
+
     if (fromPartition) return fromPartition;
     // 2. No partition config yet. A workspace that declares `mode: self` self-heals
     //    on a fresh clone (issue #198): bootstrapSelfRepo now writes the machine
     //    config into the PARTITION (P2), not <workspaceRoot>/.teamai. So run the
     //    self-heal and, on success, read the config back FROM THE PARTITION.
     const healed = await selfHealAndReadPartition(anchors.workspaceRoot, partitionDir, onUnreadable, options);
+
     if (healed) return healed;
+
     // 3. Otherwise read a legacy `<workspaceRoot>/.teamai` config directly — a
     //    pre-P2 self install (or any un-migrated install) whose config still lives
     //    in the repo. Double-read compat until migration relocates it.
@@ -1001,14 +1132,18 @@ async function selfHealAndReadPartition(
   options: LoadOptions = {},
 ): Promise<LocalConfig | null> {
   if (options.selfHeal === false) return null;
+
   if (options.dryRun) return previewSelfHeal(workspaceRoot, partitionDir, workspaceRoot);
+
   try {
     const { bootstrapSelfRepo } = await import('./bootstrap.js');
     const result = await bootstrapSelfRepo(workspaceRoot, { silent: true });
+
     if (result !== 'bootstrapped') return null;
   } catch {
     return null;
   }
+
   return readConfigFrom(partitionDir, workspaceRoot, undefined, onUnreadable);
 }
 
@@ -1020,27 +1155,37 @@ export async function readConfigFrom(
   options: LoadOptions = {},
 ): Promise<LocalConfig | null> {
   const configPath = path.join(dataHomeDir, 'config.yaml');
+
   if (!(await pathExists(configPath))) {
     if (!selfHealRepoRoot || options.selfHeal === false) return null;
+
     if (options.dryRun) return previewSelfHeal(selfHealRepoRoot, dataHomeDir, projectRoot);
+
     try {
       const { bootstrapSelfRepo } = await import('./bootstrap.js');
       const result = await bootstrapSelfRepo(selfHealRepoRoot, { silent: true });
+
       if (result !== 'bootstrapped') return null;
     } catch {
       return null;
     }
+
     if (!(await pathExists(configPath))) return null;
   }
+
   const content = await readFileSafe(configPath);
+
   if (!content) {
     // The file exists (checked above) but gave nothing: unreadable or empty.
     onUnreadable?.(configPath, 'the file is empty or could not be read');
+
     return null;
   }
+
   try {
     const raw = YAML.parse(content);
     const config = LocalConfigSchema.parse(raw);
+
     if (config.scope !== 'project') {
       // Run from HOME, `<cwd>/.teamai/config.yaml` is the user config itself.
       // Anywhere else a config here that is not scope: project cannot say which
@@ -1048,14 +1193,17 @@ export async function readConfigFrom(
       if (!isUserTeamaiDir(dataHomeDir, projectRoot)) {
         onUnreadable?.(configPath, `it is scope: ${installScopeName(config.scope)}, but a config inside a workspace must be scope: workspace`);
       }
+
       return null;
     }
+
     return await withBranchHome(
       await applyMachineSettings(await applyRoleAssignment(anchorProjectConfig(config, dataHomeDir, projectRoot)), await loadMemberSettings()),
       options,
     );
   } catch (e) {
     onUnreadable?.(configPath, describeConfigError(e));
+
     return null;
   }
 }
@@ -1069,6 +1217,7 @@ async function previewSelfHeal(repoRoot: string, dataHomeDir: string, projectRoo
   try {
     const { previewSelfBootstrap } = await import('./bootstrap.js');
     const config = await previewSelfBootstrap(repoRoot);
+
     return config
       ? await withBranchHome(anchorProjectConfig(LocalConfigSchema.parse(config), dataHomeDir, projectRoot), { dryRun: true })
       : null;
@@ -1084,6 +1233,7 @@ function anchorProjectConfig(config: LocalConfig, dataHomeDir: string, projectRo
   // into a worktree names the main checkout); overriding keeps landing tied to
   // the real workspace (also backfills when absent, #85).
   const resolved: LocalConfig = { ...config, projectRoot, dataHome: dataHomeDir };
+
   // Self mode (P2): the config now lives in the SHARED partition, but its
   // persisted repo.localPath / businessRepoRoot name the checkout that first
   // migrated (typically main). Every worktree reads that one config, so without
@@ -1100,6 +1250,7 @@ function anchorProjectConfig(config: LocalConfig, dataHomeDir: string, projectRo
       businessRepoRoot: projectRoot,
     };
   }
+
   return resolved;
 }
 
@@ -1120,8 +1271,10 @@ async function withBranchHome(config: LocalConfig, options: LoadOptions = {}): P
   if (config.repo.kind !== 'self') return config;
   const root = config.repo.businessRepoRoot ?? path.dirname(expandHome(config.repo.localPath));
   const anchors = await resolveAnchors(root);
+
   if (!anchors) return config;
   const partition = await resolvePartitionDir(anchors.projectAnchor, { dryRun: options.dryRun });
+
   return { ...config, branchHome: path.join(partition, SELF_BRANCH_HOME_DIRNAME) };
 }
 
@@ -1139,6 +1292,7 @@ function isUserTeamaiDir(dataHomeDir: string, projectRoot: string): boolean {
       return path.resolve(p);
     }
   };
+
   return path.resolve(dataHomeDir) === path.join(path.resolve(projectRoot), '.teamai')
     && real(projectRoot) === real(getUserHome());
 }
@@ -1155,9 +1309,11 @@ function describeConfigError(e: unknown): string {
       if (issue.code === 'invalid_value' && issue.path.join('.') === 'scope' && issue.message.startsWith('scope "')) {
         return issue.message;
       }
+
       return `${issue.path.join('.') || '(root)'}: ${issue.message}`;
     }).join('; ');
   }
+
   return e instanceof Error ? e.message : String(e);
 }
 
@@ -1172,6 +1328,7 @@ function describeConfigError(e: unknown): string {
 export async function findUnreadableProjectConfig(cwd?: string, options: LoadOptions = {}): Promise<string | null> {
   let problem: string | null = null;
   await detectProjectConfig(cwd, (configPath, error) => { problem ??= `${configPath}: ${error}`; }, options);
+
   return problem;
 }
 
@@ -1185,14 +1342,19 @@ export async function requireInitForScope(
   projectRoot?: string,
 ): Promise<{ localConfig: LocalConfig; teamConfig: TeamaiConfig }> {
   const localConfig = await loadLocalConfigForScope(scope, projectRoot);
+
   if (!localConfig) {
     if (scope === 'project') {
       throw new NotInitializedError(`teamai is not initialized in workspace scope at ${projectRoot}. Run \`teamai init\` first.`);
     }
+
     return throwMissingOrInvalid(expandHome(getConfigPath(scope, projectRoot)));
   }
+
   const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+
   if (!teamConfig) return throwTeamConfigMissingOrInvalid(localConfig.repo.localPath);
+
   return { localConfig, teamConfig };
 }
 
@@ -1208,17 +1370,24 @@ export async function requireInitForScope(
  */
 export async function autoDetectInit(cwd?: string, options: LoadOptions & { children?: boolean } = {}): Promise<TeamaiInit> {
   let unreadable: string | undefined;
+
   const projectConfig = await detectProjectConfig(cwd, (configPath, error) => {
     unreadable ??= `${configPath}: ${error}`;
   }, options);
+
   if (unreadable) throw new UnreadableProjectConfigError(unreadable);
+
   if (projectConfig) {
     const teamConfig = await loadTeamConfig(projectConfig.repo.localPath);
+
     if (!teamConfig) return throwTeamConfigMissingOrInvalid(projectConfig.repo.localPath);
+
     if (options.children === false) return { localConfig: projectConfig, teamConfig };
     // Loaded here: the walk reaches this module through the resolvers it imports.
     const { readWorkspaceChildren } = await import('./workspace-children.js');
+
     return { localConfig: await readWorkspaceChildren(projectConfig), teamConfig };
   }
+
   return requireInit(options);
 }

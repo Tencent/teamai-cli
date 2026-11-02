@@ -30,6 +30,7 @@ export function buildPackageHintMessage(
       ? `${marketplaceCount} Claude marketplace${marketplaceCount === 1 ? '' : 's'}`
       : '',
   ].filter(Boolean).join(' and ');
+
   return [
     `[teamai:pkg-hint] Team package declarations changed (${summary}).`,
     'Review the packages section, then run `teamai packages` to apply it.',
@@ -48,9 +49,12 @@ async function loadPackageContext(cwd: string): Promise<{
 } | null> {
   // oxlint-disable-next-line teamai/config-load-options -- session-start package hints retain normal config migration and have no preview option
   const localConfig = await detectProjectConfig(cwd) ?? await loadLocalConfig();
+
   if (!localConfig || localConfig.repo.kind === 'http') return null;
   const manifest = await loadPackageManifest(localConfig.repo.localPath);
+
   if (!hasPackageDeclarations(manifest)) return null;
+
   return { localConfig, manifest };
 }
 
@@ -61,22 +65,27 @@ function isDeclarationAcknowledged(
   cwd: string,
 ): boolean {
   if (!lock) return false;
+
   if (localConfig.scope !== 'user') {
     return lock.declarationHash === packageDeclarationHash(manifest);
   }
 
   if (lock.declarationHash !== sharedPackageDeclarationHash(manifest)) return false;
   const projectHash = projectNpmDeclarationHash(manifest);
+
   if (!projectHash) return true;
+
   return lock.projectDeclarationHashes?.[packageProjectKey(cwd)] === projectHash;
 }
 
 async function computePackageHintState(cwd: string): Promise<PackageHintState | null> {
   if (process.env.TEAMAI_PACKAGE_HINT_DISABLED === '1') return null;
   const context = await loadPackageContext(cwd);
+
   if (!context) return null;
   const { localConfig, manifest } = context;
   const lock = await loadPackageLock(await packageLockDir(localConfig));
+
   if (isDeclarationAcknowledged(localConfig, manifest, lock, cwd)) return null;
 
   return {
@@ -101,9 +110,11 @@ function packageHintOutput(message: string): string {
 export async function computePackageHintOutput(cwd: string): Promise<string | null> {
   try {
     const state = await computePackageHintState(cwd);
+
     return state ? packageHintOutput(state.message) : null;
   } catch (error) {
     log.debug(`pkg-hint: ${(error as Error).message}`);
+
     return null;
   }
 }
@@ -129,13 +140,16 @@ function pendingPath(sessionId: string): string {
 
 async function claimPackageHint(sessionId: string, manifestHash: string): Promise<boolean> {
   const filePath = claimPath(sessionId, manifestHash);
+
   try {
     await ensureDir(path.dirname(filePath));
     await fs.promises.writeFile(filePath, '{}\n', { encoding: 'utf-8', flag: 'wx' });
+
     return true;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
     log.debug(`pkg-hint claim: ${(error as Error).message}`);
+
     // A failed dedup marker must not suppress the user-facing safety prompt.
     return true;
   }
@@ -148,10 +162,13 @@ export async function claimPackageHintOutput(
 ): Promise<string | null> {
   try {
     const state = await computePackageHintState(cwd);
+
     if (!state || !await claimPackageHint(sessionId, state.manifestHash)) return null;
+
     return packageHintOutput(state.message);
   } catch (error) {
     log.debug(`pkg-hint: ${(error as Error).message}`);
+
     return null;
   }
 }
@@ -160,6 +177,7 @@ export async function claimPackageHintOutput(
 export async function packageManifestHashForCwd(cwd: string): Promise<string | null> {
   try {
     const context = await loadPackageContext(cwd);
+
     return context ? packageDeclarationHash(context.manifest) : null;
   } catch {
     return null;
@@ -174,8 +192,10 @@ export async function stashPackageHintAfterPull(
 ): Promise<void> {
   try {
     const afterHash = await packageManifestHashForCwd(cwd);
+
     if (!afterHash || afterHash === beforeHash) return;
     const state = await computePackageHintState(cwd);
+
     if (!state || !await claimPackageHint(sessionId, state.manifestHash)) return;
     await writeJsonAtomic(pendingPath(sessionId), { message: state.message });
   } catch (error) {
@@ -187,7 +207,9 @@ export async function stashPackageHintAfterPull(
 export async function takePendingPackageHint(sessionId: string): Promise<string | null> {
   const filePath = pendingPath(sessionId);
   const pending = await readJson<{ message?: unknown }>(filePath);
+
   if (!pending || typeof pending.message !== 'string' || !pending.message) return null;
   await fs.promises.unlink(filePath).catch(() => undefined);
+
   return pending.message;
 }

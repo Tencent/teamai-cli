@@ -8,6 +8,7 @@ import type { TeamaiConfig, LocalConfig } from './types.js';
 
 export async function pullLatest(repoPath: string): Promise<void> {
     const pullSpin = (await spinner('Pulling latest changes...')).start();
+
     try {
         await pullRepo(repoPath);
         pullSpin.succeed('Up to date');
@@ -35,10 +36,13 @@ export async function runManifestEdit(
     if (!options.dryRun && localConfig.repo.kind !== 'self') {
         if (!options.skipPull) await pullLatest(localConfig.repo.localPath);
         await fn(localConfig.repo.localPath, localConfig);
+
         return;
     }
+
     const { withKnowledgeWorktree, withDefaultBranchPreview, EmptyRepoError, DirtyPreviewError } = await import('./utils/reports-branch.js');
     const body = (checkoutConfig: LocalConfig) => fn(checkoutConfig.repo.localPath, checkoutConfig);
+
     try {
         if (options.dryRun) {
             // Real manifest edits also warn and proceed when their pull fails.
@@ -78,6 +82,7 @@ export async function pushManifestChange(input: {
 
         if (!hasChanges) {
             log.info('No changes to push (manifest unchanged)');
+
             return;
         }
 

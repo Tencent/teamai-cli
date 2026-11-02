@@ -29,14 +29,18 @@ import {
 export async function removeRecallAgentAndRule(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<number> {
   const install = installOf(teamConfig, localConfig);
   let removed = 0;
+
   for (const tool of Object.keys(scopedToolPaths(teamConfig, localConfig))) {
     // Remove recall rule file
     const rulesDir = ownOf(await locate(tool, 'rules', install));
+
     if (rulesDir?.kind === 'dir') {
       // Cursor and JoyCode copies are `.mdc`; older layouts also left `.md` files.
       const extensions = new Set<string>([ruleFileExtensionForTool(tool), '.md']);
+
       for (const extension of extensions) {
         const ruleFile = path.join(rulesDir.path, `teamai-recall${extension}`);
+
         if (await pathExists(ruleFile)) {
           if (await keepsTrackedCopy(ruleFile)) continue;
           await remove(ruleFile);
@@ -48,11 +52,14 @@ export async function removeRecallAgentAndRule(teamConfig: TeamaiConfig, localCo
 
     for (const { path: agentsDir } of cleanupOf(await locate(tool, 'agents', install))) {
       const extensions = new Set<string>(['.md']);
+
       if (isAgentToolId(tool)) {
         extensions.add(agentFileExtensionForTool(tool));
       }
+
       for (const extension of extensions) {
         const agentFile = path.join(agentsDir, `teamai-recall${extension}`);
+
         if (await pathExists(agentFile)) {
           if (await keepsTrackedCopy(agentFile)) continue;
           await remove(agentFile);
@@ -62,11 +69,13 @@ export async function removeRecallAgentAndRule(teamConfig: TeamaiConfig, localCo
       }
     }
   }
+
   return removed;
 }
 
 async function removeRecallArtifacts(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
   await removeRecallAgentAndRule(teamConfig, localConfig);
+
   for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     // Remove the legacy recall skill an earlier release deployed. The served
     // `share` workflow is gated at run time, but a member who upgrades and
@@ -76,6 +85,7 @@ async function removeRecallArtifacts(teamConfig: TeamaiConfig, localConfig: Loca
     // Hermes are pruned where their skills actually live.
     if (toolPath.skills && !isAgentExcluded(localConfig, tool)) {
       const target = await builtinSkillsTarget(tool, teamConfig, localConfig);
+
       if (target) await pruneLegacyBuiltinSkills(tool, target, LEGACY_RECALL_SKILL_NAMES);
     }
   }
@@ -96,9 +106,12 @@ async function writeRecallBlock(
   // their other blocks to the next pull's cleanup.
   const files = blocks === null ? [...targets, ...stale] : targets;
   const plan = await planInstructionFiles(files, blocks ?? { recall: null, directRecall: null });
+
   for (const warning of plan.warnings) log.warn(warning);
   const { report, failures, files: results } = await applyInstructionPlan(plan, { dryRun: false });
+
   for (const line of report) log.debug(line);
+
   for (const failure of failures) log.warn(failure);
   await registerOpencodeContext(teamConfig, localConfig, resolved, false, results);
 }
@@ -121,6 +134,7 @@ export async function recallDisable(opts: GlobalOptions): Promise<void> {
 
   if (opts.dryRun) {
     log.info('[dry-run] Would set recallEnabled=false and remove managed Recall artifacts.');
+
     return;
   }
 
@@ -143,6 +157,7 @@ export async function recallEnable(opts: GlobalOptions): Promise<void> {
 
   if (opts.dryRun) {
     log.info('[dry-run] Would set recallEnabled=true and deploy managed Recall artifacts.');
+
     return;
   }
 
@@ -163,10 +178,13 @@ export async function recallStatus(_opts: GlobalOptions): Promise<void> {
   const userOverride = localConfig.recallEnabled;
 
   console.log(`Recall: ${effective ? 'enabled' : 'disabled'}`);
+
   if (process.env.TEAMAI_RECALL_DISABLED === '1') {
     console.log('  Env override (TEAMAI_RECALL_DISABLED=1): disabled');
   }
+
   console.log(`  Team config (sharing.recall.enabled): ${teamSetting}`);
+
   if (userOverride !== undefined) {
     console.log(`  User override (recallEnabled): ${userOverride}`);
   } else {

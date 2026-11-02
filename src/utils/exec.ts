@@ -39,6 +39,7 @@ export const execCommand: CommandExecutor = (
   let stderr = '';
   let settled = false;
   const timeoutMs = options.timeoutMs ?? 120_000;
+
   const finish = (callback: () => void): void => {
     if (settled) return;
     settled = true;
@@ -53,11 +54,13 @@ export const execCommand: CommandExecutor = (
   child.stdout?.on('data', (chunk: Buffer) => {
     const text = stdoutDecoder.write(chunk);
     stdout += text;
+
     if (options.stream) process.stdout.write(text);
   });
   child.stderr?.on('data', (chunk: Buffer) => {
     const text = stderrDecoder.write(chunk);
     stderr += text;
+
     if (options.stream) process.stderr.write(text);
   });
 
@@ -72,10 +75,12 @@ export const execCommand: CommandExecutor = (
   child.on('close', (code) => finish(() => {
     const stdoutRest = stdoutDecoder.end();
     const stderrRest = stderrDecoder.end();
+
     if (options.stream) {
       process.stdout.write(stdoutRest);
       process.stderr.write(stderrRest);
     }
+
     resolve({
       stdout: stdout + stdoutRest,
       stderr: stderr + stderrRest,
@@ -91,7 +96,9 @@ export async function probeBinary(
 ): Promise<string> {
   try {
     const result = await executor(binary, args, { timeoutMs: 5_000 });
+
     if (result.code !== 0) return '';
+
     return (result.stdout || result.stderr).trim();
   } catch {
     return '';
@@ -102,6 +109,7 @@ export function formatCommand(command: string, args: string[]): string {
   const quote = (value: string): string => /^[a-zA-Z0-9_./:@=+-]+$/.test(value)
     ? value
     : JSON.stringify(value);
+
   return [command, ...args.map(quote)].join(' ');
 }
 
@@ -116,14 +124,18 @@ export function captureTail(child: ChildProcess, maxChars: number): () => string
   let output = '';
   const stdoutDecoder = new StringDecoder('utf8');
   const stderrDecoder = new StringDecoder('utf8');
+
   const append = (text: string) => {
     if (text) output = (output + text).slice(-maxChars);
   };
+
   child.stdout?.on('data', (chunk: Buffer) => append(stdoutDecoder.write(chunk)));
   child.stderr?.on('data', (chunk: Buffer) => append(stderrDecoder.write(chunk)));
+
   return () => {
     append(stdoutDecoder.end());
     append(stderrDecoder.end());
+
     return output.trim().replace(/\s+/g, ' ').slice(-maxChars);
   };
 }
@@ -147,6 +159,8 @@ export function detachPipe(stream: Readable): void {
  */
 export function detachChild(child: ChildProcess): void {
   child.unref();
+
   if (child.stdout) detachPipe(child.stdout);
+
   if (child.stderr) detachPipe(child.stderr);
 }

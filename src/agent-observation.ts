@@ -26,11 +26,13 @@ import type { TeamDelivery } from './pull.js';
  * in a URL, no "..", no spaces, and at most 80 characters.
  */
 const NAME = /^(?![A-Za-z]:)(?!.*:\/)(?!.*\.\.)[A-Za-z0-9][A-Za-z0-9._:@/-]{0,79}$/;
+
 /** A tool name, version or effort, such as `claude`, `2.1.301` or `high`: a name with no "/" or ":", which only models need. */
 const LABEL = /^[A-Za-z0-9][A-Za-z0-9._@-]{0,79}$/;
 const COMMIT = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
 
 const Name = z.string().regex(NAME);
+
 /** What the checkout was delivered for: the pull's `DeliverySelection`, and the workspace children it kept (#913). */
 const Selection = DeliverySelectionSchema.extend({ children: z.string().optional() });
 const Label = z.string().regex(LABEL);
@@ -38,8 +40,11 @@ const Applied = z.enum(['main', 'prompt', 'subagent']);
 
 /** The model asked for, the one the tool reports and the alias asked for, each kept only when shaped like a name. */
 export const ObservedModelSchema = z.object({ requested: Name.optional(), reported: Name.optional(), alias: Name.optional() });
+
 export type ObservedModel = z.infer<typeof ObservedModelSchema>;
+
 export const ObservedEffortSchema = z.object({ requested: Label.optional(), reported: Label.optional() });
+
 export type ObservedEffort = z.infer<typeof ObservedEffortSchema>;
 
 /** What one pass of a step ran as. Every field is best effort: absent when not observed, never inferred. */
@@ -55,10 +60,12 @@ export const AgentObservationSchema = z.object({
   driver: z.string(),
   fingerprint: z.string().regex(/^[0-9a-f]{64}$/).optional(),
 });
+
 export type AgentObservation = z.infer<typeof AgentObservationSchema>;
 
 /** The team skills a pass or session loaded, by name. Absent when nothing observed them, so `[]` means none was loaded. */
 export const UsedSchema = z.object({ skills: z.array(z.string().min(1)) });
+
 export type Used = z.infer<typeof UsedSchema>;
 
 /**
@@ -75,6 +82,7 @@ export const ReportedAgentSchema = z.object({
   team: z.object({ revision: z.string(), localChanges: z.boolean(), selection: Selection.optional() }).optional(),
   project: z.object({ commit: z.string(), dirty: z.boolean() }).optional(),
 });
+
 export type ReportedAgent = z.infer<typeof ReportedAgentSchema>;
 
 const DefinitionOnlySchema = z.object({ definition: z.object({ name: z.string().min(1) }) });
@@ -123,33 +131,41 @@ export type ToolLaunch = {
 /** Observe a launch before the tool starts. Never throws: each field it cannot observe is left out. */
 export async function observeLaunch(launch: ToolLaunch): Promise<ReportedAgent> {
   const [version, checkout] = await Promise.all([getAgentVersion(launch.tool), observeCheckout(launch)]);
+
   return { ...(version ? { tool: { version } } : {}), ...checkout };
 }
 
 /** What `observeLaunch` reads from the checkout and the pull record, without running the tool for its version. */
 export async function observeCheckout(launch: ToolLaunch): Promise<ReportedAgent> {
   const { teamDelivery } = await import('./pull.js');
+
   const [delivery, head] = await Promise.all([
     launch.delivery !== undefined ? launch.delivery : teamDelivery(launch.config, launch.tool, { beforeOwnPull: launch.beforeOwnPull }).catch(() => undefined),
     launch.head !== undefined ? launch.head : getHeadState(launch.cwd).catch(() => null),
   ]);
+
   const record = delivery?.record;
   const definition = launch.definition;
+
   const resolved = definition && await recordedUnchanged(record?.delivered, definition.file)
     ? record?.agentModels?.[definition.stem]?.[launch.tool]
     : undefined;
+
   const { chosen } = launch;
+
   const model = chosen
     ? names({ requested: chosen.model, alias: chosen.alias })
     : definition?.model
       ? names({ requested: definition.model, alias: resolved?.model === definition.model ? resolved.alias : undefined })
       // With no model on argv, the tool runs the one its deployed file sets, as the pull recorded it.
       : definition ? names({ requested: resolved?.model, alias: resolved?.alias }) : undefined;
+
   // The effort requested is the one the launch passes on argv. Claude does not apply an agent file's `effort:` under
   // `--agent`, so the file's value is not what ran.
   const effort = names({ requested: chosen ? chosen.effort : definition?.effort }, LABEL);
   // A record an older CLI wrote does not say what it was delivered for, so it names no team.
   const selection = delivery?.complete ? delivery.record.selection : undefined;
+
   const team = delivery?.complete && selection
     ? {
       revision: delivery.commit,
@@ -157,6 +173,7 @@ export async function observeCheckout(launch: ToolLaunch): Promise<ReportedAgent
       selection: { ...selection, ...(delivery.record.children ? { children: delivery.record.children } : {}) },
     }
     : undefined;
+
   return {
     ...(model ? { model } : {}),
     ...(effort ? { effort } : {}),
@@ -177,11 +194,13 @@ export function observedEffort(values: { requested?: string; reported?: string }
 
 function names<T extends Record<string, string | undefined>>(values: T, shape = NAME): Partial<T> | undefined {
   const kept = Object.fromEntries(Object.entries(values).filter(([, value]) => value !== undefined && shape.test(value)));
+
   return Object.keys(kept).length > 0 ? kept as Partial<T> : undefined;
 }
 
 async function allUnchanged(delivered: Record<string, string>): Promise<boolean> {
   const unchanged = await Promise.all(Object.keys(delivered).map((file) => recordedUnchanged(delivered, file)));
+
   return unchanged.every(Boolean);
 }
 
@@ -196,17 +215,21 @@ export function settleObservation(
 ): AgentObservation | undefined {
   const reported = report.agent;
   const tool = report.tool ?? reported?.tool?.name;
+
   if (!reported || !tool || !LABEL.test(tool)) return undefined;
+
   const model = names({
     requested: reported.model?.requested,
     reported: report.model ?? reported.model?.reported,
     alias: reported.model?.alias,
   });
+
   const effort = names({ requested: reported.effort?.requested, reported: reported.effort?.reported }, LABEL);
   const team = reported.team && COMMIT.test(reported.team.revision) ? reported.team : undefined;
   const project = reported.project && COMMIT.test(reported.project.commit) ? reported.project : undefined;
   const version = !reported.tool?.name || reported.tool.name === tool ? reported.tool?.version : undefined;
   const applied = reported.definition?.applied;
+
   const observation: AgentObservation = {
     v: 1,
     ...(definition ? { definition: { name: definition, ...(applied ? { applied } : {}) } } : {}),
@@ -218,7 +241,9 @@ export function settleObservation(
     teamai: getCurrentVersion(),
     driver: report.driver.kind,
   };
+
   const fingerprint = fingerprintOf(observation);
+
   return fingerprint ? { ...observation, fingerprint } : observation;
 }
 
@@ -229,7 +254,9 @@ export function settleObservation(
  */
 function fingerprintOf(observation: AgentObservation): string | undefined {
   const { v, definition, tool, model, effort, team } = observation;
+
   if (!(model?.requested ?? model?.reported) || !team || team.localChanges) return undefined;
+
   return crypto.createHash('sha256').update(canonicalJson({ v, definition, tool, model, effort, team }), 'utf8').digest('hex');
 }
 
@@ -237,17 +264,21 @@ function fingerprintOf(observation: AgentObservation): string | undefined {
 function canonicalJson(value: unknown): string {
   if (value !== null && typeof value === 'object') {
     const entries = Object.entries(value).filter(([, item]) => item !== undefined).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+
     return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(',')}}`;
   }
+
   return JSON.stringify(value);
 }
 
 /** Parse the `agent` field of a report payload, or return an `invalid_report` message for a wrong JSON type. */
 export function parseReportedAgent(value: unknown): ReportedAgent | string {
   const parsed = ReportedAgentSchema.safeParse(value);
+
   if (parsed.success) return parsed.data;
   const issue = parsed.error.issues[0];
   const field = ['agent', ...(issue?.path ?? [])].join('.');
+
   return issue?.code === 'invalid_type' ? `${field} must be ${article(issue.expected)}` : `${field} is invalid`;
 }
 
@@ -259,8 +290,10 @@ function article(type: string): string {
 export function readRecordedAgent(value: unknown): RecordedAgent | undefined {
   if (typeof value === 'string') return value ? { definition: { name: value } } : undefined;
   const observation = AgentObservationSchema.safeParse(value);
+
   if (observation.success) return observation.data;
   const definitionOnly = DefinitionOnlySchema.safeParse(value);
+
   return definitionOnly.success ? definitionOnly.data : undefined;
 }
 
@@ -270,8 +303,10 @@ export function readRecordedAgent(value: unknown): RecordedAgent | undefined {
  */
 export function parseReportedUsed(value: unknown): Used | undefined | string {
   const parsed = z.object({ skills: z.array(z.string()) }).safeParse(value);
+
   if (!parsed.success) return 'used must be an object whose skills is an array of skill names';
   const { skills } = parsed.data;
   const named = [...new Set(skills.filter((skill) => SKILL_NAME_REGEX.test(skill)))].sort();
+
   return named.length > 0 || skills.length === 0 ? { skills: named } : undefined;
 }

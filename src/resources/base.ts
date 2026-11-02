@@ -4,6 +4,7 @@ import type { ResourceType, ResourceItem, ResourceDiff, DeliveryTarget, TeamaiCo
 
 /** The placement records `publishedNameFor` resolves a bare name through. */
 export type PlacementRecords = Pick<State, 'placedRules' | 'placedAgents'>;
+
 import { readFileSafe, writeFile, ensureDir, pathExists } from '../utils/fs.js';
 import { getUserHome } from '../utils/home.js';
 import type { DeliveryLedger } from './delivered-copies.js';
@@ -139,6 +140,7 @@ export abstract class ResourceHandler {
   static async isToolInstalled(toolPath: string, baseDir?: string, rootSegment?: string): Promise<boolean> {
     const base = baseDir ?? getUserHome();
     const toolRoot = path.join(base, rootSegment ?? toolInstallRoot(toolPath));
+
     return pathExists(toolRoot);
   }
 
@@ -149,7 +151,9 @@ export abstract class ResourceHandler {
   async readTombstones(localConfig: LocalConfig): Promise<Set<string>> {
     const tombstonePath = path.join(localConfig.repo.localPath, this.type, TOMBSTONE_FILE);
     const content = await readFileSafe(tombstonePath);
+
     if (!content) return new Set();
+
     return new Set(
       content.split('\n').map((l) => l.trim()).filter((l) => l.length > 0),
     );

@@ -19,6 +19,7 @@ interface GitCodeRepoApiItem {
 
 function mapItem(item: GitCodeRepoApiItem): OrgRepoInfo {
   const fullName = item.full_name;
+
   return {
     url: item.html_url ?? `https://${GITCODE_HOST}/${fullName}.git`,
     fullName,
@@ -46,6 +47,7 @@ export async function gitcodeListOrgRepos(
   opts?: { maxRepos?: number },
 ): Promise<OrgRepoInfo[]> {
   const token = getGitCodeToken();
+
   if (!token) {
     throw new Error('GitCode token unavailable: set GITCODE_TOKEN (or GC_TOKEN).');
   }
@@ -58,20 +60,24 @@ export async function gitcodeListOrgRepos(
   while (collected.length < maxRepos) {
     const url = `${gitcodeApiBase()}/orgs/${encodeURIComponent(org)}/repos`
       + `?per_page=${DEFAULT_PER_PAGE}&page=${page}`;
+
     const resp = await fetch(url, { headers, redirect: 'manual' });
 
     if (resp.status === 404) {
       throw new Error(`GitCode org ${org} not found or no access`);
     }
+
     if (!resp.ok) {
       throw new Error(`GitCode API HTTP ${resp.status}: ${await resp.text().catch(() => '')}`);
     }
 
     const items = (await resp.json()) as GitCodeRepoApiItem[];
+
     if (!Array.isArray(items) || items.length === 0) break;
 
     for (const item of items) {
       collected.push(mapItem(item));
+
       if (collected.length >= maxRepos) break;
     }
 

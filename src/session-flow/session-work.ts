@@ -41,6 +41,7 @@ function transcriptOf(session: Session, budget: number): string {
     messages: session.messages.map((message) => ({ ...message, content: message.content.map((block) =>
       block.type === 'tool_call' ? { ...block, arguments: { excerpt: keepEnds(JSON.stringify(block.arguments), TOOL_CALL_MAX_CHARS) } } : block) })),
   };
+
   return keepEnds(AgentSession.transcript(capped).map((entry) => `### ${entry.role}\n${entry.text}\n${entry.toolOutput}`).join('\n\n'), budget);
 }
 
@@ -48,11 +49,13 @@ function transcriptOf(session: Session, budget: number): string {
 export function judgedTranscript(found: { session: Session; subagents?: SubagentsRead }, budget: { session: number; subagent: number }): { body: string; gaps: EvidenceGap[] } {
   const gaps: EvidenceGap[] = [];
   let body = transcriptOf(found.session, budget.session);
+
   if (found.subagents?.status !== 'read') gaps.push('subagents_unread');
   else for (const agent of found.subagents.agents) {
     if (agent.start === 'unknown') gaps.push('subagent_boundary_unknown');
     body += `\n\n## Subagent (depth ${agent.depth}${agent.finished === false ? ', not finished' : ''})\n\n${transcriptOf(agent.session, budget.subagent)}`;
   }
+
   return { body, gaps };
 }
 
@@ -63,10 +66,13 @@ export function judgedTranscript(found: { session: Session; subagents?: Subagent
 function capturedTeamSkillsAt(captures: readonly SessionCapture[]): (timestamp: string | undefined) => Readonly<Record<string, readonly string[]>> {
   const [first, ...rest] = captures;
   const alike = first !== undefined && rest.every((capture) => isDeepStrictEqual(capture.teamSkills ?? {}, first.teamSkills ?? {}));
+
   return (timestamp) => {
     const at = timestamp === undefined ? Number.NaN : Date.parse(timestamp);
+
     if (Number.isNaN(at)) return alike ? first.teamSkills ?? {} : {};
     const inEffect = captures.findLast((capture) => Date.parse(capture.capturedAt) <= at);
+
     return inEffect?.teamSkills ?? {};
   };
 }
@@ -74,6 +80,7 @@ function capturedTeamSkillsAt(captures: readonly SessionCapture[]): (timestamp: 
 function firstPrompt(session: Session): string {
   const text = session.messages.flatMap((message) => message.content.map((block) => typedIn(message, block))).find((typed) => typed !== '') ?? '';
   const flat = text.replace(/\s+/g, ' ').trim();
+
   return flat.length > 200 ? `${flat.slice(0, 200)}…` : flat;
 }
 
@@ -84,10 +91,13 @@ function firstPrompt(session: Session): string {
 export function firstPromptOnly(found: { session: Session }): { session: Session; subagents: SubagentsRead } {
   const { session } = found;
   const first = session.messages.find((message) => message.content.some((block) => typedIn(message, block) !== ''));
+
   const typed = first?.content.flatMap((block) => {
     const text = typedIn(first, block);
+
     return text === '' ? [] : [{ type: 'text' as const, text }];
   });
+
   return { session: { ...session, messages: first && typed ? [{ ...first, content: typed }] : [] }, subagents: { status: 'read', agents: [] } };
 }
 
@@ -119,14 +129,17 @@ export function judgeSession({ platform, found, captures, mask, agent: archived 
   const subject = { platform, sessionId: session.sessionId };
   const used = usedSkills(AgentSession.toolForPlatform(platform), found, capturedTeamSkillsAt(captures));
   const skills = skillsEvidence(captures, used, mask);
+
   const manifest = {
     subject, kind: 'session' as const,
     gaps: 'gap' in skills ? [...transcript.gaps, skills.gap] : transcript.gaps,
     ...('skills' in skills ? { skills: skills.skills } : {}),
   };
+
   const framing = `## evidence.json\n\n${JSON.stringify(manifest)}\n\n## transcripts/session.md\n\n`.length;
   const agent = archived ?? SessionCaptures.agentOf(captures, SessionCaptures.reportedModelOf(session));
   const runMode = SessionCaptures.runModeOf(captures);
+
   return {
     subject,
     body: keepEnds(mask(transcript.body), EVIDENCE_MAX_CHARS - framing),
@@ -158,6 +171,7 @@ export async function writeSessionEvidence(dir: string, judged: JudgedSession, r
 /** The label of a verdict on a session, with the context one read of it gave. */
 export function sessionLabel(verdict: Omit<SessionLabel, 'source' | 'subject' | 'agent' | 'used' | 'runMode'>, subject: SessionSubject, context: SessionLabelContext): SessionLabel {
   const { scorer, rubric, label, score, passed, judge, scoredAt } = verdict;
+
   return { scorer, rubric, label, score, passed, source: 'session', subject, ...(context.agent ? { agent: context.agent } : {}), used: context.used, judge, ...(context.runMode ? { runMode: context.runMode } : {}), scoredAt };
 }
 
@@ -193,12 +207,16 @@ interface SessionScorer {
 /** The scorers of this scope that judge sessions. */
 async function sessionScorers(config: LocalConfig): Promise<SessionScorer[]> {
   const pins = await pinScorers(config, await cachedScorerNames(config));
+
   const scorers = Object.entries(pins).flatMap(([scorer, pin]) => {
     const definition = pinnedDefinition(scorer, pin);
     const [, dir, file] = (pin.relativePath ?? '').split('/');
+
     return definition?.sessions ? [{ scorer, pin, definition, dir: file === undefined ? undefined : dir }] : [];
   });
+
   const { shared } = await scorerNamespaces(config, [...new Set(scorers.flatMap(({ dir }) => dir ?? []))]);
+
   return scorers.map(({ dir, ...scorer }) => (dir === undefined || shared.includes(dir) ? scorer : { ...scorer, namespace: dir }));
 }
 
@@ -210,7 +228,9 @@ type CaptureSelection = NonNullable<NonNullable<SessionCapture['agent']['team']>
  */
 function selectedAs(scope: LocalConfig, selection: CaptureSelection): LocalConfig | undefined {
   const { children, roleUnresolved: _roleUnresolved, ...own } = scope;
+
   if (selection.children !== children?.fingerprint) return undefined;
+
   return {
     ...own,
     primaryRole: selection.primaryRole,
@@ -229,12 +249,14 @@ function selectedAs(scope: LocalConfig, selection: CaptureSelection): LocalConfi
  */
 async function sessionNamespaces(scope: LocalConfig, captures: readonly SessionCapture[], dirs: readonly string[]): Promise<Set<string>> {
   let active = new Set(captures.length > 0 ? dirs : []);
+
   for (const capture of captures) {
     const selection = capture.agent.team?.selection;
     const selected = selection && selectedAs(scope, selection);
     const resolved = selected ? (await scorerNamespaces(selected, dirs)).active : [];
     active = new Set(resolved.filter((dir) => active.has(dir)));
   }
+
   return active;
 }
 
@@ -242,12 +264,16 @@ async function sessionNamespaces(scope: LocalConfig, captures: readonly SessionC
 async function lastEvents(): Promise<Map<string, string>> {
   const { readEvents } = await import('../dashboard-collector.js');
   const latest = new Map<string, string>();
+
   for (const event of await readEvents()) {
     const platform = AgentSession.platformForTool(event.tool);
+
     if (!platform) continue;
     const key = sessionKey({ platform, sessionId: event.sessionId });
+
     if ((latest.get(key) ?? '') < event.timestamp) latest.set(key, event.timestamp);
   }
+
   return latest;
 }
 
@@ -259,8 +285,10 @@ async function lastActiveAt(captured: CapturedSession, events: ReadonlyMap<strin
   const files = [...new Set(captured.captures.flatMap((capture) => capture.sessionFile ?? []))];
   const written = await Promise.all(files.map((file) => fs.stat(file).then((stat) => stat.mtimeMs, () => undefined)));
   const known = written.filter((at): at is number => at !== undefined);
+
   if (known.length < files.length) return undefined;
   const event = events.get(sessionKey(captured));
+
   return Math.max(...known, ...(event ? [Date.parse(event)] : []), ...captured.captures.map((capture) => Date.parse(capture.capturedAt)));
 }
 
@@ -277,11 +305,15 @@ async function isGone(captured: CapturedSession): Promise<boolean> {
 async function finished(captured: readonly CapturedSession[], now: string, includes: (mode: RunMode) => boolean): Promise<CapturedSession[]> {
   const events = await lastEvents();
   const found: Array<{ captured: CapturedSession; activeAt: number }> = [];
+
   for (const one of captured) {
     const mode = SessionCaptures.runModeOf(one.captures) ?? 'attended';
+
     if (!includes(mode)) continue;
     const activeAt = await lastActiveAt(one, events);
+
     if (activeAt === undefined) continue;
+
     switch (mode) {
       case 'attended':
         if (activeAt + FINISHED_AFTER_MS <= Date.parse(now)) found.push({ captured: one, activeAt });
@@ -291,17 +323,21 @@ async function finished(captured: readonly CapturedSession[], now: string, inclu
         break;
       default: {
         const unhandled: never = mode;
+
         return unhandled;
       }
     }
   }
+
   return found.sort((left, right) => left.activeAt - right.activeAt).map((one) => one.captured);
 }
 
 /** Every session captured here by `platform\0sessionId`, while a session attempt is kept here to prune by it; else none. */
 async function prunableBy(config: LocalConfig): Promise<ReadonlySet<string> | undefined> {
   const attempts = [...(await AttemptStore.read(config)).values()].flat();
+
   if (!attempts.some((attempt) => attempt.source === 'session')) return undefined;
+
   return new Set((await SessionCaptures.list(config)).map(sessionKey));
 }
 
@@ -315,33 +351,43 @@ async function prunableBy(config: LocalConfig): Promise<ReadonlySet<string> | un
  */
 async function entries(config: LocalConfig, now: string, scoring: Extract<ScopeScoring, { ok: true }>): Promise<{ entries: SessionEntry[]; captured?: ReadonlySet<string> }> {
   const { policies } = scoring.sessions;
+
   if (!RUN_MODES.some((mode) => policies[mode].policy === 'auto')) return { entries: [], captured: await prunableBy(config) };
   const scorers = await sessionScorers(config);
   const routing = scoring.skillRouting;
+
   if (scorers.length === 0 && !routing) return { entries: [], captured: await prunableBy(config) };
   const captured = await SessionCaptures.list(config);
   const keys = new Set(captured.map(sessionKey));
+
   if (captured.length === 0) return { entries: [], captured: keys };
   const pick = await sampler(config, now, scorers);
   const batch = batchesScorers({ team: scoring.batch });
   // A routing question needs only which skills its session's captures delivered, never the session's read.
   const noLabels: ScoreLabel[] = [];
   const noAttempts = new Map<string, readonly AttemptRecord[]>();
+
   const [labels, attempts] = routing
     ? await Promise.all([LabelStore.local(config), AttemptStore.read(config)])
     : [noLabels, noAttempts];
+
   const found: SessionEntry[] = [];
+
   for (const session of await finished(captured, now, (mode) => policies[mode].policy === 'auto')) {
     const subject = { platform: session.platform, sessionId: session.sessionId };
+
     for (const sampled of await pick(session)) found.push({ source: 'session', ...sampled, subject, batch });
+
     // A routing question is never sampled — every finished session the judge leases gets them — and one session's
     // questions always share a judge call, whatever `batch` says, so their entries batch together.
     if (routing) {
       const available = availableTeamSkills(session.captures);
+
       if (available) {
         for (const question of routingScorers(available)) {
           const id = sessionEntryIdOf(question.scorer, question.pin.sourceHash, subject);
           const state = sessionEntryState({ labels: labels.filter((label) => sameSessionKey(label, question.scorer, question.pin.sourceHash, subject)), attempts: attempts.get(id) ?? [], now });
+
           if (state.kind === 'open' || state.kind === 'leased') {
             found.push({ source: 'session', id, scorer: question.scorer, pin: question.pin, definition: question.definition, subject, batch: true, state });
           }
@@ -349,6 +395,7 @@ async function entries(config: LocalConfig, now: string, scoring: Extract<ScopeS
       }
     }
   }
+
   return { entries: found, captured: keys };
 }
 
@@ -371,13 +418,16 @@ async function sampler(config: LocalConfig, now: string, scorers?: readonly Sess
   const [labels, attempts] = await Promise.all([LabelStore.local(config), AttemptStore.read(config)]);
   const dirs = [...new Set(all.flatMap(({ namespace }) => namespace ?? []))];
   const scope = dirs.length > 0 ? await readWorkspaceChildren(config) : config;
+
   return async ({ platform, sessionId, captures }) => {
     const active = dirs.length > 0 ? await sessionNamespaces(scope, captures, dirs) : new Set<string>();
     const subject = { platform, sessionId };
+
     return all.filter(({ namespace }) => namespace === undefined || active.has(namespace)).flatMap(({ scorer, pin, definition }): SampledScorer[] => {
       if (!isSampled(scorer, subject, definition.samplingRate)) return [];
       const id = sessionEntryIdOf(scorer, pin.sourceHash, subject);
       const state = sessionEntryState({ labels: labels.filter((label) => sameSessionKey(label, scorer, pin.sourceHash, subject)), attempts: attempts.get(id) ?? [], now });
+
       // A tried or labelled key is never work again; leaving it out keeps the attempts lock's scan to open and live keys.
       return state.kind === 'open' || state.kind === 'leased' ? [{ scorer, pin, definition, id, state }] : [];
     });
@@ -391,6 +441,7 @@ async function sampler(config: LocalConfig, now: string, scorers?: readonly Sess
  */
 async function sampledScorers(config: LocalConfig, subject: SessionSubject, now: string): Promise<SampledScorer[]> {
   const captures = await SessionCaptures.read(config, subject.platform, subject.sessionId);
+
   return (await sampler(config, now))({ ...subject, captures });
 }
 
@@ -407,9 +458,11 @@ export interface NamedSession {
 /** The entries of a named session: each open, unless a live lease holds it. */
 async function entriesOf(config: LocalConfig, { subject, scorers, batch }: NamedSession, now: string): Promise<SessionEntry[]> {
   const attempts = await AttemptStore.read(config);
+
   return scorers.map(({ scorer, pin, definition }) => {
     const id = sessionEntryIdOf(scorer, pin.sourceHash, subject);
     const live = liveSessionLease(attempts.get(id) ?? [], now);
+
     return { source: 'session', id, scorer, pin, definition, subject, batch, state: live ? { kind: 'leased', attempt: live } : { kind: 'open' } };
   });
 }
@@ -424,6 +477,7 @@ const localDay = (at: string) => new Date(at).toDateString();
 /** The day's launches: distinct attempt ids of session attempts leased on `now`'s local date. A batch shares one id. */
 function launchesToday(attempts: Iterable<AttemptRecord>, now: string): number {
   const today = localDay(now);
+
   return new Set([...attempts].filter((attempt) => attempt.source === 'session' && localDay(attempt.leasedAt) === today).map((attempt) => attempt.attempt)).size;
 }
 
@@ -433,6 +487,7 @@ function launchesToday(attempts: Iterable<AttemptRecord>, now: string): number {
  */
 function gone(attempts: ReadonlyMap<string, readonly AttemptRecord[]>, captured: ReadonlySet<string>, now: string): string[] {
   const today = localDay(now);
+
   return [...attempts].filter(([, ofEntry]) => ofEntry.length > 0 && ofEntry.every((attempt) => attempt.source === 'session'
     && !captured.has(sessionKey(attempt.subject))
     && localDay(attempt.leasedAt) !== today
@@ -447,8 +502,10 @@ async function read(config: LocalConfig, subject: SessionSubject): Promise<{ ok:
   const captures = await SessionCaptures.read(config, subject.platform, subject.sessionId);
   const filePath = captures.flatMap((capture) => capture.sessionFile ?? []).at(-1);
   const found = await AgentSession.find({ ...subject, ...(filePath ? { filePath } : {}) }, { subagents: true });
+
   if (found.status !== 'done' || found.session.messages.length === 0) return { ok: false };
   const envSecrets = await knownSecrets(config);
+
   return { ok: true, judged: judgeSession({ platform: subject.platform, found, captures, mask: (text) => redact(text, { envSecrets }) }) };
 }
 
@@ -456,8 +513,10 @@ async function read(config: LocalConfig, subject: SessionSubject): Promise<{ ok:
 async function ensureEvidence(config: LocalConfig, subject: SessionSubject, rubrics: Rubrics, dir: string): Promise<{ ok: true } | { ok: false; code: 'evidence_empty' }> {
   if (await isEvidenceReady(dir)) return { ok: true };
   const session = await read(config, subject);
+
   if (!session.ok) return { ok: false, code: 'evidence_empty' };
   await writeSessionEvidence(dir, session.judged, rubrics);
+
   return { ok: true };
 }
 

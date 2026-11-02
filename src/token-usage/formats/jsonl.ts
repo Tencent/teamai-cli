@@ -15,25 +15,32 @@ export async function forEachJsonLine(
   visit: (entry: unknown) => void,
 ): Promise<void> {
   let size: number;
+
   try {
     size = (await fs.promises.stat(file)).size;
   } catch {
     return;
   }
+
   if (size > INTERVENTION_SCAN_MAX_BYTES) {
     log.warn(`token-usage: transcript too large to read (${size} bytes): ${file}`);
+
     return;
   }
+
   const lines = readline.createInterface({ input: fs.createReadStream(file, { encoding: 'utf-8' }), crlfDelay: Infinity });
+
   try {
     for await (const line of lines) {
       if (!markers.some((marker) => line.includes(marker))) continue;
       let entry: unknown;
+
       try {
         entry = JSON.parse(line);
       } catch {
         continue;
       }
+
       visit(entry);
     }
   } catch (e) {

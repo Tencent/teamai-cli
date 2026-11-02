@@ -46,8 +46,11 @@ export const reportsBranch = createBranchWorktree({
 });
 
 export type EnsureReportsWorktreeOptions = EnsureWorktreeOptions;
+
 export type ReportsWrite = BranchWrite;
+
 export type ReportsWriteContext = BranchWriteContext;
+
 export type ReportsPublishResult = PublishResult;
 
 /** Materialize the reports worktree. See the branch-worktree module. */
@@ -72,6 +75,7 @@ export async function indexableVotesDir(localConfig: LocalConfig): Promise<strin
     if (e instanceof ForeignCheckoutError) return undefined;
     throw e;
   }
+
   return path.join(reportsBranch.dir(localConfig), 'votes');
 }
 
@@ -101,18 +105,23 @@ export async function readableReportsWorktree(
   // A dry run reads the local copy as it is: neither refreshed nor created.
   if (options.dryRun) {
     await reportsBranch.checkOwner(localConfig);
+
     return reportsBranch.dir(localConfig);
   }
+
   let refreshed = await reportsBranch.refresh(localConfig, { pushIfCreated: false });
+
   // Failed: try once more, under the lock like every creation, and throw the
   // cause if it fails again. An `ensure` here would create the checkout without
   // the lock, while a writer that took it meanwhile creates it too (#823 item 15).
   if (refreshed.status === 'failed') refreshed = await reportsBranch.refresh(localConfig, { pushIfCreated: false });
+
   switch (refreshed.status) {
     case 'done':
       return reportsBranch.dir(localConfig);
     case 'busy':
       await reportsBranch.checkOwner(localConfig);
+
       return reportsBranch.dir(localConfig);
     case 'failed':
       throw new Error(refreshed.reason);
@@ -155,6 +164,7 @@ export async function readReportsOriginFile(
 ): Promise<string | null> {
   try {
     const git = createGit(worktree);
+
     return await git.raw(['show', `origin/${REPORTS_BRANCH}:${relPath}`]);
   } catch {
     return null;
@@ -173,14 +183,18 @@ export type ReportsOriginRead =
  */
 export async function fetchReportsOriginFile(dir: string, relPath: string): Promise<ReportsOriginRead> {
   const git = createGit(dir);
+
   try {
     const heads = await git.listRemote(['--heads', 'origin', REPORTS_BRANCH]);
+
     if (heads.trim() === '') return { status: 'absent' };
     await fetchTrackingRef(git, REPORTS_BRANCH);
   } catch (e) {
     return { status: 'unreachable', reason: failureReason(e) };
   }
+
   const text = await readReportsOriginFile(dir, relPath);
+
   return text === null ? { status: 'absent' } : { status: 'found', text };
 }
 
@@ -206,12 +220,16 @@ export async function updateReports<T = never>(
   options: BranchPushOptions & EnsureReportsWorktreeOptions = {},
 ): Promise<PublishResult & { value?: T }> {
   const held: { change?: { value: T } } = {};
+
   const result = await reportsBranch.update(localConfig, async (worktree, ctx) => {
     const change = await write(worktree, ctx);
+
     if (change === null || !('value' in change)) return change;
     held.change = { value: change.value };
+
     return change.write;
   }, options);
+
   return held.change ? { ...result, value: held.change.value } : result;
 }
 
@@ -269,6 +287,7 @@ export async function withKnowledgeWorktree<T>(
       await fse.remove(wt);
     }
   }
+
   try {
     await git.raw(['worktree', 'prune']);
   } catch {
@@ -277,6 +296,7 @@ export async function withKnowledgeWorktree<T>(
 
   // Fetch the latest default branch so the PR is based on current main.
   const defaultBranch = await getDefaultBranch(repoRoot);
+
   try {
     await git.fetch(['origin', defaultBranch]);
   } catch (error) {
@@ -287,6 +307,7 @@ export async function withKnowledgeWorktree<T>(
   // Detached worktree at origin/<default>; pushRepoBranch will create the feature
   // branch inside the worktree, so the active repo never switches branches.
   let base = `origin/${defaultBranch}`;
+
   try {
     await git.raw(['worktree', 'add', '--detach', wt, base]);
   } catch (error) {
@@ -312,6 +333,7 @@ export async function withKnowledgeWorktree<T>(
       await git.raw(['worktree', 'remove', '--force', wt]);
     } catch {
       await fse.remove(wt);
+
       try { await git.raw(['worktree', 'prune']); } catch { /* best effort */ }
     }
   }
@@ -351,16 +373,20 @@ export async function withDefaultBranchPreview<T>(
   const selfMode = localConfig.repo.kind === 'self';
   const repoRoot = selfMode ? getBusinessRoot(localConfig) : localConfig.repo.localPath;
   const git = createGit(repoRoot);
+
   if (!selfMode) await assertAttachedTeamRepo(git, repoRoot);
+
   // A successful clone pull may preserve dirty manifests/resources. Do not
   // silently replace that view with origin; self mode really reads a worktree.
   if (!selfMode && (await git.raw(['--no-optional-locks', 'status', '--porcelain', '--untracked-files=all'])).trim()) {
     throw new DirtyPreviewError(repoRoot);
   }
+
   const defaultBranch = await getDefaultBranch(repoRoot);
   const branch = selfMode ? defaultBranch : (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();
   const head = await getHeadCommit(repoRoot);
   let base: string | null = null;
+
   try {
     if (selfMode) {
       await git.fetch(['origin', branch]);
@@ -371,19 +397,24 @@ export async function withDefaultBranchPreview<T>(
       try {
         const remote = (await git.getConfig(`branch.${branch}.remote`)).value;
         const merge = (await git.getConfig(`branch.${branch}.merge`)).value;
+
         if (remote && merge) {
           await git.fetch([remote, merge]);
           const upstream = await getHeadCommit(repoRoot, 'FETCH_HEAD');
+
           if (head && upstream) {
             const common = (await git.raw(['merge-base', head, upstream])).trim();
+
             if (common === upstream) base = head;
             else if (common === head) base = upstream;
           }
         }
       } catch { /* failed ff-only pull: model pullRepo's origin/local fallback */ }
+
       if (!base) {
         await git.fetch(['origin', branch]);
         base = await getHeadCommit(repoRoot, `origin/${branch}`);
+
         if (!base) throw new Error(`Cannot resolve origin/${branch} after fetching; the pull reset would fail.`);
       }
     }
@@ -392,9 +423,11 @@ export async function withDefaultBranchPreview<T>(
     log.warn(`Could not fetch origin/${branch} (${(e as Error).message}); ${selfMode ? 'previewing against the copy fetched last.' : 'previewing against the local checkout.'}`);
     base = selfMode ? await getHeadCommit(repoRoot, `origin/${branch}`) ?? head : head;
   }
+
   if (!base) throw new EmptyRepoError(repoRoot);
 
   const dir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-preview-'));
+
   try {
     await git.raw(['clone', '--quiet', '--shared', '--no-checkout', repoRoot, dir]);
     const preview = createGit(dir);
@@ -403,17 +436,22 @@ export async function withDefaultBranchPreview<T>(
     // History/name resolution must instead see the member's fetched refs,
     // including an ahead HEAD that differs from origin/<active branch>.
     const refs = await git.raw(['for-each-ref', '--format=%(refname) %(objectname)', 'refs/remotes/origin/']);
+
     for (const entry of refs.trim().split('\n').filter(Boolean)) {
       const [ref, commit] = entry.split(' ');
+
       if (ref !== 'refs/remotes/origin/HEAD') await preview.raw(['update-ref', ref, commit]);
     }
+
     await preview.raw(['symbolic-ref', 'refs/remotes/origin/HEAD', `refs/remotes/origin/${defaultBranch}`]);
+
     const previewConfig: LocalConfig = {
       ...localConfig,
       repo: selfMode
         ? { ...localConfig.repo, localPath: path.join(dir, '.teamai'), businessRepoRoot: dir }
         : { ...localConfig.repo, localPath: dir },
     };
+
     return await fn(previewConfig);
   } finally {
     await fse.remove(dir);

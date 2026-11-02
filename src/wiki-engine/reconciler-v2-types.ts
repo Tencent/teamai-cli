@@ -17,7 +17,9 @@ export interface NumericConfidence {
 /** Derive label from numeric score */
 export function labelFromScore(score: number): WikiConfidence {
   if (score >= 0.8) return "EXTRACTED";
+
   if (score >= 0.5) return "INFERRED";
+
   return "AMBIGUOUS";
 }
 
@@ -25,6 +27,7 @@ export function labelFromScore(score: number): WikiConfidence {
 export function buildConfidence(factors: ConfidenceFactor[]): NumericConfidence {
   if (factors.length === 0) return { score: 0, label: "AMBIGUOUS", factors: [] };
   const score = Math.min(1, factors.reduce((sum, f) => sum + f.weight, 0));
+
   return { score, label: labelFromScore(score), factors };
 }
 

@@ -26,7 +26,9 @@ const COPILOT_MARKER = '--tool copilot';
  */
 export function copilotRunsEntries(data: unknown): Array<[string, string | undefined, string]> {
   const file = data as { version?: unknown; disableAllHooks?: unknown; hooks?: unknown } | null;
+
   if (file?.version !== 1 || file.disableAllHooks || !file.hooks || typeof file.hooks !== 'object') return [];
+
   return Object.entries(file.hooks).flatMap(([event, entries]) => !Array.isArray(entries) ? [] : entries
     .filter(entry => entry?.type === 'command')
     .flatMap(entry => [entry.bash, entry.powershell, entry.command]
@@ -76,6 +78,7 @@ const POWERSHELL_CURSOR_HOOK_SKIP =
 
 function powershellProjectCopilotCopyCheck(event: string, matcher: string | undefined, command: string): string {
   const expectedMatcher = matcher && matcher !== '*' ? matcher : '';
+
   return [
     '$teamaiHooks = Join-Path (Join-Path $env:COPILOT_PROJECT_DIR ".github") "hooks";',
     'Get-ChildItem -LiteralPath $teamaiHooks -Filter "*.json" -File -ErrorAction SilentlyContinue | ForEach-Object {',
@@ -131,11 +134,13 @@ export function claudeHookOtherHostSkip(
 ): string {
   if (!claudeHookUsesPowerShell(platform, gitBashPath)) {
     if (!copilotEvent) return CURSOR_HOOK_SKIP;
+
     return CURSOR_HOOK_SKIP + 'if [ -n "$COPILOT_PROJECT_DIR" ] && node -e ' + shellQuoteValue(PROJECT_COPILOT_COPY_CHECK) + ' '
       + `"$COPILOT_PROJECT_DIR/.github/hooks" ${copilotCopyKey(copilotEvent, copilotMatcher, command)} 2>/dev/null; then exit 0; fi; `;
   }
 
   if (!copilotEvent) return POWERSHELL_CURSOR_HOOK_SKIP;
+
   return POWERSHELL_CURSOR_HOOK_SKIP + 'if ($env:COPILOT_PROJECT_DIR) { '
     + powershellProjectCopilotCopyCheck(copilotEvent, copilotMatcher, command)
     + '}; ';
@@ -143,6 +148,7 @@ export function claudeHookOtherHostSkip(
 
 function homeDir(env: NodeJS.ProcessEnv): string | undefined {
   const home = env.HOME?.trim() || env.USERPROFILE?.trim();
+
   return home || undefined;
 }
 
@@ -156,9 +162,12 @@ function fileHasMarker(file: string, marker: string): boolean {
 
 function cursorCopyInstalled(env: NodeJS.ProcessEnv): boolean {
   const home = homeDir(env);
+
   if (home && fileHasMarker(path.join(home, '.cursor', 'hooks.json'), CURSOR_MARKER)) return true;
   const project = env.CURSOR_PROJECT_DIR?.trim();
+
   if (project && fileHasMarker(path.join(project, '.cursor', 'hooks.json'), CURSOR_MARKER)) return true;
+
   return false;
 }
 
@@ -167,6 +176,7 @@ function copilotHooksInstalled(dir: string): boolean {
   try {
     return fs.readdirSync(dir).some(name => {
       if (!name.endsWith('.json')) return false;
+
       try {
         return copilotRunsEntries(JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8')))
           .some(([, , command]) => command.includes(COPILOT_MARKER));
@@ -181,16 +191,21 @@ function copilotHooksInstalled(dir: string): boolean {
 
 function copilotCopyInstalled(env: NodeJS.ProcessEnv, includeGlobal: boolean): boolean {
   const project = env.COPILOT_PROJECT_DIR?.trim();
+
   if (!project) return false;
   const home = homeDir(env);
   const copilotHome = env.COPILOT_HOME?.trim() || (home ? path.join(home, '.copilot') : undefined);
+
   return (includeGlobal && copilotHome !== undefined && copilotHooksInstalled(path.join(copilotHome, 'hooks')))
     || copilotHooksInstalled(path.join(project, '.github', 'hooks'));
 }
 
 export function claudeHookRunsInAnotherHost(tool: string, env: NodeJS.ProcessEnv = process.env, includeGlobalCopilot = true): boolean {
   if (tool !== 'claude') return false;
+
   if (env.CURSOR_VERSION && cursorCopyInstalled(env)) return true;
+
   if (env.COPILOT_PROJECT_DIR && copilotCopyInstalled(env, includeGlobalCopilot)) return true;
+
   return false;
 }

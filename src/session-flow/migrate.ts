@@ -14,9 +14,11 @@ import { getAdapter, listAvailablePlatforms, listInstalledPlatforms } from './ad
 export const THINKING_SUPPORT: Record<string, boolean> = Object.fromEntries(
   Object.entries(SESSION_PLATFORM_FACTS).map(([name, facts]) => [name, facts.thinking]),
 );
+
 export const IMAGE_SUPPORT: Record<string, boolean> = Object.fromEntries(
   Object.entries(SESSION_PLATFORM_FACTS).map(([name, facts]) => [name, facts.images]),
 );
+
 export const NATIVE_TOOLS: Record<string, ReadonlySet<string>> = Object.fromEntries(
   Object.entries(SESSION_PLATFORM_FACTS).map(([name, facts]) => [name, facts.nativeTools]),
 );
@@ -90,6 +92,7 @@ export function fidelityFromSession(session: Session, targetPlatform: string): F
         }
       } else if (block.type === 'image') {
         imageCount++;
+
         if (targetSupportsImage) {
           preservedBlocks++;
         } else {
@@ -103,6 +106,7 @@ export function fidelityFromSession(session: Session, targetPlatform: string): F
   if (thinkingCount > 0 && !targetSupportsThinking) {
     degradations.push('thinking_blocks_degraded_to_text');
   }
+
   if (imageCount > 0 && !targetSupportsImage) {
     degradations.push(`image_blocks_degraded_to_placeholder (${imageCount})`);
   }
@@ -134,6 +138,7 @@ export function fidelityFromSession(session: Session, targetPlatform: string): F
 
 export function degradeThinkingBlocks(session: Session, targetPlatform: string): Session {
   const targetSupportsThinking = THINKING_SUPPORT[targetPlatform] ?? true;
+
   if (targetSupportsThinking) return session;
 
   return {
@@ -144,6 +149,7 @@ export function degradeThinkingBlocks(session: Session, targetPlatform: string):
         if (block.type === 'thinking') {
           return { type: 'text', text: `<thinking>\n${block.text}\n</thinking>` };
         }
+
         return block;
       }),
     })),
@@ -168,6 +174,7 @@ export interface MigrationPreview {
 /** Whether cwd is a writable real absolute path (excludes irreversible placeholders such as md5:<hash>). */
 function isUsableCwd(cwd: string | undefined): cwd is string {
   if (!cwd) return false;
+
   // Windows drive paths (C:\... / C:/...) are valid absolute paths too
   return cwd.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(cwd);
 }
@@ -186,7 +193,9 @@ export function resolveTargetCwd(
   fallback: string | undefined,
 ): string | undefined {
   if (explicit) return explicit;
+
   if (isUsableCwd(sourceSessionCwd)) return sourceSessionCwd;
+
   return fallback;
 }
 

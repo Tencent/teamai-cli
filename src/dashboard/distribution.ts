@@ -48,6 +48,7 @@ function selectionOf(config: Pick<LocalConfig, 'primaryRole' | 'additionalRoles'
  */
 function revisionOf(config: LocalConfig): string {
   const identity = { scope: config.scope, dataHome: config.dataHome ?? null, projectRoot: config.projectRoot ?? null };
+
   return createHash('sha256').update(JSON.stringify({ identity, selection: selectionOf(config) })).digest('hex').slice(0, 16);
 }
 
@@ -63,9 +64,11 @@ type ManifestRead<T> = { state: 'ok'; manifest: T } | { state: 'missing' } | { s
 async function readManifest<T>(kind: 'roles' | 'projects', load: (repoPath: string) => Promise<T | null>, repoPath: string): Promise<ManifestRead<T>> {
   try {
     const manifest = await load(repoPath);
+
     return manifest ? { state: 'ok', manifest } : { state: 'missing' };
   } catch (error) {
     log.debug(`dashboard: manifest/${kind}.yaml: ${(error as Error).message}`);
+
     return { state: 'invalid', error: `manifest/${kind}.yaml cannot be read or parsed. Run \`teamai ${kind} list\` for details.` };
   }
 }
@@ -76,7 +79,9 @@ const readProjects = (repoPath: string) => readManifest<ProjectsManifest>('proje
 /** The manifest a save checks ids against; a 409 when the team has none or it cannot be read. */
 function manifestOrConflict<T>(kind: 'roles' | 'projects', read: ManifestRead<T>): T {
   if (read.state === 'missing') throw new HttpError(409, `This team repo defines no ${kind} (no manifest/${kind}.yaml).`);
+
   if (read.state === 'invalid') throw new HttpError(409, read.error);
+
   return read.manifest;
 }
 
@@ -90,6 +95,7 @@ async function deliveryOf(config: LocalConfig): Promise<Delivery | { error: stri
     return await resolveDelivery(config);
   } catch (error) {
     log.debug(`dashboard: distribution resolution failed: ${(error as Error).message}`);
+
     return { error: UNRESOLVED };
   }
 }
@@ -118,24 +124,30 @@ interface RoleChange { primaryRole: string; additionalRoles: string[] }
 /** `{ primaryRole, additionalRoles? }`, checked against the roles manifest. */
 async function roleChange(repoPath: string, body: Record<string, unknown>): Promise<RoleChange & { version: number }> {
   const { primaryRole, additionalRoles = [] } = body;
+
   if (typeof primaryRole !== 'string' || !isStringArray(additionalRoles)) {
     throw new HttpError(400, 'Expected { primaryRole: string, additionalRoles?: string[] }.');
   }
+
   for (const id of [primaryRole, ...additionalRoles]) assertSafeId('role', id);
   const manifest = manifestOrConflict('roles', await readRoles(repoPath));
   const change = { primaryRole, additionalRoles: [...new Set(additionalRoles)].filter((id) => id !== primaryRole) };
   assertKnown('role', [change.primaryRole, ...change.additionalRoles], manifest.roles.map((role) => role.id));
+
   return { ...change, version: manifest.version };
 }
 
 /** `{ projects }`, checked against the projects manifest. An empty list is allowed. */
 async function projectChange(repoPath: string, body: Record<string, unknown>): Promise<string[]> {
   const { projects } = body;
+
   if (!isStringArray(projects)) throw new HttpError(400, 'Expected { projects: string[] }.');
+
   for (const id of projects) assertSafeId('project', id);
   const manifest = manifestOrConflict('projects', await readProjects(repoPath));
   const ids = [...new Set(projects)];
   assertKnown('project', ids, manifest.projects.map((project) => project.id));
+
   return ids;
 }
 
@@ -153,6 +165,7 @@ export async function readDistribution(ownConfig: LocalConfig) {
   const [roles, projects] = await Promise.all([readRoles(repoPath), readProjects(repoPath)]);
   // What pull delivers to a workspace includes its children's selections (#913).
   const withChildren = await readWorkspaceChildren(ownConfig);
+
   return {
     configured: true as const,
     revision: revisionOf(ownConfig),
@@ -184,16 +197,20 @@ export async function readDistribution(ownConfig: LocalConfig) {
 export async function previewDistribution(ownConfig: LocalConfig, body: Record<string, unknown>) {
   const repoPath = ownConfig.repo.localPath;
   let candidate: LocalConfig = { ...ownConfig };
+
   if ('primaryRole' in body || 'additionalRoles' in body) {
     assertRolesEditable(ownConfig);
     const { primaryRole, additionalRoles } = await roleChange(repoPath, body);
     candidate = { ...candidate, primaryRole, additionalRoles };
   }
+
   if ('projects' in body) candidate = { ...candidate, projects: await projectChange(repoPath, body) };
   const before = await deliveryOf(await readWorkspaceChildren(ownConfig));
   const after = await deliveryOf(await readWorkspaceChildren(candidate));
+
   if ('error' in before || 'error' in after) throw new HttpError(409, UNRESOLVED);
   const [roles, projects] = await Promise.all([readRoles(repoPath), readProjects(repoPath)]);
+
   return {
     revision: revisionOf(ownConfig),
     selection: selectionOf(candidate),

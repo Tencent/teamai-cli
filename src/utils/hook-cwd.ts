@@ -11,16 +11,22 @@
 export function resolveHookCwd(data: Record<string, unknown>): string | undefined {
   if (typeof data.cwd === 'string') {
     const trimmed = data.cwd.trim();
+
     if (trimmed) return fromUriPath(trimmed);
   }
+
   const roots = data.workspace_roots;
+
   if (!Array.isArray(roots)) return undefined;
+
   for (const root of roots) {
     if (typeof root === 'string') {
       const trimmed = root.trim();
+
       if (trimmed) return fromUriPath(trimmed);
     }
   }
+
   return undefined;
 }
 

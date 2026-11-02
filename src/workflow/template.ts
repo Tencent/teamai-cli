@@ -53,6 +53,7 @@ interface Syntax {
 /** `paths` is the regex source of what a template that reads one path holds between its braces. */
 function syntax(paths: string): Syntax {
   const template = new RegExp(`\\{\\{\\s*(${paths})\\s*\\}\\}`);
+
   return { template, recognized: new RegExp(`(?<!\\$)${template.source}`, 'g'), path: new RegExp(`^(?:${paths})`) };
 }
 
@@ -68,12 +69,16 @@ const SYNTAX = {
   /** Those, and `item`, bare or with names and indexes. */
   bound: syntax(String.raw`${PATHS}|item(?![A-Za-z0-9_-])(?:[.[][^{}]*?)?`),
 };
+
 /** `with.<name>`, then any names and indexes inside its value. */
 const WITH_PATH = /^with\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+|\[[^\]]*\]?)*$/;
+
 /** A `{{ … }}`, `${{ … }}` included, up to the first `}}`, that holds no other `{{`. */
 const ANY_BRACES = /\{\{((?:(?!\{\{)[\s\S])*?)\}\}/g;
+
 /** Those not preceded by `$`. */
 const BRACES = new RegExp(`(?<!\\$)${ANY_BRACES.source}`, 'g');
+
 /** `\{{`: a literal `{{`. Only the backslash is dropped, and nothing after it is read as a template. */
 const ESCAPED = '\\{{';
 
@@ -86,6 +91,7 @@ const WITH_MESSAGE = 'with is read only as one path, such as with.<name>; an exp
  */
 export function findTemplate(text: string, item: boolean): string | undefined {
   const { template, path } = item ? SYNTAX.bound : SYNTAX.unbound;
+
   return template.exec(text)?.[0] ?? [...text.matchAll(ANY_BRACES)].find((match) => readsLikeExpression(match[1] ?? '', path))?.[0];
 }
 
@@ -94,9 +100,12 @@ function readOf(inner: string): { expression: Expression } | { path: WithPath } 
   if (inner.startsWith('with.')) {
     if (!WITH_PATH.test(inner)) return WITH_MESSAGE;
     const parsed = parseFields(inner);
+
     return parsed.ok ? { path: { root: 'with', fields: parsed.fields.slice(1) } } : parsed.message;
   }
+
   const parsed = parseExpression(inner);
+
   return parsed.ok ? { expression: parsed.expression } : parsed.message;
 }
 
@@ -110,34 +119,45 @@ export function parseTemplate(text: string, item: boolean): TemplateParse {
   const { recognized, path } = item ? SYNTAX.bound : SYNTAX.unbound;
   const template: Template = [];
   const errors: TemplateError[] = [];
+
   const read = (source: string, inner: string): void => {
     const parsed = readOf(inner);
+
     if (typeof parsed === 'string') errors.push({ source, message: parsed });
     else template.push({ source, ...parsed });
   };
+
   const literal = (segment: string): void => {
     let index = 0;
+
     for (const match of segment.matchAll(BRACES)) {
       if (!readsLikeExpression(match[1] ?? '', path)) continue;
+
       if (match.index > index) template.push(segment.slice(index, match.index));
       read(match[0], match[1] ?? '');
       index = match.index + match[0].length;
     }
+
     if (index < segment.length) template.push(segment.slice(index));
   };
+
   const scan = (piece: string): void => {
     let index = 0;
+
     for (const match of piece.matchAll(recognized)) {
       literal(piece.slice(index, match.index));
       read(match[0], match[1] ?? '');
       index = match.index + match[0].length;
     }
+
     literal(piece.slice(index));
   };
+
   text.split(ESCAPED).forEach((piece, at) => {
     if (at > 0) template.push('{{');
     scan(piece);
   });
+
   return errors.length > 0 ? { ok: false, errors } : { ok: true, template };
 }
 
@@ -162,14 +182,18 @@ export function templateWithPaths(template: Template): WithPath[] {
  */
 function valueOf(read: TemplateRead, context: TemplateContext): unknown {
   if ('expression' in read) return evaluateExpression(read.expression, context);
+
   return resolvePath({ root: 'inputs', fields: read.path.fields, column: 1 }, { inputs: context.with, steps: {} });
 }
 
 /** A value as text: strings as they are, numbers and booleans as text, objects and arrays as JSON, null as ''. */
 function textOf(value: unknown): string {
   if (value === null || value === undefined) return '';
+
   if (typeof value === 'string') return value;
+
   if (typeof value === 'object') return JSON.stringify(value);
+
   return String(value);
 }
 
@@ -181,14 +205,18 @@ export function renderText(template: Template, context: TemplateContext): string
 /** Renders a whole value: a template that is exactly one `{{ … }}` keeps the JSON value it reads; anything else is text. */
 export function renderValue(template: Template, context: TemplateContext): unknown {
   const only = template.length === 1 ? template[0] : undefined;
+
   if (only !== undefined && typeof only !== 'string') return valueOf(only, context);
+
   return renderText(template, context);
 }
 
 /** Every string inside a value, at any depth: the templates a `with` value holds. */
 export function stringsIn(value: unknown): string[] {
   if (typeof value === 'string') return [value];
+
   if (value && typeof value === 'object') return Object.values(value).flatMap(stringsIn);
+
   return [];
 }
 
@@ -232,14 +260,19 @@ export function stepExpressions(step: Pick<WorkflowStep, 'if' | 'loop' | 'break'
 export function renderStrings(value: unknown, context: TemplateContext): { ok: true; value: unknown } | { ok: false; error: TemplateError } {
   if (typeof value === 'string') {
     const parsed = parseTemplate(value, Object.hasOwn(context, 'item'));
+
     return parsed.ok ? { ok: true, value: renderValue(parsed.template, context) } : { ok: false, error: parsed.errors[0]! };
   }
+
   if (!value || typeof value !== 'object') return { ok: true, value };
   const rendered: Array<[string, unknown]> = [];
+
   for (const [key, item] of Object.entries(value)) {
     const result = renderStrings(item, context);
+
     if (!result.ok) return result;
     rendered.push([key, result.value]);
   }
+
   return { ok: true, value: Array.isArray(value) ? rendered.map(([, item]) => item) : Object.fromEntries(rendered) };
 }

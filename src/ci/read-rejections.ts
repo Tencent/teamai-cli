@@ -15,6 +15,7 @@ import { paginateGitLab } from './gitlab-paginate.js';
 import { log } from '../utils/logger.js';
 
 const API_TIMEOUT_MS = 15_000;
+
 // GitLab caps note pages at 100; same guard as fetchGitLabDiscussions (mr-fetch.ts).
 const MAX_NOTE_PAGES = 20;
 
@@ -46,6 +47,7 @@ const MARKER_REGEX = /<!-- teamai:ci-extract:(\S+) -->/;
  */
 export function extractMarkerId(body: string): string | null {
   const match = body.match(MARKER_REGEX);
+
   return match ? match[1] : null;
 }
 
@@ -62,7 +64,9 @@ interface GitHubReaction {
 
 async function githubRequest(path: string): Promise<Response> {
   const token = process.env['GITHUB_TOKEN'];
+
   if (!token) throw new Error('GITHUB_TOKEN is not set');
+
   return fetch(`https://api.github.com${path}`, {
     headers: {
       Authorization: `Bearer ${token}`,
@@ -78,11 +82,13 @@ async function readGitHubRejections(owner: string, repo: string, prNumber: strin
 
   // Read all comments
   const resp = await githubRequest(`/repos/${owner}/${repo}/issues/${prNumber}/comments?per_page=100`);
+
   if (!resp.ok) throw new Error(`GitHub comments request failed (${resp.status})`);
   const comments = (await resp.json()) as GitHubComment[];
 
   for (const comment of comments) {
     const markerId = extractMarkerId(comment.body);
+
     if (!markerId) continue;
     result.allIds.add(markerId);
 
@@ -90,9 +96,11 @@ async function readGitHubRejections(owner: string, repo: string, prNumber: strin
     const reactResp = await githubRequest(
       `/repos/${owner}/${repo}/issues/comments/${comment.id}/reactions?per_page=100`,
     );
+
     if (!reactResp.ok) {
       throw new Error(`GitHub reactions request failed for comment ${comment.id} (${reactResp.status})`);
     }
+
     const reactions = (await reactResp.json()) as GitHubReaction[];
     const hasThumbsDown = reactions.some((r) => r.content === '-1');
 
@@ -130,10 +138,13 @@ async function tgitRequest(path: string): Promise<Response> {
 
 async function getMrGlobalId(projectId: string, mrIid: string): Promise<number> {
   const resp = await tgitRequest(`/projects/${projectId}/merge_requests?iid=${mrIid}`);
+
   if (!resp.ok) throw new Error(`TGit MR lookup failed (${resp.status})`);
   const mrs = (await resp.json()) as Array<{ id: number; iid: number }>;
   const mr = mrs.find((m) => String(m.iid) === mrIid);
+
   if (!mr) throw new Error(`TGit MR !${mrIid} not found`);
+
   return mr.id;
 }
 
@@ -145,16 +156,19 @@ async function readTGitRejections(owner: string, repo: string, mrIid: string): P
 
   // Read all notes
   const resp = await tgitRequest(`/projects/${projectId}/merge_requests/${mrGlobalId}/notes?per_page=100`);
+
   if (!resp.ok) throw new Error(`TGit notes request failed (${resp.status})`);
   const notes = (await resp.json()) as TGitNote[];
 
   for (const note of notes) {
     const markerId = extractMarkerId(note.body);
+
     if (!markerId) continue;
     result.allIds.add(markerId);
 
     // TGit: emoji number 8 (☝️) = reject, no emoji = approve (written by default)
     const hasRejectEmoji = (note.comments ?? []).some((c) => c.comment === TGIT_REJECT_EMOJI);
+
     if (hasRejectEmoji) {
       result.rejectedIds.add(markerId);
     } else {
@@ -181,14 +195,17 @@ async function readGitLabRejections(mrUrl: string): Promise<RejectionResult> {
 
   const { apiBase, projectPath, mrIid } = parseGitLabMRUrl(mrUrl);
   const token = getGitLabToken();
+
   if (!token) {
     throw new Error(
       'GitLab authentication unavailable. Set the GITLAB_TOKEN environment variable '
       + '(a GitLab Personal Access Token with `api` scope).',
     );
   }
+
   const enc = encodeURIComponent(projectPath);
   const headers = { 'PRIVATE-TOKEN': token };
+
   const doFetch = (path: string) => fetch(`${apiBase}${path}`, {
     headers,
     signal: AbortSignal.timeout(API_TIMEOUT_MS),
@@ -209,6 +226,7 @@ async function readGitLabRejections(mrUrl: string): Promise<RejectionResult> {
 
   for (const note of notes) {
     const markerId = extractMarkerId(note.body);
+
     if (!markerId) continue;
     result.allIds.add(markerId);
 
@@ -248,15 +266,18 @@ export async function readRejections(mrUrl: string): Promise<RejectionResult> {
 
   if (parsed.provider === 'github') {
     log.debug('Reading GitHub reactions...');
+
     return readGitHubRejections(parsed.owner, parsed.repo, parsed.number);
   }
 
   if (parsed.provider === 'gitlab') {
     log.debug('Reading GitLab award emoji...');
+
     return readGitLabRejections(mrUrl);
   }
 
   log.debug('Reading TGit emoji reactions...');
+
   return readTGitRejections(parsed.owner, parsed.repo, parsed.number);
 }
 

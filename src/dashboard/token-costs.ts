@@ -29,10 +29,12 @@ const emptyUsage = (): Usage => ({ requests: 0, pricedRequests: 0, costMicros: 0
 
 function add(usage: Usage, record: LocalRequestRecord): void {
   usage.requests += 1;
+
   if (record.costMicros !== null) {
     usage.pricedRequests += 1;
     usage.costMicros += record.costMicros;
   }
+
   usage.tokens.input += record.inputTokens;
   usage.tokens.output += record.outputTokens;
   usage.tokens.cacheRead += record.cacheReadTokens;
@@ -43,9 +45,11 @@ const byCost = (a: Usage, b: Usage) => b.costMicros - a.costMicros || totalToken
 
 function group<T extends Usage>(map: Map<string, T>, key: string, create: () => T): T {
   const found = map.get(key);
+
   if (found) return found;
   const created = create();
   map.set(key, created);
+
   return created;
 }
 
@@ -74,30 +78,39 @@ export function summarizeTokenCosts(
 
   for (const record of records) {
     const { scope } = options;
+
     if (scope && !(scope.dataHomeKey && record.dataHomeKey
       ? record.dataHomeKey === scope.dataHomeKey
       : record.sessionId !== undefined && scope.sessionIds.has(record.sessionId))) continue;
     const at = Date.parse(record.timestamp);
+
     if (at >= previousStart && at < start) {
       previous.requests += 1;
       previous.costMicros += record.costMicros ?? 0;
       continue;
     }
+
     if (at < start || at >= end) continue;
     const tool = record.tool ?? 'unknown';
     add(totals, record);
+
     if (record.costMicros !== null && record.costSource === 'reported') totals.reportedCostMicros += record.costMicros;
+
     if (record.costMicros !== null) totals.cacheSavingsMicros += record.cacheSavingsMicros ?? 0;
     const day = daily.get(record.timestamp.slice(0, 10));
+
     if (day) add(day, record);
     add(group(tools, tool, () => ({ ...emptyUsage(), tool })), record);
     const model = group(models, record.model, () => ({ ...emptyUsage(), model: record.model, tools: [] }));
     add(model, record);
+
     if (!model.tools.includes(tool)) model.tools.push(tool);
     const { sessionId } = record;
+
     if (sessionId) {
       const session = group(sessions, sessionId, () => ({ ...emptyUsage(), sessionId, tool, lastAt: record.timestamp }));
       add(session, record);
+
       if (at > Date.parse(session.lastAt)) session.lastAt = record.timestamp;
     }
   }
@@ -111,6 +124,7 @@ export function summarizeTokenCosts(
     previous: options.days * 2 <= REQUEST_LOG_RETENTION_DAYS ? previous : null,
     daily: dates.map((date) => {
       const day = daily.get(date) ?? emptyUsage();
+
       return { date, requests: day.requests, costMicros: day.costMicros, tokens: totalTokens(day.tokens) };
     }),
     byTool: [...tools.values()].sort(byCost),

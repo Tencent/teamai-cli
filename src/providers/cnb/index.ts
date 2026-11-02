@@ -38,8 +38,10 @@ export class CNBProvider implements GitProvider {
   async authenticate(): Promise<string> {
     if (this.isAuthenticated()) {
       const username = cnbWhoami();
+
       if (username) return username;
     }
+
     return ensureCnbAuthenticated();
   }
 
@@ -54,6 +56,7 @@ export class CNBProvider implements GitProvider {
       if (e instanceof CnbRepoNotFoundError) {
         throw new RepoNotFoundError(repo);
       }
+
       throw e;
     }
   }

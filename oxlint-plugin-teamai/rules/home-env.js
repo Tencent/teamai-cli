@@ -13,14 +13,19 @@ export default defineRule({
   },
   create(context) {
     if (!inProductionSource(context) || isOneOf(context, [HOME_OWNER])) return {};
+
     return {
       MemberExpression(node) {
         if (node.object.type !== 'MemberExpression' || node.object.computed) return;
+
         if (node.object.object.type !== 'Identifier' || node.object.object.name !== 'process') return;
+
         if (node.object.property.type !== 'Identifier' || node.object.property.name !== 'env') return;
+
         const readsHome = node.computed
           ? node.property.type === 'Literal' && node.property.value === 'HOME'
           : node.property.type === 'Identifier' && node.property.name === 'HOME';
+
         if (!readsHome) return;
         context.report({
           node,

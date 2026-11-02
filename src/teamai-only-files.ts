@@ -49,21 +49,27 @@ export interface SharedFileJudgement {
  */
 export async function judgeTeamaiOnlyFiles(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<SharedFileJudgement[]> {
   if (localConfig.scope !== 'project') return [];
+
   const verdicts = [
     ...await judgeTeamaiOnlyMcpConfigs(teamConfig, localConfig),
     ...await judgeInternalClaudeInstructions(teamConfig, localConfig),
     ...[await judgeTeamaiOnlyCodexHooks(teamConfig, localConfig), await judgeOpencodeInstructions(teamConfig, localConfig)]
       .filter((verdict) => verdict !== null),
   ];
+
   // One file judged twice (a team mapping two writers to it) is teamai-only only if both say so.
   const byFile = new Map<string, boolean>();
+
   for (const { file, teamaiOnly } of verdicts) byFile.set(file, (byFile.get(file) ?? true) && teamaiOnly);
   const judged: SharedFileJudgement[] = [];
+
   for (const [file, teamaiOnly] of byFile) {
     const tracking = await gitTracks(file);
+
     if (tracking.kind === 'unknown') judged.push({ file, state: 'unknown', error: tracking.error });
     else judged.push({ file, state: tracking.kind === 'tracked' ? 'tracked' : teamaiOnly ? 'teamai-only' : 'mixed' });
   }
+
   return judged;
 }
 
@@ -72,10 +78,12 @@ async function judgeInternalClaudeInstructions(teamConfig: TeamaiConfig, localCo
   const { targets } = await resolveInstructionTargets(teamConfig, localConfig);
   const files = targets.filter((target) => target.tools.some((tool) => tool === 'claude-internal' || tool === 'tclaude'));
   const verdicts = [];
+
   for (const target of files) {
     if (await readFileSafe(target.path) === null) continue;
     verdicts.push({ file: target.path, teamaiOnly: await holdsOnlyInstructionBlocks(target.path) });
   }
+
   return verdicts;
 }
 
@@ -87,6 +95,7 @@ async function judgeInternalClaudeInstructions(teamConfig: TeamaiConfig, localCo
 export async function keptOutByMcpExclude(files: readonly string[]): Promise<Set<string>> {
   const blocks = await findMcpGitExcludes(files.map((file) => path.dirname(file)));
   const listed = [...blocks.values()].flat().flatMap(({ files: protectedFiles }) => protectedFiles);
+
   return new Set(await Promise.all(listed.map((file) => realFilePath(file))));
 }
 
@@ -101,6 +110,7 @@ export async function describeNoLongerTeamaiOnly(file: string, projectRoot: stri
  */
 export async function describeUnknownTracking(judgement: SharedFileJudgement, projectRoot: string, kept: boolean): Promise<string> {
   const shown = await shownPath(judgement.file, projectRoot);
+
   return `git could not say whether it tracks ${shown}: ${judgement.error ?? 'git failed'}. `
     + (kept ? 'teamai keeps its git exclude line as the last pull left it. ' : 'teamai cannot tell whether to keep it out of git. ')
     + 'Fix the repository, then run `teamai pull` again.';
@@ -110,6 +120,7 @@ export async function describeUnknownTracking(judgement: SharedFileJudgement, pr
 async function shownPath(file: string, projectRoot: string): Promise<string> {
   const [real, root] = await Promise.all([realFilePath(file), realFilePath(projectRoot)]);
   const rel = path.relative(root, real);
+
   return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel) ? rel.split(path.sep).join('/') : real;
 }
 
@@ -125,10 +136,12 @@ async function opencodeInstructionEntries(
   localConfig: LocalConfig,
 ): Promise<{ file: string; ours: (entry: unknown) => boolean } | null> {
   const target = await new RulesHandler().opencodeInstructionsTarget(teamConfig, localConfig, []);
+
   if (target === null) return null;
   const file = target.configFile;
   const contextFile = ownOf(await locate('opencode', 'blocks', installOf(teamConfig, localConfig)))?.path;
   const context = contextFile ? opencodeContextReference(contextFile, 'project', resolveBaseDir(localConfig)) : null;
+
   return {
     file,
     ours: (entry) => typeof entry === 'string' && (target.owns(entry) || (context?.config === file && entry === context.entry)),
@@ -150,16 +163,23 @@ export async function retireOpencodeV1Instructions(
 ): Promise<string | null> {
   if (!await opencodeDeliversThroughPlugin(teamConfig, localConfig)) return null;
   const verdict = await judgeOpencodeInstructions(teamConfig, localConfig);
+
   if (!verdict || (await gitTracks(verdict.file, 'entry')).kind !== 'untracked') return null;
   const outcome = 'as teamai\'s plugin adds the team instructions and rules on OpenCode V2, which would otherwise load them twice.';
+
   if (verdict.teamaiOnly) {
     if (!dryRun) await fs.promises.rm(verdict.file, { force: true });
+
     return `${dryRun ? 'Would delete' : 'Deleted'} ${verdict.file}: it held only teamai's \`instructions\` entries, ${outcome}`;
   }
+
   const entries = await opencodeInstructionEntries(teamConfig, localConfig);
   const ours = ((await readOpencodeInstructionList(verdict.file)) ?? []).filter((entry): entry is string => entries?.ours(entry) === true);
+
   if (!entries || ours.length === 0) return null;
+
   if (!dryRun && !await reconcileOpencodeInstructionSet(verdict.file, [], entries.ours, 'team instructions')) return null;
+
   return `${dryRun ? 'Would take' : 'Took'} teamai's \`instructions\` entries (${ours.join(', ')}) out of ${verdict.file}, ${outcome}`;
 }
 
@@ -173,11 +193,14 @@ export async function opencodeV1Leftovers(teamConfig: TeamaiConfig, localConfig:
   if (!await opencodeDeliversThroughPlugin(teamConfig, localConfig)) return [];
   const left: Array<{ file: string; entries: string[] }> = [];
   const servers = await opencodeV1Servers(teamConfig, localConfig);
+
   if (servers) left.push({ file: servers.file, entries: servers.names });
   const instructions = await opencodeInstructionEntries(teamConfig, localConfig);
   const listed = instructions && await readOpencodeInstructionList(instructions.file);
   const ours = (listed ?? []).filter((entry): entry is string => instructions?.ours(entry) === true);
+
   if (instructions && ours.length > 0) left.push({ file: instructions.file, entries: ours });
+
   return left;
 }
 
@@ -188,20 +211,28 @@ export async function opencodeV1Leftovers(teamConfig: TeamaiConfig, localConfig:
  */
 async function judgeOpencodeInstructions(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<{ file: string; teamaiOnly: boolean } | null> {
   const entries = await opencodeInstructionEntries(teamConfig, localConfig);
+
   if (entries === null) return null;
   const { file, ours } = entries;
+
   if (!(await fs.promises.lstat(file).catch(() => null))?.isFile()) return null;
   const raw = await readFileSafe(file);
+
   if (raw === null || raw.trim() === '') return null;
   let data: unknown;
+
   try {
     data = JSON.parse(raw);
   } catch {
     return { file, teamaiOnly: false };
   }
+
   if (typeof data !== 'object' || data === null || Array.isArray(data)) return { file, teamaiOnly: false };
   const { instructions, ...others } = data as { instructions?: unknown };
+
   if (Object.keys(others).length > 0) return { file, teamaiOnly: false };
+
   if (instructions === undefined) return null;
+
   return { file, teamaiOnly: Array.isArray(instructions) && instructions.length > 0 && instructions.every(ours) };
 }

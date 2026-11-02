@@ -29,10 +29,13 @@ import type { AstSymbol, AstSymbolKind } from "./types.js";
  */
 export function swiftModuleScope(relativePath: string): string | undefined {
   const normalized = relativePath.replace(/\\/gu, "/");
+
   if (!normalized.toLowerCase().endsWith(".swift")) {
     return undefined;
   }
+
   const segments = normalized.split("/");
+
   // The innermost marker wins, so the scan runs from the end. A repository may
   // vendor whole packages beneath a directory of its own named `Tests` or
   // `Sources` — `Tests/Fixtures/A/Sources/App` and `Tests/Fixtures/B/Sources/App`
@@ -50,11 +53,14 @@ export function swiftModuleScope(relativePath: string): string | undefined {
   // no scope.
   for (let index = segments.length - 3; index >= 0; index--) {
     const segment = segments[index];
+
     if (segment !== "Sources" && segment !== "Tests") {
       continue;
     }
+
     return segments.slice(0, index + 2).join("/");
   }
+
   return undefined;
 }
 
@@ -102,10 +108,13 @@ export function buildSwiftModuleSymbolIndex(
 
   for (const member of members) {
     const scope = swiftModuleScope(member.file);
+
     if (!scope) {
       continue;
     }
+
     const names = memberNames.get(scope);
+
     if (names) {
       names.add(member.name);
     } else {
@@ -115,11 +124,14 @@ export function buildSwiftModuleSymbolIndex(
 
   for (const symbol of symbols) {
     const scope = swiftModuleScope(symbol.file);
+
     if (!scope) {
       continue;
     }
+
     scopeOfFile.set(symbol.file, scope);
     const bucket = byModule.get(scope);
+
     if (bucket) {
       bucket.push(symbol);
     } else {
@@ -158,9 +170,11 @@ export function swiftModuleDeclaresMember(
   name: string
 ): boolean {
   const scope = index.scopeOfFile.get(fromFile) ?? swiftModuleScope(fromFile);
+
   if (!scope) {
     return false;
   }
+
   return index.memberNames.get(scope)?.has(name) === true;
 }
 
@@ -183,11 +197,14 @@ export function findSwiftModuleSymbol(
   kinds: readonly AstSymbolKind[]
 ): AstSymbol | undefined {
   const scope = index.scopeOfFile.get(fromFile) ?? swiftModuleScope(fromFile);
+
   if (!scope) {
     return undefined;
   }
+
   const matches = (index.byModule.get(scope) ?? []).filter(
     (symbol) => symbol.name === name && symbol.file !== fromFile && kinds.includes(symbol.kind)
   );
+
   return matches.length === 1 ? matches[0] : undefined;
 }

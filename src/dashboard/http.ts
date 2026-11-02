@@ -22,12 +22,17 @@ const MAX_JSON_BODY_BYTES = 64 * 1024;
  */
 export function isLocalWrite(req: http.IncomingMessage, port: number): boolean {
   const local = new Set([`localhost:${port}`, `127.0.0.1:${port}`]);
+
   if (!(req.headers['content-type'] ?? '').toLowerCase().startsWith('application/json')) return false;
+
   if (!local.has(req.headers.host ?? '')) return false;
   const origin = req.headers.origin;
+
   if (origin === undefined) return true;
+
   try {
     const parsed = new URL(origin);
+
     return parsed.protocol === 'http:' && local.has(parsed.host);
   } catch {
     return false;
@@ -38,17 +43,23 @@ export function isLocalWrite(req: http.IncomingMessage, port: number): boolean {
 export async function readJsonBody(req: http.IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
   let size = 0;
+
   for await (const chunk of req) {
     size += (chunk as Buffer).length;
+
     if (size > MAX_JSON_BODY_BYTES) throw new HttpError(400, 'Request body too large.');
     chunks.push(chunk as Buffer);
   }
+
   let body: unknown;
+
   try {
     body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
   } catch {
     throw new HttpError(400, 'Request body must be JSON.');
   }
+
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw new HttpError(400, 'Request body must be a JSON object.');
+
   return body as Record<string, unknown>;
 }

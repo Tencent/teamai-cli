@@ -56,22 +56,28 @@ type Configured = Extract<SessionSharing, { configured: true }>;
 async function capturedHere(config: LocalConfig, now: string, publish: SessionPolicies): Promise<CapturedSessions> {
   const sessions = await SessionCaptures.list(config);
   const finished = new Set((await SessionWork.finished(sessions, now, () => true)).map(sessionKey));
+
   const counts: CapturedSessions = {
     attended: { active: 0, finished: 0, waitingToArchive: 0, archived: 0 },
     unattended: { waitingForDrain: 0, finished: 0, waitingToArchive: 0, archived: 0 },
   };
+
   for (const one of sessions) {
     const mode = SessionCaptures.runModeOf(one.captures) ?? 'attended';
+
     if (await SessionPublish.isRecorded(config, one)) {
       counts[mode].archived += 1;
       continue;
     }
+
     if (await SessionWork.isGone(one)) continue;
+
     if (finished.has(sessionKey(one))) {
       if (publish[mode].policy === 'auto') counts[mode].waitingToArchive += 1;
       else counts[mode].finished += 1;
       continue;
     }
+
     switch (mode) {
       case 'attended':
         counts.attended.active += 1;
@@ -82,10 +88,12 @@ async function capturedHere(config: LocalConfig, now: string, publish: SessionPo
         break;
       default: {
         const unhandled: never = mode;
+
         return unhandled;
       }
     }
   }
+
   return counts;
 }
 
@@ -93,6 +101,7 @@ async function capturedHere(config: LocalConfig, now: string, publish: SessionPo
 async function stepsWaitingToArchive(config: LocalConfig, publish: SessionPolicies): Promise<Record<RunMode, number>> {
   const waiting = async (mode: RunMode) => (publish[mode].policy === 'auto' ? SessionPublish.waitingSteps(config, mode) : 0);
   const [attended, unattended] = await Promise.all([waiting('attended'), waiting('unattended')]);
+
   return { attended, unattended };
 }
 
@@ -107,32 +116,40 @@ function nextSteps(
 ): Configured['next'] {
   const acts = (mode: RunMode) => publish[mode].policy === 'auto'
     || (scoring.state === 'ok' && scoring.policies[mode].policy === 'auto' && scoring.scorers.length > 0);
+
   const waits: Record<RunMode, boolean> = {
     attended: captured.attended.waitingToArchive > 0 || stepSessionsWaitingToArchive.attended > 0,
     unattended: captured.unattended.waitingToArchive > 0 || stepSessionsWaitingToArchive.unattended > 0 || (captured.unattended.waitingForDrain > 0 && acts('unattended')),
   };
+
   const modes = RUN_MODES.filter((mode) => waits[mode]);
+
   if (modes.length === 0 && pendingLabels > 0 && archive === 'teamai-reports') modes.push(runMode.mode);
   const inMode = (mode: RunMode) => (platform === 'win32' ? `$env:${RUN_MODE_ENV}='${mode}'; teamai score --drain` : `${RUN_MODE_ENV}=${mode} teamai score --drain`);
   // PowerShell keeps a variable a command sets for the rest of the session, so once one command sets the mode, each does.
   const setsEach = platform === 'win32' && modes.some((mode) => mode !== runMode.mode);
+
   return modes.map((mode) => ({ mode, command: mode === runMode.mode && !setsEach ? 'teamai score --drain' : inMode(mode) }));
 }
 
 /** What the panel shows for `config`, read with `env` as this machine's environment and `platform` as its OS, at `now`. */
 export async function readSessionSharing(config: LocalConfig, { env, platform, now }: { env: NodeJS.ProcessEnv; platform: NodeJS.Platform; now: string }): Promise<SessionSharing> {
   const unavailable = scoringUnavailable(config);
+
   const [team, scored] = await Promise.all([
     loadTeamConfig(config.repo.localPath),
     unavailable === undefined ? scopeScoring(config) : { ok: false as const, reason: unavailable },
   ]);
+
   const publish = SessionPolicy.publish(config, team);
+
   const [scorers, captured, stepSessionsWaitingToArchive, pendingLabels] = await Promise.all([
     scored.ok ? SessionWork.sessionScorers(config) : [],
     capturedHere(config, now, publish.policies),
     stepsWaitingToArchive(config, publish.policies),
     LabelStore.unpublished(config),
   ]);
+
   const read = {
     runMode: explainRunMode(env),
     archive: sessionArchiveRoot(config) ? 'teamai-reports' : 'none',
@@ -144,6 +161,7 @@ export async function readSessionSharing(config: LocalConfig, { env, platform, n
     stepSessionsWaitingToArchive,
     pendingLabels,
   } satisfies Omit<Configured, 'configured' | 'problems' | 'unreadTools' | 'next'>;
+
   return {
     configured: true,
     ...read,

@@ -39,15 +39,19 @@ export type BootstrapResult = 'bootstrapped' | 'already' | 'skip';
 export async function readSelfModeMarker(dir: string): Promise<{ repo?: string; provider?: string } | null> {
   const yamlPath = path.join(dir, '.teamai', 'teamai.yaml');
   const content = await readFileSafe(yamlPath);
+
   if (!content) return null;
+
   try {
     const raw = YAML.parse(content) as Partial<TeamaiConfig> | null;
+
     if (raw && raw.mode === 'self') {
       return { repo: raw.repo, provider: raw.provider };
     }
   } catch {
     // malformed yaml — not our concern here
   }
+
   return null;
 }
 
@@ -77,7 +81,9 @@ async function findPendingBootstrap(
 
   // Only self-mode projects auto-bootstrap.
   const marker = await readSelfModeMarker(businessRepoRoot);
+
   if (!marker) return 'skip';
+
   return { partitionHome, configPath, marker };
 }
 
@@ -99,8 +105,10 @@ async function planSelfBootstrap(
   // Derive provider/remote: prefer the business repo origin, fall back to the
   // repo recorded in teamai.yaml.
   const remoteUrl = (await getRemoteUrl(businessRepoRoot)) ?? marker.repo ?? '';
+
   if (!remoteUrl) {
     log.debug('[bootstrap] no remote/repo to derive provider from; skipping');
+
     return null;
   }
 
@@ -113,6 +121,7 @@ async function planSelfBootstrap(
   // interactive login that stores credentials (`gh auth login --web`, GitCode's
   // token prompt).
   let username = '';
+
   if (!dryRun) {
     // Non-interactive gate: only proceed if already authenticated. Never trigger
     // an interactive login from a hook — degrade to skip and let an explicit
@@ -122,6 +131,7 @@ async function planSelfBootstrap(
         log.warn('This is a teamai single-repo project, but you are not authenticated yet.');
         log.warn(`Run \`teamai init .\` (or authenticate with your git provider) to finish setup.`);
       }
+
       return null;
     }
 
@@ -129,22 +139,27 @@ async function planSelfBootstrap(
       username = await provider.authenticate();
     } catch {
       log.debug('[bootstrap] could not resolve username; skipping');
+
       return null;
     }
   }
 
   let repoInfo;
+
   try {
     repoInfo = provider.parseRepoInput(remoteUrl);
   } catch {
     log.debug('[bootstrap] could not parse remote; skipping');
+
     return null;
   }
 
   const { loadTeamConfig } = await import('./config.js');
   const teamConfig = await loadTeamConfig(localPath);
+
   if (!teamConfig) {
     log.debug('[bootstrap] teamai.yaml not loadable; skipping');
+
     return null;
   }
 
@@ -176,6 +191,7 @@ async function planSelfBootstrap(
   try {
     const { loadRolesManifest } = await import('./roles.js');
     const manifest = await loadRolesManifest(localPath);
+
     if (manifest.roles.length === 1) {
       localConfig.primaryRole = manifest.roles[0].id;
       localConfig.resourceProfileVersion = manifest.version;
@@ -187,6 +203,7 @@ async function planSelfBootstrap(
     // gets an unfiltered sync, which is the opposite of what the broken
     // manifest asked for.
     const { RolesManifestNotFoundError } = await import('./roles.js');
+
     if (!(error instanceof RolesManifestNotFoundError)) throw error;
   }
 
@@ -202,14 +219,17 @@ async function planSelfBootstrap(
 export async function previewSelfBootstrap(dir?: string): Promise<LocalConfig | null> {
   const businessRepoRoot = dir ?? process.cwd();
   const pending = await findPendingBootstrap(businessRepoRoot, true);
+
   if (typeof pending === 'string') return null;
   const plan = await planSelfBootstrap(businessRepoRoot, pending.partitionHome, pending.marker, true, true);
+
   if (!plan) return null;
   log.info(
     `[dry-run] Would bootstrap this single-repo project if you are authenticated with ${plan.providerName} ` +
       `(not checked in a dry run): look up your username, write its config and state to ` +
       `${pending.partitionHome}, seed tool dirs, inject hooks and register you as a member`,
   );
+
   return plan.localConfig;
 }
 
@@ -229,13 +249,16 @@ export async function bootstrapSelfRepo(
   const info = (msg: string) => { if (!silent) log.info(msg); };
 
   const pending = await findPendingBootstrap(businessRepoRoot, false);
+
   if (typeof pending === 'string') return pending;
   const { configPath } = pending;
 
   const lockPath = path.join(businessRepoRoot, '.teamai', BOOTSTRAP_LOCK_FILENAME);
   const locked = await acquireLock(lockPath);
+
   if (!locked) {
     log.debug('[bootstrap] another bootstrap is in progress; skipping');
+
     return 'skip';
   }
 
@@ -244,6 +267,7 @@ export async function bootstrapSelfRepo(
     if (await pathExists(configPath)) return 'already';
 
     const plan = await planSelfBootstrap(businessRepoRoot, pending.partitionHome, pending.marker, silent, false);
+
     if (!plan) return 'skip';
     const { localConfig, teamConfig, username } = plan;
     const localPath = localConfig.repo.localPath;
@@ -276,17 +300,21 @@ export async function bootstrapSelfRepo(
     // Inject hooks so session-start pull/report fire from now on.
     try {
       const { describeUnappliedTeamHooks, reconcileTeamHooksForConfig, reportCodexTrust, trustCodexForScope } = await import('./hooks.js');
+
       try {
         const reconciled = await reconcileTeamHooksForConfig(teamConfig, localConfig, {});
+
         if (!reconciled.ok) {
           // A session-start bootstrap is silent, so debug.log is the only trace.
           const message = describeUnappliedTeamHooks(reconciled);
+
           if (silent) log.persist(message);
           else log.warn(message);
         }
       } finally {
         // Git-hook installation can fail after the Codex hooks were written.
         const codexTrust = await trustCodexForScope(teamConfig, localConfig);
+
         if (!silent) reportCodexTrust(codexTrust, 'all');
         else if (codexTrust) log.debug(`[bootstrap] Codex trust: ${codexTrust.kind}`);
       }
@@ -302,16 +330,21 @@ export async function bootstrapSelfRepo(
         const memberDir = path.join(wt, 'members');
         await ensureDir(memberDir);
         const memberPath = path.join(memberDir, `${username}.yaml`);
+
         if (await pathExists(memberPath)) {
           return { files: [], message: `[teamai] Register member: ${username}` };
         }
+
         // Absorb the member's pre-switch file from the clone (inherited root):
         // its displayName/registeredAt/projects survive the re-registration.
         const inherited = await getMemberConfig(localConfig.repo.localPath, username);
+
         const config = inherited
           ? mergeMemberConfig(inherited, { username }).config
           : { username, displayName: username, registeredAt: new Date().toISOString() };
+
         await writeFile(memberPath, YAML.stringify(config));
+
         return { files: ['members/'], message: `[teamai] Register member: ${username}` };
       });
     } catch (e) {
@@ -319,9 +352,11 @@ export async function bootstrapSelfRepo(
     }
 
     info('teamai single-repo project initialized locally. Team skills/rules are now active.');
+
     return 'bootstrapped';
   } catch (e) {
     log.debug(`[bootstrap] failed (non-blocking): ${(e as Error).message}`);
+
     return 'skip';
   } finally {
     await releaseLock(lockPath);

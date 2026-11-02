@@ -30,6 +30,7 @@ const CLAUDE_ENV_KEYS = [
   'ANTHROPIC_CUSTOM_MODEL_OPTION_NAME',
   'CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY',
 ] as const;
+
 const CLAUDE_PROVIDER_KEYS = ['CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY'] as const;
 
 interface AgentState {
@@ -77,11 +78,15 @@ function manifestPath(): string {
 async function withManifestLock<T>(run: () => Promise<T>): Promise<T> {
   const file = `${manifestPath()}.lock`;
   let acquired = false;
+
   for (let attempt = 0; attempt < 100; attempt++) {
     if (await acquireLock(file)) { acquired = true; break; }
+
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
+
   if (!acquired) throw new Error('Another model operation is in progress; retry shortly');
+
   try { return await run(); }
   finally { await releaseLock(file); }
 }
@@ -97,10 +102,13 @@ type AgentRoots = { readonly claude: string; readonly codex: string };
  */
 async function agentRootsOf(localConfig: Pick<LocalConfig, 'toolRoots'> | undefined, dryRun: boolean | undefined): Promise<AgentRoots> {
   const toolRoots = localConfig ? localConfig.toolRoots : await resolveMemberToolRoots(undefined, { dryRun });
+
   const rootOf = (tool: 'claude' | 'codex'): string => {
     const { envVar, defaultRoot } = RELOCATABLE_TOOLS[tool];
+
     return process.env[envVar]?.trim() || recordedToolRootDir(tool, toolRoots) || path.join(getUserHome(), defaultRoot);
   };
+
   return { claude: rootOf('claude'), codex: rootOf('codex') };
 }
 
@@ -114,7 +122,9 @@ function codexSettingsPath(roots: AgentRoots): string {
 
 function openCodeSettingsPath(): string {
   const custom = process.env.OPENCODE_CONFIG?.trim();
+
   if (custom) return custom;
+
   return path.join(toolHome('opencode'), 'opencode.json');
 }
 
@@ -155,18 +165,26 @@ function agySettingsPath(): string {
 
 function agentSettingsPath(agent: ModelAgent, roots: AgentRoots): string {
   if (agent === 'claude') return claudeSettingsPath(roots);
+
   if (agent === 'codex') return codexSettingsPath(roots);
+
   return ownSettingsPath(agent);
 }
 
 /** The settings file of an agent no `toolRoots` entry moves. */
 function ownSettingsPath(agent: Exclude<ModelAgent, 'claude' | 'codex'>): string {
   if (agent === 'muse') return museSettingsPath();
+
   if (agent === 'agy') return agySettingsPath();
+
   if (agent === 'opencode') return openCodeSettingsPath();
+
   if (agent === 'pi') return piSettingsPath();
+
   if (agent === 'omp') return ompSettingsPath();
+
   if (agent === 'codebuddy') return path.join(toolHome('codebuddy'), 'models.json');
+
   return path.join(getUserHome(), `.${agent}`, 'models.json');
 }
 
@@ -206,19 +224,25 @@ function validAgentState(state: unknown): state is AgentState {
 async function loadManifest(): Promise<ModelSwitchManifest | null> {
   const file = manifestPath();
   const raw = await readOptionalFile(file);
+
   if (raw === null) return null;
   let parsed: unknown;
+
   try { parsed = JSON.parse(raw); } catch {
     throw new Error(`Cannot parse model ownership manifest: ${file}`);
   }
+
   if (!isRecord(parsed) || parsed.version !== 1 || !isRecord(parsed.agents)) {
     throw new Error(`Invalid model ownership manifest: ${file}`);
   }
+
   for (const [agent, state] of Object.entries(parsed.agents)) {
     if (!(ALL_MODEL_AGENTS as string[]).includes(agent) || !validAgentState(state)) {
       throw new Error(`Invalid model ownership entry for ${agent}: ${file}`);
     }
+
     const pending = state.pending;
+
     if (pending && (!isRecord(pending) || !['switch', 'restore'].includes(pending.kind as string)
       || !Object.prototype.hasOwnProperty.call(pending, 'before')
       || (pending.kind === 'switch' && !Object.prototype.hasOwnProperty.call(pending, 'prior'))
@@ -227,11 +251,13 @@ async function loadManifest(): Promise<ModelSwitchManifest | null> {
       throw new Error(`Invalid pending model ownership entry for ${agent}: ${file}`);
     }
   }
+
   if (parsed.legacyValueDeclines !== undefined
     && (!Array.isArray(parsed.legacyValueDeclines)
       || parsed.legacyValueDeclines.some((key) => typeof key !== 'string'))) {
     throw new Error(`Invalid legacy value declines: ${file}`);
   }
+
   return parsed as unknown as ModelSwitchManifest;
 }
 
@@ -242,6 +268,7 @@ async function saveManifest(manifest: ModelSwitchManifest): Promise<void> {
 /** The legacy team values identities this machine declined to adopt, keyed `${target}::<slug>-<digest>`. */
 export async function refusedLegacyValueKeys(): Promise<ReadonlySet<string>> {
   const manifest = await loadManifest();
+
   return new Set(manifest?.legacyValueDeclines ?? []);
 }
 
@@ -259,14 +286,17 @@ export async function refuseLegacyValue(key: string): Promise<void> {
 function hash(value: unknown): string {
   function canonical(item: unknown): unknown {
     if (Array.isArray(item)) return item.map(canonical);
+
     if (isRecord(item)) {
       return Object.fromEntries(Object.entries(item)
         .filter(([, entry]) => entry !== undefined)
         .sort(([left], [right]) => left.localeCompare(right))
         .map(([key, entry]) => [key, canonical(entry)]));
     }
+
     return item;
   }
+
   return crypto.createHash('sha256').update(JSON.stringify(canonical(value)) ?? 'undefined').digest('hex');
 }
 
@@ -287,11 +317,14 @@ function sameManaged(agent: ModelAgent, a: unknown, b: unknown): boolean {
   if (agent === 'pi' || agent === 'omp') {
     const { id: _left, ...left } = (a ?? {}) as Record<string, unknown>;
     const { id: _right, ...right } = (b ?? {}) as Record<string, unknown>;
+
     return equal(left, right);
   }
+
   if (agent !== 'claude') return equal(a, b);
   const { model: _left, ...left } = a as ClaudeSnapshot;
   const { model: _right, ...right } = b as ClaudeSnapshot;
+
   return equal(left, right);
 }
 
@@ -313,17 +346,22 @@ async function writeAgentJson(file: string, value: unknown): Promise<void> {
 /** Read a YAML mapping, the shape OMP's `models.yml` uses. */
 async function yamlObject(file: string): Promise<Record<string, unknown>> {
   const raw = await readOptionalFile(file);
+
   if (raw === null || raw.trim() === '') return {};
   let parsed: unknown;
+
   try {
     parsed = YAML.parse(raw);
   } catch (error) {
     throw new Error(`Cannot parse ${file}: ${(error as Error).message}`, { cause: error });
   }
+
   if (parsed === null || parsed === undefined) return {};
+
   if (!isRecord(parsed)) {
     throw new Error(`Cannot update ${file}: the root must be a YAML mapping`);
   }
+
   return parsed;
 }
 
@@ -340,16 +378,20 @@ async function writeAgentYaml(file: string, doc: unknown): Promise<void> {
 
 async function jsonObject(file: string): Promise<Record<string, unknown>> {
   const raw = await readOptionalFile(file);
+
   if (raw === null || raw.trim() === '') return {};
   let parsed: unknown;
+
   try {
     parsed = JSON.parse(raw);
   } catch (error) {
     throw new Error(`Cannot parse ${file}: ${(error as Error).message}`, { cause: error });
   }
+
   if (!isRecord(parsed)) {
     throw new Error(`Cannot update ${file}: the root must be a JSON object`);
   }
+
   return parsed;
 }
 
@@ -359,12 +401,16 @@ async function installed(agent: ModelAgent, roots: AgentRoots): Promise<boolean>
 
 function supportedRoute(agent: ModelAgent, profile: ResolvedModelProfile): boolean {
   if (agent === 'claude') return !!profile.routes.anthropic;
+
   if (agent === 'codex' || agent === 'muse') return !!profile.routes['openai-responses'];
+
   if (agent === 'agy') return !!profile.routes.gemini;
+
   // OpenCode, Pi and OMP name an api per model, so any serves an Anthropic or OpenAI protocol.
   if (agent === 'opencode' || agent === 'pi' || agent === 'omp') {
     return !!(profile.routes.anthropic || profile.routes['openai-responses'] || profile.routes['openai-chat-completions']);
   }
+
   return !!profile.routes['openai-chat-completions'];
 }
 
@@ -424,22 +470,28 @@ function piProvider(profile: ResolvedModelProfile): PiProvider | null {
   const models: Array<Record<string, unknown>> = [];
   const of = new Map<string, { api: string; baseUrl: string }>();
   let fallback: { api: string; baseUrl: string } | undefined;
+
   for (const [protocol, api] of PI_APIS) {
     const route = profile.routes[protocol];
+
     if (!route) continue;
     fallback ??= { api, baseUrl: route.base_url };
+
     for (const model of route.models) {
       if (of.has(model)) continue;
       of.set(model, { api, baseUrl: route.base_url });
     }
   }
+
   if (fallback === undefined) return null;
+
   for (const [model, route] of of) {
     // Only a model that departs from the provider default repeats the fields.
     models.push(route.api === fallback.api && route.baseUrl === fallback.baseUrl
       ? { id: model }
       : { id: model, api: route.api, baseUrl: route.baseUrl });
   }
+
   return { api: fallback.api, baseUrl: fallback.baseUrl, models };
 }
 
@@ -453,8 +505,10 @@ type PiSnapshot = Record<string, unknown> | null;
  */
 function piSnapshot(doc: Record<string, unknown>, reference?: unknown): PiSnapshot {
   const id = piKeyOf(reference);
+
   if (id === null) return null;
   const provider = (isRecord(doc.providers) ? doc.providers : {})[id];
+
   return isRecord(provider) ? provider : null;
 }
 
@@ -467,6 +521,7 @@ function piSnapshot(doc: Record<string, unknown>, reference?: unknown): PiSnapsh
  */
 function piKeyOf(reference: unknown): string | null {
   const id = isRecord(reference) ? reference.id : undefined;
+
   return typeof id === 'string' ? id : null;
 }
 
@@ -474,9 +529,11 @@ function piKeyOf(reference: unknown): string | null {
 async function piDoc(agent: 'pi' | 'omp'): Promise<Record<string, unknown>> {
   const file = ownSettingsPath(agent);
   const doc = agent === 'omp' ? await yamlObject(file) : await jsonObject(file);
+
   if (doc.providers !== undefined && !isRecord(doc.providers)) {
     throw new Error(`Cannot update ${file}: providers must be an object`);
   }
+
   return doc;
 }
 
@@ -494,7 +551,9 @@ async function writePi(agent: 'pi' | 'omp', snapshot: PiSnapshot, previousManage
   const providers = { ...(isRecord(doc.providers) ? doc.providers : {}) };
   const managed = piKeyOf(previousManaged);
   const id = piKeyOf(snapshot) ?? managed;
+
   if (id === null) return;
+
   if (snapshot === null) delete providers[id];
   else {
     // `id` keys the entry for TeamAI and is not part of the provider schema
@@ -502,9 +561,12 @@ async function writePi(agent: 'pi' | 'omp', snapshot: PiSnapshot, previousManage
     const { id: _key, ...provider } = snapshot;
     providers[id] = provider;
   }
+
   if (managed !== null && managed !== id) delete providers[managed];
+
   if (Object.keys(providers).length === 0) delete doc.providers;
   else doc.providers = providers;
+
   if (agent === 'omp') await writeAgentYaml(file, doc);
   else await writeAgentJson(file, doc);
 }
@@ -519,6 +581,7 @@ function claudeEnv(settings: Record<string, unknown>): Record<string, unknown> {
 
 function claudeSnapshot(settings: Record<string, unknown>): ClaudeSnapshot {
   const env = claudeEnv(settings);
+
   return {
     ...Object.fromEntries(CLAUDE_ENV_KEYS.map((key) => [key, env[key] ?? null])),
     model: settings.model ?? null,
@@ -529,20 +592,26 @@ function claudeSnapshot(settings: Record<string, unknown>): ClaudeSnapshot {
 async function writeClaude(snapshot: ClaudeSnapshot, roots: AgentRoots): Promise<void> {
   const file = claudeSettingsPath(roots);
   const settings = await jsonObject(file);
+
   if (settings.env !== undefined && !isRecord(settings.env)) {
     throw new Error(`Cannot update ${file}: env must be an object`);
   }
+
   const env = { ...claudeEnv(settings) };
+
   for (const key of CLAUDE_ENV_KEYS) {
     if (snapshot[key] === null || snapshot[key] === undefined) delete env[key];
     else env[key] = snapshot[key];
   }
+
   if (Object.keys(env).length === 0) delete settings.env;
   else settings.env = env;
+
   for (const key of ['model', 'modelPicker'] as const) {
     if (snapshot[key] === null || snapshot[key] === undefined) delete settings[key];
     else settings[key] = snapshot[key];
   }
+
   await writeAgentJson(file, settings);
 }
 
@@ -564,8 +633,11 @@ function claudeProviderFlagEnabled(value: unknown): boolean {
 function claudeShellOverrides(desired: ClaudeSnapshot): string[] {
   return Object.keys(process.env).filter((key) => {
     const value = process.env[key];
+
     if (value === '') return false;
+
     if ((CLAUDE_PROVIDER_KEYS as readonly string[]).includes(key)) return claudeProviderFlagEnabled(value);
+
     return (CLAUDE_ENV_KEYS as readonly string[]).includes(key) && value !== desired[key as (typeof CLAUDE_ENV_KEYS)[number]];
   }).sort();
 }
@@ -590,11 +662,13 @@ function parseCodex(source: string): Record<string, unknown> {
 
 function codexSnapshot(source: string): CodexSnapshot {
   const parsed = parseCodex(source);
+
   for (const key of ['model', 'model_provider'] as const) {
     if (parsed[key] !== undefined && typeof parsed[key] !== 'string') {
       throw new Error(`Cannot update Codex config.toml: ${key} must be a string`);
     }
   }
+
   return {
     model: parsed.model as string | undefined,
     model_provider: parsed.model_provider as string | undefined,
@@ -607,6 +681,7 @@ function setTopLevelString(source: string, key: string, value: string | undefine
   const firstTable = source.search(/^\s*\[/m);
   const top = firstTable < 0 ? source : source.slice(0, firstTable);
   const tables = firstTable < 0 ? '' : source.slice(firstTable);
+
   if (re.test(top)) {
     const updated = value === undefined
       ? top.replace(new RegExp(`${re.source}(?:\\r?\\n|$)`, 'm'), '')
@@ -614,30 +689,44 @@ function setTopLevelString(source: string, key: string, value: string | undefine
         let quote: '"' | "'" | null = null;
         let escaped = false;
         let comment = '';
+
         for (let i = 0; i < oldValue.length; i++) {
           const char = oldValue[i];
+
           if (escaped) { escaped = false; continue; }
+
           if (quote === '"' && char === '\\') { escaped = true; continue; }
+
           if (quote) { if (char === quote) quote = null; continue; }
+
           if (char === '"' || char === "'") { quote = char; continue; }
+
           if (char === '#') { comment = oldValue.slice(i).trimEnd(); break; }
         }
+
         return `${prefix}${JSON.stringify(value)}${comment ? ` ${comment}` : ''}`;
       });
+
     return updated + tables;
   }
+
   if (value === undefined) return source;
   const line = `${key} = ${JSON.stringify(value)}\n`;
+
   if (firstTable < 0) return `${source.trimEnd()}${source.trim() ? '\n' : ''}${line}`;
+
   return `${top.trimEnd()}\n${line}\n${tables}`;
 }
 
 function setCodexProviderBlock(source: string, block: string | undefined): string {
   if (CODEX_PROVIDER_BLOCK_RE.test(source)) {
     const updated = source.replace(CODEX_PROVIDER_BLOCK_RE, block ? `${block}\n\n` : '');
+
     return block === undefined ? updated.replace(/\n{2,}$/, '\n') : updated;
   }
+
   if (!block) return source;
+
   return `${source.trimEnd()}${source.trim() ? '\n\n' : ''}${block}\n`;
 }
 
@@ -654,18 +743,23 @@ async function writeCodex(snapshot: CodexSnapshot, roots: AgentRoots): Promise<v
   // one that differs from the intended settings.
   const unsafe = new Error(`Cannot safely update ${file}; set model, model_provider, and [model_providers.teamai] manually`);
   let parsed: Record<string, unknown>;
+
   try {
     parsed = parseToml(withoutTomlBom(source)) as Record<string, unknown>;
   } catch {
     throw unsafe;
   }
+
   const wantedProvider = snapshot.providerBlock
     ? (parseToml(snapshot.providerBlock) as { model_providers?: Record<string, unknown> }).model_providers?.teamai
     : undefined;
+
   const providers = isRecord(parsed.model_providers) ? parsed.model_providers : {};
+
   if (parsed.model !== snapshot.model || parsed.model_provider !== snapshot.model_provider || !equal(providers.teamai, wantedProvider)) {
     throw unsafe;
   }
+
   await writeFileAtomic(await writableTarget(file), bom + source, { mode: 0o600 });
 }
 
@@ -698,11 +792,14 @@ const AGY_KEYS: KeyFile = {
 
 function withoutKeyBlock(content: string, keys: KeyFile): string {
   const start = content.indexOf(keys.start);
+
   if (start === -1) return content;
   const end = content.indexOf(keys.end, start);
+
   if (end === -1) return content;
   const head = content.slice(0, start).replace(/\n$/, '');
   const tail = content.slice(end + keys.end.length).replace(/^\n/, '');
+
   return head && tail ? `${head}\n${tail}` : head ? `${head}\n` : tail;
 }
 
@@ -715,20 +812,26 @@ async function writeKeyExport(keys: KeyFile, keyExport: string | null, writeSett
   const keyFile = keys.path();
   // The file the block goes in for zsh may be under ZDOTDIR.
   const profiles = [...new Set([...SHELL_PROFILE_CANDIDATE_NAMES.map((name) => path.join(getUserHome(), name)), await detectShellProfile()])];
+
   if (keyExport === null) {
     await writeSettings();
     await fs.promises.rm(keyFile, { force: true });
+
     for (const profile of profiles) {
       const content = await readOptionalFile(profile);
+
       if (content !== null && content.includes(keys.start)) {
         await writeFileAtomic(profile, withoutKeyBlock(content, keys));
       }
     }
+
     return;
   }
+
   await writeFileAtomic(keyFile, keyExport, { mode: 0o600 });
   await writeSettings();
   const sourced = await Promise.all(profiles.map(async (profile) => (await readOptionalFile(profile))?.includes(keys.start)));
+
   if (sourced.some(Boolean)) return;
   const profile = await detectShellProfile();
   const content = (await readOptionalFile(profile)) ?? '';
@@ -746,6 +849,7 @@ interface MuseSnapshot {
 
 async function museSnapshot(): Promise<MuseSnapshot> {
   const settings = await jsonObject(museSettingsPath());
+
   return {
     model: settings.model,
     endpoint_transport: settings.endpoint_transport,
@@ -757,10 +861,12 @@ async function writeMuse(snapshot: MuseSnapshot): Promise<void> {
   const file = museSettingsPath();
   // Muse refuses a settings.json without schema_version.
   const settings: Record<string, unknown> = { schema_version: 1, ...await jsonObject(file) };
+
   for (const key of ['model', 'endpoint_transport'] as const) {
     if (snapshot[key] === undefined) delete settings[key];
     else settings[key] = snapshot[key];
   }
+
   await writeKeyExport(MUSE_KEYS, snapshot.keyExport, () => writeAgentJson(file, settings));
 }
 
@@ -778,6 +884,7 @@ interface AgySnapshot {
 
 async function agySnapshot(): Promise<AgySnapshot> {
   const settings = await jsonObject(agySettingsPath());
+
   return { modelProvider: settings.modelProvider, keyExport: await readOptionalFile(AGY_KEYS.path()) };
 }
 
@@ -786,6 +893,7 @@ async function writeAgy(snapshot: unknown): Promise<void> {
   const recorded = isRecord(snapshot) ? snapshot : {};
   const file = agySettingsPath();
   const settings = await jsonObject(file);
+
   if (recorded.modelProvider === undefined) delete settings.modelProvider;
   else settings.modelProvider = recorded.modelProvider;
   const keyExport = typeof recorded.keyExport === 'string' ? recorded.keyExport : null;
@@ -799,6 +907,7 @@ const OPENCODE_PROVIDERS = [
   ['openai-chat-completions', 'teamai-chat', '@ai-sdk/openai-compatible'],
   ['openai-responses', 'teamai-responses', '@ai-sdk/openai'],
 ] as const;
+
 const OPENCODE_PROVIDER_IDS: string[] = OPENCODE_PROVIDERS.map(([, id]) => id);
 
 interface OpenCodeSnapshot {
@@ -812,6 +921,7 @@ function openCodeProviders(doc: Record<string, unknown>): Record<string, unknown
 
 function openCodeSnapshot(doc: Record<string, unknown>): OpenCodeSnapshot {
   const providers = openCodeProviders(doc);
+
   return {
     model: doc.model ?? null,
     providers: Object.fromEntries(OPENCODE_PROVIDER_IDS.map((id) => [id, providers[id] ?? null])),
@@ -821,16 +931,21 @@ function openCodeSnapshot(doc: Record<string, unknown>): OpenCodeSnapshot {
 async function writeOpenCode(snapshot: OpenCodeSnapshot): Promise<void> {
   const file = openCodeSettingsPath();
   const doc = await jsonObject(file);
+
   if (doc.provider !== undefined && !isRecord(doc.provider)) {
     throw new Error(`Cannot update ${file}: provider must be an object`);
   }
+
   const providers = { ...openCodeProviders(doc) };
+
   if (snapshot.model === null || snapshot.model === undefined) delete doc.model;
   else doc.model = snapshot.model;
+
   for (const [id, value] of Object.entries(snapshot.providers)) {
     if (value === null) delete providers[id];
     else providers[id] = value;
   }
+
   if (Object.keys(providers).length === 0) delete doc.provider;
   else doc.provider = providers;
   await writeAgentJson(file, doc);
@@ -853,19 +968,28 @@ async function buddyDoc(agent: BuddyAgent): Promise<{
 }> {
   const file = ownSettingsPath(agent);
   const raw = await readOptionalFile(file);
+
   if (raw === null || raw.trim() === '') return { file, doc: {}, models: [] };
   let parsed: unknown;
+
   try { parsed = JSON.parse(raw); } catch (error) {
     throw new Error(`Cannot parse ${file}: ${(error as Error).message}`, { cause: error });
   }
+
   if (Array.isArray(parsed)) return { file, doc: parsed, models: parsed };
+
   if (!isRecord(parsed)) throw new Error(`Cannot update ${file}: root must be an object or array`);
+
   if (parsed.availableModels !== undefined && (!Array.isArray(parsed.availableModels) || !parsed.availableModels.every((id) => typeof id === 'string'))) {
     throw new Error(`Cannot update ${file}: availableModels must be an array of model IDs`);
   }
+
   const availableModels = parsed.availableModels as string[] | undefined;
+
   if (parsed.models === undefined) return { file, doc: parsed, models: [], availableModels };
+
   if (!Array.isArray(parsed.models)) throw new Error(`Cannot update ${file}: models must be an array`);
+
   return { file, doc: parsed, models: parsed.models, availableModels };
 }
 
@@ -880,15 +1004,18 @@ function buddyAllowed(availableModels: string[] | undefined, ids: string[]): Rec
 function reconcileBuddyAllowed(availableModels: string[] | undefined, allowed: Record<string, boolean | undefined> | undefined): string[] | undefined {
   if (!availableModels || !allowed) return availableModels;
   const next = availableModels.filter((id) => allowed[id] !== false);
+
   for (const [id, enabled] of Object.entries(allowed)) {
     if (enabled && !next.includes(id)) next.push(id);
   }
+
   return next;
 }
 
 async function localAgentOwnsBuddyEntry(agent: BuddyAgent, id: string, entry: unknown): Promise<boolean> {
   const manifest = await jsonObject(path.join(getUserHome(), '.teamai', 'local-agent', 'model-manifest.json'));
   const owned = manifest[agent];
+
   return isRecord(owned) && owned[id] === entryHash(entry);
 }
 
@@ -896,7 +1023,9 @@ async function localAgentOwnsBuddyEntry(agent: BuddyAgent, id: string, entry: un
 // decide ownership.
 function buddyOwnedEntry(entry: unknown, written: unknown): unknown {
   if (entry === undefined) return null;
+
   if (!isRecord(entry) || !isRecord(written)) return entry;
+
   return Object.fromEntries(Object.keys(written).map((key) => [key, entry[key]]));
 }
 
@@ -916,17 +1045,21 @@ async function replaceBuddy(
   const previousEntries = previousManaged?.entries ?? {};
   const managedIds = new Set([...Object.keys(previousEntries), ...Object.keys(desired.entries)]);
   const next = models.filter((entry) => !(isRecord(entry) && typeof entry.id === 'string' && managedIds.has(entry.id)));
+
   for (const [id, entry] of Object.entries(desired.entries)) {
     if (entry === null) continue;
     const current = buddyEntry(models, id);
     const prior = previousEntries[id];
+
     if (keepAppMetadata && isRecord(current) && isRecord(prior) && isRecord(entry)) {
       const extras = Object.fromEntries(Object.entries(current).filter(([key]) => !(key in prior)));
       next.push({ ...extras, ...entry });
     } else next.push(entry);
   }
+
   next.push(...Object.values(released?.entries ?? {}).filter((entry) => entry !== null));
   const allowed = desired.allowed || released?.allowed ? { ...released?.allowed, ...desired.allowed } : undefined;
+
   if (Array.isArray(doc)) await writeAgentJson(file, next);
   else await writeAgentJson(file, { ...doc, models: next, ...(allowed ? { availableModels: reconcileBuddyAllowed(availableModels, allowed) } : {}) });
 }
@@ -939,14 +1072,20 @@ async function replaceBuddy(
  */
 async function currentSnapshot(agent: ModelAgent, roots: AgentRoots, reference?: unknown): Promise<unknown> {
   if (agent === 'claude') return claudeSnapshot(await jsonObject(claudeSettingsPath(roots)));
+
   if (agent === 'codex') return codexSnapshot((await readOptionalFile(codexSettingsPath(roots))) ?? '');
+
   if (agent === 'opencode') return openCodeSnapshot(await jsonObject(openCodeSettingsPath()));
+
   if (agent === 'muse') return museSnapshot();
+
   if (agent === 'agy') return agySnapshot();
+
   if (agent === 'pi' || agent === 'omp') return piSnapshot(await piDoc(agent), reference);
   const written = reference as BuddySnapshot | undefined;
   const { models, availableModels } = await buddyDoc(agent);
   const entries = written?.entries ?? {};
+
   return {
     entries: Object.fromEntries(Object.entries(entries).map(([id, entry]) => [id, buddyOwnedEntry(buddyEntry(models, id), entry)])),
     ...(written?.allowed ? { allowed: buddyAllowed(availableModels, Object.keys(written.allowed)) } : {}),
@@ -962,22 +1101,30 @@ async function writeSnapshot(
   released?: BuddySnapshot,
 ): Promise<void> {
   if (agent === 'claude') return writeClaude(snapshot as ClaudeSnapshot, roots);
+
   if (agent === 'codex') return writeCodex(snapshot as CodexSnapshot, roots);
+
   if (agent === 'opencode') return writeOpenCode(snapshot as OpenCodeSnapshot);
+
   if (agent === 'muse') return writeMuse(snapshot as MuseSnapshot);
+
   if (agent === 'agy') return writeAgy(snapshot);
+
   if (agent === 'pi' || agent === 'omp') return writePi(agent, snapshot as PiSnapshot, previousManaged);
+
   return replaceBuddy(agent, previousManaged as BuddySnapshot | undefined, snapshot as BuddySnapshot, keepAppMetadata, released);
 }
 
 function desiredSnapshot(agent: ModelAgent, profile: ResolvedModelProfile): unknown {
   const envRef = profile.api_key_env;
+
   if (agent === 'claude') {
     const route = profile.routes.anthropic!;
     const models = route.models;
     // Claude's own background work and subagents ask for opus/sonnet/haiku.
     // Point each family at a matching gateway model, else the default.
     const family = (name: string) => models.find((model) => model.toLowerCase().includes(name)) ?? models[0];
+
     return {
       ANTHROPIC_BASE_URL: route.base_url,
       ANTHROPIC_AUTH_TOKEN: profile.api_key_value ?? null,
@@ -994,8 +1141,10 @@ function desiredSnapshot(agent: ModelAgent, profile: ResolvedModelProfile): unkn
       modelPicker: { options: models.map((model) => ({ model })), replaceBuiltInOptions: true },
     } satisfies ClaudeSnapshot;
   }
+
   if (agent === 'codex') {
     const route = profile.routes['openai-responses']!;
+
     return {
       model: route.models[0],
       model_provider: 'teamai',
@@ -1010,8 +1159,10 @@ function desiredSnapshot(agent: ModelAgent, profile: ResolvedModelProfile): unkn
       ].join('\n'),
     } satisfies CodexSnapshot;
   }
+
   if (agent === 'muse') {
     const route = profile.routes['openai-responses']!;
+
     return {
       model: profile.model && route.models.includes(profile.model) ? profile.model : route.models[0],
       // Muse sends its bearer to a base_url other than Meta's only when
@@ -1020,23 +1171,30 @@ function desiredSnapshot(agent: ModelAgent, profile: ResolvedModelProfile): unkn
       keyExport: `export META_API_KEY=${envRef ? `"\${${envRef}}"` : shellQuoteValue(profile.api_key_value ?? '')}\n`,
     } satisfies MuseSnapshot;
   }
+
   if (agent === 'agy') {
     const route = profile.routes.gemini;
+
     if (!route) throw new Error(`Profile ${profile.ref} serves no Gemini route for agy`);
+
     return {
       modelProvider: 'gemini',
       keyExport: agyKeyFunction(envRef ? { envRef } : { value: profile.api_key_value ?? '' }, route.base_url),
     } satisfies AgySnapshot;
   }
+
   if (agent === 'opencode') {
     const providers: Record<string, unknown> = Object.fromEntries(OPENCODE_PROVIDER_IDS.map((id) => [id, null]));
     const providerOf = new Map<string, string>();
+
     // A model served over several protocols is registered once, preferring
     // Chat Completions, then Responses, then Anthropic.
     for (const protocol of ['openai-chat-completions', 'openai-responses', 'anthropic'] as const) {
       const route = profile.routes[protocol];
+
       if (!route) continue;
       const [, id, npm] = OPENCODE_PROVIDERS.find(([candidate]) => candidate === protocol)!;
+
       for (const model of route.models) {
         if (providerOf.has(model)) continue;
         providerOf.set(model, id);
@@ -1049,17 +1207,22 @@ function desiredSnapshot(agent: ModelAgent, profile: ResolvedModelProfile): unkn
         };
       }
     }
+
     // A model the profile serves only over Gemini has no OpenCode provider.
     const reachable = profile.profile.model_groups.flatMap((group) => group.models).filter((model) => providerOf.has(model));
     const defaultModel = profile.model ?? reachable[0];
     const provider = defaultModel === undefined ? undefined : providerOf.get(defaultModel);
+
     if (defaultModel === undefined || provider === undefined) {
       throw new Error(`Profile ${profile.ref} serves ${defaultModel ?? 'no model'} only over Gemini, which OpenCode does not speak. Choose one of: ${reachable.join(', ')}.`);
     }
+
     return { model: `${provider}/${defaultModel}`, providers } satisfies OpenCodeSnapshot;
   }
+
   if (agent === 'pi' || agent === 'omp') {
     const provider = piProvider(profile)!;
+
     return {
       // The provider key, read back by currentSnapshot and writePi, which have
       // the snapshot but not the profile.
@@ -1076,7 +1239,9 @@ function desiredSnapshot(agent: ModelAgent, profile: ResolvedModelProfile): unkn
       models: provider.models,
     } satisfies Record<string, unknown>;
   }
+
   const route = profile.routes['openai-chat-completions']!;
+
   return {
     entries: Object.fromEntries(route.models.map((model) => [model, {
       id: model,
@@ -1094,6 +1259,7 @@ async function firstSnapshot(agent: ModelAgent, roots: AgentRoots, desired: unkn
   if (agent !== 'codebuddy' && agent !== 'workbuddy') return currentSnapshot(agent, roots);
   const { models } = await buddyDoc(agent);
   const ids = Object.keys((desired as BuddySnapshot).entries);
+
   return { entries: Object.fromEntries(ids.map((id) => [id, buddyEntry(models, id) ?? null])) } satisfies BuddySnapshot;
 }
 
@@ -1103,9 +1269,12 @@ async function firstSnapshot(agent: ModelAgent, roots: AgentRoots, desired: unkn
 async function recoverPending(manifest: ModelSwitchManifest, agent: ModelAgent, roots: AgentRoots): Promise<boolean> {
   const state = manifest.agents[agent];
   const pending = state?.pending;
+
   if (!state || !pending) return true;
+
   if (!sameAgentSettingsPath(agent, state, roots)) return false;
   const after = await currentSnapshot(agent, roots, state.lastWritten);
+
   if (pending.kind === 'switch') {
     if (sameManaged(agent, after, state.lastWritten)) {
       delete state.pending;
@@ -1119,6 +1288,7 @@ async function recoverPending(manifest: ModelSwitchManifest, agent: ModelAgent, 
     delete manifest.agents[agent];
   } else return false;
   await saveManifest(manifest);
+
   return true;
 }
 
@@ -1126,38 +1296,48 @@ async function firstSwitchCollision(agent: ModelAgent, roots: AgentRoots, profil
   if (agent === 'codex') {
     const source = (await readOptionalFile(codexSettingsPath(roots))) ?? '';
     const providers = parseCodex(source).model_providers;
+
     const taken = providers !== undefined && (!isRecord(providers)
       || Object.prototype.hasOwnProperty.call(providers, 'teamai')
       // An inline `model_providers = {...}` table cannot be extended.
       || /^\s*(?:model_providers|"model_providers"|'model_providers')\s*=\s*\{/m.test(source));
+
     return taken ? 'codex already has a user-owned provider named teamai' : undefined;
   }
+
   if (agent === 'opencode') {
     const providers = openCodeProviders(await jsonObject(openCodeSettingsPath()));
     const taken = OPENCODE_PROVIDER_IDS.find((id) => providers[id] !== undefined);
+
     return taken ? `opencode already has a user-owned provider named ${taken}` : undefined;
   }
+
   if (agent === 'pi' || agent === 'omp') {
     // The provider key is the profile ref, so a member who already has a
     // provider under that ref is refused rather than silently overwritten.
     const id = piProviderKey(profile);
     const doc = await piDoc(agent);
     const providers = isRecord(doc.providers) ? doc.providers : {};
+
     return providers[id] !== undefined ? `${agent} already has a user-owned provider named ${id}` : undefined;
   }
+
   return undefined;
 }
 
 async function buddyCollision(agent: BuddyAgent, desired: BuddySnapshot, state: AgentState | undefined): Promise<string | undefined> {
   const managedIds = new Set(Object.keys((state?.lastWritten as BuddySnapshot | undefined)?.entries ?? {}));
   const { models } = await buddyDoc(agent);
+
   for (const id of Object.keys(desired.entries)) {
     if (managedIds.has(id)) continue;
     const existing = buddyEntry(models, id);
+
     if (existing !== undefined && !await localAgentOwnsBuddyEntry(agent, id, existing)) {
       return `${agent} already has a user-owned model named ${id}`;
     }
   }
+
   return undefined;
 }
 
@@ -1182,6 +1362,7 @@ export async function switchModelProfile(
   options: SwitchOptions = {},
 ): Promise<ModelSwitchResult[]> {
   if (options.dryRun) return switchModelProfileUnlocked(profile, agents, options);
+
   return withManifestLock(() => switchModelProfileUnlocked(profile, agents, options));
 }
 
@@ -1193,6 +1374,7 @@ async function switchModelProfileUnlocked(
   const roots = await agentRootsOf(options.localConfig, options.dryRun);
   const manifest = (await loadManifest()) ?? { version: 1, agents: {} };
   const results: ModelSwitchResult[] = [];
+
   const metadata: Pick<AgentState, 'profile' | 'team' | 'model'> = {
     profile: profile.ref,
     ...(profile.team ? { team: profile.team } : {}),
@@ -1205,94 +1387,120 @@ async function switchModelProfileUnlocked(
         results.push({ agent, status: 'skipped', message: `${agent} has an interrupted model update; run without --dry-run to recover it` });
         continue;
       }
+
       if (!options.dryRun && !await recoverPending(manifest, agent, roots)) {
         results.push({ agent, status: 'skipped', message: `${agent} model settings changed during an interrupted TeamAI update; leaving them untouched` });
         continue;
       }
+
       const expected = options.onlyIfActive;
       const active = manifest.agents[agent];
+
       const teamMatches = active?.team === expected?.team
         || (expected?.team !== undefined && options.localConfig !== undefined && sameTeamIdentity(active?.team, options.localConfig));
+
       if (expected && (active?.profile !== expected.profile || !teamMatches || active.model !== expected.model)) {
         results.push({ agent, status: 'unchanged', message: `${agent} no longer uses ${expected.profile}` });
         continue;
       }
+
       if (!supportedRoute(agent, profile)) {
         results.push({ agent, status: 'unsupported', message: `Profile ${profile.ref} has no protocol ${agent} can use` });
         continue;
       }
+
       if (!await installed(agent, roots)) {
         results.push({ agent, status: 'not-installed', message: `${agent} is not installed` });
         continue;
       }
+
       if (agent === 'claude') {
         const settingsEnv = claudeEnv(await jsonObject(claudeSettingsPath(roots)));
         const providerFlags = CLAUDE_PROVIDER_KEYS.filter((key) => claudeProviderFlagEnabled(settingsEnv[key]));
+
         if (providerFlags.length > 0) {
           results.push({ agent, status: 'skipped', message: `claude settings.json enables ${providerFlags.join(', ')}; disable it before switching` });
           continue;
         }
       }
+
       const state = manifest.agents[agent];
+
       if (state && !sameAgentSettingsPath(agent, state, roots)) {
         results.push({ agent, status: 'skipped', message: movedSettingsMessage(agent, state, roots) });
         continue;
       }
+
       const desired = desiredSnapshot(agent, profile);
       let warning: string | undefined;
+
       if (agent === 'claude') {
         const overrides = claudeShellOverrides(desired as ClaudeSnapshot);
+
         if (overrides.length > 0) {
           warning = `This shell sets ${overrides.join(', ')}, which override settings.json for Claude sessions started from it`;
         }
       }
+
       if (agent === 'muse') {
         const { base_url: baseUrl } = (desired as MuseSnapshot).endpoint_transport as { base_url: string };
         warning = `Shells started before this switch lack the profile's META_API_KEY: open a new shell before running muse, or Muse Code sends your saved Meta credential to ${baseUrl}`;
       }
+
       if (agent === 'agy') {
         warning = "Shells started before this switch lack teamai's agy function, which hands agy the profile's key and endpoint: open a new shell before running agy, or agy refuses to start with modelProvider set";
       }
+
       const current = await currentSnapshot(agent, roots, state ? state.lastWritten : desired);
+
       if (state && !sameManaged(agent, current, state.lastWritten)) {
         results.push({ agent, status: 'skipped', message: `${agent} model settings changed outside TeamAI; leaving them untouched` });
         continue;
       }
+
       const previous = state ? structuredClone(state.previous) : await firstSnapshot(agent, roots, desired);
       let released: BuddySnapshot | undefined;
+
       if (agent === 'codebuddy' || agent === 'workbuddy') {
         const desiredBuddy = desired as BuddySnapshot;
         const prior = previous as BuddySnapshot;
         const { availableModels } = await buddyDoc(agent);
         const managedIds = Object.keys(desiredBuddy.entries);
+
         // A model the catalog dropped gets its original entry back now and
         // leaves TeamAI's records, so a later restore never touches an ID
         // TeamAI no longer writes (the user may have reused it).
         const dropped = Object.keys((state?.lastWritten as BuddySnapshot | undefined)?.entries ?? {})
           .filter((id) => !managedIds.includes(id));
+
         released = {
           entries: Object.fromEntries(dropped.map((id) => [id, prior.entries[id] ?? null])),
           ...(prior.allowed ? { allowed: Object.fromEntries(dropped.filter((id) => id in prior.allowed!).map((id) => [id, prior.allowed![id]])) } : {}),
         };
         prior.entries = Object.fromEntries(managedIds.map((id) => [id, prior.entries[id] ?? null]));
+
         if (availableModels?.length || prior.allowed) {
           const existing = buddyAllowed(availableModels, managedIds);
           prior.allowed = Object.fromEntries(managedIds.map((id) => [id, prior.allowed?.[id] ?? existing[id]]));
           desiredBuddy.allowed = Object.fromEntries(managedIds.map((id) => [id, true]));
         }
       }
+
       if (agent === 'claude' && state && !profile.model) {
         // Keep the model the user picked in Claude if the catalog still has it.
         const picked = claudeModelId((current as ClaudeSnapshot).model);
+
         if (picked && profile.routes.anthropic!.models.includes(picked)) {
           (desired as ClaudeSnapshot).model = (current as ClaudeSnapshot).model;
         }
       }
+
       if (equal(current, desired)) {
         if (state && !options.dryRun && (state.profile !== metadata.profile || state.team !== metadata.team || state.model !== metadata.model)) {
           manifest.agents[agent] = { ...state, profile: metadata.profile, team: metadata.team, model: metadata.model };
           await saveManifest(manifest);
         }
+
         results.push({ agent, status: 'unchanged', message: `${agent} already uses ${profile.ref}`, ...(warning ? { warning } : {}) });
         continue;
       }
@@ -1300,6 +1508,7 @@ async function switchModelProfileUnlocked(
       const collision = agent === 'codebuddy' || agent === 'workbuddy'
         ? await buddyCollision(agent, desired as BuddySnapshot, state)
         : state ? undefined : await firstSwitchCollision(agent, roots, profile);
+
       if (collision) {
         results.push({ agent, status: 'skipped', message: collision });
         continue;
@@ -1314,6 +1523,7 @@ async function switchModelProfileUnlocked(
           pending: { kind: 'switch', before: state ? current : await firstSnapshot(agent, roots, desired), prior: state ?? null },
         };
         await saveManifest(manifest);
+
         try {
           await writeSnapshot(agent, roots, desired, state?.lastWritten, true, released);
         } catch (error) {
@@ -1324,9 +1534,11 @@ async function switchModelProfileUnlocked(
           await saveManifest(manifest);
           throw error;
         }
+
         delete manifest.agents[agent]!.pending;
         await saveManifest(manifest);
       }
+
       results.push({
         agent,
         status: 'switched',
@@ -1346,6 +1558,7 @@ export async function restoreModelProfiles(
   options: { dryRun?: boolean } = {},
 ): Promise<ModelSwitchResult[]> {
   if (options.dryRun) return restoreModelProfilesUnlocked(agents, options);
+
   return withManifestLock(() => restoreModelProfilesUnlocked(agents, options));
 }
 
@@ -1356,42 +1569,55 @@ async function restoreModelProfilesUnlocked(
   const roots = await agentRootsOf(undefined, options.dryRun);
   const manifest = (await loadManifest()) ?? { version: 1 as const, agents: {} };
   const results: ModelSwitchResult[] = [];
+
   for (const agent of agents) {
     try {
       if (options.dryRun && manifest.agents[agent]?.pending) {
         results.push({ agent, status: 'skipped', message: `${agent} has an interrupted model update; run without --dry-run to recover it` });
         continue;
       }
+
       if (!options.dryRun && !await recoverPending(manifest, agent, roots)) {
         results.push({ agent, status: 'skipped', message: `${agent} model settings changed during an interrupted TeamAI update; leaving them untouched` });
         continue;
       }
+
       const state = manifest.agents[agent];
+
       if (!state) {
         results.push({ agent, status: 'unchanged', message: `${agent} has no TeamAI-managed model settings` });
         continue;
       }
+
       if (!sameAgentSettingsPath(agent, state, roots)) {
         results.push({ agent, status: 'skipped', message: movedSettingsMessage(agent, state, roots) });
         continue;
       }
+
       const current = await currentSnapshot(agent, roots, state.lastWritten);
+
       if (!sameManaged(agent, current, state.lastWritten)) {
         results.push({ agent, status: 'skipped', message: `${agent} model settings changed outside TeamAI; leaving them untouched` });
         continue;
       }
+
       let restored = state.previous;
+
       if (agent === 'claude') {
         // Put back the original model only if the current one is still one
         // TeamAI offered; a model the user chose elsewhere stays.
         const offered = (((state.lastWritten as ClaudeSnapshot).modelPicker as { options?: Array<{ model?: unknown }> } | null)?.options ?? [])
           .map((option) => option.model);
+
         const picked = claudeModelId((current as ClaudeSnapshot).model);
+
         if (picked && !offered.includes(picked)) restored = { ...(state.previous as ClaudeSnapshot), model: (current as ClaudeSnapshot).model };
       }
+
       if (!options.dryRun) {
         state.pending = { kind: 'restore', before: current };
         await saveManifest(manifest);
+
         try {
           await writeSnapshot(agent, roots, restored, state.lastWritten);
         } catch (error) {
@@ -1399,9 +1625,11 @@ async function restoreModelProfilesUnlocked(
           await saveManifest(manifest);
           throw error;
         }
+
         delete manifest.agents[agent];
         await saveManifest(manifest);
       }
+
       results.push({
         agent,
         status: 'restored',
@@ -1417,12 +1645,14 @@ async function restoreModelProfilesUnlocked(
       results.push({ agent, status: 'failed', message: `${agent} restore failed: ${(error as Error).message}` });
     }
   }
+
   return results;
 }
 
 /** Which profile each agent currently uses through TeamAI. */
 export async function activeModelProfiles(): Promise<Partial<Record<ModelAgent, ActiveModelProfile>>> {
   const manifest = await loadManifest();
+
   return Object.fromEntries(Object.entries(manifest?.agents ?? {}).map(([agent, state]) => [
     agent,
     { profile: state.profile, ...(state.team ? { team: state.team } : {}), ...(state.model ? { model: state.model } : {}) },
@@ -1442,22 +1672,29 @@ export type LiveModelSwitch = { readonly ok: true; readonly switched: boolean } 
  */
 export async function liveModelSwitches(localConfig: Pick<LocalConfig, 'toolRoots'>): Promise<Record<ModelAgent, LiveModelSwitch>> {
   let manifest: ModelSwitchManifest | null;
+
   try {
     manifest = await loadManifest();
   } catch (error) {
     const unreadable: LiveModelSwitch = { ok: false, reason: (error as Error).message };
+
     return Object.fromEntries(ALL_MODEL_AGENTS.map((agent) => [agent, unreadable])) as Record<ModelAgent, LiveModelSwitch>;
   }
+
   const roots = await agentRootsOf(localConfig, true);
+
   const entries = await Promise.all(ALL_MODEL_AGENTS.map(async (agent): Promise<[ModelAgent, LiveModelSwitch]> => {
     const state = manifest?.agents[agent];
+
     if (!state || !sameAgentSettingsPath(agent, state, roots)) return [agent, { ok: true, switched: false }];
+
     try {
       return [agent, { ok: true, switched: sameManaged(agent, await currentSnapshot(agent, roots, state.lastWritten), state.lastWritten) }];
     } catch (error) {
       return [agent, { ok: false, reason: (error as Error).message }];
     }
   }));
+
   return Object.fromEntries(entries) as Record<ModelAgent, LiveModelSwitch>;
 }
 
@@ -1470,9 +1707,12 @@ export async function liveModelSwitches(localConfig: Pick<LocalConfig, 'toolRoot
 export async function switchedGatewayOrigins(localConfig: LocalConfig): Promise<Map<string, string[]>> {
   const manifest = await loadManifest();
   const byProfile = new Map<string, string[]>();
+
   for (const agent of ALL_MODEL_AGENTS) {
     const state = manifest?.agents[agent];
+
     if (!state || !state.profile.startsWith('team:') || !sameTeamIdentity(state.team, localConfig)) continue;
+
     const origins = writtenGatewayUrls(agent, state.lastWritten).flatMap((url) => {
       try {
         return [new URL(url).origin];
@@ -1480,43 +1720,59 @@ export async function switchedGatewayOrigins(localConfig: LocalConfig): Promise<
         return [];
       }
     });
+
     byProfile.set(state.profile, [...new Set([...(byProfile.get(state.profile) ?? []), ...origins])]);
   }
+
   return byProfile;
 }
 
 /** The gateway URLs in one agent's written snapshot, as `desiredSnapshot` lays them out. */
 function writtenGatewayUrls(agent: ModelAgent, snapshot: unknown): string[] {
   if (!isRecord(snapshot)) return [];
+
   if (agent === 'claude') return typeof snapshot.ANTHROPIC_BASE_URL === 'string' ? [snapshot.ANTHROPIC_BASE_URL] : [];
+
   if (agent === 'codex') {
     const line = typeof snapshot.providerBlock === 'string' ? /^base_url = (".*")$/m.exec(snapshot.providerBlock) : null;
+
     if (!line?.[1]) return [];
+
     try {
       const url: unknown = JSON.parse(line[1]);
+
       return typeof url === 'string' ? [url] : [];
     } catch {
       return [];
     }
   }
+
   if (agent === 'opencode') {
     const providers = isRecord(snapshot.providers) ? Object.values(snapshot.providers) : [];
+
     return providers.flatMap((provider) => (
       isRecord(provider) && isRecord(provider.options) && typeof provider.options.baseURL === 'string'
         ? [provider.options.baseURL]
         : []
     ));
   }
+
   if (agent === 'pi' || agent === 'omp') return typeof snapshot.baseUrl === 'string' ? [snapshot.baseUrl] : [];
+
   if (agent === 'muse') {
     const transport = snapshot.endpoint_transport;
+
     return isRecord(transport) && typeof transport.base_url === 'string' ? [transport.base_url] : [];
   }
+
   if (agent === 'agy') {
     const url = typeof snapshot.keyExport === 'string' ? agyGatewayOf(snapshot.keyExport, {})?.GOOGLE_GEMINI_BASE_URL : undefined;
+
     return url ? [url] : [];
   }
+
   const entries = isRecord(snapshot.entries) ? Object.values(snapshot.entries) : [];
+
   return entries.flatMap((entry) => (isRecord(entry) && typeof entry.url === 'string' ? [entry.url] : []));
 }
 

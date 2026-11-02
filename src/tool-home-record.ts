@@ -37,22 +37,28 @@ export async function nextToolHomes(
 ): Promise<{ readonly homes: Record<string, string>; readonly changes: readonly ToolHomeChange[] }> {
   const homes: Record<string, string> = { ...recorded };
   const changes: ToolHomeChange[] = [];
+
   for (const tool of Object.keys(TOOLS).filter(isToolId)) {
     const moved = envToolHome(tool, host);
+
     const blank = by === 'init' && homes[tool] !== undefined && (moved === null || moved.kind === 'platform-default')
       && homeVariables(tool).find((name) => host.env[name] !== undefined && host.env[name]?.trim() === '');
+
     if (blank) {
       delete homes[tool];
       changes.push({ tool, variable: blank, dir: null });
       continue;
     }
+
     if (!moved) continue;
     const current = homes[tool];
     const rule = by === 'pull' ? PULL_RECORDS : INIT_RECORDS[moved.kind];
+
     if (current === moved.dir || (current !== undefined && !rule.replacesRecord) || (rule.needsExistingHome && !await host.exists(moved.dir))) continue;
     homes[tool] = moved.dir;
     changes.push({ tool, variable: moved.variable, dir: moved.dir });
   }
+
   return { homes, changes };
 }
 
@@ -62,25 +68,35 @@ const TOOL_HOMES_LOCK_WAIT = { attempts: 20, delayMs: 100 };
 export async function recordToolHomes(by: 'init' | 'pull', host: Host = realHost()): Promise<readonly ToolHomeChange[]> {
   if ((await nextToolHomes(recordedHomes(host), host, by)).changes.length === 0) return [];
   const file = toolHomesPath();
+
   const recorded = await withFileLock(`${file}.lock`, TOOL_HOMES_LOCK_WAIT, async () => {
     const read = reloadToolHomes();
+
     if (read.kind === 'invalid') {
       log.warn(`Did not record the tool homes this shell moves: ${file} is not a tool-homes record (${read.error}). Fix or delete it.`);
+
       return [];
     }
+
     const before = read.kind === 'ok' ? read.homes : {};
     const next = await nextToolHomes(before, host, by);
+
     if (next.changes.length > 0) {
       for (const change of next.changes) {
         const previous = before[change.tool];
+
         if (previous !== undefined && previous !== change.dir) await rememberToolHome(change.tool, previous);
       }
+
       await saveToolHomes(next.homes);
     }
+
     return next.changes;
   });
+
   if (recorded.held) return recorded.value;
   log.warn(`Did not record the tool homes this shell moves: another teamai process holds ${file}.lock. ${by === 'init' ? 'Re-run `teamai init`' : 'The next pull records them'}.`);
+
   return [];
 }
 

@@ -117,14 +117,18 @@ export interface RedactOptions {
  */
 export function collectEnvSecrets(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const secrets: Record<string, string> = {};
+
   for (const [name, value] of Object.entries(env)) {
     if (typeof value !== 'string' || value.length < MIN_ENV_VALUE_LENGTH) continue;
+
     if (!SECRET_NAME_PATTERN.test(name.toUpperCase())) continue;
+
     // `SSH_KEY_PATH` names where a secret lives, not the secret. Shape alone
     // cannot tell: base64 secrets contain `/` and may start with it.
     if (path.isAbsolute(value) && fs.existsSync(value)) continue;
     secrets[name] = value;
   }
+
   return secrets;
 }
 
@@ -142,8 +146,10 @@ export function redact(text: string, options: RedactOptions = {}): string {
   // is not masked inside `build-49381`.
   const envSecrets = options.envSecrets ?? {};
   const entries = Object.entries(envSecrets).sort((a, b) => b[1].length - a[1].length);
+
   for (const [label, value] of entries) {
     if (!value) continue;
+
     if (value.length < MIN_ENV_VALUE_LENGTH) {
       const token = new RegExp(`(?<![\\p{L}\\p{N}_])${value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}_])`, 'gu');
       out = out.replace(token, () => PLACEHOLDER(label));
@@ -159,6 +165,7 @@ export function redact(text: string, options: RedactOptions = {}): string {
         wasPassedOver(rest.at(-1)) ? match : PLACEHOLDER(label),
       );
     }
+
     out = out.replace(KV_PATTERN, (_m, key: string, sep: string) => key + sep + PLACEHOLDER('kv'));
     out = out.replace(BEARER_PATTERN, (match, scheme: string, token: string) =>
       JOINED_WORDS_PATTERN.test(token) ? match : scheme + PLACEHOLDER('authz'),
@@ -177,10 +184,13 @@ export function redact(text: string, options: RedactOptions = {}): string {
  */
 export function redactJson(value: unknown, envSecrets: Record<string, string>): unknown {
   if (typeof value === 'string') return redact(value, { envSecrets, patterns: false });
+
   if (Array.isArray(value)) return value.map((item) => redactJson(item, envSecrets));
+
   if (value !== null && typeof value === 'object') {
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [redact(key, { envSecrets, patterns: false }), redactJson(item, envSecrets)]));
   }
+
   return value;
 }
 

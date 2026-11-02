@@ -79,6 +79,7 @@ export async function parseTranscriptForVotes(transcriptPath: string): Promise<T
 
   try {
     const stat = await fs.promises.stat(transcriptPath);
+
     if (stat.size === 0) return emptyResult();
   } catch {
     return emptyResult();
@@ -91,6 +92,7 @@ export async function parseTranscriptForVotes(transcriptPath: string): Promise<T
 
   for await (const line of rl) {
     const trimmed = line.trim();
+
     if (!trimmed) continue;
 
     // NOTE: the recalled-doc-ids COMMENT marker is scanned only from TRUSTED
@@ -101,6 +103,7 @@ export async function parseTranscriptForVotes(transcriptPath: string): Promise<T
     // (issue #723 review). Region-form markers were already gated; the comment
     // form now matches.
     let entry: Record<string, unknown>;
+
     try {
       entry = JSON.parse(trimmed) as Record<string, unknown>;
     } catch {
@@ -113,8 +116,10 @@ export async function parseTranscriptForVotes(transcriptPath: string): Promise<T
     // These are teamai output, not the body of a file a reader tool returned, so
     // they are trusted (unlike a reader tool_result block, which is gated below).
     const topResult = entry['toolUseResult'];
+
     if (topResult && typeof topResult === 'object') {
       const stdout = (topResult as Record<string, unknown>)['stdout'];
+
       if (typeof stdout === 'string') {
         extractRecalledDocIdsFromComment(stdout, recalledSet);
         extractRecalledDocIds(stdout, recalledSet, docIdToPath, docIdToScope);
@@ -122,11 +127,13 @@ export async function parseTranscriptForVotes(transcriptPath: string): Promise<T
     }
 
     const message = entry['message'] as Record<string, unknown> | undefined;
+
     if (message && typeof message['content'] === 'string') {
       const s = message['content'] as string;
       extractRecalledDocIdsFromComment(s, recalledSet);
       extractRecalledDocIds(s, recalledSet, docIdToPath, docIdToScope);
     }
+
     if (!message || !Array.isArray(message['content'])) continue;
 
     // Subagent-internal messages (the teamai-recall Task subagent's own work)
@@ -147,6 +154,7 @@ export async function parseTranscriptForVotes(transcriptPath: string): Promise<T
         // (issue #723 review). Buffered, because reader ids are only fully
         // known after the whole transcript is scanned.
         const tid = block['tool_use_id'] ?? block['toolUseId'];
+
         if (!isSidechain) deferredResultRegions.push({ id: typeof tid === 'string' ? tid : undefined, content: block['content'] });
       }
 
@@ -154,11 +162,13 @@ export async function parseTranscriptForVotes(transcriptPath: string): Promise<T
       if (block['type'] === 'tool_use') {
         const id = typeof block['id'] === 'string' ? (block['id'] as string) : undefined;
         const name = typeof block['name'] === 'string' ? block['name'].toLowerCase() : '';
+
         if (id && READ_LIKE_TOOLS.has(name)) readerToolUseIds.add(id);
       }
 
       if (entry['type'] !== 'assistant' || block['type'] !== 'text') continue;
       const text = block['text'];
+
       if (typeof text !== 'string') continue;
 
       messageTextParts.push(text);
@@ -178,6 +188,7 @@ export async function parseTranscriptForVotes(transcriptPath: string): Promise<T
     if (!isSidechain && entry['type'] === 'assistant' && messageTextParts.length > 0) {
       const msgId = typeof message['id'] === 'string' ? (message['id'] as string) : undefined;
       const joined = messageTextParts.join('\n');
+
       if (msgId !== undefined && msgId === finalAssistantId) {
         // Same logical message split across records — append, don't replace.
         finalAssistantText = finalAssistantText ? `${finalAssistantText}\n${joined}` : joined;
@@ -223,9 +234,11 @@ function isValidDocId(docId: string): boolean {
 function extractRecalledDocIdsFromComment(text: string, out: Set<string>): void {
   const pattern = /(?:<!--|<!—)\s*teamai:recalled-doc-ids:\s*\[([^\]]*)\]\s*(?:-->|—>)/gi;
   let match: RegExpExecArray | null;
+
   while ((match = pattern.exec(text)) !== null) {
     for (const item of match[1].split(',')) {
       const docId = item.trim().replace(/^['"]|['"]$/g, '');
+
       if (isValidDocId(docId)) out.add(docId);
     }
   }
@@ -240,12 +253,16 @@ function extractRecalledDocIdsFromValue(
   if (typeof value === 'string') {
     extractRecalledDocIdsFromComment(value, out);
     extractRecalledDocIds(value, out, docIdToPath, docIdToScope);
+
     return;
   }
+
   if (Array.isArray(value)) {
     for (const item of value) extractRecalledDocIdsFromValue(item, out, docIdToPath, docIdToScope);
+
     return;
   }
+
   if (value !== null && typeof value === 'object') {
     for (const item of Object.values(value as Record<string, unknown>)) {
       extractRecalledDocIdsFromValue(item, out, docIdToPath, docIdToScope);
@@ -260,11 +277,14 @@ function extractRecalledDocIds(
   docIdToScope: Map<string, 'project' | 'user' | 'unknown'>,
 ): void {
   let searchFrom = 0;
+
   while (true) {
     const startIdx = text.indexOf(RECALL_REGION_START, searchFrom);
+
     if (startIdx === -1) break;
 
     const endIdx = text.indexOf(RECALL_REGION_END, startIdx + RECALL_REGION_START.length);
+
     if (endIdx === -1) break;
 
     const region = text.slice(startIdx + RECALL_REGION_START.length, endIdx);
@@ -274,24 +294,32 @@ function extractRecalledDocIds(
     // / `[workspace]` tag is how we attribute the upvote to the right scope;
     // `[project]` is what a recall older than #1099 printed for the workspace.
     let currentScope: 'project' | 'user' | 'unknown' = 'unknown';
+
     for (const rawLine of region.split('\n')) {
       const line = rawLine.trim();
       const header = line.match(/^\[\d+\/\d+\]/);
+
       if (header) {
         // Reset per hit, then read the trailing [workspace]/[project]/[user] tag if present.
         currentScope = 'unknown';
         const scopeTag = line.match(/\[(workspace|project|user)\]\s*$/);
+
         if (scopeTag) currentScope = scopeTag[1] === 'user' ? 'user' : 'project';
         continue;
       }
+
       const fileMatch = line.match(/^File:\s*(.+)$/);
+
       if (fileMatch) {
         const filePath = fileMatch[1].trim();
         const docId = path.basename(filePath).replace(/\.md$/i, '');
+
         if (isValidDocId(docId)) {
           out.add(docId);
+
           // First occurrence wins, so the LLM-judge reads the doc's real content.
           if (!docIdToPath.has(docId)) docIdToPath.set(docId, filePath);
+
           if (!docIdToScope.has(docId)) docIdToScope.set(docId, currentScope);
         }
       }

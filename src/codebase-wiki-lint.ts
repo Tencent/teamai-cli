@@ -88,6 +88,7 @@ export async function lintTeamwiki(opts: {
 
   // Check evidence directory
   const evidenceDir = path.join(wikiRoot, 'evidence', 'code');
+
   if (!await pathExists(evidenceDir)) {
     addIssue({
       severity: 'high',
@@ -97,6 +98,7 @@ export async function lintTeamwiki(opts: {
     });
   } else {
     const projects = await readdir(evidenceDir);
+
     if (projects.length === 0) {
       addIssue({
         severity: 'medium',
@@ -109,14 +111,17 @@ export async function lintTeamwiki(opts: {
     for (const project of projects) {
       const projectDir = path.join(evidenceDir, project);
       const pStat = await stat(projectDir).catch(() => null);
+
       if (!pStat?.isDirectory()) {
         if (!pStat) {
           addIssue({ severity: 'low', category: 'stat-failed', location: `evidence/code/${project}`, message: 'Could not read the directory status' });
         }
+
         continue;
       }
 
       const files = await readdir(projectDir);
+
       if (!files.includes('index.md')) {
         addIssue({
           severity: 'low',
@@ -142,6 +147,7 @@ export async function lintTeamwiki(opts: {
 
   // Check source-manifest.json
   const manifestPath = path.join(wikiRoot, 'source-manifest.json');
+
   if (!await pathExists(manifestPath)) {
     addIssue({
       severity: 'low',
@@ -153,8 +159,10 @@ export async function lintTeamwiki(opts: {
     try {
       const raw = await readFile(manifestPath, 'utf-8');
       const manifest = JSON.parse(raw);
+
       if (manifest.lastScan) {
         const daysSince = (Date.now() - new Date(manifest.lastScan).getTime()) / (1000 * 60 * 60 * 24);
+
         if (daysSince > 60) {
           addIssue({
             severity: 'medium',
@@ -177,13 +185,17 @@ export async function lintTeamwiki(opts: {
   // Graph health metrics; null stays "not checked" when the graph is missing
   // or corrupt, so a JSON reader never mistakes it for a measured 0% (#1637).
   let graphHealth: { nodeCount: number; edgeCount: number; orphanNodes: number; connectivity: number } | null = null;
+
   if (graph) {
     const connectedNodes = new Set<string>();
+
     for (const edge of graph.edges) {
       connectedNodes.add(edge.from);
       connectedNodes.add(edge.to);
     }
+
     const orphans = graph.nodes.filter(n => !connectedNodes.has(n.slug));
+
     const connectivity = graph.nodes.length > 0
       ? (graph.nodes.length - orphans.length) / graph.nodes.length
       : 0;
@@ -230,20 +242,24 @@ export function formatWikiLintReport(report: WikiLintReport): string {
 
   lines.push(chalk.bold('=== teamwiki/ knowledge graph health check ==='));
   lines.push('');
+
   if (report.graphHealth === null) {
     lines.push('graph: not checked (graph-index.json missing or corrupt)');
   } else {
     lines.push(`Graph: ${report.graphHealth.nodeCount} nodes, ${report.graphHealth.edgeCount} edges, connectivity ${(report.graphHealth.connectivity * 100).toFixed(0)}%`);
+
     if (report.graphHealth.orphanNodes > 0) {
       lines.push(chalk.dim(`  (${report.graphHealth.orphanNodes} orphan nodes)`));
     }
   }
+
   lines.push('');
 
   if (report.issues.length === 0) {
     lines.push(chalk.green('✓ No issues'));
   } else {
     const byCategory = new Map<string, WikiLintIssue[]>();
+
     for (const issue of report.issues) {
       const existing = byCategory.get(issue.category) ?? [];
       existing.push(issue);
@@ -252,11 +268,14 @@ export function formatWikiLintReport(report: WikiLintReport): string {
 
     for (const [category, categoryIssues] of byCategory) {
       lines.push(chalk.bold(`[${category}] (${categoryIssues.length})`));
+
       for (const issue of categoryIssues) {
         const sevColor = issue.severity === 'high' ? chalk.red
           : issue.severity === 'medium' ? chalk.yellow : chalk.dim;
+
         lines.push(`  ${sevColor(`[${issue.severity}]`)} ${issue.location}: ${issue.message}`);
       }
+
       lines.push('');
     }
 
@@ -266,6 +285,7 @@ export function formatWikiLintReport(report: WikiLintReport): string {
   if (report.assetGraph) {
     lines.push(formatAssetGraphLine(report.assetGraph));
   }
+
   return lines.join('\n');
 }
 

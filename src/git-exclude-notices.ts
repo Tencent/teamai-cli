@@ -59,8 +59,10 @@ export function isBackgroundPull(options: Pick<GlobalOptions, 'silent' | 'gitHoo
 
 function parseFile(content: string | null): Record<string, unknown> {
   if (!content?.trim()) return {};
+
   try {
     const parsed = JSON.parse(content) as unknown;
+
     return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
   } catch {
     // Nothing in it is worth more than the notices to come.
@@ -71,6 +73,7 @@ function parseFile(content: string | null): Record<string, unknown> {
 function parse(record: unknown): GitExcludeNotices {
   const parsed = (typeof record === 'object' && record !== null ? record : {}) as Partial<GitExcludeNotices>;
   const valid = (n: unknown): n is GitExcludeNotice => typeof (n as GitExcludeNotice)?.message === 'string' && typeof (n as GitExcludeNotice)?.at === 'string';
+
   return {
     lastFailure: valid(parsed.lastFailure) ? { ...parsed.lastFailure, said: parsed.lastFailure.said === true } : null,
     notices: Array.isArray(parsed.notices) ? parsed.notices.filter(valid) : [],
@@ -81,6 +84,7 @@ function parse(record: unknown): GitExcludeNotices {
 export async function readGitExcludeNotices(home: GitExcludeNoticesHome): Promise<GitExcludeNotices> {
   const { file, owner } = locate(home);
   const all = parseFile(await readFileSafe(file));
+
   return parse(owner === null ? all : all[owner]);
 }
 
@@ -91,13 +95,17 @@ export async function readGitExcludeNotices(home: GitExcludeNoticesHome): Promis
  */
 async function updateNotices(home: GitExcludeNoticesHome, edit: (current: GitExcludeNotices) => GitExcludeNotices | null): Promise<void> {
   const { file, owner } = locate(home);
+
   try {
     const result = await updateFileLocked(file, (content) => {
       const all = parseFile(content);
       const next = edit(parse(owner === null ? all : all[owner]));
+
       if (next === null) return null;
+
       return `${JSON.stringify(owner === null ? next : { ...all, [owner]: next }, null, 2)}\n`;
     });
+
     if (result === 'locked') log.persist(`git exclude: ${file} was busy, its update waits for the next run`);
   } catch (e) {
     log.persist(`git exclude: could not update ${file}: ${e instanceof Error ? e.message : String(e)}`);
@@ -112,8 +120,10 @@ async function updateNotices(home: GitExcludeNoticesHome, edit: (current: GitExc
 export async function noticeGitExclude(home: GitExcludeNoticesHome, message: string, options: Pick<GlobalOptions, 'silent' | 'gitHook'>): Promise<void> {
   if (!isBackgroundPull(options)) {
     warnOnce(message);
+
     return;
   }
+
   log.persist(`git exclude: ${message}`);
   await updateNotices(home, (current) => current.notices.some((n) => n.message === message)
     ? null
@@ -140,8 +150,11 @@ export async function clearGitExcludeFailure(home: GitExcludeNoticesHome): Promi
 export async function sayGitExcludeNotices(home: GitExcludeNoticesHome): Promise<boolean> {
   const { lastFailure, notices } = await readGitExcludeNotices(home);
   const failure = lastFailure && !lastFailure.said ? lastFailure : null;
+
   if (failure) log.warn(`${locate(home).label} (${failure.at}) could not keep teamai's git exclude blocks up to date: ${failure.message}`);
+
   for (const notice of notices) warnOnce(notice.message);
+
   if (failure || notices.length > 0) {
     const said = new Set(notices.map((n) => n.message));
     await updateNotices(home, (current) => ({
@@ -149,5 +162,6 @@ export async function sayGitExcludeNotices(home: GitExcludeNoticesHome): Promise
       notices: current.notices.filter((n) => !said.has(n.message)),
     }));
   }
+
   return lastFailure !== null;
 }

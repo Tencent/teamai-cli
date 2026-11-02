@@ -30,22 +30,29 @@ export async function codexProjectTrust(gate: Extract<ReadGate, { kind: 'codex-p
 
   if (!await pathExists(gate.config)) return { kind: 'untrusted', main };
   const raw = await readFileSafe(gate.config);
+
   if (raw === null) return { kind: 'unreadable', reason: 'could not be read' };
   let projects: unknown;
+
   try {
     const { parse } = await import('smol-toml');
     projects = parse(withoutTomlBom(raw)).projects;
   } catch (error) {
     return { kind: 'unreadable', reason: `could not be parsed (${error instanceof Error ? error.message.split('\n')[0] : String(error)})` };
   }
+
   if (typeof projects !== 'object' || projects === null) return { kind: 'untrusted', main };
   const entries = new Map<string, unknown>(Object.entries(projects));
+
   for (const dir of dirs) {
     const entry = entries.get(dir);
     const level = typeof entry === 'object' && entry !== null && 'trust_level' in entry ? entry.trust_level : undefined;
+
     if (typeof level !== 'string') continue;
+
     return level === 'trusted' ? { kind: 'trusted' } : { kind: 'untrusted', main, decidedBy: { dir, level } };
   }
+
   return { kind: 'untrusted', main };
 }
 
@@ -53,6 +60,7 @@ export async function codexProjectTrust(gate: Extract<ReadGate, { kind: 'codex-p
 export function codexTrustFix(trust: Exclude<CodexProjectTrust, { kind: 'trusted' }>, gate: Extract<ReadGate, { kind: 'codex-project-trust' }>, cause: string): string {
   const configFile = gate.config;
   const table = (dir: string): string => `[projects.${JSON.stringify(dir)}]`;
+
   switch (trust.kind) {
     case 'unreadable':
       return `${cause}, and ${configFile} ${trust.reason}, so whether Codex trusts this checkout is unknown. `
@@ -62,11 +70,13 @@ export function codexTrustFix(trust: Exclude<CodexProjectTrust, { kind: 'trusted
         return `${cause}, and ${configFile} sets trust_level = ${JSON.stringify(trust.decidedBy.level)} in `
           + `${table(trust.decidedBy.dir)}, the entry Codex reads for this checkout. Set it to "trusted".`;
       }
+
       return `${cause}, and ${configFile} does not trust ${trust.main}. Open Codex in ${trust.main} and trust the project `
         + `when it asks, or add a ${table(trust.main)} table holding trust_level = "trusted" to ${configFile}. `
         + 'Trusting the main checkout covers every worktree of it.';
     default: {
       const unhandled: never = trust;
+
       return unhandled;
     }
   }

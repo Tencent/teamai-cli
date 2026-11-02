@@ -25,7 +25,9 @@ export function openclawTeamHookPluginIn(stateDir: string, host: Host = realHost
 export function resolveOpenclawConfigPath(host: Host = realHost(), stateDir: string = resolveOpenclawStateDir()): string {
   const p = host.path;
   const override = host.env.OPENCLAW_CONFIG_PATH?.trim();
+
   if (override) return absoluteOn(override, host);
+
   return p.join(stateDir, 'openclaw.json');
 }
 
@@ -63,15 +65,19 @@ export async function resolveOpenclawWorkspace(
   const agents = read.kind === 'ok' ? read.value.agents as { defaults?: { workspace?: unknown } } | undefined : undefined;
   const configured = agents?.defaults?.workspace;
   const envDir = host.env.OPENCLAW_WORKSPACE_DIR?.trim();
+
   const candidate = typeof configured === 'string' && configured.trim()
     ? absoluteOn(configured.trim(), host)
     : envDir
       ? absoluteOn(envDir, host)
       : p.join(stateDir, 'workspace');
+
   const exists = await host.exists(candidate);
+
   if (read.kind === 'invalid') {
     return { kind: 'unreadable-config', file: cfgPath, error: read.error, fallback: exists ? candidate : null };
   }
+
   return exists ? { kind: 'found', dir: candidate } : { kind: 'none', tried: [workspacePath, candidate].filter(Boolean).join(', '), candidate };
 }
 
@@ -79,13 +85,17 @@ export async function resolveOpenclawWorkspace(
 export async function openclawBootstrapBudget(): Promise<{ limit: number; config: string; error?: string }> {
   const config = resolveOpenclawConfigPath();
   const read = await realHost().readJson(config);
+
   if (read.kind === 'invalid') return { limit: 0, config, error: read.error };
   const agents = read.kind === 'ok' ? read.value.agents as { defaults?: Record<string, unknown> } | undefined : undefined;
   const defaults = agents?.defaults;
+
   const cap = (value: unknown, fallback: number): number =>
     typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+
   const perFile = cap(defaults?.bootstrapMaxChars, 20_000);
   const total = Math.max(1, cap(defaults?.bootstrapTotalMaxChars, 60_000));
+
   // OpenClaw skips even the first existing file when less than 64 chars remain.
   return { limit: total < 64 ? 0 : Math.max(1, Math.min(perFile, total)), config };
 }

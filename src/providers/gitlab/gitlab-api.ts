@@ -41,11 +41,13 @@ export function gitlabBaseUrl(): string {
  */
 export function gitlabApiBase(): string {
   const prefix = process.env.GITLAB_API_PREFIX?.trim().replace(/^\/+|\/+$/g, '') || 'api/v4';
+
   return `${gitlabBaseUrl()}/${prefix}`;
 }
 
 function resolveGitLabBaseUrl(): string {
   const gitlabUrl = process.env.GITLAB_URL?.trim();
+
   if (gitlabUrl) {
     // Reject a value `new URL()` cannot parse (most often a missing scheme).
     // Without this the API base and GITLAB_HOST silently disagree: repo-url.ts
@@ -53,6 +55,7 @@ function resolveGitLabBaseUrl(): string {
     // URL" from deep inside undici.
     try {
       const parsed = new URL(gitlabUrl);
+
       if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
         throw new Error('unsupported protocol');
       }
@@ -62,9 +65,12 @@ function resolveGitLabBaseUrl(): string {
           'scheme, e.g. https://gitlab.example.com',
       );
     }
+
     assertSameGitLabHost(new URL(gitlabUrl));
+
     return gitlabUrl.replace(/\/+$/, '');
   }
+
   return `https://${GITLAB_HOST}`;
 }
 
@@ -75,6 +81,7 @@ function resolveGitLabBaseUrl(): string {
  */
 function assertSameGitLabHost(gitlabUrl: URL): void {
   const override = process.env.TEAMAI_GITLAB_HOST?.trim().toLowerCase();
+
   if (!override || override === gitlabUrl.host || override === gitlabUrl.hostname) return;
   throw new Error(
     `TEAMAI_GITLAB_HOST (${override}) and GITLAB_URL (${gitlabUrl.origin}) name different GitLab `
@@ -94,13 +101,16 @@ export function getGitLabToken(): string | null {
     process.env.GITLAB_PAT,
   ]) {
     const token = raw?.trim();
+
     if (token) return token;
   }
+
   return null;
 }
 
 function requireToken(): string {
   const token = getGitLabToken();
+
   if (!token) {
     throw new Error(
       'GitLab authentication unavailable. Set the GITLAB_TOKEN environment variable ' +
@@ -108,6 +118,7 @@ function requireToken(): string {
         'GITLAB_PAT are accepted as aliases.',
     );
   }
+
   return token;
 }
 
@@ -129,17 +140,21 @@ export function gitlabIsAuthenticated(): boolean {
 /** Fetch the authenticated GitLab username, or null when unavailable. */
 export async function gitlabWhoami(): Promise<string | null> {
   const token = getGitLabToken();
+
   if (!token) return null;
   // Resolved outside the try: a GITLAB_URL configuration error must reach the
   // user instead of reading as a failed login.
   const url = `${gitlabApiBase()}/user`;
+
   try {
     const resp = await fetch(url, {
       headers: authHeaders(token),
       redirect: 'manual',
     });
+
     if (!resp.ok) return null;
     const data = (await resp.json()) as { username?: string };
+
     return data.username ?? null;
   } catch {
     return null;
@@ -152,6 +167,7 @@ export async function gitlabWhoami(): Promise<string | null> {
  */
 export async function ensureGitLabAvailable(): Promise<void> {
   const token = getGitLabToken();
+
   if (token) return;
   throw new Error(
     'GitLab authentication unavailable. Set GITLAB_TOKEN (or GITLAB_PRIVATE_TOKEN / GITLAB_PAT).',
@@ -181,6 +197,7 @@ export class GitLabRepoNotFoundError extends Error {
  */
 function cloneUrl(repo: string): string {
   const base = gitlabBaseUrl().replace(/\/+$/, '');
+
   return `${base}/${repo}.git`;
 }
 
@@ -190,6 +207,7 @@ function cloneUrl(repo: string): string {
  */
 function gitlabAuthHeaderArg(token: string): string {
   const encoded = Buffer.from(`oauth2:${token}`).toString('base64');
+
   return `http.extraHeader=Authorization: Basic ${encoded}`;
 }
 
@@ -203,9 +221,11 @@ export function gitlabRepoClone(repo: string, localPath: string): void {
   // `-c <key>=<val>` is a git-level option and must precede the `clone`
   // subcommand, matching the http.extraHeader pattern in clone.ts.
   const args: string[] = [];
+
   if (token) {
     args.push('-c', gitlabAuthHeaderArg(token));
   }
+
   args.push('clone', cloneUrl(repo), localPath);
 
   const result = spawnSync('git', args, {
@@ -214,7 +234,9 @@ export function gitlabRepoClone(repo: string, localPath: string): void {
     timeout: 120_000,
     windowsHide: true,
   });
+
   const allOutput = `${result.stderr ?? ''} ${result.stdout ?? ''}`;
+
   if (result.status === 0) return;
 
   // "not found" / "could not be found" indicate the repo does not exist (or the
@@ -246,8 +268,10 @@ async function resolveNamespaceId(owner: string, token: string): Promise<number 
     `${gitlabApiBase()}/groups/${encodeURIComponent(owner)}`,
     { headers: authHeaders(token), redirect: 'manual' },
   );
+
   if (!resp.ok) return null;
   const group = (await resp.json()) as { id?: number };
+
   return group.id ?? null;
 }
 
@@ -262,6 +286,7 @@ export async function gitlabCreateRepo(owner: string, repo: string): Promise<voi
 
   if (!login || login.toLowerCase() !== owner.toLowerCase()) {
     const namespaceId = await resolveNamespaceId(owner, token);
+
     if (namespaceId === null) {
       // Posting without namespace_id would create the project under the
       // authenticated user instead, reporting success at the wrong location and
@@ -271,6 +296,7 @@ export async function gitlabCreateRepo(owner: string, repo: string): Promise<voi
           'cannot see it. Check the group path and that the token has `api` scope.',
       );
     }
+
     body.namespace_id = namespaceId;
   }
 
@@ -280,6 +306,7 @@ export async function gitlabCreateRepo(owner: string, repo: string): Promise<voi
     body: JSON.stringify(body),
     redirect: 'manual',
   });
+
   if (!resp.ok) {
     const errBody = await resp.text().catch(() => '');
     throw new Error(`Failed to create GitLab project: ${resp.status} ${errBody}`);
@@ -319,21 +346,25 @@ async function resolveReviewerIds(
 ): Promise<number[]> {
   if (!reviewers?.length) return [];
   const ids: number[] = [];
+
   for (const username of reviewers) {
     try {
       const resp = await fetch(
         `${gitlabApiBase()}/users?username=${encodeURIComponent(username)}`,
         { headers: authHeaders(token), redirect: 'manual', signal },
       );
+
       if (!resp.ok) continue;
       const users = (await resp.json()) as GitLabUser[];
       const exact = users.find((u) => u.username.toLowerCase() === username.toLowerCase());
+
       if (exact) ids.push(exact.id);
     } catch {
       signal.throwIfAborted();
       // Non-fatal: an unresolvable reviewer should not block MR creation.
     }
   }
+
   return ids;
 }
 
@@ -353,9 +384,11 @@ export async function gitlabMrCreate(opts: GitLabMrCreateOptions): Promise<strin
     target_branch: opts.target,
     title: opts.title,
   };
+
   if (opts.description) body.description = opts.description;
 
   const reviewerIds = await resolveReviewerIds(opts.reviewers, token, signal);
+
   if (reviewerIds.length > 0) body.reviewer_ids = reviewerIds;
 
   const resp = await fetch(`${gitlabApiBase()}/projects/${projectId}/merge_requests`, {
@@ -365,13 +398,16 @@ export async function gitlabMrCreate(opts: GitLabMrCreateOptions): Promise<strin
     redirect: 'manual',
     signal,
   });
+
   if (!resp.ok) {
     const errBody = await resp.text().catch(() => '');
     throw new Error(`Failed to create GitLab MR: ${resp.status} ${errBody}`);
   }
 
   const mr = (await resp.json()) as { web_url?: string; iid?: number };
+
   if (mr.web_url) return mr.web_url;
+
   if (mr.iid) return `${gitlabBaseUrl()}/${opts.repo}/-/merge_requests/${mr.iid}`;
   throw new Error('GitLab MR created but response did not include web_url.');
 }
@@ -398,19 +434,27 @@ const GitLabOpenMrSchema = z.object({
 export async function gitlabFindOpenMr({ repo, source, target, timeoutMs }: PullRequestRef): Promise<string | undefined> {
   const token = requireToken();
   const query = new URLSearchParams({ state: 'opened', source_branch: source, target_branch: target, per_page: String(LOOKUP_PAGE) });
+
   const response = await fetch(`${gitlabApiBase()}/projects/${encodeURIComponent(repo)}/merge_requests?${query}`, {
     headers: authHeaders(token), redirect: 'manual', signal: AbortSignal.timeout(timeoutMs),
   });
+
   if (!response.ok) throw new Error(`GitLab answered the open merge request lookup with HTTP ${response.status}. Check the token's access to the project.`);
   const requests = z.array(GitLabOpenMrSchema).safeParse(await response.json().catch(() => undefined));
+
   if (!requests.success) throw new Error('GitLab answered the open merge request lookup with data TeamAI cannot read.');
+
   const found = requests.data.find((mr) => mr.state === 'opened' && mr.source_branch === source && mr.target_branch === target
     && mr.source_project_id === mr.target_project_id);
+
   if (!found) {
     if (requests.data.length >= LOOKUP_PAGE) throw new Error('GitLab listed more open merge requests than one page, so TeamAI cannot tell whether this branch has one.');
+
     return undefined;
   }
+
   if (hostOf(found.web_url) !== hostOf(gitlabBaseUrl())) throw new Error('GitLab answered the open merge request lookup with a URL on another host.');
+
   return found.web_url;
 }
 

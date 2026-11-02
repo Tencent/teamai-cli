@@ -100,26 +100,33 @@ function denormalizeToolName(irName: string): string {
 function resolveSessionTitle(session: Session, sessionId: string): string {
   for (const m of session.messages) {
     if (m.role !== 'user') continue;
+
     for (const b of m.content) {
       if (b.type !== 'text') continue;
       const t = titleFromUserText(b.text);
+
       if (t) return t;
     }
   }
+
   return cleanTitleText(session.title) || fallbackTitle(sessionId);
 }
 
 /** Summary text shown for a tool call when collapsed (native providerData.argumentsDisplayText). */
 function argumentsDisplayText(name: string, args: Record<string, unknown> | undefined): string {
   if (!args) return name;
+
   const preferred =
     args.command ?? args.path ?? args.pattern ?? args.glob_pattern ?? args.target_directory ??
     args.target_file ?? args.query ?? args.url ?? args.filePath;
+
   if (typeof preferred === 'string' && preferred.trim()) {
     return preferred.length > 160 ? `${preferred.slice(0, 160)}…` : preferred;
   }
+
   try {
     const s = JSON.stringify(args);
+
     return s.length > 160 ? `${s.slice(0, 160)}…` : s;
   } catch {
     return name;
@@ -137,6 +144,7 @@ function uuidV4(): string {
 function toUnixMs(isoStr?: string): number {
   if (!isoStr) return Date.now();
   const d = new Date(isoStr);
+
   return isNaN(d.getTime()) ? Date.now() : d.getTime();
 }
 
@@ -163,9 +171,11 @@ interface WorkBuddyMeta {
  */
 function readMeta(jsonlPath: string): WorkBuddyMeta {
   const metaPath = jsonlPath.replace(/\.jsonl$/, '.meta.json');
+
   try {
     if (!fileExists(metaPath)) return {};
     const parsed = JSON.parse(fs.readFileSync(metaPath, 'utf-8')) as Record<string, unknown>;
+
     return {
       cwd: typeof parsed.cwd === 'string' ? parsed.cwd : undefined,
       createdAt: typeof parsed.createdAt === 'number' ? parsed.createdAt : undefined,
@@ -200,32 +210,41 @@ export class WorkBuddyAdapter extends AgentAdapter {
 
   private resolveProjectDir(projectPath?: string): string {
     const root = this.storageRoot;
+
     if (projectPath) {
       // Must use the same encoding as writeSession (encodeCwdCodeBuddy, which keeps spaces):
       // native workspace directory names keep spaces. encodeCwdGeneric (space → '-') points at an empty directory,
       // which shows up as "list by cwd = 0" — the full set can be read, but workspace filtering drops everything.
       return path.join(root, encodeCwdCodeBuddy(projectPath));
     }
+
     return root;
   }
 
   private findSessionFile(sessionId: string, projectPath?: string): string | null {
     if (projectPath) {
       const target = path.join(this.resolveProjectDir(projectPath), `${sessionId}.jsonl`);
+
       return fileExists(target) ? target : null;
     }
+
     const root = this.storageRoot;
+
     if (!dirExists(root)) return null;
+
     for (const projDir of fs.readdirSync(root)) {
       const candidate = path.join(root, projDir, `${sessionId}.jsonl`);
+
       if (fileExists(candidate)) return candidate;
     }
+
     return null;
   }
 
   async listConversations(projectPath?: string): Promise<SessionMeta[]> {
     const metas: SessionMeta[] = [];
     const root = this.storageRoot;
+
     if (!dirExists(root)) return [];
 
     const projDirs = projectPath
@@ -235,12 +254,15 @@ export class WorkBuddyAdapter extends AgentAdapter {
     for (const projDir of projDirs) {
       if (!dirExists(projDir)) continue;
       const fallbackCwd = decodeCwdGeneric(path.basename(projDir));
+
       for (const jsonlFile of fs.readdirSync(projDir).filter((f) => f.endsWith('.jsonl')).sort()) {
         const fullPath = path.join(projDir, jsonlFile);
         const meta = this.extractMeta(fullPath, fallbackCwd);
+
         if (meta) metas.push(meta);
       }
     }
+
     return metas;
   }
 
@@ -265,24 +287,31 @@ export class WorkBuddyAdapter extends AgentAdapter {
 
         // Infer from in-line timestamps only when meta.json did not cover them
         const tsRaw = record.timestamp;
+
         if (tsRaw !== undefined) {
           const ts = fromUnixMs(Number(tsRaw));
+
           if (!createdAt) createdAt = ts;
+
           if (!metaInfo.updatedAt) updatedAt = ts;
         }
 
         if (rtype === 'message') {
           messageCount++;
           const role = record.role as string;
+
           if (role === 'user' && userTextCandidates.length < 5) {
             const content = record.content;
+
             if (Array.isArray(content)) {
               const parts: string[] = [];
+
               for (const block of content) {
                 if (block && typeof block === 'object' && (block as Record<string, unknown>).type === 'input_text') {
                   parts.push(String((block as Record<string, unknown>).text ?? ''));
                 }
               }
+
               if (parts.length) userTextCandidates.push(parts.join(' '));
             }
           }
@@ -293,6 +322,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
     }
 
     if (!createdAt) createdAt = new Date().toISOString();
+
     if (!updatedAt) updatedAt = createdAt;
 
     // aiTitle is the title WorkBuddy itself chose, so it is the most reliable; injected-text cleaning matches the codebuddy adapter
@@ -302,6 +332,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
       fallbackTitle(sessionId);
 
     let sizeBytes = 0;
+
     try {
       sizeBytes = fs.statSync(jsonlPath).size;
     } catch {
@@ -327,9 +358,11 @@ export class WorkBuddyAdapter extends AgentAdapter {
       ref.filePath ??
       this.findSessionFile(ref.sessionId, ref.projectPath) ??
       (ref.projectPath ? this.findSessionFile(ref.sessionId) : null);
+
     if (!jsonlPath) {
       throw new Error(`WorkBuddy session file not found: session_id=${ref.sessionId}`);
     }
+
     // The file name is the id: a listed file decides it, not the request.
     const sessionId = path.basename(jsonlPath, '.jsonl');
 
@@ -344,7 +377,9 @@ export class WorkBuddyAdapter extends AgentAdapter {
     const messages: Message[] = [];
 
     if (metaInfo.sourceConversationId) sessionMetadata.sourceConversationId = metaInfo.sourceConversationId;
+
     if (metaInfo.isPlayground !== undefined) sessionMetadata.isPlayground = metaInfo.isPlayground;
+
     if (metaInfo.migratedFrom) sessionMetadata.originator = metaInfo.migratedFrom;
 
     // First pass: extract title / timestamps
@@ -354,14 +389,18 @@ export class WorkBuddyAdapter extends AgentAdapter {
       if (rtype === 'ai-title') {
         // Same as the codebuddy adapter: injected-block text is occasionally stored as ai-title, and taking it as-is pollutes the migration path
         const t = String(rec.aiTitle ?? '');
+
         if (t && !isInjectedText(t)) title = cutTitle(t, 100);
         continue;
       }
 
       const tsRaw = rec.timestamp;
+
       if (tsRaw !== undefined) {
         const ts = fromUnixMs(Number(tsRaw));
+
         if (!createdAt) createdAt = ts;
+
         if (!metaInfo.updatedAt) updatedAt = ts;
       }
     }
@@ -372,9 +411,11 @@ export class WorkBuddyAdapter extends AgentAdapter {
 
       if (rtype === 'message') {
         const role = rec.role as string;
+
         if (role !== 'user' && role !== 'assistant') continue;
 
         const content = this.parseMessageContent(rec);
+
         const msg: Message = {
           role: role as 'user' | 'assistant',
           content,
@@ -385,11 +426,14 @@ export class WorkBuddyAdapter extends AgentAdapter {
 
         // Keep providerData in full (including WorkBuddy extension fields such as memory references)
         const providerData = rec.providerData as Record<string, unknown> | undefined;
+
         if (providerData) {
           const md: Record<string, unknown> = { ...providerData };
+
           if (typeof providerData.model === 'string') {
             if (!sessionMetadata.model) sessionMetadata.model = providerData.model;
           }
+
           msg.metadata = md;
         }
 
@@ -401,6 +445,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
         const providerData = rec.providerData as Record<string, unknown> | undefined;
         let argsRaw = providerData?.arguments ?? rec.arguments;
         let arguments_: Record<string, unknown>;
+
         try {
           arguments_ = typeof argsRaw === 'string' ? JSON.parse(argsRaw) : (argsRaw as Record<string, unknown>) ?? {};
         } catch {
@@ -418,9 +463,11 @@ export class WorkBuddyAdapter extends AgentAdapter {
         const callId = String(rec.callId ?? '');
         const output = rec.output as Record<string, unknown> | undefined;
         let contentStr = '';
+
         if (output) {
           contentStr = String(output.text ?? '');
         }
+
         const status = String(rec.status ?? 'completed');
         const isError = status === 'failed' || status === 'error';
         const block: ToolResultBlock = { type: 'tool_result', callId, content: contentStr, isError };
@@ -433,6 +480,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
       } else if (rtype === 'reasoning') {
         const rawContent = rec.rawContent as Array<Record<string, unknown>> | undefined;
         let text = '';
+
         if (Array.isArray(rawContent)) {
           for (const part of rawContent) {
             if (part.type === 'reasoning_text') {
@@ -440,6 +488,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
             }
           }
         }
+
         const block: ThinkingBlock = { type: 'thinking', text };
 
         if (messages.length > 0 && messages[messages.length - 1].role === 'assistant') {
@@ -457,16 +506,20 @@ export class WorkBuddyAdapter extends AgentAdapter {
             if (block.type === 'text' && block.text) {
               if (isInjectedText(block.text)) continue; // injected blocks are not titles
               title = cleanTitleText(block.text);
+
               if (title) break;
             }
           }
+
           if (title) break;
         }
       }
     }
+
     if (!title) title = `Session ${sessionId.slice(0, 8)}`;
 
     if (!createdAt) createdAt = new Date().toISOString();
+
     if (!updatedAt) updatedAt = createdAt;
 
     return {
@@ -487,6 +540,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
 
     if (typeof contentArr === 'string') {
       blocks.push({ type: 'text', text: contentArr });
+
       return blocks;
     }
 
@@ -502,6 +556,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
         blocks.push({ type: 'text', text });
       }
     }
+
     return blocks;
   }
 
@@ -511,11 +566,13 @@ export class WorkBuddyAdapter extends AgentAdapter {
 
   async writeSession(session: Session, projectPath?: string): Promise<string> {
     const cwd = projectPath ?? session.cwd;
+
     const sessionId = deriveTargetSessionId({
       targetPlatform: this.platform,
       targetCwd: cwd,
       sourceSessionId: session.sessionId,
     });
+
     // WorkBuddy is isomorphic with CodeBuddy: project directory names keep spaces (observed CodeBuddy on disk as
     // `Users-caiwenzhe-Desktop-Code-teamai cli`). encodeCwdGeneric would also turn spaces into
     // `-`, so the directory name would not match what the client computes from the current cwd → the session would not appear in that project's list.
@@ -526,6 +583,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
 
     // callId → tool name: so function_call_result lines carry the real tool name (instead of always 'Agent')
     const toolNamesByCallId = new Map<string, string>();
+
     for (const m of session.messages) {
       for (const b of m.content) {
         if (b.type === 'tool_call' && b.callId) {
@@ -533,6 +591,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
         }
       }
     }
+
     const resultToolName = (callId: string): string | undefined => toolNamesByCallId.get(callId);
 
     // 1. ai-title line
@@ -573,6 +632,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
       if (otherBlocks.length > 0) {
         const wbContent: Record<string, unknown>[] = [];
         let hasText = false;
+
         for (const block of otherBlocks) {
           if (block.type === 'text') {
             wbContent.push({
@@ -695,9 +755,11 @@ export class WorkBuddyAdapter extends AgentAdapter {
         updatedAtMs: Date.now(),
         model: session.metadata?.model,
       });
+
       if (!reg.ok) {
         const notice =
           `WorkBuddy session list registration failed (transcript written, session may be invisible in WorkBuddy): ${reg.reason ?? 'unknown'}`;
+
         log.debug(`workbuddy register failed: session=${sessionId} reason=${reg.reason ?? 'unknown'}`);
         this.noteWrite(notice);
       }
@@ -716,6 +778,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
     // it before the lookup would drop another workspace's copy of the same
     // session id when `rollback --cwd` matched nothing here.
     const jsonlPath = this.findSessionFile(sessionId, projectPath);
+
     if (!jsonlPath) return false;
 
     // Drop the DB registration (otherwise deleting the jsonl leaves an unopenable session in the WorkBuddy list)
@@ -726,6 +789,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
     }
 
     let deleted = false;
+
     try {
       fs.unlinkSync(jsonlPath);
       deleted = true;
@@ -734,6 +798,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
     }
 
     const metaPath = jsonlPath.replace(/\.jsonl$/, '.meta.json');
+
     if (fileExists(metaPath)) {
       try {
         fs.unlinkSync(metaPath);
@@ -744,9 +809,11 @@ export class WorkBuddyAdapter extends AgentAdapter {
 
     // Delete the same-named subdirectory (subagents and similar)
     const subdir = jsonlPath.replace(/\.jsonl$/, '');
+
     if (dirExists(subdir)) {
       removeDirRecursive(subdir);
     }
+
     return deleted;
   }
 }

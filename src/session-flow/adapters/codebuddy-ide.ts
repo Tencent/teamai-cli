@@ -47,7 +47,9 @@ import { deriveTargetSessionId } from '../ids.js';
  */
 function toConvId(sessionId: string): string {
   const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
   if (uuidRe.test(sessionId)) return sessionId.replace(/-/g, '').toLowerCase();
+
   return sessionId;
 }
 
@@ -80,10 +82,12 @@ const MIME_BY_EXT: Record<string, string> = {
  */
 function parseImageBlock(block: Record<string, unknown>, convDir: string): ImageBlock | null {
   const ref = String(block.image ?? block.url ?? block.path ?? '').trim();
+
   if (!ref) return null;
 
   // data URI: decode base64 directly
   const dataUri = ref.match(/^data:(image\/[a-z+]+);base64,(.+)$/i);
+
   if (dataUri) {
     return {
       type: 'image',
@@ -95,6 +99,7 @@ function parseImageBlock(block: Record<string, unknown>, convDir: string): Image
 
   // Resolve the file path
   let filePath = '';
+
   if (ref.startsWith('codebuddy-asset://')) {
     const rel = ref.slice('codebuddy-asset://'.length).replace(/^\/+/, '');
     filePath = path.join(convDir, rel);
@@ -109,6 +114,7 @@ function parseImageBlock(block: Record<string, unknown>, convDir: string): Image
   const label = path.basename(filePath);
 
   let data: string | undefined;
+
   try {
     data = fs.readFileSync(filePath).toString('base64');
   } catch {
@@ -129,14 +135,18 @@ const TITLE_LOOKAHEAD = 30;
 function firstUserText(messages: IdeMessageParsed[]): string {
   // Collect candidates, then unwrap them together: skipping a whole injected message is not the same as discarding it; real questions inside slash-command mixed messages still need to be recovered
   const candidates: string[] = [];
+
   for (const m of messages) {
     if (m.role !== 'user') continue;
+
     for (const block of m.content) {
       if (block.type !== 'text' || typeof block.text !== 'string') continue;
       candidates.push(block.text);
     }
+
     if (candidates.length >= 5) break;
   }
+
   return titleFromCandidates(candidates);
 }
 
@@ -175,10 +185,12 @@ export class CodeBuddyIdeAdapter extends AgentAdapter {
     let messageCount = 0;
     let sizeBytes = 0;
     const msgDir = path.join(entry.convDir, 'messages');
+
     try {
       for (const f of fs.readdirSync(msgDir)) {
         if (!f.endsWith('.json')) continue;
         messageCount++;
+
         try {
           sizeBytes += fs.statSync(path.join(msgDir, f)).size;
         } catch {
@@ -232,6 +244,7 @@ export class CodeBuddyIdeAdapter extends AgentAdapter {
     } else if (projectPath) {
       for (const dir of findIdeHistoryDirs(projectPath)) {
         const candidate = path.join(dir, convId);
+
         if (fs.existsSync(candidate)) {
           convDir = candidate;
           historyDir = dir;
@@ -241,14 +254,17 @@ export class CodeBuddyIdeAdapter extends AgentAdapter {
         }
       }
     }
+
     if (!convDir) {
       const found = findIdeConversationDirs(convId)[0];
+
       if (found) {
         convDir = found.convDir;
         historyDir = found.historyDir;
         workspaceHash = path.basename(found.historyDir);
       }
     }
+
     if (!convDir || !historyDir) {
       throw new Error(`CodeBuddy IDE session not found: session_id=${ref.sessionId}`);
     }
@@ -268,8 +284,10 @@ export class CodeBuddyIdeAdapter extends AgentAdapter {
         for (const block of raw.content) {
           if (block.type !== 'tool-result') continue;
           const irBlock = this.parseToolResult(block);
+
           if (!irBlock) continue;
           const last = messages[messages.length - 1];
+
           if (last && last.role === 'user') {
             last.content.push(irBlock);
           } else {
@@ -278,10 +296,12 @@ export class CodeBuddyIdeAdapter extends AgentAdapter {
             messages.push({ role: 'user', content: [irBlock], timestamp: raw.createdAt });
           }
         }
+
         continue;
       }
 
       const content = this.parseContent(raw, convDir);
+
       if (content.length === 0) continue;
 
       const msg: Message = {
@@ -290,6 +310,7 @@ export class CodeBuddyIdeAdapter extends AgentAdapter {
         messageId: raw.id,
         timestamp: raw.createdAt,
       };
+
       if (raw.model) msg.metadata = { model: raw.model };
       messages.push(msg);
     }
@@ -298,7 +319,9 @@ export class CodeBuddyIdeAdapter extends AgentAdapter {
       safeConversationName(entry?.name ?? '') ||
       firstUserText(rawMessages) ||
       `Session ${convId.slice(0, 8)}`;
+
     const createdAt = entry?.createdAt || rawMessages[0]?.createdAt || new Date().toISOString();
+
     const updatedAt =
       entry?.lastMessageAt || rawMessages[rawMessages.length - 1]?.createdAt || createdAt;
 
@@ -321,14 +344,18 @@ export class CodeBuddyIdeAdapter extends AgentAdapter {
       switch (block.type) {
         case 'text': {
           const text = String(block.text ?? '');
+
           if (text) blocks.push({ type: 'text', text });
           break;
         }
+
         case 'reasoning': {
           const text = String(block.text ?? block.reasoning ?? '');
+
           if (text) blocks.push({ type: 'thinking', text });
           break;
         }
+
         case 'tool-call': {
           const callId = String(block.toolCallId ?? block.id ?? '');
           const args = (block.args ?? block.arguments ?? {}) as Record<string, unknown>;
@@ -340,19 +367,24 @@ export class CodeBuddyIdeAdapter extends AgentAdapter {
           });
           break;
         }
+
         case 'tool-result': {
           const irBlock = this.parseToolResult(block);
+
           if (irBlock) blocks.push(irBlock);
           break;
         }
+
         case 'image': {
           // Image dragged into the input box: content is a relative `codebuddy-asset://assets/xxx.png`
           // reference, and the file itself lives under <convDir>/assets/. These used to be skipped outright — the image never entered
           // the IR, fidelity still reported 100%, and the user only noticed the pictures were gone after opening the migration result.
           const img = parseImageBlock(block, convDir);
+
           if (img) blocks.push(img);
           break;
         }
+
         default:
           // Other IDE-specific blocks (file references and similar): the IR has no matching type, so skip them
           break;
@@ -368,6 +400,7 @@ export class CodeBuddyIdeAdapter extends AgentAdapter {
     const inner = result?.result as Record<string, unknown> | undefined;
 
     let content = '';
+
     if (typeof inner?.content === 'string') {
       content = inner.content;
     } else if (inner && typeof inner.content !== 'undefined') {
@@ -387,9 +420,11 @@ export class CodeBuddyIdeAdapter extends AgentAdapter {
   /** Returns the 32-hex conversation id, the form `writeSession` returns. */
   async existingSessionId(sessionId: string, projectPath?: string): Promise<string | undefined> {
     const convId = toConvId(sessionId);
+
     const found = projectPath
       ? findIdeHistoryDirs(projectPath, false).some((historyDir) => fs.existsSync(path.join(historyDir, convId)))
       : findIdeConversationDirs(convId).length > 0;
+
     return found ? convId : undefined;
   }
 
@@ -400,6 +435,7 @@ export class CodeBuddyIdeAdapter extends AgentAdapter {
     // the hash cannot be computed and the write is skipped silently. A silent success is more dangerous than a failure — the user thinks the migration finished, but the sidebar is empty.
     // Windows drive paths (C:\...) are valid absolute paths too, so allow them as well.
     const absoluteLike = cwd.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(cwd);
+
     if (!cwd || !absoluteLike) {
       throw new Error(
         `Writing to CodeBuddy IDE requires an absolute working directory, got "${cwd}". Pass --cwd/--target-cwd.`,
@@ -411,7 +447,9 @@ export class CodeBuddyIdeAdapter extends AgentAdapter {
       targetCwd: cwd,
       sourceSessionId: session.sessionId,
     });
+
     const result = writeIdeSession({ ...session, sessionId: writeId }, cwd);
+
     if (result.synced === 0 || !result.convId) {
       throw new Error(`CodeBuddy IDE write failed: ${result.skipped ?? 'no IDE history directory found'}`);
     }
@@ -421,6 +459,7 @@ export class CodeBuddyIdeAdapter extends AgentAdapter {
 
   async deleteSession(sessionId: string, projectPath?: string): Promise<boolean> {
     const cleaned = deleteIdeSession(sessionId, projectPath);
+
     return cleaned > 0;
   }
 }

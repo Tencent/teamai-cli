@@ -55,12 +55,14 @@ type MarkerPair = readonly [start: string, end: string, name: string];
 const CULTURE: MarkerPair = [TEAMAI_CULTURE_START, TEAMAI_CULTURE_END, 'culture'];
 const CLAUDEMD: MarkerPair = [TEAMAI_CLAUDEMD_START, TEAMAI_CLAUDEMD_END, 'claudemd'];
 const RECALL: MarkerPair = [TEAMAI_RECALL_RULES_START, TEAMAI_RECALL_RULES_END, 'recall'];
+
 /**
  * The rules block releases before per-file rules wrote into instruction files.
  * Hermes still writes it live in SOUL.md, which is only ever a target here,
  * never a retired file, so cleanup never reaches that copy.
  */
 const LEGACY_RULES: MarkerPair = [TEAMAI_RULES_START, TEAMAI_RULES_END, 'rules'];
+
 /** The team rules a Codex-family tool reads from its own AGENTS.md in user scope. */
 const TEAM_RULES: MarkerPair = [TEAMAI_TEAM_RULES_START, TEAMAI_TEAM_RULES_END, 'team-rules'];
 
@@ -74,7 +76,9 @@ const STALE_BLOCKS: readonly MarkerPair[] = [CULTURE, CLAUDEMD, RECALL, LEGACY_R
  */
 async function hasRecallAgent(tool: string, install: Install): Promise<boolean> {
   const blocks = channelsOf(tool).blocks[install.scope];
+
   if (typeof blocks === 'object' && blocks.channel === 'file' && blocks.noRecallAgent === true) return false;
+
   return ownOf(await locate(tool, 'agents', install)) !== null;
 }
 
@@ -134,6 +138,7 @@ export function deliversInstructionsByHook(tool: string, scope: Scope): boolean 
 
 function runTimeBlocksOf(tool: string, scope: Scope): RunTime | null {
   const channel = channelsOf(tool).blocks[scope];
+
   return typeof channel === 'object' && channel.channel !== 'file' ? channel : null;
 }
 
@@ -154,6 +159,7 @@ export function instructionHookText(blocks: InstructionBlocks, recall: boolean):
 export async function nativeProjectInstructions(tool: string, projectRoot: string): Promise<string> {
   const preferred = CODEX_TOOL_IDS.some((id) => id === tool) ? 'AGENTS.override.md'
     : tool === 'omp' ? '.omp/AGENTS.md' : undefined;
+
   return (preferred ? await readFileSafe(path.join(projectRoot, preferred)) : null)
     ?? await readFileSafe(path.join(projectRoot, 'AGENTS.md')) ?? '';
 }
@@ -163,20 +169,26 @@ export async function instructionHookTextFor(teamConfig: TeamaiConfig, localConf
   const { buildRolePullContext } = await import('./resources/desired.js');
   const { resolveInstructionBlocks } = await import('./pull.js');
   const { blocks } = await resolveInstructionBlocks(teamConfig, localConfig, await buildRolePullContext(localConfig));
+
   if (localConfig.scope === 'project' && localConfig.projectRoot) {
     const native = await nativeProjectInstructions(tool, localConfig.projectRoot);
+
     // Native context still supplies each retained block. Do not add a second
     // member selection while another writer's replacement holds cleanup back.
     if (native.includes(CULTURE[0]) || native.includes(CULTURE[1])) blocks.culture = null;
+
     if (native.includes(CLAUDEMD[0]) || native.includes(CLAUDEMD[1])) blocks.claudemd = null;
+
     if (native.includes(RECALL[0]) || native.includes(RECALL[1])) blocks.recall = blocks.directRecall = null;
   }
+
   return instructionHookText(blocks, await hasRecallAgent(tool, installOf(teamConfig, localConfig)));
 }
 
 /** The message for hook text over its channel's limit, or null when it fits. */
 export function hookLimitProblem(hook: InstructionHook, text: string): string | null {
   if (hook.limit === undefined || text.length <= hook.limit) return null;
+
   return `${hook.tool} cannot load this project's team instructions: they are ${text.length} characters, over the `
     + `${hook.limit}-character limit of its prompt section, so ${hook.tool} skips them. Shorten culture.md or the `
     + 'claudemd/ files for this scope, or run `teamai recall disable`, which drops the recall block from them. '
@@ -195,6 +207,7 @@ export async function channelReadiness(
   context?: { teamConfig: TeamaiConfig; localConfig: LocalConfig },
 ): Promise<{ ready: boolean; fix: string }> {
   const rerun = 'Run `teamai hooks inject` to reinstall it; `teamai hooks remove` takes it away.';
+
   switch (probe) {
     case 'omp-extension':
     case 'pi-extension': {
@@ -203,6 +216,7 @@ export async function channelReadiness(
       const omp = probe === 'omp-extension';
       const file = omp ? path.join(hookAdapterDir('omp-extension'), OMP_HOOK_FILE) : path.join(hookAdapterDir('pi-extension'), PI_HOOK_FILE);
       const expected = omp ? buildOmpExtensionSource() : buildPiExtensionSource();
+
       return {
         ready: await hookSourceMatches(await readFileSafe(file), expected),
         // Pi's extension also carries a project's team rules (#946); OMP reads its own rules files.
@@ -210,42 +224,54 @@ export async function channelReadiness(
           + `${getsRulesFromExtension(tool) ? ' or rules' : ''}. ${rerun}`,
       };
     }
+
     case 'hermes-plugin': {
       const {
         buildInstructionsPlugin, foreignInstructionsPlugin, getInstructionsPluginDir, HERMES_INSTRUCTIONS_PLUGIN, ownsInstructionsPlugin,
       } = await import('./hermes-hooks.js');
+
       const { getHermesConfigPath, isHermesPluginEnabled } = await import('./hermes-config.js');
+
       if (!await ownsInstructionsPlugin()) return { ready: false, fix: foreignInstructionsPlugin() };
       const dir = getInstructionsPluginDir();
       const plugin = buildInstructionsPlugin();
+
       const installed = await hookSourceMatches(await readFileSafe(path.join(dir, '__init__.py')), plugin.init)
         && await readFileSafe(path.join(dir, 'plugin.yaml')) === plugin.manifest;
+
       if (!installed) {
         return { ready: false, fix: `The Hermes plugin ${dir} is missing or out of date, so Hermes sessions in this project get no team instructions. ${rerun}` };
       }
+
       return {
         ready: await isHermesPluginEnabled(HERMES_INSTRUCTIONS_PLUGIN),
         fix: `${HERMES_INSTRUCTIONS_PLUGIN} is not in plugins.enabled of ${getHermesConfigPath()}, and Hermes loads no user plugin that is not listed there. `
           + 'Add it there (or remove it from plugins.disabled), then start a new Hermes session.',
       };
     }
+
     case 'codex-hooks': {
       const file = hooksFileOf(tool, context);
+
       return {
         ready: file !== undefined && await hooksInstalled(file, tool),
         fix: `${file ?? `${tool}'s hooks file`} is missing or out of date, so ${tool} sessions get no team instructions. ${rerun}`,
       };
     }
+
     case 'muse-session-start': {
       const file = hooksFileOf(tool, context);
+
       return {
         ready: file !== undefined && await hooksInstalled(file, tool),
         fix: `${file ?? `${tool}'s hooks file`} registers no current teamai SessionStart hook, so Muse Code sessions in this project `
           + `get none of the team rules or instructions. ${rerun}`,
       };
     }
+
     case 'zcode-session-start': {
       const file = hooksFileOf(tool, context);
+
       if (file === undefined || !await hooksInstalled(file, tool)) {
         return {
           ready: false,
@@ -253,29 +279,36 @@ export async function channelReadiness(
             + `get none of the team rules or instructions. ${rerun}`,
         };
       }
+
       const read = await readJsonObject(file);
       const hooks = read.kind === 'ok' ? read.value.hooks : undefined;
+
       return {
         ready: typeof hooks === 'object' && hooks !== null && 'enabled' in hooks && hooks.enabled === true,
         fix: `${file} sets hooks.enabled to something other than true, so ZCode runs none of the hooks it registers, and sessions `
           + 'in this project get none of the team rules or instructions. Run `teamai hooks inject`, which turns them on.',
       };
     }
+
     case 'dsh-session-start': {
       const { isDshHooksMounted, resolveDshHomePatchPath, resolveDshHookConfigPath } = await import('./dsh-hooks.js');
       const configPath = resolveDshHookConfigPath();
+
       const broken = [
         ...await isDshHooksMounted(configPath) ? [] : [resolveDshHomePatchPath()],
         ...await hooksInstalled(configPath, tool) ? [] : [configPath],
       ];
+
       return {
         ready: broken.length === 0,
         fix: `${broken.join(' and ')} ${broken.length === 1 ? 'is' : 'are'} missing or out of date, so DeepSeek Harness sessions in this `
           + `project get none of the team rules or instructions. ${rerun}`,
       };
     }
+
     default: {
       const unhandled: never = probe;
+
       return unhandled;
     }
   }
@@ -286,11 +319,13 @@ function hooksFileOf(tool: string, context: { teamConfig: TeamaiConfig; localCon
   if (context === undefined) return undefined;
   const hookScope = resolveHookScope(context.localConfig);
   const settings = scopedToolPaths(context.teamConfig, { ...context.localConfig, scope: hookScope.scope })[tool]?.settings;
+
   return settings === undefined ? undefined : path.resolve(hookScope.baseDir, settings);
 }
 
 async function hooksInstalled(file: string, tool: string): Promise<boolean> {
   const { getHookStatus } = await import('./hooks.js');
+
   return await getHookStatus(file, tool) === 'installed';
 }
 
@@ -305,13 +340,17 @@ export async function instructionHookChannelInstallable(tool: string): Promise<b
     const { hasOmpHooks, OMP_HOOK_FILE } = await import('./omp-hooks.js');
     const { hasPiHooks, PI_HOOK_FILE } = await import('./pi-hooks.js');
     const file = tool === 'omp' ? path.join(hookAdapterDir('omp-extension'), OMP_HOOK_FILE) : path.join(hookAdapterDir('pi-extension'), PI_HOOK_FILE);
+
     return !await pathExists(file) || (tool === 'omp' ? await hasOmpHooks() : await hasPiHooks());
   }
+
   if (tool === 'hermes') {
     const { HERMES_INSTRUCTIONS_PLUGIN, ownsInstructionsPlugin } = await import('./hermes-hooks.js');
     const { isHermesPluginDisabled } = await import('./hermes-config.js');
+
     return await ownsInstructionsPlugin() && !await isHermesPluginDisabled(HERMES_INSTRUCTIONS_PLUGIN);
   }
+
   return true;
 }
 
@@ -323,17 +362,23 @@ export async function instructionHookChannelInstallable(tool: string): Promise<b
 export async function instructionChannelProblems(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<string[]> {
   const { hooks } = await resolveInstructionTargets(teamConfig, localConfig);
   const problems: string[] = [];
+
   for (const hook of hooks) {
     const text = await instructionHookTextFor(teamConfig, localConfig, hook.tool);
+
     if (!text) continue;
     const channel = await channelReadiness(hook.tool, hook.probe, { teamConfig, localConfig });
+
     if (!channel.ready) {
       problems.push(channel.fix);
       continue;
     }
+
     const overLimit = hookLimitProblem(hook, text);
+
     if (overLimit) problems.push(overLimit);
   }
+
   return problems;
 }
 
@@ -354,6 +399,7 @@ function managedBlockBody(block: string): string {
 export async function unreadableRulesFileMessage(tool: string, gate: { readonly file: string }): Promise<string> {
   const read = await readJsonObject(gate.file);
   const why = read.kind === 'invalid' ? ` (${read.error})` : '';
+
   return `teamai cannot read ${gate.file} as plain JSON${why}, so it cannot tell which `
     + `workspace ${tool} reads: it writes no team-rules block, and ${tool} gets none of the team rules from teamai. `
     + 'Make that file plain JSON (no comments or trailing commas), then run `teamai pull`.';
@@ -377,20 +423,28 @@ export async function resolveInstructionTargets(
   const current = new Set<string>();
   const retired = new Map<string, InstructionTarget>();
   const hooks: InstructionHook[] = [];
+
   // A tool the team does not map still names the files earlier releases wrote its blocks to.
   for (const tool of new Set([...Object.keys(TOOLS), ...Object.keys(install.toolPaths)])) {
     const location = await locate(tool, 'blocks', install);
+
     // A retired file is cleaned as the member's: one git tracks stays, emptied.
     for (const { place } of location.retired) if (!retired.has(place.path)) retired.set(place.path, { path: place.path, tools: [], recall: false });
+
     if (install.toolPaths[tool] === undefined) continue;
     const own = ownOf(location);
+
     if (own !== null) current.add(own.path);
+
     if (isAgentExcluded(localConfig, tool)) {
       if (own !== null) inUse.add(own.path);
+
       for (const { place } of location.retired) inUse.add(place.path);
       continue;
     }
+
     if (!location.gates.every((gate) => gate.met)) continue;
+
     switch (location.channel) {
       case 'run-time':
         hooks.push({ tool, probe: location.probe, recall: await hasRecallAgent(tool, install), limit: location.limit ?? undefined });
@@ -405,17 +459,21 @@ export async function resolveInstructionTargets(
         targets.set(own.path, target);
         break;
       }
+
       case 'none':
       case 'unknown':
         break;
       default: {
         const unhandled: never = location;
+
         return unhandled;
       }
     }
   }
+
   const stale = [...retired.values()].filter((t) => !current.has(t.path) && !inUse.has(t.path));
   const opencode = [...targets.values()].find((target) => target.tools.includes('opencode'));
+
   if (install.scope !== 'user' || opencode === undefined) return { targets: [...targets.values()], hooks, stale, opencodeFallback: null, opencodeFallbackStale: false };
   // OpenCode V1 reads ~/.claude/CLAUDE.md while its own user AGENTS.md does
   // not exist; when Claude's blocks are there, listing OpenCode's file too
@@ -427,6 +485,7 @@ export async function resolveInstructionTargets(
   const claudeDelivers = claude !== null && claude.path === claudeFile && targets.get(claudeFile)?.tools.includes('claude') === true;
   const claudeHolds = !claudeDelivers && await holdsInstructionBlocks(claudeFile);
   const opencodeFallback = (claudeDelivers || claudeHolds) && !await pathExists(path.join(path.dirname(opencode.path), 'AGENTS.md')) ? claudeFile : null;
+
   return { targets: [...targets.values()], hooks, stale, opencodeFallback, opencodeFallbackStale: opencodeFallback !== null && claudeHolds };
 }
 
@@ -439,18 +498,23 @@ export async function retiredFilesOfReached(
   const { stale } = await resolveInstructionTargets(teamConfig, localConfig);
   const install = installOf(teamConfig, localConfig);
   const writers = new Map<string, string[]>();
+
   for (const tool of Object.keys(install.toolPaths)) {
     const location = await locate(tool, 'blocks', install);
     // A tool installed where its hook runs, or in this checkout, excluded or
     // not, keeps the files it wrote until it is reached. Agents have no
     // run-time channel, so their location carries this scope's own gates.
     const installed = (gates: readonly Gate[]) => gates.every((gate) => gate.kind === 'selected' || gate.met);
+
     if (!installed(location.gates) && !installed((await locate(tool, 'agents', install)).gates)) continue;
+
     // A tool with no file and no hook channel here (OpenClaw in a project, #946)
     // has no replacement to wait for; a hook tool whose hook is not installed does.
     if (location.channel !== 'run-time' && ownOf(location) === null) continue;
+
     for (const { place } of location.retired) writers.set(place.path, [...writers.get(place.path) ?? [], tool]);
   }
+
   return stale.filter((target) => (writers.get(target.path) ?? []).every((tool) => reached.includes(tool)));
 }
 
@@ -472,47 +536,62 @@ export async function registerOpencodeContext(
   if (teamConfig.toolPaths.opencode === undefined) return null;
   const location = await locate('opencode', 'blocks', installOf(teamConfig, localConfig));
   const contextFile = ownOf(location)?.path;
+
   if (contextFile === undefined || location.channel !== 'files') return null;
   // teamai's plugin adds the file on OpenCode V2 (#915), which applies
   // `instructions` too: listing it there would load it twice.
   const { opencodeDeliversThroughPlugin } = await import('./opencode-hooks.js');
+
   if (await opencodeDeliversThroughPlugin(teamConfig, localConfig)) return null;
   const targeted = resolved.targets.some((target) => target.path === contextFile);
   const wanted = targeted && !resolved.opencodeFallback;
+
   if (!targeted && !resolved.stale.some((target) => target.path === contextFile)) return null;
   const result = files.find((file) => file.path === contextFile);
+
   // An unsuccessful edit cannot activate a new entry or remove a working one.
   if (wanted && (!result || result.status === 'blocked' || result.status === 'failed')) return null;
   const ready = result?.status === 'current' || result?.status === 'written' || (dryRun && result?.status === 'would-write');
   const delivered = await holdsInstructionBlocks(contextFile) || (dryRun && result?.status === 'would-write');
+
   // A same-named file of the member's: its entry, if any, is theirs too.
   if (!delivered && await pathExists(contextFile)) return null;
   // Old or malformed blocks the plan could not replace are not this sync's.
   const present = wanted && delivered && ready;
   // Pull, doctor and uninstall read the entry from the config beside the file, whatever the team maps MCP to.
   const { config, entry } = opencodeContextReference(contextFile, localConfig.scope, resolveBaseDir(localConfig));
+
   // An entry goes only if teamai recorded adding it: one the member listed
   // before teamai wrote the file is theirs.
   if (!present) {
     const { loadStateForScope } = await import('./config.js');
     const recorded = (await loadStateForScope(localConfig)).opencodeContextEntries ?? [];
+
     if (!recorded.some((ref) => ref.config === config && ref.entry === entry)) return null;
   }
+
   if (dryRun) {
     const listed = (await readOpencodeInstructionList(config))?.includes(entry) ?? false;
+
     if (listed === present) return null;
+
     return `Would ${present ? 'add' : 'remove'} "${entry}" ${present ? 'to' : 'from'} the instructions of ${config}`;
   }
+
   const listed = await readOpencodeInstructionList(config);
+
   if (present && !listed?.includes(entry) && (listed !== null || !await pathExists(config))) {
     // Persist ownership before activation. If either write fails, retry can
     // safely finish without claiming an entry the member already listed.
     await recordOpencodeContextEntry(localConfig, { config, entry }, true);
   }
+
   const changed = await reconcileOpencodeInstructions(config, entry, present, 'team instructions');
+
   if (!present && ((await readOpencodeInstructionList(config))?.includes(entry) === false || !await pathExists(config))) {
     await recordOpencodeContextEntry(localConfig, { config, entry }, false);
   }
+
   return changed ? `${present ? 'Added' : 'Removed'} "${entry}" ${present ? 'to' : 'from'} the instructions of ${config}` : null;
 }
 
@@ -556,19 +635,25 @@ type BlockEdit = { content: string } | { malformed: true };
 function editBlock(content: string, [start, end]: MarkerPair, block: string | null): BlockEdit {
   const starts = content.split(start).length - 1;
   const ends = content.split(end).length - 1;
+
   if (starts === 0 && ends === 0) {
     if (block === null) return { content };
     const kept = content.trimEnd();
+
     return { content: kept ? `${kept}\n\n${block}\n` : `${block}\n` };
   }
+
   const startIdx = content.indexOf(start);
   const endIdx = content.indexOf(end);
+
   if (starts !== 1 || ends !== 1 || endIdx < startIdx) return { malformed: true };
   const after = content.substring(endIdx + end.length);
+
   if (block !== null) return { content: content.substring(0, startIdx) + block + after };
   const before = content.substring(0, startIdx).replace(/\n+$/, '\n');
   // A block that opened the file leaves no blank line above what follows it.
   const rest = (before + after.replace(/^\n+/, before ? '\n' : '')).trimEnd();
+
   return { content: rest ? `${rest}\n` : '' };
 }
 
@@ -582,18 +667,23 @@ function hasTeamaiBlock(content: string): boolean {
  */
 export async function holdsInstructionBlocks(file: string): Promise<boolean> {
   const content = await readFileSafe(file);
+
   return content !== null && hasTeamaiBlock(content);
 }
 
 /** Whether a shared instruction file contains complete TeamAI blocks and no member text. */
 export async function holdsOnlyInstructionBlocks(file: string): Promise<boolean> {
   let content = await readFileSafe(file);
+
   if (content === null || !hasTeamaiBlock(content)) return false;
+
   for (const pair of STALE_BLOCKS) {
     const edited = editBlock(content, pair, null);
+
     if ('malformed' in edited) return false;
     content = edited.content;
   }
+
   return content.trim() === '';
 }
 
@@ -628,6 +718,7 @@ async function planFile(
   const existing = await readFileSafe(target.path);
   // A retired file teamai wrote with a header, such as its own Copilot file once sharing.gitExclude is off (#915).
   const header = target.header ?? (kind === 'cleanup' ? KNOWN_HEADERS.find((known) => existing?.startsWith(known)) : undefined);
+
   // A tracked instruction target may have been emptied by the rule-reclaim
   // pass above: it is still the business repository's file, but it is now
   // deliberately available for the blocks this plan is about to write.
@@ -636,30 +727,42 @@ async function planFile(
   if (existing !== null && target.owned && !hasTeamaiBlock(existing)
     && existing.trim() !== '' && existing !== (target.header ?? '')) {
     warnings.push(`${target.path} was not written by teamai, so teamai left it unchanged. Move or rename it so teamai can deliver the team instructions there.`);
+
     return null;
   }
+
   let content = existing ?? target.header ?? '';
+
   for (const [pair, block] of edits) {
     const edited = editBlock(content, pair, block);
+
     if ('malformed' in edited) {
       warnings.push(`${target.path} has an incomplete teamai ${pair[2]} block, so teamai left it unchanged. Fix or remove its ${pair[2]} markers by hand.`);
+
       return null;
     }
+
     content = edited.content;
   }
+
   // teamai's own rule file needs its header to be loaded at all: put it back
   // if it was lost or edited, replacing any other frontmatter.
   if (target.owned && target.header && hasTeamaiBlock(content) && !content.startsWith(target.header)) {
     content = target.header + content.replace(/^---\n[\s\S]*?\n---\n/, '').replace(/^\n*/, '\n');
   }
+
   if (content === (existing ?? target.header ?? '')) return null;
 
   const remainder = withoutHeader(content, header).trim();
+
   if (remainder === '') {
     if (existing === null) return null;
+
     if (target.owned || (createdByTeamai(withoutHeader(existing, header)) && await mayDelete(target.path))) return { path: target.path, content: null, kind };
+
     return { path: target.path, content: '', kind };
   }
+
   return { path: target.path, content, kind };
 }
 
@@ -680,7 +783,9 @@ export async function clearInstructionFile(
   owned = path.basename(file).startsWith(`${TEAMAI_CONTEXT_RULE_NAME}.`),
 ): Promise<{ changed: boolean; warnings: string[] }> {
   const existing = await readFileSafe(file);
+
   if (existing === null) return { changed: false, warnings: [] };
+
   const target: InstructionTarget = {
     path: file,
     tools: [],
@@ -688,15 +793,20 @@ export async function clearInstructionFile(
     header: KNOWN_HEADERS.find((header) => existing.startsWith(header)),
     owned,
   };
+
   const blocks = starts === undefined ? STALE_BLOCKS : STALE_BLOCKS.filter(([start]) => starts.includes(start));
   const warnings: string[] = [];
   const change = await planFile(target, blocks.map((pair) => [pair, null] as const), 'cleanup', warnings);
+
   const plan: InstructionPlan = {
     changes: change ? [change] : [], warnings,
     files: [{ path: file, status: warnings.length > 0 ? 'blocked' : change ? 'planned' : 'current' }],
   };
+
   const { failures } = await applyInstructionPlan(plan, { dryRun: false });
+
   if (failures.length > 0) throw new Error(failures.join(' '));
+
   return { changed: plan.changes.length > 0, warnings: plan.warnings };
 }
 
@@ -714,17 +824,23 @@ export async function planInstructionFiles(
   const warnings: string[] = [];
   const changes: InstructionFileChange[] = [];
   const files: InstructionPlan['files'] = [];
+
   for (const target of targets) {
     const edits: Array<readonly [MarkerPair, string | null]> = [];
+
     if (blocks.culture !== undefined) edits.push([CULTURE, blocks.culture]);
+
     if (blocks.claudemd !== undefined) edits.push([CLAUDEMD, blocks.claudemd]);
     const recall = target.recall ? blocks.recall : blocks.directRecall;
+
     if (recall !== undefined) edits.push([RECALL, recall]);
     const before = warnings.length;
     const change = await planFile(target, edits, 'write', warnings);
+
     if (change) changes.push(change);
     files.push({ path: target.path, status: warnings.length > before ? 'blocked' : change ? 'planned' : 'current' });
   }
+
   const cleanupBlocks = retiredBlocks === undefined ? STALE_BLOCKS : [
     ...retiredBlocks.culture !== undefined ? [CULTURE] : [],
     ...retiredBlocks.claudemd !== undefined ? [CLAUDEMD] : [],
@@ -733,12 +849,15 @@ export async function planInstructionFiles(
     ...retiredBlocks.culture !== undefined && retiredBlocks.claudemd !== undefined
       && retiredBlocks.recall !== undefined && retiredBlocks.directRecall !== undefined ? [LEGACY_RULES, TEAM_RULES] : [],
   ];
+
   for (const file of stale) {
     const before = warnings.length;
     const change = await planFile(file, cleanupBlocks.map((pair) => [pair, null] as const), 'cleanup', warnings);
+
     if (change) changes.push(change);
     files.push({ path: file.path, status: warnings.length > before ? 'blocked' : change ? 'planned' : 'current' });
   }
+
   return { changes, warnings, files };
 }
 
@@ -754,9 +873,11 @@ export async function applyInstructionPlan(
   const report: string[] = [];
   const failures: string[] = [];
   const files = new Map<string, InstructionFileResult>();
+
   for (const file of plan.files) {
     if (file.status !== 'planned') files.set(file.path, { ...file, status: file.status });
   }
+
   for (const { path: file, content, kind } of plan.changes) {
     if (!options.dryRun) {
       try {
@@ -768,6 +889,7 @@ export async function applyInstructionPlan(
         continue;
       }
     }
+
     files.set(file, { path: file, status: options.dryRun
       ? content === null ? 'would-remove' : 'would-write'
       : content === null ? 'removed' : 'written' });
@@ -775,5 +897,6 @@ export async function applyInstructionPlan(
       ? `${options.dryRun ? 'Would write' : 'Wrote'} teamai instruction blocks to ${file}`
       : `${options.dryRun ? 'Would remove' : 'Removed'} teamai instruction blocks from ${file}`);
   }
+
   return { report, failures, files: plan.files.map((file) => files.get(file.path)!) };
 }

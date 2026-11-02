@@ -43,9 +43,11 @@ export interface ImportFromRepoListResult {
  */
 function sortByPriority(entries: RepoListEntry[]): RepoListEntry[] {
     const order: Record<string, number> = { high: 0, normal: 1, low: 2 };
+
     return [...entries].sort((a, b) => {
         const pa = order[a.priority ?? 'normal'] ?? 1;
         const pb = order[b.priority ?? 'normal'] ?? 1;
+
         return pa - pb;
     });
 }
@@ -86,6 +88,7 @@ export async function importFromRepoList(
     // Every entry lands in the same teamwiki: <output>/teamwiki, else the team repo's.
     let target: TeamwikiTarget | undefined;
     let releaseBatchLock: (() => Promise<void>) | null = null;
+
     if (!dryRun) {
         target = await resolveTeamwiki({ output });
         releaseBatchLock = await lockTeamwiki(target);
@@ -98,6 +101,7 @@ export async function importFromRepoList(
     try {
     // 2. 分拣 org entry（暂不支持）与单仓 entry
     const singleEntries: ReturnType<typeof sortByPriority> = [];
+
     for (const item of repoListFile.repos) {
         if (isOrgEntry(item)) {
             log.warn(`org entry not yet supported, skipped: ${item.org}`);
@@ -131,12 +135,14 @@ export async function importFromRepoList(
                 skipEnrich,
                 maxFiles,
             });
+
             if (!deepEnrichComplete) {
                 failIncompleteDeepEnrich({
                     slug: repoSlugForUrl(entry.url),
                     output,
                 });
             }
+
             succeeded.push(1);
         } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
@@ -155,10 +161,12 @@ export async function importFromRepoList(
         }
 
         semaphore.running++;
+
         const task = processEntry(entry).finally(() => {
             semaphore.running--;
             inFlight.delete(task);
         });
+
         inFlight.add(task);
     }
 

@@ -36,13 +36,17 @@ export class GitLabProvider implements GitProvider {
   async authenticate(): Promise<string> {
     if (this.isAuthenticated()) {
       const username = await gitlabWhoami();
+
       if (username) return username;
     }
+
     await ensureGitLabAvailable();
     const username = await gitlabWhoami();
+
     if (!username) {
       throw new Error('GitLab authentication failed. Please run `teamai init` again.');
     }
+
     return username;
   }
 
@@ -57,6 +61,7 @@ export class GitLabProvider implements GitProvider {
       if (e instanceof GitLabRepoNotFoundError) {
         throw new RepoNotFoundError(repo);
       }
+
       throw e;
     }
   }

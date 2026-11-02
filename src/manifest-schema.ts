@@ -156,7 +156,9 @@ export function warnUnknownResourceKeys(
  */
 export function assertSafeFallbackNamespaces(ids: string[], source: string): string[] {
   const error = fallbackNamespaceError(ids, source);
+
   if (error !== null) throw new Error(error);
+
   return ids;
 }
 
@@ -166,6 +168,7 @@ export function assertSafeFallbackNamespaces(ids: string[], source: string): str
  */
 export function fallbackNamespaceError(ids: string[], source: string): string | null {
   const unsafe = ids.find((id) => !isSafeNamespaceSegment(id));
+
   return unsafe === undefined
     ? null
     : `Invalid ${source} "${unsafe}": ${NAMESPACE_RULE}. Switch to a role whose id is a valid namespace with \`teamai roles set <role>\`, or add manifest/roles.yaml to map the role to its namespaces.`;
@@ -179,11 +182,13 @@ export function fallbackNamespaceError(ids: string[], source: string): string | 
  */
 export function parseManifest<S extends z.ZodType>(schema: S, raw: unknown, kind: ManifestKind): z.infer<S> {
   const parsed = schema.safeParse(raw);
+
   if (parsed.success) return parsed.data;
 
   const detail = parsed.error.issues
     .map((issue) => (issue.path.length > 0 ? `${issue.path.join('.')}: ${issue.message}` : issue.message))
     .join('; ');
+
   throw new Error(`Invalid ${kind} manifest: ${detail}`);
 }
 
@@ -199,14 +204,19 @@ export function parseManifest<S extends z.ZodType>(schema: S, raw: unknown, kind
  */
 async function danglingLinkOnPath(target: string): Promise<string | null> {
   let current = target;
+
   for (;;) {
     const link = await fs.lstat(current).catch(() => null);
+
     if (link) {
       if (!link.isSymbolicLink()) return null;
       const resolves = await fs.stat(current).then(() => true, () => false);
+
       return resolves ? null : current;
     }
+
     const parent = path.dirname(current);
+
     if (parent === current) return null;
     current = parent;
   }
@@ -225,17 +235,22 @@ export async function readManifestFile(manifestPath: string, kind: ManifestKind)
   // directory, read as absent, and relax the filtering.
   const resolvedPath = expandHome(manifestPath);
   let content: string;
+
   try {
     content = await fs.readFile(resolvedPath, 'utf-8');
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       const dangling = await danglingLinkOnPath(resolvedPath);
+
       if (!dangling) return null;
       throw new Error(`The ${kind} manifest ${resolvedPath} could not be read: ${dangling} is a symbolic link with no target. Point the link at the manifest file, or replace the link with the file itself.`, { cause: error });
     }
+
     throw new Error(`The ${kind} manifest ${resolvedPath} could not be read: ${(error as Error).message}. Make it a readable file, then retry.`, { cause: error });
   }
+
   if (content.trim() === '') throw emptyManifestError(kind, resolvedPath);
+
   return content;
 }
 
@@ -244,6 +259,7 @@ export function emptyManifestError(kind: ManifestKind, where: string): Error {
   const consequence = kind === 'members'
     ? 'deleting it instead hands role selection back to each member'
     : `deleting it instead turns ${kind} filtering off for the whole team`;
+
   return new Error(`Invalid ${kind} manifest: ${where} is empty. Give it a version and a ${kind} list; ${consequence}.`);
 }
 
@@ -256,9 +272,11 @@ const parsedManifests = new Map<string, { content: string; manifest: unknown }>(
  */
 export function parseManifestOnce<T>(manifestPath: string, content: string, parse: (content: string) => T): T {
   const known = parsedManifests.get(manifestPath);
+
   if (known?.content === content) return structuredClone(known.manifest as T);
   const manifest = parse(content);
   parsedManifests.set(manifestPath, { content, manifest: structuredClone(manifest) });
+
   return manifest;
 }
 
@@ -291,9 +309,11 @@ export function caseFoldKey(name: string): string {
  */
 export function assertNoCaseAliasedNamespaces(entries: Iterable<NamespaceEntry>, kind: string): void {
   const seen = new Map<string, NamespaceEntry>();
+
   for (const entry of entries) {
     const key = `${entry.type}/${caseFoldKey(entry.namespace)}`;
     const prior = seen.get(key);
+
     if (!prior) {
       seen.set(key, entry);
     } else if (prior.namespace !== entry.namespace) {

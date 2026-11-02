@@ -15,6 +15,7 @@ export interface WorktreeSnapshot {
 
 async function gitStatus(workspace: string, run: Git): Promise<{ ok: boolean; text: string }> {
   const status = await run(workspace, ['status', '--porcelain', '-z', '--untracked-files=all', '--ignore-submodules=none']);
+
   return status.code === 0 ? { ok: true, text: status.stdout } : { ok: false, text: status.stderr.trim() };
 }
 
@@ -22,21 +23,27 @@ async function gitStatus(workspace: string, run: Git): Promise<{ ok: boolean; te
 function statusEntries(text: string): { mark: string; relative: string }[] {
   const parts = text.split('\0');
   const entries: { mark: string; relative: string }[] = [];
+
   for (let index = 0; index < parts.length; index += 1) {
     const item = parts[index] ?? '';
+
     if (item.length < 4) continue;
     const mark = item.slice(0, 2);
+
     if (mark.includes('R') || mark.includes('C')) index += 1;
     entries.push({ mark, relative: item.slice(3) });
   }
+
   return entries;
 }
 
 async function hashPath(workspace: string, relative: string): Promise<string> {
   const full = path.resolve(workspace, relative);
+
   try {
     const stats = await fs.lstat(full);
     const bytes = stats.isSymbolicLink() ? await fs.readlink(full) : await fs.readFile(full);
+
     return createHash('sha256').update(bytes).digest('hex');
   } catch {
     return 'missing';
@@ -45,10 +52,13 @@ async function hashPath(workspace: string, relative: string): Promise<string> {
 
 async function stagedEntry(workspace: string, relative: string, run: Git): Promise<string> {
   const listed = await run(workspace, ['ls-files', '-s', '--', relative]);
+
   const entries = listed.stdout.split('\n').filter((line) => line.trim() !== '').map((line) => {
     const [mode, blob, stage] = line.split(/\s+/);
+
     return `${mode}:${blob}:${stage}`;
   });
+
   return entries.join(',') || 'none';
 }
 
@@ -68,27 +78,35 @@ export async function snapshotWorktree(workspace: string, run: Git = git, depth 
     run(workspace, ['rev-parse', 'HEAD']),
     run(workspace, ['symbolic-ref', '--quiet', 'HEAD']),
   ]);
+
   const head = headRead.stdout.trim();
   const branch = branchRead.stdout.trim();
+
   if (!status.ok) return { ok: false, files: new Map(), ...(head ? { head } : {}), branch };
   const files = new Map<string, string>();
+
   for (const { mark, relative } of statusEntries(status.text)) {
     if (files.has(relative)) continue;
     const staged = await stagedEntry(workspace, relative, run);
     const mode = await worktreeMode(workspace, relative);
     const gitlink = staged.split(',').some((entry) => entry.startsWith('160000:'));
+
     const body = gitlink && depth < 3
       ? await submoduleSnapshot(path.resolve(workspace, relative), run, depth)
       : await hashPath(workspace, relative);
+
     files.set(relative, `${mark}:${staged}:${mode}:${body}`);
   }
+
   return { ok: true, files, ...(head ? { head } : {}), branch };
 }
 
 async function submoduleSnapshot(dir: string, run: Git, depth: number): Promise<string> {
   const snap = await snapshotWorktree(dir, run, depth + 1);
+
   const files = [...snap.files.entries()].sort(([left], [right]) => left.localeCompare(right))
     .map(([name, value]) => `${name}=${value}`).join('\n');
+
   return `${snap.ok ? 'ok' : 'unreadable'}:${snap.head ?? ''}:${files}`;
 }
 
@@ -99,6 +117,8 @@ export function changedPaths(before: WorktreeSnapshot, after: WorktreeSnapshot):
     : !before.ok
       ? (after.files.size === 0 ? [] : [...after.files.keys()])
       : [...new Set([...before.files.keys(), ...after.files.keys()])].filter((name) => before.files.get(name) !== after.files.get(name));
+
   if ((before.head && after.head && before.head !== after.head) || before.branch !== after.branch) files.push('HEAD');
+
   return files;
 }

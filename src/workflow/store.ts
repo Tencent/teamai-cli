@@ -27,9 +27,12 @@ export function isRunId(runId: string): boolean {
 }
 
 export const RunIdSchema = z.string().regex(RUN_ID, 'Run id must look like r followed by 8 or 16 hex digits').brand<'RunId'>();
+
 export type RunId = z.infer<typeof RunIdSchema>;
+
 /** The attempt id the engine gives a lease: `a` + 8 hex digits. */
 export const AttemptIdSchema = z.string().regex(/^a[0-9a-f]{8}$/, 'Attempt id must look like a followed by 8 hex digits').brand<'AttemptId'>();
+
 export type AttemptId = z.infer<typeof AttemptIdSchema>;
 
 /** A fresh run id: 16 hex digits (see RUN_ID for why not 8). */
@@ -100,11 +103,14 @@ export async function appendAttemptOutcome(config: LocalConfig, marker: string, 
   const [runPart, attemptPart, ...rest] = marker.split('/');
   const run = RunIdSchema.safeParse(runPart);
   const attempt = AttemptIdSchema.safeParse(attemptPart);
+
   if (!run.success || !attempt.success || rest.length > 0) return 'bad_marker';
+
   if (await readFileSafe(runFilePath(config, run.data)) === null) return 'unknown_run';
   const file = attemptOutcomesPath(config, run.data, attempt.data);
   await fs.mkdir(path.dirname(file), { recursive: true });
   await fs.appendFile(file, `${JSON.stringify(outcome)}\n`, 'utf8');
+
   return 'appended';
 }
 
@@ -112,10 +118,13 @@ export async function appendAttemptOutcome(config: LocalConfig, marker: string, 
 export async function readAttemptOutcomes(config: LocalConfig, run: string, attempt: string): Promise<WorkOutcome[]> {
   const runId = RunIdSchema.safeParse(run);
   const attemptId = AttemptIdSchema.safeParse(attempt);
+
   if (!runId.success || !attemptId.success) return [];
   const text = await readFileSafe(attemptOutcomesPath(config, runId.data, attemptId.data));
+
   return uniqueOutcomes((text ?? '').split('\n').flatMap((line) => {
     const parsed = WorkOutcomeSchema.safeParse(parsedJson(line));
+
     return parsed.success ? [parsed.data] : [];
   }));
 }
@@ -129,6 +138,7 @@ function parsedJson(text: string | null): unknown {
 }
 
 const RunLockSchema = z.object({ run: RunIdSchema }).brand<'RunLock'>();
+
 /** Proof that the caller holds this machine's driver lock of `run`. Only `takeRunLock` makes one. */
 export type RunLock = z.infer<typeof RunLockSchema>;
 
@@ -144,15 +154,19 @@ export type LockTaken<T> = { kind: 'held'; value: T } | { kind: 'busy'; error: {
 export async function takeRunLock<T>(config: LocalConfig, run: RunId, body: (lock: RunLock) => Promise<T>, { waitMs }: { waitMs: number }): Promise<LockTaken<T>> {
   const lock = driverLockPath(config, run);
   const until = Date.now() + waitMs;
+
   while (!await acquireLock(lock)) {
     if (Date.now() >= until) {
       const owner = LockOwnerSchema.safeParse(parsedJson(await readFileSafe(lock)));
+
       return { kind: 'busy', error: { code: 'driver_running', message: owner.success
         ? `Run ${run} is already driven by process ${owner.data.pid} on this machine. Stop that driver, or wait for it.`
         : `Run ${run} has a local driver lock whose process id is unknown. Stop that driver, or inspect its driver.lock file.` } };
     }
+
     await delay(LOCK_WAIT_MS);
   }
+
   try {
     return { kind: 'held', value: await body(RunLockSchema.parse({ run })) };
   } finally {
@@ -168,6 +182,7 @@ export async function withRunLock<T>(
   options: { waitMs: number },
 ): Promise<T | { error: { code: 'driver_running'; message: string } }> {
   const taken = await takeRunLock(config, run, body, options);
+
   return taken.kind === 'held' ? taken.value : { error: taken.error };
 }
 
@@ -181,7 +196,9 @@ function runnerLockPath(config: LocalConfig, run: RunId, attempt: AttemptId): st
  */
 export async function withRunnerLock<T>(config: LocalConfig, run: RunId, attempt: AttemptId, body: () => Promise<T>): Promise<T | 'held'> {
   const lock = runnerLockPath(config, run, attempt);
+
   if (!await acquireLock(lock)) return 'held';
+
   try {
     return await body();
   } finally {
@@ -197,6 +214,7 @@ export async function runnerAlive(config: LocalConfig, run: RunId, attempt: Atte
 function isDefinition(value: unknown): value is WorkflowDefinition {
   if (!value || typeof value !== 'object') return false;
   const definition = value as WorkflowDefinition;
+
   return definition.schemaVersion === 'v1alpha1'
     && typeof definition.name === 'string'
     && typeof definition.description === 'string'
@@ -206,6 +224,7 @@ function isDefinition(value: unknown): value is WorkflowDefinition {
 export function isRunState(value: unknown): value is RunState {
   if (!value || typeof value !== 'object') return false;
   const run = value as RunState;
+
   return run.schemaVersion === 'v1alpha1'
     && isRunId(run.id)
     && typeof run.name === 'string'
@@ -238,11 +257,15 @@ const RunProgressSchema = z.object({
 
 export async function readRun(config: LocalConfig, runId: string): Promise<RunState | 'missing' | 'corrupt'> {
   const raw = await readFileSafe(runFilePath(config, runId));
+
   if (raw === null) return 'missing';
+
   try {
     const value: unknown = JSON.parse(raw);
+
     if (!isRunState(value)) return 'corrupt';
     const progress = RunProgressSchema.safeParse(value);
+
     return progress.success ? { ...value, ...progress.data } : 'corrupt';
   } catch {
     return 'corrupt';
@@ -254,6 +277,7 @@ export async function readRuns(config: LocalConfig): Promise<RunState[]> {
   const files = await fs.readdir(runsDir(config)).catch(() => []);
   const ids = files.filter((file) => file.endsWith('.json')).map((file) => file.slice(0, -'.json'.length)).filter(isRunId);
   const runs = await Promise.all(ids.map((id) => readRun(config, id)));
+
   return runs.filter((run): run is RunState => typeof run === 'object');
 }
 
@@ -276,6 +300,7 @@ const PINNED: ReadonlySet<string> = new Set(['definition', 'workflows', 'scorers
 /** `run` as its file holds it: each of `secrets` masked in every field but the pinned definitions. */
 function maskedRun(run: RunState, secrets: Record<string, string>): unknown {
   if (Object.keys(secrets).length === 0) return run;
+
   return Object.fromEntries(Object.entries(run).map(([key, value]) => [key, PINNED.has(key) ? value : redactJson(value, secrets)]));
 }
 
@@ -292,16 +317,23 @@ export async function updateRun<T>(
 ): Promise<RunUpdate<T>> {
   const lock = runLockPath(config, runId);
   let held = false;
+
   for (let attempt = 0; attempt < LOCK_ATTEMPTS && !held; attempt += 1) {
     held = await acquireLock(lock);
+
     if (!held) await delay(LOCK_WAIT_MS);
   }
+
   if (!held) return { status: 'busy' };
+
   try {
     const loaded = await readRun(config, runId);
+
     if (loaded === 'corrupt') return { status: 'corrupt' };
     const { value, write } = await change(loaded);
+
     if (write) await writeJsonAtomic(runFilePath(config, runId), maskedRun(write, secrets));
+
     return { status: 'done', value };
   } finally {
     await releaseLock(lock);
@@ -312,10 +344,12 @@ export async function updateRun<T>(
 export async function installOwner(config: LocalConfig): Promise<HandoffOwner> {
   const file = path.join(getDataHome(config), 'workflows', 'owner.json');
   let id = ownerId(await readFileSafe(file));
+
   if (id === undefined) {
     await fs.mkdir(path.dirname(file), { recursive: true });
     const draft = `${file}.${randomUUID()}.tmp`;
     await writeFileAtomic(draft, `${JSON.stringify({ id: randomUUID() })}\n`);
+
     try {
       // A hard link never replaces an existing file, so two first runs agree on one id.
       await fs.link(draft, file);
@@ -324,16 +358,21 @@ export async function installOwner(config: LocalConfig): Promise<HandoffOwner> {
     } finally {
       await fs.rm(draft, { force: true });
     }
+
     id = ownerId(await readFileSafe(file));
   }
+
   if (id === undefined) throw new Error(`${file} does not hold an install id. Move it aside and try again.`);
+
   return { id, user: config.username };
 }
 
 function ownerId(text: string | null): string | undefined {
   if (text === null) return undefined;
+
   try {
     const value: unknown = JSON.parse(text);
+
     return typeof value === 'object' && value !== null && 'id' in value && typeof value.id === 'string' && value.id !== '' ? value.id : undefined;
   } catch {
     return undefined;

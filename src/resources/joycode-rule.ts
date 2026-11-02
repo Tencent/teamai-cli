@@ -23,9 +23,11 @@ import {
  */
 export function teamRuleToJoycodeRule(rawTeamRule: string): string {
   const globs = [...new Set(rulePaths(teamRuleData(rawTeamRule)).flatMap(expandBraces))];
+
   const frontmatter = globs.length > 0
     ? [`globs: ${globs.join(', ')}`, 'alwaysApply: false']
     : ['alwaysApply: true'];
+
   return `---\n${frontmatter.join('\n')}\n---\n\n${teamRuleBody(rawTeamRule)}\n`;
 }
 
@@ -36,7 +38,9 @@ export function teamRuleToJoycodeRule(rawTeamRule: string): string {
  */
 export function joycodeQuotedGlobsWarning(file: string, rawCopy: string): string | null {
   const frontmatter = /^---\s*[\r\n]+([\s\S]*?)\r?\n---/.exec(rawCopy)?.[1] ?? '';
+
   if (!/^\s*globs:\s*["']/m.test(frontmatter)) return null;
+
   return `${file} keeps the quoted \`globs\` an older teamai wrote, which JoyCode never matches, so the rule applies to no file. `
     + 'Remove the quotes and write each `{a,b}` alternative as a glob of its own, or delete the file and run `teamai pull --force` to take the team version.';
 }

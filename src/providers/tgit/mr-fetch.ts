@@ -20,9 +20,11 @@ interface ParsedTGitMR {
 function parseTGitMRUrl(url: string): ParsedTGitMR {
   // 匹配 git.woa.com 后的路径，最后两段为 merge_requests/<id>
   const match = url.match(/git\.woa\.com\/(.+)\/([^/]+)\/merge_requests\/(\d+)/);
+
   if (!match) {
     throw new Error(`Invalid TGit MR URL: ${url}`);
   }
+
   return { group: match[1], project: match[2], mrIid: match[3] };
 }
 
@@ -66,33 +68,45 @@ const MAX_NOTE_PAGES = 10;
  */
 async function fetchTGitThreads(enc: string, mrGlobalId: number, commentMarker?: string): Promise<MRThread[]> {
   const notes: TGitNote[] = [];
+
   for (let page = 1; page <= MAX_NOTE_PAGES; page++) {
     const resp = await tgitFetch(`/projects/${enc}/merge_requests/${mrGlobalId}/notes?per_page=100&page=${page}`);
+
     if (!resp.ok) {
       throw new Error(`TGit API error ${resp.status}`);
     }
+
     const raw = (await resp.json()) as TGitNote[];
+
     if (!Array.isArray(raw)) {
       throw new Error('TGit API returned no note list');
     }
+
     notes.push(...raw);
+
     if (raw.length < 100) break;
   }
+
   const threads: MRThread[] = [];
   const byDiscussion = new Map<string, MRThread>();
+
   for (const n of notes) {
     if (n.system) continue;
     const note = { author: n.author?.username, body: n.body ?? '' };
     const key = n.discussion_id === undefined || n.discussion_id === null ? undefined : String(n.discussion_id);
     const thread = key === undefined ? undefined : byDiscussion.get(key);
+
     if (thread) {
       thread.notes.push(note);
       continue;
     }
+
     const fresh: MRThread = { notes: [note] };
+
     if (key !== undefined) byDiscussion.set(key, fresh);
     threads.push(fresh);
   }
+
   return pruneThreads(threads, commentMarker);
 }
 
@@ -120,22 +134,29 @@ export async function fetchTGitMR(url: string, opts: MRFetchOptions = {}): Promi
 
   // ── 1. 获取元信息（TGit 不支持 /merge_requests/{iid} 路径，需用 ?iid= 查询）──
   const resp = await tgitFetch(`/projects/${enc}/merge_requests?iid=${mrIid}`);
+
   if (!resp.ok) {
     throw new Error(`TGit API 返回错误 ${resp.status}：${await resp.text()}`);
   }
+
   const mrList = await resp.json() as TGitMR[];
+
   if (!Array.isArray(mrList)) {
     throw new Error(`TGit API 返回了非预期的响应（期望 MR 列表）：${JSON.stringify(mrList).slice(0, 200)}`);
   }
+
   const mr = mrList.find((m) => String(m.iid) === mrIid);
+
   if (!mr) {
     throw new Error(`TGit MR !${mrIid} 不存在`);
   }
 
   // ── 2. 获取 diff（使用全局 id，单数 merge_request 路径，截断至 50KB，失败不阻断）──
   let diff = '';
+
   try {
     const diffResp = await tgitFetch(`/projects/${enc}/merge_request/${mr.id}/changes`);
+
     if (diffResp.ok) {
       const diffData = await diffResp.json() as TGitChangesResponse;
       const fileDiffs = diffData.files ?? diffData.changes ?? [];
@@ -149,6 +170,7 @@ export async function fetchTGitMR(url: string, opts: MRFetchOptions = {}): Promi
 
   // ── 3. 获取评审 threads（失败非致命） ─────────────────────
   let discussions: MRThread[] | undefined;
+
   if (opts.discussions !== false) {
     try {
       discussions = await fetchTGitThreads(enc, mr.id, opts.commentMarker);

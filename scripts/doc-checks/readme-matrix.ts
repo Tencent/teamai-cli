@@ -10,6 +10,7 @@ import { isToolId, TOOLS, type Support, type ToolId } from '../../src/tools.js';
 import { DEFAULT_TOOL_PATHS } from '../../src/types.js';
 
 const ROOT = process.cwd();
+
 const READMES = fs
   .readdirSync(ROOT)
   .filter((file) => /^README(\..+)?\.md$/.test(file))
@@ -31,6 +32,7 @@ const COLUMNS = [
   'scorers',
   'benchmarks',
 ] as const;
+
 type Column = (typeof COLUMNS)[number];
 
 /** The README's row label for each tool it lists. */
@@ -57,15 +59,18 @@ const LABELS: Readonly<Record<string, ToolId>> = {
   'Muse Code': 'muse',
   Antigravity: 'agy',
 };
+
 /** Internal builds the README leaves out. */
 const UNLISTED: ReadonlySet<ToolId> = new Set(['claude-internal', 'codex-internal', 'tclaude', 'tcodex']);
 
 function rows(file: string): Map<string, readonly string[]> {
   const text = fs.readFileSync(path.join(ROOT, file), 'utf8');
+
   return new Map(
     [...text.matchAll(/<tr><td>([^<]+)<\/td>(.*?)<\/tr>/g)].map(([, label, cells]) => {
       const values = [...cells.matchAll(/<td align="center">(.*?)<\/td>/g)].map(([, value]) => value);
       assert.equal(values.length, COLUMNS.length, `${file}: ${label}`);
+
       return [label, values];
     }),
   );
@@ -78,7 +83,9 @@ function cell(row: readonly string[], column: Column): string | undefined {
 /** `✓` or `—` when the descriptor's mark decides it, else undefined (`?`). */
 function decided(support: Support): '✓' | '—' | undefined {
   const mark = typeof support === 'string' ? support : support.cell;
+
   if (mark === '?') return undefined;
+
   return mark.startsWith('✓') || mark.startsWith('◐') ? '✓' : '—';
 }
 
@@ -88,6 +95,7 @@ await check('lists every tool but the internal builds', () => {
   const tools = Object.keys(DEFAULT_TOOL_PATHS)
     .filter(isToolId)
     .filter((tool) => !UNLISTED.has(tool));
+
   assert.deepEqual([...matrix.keys()].map((label) => LABELS[label]).sort(), tools.sort());
 });
 
@@ -102,6 +110,7 @@ for (const [label, row] of matrix) {
     const tool = LABELS[label];
     const d = TOOLS[tool];
     const blocks = typeof d.blocks.user === 'object' || typeof d.blocks.project === 'object';
+
     if (typeof d.rules.user === 'object' && d.rules.user.channel === 'inline') assert.equal(cell(row, 'rules'), '✓¹');
     assert.equal(cell(row, 'culture'), blocks ? '✓' : '—');
     assert.equal(cell(row, 'models'), ALL_MODEL_AGENTS.some((agent) => agent === tool) ? '✓' : '—');
@@ -111,6 +120,7 @@ for (const [label, row] of matrix) {
       typeof d.hooks.user === 'object' && runsTeamHookOn(tool, 'SessionStart') ? '✓' : '—',
     );
     const usage = decided(d.features.stats);
+
     if (usage !== undefined) assert.equal(cell(row, 'usage'), usage);
     // The skill driver runs workflows wherever the teamai skill reaches the session.
     assert.equal(cell(row, 'workflows'), cell(row, 'skills'));

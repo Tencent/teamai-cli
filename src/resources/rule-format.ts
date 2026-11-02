@@ -81,6 +81,7 @@ export function ruleFormatById(id: RuleFormatId): RuleFormat {
 /** The tool's own rules format; undefined when it takes the team `.md` verbatim. */
 export function ruleFormatForTool(tool: string): RuleFormat | undefined {
   const id = ruleFormatIdOf(tool);
+
   return id === 'verbatim' ? undefined : RULE_FORMATS[id];
 }
 
@@ -117,11 +118,14 @@ export function flatStem(name: string): string {
  */
 export function ruleStemsForTool(tool: string, teamNames: Iterable<string>): Map<string, string> {
   const names = [...new Set(teamNames)];
+
   if (!ruleFormatForTool(tool)?.flat) return new Map(names.map((name) => [name, name]));
   const stems = new Map<string, string>();
+
   for (const name of names) {
     if (!name.includes('/') || flatStemSharers(tool, name, names).length === 0) stems.set(name, flatStem(name));
   }
+
   return stems;
 }
 
@@ -129,6 +133,7 @@ export function ruleStemsForTool(tool: string, teamNames: Iterable<string>): Map
 export function flatStemSharers(tool: string, name: string, teamNames: Iterable<string>): string[] {
   if (!ruleFormatForTool(tool)?.flat) return [];
   const stem = flatStem(name);
+
   return [...new Set(teamNames)].filter((other) => other !== name && flatStem(other) === stem);
 }
 
@@ -141,10 +146,13 @@ export function flatStemSharers(tool: string, name: string, teamNames: Iterable<
  */
 export function teamRuleNameForFile(tool: string, stem: string, stems: ReadonlyMap<string, string>): string | undefined {
   if (!ruleFormatForTool(tool)?.flat) return stem;
+
   if (stem.includes('/')) return undefined;
+
   for (const [name, delivered] of stems) {
     if (delivered === stem) return name;
   }
+
   return stem;
 }
 
@@ -157,6 +165,7 @@ export function teamRuleNameForFile(tool: string, stem: string, stems: ReadonlyM
 export function flatStemsOfRemoved(tool: string, removed: Iterable<string>, teamNames: Iterable<string>): Set<string> {
   if (!ruleFormatForTool(tool)?.flat) return new Set();
   const live = new Set(ruleStemsForTool(tool, teamNames).values());
+
   return new Set([...removed].filter((name) => name.includes('/')).map(flatStem).filter((stem) => !live.has(stem)));
 }
 
@@ -168,6 +177,7 @@ export function flatStemsOfRemoved(tool: string, removed: Iterable<string>, team
  */
 export function sharesRulesDirWithMember(tool: string): boolean {
   if (tool === 'cursor') return false;
+
   return ruleFormatForTool(tool) !== undefined || tool === 'pi';
 }
 
@@ -348,8 +358,11 @@ export const RULE_FILE_EXTENSIONS = ['.instructions.md', '.mdc', '.md'] as const
  */
 export function ruleStemFromFilename(filename: string): string | null {
   if (filename.endsWith('.instructions.md')) return filename.slice(0, -'.instructions.md'.length);
+
   if (filename.endsWith('.mdc')) return filename.slice(0, -'.mdc'.length);
+
   if (filename.endsWith('.md')) return filename.slice(0, -'.md'.length);
+
   return null;
 }
 

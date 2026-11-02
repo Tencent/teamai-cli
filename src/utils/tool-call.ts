@@ -102,6 +102,7 @@ function asObject(value: unknown): Record<string, unknown> | null {
  */
 function responseOf(stdin: Record<string, unknown>): unknown {
   if (stdin.tool_response !== undefined) return stdin.tool_response;
+
   if (typeof stdin.tool_output === 'string') {
     try {
       return asObject(JSON.parse(stdin.tool_output)) ?? stdin.tool_output;
@@ -109,6 +110,7 @@ function responseOf(stdin: Record<string, unknown>): unknown {
       return stdin.tool_output;
     }
   }
+
   return stdin.tool_result;
 }
 
@@ -121,11 +123,16 @@ function responseOf(stdin: Record<string, unknown>): unknown {
  */
 function statusOf(stdin: Record<string, unknown>, response: unknown): ToolStatus {
   const bridged = stdin.tool_status;
+
   if (bridged === 'success' || bridged === 'failure' || bridged === 'unknown') return bridged;
   const r = asObject(response);
+
   if (!r) return 'unknown';
+
   if (typeof r.exitCode === 'number') return r.exitCode !== 0 ? 'failure' : 'success';
+
   if (typeof r.result_type === 'string') return r.result_type === 'success' ? 'success' : 'failure';
+
   return 'success';
 }
 
@@ -133,6 +140,7 @@ function statusOf(stdin: Record<string, unknown>, response: unknown): ToolStatus
 function outputOf(response: unknown): string | undefined {
   const r = asObject(response);
   const output = typeof response === 'string' ? response : r?.stdout ?? r?.text_result_for_llm;
+
   return typeof output === 'string' ? output : undefined;
 }
 
@@ -145,12 +153,14 @@ function searchOutputOf(response: unknown): string | undefined {
   if (typeof response === 'string') return response;
   const r = asObject(response);
   const output = r?.content ?? r?.results ?? r?.text_result_for_llm;
+
   return typeof output === 'string' ? output : undefined;
 }
 
 /** Whether `file` is `root` or under it; always, when `root` has no base to place it. */
 function within(file: string, root: string): boolean {
   if (!isAbsolutePath(root)) return true;
+
   return isAbsolutePath(file) && isWithin(file, root);
 }
 
@@ -195,20 +205,28 @@ function shownFiles(output: string, roots: string[], base: string | undefined, t
   if (target !== undefined && endsInFileName(target)) return showsLines(output, plain) ? [target] : [];
   const files = new Set<string>();
   let under = false;
+
   for (const line of output.split('\n')) {
     const colon = line.indexOf(':', /^[A-Za-z]:[\\/]/.test(line) ? 2 : 0);
+
     if (colon <= 0) continue;
     const prefix = line.slice(0, colon);
+
     // Text before a colon (`Cause: …`, `12:text`, OpenCode's `  Line 12: text`) is no path.
     if (/^\s/.test(prefix) || !endsInFileName(prefix)) continue;
     const rest = line.slice(colon);
+
     if (!plain && !/^:\d+:/.test(rest) && rest.trimEnd() !== ':') continue;
     const file = resolvePath(prefix, base);
+
     if (!roots.some((root) => within(file, root))) continue;
     files.add(file);
+
     if (target !== undefined && !samePath(file, target)) under = true;
   }
+
   if (target !== undefined && !under && showsLines(output, plain)) files.add(target);
+
   return [...files];
 }
 
@@ -227,15 +245,21 @@ function withoutErrors(output: string, verb: string): { content: string | null; 
   const prefixes = [...new Set([verb, verb.split(/[\\/]/).pop()!])].map((name) => `${name}: `);
   const lines = output.split('\n');
   const named: string[] = [];
+
   const kept = lines.filter((line) => {
     if (SHELL_DIAGNOSTIC.test(line)) return false;
     const prefix = prefixes.find((p) => line.startsWith(p));
+
     if (prefix === undefined) return true;
     const file = /^(.+?): /.exec(line.slice(prefix.length))?.[1];
+
     if (file !== undefined) named.push(file.replace(/^'(.*)'$/, '$1'));
+
     return false;
   });
+
   if (kept.length === lines.length) return { content: output, named };
+
   return { content: kept.some((line) => line.trim() !== '') ? kept.join('\n') : null, named };
 }
 
@@ -248,53 +272,69 @@ export function classifyToolCall(stdin: Record<string, unknown>, agent?: string)
   const status = statusOf(stdin, response);
   const cwd = resolveHookCwd(stdin);
   const unknown: ToolCall = { category: 'unknown', paths: [], status, simple: false };
+
   if (!input || !category) return unknown;
 
   if (category === 'read') {
     // `filePath`: CodeBuddy IDE's `read_file` (unverified); `path`: Copilot's `view`, and Cursor's Read too.
     const file = input.file_path ?? input.filePath ?? input.path;
+
     if (typeof file !== 'string' || !file.trim()) return unknown;
     const spelled = READ_SELECTORS.has(agent ?? '') ? withoutReadSelector(file) : file;
+
     return { category, paths: [resolvePath(spelled, cwd)], status, simple: true };
   }
+
   if (category === 'list') return { category, paths: [], status, simple: true };
 
   if (category === 'search') {
     const given = input.output_mode ?? asObject(response)?.mode;
     const mode = typeof given === 'string' ? given : LISTS_BY_DEFAULT.has(name) ? 'files_with_matches' : 'content';
+
     if (mode === 'files_with_matches') return { category: 'list', paths: [], status, simple: true };
     const output = searchOutputOf(response);
+
     if (mode !== 'content' || output === undefined || !readsSearchEvidence(agent)) {
       return { category, paths: [], status, simple: true };
     }
+
     // Relative output paths are relative to the searched path (Pi), else to the cwd.
     const root = typeof input.path === 'string' && input.path.trim() ? resolvePath(input.path, cwd) : undefined;
     const base = root ?? cwd;
     const target = root !== undefined && isAbsolutePath(root) ? root : undefined;
+
     return { category, paths: shownFiles(output, base ? [base] : [], base, target, false), status, simple: true };
   }
 
   const command = input.command;
+
   if (typeof command !== 'string') return unknown;
   const shell = classifyShellCommand(command, { powershell: name.toLowerCase() === 'powershell', home: getUserHome() }, status === 'success');
   const output = outputOf(response);
   const optional = output !== undefined ? { output } : {};
+
   // With no status, only the command's own error lines tell a failure apart.
   const errors = status === 'unknown' && output !== undefined && shell.verb !== undefined
     ? withoutErrors(output, shell.verb)
     : { content: output, named: [] };
+
   const content = errors.content;
+
   if (content === null) return { category: shell.category, paths: [], status: 'failure', simple: shell.simple, command, ...optional };
+
   if (shell.category === 'search') {
     // A shell search prints paths as its operands wrote them: relative to the cwd.
     const roots = shell.paths.map((f) => resolvePath(f, cwd));
     // Only a lone search prints its output; after a pipe, what shows may no longer be the file's lines.
     const target = shell.target !== undefined && shell.simple ? resolvePath(shell.target, cwd) : undefined;
     const paths = content !== undefined ? shownFiles(content, roots, cwd, target, true) : [];
+
     return { category: 'search', paths, status, simple: shell.simple, command, ...optional };
   }
+
   // A read did not read a file its command's error names.
   const failed = errors.named.map((f) => resolvePath(f, cwd));
+
   return {
     category: shell.category,
     paths: shell.paths.map((f) => resolvePath(f, cwd)).filter((f) => !failed.some((e) => samePath(e, f))),

@@ -40,6 +40,7 @@ const RolesManifestSchema = z.object({
 });
 
 export type TeamRole = z.infer<typeof RoleSchema>;
+
 export type RolesManifest = z.infer<typeof RolesManifestSchema>;
 
 /**
@@ -62,11 +63,13 @@ function validateManifestShape(raw: unknown): RolesManifest {
 
   const candidate = raw as Record<string, unknown>;
   const roles = candidate.roles;
+
   if (!Array.isArray(roles) || roles.length === 0) {
     throw new Error('Invalid roles manifest: roles must be a non-empty array');
   }
 
   const entries: unknown[] = roles;
+
   for (const role of entries) {
     if (!role || typeof role !== 'object') {
       throw new Error('Invalid roles manifest: every role must be an object');
@@ -74,6 +77,7 @@ function validateManifestShape(raw: unknown): RolesManifest {
 
     const id = 'id' in role && role.id != null ? String(role.id) : '<unknown>';
     const resources = 'resources' in role ? role.resources : undefined;
+
     if (!resources || typeof resources !== 'object' || Array.isArray(resources)) {
       throw new Error(`Invalid roles manifest: role ${id} is missing resources`);
     }
@@ -85,12 +89,15 @@ function validateManifestShape(raw: unknown): RolesManifest {
 
   const manifest = parseManifest(RolesManifestSchema, raw, 'roles');
   const ids = new Set<string>();
+
   for (const role of manifest.roles) {
     if (ids.has(role.id)) {
       throw new Error(`Invalid roles manifest: duplicate role id "${role.id}"`);
     }
+
     ids.add(role.id);
   }
+
   assertNoCaseAliasedNamespaces(roleNamespaceEntries(manifest), 'roles manifest');
 
   return manifest;
@@ -125,17 +132,20 @@ export async function loadRolesManifest(repoPath: string): Promise<RolesManifest
   // only one that becomes RolesManifestNotFoundError: an unreadable or empty file
   // throws a plain error and fails the pull or push.
   const content = await readManifestFile(manifestPath, 'roles');
+
   if (content === null) {
     throw new RolesManifestNotFoundError(manifestPath);
   }
 
   return parseManifestOnce(manifestPath, content, (text) => {
     let raw: unknown;
+
     try {
       raw = YAML.parse(text);
     } catch (error) {
       throw new Error(`Invalid roles manifest YAML: ${(error as Error).message}`, { cause: error });
     }
+
     return validateManifestShape(raw);
   });
 }
@@ -188,9 +198,11 @@ export function describeRoles(roles: Array<Pick<TeamRole, 'id' | 'description'>>
 
 function getRoleOrThrow(manifest: RolesManifest, roleId: string): TeamRole {
   const role = manifest.roles.find((candidate) => candidate.id === roleId);
+
   if (!role) {
     throw new Error(`Unknown role "${roleId}". Valid roles: ${listRoleIds(manifest).join(', ')}`);
   }
+
   return role;
 }
 
@@ -213,6 +225,7 @@ export function resolveRoleResourceNamespaces(input: {
   for (const type of [...NAMESPACED_RESOURCE_TYPES, 'learnings' as const]) {
     const seen = new Set<string>();
     const out: string[] = [];
+
     for (const role of resolvedRoles) {
       for (const namespace of (role.resources as Record<string, string[] | undefined>)[type] ?? []) {
         if (seen.has(namespace)) continue;
@@ -220,6 +233,7 @@ export function resolveRoleResourceNamespaces(input: {
         out.push(namespace);
       }
     }
+
     if (out.length > 0 || namespaces[type] !== undefined) namespaces[type] = out;
   }
 
@@ -245,6 +259,8 @@ export function activeRoleIds(
   },
 ): string[] | null {
   if (localConfig.roleUnresolved) return [];
+
   if (!localConfig.primaryRole) return localConfig.roleAssignment ? [] : null;
+
   return [...new Set([localConfig.primaryRole, ...(localConfig.additionalRoles ?? [])])];
 }

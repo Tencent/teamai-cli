@@ -55,6 +55,7 @@ const many = (values: readonly string[] | undefined): GroupValue[] | undefined =
 
 /** The dimensions a cohort can be grouped by, in the order the page offers them. */
 export const DIMENSIONS_OFFERED = ['tool', 'model', 'teamRevision', 'definition', 'role', 'project', 'tag', 'fingerprint', 'skill'] as const;
+
 export type Dimension = (typeof DIMENSIONS_OFFERED)[number];
 
 /**
@@ -66,24 +67,30 @@ const DIMENSIONS: Record<Dimension, (entry: ViewedLabel) => GroupValue[] | undef
   tool: ({ agent }) => one(observed(agent)?.tool.name),
   model: ({ agent }) => {
     const model = observed(agent)?.model;
+
     if (model?.reported) return [{ value: model.reported, isReported: true }];
+
     return model?.requested ? [{ value: model.requested, isReported: false }] : undefined;
   },
   teamRevision: ({ agent }) => {
     const team = observed(agent)?.team;
+
     return team ? [{ value: team.revision, ...(team.localChanges ? { localChanges: true } : {}) }] : undefined;
   },
   definition: ({ agent }) => one(agent?.definition?.name),
   role: ({ agent }) => {
     const selection = observed(agent)?.team?.selection;
+
     return selection ? many(selection.primaryRole ? [selection.primaryRole] : []) : undefined;
   },
   project: ({ agent }) => {
     const selection = observed(agent)?.team?.selection;
+
     return selection ? many(selection.projects ?? []) : undefined;
   },
   tag: ({ agent }) => {
     const selection = observed(agent)?.team?.selection;
+
     return selection ? many(selection.subscribedTags ?? []) : undefined;
   },
   fingerprint: ({ agent }) => one(observed(agent)?.fingerprint),
@@ -213,10 +220,13 @@ function judgeCohort(judge: ScoreLabel['judge']): JudgeCohort {
       return { kind: 'human' };
     case 'model': {
       const id = judge.model?.reported ?? judge.model?.requested;
+
       return { kind: 'model', tool: judge.tool, ...(id ? { model: { id, isReported: judge.model?.reported !== undefined } } : {}) };
     }
+
     default: {
       const unhandled: never = judge;
+
       return unhandled;
     }
   }
@@ -227,6 +237,7 @@ function withAlias(judge: JudgeCohort, newestFirst: readonly ViewedLabel[]): Jud
   if (judge.kind !== 'model' || !judge.model) return judge;
   const newestJudge = newestFirst[0]?.label.judge;
   const alias = newestJudge?.kind === 'model' ? newestJudge.model?.alias : undefined;
+
   return alias ? { ...judge, model: { ...judge.model, alias } } : judge;
 }
 
@@ -237,9 +248,11 @@ const identities = new WeakMap<ScoreLabel, { cohort: CohortIdentity; key: string
 
 function identityOf(label: ScoreLabel): { cohort: CohortIdentity; key: string } {
   const kept = identities.get(label);
+
   if (kept) return kept;
   const identity = { cohort: cohortOf(label), key: labelId(label) };
   identities.set(label, identity);
+
   return identity;
 }
 
@@ -251,6 +264,7 @@ function cohortOf(label: ScoreLabel): CohortIdentity {
     runMode: label.runMode ?? null,
     judge: judgeCohort(label.judge),
   };
+
   return { id: createHash('sha256').update(canonicalJson(identity)).digest('hex').slice(0, 16), ...identity };
 }
 
@@ -260,11 +274,14 @@ function cohortOf(label: ScoreLabel): CohortIdentity {
  */
 function current(labels: readonly ViewedLabel[]): ViewedLabel[] {
   const kept = new Map<string, ViewedLabel>();
+
   for (const entry of labels) {
     const { key } = identityOf(entry.label);
     const other = kept.get(key);
+
     if (!other || entry.label.scoredAt > other.label.scoredAt) kept.set(key, entry);
   }
+
   return [...kept.values()];
 }
 
@@ -272,22 +289,27 @@ function current(labels: readonly ViewedLabel[]): ViewedLabel[] {
 function weekOf(iso: string): string {
   const day = new Date(`${iso.slice(0, 10)}T00:00:00Z`);
   day.setUTCDate(day.getUTCDate() - ((day.getUTCDay() + 6) % 7));
+
   return day.toISOString().slice(0, 10);
 }
 
 /** Every week the window touches, oldest first, each with its own labels. */
 function trend({ labels, from, to }: { labels: readonly ViewedLabel[]; from: string; to: string }): TrendWeek[] {
   const byWeek = new Map<string, ViewedLabel[]>();
+
   for (const entry of labels) {
     const week = weekOf(entry.label.scoredAt);
     const members = byWeek.get(week) ?? [];
     members.push(entry);
     byWeek.set(week, members);
   }
+
   const weeks: TrendWeek[] = [];
+
   for (let week = weekOf(from); week <= to.slice(0, 10); week = new Date(Date.parse(`${week}T00:00:00Z`) + 7 * DAY_MS).toISOString().slice(0, 10)) {
     weeks.push({ week, ...stats(byWeek.get(week) ?? []) });
   }
+
   return weeks;
 }
 
@@ -295,14 +317,17 @@ function trend({ labels, from, to }: { labels: readonly ViewedLabel[]; from: str
 function groupKey(value: GroupValue): string {
   return JSON.stringify(['value', value.value, value.isReported ?? null, value.localChanges ?? false]);
 }
+
 const NONE_KEY = JSON.stringify(['none']);
 const NOT_RECORDED_KEY = JSON.stringify(['not recorded']);
 
 function splitStats(labels: readonly ViewedLabel[], sideOf: ReadonlyMap<string, Side>): Omit<Split, 'commit'> {
   const side = (entry: ViewedLabel) => {
     const revision = observed(entry.agent)?.team?.revision;
+
     return revision === undefined ? undefined : sideOf.get(revision);
   };
+
   return {
     before: stats(labels.filter((entry) => side(entry) === 'before')),
     after: stats(labels.filter((entry) => side(entry) === 'after')),
@@ -312,12 +337,15 @@ function splitStats(labels: readonly ViewedLabel[], sideOf: ReadonlyMap<string, 
 
 function groupKeys(entry: ViewedLabel, dimension: Dimension): string[] {
   const recorded = DIMENSIONS[dimension](entry);
+
   if (recorded === undefined) return [NOT_RECORDED_KEY];
+
   return recorded.length === 0 ? [NONE_KEY] : recorded.map(groupKey);
 }
 
 function subjectRef(entry: ViewedLabel): SubjectRef {
   const { label } = entry;
+
   switch (label.source) {
     case 'session':
       return { source: 'session', platform: label.subject.platform, ...entry.sessionName ? { sessionName: entry.sessionName } : {} };
@@ -325,6 +353,7 @@ function subjectRef(entry: ViewedLabel): SubjectRef {
       return { source: 'workflow', run: { id: label.subject.runId, step: label.subject.step, pass: label.subject.pass, ...entry.runSource ? { source: entry.runSource } : {} } };
     default: {
       const unhandled: never = label;
+
       return unhandled;
     }
   }
@@ -332,6 +361,7 @@ function subjectRef(entry: ViewedLabel): SubjectRef {
 
 function failingLabel(entry: ViewedLabel): FailingLabel {
   const { label } = entry;
+
   return {
     author: entry.author,
     scoredAt: label.scoredAt,
@@ -346,15 +376,19 @@ function reminderRows(labels: readonly ViewedLabel[], input: ReminderInput): Rem
   const verdicts = new Map(labels.flatMap(({ label }) => (label.source === 'session' ? [[label.subject.sessionId, label.passed] as const] : [])));
   const empty = (reminder: ReminderRow['reminder']) => ({ reminder, sessions: 0, labelled: 0, passed: 0 });
   const rows = { yes: empty('yes'), no: empty('no'), 'not recorded': empty('not recorded') };
+
   for (const session of new Set(input.sessions)) {
     const hinted = input.hinted.get(session);
     const row = rows[hinted === undefined ? 'not recorded' : hinted ? 'yes' : 'no'];
     row.sessions += 1;
     const passed = verdicts.get(session);
+
     if (passed === undefined) continue;
     row.labelled += 1;
+
     if (passed) row.passed += 1;
   }
+
   return Object.values(rows).map((row) => ({ ...row, rate: row.labelled === 0 ? null : row.passed / row.labelled }));
 }
 
@@ -363,10 +397,13 @@ function groups(labels: readonly ViewedLabel[], dimension: Dimension, sideOf: Re
   const values = new Map<string, { value: GroupValue; labels: ViewedLabel[] }>();
   const none: ViewedLabel[] = [];
   const notRecorded: ViewedLabel[] = [];
+
   for (const entry of labels) {
     const recorded = DIMENSIONS[dimension](entry);
+
     if (recorded === undefined) notRecorded.push(entry);
     else if (recorded.length === 0) none.push(entry);
+
     for (const value of recorded ?? []) {
       const key = groupKey(value);
       const group = values.get(key) ?? { value, labels: [] };
@@ -374,23 +411,30 @@ function groups(labels: readonly ViewedLabel[], dimension: Dimension, sideOf: Re
       values.set(key, group);
     }
   }
+
   const counts = (members: readonly ViewedLabel[]) => ({ stats: stats(members), ...sideOf ? { split: splitStats(members, sideOf) } : {} });
+
   const counted: Group[] = [...values].map(([key, { value, labels: members }]) => ({ key, kind: 'value' as const, ...value, ...counts(members) }))
     .sort((left, right) => right.stats.n - left.stats.n || left.key.localeCompare(right.key));
+
   if (none.length > 0) counted.push({ key: NONE_KEY, kind: 'none', ...counts(none) });
+
   if (notRecorded.length > 0) counted.push({ key: NOT_RECORDED_KEY, kind: 'not recorded', ...counts(notRecorded) });
+
   return counted;
 }
 
 /** The values `labels` stored, as stored: the scorer file is never read to rename, add or reorder them. */
 function valueCounts(labels: readonly ViewedLabel[]): ValueCount[] {
   const counts = new Map<string, ValueCount>();
+
   for (const { label } of labels) {
     const key = JSON.stringify([label.label, label.score]);
     const count = counts.get(key) ?? { label: label.label, score: label.score, n: 0 };
     count.n += 1;
     counts.set(key, count);
   }
+
   return [...counts.values()].sort((left, right) => right.score - left.score || left.label.localeCompare(right.label));
 }
 
@@ -412,16 +456,21 @@ function agreement({ labels, scorer, sourceHash, source, inWindow, rubricLabels 
   const ofScorer = labels.filter(({ label }) => label.scorer === scorer && label.source === source);
   const listed = new Set(rubricLabels?.get(sourceHash) ?? ofScorer.filter(({ label }) => label.rubric.sourceHash === sourceHash).map(({ label }) => label.label));
   const hand = new Map<string, ViewedLabel>();
+
   for (const entry of ofScorer) {
     if (entry.label.judge.kind !== 'human') continue;
     const kept = hand.get(subjectKey(entry.label));
+
     if (!kept || entry.label.scoredAt > kept.label.scoredAt) hand.set(subjectKey(entry.label), entry);
   }
+
   const pairable = new Map([...hand].filter(([, { label }]) => listed.has(label.label)));
   const rows = new Map<string, JudgeAgreement>();
   const disagreements: Disagreement[] = [];
+
   for (const entry of ofScorer) {
     const { label } = entry;
+
     if (label.judge.kind !== 'model' || label.rubric.sourceHash !== sourceHash || !inWindow(entry)) continue;
     const judge = judgeCohort(label.judge);
     const key = canonicalJson(judge);
@@ -429,12 +478,15 @@ function agreement({ labels, scorer, sourceHash, source, inWindow, rubricLabels 
     rows.set(key, row);
     row.labels += 1;
     const paired = pairable.get(subjectKey(label));
+
     if (!paired) continue;
     row.paired += 1;
+
     if (paired.label.passed === label.passed) {
       row.agree += 1;
       continue;
     }
+
     if (label.passed) row.judgePassedHumanFailed += 1;
     else row.judgeFailedHumanPassed += 1;
     disagreements.push({
@@ -444,6 +496,7 @@ function agreement({ labels, scorer, sourceHash, source, inWindow, rubricLabels 
       hand: { label: paired.label.label, passed: paired.label.passed, author: paired.author, scoredAt: paired.label.scoredAt },
     });
   }
+
   return {
     handLabelled: pairable.size,
     judges: [...rows.values()].sort((left, right) => right.labels - left.labels),
@@ -453,6 +506,7 @@ function agreement({ labels, scorer, sourceHash, source, inWindow, rubricLabels 
 
 function stats(labels: readonly ViewedLabel[]): Stats {
   const passed = labels.filter(({ label }) => label.passed).length;
+
   return { n: labels.length, passed, failed: labels.length - passed, rate: labels.length === 0 ? null : passed / labels.length };
 }
 
@@ -472,6 +526,7 @@ function defaultCohort(scored: ReadonlyArray<{ summary: CohortSummary; all: View
   const committed = cohorts.flatMap(({ summary, all }) => all.filter(({ label }) => label.rubric.teamRevision).map(({ label }) => ({ hash: summary.rubric.sourceHash, at: label.scoredAt })));
   const anyLabel = cohorts.map(({ summary }) => ({ hash: summary.rubric.sourceHash, at: summary.lastScoredAt }));
   const rubric = (committed.length > 0 ? committed : anyLabel).reduce<{ hash: string; at: string } | undefined>((best, entry) => (!best || entry.at > best.at ? entry : best), undefined);
+
   return cohorts.map(({ summary }) => summary)
     .filter((summary) => summary.rubric.sourceHash === rubric?.hash)
     .sort((left, right) => right.stats.n - left.stats.n || right.lastScoredAt.localeCompare(left.lastScoredAt))[0];
@@ -487,6 +542,7 @@ export const ScorerResults = {
   revisions(labels: readonly ViewedLabel[]): Set<string> {
     return new Set(labels.flatMap(({ agent }) => {
       const revision = observed(agent)?.team?.revision;
+
       return revision === undefined ? [] : [revision];
     }));
   },
@@ -499,6 +555,7 @@ export const ScorerResults = {
 
     const kept = current(labels);
     const byCohort = new Map<string, { cohort: CohortIdentity; all: ViewedLabel[] }>();
+
     for (const entry of kept) {
       const { cohort } = identityOf(entry.label);
       const group = byCohort.get(cohort.id) ?? { cohort, all: [] };
@@ -507,9 +564,11 @@ export const ScorerResults = {
     }
 
     const byScorer = new Map<string, Array<{ summary: CohortSummary; all: ViewedLabel[] }>>();
+
     for (const { cohort, all } of byCohort.values()) {
       const newestFirst = [...all].sort((left, right) => right.label.scoredAt.localeCompare(left.label.scoredAt));
       const teamRevision = newestFirst.find(({ label }) => label.rubric.teamRevision)?.label.rubric.teamRevision;
+
       const summary: CohortSummary = {
         ...cohort,
         rubric: { sourceHash: cohort.rubric.sourceHash, ...(teamRevision ? { teamRevision } : {}) },
@@ -518,20 +577,27 @@ export const ScorerResults = {
         trend: trend({ labels: all.filter(inWindow), from, to }),
         lastScoredAt: newest(all),
       };
+
       byScorer.set(cohort.scorer, [...byScorer.get(cohort.scorer) ?? [], { summary, all }]);
     }
 
     const scorers: ScorerSummary[] = [];
+
     for (const [scorer, cohorts] of [...byScorer].sort(([left], [right]) => left.localeCompare(right))) {
       const opened = defaultCohort(cohorts);
+
       if (!opened) continue;
+
       const ordered = cohorts.map(({ summary }) => summary)
         .sort((left, right) => Number(right.id === opened.id) - Number(left.id === opened.id) || right.lastScoredAt.localeCompare(left.lastScoredAt));
+
       const judge = byCohort.get(opened.id)?.cohort.judge;
+
       const judged = judge?.kind === 'model'
         ? agreement({ labels: kept, scorer, sourceHash: opened.rubric.sourceHash, source: opened.source, inWindow, rubricLabels }).judges
           .find((row) => canonicalJson(row.judge) === canonicalJson(judge))
         : undefined;
+
       scorers.push({ scorer, defaultCohort: opened.id, cohorts: ordered, ...(judged ? { agreement: { paired: judged.paired, agree: judged.agree } } : {}) });
     }
 
@@ -539,13 +605,16 @@ export const ScorerResults = {
     const cohortId = scorer?.cohorts.some((cohort) => cohort.id === query.cohort) ? query.cohort : scorer?.defaultCohort;
     const chosen = cohortId ? byCohort.get(cohortId) : undefined;
     const summary = scorer?.cohorts.find((cohort) => cohort.id === cohortId);
+
     if (!chosen || !summary) return { window, scorers };
     const counted = chosen.all.filter(inWindow);
     const { groupBy, split } = query;
     const group = query.failing?.group;
     const inGroup = (entry: ViewedLabel) => !groupBy || group === undefined || groupKeys(entry, groupBy).includes(group);
+
     const failing = counted.filter((entry) => !entry.label.passed && inGroup(entry))
       .sort((left, right) => right.label.scoredAt.localeCompare(left.label.scoredAt));
+
     return {
       window,
       scorers,

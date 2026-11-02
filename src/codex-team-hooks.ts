@@ -54,16 +54,21 @@ interface CodexTeamHookIndex {
 /** Each checkout's hooks in `record`, or undefined for a record that holds one set for the whole project. */
 function checkoutHooks(record: CodexTeamHookRecord | undefined): Record<string, CodexTeamHook[]> | undefined {
   if (!record?.checkouts) return undefined;
+
   if (Array.isArray(record.checkouts)) return Object.fromEntries(record.checkouts.map((root) => [root, record.hooks ?? []]));
+
   return record.checkouts;
 }
 
 /** The hooks `record` runs for `checkout`: its own when checkouts are recorded, else the project's. */
 function hooksFor(record: CodexTeamHookRecord | undefined, checkout: string | undefined): CodexTeamHook[] | undefined {
   const perCheckout = checkoutHooks(record);
+
   if (!perCheckout) return record?.hooks;
+
   if (checkout) return Object.hasOwn(perCheckout, checkout) ? perCheckout[checkout] : undefined;
   const all = Object.values(perCheckout);
+
   return all.length ? all.flat() : undefined;
 }
 
@@ -89,6 +94,7 @@ export function codexTeamHookIndexPath(): string {
 
 async function readIndex(): Promise<CodexTeamHookIndex> {
   const data = await readJson<CodexTeamHookIndex>(codexTeamHookIndexPath());
+
   return data && typeof data === 'object' && data.projects && typeof data.projects === 'object'
     ? data : { projects: {} };
 }
@@ -125,21 +131,26 @@ export async function setCodexDispatcherHooks(project: string, hooks: CodexTeamH
   // Nothing to change: no lock, no write (the common case, a project whose hooks stay in its file).
   const seen = (await readIndex()).projects[project];
   const seenCheckouts = checkoutHooks(seen);
+
   if (hooks === null ? seen === undefined || (checkout && seenCheckouts && !Object.hasOwn(seenCheckouts, checkout))
     : checkout ? !Array.isArray(seen?.checkouts) && JSON.stringify(seenCheckouts?.[checkout]) === JSON.stringify(hooks)
       : !seenCheckouts && JSON.stringify(seen?.hooks) === JSON.stringify(hooks)) return true;
   const lock = `${file}.lock`;
   const { acquireLock, releaseLock } = await import('./update.js');
   const deadline = Date.now() + 3_000;
+
   while (!await acquireLock(lock)) {
     if (Date.now() >= deadline) return false;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
+
   try {
     const index = await readIndex();
     const before = JSON.stringify(index);
+
     if (checkout) {
       const previous = index.projects[project];
+
       // A record without checkouts described the original main checkout's shared
       // file: the one the identity recovers, or the identity when it is a
       // checkout itself (self mode). A Git directory is none; each real
@@ -147,20 +158,26 @@ export async function setCodexDispatcherHooks(project: string, hooks: CodexTeamH
       const original = previous?.hooks
         ? await checkoutForProjectAnchor(project) ?? (fs.existsSync(path.join(project, '.git')) ? project : undefined)
         : undefined;
+
       const registered = checkoutHooks(previous) ?? (original && previous?.hooks ? { [original]: previous.hooks } : {});
       const checkouts = Object.fromEntries(Object.entries(registered).filter(([root]) => root !== checkout && fs.existsSync(root)));
+
       if (hooks) checkouts[checkout] = hooks;
+
       if (Object.keys(checkouts).length) index.projects[project] = { checkouts };
       else delete index.projects[project];
     } else if (hooks) index.projects[project] = { hooks };
     else delete index.projects[project];
+
     for (const root of Object.keys(index.projects)) {
       if (!fs.existsSync(root)) delete index.projects[root];
     }
+
     if (JSON.stringify(index) !== before) {
       if (Object.keys(index.projects).length === 0) await fs.promises.rm(file, { force: true });
       else await writeJsonAtomic(file, index);
     }
+
     return true;
   } finally {
     await releaseLock(lock);
@@ -176,26 +193,32 @@ export async function setCodexDispatcherHooks(project: string, hooks: CodexTeamH
  */
 export async function reconcileCodexDispatchers(hooksFile: string, codexTrust: CodexTrustPolicy): Promise<void> {
   const timeouts = new Map<string, number>();
+
   for (const [root, record] of Object.entries((await readIndex()).projects)) {
     // A project or checkout that is gone needs no entry; the index drops it on its next write.
     if (!fs.existsSync(root)) continue;
     const perCheckout = checkoutHooks(record);
+
     const hooks = perCheckout
       ? Object.entries(perCheckout).filter(([checkout]) => fs.existsSync(checkout)).flatMap(([, defs]) => defs)
       : record.hooks ?? [];
+
     for (const hook of hooks) {
       if (!DISPATCHABLE_EVENT.test(hook.event)) continue;
       const timeout = hook.timeout ?? defaultTimeout(hook.event);
       timeouts.set(hook.event, Math.max(timeouts.get(hook.event) ?? 0, timeout));
     }
   }
+
   if (timeouts.size === 0 && (await readJsonObject(hooksFile)).kind === 'missing') return;
   const { editCodexHookFile } = await import('./hooks.js');
   const isDispatcher = (group: { hooks?: Array<{ command?: string }> }) => isCodexTeamHookDispatcher(group?.hooks?.[0]?.command ?? '');
+
   const written = await editCodexHookFile(hooksFile, CODEX_TOOL_ID, (all) => Object.fromEntries(
     [...new Set([...Object.keys(all), ...timeouts.keys()])].map((event) => {
       const existing = all[event] ?? [];
       const timeout = timeouts.get(event);
+
       const wanted: CodexGroupSlot | undefined = timeout === undefined ? undefined
         : {
           write: {
@@ -211,12 +234,17 @@ export async function reconcileCodexDispatchers(hooksFile: string, codexTrust: C
             }],
           },
         };
+
       const at = existing.findIndex(isDispatcher);
+
       const slots = existing.flatMap((group, index): CodexGroupSlot[] =>
         !isDispatcher(group) ? [{ keep: index }] : index === at && wanted ? [wanted] : []);
+
       if (wanted && at < 0) slots.push(wanted);
+
       return [event, slots.length === 0 && existing.length > 0 ? null : slots];
     })), codexTrust);
+
   if (written) log.debug(`Updated the Codex team-hook dispatchers in ${hooksFile}`);
 }
 
@@ -237,17 +265,21 @@ const MATCHED_FIELD: Record<string, string> = {
 function matches(hook: CodexTeamHook, payload: Record<string, unknown>): boolean {
   const matcher = hook.matcher;
   const field = MATCHED_FIELD[hook.event];
+
   if (!matcher || matcher === '*' || !field) return true;
   const value = payload[field];
+
   if (typeof value !== 'string') return false;
   // Codex lets `Edit` and `Write` select apply_patch, which still reports itself by name.
   const values = value === 'apply_patch' ? [value, 'Edit', 'Write'] : [value];
   let regex: RegExp | null = null;
+
   try {
     regex = new RegExp(`^(?:${matcher})$`);
   } catch {
     // Not a regex: compare literally.
   }
+
   return values.some((v) => (regex ? regex.test(v) : v === matcher));
 }
 
@@ -263,6 +295,7 @@ export async function runCodexDispatcher(event: string): Promise<number> {
   // STDOUT carries only the hooks' output to Codex.
   setStderrOnly(true);
   const { projects } = await readIndex();
+
   if (Object.keys(projects).length === 0) return 0;
   const { readStdin, parseStdin } = await import('./hook-dispatch-cli.js');
   const raw = await readStdin();
@@ -276,16 +309,21 @@ export async function runCodexDispatcher(event: string): Promise<number> {
   // A record with checkouts runs only the hooks the resolved checkout registered; an unresolved checkout runs none.
   const checkout = localConfig && checkoutHooks(record) ? await codexTeamHookCheckout(localConfig) : undefined;
   const hooks = (checkout === null ? [] : hooksFor(record, checkout ?? undefined) ?? []).filter((hook) => hook.event === event && matches(hook, payload));
+
   if (hooks.length === 0) return 0;
 
   const runs = await Promise.all(hooks.map(async (hook) => ({ hook, ...await runHookCommand(hook.command, { cwd, timeout: hook.timeout ?? defaultTimeout(hook.event), stdin: raw }) })));
+
   for (const run of runs) {
     if (run.timedOut) process.stderr.write(`teamai: team hook ${run.hook.id} timed out after ${run.hook.timeout ?? defaultTimeout(event)}s\n`);
     else if (run.code !== 0 && run.stderr) process.stderr.write(run.stderr);
   }
+
   if (runs.some((run) => run.code === 2)) return 2;
   const { mergeHookOutputs } = await import('./hook-dispatch.js');
   const output = mergeHookOutputs(runs.filter((run) => run.code === 0 && run.stdout.trim()).map((run) => run.stdout));
+
   if (output) await new Promise<void>((resolve) => process.stdout.write(output, () => resolve()));
+
   return 0;
 }

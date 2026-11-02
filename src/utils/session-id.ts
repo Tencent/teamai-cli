@@ -82,6 +82,7 @@ export async function agentSessionFromEnv(): Promise<EnvAgentSession> {
     const ids = [...new Set(AGENT_SESSION_ENV.map((name) => process.env[name]).filter((v): v is string => !!v))];
     const id = await pickSession(ids);
     const name = id ? AGENT_SESSION_ENV.find((n) => process.env[n] === id) : undefined;
+
     return { ...(id ? { id } : {}), ...(name ? { agent: AGENT_FAMILY[name] } : {}), unambiguous: ids.length === 1 };
 }
 
@@ -92,18 +93,25 @@ async function pickSession(ids: string[]): Promise<string | undefined> {
     const { readEvents } = await import('../dashboard-collector.js');
     const firstEvent = new Map<string, string>();
     const lastStart = new Map<string, string>();
+
     for (const { sessionId, timestamp, type } of await readEvents()) {
         if (!ids.includes(sessionId)) continue;
         const first = firstEvent.get(sessionId);
+
         if (!first || timestamp < first) firstEvent.set(sessionId, timestamp);
         const start = lastStart.get(sessionId);
+
         if (type === 'session_start' && (!start || timestamp > start)) lastStart.set(sessionId, timestamp);
     }
+
     let latest: { id: string; runStart: string } | undefined;
+
     for (const [id, first] of firstEvent) {
         const runStart = lastStart.get(id) ?? first;
+
         if (!latest || runStart > latest.runStart) latest = { id, runStart };
     }
+
     return latest?.id ?? ids[0];
 }
 
@@ -144,8 +152,10 @@ export function deriveSessionId(
     }
 
     const ppid = process.ppid ?? process.pid;
+
     if (options.includeCwd) {
         const cwd = resolveHookCwd(data) ?? process.cwd();
+
         return `pid-${ppid}-${cwd}`;
     }
 

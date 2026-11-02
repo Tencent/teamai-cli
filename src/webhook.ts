@@ -71,6 +71,7 @@ async function sendToEndpoint(
     const signature = createHmac('sha256', secret)
       .update(outbound)
       .digest('hex');
+
     headers['X-TeamAI-Signature'] = `sha256=${signature}`;
   }
 
@@ -78,6 +79,7 @@ async function sendToEndpoint(
     let failure: string;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeout);
+
     try {
       const response = await fetch(url, {
         method: 'POST',
@@ -88,13 +90,16 @@ async function sendToEndpoint(
 
       if (response.ok) {
         log.debug(`Webhook sent successfully to ${url}`);
+
         return true;
       }
 
       if (response.status >= 400 && response.status < 500 && response.status !== 429) {
         log.warn(`Webhook to ${url} failed with status ${response.status} (not retrying)`);
+
         return false;
       }
+
       failure = `status ${response.status}`;
     } catch (error) {
       failure = error instanceof Error && error.name === 'AbortError'
@@ -112,6 +117,7 @@ async function sendToEndpoint(
       log.warn(`Webhook to ${url} failed after ${retries + 1} attempt(s): ${failure}`);
     }
   }
+
   return false;
 }
 
@@ -142,7 +148,9 @@ export async function loadWebhookConfig(
 ): Promise<WebhookConfig> {
   if (!localConfig) return getWebhookSharing((await autoDetectInit(undefined, options)).teamConfig);
   const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+
   if (!teamConfig) throw new Error(`No usable team config (teamai.yaml) in ${localConfig.repo.localPath}.`);
+
   return getWebhookSharing(teamConfig);
 }
 
@@ -166,11 +174,13 @@ export async function testWebhook(url?: string, options: { dryRun?: boolean } = 
 
   if (options.dryRun) {
     log.info(`[dry-run] Would send a test webhook to ${endpoints.length} endpoint(s).`);
+
     return;
   }
 
   if (endpoints.length === 0) {
     log.warn('No webhook endpoints configured.');
+
     return;
   }
 
@@ -185,6 +195,7 @@ export async function testWebhook(url?: string, options: { dryRun?: boolean } = 
 
   for (const endpoint of endpoints) {
     log.info(`Testing webhook to ${endpoint.url}...`);
+
     if (await sendToEndpoint(endpoint, testPayload)) {
       log.success(`Webhook test successful: ${endpoint.url}`);
     } else {

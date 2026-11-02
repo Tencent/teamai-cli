@@ -27,6 +27,7 @@ import { z } from 'zod';
  */
 export function resolveRealCwd(cwd: string): string {
   const resolved = path.resolve(cwd);
+
   try {
     return fs.realpathSync(resolved);
   } catch {
@@ -66,19 +67,25 @@ export function encodeCwdCodeBuddy(cwd: string): string {
     .replace(/[/\\:]/g, '-')
     .replace(/^-+|-+$/g, '')
     .replace(/-+/g, '-');
+
   // CodeBuddy 2.173.0: compressWorkspacePathName keeps short names unchanged,
   // truncates by UTF-8 code point, then hashes every original byte with djb2.
   if (Buffer.byteLength(encoded, 'utf8') <= 255) return encoded;
   let prefix = '';
   let bytes = 0;
+
   for (const point of encoded) {
     const size = Buffer.byteLength(point, 'utf8');
+
     if (bytes + size > 180) break;
     bytes += size;
     prefix += point;
   }
+
   let hash = 5381;
+
   for (const byte of Buffer.from(encoded, 'utf8')) hash = (hash * 33) ^ byte;
+
   return `${prefix}-${(hash >>> 0).toString(36)}`;
 }
 
@@ -105,9 +112,12 @@ export function decodeCwdClaude(encoded: string): string {
 export function bestEffortDecodeCwdClaude(encoded: string): string | undefined {
   if (!encoded.startsWith('-')) return undefined;
   const candidate = '/' + encoded.slice(1).replace(/-/g, '/');
+
   try {
     if (!fs.existsSync(candidate)) return undefined;
+
     if (!fs.statSync(candidate).isDirectory()) return undefined;
+
     return fs.realpathSync(candidate);
   } catch {
     return undefined;
@@ -130,45 +140,57 @@ const JsonlRecord = z.record(z.string(), z.unknown());
 export function* readJsonl(filePath: string): Generator<Record<string, unknown>> {
   let pending: string | undefined;
   let count = 0;
+
   for (const line of jsonlLines(filePath)) {
     if (!line.trim()) continue;
+
     if (pending !== undefined) {
       yield JsonlRecord.parse(JSON.parse(pending));
       count++;
     }
+
     pending = line;
   }
+
   if (pending === undefined) return;
   let value: unknown;
+
   try {
     value = JSON.parse(pending);
   } catch (error) {
     if (count === 0) throw error;
+
     return;
   }
+
   yield JsonlRecord.parse(value);
 }
 
 export function* readJsonlHead(filePath: string, maxLines: number): Generator<Record<string, unknown>> {
   if (maxLines <= 0) return;
   let count = 0;
+
   for (const record of readJsonl(filePath)) {
     yield record;
+
     if (++count >= maxLines) return;
   }
 }
 
 function* jsonlLines(filePath: string): Generator<string> {
   const fd = fs.openSync(filePath, 'r');
+
   try {
     const decoder = new StringDecoder('utf8');
     const chunk = Buffer.alloc(64 * 1024);
     let partial = '';
+
     for (let read = fs.readSync(fd, chunk); read > 0; read = fs.readSync(fd, chunk)) {
       const parts = (partial + decoder.write(chunk.subarray(0, read))).split('\n');
       partial = parts.pop() ?? '';
       yield* parts;
     }
+
     yield partial + decoder.end();
   } finally {
     fs.closeSync(fd);
@@ -184,10 +206,13 @@ function* jsonlLines(filePath: string): Generator<string> {
 export function writeJsonl(filePath: string, records: Iterable<Record<string, unknown>>): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const lines: string[] = [];
+
   for (const record of records) {
     lines.push(JSON.stringify(record));
   }
+
   const tmpPath = `${filePath}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+
   try {
     fs.writeFileSync(tmpPath, lines.join('\n') + '\n', { encoding: 'utf-8', flag: 'wx' });
     fs.renameSync(tmpPath, filePath);
@@ -232,10 +257,13 @@ export function dirExists(p: string): boolean {
 export function scanFiles(rootDir: string, pattern: RegExp): string[] {
   if (!dirExists(rootDir)) return [];
   const results: string[] = [];
+
   const walk = (dir: string) => {
     const entries = fs.readdirSync(dir, { withFileTypes: true });
+
     for (const entry of entries) {
       const fullPath = path.join(dir, entry.name);
+
       if (entry.isDirectory()) {
         walk(fullPath);
       } else if (entry.isFile() && pattern.test(entry.name)) {
@@ -243,6 +271,7 @@ export function scanFiles(rootDir: string, pattern: RegExp): string[] {
       }
     }
   };
+
   walk(rootDir);
   results.sort((a, b) => {
     try {
@@ -251,6 +280,7 @@ export function scanFiles(rootDir: string, pattern: RegExp): string[] {
       return 0;
     }
   });
+
   return results;
 }
 
@@ -277,8 +307,11 @@ export function mayReadLocalImageFile(
   filePath?: string,
 ): boolean {
   if (!filePath) return false;
+
   if (!path.isAbsolute(filePath)) return false;
+
   if (!IMAGE_FILE_RE.test(filePath)) return false;
+
   return session?.metadata?.untrusted !== true;
 }
 
@@ -296,6 +329,7 @@ export function safeFileName(raw: string, fallback = 'image.png'): string {
     .replace(/[\u0000-\u001f<>:"|?*]/g, '_')
     .replace(/^\.+/, '_')
     .trim();
+
   return base || fallback;
 }
 

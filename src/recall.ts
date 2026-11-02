@@ -125,6 +125,7 @@ export function isRelevantScore(
 ): boolean {
   if (isCodebaseHit) return score >= CODEBASE_RELEVANCE_THRESHOLD;
   const baseline = idfBaseline > 0 ? idfBaseline : 1;
+
   return score >= Math.max(baseline * LEARNINGS_RELEVANCE_RATIO, LEARNINGS_ABSOLUTE_FLOOR);
 }
 
@@ -148,24 +149,31 @@ export function isRelevantScore(
  */
 export function computeIdfBaseline(indexes: SearchIndex[], domain?: KnowledgeDomain): number {
   let maxEntries = 0;
+
   for (const idx of indexes) {
     if (!idx.df) continue;                    // legacy index: its N is not used for IDF anyway
+
     if (idx.dfByDomain) {
       const domainSizes: Partial<Record<KnowledgeDomain, number>> = {};
+
       for (const entry of idx.entries) {
         const entryDomain = entry.domain ?? 'neutral';
         domainSizes[entryDomain] = (domainSizes[entryDomain] ?? 0) + 1;
       }
+
       const entryCount = domain
         ? domainSizes[domain] ?? 0
         : Math.max(0, ...Object.values(domainSizes));
+
       if (entryCount > maxEntries) maxEntries = entryCount;
     } else if (idx.entries.length > maxEntries) {
       // v6 and older indexes scored every entry against the global corpus.
       maxEntries = idx.entries.length;
     }
   }
+
   if (maxEntries === 0) return 1;
+
   return Math.log((maxEntries + 1) / 2) + 1;
 }
 
@@ -179,6 +187,7 @@ export function normalizeLearningsScoreForRanking(score: number, idfBaseline: nu
   if (score <= 0) return 0;
   const baseline = idfBaseline > 0 ? idfBaseline : 1;
   const threshold = Math.max(baseline * LEARNINGS_RELEVANCE_RATIO, LEARNINGS_ABSOLUTE_FLOOR);
+
   return Math.min(10, Math.max(0, 4 + 2 * Math.log2(score / threshold)));
 }
 
@@ -190,14 +199,18 @@ export function normalizeLearningsScoreForRanking(score: number, idfBaseline: nu
  */
 function namesIdentifier(page: string, title: string, identifier: string): boolean {
   if (!identifier) return false;
+
   for (const segment of page.toLowerCase().split('/')) {
     const stem = segment.replace(/\.[a-z0-9]+$/, '');
+
     if (stem === identifier || stem.split('__').includes(identifier)) return true;
   }
+
   // Hyphens and underscores belong to the identifier, matching the character
   // class identifiers are extracted with: `smart-sale-service` must not match
   // a page titled `smart-sale-service-api overview`.
   const escaped = identifier.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
   return new RegExp(`(^|[^a-z0-9_-])${escaped}([^a-z0-9_-]|$)`).test(title.toLowerCase());
 }
 
@@ -292,7 +305,9 @@ function resolveReadablePath(
 ): string {
   if (indexedPath && existsSync(indexedPath)) return indexedPath;
   const underBase = learningsBase ? path.join(learningsBase, filename) : null;
+
   if (underBase && existsSync(underBase)) return underBase;
+
   // oxlint-disable-next-line teamai/learnings-root -- a display-only hint when nothing on disk matches
   return indexedPath ?? underBase ?? path.join('~', '.teamai', 'learnings', filename);
 }
@@ -358,9 +373,11 @@ export interface RelationContext {
 /** The `source:` files a teamwiki code page names, read where the page sits. */
 function pageSourcePaths(pageAbsPath: string | undefined): string[] {
   if (!pageAbsPath || !existsSync(pageAbsPath)) return [];
+
   try {
     const raw = matter(readFileSync(pageAbsPath, 'utf-8')).data['source'];
     const list = Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : [];
+
     return list.filter((s): s is string => typeof s === 'string' && s.trim() !== '').map((s) => s.trim());
   } catch {
     return [];
@@ -381,28 +398,35 @@ export function collectCodePages(
   withheld: ReadonlySet<string> | null,
 ): Array<{ treePath: string; slug: string; sources: readonly string[] }> {
   const pages: Array<{ treePath: string; slug: string; sources: readonly string[] }> = [];
+
   if (withheld === null) return pages;
   const codeRoot = path.join(teamwikiRoot, 'evidence', 'code');
   let rels: string[];
+
   try {
     rels = readdirSync(codeRoot, { recursive: true }) as string[];
   } catch {
     return pages; // no code pages in this wiki
   }
+
   for (const rel of rels) {
     if (!rel.endsWith('.md')) continue;
     const treePath = `teamwiki/evidence/code/${rel.split(path.sep).join('/')}`;
     const slug = teamwikiCodebaseSlug(treePath);
+
     if (slug === null || withheld.has(caseFoldKey(slug))) continue;
     const sources = pageSourcePaths(path.join(codeRoot, rel));
+
     if (sources.length > 0) pages.push({ treePath, slug, sources });
   }
+
   return pages;
 }
 
 /** The `paths:` globs of a rule entry's file; empty when unscoped or unreadable. */
 function entryRuleGlobs(entry: SearchIndexEntry): string[] {
   if (!entry.path || !existsSync(entry.path)) return [];
+
   try {
     // Braces expand here, the same pass the rule renderers run
     // (rulePaths(...).flatMap(expandBraces), src/resources/team-rule.ts), so
@@ -435,6 +459,7 @@ async function buildRelationContexts(
       log.debug(`recall: relations unavailable for ${installScopeName(scope)}: ${(e as Error).message}`);
     }
   }));
+
   return contexts;
 }
 
@@ -453,19 +478,24 @@ export async function buildRelationContext(args: {
   const byTreePath = new Map<string, SearchIndexEntry>();
   const incoming = new Map<string, IncomingRelation[]>();
   const ruleGlobs = new Map<string, string[]>();
+
   for (const entry of index.entries) {
     if (!entry.treePath || hidden?.has(`${entry.type}:${entry.filename}`)) continue;
     byTreePath.set(entry.treePath, entry);
+
     for (const r of entry.related ?? []) {
       const list = incoming.get(r.target) ?? [];
       list.push({ from: entry.treePath, relation: r.relation, via: r.via });
       incoming.set(r.target, list);
     }
+
     if (entry.type === 'rules') {
       const globs = entryRuleGlobs(entry);
+
       if (globs.length > 0) ruleGlobs.set(entry.treePath, globs);
     }
   }
+
   for (const list of incoming.values()) list.sort((a, b) => a.from.localeCompare(b.from));
   // Withheld codebases: a resolved context contributes its inactive wiki
   // namespaces; a null context means the team filters nothing, so nothing is
@@ -473,16 +503,19 @@ export async function buildRelationContext(args: {
   // `?? []` above. Only a read that THROWS is "cannot be read": then no
   // teamwiki target resolves, never "everything allowed".
   let withheld: ReadonlySet<string> | null;
+
   try {
     const ns = await resolveResourceNamespaces(config);
     withheld = new Set((ns?.inactiveWikiNamespaces ?? []).map((namespace) => caseFoldKey(namespace)));
   } catch {
     withheld = null;
   }
+
   const teamwikiRoot = path.join(config.repo.localPath, 'teamwiki');
   // Teams without scoped rules never look at code pages; skipping the walk
   // saves ~65 ms per recall at 3,000 pages (#1636 review).
   const codePages = ruleGlobs.size > 0 ? collectCodePages(teamwikiRoot, withheld) : [];
+
   return {
     byTreePath,
     incoming,
@@ -503,12 +536,17 @@ export function resolveRelationTarget(ctx: RelationContext, target: string): str
   if (classifyTreePath(target) === 'teamwiki') {
     if (ctx.withheld === null) return null;
     const slug = teamwikiCodebaseSlug(target);
+
     if (slug !== null && ctx.withheld.has(caseFoldKey(slug))) return null;
     const abs = path.join(ctx.teamwikiRoot, target.slice('teamwiki/'.length));
+
     return existsSync(abs) ? abs : null;
   }
+
   const entry = ctx.byTreePath.get(target);
+
   if (!entry) return null;
+
   return resolveReadablePath(entry.path, entry.filename, ctx.learningsBase);
 }
 
@@ -535,10 +573,13 @@ function printedRelations(
   if (!entry.treePath) return [];
   const relations: PrintedRelation[] = [];
   const seen = new Set<string>();
+
   const push = (direction: 'out' | 'in', relation: AssetRelationType, otherEnd: string): void => {
     const printed = resolveRelationTarget(ctx, otherEnd);
+
     if (printed === null) return;
     const key = `${direction}${relation}${otherEnd}`;
+
     if (seen.has(key)) return;
     seen.add(key);
     relations.push({
@@ -546,21 +587,29 @@ function printedRelations(
       ref: { relation, direction, path: printed },
     });
   };
+
   const own = entry.related ?? [];
   const incoming = [...(ctx.incoming.get(entry.treePath) ?? [])].sort((a, b) => a.from.localeCompare(b.from));
+
   for (const r of own) if (r.via === 'declared') push('out', r.relation, r.target);
+
   for (const r of incoming) if (r.via === 'declared') push('in', r.relation, r.from);
   // A declared relation to the same asset wins over a derived or linked one.
   const declaredOut = new Set(own.filter((r) => r.via === 'declared').map((r) => r.target));
   const declaredIn = new Set(incoming.filter((r) => r.via === 'declared').map((r) => r.from));
+
   for (const target of [...(derived?.out ?? [])].sort()) {
     if (!declaredOut.has(target)) push('out', 'MAPS_TO', target);
   }
+
   for (const from of [...(derived?.in ?? [])].sort()) {
     if (!declaredIn.has(from)) push('in', 'MAPS_TO', from);
   }
+
   for (const r of own) if (r.via === 'link' && !declaredOut.has(r.target)) push('out', r.relation, r.target);
+
   for (const r of incoming) if (r.via === 'link' && !declaredIn.has(r.from)) push('in', r.relation, r.from);
+
   return relations.slice(0, RELATION_LINES_CAP);
 }
 
@@ -594,16 +643,20 @@ function resultsRelations(
   // can see (#1563 part 1). Never stored, and independent of which pages
   // this query returned.
   const derived = computeDerivedRelations(relationContexts);
+
   return results.map(({ entry, scope }) => {
     // Relations resolve inside the scope the hit came from. A hit with an
     // explicit scope never borrows another scope's context: when that
     // scope has no index there is nothing it can see, and falling back
     // would attach a user relation to a workspace page.
     const ctx = scope !== undefined ? relationContexts.get(scope) : fallbackCtx;
+
     if (!ctx) return [];
+
     // Derived edges belong to the hit's scope like every other relation.
     const derivedForScope = (scope !== undefined ? derived.get(scope) : undefined)
       ?? (scope === undefined ? derived.values().next().value as DerivedEdges | undefined : undefined);
+
     return printedRelations(ctx, entry, derivedForScope && entry.treePath
       ? { out: derivedForScope.out.get(entry.treePath), in: derivedForScope.in.get(entry.treePath) }
       : undefined);
@@ -648,24 +701,30 @@ export function computeDerivedRelations(
   // into ambiguity, and a rule hit must show its → MAPS_TO even when the
   // page is not a hit.
   const byScope = new Map<string, DerivedEdges>();
+
   for (const [scope, ctx] of contexts) {
     const out = new Map<string, Set<string>>();
     const inn = new Map<string, Set<string>>();
+
     for (const [rule, globs] of ctx.ruleGlobs ?? []) {
       // Each glob is judged on its own: two globs matching two different
       // codebases are two certain edges, not one ambiguous pair.
       for (const glob of globs) {
         const matched = (ctx.codePages ?? []).filter((pg) => pg.sources.some((s) => matchGlob(glob, s)));
         const slugs = new Set(matched.map((m) => m.slug));
+
         if (slugs.size !== 1) continue; // no match, or this glob spans codebases
+
         for (const pg of matched) {
           addEdge(out, rule, pg.treePath);
           addEdge(inn, pg.treePath, rule);
         }
       }
     }
+
     byScope.set(scope, { out, in: inn });
   }
+
   return byScope;
 }
 
@@ -697,9 +756,11 @@ export function formatResults(
     const typeTag = entry.type ? `[${entry.type}] ` : '';
     lines.push(`[${i + 1}/${results.length}] ${typeTag}${entry.title}${voteStr}${scopeStr}`);
     lines.push(`Author: ${entry.author || 'unknown'} | Date: ${entry.date || 'unknown'} | Score: ${score.toFixed(1)}`);
+
     if (entry.tags.length > 0) {
       lines.push(`Tags: ${entry.tags.join(', ')}`);
     }
+
     // Term coverage lets the caller judge relevance itself: a hit whose every
     // discriminating term is missing is topically adjacent, not an answer.
     // Score alone cannot express this.
@@ -707,27 +768,35 @@ export function formatResults(
       const matchedStr = matchedTerms && matchedTerms.length > 0 ? matchedTerms.join(', ') : 'none';
       lines.push(`Matched: ${matchedStr} | Missing: ${missingTerms.join(', ')}`);
     }
+
     lines.push(`File: ${printedPath(results[i])}`);
+
     if (relations) {
       lines.push(...relations[i].map((p) => p.line));
     }
+
     if (sources && sources.length > 0) {
       lines.push(`Sources: ${sources.map((s) => s.desc ? `${s.path} (${s.desc})` : s.path).join(', ')}`);
       const freshnessSources = sources.filter((source) => source.freshness);
+
       if (freshnessSources.length > 0) {
         lines.push(`Source freshness: ${freshnessSources.map((source) => {
           const scan = source.lastScan ? ` (last scan: ${source.lastScan})` : '';
+
           return `${source.path}=${source.freshness}${scan}`;
         }).join('; ')}`);
       }
     }
+
     if (entry.snippet) {
       lines.push(`Snippet: ${entry.snippet}`);
     }
+
     lines.push('');
   }
 
   const allRelated = new Set<string>();
+
   for (const r of results) {
     if (r.relatedFiles) {
       for (const f of r.relatedFiles) {
@@ -735,21 +804,26 @@ export function formatResults(
       }
     }
   }
+
   if (allRelated.size > 0) {
     const capped = [...allRelated].slice(0, 10);
     lines.push('--- Candidate change files ---');
+
     for (const f of capped) {
       lines.push(`- ${f}`);
     }
+
     if (allRelated.size > 10) {
       lines.push(`  (${allRelated.size - 10} more omitted)`);
     }
+
     lines.push('');
   }
 
   lines.push('--- [teamai:recall:end] ---');
   lines.push('');
   lines.push('The above comes from the team knowledge base and is for reference only. Use the Read tool to open the listed files for details.');
+
   return lines.join('\n');
 }
 
@@ -774,6 +848,7 @@ export async function autoUpvote(
     // honestly per the actual outcome — the previous message claimed success
     // even when the locked write was skipped (issue #723 review).
     const applied = await incrementRecalled(localVotePath, docIds);
+
     if (applied) {
       log.debug(`autoUpvote: incremented recalled_count for ${docIds.length} doc(s)`);
     } else {
@@ -804,6 +879,7 @@ async function recordRun(
 ): Promise<string | undefined> {
   const { appendRecallLine, recallLogPath } = await import('./recall-log.js');
   const run = randomUUID();
+
   try {
     await appendRecallLine(config, {
       kind: 'run',
@@ -816,6 +892,7 @@ async function recordRun(
       ...(caller ? { caller } : {}),
       docs: results.map((r, i) => {
         const scope = r.scope ?? config.scope;
+
         return {
           key: voteKey(r),
           type: r.entry.type,
@@ -829,10 +906,12 @@ async function recordRun(
         };
       }),
     });
+
     return run;
   } catch (e) {
     log.warn(`Recall could not record this run in ${recallLogPath(config)}: ${(e as Error).message}. `
       + 'Docs opened after it will not be upvoted.');
+
     return undefined;
   }
 }
@@ -874,6 +953,7 @@ async function loadOrBuildScopeIndex(
   // The first root that exists is where `File:` paths point when an index entry
   // predates absolute paths.
   let effectiveLearningsDir: string | null = null;
+
   for (const dir of indexLearningsDirs) {
     if (await pathExists(dir)) { effectiveLearningsDir = dir; break; }
   }
@@ -885,26 +965,32 @@ async function loadOrBuildScopeIndex(
   // condition triggers rebuild when the file is missing entirely. So does an
   // index built before a workspace child changed what it selects (#913).
   const needsRebuild = !index || isLegacyIndex(index) || index.children !== localConfig.children?.fingerprint;
+
   // A legacy index is rebuilt even when no source can be seen, or it would serve what it holds whole (#1006).
   if (needsRebuild && (index || effectiveLearningsDir || await pathExists(path.join(localConfig.repo.localPath, 'docs')) || await pathExists(path.join(localConfig.repo.localPath, 'rules')) || await pathExists(path.join(localConfig.repo.localPath, 'skills')))) {
     const docsDir = path.join(localConfig.repo.localPath, 'docs');
     const rulesDir = path.join(localConfig.repo.localPath, 'rules');
     const repoCodebaseDir = path.join(localConfig.repo.localPath, 'docs', 'team-codebase');
     const hasLegacyCodebase = await pathExists(repoCodebaseDir);
+
     if (hasLegacyCodebase) {
       log.warn(`Legacy 'docs/team-codebase' is no longer indexed. Migrate to 'teamwiki/' for code-knowledge recall.`);
     }
+
     // Same namespaces pull indexes by. Omitting them, as this used to, dropped
     // every project-private learning from a recall-triggered rebuild.
     // A manifest that cannot be read leaves out what depends on it, never the
     // learnings, and recall says so once: the index it builds is saved (#823).
     const { deliveredIndexSources } = await import('./resources/desired.js');
+
     // Empty lists, not undefined: undefined would index the whole trees.
     const nothingDelivered: Pick<BuildIndexOptions, 'docFiles' | 'ruleFiles' | 'skills'> = {
       docFiles: [], ruleFiles: [], skills: { kind: 'dirs', dirs: [] },
     };
+
     let learningsNamespaces: string[] = [];
     let delivered: Pick<BuildIndexOptions, 'docFiles' | 'ruleFiles' | 'skills'> | undefined;
+
     try {
       learningsNamespaces = await deliveredLearningsNamespaces(localConfig);
     } catch (e) {
@@ -918,6 +1004,7 @@ async function loadOrBuildScopeIndex(
       }));
       delivered = nothingDelivered;
     }
+
     try {
       delivered ??= await deliveredIndexSources(localConfig);
     } catch (e) {
@@ -926,6 +1013,7 @@ async function loadOrBuildScopeIndex(
         + '`teamai doctor` shows the problem.');
       delivered = nothingDelivered;
     }
+
     // With no skills to keep (no index, or an older one), a collision would index none quietly.
     if (delivered.skills?.kind === 'keep-indexed' && !index?.entries.some((entry) => entry.type === 'skills')) {
       log.warn(`Skills stay out of recall: ${delivered.skills.reason}. Fix the collision and run \`teamai pull\`.`);
@@ -933,12 +1021,14 @@ async function loadOrBuildScopeIndex(
 
     // A failed build must not fall back to the index on disk, which would serve what the warning left out.
     const partial = delivered === nothingDelivered;
+
     try {
       // Without another repository's learnings checkout, if one sits where
       // this project's would (#808). The probe runs only here, when an index
       // is built, never on a plain recall.
       const { indexableLearningsRoots } = await import('./utils/learnings-roots.js');
       const unreadable: UnreadableFile[] = [];
+
       const buildOptions: BuildIndexOptions = {
         learningsDirs: [pendingLearningsDir(localConfig), ...await indexableLearningsRoots(localConfig, unreadable)],
         learningsNamespaces,
@@ -953,6 +1043,7 @@ async function loadOrBuildScopeIndex(
         unreadable,
         children: localConfig.children?.fingerprint,
       };
+
       if (dryRun) {
         index = await indexInMemory(buildOptions);
       } else {
@@ -961,15 +1052,19 @@ async function loadOrBuildScopeIndex(
       }
     } catch (e) {
       const cause = e instanceof Error ? e.message : String(e);
+
       if (partial && index) {
         // The index on disk predates the broken manifest and holds what the warning above left out.
         log.warn(`Recall could not build the ${installScopeName(scopeLabel)} search index: ${cause}. `
           + `Recall skips the older index at ${indexPath}, which would return what the manifest error leaves out. `
           + 'Resolve that error, fix the manifest, and run `teamai pull` to rebuild it.');
+
         return 'build-failed';
       }
+
       // Never the older index either: it predates what this build was given (#1006).
       log.warn(`Recall could not build the ${installScopeName(scopeLabel)} search index: ${cause}`);
+
       return 'build-failed';
     }
   }
@@ -978,6 +1073,7 @@ async function loadOrBuildScopeIndex(
 
   // learningsBase: 实际文件所在路径，用于输出给用户/AI 读取
   const learningsBase = effectiveLearningsDir ?? roots.write;
+
   return { index, learningsBase };
 }
 
@@ -1001,33 +1097,42 @@ export async function recall(
     const rounded = Math.round(score * 10) / 10;
     const verdict = isRelevantScore(score, isCodebaseHit, baseline) ? 'RELEVANT' : 'NOT_RELEVANT';
     let line = `${verdict} score=${rounded.toFixed(1)}`;
+
     // Emit the cutoff too: a bare score is uninterpretable by the caller.
     const cutoff = isCodebaseHit
       ? CODEBASE_RELEVANCE_THRESHOLD
       : Math.max((baseline > 0 ? baseline : 1) * LEARNINGS_RELEVANCE_RATIO, LEARNINGS_ABSOLUTE_FLOOR);
+
     line += ` threshold=${(Math.round(cutoff * 10) / 10).toFixed(1)}`;
+
     if (verdict === 'RELEVANT' && topResult) {
       line += ` title="${topResult.entry.title}"`;
+
       // Term coverage: RELEVANT means "worth reading files", not "covers your
       // subject". Missing terms let the caller make that second call itself.
       if (topResult.matchedTerms && topResult.matchedTerms.length > 0) {
         line += ` matched=${topResult.matchedTerms.join(',')}`;
       }
+
       if (topResult.missingTerms && topResult.missingTerms.length > 0) {
         line += ` missing=${topResult.missingTerms.join(',')}`;
       }
+
       if (topResult.sources && topResult.sources.length > 0) {
         const srcStr = topResult.sources.map((s) => s.desc ? `${s.path}(${s.desc})` : s.path).join(',');
         line += ` sources=${srcStr}`;
       }
     }
+
     process.stdout.write(`${line}\n`);
   };
 
   const noQuery = !query || !query.trim();
+
   if (noQuery && !options.check) {
     log.error('Usage: teamai recall <query>');
     log.info('Example: teamai recall "api timeout"');
+
     return;
   }
 
@@ -1036,37 +1141,45 @@ export async function recall(
   // A detection that throws still searches what loads next, but its votes must
   // not reach that scope's team (#787).
   let projectUnreadable = false;
+
   try {
     // The flag reaches detection: a bare load migrates the legacy role config
     // in place, which would write under --dry-run (#850).
     projectConfig = await detectProjectConfig(undefined, (configPath, error) => { unreadable.push(`${configPath}: ${error}`); }, { dryRun: options.dryRun });
+
     // A workspace searches what its children select too (#913).
     if (projectConfig) projectConfig = await readWorkspaceChildren(projectConfig);
   } catch (e) {
     // A cwd that no longer exists holds no project: user scope, as in
     // resolveConfigForDir.
     const gone = typeof e === 'object' && e !== null && 'code' in e && e.code === 'ENOENT';
+
     if (!gone) projectUnreadable = true;
     log.debug('recall: workspace scope detection failed');
   }
+
   // Detection skips a project config it cannot read and answers with what
   // loads next — a legacy `.teamai/` that may name another team, or the user
   // scope — so recall would search and record for a team this project may not
   // belong to (#796). An empty result or NOT_RELEVANT would tell the agent the
   // team has no knowledge, so refuse instead: the rule `pull` follows (#784).
   const [problem] = unreadable;
+
   if (problem !== undefined) {
     log.error(`Nothing was searched: ${describeUnreadableConfig(problem)}`);
     process.exitCode = 1;
+
     return;
   }
 
   if (noQuery) {
     emitCheckVerdict(0);
+
     return;
   }
 
   const VALID_DEPTHS = new Set(['route', 'context', 'lookup']);
+
   if (options.depth && !VALID_DEPTHS.has(options.depth)) {
     log.warn(`Invalid --depth "${options.depth}", falling back to "context". Valid: route, context, lookup`);
     options.depth = 'context';
@@ -1085,6 +1198,7 @@ export async function recall(
     // Project mode: project scope first.
     try {
       const result = await loadOrBuildScopeIndex(projectConfig, 'project', options.dryRun);
+
       if (result === 'build-failed') indexBuildFailed = true;
       else if (result && result.index.entries.length > 0) {
         scopeIndexes.push({ index: result.index, scope: 'project', config: projectConfig, learningsBase: result.learningsBase });
@@ -1096,8 +1210,10 @@ export async function recall(
     if (projectConfig.inheritUserScope === true) {
       try {
         const userConfig = await loadLocalConfigForScope('user', undefined, { dryRun: options.dryRun });
+
         if (userConfig) {
           const result = await loadOrBuildScopeIndex(userConfig, 'user', options.dryRun);
+
           if (result === 'build-failed') indexBuildFailed = true;
           else if (result && result.index.entries.length > 0) {
             scopeIndexes.push({ index: result.index, scope: 'user', config: userConfig, learningsBase: result.learningsBase });
@@ -1112,6 +1228,7 @@ export async function recall(
     try {
       const { localConfig: userConfig } = await requireInit({ dryRun: options.dryRun });
       const result = await loadOrBuildScopeIndex(userConfig, 'user', options.dryRun);
+
       if (result === 'build-failed') indexBuildFailed = true;
       else if (result && result.index.entries.length > 0) {
         scopeIndexes.push({ index: result.index, scope: 'user', config: userConfig, learningsBase: result.learningsBase });
@@ -1124,24 +1241,32 @@ export async function recall(
   // Codebase knowledge stays bound to the active project even when its search
   // index is empty and only an inherited user index is available.
   const wikiConfig = projectConfig ?? scopeIndexes[0]?.config;
+
   const wikiRoot = wikiConfig
     ? path.join(wikiConfig.repo.localPath, 'teamwiki')
     : path.join(process.cwd(), '.teamai', 'team-repo', 'teamwiki');
+
   const hasWiki = await pathExists(wikiRoot);
+
   if (scopeIndexes.length === 0 && !hasWiki) {
     if (options.check) {
       emitCheckVerdict(0);
+
       return;
     }
+
     if (indexBuildFailed) return;
+
     if (indexEmpty) log.info('The search index is empty: nothing you receive from the team is indexed. `teamai pull` rebuilds it when that changes.');
     else log.info('No learnings available. Run `teamai pull` first to sync team knowledge.');
+
     return;
   }
 
   // Merge: search each scope index, tag results with scope, then combine & sort
   const allResults: ScopedSearchResult[] = [];
   const seenEntries = new Set<string>();
+
   const projectEntryKeys = new Set(
     scopeIndexes
       .filter(({ scope }) => scope === 'project')
@@ -1153,12 +1278,15 @@ export async function recall(
   for (const { index, scope, learningsBase } of scopeIndexes) {
     // Keep every candidate until domain-specific scores are normalized below.
     const results = search(query, index, index.entries.length);
+
     for (const r of results) {
       // A project entry shadows the same logical user entry even when the
       // project version does not match this particular query. This prevents a
       // stale inherited copy from leaking through after a project override.
       const entryKey = `${r.entry.type}:${r.entry.filename}`;
+
       if (scope === 'user' && projectEntryKeys.has(entryKey)) continue;
+
       if (!seenEntries.has(entryKey)) {
         seenEntries.add(entryKey);
         allResults.push({
@@ -1186,6 +1314,7 @@ export async function recall(
       .filter((token) => token.length >= 5
         && (/[-_\d]/.test(token) || /[a-z][A-Z]/.test(token)))
       .map((token) => token.toLowerCase());
+
     // A wiki codebase slug declared under `resources.wiki` but not active for
     // this directory stays out of recall, the same way docs are scoped
     // (#912). Resolved inside this try: an unreadable or malformed manifest
@@ -1195,13 +1324,16 @@ export async function recall(
     const withheldCodebases = hasWiki && wikiConfig
       ? (await resolveResourceNamespaces(wikiConfig))?.inactiveWikiNamespaces ?? []
       : [];
+
     const codeResults = await queryCodeKnowledge(query, { wikiRoot, limit: 3, depth: options.depth, withheldCodebases });
+
     // B11 fix: log-dampening instead of min-max normalization
     // Codebase BM25 scores (0-50+) mapped to learnings scale (0-10) via log curve
     for (const cr of codeResults) {
       const namedModule = queryIdentifiers.some(
         (identifier) => namesIdentifier(String(cr.page || ''), String(cr.title || ''), identifier),
       );
+
       allResults.push({
         entry: {
           filename: cr.page,
@@ -1236,8 +1368,10 @@ export async function recall(
   // descending, then by date descending. Keep each result's original score for
   // --check, quality tracking, and output.
   const rankingScore = (result: ScopedSearchResult): number => rankingScoreOf(result, idfBaseline);
+
   const relevant = (result: ScopedSearchResult): boolean =>
     isRelevantScore(result.score, result.fromCodebase ?? false, result.idfBaseline ?? idfBaseline);
+
   // Among code hits, the page that names the module the query asked about wins:
   // codebase scores saturate, so a weaker-scoring overview of a different
   // codebase would otherwise tie and win on input order. Expressed as a small,
@@ -1247,18 +1381,23 @@ export async function recall(
   // by more than the tie-break band. The stored score and `--check` are
   // unaffected — only the merged ordering sees the bonus.
   const NAMED_MODULE_RANK_BONUS = 0.5;
+
   const orderScore = (result: ScopedSearchResult): number =>
     rankingScore(result)
     + (result.fromCodebase && result.namedModule === true ? NAMED_MODULE_RANK_BONUS : 0);
+
   allResults.sort((a, b) => {
     // A relevant hit outranks an irrelevant one whatever their scores. `--check`
     // reads the first result only, so an irrelevant hit at the top makes it
     // report "nothing relevant" while a relevant hit sits below it — the
     // cross-source penalty must not buy that position (#1524).
     const relevanceDelta = Number(relevant(b)) - Number(relevant(a));
+
     if (relevanceDelta !== 0) return relevanceDelta;
     const scoreDelta = orderScore(b) - orderScore(a);
+
     if (scoreDelta !== 0) return scoreDelta;
+
     return (b.entry.date || '').localeCompare(a.entry.date || '');
   });
 
@@ -1278,32 +1417,43 @@ export async function recall(
   // better page of its own codebase or drop a relevant code hit out of the
   // five shown while irrelevant learnings take its place.
   const CODEBASE_ENTRIES_IN_TOP = 2;
+
   const codebaseOf = (result: ScopedSearchResult): string | undefined =>
     result.fromCodebase
       ? result.entry.filename.match(/^evidence\/code\/([^/]+)\//)?.[1]
       : undefined;
+
   const ranked: ScopedSearchResult[] = [];
   const extras: Array<{ result: ScopedSearchResult; predecessor: ScopedSearchResult | undefined }> = [];
   const codebaseCounts = new Map<string, number>();
+
   for (const result of allResults) {
     const codebase = codebaseOf(result);
+
     if (codebase) {
       const seen = codebaseCounts.get(codebase) ?? 0;
+
       if (seen >= CODEBASE_ENTRIES_IN_TOP) {
         extras.push({ result, predecessor: ranked[ranked.length - 1] });
         continue;
       }
+
       codebaseCounts.set(codebase, seen + 1);
     }
+
     ranked.push(result);
   }
+
   for (const { result, predecessor } of extras) {
     const predecessorIndex = predecessor ? ranked.indexOf(predecessor) : -1;
     let insertAt = predecessorIndex + 1;
+
     for (let index = predecessorIndex + 1; index < ranked.length; index += 1) {
       const candidate = ranked[index];
+
       if (!candidate.fromCodebase && relevant(candidate)) insertAt = index + 1;
     }
+
     ranked.splice(insertAt, 0, result);
   }
 
@@ -1321,6 +1471,7 @@ export async function recall(
     const learningsIndex = ranked.findIndex(
       (candidate, index) => index >= 3 && !candidate.fromCodebase && relevant(candidate),
     );
+
     if (learningsIndex >= 3) {
       const [demotedThird] = ranked.splice(2, 1);
       ranked.splice(learningsIndex, 0, demotedThird);
@@ -1330,6 +1481,7 @@ export async function recall(
   if (options.check) {
     const top = ranked.length > 0 ? ranked[0] : undefined;
     emitCheckVerdict(top?.score ?? 0, top?.fromCodebase ?? false, top?.idfBaseline ?? idfBaseline, top);
+
     return;
   }
 
@@ -1350,6 +1502,7 @@ export async function recall(
   // to print or record, and the contexts are not built.
   let relationContexts: Map<string, RelationContext> | undefined;
   let relatedByResult: RelatedRef[][] | undefined;
+
   if (topResults.length > 0) {
     relationContexts = await buildRelationContexts(scopeIndexes, projectEntryKeys);
     relatedByResult = relatedRefsOf(topResults, relationContexts);
@@ -1361,10 +1514,12 @@ export async function recall(
   // (#884). Neither under --dry-run (#900); the log not where votes must not
   // reach the team (#787).
   let runId: string | undefined;
+
   if (process.env.TEAMAI_RECALL_DISABLED !== '1' && !options.dryRun) {
     const session = await agentSessionFromEnv();
     recordRecallQuality(session.id ?? deriveSessionId({}), topResults, query);
     const activeConfig = projectConfig ?? scopeIndexes[0]?.config;
+
     if (activeConfig && !projectUnreadable) {
       runId = await recordRun(activeConfig, topResults, session, options.caller, projectConfig !== null, relatedByResult);
     }
@@ -1373,6 +1528,7 @@ export async function recall(
   if (topResults.length === 0) {
     // The run id lets the hook claim a run with no hits too (#884).
     log.info(`No matching learnings found for "${query}".${runId ? ` run=${runId}` : ''}`);
+
     return;
   }
 
@@ -1388,8 +1544,10 @@ export async function recall(
     const voteScopes = projectConfig
       ? scopeIndexes.filter((scopeInfo) => scopeInfo.scope === 'project')
       : scopeIndexes;
+
     for (const scopeInfo of voteScopes) {
       const scopeResults = topResults.filter(r => r.scope === scopeInfo.scope);
+
       if (scopeResults.length > 0) {
         try {
           await autoUpvote(scopeResults, scopeInfo.config);

@@ -31,6 +31,7 @@ function stripBom(text: string): string {
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
     if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
     const prototype = Object.getPrototypeOf(value);
+
     return prototype === Object.prototype || prototype === null;
 }
 
@@ -43,35 +44,43 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
  */
 export function splitFrontmatter(content: string): FrontmatterSplit {
     const match = content.match(FRONTMATTER_BLOCK);
+
     if (!match) {
         if (OPENING_FENCE.test(content)) {
             log.warn('Frontmatter block has opening "---" but no closing delimiter; metadata will be ignored');
         }
+
         return { data: {}, valid: false, body: stripBom(content), raw: '' };
     }
+
     const rawFull = match[0];
     const body = content.slice(rawFull.length);
     const raw = stripBom(rawFull);
     let data: Record<string, unknown> = {};
     let valid = false;
+
     try {
         // Passing options disables gray-matter's module-level cache. Cache entries
         // otherwise survive parse failures and share mutable `data` references.
         const parsed = matter(raw, {});
+
         if (!isPlainRecord(parsed.data)) {
             return { data: {}, valid: false, body, raw };
         }
+
         data = { ...parsed.data };
         valid = true;
     } catch {
         data = {};
     }
+
     return { data, valid, body, raw };
 }
 
 /** Parse frontmatter fields and body from a document. */
 export function parseFrontmatter(content: string): { data: Record<string, unknown>; body: string } {
     const { data, body } = splitFrontmatter(content);
+
     return { data, body };
 }
 

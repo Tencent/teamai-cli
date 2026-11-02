@@ -18,6 +18,7 @@ import { log } from '../utils/logger.js';
 
 const DEFAULT_MARKER = '<!-- teamai:ci-extract -->';
 const API_TIMEOUT_MS = 15_000;
+
 // GitLab caps note pages at 100; same guard as fetchGitLabDiscussions (mr-fetch.ts).
 const MAX_NOTE_PAGES = 20;
 
@@ -43,6 +44,7 @@ interface ParsedMrUrl {
 export function parseMrUrl(url: string): ParsedMrUrl {
   // GitHub: https://github.com/{owner}/{repo}/pull/{number}
   const ghMatch = url.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
+
   if (ghMatch) {
     return { provider: 'github', owner: ghMatch[1], repo: ghMatch[2], number: ghMatch[3] };
   }
@@ -50,6 +52,7 @@ export function parseMrUrl(url: string): ParsedMrUrl {
   // TGit: https://git.woa.com/{group}/{project}/merge_requests/{iid}
   // group may span several path levels
   const tgitMatch = url.match(/git\.woa\.com\/(.+)\/([^/]+)\/merge_requests\/(\d+)/);
+
   if (tgitMatch) {
     return { provider: 'tgit', owner: tgitMatch[1], repo: tgitMatch[2], number: tgitMatch[3] };
   }
@@ -57,9 +60,11 @@ export function parseMrUrl(url: string): ParsedMrUrl {
   // GitLab (including self-hosted): https://<host>/<group...>/<project>/-/merge_requests/<iid>
   // The `/-/` route separator is GitLab-specific, so it identifies the platform on any host.
   const glMatch = url.match(/^[a-z]+:\/\/[^/]+\/(.+)\/-\/merge_requests\/(\d+)/i);
+
   if (glMatch) {
     const projectPath = glMatch[1];
     const lastSlash = projectPath.lastIndexOf('/');
+
     if (lastSlash > 0) {
       return {
         provider: 'gitlab',
@@ -99,10 +104,12 @@ export function formatComment(
     lines.push('### Codebase.md update suggestions', '');
     lines.push('| Section | Action | Preview |');
     lines.push('|---------|--------|---------|');
+
     for (const s of suggestions) {
       const preview = s.content.replace(/\n/g, ' ').slice(0, 80);
       lines.push(`| ${s.section} | ${s.action} | ${preview} |`);
     }
+
     lines.push('');
   }
 
@@ -121,14 +128,17 @@ export function formatComment(
 
 async function githubRequest(path: string, method: string, body?: unknown): Promise<Response> {
   const token = process.env['GITHUB_TOKEN'];
+
   if (!token) throw new Error('GITHUB_TOKEN environment variable is not set');
 
   const url = `https://api.github.com${path}`;
+
   const headers: Record<string, string> = {
     Authorization: `Bearer ${token}`,
     Accept: 'application/vnd.github+json',
     'User-Agent': 'teamai-cli',
   };
+
   if (body) headers['Content-Type'] = 'application/json';
 
   return fetch(url, {
@@ -155,10 +165,13 @@ async function findGitHubComment(
     `/repos/${owner}/${repo}/issues/${prNumber}/comments?per_page=100`,
     'GET',
   );
+
   if (!resp.ok) {
     throw new Error(`GitHub comment list request failed (${resp.status})`);
   }
+
   const comments = (await resp.json()) as GitHubComment[];
+
   return comments.find((c) => c.body.includes(marker)) ?? null;
 }
 
@@ -173,11 +186,14 @@ async function postGitHubComment(
     'POST',
     { body },
   );
+
   if (!resp.ok) {
     const errText = await resp.text();
     throw new Error(`GitHub comment post failed (${resp.status}): ${errText}`);
   }
+
   const data = (await resp.json()) as GitHubComment;
+
   return { created: true, url: data.html_url };
 }
 
@@ -192,11 +208,14 @@ async function updateGitHubComment(
     'PATCH',
     { body },
   );
+
   if (!resp.ok) {
     const errText = await resp.text();
     throw new Error(`GitHub comment update failed (${resp.status}): ${errText}`);
   }
+
   const data = (await resp.json()) as GitHubComment;
+
   return { created: false, url: data.html_url };
 }
 
@@ -228,14 +247,18 @@ async function getMrGlobalId(projectId: string, mrIid: string): Promise<number> 
     `/projects/${projectId}/merge_requests?iid=${mrIid}`,
     'GET',
   );
+
   if (!resp.ok) {
     throw new Error(`TGit MR lookup failed (${resp.status})`);
   }
+
   const mrs = (await resp.json()) as TGitMRInfo[];
   const mr = mrs.find((m) => String(m.iid) === mrIid);
+
   if (!mr) {
     throw new Error(`TGit MR !${mrIid} not found`);
   }
+
   return mr.id;
 }
 
@@ -248,10 +271,13 @@ async function findTGitComment(
     `/projects/${projectId}/merge_requests/${mrGlobalId}/notes?per_page=100`,
     'GET',
   );
+
   if (!resp.ok) {
     throw new Error(`TGit note list request failed (${resp.status})`);
   }
+
   const notes = (await resp.json()) as TGitNote[];
+
   return notes.find((n) => n.body.includes(marker)) ?? null;
 }
 
@@ -265,10 +291,12 @@ async function postTGitComment(
     'POST',
     { body },
   );
+
   if (!resp.ok) {
     const errText = await resp.text();
     throw new Error(`TGit comment post failed (${resp.status}): ${errText}`);
   }
+
   return { created: true };
 }
 
@@ -283,10 +311,12 @@ async function updateTGitComment(
     'PUT',
     { body },
   );
+
   if (!resp.ok) {
     const errText = await resp.text();
     throw new Error(`TGit comment update failed (${resp.status}): ${errText}`);
   }
+
   return { created: false };
 }
 
@@ -304,17 +334,20 @@ interface GitLabNote {
  */
 async function gitlabNotesBase(mrUrl: string): Promise<string> {
   const { apiBase, projectPath, mrIid } = parseGitLabMRUrl(mrUrl);
+
   return `${apiBase}/projects/${encodeURIComponent(projectPath)}/merge_requests/${mrIid}/notes`;
 }
 
 async function gitlabRequest(mrUrl: string, path: string, method: string, body?: unknown): Promise<Response> {
   const token = getGitLabToken();
+
   if (!token) {
     throw new Error(
       'GitLab authentication unavailable. Set the GITLAB_TOKEN environment variable '
       + '(a GitLab Personal Access Token with `api` scope).',
     );
   }
+
   return fetch(`${await gitlabNotesBase(mrUrl)}${path}`, {
     method,
     headers: { 'PRIVATE-TOKEN': token, 'Content-Type': 'application/json', 'Accept': 'application/json' },
@@ -330,6 +363,7 @@ async function gitlabRequest(mrUrl: string, path: string, method: string, body?:
 async function findGitLabComment(mrUrl: string, marker: string): Promise<GitLabNote | null> {
   // Markers sit on their own line. Ignore mentions quoted in a sentence.
   const matchesMarker = (note: GitLabNote) => note.body.split('\n').some((line) => line.trim() === marker);
+
   // Pipeline updates edit the original comment without changing created_at.
   // Search recent edits first, then stop at the most recently updated marker.
   const notes = await paginateGitLab<GitLabNote>(
@@ -338,24 +372,29 @@ async function findGitLabComment(mrUrl: string, marker: string): Promise<GitLabN
     'GitLab note list',
     { stopWhen: matchesMarker },
   );
+
   return notes.find(matchesMarker) ?? null;
 }
 
 async function postGitLabComment(mrUrl: string, body: string): Promise<CommentResult> {
   const resp = await gitlabRequest(mrUrl, '', 'POST', { body });
+
   if (!resp.ok) {
     const errText = await resp.text();
     throw new Error(`GitLab comment post failed (${resp.status}): ${errText}`);
   }
+
   return { created: true };
 }
 
 async function updateGitLabComment(mrUrl: string, noteId: number, body: string): Promise<CommentResult> {
   const resp = await gitlabRequest(mrUrl, `/${noteId}`, 'PUT', { body });
+
   if (!resp.ok) {
     const errText = await resp.text();
     throw new Error(`GitLab comment update failed (${resp.status}): ${errText}`);
   }
+
   return { created: false };
 }
 
@@ -389,6 +428,7 @@ export async function postOrUpdateMrComment(
   if (dryRun) {
     log.info('dry-run: comment that would be posted:');
     console.log(body);
+
     return { created: true };
   }
 
@@ -399,19 +439,25 @@ export async function postOrUpdateMrComment(
       parsed.number,
       effectiveMarker,
     );
+
     if (existing) {
       log.debug(`Found existing comment #${existing.id}; updating in place...`);
+
       return updateGitHubComment(parsed.owner, parsed.repo, existing.id, body);
     }
+
     return postGitHubComment(parsed.owner, parsed.repo, parsed.number, body);
   }
 
   if (parsed.provider === 'gitlab') {
     const existing = await findGitLabComment(mrUrl, effectiveMarker);
+
     if (existing) {
       log.debug(`Found existing note #${existing.id}; updating in place...`);
+
       return updateGitLabComment(mrUrl, existing.id, body);
     }
+
     return postGitLabComment(mrUrl, body);
   }
 
@@ -419,10 +465,13 @@ export async function postOrUpdateMrComment(
   const projectId = encodeURIComponent(`${parsed.owner}/${parsed.repo}`);
   const mrGlobalId = await getMrGlobalId(projectId, parsed.number);
   const existing = await findTGitComment(projectId, mrGlobalId, effectiveMarker);
+
   if (existing) {
     log.debug(`Found existing note #${existing.id}; updating in place...`);
+
     return updateTGitComment(projectId, mrGlobalId, existing.id, body);
   }
+
   return postTGitComment(projectId, mrGlobalId, body);
 }
 
@@ -445,6 +494,7 @@ export function formatIndividualComment(
   if (type === 'learning') {
     lines.push(`## TeamAI Learning`, '');
     lines.push(`**${content.title}**`, '');
+
     if (content.body) {
       lines.push('<details>', '<summary>Show full content</summary>', '');
       lines.push('```markdown');
@@ -455,6 +505,7 @@ export function formatIndividualComment(
   } else {
     lines.push(`## TeamAI Codebase Suggestion #${index}`, '');
     lines.push(`**Section**: ${content.section} | **Action**: ${content.action}`, '');
+
     if (content.preview) {
       lines.push('```');
       lines.push(content.preview.slice(0, 300));
@@ -463,12 +514,14 @@ export function formatIndividualComment(
   }
 
   lines.push('');
+
   if (provider === 'tgit') {
     lines.push('> 💡 To keep this out of the team knowledge repo, add a ☝️ emoji reaction to this comment');
   } else {
     // GitHub / GitLab: 👎 reaction (a thumbsdown award emoji on GitLab)
     lines.push('> 💡 To keep this out of the team knowledge repo, add a 👎 reaction to this comment');
   }
+
   lines.push('');
   lines.push('_Auto-generated by `teamai ci extract-mr`_');
 
@@ -500,6 +553,7 @@ export async function postIndividualComments(
       { title: learning.title, body: learning.content },
       parsed.provider,
     );
+
     items.push({ markerId: 'learning', body });
   }
 
@@ -507,11 +561,13 @@ export async function postIndividualComments(
   if (suggestions) {
     for (let i = 0; i < suggestions.length; i++) {
       const s = suggestions[i];
+
       const body = formatIndividualComment(
         'suggestion', i + 1,
         { section: s.section, action: s.action, preview: s.content },
         parsed.provider,
       );
+
       items.push({ markerId: `suggestion:${i + 1}`, body });
     }
   }
@@ -524,6 +580,7 @@ export async function postIndividualComments(
       console.log(item.body);
       console.log('---');
     }
+
     return { posted: items.length };
   }
 
@@ -531,11 +588,13 @@ export async function postIndividualComments(
     for (const item of items) {
       const marker = `<!-- teamai:ci-extract:${item.markerId} -->`;
       const existing = await findGitHubComment(parsed.owner, parsed.repo, parsed.number, marker);
+
       if (existing) {
         await updateGitHubComment(parsed.owner, parsed.repo, existing.id, item.body);
       } else {
         await postGitHubComment(parsed.owner, parsed.repo, parsed.number, item.body);
       }
+
       posted++;
     }
   } else if (parsed.provider === 'gitlab') {
@@ -543,11 +602,13 @@ export async function postIndividualComments(
     for (const item of items) {
       const marker = `<!-- teamai:ci-extract:${item.markerId} -->`;
       const existing = await findGitLabComment(mrUrl, marker);
+
       if (existing) {
         await updateGitLabComment(mrUrl, existing.id, item.body);
       } else {
         await postGitLabComment(mrUrl, item.body);
       }
+
       posted++;
     }
   } else {
@@ -561,17 +622,23 @@ export async function postIndividualComments(
       `/projects/${projectId}/merge_requests?iid=${parsed.number}`,
       'GET',
     );
+
     let anchorFile = 'README.md';
+
     if (mrListResp.ok) {
       const mrList = (await mrListResp.json()) as Array<{ source_branch: string; target_branch: string }>;
+
       if (mrList.length > 0) {
         const { source_branch, target_branch } = mrList[0];
+
         const compareResp = await tgitRequest(
           `/projects/${projectId}/repository/compare?from=${target_branch}&to=${source_branch}`,
           'GET',
         );
+
         if (compareResp.ok) {
           const compareData = (await compareResp.json()) as { diffs?: Array<{ new_path: string }> };
+
           if (compareData.diffs && compareData.diffs.length > 0) {
             anchorFile = compareData.diffs[0].new_path;
           }
@@ -583,6 +650,7 @@ export async function postIndividualComments(
       const marker = `<!-- teamai:ci-extract:${item.markerId} -->`;
       // Check whether it already exists
       const existingNote = await findTGitComment(projectId, mrGlobalId, marker);
+
       if (existingNote) {
         await updateTGitComment(projectId, mrGlobalId, existingNote.id, item.body);
       } else {
@@ -592,16 +660,19 @@ export async function postIndividualComments(
           'POST',
           { body: item.body, path: anchorFile, line: 1, line_type: 'new' },
         );
+
         if (!resp.ok) {
           // fallback: create a plain note
           await postTGitComment(projectId, mrGlobalId, item.body);
         }
       }
+
       posted++;
     }
   }
 
   log.success(`Posted ${posted} individual suggestion(s)`);
+
   return { posted };
 }
 
@@ -618,20 +689,25 @@ function formatGraphComment(summary: { added: string[]; removed: string[]; wikiU
 
   if (summary.added.length > 0) {
     lines.push(`### Added nodes (${summary.added.length})`);
+
     for (const item of summary.added.slice(0, 20)) {
       lines.push(`- ${item}`);
     }
+
     if (summary.added.length > 20) {
       lines.push(`- _...and ${summary.added.length - 20} more_`);
     }
+
     lines.push('');
   }
 
   if (summary.removed.length > 0) {
     lines.push(`### Removed nodes (${summary.removed.length})`);
+
     for (const item of summary.removed.slice(0, 10)) {
       lines.push(`- ${item}`);
     }
+
     lines.push('');
   }
 
@@ -643,6 +719,7 @@ function formatGraphComment(summary: { added: string[]; removed: string[]; wikiU
   lines.push('---');
   lines.push('> Add a 👎 reaction to this comment to keep this graph update out of the team knowledge repo');
   lines.push(CODEBASE_GRAPH_MARKER);
+
   return lines.join('\n');
 }
 
@@ -657,11 +734,13 @@ export async function postCodebaseGraphComment(
   if (dryRun) {
     log.info('[dry-run] Codebase graph comment:');
     console.log(body);
+
     return;
   }
 
   if (parsed.provider === 'github') {
     const existing = await findGitHubComment(parsed.owner, parsed.repo, parsed.number, CODEBASE_GRAPH_MARKER);
+
     if (existing) {
       await updateGitHubComment(parsed.owner, parsed.repo, existing.id, body);
     } else {
@@ -669,6 +748,7 @@ export async function postCodebaseGraphComment(
     }
   } else if (parsed.provider === 'gitlab') {
     const existing = await findGitLabComment(mrUrl, CODEBASE_GRAPH_MARKER);
+
     if (existing) {
       await updateGitLabComment(mrUrl, existing.id, body);
     } else {
@@ -678,11 +758,13 @@ export async function postCodebaseGraphComment(
     const projectId = encodeURIComponent(`${parsed.owner}/${parsed.repo}`);
     const mrGlobalId = await getMrGlobalId(projectId, parsed.number);
     const existing = await findTGitComment(projectId, mrGlobalId, CODEBASE_GRAPH_MARKER);
+
     if (existing) {
       await updateTGitComment(projectId, mrGlobalId, existing.id, body);
     } else {
       await postTGitComment(projectId, mrGlobalId, body);
     }
   }
+
   log.success('Codebase graph change comment posted');
 }

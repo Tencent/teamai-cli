@@ -7,4 +7,5 @@ import module from 'node:module';
 // tsup.config.ts), loaded after the call by URL, so the bundler leaves it out
 // of this one. Node 20 has no compile cache.
 (module as typeof module & { enableCompileCache?: () => unknown }).enableCompileCache?.();
+
 await import(new URL('./cli.js', import.meta.url).href);

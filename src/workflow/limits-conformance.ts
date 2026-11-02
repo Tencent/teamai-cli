@@ -4,6 +4,7 @@ import { PARALLEL_ROOTS, controlsYaml, bothSkillProfiles, type ConformanceScenar
 export const limitsConformanceScenarios: ConformanceScenario[] = [];
 
 const NO_NETWORK = controlsYaml('  - id: fetch\n    command: echo fetch\n    requires: { network: false }');
+
 limitsConformanceScenarios.push(
   {
     name: 'a driver that cannot deny the network still gets the step, and the run records network as unenforced', workflowName: 'build', yaml: NO_NETWORK,
@@ -53,6 +54,7 @@ limitsConformanceScenarios.push(
 /** A value long enough to be masked, which no scenario output may carry. */
 const CONFORMANCE_SECRET = 'conformance-secret-value-1082';
 const NEEDS_TOKEN = controlsYaml('  - id: deploy\n    command: echo deploy\n    requires: { env: [CONFORMANCE_TOKEN] }\n  - id: build\n    needs: []\n    command: echo build');
+
 limitsConformanceScenarios.push(
   {
     name: 'a step that requires env waits for a driver that scopes env, which gets the key name and no value',
@@ -116,8 +118,10 @@ limitsConformanceScenarios.push(
 );
 
 const BASE = { ref: 'main', commit: 'a'.repeat(40) };
+
 const WITH_SETUP = controlsYaml('  - id: change\n    workspace: new\n    command: echo change\n  - id: look\n    needs: []\n    command: echo look')
   .replace('steps:\n', 'setup:\n  command: npm ci\n  requires: { env: [CONFORMANCE_TOKEN] }\nsteps:\n');
+
 limitsConformanceScenarios.push(
   {
     name: 'a step in a workspace the driver creates waits for a driver that runs setup, which gets setup with its own keys only',
@@ -139,6 +143,7 @@ limitsConformanceScenarios.push(
 );
 
 const SETUP_SECRET = 'conformance-setup-value-1304';
+
 const COMMANDS_ONLY = controlsYaml(`  - id: publish
     workspace: new
     command: echo publish
@@ -147,6 +152,7 @@ const COMMANDS_ONLY = controlsYaml(`  - id: publish
     needs: []
     prompt: Tell the channel
     requires: { env: [CONFORMANCE_TOKEN] }`).replace('steps:\n', 'setup:\n  command: npm ci\n  requires: { env: [SETUP_TOKEN] }\nsteps:\n');
+
 limitsConformanceScenarios.push(
   {
     name: 'env-commands-scope: a driver that scopes env for commands only gets the command step and its setup scoped, and the prompt step waits',
@@ -177,6 +183,7 @@ const TIMED_STEP = controlsYaml(`  - id: work
     needs: [work]
     if: steps.work.outcome == 'timeout'
     command: echo recover`);
+
 const TIMED_FAN_OUT = controlsYaml(`  - id: plan
     command: echo plan
     output:
@@ -189,6 +196,7 @@ const TIMED_FAN_OUT = controlsYaml(`  - id: plan
       steps:
         - id: work
           command: echo work`);
+
 limitsConformanceScenarios.push(
   {
     name: 'a lease past its timeout is cancelled, its report is lease_cancelled, and the step settles with outcome timeout',
@@ -268,6 +276,7 @@ limitsConformanceScenarios.push(
 );
 
 const BUDGETED = (tokens: number, steps: string): string => controlsYaml(steps).replace('steps:\n', `budget: { tokens: ${tokens} }\nsteps:\n`);
+
 limitsConformanceScenarios.push(
   {
     name: 'a prompt under a budget waits for a driver that reports tokens, and a success that reports none fails budget_unmeasured',
@@ -304,6 +313,7 @@ limitsConformanceScenarios.push(
 
 const MAX_TURNS = controlsYaml('  - id: plan\n    prompt: Plan it.\n    max_turns: 5\n  - id: check\n    needs: []\n    command: echo check');
 const TURNS_UNENFORCED = [{ requirement: 'max_turns', asked: 5 }];
+
 limitsConformanceScenarios.push(
   {
     name: 'a driver that cannot cap turns gets a max_turns prompt without maxTurns, and the run records max_turns as unenforced',

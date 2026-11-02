@@ -111,6 +111,7 @@ const REPAIRABLE_CODE_EDGE_SOURCES = new Set<GraphEdgeSource>(['code-ast', 'code
 const MISSING_PATH_ERROR_CODE = 'ENOENT';
 const REPAIRABLE_VALIDATION_ISSUE_CODE = 'edge.missing_node';
 const SELF_LOOP_VALIDATION_ISSUE_CODE = 'edge.self_loop';
+
 // The extractor deliberately emits a file-level IMPLEMENTS self-loop when a
 // class implements an interface defined in the same file (edges are
 // file-to-file, not symbol-to-symbol). validateGraph flags every self-loop as
@@ -129,24 +130,31 @@ function isExpectedSelfLoop(edge: GraphEdge): boolean {
  */
 async function graphUnchanged(wikiRoot: string, graph: GraphIndex): Promise<boolean> {
   const raw = await readFile(path.join(wikiRoot, '.indices', 'graph-index.json'), 'utf8').catch(() => null);
+
   if (raw === null) return false;
   const saved: unknown = JSON.parse(raw);
+
   if (typeof saved !== 'object' || saved === null || !('generatedAt' in saved) || typeof saved.generatedAt !== 'string') return false;
+
   return JSON.stringify({ ...graph, generatedAt: saved.generatedAt }, null, 2) === raw;
 }
 
 async function loadReconciliationBase(wikiRoot: string): Promise<GraphIndex> {
   const graphPath = path.join(wikiRoot, '.indices', 'graph-index.json');
   const graph = await loadGraphIndex(wikiRoot);
+
   if (!graph) {
     if (!(await exists(graphPath))) return createGraphIndex();
     throw new Error(`Cannot reconcile invalid graph index at ${graphPath}`);
   }
+
   const base = createGraphIndex(
     graph.nodes,
     graph.edges.filter(edge => edge.source !== BRIDGE_EDGE_SOURCE),
   );
+
   const hasUnexpectedSelfLoop = base.edges.some(edge => edge.from === edge.to && !isExpectedSelfLoop(edge));
+
   if (
     hasUnexpectedSelfLoop
     || validateGraph(base).issues.some(issue =>
@@ -155,10 +163,13 @@ async function loadReconciliationBase(wikiRoot: string): Promise<GraphIndex> {
   ) {
     throw new Error(`Cannot reconcile invalid graph index at ${graphPath}`);
   }
+
   const nodeSlugs = new Set(base.nodes.map(node => node.slug));
   const endpointNodes: GraphNode[] = [];
+
   for (const edge of base.edges) {
     if (!edge.source || !REPAIRABLE_CODE_EDGE_SOURCES.has(edge.source)) continue;
+
     for (const slug of [edge.from, edge.to]) {
       if (nodeSlugs.has(slug)) continue;
       nodeSlugs.add(slug);
@@ -179,12 +190,15 @@ async function loadReconciliationBase(wikiRoot: string): Promise<GraphIndex> {
       });
     }
   }
+
   const repaired = mergeGraphs(base, createGraphIndex(endpointNodes));
+
   if (
     validateGraph(repaired).issues.some(issue => issue.code !== SELF_LOOP_VALIDATION_ISSUE_CODE)
   ) {
     throw new Error(`Cannot reconcile invalid graph index at ${graphPath}`);
   }
+
   return repaired;
 }
 
@@ -193,6 +207,7 @@ async function loadReconciliationBase(wikiRoot: string): Promise<GraphIndex> {
 async function exists(p: string): Promise<boolean> {
   try {
     await stat(p);
+
     return true;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === MISSING_PATH_ERROR_CODE) return false;
@@ -204,8 +219,10 @@ async function readPages(dirPath: string): Promise<PageRecord[]> {
   if (!(await exists(dirPath))) return [];
   const entries = await readdir(dirPath, { withFileTypes: true });
   const pages: PageRecord[] = [];
+
   for (const entry of entries) {
     const full = path.join(dirPath, entry.name);
+
     if (entry.isDirectory()) {
       pages.push(...await readPages(full));
     } else if (entry.isFile() && entry.name.endsWith('.md')) {
@@ -221,39 +238,48 @@ async function readPages(dirPath: string): Promise<PageRecord[]> {
       });
     }
   }
+
   return pages;
 }
 
 function keyTerms(page: PageRecord): string[] {
   const terms = new Set<string>();
+
   // PascalCase identifiers
   for (const m of page.text.matchAll(/\b([A-Z][a-z]+(?:[A-Z][a-z]+)+)\b/g)) {
     terms.add(m[1]);
   }
+
   // backtick tokens
   for (const m of page.text.matchAll(/`([^`]+)`/g)) {
     terms.add(m[1].trim());
   }
+
   // CJK words (2-6 chars)
   for (const m of page.text.matchAll(/[一-鿿]{2,6}/g)) {
     terms.add(m[0]);
   }
+
   return [...terms];
 }
 
 function extractApiEndpoints(text: string): string[] {
   const endpoints: string[] = [];
+
   for (const m of text.matchAll(/\b(GET|POST|PUT|DELETE|PATCH)\s+(\/\S+)/g)) {
     endpoints.push(`${m[1]} ${m[2]}`);
   }
+
   return endpoints;
 }
 
 function extractConcepts(text: string): string[] {
   const concepts = new Set<string>();
+
   for (const m of text.matchAll(/\b([A-Z][a-z]+(?:[A-Z][a-z]+)+)\b/g)) {
     concepts.add(m[1]);
   }
+
   return [...concepts];
 }
 
@@ -263,6 +289,7 @@ function detectConflicts(product: PageRecord, code: PageRecord): ReconcileConfli
   // COUNT_MISMATCH: "N states" / "N 个状态"
   const countProd = product.text.match(/(\d+)\s*(?:states?|个状态)/i);
   const countCode = code.text.match(/(\d+)\s*(?:states?|个状态)/i);
+
   if (countProd && countCode && countProd[1] !== countCode[1]) {
     conflicts.push({
       kind: 'COUNT_MISMATCH',
@@ -275,6 +302,7 @@ function detectConflicts(product: PageRecord, code: PageRecord): ReconcileConfli
   // STATE_MISMATCH: enum-like "A|B|C" patterns
   const enumProd = product.text.match(/`([A-Z_]+(?:\|[A-Z_]+){1,})`/);
   const enumCode = code.text.match(/`([A-Z_]+(?:\|[A-Z_]+){1,})`/);
+
   if (enumProd && enumCode && enumProd[1] !== enumCode[1]) {
     conflicts.push({
       kind: 'STATE_MISMATCH',
@@ -289,11 +317,13 @@ function detectConflicts(product: PageRecord, code: PageRecord): ReconcileConfli
     [/\bsync(?:hronous)?\b/i, /\basync(?:hronous)?\b/i],
     [/\bblocking\b/i, /\bnon-blocking\b/i],
   ];
+
   for (const [patA, patB] of OPPOSING_PAIRS) {
     const prodHasA = patA.test(product.text);
     const prodHasB = patB.test(product.text);
     const codeHasA = patA.test(code.text);
     const codeHasB = patB.test(code.text);
+
     if ((prodHasA && codeHasB && !codeHasA) || (prodHasB && codeHasA && !codeHasB)) {
       conflicts.push({
         kind: 'BEHAVIOR_MISMATCH',
@@ -323,10 +353,13 @@ export async function reconcileKnowledge(options: ReconcileOptions): Promise<Rec
 
   // Read all pages
   const productPages: PageRecord[] = [];
+
   for (const dir of productDirNames) {
     productPages.push(...await readPages(path.join(wikiRoot, dir)));
   }
+
   const codePages: PageRecord[] = [];
+
   for (const dir of codeDirNames) {
     codePages.push(...await readPages(path.join(wikiRoot, dir)));
   }
@@ -346,8 +379,10 @@ export async function reconcileKnowledge(options: ReconcileOptions): Promise<Rec
   for (const productPage of productPages) {
     const terms = keyTerms(productPage);
     let matched = false;
+
     for (const codePage of codePages) {
       const matchedTerms = terms.filter(t => codePage.text.includes(t));
+
       if (matchedTerms.length === 0) continue;
 
       matched = true;
@@ -356,10 +391,12 @@ export async function reconcileKnowledge(options: ReconcileOptions): Promise<Rec
 
       for (const term of matchedTerms) {
         const nearTitle = codePage.title.includes(term);
+
         const factors: ConfidenceFactor[] = [
           { name: 'direct_match', weight: 0.9 },
           ...(nearTitle ? [{ name: 'title_proximity', weight: 0.1 }] : []),
         ];
+
         const nc = buildConfidence(factors);
         graphEdges.push({
           from: toPageSlug(path.relative(wikiRoot, productPage.path)),
@@ -378,9 +415,11 @@ export async function reconcileKnowledge(options: ReconcileOptions): Promise<Rec
     // Phase 4 — concepts not implemented
     if (!matched) {
       const concepts = extractConcepts(productPage.text);
+
       const unimplemented = concepts.filter(
         c => !codePages.some(cp => cp.text.includes(c))
       );
+
       for (const concept of unimplemented) {
         gaps.push({
           kind: 'CONCEPT_NOT_IMPLEMENTED',
@@ -392,9 +431,11 @@ export async function reconcileKnowledge(options: ReconcileOptions): Promise<Rec
 
     // Phase 3 — API endpoints with doc but no impl
     const endpoints = extractApiEndpoints(productPage.text);
+
     for (const endpoint of endpoints) {
       const pathPart = endpoint.split(' ')[1];
       const hasImpl = codePages.some(cp => cp.text.includes(pathPart));
+
       if (!hasImpl) {
         gaps.push({
           kind: 'API_DOC_NO_IMPL',
@@ -450,16 +491,21 @@ export async function reconcileKnowledge(options: ReconcileOptions): Promise<Rec
   // Phase 7 — API↔Interface matching (path + method dual factor)
   for (const productPage of productPages) {
     const endpoints = extractApiEndpoints(productPage.text);
+
     for (const endpoint of endpoints) {
       const [method, apiPath] = endpoint.split(' ');
+
       for (const codePage of codePages) {
         const hasPath = codePage.text.includes(apiPath);
         const hasMethod = codePage.text.includes(method);
+
         if (!hasPath) continue;
+
         const factors: ConfidenceFactor[] = [
           { name: 'path_match', weight: 0.7 },
           ...(hasMethod ? [{ name: 'method_match', weight: 0.3 }] : []),
         ];
+
         apiMatches.push({
           apiPagePath: productPage.path,
           interfacePagePath: codePage.path,
@@ -474,8 +520,10 @@ export async function reconcileKnowledge(options: ReconcileOptions): Promise<Rec
   // Phase 8 — Rule↔Code matching
   for (const productPage of productPages) {
     const rulePatterns = productPage.text.match(/`[^`]{3,50}`/g) ?? [];
+
     for (const rawPattern of rulePatterns) {
       const pattern = rawPattern.replace(/`/g, '');
+
       for (const codePage of codePages) {
         if (!codePage.text.includes(pattern)) continue;
         const factors: ConfidenceFactor[] = [{ name: 'rule_pattern_match', weight: 0.85 }];
@@ -491,17 +539,21 @@ export async function reconcileKnowledge(options: ReconcileOptions): Promise<Rec
 
   // Phase 9 — Stale detection
   const MS_PER_DAY = 86_400_000;
+
   for (const edge of graphEdges) {
     const fromPage = productPages.find(
       p => toPageSlug(path.relative(wikiRoot, p.path)) === edge.from
     );
+
     const toPage = codePages.find(
       p => toPageSlug(path.relative(wikiRoot, p.path)) === edge.to
     );
+
     if (!fromPage?.updated || !toPage?.updated) continue;
     const fromMs = new Date(fromPage.updated).getTime();
     const toMs = new Date(toPage.updated).getTime();
     const daysDrift = Math.abs(fromMs - toMs) / MS_PER_DAY;
+
     if (daysDrift > 30) {
       staleWarnings.push({
         mappingFrom: edge.from,
@@ -520,12 +572,15 @@ export async function reconcileKnowledge(options: ReconcileOptions): Promise<Rec
   if (!dryRun) {
     const baseEdges = existing.edges.filter(edge => edge.source !== BRIDGE_EDGE_SOURCE);
     const preservedNodeSlugs = new Set(baseEdges.flatMap(edge => [edge.from, edge.to]));
+
     const baseNodes = existing.nodes.filter(
       node => node.source !== BRIDGE_EDGE_SOURCE || preservedNodeSlugs.has(node.slug),
     );
+
     const existingNodeSlugs = new Set(
       baseNodes.filter(node => node.source !== BRIDGE_EDGE_SOURCE).map(node => node.slug),
     );
+
     const pageNodes: GraphNode[] = [
       ...productPages.map(page => ({
         slug: toPageSlug(path.relative(wikiRoot, page.path)),
@@ -544,6 +599,7 @@ export async function reconcileKnowledge(options: ReconcileOptions): Promise<Rec
         source: BRIDGE_EDGE_SOURCE,
       })),
     ].filter(node => !existingNodeSlugs.has(node.slug));
+
     const newEdges: GraphEdge[] = graphEdges.map(e => ({
       from: e.from,
       to: e.to,
@@ -551,21 +607,26 @@ export async function reconcileKnowledge(options: ReconcileOptions): Promise<Rec
       weight: e.confidenceScore,
       source: BRIDGE_EDGE_SOURCE,
     }));
+
     const base = createGraphIndex(
       baseNodes,
       baseEdges,
     );
+
     const refreshedNodes = mergeGraphs(base, createGraphIndex(pageNodes)).nodes;
+
     const merged = mergeGraphs(
       createGraphIndex(refreshedNodes, newEdges),
       createGraphIndex([], baseEdges),
     );
+
     if (!(await graphUnchanged(wikiRoot, merged))) await saveGraphIndex(wikiRoot, merged);
   }
 
   const durationMs = Date.now() - startMs;
   const mappingCount = new Set(graphEdges.map(e => JSON.stringify([e.from, e.to]))).size;
   const allScores = graphEdges.map(e => e.confidenceScore ?? 0);
+
   const averageConfidence = allScores.length > 0
     ? allScores.reduce((a, b) => a + b, 0) / allScores.length
     : 0;

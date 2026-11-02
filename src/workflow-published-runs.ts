@@ -82,12 +82,16 @@ async function list(config: LocalConfig, { taker, env }: { taker: Taker; env: Wo
   if (!usesBranchWorktree(config)) return [];
   const root = path.join(getReportsDir(config), SNAPSHOTS_DIR);
   const entries = await fs.readdir(root, { withFileTypes: true }).catch(() => []);
+
   const snapshots = await Promise.all(entries.flatMap((entry) => {
     const run = RunIdSchema.safeParse(entry.name);
+
     return entry.isDirectory() && run.success ? [readSnapshot(config, run.data)] : [];
   }));
+
   const running = snapshots.filter((snapshot): snapshot is RunSnapshot => snapshot?.status === 'running');
   const toolLacksOf = taker.driver === 'local' ? toolLacks(config, taker.tools, await memberTools(config)) : () => [];
+
   const runs = await Promise.all(running.map(async (snapshot): Promise<PublishedRun> => ({
     run: RunIdSchema.parse(snapshot.run),
     workflow: snapshot.name,
@@ -97,17 +101,22 @@ async function list(config: LocalConfig, { taker, env }: { taker: Taker; env: Wo
     ...(snapshot.repository !== undefined ? { repository: snapshot.repository } : {}),
     ...(snapshot.offered ? { offer: await offerOf(config, snapshot, snapshot.offered.at, { taker, env, toolLacksOf }) } : {}),
   })));
+
   const offered = runs.filter((run) => run.offer).sort((left, right) => (left.offer?.at ?? '').localeCompare(right.offer?.at ?? ''));
   const held = runs.filter((run) => !run.offer).sort((left, right) => right.ownedAt.localeCompare(left.ownedAt));
+
   return [...offered, ...held];
 }
 
 async function readSnapshot(config: LocalConfig, run: RunId): Promise<RunSnapshot | undefined> {
   const text = await fs.readFile(path.join(getReportsDir(config), snapshotPath(run)), 'utf8').catch(() => undefined);
+
   if (text === undefined) return undefined;
   const parsed = parseSnapshot(text, run);
+
   if (parsed.ok) return parsed.value;
   log.debug(`[workflow] left out run ${run} from teamai-reports: ${parsed.error.message}`);
+
   return undefined;
 }
 
@@ -119,18 +128,24 @@ async function readSnapshot(config: LocalConfig, run: RunId): Promise<RunSnapsho
  */
 async function offerOf(config: LocalConfig, snapshot: RunSnapshot, at: string, { taker, env, toolLacksOf }: { taker: Taker; env: WorkflowEnv; toolLacksOf: ToolLacks }): Promise<Offer> {
   const definitions = await definitionsOf(config, snapshot);
+
   if (!definitions.ok) return { at, needs: [], uses: { env: [], prompts: [] }, lacks: [], refusal: { code: definitions.error.code, message: definitions.error.message } };
   const { definition, workflows } = definitions.value;
+
   const description = describeWorkflow({
     definition, source: DefaultWorkflows.sourceOfRun(snapshot), workflows, ceiling: ceilingOf(config), can: canFor(undefined), allow: config.workflows?.allow ?? {}, env: env.facts,
   });
+
   const settled = new Set(settledSteps({ definition, workflows, steps: snapshot.steps }));
   const needs = stepNeeds(description, settled);
   const left = description.facts.runs.filter((run) => isLeft(run.step, settled));
   const local = taker.driver === 'skill' ? localReason(description) : undefined;
+
   const refusal = invokeRefusal(definition, taker.caller, { kind: 'continue', run: RunIdSchema.parse(snapshot.run) })
     ?? (local !== undefined ? { code: 'needs_local_driver', message: local } : undefined);
+
   const uses = { env: [...new Set(left.flatMap((run) => run.env))], prompts: left.flatMap((run) => (run.executor === 'prompt' ? [run.step] : [])) };
+
   return { at, needs, uses, lacks: [...envLacks(left, env.facts), ...toolLacksOf(left)], ...(refusal ? { refusal } : {}) };
 }
 
@@ -147,9 +162,11 @@ const pathLookups = new Map<LaunchTool, { isFound: boolean; at: number }>();
 /** Whether `tool`'s executable is on PATH here, as the launcher would find it, looked up at most once a minute. */
 function isOnPath(tool: LaunchTool): boolean {
   const known = pathLookups.get(tool);
+
   if (known && Date.now() - known.at < PATH_LOOKUP_MS) return known.isFound;
   const isFound = resolveCliPath(executableOf(tool)) !== null;
   pathLookups.set(tool, { isFound, at: Date.now() });
+
   return isFound;
 }
 
@@ -160,27 +177,34 @@ function isOnPath(tool: LaunchTool): boolean {
 function toolLacks(config: LocalConfig, flags: Record<string, string>, members: MemberTool[]): ToolLacks {
   return (runs) => {
     const byChoice = new Map<string, { agent: string | undefined; tool: string | undefined; prompts: StepRun[] }>();
+
     for (const run of runs) {
       if (run.executor !== 'prompt') continue;
       const key = JSON.stringify([run.agent, run.tool]);
       const group = byChoice.get(key) ?? { agent: run.agent, tool: run.tool, prompts: [] };
       byChoice.set(key, { ...group, prompts: [...group.prompts, run] });
     }
+
     return [...byChoice.values()].flatMap(({ agent, tool, prompts }): Lack[] => {
       const steps = `the prompt step${prompts.length > 1 ? 's' : ''} ${listOf(prompts.map((run) => run.step))}`;
       const flag = agent === undefined ? 'default' : agent;
       const choice = launchToolFor({ agent, tool }, config, flags, members);
+
       if (choice.ok) {
         // A step's own tool wins over --tools, so only installing it helps.
         const fix = tool === undefined ? `install ${choice.tool}, or pass --tools ${flag}=<tool> for one that is` : `install ${choice.tool}`;
+
         return isOnPath(choice.tool) ? [] : [{ reason: `${steps} ${prompts.length > 1 ? 'run' : 'runs'} on ${choice.tool}, which is not on PATH here`, fix }];
       }
+
       if (choice.failure.code === 'tool_unconfigured') {
         return [{ reason: `no tool is configured here for ${steps}`, fix: `pass --tools ${flag}=<tool>, or set workflows.tools.${flag}` }];
       }
+
       const fix = tool === undefined
         ? `pass --tools ${flag}=<tool> with a tool teamai launches`
         : `its workflow names tool ${tool}, which teamai does not launch here; continue it with a driver that launches ${tool}`;
+
       return [{ reason: `${steps} ${prompts.length > 1 ? 'have' : 'has'} no tool teamai launches here (${choice.failure.message.replace(/\.$/, '')})`, fix }];
     });
   };
@@ -190,14 +214,18 @@ function toolLacks(config: LocalConfig, flags: Record<string, string>, members: 
 function envLacks(runs: readonly StepRun[], env: EnvFacts): Lack[] {
   const absent = (keys: readonly string[]): string[] => (env.unreadable !== undefined ? [...keys] : keys.filter((key) => sameEnvName(env.present, key) === undefined));
   const short = runs.filter((run) => absent(run.env).length > 0);
+
   if (short.length === 0) return [];
   const keys = [...new Set(short.flatMap((run) => absent(run.env)))];
   const steps = short.map((run) => run.step);
   const require = `${listOf(steps)} require${steps.length > 1 ? '' : 's'} env ${listOf(keys)}`;
+
   if (env.unreadable !== undefined) {
     return [{ reason: `${require}, and the team env cannot be read here: ${env.unreadable}`, fix: 'teamai env list, and fix what it reports' }];
   }
+
   const one = keys.length === 1;
+
   return [{
     reason: `${require}, which ${one ? 'has' : 'have'} no value here`,
     fix: envAdvice(keys, env.declared),
@@ -223,17 +251,24 @@ function candidates(runs: readonly PublishedRun[], { repository, hasPerson, self
 async function resumable(config: LocalConfig, { taker, env, repository }: { taker: Taker; env: WorkflowEnv; repository: string | undefined }): Promise<ResumableRun[]> {
   const [published, self, runs] = await Promise.all([list(config, { taker, env }), installOwner(config), readRuns(config)]);
   const local = runs.filter((run) => run.status === 'running').sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+
   const mine = await Promise.all(local.map(async (run): Promise<Exclude<ResumableRun, { kind: 'offered' }> | undefined> => {
     const read = run.publication === undefined || !usesBranchWorktree(config) ? undefined : await readSnapshot(config, RunIdSchema.parse(run.id));
     const snapshot = read?.createdAt === run.createdAt ? read : undefined;
+
     if (snapshot === undefined || snapshot.owner.id === self.id) return { kind: 'here', run, isOffered: snapshot?.offered !== undefined };
+
     if (snapshot.status !== 'running') return { kind: 'ended', run, owner: snapshot.owner, status: snapshot.status };
+
     return snapshot.offered === undefined ? { kind: 'claimed', run, owner: snapshot.owner, ownedAt: snapshot.ownedAt } : undefined;
   }));
+
   const held = mine.filter((row) => row !== undefined);
   const here = new Set(held.map((row) => row.run.id));
+
   const offered = published.flatMap((run): ResumableRun[] => (run.offer !== undefined && run.owner.id !== self.id && repository !== undefined
     && run.repository === repository && !here.has(run.run) ? [{ kind: 'offered', published: { ...run, offer: run.offer } }] : []));
+
   return [...offered, ...held];
 }
 

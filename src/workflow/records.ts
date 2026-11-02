@@ -48,6 +48,7 @@ const RECORDED_FAILURES = [
   'delivery_failed', 'protected_path',
   'trial_prepare_failed', 'clone_prepare_failed',
 ] as const;
+
 type RecordedFailure = (typeof RECORDED_FAILURES)[number];
 
 function isRecordedFailure(failure: WorkflowFailure | undefined): failure is WorkflowFailure & { code: RecordedFailure } {
@@ -194,14 +195,19 @@ export function buildStartRecord(
  */
 function failureOf(run: RunState): RecordedFailure | undefined {
   if (run.status !== 'failed' || run.end !== undefined) return undefined;
+
   if (isRecordedFailure(run.failure)) return run.failure.code;
+
   const failed = run.steps
     .filter((step): step is Extract<StepState, { status: 'failed' | 'cancelled' }> => step.status === 'failed' || step.status === 'cancelled')
     .sort((left, right) => left.settledAt - right.settledAt);
+
   const top = new Set(run.definition.steps.map((step) => step.id));
   const first = failed.find((step) => top.has(step.id));
+
   if (!first) return undefined;
   const under = (step: StepState): boolean => step.id.startsWith(`${first.id}.`) || step.id.startsWith(`${first.id}[`);
+
   return [first, ...failed.filter(under)].map((step) => step.failure).find(isRecordedFailure)?.code;
 }
 
@@ -222,15 +228,18 @@ export function buildEndRecord(
   // An entry per pass: path, and what that pass reported. Message, outputs,
   // results, and session ids never cross.
   const definitionOf = stepDefinitions(run);
+
   const entry = (step: string, pass: number | undefined, reported: Reported | undefined): StepEntry => {
     const name = definitionOf(step)?.agent;
     const agent = reported?.agent ?? (name ? { definition: { name } } : undefined);
     const outcome = reported?.outcome === 'skipped' ? undefined : reported?.outcome;
+
     const outcomes = uniqueOutcomes([
       ...(reported?.changes?.commits ?? []).map((sha): WorkOutcome => ({ kind: 'commit', sha })),
       ...(run.deliveries ?? []).filter((receipt) => receipt.step === step && receipt.pass === (pass ?? 1)).map((receipt): WorkOutcome => ({ kind: 'pr', url: receipt.url })),
       ...(reported?.outcomes ?? []),
     ]);
+
     return {
       step,
       ...(reported?.answer ? { answer: { choice: reported.answer.choice, channel: reported.answer.channel, agent: reported.answer.agent } } : {}),
@@ -245,6 +254,7 @@ export function buildEndRecord(
       ...(outcomes.length > 0 ? { outcomes } : {}),
     };
   };
+
   // A loop keeps a step's earlier passes in `passes`, and the passes of the
   // instances it removed from the run, such as the items of a for_each it ran
   // again, in `archive`.
@@ -255,8 +265,10 @@ export function buildEndRecord(
     ]),
     ...(run.archive ?? []).map((archived) => entry(archived.step, archived.pass, archived)),
   ];
+
   // Receipts are what delivery recorded, never a step's outputs, and each URL appears once.
   const prs = (run.deliveries ?? []).map((receipt) => receipt.url);
+
   return {
     ...buildStartRecord(run, driver, username, now),
     phase: 'end',
@@ -293,11 +305,16 @@ export function buildEndRecord(
  */
 export function mergeRecord(origin: WorkflowRunRecord | null, next: WorkflowRunRecord): WorkflowRunRecord {
   if (!origin) return next;
+
   if (origin.phase === 'end' && next.phase === 'start') return origin;
   const merged = { ...origin, ...next, startedAt: origin.startedAt };
+
   if (next.end === undefined) delete merged.end;
+
   if (next.failure === undefined) delete merged.failure;
+
   if (next.prs === undefined) delete merged.prs;
+
   return merged;
 }
 
@@ -325,13 +342,17 @@ export async function queueRunRecord(
   try {
     if (!await isRecordingEnabled(config)) return false;
     const username = config.username ?? 'unknown';
+
     const record = phase === 'start'
       ? buildStartRecord(run, driver, username)
       : buildEndRecord(run, driver, username);
+
     await enqueueRecord(config, record, secrets);
+
     return true;
   } catch (error) {
     log.warn(`[workflows] Could not queue the ${phase} record of run ${run.id}, so the team report will not include it: ${error instanceof Error ? error.message : String(error)}`);
+
     return false;
   }
 }
@@ -358,8 +379,10 @@ export async function runRecordState(config: LocalConfig, run: RunState): Promis
 /** `runRecordState` of several runs, reading the team config and the queue once for all of them. */
 export async function runRecordStates(config: LocalConfig, runs: RunState[]): Promise<Map<string, RecordState>> {
   const queued = runs.filter((run) => run.endRecordQueued);
+
   if (queued.length === 0 || !await isRecordingEnabled(config)) return new Map();
   const pending = new Set((await pendingRecords(config)).map((record) => record.run));
+
   return new Map(queued.map((run): [string, RecordState] => [run.id, pending.has(run.id) ? 'pending' : 'published']));
 }
 
@@ -384,6 +407,7 @@ function pendingBenchmarksDir(config: LocalConfig): string {
 
 /** What the queue reads of a benchmark record: its run. The rest is the benchmark module's, and is published as it is. */
 const QueuedBenchmarkSchema = z.object({ run: z.string().min(1) }).passthrough();
+
 type QueuedBenchmark = z.infer<typeof QueuedBenchmarkSchema>;
 
 /**
@@ -398,6 +422,7 @@ export async function queueBenchmarkRecord(config: LocalConfig, record: QueuedBe
   const target = path.join(dir, `${record.run}.json`);
   await fs.writeFile(`${target}.tmp`, `${JSON.stringify(redactJson(record, secrets), null, 2)}\n`, 'utf-8');
   await fs.rename(`${target}.tmp`, target);
+
   return true;
 }
 
@@ -410,11 +435,14 @@ export async function pendingBenchmarkRuns(config: LocalConfig): Promise<Set<str
 async function pendingBenchmarks(config: LocalConfig): Promise<Array<{ file: string; text: string; record: QueuedBenchmark }>> {
   const dir = pendingBenchmarksDir(config);
   const files = (await fs.readdir(dir).catch((): string[] => [])).filter((file) => file.endsWith('.json')).sort();
+
   const read = await Promise.all(files.map(async (file) => {
     const text = await fs.readFile(path.join(dir, file), 'utf-8').catch(() => undefined);
     const parsed = text === undefined ? undefined : QueuedBenchmarkSchema.safeParse(parseJson(text));
+
     return text !== undefined && parsed?.success ? [{ file: path.join(dir, file), text, record: parsed.data }] : [];
   }));
+
   return read.flat();
 }
 
@@ -445,14 +473,18 @@ export async function removeQueuedEndRecord(config: LocalConfig, runId: string):
 export async function pendingRecords(config: LocalConfig): Promise<WorkflowRunRecord[]> {
   const dir = pendingDir(config);
   let files: string[];
+
   try {
     files = await fs.readdir(dir);
   } catch {
     return [];
   }
+
   const records: WorkflowRunRecord[] = [];
+
   for (const file of files.sort()) {
     if (!file.endsWith('.json')) continue;
+
     try {
       records.push(JSON.parse(await fs.readFile(path.join(dir, file), 'utf-8')) as WorkflowRunRecord);
     } catch {
@@ -460,20 +492,25 @@ export async function pendingRecords(config: LocalConfig): Promise<WorkflowRunRe
       // of the same run+phase overwrites it.
     }
   }
+
   return records;
 }
 
 async function dequeue(config: LocalConfig, record: WorkflowRunRecord): Promise<void> {
   const lock = runLockPath(config, record.run);
+
   if (!await acquireLock(lock)) return;
+
   try {
     const target = pendingPath(config, record);
     let current: WorkflowRunRecord;
+
     try {
       current = JSON.parse(await fs.readFile(target, 'utf-8')) as WorkflowRunRecord;
     } catch {
       return;
     }
+
     if (current.phase === record.phase && current.endedAt === record.endedAt) await fs.rm(target, { force: true });
   } finally {
     await releaseLock(lock);
@@ -500,44 +537,55 @@ export type RecordDelivery = { state: 'published' } | { state: 'pending'; reason
 export async function publishPendingRecords(config: LocalConfig, options: { run?: string } = {}): Promise<RecordDelivery> {
   const queued = (await pendingRecords(config)).filter((record) => options.run === undefined || record.run === options.run);
   const benchmarks = (await pendingBenchmarks(config)).filter(({ record }) => options.run === undefined || record.run === options.run);
+
   if (queued.length === 0 && benchmarks.length === 0) return { state: 'published' };
   const { updateReports, readReportsOriginFile } = await import('../utils/reports-branch.js');
   const install = (await installOwner(config)).id;
+
   const outcome = await updateReports(config, async (worktree) => {
     const files: string[] = [];
     const byRun = new Map<string, WorkflowRunRecord[]>();
+
     for (const record of queued) {
       if (ownedElsewhere(await readReportsOriginFile(worktree, snapshotPath(record.run)), install)) continue;
       const list = byRun.get(record.run) ?? [];
       list.push(record);
       byRun.set(record.run, list);
     }
+
     const delivered: WorkflowRunRecord[] = [];
     const originByRun = new Map<string, WorkflowRunRecord | null>();
+
     for (const [runId, records] of byRun) {
       // Upsert per run id: the merge base is what origin holds, so a retry
       // never duplicates the logical record and an end phase stays terminal.
       const rel = recordPath(runId);
       const originRaw = await readReportsOriginFile(worktree, rel);
       let origin: WorkflowRunRecord | null = null;
+
       try {
         origin = originRaw === null ? null : JSON.parse(originRaw) as WorkflowRunRecord;
       } catch {
         origin = null;
       }
+
       originByRun.set(runId, origin);
       let merged: WorkflowRunRecord | null = null;
+
       for (const record of [...records].sort((a, b) => (a.phase === 'end' ? 1 : 0) - (b.phase === 'end' ? 1 : 0))) {
         merged = mergeRecord(merged, record);
       }
+
       if (origin !== null) {
         merged = mergeRecord(origin, merged!);
       }
+
       await fs.mkdir(path.join(worktree, path.dirname(rel)), { recursive: true });
       await fs.writeFile(path.join(worktree, rel), `${JSON.stringify(merged, null, 2)}\n`, 'utf-8');
       files.push(rel);
       delivered.push(...records);
     }
+
     // Workflow totals ride the same update: one lock, one push, and the stats
     // merge counts only what this update delivered. Each total lands in the
     // stats file of the member who ran it, not of whoever drains the queue.
@@ -545,14 +593,18 @@ export async function publishPendingRecords(config: LocalConfig, options: { run?
     // the other member's totals.
     const { default: YAML } = await import('yaml');
     const delta = statsDeltaRecords(originByRun, delivered);
+
     const usernames = new Set(delta.flatMap((record) => {
       const origin = originByRun.get(record.run);
+
       return origin?.phase === 'end' ? [record.username, origin.username] : [record.username];
     }));
+
     for (const username of usernames) {
       const statsRel = `stats/${username}.yaml`;
       const existingStatsRaw = await readReportsOriginFile(worktree, statsRel);
       let existingStats: Record<string, unknown> = {};
+
       if (existingStatsRaw !== null && existingStatsRaw.trim() !== '') {
         try {
           existingStats = YAML.parse(existingStatsRaw) as Record<string, unknown>;
@@ -560,11 +612,13 @@ export async function publishPendingRecords(config: LocalConfig, options: { run?
           existingStats = {};
         }
       }
+
       const mergedStats = mergeWorkflowStats(ensureStatsShape(existingStats, username), username, delta, originByRun);
       await fs.mkdir(path.join(worktree, 'stats'), { recursive: true });
       await fs.writeFile(path.join(worktree, statsRel), YAML.stringify(mergedStats), 'utf-8');
       files.push(statsRel);
     }
+
     // A benchmark record replaces what its key holds, and folds into no stats total.
     for (const { record, text } of benchmarks) {
       const rel = benchmarkRecordPath(record.run);
@@ -572,32 +626,39 @@ export async function publishPendingRecords(config: LocalConfig, options: { run?
       await fs.writeFile(path.join(worktree, rel), text, 'utf-8');
       files.push(rel);
     }
+
     const counts = [
       ...(byRun.size > 0 ? [`${byRun.size} workflow run record${byRun.size === 1 ? '' : 's'}`] : []),
       ...(benchmarks.length > 0 ? [`${benchmarks.length} benchmark record${benchmarks.length === 1 ? '' : 's'}`] : []),
     ];
+
     return {
       files: [...new Set(files)],
       message: `[teamai] Publish ${counts.join(' and ')}`,
     };
   });
+
   switch (outcome.status) {
     case 'published':
     case 'already-present': {
       for (const record of queued) await dequeue(config, record);
+
       for (const benchmark of benchmarks) await dequeueBenchmark(benchmark);
       const remaining = new Set(await fs.readdir(pendingDir(config)).catch(() => []));
       const remainingBenchmarks = new Set((await pendingBenchmarks(config)).map(({ file }) => file));
+
       return queued.some((record) => remaining.has(path.basename(pendingPath(config, record)))) || benchmarks.some(({ file }) => remainingBenchmarks.has(file))
         ? { state: 'pending', reason: 'a record of the same run was still queued after they were delivered' }
         : { state: 'published' };
     }
+
     case 'busy':
       return { state: 'pending', reason: 'another teamai process is writing teamai-reports' };
     case 'failed':
       return { state: 'pending', reason: outcome.reason };
     default: {
       const unhandled: never = outcome;
+
       return unhandled;
     }
   }
@@ -606,10 +667,13 @@ export async function publishPendingRecords(config: LocalConfig, options: { run?
 /** Whether `snapshot`, a run's published state as origin holds it, names an install other than `install` as its owner. */
 function ownedElsewhere(snapshot: string | null, install: string): boolean {
   if (snapshot === null) return false;
+
   try {
     const value: unknown = JSON.parse(snapshot);
+
     if (typeof value !== 'object' || value === null || !('owner' in value)) return false;
     const { owner } = value;
+
     return typeof owner === 'object' && owner !== null && 'id' in owner && typeof owner.id === 'string' && owner.id !== install;
   } catch {
     return false;
@@ -629,6 +693,7 @@ export function ensureStatsShape(
   username: string,
 ): Record<string, unknown> {
   if (existing.username === username && existing.skills) return existing;
+
   return {
     updatedAt: new Date().toISOString(),
     ...existing,
@@ -664,30 +729,40 @@ export function mergeWorkflowStats(
 ): Record<string, unknown> {
   const current = (existing.workflows ?? {}) as Partial<WorkflowStats>;
   const byRun = new Map<string, WorkflowRunRecord>();
+
   for (const record of records) {
     const prior = byRun.get(record.run);
+
     // End phase wins within one delivery; a start-only run has not ended yet
     // and is not counted as a run.
     if (!prior || (prior.phase === 'start' && record.phase === 'end')) byRun.set(record.run, record);
   }
+
   let { runs = 0, succeeded = 0, failed = 0, totalDurationMs = 0 } = current;
+
   const fold = (record: WorkflowRunRecord, sign: 1 | -1): void => {
     // An isolated run's steps are measurements, not workflow outcomes, so it is in no workflow total.
     if (record.username !== username || record.isolated === true) return;
     runs += sign;
+
     if (record.status === 'succeeded') succeeded += sign;
+
     if (record.status === 'failed') failed += sign;
     totalDurationMs += sign * (record.durationMs ?? 0);
   };
+
   for (const record of byRun.values()) {
     if (record.phase !== 'end') continue;
     const origin = originByRun.get(record.run);
+
     if (origin?.phase === 'end') {
       if (origin.endedAt === record.endedAt) continue;
       fold(origin, -1);
     }
+
     fold(record, 1);
   }
+
   return { ...existing, workflows: { runs, succeeded, failed, totalDurationMs } };
 }
 
@@ -705,6 +780,7 @@ export function statsDeltaRecords(
   return records.filter((record) => {
     if (record.phase !== 'end') return false;
     const origin = originByRun.get(record.run);
+
     return origin?.phase !== 'end' || origin.endedAt !== record.endedAt;
   });
 }

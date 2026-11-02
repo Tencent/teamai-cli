@@ -20,9 +20,11 @@ interface ParsedGitHubPR {
  */
 function parseGitHubPRUrl(url: string): ParsedGitHubPR {
   const match = url.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
+
   if (!match) {
     throw new Error(`Invalid GitHub PR URL: ${url}`);
   }
+
   return { owner: match[1], repo: match[2], number: match[3] };
 }
 
@@ -63,10 +65,12 @@ interface GitHubApiCommit {
 async function githubApiGet(path: string): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const token = process.env['GITHUB_TOKEN'];
+
     const headers: Record<string, string> = {
       'User-Agent': 'teamai-cli',
       'Accept': 'application/vnd.github+json',
     };
+
     if (token) headers['Authorization'] = `Bearer ${token}`;
 
     const req = https.request(
@@ -77,10 +81,13 @@ async function githubApiGet(path: string): Promise<unknown> {
         res.on('data', (c: Buffer) => chunks.push(c));
         res.on('end', () => {
           const body = Buffer.concat(chunks).toString('utf-8');
+
           if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
             reject(new Error(`GitHub API error ${res.statusCode}: ${body}`));
+
             return;
           }
+
           try {
             resolve(JSON.parse(body));
           } catch (e) {
@@ -89,6 +96,7 @@ async function githubApiGet(path: string): Promise<unknown> {
         });
       },
     );
+
     req.on('error', reject);
     req.setTimeout(30000, () => { req.destroy(); reject(new Error('GitHub API timeout')); });
     req.end();
@@ -101,9 +109,11 @@ type ApiGet = (path: string) => Promise<unknown>;
 /** `gh api <path>`: the same paths as the REST client, with gh's credentials. */
 async function ghApiGet(path: string): Promise<unknown> {
   const result = ghExec(['api', path.replace(/^\//, '')]);
+
   if (result.status !== 0) {
     throw new Error(`gh api error ${result.status}: ${result.stderr || result.stdout}`);
   }
+
   return JSON.parse(result.stdout);
 }
 
@@ -138,14 +148,19 @@ const MAX_LIST_PAGES = 10;
 /** Reads every page of a list endpoint. */
 async function readPages<T>(get: ApiGet, path: string): Promise<T[]> {
   const all: T[] = [];
+
   for (let page = 1; page <= MAX_LIST_PAGES; page++) {
     const items = await get(`${path}?per_page=100&page=${page}`);
+
     if (!Array.isArray(items)) {
       throw new Error(`GitHub API returned no list for ${path}`);
     }
+
     all.push(...(items as T[]));
+
     if (items.length < 100) break;
   }
+
   return all;
 }
 
@@ -170,24 +185,30 @@ async function fetchGitHubThreads(
   const conversation = await readPages<GitHubIssueComment>(get, `${base}/issues/${number}/comments`);
 
   const byRoot = new Map<number, MRThread>();
+
   for (const c of comments) {
     const note = { author: c.user?.login, body: c.body ?? '' };
     const thread = byRoot.get(c.in_reply_to_id ?? c.id);
+
     if (thread) {
       thread.notes.push(note);
     } else {
       byRoot.set(c.id, { file: c.path, line: c.line ?? c.original_line ?? undefined, notes: [note] });
     }
   }
+
   const threads = [...byRoot.values()];
+
   for (const r of reviews) {
     if (!r.body?.trim() || r.state === 'PENDING') continue;
     const verdict = r.state ? `${r.state.toLowerCase().replace(/_/g, ' ')}: ` : '';
     threads.push({ notes: [{ author: r.user?.login, body: `${verdict}${r.body}` }] });
   }
+
   for (const c of conversation) {
     threads.push({ notes: [{ author: c.user?.login, body: c.body ?? '' }] });
   }
+
   return pruneThreads(threads, commentMarker);
 }
 
@@ -203,6 +224,7 @@ async function fetchGitHubPRViaApi(owner: string, repo: string, number: string):
 
   // ── 2. 提交列表 ──────────────────────────────────────────
   const commitsRaw = await readPages<GitHubApiCommit>(githubApiGet, `/repos/${owner}/${repo}/pulls/${number}/commits`);
+
   const commits = commitsRaw.map((c) => ({
     hash: c.sha,
     message: c.commit.message.split('\n')[0],
@@ -211,10 +233,12 @@ async function fetchGitHubPRViaApi(owner: string, repo: string, number: string):
   // ── 3. diff（Accept: application/vnd.github.v3.diff） ────
   const diff = await new Promise<string>((resolve, reject) => {
     const token = process.env['GITHUB_TOKEN'];
+
     const headers: Record<string, string> = {
       'User-Agent': 'teamai-cli',
       'Accept': 'application/vnd.github.v3.diff',
     };
+
     if (token) headers['Authorization'] = `Bearer ${token}`;
 
     const req = https.request(
@@ -225,14 +249,18 @@ async function fetchGitHubPRViaApi(owner: string, repo: string, number: string):
         res.on('data', (c: Buffer) => chunks.push(c));
         res.on('end', () => {
           const body = Buffer.concat(chunks).toString('utf-8');
+
           if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
             reject(new Error(`GitHub API diff error ${res.statusCode}: ${body}`));
+
             return;
           }
+
           resolve(body.slice(0, 50000));
         });
       },
     );
+
     req.on('error', reject);
     req.setTimeout(30000, () => { req.destroy(); reject(new Error('GitHub API diff timeout')); });
     req.end();
@@ -270,6 +298,7 @@ export async function fetchGitHubPR(url: string, opts: MRFetchOptions = {}): Pro
 
   let mr: MRData;
   let get: ApiGet;
+
   // ── 优先尝试 gh CLI ──────────────────────────────────────
   try {
     const viewResult = ghExec([
@@ -281,18 +310,22 @@ export async function fetchGitHubPR(url: string, opts: MRFetchOptions = {}): Pro
       '--json',
       'title,body,author,mergedAt,commits',
     ]);
+
     if (viewResult.status !== 0) {
       throw new Error(`gh pr view failed (${viewResult.status}): ${viewResult.stderr || viewResult.stdout}`);
     }
+
     const prView = JSON.parse(viewResult.stdout) as GhPRView;
 
     const diffResult = ghExec(
       ['pr', 'diff', number, '--repo', repoArg],
       { maxBuffer: 50 * 1024 * 1024 },
     );
+
     if (diffResult.status !== 0) {
       throw new Error(`gh pr diff failed (${diffResult.status}): ${diffResult.stderr || diffResult.stdout}`);
     }
+
     const rawDiff = diffResult.stdout;
 
     mr = {
@@ -324,6 +357,7 @@ export async function fetchGitHubPR(url: string, opts: MRFetchOptions = {}): Pro
       log.warn(`Review threads not read (${(err as Error).message}); the learning is extracted without them`);
     }
   }
+
   return mr;
 }
 

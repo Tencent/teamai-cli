@@ -28,15 +28,19 @@ export interface ParsedGitLabMR {
  */
 export function parseGitLabMRUrl(url: string): ParsedGitLabMR {
   const match = url.match(/^(https?):\/\/([^/]+)\/(.+?)\/-\/merge_requests\/(\d+)/i);
+
   if (!match) {
     throw new Error(`Invalid GitLab MR URL: ${url}`);
   }
+
   const scheme = match[1].toLowerCase();
   const host = match[2];
   let projectPath = match[3];
+
   if (!projectPath.includes('/')) {
     throw new Error(`Invalid GitLab MR URL: ${url}`);
   }
+
   // Only ever send the token to the *configured* instance. We still derive the
   // API base from the URL's own origin (so a self-hosted instance keeps its
   // scheme/port), but the host component must match GITLAB_HOST — otherwise a
@@ -50,17 +54,24 @@ export function parseGitLabMRUrl(url: string): ParsedGitLabMR {
         `instance if it is trusted.`,
     );
   }
+
   const instancePath = new URL(gitlabBaseUrl()).pathname.replace(/\/+$/, '');
+
   if (instancePath) {
     const prefix = `${instancePath.slice(1)}/`;
+
     if (!projectPath.startsWith(prefix)) {
       throw new Error(`GitLab MR URL does not match the configured GitLab instance path "${instancePath}": ${url}`);
     }
+
     projectPath = projectPath.slice(prefix.length);
+
     if (!projectPath.includes('/')) throw new Error(`Invalid GitLab MR URL: ${url}`);
   }
+
   // Use the same API prefix as gitlabApiBase() for consistency with MR creation.
   const apiPrefix = process.env.GITLAB_API_PREFIX?.trim().replace(/^\/+|\/+$/g, '') || 'api/v4';
+
   return {
     apiBase: `${scheme}://${host}${instancePath}/${apiPrefix}`,
     projectPath,
@@ -137,6 +148,7 @@ function toThread(discussion: GitLabDiscussion): MRThread {
   const notes = (discussion.notes ?? []).filter((n) => !n.system);
   const position = notes[0]?.position;
   const resolvable = notes.find((n) => n.resolvable);
+
   return {
     file: position?.new_path ?? position?.old_path ?? undefined,
     line: position?.new_line ?? position?.old_line ?? undefined,
@@ -159,18 +171,23 @@ async function fetchGitLabDiscussions(
   commentMarker?: string,
 ): Promise<MRThread[]> {
   const threads: MRThread[] = [];
+
   for (let page = 1; page <= MAX_DISCUSSION_PAGES; page++) {
     const resp = await fetch(
       `${apiBase}/projects/${enc}/merge_requests/${mrIid}/discussions?per_page=100&page=${page}`,
       { headers, redirect: 'manual', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) },
     );
+
     if (!resp.ok) {
       throw new Error(`GitLab API error ${resp.status}`);
     }
+
     const raw = (await resp.json()) as GitLabDiscussion[];
     threads.push(...raw.map(toThread));
+
     if (!resp.headers.get('x-next-page')) break;
   }
+
   return pruneThreads(threads, commentMarker);
 }
 
@@ -193,6 +210,7 @@ async function fetchGitLabDiscussions(
 export async function fetchGitLabMR(url: string, opts: MRFetchOptions = {}): Promise<MRData> {
   const { apiBase, projectPath, mrIid } = parseGitLabMRUrl(url);
   const token = getGitLabToken();
+
   if (!token) {
     throw new Error('GITLAB_TOKEN is not set.');
   }
@@ -207,31 +225,41 @@ export async function fetchGitLabMR(url: string, opts: MRFetchOptions = {}): Pro
     redirect: 'manual',
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
+
   if (!resp.ok) {
     throw new Error(`GitLab API error ${resp.status}: ${await resp.text()}`);
   }
+
   const mr = (await resp.json()) as GitLabMR;
 
   // ── 2. 获取提交列表（失败非致命） ──────────────────────────
   let commits: Array<{ hash: string; message: string }> = [];
+
   try {
     const fetched: GitLabCommit[] = [];
     let page = 1;
+
     while (page <= MAX_COMMIT_PAGES) {
       const suffix = page === 1 ? '' : `&page=${page}`;
+
       const commitsResp = await fetch(
         `${apiBase}/projects/${enc}/merge_requests/${mrIid}/commits?per_page=${COMMIT_PAGE_SIZE}${suffix}`,
         { headers, redirect: 'manual', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) },
       );
+
       if (!commitsResp.ok) throw new Error(`GitLab API error ${commitsResp.status}`);
       const raw = (await commitsResp.json()) as GitLabCommit[];
+
       if (!Array.isArray(raw)) throw new Error('GitLab API returned no commit list');
       fetched.push(...raw);
       const next = commitsResp.headers.get('x-next-page');
+
       if (next && Number(next) !== page + 1) throw new Error(`Invalid GitLab commit page: ${next}`);
+
       if (!next && raw.length < COMMIT_PAGE_SIZE) break;
       page++;
     }
+
     if (page > MAX_COMMIT_PAGES) throw new Error('GitLab commit page limit reached');
     commits = fetched.map((c) => ({ hash: c.id, message: c.title }));
   } catch (err) {
@@ -240,11 +268,13 @@ export async function fetchGitLabMR(url: string, opts: MRFetchOptions = {}): Pro
 
   // ── 3. 获取 diff（截断至 50KB，失败非致命） ────────────────
   let diff = '';
+
   try {
     const diffResp = await fetch(
       `${apiBase}/projects/${enc}/merge_requests/${mrIid}/changes`,
       { headers, redirect: 'manual', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) },
     );
+
     if (diffResp.ok) {
       const diffData = (await diffResp.json()) as GitLabChangesResponse;
       diff = (diffData.changes ?? []).map((c) => c.diff).join('\n').slice(0, 50000);
@@ -257,6 +287,7 @@ export async function fetchGitLabMR(url: string, opts: MRFetchOptions = {}): Pro
 
   // ── 4. 获取评审 threads（失败非致命） ─────────────────────
   let discussions: MRThread[] | undefined;
+
   if (opts.discussions !== false) {
     try {
       discussions = await fetchGitLabDiscussions(apiBase, enc, mrIid, headers, opts.commentMarker);

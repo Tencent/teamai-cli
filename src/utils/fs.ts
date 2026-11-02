@@ -69,6 +69,7 @@ const MAX_SYMLINK_HOPS = 40;
  */
 export async function symlinkTarget(filePath: string): Promise<string> {
   let target = filePath;
+
   for (let hops = 0; hops < MAX_SYMLINK_HOPS; hops++) {
     try {
       if (!(await fse.lstat(target)).isSymbolicLink()) return target;
@@ -76,8 +77,10 @@ export async function symlinkTarget(filePath: string): Promise<string> {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return target;
       throw error;
     }
+
     target = path.resolve(await fse.realpath(path.dirname(target)), await fse.readlink(target));
   }
+
   throw new Error(
     `Cannot write ${filePath}: it is part of a symbolic link loop. Point the link at a regular file, then retry.`,
   );
@@ -107,12 +110,15 @@ export async function writeFileAtomic(
   const expanded = await symlinkTarget(expandHome(filePath));
   await fse.ensureDir(path.dirname(expanded));
   let mode = options?.mode ?? 0o600;
+
   try {
     if (options?.mode === undefined) mode = (await fse.stat(expanded)).mode & 0o777;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
+
   const tmp = `${expanded}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+
   try {
     // Created with the mode, so it is never readable wider than the target; chmod undoes the umask.
     await fse.writeFile(tmp, content, { encoding: 'utf-8', mode, flag: 'wx' });
@@ -129,11 +135,14 @@ export async function writeFileAtomic(
  */
 export async function readJson<T = unknown>(filePath: string): Promise<T | null> {
   const content = await readFileSafe(filePath);
+
   if (content === null) return null;
+
   try {
     return JSON.parse(content) as T;
   } catch {
     log.warn(`Failed to parse JSON: ${filePath}`);
+
     return null;
   }
 }
@@ -147,9 +156,12 @@ export type JsonObjectRead =
 /** Read a file that should hold a JSON object, saying why when it does not. Never throws, never logs. */
 export async function readJsonObject(filePath: string): Promise<JsonObjectRead> {
   const raw = await readFileSafe(filePath);
+
   if (raw === null) return { kind: 'missing' };
+
   try {
     const value: unknown = JSON.parse(raw);
+
     return value && typeof value === 'object' && !Array.isArray(value)
       ? { kind: 'ok', value: value as Record<string, unknown> }
       : { kind: 'invalid', error: 'not a JSON object' };
@@ -189,6 +201,7 @@ export async function writeJsonAtomic(
   await fse.ensureDir(path.dirname(expanded));
   const content = JSON.stringify(data, null, options?.compact ? undefined : 2) + '\n';
   let mode = options?.mode ?? 0o600;
+
   if (options?.mode === undefined) {
     try {
       mode = (await fse.stat(expanded)).mode & 0o777;
@@ -196,7 +209,9 @@ export async function writeJsonAtomic(
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
   }
+
   const tmp = `${expanded}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+
   try {
     // Created with the mode, so it is never readable wider than the target; chmod undoes the umask.
     await fse.writeFile(tmp, content, { encoding: 'utf-8', mode, flag: 'wx' });
@@ -219,14 +234,17 @@ export async function copyDir(
   src: string, dest: string, onLink?: (relativePath: string) => void, skip: readonly string[] = [],
 ): Promise<void> {
   const destExpanded = expandHome(dest);
+
   try {
     const stat = await fse.lstat(destExpanded);
+
     if (stat.isSymbolicLink()) {
       await fse.remove(destExpanded);
     }
   } catch {
     // dest doesn't exist yet — that's fine
   }
+
   const srcExpanded = expandHome(src);
   await fse.copy(srcExpanded, destExpanded, {
     overwrite: true,
@@ -234,9 +252,12 @@ export async function copyDir(
       if (isIgnored(path.basename(srcPath))) return false;
       // An entry `skip` names, and everything under it, is left as the destination has it.
       const rel = path.relative(srcExpanded, srcPath).split(path.sep).join('/');
+
       if (skip.some((entry) => rel === entry || rel.startsWith(`${entry}/`))) return false;
+
       if (onLink === undefined || srcPath === srcExpanded || !(await fse.lstat(srcPath)).isSymbolicLink()) return true;
       onLink(path.relative(srcExpanded, srcPath).split(path.sep).join('/'));
+
       return false;
     },
   });
@@ -255,8 +276,10 @@ export async function copyDir(
 export async function pruneEmptyDirs(target: string): Promise<boolean> {
   const expanded = expandHome(target);
   let entries;
+
   try {
     const stat = await fse.lstat(expanded);
+
     if (!stat.isDirectory() || stat.isSymbolicLink()) return false;
     entries = await fse.readdir(expanded, { withFileTypes: true });
   } catch {
@@ -264,6 +287,7 @@ export async function pruneEmptyDirs(target: string): Promise<boolean> {
   }
 
   let empty = true;
+
   for (const entry of entries) {
     if (entry.isDirectory()) {
       if (!await pruneEmptyDirs(path.join(expanded, entry.name))) empty = false;
@@ -273,8 +297,10 @@ export async function pruneEmptyDirs(target: string): Promise<boolean> {
   }
 
   if (!empty) return false;
+
   try {
     await fse.rmdir(expanded);
+
     return true;
   } catch {
     return false;
@@ -295,8 +321,10 @@ export async function copyFile(src: string, dest: string): Promise<void> {
  */
 export async function listDirs(dirPath: string): Promise<string[]> {
   const expanded = expandHome(dirPath);
+
   if (!await fse.pathExists(expanded)) return [];
   const entries = await fse.readdir(expanded, { withFileTypes: true });
+
   return entries.filter(e => e.isDirectory() && !isIgnored(e.name)).map(e => e.name);
 }
 
@@ -305,8 +333,10 @@ export async function listDirs(dirPath: string): Promise<string[]> {
  */
 export async function listFiles(dirPath: string): Promise<string[]> {
   const expanded = expandHome(dirPath);
+
   if (!await fse.pathExists(expanded)) return [];
   const entries = await fse.readdir(expanded, { withFileTypes: true });
+
   return entries.filter(e => e.isFile()).map(e => e.name);
 }
 
@@ -315,17 +345,21 @@ export async function listFiles(dirPath: string): Promise<string[]> {
  */
 export async function listFilesRecursive(dirPath: string): Promise<string[]> {
   const expanded = expandHome(dirPath);
+
   if (!await fse.pathExists(expanded)) return [];
   const results: string[] = [];
   await _walkFiles(expanded, '', results);
+
   return results;
 }
 
 async function _walkFiles(base: string, prefix: string, results: string[]): Promise<void> {
   const entries = await fse.readdir(path.join(base, prefix), { withFileTypes: true });
+
   for (const entry of entries) {
     if (isIgnored(entry.name)) continue;
     const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+
     if (entry.isFile()) {
       results.push(rel);
     } else if (entry.isDirectory()) {
@@ -348,19 +382,24 @@ const VCS_METADATA_NAMES = new Set(['.git', '.hg', '.svn']);
  */
 export async function hasVcsMetadataRecursive(dir: string): Promise<boolean> {
   const expanded = expandHome(dir);
+
   if (!await fse.pathExists(expanded)) return false;
   let entries;
+
   try {
     entries = await fse.readdir(expanded, { withFileTypes: true });
   } catch {
     return false;
   }
+
   for (const entry of entries) {
     if (VCS_METADATA_NAMES.has(entry.name)) return true; // dir or file (submodule link)
+
     if (entry.isDirectory() && entry.name !== 'node_modules') {
       if (await hasVcsMetadataRecursive(path.join(expanded, entry.name))) return true;
     }
   }
+
   return false;
 }
 
@@ -381,7 +420,9 @@ export type GeneratedFileState = 'absent' | 'teamai' | 'foreign';
 
 export async function generatedFileState(file: string, marker: string): Promise<GeneratedFileState> {
   const content = await readFileSafe(file);
+
   if (content === null) return await pathExists(file) ? 'foreign' : 'absent';
+
   return content.includes(marker) ? 'teamai' : 'foreign';
 }
 
@@ -399,6 +440,7 @@ export async function remove(p: string): Promise<void> {
 export async function getFileMtime(filePath: string): Promise<number> {
   try {
     const stat = await fse.stat(expandHome(filePath));
+
     return stat.mtimeMs;
   } catch {
     return 0;
@@ -411,21 +453,27 @@ export async function getFileMtime(filePath: string): Promise<number> {
  */
 export async function getDirLatestMtime(dirPath: string): Promise<number> {
   const expanded = expandHome(dirPath);
+
   if (!await fse.pathExists(expanded)) return 0;
 
   let latest = 0;
   const entries = await fse.readdir(expanded, { withFileTypes: true });
+
   for (const entry of entries) {
     if (isIgnored(entry.name)) continue;
     const fullPath = path.join(expanded, entry.name);
+
     if (entry.isFile()) {
       const stat = await fse.stat(fullPath);
+
       if (stat.mtimeMs > latest) latest = stat.mtimeMs;
     } else if (entry.isDirectory()) {
       const sub = await getDirLatestMtime(fullPath);
+
       if (sub > latest) latest = sub;
     }
   }
+
   return latest;
 }
 
@@ -435,6 +483,7 @@ export async function getDirLatestMtime(dirPath: string): Promise<number> {
 export async function fileHash(filePath: string): Promise<string | null> {
   try {
     const content = await fse.readFile(filePath);
+
     return crypto.createHash('sha256').update(content).digest('hex');
   } catch {
     return null;
@@ -448,8 +497,10 @@ export async function fileHash(filePath: string): Promise<string | null> {
  */
 export async function fileContentEqualToBuffer(filePath: string, buffer: Buffer): Promise<boolean> {
   const fileHashVal = await fileHash(expandHome(filePath));
+
   if (fileHashVal === null) return false;
   const bufHash = crypto.createHash('sha256').update(buffer).digest('hex');
+
   return fileHashVal === bufHash;
 }
 
@@ -462,7 +513,9 @@ export async function fileContentEqual(fileA: string, fileB: string): Promise<bo
     fileHash(expandHome(fileA)),
     fileHash(expandHome(fileB)),
   ]);
+
   if (hashA === null || hashB === null) return false;
+
   return hashA === hashB;
 }
 
@@ -485,6 +538,7 @@ export async function dirContentEqual(dirA: string, dirB: string, ignore?: strin
 
   // Same set of files?
   if (filesA.size !== filesB.size) return false;
+
   for (const rel of filesA) {
     if (!filesB.has(rel)) return false;
   }
@@ -495,6 +549,7 @@ export async function dirContentEqual(dirA: string, dirB: string, ignore?: strin
       path.join(expandedA, rel),
       path.join(expandedB, rel),
     );
+
     if (!equal) return false;
   }
 
@@ -534,6 +589,7 @@ export async function dirTeamSubsetEqual(
       path.join(expandedLocal, rel),
       path.join(expandedTeam, rel),
     );
+
     if (!equal) return false;
   }
 
@@ -546,17 +602,22 @@ export async function dirTeamSubsetEqual(
 async function collectFiles(base: string, prefix: string, ignore?: Set<string>): Promise<Set<string>> {
   const result = new Set<string>();
   const entries = await fse.readdir(path.join(base, prefix), { withFileTypes: true });
+
   for (const entry of entries) {
     if (isIgnored(entry.name)) continue;
+
     if (ignore?.has(entry.name)) continue;
     const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+
     if (entry.isFile()) {
       result.add(rel);
     } else if (entry.isDirectory()) {
       const sub = await collectFiles(base, rel, ignore);
+
       for (const s of sub) result.add(s);
     }
   }
+
   return result;
 }
 
@@ -567,8 +628,10 @@ async function collectFiles(base: string, prefix: string, ignore?: Set<string>):
 export async function writeIfChanged(filePath: string, content: string): Promise<boolean> {
   const newHash = crypto.createHash('sha256').update(content, 'utf-8').digest('hex');
   const existingHash = await fileHash(filePath);
+
   if (existingHash === newHash) return false;
   await fse.ensureDir(path.dirname(filePath));
   await fse.writeFile(filePath, content, 'utf-8');
+
   return true;
 }

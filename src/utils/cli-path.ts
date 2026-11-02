@@ -37,8 +37,10 @@ export function pickWindowsCommand(whereOutput: string): string | null {
 
   for (const ext of WIN_EXEC_EXTENSIONS) {
     const hit = lines.find((line) => line.toLowerCase().endsWith(ext));
+
     if (hit !== undefined) return hit;
   }
+
   return null;
 }
 
@@ -59,7 +61,9 @@ function whereOnWindows(cmd: string): string | null {
       shell: false,
       timeout: CLI_DETECT_TIMEOUT_MS,
     });
+
     const p = pickWindowsCommand(out);
+
     return p !== null && existsSync(p) ? p : null;
   } catch {
     // where 未找到时退出码非 0（stderr 为 "INFO: Could not find files..."），走这里
@@ -78,6 +82,7 @@ function whichOnPosix(cmd: string): string | null {
       shell: false,
       timeout: CLI_DETECT_TIMEOUT_MS,
     }).trim();
+
     if (p && existsSync(p)) return p;
   } catch {
     // Desktop hooks may need the PATH configured by a login shell.
@@ -91,6 +96,7 @@ function whichOnPosix(cmd: string): string | null {
         shell: false,
         timeout: CLI_DETECT_TIMEOUT_MS,
       }).trim();
+
       if (p && existsSync(p)) return p;
     } catch {
       // Try the next shell.

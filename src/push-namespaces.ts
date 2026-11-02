@@ -112,10 +112,12 @@ export function isNestedPlaceableType(type: PlaceableType): boolean {
  */
 export function isAtSharedRoot(item: ResourceItem): boolean {
   if (item.namespace) return false;
+
   // A first directory under docs/, wiki/ or prompts/ is only a namespace when a
   // manifest declares it. Undeclared directories are ordinary shared content
   // (#1101), which a placement still moves into the chosen namespace.
   if (isNestedPlaceableType(item.type)) return true;
+
   return item.relativePath.split('/').length === 2;
 }
 
@@ -127,6 +129,7 @@ export function declaredNamespaceFor(
   if (!isNestedPlaceableType(item.type)) return undefined;
   const segments = item.relativePath.split('/');
   const candidate = segments[rootSegmentsFor(item.type)];
+
   return candidate && declaredNamespaces.includes(candidate) ? candidate : undefined;
 }
 
@@ -141,6 +144,7 @@ export function declaredNamespaceFor(
  */
 export function withNamespace(relativePath: string, namespace: string, rootSegments = 1): string {
   const parts = relativePath.split('/');
+
   return [...parts.slice(0, rootSegments), namespace, ...parts.slice(rootSegments)].join('/');
 }
 
@@ -189,7 +193,9 @@ export function resolveRoleNamespace(
   if (declared === null) return { ok: true, namespace };
   const axis = NAMESPACE_AXIS[type];
   const onAxis = [...new Set(declared.filter((entry) => entry.type === axis).map((entry) => entry.namespace))];
+
   if (onAxis.includes(namespace)) return { ok: true, namespace };
+
   return {
     ok: false,
     message: `--role ${namespace} cannot take new ${type}: no role or project declares "${namespace}" as a ${axis} `
@@ -213,12 +219,14 @@ export function resolveProjectNamespace(
   type: PlaceableType,
 ): NamespaceResolution {
   const project = findProject(manifest, projectId);
+
   if (!project) {
     return { ok: false, message: unknownProjectMessage(manifest, projectId) };
   }
 
   const axis = NAMESPACE_AXIS[type];
   const namespaces = project.resources[axis] ?? [];
+
   if (namespaces.length === 0) {
     return {
       ok: false,
@@ -226,6 +234,7 @@ export function resolveProjectNamespace(
         + `Add one to manifest/projects.yaml, or use --role <ns> to target a namespace explicitly.`,
     };
   }
+
   if (namespaces.length > 1) {
     return {
       ok: false,
@@ -235,6 +244,7 @@ export function resolveProjectNamespace(
   }
 
   const namespace = namespaces[0];
+
   if (!isSafeNamespaceSegment(namespace)) {
     return {
       ok: false,
@@ -272,12 +282,17 @@ export function placedResourcePath(
   if (!placed || name.includes('/')) return null;
 
   const recorded = placed[name];
+
   if (!recorded) return null;
 
   const segments = recorded.split('/');
+
   if (segments.length !== 3) return null;
+
   if (segments[0] !== root) return null;
+
   if (segments.some((segment) => segment === '' || segment === '.' || segment === '..')) return null;
+
   // The namespace must be the same safe segment push itself would write. A
   // `\` in it is a separator on Windows, where `path.join` then walks out of
   // the resource root that the `/` split above seemed to confine it to.
@@ -287,6 +302,7 @@ export function placedResourcePath(
   // `<name>.backup.md` and redirect scanning, syncing and removal onto an
   // unrelated file that happens to sit there.
   const allowed = root === 'rules' ? [`${name}.md`] : [`${name}.yaml`, `${name}.md`];
+
   if (!allowed.includes(segments[2])) return null;
 
   return recorded;

@@ -141,6 +141,7 @@ export function recallLogPath(config: LocalConfig): string {
   const home = !config.dataHome && config.scope === 'project' && !config.projectRoot
     ? getTeamaiHomeDir()
     : getDataHome(config);
+
   return path.join(home, 'dashboard', 'recall.jsonl');
 }
 
@@ -157,5 +158,6 @@ export async function appendRecallLines(config: LocalConfig, lines: RecallLogLin
 /** Every line of the scope's log, those a busy lock left in side records included. */
 export async function readRecallLog(config: LocalConfig): Promise<RecallLogLine[]> {
   const records = await readJsonl(recallLogPath(config));
+
   return records.filter((r): r is RecallLogLine & Record<string, unknown> => typeof r.kind === 'string' && KINDS.has(r.kind));
 }

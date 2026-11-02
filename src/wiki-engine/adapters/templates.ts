@@ -23,9 +23,11 @@ export function routerTemplate(
   domains?: DomainGroup[],
 ): string {
   const allKeywords = new Set<string>();
+
   for (const p of projects) {
     if (p.keywords) p.keywords.forEach(k => allKeywords.add(k));
   }
+
   const baseTerms = ['路由', '索引', '入口', '知识库', '代码知识', 'architecture', 'module', 'dependency'];
   const anchorTerms = [...baseTerms, ...allKeywords].slice(0, 20);
 
@@ -54,8 +56,10 @@ export function routerTemplate(
     for (const domain of domains) {
       lines.push(`### ${domain.name}${domain.apiCount ? ` (${domain.apiCount} APIs)` : ''}`);
       lines.push('');
+
       for (const comp of domain.components) {
         const proj = projects.find(p => p.slug === comp || p.label === comp);
+
         if (proj) {
           const desc = proj.description ? ` — ${proj.description}` : '';
           const kw = proj.keywords?.length ? ` [${proj.keywords.slice(0, 5).join(', ')}]` : '';
@@ -64,17 +68,22 @@ export function routerTemplate(
           lines.push(`- ${comp}`);
         }
       }
+
       lines.push('');
     }
+
     const grouped = new Set(domains.flatMap(d => d.components));
     const ungrouped = projects.filter(p => !grouped.has(p.slug) && !grouped.has(p.label));
+
     if (ungrouped.length > 0) {
       lines.push('### Other');
       lines.push('');
+
       for (const p of ungrouped) {
         const desc = p.description ? ` — ${p.description}` : ' — 代码知识';
         lines.push(`- [[evidence/code/${p.slug}/index]]${desc}`);
       }
+
       lines.push('');
     }
   } else {
@@ -83,6 +92,7 @@ export function routerTemplate(
       const kw = p.keywords?.length ? ` [${p.keywords.slice(0, 5).join(', ')}]` : '';
       lines.push(`- [[evidence/code/${p.slug}/index]]${desc}${kw}`);
     }
+
     lines.push('');
   }
 
@@ -103,23 +113,30 @@ export function indexTemplate(
   modules?: ModuleEntry[],
 ): string {
   const allKeywords = projects.flatMap(p => p.keywords ?? []).slice(0, 15);
+
   const searchAnchor = allKeywords.length > 0
     ? `\n<!-- search-anchor: ${allKeywords.join(', ')} -->`
     : '';
 
   const sections = ['# Team Wiki Index'];
+
   if (searchAnchor) sections.push(searchAnchor);
   sections.push('', `Last updated: ${new Date().toISOString()}`, '');
 
   if (stats) {
     sections.push('## Stats', '');
+
     if (stats.totalFacts) sections.push(`- Facts: ${stats.totalFacts}`);
+
     if (stats.totalNodes) sections.push(`- Graph nodes: ${stats.totalNodes}`);
+
     if (stats.totalEdges) sections.push(`- Graph edges: ${stats.totalEdges}`);
+
     if (stats.interfaces) {
       const ifStr = Object.entries(stats.interfaces).map(([t, c]) => `${t}:${c}`).join(', ');
       sections.push(`- Interfaces: ${ifStr}`);
     }
+
     if (stats.callChains) sections.push(`- Call chains: ${stats.callChains}`);
     sections.push('');
   }
@@ -128,16 +145,19 @@ export function indexTemplate(
     sections.push('## 模块速查', '');
     sections.push('| 模块 | 职责 | 关键组件 | 层级 |');
     sections.push('|------|------|---------|------|');
+
     for (const mod of modules.slice(0, 20)) {
       const resp = mod.responsibilities?.slice(0, 2).join('; ') ?? '—';
       const comps = mod.topComponents?.slice(0, 3).join(', ') ?? '—';
       const cat = mod.category ?? '—';
       sections.push(`| ${mod.slug} | ${resp} | ${comps} | ${cat} |`);
     }
+
     sections.push('');
   }
 
   sections.push('## 文档导航', '');
+
   for (const p of projects) {
     sections.push(`### ${p.slug}`, '');
     sections.push(`- [overview.md](./evidence/code/${p.slug}/overview.md) — 架构概览`);
@@ -167,6 +187,7 @@ export interface GraphReadmeOptions {
 
 export function graphReadmeTemplate(project: string, opts?: GraphReadmeOptions): string {
   const { hasG5 = true, hasG6 = true } = opts ?? {};
+
   const lines = [
     `# ${project} — G-Document 路由`,
     '<!-- search-anchor: 图谱, graph, G1, G2, G5, G6, 依赖, 调用链, 流程, 爆炸半径 -->',
@@ -184,12 +205,16 @@ export function graphReadmeTemplate(project: string, opts?: GraphReadmeOptions):
     '| 业务规则/是否可执行 | [graph-g9-constraints.md](./graph-g9-constraints.md) | 约束矩阵与验证边界 |',
     '| G1-G9/方法覆盖/缺口 | [graph-coverage.md](./graph-coverage.md) | 方法与 CLI 输出对照 |',
   ];
+
   if (hasG5) {
     lines.push('| 流程/场景/sequence | [graph-g5-scenarios.md](./graph-g5-scenarios.md) | 核心业务场景序列图 |');
   }
+
   if (hasG6) {
     lines.push('| 多跳推理/三元组/知识图谱 | [graph-g6-triples.md](./graph-g6-triples.md) | 带置信度的知识图谱三元组与多跳路径索引 |');
   }
+
   lines.push('');
+
   return lines.join('\n');
 }

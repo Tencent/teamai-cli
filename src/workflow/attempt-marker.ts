@@ -27,8 +27,10 @@ export type AgentEvidence =
 /** The evidence `env` holds that an agent runs its process: the attempt marker, else the first agent session variable set. */
 export function agentEvidence(env: NodeJS.ProcessEnv): AgentEvidence {
   const attempt = env[ATTEMPT_ENV];
+
   if (attempt) return { kind: 'attempt', attempt };
   const variable = AGENT_SESSION_ENV.find((name) => env[name]);
+
   return variable ? { kind: 'session', variable } : { kind: 'none' };
 }
 
@@ -48,17 +50,21 @@ export type Nested =
  */
 export function nestedCall(env: NodeJS.ProcessEnv): Extract<Nested, { kind: 'marker' }> | undefined {
   const attempt = env[ATTEMPT_ENV];
+
   return attempt ? { kind: 'marker', attempt } : undefined;
 }
 
 /** What refuses a start in `cwd`: the attempt marker, then a workflow worktree, then HEAD on a workflow branch. */
 export async function nestedStart(env: NodeJS.ProcessEnv, cwd: string): Promise<Nested | undefined> {
   const marked = nestedCall(env);
+
   if (marked) return marked;
   const checkout = worktreeCheckout(cwd);
+
   if (checkout !== undefined) return { kind: 'worktree-path', dir: cwd, checkout };
   const branch = (await git(cwd, ['symbolic-ref', '--quiet', '--short', 'HEAD'])).stdout.trim();
   const [owner, run, ...rest] = branch.split('/');
+
   return owner === 'teamai' && run !== undefined && isRunId(run) && rest.length > 0 ? { kind: 'workflow-branch', dir: cwd, branch } : undefined;
 }
 
@@ -72,6 +78,7 @@ export function nestedWorkflowError(nested: Nested): WorkflowFailure {
       return { code: 'nested_workflow', message: `HEAD of ${nested.dir} is on workflow branch ${nested.branch}, where a step of a run works, so no workflow run starts from it. Start runs from a checkout on a branch of your own; to run another workflow as part of a run, add it to the definition as a workflow step.` };
     default: {
       const unhandled: never = nested;
+
       return unhandled;
     }
   }

@@ -15,6 +15,7 @@ import { getUserHome } from './home.js';
 export function assertSafePath(target: string, allowedRoots: string[]): void {
   const resolvedTarget = resolveReal(target);
   const resolvedRoots = allowedRoots.map(resolveReal);
+
   if (resolvedRoots.some((root) => resolvedTarget === root || resolvedTarget.startsWith(root + path.sep))) {
     return;
   }
@@ -41,6 +42,7 @@ export function assertSafePath(target: string, allowedRoots: string[]): void {
 export function assertWithinRoot(root: string, candidate: string, message?: string): void {
   const resolvedRoot = path.resolve(root);
   const resolvedCandidate = path.resolve(candidate);
+
   if (resolvedCandidate !== resolvedRoot && !resolvedCandidate.startsWith(resolvedRoot + path.sep)) {
     throw new Error(message ?? `path traversal detected: "${candidate}" is outside "${root}"`);
   }
@@ -64,10 +66,12 @@ export function assertWithinRoot(root: string, candidate: string, message?: stri
 export function resolveReal(p: string): string {
   const expanded = p.startsWith('~') ? path.join(getUserHome(), p.slice(1)) : p;
   const abs = path.resolve(expanded);
+
   try {
     return fs.realpathSync(abs);
   } catch {
     const parent = path.dirname(abs);
+
     return parent === abs ? abs : path.join(resolveReal(parent), path.basename(abs));
   }
 }
@@ -105,6 +109,7 @@ export function assertSafeResourceName(name: string): void {
 
   // Attempt URL-decode to catch %2e%2e, %2f, etc.
   let decoded: string;
+
   try {
     decoded = decodeURIComponent(name);
   } catch {

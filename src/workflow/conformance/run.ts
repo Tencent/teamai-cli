@@ -554,6 +554,7 @@ export const workflowConformanceScenarios: ConformanceScenario[] = [
 ];
 
 const APPROVE = controlsYaml('  - id: work\n    approve: Build it?\n    command: echo work\n  - id: later\n    needs: [work]\n    command: echo later');
+
 const CHOOSE = controlsYaml(`  - id: decide
     choose: { message: Pick one, options: [build, revise] }
     loop: { back_to: decide, while: "steps.decide.choice == 'revise'", max_iterations: 3 }
@@ -561,6 +562,7 @@ const CHOOSE = controlsYaml(`  - id: decide
     needs: [decide]
     if: steps.decide.choice == 'build'
     command: echo work`);
+
 workflowConformanceScenarios.push(
   {
     name: 'interactive hand-back to a driver that no longer has HITL releases the lease and waits', workflowName: 'build', yaml: controlsYaml('  - id: pair\n    prompt: Work together.\n    interactive: true'),

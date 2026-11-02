@@ -18,6 +18,7 @@ export function parseGitHubRepoInput(input: string): RepoInfo {
   const httpsMatch = trimmed.match(
     /^https?:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/,
   );
+
   if (httpsMatch) {
     return buildRepoInfo(httpsMatch[1], httpsMatch[2]);
   }
@@ -25,6 +26,7 @@ export function parseGitHubRepoInput(input: string): RepoInfo {
   const sshMatch = trimmed.match(
     /^git@github\.com:([^/]+)\/([^/]+?)(?:\.git)?\/?$/,
   );
+
   if (sshMatch) {
     return buildRepoInfo(sshMatch[1], sshMatch[2]);
   }
@@ -33,6 +35,7 @@ export function parseGitHubRepoInput(input: string): RepoInfo {
   const shortMatch = trimmed.match(
     /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/,
   );
+
   if (shortMatch) {
     return buildRepoInfo(shortMatch[1], shortMatch[2]);
   }

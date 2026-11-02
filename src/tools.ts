@@ -74,6 +74,7 @@ export type Home = {
  * from the workspace, #1197).
  */
 export type HomeRead = { readonly base: 'home'; readonly path: string; readonly when?: 'workspaceUnderHome'; readonly evidence: Evidence };
+
 /** A path in a project the tool reads: from a session at or under its root, or only at it. */
 export type ProjectRead = {
   readonly base: 'project';
@@ -142,6 +143,7 @@ export type Activation =
 
 /** One file per rule in the scope's configured rules directory, rendered by its rules format or copied verbatim. */
 export type RulesDir<R> = { readonly channel: 'dir'; readonly format: RuleFormatId | 'verbatim'; readonly reads: Reads<R>; readonly activation?: Activation };
+
 /** The team rules as one block in the tool's blocks file for the scope; `label` names that file in doctor. */
 export type RulesInline = { readonly channel: 'inline'; readonly label: string };
 
@@ -185,6 +187,7 @@ export type BlocksChannels = Scoped<BlocksTarget<HomeRead>, BlocksTarget<HomeRea
  * tool's renderer.
  */
 export type AgentsTarget<R> = { readonly reads: Reads<R>; readonly readGates?: readonly ReadGateKind[] };
+
 export type AgentsChannels = Scoped<AgentsTarget<HomeRead>, AgentsTarget<HomeRead | ProjectRead>>;
 
 /**
@@ -200,6 +203,7 @@ type McpCommon<R> = {
 };
 
 export type McpUser = McpCommon<HomeRead | FirstExistingRead>;
+
 export type McpProject = McpCommon<HomeRead | ProjectRead | FirstExistingRead> & {
   /**
    * #915: while sharing.gitExclude is on or the workspace has children, the
@@ -232,6 +236,7 @@ export type HookSettings<R> = { readonly channel: 'settings'; readonly format: H
 
 /** A file or directory of teamai's own the tool loads from its home, written by the tool's own adapter. */
 export type HookAdapterId = 'opencode-plugin' | 'pi-extension' | 'omp-extension' | 'hermes-plugin' | 'openclaw-hook' | 'dsh-hooks' | 'kiro-hooks' | 'agy-hooks';
+
 export type HookAdapter = { readonly channel: 'adapter'; readonly adapter: HookAdapterId; readonly evidence: Evidence; readonly readGates?: readonly ReadGateKind[] };
 
 /**
@@ -1628,12 +1633,14 @@ export function isToolId(value: string): value is ToolId {
 /** Whether releases before #1221 wrote `tool`'s hooks and MCP servers under its default home when the home moved (`Home.moves.defaultHomeLeftovers`). */
 export function hasDefaultHomeLeftovers(tool: ToolId): boolean {
   const { home }: ToolDescriptor = TOOLS[tool];
+
   return home.moves?.defaultHomeLeftovers === true;
 }
 
 /** The env variables that move `tool`'s home (`Home.moves.by`): a tool's own, and `XDG_CONFIG_HOME` for an XDG home. `LOCALAPPDATA` is not one: it is where Windows keeps a home that did not move. */
 export function homeVariables(tool: ToolId): readonly string[] {
   const { home }: ToolDescriptor = TOOLS[tool];
+
   return (home.moves?.by ?? []).flatMap((move): string[] => {
     switch (move.kind) {
       case 'env':
@@ -1652,6 +1659,7 @@ export function homeVariables(tool: ToolId): readonly string[] {
         return ['HERMES_HOME', 'HERMES_DATA_DIR_SUFFIX'];
       default: {
         const unhandled: never = move;
+
         return unhandled;
       }
     }
@@ -1662,12 +1670,14 @@ export function homeVariables(tool: ToolId): readonly string[] {
 export function skillsFollowSession(tool: string): boolean {
   if (!isToolId(tool)) return false;
   const descriptor: ToolDescriptor = TOOLS[tool];
+
   return descriptor.skillsFollowSession === true;
 }
 
 /** What says `tool` is installed beyond its configured paths, if anything (`InstallGate`). */
 export function installGateOf(tool: ToolId): InstallGate | undefined {
   const descriptor: ToolDescriptor = TOOLS[tool];
+
   return descriptor.installedBy;
 }
 
@@ -1695,6 +1705,7 @@ export type AgentToolId = {
 export function sessionPlatformsOf(tool: string): readonly SessionPlatform[] {
   if (!isToolId(tool)) return [];
   const { sessions }: ToolDescriptor = TOOLS[tool];
+
   return typeof sessions === 'string' ? [] : sessions;
 }
 
@@ -1730,7 +1741,9 @@ export function channelsOf(tool: string): Pick<ToolDescriptor, 'rules' | 'blocks
  */
 export function selfLocalSettingsOf(tool: string): string | null {
   const self = channelsOf(tool).hooks.self;
+
   if (typeof self !== 'object' || self.reads === 'unknown') return null;
+
   return self.reads.find((read) => read.base === 'project' && read.path.endsWith('/settings.local.json'))?.path ?? null;
 }
 
@@ -1738,6 +1751,7 @@ export function selfLocalSettingsOf(tool: string): string | null {
 export function isAgentToolId(tool: string): tool is AgentToolId {
   if (!isToolId(tool)) return false;
   const { agents }: ToolDescriptor = TOOLS[tool];
+
   return [agents.user, agents.project].some((channel) => channel !== 'none' && channel !== 'unknown');
 }
 
@@ -1747,16 +1761,20 @@ export const AGENT_TOOLS: readonly AgentToolId[] = Object.keys(TOOLS).filter(isA
 /** The format `tool`'s rule files take in either scope: its rules format, or the team `.md` verbatim. */
 export function ruleFormatIdOf(tool: string): RuleFormatId | 'verbatim' {
   const { rules } = channelsOf(tool);
+
   for (const channel of [rules.user, rules.project]) {
     if (typeof channel === 'object' && channel.channel === 'dir') return channel.format;
   }
+
   return 'verbatim';
 }
 
 /** How a project's team rules reach `tool` at run time, if they do. */
 export function runTimeRulesOf(tool: string): RunTimeVia | null {
   const { project } = channelsOf(tool).rules;
+
   if (typeof project !== 'object') return null;
+
   switch (project.channel) {
     case 'dir':
       return null;
@@ -1766,6 +1784,7 @@ export function runTimeRulesOf(tool: string): RunTimeVia | null {
       return project.channel;
     default: {
       const unhandled: never = project;
+
       return unhandled;
     }
   }
@@ -1774,7 +1793,9 @@ export function runTimeRulesOf(tool: string): RunTimeVia | null {
 /** The format of `tool`'s hook settings file in either scope; null when it reads none (an adapter, `none` or `unknown`). A custom tool reads Claude's. */
 export function hookSettingsFormatOf(tool: string): HookFormat | null {
   const { hooks } = channelsOf(tool);
+
   for (const channel of [hooks.user, hooks.self]) if (typeof channel === 'object' && channel.channel === 'settings') return channel.format;
+
   return null;
 }
 
@@ -1786,6 +1807,8 @@ export function hookFormatOf(tool: string): HookFormat {
 /** The format `tool`'s MCP servers take in either scope; null when it has an MCP channel in neither. */
 export function mcpFormatOf(tool: string): McpFormat | null {
   const { mcp } = channelsOf(tool);
+
   for (const channel of [mcp.user, mcp.project]) if (typeof channel === 'object') return channel.format;
+
   return null;
 }

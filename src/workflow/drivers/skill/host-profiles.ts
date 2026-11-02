@@ -4,6 +4,7 @@ import { isJudgeTool, judgeAccess } from '../../../scorers/judge.js';
 import type { DriverCan } from '../../requirements.js';
 
 export const HOST_CHOICES = ['h1', 'h2', 'h3', 'h4'] as const;
+
 export type HostChoice = typeof HOST_CHOICES[number];
 
 export interface HostProfile {

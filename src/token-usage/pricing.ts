@@ -31,6 +31,7 @@ export type PricedTokens =
 
 function ratesFor(price: ModelPrice, speed: TokenSpeed, promptTokens: number): TokenRates {
   const tiered = (speed === 'fast' && price.fast) || (speed === 'flex' && price.flex) || price;
+
   return tiered.above?.findLast((tier) => promptTokens > tier.tokens) ?? tiered;
 }
 
@@ -51,12 +52,15 @@ export function priceTokens(
   if (request.reportedCostMicros !== undefined) {
     return { costMicros: Math.round(request.reportedCostMicros), source: 'reported', priceVersion: 'reported' };
   }
+
   const model = aliases?.[request.model] ?? request.model;
   const price = CATALOG.models[model.trim().toLowerCase()] ?? CATALOG.models[canonicalModelName(model)];
+
   if (!price) return null;
   const { input, output, cacheRead, cacheCreation } = request.tokens;
   const rates = ratesFor(price, request.speed ?? 'standard', request.combinesCalls ? 0 : input + cacheRead + cacheCreation);
   const hour = Math.min(request.cacheCreation1h ?? 0, cacheCreation);
+
   return {
     costMicros: Math.round(
       input * rates.input + output * rates.output + cacheRead * rates.cacheRead

@@ -85,6 +85,7 @@ export function hashWorkspace(cwd: string): string | null {
   // POSIX absolute path, or a Windows drive absolute path (C:\ or C:/)
   if (!cwd || !(cwd.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(cwd))) return null;
   let normalized = path.resolve(cwd).replace(/\/+$/, '');
+
   // On macOS /tmp is a symlink to /private/tmp, and VSCode passes the IDE the resolved real path.
   // Without realpath, "write via /tmp, list via /private/tmp" computes two different workspace
   // hashes: the write succeeds but listing cannot find it, and the user thinks the migration was lost.
@@ -93,6 +94,7 @@ export function hashWorkspace(cwd: string): string | null {
   } catch {
     // Keep the original path when the directory does not exist (createIfMissing case)
   }
+
   return crypto.createHash('md5').update(normalized).digest('hex');
 }
 
@@ -111,7 +113,9 @@ export function hashWorkspace(cwd: string): string | null {
 function toIdeConvId(sessionId: string): string {
   if (/^[0-9a-f]{32}$/i.test(sessionId)) return sessionId.toLowerCase();
   const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
   if (uuidRe.test(sessionId)) return sessionId.replace(/-/g, '').toLowerCase();
+
   return crypto.createHash('md5').update(sessionId).digest('hex');
 }
 
@@ -123,8 +127,10 @@ export function getUserDataBase(): string | null {
   // not apply the node:os homedir mock, and writing the real home pollutes
   // later tests on the same machine.
   const override = process.env.TEAMAI_CODEBUDDY_IDE_DATA?.trim();
+
   if (override) return override;
   const home = os.homedir();
+
   switch (process.platform) {
     case 'darwin':
       return path.join(home, 'Library', 'Application Support', 'CodeBuddyExtension', 'Data');
@@ -155,20 +161,25 @@ export function getUserDataBase(): string | null {
  */
 export function listIdeHistoryRoots(): string[] {
   const base = getUserDataBase();
+
   if (!base || !fs.existsSync(base)) return [];
 
   const out: string[] = [];
+
   try {
     for (const extId of fs.readdirSync(base)) {
       const ideRoot = path.join(base, extId, 'CodeBuddyIDE');
+
       if (!fs.existsSync(ideRoot)) continue;
 
       const direct = path.join(ideRoot, 'history');
+
       if (fs.existsSync(direct)) out.push(direct);
 
       for (const instId of fs.readdirSync(ideRoot)) {
         if (instId === 'history') continue;
         const historyRoot = path.join(ideRoot, instId, 'history');
+
         if (fs.existsSync(historyRoot)) out.push(historyRoot);
       }
     }
@@ -188,13 +199,17 @@ export function listIdeHistoryRoots(): string[] {
  */
 export function findIdeHistoryDirs(cwd: string, createIfMissing = false): string[] {
   const hash = hashWorkspace(cwd);
+
   if (!hash) return []; // cwd is not a real absolute path; skip sync
 
   const out: string[] = [];
+
   for (const historyRoot of listIdeHistoryRoots()) {
     const target = path.join(historyRoot, hash);
+
     if (fs.existsSync(target) || createIfMissing) out.push(target);
   }
+
   return out;
 }
 
@@ -208,9 +223,11 @@ export function findIdeHistoryDirs(cwd: string, createIfMissing = false): string
  */
 function pickModel(session: Session): string | undefined {
   if (session.metadata?.model) return String(session.metadata.model);
+
   for (const m of session.messages) {
     if (m.metadata?.model) return String(m.metadata.model);
   }
+
   return undefined;
 }
 
@@ -235,6 +252,7 @@ function stableId(parts: string[]): string {
 function toEpochMs(iso: string | undefined): number | undefined {
   if (!iso) return undefined;
   const t = Date.parse(iso);
+
   return Number.isFinite(t) ? t : undefined;
 }
 
@@ -259,19 +277,24 @@ function resolveTimestamps(session: Session): string[] {
     { i: -1, t: base },
     { i: n, t: tail },
   ];
+
   session.messages.forEach((m, i) => {
     const t = toEpochMs(m.timestamp);
+
     if (t !== undefined) known.push({ i, t });
   });
   known.sort((a, b) => a.i - b.i);
 
   const ts: number[] = Array.from({ length: n });
+
   for (const p of known) {
     if (p.i >= 0 && p.i < n) ts[p.i] = p.t;
   }
+
   for (let k = 0; k < known.length - 1; k++) {
     const a = known[k];
     const b = known[k + 1];
+
     for (let i = a.i + 1; i <= b.i - 1; i++) {
       const ratio = (i - a.i) / (b.i - a.i);
       ts[i] = Math.round(a.t + (b.t - a.t) * ratio);
@@ -305,6 +328,7 @@ function irToIdeMessages(session: Session): { messages: IdeMessageFile[]; assets
 
   // callId → toolName map (tool-result needs toolName filled back in)
   const toolNameByCallId = new Map<string, string>();
+
   for (const msg of session.messages) {
     for (const b of msg.content) {
       if (b.type === 'tool_call' && b.callId) toolNameByCallId.set(b.callId, b.toolName);
@@ -320,8 +344,10 @@ function irToIdeMessages(session: Session): { messages: IdeMessageFile[]; assets
     const ext = path.extname(base) || `.${(b.mimeType.split('/')[1] ?? 'png').replace('jpeg', 'jpg')}`;
     const stem = base.slice(0, base.length - ext.length) || 'image';
     let name = `${safeFileName(stem, 'image')}${ext}`;
+
     for (let i = 1; usedNames.has(name); i++) name = `${safeFileName(stem, 'image')}-${i}${ext}`;
     usedNames.add(name);
+
     if (mayReadLocalImageFile(session, b.filePath) && b.filePath && fs.existsSync(b.filePath)) {
       assets.push({ name, sourcePath: b.filePath });
     } else if (b.data) {
@@ -329,12 +355,14 @@ function irToIdeMessages(session: Session): { messages: IdeMessageFile[]; assets
     } else {
       return null; // No usable content: the caller degrades to placeholder text
     }
+
     return `codebuddy-asset://assets/${name}`;
   };
 
   session.messages.forEach((msg, msgIdx) => {
     const ts = timestamps[msgIdx];
     const msgModel = msg.metadata?.model ?? model;
+
     const extra = JSON.stringify({
       requestId: stableId([session.sessionId, String(msgIdx), 'request']),
       modelId: msgModel ? `custom-local:${msgModel}` : 'custom-local:unknown',
@@ -344,6 +372,7 @@ function irToIdeMessages(session: Session): { messages: IdeMessageFile[]; assets
 
     // 1) thinking + text + image + tool_call → one message
     const content: Record<string, unknown>[] = [];
+
     for (const b of msg.content) {
       if (b.type === 'thinking') {
         content.push({ type: 'reasoning', text: b.text });
@@ -353,9 +382,11 @@ function irToIdeMessages(session: Session): { messages: IdeMessageFile[]; assets
         // (<user_query>/<timestamp>/<image_files>...) and attachment paths
         // from user text so the bubble shows the real question.
         const text = msg.role === 'user' ? visibleUserText(b.text) : b.text;
+
         if (text) content.push({ type: 'text', text });
       } else if (b.type === 'image') {
         const ref = assetRef(b);
+
         if (ref) {
           content.push({ type: 'image', image: ref });
         } else {
@@ -445,17 +476,24 @@ interface IdeIndex {
 
 function readIndex(historyDir: string): IdeIndex {
   const idxPath = path.join(historyDir, 'index.json');
+
   if (!fs.existsSync(idxPath)) return { conversations: [] };
+
   try {
     const data = JSON.parse(fs.readFileSync(idxPath, 'utf-8')) as IdeIndex;
+
     if (!Array.isArray(data.conversations)) data.conversations = [];
+
     return data;
   } catch {
     // When index.json is corrupt, try to restore from the backup
     const bakPath = path.join(historyDir, '.index_bak.json');
+
     try {
       const data = JSON.parse(fs.readFileSync(bakPath, 'utf-8')) as IdeIndex;
+
       if (!Array.isArray(data.conversations)) data.conversations = [];
+
       return data;
     } catch {
       return { conversations: [] };
@@ -465,6 +503,7 @@ function readIndex(historyDir: string): IdeIndex {
 
 function writeIndex(historyDir: string, data: IdeIndex): void {
   const idxPath = path.join(historyDir, 'index.json');
+
   // Back up before writing, matching the IDE's own .index_bak.json convention
   if (fs.existsSync(idxPath)) {
     try {
@@ -473,6 +512,7 @@ function writeIndex(historyDir: string, data: IdeIndex): void {
       // A failed backup must not block the write
     }
   }
+
   fs.writeFileSync(idxPath, JSON.stringify(data, null, 2), 'utf-8');
 }
 
@@ -480,9 +520,11 @@ function upsertConversation(historyDir: string, conv: IdeConversation): void {
   const data = readIndex(historyDir);
   const convs = data.conversations as IdeConversation[];
   const i = convs.findIndex((c) => c.id === conv.id);
+
   if (i >= 0) convs[i] = conv;
   else convs.push(conv);
   data.conversations = convs;
+
   // A native index.json always has top-level current (pointing at the current session). A new
   // workspace does not have it naturally. If it is missing, the IDE may open that workspace with
   // nothing selected → fill in the conversation just written.
@@ -493,8 +535,10 @@ function upsertConversation(historyDir: string, conv: IdeConversation): void {
 function removeConversation(historyDir: string, convId: string): void {
   const data = readIndex(historyDir);
   const convs = (data.conversations as IdeConversation[]).filter((c) => c.id !== convId);
+
   if (convs.length === (data.conversations as IdeConversation[]).length) return; // No change
   data.conversations = convs;
+
   if (data.current === convId) data.current = convs[convs.length - 1]?.id;
   writeIndex(historyDir, data);
 }
@@ -525,10 +569,12 @@ const PLACEHOLDER_TITLE = /^session\s+[0-9a-f]{8}$/i;
 
 function cleanTitle(session: Session, convId: string): string {
   const raw = (session.title ?? '').replace(/\s+/g, ' ').trim();
+
   if (raw && !PLACEHOLDER_TITLE.test(raw) && !SYSTEM_INJECTED_TITLE.test(raw)) return raw.slice(0, 100);
 
   for (const m of session.messages) {
     if (m.role !== 'user') continue;
+
     for (const b of m.content) {
       if (b.type !== 'text') continue;
       // The source platform's first user message is often wrapped in <user_info>/<rules>/<additional_data>
@@ -536,14 +582,17 @@ function cleanTitle(session: Session, convId: string): string {
       // fall back to "Session xxxxxxxx". Clean first (unwrap <user_query> + strip metadata + drop
       // attachment paths), then take the title.
       const cleaned = titleFromUserText(b.text);
+
       if (cleaned) return cleaned.slice(0, 100);
       const t = b.text.replace(/\s+/g, ' ').trim();
+
       // isInjectedText is the full injected-tag-head list maintained in title.ts (it evolves with META_BLOCK_RE).
       // SYSTEM_INJECTED_TITLE is kept only as a second check — one source of truth, so adding a tag
       // does not miss one of the two sides.
       if (t && !isInjectedText(t) && !SYSTEM_INJECTED_TITLE.test(t)) return t.slice(0, 100);
     }
   }
+
   return `Session ${convId.slice(0, 8)}`;
 }
 
@@ -589,8 +638,10 @@ function buildIdeRequests(session: Session, messages: IdeMessageFile[]): IdeRequ
       // First message is not user (rare): open a fallback turn so the message is not unowned
       cur = openRequest(m.createdAt);
     }
+
     cur.messages.push(m.id);
   }
+
   if (cur) requests.push(cur);
 
   return requests;
@@ -598,6 +649,7 @@ function buildIdeRequests(session: Session, messages: IdeMessageFile[]): IdeRequ
 
 export function writeIdeSession(session: Session, cwd: string): IdeSyncResult {
   const dirs = findIdeHistoryDirs(cwd, true);
+
   if (dirs.length === 0) {
     return {
       synced: 0,
@@ -625,6 +677,7 @@ export function writeIdeSession(session: Session, cwd: string): IdeSyncResult {
   };
 
   let synced = 0;
+
   for (const historyDir of dirs) {
     try {
       const convDir = path.join(historyDir, convId);
@@ -634,6 +687,7 @@ export function writeIdeSession(session: Session, cwd: string): IdeSyncResult {
       // Message file name = message id. Leftover files from older versions are neither overwritten
       // nor indexed, so they become orphans and the directory grows without bound as migrations repeat.
       const marker = path.join(msgDir, '.teamai-migrated');
+
       if (fs.existsSync(msgDir) && !fs.existsSync(marker)) {
         const backup = path.join(convDir, `messages.backup-${Date.now()}`);
         fs.renameSync(msgDir, backup);
@@ -642,6 +696,7 @@ export function writeIdeSession(session: Session, cwd: string): IdeSyncResult {
           if (f.endsWith('.json')) fs.unlinkSync(path.join(msgDir, f));
         }
       }
+
       fs.mkdirSync(msgDir, { recursive: true });
       fs.writeFileSync(marker, new Date().toISOString(), 'utf-8');
 
@@ -650,18 +705,23 @@ export function writeIdeSession(session: Session, cwd: string): IdeSyncResult {
       // (replace it with placeholder text) and do not block writing the whole session.
       if (assets.length > 0) {
         const assetsDir = path.join(convDir, 'assets');
+
         try {
           fs.mkdirSync(assetsDir, { recursive: true });
         } catch {
           // If the directory cannot be created, the per-asset writes below fail and fall back to placeholders
         }
+
         for (const asset of assets) {
           let ok = false;
+
           try {
             const dest = path.join(assetsDir, asset.name);
+
             // Belt and braces: never write outside assets/ even if a name
             // slips past safeFileName.
             if (path.relative(assetsDir, dest).startsWith('..')) throw new Error('unsafe asset name');
+
             if (asset.sourcePath && fs.existsSync(asset.sourcePath)) {
               fs.copyFileSync(asset.sourcePath, dest);
               ok = true;
@@ -672,19 +732,25 @@ export function writeIdeSession(session: Session, cwd: string): IdeSyncResult {
           } catch {
             ok = false;
           }
+
           if (!ok) {
             const ref = `codebuddy-asset://assets/${asset.name}`;
+
             for (const m of messages) {
               let body: { role?: string; content?: Array<Record<string, unknown>> };
+
               try {
                 body = JSON.parse(m.message);
               } catch {
                 continue;
               }
+
               if (!Array.isArray(body.content)) continue;
+
               const idx = body.content.findIndex(
                 (c) => c.type === 'image' && c.image === ref,
               );
+
               if (idx >= 0) {
                 body.content[idx] = { type: 'text', text: `[image: ${asset.name} (asset write failed)]` };
                 m.message = JSON.stringify(body);
@@ -698,6 +764,7 @@ export function writeIdeSession(session: Session, cwd: string): IdeSyncResult {
       // The conversation-level index.json is the **message order index** — the IDE uses it to decide
       // display order. Writing only messages/*.json without it opens a blank session.
       const messageIndex: Array<Record<string, unknown>> = [];
+
       for (const m of messages) {
         fs.writeFileSync(path.join(msgDir, `${m.id}.json`), JSON.stringify(m, null, 2), 'utf-8');
         messageIndex.push({ id: m.id, type: 'text', role: m.role, isComplete: true });
@@ -706,6 +773,7 @@ export function writeIdeSession(session: Session, cwd: string): IdeSyncResult {
       // Back up before writing, matching the IDE's own .index_bak.json convention
       // (native session directories all carry it, so a corrupt index can heal itself)
       const convIdxPath = path.join(convDir, 'index.json');
+
       if (fs.existsSync(convIdxPath)) {
         try {
           fs.copyFileSync(convIdxPath, path.join(convDir, '.index_bak.json'));
@@ -743,18 +811,22 @@ export function writeIdeSession(session: Session, cwd: string): IdeSyncResult {
  */
 export function findIdeConversationDirs(convId: string): Array<{ historyDir: string; convDir: string }> {
   const out: Array<{ historyDir: string; convDir: string }> = [];
+
   try {
     for (const historyRoot of listIdeHistoryRoots()) {
       for (const wsHash of fs.readdirSync(historyRoot)) {
         const historyDir = path.join(historyRoot, wsHash);
+
         if (!fs.statSync(historyDir).isDirectory()) continue;
         const convDir = path.join(historyDir, convId);
+
         if (fs.existsSync(convDir)) out.push({ historyDir, convDir });
       }
     }
   } catch {
     return out;
   }
+
   return out;
 }
 
@@ -780,17 +852,21 @@ export function deleteIdeSession(sessionId: string, cwd?: string): number {
   // data loss, much worse than leaving a leftover.
   // Only when the caller omits cwd (automatic rollback after a failed migrate) is cleanup global by convId.
   const scoped = cwd ? findIdeHistoryDirs(cwd, false) : [];
+
   if (cwd && scoped.length === 0) {
     console.warn(
       `  · No CodeBuddy IDE workspace matches ${cwd}; nothing deleted. Pass no --cwd to delete every copy.`,
     );
+
     return 0;
   }
+
   const targets: Array<{ historyDir: string; convDir: string }> = scoped.length > 0
     ? scoped.map((historyDir) => ({ historyDir, convDir: path.join(historyDir, convId) }))
     : findIdeConversationDirs(convId);
 
   let cleaned = 0;
+
   for (const { historyDir, convDir } of targets) {
     // Directory deletion and index-entry cleanup must be two separate try blocks.
     // In one try, once rm throws (a large session easily races a running IDE process writing back),
@@ -802,6 +878,7 @@ export function deleteIdeSession(sessionId: string, cwd?: string): number {
     } catch {
       // ignore: if the directory cannot be deleted, at least make it disappear from the sidebar
     }
+
     try {
       removeConversation(historyDir, convId);
       cleaned++;
@@ -863,18 +940,22 @@ export function listIdeConversations(historyDirs?: string[]): IdeConversationEnt
 
   for (const historyRoot of roots) {
     let wsHashes: string[] = [];
+
     try {
       wsHashes = fs.readdirSync(historyRoot);
     } catch {
       continue;
     }
+
     for (const wsHash of wsHashes) {
       const historyDir = path.join(historyRoot, wsHash);
+
       try {
         if (!fs.statSync(historyDir).isDirectory()) continue;
       } catch {
         continue;
       }
+
       for (const c of readIndex(historyDir).conversations as IdeConversation[]) {
         if (!c?.id) continue;
         out.push({
@@ -896,6 +977,7 @@ export function listIdeConversations(historyDirs?: string[]): IdeConversationEnt
 
 function parseIdeMessageFile(file: string): IdeMessageParsed | null {
   let raw: IdeMessageFile;
+
   try {
     raw = JSON.parse(fs.readFileSync(file, 'utf-8')) as IdeMessageFile;
   } catch {
@@ -905,6 +987,7 @@ function parseIdeMessageFile(file: string): IdeMessageParsed | null {
   // message is stringified JSON. When it is corrupt (a half-written file while the IDE is writing),
   // skip the whole message. Half JSON cannot be degraded to text — stitching it back only yields unreadable garbage.
   let body: { role?: string; content?: unknown };
+
   try {
     body = JSON.parse(raw.message) as { role?: string; content?: unknown };
   } catch {
@@ -914,8 +997,10 @@ function parseIdeMessageFile(file: string): IdeMessageParsed | null {
   const content = Array.isArray(body.content) ? (body.content as Array<Record<string, unknown>>) : [];
 
   let model: string | undefined;
+
   try {
     const extra = JSON.parse(raw.extra ?? '{}') as { modelName?: string };
+
     if (extra?.modelName) model = String(extra.modelName).replace(/^custom-local:/, '');
   } catch {
     // A missing extra does not affect the message itself
@@ -941,13 +1026,16 @@ function parseIdeMessageFile(file: string): IdeMessageParsed | null {
  */
 export function readIdeConversation(convDir: string, limit?: number): IdeMessageParsed[] {
   const msgDir = path.join(convDir, 'messages');
+
   if (!fs.existsSync(msgDir)) return [];
 
   let order: string[] = [];
+
   try {
     const idx = JSON.parse(fs.readFileSync(path.join(convDir, 'index.json'), 'utf-8')) as {
       messages?: Array<{ id?: string }>;
     };
+
     if (Array.isArray(idx.messages)) {
       order = idx.messages.map((m) => String(m?.id ?? '')).filter(Boolean);
     }
@@ -956,6 +1044,7 @@ export function readIdeConversation(convDir: string, limit?: number): IdeMessage
   }
 
   let files: string[] = [];
+
   try {
     files = fs.readdirSync(msgDir).filter((f) => f.endsWith('.json'));
   } catch {
@@ -973,17 +1062,22 @@ export function readIdeConversation(convDir: string, limit?: number): IdeMessage
 
   for (const id of order) {
     if (reached()) break;
+
     if (seen.has(id)) continue;
     seen.add(id);
     const parsed = parseIdeMessageFile(path.join(msgDir, `${id}.json`));
+
     if (parsed) messages.push(parsed);
   }
+
   for (const f of files) {
     if (reached()) break;
     const id = f.replace(/\.json$/, '');
+
     if (seen.has(id)) continue;
     seen.add(id);
     const parsed = parseIdeMessageFile(path.join(msgDir, f));
+
     if (parsed) messages.push(parsed);
   }
 

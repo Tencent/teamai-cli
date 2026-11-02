@@ -47,9 +47,11 @@ const EXTRACTOR_REGISTRY: Record<string, LanguageExtractor> = {
  */
 export function extractForLanguage(language: string, files: CodeCollectedFile[], context?: ExtractorContext): CodeFact[] {
   const extractor = EXTRACTOR_REGISTRY[language];
+
   if (!extractor) {
     return [];
   }
+
   return extractor(files, context);
 }
 
@@ -61,9 +63,15 @@ export function supportedLanguages(): string[] {
 }
 
 export { extractGo } from "./go.js";
+
 export { extractJava } from "./java.js";
+
 export { extractPython } from "./python.js";
+
 export { extractRust } from "./rust.js";
+
 export { extractScala, SCALA_DECL_PREFIX, SCALA_WILDCARD_PREFIX } from "./scala.js";
+
 export { extractSwift } from "./swift.js";
+
 export { extractTypescript } from "./typescript.js";

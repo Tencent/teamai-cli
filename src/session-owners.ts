@@ -30,6 +30,7 @@ export type ReportedPromptTokens = Record<string, { prompts: number; tokens: Tok
 
 
 export const REPORTED_SNAPSHOTS = ['interventions', 'prompt-tokens', 'daily-sessions'] as const;
+
 export type ReportedSnapshotName = typeof REPORTED_SNAPSHOTS[number];
 
 /** The machine-level snapshot every scope shared before #786 (evaluated at call time for tests). */
@@ -40,7 +41,9 @@ export function sharedSnapshotPath(name: ReportedSnapshotName): string {
 /** The snapshot of the scope whose data home is `dataHome`; `outcomes` is the one only a scope's own report keeps (#1387). */
 export function snapshotPathIn(dataHome: string, name: ReportedSnapshotName | 'outcomes'): string {
   const file = `reported-${name}.json`;
+
   if (path.resolve(dataHome) !== path.resolve(getTeamaiHomeDir())) return path.join(dataHome, 'dashboard', file);
+
   return path.join(dataHome, 'dashboard', `user-${file}`);
 }
 
@@ -78,11 +81,14 @@ async function knownDataHomes(options: { suppressMigrationNotice?: boolean } = {
   // session of it still in the log leads to it.
   const { resolveConfigForDir } = await import('./config.js');
   const cwds = new Set((await readEvents()).flatMap((e) => (typeof e.cwd === 'string' ? [e.cwd] : [])));
+
   for (const cwd of cwds) {
     // A read: the config is loaded, never migrated.
     const config = (await pathExists(cwd)) ? await resolveConfigForDir(cwd, undefined, { dryRun: true, suppressMigrationNotice: options.suppressMigrationNotice }) : null;
+
     if (config) homes.push(getDataHome(config));
   }
+
   return [...new Set(homes.map((home) => path.resolve(home)))];
 }
 
@@ -90,9 +96,11 @@ async function knownDataHomes(options: { suppressMigrationNotice?: boolean } = {
 export function reportedSize(entry: unknown): { prompts: number; tokens: number } {
   if (!entry || typeof entry !== 'object') return { prompts: 0, tokens: 0 };
   const prompts = 'prompts' in entry && typeof entry.prompts === 'number' ? entry.prompts : 0;
+
   const tokens = 'tokens' in entry && entry.tokens && typeof entry.tokens === 'object'
     ? Object.values(entry.tokens).reduce((sum: number, n: unknown) => sum + (typeof n === 'number' ? n : 0), 0)
     : 0;
+
   return { prompts, tokens };
 }
 
@@ -106,7 +114,9 @@ export interface ScopeSnapshots {
 export async function readSnapshotsIn(dataHome: string | undefined): Promise<ScopeSnapshots> {
   const read = (name: ReportedSnapshotName) =>
     readJson<Record<string, unknown>>(dataHome === undefined ? sharedSnapshotPath(name) : snapshotPathIn(dataHome, name));
+
   const [interventions, promptTokens, daily] = await Promise.all(REPORTED_SNAPSHOTS.map(read));
+
   return { interventions, promptTokens, daily };
 }
 
@@ -115,18 +125,22 @@ export function interventionsEntry(value: unknown): ReportedInterventions[string
   const count = (field: 'interrupt' | 'toolReject' | 'correction') =>
     (value && typeof value === 'object' && field in value && typeof Object.entries(value).find(([k]) => k === field)?.[1] === 'number'
       ? Number(Object.entries(value).find(([k]) => k === field)?.[1]) : 0);
+
   return { interrupt: count('interrupt'), toolReject: count('toolReject'), correction: count('correction') };
 }
 
 /** A prompt-token entry read from a file, zero for what it does not hold. */
 export function promptTokensEntry(value: unknown): ReportedPromptTokens[string] {
   const tokens = emptyTokenUsage();
+
   if (value && typeof value === 'object' && 'tokens' in value && value.tokens && typeof value.tokens === 'object') {
     for (const [field, n] of Object.entries(value.tokens)) {
       if (typeof n !== 'number') continue;
+
       if (field === 'input' || field === 'output' || field === 'cacheRead' || field === 'cacheCreation') tokens[field] = n;
     }
   }
+
   return { prompts: reportedSize(value).prompts, tokens };
 }
 
@@ -134,6 +148,7 @@ export function promptTokensEntry(value: unknown): ReportedPromptTokens[string] 
 function heldIn(snapshots: ScopeSnapshots, id: string): { prompts: number; tokens: number; interventions: number } {
   const fromTokens = reportedSize(snapshots.promptTokens?.[id]);
   const iv = interventionsEntry(snapshots.interventions?.[id]);
+
   return {
     prompts: Math.max(fromTokens.prompts, reportedSize(snapshots.daily?.[id]).prompts),
     tokens: fromTokens.tokens,
@@ -149,9 +164,11 @@ function heldIn(snapshots: ScopeSnapshots, id: string): { prompts: number; token
 export function showsReported(own: ScopeSnapshots, shared: ScopeSnapshots, id: string): boolean {
   const inShared = [shared.interventions, shared.promptTokens, shared.daily].some((snapshot) =>
     !!snapshot && typeof snapshot === 'object' && Object.hasOwn(snapshot, id));
+
   if (!inShared) return true;
   const a = heldIn(own, id);
   const b = heldIn(shared, id);
+
   return a.prompts !== b.prompts ? a.prompts > b.prompts
     : a.tokens !== b.tokens ? a.tokens > b.tokens : a.interventions > b.interventions;
 }
@@ -181,15 +198,20 @@ function creditOf(held: Array<{ key: string; snapshots: ScopeSnapshots }>, id: s
   const parts = held.map((part) => part.snapshots);
   const stops = parts.filter((part) => parseDailySnapshot(part.daily?.[id]) !== undefined);
   const loose = parts.filter((part) => !stops.includes(part));
+
   const prompts = Math.max(0, ...stops.map((part) => heldIn(part, id).prompts))
     + loose.reduce((sum, part) => sum + heldIn(part, id).prompts, 0);
+
   const tokens = emptyTokenUsage();
   const interventions = { interrupt: 0, toolReject: 0, correction: 0 };
+
   for (const part of parts) {
     const entry = promptTokensEntry(part.promptTokens?.[id]);
+
     for (const field of ['input', 'output', 'cacheRead', 'cacheCreation'] as const) {
       tokens[field] = Math.max(tokens[field], entry.tokens[field]);
     }
+
     // Interruptions and rejections come from Stops, cumulative; corrections
     // are counted per prompt in each part's own events.
     const iv = interventionsEntry(part.interventions?.[id]);
@@ -197,11 +219,15 @@ function creditOf(held: Array<{ key: string; snapshots: ScopeSnapshots }>, id: s
     interventions.toolReject = Math.max(interventions.toolReject, iv.toolReject);
     interventions.correction += iv.correction;
   }
+
   const days = stops.flatMap((part) => {
     const day = parseDailySnapshot(part.daily?.[id]);
+
     return day ? [day] : [];
   });
+
   const latest = days.reduce<DailySessionSnapshot | undefined>((a, b) => (!a || b.prompts > a.prompts ? b : a), undefined);
+
   return {
     interventions,
     promptTokens: { prompts, tokens },
@@ -221,30 +247,41 @@ function creditOf(held: Array<{ key: string; snapshots: ScopeSnapshots }>, id: s
 async function ownersFromSnapshots(options: { suppressMigrationNotice?: boolean } = {}): Promise<string> {
   const shared = await readSnapshotsIn(undefined);
   const parts = new Map<string, Array<{ key: string; snapshots: ScopeSnapshots }>>();
+
   for (const dataHome of await knownDataHomes(options)) {
     const snapshots = await readSnapshotsIn(dataHome);
+
     const ids = new Set([snapshots.interventions, snapshots.promptTokens, snapshots.daily].flatMap((snapshot) =>
       (snapshot && typeof snapshot === 'object' ? Object.keys(snapshot) : [])));
+
     const key = await dataHomeKey(dataHome);
+
     for (const sessionId of ids) {
       if (sessionId.startsWith('pid-') || !showsReported(snapshots, shared, sessionId)) continue;
       parts.set(sessionId, [...(parts.get(sessionId) ?? []), { key, snapshots }]);
     }
   }
+
   const lines: string[] = [];
+
   for (const [sessionId, held] of parts) {
     const size = (part: { snapshots: ScopeSnapshots }) => heldIn(part.snapshots, sessionId);
+
     const best = held.reduce((a, b) => {
       const x = size(a);
       const y = size(b);
+
       return y.prompts > x.prompts || (y.prompts === x.prompts && y.tokens > x.tokens) ? b : a;
     });
+
     const tied = held.some((part) => part.key !== best.key
       && size(part).prompts === size(best).prompts && size(part).tokens === size(best).tokens);
+
     if (tied) continue;
     const credit = held.length > 1 ? creditOf(held, sessionId) : undefined;
     lines.push(JSON.stringify({ sessionId, dataHomeKey: best.key, ...(credit ? { credit } : {}) }));
   }
+
   return lines.map((line) => `${line}\n`).join('');
 }
 
@@ -256,26 +293,33 @@ export async function readOwnerCredits(): Promise<Map<string, OwnerCredit>> {
 function parseOwnerCredits(content: string | null): Map<string, OwnerCredit> {
   const credits = new Map<string, OwnerCredit>();
   const seen = new Set<string>();
+
   for (const line of (content ?? '').split('\n')) {
     let parsed: unknown;
+
     try {
       parsed = JSON.parse(line);
     } catch {
       continue;
     }
+
     if (!parsed || typeof parsed !== 'object' || !('sessionId' in parsed) || typeof parsed.sessionId !== 'string') continue;
+
     if (seen.has(parsed.sessionId)) continue;
     seen.add(parsed.sessionId);
+
     if (!('credit' in parsed) || !parsed.credit || typeof parsed.credit !== 'object') continue;
     const credit = parsed.credit;
     const daily = 'daily' in credit ? parseDailySnapshot(credit.daily) : undefined;
     const parts: CreditPart[] = [];
+
     if ('parts' in credit && Array.isArray(credit.parts)) {
       for (const part of credit.parts) {
         if (!part || typeof part !== 'object' || !('key' in part) || typeof part.key !== 'string') continue;
         parts.push({ key: part.key, prompts: reportedSize(part).prompts, stop: 'stop' in part && part.stop === true });
       }
     }
+
     credits.set(parsed.sessionId, {
       interventions: interventionsEntry('interventions' in credit ? credit.interventions : undefined),
       promptTokens: promptTokensEntry('promptTokens' in credit ? credit.promptTokens : undefined),
@@ -283,6 +327,7 @@ function parseOwnerCredits(content: string | null): Map<string, OwnerCredit> {
       ...(parts.length > 0 ? { parts } : {}),
     });
   }
+
   return credits;
 }
 
@@ -302,12 +347,14 @@ export interface SessionOwnerState {
 
 export async function readSessionOwnerState(options: { dryRun?: boolean; suppressMigrationNotice?: boolean } = {}): Promise<SessionOwnerState> {
   const content = await readSessionOwnersContent(options);
+
   return { owners: parseSessionOwners(content), credits: parseOwnerCredits(content) };
 }
 
 async function readSessionOwnersContent(options: { dryRun?: boolean; suppressMigrationNotice?: boolean }): Promise<string | null> {
   if (!(await pathExists(sessionOwnersPath()))) {
     if (options.dryRun) return ownersFromSnapshots(options);
+
     try {
       await ensureDir(path.dirname(sessionOwnersPath()));
       // Exclusive: a report in another scope may be writing it too.
@@ -316,15 +363,19 @@ async function readSessionOwnersContent(options: { dryRun?: boolean; suppressMig
       if ((e as NodeJS.ErrnoException).code !== 'EEXIST') log.debug(`Could not seed session owners: ${(e as Error).message}`);
     }
   }
+
   return readFileSafe(sessionOwnersPath());
 }
 
 function parseSessionOwners(content: string | null): Map<string, string> {
   const owners = new Map<string, string>();
+
   for (const line of (content ?? '').split('\n')) {
     if (!line.trim()) continue;
+
     try {
       const parsed: unknown = JSON.parse(line);
+
       if (parsed && typeof parsed === 'object' && 'sessionId' in parsed && 'dataHomeKey' in parsed
         && typeof parsed.sessionId === 'string' && typeof parsed.dataHomeKey === 'string'
         && !owners.has(parsed.sessionId)) owners.set(parsed.sessionId, parsed.dataHomeKey);
@@ -332,6 +383,7 @@ function parseSessionOwners(content: string | null): Map<string, string> {
       // A torn or hand-edited line records no owner.
     }
   }
+
   return owners;
 }
 
@@ -344,6 +396,7 @@ export async function reportedBeyondShared(
   const shared = await readSnapshotsIn(undefined);
   const own: ScopeSnapshots = { interventions, promptTokens, daily };
   const ids = new Set([...Object.keys(promptTokens), ...Object.keys(interventions), ...Object.keys(daily)]);
+
   return [...ids].filter((id) => showsReported(own, shared, id));
 }
 
@@ -351,7 +404,9 @@ export async function reportedBeyondShared(
 export async function recordSessionOwners(sessionIds: Iterable<string>, key: string): Promise<void> {
   const owners = await readSessionOwners();
   const ids = new Set([...sessionIds].filter((id) => !id.startsWith('pid-') && !owners.has(id)));
+
   if (ids.size === 0) return;
+
   try {
     await ensureDir(path.dirname(sessionOwnersPath()));
     await fs.promises.appendFile(sessionOwnersPath(),
@@ -374,44 +429,60 @@ export async function creditedPrompts(credit: OwnerCredit, transcripts: string[]
   const parts = credit.parts ?? [];
   const stopped = parts.filter((part) => part.stop);
   const loose = parts.filter((part) => !part.stop);
+
   if (stopped.length === 0 || loose.length === 0) return undefined;
   const covered = Math.max(...stopped.map((part) => part.prompts));
   const { resolveConfigForDir } = await import('./config.js');
   const keys = new Map<string, Promise<string | undefined>>();
+
   const keyOf = (cwd: string) => {
     let key = keys.get(cwd);
+
     if (!key) {
       key = pathExists(cwd).then(async (exists) => {
         const config = exists ? await resolveConfigForDir(cwd, undefined, { dryRun: true }) : null;
+
         return config ? dataHomeKey(getDataHome(config)) : undefined;
       });
       keys.set(cwd, key);
     }
+
     return key;
   };
+
   for (const transcript of transcripts.toReversed()) {
     const content = await readFileSafe(transcript);
+
     if (content === null) continue;
     const prompts: string[] = [];
+
     for (const line of content.split('\n')) {
       let entry: unknown;
+
       try {
         entry = JSON.parse(line);
       } catch {
         continue;
       }
+
       if (!isHumanPromptEntry(entry) || !entry || typeof entry !== 'object' || !('cwd' in entry)) continue;
+
       if (typeof entry.cwd === 'string') prompts.push(entry.cwd);
     }
+
     if (prompts.length < covered) continue;
     const scopes = await Promise.all(prompts.map(keyOf));
     let total = covered;
+
     for (const part of loose) {
       const own = scopes.flatMap((key, i) => (key === part.key ? [i] : [])).slice(0, part.prompts);
+
       if (own.length < part.prompts) return undefined;
       total += own.filter((i) => i >= covered).length;
     }
+
     return total;
   }
+
   return undefined;
 }

@@ -67,9 +67,11 @@ import { isToolId, TOOLS, type ToolDescriptor } from './tools.js';
 async function readStdin(): Promise<string> {
   if (process.stdin.isTTY) return '';
   const chunks: Buffer[] = [];
+
   for await (const chunk of process.stdin) {
     chunks.push(chunk as Buffer);
   }
+
   return Buffer.concat(chunks).toString('utf-8');
 }
 
@@ -77,6 +79,7 @@ async function readStdin(): Promise<string> {
 
 /** Maximum bytes to read from the end of a transcript file. */
 const TRANSCRIPT_TAIL_BYTES = 10240;
+
 /** Maximum characters for stoppedOutput. */
 const STOPPED_OUTPUT_MAX_CHARS = 500;
 
@@ -89,12 +92,14 @@ export async function readLastAssistantOutput(transcriptPath: string): Promise<s
   try {
     const stat = await fs.promises.stat(transcriptPath);
     const fileSize = stat.size;
+
     if (fileSize === 0) return '';
 
     const readSize = Math.min(fileSize, TRANSCRIPT_TAIL_BYTES);
     const offset = Math.max(0, fileSize - readSize);
 
     const fh = await fs.promises.open(transcriptPath, 'r');
+
     try {
       const buffer = Buffer.alloc(readSize);
       await fh.read(buffer, 0, readSize, offset);
@@ -107,11 +112,13 @@ export async function readLastAssistantOutput(transcriptPath: string): Promise<s
       for (const line of lines) {
         try {
           const entry = JSON.parse(line);
+
           // Claude Code transcript format: {type: "assistant", message: {content: [{type: "text", text: "..."}]}}
           if (entry.type === 'assistant' && entry.message?.content) {
             const textParts = (entry.message.content as Array<{ type: string; text?: string }>)
               .filter((c) => c.type === 'text' && c.text)
               .map((c) => c.text);
+
             if (textParts.length > 0) {
               lastAssistantText = textParts.join('\n');
             }
@@ -130,6 +137,7 @@ export async function readLastAssistantOutput(transcriptPath: string): Promise<s
     }
   } catch (e) {
     log.warn(`dashboard: failed to read transcript: ${(e as Error).message}`);
+
     return '';
   }
 }
@@ -157,6 +165,7 @@ export interface TranscriptScanResult {
 export const REQUEST_LOG_RETENTION_DAYS = 90;
 
 const RequestCount = z.number().finite().nonnegative();
+
 /**
  * One request in `~/.teamai/dashboard/requests.jsonl`: its tokens and model,
  * and its cost when a price was known, kept as recorded so a later catalog
@@ -186,7 +195,9 @@ const LocalRequestRecordSchema = z.object({
   }),
   z.object({ costMicros: z.null(), priceVersion: z.null() }),
 ]));
+
 export type LocalRequestRecord = z.infer<typeof LocalRequestRecordSchema>;
+
 type PricedRequestRecord = Extract<LocalRequestRecord, { costMicros: number }>;
 
 const isPriced = (record: LocalRequestRecord): record is PricedRequestRecord => record.costMicros !== null;
@@ -198,6 +209,7 @@ const isPriced = (record: LocalRequestRecord): record is PricedRequestRecord => 
  */
 function tokenSourceOf(tool: string): ToolDescriptor['tokens'] {
   const id = tool.toLowerCase();
+
   return isToolId(id) ? TOOLS[id].tokens : 'claude-jsonl';
 }
 
@@ -207,6 +219,7 @@ function cacheSavingsMicros(request: TokenRequest, aliases?: Record<string, stri
   const { reportedCostMicros: _reported, ...estimate } = request;
   const actual = priceTokens(estimate, aliases);
   const uncached = priceTokens({ ...estimate, tokens: { ...request.tokens, input: request.tokens.input + request.tokens.cacheRead, cacheRead: 0 } }, aliases);
+
   return actual && uncached ? Math.max(0, uncached.costMicros - actual.costMicros) : undefined;
 }
 
@@ -223,15 +236,19 @@ async function recordTokenRequests(
   options: ParseHookEventOptions | undefined,
 ): Promise<void> {
   const aliases = options?.modelAliases;
+
   if (!requests.length) return;
   const logged = await readLocalRequestRecords();
+
   const records = requests.map((request): LocalRequestRecord => {
     const id = createHash('sha256').update(`${scope}\0${request.key}`).digest('hex');
     const kept = logged.get(id);
     // A request stays with the workspace that first recorded it, even when its session resumes in another.
     const dataHome = kept?.dataHomeKey ?? options?.dataHomeKey;
     const owner = { tool: kept?.tool ?? event.tool, sessionId: kept?.sessionId ?? event.sessionId, ...(dataHome ? { dataHomeKey: dataHome } : {}) };
+
     if (kept && isPriced(kept)) return { ...kept, ...owner };
+
     const base = {
       id,
       timestamp: Number.isFinite(Date.parse(request.timestamp)) ? new Date(request.timestamp).toISOString() : event.timestamp,
@@ -242,9 +259,12 @@ async function recordTokenRequests(
       cacheReadTokens: request.tokens.cacheRead,
       cacheCreationTokens: request.tokens.cacheCreation,
     };
+
     const priced = priceTokens(request, aliases);
+
     if (!priced) return { ...base, costMicros: null, priceVersion: null };
     const savings = cacheSavingsMicros(request, aliases);
+
     return {
       ...base,
       costMicros: priced.costMicros,
@@ -253,7 +273,9 @@ async function recordTokenRequests(
       ...(savings === undefined ? {} : { cacheSavingsMicros: savings }),
     };
   });
+
   const priced = records.filter(isPriced);
+
   if (priced.length) {
     const daily = aggregateRequestDaily(priced);
     event.requestDaily = daily;
@@ -265,6 +287,7 @@ async function recordTokenRequests(
       priceVersion: day.priceVersion,
     }));
   }
+
   await reconcileRequestLog(records);
 }
 
@@ -285,8 +308,10 @@ export async function scanTranscriptStop(transcriptPath: string): Promise<Transc
   // CodeBuddy persists its transcript as a single `index.json` document, not JSONL.
   if (path.basename(transcriptPath) === 'index.json') {
     const cb = await scanCodebuddyIndex(transcriptPath);
+
     if (cb) return cb;
   }
+
   return scanJsonlTranscriptOnce(transcriptPath);
 }
 
@@ -298,18 +323,25 @@ export async function scanTranscriptStop(transcriptPath: string): Promise<Transc
  */
 export function isHumanPromptEntry(entry: unknown): boolean {
   if (!entry || typeof entry !== 'object' || !('type' in entry) || entry.type !== 'user') return false;
+
   if (('isMeta' in entry && entry.isMeta === true) || ('isSidechain' in entry && entry.isSidechain === true)) return false;
   const message = 'message' in entry && entry.message && typeof entry.message === 'object' ? entry.message : undefined;
   const content: unknown = message && 'content' in message ? message.content : undefined;
+
   if (typeof content === 'string') {
     const text = content.trim();
+
     return !!text && !text.startsWith(TRANSCRIPT_INTERRUPT_PREFIX) && !TRANSCRIPT_SYSTEM_PREFIXES.some((p) => text.startsWith(p));
   }
+
   if (!Array.isArray(content)) return false;
+
   return content.some((item: unknown) => {
     if (!item || typeof item !== 'object' || !('type' in item) || item.type !== 'text' || !('text' in item)) return false;
+
     if (typeof item.text !== 'string' || item.text.startsWith(TRANSCRIPT_INTERRUPT_PREFIX)) return false;
     const text = item.text.trim();
+
     return !!text && !TRANSCRIPT_SYSTEM_PREFIXES.some((p) => text.startsWith(p));
   });
 }
@@ -322,9 +354,12 @@ async function scanJsonlTranscriptOnce(transcriptPath: string): Promise<Transcri
 
   try {
     const stat = await fs.promises.stat(transcriptPath);
+
     if (stat.size === 0) return { interrupt, toolReject, toolError, prompts };
+
     if (stat.size > INTERVENTION_SCAN_MAX_BYTES) {
       log.warn(`dashboard: transcript too large to scan (${stat.size} bytes)`);
+
       return { interrupt, toolReject, toolError, prompts };
     }
 
@@ -335,6 +370,7 @@ async function scanJsonlTranscriptOnce(transcriptPath: string): Promise<Transcri
 
     for await (const line of rl) {
       const trimmed = line.trim();
+
       // Cheap pre-filter: friction and prompts are on user records only.
       if (!trimmed || !trimmed.includes('"user"')) continue;
 
@@ -344,6 +380,7 @@ async function scanJsonlTranscriptOnce(transcriptPath: string): Promise<Transcri
         isSidechain?: unknown;
         message?: { content?: unknown };
       };
+
       try {
         entry = JSON.parse(trimmed);
       } catch {
@@ -354,6 +391,7 @@ async function scanJsonlTranscriptOnce(transcriptPath: string): Promise<Transcri
 
       if (isHumanPromptEntry(entry)) prompts++;
       const content = entry.message?.content;
+
       if (!Array.isArray(content)) continue;
 
       for (const item of content as Array<Record<string, unknown>>) {
@@ -366,6 +404,7 @@ async function scanJsonlTranscriptOnce(transcriptPath: string): Promise<Transcri
               ? (item.content as Array<{ text?: string }>)
                 .map((c) => (typeof c?.text === 'string' ? c.text : '')).join(' ')
               : '';
+
           if (TRANSCRIPT_REJECT_MARKERS.some((m) => text.includes(m))) {
             toolReject++;
           } else {
@@ -416,7 +455,9 @@ function copilotUsageEquals(
   second: CopilotUsageObservation,
 ): boolean {
   if (first.shutdownObserved !== second.shutdownObserved) return false;
+
   if (!first.tokens || !second.tokens) return first.tokens === second.tokens;
+
   return first.tokens.input === second.tokens.input
     && first.tokens.output === second.tokens.output
     && first.tokens.cacheRead === second.tokens.cacheRead
@@ -426,6 +467,7 @@ function copilotUsageEquals(
 /** Parse only Copilot's final token counters from a shutdown record. */
 function parseCopilotShutdown(entry: unknown): CopilotUsageObservation {
   const shutdown = readCopilotShutdown(entry);
+
   return shutdown ? { shutdownObserved: true, ...shutdown } : { shutdownObserved: false };
 }
 
@@ -435,27 +477,35 @@ async function readLatestCopilotUsageFromTail(
 ): Promise<CopilotUsageObservation> {
   try {
     const stat = await fs.promises.stat(transcriptPath);
+
     if (stat.size === 0) return { shutdownObserved: false };
     const readSize = Math.min(stat.size, COPILOT_USAGE_TAIL_BYTES);
     const offset = stat.size - readSize;
     const fh = await fs.promises.open(transcriptPath, 'r');
+
     try {
       const buffer = Buffer.alloc(readSize);
       await fh.read(buffer, 0, readSize, offset);
       let lineStart = 0;
+
       if (offset > 0) {
         const partialLineEnd = buffer.indexOf('\n');
+
         if (partialLineEnd < 0) return { shutdownObserved: false };
         lineStart = partialLineEnd + 1;
       }
+
       let latest: CopilotUsageObservation = { shutdownObserved: false };
+
       while (lineStart < buffer.length) {
         const newline = buffer.indexOf('\n', lineStart);
         const lineEnd = newline < 0 ? buffer.length : newline;
         const line = buffer.subarray(lineStart, lineEnd).toString('utf-8');
+
         if (line.includes(`"${COPILOT_SHUTDOWN_EVENT}"`)) {
           try {
             const observed = parseCopilotShutdown(JSON.parse(line));
+
             if (observed.shutdownObserved) {
               latest = { ...observed, shutdownOffset: offset + lineEnd };
             }
@@ -463,15 +513,18 @@ async function readLatestCopilotUsageFromTail(
             // The last line may still be in flight; the bounded retry sees it later.
           }
         }
+
         if (newline < 0) break;
         lineStart = newline + 1;
       }
+
       return latest;
     } finally {
       await fh.close();
     }
   } catch {
     log.debug('dashboard: failed to read Copilot usage tail');
+
     return { shutdownObserved: false };
   }
 }
@@ -483,17 +536,22 @@ async function waitForCopilotShutdownUsage(
 ): Promise<CopilotUsageObservation> {
   const isCurrent = (observed: CopilotUsageObservation): boolean => {
     if (!observed.shutdownObserved) return false;
+
     // Legacy sessions have no run marker; only a newly observed record is safe.
     return !initial.shutdownObserved
       || observed.shutdownOffset !== initial.shutdownOffset
       || !copilotUsageEquals(initial, observed);
   };
+
   if (isCurrent(initial)) return initial;
+
   for (let attempt = 1; attempt < COPILOT_USAGE_MAX_ATTEMPTS; attempt++) {
     await new Promise((resolve) => setTimeout(resolve, COPILOT_USAGE_RETRY_MS));
     const observed = await readLatestCopilotUsageFromTail(transcriptPath);
+
     if (isCurrent(observed)) return observed;
   }
+
   return { shutdownObserved: false };
 }
 
@@ -512,27 +570,34 @@ async function findCopilotRunMarkerAfter(
 ): Promise<CopilotRunMarker | undefined> {
   try {
     const stat = await fs.promises.stat(transcriptPath);
+
     if (startOffset > stat.size || stat.size - startOffset > COPILOT_RUN_SCAN_BYTES) {
       return undefined;
     }
+
     const readSize = stat.size - startOffset;
     const offset = startOffset;
     const fh = await fs.promises.open(transcriptPath, 'r');
+
     try {
       const buffer = Buffer.alloc(readSize);
       await fh.read(buffer, 0, readSize, offset);
       let lineStart = 0;
       let selected: CopilotRunMarker | undefined;
+
       while (lineStart < buffer.length) {
         const newline = buffer.indexOf('\n', lineStart);
         const lineEnd = newline < 0 ? buffer.length : newline;
         const line = buffer.subarray(lineStart, lineEnd).toString('utf-8');
+
         if (line.includes('"session.start"') || line.includes('"session.resume"')) {
           try {
             const record = asRecord(JSON.parse(line));
             const markerTime = record?.timestamp;
+
             const time = typeof markerTime === 'string' || typeof markerTime === 'number'
               ? new Date(markerTime).getTime() : NaN;
+
             if ((record?.type === 'session.start' || record?.type === 'session.resume')
               && typeof record.id === 'string'
               && offset + lineStart >= startOffset
@@ -544,15 +609,18 @@ async function findCopilotRunMarkerAfter(
             // Partial records provide no safe run linkage.
           }
         }
+
         if (newline < 0) break;
         lineStart = newline + 1;
       }
+
       return selected;
     } finally {
       await fh.close();
     }
   } catch {
     log.debug('dashboard: failed to recover Copilot run marker');
+
     return undefined;
   }
 }
@@ -564,29 +632,39 @@ async function readCopilotUsageForRun(
 ): Promise<CopilotUsageObservation> {
   const descendants = new Set<string>([marker.id]);
   let latest: CopilotUsageObservation = { shutdownObserved: false };
+
   try {
     const stat = await fs.promises.stat(transcriptPath);
+
     // Large transcript bodies are private and may be arbitrarily long. Missing
     // totals are safer than rereading an unbounded log on every retry.
     if (stat.size - marker.offset > COPILOT_RUN_SCAN_BYTES) return latest;
+
     const stream = fs.createReadStream(transcriptPath, {
       start: marker.offset, encoding: 'utf-8',
     });
+
     const lines = readline.createInterface({ input: stream, crlfDelay: Infinity });
+
     try {
       for await (const line of lines) {
         let record: Record<string, unknown> | null;
+
         try {
           record = asRecord(JSON.parse(line));
         } catch {
           continue;
         }
+
         if (!record || typeof record.id !== 'string') continue;
+
         if ((record.type === 'session.start' || record.type === 'session.resume')
           && record.id !== marker.id) break;
+
         if (typeof record.parentId === 'string' && descendants.has(record.parentId)) {
           descendants.add(record.id);
         }
+
         if (record.type === COPILOT_SHUTDOWN_EVENT && descendants.has(record.id)) {
           latest = parseCopilotShutdown(record);
         }
@@ -598,6 +676,7 @@ async function readCopilotUsageForRun(
   } catch {
     log.debug('dashboard: failed to read Copilot run lineage');
   }
+
   return latest;
 }
 
@@ -607,11 +686,14 @@ async function waitForCopilotRunUsage(
 ): Promise<CopilotUsageObservation> {
   for (let attempt = 0; attempt < COPILOT_USAGE_MAX_ATTEMPTS; attempt++) {
     const observed = await readCopilotUsageForRun(transcriptPath, marker);
+
     if (observed.tokens) return observed;
+
     if (attempt < COPILOT_USAGE_MAX_ATTEMPTS - 1) {
       await new Promise((resolve) => setTimeout(resolve, COPILOT_USAGE_RETRY_MS));
     }
   }
+
   return { shutdownObserved: false };
 }
 
@@ -621,6 +703,7 @@ export function resolveCopilotUsageTranscript(
   sessionId: string,
 ): string | null {
   if (!COPILOT_SESSION_ID_RE.test(sessionId) || sessionId === '.' || sessionId === '..') return null;
+
   return path.join(
     toolHome(COPILOT_TOOL_ID),
     COPILOT_SESSION_STATE_DIR,
@@ -643,17 +726,21 @@ const CodebuddyIndex = z.object({
 async function readCodebuddyIndexPrompts(transcriptPath: string): Promise<number | null> {
   try {
     const stat = await fs.promises.stat(transcriptPath);
+
     if (stat.size === 0 || stat.size > INTERVENTION_SCAN_MAX_BYTES) return null;
     const index = CodebuddyIndex.safeParse(JSON.parse(await fs.promises.readFile(transcriptPath, 'utf-8')));
+
     return index.success ? index.data.messages.filter((m) => m.role === 'user').length : null;
   } catch (e) {
     log.warn(`dashboard: failed to scan CodeBuddy index: ${(e as Error).message}`);
+
     return null;
   }
 }
 
 /** Cap on CodeBuddy message blobs scanned for friction, to bound Stop-hook IO. */
 const CODEBUDDY_BLOB_MAX_COUNT = 2000;
+
 /** User-rejection marker CodeBuddy writes into a cancelled tool's result.errorMessage. */
 const CODEBUDDY_REJECT_MARKER = 'User rejected this command';
 
@@ -690,6 +777,7 @@ async function scanCodebuddyBlobs(
   messagesDir: string,
 ): Promise<{ toolReject: number; toolError: number }> {
   let names: string[];
+
   try {
     names = await fs.promises.readdir(messagesDir);
   } catch {
@@ -711,9 +799,11 @@ async function scanCodebuddyBlobs(
   for (const blobPath of blobPaths) {
     try {
       const stat = await fs.promises.stat(blobPath);
+
       if (stat.size === 0 || stat.size > INTERVENTION_SCAN_MAX_BYTES) continue;
 
       const raw = await fs.promises.readFile(blobPath, 'utf-8');
+
       const blob = JSON.parse(raw) as {
         role?: unknown;
         extra?: unknown;
@@ -723,21 +813,27 @@ async function scanCodebuddyBlobs(
       if (blob.role === 'assistant') {
         if (typeof blob.extra !== 'string') continue;
         let extra: unknown;
+
         try {
           extra = JSON.parse(blob.extra);
         } catch {
           continue;
         }
+
         const toolStatus = (extra as { toolStatus?: unknown } | null)?.toolStatus;
+
         if (!toolStatus || typeof toolStatus !== 'object') continue;
+
         for (const [callId, entry] of Object.entries(
           toolStatus as Record<string, unknown>,
         )) {
           if (!entry || typeof entry !== 'object') continue;
+
           const e = entry as {
             status?: unknown;
             result?: { errorMessage?: unknown } | null;
           };
+
           if (
             e.status === 'cancelled' &&
             typeof e.result?.errorMessage === 'string' &&
@@ -749,20 +845,26 @@ async function scanCodebuddyBlobs(
       } else if (blob.role === 'tool') {
         if (typeof blob.message !== 'string') continue;
         let message: unknown;
+
         try {
           message = JSON.parse(blob.message);
         } catch {
           continue;
         }
+
         const content = (message as { content?: unknown } | null)?.content;
+
         if (!Array.isArray(content)) continue;
+
         for (const item of content) {
           if (!item || typeof item !== 'object') continue;
+
           const i = item as {
             type?: unknown;
             toolCallId?: unknown;
             isError?: unknown;
           };
+
           if (
             i.type === 'tool-result' &&
             i.isError === true &&
@@ -793,7 +895,9 @@ async function scanCodebuddyIndex(transcriptPath: string): Promise<TranscriptSca
     readCodebuddyIndexPrompts(transcriptPath),
     scanCodebuddyBlobs(path.join(path.dirname(transcriptPath), 'messages')),
   ]);
+
   if (prompts === null && friction.toolReject + friction.toolError === 0) return null;
+
   return { interrupt: 0, ...friction, prompts: prompts ?? 0 };
 }
 
@@ -804,6 +908,7 @@ export async function countInterventions(
   transcriptPath: string,
 ): Promise<{ interrupt: number; toolReject: number; toolError: number }> {
   const { interrupt, toolReject, toolError } = await scanTranscriptStop(transcriptPath);
+
   return { interrupt, toolReject, toolError };
 }
 
@@ -816,14 +921,18 @@ const UNSPACED_SCRIPT_RE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana
  */
 function wordBoundaryPattern(keyword: string): RegExp {
   const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
   return new RegExp(`(?<![\\p{L}\\p{N}_])${escaped}(?![\\p{L}\\p{N}_])`, 'u');
 }
 
 /** True when `lower` contains `keyword`, whole-word for spaced scripts, substring otherwise. */
 function containsKeyword(lower: string, keyword: string): boolean {
   const k = keyword.trim().normalize('NFC').toLowerCase();
+
   if (!k) return false;
+
   if (UNSPACED_SCRIPT_RE.test(k)) return lower.includes(k);
+
   return wordBoundaryPattern(k).test(lower);
 }
 
@@ -834,6 +943,7 @@ function containsKeyword(lower: string, keyword: string): boolean {
 function isCorrectionPrompt(text?: string, extraKeywords: readonly string[] = []): boolean {
   if (!text) return false;
   const lower = text.normalize('NFC').toLowerCase();
+
   return [...CORRECTION_KEYWORDS, ...extraKeywords].some((k) => containsKeyword(lower, k));
 }
 
@@ -883,18 +993,24 @@ function codexReplyText(prompt: string): string {
   // JSON.parse skips the whitespace around the array, so the pattern needs no
   // whitespace quantifiers inside the tags: those backtrack on long runs.
   const match = /^\s*<send_user_message_question_reply>([\s\S]*)<\/send_user_message_question_reply>\s*$/.exec(prompt);
+
   if (!match) return prompt;
+
   try {
     const replies: unknown = JSON.parse(match[1]);
+
     if (!Array.isArray(replies) || replies.length === 0) return prompt;
     const items: unknown[] = replies;
     const answers: string[] = [];
+
     for (const reply of items) {
       if (!reply || typeof reply !== 'object' || !('answer' in reply) || typeof reply.answer !== 'string') return prompt;
       answers.push(reply.answer);
     }
+
     // A reply with no answer text keeps the prompt, so the turn is still counted.
     const text = answers.join('\n');
+
     return text.trim() ? text : prompt;
   } catch {
     return prompt;
@@ -914,10 +1030,12 @@ export async function parseHookEvent(
   if (!raw.trim()) return null;
 
   let hookData: Record<string, unknown>;
+
   try {
     hookData = JSON.parse(raw);
   } catch {
     log.error('dashboard-collector: failed to parse STDIN JSON');
+
     return null;
   }
 
@@ -925,23 +1043,29 @@ export async function parseHookEvent(
   const hookEventName = typeof hookData.hook_event_name === 'string'
     ? hookData.hook_event_name
     : '';
+
   const eventType = mapEventType(hookEventName);
+
   if (!eventType) {
     log.debug(`dashboard-collector: unknown hook event: ${hookEventName}`);
+
     return null;
   }
 
   const isCopilot = tool.toLowerCase() === COPILOT_TOOL_ID;
   const derivedSessionId = deriveDispatchSessionId(hookData, tool);
+
   // Copilot IDs are persisted, so reject path-like IDs even when supplied directly.
   const sessionId = isCopilot && !COPILOT_SESSION_ID_RE.test(derivedSessionId)
     ? `pid-${process.ppid ?? process.pid}`
     : derivedSessionId;
+
   const cwd = isCopilot ? undefined : resolveHookCwd(hookData);
 
   const providerTime = isCopilot && (typeof hookData.timestamp === 'string'
     || typeof hookData.timestamp === 'number')
     ? new Date(hookData.timestamp).getTime() : NaN;
+
   const event: DashboardEvent = {
     type: eventType,
     timestamp: Number.isFinite(providerTime)
@@ -959,6 +1083,7 @@ export async function parseHookEvent(
   // Resolve AI tool PID for liveness monitoring on session start
   if (eventType === 'session_start') {
     const ppid = process.ppid ?? process.pid;
+
     if (ppid > 1) {
       try {
         event.monitorPid = resolveMonitorPid(ppid);
@@ -977,6 +1102,7 @@ export async function parseHookEvent(
   if (eventType === 'prompt_submit' && typeof hookData.prompt === 'string') {
     const prompt = isCodexTool(tool) ? codexReplyText(hookData.prompt) : hookData.prompt;
     const human = stripInjectedPrompt(prompt);
+
     if (!human) return null;
     // Decide "correction" here, over the full prompt, because only the hook knows
     // which team (and so which extra keywords) the prompt belongs to. The
@@ -984,6 +1110,7 @@ export async function parseHookEvent(
     // dropping the original prompt so keywords beyond the persisted summary are
     // still detected.
     event.correction = isCorrectionPrompt(human, options?.correctionKeywords);
+
     // Persist only a redacted, capped summary. Redact before truncating so a
     // secret that crosses the 200-character boundary cannot be partially leaked.
     // Copilot prompts remain entirely absent from telemetry, matching its
@@ -1005,15 +1132,19 @@ export async function parseHookEvent(
   const stopTranscript = eventType === 'stop' && !isCopilot
     && typeof hookData.transcript_path === 'string' && hookData.transcript_path
     ? hookData.transcript_path : undefined;
+
   if (stopTranscript) {
     event.transcriptPath = stopTranscript;
     const output = await readLastAssistantOutput(stopTranscript);
+
     if (output) {
       event.stoppedOutput = output;
     }
+
     // Full-transcript snapshot of interrupt/tool_reject counts + human prompt
     // count (idempotent, sourced from the non-compactable transcript).
     const scan = await scanTranscriptStop(stopTranscript);
+
     if (scan.interrupt > 0 || scan.toolReject > 0 || scan.toolError > 0) {
       event.interventions = {
         interrupt: scan.interrupt,
@@ -1021,6 +1152,7 @@ export async function parseHookEvent(
         toolError: scan.toolError,
       };
     }
+
     if (scan.prompts > 0) {
       event.prompts = scan.prompts;
     }
@@ -1028,16 +1160,21 @@ export async function parseHookEvent(
 
   // Token usage, in the format the tool's TOOLS entry names.
   const tokenSource = tokenSourceOf(tool);
+
   if (eventType === 'stop' && options?.readUsage !== false && isTokenFormatId(tokenSource)) {
     const reading = await readTokenUsage(tokenSource, { transcriptPath: stopTranscript, sessionId });
+
     if (totalTokens(reading.tokens) > 0) {
       event.tokens = reading.tokens;
+
       if (reading.scope) event.tokenScope = reading.scope;
     }
+
     // A session total that names no model (agy, Muse's rollup) is logged as one unpriced request, updated at each Stop.
     const requests = !reading.requests.length && reading.scope === 'session' && totalTokens(reading.tokens) > 0
       ? [{ key: 'session', timestamp: event.timestamp, model: '', tokens: reading.tokens, speed: 'standard' as const }]
       : reading.requests;
+
     await recordTokenRequests(event, requests, stopTranscript ?? `${tool}:${sessionId}`, options);
   }
 
@@ -1046,41 +1183,54 @@ export async function parseHookEvent(
   // appeared in a previous start event for this session.
   if (eventType === 'session_start' && isCopilot) {
     const transcriptPath = resolveCopilotUsageTranscript(sessionId);
+
     if (transcriptPath) {
       try {
         let boundary = (await fs.promises.stat(transcriptPath)).size;
+
         if (boundary > 0) {
           const tailSize = Math.min(boundary, COPILOT_USAGE_TAIL_BYTES);
           const tail = Buffer.alloc(tailSize);
           const fh = await fs.promises.open(transcriptPath, 'r');
+
           try {
             await fh.read(tail, 0, tailSize, boundary - tailSize);
           } finally {
             await fh.close();
           }
+
           if (tail[tailSize - 1] !== 10) {
             const newline = tail.lastIndexOf(10);
+
             if (newline >= 0) boundary = boundary - tailSize + newline + 1;
             else if (tailSize === boundary) boundary = 0;
           }
         }
+
         event.copilotRunStartOffset = boundary;
+
         const candidate = await findCopilotRunMarkerAfter(
           transcriptPath, Math.max(0, boundary - COPILOT_USAGE_TAIL_BYTES),
           NaN, NaN, false,
         );
+
         if (candidate) {
           const shutdown = await readLatestCopilotUsageFromTail(transcriptPath);
           const history = await readEventsRaw(getEventsPath());
+
           const previousStarts = history.filter((entry) => entry.tool === COPILOT_TOOL_ID
             && entry.sessionId === sessionId && entry.type === 'session_start');
+
           const reused = previousStarts.some((entry) => entry.copilotRunMarkerId === candidate.id);
+
           const unclaimedPrior = previousStarts.some(
             (entry) => typeof entry.copilotRunMarkerId !== 'string',
           );
+
           const closed = shutdown.shutdownObserved
             && typeof shutdown.shutdownOffset === 'number'
             && shutdown.shutdownOffset > candidate.offset;
+
           if (!reused && !unclaimedPrior && !closed) {
             event.copilotRunMarkerId = candidate.id;
             event.copilotRunMarkerOffset = candidate.offset;
@@ -1097,42 +1247,53 @@ export async function parseHookEvent(
   // final shutdown counters, and never persist paths or transcript content.
   if (eventType === 'session_end' && tokenSource === 'copilot-shutdown' && options?.readUsage !== false) {
     const transcriptPath = resolveCopilotUsageTranscript(sessionId);
+
     if (transcriptPath) {
       const history = await readEventsRaw(getEventsPath());
       const endTime = Date.parse(event.timestamp);
+
       const sessionHistory = history.filter((entry) => entry.tool === COPILOT_TOOL_ID
         && entry.sessionId === sessionId);
+
       // Copilot may omit the provider timestamp. A delayed End handler then has
       // only its receipt time, so two unmatched Starts make its run ambiguous.
       const starts = sessionHistory.filter((entry) => entry.type === 'session_start');
       let lastEnd = -1;
+
       for (let index = 0; index < sessionHistory.length; index++) {
         if (sessionHistory[index].type === 'session_end') lastEnd = index;
       }
+
       const pendingStarts = sessionHistory.slice(lastEnd + 1)
         .filter((entry) => entry.type === 'session_start');
+
       const start = Number.isFinite(providerTime)
         ? starts.toReversed().find((entry) => Date.parse(entry.timestamp) <= endTime)
         : starts.length === 1 ? starts[0]
           : pendingStarts.length === 1 ? pendingStarts[0] : undefined;
+
       let usage: CopilotUsageObservation = { shutdownObserved: false };
       const startTime = start ? Date.parse(start.timestamp) : NaN;
       const boundary = start?.copilotRunStartOffset;
+
       const recovered = Number.isFinite(providerTime)
         && typeof boundary === 'number' && Number.isFinite(boundary)
         ? await findCopilotRunMarkerAfter(
           transcriptPath, boundary, startTime, endTime, Number.isFinite(providerTime),
         )
         : undefined;
+
       const stored = typeof start?.copilotRunMarkerId === 'string'
         && typeof start.copilotRunMarkerOffset === 'number'
         && Number.isFinite(start.copilotRunMarkerOffset)
         ? { id: start.copilotRunMarkerId, offset: start.copilotRunMarkerOffset }
         : undefined;
+
       // Without a provider End time, a later marker may belong to the next run
       // whose Start handler has not persisted yet. Only the marker claimed at
       // this Start can safely supply totals.
       const marker = Number.isFinite(providerTime) ? recovered ?? stored : stored;
+
       if (marker) {
         usage = await waitForCopilotRunUsage(transcriptPath, marker);
       } else if ((start && boundary === undefined && !stored)
@@ -1142,10 +1303,12 @@ export async function parseHookEvent(
         const initial = await readLatestCopilotUsageFromTail(transcriptPath);
         usage = await waitForCopilotShutdownUsage(transcriptPath, initial);
       }
+
       if (usage.tokens) {
         event.tokens = usage.tokens;
         event.tokenScope = 'session';
       }
+
       // Request ids hash the session id, so the request log keeps no Copilot path.
       await recordTokenRequests(event, usage.requests ?? [], `${COPILOT_TOOL_ID}:${sessionId}`, options);
     }
@@ -1168,8 +1331,10 @@ function getRequestsPath(): string {
 /** A request log line, or undefined for a partial or malformed one. */
 function parseRequestLine(line: string): LocalRequestRecord | undefined {
   if (!line.trim()) return undefined;
+
   try {
     const record = LocalRequestRecordSchema.safeParse(JSON.parse(line));
+
     return record.success ? record.data : undefined;
   } catch {
     return undefined;
@@ -1179,22 +1344,28 @@ function parseRequestLine(line: string): LocalRequestRecord | undefined {
 /** The local request log, by request id; empty before the first request. */
 export async function readLocalRequestRecords(): Promise<Map<string, LocalRequestRecord>> {
   const records = new Map<string, LocalRequestRecord>();
+
   try {
     const content = await fs.promises.readFile(getRequestsPath(), 'utf-8');
+
     for (const line of content.split('\n')) {
       const record = parseRequestLine(line);
+
       if (record) records.set(record.id, record);
     }
   } catch {
     // No local request history yet.
   }
+
   return records;
 }
 
 function aggregateRequestDaily(records: readonly PricedRequestRecord[]): Record<string, RequestCostMetrics> {
   const daily: Record<string, RequestCostMetrics> = {};
+
   for (const record of records) {
     const date = record.timestamp.slice(0, 10);
+
     const bucket = daily[date] ?? {
       pricedRequests: 0,
       costMicros: 0,
@@ -1202,6 +1373,7 @@ function aggregateRequestDaily(records: readonly PricedRequestRecord[]): Record<
       cacheEligibleInputTokens: 0,
       priceVersion: record.priceVersion,
     };
+
     bucket.pricedRequests += 1;
     bucket.costMicros += record.costMicros;
     bucket.cacheReadTokens += record.cacheReadTokens;
@@ -1209,6 +1381,7 @@ function aggregateRequestDaily(records: readonly PricedRequestRecord[]): Record<
     bucket.priceVersion = record.priceVersion;
     daily[date] = bucket;
   }
+
   return daily;
 }
 
@@ -1221,8 +1394,10 @@ export async function reconcileRequestLog(
   const lockPath = `${requestsPath}.lock`;
   const cutoff = now.getTime() - REQUEST_LOG_RETENTION_DAYS * 86_400_000;
   let lock: fs.promises.FileHandle | undefined;
+
   try {
     await ensureDir(path.dirname(requestsPath));
+
     for (let attempt = 0; attempt < 10 && !lock; attempt++) {
       try {
         lock = await fs.promises.open(lockPath, 'wx', 0o600);
@@ -1231,27 +1406,35 @@ export async function reconcileRequestLog(
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
     }
+
     if (!lock) throw new Error('request log is busy');
     let existing = '';
+
     try {
       existing = await fs.promises.readFile(requestsPath, 'utf-8');
     } catch {
       // First write.
     }
+
     const records = new Map<string, LocalRequestRecord>();
+
     for (const line of existing.split('\n')) {
       const record = parseRequestLine(line);
+
       if (record && Date.parse(record.timestamp) >= cutoff) records.set(record.id, record);
     }
+
     for (const record of incoming) {
       if (Date.parse(record.timestamp) >= cutoff) {
         records.set(record.id, record);
       }
     }
+
     const content = [...records.values()]
       .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp))
       .map((record) => JSON.stringify(record))
       .join('\n');
+
     const tempPath = `${requestsPath}.${process.pid}.${randomUUID()}.tmp`;
     await fs.promises.writeFile(tempPath, content ? `${content}\n` : '', { encoding: 'utf-8', mode: 0o600 });
     await fs.promises.rename(tempPath, requestsPath);
@@ -1259,6 +1442,7 @@ export async function reconcileRequestLog(
     log.warn(`dashboard: failed to update local request log: ${(e as Error).message}`);
   } finally {
     await lock?.close().catch(() => undefined);
+
     if (lock) await fs.promises.unlink(lockPath).catch(() => undefined);
   }
 }
@@ -1275,7 +1459,9 @@ export async function reconcileRequestLog(
 export async function dataHomeKey(dataHome: string): Promise<string> {
   const real = await fs.promises.realpath(dataHome).catch(() => !path.isAbsolute(dataHome) ? dataHome
     : fs.promises.realpath(path.dirname(dataHome)).then((p) => path.join(p, path.basename(dataHome)), () => dataHome));
+
   const norm = /^(?:[A-Za-z]:[\\/]|\\\\)/.test(real) ? real.replace(/\\/g, '/').toLowerCase() : real;
+
   return createHash('sha256').update(norm.replace(/\/+$/, '')).digest('hex').slice(0, 16);
 }
 
@@ -1290,6 +1476,7 @@ export async function dataHomeKey(dataHome: string): Promise<string> {
 
 /** A hook append waits at most ~250 ms for the events lock, inside its foreground budget. */
 const EVENTS_APPEND_LOCK_WAIT = { attempts: 10, delayMs: 25 };
+
 /** A compaction waits up to ~5 s for a peer's compaction to finish. */
 const EVENTS_REWRITE_LOCK_WAIT = { attempts: 100, delayMs: 50 };
 
@@ -1305,6 +1492,7 @@ async function withEventsLock(
   fn: () => Promise<void>,
 ): Promise<boolean> {
   const lockPath = `${eventsPath}.lock`;
+
   for (let i = 0; i < wait.attempts; i++) {
     if (await acquireLock(lockPath)) {
       try {
@@ -1313,10 +1501,13 @@ async function withEventsLock(
       } finally {
         await releaseLock(lockPath);
       }
+
       return true;
     }
+
     await new Promise((r) => setTimeout(r, wait.delayMs));
   }
+
   return false;
 }
 
@@ -1340,11 +1531,14 @@ async function foldPendingEvents(eventsPath: string): Promise<void> {
   const prefix = eventsPendingPrefix(eventsPath);
   const names = await fs.promises.readdir(dir).catch(() => []);
   const pending: Array<{ pendingPath: string; content: string; timestamp: number }> = [];
+
   for (const name of names) {
     if (!name.startsWith(prefix) || !name.endsWith('.jsonl')) continue;
     const pendingPath = path.join(dir, name);
+
     try {
       const content = await fs.promises.readFile(pendingPath, 'utf-8');
+
       if (!content.endsWith('\n')) continue;
       const timestamp = Date.parse(pendingTimestampOf(content));
       pending.push({ pendingPath, content, timestamp: Number.isNaN(timestamp) ? 0 : timestamp });
@@ -1352,18 +1546,23 @@ async function foldPendingEvents(eventsPath: string): Promise<void> {
       log.debug(`dashboard: could not fold ${pendingPath} into ${eventsPath}: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
+
   pending.sort((a, b) => a.timestamp - b.timestamp);
   let folded: Set<string> | undefined;
+
   for (const { pendingPath, content } of pending) {
     try {
       const id = pendingIdOf(content);
       folded ??= new Set(
         (await fs.promises.readFile(eventsPath, 'utf-8').catch(() => '')).split('\n').map(pendingIdOf).filter((i) => i !== undefined),
       );
+
       if (id === undefined || !folded.has(id)) {
         await fs.promises.appendFile(eventsPath, content, 'utf-8');
+
         if (id !== undefined) folded.add(id);
       }
+
       await fs.promises.rm(pendingPath, { force: true });
     } catch (e) {
       log.debug(`dashboard: could not fold ${pendingPath} into ${eventsPath}: ${e instanceof Error ? e.message : String(e)}`);
@@ -1375,6 +1574,7 @@ async function foldPendingEvents(eventsPath: string): Promise<void> {
 function pendingTimestampOf(content: string): string {
   try {
     const { timestamp } = JSON.parse(content) as { timestamp?: unknown };
+
     return typeof timestamp === 'string' ? timestamp : '';
   } catch {
     return '';
@@ -1384,8 +1584,10 @@ function pendingTimestampOf(content: string): string {
 /** The id a side file gave its line, if the line has one. */
 function pendingIdOf(line: string): string | undefined {
   if (!line.includes('"pendingId"')) return undefined;
+
   try {
     const { pendingId } = JSON.parse(line) as { pendingId?: unknown };
+
     return typeof pendingId === 'string' ? pendingId : undefined;
   } catch {
     return undefined;
@@ -1397,6 +1599,7 @@ async function removeOrphanTemps(target: string): Promise<void> {
   const dir = path.dirname(target);
   const prefix = `${path.basename(target)}.`;
   const names = await fs.promises.readdir(dir).catch(() => []);
+
   for (const name of names) {
     if (!name.startsWith(prefix) || !/^\d+\.[0-9a-f]{12}\.tmp$/.test(name.slice(prefix.length))) continue;
     await fs.promises.rm(path.join(dir, name), { force: true }).catch(() => undefined);
@@ -1412,16 +1615,21 @@ export async function appendEvent(event: DashboardEvent | SessionOutcomeEvent): 
     const eventsPath = getEventsPath();
     await ensureDir(path.dirname(eventsPath));
     const line = JSON.stringify(event) + '\n';
+
     const detail = 'toolName' in event && event.toolName
       ? ` [tool=${event.toolName}]`
       : 'promptSummary' in event && event.promptSummary
         ? ` [prompt=${event.promptSummary}]`
         : '';
+
     const summary = `dashboard: recorded ${event.type} for session ${event.sessionId.slice(0, 16)}${detail}`;
+
     if (await withEventsLock(eventsPath, EVENTS_APPEND_LOCK_WAIT, () => fs.promises.appendFile(eventsPath, line, 'utf-8'))) {
       log.debug(summary);
+
       return;
     }
+
     // The lock is still held: record the event in a side file of its own for
     // the next lock holder to fold in, rather than race a rewrite (#804).
     // It holds what the events file holds, so it gets no wider mode than that
@@ -1463,18 +1671,24 @@ async function readLogRaw(filePath: string): Promise<{ events: DashboardEvent[];
   const events: DashboardEvent[] = [];
   const outcomes: Array<{ timestamp: string; line: string }> = [];
   const content = await fs.promises.readFile(filePath, 'utf-8').catch(() => '');
+
   for (const line of content.split('\n')) {
     const trimmed = line.trim();
+
     if (!trimmed) continue;
+
     try {
       const parsed = JSON.parse(trimmed) as DashboardEvent | SessionOutcomeEvent;
+
       if (!parsed.type || !parsed.sessionId || !parsed.timestamp) continue;
+
       if (parsed.type === 'session_outcome') outcomes.push({ timestamp: parsed.timestamp, line: trimmed });
       else events.push(parsed);
     } catch {
       // Skip corrupted lines
     }
   }
+
   return { events, outcomes };
 }
 
@@ -1485,15 +1699,19 @@ export const SESSION_OUTCOME_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 export async function readSessionOutcomes(eventsPath?: string): Promise<SessionOutcomeEvent[]> {
   const content = await fs.promises.readFile(eventsPath ?? getEventsPath(), 'utf-8').catch(() => '');
   const outcomes: SessionOutcomeEvent[] = [];
+
   for (const line of content.split('\n')) {
     if (!line.includes('"session_outcome"')) continue;
+
     try {
       const parsed = SessionOutcomeEventSchema.safeParse(JSON.parse(line));
+
       if (parsed.success) outcomes.push(parsed.data);
     } catch {
       // Skip corrupted lines
     }
   }
+
   return outcomes;
 }
 
@@ -1527,8 +1745,11 @@ function eventPayloadScore(e: DashboardEvent): number {
 /** A specific host wins over the generic `claude` default (index.ts hook --tool). */
 function preferTool(a: string, b: string): string {
   if (a === b) return a;
+
   if (a === 'claude') return b;
+
   if (b === 'claude') return a;
+
   return a; // both specific (shouldn't occur under the bug): keep earliest deterministically
 }
 
@@ -1543,21 +1764,26 @@ export function dedupeEvents(events: DashboardEvent[]): DashboardEvent[] {
   const sorted = [...events].sort((x, y) => Date.parse(x.timestamp) - Date.parse(y.timestamp));
   const result: DashboardEvent[] = [];
   const lastByKey = new Map<string, number>(); // (sessionId\0signature) -> index in result
+
   for (const e of sorted) {
     const key = `${e.sessionId}\0${eventSignature(e)}`;
     const idx = lastByKey.get(key);
+
     if (idx !== undefined) {
       const prev = result[idx];
       const gap = Math.abs(Date.parse(e.timestamp) - Date.parse(prev.timestamp));
+
       if (prev.tool !== e.tool && gap <= CROSS_TOOL_DEDUP_WINDOW_MS) {
         const carrier = eventPayloadScore(e) > eventPayloadScore(prev) ? e : prev; // tie -> prev (earlier)
         result[idx] = { ...carrier, tool: preferTool(prev.tool, e.tool) };
         continue; // collapsed; do not push
       }
     }
+
     result.push(e);
     lastByKey.set(key, result.length - 1);
   }
+
   return result;
 }
 
@@ -1569,8 +1795,10 @@ export function dedupeEvents(events: DashboardEvent[]): DashboardEvent[] {
  */
 export async function readEvents(eventsPath?: string): Promise<DashboardEvent[]> {
   const filePath = eventsPath ?? getEventsPath();
+
   return dedupeEvents(await readEventsRaw(filePath)).map((event) => {
     delete (event as DashboardEvent & { pendingId?: unknown }).pendingId;
+
     return event;
   });
 }
@@ -1604,6 +1832,7 @@ export function rebuildSessions(events: DashboardEvent[], outcomes: readonly Ses
   const keys = repoKeys(events);
   const allKeys = new Set(keys.values());
   const delivered = new Map<string, WorkOutcome[]>();
+
   for (const outcome of outcomes) delivered.set(outcome.sessionId, uniqueOutcomes([...delivered.get(outcome.sessionId) ?? [], ...outcome.outcomes]));
 
   for (const event of events) {
@@ -1636,37 +1865,45 @@ export function rebuildSessions(events: DashboardEvent[], outcomes: readonly Ses
 
     // Update common fields
     session.lastActivity = event.timestamp;
+
     if (event.cwd) session.cwd = event.cwd;
 
     switch (event.type) {
       case 'session_start':
         session.status = 'running';
         session.startedAt = event.timestamp;
+
         if (event.monitorPid) session.monitorPid = event.monitorPid;
         break;
       case 'tool_use':
         session.status = 'running';
+
         if (event.toolName) session.lastTool = event.toolName;
         break;
       case 'prompt_submit':
         session.status = 'running';
+
         // Capture the first prompt as summary
         if (!session.promptSummary && event.promptSummary) {
           session.promptSummary = event.promptSummary;
         }
+
         // Collect all prompts
         if (event.promptSummary) {
           session.prompts.push(event.promptSummary);
         }
+
         break;
       case 'stop':
         // Stop = LLM finished responding, but the user is still in the session.
         // Mark as waiting_for_input instead of stopped. The session will return
         // to 'running' when the next prompt_submit or tool_use arrives.
         session.status = 'waiting_for_input';
+
         if (event.stoppedOutput) {
           session.stoppedOutput = event.stoppedOutput;
         }
+
         break;
       case 'session_end':
         session.status = 'stopped';
@@ -1683,8 +1920,10 @@ export function rebuildSessions(events: DashboardEvent[], outcomes: readonly Ses
 
   // Fill per-session metrics (single source of truth: aggregate fold)
   const metricsMap = aggregateSessionMetrics(events);
+
   for (const session of sessions.values()) {
     const m = metricsMap.get(session.sessionId);
+
     if (m) {
       session.interventions = { interrupt: m.interrupt, toolReject: m.toolReject, correction: m.correction };
       session.interventionCount = m.interrupt + m.toolReject + m.correction;
@@ -1695,6 +1934,7 @@ export function rebuildSessions(events: DashboardEvent[], outcomes: readonly Ses
 
   // Apply timeouts
   const result: DashboardSession[] = [];
+
   for (const session of sessions.values()) {
     const lastActivityMs = new Date(session.lastActivity).getTime();
     const elapsed = now - lastActivityMs;
@@ -1704,7 +1944,9 @@ export function rebuildSessions(events: DashboardEvent[], outcomes: readonly Ses
       const stoppedAtMs = session.stoppedAt
         ? new Date(session.stoppedAt).getTime()
         : lastActivityMs;
+
       const stoppedElapsed = now - stoppedAtMs;
+
       if (stoppedElapsed > DASHBOARD_STOPPED_DISPLAY_MS) continue;
       result.push(session);
       continue;
@@ -1724,6 +1966,7 @@ export function rebuildSessions(events: DashboardEvent[], outcomes: readonly Ses
   // Sort: active sessions first, stopped last; within each group by total runtime descending
   result.sort((a, b) => {
     if (a.status === 'stopped' && b.status !== 'stopped') return 1;
+
     if (a.status !== 'stopped' && b.status === 'stopped') return -1;
     // Sort by total runtime descending (longest-running first) for stable card positions
     const sortNow = Date.now();
@@ -1731,8 +1974,10 @@ export function rebuildSessions(events: DashboardEvent[], outcomes: readonly Ses
     const bEnd = b.stoppedAt ? new Date(b.stoppedAt).getTime() : sortNow;
     const aRuntime = aEnd - new Date(a.startedAt).getTime();
     const bRuntime = bEnd - new Date(b.startedAt).getTime();
+
     return bRuntime - aRuntime;
   });
+
   return result;
 }
 
@@ -1754,6 +1999,7 @@ function setLatestTokenSnapshot(
   const current = snapshots.get(key);
   const candidateTime = Date.parse(event.timestamp);
   const currentTime = current ? Date.parse(current.timestamp) : Number.NaN;
+
   if (!current || !Number.isFinite(candidateTime) || !Number.isFinite(currentTime)
     || candidateTime >= currentTime) {
     snapshots.set(key, { timestamp: event.timestamp, tokens: event.tokens });
@@ -1767,13 +2013,17 @@ function setLatestTokenSnapshot(
  */
 export function memberEvents(events: DashboardEvent[]): DashboardEvent[] {
   const launchedFrom = new Map<string, number>();
+
   for (const event of events) {
     const at = Date.parse(event.timestamp);
+
     if (event.launchedBy && Number.isFinite(at)) launchedFrom.set(event.sessionId, Math.min(at, launchedFrom.get(event.sessionId) ?? at));
   }
+
   return events.filter((event) => {
     if (event.launchedBy) return false;
     const from = launchedFrom.get(event.sessionId);
+
     return from === undefined || Date.parse(event.timestamp) < from;
   });
 }
@@ -1784,7 +2034,9 @@ export function memberEvents(events: DashboardEvent[]): DashboardEvent[] {
  */
 export function sessionRuns(events: DashboardEvent[]): Map<string, SessionRun> {
   const runs = new Map<string, SessionRun>();
+
   for (const { sessionId, runMode, launchedBy } of events) if (runMode) runs.set(sessionId, { runMode, ...(launchedBy ? { launchedBy } : {}) });
+
   return runs;
 }
 
@@ -1830,32 +2082,40 @@ export function aggregateSessionMetrics(
 
   for (const event of events) {
     let m = map.get(event.sessionId);
+
     if (!m) {
       m = { interrupt: 0, toolReject: 0, correction: 0, prompts: 0, tokens: emptyTokenUsage() };
       map.set(event.sessionId, m);
     }
+
     if (typeof event.transcriptPath === 'string') {
       const since = transcriptSince.get(event.sessionId) ?? new Map<string, string>();
       const first = since.get(event.transcriptPath);
+
       if (first === undefined || Date.parse(event.timestamp) < Date.parse(first)) since.set(event.transcriptPath, event.timestamp);
       transcriptSince.set(event.sessionId, since);
       lastTranscript.set(event.sessionId, event.transcriptPath);
     }
+
     if (event.tokenScope === 'transcript' || (isCodexTool(event.tool) && typeof event.transcriptPath === 'string')) {
       rolloutSessions.add(event.sessionId);
     }
+
     const sessionTimeline = timeline.get(event.sessionId) ?? [];
     const rolloutOf = event.transcriptPath ?? lastTranscript.get(event.sessionId);
     sessionTimeline.push({ at: Date.parse(event.timestamp), transcript: rolloutOf });
     timeline.set(event.sessionId, sessionTimeline);
+
     if (event.status === 'error' && rolloutOf !== undefined) {
       transcriptErrors.set(event.sessionId, (transcriptErrors.get(event.sessionId) ?? new Set<string>()).add(rolloutOf));
     }
+
     if (event.type === 'prompt_submit' && rolloutOf !== undefined) {
       const submits = transcriptSubmits.get(event.sessionId) ?? new Map<string, number>();
       submits.set(rolloutOf, (submits.get(rolloutOf) ?? 0) + 1);
       transcriptSubmits.set(event.sessionId, submits);
     }
+
     if (event.type === 'stop' && typeof event.transcriptPath === 'string') {
       const rollout = event.transcriptPath;
       // The latest Stop by its timestamp, as for tokens: background Stop
@@ -1864,20 +2124,25 @@ export function aggregateSessionMetrics(
       const latest = stopAt.get(event.sessionId) ?? new Map<string, number>();
       const seen = latest.get(rollout);
       const newest = seen === undefined || !Number.isFinite(at) || !Number.isFinite(seen) || at >= seen;
+
       if (newest) {
         latest.set(rollout, at);
         stopAt.set(event.sessionId, latest);
       }
+
       const record = <T>(maps: Map<string, Map<string, T>>, value: T) => {
         if (!newest) return;
         const perRollout = maps.get(event.sessionId) ?? new Map<string, T>();
         perRollout.set(rollout, value);
         maps.set(event.sessionId, perRollout);
       };
+
       if (typeof event.prompts === 'number') record(transcriptPrompts, event.prompts);
+
       if (event.interventions) {
         record(transcriptInterventions, { interrupt: event.interventions.interrupt, toolReject: event.interventions.toolReject });
       }
+
       // An older Stop records its cost as one request, on its own day.
       if (event.requestDaily) record(transcriptRequests, event.requestDaily);
       else if (event.requestMetrics) record(transcriptRequests, { [event.timestamp.slice(0, 10)]: event.requestMetrics });
@@ -1888,26 +2153,32 @@ export function aggregateSessionMetrics(
         m.interrupt = event.interventions.interrupt;
         m.toolReject = event.interventions.toolReject;
       }
+
       if (typeof event.prompts === 'number') {
         stopPrompts.set(event.sessionId, event.prompts);
       }
+
       lastStopAt.set(event.sessionId, new Date(event.timestamp).getTime());
     } else if (event.type === 'prompt_submit') {
       submitCount.set(event.sessionId, (submitCount.get(event.sessionId) ?? 0) + 1);
       const priorStopAt = lastStopAt.get(event.sessionId);
+
       if (priorStopAt !== undefined) {
         const gap = new Date(event.timestamp).getTime() - priorStopAt;
         // Legacy events (no `correction` flag) fall back to the built-in list.
         const isCorrection = event.correction ?? isCorrectionPrompt(event.promptSummary);
+
         if (gap >= 0 && gap <= CORRECTION_WINDOW_MS && isCorrection) {
           m.correction++;
           const rollout = event.transcriptPath ?? lastTranscript.get(event.sessionId);
+
           if (rollout !== undefined) {
             const corrections = transcriptCorrections.get(event.sessionId) ?? new Map<string, number>();
             corrections.set(rollout, (corrections.get(rollout) ?? 0) + 1);
             transcriptCorrections.set(event.sessionId, corrections);
           }
         }
+
         // Each stop is consumed once — a later prompt is a new task, not a correction.
         lastStopAt.delete(event.sessionId);
       }
@@ -1918,10 +2189,12 @@ export function aggregateSessionMetrics(
         setLatestTokenSnapshot(sessionTokens, event.sessionId, event);
       } else if (event.tokenScope === 'transcript' && event.transcriptPath) {
         let segments = transcriptTokens.get(event.sessionId);
+
         if (!segments) {
           segments = new Map<string, TimedTokenSnapshot>();
           transcriptTokens.set(event.sessionId, segments);
         }
+
         // A rollout's counter is cumulative within that file. Repeated Stop scans
         // replace the same segment; a resumed rollout has a distinct path and adds
         // one new segment to the logical session total.
@@ -1939,29 +2212,36 @@ export function aggregateSessionMetrics(
   for (const [sid, m] of map) {
     const sessionSnapshot = sessionTokens.get(sid);
     const segments = transcriptTokens.get(sid);
+
     if (sessionSnapshot) {
       // The newer thread-level counter already spans rollout files.
       m.tokens = { ...sessionSnapshot.tokens };
       m.tokensSpanRollouts = true;
     } else if (segments && segments.size > 0) {
       let total = emptyTokenUsage();
+
       for (const segment of segments.values()) total = addTokenUsage(total, segment.tokens);
       m.tokens = total;
     } else {
       const unscoped = unscopedTokens.get(sid);
+
       if (unscoped) m.tokens = { ...unscoped.tokens };
     }
+
     if (rolloutSessions.has(sid)) {
       // Active time per rollout: each gap goes to the rollout of the event it ends at.
       const durations = new Map<string, number>();
       const own = [...(timeline.get(sid) ?? [])].sort((a, b) => a.at - b.at);
+
       for (let i = 1; i < own.length; i++) {
         const gap = own[i].at - own[i - 1].at;
         const rollout = own[i].transcript;
+
         if (rollout !== undefined && Number.isFinite(gap) && gap >= 0 && gap <= DASHBOARD_IDLE_TIMEOUT_MS) {
           durations.set(rollout, (durations.get(rollout) ?? 0) + gap);
         }
       }
+
       const since = transcriptSince.get(sid) ?? new Map<string, string>();
       m.segments = Object.fromEntries([...since].map(([transcript, first]) => [transcript, {
         // A Codex Stop may count no prompts: the rollout's submits then do.
@@ -1976,15 +2256,19 @@ export function aggregateSessionMetrics(
         since: first,
         error: transcriptErrors.get(sid)?.has(transcript) ?? false,
       }]));
+
       // A rollout's Stop counts restart too; the session sums them.
       const sum = (field: 'interrupt' | 'toolReject') =>
         Object.values(m.segments ?? {}).reduce((total, segment) => total + segment[field], 0);
+
       m.interrupt = Math.max(m.interrupt, sum('interrupt'));
       m.toolReject = Math.max(m.toolReject, sum('toolReject'));
     }
+
     // A rollout's prompt count restarts too: its segments sum where they exist.
     const rolloutPrompts = m.segments
       ? Object.values(m.segments).reduce((sum, segment) => sum + segment.prompts, 0) : 0;
+
     m.prompts = Math.max(submitCount.get(sid) ?? 0, stopPrompts.get(sid) ?? 0, rolloutPrompts);
   }
 
@@ -1998,9 +2282,11 @@ export function aggregateSessionInterventions(
   events: DashboardEvent[],
 ): Map<string, { interrupt: number; toolReject: number; correction: number }> {
   const out = new Map<string, { interrupt: number; toolReject: number; correction: number }>();
+
   for (const [sid, m] of aggregateSessionMetrics(events)) {
     out.set(sid, { interrupt: m.interrupt, toolReject: m.toolReject, correction: m.correction });
   }
+
   return out;
 }
 
@@ -2019,6 +2305,7 @@ const LAUNCHED_RESUMABLE_MS = 30 * 24 * 60 * 60 * 1000;
  */
 export async function compactEvents(eventsPath?: string): Promise<void> {
   const filePath = eventsPath ?? getEventsPath();
+
   try {
     // Cheap lock-free pre-check: one of these runs detached after every
     // append, and nearly always finds nothing to do. Below the threshold with
@@ -2026,12 +2313,15 @@ export async function compactEvents(eventsPath?: string): Promise<void> {
     // would lock may be a sandbox another test (or a rolling state dir) is
     // deleting concurrently.
     const pre = await fs.promises.readFile(filePath, 'utf-8').catch(() => null);
+
     if (pre === null) return;
     const preLines = pre.split('\n').filter(l => l.trim());
+
     const hasSideFiles = await fs.promises.readdir(path.dirname(filePath)).then(
       (names) => names.some((n) => n.startsWith(eventsPendingPrefix(filePath)) && n.endsWith('.jsonl')),
       () => false,
     );
+
     if (preLines.length < DASHBOARD_COMPACTION_THRESHOLD && !hasSideFiles) return;
 
     const locked = await withEventsLock(filePath, EVENTS_REWRITE_LOCK_WAIT, async () => {
@@ -2057,9 +2347,11 @@ export async function compactEvents(eventsPath?: string): Promise<void> {
       const activeSessions = rebuildSessions(chronological);
       const activeIds = new Set(activeSessions.map(s => s.sessionId));
       const monitored = new Map<string, number>();
+
       for (const e of chronological) {
         if (e.type === 'session_start' && typeof e.monitorPid === 'number') monitored.set(e.sessionId, e.monitorPid);
       }
+
       for (const [sessionId, pid] of monitored) {
         if (isProcessAlive(pid)) activeIds.add(sessionId);
       }
@@ -2070,12 +2362,15 @@ export async function compactEvents(eventsPath?: string): Promise<void> {
       // it keeps every event, since its first one alone would list it as running again.
       const launchedFrom = new Map<string, DashboardEvent>();
       const lastAt = new Map<string, number>();
+
       for (const e of chronological) {
         if (e.launchedBy && !launchedFrom.has(e.sessionId)) launchedFrom.set(e.sessionId, e);
         lastAt.set(e.sessionId, Date.parse(e.timestamp));
       }
+
       const now = Date.now();
       const marks = new Set<DashboardEvent>();
+
       for (const [sessionId, first] of launchedFrom) {
         if (now - (lastAt.get(sessionId) ?? 0) <= DASHBOARD_STALE_TIMEOUT_MS) activeIds.add(sessionId);
         else if (now - Date.parse(first.timestamp) <= LAUNCHED_RESUMABLE_MS) marks.add(first);
@@ -2091,6 +2386,7 @@ export async function compactEvents(eventsPath?: string): Promise<void> {
       // orphan a later one removes (removeOrphanTemps).
       const mode = await fs.promises.stat(target).then((s) => s.mode & 0o7777, () => 0o600);
       const tmpPath = `${target}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
+
       try {
         await fs.promises.writeFile(tmpPath, compacted, { encoding: 'utf-8', mode });
         await fs.promises.rename(tmpPath, target);
@@ -2101,6 +2397,7 @@ export async function compactEvents(eventsPath?: string): Promise<void> {
 
       log.debug(`dashboard: compacted ${lines.length} → ${kept.length} events`);
     });
+
     // An opportunistic cleanup: leave the file as it is and let the next
     // compaction try again, rather than reporting a lost race as a failure.
     if (!locked) log.debug(`dashboard: ${path.basename(filePath)}.lock is still held after 5 s, so compaction is skipped`);
@@ -2129,11 +2426,13 @@ const recordedScopes = new Map<string, Promise<RecordedScope>>();
 function recordedScope(sessionId: string, cwd: string): Promise<RecordedScope> {
   const key = `${sessionId}\0${cwd}`;
   let known = recordedScopes.get(key);
+
   if (!known) {
     known = readEvents().then((events) => {
       const own = events.filter((e) => e.sessionId === sessionId).toReversed();
       const here = own.filter((e) => e.cwd === cwd);
       const scoped = here.find((e) => e.dataHomeKey) ?? own.find((e) => e.dataHomeKey);
+
       return {
         cwd: scoped?.cwd ?? own.find((e) => e.cwd)?.cwd,
         scope: scoped?.dataHomeKey ? { key: scoped.dataHomeKey, anchor: scoped.projectAnchor } : undefined,
@@ -2142,6 +2441,7 @@ function recordedScope(sessionId: string, cwd: string): Promise<RecordedScope> {
     });
     recordedScopes.set(key, known);
   }
+
   return known;
 }
 
@@ -2149,6 +2449,7 @@ function recordedScope(sessionId: string, cwd: string): Promise<RecordedScope> {
 export async function recordedHookCwd(hookData: Record<string, unknown>, tool: string): Promise<string | undefined> {
   const sessionId = deriveDispatchSessionId(hookData, tool);
   const events = (await readEvents()).filter(event => event.sessionId === sessionId).toReversed();
+
   return (events.find(event => event.cwd && !fs.existsSync(event.cwd)) ?? events.find(event => event.cwd))?.cwd;
 }
 
@@ -2164,6 +2465,7 @@ function recordedWorkspace(hookData: Record<string, unknown>, tool: string): Pro
   const sessionId = deriveDispatchSessionId(hookData, tool);
   const key = `${sessionId}\0${getUserHome()}`;
   let known = recordedWorkspaces.get(key);
+
   if (!known) {
     known = readEvents().then((events) => events
       .filter(event => event.sessionId === sessionId)
@@ -2171,6 +2473,7 @@ function recordedWorkspace(hookData: Record<string, unknown>, tool: string): Pro
       .find(event => event.cwd && fs.existsSync(event.cwd))?.cwd);
     recordedWorkspaces.set(key, known);
   }
+
   return known;
 }
 
@@ -2185,14 +2488,18 @@ function recordedWorkspace(hookData: Record<string, unknown>, tool: string): Pro
  */
 export async function hookScopeDir(hookData: Record<string, unknown>, tool: string): Promise<string | undefined> {
   const cwd = resolveHookCwd(hookData);
+
   if (!cwd || fs.existsSync(cwd)) return cwd;
   const { scope } = await recordedScope(deriveDispatchSessionId(hookData, tool), cwd);
   const checkout = scope?.anchor ? await checkoutOf(scope.anchor) : undefined;
+
   if (scope && checkout) {
     const { resolveConfigForDir } = await import('./config.js');
     const config = await resolveConfigForDir(checkout);
+
     if (!config || await dataHomeKey(getDataHome(config)) === scope.key) return checkout;
   }
+
   return cwd;
 }
 
@@ -2221,12 +2528,16 @@ export async function resolveHookScopeFor(hookData: Record<string, unknown>, too
   // The directory the hook works in: the payload's own, as every host but the
   // ones below sends the workspace.
   const dir = resolveHookCwd(hookData);
+
   if (!HOSTS_SENDING_OWN_CWD.has(tool)) return { config, dir };
+
   // A scope the payload's own directory holds is the one the session works in.
   if (config && config.scope === 'project') return { config, dir };
   const workspace = await recordedWorkspace(hookData, tool);
+
   if (!workspace || workspace === dir) return { config, dir };
   const recorded = await resolveConfigForDir(workspace);
+
   // The workspace's scope: the project the session started in, or the user
   // scope, which the extension host's directory resolves to as well when the
   // member installed there (#1516).
@@ -2248,8 +2559,10 @@ export async function resolveHookConfig(hookData: Record<string, unknown>, tool:
  */
 async function checkoutOf(anchor: string): Promise<string | undefined> {
   if (!fs.existsSync(anchor)) return undefined;
+
   if (fs.existsSync(path.join(anchor, '.git'))) return anchor;
   const { checkoutForProjectAnchor } = await import('./utils/git.js');
+
   return await checkoutForProjectAnchor(anchor) ?? undefined;
 }
 
@@ -2263,8 +2576,10 @@ async function checkoutOf(anchor: string): Promise<string | undefined> {
  */
 export async function eventProjectAnchor(cwd: string | undefined, sessionId: string): Promise<string | undefined> {
   if (!cwd) return undefined;
+
   if (!fs.existsSync(cwd)) return (await recordedScope(sessionId, cwd)).projectAnchor;
   const { resolveAnchors } = await import('./utils/git.js');
+
   return (await resolveAnchors(cwd))?.projectAnchor;
 }
 
@@ -2281,6 +2596,7 @@ export const GIT_AT_START_PAYLOAD_KEY = 'teamai_git_at_start';
 export function gitStateIn(payload: Record<string, unknown>): HeadState | null | undefined {
   if (!(GIT_AT_START_PAYLOAD_KEY in payload)) return undefined;
   const value = payload[GIT_AT_START_PAYLOAD_KEY];
+
   return value !== null && typeof value === 'object' && 'head' in value && typeof value.head === 'string' && 'dirty' in value && typeof value.dirty === 'boolean'
     ? { head: value.head, dirty: value.dirty }
     : null;
@@ -2294,10 +2610,13 @@ export async function readGitStateAtStart(cwd: string): Promise<HeadState | null
   try {
     const { getHeadState } = await import('./utils/git.js');
     const state = await getHeadState(cwd, AbortSignal.timeout(GIT_STATE_TIMEOUT_MS));
+
     if (!state) log.debug(`dashboard: ${cwd} has no commit yet, so session_start records no git state`);
+
     return state;
   } catch (e) {
     log.debug(`dashboard: could not read the git state of ${cwd} at session_start: ${e instanceof Error ? e.message : String(e)}`);
+
     return null;
   }
 }
@@ -2311,6 +2630,7 @@ export async function readGitStateAtStart(cwd: string): Promise<HeadState | null
 export async function addGitStateAtStart(event: DashboardEvent, known?: HeadState | null): Promise<void> {
   if (event.type !== 'session_start' || !event.cwd) return;
   const state = known === undefined ? await readGitStateAtStart(event.cwd) : known;
+
   if (state) event.gitAtStart = state;
 }
 
@@ -2329,8 +2649,10 @@ export async function addGitHeadAtStop(event: DashboardEvent): Promise<void> {
   // wait itself: the Stop handler is stopped soon after, and its event would go unwritten.
   const capped = new Promise<[null, null]>((resolve) => abort.addEventListener('abort', () => resolve([null, null]), { once: true }));
   const [head, branch] = await Promise.race([Promise.all([getHeadCommit(event.cwd, 'HEAD', abort), getCurrentBranch(event.cwd, abort)]), capped]);
+
   if (!head) return;
   event.gitHead = head;
+
   if (branch) event.gitBranch = branch;
 }
 
@@ -2348,37 +2670,47 @@ export async function addGitHeadAtStop(event: DashboardEvent): Promise<void> {
  */
 export async function dashboardReport(toolArg?: string): Promise<void> {
   const raw = await readStdin();
+
   if (!raw.trim()) {
     log.debug('dashboard-report: no STDIN data');
+
     return;
   }
 
   // Asked about the session's cwd, never the directory this process started in.
   let hookData: Record<string, unknown> = {};
+
   try {
     const parsed: unknown = JSON.parse(raw);
+
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
       hookData = parsed as Record<string, unknown>;
     }
   } catch {
     // parseHookEvent reports the malformed payload below; nothing to gate on yet.
   }
+
   const config = await resolveHookConfig(hookData, toolArg ?? 'claude');
+
   if (!config) {
     log.debug('dashboard-report: teamai is not set up here, skipping');
+
     return;
   }
 
   const scopeKey = await dataHomeKey(getDataHome(config));
   const event = await parseHookEvent(raw, toolArg ?? 'claude', { modelAliases: config.modelAliases, dataHomeKey: scopeKey });
+
   if (!event) return;
 
   event.dataHomeKey = scopeKey;
+
   const [projectAnchor] = await Promise.all([
     eventProjectAnchor(event.cwd, event.sessionId),
     addGitStateAtStart(event, gitStateIn(hookData)),
     addGitHeadAtStop(event),
   ]);
+
   event.projectAnchor = projectAnchor;
   const { sessionRun } = await import('./launch-context.js');
   Object.assign(event, sessionRun(process.env));

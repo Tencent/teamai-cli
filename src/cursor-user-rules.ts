@@ -21,6 +21,7 @@ import { log } from './utils/logger.js';
 
 async function canonicalPath(p: string): Promise<string> {
   const resolved = await fs.promises.realpath(p).catch(() => path.resolve(p));
+
   return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
 }
 
@@ -28,9 +29,11 @@ async function canonicalPath(p: string): Promise<string> {
 async function cursorWalkReaches(workspace: string, rulesDir: string): Promise<boolean> {
   const target = await canonicalPath(rulesDir);
   let dir = path.resolve(workspace);
+
   for (;;) {
     if (await canonicalPath(path.join(dir, '.cursor', 'rules')) === target) return true;
     const parent = path.dirname(dir);
+
     if (parent === dir) return false;
     dir = parent;
   }
@@ -39,6 +42,7 @@ async function cursorWalkReaches(workspace: string, rulesDir: string): Promise<b
 /** The user-scope rules directory a pull writes Cursor's rules to, or undefined when Cursor gets none. */
 export async function cursorUserRulesDir(teamConfig: TeamaiConfig, userConfig: LocalConfig): Promise<string | undefined> {
   const own = ownOf(await locate('cursor', 'rules', installOf(teamConfig, userConfig)));
+
   return own?.kind === 'dir' ? own.path : undefined;
 }
 
@@ -46,6 +50,7 @@ export async function cursorUserRulesDir(teamConfig: TeamaiConfig, userConfig: L
 export async function cursorUserRulesText(teamConfig: TeamaiConfig, userConfig: LocalConfig): Promise<string | null> {
   const parts = [await instructionHookTextFor(teamConfig, userConfig, 'cursor'), await teamRulesContext(teamConfig, userConfig)]
     .filter((part): part is string => !!part);
+
   return parts.length === 0 ? null : parts.join('\n\n');
 }
 
@@ -58,15 +63,21 @@ export async function cursorUserRulesText(teamConfig: TeamaiConfig, userConfig: 
 export async function cursorUserRulesContext(workspace: string, config: LocalConfig): Promise<string | null> {
   // oxlint-disable-next-line teamai/config-load-options -- session-start rules context retains normal user-scope migration and has no preview option
   const userConfig = config.scope === 'user' ? config : await loadLocalConfig();
+
   if (!userConfig || isAgentExcluded(userConfig, 'cursor')) return null;
   const teamConfig = await loadTeamConfig(userConfig.repo.localPath);
+
   if (!teamConfig) return null;
   const rulesDir = await cursorUserRulesDir(teamConfig, userConfig);
+
   if (rulesDir === undefined || await cursorWalkReaches(workspace, rulesDir)) return null;
   const text = await cursorUserRulesText(teamConfig, userConfig);
+
   if (text !== null && text.length > CURSOR_HOOK_CONTEXT_LIMIT) {
     log.debug(`cursor-user-rules: ${text.length} characters, over Cursor's ${CURSOR_HOOK_CONTEXT_LIMIT}-character hook limit; not added`);
+
     return null;
   }
+
   return text;
 }

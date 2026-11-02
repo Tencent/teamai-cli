@@ -39,6 +39,7 @@ export const MCP_SERVER_KEY: Record<Exclude<McpFormat, 'codex'>, string> = {
 /** Whether two formats keep their servers under one key of a shared file (Claude, Cursor and CodeBuddy all use `mcpServers`). */
 export function sameServerKey(a: McpFormat, b: McpFormat): boolean {
   if (a === 'codex' || b === 'codex') return a === b;
+
   return MCP_SERVER_KEY[a] === MCP_SERVER_KEY[b];
 }
 
@@ -88,6 +89,7 @@ export function supportsEnvExpansion(
 
 /** `Authorization: Bearer ${VAR}` — codex re-adds the "Bearer " prefix itself. */
 const BEARER_PLACEHOLDER_RE = /^Bearer \$\{([A-Za-z_][A-Za-z0-9_]*)\}$/;
+
 /** A header whose entire value is one placeholder. */
 const WHOLE_PLACEHOLDER_RE = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/;
 
@@ -100,21 +102,27 @@ interface CodexHeaderPlan {
 /** Split headers across the three fields codex offers for them. */
 export function planCodexHeaders(headers: Record<string, string> = {}): CodexHeaderPlan {
   const plan: CodexHeaderPlan = { envHttpHeaders: {}, httpHeaders: {} };
+
   for (const [name, value] of Object.entries(headers)) {
     if (name.toLowerCase() === 'authorization') {
       const bearer = BEARER_PLACEHOLDER_RE.exec(value);
+
       if (bearer) {
         plan.bearerTokenEnvVar = bearer[1];
         continue;
       }
     }
+
     const whole = WHOLE_PLACEHOLDER_RE.exec(value);
+
     if (whole) {
       plan.envHttpHeaders[name] = whole[1];
       continue;
     }
+
     plan.httpHeaders[name] = value;
   }
+
   return plan;
 }
 
@@ -125,15 +133,19 @@ const PLACEHOLDER_RE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
 /** Every ${VAR} referenced anywhere in a def. */
 export function referencedVars(def: McpServerDef): string[] {
   const found = new Set<string>();
+
   const scan = (v: string | undefined): void => {
     if (!v) return;
+
     for (const m of v.matchAll(PLACEHOLDER_RE)) found.add(m[1]);
   };
+
   scan(def.url);
   scan(def.command);
   def.args?.forEach(scan);
   Object.values(def.headers ?? {}).forEach(scan);
   Object.values(def.env ?? {}).forEach(scan);
+
   return [...found];
 }
 
@@ -147,6 +159,7 @@ export interface ResolveResult {
 export function placeholderValue(vars: Record<string, string>, name: string): string | undefined {
   if (Object.hasOwn(vars, name)) return vars[name];
   const other = sameEnvName(Object.keys(vars), name);
+
   return other === undefined ? undefined : vars[other];
 }
 
@@ -157,15 +170,20 @@ export function placeholderValue(vars: Record<string, string>, name: string): st
 export function resolvePlaceholders(def: McpServerDef, vars: Record<string, string>): ResolveResult {
   const missing = new Set<string>();
   const lookup = (name: string): string | undefined => placeholderValue(vars, name);
+
   const sub = (v: string): string =>
     v.replace(PLACEHOLDER_RE, (whole, name: string) => {
       const val = lookup(name);
+
       if (val === undefined || val === '') {
         missing.add(name);
+
         return whole;
       }
+
       return val;
     });
+
   const subMap = (m: Record<string, string> | undefined): Record<string, string> | undefined =>
     m && Object.fromEntries(Object.entries(m).map(([k, v]) => [k, sub(v)]));
 
@@ -188,14 +206,19 @@ export type McpJsonEntry = Record<string, unknown>;
 
 function renderClaude(def: McpServerDef): McpJsonEntry {
   const e: McpJsonEntry = { type: def.transport };
+
   if (def.transport === 'stdio') {
     e.command = def.command;
+
     if (def.args?.length) e.args = def.args;
+
     if (def.env && Object.keys(def.env).length) e.env = def.env;
   } else {
     e.url = def.url;
+
     if (def.headers && Object.keys(def.headers).length) e.headers = def.headers;
   }
+
   return e;
 }
 
@@ -211,30 +234,40 @@ function toCursorEnvSyntax(s: string): string {
 function renderCursor(def: McpServerDef): McpJsonEntry {
   const mapVals = (m: Record<string, string>): Record<string, string> =>
     Object.fromEntries(Object.entries(m).map(([k, v]) => [k, toCursorEnvSyntax(v)]));
+
   const e: McpJsonEntry = {};
+
   if (def.transport === 'stdio') {
     e.command = def.command;
+
     if (def.args?.length) e.args = def.args.map(toCursorEnvSyntax);
+
     if (def.env && Object.keys(def.env).length) e.env = mapVals(def.env);
   } else {
     e.type = def.transport;
     e.url = def.url ? toCursorEnvSyntax(def.url) : def.url;
+
     if (def.headers && Object.keys(def.headers).length) e.headers = mapVals(def.headers);
   }
+
   return e;
 }
 
 /** Antigravity CLI takes the transport from `command` or `url`, and warns on a `type` key. */
 function renderAgy(def: McpServerDef): McpJsonEntry {
   const { type: _transport, ...entry } = renderClaude(def);
+
   return entry;
 }
 
 function renderBuddy(def: McpServerDef): McpJsonEntry {
   const e: McpJsonEntry = {};
+
   if (def.transport === 'stdio') {
     e.command = def.command;
+
     if (def.args?.length) e.args = def.args;
+
     if (def.env && Object.keys(def.env).length) e.env = def.env;
   } else {
     // CodeBuddy keys the remote transport off `type`, exactly like the claude
@@ -242,9 +275,12 @@ function renderBuddy(def: McpServerDef): McpJsonEntry {
     // Authorization header never ships and the server 401s.
     e.type = def.transport;
     e.url = def.url;
+
     if (def.headers && Object.keys(def.headers).length) e.headers = def.headers;
   }
+
   if (def.timeout !== undefined) e.timeout = def.timeout;
+
   return e;
 }
 
@@ -254,15 +290,20 @@ function renderCopilot(def: McpServerDef): McpJsonEntry {
     type: def.transport === 'stdio' ? 'local' : def.transport,
     tools: [COPILOT_ALL_TOOLS],
   };
+
   if (def.transport === 'stdio') {
     e.command = def.command;
     e.args = def.args ?? [];
+
     if (def.env && Object.keys(def.env).length) e.env = def.env;
   } else {
     e.url = def.url;
+
     if (def.headers && Object.keys(def.headers).length) e.headers = def.headers;
   }
+
   if (def.timeout !== undefined) e.timeout = def.timeout;
+
   return e;
 }
 
@@ -274,19 +315,24 @@ function renderCopilot(def: McpServerDef): McpJsonEntry {
  */
 function renderOpencode(def: McpServerDef): McpJsonEntry {
   const e: McpJsonEntry = {};
+
   if (def.transport === 'stdio') {
     e.type = 'local';
     // OpenCode folds the executable and its args into one `command` array.
     // The schema guarantees a stdio def has `command`; guard anyway so a
     // malformed def never writes an empty-string executable into opencode.json.
     e.command = [...(def.command ? [def.command] : []), ...(def.args ?? [])];
+
     if (def.env && Object.keys(def.env).length) e.environment = def.env;
   } else {
     e.type = 'remote';
     e.url = def.url;
+
     if (def.headers && Object.keys(def.headers).length) e.headers = def.headers;
   }
+
   e.enabled = true;
+
   return e;
 }
 
@@ -294,16 +340,24 @@ function renderOpencode(def: McpServerDef): McpJsonEntry {
 export function renderJsonEntry(format: Exclude<McpFormat, 'codex'>, def: McpServerDef): McpJsonEntry {
   if (format === 'pi') {
     const entry = renderClaude(def);
+
     // Pi uses seconds (including fractions); team definitions use milliseconds.
     if (def.timeout !== undefined) entry.timeout = def.timeout / 1000;
+
     // Omit exposure to keep Pi's native codemode default.
     return entry;
   }
+
   if (format === 'claude' || format === 'muse') return renderClaude(def);
+
   if (format === 'agy') return renderAgy(def);
+
   if (format === 'cursor') return renderCursor(def);
+
   if (format === 'opencode') return renderOpencode(def);
+
   if (format === 'copilot') return renderCopilot(def);
+
   return renderBuddy(def);
 }
 
@@ -321,35 +375,46 @@ export function renderCodexBlock(def: McpServerDef): string {
   if (def.transport === 'http') {
     const inlineTable = (t: Record<string, string>): string =>
       `{ ${Object.entries(t).map(([k, v]) => `${q(k)} = ${q(v)}`).join(', ')} }`;
+
     lines.push(`url = ${q(def.url ?? '')}`);
     const plan = planCodexHeaders(def.headers);
+
     if (plan.bearerTokenEnvVar) lines.push(`bearer_token_env_var = ${q(plan.bearerTokenEnvVar)}`);
+
     if (Object.keys(plan.envHttpHeaders).length > 0) {
       lines.push(`env_http_headers = ${inlineTable(plan.envHttpHeaders)}`);
     }
+
     if (Object.keys(plan.httpHeaders).length > 0) {
       lines.push(`http_headers = ${inlineTable(plan.httpHeaders)}`);
     }
+
     if (def.timeout !== undefined) {
       lines.push(`startup_timeout_sec = ${Math.ceil(def.timeout / 1000)}`);
     }
+
     return lines.join('\n') + '\n';
   }
 
   lines.push(`command = ${q(def.command ?? '')}`);
   lines.push(`args = [${(def.args ?? []).map(q).join(', ')}]`);
+
   if (def.timeout !== undefined) {
     lines.push(`startup_timeout_sec = ${Math.ceil(def.timeout / 1000)}`);
   }
+
   const env = def.env ?? {};
+
   if (Object.keys(env).length) {
     lines.push('');
     lines.push(`[mcp_servers.${def.name}.env]`);
+
     for (const [k, v] of Object.entries(env)) {
       const key = k.length > 0 && !/[^A-Za-z0-9_-]/.test(k) ? k : q(k);
       lines.push(`${key} = ${q(v)}`);
     }
   }
+
   return lines.join('\n') + '\n';
 }
 
@@ -361,16 +426,21 @@ export function entryHash(rendered: unknown): string {
 /** Muse saves inferred stdio types and object keys differently; array order remains meaningful. */
 export function museEntryHash(rendered: unknown): string {
   let value = rendered;
+
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     const entry = value as Record<string, unknown>;
+
     if (entry.type === undefined && typeof entry.command === 'string' && entry.url === undefined) {
       value = { type: 'stdio', ...entry };
     }
   }
+
   const canonical = JSON.stringify(value, (_key, item: unknown) => {
     if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
     const object = item as Record<string, unknown>;
+
     return Object.fromEntries(Object.keys(object).sort().map(key => [key, object[key]]));
   });
+
   return crypto.createHash('sha1').update(canonical).digest('hex').slice(0, 16);
 }

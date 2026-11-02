@@ -9,6 +9,7 @@ import { describeLiteral, INVOCATIONS, startLiteral } from '../../src/workflow/d
 import { TRANSITIONS, type TransitionRow } from '../../src/workflow/drivers/skill/transitions.js';
 
 const ROOT = process.cwd();
+
 await check('names every skill after its directory, and promises no permissions it cannot grant', async () => {
   for (const skill of await listServableSkills({
     deployRoot: path.join(ROOT, 'skills'),
@@ -41,6 +42,7 @@ await check('quotes {SKILL_DIR} and $(teamai skill path …) in every command it
   // be a Windows path used through Bash. An unquoted occurrence in a command
   // line splits into two arguments there and the documented invocation fails.
   const offenders: string[] = [];
+
   for (const skill of await listServableSkills({
     deployRoot: path.join(ROOT, 'skills'),
     dataRoot: path.join(ROOT, 'skill-data'),
@@ -49,6 +51,7 @@ await check('quotes {SKILL_DIR} and $(teamai skill path …) in every command it
       'SKILL.md',
       ...(await listFilesRecursive(path.join(skill.dir, 'references'))).map((f) => `references/${f}`),
     ];
+
     for (const relative of files) {
       if (!relative.endsWith('.md')) continue;
       const text = fs.readFileSync(path.join(skill.dir, relative), 'utf8');
@@ -59,6 +62,7 @@ await check('quotes {SKILL_DIR} and $(teamai skill path …) in every command it
         if (/(?:^|[`\s(])(?:python3?|node|bash|sh|cp|mv|cat|ls|rm)\s+\{SKILL_DIR\}/.test(line)) {
           offenders.push(`${skill.name}/${relative}:${i + 1}: ${line.trim()}`);
         }
+
         // `$(teamai skill path …)` is word-split in a shell command just the
         // same, so it is always written inside double quotes.
         if (/(?<!")\$\(teamai skill path /.test(line)) {
@@ -67,6 +71,7 @@ await check('quotes {SKILL_DIR} and $(teamai skill path …) in every command it
       });
     }
   }
+
   assert.deepEqual(offenders, []);
 });
 
@@ -74,6 +79,7 @@ await check('ships no Chinese text in the deployed stub or the served content', 
   // Both reach the agent as CLI output (`teamai skill get` prints skill-data/),
   // which the repo rule keeps English; the agent translates for the user.
   const offenders: string[] = [];
+
   for (const root of ['skills', 'skill-data']) {
     for (const relative of await listFilesRecursive(path.join(ROOT, root))) {
       const text = fs.readFileSync(path.join(ROOT, root, relative), 'utf8');
@@ -83,6 +89,7 @@ await check('ships no Chinese text in the deployed stub or the served content', 
       });
     }
   }
+
   assert.deepEqual(offenders, []);
 });
 
@@ -93,6 +100,7 @@ await check('keeps the stub description within the 1024-character budget agents 
   assert.ok(description.length > 0);
   assert.ok(description.length <= 1024);
 });
+
 await check('pre-approves only read-only skill and workflow calls', () => {
   const stub = fs.readFileSync(path.join(ROOT, 'skills/teamai/SKILL.md'), 'utf8');
   const patterns = (stub.match(/^allowed-tools: (.*)$/m)?.[1] ?? '').split(', ');
@@ -101,11 +109,13 @@ await check('pre-approves only read-only skill and workflow calls', () => {
     [...patterns].sort(),
     INVOCATIONS.flatMap((invocation) => calls.map((call) => `Bash(${invocation} ${call}:*)`)).sort(),
   );
+
   for (const invocation of INVOCATIONS) {
     const starts = [
       startLiteral(invocation, 'ship'),
       startLiteral(invocation, 'ship', { parallel: 2, confirmed: true, inputs: true }),
     ];
+
     for (const pattern of patterns) {
       const prefix = pattern.replace(/^Bash\((.*):\*\)$/, '$1');
       assert.deepEqual(
@@ -115,10 +125,12 @@ await check('pre-approves only read-only skill and workflow calls', () => {
     }
   }
 });
+
 await check('workflow guide starts with the describe literal', () => {
   const guide = fs.readFileSync(path.join(ROOT, 'skill-data/workflow/SKILL.md'), 'utf8');
   assert.ok(guide.includes('`' + describeLiteral('teamai', '<name>') + '`'));
 });
+
 const COLUMNS = ['id', 'state', 'input', 'guard', 'effects', 'next', 'action'] as const;
 
 function render(row: TransitionRow): string {
@@ -129,7 +141,9 @@ function render(row: TransitionRow): string {
 function documentedRows(): TransitionRow[] {
   const doc = fs.readFileSync(path.join(ROOT, 'docs/dev/workflow-engine.md'), 'utf8');
   const section = doc.split(/^## /m).find((part) => part.startsWith('The skill driver\n'));
+
   if (!section) throw new Error('docs/dev/workflow-engine.md has no "## The skill driver" section');
+
   return section
     .split('\n')
     .filter((line) => line.startsWith('| ') && !line.startsWith('| Row |'))
@@ -138,9 +152,11 @@ function documentedRows(): TransitionRow[] {
         .slice(1, -1)
         .split('|')
         .map((cell) => cell.trim());
+
       if (cells.length !== COLUMNS.length)
         throw new Error(`A skill driver row has ${cells.length} cells, not ${COLUMNS.length}: ${line}`);
       const [id = '', state = '', input = '', guard = '', effects = '', next = '', action = ''] = cells;
+
       return { id, state, input, guard, effects, next, action };
     });
 }

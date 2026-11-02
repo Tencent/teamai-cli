@@ -20,8 +20,10 @@ import type { OutputSchema } from './workflow/types.js';
 
 /** teamai's default that shares what a session taught, then the session: the one the friction reminder offers. */
 const SHARE_LEARNINGS = 'teamai-share-learnings';
+
 /** teamai's default that publishes and scores a session, which `teamai-share-learnings` runs as a step. */
 const SHARE_SESSION = 'teamai-share-session';
+
 /** The workflows whose inputs describe proposes, by name: the defaults, and a team file that replaces one. */
 const PROPOSED_FOR = new Set([SHARE_LEARNINGS, SHARE_SESSION]);
 
@@ -62,6 +64,7 @@ function publishProposal(policy: SessionPolicies['attended']): Proposal<boolean>
       return { value: false, why: `${PUBLISH_WHY} Not proposed: the attended publish policy is auto, so teamai publishes this session, scrubbed, once it has been idle 6 hours.` };
     default: {
       const unhandled: never = policy.policy;
+
       return unhandled;
     }
   }
@@ -79,28 +82,38 @@ function filesOf(sources: readonly string[]): string {
 function scorersProposal(sampled: readonly SampledScorer[], { judge, team }: { judge: () => Judge; team: readonly IsolationSetting[] }): Proposal<string[]> {
   const verifiedBy = (one: SampledScorer) => {
     const required = requiredIsolation([...team, { source: scorerIsolationSource(one.scorer, one.pin.relativePath), value: one.definition.isolation }]);
+
     return required.level === 'verified' && judge() === 'driver' ? required.setBy : undefined;
   };
+
   const proposed: SampledScorer[] = [];
   const leftOut = new Map<string, { sources: readonly string[]; scorers: string[] }>();
+
   for (const one of sampled.filter(({ state }) => state.kind === 'open')) {
     const sources = verifiedBy(one);
+
     if (sources === undefined) {
       proposed.push(one);
       continue;
     }
+
     const key = sources.join('\0');
     leftOut.set(key, { sources, scorers: [...leftOut.get(key)?.scorers ?? [], one.scorer] });
   }
+
   const left = [...leftOut.values()].map(leftOutWhy);
+
   if (proposed.length > 0) return { value: proposed.map(({ scorer }) => scorer), why: [SCORERS_WHY, samplingWhy(proposed), ...left, '[] skips scoring.'].join(' ') };
+
   return { value: [], why: [SCORERS_WHY, `None proposed: ${left.length > 0 ? left.join(' ') : 'no scorer samples this session.'}`, NAME_ANY].join(' ') };
 }
 
 /** That `proposed`, one scorer or more, sample this session, with their sampling rates. */
 function samplingWhy(proposed: readonly SampledScorer[]): string {
   const [only, ...more] = proposed;
+
   if (only !== undefined && more.length === 0) return `${only.scorer} samples this session (samplingRate ${only.definition.samplingRate}).`;
+
   return `${listOf(proposed.map(({ scorer, definition }) => `${scorer} (samplingRate ${definition.samplingRate})`))} sample this session.`;
 }
 
@@ -130,16 +143,20 @@ async function propose(
   { now = new Date().toISOString(), judgeTools = () => installedJudgeTools([]) }: OfferOptions,
 ): Promise<Omit<SessionShareOffer, 'judge'> & { judge: () => Proposal<Judge> }> {
   let found: Proposal<Judge> | undefined;
+
   const judge = (): Proposal<Judge> => {
     if (found) return found;
     const [installed] = judgeTools();
     found = installed
       ? { value: 'here', why: `${installed} is installed here, so teamai's own judge scores it.` }
       : { value: 'driver', why: 'No judge tool teamai runs is installed here, so this session\'s agent judges, best-effort.' };
+
     return found;
   };
+
   const platform = AgentSession.platformForTool(tool);
   const session = { value: sessionId, why: 'The session to share: this one.' };
+
   if (platform === undefined) {
     return {
       session, source: { value: tool, why: 'This session\'s tool.' }, judge,
@@ -147,22 +164,28 @@ async function propose(
       scorers: { value: [], why: `${SCORERS_WHY} None proposed: teamai reads no sessions from ${tool}.` },
     };
   }
+
   const [team, scoring] = await Promise.all([loadTeamConfig(config.repo.localPath), scopeScoring(config)]);
   const publish = publishProposal(SessionPolicy.publish(config, team).policies.attended);
   const source = { value: platform, why: 'This session\'s tool, as teamai session list names it.' };
+
   if (!scoring.ok) return { session, source, publish, judge, scorers: { value: [], why: `${SCORERS_WHY} None proposed: ${scoring.reason} ${NAME_ANY}` } };
   const policy = scoring.sessions.policies.attended;
+
   switch (policy.policy) {
     case 'ask': {
       const sampled = await SessionWork.sampledScorers(config, { platform, sessionId }, now);
+
       return { session, source, publish, judge, scorers: scorersProposal(sampled, { judge: () => judge().value, team: scoring.isolation }) };
     }
+
     case 'off':
       return { session, source, publish, judge, scorers: { value: [], why: `${SCORERS_WHY} None proposed: the attended scoring policy (${SessionPolicy.setBy(policy.source)}) is off. ${NAME_ANY}` } };
     case 'auto':
       return { session, source, publish, judge, scorers: { value: [], why: `${SCORERS_WHY} None proposed: the attended scoring policy is auto, so the background judge scores this session once it has been idle 6 hours. ${NAME_ANY}` } };
     default: {
       const unhandled: never = policy.policy;
+
       return unhandled;
     }
   }
@@ -171,6 +194,7 @@ async function propose(
 /** Every proposal for session `sessionId` of `tool`, as describe gives them. */
 async function offer(config: LocalConfig, session: { tool: string; sessionId: string }, options: OfferOptions = {}): Promise<SessionShareOffer> {
   const proposed = await propose(config, session, options);
+
   return { ...proposed, judge: proposed.judge() };
 }
 
@@ -190,7 +214,9 @@ async function reminderOffer(
 ): Promise<SessionShareOffered | undefined> {
   if (run.launchedBy !== undefined || run.runMode === 'unattended' || (await nestedStart(process.env, cwd)) !== undefined) return undefined;
   const start = await resolveStart(config, SHARE_LEARNINGS);
+
   if (!start.workflow || (start.workflow.definition.invoke ?? 'deny') === 'deny') return undefined;
+
   // A sub-workflow the team replaced with other inputs would fail the run after its learnings were shared.
   if ('failed' in await loadWorkflowTree(start.config, start.workflow)) return undefined;
   // The skill driver imports this module for describe, so this one loads it only here.
@@ -198,8 +224,10 @@ async function reminderOffer(
   // A run lives in the data home of the scope it was started in, and a session drives it from any directory.
   const [user, partitions] = await Promise.all([loadLocalConfigForScope('user', undefined, { dryRun: true }), projectPartitions()]);
   const homes = new Map([config, ...(user ? [user] : []), ...partitions].map((home) => [getDataHome(home), home]));
+
   if ((await Promise.all([...homes.values()].map((home) => drivesUndoneRun(home, sessionId)))).some(Boolean)) return undefined;
   const { publish, scorers } = await propose(start.config, { tool, sessionId }, options);
+
   return { publish: publish.value, scorers: scorers.value };
 }
 
@@ -221,6 +249,7 @@ function isContractInput(name: string): name is keyof SessionShareOffer {
 
 function sameType(left: OutputSchema, right: OutputSchema): boolean {
   if (left.type === 'enum' && right.type === 'enum') return [...left.values].sort().join('\0') === [...right.values].sort().join('\0');
+
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
@@ -238,11 +267,15 @@ async function proposals(
 ): Promise<Record<string, { value?: unknown; why: string }>> {
   if (!PROPOSED_FOR.has(name)) return {};
   const matching = Object.entries(inputs).flatMap(([input, type]) => (isContractInput(input) && sameType(type, CONTRACT[input]) ? [input] : []));
+
   if (matching.length === 0) return {};
+
   if (caller.session === undefined || caller.tool === undefined) {
     return Object.fromEntries(matching.filter((input) => input === 'session' || input === 'source').map((input) => [input, { why: NO_SESSION_WHY }]));
   }
+
   const proposed = await offer(config, { tool: caller.tool, sessionId: caller.session });
+
   return Object.fromEntries(matching.map((input) => [input, proposed[input]]));
 }
 

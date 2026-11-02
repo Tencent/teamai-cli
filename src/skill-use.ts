@@ -64,6 +64,7 @@ const LEGACY_PLUGIN_SKILL_CALL: Readonly<Record<string, string>> = { opencode: '
 const NAME = `${SKILL_NAME_CHARS}+`;
 const SKILL_MD = /[\\/]([^\\/]+)[\\/]SKILL\.md$/i;
 const SKILL_URI = /^skill:\/\/([^/]+)\/?$/;
+
 /** The block Pi's `_expandSkillCommand` puts first in the prompt: `<skill name="X" location="FILE">`. */
 const PI_SKILL_BLOCK = new RegExp(`^<skill name="(${NAME})" location="([^"\n]+)">`);
 
@@ -77,8 +78,11 @@ function skillLoadOf(tool: string): SkillLoad | undefined {
 
 function isSkillCall(tool: string, hostName: string): boolean {
   const load = skillLoadOf(tool);
+
   if (load === undefined) return normalizeToolName(hostName) === 'Skill';
+
   if (load === 'unknown') return false;
+
   return load.calls.some((call) => call.name === hostName) || LEGACY_PLUGIN_SKILL_CALL[tool] === hostName;
 }
 
@@ -93,27 +97,38 @@ const NO_SKILLS: ToolCallSkills = { loaded: [], named: [] };
 function toolCallSkills(stdin: Record<string, unknown>, tool: string): ToolCallSkills {
   const hostName = typeof stdin.tool_name === 'string' ? stdin.tool_name : '';
   const input = asObject(stdin.tool_input);
+
   if (!hostName || !input) return NO_SKILLS;
+
   if (isSkillCall(tool, hostName)) {
     const skill = extractSkillName(input);
+
     return { loaded: skill ? [{ skill }] : [], named: [] };
   }
+
   const load = skillLoadOf(tool);
+
   if (load === undefined || load === 'unknown') return NO_SKILLS;
   const call = classifyToolCall(stdin, tool);
+
   if (call.status === 'failure') return NO_SKILLS;
   const uri = call.category === 'read' && typeof input.path === 'string' ? SKILL_URI.exec(input.path.trim()) : null;
+
   if (uri) return { loaded: [{ skill: uri[1] }], named: [] };
+
   if (call.category === 'read') return { loaded: skillReads(call.paths), named: [] };
+
   if (call.command === undefined) return NO_SKILLS;
   const cwd = resolveHookCwd(stdin);
   const named = namedReads(call.command, { powershell: normalizeToolName(hostName).toLowerCase() === 'powershell', home: getUserHome() });
+
   return { loaded: [], named: skillReads(named.map((file) => resolvePath(file, cwd))), ...(call.output === undefined ? {} : { output: call.output }) };
 }
 
 /** The skills one PostToolUse payload shows loaded, before the existence gate: a named read counts when its output shows it. */
 function toolCallCandidates(stdin: Record<string, unknown>, tool: string): SkillCandidate[] {
   const { loaded, named, output } = toolCallSkills(stdin, tool);
+
   return [...loaded, ...named.filter((candidate) => showsSkill(output, candidate.skill))];
 }
 
@@ -121,6 +136,7 @@ function toolCallCandidates(stdin: Record<string, unknown>, tool: string): Skill
 function skillReads(files: readonly string[]): SkillCandidate[] {
   return files.flatMap((file) => {
     const match = SKILL_MD.exec(file);
+
     return match ? [{ skill: match[1], file }] : [];
   });
 }
@@ -138,16 +154,20 @@ function showsSkill(output: string | undefined, skill: string): boolean {
 
 function promptFormsOf(tool: string): readonly PromptForm[] {
   const load = skillLoadOf(tool);
+
   if (load === undefined || load === 'unknown') return ['/name'];
   const form = load.promptForm ?? '/name';
+
   return typeof form === 'string' ? [form] : form;
 }
 
 /** The skills a prompt mentions, before the existence gate. */
 function promptCandidates(prompt: string, tool: string): SkillCandidate[] {
   const candidates: SkillCandidate[] = [];
+
   for (const form of promptFormsOf(tool)) {
     let pattern: RegExp;
+
     switch (form) {
       case '$name':
         // Codex resolves a `$name` anywhere in the prompt.
@@ -155,8 +175,10 @@ function promptCandidates(prompt: string, tool: string): SkillCandidate[] {
         break;
       case 'skill-block': {
         const block = PI_SKILL_BLOCK.exec(prompt);
+
         return block ? [{ skill: block[1], file: block[2] }] : [];
       }
+
       case 'command-uri':
         // The CodeBuddy plugin lands a manual slash command as `@command://name`
         // (#1516). Anchored at the start, so a command URI quoted in the
@@ -169,11 +191,14 @@ function promptCandidates(prompt: string, tool: string): SkillCandidate[] {
         break;
       default: {
         const unhandled: never = form;
+
         return unhandled;
       }
     }
+
     candidates.push(...[...prompt.matchAll(pattern)].map((match) => ({ skill: match[1] })));
   }
+
   return candidates;
 }
 
@@ -184,16 +209,20 @@ export function typedIn(message: Message, block: ContentBlock): string {
 
 /** A string literal in a Codex code-mode script. */
 const STRING_LITERAL = '"(?:[^"\\\\\\n]|\\\\.)*"';
+
 /** The object literal a Codex code-mode script passes to `tools.exec_command`, with objects nested one level. */
 const CODE_MODE_CALL = new RegExp(`\\btools\\.exec_command\\(\\s*\\{((?:[^{}"]|${STRING_LITERAL}|\\{(?:[^{}"]|${STRING_LITERAL})*\\})*)\\}`, 'g');
+
 /** A property of that object whose value is a string literal. */
 const STRING_PROPERTY = new RegExp(`(\\w+)\\s*:\\s*(${STRING_LITERAL})`, 'g');
 
 /** The string a script literal stands for, or undefined when it is not one. */
 function stringOf(literal: string | undefined): string | undefined {
   if (literal === undefined) return undefined;
+
   try {
     const value: unknown = JSON.parse(literal);
+
     return typeof value === 'string' ? value : undefined;
   } catch {
     return undefined;
@@ -205,6 +234,7 @@ function codeModeEvents(script: string, cwd: string): Array<Record<string, unkno
   return [...script.matchAll(CODE_MODE_CALL)].flatMap((call) => {
     const properties = new Map([...call[1].matchAll(STRING_PROPERTY)].map((property) => [property[1], property[2]]));
     const command = stringOf(properties.get('cmd'));
+
     return command === undefined ? [] : [{ tool_name: 'Bash', tool_input: { command }, cwd: inWorkdir(cwd, stringOf(properties.get('workdir'))) }];
   });
 }
@@ -225,39 +255,52 @@ function inWorkdir(cwd: string, workdir: unknown): string {
 function blockCandidates(message: Message, block: ContentBlock, cwd: string, output: string | undefined, tool: string): SkillCandidate[] {
   if (block.type === 'tool_call') {
     const input = block.arguments;
+
     if (block.toolName === 'exec' && typeof input.input === 'string') {
       return codeModeEvents(input.input, cwd).flatMap((event) => {
         const { loaded, named } = toolCallSkills(event, tool);
+
         return [...loaded, ...named];
       }).filter((candidate) => showsSkill(output, candidate.skill));
     }
+
     const toolInput = typeof input.cmd === 'string' && input.command === undefined ? { ...input, command: input.cmd } : input;
+
     return skillCandidates({ tool_name: block.toolName, tool_input: toolInput, cwd: inWorkdir(cwd, input.workdir), ...(output === undefined ? {} : { tool_response: output }) }, tool);
   }
+
   const prompt = typedIn(message, block);
+
   return prompt ? skillCandidates({ prompt, cwd }, tool) : [];
 }
 
 /** The candidates that name an installed skill, each once. */
 async function installedSkills(candidates: SkillCandidate[], stdin: Record<string, unknown>, tool: string, config: LocalConfig, source: 'prompt' | 'tool-call'): Promise<string[]> {
   const named = candidates.filter((c) => isValidSkillName(c.skill));
+
   if (!named.length) return [];
   const hookCwd = resolveHookCwd(stdin);
   // The same root resolution import and the local agent use: the scope's own
   // record first, since a removed worktree's cwd leads nowhere (#810).
   const toolRoots = config.toolRoots ?? await resolveMemberToolRoots(hookCwd);
   const roots = await skillRoots({ config, toolRoots, hookCwd, tool });
+
   const readRoots = source === 'tool-call' && named.some((c) => c.file !== undefined)
     ? await skillRoots({ config, toolRoots, hookCwd }) : roots;
+
   const skills = new Set<string>();
+
   for (const { skill, file } of named) {
     if (skills.has(skill)) continue;
+
     const installed = file !== undefined
       ? await isInstalledSkillFile(skill, file, readRoots)
       : await skillExistsOnDisk(skill, roots);
+
     if (installed) skills.add(skill);
     else log.debug(`"${skill}" is not an installed skill, so its use is not tracked`);
   }
+
   return [...skills];
 }
 
@@ -279,6 +322,7 @@ export const DeliveredSkillInfoSchema = z.object({
   namespaceUnknown: z.literal(true).optional(),
   description: z.string().optional(),
 });
+
 export type DeliveredSkillInfo = z.infer<typeof DeliveredSkillInfoSchema>;
 
 /**
@@ -299,22 +343,29 @@ export async function deliveredTeamSkills(config: LocalConfig, cwd: string, deli
   const toolRoots = config.toolRoots ?? await resolveMemberToolRoots(cwd);
   const copies = new Map<string, string[]>();
   const others = new Set<string>();
+
   for (const root of await skillRoots({ config, toolRoots, hookCwd: cwd })) {
     for (const name of await fs.readdir(root).catch(() => [])) {
       const file = path.join(root, name, 'SKILL.md');
+
       if (!sources.has(name) || !await pathExists(file)) continue;
+
       if (await recordedUnchanged(delivered, file)) copies.set(name, [...copies.get(name) ?? [], file]);
       else others.add(name);
     }
   }
+
   const kept = [...copies].filter(([name]) => !others.has(name));
+
   const teamSkillInfo = await Promise.all(kept.map(async ([name, [file]]): Promise<[string, DeliveredSkillInfo]> => {
     const { data, valid } = splitFrontmatter(await readFileSafe(file) ?? '');
+
     return [name, {
       ...await deliveredNamespace({ repo, rev, delivered, dest: path.dirname(file), dirs: sources.get(name) ?? [] }),
       ...(valid && typeof data.description === 'string' ? { description: data.description.trim() } : {}),
     }];
   }));
+
   return { teamSkills: Object.fromEntries(kept), teamSkillInfo: Object.fromEntries(teamSkillInfo) };
 }
 
@@ -325,12 +376,15 @@ export async function deliveredTeamSkills(config: LocalConfig, cwd: string, deli
 function teamSkillDirs(files: readonly string[]): Map<string, string[]> {
   const dirs = new Set(files.filter((file) => path.posix.basename(file) === 'SKILL.md').map((file) => path.posix.dirname(file)));
   const byName = new Map<string, string[]>();
+
   for (const dir of dirs) {
     const depth = dir.split('/').length;
+
     if (depth !== 2 && (depth !== 3 || dirs.has(path.posix.dirname(dir)))) continue;
     const name = path.posix.basename(dir);
     byName.set(name, [...byName.get(name) ?? [], dir]);
   }
+
   return byName;
 }
 
@@ -344,8 +398,10 @@ async function deliveredNamespace({ repo, rev, delivered, dest, dirs }: {
 }): Promise<DeliveredSkillInfo> {
   const matched = dirs.length === 1 ? dirs : (await Promise.all(dirs.map(async (dir) =>
     await isRecordedFromTeamSkill(delivered, dest, repo, dir, { rev }) ? [dir] : []))).flat();
+
   if (matched.length !== 1) return { namespaceUnknown: true };
   const parent = path.posix.dirname(matched[0]);
+
   return parent === 'skills' ? {} : { namespace: path.posix.basename(parent) };
 }
 
@@ -355,10 +411,13 @@ async function deliveredNamespace({ repo, rev, delivered, dest, dirs }: {
  */
 export function recordedTeamSkills(candidates: readonly SkillCandidate[], teamSkills: Readonly<Record<string, readonly string[]>>, cwd: string): string[] {
   const credited = new Set<string>();
+
   for (const { skill, file } of candidates) {
     const files = Object.hasOwn(teamSkills, skill) ? teamSkills[skill] : undefined;
+
     if (files && (file === undefined || files.some((recorded) => path.resolve(recorded) === path.resolve(cwd, file)))) credited.add(skill);
   }
+
   return [...credited];
 }
 
@@ -374,17 +433,22 @@ export function usedSkills(
 ): string[] {
   const subagents = found.subagents?.status === 'read' ? found.subagents.agents.map((agent) => agent.session) : [];
   const used = new Set<string>();
+
   for (const session of [found.session, ...subagents]) {
     const results = new Map(session.messages.flatMap((message) => message.content.flatMap((block) => block.type === 'tool_result' ? [[block.callId, block] as const] : [])));
     const cwd = session.cwd || found.session.cwd;
+
     for (const message of session.messages) {
       for (const block of message.content) {
         const result = block.type === 'tool_call' ? results.get(block.callId) : undefined;
+
         if (result?.isError) continue;
+
         for (const skill of recordedTeamSkills(blockCandidates(message, block, cwd, result?.content, tool), teamSkillsAt(message.timestamp), cwd)) used.add(skill);
       }
     }
   }
+
   return [...used].sort();
 }
 
@@ -397,8 +461,10 @@ export function usedSkills(
 function hostTurnKey(stdin: Record<string, unknown>): string | undefined {
   for (const field of ['turn_id', 'prompt_id', 'generation_id']) {
     const value = stdin[field];
+
     if (typeof value === 'string' && value) return value;
   }
+
   return undefined;
 }
 
@@ -408,6 +474,7 @@ function hostTurnKey(stdin: Record<string, unknown>): string | undefined {
  */
 function claimSessionId(stdin: Record<string, unknown>): string | undefined {
   const sessionId = deriveSessionId(stdin);
+
   return sessionId.startsWith('pid-') ? undefined : sessionId;
 }
 
@@ -421,6 +488,7 @@ const SkillClaimsSchema = z.object({
   turns: z.record(z.string(), z.array(z.string())),
   webhooks: z.record(z.string(), z.array(z.string())).default({}),
 });
+
 type SkillClaims = z.infer<typeof SkillClaimsSchema>;
 
 function claimsPath(sessionId: string): string {
@@ -435,35 +503,46 @@ async function claimTurnSlots(stdin: Record<string, unknown>, skills: string[], 
   const opensTurn = source === 'prompt';
   const unchecked = { usage: skills, webhooks: opensTurn ? [] : skills };
   const sessionId = claimSessionId(stdin);
+
   if (sessionId === undefined) return unchecked;
   const file = claimsPath(sessionId);
   const lockPath = `${file}.lock`;
+
   const claimed = await withFileLock(lockPath, CLAIMS_LOCK_WAIT, async () => {
     const parsed = SkillClaimsSchema.safeParse(await readJson<unknown>(file));
     const claims: SkillClaims = parsed.success ? parsed.data : { turns: {}, webhooks: {} };
+
     if (opensTurn && hostTurnKey(stdin) === undefined) claims.stamp = randomUUID();
     const turn = hostTurnKey(stdin) ?? claims.stamp;
+
     if (turn === undefined) return unchecked;
     const credited = claims.turns[turn] ?? [];
     const won = skills.filter((skill) => !credited.includes(skill));
     const notified = claims.webhooks[turn] ?? [];
     const webhooks = opensTurn ? [] : skills.filter((skill) => !notified.includes(skill));
+
     if (won.length || webhooks.length || opensTurn) {
       delete claims.turns[turn];
       claims.turns[turn] = [...credited, ...won];
+
       if (webhooks.length) {
         delete claims.webhooks[turn];
         claims.webhooks[turn] = [...notified, ...webhooks];
       }
+
       for (const slots of [claims.turns, claims.webhooks]) {
         for (const old of Object.keys(slots).slice(0, -KEPT_TURNS)) delete slots[old];
       }
+
       await writeJson(file, claims);
     }
+
     return { usage: won, webhooks };
   });
+
   if (claimed.held) return claimed.value;
   log.debug(`${lockPath} is still held, so ${skills.join(', ') || 'this turn'} is recorded without the once-per-turn check`);
+
   return unchecked;
 }
 
@@ -477,18 +556,22 @@ async function record(skills: string[], tool: string, config: LocalConfig): Prom
 async function toolCallTrackingDisabled(config: LocalConfig): Promise<boolean> {
   const { readBuiltinDisabledListing } = await import('./resources/hooks.js');
   const listing = await readBuiltinDisabledListing(config, RETIRED_SKILL_HOOK_KEY);
+
   if (listing === 'unreadable') {
     log.debug('hooks/hooks.yaml cannot be read, so skill use from tool calls is not tracked');
   }
+
   return listing !== 'not-listed';
 }
 
 /** Record tool-call usage and separately claim the skills to notify in the background. */
 export async function creditToolCall(stdin: Record<string, unknown>, tool: string, config: LocalConfig): Promise<string[]> {
   const candidates = toolCallCandidates(stdin, tool);
+
   if (!candidates.length || await toolCallTrackingDisabled(config)) return [];
   const claims = await claimTurnSlots(stdin, await installedSkills(candidates, stdin, tool, config, 'tool-call'), 'tool-call');
   await record(claims.usage, tool, config);
+
   return claims.webhooks;
 }
 
@@ -500,6 +583,7 @@ export async function creditToolCall(stdin: Record<string, unknown>, tool: strin
 export async function creditPromptMentions(stdin: Record<string, unknown>, tool: string, config: LocalConfig): Promise<void> {
   const prompt = typeof stdin.prompt === 'string' ? stdin.prompt : '';
   const skills = await installedSkills(promptCandidates(prompt, tool), stdin, tool, config, 'prompt');
+
   if (!skills.length && hostTurnKey(stdin) !== undefined) return;
   const claims = await claimTurnSlots(stdin, skills, 'prompt');
   await record(claims.usage, tool, config);

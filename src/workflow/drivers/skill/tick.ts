@@ -28,12 +28,16 @@ import type { SkillContext } from './skill-driver.js';
 
 /** How long one poll waits for something to show the agent. */
 export const WAIT_BOUND_MS = 100_000;
+
 /** How long a poll sleeps between ticks. */
 export const WAIT_POLL_MS = 2_000;
+
 /** How long a call that spawned runners waits for them to prepare, and how young a runner may be without its lock. */
 export const WAIT_GRACE_MS = 5_000;
+
 /** How long a foreground call waits for the run lock. */
 export const TICK_LOCK_WAIT_MS = 30_000;
+
 /** How long a runner waits before it tries again: for the run lock, or to send a report the engine refused. */
 export const RUNNER_POLL_MS = 10_000;
 const GRACE_CHECK_MS = 250;
@@ -41,6 +45,7 @@ const GRACE_CHECK_MS = 250;
 /** Tells the context's trace the row `taken` names, when a row applied. */
 export function traced<T extends { row: RowId } | undefined>(context: SkillContext, taken: T): T {
   if (taken) context.trace?.(taken.row);
+
   return taken;
 }
 
@@ -54,6 +59,7 @@ interface Applied {
 /** Applies the effects of a row that moved the run to `start`, in order, under `lock`. */
 export async function applyEffects(context: SkillContext, lock: RunLock, start: SkillState, effects: readonly Effect[]): Promise<Applied> {
   let applied: Applied = { state: start, spawned: false };
+
   for (const effect of effects) {
     switch (effect.kind) {
       case 'spawn':
@@ -66,15 +72,19 @@ export async function applyEffects(context: SkillContext, lock: RunLock, start: 
       case 'send': {
         const sent = await sendReport(context, lock, applied.state, effect.attempt, effect.body);
         applied.state = sent.state;
+
         if (sent.refused) applied.refused = sent.refused;
         break;
       }
+
       default: {
         const unhandled: never = effect;
+
         return unhandled;
       }
     }
   }
+
   return applied;
 }
 
@@ -91,7 +101,9 @@ async function sendReport(context: SkillContext, lock: RunLock, state: SkillStat
   await writeSkillState(context.config, lock, state, context.env.secrets);
   const reply = reportReply(await context.client.report(state.run, body, { lock }));
   const taken = traced(context, reportedRow(state, { attempt, reply, at: context.now().toISOString() }));
+
   if (!taken) return { state };
+
   return 'answer' in taken ? { state, refused: taken.answer.error } : { state: taken.state };
 }
 
@@ -102,16 +114,22 @@ async function sendReport(context: SkillContext, lock: RunLock, state: SkillStat
 async function judgeTick(context: SkillContext, lock: RunLock, start: SkillState, role: 'call' | 'runner'): Promise<SkillState> {
   let state = start;
   const open = state.judging?.open;
+
   if (open && !(await context.runners.alive(state.run, open.attempt))) {
     const freed = traced(context, judgeFreeRow(state, { at: context.now().toISOString(), graceMs: WAIT_GRACE_MS }));
+
     if (freed) state = (await applyEffects(context, lock, freed.state, freed.effects)).state;
   }
+
   const ticked = traced(context, judgeTickRow(state, role));
+
   if (!ticked) return state;
   const { tool, running, canTakeLease } = ticked.request;
   const answer = await context.client.scoreNext({ driver: { ...state.driver, can: { judge: judgeCan(tool) } }, run: state.run, running, canTakeLease });
   const replied = traced(context, scoreReplyRow(state, { reply: scoreReply(answer), at: context.now().toISOString() }));
+
   if (!replied) return state;
+
   return (await applyEffects(context, lock, replied.state, replied.effects)).state;
 }
 
@@ -131,6 +149,7 @@ interface Ticked extends TickTurn {
  */
 export async function runTick(context: SkillContext, lock: RunLock, start: SkillState, role: 'call' | 'runner'): Promise<Ticked> {
   const stepped = await stepTick(context, lock, start, role);
+
   return { ...stepped, state: await judgeTick(context, lock, stepped.state, role) };
 }
 
@@ -148,7 +167,9 @@ async function attemptCheckRow(context: SkillContext, state: SkillState, open: A
     case 'running':
     case 'stopping':
       if (open.phase === 'stopping' && open.by !== 'runner') return undefined;
+
       if (await context.runners.alive(state.run, open.attempt)) return undefined;
+
       return runnerFreeRow(state, { attempt: open.attempt, at: context.now().toISOString(), graceMs: WAIT_GRACE_MS });
     case 'placing':
     case 'offered':
@@ -156,6 +177,7 @@ async function attemptCheckRow(context: SkillContext, state: SkillState, open: A
       return undefined;
     default: {
       const unhandled: never = open;
+
       return unhandled;
     }
   }
@@ -188,58 +210,75 @@ function endOf(done: { outcome: string; failure?: WorkflowFailure; prs: string[]
 async function stepTick(context: SkillContext, lock: RunLock, start: SkillState, role: 'call' | 'runner'): Promise<Ticked> {
   let state = start;
   let spawned = false;
+
   const apply = async (effects: readonly Effect[]): Promise<void> => {
     const applied = await applyEffects(context, lock, state, effects);
     state = applied.state;
     spawned = spawned || applied.spawned;
   };
+
   for (const open of start.attempts) {
     const moved = traced(context, await attemptCheckRow(context, state, open));
+
     if (!moved) continue;
     state = moved.state;
     await apply(moved.effects);
   }
+
   let probed = false;
+
   for (;;) {
     const version = state.done ? await context.client.runVersion(state.run) : undefined;
     const ticked = traced(context, tickRow(state, { role, ...(version ? { version } : {}) }));
+
     if (!('request' in ticked)) return { state, spawned };
+
     if ('state' in ticked) state = ticked.state;
     const { request } = ticked;
     probed = probed || !request.canTakeLease;
+
     const body = {
       driver: { ...state.driver, can: canFor(state.host.kind === 'chosen' ? state.host.id : undefined) }, running: request.running, canTakeLease: request.canTakeLease,
       runMode: state.options.mode, ...(request.autoApprove ? { autoApprove: true } : {}),
     };
+
     const answer = await context.client.next(state.run, body);
     const at = context.now().toISOString();
     const { reply, cancelled } = engineReply(state.run, answer);
     const sameEnd = reply.kind === 'done' && reply.out && state.done !== undefined && canonicalJson(endOf(reply)) === canonicalJson(endOf(state.done));
     state = traced(context, reopenedRow(state, { reply, sameEnd }))?.state ?? state;
+
     for (const attempt of cancelled) state = traced(context, cancelledRow(state, { attempt, at }))?.state ?? state;
     state = traced(context, gateCheckRow(state, reply))?.state ?? state;
     const ended = reply.kind === 'done' && !state.done ? await context.client.runVersion(state.run) : undefined;
     const replied = traced(context, replyRow(state, { reply, at, ...(ended ? { version: ended } : {}) }));
+
     if (!replied) return { state, spawned };
+
     if ('answer' in replied) {
       return { state, spawned, error: errorOf(replied.answer, { invocation: state.invocation, same: nextLiteral(state.invocation, state.run), run: state.run }) };
     }
+
     state = replied.state;
     await apply(replied.effects);
+
     if (!probed && traced(context, heldProbeRow(reply))) {
       probed = true;
       const probe = engineReply(state.run, await context.client.next(state.run, { ...body, canTakeLease: false })).reply;
       state = traced(context, gateCheckRow(state, probe))?.state ?? state;
       const asked = probe.kind === 'hitl' ? traced(context, replyRow(state, { reply: probe, at })) : undefined;
+
       if (asked && 'state' in asked) {
         state = asked.state;
         await apply(asked.effects);
       }
     }
+
     const leased = reply.kind === 'lease';
     // A cancel in this reply gave up an attempt that waited, so a slot the request had no room for is free now. A run
     // that ended has no step left to fill it.
     const freed = !request.canTakeLease && role === 'call' && !state.done && hasSlot(state);
+
     if (!freed && (!leased || (!hasSlot(state) && (state.gate === undefined || probed)))) {
       return { state, spawned, ...(replied.waiting ? { waiting: replied.waiting } : {}), ...(replied.turn ? { turn: replied.turn } : {}) };
     }
@@ -262,52 +301,68 @@ async function called(context: SkillContext, lock: RunLock, same: Literal, input
   const { run } = lock;
   const read = await readSkillState(context.config, run);
   const localTool = localPromptTool(context);
+
   if (read.kind === 'unreadable') {
     return { answer: { error: { code: 'run_unreadable', message: `The skill driver's state of run ${run} cannot be read (${read.reason}). The person can continue the run in a terminal with ${resumeLiteral(context.invocation, run, { tool: localTool })}.`, next: null } } };
   }
+
   const state = read.kind === 'found' ? read.state : undefined;
   const answers = input.resume?.answers ?? {};
   const confirmed = input.resume?.confirmed ?? input.takeover?.confirmed ?? false;
+
   if (context.mode === 'unattended' && (input.resume !== undefined || input.takeover)) {
     // Nobody is there to take a run that needs a person or the local driver over from here, so it is refused before the
     // claim, which would leave this install owning it, and before a takeover makes this session its orchestrator.
     const carried = await context.client.carried(run, {
       published: input.resume !== undefined, claim: input.resume !== undefined && input.resume.claim !== 'lacking', ceiling: ceilingOf(context.config), can: canFor(undefined),
     });
+
     const local = carried ? localReason(carried.description) : undefined;
     const attended = carried ? attendedNow(carried) : undefined;
+
     if (carried && (local !== undefined || attended !== undefined)) {
       const readied: RunReadied = { kind: 'ready', installed: false, ...carried, judging: { kind: 'none' } };
       const refused = traced(context, readiedRow({ run, readied, kept: false, mode: context.mode, ...(local !== undefined ? { local } : {}), ...(attended !== undefined ? { attended } : {}), needsTool: false, answers, confirmed }));
+
       if (refused && 'answer' in refused) return { answer: { error: errorOf(refused.answer, { invocation: context.invocation, same, localTool }) } };
     }
   }
+
   if (input.resume !== undefined || (input.takeover && !state)) {
     const readied = await context.client.resume(run, {
       lock, claim: input.resume === undefined ? 'none' : input.resume.claim, checkout: context.cwd, ceiling: ceilingOf(context.config), can: canFor(undefined),
       ...(context.tool !== undefined ? { tool: context.tool } : {}),
     });
+
     const local = readied.kind === 'ready' ? localReason(readied.description) : undefined;
     const attended = readied.kind === 'ready' && context.mode === 'unattended' ? attendedNow(readied) : undefined;
+
     const taken = traced(context, readiedRow({
       run, readied, kept: state !== undefined, mode: context.mode, ...(local !== undefined ? { local } : {}), ...(attended !== undefined ? { attended } : {}), answers, confirmed,
       needsTool: readied.kind === 'ready' && needsTool(readied.description, { tool: context.tool, judged: answers.judge !== false }),
     }));
+
     if (taken && 'answer' in taken) {
       // R28 with a skill.json kept here comes after the resume installed the published run over it, which made it stale: the
       // resume its next names must ready the run anew, as R19 would have.
       if (taken.row === 'R28' && state !== undefined) await removeSkillState(context.config, lock);
+
       return { answer: { error: errorOf(taken.answer, { invocation: context.invocation, same, localTool, tool: input.resume?.tool }) } };
     }
+
     if (taken) {
       return { state: plannedState(context, run, taken.start) };
     }
   }
+
   const unattended = state && context.mode === 'unattended' && (input.resume !== undefined || input.takeover) ? traced(context, unattendedRow(state, answers)) : undefined;
   const kept = unattended?.state ?? state;
+
   if (kept && input.report !== undefined && traced(context, reportCallRow(kept, input.report))) return { state: kept };
   const taken = traced(context, callRow(kept, { run, session: context.session, tool: context.tool, declared: input.resume?.tool, at: context.now().toISOString(), takeover: input.takeover !== undefined }));
+
   if ('answer' in taken) return { answer: { error: errorOf(taken.answer, { invocation: context.invocation, same, run, localTool }) } };
+
   return { state: taken.state };
 }
 
@@ -320,6 +375,7 @@ function attendedNow(run: Pick<Extract<RunReadied, { kind: 'ready' }>, 'descript
 function rendered(state: SkillState, answer: TurnAnswer, input: { events: TurnEvent[]; waiting?: Waiting; localTool?: string }): Turn {
   const after = answer.after === 'none' ? undefined
     : { kind: answer.after, run: answer.after === 'wake' ? nextLiteral(state.invocation, state.run) : pollLiteral(state.invocation, state.run) };
+
   return turnOf(state, {
     events: answer.events === 'unseen' ? input.events : [], ...(after ? { after } : {}), ...(input.waiting ? { waiting: input.waiting } : {}), ...(answer.quiet ? { quiet: true } : {}),
     localTool: input.localTool,
@@ -336,6 +392,7 @@ async function finish(context: SkillContext, lock: RunLock, state: SkillState, t
   const events = unseenEvents(state, context.session);
   const shown = traced(context, turnRow(state, { session: context.session, ticked }));
   await writeSkillState(context.config, lock, shown.state, context.env.secrets);
+
   return { data: { turn: rendered(shown.state, shown.turn, { events, ...(shown.waiting ? { waiting: shown.waiting } : {}), localTool: runPromptTool(context, shown.state) }) } };
 }
 
@@ -366,6 +423,7 @@ function literalOf(invocation: Invocation, run: RunId, call: ForegroundCall): Li
       return takeoverLiteral(invocation, run, { confirmed: call.confirmed });
     case 'resume': {
       const options = { ...call.answers, noJudge: call.answers.judge === false, confirmed: call.confirmed, tool: call.tool };
+
       switch (call.claim) {
         case 'offered':
           // A run `--next` picked is taken only while it is offered, so the same call picks again.
@@ -375,10 +433,12 @@ function literalOf(invocation: Invocation, run: RunId, call: ForegroundCall): Li
           return skillResumeLiteral(invocation, run, { claim: call.claim === 'any', ...options });
         default: {
           const unhandled: never = call.claim;
+
           return unhandled;
         }
       }
     }
+
     case 'choose':
       return chooseHostLiteral(invocation, run, call.choice);
     case 'ack':
@@ -389,6 +449,7 @@ function literalOf(invocation: Invocation, run: RunId, call: ForegroundCall): Li
       return respondLiteral(invocation, run, call);
     default: {
       const unhandled: never = call;
+
       return unhandled;
     }
   }
@@ -409,10 +470,13 @@ async function callRowOf(context: SkillContext, state: SkillState, call: Foregro
       return adoptRow(state, { attempt: call.attempt, dir: call.dir, at: context.now().toISOString() });
     case 'respond': {
       const answer = await context.client.respond(state.run, call.step, call.choice, { pass: call.pass, via: { kind: 'skill', driver: state.driver } });
+
       return respondedRow(state, respondReply(answer));
     }
+
     default: {
       const unhandled: never = call;
+
       return unhandled;
     }
   }
@@ -424,11 +488,15 @@ async function callRowOf(context: SkillContext, state: SkillState, call: Foregro
  */
 async function applyCall(context: SkillContext, lock: RunLock, state: SkillState, call: ForegroundCall, same: Literal): Promise<Applied | { answer: SkillAnswer }> {
   const taken = traced(context, await callRowOf(context, state, call));
+
   if (!taken) return { state, spawned: false };
+
   if ('answer' in taken) {
     await writeSkillState(context.config, lock, state, context.env.secrets);
+
     return { answer: { error: errorOf(taken.answer, { invocation: state.invocation, same, run: state.run }) } };
   }
+
   return applyEffects(context, lock, taken.state, taken.effects ?? []);
 }
 
@@ -439,11 +507,14 @@ async function applyCall(context: SkillContext, lock: RunLock, state: SkillState
  */
 async function invokeRefused(context: SkillContext, run: RunId, call: Extract<ForegroundCall, { kind: 'resume' | 'takeover' }>): Promise<SkillAnswer | undefined> {
   const read = await readSkillState(context.config, run);
+
   if (drivesRun(read.kind === 'found' ? read.state : undefined, context.session)) return undefined;
   const caller = { evidence: context.evidence, confirmed: call.confirmed, mode: context.mode };
   const refused = traced(context, invokeRow(await context.client.resumeRefusal(run, { caller, published: call.kind === 'resume' })));
+
   if (!refused) return undefined;
   const confirmed = literalOf(context.invocation, run, { ...call, confirmed: true });
+
   return { error: errorOf(refused.answer, { invocation: context.invocation, same: confirmed, localTool: localPromptTool(context) }) };
 }
 
@@ -454,24 +525,34 @@ async function invokeRefused(context: SkillContext, run: RunId, call: Extract<Fo
 export async function foreground(context: SkillContext, run: RunId, call: ForegroundCall): Promise<SkillAnswer> {
   const same = literalOf(context.invocation, run, call);
   const refused = call.kind === 'resume' || call.kind === 'takeover' ? await invokeRefused(context, run, call) : undefined;
+
   if (refused) return refused;
+
   const first = await context.locks.take(run, async (lock): Promise<{ answer: SkillAnswer } | { grace: true }> => {
     const read = await called(context, lock, same, call.kind === 'takeover' ? { takeover: call } : call.kind === 'resume' ? { resume: call } : {});
+
     if ('answer' in read) return read;
     const applied = await applyCall(context, lock, read.state, call, same);
+
     if ('answer' in applied) return applied;
     const ticked = await runTick(context, lock, applied.state, 'call');
     const { state } = ticked;
+
     // Only the tick knows whether a run that was done still is: the engine may have reopened it (X6).
     if (call.kind === 'next' || call.kind === 'takeover' || call.kind === 'resume') traced(context, doneRow(state));
+
     if (ticked.error) {
       await writeSkillState(context.config, lock, state, context.env.secrets);
+
       return { answer: { error: ticked.error } };
     }
+
     if (!(ticked.spawned || applied.spawned) || !traced(context, graceRow(state))) return { answer: await finish(context, lock, state, ticked) };
     await writeSkillState(context.config, lock, state, context.env.secrets);
+
     return { grace: true };
   }, TICK_LOCK_WAIT_MS);
+
   switch (first.kind) {
     case 'held':
       if ('answer' in first.value) return first.value.answer;
@@ -480,27 +561,37 @@ export async function foreground(context: SkillContext, run: RunId, call: Foregr
       return lockBusy(context, run, same);
     default: {
       const unhandled: never = first;
+
       return unhandled;
     }
   }
+
   const until = context.now().getTime() + WAIT_GRACE_MS;
+
   for (;;) {
     await context.runners.sleep(GRACE_CHECK_MS);
+
     const checked = await context.locks.take(run, async (lock): Promise<SkillAnswer | 'again'> => {
       const read = await readSkillState(context.config, run);
+
       if (read.kind !== 'found') return { error: { code: 'run_unreadable', message: `The skill driver's state of run ${run} went missing while it ran.`, next: null } };
+
       if (read.state.attempts.some((open) => open.phase === 'preparing') && context.now().getTime() < until) return 'again';
+
       // The tick's reason to wait is stale once its runners moved, and while they have not, an attempt is open.
       return finish(context, lock, read.state, {});
     }, TICK_LOCK_WAIT_MS);
+
     switch (checked.kind) {
       case 'held':
         if (checked.value === 'again') continue;
+
         return checked.value;
       case 'busy':
         return lockBusy(context, run, same);
       default: {
         const unhandled: never = checked;
+
         return unhandled;
       }
     }
@@ -514,23 +605,32 @@ export async function foreground(context: SkillContext, run: RunId, call: Foregr
 export async function agentReport(context: SkillContext, run: RunId, call: { attempt: AttemptId; modelUnavailable: boolean }): Promise<SkillAnswer> {
   const { attempt } = call;
   const same = (call.modelUnavailable ? unavailableLiteral : reportLiteral)(context.invocation, run, attempt);
+
   const answered = await context.locks.take(run, async (lock): Promise<SkillAnswer> => {
     const read = await called(context, lock, same, { report: attempt });
+
     if ('answer' in read) return read.answer;
     const { state } = read;
     const result = await readChildResult({ config: context.config, run, attempt });
     const taken = traced(context, reportRow(state, { attempt, modelUnavailable: call.modelUnavailable, result }));
+
     if (!taken) return { data: { runner: { attempt, status: 'gone' } } };
+
     if ('answer' in taken) {
       await writeSkillState(context.config, lock, state, context.env.secrets);
+
       return { error: errorOf(taken.answer, { invocation: state.invocation, same, run }) };
     }
+
     if ('repeated' in taken) return { data: { runner: { attempt, status: 'repeated' } } };
     const sent = await applyEffects(context, lock, taken.state, taken.effects);
     await writeSkillState(context.config, lock, sent.state, context.env.secrets);
+
     if (sent.refused) return { error: { ...sent.refused, next: same } };
+
     return { data: { runner: { attempt, status: sent.state.settled.includes(attempt) ? 'reported' : 'gone' } } };
   }, WAIT_BOUND_MS);
+
   switch (answered.kind) {
     case 'held':
       return answered.value;
@@ -538,6 +638,7 @@ export async function agentReport(context: SkillContext, run: RunId, call: { att
       return lockBusy(context, run, same);
     default: {
       const unhandled: never = answered;
+
       return unhandled;
     }
   }
@@ -551,23 +652,32 @@ export async function poll(context: SkillContext, run: RunId): Promise<SkillAnsw
   const same = pollLiteral(context.invocation, run);
   const started = context.now().getTime();
   let last: SkillState | undefined;
+
   for (;;) {
     const boundReached = context.now().getTime() - started >= WAIT_BOUND_MS;
+
     const ticked = await context.locks.take(run, async (lock): Promise<SkillAnswer | 'sleep'> => {
       const read = await called(context, lock, same);
+
       if ('answer' in read) return read.answer;
       const result = await runTick(context, lock, read.state, 'call');
+
       if (result.error) {
         await writeSkillState(context.config, lock, result.state, context.env.secrets);
+
         return { error: result.error };
       }
+
       const events = unseenEvents(result.state, context.session);
       const polled = traced(context, pollRow(result.state, { session: context.session, busy: false, boundReached, ticked: result }));
       last = 'state' in polled ? polled.state : result.state;
       await writeSkillState(context.config, lock, last, context.env.secrets);
+
       if (!('turn' in polled)) return 'sleep';
+
       return { data: { turn: rendered(last, polled.turn, { events, ...(polled.waiting ? { waiting: polled.waiting } : {}), localTool: runPromptTool(context, last) }) } };
     }, 0);
+
     switch (ticked.kind) {
       case 'held':
         if (ticked.value !== 'sleep') return ticked.value;
@@ -577,15 +687,20 @@ export async function poll(context: SkillContext, run: RunId): Promise<SkillAnsw
           if (boundReached) return lockBusy(context, run, same);
           break;
         }
+
         const polled = traced(context, pollRow(last, { session: context.session, busy: true, boundReached, ticked: {} }));
+
         if ('turn' in polled) return { data: { turn: rendered(polled.state, polled.turn, { events: [] }) } };
         break;
       }
+
       default: {
         const unhandled: never = ticked;
+
         return unhandled;
       }
     }
+
     await context.runners.sleep(WAIT_POLL_MS);
   }
 }

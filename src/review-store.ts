@@ -36,6 +36,7 @@ const HIGH_RISK_SECTIONS = new Set([
     '目录结构与模块职责', '模块依赖', 'modules', 'dependencies',
     'external-knowledge', '外部知识源',
 ]);
+
 /** 反序列化大小上限：10 MB，防止超大文件导致 OOM。 */
 const MAX_CONFIG_FILE_BYTES = 10 * 1024 * 1024;
 
@@ -70,7 +71,9 @@ export function computeReviewId(
  */
 export function inferRisk(target: { file: string; section?: string }): Risk {
     if (target.section && HIGH_RISK_SECTIONS.has(target.section)) return 'high';
+
     if (target.file.includes('external-knowledge')) return 'high';
+
     return 'medium';
 }
 
@@ -99,6 +102,7 @@ function normalizeItem(raw: Record<string, unknown>): PendingReviewItem | null {
         const file = item.target?.file ?? '';
         const section = item.target?.section;
         const ts = item.ts ?? new Date().toISOString();
+
         return {
             id: item.id ?? computeReviewId(file, section, ts),
             ts,
@@ -115,6 +119,7 @@ function normalizeItem(raw: Record<string, unknown>): PendingReviewItem | null {
         const file = legacy.file ?? '';
         const section = legacy.section;
         const ts = legacy.ts ?? new Date().toISOString();
+
         return {
             id: computeReviewId(file, section, ts),
             ts,
@@ -139,11 +144,13 @@ function normalizeItem(raw: Record<string, unknown>): PendingReviewItem | null {
  */
 export async function loadPendingReview(cwd: string): Promise<PendingReviewItem[]> {
     const filePath = getPendingReviewPath(cwd);
+
     if (!await fs.pathExists(filePath)) {
         return [];
     }
 
     const stat = await fs.stat(filePath);
+
     if (stat.size > MAX_CONFIG_FILE_BYTES) {
         throw new Error(`${filePath} exceeds max allowed size 10MB`);
     }
@@ -153,9 +160,11 @@ export async function loadPendingReview(cwd: string): Promise<PendingReviewItem[
 
     for (const line of text.split('\n')) {
         const trimmed = line.trim();
+
         if (!trimmed) continue;
 
         let parsed: Record<string, unknown>;
+
         try {
             parsed = JSON.parse(trimmed) as Record<string, unknown>;
         } catch (err) {
@@ -164,6 +173,7 @@ export async function loadPendingReview(cwd: string): Promise<PendingReviewItem[
         }
 
         const normalized = normalizeItem(parsed);
+
         if (normalized) {
             items.push(normalized);
         } else {
@@ -236,5 +246,6 @@ export async function removePendingReview(cwd: string, id: string): Promise<bool
     }
 
     await savePendingReview(cwd, filtered);
+
     return true;
 }

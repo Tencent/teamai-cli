@@ -16,7 +16,9 @@ export const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
  */
 export function envTable<V>(entries: Iterable<readonly [string, V]> = []): Record<string, V> {
   const table: Record<string, V> = Object.create(null);
+
   for (const [key, value] of entries) table[key] = value;
+
   return table;
 }
 
@@ -33,7 +35,9 @@ export function envName(key: string): string {
 /** The name in `names` that is the same environment variable as `key` (in any case on Windows), if any. */
 export function sameEnvName(names: Iterable<string>, key: string): string | undefined {
   const name = envName(key);
+
   for (const other of names) if (envName(other) === name) return other;
+
   return undefined;
 }
 
@@ -44,6 +48,7 @@ export function sameEnvName(names: Iterable<string>, key: string): string | unde
  */
 export function envNamePattern(key: string): string {
   if (process.platform !== 'win32') return key;
+
   return key.replace(/[A-Za-z]/g, (letter) => `[${letter}${letter === letter.toUpperCase() ? letter.toLowerCase() : letter.toUpperCase()}]`);
 }
 

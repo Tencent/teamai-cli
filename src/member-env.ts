@@ -32,11 +32,13 @@ async function teamaiEnvShPaths(dataHomes: readonly string[]): Promise<string[]>
   const home = getTeamaiHomeDir();
   const projects = path.join(home, 'projects');
   let partitions: string[] = [];
+
   try {
     partitions = (await fs.promises.readdir(projects)).map((name) => path.join(projects, name, 'env.sh'));
   } catch {
     // No project partitions on this machine.
   }
+
   return [...new Set([path.join(home, 'env.sh'), ...dataHomes.map((dataHome) => path.join(dataHome, 'env.sh')), ...partitions])];
 }
 
@@ -73,23 +75,33 @@ async function memberEnvironmentAt(
 ): Promise<MemberEnvironment> {
   const exported: ReadonlyMap<string, string>[] = [];
   const recorded: EnvShExports[] = [];
+
   for (const envSh of await teamaiEnvShPaths(dataHomes)) {
     const content = await readFileSafe(envSh);
+
     if (content !== null) exported.push(parseEnvFile(content));
     recorded.push(await readEnvShExports(envSh));
   }
+
   const marked = markedAsExported(env);
+
   return (key) => {
     const value = envValue(env, key);
+
     if (value === undefined) return undefined;
+
     if (marked(key, value)) return undefined;
     // On Windows another scope's `token` is this key's `TOKEN`: compare names as the platform does.
     const name = envName(key);
     const sameName = ([other]: readonly [string, unknown]): boolean => envName(other) === name;
+
     if (exported.some((exports) => [...exports].some((entry) => sameName(entry) && entry[1] === value))) return undefined;
     const digest = exportDigest(key, value);
+
     if (recorded.some((exports) => [...exports].some((entry) => sameName(entry) && entry[1].has(digest)))) return undefined;
+
     if (scope.secretKeys.has(key) && [...scope.envYaml].some((entry) => sameName(entry) && entry[1] === value)) return undefined;
+
     return value;
   };
 }

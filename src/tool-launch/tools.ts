@@ -28,6 +28,7 @@ export function launchAdapterOf(tool: LaunchOrderTool): (typeof LAUNCH_ADAPTERS)
 /** The command that starts `tool`: its adapter's executable, or the tool's id. */
 export function executableOf(tool: LaunchOrderTool): string {
   const adapter: LaunchAdapter = launchAdapterOf(tool);
+
   return adapter.executable ?? tool;
 }
 
@@ -57,6 +58,8 @@ export type JudgeTool = ToolWith<'judge'>;
 /** OpenCode's model arguments: OpenCode 2 has no `--variant` and reads the effort from `--model provider/model#variant`. */
 export function opencodeModelArgs(model: { name: string; effort?: string } | undefined, major: number): string[] {
   if (!model) return [];
+
   if (model.effort === undefined) return ['--model', model.name];
+
   return major >= 2 ? ['--model', `${model.name}#${model.effort}`] : ['--model', model.name, '--variant', model.effort];
 }

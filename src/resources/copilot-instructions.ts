@@ -13,6 +13,7 @@ export function teamRuleToCopilotInstructions(rawTeamRule: string): string {
   const { body } = splitFrontmatter(rawTeamRule);
   // `paths:` is read the one way every render reads it (team-rule.ts).
   const paths = rulePaths(teamRuleData(rawTeamRule));
+
   return stringifyFrontmatter(
     { applyTo: paths.length > 0 ? paths.join(', ') : ALL_FILES_GLOB },
     `\n${normalizeBody(body)}\n`,
@@ -29,11 +30,15 @@ export function mergeCopilotBodyIntoTeamMd(
   existingTeamMd: string | null,
 ): string {
   const body = normalizeBody(splitFrontmatter(rawCopilotInstructions).body);
+
   if (existingTeamMd === null) return `${body}\n`;
 
   const existing = splitFrontmatter(existingTeamMd);
+
   if (normalizeBody(existing.body) === body) return existingTeamMd;
+
   if (!existing.raw) return `${body}\n`;
+
   return `${existing.raw.endsWith('\n') ? existing.raw : `${existing.raw}\n`}\n${body}\n`;
 }
 

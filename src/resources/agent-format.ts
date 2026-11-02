@@ -31,6 +31,7 @@ export function agentStemFromFilename(filename: string): string | null {
   for (const ext of AGENT_FILE_EXTENSIONS) {
     if (filename.endsWith(ext)) return filename.slice(0, -ext.length);
   }
+
   return null;
 }
 
@@ -101,6 +102,7 @@ export type ParseResult =
  */
 export function parseAgentYaml(content: string, filename: string): ParseResult {
   let raw: unknown;
+
   try {
     raw = parseYaml(content);
   } catch (err) {
@@ -212,13 +214,17 @@ function isManagedKiroSessionHook(value: unknown): boolean {
  */
 export function renderForKiro(spec: AgentSpec): RenderResult {
   const extras = { ...spec.tool_extras?.['kiro'] };
+
   if (isRecord(extras['hooks'])) {
     const hooks = { ...extras['hooks'] };
+
     if (Array.isArray(hooks['agentSpawn'])) {
       const kept = hooks['agentSpawn'].filter((entry) => !isManagedKiroSessionHook(entry));
+
       if (kept.length === 0) delete hooks['agentSpawn'];
       else hooks['agentSpawn'] = kept;
     }
+
     if (Object.keys(hooks).length > 0) extras['hooks'] = hooks;
     else delete extras['hooks'];
   }
@@ -228,7 +234,9 @@ export function renderForKiro(spec: AgentSpec): RenderResult {
     description: spec.description,
     prompt: spec.instructions,
   };
+
   if (spec.model !== undefined) json['model'] = spec.model;
+
   if (spec.tools !== undefined && spec.tools.length > 0) json['tools'] = spec.tools;
   Object.assign(json, extras);
 
@@ -258,20 +266,26 @@ export function renderForCursor(spec: AgentSpec): RenderResult {
     agent_id: spec.name,
     description: spec.description,
   };
+
   if (spec.model !== undefined) {
     frontmatterData['model'] = spec.model;
   }
+
   if (spec.tools !== undefined && spec.tools.length > 0) {
     frontmatterData['tools'] = spec.tools;
   }
+
   // Flatten tool_extras.cursor into frontmatter
   const extras = spec.tool_extras?.['cursor'];
+
   if (extras) {
     for (const [key, value] of Object.entries(extras)) {
       frontmatterData[key] = value;
     }
   }
+
   const content = matter.stringify(spec.instructions, frontmatterData);
+
   return { ext: agentFileExtensionForTool('cursor'), content };
 }
 
@@ -304,6 +318,7 @@ function normalizeCopilotTools(tools: string[] | string): string[] {
   const values = Array.isArray(tools)
     ? tools
     : tools.split(',').map((tool) => tool.trim()).filter(Boolean);
+
   return [...new Set(values.map((tool) => COPILOT_TOOL_ALIASES.get(tool.toLowerCase()) ?? tool))];
 }
 
@@ -313,9 +328,12 @@ export function renderForCopilot(spec: AgentSpec): RenderResult {
     name: spec.name,
     description: spec.description,
   };
+
   if (spec.model !== undefined) frontmatterData['model'] = spec.model;
+
   if (spec.tools !== undefined) frontmatterData['tools'] = normalizeCopilotTools(spec.tools);
   Object.assign(frontmatterData, spec.tool_extras?.copilot ?? {});
+
   return {
     ext: agentFileExtensionForTool('copilot'),
     content: matter.stringify(spec.instructions, frontmatterData),
@@ -337,6 +355,7 @@ const MUSE_TOOLS = new Set([
   'subagent_status', 'subagent_wait', 'update_goal', 'web_fetch', 'web_search', 'work_list', 'work_status',
   'work_stop', 'workflow', 'write_file', 'write_todos',
 ]);
+
 const MUSE_TOOL_ALIASES = new Map<string, string>([
   ['read', 'read_file'],
   ['write', 'write_file'],
@@ -356,19 +375,24 @@ const MUSE_TOOL_ALIASES = new Map<string, string>([
 function museTools(tools: unknown): { kept: string[]; dropped: string[] } {
   const names = Array.isArray(tools) ? tools.map(String)
     : typeof tools === 'string' ? tools.split(',').map((tool) => tool.trim()).filter(Boolean) : [];
+
   const kept = new Set<string>();
   const dropped: string[] = [];
+
   for (const name of names) {
     const muse = MUSE_TOOLS.has(name) ? name : MUSE_TOOL_ALIASES.get(name.toLowerCase());
+
     if (muse) kept.add(muse);
     else dropped.push(name);
   }
+
   return { kept: [...kept], dropped };
 }
 
 /** What the Muse Code render of `spec` leaves out: tools it has no tool for, and `tool_extras.muse` keys it rejects. */
 export function museAgentDrops(spec: AgentSpec): { tools: string[]; extras: string[] } {
   const extras = spec.tool_extras?.muse ?? {};
+
   return {
     tools: museTools(extras.tools ?? spec.tools).dropped,
     extras: Object.keys(extras).filter((key) => !MUSE_AGENT_KEYS.has(key)),
@@ -379,13 +403,16 @@ export function museAgentDrops(spec: AgentSpec): { tools: string[]; extras: stri
 export function renderForMuse(spec: AgentSpec): RenderResult {
   const extras = Object.fromEntries(Object.entries(spec.tool_extras?.muse ?? {}).filter(([key]) => MUSE_AGENT_KEYS.has(key)));
   const frontmatterData: Record<string, unknown> = { name: spec.name, description: spec.description };
+
   if (spec.model !== undefined) frontmatterData['model'] = spec.model;
   Object.assign(frontmatterData, extras);
   // Muse gives an agent with no `tools` every tool, so one that limits its
   // tools keeps the limit, as `tools: []` when Muse has none of them.
   const requested = extras.tools ?? spec.tools;
+
   if (requested !== undefined && requested !== null) frontmatterData['tools'] = museTools(requested).kept;
   else delete frontmatterData['tools'];
+
   return { ext: agentFileExtensionForTool('muse'), content: matter.stringify(spec.instructions, frontmatterData) };
 }
 
@@ -398,19 +425,24 @@ export function renderForMuse(spec: AgentSpec): RenderResult {
  */
 export function renderForAgy(spec: AgentSpec, resolved?: ResolvedAgentModel): RenderResult {
   const frontmatterData: Record<string, unknown> = { name: spec.name, description: spec.description };
+
   if (resolved?.model !== undefined) frontmatterData['model'] = resolved.model;
   const tools = agyToolsFor(spec.tools);
+
   if (tools.length > 0) frontmatterData['tools'] = tools;
   Object.assign(frontmatterData, spec.tool_extras?.agy);
+
   return { ext: agentFileExtensionForTool('agy'), content: matter.stringify(spec.instructions, frontmatterData) };
 }
 
 /** Reverse an agy agent: its `model` and `tools` are agy's own, so they go back as `tool_extras.agy`, never the team's. */
 export function reverseFromAgy(filePath: string, content: string): ReverseResult {
   const result = reverseFromClaude(filePath, content);
+
   if (!result.ok) return result;
   const { model, tools, tool_extras, ...spec } = result.spec;
   const extras = { ...tool_extras?.['claude'], ...(model !== undefined ? { model } : {}), ...(tools !== undefined ? { tools } : {}) };
+
   return { ok: true, spec: Object.keys(extras).length > 0 ? { ...spec, tool_extras: { agy: extras } } : spec };
 }
 
@@ -422,12 +454,16 @@ export function agentRejection({ tool, name, spec, scope }: {
   readonly tool: string; readonly name: string; readonly spec: AgentSpec | undefined; readonly scope: Scope;
 }): string | null {
   if (tool !== 'trae' && tool !== 'trae-cn') return null;
+
   if (!TRAE_AGENT_NAME.test(name)) {
     return 'Trae loads a subagent only when its name starts with a letter, holds only letters, digits and -, ends with a letter or digit, and is at most 50 characters.';
   }
+
   const clashes = scope === 'user' || spec === undefined ? [] : traeExtrasClashes(spec);
+
   if (clashes.length === 0) return null;
   const pairs = clashes.map((key) => `tool_extras.trae.${key} and tool_extras.trae-cn.${key}`).join(', ');
+
   return `Trae and Trae CN read one project file, and ${pairs} differ. Give both editions the same value, or set it for one edition only.`;
 }
 
@@ -435,12 +471,14 @@ export function agentRejection({ tool, name, spec, scope }: {
 function traeEditionExtras(spec: AgentSpec): { readonly trae: Record<string, unknown>; readonly cn: Record<string, unknown> } {
   const { model: _trae, ...trae } = spec.tool_extras?.['trae'] ?? {};
   const { model: _cn, ...cn } = spec.tool_extras?.['trae-cn'] ?? {};
+
   return { trae, cn };
 }
 
 /** The `tool_extras` keys the two Trae editions give different values, which their shared project file cannot carry. */
 export function traeExtrasClashes(spec: AgentSpec): string[] {
   const { trae, cn } = traeEditionExtras(spec);
+
   return Object.keys(trae).filter((key) => key in cn && !isDeepStrictEqual(trae[key], cn[key]));
 }
 
@@ -457,21 +495,26 @@ function renderForTrae(spec: AgentSpec, tool: 'trae' | 'trae-cn', resolved: Reso
   const { tools, ...rest } = withModel(spec, isUser ? resolved?.model : undefined);
   const { trae, cn } = traeEditionExtras(spec);
   const joined = traeTools(tools);
+
   return renderMarkdownAgent(rest, isUser ? toolExtrasFor(spec, tool) : { ...cn, ...trae }, joined === undefined ? undefined : { tools: joined });
 }
 
 /** Trae gives an agent with no `tools` every tool, and one with `tools: ''` none. */
 function traeTools(tools: string[] | string | undefined): string | undefined {
   if (tools === undefined) return undefined;
+
   return Array.isArray(tools) ? tools.join(', ') : tools;
 }
 
 /** Reverse a Trae subagent: Claude's Markdown, with `tools` a comma-separated string. */
 export function reverseFromTrae(filePath: string, content: string): ReverseResult {
   const result = reverseFromClaude(filePath, content);
+
   if (!result.ok) return result;
   const tools: unknown = result.spec.tools;
+
   if (typeof tools === 'string') result.spec.tools = tools.split(',').map((tool) => tool.trim()).filter(Boolean);
+
   return result;
 }
 
@@ -489,19 +532,24 @@ export function renderForOpencode(spec: AgentSpec, resolved?: Record<string, unk
     description: spec.description,
     mode: 'subagent',
   };
+
   if (spec.model !== undefined) {
     frontmatterData['model'] = spec.model;
   }
+
   // Resolved fields go before the extras, so an extras value overrides them.
   Object.assign(frontmatterData, resolved);
   // Flatten tool_extras.opencode into frontmatter (mode/permission/temperature/…).
   const extras = spec.tool_extras?.['opencode'];
+
   if (extras) {
     for (const [key, value] of Object.entries(extras)) {
       frontmatterData[key] = value;
     }
   }
+
   const content = matter.stringify(spec.instructions, frontmatterData);
+
   return { ext: agentFileExtensionForTool('opencode'), content };
 }
 
@@ -515,20 +563,25 @@ function renderMarkdownAgent(spec: AgentSpec, extras?: Record<string, unknown>, 
     name: spec.name,
     description: spec.description,
   };
+
   if (spec.model !== undefined) {
     frontmatterData['model'] = spec.model;
   }
+
   if (spec.tools !== undefined && spec.tools.length > 0) {
     frontmatterData['tools'] = spec.tools;
   }
+
   // Resolved fields go before the extras, so an extras value overrides them.
   Object.assign(frontmatterData, resolved);
+
   // Flatten tool-private extras into frontmatter
   if (extras) {
     for (const [key, value] of Object.entries(extras)) {
       frontmatterData[key] = value;
     }
   }
+
   return matter.stringify(spec.instructions, frontmatterData);
 }
 
@@ -546,12 +599,16 @@ function renderMarkdownAgent(spec: AgentSpec, extras?: Record<string, unknown>, 
  */
 function canUseTomlLiteral(value: string): boolean {
   if (!value.includes('\n')) return false;
+
   if (value.includes("'''")) return false;
+
   if (value.endsWith("'")) return false;
+
   // Control characters a literal string cannot carry (`\r`, NUL, DEL, ...):
   // TOML 1.0 bans C0 other than tab and newline, plus DEL, and smol-toml
   // rejects the whole document on them. C1 (U+0080-U+009F) is allowed.
   if (/(?![\t\n\u0080-\u009f])\p{Cc}/u.test(value)) return false;
+
   return true;
 }
 
@@ -578,25 +635,32 @@ function renderTomlAgent(spec: AgentSpec, extras?: Record<string, unknown>, reso
     description: spec.description,
     developer_instructions: spec.instructions,
   };
+
   if (spec.model !== undefined) {
     tomlData['model'] = spec.model;
   }
+
   // Resolved fields go before the extras, so an extras value overrides them.
   Object.assign(tomlData, resolved);
+
   // Flatten tool-private extras into top-level TOML fields
   if (extras) {
     for (const [key, value] of Object.entries(extras)) {
       tomlData[key] = value;
     }
   }
+
   // Render first, then substitute: a literal string is emitted verbatim, so the
   // multi-line values have to bypass `stringify` rather than be post-processed.
   const rendered = stringifyToml(tomlData);
+
   return Object.entries(tomlData)
     .reduce((text, [key, value]) => {
       if (typeof value !== 'string' || !canUseTomlLiteral(value)) return text;
       const escaped = `${key} = ${JSON.stringify(value)}\n`;
+
       if (!text.includes(escaped)) return text;
+
       // A function replacement, not a string: the value is agent-authored
       // content, and a string replacement would let the $-sequences
       // ($&, $$, $', $`) expand inside it, silently eating dollars out of
@@ -618,6 +682,7 @@ const COMMON_CURSOR_FIELDS = new Set(['agent_id', 'description', 'model', 'tools
 const COMMON_COPILOT_FIELDS = new Set(['name', 'description', 'model', 'tools']);
 const COMMON_CODEX_FIELDS = new Set(['name', 'description', 'developer_instructions', 'model']);
 const COMMON_KIRO_FIELDS = new Set(['name', 'description', 'prompt', 'model', 'tools']);
+
 // `mode` is not carried to the AgentSpec root — it is an OpenCode-only concept
 // (teamai always renders `subagent`), so it round-trips through tool_extras.opencode.
 const COMMON_OPENCODE_FIELDS = new Set(['description', 'model']);
@@ -631,6 +696,7 @@ const COMMON_OPENCODE_FIELDS = new Set(['description', 'model']);
  */
 export function reverseFromClaude(filePath: string, content: string): ReverseResult {
   let parsed: matter.GrayMatterFile<string>;
+
   try {
     parsed = matter(content);
   } catch (err) {
@@ -641,12 +707,16 @@ export function reverseFromClaude(filePath: string, content: string): ReverseRes
   const body = parsed.content.trim();
 
   const name = (fm['name'] as string | undefined) ?? path.basename(filePath, '.md');
+
   if (!name) return { ok: false, reason: 'missing field name' };
+
   if (!fm['description']) return { ok: false, reason: 'missing field description' };
+
   if (!body) return { ok: false, reason: 'missing field instructions (empty body)' };
 
   // Collect non-common frontmatter fields as tool_extras
   const extras: Record<string, unknown> = {};
+
   for (const [key, value] of Object.entries(fm)) {
     if (!COMMON_CLAUDE_FIELDS.has(key)) {
       extras[key] = value;
@@ -658,8 +728,11 @@ export function reverseFromClaude(filePath: string, content: string): ReverseRes
     description: fm['description'] as string,
     instructions: body,
   };
+
   if (fm['model'] !== undefined) spec.model = fm['model'] as string;
+
   if (fm['tools'] !== undefined) spec.tools = fm['tools'] as string[];
+
   if (Object.keys(extras).length > 0) spec.tool_extras = { claude: extras };
 
   return { ok: true, spec };
@@ -668,6 +741,7 @@ export function reverseFromClaude(filePath: string, content: string): ReverseRes
 /** Reverse a Copilot `.agent.md` profile into TeamAI's canonical agent spec. */
 export function reverseFromCopilot(filePath: string, content: string): ReverseResult {
   let parsed: matter.GrayMatterFile<string>;
+
   try {
     parsed = matter(content);
   } catch (err) {
@@ -678,22 +752,31 @@ export function reverseFromCopilot(filePath: string, content: string): ReverseRe
   const body = parsed.content.trim();
   const stem = agentStemFromFilename(path.basename(filePath));
   const name = (fm['name'] as string | undefined) ?? stem;
+
   if (!name) return { ok: false, reason: 'missing field name' };
+
   if (!fm['description']) return { ok: false, reason: 'missing field description' };
+
   if (!body) return { ok: false, reason: 'missing field instructions (empty body)' };
 
   const extras: Record<string, unknown> = {};
+
   for (const [key, value] of Object.entries(fm)) {
     if (!COMMON_COPILOT_FIELDS.has(key)) extras[key] = value;
   }
+
   const spec: AgentSpec = {
     name,
     description: fm['description'] as string,
     instructions: body,
   };
+
   if (fm['model'] !== undefined) spec.model = fm['model'] as string;
+
   if (fm['tools'] !== undefined) spec.tools = fm['tools'] as string[];
+
   if (Object.keys(extras).length > 0) spec.tool_extras = { copilot: extras };
+
   return { ok: true, spec };
 }
 
@@ -703,13 +786,16 @@ export function reverseFromCopilot(filePath: string, content: string): ReverseRe
  */
 export function reverseFromCodebuddy(filePath: string, content: string): ReverseResult {
   const result = reverseFromClaude(filePath, content);
+
   if (!result.ok) return result;
 
   const spec = result.spec;
+
   // Move extras from 'claude' to 'codebuddy'
   if (spec.tool_extras?.['claude']) {
     spec.tool_extras = { codebuddy: spec.tool_extras['claude'] };
   }
+
   return { ok: true, spec };
 }
 
@@ -720,12 +806,15 @@ export function reverseFromCodebuddy(filePath: string, content: string): Reverse
  */
 export function reverseFromJoycode(filePath: string, content: string): ReverseResult {
   const result = reverseFromClaude(filePath, content);
+
   if (!result.ok) return result;
 
   const spec = result.spec;
+
   if (spec.tool_extras?.['claude']) {
     spec.tool_extras = { joycode: spec.tool_extras['claude'] };
   }
+
   return { ok: true, spec };
 }
 
@@ -735,13 +824,16 @@ export function reverseFromJoycode(filePath: string, content: string): ReverseRe
  */
 export function reverseFromWorkbuddy(filePath: string, content: string): ReverseResult {
   const result = reverseFromClaude(filePath, content);
+
   if (!result.ok) return result;
 
   const spec = result.spec;
+
   // Move extras from 'claude' to 'workbuddy'
   if (spec.tool_extras?.['claude']) {
     spec.tool_extras = { workbuddy: spec.tool_extras['claude'] };
   }
+
   return { ok: true, spec };
 }
 
@@ -752,10 +844,12 @@ export function reverseFromWorkbuddy(filePath: string, content: string): Reverse
  */
 export function reverseFromMuse(filePath: string, content: string): ReverseResult {
   const result = reverseFromClaude(filePath, content);
+
   if (!result.ok) return result;
 
   const { tools, tool_extras, ...spec } = result.spec;
   const extras = { ...tool_extras?.['claude'], ...(tools !== undefined ? { tools } : {}) };
+
   return { ok: true, spec: Object.keys(extras).length > 0 ? { ...spec, tool_extras: { muse: extras } } : spec };
 }
 
@@ -766,8 +860,10 @@ export function reverseFromMuse(filePath: string, content: string): ReverseResul
  */
 export function reverseFromKiro(filePath: string, content: string): ReverseResult {
   let parsed: Record<string, unknown>;
+
   try {
     const raw = JSON.parse(content) as unknown;
+
     if (!isRecord(raw)) return { ok: false, reason: 'agent config must be a JSON object' };
     parsed = raw;
   } catch (err) {
@@ -775,22 +871,29 @@ export function reverseFromKiro(filePath: string, content: string): ReverseResul
   }
 
   const name = (parsed['name'] as string | undefined) ?? path.basename(filePath, '.json');
+
   if (!name) return { ok: false, reason: 'missing field name' };
+
   if (!parsed['description']) return { ok: false, reason: 'missing field description' };
+
   if (!parsed['prompt']) return { ok: false, reason: 'missing field prompt' };
 
   const extras: Record<string, unknown> = {};
+
   for (const [key, value] of Object.entries(parsed)) {
     if (!COMMON_KIRO_FIELDS.has(key)) extras[key] = value;
   }
 
   if (isRecord(extras['hooks'])) {
     const hooks = { ...extras['hooks'] };
+
     if (Array.isArray(hooks['agentSpawn'])) {
       const remaining = hooks['agentSpawn'].filter((entry) => !isManagedKiroSessionHook(entry));
+
       if (remaining.length > 0) hooks['agentSpawn'] = remaining;
       else delete hooks['agentSpawn'];
     }
+
     if (Object.keys(hooks).length > 0) extras['hooks'] = hooks;
     else delete extras['hooks'];
   }
@@ -800,9 +903,13 @@ export function reverseFromKiro(filePath: string, content: string): ReverseResul
     description: parsed['description'] as string,
     instructions: parsed['prompt'] as string,
   };
+
   if (parsed['model'] !== undefined) spec.model = parsed['model'] as string;
+
   if (parsed['tools'] !== undefined) spec.tools = parsed['tools'] as string[];
+
   if (Object.keys(extras).length > 0) spec.tool_extras = { kiro: extras };
+
   return { ok: true, spec };
 }
 
@@ -815,6 +922,7 @@ export function reverseFromKiro(filePath: string, content: string): ReverseResul
  */
 export function reverseFromCodex(filePath: string, content: string): ReverseResult {
   let parsed: Record<string, unknown>;
+
   try {
     parsed = parseToml(content) as Record<string, unknown>;
   } catch (err) {
@@ -822,12 +930,16 @@ export function reverseFromCodex(filePath: string, content: string): ReverseResu
   }
 
   const name = (parsed['name'] as string | undefined) ?? path.basename(filePath, '.toml');
+
   if (!name) return { ok: false, reason: 'missing field name' };
+
   if (!parsed['description']) return { ok: false, reason: 'missing field description' };
+
   if (!parsed['developer_instructions']) return { ok: false, reason: 'missing field developer_instructions' };
 
   // Collect non-common fields as tool_extras
   const extras: Record<string, unknown> = {};
+
   for (const [key, value] of Object.entries(parsed)) {
     if (!COMMON_CODEX_FIELDS.has(key)) {
       extras[key] = value;
@@ -839,7 +951,9 @@ export function reverseFromCodex(filePath: string, content: string): ReverseResu
     description: parsed['description'] as string,
     instructions: parsed['developer_instructions'] as string,
   };
+
   if (parsed['model'] !== undefined) spec.model = parsed['model'] as string;
+
   if (Object.keys(extras).length > 0) spec.tool_extras = { codex: extras };
 
   return { ok: true, spec };
@@ -851,6 +965,7 @@ export function reverseFromCodex(filePath: string, content: string): ReverseResu
  */
 export function reverseFromCursor(filePath: string, content: string): ReverseResult {
   let parsed: matter.GrayMatterFile<string>;
+
   try {
     parsed = matter(content);
   } catch (err) {
@@ -861,12 +976,16 @@ export function reverseFromCursor(filePath: string, content: string): ReverseRes
   const body = parsed.content.trim();
 
   const name = (fm['agent_id'] as string | undefined) ?? path.basename(filePath, '.md');
+
   if (!name) return { ok: false, reason: 'missing field agent_id' };
+
   if (!fm['description']) return { ok: false, reason: 'missing field description' };
+
   if (!body) return { ok: false, reason: 'missing field instructions (empty body)' };
 
   // Collect non-common frontmatter fields as tool_extras
   const extras: Record<string, unknown> = {};
+
   for (const [key, value] of Object.entries(fm)) {
     if (!COMMON_CURSOR_FIELDS.has(key)) {
       extras[key] = value;
@@ -878,8 +997,11 @@ export function reverseFromCursor(filePath: string, content: string): ReverseRes
     description: fm['description'] as string,
     instructions: body,
   };
+
   if (fm['model'] !== undefined) spec.model = fm['model'] as string;
+
   if (fm['tools'] !== undefined) spec.tools = fm['tools'] as string[];
+
   if (Object.keys(extras).length > 0) spec.tool_extras = { cursor: extras };
 
   return { ok: true, spec };
@@ -893,6 +1015,7 @@ export function reverseFromCursor(filePath: string, content: string): ReverseRes
  */
 export function reverseFromOpencode(filePath: string, content: string): ReverseResult {
   let parsed: matter.GrayMatterFile<string>;
+
   try {
     parsed = matter(content);
   } catch (err) {
@@ -903,12 +1026,16 @@ export function reverseFromOpencode(filePath: string, content: string): ReverseR
   const body = parsed.content.trim();
 
   const name = path.basename(filePath, '.md');
+
   if (!name) return { ok: false, reason: 'missing agent name (empty filename)' };
+
   if (!fm['description']) return { ok: false, reason: 'missing field description' };
+
   if (!body) return { ok: false, reason: 'missing field instructions (empty body)' };
 
   // Collect non-common frontmatter fields as tool_extras
   const extras: Record<string, unknown> = {};
+
   for (const [key, value] of Object.entries(fm)) {
     if (!COMMON_OPENCODE_FIELDS.has(key)) {
       extras[key] = value;
@@ -920,7 +1047,9 @@ export function reverseFromOpencode(filePath: string, content: string): ReverseR
     description: fm['description'] as string,
     instructions: body,
   };
+
   if (fm['model'] !== undefined) spec.model = fm['model'] as string;
+
   if (Object.keys(extras).length > 0) spec.tool_extras = { opencode: extras };
 
   return { ok: true, spec };
@@ -962,9 +1091,11 @@ export function mergeReverseResults(
   perTool: Partial<Record<ToolName, AgentSpec>>,
 ): MergeResult {
   const entries = Object.entries(perTool) as Array<[ToolName, AgentSpec]>;
+
   if (entries.length === 0) {
     return { ok: false, conflicts: [{ field: 'all', values: {} }] };
   }
+
   if (entries.length === 1) {
     return { ok: true, spec: entries[0][1] };
   }
@@ -974,16 +1105,20 @@ export function mergeReverseResults(
   // Check each common field for discrepancies
   for (const field of MERGE_COMMON_FIELDS) {
     const valuesByTool: Record<string, unknown> = {};
+
     for (const [tool, spec] of entries) {
       const value = spec[field];
+
       if (value !== undefined) {
         valuesByTool[tool] = value;
       }
     }
+
     if (Object.keys(valuesByTool).length === 0) continue;
 
     // Normalize: convert to JSON for deep comparison
     const uniqueValues = new Set(Object.values(valuesByTool).map((v) => JSON.stringify(v)));
+
     if (uniqueValues.size > 1) {
       conflicts.push({ field, values: valuesByTool });
     }
@@ -1003,6 +1138,7 @@ export function mergeReverseResults(
         if (!mergedExtras[toolKey]) {
           mergedExtras[toolKey] = {};
         }
+
         Object.assign(mergedExtras[toolKey]!, extras);
       }
     }
@@ -1032,6 +1168,7 @@ export const EXTRAS_BASE_TOOL: Readonly<Partial<Record<ToolName, ToolName>>> = {
 export function toolExtrasFor(spec: AgentSpec, tool: ToolName): Record<string, unknown> | undefined {
   const extras = spec.tool_extras;
   const base = EXTRAS_BASE_TOOL[tool];
+
   return base ? { ...extras?.[base], ...extras?.[tool] } : extras?.[tool];
 }
 
@@ -1044,9 +1181,12 @@ export function toolExtrasFor(spec: AgentSpec, tool: ToolName): Record<string, u
 export function inheritedExtras(spec: AgentSpec, tool: ToolName, scope: Scope | undefined): { readonly from: ToolName; readonly extras: Record<string, unknown> } | undefined {
   if (scope !== 'user' && (tool === 'trae' || tool === 'trae-cn')) {
     const { trae, cn } = traeEditionExtras(spec);
+
     return tool === 'trae' ? { from: 'trae-cn', extras: cn } : { from: 'trae', extras: trae };
   }
+
   const base = EXTRAS_BASE_TOOL[tool];
+
   return base === undefined ? undefined : { from: base, extras: spec.tool_extras?.[base] ?? {} };
 }
 
@@ -1094,6 +1234,7 @@ export function renderForTool(spec: AgentSpec, tool: ToolName, resolved?: Resolv
   const effortField = agentEffortField(tool);
   const fields = effortField && resolved?.effort !== undefined ? { [effortField]: resolved.effort } : undefined;
   const ext = agentFileExtensionForTool(tool);
+
   switch (tool) {
     case 'claude':
     case 'claude-internal':
@@ -1125,6 +1266,7 @@ export function renderForTool(spec: AgentSpec, tool: ToolName, resolved?: Resolv
 
 function withModel(spec: AgentSpec, model: string | undefined): AgentSpec {
   const { model: _replaced, ...rest } = spec;
+
   return model === undefined ? rest : { ...rest, model };
 }
 
@@ -1135,7 +1277,9 @@ function withModel(spec: AgentSpec, model: string | undefined): AgentSpec {
 export function reverseByTool(tool: ToolName, filePath: string, content: string): ReverseResult {
   const result = reverseByParser(tool, filePath, content);
   const extras = result.ok ? Object.values(result.spec.tool_extras ?? {})[0] : undefined;
+
   if (result.ok && extras) result.spec.tool_extras = { [tool]: extras };
+
   return result;
 }
 

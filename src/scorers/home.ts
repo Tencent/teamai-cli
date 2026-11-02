@@ -8,6 +8,8 @@ import { getDataHome, isSelfMode, type LocalConfig } from '../types.js';
 export function scoringUnavailable(config: LocalConfig): string | undefined {
   if (config.scope !== 'project' || isSelfMode(config) || !config.projectRoot) return undefined;
   const legacy = path.join(config.projectRoot, '.teamai');
+
   if (path.resolve(getDataHome(config)) !== path.resolve(legacy)) return undefined;
+
   return `Scoring is off for this project: its teamai data is still in ${legacy}, inside the repository, where judge evidence would land. Run teamai pull to move it to ~/.teamai/projects/, then score again.`;
 }

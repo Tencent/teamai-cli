@@ -4,5 +4,6 @@ export function shouldRegisterSessionFlowCommands(
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
   if (env.TEAMAI_COMMAND_TABLE_ONLY) return true;
+
   return argv.includes('session');
 }

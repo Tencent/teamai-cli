@@ -60,6 +60,7 @@ export interface ImageBlock {
 export function imagePlaceholderText(block: ImageBlock): string {
   const sizeKb = block.data ? Math.round((block.data.length * 3) / 4 / 1024) : null;
   const sizePart = sizeKb !== null ? `, ${sizeKb}KB` : '';
+
   return `[image: ${block.label ?? 'image'}${sizePart}]`;
 }
 
@@ -88,6 +89,7 @@ export function blockToDict(block: ContentBlock): Record<string, unknown> {
 
 export function blockFromDict(data: Record<string, unknown>): ContentBlock {
   const t = data.type as string;
+
   switch (t) {
     case 'text':
       return { type: 'text', text: String(data.text ?? '') };
@@ -153,6 +155,7 @@ export function messageToDict(msg: Message): Record<string, unknown> {
 
 export function messageFromDict(data: Record<string, unknown>): Message {
   const rawContent = (data.content as Array<Record<string, unknown>>) ?? [];
+
   return {
     role: data.role as 'user' | 'assistant',
     content: rawContent.map(blockFromDict),
@@ -202,6 +205,7 @@ export function sessionToDict(session: Session): Record<string, unknown> {
 
 export function sessionFromDict(data: Record<string, unknown>): Session {
   const rawMessages = (data.messages as Array<Record<string, unknown>>) ?? [];
+
   return {
     sessionId: String(data.sessionId ?? ''),
     title: String(data.title ?? ''),

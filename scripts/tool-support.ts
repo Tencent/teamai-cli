@@ -77,6 +77,7 @@ type Read = HomeRead | ProjectRead | FirstExistingRead;
 
 function file(path: string | CodebuddyConfigFile, base: 'home' | 'project'): string {
   if (typeof path !== 'string') return '`~/.codebuddy.json` (in `$CODEBUDDY_CONFIG_DIR` when set)';
+
   return base === 'home' ? `\`~/${path}\`` : `\`${path}\``;
 }
 
@@ -84,8 +85,10 @@ function read(entry: Read): string {
   const where = 'firstOf' in entry
     ? `first of ${entry.firstOf.map((path) => file(path, entry.base)).join(', ')}`
     : file(entry.path, entry.base);
+
   const when = 'when' in entry && entry.when === 'cwdOnly' ? ' cwd only'
     : 'when' in entry && entry.when === 'workspaceUnderHome' ? ' from a session under ~' : '';
+
   return `${where} ${EVIDENCE[entry.evidence]}${when}`;
 }
 
@@ -96,7 +99,9 @@ function reads(list: readonly Read[] | 'unknown'): string {
 /** A scope's channel: `—` and `?` as stated, else the places the tool reads. */
 function channel<C>(value: C | 'none' | 'unknown', render: (c: C) => string): string {
   if (value === 'none') return '—';
+
   if (value === 'unknown') return '?';
+
   return render(value);
 }
 
@@ -115,6 +120,7 @@ function homeMove(move: HomeMove, dir: string): string {
     case 'hermes-home': return `\`$HERMES_HOME\` \`~/${dir}$HERMES_DATA_DIR_SUFFIX\` \`%LOCALAPPDATA%\\hermes$HERMES_DATA_DIR_SUFFIX\` \`<home>/profiles/<active_profile>\``;
     default: {
       const unhandled: never = move;
+
       return unhandled;
     }
   }
@@ -122,6 +128,7 @@ function homeMove(move: HomeMove, dir: string): string {
 
 function home(descriptor: ToolDescriptor): string {
   const { dir, moves } = descriptor.home;
+
   return [`\`~/${moves?.root ?? dir}\``, ...(moves?.by.map((move) => homeMove(move, dir)) ?? [])].join(' ');
 }
 
@@ -139,14 +146,18 @@ function table(header: readonly string[], rows: readonly (readonly string[])[]):
 
 function agentsRead(d: ToolDescriptor, scope: 'user' | 'project'): string {
   const value = d.agents[scope];
+
   if (value === 'none') return '—';
+
   if (value === 'unknown') return '?';
   const result = reads(value.reads);
+
   return d === TOOLS.joycode ? `${result}<br>indexed by \`agent.json\`` : result;
 }
 
 function userRow(tool: ToolId, d: ToolDescriptor): string[] {
   const { hooks } = d;
+
   return [
     name(tool),
     home(d),
@@ -162,6 +173,7 @@ function userRow(tool: ToolId, d: ToolDescriptor): string[] {
 
 function projectRow(tool: ToolId, d: ToolDescriptor): string[] {
   const { hooks } = d;
+
   return [
     name(tool),
     reads(d.skills.project),
@@ -175,7 +187,9 @@ function projectRow(tool: ToolId, d: ToolDescriptor): string[] {
 
 function featureCell(support: Support, notes: string[]): string {
   if (typeof support === 'string') return support;
+
   if (!notes.includes(support.note)) notes.push(support.note);
+
   return `${support.cell}<sup>${notes.indexOf(support.note) + 1}</sup>`;
 }
 
@@ -186,6 +200,7 @@ export function renderToolSupportPage(lang: ToolSupportLang): string {
   const tools = Object.keys(DEFAULT_TOOL_PATHS).filter(isToolId).map((tool): [ToolId, ToolDescriptor] => [tool, TOOLS[tool]]);
   const notes: string[] = [];
   const featureRows = tools.map(([tool, d]) => [name(tool), ...FEATURE_KEYS.map((key) => featureCell(d.features[key], notes))]);
+
   return [
     text.title,
     '',

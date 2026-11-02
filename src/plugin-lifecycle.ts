@@ -71,6 +71,7 @@ export interface ReconcileDeps {
 const INSTALL_TIMEOUT_MS = 5 * 60 * 1000;
 const UPDATE_TIMEOUT_MS = 5 * 60 * 1000;
 const UNINSTALL_TIMEOUT_MS = 5 * 60 * 1000;
+
 /** Setup daemonizes quickly; allow 1 minute. */
 const RUN_TIMEOUT_MS = 60 * 1000;
 const FAILURE_COOLDOWN_MS = 10 * 60 * 1000;
@@ -92,6 +93,7 @@ const FAILURE_COOLDOWN_MS = 10 * 60 * 1000;
 export function commandFingerprint(d: PluginDescriptor): string {
   const sep = String.fromCharCode(0);
   const parts = [d.installCmd, d.updateCmd ?? '', d.runCmd];
+
   return createHash('sha256').update(parts.join(sep)).digest('hex');
 }
 
@@ -129,6 +131,7 @@ export async function reconcilePlugins(
   // Phase A: install / update / steady-state
   for (const d of desired) {
     const e = local[d.slug];
+
     try {
       if (!e || !e.ready) {
         // Not installed or previous attempt failed → try install (subject to cooldown)
@@ -136,6 +139,7 @@ export async function reconcilePlugins(
           deps.log.debug(`plugin ${d.slug}: in failure cooldown, skip`);
           continue;
         }
+
         deps.log.debug(`plugin ${d.slug}: installing${d.version ? ' version ' + d.version : ''}`);
         await deps.execCommand(d.installCmd, INSTALL_TIMEOUT_MS);
         await deps.execCommand(d.runCmd, RUN_TIMEOUT_MS);
@@ -149,10 +153,12 @@ export async function reconcilePlugins(
         // A stored fingerprint that no longer matches means the provisioning
         // commands (install/update/run, including launch args in runCmd) changed.
         const cmdChanged = e.cmdFingerprint !== undefined && e.cmdFingerprint !== currentFp;
+
         if (versionChanged || cmdChanged) {
           const reason = versionChanged
             ? `version ${e.version ?? '(unknown)'} -> ${d.version}`
             : 'command/launch-arg change';
+
           deps.log.debug(`plugin ${d.slug}: updating (${reason})`);
           await deps.execCommand(d.updateCmd ?? d.installCmd, UPDATE_TIMEOUT_MS);
           await deps.execCommand(d.runCmd, RUN_TIMEOUT_MS);
@@ -176,16 +182,19 @@ export async function reconcilePlugins(
       deps.log.warn(`plugin ${d.slug} reconcile failed: ${msg}`);
       await deps.mutatePlugins((m) => {
         const prev = m[d.slug];
+
         const base: PluginState = prev ?? {
           slug: d.slug,
           version: d.version,
           ready: false,
           uninstallCmd: d.uninstallCmd,
         };
+
         // Preserve ready=true if the plugin was already healthy (transient error)
         if (!prev || !prev.ready) {
           base.ready = false;
         }
+
         base.lastAttemptAt = new Date(deps.now()).toISOString();
         base.lastError = msg;
         m[d.slug] = base;
@@ -197,6 +206,7 @@ export async function reconcilePlugins(
   for (const slug of Object.keys(local)) {
     if (desiredSlugs.has(slug)) continue;
     const e = local[slug];
+
     try {
       deps.log.debug(`plugin ${slug}: uninstalling (removed from desired list)`);
       await deps.execCommand(e.uninstallCmd, UNINSTALL_TIMEOUT_MS);
@@ -218,6 +228,7 @@ export async function reconcilePlugins(
  */
 export async function teardownAllPlugins(deps: ReconcileDeps): Promise<void> {
   const plugins = await deps.readPlugins();
+
   for (const [slug, state] of Object.entries(plugins)) {
     try {
       deps.log.debug(`plugin ${slug}: tearing down`);
@@ -239,6 +250,7 @@ const PLUGIN_CMD_FIELDS = new Set([
   'run_cmd',
   'version',
 ]);
+
 const PLUGIN_VAR_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /**
@@ -254,17 +266,23 @@ const PLUGIN_VAR_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 export function parseGetConfig(resp: unknown): { vars: Record<string, string>; plugins: PluginDescriptor[] } {
   const vars: Record<string, string> = {};
   const plugins: PluginDescriptor[] = [];
+
   if (!resp || typeof resp !== 'object') return { vars, plugins };
+
   for (const [key, section] of Object.entries(resp as Record<string, unknown>)) {
     if (!section || typeof section !== 'object') continue;
     const s = section as Record<string, unknown>;
     const isStr = (v: unknown): v is string => typeof v === 'string' && v.length > 0;
+
     if (!isStr(s['install_cmd']) || !isStr(s['run_cmd']) || !isStr(s['uninstall_cmd'])) continue;
+
     for (const [field, value] of Object.entries(s)) {
       if (PLUGIN_CMD_FIELDS.has(field) || !PLUGIN_VAR_NAME.test(field)) continue;
+
       if (typeof value === 'number' && Number.isFinite(value)) vars[field] = String(value);
       else if (isStr(value)) vars[field] = value;
     }
+
     plugins.push({
       slug: key,
       version: isStr(s['version']) ? (s['version'] as string) : undefined,
@@ -274,6 +292,7 @@ export function parseGetConfig(resp: unknown): { vars: Record<string, string>; p
       runCmd: s['run_cmd'] as string,
     });
   }
+
   return { vars, plugins };
 }
 
@@ -287,8 +306,10 @@ export function substituteVars(cmd: string, vars: Record<string, string>): strin
 /** Return the list of unresolved ${...} placeholder names remaining in cmd. */
 export function unresolvedPlaceholders(cmd: string): string[] {
   const found = new Set<string>();
+
   for (const match of cmd.matchAll(/\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g)) {
     found.add(match[1]);
   }
+
   return [...found];
 }

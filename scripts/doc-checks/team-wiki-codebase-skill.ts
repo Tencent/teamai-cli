@@ -58,6 +58,7 @@ await check('does not point at GRAPH-CAPABILITIES.md', () => {
 await check('does not require standalone team-wiki CLI commands', () => {
   for (const file of SKILL_FILES) {
     const text = fs.readFileSync(file, 'utf8');
+
     for (const cmd of FORBIDDEN_REQUIRED_COMMANDS) {
       assert.ok(!text.includes(cmd), `${file} must not require ${cmd}`);
     }

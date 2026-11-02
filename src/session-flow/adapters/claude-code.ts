@@ -130,10 +130,13 @@ function uuidV4(): string {
  */
 function parseCcTimestamp(tsStr: string | undefined): string | undefined {
   if (!tsStr) return undefined;
+
   try {
     // Verify it parses
     const d = new Date(tsStr);
+
     if (isNaN(d.getTime())) return undefined;
+
     return tsStr;
   } catch {
     return undefined;
@@ -145,7 +148,9 @@ function parseCcTimestamp(tsStr: string | undefined): string | undefined {
  */
 function toCcTimestamp(isoStr: string | undefined): string {
   const d = isoStr ? new Date(isoStr) : new Date();
+
   if (isNaN(d.getTime())) return new Date().toISOString();
+
   return d.toISOString();
 }
 
@@ -162,6 +167,7 @@ function parseCcContentBlocks(content: unknown, toolResultImages: ImageBlock[] =
 
   if (typeof content === 'string') {
     blocks.push({ type: 'text', text: content });
+
     return blocks;
   }
 
@@ -189,22 +195,27 @@ function parseCcContentBlocks(content: unknown, toolResultImages: ImageBlock[] =
       });
     } else if (btype === 'tool_result') {
       let rawContent = b.content;
+
       if (Array.isArray(rawContent)) {
         const parts: string[] = [];
+
         for (const part of rawContent) {
           if (part && typeof part === 'object' && (part as Record<string, unknown>).type === 'text') {
             parts.push(String((part as Record<string, unknown>).text ?? ''));
           } else if (part && typeof part === 'object' && (part as Record<string, unknown>).type === 'image') {
             const image = parseCcImage(part as Record<string, unknown>);
+
             if (image) toolResultImages.push(image);
           } else if (typeof part === 'string') {
             parts.push(part);
           }
         }
+
         rawContent = parts.join('\n');
       } else if (typeof rawContent !== 'string') {
         rawContent = rawContent == null ? '' : String(rawContent);
       }
+
       blocks.push({
         type: 'tool_result',
         callId: String(b.tool_use_id ?? ''),
@@ -215,9 +226,11 @@ function parseCcContentBlocks(content: unknown, toolResultImages: ImageBlock[] =
       // Screenshot pasted into the input box.
       // If it is not parsed, the image never enters the IR or the target, yet fidelity still reports 100% (silent undercount).
       const image = parseCcImage(b);
+
       if (image) blocks.push(image);
     }
   }
+
   return blocks;
 }
 
@@ -228,7 +241,9 @@ function parseCcImage(b: Record<string, unknown>): ImageBlock | undefined {
   const src = b.source as Record<string, unknown> | undefined;
   const data = typeof src?.data === 'string' ? src.data : undefined;
   const url = typeof b.url === 'string' ? b.url : (typeof src?.url === 'string' ? src.url : undefined);
+
   if (!data && !url) return undefined;
+
   return {
     type: 'image',
     mimeType: String(src?.media_type ?? 'image/png'),
@@ -242,6 +257,7 @@ function parseCcImage(b: Record<string, unknown>): ImageBlock | undefined {
 /** Inline images have no filename; derive a readable placeholder from the mime type (used when writing back or degrading to a placeholder). */
 function guessImageLabel(mimeType: string): string {
   const ext = mimeType.split('/')[1]?.replace('jpeg', 'jpg') ?? 'png';
+
   return `image.${ext}`;
 }
 
@@ -277,6 +293,7 @@ function irBlockToCc(block: ContentBlock, session?: Session): Record<string, unk
       // CC natively supports base64 image blocks in user messages. When data is missing (the source file cannot be read),
       // read it from filePath; if that also fails, degrade to placeholder text and never drop the block silently.
       let data = block.data;
+
       // Untrusted sessions (restored from a team archive) must never read a
       // local path: an archived image block can point at any readable file,
       // and its contents would then be embedded into the restored session.
@@ -287,7 +304,9 @@ function irBlockToCc(block: ContentBlock, session?: Session): Record<string, unk
           data = undefined;
         }
       }
+
       if (!data) return { type: 'text', text: imagePlaceholderText(block) };
+
       return {
         type: 'image',
         source: { type: 'base64', media_type: block.mimeType, data },
@@ -340,26 +359,33 @@ export class ClaudeCodeAdapter extends AgentAdapter {
     if (projectPath) {
       return path.join(this.storageRoot, encodeCwdClaude(projectPath));
     }
+
     return this.storageRoot;
   }
 
   private findSessionFile(sessionId: string, projectPath?: string): string | null {
     if (projectPath) {
       const target = path.join(this.resolveProjectDir(projectPath), `${sessionId}.jsonl`);
+
       return fileExists(target) ? target : null;
     }
+
     // Walk every encoded directory
     if (!dirExists(this.storageRoot)) return null;
+
     for (const projDir of fs.readdirSync(this.storageRoot)) {
       const candidate = path.join(this.storageRoot, projDir, `${sessionId}.jsonl`);
+
       if (fileExists(candidate)) return candidate;
     }
+
     return null;
   }
 
   async listConversations(projectPath?: string): Promise<SessionMeta[]> {
     const metas: SessionMeta[] = [];
     const root = this.storageRoot;
+
     if (!dirExists(root)) return [];
 
     const projDirs = projectPath
@@ -369,12 +395,15 @@ export class ClaudeCodeAdapter extends AgentAdapter {
     for (const projDir of projDirs) {
       if (!dirExists(projDir)) continue;
       const cwd = bestEffortDecodeCwdClaude(path.basename(projDir)) ?? decodeCwdClaude(path.basename(projDir));
+
       for (const jsonlFile of fs.readdirSync(projDir).filter((f) => f.endsWith('.jsonl')).sort()) {
         const fullPath = path.join(projDir, jsonlFile);
         const meta = this.extractMeta(fullPath, cwd);
+
         if (meta) metas.push(meta);
       }
     }
+
     return metas;
   }
 
@@ -406,22 +435,27 @@ export class ClaudeCodeAdapter extends AgentAdapter {
 
         if (rtype === 'user' || rtype === 'assistant') {
           messageCount++;
+
           // The directory name decodes only when the path has no '-', '_', '.' or space; the record has the real one.
           if (recordedCwd === undefined && typeof record.cwd === 'string' && path.isAbsolute(record.cwd)) {
             recordedCwd = record.cwd;
           }
+
           if (rtype === 'user' && userTextCandidates.length < 5) {
             const msg = record.message as Record<string, unknown> | undefined;
             const content = msg?.content;
+
             if (typeof content === 'string') {
               userTextCandidates.push(content);
             } else if (Array.isArray(content)) {
               const parts: string[] = [];
+
               for (const block of content) {
                 if (block && typeof block === 'object' && (block as Record<string, unknown>).type === 'text') {
                   parts.push(String((block as Record<string, unknown>).text ?? ''));
                 }
               }
+
               if (parts.length) userTextCandidates.push(parts.join(' '));
             }
           }
@@ -433,16 +467,20 @@ export class ClaudeCodeAdapter extends AgentAdapter {
 
     // No record says when: date it by the file, so a damaged session does not sort as the newest.
     if (!createdAt) createdAt = fileModifiedAt(jsonlPath);
+
     if (!updatedAt) updatedAt = createdAt;
 
     // Title: summary line (that is what CC /resume uses) > unwrapped user text > id fallback.
     // Do not skip a whole message just because it is injected — mixed messages with an injection header such as <command-name>
     // followed by a real question would be dropped entirely; titleFromUserText unwraps <user_query> and strips metadata.
     title = summaryTitle ? cleanTitleText(summaryTitle) : '';
+
     if (!title) title = titleFromCandidates(userTextCandidates);
+
     if (!title) title = fallbackTitle(sessionId);
 
     let sizeBytes = 0;
+
     try {
       sizeBytes = fs.statSync(jsonlPath).size;
     } catch {
@@ -464,11 +502,13 @@ export class ClaudeCodeAdapter extends AgentAdapter {
 
   async readSession(ref: SessionReadRef): Promise<Session> {
     const jsonlPath = ref.filePath ?? this.findSessionFile(ref.sessionId, ref.projectPath);
+
     if (!jsonlPath) {
       throw new Error(
         `Claude Code session file not found: session_id=${ref.sessionId}, project_path=${ref.projectPath ?? 'undefined'}`,
       );
     }
+
     return this.readTranscript(jsonlPath, 'main');
   }
 
@@ -479,16 +519,22 @@ export class ClaudeCodeAdapter extends AgentAdapter {
    */
   async readSubagents(session: Session, ref: SessionReadRef): Promise<SubagentsRead> {
     const jsonlPath = ref.filePath ?? this.findSessionFile(session.sessionId, ref.projectPath);
+
     if (!jsonlPath) return { status: 'unread', reason: `The transcript of session ${session.sessionId} was not found again` };
     const dir = path.join(path.dirname(jsonlPath), path.basename(jsonlPath, '.jsonl'), 'subagents');
+
     if (!dirExists(dir)) return { status: 'read', agents: [] };
+
     const read = fs.readdirSync(dir).filter((name) => /^agent-.+\.jsonl$/.test(name)).sort().map((name) => {
       const meta = SubagentMetaSchema.safeParse(readJsonFile(path.join(dir, name.replace(/\.jsonl$/, '.meta.json'))));
       const agent = this.readTranscript(path.join(dir, name), 'subagent');
+
       return { agent, meta: meta.success ? meta.data : {} };
     });
+
     const ordered: Subagent[] = [];
     const placed = new Set<number>();
+
     const visit = (parent: Session, depth: number): void => {
       for (const callId of toolCallIds(parent)) {
         read.forEach((item, index) => {
@@ -499,10 +545,12 @@ export class ClaudeCodeAdapter extends AgentAdapter {
         });
       }
     };
+
     visit(session, 1);
     read.forEach((item, index) => {
       if (!placed.has(index)) ordered.push({ session: item.agent, depth: item.meta.spawnDepth ?? 1, finished: item.meta.finished === true });
     });
+
     return { status: 'read', agents: ordered };
   }
 
@@ -518,25 +566,33 @@ export class ClaudeCodeAdapter extends AgentAdapter {
     const rawRecords: Record<string, unknown>[] = [];
     let nativeCwd: string | undefined;
     let summaryTitle: string | undefined;
+
     for (const record of readJsonl(jsonlPath)) {
       const rtype = record.type as string;
+
       if (rtype === 'summary') {
         // Title line written by writeSession (CC /resume uses it too). If the read side ignores it,
         // the title drifts to the first user text after a roundtrip (which may be a leftover fragment after injection cleaning).
         const t = String(record.summary ?? '');
+
         if (t) summaryTitle = t; // Take the last one (writeSession appends it at the end of the file)
         continue;
       }
+
       if (SKIP_TYPES.has(rtype)) continue;
+
       if (rtype !== 'user' && rtype !== 'assistant') continue;
+
       // Every message record carries the real cwd (absolute path). Decoding the directory name is lossy
       // (`-` may come from `/` or a space), so the archive key (repoIdentity) must prefer
       // the native cwd in the record (design doc Key invariant); if recovery fails, fall back to the decoded directory name.
       if (nativeCwd === undefined && typeof record.cwd === 'string' && path.isAbsolute(record.cwd)) {
         nativeCwd = record.cwd;
       }
+
       rawRecords.push(record);
     }
+
     // The cwd in the record is sometimes an encoded directory name (`-Users-foo-project`), not a real path:
     // decode it back to the real workspace so migration can "keep the source session's workspace" rather than falling back to the current directory.
     const sessionCwd = nativeCwd ?? bestEffortDecodeCwdClaude(cwd) ?? cwd;
@@ -547,38 +603,50 @@ export class ClaudeCodeAdapter extends AgentAdapter {
     // Extract the title: prefer the summary title line (written on disk, and also used by CC /resume),
     // then unwrapped user text (mixed messages with an injection header plus a real question can still be unwrapped), and finally fall back to the id prefix.
     let title = summaryTitle ? cleanTitleText(summaryTitle) : '';
+
     if (!title) {
       const candidates: string[] = [];
+
       for (const msg of messages) {
         if (msg.role !== 'user') continue;
+
         for (const block of msg.content) {
           if (block.type === 'text' && block.text) candidates.push(block.text);
         }
+
         if (candidates.length >= 5) break;
       }
+
       title = titleFromCandidates(candidates);
     }
+
     if (!title) title = fallbackTitle(sessionId);
 
     // Timestamps
     let createdAt: string | undefined;
     let updatedAt: string | undefined;
+
     for (const record of rawRecords) {
       const ts = parseCcTimestamp(record.timestamp as string);
+
       if (ts) {
         if (!createdAt) createdAt = ts;
         updatedAt = ts;
       }
     }
+
     if (!createdAt) createdAt = new Date().toISOString();
+
     if (!updatedAt) updatedAt = createdAt;
 
     // Metadata
     const metadata: Record<string, unknown> = {};
+
     for (let i = rawRecords.length - 1; i >= 0; i--) {
       if (rawRecords[i].type === 'assistant') {
         const msg = rawRecords[i].message as Record<string, unknown> | undefined;
         const model = msg?.model as string | undefined;
+
         if (model) {
           metadata.model = model;
           break;
@@ -609,16 +677,20 @@ export class ClaudeCodeAdapter extends AgentAdapter {
 
     // uuid → record (main-chain records only)
     const uuidToRecord = new Map<string, Record<string, unknown>>();
+
     for (const record of mainChain) {
       const uid = record.uuid as string | undefined;
+
       if (uid) uuidToRecord.set(uid, record);
     }
 
     // parentUuid → children
     const childrenMap = new Map<string | null, Record<string, unknown>[]>();
     const roots: Record<string, unknown>[] = [];
+
     for (const record of mainChain) {
       const parent = (record.parentUuid as string | null | undefined) ?? null;
+
       if (parent === null) {
         roots.push(record);
       } else if (uuidToRecord.has(parent)) {
@@ -639,9 +711,12 @@ export class ClaudeCodeAdapter extends AgentAdapter {
     while (stack.length > 0) {
       const record = stack.pop()!;
       const uid = record.uuid as string | undefined;
+
       if (uid && visited.has(uid)) continue;
+
       if (uid) visited.add(uid);
       ordered.push(record);
+
       if (uid) {
         stack.push(...(childrenMap.get(uid) ?? []).toReversed());
       }
@@ -652,29 +727,37 @@ export class ClaudeCodeAdapter extends AgentAdapter {
     // Images returned by tools go in a user message of their own after the round's tool results
     // (Claude Code writes each parallel tool_result as its own record)
     let toolImages: ImageBlock[] = [];
+
     const flushToolImages = (timestamp?: string) => {
       if (toolImages.length === 0) return;
       messages.push({ role: 'user', content: toolImages, timestamp });
       toolImages = [];
     };
+
     for (const record of ordered) {
       const images: ImageBlock[] = [];
       const msg = this.recordToMessage(record, images);
+
       if (!msg) continue;
       const toolResultsOnly = msg.role === 'user' && msg.content.length > 0 && msg.content.every((b) => b.type === 'tool_result');
+
       if (!toolResultsOnly) flushToolImages(messages[messages.length - 1]?.timestamp);
       messages.push(msg);
       toolImages.push(...images);
     }
+
     flushToolImages(messages[messages.length - 1]?.timestamp);
+
     return messages;
   }
 
   private recordToMessage(record: Record<string, unknown>, toolResultImages?: ImageBlock[]): Message | null {
     const rtype = record.type as string;
+
     if (rtype !== 'user' && rtype !== 'assistant') return null;
 
     const msgObj = record.message as Record<string, unknown> | undefined;
+
     if (!msgObj || typeof msgObj !== 'object') return null;
 
     const content = msgObj.content;
@@ -685,11 +768,15 @@ export class ClaudeCodeAdapter extends AgentAdapter {
     const parentId = record.parentUuid as string | undefined;
 
     const metadata: Message['metadata'] = {};
+
     if (rtype === 'assistant') {
       const model = msgObj.model as string | undefined;
+
       if (model) metadata.model = model;
     }
+
     if (record.isMeta) metadata.isMeta = true;
+
     if (record.promptId) metadata.promptId = record.promptId as string;
 
     return {
@@ -708,11 +795,13 @@ export class ClaudeCodeAdapter extends AgentAdapter {
 
   async writeSession(session: Session, projectPath?: string): Promise<string> {
     const cwd = projectPath ?? session.cwd;
+
     const sessionId = deriveTargetSessionId({
       targetPlatform: this.platform,
       targetCwd: cwd,
       sourceSessionId: session.sessionId,
     });
+
     const projDir = path.join(this.storageRoot, encodeCwdClaude(cwd));
     const jsonlPath = path.join(projDir, `${sessionId}.jsonl`);
 
@@ -759,13 +848,16 @@ export class ClaudeCodeAdapter extends AgentAdapter {
 
       // Build content blocks
       const ccBlocks: Record<string, unknown>[] = [];
+
       for (const block of msg.content) {
         const ccBlock = irBlockToCc(block, session);
+
         if (ccBlock) ccBlocks.push(ccBlock);
       }
 
       // CC message object
       const ccMessage: Record<string, unknown> = { role: msg.role, content: ccBlocks };
+
       if (msg.role === 'assistant') {
         ccMessage.model = msg.metadata?.model ?? 'claude-sonnet-4-20250514';
       }
@@ -808,7 +900,9 @@ export class ClaudeCodeAdapter extends AgentAdapter {
         userType: 'external',
         entrypoint: 'cli',
       };
+
       if (msg.metadata?.isMeta) record.isMeta = true;
+
       if (msg.metadata?.promptId) record.promptId = msg.metadata.promptId;
 
       records.push(record);
@@ -851,6 +945,7 @@ export class ClaudeCodeAdapter extends AgentAdapter {
     // When it is missing, the list falls back to the session id prefix (for example 824ff784), which hits every migrated session.
     // The title read by the source adapter is already cleaned of injections, so persist it as-is.
     const summary = cleanTitleText(session.title ?? '') || fallbackTitle(sessionId);
+
     if (summary) {
       records.push({
         type: 'summary',
@@ -872,24 +967,31 @@ export class ClaudeCodeAdapter extends AgentAdapter {
   private findAllSessionFiles(sessionId: string, projectPath?: string): string[] {
     if (projectPath) {
       const target = path.join(this.resolveProjectDir(projectPath), `${sessionId}.jsonl`);
+
       return fileExists(target) ? [target] : [];
     }
+
     if (!dirExists(this.storageRoot)) return [];
     const out: string[] = [];
+
     for (const projDir of fs.readdirSync(this.storageRoot)) {
       const candidate = path.join(this.storageRoot, projDir, `${sessionId}.jsonl`);
+
       if (fileExists(candidate)) out.push(candidate);
     }
+
     return out;
   }
 
   async deleteSession(sessionId: string, projectPath?: string): Promise<boolean> {
     assertSafeSessionFileId(sessionId);
     const jsonlPaths = this.findAllSessionFiles(sessionId, projectPath);
+
     // Nothing to delete under this project: report it instead of printing ✓.
     if (jsonlPaths.length === 0) return false;
 
     let deleted = false;
+
     for (const jsonlPath of jsonlPaths) {
       try {
         fs.unlinkSync(jsonlPath);
@@ -900,10 +1002,12 @@ export class ClaudeCodeAdapter extends AgentAdapter {
 
       // Delete the same-named subdirectory
       const subdir = jsonlPath.replace(/\.jsonl$/, '');
+
       if (dirExists(subdir)) {
         removeDirRecursive(subdir);
       }
     }
+
     return deleted;
   }
 }

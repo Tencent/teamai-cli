@@ -15,22 +15,29 @@ export function outputMismatch(schema: OutputSchema, value: unknown, path = 'out
         : `${path} must be one of ${schema.values.join(', ')}`;
     case 'array':
       if (!Array.isArray(value)) return `${path} must be an array`;
+
       for (let index = 0; index < value.length; index += 1) {
         const mismatch = outputMismatch(schema.items, value[index], `${path}[${index}]`);
+
         if (mismatch) return mismatch;
       }
+
       return null;
     case 'object': {
       if (typeof value !== 'object' || value === null || Array.isArray(value)) return `${path} must be an object`;
       // Extra keys are allowed. Only declared fields are checked.
       const record = value as Record<string, unknown>;
+
       for (const [key, child] of Object.entries(schema.fields)) {
         if (!Object.prototype.hasOwnProperty.call(record, key)) return `${path}.${key} is missing`;
         const mismatch = outputMismatch(child, record[key], `${path}.${key}`);
+
         if (mismatch) return mismatch;
       }
+
       return null;
     }
+
     case 'json':
       return value === undefined ? `${path} is missing` : null;
     case 'workflow':

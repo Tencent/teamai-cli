@@ -31,22 +31,29 @@ export async function paginateGitLab<T>(
 ): Promise<T[]> {
   const { parse = (json: unknown) => json as T[], stopWhen } = options;
   const all: T[] = [];
+
   for (let page = 1; page <= maxPages; page++) {
     const resp = await fetchPage(page);
+
     if (resp.status >= 300 && resp.status < 400) {
       throw new Error(
         `${label} request returned a redirect (${resp.status}); refusing to follow it `
         + 'so the access token is not forwarded to another origin',
       );
     }
+
     if (!resp.ok) {
       throw new Error(`${label} request failed (${resp.status})`);
     }
+
     const items = parse(await resp.json());
     all.push(...items);
+
     if (stopWhen && items.some(stopWhen)) return all;
+
     if (!resp.headers.get('x-next-page')) return all;
   }
+
   throw new Error(
     `${label} has more than ${maxPages} pages; refusing to truncate `
     + '(a marker comment or a thumbsdown past the limit would be missed)',

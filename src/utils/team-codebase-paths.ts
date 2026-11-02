@@ -25,6 +25,7 @@ export interface TeamCodebasePaths {
  */
 export function getTeamCodebasePaths(cwd: string, output?: string): TeamCodebasePaths {
     const root = output ?? path.join(cwd, 'docs', TEAM_CODEBASE_DIR);
+
     return {
         root,
         index: path.join(root, 'index.md'),
@@ -44,8 +45,10 @@ export function getTeamCodebasePaths(cwd: string, output?: string): TeamCodebase
  */
 export function safeDomainSlug(name: string): string {
     const trimmed = name.trim();
+
     if (!trimmed) {
         return 'unnamed';
     }
+
     return trimmed.replace(/[/\\:]/g, '_');
 }

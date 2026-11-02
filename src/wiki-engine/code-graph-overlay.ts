@@ -12,6 +12,7 @@ export function buildIndexHubOverlay(
   kindPageSlugs: string[],
 ): ReturnType<typeof createGraphIndex> {
   const indexSlug = toPageSlug(`${codeOutputDir}/${project}/index`);
+
   const nodes: GraphNode[] = [
     {
       slug: indexSlug,
@@ -21,11 +22,14 @@ export function buildIndexHubOverlay(
       domain: "code-knowledge",
     },
   ];
+
   const edges: GraphEdge[] = [];
+
   for (const slug of kindPageSlugs) {
     if (slug === indexSlug) {
       continue;
     }
+
     nodes.push({
       slug,
       type: "component",
@@ -41,5 +45,6 @@ export function buildIndexHubOverlay(
       source: "code-heuristic",
     });
   }
+
   return createGraphIndex(nodes, edges);
 }

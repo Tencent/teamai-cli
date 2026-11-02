@@ -40,15 +40,18 @@ export function normalizeAgentList(agent?: string | string[]): string[] {
   const raw = Array.isArray(agent) ? agent : [agent];
   const out: string[] = [];
   const seen = new Set<string>();
+
   for (const part of raw) {
     for (const piece of String(part).split(',')) {
       const id = piece.trim();
+
       if (id && !seen.has(id)) {
         seen.add(id);
         out.push(id);
       }
     }
   }
+
   return out;
 }
 
@@ -197,6 +200,7 @@ export async function seedSelfModeToolDirs(
   // custom agent's session-start hook is silently skipped (#867 review).
   const hookScope = resolveHookScope(localConfig);
   const seedHookRoot = hookScope.baseDir !== baseDir;
+
   const hookConfigured = seedHookRoot
     ? scopedToolPaths(teamConfig, { ...localConfig, scope: hookScope.scope })
     : configured;
@@ -206,20 +210,25 @@ export async function seedSelfModeToolDirs(
   targets = targets.filter((id) => !isAgentDisabled(localConfig, id));
 
   const seeded: string[] = [];
+
   for (const id of targets) {
     const isCustom = !KNOWN_AGENTS.some((a) => a.id === id);
+
     if (!selfMode && !isCustom) continue;
 
     const fallbackSkills = KNOWN_AGENTS.find((a) => a.id === id)?.skillsPath;
     const agentsDir = ownOf(await locate(id, 'agents', install))?.path ?? null;
     let ensured = await seedToolRoots(id, baseDir, configured[id], agentsDir, fallbackSkills, localConfig.toolRoots);
+
     // The HOME pass is restricted to what hook installation actually reads
     // (settings/hooks) — seeding skills/rules/agents/claudemd there too would
     // create a redundant directory for a tool with no settings-based hook
     // surface (#867 review, P2).
     if (seedHookRoot && await seedHookInstallRoot(id, hookScope.baseDir, hookConfigured[id], localConfig.toolRoots)) ensured = true;
+
     if (ensured) seeded.push(id);
   }
+
   return seeded;
 }
 
@@ -246,20 +255,26 @@ async function seedToolRoots(
   toolRoots?: Record<string, string>,
 ): Promise<boolean> {
   const dirPaths = [paths?.skills, paths?.rules].filter((p): p is string => !!p);
+
   if (dirPaths.length === 0 && agentsDir === null && fallbackSkills) dirPaths.push(fallbackSkills);
   const dirs = [...dirPaths.map((dirPath) => path.join(baseDir, dirPath)), ...agentsDir === null ? [] : [agentsDir]];
+
   for (const dir of dirs) await ensureDir(dir);
 
   let ensuredAnything = dirs.length > 0;
   const claudemd = paths?.claudemd;
+
   if (claudemd) {
     const claudemdRoot = toolGateRoot(tool, claudemd, toolRoots);
+
     if (claudemdRoot !== claudemd) {
       await ensureDir(path.join(baseDir, claudemdRoot));
       ensuredAnything = true;
     }
   }
+
   if (await seedHookInstallRoot(tool, baseDir, paths, toolRoots)) ensuredAnything = true;
+
   return ensuredAnything;
 }
 
@@ -280,16 +295,21 @@ async function seedHookInstallRoot(
   toolRoots?: Record<string, string>,
 ): Promise<boolean> {
   let seeded = false;
+
   for (const filePath of [paths?.settings, paths?.hooks].filter((p): p is string => !!p)) {
     const root = toolGateRoot(tool, filePath, toolRoots);
+
     if (root !== filePath) {
       await ensureDir(path.join(baseDir, root));
     } else {
       const full = path.join(baseDir, filePath);
+
       if (!await pathExists(full)) await writeJson(full, {});
     }
+
     seeded = true;
   }
+
   return seeded;
 }
 
@@ -311,12 +331,15 @@ export async function detectHomeInstalledAgents(
   const home = getUserHome();
 
   const found: string[] = [];
+
   for (const id of candidateIds) {
     if (id === COPILOT_TOOL_ID) {
       if (await pathExists(toolHome(COPILOT_TOOL_ID))) found.push(id);
       continue;
     }
+
     const skillsPath = KNOWN_AGENTS.find((a) => a.id === id)?.skillsPath;
+
     if (!skillsPath) continue;
     // The tool's own dir, e.g. ".claude" or ".config/muse" — never a shared
     // parent like ".config" that exists on most machines.
@@ -325,10 +348,12 @@ export async function detectHomeInstalledAgents(
     // CODEX_HOME) may have no default root at all; the developer still uses
     // it. This runs before any config exists, so the variable is the only signal.
     const relocated = detectToolRoot(id);
+
     if (await pathExists(path.join(home, rootSegment)) || (relocated !== null && await pathExists(relocated))) {
       found.push(id);
     }
   }
+
   return found;
 }
 
@@ -343,9 +368,11 @@ export function getEffectiveAgents(
   }
 
   const toolPaths = scopedToolPaths(teamConfig, localConfig ?? {});
+
   for (const [id, paths] of Object.entries(toolPaths)) {
     if (!paths.skills) continue;
     const existing = byId.get(id);
+
     if (existing) {
       byId.set(id, { ...existing, skillsPath: paths.skills, fromTeamConfig: true });
     } else {
@@ -373,24 +400,29 @@ export function getEffectiveAgents(
 export async function detectInstalledAgents(localConfig: LocalConfig, teamConfig: TeamaiConfig, host: Host = realHost()): Promise<ResolvedAgent[]> {
   const agents = getEffectiveAgents(teamConfig, localConfig);
   const scoped = scopedToolPaths(teamConfig, localConfig);
+
   const fromTeamConfig = new Set(
     Object.entries(scoped)
       .filter(([, paths]) => paths.skills)
       .map(([id]) => id),
   );
+
   const install = installOf(teamConfig, localConfig);
   const base = install.scope === 'user' ? host.home : install.projectRoot;
 
   const results: ResolvedAgent[] = [];
+
   for (const agent of agents) {
     const location = isToolId(agent.id) ? await locate(agent.id, 'skills', install, host) : null;
     const own = location === null ? null : ownOf(location);
+
     const [absoluteSkillsPath, installed] = location !== null && own !== null
       ? [own.path, isInstalledFor(location)]
       : [
         host.path.join(base, ...agent.skillsPath.split('/')),
         await host.exists(host.path.join(base, ...toolGateRoot(agent.id, agent.skillsPath, localConfig.toolRoots).split('/'))),
       ];
+
     results.push({ ...agent, absoluteSkillsPath, installed, fromTeamConfig: fromTeamConfig.has(agent.id) });
   }
 

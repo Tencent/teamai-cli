@@ -5,6 +5,7 @@ import type { WebhookPayload } from './types.js';
  */
 export function formatFeishuMessage(payload: WebhookPayload): Record<string, unknown> {
   const eventLabel = formatEventLabel(payload.event);
+
   const time = new Date(payload.timestamp).toLocaleString('zh-CN', {
     timeZone: 'Asia/Shanghai',
     year: 'numeric',
@@ -33,6 +34,7 @@ export function formatFeishuMessage(payload: WebhookPayload): Record<string, unk
 
   if (payload.data) {
     const dataStr = formatEventData(payload.event, payload.data);
+
     if (dataStr) {
       lines.push(dataStr);
     }
@@ -53,6 +55,7 @@ export function formatFeishuMessage(payload: WebhookPayload): Record<string, unk
  */
 export function formatWecomMessage(payload: WebhookPayload): Record<string, unknown> {
   const eventLabel = formatEventLabel(payload.event);
+
   const time = new Date(payload.timestamp).toLocaleString('zh-CN', {
     timeZone: 'Asia/Shanghai',
     year: 'numeric',
@@ -80,6 +83,7 @@ export function formatWecomMessage(payload: WebhookPayload): Record<string, unkn
 
   if (payload.data) {
     const dataStr = formatEventData(payload.event, payload.data);
+
     if (dataStr) {
       lines.push(dataStr);
     }
@@ -121,6 +125,7 @@ function formatEventLabel(event: string): string {
     'session-stop': 'Session Ended',
     'webhook-test': 'Webhook Test',
   };
+
   return labels[event] ?? event;
 }
 
@@ -133,17 +138,21 @@ function formatEventData(event: string, data: Record<string, unknown>): string |
     case 'pull':
       if (data.resources && typeof data.resources === 'object') {
         const resources = data.resources as Record<string, number>;
+
         const parts = Object.entries(resources)
           .filter(([, count]) => count > 0)
           .map(([type, count]) => `${type}: ${count}`);
+
         return parts.length > 0 ? `Resources: ${parts.join(', ')}` : null;
       }
+
       return null;
 
     case 'skill-use':
       if (data.skillName && typeof data.skillName === 'string') {
         return `Skill: ${data.skillName}`;
       }
+
       return null;
 
     case 'session-start':
@@ -151,6 +160,7 @@ function formatEventData(event: string, data: Record<string, unknown>): string |
       if (data.sessionId && typeof data.sessionId === 'string') {
         return `Session: ${data.sessionId.slice(0, 8)}...`;
       }
+
       return null;
 
     default:

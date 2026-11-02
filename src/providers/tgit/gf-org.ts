@@ -5,6 +5,7 @@ import { log } from '../../utils/logger.js';
 const TGIT_API_BASE = 'https://git.woa.com/api/v3';
 const DEFAULT_PER_PAGE = 100;
 const DEFAULT_MAX_REPOS = 200;
+
 // 响应体最大 50 MB，防止恶意服务器返回超大响应导致 OOM
 const MAX_RESPONSE_BYTES = 50 * 1024 * 1024;
 
@@ -81,11 +82,13 @@ export async function gfListOrgRepos(
         if (resp.status >= 300 && resp.status < 400) {
             throw new Error(`Unexpected redirect from TGit API: ${resp.status}`);
         }
+
         if (resp.status === 404) {
             // 工蜂部分版本不支持 /groups/<id>/projects，fallback 到策略 2
             useProjectsEndpoint = false;
             break;
         }
+
         if (!resp.ok) {
             throw new Error(`TGit API HTTP ${resp.status}: ${await resp.text().catch(() => '')}`);
         }
@@ -93,24 +96,31 @@ export async function gfListOrgRepos(
         const reader = resp.body?.getReader();
         let received = 0;
         const chunks: Uint8Array[] = [];
+
         if (reader) {
             while (true) {
                 const { done, value } = await reader.read();
+
                 if (done) break;
                 received += value.length;
+
                 if (received > MAX_RESPONSE_BYTES) {
                     await reader.cancel();
                     throw new Error(`TGit API response exceeds ${MAX_RESPONSE_BYTES} bytes`);
                 }
+
                 chunks.push(value);
             }
         }
+
         const bodyText = Buffer.concat(chunks).toString('utf-8');
         const items = JSON.parse(bodyText) as TgitProjectApiItem[];
+
         if (!Array.isArray(items) || items.length === 0) break;
 
         for (const item of items) {
             collected.push(mapItem(item));
+
             if (collected.length >= maxRepos) break;
         }
 
@@ -126,9 +136,11 @@ export async function gfListOrgRepos(
         if (resp.status >= 300 && resp.status < 400) {
             throw new Error(`Unexpected redirect from TGit API: ${resp.status}`);
         }
+
         if (resp.status === 404) {
             throw new Error(`TGit group ${group} not found or no access`);
         }
+
         if (!resp.ok) {
             throw new Error(`TGit API HTTP ${resp.status}: ${await resp.text().catch(() => '')}`);
         }
@@ -136,24 +148,30 @@ export async function gfListOrgRepos(
         const reader = resp.body?.getReader();
         let received = 0;
         const chunks: Uint8Array[] = [];
+
         if (reader) {
             while (true) {
                 const { done, value } = await reader.read();
+
                 if (done) break;
                 received += value.length;
+
                 if (received > MAX_RESPONSE_BYTES) {
                     await reader.cancel();
                     throw new Error(`TGit API response exceeds ${MAX_RESPONSE_BYTES} bytes`);
                 }
+
                 chunks.push(value);
             }
         }
+
         const bodyText = Buffer.concat(chunks).toString('utf-8');
         const groupData = JSON.parse(bodyText) as { projects?: TgitProjectApiItem[] };
 
         if (groupData.projects && Array.isArray(groupData.projects)) {
             for (const item of groupData.projects) {
                 collected.push(mapItem(item));
+
                 if (collected.length >= maxRepos) break;
             }
         } else {
@@ -162,5 +180,6 @@ export async function gfListOrgRepos(
     }
 
     log.debug(`gfListOrgRepos: ${group} 共 ${collected.length} 项`);
+
     return collected;
 }

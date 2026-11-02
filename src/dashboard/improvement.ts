@@ -8,10 +8,12 @@ import { BUILTIN_SKILL_NAMES, LEGACY_BUILTIN_SKILL_NAMES } from '../builtin-skil
 const WINDOW_DAYS = 30;
 const HISTORY_DAYS = 180;
 const LIST_LIMIT = 200;
+
 // Skill keys the usage tracker can record from a path segment rather than a skill name.
 const NOT_SKILLS = new Set(['Users', 'users', 'root', 'home', 'data', 'tmp', 'private', 'var', 'opt']);
 
 export interface DayPoint { date: string; ended: number; succeeded: number; corrected: number; prompts: number; durationMs: number; costMicros: number; priced: number; cacheRead: number; cacheEligible: number; members: number }
+
 /** `uses` is the all-time count members published; stats carry no per-day skill counts. */
 export interface SkillUse { name: string; namespace?: string; uses: number; users: number; lastUsed: string | null }
 
@@ -46,19 +48,25 @@ interface MaintenanceInput {
 const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
 const isoDay = (d: Date): string => d.toISOString().slice(0, 10);
 const isDay = (day: string): boolean => /^\d{4}-\d{2}-\d{2}$/.test(day) && !Number.isNaN(Date.parse(`${day}T00:00:00Z`));
+
 // A published day counts once any counter on it is positive: a day with prompts or cost but no ended session is still data.
 const hasActivity = (v: unknown): boolean => !!v && typeof v === 'object' && Object.values(v as Record<string, unknown>).some((x) => num(x) > 0);
 
 async function readStats(statsDir: string): Promise<StatsFile[]> {
   let names: string[];
+
   try { names = await fs.promises.readdir(statsDir); } catch { return []; }
+
   const out: StatsFile[] = [];
+
   for (const name of names.filter((n) => n.endsWith('.yaml'))) {
     try {
       const parsed = YAML.parse(await fs.promises.readFile(path.join(statsDir, name), 'utf-8')) as StatsFile | null;
+
       if (parsed && typeof parsed === 'object') out.push(parsed);
     } catch { /* one unreadable member file does not hide the rest */ }
   }
+
   return out;
 }
 
@@ -66,15 +74,21 @@ async function teamSkills(knowledgeRoot: string): Promise<Map<string, string>> {
   const skills = new Map<string, string>();
   const root = path.join(knowledgeRoot, 'skills');
   let namespaces: fs.Dirent[];
+
   try { namespaces = await fs.promises.readdir(root, { withFileTypes: true }); } catch { return skills; }
+
   for (const ns of namespaces.filter((d) => d.isDirectory() && !d.name.startsWith('.'))) {
     if (fs.existsSync(path.join(root, ns.name, 'SKILL.md'))) { skills.set(ns.name, ''); continue; }
+
     let entries: fs.Dirent[];
+
     try { entries = await fs.promises.readdir(path.join(root, ns.name), { withFileTypes: true }); } catch { continue; }
+
     for (const e of entries) {
       if (e.isDirectory() && fs.existsSync(path.join(root, ns.name, e.name, 'SKILL.md'))) skills.set(e.name, ns.name);
     }
   }
+
   return skills;
 }
 
@@ -91,28 +105,35 @@ export async function buildImprovement(
   const files = await readStats(paths.statsDir);
   let latest = '';
   let latestStats: string | null = null;
+
   for (const f of files) {
     for (const [day, v] of Object.entries(f.daily ?? {})) if (isDay(day) && hasActivity(v) && day > latest) latest = day;
+
     if (f.updatedAt && (!latestStats || f.updatedAt > latestStats)) latestStats = f.updatedAt;
   }
+
   const end = latest ? new Date(latest + 'T00:00:00Z') : new Date(isoDay(new Date()) + 'T00:00:00Z');
   const from = new Date(end.getTime() - (WINDOW_DAYS - 1) * 86400000);
   const historyFrom = new Date(end.getTime() - (HISTORY_DAYS - 1) * 86400000);
   const [toDay, fromDay, historyDay] = [isoDay(end), isoDay(from), isoDay(historyFrom)];
 
   const byDay = new Map<string, DayPoint>();
+
   for (let t = historyFrom.getTime(); t <= end.getTime(); t += 86400000) {
     const d = isoDay(new Date(t));
     byDay.set(d, { date: d, ended: 0, succeeded: 0, corrected: 0, prompts: 0, durationMs: 0, costMicros: 0, priced: 0, cacheRead: 0, cacheEligible: 0, members: 0 });
   }
+
   const friction = { members: 0, sessions: 0, interrupt: 0, toolReject: 0, correction: 0 };
   const usage = new Map<string, { uses: number; users: Set<string>; lastUsed: string }>();
 
   for (const f of files) {
     const user = f.username ?? '';
+
     for (const [day, v] of Object.entries(f.daily ?? {})) {
       if (!v || typeof v !== 'object' || day < historyDay || day > toDay) continue;
       const p = byDay.get(day);
+
       if (!p) continue;
       p.ended += num(v.sessionsEnded);
       p.succeeded += num(v.sessionsSucceeded);
@@ -123,8 +144,10 @@ export async function buildImprovement(
       p.priced += num(v.pricedRequests);
       p.cacheRead += num(v.cacheReadTokens);
       p.cacheEligible += num(v.cacheEligibleInputTokens);
+
       if (num(v.sessionsEnded) > 0) p.members += 1;
     }
+
     if (f.interventions && num(f.interventions.sessions) > 0) {
       friction.members += 1;
       friction.sessions += num(f.interventions.sessions);
@@ -132,22 +155,28 @@ export async function buildImprovement(
       friction.toolReject += num(f.interventions.toolReject);
       friction.correction += num(f.interventions.correction);
     }
+
     for (const [name, s] of Object.entries(f.skills ?? {})) {
       const last = String(s?.lastUsed ?? '');
+
       if (!last || last.slice(0, 10) < fromDay || NOT_SKILLS.has(name) || name.includes('/')) continue;
       const u = usage.get(name) ?? { uses: 0, users: new Set<string>(), lastUsed: '' };
       u.uses += num(s.count);
       u.users.add(user);
+
       if (last > u.lastUsed) u.lastUsed = last;
       usage.set(name, u);
     }
   }
 
   const team = await teamSkills(paths.knowledgeRoot);
+
   const toUse = (name: string): SkillUse => {
     const u = usage.get(name);
+
     return { name, ...(team.has(name) && team.get(name) ? { namespace: team.get(name) } : {}), uses: u?.uses ?? 0, users: u?.users.size ?? 0, lastUsed: u?.lastUsed || null };
   };
+
   // Uses are all-time, so recency (not the cumulative count) breaks ties after member count.
   const byUse = (a: SkillUse, b: SkillUse) => b.users - a.users || (b.lastUsed ?? '').localeCompare(a.lastUsed ?? '') || a.name.localeCompare(b.name);
   // Since #1055 push only publishes team-repo skills and the CLI built-ins, so a name outside the repo is a

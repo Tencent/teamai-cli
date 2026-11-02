@@ -60,23 +60,32 @@ export const secretsEntryReader: EntryReader<SecretDeclaration> = {
   delivered: (declaration) => declaration.key,
   async read(absolutePath, relativePath) {
     const file = await readEntryFileText(absolutePath, relativePath);
+
     if (!file.ok) return file;
+
     if (file.text === null) return null;
     let raw: unknown;
+
     try {
       raw = YAML.parse(file.text);
     } catch (e) {
       return { ok: false, reason: `${relativePath} is not valid YAML: ${e instanceof Error ? e.message : String(e)}` };
     }
+
     if (raw === null || raw === undefined) return { ok: true, entries: [] };
     const shapeProblem = missingTopLevelKeyReason(raw, SecretsYamlSchema);
+
     if (shapeProblem) return { ok: false, reason: `${relativePath} declares no secrets: ${shapeProblem}` };
     const parsed = SecretsYamlSchema.safeParse(raw);
+
     if (!parsed.success) {
       const issues = parsed.error.issues.map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`).join('; ');
+
       return { ok: false, reason: `${relativePath} does not match the secrets.yaml schema: ${issues}` };
     }
+
     const entries = parsed.data.secrets;
+
     return { ok: true, entries, unknownKeys: unknownEntryKeys(raw, 'secrets', entries, SecretDeclarationSchema) };
   },
   nameOf: (secret) => secret.key,
@@ -94,11 +103,14 @@ export async function readSecretsForEdit(
   relativePath: string,
 ): Promise<{ ok: true; secrets: Record<string, unknown>[] } | { ok: false; reason: string }> {
   const read = await secretsEntryReader.read(absolutePath, relativePath);
+
   if (read === null) return { ok: true, secrets: [] };
+
   if (!read.ok) return read;
   const text = await readFileSafe(absolutePath);
   const written = writtenList(text === null ? null : YAML.parse(text), 'secrets');
   const isEntry = (entry: unknown): entry is Record<string, unknown> => entry !== null && typeof entry === 'object';
+
   return { ok: true, secrets: Array.isArray(written) ? written.filter(isEntry) : [] };
 }
 
@@ -133,17 +145,22 @@ export async function resolveSecretDeclarations(
   namespaces?: KnownNamespaces,
 ): Promise<SecretDeclarations> {
   let found = false;
+
   const reader: EntryReader<SecretDeclaration> = {
     ...secretsEntryReader,
     async read(absolutePath, relativePath) {
       const read = await secretsEntryReader.read(absolutePath, relativePath);
+
       if (read !== null) found = true;
+
       return read;
     },
   };
+
   const resolution = namespaces
     ? await resolveEntries(reader, localConfig, namespaces.active)
     : await resolveEntriesFor(reader, localConfig);
+
   return resolution.kind === 'resolved' && !found ? { kind: 'absent' } : resolution;
 }
 
@@ -158,5 +175,6 @@ export function declaredSecretKeys(declarations: SecretDeclarations): ReadonlySe
   if (declarations.kind === 'failed') return null;
   const keys = new Set(declarations.kind === 'resolved' ? declarations.entries.map((entry) => entry.name) : []);
   const names = new Set([...keys].map(envName));
+
   return Object.assign(keys, { has: (key: string): boolean => names.has(envName(key)) });
 }

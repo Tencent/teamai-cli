@@ -31,6 +31,7 @@ export interface LockWait {
 
 /** A hook append waits at most ~250 ms of wall time for the lock, inside its foreground budget. */
 export const HOOK_LOCK_WAIT: LockWait = { budgetMs: 250, delayMs: 25 };
+
 /** A rewrite waits up to ~5 s of wall time for a peer's rewrite to finish. Too long for a hook. */
 export const REWRITE_LOCK_WAIT: LockWait = { budgetMs: 5_000, delayMs: 50 };
 
@@ -67,6 +68,7 @@ export async function appendJsonlBatch(filePath: string, records: object[], opti
   const mode = options.mode ?? OWNER_ONLY;
   await ensureDir(path.dirname(filePath));
   const lines = records.map((record) => JSON.stringify(record) + '\n').join('');
+
   if (await withLock(filePath, options.wait ?? HOOK_LOCK_WAIT, mode, () => appendWhole(filePath, lines, mode))) return null;
   // The lock is still held: record them in a side file of their own for the
   // next lock holder to fold in, rather than race a rewrite.
@@ -79,6 +81,7 @@ export async function appendJsonlBatch(filePath: string, records: object[], opti
   const sideMode = await fs.promises.stat(filePath).then((s) => s.mode & 0o777, () => OWNER_ONLY);
   const pending = records.map((record) => JSON.stringify({ ...record, pendingId: randomUUID() }) + '\n').join('');
   await fs.promises.writeFile(pendingPath, pending, { encoding: 'utf-8', flag: 'wx', mode: sideMode });
+
   return pendingPath;
 }
 
@@ -89,18 +92,23 @@ export async function appendJsonlBatch(filePath: string, records: object[], opti
  */
 export async function readJsonl(filePath: string, options: { includePending?: boolean } = {}): Promise<JsonlRecord[]> {
   const records = parseLines(await readOrEmpty(filePath));
+
   if (options.includePending !== false) {
     const inFile = new Set(records.map((r) => r.pendingId).filter((id) => typeof id === 'string'));
+
     for (const pendingPath of await sideRecordPaths(filePath)) {
       const content = await readOrEmpty(pendingPath).catch(() => '');
+
       // One without its newline is still being written.
       if (!content.endsWith('\n')) continue;
+
       for (const record of parseLines(content)) {
         if (typeof record.pendingId === 'string' && inFile.has(record.pendingId)) continue;
         records.push(record);
       }
     }
   }
+
   return records.map(({ pendingId: _pendingId, ...rest }) => rest);
 }
 
@@ -121,6 +129,7 @@ export async function rewriteJsonl(
   options: JsonlStoreOptions = {},
 ): Promise<void> {
   const wait = options.wait ?? REWRITE_LOCK_WAIT;
+
   const rewritten = await withLock(filePath, wait, options.mode ?? OWNER_ONLY, async () => {
     // Replace the file itself, not a symlink to it.
     const target = await fs.promises.realpath(filePath);
@@ -128,9 +137,11 @@ export async function rewriteJsonl(
     await options.beforeSideFile?.();
     const lines = (await fs.promises.readFile(target, 'utf-8')).split('\n').filter((l) => l.trim());
     const kept = keep(lines);
+
     if (!kept) return;
     const mode = (await fs.promises.stat(target)).mode & 0o7777;
     const tmpPath = `${target}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
+
     try {
       await fs.promises.writeFile(tmpPath, kept.length ? kept.join('\n') + '\n' : '', { encoding: 'utf-8', mode });
       // The create mode passes through the umask.
@@ -141,6 +152,7 @@ export async function rewriteJsonl(
       throw e;
     }
   });
+
   if (!rewritten) {
     throw new Error(
       `${filePath}.lock is still held after ${wait.budgetMs / 1000} s, so the file was left as it is; remove the lock if no teamai process is running`,
@@ -159,6 +171,7 @@ async function withLock(filePath: string, wait: LockWait, mode: number, fn: () =
   // Wall clock, not an attempt count: a busy event loop runs each sleep late,
   // and 100 late sleeps blow past the budget this wait promises.
   const deadline = Date.now() + wait.budgetMs;
+
   for (;;) {
     if (await acquireLock(lockPath)) {
       try {
@@ -167,9 +180,12 @@ async function withLock(filePath: string, wait: LockWait, mode: number, fn: () =
       } finally {
         await releaseLock(lockPath);
       }
+
       return true;
     }
+
     const remaining = deadline - Date.now();
+
     if (remaining <= 0) return false;
     await new Promise((r) => setTimeout(r, Math.min(wait.delayMs, remaining)));
   }
@@ -184,6 +200,7 @@ async function sideRecordPaths(filePath: string): Promise<string[]> {
   const dir = path.dirname(filePath);
   const prefix = pendingPrefix(filePath);
   const names = await fs.promises.readdir(dir).catch(() => [] as string[]);
+
   return names.filter((n) => n.startsWith(prefix) && n.endsWith('.jsonl')).map((n) => path.join(dir, n));
 }
 
@@ -196,19 +213,26 @@ async function sideRecordPaths(filePath: string): Promise<string[]> {
  */
 async function foldSideRecords(filePath: string, mode: number): Promise<void> {
   let folded: Set<string> | undefined;
+
   for (const pendingPath of await sideRecordPaths(filePath)) {
     try {
       const content = await fs.promises.readFile(pendingPath, 'utf-8');
+
       if (!content.endsWith('\n')) continue;
       const known = folded ??= new Set((await readOrEmpty(filePath).catch(() => '')).split('\n').map(pendingIdOf).filter((i) => i !== undefined));
+
       const fresh = content.split('\n').filter((line) => {
         const id = pendingIdOf(line);
+
         return line.trim() !== '' && (id === undefined || !known.has(id));
       });
+
       if (fresh.length > 0) {
         await appendWhole(filePath, fresh.join('\n') + '\n', mode);
+
         for (const id of fresh.map(pendingIdOf)) if (id !== undefined) known.add(id);
       }
+
       await fs.promises.rm(pendingPath, { force: true });
     } catch (e) {
       log.debug(`Could not fold ${pendingPath} into ${filePath}: ${e instanceof Error ? e.message : String(e)}`);
@@ -223,14 +247,17 @@ async function foldSideRecords(filePath: string, mode: number): Promise<void> {
  */
 async function appendWhole(filePath: string, text: string, mode: number): Promise<void> {
   const handle = await fs.promises.open(filePath, 'a+', mode);
+
   try {
     const { size } = await handle.stat();
     let torn = false;
+
     if (size > 0) {
       const last = Buffer.alloc(1);
       await handle.read(last, 0, 1, size - 1);
       torn = last[0] !== 0x0a;
     }
+
     await handle.appendFile(torn ? '\n' + text : text, 'utf-8');
   } finally {
     await handle.close();
@@ -242,6 +269,7 @@ async function removeOrphanTemps(target: string): Promise<void> {
   const dir = path.dirname(target);
   const prefix = `${path.basename(target)}.`;
   const names = await fs.promises.readdir(dir).catch(() => [] as string[]);
+
   for (const name of names) {
     if (!name.startsWith(prefix) || !/^\d+\.[0-9a-f]{12}\.tmp$/.test(name.slice(prefix.length))) continue;
     await fs.promises.rm(path.join(dir, name), { force: true }).catch(() => undefined);
@@ -251,8 +279,10 @@ async function removeOrphanTemps(target: string): Promise<void> {
 /** The id a side record gave its line, if the line has one. */
 function pendingIdOf(line: string): string | undefined {
   if (!line.includes('"pendingId"')) return undefined;
+
   try {
     const { pendingId } = JSON.parse(line) as { pendingId?: unknown };
+
     return typeof pendingId === 'string' ? pendingId : undefined;
   } catch {
     return undefined;
@@ -270,11 +300,15 @@ async function readOrEmpty(filePath: string): Promise<string> {
 
 function parseLines(content: string): JsonlRecord[] {
   const records: JsonlRecord[] = [];
+
   for (const line of content.split('\n')) {
     const trimmed = line.trim();
+
     if (!trimmed) continue;
+
     try {
       const parsed: unknown = JSON.parse(trimmed);
+
       if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
         records.push(parsed as JsonlRecord);
         continue;
@@ -282,7 +316,9 @@ function parseLines(content: string): JsonlRecord[] {
     } catch {
       // Reported below.
     }
+
     log.debug(`Skipping corrupted JSONL line: ${trimmed.slice(0, 50)}`);
   }
+
   return records;
 }

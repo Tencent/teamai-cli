@@ -6,6 +6,7 @@ import type { WorkspaceMode } from './workspace.js';
 /** How far a driver keeps a step from the member's machine, weakest first. A workspace contract is at least `worktree`. */
 export const ISOLATION_LEVELS = ['none', 'worktree', 'sandbox'] as const;
 const IsolationSchema = z.enum(ISOLATION_LEVELS);
+
 export type Isolation = z.infer<typeof IsolationSchema>;
 
 const EnvKeySchema = z.string().regex(ENV_KEY_RE, 'must be an environment variable name');
@@ -21,6 +22,7 @@ export const RequirementsSchema = z.object({
   env: z.array(EnvKeySchema).optional(),
   strict: z.boolean().optional(),
 });
+
 export type Requirements = z.infer<typeof RequirementsSchema>;
 
 /**
@@ -28,10 +30,12 @@ export type Requirements = z.infer<typeof RequirementsSchema>;
  * the agent's turn there, and the step succeeds with the limit it reached.
  */
 export const ON_LIMIT = ['end_turn', 'fail'] as const;
+
 export type OnLimit = typeof ON_LIMIT[number];
 
 /** The limit that ended an agent's turn under `on_limit: end_turn`, as a report names it. */
 export const LimitSchema = z.enum(['timeout', 'budget', 'max_turns']);
+
 export type Limit = z.infer<typeof LimitSchema>;
 
 /**
@@ -46,6 +50,7 @@ export const TurnLimitsSchema = z.object({
   budget: z.object({ tokens: z.number().int().positive() }).optional(),
   onLimit: z.literal('end_turn'),
 });
+
 export type TurnLimits = z.infer<typeof TurnLimitsSchema>;
 
 /** Whether `limits` sets `limit`. */
@@ -59,6 +64,7 @@ export function setsLimit(limits: TurnLimits, limit: Limit): boolean {
       return limits.maxTurns !== undefined;
     default: {
       const unhandled: never = limit;
+
       return unhandled;
     }
   }
@@ -89,6 +95,7 @@ const SetupRequirementsSchema = z.object({ env: z.array(EnvKeySchema).optional()
  * deadline bounds it.
  */
 export const SetupSchema = z.object({ command: z.string().trim().min(1), requires: SetupRequirementsSchema.optional() }).strict();
+
 export type Setup = z.infer<typeof SetupSchema>;
 
 /**
@@ -121,9 +128,13 @@ const ENFORCEMENT = {
   /** A step in a clone is leased only through `next --prepare`, so teamai made its clone. Process-only. */
   prepare: 'strict',
 } as const satisfies Record<string, 'strict' | 'bestEffort'> & Record<keyof Floor | 'env', 'strict' | 'bestEffort'>;
+
 type Enforcement = typeof ENFORCEMENT;
+
 type KeysOf<E extends Enforcement[keyof Enforcement]> = { [K in keyof Enforcement]: Enforcement[K] extends E ? K : never }[keyof Enforcement];
+
 export type StrictKey = KeysOf<'strict'>;
+
 type BestEffortKey = KeysOf<'bestEffort'>;
 
 /**
@@ -159,6 +170,7 @@ export const CanSchema = z.object({
   end_turn: z.boolean().optional(),
   unattended: z.boolean().optional(),
 });
+
 export type DriverCan = z.infer<typeof CanSchema>;
 
 /** The `can` keys this CLI reads; any other key is echoed in `ignored`. */
@@ -171,6 +183,7 @@ export const AllowSchema = z.object({
   network: z.boolean().optional(),
   env: z.array(EnvKeySchema).optional(),
 }).strict();
+
 export type Allow = z.infer<typeof AllowSchema>;
 
 /** What a held step lacks, as `wait.held[].missing` lists it: a capability, or what the member's policy allows. */
@@ -206,6 +219,7 @@ export const UnenforcedSchema = z.discriminatedUnion('requirement', [
   /** A prompt under `on_limit: end_turn` leased to a driver that cannot end its turn, so it ran under `on_limit: fail`. */
   z.object({ requirement: z.literal('on_limit') }),
 ]) satisfies z.ZodType<{ requirement: BestEffortKey }>;
+
 export type Unenforced = z.infer<typeof UnenforcedSchema>;
 
 /**
@@ -213,6 +227,7 @@ export type Unenforced = z.infer<typeof UnenforcedSchema>;
  * runs the step, such as the tool it picked not capping turns.
  */
 export const ReportedUnenforcedSchema = z.array(z.enum(['max_turns', 'budget'])) satisfies z.ZodType<BestEffortKey[]>;
+
 export type ReportedUnenforced = z.infer<typeof ReportedUnenforcedSchema>;
 
 /**
@@ -221,6 +236,7 @@ export type ReportedUnenforced = z.infer<typeof ReportedUnenforcedSchema>;
  */
 export function reportedUnenforced(keys: ReportedUnenforced, asked: { maxTurns?: number; tokens?: number }): Unenforced[] | string {
   const entries: Unenforced[] = [];
+
   for (const key of keys) {
     switch (key) {
       case 'max_turns':
@@ -233,19 +249,23 @@ export function reportedUnenforced(keys: ReportedUnenforced, asked: { maxTurns?:
         break;
       default: {
         const unknown: never = key;
+
         return unknown;
       }
     }
   }
+
   return entries;
 }
 
 /** The env keys a lease gives the step and the ones it keeps from it, by name. */
 export const EnvScopeSchema = z.object({ provide: z.array(z.string()), withhold: z.array(z.string()) });
+
 export type EnvScope = z.infer<typeof EnvScopeSchema>;
 
 /** The setup a lease carries: the command, and for a driver with `can.env`, the keys it gets and the ones kept from it. */
 export const LeaseSetupSchema = z.object({ command: z.string(), envScope: EnvScopeSchema.optional() });
+
 export type LeaseSetup = z.infer<typeof LeaseSetupSchema>;
 
 /**
@@ -256,14 +276,20 @@ export function mergeRequirements(...levels: ReadonlyArray<(Requirements & Pick<
   const given = levels.filter((level) => level !== undefined);
   const merged: InEffect = {};
   let floor: Floor = {};
+
   for (const { network, isolation, strict, floor: inner = {} } of given) {
     if (network !== undefined) merged.network = network;
+
     if (isolation !== undefined) merged.isolation = isolation;
     floor = raised(raised(floor, inner), strict ? { network, isolation } : {});
   }
+
   const env = [...new Set(given.flatMap((level) => level.env ?? []))];
+
   if (env.length > 0) merged.env = env;
+
   if (floor.isolation === undefined && floor.network === undefined) return merged;
+
   return { ...raised(merged, floor), floor };
 }
 
@@ -272,6 +298,7 @@ function raised<T extends Floor>(values: T, floor: Floor): T {
   const isolation = floor.isolation !== undefined && (values.isolation === undefined || rank(values.isolation) < rank(floor.isolation)) ? floor.isolation : values.isolation;
   // Denying the network keeps a step further from the member's machine, so only a floor of `false` raises a value.
   const network = floor.network === false ? false : values.network;
+
   return { ...values, ...(isolation !== undefined ? { isolation } : {}), ...(network !== undefined ? { network } : {}) };
 }
 
@@ -305,6 +332,7 @@ function envCovers(env: DriverCan['env'], executor: Executor): { step: boolean; 
       return { step: executor === 'command', setup: true };
     default: {
       const unhandled: never = env;
+
       return unhandled;
     }
   }
@@ -373,17 +401,22 @@ export function negotiate(offer: Offer, can: DriverCan, allow: Allow, env: EnvFa
   const stripped: readonly string[] = sealed ? SANDBOX_WITHHELD_ENV : [];
   const guarded = [...env.declared, ...offer.runEnvKeys, ...stripped];
   const shadowed = offer.envKeys.filter((key) => sameEnvName([...env.secrets, ...offer.runEnvKeys], key) !== undefined);
+
   if (shadowed.length > 0) {
     return { kind: 'fail', failure: { code: 'env_conflict', message: `Step "${offer.step}" sets env ${shadowed.join(', ')}, which a team secret or a requires.env of the run names. Rename the step's variable, or remove it from env:.` } };
   }
+
   const allowed = (keys: readonly string[]): string[] => keys.filter((key) => sameEnvName(stripped, key) === undefined);
   const required = allowed(requires.env ?? []);
   const setupKeys = allowed(offer.setup?.requires?.env ?? []);
   const covers = envCovers(can.env, offer.executor);
   const policy: Missing[] = [];
+
   if (allow.network === false && requires.network === true) policy.push('policy.network');
+
   if (allow.env && [...required, ...setupKeys].some((key) => sameEnvName(allow.env ?? [], key) === undefined)) policy.push('policy.env');
   const provided = providedIsolation(can, offer.hasContract);
+
   const gaps: Missing[] = policy.length > 0 ? policy : [
     ...(offer.tool !== undefined && lacksTool(offer.tool, can) ? ['tools' as const] : []),
     ...(offer.unattended && !can.unattended ? ['unattended' as const] : []),
@@ -396,27 +429,39 @@ export function negotiate(offer: Offer, can: DriverCan, allow: Allow, env: EnvFa
     ...((required.length > 0 && !covers.step) || (setupKeys.length > 0 && !covers.setup) || (sealed && can.env !== true) ? ['env' as const] : []),
     ...(offer.budgeted && !offer.interactive && !can.tokens ? ['tokens' as const] : []),
   ];
+
   const [first, ...rest] = gaps;
+
   if (first !== undefined) return { kind: 'hold', missing: [first, ...rest] };
+
   if (covers.step || covers.setup) {
     const unavailable = envUnavailable(`Step "${offer.step}"`, required, env) ?? envUnavailable(`The setup of step "${offer.step}"`, setupKeys, env);
+
     if (unavailable) return { kind: 'fail', failure: unavailable };
   }
+
   const unenforced: Unenforced[] = [];
+
   if (requires.network === false && !can.network) unenforced.push({ requirement: 'network', asked: false });
   const asked = requires.isolation;
+
   if (asked !== undefined && asked !== 'none' && rank(asked) > rank(provided)) unenforced.push({ requirement: 'isolation', asked, provided });
   const withhold = [...new Set(guarded)].filter((key) => sameEnvName(required, key) === undefined).sort();
+
   if (!covers.step && withhold.length > 0) unenforced.push({ requirement: 'withhold', keys: withhold });
+
   if (offer.maxTurns !== undefined && !can.max_turns) unenforced.push({ requirement: 'max_turns', asked: offer.maxTurns });
+
   if (offer.endTurn && !can.end_turn) unenforced.push({ requirement: 'on_limit' });
   const limits = offer.endTurn && can.end_turn ? { limits: offer.endTurn } : {};
   const envScope = covers.step && (required.length > 0 || withhold.length > 0) ? { envScope: { provide: required, withhold } } : {};
   const maxTurns = offer.maxTurns !== undefined && can.max_turns && !limits.limits ? { maxTurns: offer.maxTurns } : {};
   const setupWithhold = [...new Set(guarded)].filter((key) => sameEnvName(setupKeys, key) === undefined).sort();
+
   const setup = offer.setup && {
     setup: { command: offer.setup.command, ...(covers.setup && (setupKeys.length > 0 || setupWithhold.length > 0) ? { envScope: { provide: setupKeys, withhold: setupWithhold } } : {}) },
   };
+
   return { kind: 'grant', terms: { requires, ...envScope, ...maxTurns, ...limits, ...setup, unenforced } };
 }
 
@@ -429,15 +474,18 @@ export function envAdvice(keys: readonly string[], declared: ReadonlySet<string>
   const known = keys.filter((key) => sameEnvName(declared, key) !== undefined);
   const unknown = keys.filter((key) => sameEnvName(declared, key) === undefined);
   const advice: string[] = [];
+
   if (known.length > 0) {
     advice.push(`run ${known.map((key) => `teamai env set ${key}`).join(', ')}, or set ${known.length > 1 ? 'them' : 'it'} in the environment`);
   }
+
   if (unknown.length > 0) {
     const them = unknown.length > 1 ? 'them' : 'it';
     const adds = unknown.map((key) => `teamai env add ${key} --secret`).join(', ');
     const sets = unknown.map((key) => `teamai env set ${key}`).join(', ');
     advice.push(`set ${unknown.join(', ')} in the environment, or declare ${them} in the team repo with ${adds} and give ${them} a value with ${sets}`);
   }
+
   return advice.join('; ');
 }
 
@@ -449,13 +497,17 @@ export function lacksTool(tool: string, can: Pick<DriverCan, 'tools'>): boolean 
 /** Why `keys`, which `who` requires, cannot be given here: the team env cannot be read, or a key has no value. */
 function envUnavailable(who: string, keys: readonly string[], env: EnvFacts): WorkflowFailure | undefined {
   if (keys.length === 0) return undefined;
+
   if (env.unreadable) {
     return { code: 'env_unavailable', message: `${who} requires env ${keys.join(', ')}, and the team env cannot be read here: ${env.unreadable}. Run teamai env list, fix what it reports, then retry the step.` };
   }
+
   const absent = keys.filter((key) => sameEnvName(env.present, key) === undefined);
+
   if (absent.length === 0) return undefined;
   const one = absent.length === 1;
   const advice = envAdvice(absent, env.declared);
+
   return { code: 'missing_env', message: `${who} requires env ${absent.join(', ')}, which ${one ? 'has' : 'have'} no value on this machine. ${advice.charAt(0).toUpperCase()}${advice.slice(1)}, then retry the step.` };
 }
 
@@ -465,38 +517,47 @@ function rank(level: Isolation): number {
 
 function providedIsolation(can: DriverCan, hasContract: boolean): Isolation {
   const declared = can.isolation ?? 'none';
+
   return hasContract && rank(declared) < rank('worktree') ? 'worktree' : declared;
 }
 
 /** What a handed-back lease records: what it already had, then what this driver adds, each requirement once. The list only grows. */
 export function unionUnenforced(stored: readonly Unenforced[], added: readonly Unenforced[]): Unenforced[] {
   const union = [...stored];
+
   for (const entry of added) if (!union.some((item) => item.requirement === entry.requirement)) union.push(entry);
+
   return union;
 }
 
 /** Every key a step or the setup of these workflow files requires, `defaults.requires` and inline workflows included. */
 export function requiredEnvKeys(definitions: ReadonlyArray<{ defaults?: WorkflowDefaults; setup?: Setup; steps: WorkflowStep[] }>): Set<string> {
   const keys = new Set<string>();
+
   const visit = (steps: readonly WorkflowStep[]): void => {
     for (const step of steps) {
       for (const key of step.requires?.env ?? []) keys.add(key);
       const child = stepWorkflow(step);
+
       if (child?.kind === 'inline') visit(child.workflow.steps);
     }
   };
+
   for (const definition of definitions) {
     for (const key of [...definition.defaults?.requires?.env ?? [], ...definition.setup?.requires?.env ?? []]) keys.add(key);
     visit(definition.steps);
   }
+
   return keys;
 }
 
 /** The `wait.held` entry for a step held for what it misses: what the member's policy refuses, or what the driver lacks. */
 export function heldFor(step: string, missing: readonly Missing[]): Held {
   const refused = missing.flatMap((item) => (item.startsWith('policy.') ? [item.slice('policy.'.length)] : []));
+
   const reason = refused.length > 0
     ? `step "${step}" needs ${refused.join(', ')}, which workflows.allow in local config does not allow on this machine`
     : `step "${step}" needs ${missing.join(', ')}, which this driver does not declare`;
+
   return { step, reason, missing: [...missing] };
 }

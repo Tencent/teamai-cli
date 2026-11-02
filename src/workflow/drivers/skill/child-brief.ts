@@ -13,6 +13,7 @@ const ChildResultSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('output'), output: z.unknown().optional() }),
   z.object({ kind: z.literal('failure'), failure: z.object({ code: z.string().min(1), message: z.string() }) }),
 ]);
+
 export type ChildResult = z.infer<typeof ChildResultSchema>;
 
 
@@ -44,6 +45,7 @@ export async function writeChildBrief(input: {
 }): Promise<string> {
   const { config, run, attempt, step, dir, changes, prompt, by, output, report, secrets } = input;
   const shape = output === undefined ? 'a short summary of what you did, as a JSON string' : `a value that matches the JSON schema \`${JSON.stringify(output)}\``;
+
   const brief = [
     `# Step ${step}, attempt ${attempt} of run ${run}`,
     '',
@@ -76,9 +78,11 @@ export async function writeChildBrief(input: {
       : `2. Run \`${report}\` once, then go on with the run.`,
     '',
   ].join('\n');
+
   const file = path.join(attemptDir(config, run, attempt), 'brief.md');
   await fs.mkdir(path.dirname(file), { recursive: true });
   await writeFileAtomic(file, redact(brief, { envSecrets: secrets, patterns: false }));
+
   return file;
 }
 
@@ -86,15 +90,20 @@ export async function writeChildBrief(input: {
 export async function readChildResult(input: { config: LocalConfig; run: RunId; attempt: AttemptId }): Promise<ChildResult> {
   const file = attemptResultPath(input.config, input.run, input.attempt);
   const raw = await readFileSafe(file);
+
   if (raw === null) {
     return { kind: 'failure', failure: { code: 'tool_failed', message: `The child of attempt ${input.attempt} wrote no ${file}, so the step has no result.` } };
   }
+
   let parsed: z.ZodSafeParseResult<ChildResult>;
+
   try {
     parsed = ChildResultSchema.safeParse(JSON.parse(raw));
   } catch (error) {
     return { kind: 'failure', failure: { code: 'tool_failed', message: `The child of attempt ${input.attempt} wrote ${file}, which is not JSON: ${error instanceof Error ? error.message : String(error)}.` } };
   }
+
   if (parsed.success) return parsed.data;
+
   return { kind: 'failure', failure: { code: 'tool_failed', message: `The child of attempt ${input.attempt} wrote ${file}, which is not a result: ${parsed.error.issues[0]?.message ?? 'invalid'}.` } };
 }

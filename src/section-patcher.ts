@@ -35,6 +35,7 @@ function slugify(title: string): string {
  */
 function extractFrontmatter(md: string): { frontmatter: string; rest: string } {
     const { raw, body } = splitFrontmatter(md);
+
     return { frontmatter: raw, rest: body };
 }
 
@@ -51,6 +52,7 @@ export function hashBody(body: string): string {
         .map((line) => line.trimEnd())
         .join('\n')
         .trim();
+
     return crypto.createHash('sha1').update(normalized, 'utf8').digest('hex').slice(0, 16);
 }
 
@@ -75,6 +77,7 @@ export function splitToSections(md: string): { prelude: string; sections: Manage
 
     // 找出所有 ## 标题的行号
     const headerIndices: number[] = [];
+
     for (let i = 0; i < lines.length; i++) {
         if (lines[i].startsWith('## ')) {
             headerIndices.push(i);
@@ -96,10 +99,12 @@ export function splitToSections(md: string): { prelude: string; sections: Manage
         const bodyStartIdx = headerLineIdx + 1;
         const bodyEndIdx = hi + 1 < headerIndices.length ? headerIndices[hi + 1] : lines.length;
         const bodyLines = lines.slice(bodyStartIdx, bodyEndIdx);
+
         // 去掉末尾的空行（章节间间距由 joinSections 控制）
         while (bodyLines.length > 0 && bodyLines[bodyLines.length - 1].trim() === '') {
             bodyLines.pop();
         }
+
         const body = bodyLines.join('\n');
 
         const baseSlug = slugify(title);
@@ -140,14 +145,18 @@ export function joinSections(prelude: string, sections: ManagedSection[]): strin
 
     const sectionStrs = sections.map((section) => {
         const metaParts = ['managed-by: import --from-repo', `section: ${section.slug}`];
+
         if (section.source) {
             metaParts.push(`source: ${section.source}`);
         }
+
         if (section.syncedAt) {
             metaParts.push(`syncedAt: ${section.syncedAt}`);
         }
+
         const openAnchor = `<!-- ${metaParts.join(', ')} -->`;
         const closeAnchor = `<!-- /managed-by: ${section.slug} -->`;
+
         return `${openAnchor}\n## ${section.title}\n${section.body}\n${closeAnchor}`;
     });
 
@@ -172,6 +181,7 @@ export function parseSections(md: string): { prelude: string; sections: ManagedS
     // 收集所有开锚
     const opens: Array<{ slug: string; extra: string; index: number; end: number }> = [];
     let m: RegExpExecArray | null;
+
     while ((m = openRe.exec(md)) !== null) {
         opens.push({ slug: m[1], extra: m[2], index: m.index, end: m.index + m[0].length });
     }
@@ -182,6 +192,7 @@ export function parseSections(md: string): { prelude: string; sections: ManagedS
 
     // 收集所有闭锚
     const closes: Array<{ slug: string; index: number; end: number }> = [];
+
     while ((m = closeRe.exec(md)) !== null) {
         closes.push({ slug: m[1], index: m.index, end: m.index + m[0].length });
     }
@@ -192,9 +203,11 @@ export function parseSections(md: string): { prelude: string; sections: ManagedS
 
     for (const open of opens) {
         const closeIdx = closes.findIndex((c, i) => c.slug === open.slug && !closeUsed.has(i) && c.index > open.end);
+
         if (closeIdx === -1) {
             throw new Error(`unclosed anchor: ${open.slug}`);
         }
+
         closeUsed.add(closeIdx);
         const close = closes[closeIdx];
 
@@ -205,31 +218,40 @@ export function parseSections(md: string): { prelude: string; sections: ManagedS
         // 跳过可能的空行后取标题
         let titleLine = '';
         let bodyStartLine = 0;
+
         for (let i = 0; i < innerLines.length; i++) {
             if (innerLines[i].trim() === '') {
                 continue;
             }
+
             if (innerLines[i].startsWith('## ')) {
                 titleLine = innerLines[i].replace(/^## /, '').trim();
                 bodyStartLine = i + 1;
             }
+
             break;
         }
+
         const bodyLines = innerLines.slice(bodyStartLine);
+
         // 去末尾空行
         while (bodyLines.length > 0 && bodyLines[bodyLines.length - 1].trim() === '') {
             bodyLines.pop();
         }
+
         const body = bodyLines.join('\n');
 
         // 解析 extra 里的 source / syncedAt
         let source: string | undefined;
         let syncedAt: string | undefined;
         const srcMatch = open.extra.match(/source:\s*([^,>]+)/);
+
         if (srcMatch) {
             source = srcMatch[1].trim();
         }
+
         const syncMatch = open.extra.match(/syncedAt:\s*([^,>]+)/);
+
         if (syncMatch) {
             syncedAt = syncMatch[1].trim();
         }
@@ -266,12 +288,15 @@ export function patchManagedSection(
     // 同时接受 --from-repo 和 --from-iwiki 来源（写入侧锚点保持原样，解析侧放宽匹配）。
     // [^>\n]{0,256}? 限制字符种类与长度上限，防止 ReDoS 回溯。
     const fromVariants = '--from-(?:repo|iwiki)';
+
     const openRe = new RegExp(
         `<!--\\s*managed-by:\\s*import\\s+${fromVariants},\\s*section:\\s*${escapeRegex(slug)}([^>\\n]{0,256}?)-->`,
     );
+
     const closeRe = new RegExp(`<!--\\s*/managed-by:\\s*${escapeRegex(slug)}[^>\\n]{0,256}?\\s*-->`);
 
     const openMatch = openRe.exec(md);
+
     if (!openMatch) {
         throw new Error(`section not found: ${slug}`);
     }
@@ -281,6 +306,7 @@ export function patchManagedSection(
 
     const afterOpen = md.slice(openEnd);
     const closeMatch = closeRe.exec(afterOpen);
+
     if (!closeMatch) {
         throw new Error(`section not found: ${slug}`);
     }
@@ -291,6 +317,7 @@ export function patchManagedSection(
     // 从旧开锚中提取标题
     const oldInner = md.slice(openEnd, closeStart);
     let title = '';
+
     for (const line of oldInner.split('\n')) {
         if (line.startsWith('## ')) {
             title = line.replace(/^## /, '').trim();
@@ -300,7 +327,9 @@ export function patchManagedSection(
 
     // 构建新开锚
     const metaParts = ['managed-by: import --from-repo', `section: ${slug}`];
+
     if (meta.source) metaParts.push(`source: ${meta.source}`);
+
     if (meta.syncedAt) metaParts.push(`syncedAt: ${meta.syncedAt}`);
     const newOpen = `<!-- ${metaParts.join(', ')} -->`;
     const newClose = `<!-- /managed-by: ${slug} -->`;
@@ -346,6 +375,7 @@ export function mergeWithAnchors(
             source: meta.source,
             syncedAt: meta.syncedAt,
         }));
+
         return {
             mergedMd: joinSections(freshPrelude, allSections),
             changedSlugs: [],
@@ -366,6 +396,7 @@ export function mergeWithAnchors(
             source: meta.source,
             syncedAt: meta.syncedAt,
         }));
+
         return {
             mergedMd: joinSections(freshPrelude, allSections),
             changedSlugs: [],
@@ -385,8 +416,10 @@ export function mergeWithAnchors(
 
     // 按 fresh 顺序构建合并后 sections
     const mergedSections: ManagedSection[] = [];
+
     for (const freshSection of freshSections) {
         const old = oldBySlug.get(freshSection.slug);
+
         if (old) {
             if (old.bodyHash === freshSection.bodyHash) {
                 // 保留旧 syncedAt + source
@@ -413,6 +446,7 @@ export function mergeWithAnchors(
 
     // 若全部 kept（无 added/removed/changed），保留旧 frontmatter 避免 lastUpdated 变化
     let finalPrelude = freshPrelude;
+
     if (changedSlugs.length === 0 && addedSlugs.length === 0 && removedSlugs.length === 0) {
         finalPrelude = oldPrelude;
     }

@@ -32,6 +32,7 @@ export async function upgradeCodebaseWiki(opts: UpgradeCodebaseWikiOptions): Pro
     } else {
       log.info('no docs/team-codebase/repos/ directory found, no migration needed.');
     }
+
     return;
   }
 
@@ -44,6 +45,7 @@ export async function upgradeCodebaseWiki(opts: UpgradeCodebaseWikiOptions): Pro
     } else {
       log.info('no .md files under repos/, no migration needed.');
     }
+
     return;
   }
 
@@ -95,18 +97,23 @@ export async function upgradeCodebaseWiki(opts: UpgradeCodebaseWikiOptions): Pro
     if (result.migrated.length > 0) {
       const noun = result.migrated.length === 1 ? 'repository' : 'repositories';
       log.success(`migrated ${result.migrated.length} ${noun} to teamwiki/ format`);
+
       for (const m of result.migrated) {
         console.log(chalk.green(`  ✓ ${m}`));
       }
     }
+
     if (result.skipped.length > 0) {
       console.log(chalk.yellow(`skipped ${result.skipped.length}:`));
+
       for (const s of result.skipped) {
         console.log(chalk.yellow(`  - ${s}`));
       }
     }
+
     if (result.errors.length > 0) {
       console.log(chalk.red(`failed ${result.errors.length}:`));
+
       for (const e of result.errors) {
         console.log(chalk.red(`  ✗ ${e}`));
       }

@@ -43,21 +43,25 @@ interface CursorFrontmatter {
 function deriveCursorFrontmatter(data: Record<string, unknown>): CursorFrontmatter {
   // `globs` is read too: a rule authored in Cursor's own spelling stays scoped.
   const patterns = rulePaths({ paths: data.paths ?? data.globs });
+
   if (patterns.length > 0) {
     return { globs: patterns.join(', '), alwaysApply: false };
   }
+
   return { alwaysApply: true };
 }
 
 /** Serialize Cursor frontmatter into a `.mdc` file string. */
 function renderCursorMdc(fm: CursorFrontmatter, body: string): string {
   const lines = ['---'];
+
   // Quoted deliberately: a glob starting with `*` is an alias node in YAML, so
   // an unquoted value makes the whole block unparseable — which would put us
   // back where we started, with Cursor ignoring the rule.
   if (fm.globs !== undefined) lines.push(`globs: ${JSON.stringify(fm.globs)}`);
   lines.push(`alwaysApply: ${fm.alwaysApply}`);
   lines.push('---');
+
   return `${lines.join('\n')}\n\n${body}\n`;
 }
 

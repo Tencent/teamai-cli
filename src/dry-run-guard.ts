@@ -151,16 +151,22 @@ export function noDryRunPreview(command: string): string {
 /** The refusal for running `command` with `--dry-run`, or undefined when its dry run may go ahead. */
 export function dryRunRefusal(command: Command): string | undefined {
   const names: string[] = [];
+
   for (let current: Command | null = command; current?.parent; current = current.parent) names.unshift(current.name());
   const path = names.join(' ');
+
   if (path === 'ci extract-mr' && command.opts().output !== undefined) return noDryRunPreview('ci extract-mr --output');
+
   if (path === 'import') {
     const opts = command.opts();
+
     // Match importCmd's source precedence. #960 made --from-org preview-safe.
     if (!opts.fromOrg && !opts.fromRepo && !opts.fromRepoList) {
       if (opts.fromIwiki) return noDryRunPreview('import --from-iwiki'); // persists the review session
+
       if (!opts.fromMr && !opts.dir && opts.fromClaude) return noDryRunPreview('import --from-claude'); // persists the review session
     }
   }
+
   return DRY_RUN_PREVIEW.has(path) ? undefined : noDryRunPreview(path);
 }

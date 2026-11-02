@@ -45,7 +45,9 @@ const CLAUDE_TOOL: Record<string, string> = {
 export function agyToolsFor(claudeTools: unknown): string[] {
   const names = Array.isArray(claudeTools) ? claudeTools.map(String)
     : typeof claudeTools === 'string' ? claudeTools.split(',').map((tool) => tool.trim()) : [];
+
   const agy = names.flatMap((name) => Object.keys(CLAUDE_TOOL).filter((tool) => CLAUDE_TOOL[tool] === name));
+
   return [...new Set(agy)];
 }
 
@@ -82,19 +84,27 @@ const AgyPayload = z.object({
  */
 export function agyHookPayload(event: string, payload: Record<string, unknown>): Record<string, unknown> | null {
   const agy = AgyPayload.parse(payload);
+
   if (event === 'prompt-submit' && agy.invocationNum !== undefined && agy.invocationNum > 0) return null;
   const shaped: Record<string, unknown> = { ...payload, hook_event_name: CLAUDE_EVENT[event] ?? event };
+
   if (agy.conversationId !== undefined) shaped.session_id = agy.conversationId;
   const workspace = agy.workspacePaths?.[0];
+
   if (workspace !== undefined) shaped.cwd = workspace;
+
   if (event === 'prompt-submit' && agy.lastUserInput !== undefined) shaped.prompt = agy.lastUserInput;
+
   if (agy.transcriptPath !== undefined) shaped.transcript_path = agy.transcriptPath;
+
   if (agy.toolCall) {
     shaped.tool_name = CLAUDE_TOOL[agy.toolCall.name] ?? agy.toolCall.name;
     shaped.tool_input = Object.fromEntries(Object.entries(agy.toolCall.args).map(([key, value]) => [CLAUDE_ARG[key] ?? key, value]));
   }
+
   // agy sends no tool output, so a call it reports an error for is the only one known to have failed.
   if (event === 'post-tool-use' && agy.error) shaped.tool_status = 'failure';
+
   return shaped;
 }
 
@@ -108,6 +118,7 @@ export interface AgyHookResult {
 
 /** A Claude Code hook's JSON output, as far as it adds context. */
 const ClaudeHookOutput = z.object({ hookSpecificOutput: z.object({ additionalContext: z.string() }) });
+
 /** The team hooks' decision as teamai's bridge prints it. */
 const BridgeDecision = z.object({ block: z.string().optional(), context: z.string().optional() });
 
@@ -123,8 +134,10 @@ function jsonOf(text: string): unknown {
 /** The context a Claude Code hook output carries: its `additionalContext`, or the text itself when it is not JSON. */
 function contextOf(output: string): string {
   const json = jsonOf(output);
+
   if (json === undefined) return output;
   const parsed = ClaudeHookOutput.safeParse(json);
+
   return parsed.success ? parsed.data.hookSpecificOutput.additionalContext : '';
 }
 
@@ -132,11 +145,16 @@ function contextOf(output: string): string {
 export function agyHookReply(event: string, result: AgyHookResult): string {
   const parsed = BridgeDecision.safeParse(jsonOf(result.team));
   const decided = parsed.success ? parsed.data : {};
+
   if (event === 'pre-tool-use' && decided.block !== undefined) return JSON.stringify({ decision: 'deny', reason: decided.block });
   const context = [contextOf(result.builtin), decided.context ?? ''].map((text) => text.trim()).filter(Boolean).join('\n\n');
+
   if (!context) return '';
+
   // A session-start step persists across turns; a prompt's lasts only that turn.
   if (event === 'session-start') return JSON.stringify({ injectSteps: [{ systemMessage: { systemMessage: context } }] });
+
   if (event === 'prompt-submit') return JSON.stringify({ injectSteps: [{ ephemeralMessage: context }] });
+
   return '';
 }

@@ -26,12 +26,15 @@ function formatBytes(bytes: number): string {
     if (bytes >= 1024 * 1024 * 1024) {
         return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
     }
+
     if (bytes >= 1024 * 1024) {
         return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
     }
+
     if (bytes >= 1024) {
         return `${(bytes / 1024).toFixed(2)} KB`;
     }
+
     return `${bytes} B`;
 }
 
@@ -42,15 +45,18 @@ function formatBytes(bytes: number): string {
  */
 function shortSha(sha?: string): string {
     if (!sha) return '-';
+
     return sha.slice(0, 8);
 }
 
 function parseGcOption(value: string, option: string): number | undefined {
     const parsed = parsePositiveInteger(value);
+
     if (parsed !== undefined) return parsed;
 
     log.error(`${option} must be a positive integer; received "${value}"`);
     process.exitCode = 2;
+
     return undefined;
 }
 
@@ -78,6 +84,7 @@ async function runStatus(opts: CacheCmdOptions): Promise<void> {
 
     if (opts.json) {
         console.log(JSON.stringify(result, null, 2));
+
         return;
     }
 
@@ -87,6 +94,7 @@ async function runStatus(opts: CacheCmdOptions): Promise<void> {
 
     if (result.entryCount === 0) {
         console.log(chalk.gray('(no cache entries)'));
+
         return;
     }
 
@@ -106,12 +114,14 @@ async function runStatus(opts: CacheCmdOptions): Promise<void> {
 
     for (const entry of result.entries) {
         const keyTrunc = entry.key.length > colKey ? `…${entry.key.slice(-(colKey - 1))}` : entry.key;
+
         const row = [
             keyTrunc.padEnd(colKey),
             formatBytes(entry.size_bytes).padStart(colSize),
             entry.last_used.padEnd(colUsed),
             shortSha(entry.last_synced_sha),
         ].join('  ');
+
         console.log(row);
     }
 
@@ -124,14 +134,18 @@ async function runStatus(opts: CacheCmdOptions): Promise<void> {
 
 async function runGc(opts: CacheCmdOptions): Promise<void> {
     let maxBytes: number | undefined;
+
     if (opts.maxBytes !== undefined) {
         maxBytes = parseGcOption(opts.maxBytes, '--max-bytes');
+
         if (maxBytes === undefined) return;
     }
 
     let staleDays: number | undefined;
+
     if (opts.staleDays !== undefined) {
         staleDays = parseGcOption(opts.staleDays, '--stale-days');
+
         if (staleDays === undefined) return;
     }
 
@@ -145,9 +159,11 @@ async function runGc(opts: CacheCmdOptions): Promise<void> {
 
     if (opts.json) {
         console.log(JSON.stringify(result, null, 2));
+
         if (result.skipped.length > 0) {
             process.exit(1);
         }
+
         return;
     }
 
@@ -169,6 +185,7 @@ async function runGc(opts: CacheCmdOptions): Promise<void> {
     } else {
         const removedLabel = opts.dryRun ? 'Would remove' : 'Removed';
         console.log(chalk.bold(`${removedLabel} (${result.removed.length}):`));
+
         for (const item of result.removed) {
             const tag = item.reason === 'stale' ? chalk.yellow('[stale]') : chalk.red('[over-cap]');
             console.log(`  ${tag} ${item.key}  (${formatBytes(item.size_bytes)})`);
@@ -178,9 +195,11 @@ async function runGc(opts: CacheCmdOptions): Promise<void> {
     if (result.skipped.length > 0) {
         console.log('');
         console.log(chalk.bold(chalk.red(`Skipped (${result.skipped.length}, needs manual review):`)));
+
         for (const item of result.skipped) {
             console.log(`  ${chalk.red('[skip]')} ${item.key}: ${item.reason}`);
         }
+
         console.log('');
         process.exit(1);
     }

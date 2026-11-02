@@ -97,6 +97,7 @@
     "teamai/no-reflect-get": "warn",
     "teamai/no-unknown-type-aliases": "warn",
     "teamai/no-widen-then-assert": "warn",
+    "teamai/require-readable-spacing": "warn",
     // A suppression with no reason can't be reviewed or removed later.
     "teamai/suppression-reason": "error"
   },
