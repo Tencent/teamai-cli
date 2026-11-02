@@ -20,11 +20,13 @@ const ATTEMPT_ID = /^a[0-9a-f]{8}$/;
 const SOURCE_HASH = /^[0-9a-f]{64}$/;
 
 const RubricSchema = PinnedScorerSchema.pick({ sourceHash: true, content: true });
+
 type Rubric = z.infer<typeof RubricSchema>;
 
 /** Why a judge attempt closed without a label. */
 /** `check_could_not_run`: the scorer's check of a delivered pass (#1247) could not start, was killed or timed out. */
 export const JUDGE_FAILURES = ['judge_failed', 'lease_expired', 'evidence_empty', 'judge_answer_invalid', 'judge_tool_unavailable', 'check_could_not_run'] as const;
+
 export type JudgeFailureCode = (typeof JUDGE_FAILURES)[number];
 
 export type JudgeDriver = z.infer<typeof DriverSchema>;
@@ -54,7 +56,9 @@ const AttemptBase = {
   /** In a batch, the entries of every scorer the lease judges, in the step's order; each has an attempt of this id. */
   batch: z.array(z.string().regex(ENTRY_ID)).min(2).optional(),
 };
+
 const Settled = { settledAt: z.string() };
+
 const Verdict = {
   labelId: z.string().min(1),
   verdict: z.object({ label: z.string().min(1), score: z.number(), passed: z.boolean(), version: z.string().min(1), decidedBy: z.enum(DECIDERS).optional() }),
@@ -87,12 +91,19 @@ const SessionAttemptSchema = z.union([
 
 /** A file without `source` reads as a run attempt; `source: 'session'` fails each of those. */
 export const AttemptRecordSchema = z.union([RunAttemptSchema, SessionAttemptSchema]);
+
 export type AttemptRecord = z.infer<typeof AttemptRecordSchema>;
+
 export type RunAttempt = z.infer<typeof RunAttemptSchema>;
+
 export type SessionAttempt = z.infer<typeof SessionAttemptSchema>;
+
 export type LeasedAttempt = Extract<AttemptRecord, { status: 'leased' }>;
+
 export type LeasedRunAttempt = Extract<RunAttempt, { status: 'leased' }>;
+
 export type LeasedSessionAttempt = Extract<SessionAttempt, { status: 'leased' }>;
+
 export type SucceededAttempt = Extract<AttemptRecord, { status: 'succeeded' }>;
 
 export function isRunAttempt(attempt: AttemptRecord): attempt is RunAttempt {
@@ -102,6 +113,7 @@ export function isRunAttempt(attempt: AttemptRecord): attempt is RunAttempt {
 /** A stage settled this attempt before any judge ran (#1247): it labelled the pass, or found its check could not run. */
 export function isDecidedBeforeJudge(attempt: AttemptRecord): boolean {
   if (attempt.status === 'succeeded') return isStageDecider(attempt.verdict.decidedBy);
+
   return attempt.status === 'failed' && attempt.code === 'check_could_not_run';
 }
 
@@ -118,6 +130,7 @@ export const ScoreRequestSchema = z.object({
   /** `--batch`: whether this pass's scorers share one judge call, over what the step says. */
   batch: z.boolean().optional(),
 });
+
 export type ScoreRequest = z.infer<typeof ScoreRequestSchema>;
 
 export function newAttemptId(): string {
@@ -146,9 +159,12 @@ const LOCK_WAIT_MS = 25;
 
 async function readRecord<T>(file: string, schema: z.ZodType<T>): Promise<T | undefined> {
   const raw = await readFileSafe(file);
+
   if (raw === null) return undefined;
+
   try {
     const parsed = schema.safeParse(JSON.parse(raw));
+
     return parsed.success ? parsed.data : undefined;
   } catch {
     return undefined;
@@ -163,9 +179,11 @@ export const AttemptStore = {
   /** Every readable attempt, by entry. A file this teamai cannot read is left out. */
   async read(config: LocalConfig): Promise<Map<string, AttemptRecord[]>> {
     const byEntry = new Map<string, AttemptRecord[]>();
+
     for (const entry of (await listDir(attemptsDir(config))).filter((name) => ENTRY_ID.test(name))) {
       byEntry.set(entry, await AttemptStore.ofEntry(config, entry));
     }
+
     return byEntry;
   },
 
@@ -173,12 +191,14 @@ export const AttemptStore = {
     const dir = path.join(attemptsDir(config), entry);
     const files = (await listDir(dir)).filter((name) => ATTEMPT_ID.test(name.replace(/\.json$/, '')) && name.endsWith('.json'));
     const records = await Promise.all(files.map((name) => readRecord(path.join(dir, name), AttemptRecordSchema)));
+
     return records.filter((record): record is AttemptRecord => record !== undefined && record.entry === entry);
   },
 
   async get(config: LocalConfig, entry: string, attempt: string): Promise<AttemptRecord | undefined> {
     if (!ENTRY_ID.test(entry) || !ATTEMPT_ID.test(attempt)) return undefined;
     const record = await readRecord(path.join(attemptsDir(config), entry, `${attempt}.json`), AttemptRecordSchema);
+
     return record?.entry === entry && record.attempt === attempt ? record : undefined;
   },
 
@@ -190,12 +210,14 @@ export const AttemptStore = {
   async requests(config: LocalConfig): Promise<ScoreRequest[]> {
     const entries = (await listDir(attemptsDir(config))).filter((name) => ENTRY_ID.test(name));
     const requests = await Promise.all(entries.map((entry) => AttemptStore.request(config, entry)));
+
     return requests.filter((request): request is ScoreRequest => request !== undefined);
   },
 
   async request(config: LocalConfig, entry: string): Promise<ScoreRequest | undefined> {
     if (!ENTRY_ID.test(entry)) return undefined;
     const request = await readRecord(path.join(attemptsDir(config), entry, 'request.json'), ScoreRequestSchema);
+
     return request?.entry === entry ? request : undefined;
   },
 
@@ -212,6 +234,7 @@ export const AttemptStore = {
   async rubric(config: LocalConfig, sourceHash: string): Promise<Rubric | undefined> {
     if (!SOURCE_HASH.test(sourceHash)) return undefined;
     const rubric = await readRecord(rubricPath(config, sourceHash), RubricSchema);
+
     return rubric?.sourceHash === sourceHash ? rubric : undefined;
   },
 
@@ -225,12 +248,15 @@ export const AttemptStore = {
     const attempts = [...(await AttemptStore.read(config)).values()];
     const named = new Set(attempts.flat().map((attempt) => attempt.rubric.sourceHash));
     const latest = new Set(attempts.flatMap((ofEntry) => ofEntry.reduce<AttemptRecord | undefined>((newest, attempt) => (newest && newest.leasedAt >= attempt.leasedAt ? newest : attempt), undefined)?.attempt ?? []));
+
     const remove = async (dir: string, pattern: RegExp, keep: ReadonlySet<string>) => {
       for (const name of await listDir(dir)) {
         const id = pattern.exec(name)?.[1];
+
         if (id !== undefined && !keep.has(id)) await fs.rm(path.join(dir, name), { force: true });
       }
     };
+
     await remove(path.join(scoresDir(config), 'rubrics'), /^([0-9a-f]{64})\.json$/, named);
     await remove(path.join(scoresDir(config), 'raw'), /^(a[0-9a-f]{8})\.txt$/, latest);
   },
@@ -245,11 +271,15 @@ export const AttemptStore = {
     const lock = path.join(scoresDir(config), 'attempts.lock');
     await fs.mkdir(scoresDir(config), { recursive: true });
     let held = false;
+
     for (let tries = 0; tries < LOCK_ATTEMPTS && !held; tries += 1) {
       held = await acquireLock(lock);
+
       if (!held) await new Promise((resolve) => setTimeout(resolve, LOCK_WAIT_MS));
     }
+
     if (!held) return { status: 'busy' };
+
     try {
       return { status: 'done', value: await change() };
     } finally {

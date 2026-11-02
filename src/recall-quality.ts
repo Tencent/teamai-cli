@@ -1,5 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs';
+import { z } from 'zod';
 import type { SearchResult } from './utils/search-index.js';
 import { getUserHome } from './utils/home.js';
 
@@ -40,6 +41,7 @@ function sanitizeSessionId(sessionId: string): string {
 
 function getCachePath(sessionId: string): string {
     const safeName = sanitizeSessionId(sessionId);
+
     return path.join(
         getUserHome(),
         '.teamai',
@@ -48,28 +50,33 @@ function getCachePath(sessionId: string): string {
     );
 }
 
+/** The cache file as written; a field of another type reads as its zero. */
+const StoredRecallCacheSchema = z.object({
+    queries: z.array(z.string()).catch([]),
+    count: z.number().catch(0),
+    updatedAt: z.string().optional().catch(undefined),
+    topScore: z.number().catch(0),
+    hitCount: z.number().catch(0),
+    missCount: z.number().catch(0),
+});
+
 function readCache(sessionId: string): RecallCache | null {
     try {
         const cachePath = getCachePath(sessionId);
+
         if (!fs.existsSync(cachePath)) return null;
 
         const raw = fs.readFileSync(cachePath, 'utf-8');
-        const parsed = JSON.parse(raw) as Partial<RecallCache>;
+        const cache = StoredRecallCacheSchema.safeParse(JSON.parse(raw));
+
+        if (!cache.success) return null;
+        const parsed = cache.data;
 
         const age = Date.now() - new Date(parsed.updatedAt ?? '').getTime();
+
         if (age > CACHE_TTL_MS) return null;
 
-        const queries = Array.isArray(parsed.queries) && parsed.queries.every((q) => typeof q === 'string')
-            ? parsed.queries
-            : [];
-        return {
-            queries,
-            count: typeof parsed.count === 'number' ? parsed.count : 0,
-            updatedAt: parsed.updatedAt ?? new Date().toISOString(),
-            topScore: typeof parsed.topScore === 'number' ? parsed.topScore : 0,
-            hitCount: typeof parsed.hitCount === 'number' ? parsed.hitCount : 0,
-            missCount: typeof parsed.missCount === 'number' ? parsed.missCount : 0,
-        };
+        return { ...parsed, updatedAt: parsed.updatedAt ?? new Date().toISOString() };
     } catch {
         return null;
     }
@@ -79,14 +86,17 @@ function writeCache(sessionId: string, cache: RecallCache): void {
     try {
         const cachePath = getCachePath(sessionId);
         const dir = path.dirname(cachePath);
+
         if (!fs.existsSync(dir)) {
             fs.mkdirSync(dir, { recursive: true });
         }
+
         // 0600: the cache now holds the raw query text, which can carry a
         // secret; it is a local-only diagnostic and no reader needs group or
         // world access. chmod also normalizes files written before the mode
         // existed. Best-effort, like the write itself.
         fs.writeFileSync(cachePath, JSON.stringify(cache), { encoding: 'utf-8', mode: 0o600 });
+
         try {
             fs.chmodSync(cachePath, 0o600);
         } catch {
@@ -115,10 +125,13 @@ export function recordRecallQuality(sessionId: string, results: SearchResult[], 
             hitCount: 0,
             missCount: 0,
         };
+
         if (query !== undefined) {
             cache.queries = [...cache.queries, query].slice(-MAX_TRACKED_QUERIES);
         }
+
         const bestScore = results.length > 0 ? results[0].score : 0;
+
         const updated: RecallCache = {
             ...cache,
             count: cache.count + 1,
@@ -127,6 +140,7 @@ export function recordRecallQuality(sessionId: string, results: SearchResult[], 
             missCount: results.length > 0 ? cache.missCount : cache.missCount + 1,
             updatedAt: new Date().toISOString(),
         };
+
         writeCache(sessionId, updated);
     } catch {
         // Never let quality tracking affect the recall command itself
@@ -140,8 +154,11 @@ export function recordRecallQuality(sessionId: string, results: SearchResult[], 
  */
 export function readRecallQuality(sessionId: string): { topScore: number; hitCount: number; missCount: number } | null {
     const cache = readCache(sessionId);
+
     if (!cache) return null;
+
     if (cache.hitCount === 0 && cache.missCount === 0) return null;
+
     return {
         topScore: cache.topScore,
         hitCount: cache.hitCount,

@@ -20,6 +20,10 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { z } from 'zod';
+import type { JsonValue } from '../types.js';
+import { OptionalString } from './fs.js';
+import type { ToolArguments } from './ir.js';
 import { findSqlite3 } from './sqlite.js';
 
 // ---------------------------------------------------------------------------
@@ -29,9 +33,11 @@ import { findSqlite3 } from './sqlite.js';
  /** Cursor user-data dir (macOS / Linux; other platforms return null = registration unsupported). */
 export function getCursorStateRoot(): string | null {
   const home = os.homedir();
+
   if (process.platform === 'darwin') {
     return path.join(home, 'Library', 'Application Support', 'Cursor');
   }
+
   if (process.platform === 'linux') {
     // The IDE resolves its user-data dir the way VS Code does, so on Linux that is
     // `$XDG_CONFIG_HOME/Cursor` when the variable is set and ~/.config/Cursor otherwise. The
@@ -41,21 +47,28 @@ export function getCursorStateRoot(): string | null {
     // and leave the result a relative `Cursor`, i.e. the working directory.
     return path.join(process.env.XDG_CONFIG_HOME?.trim() || path.join(home, '.config'), 'Cursor');
   }
+
    return null; // Windows: %APPDATA%/Cursor -- not supported yet (no guaranteed sqlite3 CLI)
 }
 
  /** Path to Cursor's state.vscdb. */
 export function getCursorStateDbPath(): string | null {
   const root = getCursorStateRoot();
+
   return root ? path.join(root, 'User', 'globalStorage', 'state.vscdb') : null;
 }
+
+/** The part of User/workspaceStorage/<hash>/workspace.json this module reads. */
+const CursorWorkspaceFileSchema = z.object({ folder: OptionalString });
 
  /** cwd -> Cursor workspaceId (resolved from workspaceStorage/<hash>/workspace.json's folder). */
 export function resolveCursorWorkspaceId(cwd: string): { id: string; uri: CursorUri } | null {
   const root = getCursorStateRoot();
+
   if (!root) return null;
   const wsRoot = path.join(root, 'User', 'workspaceStorage');
   let entries: string[];
+
   try {
     entries = fs.readdirSync(wsRoot);
   } catch {
@@ -63,26 +76,33 @@ export function resolveCursorWorkspaceId(cwd: string): { id: string; uri: Cursor
   }
 
   const target = realpathOr(cwd);
+
   for (const hash of entries) {
     const wj = path.join(wsRoot, hash, 'workspace.json');
     let raw: string;
+
     try {
       raw = fs.readFileSync(wj, 'utf-8');
     } catch {
       continue;
     }
-    let parsed: { folder?: string };
+
+    let folder: string | undefined;
+
     try {
-      parsed = JSON.parse(raw) as { folder?: string };
+      folder = CursorWorkspaceFileSchema.parse(JSON.parse(raw)).folder;
     } catch {
       continue;
     }
-    const folder = parsed.folder;
+
     if (!folder) continue;
     const fsPath = decodeURIComponent(folder.replace(/^file:\/\//, ''));
+
     if (realpathOr(fsPath) !== target) continue;
+
     return { id: hash, uri: makeUri(folder, fsPath) };
   }
+
   return null;
 }
 
@@ -124,25 +144,28 @@ function lexical(text: string): string {
         },
       ]
     : [];
+
   return JSON.stringify({
     root: { children: paragraph, direction: 'ltr', format: '', indent: 0, type: 'root', version: 1 },
   });
 }
 
 interface BubbleTemplate {
-  [k: string]: unknown;
+  [k: string]: JsonValue;
 }
 
  /** Tool output: the native result is a JSON string (object); bare text must be wrapped, or the UI cannot parse it. */
 function encodeToolResult(raw?: string): string {
   if (!raw) return '';
   const s = raw.trim();
+
   if (s.startsWith('{') || s.startsWith('[')) return s;
+
   return JSON.stringify({ output: raw });
 }
 
  /** Empty shape of the native composerData.context / bubble.context. */
-function emptyContext(): Record<string, unknown> {
+function emptyContext() {
   return {
     composers: [],
     selectedCommits: [],
@@ -240,7 +263,7 @@ function emptyBubble(): BubbleTemplate {
 
 export interface CursorComposerTool {
   name: string;
-  args: Record<string, unknown>;
+  args: ToolArguments;
   /**
     * Tool output. The native record keeps it on the assistant's tool bubble as
     * `toolFormerData.result` and does **not** emit a separate message -- so the
@@ -278,16 +301,26 @@ interface BubbleRecord {
   value: string;
 }
 
+/** One entry of composerData.fullConversationHeadersOnly. */
+interface ConversationHeader {
+  bubbleId: string;
+  type: 1 | 2;
+  grouping: JsonValue;
+  contentHeightHint?: number;
+  createdAt: string;
+}
+
 function buildBubbleRecords(
   composerId: string,
   messages: CursorComposerMessage[],
-): { records: BubbleRecord[]; headers: Record<string, unknown>[] } {
+) {
   const records: BubbleRecord[] = [];
-  const headers: Record<string, unknown>[] = [];
+  const headers: ConversationHeader[] = [];
   const uuid = (): string => cryptoRandomUuid();
 
   for (const msg of messages) {
     const isUser = msg.role === 'user';
+
     if (msg.text.trim()) {
       const bid = uuid();
       const bubble = emptyBubble();
@@ -295,6 +328,7 @@ function buildBubbleRecords(
       bubble.bubbleId = bid;
       bubble.createdAt = msg.createdAt;
       bubble.text = msg.text;
+
       if (isUser) {
         bubble.richText = lexical(msg.text);
         bubble.requestId = uuid();
@@ -310,6 +344,7 @@ function buildBubbleRecords(
          // and markdown stops working
         bubble.codeBlocks = [];
       }
+
       records.push({ key: `bubbleId:${composerId}:${bid}`, value: JSON.stringify(bubble) });
       headers.push({
         bubbleId: bid,
@@ -364,6 +399,7 @@ function buildBubbleRecords(
       });
     }
   }
+
   return { records, headers };
 }
 
@@ -374,8 +410,8 @@ function buildComposerData(
   createdMs: number,
   lastMs: number,
   ws: { id: string; uri: CursorUri },
-  headers: Record<string, unknown>[],
-): Record<string, unknown> {
+  headers: ConversationHeader[],
+) {
   return {
     _v: 18,
     composerId,
@@ -465,7 +501,7 @@ function buildHead(
   createdMs: number,
   lastMs: number,
   ws: { id: string; uri: CursorUri },
-): Record<string, unknown> {
+) {
   return {
     type: 'head',
     composerId,
@@ -529,6 +565,7 @@ export function assertCursorSessionId(id: string): string | null {
  */
 export function cursorBubbleCleanupWhere(composerId: string): string {
   const id = esc(composerId);
+
   return `key >= 'bubbleId:${id}:' AND key < 'bubbleId:${id};'`;
 }
 
@@ -547,24 +584,31 @@ export interface RegisterResult {
  */
 export function registerCursorComposer(args: RegisterCursorComposerArgs): RegisterResult {
   const invalidId = assertCursorSessionId(args.composerId);
+
   if (invalidId) return { ok: false, reason: invalidId };
 
   const dbPath = getCursorStateDbPath();
+
   if (!dbPath) return { ok: false, reason: 'unsupported platform' };
+
   if (!fs.existsSync(dbPath)) return { ok: false, reason: `state db not found: ${dbPath}` };
 
   const sqlite3 = findSqlite3();
+
   if (!sqlite3) return { ok: false, reason: 'sqlite3 CLI not found' };
 
   const ws = resolveCursorWorkspaceId(args.cwd);
+
   if (!ws) return { ok: false, reason: `cursor workspace not found for ${args.cwd}` };
 
   const { records, headers } = buildBubbleRecords(args.composerId, args.messages);
+
   if (records.length === 0) return { ok: false, reason: 'no renderable messages' };
 
   const times = args.messages
     .map((m) => Date.parse(m.createdAt))
     .filter((n) => Number.isFinite(n));
+
   const createdMs = times.length ? Math.min(...times) : Date.now();
   const lastMs = times.length ? Math.max(...times) : createdMs;
    // List sort fields (lastUpdatedAt/recency) use the migration time: keeping the
@@ -583,6 +627,7 @@ export function registerCursorComposer(args: RegisterCursorComposerArgs): Regist
      // OR REPLACE relies on a unique index; delete first so a re-migration
     `DELETE FROM composerHeaders WHERE composerId='${esc(args.composerId)}';`,
   ];
+
   stmts.push(
     'INSERT OR REPLACE INTO composerHeaders ' +
       '(composerId, workspaceId, createdAt, lastUpdatedAt, isArchived, isSubagent, recency, checkpointAt, value, subagentTypeName) ' +
@@ -594,12 +639,14 @@ export function registerCursorComposer(args: RegisterCursorComposerArgs): Regist
     'INSERT OR REPLACE INTO cursorDiskKV (key, value) VALUES ' +
       `('composerData:${esc(args.composerId)}','${esc(JSON.stringify(composer))}');`,
   );
+
   for (const rec of records) {
     stmts.push(
       'INSERT OR REPLACE INTO cursorDiskKV (key, value) VALUES ' +
         `('${esc(rec.key)}','${esc(rec.value)}');`,
     );
   }
+
   stmts.push('COMMIT;');
 
   // The script holds the full conversation text. Piping it straight to sqlite3
@@ -612,14 +659,16 @@ export function registerCursorComposer(args: RegisterCursorComposerArgs): Regist
       maxBuffer: 32 * 1024 * 1024,
       timeout: 30_000,
     });
+
     if (r.status !== 0) {
       const stderr = (r.stderr?.toString() ?? '').trim();
       const signal = r.signal ? ` signal ${r.signal}` : '';
       const err = r.error?.message ? ` ${r.error.message}` : '';
+
       return { ok: false, reason: (stderr || `sqlite3 exit ${r.status}${signal}${err}`).slice(0, 300) };
     }
   } catch (e) {
-    return { ok: false, reason: (e as Error).message };
+    return { ok: false, reason: e instanceof Error ? e.message : String(e) };
   }
 
   return { ok: true, bubbleCount: records.length };
@@ -634,14 +683,18 @@ export function registerCursorComposer(args: RegisterCursorComposerArgs): Regist
 export function cursorComposerExists(composerId: string, cwd?: string): { ok: true; exists: boolean } | { ok: false; reason: string } {
   if (assertCursorSessionId(composerId)) return { ok: true, exists: false };
   const dbPath = getCursorStateDbPath();
+
   if (!dbPath || !fs.existsSync(dbPath)) return { ok: true, exists: false };
   const sqlite3 = findSqlite3();
+
   if (!sqlite3) return { ok: true, exists: false };
 
   const id = esc(composerId);
   let sql: string;
+
   if (cwd) {
     const ws = resolveCursorWorkspaceId(cwd);
+
     if (!ws) return { ok: true, exists: false };
     sql = `SELECT EXISTS(SELECT 1 FROM composerHeaders WHERE composerId='${id}' AND workspaceId='${esc(ws.id)}');`;
   } else {
@@ -652,13 +705,16 @@ export function cursorComposerExists(composerId: string, cwd?: string): { ok: tr
 
   try {
     const r = spawnSync(sqlite3, [dbPath], { input: `PRAGMA busy_timeout=5000;\n${sql}`, timeout: 30_000 });
+
     if (r.status !== 0) {
       const stderr = (r.stderr?.toString() ?? '').trim();
+
       return { ok: false, reason: (stderr || `sqlite3 exit ${r.status}${r.signal ? ` signal ${r.signal}` : ''}`).slice(0, 300) };
     }
+
     return { ok: true, exists: (r.stdout?.toString() ?? '').trim().endsWith('1') };
   } catch (e) {
-    return { ok: false, reason: (e as Error).message };
+    return { ok: false, reason: e instanceof Error ? e.message : String(e) };
   }
 }
 
@@ -668,14 +724,18 @@ export function cursorComposerExists(composerId: string, cwd?: string): { ok: tr
  */
 export function unregisterCursorComposer(composerId: string): RegisterResult {
   const invalidId = assertCursorSessionId(composerId);
+
   if (invalidId) return { ok: false, reason: invalidId };
 
   const dbPath = getCursorStateDbPath();
+
   if (!dbPath || !fs.existsSync(dbPath)) return { ok: false, reason: 'state db not found' };
   const sqlite3 = findSqlite3();
+
   if (!sqlite3) return { ok: false, reason: 'sqlite3 CLI not found' };
 
   const id = esc(composerId);
+
   const sql =
     'BEGIN IMMEDIATE;\n' +
     `DELETE FROM composerHeaders WHERE composerId='${id}';\n` +
@@ -689,14 +749,17 @@ export function unregisterCursorComposer(composerId: string): RegisterResult {
       maxBuffer: 32 * 1024 * 1024,
       timeout: 30_000,
     });
+
     if (r.status !== 0) {
       const stderr = (r.stderr?.toString() ?? '').trim();
       const signal = r.signal ? ` signal ${r.signal}` : '';
       const err = r.error?.message ? ` ${r.error.message}` : '';
+
       return { ok: false, reason: (stderr || `sqlite3 exit ${r.status}${signal}${err}`).slice(0, 300) };
     }
   } catch (e) {
-    return { ok: false, reason: (e as Error).message };
+    return { ok: false, reason: e instanceof Error ? e.message : String(e) };
   }
+
   return { ok: true };
 }

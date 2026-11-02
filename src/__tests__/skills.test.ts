@@ -729,7 +729,6 @@ scope: 'user',
   });
 
   it('handles mixed flat and namespaced layout without primaryRole', async () => {
-    // Flat skill
     const flatSkillDir = path.join(localConfig.repo.localPath, 'skills', 'flat-skill');
     await fse.ensureDir(flatSkillDir);
     await fse.writeFile(path.join(flatSkillDir, 'SKILL.md'), '# v1');

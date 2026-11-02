@@ -88,51 +88,78 @@ const failed = (fault: DeliveryFault): DeliveryOutcome => ({ ok: false, fault })
 export async function deliverPr(job: DeliveryJob, gate: CreateGate): Promise<DeliveryOutcome | 'busy'> {
   if (!OBJECT_ID.test(job.key.head) || !OBJECT_ID.test(job.base)) return failed({ kind: 'unreadable' });
   const tip = await originTip(job.checkout, job.key.branch);
+
   if (tip.kind === 'unreadable') return failed({ kind: 'branch_unreadable' });
+
   if (tip.commit === undefined) return failed({ kind: 'branch_missing' });
+
   if (tip.commit !== job.key.head && tip.commit !== job.recordedHead) {
     const ahead = await contains(job, { commit: tip.commit, ancestor: job.recordedHead ?? job.key.head });
+
     if ('fault' in ahead) return failed(ahead.fault);
+
     return failed(ahead.contains ? { kind: 'branch_ahead', tip: tip.commit } : { kind: 'branch_moved' });
   }
+
   if (tip.commit !== job.key.head) {
     const holds = await contains(job, { commit: tip.commit, ancestor: job.key.head });
+
     if ('fault' in holds) return failed(holds.fault);
+
     if (!holds.contains) return failed({ kind: 'branch_rewritten' });
   }
+
   const changed = await changedFiles({ ...job, key: { ...job.key, head: tip.commit } });
+
   if ('fault' in changed) return failed(changed.fault);
   const files = protectedPaths(changed.files);
+
   if (files.length > 0 && tip.commit !== job.key.head) {
     const own = await changedFiles(job);
+
     if ('fault' in own) return failed(own.fault);
     const owned = protectedPaths(own.files);
+
     return failed(owned.length > 0 ? { kind: 'protected_path', files: owned } : { kind: 'later_protected_path', files });
   }
+
   if (files.length > 0) return failed({ kind: 'protected_path', files });
+
   for (const child of job.childWork) {
     const held = await contains(job, { commit: tip.commit, ancestor: child.commit });
+
     if ('fault' in held) return failed(held.fault);
+
     if (!held.contains) return failed({ kind: 'child_work_left_out', step: child.step, branch: child.branch });
   }
+
   if (job.reported) return { ok: true, pr: job.reported };
   const origin = await originOf(job.checkout);
+
   if (origin.kind === 'transport') return failed({ kind: 'no_provider' });
   const { provider, repo } = origin;
   const ref: PullRequestRef = { repo, source: job.key.branch, target: job.target, timeoutMs: DELIVERY_TIMEOUT_MS };
   const found = await findOpen(origin, ref);
+
   if (found.kind === 'failed') return failed({ kind: 'lookup_failed', provider: provider.name });
+
   if (found.kind === 'unsafe') return failed({ kind: 'unsafe_url', provider: provider.name });
   // A step of the branch may have pushed while the lookup ran, so neither a found request nor a new one is taken on the
   // commit checked before it. A push after this read shows in the pull request itself, and nothing here closes that window.
   const checked = await originTip(job.checkout, job.key.branch);
+
   if (checked.kind === 'unreadable') return failed({ kind: 'branch_unreadable' });
+
   if (checked.commit !== tip.commit) return 'busy';
+
   if (found.kind === 'found') return { ok: true, pr: found.pr };
   const gated = await gate();
+
   if (gated === 'busy') return 'busy';
+
   if (gated === 'refused') return failed({ kind: 'withdrawn' });
   let answered = false;
+
   try {
     await provider.createPullRequest({
       repo, source: job.key.branch, target: job.target, title: `${job.runName}: ${job.key.step}`,
@@ -145,11 +172,15 @@ export async function deliverPr(job: DeliveryJob, gate: CreateGate): Promise<Del
   } catch {
     // A create that failed or timed out may still have opened the request, so the lookup below decides.
   }
+
   // One that answered may name the request by another URL than the lookup a later delivery of the branch finds it by,
   // or before the host lists it, so only the lookup's URL is kept: one request, one receipt.
   const opened = await findOpen(origin, ref);
+
   if (opened.kind === 'found') return { ok: true, pr: opened.pr };
+
   if (opened.kind === 'unsafe') return failed({ kind: 'unsafe_url', provider: provider.name });
+
   return failed({ kind: answered || opened.kind === 'failed' ? 'create_unconfirmed' : 'create_failed', provider: provider.name });
 }
 
@@ -163,10 +194,14 @@ export async function reportedPrMismatch(
   { checkout, url, branch, target }: { checkout: string; url: PrUrl; branch: string; target: string },
 ): Promise<string | undefined> {
   const origin = await originOf(checkout);
+
   if (origin.kind === 'transport' || new URL(url).hostname !== origin.hostname) return undefined;
   const found = await findOpen(origin, { repo: origin.repo, source: branch, target, timeoutMs: DELIVERY_TIMEOUT_MS });
+
   if (found.kind === 'none') return `branch ${branch} has no open pull request into ${target}`;
+
   if (found.kind !== 'found') return `could not be checked against the open pull requests of branch ${branch} into ${target}`;
+
   return found.pr === url ? undefined : `is not the open pull request of branch ${branch} into ${target}`;
 }
 
@@ -178,7 +213,9 @@ export async function findDelivered(
   checkout: string, { branch, target }: Pick<UnresolvedCreate, 'branch' | 'target'>,
 ): Promise<{ kind: 'found'; pr: PrUrl } | { kind: 'none' } | { kind: 'failed' } | { kind: 'unsafe' }> {
   const origin = await originOf(checkout);
+
   if (origin.kind === 'transport') return { kind: 'failed' };
+
   return findOpen(origin, { repo: origin.repo, source: branch, target, timeoutMs: DELIVERY_TIMEOUT_MS });
 }
 
@@ -192,7 +229,9 @@ export async function deliveredCi({ checkout, commit }: { checkout: string; comm
 > {
   if (!OBJECT_ID.test(commit)) return { kind: 'unsupported' };
   const origin = await originOf(checkout);
+
   if (origin.kind === 'transport' || !origin.pullRequests.checks) return { kind: 'unsupported' };
+
   try {
     return { kind: 'read', status: await origin.pullRequests.checks({ repo: origin.repo, commit, timeoutMs: DELIVERY_TIMEOUT_MS }) };
   } catch (e) {
@@ -203,6 +242,7 @@ export async function deliveredCi({ checkout, commit }: { checkout: string; comm
 /** The provider of the checkout's configured origin; git alone when the checkout has none. */
 async function originOf(checkout: string): Promise<OriginProvider> {
   const remote = await git(checkout, ['config', '--get', 'remote.origin.url']);
+
   return remote.code === 0 ? providerForRemote(remote.stdout) : { kind: 'transport' };
 }
 
@@ -214,13 +254,16 @@ async function findOpen(
   { pullRequests, hostname }: Extract<OriginProvider, { kind: 'provider' }>, ref: PullRequestRef,
 ): Promise<{ kind: 'found'; pr: PrUrl } | { kind: 'none' } | { kind: 'failed' } | { kind: 'unsafe' }> {
   let url: string | undefined;
+
   try {
     url = await pullRequests.findOpen(ref);
   } catch {
     return { kind: 'failed' };
   }
+
   if (url === undefined) return { kind: 'none' };
   const clean = sanitizePrUrl(url);
+
   return clean.url && new URL(clean.url).hostname === hostname ? { kind: 'found', pr: clean.url } : { kind: 'unsafe' };
 }
 
@@ -228,8 +271,10 @@ async function findOpen(
 async function originTip(checkout: string, branch: string): Promise<{ kind: 'read'; commit?: string } | { kind: 'unreadable' }> {
   const ref = `refs/heads/${branch}`;
   const listed = await git(checkout, ['-c', 'credential.interactive=false', 'ls-remote', 'origin', ref], ORIGIN_GIT);
+
   if (listed.code !== 0) return { kind: 'unreadable' };
   const commit = listed.stdout.split('\n').map((line) => line.split('\t')).find(([, name]) => name?.trim() === ref)?.[0];
+
   return commit ? { kind: 'read', commit } : { kind: 'read' };
 }
 
@@ -237,9 +282,12 @@ async function originTip(checkout: string, branch: string): Promise<{ kind: 'rea
 async function changedFiles({ key, runId, checkout, base }: DeliveryJob): Promise<{ files: string[] } | { fault: DeliveryFault }> {
   if (!OBJECT_ID.test(key.head) || !OBJECT_ID.test(base)) return { fault: { kind: 'unreadable' } };
   const fetched = await fetchMissingCommits(checkout, { run: runId, commits: [base, key.head] }, ORIGIN_GIT);
+
   if (fetched.missing.length > 0) return { fault: { kind: 'unreadable' } };
   const diff = await git(checkout, ['diff', '--no-renames', '--name-only', '-z', base, key.head, '--']);
+
   if (diff.code !== 0) return { fault: { kind: 'unreadable' } };
+
   return { files: diff.stdout.split('\0').filter(Boolean) };
 }
 
@@ -247,10 +295,13 @@ async function changedFiles({ key, runId, checkout, base }: DeliveryJob): Promis
 async function contains({ runId, checkout }: DeliveryJob, { commit, ancestor }: { commit: string; ancestor: string }): Promise<{ contains: boolean } | { fault: DeliveryFault }> {
   if (!OBJECT_ID.test(commit) || !OBJECT_ID.test(ancestor)) return { contains: false };
   const fetched = await fetchMissingCommits(checkout, { run: runId, commits: [ancestor, commit] }, ORIGIN_GIT);
+
   if (fetched.missing.includes(commit)) return { fault: { kind: 'unreadable' } };
+
   // A commit the checkout holds brings its history, so an ancestor still missing is not in it.
   if (fetched.missing.length > 0) return { contains: false };
   const { code } = await git(checkout, ['merge-base', '--is-ancestor', ancestor, commit]);
+
   return code === 0 || code === 1 ? { contains: code === 0 } : { fault: { kind: 'unreadable' } };
 }
 
@@ -258,6 +309,7 @@ const LISTED_FILES = 20;
 
 function listedFiles(files: string[]): string {
   const more = files.length > LISTED_FILES ? `, and ${files.length - LISTED_FILES} more` : '';
+
   return `${files.slice(0, LISTED_FILES).join(', ')}${more}`;
 }
 
@@ -266,6 +318,7 @@ export function deliveryFailure({ runId, key, recordedHead, openedBy }: Pick<Del
   const { step, branch } = key;
   const head = recordedHead ?? key.head;
   const retry = `teamai workflow retry ${runId} ${step}`;
+
   switch (fault.kind) {
     case 'no_checkout':
       return {
@@ -284,11 +337,13 @@ export function deliveryFailure({ runId, key, recordedHead, openedBy }: Pick<Del
       };
     case 'later_protected_path': {
       const rerun = openedBy ? `. Or, once workflow step "${openedBy}" has stopped, run its steps again in a new branch: teamai workflow retry ${runId} ${openedBy}` : '';
+
       return {
         code: 'delivery_failed',
         message: `PR delivery for step "${step}" failed: commit ${head}, which a later report recorded on the shared branch ${branch}, changed protected paths against the run base: ${listedFiles(fault.files)}. Step "${step}" itself left them alone, so a retry does not run it again. TeamAI delivers no pull request that changes CI, hooks or agent configuration. The work is kept on origin in branch ${branch}. To deliver the step's own work without the later commits, put branch ${branch} on origin back at ${key.head}, the commit the step reported, then run: ${retry}${rerun}`,
       };
     }
+
     case 'branch_missing':
       return {
         code: 'delivery_failed',
@@ -351,6 +406,7 @@ export function deliveryFailure({ runId, key, recordedHead, openedBy }: Pick<Del
       };
     default: {
       const unknown: never = fault;
+
       return unknown;
     }
   }

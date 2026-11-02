@@ -2,10 +2,13 @@ import { realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 import crossSpawn from 'cross-spawn';
 import semver from 'semver';
+import { z } from 'zod';
 import { desktopCodexBinaries } from './codex-desktop.js';
 import { getCurrentVersion } from './package-info.js';
-import type { CodexBuild, CodexBuildSkew } from './types.js';
+import type { CodexBuild, CodexBuildSkew, JsonValue } from './types.js';
+import { JsonValueSchema, JsonObjectSchema } from './types.js';
 import { probeBinary } from './utils/exec.js';
+import { lenientList } from './utils/json.js';
 import { log } from './utils/logger.js';
 import { findOnPath } from './utils/lookpath.js';
 
@@ -68,13 +71,16 @@ export type CodexHookTrustReport = (
 
 const REQUEST_TIMEOUT_MS = 10_000;
 
-interface HookInfo {
-  key: string;
-  command: string;
-  sourcePath: string;
-  currentHash: string;
-  trustStatus: string;
-}
+/** One hook as Codex's `hooks/list` reports it. */
+const HookInfoSchema = z.object({
+  key: z.string(),
+  command: z.string(),
+  sourcePath: z.string(),
+  currentHash: z.string(),
+  trustStatus: z.string(),
+});
+
+type HookInfo = z.infer<typeof HookInfoSchema>;
 
 function canonical(file: string): string {
   try { return realpathSync.native(file); } catch { return path.resolve(file); }
@@ -91,17 +97,22 @@ interface CodexCandidate {
 /** `codex` on PATH first (it wins a version tie), then the desktop builds. Stat only, no spawn. */
 function codexBuildCandidates(): CodexCandidate[] {
   const onPath = findOnPath('codex');
+
   const found = [
     ...(onPath ? [{ command: 'codex', path: onPath }] : []),
     ...desktopCodexBinaries().map((binary) => ({ command: binary, path: binary })),
   ];
+
   const seen = new Set<string>();
+
   return found.flatMap((candidate) => {
     try {
       const real = realpathSync.native(candidate.path);
       const { mtimeMs, size } = statSync(real);
+
       if (seen.has(real)) return [];
       seen.add(real);
+
       return [{ ...candidate, identity: `${candidate.path}\0${real}\0${mtimeMs}\0${size}` }];
     } catch {
       return [];
@@ -120,6 +131,7 @@ export function codexBuildsIdentity(): string {
 
 async function probeCodexVersion(command: string): Promise<string | null> {
   const printed = /codex-cli\s+(\S+)/.exec(await probeBinary(command))?.[1];
+
   return printed ? semver.valid(printed) : null;
 }
 
@@ -138,18 +150,24 @@ let resolved: { identity: string; build: Promise<ResolvedCodexBuild | null> } | 
 function resolveCodexBuild(): Promise<ResolvedCodexBuild | null> {
   const candidates = codexBuildCandidates();
   const identity = candidates.map((c) => c.identity).join('\0\0');
+
   if (resolved?.identity !== identity) resolved = { identity, build: pickCodexBuild(candidates) };
+
   return resolved.build;
 }
 
 async function pickCodexBuild(candidates: CodexCandidate[]): Promise<ResolvedCodexBuild | null> {
   if (candidates.length <= 1) return candidates[0] ? { command: candidates[0].command } : null;
   const probed = await Promise.all(candidates.map(async (c) => ({ ...c, version: await probeCodexVersion(c.command) })));
+
   const [chosen, ...rest] = [...probed].sort((a, b) => {
     if (a.version === null || b.version === null) return Number(a.version === null) - Number(b.version === null);
+
     return semver.rcompare(a.version, b.version);
   });
+
   const others = rest.filter((c) => c.version !== chosen.version).map((c) => ({ path: c.path, version: c.version, command: c.command }));
+
   return others.length > 0
     ? { command: chosen.command, otherVersions: { chosen: { path: chosen.path, version: chosen.version }, others } }
     : { command: chosen.command };
@@ -164,22 +182,31 @@ async function compareCodexBuilds(
   const chosen = hashes(listed);
   const ids = req.hooks.flatMap(hookIds).filter((id) => chosen.has(id));
   const versions = build.otherVersions;
+
   if (!versions || ids.length === 0) return {};
+
   const compared = await Promise.all(versions.others.map(async (other) => ({
     codex: { path: other.path, version: other.version },
     theirs: await withCodexBuild(req.codexHome, other.command, async (server) => hashes(await listHooks(server, req.cwd))),
   })));
+
   const others = compared.flatMap(({ codex, theirs }) =>
     theirs instanceof Map && ids.some((id) => theirs.has(id) && theirs.get(id) !== chosen.get(id)) ? [codex] : []);
+
   const uncompared = compared.flatMap(({ codex, theirs }) => {
     if (theirs instanceof Map) return [];
     log.debug(`Codex: could not compare ${codexBuildLabel(codex)} with ${codexBuildLabel(versions.chosen)}: ${theirs.reason}`);
+
     return [codex];
   });
-  return {
-    ...(others.length > 0 ? { skew: { chosen: versions.chosen, others } } : {}),
-    ...(uncompared.length > 0 ? { uncompared } : {}),
-  };
+
+  const comparison: CodexBuildComparison = {};
+
+  if (others.length > 0) comparison.skew = { chosen: versions.chosen, others };
+
+  if (uncompared.length > 0) comparison.uncompared = uncompared;
+
+  return comparison;
 }
 
 function codexBuildLabel(b: CodexBuild): string {
@@ -195,9 +222,16 @@ export function codexBuildSkewMessage(skew: CodexBuildSkew): string {
 
 /** One `codex app-server` process speaking line-delimited JSON-RPC over stdio. */
 interface AppServer {
-  request(method: string, params: unknown): Promise<unknown>;
+  /** The request's `result`, undefined when the reply carries none. */
+  request(method: string, params: JsonValue): Promise<JsonValue | undefined>;
   close(): void;
 }
+
+/** A JSON-RPC reply to one of teamai's requests; a line without a numeric id is a notification. */
+const RpcReplySchema = z.object({ id: z.number(), result: JsonValueSchema.optional(), error: JsonValueSchema.optional() });
+
+/** A JSON-RPC error's message, when the error carries one. */
+const RpcErrorSchema = z.object({ message: JsonValueSchema.optional() });
 
 class AppServerError extends Error {
   constructor(message: string, readonly unavailable = false) {
@@ -211,15 +245,19 @@ async function openAppServer(codexHome: string, command: string): Promise<AppSer
     stdio: ['pipe', 'pipe', 'ignore'],
     windowsHide: true,
   });
-  const pending = new Map<number, { method: string; resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+
+  const pending = new Map<number, { method: string; resolve: (v: JsonValue | undefined) => void; reject: (e: Error) => void }>();
   let nextId = 1;
   let ended: AppServerError | null = null;
+
   const fail = (error: AppServerError): void => {
     if (ended) return;
     ended = error;
+
     for (const { reject } of pending.values()) reject(error);
     pending.clear();
   };
+
   child.on('error', (e: NodeJS.ErrnoException) => {
     fail(e.code === 'ENOENT'
       ? new AppServerError('codex is not on PATH', true)
@@ -235,33 +273,47 @@ async function openAppServer(codexHome: string, command: string): Promise<AppSer
   child.stdout?.on('data', (chunk: string) => {
     buffer += chunk;
     let newline: number;
+
     while ((newline = buffer.indexOf('\n')) >= 0) {
       const line = buffer.slice(0, newline).trim();
       buffer = buffer.slice(newline + 1);
+
       if (!line) continue;
-      let message: { id?: unknown; result?: unknown; error?: { message?: string } };
-      try { message = JSON.parse(line); } catch { continue; }
-      if (typeof message.id !== 'number') continue; // a notification
+      let parsed: unknown;
+
+      try { parsed = JSON.parse(line); } catch { continue; }
+
+      const reply = RpcReplySchema.safeParse(parsed);
+
+      if (!reply.success) continue; // a notification
+      const message = reply.data;
       const waiter = pending.get(message.id);
+
       if (!waiter) continue;
       pending.delete(message.id);
-      if (message.error) waiter.reject(new AppServerError(`${waiter.method}: ${message.error.message ?? 'unknown error'}`));
-      else waiter.resolve(message.result);
+
+      if (message.error) {
+        const detail = RpcErrorSchema.safeParse(message.error);
+        waiter.reject(new AppServerError(`${waiter.method}: ${(detail.success ? detail.data.message : undefined) ?? 'unknown error'}`));
+      } else waiter.resolve(message.result);
     }
   });
 
-  const send = (message: object): void => {
+  const send = (message: JsonValue): void => {
     child.stdin?.write(`${JSON.stringify(message)}\n`);
   };
+
   const server: AppServer = {
     request(method, params) {
       if (ended) return Promise.reject(ended);
       const id = nextId++;
+
       return new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
           pending.delete(id);
           reject(new AppServerError(`codex app-server did not answer ${method} within ${REQUEST_TIMEOUT_MS / 1000}s`));
         }, REQUEST_TIMEOUT_MS);
+
         pending.set(id, {
           method,
           resolve: (v) => { clearTimeout(timer); resolve(v); },
@@ -276,9 +328,11 @@ async function openAppServer(codexHome: string, command: string): Promise<AppSer
       child.kill();
     },
   };
+
   try {
     await server.request('initialize', { clientInfo: { name: 'teamai', version: getCurrentVersion() } });
     send({ method: 'initialized' });
+
     return server;
   } catch (e) {
     server.close();
@@ -293,7 +347,9 @@ async function withAppServer<T>(
   run: (server: AppServer, build: ResolvedCodexBuild) => Promise<T>,
 ): Promise<T | AppServerFailure> {
   const build = await resolveCodexBuild();
+
   if (!build) return { kind: 'unavailable', reason: 'codex is not on PATH and no Codex desktop app is installed' };
+
   return withCodexBuild(codexHome, build.command, (server) => run(server, build));
 }
 
@@ -303,24 +359,43 @@ async function withCodexBuild<T>(
   run: (server: AppServer) => Promise<T>,
 ): Promise<T | AppServerFailure> {
   let server: AppServer | null = null;
+
   try {
     server = await openAppServer(codexHome, command);
+
     return await run(server);
   } catch (e) {
     if (e instanceof AppServerError && e.unavailable) return { kind: 'unavailable', reason: e.message };
-    return { kind: 'failed', reason: (e as Error).message };
+
+    return { kind: 'failed', reason: e instanceof Error ? e.message : String(e) };
   } finally {
     server?.close();
   }
 }
 
-async function batchWrite(server: AppServer, keyPath: string, value: Record<string, unknown>): Promise<void> {
-  const result = await server.request('config/batchWrite', {
+/** A `config/batchWrite` reply's `status`; a reply that is not an object has none. */
+const BatchWriteReplySchema = z.object({ status: JsonValueSchema.optional() }).catch({});
+
+/** `config/read`'s `config.projects`, by project path; a reply without them has none. */
+const ProjectsReadSchema = z
+  .object({ config: z.object({ projects: JsonObjectSchema }) })
+  .transform(({ config }) => config.projects)
+  .catch(() => ({}));
+
+/** A project entry's trust level, when it is a string. */
+const ProjectTrustSchema = z.object({ trust_level: z.string() });
+
+/** A project entry that holds exactly what teamai writes. */
+const OwnedProjectTrustSchema = z.strictObject({ trust_level: z.literal('trusted') });
+
+async function batchWrite(server: AppServer, keyPath: string, value: Record<string, JsonValue>): Promise<void> {
+  const result = BatchWriteReplySchema.parse(await server.request('config/batchWrite', {
     edits: [{ keyPath, value, mergeStrategy: 'upsert' }],
     reloadUserConfig: true,
-  }) as { status?: string } | null;
-  if (result?.status !== 'ok') {
-    throw new AppServerError(`config/batchWrite ${keyPath}: status ${result?.status ?? 'missing'}`);
+  }));
+
+  if (result.status !== 'ok') {
+    throw new AppServerError(`config/batchWrite ${keyPath}: status ${result.status ?? 'missing'}`);
   }
 }
 
@@ -330,13 +405,16 @@ async function batchWrite(server: AppServer, keyPath: string, value: Record<stri
  * Codex — that choice is theirs and is never overwritten.
  */
 async function ensureProjectTrusted(server: AppServer, project: string, onWritten?: (project: string) => Promise<void>): Promise<'trusted' | 'untrusted'> {
-  const read = await server.request('config/read', {}) as
-    { config?: { projects?: Record<string, { trust_level?: string }> | null } } | null;
-  const level = read?.config?.projects?.[project]?.trust_level;
+  const projects = ProjectsReadSchema.parse(await server.request('config/read', {}));
+  const entry = ProjectTrustSchema.safeParse(projects[project]);
+  const level = entry.success ? entry.data.trust_level : undefined;
+
   if (level === 'trusted') return 'trusted';
+
   if (level === 'untrusted') return 'untrusted';
   await batchWrite(server, 'projects', { [project]: { trust_level: 'trusted' } });
   await onWritten?.(project);
+
   return 'trusted';
 }
 
@@ -347,8 +425,10 @@ async function ensureProjectTrusted(server: AppServer, project: string, onWritte
  */
 export async function trustCodexProject(req: { codexHome: string; project: string }): Promise<CodexTrust> {
   const project = canonical(req.project);
+
   return withAppServer(req.codexHome, async (server): Promise<CodexTrust> => {
     const level = await ensureProjectTrusted(server, project);
+
     return level === 'trusted'
       ? { kind: 'trusted', hooks: 0, project }
       : { kind: 'project-untrusted', hooks: 0, project };
@@ -360,17 +440,19 @@ export async function removeOwnedCodexProjectTrust(req: { codexHome: string; pro
   { kind: 'removed' | 'kept' } | AppServerFailure
 > {
   const project = canonical(req.project);
+
   return withAppServer(req.codexHome, async (server) => {
-    const read = await server.request('config/read', {}) as {
-      config?: { projects?: Record<string, Record<string, unknown>> };
-    } | null;
-    const entry = read?.config?.projects?.[project];
-    if (!entry || entry.trust_level !== 'trusted' || Object.keys(entry).length !== 1) return { kind: 'kept' as const };
-    const result = await server.request('config/batchWrite', {
+    const projects = ProjectsReadSchema.parse(await server.request('config/read', {}));
+
+    if (!OwnedProjectTrustSchema.safeParse(projects[project]).success) return { kind: 'kept' as const };
+
+    const result = BatchWriteReplySchema.parse(await server.request('config/batchWrite', {
       edits: [{ keyPath: `projects.${JSON.stringify(project)}`, value: null, mergeStrategy: 'replace' }],
       reloadUserConfig: true,
-    }) as { status?: string } | null;
-    if (result?.status !== 'ok') throw new AppServerError(`could not remove recorded project trust for ${project}`);
+    }));
+
+    if (result.status !== 'ok') throw new AppServerError(`could not remove recorded project trust for ${project}`);
+
     return { kind: 'removed' as const };
   });
 }
@@ -382,14 +464,25 @@ function hookId(file: string, command: string, key: string): string {
 /** The ids Codex may list a written entry under: by its command, and on Windows by its `commandWindows`. */
 function hookIds(hook: CodexHookTrustRequest['hooks'][number]): string[] {
   const ids = [hookId(hook.file, hook.command, hook.key)];
+
   if (hook.commandWindows !== undefined) ids.push(hookId(hook.file, hook.commandWindows, hook.key));
+
   return ids;
 }
 
+/** Where `hooks/list` puts the first cwd's hooks; a reply without them lists none. */
+const HooksListReplySchema = z.object({ data: z.tuple([z.object({ hooks: JsonValueSchema })], JsonValueSchema) });
+
 async function listHooks(server: AppServer, cwd: string): Promise<HookInfo[]> {
-  const listed = await server.request('hooks/list', { cwds: [canonical(cwd)] }) as
-    { data?: Array<{ hooks?: HookInfo[] }> } | null;
-  return listed?.data?.[0]?.hooks ?? [];
+  const listed = HooksListReplySchema.safeParse(await server.request('hooks/list', { cwds: [canonical(cwd)] }));
+
+  if (!listed.success || listed.data.data[0].hooks === null) return [];
+  // A hook with another handler, such as `mcp_tool`, is listed without a command; teamai writes none of those.
+  const hooks = lenientList(HookInfoSchema).safeParse(listed.data.data[0].hooks);
+
+  if (!hooks.success) throw new AppServerError('hooks/list: the hooks of the cwd are not a list');
+
+  return hooks.data;
 }
 
 /**
@@ -400,12 +493,14 @@ async function listHooks(server: AppServer, cwd: string): Promise<HookInfo[]> {
 export async function trustCodexHooks(req: CodexHookTrustRequest): Promise<CodexTrust> {
   const wanted = new Set(req.hooks.flatMap(hookIds));
   const project = req.project ? canonical(req.project) : undefined;
+
   return withAppServer(req.codexHome, async (server, build): Promise<CodexTrust> => {
     const level = project ? await ensureProjectTrusted(server, project, req.onProjectTrusted) : undefined;
     const listed = await listHooks(server, req.cwd);
     const builds = await compareCodexBuilds(req, listed, build);
     const loaded = new Set(listed.map((h) => hookId(h.sourcePath, h.command, h.key)));
     const missing = req.hooks.filter((h) => !hookIds(h).some((id) => loaded.has(id)));
+
     if (missing.length > 0 && level !== 'untrusted') {
       return {
         kind: 'failed',
@@ -413,8 +508,10 @@ export async function trustCodexHooks(req: CodexHookTrustRequest): Promise<Codex
         ...builds,
       };
     }
+
     const toTrust = listed.filter((h) =>
       h.trustStatus !== 'trusted' && wanted.has(hookId(h.sourcePath, h.command, h.key)));
+
     if (toTrust.length > 0) {
       await batchWrite(
         server,
@@ -422,13 +519,19 @@ export async function trustCodexHooks(req: CodexHookTrustRequest): Promise<Codex
         Object.fromEntries(toTrust.map((h) => [h.key, { trusted_hash: h.currentHash }])),
       );
     }
+
     if (project && level === 'untrusted') return { kind: 'project-untrusted', hooks: toTrust.length, project, ...builds };
-    return { kind: 'trusted', hooks: toTrust.length, ...(project ? { project } : {}), ...builds };
+
+    const trusted: CodexTrust = { kind: 'trusted', hooks: toTrust.length };
+
+    if (project) trusted.project = project;
+
+    return { ...trusted, ...builds };
   });
 }
 
 function hooksByKey(hooks: HookInfo[], file: string): Map<string, HookInfo> {
-  return new Map(hooks.filter((h) => canonical(h.sourcePath) === file).map((h) => [h.key, h]));
+  return new Map(hooks.flatMap((h) => (canonical(h.sourcePath) === file ? [[h.key, h] as const] : [])));
 }
 
 function hasApprovalState(hook: HookInfo): boolean {
@@ -450,15 +553,20 @@ export async function keepCodexHookTrust(
   const file = canonical(req.file);
   const before = await withAppServer(req.codexHome, async (server) => hooksByKey(await listHooks(server, req.cwd), file));
   await write();
+
   if (!(before instanceof Map)) return before;
+
   if (![...before.values()].some(hasApprovalState)) return { kind: 'trusted', hooks: 0 };
+
   return withAppServer(req.codexHome, async (server): Promise<CodexTrust> => {
     const toTrust: HookInfo[] = [];
-    const edits: Array<{ keyPath: string; value: unknown; mergeStrategy: 'upsert' | 'replace' }> = [];
+    const edits: Array<{ keyPath: string; value: JsonValue; mergeStrategy: 'upsert' | 'replace' }> = [];
     const after = hooksByKey(await listHooks(server, req.cwd), file);
+
     for (const hook of after.values()) {
       const originalKey = retained.get(hook.key);
       const original = originalKey === undefined ? undefined : before.get(originalKey);
+
       if (original?.trustStatus === 'trusted' && original.currentHash === hook.currentHash) {
         if (hook.trustStatus !== 'trusted') {
           toTrust.push(hook);
@@ -471,6 +579,7 @@ export async function keepCodexHookTrust(
         });
       }
     }
+
     for (const hook of before.values()) {
       if (hasApprovalState(hook) && !after.has(hook.key)) {
         edits.push({
@@ -480,6 +589,7 @@ export async function keepCodexHookTrust(
         });
       }
     }
+
     if (toTrust.length > 0) {
       edits.push({
         keyPath: 'hooks.state',
@@ -487,15 +597,18 @@ export async function keepCodexHookTrust(
         mergeStrategy: 'upsert',
       });
     }
+
     if (edits.length > 0) {
-      const result = await server.request('config/batchWrite', {
+      const result = BatchWriteReplySchema.parse(await server.request('config/batchWrite', {
         edits,
         reloadUserConfig: true,
-      }) as { status?: string } | null;
-      if (result?.status !== 'ok') {
+      }));
+
+      if (result.status !== 'ok') {
         throw new AppServerError(`config/batchWrite hooks.state: status ${result?.status ?? 'missing'}`);
       }
     }
+
     return { kind: 'trusted', hooks: toTrust.length };
   });
 }
@@ -509,6 +622,7 @@ export async function readCodexHookTrust(req: Omit<CodexHookTrustRequest, 'proje
   return withAppServer(req.codexHome, async (server, build): Promise<CodexHookTrustReport> => {
     const listed = await listHooks(server, req.cwd);
     const statuses = new Map(listed.map((h) => [hookId(h.sourcePath, h.command, h.key), h.trustStatus]));
+
     return {
       kind: 'listed',
       notTrusted: req.hooks

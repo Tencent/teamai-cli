@@ -1,5 +1,5 @@
 import path from 'node:path';
-import YAML from 'yaml';
+import { parseYaml } from './utils/yaml.js';
 import { autoDetectInit } from './config.js';
 import { saveScopeSelection } from './scope-selection.js';
 import {
@@ -27,13 +27,16 @@ function parseIds(input: string[]): string[] {
   const flat = input.flatMap((s) => s.split(','));
   const seen = new Set<string>();
   const out: string[] = [];
+
   for (const raw of flat) {
     const id = raw.trim();
+
     if (id && !seen.has(id)) {
       seen.add(id);
       out.push(id);
     }
   }
+
   return out;
 }
 
@@ -51,23 +54,28 @@ export async function projectsList(_options: GlobalOptions): Promise<void> {
   const namespaces = await deliveredLearningsNamespaces(localConfig);
   const destination = ownNamespaces.length === 1 ? `learnings/${ownNamespaces[0]}/` : 'learnings/ (shared root)';
   const contributionTarget = `Contributes to: ${destination}   --namespace accepts: ${namespaces.join(', ') || '(none)'}`;
+
   if (!manifest) {
     log.info('This team repo defines no projects (no manifest/projects.yaml).');
     log.info('Projects are optional — resources fall back to roles + shared learnings.');
     printWorkspaceChildren(localConfig);
     console.log(contributionTarget);
+
     return;
   }
 
   console.log('');
   console.log(`Projects manifest (version ${manifest.version}):`);
   console.log('');
+
   if (manifest.projects.length === 0) {
     console.log('  (no projects defined)');
   }
+
   for (const project of manifest.projects) {
     const label = project.name ? `${project.id} — ${project.name}` : project.id;
     console.log(`  ${label}`);
+
     if (project.description) console.log(`    ${project.description}`);
     console.log(`    skills:    ${project.resources.skills.join(', ') || '(none)'}`);
     console.log(`    knowledge: ${project.resources.knowledge.join(', ') || '(none)'}`);
@@ -76,11 +84,13 @@ export async function projectsList(_options: GlobalOptions): Promise<void> {
   }
 
   const active = localConfig.projects ?? [];
+
   if (active.length > 0) {
     console.log(`Your active projects (this directory): ${active.join(', ')}`);
   } else {
     console.log('No active projects in this directory. Run `teamai projects set <id>` to set them.');
   }
+
   printWorkspaceChildren(localConfig);
   console.log(contributionTarget);
 }
@@ -88,13 +98,16 @@ export async function projectsList(_options: GlobalOptions): Promise<void> {
 /** Each child of a workspace and what it selects, which the workspace delivers too (#913). */
 function printWorkspaceChildren(workspace: LocalConfig): void {
   const found = workspace.children;
+
   if (!found) return;
   console.log('This workspace also delivers what its children select:');
+
   for (const child of found.children) {
     const { projects = [], primaryRole, additionalRoles } = child.selection;
     const roles = primaryRole ? `; roles: ${[primaryRole, ...additionalRoles].join(', ')}` : '';
     console.log(`  ${child.path}: ${projects.join(', ') || '(no projects)'}${roles}`);
   }
+
   for (const child of found.leftOut) console.log(`  ${child.path}: left out, ${child.reason}`);
 }
 
@@ -108,16 +121,20 @@ export async function projectsSet(
   const repoPath = localConfig.repo.localPath;
 
   const manifest = await loadProjectsManifest(repoPath);
+
   if (!manifest) {
     log.error('This team repo defines no projects (no manifest/projects.yaml).');
+
     return;
   }
 
   const requested = parseIds(ids);
   const validIds = new Set(listProjectIds(manifest));
+
   for (const id of requested) {
     if (!validIds.has(id)) {
       log.error(`Unknown project "${id}". Valid projects: ${[...validIds].join(', ') || '(none)'}`);
+
       return;
     }
   }
@@ -128,6 +145,7 @@ export async function projectsSet(
   if (options.dryRun) {
     const value = requested.length > 0 ? requested.join(', ') : '(none)';
     log.info(`[dry-run] Would set active projects to: ${value}`);
+
     return;
   }
 
@@ -140,6 +158,7 @@ export async function projectsSet(
   } else {
     log.success('Active projects cleared (this directory now syncs role + shared learnings only).');
   }
+
   log.info('Run `teamai pull` to sync resources for your updated projects.');
 }
 
@@ -158,9 +177,11 @@ export async function projectsMembers(
   const knowledgePath = localConfig.repo.localPath;
   let membersRoot = knowledgePath;
   const { usesBranchWorktree } = await import('./types.js');
+
   if (usesBranchWorktree(localConfig)) {
     const { readableReportsWorktree } = await import('./utils/reports-branch.js');
     const { CheckoutRefusedError } = await import('./utils/branch-worktree.js');
+
     // Read-only: never publish a missing reports branch.
     try {
       membersRoot = await readableReportsWorktree(localConfig);
@@ -170,6 +191,7 @@ export async function projectsMembers(
       // the way out, was already printed.
       if (!(e instanceof CheckoutRefusedError)) throw e;
       process.exitCode = 1;
+
       return;
     }
   } else {
@@ -177,6 +199,7 @@ export async function projectsMembers(
   }
 
   const manifest = await loadProjectsManifest(knowledgePath);
+
   if (manifest && !listProjectIds(manifest).includes(projectId)) {
     log.warn(`Project "${projectId}" is not defined in manifest/projects.yaml.`);
     // Continue anyway — the roster may still record historical membership.
@@ -186,15 +209,20 @@ export async function projectsMembers(
   // bytes, so a copy on the reports branch supersedes the inherited one.
   const members: string[] = [];
   const listed = new Set<string>();
+
   for (const root of memberReadRoots(membersRoot, localConfig)) {
     const files = (await listFiles(path.join(root, 'members'))).filter((f) => f.endsWith('.yaml') || f.endsWith('.yml'));
+
     for (const file of files) {
       if (listed.has(file)) continue;
       listed.add(file);
       const content = await readFileSafe(path.join(root, 'members', file));
+
       if (!content) continue;
+
       try {
-        const member = MemberConfigSchema.parse(YAML.parse(content));
+        const member = MemberConfigSchema.parse(parseYaml(content));
+
         if ((member.projects ?? []).includes(projectId)) {
           const display = member.displayName ? ` — ${member.displayName}` : '';
           members.push(`${member.username}${display}`);
@@ -206,15 +234,18 @@ export async function projectsMembers(
   }
 
   console.log('');
+
   if (members.length === 0) {
     console.log(`No members registered for project "${projectId}".`);
   } else {
     console.log(`Members of project "${projectId}" (${members.length}):`);
     console.log('');
+
     for (const m of members.sort()) {
       console.log(`  ${m}`);
     }
   }
+
   console.log('');
 }
 
@@ -234,7 +265,9 @@ function mapResources(
   // The hand-declared types (env, hooks, mcp, models, docs) are kept as they are:
   // writing one an admin did not declare breaks pull on older CLIs.
   const mapped: ProjectResources = { ...resources };
+
   for (const type of PROJECT_RESOURCE_TYPES) mapped[type] = fn(resources[type]);
+
   return mapped;
 }
 
@@ -260,25 +293,30 @@ async function editProjectsManifest(
 
   await runManifestEdit(localConfig, 'Projects', async (repoPath, editConfig) => {
     let current: ProjectsManifest | null;
+
     try {
       current = await loadProjectsManifest(repoPath);
     } catch (e) {
-      log.error((e as Error).message);
+      log.error(e instanceof Error ? e.message : String(e));
+
       return;
     }
 
     const result = change(current);
+
     if (!result) return;
 
     try {
       validateProjectsManifest(result.manifest);
     } catch (e) {
-      log.error((e as Error).message);
+      log.error(e instanceof Error ? e.message : String(e));
+
       return;
     }
 
     if (options.dryRun) {
       log.info(`[dry-run] Would ${result.summary}`);
+
       return;
     }
 
@@ -302,15 +340,19 @@ export async function projectsAdd(
   options: GlobalOptions & { namespaces: string; name?: string; description?: string },
 ): Promise<void> {
   const namespaces = parseIds([options.namespaces]);
+
   if (namespaces.length === 0) {
     log.error(`At least one namespace is required. Use --namespaces common,${projectId}`);
+
     return;
   }
 
   await editProjectsManifest(options, (manifest) => {
     const base: ProjectsManifest = manifest ?? { version: 1, projects: [] };
+
     if (findProject(base, projectId)) {
       log.error(`Project "${projectId}" already exists. Use \`teamai projects update ${projectId}\` to modify it.`);
+
       return null;
     }
 
@@ -320,6 +362,7 @@ export async function projectsAdd(
       description: options.description ?? '',
       resources: uniformResources(namespaces),
     };
+
     return {
       manifest: { ...base, projects: [...base.projects, project] },
       summary: `add project "${projectId}" (namespaces: ${namespaces.join(', ')})`,
@@ -339,28 +382,36 @@ export async function projectsUpdate(
 ): Promise<void> {
   const toAdd = options.addNamespaces !== undefined ? parseIds([options.addNamespaces]) : [];
   const toRemove = new Set(options.removeNamespaces !== undefined ? parseIds([options.removeNamespaces]) : []);
+
   if (toAdd.length === 0 && toRemove.size === 0 && options.name === undefined && options.description === undefined) {
     log.error('Nothing to update. Use --add-namespaces, --remove-namespaces, --name, or --description.');
+
     return;
   }
 
   await editProjectsManifest(options, (manifest) => {
     const existing = manifest ? findProject(manifest, projectId) : undefined;
+
     if (!manifest || !existing) {
       log.error(manifest ? unknownProjectMessage(manifest, projectId) : 'This team repo defines no projects (no manifest/projects.yaml).');
+
       return null;
     }
 
     // Each resource type keeps its own list, so a hand-edited per-type layout survives.
     const resources = mapResources(existing.resources, (namespaces) => {
       const next = namespaces.filter((ns) => !toRemove.has(ns));
+
       for (const ns of toAdd) {
         if (!next.includes(ns)) next.push(ns);
       }
+
       return next;
     });
+
     if (PROJECT_RESOURCE_TYPES.every((type) => resources[type].length === 0)) {
       log.error(`Cannot remove every namespace from project "${projectId}". Use \`teamai projects remove ${projectId}\` to delete it.`);
+
       return null;
     }
 
@@ -370,6 +421,7 @@ export async function projectsUpdate(
       description: options.description ?? existing.description,
       resources,
     };
+
     return {
       manifest: { ...manifest, projects: manifest.projects.map((p) => (p.id === projectId ? updated : p)) },
       summary: `update project "${projectId}" (${describeResources(resources)})`,
@@ -384,8 +436,10 @@ export async function projectsRemove(projectId: string, options: GlobalOptions):
     (manifest) => {
       if (!manifest || !findProject(manifest, projectId)) {
         log.error(manifest ? unknownProjectMessage(manifest, projectId) : 'This team repo defines no projects (no manifest/projects.yaml).');
+
         return null;
       }
+
       return {
         manifest: { ...manifest, projects: manifest.projects.filter((p) => p.id !== projectId) },
         summary: `remove project "${projectId}"`,

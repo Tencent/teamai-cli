@@ -8,7 +8,9 @@ import { channelsOf, TOOL_IDS, TOOLS, type ToolId } from '../tools.js';
  * while teamai hooks expect CLI-style names like `Bash`, `Grep`.
  */
 
-const IDE_TO_CLI: Record<string, string> = {
+/** A tool name as one source writes it → the name teamai uses. A `Map`, so a name
+ *  such as `constructor` is not looked up on `Object.prototype`. */
+const IDE_TO_CLI = new Map(Object.entries({
   execute_command: 'Bash',
   search_content: 'Grep',
   write_to_file: 'Write',
@@ -20,22 +22,22 @@ const IDE_TO_CLI: Record<string, string> = {
   task: 'Task',
   skill: 'Skill',
   read_skill: 'Skill', // Muse Code
-};
+}));
 
 export function normalizeToolName(name: string): string {
-  return IDE_TO_CLI[name] ?? name;
+  return IDE_TO_CLI.get(name) ?? name;
 }
 
-// oxlint-disable-next-line teamai/tool-facts -- aliases: a tool left out is its own agent type, the right default for a new tool
-const AGENT_TYPE_ALIASES: Record<string, string> = {
+// A tool left out is its own agent type, the right default for a new tool.
+const AGENT_TYPE_ALIASES = new Map(Object.entries({
   tcodex: 'codex',
   'codex-internal': 'codex',
   tclaude: 'claude',
   'claude-internal': 'claude',
-} satisfies Partial<Record<ToolId, ToolId>>;
+} satisfies Partial<Record<ToolId, ToolId>>));
 
 export function normalizeAgentType(name: string): string {
-  return AGENT_TYPE_ALIASES[name] ?? name;
+  return AGENT_TYPE_ALIASES.get(name) ?? name;
 }
 
 /**
@@ -49,11 +51,12 @@ export function normalizeAgentType(name: string): string {
  * `src/tools.ts` holds data and type-only imports, so loading it costs little.
  */
 export type CodexToolId = { [T in ToolId]: (typeof TOOLS)[T]['launch'] extends 'codex' ? T : never }[ToolId];
+
 export const CODEX_TOOL_IDS: readonly CodexToolId[] = TOOL_IDS.filter((tool): tool is CodexToolId => TOOLS[tool].launch === 'codex');
 
 /** Whether `tool` runs Codex (`CODEX_TOOL_IDS`). */
 export function isCodexTool(tool: string): boolean {
-  return (CODEX_TOOL_IDS as readonly string[]).includes(tool);
+  return CODEX_TOOL_IDS.some((id) => id === tool);
 }
 
 /**

@@ -20,14 +20,18 @@ import { worktreeCheckout } from '../workflow/worktree.js';
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`;
+
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+
   return `${(bytes / 1024 / 1024).toFixed(1)}MB`;
 }
 
 /** `  (12 msgs)` or `  (12 msgs, 4.0KB)`; nothing when the tool's listing does not count (OpenCode). */
 export function listedCounts(m: AgentSessionListed, { includeSize = false } = {}): string {
   if (m.messageCount === undefined) return '';
+
   if (!includeSize || m.sizeBytes === undefined) return `  (${m.messageCount} msgs)`;
+
   return `  (${m.messageCount} msgs, ${formatBytes(m.sizeBytes)})`;
 }
 
@@ -86,6 +90,7 @@ export function closeStdin(): void {
     sharedRl.close();
     sharedRl = null;
   }
+
   lineResolver = null;
 }
 
@@ -95,11 +100,16 @@ export function closeStdin(): void {
  */
 export function ask(question: string): Promise<string> {
   startLineReader();
+
   return new Promise((resolve) => {
-    if (lineQueue.length > 0) {
-      resolve(lineQueue.shift() as string);
+    const queued = lineQueue.shift();
+
+    if (queued !== undefined) {
+      resolve(queued);
+
       return;
     }
+
     // When stdin closes (EOF / pipe end), 'line' never fires and the promise
     // hangs until the event loop drains, then the process exits silently —
     // a scripted call gets exit 0 and no output, which looks like success.
@@ -111,11 +121,13 @@ export function ask(question: string): Promise<string> {
         r('');
       }
     };
+
     sharedRl?.once?.('close', onEnd);
     lineResolver = (line) => {
       sharedRl?.off?.('close', onEnd);
       resolve(line);
     };
+
     process.stdout.write(question);
   });
 }
@@ -134,6 +146,7 @@ export async function confirmUnredactedArchive(
   opts: { scrub?: boolean; yes?: boolean },
 ): Promise<ArchiveConsent> {
   if (opts.scrub || opts.yes) return 'ok';
+
   if (!isInteractive()) return 'refused';
   console.log(`\n  ⚠ About to archive ${count} unredacted session(s) from ${sourceLabel}.`);
   console.log(
@@ -141,7 +154,9 @@ export async function confirmUnredactedArchive(
   );
   console.log('    Re-run with --scrub to redact secret-shaped values first, or -y to archive as-is.');
   const ans = await ask('Archive as-is? (y/N): ');
+
   if (!/^y(es)?$/i.test(ans.trim())) return 'declined';
+
   return 'ok';
 }
 
@@ -151,10 +166,12 @@ export async function confirmUnredactedArchive(
  */
 export async function safeGetAdapter(platform: string, cwd: string | undefined) {
   const unknown = noAdapter(platform, 'read');
+
   if (unknown) {
     console.error(`Error: ${unknown.message}`);
     process.exit(1);
   }
+
   return getAdapter(platform, await recordedToolRoots(cwd));
 }
 
@@ -169,8 +186,10 @@ export async function safeGetAdapter(platform: string, cwd: string | undefined) 
  */
 export function authorForCwd(cwd: string | undefined, fallback: string): string {
   if (!cwd || !path.isAbsolute(cwd)) return fallback;
+
   try {
     const author = getGitAuthor(cwd);
+
     return author && author !== 'unknown' ? author : fallback;
   } catch {
     return fallback;
@@ -200,13 +219,16 @@ export function resolveRepoIdentity(cwd?: string): string | null {
  */
 export function deriveArchiveIdentity(session: { cwd: string }, platform: string): string | null {
   const nativeCwd = session.cwd;
+
   if (nativeCwd && path.isAbsolute(nativeCwd)) {
     // A workflow step's worktree is removed once the step is done; the checkout it was made from has the same remote.
     return getRepoIdentity(worktreeCheckout(nativeCwd) ?? nativeCwd);
   }
+
   console.warn(
     `  ⚠ native cwd unknowable for ${platform} session, archived under _unattributed`,
   );
+
   return null;
 }
 
@@ -231,6 +253,7 @@ export async function resolveRepoRoot(
   const { detectProjectConfig, requireInit, NotInitializedError } = await import('../config.js');
   const loadOpts = { dryRun: options.dryRun };
   let cfg: LocalConfig;
+
   try {
     cfg = (await detectProjectConfig(undefined, undefined, loadOpts)) ?? (await requireInit(loadOpts)).localConfig;
   } catch (e) {
@@ -240,12 +263,15 @@ export async function resolveRepoRoot(
       { cause: e },
     );
   }
+
   const archives = await sessionArchives(cfg, options);
+
   if (!archives) {
     throw new Error(
       'This teamai install keeps no team repo clone on this machine, so it has no session archive. Pass --repo-root <path to a team repo clone>.',
     );
   }
+
   return archives;
 }
 
@@ -258,10 +284,13 @@ export async function sessionArchives(
   options: { dryRun: boolean; read?: boolean },
 ): Promise<{ root: string; reports: LocalConfig; legacy?: string } | undefined> {
   const root = cfg.repo.localPath?.trim() ? sessionArchiveRoot(cfg) : undefined;
+
   if (!root) return undefined;
   const legacy = isSelfMode(cfg) ? {} : { legacy: cfg.repo.localPath };
+
   // A writer opens the checkout itself, under the lock, in updateReports.
   if (!options.read) return { root, reports: cfg, ...legacy };
+
   try {
     return { root: await readableReportsWorktree(cfg, { dryRun: options.dryRun }), reports: cfg, ...legacy };
   } catch (e) {
@@ -291,14 +320,20 @@ export async function archiveToReports(
 ): Promise<ReportsArchive> {
   // Stays 0 when the write never ran, so a failure before it is still reported.
   let saved: number | undefined = 0;
+
   const result = await updateReports(reports, async (worktree) => {
     const syncMgr = new SyncManager(worktree);
     saved = await save(syncMgr, worktree);
+
     return saved ? { files: syncMgr.writtenFiles(), message: commitMessage(saved) } : null;
   });
+
   if (result.status === 'busy') return result;
+
   if (saved === undefined) return { status: 'stopped' };
+
   if (result.status === 'failed') return { status: 'failed', saved, reason: result.reason };
+
   return { status: result.status, saved };
 }
 
@@ -313,10 +348,12 @@ export async function archiveToReports(
  */
 export async function pushToRemote(syncMgr: SyncManager, repoRoot: string): Promise<boolean> {
   const pushed = await pushArchive(syncMgr, repoRoot);
+
   if (pushed.status === 'pushed') return true;
   // The local commit is kept, so nothing is lost -- but this is still a
   // failure and must not be printed as "✓ Pushed".
   console.error(`  ✗ Remote push failed (local commit kept): ${pushed.reason}`);
+
   return false;
 }
 
@@ -324,13 +361,17 @@ export async function pushToRemote(syncMgr: SyncManager, repoRoot: string): Prom
 export async function pushArchive(syncMgr: SyncManager, repoRoot: string): Promise<{ status: 'pushed' } | { status: 'failed'; reason: string }> {
   try {
     const pushed = syncMgr.gitPush();
+
     if (pushed.status === 'indexes-conflicted') {
       const merged = await syncMgr.commitRebuiltIndexes(pushed.indexes);
+
       if (merged.status === 'busy') throw new Error(mergeBusyMessage(repoRoot, merged.lockPath));
+
       if (syncMgr.gitPush().status !== 'pushed') {
         throw new Error(`The remote moved on again and its merge stopped on the session indexes; run \`teamai session pull\` to finish it.`);
       }
     }
+
     return { status: 'pushed' };
   } catch (err) {
     return { status: 'failed', reason: gitFailureReason(err) };
@@ -343,24 +384,34 @@ export async function pushArchive(syncMgr: SyncManager, repoRoot: string): Promi
  */
 export async function pullArchive(syncMgr: SyncManager, repoRoot: string): Promise<{ status: 'pulled'; rebuilt: number } | { status: 'failed'; reason: string }> {
   let rebuilt = 0;
+
   const finishMerge = async (indexes: string[]): Promise<string | undefined> => {
     const merged = await syncMgr.commitRebuiltIndexes(indexes);
+
     if (merged.status === 'busy') return mergeBusyMessage(repoRoot, merged.lockPath);
     rebuilt += indexes.length;
+
     return undefined;
   };
+
   try {
     let pulled = syncMgr.gitPull();
+
     if (pulled.status === 'indexes-conflicted' && pulled.pending) {
       const busy = await finishMerge(pulled.indexes);
+
       if (busy) return { status: 'failed', reason: busy };
       pulled = syncMgr.gitPull();
     }
+
     if (pulled.status === 'stopped') return { status: 'failed', reason: pulled.reason };
+
     if (pulled.status === 'indexes-conflicted') {
       const busy = await finishMerge(pulled.indexes);
+
       if (busy) return { status: 'failed', reason: busy };
     }
+
     return { status: 'pulled', rebuilt };
   } catch (err) {
     return {
@@ -371,9 +422,10 @@ export async function pullArchive(syncMgr: SyncManager, repoRoot: string): Promi
 }
 
 /** The first line ("Command failed: git ...") only repeats the command; git's fatal/error line is the actual reason. */
-function gitFailureReason(err: unknown): string {
-  const msg = err instanceof Error ? err.message : String(err);
+function gitFailureReason(cause: unknown): string {
+  const msg = cause instanceof Error ? cause.message : String(cause);
   const fatal = msg.split('\n').find((l) => /^(fatal|error):/i.test(l.trim()));
+
   return safeText(fatal?.trim() ?? msg.split('\n')[0]);
 }
 
@@ -412,6 +464,7 @@ export function reportArchiveBusy(repoRoot: string, lockPath: string): void {
 /** `session migrate --json` prints the same `{ data } | { error }` envelope as the workflow commands. */
 export function printEnvelope(envelope: WorkflowEnvelope): void {
   process.stdout.write(`${JSON.stringify(envelope)}\n`);
+
   if ('error' in envelope) process.exitCode = 1;
 }
 
@@ -433,12 +486,15 @@ export async function listSource({
     sessions,
     failures: [failure],
   } = await AgentSession.list({ platforms: [platform], cwd });
+
   if (!failure) return sessions;
+
   if (asEnvelope) {
     printEnvelope({ error: { code: failure.code, message: failure.message } });
   } else {
     console.error(`Error: ${failure.message}`);
     process.exitCode = 1;
   }
+
   return undefined;
 }

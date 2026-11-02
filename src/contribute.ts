@@ -10,7 +10,7 @@ import { pathExists } from './utils/fs.js';
 import { log, spinner } from './utils/logger.js';
 import { markContributed } from './contribute-check.js';
 import { agentSessionFromEnv } from './utils/session-id.js';
-import { splitFrontmatter, stringifyFrontmatter } from './utils/frontmatter.js';
+import { splitFrontmatter, stringifyFrontmatter, type FrontmatterValue } from './utils/frontmatter.js';
 import { AgentSession } from './session-flow/agent-session.js';
 import { SessionCaptures } from './session-flow/captures.js';
 import type { SessionSubject } from './scorers/label.js';
@@ -43,12 +43,14 @@ import { getDataHome, getProjectSearchIndexPath, isSelfMode, parseInstallScope }
 export async function resolveLearningsSubdir(localConfig: LocalConfig): Promise<string> {
   const namespaces = await resolveActiveLearningsNamespaces(localConfig);
   const sub = namespaces.length === 1 ? namespaces[0] : '';
+
   // Defense-in-depth: the namespace is a path component here. It is validated at
   // the manifest boundary, but refuse anything that isn't a safe single segment
   // rather than let it escape the learnings/ directory.
   if (sub && !isSafeNamespaceSegment(sub)) {
     throw new Error(`Invalid learnings namespace "${sub}": must not contain path separators or '..'`);
   }
+
   return sub;
 }
 
@@ -138,6 +140,7 @@ export function generateFilename(title?: string): string {
 
   const date = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
   const random = Math.random().toString(36).slice(2, 8);
+
   return `${slug}-${date}-${random}.md`;
 }
 
@@ -149,13 +152,21 @@ export function generateFilename(title?: string): string {
 async function contributedSession(localConfig: LocalConfig, named: string | undefined): Promise<ContributedSession | undefined> {
   const env = await agentSessionFromEnv();
   const sessionId = named || env.id;
+
   if (!sessionId) return undefined;
   const own = env.id === sessionId;
   const fromEnv = own && env.agent ? AgentSession.platformForTool(env.agent) : undefined;
   const captured = fromEnv === undefined ? await SessionCaptures.platformsOf(localConfig, sessionId) : [];
   const platform = fromEnv ?? (captured.length === 1 ? captured[0] : undefined);
   const tool = own ? env.agent : platform && AgentSession.toolForPlatform(platform);
-  return { sessionId, own, ...(platform ? { platform } : {}), ...(tool ? { tool } : {}) };
+
+  const session: ContributedSession = { sessionId, own };
+
+  if (platform) session.platform = platform;
+
+  if (tool) session.tool = tool;
+
+  return session;
 }
 
 /** The session a contribution names, and whether this process runs in it, so its run mode and launcher are that session's. */
@@ -168,13 +179,19 @@ interface ContributedSession {
 
 /** Record the learning at `relPath` as an outcome of `session`, on this machine only. */
 async function recordLearningOutcome(localConfig: LocalConfig, session: ContributedSession, relPath: string): Promise<void> {
+  const timestamp = new Date().toISOString();
+  const homeKey = await dataHomeKey(getDataHome(localConfig));
+  const run = session.own ? await ownSessionRun(localConfig) : undefined;
+
+  // Absent fields stay undefined, which the JSON line omits.
   await appendEvent({
     type: 'session_outcome',
-    timestamp: new Date().toISOString(),
+    timestamp,
     sessionId: session.sessionId,
-    ...(session.tool ? { tool: session.tool } : {}),
-    dataHomeKey: await dataHomeKey(getDataHome(localConfig)),
-    ...(session.own ? await ownSessionRun(localConfig) : {}),
+    tool: session.tool || undefined,
+    dataHomeKey: homeKey,
+    runMode: run?.runMode,
+    launchedBy: run?.launchedBy,
     outcomes: [{ kind: 'learning', id: learningIdOf(relPath) }],
   });
 }
@@ -187,9 +204,11 @@ async function recordLearningOutcome(localConfig: LocalConfig, session: Contribu
 async function ownSessionRun(localConfig: LocalConfig): Promise<SessionRun> {
   const run = sessionRun(process.env);
   const marker = process.env[ATTEMPT_ENV];
+
   if (!marker || process.env[LAUNCHED_BY_ENV]) return run;
   const runId = RunIdSchema.safeParse(marker.split('/')[0]);
   const { sessionDrivesRun } = await import('./workflow/drivers/skill/skill-driver.js');
+
   return runId.success && await sessionDrivesRun(localConfig, runId.data) ? { runMode: run.runMode } : run;
 }
 
@@ -203,22 +222,28 @@ async function recordStepOutcome(localConfig: LocalConfig, marker: string, relPa
   const { findAttemptRun } = await import('./workflow/run-location.js');
   const found = await findAttemptRun(process.env);
   let recorded: Awaited<ReturnType<typeof appendAttemptOutcome>>;
+
   try {
     recorded = await appendAttemptOutcome('error' in found ? localConfig : found.config, marker, { kind: 'learning', id });
   } catch (e) {
     log.warn(`Learning ${id} is not recorded on workflow attempt ${marker}: ${e instanceof Error ? e.message : String(e)}`);
+
     return;
   }
+
   switch (recorded) {
     case 'appended': return;
     case 'bad_marker':
       log.warn(`Learning ${id} is not recorded on a workflow step: ${ATTEMPT_ENV} is "${marker}", not <run>/<attempt>.`);
+
       return;
     case 'unknown_run':
       log.warn(`Learning ${id} is not recorded on workflow attempt ${marker}: this scope holds no such run. Run teamai contribute in the step's checkout, or pass --scope with the scope the run started in.`);
+
       return;
     default: {
       const unhandled: never = recorded;
+
       return unhandled;
     }
   }
@@ -232,9 +257,13 @@ async function recordStepOutcome(localConfig: LocalConfig, marker: string, relPa
 function withSessionField(content: string, session: SessionSubject): string {
   const line = `session: ${YAML.stringify(session, { collectionStyle: 'flow' }).trimEnd()}`;
   const { raw, valid, data, body } = splitFrontmatter(content);
+
   if (!raw) return `---\n${line}\n---\n${body}`;
+
   if (!valid) return content;
+
   if ('session' in data) return stringifyFrontmatter({ ...data, session }, body);
+
   return raw.replace(/(\r?\n)(---[ \t]*(?:\r?\n)?)$/, `$1${line}$1$2`) + body;
 }
 
@@ -248,32 +277,43 @@ async function relationWarningsForLearning(localConfig: LocalConfig, relPath: st
   const warnings: string[] = [];
   const ownTreePath = `learnings/${relPath.replace(/\.md$/i, '')}`;
   let learningRoots: string[] = [];
+
   try {
     learningRoots = [pendingLearningsDir(localConfig), ...await indexableLearningsRoots(localConfig, [])];
   } catch {
     learningRoots = [pendingLearningsDir(localConfig)];
   }
+
   const repoRoot = localConfig.repo.localPath;
+
   const targetExists = (kind: AssetKind, treePath: string): boolean => {
     const rel = kind === 'learning'
       ? `${treePath.slice('learnings/'.length)}.md`
       : treePath;
+
     const roots = kind === 'learning' ? learningRoots : [repoRoot];
+
     return roots.some((root) => fs.existsSync(path.join(root, ...rel.split('/'))));
   };
-  let rawRelated: unknown;
+
+  let rawRelated: FrontmatterValue | undefined;
+
   try {
     rawRelated = matter(content).data['related'];
   } catch (e) {
     const { raw } = splitFrontmatter(content);
+
     if (/^related[ \t]*:/m.test(raw)) {
       const detail = e instanceof Error ? e.message.split('\n')[0] : String(e);
       warnings.push(`related: could not be parsed (${detail}); all of it is ignored.`);
     }
+
     return warnings;
   }
+
   parseRelatedBlock(rawRelated, 'learning', ownTreePath, 'warn', targetExists,
     (_severity, message) => warnings.push(`related: ${message}`));
+
   return warnings;
 }
 
@@ -292,19 +332,23 @@ export async function contribute(
   // Validate file
   if (!options.file) {
     log.error('Usage: teamai contribute --file <path> [--title <title>] [--namespace <ns>]');
+
     return;
   }
 
   let content: string;
+
   try {
     content = await fs.promises.readFile(options.file, 'utf-8');
   } catch (e) {
-    log.error(`Cannot read file: ${options.file} — ${(e as Error).message}`);
+    log.error(`Cannot read file: ${options.file} — ${e instanceof Error ? e.message : String(e)}`);
+
     return;
   }
 
   if (!content.trim()) {
     log.error('Contribution file is empty — nothing to push.');
+
     return;
   }
 
@@ -313,17 +357,27 @@ export async function contribute(
   // which would write under --dry-run (#850).
   const loadOpts = { dryRun: options.dryRun };
   let scope: Scope | undefined;
+
   try {
     scope = options.scope === undefined ? undefined : parseInstallScope(options.scope);
   } catch (e) {
-    log.error((e as Error).message);
+    log.error(e instanceof Error ? e.message : String(e));
     process.exitCode = 1;
+
     return;
   }
+
   let localConfig: LocalConfig;
+
   if (scope === 'project') {
     const cfg = await loadLocalConfigForScope('project', process.cwd(), loadOpts);
-    if (!cfg) { log.error('No workspace teamai config in this directory'); return; }
+
+    if (!cfg) {
+      log.error('No workspace teamai config in this directory');
+
+      return;
+    }
+
     localConfig = cfg;
   } else if (scope === 'user') {
     const { localConfig: userCfg } = await requireInit(loadOpts);
@@ -333,6 +387,7 @@ export async function contribute(
     const projectConfig = await detectProjectConfig(undefined, undefined, loadOpts);
     localConfig = projectConfig ?? (await requireInit(loadOpts)).localConfig;
   }
+
   assertNotReadOnly(localConfig, 'teamai contribute');
   const username = localConfig.username;
   localConfig = await readWorkspaceChildren(localConfig);
@@ -342,18 +397,23 @@ export async function contribute(
   // scope reads, a workspace's children's included (#913).
   const ownNamespaces = await resolveActiveLearningsNamespaces(localConfig);
   const namespaces = await deliveredLearningsNamespaces(localConfig);
+
   // Validate before saving the queue, creating worktrees or rebuilding indexes.
   // An empty --namespace names the shared root, which every member may write.
   if (options.namespace !== undefined && options.namespace !== '' &&
       (!isSafeNamespaceSegment(options.namespace) || !namespaces.includes(options.namespace))) {
     log.error(`Cannot contribute to namespace "${options.namespace}". Allowed learnings namespaces: ${namespaces.join(', ') || '(none)'}.`);
     process.exitCode = 1;
+
     return;
   }
+
   const learningsSubdir = options.namespace ?? (ownNamespaces.length === 1 ? ownNamespaces[0] : '');
+
   if (options.namespace === undefined && !learningsSubdir && namespaces.length > 0) {
     log.info(`Contributing to learnings/ (shared root). To choose a namespace, pass --namespace <ns>: ${namespaces.join(', ')}.`);
   }
+
   // Keep the chosen path in the queue so retries publish to the same namespace.
   const relPath = learningsSubdir ? path.posix.join(learningsSubdir, filename) : filename;
 
@@ -363,6 +423,7 @@ export async function contribute(
 
   if (options.dryRun) {
     log.info(`[dry-run] Would push: learnings/${relPath} (${content.length} bytes)`);
+
     return;
   }
 
@@ -377,21 +438,27 @@ export async function contribute(
   }
 
   const session = await contributedSession(localConfig, options.sessionId);
+
   try {
     const queued = await savePendingLearning(localConfig, relPath, session?.platform
       ? withSessionField(content, { platform: session.platform, sessionId: session.sessionId })
       : content);
+
     if (queued.status !== 'saved') {
       spin.fail(queueWriteRefusal(queued));
       process.exitCode = 1;
+
       return;
     }
+
     if (session) await recordLearningOutcome(localConfig, session, relPath);
     const attempt = process.env[ATTEMPT_ENV];
+
     if (attempt) await recordStepOutcome(localConfig, attempt, relPath);
   } catch (e) {
-    spin.fail(`Contribution failed: ${(e as Error).message}`);
+    spin.fail(`Contribution failed: ${e instanceof Error ? e.message : String(e)}`);
     log.info('You can retry with: teamai contribute --file <path>');
+
     return;
   }
 
@@ -400,7 +467,7 @@ export async function contribute(
   try {
     await rebuildIndexAfterContribute(localConfig);
   } catch (e) {
-    log.debug(`contribute: index rebuild skipped: ${(e as Error).message}`);
+    log.debug(`contribute: index rebuild skipped: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   const report = await publishQueuedLearnings(localConfig, username);
@@ -415,7 +482,7 @@ export async function contribute(
     try {
       await rebuildIndexAfterContribute(localConfig);
     } catch (e) {
-      log.debug(`contribute: post-publish index rebuild skipped: ${(e as Error).message}`);
+      log.debug(`contribute: post-publish index rebuild skipped: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -430,10 +497,13 @@ export async function contribute(
   if (report.published.includes(relPath)) {
     spin.succeed(`Contributed: learnings/${relPath}`);
     log.info('Your session knowledge has been shared with the team.');
+
     return;
   }
+
   if (report.installChanged) {
     spin.warn(`Saved locally, not published: ${report.installChanged}. ${KEPT_FOR_ITS_INSTALL}`);
+
     return;
   }
 

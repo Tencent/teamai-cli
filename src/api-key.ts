@@ -28,14 +28,17 @@ export function getApiKeyPath(): string {
  */
 export function resolveApiKey(): string | null {
   const fromEnv = process.env.TEAMAI_API_TOKEN || process.env.TEAMAI_API_KEY;
+
   if (fromEnv && fromEnv.trim()) return fromEnv.trim();
 
   try {
     const content = fs.readFileSync(getApiKeyPath(), 'utf-8').trim();
+
     if (content) return content;
   } catch {
     // no file — fall through to null
   }
+
   return null;
 }
 
@@ -44,6 +47,7 @@ export function resolveApiKey(): string | null {
  */
 export async function saveApiKey(key: string): Promise<void> {
   const trimmed = key.trim();
+
   if (!trimmed) throw new Error('API key must not be empty');
   const keyPath = getApiKeyPath();
   await ensureDir(path.dirname(keyPath));

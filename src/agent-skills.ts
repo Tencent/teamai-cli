@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { z } from 'zod';
 import { listDirs, pathExists, readFileSafe } from './utils/fs.js';
 import { detectInstalledAgents, type ResolvedAgent } from './known-agents.js';
 import { isCliOwnedSkillName } from './builtin-skills.js';
@@ -62,21 +63,27 @@ export async function buildClassifyContext(localConfig: LocalConfig): Promise<Cl
   let sourceSkills = new Map<string, string>();
   const sourceSkillPaths = new Map<string, string>();
   const pathTrackedSources = new Set<string>();
+
   try {
     const { getSourceSkillOrigins, getSourcePathOwners, getSourceManifestPath } = await import('./source.js');
     const origins = await getSourceSkillOrigins(localConfig);
+
     for (const owner of await getSourcePathOwners()) {
       const source = owner.sourceName;
+
       if (!source) continue;
+
       // Different aliases can publish the same name, so the first-name origin
       // map cannot enumerate every owner. Verify each alias's scoped record.
       if (owner.manifestPath !== getSourceManifestPath(source, localConfig)) continue;
+
       if (!sourceSkillPaths.has(owner.path)) sourceSkillPaths.set(owner.path, source);
       pathTrackedSources.add(source);
     }
+
     sourceSkills = origins;
   } catch (error) {
-    log.warn(`Source provenance could not be determined: ${(error as Error).message}. Source labels may be incomplete; do not treat local-only as proof of local ownership.`);
+    log.warn(`Source provenance could not be determined: ${error instanceof Error ? error.message : String(error)}. Source labels may be incomplete; do not treat local-only as proof of local ownership.`);
   }
 
   return { teamSkills, sourceSkills, sourceSkillPaths, pathTrackedSources };
@@ -89,16 +96,20 @@ export async function buildClassifyContext(localConfig: LocalConfig): Promise<Cl
 export async function collectTeamRepoSkills(repoPath: string): Promise<Map<string, { namespace?: string }>> {
   const teamSkillsDir = path.join(repoPath, 'skills');
   const result = new Map<string, { namespace?: string }>();
+
   if (!await pathExists(teamSkillsDir)) return result;
 
   const topDirs = await listDirs(teamSkillsDir);
+
   for (const dir of topDirs) {
     const dirPath = path.join(teamSkillsDir, dir);
     const hasSkillMd = await pathExists(path.join(dirPath, 'SKILL.md'));
+
     if (hasSkillMd) {
       result.set(dir, {});
     } else {
       const subDirs = await listDirs(dirPath);
+
       for (const subDir of subDirs) {
         if (!result.has(subDir)) {
           result.set(subDir, { namespace: dir });
@@ -115,17 +126,22 @@ export function classifySkill(name: string, ctx: ClassifyContext, skillPath?: st
   // Same rule as the push scan and uninstall: a name a pre-stub release deployed
   // is ours until the next pull prunes it, not a member's local-only skill.
   if (isCliOwnedSkillName(name)) return { kind: 'builtin' };
+
   if (ctx.teamSkills.has(name)) {
     return { kind: 'team', namespace: ctx.teamSkills.get(name)?.namespace };
   }
+
   const pathSource = skillPath && ctx.sourceSkillPaths.get(resolveReal(skillPath));
+
   if (pathSource) return { kind: 'source', name: pathSource };
   const nameSource = ctx.sourceSkills.get(name);
+
   // Older scoped records may carry only names. Keep their exact-name fallback,
   // but never use a basename alias or override a modern record's actual paths.
   if (nameSource && (!skillPath || !ctx.pathTrackedSources.has(nameSource))) {
     return { kind: 'source', name: nameSource };
   }
+
   return { kind: 'local-only' };
 }
 
@@ -160,32 +176,40 @@ export function formatSkillSource(source: SkillSource): string {
  */
 export async function scanAgentSkills(agent: ResolvedAgent, ctx: ClassifyContext): Promise<AgentSkillsView> {
   const skills: AgentSkill[] = [];
+
   if (!agent.installed) {
     return { agent, skills };
   }
+
   if (!await pathExists(agent.absoluteSkillsPath)) {
     return { agent, skills };
   }
 
   const names = new Set(await listDirs(agent.absoluteSkillsPath));
+
   for (const [name, source] of ctx.sourceSkills) {
     // Recorded names also find symlinked installs, whose physical path may sit
     // outside this root. A name alone must not expose another tool's modules.
     if (!ctx.pathTrackedSources.has(source)
       || ctx.sourceSkillPaths.has(resolveReal(path.join(agent.absoluteSkillsPath, name)))) names.add(name);
   }
+
   const physicalRoot = resolveReal(agent.absoluteSkillsPath);
+
   for (const installedPath of ctx.sourceSkillPaths.keys()) {
     const relative = path.relative(physicalRoot, installedPath);
+
     if (relative && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)) {
       names.add(relative.split(path.sep).join('/'));
     }
   }
+
   for (const name of names) {
     // Skip hidden directories (e.g. .system) and workspace scratch dirs
     if (name.split('/').some((part) => part.startsWith('.') || part.endsWith('-workspace'))) continue;
     const skillDir = path.join(agent.absoluteSkillsPath, name);
     const skillMd = path.join(skillDir, 'SKILL.md');
+
     if (!await pathExists(skillMd)) continue;
     const description = await readSkillDescription(skillMd);
     skills.push({
@@ -197,6 +221,7 @@ export async function scanAgentSkills(agent: ResolvedAgent, ctx: ClassifyContext
   }
 
   skills.sort((a, b) => a.name.localeCompare(b.name));
+
   return { agent, skills };
 }
 
@@ -213,10 +238,12 @@ export async function scanInstalledAgents(
   const agents = await detectInstalledAgents(localConfig, teamConfig);
   const ctx = await buildClassifyContext(localConfig);
   const views: AgentSkillsView[] = [];
+
   for (const agent of agents) {
     if (!agent.installed) continue;
     views.push(await scanAgentSkills(agent, ctx));
   }
+
   return views;
 }
 
@@ -227,10 +254,12 @@ export async function scanInstalledAgents(
  */
 export async function readSkillDescription(skillMdPath: string): Promise<string> {
   const content = await readFileSafe(skillMdPath);
+
   if (!content) return '';
   const { data } = parseFrontmatter(content);
-  const desc = data['description'];
-  if (typeof desc !== 'string') return '';
+  const desc = z.string().safeParse(data['description']).data;
+
+  if (desc === undefined) return '';
 
   // Normalize whitespace: collapse newlines + indentation into single spaces
   return desc.split('\n').map((l) => l.trim()).filter(Boolean).join(' ');
@@ -239,5 +268,6 @@ export async function readSkillDescription(skillMdPath: string): Promise<string>
 /** Truncate description to `max` characters with an ellipsis suffix. */
 export function truncate(text: string, max: number): string {
   if (text.length <= max) return text;
+
   return text.slice(0, Math.max(0, max - 3)) + '...';
 }

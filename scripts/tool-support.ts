@@ -24,6 +24,20 @@ export type ToolSupportLang = keyof typeof TOOL_SUPPORT_PAGES;
 
 const FEATURE_KEYS = ['env', 'workflows', 'unattended', 'recall', 'stats', 'tokens', 'aiBackend', 'votesJudge', 'sessionJudge', 'agentHooks'] as const satisfies readonly (keyof ToolFeatures)[];
 
+/** The translated headers, legend and column names of one support page. */
+type PageText = {
+  readonly title: string;
+  readonly intro: readonly string[];
+  readonly legend: readonly string[];
+  readonly user: string;
+  readonly project: string;
+  readonly projectNote: string;
+  readonly features: string;
+  readonly featuresNote: string;
+  readonly notes: string;
+  readonly columns: Readonly<Record<'tool' | 'home' | 'skills' | 'rules' | 'blocks' | 'agents' | 'hooks' | 'mcp' | 'sessions' | (typeof FEATURE_KEYS)[number], string>>;
+};
+
 const TEXT = {
   en: {
     title: '# Tool support',
@@ -69,14 +83,15 @@ const TEXT = {
       env: '环境变量', workflows: '工作流（本地驱动）', unattended: '无人值守提示', recall: 'Recall', stats: '统计', tokens: 'Token 与费用', aiBackend: 'AI 后端', votesJudge: '投票评审', sessionJudge: '会话评审', agentHooks: 'HTTP agent hooks',
     },
   },
-} as const satisfies Record<ToolSupportLang, unknown>;
+} as const satisfies Record<ToolSupportLang, PageText>;
 
 const EVIDENCE: Record<Evidence, string> = { verified: 'v', source: 's', docs: 'd', assumed: 't' };
 
 type Read = HomeRead | ProjectRead | FirstExistingRead;
 
 function file(path: string | CodebuddyConfigFile, base: 'home' | 'project'): string {
-  if (typeof path !== 'string') return '`~/.codebuddy.json` (in `$CODEBUDDY_CONFIG_DIR` when set)';
+  if (path instanceof Object) return '`~/.codebuddy.json` (in `$CODEBUDDY_CONFIG_DIR` when set)';
+
   return base === 'home' ? `\`~/${path}\`` : `\`${path}\``;
 }
 
@@ -84,8 +99,10 @@ function read(entry: Read): string {
   const where = 'firstOf' in entry
     ? `first of ${entry.firstOf.map((path) => file(path, entry.base)).join(', ')}`
     : file(entry.path, entry.base);
+
   const when = 'when' in entry && entry.when === 'cwdOnly' ? ' cwd only'
     : 'when' in entry && entry.when === 'workspaceUnderHome' ? ' from a session under ~' : '';
+
   return `${where} ${EVIDENCE[entry.evidence]}${when}`;
 }
 
@@ -96,7 +113,9 @@ function reads(list: readonly Read[] | 'unknown'): string {
 /** A scope's channel: `—` and `?` as stated, else the places the tool reads. */
 function channel<C>(value: C | 'none' | 'unknown', render: (c: C) => string): string {
   if (value === 'none') return '—';
+
   if (value === 'unknown') return '?';
+
   return render(value);
 }
 
@@ -115,6 +134,7 @@ function homeMove(move: HomeMove, dir: string): string {
     case 'hermes-home': return `\`$HERMES_HOME\` \`~/${dir}$HERMES_DATA_DIR_SUFFIX\` \`%LOCALAPPDATA%\\hermes$HERMES_DATA_DIR_SUFFIX\` \`<home>/profiles/<active_profile>\``;
     default: {
       const unhandled: never = move;
+
       return unhandled;
     }
   }
@@ -122,6 +142,7 @@ function homeMove(move: HomeMove, dir: string): string {
 
 function home(descriptor: ToolDescriptor): string {
   const { dir, moves } = descriptor.home;
+
   return [`\`~/${moves?.root ?? dir}\``, ...(moves?.by.map((move) => homeMove(move, dir)) ?? [])].join(' ');
 }
 
@@ -139,14 +160,18 @@ function table(header: readonly string[], rows: readonly (readonly string[])[]):
 
 function agentsRead(d: ToolDescriptor, scope: 'user' | 'project'): string {
   const value = d.agents[scope];
+
   if (value === 'none') return '—';
+
   if (value === 'unknown') return '?';
   const result = reads(value.reads);
+
   return d === TOOLS.joycode ? `${result}<br>indexed by \`agent.json\`` : result;
 }
 
 function userRow(tool: ToolId, d: ToolDescriptor): string[] {
   const { hooks } = d;
+
   return [
     name(tool),
     home(d),
@@ -156,12 +181,13 @@ function userRow(tool: ToolId, d: ToolDescriptor): string[] {
     agentsRead(d, 'user'),
     channel(hooks.user, (c) => c.channel === 'settings' ? reads(c.reads) : `${c.adapter} ${EVIDENCE[c.evidence]}`),
     channel(d.mcp.user, (c) => reads(c.reads)),
-    typeof d.sessions === 'string' ? channel(d.sessions, () => '') : d.sessions.join(', '),
+    Array.isArray(d.sessions) ? d.sessions.join(', ') : channel(d.sessions, () => ''),
   ];
 }
 
 function projectRow(tool: ToolId, d: ToolDescriptor): string[] {
   const { hooks } = d;
+
   return [
     name(tool),
     reads(d.skills.project),
@@ -174,8 +200,10 @@ function projectRow(tool: ToolId, d: ToolDescriptor): string[] {
 }
 
 function featureCell(support: Support, notes: string[]): string {
-  if (typeof support === 'string') return support;
+  if (!(support instanceof Object)) return support;
+
   if (!notes.includes(support.note)) notes.push(support.note);
+
   return `${support.cell}<sup>${notes.indexOf(support.note) + 1}</sup>`;
 }
 
@@ -186,6 +214,7 @@ export function renderToolSupportPage(lang: ToolSupportLang): string {
   const tools = Object.keys(DEFAULT_TOOL_PATHS).filter(isToolId).map((tool): [ToolId, ToolDescriptor] => [tool, TOOLS[tool]]);
   const notes: string[] = [];
   const featureRows = tools.map(([tool, d]) => [name(tool), ...FEATURE_KEYS.map((key) => featureCell(d.features[key], notes))]);
+
   return [
     text.title,
     '',

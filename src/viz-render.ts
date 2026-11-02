@@ -56,19 +56,24 @@ function renderBarChart(items: Array<{ label: string; value: number; badge: stri
     const y = idx * ROW_H + 5;
     const barW = Math.max(2, Math.round((item.value / maxVal) * BAR_AREA));
     const textY = y + BAR_H / 2 + 5;
+
     const labelEl =
       `<text x="0" y="${textY}"` +
       ` style="${mono};font-size:12px;fill:var(--text2)">` +
       `${escapeHtml(trunc(item.label, 30))}</text>`;
+
     const barEl =
       `<rect x="${LABEL_W}" y="${y}" width="${barW}" height="${BAR_H}"` +
       ` style="fill:var(--accent);opacity:0.9" rx="4"/>`;
+
     const valEl =
       `<text x="${LABEL_W + BAR_AREA + 6}" y="${textY}"` +
       ` style="${mono};font-size:12px;fill:var(--accent)">${item.value}</text>`;
+
     const badgeEl =
       `<text x="${LABEL_W + BAR_AREA + VALUE_W + 10}" y="${textY}"` +
       ` style="${mono};font-size:11px;fill:var(--text2)">${escapeHtml(item.badge)}</text>`;
+
     return labelEl + barEl + valEl + badgeEl;
   });
 
@@ -109,6 +114,7 @@ function renderLineChart(points: TrendPoint[]): string {
 
   // Area fill polygon: bottom-left → data points → bottom-right
   const bottomY = PAD_T + PLOT_H;
+
   const areaPoints = [
     `${PAD_L},${bottomY}`,
     ...points.map((p, i) => `${toX(i)},${toY(p.count)}`),
@@ -120,6 +126,7 @@ function renderLineChart(points: TrendPoint[]): string {
   // Y-axis ticks (0, mid, max)
   const yTicks = [0, Math.round(maxY / 2), maxY].map((v) => {
     const y = toY(v);
+
     return (
       `<line x1="${PAD_L - 4}" y1="${y}" x2="${PAD_L}" y2="${y}"` +
       ` style="stroke:var(--border)" stroke-width="1"/>` +
@@ -130,27 +137,31 @@ function renderLineChart(points: TrendPoint[]): string {
 
   // X-axis labels (show every Nth label to avoid overlap)
   const step = Math.max(1, Math.ceil(n / 8));
-  const xLabels = points
-    .map((p, origIdx) => ({ p, origIdx }))
-    .filter(({ origIdx }) => origIdx % step === 0 || origIdx === n - 1)
-    .map(({ p, origIdx }) => {
-      const x = toX(origIdx);
-      return (
-        `<text x="${x}" y="${H - 8}" text-anchor="middle"` +
-        ` style="${mono};font-size:10px;fill:var(--text2)">${escapeHtml(p.period)}</text>`
-      );
-    });
+
+  const xLabels = points.flatMap((p, origIdx) => {
+    if (origIdx % step !== 0 && origIdx !== n - 1) return [];
+    const x = toX(origIdx);
+
+    return [
+      `<text x="${x}" y="${H - 8}" text-anchor="middle"` +
+      ` style="${mono};font-size:10px;fill:var(--text2)">${escapeHtml(p.period)}</text>`,
+    ];
+  });
 
   const axisVert =
     `<line x1="${PAD_L}" y1="${PAD_T}" x2="${PAD_L}" y2="${bottomY}"` +
     ` style="stroke:var(--border)" stroke-width="1"/>`;
+
   const axisHoriz =
     `<line x1="${PAD_L}" y1="${bottomY}" x2="${W - PAD_R}" y2="${bottomY}"` +
     ` style="stroke:var(--border)" stroke-width="1"/>`;
+
   const areaEl = `<polygon points="${areaPoints}" style="fill:var(--accent);opacity:0.08"/>`;
+
   const lineEl =
     `<polyline points="${polyPoints}" fill="none"` +
     ` style="stroke:var(--accent)" stroke-width="2" stroke-linejoin="round"/>`;
+
   const dots = points.map(
     (p, i) => `<circle cx="${toX(i)}" cy="${toY(p.count)}" r="3.5" style="fill:var(--accent)"/>`,
   );
@@ -179,6 +190,7 @@ function renderOverviewCards(data: VizData): string {
     { label: 'Overall Coverage', value: `${data.overallCoveragePct}%` },
     { label: 'Contributors', value: String(data.contributorCount) },
   ];
+
   const cardHtml = cards
     .map(
       (c) =>
@@ -188,6 +200,7 @@ function renderOverviewCards(data: VizData): string {
         `</div>`,
     )
     .join('');
+
   return `<section id="overview"><h2 data-i18n>Overview</h2><div class="cards">${cardHtml}</div></section>`;
 }
 
@@ -197,6 +210,7 @@ function renderCoverageSection(coverage: CoverageStat[]): string {
     .map((stat) => {
       const label = escapeHtml(stat.type);
       const pct = stat.coveragePct;
+
       return [
         `<div class="cov-row">`,
         `  <div class="cov-label">${label}</div>`,
@@ -208,6 +222,7 @@ function renderCoverageSection(coverage: CoverageStat[]): string {
       ].join('');
     })
     .join('');
+
   return `<section id="coverage"><h2 data-i18n>Coverage by Type</h2>${rows}</section>`;
 }
 
@@ -218,7 +233,9 @@ function renderTopRecalledSection(topRecalled: EntryMetric[]): string {
     value: m.recalledCount,
     badge: m.type,
   }));
+
   const chart = renderBarChart(items);
+
   return `<section id="top-recalled"><h2 data-i18n>Top Recalled Entries</h2>${chart}</section>`;
 }
 
@@ -232,6 +249,7 @@ function renderSilentSection(silent: EntryMetric[]): string {
   }
 
   const byType = new Map<string, EntryMetric[]>();
+
   for (const m of silent) {
     const list = byType.get(m.type) ?? [];
     list.push(m);
@@ -247,6 +265,7 @@ function renderSilentSection(silent: EntryMetric[]): string {
             ` <span class="muted">— ${escapeHtml(m.author || 'unknown')}</span></li>`,
         )
         .join('');
+
       return [
         `<details>`,
         `  <summary><span data-i18n>${escapeHtml(type)}</span> (${entries.length})</summary>`,
@@ -267,12 +286,15 @@ function renderSilentSection(silent: EntryMetric[]): string {
 /** Render the asset-relation health section (#1562 part 2): the counts headline plus the assets behind each count, as an HTML string. */
 function renderRelationsSection(data: VizData): string {
   const rel = data.relations;
+
   const headline =
     `${rel.assetCount} assets · ${rel.relationCount} relations · ` +
     `${rel.withoutRelation.length} without a relation · ${rel.unresolved.length} unresolved`;
+
   const details = (title: string, items: readonly string[]): string => {
     if (items.length === 0) return '';
     const rows = items.map((item) => `<li><code>${escapeHtml(item)}</code></li>`).join('');
+
     return [
       `<details>`,
       `  <summary><span data-i18n>${title}</span> (${items.length})</summary>`,
@@ -280,15 +302,18 @@ function renderRelationsSection(data: VizData): string {
       `</details>`,
     ].join('');
   };
+
   // The counts resolve against this report's own scope and say so: a team repo
   // and a personal ~/.teamai resolve different relation sets.
   const scopeNote =
     `<p class="muted"><span data-i18n>Resolved for</span> ` +
     `<span class="source-badge source-${data.source.scope}">${escapeHtml(data.source.label)}</span></p>`;
+
   const silentLine =
     rel.silentAndWithoutRelation.length === 0
       ? `<p><span data-i18n>Silent and without a relation</span>: <span data-i18n>none</span></p>`
       : details('Silent and without a relation', rel.silentAndWithoutRelation);
+
   return [
     `<section id="relations">`,
     `  <h2 data-i18n>Relations</h2>`,
@@ -305,6 +330,7 @@ function renderRelationsSection(data: VizData): string {
 function renderTrendSection(trend: TrendPoint[]): string {
   const chart = renderLineChart(trend);
   const note = '<p class="muted" data-i18n>Each entry is counted once, in the month it was last recalled.</p>';
+
   return `<section id="trend"><h2 data-i18n>Entries by Last-Recall Month</h2>${note}${chart}</section>`;
 }
 
@@ -313,13 +339,16 @@ function renderAuthorsSection(authors: AuthorStat[]): string {
   if (authors.length === 0) {
     return `<section id="authors"><h2 data-i18n>Author Contributions</h2><p data-i18n>No author data.</p></section>`;
   }
+
   const header = '<tr><th data-i18n>Author</th><th data-i18n>Entries</th><th data-i18n>Total Recalled</th></tr>';
+
   const rows = authors
     .map(
       (a) =>
         `<tr><td>${escapeHtml(a.author)}</td><td>${a.entries}</td><td>${a.totalRecalled}</td></tr>`,
     )
     .join('');
+
   return [
     `<section id="authors">`,
     `  <h2 data-i18n>Author Contributions</h2>`,
@@ -333,17 +362,21 @@ function renderPromotionBlock(promote: PromotionCandidate[]): string {
   const intro =
     '<p class="muted">Learnings with high confidence (&ge;0.90) and adoption across ' +
     'multiple users — good candidates to promote to formal skills, rules, or docs.</p>';
+
   const guide =
     '<div class="maint-guide"><strong>How to promote</strong>' +
     ' — Review a candidate below, then run (each entry shows its own ready-to-copy command):' +
     '<code>teamai recall promote &lt;learning-id&gt; --category skill|rule|doc</code></div>';
+
   if (promote.length === 0) {
     return `<div class="maint-block"><h3 data-i18n>Promotable Learnings</h3>${intro}${guide}<p data-i18n>None right now.</p></div>`;
   }
+
   const rows = promote
     .map((c) => {
       const cmd =
         `teamai recall promote ${escapeHtml(c.docId)} --category ${escapeHtml(c.suggestedCategory)}`;
+
       return [
         `<div class="maint-item">`,
         `  <div><strong>${escapeHtml(c.title)}</strong>`,
@@ -355,6 +388,7 @@ function renderPromotionBlock(promote: PromotionCandidate[]): string {
       ].join('');
     })
     .join('');
+
   return `<div class="maint-block"><h3 data-i18n>Promotable Learnings</h3>${intro}${guide}${rows}</div>`;
 }
 
@@ -362,16 +396,20 @@ function renderPromotionBlock(promote: PromotionCandidate[]): string {
 function renderPruneBlock(prune: PruneCandidate[]): string {
   const intro =
     '<p class="muted">Learnings below confidence threshold or inactive for &gt;180 days.</p>';
+
   const guide =
     '<div class="maint-guide"><strong>How to archive</strong>' +
     ' — These are batch-archived together. Review the list below, then run:' +
     '<code>teamai recall maintenance --prune --archive</code></div>';
+
   if (prune.length === 0) {
     return `<div class="maint-block"><h3 data-i18n>Suggested for Archive</h3>${intro}${guide}<p data-i18n>None right now.</p></div>`;
   }
+
   const rows = prune
     .map((c) => {
       const activity = c.lastActivity ? escapeHtml(c.lastActivity.substring(0, 10)) : 'unknown';
+
       return [
         `<div class="maint-item">`,
         `  <div><strong>${escapeHtml(c.filename)}</strong></div>`,
@@ -381,6 +419,7 @@ function renderPruneBlock(prune: PruneCandidate[]): string {
       ].join('');
     })
     .join('');
+
   return `<div class="maint-block"><h3 data-i18n>Suggested for Archive</h3>${intro}${guide}${rows}</div>`;
 }
 
@@ -389,18 +428,22 @@ function renderStaleBlock(stale: StaleEntry[]): string {
   const intro =
     '<p class="muted">Entries recalled frequently but rarely upvoted — ' +
     'likely stale or low quality. Run the command below to review and refresh them.</p>';
+
   const guide =
     '<div class="maint-guide"><strong>How to update</strong>' +
     ' — Run the command below to review and refresh these entries:' +
     '<code>teamai recall maintenance --update-quality</code></div>';
+
   if (stale.length === 0) {
     return (
       `<div class="maint-block"><h3 data-i18n>Stale (Needs Quality Update)</h3>` +
       `${intro}${guide}<p data-i18n>None right now.</p></div>`
     );
   }
+
   const header =
     '<tr><th data-i18n>Doc ID</th><th data-i18n>Type</th><th data-i18n>Recalls</th><th data-i18n>Upvotes</th><th data-i18n>Users</th></tr>';
+
   const rows = stale
     .map(
       (s) =>
@@ -408,6 +451,7 @@ function renderStaleBlock(stale: StaleEntry[]): string {
         `<td>${s.recalledCount}</td><td>${s.upvotedCount}</td><td>${s.userCount}</td></tr>`,
     )
     .join('');
+
   return [
     `<div class="maint-block">`,
     `  <h3 data-i18n>Stale (Needs Quality Update)</h3>`,
@@ -423,11 +467,12 @@ function renderMaintenanceSection(data: VizData): string {
   const promote = renderPromotionBlock(data.maintenance.promote);
   const prune = renderPruneBlock(data.maintenance.prune);
   const stale = renderStaleBlock(data.maintenance.stale);
+
   return `<section id="maintenance"><h2 data-i18n>Maintenance Console</h2>${promote}${prune}${stale}</section>`;
 }
 
 /** Reuse every existing KB report section inside the unified dashboard. */
-export function renderDashboardReport(data: VizData): { context: string; maintenance: string } {
+export function renderDashboardReport(data: VizData) {
   return {
     context: renderOverviewCards(data) + renderCoverageSection(data.coverage)
       + renderTopRecalledSection(data.topRecalled) + renderSilentSection(data.silent)

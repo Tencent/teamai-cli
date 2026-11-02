@@ -1,6 +1,7 @@
-import { spawnSync } from 'node:child_process';
+import { spawnSync, type SpawnSyncOptions, type SpawnSyncOptionsWithStringEncoding } from 'node:child_process';
 import crossSpawn from 'cross-spawn';
 import { z } from 'zod';
+import type { JsonValue } from '../../types.js';
 import { log } from '../../utils/logger.js';
 import { resolveCliPath } from '../../utils/cli-path.js';
 import { isInteractive } from '../../utils/prompt.js';
@@ -41,7 +42,17 @@ export function isGhInstalled(): boolean {
  */
 function hitTimeout(result: { error?: Error | null }): boolean {
   const { error } = result;
+
   return error instanceof Error && 'code' in error && error.code === 'ETIMEDOUT';
+}
+
+/** What a gh run printed and how it exited. */
+export interface GhExecResult {
+  stdout: string;
+  stderr: string;
+  status: number;
+  /** Set when the deadline fired. */
+  timedOut?: boolean;
 }
 
 /**
@@ -63,8 +74,9 @@ export function ghExec(
     timeoutMs?: number;
     maxBuffer?: number;
   },
-): { stdout: string; stderr: string; status: number; timedOut?: boolean } {
+): GhExecResult {
   const ghPath = getGhPath();
+
   if (!ghPath) {
     throw new Error(
       'gh CLI not found. Install it from https://cli.github.com/ or set GITHUB_TOKEN environment variable.',
@@ -74,34 +86,40 @@ export function ghExec(
   log.debug(`gh exec: ${ghPath} ${args.join(' ')}`);
 
   if (options?.inheritStdio) {
-    const result = crossSpawn.sync(ghPath, args, {
+    const inherited: SpawnSyncOptions = {
       stdio: 'inherit',
       env: { ...process.env, ...options.env },
       cwd: options.cwd,
-      ...(options.timeoutMs ? { timeout: options.timeoutMs } : {}),
-    });
-    return {
-      stdout: '',
-      stderr: '',
-      status: result.status ?? 1,
-      ...(hitTimeout(result) ? { timedOut: true } : {}),
     };
+
+    if (options.timeoutMs) inherited.timeout = options.timeoutMs;
+    const result = crossSpawn.sync(ghPath, args, inherited);
+    const ran: GhExecResult = { stdout: '', stderr: '', status: result.status ?? 1 };
+
+    if (hitTimeout(result)) ran.timedOut = true;
+
+    return ran;
   }
 
-  const result = crossSpawn.sync(ghPath, args, {
+  const captured: SpawnSyncOptionsWithStringEncoding = {
     env: { ...process.env, ...options?.env },
     encoding: 'utf-8',
     maxBuffer: options?.maxBuffer ?? 10 * 1024 * 1024,
     cwd: options?.cwd,
-    ...(options?.timeoutMs ? { timeout: options.timeoutMs } : {}),
-  });
+  };
 
-  return {
+  if (options?.timeoutMs) captured.timeout = options.timeoutMs;
+  const result = crossSpawn.sync(ghPath, args, captured);
+
+  const ran: GhExecResult = {
     stdout: (result.stdout ?? '').toString().trim(),
     stderr: (result.stderr ?? '').toString().trim(),
     status: result.status ?? 1,
-    ...(hitTimeout(result) ? { timedOut: true } : {}),
   };
+
+  if (hitTimeout(result)) ran.timedOut = true;
+
+  return ran;
 }
 
 // ─── Installation guidance ───────────────────────────────
@@ -113,11 +131,13 @@ export function ghExec(
 export async function ensureGhAvailable(): Promise<void> {
   if (isGhInstalled()) {
     log.debug('gh CLI detected');
+
     return;
   }
 
   if (getGitHubToken()) {
     log.debug('GITHUB_TOKEN env var detected — will use REST API directly');
+
     return;
   }
 
@@ -148,14 +168,17 @@ export function getGitHubToken(): string | null {
  */
 export function ghGetOAuthToken(): string | null {
   const envToken = getGitHubToken();
+
   if (envToken) return envToken;
 
   if (!isGhInstalled()) return null;
 
   try {
     const result = ghExec(['auth', 'token']);
+
     if (result.status !== 0) return null;
     const token = result.stdout.trim();
+
     return token || null;
   } catch {
     return null;
@@ -168,9 +191,12 @@ export function ghGetOAuthToken(): string | null {
  */
 export function ghIsAuthenticated(): boolean {
   if (getGitHubToken()) return true;
+
   if (!isGhInstalled()) return false;
+
   try {
     const result = ghExec(['auth', 'status']);
+
     return result.status === 0;
   } catch {
     return false;
@@ -190,9 +216,11 @@ export async function ghFetchLogin(token: string): Promise<string | null> {
         'X-GitHub-Api-Version': '2022-11-28',
       },
     });
+
     if (!resp.ok) return null;
-    const data = (await resp.json()) as { login?: string };
-    return data.login ?? null;
+    const data = z.object({ login: z.string().optional().catch(undefined) }).safeParse(await resp.json());
+
+    return data.data?.login ?? null;
   } catch {
     return null;
   }
@@ -206,6 +234,7 @@ export async function ghAuthWhoami(): Promise<string | null> {
   if (isGhInstalled()) {
     try {
       const result = ghExec(['api', 'user', '-q', '.login']);
+
       if (result.status === 0 && result.stdout) {
         return result.stdout.trim();
       }
@@ -215,9 +244,11 @@ export async function ghAuthWhoami(): Promise<string | null> {
   }
 
   const token = getGitHubToken();
+
   if (token) {
     return ghFetchLogin(token);
   }
+
   return null;
 }
 
@@ -231,10 +262,13 @@ export function ghAuthLogin(): void {
         'Install gh from https://cli.github.com/ or export GITHUB_TOKEN.',
     );
   }
+
   log.info('Starting GitHub authentication via gh CLI...');
+
   const result = ghExec(['auth', 'login', '--web', '--git-protocol', 'https'], {
     inheritStdio: true,
   });
+
   if (result.status !== 0) {
     throw new Error('gh auth login failed. Please try again.');
   }
@@ -246,6 +280,7 @@ export function ghAuthLogin(): void {
  */
 export async function ensureGhAuthenticated(): Promise<string> {
   const existing = await ghAuthWhoami();
+
   if (existing) return existing;
 
   // `gh auth login --web` inherits stdio and waits for a browser device flow.
@@ -263,9 +298,11 @@ export async function ensureGhAuthenticated(): Promise<string> {
   ghAuthLogin();
 
   const verified = await ghAuthWhoami();
+
   if (!verified) {
     throw new Error('GitHub authentication failed. Please run `teamai init` again.');
   }
+
   return verified;
 }
 
@@ -286,6 +323,7 @@ export class RepoNotFoundError extends Error {
  */
 function ghAuthHeader(token: string): string {
   const encoded = Buffer.from(`x-access-token:${token}`).toString('base64');
+
   return `Authorization: Basic ${encoded}`;
 }
 
@@ -330,6 +368,7 @@ function ghCredentialHelper(): string {
  */
 export function ghCredentialHelperFor(ghPath: string | null, hasEnvToken: boolean): string {
   if (hasEnvToken || !ghPath) return GH_ENV_CREDENTIAL_HELPER;
+
   return `!"${ghPath}" auth git-credential`;
 }
 
@@ -354,11 +393,13 @@ export function ghCredentialHelperFor(ghPath: string | null, hasEnvToken: boolea
  */
 export function redactCredential(output: string, token: string | null): string {
   let redacted = output.replace(/x-access-token:[^@]+@/g, 'x-access-token:***@');
+
   if (token) {
     const encoded = Buffer.from(`x-access-token:${token}`).toString('base64');
     redacted = redacted.split(encoded).join('***');
     redacted = redacted.split(token).join('***');
   }
+
   return redacted;
 }
 
@@ -391,9 +432,11 @@ export function ghRepoClone(repo: string, localPath: string): void {
 
   // `-c <key>=<val>` is a git-level option, so it must precede `clone`.
   const args: string[] = [];
+
   if (token) {
     args.push('-c', `http.extraHeader=${ghAuthHeader(token)}`);
   }
+
   args.push('clone', cloneUrl, localPath);
 
   const result = spawnSync('git', args, {
@@ -404,6 +447,7 @@ export function ghRepoClone(repo: string, localPath: string): void {
   });
 
   const allOutput = `${result.stderr ?? ''} ${result.stdout ?? ''}`;
+
   if (
     allOutput.includes('not found') ||
     allOutput.includes('does not exist') ||
@@ -411,6 +455,7 @@ export function ghRepoClone(repo: string, localPath: string): void {
   ) {
     throw new RepoNotFoundError(repo);
   }
+
   if (result.status !== 0) {
     const sanitized = redactCredential(allOutput, token);
     throw new Error(`git clone failed: ${sanitized.trim()}`);
@@ -429,10 +474,12 @@ export function ghRepoClone(repo: string, localPath: string): void {
   // github.com so helpers configured for other hosts are left untouched.
   if (token) {
     const reset = gitConfigLocal(localPath, '--replace-all', GH_HELPER_KEY, '');
+
     const persisted =
       reset.status === 0
         ? gitConfigLocal(localPath, '--add', GH_HELPER_KEY, ghCredentialHelper())
         : reset;
+
     if (persisted.status !== 0) {
       log.warn(
         `Could not persist the GitHub credential helper: ${(persisted.stderr ?? '').trim()}. Push/pull may prompt for credentials.`,
@@ -449,6 +496,7 @@ export function ghRepoClone(repo: string, localPath: string): void {
  */
 export async function ghCreateRepo(owner: string, repo: string): Promise<void> {
   const token = ghGetOAuthToken();
+
   if (!token) {
     throw new Error(
       'Cannot retrieve GitHub token. Run `gh auth login` or export GITHUB_TOKEN.',
@@ -464,6 +512,7 @@ export async function ghCreateRepo(owner: string, repo: string): Promise<void> {
 
   const login = await ghFetchLogin(token);
   const isOwnerSelf = login && login.toLowerCase() === owner.toLowerCase();
+
   const endpoint = isOwnerSelf
     ? `${GITHUB_API}/user/repos`
     : `${GITHUB_API}/orgs/${encodeURIComponent(owner)}/repos`;
@@ -520,9 +569,11 @@ export async function ghPrCreate(opts: GhPrCreateOptions): Promise<string> {
   if (isGhInstalled()) {
     return ghPrCreateViaCli(opts);
   }
+
   if (getGitHubToken()) {
     return ghPrCreateViaApi(opts);
   }
+
   throw new Error(
     'Cannot create PR: gh CLI is not installed and GITHUB_TOKEN is not set.',
   );
@@ -553,13 +604,15 @@ function ghPrCreateViaCli(opts: GhPrCreateOptions): string {
     args.push('-r', opts.reviewers.join(','));
   }
 
-  const result = ghExec(args, { cwd: opts.cwd, ...(opts.spawnTimeoutMs ? { timeoutMs: opts.spawnTimeoutMs } : {}) });
+  const result = ghExec(args, { cwd: opts.cwd, timeoutMs: opts.spawnTimeoutMs });
+
   if (result.status !== 0) {
     const errMsg = result.stderr || result.stdout;
     throw new Error(`gh pr create failed: ${errMsg}`);
   }
 
   const urlMatch = result.stdout.match(/https:\/\/github\.com\/[^\s]+\/pull\/\d+/);
+
   if (urlMatch) return urlMatch[0];
 
   throw new Error(`gh pr create succeeded but returned unexpected output: ${result.stdout}`);
@@ -567,6 +620,7 @@ function ghPrCreateViaCli(opts: GhPrCreateOptions): string {
 
 async function ghPrCreateViaApi(opts: GhPrCreateOptions): Promise<string> {
   const token = getGitHubToken();
+
   if (!token) {
     throw new Error('GITHUB_TOKEN is not set.');
   }
@@ -583,7 +637,7 @@ async function ghPrCreateViaApi(opts: GhPrCreateOptions): Promise<string> {
     {
       method: 'POST',
       headers: authHeaders,
-      ...(opts.spawnTimeoutMs ? { signal: AbortSignal.timeout(opts.spawnTimeoutMs) } : {}),
+      signal: opts.spawnTimeoutMs ? AbortSignal.timeout(opts.spawnTimeoutMs) : undefined,
       body: JSON.stringify({
         title: opts.title,
         body: opts.description ?? opts.title,
@@ -598,7 +652,11 @@ async function ghPrCreateViaApi(opts: GhPrCreateOptions): Promise<string> {
     throw new Error(`Failed to create PR: ${resp.status} ${errBody}`);
   }
 
-  const pr = (await resp.json()) as { html_url?: string; number?: number };
+  // A field of another type, or a body that is no object, reads as absent: no html_url is reported below.
+  const pr = z.object({
+    html_url: z.string().optional().catch(undefined),
+    number: z.number().optional().catch(undefined),
+  }).catch({}).parse(await resp.json());
 
   // Request reviewers in a separate call (GitHub REST API design)
   if (opts.reviewers && opts.reviewers.length > 0 && pr.number) {
@@ -619,6 +677,7 @@ async function ghPrCreateViaApi(opts: GhPrCreateOptions): Promise<string> {
   if (!pr.html_url) {
     throw new Error('PR created but response did not include html_url.');
   }
+
   return pr.html_url;
 }
 
@@ -640,8 +699,11 @@ export async function ghFindOpenPull({ repo, source, target, timeoutMs }: PullRe
   const owner = repo.split('/')[0] ?? repo;
   const query = new URLSearchParams({ state: 'open', head: `${owner}:${source}`, base: target, per_page: '100' });
   const pulls = z.array(GhPullSchema).safeParse(await ghApiGet(`repos/${repo}/pulls?${query}`, timeoutMs, OPEN_LOOKUP));
+
   if (!pulls.success) throw new Error(unreadable(OPEN_LOOKUP));
+
   const ours = (name: string | undefined): boolean => name?.toLowerCase() === repo.toLowerCase();
+
   return pulls.data.find((pull) => pull.state === 'open' && pull.head.ref === source && pull.base.ref === target
     && ours(pull.head.repo?.full_name) && ours(pull.base.repo.full_name))?.html_url;
 }
@@ -650,7 +712,9 @@ const CheckRunsSchema = z.object({
   total_count: z.number(),
   check_runs: z.array(z.object({ status: z.string(), conclusion: z.string().nullable() })),
 });
+
 const CombinedStatusSchema = z.object({ total_count: z.number(), statuses: z.array(z.object({ state: z.string() })) });
+
 /** Conclusions that fail a check run. A cancelled or stale run says nothing of the commit, as a skipped or neutral one passes it. */
 const FAILED_CONCLUSIONS = new Set(['failure', 'timed_out', 'action_required', 'startup_failure']);
 const PASSED_CONCLUSIONS = new Set(['success', 'neutral', 'skipped']);
@@ -665,43 +729,57 @@ export async function ghCommitChecks({ repo, commit, timeoutMs }: CommitRef): Pr
     ghApiGet(`repos/${repo}/commits/${commit}/check-runs?per_page=100`, timeoutMs, CHECKS_LOOKUP),
     ghApiGet(`repos/${repo}/commits/${commit}/status?per_page=100`, timeoutMs, CHECKS_LOOKUP),
   ]);
+
   const runs = CheckRunsSchema.safeParse(runsAnswer);
   const status = CombinedStatusSchema.safeParse(statusAnswer);
+
   if (!runs.success || !status.success) throw new Error(unreadable(CHECKS_LOOKUP));
   const conclusions = runs.data.check_runs.map((run) => (run.status === 'completed' ? run.conclusion ?? 'unknown' : 'running'));
   // Each commit status context, not the combined state, which reads failure while another context is still pending.
   const statuses = status.data.statuses.map((context) => context.state);
   const isPartial = runs.data.total_count > runs.data.check_runs.length || status.data.total_count > status.data.statuses.length;
+
   if (conclusions.includes('running') || statuses.includes('pending') || isPartial) return 'pending';
+
   if (conclusions.some((conclusion) => FAILED_CONCLUSIONS.has(conclusion)) || statuses.some((state) => state === 'failure' || state === 'error')) return 'failed';
+
   return conclusions.some((conclusion) => PASSED_CONCLUSIONS.has(conclusion)) || statuses.includes('success') ? 'passed' : 'none';
 }
 
 /** One GitHub read, as its failures name it: what gh could not do, and the lookup GitHub answered. */
 interface GhLookup { gh: string; name: string }
+
 const OPEN_LOOKUP: GhLookup = { gh: 'look up open pull requests', name: 'the open pull request lookup' };
 const CHECKS_LOOKUP: GhLookup = { gh: 'read the checks of the commit', name: 'the commit checks lookup' };
 const unreadable = (lookup: GhLookup): string => `GitHub answered ${lookup.name} with data TeamAI cannot read.`;
 
-async function ghApiGet(path: string, timeoutMs: number, lookup: GhLookup): Promise<unknown> {
+async function ghApiGet(path: string, timeoutMs: number, lookup: GhLookup): Promise<JsonValue> {
   const ghPath = getGhPath();
+
   if (ghPath) {
     const result = await ghSpawn(ghPath, ['api', path], { timeoutMs, env: { GH_PROMPT_DISABLED: '1', GIT_TERMINAL_PROMPT: '0' } });
+
     if (result.status !== 0) throw new Error(`gh could not ${lookup.gh}. Check gh auth status and its access to the repository.`);
+
     try {
       return JSON.parse(result.stdout);
     } catch {
       throw new Error(unreadable(lookup));
     }
   }
+
   const token = getGitHubToken();
+
   if (!token) throw new Error('GitHub credentials are unavailable: install gh and log in, or set GITHUB_TOKEN or GH_TOKEN.');
+
   const response = await fetch(`${GITHUB_API}/${path}`, {
     headers: { 'Accept': 'application/vnd.github+json', 'Authorization': `Bearer ${token}`, 'X-GitHub-Api-Version': '2022-11-28' },
     redirect: 'manual',
     signal: AbortSignal.timeout(timeoutMs),
   });
+
   if (!response.ok) throw new Error(`GitHub answered ${lookup.name} with HTTP ${response.status}. Check the token's access to the repository.`);
+
   try {
     return await response.json();
   } catch {
@@ -715,16 +793,19 @@ async function ghApiGet(path: string, timeoutMs: number, lookup: GhLookup): Prom
  */
 function ghSpawn(ghPath: string, args: string[], { env, timeoutMs }: { env: NodeJS.ProcessEnv; timeoutMs: number }): Promise<{ stdout: string; status: number }> {
   log.debug(`gh exec: ${ghPath} ${args.join(' ')}`);
+
   return new Promise((resolve) => {
     const child = crossSpawn(ghPath, args, { env: { ...process.env, ...env } });
     let stdout = '';
     let settled = false;
+
     const finish = (status: number): void => {
       if (settled) return;
       settled = true;
       clearTimeout(deadline);
       resolve({ stdout: stdout.trim(), status });
     };
+
     const deadline = setTimeout(() => {
       finish(1);
       child.kill('SIGKILL');
@@ -732,6 +813,7 @@ function ghSpawn(ghPath: string, args: string[], { env, timeoutMs }: { env: Node
       child.stdout?.destroy();
       child.stderr?.destroy();
     }, timeoutMs);
+
     child.stdout?.setEncoding('utf8');
     child.stdout?.on('data', (chunk: string) => { stdout += chunk; });
     child.stderr?.resume();

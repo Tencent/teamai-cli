@@ -30,7 +30,7 @@ import { PublishedRuns, type PublishedRun, type Taker } from '../workflow-publis
 import { installOwner, isRunId, readRun, readRuns, runsDir } from '../workflow/store.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
 import type { StepHitl, RunState } from '../workflow/types.js';
-import { HttpError } from './http.js';
+import { HttpError, type JsonBody } from './http.js';
 
 /** The newest runs each source lists; a run still running on this machine is always listed. */
 const RUN_LIMIT = 50;
@@ -42,20 +42,32 @@ const RUN_LIMIT = 50;
 type ReadRecord = Pick<WorkflowRunRecord,
   'run' | 'workflow' | 'alias' | 'sourceHash' | 'teamRevision' | 'origin' | 'driver' | 'status' | 'end' | 'startedAt' | 'endedAt' | 'durationMs' | 'stepCounts' | 'username'>
   & { steps?: StepEntry[]; prs?: unknown[] };
+
 type StepEntry = Pick<NonNullable<WorkflowRunRecord['steps']>[number], 'step' | 'pass' | 'outcome' | 'tokens' | 'agent'>
   & { answer?: { choice: string; channel: string }; outcomes?: unknown[] };
 
 const TokensSchema: z.ZodType<TokenUsage> = z.object({ input: z.number().optional(), output: z.number().optional(), cachedInput: z.number().optional() });
+
 /** Only links a browser opens as a web page; a `javascript:` URL from either source never becomes a link. */
-function isWebUrl(value: unknown): value is string {
-  if (typeof value !== 'string') return false;
+const WebUrlSchema = z.string().refine((value) => {
   try {
     const { protocol } = new URL(value);
+
     return protocol === 'https:' || protocol === 'http:';
   } catch {
     return false;
   }
+});
+
+/** The web links among a record's delivered pull requests. */
+function webUrls(prs: unknown[] | undefined): string[] {
+  return (prs ?? []).flatMap((pr) => {
+    const url = WebUrlSchema.safeParse(pr);
+
+    return url.success ? [url.data] : [];
+  });
 }
+
 const RecordSchema: z.ZodType<ReadRecord> = z.object({
   run: z.string().refine(isRunId),
   workflow: z.string(),
@@ -76,7 +88,7 @@ const RecordSchema: z.ZodType<ReadRecord> = z.object({
     pass: z.number(),
     outcome: z.enum(['success', 'failed', 'timeout', 'cancelled']).optional(),
     tokens: TokensSchema.optional(),
-    agent: z.unknown().transform(readRecordedAgent).optional(),
+    agent: z.unknown().transform((agent) => readRecordedAgent(agent)).optional(),
     answer: z.object({ choice: z.string(), channel: z.string() }).optional(),
     outcomes: z.array(z.unknown()).optional().catch(undefined),
   })).optional(),
@@ -160,67 +172,102 @@ function tokenTotal(steps: StepEntry[] | undefined): number {
 function learningsOf(steps: StepEntry[] | undefined): string[] {
   const ids = (steps ?? []).flatMap((entry) => (entry.outcomes ?? []).flatMap((outcome) => {
     const parsed = WorkOutcomeSchema.safeParse(outcome);
+
     return parsed.success && parsed.data.kind === 'learning' ? [parsed.data.id] : [];
   }));
+
   return [...new Set(ids)];
 }
 
+/** The row fields a record may lack; a row leaves out each one its record lacks. */
+const OPTIONAL_ROW_FIELDS = [
+  'alias', 'driver', 'end', 'endedAt', 'durationMs', 'sourceHash', 'teamRevision', 'origin', 'stepCounts',
+] as const satisfies ReadonlyArray<keyof RunRow>;
+
+/** A record as a page row, its fields in the order the page's JSON has always had them. */
 function rowOf(record: ReadRecord): RunRow {
-  return {
+  const row: RunRow = {
     run: record.run,
     workflow: record.workflow,
-    ...(record.alias !== undefined ? { alias: record.alias } : {}),
-    ...(record.driver ? { driver: record.driver.kind } : {}),
+    alias: record.alias,
+    driver: record.driver?.kind,
     status: record.status,
-    ...(record.end !== undefined ? { end: record.end } : {}),
+    end: record.end,
     startedAt: record.startedAt,
-    ...(record.endedAt !== undefined ? { endedAt: record.endedAt } : {}),
-    ...(record.durationMs !== undefined ? { durationMs: record.durationMs } : {}),
+    endedAt: record.endedAt,
+    durationMs: record.durationMs,
     tokens: tokenTotal(record.steps),
-    ...(record.sourceHash !== undefined ? { sourceHash: record.sourceHash } : {}),
-    ...(record.teamRevision !== undefined ? { teamRevision: record.teamRevision } : {}),
-    ...(record.origin ? { origin: record.origin } : {}),
-    prs: (record.prs ?? []).filter(isWebUrl),
+    sourceHash: record.sourceHash,
+    teamRevision: record.teamRevision,
+    origin: record.origin,
+    prs: webUrls(record.prs),
     learnings: learningsOf(record.steps),
-    ...(record.stepCounts ? { stepCounts: record.stepCounts } : {}),
+    stepCounts: record.stepCounts,
   };
+
+  for (const field of OPTIONAL_ROW_FIELDS) {
+    if (row[field] === undefined) delete row[field];
+  }
+
+  return row;
+}
+
+/** A pass's label as the page shows it; `decidedBy` only when a stage before the judge decided it. */
+function scoreCell({ scorer, label, passed, decidedBy }: PassScore): PassScore {
+  const cell: PassScore = { scorer, label, passed };
+
+  if (decidedBy) cell.decidedBy = decidedBy;
+
+  return cell;
 }
 
 function stepRow(entry: StepEntry, status: string, scores: ReadonlyMap<string, PassScore[]> | undefined, gate?: Gate): StepRow {
   const passScores = scores?.get(`${entry.step}#${entry.pass}`);
+
   const outcomes = entry.outcomes?.flatMap((outcome) => {
     const parsed = WorkOutcomeSchema.safeParse(outcome);
+
     return parsed.success ? [parsed.data] : [];
   });
-  return {
-    step: entry.step,
-    pass: entry.pass,
-    status,
-    ...(entry.tokens ? { tokens: entry.tokens } : {}),
-    ...(entry.answer ? { answer: { choice: entry.answer.choice, channel: entry.answer.channel } } : {}),
-    ...(gate ? { gate } : {}),
-    ...(passScores ? { scores: passScores.map(({ scorer, label, passed, decidedBy }) => ({ scorer, label, passed, ...decidedBy ? { decidedBy } : {} })) } : {}),
-    ...(outcomes?.length ? { outcomes } : {}),
-  };
+
+  const row: StepRow = { step: entry.step, pass: entry.pass, status };
+
+  if (entry.tokens) row.tokens = entry.tokens;
+
+  if (entry.answer) row.answer = { choice: entry.answer.choice, channel: entry.answer.channel };
+
+  if (gate) row.gate = gate;
+
+  if (passScores) row.scores = passScores.map(scoreCell);
+
+  if (outcomes?.length) row.outcomes = outcomes;
+
+  return row;
 }
 
 /** A local run as the record it will publish; a running run has no end time yet. */
 function localRecord(run: RunState): ReadRecord {
   const record = buildEndRecord(run, run.driver, '');
+
   if (run.status !== 'running') return record;
   const { endedAt: _endedAt, durationMs: _durationMs, ...running } = record;
+
   return running;
 }
 
 function localRow(run: RunState, records: Map<string, RecordState>): LocalRunRow {
   const record = records.get(run.id);
-  return {
+
+  const row: LocalRunRow = {
     ...rowOf(localRecord(run)),
     source: 'local',
     current: run.steps.filter((state) => state.status === 'leased' || state.status === 'delivering').map((state) => state.id),
     waiting: run.steps.filter((state) => state.status === 'waiting').map((state) => state.id),
-    ...(record ? { record } : {}),
   };
+
+  if (record) row.record = record;
+
+  return row;
 }
 
 function reportedRow(record: ReadRecord): ReportedRunRow {
@@ -237,6 +284,7 @@ export async function listLocalRuns(config: LocalConfig): Promise<LocalRunRow[]>
   const running = runs.filter((run) => run.status === 'running');
   const settled = runs.filter((run) => run.status !== 'running').slice(0, Math.max(0, RUN_LIMIT - running.length));
   const records = await runRecordStates(config, settled);
+
   return [...running, ...settled].map((run) => localRow(run, records));
 }
 
@@ -247,6 +295,7 @@ function recordsDir(config: LocalConfig): string {
 async function readRecord(file: string): Promise<ReadRecord | undefined> {
   try {
     const parsed = RecordSchema.safeParse(JSON.parse(await fs.readFile(file, 'utf8')));
+
     return parsed.success ? parsed.data : undefined;
   } catch {
     return undefined;
@@ -262,9 +311,11 @@ export async function listReportedRuns(config: LocalConfig): Promise<ReportedRun
     const { readableReportsWorktree } = await import('../utils/reports-branch.js');
     await readableReportsWorktree(config);
   }
+
   const dir = recordsDir(config);
   const files = (await fs.readdir(dir).catch(() => [])).filter((file) => file.endsWith('.json'));
   const records = await Promise.all(files.map((file) => readRecord(path.join(dir, file))));
+
   return newestFirst(records.filter((record) => record !== undefined).map(reportedRow)).slice(0, RUN_LIMIT);
 }
 
@@ -277,6 +328,7 @@ const PERSON: Taker = { caller: { evidence: { kind: 'none' }, confirmed: false, 
  */
 export async function listHandoffs(config: LocalConfig): Promise<HandoffRow[]> {
   const [runs, self] = await Promise.all([PublishedRuns.list(config, { taker: PERSON, env: await resolveWorkflowEnv(config) }), installOwner(config)]);
+
   return runs.map((run) => ({ ...run, isMine: run.owner.id === self.id }));
 }
 
@@ -287,6 +339,7 @@ export async function listHandoffs(config: LocalConfig): Promise<HandoffRow[]> {
 async function benchmarkOf(file: string): Promise<Pick<RunDetail, 'benchmark'>> {
   try {
     const parsed = BenchmarkRunRecordSchema.safeParse(JSON.parse(await fs.readFile(file, 'utf8')));
+
     return parsed.success ? { benchmark: benchmarkCells(benchmarkTable({ benchmark: parsed.data })) } : {};
   } catch {
     return {};
@@ -296,44 +349,61 @@ async function benchmarkOf(file: string): Promise<Pick<RunDetail, 'benchmark'>> 
 function localDetail(run: RunState, row: LocalRunRow, scores: ReadonlyMap<string, PassScore[]> | undefined, scoring: ScoringTotal): Omit<RunDetail, 'benchmark'> {
   const live = new Map(run.steps.map((state) => [`${state.id}#${state.pass ?? 1}`, state]));
   const record = localRecord(run);
+
   const steps = (record.steps ?? []).map((entry) => {
     const state = live.get(`${entry.step}#${entry.pass}`);
     const hitl = state?.status === 'waiting' ? locateStep(run, state.id)?.step.hitl : undefined;
     const gate = hitl ? { kind: hitl.kind, options: hitl.options, required: hitl.required } : undefined;
     // A record entry keeps the answer only once its pass settles; an answered step still pending shows it too.
     const answer = entry.answer ?? state?.answer;
-    return stepRow({ ...entry, ...(answer ? { answer } : {}) }, state?.status ?? (entry.outcome ? STATUS_OF_OUTCOME[entry.outcome] : 'skipped'), scores, gate);
+
+    const answered: StepEntry = { ...entry };
+
+    if (answer) answered.answer = answer;
+
+    return stepRow(answered, state?.status ?? (entry.outcome ? STATUS_OF_OUTCOME[entry.outcome] : 'skipped'), scores, gate);
   });
+
   return { run: row, steps, scoring };
 }
 
 /** One run with a row per pass of each step, or undefined when the source holds no such run. */
 export async function workflowRunDetail(config: LocalConfig, source: 'local' | 'reported', runId: string): Promise<RunDetail | undefined> {
   if (!isRunId(runId)) return undefined;
+
   if (source === 'local') {
     const run = await readRun(config, runId);
-    if (typeof run !== 'object') return undefined;
+
+    if (run === 'missing' || run === 'corrupt') return undefined;
+
     const [records, scores, scoring, benchmark] = await Promise.all([
       runRecordStates(config, run.status === 'running' ? [] : [run]),
       LabelStore.ofRuns(config, [runId], { published: false }),
       LabelStore.scoringTotal(config, runId, 'local'),
       benchmarkOf(benchmarkRecordFile(runsDir(config), runId)),
     ]);
+
     return { ...localDetail(run, localRow(run, records), scores.get(runId), scoring), ...benchmark };
   }
+
   if (usesBranchWorktree(config)) {
     // The history refreshes the checkout; a detail only checks it is this repository's.
     const { readableReportsWorktree } = await import('../utils/reports-branch.js');
     await readableReportsWorktree(config, { dryRun: true });
   }
+
   const record = await readRecord(path.join(getReportsDir(config), RECORDS_DIR, `${runId}.json`));
+
   if (!record) return undefined;
+
   const [scores, scoring, benchmark] = await Promise.all([
     LabelStore.ofRuns(config, [runId], { published: true }),
     LabelStore.scoringTotal(config, runId, 'published'),
     benchmarkOf(path.join(getReportsDir(config), benchmarkRecordPath(runId))),
   ]);
+
   const passes = scores.get(runId);
+
   return {
     run: reportedRow(record),
     steps: (record.steps ?? []).map((entry) => stepRow(entry, entry.outcome ? STATUS_OF_OUTCOME[entry.outcome] : 'skipped', passes)),
@@ -358,12 +428,15 @@ const STALE_CODES = new Set(['stale_response', 'repeated_response', 'not_waiting
  * the server's environment makes it an agent's answer, as it would make one from that shell. The page must send the
  * pass it showed. Throws an HttpError the page shows when the engine refuses it.
  */
-export async function answerFromDashboard(config: LocalConfig, body: Record<string, unknown>): Promise<{ answered: unknown }> {
+export async function answerFromDashboard(config: LocalConfig, body: JsonBody): Promise<{ answered: unknown }> {
   const parsed = AnswerSchema.safeParse(body);
+
   if (!parsed.success) throw new HttpError(400, 'Send run, step, pass and choice of the HITL request you answer.');
   const { run, step, pass, choice } = parsed.data;
   const provenance = respondProvenance({ kind: 'dashboard', caller: callerProvenance(process.env, process.stdin) });
   const envelope = await respondToHitl(config, run, await knownSecrets(config), { step, choice, pass, provenance });
+
   if ('error' in envelope) throw new HttpError(STALE_CODES.has(envelope.error.code) ? 409 : 400, envelope.error.message);
+
   return { answered: envelope.data.answered };
 }

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import fse from 'fs-extra';
-import { pathExists, remove } from './utils/fs.js';
+import { errnoCode, pathExists, remove } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { warnOnce } from './utils/warn-once.js';
 import type { TeamaiConfig, LocalConfig } from './types.js';
@@ -111,24 +111,30 @@ export type OwnedSkillFiles = ReadonlyMap<string, ReadonlySet<string>>;
  */
 export async function ownedSkillFiles(skillName: string, paths?: readonly string[]): Promise<OwnedSkillFiles> {
   const owned = new Map<string, Set<string>>();
+
   for (const [relative, digests] of PACKAGED_SKILL_DIGESTS.get(skillName) ?? []) {
     if (!paths || paths.includes(relative)) owned.set(relative, new Set(digests));
   }
+
   if (BUILTIN_SKILL_NAMES.has(skillName) && (!paths || paths.includes('SKILL.md'))) {
     const stubPath = path.join(packagedSkillRoots().deployRoot, skillName, 'SKILL.md');
+
     if (await pathExists(stubPath)) {
       const digests = owned.get('SKILL.md') ?? new Set<string>();
       digests.add(packagedSkillDigest(await fs.promises.readFile(stubPath)));
       owned.set('SKILL.md', digests);
     }
   }
+
   return owned;
 }
 
 /** True when `file` sits at an owned path with content a release shipped there. */
 async function isOwnedFile(file: string, relative: string, owned: OwnedSkillFiles): Promise<boolean> {
   const digests = owned.get(relative);
+
   if (!digests) return false;
+
   return digests.has(packagedSkillDigest(await fs.promises.readFile(file)));
 }
 
@@ -141,8 +147,10 @@ async function isOwnedFile(file: string, relative: string, owned: OwnedSkillFile
  */
 function isDerivedArtifact(relativePath: string, provenScripts: ReadonlySet<string>): boolean {
   const parts = relativePath.split('/');
+
   if (parts.length < 2 || parts[parts.length - 2] !== '__pycache__' || !relativePath.endsWith('.pyc')) return false;
   const stem = parts[parts.length - 1].split('.')[0];
+
   return provenScripts.has([...parts.slice(0, -2), `${stem}.py`].join('/'));
 }
 
@@ -153,14 +161,17 @@ function isDerivedArtifact(relativePath: string, provenScripts: ReadonlySet<stri
  */
 async function walkFiles(dir: string, prefix = ''): Promise<string[]> {
   const found: string[] = [];
+
   for (const entry of await fs.promises.readdir(dir, { withFileTypes: true })) {
     const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+
     if (entry.isDirectory()) {
       found.push(...await walkFiles(path.join(dir, entry.name), relative));
     } else {
       found.push(relative);
     }
   }
+
   return found;
 }
 
@@ -173,26 +184,33 @@ async function walkFiles(dir: string, prefix = ''): Promise<string[]> {
 async function removeEmptyDirs(dir: string): Promise<{ file: string; error: string }[]> {
   const failures: { file: string; error: string }[] = [];
   let entries;
+
   try {
     entries = await fs.promises.readdir(dir, { withFileTypes: true });
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') failures.push({ file: dir, error: (e as Error).message });
+    if (errnoCode(e) !== 'ENOENT') failures.push({ file: dir, error: e instanceof Error ? e.message : String(e) });
+
     return failures;
   }
+
   for (const entry of entries) {
     if (entry.isDirectory()) failures.push(...await removeEmptyDirs(path.join(dir, entry.name)));
   }
+
   try {
     await fs.promises.rmdir(dir);
   } catch (e) {
     // Not empty is the expected outcome for a directory holding the member's
     // files — and some platforms say EACCES for that under a read-only parent,
     // so the directory's contents, not the error code, decide.
-    const code = (e as NodeJS.ErrnoException).code;
+    const code = errnoCode(e);
+
     const stillHolds = code === 'ENOTEMPTY' || code === 'EEXIST'
       || (await fs.promises.readdir(dir).catch(() => [])).length > 0;
-    if (!stillHolds) failures.push({ file: dir, error: (e as Error).message });
+
+    if (!stillHolds) failures.push({ file: dir, error: e instanceof Error ? e.message : String(e) });
   }
+
   return failures;
 }
 
@@ -243,18 +261,21 @@ export async function removeOwnedFiles(
   // Root links may stay within this repository; foreign and skill links are not owned.
   if (!await allowsSkillDirectory(baseDir, dir)) {
     result.skippedSymlink = true;
+
     return result;
   }
 
   let entries: string[];
+
   try {
     entries = await walkFiles(dir);
   } catch (e) {
     // Another tool may have removed this same tree through an allowed root alias.
-    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return result;
+    if (errnoCode(e) === 'ENOENT') return result;
     // An unreadable subdirectory. Reporting it is the point: a silent return
     // leaves the tree in place while `pull` says it succeeded.
-    result.notRemoved.push({ file: dir, error: (e as Error).message });
+    result.notRemoved.push({ file: dir, error: e instanceof Error ? e.message : String(e) });
+
     return result;
   }
 
@@ -262,8 +283,10 @@ export async function removeOwnedFiles(
   // script proven ours, and that proof has to be taken while the script is
   // still there.
   const proven = new Set<string>();
+
   for (const relative of entries) {
     const file = path.join(dir, relative);
+
     try {
       // Ours only at a path a release shipped *and* with content one of them
       // shipped there. A member's edit, or a skill of their own that uses a
@@ -272,24 +295,29 @@ export async function removeOwnedFiles(
       if (!(await fs.promises.lstat(file)).isSymbolicLink() && await isOwnedFile(file, relative, owned)) proven.add(relative);
     } catch (e) {
       // Unreadable, so unprovable: kept, and said so.
-      result.notRemoved.push({ file, error: (e as Error).message });
+      result.notRemoved.push({ file, error: e instanceof Error ? e.message : String(e) });
     }
   }
 
   for (const relative of entries) {
     const file = path.join(dir, relative);
+
     if (result.notRemoved.some((failure) => failure.file === file)) continue;
+
     const owns = proven.has(relative)
       || (isDerivedArtifact(relative, proven) && !(await fs.promises.lstat(file)).isSymbolicLink());
+
     if (!owns) {
       result.foreign++;
       continue;
     }
+
     // Ours, but a file the repository tracks is never deleted (#915); named there.
     if (await keepsTrackedCopy(file)) {
       result.tracked++;
       continue;
     }
+
     // Content proves the CLI wrote the file; a copy still goes to the archive
     // before the delete, so no removal is a one-way door.
     if (backupDir) {
@@ -302,18 +330,20 @@ export async function removeOwnedFiles(
       } catch (e) {
         // A full disk, a read-only home, a colliding copy. Keep the file: a
         // backup that did not happen must not authorise the delete.
-        result.unbackedUp.push({ file, error: (e as Error).message });
+        result.unbackedUp.push({ file, error: e instanceof Error ? e.message : String(e) });
         continue;
       }
     }
+
     try {
       await remove(file);
     } catch (e) {
       // A read-only parent. The archive holds the copy, but the original stays,
       // so the tree is half-pruned: say so rather than let a debug line carry it.
-      result.notRemoved.push({ file, error: (e as Error).message });
+      result.notRemoved.push({ file, error: e instanceof Error ? e.message : String(e) });
     }
   }
+
   result.notRemoved.push(...await removeEmptyDirs(dir));
 
   return result;
@@ -340,6 +370,7 @@ function skillBackupDir(baseDir: string, tool: string, skillRoot: string, skillN
   // path the second pass collides with the first, and `errorOnExist` turns that
   // into files it can neither archive nor prune.
   const baseSlug = `${path.basename(baseDir) || 'root'}-${createHash('sha256').update(baseDir).digest('hex').slice(0, 8)}`;
+
   // Machine data, not project data: under project scope `baseDir` is the repo
   // root, where a backup per session start would show up as a dirty tree.
   return path.join(getUserHome(), '.teamai', 'removed-skills', PRUNE_RUN_ID, baseSlug, tool, rootSlug, skillName);
@@ -370,11 +401,14 @@ export interface BuiltinSkillsTarget {
 export async function skillsGuardBase(scopeRoot: string, skillsDir: string): Promise<string> {
   const under = (root: string): boolean => {
     const relative = path.relative(root, skillsDir);
+
     return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
   };
+
   if (under(scopeRoot)) return scopeRoot;
   const homes = [toolHome(COPILOT_TOOL_ID), toolHome('hermes'), await openclawWorkspaceDir()];
   const home = homes.filter((dir): dir is string => dir !== null && under(dir)).sort((a, b) => a.length - b.length)[0];
+
   return home ? path.dirname(home) : path.dirname(path.dirname(skillsDir));
 }
 
@@ -391,7 +425,9 @@ export async function builtinSkillsTarget(
   localConfig: LocalConfig,
 ): Promise<BuiltinSkillsTarget | null> {
   const skillsDir = writable(await locate(tool, 'skills', installOf(teamConfig, localConfig)))?.path ?? null;
+
   if (skillsDir === null) return null;
+
   return { skillsDir, guardBase: await skillsGuardBase(resolveBaseDir(localConfig), skillsDir) };
 }
 
@@ -412,16 +448,21 @@ export async function pruneLegacyBuiltinSkills(
   // another tool's pass would delete Codex's copies while Codex is excluded or
   // not installed, which the enabledAgents whitelist rules out.
   const skillRoots = [skillsDir];
+
   if (tool === CODEX_TOOL) skillRoots.push(path.join(guardBase, SHARED_AGENT_SKILLS_PATH));
+
   for (const legacyName of names) {
     for (const root of skillRoots) {
       const dir = path.join(root, legacyName);
+
       // teamai-share-learnings is now also the skill pull generates for that default workflow.
       if (!await pathExists(dir) || (await generatedSkillAt(dir)).kind === 'ours') continue;
+
       try {
         const backupDir = skillBackupDir(guardBase, tool, path.relative(guardBase, root), legacyName);
         const result = await removeOwnedFiles(dir, await ownedSkillFiles(legacyName), guardBase, backupDir);
         const saved = result.backedUp > 0 ? `; a copy is in ${backupDir}` : '';
+
         if (prunedWhole(result)) {
           log.debug(`Removed legacy built-in skill ${legacyName} from ${tool} (${dir})${saved}`);
         } else if (result.skippedSymlink) {
@@ -460,11 +501,13 @@ async function retireOtherCodexCopy(
   { skillsDir, guardBase }: BuiltinSkillsTarget,
 ): Promise<void> {
   const candidates = [path.join(skillsDir, skillName), path.join(guardBase, SHARED_AGENT_SKILLS_PATH, skillName)];
+
   for (const other of candidates) {
     if (await fs.promises.realpath(other).catch(() => other) === await fs.promises.realpath(deployedDir).catch(() => deployedDir)
       || !await pathExists(other)) continue;
     const backupDir = skillBackupDir(guardBase, tool, path.relative(guardBase, path.dirname(other)), skillName);
     const result = await removeOwnedFiles(other, await ownedSkillFiles(skillName), guardBase, backupDir);
+
     if (prunedWhole(result)) {
       log.debug(`Removed the second Codex copy of ${skillName} at ${other}; the stub is at ${deployedDir}`);
     } else if (result.skippedSymlink) {
@@ -483,31 +526,40 @@ async function retireOtherCodexCopy(
 async function packagedBuiltinSkillNames(builtinDir: string): Promise<string[]> {
   if (!await pathExists(builtinDir)) {
     log.debug('No built-in skills directory found, skipping deployment');
+
     return [];
   }
 
   let entries: string[];
+
   try {
     entries = await fs.promises.readdir(builtinDir);
   } catch (e) {
     log.debug(`Could not list the built-in skills in ${builtinDir}, skipping deployment: ${e instanceof Error ? e.message : String(e)}`);
+
     return [];
   }
 
   const skillNames: string[] = [];
+
   for (const entry of entries) {
     if (await pathExists(path.join(builtinDir, entry, 'SKILL.md'))) skillNames.push(entry);
   }
+
   if (skillNames.length === 0) log.debug(`No built-in skill in ${builtinDir} has a SKILL.md, skipping deployment`);
+
   return skillNames;
 }
 
 /** Pull's line for the `SKILL.md` in `destDir` it keeps in place of the built-in skill, or null when there is none to keep. */
 export async function keptStubLine(destDir: string, skillName: string): Promise<string | null> {
   const stub = path.join(destDir, 'SKILL.md');
+
   if (!await pathExists(stub)) return null;
+
   if ((await fs.promises.lstat(stub)).isFile() && !await keepsTrackedCopy(stub)
     && await isOwnedFile(stub, 'SKILL.md', await ownedSkillFiles(skillName))) return null;
+
   return `Kept ${stub}: it is tracked or contains member instructions. Remove it to receive the built-in skill.`;
 }
 
@@ -550,26 +602,32 @@ export async function deployBuiltinSkills(
 
   const toolPaths = scopedToolPaths(teamConfig, localConfig);
   const skillTarget = skillTargetsFor(teamConfig, localConfig);
+
   for (const [tool, toolPath] of Object.entries(toolPaths)) {
     if (!toolPath.skills) continue;
 
     // Skip tools that cannot receive skills: not installed, no workspace.
     const target = await builtinSkillsTarget(tool, teamConfig, localConfig);
+
     if (!target) {
       log.debug(`Skipping built-in skill deployment for ${tool}: tool not installed`);
       continue;
     }
+
     const baseDir = target.guardBase;
+
     // An excluded agent is neither written to nor deleted from (usage-guide:
     // "the enabledAgents whitelist also gates CLI built-in skills"), so its
     // legacy directories are left alone too.
     if (isAgentExcluded(localConfig, tool)) continue;
+
     if (skillNames.length === 0) {
       options?.toolsMissingSkills?.add(tool);
       continue;
     }
 
     let deployedHere = 0;
+
     for (const skillName of skillNames) {
       const srcDir = path.join(builtinDir, skillName);
       // Resolved without a source path, so the resolver only answers where the
@@ -584,15 +642,19 @@ export async function deployBuiltinSkills(
       try {
         // Deployment and pruning follow the same repository boundary.
         const block = await findSkillDirectoryBlock(baseDir, destDir);
+
         if (block) {
           warnOnce(describeSkippedSkillDirectory(skillName, tool, block));
           continue;
         }
+
         const kept = await keptStubLine(destDir, skillName);
+
         if (kept !== null) {
           log.warn(kept);
           continue;
         }
+
         // A dry run writes and prunes nothing: it reports where the skill would land (#915).
         if (options?.dryRun) {
           options.recorder?.report('builtin', path.join(destDir, 'SKILL.md'));
@@ -600,6 +662,7 @@ export async function deployBuiltinSkills(
           deployedHere++;
           continue;
         }
+
         // The stub first: if it cannot be written, the pre-stub SKILL.md and the
         // references it points at stay together, a working old skill rather
         // than an old skill whose references are gone.
@@ -614,12 +677,15 @@ export async function deployBuiltinSkills(
         const retired = (PACKAGED_SKILL_FILES.get(skillName) ?? []).filter((p) => !shippedNow.has(p));
         const backupDir = skillBackupDir(baseDir, tool, path.relative(baseDir, path.dirname(destDir)), skillName);
         const result = await removeOwnedFiles(destDir, await ownedSkillFiles(skillName, retired), baseDir, backupDir);
+
         if (result.unbackedUp.length > 0) {
           log.warn(`Kept ${result.unbackedUp.length} file(s) under ${destDir}: their backup could not be written, so they were not removed. First: ${result.unbackedUp[0].file} — ${result.unbackedUp[0].error}`);
         }
+
         if (result.notRemoved.length > 0) {
           log.warn(`Archived but could not delete ${result.notRemoved.length} file(s) under ${destDir}. First: ${result.notRemoved[0].file} — ${result.notRemoved[0].error}`);
         }
+
         if (tool === CODEX_TOOL) await retireOtherCodexCopy(tool, skillName, destDir, target);
         // The one file it writes there, never the directory (#915).
         options?.recorder?.report('builtin', path.join(destDir, 'SKILL.md'));
@@ -628,7 +694,7 @@ export async function deployBuiltinSkills(
         deployedHere++;
       } catch (e) {
         options?.recorder?.failed('builtin');
-        log.error(`Failed to deploy built-in skill ${skillName} to ${toolPath.skills}: ${(e as Error).message}`);
+        log.error(`Failed to deploy built-in skill ${skillName} to ${toolPath.skills}: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
 
@@ -636,6 +702,7 @@ export async function deployBuiltinSkills(
     // and then failing to write the stub (a link, a read-only directory) would
     // leave the agent with no discoverable TeamAI skill at all.
     if (options?.dryRun) continue;
+
     if (deployedHere === skillNames.length) {
       await pruneLegacyBuiltinSkills(tool, target);
     } else {

@@ -1,4 +1,6 @@
 import matter from 'gray-matter';
+import { z } from 'zod';
+import { ParsedValueSchema, type ParsedFields } from './agent-format.js';
 
 /**
  * The tool-neutral team rule: a `.md` whose optional frontmatter holds
@@ -25,6 +27,7 @@ const FRONTMATTER_RE = /^﻿?---[ \t]*\r?\n(?:[^\n]*\n)*?---[ \t]*(?:\r?\n|$)/;
  */
 function splitRuleFrontmatter(raw: string): { block: string; body: string } {
   const m = raw.match(FRONTMATTER_RE);
+
   return m ? { block: m[0], body: raw.slice(m[0].length) } : { block: '', body: raw };
 }
 
@@ -38,15 +41,20 @@ function quoteYamlUnsafeScalars(block: string): string {
     .split(/\r?\n/)
     .map((line) => {
       const m = line.match(/^(\s*(?:-\s+|[A-Za-z0-9_.-]+:[ \t]+))([*&].*)$/);
+
       if (!m) return line;
       // YAML comments begin at a whitespace-separated #; a # inside a glob is literal.
       const commentAt = m[2].search(/[ \t]+#/);
       const scalar = (commentAt === -1 ? m[2] : m[2].slice(0, commentAt)).trimEnd();
       const comment = commentAt === -1 ? '' : m[2].slice(commentAt);
+
       return /["']/.test(scalar) ? line : `${m[1]}${JSON.stringify(scalar)}${comment}`;
     })
     .join('\n');
 }
+
+/** Front matter by key; a value none of the parsers' types covers (a `!!binary` one) reads as null. */
+const RuleDataSchema = z.record(z.string(), ParsedValueSchema.catch(null));
 
 /**
  * A team rule's frontmatter data, parsed with gray-matter and retried once
@@ -57,18 +65,20 @@ function quoteYamlUnsafeScalars(block: string): string {
  * failed parse too, so a second render of the same rule skipped the retry and
  * came out unscoped.
  */
-export function teamRuleData(raw: string): Record<string, unknown> {
+export function teamRuleData(raw: string): ParsedFields {
   try {
-    return matter(raw, {}).data;
+    return RuleDataSchema.parse(matter(raw, {}).data);
   } catch {
     // Invalid YAML — retry below with unsafe scalars quoted.
   }
 
   const { block } = splitRuleFrontmatter(raw);
+
   if (!block) return {};
   const quoted = quoteYamlUnsafeScalars(block);
+
   try {
-    return matter(quoted.endsWith('\n') ? quoted : `${quoted}\n`, {}).data;
+    return RuleDataSchema.parse(matter(quoted.endsWith('\n') ? quoted : `${quoted}\n`, {}).data);
   } catch {
     return {};
   }
@@ -92,8 +102,10 @@ function splitTopLevelCommas(value: string): string[] {
   const parts: string[] = [];
   let depth = 0;
   let start = 0;
+
   for (let i = 0; i < value.length; i++) {
     const c = value[i];
+
     if (c === '{') depth++;
     else if (c === '}' && depth > 0) depth--;
     else if (c === ',' && depth === 0) {
@@ -101,7 +113,9 @@ function splitTopLevelCommas(value: string): string[] {
       start = i + 1;
     }
   }
+
   parts.push(value.slice(start));
+
   return parts;
 }
 
@@ -109,14 +123,19 @@ function splitTopLevelCommas(value: string): string[] {
  * The globs a team rule's `paths:` frontmatter scopes it to; empty when
  * unscoped. A string is split on its top-level commas.
  */
-export function rulePaths(data: Record<string, unknown>): string[] {
+export function rulePaths(data: ParsedFields): string[] {
   const value = data.paths;
+
   if (Array.isArray(value)) {
     return value.map((entry) => String(entry).trim()).filter(Boolean);
   }
-  if (typeof value === 'string') {
-    return splitTopLevelCommas(value).map((entry) => entry.trim()).filter(Boolean);
+
+  const glob = z.string().safeParse(value);
+
+  if (glob.success) {
+    return splitTopLevelCommas(glob.data).map((entry) => entry.trim()).filter(Boolean);
   }
+
   return [];
 }
 
@@ -128,21 +147,27 @@ export function rulePaths(data: Record<string, unknown>): string[] {
 export function expandBraces(glob: string): string[] {
   let depth = 0;
   let open = -1;
+
   for (let i = 0; i < glob.length; i++) {
     const c = glob[i];
+
     if (c === '{') {
       if (depth === 0) open = i;
       depth++;
     } else if (c === '}' && depth > 0) {
       depth--;
+
       if (depth > 0) continue;
       const alternatives = splitTopLevelCommas(glob.slice(open + 1, i));
+
       if (alternatives.length < 2) continue;
       const prefix = glob.slice(0, open);
       const suffix = glob.slice(i + 1);
+
       return alternatives.flatMap((alternative) => expandBraces(`${prefix}${alternative}${suffix}`));
     }
   }
+
   return [glob];
 }
 
@@ -160,6 +185,7 @@ export function expandBraces(glob: string): string[] {
  */
 export function mergeRuleBodyIntoTeamMd(rawToolRule: string, existingTeamMd: string | null): string {
   const body = teamRuleBody(rawToolRule);
+
   if (existingTeamMd === null) return `${body}\n`;
 
   // Body unchanged — hand back the team file byte-for-byte so a no-op push
@@ -167,7 +193,9 @@ export function mergeRuleBodyIntoTeamMd(rawToolRule: string, existingTeamMd: str
   if (teamRuleBody(existingTeamMd) === body) return existingTeamMd;
 
   const { block } = splitRuleFrontmatter(existingTeamMd);
+
   if (!block) return `${body}\n`;
+
   return `${block.endsWith('\n') ? block : `${block}\n`}\n${body}\n`;
 }
 

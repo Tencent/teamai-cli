@@ -18,6 +18,7 @@ function createHandler(name: string, output?: string): TestHandler {
 
 import {
   createDispatcher,
+  HookStdinSchema,
   type HookHandler,
 } from '../hook-dispatch.js';
 
@@ -401,5 +402,13 @@ describe('hook-dispatch', () => {
       expect(dispatcher.hasBackground('post-tool-use', 'Skill')).toBe(false);
       expect(dispatcher.hasBackground('session-start', '*')).toBe(false);
     });
+  });
+});
+
+describe('HookStdinSchema', () => {
+  it('reads a number too large for a double as null, as JSON writes it, and keeps the rest of the payload', () => {
+    const payload = JSON.parse('{"session_id":"s-1","tool_input":{"limit":1e999}}');
+
+    expect(HookStdinSchema.safeParse(payload).data).toEqual({ session_id: 's-1', tool_input: { limit: null } });
   });
 });

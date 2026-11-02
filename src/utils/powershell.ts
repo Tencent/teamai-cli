@@ -11,16 +11,21 @@ let resolvedPowerShell: string | undefined;
  */
 export function windowsPowerShell(): string {
   if (resolvedPowerShell) return resolvedPowerShell;
+
   const roots = [process.env.SystemRoot, 'C:\\Windows', process.env.windir].filter(
     (r): r is string => !!r,
   );
+
   resolvedPowerShell = 'powershell.exe';
+
   for (const root of roots) {
     const candidate = path.join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+
     if (fs.existsSync(candidate)) {
       resolvedPowerShell = candidate;
       break;
     }
   }
+
   return resolvedPowerShell;
 }

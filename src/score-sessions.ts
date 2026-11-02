@@ -33,9 +33,12 @@ export async function localJudgeOffers(): Promise<Array<{ isolation: Isolation; 
   const levels = await judgeToolLevels();
   const offers: Array<{ isolation: Isolation; tools: [string, ...string[]] }> = [];
   const [verified, ...moreVerified] = levels.filter((level) => level.isolation === 'verified').map((level) => level.tool);
+
   if (verified) offers.push({ isolation: 'verified', tools: [verified, ...moreVerified] });
   const [any, ...more] = levels.map((level) => level.tool);
+
   if (any) offers.push({ isolation: 'best-effort', tools: [any, ...more] });
+
   return offers;
 }
 
@@ -48,6 +51,7 @@ export const judgePassLock = (config: LocalConfig): string => path.join(scoresDi
 /** What the background pass does with the attended sessions of `config`: judge them, publish them, both or neither. */
 async function attendedWork(config: LocalConfig): Promise<{ judges: boolean; publishes: boolean }> {
   const scoring = scoringUnavailable(config) ? undefined : await scopeScoring(config);
+
   return {
     judges: scoring?.ok === true && scoring.sessions.policies.attended.policy === 'auto',
     publishes: SessionPolicy.publish(config, await loadTeamConfig(config.repo.localPath)).policies.attended.policy === 'auto',
@@ -62,25 +66,35 @@ async function attendedWork(config: LocalConfig): Promise<{ judges: boolean; pub
 export async function scoreSessions(configs: readonly LocalConfig[], { clock = () => new Date().toISOString() }: { clock?: () => string } = {}): Promise<void> {
   const deadline = Date.parse(clock()) + RUN_MAX_MS;
   const offers = await localJudgeOffers();
+
   for (const config of configs) {
     const { judges, publishes } = await attendedWork(config);
+
     if (!judges && !publishes) continue;
     const lock = judgePassLock(config);
+
     if (!await acquireLock(lock)) continue;
+
     try {
       if (publishes) {
         const published = await SessionPublish.captured(config, 'attended', clock());
+
         for (const { sessions, reason } of published.unpublished) log.debug(`[sessions] ${sessions} attended session(s) were not archived: ${reason}`);
       }
+
       if (!judges) continue;
       const driver = driverIdentity('local', SessionWork.leaseCwd(config));
+
       for (const judge of offers) {
         for (;;) {
           const now = clock();
+
           if (Date.parse(now) >= deadline) return;
           const taken = await takeJudgeLease(config, { driver, judge, running: [], only: 'session' }, now);
+
           if (taken.kind !== 'lease') break;
           const judged = await judgeLease(config, taken.lease.ref, driver, { clock, publish: false });
+
           if ('error' in judged) log.debug(`[scores] Session lease ${taken.lease.ref} was not labelled: ${judged.error.code}: ${judged.error.message}`);
         }
       }
@@ -101,21 +115,26 @@ export async function reachedScopes(cwd?: string): Promise<LocalConfig[]> {
   const user = await loadLocalConfig();
   const homes = new Set<string>();
   const scopes: LocalConfig[] = [];
+
   for (const config of [project, user]) {
     if (config === null || homes.has(getDataHome(config))) continue;
     homes.add(getDataHome(config));
     scopes.push(config);
   }
+
   return scopes;
 }
 
 /** The scopes `cwd` reaches whose finished attended sessions the background pass judges or publishes. */
 export async function backgroundPassScopes(cwd?: string): Promise<LocalConfig[]> {
   const scopes: LocalConfig[] = [];
+
   for (const config of await reachedScopes(cwd)) {
     const { judges, publishes } = await attendedWork(config);
+
     if (judges || publishes) scopes.push(config);
   }
+
   return scopes;
 }
 

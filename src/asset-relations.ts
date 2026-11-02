@@ -18,13 +18,27 @@
  */
 
 import path from 'node:path';
+import { z } from 'zod';
+import type { FrontmatterValue } from './utils/frontmatter.js';
 
 /** The relations an asset may declare. The other three code-graph relations (`DEPENDS_ON`, `CONTAINS`, `IMPLEMENTS`) relate code to code and can never be declared on an asset. */
 export const ASSET_RELATIONS = ['MAPS_TO', 'REFERENCES', 'SUPERSEDES', 'CONFLICTS_WITH'] as const;
+
 export type AssetRelationType = (typeof ASSET_RELATIONS)[number];
 
 /** Every code-graph relation name, so a code-only key gets its own message instead of "unknown". */
 const CODE_ONLY_RELATIONS = ['DEPENDS_ON', 'CONTAINS', 'IMPLEMENTS'] as const;
+
+const ASSET_RELATION_NAMES = new Set<string>(ASSET_RELATIONS);
+
+const CODE_ONLY_RELATION_NAMES = new Set<string>(CODE_ONLY_RELATIONS);
+
+function isAssetRelation(key: string): key is AssetRelationType {
+  return ASSET_RELATION_NAMES.has(key);
+}
+
+/** A relation's targets as written: one string, or a list whose non-strings are reported. Anything else is null. */
+const RelationTargetsSchema = z.union([z.string().transform((target) => [target]), z.array(z.unknown())]).nullable().catch(null);
 
 /** The kind of asset a relation endpoint names. */
 export type AssetKind = 'rule' | 'doc' | 'learning' | 'skill' | 'teamwiki';
@@ -82,6 +96,7 @@ export function classifyTreePath(treePath: string): AssetKind | null {
   for (const [kind, prefix] of KIND_PREFIXES) {
     if (treePath.startsWith(prefix)) return kind;
   }
+
   return null;
 }
 
@@ -97,21 +112,27 @@ export function classifyTreePath(treePath: string): AssetKind | null {
 export function normalizeTargetPath(raw: string): string | null {
   if (!raw || path.isAbsolute(raw) || /^[a-zA-Z]:[\\/]/.test(raw)) return null;
   const normalized = path.posix.normalize(raw.replace(/\\/g, '/'));
+
   if (normalized.startsWith('../') || normalized === '..' || path.posix.isAbsolute(normalized)) return null;
   const kind = classifyTreePath(normalized);
+
   if (!kind) return null;
+
   if (kind === 'rule' || kind === 'doc' || kind === 'teamwiki') {
     return normalized.endsWith('.md') ? normalized : `${normalized}.md`;
   }
+
   if (kind === 'skill') {
     return normalized.replace(/\/SKILL\.md$/i, '');
   }
+
   return normalized.replace(/\.md$/i, '');
 }
 
 /** The codebase slug of a `teamwiki/evidence/code/<slug>/…` path; null for any other path. */
 export function teamwikiCodebaseSlug(treePath: string): string | null {
   const parts = treePath.split('/');
+
   return parts.length > 3 && parts[0] === 'teamwiki' && parts[1] === 'evidence' && parts[2] === 'code'
     ? parts[3] ?? null
     : null;
@@ -132,7 +153,7 @@ export function teamwikiCodebaseSlug(treePath: string): string | null {
  * both stay.
  */
 export function parseRelatedBlock(
-  rawRelated: unknown,
+  rawRelated: FrontmatterValue | undefined,
   sourceKind: 'rule' | 'doc' | 'learning',
   ownTreePath: string,
   structuralSeverity: RelationSeverity,
@@ -141,62 +162,85 @@ export function parseRelatedBlock(
   noAssetNote = 'names no team asset',
 ): StoredRelation[] {
   if (rawRelated === undefined || rawRelated === null) return [];
-  if (typeof rawRelated !== 'object' || Array.isArray(rawRelated)) {
+
+  if (!(rawRelated instanceof Object) || Array.isArray(rawRelated)) {
     report(structuralSeverity, '`related` is not a mapping; all of it is ignored.');
+
     return [];
   }
-  const block = rawRelated as Record<string, unknown>;
+
   const out: StoredRelation[] = [];
   const seen = new Set<string>();
   const useList = `Use ${ASSET_RELATIONS.join(', ').replace(/, ([^,]*)$/, ' or $1')}.`;
-  for (const [rawKey, rawValue] of Object.entries(block)) {
+
+  for (const [rawKey, rawValue] of Object.entries(rawRelated)) {
     const key = rawKey.toUpperCase();
-    if ((CODE_ONLY_RELATIONS as readonly string[]).includes(key)) {
+
+    if (CODE_ONLY_RELATION_NAMES.has(key)) {
       report(structuralSeverity, `${key} relates code to code and cannot be declared on a ${sourceKind}. ${useList}`);
       continue;
     }
-    if (!(ASSET_RELATIONS as readonly string[]).includes(key)) {
+
+    if (!isAssetRelation(key)) {
       report(structuralSeverity, `"${rawKey}" is not a relation. ${useList}`);
       continue;
     }
-    const relation = key as AssetRelationType;
-    const values: unknown[] | null = typeof rawValue === 'string' ? [rawValue] : Array.isArray(rawValue) ? rawValue : null;
+
+    const relation = key;
+    const values = RelationTargetsSchema.parse(rawValue);
+
     if (values === null) {
       report(structuralSeverity, `${key} is not a string or a list; that key is ignored.`);
       continue;
     }
-    const strings = values.filter((v): v is string => typeof v === 'string');
+
+    const strings = values.flatMap((v) => {
+      const target = z.string().safeParse(v);
+
+      return target.success ? [target.data] : [];
+    });
+
     if (strings.length !== values.length) {
       report(structuralSeverity, `${key} mixes strings with other values; the strings are kept, the rest ignored.`);
     }
+
     for (const written of strings) {
       const target = normalizeTargetPath(written);
+
       if (target === null) {
         report(structuralSeverity, `${key} ${written} is absolute, climbs out with '..', or has no known prefix; this relation is ignored.`);
         continue;
       }
+
       if (target === ownTreePath) {
         report('warn', `${key} ${written} names this ${sourceKind} itself; this relation is ignored.`);
         continue;
       }
+
       const kind = classifyTreePath(target)!;
+
       if (!DECLARABLE[sourceKind][relation].includes(kind)) {
         const alternative = relation === 'SUPERSEDES' && kind === 'rule' && sourceKind === 'learning'
           ? ' Use CONFLICTS_WITH;'
           : '';
+
         report(structuralSeverity, `a ${sourceKind} cannot ${relation} a ${kind} (${target}).${alternative} this relation is ignored.`);
         continue;
       }
+
       if (!targetExists(kind, target)) {
         report('warn', `${key} ${written} ${noAssetNote}; this relation is ignored.`);
         continue;
       }
+
       const dedupe = `${relation}${target}`;
+
       if (seen.has(dedupe)) continue;
       seen.add(dedupe);
       out.push({ relation, target, via: 'declared' });
     }
   }
+
   return out;
 }
 
@@ -219,16 +263,22 @@ export function relationsFromLinks(
 ): StoredRelation[] {
   const out: StoredRelation[] = [];
   const seen = new Set<string>();
+
   for (const raw of linkTargets(markdown)) {
     const rooted = TEAM_ROOT_PREFIXES.some((prefix) => raw.startsWith(prefix));
+
     const resolved = rooted
       ? raw
       : path.posix.normalize(path.posix.join(path.posix.dirname(ownTreePath), raw));
+
     const target = normalizeTargetPath(resolved);
+
     if (target === null || target === ownTreePath) continue;
+
     if (seen.has(target)) continue;
     seen.add(target);
     out.push({ relation: 'REFERENCES', target, via: 'link' });
   }
+
   return out;
 }

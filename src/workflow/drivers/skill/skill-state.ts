@@ -29,6 +29,7 @@ const ReportBodySchema = z.object({
   message: z.string().optional(),
   failure: FailureSchema.optional(),
 });
+
 export type ReportBody = z.infer<typeof ReportBodySchema>;
 
 /**
@@ -39,6 +40,7 @@ const ModelPickSchema = z.union([
   z.object({ by: z.literal('definition') }),
   z.object({ by: z.enum(['step', 'defaults']), name: z.string(), effort: z.string().optional(), alias: z.string().optional() }),
 ]);
+
 export type ModelPick = z.infer<typeof ModelPickSchema>;
 
 /**
@@ -55,14 +57,17 @@ const DispatchSchema = z.object({
   agent: z.string().optional(),
   model: ModelPickSchema,
 });
+
 export type Dispatch = z.infer<typeof DispatchSchema>;
 
 /** Why an attempt is stopped: the person cancelled it, or it passed the deadline its lease carries. */
 const STOP_REASONS = ['cancelled', 'timeout'] as const;
+
 export type StopReason = typeof STOP_REASONS[number];
 
 /** The place the host is asked to make for a step: `name` for it, on `branch`, from commit `start`. */
 const PlaceAskSchema = z.object({ name: z.string(), branch: z.string(), start: z.string() });
+
 export type PlaceAsk = z.infer<typeof PlaceAskSchema>;
 
 /** Where a runner prepares the place of its attempt when the host makes it. Absent: where TeamAI makes it. */
@@ -73,6 +78,7 @@ const HostRequestSchema = z.discriminatedUnion('kind', [
 
 const RunVersionSchema: z.ZodType<RunVersion> = z.object({ status: z.enum(['running', 'succeeded', 'failed', 'cancelled']), revision: z.number().int(), receipts: z.number().int(), creating: z.boolean() });
 const AttemptBase = { attempt: AttemptIdSchema, step: z.string(), revision: z.number().int(), spawnedAt: z.string(), expiresAt: z.string().optional() };
+
 /**
  * An open attempt: its runner prepares its place or runs its command; it waits for the place another attempt holds;
  * it waits for the agent to adopt a place its host made; its dispatch is offered to the agent, or acked; it is being
@@ -91,10 +97,12 @@ const AttemptStateSchema = z.discriminatedUnion('phase', [
   /** `stopped`: the report gives up an attempt stopped for this reason. */
   z.object({ ...AttemptBase, phase: z.literal('reporting'), body: ReportBodySchema, tail: z.string().optional(), stopped: z.enum(STOP_REASONS).optional() }),
 ]);
+
 export type AttemptState = z.infer<typeof AttemptStateSchema>;
 
 /** The judge running now: lease `ref`, its runner keyed by the attempt in that ref, on the pass of `step` that `scorers` judge. */
 const JudgeSchema = z.object({ ref: z.string(), attempt: AttemptIdSchema, step: z.string(), scorers: z.array(z.string()), spawnedAt: z.string() });
+
 export type Judge = z.infer<typeof JudgeSchema>;
 
 const TurnEventSchema = z.discriminatedUnion('kind', [
@@ -121,6 +129,7 @@ const TurnEventSchema = z.discriminatedUnion('kind', [
     tail: z.string().optional(),
   }),
 ]);
+
 export type TurnEvent = z.infer<typeof TurnEventSchema>;
 
 const GateBase = {
@@ -133,6 +142,7 @@ const GateBase = {
   /** The `seq` it was journalled at, so a poll wakes a session that was not shown it yet. */
   seq: z.number().int(),
 };
+
 /**
  * The gate the engine asks about now. Only the person answers a required one; `decide` says who answers an optional
  * one: the agent, after asking the person (`person`), or with its own best recommendation (`agent`).
@@ -141,6 +151,7 @@ const GateSchema = z.discriminatedUnion('required', [
   z.object({ ...GateBase, required: z.literal(true) }),
   z.object({ ...GateBase, required: z.literal(false), decide: z.enum(['person', 'agent']) }),
 ]);
+
 export type Gate = z.infer<typeof GateSchema>;
 
 const SkillStateSchema = z.object({
@@ -166,7 +177,7 @@ const SkillStateSchema = z.object({
    * works in, which `--tools default=<tool>` names or its host does, so a runner resolves its children's models for it;
    * dropped when this teamai knows no such tool.
    */
-  orchestrator: z.object({ session: z.string().optional(), tool: z.custom<ToolId>((tool) => typeof tool === 'string' && isToolId(tool)).optional().catch(undefined), lastCallAt: z.string() }),
+  orchestrator: z.object({ session: z.string().optional(), tool: z.string().refine(isToolId).optional().catch(undefined), lastCallAt: z.string() }),
   attempts: z.array(AttemptStateSchema),
   /** Present while this driver judges the run's scored steps with the confined judge of `tool`. `open`: the judge running now. */
   judging: z.object({ tool: z.string(), open: JudgeSchema.optional() }).optional(),
@@ -188,6 +199,7 @@ const SkillStateSchema = z.object({
    */
   done: z.object({ outcome: z.enum(['succeeded', 'failed', 'cancelled']), failure: FailureSchema.optional(), prs: z.array(z.string()), version: RunVersionSchema.optional() }).optional(),
 });
+
 export type SkillState = z.infer<typeof SkillStateSchema>;
 
 /** The host of a run before the agent answers the host question, as R10 or R19 starts it. */
@@ -201,9 +213,15 @@ export function newSkillState(input: {
   run: RunId; driver: SkillState['driver']; invocation: SkillState['invocation']; options: SkillState['options']; host: UnansweredHost; session: string | undefined; tool: ToolId | undefined; at: string; judge?: JudgedBy;
 }): SkillState {
   const { run, driver, invocation, options, host, session, tool, at, judge } = input;
+
+  const orchestrator: SkillState['orchestrator'] = { lastCallAt: at };
+
+  if (session !== undefined) orchestrator.session = session;
+
+  if (tool !== undefined) orchestrator.tool = tool;
+
   return {
-    version: 1, run, driver, invocation, options, host,
-    orchestrator: { ...(session !== undefined ? { session } : {}), ...(tool !== undefined ? { tool } : {}), lastCallAt: at },
+    version: 1, run, driver, invocation, options, host, orchestrator,
     attempts: [], ...judgingState(judge), seq: 0, events: [], seen: {}, settled: [],
   };
 }
@@ -211,6 +229,7 @@ export function newSkillState(input: {
 /** The skill state field of who judges the run on this machine: `judging` for the confined judge, `sessionJudge` for the session. */
 function judgingState(judge: JudgedBy | undefined): Pick<SkillState, 'judging' | 'sessionJudge'> {
   if (judge === undefined) return {};
+
   switch (judge.kind) {
     case 'here':
       return { judging: { tool: judge.tool } };
@@ -218,6 +237,7 @@ function judgingState(judge: JudgedBy | undefined): Pick<SkillState, 'judging' |
       return { sessionJudge: { tool: judge.tool } };
     default: {
       const unhandled: never = judge;
+
       return unhandled;
     }
   }
@@ -230,9 +250,12 @@ export function drivesRun(state: SkillState | undefined, session: string | undef
 
 export async function readSkillState(config: LocalConfig, run: RunId): Promise<{ kind: 'found'; state: SkillState } | { kind: 'missing' } | { kind: 'unreadable'; reason: string }> {
   const raw = await readFileSafe(skillStatePath(config, run));
+
   if (raw === null) return { kind: 'missing' };
+
   try {
     const parsed = SkillStateSchema.safeParse(JSON.parse(raw));
+
     return parsed.success ? { kind: 'found', state: parsed.data } : { kind: 'unreadable', reason: parsed.error.issues[0]?.message ?? 'invalid' };
   } catch (error) {
     return { kind: 'unreadable', reason: error instanceof Error ? error.message : String(error) };

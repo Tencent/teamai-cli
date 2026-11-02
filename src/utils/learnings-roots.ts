@@ -113,15 +113,19 @@ export async function indexableLearningsRoots(
   localConfig: LocalConfig, unreadable?: UnreadableFile[],
 ): Promise<readonly string[]> {
   const roots = learningsRoots(localConfig);
+
   try {
     await learningsBranch.checkOwner(localConfig);
+
     return roots.read;
   } catch (e) {
     if (!(e instanceof ForeignCheckoutError)) {
       if (!unreadable) throw e;
       unreadable.push({ path: roots.write, reason: e instanceof Error ? e.message : String(e) });
+
       return roots.read;
     }
+
     return roots.read.filter((root) => root !== roots.write);
   }
 }
@@ -141,6 +145,7 @@ export async function indexableLearningsRoots(
  */
 export async function knowledgeRoots(localConfig: LocalConfig): Promise<string[]> {
   const roots = [localConfig.repo.localPath, getUserLearningsDir()];
+
   try {
     const { pendingLearningsDir } = await import('./pending-learnings.js');
     const checkout = learningsBranch.dir(localConfig);
@@ -151,8 +156,9 @@ export async function knowledgeRoots(localConfig: LocalConfig): Promise<string[]
       pendingLearningsDir(localConfig),
     );
   } catch (e) {
-    log.debug(`knowledgeRoots: could not resolve the learnings roots: ${(e as Error).message}`);
+    log.debug(`knowledgeRoots: could not resolve the learnings roots: ${e instanceof Error ? e.message : String(e)}`);
   }
+
   return roots.filter(Boolean);
 }
 
@@ -162,6 +168,7 @@ export async function knowledgeRoots(localConfig: LocalConfig): Promise<string[]
  */
 export function isUnderRoots(absPath: string, roots: readonly string[]): boolean {
   const absolute = (p: string): string => isAbsolutePath(p) ? p : path.resolve(p);
+
   return roots.some((root) => isWithin(absolute(absPath), absolute(root)));
 }
 
@@ -207,8 +214,10 @@ export async function walkLearningsTree<T>(
 
   for (const root of roots) {
     const rootItems = await visitor.onRoot(root);
+
     for (const item of rootItems) {
       const id = visitor.getId(item);
+
       if (claimed.has(id)) continue;
       claimed.add(id);
       out.push(item);
@@ -219,8 +228,10 @@ export async function walkLearningsTree<T>(
         if (!isSafeNamespaceSegment(ns)) continue;
         const nsDir = path.join(root, ns);
         const nsItems = await visitor.onNamespace(root, ns, nsDir);
+
         for (const item of nsItems) {
           const id = visitor.getId(item);
+
           if (claimed.has(id)) continue;
           claimed.add(id);
           out.push(item);
@@ -247,22 +258,26 @@ export async function listLearningFiles(
   return walkLearningsTree<LearningFile>(roots, namespaces, {
     onRoot: async (root) => {
       let files: string[] = [];
+
       try {
         files = await listFiles(root);
       } catch {
         return [];
       }
+
       return files
         .filter((file) => file.endsWith('.md'))
         .map((file) => ({ file, absPath: path.join(root, file), root }));
     },
     onNamespace: async (root, ns, nsDir) => {
       let files: string[] = [];
+
       try {
         files = await listFilesRecursive(nsDir);
       } catch {
         return [];
       }
+
       return files
         .filter((rel) => rel.endsWith('.md'))
         .map((rel) => ({ file: path.join(ns, rel), absPath: path.join(nsDir, rel), root }));
@@ -281,15 +296,19 @@ export async function listLearningFiles(
 export function isInWriteRoot(absPath: string, rootPath: string): boolean {
   const resolved = path.resolve(absPath);
   const root = path.resolve(rootPath);
+
   return resolved === root || resolved.startsWith(root + path.sep);
 }
 
 function dedupe(dirs: string[]): string[] {
   const seen = new Set<string>();
+
   return dirs.filter((dir) => {
     const key = path.resolve(dir);
+
     if (seen.has(key)) return false;
     seen.add(key);
+
     return true;
   });
 }

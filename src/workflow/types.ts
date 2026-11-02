@@ -82,6 +82,7 @@ export interface WorkflowStep {
    */
   workflow?: string | InlineWorkflow | WorkflowFrom;
   /** Values for the inputs of the workflow this step runs, as written; every string inside follows the template rules. */
+  // oxlint-disable-next-line teamai/no-unsafe-dictionary-type -- YAML toJSON can hold values JSON cannot, such as the Uint8Array a !!binary tag decodes to; the inputs check at start types them
   with?: Record<string, unknown>;
   /** Name in `ends` this step finishes the workflow with when it succeeds. A step with no action only ends the workflow and is never leased. */
   end?: string;
@@ -195,7 +196,9 @@ export type StepWorkflow =
 /** The workflow `step` runs, as its `workflow` names it, or undefined for a step that runs none. Every reader of `workflow` goes through here. */
 export function stepWorkflow({ workflow }: Pick<WorkflowStep, 'workflow'>): StepWorkflow | undefined {
   if (workflow === undefined) return undefined;
-  if (typeof workflow === 'string') return { kind: 'named', name: workflow };
+
+  if (!(workflow instanceof Object)) return { kind: 'named', name: workflow };
+
   return 'from' in workflow ? { kind: 'from', step: workflow.from } : { kind: 'inline', workflow };
 }
 
@@ -213,6 +216,7 @@ export function workflowRunBy(
   run: Pick<RunState, 'workflows' | 'admitted'>, step: Pick<WorkflowStep, 'workflow'>, prefix: string,
 ): WorkflowDefinition | InlineWorkflow | undefined {
   const runs = stepWorkflow(step);
+
   switch (runs?.kind) {
     case undefined:
       return undefined;
@@ -224,6 +228,7 @@ export function workflowRunBy(
       return run.admitted?.[`${prefix}${runs.step}`]?.definition;
     default: {
       const unhandled: never = runs;
+
       return unhandled;
     }
   }
@@ -239,6 +244,7 @@ export interface InlineWorkflow {
   loop?: WorkflowLoop;
   steps: WorkflowStep[];
 }
+
 
 /** Values a workflow file sets for its steps. */
 export interface WorkflowDefaults {
@@ -263,6 +269,7 @@ export interface StepScorers {
 
 /** Whether an agent session may start a workflow: on its own (`allow`), after the person's yes (`ask`), or never (`deny`). */
 export const INVOKE_VALUES = ['allow', 'ask', 'deny'] as const;
+
 export type Invoke = typeof INVOKE_VALUES[number];
 
 export interface WorkflowDefinition {
@@ -328,6 +335,7 @@ export interface WorkflowDiagnostic {
 }
 
 export type StepOutcome = 'success' | 'failed' | 'released';
+
 export type RunStatus = 'running' | 'succeeded' | 'failed' | 'cancelled';
 
 export interface StepLease {
@@ -384,6 +392,7 @@ export interface RunState {
   /** Why the run failed when no end says it, such as `loop_exhausted` on a looping top-level workflow. */
   failure?: WorkflowFailure;
   /** The validated `--inputs`, stored when the workflow declares inputs. */
+  // oxlint-disable-next-line teamai/no-unsafe-dictionary-type -- engine.ts and handoff.ts write the inputs they checked as Record<string, unknown>
   inputs?: Record<string, unknown>;
   /** The alias that started the workflow when the run started: the name people use for it. Absent when it had none, or its alias started another workflow. */
   alias?: string;
@@ -475,6 +484,7 @@ export interface RunState {
  * the output field that held the workflow; and the workflow that field defines, which a `from` step runs.
  */
 export interface AdmittedWorkflow {
+  // oxlint-disable-next-line teamai/no-unsafe-dictionary-type -- the output as the producer's report held it, kept and hashed as is; admission parses only the field it reads
   output: Record<string, unknown>;
   hash: string;
   field: string;
@@ -512,7 +522,9 @@ export type WorkflowSource = 'team' | 'default';
 export type ResolvedWorkflow = CachedWorkflow & { source: WorkflowSource };
 
 export type WorkflowEnvelope =
+  // oxlint-disable-next-line teamai/no-unsafe-dictionary-type -- engine.ts ok() and the session-flow commands put typed records here, which are not JsonValue
   | { data: Record<string, unknown> }
+  // oxlint-disable-next-line teamai/no-unsafe-dictionary-type -- scoring and engine label records carry typed fields the error renders as JSON
   | { error: { code: string; message: string; labels?: Array<Record<string, unknown>> } };
 
 export function isWorkflowError(

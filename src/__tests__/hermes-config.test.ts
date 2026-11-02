@@ -10,6 +10,10 @@ import {
   upsertHermesHook,
   removeHermesHookByCommand,
   getHermesConfigPath,
+  getHermesAllowlistPath,
+  addHermesAllowlist,
+  hasHermesHookCommands,
+  removeHermesAllowlist,
 } from '../hermes-config.js';
 import { TEAMAI_RULES_START, TEAMAI_RULES_END } from '../types.js';
 
@@ -215,5 +219,45 @@ describe('removeHermesHookByCommand', () => {
   it('is a no-op when the command is not present in config.yaml', async () => {
     // config.yaml does not exist — should not throw
     await expect(removeHermesHookByCommand('/nonexistent.sh')).resolves.toBeUndefined();
+  });
+});
+
+// ─── shell-hooks allowlist the member edited ───────────────────────────────────────
+
+describe('shell-hooks allowlist the member edited', () => {
+  const approved = { event: 'pre_tool_call', command: '/hooks/teamai.sh' };
+
+  function writeAllowlist(json: object): void {
+    fs.writeFileSync(getHermesAllowlistPath(), JSON.stringify(json));
+  }
+
+  function readAllowlist(): object {
+    return JSON.parse(fs.readFileSync(getHermesAllowlistPath(), 'utf-8'));
+  }
+
+  it('adds an approval beside an entry that is not an object, keeping the file as written', async () => {
+    writeAllowlist({ approvals: [null, approved], note: 'mine' });
+
+    expect(await addHermesAllowlist('post_tool_call', approved.command)).toBe(true);
+    expect(readAllowlist()).toEqual({
+      approvals: [null, approved, { event: 'post_tool_call', command: approved.command }],
+      note: 'mine',
+    });
+    expect(await addHermesAllowlist(approved.event, approved.command)).toBe(false);
+  });
+
+  it('finds an approved command beside an entry that is not an object', async () => {
+    writeAllowlist({ approvals: [null, { command: 1 }, approved] });
+
+    expect(await hasHermesHookCommands([approved.command])).toBe(true);
+    expect(await hasHermesHookCommands(['/hooks/other.sh'])).toBe(false);
+  });
+
+  it('removes an approval and keeps an entry that is not an object', async () => {
+    writeAllowlist({ approvals: [null, approved] });
+
+    await removeHermesAllowlist(approved.event, approved.command);
+
+    expect(readAllowlist()).toEqual({ approvals: [null] });
   });
 });

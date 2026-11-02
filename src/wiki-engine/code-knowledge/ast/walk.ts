@@ -61,6 +61,7 @@ export function walkFile(file: CodeCollectedFile): FileWalkResult {
 
   if (Buffer.byteLength(file.content, "utf8") > MAX_FILE_BYTES) {
     parseErrors.push(`skipped large file: ${file.relativePath}`);
+
     return { symbols, swiftModuleSymbols, swiftMemberNames, imports, callSites, implementsSites, parseErrors };
   }
 
@@ -70,28 +71,34 @@ export function walkFile(file: CodeCollectedFile): FileWalkResult {
   parser.setLanguage(language);
 
   let tree;
+
   try {
     tree = parser.parse(file.content);
   } catch (error) {
     parseErrors.push(`parse failed: ${file.relativePath}: ${error instanceof Error ? error.message : String(error)}`);
+
     return { symbols, swiftModuleSymbols, swiftMemberNames, imports, callSites, implementsSites, parseErrors };
   }
 
   if (!tree) {
     parseErrors.push(`parse returned null: ${file.relativePath}`);
+
     return { symbols, swiftModuleSymbols, swiftMemberNames, imports, callSites, implementsSites, parseErrors };
   }
 
   try {
     const query = getQuery(variant);
     const exportLineStarts = collectExportLineStarts(variant, tree.rootNode);
+
     // One traversal per file, shared by every call site below: doing this per
     // call would re-walk the enclosing declaration once for each of its calls.
     const swiftShadowedNames =
       variant === "swift" ? buildSwiftShadowedNames(tree.rootNode) : undefined;
+
     if (variant === "swift") {
       const names = new Set<string>();
       collectSwiftMemberNames(tree.rootNode, names);
+
       for (const name of names) {
         swiftMemberNames.push({ file: file.relativePath, name });
       }
@@ -103,6 +110,7 @@ export function walkFile(file: CodeCollectedFile): FileWalkResult {
       if (byName.has("import.stmt")) {
         const stmt = byName.get("import.stmt")!;
         const specNode = byName.get("import.spec");
+
         if (!specNode) continue;
         const specifier = normalizeImportSpecifier(specNode.text, variant);
         const line = stmt.startPosition.row + 1;
@@ -118,18 +126,23 @@ export function walkFile(file: CodeCollectedFile): FileWalkResult {
       }
 
       const symbolName = byName.get("symbol.name")?.text;
+
       if (symbolName) {
         const decl =
           byName.get("symbol.class") ?? byName.get("symbol.function") ?? byName.get("symbol.interface");
+
         if (!decl) continue;
+
         const kind: AstSymbolKind = byName.has("symbol.class")
           ? "class"
           : byName.has("symbol.interface")
             ? "interface"
             : "function";
+
         const lineStart = decl.startPosition.row + 1;
         const lineEnd = decl.endPosition.row + 1;
         const exported = isExportedSymbol(variant, decl.startIndex, file.content, lineStart, exportLineStarts);
+
         const symbol: AstSymbol = {
           id: symbolId(file.relativePath, kind, symbolName),
           kind,
@@ -139,12 +152,15 @@ export function walkFile(file: CodeCollectedFile): FileWalkResult {
           lineEnd,
           exported
         };
+
         symbols.push(symbol);
+
         // Swift files in one module see each other without any import, so the
         // module index needs exactly the declarations a sibling can reach.
         if (variant === "swift" && isSwiftModuleVisible(decl)) {
           swiftModuleSymbols.push(symbol);
         }
+
         continue;
       }
 
@@ -155,26 +171,34 @@ export function walkFile(file: CodeCollectedFile): FileWalkResult {
         const receiver = byName.get("call.receiver")?.text;
         const member = byName.get("call.member")?.text;
         const calleeText = callee ?? (receiver && member ? `${receiver}.${member}` : callNode.text);
+
         const localBindings =
           swiftShadowedNames === undefined ? [] : swiftShadowedNamesAt(callNode, swiftShadowedNames);
+
         const enclosedByType = variant === "swift" && isInsideSwiftTypeBody(callNode);
-        callSites.push({
+
+        const site: AstCallSite = {
           fromFile: file.relativePath,
           line,
           calleeText,
           receiver,
-          ...(localBindings.length > 0 ? { localBindings } : {}),
-          ...(enclosedByType ? { enclosedByType } : {}),
           confidence: "INFERRED"
-        });
+        };
+
+        if (localBindings.length > 0) site.localBindings = localBindings;
+
+        if (enclosedByType) site.enclosedByType = enclosedByType;
+        callSites.push(site);
         continue;
       }
 
       if (byName.has("impl.stmt")) {
         const classNode = byName.get("impl.class");
+
         const ifaceNames = match.captures
           .filter((c) => c.name === "impl.iface")
           .map((c) => c.node.text);
+
         if (classNode && ifaceNames.length > 0) {
           implementsSites.push({
             fromFile: file.relativePath,
@@ -183,6 +207,7 @@ export function walkFile(file: CodeCollectedFile): FileWalkResult {
             line: classNode.startPosition.row + 1
           });
         }
+
         continue;
       }
     }
@@ -224,10 +249,13 @@ function isSwiftModuleVisible(decl: Node): boolean {
   if (decl.parent?.type !== "source_file") {
     return false;
   }
+
   const modifiers = decl.namedChildren.find((child) => child?.type === "modifiers");
+
   if (!modifiers) {
     return true;
   }
+
   return !modifiers.namedChildren.some(
     (child) =>
       child?.type === "visibility_modifier" && (child.text === "private" || child.text === "fileprivate")
@@ -271,10 +299,12 @@ function collectSwiftMemberNames(node: Node, names: Set<string>): void {
   if (SWIFT_TYPE_BODIES.has(node.type)) {
     for (const member of namedChildrenOf(node)) {
       const name = member.childForFieldName("name");
+
       if (name && (name.type === "simple_identifier" || name.type === "type_identifier")) {
         addSwiftName(name.text, names);
         continue;
       }
+
       for (const child of namedChildrenOf(member)) {
         if (child.type === "pattern") {
           collectSwiftShadowedNames(child, names);
@@ -282,6 +312,7 @@ function collectSwiftMemberNames(node: Node, names: Set<string>): void {
       }
     }
   }
+
   for (const child of namedChildrenOf(node)) {
     collectSwiftMemberNames(child, names);
   }
@@ -306,11 +337,13 @@ function isInsideSwiftTypeBody(node: Node): boolean {
       return true;
     }
   }
+
   return false;
 }
 
 function symbolId(file: string, kind: AstSymbolKind, name: string): string {
   const kindLabel = kind.charAt(0).toUpperCase() + kind.slice(1);
+
   return `${file}#${kindLabel}:${name}`;
 }
 
@@ -370,12 +403,15 @@ function collectSwiftShadowedNames(node: Node, names: Set<string>): void {
   if (node.type === "user_type") {
     return;
   }
+
   if (node.type === "simple_identifier" || node.type === "type_identifier") {
     if (isSwiftBindingPosition(node)) {
       addSwiftName(node.text, names);
     }
+
     return;
   }
+
   for (const child of namedChildrenOf(node)) {
     collectSwiftShadowedNames(child, names);
   }
@@ -405,12 +441,15 @@ function collectSwiftShadowedNames(node: Node, names: Set<string>): void {
  */
 function isSwiftBindingPosition(node: Node): boolean {
   const parent = node.parent;
+
   if (!parent) {
     return false;
   }
+
   if (parent.type === "pattern" || parent.type === "type_parameter") {
     return true;
   }
+
   return (
     sameSpan(parent.childForFieldName("name"), node) ||
     sameSpan(parent.childForFieldName("bound_identifier"), node)
@@ -449,11 +488,13 @@ function sameSpan(candidate: Node | null, node: Node): boolean {
  */
 function buildSwiftShadowedNames(root: Node): Map<number, string[]> {
   const byDeclaration = new Map<number, string[]>();
+
   for (const declaration of namedChildrenOf(root)) {
     const names = new Set<string>();
     collectSwiftShadowedNames(declaration, names);
     byDeclaration.set(declaration.startIndex, [...names]);
   }
+
   return byDeclaration;
 }
 
@@ -469,8 +510,10 @@ function buildSwiftShadowedNames(root: Node): Map<number, string[]> {
  */
 function swiftShadowedNamesAt(node: Node, byDeclaration: Map<number, string[]>): string[] {
   let scope: Node = node;
+
   while (scope.parent && scope.parent.type !== "source_file") {
     scope = scope.parent;
   }
+
   return byDeclaration.get(scope.startIndex) ?? [];
 }

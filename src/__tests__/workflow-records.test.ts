@@ -323,16 +323,16 @@ describe('#1083 workflow run records', () => {
   });
 
   it('seeds the required stats shape so digest never skips workflow-only stats', async () => {
-    const { ensureStatsShape } = await import('../workflow/records.js');
+    const { ensureDigestFields } = await import('../workflow/records.js');
     // digest's loadTeamStats requires username AND skills; a first workflow
     // run with no prior stats file must still produce a digest-visible file.
-    const seeded = ensureStatsShape({}, 'tester');
+    const seeded = ensureDigestFields({}, 'tester');
     expect(seeded.username).toBe('tester');
     expect(seeded.skills).toEqual({});
     expect(typeof seeded.updatedAt).toBe('string');
     // An existing stats file keeps its shape untouched.
     const existing = { username: 'tester', skills: { review: { count: 5 } }, updatedAt: 'x' };
-    expect(ensureStatsShape(existing, 'tester')).toBe(existing);
+    expect(ensureDigestFields(existing, 'tester')).toBe(existing);
   });
 
   it('merges a record published with a string agent, which reads as its definition (#1176)', () => {
@@ -537,6 +537,51 @@ describe('#1083 workflow stats merge', () => {
     const stats = YAML.parse(await reports.show(['teamai-reports:stats/alice.yaml'])) as Record<string, unknown>;
     expect(stats.workflows).toEqual({ runs: 1, succeeded: 1, failed: 0, totalDurationMs: 150000 });
     expect(await reports.raw(['ls-tree', '--name-only', 'teamai-reports', 'stats/'])).toBe('stats/alice.yaml\n');
+  });
+
+  it('writes a member stats file back with its keys in the order they were read', async () => {
+    const { config, origin } = await reportsRemote('alice');
+    const clone = path.dirname(origin) + '/team-repo';
+    const git = simpleGit(clone);
+    const written = 'skills: {}\nupdatedAt: 2026-10-13T00:00:00.000Z\nusername: alice\n';
+    await git.checkout(['--orphan', 'teamai-reports']);
+    await git.raw(['rm', '-rf', '--cached', '.']);
+    fs.mkdirSync(path.join(clone, 'stats'));
+    fs.writeFileSync(path.join(clone, 'stats', 'alice.yaml'), written);
+    await git.add(['stats/alice.yaml']);
+    await git.commit('stats');
+    await git.push('origin', 'teamai-reports');
+    await git.checkout(['-f', 'main']);
+    await enqueueRecord(config, buildEndRecord(runState(), driver, 'alice'), {});
+
+    expect(await publishPendingRecords(config)).toEqual({ state: 'published' });
+
+    expect(await simpleGit(origin).show(['teamai-reports:stats/alice.yaml'])).toBe(
+      `${written}workflows:\n  runs: 1\n  succeeded: 1\n  failed: 0\n  totalDurationMs: 150000\n`,
+    );
+  });
+
+  it('counts a workflow total the stats file holds as text from zero instead of appending to it', async () => {
+    const { config, origin } = await reportsRemote('alice');
+    const clone = path.dirname(origin) + '/team-repo';
+    const git = simpleGit(clone);
+    await git.checkout(['--orphan', 'teamai-reports']);
+    await git.raw(['rm', '-rf', '--cached', '.']);
+    fs.mkdirSync(path.join(clone, 'stats'));
+    fs.writeFileSync(
+      path.join(clone, 'stats', 'alice.yaml'),
+      'skills: {}\nupdatedAt: 2026-10-13T00:00:00.000Z\nusername: alice\nworkflows:\n  runs: "3"\n  totalDurationMs: "1000"\n',
+    );
+    await git.add(['stats/alice.yaml']);
+    await git.commit('stats');
+    await git.push('origin', 'teamai-reports');
+    await git.checkout(['-f', 'main']);
+    await enqueueRecord(config, buildEndRecord(runState(), driver, 'alice'), {});
+
+    expect(await publishPendingRecords(config)).toEqual({ state: 'published' });
+
+    const stats = YAML.parse(await simpleGit(origin).show(['teamai-reports:stats/alice.yaml']));
+    expect(stats.workflows).toEqual({ runs: 1, succeeded: 1, failed: 0, totalDurationMs: 150000 });
   });
 
   it('moves a run out of the stats of the member whose end another member replaced', async () => {

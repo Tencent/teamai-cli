@@ -23,8 +23,10 @@ async function copyIfChanged(source: string, destination: string): Promise<void>
     const [incoming, existing, sourceStat, destinationStat] = await Promise.all([
       fse.readFile(source), fse.readFile(destination), fse.stat(source), fse.stat(destination),
     ]);
+
     if (incoming.equals(existing) && (sourceStat.mode & 0o777) === (destinationStat.mode & 0o777)) return;
   }
+
   await fse.copy(source, destination, { overwrite: true });
 }
 
@@ -46,25 +48,30 @@ export async function mirrorLearnings(
   destinationDir: string,
   activeNamespaces: string[],
 ): Promise<void> {
-  const roots = typeof sourceDirs === 'string' ? [sourceDirs] : sourceDirs;
+  const roots = [sourceDirs].flat();
   const presentRoots: string[] = [];
+
   for (const root of roots) {
     if (await isDirectory(root)) presentRoots.push(root);
   }
 
   // Shared root-level learnings, first root wins.
   const sourceRootFiles: Resolved = new Map();
+
   for (const root of presentRoots) {
     for (const file of await listFiles(root)) {
       if (!file.endsWith('.md') || file.startsWith('.')) continue;
+
       if (!sourceRootFiles.has(file)) sourceRootFiles.set(file, path.join(root, file));
     }
   }
 
   const sourceNamespaces = new Set<string>();
+
   for (const root of presentRoots) {
     for (const namespace of await listDirs(root)) sourceNamespaces.add(namespace);
   }
+
   const selectedNamespaces = new Set(
     activeNamespaces.filter((namespace) =>
       !namespace.startsWith('.') && sourceNamespaces.has(namespace),
@@ -73,17 +80,22 @@ export async function mirrorLearnings(
 
   // Learnings inside each selected namespace, first root wins.
   const sourceNamespaceFiles = new Map<string, Resolved>();
+
   for (const namespace of selectedNamespaces) {
     const resolved: Resolved = new Map();
+
     for (const root of presentRoots) {
       const nsDir = path.join(root, namespace);
+
       if (!await pathExists(nsDir)) continue;
+
       // Every visible file, not only Markdown: a namespace may carry what its
       // learnings reference, and the mirror used to copy those too.
       for (const file of visibleFiles(await listFilesRecursive(nsDir))) {
         if (!resolved.has(file)) resolved.set(file, path.join(nsDir, file));
       }
     }
+
     sourceNamespaceFiles.set(namespace, resolved);
   }
 
@@ -109,8 +121,10 @@ export async function mirrorLearnings(
   // deleted upstream. Reconcile those files before the overwrite copy.
   for (const namespace of selectedNamespaces) {
     const destinationNamespaceDir = path.join(destinationDir, namespace);
+
     if (!await pathExists(destinationNamespaceDir)) continue;
     const sourceFiles = sourceNamespaceFiles.get(namespace) ?? new Map();
+
     for (const file of visibleMarkdownFiles(await listFilesRecursive(destinationNamespaceDir))) {
       if (!sourceFiles.has(file)) {
         await remove(path.join(destinationNamespaceDir, file));
@@ -121,6 +135,7 @@ export async function mirrorLearnings(
   for (const [file, source] of sourceRootFiles) {
     await copyIfChanged(source, path.join(destinationDir, file));
   }
+
   for (const [namespace, files] of sourceNamespaceFiles) {
     for (const [file, source] of files) {
       await copyIfChanged(source, path.join(destinationDir, namespace, file));

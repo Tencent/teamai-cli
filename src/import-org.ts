@@ -59,26 +59,37 @@ export interface ImportFromOrgOptions {
  *
  * @param org 用户输入
  */
-function parseOrgInput(org: string): { providerName: string; orgPath: string } {
+/** The provider an org input is hosted on, and the org's path there. */
+interface OrgTarget {
+    providerName: string;
+    orgPath: string;
+}
+
+function parseOrgInput(org: string): OrgTarget {
     const trimmed = org.trim();
 
     // 完整 HTTPS URL
     const httpsMatch = trimmed.match(/^https?:\/\/([^/]+)\/(.+)/);
+
     if (httpsMatch) {
         const host = httpsMatch[1].toLowerCase();
         const orgPath = httpsMatch[2].replace(/\/$/, '');
+
         return { providerName: detectProviderForHost(host), orgPath };
     }
 
     // "host/org" 格式（不含协议）
     const hostOrgMatch = trimmed.match(/^([^/]+)\/(.+)/);
+
     if (hostOrgMatch) {
         const host = hostOrgMatch[1].toLowerCase();
         const orgPath = hostOrgMatch[2];
+
         if (host.includes('.')) {
             // 有效 hostname
             return { providerName: detectProviderForHost(host), orgPath };
         }
+
         // 裸 "owner/repo" 模式 → 视整体为 org 路径，用默认 provider
         return { providerName: getProviderFromUrl('').name, orgPath: trimmed };
     }
@@ -90,6 +101,7 @@ function parseOrgInput(org: string): { providerName: string; orgPath: string } {
 
     // 裸 org 名
     const providerName = getProvider().name;
+
     return { providerName, orgPath: trimmed };
 }
 
@@ -160,6 +172,7 @@ export async function importFromOrg(opts: ImportFromOrgOptions): Promise<void> {
     // 2. 拉取仓库列表
     log.info(`Fetching repo list from ${providerName}/${orgPath}`);
     let rawRepos: OrgRepoInfo[];
+
     try {
         rawRepos = await provider.listOrgRepos(orgPath, { maxRepos });
     } catch (err) {
@@ -177,6 +190,7 @@ export async function importFromOrg(opts: ImportFromOrgOptions): Promise<void> {
 
     if (filteredRepos.length === 0) {
         log.warn('No repos after filtering, aborting');
+
         return;
     }
 
@@ -184,24 +198,29 @@ export async function importFromOrg(opts: ImportFromOrgOptions): Promise<void> {
 
     if (opts.dryRun) {
         log.info(`[dry-run] Would write whitelist: ${WHITELIST_DRAFT_PATH} (${filteredRepos.length} repos)`);
+
         for (const repo of filteredRepos) {
             log.info(opts.skipImport
                 ? `[dry-run] Whitelist entry: ${repo.url}`
                 : `[dry-run] Would import ${repo.url}`);
         }
+
         return;
     }
 
     // 4. 生成白名单（跳过 AI 聚类，知识图谱通过 nodes/edges 自动组织关系）
     const whitelistDraftPath = path.join(cwd, WHITELIST_DRAFT_PATH);
+
     if (!opts.dryRun) {
         await fs.ensureDir(path.dirname(whitelistDraftPath));
         const lines = ['version: 1', 'repos:'];
+
         for (const repo of filteredRepos) {
             lines.push(`  - url: ${repo.url}`);
             lines.push(`    auth: token`);
             lines.push(`    priority: normal`);
         }
+
         await fs.writeFile(whitelistDraftPath, lines.join('\n') + '\n', 'utf8');
         log.info(`Whitelist written: ${WHITELIST_DRAFT_PATH} (${filteredRepos.length} repos)`);
     }
@@ -212,6 +231,7 @@ export async function importFromOrg(opts: ImportFromOrgOptions): Promise<void> {
 
         if (await fs.pathExists(whitelistPath)) {
             log.info(`Starting batch import (whitelist: ${whitelistPath})...`);
+
             try {
                 const result = await importFromRepoList({
                     listPath: whitelistPath,
@@ -222,6 +242,7 @@ export async function importFromOrg(opts: ImportFromOrgOptions): Promise<void> {
                     incremental: false,
                     skipEnrich: opts.skipEnrich ?? false,
                 });
+
                 // importFromRepoList already rebuilt the indexes and pushed them via MR.
                 log.info(
                     `Batch import complete: ${result.succeeded} succeeded, ${result.failed.length} failed, ${result.skipped.length} skipped`,

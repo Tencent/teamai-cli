@@ -7,7 +7,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
-import { AgentObservationSchema, observeCheckout, settleObservation, type AgentObservation } from '../agent-observation.js';
+import { AgentObservationSchema, observeCheckout, settleObservation, type AgentObservation, type ToolLaunch } from '../agent-observation.js';
 import { getAgentVersion } from '../agent-version.js';
 import { agreedRunMode, launchedBy, resolveRunMode, RunModeSchema, type RunMode } from '../launch-context.js';
 import type { CheckoutRecord } from '../pull.js';
@@ -16,7 +16,9 @@ import { getDataHome, type DeliverySelection, type LocalConfig } from '../types.
 import { acquireLock, releaseLock } from '../update.js';
 import { log } from '../utils/logger.js';
 import { AgentSession } from './agent-session.js';
+import { OptionalString } from './fs.js';
 import type { Session } from './ir.js';
+import type { HookStdin } from '../hook-dispatch.js';
 
 export const SessionCaptureSchema = z.object({
   captureId: z.string().uuid(),
@@ -38,12 +40,34 @@ export const SessionCaptureSchema = z.object({
    */
   teamSkillInfo: z.record(z.string(), DeliveredSkillInfoSchema).optional(),
 });
+
 export type SessionCapture = z.infer<typeof SessionCaptureSchema>;
 
 /** The hook payload field the foreground dispatcher hands the background pass the capture it wrote in. */
 export const CAPTURE_PAYLOAD_KEY = 'teamai_capture';
 
 const SEGMENT = /^(?!\.{1,2}$)[A-Za-z0-9._-]{1,200}$/;
+
+/** The session-start hook payload fields a capture reads: a session id safe as a path segment, and the session's cwd. */
+const StartPayloadSchema = z.object({
+  session_id: z.string().regex(SEGMENT),
+  cwd: z.string(),
+  model: OptionalString,
+  transcript_path: OptionalString,
+});
+
+/** The background pass's payload: its session and the capture the start wrote, both safe as path segments. */
+const ToolVersionPayloadSchema = z.object({
+  session_id: z.string().regex(SEGMENT),
+  [CAPTURE_PAYLOAD_KEY]: z.string().regex(SEGMENT),
+});
+
+/** The post-pull payload: its session, and the cwd and capture id when the hook carries them. */
+const PulledPayloadSchema = z.object({
+  session_id: z.string().regex(SEGMENT),
+  cwd: OptionalString,
+  [CAPTURE_PAYLOAD_KEY]: OptionalString,
+});
 
 function sessionDir(config: LocalConfig, platform: string, sessionId: string): string {
   return path.join(getDataHome(config), 'sessions', 'captures', platform, sessionId);
@@ -62,31 +86,47 @@ async function writeCapture(config: LocalConfig, capture: SessionCapture): Promi
  * none, and neither does a session teamai launched: a workflow step is scored as a step, and a judge never. A capture
  * that fails is logged at debug level, so it never fails the hook.
  */
-async function atStart(config: LocalConfig, tool: string, payload: Record<string, unknown>, env: NodeJS.ProcessEnv): Promise<string | undefined> {
+async function atStart(config: LocalConfig, tool: string, payload: HookStdin, env: NodeJS.ProcessEnv): Promise<string | undefined> {
   const platform = AgentSession.platformForTool(tool);
-  const sessionId = payload.session_id;
-  const cwd = payload.cwd;
+
   if (launchedBy(env) || payload.source === 'compact') return undefined;
-  if (!platform || typeof sessionId !== 'string' || !SEGMENT.test(sessionId) || typeof cwd !== 'string') return undefined;
+  const fields = StartPayloadSchema.safeParse(payload);
+
+  if (!platform || !fields.success) return undefined;
+  const { session_id: sessionId, cwd, model: requested, transcript_path: file } = fields.data;
+
   try {
-    const model = typeof payload.model === 'string' ? { requested: payload.model } : undefined;
+    const model = requested === undefined ? undefined : { requested };
     const { gitStateIn } = await import('../dashboard-collector.js');
     const head = gitStateIn(payload);
-    const reported = await observeCheckout({ config, tool, cwd, beforeOwnPull: true, ...(head !== undefined ? { head } : {}) });
-    const agent = settleObservation({ agent: { ...reported, ...(model ? { model } : {}) }, tool, driver: { kind: 'session' } }, undefined);
+    const launch: ToolLaunch = { config, tool, cwd, beforeOwnPull: true };
+
+    if (head !== undefined) launch.head = head;
+    const reported = await observeCheckout(launch);
+    const agent = settleObservation({ agent: model ? { ...reported, model } : { ...reported }, tool, driver: { kind: 'session' } }, undefined);
+
     if (!agent) return undefined;
-    const file = payload.transcript_path;
     const { teamDelivery } = await import('../pull.js');
     const record = (await teamDelivery(config, tool, { beforeOwnPull: true }).catch(() => undefined))?.record;
+
     const capture: SessionCapture = {
       captureId: randomUUID(), platform, sessionId, capturedAt: new Date().toISOString(), runMode: resolveRunMode(env), agent,
-      ...(typeof file === 'string' && path.isAbsolute(file) ? { sessionFile: file } : {}),
-      ...(record?.delivered ? await deliveredTeamSkills(config, cwd, record.delivered, record.rev) : {}),
     };
+
+    if (file !== undefined && path.isAbsolute(file)) capture.sessionFile = file;
+
+    if (record?.delivered) {
+      const delivered = await deliveredTeamSkills(config, cwd, record.delivered, record.rev);
+      capture.teamSkills = delivered.teamSkills;
+      capture.teamSkillInfo = delivered.teamSkillInfo;
+    }
+
     await writeCapture(config, capture);
+
     return capture.captureId;
   } catch (e) {
     log.debug(`session capture: could not capture ${platform} session ${sessionId}: ${e instanceof Error ? e.message : String(e)}`);
+
     return undefined;
   }
 }
@@ -94,6 +134,7 @@ async function atStart(config: LocalConfig, tool: string, payload: Record<string
 /** The observation `agent` settles to with `version` as its tool's version. */
 function withToolVersion(agent: AgentObservation, version: string): AgentObservation {
   const { tool, model, effort, team, project } = agent;
+
   return settleObservation({ agent: { tool: { ...tool, version }, model, effort, team, project }, tool: tool.name, driver: { kind: agent.driver } }, undefined) ?? agent;
 }
 
@@ -106,16 +147,20 @@ const LOCK_RETRY_MS = 100;
  */
 async function rewrite(config: LocalConfig, platform: string, sessionId: string, pick: (file: string) => boolean, change: (capture: SessionCapture) => SessionCapture): Promise<void> {
   const dir = sessionDir(config, platform, sessionId);
+
   if (!(await fs.stat(dir).catch(() => undefined))) return;
   const lock = path.join(dir, 'rewrite.lock');
+
   for (let attempt = 1; !(await acquireLock(lock)); attempt++) {
     if (attempt === LOCK_ATTEMPTS) throw new Error(`another teamai process holds ${lock}`);
     await new Promise((resolve) => setTimeout(resolve, LOCK_RETRY_MS));
   }
+
   try {
     for (const name of (await fs.readdir(dir)).filter((fileName) => fileName.endsWith('.json') && pick(fileName))) {
       const file = path.join(dir, name);
       const parsed = SessionCaptureSchema.safeParse(JSON.parse(await fs.readFile(file, 'utf8')));
+
       if (!parsed.success) continue;
       await fs.writeFile(`${file}.tmp`, `${JSON.stringify(change(parsed.data), null, 2)}\n`, { mode: 0o600 });
       await fs.rename(`${file}.tmp`, file);
@@ -126,12 +171,16 @@ async function rewrite(config: LocalConfig, platform: string, sessionId: string,
 }
 
 /** In the hook's background pass: adds the tool's version, which the start leaves out so it never waits on it. */
-async function addToolVersion(config: LocalConfig, tool: string, payload: Record<string, unknown>): Promise<void> {
+async function addToolVersion(config: LocalConfig, tool: string, payload: HookStdin): Promise<void> {
   const platform = AgentSession.platformForTool(tool);
-  const { session_id: sessionId, [CAPTURE_PAYLOAD_KEY]: captureId } = payload;
-  if (!platform || typeof sessionId !== 'string' || !SEGMENT.test(sessionId) || typeof captureId !== 'string' || !SEGMENT.test(captureId)) return;
+  const fields = ToolVersionPayloadSchema.safeParse(payload);
+
+  if (!platform || !fields.success) return;
+  const { session_id: sessionId, [CAPTURE_PAYLOAD_KEY]: captureId } = fields.data;
   const version = await getAgentVersion(tool);
+
   if (!version) return;
+
   try {
     await rewrite(config, platform, sessionId, (file) => file === `${captureId}.json`, (capture) => ({ ...capture, agent: withToolVersion(capture.agent, version) }));
   } catch (e) {
@@ -144,6 +193,7 @@ type CheckoutDelivery = { rev?: string; selection?: DeliverySelection; children?
 
 async function checkoutRecord(config: LocalConfig, tool: string): Promise<CheckoutRecord | undefined> {
   const { teamDelivery } = await import('../pull.js');
+
   return (await teamDelivery(config, tool).catch(() => undefined))?.record;
 }
 
@@ -159,14 +209,18 @@ async function checkoutDelivery(config: LocalConfig, tool: string): Promise<Chec
 /** `capture` with the team skills of `pulled` added to those it holds. */
 function withTeamSkills(capture: SessionCapture, pulled: Record<string, string[]>): SessionCapture {
   const teamSkills = { ...capture.teamSkills };
+
   for (const [name, files] of Object.entries(pulled)) teamSkills[name] = [...new Set([...teamSkills[name] ?? [], ...files])];
+
   return Object.keys(teamSkills).length > 0 ? { ...capture, teamSkills } : capture;
 }
 
 /** `capture` with the descriptions of the skills `pulled` added for names it does not already hold, so a later pull leaves them (#1469). */
 function withTeamSkillInfo(capture: SessionCapture, pulled: Record<string, DeliveredSkillInfo>): SessionCapture {
   const teamSkillInfo = { ...capture.teamSkillInfo };
+
   for (const [name, info] of Object.entries(pulled)) if (!(name in teamSkillInfo)) teamSkillInfo[name] = info;
+
   return { ...capture, teamSkillInfo };
 }
 
@@ -177,21 +231,26 @@ function withTeamSkillInfo(capture: SessionCapture, pulled: Record<string, Deliv
  * delivered another revision, or the same one for another selection or other workspace children, than the checkout
  * held `before` it.
  */
-async function markTeamChanged(config: LocalConfig, tool: string, payload: Record<string, unknown>, before: CheckoutDelivery): Promise<void> {
+async function markTeamChanged(config: LocalConfig, tool: string, payload: HookStdin, before: CheckoutDelivery): Promise<void> {
   const platform = AgentSession.platformForTool(tool);
-  const { session_id: sessionId, cwd, [CAPTURE_PAYLOAD_KEY]: captureId } = payload;
-  if (!platform || typeof sessionId !== 'string' || !SEGMENT.test(sessionId)) return;
+  const fields = PulledPayloadSchema.safeParse(payload);
+
+  if (!platform || !fields.success) return;
+  const { session_id: sessionId, cwd, [CAPTURE_PAYLOAD_KEY]: captureId } = fields.data;
   const record = await checkoutRecord(config, tool);
   const changed = !isDeepStrictEqual(deliveryOf(record), before);
+
   try {
-    const pulled = record?.delivered && typeof cwd === 'string' && typeof captureId === 'string'
+    const pulled = record?.delivered && cwd !== undefined && captureId !== undefined
       ? await deliveredTeamSkills(config, cwd, record.delivered, record.rev) : undefined;
+
     if (!changed && !pulled) return;
-    await rewrite(config, platform, sessionId, () => true, (capture) => ({
-      ...(capture.captureId === captureId && pulled
-        ? withTeamSkillInfo(withTeamSkills(capture, pulled.teamSkills), pulled.teamSkillInfo) : capture),
-      ...(changed ? { teamChanged: true } : {}),
-    }));
+    await rewrite(config, platform, sessionId, () => true, (capture) => {
+      const next = capture.captureId === captureId && pulled
+        ? withTeamSkillInfo(withTeamSkills(capture, pulled.teamSkills), pulled.teamSkillInfo) : capture;
+
+      return changed ? { ...next, teamChanged: true } : { ...next };
+    });
   } catch (e) {
     log.debug(`session capture: could not record what the pull of ${platform} session ${sessionId} delivered: ${e instanceof Error ? e.message : String(e)}`);
   }
@@ -203,15 +262,19 @@ async function read(config: LocalConfig, platform: string, sessionId: string): P
   const dir = sessionDir(config, platform, sessionId);
   const files = await fs.readdir(dir).catch(() => []);
   const captures: SessionCapture[] = [];
+
   for (const file of files.filter((name) => name.endsWith('.json'))) {
     const text = await fs.readFile(path.join(dir, file), 'utf8');
+
     try {
       const parsed = SessionCaptureSchema.safeParse(JSON.parse(text));
+
       if (parsed.success) captures.push(parsed.data);
     } catch {
       continue;
     }
   }
+
   return captures.sort((a, b) => a.capturedAt.localeCompare(b.capturedAt));
 }
 
@@ -224,11 +287,14 @@ const SWEEP_AFTER_MS = 24 * 60 * 60 * 1000;
 async function sweep(config: LocalConfig): Promise<void> {
   const root = path.join(getDataHome(config), 'sessions', 'captures');
   const now = Date.now();
+
   const gone = async ({ sessionFile, capturedAt }: SessionCapture): Promise<boolean> =>
     sessionFile !== undefined && now - Date.parse(capturedAt) > SWEEP_AFTER_MS && !(await fs.stat(sessionFile).catch(() => undefined));
+
   for (const platform of await fs.readdir(root).catch(() => [])) {
     for (const sessionId of await fs.readdir(path.join(root, platform)).catch(() => [])) {
       const captures = await read(config, platform, sessionId);
+
       if (captures.length > 0 && (await Promise.all(captures.map(gone))).every(Boolean)) {
         await fs.rm(sessionDir(config, platform, sessionId), { recursive: true, force: true });
       }
@@ -252,14 +318,17 @@ const DRAINED_FILE = 'drained';
 async function list(config: LocalConfig): Promise<CapturedSession[]> {
   const root = path.join(getDataHome(config), 'sessions', 'captures');
   const sessions: CapturedSession[] = [];
+
   for (const platform of (await fs.readdir(root).catch(() => [])).filter((name) => SEGMENT.test(name)).sort()) {
     for (const sessionId of (await fs.readdir(path.join(root, platform)).catch(() => [])).sort()) {
       const [first, ...rest] = await read(config, platform, sessionId);
+
       if (!first) continue;
       const drained = await fs.stat(path.join(sessionDir(config, platform, sessionId), DRAINED_FILE)).then(() => true, () => false);
       sessions.push({ platform, sessionId, captures: [first, ...rest], drained });
     }
   }
+
   return sessions;
 }
 
@@ -269,6 +338,7 @@ async function list(config: LocalConfig): Promise<CapturedSession[]> {
  */
 async function markDrained(config: LocalConfig, captured: Pick<CapturedSession, 'platform' | 'sessionId'>, now: string): Promise<void> {
   const file = path.join(sessionDir(config, captured.platform, captured.sessionId), DRAINED_FILE);
+
   try {
     await fs.writeFile(file, `${now}\n`, { mode: 0o600, flag: 'wx' });
   } catch (error) {
@@ -282,6 +352,7 @@ async function platformsOf(config: LocalConfig, sessionId: string): Promise<stri
   const root = path.join(getDataHome(config), 'sessions', 'captures');
   const platforms = await fs.readdir(root).catch(() => []);
   const held = await Promise.all(platforms.map(async (platform) => (await read(config, platform, sessionId)).length > 0));
+
   return platforms.filter((_, index) => held[index]);
 }
 
@@ -293,16 +364,20 @@ async function platformsOf(config: LocalConfig, sessionId: string): Promise<stri
  */
 function agentOf(captures: readonly SessionCapture[], reportedModel: string | undefined): AgentObservation | undefined {
   const [first, ...rest] = captures;
+
   if (!first) return undefined;
   const teamChanged = captures.some((capture) => capture.teamChanged);
   const compared = ({ tool, model, effort, team }: AgentObservation) => ({ tool, model, effort, team: teamChanged ? undefined : team });
+
   if (rest.some((capture) => !isDeepStrictEqual(compared(capture.agent), compared(first.agent)))) return undefined;
   const { tool, model, effort, team, project, teamai, driver } = first.agent;
+
   const settled = settleObservation({
-    agent: { tool, model: { ...model, ...(reportedModel ? { reported: reportedModel } : {}) }, effort, team: teamChanged ? undefined : team, project },
+    agent: { tool, model: reportedModel ? { ...model, reported: reportedModel } : { ...model }, effort, team: teamChanged ? undefined : team, project },
     tool: tool.name,
     driver: { kind: driver },
   }, undefined);
+
   return settled && { ...settled, teamai };
 }
 
@@ -310,6 +385,7 @@ function agentOf(captures: readonly SessionCapture[], reportedModel: string | un
 function reportedModelOf(session: Session): string | undefined {
   const models = new Set(session.messages.flatMap((message) => message.metadata?.model ?? []));
   const [model] = models.size === 1 ? models : [];
+
   return model;
 }
 
@@ -321,6 +397,7 @@ async function agentOfSession(platform: string, session: Session, fallback: Loca
   const { resolveHookConfig } = await import('../dashboard-collector.js');
   const scope = session.cwd ? await resolveHookConfig({ cwd: session.cwd, session_id: session.sessionId }, AgentSession.toolForPlatform(platform)) : null;
   const config = scope ?? fallback;
+
   return config && agentOf(await read(config, platform, session.sessionId), reportedModelOf(session));
 }
 

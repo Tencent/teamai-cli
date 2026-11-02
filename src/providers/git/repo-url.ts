@@ -5,16 +5,19 @@ const SUPPORTED_URL_HINT =
 
 function invalidRepoUrl(reason?: string): Error {
   const detail = reason ? `: ${reason}` : '';
+
   return new Error(`Invalid Git repo URL${detail} (${SUPPORTED_URL_HINT})`);
 }
 
-function parsePath(rawPath: string): { owner: string; repo: string; fullPath: string } {
+function parsePath(rawPath: string) {
   const fullPath = rawPath
     .replace(/^\/+/, '')
     .replace(/\/+$/, '');
+
   const cleanPath = fullPath
     .replace(/\.git$/i, '')
     .replace(/\/+$/, '');
+
   const segments = cleanPath.split('/').filter(Boolean);
 
   if (
@@ -26,6 +29,7 @@ function parsePath(rawPath: string): { owner: string; repo: string; fullPath: st
 
   const repo = segments[segments.length - 1];
   const owner = segments.slice(0, -1).join('/');
+
   return { owner, repo, fullPath };
 }
 
@@ -54,6 +58,7 @@ function parseGenericGitRepoInputWithOptions(input: string, options: ParseOption
 
   if (/^https?:\/\//i.test(trimmed) || /^ssh:\/\//i.test(trimmed)) {
     let parsed: URL;
+
     try {
       parsed = new URL(trimmed);
     } catch {
@@ -61,12 +66,14 @@ function parseGenericGitRepoInputWithOptions(input: string, options: ParseOption
     }
 
     const httpCredentials = /^https?:$/i.test(parsed.protocol) && (parsed.username || parsed.password);
+
     if (!parsed.hostname || (!allowExistingInsecureOrigin && (parsed.password || httpCredentials))) {
       throw new Error(
         'Invalid Git repo URL. Do not embed credentials in the URL; '
         + 'configure a Git credential helper or SSH key instead.',
       );
     }
+
     if (parsed.search || parsed.hash) {
       throw invalidRepoUrl('query strings and fragments are not supported');
     }
@@ -77,12 +84,15 @@ function parseGenericGitRepoInputWithOptions(input: string, options: ParseOption
     const auth = /^ssh:$/i.test(parsed.protocol) && parsed.username ? `${parsed.username}@` : '';
     // Git hosts such as Azure Repos require the clone path without an added .git.
     const remoteUrl = `${parsed.protocol}//${auth}${parsed.host}/${fullPath}`;
+
     return buildRepoInfo(owner, repo, remoteUrl);
   }
 
   const scpMatch = trimmed.match(/^([^@\s]+)@([^:\s]+):(.+)$/);
+
   if (scpMatch) {
     const [, user, host, rawPath] = scpMatch;
+
     // A colon in the SSH user field means embedded credentials
     // (e.g. "oauth2:token@host:path"); a real SSH login never contains one.
     if (user.includes(':')) {
@@ -91,9 +101,11 @@ function parseGenericGitRepoInputWithOptions(input: string, options: ParseOption
         + 'configure a Git credential helper or SSH key instead.',
       );
     }
+
     const { owner, repo, fullPath } = parsePath(rawPath);
     // A leading slash makes the path absolute on the host instead of relative to the login's home.
     const remotePath = rawPath.startsWith('/') ? `/${fullPath}` : fullPath;
+
     return buildRepoInfo(owner, repo, `${user}@${host}:${remotePath}`);
   }
 

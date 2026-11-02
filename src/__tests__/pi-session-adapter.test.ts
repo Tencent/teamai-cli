@@ -80,6 +80,15 @@ describe('PiAdapter', () => {
     expect(session.messages.at(-1)?.content).toEqual([{ type: 'text', text: 'latest' }]);
   });
 
+  it('reads a message whose timestamp is out of range as having none of its own', async () => {
+    const { adapter, id } = fixture('pi', [{
+      type: 'message', id: 'a3', parentId: 'a2', timestamp: '2026-01-02T03:04:06Z', activeLeafId: 'a3',
+      message: { role: 'assistant', model: 'provider/model-c', timestamp: 1e20, content: 'later' },
+    }]);
+    const session = await adapter.readSession({ sessionId: id });
+    expect(session.messages.at(-1)).toMatchObject({ content: [{ type: 'text', text: 'later' }], timestamp: '2026-01-02T03:04:06.000Z' });
+  });
+
   it('treats an explicit null active leaf as no active branch', async () => {
     const { adapter, id } = fixture('omp', [{ type: 'session_info', id: 'i1', parentId: 'a2', activeLeafId: null }]);
     expect((await adapter.readSession({ sessionId: id })).messages).toEqual([]);

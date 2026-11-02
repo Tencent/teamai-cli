@@ -6,5 +6,8 @@ import module from 'node:module';
 // every hook an agent runs. The CLI is therefore its own file (see
 // tsup.config.ts), loaded after the call by URL, so the bundler leaves it out
 // of this one. Node 20 has no compile cache.
-(module as typeof module & { enableCompileCache?: () => unknown }).enableCompileCache?.();
+// SAFETY: Node 22.1+ defines module.enableCompileCache and the @types/node 20 the build pins does not,
+// so it is typed optional and called only where it exists.
+(module as typeof module & { enableCompileCache?: () => void }).enableCompileCache?.();
+
 await import(new URL('./cli.js', import.meta.url).href);

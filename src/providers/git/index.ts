@@ -20,7 +20,9 @@ export function normalizeGitIdentity(value: string): string | null {
     .replace(/[._-]+$/g, '');
 
   if (!normalized) return null;
+
   if (WINDOWS_RESERVED_NAME.test(normalized)) normalized = `user-${normalized}`;
+
   return normalized.slice(0, 64);
 }
 
@@ -34,8 +36,10 @@ function gitIdentity(): string {
     // the option is the only guard.
     windowsHide: true,
   });
+
   const configured = result.status === 0 ? (result.stdout ?? '').trim() : '';
   let osUsername = '';
+
   try {
     osUsername = os.userInfo().username;
   } catch {
@@ -44,8 +48,10 @@ function gitIdentity(): string {
 
   for (const candidate of [configured, process.env.GIT_AUTHOR_NAME ?? '', osUsername]) {
     const safe = normalizeGitIdentity(candidate);
+
     if (safe) return safe;
   }
+
   return 'git-user';
 }
 
@@ -81,6 +87,7 @@ export class GenericGitProvider implements GitProvider {
       timeout: 10_000,
       windowsHide: true,
     });
+
     if (result.error || result.status !== 0) {
       throw new Error('git is required for generic Git repositories but was not found on PATH.');
     }
@@ -98,6 +105,7 @@ export class GenericGitProvider implements GitProvider {
       maxBuffer: 10 * 1024 * 1024,
       windowsHide: true,
     });
+
     if (result.error || result.status !== 0) {
       const output = `${result.stderr ?? ''} ${result.stdout ?? ''}`.trim();
       const detail = output || result.error?.message || `exit ${result.status ?? 1}`;

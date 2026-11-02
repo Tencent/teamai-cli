@@ -100,6 +100,7 @@ export async function resolveMaintenancePaths(
   } else if (usesBranchWorktree(localConfig)) {
     const { syncLockPath } = await import('../utils/learnings-publish.js');
     const lock = options.holdsSyncLock ? null : syncLockPath(localConfig);
+
     if (lock === null) {
       await refreshCheckouts(localConfig);
     } else if (!(await withFileLock(lock, { attempts: 1, delayMs: 0 }, () => refreshCheckouts(localConfig))).held) {
@@ -109,6 +110,7 @@ export async function resolveMaintenancePaths(
 
   const repoPath = getKnowledgeDir(localConfig);
   const roots = learningsRoots(localConfig);
+
   return {
     repoPath,
     votesDir: path.join(getReportsDir(localConfig), 'votes'),

@@ -13,7 +13,7 @@ import type { SimpleGit } from 'simple-git';
 import { z } from 'zod';
 
 import { ensureDir, writeFileAtomic } from './fs.js';
-import { parseFrontmatter } from './frontmatter.js';
+import { parseFrontmatter, type FrontmatterData } from './frontmatter.js';
 import { createGitWithBlockTimeout } from './git.js';
 import { learningsBranch } from './learnings-branch.js';
 import { CheckoutRefusedError, failureReason, fetchTrackingRef, type PublishResult } from './branch-worktree.js';
@@ -76,6 +76,7 @@ export async function publishQueuedLearnings(
   // left behind (#866).
   const syncLock = options.holdsSyncLock ? null : syncLockPath(localConfig);
   const locked = syncLock === null || await acquireLock(syncLock, { dryRun: options.dryRun });
+
   try {
     return await publishUnderSyncLock(localConfig, username, locked, options.dryRun === true);
   } finally {
@@ -97,6 +98,7 @@ async function publishUnderSyncLock(
   // a write — the empty `locks/` directory a preview would otherwise leave on an
   // install that has none yet (#866).
   const listing = await listPendingForInstall(localConfig, { dryRun });
+
   switch (listing.status) {
     case 'listed':
       break;
@@ -117,21 +119,27 @@ async function publishUnderSyncLock(
       throw new Error(`Unhandled queue listing: ${JSON.stringify(unhandled)}`);
     }
   }
+
   // What a maintenance run changed and could not publish goes first, and
   // whether or not anything is queued: rerunning maintenance finds nothing to change.
   if (locked && !dryRun) {
     const maintenance = await publishRecordedMaintenance(localConfig);
+
     if (maintenance.status === 'published') log.success('Published earlier maintenance changes to the learnings branch');
     else if (maintenance.status !== 'already-present') log.debug(`[learnings] recorded maintenance changes stay local: ${maintenance.status}`);
   }
 
   const queued = listing.queued;
+
   if (queued.length === 0) {
     return { published: [], remaining: 0 };
   }
+
   if (dryRun) return { published: [], remaining: queued.length };
+
   if (!locked) {
     log.debug('[learnings] a pull or push is in progress; leaving the queue for it');
+
     return {
       published: [],
       remaining: queued.length,
@@ -145,11 +153,13 @@ async function publishUnderSyncLock(
     for (const relPath of report.published) {
       await dropPendingLearning(localConfig, relPath);
     }
+
     return { ...report, remaining: queued.length - report.published.length };
   } catch (e) {
     // Never throw: a contribution is already safe in the queue, and publishing
     // it is never the reason a command fails.
-    log.debug(`[learnings] publishing failed (non-blocking): ${(e as Error).message}`);
+    log.debug(`[learnings] publishing failed (non-blocking): ${e instanceof Error ? e.message : String(e)}`);
+
     return {
       published: [],
       remaining: queued.length,
@@ -179,10 +189,17 @@ export function syncLockPath(localConfig: LocalConfig): string | null {
  */
 const IMPORT_REMNANT_NAME = /^\d{4}-\d{2}-\d{2}-(.*)\.md$/;
 
+/** The frontmatter fields an import remnant is told by; a value that is not a string reads as absent. */
+const RemnantFrontmatterSchema = z.object({
+  source_mr: z.string().optional().catch(undefined),
+  title: z.string().optional().catch(undefined),
+});
+
 /** The merge request a learning was extracted from, from its frontmatter. */
-function sourceMr(frontmatter: Record<string, unknown>): string | null {
-  const mr = frontmatter.source_mr;
-  return typeof mr === 'string' && mr.trim() !== '' ? mr.trim() : null;
+function sourceMr(frontmatter: FrontmatterData): string | null {
+  const mr = RemnantFrontmatterSchema.parse(frontmatter).source_mr?.trim();
+
+  return mr ? mr : null;
 }
 
 /**
@@ -201,30 +218,40 @@ function sourceMr(frontmatter: Record<string, unknown>): string | null {
 async function queueImportRemnants(localConfig: LocalConfig): Promise<void> {
   try {
     const checkout = await learningsBranch.registeredCheckout(localConfig);
+
     if (checkout === null) return;
     const git = createGitWithBlockTimeout(checkout);
+
     const lsFiles = async (args: string[]): Promise<string[]> =>
       (await git.raw(['ls-files', '-z', ...args, '--', 'learnings'])).split('\0').filter(Boolean);
 
     const remnants: Array<{ file: string; content: string; mr: string; title?: string }> = [];
+
     for (const rel of await lsFiles(['--others', '--exclude-standard'])) {
       // Directly under `learnings/`: those versions wrote nothing into a namespace.
       if (rel.split('/').length !== 2) continue;
       const named = IMPORT_REMNANT_NAME.exec(path.posix.basename(rel));
+
       if (!named) continue;
       const file = path.join(checkout, rel);
+
       // One that cannot be read, such as a dangling link, must not hold back the rest on every run.
-      const content = await fs.promises.readFile(file, 'utf-8').catch((e: unknown) => {
-        log.debug(`[learnings] cannot read ${file}: ${failureReason(e)}`);
+      const content = await fs.promises.readFile(file, 'utf-8').catch((cause: unknown) => {
+        log.debug(`[learnings] cannot read ${file}: ${failureReason(cause)}`);
+
         return null;
       });
+
       if (content === null) continue;
       const { data } = parseFrontmatter(content);
       const mr = sourceMr(data);
+
       if (mr === null) continue;
-      const title = typeof data.title === 'string' && data.title.trim() ? data.title : named[1];
+      const fields = RemnantFrontmatterSchema.parse(data);
+      const title = fields.title?.trim() ? fields.title : named[1];
       remnants.push({ file, content, mr, title: title || undefined });
     }
+
     if (remnants.length === 0) return;
 
     // What already covers a remnant: a learning on origin, in any namespace,
@@ -234,15 +261,19 @@ async function queueImportRemnants(localConfig: LocalConfig): Promise<void> {
     // a copy origin has deleted, and a remnant removed against that copy is
     // lost. Without a current origin every remnant stays for a later run.
     const known = await learningsOnOrigin(git);
+
     if (known === null) return;
     // The queue only while it is still this install's: after init switched the
     // project to another team repository, it holds that install's learnings, and
     // a remnant removed against one of them never reached this one's repository.
     const queue = await readPendingForInstall(localConfig);
+
     if (queue.status !== 'read') {
       log.debug(`[learnings] leaving what an older import --from-mr left for a later run: the queue is ${queue.status}`);
+
       return;
     }
+
     for (const { relPath, content } of queue.queued) {
       known.push({ label: `the contribution queue (${relPath})`, content, mr: sourceMr(parseFrontmatter(content).data) });
     }
@@ -250,24 +281,30 @@ async function queueImportRemnants(localConfig: LocalConfig): Promise<void> {
     const { generateFilename, resolveLearningsSubdir } = await import('../contribute.js');
     const subdir = await resolveLearningsSubdir(localConfig);
     const queued: string[] = [];
+
     for (const remnant of remnants) {
       const covered = known.find((k) => k.content === remnant.content || k.mr === remnant.mr);
+
       if (covered) {
         if (!await removeRemnant(remnant.file)) continue;
         log.warn(`Removed ${remnant.file}, which an older teamai import --from-mr left unpublished: ${covered.label} already has it.`);
         continue;
       }
+
       const relPath = path.posix.join(subdir, generateFilename(remnant.title));
       const saved = await savePendingLearning(localConfig, relPath, remnant.content);
+
       if (saved.status !== 'saved') {
         log.debug(`[learnings] could not queue ${remnant.file}: ${saved.status}`);
         break;
       }
+
       // Queued even when it cannot go: the next run finds the queued copy and removes it then.
       await removeRemnant(remnant.file);
       queued.push(remnant.file);
       known.push({ label: `the contribution queue (${relPath})`, content: remnant.content, mr: remnant.mr });
     }
+
     if (queued.length > 0) {
       log.warn(`Queued ${queued.length} learning(s) an older teamai import --from-mr left unpublished: ${queued.join(', ')}`);
     }
@@ -280,9 +317,11 @@ async function queueImportRemnants(localConfig: LocalConfig): Promise<void> {
 async function removeRemnant(file: string): Promise<boolean> {
   try {
     await fs.promises.rm(file, { force: true });
+
     return true;
   } catch (e) {
     log.debug(`[learnings] cannot remove ${file}: ${failureReason(e)}`);
+
     return false;
   }
 }
@@ -301,6 +340,7 @@ interface KnownLearning {
  */
 async function learningsOnOrigin(git: SimpleGit): Promise<KnownLearning[] | null> {
   const ref = `origin/${learningsBranch.branch}`;
+
   try {
     try {
       await fetchTrackingRef(git, learningsBranch.branch);
@@ -308,17 +348,22 @@ async function learningsOnOrigin(git: SimpleGit): Promise<KnownLearning[] | null
       // A fetch of a branch origin lacks fails too; ls-remote tells the two
       // apart, succeeding with no output only when origin answered without it.
       if ((await git.raw(['ls-remote', '--heads', 'origin', `refs/heads/${learningsBranch.branch}`])).trim() !== '') throw e;
+
       return [];
     }
+
     const files = (await git.raw(['ls-tree', '-r', '-z', '--name-only', ref, '--', 'learnings'])).split('\0').filter((f) => f.endsWith('.md'));
     const learnings: KnownLearning[] = [];
+
     for (const rel of files) {
       const content = await git.show([`${ref}:${rel}`]);
       learnings.push({ label: rel, content, mr: sourceMr(parseFrontmatter(content).data) });
     }
+
     return learnings;
   } catch (e) {
     log.debug(`[learnings] cannot read ${ref}; leaving what an older import --from-mr left for a later run: ${failureReason(e)}`);
+
     return null;
   }
 }
@@ -341,26 +386,35 @@ export async function publishLearningsMaintenance(
   changed: readonly string[],
 ): Promise<PublishResult> {
   const checkout = learningsBranch.dir(localConfig);
-  const inCheckout = changed
-    .map((file) => path.relative(checkout, file))
-    .filter((rel) => rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel));
+
+  const inCheckout = changed.flatMap((file) => {
+    const rel = path.relative(checkout, file);
+
+    return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel) ? [rel] : [];
+  });
+
   if (inCheckout.length < changed.length) {
     log.debug(`[learnings] maintenance changed files outside ${checkout}; not publishing those`);
   }
+
   if (!learningsBranch.enabled(localConfig)) {
     // kind: 'http' has no branch to retry against.
     return inCheckout.length === 0 ? { status: 'already-present' } : commitMaintenance(localConfig, message, inCheckout);
   }
+
   if (inCheckout.length > 0) {
     try {
       const contents: Record<string, string | null> = {};
+
       for (const rel of inCheckout) contents[rel] = await contentDigest(path.join(checkout, rel));
       await recordMaintenance(checkout, { message, files: inCheckout, contents });
     } catch (e) {
       log.debug(`[learnings] cannot record maintenance changes for a retry: ${failureReason(e)}`);
+
       return commitMaintenance(localConfig, message, inCheckout);
     }
   }
+
   return publishRecordedMaintenance(localConfig);
 }
 
@@ -374,15 +428,18 @@ const MaintenanceRecord = z.object({
   files: z.array(z.string()),
   contents: z.record(z.string(), z.string().nullable()).optional(),
 });
+
 type MaintenanceRecord = z.infer<typeof MaintenanceRecord>;
 
 async function hasUncommittedChange(checkout: string, rel: string): Promise<boolean> {
   const status = await createGitWithBlockTimeout(checkout).raw(['--literal-pathspecs', 'status', '--porcelain', '-z', '--untracked-files=all', '--', rel]);
+
   return status.length > 0;
 }
 
 async function contentDigest(file: string): Promise<string | null> {
   if (!fs.existsSync(file)) return null;
+
   return createHash('sha256').update(await fs.promises.readFile(file)).digest('hex');
 }
 
@@ -393,6 +450,7 @@ async function contentDigest(file: string): Promise<string | null> {
  */
 async function maintenanceRecordsDir(checkout: string): Promise<string> {
   const gitPath = (await createGitWithBlockTimeout(checkout).raw(['rev-parse', '--git-path', 'teamai-maintenance'])).trim();
+
   return path.resolve(checkout, gitPath);
 }
 
@@ -406,14 +464,17 @@ async function recordMaintenance(checkout: string, record: MaintenanceRecord): P
 /** Publish every recorded maintenance change, dropping the records once origin has them. Never throws. */
 async function publishRecordedMaintenance(localConfig: LocalConfig): Promise<PublishResult> {
   const checkout = learningsBranch.dir(localConfig);
+
   try {
     if (!fs.existsSync(checkout)) return { status: 'already-present' };
     const dir = await maintenanceRecordsDir(checkout);
     const records: Array<MaintenanceRecord & { file: string }> = [];
+
     // `.json` only: an interrupted atomic write leaves a `.tmp` copy beside them.
     for (const name of (await fs.promises.readdir(dir).catch(() => [])).filter((n) => n.endsWith('.json'))) {
       const file = path.join(dir, name);
       let text: string;
+
       try {
         text = await fs.promises.readFile(file, 'utf-8');
       } catch (e) {
@@ -421,17 +482,22 @@ async function publishRecordedMaintenance(localConfig: LocalConfig): Promise<Pub
         log.warn(`Cannot read maintenance record ${file} (${failureReason(e)}); it stays for the next publish.`);
         continue;
       }
+
       let problem: string;
+
       try {
         const parsed = MaintenanceRecord.safeParse(JSON.parse(text));
+
         if (parsed.success) {
           records.push({ ...parsed.data, file });
           continue;
         }
+
         problem = 'not a maintenance record';
       } catch (e) {
         problem = failureReason(e);
       }
+
       // Read and malformed, so no later publish can use it either, and it must
       // not hold back the others on every one.
       await fs.promises.rm(file, { force: true }).catch(() => undefined);
@@ -440,21 +506,25 @@ async function publishRecordedMaintenance(localConfig: LocalConfig): Promise<Pub
           `that is not on the learnings branch stays uncommitted in ${checkout}; check with git -C "${checkout}" status.`,
       );
     }
+
     if (records.length === 0) return { status: 'already-present' };
     // A file publishes only as the newest run that changed it left it: an edit
     // made since is someone's own, not this maintenance, and stays uncommitted.
     // Names start with the time they were written.
     records.sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
     const expected = new Map<string, string | null | undefined>();
+
     for (const record of records) for (const rel of record.files) expected.set(rel, record.contents?.[rel]);
     const files: string[] = [];
     const editedSince: string[] = [];
+
     for (const [rel, digest] of expected) {
       if (digest === undefined || (await contentDigest(path.join(checkout, rel))) === digest) files.push(rel);
       // Nothing uncommitted: an earlier attempt committed the run's change, and a refresh merged origin's into it.
       else if (!(await hasUncommittedChange(checkout, rel))) files.push(rel);
       else editedSince.push(rel);
     }
+
     if (editedSince.length > 0) {
       log.warn(
         `Not publishing the edit to ${editedSince.join(', ')}: it was made after the maintenance run that changed ` +
@@ -462,11 +532,14 @@ async function publishRecordedMaintenance(localConfig: LocalConfig): Promise<Pub
           `${checkout}; find it with git -C "${checkout}" status, then share it as a learning or discard it.`,
       );
     }
+
     const message = records.length === 1 ? records[0].message : `[teamai] Publish ${records.length} learnings maintenance runs`;
     const result = await commitMaintenance(localConfig, message, files);
+
     if (result.status === 'published' || result.status === 'already-present') {
       for (const record of records) await fs.promises.rm(record.file, { force: true });
     }
+
     return result;
   } catch (e) {
     return { status: 'failed', reason: failureReason(e) };
@@ -487,6 +560,7 @@ async function commitMaintenance(localConfig: LocalConfig, message: string, inCh
   // tracked, or one an earlier attempt already committed the removal of.
   const removed = inCheckout.filter((rel) => !fs.existsSync(path.join(checkout, rel)));
   let tracked = new Set<string>();
+
   if (removed.length > 0) {
     try {
       tracked = new Set((await createGitWithBlockTimeout(checkout).raw(['--literal-pathspecs', 'ls-files', '-z', '--', ...removed])).split('\0').filter(Boolean));
@@ -496,9 +570,12 @@ async function commitMaintenance(localConfig: LocalConfig, message: string, inCh
       return { status: 'failed', reason: failureReason(e) };
     }
   }
+
   const files = inCheckout.filter((rel) => !removed.includes(rel) || tracked.has(rel.split(path.sep).join('/')));
+
   // kind: 'http' has no branch an earlier attempt could have committed to.
   if (files.length === 0 && !learningsBranch.enabled(localConfig)) return { status: 'already-present' };
+
   // `commitAndPush`, not `update`: maintenance already wrote into the worktree
   // before this call, and `update` syncs with origin first, which can carry
   // those uncommitted files into a rebase or leave them behind.
@@ -526,13 +603,16 @@ async function publishToLearningsBranch(
 
   const result = await learningsBranch.update(localConfig, async (worktree) => {
     const files: string[] = [];
+
     for (const relPath of queued) {
       const content = await readPendingLearning(localConfig, relPath);
+
       if (content === null) {
         log.debug(`[learnings] skipping unreadable queue entry ${relPath}`);
         unreadable.push(relPath);
         continue;
       }
+
       // oxlint-disable-next-line teamai/learnings-root -- publishing writes into the locked orphan worktree supplied by learningsBranch.update
       const destAbs = path.join(worktree, 'learnings', relPath);
       await ensureDir(path.dirname(destAbs));
@@ -540,7 +620,9 @@ async function publishToLearningsBranch(
       files.push(path.posix.join('learnings', relPath.split(path.sep).join('/')));
       published.push(relPath);
     }
+
     if (files.length === 0) return null;
+
     return { files, message: commitMessageFor(username) };
   });
 

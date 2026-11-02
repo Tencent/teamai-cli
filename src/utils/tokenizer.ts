@@ -43,6 +43,7 @@ export function tokenize(text: string): string[] {
         tokens.push(cjkRun[i] + cjkRun[i + 1]);
       }
     }
+
     cjkRun = [];
   };
 
@@ -65,6 +66,7 @@ export function tokenize(text: string): string[] {
         .toLowerCase()
         .split(/\s+/)
         .filter((t) => t.length >= 2);
+
       for (const t of split) {
         if (t !== word) tokens.push(t);
       }
@@ -77,6 +79,7 @@ export function tokenize(text: string): string[] {
       flushCjkRun();
     }
   }
+
   flushCjkRun();
 
   return [...new Set(tokens)];
@@ -85,12 +88,16 @@ export function tokenize(text: string): string[] {
 /** Non-deduplicated word-like token count (for BM25 document length). */
 export function tokenCount(text: string): number {
   if (!text) return 0;
+
   const input = text.length > MAX_TOKENIZE_CHARS
     ? text.slice(0, MAX_TOKENIZE_CHARS) : text;
+
   let count = 0;
+
   for (const seg of sharedSegmenter.segment(input)) {
     if (seg.isWordLike) count++;
   }
+
   return count;
 }
 
@@ -122,8 +129,10 @@ export function tokenCount(text: string): number {
  */
 export function wordSegments(text: string): string[] {
   if (!text) return [];
+
   const input = text.length > MAX_TOKENIZE_CHARS
     ? text.slice(0, MAX_TOKENIZE_CHARS) : text;
+
   const words: string[] = [];
   let run: string[] = [];
   // Whether the last emitted word was a multi-char CJK word, i.e. one the
@@ -131,17 +140,21 @@ export function wordSegments(text: string): string[] {
   let lastWasCjkWord = false;
 
   const flushRun = (): void => {
-    if (run.length > 0 && lastWasCjkWord) {
-      // The first char is a suffix the segmenter peeled off the previous word,
-      // so it belongs there rather than leading a word of its own. Only the
-      // first: the rest are separate words the segmenter failed to join.
-      words[words.length - 1] += run.shift() as string;
+    // The first char is a suffix the segmenter peeled off the previous word,
+    // so it belongs there rather than leading a word of its own. Only the
+    // first: the rest are separate words the segmenter failed to join.
+    const suffix = lastWasCjkWord ? run.shift() : undefined;
+
+    if (suffix !== undefined) {
+      words[words.length - 1] += suffix;
       lastWasCjkWord = false;
     }
+
     if (run.length > 0) {
       words.push(run.join(''));
       lastWasCjkWord = false;
     }
+
     run = [];
   };
 
@@ -151,14 +164,17 @@ export function wordSegments(text: string): string[] {
       lastWasCjkWord = false;
       continue;
     }
+
     if (seg.segment.length === 1 && /[一-鿿]/.test(seg.segment)) {
       run.push(seg.segment);
       continue;
     }
+
     flushRun();
     words.push(seg.segment);
     lastWasCjkWord = /^[一-鿿]+$/.test(seg.segment);
   }
+
   flushRun();
 
   return words;

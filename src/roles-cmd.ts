@@ -25,12 +25,15 @@ function parseNamespaces(input: string): string[] {
 
 export async function rolesInit(options: GlobalOptions): Promise<void> {
     const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: options.dryRun });
+
     if (options.dryRun && localConfig.repo.kind !== 'self') {
         await runManifestEdit(localConfig, 'Roles', async (_repoPath, previewConfig) => {
             await initializeRoles(options, previewConfig, teamConfig);
         }, { dryRun: true });
+
         return;
     }
+
     if (!options.dryRun && localConfig.repo.kind !== 'self') await pullLatest(localConfig.repo.localPath);
     await initializeRoles(options, localConfig, teamConfig);
 }
@@ -40,11 +43,14 @@ async function initializeRoles(options: GlobalOptions, localConfig: LocalConfig,
 
     // Check if manifest already exists
     const manifestPath = path.join(repoPath, 'manifest', 'roles.yaml');
+
     if (await pathExists(manifestPath)) {
         log.warn(`Roles manifest already exists at ${manifestPath}`);
         const overwrite = await askConfirmation('Overwrite existing manifest? [y/N] ');
+
         if (!overwrite) {
             log.info('Aborted. Existing manifest is unchanged.');
+
             return;
         }
     }
@@ -62,8 +68,10 @@ async function initializeRoles(options: GlobalOptions, localConfig: LocalConfig,
     }> = [];
 
     let addMore = true;
+
     while (addMore) {
         const id = await askQuestion(`Role id (e.g. hai, pm, devops): `);
+
         if (!id) {
             log.warn('Role id is required. Skipping.');
             continue;
@@ -79,6 +87,7 @@ async function initializeRoles(options: GlobalOptions, localConfig: LocalConfig,
         const namespacesInput = await askQuestion(
             `Resource namespaces for "${id}" (comma-separated, e.g. common,${id}): `,
         );
+
         const namespaces = parseNamespaces(namespacesInput);
 
         if (namespaces.length === 0) {
@@ -104,6 +113,7 @@ async function initializeRoles(options: GlobalOptions, localConfig: LocalConfig,
 
     if (roles.length === 0) {
         log.error('No roles defined. Aborting.');
+
         return;
     }
 
@@ -116,6 +126,7 @@ async function initializeRoles(options: GlobalOptions, localConfig: LocalConfig,
     if (options.dryRun) {
         log.info('[dry-run] Would write manifest:');
         console.log(YAML.stringify(manifest));
+
         return;
     }
 
@@ -123,9 +134,11 @@ async function initializeRoles(options: GlobalOptions, localConfig: LocalConfig,
     const allNamespaces = [...new Set(roles.flatMap((r) => r.resources.skills))];
     log.info('');
     log.info('Next step: organize your skills into namespace subdirectories:');
+
     for (const ns of allNamespaces) {
         log.info(`  skills/${ns}/`);
     }
+
     log.info('');
     log.info('Example: mv skills/hai-deploy-test skills/hai/hai-deploy-test');
 
@@ -145,6 +158,14 @@ async function initializeRoles(options: GlobalOptions, localConfig: LocalConfig,
 
 // ─── roles list ─────────────────────────────────────────
 
+/** What `roles list --json` reports: every role held, the primary one, the rest, and where they come from. */
+export interface EffectiveRoles {
+    roles: string[];
+    primaryRole: string | null;
+    additionalRoles: string[];
+    source: RoleSource;
+}
+
 /**
  * This member's effective roles and where they come from.
  *
@@ -155,17 +176,14 @@ async function initializeRoles(options: GlobalOptions, localConfig: LocalConfig,
  * A team hook that bounds an agent by role reads this (`roles list --json`)
  * rather than the member's config file, whose path and shape are teamai's own.
  */
-export function effectiveRoles(localConfig: LocalConfig): {
-    roles: string[];
-    primaryRole: string | null;
-    additionalRoles: string[];
-    source: RoleSource;
-} {
+export function effectiveRoles(localConfig: LocalConfig): EffectiveRoles {
     const primaryRole = localConfig.primaryRole ?? null;
     const additionalRoles = primaryRole ? (localConfig.additionalRoles ?? []) : [];
+
     const source: RoleSource = localConfig.roleAssignment
         ? localConfig.roleAssignment.source
         : primaryRole ? 'local' : 'none';
+
     return {
         roles: primaryRole ? [...new Set([primaryRole, ...additionalRoles])] : [],
         primaryRole,
@@ -187,6 +205,7 @@ export async function rolesList(options: { json?: boolean } = {}): Promise<void>
     // assigned role roles.yaml does not declare, a members.yaml that cannot be
     // read — so every log line goes to stderr, as doctor --json routes them.
     const stderrOnly = setStderrOnly(true);
+
     try {
         await listRoles(options);
     } finally {
@@ -205,15 +224,18 @@ async function listRoles(options: { json?: boolean }): Promise<void> {
     // manifest cannot be read, so a hook reading --json is never left guessing.
     if (options.json) {
         console.log(JSON.stringify({ ...effective, assignmentFile: localConfig.roleAssignment ? ROLE_ASSIGNMENTS_FILE : null }, null, 2));
+
         return;
     }
 
     let manifest;
+
     try {
         manifest = await loadRolesManifest(repoPath);
     } catch (e) {
-        log.error((e as Error).message);
+        log.error(e instanceof Error ? e.message : String(e));
         log.info('Run `teamai roles init` to create a roles manifest.');
+
         return;
     }
 
@@ -232,6 +254,7 @@ async function listRoles(options: { json?: boolean }): Promise<void> {
     // Show current user's role
     if (effective.primaryRole) {
         console.log(`Your primary role: ${effective.primaryRole}`);
+
         if (effective.additionalRoles.length > 0) {
             console.log(`Additional roles: ${effective.additionalRoles.join(', ')}`);
         }
@@ -240,6 +263,7 @@ async function listRoles(options: { json?: boolean }): Promise<void> {
     } else {
         console.log('You have no role configured. Run `teamai roles set <role>` to set one.');
     }
+
     if (localConfig.roleAssignment) {
         console.log('');
         console.log(assignedRolesNotice(effective));
@@ -261,15 +285,18 @@ export async function rolesSet(
     if (localConfig.roleAssignment) {
         log.error(assignedRolesNotice(effectiveRoles(localConfig)));
         process.exitCode = 1;
+
         return;
     }
 
     let manifest;
+
     try {
         manifest = await loadRolesManifest(repoPath);
     } catch (e) {
-        log.error((e as Error).message);
+        log.error(e instanceof Error ? e.message : String(e));
         log.info('Run `teamai roles init` to create a roles manifest first.');
+
         return;
     }
 
@@ -278,20 +305,24 @@ export async function rolesSet(
     // Validate primary role
     if (!validIds.has(primaryRole)) {
         log.error(`Unknown role "${primaryRole}". Valid roles: ${[...validIds].join(', ')}`);
+
         return;
     }
 
     // Validate additional roles
     const additionalRoles = (options.add ?? []).filter((id) => id !== primaryRole);
+
     for (const id of additionalRoles) {
         if (!validIds.has(id)) {
             log.error(`Unknown additional role "${id}". Valid roles: ${[...validIds].join(', ')}`);
+
             return;
         }
     }
 
     if (options.dryRun) {
         log.info(`[dry-run] Would set primary role to: ${primaryRole}, additional roles: ${additionalRoles.join(', ') || 'none'}`);
+
         return;
     }
 
@@ -307,9 +338,11 @@ export async function rolesSet(
     await saveScopeSelection(localConfig, updatedConfig);
 
     log.success(`Primary role set to: ${primaryRole}`);
+
     if (additionalRoles.length > 0) {
         log.success(`Additional roles: ${additionalRoles.join(', ')}`);
     }
+
     log.info('Run `teamai pull` to sync resources for your new role.');
 }
 
@@ -320,8 +353,10 @@ export async function rolesAdd(
     options: GlobalOptions & { namespaces: string; description?: string },
 ): Promise<void> {
     const namespaces = parseNamespaces(options.namespaces);
+
     if (namespaces.length === 0) {
         log.error('At least one namespace is required. Use --namespaces common,hai');
+
         return;
     }
 
@@ -329,17 +364,20 @@ export async function rolesAdd(
 
     await runManifestEdit(localConfig, 'Roles', async (repoPath, editConfig) => {
         let manifest: RolesManifest;
+
         try {
             manifest = await loadRolesManifest(repoPath);
         } catch (e) {
-            log.error((e as Error).message);
+            log.error(e instanceof Error ? e.message : String(e));
             log.info('Run `teamai roles init` to create a roles manifest first.');
+
             return;
         }
 
         // Check duplicate
         if (findRole(manifest, roleId)) {
             log.error(`Role "${roleId}" already exists. Use \`teamai roles update ${roleId}\` to modify it.`);
+
             return;
         }
 
@@ -360,6 +398,7 @@ export async function rolesAdd(
 
         if (options.dryRun) {
             log.info(`[dry-run] Would add role "${roleId}" with namespaces: ${namespaces.join(', ')}`);
+
             return;
         }
 
@@ -387,22 +426,27 @@ export async function rolesRemove(
 
     await runManifestEdit(localConfig, 'Roles', async (repoPath, editConfig) => {
         let manifest: RolesManifest;
+
         try {
             manifest = await loadRolesManifest(repoPath);
         } catch (e) {
-            log.error((e as Error).message);
+            log.error(e instanceof Error ? e.message : String(e));
             log.info('Run `teamai roles init` to create a roles manifest first.');
+
             return;
         }
 
         if (!findRole(manifest, roleId)) {
             log.error(`Role "${roleId}" not found. Valid roles: ${listRoleIds(manifest).join(', ')}`);
+
             return;
         }
 
         const remaining = manifest.roles.filter((r) => r.id !== roleId);
+
         if (remaining.length === 0) {
             log.error('Cannot remove the last role. The manifest requires at least one role.');
+
             return;
         }
 
@@ -413,6 +457,7 @@ export async function rolesRemove(
 
         if (options.dryRun) {
             log.info(`[dry-run] Would remove role "${roleId}". Remaining: ${remaining.map((r) => r.id).join(', ')}`);
+
             return;
         }
 
@@ -447,6 +492,7 @@ export async function rolesUpdate(
 
     if (!hasAddNs && !hasRemoveNs && !hasDesc) {
         log.error('Nothing to update. Use --add-namespaces, --remove-namespaces, or --description.');
+
         return;
     }
 
@@ -454,17 +500,21 @@ export async function rolesUpdate(
 
     await runManifestEdit(localConfig, 'Roles', async (repoPath, editConfig) => {
         let manifest: RolesManifest;
+
         try {
             manifest = await loadRolesManifest(repoPath);
         } catch (e) {
-            log.error((e as Error).message);
+            log.error(e instanceof Error ? e.message : String(e));
             log.info('Run `teamai roles init` to create a roles manifest first.');
+
             return;
         }
 
         const existingRole = findRole(manifest, roleId);
+
         if (!existingRole) {
             log.error(`Role "${roleId}" not found. Valid roles: ${listRoleIds(manifest).join(', ')}`);
+
             return;
         }
 
@@ -474,6 +524,7 @@ export async function rolesUpdate(
         if (hasAddNs) {
             const toAdd = parseNamespaces(options.addNamespaces!);
             const existing = new Set(updatedNamespaces);
+
             for (const ns of toAdd) {
                 if (!existing.has(ns)) {
                     updatedNamespaces.push(ns);
@@ -489,6 +540,7 @@ export async function rolesUpdate(
 
         if (updatedNamespaces.length === 0) {
             log.error('Cannot remove all namespaces. A role must have at least one namespace.');
+
             return;
         }
 
@@ -512,7 +564,9 @@ export async function rolesUpdate(
         if (options.dryRun) {
             log.info(`[dry-run] Would update role "${roleId}":`);
             log.info(`  namespaces: ${updatedNamespaces.join(', ')}`);
+
             if (hasDesc) log.info(`  description: ${options.description}`);
+
             return;
         }
 
@@ -520,8 +574,11 @@ export async function rolesUpdate(
         log.success(`Updated role: ${roleId} (namespaces: ${updatedNamespaces.join(', ')})`);
 
         const changes: string[] = [];
+
         if (hasAddNs) changes.push(`added namespaces: ${options.addNamespaces}`);
+
         if (hasRemoveNs) changes.push(`removed namespaces: ${options.removeNamespaces}`);
+
         if (hasDesc) changes.push(`description: ${options.description}`);
 
         const commitMsg = `[teamai] Update role "${roleId}"`;

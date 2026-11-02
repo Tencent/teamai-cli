@@ -461,6 +461,36 @@ describe('extract writes a fallback evidence manifest (#508)', () => {
     expect(manifest.components[0]?.responsibilities).toEqual(['render']);
   });
 
+  it('leaves out a module whose AI reply names no domain and keeps the modules whose reply does', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-508-ai-partial-'));
+    temporaryDirectories.push(root);
+    const classes = (prefix: string) =>
+      Array.from({ length: 5 }, (_, index) => `export class ${prefix}${index} { run() { return ${index}; } }`).join('\n') + '\n';
+    fs.mkdirSync(path.join(root, 'src'));
+    fs.writeFileSync(path.join(root, 'src', 'app.ts'), classes('App'));
+    fs.mkdirSync(path.join(root, 'lib'));
+    fs.writeFileSync(path.join(root, 'lib', 'util.ts'), classes('Util'));
+    vi.mocked(callToolParallel)
+      .mockImplementationOnce(async (tasks) =>
+        tasks.map((task) =>
+          task.parse(
+            task.prompt.includes('模块名: lib')
+              ? '{"responsibilities":["helpers"],"summary":"shared helpers"}'
+              : '{"domain":"widgets","responsibilities":["render"],"layer":"service","summary":"ui"}',
+          ),
+        ),
+      )
+      .mockImplementationOnce(async (tasks) =>
+        tasks.map((task) => task.parse('{"domain":"widgets","description":"ui kit","keywords":["widget"]}')),
+      );
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await extractCodebase({ path: root, project: 'widget', json: true });
+
+    const manifest = readEvidenceManifest(root, 'widget');
+    expect(manifest.components.map((component) => [component.slug, component.category])).toEqual([['src', 'service']]);
+  });
+
   it('says so when extractable files yield no components to put in a manifest', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-508-none-'));
     temporaryDirectories.push(root);

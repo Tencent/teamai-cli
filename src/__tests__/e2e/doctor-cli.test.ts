@@ -157,6 +157,23 @@ describe('teamai doctor CLI (e2e)', () => {
     expect(report.checks.some((c) => c.name === 'Team repo exists locally' && c.ok)).toBe(true);
   });
 
+  it('tells the member to fix a hook file teamai will not rewrite, not to run hooks inject', () => {
+    const home = path.join(sandbox, 'unreadable-hook-home');
+    writeLocalConfig(home, path.join(sandbox, 'team-repo'));
+    const settings = path.join(home, '.claude', 'settings.json');
+    fs.writeFileSync(settings, JSON.stringify({ hooks: { SessionStart: {} } }));
+
+    const result = runDoctor(home, '--json');
+
+    const report = JSON.parse(result.stdout) as { checks: Array<{ name: string; ok: boolean; fix?: string }> };
+    const hookCheck = report.checks.find((c) => c.name === 'teamai hooks in claude settings');
+    expect(hookCheck).toEqual({
+      name: 'teamai hooks in claude settings',
+      ok: false,
+      fix: `${settings}: hooks.SessionStart is not a list, so teamai left the file as it is. Fix it, then run the command again.`,
+    });
+  });
+
   it('--json keeps its envelope before initialization', () => {
     const result = runDoctor(uninitializedHome, '--json');
 

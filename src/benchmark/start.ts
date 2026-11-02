@@ -5,7 +5,7 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { isLabelShaped, isNameShaped, observeCheckout } from '../agent-observation.js';
+import { isRecordableLabel, isRecordableName, observeCheckout } from '../agent-observation.js';
 import { loadLocalConfigForScope } from '../config.js';
 import { isModelAlias, loadModelAliases, loadTeamModelAliases, noModelCause, noModelReason, resolveModelValue, type ModelAliases, type ModelResolution, type NoModel } from '../models/aliases.js';
 import { pinScorers } from '../scorers/cache.js';
@@ -13,6 +13,7 @@ import type { PinnedScorer } from '../scorers/pin.js';
 import { resolveTeamRef, TeamRefError } from '../team-ref.js';
 import { isAgentToolId } from '../tools.js';
 import type { LocalConfig } from '../types.js';
+import { definedFields } from '../utils/defined-fields.js';
 import { withTeamRevision } from '../workflow/cache.js';
 import { loadCachedSuite, readSuiteFiles } from './suite-cache.js';
 import { error } from '../workflow/engine.js';
@@ -22,7 +23,7 @@ import { judgeUnavailable } from '../workflow/scoring.js';
 import type { WorkflowEnvelope, WorkflowFailure } from '../workflow/types.js';
 import { formatDiagnostic } from '../workflow/parse.js';
 import { git } from '../workflow/worktree.js';
-import { addedOf, compileBundle, freezePlan, type BenchmarkPlan, type PlannedArm } from './plan.js';
+import { addedOf, compileBundle, freezePlan, type BenchmarkPlan, type CompiledBundle, type PlannedArm } from './plan.js';
 import { defaultsArmOf, parseSuite, type Arm, type Suite, type TaskJudge } from './suite.js';
 import { pinArmWorkflow, type PinnedArmWorkflow } from './arm-workflow.js';
 import type { TeamSelection } from '../workflow/clone.js';
@@ -50,7 +51,7 @@ interface BenchmarkStart {
  * as `planBenchmark` freezes it, and the suite's timeout comes with them.
  */
 export interface BenchmarkPlanned {
-  definition: { definition: Record<string, unknown>; workflows: Record<string, Record<string, unknown>>; scorers: Record<string, PinnedScorer>; teamRevision: string };
+  definition: CompiledBundle & { teamRevision: string };
   plan: BenchmarkPlan;
 }
 
@@ -62,11 +63,14 @@ export interface BenchmarkPlanned {
 export async function planBenchmark(config: LocalConfig, name: string, options: BenchmarkStart): Promise<{ planned: BenchmarkPlanned; timeoutMs: number } | { refused: Refusal }> {
   // First: no suite, arm or commit read later changes that this machine cannot pin the team a trial gets.
   const blocked = await trialBlocker(config);
+
   if (blocked !== undefined) return { refused: error('team_ref_blocked', blocked) };
   const frozen = await freezeSuite(config, name, options);
+
   if (!frozen.ok) return { refused: frozen.refused };
   const { suite, plan, committed, armWorkflows } = frozen;
   const { definition, workflows, scorers } = compileBundle(plan, committed, { armWorkflows, unattended: options.unattended });
+
   return {
     planned: { definition: { definition, workflows, scorers, teamRevision: plan.baselineTeamRevision }, plan },
     timeoutMs: suite.timeoutMs,
@@ -81,21 +85,27 @@ export async function planBenchmark(config: LocalConfig, name: string, options: 
  */
 export async function planStep(name: string, env: NodeJS.ProcessEnv, { memberAliases }: Pick<BenchmarkStart, 'memberAliases'>): Promise<{ planned: BenchmarkPlanned } | { failure: WorkflowFailure }> {
   const found = await findAttemptRun(env);
+
   if ('error' in found) return { failure: found.error };
   const { config, run, step } = found;
   const planned = await planBenchmark(config, name, { checkout: run.checkout ?? process.cwd(), memberAliases, unattended: trialsUnattended(run, step.id) });
+
   if ('refused' in planned) return { failure: planned.refused.error };
   const limit = runDeadline(run) === undefined ? undefined : Math.min(...[run.definition.timeout, run.timeout].filter((ms) => ms !== undefined));
+
   if (limit === undefined || limit > planned.timeoutMs) {
     const bound = limit === undefined ? 'has no timeout' : `may take ${durationText(limit)}`;
+
     return { failure: { code: 'invalid_arguments', message: `Run ${run.id} ${bound}, and suite "${name}" allows ${durationText(planned.timeoutMs)}. Start it with teamai workflow start ${run.name} --timeout ${durationText(planned.timeoutMs)}, or with teamai benchmark run ${name}, which sets it.` } };
   }
+
   return { planned: planned.planned };
 }
 
 /** `ms` as the largest whole unit a timeout takes: 2h, 10m, 30s or 500ms. */
 function durationText(ms: number): string {
   const unit = ([['h', 3_600_000], ['m', 60_000], ['s', 1000]] as const).find(([, size]) => ms % size === 0);
+
   return unit ? `${ms / unit[1]}${unit[0]}` : `${ms}ms`;
 }
 
@@ -109,76 +119,104 @@ type Frozen = { ok: true; suite: Suite; plan: BenchmarkPlan; committed: Committe
 async function freezeSuite(config: LocalConfig, name: string, options: BenchmarkStart): Promise<Frozen> {
   const refuse = (refused: Refusal): Refused => ({ ok: false, refused });
   const pulled = await pulledTeamRevision(config, options.checkout);
+
   if ('refused' in pulled) return refuse(error('team_revision_unpullable', pulled.refused));
   const { revision } = pulled;
   const found = await loadCachedSuite(config, name);
+
   if (found === null) {
     return refuse(error('benchmark_not_found', `Suite "${name}" has no runnable version for this member. Check benchmarks/${name}/suite.yaml and that your roles or projects receive its namespace, push it, run teamai pull, and start again.`));
   }
+
   const unreachable = await unreachableTask(config, found, options.checkout);
+
   if (unreachable) {
     const { task, commit } = unreachable;
     const named = commit === task.startingCommit ? `starts from ${short(commit)}` : `writes check.add from its solutionCommit ${short(commit)}`;
+
     return refuse(error('commit_unreachable', `Task "${task.id}" ${named}, which neither this checkout nor ${found.repo} has. Push it, or fix ${commit === task.startingCommit ? 'startingCommit' : 'solutionCommit'}, and start again.`));
   }
+
   let aliases: Promise<ModelAliases> | undefined;
   const loadAliases = (): Promise<ModelAliases> => (aliases ??= armAliases(config, revision, options.memberAliases));
   const [firstArm, ...otherArms] = found.arms;
   const first = await plannedArm(config, firstArm, revision, loadAliases);
+
   if (!first.ok) return first;
   const rest: PlannedArm[] = [];
+
   for (const arm of otherArms) {
     const resolved = await plannedArm(config, arm, revision, loadAliases);
+
     if (!resolved.ok) return resolved;
     rest.push(resolved.arm);
   }
+
   const unpublishable = [first.arm, ...rest].map(unpublishableArm).find((message) => message !== undefined);
+
   if (unpublishable !== undefined) return refuse(error('arm_unpublishable', unpublishable));
   const armWorkflows = new Map<string, PinnedArmWorkflow>();
   const arms: [PlannedArm, ...PlannedArm[]] = [first.arm, ...rest];
+
   for (const [index, arm] of arms.entries()) {
     const workflow = found.arms[index]?.workflow;
+
     if (workflow === undefined) continue;
     const pinnedWorkflow = await pinArmWorkflow(config, { arm, name: workflow, revision: arm.team.kind === 'none' ? revision : arm.team.revision, unattended: options.unattended });
+
     if (!pinnedWorkflow.ok) {
       const { code, message } = pinnedWorkflow;
+
       return refuse(code === 'workflow_namespace_conflict' ? error('workflow_namespace_conflict', message) : error('arm_workflow_unrunnable', message));
     }
+
     armWorkflows.set(arm.name, pinnedWorkflow.pinned);
     arms[index] = { ...arm, workflow: { name: workflow, sourceHash: pinnedWorkflow.pinned.sourceHash } };
   }
+
   const pinned = await pinScorers(config, found.scorers);
   const unpinned = found.scorers.find((scorer) => !Object.hasOwn(pinned, scorer));
+
   if (unpinned !== undefined) {
     return refuse(error('scorer_not_found', `Suite "${found.name}" lists scorer "${unpinned}", which has no valid scorers/${unpinned}.md for this member. Add the scorer, or remove it from ${found.relativePath}, push it, run teamai pull, and start again.`));
   }
+
   const committed = await commitCheckFiles(commitCacheOf(config, found.repo), found);
+
   if (!committed.ok) {
     return refuse(error('check_files_unwritable', `Task "${committed.task}" writes files from the suite directory before its check, and they could not be written as a commit into this machine's benchmark cache: ${committed.failed} Fix that, and start again.`));
   }
+
   const skillChanges = await skillChangesOf(config, arms, { baseline: revision, defaults: defaultsArmOf(found)?.name });
+
   if ('refused' in skillChanges) return refuse(skillChanges.refused);
   const plan = freezePlan({ committed: committed.suite, baselineTeamRevision: revision, selection: selectionOf(config), arms, scorers: pinned, skillChanges: skillChanges.changes });
   const { scorers: generated } = compileBundle(plan, committed.suite, { armWorkflows, unattended: options.unattended });
   const criteria = found.tasks.find((task) => task.judge.kind === 'criteria');
   const needs = found.scorers.length > 0 ? `its scorers ${found.scorers.join(', ')}` : criteria ? `task "${criteria.id}" has successCriteria` : undefined;
   const unjudged = needs === undefined ? undefined : await judgeUnavailable(config, { ...pinned, ...generated });
+
   if (unjudged !== undefined) {
     return refuse(error('scoring_unavailable', `This suite needs a judge (${needs}), and this machine cannot judge: ${unjudged} Fix it, or start the benchmark where a judge tool is installed.`));
   }
+
   return { ok: true, suite: found, plan, committed: committed.suite, pinned, armWorkflows };
 }
 
 type ArmResolution = { ok: true; arm: PlannedArm } | { ok: false; message: string };
+
 /** A refusal before any run exists. */
 type Refusal = ReturnType<typeof error>;
+
 type Refused = { ok: false; refused: Refusal };
 
 /** The arm as the plan freezes it, its team assets resolved before its model, or why start refuses it. */
 async function plannedArm(config: LocalConfig, arm: Arm, pulled: string, aliases: () => Promise<ModelAliases>): Promise<{ ok: true; arm: PlannedArm } | Refused> {
   const team = await resolveTeam(config, arm, pulled);
+
   if (!team.ok) return team;
   const resolved = await resolveArm(arm, team.team, aliases);
+
   return resolved.ok ? resolved : { ok: false, refused: error('arm_model_missing', resolved.message) };
 }
 
@@ -193,31 +231,51 @@ async function resolveTeam(config: LocalConfig, { name, tool, team }: Arm, pulle
       return { ok: true, team: { kind: 'pulled', revision: pulled } };
     case 'none': {
       const user = await loadLocalConfigForScope('user', undefined, { dryRun: true, suppressMigrationNotice: true });
+
       if (user && (user.enabledAgents === undefined || user.enabledAgents.includes(tool))) {
         return { ok: false, refused: error('arm_team_unclean', `Arm "${name}" runs without team assets, and this machine's user-scope teamai install delivers team assets to ${tool} in your home, where its trials would read them. Start the benchmark on a machine where teamai is installed only in workspace scope.`) };
       }
+
       return { ok: true, team: { kind: 'none' } };
     }
+
     case 'ref': {
       const resolved = await resolveTeamRef(config.repo.localPath, team.ref).then((ref) => ({ ok: true as const, commit: ref.commit }), (cause: unknown) => ({ ok: false as const, cause }));
+
       if (resolved.ok) return { ok: true, team: { kind: 'ref', ref: team.ref, revision: resolved.commit } };
+
       if (resolved.cause instanceof TeamRefError) {
         return { ok: false, refused: error('arm_team_unresolved', `Arm "${name}" runs on team ref "${team.ref}", which is no branch, tag or commit of this checkout's team repo that holds teamai.yaml. Its branches: ${resolved.cause.branches.join(', ') || 'none'}. Fetch it, or fix the arm's team, push it, run teamai pull, and start again.`) };
       }
+
       const cause = resolved.cause instanceof Error ? resolved.cause.message : String(resolved.cause);
+
       return { ok: false, refused: error('arm_team_unreadable', `Arm "${name}" runs on team ref "${team.ref}", and git could not read this checkout's team repo at ${config.repo.localPath}: ${cause}. Repair the team repo, or run teamai pull, and start again.`) };
     }
+
     case 'without': {
       const refusal = await withoutRefusal(config, { arm: name, paths: team.paths, revision: pulled, selection: selectionOf(config) });
+
       if (refusal?.code === 'arm_team_unreadable') return { ok: false, refused: error('arm_team_unreadable', refusal.message) };
+
       if (refusal) return { ok: false, refused: error('arm_team_unresolved', refusal.message) };
+
       return { ok: true, team: { kind: 'without', paths: team.paths, revision: pulled } };
     }
+
     default: {
       const unhandled: never = team;
+
       return unhandled;
     }
   }
+}
+
+/** The files of the baseline and of an arm's team revision, and those that differ between them. */
+interface ComparedFiles {
+  before: string[];
+  after: string[];
+  touched: string[];
 }
 
 /**
@@ -230,35 +288,47 @@ async function skillChangesOf(config: LocalConfig, arms: readonly PlannedArm[], 
   const changes: SkillChanges[] = [];
   const listing = (revision: string) => git(config.repo.localPath, ['ls-tree', '-r', '--name-only', revision]);
   const lines = (text: string): string[] => text.split('\n').filter((file) => file !== '');
+
   for (const arm of arms) {
     const against = defaults === undefined || defaults === arm.name ? {} : { defaults };
-    let compared: { before: string[]; after: string[]; touched: string[] };
+    let compared: ComparedFiles;
+
     if (arm.team.kind === 'without') {
       const { paths } = arm.team;
       const before = await listing(baseline);
+
       if (before.code !== 0) {
         return { refused: error('arm_team_unreadable', `Arm "${arm.name}" runs without ${paths.join(', ')}, and git could not list the skills of the team revision this checkout pulled at ${config.repo.localPath}: ${before.stderr.trim()}. Repair the team repo, or run teamai pull, and start again.`) };
       }
+
       const files = lines(before.stdout);
       compared = { before: files, after: files.filter((file) => !leavesOut(paths, file)), touched: files.filter((file) => leavesOut(paths, file)) };
     } else {
       if (arm.team.kind !== 'ref' || arm.team.revision === baseline) continue;
       const [before, after, diff] = await Promise.all([listing(baseline), listing(arm.team.revision), git(config.repo.localPath, ['diff', '--name-only', '--no-renames', baseline, arm.team.revision])]);
       const failed = [before, after, diff].find((read) => read.code !== 0);
+
       if (failed) {
         return { refused: error('arm_team_unreadable', `Arm "${arm.name}" runs on team ref "${arm.team.ref}", and git could not compare its skills with the team revision this checkout pulled at ${config.repo.localPath}: ${failed.stderr.trim()}. Repair the team repo, or run teamai pull, and start again.`) };
       }
+
       compared = { before: lines(before.stdout), after: lines(after.stdout), touched: lines(diff.stdout) };
     }
+
     const [had, has] = [skillDirectories(compared.before), skillDirectories(compared.after)];
+
     const skills = [...new Set([...had, ...has])].sort().flatMap((directory) => {
       const change = !had.has(directory) ? 'added' as const : !has.has(directory) ? 'removed' as const
         : compared.touched.some((file) => file.startsWith(`${directory}/`)) ? 'changed' as const : undefined;
+
       return change ? [{ name: path.posix.basename(directory), change }] : [];
     });
+
     const [first, ...rest] = skills;
+
     if (first) changes.push({ arm: arm.name, ...against, skills: [first, ...rest] });
   }
+
   return { changes };
 }
 
@@ -286,11 +356,14 @@ async function resolveArm({ name, tool, model }: Arm, team: ArmTeam, aliases: ()
   const alias = isModelAlias(loaded, model);
   // An alias maps only the tools teamai knows, so it gives any other tool no model; a model name passes as written.
   const resolution: ModelResolution = isAgentToolId(tool) ? resolveModelValue(loaded, model, tool) : alias ? { ok: true, step: 'default' } : { ok: true, step: 'literal', model };
+
   if (!resolution.ok || resolution.model === undefined) {
     return { ok: false, message: `Arm "${name}" uses ${alias ? `model alias "${model}"` : `model "${model}"`}, which ${noModelCause(resolution, tool)}. ${NO_MODEL_FIX[noModelReason(resolution)]}` };
   }
+
   const source = resolution.step === 'local' || resolution.step === 'switched' ? 'member' : 'team';
-  return { ok: true, arm: { name, tool, model: resolution.model, ...(alias ? { alias: model } : {}), ...(resolution.effort !== undefined ? { effort: resolution.effort } : {}), source, team } };
+
+  return { ok: true, arm: definedFields<PlannedArm>({ name, tool, model: resolution.model, alias: alias ? model : undefined, effort: resolution.effort, source, team }) };
 }
 
 /**
@@ -299,19 +372,23 @@ async function resolveArm({ name, tool, model }: Arm, team: ArmTeam, aliases: ()
  * nothing of the value, which may be a secret.
  */
 function unpublishableArm(arm: PlannedArm): string | undefined {
-  const field = !isLabelShaped(arm.tool) ? 'tool'
-    : arm.model !== undefined && !isNameShaped(arm.model) ? 'model'
-      : arm.effort !== undefined && !isLabelShaped(arm.effort) ? 'effort' : undefined;
+  const field = !isRecordableLabel(arm.tool) ? 'tool'
+    : arm.model !== undefined && !isRecordableName(arm.model) ? 'model'
+      : arm.effort !== undefined && !isRecordableLabel(arm.effort) ? 'effort' : undefined;
+
   if (field === undefined) return undefined;
+
   const fix = arm.source === 'member' && field !== 'tool'
     ? 'Fix your entry in ~/.teamai/models/aliases.yaml, or start again without --member-aliases.'
     : 'Fix the suite or the team\'s models/aliases.yaml, push it, run teamai pull, and start again.';
+
   return `Arm "${arm.name}" has a ${field} that is not a plain name, such as a URL or a local path, and a benchmark record publishes it. ${fix}`;
 }
 
 /** The model aliases the team files hold at `revision`, under the config's selection, and the member's over them when asked. */
 async function armAliases(config: LocalConfig, revision: string, member: boolean): Promise<ModelAliases> {
   const read = await withTeamRevision(config, revision, (at) => (member ? loadModelAliases(at) : loadTeamModelAliases(at)));
+
   return 'failed' in read ? { ok: false, reason: `the team's model aliases at ${revision.slice(0, 7)} could not be read: ${read.failed}` } : read;
 }
 
@@ -323,11 +400,14 @@ async function armAliases(config: LocalConfig, revision: string, member: boolean
 async function pulledTeamRevision(config: LocalConfig, checkout: string): Promise<{ revision: string } | { refused: string }> {
   const { teamDelivery } = await import('../pull.js');
   const tool = (await teamDelivery(config, '')).record?.targets[0];
+
   if (tool === undefined) {
     return { refused: 'teamai pull set up no AI tool in this checkout, so the team revision it delivered cannot be read. Run teamai init with --agent <tool>, run teamai pull, and start again.' };
   }
+
   const team = (await observeCheckout({ config, tool, cwd: checkout })).team;
   const pushed = team !== undefined && !team.localChanges && await resolveTeamRef(config.repo.localPath, team.revision).then(() => true, () => false);
+
   return pushed ? { revision: team.revision } : { refused: 'Benchmarks start from the team revision this checkout last pulled, and it has none that another machine can pull. Push any team changes, run teamai pull, and start again.' };
 }
 
@@ -338,11 +418,14 @@ async function pulledTeamRevision(config: LocalConfig, checkout: string): Promis
  */
 async function unreachableTask(config: LocalConfig, suite: Suite, checkout: string): Promise<{ task: Suite['tasks'][number]; commit: string } | undefined> {
   const cache = commitCacheOf(config, suite.repo);
+
   for (const task of suite.tasks) {
     // A check's added files come from the task's solution commit, so its trials need that commit too.
     const commit = await firstUnreachable(checkout, cache, suite.repo, [task.startingCommit, ...(task.judge.kind === 'check' && task.judge.add ? [task.judge.add.commit] : [])]);
+
     if (commit !== undefined) return { task, commit };
   }
+
   return undefined;
 }
 
@@ -352,24 +435,27 @@ async function unreachableTask(config: LocalConfig, suite: Suite, checkout: stri
  */
 async function firstUnreachable(checkout: string, cache: string, repo: string, commits: readonly string[]): Promise<string | undefined> {
   const has = async (dir: string, commit: string): Promise<boolean> => (await git(dir, ['cat-file', '-e', `${commit}^{commit}`])).code === 0;
+
   for (const commit of commits) {
     if (await has(checkout, commit) || await has(cache, commit)) continue;
     await fs.mkdir(cache, { recursive: true });
     const made = await git(cache, ['init', '-q', '--bare']);
     const fetched = made.code === 0 && (await git(cache, ['fetch', '-q', '--no-tags', repo, `${commit}:refs/benchmark/${commit}`])).code === 0;
+
     if (!fetched || !await has(cache, commit)) return commit;
   }
+
   return undefined;
 }
 
 function selectionOf(config: LocalConfig): TeamSelection {
-  return {
-    ...(config.primaryRole ? { primaryRole: config.primaryRole } : {}),
+  return definedFields<TeamSelection>({
+    primaryRole: config.primaryRole || undefined,
     additionalRoles: config.additionalRoles,
     projects: config.projects ?? [],
-    ...(config.subscribedTags ? { subscribedTags: config.subscribedTags } : {}),
+    subscribedTags: config.subscribedTags,
     excludedSkills: config.excludedSkills ?? [],
-  };
+  });
 }
 
 /**
@@ -385,29 +471,39 @@ export async function tryBenchmarkTask(file: string, options: { checkout: string
   const suiteFile = path.join(path.dirname(path.dirname(file)), 'suite.yaml');
   const read = (at: string): Promise<string | undefined> => fs.readFile(at, 'utf8').catch(() => undefined);
   const [suiteText, taskText] = [await read(suiteFile), await read(file)];
+
   if (taskText === undefined) return error('benchmark_not_found', `The task file ${file} could not be read. Pass the path of a task file, such as benchmarks/<suite>/tasks/<task>.yaml in a checkout of the team repo.`);
+
   if (suiteText === undefined) return error('benchmark_not_found', `${suiteFile} could not be read: teamai benchmark try reads the suite two directories up from the task file, as in benchmarks/<suite>/tasks/<task>.yaml.`);
   const posix = (at: string): string => at.split(path.sep).join('/');
   const taskSource = { relativePath: posix(file), content: taskText };
   const files = await readSuiteFiles(path.dirname(suiteFile), posix(path.dirname(suiteFile)), [taskSource]);
   const parsed = parseSuite({ suite: { relativePath: posix(suiteFile), content: suiteText }, tasks: [taskSource], files });
+
   if (!parsed.ok) return error('benchmark_invalid', parsed.diagnostics.map(formatDiagnostic).join('\n'));
   const { suite } = parsed;
   const [task] = suite.tasks;
   const { judge, startingCommit } = task;
+
   if (judge.kind === 'criteria') return tried(task.id, `Task "${task.id}" is judged by successCriteria, so there is no check to try. Its files are valid.`);
   const { solutionCommit } = task;
   const cache = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-try-commits-'));
+
   try {
     const unreachable = await firstUnreachable(options.checkout, cache, suite.repo, [startingCommit, ...(solutionCommit ? [solutionCommit] : [])]);
+
     if (unreachable !== undefined) {
       const named = unreachable === startingCommit ? `starts from ${short(unreachable)}` : `names the solutionCommit ${short(unreachable)}`;
+
       return error('commit_unreachable', `Task "${task.id}" ${named}, which neither this checkout nor ${suite.repo} has. Push it, or fix ${unreachable === startingCommit ? 'startingCommit' : 'solutionCommit'}, and try again.`);
     }
+
     const committed = await commitCheckFiles(cache, suite);
+
     if (!committed.ok) {
       return error('check_files_unwritable', `Task "${committed.task}" writes files from the suite directory before its check, and they could not be written as a commit into a temporary cache: ${committed.failed} Fix that, and try again.`);
     }
+
     return await tryCheck(suite, task, judge, addedOf(judge, committed.suite.files.get(task.id)), [options.checkout, cache], options);
   } finally {
     await fs.rm(cache, { recursive: true, force: true, maxRetries: 3 });
@@ -421,30 +517,39 @@ export async function tryBenchmarkTask(file: string, options: { checkout: string
 async function tryCheck(suite: Suite, task: Suite['tasks'][number], judge: Extract<TaskJudge, { kind: 'check' }>, add: readonly Added[], sources: readonly string[], options: { checkout: string; signal?: AbortSignal; progress: (line: string) => void }): Promise<WorkflowEnvelope> {
   const { startingCommit } = task;
   const expiresAt = new Date(Date.now() + suite.timeoutMs).toISOString();
+
   const at = (commit: string, protect?: readonly string[]): Promise<CheckRun> => runCheckAt({
-    commit, startingCommit, command: judge.run, ...(protect ? { protect } : {}), add, ...(suite.setup ? { setup: suite.setup } : {}),
-    sources, expiresAt, ...(options.signal ? { signal: options.signal } : {}),
+    commit, startingCommit, command: judge.run, protect, add, setup: suite.setup, sources, expiresAt, signal: options.signal,
   });
+
   options.progress(`Task ${task.id}: trying the check at ${short(startingCommit)}`);
   const start = await at(startingCommit);
   const unusable = unusableRun(task.id, judge.run, startingCommit, start);
+
   if (unusable !== undefined) return error('task_try_failed', unusable);
+
   if (start.kind === 'check' && start.verdict.verdict === 'passed') {
     return error('task_try_failed', `Task "${task.id}": the check passes without changes at ${short(startingCommit)}, so it cannot tell a solution from no change. Pick a startingCommit where the check fails, or fix the check.`);
   }
+
   const { solutionCommit } = task;
+
   if (solutionCommit === undefined) return tried(task.id, `Task "${task.id}": the check fails at ${short(startingCommit)}, as the task expects. The task has no solutionCommit, so the check was not tried on a solution.`);
   options.progress(`Task ${task.id}: trying the check at the solution ${short(solutionCommit)}, with the protected paths as ${short(startingCommit)} has them`);
   const solved = await at(solutionCommit, judge.protect);
   const unusableSolution = unusableRun(task.id, judge.run, solutionCommit, solved);
+
   if (unusableSolution !== undefined) return error('task_try_failed', unusableSolution);
+
   if (solved.kind === 'check' && solved.verdict.verdict === 'failed') {
     const changed = await git(options.checkout, ['diff', '--name-only', startingCommit, solutionCommit, '--', ...judge.protect.map((entry) => `:(glob)${entry}`)]);
     const added = new Set(add.flatMap((entry) => entry.paths));
     const paths = changed.code === 0 ? changed.stdout.split('\n').filter((line) => line !== '' && !added.has(line)) : [];
     const hint = paths.length > 0 ? ` The solution changes ${paths.join(', ')}, which protect puts back as ${short(startingCommit)} has them: list a test the solution brought in check.add.` : '';
+
     return error('task_try_failed', `Task "${task.id}": the check fails at the solution ${short(solutionCommit)} (exit ${solved.verdict.exitCode}), with the protected paths as ${short(startingCommit)} has them.${hint}`);
   }
+
   return tried(task.id, `Task "${task.id}": the check fails at ${short(startingCommit)} and passes at the solution ${short(solutionCommit)}, with the protected paths as ${short(startingCommit)} has them.`);
 }
 
@@ -460,6 +565,8 @@ function short(commit: string): string {
 function unusableRun(task: string, command: string, commit: string, ran: CheckRun): string | undefined {
   if (ran.kind === 'error') return `Task "${task}" could not be tried at ${short(commit)}: ${ran.failure.message}`;
   const { verdict } = ran;
+
   if (verdict.verdict !== 'could_not_run') return undefined;
+
   return `Task "${task}": the check "${command}" could not run at ${short(commit)} (${verdict.cause}${verdict.detail ? `: ${verdict.detail}` : ''}). Make the command runnable after setup there, or fix check.run.`;
 }

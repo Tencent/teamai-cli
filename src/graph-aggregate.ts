@@ -19,10 +19,13 @@ import { caseFoldKey } from './manifest-schema.js';
  */
 export async function buildAggregatedGraph(teamwikiRoot: string) {
     const evidenceBase = path.join(teamwikiRoot, 'evidence', 'code');
+
     if (!(await fs.pathExists(evidenceBase))) return null;
 
     const { mergeGraphs, createGraphIndex } = await import('./wiki-engine/adapters/index.js');
+
     type GraphIndex = Parameters<typeof mergeGraphs>[0];
+
     const { detectCrossRepoEdges } = await import('./import-repo.js');
 
     let globalGraph: GraphIndex | null = null;
@@ -31,10 +34,14 @@ export async function buildAggregatedGraph(teamwikiRoot: string) {
     for (const dir of projectDirs) {
         if (!dir.isDirectory()) continue;
         const graphPath = path.join(evidenceBase, dir.name, '.indices', 'graph-index.json');
+
         if (!(await fs.pathExists(graphPath))) continue;
 
         try {
+            // SAFETY: only teamai's own code extraction writes a per-repo graph-index.json; a file without
+            // nodes or edges arrays throws on the loops below and the catch skips that repo.
             const overlay = JSON.parse(await fs.readFile(graphPath, 'utf8')) as GraphIndex;
+
             // Stamp ownership onto the data itself before it ever enters the
             // global graph (#912 review): every node and edge this ONE
             // per-repo file contributed is unambiguously this project's.
@@ -45,7 +52,9 @@ export async function buildAggregatedGraph(teamwikiRoot: string) {
             // if the file was since emptied, rewritten by a newer
             // extraction, or deleted outright.
             for (const node of overlay.nodes) node.origin = dir.name;
+
             for (const edge of overlay.edges) edge.origin = dir.name;
+
             if (globalGraph) {
                 // A cross-repo edge spans two codebases, so
                 // detectCrossRepoEdges tags it with BOTH their origins as a
@@ -54,6 +63,7 @@ export async function buildAggregatedGraph(teamwikiRoot: string) {
                 // later from whichever node ends up winning a slug collision.
                 const crossEdges = detectCrossRepoEdges(overlay, globalGraph);
                 globalGraph = mergeGraphs(globalGraph, overlay);
+
                 if (crossEdges.length > 0) {
                     // Routed through `mergeGraphs`, not appended raw: a
                     // THIRD repo processed later can independently detect a
@@ -76,7 +86,7 @@ export async function buildAggregatedGraph(teamwikiRoot: string) {
                 globalGraph = overlay;
             }
         } catch (e) {
-            log.warn(`[graph] skipped ${dir.name} graph: ${(e as Error).message}`);
+            log.warn(`[graph] skipped ${dir.name} graph: ${e instanceof Error ? e.message : String(e)}`);
         }
     }
 
@@ -185,9 +195,13 @@ export async function scopeGlobalGraph(
     withheldProjects: Set<string>,
 ) {
     const { loadGraphIndex, parseGraphIndex } = await import('./wiki-engine/core/graph-index.schema.js');
+
     type GraphIndex = NonNullable<Awaited<ReturnType<typeof loadGraphIndex>>>;
+
     type GraphNode = GraphIndex['nodes'][number];
+
     const globalGraph = await loadGraphIndex(teamwikiRoot);
+
     if (!globalGraph || withheldProjects.size === 0) return globalGraph;
 
     const withheldIds = new Set<string>();
@@ -207,12 +221,15 @@ export async function scopeGlobalGraph(
     // Origin-tag removal first (see doc comment): authoritative and
     // independent of whatever any per-repo file currently says.
     const taggedOrigins = new Set<string>();
+
     for (const node of globalGraph.nodes) {
         if (!node.origin) continue;
         const origin = caseFoldKey(node.origin);
         taggedOrigins.add(origin);
+
         if (withheldProjects.has(origin)) withheldIds.add(node.slug);
     }
+
     for (const edge of globalGraph.edges) {
         // A cross-repo edge carries one pair of origins PER independent
         // detection that has ever produced its exact identity (`mergeGraphs`
@@ -232,13 +249,17 @@ export async function scopeGlobalGraph(
         // round 17 P2). A plain single-origin edge (`origin` set, no pairs
         // at all) still reduces to the original single-tag check unchanged.
         const pairs = [...(edge.crossOriginPairs ?? []), ...(edge.origin ? [[edge.origin]] : [])];
+
         for (const pair of pairs) {
             for (const rawOrigin of pair) taggedOrigins.add(caseFoldKey(rawOrigin));
         }
+
         const edgeWithheld = pairs.length > 0 && pairs.every((pair) =>
             pair.some((rawOrigin) => withheldProjects.has(caseFoldKey(rawOrigin))));
+
         if (edgeWithheld) withheldEdgeKeys.add(edgeKey(edge.from, edge.to, edge.relation));
     }
+
     const tagCovered = new Set([...withheldProjects].filter((p) => taggedOrigins.has(p)));
 
     const evidenceBase = path.join(teamwikiRoot, 'evidence', 'code');
@@ -249,14 +270,17 @@ export async function scopeGlobalGraph(
     // to exactly the codebases that fallback actually covers.
     const fallbackWithheldIds = new Set<string>();
     const projectDirs = await readdir(evidenceBase, { withFileTypes: true }).catch(() => []);
+
     for (const dir of projectDirs) {
         if (!dir.isDirectory()) continue;
         const foldedName = caseFoldKey(dir.name);
         const isWithheld = withheldProjects.has(foldedName);
+
         // A tag-covered withheld codebase is already fully handled above;
         // an allowed codebase is always read, for collision restoration.
         if (isWithheld && tagCovered.has(foldedName)) continue;
         const graphPath = path.join(evidenceBase, dir.name, '.indices', 'graph-index.json');
+
         try {
             const raw = JSON.parse(await fs.readFile(graphPath, 'utf8'));
             // `parseGraphIndex` is the exact schema `loadGraphIndex` validates
@@ -275,7 +299,9 @@ export async function scopeGlobalGraph(
             // identifiers, silently exposing whatever the global graph
             // still has for it.
             const repoGraph = parseGraphIndex(raw);
+
             if (!repoGraph) throw new Error(`${graphPath} does not validate as a graph-index.json`);
+
             // A schema-valid but entirely empty graph ({nodes: [], edges: []})
             // still parses, so it would otherwise mark a withheld codebase
             // accounted for while contributing nothing to subtract — exposing
@@ -289,22 +315,30 @@ export async function scopeGlobalGraph(
             if (isWithheld && repoGraph.nodes.length === 0 && repoGraph.edges.length === 0) {
                 throw new Error(`${graphPath} reports no nodes or edges for a withheld codebase — too suspicious (stale or truncated) to trust as complete ownership evidence`);
             }
+
             const ids = isWithheld ? withheldIds : allowedIds;
             const edgeKeys = isWithheld ? withheldEdgeKeys : allowedEdgeKeys;
+
             for (const node of repoGraph.nodes) {
                 ids.add(node.slug);
+
                 if (isWithheld) fallbackWithheldIds.add(node.slug);
+
                 if (!isWithheld) allowedNodeBySlug.set(node.slug, node);
             }
+
             for (const edge of repoGraph.edges) {
                 ids.add(edge.from);
                 ids.add(edge.to);
+
                 if (isWithheld) {
                     fallbackWithheldIds.add(edge.from);
                     fallbackWithheldIds.add(edge.to);
                 }
+
                 edgeKeys.add(edgeKey(edge.from, edge.to, edge.relation));
             }
+
             if (isWithheld) accountedWithheld.add(foldedName);
         } catch { /* handled below: an unreadable or schema-invalid file leaves this withheld project unaccounted for */ }
     }
@@ -324,6 +358,7 @@ export async function scopeGlobalGraph(
     // used on its own to decide whether the fast path a few lines down may
     // still return the graph completely untouched.
     const contestedSlugs = new Set<string>();
+
     for (const id of withheldIds) {
         if (allowedNodeBySlug.has(id)) contestedSlugs.add(id);
     }
@@ -342,13 +377,16 @@ export async function scopeGlobalGraph(
     // remove it — fail closed instead.
     const looksLikeUnattributableEdge = (edge: { origin?: string; crossOriginPairs?: string[][]; source?: string }) =>
         !edge.origin && !edge.crossOriginPairs && !edge.source;
+
     for (const slug of contestedSlugs) {
         if (!fallbackWithheldIds.has(slug)) continue;
         const unverifiable = globalGraph.edges.some((e) => (e.from === slug || e.to === slug) && looksLikeUnattributableEdge(e));
+
         if (unverifiable) return null;
     }
 
     for (const id of allowedIds) withheldIds.delete(id);
+
     for (const key of allowedEdgeKeys) withheldEdgeKeys.delete(key);
 
     // `teamai codebase --reconcile` adds code-page nodes (e.g.
@@ -368,11 +406,14 @@ export async function scopeGlobalGraph(
     // Edge endpoints get the identical prefix check for that reason.
     for (const node of globalGraph.nodes) {
         const match = node.slug.match(/^evidence\/code\/([^/]+)\//);
+
         if (match && withheldProjects.has(caseFoldKey(match[1]))) withheldIds.add(node.slug);
     }
+
     for (const edge of globalGraph.edges) {
         for (const slug of [edge.from, edge.to]) {
             const match = slug.match(/^evidence\/code\/([^/]+)\//);
+
             if (match && withheldProjects.has(caseFoldKey(match[1]))) withheldIds.add(slug);
         }
     }
@@ -389,6 +430,7 @@ export async function scopeGlobalGraph(
     const nodes = globalGraph.nodes
         .filter((n) => !withheldIds.has(n.slug))
         .map((n) => (contestedSlugs.has(n.slug) ? { ...n, ...allowedNodeBySlug.get(n.slug) } : n));
+
     const edges = globalGraph.edges.filter((e) =>
         !withheldIds.has(e.from) && !withheldIds.has(e.to) && !withheldEdgeKeys.has(edgeKey(e.from, e.to, e.relation)));
 
@@ -411,6 +453,7 @@ export async function aggregateGlobalGraph(
         await fs.ensureDir(path.dirname(destPath));
         await fs.writeFile(destPath, JSON.stringify(globalGraph, null, 2), 'utf8');
         log.info(`global graph-index.json aggregated (${globalGraph.nodes.length} nodes, ${globalGraph.edges.length} edges)`);
+
         return { nodes: globalGraph.nodes.length, edges: globalGraph.edges.length };
     }
 

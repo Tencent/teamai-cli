@@ -3,8 +3,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import fse from 'fs-extra';
 import YAML from 'yaml';
+import { parseYaml } from '../utils/yaml.js';
+import { z } from 'zod';
 
-import { getDataHome, getTeamaiHome, isSelfMode, type LocalConfig } from '../types.js';
+import { getDataHome, getTeamaiHome, isSelfMode, type JsonValue, type LocalConfig, isJsonObject } from '../types.js';
 import { pathExists, readFileSafe, writeFile } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import {
@@ -39,24 +41,32 @@ export function packageLockPath(cwd: string): string {
  */
 export async function packageLockDir(localConfig: LocalConfig, options: { readOnly?: boolean } = {}): Promise<string> {
   const dir = getDataHome(localConfig);
+
   if (localConfig.scope !== 'project' || !localConfig.projectRoot) return dir;
   const legacyDir = getTeamaiHome('project', localConfig.projectRoot);
+
   // A project outside git keeps its data home in `.teamai/` itself.
   if (path.resolve(legacyDir) === path.resolve(dir)) return dir;
   const legacy = packageLockPath(legacyDir);
   const { gitTracks } = await import('../git-exclude.js');
+
   if (await pathExists(legacy)) {
     if (options.readOnly) return await pathExists(packageLockPath(dir)) ? dir : legacyDir;
+
     if ((await gitTracks(legacy)).kind !== 'untracked') {
       if (await pathExists(packageLockPath(dir))) return dir;
+
       try {
         await fse.copy(legacy, packageLockPath(dir), { overwrite: false, errorOnExist: true });
+
         return dir;
       } catch (error) {
-        log.debug(`Could not copy ${legacy} to ${dir}: ${(error as Error).message}`);
+        log.debug(`Could not copy ${legacy} to ${dir}: ${error instanceof Error ? error.message : String(error)}`);
+
         return legacyDir;
       }
     }
+
     try {
       await fse.move(legacy, packageLockPath(dir), { overwrite: false });
     } catch (error) {
@@ -64,42 +74,55 @@ export async function packageLockDir(localConfig: LocalConfig, options: { readOn
       if (await pathExists(packageLockPath(dir))) {
         await fse.remove(legacy);
       } else {
-        log.debug(`Could not move ${legacy} to ${dir}: ${(error as Error).message}`);
+        log.debug(`Could not move ${legacy} to ${dir}: ${error instanceof Error ? error.message : String(error)}`);
+
         return legacyDir;
       }
     }
   }
+
   if (!options.readOnly && !isSelfMode(localConfig)) {
     const gitignore = path.join(legacyDir, '.gitignore');
     const lines = (await readFileSafe(gitignore))?.split('\n').map((line) => line.trim()).filter(Boolean);
+
     if (lines?.length === 1 && lines[0] === PACKAGE_LOCK_FILENAME && (await gitTracks(gitignore)).kind === 'untracked') {
       await fse.remove(gitignore);
     }
   }
+
   return dir;
 }
 
-function parseYamlObject(content: string, filePath: string): Record<string, unknown> {
-  const raw = YAML.parse(content);
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+/** The fields of teamai.yaml that can name the team; one of the wrong type reads as absent. */
+const TeamNameSchema = z.object({
+  name: z.string().optional().catch(undefined),
+  team: z.string().optional().catch(undefined),
+});
+
+function parseYamlObject(content: string, filePath: string): Record<string, JsonValue> {
+  // The parsed document itself: a schema copy would drop a `__proto__` key and refuse a `.inf` the save writes back.
+  const parsed = parseYaml(content);
+
+  if (!isJsonObject(parsed)) {
     throw new Error(`${filePath} must contain a YAML object`);
   }
-  return raw as Record<string, unknown>;
+
+  return parsed;
 }
 
 export async function loadPackageManifest(repoPath: string): Promise<PackageManifest> {
   const filePath = packageManifestPath(repoPath);
   const content = await readFileSafe(filePath);
+
   if (content === null) {
     throw new Error(`Package manifest not found: ${filePath}`);
   }
+
   const raw = parseYamlObject(content, filePath);
+  const { name, team } = TeamNameSchema.parse(raw);
+
   return PackageManifestSchema.parse({
-    name: typeof raw.name === 'string'
-      ? raw.name
-      : typeof raw.team === 'string'
-        ? raw.team
-        : '',
+    name: name ?? team ?? '',
     packages: raw.packages ?? {},
   });
 }
@@ -117,15 +140,18 @@ export async function savePackageManifest(
   const content = await readFileSafe(filePath);
   const raw = content === null ? {} : parseYamlObject(content, filePath);
   raw.packages = manifest.packages;
+
   if (!raw.name && !raw.team && manifest.name) raw.name = manifest.name;
   await writeFile(filePath, YAML.stringify(raw));
 }
 
 export async function loadPackageLock(cwd: string): Promise<PackageLock | null> {
   const content = await readFileSafe(packageLockPath(cwd));
+
   if (content === null) return null;
+
   try {
-    return PackageLockSchema.parse(YAML.parse(content));
+    return PackageLockSchema.parse(parseYaml(content));
   } catch {
     return null;
   }
@@ -135,15 +161,20 @@ export async function savePackageLock(cwd: string, lock: PackageLock): Promise<v
   await writeFile(packageLockPath(cwd), YAML.stringify(PackageLockSchema.parse(lock)));
 }
 
-function canonicalize(value: unknown): unknown {
+/** A package declaration as the hash reads it: plain data, where an optional field left out is undefined. */
+type DeclarationValue = JsonValue | undefined | readonly DeclarationValue[] | { readonly [key: string]: DeclarationValue };
+
+function canonicalize(value: DeclarationValue): DeclarationValue {
   if (Array.isArray(value)) return value.map(canonicalize);
-  if (value && typeof value === 'object') {
+
+  if (value instanceof Object) {
     return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
+      Object.entries(value)
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([key, child]) => [key, canonicalize(child)]),
     );
   }
+
   return value;
 }
 
@@ -161,27 +192,35 @@ function packageSetHash(packages: PackageManifest['packages']): string {
 /** Hash declarations whose installation is shared across user-scope projects. */
 export function sharedPackageDeclarationHash(manifest: PackageManifest): string {
   const npm = manifest.packages.npm?.filter((spec) => spec.global);
-  return packageSetHash({
-    ...(npm && npm.length > 0 ? { npm } : {}),
-    ...(manifest.packages.claude ? { claude: manifest.packages.claude } : {}),
-  });
+
+  const shared: PackageManifest['packages'] = {};
+
+  if (npm && npm.length > 0) shared.npm = npm;
+
+  if (manifest.packages.claude) shared.claude = manifest.packages.claude;
+
+  return packageSetHash(shared);
 }
 
 /** Hash npm dependencies installed into the current project rather than the machine. */
 export function projectNpmDeclarationHash(manifest: PackageManifest): string | null {
   const npm = manifest.packages.npm?.filter((spec) => !spec.global) ?? [];
+
   return npm.length > 0 ? packageSetHash({ npm }) : null;
 }
 
 /** Do not persist absolute project paths in the local lockfile. */
 export function packageProjectKey(cwd: string): string {
   let normalized = path.resolve(cwd);
+
   try {
     normalized = fs.realpathSync.native(normalized);
   } catch {
     // The install path check will report a missing cwd/package.json separately.
   }
+
   if (process.platform === 'win32') normalized = normalized.toLowerCase();
+
   return crypto.createHash('sha256').update(normalized).digest('hex').slice(0, 24);
 }
 

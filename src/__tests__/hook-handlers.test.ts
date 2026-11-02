@@ -206,7 +206,7 @@ vi.mock('node:child_process', async (importOriginal) => ({ ...(await importOrigi
 import { buildAdoptedSummary, buildHandlerRegistry, filterHandlersForConfig } from '../hook-handlers.js';
 import { createDispatcher } from '../hook-dispatch.js';
 import { GIT_HOOK_EVENTS } from '../git-hook.js';
-import type { LocalConfig } from '../types.js';
+import type { JsonValue, LocalConfig } from '../types.js';
 
 /** The scope hook-dispatch resolved for the hook's cwd, handed to every handler. */
 const scope: LocalConfig = { repo: { localPath: '/tmp', remote: '' }, username: 'test', scope: 'user', additionalRoles: [] };
@@ -2090,7 +2090,7 @@ describe('post-tool-use wildcard dispatch routes Cursor SKILL.md Read to the web
 
 // PostToolUse payloads as Muse Code 1.4.6 sends them, tool_response trimmed.
 describe('skill-use handler: Muse Code', () => {
-  const musePayload = (toolName: string, toolInput: Record<string, unknown>) => ({
+  const musePayload = (toolName: string, toolInput: JsonValue) => ({
     hook_event_name: 'PostToolUse',
     tool_name: toolName,
     tool_input: toolInput,

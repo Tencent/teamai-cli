@@ -86,6 +86,7 @@ const ENTRIES = [
 /** Whether ENTRIES names `from` among the importers of the entry `to`. */
 const namedEntry = (/** @type {string} */ from, /** @type {string} */ to) => ENTRIES.some(({ folder, entries }) => {
   const importers = to.startsWith(folder) ? entries[to.slice(folder.length)] : undefined;
+
   return Array.isArray(importers) && importers.includes(from);
 });
 
@@ -95,41 +96,56 @@ export default defineRule({
   create(context) {
     const absolute = lintedPath(context);
     const index = absolute.lastIndexOf('/src/');
+
     if (index < 0) return {};
     const from = absolute.slice(index + 1);
     const root = absolute.slice(0, index + 1);
     const isTest = from.startsWith('src/__tests__/');
+
     return importVisitors(({ node, specifier, typeOnly, names }) => {
       const resolved = sourceImport(context.filename, specifier);
       const to = specifier.startsWith('.') ? (resolved ? resolved.split('\\').join('/').slice(root.length) : path.posix.normalize(path.posix.join(path.posix.dirname(from), specifier)).replace(/\.js$/, '.ts')) : specifier;
       const skill = from.startsWith(SKILL);
       let violation = false;
+
       if (skill && to !== 'zod' && !to.startsWith('node:') && path.posix.dirname(to) !== path.posix.dirname(from)) {
         const allowed = SKILL_IMPORTS[to];
         violation = !allowed || (allowed.typeOnly && !typeOnly ? names.some((name) => !(allowed.values ?? []).includes(name)) : allowed.names !== undefined && names.some((name) => !allowed.names?.includes(name)));
       }
+
       const entry = ENTRIES.find(({ folder }) => to.startsWith(folder) && !from.startsWith(folder));
+
       if (entry) {
         const name = to.slice(entry.folder.length);
         const importers = entry.entries[name];
         violation ||= isTest ? !entry.testEntries.includes(name) : importers === undefined || (importers !== 'any' && !importers.includes(from));
       }
+
       if (from === SKILL + 'transitions.ts' && !typeOnly) violation = true;
       const flat = from.startsWith(FLAT) && ![FLAT + 'drivers/', PLACE, DISCOVERY].some((folder) => from.startsWith(folder));
+
       if (flat && (to.startsWith(FLAT + 'drivers/') || to.startsWith(DISCOVERY) || (to.startsWith(PLACE) && !namedEntry(from, to)))) violation = true;
+
       // The engine, the protocol and the drivers never import a feature built on them, such as benchmarks.
       if (from.startsWith(FLAT) && to.startsWith(BENCHMARK)) violation = true;
+
       if (from === 'src/workflow/pr-delivery.ts' && to === 'src/workflow/engine.ts') violation = true;
+
       if (violation) context.report({ node, message: `Workflow module boundary forbids ${from} -> ${to}. Use the declared entry module or an explained inline disable.` });
+
       if (from === 'src/workflow/snapshot.ts' && !typeOnly && resolved) {
         const reached = reachesSource(resolved, (native) => {
           const file = native.split('\\').join('/');
+
           return file.includes('/src/providers/') || file.endsWith('/src/workflow/pr-delivery.ts');
         }, false);
+
         if (reached) context.report({ node, message: `Run snapshot must not load delivery or provider code: ${reached.slice(root.length)}.` });
       }
+
       if (skill && resolved) {
         const reached = reachesSource(resolved, (file) => file.split('\\').join('/').includes('/' + LOCAL));
+
         if (reached) context.report({ node, message: `Skill driver dependency reaches the local driver through ${to}: ${reached.slice(root.length)}.` });
       }
     });

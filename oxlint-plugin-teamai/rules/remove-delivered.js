@@ -12,6 +12,7 @@ export default defineRule({
   },
   create(context) {
     if (!isOneOf(context, PULL_SIDE_FILES)) return {};
+
     return {
       CallExpression(node) {
         if (node.callee.type !== 'Identifier' || node.callee.name !== 'remove') return;

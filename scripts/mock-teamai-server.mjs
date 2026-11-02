@@ -46,13 +46,16 @@ function buildSkillZip(slug) {
 
 async function readBody(req) {
   const chunks = [];
+
   for await (const c of req) chunks.push(c);
   const raw = Buffer.concat(chunks).toString('utf-8');
+
   return raw ? JSON.parse(raw) : {};
 }
 
 async function handleRequest(req, res) {
   const url = new URL(req.url ?? '/', `http://localhost:${PORT}`);
+
   const json = (status, body) => {
     res.writeHead(status, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(body));
@@ -62,11 +65,13 @@ async function handleRequest(req, res) {
     const slug = url.searchParams.get('slug') ?? 'skill';
     res.writeHead(200, { 'Content-Type': 'application/zip' });
     res.end(Buffer.from(buildSkillZip(slug)));
+
     return;
   }
 
   if ((req.headers.authorization ?? '') !== `Bearer ${API_KEY}`) {
     json(401, { error: 'unauthorized' });
+
     return;
   }
 
@@ -74,6 +79,7 @@ async function handleRequest(req, res) {
     const body = await readBody(req);
     console.log('[report]', JSON.stringify(body));
     json(200, { ok: true, instance_id: 'local-mock-abc123' });
+
     return;
   }
 
@@ -83,6 +89,7 @@ async function handleRequest(req, res) {
     const commands = pendingCommands;
     pendingCommands = [];
     json(200, { ok: true, commands });
+
     return;
   }
 
@@ -91,6 +98,7 @@ async function handleRequest(req, res) {
     const body = await readBody(req);
     console.log(`[ack ${body.id}]`, JSON.stringify(body));
     json(200, { ok: true });
+
     return;
   }
 
@@ -100,6 +108,7 @@ async function handleRequest(req, res) {
 const server = http.createServer((req, res) => {
   handleRequest(req, res).catch((e) => {
     console.error('[error]', e instanceof Error ? e.message : String(e));
+
     if (!res.headersSent) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'internal error' }));
@@ -109,5 +118,6 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`mock teamai server on http://127.0.0.1:${PORT} (API_KEY=${API_KEY})`);
+
   if (SEED_INSTALL) console.log(`seeded sync install_skill: ${SEED_INSTALL}`);
 });

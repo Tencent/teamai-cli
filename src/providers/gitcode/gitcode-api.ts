@@ -41,13 +41,16 @@ export function gitcodeApiBase(): string {
 export function getGitCodeToken(): string | null {
   for (const raw of [process.env.GITCODE_TOKEN, process.env.GC_TOKEN]) {
     const token = raw?.trim();
+
     if (token) return token;
   }
+
   return readNetrcToken();
 }
 
 function requireToken(): string {
   const token = getGitCodeToken();
+
   if (!token) {
     throw new Error(
       'GitCode authentication unavailable. Set GITCODE_TOKEN (a GitCode Personal ' +
@@ -55,10 +58,11 @@ function requireToken(): string {
         'accepted as an alias.',
     );
   }
+
   return token;
 }
 
-function authHeaders(token: string): Record<string, string> {
+function authHeaders(token: string) {
   return {
     'Authorization': `Bearer ${token}`,
     'Content-Type': 'application/json',
@@ -91,14 +95,18 @@ function netrcPath(): string {
  */
 function netrcReadPaths(): string[] {
   let current: string;
+
   try {
     current = netrcPath();
   } catch {
     return [];
   }
+
   const paths = [current];
   const legacy = legacyUserHome();
+
   if (legacy) paths.push(path.join(legacy, '.netrc'));
+
   return paths;
 }
 
@@ -107,14 +115,17 @@ export function readNetrcToken(): string | null {
   const pattern = new RegExp(
     `machine\\s+${GITCODE_HOST.replace('.', '\\.')}\\s+.*?password\\s+(\\S+)`,
   );
+
   for (const file of netrcReadPaths()) {
     try {
       const match = fs.readFileSync(file, 'utf-8').match(pattern);
+
       if (match?.[1]) return match[1];
     } catch {
       // Missing or unreadable here — try the next location.
     }
   }
+
   return null;
 }
 
@@ -125,11 +136,13 @@ export function readNetrcToken(): string | null {
 export function writeNetrcToken(token: string): void {
   const file = netrcPath();
   let existing = '';
+
   try {
     existing = fs.readFileSync(file, 'utf-8');
   } catch {
     // no existing file — start fresh
   }
+
   const filtered = existing
     .split('\n')
     .filter((line) => !new RegExp(`^machine\\s+${GITCODE_HOST.replace('.', '\\.')}\\b`).test(line.trim()))
@@ -139,6 +152,7 @@ export function writeNetrcToken(token: string): void {
   const entry = `machine ${GITCODE_HOST} login oauth2 password ${token}`;
   const next = filtered ? `${filtered}\n${entry}\n` : `${entry}\n`;
   fs.writeFileSync(file, next, { mode: 0o600 });
+
   try {
     fs.chmodSync(file, 0o600);
   } catch {
@@ -156,15 +170,19 @@ export function gitcodeIsAuthenticated(): boolean {
 /** Fetch the authenticated GitCode username (`login`), or null when unavailable. */
 export async function gitcodeWhoami(): Promise<string | null> {
   const token = getGitCodeToken();
+
   if (!token) return null;
+
   try {
     const resp = await fetch(`${gitcodeApiBase()}/user`, {
       headers: authHeaders(token),
       redirect: 'manual',
     });
+
     if (!resp.ok) return null;
-    const data = (await resp.json()) as { login?: string };
-    return data.login ?? null;
+    const data = z.object({ login: z.string().optional().catch(undefined) }).safeParse(await resp.json());
+
+    return data.data?.login ?? null;
   } catch {
     return null;
   }
@@ -197,6 +215,7 @@ function cloneUrl(repo: string, token: string | null): string {
   if (token) {
     return `https://oauth2:${token}@${GITCODE_HOST}/${repo}.git`;
   }
+
   return `https://${GITCODE_HOST}/${repo}.git`;
 }
 
@@ -211,13 +230,16 @@ function redactCloneOutput(output: string): string {
  */
 export function gitcodeRepoClone(repo: string, localPath: string): void {
   const token = getGitCodeToken();
+
   const result = spawnSync('git', ['clone', cloneUrl(repo, token), localPath], {
     encoding: 'utf-8',
     stdio: ['pipe', 'pipe', 'pipe'],
     timeout: 120_000,
     windowsHide: true,
   });
+
   const allOutput = `${result.stderr ?? ''} ${result.stdout ?? ''}`;
+
   if (result.status === 0) return;
 
   if (
@@ -243,11 +265,12 @@ export async function gitcodeCreateRepo(owner: string, repo: string): Promise<vo
   const login = await gitcodeWhoami();
 
   const isOrg = !login || login.toLowerCase() !== owner.toLowerCase();
+
   const endpoint = isOrg
     ? `${gitcodeApiBase()}/orgs/${encodeURIComponent(owner)}/repos`
     : `${gitcodeApiBase()}/user/repos`;
 
-  const body: Record<string, unknown> = { name: repo, private: true, auto_init: true };
+  const body = { name: repo, private: true, auto_init: true };
 
   const resp = await fetch(endpoint, {
     method: 'POST',
@@ -255,6 +278,7 @@ export async function gitcodeCreateRepo(owner: string, repo: string): Promise<vo
     body: JSON.stringify(body),
     redirect: 'manual',
   });
+
   if (!resp.ok) {
     const errBody = await resp.text().catch(() => '');
     throw new Error(`Failed to create GitCode repo: ${resp.status} ${errBody}`);
@@ -279,6 +303,14 @@ export interface GitCodePullCreateOptions {
   spawnTimeoutMs?: number;
 }
 
+/** The body of GitCode's create-pull-request request. */
+interface GitCodePullCreateBody {
+  title: string;
+  head: string;
+  base: string;
+  body?: string;
+}
+
 /**
  * Create a pull request via the GitCode REST API.
  * `POST /repos/{owner}/{repo}/pulls` with Gitee-style body { head, base, title, body }.
@@ -287,11 +319,12 @@ export interface GitCodePullCreateOptions {
 export async function gitcodePullCreate(opts: GitCodePullCreateOptions): Promise<string> {
   const token = requireToken();
 
-  const body: Record<string, unknown> = {
+  const body: GitCodePullCreateBody = {
     title: opts.title,
     head: opts.source,
     base: opts.target,
   };
+
   if (opts.description) body.body = opts.description;
 
   const resp = await fetch(`${gitcodeApiBase()}/repos/${opts.repo}/pulls`, {
@@ -299,15 +332,22 @@ export async function gitcodePullCreate(opts: GitCodePullCreateOptions): Promise
     headers: authHeaders(token),
     body: JSON.stringify(body),
     redirect: 'manual',
-    ...(opts.spawnTimeoutMs ? { signal: AbortSignal.timeout(opts.spawnTimeoutMs) } : {}),
+    signal: opts.spawnTimeoutMs ? AbortSignal.timeout(opts.spawnTimeoutMs) : undefined,
   });
+
   if (!resp.ok) {
     const errBody = await resp.text().catch(() => '');
     throw new Error(`Failed to create GitCode PR: ${resp.status} ${errBody}`);
   }
 
-  const pr = (await resp.json()) as { html_url?: string; number?: number };
+  // A field of another type, or a body that is no object, reads as absent.
+  const pr = z.object({
+    html_url: z.string().optional().catch(undefined),
+    number: z.number().optional().catch(undefined),
+  }).catch({}).parse(await resp.json());
+
   if (pr.html_url) return pr.html_url;
+
   // Fallback when html_url is absent: GitCode's PR web path uses `/pull/`
   // (singular), verified against the live API — not `/pulls/`.
   if (pr.number) return `https://${GITCODE_HOST}/${opts.repo}/pull/${pr.number}`;
@@ -335,19 +375,27 @@ const GitCodeOpenPullSchema = z.object({
 export async function gitcodeFindOpenPull({ repo, source, target, timeoutMs }: PullRequestRef): Promise<string | undefined> {
   const token = requireToken();
   const query = new URLSearchParams({ state: 'open', head: source, base: target, per_page: String(LOOKUP_PAGE) });
+
   const resp = await fetch(`${gitcodeApiBase()}/repos/${repo}/pulls?${query}`, {
     headers: authHeaders(token), redirect: 'manual', signal: AbortSignal.timeout(timeoutMs),
   });
+
   if (!resp.ok) throw new Error(`GitCode answered the open pull request lookup with HTTP ${resp.status}. Check GITCODE_TOKEN and its access to the repository.`);
   const pulls = z.array(GitCodeOpenPullSchema).safeParse(await resp.json().catch(() => undefined));
+
   if (!pulls.success) throw new Error('GitCode answered the open pull request lookup with data TeamAI cannot read.');
   const ours = (name: string | undefined): boolean => name?.toLowerCase() === repo.toLowerCase();
+
   const found = pulls.data.find((pull) => pull.state === 'open' && pull.head.ref === source && pull.base.ref === target
     && ours(pull.head.repo?.full_name) && ours(pull.base.repo.full_name));
+
   if (!found) {
     if (pulls.data.length >= LOOKUP_PAGE) throw new Error('GitCode listed more open pull requests than one page, so TeamAI cannot tell whether this branch has one.');
+
     return undefined;
   }
+
   if (!found.html_url.startsWith(`https://${GITCODE_HOST}/`)) throw new Error('GitCode answered the open pull request lookup with a URL on another host.');
+
   return found.html_url;
 }

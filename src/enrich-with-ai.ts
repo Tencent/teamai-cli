@@ -1,5 +1,8 @@
 import path from 'node:path';
 import { writeFile, mkdir } from 'node:fs/promises';
+
+import { z } from 'zod';
+
 import { callToolParallel, isOverrideInvalid } from './tool-launch/call.js';
 import { log } from './utils/logger.js';
 import { assertSafeResourceName } from './utils/path-safety.js';
@@ -22,12 +25,20 @@ export interface EnrichResult {
   repoKeywords: string[];
 }
 
-interface ModuleAIResult {
-  domain: string;
-  responsibilities: string[];
-  layer: string;
-  summary: string;
-}
+const ModuleAIResultSchema = z.object({
+  domain: z.string(),
+  responsibilities: z.array(z.string()).optional().catch(undefined),
+  layer: z.string(),
+  summary: z.string().optional().catch(undefined),
+});
+
+type ModuleAIResult = z.infer<typeof ModuleAIResultSchema>;
+
+const DomainAIResultSchema = z.object({
+  domain: z.string(),
+  description: z.string().optional().catch(undefined),
+  keywords: z.array(z.string()).optional().catch(undefined),
+});
 
 function sanitizeForPrompt(text: string): string {
   return text.replace(/[\n\r]/g, ' ').replace(/[<>]/g, '').slice(0, 200);
@@ -57,6 +68,7 @@ function buildDomainPrompt(
   const modules = moduleResults.map(m =>
     `${m.name}: domain=${m.result.domain}, layer=${m.result.layer}, summary=${m.result.summary}`
   ).join('\n');
+
   const ifSummary = interfaceInventory.entries.map(e => `${e.component}:${e.type}:${e.count}`).join(', ');
 
   return `<context>
@@ -76,11 +88,13 @@ ${modules}
 {"domain": "域名", "description": "一句话描述", "keywords": ["关键词1", "关键词2"]}`;
 }
 
-function parseJSON<T>(raw: string): T | null {
+function parseJSON<T>(raw: string, schema: z.ZodType<T>): T | null {
   const match = raw.match(/\{[\s\S]*\}/);
+
   if (!match) return null;
+
   try {
-    return JSON.parse(match[0]) as T;
+    return schema.safeParse(JSON.parse(match[0])).data ?? null;
   } catch {
     return null;
   }
@@ -100,8 +114,10 @@ function resolveImportToModule(importerFile: string, importPath: string): string
     const importerDir = path.dirname(importerFile);
     const resolved = path.normalize(path.join(importerDir, importPath));
     const topLevel = resolved.split('/')[0];
+
     // Guard against resolving outside repo root
     if (!topLevel || topLevel === '..' || topLevel === '.') return undefined;
+
     return topLevel;
   }
 
@@ -113,15 +129,19 @@ function resolveImportToModule(importerFile: string, importPath: string): string
   // Case 3: bare/absolute imports (JS/TS: lodash/fp, @scope/pkg)
   const parts = importPath.split('/');
   const first = parts[0];
+
   if (!first) return undefined;
+
   // Skip npm scoped packages (@scope/pkg) — not project modules
   if (first.startsWith('@')) return undefined;
+
   return first;
 }
 
 /** Group non-relation facts by top-level directory (same buckets as AI enrich). */
 export function groupFactsByModule(facts: CodeFact[]): Map<string, CodeFact[]> {
   const modules = new Map<string, CodeFact[]>();
+
   for (const fact of facts) {
     if (fact.kind === 'relation') continue;
     const mod = fact.file.split('/')[0] || '_root';
@@ -129,12 +149,14 @@ export function groupFactsByModule(facts: CodeFact[]): Map<string, CodeFact[]> {
     existing.push(fact);
     modules.set(mod, existing);
   }
+
   return modules;
 }
 
 function isSafeSlug(name: string): boolean {
   try {
     assertSafeResourceName(name);
+
     return true;
   } catch {
     return false;
@@ -154,27 +176,35 @@ export function buildFallbackManifest(ctx: {
   modules: Map<string, CodeFact[]>;
 }): CodebaseOutputManifestV2 | null {
   const moduleNames = [...ctx.modules.keys()].filter(isSafeSlug);
+
   const componentNames = [...new Set(
     ctx.facts.filter(f => f.kind === 'component').map(f => f.name),
   )].filter(isSafeSlug);
+
   const slugs = moduleNames.length > 0 ? moduleNames : componentNames;
+
   if (slugs.length === 0) return null;
 
   const components: ManifestComponentV2[] = slugs.map((name) => {
     const moduleFacts = ctx.modules.get(name) ?? ctx.facts.filter(f => f.name === name);
+
     const entrypoints = moduleFacts
       .filter(f => f.kind === 'component')
       .filter(f => /handler|route|controller|endpoint|main|server|app/i.test(f.name))
       .slice(0, 5)
       .map(f => `${f.name} (${f.file}:${f.lineStart})`);
-    return {
+
+    const component: ManifestComponentV2 = {
       slug: name,
       docPath: `evidence/code/${ctx.project}/${name}.md`,
       title: name,
       category: 'component',
       confidence: 'EXTRACTED',
-      ...(entrypoints.length > 0 ? { entrypoints } : {}),
     };
+
+    if (entrypoints.length > 0) component.entrypoints = entrypoints;
+
+    return component;
   });
 
   return {
@@ -189,11 +219,14 @@ export function buildFallbackManifest(ctx: {
 export function describeEvidenceManifest(source: 'ai' | 'fallback' | 'none', componentCount: number): string | undefined {
   if (source === 'fallback') {
     const noun = componentCount === 1 ? 'component' : 'components';
+
     return `Wrote fallback _manifest.json (${componentCount} ${noun}, no AI enrich)`;
   }
+
   if (source === 'none') {
     return 'AI enrich produced no manifest; deep-enrich will have no components';
   }
+
   return undefined;
 }
 
@@ -202,6 +235,7 @@ export async function enrichWithAI(ctx: EnrichContext): Promise<EnrichResult | n
 
   if (moduleEntries.length === 0) {
     log.debug('enrichWithAI: no qualifying modules, skipping');
+
     return null;
   }
 
@@ -211,23 +245,27 @@ export async function enrichWithAI(ctx: EnrichContext): Promise<EnrichResult | n
   const tasks = moduleEntries.map(([moduleName, moduleFacts]) => ({
     prompt: buildModulePrompt(moduleName, moduleFacts, ctx.interfaceInventory),
     parse: (raw: string) => {
-      const result = parseJSON<ModuleAIResult>(raw);
+      const result = parseJSON(raw, ModuleAIResultSchema);
+
       return result ? { name: moduleName, result } : null;
     },
   }));
 
   let moduleResults: Array<{ name: string; result: ModuleAIResult }>;
+
   try {
     const results = await callToolParallel(tasks, { launchedBy: 'enrich-with-ai', concurrency: 3 });
     moduleResults = results.filter((r): r is { name: string; result: ModuleAIResult } => r !== null);
   } catch (e) {
     if (isOverrideInvalid(e)) throw e;
-    log.warn(`enrichWithAI: module analysis failed (non-blocking): ${(e as Error).message}`);
+    log.warn(`enrichWithAI: module analysis failed (non-blocking): ${e instanceof Error ? e.message : String(e)}`);
+
     return null;
   }
 
   if (moduleResults.length === 0) {
     log.debug('enrichWithAI: all module analyses returned null');
+
     return null;
   }
 
@@ -236,18 +274,22 @@ export async function enrichWithAI(ctx: EnrichContext): Promise<EnrichResult | n
   let repoDomain = '';
   let repoDescription = '';
   let repoKeywords: string[] = [];
+
   try {
     const domainPrompt = buildDomainPrompt(ctx.project, moduleResults, ctx.interfaceInventory);
+
     const domainTasks = [{
       prompt: domainPrompt,
       parse: (raw: string) => {
-        return parseJSON<{ domain: string; description: string; keywords: string[] }>(raw);
+        return parseJSON(raw, DomainAIResultSchema);
       },
     }];
+
     const [domainResult] = await callToolParallel(domainTasks, { launchedBy: 'enrich-with-ai', concurrency: 1 });
+
     if (domainResult) {
       repoDomain = domainResult.domain;
-      repoDescription = domainResult.description;
+      repoDescription = domainResult.description ?? '';
       repoKeywords = domainResult.keywords ?? [];
       const apiCount = ctx.interfaceInventory.entries.reduce((sum, e) => sum + e.count, 0);
       domains = [{ name: repoDomain, components: moduleResults.map(m => m.name), apiCount }];
@@ -273,24 +315,30 @@ export async function enrichWithAI(ctx: EnrichContext): Promise<EnrichResult | n
   }));
 
   const edges: ManifestEdgeV2[] = [];
+
   for (const { name } of moduleResults) {
     // Cross-module edges based on import/relation facts. AST-derived facts encode
     // their real relation and source in `detail` ("<RELATION> → <target> (code-ast)");
     // regex heuristic facts carry a raw source line, so they keep the defaults.
     const moduleImports = ctx.facts.filter(f => f.kind === 'relation' && f.file.startsWith(name + '/'));
-    const targetEdges = new Map<string, { relation: string; source: ManifestEdgeSource }>();
+    const targetEdges = new Map<string, EdgeProvenance>();
+
     for (const imp of moduleImports) {
       const resolved = resolveImportToModule(imp.file, imp.name);
+
       if (!resolved || resolved === name) {
         continue;
       }
+
       const provenance = parseEdgeProvenance(imp.detail);
       const existing = targetEdges.get(resolved);
+
       // Deterministic winner regardless of fact order: highest provenance rank wins.
       if (!existing || edgeProvenanceRank(provenance) > edgeProvenanceRank(existing)) {
         targetEdges.set(resolved, provenance);
       }
     }
+
     for (const [target, provenance] of targetEdges) {
       if (moduleResults.some(m => m.name === target)) {
         edges.push({
@@ -316,6 +364,11 @@ export async function enrichWithAI(ctx: EnrichContext): Promise<EnrichResult | n
   return { manifest, domains, repoDomain, repoDescription, repoKeywords };
 }
 
+export interface EdgeProvenance {
+  relation: string;
+  source: ManifestEdgeSource;
+}
+
 /**
  * Parse edge relation and source from a relation fact's detail string.
  *
@@ -323,15 +376,17 @@ export async function enrichWithAI(ctx: EnrichContext): Promise<EnrichResult | n
  * (regex heuristic facts, whose detail is a raw source line) falls back to a
  * DEPENDS_ON / code-heuristic default.
  */
-export function parseEdgeProvenance(detail: string): { relation: string; source: ManifestEdgeSource } {
+export function parseEdgeProvenance(detail: string): EdgeProvenance {
   if (detail.includes('(code-ast)')) {
     const relation = detail.startsWith('REFERENCES')
       ? 'REFERENCES'
       : detail.startsWith('IMPLEMENTS')
         ? 'IMPLEMENTS'
         : 'DEPENDS_ON';
+
     return { relation, source: 'code-ast' };
   }
+
   return { relation: 'DEPENDS_ON', source: 'code-heuristic' };
 }
 
@@ -343,10 +398,11 @@ export function parseEdgeProvenance(detail: string): { relation: string; source:
  * dependency (DEPENDS_ON) is the canonical module-level relation and wins,
  * keeping the edge consistent with the "imports from" reason.
  */
-export function edgeProvenanceRank(provenance: { relation: string; source: ManifestEdgeSource }): number {
+export function edgeProvenanceRank(provenance: EdgeProvenance): number {
   if (provenance.source !== 'code-ast') {
     return 0;
   }
+
   switch (provenance.relation) {
     case 'DEPENDS_ON':
       return 3;
@@ -375,5 +431,6 @@ export async function writeManifest(manifest: CodebaseOutputManifestV2, outputDi
   await mkdir(outputDir, { recursive: true });
   const manifestPath = path.join(outputDir, '_manifest.json');
   await writeFile(manifestPath, JSON.stringify(manifest, null, 2), 'utf-8');
+
   return manifestPath;
 }

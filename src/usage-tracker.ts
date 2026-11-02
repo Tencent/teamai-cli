@@ -1,11 +1,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { z } from 'zod';
 import { log } from './utils/logger.js';
+import { HookStdinSchema, type HookStdin } from './hook-dispatch.js';
 import {
   DEFAULT_TOOL_PATHS,
   getDataHome,
   getTeamaiHomeDir,
+  HookPayloadSchema,
   SKILL_NAME_REGEX,
+  type JsonValue,
   type LocalConfig,
   type UsageEvent,
 } from './types.js';
@@ -29,7 +33,9 @@ import { samePath } from './utils/agent-path.js';
 function getUsagePath(config: LocalConfig): string {
   const dataHome = getDataHome(config);
   const sharedDir = getTeamaiHomeDir();
+
   if (path.resolve(dataHome) !== path.resolve(sharedDir)) return path.join(dataHome, 'usage.jsonl');
+
   return path.join(sharedDir, 'user-usage.jsonl');
 }
 
@@ -66,21 +72,29 @@ function getKnownSkillsPath(): string {
  * If the value looks like a file path (e.g. "/root/.cursor/skills/tdd/SKILL.md"),
  * extracts the skill directory name as the skill identifier.
  */
-export function extractSkillName(toolInput: string | Record<string, unknown>): string | null {
+export function extractSkillName(toolInput: string | z.input<typeof SkillToolInputSchema>): string | null {
   try {
-    const parsed = typeof toolInput === 'string' ? JSON.parse(toolInput) : toolInput;
-    const raw: unknown = parsed?.skill ?? parsed?.name ?? parsed?.id ?? parsed?.skill_name ?? parsed?.command ?? null;
-    if (typeof raw !== 'string') return null;
-    const trimmed = raw.trim();
+    const text = z.string().safeParse(toolInput);
+    const input = SkillToolInputSchema.safeParse(text.success ? JSON.parse(text.data) : toolInput);
+
+    if (!input.success) return null;
+    const { skill, name, id, skill_name: skillName, command } = input.data;
+    const raw = z.string().safeParse(skill ?? name ?? id ?? skillName ?? command ?? null);
+
+    if (!raw.success) return null;
+    const trimmed = raw.data.trim();
+
     if (!trimmed) return null;
 
     // If value looks like a path to SKILL.md, extract the parent directory name
     const skillMdMatch = trimmed.match(/\/([^/]+)\/SKILL\.md$/i);
+
     if (skillMdMatch) return skillMdMatch[1];
 
     // If value looks like a filesystem path, extract the last segment
     if (trimmed.startsWith('/') || trimmed.startsWith('~')) {
       const segments = trimmed.split('/').filter(Boolean);
+
       return segments[segments.length - 1] || null;
     }
 
@@ -89,6 +103,15 @@ export function extractSkillName(toolInput: string | Record<string, unknown>): s
     return null;
   }
 }
+
+/** The fields a skill tool's input may name its skill in; the first one present names it. */
+const SkillToolInputSchema = z.looseObject({
+  skill: z.unknown().optional(),
+  name: z.unknown().optional(),
+  id: z.unknown().optional(),
+  skill_name: z.unknown().optional(),
+  command: z.unknown().optional(),
+});
 
 /**
  * Validate a skill name against allowed characters.
@@ -124,18 +147,23 @@ export async function skillRoots({ config, toolRoots, hookCwd, tool: callingTool
   const roots = new Set([path.join(home, SHARED_AGENT_SKILLS_PATH)]);
   const installs = [installOf(team, { ...config, scope: 'user', toolRoots })];
   const project = config.scope === 'project' && config.projectRoot ? config.projectRoot : hookCwd;
+
   if (project !== undefined && path.resolve(project) !== path.resolve(home)) {
     roots.add(path.join(project, SHARED_AGENT_SKILLS_PATH));
     installs.push(installOf(team, { ...config, scope: 'project', projectRoot: project, toolRoots }));
   }
+
   for (const install of installs) {
     for (const tool of Object.keys(team.toolPaths)) {
       if (callingTool !== undefined && callingTool !== tool) continue;
       const where = await locate(tool, 'skills', install);
+
       for (const place of writesOf(where)) roots.add(place.path);
+
       if (where.reads !== 'unknown') for (const read of where.reads) roots.add(read.path);
     }
   }
+
   return [...roots];
 }
 
@@ -147,17 +175,22 @@ export async function skillExistsOnDisk(skillName: string, roots: readonly strin
   for (const root of roots) {
     if (await pathExists(path.join(root, skillName, 'SKILL.md'))) return true;
   }
+
   return false;
 }
 
 /** Whether `file` is the SKILL.md of `skillName` under one of `roots`, however either path is spelled. */
 export async function isInstalledSkillFile(skillName: string, file: string, roots: readonly string[]): Promise<boolean> {
   const real = await fs.promises.realpath(file).catch(() => null);
+
   if (real === null) return false;
+
   for (const root of roots) {
     const installed = await fs.promises.realpath(path.join(root, skillName, 'SKILL.md')).catch(() => null);
+
     if (installed !== null && samePath(installed, real)) return true;
   }
+
   return false;
 }
 
@@ -183,9 +216,12 @@ export async function appendUsageEvent(event: UsageEvent, config: LocalConfig): 
     const pendingPath = await appendJsonl(usagePath, event, usageStoreOptions(config, usagePath));
     log.debug(pendingPath ? `Tracked skill: ${event.skill} (in ${pendingPath}; ${usagePath}.lock is held)` : `Tracked skill: ${event.skill}`);
   } catch (e) {
-    log.error(`Failed to write usage event: ${(e as Error).message}`);
+    log.error(`Failed to write usage event: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
+
+/** A usage line as a reader needs it: one without a skill or a time is skipped. No reader reads `tool`. */
+const UsageLineSchema = z.object({ skill: z.string().min(1), timestamp: z.string().min(1), tool: z.string().catch('') });
 
 /**
  * Read all usage events from a scope's JSONL file.
@@ -194,12 +230,14 @@ export async function appendUsageEvent(event: UsageEvent, config: LocalConfig): 
 export async function readUsageEvents(config: LocalConfig): Promise<UsageEvent[]> {
   try {
     const events: UsageEvent[] = [];
+
     // Side records count once a lock holder folds them in, as before the store.
-    for (const parsed of (await readJsonl(getUsagePath(config), { includePending: false })) as Partial<UsageEvent>[]) {
-      if (parsed.skill && parsed.timestamp) {
-        events.push({ skill: parsed.skill, timestamp: parsed.timestamp, tool: parsed.tool } as UsageEvent);
-      }
+    for (const record of await readJsonl(getUsagePath(config), { includePending: false })) {
+      const parsed = UsageLineSchema.safeParse(record);
+
+      if (parsed.success) events.push(parsed.data);
     }
+
     return events;
   } catch {
     return [];
@@ -216,7 +254,7 @@ export async function truncateUsageAfterReport(reportedCount: number, config: Lo
     await rewriteUsageFile(config, (lines) => lines.slice(reportedCount));
     log.debug(`Truncated usage.jsonl: removed ${reportedCount} reported events`);
   } catch (e) {
-    log.error(`Failed to truncate usage.jsonl: ${(e as Error).message}`);
+    log.error(`Failed to truncate usage.jsonl: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
@@ -233,15 +271,18 @@ export const USAGE_EVENT_CAP = 5_000;
  */
 export async function capUsageEvents(config: LocalConfig): Promise<void> {
   let dropped = 0;
+
   try {
     await rewriteUsageFile(config, (lines) => {
       if (lines.length <= USAGE_EVENT_CAP) return null;
       dropped = lines.length - USAGE_EVENT_CAP;
+
       return lines.slice(-USAGE_EVENT_CAP);
     });
+
     if (dropped) log.debug(`Capped usage.jsonl: dropped ${dropped} oldest events`);
   } catch (e) {
-    if (typeof e === 'object' && e !== null && 'code' in e && e.code === 'ENOENT') return;
+    if (e instanceof Error && 'code' in e && e.code === 'ENOENT') return;
     log.error(`Could not cap ${getUsagePath(config)} to ${USAGE_EVENT_CAP} events: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
@@ -270,9 +311,11 @@ const USAGE_SIDE_FILE_PATTERNS = ['usage.jsonl.*', 'usage.pending-*.jsonl'];
 async function ignoreUsageSideFiles(config: LocalConfig, usagePath: string): Promise<void> {
   if (config.scope !== 'project' || config.repo.kind === 'self') return;
   const gitignorePath = path.join(path.dirname(usagePath), '.gitignore');
+
   try {
     const lines = (await fs.promises.readFile(gitignorePath, 'utf-8')).split('\n');
     const missing = USAGE_SIDE_FILE_PATTERNS.filter((p) => !lines.some((l) => l.trim() === p));
+
     if (!missing.length) return;
     const anchor = lines.findIndex((l) => l.trim() === 'usage.jsonl');
     const at = anchor >= 0 ? anchor + 1 : lines.length - (lines[lines.length - 1] === '' ? 1 : 0);
@@ -280,7 +323,7 @@ async function ignoreUsageSideFiles(config: LocalConfig, usagePath: string): Pro
     // A full disk or a kill mid-write must not leave it empty: it also ignores `token` and `env`.
     await writeFileAtomic(gitignorePath, lines.join('\n'));
   } catch (e) {
-    if (typeof e === 'object' && e !== null && 'code' in e && e.code === 'ENOENT') return;
+    if (e instanceof Error && 'code' in e && e.code === 'ENOENT') return;
     log.debug(`Could not add the usage side files to ${gitignorePath}: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
@@ -296,21 +339,27 @@ const KNOWN_SKILLS_LOCK_WAIT = { attempts: 20, delayMs: 50 };
 export async function updateKnownSkills(skillName: string): Promise<void> {
   const knownPath = getKnownSkillsPath();
   const lockPath = `${knownPath}.lock`;
+
   try {
     const updated = await withFileLock(lockPath, KNOWN_SKILLS_LOCK_WAIT, async () => {
       const existing = await readJson<string[]>(knownPath);
       const skills = new Set(Array.isArray(existing) ? existing : []);
+
       if (skills.has(skillName)) return;
       skills.add(skillName);
       await writeJson(knownPath, Array.from(skills).sort());
       log.debug(`Added ${skillName} to known-skills.json`);
     });
+
     if (updated.held) return;
     log.debug(`${lockPath} is still held, so ${skillName} was not added to known-skills.json; its usage event is recorded`);
   } catch (e) {
-    log.error(`Failed to update known-skills: ${(e as Error).message}`);
+    log.error(`Failed to update known-skills: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
+
+/** known-skills.json: a list of skill names; an entry that is not a name is skipped. */
+const KnownSkillsSchema = z.array(z.string().nullable().catch(null)).transform((names) => names.filter((name) => name !== null));
 
 /**
  * Read the set of skills the current user has ever used.
@@ -323,17 +372,17 @@ export async function readKnownSkills(): Promise<Set<string>> {
   // (Source 2 below stays machine-wide; neither leaves the machine)
   const config = await resolveConfigForDir();
   const events = config ? await readUsageEvents(config) : [];
+
   for (const event of events) {
     skills.add(event.skill);
   }
 
   // Source 2: known-skills.json (survives truncation)
   try {
-    const known = await readJson<string[]>(getKnownSkillsPath());
-    if (Array.isArray(known)) {
-      for (const name of known) {
-        if (typeof name === 'string') skills.add(name);
-      }
+    const known = KnownSkillsSchema.safeParse(await readJson(getKnownSkillsPath()));
+
+    if (known.success) {
+      for (const name of known.data) skills.add(name);
     }
   } catch {
     // known-skills.json missing or corrupted — use only JSONL data
@@ -351,9 +400,11 @@ async function readStdin(): Promise<string> {
   if (process.stdin.isTTY) return '';
 
   const chunks: Buffer[] = [];
+
   for await (const chunk of process.stdin) {
-    chunks.push(chunk as Buffer);
+    chunks.push(chunk);
   }
+
   return Buffer.concat(chunks).toString('utf-8');
 }
 
@@ -362,44 +413,58 @@ async function readStdin(): Promise<string> {
  * written before hook-dispatch call until a pull replaces them.
  */
 export async function track(rawToolName: string, toolInput: string, tool?: string): Promise<void> {
-  let input: unknown;
+  let input: JsonValue;
+
   try {
     input = JSON.parse(toolInput);
   } catch {
     log.debug('Could not parse the tool input of a track call');
+
     return;
   }
+
   const config = await resolveConfigForDir();
+
   if (!config) return;
   const { creditToolCall } = await import('./skill-use.js');
-  await creditToolCall({ tool_name: rawToolName, tool_input: input }, tool ?? 'claude', config);
+  await creditToolCall(HookPayloadSchema.parse({ tool_name: rawToolName, tool_input: input }), tool ?? 'claude', config);
 }
 
 /** A hook payload from STDIN, or null when there is none or it is not a JSON object. */
-async function readHookStdin(): Promise<Record<string, unknown> | null> {
+async function readHookStdin(): Promise<HookStdin | null> {
   const raw = await readStdin();
+
   if (!raw.trim()) {
     log.debug('No STDIN data received');
+
     return null;
   }
-  let parsed: unknown;
+
+  let parsed: JsonValue = null;
+
   try {
     parsed = JSON.parse(raw);
   } catch {
     parsed = null;
   }
-  if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) return { ...parsed };
+
+  const stdin = HookStdinSchema.safeParse(parsed);
+
+  if (stdin.success) return stdin.data;
   log.error('Failed to parse STDIN JSON');
+
   return null;
 }
 
 /** Handle the hidden `teamai track --stdin` command (a pre-hook-dispatch PostToolUse hook). */
 export async function trackFromStdin(toolArg?: string): Promise<void> {
   const hookData = await readHookStdin();
+
   if (!hookData) return;
   const tool = toolArg ?? 'claude';
   const { resolveHookConfig } = await import('./dashboard-collector.js');
   const config = await resolveHookConfig(hookData, tool);
+
   if (!config) return;
   const { creditToolCall } = await import('./skill-use.js');
   await creditToolCall(hookData, tool, config);
@@ -408,10 +473,12 @@ export async function trackFromStdin(toolArg?: string): Promise<void> {
 /** Handle the hidden `teamai track-slash --stdin` command (a pre-hook-dispatch UserPromptSubmit hook). */
 export async function trackSlashCommand(toolArg?: string): Promise<void> {
   const hookData = await readHookStdin();
+
   if (!hookData) return;
   const tool = toolArg ?? 'claude';
   const { resolveHookConfig } = await import('./dashboard-collector.js');
   const config = await resolveHookConfig(hookData, tool);
+
   if (!config) return;
   const { creditPromptMentions } = await import('./skill-use.js');
   await creditPromptMentions(hookData, tool, config);

@@ -1,5 +1,5 @@
 import path from 'node:path';
-import YAML from 'yaml';
+import { parseYaml } from './utils/yaml.js';
 import { autoDetectInit, loadStateForScope } from './config.js';
 import { listCachedWorkflows, resolveStart, startingAlias } from './workflow/cache.js';
 import { summarizeWorkspaceChildren } from './workspace-children.js';
@@ -46,8 +46,10 @@ export interface ListOptions extends GlobalOptions {
 export async function status(options: GlobalOptions): Promise<void> {
   if (options.all) {
     await statusAll();
+
     return;
   }
+
   // Auto-detect scope.
   // This is a read-only command, so `dryRun` is passed unconditionally rather
   // than forwarded from `options.dryRun`: the load must never migrate a legacy
@@ -63,6 +65,7 @@ export async function status(options: GlobalOptions): Promise<void> {
   // (~/.teamai/projects/<slug>/ for a partitioned install, else legacy .teamai).
   log.info(`  data: ${getDataHome(localConfig)}`);
   const children = summarizeWorkspaceChildren(localConfig);
+
   if (children) log.info(`  ${children}`);
 
   if (localConfig.repo.ref !== undefined) {
@@ -72,28 +75,33 @@ export async function status(options: GlobalOptions): Promise<void> {
   // Git status
   console.log('');
   log.info('Team repo status:');
+
   try {
     const gitStatus = await getRepoStatus(localConfig.repo.localPath);
     console.log(`  repo: ${localConfig.repo.remote}`);
     console.log(`  local: ${localConfig.repo.localPath}`);
+
     if (gitStatus.ahead > 0) console.log(`  ahead: ${gitStatus.ahead} commit(s)`);
+
     if (gitStatus.behind > 0) console.log(`  behind: ${gitStatus.behind} commit(s)`);
+
     if (gitStatus.modified.length > 0) {
       console.log(`  modified: ${gitStatus.modified.length} file(s)`);
     }
+
     if (gitStatus.ahead === 0 && gitStatus.behind === 0 && gitStatus.modified.length === 0) {
       console.log('  up to date');
     }
   } catch (e) {
-    log.warn(`Could not check git status: ${(e as Error).message}`);
+    log.warn(`Could not check git status: ${e instanceof Error ? e.message : String(e)}`);
   }
 
-  // State
   const state = await loadStateForScope(localConfig);
   console.log('');
   log.info('Sync state:');
   console.log(`  last push: ${state.lastPush ?? 'never'}`);
   console.log(`  last pull: ${state.lastPull ?? 'never'}`);
+
   if (state.autoReportPendingSince) {
     console.log(`  auto-report: pending since ${state.autoReportPendingSince}; run \`teamai pull --verbose\` to retry and see why`);
   }
@@ -118,14 +126,17 @@ export async function status(options: GlobalOptions): Promise<void> {
   // and the list commands say why.
   // A type with namespace entries says where they come from: `env: 3 (2 root, 1 checkout)`.
   const origins: Partial<Record<ResourceType, string>> = {};
+
   const count = (type: EntryType & ResourceType, resolution: EntryResolution<unknown>): void => {
     counts[type] = resolution.kind === 'resolved' ? resolution.entries.length : 0;
+
     if (resolution.kind === 'failed') origins[type] = ' (cannot be resolved; run `teamai doctor`)';
     else if (resolution.entries.some((entry) => entry.namespace !== null)) origins[type] = ` (${describeOrigins(resolution.entries)})`;
     // An entry an unknown or removed key takes out of the delivered set is
     // invisible in the count, so name it here too (#822).
     reportUndeliveredEntryNotices(resolution);
   };
+
   count('env', await resolveEntriesFor(envEntryReader, localConfig));
 
   const agentsHandler = getAllHandlers().find((h) => h.type === 'agents');
@@ -151,6 +162,7 @@ export async function status(options: GlobalOptions): Promise<void> {
   for (const type of RESOURCE_TYPES) {
     console.log(`  ${type}: ${counts[type] ?? 0}${origins[type] ?? ''}`);
   }
+
   const scorers = await cachedScorerNames(localConfig);
   console.log(`  scorers: ${scorers.length}${scorers.length > 0 ? ` (${scorers.join(', ')})` : ''}`);
 
@@ -159,20 +171,24 @@ export async function status(options: GlobalOptions): Promise<void> {
   log.info('Local resources not yet pushed:');
   let anyNew = false;
   let anyUnscanned = false;
+
   for (const handler of getAllHandlers()) {
     let items;
+
     try {
       items = await handler.scanLocalForPush(teamConfig, localConfig);
     } catch (e) {
       // A manifest that does not parse fails the pull and the push; status is
       // where the member looks to find out why, so it reports and goes on.
-      log.warn(`  [${handler.type}] could not scan: ${(e as Error).message}`);
+      log.warn(`  [${handler.type}] could not scan: ${e instanceof Error ? e.message : String(e)}`);
       anyUnscanned = true;
       continue;
     }
+
     if (items.length > 0) {
       anyNew = true;
       console.log(`  [${handler.type}] ${items.length} new`);
+
       if (options.verbose) {
         for (const item of items) {
           console.log(`    - ${item.name}`);
@@ -180,6 +196,7 @@ export async function status(options: GlobalOptions): Promise<void> {
       }
     }
   }
+
   if (!anyNew) {
     // A bare "(none)" would read as a clean result for the types it never saw.
     console.log(anyUnscanned ? '  (none in the types that could be scanned)' : '  (none)');
@@ -215,13 +232,16 @@ async function statusAll(): Promise<void> {
 
   console.log('');
   log.info(`Project data partitions (${root}):`);
+
   if (slugs.length === 0) {
     log.info('  (none — no project has been initialized or migrated on this machine)');
     console.log('');
+
     return;
   }
 
   let orphanCount = 0;
+
   for (const slug of slugs.sort()) {
     const partitionDir = path.join(root, slug);
     const anchor = await readAnchorFile(partitionDir);
@@ -233,9 +253,10 @@ async function statusAll(): Promise<void> {
     let scope: string | undefined;
     let kind: string | undefined;
     const cfgRaw = await readFileSafe(path.join(partitionDir, 'config.yaml'));
+
     if (cfgRaw) {
       try {
-        const parsed = LocalConfigSchema.parse(YAML.parse(cfgRaw));
+        const parsed = LocalConfigSchema.parse(parseYaml(cfgRaw));
         scope = installScopeName(parsed.scope);
         kind = parsed.repo.kind;
         const recordedRoot = parsed.repo.businessRepoRoot ?? parsed.projectRoot;
@@ -251,6 +272,7 @@ async function statusAll(): Promise<void> {
     // (still used by the main checkout) is orphaned. So without a trustworthy
     // anchor we never recommend deletion — classify as unknown.
     let state: string;
+
     if (!anchor) {
       state = projectPath
         ? 'unknown — no anchor; cannot confirm orphan (partition may still be active)'
@@ -276,6 +298,7 @@ async function statusAll(): Promise<void> {
   }
 
   console.log('');
+
   if (orphanCount > 0) {
     log.warn(
       `${orphanCount} orphan partition(s) found. teamai never deletes them automatically; ` +
@@ -292,9 +315,11 @@ export async function list(type: string | undefined, options: ListOptions): Prom
   const repoPath = localConfig.repo.localPath;
 
   const source = options.source ?? 'all';
+
   if (!['repo', 'local', 'all'].includes(source)) {
     log.error(`Invalid --source: ${source}. Must be one of: repo, local, all.`);
     process.exitCode = 1;
+
     return;
   }
 
@@ -305,6 +330,7 @@ export async function list(type: string | undefined, options: ListOptions): Prom
     } catch (err) {
       log.error(`Invalid --agent: ${err instanceof Error ? err.message : String(err)}`);
       process.exitCode = 2;
+
       return;
     }
   }
@@ -312,21 +338,24 @@ export async function list(type: string | undefined, options: ListOptions): Prom
   // --agent / --source local restrict the output to local skill scanning,
   // which is only meaningful for the "skills" resource type.
   const isSkillsScope = !type || type === 'skills';
+
   if ((options.agent || source === 'local') && !isSkillsScope) {
     log.error('--source local / --agent only apply when listing skills.');
     process.exitCode = 1;
+
     return;
   }
 
-  if (type && !RESOURCE_TYPES.includes(type as ResourceType)) {
+  const selected = RESOURCE_TYPES.find((resourceType) => resourceType === type);
+
+  if (type && selected === undefined) {
     log.error(`Unknown resource type: ${type}. Supported: ${RESOURCE_TYPES.join(', ')}`);
     process.exitCode = 1;
+
     return;
   }
 
-  const types: ResourceType[] = type
-    ? [type as ResourceType]
-    : [...RESOURCE_TYPES];
+  const types: ResourceType[] = selected ? [selected] : [...RESOURCE_TYPES];
 
   // ── Repo section ────────────────────────────────────
   if (source === 'repo' || source === 'all') {
@@ -362,86 +391,120 @@ async function printRepoSection(
     // An entry an unknown or removed key takes out of the delivered set never appears below (#822).
     reportUndeliveredEntryNotices(teamEnv.variables);
     const listing = envListing(teamEnv, options);
+
     for (const problem of listing.problems) console.log(`  ${problem}`);
+
     if (listing.lines.length === 0) {
       if (listing.problems.length === 0) console.log('  (none)');
+
       return;
     }
+
     if (listing.revealed) process.stderr.write('[warn] Env values will be shown in plaintext\n');
+
     for (const line of listing.lines) console.log(line.text);
+
     return;
   }
 
   if (t === 'mcp') {
     const mcp = await resolveEntriesFor(mcpEntryReader, localConfig);
+
     if (mcp.kind === 'failed') {
       reportUndeliveredEntryNotices(mcp);
       console.log(`  ${describeEntryFailure(mcp.failure)}`);
+
       return;
     }
+
     reportUndeliveredEntryNotices(mcp);
+
     if (mcp.entries.length === 0) {
       console.log('  (none)');
+
       return;
     }
+
     for (const resolved of mcp.entries) {
       const s = resolved.entry;
+
       const endpoint = s.transport === 'stdio'
         ? `${s.command ?? ''} ${(s.args ?? []).join(' ')}`.trim()
         : (s.url ?? '');
+
       console.log(`  ${s.name}  [${s.transport}]  ${endpoint}  (${describeOrigin(resolved)})`);
+
       if (options.verbose && s.description) {
         console.log(`    ${s.description}`);
       }
     }
+
     return;
   }
 
   if (t === 'hooks') {
     const { resolution: hooks } = await resolveTeamHookEntries(localConfig);
+
     if (hooks.kind === 'failed') {
       reportUndeliveredEntryNotices(hooks);
       console.log(`  ${describeEntryFailure(hooks.failure)}`);
+
       return;
     }
+
     reportUndeliveredEntryNotices(hooks);
+
     if (hooks.entries.length === 0) {
       console.log('  (none)');
+
       return;
     }
+
     for (const resolved of hooks.entries) {
       const h = resolved.entry;
       console.log(`  ${h.id}  [${h.event}]  (${describeOrigin(resolved)})`);
+
       if (options.verbose && h.description) {
         console.log(`    ${h.description}`);
       }
     }
+
     return;
   }
 
   const handler = getAllHandlers().find((h) => h.type === t);
+
   if (!handler) return;
 
   if (t === 'workflows') {
     const files = await handler.scanTeamForPull(teamConfig, localConfig);
+
     for (const line of await workflowSourceLines(localConfig, files, options)) console.log(line);
+
     return;
   }
 
   const items = await handler.scanTeamForPull(teamConfig, localConfig);
+
   if (items.length === 0) {
     console.log('  (none)');
+
     return;
   }
+
   for (const item of items) {
     let suffix = '';
+
     if (t === 'skills') {
       const contributors = await SkillsHandler.readContributors(item.sourcePath);
+
       if (contributors.length > 0) {
         suffix = `  (${contributors.join(', ')})`;
       }
     }
+
     console.log(`  ${item.name}${suffix}`);
+
     if (options.verbose) {
       console.log(`    path: ${item.sourcePath}`);
     }
@@ -460,14 +523,19 @@ async function workflowSourceLines(
 ): Promise<string[]> {
   const paths = new Map(files.map((file) => [file.name.replace(/\.yaml$/, ''), file.sourcePath]));
   const names = [...new Set([...paths.keys(), ...(await listCachedWorkflows(localConfig)).map(({ definition }) => definition.name)])].sort();
+
   if (names.length === 0) return ['  (none)'];
+
   const shown = await Promise.all(names.map(async (name) => {
     const start = await resolveStart(localConfig, name);
     const alias = start.workflow ? await startingAlias(start.config, start.workflow.definition) : undefined;
+
     return { label: alias !== undefined ? `${alias} (${name})` : name, source: start.workflow?.source ?? 'not runnable' };
   }));
+
   return names.flatMap((name, index) => {
     const sourcePath = paths.get(name);
+
     return [`  ${shown[index].label}  (${shown[index].source})`, ...(options.verbose && sourcePath ? [`    path: ${sourcePath}`] : [])];
   });
 }
@@ -484,11 +552,14 @@ async function printLocalAgentsSection(
     if (agents.length === 0) {
       log.error(`Agent "${options.agent}" is unknown. Use \`teamai list --source local\` to see installed agents.`);
       process.exitCode = 1;
+
       return;
     }
+
     if (!agents[0].installed) {
       log.error(`Agent "${options.agent}" is not installed (no directory at ~/.${options.agent}/).`);
       process.exitCode = 1;
+
       return;
     }
   }
@@ -497,13 +568,16 @@ async function printLocalAgentsSection(
   console.log('=== LOCAL AGENTS ===');
 
   const installed = agents.filter((a) => a.installed);
+
   if (installed.length === 0) {
     console.log('  (no installed agents detected)');
+
     return;
   }
 
   const ctx = await buildClassifyContext(localConfig);
   const views: AgentSkillsView[] = [];
+
   for (const agent of installed) {
     views.push(await scanAgentSkills(agent, ctx));
   }
@@ -511,6 +585,7 @@ async function printLocalAgentsSection(
   // Summary line per agent
   const idCol = Math.max(...views.map((v) => v.agent.id.length), 6);
   const pathCol = Math.max(...views.map((v) => v.agent.absoluteSkillsPath.length), 12);
+
   for (const view of views) {
     const id = view.agent.id.padEnd(idCol);
     const p = view.agent.absoluteSkillsPath.padEnd(pathCol);
@@ -527,6 +602,7 @@ async function printLocalAgentsSection(
     console.log(`  --- ${view.agent.id} (${view.skills.length}) ---`);
     const nameCol = Math.max(...view.skills.map((s) => s.name.length));
     const sourceCol = Math.max(...view.skills.map((s) => formatSkillSource(s.source).length));
+
     for (const skill of view.skills) {
       const desc = truncate(skill.description, 80);
       console.log(
@@ -538,5 +614,6 @@ async function printLocalAgentsSection(
 
 function filterAgents(agents: ResolvedAgent[], agentFilter?: string): ResolvedAgent[] {
   if (!agentFilter) return agents;
+
   return agents.filter((a) => a.id === agentFilter);
 }

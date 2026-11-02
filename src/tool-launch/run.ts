@@ -17,6 +17,7 @@ export interface ToolRun {
 export async function runTool(input: { executable: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv; stdin: string; timeoutMs: number; detached: boolean; group?: string; signal?: AbortSignal }): Promise<ToolRun> {
   const detached = input.detached && process.platform !== 'win32';
   const child = crossSpawn(input.executable, input.args, { cwd: input.cwd, env: input.env, stdio: ['pipe', 'pipe', 'pipe'], detached, windowsHide: true });
+
   if (detached && input.group !== undefined) recordGroup(child, input.group);
   const stdout: string[] = [];
   const stderr: string[] = [];
@@ -27,10 +28,15 @@ export async function runTool(input: { executable: string; args: string[]; cwd: 
   let timedOut = false;
   const timer = setTimeout(() => { timedOut = true; void stop(); }, input.timeoutMs);
   const onAbort = (): void => { void stop(); };
+
   input.signal?.addEventListener('abort', onAbort, { once: true });
+
   if (input.signal?.aborted) onAbort();
   child.stdin?.on('error', () => {});
   child.stdin?.end(input.stdin);
-  try { const code = await exited; return { stdout: stdout.join(''), stderr: stderr.join(''), code, timedOut }; }
+
+  try { const code = await exited;
+
+ return { stdout: stdout.join(''), stderr: stderr.join(''), code, timedOut }; }
   finally { clearTimeout(timer); input.signal?.removeEventListener('abort', onAbort); }
 }

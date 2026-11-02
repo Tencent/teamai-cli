@@ -17,9 +17,11 @@ import { mergeRuleBodyIntoTeamMd, ruleBodyEqualsTeamMd, rulePaths, teamRuleBody,
  */
 export function teamRuleToCodebuddyRule(rawTeamRule: string): string {
   const paths = rulePaths(teamRuleData(rawTeamRule));
+
   const frontmatter = paths.length > 0
     ? ['alwaysApply: false', 'paths:', ...paths.map((glob) => `  - ${JSON.stringify(glob)}`)]
     : ['alwaysApply: true'];
+
   return `---\n${frontmatter.join('\n')}\n---\n\n${teamRuleBody(rawTeamRule)}\n`;
 }
 

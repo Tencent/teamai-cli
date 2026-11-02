@@ -1,5 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
+import { z } from "zod";
 
 import { toPosix } from "../../core/wiki-protocol.js";
 
@@ -8,6 +9,7 @@ const INDEX_SUFFIXES_TS = ["/index.ts", "/index.tsx", "/index.js", "/index.jsx"]
 const EXTENSIONS_PY = [".py"];
 const INDEX_SUFFIXES_PY = ["/__init__.py"];
 const EXTENSIONS_GO = [".go"];
+
 /** Matches a dotted module identifier (e.g. `pkg.sub.mod`), used by Python/Go import resolution. */
 const MODULE_IDENTIFIER_RE = /^[A-Za-z_][\w.]*$/u;
 
@@ -21,6 +23,14 @@ export interface ResolvedImport {
   confidence: "EXTRACTED" | "AMBIGUOUS";
   candidates?: string[];
 }
+
+/** The tsconfig.json fields path resolution reads. */
+const TsconfigSchema = z.object({
+  compilerOptions: z.object({
+    baseUrl: z.string().nullish(),
+    paths: z.record(z.string(), z.array(z.string())).nullish(),
+  }).nullish(),
+});
 
 const tsconfigCache = new Map<string, TsconfigPathsConfig | null>();
 
@@ -39,13 +49,14 @@ export async function loadTsconfigPaths(
     }
 
     const configPath = path.join(dir, "tsconfig.json");
+
     try {
-      const raw = JSON.parse(await readFile(configPath, "utf8")) as {
-        compilerOptions?: { baseUrl?: string; paths?: Record<string, string[]> };
-      };
+      const raw = TsconfigSchema.parse(JSON.parse(await readFile(configPath, "utf8")));
+
       const configDir = path.dirname(configPath);
       const baseUrl = raw.compilerOptions?.baseUrl ?? ".";
       const pathsMap = raw.compilerOptions?.paths ?? {};
+
       const resolved: TsconfigPathsConfig = {
         baseUrl: toPosix(path.resolve(configDir, baseUrl)),
         paths: Object.fromEntries(
@@ -53,12 +64,15 @@ export async function loadTsconfigPaths(
             key,
             values.map((v) => {
               const withoutStar = v.replace(/\*$/u, "");
+
               return toPosix(path.resolve(configDir, baseUrl, withoutStar));
             })
           ])
         )
       };
+
       tsconfigCache.set(dir, resolved);
+
       return resolved;
     } catch {
       // try parent
@@ -66,11 +80,13 @@ export async function loadTsconfigPaths(
 
     if (dir === root) break;
     const parent = path.dirname(dir);
+
     if (parent === dir) break;
     dir = parent;
   }
 
   tsconfigCache.set(absDir, null);
+
   return null;
 }
 
@@ -87,9 +103,12 @@ export async function resolveImportSpecifier(
 
   if (fromFile.endsWith(".py") || fromFile.endsWith(".go")) {
     const sibling = await resolveSiblingModuleImport(fromFile, specifier, fileExists);
+
     if (sibling) return sibling;
+
     if (fromFile.endsWith(".py")) {
       const absolutePkg = await resolveAbsolutePackageImport(fromFile, specifier, fileExists);
+
       if (absolutePkg) return absolutePkg;
     }
   }
@@ -106,8 +125,10 @@ export async function resolveImportSpecifier(
   }
 
   const tsconfig = await loadTsconfigPaths(repoRoot, fromFile);
+
   if (tsconfig) {
     const mapped = await resolvePathsMapping(repoRoot, tsconfig, specifier, fromFile, fileExists);
+
     if (mapped) return mapped;
   }
 
@@ -122,6 +143,7 @@ async function resolveRelativeImport(
   const fromDir = path.dirname(fromFile);
   const base = toPosix(path.normalize(path.join(fromDir, specifier)));
   const candidates = await expandModulePaths(base, fromFile, fileExists);
+
   return pickCandidate(candidates);
 }
 
@@ -134,11 +156,13 @@ async function resolveSiblingModuleImport(
   if (!MODULE_IDENTIFIER_RE.test(specifier)) {
     return undefined;
   }
+
   const fromDir = path.dirname(fromFile);
   // Python dotted modules (a.b.c) map to nested paths (a/b/c); other langs keep the specifier as-is.
   const modulePath = fromFile.endsWith(".py") ? specifier.replace(/\./gu, "/") : specifier;
   const base = toPosix(path.normalize(path.join(fromDir, modulePath)));
   const candidates = await expandModulePaths(base, fromFile, fileExists);
+
   return pickCandidate(candidates);
 }
 
@@ -164,11 +188,14 @@ async function resolveAbsolutePackageImport(
   if (!fromFile.endsWith(".py")) {
     return undefined;
   }
+
   if (!MODULE_IDENTIFIER_RE.test(specifier)) {
     return undefined;
   }
+
   const modulePath = specifier.replace(/\./gu, "/");
   const candidates = await expandModulePaths(modulePath, fromFile, fileExists);
+
   return pickCandidate(candidates);
 }
 
@@ -185,13 +212,16 @@ async function resolvePathsMapping(
   for (const [pattern, targets] of entries) {
     if (pattern.endsWith("/*")) {
       const prefix = pattern.slice(0, -2);
+
       if (!specifier.startsWith(`${prefix}/`)) continue;
       const rest = specifier.slice(prefix.length + 1);
+
       for (const targetBase of targets) {
         const abs = toPosix(path.join(targetBase, rest));
         const rel = toPosix(path.relative(root, abs));
         const candidates = await expandModulePaths(rel, fromFile, fileExists);
         const picked = pickCandidate(candidates);
+
         if (picked) return picked;
       }
     } else if (pattern === specifier) {
@@ -199,6 +229,7 @@ async function resolvePathsMapping(
         const rel = toPosix(path.relative(root, target));
         const candidates = await expandModulePaths(rel, fromFile, fileExists);
         const picked = pickCandidate(candidates);
+
         if (picked) return picked;
       }
     }
@@ -207,13 +238,21 @@ async function resolvePathsMapping(
   return undefined;
 }
 
-function moduleExtensions(fromFile: string): { extensions: string[]; indexSuffixes: string[] } {
+/** The file extensions and directory index files an import specifier may resolve to. */
+interface ModuleExtensions {
+  extensions: string[];
+  indexSuffixes: string[];
+}
+
+function moduleExtensions(fromFile: string): ModuleExtensions {
   if (fromFile.endsWith(".py")) {
     return { extensions: EXTENSIONS_PY, indexSuffixes: INDEX_SUFFIXES_PY };
   }
+
   if (fromFile.endsWith(".go")) {
     return { extensions: EXTENSIONS_GO, indexSuffixes: [] };
   }
+
   return { extensions: EXTENSIONS_TS, indexSuffixes: INDEX_SUFFIXES_TS };
 }
 
@@ -224,10 +263,13 @@ async function expandGoPackageDir(
 ): Promise<string[]> {
   const found: string[] = [];
   const seg = normalized.split("/").pop();
+
   if (seg) {
     const nested = `${normalized}/${seg}.go`;
+
     if (await fileExists(nested)) found.push(nested);
   }
+
   return found;
 }
 
@@ -242,11 +284,13 @@ async function expandModulePaths(
 
   for (const ext of extensions) {
     const candidate = `${normalized}${ext}`;
+
     if (await fileExists(candidate)) found.push(candidate);
   }
 
   for (const indexSuffix of indexSuffixes) {
     const candidate = `${normalized}${indexSuffix}`;
+
     if (await fileExists(candidate)) found.push(candidate);
   }
 
@@ -261,9 +305,11 @@ async function expandModulePaths(
 
 function pickCandidate(candidates: string[]): ResolvedImport | undefined {
   if (candidates.length === 0) return undefined;
+
   if (candidates.length === 1) {
     return { targetFile: candidates[0]!, confidence: "EXTRACTED" };
   }
+
   return { targetFile: candidates[0]!, confidence: "AMBIGUOUS", candidates };
 }
 
@@ -273,9 +319,11 @@ export async function buildFileExistenceChecker(
 ): Promise<(relativePath: string) => Promise<boolean>> {
   return async (relativePath: string) => {
     if (knownFiles.has(relativePath)) return true;
+
     try {
       const abs = path.resolve(repoRoot, relativePath);
       const s = await stat(abs);
+
       return s.isFile();
     } catch {
       return false;

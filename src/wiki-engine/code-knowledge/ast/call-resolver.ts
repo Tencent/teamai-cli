@@ -22,6 +22,7 @@ export function buildImportBindingsForFile(
   for (const imp of imports.filter((i) => i.fromFile === fromFile)) {
     const key = `${imp.fromFile}:${imp.line}`;
     const target = resolved.get(key);
+
     if (!target) continue;
 
     localToFile.set(imp.defaultBinding ?? imp.namespaceBinding ?? "", target.targetFile);
@@ -30,6 +31,7 @@ export function buildImportBindingsForFile(
 
     if (imp.defaultBinding) {
       const def = targetSymbols.find((s) => s.exported && (s.kind === "function" || s.kind === "class"));
+
       if (def) localToSymbolId.set(imp.defaultBinding, def.id);
       localToFile.set(imp.defaultBinding, target.targetFile);
     }
@@ -41,6 +43,7 @@ export function buildImportBindingsForFile(
     for (const name of imp.namedBindings ?? []) {
       const local = name;
       const exported = targetSymbols.find((s) => s.name === name && s.exported);
+
       if (exported) localToSymbolId.set(local, exported.id);
       localToFile.set(local, target.targetFile);
     }
@@ -57,12 +60,15 @@ export function resolveCallSites(
   swiftModules?: SwiftModuleSymbolIndex
 ): AstCallSite[] {
   const bindingsByFile = new Map<string, ImportBindingMap>();
+
   return callSites.map((site) => {
     let bindings = bindingsByFile.get(site.fromFile);
+
     if (!bindings) {
       bindings = buildImportBindingsForFile(site.fromFile, imports, resolved, symbolsByFile);
       bindingsByFile.set(site.fromFile, bindings);
     }
+
     return resolveOneCall(site, symbolsByFile, bindings, swiftModules);
   });
 }
@@ -78,6 +84,7 @@ function resolveOneCall(
   if (!callee.includes(".")) {
     const localSymbols = symbolsByFile.get(site.fromFile) ?? [];
     const sameFile = localSymbols.find((s) => s.name === callee && (s.kind === "function" || s.kind === "class"));
+
     if (sameFile) {
       return {
         ...site,
@@ -89,6 +96,7 @@ function resolveOneCall(
 
     const importedId = bindings.localToSymbolId.get(callee);
     const importedFile = bindings.localToFile.get(callee);
+
     if (importedId) {
       return {
         ...site,
@@ -97,6 +105,7 @@ function resolveOneCall(
         confidence: "EXTRACTED"
       };
     }
+
     if (importedFile) {
       return { ...site, resolvedTargetFile: importedFile, confidence: "INFERRED" };
     }
@@ -128,6 +137,7 @@ function resolveOneCall(
       !(site.enclosedByType === true && swiftModuleDeclaresMember(swiftModules, site.fromFile, callee))
     ) {
       const moduleSymbol = findSwiftModuleSymbol(swiftModules, site.fromFile, callee, ["function", "class"]);
+
       if (moduleSymbol) {
         return {
           ...site,
@@ -142,12 +152,15 @@ function resolveOneCall(
   }
 
   const [recv, member] = callee.split(".", 2);
+
   if (!recv || !member) return site;
 
   const importedFile = bindings.localToFile.get(recv);
+
   if (importedFile) {
     const targetSymbols = symbolsByFile.get(importedFile) ?? [];
     const sym = targetSymbols.find((s) => s.name === member);
+
     if (sym) {
       return {
         ...site,
@@ -157,11 +170,13 @@ function resolveOneCall(
         confidence: "EXTRACTED"
       };
     }
+
     return { ...site, resolvedTargetFile: importedFile, receiver: recv, confidence: "INFERRED" };
   }
 
   const localSymbols = symbolsByFile.get(site.fromFile) ?? [];
   const localClass = localSymbols.find((s) => s.name === recv && s.kind === "class");
+
   if (localClass) {
     return { ...site, resolvedTargetFile: site.fromFile, confidence: "INFERRED" };
   }
@@ -176,6 +191,7 @@ function resolveOneCall(
   // shadows the type, and the receiver then has nothing to do with this module.
   if (swiftModules && !site.localBindings?.includes(recv)) {
     const moduleClass = findSwiftModuleSymbol(swiftModules, site.fromFile, recv, ["class"]);
+
     if (moduleClass) {
       return { ...site, resolvedTargetFile: moduleClass.file, receiver: recv, confidence: "INFERRED" };
     }

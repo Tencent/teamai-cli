@@ -1,4 +1,4 @@
-import YAML from 'yaml';
+import { parseYaml } from './utils/yaml.js';
 import path from 'node:path';
 import { requireInit, detectProjectConfig } from './config.js';
 import { readFileSafe, listFiles } from './utils/fs.js';
@@ -13,9 +13,12 @@ import type { GlobalOptions, LocalConfig, MemberConfig } from './types.js';
 export async function getMemberConfig(repoPath: string, username: string): Promise<MemberConfig | null> {
   const memberPath = path.join(repoPath, 'members', `${username}.yaml`);
   const content = await readFileSafe(memberPath);
+
   if (!content) return null;
+
   try {
-    const raw = YAML.parse(content);
+    const raw = parseYaml(content);
+
     return MemberConfigSchema.parse(raw);
   } catch {
     return null;
@@ -31,6 +34,7 @@ export async function getMemberConfig(repoPath: string, username: string): Promi
  */
 export function memberReadRoots(primary: string, localConfig: LocalConfig): string[] {
   if (primary === localConfig.repo.localPath) return [primary];
+
   return [primary, localConfig.repo.localPath];
 }
 
@@ -42,9 +46,17 @@ export function memberReadRoots(primary: string, localConfig: LocalConfig): stri
 export async function readMemberConfig(roots: string[], username: string): Promise<MemberConfig | null> {
   for (const root of roots) {
     const config = await getMemberConfig(root, username);
+
     if (config) return config;
   }
+
   return null;
+}
+
+/** A merged roster entry and whether it differs from the one it was merged into. */
+export interface MemberConfigMerge {
+  config: MemberConfig;
+  changed: boolean;
 }
 
 /**
@@ -57,10 +69,11 @@ export async function readMemberConfig(roots: string[], username: string): Promi
 export function mergeMemberConfig(
   existing: MemberConfig | null,
   input: { username: string; role?: string; projects?: string[] },
-): { config: MemberConfig; changed: boolean } {
+): MemberConfigMerge {
   const prevProjects = existing?.projects ?? [];
   const mergedProjects: string[] = [...prevProjects];
   const seen = new Set(prevProjects);
+
   for (const p of input.projects ?? []) {
     if (!seen.has(p)) {
       seen.add(p);
@@ -74,9 +87,11 @@ export function mergeMemberConfig(
     username: input.username,
     displayName: existing?.displayName || input.username,
     registeredAt: existing?.registeredAt ?? new Date().toISOString(),
-    ...(role ? { role } : {}),
-    ...(mergedProjects.length > 0 ? { projects: mergedProjects } : {}),
   };
+
+  if (role) config.role = role;
+
+  if (mergedProjects.length > 0) config.projects = mergedProjects;
 
   const changed =
     !existing ||
@@ -98,9 +113,11 @@ export async function listMembers(options: GlobalOptions): Promise<void> {
   // Listing is read-only: never publish a missing reports branch.
   let repoPath: string;
   const { usesBranchWorktree } = await import('./types.js');
+
   if (usesBranchWorktree(localConfig)) {
     const { readableReportsWorktree } = await import('./utils/reports-branch.js');
     const { CheckoutRefusedError } = await import('./utils/branch-worktree.js');
+
     try {
       repoPath = await readableReportsWorktree(localConfig);
     } catch (e) {
@@ -109,6 +126,7 @@ export async function listMembers(options: GlobalOptions): Promise<void> {
       // the way out, was already printed.
       if (!(e instanceof CheckoutRefusedError)) throw e;
       process.exitCode = 1;
+
       return;
     }
   } else {
@@ -120,9 +138,11 @@ export async function listMembers(options: GlobalOptions): Promise<void> {
   // bytes, so a copy on the reports branch supersedes the inherited one.
   const memberFiles: Array<{ file: string; root: string }> = [];
   const listed = new Set<string>();
+
   for (const root of memberReadRoots(repoPath, localConfig)) {
     for (const file of await listFiles(path.join(root, 'members'))) {
       if (!file.endsWith('.yaml') && !file.endsWith('.yml')) continue;
+
       if (listed.has(file)) continue;
       listed.add(file);
       memberFiles.push({ file, root });
@@ -131,6 +151,7 @@ export async function listMembers(options: GlobalOptions): Promise<void> {
 
   if (memberFiles.length === 0) {
     log.info('No team members registered');
+
     return;
   }
 
@@ -140,14 +161,17 @@ export async function listMembers(options: GlobalOptions): Promise<void> {
 
   for (const { file, root } of memberFiles) {
     const content = await readFileSafe(path.join(root, 'members', file));
+
     if (!content) continue;
+
     try {
-      const raw = YAML.parse(content);
+      const raw = parseYaml(content);
       const member = MemberConfigSchema.parse(raw);
       const isSelf = member.username === localConfig.username;
       const marker = isSelf ? ' (you)' : '';
       const display = member.displayName ? ` — ${member.displayName}` : '';
       console.log(`  ${member.username}${display}${marker}`);
+
       if (options.verbose) {
         console.log(`    registered: ${member.registeredAt}`);
       }
@@ -155,5 +179,6 @@ export async function listMembers(options: GlobalOptions): Promise<void> {
       log.warn(`Invalid member file: ${file}`);
     }
   }
+
   console.log('');
 }

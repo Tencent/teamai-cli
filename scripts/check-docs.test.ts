@@ -9,8 +9,9 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const command = path.join(ROOT, 'scripts/check-docs.mjs');
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
-// The cases that run the check three times take about 12 s on a CI runner, near the default 15 s, so they get 30 s.
-const THREE_RUNS_MS = 30_000;
+// The cases that run the check three times compile the TypeScript sources it reads each time. They take 13-16 s on a CI
+// runner, around the default 15 s, so they get 60 s.
+const THREE_RUNS_MS = 60_000;
 
 function checkout(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-docs-command-'));

@@ -25,8 +25,8 @@ import { BENCHMARK_PLAN_SCHEMA_VERSION, baselineStepOf, checkStepOf, type Benchm
 import type { CheckFile, Suite } from './suite.js';
 import { planOfRun } from './run-plan.js';
 
-const CommittedSuiteSchema = z.custom<{ suite: Suite; files: ReadonlyMap<string, Added> }>((value) => typeof value === 'object' && value !== null)
-  .brand<'CommittedSuite'>();
+const CommittedSuiteSchema = z.object({ suite: z.custom<Suite>(), files: z.custom<ReadonlyMap<string, Added>>() }).brand<'CommittedSuite'>();
+
 /**
  * A suite whose check files are each a commit in a commit cache: `files` holds, by task, the check.add entry that writes
  * them. Only `commitCheckFiles` makes one, so a task's check files never reach a plan without their commit.
@@ -36,13 +36,16 @@ export type CommittedSuite = z.infer<typeof CommittedSuiteSchema>;
 /** Commits the check files of every task of `suite` that has them into `cache`, or names the first task that failed. */
 export async function commitCheckFiles(cache: string, suite: Suite): Promise<{ ok: true; suite: CommittedSuite } | { ok: false; task: string; failed: string }> {
   const files = new Map<string, Added>();
+
   for (const task of suite.tasks) {
     if (task.judge.kind !== 'check' || !task.judge.files) continue;
     const [first, ...rest] = task.judge.files;
     const committed = await commitFiles(cache, task.judge.files);
+
     if ('failed' in committed) return { ok: false, task: task.id, failed: committed.failed };
     files.set(task.id, { kind: 'suite', commit: committed.commit, paths: [first.path, ...rest.map((file) => file.path)] });
   }
+
   return { ok: true, suite: CommittedSuiteSchema.parse({ suite, files }) };
 }
 
@@ -54,29 +57,39 @@ export async function commitCheckFiles(cache: string, suite: Suite): Promise<{ o
 async function commitFiles(cache: string, files: readonly CheckFile[]): Promise<{ commit: string } | { failed: string }> {
   await fs.mkdir(cache, { recursive: true });
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-check-files-'));
+
   // untrustedGit is the git that takes an env with stdin, which the index of its own needs.
   const written = untrustedGit({
     ...process.env, GIT_INDEX_FILE: path.join(dir, 'index'),
     GIT_AUTHOR_NAME: 'teamai', GIT_AUTHOR_EMAIL: 'teamai@localhost', GIT_AUTHOR_DATE: '946684800 +0000',
     GIT_COMMITTER_NAME: 'teamai', GIT_COMMITTER_EMAIL: 'teamai@localhost', GIT_COMMITTER_DATE: '946684800 +0000',
   });
-  const failed = (step: string, stderr: string): { failed: string } => ({ failed: `git ${step} failed: ${stderr.trim()}.` });
+
+  const failed = (step: string, stderr: string) => ({ failed: `git ${step} failed: ${stderr.trim()}.` });
+
   try {
     const made = await written(cache, ['init', '-q', '--bare']);
+
     if (made.code !== 0) return failed('init', made.stderr);
     const blobs = files.map((file, index) => ({ at: path.join(dir, `${index}.blob`), file }));
+
     for (const { at, file } of blobs) await fs.writeFile(at, Buffer.from(file.base64, 'base64'));
     const hashed = await written(cache, ['hash-object', '-w', '--no-filters', '--stdin-paths'], { input: blobs.map(({ at }) => at).join('\n') });
     const objects = hashed.stdout.trim().split('\n');
+
     if (hashed.code !== 0 || objects.length !== files.length) return failed('hash-object', hashed.stderr);
     const staged = await written(cache, ['update-index', '--add', '-z', '--index-info'], { input: files.map((file, index) => `${file.mode} ${objects[index]}\t${file.path}\0`).join('') });
+
     if (staged.code !== 0) return failed('update-index', staged.stderr);
     const tree = await written(cache, ['write-tree']);
+
     if (tree.code !== 0) return failed('write-tree', tree.stderr);
     const commit = await written(cache, ['commit-tree', tree.stdout.trim(), '-m', 'teamai: check files']);
+
     if (commit.code !== 0) return failed('commit-tree', commit.stderr);
     const sha = commit.stdout.trim();
     const kept = await written(cache, ['update-ref', `refs/benchmark/${sha}`, sha]);
+
     return kept.code === 0 ? { commit: sha } : failed('update-ref', kept.stderr);
   } finally {
     await fs.rm(dir, { recursive: true, force: true, maxRetries: 3 });
@@ -101,6 +114,7 @@ const BLOCKED: Record<TeamRefBlock, string> = {
 export async function trialBlocker(config: LocalConfig): Promise<string | undefined> {
   if (isSelfMode(config)) return SELF_MODE;
   const blocked = teamRefBlocker(config, await loadLocalConfigForScope('user', undefined, { dryRun: true }));
+
   return blocked ? BLOCKED[blocked.block] : undefined;
 }
 
@@ -121,29 +135,39 @@ export type CheckStepMode = 'baseline' | 'trial';
  */
 export async function runCheckStep({ mode, env: given, cwd, signal }: { mode: CheckStepMode; env: NodeJS.ProcessEnv; cwd: string; signal?: AbortSignal }): Promise<{ result: CheckResult } | { failure: WorkflowFailure }> {
   const found = await findAttemptRun(given);
+
   if ('error' in found) {
     if (found.error.code !== 'run_unreadable') return { failure: found.error };
+
     return { failure: { ...found.error, message: `${found.error.message}: its file, or the benchmark plan in it, is not in a form this teamai reads, whose plans are schemaVersion ${BENCHMARK_PLAN_SCHEMA_VERSION}. Run the benchmark with the teamai that started it, or start it again.` } };
   }
+
   const { config, run, step } = found;
   const planned = planOfRun(run, step.id);
+
   if ('failure' in planned) return planned;
   const { plan, prefix } = planned.found;
   const checked = step.id.startsWith(prefix) ? checkedBy(plan, mode, step.id.slice(prefix.length)) : undefined;
+
   if (!checked) {
     return { failure: { code: 'invalid_arguments', message: `Step "${step.id}" of run ${run.id} is not ${mode === 'baseline' ? 'the baseline of a check task' : 'the check of a trial'} of a benchmark run, so teamai benchmark check --${mode} has nothing to check there.` } };
   }
+
   const { task, judge, at } = checked;
   const env = Object.fromEntries(Object.entries(given).filter(([key]) => sameEnvName(SANDBOX_WITHHELD_ENV, key) === undefined));
   const sources = [...(run.checkout !== undefined ? [run.checkout] : []), commitCacheOf(config, plan.suite.repo)];
   const expiresAt = leaseDeadline(run, step);
+
   const prepared = (mode === 'trial' ? await restoreProtected({ clone: cwd, startingCommit: task.startingCommit, protect: judge.protect, sources, env, expiresAt }) : undefined)
     ?? (judge.add ? await writeAdded({ clone: cwd, add: judge.add, sources, env, expiresAt }) : undefined);
+
   const ran: CheckRun = prepared
     ? { kind: 'error', failure: prepared }
-    : { kind: 'check', verdict: checkVerdict((await runShellCommand({ command: judge.run, cwd, env, ...(signal ? { signal } : {}), ...(expiresAt !== undefined ? { expiresAt } : {}) })).exit, process.platform) };
+    : { kind: 'check', verdict: checkVerdict((await runShellCommand({ command: judge.run, cwd, env, signal, expiresAt })).exit, process.platform) };
+
   if (at) progress(at, ran);
   else baselineProgress(task.id, ran);
+
   return ran.kind === 'check' ? { result: ran.verdict.verdict } : { failure: ran.failure };
 }
 
@@ -151,8 +175,10 @@ export async function runCheckStep({ mode, env: given, cwd, signal }: { mode: Ch
 function checkedBy(plan: BenchmarkPlan, mode: CheckStepMode, step: string): { task: BenchmarkPlan['tasks'][number]; judge: Extract<BenchmarkPlan['tasks'][number]['judge'], { kind: 'check' }>; at?: TrialAt } | undefined {
   const trial = mode === 'trial' ? plan.trials.find((planned) => checkStepOf(planned) === step) : undefined;
   const task = plan.tasks.find((planned) => (mode === 'trial' ? planned.id === trial?.task : baselineStepOf(planned.id) === step));
+
   if (task?.judge.kind !== 'check') return undefined;
-  return { task, judge: task.judge, ...(trial ? { at: { ...trial, total: plan.trials.length } } : {}) };
+
+  return { task, judge: task.judge, at: trial ? { ...trial, total: plan.trials.length } : undefined };
 }
 
 /** A trial, as its progress lines name it: its place in the plan's trial list of `total`. */
@@ -170,23 +196,30 @@ function progress({ order, total, task, arm }: TrialAt, event: CheckRun): void {
       switch (event.verdict.verdict) {
         case 'passed':
           log.info(`Trial ${order}/${total} ${task} ${arm}: check passed`);
+
           return;
         case 'failed':
           log.info(`Trial ${order}/${total} ${task} ${arm}: check failed (exit ${event.verdict.exitCode})`);
+
           return;
         case 'could_not_run':
           log.info(`Trial ${order}/${total} ${task} ${arm}: check could not run (${event.verdict.cause})`);
+
           return;
         default: {
           const unhandled: never = event.verdict;
+
           return unhandled;
         }
       }
+
     case 'error':
       log.info(`Trial ${order}/${total} ${task} ${arm}: error (${event.failure.code}: ${event.failure.message})`);
+
       return;
     default: {
       const unhandled: never = event;
+
       return unhandled;
     }
   }
@@ -199,23 +232,30 @@ function baselineProgress(task: string, event: CheckRun): void {
       switch (event.verdict.verdict) {
         case 'passed':
           log.info(`Baseline ${task}: check passes without changes, so the task is invalid`);
+
           return;
         case 'failed':
           log.info(`Baseline ${task}: check fails on the starting commit, as the task expects`);
+
           return;
         case 'could_not_run':
           log.info(`Baseline ${task}: check could not run (${event.verdict.cause})`);
+
           return;
         default: {
           const unhandled: never = event.verdict;
+
           return unhandled;
         }
       }
+
     case 'error':
       log.info(`Baseline ${task}: check could not run (${event.failure.code}: ${event.failure.message})`);
+
       return;
     default: {
       const unhandled: never = event;
+
       return unhandled;
     }
   }

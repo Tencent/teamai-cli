@@ -11,57 +11,66 @@
  */
 
 import { z } from 'zod';
+import { type JsonValue, JsonObjectSchema } from './types.js';
+import type { HookStdin } from './hook-dispatch.js';
 
 /** teamai's dispatch events and the Claude Code event each one carries. */
-const CLAUDE_EVENT: Record<string, string> = {
-  'session-start': 'SessionStart',
-  'prompt-submit': 'UserPromptSubmit',
-  'pre-tool-use': 'PreToolUse',
-  'post-tool-use': 'PostToolUse',
-  stop: 'Stop',
-};
+const CLAUDE_EVENT = new Map([
+  ['session-start', 'SessionStart'],
+  ['prompt-submit', 'UserPromptSubmit'],
+  ['pre-tool-use', 'PreToolUse'],
+  ['post-tool-use', 'PostToolUse'],
+  ['stop', 'Stop'],
+]);
 
 /** agy's tool names, as Claude Code names the same tool. */
-const CLAUDE_TOOL: Record<string, string> = {
-  run_command: 'Bash',
-  view_file: 'Read',
-  read_file: 'Read',
-  write_to_file: 'Write',
-  replace_file_content: 'Edit',
-  multi_replace_file_content: 'Edit',
-  grep_search: 'Grep',
-  find_by_name: 'Glob',
-  list_dir: 'LS',
-  read_url_content: 'WebFetch',
-  search_web: 'WebSearch',
-  invoke_subagent: 'Task',
-};
+const CLAUDE_TOOL = new Map([
+  ['run_command', 'Bash'],
+  ['view_file', 'Read'],
+  ['read_file', 'Read'],
+  ['write_to_file', 'Write'],
+  ['replace_file_content', 'Edit'],
+  ['multi_replace_file_content', 'Edit'],
+  ['grep_search', 'Grep'],
+  ['find_by_name', 'Glob'],
+  ['list_dir', 'LS'],
+  ['read_url_content', 'WebFetch'],
+  ['search_web', 'WebSearch'],
+  ['invoke_subagent', 'Task'],
+]);
+
+/** An agent's tool list as YAML wrote it: an array, or one comma-separated string; anything else lists none. */
+const AgentToolListSchema = z.union([
+  z.array(z.unknown()).transform((tools) => tools.map(String)),
+  z.string().transform((tools) => tools.split(',').map((tool) => tool.trim())),
+]).catch([]);
 
 /**
  * agy's names for the Claude Code tools an agent lists, each once, in order; a
  * tool agy has none for is left out. A list arrives as YAML wrote it: an array,
  * or one comma-separated string (`tools: Bash, Read`).
  */
-export function agyToolsFor(claudeTools: unknown): string[] {
-  const names = Array.isArray(claudeTools) ? claudeTools.map(String)
-    : typeof claudeTools === 'string' ? claudeTools.split(',').map((tool) => tool.trim()) : [];
-  const agy = names.flatMap((name) => Object.keys(CLAUDE_TOOL).filter((tool) => CLAUDE_TOOL[tool] === name));
+export function agyToolsFor(claudeTools: JsonValue | undefined): string[] {
+  const names = AgentToolListSchema.parse(claudeTools);
+
+  const agy = names.flatMap((name) => [...CLAUDE_TOOL].flatMap(([tool, claude]) => (claude === name ? [tool] : [])));
+
   return [...new Set(agy)];
 }
 
 /** agy's argument names, as Claude Code's tool input names them. */
-const CLAUDE_ARG: Record<string, string> = {
-  CommandLine: 'command',
-  AbsolutePath: 'file_path',
-  Path: 'file_path',
-  TargetFile: 'file_path',
-  SearchPath: 'path',
-  SearchDirectory: 'path',
-  DirectoryPath: 'path',
-  Query: 'pattern',
-  Pattern: 'pattern',
-  Url: 'url',
-};
+const CLAUDE_ARG = new Map([
+  ['CommandLine', 'command'],
+  ['AbsolutePath', 'file_path'],
+  ['Path', 'file_path'],
+  ['TargetFile', 'file_path'],
+  ['SearchPath', 'path'],
+  ['SearchDirectory', 'path'],
+  ['DirectoryPath', 'path'],
+  ['Query', 'pattern'],
+  ['Pattern', 'pattern'],
+  ['Url', 'url'],
+]);
 
 /** The agy fields teamai reads; a field of another shape counts as absent. */
 const AgyPayload = z.object({
@@ -72,7 +81,7 @@ const AgyPayload = z.object({
   transcriptPath: z.string().optional().catch(undefined),
   /** On PostToolUse: empty when the call ran, else why it did not. */
   error: z.string().optional().catch(undefined),
-  toolCall: z.object({ name: z.string(), args: z.record(z.string(), z.unknown()).catch({}).default({}) }).optional().catch(undefined),
+  toolCall: z.object({ name: z.string(), args: JsonObjectSchema.catch({}).default({}) }).optional().catch(undefined),
 });
 
 /**
@@ -80,22 +89,30 @@ const AgyPayload = z.object({
  * when the event is not one teamai acts on: agy runs PreInvocation before every
  * model call of a turn, and only the first (`invocationNum` 0) is the prompt.
  */
-export function agyHookPayload(event: string, payload: Record<string, unknown>): Record<string, unknown> | null {
+export function agyHookPayload(event: string, payload: HookStdin): HookStdin | null {
   const agy = AgyPayload.parse(payload);
+
   if (event === 'prompt-submit' && agy.invocationNum !== undefined && agy.invocationNum > 0) return null;
-  const shaped: Record<string, unknown> = { ...payload, hook_event_name: CLAUDE_EVENT[event] ?? event };
-  if (agy.conversationId !== undefined) shaped.session_id = agy.conversationId;
+  const claude: HookStdin = { ...payload, hook_event_name: CLAUDE_EVENT.get(event) ?? event };
+
+  if (agy.conversationId !== undefined) claude.session_id = agy.conversationId;
   const workspace = agy.workspacePaths?.[0];
-  if (workspace !== undefined) shaped.cwd = workspace;
-  if (event === 'prompt-submit' && agy.lastUserInput !== undefined) shaped.prompt = agy.lastUserInput;
-  if (agy.transcriptPath !== undefined) shaped.transcript_path = agy.transcriptPath;
+
+  if (workspace !== undefined) claude.cwd = workspace;
+
+  if (event === 'prompt-submit' && agy.lastUserInput !== undefined) claude.prompt = agy.lastUserInput;
+
+  if (agy.transcriptPath !== undefined) claude.transcript_path = agy.transcriptPath;
+
   if (agy.toolCall) {
-    shaped.tool_name = CLAUDE_TOOL[agy.toolCall.name] ?? agy.toolCall.name;
-    shaped.tool_input = Object.fromEntries(Object.entries(agy.toolCall.args).map(([key, value]) => [CLAUDE_ARG[key] ?? key, value]));
+    claude.tool_name = CLAUDE_TOOL.get(agy.toolCall.name) ?? agy.toolCall.name;
+    claude.tool_input = Object.fromEntries(Object.entries(agy.toolCall.args).map(([key, value]) => [CLAUDE_ARG.get(key) ?? key, value]));
   }
+
   // agy sends no tool output, so a call it reports an error for is the only one known to have failed.
-  if (event === 'post-tool-use' && agy.error) shaped.tool_status = 'failure';
-  return shaped;
+  if (event === 'post-tool-use' && agy.error) claude.tool_status = 'failure';
+
+  return claude;
 }
 
 /** What teamai's built-in pass and the team's hooks returned for one event. */
@@ -108,11 +125,12 @@ export interface AgyHookResult {
 
 /** A Claude Code hook's JSON output, as far as it adds context. */
 const ClaudeHookOutput = z.object({ hookSpecificOutput: z.object({ additionalContext: z.string() }) });
+
 /** The team hooks' decision as teamai's bridge prints it. */
 const BridgeDecision = z.object({ block: z.string().optional(), context: z.string().optional() });
 
 /** `text` parsed as JSON, or undefined when it is not JSON. */
-function jsonOf(text: string): unknown {
+function jsonOf(text: string): JsonValue | undefined {
   try {
     return JSON.parse(text);
   } catch {
@@ -123,8 +141,10 @@ function jsonOf(text: string): unknown {
 /** The context a Claude Code hook output carries: its `additionalContext`, or the text itself when it is not JSON. */
 function contextOf(output: string): string {
   const json = jsonOf(output);
+
   if (json === undefined) return output;
   const parsed = ClaudeHookOutput.safeParse(json);
+
   return parsed.success ? parsed.data.hookSpecificOutput.additionalContext : '';
 }
 
@@ -132,11 +152,16 @@ function contextOf(output: string): string {
 export function agyHookReply(event: string, result: AgyHookResult): string {
   const parsed = BridgeDecision.safeParse(jsonOf(result.team));
   const decided = parsed.success ? parsed.data : {};
+
   if (event === 'pre-tool-use' && decided.block !== undefined) return JSON.stringify({ decision: 'deny', reason: decided.block });
-  const context = [contextOf(result.builtin), decided.context ?? ''].map((text) => text.trim()).filter(Boolean).join('\n\n');
+  const context = [contextOf(result.builtin), decided.context ?? ''].flatMap((text) => (text.trim() ? [text.trim()] : [])).join('\n\n');
+
   if (!context) return '';
+
   // A session-start step persists across turns; a prompt's lasts only that turn.
   if (event === 'session-start') return JSON.stringify({ injectSteps: [{ systemMessage: { systemMessage: context } }] });
+
   if (event === 'prompt-submit') return JSON.stringify({ injectSteps: [{ ephemeralMessage: context }] });
+
   return '';
 }

@@ -941,6 +941,17 @@ describe('model switch bookkeeping', () => {
 
   const manifestFile = () => path.join(home, '.teamai', 'models', 'managed.json');
 
+  it('saves the ownership manifest with each agent entry in the order it was read', async () => {
+    await fse.outputJson(claudeFile(), { model: 'personal' });
+    await switchModelProfile(routed({ anthropic: ['team'] }), ['claude']);
+    const before = await fse.readFile(manifestFile(), 'utf8');
+
+    await refuseLegacyValue('/scope-a/teams/1234567890.json::alpha-abcdef1234');
+
+    const after = await fse.readJson(manifestFile());
+    expect(Object.keys(after.agents.claude)).toEqual(Object.keys(JSON.parse(before).agents.claude));
+  });
+
   it('recovers an interrupted first switch before the agent file was written', async () => {
     const original = { model: 'personal', permissions: { allow: ['Read'] } };
     await fse.outputJson(claudeFile(), original);

@@ -64,6 +64,7 @@ export async function deployBuiltinRules(
     const install: Install = localConfig === undefined
         ? { toolPaths: teamConfig.toolPaths, agents: {}, toolRoots: {}, gitExclude: false, scope: 'user' }
         : installOf(teamConfig, localConfig);
+
     let deployed = 0;
 
     const builtinRules: Array<{ name: string; content: string }> = [
@@ -72,18 +73,23 @@ export async function deployBuiltinRules(
 
     for (const tool of Object.keys(install.toolPaths)) {
         const location = await locate(tool, 'rules', install);
+
         if (ownOf(location)?.kind !== 'dir') continue;
         const own = writable(location);
+
         if (own === null) {
             log.debug(`Skipping built-in rules for ${tool}: tool not installed`);
             continue;
         }
 
         const rulesDir = own.path;
+
         if (!await pathExists(rulesDir)) continue;
+
         // A dry run writes nothing: it reports where each rule would land (#915).
         if (options?.dryRun) {
             const ext = ruleFileExtensionForTool(tool);
+
             for (const rule of builtinRules) options.recorder?.report('builtin', path.join(rulesDir, `${rule.name}${ext}`));
             deployed++;
             continue;
@@ -96,6 +102,7 @@ export async function deployBuiltinRules(
             // (`.mdc` for Cursor, Kiro's and Qoder's frontmatter, …); a tool
             // without one gets the canonical `.md`.
             const ext = ruleFileExtensionForTool(tool);
+
             for (const rule of builtinRules) {
                 const destFile = path.join(rulesDir, `${rule.name}${ext}`);
                 const content = renderRuleForTool(tool, rule.content);
@@ -118,6 +125,7 @@ export async function deployBuiltinRules(
             for (const legacyName of LEGACY_RULE_NAMES) {
                 for (const legacyExt of new Set<string>([ext, '.md'])) {
                     const legacyFile = path.join(rulesDir, `${legacyName}${legacyExt}`);
+
                     try {
                         await fs.unlink(legacyFile);
                         log.debug(`Removed legacy built-in rule ${legacyName} from ${tool}`);
@@ -131,7 +139,7 @@ export async function deployBuiltinRules(
         } catch (e) {
             options?.recorder?.failed('builtin');
             options?.toolsMissingRules?.add(tool);
-            log.error(`Failed to deploy built-in rules to ${tool}: ${(e as Error).message}`);
+            log.error(`Failed to deploy built-in rules to ${tool}: ${e instanceof Error ? e.message : String(e)}`);
         }
     }
 

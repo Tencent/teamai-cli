@@ -14,27 +14,39 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { z } from 'zod';
 import { getTeamaiHomeDir } from './types.js';
+import type { JsonValue } from './types.js';
 
 const CLAIMS_DIR = 'copilot-hook-claims';
+
 /** Days of claims kept; an event's copies all run well within the first. */
 const KEEP_DAYS = 2;
 
+/** The part of a Copilot hook payload a claim is keyed by. */
+const ClaimPayloadSchema = z.object({ timestamp: z.union([z.number(), z.string().min(1)]) });
+
 function claimDay(raw: string): string | null {
-  let timestamp: unknown;
+  let payload: JsonValue;
+
   try {
-    timestamp = (JSON.parse(raw) as { timestamp?: unknown } | null)?.timestamp;
+    payload = JSON.parse(raw);
   } catch {
     return null;
   }
-  if (typeof timestamp !== 'number' && (typeof timestamp !== 'string' || !timestamp)) return null;
-  const time = new Date(timestamp).getTime();
+
+  const claim = ClaimPayloadSchema.safeParse(payload);
+
+  if (!claim.success) return null;
+  const time = new Date(claim.data.timestamp).getTime();
+
   return Number.isFinite(time) ? new Date(time).toISOString().slice(0, 10) : null;
 }
 
 /** Keeps `day` itself, so a payload clock behind ours keeps its claims. */
 function removeOldClaims(root: string, day: string): void {
   const oldest = new Date(Date.now() - KEEP_DAYS * 86_400_000).toISOString().slice(0, 10);
+
   try {
     for (const name of fs.readdirSync(root)) {
       if (name < oldest && name !== day) fs.rmSync(path.join(root, name), { recursive: true, force: true });
@@ -47,15 +59,18 @@ function removeOldClaims(root: string, day: string): void {
 /** True when this copy runs the event: it claimed it, or no claim could be made. */
 export function claimCopilotHookEvent(event: string, matcher: string, raw: string, env: NodeJS.ProcessEnv = process.env): boolean {
   const day = claimDay(raw);
+
   if (!day) return true;
   const root = path.join(getTeamaiHomeDir(), CLAIMS_DIR);
   removeOldClaims(root, day);
   const key = createHash('sha256').update(JSON.stringify([env.COPILOT_AGENT_SESSION_ID ?? '', event, matcher, raw])).digest('hex');
+
   try {
     fs.mkdirSync(path.join(root, day), { recursive: true });
     fs.writeFileSync(path.join(root, day, key), '', { flag: 'wx' });
+
     return true;
   } catch (e) {
-    return (e as NodeJS.ErrnoException).code !== 'EEXIST';
+    return !(e instanceof Error && 'code' in e && e.code === 'EEXIST');
   }
 }

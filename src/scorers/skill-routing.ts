@@ -30,8 +30,10 @@ export function routingScorerName({ name, namespace }: AvailableSkill): string {
 export function parseRoutingScorer(value: string): { skill: string; namespace?: string } | undefined {
   if (!isRoutingScorer(value)) return undefined;
   const parts = value.slice(ROUTING_PREFIX.length).split(':');
+
   if (parts.length > 2 || parts.some((part) => part === '')) return undefined;
   const [namespace, skill] = parts.length === 2 ? parts : [undefined, parts[0]];
+
   return namespace === undefined ? { skill } : { namespace, skill };
 }
 
@@ -47,6 +49,7 @@ export function routingSkillOf(name: { skill: string; namespace?: string }, avai
 function rubricOf(skill: AvailableSkill): string {
   const name = skill.name;
   const from = skill.namespace === undefined ? '' : ` It comes from the \`${skill.namespace}\` skills namespace.`;
+
   return [
     '---',
     'labels:',
@@ -63,17 +66,22 @@ function rubricOf(skill: AvailableSkill): string {
   ].join('\n');
 }
 
-/** The routing question of `skill`: its scorer name, its pinned rubric, and the definition the rubric parses to. */
-export function routingScorer(skill: AvailableSkill): { scorer: string; pin: PinnedScorer; definition: ScorerDefinition } {
+/** A routing question: its scorer name, its pinned rubric, and the definition the rubric parses to. */
+export type RoutingQuestion = { scorer: string; pin: PinnedScorer; definition: ScorerDefinition };
+
+/** The routing question of `skill`. */
+export function routingScorer(skill: AvailableSkill): RoutingQuestion {
   const scorer = routingScorerName(skill);
   const content = rubricOf(skill);
   const sourceHash = scorerSourceHash(content);
   const parsed = parseScorer(`scorers/${scorer.replaceAll(':', '-')}.md`, content);
+
   if (!parsed.ok) throw new Error(`the routing rubric of ${scorer} does not parse: ${parsed.diagnostics.map(({ message }) => message).join('; ')}`);
+
   return { scorer, pin: { sourceHash, content }, definition: { ...parsed.definition, name: scorer } };
 }
 
 /** Every routing question of `skills`, in `skills.available` order: one per skill whose namespace the record can tell. */
-export function routingScorers(skills: readonly AvailableSkill[]): Array<{ scorer: string; pin: PinnedScorer; definition: ScorerDefinition }> {
-  return skills.filter(({ namespaceUnknown }) => !namespaceUnknown).map(routingScorer);
+export function routingScorers(skills: readonly AvailableSkill[]): RoutingQuestion[] {
+  return skills.flatMap((skill) => skill.namespaceUnknown ? [] : [routingScorer(skill)]);
 }

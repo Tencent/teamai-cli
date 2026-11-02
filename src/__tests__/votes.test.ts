@@ -67,6 +67,73 @@ describe('loadUserVotes', () => {
     expect(Object.keys(result.votes)).toHaveLength(0);
   });
 
+  it('keeps a v2 file whose one delta a hand edit nulled, instead of migrating it as v1', async () => {
+    const filePath = path.join(tmpDir, 'user.yaml');
+    fs.writeFileSync(filePath, [
+      'version: 2',
+      'votes:',
+      '  doc-a:',
+      '    recalled_count: 40',
+      '    upvoted_count: 7',
+      '    last_recalled_at: "2026-06-01T00:00:00Z"',
+      'deltas:',
+      '  doc-a:',
+      '    recalled_delta: 3',
+      '    upvoted_delta: 1',
+      '  doc-b: null',
+      '',
+    ].join('\n'));
+
+    const result = await loadUserVotes(filePath);
+
+    expect(result.votes['doc-a']).toMatchObject({ recalled_count: 40, upvoted_count: 7 });
+    expect(result.deltas).toEqual({ 'doc-a': { recalled_delta: 3, upvoted_delta: 1 } });
+  });
+
+  it.each(['deltas:', 'deltas: null'])('keeps the counters of a v2 file whose table a hand edit emptied (%s)', async (deltas) => {
+    const filePath = path.join(tmpDir, 'user.yaml');
+    fs.writeFileSync(filePath, [
+      'version: 2',
+      'votes:',
+      '  doc-a:',
+      '    recalled_count: 40',
+      '    upvoted_count: 7',
+      '    last_recalled_at: "2026-06-01T00:00:00Z"',
+      deltas,
+      '',
+    ].join('\n'));
+
+    const result = await loadUserVotes(filePath);
+
+    expect(result.votes['doc-a']).toMatchObject({ recalled_count: 40, upvoted_count: 7 });
+    expect(result.deltas).toEqual({});
+  });
+
+  it('saves a v2 file with its keys in the order they were read', async () => {
+    const filePath = path.join(tmpDir, 'user.yaml');
+    // A stage adds pendingSync to a file with no ledger; a later upvote appends upvotedSessions.
+    const content = [
+      'version: 2',
+      'votes: {}',
+      'deltas: {}',
+      'pendingSync:',
+      '  syncId: sync-1',
+      '  deltas: {}',
+      'upvotedSessions:',
+      '  session-1:',
+      '    docIds:',
+      '      - doc-a',
+      '    ts: 2026-06-01T00:00:00Z',
+      '    firstTs: 2026-06-01T00:00:00Z',
+      '',
+    ].join('\n');
+    fs.writeFileSync(filePath, content);
+
+    await saveUserVotes(filePath, await loadUserVotes(filePath));
+
+    expect(fs.readFileSync(filePath, 'utf8')).toBe(content);
+  });
+
   it('auto-migrates v1 file on read', async () => {
     const v1: UserVotes = { votes: { 'doc-x': { at: '2026-06-01T00:00:00Z' } } };
     const filePath = path.join(tmpDir, 'user.yaml');

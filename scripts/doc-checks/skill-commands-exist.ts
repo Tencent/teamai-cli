@@ -8,6 +8,7 @@ import { loadCommandTable } from '../command-table.js';
 
 const ROOT = process.cwd();
 const SKILL_DATA = path.join(ROOT, 'skill-data');
+
 /** The deployed stub is the one file agents always hold, so its commands are checked too. */
 const DEPLOYED_STUB = path.join(ROOT, 'skills', 'teamai', 'SKILL.md');
 
@@ -21,30 +22,38 @@ interface Invocation {
 function markdownFiles(dir: string): string[] {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const full = path.join(dir, entry.name);
+
     if (entry.isDirectory()) return markdownFiles(full);
+
     return entry.isFile() && entry.name.endsWith('.md') ? [full] : [];
   });
 }
 
 function collectInvocations(): Invocation[] {
   const found: Invocation[] = [];
+
   for (const file of [...markdownFiles(SKILL_DATA), DEPLOYED_STUB]) {
     const relative = path.relative(ROOT, file);
     const lines = fs.readFileSync(file, 'utf8').split('\n');
 
     // A description sentence naming the CLI is prose, not an invocation.
     let start = 0;
+
     if (lines[0] === '---') {
       const close = lines.indexOf('---', 1);
+
       if (close > 0) start = close + 1;
     }
 
     lines.slice(start).forEach((line, offset) => {
       // Inside backticks, or a bare command line inside a fenced block.
       const spans = [...line.matchAll(/`([^`]*)`/g)].map((m) => m[1]);
+
       if (/^\s*teamai\s/.test(line)) spans.push(line.trim());
+
       for (const span of spans) {
         const text = span.trim().replace(/\s+#.*$/, '');
+
         // The token after `teamai` has to look like a command name; prose such
         // as "teamai — Team AI …" or "teamai …" is a mention, not a call.
         if (!/^teamai\s+(-{1,2}[a-z]|[a-z][a-z-]*(\s|$))/.test(text)) continue;
@@ -52,28 +61,35 @@ function collectInvocations(): Invocation[] {
       }
     });
   }
+
   return found;
 }
 
 /** Walk the command chain an invocation names, and return the command it lands on. */
-function resolveCommand(program: Command, tokens: string[]): { command: Command; rest: string[] } {
+function resolveCommand(program: Command, tokens: string[]) {
   let command = program;
   let index = 0;
+
   while (index < tokens.length) {
     const next = command.commands.find((c) => c.name() === tokens[index] || c.aliases().includes(tokens[index]));
+
     if (!next) break;
     command = next;
     index += 1;
   }
+
   return { command, rest: tokens.slice(index) };
 }
 
 function knownFlags(command: Command, program: Command): Set<string> {
   const flags = new Set<string>(['--help', '-h']);
+
   for (const option of [...command.options, ...program.options]) {
     if (option.long) flags.add(option.long);
+
     if (option.short) flags.add(option.short);
   }
+
   return flags;
 }
 
@@ -82,6 +98,7 @@ function validate(program: Command, invocations: Invocation[]): string[] {
 
   for (const invocation of invocations) {
     const tokens = invocation.text.split(/\s+/).slice(1).filter(Boolean);
+
     if (tokens.length === 0) continue;
 
     const { command, rest } = resolveCommand(program, tokens);
@@ -96,6 +113,7 @@ function validate(program: Command, invocations: Invocation[]): string[] {
     // by one of them (or a flag), so any other word is a subcommand that does
     // not exist. Placeholders such as `<name>` stand for one and are skipped.
     const next = rest[0];
+
     if (
       next !== undefined &&
       command.commands.length > 0 &&
@@ -110,11 +128,14 @@ function validate(program: Command, invocations: Invocation[]): string[] {
     const flags = knownFlags(command, program);
     // After `--` the words are another command's (`teamai env exec -- gh …`).
     const end = rest.indexOf('--');
+
     for (const token of end === -1 ? rest : rest.slice(0, end)) {
       if (!token.startsWith('-') || token === '-') continue;
       const flag = token.split('=')[0];
+
       // Placeholders and prose inside an example are not flags to resolve.
       if (/[<>[\]{}"']/.test(flag)) continue;
+
       if (!flags.has(flag)) {
         problems.push(`${where}  → unknown flag "${flag}" for \`teamai ${command.name()}\``);
       }

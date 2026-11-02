@@ -61,6 +61,7 @@ export async function memberTools(scope: LocalConfig | undefined): Promise<Membe
   // In user scope the scope's own config is this machine's, read as an install.
   const own = scope && scope.scope !== 'user' ? ownMemberSettings(scope).ai?.tool : undefined;
   const machine = scope?.scope === 'user' ? scope.ai?.tool : (await loadMemberSettings()).ai?.tool;
+
   return [
     ...(env ? [{ source: 'TEAMAI_AI_TOOL' as const, tool: env, setting: 'TEAMAI_AI_TOOL' }] : []),
     ...(scope && own ? [{ source: 'ai.tool (project)' as const, tool: own, setting: `ai.tool in the ${installScopeName(scope.scope)} config ${path.join(getDataHome(scope), 'config.yaml')}` }] : []),
@@ -75,9 +76,11 @@ export async function memberTools(scope: LocalConfig | undefined): Promise<Membe
 async function scopeHere(): Promise<LocalConfig | undefined> {
   const unreadable: string[] = [];
   const scope = await resolveConfigForDir(process.cwd(), (file, error) => { unreadable.push(`${file} could not be read: ${error}.`); }, { dryRun: true, suppressMigrationNotice: true });
+
   if (unreadable.length > 0) {
     throw new CallError('override_invalid', `${unreadable.join(' ')} teamai cannot tell which ai.tool applies here, so no AI call runs until that is fixed.`);
   }
+
   return scope ?? undefined;
 }
 
@@ -107,8 +110,11 @@ type Picked = { tool: LaunchOrderTool; executable: string };
 /** The environment a call's tool runs in: the member's own, marked as teamai's launch, without an outer launch's checkout. */
 function callEnv(launchedBy: LaunchedBy, tool: string): NodeJS.ProcessEnv {
   const { TEAMAI_LAUNCHED_TOOL: _tool, TEAMAI_LAUNCHED_CHECKOUT: _checkout, ...env } = process.env;
+
+  const gateway = tool === 'agy' ? agyGatewayEnv(env) : undefined;
+
   // Our own session, not the user's: its hooks would print the share-learnings hint into the answer we read.
-  return { ...env, ...(tool === 'agy' ? agyGatewayEnv(env) : {}), TEAMAI_CONTRIBUTE_HINT_DISABLED: '1', [LAUNCHED_BY_ENV]: launchedBy, [RUN_MODE_ENV]: resolveRunMode(process.env) };
+  return { ...env, ...gateway, TEAMAI_CONTRIBUTE_HINT_DISABLED: '1', [LAUNCHED_BY_ENV]: launchedBy, [RUN_MODE_ENV]: resolveRunMode(process.env) };
 }
 
 /** A caller that resolves its tool once per scope and reuses it for every call there. */
@@ -117,39 +123,52 @@ export function createToolCaller({ resolveTool = resolveCliPath, resolveScope = 
   const named = ({ source, tool: value, setting }: MemberTool): Picked => {
     const env = source === 'TEAMAI_AI_TOOL';
     const tool = LAUNCH_ORDER.find((candidate) => candidate === value);
+
     if (tool === undefined) {
       throw new CallError('override_invalid', `${setting} is "${value}", which is not a tool teamai launches. Set it to one of: ${LAUNCH_ORDER.join(', ')}. Or ${env ? 'unset' : 'remove'} it.`);
     }
+
     const executable = resolveTool(executableOf(tool));
+
     if (executable === null) {
       throw new CallError('override_invalid', `${setting} is "${tool}", which is not on PATH. Install ${tool}, or ${env ? 'unset TEAMAI_AI_TOOL' : 'remove it'} to use the next setting or the first installed tool.`);
     }
+
     log.debug(`[tool-launch] using ${tool} (${executable}), from ${source}`);
+
     return { tool, executable };
   };
 
   const resolve = async (first: MemberTool | undefined): Promise<Picked> => {
     if (first) return named(first);
+
     for (const tool of LAUNCH_ORDER) {
       const executable = resolveTool(executableOf(tool));
+
       if (executable !== null) {
         log.debug(`[tool-launch] using ${tool} (${executable}), from LAUNCH_ORDER`);
+
         return { tool, executable };
       }
     }
+
     throw new CallError('no_tool', `No AI tool teamai launches is on PATH. Install one of: ${LAUNCH_ORDER.join(', ')}, or set TEAMAI_AI_TOOL to one you have.`);
   };
+
   // One pick per tool the member names, so a process that works in several projects never takes another project's
   // tool, and sees a setting changed since. Only a pick that succeeded is kept, so a long-lived process sees a tool
   // installed or a setting fixed since.
   const picked = new Map<string, Promise<Picked>>();
+
   const pick = async (scope: LocalConfig | undefined): Promise<Picked> => {
     const [first] = await memberTools(scope ?? await resolveScope());
     const key = first?.tool ?? '';
     const cached = picked.get(key);
+
     if (cached) return cached;
-    const picking = resolve(first).catch((error: unknown) => { picked.delete(key); throw error; });
+    const picking = resolve(first).catch((cause: unknown) => { picked.delete(key); throw cause; });
     picked.set(key, picking);
+
     return picking;
   };
 
@@ -158,20 +177,29 @@ export function createToolCaller({ resolveTool = resolveCliPath, resolveScope = 
       const { call } = launchAdapterOf(tool);
       log.debug(`[tool-launch] ${launchedBy} → ${tool}, timeout=${Math.round(timeout / 1000)}s`);
       const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-call-'));
+
       try {
         const lastMessageFile = path.join(scratch, 'last-message.txt');
         const promptFile = path.join(scratch, 'prompt.md');
+
         if (call.prompt === 'file') await fs.writeFile(promptFile, prompt);
         const args = call.args({ prompt, promptFile, lastMessageFile });
         const run = await runTool({ executable, args, cwd: process.cwd(), env: callEnv(launchedBy, tool), stdin: call.prompt !== 'stdin' ? '' : 'stdinOf' in call ? call.stdinOf(prompt) : prompt, timeoutMs: timeout, detached: false });
+
         if (run.timedOut) throw new CallError('call_failed', `AI call timed out after ${Math.round(timeout / 1000)}s (tool: ${tool})`);
         const lastMessage = await fs.readFile(lastMessageFile, 'utf8').catch(() => undefined);
         const reading = call.read({ stdout: run.stdout, lastMessage });
+
         if (run.code !== 0 || !reading.ok) {
           const reason = (reading.ok ? undefined : reading.message) || run.stderr.trim() || run.stdout.trim() || `exit code ${run.code}`;
           throw new CallError('call_failed', `AI call failed (tool: ${tool}): ${reason}`);
         }
-        return { text: reading.text, tool, ...(reading.tokens ? { tokens: reading.tokens } : {}) };
+
+        const result: CallResult = { text: reading.text, tool };
+
+        if (reading.tokens) result.tokens = reading.tokens;
+
+        return result;
       } finally {
         await fs.rm(scratch, { recursive: true, force: true, maxRetries: 3 });
       }
@@ -182,16 +210,21 @@ export function createToolCaller({ resolveTool = resolveCliPath, resolveScope = 
     await pick(options.scope);
     const settled: ({ ok: true; value: T } | { ok: false; reason: unknown })[] = [];
     let next = 0;
+
     const worker = async (): Promise<void> => {
       for (let index = next++; index < tasks.length; index = next++) {
         const task = tasks[index];
+
         try { settled[index] = { ok: true, value: task.parse((await callTool(task.prompt, options)).text) }; }
         catch (reason) { settled[index] = { ok: false, reason }; }
       }
     };
+
     await Promise.all(Array.from({ length: Math.min(concurrency, tasks.length) }, worker));
     const errors = settled.flatMap((outcome) => outcome.ok ? [] : [outcome.reason]);
+
     if (errors.length > 0) throw new AggregateError(errors, `${errors.length} AI task(s) failed`);
+
     return settled.flatMap((outcome) => outcome.ok ? [outcome.value] : []);
   }
 

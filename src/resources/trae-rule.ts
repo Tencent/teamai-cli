@@ -23,9 +23,11 @@ import {
  */
 export function teamRuleToTraeRule(rawTeamRule: string): string {
   const globs = [...new Set(rulePaths(teamRuleData(rawTeamRule)).flatMap(expandBraces))];
+
   const frontmatter = globs.length > 0
     ? [`globs: ${globs.join(', ')}`, 'alwaysApply: false']
     : ['alwaysApply: true'];
+
   return `---\n${frontmatter.join('\n')}\n---\n\n${teamRuleBody(rawTeamRule)}\n`;
 }
 

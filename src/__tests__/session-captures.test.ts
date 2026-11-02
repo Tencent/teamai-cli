@@ -12,6 +12,7 @@ import type { LocalConfig } from '../types.js';
 import { withSkillFrontmatter } from '../resources/skills.js';
 import { log } from '../utils/logger.js';
 import { commitFile, fakeClaude, git, initRepo, recordDelivery } from './helpers/delivered-checkout.js';
+import type { HookStdin } from '../hook-dispatch.js';
 
 const cleanups: Array<() => void | Promise<void>> = [];
 beforeEach(() => {
@@ -46,7 +47,7 @@ function checkout(): { config: LocalConfig; project: string; rev: string; skill:
   return { config, project, rev, skill };
 }
 
-function stalledVersionWriter(root: string, config: LocalConfig, payload: Record<string, unknown>): { stalled: string; go: string; exited: Promise<unknown> } {
+function stalledVersionWriter(root: string, config: LocalConfig, payload: HookStdin): { stalled: string; go: string; exited: Promise<unknown> } {
   const stalled = path.join(root, 'stalled');
   const go = path.join(root, 'go');
   const preload = path.join(root, 'stall.cjs');
@@ -80,8 +81,13 @@ SessionCaptures.addToolVersion(${JSON.stringify(config)}, 'claude', ${JSON.strin
   return { stalled, go, exited };
 }
 
-const start = (project: string, extra: Record<string, unknown> = {}): Record<string, unknown> =>
+const start = (project: string, extra: HookStdin = {}): HookStdin =>
   ({ session_id: SESSION, cwd: project, hook_event_name: 'SessionStart', source: 'startup', model: 'claude-opus-5-5', ...extra });
+
+/** A later hook's payload carrying the capture id, set only when there is one, as the dispatcher does. */
+function withCapture(payload: HookStdin, captureId: string | undefined): HookStdin {
+  return captureId === undefined ? payload : { ...payload, [CAPTURE_PAYLOAD_KEY]: captureId };
+}
 
 describe('session captures (#1178)', () => {
   it('records the team skills the checkout delivered and still holds as delivered, and no name a copy teamai did not deliver shares', async () => {
@@ -346,7 +352,7 @@ describe('session captures (#1178)', () => {
     const [before] = await SessionCaptures.read(config, 'claude-code', SESSION);
     cleanups.push(fakeClaude(project, '2.1.308'));
 
-    await SessionCaptures.addToolVersion(config, 'claude', { ...start(project), [CAPTURE_PAYLOAD_KEY]: captureId });
+    await SessionCaptures.addToolVersion(config, 'claude', withCapture(start(project), captureId));
 
     const [after] = await SessionCaptures.read(config, 'claude-code', SESSION);
     expect(after?.agent.tool).toEqual({ name: 'claude', version: '2.1.308' });
@@ -376,7 +382,7 @@ describe('session captures (#1178)', () => {
     const before = await SessionCaptures.checkoutDelivery(config, 'claude');
     await recordDelivery(config, { rev, targets: ['claude'], files: [] });
 
-    await SessionCaptures.markTeamChanged(config, 'claude', { ...start(project), [CAPTURE_PAYLOAD_KEY]: captureId }, before);
+    await SessionCaptures.markTeamChanged(config, 'claude', withCapture(start(project), captureId), before);
 
     expect((await SessionCaptures.read(config, 'claude-code', SESSION)).map((capture) => capture.teamSkillInfo)).toEqual([{}]);
   });
@@ -391,7 +397,7 @@ describe('session captures (#1178)', () => {
     fs.mkdirSync(path.dirname(deploy), { recursive: true });
     fs.writeFileSync(deploy, 'deploy\n');
     await recordDelivery(config, { rev: commitFile(config.repo.localPath, 'skills/deploy/SKILL.md'), targets: ['claude'], files: [skill, deploy] });
-    await SessionCaptures.markTeamChanged(config, 'claude', { ...start(project), [CAPTURE_PAYLOAD_KEY]: captureId }, before);
+    await SessionCaptures.markTeamChanged(config, 'claude', withCapture(start(project), captureId), before);
 
     expect((await SessionCaptures.read(config, 'claude-code', SESSION)).map((capture) => capture.teamSkills)).toEqual([{ review: [skill], deploy: [deploy] }]);
   });
@@ -407,7 +413,7 @@ describe('session captures (#1178)', () => {
     fs.mkdirSync(path.dirname(deploy), { recursive: true });
     fs.writeFileSync(deploy, 'deploy\n');
     await recordDelivery(config, { rev: commitFile(config.repo.localPath, 'skills/deploy/SKILL.md'), targets: ['claude'], files: [skill, deploy] });
-    await SessionCaptures.markTeamChanged(config, 'claude', { ...start(project, { source: 'resume' }), [CAPTURE_PAYLOAD_KEY]: resumed }, before);
+    await SessionCaptures.markTeamChanged(config, 'claude', withCapture(start(project, { source: 'resume' }), resumed), before);
 
     expect((await SessionCaptures.read(config, 'claude-code', SESSION)).map((capture) => capture.teamSkills))
       .toEqual([{ review: [skill] }, { review: [skill], deploy: [deploy] }]);
@@ -422,7 +428,7 @@ describe('session captures (#1178)', () => {
     const before = await SessionCaptures.checkoutDelivery(config, 'claude');
     fs.mkdirSync(path.dirname(skill), { recursive: true });
     fs.writeFileSync(skill, 'review\n');
-    await SessionCaptures.markTeamChanged(config, 'claude', { ...start(project), [CAPTURE_PAYLOAD_KEY]: captureId }, before);
+    await SessionCaptures.markTeamChanged(config, 'claude', withCapture(start(project), captureId), before);
 
     expect((await SessionCaptures.read(config, 'claude-code', SESSION)).map(({ teamSkills, teamChanged }) => ({ teamSkills, teamChanged })))
       .toEqual([{ teamSkills: { review: [skill] }, teamChanged: undefined }]);
@@ -502,7 +508,7 @@ describe('session captures (#1178)', () => {
     await recordDelivery(config, { rev: rev.slice(0, 7), targets: ['claude'], files: [skill] });
     const captureId = await SessionCaptures.atStart(config, 'claude', start(project), {});
     cleanups.push(fakeClaude(project, '2.1.308'));
-    const writer = stalledVersionWriter(path.dirname(project), config, { ...start(project), [CAPTURE_PAYLOAD_KEY]: captureId });
+    const writer = stalledVersionWriter(path.dirname(project), config, withCapture(start(project), captureId));
     await expect.poll(() => fs.existsSync(writer.stalled), { timeout: 10_000 }).toBe(true);
 
     const before = await SessionCaptures.checkoutDelivery(config, 'claude');

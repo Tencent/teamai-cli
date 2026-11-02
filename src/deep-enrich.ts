@@ -1,7 +1,11 @@
 import { readFile, writeFile, readdir, mkdir, unlink, lstat, rename } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
+
+import { z } from 'zod';
+
 import { pathExists } from './utils/fs.js';
+import { lenientList } from './utils/json.js';
 import { CallError, callTool, callToolParallel, isOverrideInvalid } from './tool-launch/call.js';
 import { log } from './utils/logger.js';
 import { assertSafeResourceName, assertWithinRoot } from './utils/path-safety.js';
@@ -22,42 +26,63 @@ export interface DeepEnrichResult {
   missingArchitecture: boolean;
 }
 
-interface ProgressState {
-  project: string;
-  phase: 'pending' | 'components' | 'architecture' | 'graph' | 'ai-graph' | 'index-enhance' | 'done';
-  componentsDone: string[];
-  componentsPending: string[];
-  startedAt: string;
-  updatedAt: string;
-}
+const PROGRESS_PHASES = ['pending', 'components', 'architecture', 'graph', 'ai-graph', 'index-enhance', 'done'] as const;
 
-interface ManifestComponent {
-  slug: string;
-  title?: string;
-  responsibilities?: string[];
-  category?: string;
-  entrypoints?: string[];
-  interfaces?: string[];
-  errorCodeRanges?: string[];
-}
+/** `_review/progress.json`, written only by saveProgress. */
+const ProgressStateSchema = z.object({
+  project: z.string(),
+  phase: z.enum(PROGRESS_PHASES),
+  componentsDone: z.array(z.string()),
+  componentsPending: z.array(z.string()),
+  startedAt: z.string(),
+  updatedAt: z.string(),
+});
 
-interface ManifestEdge {
-  from: string;
-  to: string;
-  relation?: string;
-  protocol?: string;
-  confidence?: string;
-  weight?: number;
-  reason?: string;
-  evidenceRefs?: string[];
-}
+type ProgressState = z.infer<typeof ProgressStateSchema>;
 
-interface Manifest {
-  project?: string;
-  generatedAt?: string;
-  components?: ManifestComponent[];
-  edges?: ManifestEdge[];
-}
+const OptionalTextSchema = z.string().optional().catch(undefined);
+const OptionalTextListSchema = z.array(z.string()).optional().catch(undefined);
+
+const ManifestComponentSchema = z.object({
+  slug: z.string(),
+  title: OptionalTextSchema,
+  responsibilities: OptionalTextListSchema,
+  category: OptionalTextSchema,
+  entrypoints: OptionalTextListSchema,
+  interfaces: OptionalTextListSchema,
+  errorCodeRanges: OptionalTextListSchema,
+});
+
+type ManifestComponent = z.infer<typeof ManifestComponentSchema>;
+
+const ManifestEdgeSchema = z.object({
+  from: z.string(),
+  to: z.string(),
+  relation: OptionalTextSchema,
+  protocol: OptionalTextSchema,
+  confidence: OptionalTextSchema,
+  weight: z.number().optional().catch(undefined),
+  reason: OptionalTextSchema,
+  evidenceRefs: OptionalTextListSchema,
+});
+
+type ManifestEdge = z.infer<typeof ManifestEdgeSchema>;
+
+/** The evidence `_manifest.json`; a field of the wrong type reads as absent. */
+const ManifestSchema = z.object({
+  project: OptionalTextSchema,
+  generatedAt: OptionalTextSchema,
+  components: lenientList(ManifestComponentSchema).optional().catch(undefined),
+  edges: lenientList(ManifestEdgeSchema).optional().catch(undefined),
+});
+
+type Manifest = z.infer<typeof ManifestSchema>;
+
+/** The evidence `_domains.json`; a field of the wrong type reads as absent. */
+const DomainsFileSchema = z.object({
+  keywords: OptionalTextListSchema,
+  description: OptionalTextSchema,
+});
 
 // ─── 上下文加载 ─────────────────────────────────────────────
 
@@ -86,23 +111,26 @@ async function assertSafeOutputDir(dir: string): Promise<void> {
     if ((await lstat(dir)).isSymbolicLink()) {
       throw symlinkRefusal(dir);
     }
+
     for (const entry of await readdir(dir, { withFileTypes: true })) {
       if (entry.isSymbolicLink()) {
         throw symlinkRefusal(path.join(dir, entry.name));
       }
     }
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
   }
 }
 
 async function assertSafeEvidencePath(wikiRoot: string, evidenceDir: string): Promise<void> {
   assertWithinRoot(wikiRoot, evidenceDir);
   const root = path.resolve(wikiRoot);
+
   for (let dir = path.resolve(evidenceDir); ; dir = path.dirname(dir)) {
     if ((await lstat(dir)).isSymbolicLink()) {
       throw symlinkRefusal(dir);
     }
+
     if (dir === root) break;
   }
 }
@@ -112,6 +140,7 @@ async function writeGeneratedFile(dir: string, name: string, content: string): P
   await assertSafeOutputDir(dir);
   const target = path.join(dir, name);
   const pending = path.join(dir, `.${name}.${randomUUID()}.tmp`);
+
   try {
     await writeFile(pending, content, { encoding: 'utf-8', flag: 'wx' });
     await rename(pending, target);
@@ -124,8 +153,9 @@ async function writeGeneratedFile(dir: string, name: string, content: string): P
 async function loadContext(evidenceDir: string): Promise<EnrichContext> {
   const manifestRaw = await readFileSafe(path.join(evidenceDir, '_manifest.json'));
   let manifest: Manifest = {};
+
   try {
-    manifest = JSON.parse(manifestRaw) as Manifest;
+    manifest = ManifestSchema.parse(JSON.parse(manifestRaw));
   } catch {
     log.debug('deep-enrich: failed to parse _manifest.json');
   }
@@ -138,6 +168,7 @@ async function loadContext(evidenceDir: string): Promise<EnrichContext> {
 
   const modulesDir = path.join(evidenceDir, 'modules');
   const moduleDocs = new Map<string, string>();
+
   if (await pathExists(modulesDir)) {
     try {
       const entries = await readdir(modulesDir);
@@ -166,32 +197,18 @@ function progressPath(evidenceDir: string): string {
   return path.join(evidenceDir, PROGRESS_PATH_SUBDIR, PROGRESS_FILENAME);
 }
 
-const VALID_PHASES = new Set<string>([
-  'pending', 'components', 'architecture', 'graph',
-  'ai-graph', 'index-enhance', 'done',
-]);
-
-function isValidProgressState(v: unknown, project: string): v is ProgressState {
-  if (typeof v !== 'object' || v === null) return false;
-  const s = v as Record<string, unknown>;
-  return (
-    s['project'] === project &&
-    typeof s['phase'] === 'string' &&
-    VALID_PHASES.has(s['phase']) &&
-    Array.isArray(s['componentsDone']) &&
-    Array.isArray(s['componentsPending'])
-  );
-}
-
 async function loadProgress(evidenceDir: string, project: string, allComponents: string[]): Promise<ProgressState> {
   const p = progressPath(evidenceDir);
+
   try {
     const raw = await readFile(p, 'utf-8');
-    const parsed: unknown = JSON.parse(raw);
-    if (isValidProgressState(parsed, project)) return parsed;
+    const parsed = ProgressStateSchema.safeParse(JSON.parse(raw)).data;
+
+    if (parsed?.project === project) return parsed;
   } catch {
     // 不存在或解析失败，创建新的
   }
+
   return {
     project,
     phase: 'pending',
@@ -218,6 +235,7 @@ function buildComponentPrompt(
 ): string {
   const moduleName = component.slug;
   const responsibilities = component.responsibilities ?? [];
+
   return `<context>
 项目: ${project}
 模块: ${moduleName}
@@ -292,6 +310,7 @@ ${interfaceSummary}
 
 function buildG1RelationsDoc(manifest: Manifest): string {
   const edges = manifest.edges ?? [];
+
   if (edges.length === 0) {
     return [
       '# 组件关系矩阵',
@@ -326,7 +345,9 @@ function buildG1RelationsDoc(manifest: Manifest): string {
   }
 
   const confidenceCounts = { EXTRACTED: 0, INFERRED: 0, AMBIGUOUS: 0 };
+
   for (const edge of edges) confidenceCounts[graphConfidence(edge).label]++;
+
   const lines = [
     '# 组件关系矩阵',
     '<!-- search-anchor: 依赖, 关系, 上游, 下游, DEPENDS_ON, imports, 模块关系 -->',
@@ -346,6 +367,7 @@ function buildG1RelationsDoc(manifest: Manifest): string {
     '|----------|----------|----------|------------|-------|',
     ...edges.slice(0, 50).map(e => {
       const { label, score } = graphConfidence(e);
+
       return `| ${e.from} | ${e.to} | ${e.relation ?? 'DEPENDS_ON'} | ${label} | ${score.toFixed(2)} |`;
     }),
     '',
@@ -370,6 +392,7 @@ function buildG1RelationsDoc(manifest: Manifest): string {
   }
 
   lines.push('');
+
   return lines.join('\n');
 }
 
@@ -399,6 +422,7 @@ function buildG2DataflowDoc(callChains: string): string {
     // Each `## entry` opens a chain; the `# Dependency Paths` title and its
     // intro lines are not relations and must not be labelled as such.
     const entryMatch = line.match(/^##\s+(.+)/);
+
     if (entryMatch) {
       if (currentBlock) chainBlocks.push(currentBlock);
       currentBlock = { entry: entryMatch[1], steps: [] };
@@ -406,21 +430,26 @@ function buildG2DataflowDoc(callChains: string): string {
       currentBlock.steps.push(line.trim());
     }
   }
+
   if (currentBlock) chainBlocks.push(currentBlock);
 
   if (chainBlocks.length > 0) {
     for (const block of chainBlocks.slice(0, 15)) {
       lines.push(`## ${block.entry}`, '', '**Confidence: EXTRACTED**', '');
+
       for (const step of block.steps.slice(0, 10)) {
         // Keep the producer's `- ` marker first so each step stays a list item.
         lines.push(`- [EXTRACTED] ${step.replace(/^- /, '')}`);
       }
+
       lines.push('');
     }
   } else {
     const flowLines = rawLines.filter(l => /→|->/.test(l));
+
     if (flowLines.length > 0) {
       lines.push('| 调用链路径 |', '|------------|');
+
       for (const l of flowLines.slice(0, 30)) {
         lines.push(`| ${l.trim()} |`);
       }
@@ -430,6 +459,7 @@ function buildG2DataflowDoc(callChains: string): string {
   }
 
   lines.push('');
+
   return lines.join('\n');
 }
 
@@ -437,25 +467,32 @@ function buildG3InterfacesDoc(interfacesMd: string): string {
   if (!interfacesMd.trim()) {
     return '# 接口映射表\n<!-- search-anchor: data flow, storage dependencies, MQ topology, cache, 数据流, 存储 -->\n\n## 🤖 AI Quick Reference\n| Dimension | Key Information |\n|-----------|-----------------|\n| Document scope | Extracted interface evidence only |\n| Core value | Shows known interface inventory without inventing storage behaviour |\n| Coverage | No interface evidence was extracted in this run |\n\n（暂无接口数据）\n\n> 可能原因：未检测到 HTTP/gRPC/MQ 等对外接口定义。\n> 仅当代码中存在路由注册、Proto 定义或消息队列声明时才会提取接口。\n';
   }
+
   return `# 接口映射表\n<!-- search-anchor: data flow, storage dependencies, MQ topology, cache, 数据流, 存储 -->\n\n## 🤖 AI Quick Reference\n| Dimension | Key Information |\n|-----------|-----------------|\n| Document scope | Extracted interface evidence only |\n| Core value | Routes interface questions to the evidence inventory |\n| Coverage | Extracted interface evidence only; storage and MQ semantics remain unverified |\n\n${interfacesMd}\n`;
 }
 
 function buildG4ErrorCodeDoc(manifest: Manifest, moduleDocs: Map<string, string>): string {
   const rows: string[] = [];
+
   for (const component of manifest.components ?? []) {
     for (const range of component.errorCodeRanges ?? []) {
       rows.push(`| ${range} | ${component.slug} | EXTRACTED | manifest errorCodeRanges |`);
     }
+
     const content = moduleDocs.get(component.slug) ?? '';
     const start = content.indexOf('## Errors');
+
     if (start < 0) continue;
     const end = content.indexOf('\n## ', start + 4);
     const section = content.slice(start, end < 0 ? undefined : end);
+
     for (const line of section.split('\n')) {
       const match = line.match(/- `([^`]+)` ← (.+)/);
+
       if (match) rows.push(`| ${match[1]} | ${component.slug} | EXTRACTED | ${match[2]} |`);
     }
   }
+
   return [
     '# Error Code Component Map',
     '<!-- search-anchor: error code, error mapping, InvalidParameter, 错误码, 故障排查 -->',
@@ -482,12 +519,15 @@ function buildG4ErrorCodeDoc(manifest: Manifest, moduleDocs: Map<string, string>
 function buildG7RiskDoc(manifest: Manifest): string {
   const edges = manifest.edges ?? [];
   const components = [...new Set([...(manifest.components ?? []).map(c => c.slug), ...edges.flatMap(e => [e.from, e.to])])].sort();
+
   const rows = components.map(component => {
     const direct = edges.filter(e => e.from === component || e.to === component).length;
     const dependents = new Set(edges.filter(e => e.to === component).map(e => e.from)).size;
     const level = direct >= 5 || dependents >= 3 ? '🔴 high' : direct >= 2 || dependents >= 1 ? '🟡 medium' : '🟢 low';
+
     return `| ${component} | ${level} | ${dependents} direct dependent(s) | ${direct} extracted manifest edge(s); runtime availability is unverified |`;
   });
+
   return [
     '# Architecture Risks and Impact Analysis',
     '<!-- search-anchor: architecture risk, blast radius, impact surface, 架构风险, 影响范围 -->',
@@ -513,17 +553,22 @@ function buildG7RiskDoc(manifest: Manifest): string {
 
 function buildG8ConfigDoc(components: ManifestComponent[], moduleDocs: Map<string, string>): string {
   const rows: string[] = [];
+
   for (const component of components) {
     const content = moduleDocs.get(component.slug) ?? '';
     const start = content.indexOf('## Config');
+
     if (start < 0) continue;
     const end = content.indexOf('\n## ', start + 4);
     const section = content.slice(start, end < 0 ? undefined : end);
+
     for (const line of section.split('\n')) {
       const match = line.match(/- `([^`]+)` ← (.+)/);
+
       if (match) rows.push(`| ${match[1]} | ${component.slug} | — | Extracted config reference | AMBIGUOUS | unknown |`);
     }
   }
+
   return [
     '# Core Config Parameter Index',
     '<!-- search-anchor: config parameters, config index, config changes, 配置参数, 配置变更 -->',
@@ -585,6 +630,7 @@ function buildGComparisonDoc(project: string, flags: { g5Generated: boolean; g6G
     ['G8', 'Core Config Parameter Index', 'graph-g8-config.md', 'partial', 'Explicit config references are indexed; defaults/effect modes remain unverified.'],
     ['G9', 'Business Rule Constraint Matrix', 'graph-g9-constraints.md', 'deferred', 'No product-rule evidence or standardised K4 questions were available.'],
   ];
+
   return [
     `# ${project} — G-document comparison and coverage`,
     '<!-- search-anchor: G1 G2 G3 G4 G5 G6 G7 G8 G9 method comparison coverage -->',
@@ -607,6 +653,7 @@ function extractModuleFacts(moduleDocs: Map<string, string>, slug: string): stri
 function extractRelevantCallChains(callChains: string, slug: string): string {
   const lines = callChains.split('\n');
   const relevant = lines.filter(l => l.includes(slug));
+
   return relevant.slice(0, 20).join('\n') || callChains.slice(0, 500);
 }
 
@@ -615,8 +662,11 @@ function extractDeps(manifest: Manifest, slug: string): string {
   const deps = edges.filter(e => e.from === slug).map(e => e.to);
   const rdeps = edges.filter(e => e.to === slug).map(e => e.from);
   const parts: string[] = [];
+
   if (deps.length > 0) parts.push(`依赖: ${deps.join(', ')}`);
+
   if (rdeps.length > 0) parts.push(`被依赖: ${rdeps.join(', ')}`);
+
   return parts.join('\n') || '无';
 }
 
@@ -632,6 +682,7 @@ async function runPhaseComponents(
 
   if (pending.length === 0) {
     log.info(`deep-enrich[${project}]: All component docs complete, skipping Phase 1`);
+
     return;
   }
 
@@ -639,30 +690,37 @@ async function runPhaseComponents(
 
   // 每批 2 个并发
   const BATCH = 5;
+
   for (let i = 0; i < pending.length; i += BATCH) {
     const batch = pending.slice(i, i + BATCH);
+
     const tasks = batch.map((comp) => {
       const moduleFacts = extractModuleFacts(ctx.moduleDocs, comp.slug);
       const relevantCallChains = extractRelevantCallChains(ctx.callChains, comp.slug);
       const deps = extractDeps(ctx.manifest, comp.slug);
       const prompt = buildComponentPrompt(project, comp, moduleFacts, relevantCallChains, deps);
+
       return {
         prompt,
         parse: (output: string) => output,
       };
     });
 
-    let results: string[];
+    let results: Array<string | null>;
+
     try {
       results = await callToolParallel(tasks, { launchedBy: 'deep-enrich', concurrency: BATCH });
     } catch (e) {
       if (isOverrideInvalid(e)) throw e;
+
       // No AI tool is on PATH. Every retry would probe PATH again for each
       // launcher, so skip the remaining components instead.
       if (e instanceof CallError && e.kind === 'no_tool') {
         log.warn(`deep-enrich[${project}]: Skipping ${pending.length - i} component docs: ${e.message}`);
+
         return;
       }
+
       // AggregateError — 部分可能成功，graceful fallback
       log.warn(`deep-enrich[${project}]: batch[${i}] partially failed, falling back to sequential`);
       results = await Promise.all(
@@ -670,8 +728,9 @@ async function runPhaseComponents(
           try {
             return (await callTool(tasks[idx].prompt, { launchedBy: 'deep-enrich' })).text;
           } catch (componentError) {
-            log.warn(`deep-enrich[${project}]: Skipping component ${batch[idx].slug}: ${(componentError as Error).message}`);
-            return null as unknown as string;
+            log.warn(`deep-enrich[${project}]: Skipping component ${batch[idx].slug}: ${componentError instanceof Error ? componentError.message : String(componentError)}`);
+
+            return null;
           }
         }),
       );
@@ -680,13 +739,16 @@ async function runPhaseComponents(
     for (let j = 0; j < batch.length; j++) {
       const comp = batch[j];
       const content = results[j];
+
       if (!content) continue;
+
       try {
         assertSafeResourceName(comp.slug);
       } catch (e) {
-        log.warn(`deep-enrich[${project}]: Skipping unsafe component slug "${comp.slug}": ${(e as Error).message}`);
+        log.warn(`deep-enrich[${project}]: Skipping unsafe component slug "${comp.slug}": ${e instanceof Error ? e.message : String(e)}`);
         continue;
       }
+
       const outPath = path.join(docsDir, `${comp.slug}.md`);
       await writeGeneratedFile(docsDir, `${comp.slug}.md`, content);
       progress.componentsDone.push(comp.slug);
@@ -705,28 +767,34 @@ async function runPhaseArchitecture(
 ): Promise<void> {
   const { project } = opts;
   const components = ctx.manifest.components ?? [];
+
   const moduleList = components
     .map(c => `- ${c.slug}: ${(c.responsibilities ?? []).join('; ')}`)
     .join('\n');
+
   const edges = (ctx.manifest.edges ?? [])
     .map(e => `${e.from} → ${e.to} (${e.relation ?? 'DEPENDS_ON'})`)
     .join('\n');
+
   const interfaceSummary = ctx.indexMd.slice(0, 800);
 
   const prompt = buildArchitecturePrompt(project, moduleList, edges, interfaceSummary);
   log.info(`deep-enrich[${project}]: Phase 2 — Generating architecture overview`);
 
   let content: string;
+
   try {
     content = (await callTool(prompt, { launchedBy: 'deep-enrich' })).text;
   } catch (e) {
     if (isOverrideInvalid(e)) throw e;
-    log.warn(`deep-enrich[${project}]: Architecture overview generation failed, skipping: ${(e as Error).message}`);
+    log.warn(`deep-enrich[${project}]: Architecture overview generation failed, skipping: ${e instanceof Error ? e.message : String(e)}`);
+
     return;
   }
 
   if (!content.trim()) {
     log.warn(`deep-enrich[${project}]: Architecture overview: AI returned empty, skipping write`);
+
     return;
   }
 
@@ -805,19 +873,27 @@ sequenceDiagram
 `;
 }
 
-function graphConfidence(edge: ManifestEdge): { label: 'EXTRACTED' | 'INFERRED' | 'AMBIGUOUS'; score: number } {
+interface GraphConfidence {
+  label: 'EXTRACTED' | 'INFERRED' | 'AMBIGUOUS';
+  score: number;
+}
+
+function graphConfidence(edge: ManifestEdge): GraphConfidence {
   // A missing label is not evidence. Keep it explicitly ambiguous instead of
   // manufacturing an extracted relationship (or using the forbidden 0.5 default).
   const label = edge.confidence === 'EXTRACTED' || edge.confidence === 'INFERRED' || edge.confidence === 'AMBIGUOUS'
     ? edge.confidence
     : 'AMBIGUOUS';
+
   const fallback = label === 'EXTRACTED' ? 1 : label === 'INFERRED' ? 0.8 : 0.3;
-  const score = typeof edge.weight === 'number' && edge.weight > 0 && edge.weight <= 1 ? edge.weight : fallback;
+  const score = edge.weight !== undefined && edge.weight > 0 && edge.weight <= 1 ? edge.weight : fallback;
+
   return { label, score };
 }
 
 function buildG6Content(project: string, manifest: Manifest): string {
   const edges = manifest.edges ?? [];
+
   const lines = [
     `# ${project} — Knowledge Graph Triples`,
     '<!-- search-anchor: knowledge graph, triples, multi-hop reasoning, 传递依赖, 知识图谱, 三元组 -->',
@@ -840,6 +916,7 @@ function buildG6Content(project: string, manifest: Manifest): string {
     lines.push('| — | — | — | No extracted dependency edges | AMBIGUOUS | 0.30 |', '');
     lines.push('## Multi-hop dependency path index', '', 'No dependency paths can be indexed until extraction finds graph edges.', '');
     lines.push('## Reverse reachability index', '', 'No reverse-reachability paths are available.', '');
+
     return lines.join('\n');
   }
 
@@ -850,6 +927,7 @@ function buildG6Content(project: string, manifest: Manifest): string {
 
   const adjacency = new Map<string, ManifestEdge[]>();
   const reverse = new Map<string, ManifestEdge[]>();
+
   for (const edge of edges) {
     const forward = adjacency.get(edge.from) ?? [];
     forward.push(edge);
@@ -861,29 +939,37 @@ function buildG6Content(project: string, manifest: Manifest): string {
 
   const nodes = [...new Set(edges.flatMap(({ from, to }) => [from, to]))].sort();
   lines.push('', '## Multi-hop dependency path index', '', '| Query pattern | Example path |', '|---------------|--------------|');
+
   for (const source of nodes) {
     const queue: Array<{ node: string; path: string[]; visited: Set<string> }> = [
       { node: source, path: [source], visited: new Set([source]) },
     ];
+
     let firstMultiHop: string[] | undefined;
+
     while (queue.length > 0 && !firstMultiHop) {
       const current = queue.shift()!;
+
       for (const edge of adjacency.get(current.node) ?? []) {
         // Keep separately discovered paths even when their destination is also
         // directly reachable. Only cycles on the current path are excluded.
         if (current.visited.has(edge.to)) continue;
         const nextPath = [...current.path, `(${edge.relation ?? 'DEPENDS_ON'})`, edge.to];
+
         if (nextPath.length >= 5) {
           firstMultiHop = nextPath;
           break;
         }
+
         const visited = new Set(current.visited);
         visited.add(edge.to);
         queue.push({ node: edge.to, path: nextPath, visited });
       }
     }
+
     if (firstMultiHop) lines.push(`| What does ${source} indirectly depend on? | ${firstMultiHop.join(' → ')} |`);
   }
+
   if (!lines.some((line) => line.startsWith('| What does '))) {
     lines.push('| No indirect dependency path was extracted | — |');
   }
@@ -897,6 +983,7 @@ function buildG6Content(project: string, manifest: Manifest): string {
     `| Target node | Reachable predecessors | Nearest predecessors (max ${MAX_REVERSE_PREDECESSORS}) | Representative paths (max ${MAX_REVERSE_PATHS}) |`,
     '|-------------|------------------------|-------------------------------|------------------------------|',
   );
+
   for (const target of nodes) {
     // Breadth-first over incoming edges: each predecessor is reached once, by a
     // shortest route, so work stays linear in the graph and the nearest
@@ -904,8 +991,10 @@ function buildG6Content(project: string, manifest: Manifest): string {
     // names, and routes for the nearest few.
     const hop = new Map<string, { distance: number; next: string; relation: string }>();
     let frontier = [target];
+
     for (let distance = 1; frontier.length > 0; distance++) {
       const nextFrontier: string[] = [];
+
       for (const node of frontier) {
         for (const edge of reverse.get(node) ?? []) {
           if (edge.from === target || hop.has(edge.from)) continue;
@@ -913,6 +1002,7 @@ function buildG6Content(project: string, manifest: Manifest): string {
           nextFrontier.push(edge.from);
         }
       }
+
       frontier = nextFrontier;
     }
 
@@ -921,31 +1011,38 @@ function buildG6Content(project: string, manifest: Manifest): string {
     const routeFrom = (node: string): string => {
       const segments = [node];
       let current = node;
+
       // A one-hop route repeats a triple listed above. When a direct
       // predecessor also reaches the target through another direct
       // predecessor (Api → Service → Store), show that route instead.
       const bridge = hop.get(node)?.distance === 1
         ? adjacency.get(node)?.find(edge => edge.to !== node && hop.get(edge.to)?.distance === 1)
         : undefined;
+
       if (bridge) {
         segments.push(`(${bridge.relation ?? 'DEPENDS_ON'})`, bridge.to);
         current = bridge.to;
       }
+
       for (let link = hop.get(current); link; link = hop.get(current)) {
         segments.push(`(${link.relation})`, link.next);
         current = link.next;
       }
+
       return segments.join(' → ');
     };
+
     const shown = [...hop.keys()].slice(0, MAX_REVERSE_PREDECESSORS);
     const hidden = hop.size - shown.length;
     const names = hidden > 0 ? `${shown.join(', ')}, … (+${hidden} more)` : shown.join(', ');
     const routes = shown.slice(0, MAX_REVERSE_PATHS).map(routeFrom);
+
     if (hop.size > routes.length) routes.push(`… ${routes.length} of ${hop.size} routes shown`);
     lines.push(`| ${target} | ${hop.size} | ${names} | ${routes.join('; ')} |`);
   }
 
   lines.push('');
+
   return lines.join('\n');
 }
 
@@ -959,9 +1056,11 @@ async function writeQualityReports(
   await mkdir(reviewDir, { recursive: true });
   const graphFiles = ['graph-g1-relations.md', 'graph-g2-dataflow.md', 'graph-g3-interfaces.md', 'graph-g4-errors.md', 'graph-g5-scenarios.md', 'graph-g6-triples.md', 'graph-g7-risks.md', 'graph-g8-config.md', 'graph-g9-constraints.md'];
   const present: string[] = [];
+
   for (const file of graphFiles) {
     if (await pathExists(path.join(docsDir, file))) present.push(file);
   }
+
   await writeGeneratedFile(reviewDir, 'k3-consistency-check.md', [
     '# Cross-Document Consistency Check Report', '',
     `Project: ${project}`, '',
@@ -1007,19 +1106,25 @@ async function runPhaseAiGraph(
   log.debug(`deep-enrich[${project}]: G6 knowledge-graph triples written`);
 
   const g5Path = path.join(docsDir, 'graph-g5-scenarios.md');
+
   if (await pathExists(g5Path)) {
     return { g5Generated: true, g6Generated: g6HasEdges };
   }
 
   // G5: AI 生成场景序列图（需要足够的模块数据）
   let g5Generated = false;
+
   if (ctx.moduleDocs.size < 2) {
     log.warn(`deep-enrich[${project}]: Insufficient modules (${ctx.moduleDocs.size} < 2), skipping G5`);
+
     return { g5Generated, g6Generated: g6HasEdges };
   }
+
   const architectureMd = await readFileSafe(path.join(docsDir, 'architecture.md'));
+
   if (!architectureMd.trim()) {
     log.warn(`deep-enrich[${project}]: No architecture doc, skipping G5 scenarios`);
+
     return { g5Generated, g6Generated: g6HasEdges };
   }
 
@@ -1031,6 +1136,7 @@ async function runPhaseAiGraph(
 
   try {
     const g5Content = (await callTool(prompt, { launchedBy: 'deep-enrich' })).text;
+
     if (g5Content.trim()) {
       await writeGeneratedFile(docsDir, 'graph-g5-scenarios.md', g5Content);
       log.debug(`deep-enrich[${project}]: G5 scenario diagrams written`);
@@ -1038,8 +1144,9 @@ async function runPhaseAiGraph(
     }
   } catch (e) {
     if (isOverrideInvalid(e)) throw e;
-    log.warn(`deep-enrich[${project}]: G5 scenario generation failed, skipping: ${(e as Error).message}`);
+    log.warn(`deep-enrich[${project}]: G5 scenario generation failed, skipping: ${e instanceof Error ? e.message : String(e)}`);
   }
+
   return { g5Generated, g6Generated: g6HasEdges };
 }
 
@@ -1061,6 +1168,7 @@ async function runPhaseIndexEnhance(
     hasG5: graphFlags?.g5Generated ?? false,
     hasG6: graphFlags?.g6Generated ?? true,
   });
+
   await writeGeneratedFile(docsDir, 'README.md', graphReadme);
   await writeGeneratedFile(docsDir, 'graph-coverage.md', buildGComparisonDoc(project, graphFlags ?? { g5Generated: false, g6Generated: true }));
   log.debug(`deep-enrich[${project}]: graph/README.md routing table written`);
@@ -1070,16 +1178,18 @@ async function runPhaseIndexEnhance(
   const domainsJson = await readFileSafe(path.join(evidenceDir, '_domains.json'));
   let keywords: string[] = [];
   let description = '';
+
   try {
-    const domains = JSON.parse(domainsJson) as { keywords?: string[]; description?: string };
-    keywords = domains.keywords ?? [];
-    description = domains.description ?? '';
+    const domains = DomainsFileSchema.safeParse(JSON.parse(domainsJson)).data;
+    keywords = domains?.keywords ?? [];
+    description = domains?.description ?? '';
   } catch { /* no _domains.json */ }
 
   // router.md: 检查当前项目是否已有条目，无则追加
   const routerPath = path.join(wikiRoot, 'router.md');
   const routerContent = await readFileSafe(routerPath);
   const projectLink = `[[evidence/code/${project}/index]]`;
+
   if (routerContent && !routerContent.includes(projectLink)) {
     const kw = keywords.length > 0 ? ` [${keywords.slice(0, 5).join(', ')}]` : '';
     const desc = description ? ` — ${description}` : ' — 代码知识';
@@ -1090,6 +1200,7 @@ async function runPhaseIndexEnhance(
   // index.md: 检查当前项目是否已有条目，无则追加导航块
   const indexPath = path.join(wikiRoot, 'index.md');
   const indexContent = await readFileSafe(indexPath);
+
   if (indexContent && !indexContent.includes(`evidence/code/${project}/`)) {
     const navBlock = [
       `### ${project}`, '',
@@ -1098,8 +1209,10 @@ async function runPhaseIndexEnhance(
       `- [docs/](./evidence/code/${project}/docs/) — G-document`,
       '',
     ].join('\n');
+
     const navHeader = '## Navigation';
     const navSection = indexContent.indexOf(navHeader);
+
     if (navSection > 0) {
       // 插入在 ## Navigation 标题行之后
       const afterHeader = navSection + navHeader.length;
@@ -1119,14 +1232,17 @@ function architectureDocPath(docsDir: string): string {
 
 async function existingComponentSlugs(docsDir: string, slugs: string[]): Promise<string[]> {
   const found: string[] = [];
+
   for (const slug of slugs) {
     try {
       assertSafeResourceName(slug);
     } catch {
       continue;
     }
+
     if (await pathExists(path.join(docsDir, `${slug}.md`))) found.push(slug);
   }
+
   return found;
 }
 
@@ -1135,6 +1251,7 @@ async function collectMissingAiDocs(
   slugs: string[],
 ): Promise<{ missingComponents: string[]; missingArchitecture: boolean }> {
   const existing = new Set(await existingComponentSlugs(docsDir, slugs));
+
   return {
     missingComponents: slugs.filter((slug) => !existing.has(slug)),
     missingArchitecture: !(await pathExists(architectureDocPath(docsDir))),
@@ -1145,7 +1262,7 @@ async function removeIfExists(filePath: string): Promise<void> {
   try {
     await unlink(filePath);
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    if (!(err instanceof Error && 'code' in err && err.code === 'ENOENT')) throw err;
   }
 }
 
@@ -1157,8 +1274,10 @@ async function invalidateStaleAiDocs(docsDir: string, slugs: string[]): Promise<
     } catch {
       continue;
     }
+
     await removeIfExists(path.join(docsDir, `${slug}.md`));
   }
+
   await removeIfExists(architectureDocPath(docsDir));
   await removeIfExists(path.join(docsDir, 'graph-g5-scenarios.md'));
   await removeIfExists(path.join(docsDir, 'graph-g6-multihop.md'));
@@ -1179,15 +1298,19 @@ export async function runHiddenDeepEnrich(opts: {
   const target = opts.wikiRoot ? { wikiRoot: opts.wikiRoot } : await resolveTeamwiki();
   const { wikiRoot } = target;
   const releaseImportLock = await lockTeamwiki(target);
+
   try {
     const evidenceDir = path.join(wikiRoot, 'evidence', 'code', opts.project);
+
     const result = await deepEnrich({
       project: opts.project,
       evidenceDir,
       wikiRoot,
       maxModules: opts.maxModules,
     });
+
     if (!result.complete) process.exitCode = 1;
+
     return result;
   } finally {
     await releaseImportLock();
@@ -1223,6 +1346,7 @@ export async function deepEnrich(opts: DeepEnrichOptions): Promise<DeepEnrichRes
 
   if (components.length === 0) {
     log.warn(`deep-enrich[${project}]: No components in _manifest.json, aborting`);
+
     return { project, complete: false, missingComponents: [], missingArchitecture: true };
   }
 
@@ -1242,6 +1366,7 @@ export async function deepEnrich(opts: DeepEnrichOptions): Promise<DeepEnrichRes
   // A newer extract rewrites _manifest.json without clearing docs/. File-based
   // resume would otherwise keep old component/architecture/G5 docs forever.
   const manifestTime = ctx.manifest.generatedAt;
+
   if (manifestTime && progress.startedAt < manifestTime) {
     log.info(
       `deep-enrich[${project}]: stale progress detected (manifest newer than progress.startedAt), invalidating AI docs`,

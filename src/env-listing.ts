@@ -36,11 +36,17 @@ export interface EnvListing {
 export function envListing(teamEnv: TeamEnv, options: { reveal?: boolean; verbose?: boolean }): EnvListing {
   const { variables, declarations, variableValues, secrets, staleEntries } = teamEnv;
   const problems = new Set<string>();
+
   if (variables.kind === 'failed') problems.add(describeEntryFailure(variables.failure));
+
   if (declarations.kind === 'failed') problems.add(describeEntryFailure(declarations.failure));
+
   if (variableValues.kind === 'store-unreadable') problems.add(variableValues.reason);
+
   if (secrets.kind === 'store-unreadable') problems.add(secrets.reason);
+
   if (teamEnv.inheritedValues.kind === 'store-unreadable') problems.add(teamEnv.inheritedValues.reason);
+
   // A part that can't be resolved keeps what its last pull wrote everywhere (`appliedTeamEnv`): by key only.
   for (const [kept, pull] of [[teamEnv.keptValues, 'the last pull'], [teamEnv.keptInheritedValues, "the user scope's last pull"]] as const) {
     if (kept && kept.size > 0) problems.add(`Until it is fixed, shells, MCP servers and \`teamai env exec\` use the values ${pull} wrote for ${[...kept.keys()].join(', ')}.`);
@@ -57,9 +63,11 @@ export function envListing(teamEnv: TeamEnv, options: { reveal?: boolean; verbos
   const line = (text: string): void => { lines.push({ text, detail: false }); };
   const detail = (text: string | undefined): void => { if (text && options.verbose) lines.push({ text: `    ${text}`, detail: true }); };
   let revealed = false;
+
   // A value set as the other kind is not used (secret-store.ts); `env set` again stores it as this one.
   const stale = (key: string, now: 'secret' | 'env variable'): void => {
     const kind = staleEntries.get(key);
+
     if (!kind) return;
     line(
       `    Your value for this team was set while ${key} was ${kind === 'secret' ? 'a secret' : 'an env variable'}, so it is not used. `
@@ -70,6 +78,7 @@ export function envListing(teamEnv: TeamEnv, options: { reveal?: boolean; verbos
   if (received.length > 0) {
     line(`Team env variables (${received.length}):`);
     line('');
+
     for (const variable of received) {
       const isInherited = inherited.has(variable);
       const isHeld = !isInherited && held.has(variable.name);
@@ -77,6 +86,7 @@ export function envListing(teamEnv: TeamEnv, options: { reveal?: boolean; verbos
       // Each part by its own scope's state, as `env exec` applies it (`appliedTeamEnv`):
       // what its last pull wrote while its own env can't be resolved, by name only.
       const values = isInherited ? teamEnv.inheritedValues : variableValues;
+
       if (isInherited ? values.kind === 'store-unreadable' : declarations.kind === 'failed') {
         line(`  ${variable.name}  ${origin}`);
       } else if (values.kind === 'store-unreadable') {
@@ -87,22 +97,29 @@ export function envListing(teamEnv: TeamEnv, options: { reveal?: boolean; verbos
         revealed ||= options.reveal === true;
         const source = resolved?.source ?? 'env.yaml';
         line(`  ${variable.name}=${options.reveal ? value : maskEnvValue(value)}  ${isHeld && source === 'env.yaml' ? 'installed' : source}  ${origin}`);
+
         if (!inherited.has(variable)) stale(variable.name, 'env variable');
       }
+
       detail(variable.entry.description);
     }
+
     line('');
   }
+
   if (declared.length > 0) {
     line(`Team secrets (${declared.length}):`);
     line('');
+
     for (const secret of declared) {
       line(`  ${secret.name}  ${secretState(secrets, secret.name)}  (${describeOrigin(secret)})`);
       stale(secret.name, 'secret');
       detail(secret.entry.description);
       detail(secret.entry.url);
     }
+
     line('');
   }
+
   return { problems: [...problems], lines, revealed, hasSecrets: declared.length > 0 };
 }

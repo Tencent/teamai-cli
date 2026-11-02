@@ -2,6 +2,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
+import { z } from 'zod';
+
+import { JsonValueSchema, type JsonValue } from './types.js';
 
 /**
  * The fixed start/end sentinels teamai's recall output prints (see recall.ts
@@ -38,6 +41,34 @@ export interface TranscriptVoteData {
   recalledDocScopes: Record<string, 'project' | 'user' | 'unknown'>;
 }
 
+/** A string field of a transcript record; any other value reads as absent. */
+const TranscriptTextSchema = z.string().optional().catch(undefined);
+
+/** A block of a transcript message's `content`; a block that is not an object matches no block type. */
+const TranscriptBlockSchema = z.object({
+  type: z.unknown().optional(),
+  tool_use_id: z.unknown().optional(),
+  toolUseId: z.unknown().optional(),
+  content: JsonValueSchema.optional(),
+  id: TranscriptTextSchema,
+  name: TranscriptTextSchema,
+  text: TranscriptTextSchema,
+}).catch({});
+
+/** The fields of a transcript line the vote scan reads; a field of the wrong type reads as absent. */
+const VoteTranscriptEntrySchema = z.object({
+  type: z.unknown().optional(),
+  isSidechain: z.unknown().optional(),
+  toolUseResult: z.object({ stdout: TranscriptTextSchema }).optional().catch(undefined),
+  message: z.object({
+    id: TranscriptTextSchema,
+    content: z.union([z.string(), z.array(TranscriptBlockSchema)]).optional().catch(undefined),
+  }).optional().catch(undefined),
+});
+
+/** Text a tool result holds, where a recall region may be. */
+const RecallTextSchema = z.string();
+
 function emptyResult(): TranscriptVoteData {
   return {
     recalledDocIds: [],
@@ -62,7 +93,7 @@ export async function parseTranscriptForVotes(transcriptPath: string): Promise<T
   // tool_result recall regions buffered until the whole transcript is scanned,
   // so we know which results came from readers (untrusted content) vs teamai's
   // own recall output (trusted).
-  const deferredResultRegions: Array<{ id?: string; content: unknown }> = [];
+  const deferredResultRegions: Array<{ id?: string; content: JsonValue | undefined }> = [];
   // Recalled doc-id -> original file path (for the optional LLM-judge to read).
   const docIdToPath = new Map<string, string>();
   // Recalled doc-id -> scope it was recalled from ('project'/'user'/'unknown'),
@@ -79,6 +110,7 @@ export async function parseTranscriptForVotes(transcriptPath: string): Promise<T
 
   try {
     const stat = await fs.promises.stat(transcriptPath);
+
     if (stat.size === 0) return emptyResult();
   } catch {
     return emptyResult();
@@ -91,6 +123,7 @@ export async function parseTranscriptForVotes(transcriptPath: string): Promise<T
 
   for await (const line of rl) {
     const trimmed = line.trim();
+
     if (!trimmed) continue;
 
     // NOTE: the recalled-doc-ids COMMENT marker is scanned only from TRUSTED
@@ -100,9 +133,13 @@ export async function parseTranscriptForVotes(transcriptPath: string): Promise<T
     // tool_result), manufacturing a doc-id and defeating the reader-trust gate
     // (issue #723 review). Region-form markers were already gated; the comment
     // form now matches.
-    let entry: Record<string, unknown>;
+    let entry: z.infer<typeof VoteTranscriptEntrySchema>;
+
     try {
-      entry = JSON.parse(trimmed) as Record<string, unknown>;
+      const parsed = VoteTranscriptEntrySchema.safeParse(JSON.parse(trimmed));
+
+      if (!parsed.success) continue;
+      entry = parsed.data;
     } catch {
       continue;
     }
@@ -112,54 +149,57 @@ export async function parseTranscriptForVotes(transcriptPath: string): Promise<T
     // in top-level `toolUseResult.stdout`, and a plain-STRING `message.content`.
     // These are teamai output, not the body of a file a reader tool returned, so
     // they are trusted (unlike a reader tool_result block, which is gated below).
-    const topResult = entry['toolUseResult'];
-    if (topResult && typeof topResult === 'object') {
-      const stdout = (topResult as Record<string, unknown>)['stdout'];
-      if (typeof stdout === 'string') {
-        extractRecalledDocIdsFromComment(stdout, recalledSet);
-        extractRecalledDocIds(stdout, recalledSet, docIdToPath, docIdToScope);
-      }
+    const stdout = entry.toolUseResult?.stdout;
+
+    if (stdout !== undefined) {
+      extractRecalledDocIdsFromComment(stdout, recalledSet);
+      extractRecalledDocIds(stdout, recalledSet, docIdToPath, docIdToScope);
     }
 
-    const message = entry['message'] as Record<string, unknown> | undefined;
-    if (message && typeof message['content'] === 'string') {
-      const s = message['content'] as string;
+    const message = entry.message;
+
+    if (message?.content !== undefined && !Array.isArray(message.content)) {
+      const s = message.content;
       extractRecalledDocIdsFromComment(s, recalledSet);
       extractRecalledDocIds(s, recalledSet, docIdToPath, docIdToScope);
     }
-    if (!message || !Array.isArray(message['content'])) continue;
+
+    if (!message || !Array.isArray(message.content)) continue;
 
     // Subagent-internal messages (the teamai-recall Task subagent's own work)
     // are marked isSidechain: their tool results and text are not the main
     // conversation's.
-    const isSidechain = entry['isSidechain'] === true;
+    const isSidechain = entry.isSidechain === true;
 
     // Collect ALL text blocks of THIS assistant message so a multipart final
     // reply is judged in full, not just its last fragment (issue #723 review).
     const messageTextParts: string[] = [];
 
-    for (const block of message['content'] as Array<Record<string, unknown>>) {
-      if (block['type'] === 'tool_result') {
+    for (const block of message.content) {
+      if (block.type === 'tool_result') {
         // Recall regions/markers in a tool_result: teamai's own recall output
         // (Task subagent / Bash `teamai recall`) is a trusted origin, but the
         // result of a plain file READER is just the CONTENT of a file the agent
         // opened, where a user-authored .md could carry a FORGED recall region
         // (issue #723 review). Buffered, because reader ids are only fully
         // known after the whole transcript is scanned.
-        const tid = block['tool_use_id'] ?? block['toolUseId'];
-        if (!isSidechain) deferredResultRegions.push({ id: typeof tid === 'string' ? tid : undefined, content: block['content'] });
+        const tid = TranscriptTextSchema.parse(block.tool_use_id ?? block.toolUseId);
+
+        if (!isSidechain) deferredResultRegions.push({ id: tid, content: block.content });
       }
 
       // Reader ids, so their results are treated as untrusted content.
-      if (block['type'] === 'tool_use') {
-        const id = typeof block['id'] === 'string' ? (block['id'] as string) : undefined;
-        const name = typeof block['name'] === 'string' ? block['name'].toLowerCase() : '';
+      if (block.type === 'tool_use') {
+        const id = block.id;
+        const name = block.name?.toLowerCase() ?? '';
+
         if (id && READ_LIKE_TOOLS.has(name)) readerToolUseIds.add(id);
       }
 
-      if (entry['type'] !== 'assistant' || block['type'] !== 'text') continue;
-      const text = block['text'];
-      if (typeof text !== 'string') continue;
+      if (entry.type !== 'assistant' || block.type !== 'text') continue;
+      const text = block.text;
+
+      if (text === undefined) continue;
 
       messageTextParts.push(text);
       // Assistant text is a TRUSTED origin for recall regions (this is where
@@ -176,8 +216,9 @@ export async function parseTranscriptForVotes(transcriptPath: string): Promise<T
     // Sidechain assistant text is subagent chatter, not the user-facing answer.
     // Accumulate across records that share one message id (see finalAssistantId).
     if (!isSidechain && entry['type'] === 'assistant' && messageTextParts.length > 0) {
-      const msgId = typeof message['id'] === 'string' ? (message['id'] as string) : undefined;
+      const msgId = message.id;
       const joined = messageTextParts.join('\n');
+
       if (msgId !== undefined && msgId === finalAssistantId) {
         // Same logical message split across records — append, don't replace.
         finalAssistantText = finalAssistantText ? `${finalAssistantText}\n${joined}` : joined;
@@ -223,31 +264,39 @@ function isValidDocId(docId: string): boolean {
 function extractRecalledDocIdsFromComment(text: string, out: Set<string>): void {
   const pattern = /(?:<!--|<!—)\s*teamai:recalled-doc-ids:\s*\[([^\]]*)\]\s*(?:-->|—>)/gi;
   let match: RegExpExecArray | null;
+
   while ((match = pattern.exec(text)) !== null) {
     for (const item of match[1].split(',')) {
       const docId = item.trim().replace(/^['"]|['"]$/g, '');
+
       if (isValidDocId(docId)) out.add(docId);
     }
   }
 }
 
 function extractRecalledDocIdsFromValue(
-  value: unknown,
+  value: JsonValue | undefined,
   out: Set<string>,
   docIdToPath: Map<string, string>,
   docIdToScope: Map<string, 'project' | 'user' | 'unknown'>,
 ): void {
-  if (typeof value === 'string') {
-    extractRecalledDocIdsFromComment(value, out);
-    extractRecalledDocIds(value, out, docIdToPath, docIdToScope);
+  const text = RecallTextSchema.safeParse(value);
+
+  if (text.success) {
+    extractRecalledDocIdsFromComment(text.data, out);
+    extractRecalledDocIds(text.data, out, docIdToPath, docIdToScope);
+
     return;
   }
+
   if (Array.isArray(value)) {
     for (const item of value) extractRecalledDocIdsFromValue(item, out, docIdToPath, docIdToScope);
+
     return;
   }
-  if (value !== null && typeof value === 'object') {
-    for (const item of Object.values(value as Record<string, unknown>)) {
+
+  if (value instanceof Object) {
+    for (const item of Object.values(value)) {
       extractRecalledDocIdsFromValue(item, out, docIdToPath, docIdToScope);
     }
   }
@@ -260,11 +309,14 @@ function extractRecalledDocIds(
   docIdToScope: Map<string, 'project' | 'user' | 'unknown'>,
 ): void {
   let searchFrom = 0;
+
   while (true) {
     const startIdx = text.indexOf(RECALL_REGION_START, searchFrom);
+
     if (startIdx === -1) break;
 
     const endIdx = text.indexOf(RECALL_REGION_END, startIdx + RECALL_REGION_START.length);
+
     if (endIdx === -1) break;
 
     const region = text.slice(startIdx + RECALL_REGION_START.length, endIdx);
@@ -274,24 +326,32 @@ function extractRecalledDocIds(
     // / `[workspace]` tag is how we attribute the upvote to the right scope;
     // `[project]` is what a recall older than #1099 printed for the workspace.
     let currentScope: 'project' | 'user' | 'unknown' = 'unknown';
+
     for (const rawLine of region.split('\n')) {
       const line = rawLine.trim();
       const header = line.match(/^\[\d+\/\d+\]/);
+
       if (header) {
         // Reset per hit, then read the trailing [workspace]/[project]/[user] tag if present.
         currentScope = 'unknown';
         const scopeTag = line.match(/\[(workspace|project|user)\]\s*$/);
+
         if (scopeTag) currentScope = scopeTag[1] === 'user' ? 'user' : 'project';
         continue;
       }
+
       const fileMatch = line.match(/^File:\s*(.+)$/);
+
       if (fileMatch) {
         const filePath = fileMatch[1].trim();
         const docId = path.basename(filePath).replace(/\.md$/i, '');
+
         if (isValidDocId(docId)) {
           out.add(docId);
+
           // First occurrence wins, so the LLM-judge reads the doc's real content.
           if (!docIdToPath.has(docId)) docIdToPath.set(docId, filePath);
+
           if (!docIdToScope.has(docId)) docIdToScope.set(docId, currentScope);
         }
       }

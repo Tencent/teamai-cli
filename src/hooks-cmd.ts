@@ -36,9 +36,11 @@ function formatDisplayPath(settingsPath: string): string {
     const home = getUserHome();
 
     if (settingsPath === home) return '~';
+
     if (settingsPath.startsWith(home + path.sep) || settingsPath.startsWith(home + '/')) {
         return `~${settingsPath.slice(home.length)}`;
     }
+
     return settingsPath;
 }
 
@@ -70,27 +72,36 @@ function formatHooksList(rows: HookListRow[]): string {
 async function adapterHookArtifacts(tool: string): Promise<string[] | null> {
     if (tool === 'omp') {
         const { OMP_HOOK_FILE } = await import('./omp-hooks.js');
+
         return [path.join(hookAdapterDir('omp-extension'), OMP_HOOK_FILE)];
     }
+
     if (tool === 'opencode') {
         // reconcileOpencodePlugin always installs the single plugin under the
         // user path, whatever the config scope, so probe there.
         const { OPENCODE_HOOK_FILE } = await import('./opencode-hooks.js');
+
         return [path.join(hookAdapterDir('opencode-plugin'), OPENCODE_HOOK_FILE)];
     }
+
     if (tool === 'hermes') {
         const { getReportScriptPath } = await import('./hermes-hooks.js');
+
         return [getReportScriptPath()];
     }
+
     if (tool === 'openclaw') {
         const { OPENCLAW_HOOK_DIR } = await import('./openclaw-hooks.js');
         const workspace = await openclawWorkspaceDir();
+
         if (!workspace) return null;
         // The engine needs both halves: the HOOK.md descriptor and the handler
         // it points at.
         const dir = path.join(workspace, 'hooks', OPENCLAW_HOOK_DIR);
+
         return [path.join(dir, 'HOOK.md'), path.join(dir, 'handler.ts')];
     }
+
     return null;
 }
 
@@ -99,8 +110,10 @@ async function removeAdapterHooks(adapter: HookAdapterId, dir: string): Promise<
     switch (adapter) {
         case 'opencode-plugin': {
             const { removeOpencodePlugin } = await import('./opencode-hooks.js');
+
             return removeOpencodePlugin(dir);
         }
+
         case 'pi-extension':
             return removePiHooks(dir);
         // These adapters' homes have no default-home leftovers (`Home.moves.defaultHomeLeftovers`).
@@ -113,6 +126,7 @@ async function removeAdapterHooks(adapter: HookAdapterId, dir: string): Promise<
             return;
         default: {
             const unhandled: never = adapter;
+
             return unhandled;
         }
     }
@@ -127,6 +141,7 @@ export async function hooksInject(options: GlobalOptions): Promise<void> {
 
     // Explicit user action → not gated by sharing.hooks.autoApply (auto: false).
     let reconciled: Awaited<ReturnType<typeof reconcileTeamHooksForConfig>>;
+
     try {
         reconciled = await reconcileTeamHooksForConfig(teamConfig, localConfig, {
             auto: false,
@@ -137,18 +152,24 @@ export async function hooksInject(options: GlobalOptions): Promise<void> {
         // Git-hook installation can fail after the Codex hooks were written.
         if (!options.dryRun) {
             const codexTrust = await trustCodexForScope(teamConfig, localConfig, { force: true });
+
             if (!options.silent) reportCodexTrust(codexTrust, 'all');
         }
     }
+
     // The reason is already reported; the installed team hooks were left as they were.
     if (!reconciled.ok || reconciled.unwritten?.length) {
         process.exitCode = 1;
+
         return;
     }
+
     if (options.dryRun) {
         if (!options.silent) log.info('[dry-run] Would inject hooks into configured AI tool settings.');
+
         return;
     }
+
     if (!options.silent && reconciled.ok) log.success('Hooks injected into all AI tool settings');
 }
 
@@ -193,17 +214,20 @@ export async function hooksList(_options: GlobalOptions): Promise<void> {
 
     for (const tool of Object.keys(scopedToolPaths(teamConfig, localConfig))) {
         if (isAgentExcluded(localConfig, tool)) continue;
+
         if (tool === 'kiro') {
             if (!await pathExists(path.join(getUserHome(), '.kiro'))) continue;
             rows.push({ tool, status: await hasKiroHooks() ? 'installed' : 'missing', settingsPath: formatDisplayPath(kiroHookFile()), builtinDefs: installedBuiltinHookDefs(tool, false) });
             continue;
         }
+
         if (tool === 'agy') {
             if (!await pathExists(hookAdapterDir('agy-hooks'))) continue;
             const { agyHookFile, hasAgyHooks } = await import('./agy-hooks.js');
             rows.push({ tool, status: await hasAgyHooks() ? 'installed' : 'missing', settingsPath: formatDisplayPath(agyHookFile()), builtinDefs: installedBuiltinHookDefs(tool, false) });
             continue;
         }
+
         if (tool === 'pi') {
             const hookPath = path.join(hookAdapterDir('pi-extension'), PI_HOOK_FILE);
             rows.push({
@@ -214,29 +238,34 @@ export async function hooksList(_options: GlobalOptions): Promise<void> {
             });
             continue;
         }
+
         const hookPath = hookScopedPaths[tool]?.hooks
             ? ownOf(await locate(tool, 'hooks', install))?.path
             : hookScopedPaths[tool]?.settings
                 ? hookSettingsFile(tool, baseDir, hookScopedPaths[tool].settings)
                 : undefined;
+
         if (hookPath) {
             if (seenSettingsFiles.has(hookPath)) continue;
             seenSettingsFiles.add(hookPath);
         }
+
         // The adapter-driven tools have no settings/hooks file to parse: each
         // installs a single generated artifact, so its presence is the whole
         // status.
         const artifacts = await adapterHookArtifacts(tool);
+
         if (artifacts) {
             const present = await Promise.all(artifacts.map((file) => pathExists(file)));
             rows.push({
                 tool,
                 status: present.every(Boolean) ? 'installed' : 'missing',
-                settingsPath: formatDisplayPath(artifacts[0] as string),
+                settingsPath: formatDisplayPath(artifacts[0]),
                 builtinDefs: installedBuiltinHookDefs(tool, false),
             });
             continue;
         }
+
         if (!hookPath) {
             rows.push({
                 tool,
@@ -246,6 +275,7 @@ export async function hooksList(_options: GlobalOptions): Promise<void> {
             });
             continue;
         }
+
         rows.push({
             tool,
             status: await getHookStatus(hookPath, tool, builtinOverride),
@@ -271,35 +301,46 @@ export async function hooksList(_options: GlobalOptions): Promise<void> {
     // identical once the tool id is folded out share one block, so the listing
     // stays short instead of repeating the same rows per tool.
     const builtinGroups = new Map<string, { tools: string[]; lines: string[] }>();
+
     for (const { tool, builtinDefs } of rows) {
         if (builtinDefs.length === 0) continue;
+
         const lines = builtinDefs.map((d) => {
             const matcher = d.matcher && d.matcher !== '*' ? ` [${d.matcher}]` : '';
             const command = d.command.split(`--tool ${tool}`).join('--tool <tool>');
+
             return `    ${d.event}${matcher}  →  ${command}`;
         });
+
         const key = lines.join('\n');
         const group = builtinGroups.get(key);
+
         if (group) group.tools.push(tool);
         else builtinGroups.set(key, { tools: [tool], lines });
     }
+
     if (builtinGroups.size === 0) {
         console.log('  (none)');
     }
+
     for (const group of builtinGroups.values()) {
         console.log(`  ${group.tools.join(', ')}:`);
+
         for (const line of group.lines) console.log(line);
     }
 
     console.log('');
+
     if (teamHooks.kind === 'failed') {
         console.log('Team hooks (B) — hooks/:');
         console.log(`  ${describeEntryFailure(teamHooks.failure)}`);
     } else {
         console.log(`Team hooks (B) — hooks/ (${teamHooks.entries.length}):`);
         // The tools listed above with a hook surface.
-        const hookTools = rows.filter((row) => row.status !== 'not configured').map((row) => row.tool);
+        const hookTools = rows.flatMap((row) => (row.status !== 'not configured' ? [row.tool] : []));
+
         if (teamHooks.entries.length === 0) console.log('  (none)');
+
         for (const resolved of teamHooks.entries) {
             const h = resolved.entry;
             const matcher = h.matcher ? ` [${h.matcher}]` : '';
@@ -310,9 +351,11 @@ export async function hooksList(_options: GlobalOptions): Promise<void> {
             const runIn = wanted.filter((tool) => runsTeamHookOn(tool, h.event));
             const notIn = wanted.filter((tool) => !runIn.includes(tool));
             console.log(`      runs in: ${runIn.length > 0 ? runIn.join(', ') : 'no enabled tool'}`);
+
             if (notIn.length > 0) console.log(`      not in: ${notIn.join(', ')} (no ${h.event} hook there)`);
         }
     }
+
     console.log('');
 }
 
@@ -327,6 +370,7 @@ export async function hooksRemove(_options: GlobalOptions): Promise<void> {
     await migrateLegacyManagedHooks(localConfig);
 
     const { baseDir, manifestPath, scope: hookScope } = resolveHookScope(localConfig);
+
     const teamHookProjectRoot = localConfig.scope === 'project' && !isSelfMode(localConfig)
         ? localConfig.projectRoot
         : undefined;
@@ -338,10 +382,13 @@ export async function hooksRemove(_options: GlobalOptions): Promise<void> {
     const install = installOf(teamConfig, localConfig);
     const history = teamHookHistory(localConfig);
     const keepRecordsFor = new Set<string>();
+
     for (const tool of Object.keys(scopedToolPaths(teamConfig, localConfig))) {
         const where = await locate(tool, 'hooks', install);
+
         for (const { place } of where.retired) {
             if (!await pathExists(place.path)) continue;
+
             try {
                 if (place.kind === 'entry') {
                     await reconcileHooks(place.path, tool, [], { manifestPath, removeAll: true, keepRecords: true, teamHookHistory: history, teamHookProjectRoot });
@@ -350,7 +397,7 @@ export async function hooksRemove(_options: GlobalOptions): Promise<void> {
                 }
             } catch (e) {
                 keepRecordsFor.add(tool);
-                log.warn(`Failed to remove hooks from ${place.path}: ${(e as Error).message}`);
+                log.warn(`Failed to remove hooks from ${place.path}: ${e instanceof Error ? e.message : String(e)}`);
             }
         }
     }
@@ -359,6 +406,7 @@ export async function hooksRemove(_options: GlobalOptions): Promise<void> {
     // scope injects into HOME, so resolving the project-scope paths here would
     // miss (and leave behind) every tool whose user-scope prefix differs.
     const unwritten: string[] = [];
+
     const reconciledMainTools = await reconcileHooksToAllTools(hookToolPathsForConfig(teamConfig, localConfig), baseDir, [], manifestPath, {
         removeAll: true,
         scope: localConfig.scope,
@@ -368,16 +416,18 @@ export async function hooksRemove(_options: GlobalOptions): Promise<void> {
         // The project's Claude and Codex team hooks live in the main checkout.
         mainCheckout: await resolveMainCheckoutHooks(localConfig, teamConfig.toolPaths),
         // Self mode: and the team hooks in each tool's settings.local.json (#915).
-        ...(isSelfMode(localConfig) ? { selfLocalTeamHooks: { relocate: false } } : {}),
+        selfLocalTeamHooks: isSelfMode(localConfig) ? { relocate: false } : undefined,
         codexTrust: codexTrustPolicy(localConfig),
         keepRecordsFor,
         unwritten,
     });
 
     const copilotHooks = await locate(COPILOT_TOOL_ID, 'hooks', install);
+
     const copilotFile = scopedToolPaths(teamConfig, localConfig)[COPILOT_TOOL_ID]?.hooks === undefined
         ? undefined
         : (workspaceHooksOf(copilotHooks) ?? ownOf(copilotHooks))?.path;
+
     if (copilotFile !== undefined) {
         await reconcileHooks(
             copilotFile,
@@ -410,17 +460,22 @@ export async function hooksRemove(_options: GlobalOptions): Promise<void> {
     if (teamConfig.toolPaths.pi) {
         await removePiHooks();
     }
+
     if (teamConfig.toolPaths.kiro) await removeKiroHooks();
+
     if (teamConfig.toolPaths.agy) {
         const { reconcileAgyHooks } = await import('./agy-hooks.js');
         await reconcileAgyHooks({ removeAll: true });
     }
 
     const left = new Set([...keepRecordsFor, ...unwritten]);
+
     if (left.size > 0) {
         log.warn(`Hooks remove incomplete: teamai hooks are left for ${[...left].join(', ')}. Fix what the warnings above name, then run \`teamai hooks remove\` again.`);
         process.exitCode = 1;
+
         return;
     }
+
     log.success('Hooks removed from all AI tool settings');
 }

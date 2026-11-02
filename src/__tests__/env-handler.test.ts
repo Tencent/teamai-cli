@@ -4,7 +4,7 @@ import os from 'node:os';
 import fse from 'fs-extra';
 import YAML from 'yaml';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { EnvHandler, describeEnvYamlShapeProblem, parseEnvFile, parseEnvFileKept, readEnvBackup } from '../resources/env.js';
+import { EnvHandler, describeMissingVariablesKey, parseEnvFile, parseEnvFileKept, readEnvBackup } from '../resources/env.js';
 import { resetWarnOnce } from '../utils/warn-once.js';
 import { TEAMAI_ENV_START, TEAMAI_ENV_END } from '../types.js';
 import { memberEnvironment } from '../member-env.js';
@@ -206,11 +206,11 @@ scope: 'user',
 
   // ─── writeEnvYaml ────────────────────────────────────────
 
-  // ─── describeEnvYamlShapeProblem ─────────────────────────
+  // ─── describeMissingVariablesKey ─────────────────────────
 
-  describe('describeEnvYamlShapeProblem', () => {
+  describe('describeMissingVariablesKey', () => {
     it('reports a mapping with no variables key but other top-level keys', () => {
-      const warning = describeEnvYamlShapeProblem({ FOO: 'bar', BAZ: 'qux' });
+      const warning = describeMissingVariablesKey({ FOO: 'bar', BAZ: 'qux' });
 
       expect(warning).toContain('no top-level `variables:` key');
       expect(warning).toContain('`FOO`');
@@ -219,25 +219,25 @@ scope: 'user',
     });
 
     it('stays silent for a valid variables list', () => {
-      expect(describeEnvYamlShapeProblem({ variables: [{ key: 'A', value: 'b' }] })).toBeNull();
+      expect(describeMissingVariablesKey({ variables: [{ key: 'A', value: 'b' }] })).toBeNull();
     });
 
     it('stays silent when an extra top-level key rides along with variables', () => {
       // Must stay permissive: a team repo already shipping this shape has to
       // keep delivering rather than start failing to parse.
-      expect(describeEnvYamlShapeProblem({ variables: [], extra: true })).toBeNull();
+      expect(describeMissingVariablesKey({ variables: [], extra: true })).toBeNull();
     });
 
     it('stays silent for an empty or absent mapping', () => {
-      expect(describeEnvYamlShapeProblem({})).toBeNull();
-      expect(describeEnvYamlShapeProblem(null)).toBeNull();
-      expect(describeEnvYamlShapeProblem(undefined)).toBeNull();
+      expect(describeMissingVariablesKey({})).toBeNull();
+      expect(describeMissingVariablesKey(null)).toBeNull();
+      expect(describeMissingVariablesKey(undefined)).toBeNull();
     });
 
     it('stays silent for documents that are not mappings', () => {
-      expect(describeEnvYamlShapeProblem([])).toBeNull();
-      expect(describeEnvYamlShapeProblem('FOO=bar')).toBeNull();
-      expect(describeEnvYamlShapeProblem(42)).toBeNull();
+      expect(describeMissingVariablesKey([])).toBeNull();
+      expect(describeMissingVariablesKey('FOO=bar')).toBeNull();
+      expect(describeMissingVariablesKey(42)).toBeNull();
     });
   });
 

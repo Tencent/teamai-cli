@@ -22,7 +22,7 @@ import {
 } from './snapshot.js';
 import { takeOver, type UnleasedStep } from './step-state.js';
 import { installOwner, isRunId, readRun, updateRun } from './store.js';
-import { workflowRunBy, type RunState, type RunStatus, type WorkflowDefinition, type WorkflowFailure, type WorkflowSource, type WorkflowStep } from './types.js';
+import { workflowRunBy, type RunPublication, type RunState, type RunStatus, type WorkflowDefinition, type WorkflowFailure, type WorkflowSource, type WorkflowStep } from './types.js';
 import { branchName, isIsolated, stepMode, type LeaseSession, type SessionRef } from './workspace.js';
 import { fetchMissingCommits, git, reconcileCopy } from './worktree.js';
 
@@ -53,7 +53,10 @@ export type HandoffError =
   | { code: 'branch_diverged'; branch: string; expected: string; actual: string; message: string }
   | { code: 'isolated_run'; message: string };
 
-export type Result<T> = { ok: true; value: T } | { ok: false; error: HandoffError };
+/** Why a handoff did not happen. */
+type Refusal = { ok: false; error: HandoffError };
+
+export type Result<T> = { ok: true; value: T } | Refusal;
 
 /** A lease the run held when it was published; whoever claims the run releases it. */
 export interface InFlightLease {
@@ -87,7 +90,7 @@ function ok<T>(value: T): Result<T> {
   return { ok: true, value };
 }
 
-function refused(error: HandoffError): { ok: false; error: HandoffError } {
+function refused(error: HandoffError): Refusal {
   return { ok: false, error };
 }
 
@@ -168,6 +171,7 @@ type OriginSnapshot = Result<RunSnapshot | 'absent'>;
 
 async function readOrigin(dir: string, runId: string): Promise<OriginSnapshot> {
   const read = await fetchReportsOriginFile(dir, snapshotPath(runId));
+
   switch (read.status) {
     case 'absent':
       return ok('absent');
@@ -177,6 +181,7 @@ async function readOrigin(dir: string, runId: string): Promise<OriginSnapshot> {
       return parseSnapshot(read.text, runId);
     default: {
       const unhandled: never = read;
+
       return unhandled;
     }
   }
@@ -185,6 +190,7 @@ async function readOrigin(dir: string, runId: string): Promise<OriginSnapshot> {
 /** The state revision of `snapshot` this machine has seen: its own write counts once origin shows it. */
 function acknowledged(local: RunState, snapshot: RunSnapshot): number {
   if (local.publication?.pending === snapshot.write) return snapshot.stateRevision;
+
   return local.publication?.stateRevision ?? 0;
 }
 
@@ -214,62 +220,86 @@ export async function publishRun(
   options: { checkout: string; env?: NodeJS.ProcessEnv; sessions?: (run: RunState) => LeaseSession[] },
 ): Promise<Result<PublishReceipt>> {
   if (!isRunId(runId)) return refused(INVALID_RUN);
+
   if (!usesBranchWorktree(config)) return refused(UNSUPPORTED_REPO);
   const env = options.env ?? process.env;
   const stored = await readRun(config, runId);
+
   if (stored === 'missing') return refused({ code: 'run_not_found', message: `Run ${runId} was not found` });
+
   if (stored === 'corrupt') return refused(runUnreadable(runId));
+
   if (isIsolated(stored)) return refused(isolatedUnpublishable(runId));
   const secrets = await knownSecrets(config, env);
   const projected = projectRun(stored, secrets);
+
   if (!projected.ok) return projected;
   const checked = checkedOutsideLocks(stored, options.sessions);
   const owner = await installOwner(config);
   const before = await readPublished(config, runId);
+
   if (!before.ok) return before;
   const elsewhere = before.value === 'absent' ? undefined : ownershipRefusal(stored, before.value, owner);
+
   if (elsewhere) return refused(elsewhere);
   const checkout = stored.checkout ?? options.checkout;
   const repository = getRepoIdentity(checkout) ?? undefined;
+
   // Origin already holds the run as it is, so there is nothing to write and nothing to check on the business origin: a
   // finished run's branches may be gone or have moved on, and its end is not published again.
   if (before.value !== 'absent' && options.sessions === undefined && holdsRun(stored, before.value, { body: projected.value, repository })
     && !(await pendingRecords(config)).some((record) => record.run === runId)) {
     return ok(receipt(runId, 'unchanged', before.value));
   }
+
   const pinned = await checkOrigin(checkout, stored, { side: 'publish' });
+
   if (!pinned.ok) return pinned;
 
   const drained = await publishPendingRecords(config, { run: runId })
-    .catch((error: unknown): RecordDelivery => ({ state: 'pending', reason: error instanceof Error ? error.message : String(error) }));
+    .catch((cause: unknown): RecordDelivery => ({ state: 'pending', reason: cause instanceof Error ? cause.message : String(cause) }));
+
   if (drained.state === 'pending') return refused(recordsPending(runId, drained.reason));
   const shared = options.sessions ? await shareSessions(config, runId, options.sessions(stored), checkout) : undefined;
+
   if (shared && !shared.ok) return shared;
   const sessions = shared?.value;
 
   const result = await updateReports(config, async (worktree): Promise<ReportsChange<Result<PublishVerdict>>> => {
     const origin = await readOrigin(worktree, runId);
     const verdict = origin.ok ? await decideLocked(config, runId, { origin: origin.value, checked, sessions: options.sessions, owner, secrets, repository }) : origin;
+
     if (!verdict.ok) return { value: verdict, write: null };
     const write = verdict.value.kind === 'write' ? await writeSnapshot(worktree, verdict.value.snapshot, `[teamai] Publish workflow run ${runId}`) : null;
+
     return { value: verdict, write };
   });
+
   const verdict = result.value;
+
   if (verdict === undefined) return refused(result.status === 'busy' ? REPORTS_BUSY : writeFailed(runId, result));
+
   if (!verdict.ok) return verdict;
   const decided = verdict.value;
+
   if (decided.kind === 'unchanged') return ok(receipt(runId, 'unchanged', decided.snapshot, sessions));
   const written = decided.snapshot;
+
   if (result.status !== 'published' && result.status !== 'already-present') {
     // The commit may still have landed, or may land with the next reports write: origin decides.
     const origin = await readPublished(config, runId);
+
     if (origin.ok && origin.value !== 'absent' && origin.value.write === written.write) {
       return acknowledge(config, runId, written, secrets, sessions);
     }
+
     if (origin.ok && origin.value !== 'absent' && origin.value.owner.id !== owner.id) return refused(notOwner(runId, origin.value));
+
     if (!origin.ok && origin.error.code === 'reports_unreachable') return refused(origin.error);
+
     return refused(writeFailed(runId, result));
   }
+
   return acknowledge(config, runId, written, secrets, sessions);
 }
 
@@ -277,12 +307,15 @@ export async function publishRun(
 async function decideLocked(config: LocalConfig, runId: string, against: PublishAgainst): Promise<Result<PublishVerdict>> {
   const locked = await updateRun(config, runId, against.secrets, async (local): Promise<{ value: Result<PublishVerdict>; write?: RunState }> => {
     if (local === 'missing') return { value: refused({ code: 'run_not_found', message: `Run ${runId} was not found` }) };
+
     // A run's end record is queued under this lock, so none can arrive between this check and the snapshot.
     if ((await pendingRecords(config)).some((record) => record.run === runId)) {
       return { value: refused(recordsPending(runId, 'a record of the run was queued while it was being published')) };
     }
+
     return decidePublish(local, against);
   });
+
   switch (locked.status) {
     case 'done':
       return locked.value;
@@ -292,6 +325,7 @@ async function decideLocked(config: LocalConfig, runId: string, against: Publish
       return refused(runUnreadable(runId));
     default: {
       const unhandled: never = locked;
+
       return unhandled;
     }
   }
@@ -313,19 +347,26 @@ type ChainRef = SessionRef & ArchiveSessionRef;
 async function shareSessions(config: LocalConfig, runId: string, chains: LeaseSession[], checkout: string): Promise<Result<SessionShare>> {
   const skipped: SessionRef[] = [];
   const readable: ChainRef[][] = [];
+
   for (const chain of chains) {
     const refs: ChainRef[] = [];
+
     for (const session of [chain, ...(chain.earlier ?? [])]) {
       const platform = AgentSession.platformForTool(session.tool);
+
       if (platform) refs.push({ tool: session.tool, id: session.id, platform, sessionId: session.id });
       else skipped.push({ tool: session.tool, id: session.id });
     }
+
     if (refs.length === 0) return refused(sessionsNotArchived(runId, `teamai cannot read sessions of ${chain.tool}.`));
     readable.push(refs);
   }
+
   if (readable.length === 0) return ok({ archived: [], skipped });
   const archived = await archiveSessions(config, readable, { run: runId, checkout });
+
   if (archived.status === 'failed') return refused(sessionsNotArchived(runId, archived.message));
+
   return ok({
     archived: archived.archived.map(sessionRef),
     skipped: [...skipped, ...archived.skipped.map(sessionRef)],
@@ -348,6 +389,7 @@ async function writeSnapshot(worktree: string, snapshot: RunSnapshot, message: s
   const rel = snapshotPath(snapshot.run);
   await fs.mkdir(path.join(worktree, path.dirname(rel)), { recursive: true });
   await fs.writeFile(path.join(worktree, rel), snapshotText(snapshot), 'utf-8');
+
   return { files: [rel], message };
 }
 
@@ -361,14 +403,22 @@ function recordsPending(runId: string, reason: string): HandoffError {
 
 function writeFailed(runId: string, result: { status: string; reason?: string }): HandoffError {
   const reason = result.reason === undefined ? '' : ` (${sanitizeGitUrl(result.reason)})`;
+
   return { code: 'reports_failed', message: `Run ${runId} could not be written to teamai-reports${reason}. Try again.` };
 }
 
 function receipt(runId: string, publication: PublishReceipt['publication'], snapshot: RunSnapshot, shared?: SessionShare): PublishReceipt {
-  return {
+  const answer: PublishReceipt = {
     run: runId, publication, stateRevision: snapshot.stateRevision, offered: snapshot.offered !== undefined, inFlight: inFlight(snapshot),
-    ...(shared ? { sessions: shared.archived, ...(shared.skipped.length > 0 ? { skipped: shared.skipped } : {}) } : {}),
   };
+
+  if (shared) {
+    answer.sessions = shared.archived;
+
+    if (shared.skipped.length > 0) answer.skipped = shared.skipped;
+  }
+
+  return answer;
 }
 
 /**
@@ -383,17 +433,25 @@ async function checkOrigin(
 ): Promise<Result<void>> {
   const recorded = Object.entries(run.copies ?? {}).flatMap(([branch, copy]) => (copy.commit === undefined ? [] : [{ branch, commit: copy.commit }]));
   const pin = `teamai/${run.id}/base`;
+
   if (!run.base && recorded.length === 0) return ok(undefined);
   const listed = await git(checkout, ['ls-remote', '--heads', 'origin', `refs/heads/teamai/${run.id}/*`]);
+
   if (listed.code !== 0) return refused(originUnavailable(checkout, 'read', listed.stderr));
+
   const heads = new Map(listed.stdout.split('\n').flatMap((line) => {
     const [commit, ref] = line.trim().split(/\s+/);
+
     return commit && ref?.startsWith('refs/heads/') ? [[ref.slice('refs/heads/'.length), commit] as const] : [];
   }));
+
   const expected = [...(run.base ? [{ branch: pin, commit: run.base.commit }] : []), ...recorded];
+
   for (const { branch, commit } of expected) {
     const actual = heads.get(branch);
+
     if (actual === commit) continue;
+
     // Only the publishing checkout has the recorded commit, and so can tell a push that did not land from other work.
     if (actual !== undefined && by.side === 'publish' && (await git(checkout, ['merge-base', '--is-ancestor', actual, commit])).code === 0) {
       return refused({
@@ -403,6 +461,7 @@ async function checkOrigin(
         message: `Branch ${branch} on the origin of ${checkout} is at ${actual}, behind commit ${commit} that run ${run.id} recorded: that push did not land. Push it from this checkout, then publish again: git -C ${checkout} push origin ${commit}:refs/heads/${branch}`,
       });
     }
+
     if (actual !== undefined) {
       return refused({
         code: 'branch_diverged',
@@ -414,6 +473,7 @@ async function checkOrigin(
           : `Branch ${branch} on the origin of ${checkout} is at ${actual}, and run ${run.id} recorded ${commit} when ${by.publisher.user} last published it. If ${by.publisher.user} continued the run since, ${by.publisher.user} can publish it again: teamai workflow publish ${run.id}. Moving ${branch} on origin back to ${commit} discards the commits on it past ${commit}; teamai does not move it.`,
       });
     }
+
     if (branch !== pin || by.side === 'claim') {
       return refused({
         code: 'commit_missing',
@@ -422,8 +482,11 @@ async function checkOrigin(
         message: `Branch ${branch} is not on the origin of ${checkout}, and run ${run.id} recorded commit ${commit} on it. Push it from the machine that has the commit, then try again.`,
       });
     }
+
     const pushed = await git(checkout, ['push', '--quiet', 'origin', `${commit}:refs/heads/${pin}`]);
+
     if (pushed.code === 0) continue;
+
     if ((await git(checkout, ['cat-file', '-e', `${commit}^{commit}`])).code !== 0) {
       return refused({
         code: 'commit_missing',
@@ -432,8 +495,10 @@ async function checkOrigin(
         message: `Run ${run.id} started from commit ${commit}, which ${checkout} does not have, so it cannot be pinned on origin as ${pin}. Publish from the checkout the run started in.`,
       });
     }
+
     return refused(originUnavailable(checkout, 'updated', pushed.stderr));
   }
+
   return ok(undefined);
 }
 
@@ -450,6 +515,7 @@ function originUnavailable(checkout: string, action: 'read' | 'updated', stderr:
  */
 function checkedOutsideLocks(run: RunState, sessions?: (run: RunState) => LeaseSession[]): string {
   const commits = Object.entries(run.copies ?? {}).flatMap(([branch, copy]) => (copy.commit === undefined ? [] : [[branch, copy.commit]]));
+
   return canonicalJson({ base: run.base?.commit, commits: Object.fromEntries(commits), sessions: sessions?.(run) ?? [] });
 }
 
@@ -472,24 +538,35 @@ async function decidePublish(
   { origin, checked, sessions, owner, secrets, repository }: PublishAgainst,
 ): Promise<{ value: Result<PublishVerdict>; write?: RunState }> {
   const body = projectRun(local, secrets);
+
   if (!body.ok) return { value: body };
+
   if (checkedOutsideLocks(local, sessions) !== checked) return { value: refused(publishMoved(local.id)) };
   const now = new Date().toISOString();
   const handoff = handoffOf(local, repository, origin, now);
+
   if (origin === 'absent') {
     const seen = local.publication?.stateRevision ?? 0;
     const snapshot = header(local.id, owner, now, seen + 1, body.value, handoff);
+
     return { value: ok({ kind: 'write', snapshot }), write: published(local, { stateRevision: seen, pending: snapshot.write }) };
   }
+
   const elsewhere = ownershipRefusal(local, origin, owner);
+
   if (elsewhere) return { value: refused(elsewhere) };
   const seen = acknowledged(local, origin);
+
   if (seen !== origin.stateRevision) return { value: refused(stateConflict(local.id, origin.stateRevision, seen)) };
+
   if (holdsState(origin, body.value, handoff)) {
-    const write = local.publication?.pending === undefined ? undefined : published(local, { stateRevision: seen });
-    return { value: ok({ kind: 'unchanged', snapshot: origin }), ...(write ? { write } : {}) };
+    const value = ok<PublishVerdict>({ kind: 'unchanged', snapshot: origin });
+
+    return local.publication?.pending === undefined ? { value } : { value, write: published(local, { stateRevision: seen }) };
   }
+
   const snapshot = header(local.id, owner, origin.ownedAt, origin.stateRevision + 1, body.value, handoff);
+
   return { value: ok({ kind: 'write', snapshot }), write: published(local, { stateRevision: seen, pending: snapshot.write }) };
 }
 
@@ -500,7 +577,14 @@ async function decidePublish(
  */
 function handoffOf(local: RunState, repository: string | undefined, origin: RunSnapshot | 'absent', now: string): Handoff {
   const offered = local.status !== 'running' || repository === undefined ? undefined : origin !== 'absent' && origin.offered ? origin.offered : { at: now };
-  return { ...(repository !== undefined ? { repository } : {}), ...(offered ? { offered } : {}) };
+
+  const handoff: Handoff = {};
+
+  if (repository !== undefined) handoff.repository = repository;
+
+  if (offered) handoff.offered = offered;
+
+  return handoff;
 }
 
 /** Whether `origin` holds `body`, and says `handoff` of it. */
@@ -522,13 +606,16 @@ function holdsRun(local: RunState, origin: RunSnapshot, { body, repository }: { 
 /** Why `owner` may not publish `local` over `origin`: the published run is another run, or another install's. */
 function ownershipRefusal(local: RunState, origin: RunSnapshot, owner: HandoffOwner): HandoffError | undefined {
   if (origin.createdAt !== local.createdAt) return mismatch(local.id, local, origin);
+
   if (origin.owner.id !== owner.id) return notOwner(local.id, origin);
+
   return undefined;
 }
 
 /** `local` with what this machine knows of the snapshot replaced; any earlier pending write is dropped. */
 function published(local: RunState, known: { stateRevision: number; pending?: string }): RunState {
   const { pending: _pending, ...kept } = local.publication ?? {};
+
   return { ...local, publication: { ...kept, ...known } };
 }
 
@@ -546,8 +633,10 @@ async function acknowledge(
 ): Promise<Result<PublishReceipt>> {
   await updateRun(config, runId, secrets, async (local) => {
     if (local === 'missing' || local.publication?.pending !== snapshot.write) return { value: undefined };
+
     return { value: undefined, write: published(local, { stateRevision: snapshot.stateRevision }) };
   });
+
   return ok(receipt(runId, 'published', snapshot, sessions));
 }
 
@@ -558,10 +647,13 @@ async function acknowledge(
  */
 export async function publishRunEnd(config: LocalConfig, runId: string, checkout: string): Promise<HandoffError | undefined> {
   const stored = await readRun(config, runId);
-  if (typeof stored !== 'object' || stored.publication === undefined || stored.status === 'running') return undefined;
+
+  if (stored === 'missing' || stored === 'corrupt' || stored.publication === undefined || stored.status === 'running') return undefined;
   const publishResult = await publishRun(config, runId, { checkout });
+
   if (publishResult.ok) return undefined;
   const { error } = publishResult;
+
   return error.code === 'not_owner' ? claimedElsewhere(runId, error.owner, error.ownedAt) : error;
 }
 
@@ -582,7 +674,9 @@ export interface Definitions {
  */
 export async function claimRun(config: LocalConfig, runId: string, options: { checkout: string }): Promise<Result<ClaimReceipt>> {
   const stored = isRunId(runId) ? await readRun(config, runId) : 'missing';
-  if (typeof stored === 'object' && isIsolated(stored)) return refused(isolatedUnclaimable(runId));
+
+  if (stored !== 'missing' && stored !== 'corrupt' && isIsolated(stored)) return refused(isolatedUnclaimable(runId));
+
   return acquire(config, runId, await publishedRun(config, runId), { take: 'any', checkout: options.checkout });
 }
 
@@ -602,10 +696,13 @@ export async function claimOffered(config: LocalConfig, runId: string, options: 
 export async function claimedAway(config: LocalConfig, runId: string): Promise<HandoffError | undefined> {
   if (!usesBranchWorktree(config)) return undefined;
   const local = await readRun(config, runId);
-  if (typeof local !== 'object' || local.publication === undefined) return undefined;
+
+  if (local === 'missing' || local === 'corrupt' || local.publication === undefined) return undefined;
   const text = await readReportsOriginFile(getReportsDir(config), snapshotPath(runId));
   const snapshot = text === null ? undefined : parseSnapshot(text, runId);
+
   if (!snapshot?.ok || snapshot.value.createdAt !== local.createdAt) return undefined;
+
   return snapshot.value.owner.id === (await installOwner(config)).id ? undefined : notOwner(runId, snapshot.value);
 }
 
@@ -616,13 +713,19 @@ export async function claimedAway(config: LocalConfig, runId: string): Promise<H
  */
 export async function resumeRun(config: LocalConfig, runId: string, options: { claim: boolean; checkout: string }): Promise<Result<ClaimReceipt | null>> {
   const stored = await readRun(config, runId);
+
   if (stored === 'corrupt') return refused(runUnreadable(runId));
+
   if (options.claim && stored !== 'missing' && isIsolated(stored)) return refused(isolatedUnclaimable(runId));
+
   if (stored === 'missing' || options.claim) return acquire(config, runId, await publishedRun(config, runId), { take: 'any', checkout: options.checkout });
+
   if (stored.publication === undefined) return ok(null);
   const origin = await publishedRun(config, runId);
+
   // No other install can have claimed a run origin never showed, and this one never saw it there.
   if (origin.ok && origin.value === 'absent' && stored.publication.stateRevision === 0) return ok(null);
+
   return acquire(config, runId, origin, { take: 'own', checkout: options.checkout });
 }
 
@@ -637,18 +740,24 @@ export function settledSteps({ steps, definition, workflows = {} }: { steps: Rea
   const forGood = settledForGood({ definition, workflows }, byId);
   const settled = new Set(steps.filter((step) => forGood(step.id)).map((step) => step.id));
   const items = (container: string) => steps.filter((step) => step.id.startsWith(`${container}[`) && /^\[\d+\]$/.test(step.id.slice(container.length)));
+
   const covered = (at: string, rest: string[]): boolean => {
     if (settled.has(at)) return true;
     const [segment, ...after] = rest;
+
     if (segment === undefined) return false;
     const next = at === '' ? segment : `${at}.${segment}`;
     const instances = items(next);
+
     return settled.has(next) || (instances.length > 0 ? instances.every((item) => covered(item.id, after)) : covered(next, after));
   };
+
   const paths = new Set(steps.flatMap((step) => {
     const segments = step.id.replace(/\[\d+\]/g, '').split('.');
+
     return segments.map((_, at) => segments.slice(0, at + 1).join('.'));
   }));
+
   return [...paths].filter((stepPath) => covered('', stepPath.split('.')));
 }
 
@@ -663,10 +772,12 @@ function settledForGood({ definition, workflows }: Definitions, byId: ReadonlyMa
   // A run with a `from` step is isolated, so it never comes here.
   const workflowOf = (step: WorkflowStep) => workflowRunBy({ workflows }, step, '');
   const prefixes = (id: string) => id.split('.').map((_, at, segments) => segments.slice(0, at + 1).join('.'));
+
   /** Each workflow on the way to instance `id`: its definition, the instance that runs it ('' at the top), and the step of it `id` is in. */
   const levels = (id: string) => {
     const found: Array<{ scope: Pick<WorkflowDefinition, 'steps' | 'loop'>; at: string; step: string }> = [];
     let scope: Pick<WorkflowDefinition, 'steps' | 'loop'> | undefined = definition;
+
     for (const prefix of prefixes(id)) {
       if (scope === undefined) return undefined;
       const segment = prefix.slice(prefix.lastIndexOf('.') + 1);
@@ -675,26 +786,36 @@ function settledForGood({ definition, workflows }: Definitions, byId: ReadonlyMa
       const step: WorkflowStep | undefined = scope.steps.find((candidate) => candidate.id === name);
       scope = step === undefined || (step.forEach !== undefined && name === segment) ? undefined : workflowOf(step);
     }
+
     return found;
   };
+
   const reopens = (id: string, skip: ReadonlySet<string>): boolean => {
     const found = levels(id);
+
     if (found === undefined) return true;
+
     return found.some(({ scope, at, step }) => {
       if (scope.loop !== undefined && (at === '' || !done(at, skip))) return true;
+
       return [...stepLoops(scope.steps).ranges].some(([owner, range]) => {
         const instance = at === '' ? owner : `${at}.${owner}`;
+
         if (!range.has(step) || skip.has(instance)) return false;
         const state = byId.get(instance);
         const ended = state?.status === 'skipped' || (state?.status === 'succeeded' && state.loopFinal === true);
+
         return !ended || reopens(instance, new Set([...skip, instance]));
       });
     });
   };
+
   const done = (id: string, skip: ReadonlySet<string> = new Set()): boolean => prefixes(id).some((prefix) => {
     const status = byId.get(prefix)?.status;
+
     return (status === 'succeeded' || status === 'skipped') && !reopens(prefix, skip);
   });
+
   return (id: string): boolean => done(id);
 }
 
@@ -712,15 +833,21 @@ export interface CarriedRun extends Definitions {
  */
 export async function carriedRun(config: LocalConfig, runId: string, { published: alreadyPublished, claim = false }: { published: boolean; claim?: boolean }): Promise<Result<CarriedRun | undefined>> {
   const stored = await readRun(config, runId);
+
   if (stored === 'corrupt') return refused(runUnreadable(runId));
+
   const local = stored === 'missing' ? undefined
     : { definition: stored.definition, workflows: stored.workflows ?? {}, source: DefaultWorkflows.sourceOfRun(stored), settled: settledSteps(stored), status: stored.status };
+
   if (local && !claim) return ok(local);
+
   if (!alreadyPublished) return ok(local);
   // Read from the team repository rather than the reports checkout, which a refused resume would otherwise leave synced.
   const origin = await publishedRun(config, runId, { checkout: false });
+
   if (!origin.ok || origin.value === 'absent') return origin.ok || local ? ok(local) : origin;
   const definitions = await definitionsOf(config, origin.value);
+
   return definitions.ok
     ? ok({ ...definitions.value, source: DefaultWorkflows.sourceOfRun(origin.value), settled: settledSteps({ ...definitions.value, steps: origin.value.steps }), status: origin.value.status })
     : definitions;
@@ -733,23 +860,31 @@ export async function carriedRun(config: LocalConfig, runId: string, { published
  */
 export async function reconcileTakenCopies(config: LocalConfig, runId: string, active: string): Promise<WorkflowFailure | undefined> {
   const run = await readRun(config, runId);
-  if (typeof run !== 'object' || !run.publication?.reconcileCopies || run.status !== 'running') return undefined;
+
+  if (run === 'missing' || run === 'corrupt' || !run.publication?.reconcileCopies || run.status !== 'running') return undefined;
   const recorded = Object.entries(run.copies ?? {}).flatMap(([branch, copy]) => (copy.commit === undefined ? [] : [{ branch, commit: copy.commit }]));
   const fetched = await fetchMissingCommits(active, { run: runId, commits: recorded.map((copy) => copy.commit) });
+
   if (fetched.missing.length > 0) {
     const named = recorded.filter((copy) => fetched.missing.includes(copy.commit)).map((copy) => `commit ${copy.commit} from branch ${copy.branch}`);
     const said = fetched.fetchError ? ` Git said: ${fetched.fetchError}.` : '';
+
     return { code: 'workspace_base', message: `Run ${runId} records ${named.join(', ')}, which this checkout does not have, even after fetching the run's branches from origin.${said} Push each branch to origin from the machine that has its commit, then resume the run.` };
   }
+
   for (const { branch, commit } of recorded) {
     const diverged = await reconcileCopy(active, branch, commit);
+
     if (diverged) return { code: 'branch_diverged', message: diverged.error };
   }
+
   await updateRun(config, runId, await knownSecrets(config), async (local) => {
     if (local === 'missing' || !local.publication?.reconcileCopies) return { value: undefined };
     const { reconcileCopies: _done, ...publication } = local.publication;
+
     return { value: undefined, write: { ...local, publication } };
   });
+
   return undefined;
 }
 
@@ -759,7 +894,9 @@ export async function reconcileTakenCopies(config: LocalConfig, runId: string, a
  */
 async function publishedRun(config: LocalConfig, runId: string, { checkout = true }: { checkout?: boolean } = {}): Promise<OriginSnapshot> {
   if (!isRunId(runId)) return refused(INVALID_RUN);
+
   if (!usesBranchWorktree(config)) return refused(UNSUPPORTED_REPO);
+
   return checkout ? readPublished(config, runId) : readOrigin(gitRoot(config), runId);
 }
 
@@ -780,23 +917,32 @@ async function acquire(
   const secrets = await knownSecrets(config);
   // Decided outside the reports lock: rebuilding definitions and checking the business origin can take a while.
   const decided = await decideClaim(config, runId, origin.value, owner, { take, checkout });
+
   if (!decided.ok) return decided;
   const verdict = decided.value;
+
   switch (verdict.kind) {
     case 'owned': {
       const settled = await settleOwned(config, runId, checkout, owner, verdict.snapshot, secrets);
+
       if (!settled.ok || verdict.snapshot.offered === undefined) return settled;
       const withdrawn = await withdrawOffer(config, runId, verdict.snapshot);
+
       return withdrawn.ok ? settled : withdrawn;
     }
+
     case 'claimed': {
       const landed = await replaceSnapshot(config, runId, verdict.replaces, verdict.snapshot, `[teamai] Claim workflow run ${runId}`);
+
       // Origin took no claim this machine can prove, so nothing local changes; claiming again finds out.
       if (!landed.ok) return landed;
+
       return install(config, runId, checkout, verdict.snapshot, verdict.definitions, verdict.handed, secrets);
     }
+
     default: {
       const unhandled: never = verdict;
+
       return unhandled;
     }
   }
@@ -809,6 +955,7 @@ async function readPublished(config: LocalConfig, runId: string): Promise<Origin
     async (worktree) => ({ value: await readOrigin(worktree, runId), write: null }),
     { pushIfCreated: false },
   );
+
   return result.value ?? refused(result.status === 'busy' ? REPORTS_BUSY : writeFailed(runId, result));
 }
 
@@ -819,9 +966,12 @@ async function readPublished(config: LocalConfig, runId: string): Promise<Origin
 async function withdrawOffer(config: LocalConfig, runId: string, snapshot: RunSnapshot): Promise<Result<void>> {
   const { offered: _offer, ...kept } = snapshot;
   const landed = await replaceSnapshot(config, runId, snapshot.write, { ...kept, write: randomUUID() }, `[teamai] Resume workflow run ${runId}`);
+
   if (landed.ok || landed.error.code !== 'state_moved') return landed;
   const now = await readPublished(config, runId);
+
   if (now.ok && now.value !== 'absent' && now.value.owner.id !== snapshot.owner.id) return refused(notOwner(runId, now.value));
+
   return refused({
     code: 'state_moved',
     message: `Run ${runId} changed on teamai-reports while this machine resumed it, so it was not resumed. Resume it again: teamai workflow resume ${runId}`,
@@ -832,19 +982,29 @@ async function withdrawOffer(config: LocalConfig, runId: string, snapshot: RunSn
 async function replaceSnapshot(config: LocalConfig, runId: string, replaces: string, snapshot: RunSnapshot, message: string): Promise<Result<void>> {
   const result = await updateReports(config, async (worktree): Promise<ReportsChange<Result<void>>> => {
     const origin = await readOrigin(worktree, runId);
+
     if (!origin.ok) return { value: origin, write: null };
+
     if (origin.value === 'absent' || origin.value.write !== replaces) return { value: refused(stateMoved(runId)), write: null };
+
     return { value: ok(undefined), write: await writeSnapshot(worktree, snapshot, message) };
   });
+
   if (result.value && !result.value.ok) return result.value;
+
   if (result.status === 'busy') return refused(REPORTS_BUSY);
+
   if (result.status !== 'published' && result.status !== 'already-present') {
     // The claim may still have landed, or another write of the run landed first, as when two claims race: origin decides.
     const now = await readPublished(config, runId);
+
     if (now.ok && now.value !== 'absent' && now.value.write === snapshot.write) return ok(undefined);
+
     if (now.ok && now.value !== 'absent' && now.value.write !== replaces) return refused(stateMoved(runId));
+
     return refused(writeFailed(runId, result));
   }
+
   return ok(undefined);
 }
 
@@ -882,24 +1042,35 @@ async function decideClaim(
       message: `Run ${runId} is not on teamai-reports. Publish it from the machine that has it: teamai workflow publish ${runId}`,
     });
   }
+
   const local = await readRun(config, runId);
+
   if (local === 'corrupt') return refused(runUnreadable(runId));
+
   if (local !== 'missing' && local.createdAt !== origin.createdAt) return refused(mismatch(runId, local, origin));
+
   if (origin.owner.id === owner.id) return ok({ kind: 'owned', snapshot: origin });
+
   if (take === 'own') return refused(notOwner(runId, origin));
+
   if (take === 'offered' && origin.offered === undefined) return refused(noLongerOffered(runId));
   const definitions = await definitionsOf(config, origin);
+
   if (!definitions.ok) return definitions;
   const handed = handedOver(origin, definitions.value);
+
   // A settled run leases nothing until a retry reopens it, so its branches, which a merge may have deleted, are needed
   // only then: the first drive after the retry fetches and reconciles them.
   if (origin.status === 'running') {
     const onOrigin = await checkOrigin(checkout, { id: runId, base: origin.base, copies: handed.copies }, { side: 'claim', publisher: origin.owner });
+
     if (!onOrigin.ok) return onOrigin;
   }
+
   // The write that makes this install the owner takes the offer away, so no runner takes the run while it is driven here.
   const repository = origin.repository !== undefined ? { repository: origin.repository } : {};
   const claimed: RunSnapshot = { ...header(runId, owner, new Date().toISOString(), origin.stateRevision + 1, snapshotBody(origin), repository), ...handed };
+
   return ok({ kind: 'claimed', snapshot: claimed, replaces: origin.write, definitions: definitions.value, handed });
 }
 
@@ -915,9 +1086,11 @@ interface Handover {
 function handedOver(snapshot: RunSnapshot, definitions: Definitions): Handover {
   const tree = { ...definitions, steps: snapshot.steps };
   const modes = snapshot.steps.map((step) => stepMode(tree, step.id));
+
   const moved = new Set(snapshot.steps.flatMap((step, index) => (step.status === 'leased' && modes[index] === 'new'
     ? [branchName(snapshot.run, step.id, step.pass ?? 1)]
     : [])));
+
   return {
     steps: snapshot.steps.map((step, index) => takeOver(step, modes[index])),
     copies: Object.fromEntries(Object.entries(snapshot.copies).filter(([branch]) => !moved.has(branch))),
@@ -931,29 +1104,38 @@ function handedOver(snapshot: RunSnapshot, definitions: Definitions): Handover {
 export async function definitionsOf(config: LocalConfig, snapshot: RunSnapshot): Promise<Result<Definitions>> {
   const same = (bundle: WorkflowBundle): boolean => bundle.sourceHash === snapshot.sourceHash
     && definitionHash(bundle.definition, bundle.workflows) === snapshot.definitionHash;
+
   // No team commit holds a default: only the default this teamai ships can be the one that ran, whatever the name resolves to here.
   if (snapshot.origin?.source === 'default') {
     const shipped = DefaultWorkflows.named(snapshot.name);
     const tree = shipped ? await loadWorkflowTree(config, shipped) : undefined;
+
     if (shipped && tree && !('failed' in tree) && same({ definition: shipped.definition, workflows: tree.workflows, sourceHash: tree.sourceHash })) {
       return ok({ definition: shipped.definition, workflows: tree.workflows });
     }
+
     const { teamaiVersion } = snapshot.origin;
+
     return refused({
       code: 'definition_mismatch',
       message: `Run ${snapshot.run} runs teamai's default workflow "${snapshot.name}" of teamai ${teamaiVersion}, which differs from the one teamai ${getCurrentVersion()} ships. Continue it on a machine with teamai ${teamaiVersion}, or start a new run.`,
     });
   }
+
   const cached = await loadWorkflowBundle(config, snapshot.name);
+
   if (!('failed' in cached) && same(cached)) return ok({ definition: cached.definition, workflows: cached.workflows });
   const revision = snapshot.teamRevision;
+
   if (!revision) {
     return refused({
       code: 'definition_mismatch',
       message: `Run ${snapshot.run} runs workflow "${snapshot.name}" without a team commit that holds its sources, and this machine's copy differs. Once the machine that ran it has pushed its workflows, run teamai pull and try again.`,
     });
   }
+
   const at = await loadWorkflowBundleAt(config, snapshot.name, revision);
+
   if ('failed' in at) {
     return refused({
       code: 'definition_mismatch',
@@ -961,6 +1143,7 @@ export async function definitionsOf(config: LocalConfig, snapshot: RunSnapshot):
       message: `Run ${snapshot.run} runs workflow "${snapshot.name}" as of team commit ${revision}, which this machine cannot read: ${at.failed}. Fetch that commit into the team repo, then try again.`,
     });
   }
+
   if (!same(at)) {
     return refused({
       code: 'definition_mismatch',
@@ -968,6 +1151,7 @@ export async function definitionsOf(config: LocalConfig, snapshot: RunSnapshot):
       message: `Run ${snapshot.run} runs workflow "${snapshot.name}" as of team commit ${revision}, and this teamai reads that commit differently from the one that ran it. Use the same teamai version on both machines, then try again.`,
     });
   }
+
   return ok({ definition: at.definition, workflows: at.workflows });
 }
 
@@ -985,19 +1169,30 @@ async function settleOwned(
 ): Promise<Result<ClaimReceipt>> {
   const kept = await updateRun(config, runId, secrets, async (local): Promise<{ value: Result<boolean>; write?: RunState }> => {
     if (local === 'missing') return { value: ok(false) };
+
     if (local.createdAt !== snapshot.createdAt) return { value: refused(mismatch(runId, local, snapshot)) };
     const seen = acknowledged(local, snapshot);
+
     if (seen > snapshot.stateRevision) return { value: refused(stateConflict(runId, snapshot.stateRevision, seen)) };
+
     if (seen < snapshot.stateRevision) return { value: ok(false) };
+
     if (local.publication?.pending !== snapshot.write) return { value: ok(true) };
+
     return { value: ok(true), write: published(local, { stateRevision: seen }) };
   });
+
   if (kept.status === 'busy') return refused(runBusy(runId));
+
   if (kept.status === 'corrupt') return refused(runUnreadable(runId));
+
   if (!kept.value.ok) return kept.value;
+
   if (kept.value.value) return ok({ run: runId, ownership: 'already_owned', owner, stateRevision: snapshot.stateRevision });
   const definitions = await definitionsOf(config, snapshot);
+
   if (!definitions.ok) return definitions;
+
   return install(config, runId, checkout, snapshot, definitions.value, handedOver(snapshot, definitions.value), secrets);
 }
 
@@ -1015,27 +1210,34 @@ async function install(
   // A pinned scorer comes back only when this machine caches the same bytes; otherwise its passes are not scored here (D19).
   const cached = await pinScorers(config, Object.keys(publishedScorers ?? {}));
   const scorers = Object.fromEntries(Object.entries(cached).filter(([name, pin]) => publishedScorers?.[name]?.sourceHash === pin.sourceHash));
+
+  const publication: RunPublication = { stateRevision: snapshot.stateRevision };
+
+  if (Object.values(handed.copies).some((copy) => copy.commit !== undefined)) publication.reconcileCopies = true;
+  const pinned: Pick<RunState, 'workflows' | 'scorers'> = {};
+
+  if (Object.keys(definitions.workflows).length > 0) pinned.workflows = definitions.workflows;
+
+  if (Object.keys(scorers).length > 0) pinned.scorers = scorers;
+  const copied: Pick<RunState, 'copies'> = {};
+
+  if (Object.keys(handed.copies).length > 0) copied.copies = handed.copies;
+
   const run: RunState = {
-    ...body,
-    id: runId,
-    definition: definitions.definition,
-    ...(Object.keys(definitions.workflows).length > 0 ? { workflows: definitions.workflows } : {}),
-    ...(Object.keys(scorers).length > 0 ? { scorers } : {}),
-    steps: handed.steps,
-    settledAttempts: [],
-    ...(Object.keys(handed.copies).length > 0 ? { copies: handed.copies } : {}),
-    checkout,
-    publication: {
-      stateRevision: snapshot.stateRevision,
-      ...(Object.values(handed.copies).some((copy) => copy.commit !== undefined) ? { reconcileCopies: true } : {}),
-    },
+    ...body, id: runId, definition: definitions.definition, ...pinned, steps: handed.steps, settledAttempts: [], ...copied, checkout, publication,
   };
+
   const installed = await updateRun(config, runId, secrets, async (local) => {
     if (local !== 'missing' && local.createdAt !== snapshot.createdAt) return { value: refused(mismatch(runId, local, snapshot)) };
+
     return { value: ok(undefined), write: run };
   });
+
   if (installed.status === 'busy') return refused(runBusy(runId));
+
   if (installed.status === 'corrupt') return refused(runUnreadable(runId));
+
   if (!installed.value.ok) return installed.value;
+
   return ok({ run: runId, ownership: 'claimed', owner: snapshot.owner, stateRevision: snapshot.stateRevision });
 }

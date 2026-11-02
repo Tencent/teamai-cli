@@ -65,23 +65,29 @@ export function resolveNamespacedItems<T>(
   active: readonly string[],
 ): NamespaceResolution<T> {
   const rank = (namespace: string | null): number => (namespace === null ? 0 : active.indexOf(namespace) + 1);
+
   const byPlace = (a: NamespaceCandidate<T>, b: NamespaceCandidate<T>): number => (
     rank(a.namespace) - rank(b.namespace) || compareStrings(a.source, b.source)
   );
 
   const byName = new Map<string, NamespaceCandidate<T>[]>();
+
   for (const candidate of candidates) {
     if (candidate.namespace !== null && !active.includes(candidate.namespace)) continue;
     const group = byName.get(candidate.name);
+
     if (group) group.push(candidate);
     else byName.set(candidate.name, [candidate]);
   }
 
   const items: ResolvedNamespaceItem<T>[] = [];
   const conflicts: NamespaceConflict<T>[] = [];
+
   for (const [name, group] of byName) {
     const [first, second, third] = group.sort(byPlace);
+
     if (!first) continue;
+
     if (!second) {
       items.push({ ...first, replaces: null });
     } else if (first.namespace !== null || second.namespace === null) {
@@ -98,6 +104,7 @@ export function resolveNamespacedItems<T>(
   const [conflict] = conflicts.sort((a, b) => (
     rank(a.second.namespace) - rank(b.second.namespace) || compareStrings(a.name, b.name)
   ));
+
   if (conflict) return conflict;
 
   return {
@@ -127,10 +134,12 @@ export function resolveRootOverrides<T>(
   const roots = new Map(candidates.flatMap((candidate) => (
     candidate.namespace === null ? [[candidate.name, candidate.source] as const] : []
   )));
+
   return candidates.flatMap((candidate) => {
     const root = candidate.namespace !== null && active.includes(candidate.namespace)
       ? roots.get(candidate.name)
       : undefined;
+
     return root ? [{ name: candidate.name, source: candidate.source, replaces: root }] : [];
   });
 }
@@ -147,11 +156,13 @@ export function repeatedNames<T>(
   sourceOf: (item: T) => string,
 ): Array<[string, string[]]> {
   const byName = new Map<string, string[]>();
+
   for (const item of items) {
     const name = nameOf(item);
     byName.set(name, [...(byName.get(name) ?? []), sourceOf(item)]);
   }
-  return [...byName].filter(([, sources]) => sources.length > 1).map(([name, sources]) => [name, sources.sort()]);
+
+  return [...byName].flatMap(([name, sources]): Array<[string, string[]]> => (sources.length > 1 ? [[name, sources.sort()]] : []));
 }
 
 function conflictBetween<T>(
@@ -170,5 +181,6 @@ function conflictBetween<T>(
 
 function compareStrings(a: string, b: string): number {
   if (a < b) return -1;
+
   return a > b ? 1 : 0;
 }

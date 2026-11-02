@@ -30,6 +30,7 @@ export function ownDeadline(run: RunState, state: StepState, step: WorkflowStep,
   const runs = !step.forEach || item ? workflowRunBy(run, step, state.id.slice(0, state.id.lastIndexOf('.') + 1)) : undefined;
   const file = runs && isWorkflowFile(runs) ? runs.timeout : undefined;
   const limits = [item || step.onLimit === 'end_turn' ? undefined : step.timeout, file].filter((ms) => ms !== undefined);
+
   return limits.length > 0 ? after(now, Math.min(...limits)) : undefined;
 }
 
@@ -45,12 +46,16 @@ export function spentTokens(run: RunState, under: (id: string) => boolean): numb
 /** The tokens `states` spent, and those archived or released under `under`. A step with no pass yet is not parsed. */
 function spentBy(states: readonly StepState[], run: RunState, under: (id: string) => boolean): number {
   let spent = 0;
+
   for (const state of states) {
     for (const pass of state.passes ?? []) spent += budgeted(pass.tokens);
     const current = settled(state) ? passOf(state) : undefined;
+
     if (current) spent += budgeted(current.tokens);
   }
+
   for (const entry of [...run.archive ?? [], ...run.releasedTokens ?? []]) if (under(entry.step)) spent += budgeted(entry.tokens);
+
   return spent;
 }
 
@@ -63,7 +68,9 @@ function spentUnder(run: RunState, state: StepState): number {
   const under = isUnder(state.id);
   const at = run.steps.indexOf(state) + 1;
   let end = at;
+
   while (end < run.steps.length && under(run.steps[end]?.id ?? '')) end += 1;
+
   return spentBy(run.steps.slice(at, end), run, under);
 }
 
@@ -80,10 +87,13 @@ export function budgeted(tokens: TokenUsage | undefined): number {
 export function countLateTokens(run: RunState, stopped: StoppedAttempt, tokens: TokenUsage): void {
   run.stoppedAttempts = run.stoppedAttempts?.filter((entry) => entry.attempt !== stopped.attempt);
   (run.releasedTokens ??= []).push({ step: stopped.step, attempt: stopped.attempt, tokens });
+
   const later = (from: LimitsFrom | undefined): void => {
     if (from && Date.parse(from.at) >= Date.parse(stopped.stoppedAt)) from.tokens += budgeted(tokens);
   };
+
   later(run.limitsFrom);
+
   for (const step of run.steps) if (step.status === 'running' && isUnder(step.id)(stopped.step)) later(step.limitsFrom);
 }
 
@@ -91,14 +101,23 @@ export function countLateTokens(run: RunState, stopped: StoppedAttempt, tokens: 
  * What a workflow step, or `for_each` item, starting at `now` records: when its timeout ends it, and where the budget of
  * what it runs counts from. What it ran before, such as an earlier pass a loop archived, is not counted again.
  */
-export function startLimits(run: RunState, state: StepState, step: WorkflowStep, now: string): { expiresAt?: string; limitsFrom: LimitsFrom } {
+export function startLimits(run: RunState, state: StepState, step: WorkflowStep, now: string): StartLimits {
   const expiresAt = ownDeadline(run, state, step, now);
-  return { ...(expiresAt !== undefined ? { expiresAt } : {}), limitsFrom: { at: now, tokens: spentUnder(run, state) } };
+  const from: LimitsFrom = { at: now, tokens: spentUnder(run, state) };
+
+  return expiresAt !== undefined ? { expiresAt, limitsFrom: from } : { limitsFrom: from };
+}
+
+/** `expiresAt`: when the step's timeout ends it, absent when nothing bounds it. */
+export interface StartLimits {
+  expiresAt?: string;
+  limitsFrom: LimitsFrom;
 }
 
 /** Where the limits of a workflow of the run count from: the run's, or those its running step recorded when it started. */
 function limitsFrom(run: RunState, scope: Scope): LimitsFrom {
   const recorded = scope.runner ? (scope.runner.status === 'running' ? scope.runner.limitsFrom : undefined) : run.limitsFrom;
+
   return recorded ?? { at: run.createdAt, tokens: 0 };
 }
 
@@ -119,6 +138,7 @@ export function itemsSpent(run: RunState, state: StepState): number {
 export function runDeadline(run: RunState): string | undefined {
   if (run.finalizing) return run.finalizing.until;
   const limits = [run.definition.timeout, run.timeout].filter((ms) => ms !== undefined);
+
   return limits.length === 0 ? undefined : after(limitsFrom(run, topScope(run)).at, Math.min(...limits));
 }
 
@@ -129,6 +149,7 @@ export function leaseDeadline(run: RunState, state: LeasedStep): string | undefi
     runDeadline(run),
     ...run.steps.map((step) => (step.status === 'running' && isUnder(step.id)(state.id) ? step.expiresAt : undefined)),
   ].filter((deadline) => deadline !== undefined);
+
   return deadlines.sort((left, right) => Date.parse(left) - Date.parse(right))[0];
 }
 
@@ -139,20 +160,27 @@ export function leaseDeadline(run: RunState, state: LeasedStep): string | undefi
  */
 export function expire(run: RunState, now: string): WorkflowResult | undefined {
   const runEnds = runDeadline(run);
+
   if (runEnds !== undefined && passed(runEnds, now)) {
     const failure = { code: 'timeout', message: run.finalizing ? `Run ${run.id} passed the deadline of its finally steps at ${runEnds}` : `Run ${run.id} passed its timeout at ${runEnds}` };
     stopWhere(run, () => true, failure, run.revision, now);
+
     return { outcome: 'failed', failure, settledAt: run.revision };
   }
+
   // A step's instance comes before the instances of what it runs, so an outer deadline applies first.
   for (const state of run.steps) {
     const expiresAt = state.status === 'running' ? state.expiresAt : state.status === 'leased' ? state.lease.expiresAt : undefined;
+
     if (expiresAt === undefined || !passed(expiresAt, now)) continue;
     const failure = { code: 'timeout', message: `Step "${state.id}" passed its timeout at ${expiresAt}` } as const;
+
     if (state.status === 'running') stopWhere(run, isUnder(state.id), { code: 'timeout', message: `Cancelled: ${failure.message}` }, run.revision, now);
     else if (state.status === 'leased') stopAttempt(run, state, now);
+
     if (state.status === 'running' || state.status === 'leased') timeOut(state, failure, run.revision);
   }
+
   return undefined;
 }
 
@@ -168,13 +196,21 @@ export interface Allowance {
 /** What `granted` has left. Commands spend none of it. */
 function allowanceLeft(run: RunState, granted: GrantedAllowance): Allowance {
   const state = run.steps.find((item) => item.id === granted.step);
+
   if (state?.status !== 'running') return { ...granted, spent: true };
   const definitionOf = stepDefinitions(run);
   const turns = passesWithin(run, runPasses(run), state.id, state.pass ?? 1).filter((pass) => definitionOf(pass.step)?.prompt !== undefined);
   const timeoutMs = granted.timeoutMs === undefined ? undefined : granted.timeoutMs - turns.reduce((sum, pass) => sum + (pass.durationMs ?? 0), 0);
   const tokens = granted.tokens === undefined ? undefined : granted.tokens - itemsSpent(run, state);
   const spent = state.allowanceSpent === true || (timeoutMs !== undefined && timeoutMs <= 0) || (tokens !== undefined && tokens <= 0);
-  return { step: granted.step, ...(timeoutMs !== undefined ? { timeoutMs } : {}), ...(tokens !== undefined ? { tokens } : {}), spent };
+
+  const left: Omit<Allowance, 'spent'> = { step: granted.step };
+
+  if (timeoutMs !== undefined) left.timeoutMs = timeoutMs;
+
+  if (tokens !== undefined) left.tokens = tokens;
+
+  return { ...left, spent };
 }
 
 /** The steps whose allowances, among those workflow `scope` runs inside, are spent: nothing pending under them starts. */
@@ -188,6 +224,7 @@ export function spentAllowances(run: RunState, scope: Scope): string[] {
  */
 export function allowanceInUse(run: RunState, scope: Scope): string | undefined {
   const definitionOf = stepDefinitions(run);
+
   return scope.allowances.find((granted) => run.steps.some((state) => state.status === 'leased'
     && isUnder(granted.step)(state.id) && definitionOf(state.id)?.prompt !== undefined))?.step;
 }
@@ -195,6 +232,7 @@ export function allowanceInUse(run: RunState, scope: Scope): string | undefined 
 /** The smallest of `limits`, or undefined when none is set. An allowance with nothing left leases nothing more. */
 function least(...limits: ReadonlyArray<number | undefined>): number | undefined {
   const set = limits.filter((limit) => limit !== undefined);
+
   return set.length > 0 ? Math.min(...set) : undefined;
 }
 
@@ -204,19 +242,32 @@ function least(...limits: ReadonlyArray<number | undefined>): number | undefined
  */
 export function turnLimits(run: RunState, scope: Scope, step: WorkflowStep): TurnLimits | undefined {
   const own = step.onLimit === 'end_turn';
+
   if (step.prompt === undefined || (!own && scope.allowances.length === 0)) return undefined;
   const allowances = scope.allowances.map((granted) => allowanceLeft(run, granted));
   const timeoutMs = least(own ? step.timeout : undefined, ...allowances.map((allowance) => allowance.timeoutMs));
   const tokens = least(own ? step.budget?.tokens : undefined, ...allowances.map((allowance) => allowance.tokens));
   const maxTurns = own ? step.maxTurns : undefined;
-  return {
-    ...(timeoutMs !== undefined ? { timeoutMs } : {}), ...(maxTurns !== undefined ? { maxTurns } : {}),
-    ...(tokens !== undefined ? { budget: { tokens } } : {}), onLimit: 'end_turn',
-  };
+
+  const limits: Omit<TurnLimits, 'onLimit'> = {};
+
+  if (timeoutMs !== undefined) limits.timeoutMs = timeoutMs;
+
+  if (maxTurns !== undefined) limits.maxTurns = maxTurns;
+
+  if (tokens !== undefined) limits.budget = { tokens };
+
+  return { ...limits, onLimit: 'end_turn' };
+}
+
+/** What a limit is in a lease's limits, and what of it an allowance has left. */
+interface LeasedLimit {
+  leased?: number;
+  left: (allowance: Allowance) => number | undefined;
 }
 
 /** What `limit` is in `limits`, and what of it `allowance` has left. */
-function limitOf(limit: Limit, limits: TurnLimits): { leased?: number; left: (allowance: Allowance) => number | undefined } {
+function limitOf(limit: Limit, limits: TurnLimits): LeasedLimit {
   switch (limit) {
     case 'timeout':
       return { leased: limits.timeoutMs, left: (allowance) => allowance.timeoutMs };
@@ -227,6 +278,7 @@ function limitOf(limit: Limit, limits: TurnLimits): { leased?: number; left: (al
       return { left: () => undefined };
     default: {
       const unhandled: never = limit;
+
       return unhandled;
     }
   }
@@ -239,10 +291,13 @@ function limitOf(limit: Limit, limits: TurnLimits): { leased?: number; left: (al
  */
 export function spendAllowances(run: RunState, scope: Scope, limits: TurnLimits, limit: Limit): void {
   const { leased, left } = limitOf(limit, limits);
+
   if (leased === undefined) return;
+
   for (const granted of scope.allowances) {
     const remainder = left(allowanceLeft(run, granted));
     const state = run.steps.find((item) => item.id === granted.step);
+
     if (state?.status === 'running' && remainder !== undefined && remainder <= leased) state.allowanceSpent = true;
   }
 }

@@ -1,5 +1,7 @@
 import path from 'node:path';
 
+import { z } from 'zod';
+
 import { formatCommand } from '../../utils/exec.js';
 import { log } from '../../utils/logger.js';
 import type {
@@ -14,23 +16,30 @@ import {
   type PackageInstallContext,
 } from './base.js';
 
-export interface ClaudePluginListItem {
-  id?: string;
-  version?: string;
-  scope?: string;
-  enabled?: boolean;
-  installPath?: string;
-}
+/** A field of `claude plugin ... list --json` output; one of the wrong type reads as absent. */
+const listedString = z.string().optional().catch(undefined);
 
-export interface ClaudeMarketplaceListItem {
-  name?: string;
-  source?: string;
-  repo?: string;
-  url?: string;
-  path?: string;
-  ref?: string;
-  installLocation?: string;
-}
+const ClaudePluginListItemSchema = z.object({
+  id: listedString,
+  version: listedString,
+  scope: listedString,
+  enabled: z.boolean().optional().catch(undefined),
+  installPath: listedString,
+});
+
+export type ClaudePluginListItem = z.infer<typeof ClaudePluginListItemSchema>;
+
+const ClaudeMarketplaceListItemSchema = z.object({
+  name: listedString,
+  source: listedString,
+  repo: listedString,
+  url: listedString,
+  path: listedString,
+  ref: listedString,
+  installLocation: listedString,
+});
+
+export type ClaudeMarketplaceListItem = z.infer<typeof ClaudeMarketplaceListItemSchema>;
 
 export interface ClaudeLockSection {
   marketplaces: ClaudeMarketplaceLock[];
@@ -39,9 +48,11 @@ export interface ClaudeLockSection {
 
 function marketplaceSource(marketplace: ClaudeMarketplace): string {
   if (!marketplace.ref) return marketplace.repo;
+
   const separator = marketplace.repo.includes('://') || marketplace.repo.endsWith('.git')
     ? '#'
     : '@';
+
   return `${marketplace.repo}${separator}${marketplace.ref}`;
 }
 
@@ -50,11 +61,15 @@ export function marketplaceSourceLocation(
   marketplace: ClaudeMarketplaceListItem,
 ): string | undefined {
   if (marketplace.repo) return marketplace.repo;
+
   if (marketplace.url) return marketplace.url;
+
   if (marketplace.path) return marketplace.path;
+
   // Older Claude releases sometimes emitted the location directly in source;
   // current releases use source as a kind (github/git/directory).
   if (marketplace.source && /[/:\\]/.test(marketplace.source)) return marketplace.source;
+
   return undefined;
 }
 
@@ -62,16 +77,20 @@ function marketplaceLocationsEqual(declared: string, actual: string, cwd: string
   const looksLocal = (value: string) => path.isAbsolute(value)
     || /^\.{1,2}[\\/]/.test(value)
     || /^[a-zA-Z]:[\\/]/.test(value);
+
   if (looksLocal(declared) || looksLocal(actual)) {
     return path.resolve(cwd, declared) === path.resolve(cwd, actual);
   }
+
   return declared.replace(/[\\/]+$/, '') === actual.replace(/[\\/]+$/, '');
 }
 
-function parseJsonArray<T>(stdout: string): T[] {
+function parseJsonArray<T>(stdout: string, item: z.ZodType<T>): T[] {
   const parsed: unknown = JSON.parse(stdout);
+
   if (!Array.isArray(parsed)) throw new Error('expected a JSON array');
-  return parsed as T[];
+
+  return z.array(item).parse(parsed);
 }
 
 export class ClaudePluginAdapter extends PackageAdapter<ClaudeEcosystem, ClaudeLockSection> {
@@ -80,6 +99,7 @@ export class ClaudePluginAdapter extends PackageAdapter<ClaudeEcosystem, ClaudeL
   async detect(_cwd: string): Promise<boolean> {
     try {
       const result = await this.execute('claude', ['plugin', '--help'], { timeoutMs: 5_000 });
+
       return result.code === 0;
     } catch {
       return false;
@@ -93,8 +113,10 @@ export class ClaudePluginAdapter extends PackageAdapter<ClaudeEcosystem, ClaudeL
         ['plugin', 'list', '--json'],
         { timeoutMs: 30_000 },
       );
+
       if (result.code !== 0) return [];
-      return parseJsonArray<ClaudePluginListItem>(result.stdout);
+
+      return parseJsonArray(result.stdout, ClaudePluginListItemSchema);
     } catch {
       return [];
     }
@@ -107,8 +129,10 @@ export class ClaudePluginAdapter extends PackageAdapter<ClaudeEcosystem, ClaudeL
         ['plugin', 'marketplace', 'list', '--json'],
         { timeoutMs: 30_000 },
       );
+
       if (result.code !== 0) return [];
-      return parseJsonArray<ClaudeMarketplaceListItem>(result.stdout);
+
+      return parseJsonArray(result.stdout, ClaudeMarketplaceListItemSchema);
     } catch {
       return [];
     }
@@ -123,10 +147,13 @@ export class ClaudePluginAdapter extends PackageAdapter<ClaudeEcosystem, ClaudeL
       this.queryMarketplaces(),
       this.queryPlugins(),
     ]);
+
     const declaredMarketplaces = new Set(declaration.marketplaces.map((item) => item.name));
+
     const marketplaceDeclarations = new Map(
       declaration.marketplaces.map((item) => [item.name, item]),
     );
+
     const declaredPlugins = new Set(declaration.plugins.map((item) => item.name));
 
     return {
@@ -135,23 +162,32 @@ export class ClaudePluginAdapter extends PackageAdapter<ClaudeEcosystem, ClaudeL
         .map((item) => {
           const declared = marketplaceDeclarations.get(item.name!);
           const repo = marketplaceSourceLocation(item) ?? declared?.repo;
-          return {
-            name: item.name!,
-            ...(item.source ? { source: item.source } : {}),
-            ...(repo ? { repo } : {}),
-            ...(declared?.ref ? { ref: declared.ref } : {}),
-            ...(item.installLocation ? { installLocation: item.installLocation } : {}),
-          };
+          const lock: ClaudeMarketplaceLock = { name: item.name! };
+
+          if (item.source) lock.source = item.source;
+
+          if (repo) lock.repo = repo;
+
+          if (declared?.ref) lock.ref = declared.ref;
+
+          if (item.installLocation) lock.installLocation = item.installLocation;
+
+          return lock;
         }),
       plugins: plugins
         .filter((item) => item.id && declaredPlugins.has(item.id))
-        .map((item) => ({
-          id: item.id!,
-          version: item.version ?? 'unknown',
-          scope: item.scope ?? 'user',
-          enabled: item.enabled ?? true,
-          ...(item.installPath ? { installPath: item.installPath } : {}),
-        })),
+        .map((item) => {
+          const lock: ClaudePluginLock = {
+            id: item.id!,
+            version: item.version ?? 'unknown',
+            scope: item.scope ?? 'user',
+            enabled: item.enabled ?? true,
+          };
+
+          if (item.installPath) lock.installPath = item.installPath;
+
+          return lock;
+        }),
     };
   }
 
@@ -169,16 +205,20 @@ export class ClaudePluginAdapter extends PackageAdapter<ClaudeEcosystem, ClaudeL
           'plugin', 'marketplace', 'add', marketplaceSource(marketplace),
           '--scope', context.scope,
         ];
+
         log.info(`[dry-run] Would run: ${formatCommand('claude', args)}`);
       }
+
       for (const plugin of declaration.plugins) {
         const args = [
           'plugin', 'install', plugin.name,
           '--scope', plugin.scope ?? context.scope,
           '--yes',
         ];
+
         log.info(`[dry-run] Would run: ${formatCommand('claude', args)}`);
       }
+
       return { marketplaces: [], plugins: [] };
     }
 
@@ -193,17 +233,22 @@ export class ClaudePluginAdapter extends PackageAdapter<ClaudeEcosystem, ClaudeL
         (item) => item.name ? [[item.name, item] as const] : [],
       ),
     );
+
     const previousMarketplaces = new Map(
       (context.previousPackages?.claude?.marketplaces ?? []).map((item) => [item.name, item]),
     );
+
     for (const marketplace of declaration.marketplaces) {
       const installed = installedMarketplaces.get(marketplace.name);
       const previous = previousMarketplaces.get(marketplace.name);
       const installedRepo = installed ? marketplaceSourceLocation(installed) : undefined;
+
       const sourceChanged = !!installedRepo
         && !marketplaceLocationsEqual(marketplace.repo, installedRepo, context.cwd);
+
       const declarationChanged = !!previous
         && (previous.repo !== marketplace.repo || previous.ref !== marketplace.ref);
+
       // Native list JSON does not expose a Git ref. Without a TeamAI snapshot,
       // re-add a pinned marketplace once so the requested ref is actually applied.
       const pinnedButUnverified = !!installed && !!marketplace.ref && !previous?.ref;
@@ -215,6 +260,7 @@ export class ClaudePluginAdapter extends PackageAdapter<ClaudeEcosystem, ClaudeL
           ['plugin', 'marketplace', 'remove', marketplace.name, '--scope', context.scope],
           { cwd: context.cwd, timeoutMs: 120_000, stream: true },
         );
+
         if (remove.code !== 0) {
           throw new Error(
             `Claude marketplace replacement failed for "${marketplace.name}" (exit ${remove.code}): `
@@ -222,16 +268,20 @@ export class ClaudePluginAdapter extends PackageAdapter<ClaudeEcosystem, ClaudeL
           );
         }
       }
+
       if (installed && !replace) continue;
+
       const args = [
         'plugin', 'marketplace', 'add', marketplaceSource(marketplace),
         '--scope', context.scope,
       ];
+
       const result = await this.execute('claude', args, {
         cwd: context.cwd,
         timeoutMs: 120_000,
         stream: true,
       });
+
       if (result.code !== 0) {
         throw new Error(
           `Claude marketplace add failed for "${marketplace.name}" (exit ${result.code}): `
@@ -246,11 +296,13 @@ export class ClaudePluginAdapter extends PackageAdapter<ClaudeEcosystem, ClaudeL
         '--scope', plugin.scope ?? context.scope,
         '--yes',
       ];
+
       const result = await this.execute('claude', args, {
         cwd: context.cwd,
         timeoutMs: 120_000,
         stream: true,
       });
+
       if (result.code !== 0) {
         throw new Error(
           `Claude plugin install failed for "${plugin.name}" (exit ${result.code}): `
@@ -269,23 +321,28 @@ export class ClaudePluginAdapter extends PackageAdapter<ClaudeEcosystem, ClaudeL
     const installed = new Map(
       (await this.queryPlugins()).flatMap((item) => item.id ? [[item.id, item] as const] : []),
     );
+
     return declaration.plugins.map((plugin) => {
       const actual = installed.get(plugin.name);
+
       const versionMismatch = plugin.version
         && actual?.version
         && actual.version !== 'unknown'
         && plugin.version !== actual.version;
-      return {
-        name: plugin.name,
-        installed: !!actual && !versionMismatch,
-        ...(actual?.version ? { version: actual.version } : {}),
-        ...(actual ? { enabled: actual.enabled ?? true } : {}),
-        ...(!actual
-          ? { detail: 'declared but not installed' }
-          : versionMismatch
-            ? { detail: `declared ${plugin.version}, installed ${actual.version}` }
-            : {}),
-      };
+
+      const status: PackageStatus = { name: plugin.name, installed: !!actual && !versionMismatch };
+
+      if (actual?.version) status.version = actual.version;
+
+      if (actual) status.enabled = actual.enabled ?? true;
+
+      if (!actual) {
+        status.detail = 'declared but not installed';
+      } else if (versionMismatch) {
+        status.detail = `declared ${plugin.version}, installed ${actual.version}`;
+      }
+
+      return status;
     });
   }
 
@@ -298,12 +355,14 @@ export class ClaudePluginAdapter extends PackageAdapter<ClaudeEcosystem, ClaudeL
         (item) => item.name ? [[item.name, item] as const] : [],
       ),
     );
+
     const snapshots = new Map(
       (context.previousPackages?.claude?.marketplaces ?? []).map((item) => [item.name, item]),
     );
 
     return declaration.marketplaces.map((marketplace) => {
       const actual = registered.get(marketplace.name);
+
       if (!actual) {
         return {
           name: marketplace.name,
@@ -313,6 +372,7 @@ export class ClaudePluginAdapter extends PackageAdapter<ClaudeEcosystem, ClaudeL
       }
 
       const actualLocation = marketplaceSourceLocation(actual);
+
       if (!actualLocation) {
         return {
           name: marketplace.name,
@@ -320,6 +380,7 @@ export class ClaudePluginAdapter extends PackageAdapter<ClaudeEcosystem, ClaudeL
           detail: 'registered but source could not be determined',
         };
       }
+
       if (!marketplaceLocationsEqual(marketplace.repo, actualLocation, context.cwd)) {
         return {
           name: marketplace.name,
@@ -330,12 +391,14 @@ export class ClaudePluginAdapter extends PackageAdapter<ClaudeEcosystem, ClaudeL
 
       if (marketplace.ref) {
         const snapshot = snapshots.get(marketplace.name);
+
         const actualRef = actual.ref ?? (
           snapshot?.repo
           && marketplaceLocationsEqual(marketplace.repo, snapshot.repo, context.cwd)
             ? snapshot.ref
             : undefined
         );
+
         if (actualRef !== marketplace.ref) {
           return {
             name: marketplace.name,

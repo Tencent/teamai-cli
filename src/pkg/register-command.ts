@@ -34,7 +34,7 @@ export function registerPackagesCommand(
   },
 ): Command {
   const invoke = (target: string | undefined, command: Command) =>
-    run(target, command.optsWithGlobals() as GlobalOptions);
+    run(target, command.optsWithGlobals<GlobalOptions>());
 
   const packagesCmd = addInstallOptions(
     program

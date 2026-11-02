@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { z } from 'zod';
 import type { McpServerDef } from './types.js';
 import type { McpTarget } from './mcp-reconcile.js';
 import {
@@ -40,6 +41,7 @@ export function carriesResolvedValue(
 ): boolean {
   if (!target.projectScope || target.projectKey) return false;
   const present = new Set(names);
+
   return teamDefs.some((def) => present.has(def.name)
     && referencedVars(def).length > 0
     && !supportsEnvExpansion(target.format, target.projectScope, def));
@@ -53,18 +55,40 @@ export function carriesResolvedValue(
  * not `${VAR}` references teamai resolves, so nothing tells a token from a
  * plain setting: every one counts. Only a bare stdio command does not.
  */
-export function carriesLocalAgentCredential(entry: unknown): boolean {
-  if (typeof entry !== 'object' || entry === null) return false;
-  const fields = entry as Record<string, unknown>;
-  const nonEmpty = (value: unknown): boolean =>
-    Array.isArray(value) ? value.length > 0 : typeof value === 'object' && value !== null && Object.keys(value).length > 0;
+export function carriesLocalAgentCredential<TEntry>(entry: TEntry): boolean {
+  const parsed = LocalAgentEntrySchema.safeParse(entry);
+
+  if (!parsed.success) return false;
+  const fields = parsed.data;
+
   // OpenCode keeps env under `environment`, and a stdio command with its arguments under `command`.
-  if (['headers', 'env', 'environment', 'args'].some((key) => nonEmpty(fields[key]))) return true;
+  if ([fields.headers, fields.env, fields.environment, fields.args].some((value) => FilledSchema.safeParse(value).success)) return true;
   // A command line in one string, or OpenCode's one-element array holding it, carries its arguments too.
-  const commandParts: unknown[] = Array.isArray(fields.command) ? fields.command : [fields.command];
-  if (commandParts.length > 1 || commandParts.some((part) => typeof part === 'string' && /\s/.test(part.trim()))) return true;
-  return ['url', 'serverUrl', 'httpUrl'].some((key) => typeof fields[key] === 'string' && fields[key].trim() !== '');
+  const command = z.array(z.unknown()).safeParse(fields.command);
+  const commandParts = command.success ? command.data : [fields.command];
+
+  if (commandParts.length > 1 || commandParts.some((part) => /\s/.test(TextOrEmptySchema.parse(part).trim()))) return true;
+
+  return [fields.url, fields.serverUrl, fields.httpUrl].some((value) => TextOrEmptySchema.parse(value).trim() !== '');
 }
+
+/** The fields of an installed JSON MCP entry that can carry a credential, each holding anything. */
+const LocalAgentEntrySchema = z.object({
+  headers: z.unknown().optional(),
+  env: z.unknown().optional(),
+  environment: z.unknown().optional(),
+  args: z.unknown().optional(),
+  command: z.unknown().optional(),
+  url: z.unknown().optional(),
+  serverUrl: z.unknown().optional(),
+  httpUrl: z.unknown().optional(),
+});
+
+/** A list with an item, or a map with a key. */
+const FilledSchema = z.union([z.array(z.unknown()).min(1), z.record(z.string(), z.unknown()).refine((map) => Object.keys(map).length > 0)]);
+
+/** A string value, or '' for anything else. */
+const TextOrEmptySchema = z.string().catch('');
 
 /**
  * The variable whose value, resolved by teamai into `target`, `raw` (a project
@@ -79,14 +103,19 @@ export function resolvedVariableIn(
   raw: string,
 ): string | null {
   if (!target.projectScope) return null;
+
   for (const def of teamDefs) {
     if (supportsEnvExpansion(target.format, target.projectScope, def)) continue;
+
     const found = referencedVars(def).find((name) => {
       const value = vars[name];
+
       return value !== undefined && value.length >= 8 && raw.includes(value);
     });
+
     if (found) return found;
   }
+
   return null;
 }
 
@@ -116,6 +145,7 @@ export async function ensureExcludedFromGit(
   options: { dryRun?: boolean; rerun?: string } = {},
 ): Promise<GitExclusion> {
   const [{ result }] = await ensure(MCP_OWNER, [file], options);
+
   switch (result.kind) {
     case 'excluded':
     case 'pending':
@@ -134,6 +164,7 @@ export async function ensureExcludedFromGit(
 export async function excludeFromGit(file: string, options: { rerun?: string; holds?: string } = {}): Promise<void> {
   if (!await pathExists(file)) return;
   const exclusion = await ensureExcludedFromGit(file, { rerun: options.rerun });
+
   if (exclusion.kind === 'failed') {
     log.warn(
       `${file} may hold ${options.holds ?? 'a resolved MCP variable'}, and teamai could not keep it out of git: ${exclusion.reason}. `
@@ -150,24 +181,31 @@ export async function excludeFromGit(file: string, options: { rerun?: string; ho
  */
 export async function findMcpGitExcludes(dirs: Iterable<string>): Promise<Map<string, Array<{ pattern: string; files: string[] }>>> {
   const roots = new Map<string, Set<string>>();
+
   for (const location of (await gitExcludeFiles(dirs)).values()) {
     if (!location) continue;
     const seen = roots.get(location.excludeFile) ?? new Set<string>();
     roots.set(location.excludeFile, seen.add(location.root));
   }
+
   const found = new Map<string, Array<{ pattern: string; files: string[] }>>();
+
   for (const [excludeFile, checkouts] of roots) {
     const content = await readFileSafe(excludeFile);
     const patterns = content === null ? null : excludeLines(content, MCP_EXCLUDE_OWNER);
+
     if (!patterns) continue;
     // Every checkout sharing the file, including a nested repository's linked worktrees elsewhere.
     const [anyCheckout] = checkouts;
+
     if (anyCheckout) for (const worktree of await listWorktrees(anyCheckout)) checkouts.add(worktree);
     found.set(excludeFile, patterns.map((pattern) => {
       const rel = mcpExcludePatternPath(pattern);
+
       return { pattern, files: [...checkouts].map((root) => path.join(root, rel)) };
     }));
   }
+
   return found;
 }
 
@@ -183,6 +221,7 @@ export function mcpExcludePatternPath(pattern: string): string {
 export async function removeMcpGitExclude(excludeFile: string, patterns: string[]): Promise<ExcludeUpdate> {
   return updateExcludeLines(excludeFile, MCP_EXCLUDE_OWNER, (lines) => {
     const kept = lines.filter((p) => !patterns.includes(p));
+
     return kept.length === lines.length ? null : kept;
   });
 }

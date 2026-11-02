@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 
+import { z } from 'zod';
+
 import { callToolParallel, isOverrideInvalid } from './tool-launch/call.js';
 import { listFilesRecursive, readFileSafe, writeFile, expandHome, ensureDir } from './utils/fs.js';
 import { log } from './utils/logger.js';
@@ -56,6 +58,7 @@ function todayStr(): string {
  */
 function buildFilename(title: string): string {
   const slug = toSlug(title) || 'untitled';
+
   return `${todayStr()}-${slug}.md`;
 }
 
@@ -92,6 +95,16 @@ function buildClassifyPrompt(filePath: string, rawContent: string): string {
  * @param output      AI 输出文本
  * @returns           ClassifiedItem
  */
+/** The AI's classification of a file; a field of the wrong type reads as absent, and a tag that is not text is dropped. */
+const ClassifyReplySchema = z.object({
+  type: z.unknown().optional(),
+  title: z.string().optional().catch(undefined),
+  summary: z.string().optional().catch(undefined),
+  tags: z.array(z.string().optional().catch(undefined)).catch([]),
+  confidence: z.number().optional().catch(undefined),
+  isPersonal: z.boolean().optional().catch(undefined),
+});
+
 function parseClassifyOutput(
   sourcePath: string,
   rawContent: string,
@@ -99,35 +112,31 @@ function parseClassifyOutput(
 ): ClassifiedItem {
   // 去掉可能残留的 markdown 代码块标记
   const cleaned = output.replace(/^```[a-z]*\n?/i, '').replace(/\n?```$/i, '').trim();
+
   try {
-    const parsed = JSON.parse(cleaned) as {
-      type?: string;
-      title?: string;
-      summary?: string;
-      tags?: unknown[];
-      confidence?: number;
-      isPersonal?: boolean;
-    };
+    const parsed = ClassifyReplySchema.parse(JSON.parse(cleaned));
+
     const typeValue = parsed.type;
+
     const knownType: 'rule' | 'doc' | 'learning' =
       typeValue === 'rule' || typeValue === 'doc' || typeValue === 'learning'
         ? typeValue
         : 'learning';
+
     return {
       sourcePath,
       rawContent,
       type: knownType,
-      title: typeof parsed.title === 'string' ? parsed.title : path.basename(sourcePath),
-      summary: typeof parsed.summary === 'string' ? parsed.summary : '',
-      tags: Array.isArray(parsed.tags)
-        ? (parsed.tags as string[]).filter((t) => typeof t === 'string')
-        : [],
-      confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0,
-      isPersonal: typeof parsed.isPersonal === 'boolean' ? parsed.isPersonal : false,
+      title: parsed.title ?? path.basename(sourcePath),
+      summary: parsed.summary ?? '',
+      tags: parsed.tags.flatMap((tag) => (tag === undefined ? [] : [tag])),
+      confidence: parsed.confidence ?? 0,
+      isPersonal: parsed.isPersonal ?? false,
     };
   } catch (parseErr: unknown) {
     // 解析失败 → 保守策略：标记为个人（不导入团队库），confidence=0
     log.warn(`AI classification parse failed, using conservative default (isPersonal=true): ${String(parseErr)}`);
+
     return {
       sourcePath,
       rawContent,
@@ -154,6 +163,7 @@ function buildMarkdown(item: ClassifiedItem): string {
     item.tags.length > 0
       ? `[${item.tags.map((t) => `"${t}"`).join(', ')}]`
       : '[]';
+
   return [
     '---',
     `title: "${item.title}"`,
@@ -175,7 +185,9 @@ function buildMarkdown(item: ClassifiedItem): string {
  */
 function detectTypeFromContent(content: string): 'rule' | 'doc' | 'learning' {
   if (/\btype:\s*rule\b/.test(content)) return 'rule';
+
   if (/\btype:\s*doc\b/.test(content)) return 'doc';
+
   return 'learning';
 }
 
@@ -218,27 +230,35 @@ export async function scanCandidates(opts: {
 
   if (opts.dir) {
     const expandedDir = expandHome(opts.dir);
+
     // 安全校验：拒绝用户目录之外的路径（防止路径遍历）
     try {
       assertSafePath(expandedDir, defaultAllowedRoots());
     } catch (err: unknown) {
       throw new Error(`Refused to scan directory: ${String(err)}`, { cause: err });
     }
+
     const relPaths = await listFilesRecursive(expandedDir);
+
     for (const relPath of relPaths) {
       // 跳过路径中含隐藏段（以 . 开头）的文件
       if (relPath.split('/').some((seg) => seg.startsWith('.'))) continue;
       const ext = path.extname(relPath).toLowerCase();
+
       if (ext !== '.md' && ext !== '.txt') continue;
       const absPath = path.join(expandedDir, relPath);
+
       try {
         const stat = fs.statSync(absPath);
+
         if (stat.size > MAX_FILE_SIZE_BYTES) continue;
       } catch (statErr: unknown) {
         log.warn(`cannot stat file, skipped: ${absPath} (${String(statErr)})`);
         continue;
       }
+
       const raw = await readFileSafe(absPath);
+
       if (raw === null) continue;
       results.push({ path: absPath, rawContent: raw.slice(0, MAX_CONTENT_CHARS) });
     }
@@ -249,24 +269,31 @@ export async function scanCandidates(opts: {
     const { resolveMemberToolRoots } = await import('./config.js');
     const { resolveToolRootDir, CLAUDE_TOOL_ID, DEFAULT_CLAUDE_ROOT } = await import('./types.js');
     const claudeRoot = resolveToolRootDir(CLAUDE_TOOL_ID, DEFAULT_CLAUDE_ROOT, await resolveMemberToolRoots(undefined, { dryRun: opts.dryRun }));
+
     const rulesBaseDirs = [
       path.join(claudeRoot, 'rules'),
       expandHome('~/.cursor/rules'),
     ];
+
     for (const baseDir of rulesBaseDirs) {
       if (!fs.existsSync(baseDir)) continue;
       const relPaths = await listFilesRecursive(baseDir);
+
       for (const relPath of relPaths) {
         if (path.extname(relPath).toLowerCase() !== '.md') continue;
         const absPath = path.join(baseDir, relPath);
+
         try {
           const stat = fs.statSync(absPath);
+
           if (stat.size > MAX_FILE_SIZE_BYTES) continue;
         } catch (statErr: unknown) {
           log.warn(`cannot stat file, skipped: ${absPath} (${String(statErr)})`);
           continue;
         }
+
         const raw = await readFileSafe(absPath);
+
         if (raw === null) continue;
         results.push({ path: absPath, rawContent: raw.slice(0, MAX_CONTENT_CHARS) });
       }
@@ -297,6 +324,7 @@ export async function classifyWithAI(
   }));
 
   let classified: ClassifiedItem[];
+
   try {
     classified = await callToolParallel(tasks, { launchedBy: 'import-local', concurrency: AI_CONCURRENCY });
   } catch (err: unknown) {
@@ -348,9 +376,11 @@ export async function interactiveReview(
 
   // 尝试加载已有会话（resume 模式）
   let session: ImportSession | null = null;
+
   if (opts.resume) {
     try {
       const raw = fs.readFileSync(expandHome(sessionPath), 'utf-8');
+      // SAFETY: persistSession is the only writer of the session file, and it writes an ImportSession.
       session = JSON.parse(raw) as ImportSession;
     } catch (loadErr: unknown) {
       // 文件不存在或解析失败 → 新建会话
@@ -369,6 +399,7 @@ export async function interactiveReview(
         content: buildMarkdown(item),
       },
     }));
+
     session = {
       id: Date.now().toString(),
       createdAt: new Date().toISOString(),
@@ -379,8 +410,10 @@ export async function interactiveReview(
   } else {
     // resume 模式：补充新增条目（以 sourcePath 去重，避免重复）
     const existingPaths = new Set(session.items.map((i) => i.sourcePath ?? ''));
+
     for (let idx = 0; idx < items.length; idx++) {
       const item = items[idx];
+
       if (!existingPaths.has(item.sourcePath)) {
         session.items.push({
           id: `item-${session.items.length}`,
@@ -406,6 +439,7 @@ export async function interactiveReview(
 
   if (pendingItems.length === 0) {
     log.info('all entries processed, no further interaction needed.');
+
     return session;
   }
 
@@ -414,8 +448,10 @@ export async function interactiveReview(
     for (const item of pendingItems) {
       item.status = 'accepted';
     }
+
     session.progress = session.items.filter((i) => i.status !== 'pending').length;
     await persistSession(session, sessionPath);
+
     return session;
   }
 
@@ -433,9 +469,11 @@ export async function interactiveReview(
   for (const sessionItem of pendingItems) {
     const currentIndex = session.items.indexOf(sessionItem) + 1;
     const classified = classifiedMap.get(sessionItem.sourcePath ?? '');
+
     const title = sessionItem.learningDraft?.title
       ?? classified?.title
       ?? path.basename(sessionItem.sourcePath ?? '');
+
     const itemType = classified?.type ?? 'learning';
     const summary = classified?.summary ?? '';
     const tags = classified?.tags ?? [];
@@ -447,6 +485,7 @@ export async function interactiveReview(
     process.stdout.write(`  Tags: ${tags.join(', ')}\n`);
 
     let answered = false;
+
     while (!answered) {
       const input = await question('[A]ccept  [E]dit  [S]kip  > ');
       const choice = input.trim().toLowerCase();
@@ -460,13 +499,16 @@ export async function interactiveReview(
       } else if (choice === 'e') {
         const newTitle = await question('  New title: ');
         const trimmedTitle = newTitle.trim();
+
         if (trimmedTitle.length > 0 && sessionItem.learningDraft) {
           sessionItem.learningDraft.title = trimmedTitle;
+
           if (classified !== undefined) {
             // 用新标题重建 content 的 frontmatter
             sessionItem.learningDraft.content = buildMarkdown({ ...classified, title: trimmedTitle });
           }
         }
+
         sessionItem.status = 'edited';
         answered = true;
       } else {
@@ -481,6 +523,7 @@ export async function interactiveReview(
   }
 
   rl.close();
+
   return session;
 }
 
@@ -515,8 +558,10 @@ export async function pushAccepted(
     const filename = buildFilename(draft.title);
 
     let destDir: string;
+
     if (opts.outputDir) {
       destDir = expandHome(opts.outputDir);
+
       // 安全校验：防止写出到用户目录范围之外
       try {
         assertSafePath(destDir, defaultAllowedRoots());
@@ -528,10 +573,12 @@ export async function pushAccepted(
     } else {
       // 根据 content frontmatter 判断 type，决定写入子目录
       const typeInContent = detectTypeFromContent(draft.content);
+
       const subDir =
         typeInContent === 'rule' ? 'rules'
         : typeInContent === 'doc' ? 'docs'
         : 'learnings';
+
       destDir = path.join(expandHome(repoPath), subDir);
     }
 

@@ -6,11 +6,13 @@ import type { HostChoice } from './host-profiles.js';
 import type { HitlMode } from './preflight.js';
 
 const LiteralSchema = z.string().brand<'Literal'>();
+
 /** A command line the agent runs, or shows the person, exactly as printed. Only this module builds one. */
 export type Literal = z.infer<typeof LiteralSchema>;
 
 /** How the member runs teamai: the first words of every literal. */
 export const INVOCATIONS = ['teamai', 'npx teamai-cli'] as const;
+
 export type Invocation = typeof INVOCATIONS[number];
 
 /** The invocation of a teamai process whose entry script is `entry`: npx runs the package from its own cache. */
@@ -152,6 +154,7 @@ export function adoptLiteral(invocation: Invocation, run: RunId, attempt: Attemp
 /** Leases the next judge work of `run` to the session's own judge: `tool`, at best-effort, reading only the evidence. */
 export function sessionJudgeLiteral(invocation: Invocation, run: RunId, driver: DriverIdentity, tool: string): Literal {
   const request = { run, driver: { ...driver, can: { judge: { isolation: 'best-effort', access: 'read', tools: [tool] } } }, running: [] };
+
   return LiteralSchema.parse(`${invocation} score --next --json ${shellWord(JSON.stringify(request))}`);
 }
 

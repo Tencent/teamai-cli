@@ -10,7 +10,9 @@
  * only in headers); add body redaction here if that ever changes.
  */
 
+import { z } from 'zod';
 import { log } from './logger.js';
+import type { JsonValue } from '../types.js';
 
 /** Header names whose values must be masked before logging. */
 const SENSITIVE_HEADER_RE = /^(authorization|x-api-token|x-api-key|cookie)$/i;
@@ -18,22 +20,22 @@ const SENSITIVE_HEADER_RE = /^(authorization|x-api-token|x-api-key|cookie)$/i;
 /** Mask a sensitive header value, preserving an auth scheme prefix if present. */
 function redactValue(value: string): string {
   const scheme = value.match(/^(Bearer|Basic|Token)\s+/i);
+
   return scheme ? `${scheme[1]} ***` : '***';
 }
 
 /** Return a copy of headers with sensitive values replaced by "***". */
 export function redactHeaders(headers: Record<string, string>): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [key, value] of Object.entries(headers)) {
-    out[key] = SENSITIVE_HEADER_RE.test(key) ? redactValue(value) : value;
-  }
-  return out;
+  return Object.fromEntries(
+    Object.entries(headers).map(([key, value]) => [key, SENSITIVE_HEADER_RE.test(key) ? redactValue(value) : value]),
+  );
 }
 
 /** Truncate an over-long body string so the log file stays readable. */
-function previewBody(body: unknown, maxLen = 4096): string {
+function previewBody(body: RequestInit['body'] | JsonValue, maxLen = 4096): string {
   if (body === undefined || body === null) return '(empty)';
-  const text = typeof body === 'string' ? body : JSON.stringify(body);
+  const text = z.string().safeParse(body).data ?? JSON.stringify(body);
+
   return text.length > maxLen ? `${text.slice(0, maxLen)}… (${text.length} bytes total)` : text;
 }
 
@@ -43,10 +45,11 @@ export function logHttpRequest(
   method: string,
   url: string,
   headers: Record<string, string>,
-  body?: unknown,
+  body?: RequestInit['body'],
 ): void {
   log.debug(`${tag} → ${method} ${url}`);
   log.debug(`${tag}   headers: ${JSON.stringify(redactHeaders(headers))}`);
+
   if (body !== undefined) {
     log.debug(`${tag}   body: ${previewBody(body)}`);
   }
@@ -59,7 +62,7 @@ export function logHttpResponse(
   url: string,
   status: number,
   statusText: string,
-  body: unknown,
+  body: JsonValue,
 ): void {
   const level = status >= 400 ? 'ERROR' : 'OK';
   log.debug(`${tag} ← ${status} ${statusText} [${level}] ${method} ${url}`);

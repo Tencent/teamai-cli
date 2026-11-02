@@ -21,6 +21,7 @@ import { readWorkspaceChildren } from './workspace-children.js';
  */
 async function resolveTagsScope(options: GlobalOptions = {}): Promise<LocalConfig> {
     const projectConfig = await detectProjectConfig(undefined, undefined, options);
+
     return projectConfig ?? (await requireInit(options)).localConfig;
 }
 
@@ -56,6 +57,7 @@ export async function tagsList(): Promise<void> {
 
     if (!tagsConfig) {
         log.info('No tags.yaml found in team repo. Tags are not configured yet.');
+
         return;
     }
 
@@ -63,16 +65,19 @@ export async function tagsList(): Promise<void> {
 
     if (stats.size === 0) {
         log.info('tags.yaml exists but contains no tags.');
+
         return;
     }
 
     // Show current subscriptions
     const subscribed = new Set(localConfig.subscribedTags ?? []);
+
     if (subscribed.size > 0) {
         log.info(`Your subscriptions: ${[...subscribed].join(', ')}`);
     } else {
         log.info('You have no tag subscriptions (pulling all resources).');
     }
+
     console.log('');
 
     // Display tag table
@@ -80,6 +85,7 @@ export async function tagsList(): Promise<void> {
     console.log('  ' + '─'.repeat(50));
 
     const sortedTags = [...stats.entries()].sort(([a], [b]) => a.localeCompare(b));
+
     for (const [tag, count] of sortedTags) {
         const sub = subscribed.has(tag) ? '  ✓' : '';
         console.log(
@@ -90,6 +96,7 @@ export async function tagsList(): Promise<void> {
     const untaggedSkills = await countUntaggedDeliveredSkills(localConfig, tagsConfig);
 
     console.log('');
+
     if (untaggedSkills !== null && untaggedSkills > 0) {
         log.dim(`  ${untaggedSkills} skill(s) have no tags and are always synced.`);
     }
@@ -101,6 +108,7 @@ export async function tagsList(): Promise<void> {
 export async function tagsSubscribe(tags: string[], options: GlobalOptions): Promise<void> {
     if (tags.length === 0) {
         log.error('Please specify at least one tag. Example: teamai tags subscribe hai gpu');
+
         return;
     }
 
@@ -108,6 +116,7 @@ export async function tagsSubscribe(tags: string[], options: GlobalOptions): Pro
     const existing = new Set(localConfig.subscribedTags ?? []);
 
     const newTags: string[] = [];
+
     for (const tag of tags) {
         if (!existing.has(tag)) {
             existing.add(tag);
@@ -117,11 +126,13 @@ export async function tagsSubscribe(tags: string[], options: GlobalOptions): Pro
 
     if (newTags.length === 0) {
         log.info('Already subscribed to all specified tags.');
+
         return;
     }
 
     if (options.dryRun) {
         log.info(`[dry-run] Would subscribe to: ${newTags.join(', ')}`);
+
         return;
     }
 
@@ -129,6 +140,7 @@ export async function tagsSubscribe(tags: string[], options: GlobalOptions): Pro
         ...localConfig,
         subscribedTags: [...existing].sort(),
     };
+
     await saveTagsScopeConfig(updatedConfig);
     log.success(`Subscribed to: ${newTags.join(', ')}`);
     log.dim('Run `teamai pull` to sync matching resources.');
@@ -140,6 +152,7 @@ export async function tagsSubscribe(tags: string[], options: GlobalOptions): Pro
 export async function tagsUnsubscribe(tags: string[], options: GlobalOptions): Promise<void> {
     if (tags.length === 0) {
         log.error('Please specify at least one tag. Example: teamai tags unsubscribe hai');
+
         return;
     }
 
@@ -147,6 +160,7 @@ export async function tagsUnsubscribe(tags: string[], options: GlobalOptions): P
     const existing = new Set(localConfig.subscribedTags ?? []);
 
     const removed: string[] = [];
+
     for (const tag of tags) {
         if (existing.has(tag)) {
             existing.delete(tag);
@@ -156,11 +170,13 @@ export async function tagsUnsubscribe(tags: string[], options: GlobalOptions): P
 
     if (removed.length === 0) {
         log.info('Not subscribed to any of the specified tags.');
+
         return;
     }
 
     if (options.dryRun) {
         log.info(`[dry-run] Would unsubscribe from: ${removed.join(', ')}`);
+
         return;
     }
 
@@ -168,6 +184,7 @@ export async function tagsUnsubscribe(tags: string[], options: GlobalOptions): P
         ...localConfig,
         subscribedTags: existing.size > 0 ? [...existing].sort() : undefined,
     };
+
     await saveTagsScopeConfig(updatedConfig);
     log.success(`Unsubscribed from: ${removed.join(', ')}`);
     log.dim('Run `teamai pull` to clean up filtered-out resources.');
@@ -185,6 +202,7 @@ export async function tagsAdd(
 ): Promise<void> {
     if (tags.length === 0) {
         log.error('Please specify at least one tag. Example: teamai tags add skills hai-deploy hai infra');
+
         return;
     }
 
@@ -192,19 +210,23 @@ export async function tagsAdd(
     const repoPath = localConfig.repo.localPath;
 
     let tagsConfig = await loadTagsConfig(repoPath);
+
     if (!tagsConfig) {
         tagsConfig = { skills: {}, rules: {} };
     }
 
     const map = resourceType === 'skills' ? tagsConfig.skills : tagsConfig.rules;
     const existing = new Set(map[name] ?? []);
+
     for (const tag of tags) {
         existing.add(tag);
     }
+
     map[name] = [...existing].sort();
 
     if (options.dryRun) {
         log.info(`[dry-run] Would set ${resourceType}/${name} tags to: ${map[name].join(', ')}`);
+
         return;
     }
 
@@ -224,6 +246,7 @@ export async function tagsRemove(
 ): Promise<void> {
     if (tags.length === 0) {
         log.error('Please specify at least one tag to remove.');
+
         return;
     }
 
@@ -231,15 +254,19 @@ export async function tagsRemove(
     const repoPath = localConfig.repo.localPath;
 
     const tagsConfig = await loadTagsConfig(repoPath);
+
     if (!tagsConfig) {
         log.error('No tags.yaml found in team repo.');
+
         return;
     }
 
     const map = resourceType === 'skills' ? tagsConfig.skills : tagsConfig.rules;
     const existing = map[name];
+
     if (!existing || existing.length === 0) {
         log.info(`${resourceType}/${name} has no tags.`);
+
         return;
     }
 
@@ -248,6 +275,7 @@ export async function tagsRemove(
 
     if (remaining.length === existing.length) {
         log.info(`None of the specified tags were found on ${resourceType}/${name}.`);
+
         return;
     }
 
@@ -259,6 +287,7 @@ export async function tagsRemove(
 
     if (options.dryRun) {
         log.info(`[dry-run] Would update ${resourceType}/${name} tags to: ${remaining.join(', ') || '(none)'}`);
+
         return;
     }
 
@@ -279,15 +308,20 @@ export async function tagsRemove(
  */
 async function countUntaggedDeliveredSkills(localConfig: LocalConfig, tagsConfig: TagsConfig): Promise<number | null> {
     const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+
     if (!teamConfig) return null;
+
     try {
         // A workspace's skills include its children's (#913).
         const delivered = await readWorkspaceChildren(localConfig);
         const desired = await resolveDesiredSkills(teamConfig, delivered, await buildRolePullContext(delivered));
+
         if (desired.kind !== 'resolved') return null;
+
         return desired.items.filter((item) => !tagsConfig.skills[item.name]?.length).length;
     } catch (e) {
         log.warn(`Could not count untagged skills: ${e instanceof Error ? e.message : String(e)}`);
+
         return null;
     }
 }

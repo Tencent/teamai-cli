@@ -1,4 +1,28 @@
+import { z } from 'zod';
 import { absoluteOn, realHost, toolHome, type Host } from './tool-home.js';
+import type { JsonObjectRead } from './utils/fs.js';
+
+/** A bootstrap cap OpenClaw honors: a finite number above zero. */
+const BootstrapCapSchema = z.number().positive().optional().catch(undefined);
+
+/** The default agent's settings teamai reads from openclaw.json; a field of another type counts as absent. */
+const OpenclawAgentDefaultsSchema = z.object({
+  workspace: z.string().optional().catch(undefined),
+  bootstrapMaxChars: BootstrapCapSchema,
+  bootstrapTotalMaxChars: BootstrapCapSchema,
+});
+
+const OpenclawConfigSchema = z.object({
+  agents: z.object({ defaults: OpenclawAgentDefaultsSchema.optional().catch(undefined) }).optional().catch(undefined),
+});
+
+/** The default agent's settings in openclaw.json, or undefined when the file sets none or was not read. */
+function agentDefaultsOf(read: JsonObjectRead): z.infer<typeof OpenclawAgentDefaultsSchema> | undefined {
+  if (read.kind !== 'ok') return undefined;
+  const config = OpenclawConfigSchema.safeParse(read.value);
+
+  return config.success ? config.data.agents?.defaults : undefined;
+}
 
 /**
  * The OpenClaw state dir: the recorded one (`toolHome`), else
@@ -25,7 +49,9 @@ export function openclawTeamHookPluginIn(stateDir: string, host: Host = realHost
 export function resolveOpenclawConfigPath(host: Host = realHost(), stateDir: string = resolveOpenclawStateDir()): string {
   const p = host.path;
   const override = host.env.OPENCLAW_CONFIG_PATH?.trim();
+
   if (override) return absoluteOn(override, host);
+
   return p.join(stateDir, 'openclaw.json');
 }
 
@@ -60,18 +86,21 @@ export async function resolveOpenclawWorkspace(
   const p = host.path;
   const cfgPath = resolveOpenclawConfigPath(host, stateDir);
   const read = await host.readJson(cfgPath);
-  const agents = read.kind === 'ok' ? read.value.agents as { defaults?: { workspace?: unknown } } | undefined : undefined;
-  const configured = agents?.defaults?.workspace;
+  const configured = agentDefaultsOf(read)?.workspace?.trim();
   const envDir = host.env.OPENCLAW_WORKSPACE_DIR?.trim();
-  const candidate = typeof configured === 'string' && configured.trim()
-    ? absoluteOn(configured.trim(), host)
+
+  const candidate = configured
+    ? absoluteOn(configured, host)
     : envDir
       ? absoluteOn(envDir, host)
       : p.join(stateDir, 'workspace');
+
   const exists = await host.exists(candidate);
+
   if (read.kind === 'invalid') {
     return { kind: 'unreadable-config', file: cfgPath, error: read.error, fallback: exists ? candidate : null };
   }
+
   return exists ? { kind: 'found', dir: candidate } : { kind: 'none', tried: [workspacePath, candidate].filter(Boolean).join(', '), candidate };
 }
 
@@ -79,13 +108,14 @@ export async function resolveOpenclawWorkspace(
 export async function openclawBootstrapBudget(): Promise<{ limit: number; config: string; error?: string }> {
   const config = resolveOpenclawConfigPath();
   const read = await realHost().readJson(config);
+
   if (read.kind === 'invalid') return { limit: 0, config, error: read.error };
-  const agents = read.kind === 'ok' ? read.value.agents as { defaults?: Record<string, unknown> } | undefined : undefined;
-  const defaults = agents?.defaults;
-  const cap = (value: unknown, fallback: number): number =>
-    typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+  const defaults = agentDefaultsOf(read);
+  const cap = (value: number | undefined, fallback: number): number => (value === undefined ? fallback : Math.floor(value));
+
   const perFile = cap(defaults?.bootstrapMaxChars, 20_000);
   const total = Math.max(1, cap(defaults?.bootstrapTotalMaxChars, 60_000));
+
   // OpenClaw skips even the first existing file when less than 64 chars remain.
   return { limit: total < 64 ? 0 : Math.max(1, Math.min(perFile, total)), config };
 }

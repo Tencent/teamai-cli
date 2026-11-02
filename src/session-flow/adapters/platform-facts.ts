@@ -249,5 +249,6 @@ export function sessionPlatformFacts(platform: string): SessionPlatformFacts | u
 /** The command that continues a restored session in its platform's CLI. */
 export function resumeCommand(platform: SessionPlatform, sessionId: string): string {
   const facts: SessionPlatformFacts = SESSION_PLATFORM_FACTS[platform];
+
   return facts.resume(sessionId);
 }

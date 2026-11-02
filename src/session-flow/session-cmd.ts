@@ -19,6 +19,7 @@
  */
 
 import type { Command } from 'commander';
+import { z } from 'zod';
 import fs from 'node:fs';
 import path from 'node:path';
 import { listAvailablePlatforms, listInstalledPlatforms } from './adapters/index.js';
@@ -71,19 +72,26 @@ function archivedSessions(
 ): Array<{ archive: SyncManager; identity: string | null; entry: IndexEntry }> {
   const seen = new Set<string>();
   const found: Array<{ archive: SyncManager; identity: string | null; entry: IndexEntry }> = [];
+
   for (const archiveRoot of [root, ...(legacy ? [legacy] : [])]) {
     const archive = new SyncManager(archiveRoot);
+
     for (const identity of identities(archive)) {
       for (const entry of archive.listSessions(identity, author)) {
         const key = JSON.stringify([identity, entry.sessionName, entry.author]);
+
         if (seen.has(key)) continue;
         seen.add(key);
         found.push({ archive, identity, entry });
       }
     }
   }
+
   return found;
 }
+
+/** The part of `<workspace>/.pi/settings.json` that moves the workspace's sessions. */
+const PiSessionDirSettingsSchema = z.object({ sessionDir: z.string() });
 
 /**
  * Pi can move a workspace's sessions with `<workspace>/.pi/settings.json`.
@@ -93,28 +101,37 @@ function archivedSessions(
 async function listPushSource(platform: string, cwd: string, all: boolean) {
   if (!all || platform !== 'pi') return listSource({ platform, cwd: all ? undefined : cwd });
   const global = await listSource({ platform, cwd: undefined });
+
   if (!global) return undefined;
   const workspaces = await dashboardWorkspaces([]);
+
   const roots = [...new Set([cwd, ...workspaces.filter((workspace) => workspace.scope === 'project').flatMap((workspace) => workspace.roots)])]
     .filter((root) => {
       try {
-        const settings = JSON.parse(fs.readFileSync(path.join(root, '.pi', 'settings.json'), 'utf8')) as unknown;
-        return settings !== null && typeof settings === 'object' && 'sessionDir' in settings
-          && typeof settings.sessionDir === 'string' && settings.sessionDir.trim().length > 0;
+        const settings = PiSessionDirSettingsSchema.safeParse(JSON.parse(fs.readFileSync(path.join(root, '.pi', 'settings.json'), 'utf8')));
+
+        return settings.success && settings.data.sessionDir.trim().length > 0;
       } catch {
         return false;
       }
     });
+
   const scoped = await Promise.all(roots.map(async (root) => {
     const listed = await AgentSession.list({ platforms: [platform], cwd: root });
+
     for (const failure of listed.failures) console.error(`  ✗ Skipped ${safeText(root)}: ${failure.message}`);
+
     return listed.sessions;
   }));
+
   const seen = new Set<string>();
+
   return [global, ...scoped].flat().filter((session) => {
     const key = session.filePath ? path.resolve(session.filePath) : JSON.stringify([session.sessionId, session.cwd]);
+
     if (seen.has(key)) return false;
     seen.add(key);
+
     return true;
   });
 }
@@ -141,7 +158,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
   // and merge them with the command's own options (see the init/push/pull
   // actions in src/index.ts); keep the same pattern here.
   const root = sessionCmd.parent ?? sessionCmd;
-  const isDryRun = (): boolean => Boolean((root.opts() as { dryRun?: boolean }).dryRun);
+  const isDryRun = (): boolean => Boolean(root.opts().dryRun);
 
   // ── session platforms ──────────────────────────────────────
   sessionCmd
@@ -151,6 +168,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       const available = listAvailablePlatforms();
       const installed = listInstalledPlatforms(await recordedToolRoots(undefined));
       console.log('Available platforms:');
+
       for (const p of available) {
         const status = installed.includes(p) ? '✓ installed' : '✗ not installed';
         console.log(`  ${p}: ${status}`);
@@ -174,41 +192,54 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
     .action(async (opts) => {
       try {
       const source = opts.source;
+
       if (!source) {
         console.error('Error: --source <platform> required.');
         console.error('Usage: teamai session push --source <platform> [--repo-root <path>] [--all]');
         process.exit(1);
       }
+
       if (opts.session) {
         const { reports: config } = await resolveRepoRoot(opts.repoRoot, { dryRun: isDryRun() });
+
         if (opts.all || !config) {
           console.error('Error: --session pushes one session to teamai-reports of the teamai install for this directory, so it takes neither --all nor --repo-root.');
           process.exitCode = 1;
+
           return;
         }
+
         if (isDryRun()) {
           console.log(`Dry-run: would archive ${source} session ${safeText(opts.session)}, redacted, on teamai-reports.`);
+
           return;
         }
+
         const pushed = await pushSession(config, { platform: source, sessionId: opts.session });
+
         switch (pushed.status) {
           case 'archived':
             console.log(`\n  ✓ Pushed ${source} session ${safeText(opts.session)} to teamai-reports (redacted)\n`);
+
             return;
           case 'busy':
             console.error(`Error: ${REPORTS_ARCHIVE_BUSY}`);
             process.exitCode = 1;
+
             return;
           case 'failed':
             console.error(`Error: ${safeText(pushed.message)}`);
             process.exitCode = 1;
+
             return;
           default: {
             const unhandled: never = pushed;
+
             return unhandled;
           }
         }
       }
+
       const workCwd = opts.cwd ?? process.cwd();
       const archive = await resolveRepoRoot(opts.repoRoot, { dryRun: isDryRun() });
       const { root: repoRoot, reports, legacy } = archive;
@@ -216,6 +247,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       // --all: no workspace lists every workspace directory of that platform (P5).
       // The blast radius stays on a single platform (same as status --all); single-cwd mode keeps the old behavior.
       const metas = await listPushSource(source, workCwd, Boolean(opts.all));
+
       if (!metas) return;
       const limitRaw = parseInt(opts.limit, 10);
       // Non-numeric / 0 / negative all fall back to the default. slice(0, -1)'s negative semantics would quietly drop one result
@@ -225,16 +257,20 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
 
       if (selected.length === 0) {
         console.log('No sessions found to push.');
+
         return;
       }
 
       // dry-run: list the sessions that would be archived, then stop; do not write, commit, or push
       if (isDryRun()) {
         console.log(`\nDry-run: would archive ${selected.length} session(s) from ${source}:`);
+
         for (const m of selected) {
           console.log(`  ${m.sessionId.slice(0, 8)}  ${safeText(m.title).slice(0, 50)}${listedCounts(m)}`);
         }
+
         console.log(`  Repo root: ${repoRoot}`);
+
         return;
       }
 
@@ -244,16 +280,22 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
           console.error(`\nRefusing to push ${selected.length} session(s) without confirmation.`);
           console.error('Pass -y to confirm, or omit --all to push the recent few.');
           process.exitCode = 1;
+
           return;
         }
+
         console.log(`\nAbout to push ${selected.length} session(s) from ${source}:`);
+
         for (const m of selected) {
           const title = safeText(m.title);
           console.log(`  ${m.sessionId.slice(0, 8)}  ${title.length > 50 ? title.slice(0, 50) + '...' : title}${listedCounts(m)}`);
         }
+
         const ans = await ask('\nPush all of the above? (y/N): ');
+
         if (ans.toLowerCase() !== 'y' && ans.toLowerCase() !== 'yes') {
           console.log('Cancelled.');
+
           return;
         }
       }
@@ -262,14 +304,18 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         scrub: Boolean(opts.scrub),
         yes: Boolean(opts.yes),
       });
+
       if (consent === 'refused') {
         console.error(`\nRefusing to archive ${selected.length} unredacted session(s) without confirmation.`);
         console.error('Pass --scrub to redact first, or -y to archive as-is.');
         process.exitCode = 1;
+
         return;
       }
+
       if (consent === 'declined') {
         console.log('Cancelled. Re-run with --scrub to archive a redacted copy.');
+
         return;
       }
 
@@ -277,6 +323,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       // The team's declared secrets are known only for the teamai install's own archive, not for a --repo-root clone.
       const scrub = opts.scrub ? { secrets: reports ? await knownSecrets(reports) : {}, rewriteLocalPaths: true } : false;
       const commitMessage = (saved: number) => `sync: push ${saved} session(s) from ${source}${opts.all ? ' (all workspaces)' : ''}`;
+
       /** Saves the selected sessions into the archive at `root`: how many, or undefined once a failure that stops the push was reported. */
       const archiveInto = async (syncMgr: SyncManager, archiveRoot: string): Promise<number | undefined> => {
         let saved = 0;
@@ -284,6 +331,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         let redactedTotal = 0;
         let onDefaultBranch = 0;
         const defaultBranch = legacy ? new SyncManager(legacy) : undefined;
+
         for (const m of selected) {
           // Read the file that was listed: with --all, one id can live in several workspaces.
           // What gets archived is the full original text, and the team can read it: redact first when --scrub is set; when not redacted, say so once explicitly.
@@ -291,17 +339,21 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
             { platform: source, sessionId: m.sessionId, cwd: opts.all ? undefined : workCwd, filePath: m.filePath },
             { scrub, toolRootsFor },
           );
+
           if (found.status === 'failed') {
             // This session alone is skipped; the rest of the batch is still archived.
             console.error(`  ✗ Not archived: ${found.failure.message}`);
             unreadable++;
             continue;
           }
+
           const session = found.session;
           redactedTotal += found.redactedCount ?? 0;
+
           if (opts.all) {
             console.log(`  Source: ${safeText(session.cwd || 'unknown directory')}`);
           }
+
           // P3: the archive key is derived from the session's native cwd (see deriveArchiveIdentity), not the directory the CLI is running in
           const meta = defaultSyncMeta(
             {
@@ -316,30 +368,39 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
             },
             session.createdAt,
           );
+
           // A corrupted index is repaired from disk, or the save throws: failing
           // mid-batch must not fall through to a commit that publishes a
           // half-archive.
           try {
             const write = await syncMgr.saveSession(session, meta, { pathsRewritten: Boolean(opts.scrub) });
+
             if (write.status === 'busy') {
               reportArchiveBusy(archiveRoot, write.lockPath);
+
               return undefined;
             }
           } catch (err) {
             console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
             process.exitCode = 1;
+
             return undefined;
           }
+
           saved++;
+
           if (defaultBranch?.findArchived(meta.origin.repoIdentity, { platform: source, sessionId: m.sessionId })) onDefaultBranch++;
         }
+
         if (onDefaultBranch > 0) {
           console.log(`  · ${onDefaultBranch} session(s) also archived on the default branch: session list and resume read the copy pushed to teamai-reports first.`);
         }
+
         if (unreadable > 0) {
           console.error(`  ✗ ${unreadable} session(s) could not be read and were not archived.`);
           process.exitCode = 1;
         }
+
         if (opts.scrub) {
           console.log(`  Redacted: ${redactedTotal} secret-looking value(s) (best-effort; review before sharing)`);
         } else if (saved > 0) {
@@ -347,52 +408,66 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
             '  ⚠ Archived as-is: full transcripts (possibly secrets/paths) are team-readable. Use --scrub to redact.',
           );
         }
+
         return saved;
       };
+
       // Archive changes and their Git publication are serialized per team repo, the teamai-reports archive included.
       const publication = await withSessionPublicationLock(repoRoot, async () => {
         if (reports) {
           const archived = await archiveToReports(reports, archiveInto, commitMessage);
+
           switch (archived.status) {
             case 'busy':
               console.error(`Error: ${REPORTS_ARCHIVE_BUSY}`);
               process.exitCode = 1;
+
               return;
             case 'stopped':
               return;
             case 'published':
               console.log(`\n  ✓ Pushed ${archived.saved} session(s) from ${source}\n`);
+
               return;
             case 'already-present':
               console.log(`\n  · No changes to push\n`);
+
               return;
             case 'failed':
               console.error(`\n  ✗ ${archived.saved} session(s) not pushed to teamai-reports: ${safeText(archived.reason)}`);
               process.exitCode = 1;
+
               return;
             default: {
               const unhandled: never = archived;
+
               return unhandled;
             }
           }
         }
+
         const syncMgr = new SyncManager(repoRoot);
         const saved = await archiveInto(syncMgr, repoRoot);
+
         if (saved === undefined) return;
+
         // [fixed] a gitCommit failure (not a git directory / index.lock race) used to crash with a raw stack trace
         const commit = runGitStep(
           () => syncMgr.gitCommit(commitMessage(saved)),
           repoRoot,
           'git commit',
         );
+
         if (commit.status === 'committed') {
           const pushed = await pushToRemote(syncMgr, repoRoot);
+
           if (pushed) {
             console.log(`\n  ✓ Pushed ${saved} session(s) from ${source}`);
           } else {
             console.log(`\n  · ${saved} session(s) committed locally but not pushed`);
             process.exitCode = 1;
           }
+
           console.log(`  commit: ${commit.commit.slice(0, 8)}\n`);
         } else if (commit.status === 'failed') {
           console.error(
@@ -403,6 +478,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
           console.log(`\n  · No changes to push\n`);
         }
       });
+
       if (publication.status === 'busy') reportArchiveBusy(repoRoot, publication.lockPath);
       } finally {
         closeStdin();
@@ -422,66 +498,90 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
 
       if (isDryRun()) {
         console.log(`Dry-run: would pull from the team repo remote and rebuild indexes (repo root: ${repoRoot}).`);
+
         return;
       }
+
       /** Pulls the archive at `root` and rebuilds its indexes: false once the pull itself failed and said why; a busy rebuild sets the exit code instead. */
       const pullInto = async (pullRoot: string): Promise<boolean> => {
         const syncMgr = new SyncManager(pullRoot);
         const pulled = await pullArchive(syncMgr, pullRoot);
+
         if (pulled.status === 'failed') {
           console.error(`Error: ${pulled.reason}`);
+
           return false;
         }
+
         if (pulled.rebuilt > 0) console.log(`  ✓ Merged remote sessions and rebuilt ${pulled.rebuilt} conflicted session index(es)`);
+
         if (opts.all) {
           // P2: rebuild by directory (including repos whose index is missing or corrupt — those are exactly the ones that most need repair),
           // rather than only rebuilding the ones whose identity can be recovered from _index.json.
           const rebuilt = await syncMgr.rebuildAllIndexes();
+
           if (rebuilt.status === 'busy') {
             reportArchiveBusy(pullRoot, rebuilt.lockPath);
+
             return true;
           }
+
           const { repos, sessions } = rebuilt.value;
           console.log(`\n  ✓ Pulled and indexed ${sessions} session(s) across ${repos} repo(s)\n`);
         } else {
           const repoIdentity = resolveRepoIdentity(workCwd);
           const rebuilt = await syncMgr.rebuildIndex(repoIdentity);
+
           if (rebuilt.status === 'busy') {
             reportArchiveBusy(pullRoot, rebuilt.lockPath);
+
             return true;
           }
+
           console.log(`\n  ✓ Pulled and indexed ${rebuilt.value} session(s)\n`);
         }
+
         return true;
       };
+
       // Archive changes and their Git publication are serialized per team repo, the teamai-reports archive included.
       const publication = await withSessionPublicationLock(repoRoot, async (): Promise<boolean> => {
         if (!reports) return pullInto(repoRoot);
         // Pulling merges into the teamai-reports checkout, so it runs under the lock every writer there takes.
         let pulled = true;
+
         const result = await updateReports(reports, async (worktree) => {
           pulled = await pullInto(worktree);
+
           return null;
         });
+
         if (result.status === 'busy') {
           console.error('Error: Another teamai command is writing teamai-reports, so nothing was pulled. Run this command again once it has finished.');
           process.exitCode = 1;
+
           return true;
         }
+
         if (result.status === 'failed') {
           console.error(`Error: ${safeText(result.reason)}`);
           process.exitCode = 1;
+
           return true;
         }
+
         if (!legacy) return pulled;
         const pulledLegacy = await withSessionPublicationLock(legacy, () => pullArchive(new SyncManager(legacy), legacy));
+
         if (pulledLegacy.status === 'busy') reportArchiveBusy(legacy, pulledLegacy.lockPath);
         else if (pulledLegacy.value.status === 'failed') {
           console.error(`Error: Pulling the sessions archived on the default branch in ${legacy} failed: ${safeText(pulledLegacy.value.reason)}`);
           process.exitCode = 1;
         }
+
         return pulled;
       });
+
       if (publication.status === 'busy') reportArchiveBusy(repoRoot, publication.lockPath);
       else if (!publication.value) process.exit(1);
     });
@@ -508,6 +608,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
 
       if (sessions.length === 0) {
         console.log('No team sessions found.');
+
         return;
       }
 
@@ -515,10 +616,12 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       const nameWidth = Math.max(36, ...sessions.map((s) => safeText(s.sessionName).length));
       const authorWidth = Math.max(12, ...sessions.map((s) => safeText(s.author).length + 1));
       const head = `  ${'SESSION'.padEnd(nameWidth)}  ${'AUTHOR'.padEnd(authorWidth)}PLATFORM        MSGS  UPDATED`;
+
       if (opts.all) {
         console.log(`\nSessions across all projects:\n`);
         console.log(`${head}    SOURCE`);
         console.log(`  ${'─'.repeat(head.length + 8)}`);
+
         for (const s of sessions) {
           const nameCol = safeText(s.sessionName).padEnd(nameWidth);
           const authorCol = safeText(s.author).padEnd(authorWidth);
@@ -533,6 +636,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         console.log(`\nSessions for ${repoLabel}:\n`);
         console.log(head);
         console.log(`  ${'─'.repeat(head.length - 2)}`);
+
         for (const s of sessions) {
           const nameCol = safeText(s.sessionName).padEnd(nameWidth);
           const authorCol = safeText(s.author).padEnd(authorWidth);
@@ -542,6 +646,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
           console.log(`  ${nameCol}  ${authorCol}${platCol}${msgCol}  ${dateCol}`);
         }
       }
+
       console.log(`\n  ${sessions.length} session(s)\n`);
     });
 
@@ -558,11 +663,14 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
     .option('--author <name>', 'Author of the session (if ambiguous)')
     .action(async (sessionName, opts) => {
       const refused = noAdapter(opts.platform, 'write');
+
       if (refused) {
         console.error(`Error: ${refused.message}`);
         process.exitCode = 1;
+
         return;
       }
+
       const workCwd = opts.cwd ?? process.cwd();
       const archives = await resolveRepoRoot(opts.repoRoot, { dryRun: isDryRun(), read: true });
       const repoIdentity = resolveRepoIdentity(workCwd);
@@ -570,15 +678,17 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       // A session teamai-reports does not hold is read from the archive the team kept on its default branch before.
       const held = archivedSessions(archives, () => [repoIdentity], opts.author)
         .find(({ entry }) => entry.sessionName === sessionName);
+
       const syncMgr = held?.archive ?? new SyncManager(archives.root);
       // Without try/catch, a loadSession error on resume hits the terminal as an uncaught exception.
       // The usual root cause is that the session was archived under another project name (repoIdentity mismatch).
       // Give an actionable hint instead of a raw stack trace (see design doc P9).
       let session;
+
       try {
         ({ session } = syncMgr.loadSession(repoIdentity, sessionName, opts.author));
       } catch (e) {
-        console.error(`Error: ${(e as Error).message}`);
+        console.error(`Error: ${e instanceof Error ? e.message : String(e)}`);
         console.error('The session may be archived under another project identity.');
         console.error('Try `teamai session search --all <keyword>` to find it,');
         console.error('or rerun with `--cwd <project path>` of the project it belongs to.');
@@ -593,20 +703,25 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         console.log(
           `Dry-run: would restore "${safeText(session.title)}" (${session.messages.length} msgs) into ${opts.platform} at ${resumeCwd}.`,
         );
+
         return;
       }
 
       // Never overwrite: a member may have kept talking in an earlier restore of this session.
       const write = await writeCopyOnce(resumeAdapter, { session, sourcePlatform: session.platform, cwd: resumeCwd });
+
       if (write.status === 'failed') {
         console.error(`Error: ${write.failure.message}`);
         process.exitCode = 1;
+
         return;
       }
+
       if (write.reused) {
         console.log(`\n  ✓ Session already restored as ${write.sessionId}, nothing written.`);
         console.log(`  CWD: ${resumeCwd}`);
         console.log(`\n  To continue: ${resumeCommand(opts.platform, write.sessionId)}\n`);
+
         return;
       }
 
@@ -614,6 +729,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       const registrationNotice = resumeAdapter.consumeWriteNotice?.();
 
       console.log(`\n  ✓ Session restored to ${opts.platform}`);
+
       if (registrationNotice) console.error(`  ⚠ ${registrationNotice}`);
       console.log(`  Session ID: ${newSessionId}`);
       console.log(`  Messages: ${session.messages.length}`);
@@ -647,6 +763,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         archives,
         (archive) => (opts.all ? archive.listAllRepoIdentities() : [repoIdentity]),
       );
+
       for (const { archive, identity, entry } of found) {
         try {
           const { session } = archive.loadSession(identity, entry.sessionName, entry.author);
@@ -661,10 +778,12 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
 
       if (results.length === 0) {
         console.log('No results found.');
+
         return;
       }
 
       console.log('');
+
       for (let i = 0; i < results.length; i++) {
         const hit = results[i];
         const date = hit.createdAt ? hit.createdAt.slice(0, 10) : 'unknown';
@@ -676,6 +795,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         console.log(`      ${snippetShown}`);
         console.log('');
       }
+
       console.log(`  ${results.length} result(s) found`);
     });
 
@@ -690,33 +810,41 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       if (!isSafeSessionFileId(sessionId)) {
         console.error('\n  ✗ Refusing to roll back a session id that is not a single path segment.\n');
         process.exitCode = 1;
+
         return;
       }
+
       // Rollback is destructive (deletes the CLI file and the IDE sidebar entry); look first, then delete.
       if (isDryRun()) {
         console.log(
           `\n  · --dry-run: would delete ${opts.platform}/${sessionId}` +
             `${opts.cwd ? ` (only ${opts.cwd})` : ' (all workspaces)'}\n`,
         );
+
         return;
       }
 
       const adapter = await safeGetAdapter(opts.platform, opts.cwd);
       let deleted: boolean;
+
       try {
         deleted = await adapter.deleteSession(sessionId, opts.cwd);
       } catch (err) {
         // Same contract as the other subcommands: one English line, no stack.
         console.error(`\n  ✗ Rollback failed: ${err instanceof Error ? err.message : String(err)}\n`);
         process.exitCode = 1;
+
         return;
       }
+
       // The adapter returning false means it confirmed nothing was deleted (session does not exist).
       // Previously a checkmark was printed whether or not it existed, so a silent no-op reported success and scripts could not tell whether it took effect.
       if (!deleted) {
         console.log(`\n  · Session not found: ${opts.platform}/${sessionId}, no changes (may have already been deleted)\n`);
+
         return;
       }
+
       console.log(`\n  ✓ Rolled back: ${opts.platform}/${sessionId}\n`);
     });
 }

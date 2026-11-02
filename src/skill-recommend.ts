@@ -21,6 +21,7 @@ function getTeamSkillPopularity(
   teamStats: UserStats[],
 ): Array<{ skill: string; userCount: number; percentage: number }> {
   const totalUsers = teamStats.length;
+
   if (totalUsers === 0) return [];
 
   const skillUsers = new Map<string, Set<string>>();
@@ -86,6 +87,7 @@ export function displayRecommendations(
 
   console.log('');
   console.log('💡 Recommended skills (popular with your team):');
+
   for (const rec of recommendations) {
     console.log(`  • ${rec.skill} — ${rec.reason}`);
   }

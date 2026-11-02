@@ -42,6 +42,7 @@ function getLogFilePath(): string {
   if (!_logFilePath) {
     _logFilePath = defaultLogFilePath();
   }
+
   return _logFilePath;
 }
 
@@ -52,16 +53,20 @@ function getLogFilePath(): string {
 function ensureLogDir(): void {
   if (_dirEnsured) return;
   const dir = path.dirname(getLogFilePath());
+
   // An uninstall removed the TeamAI home while this process ran; logging must not bring it back.
   if (_dirExistedAtStart && !fs.existsSync(dir)) {
     _dirEnsured = true;
+
     return;
   }
+
   try {
     fs.mkdirSync(dir, { recursive: true });
   } catch {
     // best-effort — if we can't create the dir, writes will fail silently
   }
+
   _dirEnsured = true;
 }
 
@@ -72,6 +77,7 @@ function ensureLogDir(): void {
 function maybeRotate(): void {
   try {
     const stat = fs.statSync(getLogFilePath());
+
     if (stat.size >= MAX_LOG_BYTES) {
       fs.renameSync(getLogFilePath(), getLogFilePath() + '.1');
     }
@@ -88,6 +94,7 @@ function maybeRotate(): void {
 function writeToFile(level: string, msg: string): void {
   if (_writing) return; // prevent recursion
   _writing = true;
+
   try {
     ensureLogDir();
     maybeRotate();
@@ -140,6 +147,7 @@ export function isSilent(): boolean {
 export function setStderrOnly(s: boolean): boolean {
   const previous = stderrMode;
   stderrMode = s;
+
   return previous;
 }
 
@@ -179,6 +187,7 @@ export const log = {
   },
   debug(msg: string): void {
     writeToFile('DEBUG', msg);
+
     if (!verboseEnabled || silentMode) return;
     writeInfoLine(`${chalk.gray('  [debug]')} ${msg}`);
   },
@@ -194,9 +203,11 @@ export const log = {
  */
 export async function spinner(text: string): Promise<Ora> {
   const { default: ora } = await import('ora');
+
   if (silentMode) {
     // return a no-op spinner in silent mode
     return ora({ text, isSilent: true });
   }
+
   return ora({ text, color: 'cyan', discardStdin: false });
 }

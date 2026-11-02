@@ -39,13 +39,16 @@ const inspections = new WeakMap<DoctorContext, Promise<Inspection | null>>();
 
 function inspect(ctx: DoctorContext): Promise<Inspection | null> {
   let found = inspections.get(ctx);
+
   if (!found) inspections.set(ctx, found = inspectOnce(ctx));
+
   return found;
 }
 
 async function inspectOnce(ctx: DoctorContext): Promise<Inspection | null> {
   const { localConfig, teamConfig } = ctx;
   const projectRoot = localConfig.projectRoot;
+
   if (localConfig.scope !== 'project' || !projectRoot) return null;
   const dataHome = getDataHome(localConfig);
   const configPath = path.join(dataHome, 'config.yaml');
@@ -54,19 +57,24 @@ async function inspectOnce(ctx: DoctorContext): Promise<Inspection | null> {
   const member = unmigrated ? undefined : localConfig.gitExcludeEnabled;
   const team = teamConfig?.sharing?.gitExclude?.enabled;
   const enabled = resolveGitExclude(localConfig, teamConfig);
+
   const source = member !== undefined ? `gitExcludeEnabled: ${member} in ${configPath}`
     : team !== undefined ? `sharing.gitExclude.enabled: ${team} in the team's teamai.yaml`
     : enabled === undefined ? 'team config unreadable'
     : 'the default';
+
   const state = await loadStateForScope(localConfig);
   const records = state.lastPullByWorkspace ?? {};
   // No list anywhere yet (no pull since an upgrade): nothing is delivered on record.
   const listed = Object.values(records).some((record) => record.gitExcludePaths !== undefined);
   const { checkoutKey, liveDeliveredLists } = await import('./pull.js');
+
   const union = listed
     ? await deliveredUnion(await liveDeliveredLists(projectRoot, records))
     : { paths: [], foreign: [] };
+
   const own = records[await checkoutKey(projectRoot)];
+
   return {
     projectRoot,
     enabled,
@@ -90,24 +98,32 @@ async function keptTrackedCopies(projectRoot: string, delivered: Record<string, 
   const { recordedUnchanged } = await import('./resources/delivered-copies.js');
   const covered = (file: string): boolean => listed.some((p) => file === p || file.startsWith(`${p}${path.sep}`));
   const candidates: string[] = [];
+
   for (const file of Object.keys(delivered)) {
     if (!covered(file) && await recordedUnchanged(delivered, file)) candidates.push(file);
   }
+
   const inside = candidates.filter((file) => !path.relative(projectRoot, file).startsWith('..'));
+
   if (inside.length === 0) return [];
+
   const result = await execCommand('git', ['--literal-pathspecs', 'ls-files', '-z', '--', ...inside.map((file) => path.relative(projectRoot, file))], {
     cwd: projectRoot, timeoutMs: 10_000, env: withoutGitRepositoryEnv(),
   }).catch(() => null);
+
   if (result?.code !== 0) return [];
   const tracked = new Set(result.stdout.split('\0').filter(Boolean));
+
   // A skill is kept, and named, as its directory (`<tool>/skills/<name>`), as pull names it.
   const named = (file: string): string => {
     for (let dir = path.dirname(file); dir.startsWith(`${projectRoot}${path.sep}`); dir = path.dirname(dir)) {
       if (path.basename(path.dirname(dir)) === 'skills') return dir;
     }
+
     return file;
   };
-  return [...new Set(inside.filter((file) => tracked.has(path.relative(projectRoot, file).split(path.sep).join('/'))).map(named))].sort();
+
+  return [...new Set(inside.flatMap((file) => (tracked.has(path.relative(projectRoot, file).split(path.sep).join('/')) ? [named(file)] : [])))].sort();
 }
 
 const FIRST = 5;
@@ -135,6 +151,7 @@ function damagedLine(file: string, { line, problem }: DamagedMarker): string {
  */
 export async function buildDeliveredGitExcludeChecks(ctx: DoctorContext): Promise<Check[]> {
   let found: Inspection | null;
+
   try {
     found = await inspect(ctx);
   } catch (e) {
@@ -145,13 +162,17 @@ export async function buildDeliveredGitExcludeChecks(ctx: DoctorContext): Promis
       fix: `teamai could not check its git exclude blocks: ${e instanceof Error ? e.message : String(e)}. Fix the cause, then run \`teamai doctor\` again.`,
     }];
   }
+
   if (!found) return [];
   const { projectRoot, enabled, union, reports, notices } = found;
   const checks: Check[] = [];
+
   const rel = (file: string): string => {
     const relative = path.relative(projectRoot, file);
+
     return relative.startsWith('..') || path.isAbsolute(relative) ? file : relative.split(path.sep).join('/');
   };
+
   if (enabled === undefined) {
     checks.push({
       name: 'Delivered team resources are kept out of git',
@@ -161,22 +182,30 @@ export async function buildDeliveredGitExcludeChecks(ctx: DoctorContext): Promis
       fix: describeUnreadableGitExcludeSetting(ctx.localConfig),
     });
   }
+
   if (enabled) {
     const problems: string[] = [];
+
     for (const r of reports) {
       for (const { path: file, error } of r.gitFailed) problems.push(`git could not place ${rel(file)}: ${error}.`);
+
       for (const file of r.files) {
         if (file.notReadable) problems.push(`${file.notReadable}: teamai cannot check or update its block there. Make it readable, then run \`teamai pull\`.`);
+
         if (file.missing.length > 0) problems.push(`Not listed in ${file.excludeFile}: ${nameList(file.missing.map(rel))}. Run \`teamai pull\` to list them.`);
+
         for (const { path: file2, rule } of file.reincluded) {
           problems.push(rule
             ? `git still sees ${rel(file2)}: \`${rule.pattern}\` (${rule.source}:${rule.line}) re-includes it. Remove that rule.`
             : `git still sees ${rel(file2)}: a rule in your git ignore files re-includes it (\`git check-ignore -v\` names it). Remove that rule.`);
         }
+
         for (const damaged of file.damaged) problems.push(damagedLine(file.excludeFile, damaged));
+
         for (const { checkout, error } of file.checkFailed) problems.push(`git could not say what ${checkout} tracks or ignores: ${error}.`);
       }
     }
+
     checks.push({
       name: 'Delivered team resources are kept out of git',
       source: 'local',
@@ -194,6 +223,7 @@ export async function buildDeliveredGitExcludeChecks(ctx: DoctorContext): Promis
         ? ' Rename or delete that file if it is a leftover; then the next `teamai pull` lists the path.' : ''),
     });
   }
+
   if (notices.lastFailure) {
     checks.push({
       name: 'Last background pull could not keep teamai\'s git exclude blocks up to date',
@@ -203,6 +233,7 @@ export async function buildDeliveredGitExcludeChecks(ctx: DoctorContext): Promis
       fix: `${notices.lastFailure.message} (${notices.lastFailure.at})`,
     });
   }
+
   return checks;
 }
 
@@ -212,6 +243,7 @@ export async function buildDeliveredGitExcludeChecks(ctx: DoctorContext): Promis
  */
 export async function buildLocalAgentGitExcludeChecks(): Promise<Check[]> {
   const { lastFailure } = await readGitExcludeNotices(localAgentGitExcludeNotices());
+
   return lastFailure ? [{
     name: 'Last local agent sync could not keep its git exclude block up to date',
     source: 'local',
@@ -224,6 +256,7 @@ export async function buildLocalAgentGitExcludeChecks(): Promise<Check[]> {
 /** What the local agent's sessions had to say about its `local-agent` block, for `doctor` only. */
 export async function localAgentGitExcludeNotes(): Promise<string[]> {
   const { notices } = await readGitExcludeNotices(localAgentGitExcludeNotices());
+
   return notices.map(({ at, message }) => `From a local agent sync (${at}): ${message}`);
 }
 
@@ -235,20 +268,28 @@ export async function localAgentGitExcludeNotes(): Promise<string[]> {
  */
 export async function deliveredGitExcludeNotes(ctx: DoctorContext): Promise<string[]> {
   const found = await inspect(ctx).catch(() => null);
+
   if (!found) return [];
   const { projectRoot, enabled, source, configPath, unmigrated, reports, notices, keptTracked } = found;
+
   const rel = (file: string): string => {
     const relative = path.relative(projectRoot, file);
+
     return relative.startsWith('..') || path.isAbsolute(relative) ? file : relative.split(path.sep).join('/');
   };
+
   const notes = [`Git exclude for delivered team resources: ${enabled === undefined ? 'unknown' : enabled ? 'on' : 'off'}, from ${source}.`];
+
   if (unmigrated) {
     notes.push(`This checkout keeps teamai's data in ${unmigrated}, an un-migrated layout, so its \`gitExcludeEnabled\` is not read: `
       + 'the setting comes from the team\'s teamai.yaml or the default until a pull migrates the data.');
   }
+
   const files = reports.flatMap((r) => r.files);
+
   if (enabled === false) {
     const visible = [...new Set(files.flatMap((f) => f.visible))].map(rel);
+
     if (visible.length > 0) {
       notes.push(`Delivered team resources are visible to git: ${visible.length} untracked (first ${FIRST}: ${visible.slice(0, FIRST).join(', ')}). `
         + `To keep them out of git, set \`sharing.gitExclude.enabled: true\` in teamai.yaml (the whole team)${unmigrated ? '' : ` or \`gitExcludeEnabled: true\` in ${configPath} (only you)`}, then run \`teamai pull\`.`);
@@ -259,12 +300,16 @@ export async function deliveredGitExcludeNotes(ctx: DoctorContext): Promise<stri
         notes.push(`${rel(tracked)} is delivered by teamai, but git tracks it in ${checkout}, so teamai lists no line for it. `
           + `Run \`git rm --cached ${path.relative(checkout, tracked).split(path.sep).join('/')}\` there and commit if the repository should not hold it.`);
       }
+
       if (file.stale.length > 0) notes.push(`Stale lines in teamai's delivered git exclude block in ${file.excludeFile}: ${nameList(file.stale)}. The next \`teamai pull\` drops them.`);
     }
   }
+
   for (const kept of keptTracked) {
     notes.push(`Kept ${kept}: this repository tracks it, so teamai does not delete it. Run \`git rm -r ${kept}\` and commit if the repository no longer needs it.`);
   }
+
   for (const { at, message } of notices.notices) notes.push(`From a background pull (${at}): ${message}`);
+
   return notes;
 }

@@ -20,12 +20,14 @@ import { mergeRuleBodyIntoTeamMd, ruleBodyEqualsTeamMd, rulePaths, teamRuleBody,
 export function teamRuleToOmpRule(rawTeamRule: string): string {
   const paths = rulePaths(teamRuleData(rawTeamRule));
   const body = teamRuleBody(rawTeamRule);
+
   const frontmatter = paths.length > 0
     ? [
       `description: ${JSON.stringify(ruleDescription(body, paths))}`,
       `globs: [${paths.map((glob) => JSON.stringify(glob)).join(', ')}]`,
     ]
     : ['alwaysApply: true'];
+
   return `---\n${frontmatter.join('\n')}\n---\n\n${body}\n`;
 }
 
@@ -36,11 +38,14 @@ export function teamRuleToOmpRule(rawTeamRule: string): string {
  */
 function ruleDescription(body: string, paths: readonly string[]): string {
   let fenced = false;
+
   for (const line of body.split('\n')) {
     if (/^\s*(```|~~~)/.test(line)) fenced = !fenced;
     const heading = fenced ? null : line.match(/^#{1,6}\s+(.+?)\s*#*\s*$/);
+
     if (heading) return heading[1];
   }
+
   return `Team rule for files matching ${paths.join(', ')}`;
 }
 

@@ -20,10 +20,13 @@ import { pushRepoResourceItem, scanRepoResourceForPush } from './repo-resource.j
  */
 export function resolveDocsDestination(teamConfig: TeamaiConfig, localConfig: LocalConfig): string {
   const localDir = teamConfig.sharing.docs.localDir;
+
   if (localConfig.scope === 'project' && localConfig.projectRoot && localDir.startsWith('~/')) {
     return path.join(localConfig.projectRoot, localDir.substring(2));
   }
+
   const expanded = expandHome(localDir);
+
   return path.isAbsolute(expanded) ? expanded : path.resolve(resolveBaseDir(localConfig), expanded);
 }
 
@@ -67,17 +70,22 @@ export async function keepDocsSearchWhitelist(
   const file = path.join(root, '.teamai', '.ignore');
   const [listed, realMirror] = await Promise.all([realFilePath(file), realFilePath(mirror)]);
   const paths = docsPaths.filter((p) => p !== listed);
+
   const wanted = enabled && !isSelfMode(localConfig) && teamConfig !== null
     && path.resolve(resolveDocsDestination(teamConfig, localConfig)) === mirror
     && paths.some((p) => p.startsWith(`${realMirror}${path.sep}`));
+
   const result: DocsSearchWhitelist = { paths, file, change: null, failure: null };
+
   try {
     const edit = await editDocsSearchWhitelist(file, wanted, options);
     result.change = edit.change;
+
     if (edit.teamaiOnly) result.paths = [...paths, listed].sort();
   } catch (e) {
-    result.failure = describeWhitelistFailure(file, e, 'run `teamai pull` again');
+    result.failure = describeWhitelistFailure(file, e instanceof Error ? e.message : String(e), 'run `teamai pull` again');
   }
+
   return result;
 }
 
@@ -88,15 +96,16 @@ export async function keepDocsSearchWhitelist(
  */
 export async function removeDocsSearchWhitelist(projectRoot: string, options: { dryRun?: boolean } = {}): Promise<{ file: string; removed: boolean; failure: string | null }> {
   const file = path.join(projectRoot, '.teamai', '.ignore');
+
   try {
     return { file, removed: (await editDocsSearchWhitelist(file, false, options)).change === 'remove', failure: null };
   } catch (e) {
-    return { file, removed: false, failure: describeWhitelistFailure(file, e, 'delete its lines from `# [teamai:delivered:start]` to `# [teamai:delivered:end]` yourself') };
+    return { file, removed: false, failure: describeWhitelistFailure(file, e instanceof Error ? e.message : String(e), 'delete its lines from `# [teamai:delivered:start]` to `# [teamai:delivered:end]` yourself') };
   }
 }
 
-function describeWhitelistFailure(file: string, error: unknown, next: string): string {
-  return `Could not update teamai's docs search whitelist in ${file}: ${(error as Error).message}. Fix the cause, then ${next}.`;
+function describeWhitelistFailure(file: string, reason: string, next: string): string {
+  return `Could not update teamai's docs search whitelist in ${file}: ${reason}. Fix the cause, then ${next}.`;
 }
 
 /**
@@ -107,24 +116,31 @@ async function editDocsSearchWhitelist(
   file: string, wanted: boolean, options: { dryRun?: boolean },
 ): Promise<{ change: 'write' | 'remove' | null; teamaiOnly: boolean }> {
   const lines = wanted ? WHITELIST : [];
+
   const content = await fs.readFile(file, 'utf8').catch((e: NodeJS.ErrnoException) => {
     if (e.code === 'ENOENT') return null;
     throw e;
   });
+
   if (content === null && !wanted) return { change: null, teamaiOnly: false };
   const next = withOwnerLines(content ?? '', WHITELIST_OWNER, lines);
   const after = next ?? content ?? '';
   const teamaiOnly = wanted && (withOwnerLines(after, WHITELIST_OWNER, []) ?? after).trim() === '';
+
   if (next === null) return { change: null, teamaiOnly };
+
   // A file the repository tracks is the team's: teamai leaves it as committed,
   // and so it does while git cannot say.
   if (content !== null && (await gitTracks(file, 'entry')).kind !== 'untracked') return { change: null, teamaiOnly: false };
   const change = wanted ? 'write' : 'remove';
+
   if (options.dryRun) return { change, teamaiOnly };
+
   if (after.trim() === '') await fs.rm(file, { force: true });
   else if (await updateFileLocked(file, (current) => withOwnerLines(current, WHITELIST_OWNER, lines)) === 'locked') {
     throw new Error('another teamai command held it past the wait');
   }
+
   return { change, teamaiOnly };
 }
 
@@ -133,7 +149,7 @@ async function readEntries(dir: string) {
   try {
     return await fse.readdir(dir, { withFileTypes: true });
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return [];
     throw error;
   }
 }
@@ -141,8 +157,10 @@ async function readEntries(dir: string) {
 /** Files in the docs mirror, including links themselves but never their targets. */
 export async function listDocFiles(dir: string): Promise<string[]> {
   const files: string[] = [];
+
   for (const entry of await readEntries(expandHome(dir))) {
     if (entry.name.startsWith('.')) continue;
+
     if (entry.isDirectory()) {
       const nested = await listDocFiles(path.join(dir, entry.name));
       files.push(...nested.map(file => `${entry.name}/${file}`));
@@ -150,6 +168,7 @@ export async function listDocFiles(dir: string): Promise<string[]> {
       files.push(entry.name);
     }
   }
+
   return files;
 }
 
@@ -157,11 +176,14 @@ export async function listDocFiles(dir: string): Promise<string[]> {
 export async function listStaleDocDirectories(source: string | undefined, destination: string): Promise<string[]> {
   const sourceEntries = new Map((source ? await readEntries(source) : []).map(entry => [entry.name, entry]));
   const stale: string[] = [];
+
   for (const entry of await readEntries(destination)) {
     if (entry.name.startsWith('.') || !entry.isDirectory()) continue;
     const sourceEntry = sourceEntries.get(entry.name);
+
     if (sourceEntry && !sourceEntry.isDirectory()) continue;
     const target = path.join(destination, entry.name);
+
     if (!sourceEntry && (await readEntries(target)).length === 0) {
       stale.push(`${entry.name}/`);
     } else {
@@ -169,6 +191,7 @@ export async function listStaleDocDirectories(source: string | undefined, destin
       stale.push(...nested.map(dir => `${entry.name}/${dir}`));
     }
   }
+
   return stale;
 }
 
@@ -182,9 +205,12 @@ export async function listStaleDocDirectories(source: string | undefined, destin
  */
 export async function isPrunableDoc(file: string, rel: string, repoPath: string): Promise<boolean> {
   const stat = await fse.lstat(file).catch(() => null);
+
   if (!stat) return true;
   const versions = await historicalVersions(repoPath, `docs/${rel}`);
+
   if (versions === null || versions.length === 0) return false;
+
   return isDocVersion(file, stat, versions, repoPath);
 }
 
@@ -196,13 +222,16 @@ export async function isPrunableDoc(file: string, rel: string, repoPath: string)
  */
 async function isDocVersion(file: string, stat: fse.Stats, versions: readonly HistoricalVersion[], repoPath: string): Promise<boolean> {
   if (versions.length === 0 || (!stat.isFile() && !stat.isSymbolicLink())) return false;
+
   const bytes = stat.isSymbolicLink()
     ? await fs.readlink(file).then((target) => Buffer.from(target), () => null)
     : await readBytes(file);
+
   if (bytes === null) return false;
   const id = await blobIdOf(repoPath, bytes);
   // A link matches only a link the team had, a file only a file: the same bytes are not the same entry.
   const link = stat.isSymbolicLink();
+
   return versions.some((version) => version.blob === id && (version.mode === '120000') === link);
 }
 
@@ -230,32 +259,44 @@ export function describeLinkedDocsRoot(dir: string, command: 'pull' | 'uninstall
 export async function removeTeamDocs(dir: string, repoPath: string): Promise<string[]> {
   if (await isLinkedDocsRoot(dir)) return [describeLinkedDocsRoot(dir, 'uninstall')];
   const history = await historicalVersions(repoPath, 'docs');
+
   if (history === null) {
     return [`Kept ${dir}: the team repo's history cannot be read, so nothing proves a doc there teamai's, and uninstall left it.`];
   }
+
   const kept: string[] = [];
+
   const walk = async (current: string, rel: string): Promise<void> => {
     for (const entry of await readEntries(current)) {
       const target = path.join(current, entry.name);
+
       // teamai never delivers a hidden entry: it is the member's, and keeps the mirror (and the data home around it).
       if (entry.name.startsWith('.')) {
         kept.push(`Kept ${target}: it is a hidden file of yours, so uninstall left it.`);
         continue;
       }
+
       const entryRel = rel ? `${rel}/${entry.name}` : entry.name;
+
       if (entry.isDirectory()) {
         await walk(target, entryRel);
+
         if ((await fse.readdir(target)).length === 0) await fse.rmdir(target);
         continue;
       }
+
       const versions = history.filter((version) => version.path === `docs/${entryRel}`);
+
       if (await isDocVersion(target, await fse.lstat(target), versions, repoPath)) await fse.unlink(target);
       else kept.push(describeMembersDirLeft(target, `docs/${entryRel}`, 'uninstall'));
     }
   };
+
   await walk(dir, '');
+
   // The mirror itself goes once nothing is left in it.
   if ((await fse.lstat(dir)).isDirectory() && (await fse.readdir(dir)).length === 0) await fse.rmdir(dir);
+
   return kept;
 }
 
@@ -266,29 +307,36 @@ export async function removeTeamDocs(dir: string, repoPath: string): Promise<str
  */
 async function pruneDocs(source: string | undefined, destination: string, repoPath: string, scope: string, rel = ''): Promise<void> {
   const sourceEntries = new Map((source ? await readEntries(source) : []).map(e => [e.name, e]));
+
   for (const entry of await readEntries(destination)) {
     if (entry.name.startsWith('.')) continue;
     const target = path.join(destination, entry.name);
     const entryRel = rel ? `${rel}/${entry.name}` : entry.name;
     const sourceEntry = sourceEntries.get(entry.name);
+
     if (entry.isDirectory()) {
       if (sourceEntry && !sourceEntry.isDirectory()) continue;
       // A directory where the team once had a doc file, holding anything that is
       // no team version, is the member's, put in place of that file: all of it stays (#993).
       const kept = sourceEntry ? null : await describeMembersDocDirectory(target, entryRel, repoPath);
+
       if (kept !== null) {
         log.warn(`[${scope}] ${kept}`);
         continue;
       }
+
       await pruneDocs(sourceEntry ? path.join(source!, entry.name) : undefined, target, repoPath, scope, entryRel);
+
       // A stale directory containing hidden local files, or a file kept above, must survive.
       if (!sourceEntry && (await fse.readdir(target)).length === 0) await fse.rmdir(target);
     } else if (!sourceEntry) {
       if (!await isPrunableDoc(target, entryRel, repoPath)) {
         const line = await describeKeptRemovedDoc(target, entryRel, repoPath, entry.isSymbolicLink());
+
         if (line !== null) log.warn(`[${scope}] ${line}`);
         continue;
       }
+
       await fse.unlink(target);
     }
   }
@@ -301,7 +349,9 @@ async function pruneDocs(source: string | undefined, destination: string, repoPa
  */
 export async function describeKeptRemovedDoc(target: string, rel: string, repoPath: string, link: boolean): Promise<string | null> {
   const neverTeams = (await historicalVersions(repoPath, `docs/${rel}`))?.length === 0;
+
   if (neverTeams && !link) return null;
+
   return neverTeams
     ? `Kept ${target}: it is a link of yours, and the team does not have docs/${rel}. Delete it when you no longer need it.`
     : `Kept ${target}: the team removed docs/${rel}, but this copy matches no team version of it. Delete it when you no longer need it.`;
@@ -314,6 +364,7 @@ export async function describeKeptRemovedDoc(target: string, rel: string, repoPa
  */
 export async function describeMembersDocDirectory(dir: string, rel: string, repoPath: string): Promise<string | null> {
   if (!await isMembersDocDirectory(dir, rel, repoPath)) return null;
+
   return `Kept ${dir}: the team removed docs/${rel}, but this is a directory of yours in its place. Delete it when you no longer need it.`;
 }
 
@@ -333,10 +384,13 @@ async function isMembersDocDirectory(dir: string, rel: string, repoPath: string)
 export async function isPrunedDoc(file: string, rel: string, repoPath: string): Promise<boolean> {
   const parts = rel.split('/');
   const root = file.slice(0, file.length - rel.length);
+
   for (let depth = 1; depth < parts.length; depth++) {
     const dirRel = parts.slice(0, depth).join('/');
+
     if (await isMembersDocDirectory(path.join(root, dirRel), dirRel, repoPath)) return false;
   }
+
   return isPrunableDoc(file, rel, repoPath);
 }
 
@@ -344,6 +398,7 @@ export async function isPrunedDoc(file: string, rel: string, repoPath: string): 
 async function wasTeamDocFile(repoPath: string, rel: string): Promise<boolean> {
   const pathspec = `docs/${rel}`;
   const versions = await historicalVersions(repoPath, pathspec);
+
   return (versions ?? []).some((version) => version.path === pathspec || version.path.endsWith(`/${pathspec}`));
 }
 
@@ -353,19 +408,23 @@ async function wasTeamDocFile(repoPath: string, rel: string): Promise<boolean> {
  */
 export async function isTeamDocsDirectory(localDocsDir: string, repoPath: string): Promise<boolean> {
   const real = (dir: string) => fse.realpath(dir).catch(() => path.resolve(dir));
+
   return await real(localDocsDir) === path.join(await real(repoPath), 'docs');
 }
 
 function containsPath(parent: string, child: string): boolean {
   const relative = path.relative(parent, child);
+
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }
 
 async function hasHiddenEntries(dir: string): Promise<boolean> {
   for (const entry of await readEntries(dir)) {
     if (entry.name.startsWith('.')) return true;
+
     if (entry.isDirectory() && await hasHiddenEntries(path.join(dir, entry.name))) return true;
   }
+
   return false;
 }
 
@@ -382,24 +441,30 @@ async function findDocConflicts(
 ): Promise<Array<{ source: string; target: string }>> {
   const conflicts: Array<{ source: string; target: string }> = [];
   const localEntries = new Map((await readEntries(destination)).map(entry => [entry.name, entry]));
+
   for (const entry of await readEntries(source)) {
     if (entry.name.startsWith('.') || withheld.has(entry.name)) continue;
     const entryRel = rel ? `${rel}/${entry.name}` : entry.name;
+
     // The member's entry stays where it is (#993): nothing replaces it.
     if (kept.has(entryRel)) continue;
     const local = localEntries.get(entry.name);
+
     if (!local) continue;
     const src = path.join(source, entry.name);
     const target = path.join(destination, entry.name);
+
     if (local.isSymbolicLink() || entry.isSymbolicLink() || local.isDirectory() !== entry.isDirectory()) {
       if (local.isDirectory() && await hasHiddenEntries(target)) {
         throw new Error(`Cannot replace ${target}: it contains hidden local entries. Move them before retrying.`);
       }
+
       conflicts.push({ source: src, target });
     } else if (entry.isDirectory()) {
       conflicts.push(...await findDocConflicts(src, target, new Set(), kept, entryRel));
     }
   }
+
   return conflicts;
 }
 
@@ -414,21 +479,26 @@ async function copyDocs(
   const staging = conflicts.length ? await fse.mkdtemp(path.join(destination, '.teamai-docs-')) : undefined;
   const moved: Array<{ target: string; backup: string }> = [];
   const visible = (src: string) => !path.basename(src).startsWith('.');
+
   const delivered = (src: string) => {
     const rel = path.relative(source, src).split(path.sep);
+
     return visible(src) && !withheld.has(rel[0] ?? '') && !kept.has(rel.join('/'));
   };
+
   try {
     // Prepare replacements while the old entries are still in place. A copy
     // failure must not remove the directory/file it was meant to replace.
     for (const [index, conflict] of conflicts.entries()) {
       await fse.copy(conflict.source, path.join(staging!, `new-${index}`), { filter: visible });
     }
+
     const replacedSources = new Set(conflicts.map(conflict => conflict.source));
     await fse.copy(source, destination, {
       overwrite: true,
       filter: src => delivered(src) && !replacedSources.has(src),
     });
+
     // Copying has finished before any rename: no copy worker can write into
     // a conflicting path while it is being replaced or restored.
     for (const [index, conflict] of conflicts.entries()) {
@@ -442,10 +512,12 @@ async function copyDocs(
       await fse.remove(target);
       await fse.rename(backup, target);
     }
+
     // If restoration itself fails, leave the backup directory for recovery.
     if (staging) await fse.remove(staging);
     throw error;
   }
+
   if (staging) await fse.remove(staging);
 }
 
@@ -472,12 +544,15 @@ export async function resolveDesiredDocs(repoPath: string, inactiveNamespaces: r
   const withheldDirs = new Set((await listDirs(sourceDir)).filter((dir) => inactive.has(caseFoldKey(dir))));
   const files: string[] = [];
   const withheld = new Map<string, string[]>([...withheldDirs].map((dir) => [dir, []]));
+
   for (const file of await listDocFiles(sourceDir)) {
     const slash = file.indexOf('/');
     const dirFiles = slash === -1 ? undefined : withheld.get(file.slice(0, slash));
+
     if (dirFiles) dirFiles.push(file.slice(slash + 1));
     else files.push(file);
   }
+
   return { sourceDir, files, withheld: [...withheld].map(([dir, dirFiles]) => ({ dir, files: dirFiles })) };
 }
 
@@ -489,6 +564,7 @@ export async function resolveDesiredDocs(repoPath: string, inactiveNamespaces: r
  */
 export async function resolveDocsForDirectory(localConfig: LocalConfig): Promise<DesiredDocs> {
   const resolved = await resolveResourceNamespaces(localConfig);
+
   return resolveDesiredDocs(localConfig.repo.localPath, resolved?.inactiveDocsNamespaces ?? []);
 }
 
@@ -505,39 +581,51 @@ export async function resolveDocsForDirectory(localConfig: LocalConfig): Promise
 export async function membersDocs(desired: DesiredDocs, localDocsDir: string, repoPath: string): Promise<string[]> {
   const members = new Set<string>();
   const teamais = (local: string, rel: string) => isTeamaiCopy(local, { repoPath, pathspec: `docs/${rel}` });
+
   for (const file of desired.files) {
     const parts = file.split('/');
     // A file of the member's where the team now has a directory holds back every doc under it.
     let blocked = false;
+
     for (let depth = 1; depth < parts.length && !blocked; depth++) {
       const rel = parts.slice(0, depth).join('/');
       const stat = await fse.lstat(path.join(localDocsDir, rel)).catch(() => null);
+
       if (!stat?.isFile() && !stat?.isSymbolicLink()) continue;
       blocked = true;
+
       const owned = stat.isSymbolicLink()
         ? await sameLink(path.join(localDocsDir, rel), path.join(desired.sourceDir, rel))
         : await teamais(path.join(localDocsDir, rel), rel);
+
       if (!owned) members.add(rel);
     }
+
     if (blocked) continue;
     const local = path.join(localDocsDir, file);
     const stat = await fse.lstat(local).catch(() => null);
+
     if (stat?.isSymbolicLink()) {
       if (!await sameLink(local, path.join(desired.sourceDir, file))) members.add(file);
       continue;
     }
+
     if (stat?.isDirectory()) {
       if (!await isTeamaiSkillCopy(local, { repoPath, pathspec: `docs/${file}` })) members.add(file);
       continue;
     }
+
     if (!stat?.isFile()) continue;
     const current = await readBytes(local);
     // Equal bytes prove a copy only of a team file: a team link's target bytes do not make a file teamai's.
     const sourceFile = path.join(desired.sourceDir, file);
     const source = (await fse.lstat(sourceFile).catch(() => null))?.isFile() ? await readBytes(sourceFile) : null;
+
     if (current === null || (source !== null && current.equals(source))) continue;
+
     if (!await teamais(local, file)) members.add(file);
   }
+
   return [...members];
 }
 
@@ -553,16 +641,20 @@ export function deliveredDocFiles(desired: DesiredDocs, members: readonly string
 /** Whether `local` and `team` are both links to the same target. Never follows either. */
 async function sameLink(local: string, team: string): Promise<boolean> {
   const [mine, theirs] = await Promise.all([fs.readlink(local).catch(() => null), fs.readlink(team).catch(() => null)]);
+
   return mine !== null && mine === theirs;
 }
 
 /** Whether `rel` under `root`, or a directory on the way to it, is a link (never followed). */
 async function passesThroughLink(root: string, rel: string): Promise<boolean> {
   let current = root;
+
   for (const part of rel.split(/[\\/]/)) {
     current = path.join(current, part);
+
     if (await isLink(current)) return true;
   }
+
   return false;
 }
 
@@ -587,26 +679,34 @@ async function readBytes(filePath: string): Promise<Buffer | null> {
 async function withdrawInactiveNamespaces(desired: DesiredDocs, localDocsDir: string, localConfig: LocalConfig): Promise<void> {
   for (const { dir, files } of desired.withheld) {
     const kept: string[] = [];
+
     for (const file of files) {
       const deployed = path.join(localDocsDir, dir, file);
+
       // A link of the member's at the doc or on the way to it: never read through or deleted in (#993).
       if (await passesThroughLink(localDocsDir, path.join(dir, file))) continue;
       const current = await readBytes(deployed);
+
       if (current === null) continue;
       // The type is part of the proof (#993): a file is teamai's only as a team file, today's or one from
       // the history, never as the target of a team link.
       const sourceFile = path.join(desired.sourceDir, dir, file);
       const source = (await fse.lstat(sourceFile).catch(() => null))?.isFile() ? await readBytes(sourceFile) : null;
+
       const unchanged = (source !== null && current.equals(source))
         || await isTeamaiCopy(deployed, { repoPath: localConfig.repo.localPath, pathspec: `docs/${dir}/${file}` });
+
       if (!unchanged) {
         kept.push(`${dir}/${file}`);
         continue;
       }
+
       await fs.rm(deployed, { force: true });
       log.debug(`[${installScopeName(localConfig.scope)}] Removed ${dir}/${file} of inactive docs namespace "${dir}"`);
     }
+
     await pruneEmptyDirs(path.join(localDocsDir, dir));
+
     if (kept.length > 0) {
       log.warn(
         `[${installScopeName(localConfig.scope)}] Kept ${kept.length} doc(s) of docs namespace "${dir}", which is not active here: `
@@ -625,6 +725,7 @@ export class DocsHandler extends ResourceHandler {
 
   async scanTeamForPull(_teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<ResourceItem[]> {
     const docsDir = path.join(localConfig.repo.localPath, 'docs');
+
     // Nested documents are synced as part of the same bundle.
     if (await this.countDocFiles(docsDir) === 0) return [];
 
@@ -666,38 +767,50 @@ export class DocsHandler extends ResourceHandler {
     const src = desired.sourceDir;
     // Validate the source before touching the destination, including an empty bundle.
     const entries = await readEntries(src);
+
     // A root that is a link is the member's: nothing is copied, pruned or withdrawn through it (#993).
     // It holds the docs back, as a file of the member's does, so the next pull tries again.
     if (await isLinkedDocsRoot(localDocsDir)) {
       log.warn(`[${installScopeName(localConfig.scope)}] ${describeLinkedDocsRoot(localDocsDir, 'pull')}`);
+
       return 1;
     }
+
     await fse.ensureDir(localDocsDir);
     const destination = await fse.realpath(localDocsDir);
     const repo = await fse.realpath(localConfig.repo.localPath);
     const base = await fse.realpath(resolveBaseDir(localConfig));
+
     // Withdrawing in the team's own docs would delete the team's own files.
     if (await isTeamDocsDirectory(destination, repo)) return 0;
+
     if (containsPath(destination, base) || containsPath(destination, repo) || containsPath(repo, destination)) {
       throw new Error('Docs pruning requires a dedicated localDir that does not overlap the team repo or contain the home or project root.');
     }
+
     const members = await membersDocs(desired, localDocsDir, localConfig.repo.localPath);
+
     for (const file of members) {
       log.warn(`[${installScopeName(localConfig.scope)}] ${await describeKeptEntry(path.join(localDocsDir, file), `docs/${file}`)}`);
     }
+
     if (entries.length > 0) {
       await copyDocs(src, localDocsDir, new Set(desired.withheld.map(({ dir }) => dir)), new Set(members));
     }
+
     // Copy first: a failed copy must not trigger deletion of the previous bundle.
     await pruneDocs(src, localDocsDir, localConfig.repo.localPath, installScopeName(localConfig.scope));
     await withdrawInactiveNamespaces(desired, localDocsDir, localConfig);
+
     for (const file of deliveredDocFiles(desired, members)) recorder?.report('docs', path.join(destination, file));
     log.debug(`Synced docs → ${localDocsDir}`);
+
     return members.length;
   }
 
   async removeItem(_name: string, _teamConfig: TeamaiConfig, _localConfig: LocalConfig): Promise<string[]> {
     log.warn('Removing docs is not supported via remove command. Delete from team repo directly.');
+
     return [];
   }
 }

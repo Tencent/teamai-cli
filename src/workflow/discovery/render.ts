@@ -21,8 +21,10 @@ const DESCRIPTION_LIMIT = 400;
 
 function oneLine(text: string, limit: number): string {
   const flat = text.replace(/[\p{Cc}\p{Cf}]/gu, ' ').replace(/\s+/g, ' ').trim().replace(/\.$/, '');
+
   if (flat.length <= limit) return flat;
   const cut = flat.slice(0, limit);
+
   return cut.slice(0, Math.max(cut.lastIndexOf(' '), 1)).trim();
 }
 
@@ -33,6 +35,7 @@ export function renderWorkflowSkill(workflow: AdvertisedWorkflow, tool: string):
   const suffix = `${alias ? ` Alias: ${alias}.` : ''} ${whose}: prefer it over doing the task ad hoc.`;
   const description = `${oneLine(workflow.description, DESCRIPTION_LIMIT - suffix.length)}.${suffix}`;
   const preapproves = isToolId(tool) && TOOLS[tool].skillAllowedTools;
+
   return signGenerated([
     '---',
     `name: ${workflow.skill}`,

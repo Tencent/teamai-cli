@@ -149,6 +149,7 @@ export function noAdapter(
   os: NodeJS.Platform = process.platform,
 ): Extract<AgentSessionFailure, { code: 'no_adapter' }> | undefined {
   const known = listAvailablePlatforms();
+
   if (!known.includes(platform)) {
     return {
       code: 'no_adapter',
@@ -157,6 +158,7 @@ export function noAdapter(
       message: `Unknown platform "${platform}". Known platforms: ${known.join(', ')}.`,
     };
   }
+
   if (use === 'write' && sessionPlatformFacts(platform)?.readOnly) {
     return {
       code: 'no_adapter',
@@ -165,6 +167,7 @@ export function noAdapter(
       message: `TeamAI cannot write ${platform} sessions: ${platform} resumes a conversation only from a store of its own. Pick another target platform.`,
     };
   }
+
   if (use === 'write' && os === 'win32' && sessionPlatformFacts(platform)?.sqliteRegistrationOnWindows) {
     return {
       code: 'no_adapter',
@@ -175,6 +178,7 @@ export function noAdapter(
         'the sqlite3 CLI registers it, so the copy would never show. Pick another target platform.',
     };
   }
+
   return undefined;
 }
 
@@ -192,12 +196,15 @@ export type ToolRootsLookup = (cwd: string | undefined) => Promise<ToolRoots>;
 /** `recordedToolRoots` for one run: each workspace is resolved once, however many of its sessions are read. */
 export function toolRootsLookup(): ToolRootsLookup {
   const byCwd = new Map<string | undefined, Promise<ToolRoots>>();
+
   return (cwd) => {
     let roots = byCwd.get(cwd);
+
     if (!roots) {
       roots = recordedToolRoots(cwd);
       byCwd.set(cwd, roots);
     }
+
     return roots;
   };
 }
@@ -206,7 +213,7 @@ function adapterFor(platform: string, use: 'read' | 'write', toolRoots: ToolRoot
   return noAdapter(platform, use) ?? ADAPTER_REGISTRY[platform](toolRoots);
 }
 
-const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+const messageOf = (cause: unknown): string => (cause instanceof Error ? cause.message : String(cause));
 
 const failed = (failure: AgentSessionFailure): AgentSessionCopy => ({ status: 'failed', failure });
 
@@ -217,6 +224,7 @@ async function readSource(source: AgentAdapter, ref: AgentSessionRef): Promise<S
     if (e instanceof ToolUnavailableError) return { code: 'tool_unavailable', platform: ref.platform, message: e.message };
     const where = ref.filePath ? ` at ${ref.filePath}` : ref.cwd ? ` in ${ref.cwd}` : '';
     let exists: boolean;
+
     try {
       exists = ref.filePath ? fs.existsSync(ref.filePath) : Boolean(await source.existingSessionId(ref.sessionId, ref.cwd));
     } catch (probe) {
@@ -224,9 +232,11 @@ async function readSource(source: AgentAdapter, ref: AgentSessionRef): Promise<S
       if (probe instanceof ToolUnavailableError) return { code: 'tool_unavailable', platform: ref.platform, message: probe.message };
       throw probe;
     }
+
     if (!exists) {
       return { code: 'not_found', ref, message: `No ${ref.platform} session ${ref.sessionId}${where}.` };
     }
+
     return {
       code: 'unreadable',
       ref,
@@ -246,11 +256,15 @@ async function existingCopyId(
   copyInfo: { targetId: string; cwd: string; sourcePlatform: string; targetPlatform: string; sourceSessionId: string },
 ): Promise<string | undefined> {
   const derived = await target.existingSessionId(copyInfo.targetId);
+
   if (derived) return derived;
+
   for (const id of legacyTargetSessionIds(copyInfo)) {
     const found = await target.existingSessionId(id, copyInfo.cwd);
+
     if (found) return found;
   }
+
   return undefined;
 }
 
@@ -289,6 +303,7 @@ export async function writeCopyOnce(
 ): Promise<CopyWrite> {
   const targetPlatform = target.platform;
   let targetId: string;
+
   try {
     targetId = deriveTargetSessionId({
       targetPlatform,
@@ -302,15 +317,19 @@ export async function writeCopyOnce(
 
   const key = createHash('sha256').update(`${targetPlatform}\0${targetId}`).digest('hex').slice(0, 16);
   const lockPath = path.join(getTeamaiHomeDir(), 'locks', `session-copy-${key}.lock`);
+
   for (let attempt = 1; !(await acquireLock(lockPath)); attempt++) {
     if (attempt === COPY_LOCK_ATTEMPTS) {
       const message =
         `Another teamai command is writing this session into ${targetPlatform} in ${cwd} (lock ${lockPath}). ` +
         'Run this command again when it finishes.';
+
       return { status: 'failed', failure: { code: 'copy_busy', platform: targetPlatform, lockPath, message } };
     }
+
     await new Promise((resolve) => setTimeout(resolve, COPY_LOCK_RETRY_MS));
   }
+
   try {
     return await writeUnlessCopied(target, { session, sourcePlatform, cwd, targetId });
   } finally {
@@ -325,6 +344,7 @@ async function writeUnlessCopied(
 ): Promise<CopyWrite> {
   const targetPlatform = target.platform;
   let existing: string | undefined;
+
   try {
     existing = await existingCopyId(target, { targetId, cwd, sourcePlatform, targetPlatform, sourceSessionId: session.sessionId });
   } catch (e) {
@@ -332,19 +352,23 @@ async function writeUnlessCopied(
     if (e instanceof ToolUnavailableError) {
       return { status: 'failed', failure: { code: 'tool_unavailable', platform: targetPlatform, message: e.message } };
     }
+
     throw e;
   }
+
   if (existing) return { status: 'done', sessionId: existing, reused: true };
 
   try {
     return { status: 'done', sessionId: await target.writeSession(session, cwd), reused: false };
   } catch (e) {
     let message = `Writing the ${targetPlatform} copy failed: ${messageOf(e)}`;
+
     try {
       await target.deleteSession(targetId, cwd);
     } catch (cleanup) {
       message += `. Removing the partial copy ${targetId} also failed: ${messageOf(cleanup)}`;
     }
+
     return { status: 'failed', failure: { code: 'write_failed', platform: targetPlatform, message } };
   }
 }
@@ -360,30 +384,41 @@ async function listedFilePath(target: AgentAdapter, sessionId: string, cwd: stri
 
 async function listPlatform(platform: string, cwd: string | undefined, toolRoots: ToolRoots, archived: boolean): Promise<AgentSessionList> {
   const adapter = adapterFor(platform, 'read', toolRoots);
+
   if ('code' in adapter) return { sessions: [], failures: [adapter] };
+
   if (!adapter.isReady(cwd)) {
     const message = `${platform} is not installed or its session storage directory was not found.`;
+
     return { sessions: [], failures: [{ code: 'tool_unavailable', platform, message }] };
   }
+
   let metas: SessionMeta[];
+
   try {
     metas = await (archived ? adapter.listConversations(cwd, { archived }) : adapter.listConversations(cwd));
   } catch (e) {
     const message = messageOf(e);
+
     if (e instanceof ToolUnavailableError) return { sessions: [], failures: [{ code: 'tool_unavailable', platform, message }] };
+
     return { sessions: [], failures: [{ code: 'list_failed', platform, message: `Listing ${platform} sessions failed: ${message}` }] };
   }
-  const sessions = metas.map((meta): AgentSessionListed => ({
-    platform,
-    sessionId: meta.sessionId,
-    cwd: meta.cwd,
-    ...(meta.filePath ? { filePath: meta.filePath } : {}),
-    title: meta.title,
-    createdAt: meta.createdAt,
-    updatedAt: meta.updatedAt,
-    ...(meta.messageCount === undefined ? {} : { messageCount: meta.messageCount }),
-    ...(meta.sizeBytes === undefined ? {} : { sizeBytes: meta.sizeBytes }),
-  }));
+
+  const sessions = metas.map((meta): AgentSessionListed => {
+    const ref: AgentSessionRef = meta.filePath
+      ? { platform, sessionId: meta.sessionId, cwd: meta.cwd, filePath: meta.filePath }
+      : { platform, sessionId: meta.sessionId, cwd: meta.cwd };
+
+    const listed: AgentSessionListed = { ...ref, cwd: meta.cwd, title: meta.title, createdAt: meta.createdAt, updatedAt: meta.updatedAt };
+
+    if (meta.messageCount !== undefined) listed.messageCount = meta.messageCount;
+
+    if (meta.sizeBytes !== undefined) listed.sizeBytes = meta.sizeBytes;
+
+    return listed;
+  });
+
   return { sessions, failures: [] };
 }
 
@@ -393,14 +428,19 @@ async function listPlatform(platform: string, cwd: string | undefined, toolRoots
  */
 async function list({ platforms, cwd, updatedSince, archived = false }: AgentSessionListQuery = {}): Promise<AgentSessionList> {
   const toolRoots = await recordedToolRoots(cwd);
+
   const listed = await Promise.all(
     (platforms ?? listInstalledPlatforms(toolRoots, cwd)).map((platform) => listPlatform(platform, cwd, toolRoots, archived)),
   );
+
   const since = updatedSince === undefined ? undefined : Date.parse(updatedSince);
+
   const sessions = listed
     .flatMap((one) => one.sessions)
     .filter((session) => since === undefined || Date.parse(session.updatedAt) >= since);
+
   sessions.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+
   return { sessions, failures: listed.flatMap((one) => one.failures) };
 }
 
@@ -413,16 +453,21 @@ async function find(
   { scrub = true, toolRootsFor = recordedToolRoots, subagents = false }: AgentSessionFindOptions = {},
 ): Promise<AgentSessionFound> {
   const source = adapterFor(ref.platform, 'read', await toolRootsFor(ref.cwd));
+
   if ('code' in source) return { status: 'failed', failure: source };
   const session = await readSource(source, ref);
+
   if ('code' in session) return { status: 'failed', failure: session };
   const agents = subagents ? { subagents: await readSubagents(source, session, ref) } : {};
+
   if (!scrub) return { status: 'done', session, ...agents };
   const secrets = scrub === true ? {} : scrub.secrets;
   const localPaths = scrub !== true && scrub.rewriteLocalPaths ? await publishedPathRoots(session.cwd) : undefined;
   const scrubbed = scrubSession(session, { secrets, localPaths });
+
   if (agents.subagents?.status !== 'read') return { status: 'done', session: scrubbed.session, redactedCount: scrubbed.redactedCount, ...agents };
   const read = agents.subagents.agents.map((agent) => ({ agent, scrubbed: scrubSession(agent.session, { secrets, localPaths }) }));
+
   return {
     status: 'done',
     session: scrubbed.session,
@@ -441,10 +486,13 @@ async function readSubagents(source: AgentAdapter, session: Session, ref: AgentS
 
 async function copy({ from, to, scrub = false, toolRootsFor = recordedToolRoots }: AgentSessionCopyRequest): Promise<AgentSessionCopy> {
   const source = adapterFor(from.platform, 'read', await toolRootsFor(from.cwd));
+
   if ('code' in source) return failed(source);
   const targetToolRoots = await toolRootsFor(to.cwd);
   const target = adapterFor(to.platform, 'write', targetToolRoots);
+
   if ('code' in target) return failed(target);
+
   if (!target.isReady()) {
     return failed({
       code: 'tool_unavailable',
@@ -456,6 +504,7 @@ async function copy({ from, to, scrub = false, toolRootsFor = recordedToolRoots 
   }
 
   const session = await readSource(source, from);
+
   if ('code' in session) return failed(session);
 
   // Scrub before measuring, measure before degrading: the report counts exactly what is lost or
@@ -471,20 +520,20 @@ async function copy({ from, to, scrub = false, toolRootsFor = recordedToolRoots 
     sourcePlatform: from.platform,
     cwd: to.cwd,
   });
+
   if (write.status === 'failed') return failed(write.failure);
+
   if (write.reused) return { status: 'done', sessionId: write.sessionId, cwd: to.cwd, reused: true, fidelity, ...redacted };
   const notice = target.consumeWriteNotice();
   const filePath = await listedFilePath(target, write.sessionId, to.cwd);
-  return {
-    status: 'done',
-    sessionId: write.sessionId,
-    cwd: to.cwd,
-    reused: false,
-    fidelity,
-    ...redacted,
-    ...(filePath ? { filePath } : {}),
-    ...(notice ? { notice } : {}),
-  };
+
+  const done: Extract<AgentSessionCopy, { status: 'done' }> = { status: 'done', sessionId: write.sessionId, cwd: to.cwd, reused: false, fidelity, ...redacted };
+
+  if (filePath) done.filePath = filePath;
+
+  if (notice) done.notice = notice;
+
+  return done;
 }
 
 /**
@@ -495,6 +544,7 @@ const TOOL_RESULT_MAX_CHARS = 2_000;
 
 function truncated(text: string): string {
   if (text.length <= TOOL_RESULT_MAX_CHARS) return text;
+
   return `${text.slice(0, TOOL_RESULT_MAX_CHARS)} [truncated ${text.length - TOOL_RESULT_MAX_CHARS} chars]`;
 }
 
@@ -512,6 +562,7 @@ function blockText(block: ContentBlock): string {
       return imagePlaceholderText(block);
     default: {
       const unhandled: never = block;
+
       return unhandled;
     }
   }
@@ -524,12 +575,12 @@ function blockText(block: ContentBlock): string {
  * Redaction is the caller's: pass a redacted session.
  */
 function transcript(session: Session): AgentSessionTranscriptEntry[] {
-  return session.messages.map((message) => ({
-    role: message.role,
-    ...(message.timestamp ? { timestamp: message.timestamp } : {}),
-    text: message.content.filter((block) => block.type !== 'tool_result').map(blockText).join('\n'),
-    toolOutput: message.content.filter((block) => block.type === 'tool_result').map(blockText).join('\n'),
-  }));
+  return session.messages.map((message): AgentSessionTranscriptEntry => {
+    const text = message.content.filter((block) => block.type !== 'tool_result').map(blockText).join('\n');
+    const toolOutput = message.content.filter((block) => block.type === 'tool_result').map(blockText).join('\n');
+
+    return message.timestamp ? { role: message.role, timestamp: message.timestamp, text, toolOutput } : { role: message.role, text, toolOutput };
+  });
 }
 
 /**

@@ -6,12 +6,13 @@ import { RunOriginSchema } from '../default-workflows.js';
 import { RunModeSchema } from '../launch-context.js';
 import { canonicalJson } from '../utils/canonical-json.js';
 import { redact } from '../utils/redact.js';
+import type { JsonValue } from '../types.js';
 import { isRecord } from './expression.js';
 import { CommitIdSchema, DeliveryReceiptSchema, UnresolvedCreateSchema } from './delivery-schema.js';
 import {
   ArchivedPassSchema, LimitsFromSchema, ReleasedTokensSchema, SessionContinuationSchema, StepCheckpointSchema, type ArchivedPass, type HitlAnswer, type StepPass, type StepState,
 } from './step-state.js';
-import type { RunState, StepLease, WorkflowDefinition, WorkflowFailure } from './types.js';
+import type { Finalizing, RunState, StepLease, WorkflowDefinition, WorkflowFailure } from './types.js';
 
 /**
  * The run state one install hands to another, at `workflows/runs/<id>/state.json` on `teamai-reports`. It carries what
@@ -20,18 +21,21 @@ import type { RunState, StepLease, WorkflowDefinition, WorkflowFailure } from '.
 
 /** The install that owns a published run: a random id kept under its data home, and the member's team username for messages. */
 const OwnerSchema = z.object({ id: z.string().min(1), user: z.string() });
+
 export type HandoffOwner = z.infer<typeof OwnerSchema>;
 
 const ReportedCommitsSchema = z.object({
   changes: z.object({ base: CommitIdSchema, from: CommitIdSchema, to: CommitIdSchema, commits: z.array(CommitIdSchema) }).optional(),
   read: z.object({ base: CommitIdSchema, commit: CommitIdSchema }).optional(),
 });
+
 const StepCommitsSchema = ReportedCommitsSchema.extend({ passes: z.array(ReportedCommitsSchema).optional() });
 
 /** `schema`, with the commits a step or pass reports parsed as commit ids; the local run file accepts any string there. */
 function withCommitIds<T extends z.ZodType>(schema: T): T {
   return schema.superRefine((value, ctx) => {
     const reported = StepCommitsSchema.safeParse(value);
+
     if (!reported.success) for (const issue of reported.error.issues) ctx.addIssue({ code: z.ZodIssueCode.custom, path: issue.path, message: issue.message });
   });
 }
@@ -74,6 +78,7 @@ const BodySchema = z.object({
   updatedAt: z.string(),
   steps: z.array(withCommitIds(StepCheckpointSchema)),
 });
+
 export type SnapshotBody = z.infer<typeof BodySchema>;
 
 /**
@@ -84,6 +89,7 @@ const HandoffSchema = z.object({
   repository: z.string().min(1).optional(),
   offered: z.object({ at: z.string() }).optional(),
 });
+
 export type Handoff = z.infer<typeof HandoffSchema>;
 
 // Header first, `write` on its own line: two writes of one snapshot then always conflict when git rebases one onto the other.
@@ -99,12 +105,14 @@ const SnapshotSchema = z.object({
   // A claim hands each copy's branch to git, so a snapshot never names a branch outside its own run.
   for (const [branch, copy] of Object.entries(snapshot.copies)) {
     if (!branch.startsWith(`teamai/${snapshot.run}/`)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['copies', branch], message: 'is not a branch of this run' });
+
     // A pull request from the copy may target the branch it started from.
     if (copy.from !== undefined && !copy.from.startsWith(`teamai/${snapshot.run}/`)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['copies', branch, 'from'], message: 'is not a branch of this run' });
     }
   }
 });
+
 export type RunSnapshot = z.infer<typeof SnapshotSchema>;
 
 export type SnapshotError =
@@ -134,6 +142,7 @@ export function definitionHash(definition: WorkflowDefinition, workflows: Record
 /** The body of a snapshot without its header, as compared to decide whether a publish changes anything. */
 export function snapshotBody(snapshot: RunSnapshot): SnapshotBody {
   const { snapshot: _format, run: _run, owner: _owner, ownedAt: _ownedAt, repository: _repository, offered: _offered, stateRevision: _revision, write: _write, ...body } = snapshot;
+
   return body;
 }
 
@@ -142,16 +151,20 @@ export function snapshotBody(snapshot: RunSnapshot): SnapshotBody {
  * the run would continue without it on this machine and lose it on the next publish.
  */
 export function parseSnapshot(text: string, runId: string): Parsed<RunSnapshot> {
-  let value: unknown;
+  let value: JsonValue;
+
   try {
     value = JSON.parse(text);
   } catch {
     return unsupported(runId, 'snapshot', 'is not JSON');
   }
+
   if (!isRecord(value) || value.snapshot !== 1) return unsupported(runId, 'snapshot', 'has a format version this teamai cannot read');
   const parsed = SnapshotSchema.safeParse(value);
+
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
+
     return unsupported(
       runId,
       issue ? fieldPath(issue.path) : 'snapshot',
@@ -159,9 +172,13 @@ export function parseSnapshot(text: string, runId: string): Parsed<RunSnapshot> 
       `Update teamai, or publish the run again from the machine that owns it: teamai workflow publish ${runId}`,
     );
   }
+
   const unknown = droppedField(value, parsed.data, []);
+
   if (unknown !== undefined) return unsupported(runId, unknown, 'is a field this teamai does not know');
+
   if (parsed.data.run !== runId) return unsupported(runId, 'run', `names run ${parsed.data.run}`);
+
   return { ok: true, value: parsed.data };
 }
 
@@ -177,27 +194,35 @@ function unsupported(runId: string, field: string, problem: string, next = 'Upda
 }
 
 /** The first field of `input` that parsing left out of `output`, as a path. */
-function droppedField(input: unknown, output: unknown, at: Array<string | number>): string | undefined {
+function droppedField<Output>(input: JsonValue | undefined, output: Output, at: Array<string | number>): string | undefined {
   if (Array.isArray(input)) {
     if (!Array.isArray(output)) return fieldPath(at);
+
     for (const [index, item] of input.entries()) {
       const dropped = droppedField(item, output[index], [...at, index]);
+
       if (dropped !== undefined) return dropped;
     }
+
     return undefined;
   }
+
   if (!isRecord(input)) return undefined;
+
   if (!isRecord(output)) return fieldPath(at);
+
   for (const [key, item] of Object.entries(input)) {
     if (!(key in output)) return fieldPath([...at, key]);
     const dropped = droppedField(item, output[key], [...at, key]);
+
     if (dropped !== undefined) return dropped;
   }
+
   return undefined;
 }
 
 function fieldPath(at: ReadonlyArray<PropertyKey>): string {
-  return at.map((part, index) => (typeof part === 'number' ? `[${part}]` : index === 0 ? String(part) : `.${String(part)}`)).join('') || 'snapshot';
+  return at.map((part, index) => (Number.isInteger(part) ? `[${String(part)}]` : index === 0 ? String(part) : `.${String(part)}`)).join('') || 'snapshot';
 }
 
 /** Replaces every failure message: it is free text from a tool or the engine, and no expression reads it. */
@@ -215,7 +240,7 @@ type KeysOfUnion<T> = T extends unknown ? keyof T : never;
 type FieldRules<T> = { readonly [K in KeysOfUnion<T>]-?: 'publish' | 'drop' | 'rewrite' };
 
 /** A handler for every field `R` marks `rewrite`, and for no other: what the snapshot carries in that field's place. */
-type Rewrites<T, R> = { readonly [K in keyof R as R[K] extends 'rewrite' ? K : never]: (value: T) => Record<string, unknown> };
+type Rewrites<T, R> = { readonly [K in keyof R as R[K] extends 'rewrite' ? K : never]: (value: T) => Partial<Record<string, JsonValue>> };
 
 const RUN_RULES = {
   schemaVersion: 'publish', id: 'rewrite', name: 'publish', alias: 'publish', revision: 'publish', status: 'publish', driver: 'drop',
@@ -257,9 +282,15 @@ const LEASE_RULES = { attempt: 'publish', revision: 'publish', driver: 'rewrite'
 // An isolated run, the only one with a clone, is never published.
 const COPY_RULES = { owner: 'drop', commit: 'publish', from: 'publish', used: 'drop', kind: 'drop' } satisfies FieldRules<NonNullable<RunState['copies']>[string]>;
 
+const FINALIZING_RULES = { outcome: 'publish', end: 'publish', failure: 'rewrite', since: 'publish', until: 'publish' } satisfies FieldRules<Finalizing>;
+
 const FAILURE_REWRITES = {
   message: () => ({ message: HANDED_FAILURE_MESSAGE }),
 } satisfies Rewrites<WorkflowFailure, typeof FAILURE_RULES>;
+
+const FINALIZING_REWRITES = {
+  failure: (finalizing) => (finalizing.failure ? { failure: handed(finalizing.failure, FAILURE_RULES, FAILURE_REWRITES) } : {}),
+} satisfies Rewrites<Finalizing, typeof FINALIZING_RULES>;
 
 const LEASE_REWRITES = {
   driver: (lease) => ({ driverKind: lease.driver.kind }),
@@ -286,9 +317,7 @@ const RUN_REWRITES = {
     ? { scorers: Object.fromEntries(Object.entries(run.scorers).map(([name, pin]) => [name, { sourceHash: pin.sourceHash }])) }
     : {}),
   failure: (run) => (run.failure ? { failure: handed(run.failure, FAILURE_RULES, FAILURE_REWRITES) } : {}),
-  finalizing: (run) => (run.finalizing ? {
-    finalizing: { ...run.finalizing, ...(run.finalizing.failure ? { failure: handed(run.finalizing.failure, FAILURE_RULES, FAILURE_REWRITES) } : {}) },
-  } : {}),
+  finalizing: (run) => (run.finalizing ? { finalizing: handed(run.finalizing, FINALIZING_RULES, FINALIZING_REWRITES) } : {}),
   steps: (run) => ({ steps: run.steps.map((step) => handed(step, STEP_RULES, STEP_REWRITES)) }),
   // settledAttempts only dedups reports on this machine; the engine counts from it when settledCount is absent.
   settledAttempts: () => ({}),
@@ -299,13 +328,18 @@ const RUN_REWRITES = {
 } satisfies Rewrites<RunState, typeof RUN_RULES>;
 
 /** `value` as a snapshot carries it under `rules`, with each rewritten field replaced by what its handler builds. */
-function handed<T extends object, R extends FieldRules<T>>(value: T, rules: R, rewrites: Rewrites<T, R>): Record<string, unknown> {
+function handed<T extends object, R extends FieldRules<T>>(value: T, rules: R, rewrites: Rewrites<T, R>): Record<string, JsonValue> {
   const entries: Array<[string, unknown]> = Object.entries(rules);
-  const builders: Array<(value: T) => Record<string, unknown>> = Object.values(rewrites);
+  const builders: Array<(value: T) => Partial<Record<string, JsonValue>>> = Object.values(rewrites);
+  // A run's fields are what its JSON file holds, so each published one is a JSON value.
+  const fields = new Map<string, JsonValue | undefined>(Object.entries(value));
+
   const kept = entries.flatMap(([key, rule]) => {
-    const field: unknown = Reflect.get(value, key);
+    const field = fields.get(key);
+
     return rule === 'publish' && field !== undefined ? [[key, field] as const] : [];
   });
+
   return Object.assign(Object.fromEntries(kept), ...builders.map((build) => build(value)));
 }
 
@@ -317,18 +351,24 @@ function handed<T extends object, R extends FieldRules<T>>(value: T, rules: R, r
 export function projectRun(run: RunState, secrets: Record<string, string>): Parsed<SnapshotBody> {
   const projected = handed(run, RUN_RULES, RUN_REWRITES);
   const unfit = firstUnpublishable(run.id, projected, secrets);
+
   if (unfit) return { ok: false, error: unfit };
   const parsed = BodySchema.safeParse(projected);
+
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
     const field = issue ? fieldPath(issue.path) : 'run';
+
     return { ok: false, error: { code: 'snapshot_unsupported', field, message: `Run ${run.id} cannot be published: its "${field}" is not valid.` } };
   }
+
   // A field the rules publish but the snapshot format has no place for would vanish on the machine that claims the run.
   const lost = droppedField(projected, parsed.data, []);
+
   if (lost !== undefined) {
     return { ok: false, error: { code: 'snapshot_unsupported', field: lost, message: `Run ${run.id} cannot be published: the snapshot format has no place for its "${lost}".` } };
   }
+
   return { ok: true, value: parsed.data };
 }
 
@@ -350,20 +390,26 @@ function holdsLocalPath(text: string): boolean {
 
 type Unfit = { kind: 'secret'; label: string } | { kind: 'path' };
 
-function firstUnpublishable(runId: string, body: Record<string, unknown>, envSecrets: Record<string, string>): SnapshotError | undefined {
+function firstUnpublishable(runId: string, body: Record<string, JsonValue>, envSecrets: Record<string, string>): SnapshotError | undefined {
   const labelOf = (text: string): string | undefined => {
     const redacted = redact(text, { envSecrets });
+
     return redacted === text ? undefined : PLACEHOLDER.exec(redacted)?.[1] ?? 'secret';
   };
+
   const unfitOf = (text: string): Unfit | undefined => {
     const label = labelOf(text);
+
     if (label !== undefined) return { kind: 'secret', label };
+
     return holdsLocalPath(text) ? { kind: 'path' } : undefined;
   };
+
   const found = (step: string | undefined, at: ReadonlyArray<string | number>, unfit: Unfit): SnapshotError => {
     const field = fieldPath(at);
     const where = step === undefined ? `field "${field}"` : `step "${step}" field "${field}"`;
-    const named = { ...(step === undefined ? {} : { step }), field };
+    const named: { step?: string; field: string } = step === undefined ? { field } : { step, field };
+
     switch (unfit.kind) {
       case 'secret':
         return {
@@ -380,44 +426,61 @@ function firstUnpublishable(runId: string, body: Record<string, unknown>, envSec
         };
       default: {
         const unhandled: never = unfit;
+
         return unhandled;
       }
     }
   };
-  const search = (value: unknown, step: string | undefined, at: Array<string | number>): SnapshotError | undefined => {
-    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-      const unfit = unfitOf(String(value));
-      return unfit === undefined ? undefined : found(step, at, unfit);
-    }
+
+  const search = (value: JsonValue | undefined, step: string | undefined, at: Array<string | number>): SnapshotError | undefined => {
+    if (value === null || value === undefined) return undefined;
+
     if (Array.isArray(value)) {
       for (const [index, item] of value.entries()) {
         const hit = search(item, step, [...at, index]);
+
         if (hit) return hit;
       }
+
       return undefined;
     }
-    if (!isRecord(value)) return undefined;
+
+    if (!isRecord(value)) {
+      const unfit = unfitOf(String(value));
+
+      return unfit === undefined ? undefined : found(step, at, unfit);
+    }
+
     for (const [key, item] of Object.entries(value)) {
       const unfit = unfitOf(key);
+
       if (unfit !== undefined) return found(step, at, unfit);
       const hit = search(item, step, [...at, key]);
+
       if (hit) return hit;
     }
+
     return undefined;
   };
+
   for (const [key, value] of Object.entries(body)) {
     const items = key === 'steps' || key === 'archive' ? value : undefined;
+
     if (!Array.isArray(items)) {
       const hit = search(value, undefined, [key]);
+
       if (hit) return hit;
       continue;
     }
+
     for (const [index, item] of items.entries()) {
       const step = isRecord(item) ? String(key === 'steps' ? item.id : item.step) : undefined;
       // A step whose id itself looks like a secret is named by its place in the list instead.
       const hit = step !== undefined && labelOf(step) === undefined ? search(item, step, []) : search(item, undefined, [key, index]);
+
       if (hit) return hit;
     }
   }
+
   return undefined;
 }

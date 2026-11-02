@@ -7,6 +7,7 @@ import { resolveProjectDataHome } from '../../config.js';
 import { DRIVERS_UNDER_TEST, runConformanceScenario, speaksAsDriverUnderTest } from '../../workflow/conformance-interpreter.js';
 import { benchmarkConformanceScenarios } from '../../benchmark/conformance.js';
 import { workflowConformanceScenarios } from '../../workflow/conformance/run.js';
+import type { WorkflowRunRecord } from '../../workflow/records.js';
 import type { RunState, WorkflowEnvelope } from '../../workflow/types.js';
 import { cliConformanceClient, envelope, runCLI } from '../helpers/cli-conformance.js';
 import { inProcessConformanceRunner, normalized, recorded, UNREACHABLE_ORIGIN } from '../helpers/in-process-conformance.js';
@@ -39,7 +40,7 @@ async function runBenchmarkScenario(scenario: BenchmarkScenario, profile: Driver
         if (!isRunState(run)) throw new Error(`run ${runId} is not a run file`);
         return run;
       },
-      readEndRecord: async (runId) => fixture.endRecord(runId),
+      readEndRecord: async (runId) => fixture.endRecord(runId) as WorkflowRunRecord,
       advance: (ms) => new Promise((resolve) => { setTimeout(resolve, ms); }),
       expect,
     }, profile);
@@ -105,7 +106,7 @@ describe.each(DRIVERS_UNDER_TEST)('workflow protocol conformance through the CLI
         readEndRecord: async (runId) => {
           const dataHome = await resolveProjectDataHome(repo);
           const file = path.join(dataHome, 'workflows', 'pending', `${runId}.end.json`);
-          return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) as unknown : undefined;
+          return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) as WorkflowRunRecord : undefined;
         },
         // Each CLI call reads the system clock, so the runner waits for real.
         advance: (ms) => new Promise((resolve) => { setTimeout(resolve, ms); }),

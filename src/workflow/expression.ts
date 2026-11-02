@@ -3,12 +3,38 @@
  * It reads `inputs`, `steps` and the `item` of a `for_each`, compares numbers, and calls `length`, `any`, `all` and
  * `filter`, whose predicate reads each element of the list as `.`. Its evaluation never throws.
  */
+import { z } from 'zod';
+import { isJsonObject, type JsonValue } from '../types.js';
 import type { VisibleOutcome } from './step-state.js';
 import { INDEX } from './step-path.js';
 import type { OutputSchema } from './types.js';
 
 /** A field name, or an array index such as the 0 in `tags[0]`. */
 export type PathField = string | number;
+
+/** Whether a path field is an array index rather than a name. A destructured field past the end is undefined, and neither. */
+export function isIndex(field: PathField | undefined): field is number {
+  return field !== undefined && jsonType(field) === 'number';
+}
+
+/** The type of a JSON value, as `typeof` names it, with `null` and `array` set apart from `object`. */
+export type JsonType = 'string' | 'number' | 'boolean' | 'null' | 'array' | 'object';
+
+/**
+ * The type of a JSON value: what an expression compares, renders, and checks a list against. A number is what is left,
+ * so `NaN` and `Infinity`, which a YAML `with` value can hold and `z.number()` refuses, are numbers too.
+ */
+export function jsonType(value: JsonValue): JsonType {
+  if (value === null) return 'null';
+
+  if (Array.isArray(value)) return 'array';
+
+  if (isJsonObject(value)) return 'object';
+
+  if (value === true || value === false) return 'boolean';
+
+  return z.string().safeParse(value).success ? 'string' : 'number';
+}
 
 /** A value read by a path. A missing value is `null`. */
 export type ExpressionPath =
@@ -24,7 +50,12 @@ const COMPARISONS = {
   '>': (left: number, right: number) => left > right,
   '>=': (left: number, right: number) => left >= right,
 };
+
 type Comparison = keyof typeof COMPARISONS;
+
+function isComparison(text: string): text is Comparison {
+  return Object.hasOwn(COMPARISONS, text);
+}
 
 /** Each function, as a call to it is written. */
 const FUNCTIONS = {
@@ -33,7 +64,12 @@ const FUNCTIONS = {
   all: 'all(list, predicate)',
   filter: 'filter(list, predicate)',
 };
+
 type FunctionName = keyof typeof FUNCTIONS;
+
+function isFunctionName(text: string): text is FunctionName {
+  return Object.hasOwn(FUNCTIONS, text);
+}
 
 export type Expression =
   | { kind: 'literal'; value: null | boolean | number | string | []; column: number }
@@ -49,8 +85,10 @@ export type Expression =
 /** Change branches named on `for_each` results, in item order. An empty fan-out is an empty list. */
 export function branchNames(results: Array<{ branch?: string }> | undefined): string[] | undefined {
   if (!results) return undefined;
+
   if (results.length === 0) return [];
   const names = results.flatMap((item) => item.branch ? [item.branch] : []);
+
   return names.length > 0 ? names : undefined;
 }
 
@@ -90,7 +128,7 @@ export interface ExpressionContext {
   /** The item of the `for_each` the expression is evaluated for. */
   item?: unknown;
   /** The element a predicate is evaluated for. */
-  element?: unknown;
+  element?: JsonValue;
 }
 
 export type ExpressionParse =
@@ -105,6 +143,12 @@ type Token =
   | { kind: 'element'; text: string; column: number }
   | { kind: 'end'; column: number };
 
+/** A token and the index lexing continues from. */
+interface Lexed {
+  token: Token;
+  next: number;
+}
+
 class ExpressionError extends Error {
   constructor(readonly column: number, message: string) {
     super(message);
@@ -112,50 +156,65 @@ class ExpressionError extends Error {
 }
 
 const WORD = /[A-Za-z_][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+|\[[^\]]*\]?)*/y;
+
 /** One name or `[index]` of a path, in order. */
 const FIELD = /\.?([A-Za-z0-9_-]+)|\[([^\]]*)(\]?)/y;
 const WHOLE_INDEX = new RegExp(`^(?:${INDEX})$`);
+
 /** `.`, then any names and indexes, as in `.a.b[0]` or `.[0]`. */
 const ELEMENT = /\.(?:(?:[A-Za-z0-9_-]+|\[[^\]]*\]?)(?:\.[A-Za-z0-9_-]+|\[[^\]]*\]?)*)?/y;
+
 /** A word with no "." or "[", which a "(" makes a function name. */
 const NAME = /^[A-Za-z_][A-Za-z0-9_-]*$/;
 const NUMBER = /-?[0-9]+(?:\.[0-9]+)?/y;
 const SYMBOLS = ['==', '!=', '<=', '>=', '&&', '||', '!', '<', '>', '(', ')', '[', ']', ','];
 
 /** Reads the token that starts at or after `index`. Lexing is lazy, so errors come in source order. */
-function lexAt(source: string, from: number): { token: Token; next: number } {
+function lexAt(source: string, from: number): Lexed {
   let index = from;
+
   while (index < source.length && /\s/.test(source[index] ?? '')) index += 1;
   const column = index + 1;
+
   if (index >= source.length) return { token: { kind: 'end', column }, next: index };
   const char = source[index] ?? '';
+
   if (char === "'") {
     let value = '';
     let end = index + 1;
+
     for (;;) {
       if (end >= source.length) throw new ExpressionError(column, "a string is not closed with '");
+
       if (source[end] === "'") {
         if (source[end + 1] !== "'") break;
         value += "'";
         end += 2;
         continue;
       }
+
       value += source[end];
       end += 1;
     }
+
     return { token: { kind: 'string', value, column }, next: end + 1 };
   }
+
   if (char === '"') throw new ExpressionError(column, "strings use single quotes, as in 'failed'");
   NUMBER.lastIndex = index;
   const number = NUMBER.exec(source);
+
   if (number) return { token: { kind: 'number', value: Number(number[0]), column }, next: index + number[0].length };
   WORD.lastIndex = index;
   const word = WORD.exec(source);
+
   if (word) return { token: { kind: 'word', text: word[0], column }, next: index + word[0].length };
   ELEMENT.lastIndex = index;
   const element = ELEMENT.exec(source);
+
   if (element) return { token: { kind: 'element', text: element[0], column }, next: index + element[0].length };
   const symbol = SYMBOLS.find((candidate) => source.startsWith(candidate, index)) ?? char;
+
   return { token: { kind: 'symbol', text: symbol, column }, next: index + symbol.length };
 }
 
@@ -179,10 +238,13 @@ function describe(token: Token): string {
 /** The names and indexes of a path written at `column`. The WORD token rule has already checked its shape. */
 function fieldsOf(text: string, column: number): PathField[] {
   const fields: PathField[] = [];
+
   for (FIELD.lastIndex = 0; FIELD.lastIndex < text.length;) {
     const at = column + FIELD.lastIndex;
     const match = FIELD.exec(text);
+
     if (!match) break;
+
     if (match[1] !== undefined) {
       fields.push(match[1]);
     } else if (match[3] === '') {
@@ -193,6 +255,7 @@ function fieldsOf(text: string, column: number): PathField[] {
       throw new ExpressionError(at, `"${match[0]}" is not an index; write a whole number from 0, such as [0]`);
     }
   }
+
   return fields;
 }
 
@@ -208,20 +271,29 @@ export function parseFields(text: string): { ok: true; fields: PathField[] } | {
 
 function parsePath(token: { text: string; column: number }): ExpressionPath {
   const [root, ...segments] = fieldsOf(token.text, token.column);
+
   if (root === 'inputs' || root === 'item') return { root, fields: segments, column: token.column };
+
   if (root !== 'steps') {
     throw new ExpressionError(token.column, `"${root}" is not readable; an expression reads only inputs, steps and item`);
   }
+
   const [step, field, ...fields] = segments;
-  if (typeof step === 'string' && typeof field === 'number') {
+
+  if (step !== undefined && !isIndex(step) && isIndex(field)) {
     throw new ExpressionError(token.column, `"${token.text}" indexes a step; an index reads an array in its outputs, as in steps.${step}.outputs.<field>[${field}]`);
   }
-  if (typeof step !== 'string' || !field) throw new ExpressionError(token.column, `"${token.text}" ${STEP_FIELDS}`);
+
+  if (step === undefined || isIndex(step) || !field) throw new ExpressionError(token.column, `"${token.text}" ${STEP_FIELDS}`);
+
   if (field === 'outputs' || field === 'passes' || field === 'results' || field === 'branches') return { root, step, field, fields, column: token.column };
+
   if ((field === 'outcome' || field === 'end' || field === 'choice' || field === 'note') && fields.length === 0) return { root, step, field, fields, column: token.column };
-  if ((field === 'outcome' || field === 'end' || field === 'choice' || field === 'note') && typeof fields[0] === 'number') {
+
+  if ((field === 'outcome' || field === 'end' || field === 'choice' || field === 'note') && isIndex(fields[0])) {
     throw new ExpressionError(token.column, `"${token.text}" indexes ${field}, which is a name; compare it whole, as in steps.${step}.${field} == '<name>'`);
   }
+
   throw new ExpressionError(token.column, `"${token.text}" ${STEP_FIELDS}`);
 }
 
@@ -246,6 +318,7 @@ const UNKNOWN: DeclaredType = { type: 'unknown' };
  */
 export function stepFieldSchema(field: Extract<ExpressionPath, { root: 'steps' }>['field'], output: OutputSchema | undefined, forEach: boolean, choices?: string[]): DeclaredType | undefined {
   const results: DeclaredType = { type: 'array', items: { type: 'object', fields: { item: UNKNOWN, outcome: { type: 'string' }, outputs: output ?? UNKNOWN, branch: { type: 'string' } } } };
+
   switch (field) {
     case 'choice': return choices ? { type: 'enum', values: choices } : undefined;
     case 'note': return { type: 'string' };
@@ -253,18 +326,30 @@ export function stepFieldSchema(field: Extract<ExpressionPath, { root: 'steps' }
     case 'end':
       return { type: 'string' };
     case 'outputs': return forEach ? undefined : output;
-    case 'passes':
-      return { type: 'array', items: { type: 'object', fields: { pass: { type: 'number' }, outcome: { type: 'string' }, end: { type: 'string' },
-        ...(choices ? { choice: { type: 'enum' as const, values: choices }, note: { type: 'string' as const } } : {}),
-        ...(forEach ? { results } : { outputs: output ?? UNKNOWN }),
-      } } };
+    case 'passes': {
+      const fields: Record<string, DeclaredType> = {};
+      fields.pass = { type: 'number' };
+      fields.outcome = { type: 'string' };
+      fields.end = { type: 'string' };
+
+      if (choices) {
+        fields.choice = { type: 'enum', values: choices };
+        fields.note = { type: 'string' };
+      }
+
+      if (forEach) fields.results = results;
+      else fields.outputs = output ?? UNKNOWN;
+
+      return { type: 'array', items: { type: 'object', fields } };
+    }
+
     case 'results': return forEach ? results : undefined;
     case 'branches': return { type: 'array', items: { type: 'string' } };
   }
 }
 
 class Parser {
-  private lookahead: { token: Token; next: number } | undefined;
+  private lookahead: Lexed | undefined;
   private index = 0;
   private depth = 0;
   private predicateDepth = 0;
@@ -274,12 +359,15 @@ class Parser {
   parse(): Expression {
     const expression = this.or();
     const rest = this.peek();
+
     if (rest.kind !== 'end') throw new ExpressionError(rest.column, `unexpected ${describe(rest)}`);
+
     return expression;
   }
 
   private peek(): Token {
     this.lookahead ??= lexAt(this.source, this.index);
+
     return this.lookahead.token;
   }
 
@@ -287,12 +375,15 @@ class Parser {
     const token = this.peek();
     this.index = this.lookahead?.next ?? this.index;
     this.lookahead = undefined;
+
     return token;
   }
 
   private symbol(text: string): Token | undefined {
     const token = this.peek();
+
     if (token.kind !== 'symbol' || token.text !== text) return undefined;
+
     return this.take();
   }
 
@@ -305,22 +396,28 @@ class Parser {
   private or(): Expression {
     const depth = this.depth;
     let left = this.and();
+
     for (let operator = this.symbol('||'); operator; operator = this.symbol('||')) {
       this.deeper(operator.column);
       left = { kind: 'binary', operator: '||', left, right: this.and(), column: operator.column };
     }
+
     this.depth = depth;
+
     return left;
   }
 
   private and(): Expression {
     const depth = this.depth;
     let left = this.not();
+
     for (let operator = this.symbol('&&'); operator; operator = this.symbol('&&')) {
       this.deeper(operator.column);
       left = { kind: 'binary', operator: '&&', left, right: this.not(), column: operator.column };
     }
+
     this.depth = depth;
+
     return left;
   }
 
@@ -330,76 +427,101 @@ class Parser {
     const operator = this.symbol('!');
     const expression: Expression = operator ? { kind: 'not', operand: this.not(), column: operator.column } : this.equality();
     this.depth = depth;
+
     return expression;
   }
 
   private equality(): Expression {
     const left = this.comparison();
     const operator = this.symbol('==') ?? this.symbol('!=');
+
     if (!operator || operator.kind !== 'symbol') return left;
-    return { kind: 'binary', operator: operator.text as '==' | '!=', left, right: this.comparison(), column: operator.column };
+
+    return { kind: 'binary', operator: operator.text === '==' ? '==' : '!=', left, right: this.comparison(), column: operator.column };
   }
 
   private comparison(): Expression {
     const left = this.primary();
     const operator = this.peek();
-    if (operator.kind !== 'symbol' || !Object.hasOwn(COMPARISONS, operator.text)) return left;
+
+    if (operator.kind !== 'symbol' || !isComparison(operator.text)) return left;
+    const comparison = operator.text;
     this.take();
-    return { kind: 'binary', operator: operator.text as Comparison, left, right: this.primary(), column: operator.column };
+
+    return { kind: 'binary', operator: comparison, left, right: this.primary(), column: operator.column };
   }
 
   /** The arguments of a call, after its "(". */
   private call(name: FunctionName, column: number): Expression {
     const usage = (): ExpressionError => new ExpressionError(column, `${name} is called as ${FUNCTIONS[name]}`);
+
     if (this.symbol(')')) throw usage();
     const list = this.or();
+
     if (name === 'length') {
       if (!this.symbol(')')) throw usage();
+
       return { kind: 'call', name, list, column };
     }
+
     if (!this.symbol(',')) throw usage();
     this.predicateDepth += 1;
     const predicate = this.or();
     this.predicateDepth -= 1;
+
     if (!this.symbol(')')) throw usage();
+
     return { kind: 'call', name, list, predicate, column };
   }
 
   private primary(): Expression {
     const token = this.take();
     const column = token.column;
+
     switch (token.kind) {
       case 'number':
       case 'string':
         return { kind: 'literal', value: token.value, column };
       case 'word':
         if (token.text === 'true' || token.text === 'false') return { kind: 'literal', value: token.text === 'true', column };
+
         if (token.text === 'null') return { kind: 'literal', value: null, column };
+
         if (NAME.test(token.text) && this.symbol('(')) {
-          if (!Object.hasOwn(FUNCTIONS, token.text)) throw new ExpressionError(column, `"${token.text}" is not a function; the functions are length, any, all and filter`);
-          return this.call(token.text as FunctionName, column);
+          if (!isFunctionName(token.text)) throw new ExpressionError(column, `"${token.text}" is not a function; the functions are length, any, all and filter`);
+
+          return this.call(token.text, column);
         }
+
         return { kind: 'path', path: parsePath(token), column };
       case 'symbol':
         if (token.text === '(') {
           const inner = this.or();
           const close = this.take();
+
           if (close.kind !== 'symbol' || close.text !== ')') throw new ExpressionError(close.column, `expected ")", found ${describe(close)}`);
+
           return inner;
         }
+
         if (token.text === '[') {
           const close = this.take();
+
           if (close.kind !== 'symbol' || close.text !== ']') throw new ExpressionError(close.column, 'the only array literal is []');
+
           return { kind: 'literal', value: [], column };
         }
+
         throw new ExpressionError(column, `expected a value, found ${describe(token)}`);
       case 'element':
         if (/^\.[0-9]+$/.test(token.text) || (this.predicateDepth === 0 && /^\.[0-9]/.test(token.text))) {
           throw new ExpressionError(column, 'numbers need a leading digit, as in 0.5');
         }
+
         if (this.predicateDepth === 0) {
           throw new ExpressionError(column, `"${token.text}" reads the current element, which exists only inside the predicate of any, all or filter`);
         }
+
         return { kind: 'element', fields: fieldsOf(token.text.slice(1), column + 1), column };
       case 'end':
         throw new ExpressionError(column, 'expected a value, found the end of the expression');
@@ -415,15 +537,19 @@ export interface TypeProblem {
 
 function textOf(expression: Expression): string {
   switch (expression.kind) {
-    case 'literal': return typeof expression.value === 'string' ? quoted(expression.value) : JSON.stringify(expression.value);
+    case 'literal': return jsonType(expression.value) === 'string' ? quoted(String(expression.value)) : JSON.stringify(expression.value);
     case 'path': {
       const { path } = expression;
+
       return path.root === 'steps' ? `steps.${path.step}.${path.field}${fieldsText(path.fields)}` : `${path.root}${fieldsText(path.fields)}`;
     }
+
     case 'element': {
       const text = fieldsText(expression.fields);
+
       return text.startsWith('.') ? text : `.${text}`;
     }
+
     case 'call': return `${expression.name}(...)`;
     default: return 'a condition';
   }
@@ -446,11 +572,15 @@ function known(type: DeclaredType | undefined): StaticType | undefined {
 function typeOf(expression: Expression, schemaOf: SchemaOf, element: ElementType | undefined): StaticType | undefined {
   switch (expression.kind) {
     case 'literal': {
-      const { value } = expression;
-      if (value === null) return { type: 'null' };
-      if (Array.isArray(value)) return { type: 'array' };
-      return typeof value === 'number' ? { type: 'number' } : typeof value === 'string' ? { type: 'string' } : { type: 'boolean' };
+      switch (jsonType(expression.value)) {
+        case 'null': return { type: 'null' };
+        case 'array': return { type: 'array' };
+        case 'number': return { type: 'number' };
+        case 'string': return { type: 'string' };
+        default: return { type: 'boolean' };
+      }
     }
+
     case 'path': return known(schemaOf(expression.path));
     case 'element': return element && known(schemaAt(element.items, expression.fields));
     case 'not':
@@ -458,8 +588,10 @@ function typeOf(expression: Expression, schemaOf: SchemaOf, element: ElementType
       return { type: 'boolean' };
     case 'call': {
       if (expression.name === 'length') return { type: 'number' };
+
       if (expression.name !== 'filter') return { type: 'boolean' };
       const list = typeOf(expression.list, schemaOf, element);
+
       return list?.type === 'array' ? list : { type: 'array' };
     }
   }
@@ -487,22 +619,30 @@ function problemsIn(expression: Expression, schemaOf: SchemaOf, element: Element
     case 'call': {
       const problems = problemsIn(expression.list, schemaOf, element);
       const list = typeOf(expression.list, schemaOf, element);
+
       if (list && list.type !== 'array') {
         problems.push({ column: expression.list.column, message: `passes ${textOf(expression.list)} to ${expression.name} as its list, but it is not an array` });
       }
+
       if (expression.name === 'length') return problems;
       const items = list?.type === 'array' && list.items ? { items: list.items, list: expression.list } : undefined;
+
       return [...problems, ...problemsIn(expression.predicate, schemaOf, items)];
     }
+
     case 'binary': {
       const problems = [...problemsIn(expression.left, schemaOf, element), ...problemsIn(expression.right, schemaOf, element)];
+
       if (!Object.hasOwn(COMPARISONS, expression.operator)) return problems;
+
       for (const operand of [expression.left, expression.right]) {
         const type = typeOf(operand, schemaOf, element);
+
         if (type && type.type !== 'number') {
           problems.push({ column: operand.column, message: `compares ${textOf(operand)} with ${expression.operator}, but it is not a number` });
         }
       }
+
       return problems;
     }
   }
@@ -513,7 +653,9 @@ export function parseExpression(source: string): ExpressionParse {
   try {
     const expression = new Parser(source).parse();
     const [problem] = typeProblems(expression);
+
     if (problem) return { ok: false, ...problem };
+
     return { ok: true, expression };
   } catch (error) {
     if (error instanceof ExpressionError) return { ok: false, column: error.column, message: error.message };
@@ -534,8 +676,10 @@ const STEP_FIELD = /^steps?\.[A-Za-z0-9_-]+\.(?:outcome|end|outputs|passes|resul
 export function readsLikeExpression(source: string, path: RegExp): boolean {
   let first: 'value' | 'unknown call' | undefined = 'value';
   let previous: Token | undefined;
+
   for (let index = 0; ;) {
-    let lexed: { token: Token; next: number };
+    let lexed: Lexed;
+
     try {
       lexed = lexAt(source, index);
     } catch (error) {
@@ -545,8 +689,11 @@ export function readsLikeExpression(source: string, path: RegExp): boolean {
       previous = undefined;
       continue;
     }
+
     const { token, next } = lexed;
+
     if (token.kind === 'end') return false;
+
     if (token.kind === 'symbol' && token.text === '(' && previous?.kind === 'word' && NAME.test(previous.text)) {
       first = Object.hasOwn(FUNCTIONS, previous.text) ? 'value' : 'unknown call';
     } else if (first !== undefined && token.kind === 'word' && (STEP_FIELD.test(token.text) || (first === 'value' && path.test(token.text)))) {
@@ -554,39 +701,45 @@ export function readsLikeExpression(source: string, path: RegExp): boolean {
     } else if (!(token.kind === 'symbol' && (token.text === '!' || token.text === '('))) {
       first = undefined;
     }
+
     previous = token;
     index = next;
   }
 }
 
+// oxlint-disable-next-line teamai/no-unsafe-dictionary-type -- engine.ts, snapshot.ts and local-driver.ts narrow unparsed JSON with this guard and check each field they read
 export function isRecord(value: unknown): value is Record<string, unknown> {
+  // oxlint-disable-next-line teamai/no-runtime-typeof -- the guard those callers use on values no schema has parsed yet
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
 /** The names and indexes after a path's root, as a path writes them, such as `.files[0].path`. */
 export function fieldsText(fields: PathField[]): string {
-  return fields.map((field) => (typeof field === 'number' ? `[${field}]` : `.${field}`)).join('');
+  return fields.map((field) => (isIndex(field) ? `[${field}]` : `.${field}`)).join('');
 }
 
 /** Reads a path. Anything missing along the way, including a step that has not settled, is `null`. */
-export function resolvePath(path: ExpressionPath, context: ExpressionContext): unknown {
+export function resolvePath(path: ExpressionPath, context: ExpressionContext): JsonValue {
   return pathValue(path, context) ?? null;
 }
 
 /** Reads a path as `resolvePath` does, but anything missing along the way is undefined, so a null that is there stays apart. */
-export function pathValue(path: ExpressionPath, context: ExpressionContext): unknown {
-  if (path.root === 'inputs') return readFields(context.inputs, path.fields);
-  if (path.root === 'item') return readFields(context.item, path.fields);
-  const step = Object.hasOwn(context.steps, path.step) ? context.steps[path.step] : undefined;
-  return readFields(step?.[path.field], path.fields);
+export function pathValue(path: ExpressionPath, context: ExpressionContext): JsonValue | undefined {
+  const step = path.root === 'steps' && Object.hasOwn(context.steps, path.step) ? context.steps[path.step] : undefined;
+  const root = path.root === 'inputs' ? context.inputs : path.root === 'item' ? context.item : step?.[path.field];
+
+  // SAFETY: a context holds JSON: inputs, items and outputs are parsed JSON, and the rest of a step is strings, numbers, and lists and objects of them
+  return readFields(root as JsonValue | undefined, path.fields);
 }
 
 /** The type `schema` declares for the value `fields` names inside it, or undefined when it declares none. */
 export function schemaAt(schema: DeclaredType, fields: PathField[]): DeclaredType | undefined {
   let current = schema;
+
   for (const field of fields) {
     if (current.type === 'unknown') return current;
-    if (typeof field === 'number') {
+
+    if (isIndex(field)) {
       if (current.type !== 'array') return undefined;
       current = current.items;
     } else {
@@ -594,20 +747,25 @@ export function schemaAt(schema: DeclaredType, fields: PathField[]): DeclaredTyp
       current = current.fields[field]!;
     }
   }
+
   return current;
 }
 
-function readFields(value: unknown, fields: PathField[]): unknown {
+function readFields(value: JsonValue | undefined, fields: PathField[]): JsonValue | undefined {
   let current = value;
+
   for (const field of fields) {
-    if (typeof field === 'number') current = Array.isArray(current) ? current[field] : undefined;
-    else current = isRecord(current) && Object.hasOwn(current, field) ? current[field] : undefined;
+    if (current === undefined) break;
+
+    if (isIndex(field)) current = Array.isArray(current) ? current[field] : undefined;
+    else current = isJsonObject(current) && Object.hasOwn(current, field) ? current[field] : undefined;
   }
+
   return current;
 }
 
 /** The falsy values are `false`, `null`, `0` and `''`. Everything else, `[]` and `{}` included, is truthy. */
-export function isTruthy(value: unknown): boolean {
+export function isTruthy(value: JsonValue): boolean {
   return !(value === false || value === null || value === undefined || value === 0 || value === '');
 }
 
@@ -615,32 +773,40 @@ export function isTruthy(value: unknown): boolean {
  * Strict JSON equality: no type coercion, case-sensitive strings, arrays in order, objects by their keys. It walks the
  * pairs with a stack of its own, since a value a step reports can nest deeper than the call stack goes.
  */
-function deepEqual(left: unknown, right: unknown): boolean {
-  const pairs: Array<[unknown, unknown]> = [[left, right]];
+function deepEqual(left: JsonValue, right: JsonValue): boolean {
+  const pairs: Array<[JsonValue, JsonValue | undefined]> = [[left, right]];
+
   for (let pair = pairs.pop(); pair; pair = pairs.pop()) {
     const [a, b] = pair;
+
     if (a === b) continue;
+
     if (Array.isArray(a) || Array.isArray(b)) {
       if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
       a.forEach((item, index) => pairs.push([item, b[index]]));
       continue;
     }
-    if (!isRecord(a) || !isRecord(b)) return false;
+
+    if (b === undefined || !isJsonObject(a) || !isJsonObject(b)) return false;
     const keys = Object.keys(a);
+
     if (keys.length !== Object.keys(b).length || !keys.every((key) => Object.hasOwn(b, key))) return false;
+
     for (const key of keys) pairs.push([a[key], b[key]]);
   }
+
   return true;
 }
 
 /** Evaluates an expression. It never throws. */
-export function evaluateExpression(expression: Expression, context: ExpressionContext): unknown {
+export function evaluateExpression(expression: Expression, context: ExpressionContext): JsonValue {
   switch (expression.kind) {
     case 'literal': return Array.isArray(expression.value) ? [] : expression.value;
     case 'path': return resolvePath(expression.path, context);
     case 'not': return !isTruthy(evaluateExpression(expression.operand, context));
     case 'binary': {
       const left = evaluateExpression(expression.left, context);
+
       switch (expression.operator) {
         case '&&': return isTruthy(left) && isTruthy(evaluateExpression(expression.right, context));
         case '||': return isTruthy(left) || isTruthy(evaluateExpression(expression.right, context));
@@ -648,22 +814,28 @@ export function evaluateExpression(expression: Expression, context: ExpressionCo
         case '!=': return !deepEqual(left, evaluateExpression(expression.right, context));
         default: {
           const right = evaluateExpression(expression.right, context);
-          return typeof left === 'number' && typeof right === 'number' && COMPARISONS[expression.operator](left, right);
+
+          return jsonType(left) === 'number' && jsonType(right) === 'number' && COMPARISONS[expression.operator](Number(left), Number(right));
         }
       }
     }
+
     case 'call': {
       const list = evaluateExpression(expression.list, context);
+
       if (!Array.isArray(list)) return null;
+
       if (expression.name === 'length') return list.length;
       const { predicate } = expression;
-      const holds = (element: unknown): boolean => isTruthy(evaluateExpression(predicate, { ...context, element }));
+      const holds = (element: JsonValue): boolean => isTruthy(evaluateExpression(predicate, { ...context, element }));
+
       switch (expression.name) {
         case 'any': return list.some(holds);
         case 'all': return list.every(holds);
         case 'filter': return list.filter(holds);
       }
     }
+
     case 'element': return readFields(context.element, expression.fields) ?? null;
   }
 }

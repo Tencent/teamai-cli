@@ -25,12 +25,14 @@ import { acquireLock, releaseLock } from './update.js';
 import { writeJsonAtomic } from './utils/fs.js';
 
 const StoredEntryKindSchema = z.enum(['secret', 'variable']);
+
 export type StoredEntryKind = z.infer<typeof StoredEntryKindSchema>;
 
 const StoredSecretSchema = z.union([
   z.object({ value: z.string(), kind: StoredEntryKindSchema.optional() }).strict(),
   z.object({ env: z.string().regex(ENV_KEY_RE), kind: StoredEntryKindSchema.optional() }).strict(),
 ]);
+
 export type StoredSecret = z.infer<typeof StoredSecretSchema>;
 
 /** What an entry is; one without `kind` is a secret's, the side that never exports it. */
@@ -40,10 +42,11 @@ export function storedEntryKind(entry: StoredSecret): StoredEntryKind {
 
 // Not z.record: it drops a `__proto__` key, which ENV_KEY_RE accepts.
 const SecretStoreSchema = z
-  .custom<object>((raw) => raw !== null && typeof raw === 'object' && !Array.isArray(raw))
+  .custom<object>((raw) => raw instanceof Object && !Array.isArray(raw))
   .transform((raw) => Object.entries(raw))
   .pipe(z.array(z.tuple([z.string().regex(ENV_KEY_RE), StoredSecretSchema])))
   .transform((entries) => envTable(entries));
+
 export type SecretStore = z.infer<typeof SecretStoreSchema>;
 
 /** A store file's entries, or why it cannot be used. A missing file holds none. */
@@ -64,6 +67,7 @@ export function getTeamSecretsPath(localConfig: LocalConfig): string {
   const identity = configured ? repoIdentity(configured) : localPath;
   // The full digest: the file name is all that keeps one team's values from another's.
   const hash = crypto.createHash('sha256').update(identity).digest('hex');
+
   return path.join(getTeamaiHomeDir(), 'secrets', 'teams', `${hash}.json`);
 }
 
@@ -94,28 +98,37 @@ const SCHEMES: ReadonlyMap<string, { readonly family: string; readonly defaultPo
  */
 function repoIdentity(url: string): string {
   const trimmed = url.trim();
+
   const key = (family: string, user: string, host: string, port: string, repoPath: string, rest = '', served = true): string => {
     const trimmedPath = repoPath.replace(/^\/+/, '').replace(/\/+$/, '');
     const name = served ? trimmedPath.replace(/\.git$/i, '') : trimmedPath;
+
     return `${family}://${user ? `${user}@` : ''}${host.toLowerCase()}${port ? `:${port}` : ''}/${name}${rest}`;
   };
+
   // `[user@]host:path`, as git reads it: no `/` before the `:`, no `//` after it, not a Windows drive.
   const scp = /^[A-Za-z]:[\\/]/.test(trimmed) ? null : /^(?:([^/@]+)@)?([^:/]+):(?!\/\/)(.+)$/.exec(trimmed);
+
   if (scp) {
     const scpPath = scp[3] ?? '';
+
     return key('ssh', scp[1] ?? '', scp[2] ?? '', '', /^[/~]/.test(scpPath) ? scpPath : `~/${scpPath}`);
   }
+
   let parsed: URL;
+
   try {
     parsed = new URL(trimmed);
   } catch {
     return trimmed;
   }
+
   const scheme = parsed.protocol.slice(0, -1).toLowerCase();
   const known = SCHEMES.get(scheme);
   const family = known?.family ?? scheme;
   const user = family === 'ssh' ? decodeUser(parsed.username) : '';
   const port = parsed.port === known?.defaultPort ? '' : parsed.port;
+
   return key(family, user, parsed.hostname, port, parsed.pathname, `${parsed.search}${parsed.hash}`, known !== undefined);
 }
 
@@ -141,28 +154,36 @@ export function getMachineSecretsPath(): string {
  */
 export async function readSecretStore(filePath: string): Promise<SecretStoreRead> {
   let content: string;
+
   try {
     content = await fs.promises.readFile(filePath, 'utf8');
   } catch (error) {
-    const code = error instanceof Error && 'code' in error && typeof error.code === 'string' ? error.code : undefined;
+    const code = error instanceof Error && 'code' in error ? z.string().optional().catch(undefined).parse(error.code) : undefined;
+
     if (code === 'ENOENT') return { ok: true, values: {} };
+
     return {
       ok: false,
       reason: `Cannot read your secret values at ${filePath} (${code ?? 'unknown error'}). Check that the file is yours and `
         + `readable (\`ls -l ${filePath}\`), or delete it and set the values again with \`teamai env set\`.`,
     };
   }
+
   const fix = 'Fix the file, or delete it and set the values again with `teamai env set`.';
   let raw: unknown;
+
   try {
     raw = JSON.parse(content);
   } catch {
     return { ok: false, reason: `${filePath} is not valid JSON. ${fix}` };
   }
+
   const parsed = SecretStoreSchema.safeParse(raw);
+
   if (parsed.success) return { ok: true, values: parsed.data };
-  const index = parsed.error.issues[0]?.path[0];
-  const entry = typeof index === 'number' ? index + 1 : 0;
+  const index = z.number().safeParse(parsed.error.issues[0]?.path[0]);
+  const entry = index.success ? index.data + 1 : 0;
+
   return {
     ok: false,
     reason: `${filePath} ${entry > 0 ? `has an invalid entry (entry ${entry})` : 'is not a JSON object'}: `
@@ -192,22 +213,29 @@ export async function updateSecretStore(
 ): Promise<SecretStoreUpdate> {
   const lock = `${filePath}.lock`;
   let held = false;
+
   for (let attempt = 0; attempt < 100 && !held; attempt++) {
     held = await acquireLock(lock);
+
     if (!held) await new Promise((resolve) => setTimeout(resolve, 50));
   }
+
   if (!held) {
     return {
       kind: 'failed',
       reason: `Another teamai command is changing ${filePath}. Run the command again once it has finished.`,
     };
   }
+
   try {
     const store = await readSecretStore(filePath);
+
     if (!store.ok) return { kind: 'failed', reason: store.reason };
     const next = change(store.values);
+
     if (!next) return { kind: 'unchanged' };
     await writeSecretStore(filePath, next);
+
     return { kind: 'written' };
   } finally {
     await releaseLock(lock);
@@ -217,5 +245,6 @@ export async function updateSecretStore(
 /** The value an entry stands for now: a `--from-env` reference is read from `env` each time. Empty is none. */
 export function storedSecretValue(entry: StoredSecret, env: NodeJS.ProcessEnv = process.env): string | undefined {
   const value = 'value' in entry ? entry.value : envValue(env, entry.env);
+
   return value === undefined || value === '' ? undefined : value;
 }

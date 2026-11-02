@@ -4,13 +4,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { COPILOT_RUNS_ENTRIES_SOURCE, claudeHookOtherHostSkip, claudeHookUsesPowerShell, copilotRunsEntries } from '../claude-hook-host.js';
+import type { JsonValue } from '../types.js';
 
 // The shell guard runs COPILOT_RUNS_ENTRIES_SOURCE; the CLI runs copilotRunsEntries.
 const guardRuns = new Function(`return ${COPILOT_RUNS_ENTRIES_SOURCE};`)() as (data: unknown) => unknown;
 
-const hook = (fields: Record<string, unknown>) => ({ type: 'command', ...fields });
+const hook = (fields: { [key: string]: JsonValue }) => ({ type: 'command', ...fields });
 
-const FILES: Array<[string, unknown]> = [
+const FILES: Array<[string, JsonValue]> = [
   ['null', null],
   ['a non-object', 'hooks'],
   ['version 2', { version: 2, hooks: { sessionStart: [hook({ bash: 'a' })] } }],
@@ -23,6 +24,7 @@ const FILES: Array<[string, unknown]> = [
   ['a null hook', { version: 1, hooks: { sessionStart: [null, hook({ bash: 'a' })] } }],
   ['every command field', { version: 1, hooks: { preToolUse: [hook({ bash: 'b', powershell: 'p', command: 'c', matcher: 'Bash' })] } }],
   ['a non-string command', { version: 1, hooks: { sessionStart: [hook({ bash: 1, command: 'c' })] } }],
+  ['a non-string matcher', { version: 1, hooks: { preToolUse: [hook({ bash: 'b', matcher: 5 })] } }],
   ['several events', {
     version: 1,
     hooks: { sessionStart: [hook({ bash: 'a' })], stop: [hook({ command: 'b', matcher: '*' }), hook({ powershell: 'c' })] },

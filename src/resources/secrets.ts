@@ -11,12 +11,13 @@
  */
 import path from 'node:path';
 import YAML from 'yaml';
+import { parseYaml } from '../utils/yaml.js';
 import { z } from 'zod';
 import {
   entryLayout, missingTopLevelKeyReason, readEntryFileText, resolveEntries, resolveEntriesFor, unknownEntryKeys,
   writtenList, type EntryLayout, type EntryReader, type EntryResolution,
 } from '../namespaced-entries.js';
-import type { LocalConfig } from '../types.js';
+import { isJsonObject, type JsonValue, type LocalConfig } from '../types.js';
 import { ensureDir, readFileSafe, writeFile } from '../utils/fs.js';
 import { ENV_KEY_RE, envName } from './env-key.js';
 
@@ -33,8 +34,13 @@ const SecretsYamlSchema = z.object({
 
 export type SecretDeclaration = z.infer<typeof SecretDeclarationSchema>;
 
+/** A declaration as written, every key kept, so a rewrite drops nothing the file had. */
+const WrittenSecretDeclarationSchema = z.looseObject(SecretDeclarationSchema.shape);
+
+export type WrittenSecretDeclaration = z.infer<typeof WrittenSecretDeclarationSchema>;
+
 /** The keys `declaration` was written with that secrets.yaml does not know: that secret is not declared. */
-export function unknownSecretDeclarationKeys(declaration: object): string[] {
+export function unknownSecretDeclarationKeys(declaration: WrittenSecretDeclaration): string[] {
   return Object.keys(declaration).filter((key) => !Object.hasOwn(SecretDeclarationSchema.shape, key));
 }
 
@@ -60,23 +66,32 @@ export const secretsEntryReader: EntryReader<SecretDeclaration> = {
   delivered: (declaration) => declaration.key,
   async read(absolutePath, relativePath) {
     const file = await readEntryFileText(absolutePath, relativePath);
+
     if (!file.ok) return file;
+
     if (file.text === null) return null;
-    let raw: unknown;
+    let raw: JsonValue;
+
     try {
-      raw = YAML.parse(file.text);
+      raw = parseYaml(file.text);
     } catch (e) {
       return { ok: false, reason: `${relativePath} is not valid YAML: ${e instanceof Error ? e.message : String(e)}` };
     }
+
     if (raw === null || raw === undefined) return { ok: true, entries: [] };
-    const shapeProblem = missingTopLevelKeyReason(raw, SecretsYamlSchema);
-    if (shapeProblem) return { ok: false, reason: `${relativePath} declares no secrets: ${shapeProblem}` };
+    const topLevelProblem = missingTopLevelKeyReason(raw, SecretsYamlSchema);
+
+    if (topLevelProblem) return { ok: false, reason: `${relativePath} declares no secrets: ${topLevelProblem}` };
     const parsed = SecretsYamlSchema.safeParse(raw);
+
     if (!parsed.success) {
       const issues = parsed.error.issues.map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`).join('; ');
+
       return { ok: false, reason: `${relativePath} does not match the secrets.yaml schema: ${issues}` };
     }
+
     const entries = parsed.data.secrets;
+
     return { ok: true, entries, unknownKeys: unknownEntryKeys(raw, 'secrets', entries, SecretDeclarationSchema) };
   },
   nameOf: (secret) => secret.key,
@@ -92,14 +107,23 @@ export const secretsEntryReader: EntryReader<SecretDeclaration> = {
 export async function readSecretsForEdit(
   absolutePath: string,
   relativePath: string,
-): Promise<{ ok: true; secrets: Record<string, unknown>[] } | { ok: false; reason: string }> {
+): Promise<{ ok: true; secrets: WrittenSecretDeclaration[] } | { ok: false; reason: string }> {
   const read = await secretsEntryReader.read(absolutePath, relativePath);
+
   if (read === null) return { ok: true, secrets: [] };
+
   if (!read.ok) return read;
   const text = await readFileSafe(absolutePath);
-  const written = writtenList(text === null ? null : YAML.parse(text), 'secrets');
-  const isEntry = (entry: unknown): entry is Record<string, unknown> => entry !== null && typeof entry === 'object';
-  return { ok: true, secrets: Array.isArray(written) ? written.filter(isEntry) : [] };
+  const written = writtenList(text === null ? null : parseYaml(text), 'secrets');
+  // The read above validated every entry, so each one parses here with all its keys. The spread keeps the
+  // order they were written in, so a rewrite of the team's file changes only the entry it edits.
+  const entries = Array.isArray(written) ? written : [];
+
+  return { ok: true, secrets: entries.flatMap((entry) => {
+    const declaration = WrittenSecretDeclarationSchema.safeParse(entry);
+
+    return declaration.success && isJsonObject(entry) ? [{ ...entry, ...declaration.data }] : [];
+  }) };
 }
 
 /** Write a secrets file with these declarations and nothing else. */
@@ -133,17 +157,22 @@ export async function resolveSecretDeclarations(
   namespaces?: KnownNamespaces,
 ): Promise<SecretDeclarations> {
   let found = false;
+
   const reader: EntryReader<SecretDeclaration> = {
     ...secretsEntryReader,
     async read(absolutePath, relativePath) {
       const read = await secretsEntryReader.read(absolutePath, relativePath);
+
       if (read !== null) found = true;
+
       return read;
     },
   };
+
   const resolution = namespaces
     ? await resolveEntries(reader, localConfig, namespaces.active)
     : await resolveEntriesFor(reader, localConfig);
+
   return resolution.kind === 'resolved' && !found ? { kind: 'absent' } : resolution;
 }
 
@@ -158,5 +187,6 @@ export function declaredSecretKeys(declarations: SecretDeclarations): ReadonlySe
   if (declarations.kind === 'failed') return null;
   const keys = new Set(declarations.kind === 'resolved' ? declarations.entries.map((entry) => entry.name) : []);
   const names = new Set([...keys].map(envName));
+
   return Object.assign(keys, { has: (key: string): boolean => names.has(envName(key)) });
 }

@@ -14,7 +14,9 @@ export const WorkOutcomeSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('pr'), url: PrUrlSchema }),
   z.object({ kind: z.literal('learning'), id: z.string().min(1) }),
 ]);
+
 export type WorkOutcome = z.infer<typeof WorkOutcomeSchema>;
+
 export type OutcomeKind = WorkOutcome['kind'];
 
 /** The run modes of the usage report's `outcomes`, in the order they are shown; `notRecorded` holds sessions without one. */
@@ -35,22 +37,28 @@ export function addCounts(row: OutcomeCounts | undefined, added: OutcomeCounts):
 /** `existing` with every row of `delta` added to it. */
 export function addOutcomeStats(existing: UserOutcomeStats | undefined, delta: UserOutcomeStats): UserOutcomeStats {
   const sum: UserOutcomeStats = structuredClone(existing ?? {});
+
   for (const mode of OUTCOME_MODES) {
     for (const kind of OUTCOME_ROWS) {
       const added = delta[mode]?.[kind];
+
       if (added) (sum[mode] ??= {})[kind] = addCounts(sum[mode]?.[kind], added);
     }
   }
+
   return sum;
 }
 
 /** `outcomes` with each outcome once, in the order it first appears. */
 export function uniqueOutcomes(outcomes: Iterable<WorkOutcome>): WorkOutcome[] {
   const seen = new Map<string, WorkOutcome>();
+
   for (const outcome of outcomes) {
     const key = `${outcome.kind}\0${outcomeValue(outcome)}`;
+
     if (!seen.has(key)) seen.set(key, outcome);
   }
+
   return [...seen.values()];
 }
 
@@ -62,6 +70,7 @@ export function outcomeValue(outcome: WorkOutcome): string {
     case 'learning': return outcome.id;
     default: {
       const unhandled: never = outcome;
+
       return unhandled;
     }
   }
@@ -77,6 +86,7 @@ export const SessionUsageSchema = z.object({
   tokens: z.object({ input: z.number().nonnegative(), output: z.number().nonnegative() }),
   interventions: z.number().int().nonnegative(),
 });
+
 export type SessionUsage = z.infer<typeof SessionUsageSchema>;
 
 /**
@@ -95,4 +105,5 @@ export const SessionOutcomeEventSchema = z.object({
   outcomes: z.array(WorkOutcomeSchema),
   counted: SessionUsageSchema.optional(),
 });
+
 export type SessionOutcomeEvent = z.infer<typeof SessionOutcomeEventSchema>;

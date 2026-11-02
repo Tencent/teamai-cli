@@ -32,12 +32,16 @@ const CallLineSchema = z.object({
   /** The error code; for an ack `acked`, for a report what its runner answer says (`reported`, `repeated`, ...); else `ok`. */
   answer: z.string(),
 });
+
 const AskedDispatchSchema = z.object({ at: z.string(), kind: z.literal('asked'), action: z.literal('dispatch'), attempt: AttemptIdSchema, step: z.string() });
 const AskedApprovalSchema = z.object({ at: z.string(), kind: z.literal('asked'), action: z.literal('approval'), step: z.string(), pass: z.number().int() });
 const AskedHandoffSchema = z.object({ at: z.string(), kind: z.literal('asked'), action: z.literal('handoff') });
 const JournalLineSchema = z.union([CallLineSchema, AskedDispatchSchema, AskedApprovalSchema, AskedHandoffSchema]);
+
 type JournalLine = z.infer<typeof JournalLineSchema>;
+
 type CallLine = z.infer<typeof CallLineSchema>;
+
 type AskedLine = Exclude<JournalLine, CallLine>;
 
 function journalPath(context: SkillContext, run: RunId): string {
@@ -55,6 +59,7 @@ function askedKey(line: AskedLine): string {
       return 'handoff';
     default: {
       const unhandled: never = line;
+
       return unhandled;
     }
   }
@@ -73,6 +78,7 @@ function askedOf(action: Action, at: string): AskedLine | undefined {
       return undefined;
     default: {
       const unhandled: never = action;
+
       return unhandled;
     }
   }
@@ -82,6 +88,7 @@ function askedOf(action: Action, at: string): AskedLine | undefined {
 function callLine(call: SkillCall, answer: SkillAnswer, input: Pick<CallLine, 'at' | 'by' | 'inCheckout'>): CallLine | undefined {
   const base = { ...input, kind: 'call' as const };
   const code = 'error' in answer ? answer.error.code : undefined;
+
   switch (call.kind) {
     case 'describe':
       return undefined;
@@ -102,10 +109,13 @@ function callLine(call: SkillCall, answer: SkillAnswer, input: Pick<CallLine, 'a
     case 'report': {
       if (call.role === 'runner') return undefined;
       const status = 'data' in answer && 'runner' in answer.data ? answer.data.runner.status : 'ok';
+
       return { ...base, call: call.modelUnavailable ? 'unavailable' : 'report', attempt: call.attempt, answer: code ?? status };
     }
+
     default: {
       const unhandled: never = call;
+
       return unhandled;
     }
   }
@@ -114,15 +124,19 @@ function callLine(call: SkillCall, answer: SkillAnswer, input: Pick<CallLine, 'a
 /** The keys of the actions the journal at `file` records as asked already. */
 async function askedKeys(file: string): Promise<Set<string>> {
   const keys = new Set<string>();
+
   for (const text of (await readFileSafe(file))?.split('\n') ?? []) {
     if (text.trim() === '') continue;
+
     try {
       const line = JournalLineSchema.safeParse(JSON.parse(text));
+
       if (line.success && line.data.kind === 'asked') keys.add(askedKey(line.data));
     } catch {
       // A torn last line from a process that died mid-append records nothing.
     }
   }
+
   return keys;
 }
 
@@ -137,35 +151,46 @@ const lines = (entries: JournalLine[], secrets: Record<string, string>): string 
  */
 export async function journalCall(context: SkillContext, call: SkillCall, answer: SkillAnswer): Promise<void> {
   const run = call.kind === 'start' ? ('data' in answer && 'turn' in answer.data ? answer.data.turn.run : undefined) : call.kind === 'describe' ? undefined : call.run;
+
   if (run === undefined) return;
   const read = await readSkillState(context.config, run);
+
   if (read.kind !== 'found') return;
   const { state } = read;
   const at = context.now().toISOString();
   const by = context.session === undefined ? 'none' : state.orchestrator.session === context.session ? 'orchestrator' : 'session';
   const inCheckout = path.resolve(context.cwd) === state.driver.workspace;
   const line = callLine(call, answer, { at, by, inCheckout });
+
   if (line === undefined) return;
   const file = journalPath(context, run);
   const actions = 'data' in answer && 'turn' in answer.data ? answer.data.turn.actions : [];
+
   const taken = await context.locks.take(run, async () => {
     const asked = await askedKeys(file);
+
     const fresh = actions.flatMap((action) => {
       const entry = askedOf(action, at);
+
       if (entry === undefined || asked.has(askedKey(entry))) return [];
       asked.add(askedKey(entry));
+
       return [entry];
     });
+
     await fs.appendFile(file, lines([line, ...fresh], context.env.secrets));
   }, TICK_LOCK_WAIT_MS);
+
   switch (taken.kind) {
     case 'held':
       return;
     case 'busy':
       await fs.appendFile(file, lines([line], context.env.secrets));
+
       return;
     default: {
       const unhandled: never = taken;
+
       return unhandled;
     }
   }

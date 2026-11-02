@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import matter from 'gray-matter';
+import { z } from 'zod';
 
 import { callTool, isOverrideInvalid } from './tool-launch/call.js';
 import { createGit } from './utils/git.js';
@@ -11,6 +12,26 @@ import { log } from './utils/logger.js';
 import type { CodebaseSuggestion, LintIssue, LintReport } from './types.js';
 
 /** 文件扫描截断上限（字符数）。 */
+/** A learning's frontmatter tags; a tag that is not a string reads as undefined. */
+const LearningTagsSchema = z.array(z.string().optional().catch(undefined));
+
+const LintIssueSchema = z.object({
+  severity: z.enum(['high', 'medium', 'low']),
+  category: z.enum(['contradiction', 'outdated', 'orphan', 'missing']),
+  location: z.string(),
+  description: z.string(),
+  suggestion: z.string(),
+}) satisfies z.ZodType<LintIssue>;
+
+/** The lint reply the AI writes; a malformed issue is dropped, and a missing summary takes the default. */
+const LintReplySchema = z.object({
+  summary: z.string().optional().catch(undefined),
+  issues: z.array(LintIssueSchema.nullable().catch(null))
+    .transform((issues) => issues.filter((issue) => issue !== null))
+    .optional()
+    .catch(undefined),
+});
+
 const FILE_TREE_MAX_CHARS = 5000;
 
 /** 架构文档读取上限（字符数）。 */
@@ -47,9 +68,11 @@ async function gatherRepoContext(repoPath: string): Promise<string> {
   try {
     const git = createGit(repoPath);
     const logResult = await git.log({ maxCount: GIT_LOG_MAX_COUNT });
+
     const commitMessages = logResult.all
       .map((c) => `- ${c.date.slice(0, 10)} ${c.message}`)
       .join('\n');
+
     parts.push(`## 最近 ${GIT_LOG_MAX_COUNT} 条 Commit\n${commitMessages}`);
   } catch (err) {
     log.debug(`gatherRepoContext: git log 失败 — ${String(err)}`);
@@ -67,10 +90,12 @@ async function gatherRepoContext(repoPath: string): Promise<string> {
         ' -not -name "*.js.map"',
       { cwd: repoPath, encoding: 'utf-8' },
     );
+
     const truncated =
       rawTree.length > FILE_TREE_MAX_CHARS
         ? rawTree.slice(0, FILE_TREE_MAX_CHARS) + '\n…（已截断）'
         : rawTree;
+
     parts.push(`## 文件树（maxdepth=4，已过滤 dist/node_modules）\n${truncated}`);
   } catch (err) {
     log.debug(`gatherRepoContext: find 失败 — ${String(err)}`);
@@ -78,6 +103,7 @@ async function gatherRepoContext(repoPath: string): Promise<string> {
 
   // ── package.json：获取依赖和 scripts ────────────────────
   const pkgPath = path.join(repoPath, 'package.json');
+
   if (fs.existsSync(pkgPath)) {
     try {
       const raw = fs.readFileSync(pkgPath, 'utf-8');
@@ -91,6 +117,7 @@ async function gatherRepoContext(repoPath: string): Promise<string> {
   // ── 入口文件命令注册（index.ts / main.py 等）────────────
   for (const candidate of ['src/index.ts', 'src/main.ts', 'index.ts', 'main.py']) {
     const entryPath = path.join(repoPath, candidate);
+
     if (fs.existsSync(entryPath)) {
       try {
         const raw = fs.readFileSync(entryPath, 'utf-8');
@@ -106,6 +133,7 @@ async function gatherRepoContext(repoPath: string): Promise<string> {
   // ── 类型定义文件（types.ts）────────────────────────────
   for (const candidate of ['src/types.ts', 'src/types/index.ts', 'types.py']) {
     const typesPath = path.join(repoPath, candidate);
+
     if (fs.existsSync(typesPath)) {
       try {
         const raw = fs.readFileSync(typesPath, 'utf-8');
@@ -126,12 +154,15 @@ async function gatherRepoContext(repoPath: string): Promise<string> {
 
   // 扫描 docs/ 下最多 DOCS_MAX_FILES 个 .md 文件
   const docsDir = path.join(repoPath, 'docs');
+
   if (fs.existsSync(docsDir)) {
     try {
       const entries = fs.readdirSync(docsDir);
       let count = 0;
+
       for (const entry of entries) {
         if (count >= DOCS_MAX_FILES) break;
+
         if (entry.endsWith('.md')) {
           docCandidates.push(path.join(docsDir, entry));
           count++;
@@ -144,10 +175,13 @@ async function gatherRepoContext(repoPath: string): Promise<string> {
 
   for (const docPath of docCandidates) {
     if (!fs.existsSync(docPath)) continue;
+
     try {
       const raw = fs.readFileSync(docPath, 'utf-8');
+
       const excerpt =
         raw.length > DOC_MAX_CHARS ? raw.slice(0, DOC_MAX_CHARS) + '\n…（已截断）' : raw;
+
       const relPath = path.relative(repoPath, docPath);
       parts.push(`## 文档摘要：${relPath}\n${excerpt}`);
     } catch (err) {
@@ -185,6 +219,7 @@ async function gatherLearningsContext(opts: {
     const lines = learningsSuggestions.map(
       (s) => `- [${s.action}] ${s.section}: ${s.content.slice(0, 200)}`,
     );
+
     parts.push(`## 最近 MR 提炼建议（参考）\n${lines.join('\n')}`);
   }
 
@@ -197,20 +232,21 @@ async function gatherLearningsContext(opts: {
 
       for (const entry of entries) {
         if (fileCount >= LEARNINGS_MAX_FILES) break;
+
         if (!entry.endsWith('.md')) continue;
 
         try {
           const filePath = path.join(learningsDir, entry);
           const raw = fs.readFileSync(filePath, 'utf-8');
           const parsed = matter(raw);
-          const tags: unknown = parsed.data['tags'];
-          if (Array.isArray(tags)) {
-            for (const tag of tags) {
-              if (typeof tag === 'string') {
-                tagFreq[tag] = (tagFreq[tag] ?? 0) + 1;
-              }
+          const tags = LearningTagsSchema.safeParse(parsed.data['tags']).data ?? [];
+
+          for (const tag of tags) {
+            if (tag !== undefined) {
+              tagFreq[tag] = (tagFreq[tag] ?? 0) + 1;
             }
           }
+
           fileCount++;
         } catch (err) {
           log.debug(`gatherLearningsContext: 解析 ${entry} 失败 — ${String(err)}`);
@@ -242,6 +278,7 @@ async function gatherLearningsContext(opts: {
  */
 function buildFrontmatter(repoPath: string): string {
   const now = new Date().toISOString();
+
   return [
     '---',
     'title: Codebase 概览',
@@ -289,6 +326,7 @@ export async function generateCodebaseMd(opts: {
 
   // 聚合 learnings 上下文（可能为空）
   const learningsContext = await gatherLearningsContext({ learningsSuggestions, learningsDir });
+
   const learningsInjection =
     learningsContext
       ? `\n以下是最近 MR 提炼出的更新提示与团队关注点，请融合进文档相应章节：\n<learnings>\n${learningsContext}\n</learnings>\n`
@@ -385,6 +423,7 @@ export async function generateCodebaseMd(opts: {
   const h1Idx = body.indexOf('# ');
   const h2Idx = body.indexOf('## ');
   const titleIdx = h1Idx >= 0 ? h1Idx : h2Idx;
+
   if (titleIdx > 0) {
     body = body.slice(titleIdx);
   } else if (titleIdx < 0) {
@@ -425,9 +464,11 @@ export async function generateCodebaseIndex(codebaseMd: string): Promise<string>
   try {
     // 从输出中提取 JSON（AI 可能包裹在代码块里）
     const jsonMatch = raw.match(/\[[\s\S]*\]/);
+
     if (!jsonMatch) {
       throw new Error('未找到 JSON 数组');
     }
+
     const entries: IndexEntry[] = JSON.parse(jsonMatch[0]);
 
     const tableRows = entries
@@ -444,6 +485,7 @@ export async function generateCodebaseIndex(codebaseMd: string): Promise<string>
     );
   } catch (err) {
     log.debug(`generateCodebaseIndex: 解析 JSON 失败 — ${String(err)}，原始输出：${raw.slice(0, 200)}`);
+
     return (
       frontmatter +
       `# Codebase 索引\n\n` +
@@ -481,17 +523,21 @@ export async function lintCodebaseMd(codebaseMd: string): Promise<LintReport> {
 
     // 从输出中提取 JSON 对象
     const jsonMatch = raw.match(/\{[\s\S]*\}/);
+
     if (!jsonMatch) {
       throw new Error('未找到 JSON 对象');
     }
-    const parsed = JSON.parse(jsonMatch[0]) as { summary?: string; issues?: LintIssue[] };
+
+    const parsed = LintReplySchema.parse(JSON.parse(jsonMatch[0]));
+
     return {
-      issues: Array.isArray(parsed.issues) ? parsed.issues : [],
-      summary: typeof parsed.summary === 'string' ? parsed.summary : '检查完成',
+      issues: parsed.issues ?? [],
+      summary: parsed.summary ?? '检查完成',
     };
   } catch (err) {
     if (isOverrideInvalid(err)) throw err;
     log.debug(`lintCodebaseMd: 解析失败 — ${String(err)}`);
+
     return { issues: [], summary: '解析失败，无法 lint' };
   }
 }
@@ -513,6 +559,7 @@ export async function applyCodebaseSuggestions(
 
   if (effectiveSuggestions.length === 0) {
     log.debug('applyCodebaseSuggestions: 无有效建议，直接返回原内容');
+
     return current;
   }
 
@@ -530,5 +577,6 @@ export async function applyCodebaseSuggestions(
 
   log.debug(`applyCodebaseSuggestions: 应用 ${effectiveSuggestions.length} 条建议`);
   const result = (await callTool(prompt, { launchedBy: 'codebase' })).text;
+
   return result;
 }

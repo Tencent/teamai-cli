@@ -27,7 +27,13 @@ import { pathExists } from './utils/fs.js';
  * @returns      解析结果 `{ type, id }`
  * @throws       无法识别格式时抛出 Error
  */
-function parseIWikiInput(input: string): { type: 'space' | 'page'; id: string } {
+/** What an iWiki input names: a whole space, or one page. */
+interface IWikiTarget {
+  type: 'space' | 'page';
+  id: string;
+}
+
+function parseIWikiInput(input: string): IWikiTarget {
   const trimmed = input.trim();
 
   // 纯数字视为 space id
@@ -37,6 +43,7 @@ function parseIWikiInput(input: string): { type: 'space' | 'page'; id: string } 
 
   // URL 中含 /p/<id> 或 /pages/<id>
   const pageMatch = trimmed.match(/\/(?:p|pages)\/([^/?#]+)/);
+
   if (pageMatch) {
     return { type: 'page', id: pageMatch[1] };
   }
@@ -55,7 +62,13 @@ function parseIWikiInput(input: string): { type: 'space' | 'page'; id: string } 
  * @param doc  iWiki 文档对象
  * @returns    候选格式对象
  */
-function docToCandidate(doc: IWikiDocument): { path: string; rawContent: string } {
+/** A document as classifyWithAI takes it. */
+interface ClassifyCandidate {
+  path: string;
+  rawContent: string;
+}
+
+function docToCandidate(doc: IWikiDocument): ClassifyCandidate {
   return {
     path: `iwiki://p/${doc.docid}`,
     rawContent: doc.content.slice(0, 3000),
@@ -84,6 +97,7 @@ async function downloadDocuments(
 
   for (let i = 0; i < pages.length; i += DOWNLOAD_BATCH_SIZE) {
     const batch = pages.slice(i, i + DOWNLOAD_BATCH_SIZE);
+
     const results = await Promise.allSettled(
       batch.map((page) => client.getDocument(page.docid)),
     );
@@ -127,6 +141,7 @@ export async function importFromIWiki(opts: {
 }): Promise<void> {
   // 1. 读取 token
   const token = opts.token ?? process.env['TAI_PAT_TOKEN'];
+
   if (!token) {
     throw new Error(
       'Please set TAI_PAT_TOKEN environment variable (get it at: https://tai.it.woa.com/user/pat)',
@@ -141,11 +156,13 @@ export async function importFromIWiki(opts: {
 
   // 4. 获取页面列表
   let pages: IWikiPage[];
+
   if (type === 'page') {
     // 单页模式：用占位符，后续直接下载该页
     pages = [{ docid: id, title: id }];
   } else {
     const fetchSpinner = await spinner(`Fetching iWiki Space (${id}) page tree...`);
+
     try {
       pages = await client.fetchAllPages(id, { maxPages: opts.maxPages ?? 200 });
       fetchSpinner.succeed(`Page tree fetched: ${pages.length} pages`);
@@ -157,12 +174,14 @@ export async function importFromIWiki(opts: {
 
   if (pages.length === 0) {
     log.warn('no pages found, import aborted');
+
     return;
   }
 
   // 5. 并发下载文档内容
   const downloadSpin = await spinner(`Downloading iWiki documents (${pages.length} pages)...`);
   let documents: IWikiDocument[];
+
   try {
     documents = await downloadDocuments(client, pages);
     downloadSpin.succeed(`Documents downloaded: ${documents.length}/${pages.length} pages`);
@@ -173,6 +192,7 @@ export async function importFromIWiki(opts: {
 
   if (documents.length === 0) {
     log.warn('all document downloads failed, import aborted');
+
     return;
   }
 
@@ -184,6 +204,7 @@ export async function importFromIWiki(opts: {
 
   if (classified.length === 0) {
     log.warn('no valid entries after AI classification, import aborted');
+
     return;
   }
 
@@ -200,14 +221,17 @@ export async function importFromIWiki(opts: {
   // A preview or an --output import leaves the team repo untouched.
   if (opts.dryRun || opts.outputDir) {
     log.success('iWiki import complete');
+
     return;
   }
 
   // 10. 与 teamwiki 代码知识建立 MAPS_TO 关系（在 push 之前，确保结果被推送）
   const teamwikiRoot = path.join(repoPath, 'teamwiki');
+
   if (await pathExists(path.join(teamwikiRoot, '.indices', 'graph-index.json'))) {
     try {
       const mapsToEdges = await reconcileIwikiWithCodebase(documents, teamwikiRoot);
+
       if (mapsToEdges.length > 0) {
         log.success(`Established ${mapsToEdges.length} iWiki↔code MAPS_TO relations`);
       } else {
@@ -267,9 +291,11 @@ export async function reconcileIwikiWithCodebase(
   // `title`/`slug`（本函数对 graph-index.json 做的是原始 JSON.parse，不经过
   // loadGraphIndex 的字段归一化）。
   const codeLabels = new Map<string, { id: string; origin?: string }>();
+
   for (const node of graph.nodes) {
     const label: string | undefined = node.label ?? node.title;
     const id: string | undefined = node.id ?? node.slug;
+
     if (!label || !id) continue;
     codeLabels.set(label.toLowerCase(), { id, origin: node.origin });
     // 也索引 PascalCase 拆分后的单词
@@ -280,12 +306,15 @@ export async function reconcileIwikiWithCodebase(
   // 加载代码事实页面内容用于全文匹配
   const evidenceDir = path.join(teamwikiRoot, 'evidence', 'code');
   const codePageContents = new Map<string, string>();
+
   if (await pathExists(evidenceDir)) {
     const { readdir } = await import('node:fs/promises');
     const projects = await readdir(evidenceDir);
+
     for (const project of projects) {
       const projectDir = path.join(evidenceDir, project);
-      const files = await readdir(projectDir).catch(() => [] as string[]);
+      const files = await readdir(projectDir).catch(() => []);
+
       for (const file of files) {
         if (!file.endsWith('.md')) continue;
         const content = await readFile(path.join(projectDir, file), 'utf-8').catch(() => '');
@@ -304,12 +333,15 @@ export async function reconcileIwikiWithCodebase(
     for (const term of terms) {
       // 方式 1：术语直接匹配代码节点标签
       const directMatch = codeLabels.get(term.toLowerCase());
+
       if (directMatch) {
         const key = `${docSlug}|${directMatch.id}`;
+
         if (!edgeSet.has(key)) {
           edgeSet.add(key);
           mapsToEdges.push({ from: docSlug, to: directMatch.id, relation: 'MAPS_TO', term, confidence: 0.8, origin: directMatch.origin });
         }
+
         continue;
       }
 
@@ -317,10 +349,12 @@ export async function reconcileIwikiWithCodebase(
       for (const [pagePath, content] of codePageContents) {
         if (content.toLowerCase().includes(term.toLowerCase()) && term.length > 3) {
           const key = `${docSlug}|${pagePath}`;
+
           if (!edgeSet.has(key)) {
             edgeSet.add(key);
             mapsToEdges.push({ from: docSlug, to: pagePath, relation: 'MAPS_TO', term, confidence: 0.6 });
           }
+
           break; // 每个术语最多匹配一个 code page
         }
       }
@@ -332,13 +366,16 @@ export async function reconcileIwikiWithCodebase(
     const existingKeys = new Set(
       graph.edges.map((e: { from: string; to: string; relation: string }) => `${e.from}|${e.to}|${e.relation}`),
     );
+
     for (const edge of mapsToEdges) {
       const key = `${edge.from}|${edge.to}|${edge.relation}`;
+
       if (!existingKeys.has(key)) {
         existingKeys.add(key);
         graph.edges.push(edge);
       }
     }
+
     await writeFile(graphPath, JSON.stringify(graph, null, 2), 'utf-8');
   }
 
@@ -358,24 +395,28 @@ function extractKeyTermsFromDoc(content: string): string[] {
 
   // API 路径
   const apiPaths = content.match(/\/api\/[a-z0-9/_-]+/gi);
+
   if (apiPaths) {
     for (const p of apiPaths) terms.add(p);
   }
 
   // 反引号内的代码标识符（任意格式：PascalCase、camelCase、snake_case）
   const codeRefs = content.matchAll(/`([a-zA-Z_][a-zA-Z0-9_]{2,})`/g);
+
   for (const m of codeRefs) {
     if (m[1]) terms.add(m[1]);
   }
 
   // PascalCase 标识符（独立出现）
   const pascalMatches = content.matchAll(/(?:^|[\s(,])([A-Z][a-z]+(?:[A-Z][a-z]+)+)/gm);
+
   for (const m of pascalMatches) {
     if (m[1]) terms.add(m[1]);
   }
 
   // snake_case 标识符（2+ 段，如 user_token、create_session）
   const snakeMatches = content.matchAll(/\b([a-z][a-z0-9]+(?:_[a-z0-9]+){1,})\b/g);
+
   for (const m of snakeMatches) {
     if (m[1] && m[1].length > 4) terms.add(m[1]);
   }

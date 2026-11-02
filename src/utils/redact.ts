@@ -32,6 +32,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { z } from 'zod';
 
 const PLACEHOLDER = (label: string): string => `<REDACTED:${label}>`;
 
@@ -52,6 +53,9 @@ export const MIN_ENV_VALUE_LENGTH = 8;
 /** Minimum length of a value the team declares secret: a shorter one cannot be told from ordinary text. */
 export const MIN_DECLARED_SECRET_LENGTH = 4;
 
+/** A match's named groups when its `passedOver` group took part (see SECRET_PATTERNS). */
+const PassedOverSchema = z.object({ passedOver: z.string() });
+
 /**
  * (label, regex) pairs matched and replaced wholesale. Order matters: more
  * specific prefixes (e.g. `sk-ant-`) run before broader ones (e.g. `sk-`).
@@ -61,10 +65,6 @@ export const MIN_DECLARED_SECRET_LENGTH = 4;
  * later offset, so the scan skips it once instead of rescanning it per offset.
  * Only that name keeps a match, so any other capture group still redacts.
  */
-function wasPassedOver(groups: unknown): boolean {
-  return typeof groups === 'object' && groups !== null && 'passedOver' in groups && typeof groups.passedOver === 'string';
-}
-
 const SECRET_PATTERNS: ReadonlyArray<readonly [string, RegExp]> = [
   ['pem', /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----|(?<passedOver>[\s\S]*))/g],
   ['anthropic', /\bsk-ant-[A-Za-z0-9_-]{20,}/g],
@@ -115,16 +115,20 @@ export interface RedactOptions {
  * name. Kept separate from {@link redact} so redaction stays a pure function of
  * its inputs (and so the env scan can be unit-tested with a fake env).
  */
-export function collectEnvSecrets(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
+export function collectEnvSecrets(env: NodeJS.ProcessEnv = process.env) {
   const secrets: Record<string, string> = {};
+
   for (const [name, value] of Object.entries(env)) {
-    if (typeof value !== 'string' || value.length < MIN_ENV_VALUE_LENGTH) continue;
+    if (value === undefined || value.length < MIN_ENV_VALUE_LENGTH) continue;
+
     if (!SECRET_NAME_PATTERN.test(name.toUpperCase())) continue;
+
     // `SSH_KEY_PATH` names where a secret lives, not the secret. Shape alone
     // cannot tell: base64 secrets contain `/` and may start with it.
     if (path.isAbsolute(value) && fs.existsSync(value)) continue;
     secrets[name] = value;
   }
+
   return secrets;
 }
 
@@ -142,8 +146,10 @@ export function redact(text: string, options: RedactOptions = {}): string {
   // is not masked inside `build-49381`.
   const envSecrets = options.envSecrets ?? {};
   const entries = Object.entries(envSecrets).sort((a, b) => b[1].length - a[1].length);
+
   for (const [label, value] of entries) {
     if (!value) continue;
+
     if (value.length < MIN_ENV_VALUE_LENGTH) {
       const token = new RegExp(`(?<![\\p{L}\\p{N}_])${value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}_])`, 'gu');
       out = out.replace(token, () => PLACEHOLDER(label));
@@ -156,9 +162,10 @@ export function redact(text: string, options: RedactOptions = {}): string {
   if (options.patterns !== false) {
     for (const [label, pattern] of SECRET_PATTERNS) {
       out = out.replace(pattern, (match: string, ...rest: unknown[]) =>
-        wasPassedOver(rest.at(-1)) ? match : PLACEHOLDER(label),
+        PassedOverSchema.safeParse(rest.at(-1)).success ? match : PLACEHOLDER(label),
       );
     }
+
     out = out.replace(KV_PATTERN, (_m, key: string, sep: string) => key + sep + PLACEHOLDER('kv'));
     out = out.replace(BEARER_PATTERN, (match, scheme: string, token: string) =>
       JOINED_WORDS_PATTERN.test(token) ? match : scheme + PLACEHOLDER('authz'),
@@ -175,12 +182,18 @@ export function redact(text: string, options: RedactOptions = {}): string {
  * A copy of the JSON value `value` with each known secret value masked in every string it holds, as `redact` masks
  * text without the shape patterns. Keys are strings too: output may put a secret in a computed property name.
  */
+// oxlint-disable-next-line teamai/no-unknown-parameters, teamai/no-unknown-returns -- masks secrets in any value a caller is about to send or log, and returns the same kind of value
 export function redactJson(value: unknown, envSecrets: Record<string, string>): unknown {
+  // oxlint-disable-next-line teamai/no-runtime-typeof -- the walk itself: strings are masked, other values pass through
   if (typeof value === 'string') return redact(value, { envSecrets, patterns: false });
+
   if (Array.isArray(value)) return value.map((item) => redactJson(item, envSecrets));
+
+  // oxlint-disable-next-line teamai/no-runtime-typeof -- the walk itself: an object's keys and values are masked
   if (value !== null && typeof value === 'object') {
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [redact(key, { envSecrets, patterns: false }), redactJson(item, envSecrets)]));
   }
+
   return value;
 }
 

@@ -5,6 +5,7 @@ import type { TokenReading, TokenRequest, TokenSource } from '../index.js';
 import { forEachJsonLine } from './jsonl.js';
 
 const Count = z.number().finite().nonnegative().catch(0).default(0);
+
 /** Pi counts cache reads and writes apart from `input`, as Anthropic does. */
 const Usage = z.object({
   input: Count,
@@ -13,7 +14,9 @@ const Usage = z.object({
   cacheWrite: Count,
   cost: z.object({ total: z.number().finite().nonnegative() }).optional().catch(undefined),
 });
+
 const Model = z.string().min(1).optional().catch(undefined);
+
 /** An assistant message (Pi and Oh My Pi), or a call Oh My Pi made beside the conversation (`model_usage`). */
 const Entry = z.union([
   z.object({
@@ -36,17 +39,22 @@ const Entry = z.union([
 export async function readPiSession(source: TokenSource): Promise<TokenReading> {
   let tokens: TokenUsage = emptyTokenUsage();
   const requests: TokenRequest[] = [];
+
   if (!source.transcriptPath) return { tokens, requests };
   const counted = new Set<string>();
   await forEachJsonLine(source.transcriptPath, ['"usage"'], (raw) => {
     const entry = Entry.safeParse(raw);
+
     if (!entry.success) return;
     const { id, timestamp, model, usage } = entry.data;
     const key = id && `${id}:${timestamp}`;
+
     if (key && counted.has(key)) return;
+
     if (key) counted.add(key);
     const used = { input: usage.input, output: usage.output, cacheRead: usage.cacheRead, cacheCreation: usage.cacheWrite };
     tokens = addTokenUsage(tokens, used);
+
     if (!key) return;
     const cost = usage.cost?.total;
     requests.push({
@@ -54,5 +62,6 @@ export async function readPiSession(source: TokenSource): Promise<TokenReading> 
       reportedCostMicros: cost ? Math.round(cost * 1_000_000) : undefined,
     });
   });
+
   return { tokens, requests };
 }

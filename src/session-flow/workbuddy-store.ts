@@ -34,8 +34,9 @@ function esc(value: string): string {
 }
 
 /** Run a SQL script through the sqlite3 CLI (piped in; never written to disk). */
-function runSql(dbPath: string, sql: string, timeoutMs = 30_000): { ok: boolean; reason?: string } {
+function runSql(dbPath: string, sql: string, timeoutMs = 30_000): RegisterWorkBuddyResult {
   const sqlite3 = findSqlite3();
+
   if (!sqlite3) return { ok: false, reason: 'sqlite3 CLI not found' };
 
   try {
@@ -44,13 +45,16 @@ function runSql(dbPath: string, sql: string, timeoutMs = 30_000): { ok: boolean;
       maxBuffer: 32 * 1024 * 1024,
       timeout: timeoutMs,
     });
+
     if (r.status !== 0) {
       const stderr = (r.stderr?.toString() ?? '').trim();
+
       return { ok: false, reason: stderr.slice(0, 300) || `sqlite3 exit ${r.status}` };
     }
   } catch (e) {
-    return { ok: false, reason: (e as Error).message };
+    return { ok: false, reason: e instanceof Error ? e.message : String(e) };
   }
+
   return { ok: true };
 }
 
@@ -79,7 +83,9 @@ function readUserId(dbPath: string): string | null {
         ['-readonly', dbPath, "select user_id from sessions where user_id is not null and user_id <> '' limit 1;"],
         { encoding: 'utf-8', timeout: 10_000 },
       );
+
       const v = (r.stdout ?? '').trim();
+
       if (UUID_RE.test(v)) return v;
     } catch {
        // fall through to the next source
@@ -91,6 +97,7 @@ function readUserId(dbPath: string): string | null {
    // 2) connectors/<uuid> directory names
   try {
     const connectorsDir = path.join(home, 'connectors');
+
     for (const name of fs.readdirSync(connectorsDir)) {
       if (UUID_RE.test(name)) return name;
     }
@@ -101,6 +108,7 @@ function readUserId(dbPath: string): string | null {
    // 3) uuid in app/sessions.json
   try {
     const raw = fs.readFileSync(path.join(home, 'app', 'sessions.json'), 'utf-8');
+
     for (const m of raw.matchAll(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi)) {
       return m[0];
     }
@@ -137,12 +145,14 @@ export interface RegisterWorkBuddyResult {
  */
 export function registerWorkBuddySession(args: RegisterWorkBuddySessionArgs): RegisterWorkBuddyResult {
   const dbPath = workBuddyDbPath(args.store);
+
   if (!fs.existsSync(dbPath)) {
     return { ok: false, reason: `workbuddy.db not found: ${dbPath}` };
   }
 
    // user_id is the account id; inventing one makes the client's user filter hide the row.
   const userId = readUserId(dbPath);
+
   if (!userId) {
     return { ok: false, reason: 'no existing session row to derive user_id from' };
   }
@@ -178,11 +188,14 @@ export function registerWorkBuddySession(args: RegisterWorkBuddySessionArgs): Re
  /** Remove the session from WorkBuddy's list (called on rollback / delete). */
 export function unregisterWorkBuddySession(store: string, sessionId: string): RegisterWorkBuddyResult {
   const dbPath = workBuddyDbPath(store);
+
   if (!fs.existsSync(dbPath)) return { ok: false, reason: 'workbuddy.db not found' };
+
   const sql =
     'PRAGMA busy_timeout=5000;\n' +
     'BEGIN IMMEDIATE;\n' +
     `DELETE FROM sessions WHERE id='${esc(sessionId)}';\n` +
     'COMMIT;';
+
   return runSql(dbPath, sql);
 }

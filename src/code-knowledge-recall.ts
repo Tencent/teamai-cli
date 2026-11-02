@@ -5,10 +5,12 @@
  * Implements scored mode with graph neighbor boosting.
  */
 
+import type { Dirent } from 'node:fs';
 import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 
 import matter from 'gray-matter';
+import { z } from 'zod';
 
 import type { GraphIndex } from './wiki-engine/core/graph-index.schema.js';
 import { tokenize, tokenCount, MAX_TOKENIZE_CHARS } from './utils/tokenizer.js';
@@ -49,7 +51,7 @@ interface PageDoc {
 const BM25_K1 = 1.5;
 const BM25_B = 0.75;
 const TITLE_BOOST = 3.0;
-const RELATION_WEIGHT: Record<string, number> = { DEPENDS_ON: 3, REFERENCES: 2, MAPS_TO: 2, CONTAINS: 1 };
+const RELATION_WEIGHT = new Map([['DEPENDS_ON', 3], ['REFERENCES', 2], ['MAPS_TO', 2], ['CONTAINS', 1]]);
 const ENTRY_NODE_BOOST = 8;
 
 /** 导航文件：在 context 模式下排除，避免模板文案干扰 BM25 */
@@ -66,12 +68,15 @@ function countOccurrences(text: string, token: string): number {
   let count = 0;
   let idx = 0;
   const lower = (text.length > MAX_TOKENIZE_CHARS ? text.slice(0, MAX_TOKENIZE_CHARS) : text).toLowerCase();
+
   while (true) {
     idx = lower.indexOf(token, idx);
+
     if (idx === -1) break;
     count++;
     idx += token.length;
   }
+
   return count;
 }
 
@@ -82,6 +87,7 @@ function buildCorpusStats(pages: PageDoc[]): CorpusStats {
   for (const page of pages) {
     totalLength += page.tokenCount;
     const seen = new Set<string>();
+
     for (const token of page.tokens) {
       if (!seen.has(token)) {
         seen.add(token);
@@ -120,8 +126,10 @@ function scoreBM25(page: PageDoc, queryTokens: string[], stats: CorpusStats): nu
  */
 function findEntryNodes(queryTokens: string[], graph: GraphIndex): Set<string> {
   const entries = new Set<string>();
+
   for (const node of graph.nodes) {
     const text = `${node.slug} ${node.title}`.toLowerCase();
+
     for (const token of queryTokens) {
       if (token.length > 1 && text.includes(token)) {
         entries.add(node.slug);
@@ -129,6 +137,7 @@ function findEntryNodes(queryTokens: string[], graph: GraphIndex): Set<string> {
       }
     }
   }
+
   return entries;
 }
 
@@ -139,20 +148,25 @@ interface AdjEntry {
 
 function buildAdjacencyMap(graph: GraphIndex): Map<string, AdjEntry[]> {
   const adj = new Map<string, AdjEntry[]>();
+
   for (const edge of graph.edges) {
     const fromList = adj.get(edge.from);
+
     if (fromList) {
       fromList.push({ neighbor: edge.to, relation: edge.relation });
     } else {
       adj.set(edge.from, [{ neighbor: edge.to, relation: edge.relation }]);
     }
+
     const toList = adj.get(edge.to);
+
     if (toList) {
       toList.push({ neighbor: edge.from, relation: edge.relation });
     } else {
       adj.set(edge.to, [{ neighbor: edge.from, relation: edge.relation }]);
     }
   }
+
   return adj;
 }
 
@@ -174,6 +188,7 @@ function computeGraphBoost(
   for (const slug of entryNodes) {
     const slugParts = slug.split('/');
     const slugName = (slugParts.pop() ?? '').toLowerCase();
+
     if (slugName && (pageTitle.includes(slugName) || pageFile.includes(slugName))) {
       return ENTRY_NODE_BOOST;
     }
@@ -181,8 +196,10 @@ function computeGraphBoost(
 
   // Check 1-hop and 2-hop neighbors using adjacency map
   let maxBoost = 0;
+
   for (const entrySlug of entryNodes) {
     const neighbors = adj.get(entrySlug);
+
     if (!neighbors) continue;
 
     for (const { neighbor: neighborSlug, relation } of neighbors) {
@@ -190,43 +207,55 @@ function computeGraphBoost(
       const neighborName = (neighborParts.pop() ?? '').toLowerCase();
 
       if (neighborName && (pageTitle.includes(neighborName) || pageFile.includes(neighborName))) {
-        const relWeight = RELATION_WEIGHT[relation] ?? 1;
+        const relWeight = RELATION_WEIGHT.get(relation) ?? 1;
         const boost = relWeight * 0.8; // 1-hop
+
         if (boost > maxBoost) maxBoost = boost;
       }
 
       // 2-hop: check neighbors of this neighbor
       const hop2Neighbors = adj.get(neighborSlug);
+
       if (!hop2Neighbors) continue;
+
       for (const { neighbor: hop2Slug, relation: rel2 } of hop2Neighbors) {
         const hop2Parts = hop2Slug.split('/');
         const hop2Name = (hop2Parts.pop() ?? '').toLowerCase();
+
         if (hop2Name && (pageTitle.includes(hop2Name) || pageFile.includes(hop2Name))) {
-          const relWeight = RELATION_WEIGHT[rel2] ?? 1;
+          const relWeight = RELATION_WEIGHT.get(rel2) ?? 1;
           const boost = relWeight * 0.4; // 2-hop: half weight
+
           if (boost > maxBoost) maxBoost = boost;
         }
       }
     }
   }
+
   return maxBoost;
 }
 
 function extractSnippet(content: string, queryTokens: string[], maxLen: number = 300): string {
   const lower = content.toLowerCase();
   let bestIdx = 0;
+
   for (const token of queryTokens) {
     const idx = lower.indexOf(token);
+
     if (idx >= 0) {
       bestIdx = idx;
       break;
     }
   }
+
   const start = Math.max(0, bestIdx - 50);
   const end = Math.min(content.length, start + maxLen);
   let snippet = content.slice(start, end).replace(/\n+/g, ' ').trim();
+
   if (start > 0) snippet = '...' + snippet;
+
   if (end < content.length) snippet += '...';
+
   return snippet;
 }
 
@@ -275,37 +304,50 @@ function extractSnippet(content: string, queryTokens: string[], maxLen: number =
  */
 function filterRouterContent(content: string, withheldCodebases: string[]): string {
   const withheld = new Set(withheldCodebases.map(caseFoldKey));
+
   const lineSlug = (line: string): string | null => {
     const match = line.match(/(?:evidence\/)?code\/([^/\]]+)/);
+
     return match ? caseFoldKey(match[1]) : null;
   };
+
   const isBullet = (line: string): boolean => /^-\s/.test(line);
+
   const survivesFilter = (line: string): boolean => {
     const slug = lineSlug(line);
+
     if (slug) return !withheld.has(slug);
+
     return !isBullet(line);
   };
 
   const lines = content.split('\n');
   const sections: string[][] = [[]];
+
   for (const line of lines) {
     if (/^#{1,6}\s/.test(line) && sections[sections.length - 1].length > 0) {
       sections.push([]);
     }
+
     sections[sections.length - 1].push(line);
   }
 
   const kept: string[] = [];
+
   for (const section of sections) {
     const bullets = section.filter(isBullet);
     const dropWhole = bullets.length > 0 && bullets.every((line) => !survivesFilter(line));
+
     if (dropWhole) continue;
+
     for (const line of section) {
       if (line.startsWith('<!-- search-anchor:')) continue;
+
       if (!survivesFilter(line)) continue;
       kept.push(line);
     }
   }
+
   return kept.join('\n');
 }
 
@@ -319,11 +361,14 @@ async function loadWikiPages(
   if (depth === 'route') {
     // route 模式：只加载 router.md（路由入口）
     const routerPath = path.join(wikiRoot, 'router.md');
+
     try {
       const rawContent = await readFile(routerPath, 'utf-8');
+
       const content = withheldCodebases.length > 0
         ? filterRouterContent(rawContent, withheldCodebases)
         : rawContent;
+
       const titleMatch = content.match(/^title:\s*(.+)$/m);
       const title = titleMatch ? titleMatch[1].trim() : 'Team Wiki Router';
       pages.push({
@@ -336,11 +381,13 @@ async function loadWikiPages(
     } catch {
       // router.md 不存在则跳过
     }
+
     return pages;
   }
 
   const evidenceDir = path.join(wikiRoot, 'evidence', 'code');
   let projectDirs: string[];
+
   try {
     const entries = await readdir(evidenceDir, { withFileTypes: true });
     projectDirs = entries.filter(e => e.isDirectory()).map(e => e.name);
@@ -384,33 +431,42 @@ const MAX_RECURSION_DEPTH = 10;
  */
 function sanitizeSources(sources: string[] | undefined): string[] | undefined {
   if (sources === undefined) return undefined;
+
   const cleaned = sources
     .map((s) => s.trim())
     .filter((trimmed) => {
       if (trimmed === '') return false;
+
       // Exclude URLs: http://, https://, or any other protocol via ://
       if (/^https?:\/\//i.test(trimmed)) return false;
+
       if (trimmed.includes('://')) return false;
+
       // Exclude bare directories (trailing slash)
       if (trimmed.endsWith('/')) return false;
+
       return true;
     });
+
   return cleaned.length > 0 ? cleaned : undefined;
 }
 
 export function extractSourceDescriptions(sources: string[], pageContent: string): SourceAnchor[] {
   const lines = pageContent.split('\n');
+
   return sources.map((source) => {
     const slashIdx = source.lastIndexOf('/');
     const basename = slashIdx >= 0 ? source.slice(slashIdx + 1) : source;
 
     let matchLineIdx = -1;
+
     for (let i = 0; i < lines.length; i++) {
       if (lines[i].includes(source)) {
         matchLineIdx = i;
         break;
       }
     }
+
     if (matchLineIdx === -1) {
       for (let i = 0; i < lines.length; i++) {
         if (lines[i].includes('`file:') && lines[i].includes(basename)) {
@@ -419,6 +475,7 @@ export function extractSourceDescriptions(sources: string[], pageContent: string
         }
       }
     }
+
     if (matchLineIdx === -1) {
       for (let i = 0; i < lines.length; i++) {
         if (lines[i].includes(basename)) {
@@ -431,6 +488,7 @@ export function extractSourceDescriptions(sources: string[], pageContent: string
     if (matchLineIdx === -1) return { path: source };
 
     let h3Idx = -1;
+
     for (let i = matchLineIdx; i >= 0; i--) {
       if (lines[i].startsWith('### ')) {
         h3Idx = i;
@@ -441,9 +499,12 @@ export function extractSourceDescriptions(sources: string[], pageContent: string
     if (h3Idx === -1) return { path: source };
 
     let descIdx = -1;
+
     for (let i = h3Idx + 1; i < lines.length; i++) {
       const line = lines[i];
+
       if (line.trim() === '') continue;
+
       if (line.startsWith('#') || line.startsWith('-') || line.startsWith('`')) break;
       descIdx = i;
       break;
@@ -453,9 +514,16 @@ export function extractSourceDescriptions(sources: string[], pageContent: string
 
     const chars = Array.from(lines[descIdx]);
     const desc = chars.length > 40 ? chars.slice(0, 40).join('') : lines[descIdx];
+
     return { path: source, desc };
   });
 }
+
+/** The frontmatter a page is indexed by; a field of another type counts as absent, a source that is not text is skipped. */
+const PageFrontmatterSchema = z.object({
+  title: z.string().optional().catch(undefined),
+  source: z.union([z.array(z.string().nullable().catch(null)), z.string()]).optional().catch(undefined),
+});
 
 async function loadPagesRecursive(
   dir: string,
@@ -465,10 +533,13 @@ async function loadPagesRecursive(
   currentDepth: number = 0,
 ): Promise<void> {
   if (currentDepth >= MAX_RECURSION_DEPTH) return;
+
   const entries = await readdir(dir, { withFileTypes: true })
-    .catch(() => [] as import('node:fs').Dirent[]);
+    .catch((): Dirent[] => []);
+
   for (const entry of entries) {
     const fullPath = path.join(dir, entry.name);
+
     if (entry.isDirectory()) {
       await loadPagesRecursive(
         fullPath, `${relativePath}/${entry.name}`,
@@ -476,28 +547,31 @@ async function loadPagesRecursive(
       );
     } else if (entry.name.endsWith('.md')) {
       const relFilePath = `${relativePath}/${entry.name}`;
+
       if (depth === 'context') {
         // 先检查白名单模式（overview/modules/docs 下的文件）
         if (!CONTEXT_ALLOWED_PATTERNS.some(p => p.test(relFilePath))) continue;
         // 仅排除项目根层级的导航文件（不影响 docs/index.md 等嵌套文件）
         const relSegments = relFilePath.split('/');
         const depthFromProject = relSegments.length - 3; // evidence/code/<project>/ = 3 segments
+
         if (depthFromProject <= 1 && NAVIGATION_FILES.has(entry.name)) continue;
       }
+
       try {
         const content = await readFile(fullPath, 'utf-8');
         let title: string;
         let sources: string[] | undefined;
+
         try {
-          const { data } = matter(content);
-          title = typeof data.title === 'string' && data.title.trim()
-            ? data.title.trim()
-            : entry.name.replace('.md', '');
+          const data = PageFrontmatterSchema.parse(matter(content).data);
+          title = data.title?.trim() || entry.name.replace('.md', '');
           const raw = data.source;
+
           if (Array.isArray(raw)) {
-            const filtered = raw.filter((s): s is string => typeof s === 'string' && s.trim() !== '');
+            const filtered = raw.flatMap((s) => (s !== null && s.trim() !== '' ? [s] : []));
             sources = filtered.length > 0 ? filtered : undefined;
-          } else if (typeof raw === 'string' && raw.trim() !== '') {
+          } else if (raw !== undefined && raw.trim() !== '') {
             sources = [raw.trim()];
           } else {
             sources = undefined;
@@ -508,6 +582,7 @@ async function loadPagesRecursive(
           title = titleMatch ? titleMatch[1].trim() : entry.name.replace('.md', '');
           sources = undefined;
         }
+
         pages.push({
           path: relFilePath,
           title,
@@ -539,11 +614,14 @@ async function loadPagesRecursive(
 async function loadGraph(wikiRoot: string, withheldCodebases: string[] = []): Promise<GraphIndex | null> {
   if (withheldCodebases.length === 0) {
     const { loadGraphIndex } = await import('./wiki-engine/core/graph-index.schema.js');
+
     return loadGraphIndex(wikiRoot);
   }
+
   const { scopeGlobalGraph } = await import('./graph-aggregate.js');
   const withheld = new Set(withheldCodebases.map((slug) => caseFoldKey(slug)));
-  return (await scopeGlobalGraph(wikiRoot, withheld)) as GraphIndex | null;
+
+  return scopeGlobalGraph(wikiRoot, withheld);
 }
 
 export interface QueryCodeKnowledgeOptions {
@@ -562,6 +640,7 @@ export async function queryCodeKnowledge(
   const { wikiRoot, limit = 5, depth = 'context', withheldCodebases = [] } = options;
 
   const pages = await loadWikiPages(wikiRoot, depth, withheldCodebases);
+
   if (pages.length === 0) return [];
 
   if (depth === 'route') {
@@ -579,6 +658,7 @@ export async function queryCodeKnowledge(
 
   const graph = await loadGraph(wikiRoot, withheldCodebases);
   const queryTokens = tokenize(query);
+
   if (queryTokens.length === 0) return [];
 
   const stats = buildCorpusStats(pages);
@@ -586,11 +666,14 @@ export async function queryCodeKnowledge(
   const adj = graph ? buildAdjacencyMap(graph) : new Map<string, AdjEntry[]>();
 
   const scored: Array<{ page: PageDoc; score: number }> = [];
+
   for (const page of pages) {
     let score = scoreBM25(page, queryTokens, stats);
+
     if (graph) {
       score += computeGraphBoost(page, entryNodes, graph, adj);
     }
+
     if (score > 0) {
       scored.push({ page, score });
     }
@@ -598,15 +681,17 @@ export async function queryCodeKnowledge(
 
   scored.sort((a, b) => b.score - a.score);
 
-  const TOKEN_BUDGET: Record<string, number> = { route: 2000, context: 5000, lookup: 20000 };
+  const TOKEN_BUDGET: Record<NonNullable<QueryCodeKnowledgeOptions['depth']>, number> = { route: 2000, context: 5000, lookup: 20000 };
   const budget = TOKEN_BUDGET[depth] ?? 5000;
   const estimateTokens = (text: string) => Math.ceil(text.length / 3.5);
 
   const forwardDeps = new Map<string, string[]>();
+
   if (graph && depth === 'lookup') {
     for (const edge of graph.edges) {
       if (edge.from === edge.to) continue;
       const list = forwardDeps.get(edge.from);
+
       if (list) { list.push(edge.to); } else { forwardDeps.set(edge.from, [edge.to]); }
     }
   }
@@ -618,6 +703,7 @@ export async function queryCodeKnowledge(
     if (results.length >= limit) break;
 
     let snippet: string;
+
     if (depth === 'lookup') {
       const maxChars = Math.floor(budget * 3.5 * 0.7 / Math.max(limit, 1));
       snippet = page.content.slice(0, maxChars);
@@ -626,17 +712,22 @@ export async function queryCodeKnowledge(
     }
 
     const cost = estimateTokens(page.title + ' ' + snippet);
+
     if (tokenUsed + cost > budget && results.length > 0) break;
     tokenUsed += cost;
 
     let relatedFiles: string[] | undefined;
+
     if (page.sources && page.sources.length > 0) {
       const sourceSet = new Set<string>(page.sources);
       const neighbors = new Set<string>();
+
       for (const src of page.sources) {
         const deps = forwardDeps.get(src);
+
         if (deps) { for (const d of deps) { if (!sourceSet.has(d)) { neighbors.add(d); } } }
       }
+
       if (neighbors.size > 0) {
         relatedFiles = [...neighbors].slice(0, 15);
       }

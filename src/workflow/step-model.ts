@@ -24,6 +24,7 @@ import type { WorkflowFailure } from './types.js';
  * every driver passes it to the tool as is.
  */
 export const StepModelSchema = z.object({ name: z.string().min(1), effort: z.string().min(1).optional() }).strict();
+
 export type StepModel = z.infer<typeof StepModelSchema>;
 
 /**
@@ -67,6 +68,7 @@ const NO_MODEL_FIX: Record<NoModel, Record<ModelOrigin, string>> = {
  */
 export function stepModelUnavailableText(step: string, origin: ModelOrigin, value: string, cause: string, reason: NoModel): string {
   const asks = origin === 'step' ? `asks for ${value}` : `gets ${value} from defaults`;
+
   return `Step "${step}" ${asks}, which ${cause}. ${NO_MODEL_FIX[reason][origin]}`;
 }
 
@@ -78,36 +80,51 @@ function unavailable(message: string): StepModelChoice {
 function definitionModel(agent: AgentSpec | undefined, tool: ToolName): string | undefined {
   if (agent === undefined) return undefined;
   const own = tool === 'agy' ? toolExtrasFor(agent, 'agy')?.['model'] : undefined;
-  return typeof own === 'string' ? own : agent.model;
+
+  const named = z.string().safeParse(own);
+
+  return named.success ? named.data : agent.model;
 }
 
 export async function chooseStepModel(request: StepModelRequest): Promise<StepModelChoice> {
   const { step, tool, agent } = request;
-  if (typeof request.model === 'object') return { ok: true, by: 'step', model: request.model };
+
+  if (request.model instanceof Object) return { ok: true, by: 'step', model: request.model };
   const defined = definitionModel(agent, tool);
+
   const chosen: { origin: ModelOrigin; value: string } | undefined = request.model !== undefined
     ? { origin: 'step', value: request.model }
     : defined === undefined && request.defaultModel !== undefined ? { origin: 'defaults', value: request.defaultModel } : undefined;
+
   if (!chosen) {
     // A tool teamai does not launch starts the agent itself, from the file it reads the model from.
     const family = isLaunchTool(tool) ? launchAdapterIdOf(tool) : undefined;
+
     // Claude and CodeBuddy read it from the agent file `--agent` names.
     if (!agent || !defined || family === undefined || family === 'claude' || family === 'codebuddy') return { ok: true };
     const variant = family === 'opencode' ? toolExtrasFor(agent, 'opencode')?.['variant'] : undefined;
-    return { ok: true, by: 'definition', model: { name: defined, ...(variant !== undefined ? { effort: String(variant) } : {}) } };
+
+    const model: StepModel = { name: defined };
+
+    if (variant !== undefined) model.effort = String(variant);
+
+    return { ok: true, by: 'definition', model };
   }
+
   const aliases = await loadModelAliases(request.config);
   const resolution = resolveModelValue(aliases, chosen.value, tool);
+
   if (!resolution.ok || resolution.model === undefined) {
     const value = isModelAlias(aliases, chosen.value) ? `model alias "${chosen.value}"` : `model "${chosen.value}"`;
+
     return unavailable(stepModelUnavailableText(step, chosen.origin, value, noModelCause(resolution, tool), noModelReason(resolution)));
   }
-  return {
-    ok: true,
-    by: chosen.origin,
-    model: { name: resolution.model, ...(resolution.effort !== undefined ? { effort: resolution.effort } : {}) },
-    ...(isModelAlias(aliases, chosen.value) ? { alias: chosen.value } : {}),
-  };
+
+  const model: StepModel = { name: resolution.model };
+
+  if (resolution.effort !== undefined) model.effort = resolution.effort;
+
+  return isModelAlias(aliases, chosen.value) ? { ok: true, by: chosen.origin, model, alias: chosen.value } : { ok: true, by: chosen.origin, model };
 }
 
 /**
@@ -122,13 +139,17 @@ export async function loadDeployedAgent(input: {
   toolPaths: TeamaiConfig['toolPaths'] | undefined;
 }): Promise<{ spec: AgentSpec; file: string } | null> {
   const { tool, name, config, toolPaths } = input;
+
   if (toolPaths === undefined || !isLaunchTool(tool) || !isAgentToolId(tool)) return null;
   // The same directory `teamai pull` writes, not the step's cwd.
   const agents = ownOf(await locate(tool, 'agents', installOf({ toolPaths }, config)))?.path;
+
   if (agents === undefined) return null;
   const file = path.join(agents, `${name}${agentFileExtensionForTool(tool)}`);
   const content = await readFileSafe(file);
+
   if (content === null) return null;
   const reversed = reverseByTool(tool, file, content);
+
   return reversed.ok ? { spec: reversed.spec, file } : null;
 }

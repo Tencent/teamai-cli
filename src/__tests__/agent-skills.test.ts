@@ -441,10 +441,8 @@ describe('scanInstalledAgents', () => {
     // team
     await makeSkill(path.join(fx.repoPath, 'skills'), 'team-shared', 't');
     await makeSkill(claudeDir, 'team-shared', 't-local');
-    // builtin
     const builtinName = [...BUILTIN_SKILL_NAMES][0];
     await makeSkill(claudeDir, builtinName, 'builtin desc');
-    // source
     const sourceDir = path.join(fx.homeDir, '.teamai', 'sources', 'partner');
     await fse.ensureDir(sourceDir);
     await fse.outputJson(getSourceManifestPath('partner', fx.localConfig), {

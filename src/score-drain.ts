@@ -94,44 +94,59 @@ async function judge(config: LocalConfig, clock: () => string): Promise<Pick<Dra
   const tried = new Set<string>();
   // Its scores would land inside the repository, the lock with them.
   const unavailable = scoringUnavailable(config);
+
   if (unavailable) {
     log.warn(unavailable);
+
     return { judged, failed, leftOpen, unmetIsolation, noJudgeTool: 0, otherPassRunning: 0 };
   }
+
   const offers = await localJudgeOffers();
+
   if (offers.length === 0) return { judged, failed, leftOpen, unmetIsolation, noJudgeTool: await openJudgeEntries(config, clock()), otherPassRunning: 0 };
   const lock = judgePassLock(config);
+
   if (!await acquireLock(lock)) return { judged, failed, leftOpen, unmetIsolation, noJudgeTool: 0, otherPassRunning: await openJudgeEntries(config, clock()) };
+
   try {
     for (const offer of offers) {
       for (;;) {
         const taken = await takeJudgeLease(config, { driver, judge: offer, running: [] }, clock());
+
         if (taken.kind !== 'busy' && taken.decided.length > 0) judged.push({ source: 'workflow', scorers: taken.decided.map((attempt) => attempt.scorer) });
+
         // Of the open entries an idle answer counts, those it did not skip for their model need more isolation.
         if (taken.kind === 'idle') [leftOpen, unmetIsolation] = [taken.skipped, taken.open - taken.skipped.length];
+
         if (taken.kind !== 'lease' || tried.has(taken.lease.ref)) break;
         const { lease } = taken;
         tried.add(lease.ref);
         const settled = await judgeLease(config, lease.ref, driver, { clock, publish: false });
+
         if (!('error' in settled)) {
           judged.push({ source: lease.source, scorers: settled.attempts.map((attempt) => attempt.scorer) });
           continue;
         }
+
         failed.push({ scorers: scorersOf(lease), subject: lease.subject, code: settled.error.code });
+
         if (lease.source === 'workflow') await submitJudgeLease(config, lease.ref, { driver, outcome: 'failed' }, clock());
       }
     }
   } finally {
     await releaseLock(lock);
   }
+
   return { judged, failed, leftOpen, unmetIsolation, noJudgeTool: 0, otherPassRunning: 0 };
 }
 
 /** Publishes the workflow run records of `config` that a run queued and could not publish, as pull does. */
 async function publishRunRecords(config: LocalConfig): Promise<Pick<DrainResult, 'runRecordsPublished' | 'unpublished'>> {
   const runs = new Set((await pendingRecords(config)).map((record) => record.run)).size;
+
   if (runs === 0) return { runRecordsPublished: 0, unpublished: [] };
   const delivery = await publishPendingRecords(config);
+
   switch (delivery.state) {
     case 'published':
       return { runRecordsPublished: runs, unpublished: [] };
@@ -139,6 +154,7 @@ async function publishRunRecords(config: LocalConfig): Promise<Pick<DrainResult,
       return { runRecordsPublished: 0, unpublished: [{ kind: 'runRecords', count: runs, reason: delivery.reason }] };
     default: {
       const unhandled: never = delivery;
+
       return unhandled;
     }
   }
@@ -147,8 +163,10 @@ async function publishRunRecords(config: LocalConfig): Promise<Pick<DrainResult,
 /** Publishes the pending labels of `config`, as `score --push` does. Nothing is pending while usage reporting is off. */
 async function publishLabels(config: LocalConfig): Promise<Pick<DrainResult, 'labelsPublished' | 'unpublished'>> {
   const pending = await LabelStore.unpublished(config);
+
   if (pending === 0) return { labelsPublished: 0, unpublished: [] };
   const delivery = await LabelStore.publish(config);
+
   switch (delivery.state) {
     case 'published':
       return { labelsPublished: pending, unpublished: [] };
@@ -158,6 +176,7 @@ async function publishLabels(config: LocalConfig): Promise<Pick<DrainResult, 'la
       return { labelsPublished: 0, unpublished: [] };
     default: {
       const unhandled: never = delivery;
+
       return unhandled;
     }
   }
@@ -166,8 +185,10 @@ async function publishLabels(config: LocalConfig): Promise<Pick<DrainResult, 'la
 /** Drains each scope of `configs`, in order, in run mode `mode`. */
 async function run(configs: readonly LocalConfig[], { mode, clock = () => new Date().toISOString() }: { mode: RunMode; clock?: () => string }): Promise<DrainResult> {
   const result: DrainResult = { judged: [], failed: [], leftOpen: [], unmetIsolation: 0, noJudgeTool: 0, otherPassRunning: 0, runRecordsPublished: 0, labelsPublished: 0, capturedArchived: 0, steps: [], unpublished: [], usage: [] };
+
   for (const config of configs) {
     const team = await loadTeamConfig(config.repo.localPath);
+
     if (mode === 'unattended') await finishUnattended(config, clock());
     const { judged, failed, leftOpen, unmetIsolation, noJudgeTool, otherPassRunning } = await judge(config, clock);
     result.judged.push(...judged);
@@ -182,6 +203,7 @@ async function run(configs: readonly LocalConfig[], { mode, clock = () => new Da
     const labels = await publishLabels(config);
     result.labelsPublished += labels.labelsPublished;
     result.unpublished.push(...labels.unpublished);
+
     if (SessionPolicy.publish(config, team).policies[mode].policy === 'auto') {
       const captured = await SessionPublish.captured(config, mode, clock());
       result.capturedArchived += captured.archived;
@@ -190,12 +212,15 @@ async function run(configs: readonly LocalConfig[], { mode, clock = () => new Da
       result.steps.push(...steps);
       result.unpublished.push(...steps.flatMap(({ unpublished }) => (unpublished ? [{ kind: 'sessions' as const, count: unpublished.sessions, reason: unpublished.reason }] : [])));
     }
+
     // As pull reports it, so the counts of this data home leave an ephemeral runner.
     if (usesBranchWorktree(config) && isUsageReportEnabled(config, team ?? {})) {
       const outcome = await reportUsage(config.repo.localPath, config.username, { selfConfig: config, drain: { running: await agentSessionIdFromEnv() } });
+
       if (outcome !== 'nothing') result.usage.push({ member: config.username, reported: outcome === 'reported' });
     }
   }
+
   return result;
 }
 
@@ -206,6 +231,7 @@ async function run(configs: readonly LocalConfig[], { mode, clock = () => new Da
 async function drainsUnattendedRun(config: LocalConfig): Promise<boolean> {
   if (SessionPolicy.publish(config, await loadTeamConfig(config.repo.localPath)).policies.unattended.policy !== 'off') return true;
   const scoring = scoringUnavailable(config) ? undefined : await scopeScoring(config);
+
   return scoring?.ok === true && scoring.sessions.policies.unattended.policy !== 'off';
 }
 
@@ -222,9 +248,11 @@ function passesAndSessions({ passes, sessions }: { passes: number; sessions: num
 /** Why `failed` failed, and the command a person runs for a new judgment. */
 function failedText({ scorers, subject, code }: FailedJudgment): string {
   const flags = scorers.map((scorer) => `--scorer ${scorer}`).join(' ');
+
   const [what, ask] = 'sessionId' in subject
     ? [`${subject.platform} session ${subject.sessionId}`, `teamai score --session ${subject.sessionId} --source ${subject.platform} ${flags}`]
     : [`pass ${subject.pass} of step ${subject.step} in run ${subject.runId}`, `teamai score --run ${subject.runId} --step ${subject.step} --pass ${subject.pass} ${flags}`];
+
   return `${scorers.join(', ')} on ${what}: ${code}. A failed judgment is final and is not retried. To ask for a new one: ${ask}`;
 }
 
@@ -232,14 +260,17 @@ function failedText({ scorers, subject, code }: FailedJudgment): string {
 function unpublishedText(unpublished: readonly Unpublished[]): string {
   const count = (kind: Unpublished['kind']) => unpublished.filter((entry) => entry.kind === kind).reduce((sum, entry) => sum + entry.count, 0);
   const [runRecords, labels, sessions] = [count('runRecords'), count('labels'), count('sessions')];
+
   const kinds = [
     runRecords > 0 ? plural({ count: runRecords, one: 'workflow run record', many: 'workflow run records' }) : '',
     labels > 0 ? plural({ count: labels, one: 'label', many: 'labels' }) : '',
     sessions > 0 ? plural({ count: sessions, one: 'session', many: 'sessions' }) : '',
   ].filter(Boolean);
+
   const what = kinds.length > 1 ? `${kinds.slice(0, -1).join(', ')} and ${kinds.at(-1)}` : kinds.join('');
   // A reason can end a sentence of its own, as the cause ssh gives does.
   const reasons = [...new Set(unpublished.map((entry) => entry.reason.replace(/\.$/, '')))].join('; ');
+
   return `Could not publish ${what} to teamai-reports: ${reasons}. ${runRecords + labels + sessions === 1 ? 'It stays' : 'They stay'} pending; run teamai score --drain again.`;
 }
 
@@ -259,24 +290,35 @@ function printLeftOpen({ count, what, driver }: { count: number; what: string; d
 function print(result: DrainResult): void {
   const passes = result.judged.filter((one) => one.source === 'workflow');
   const sessions = result.judged.filter((one) => one.source === 'session');
+
   if (passes.length > 0) log.success(`Judged ${plural({ count: passes.length, one: 'sampled pass', many: 'sampled passes' })} here (${scorerNames(passes)})`);
+
   if (sessions.length > 0) log.success(`Judged ${plural({ count: sessions.length, one: 'sampled session', many: 'sampled sessions' })} here (${scorerNames(sessions)})`);
+
   for (const failed of result.failed) log.error(failedText(failed));
+
   if (result.runRecordsPublished > 0) log.success(`Published ${plural({ count: result.runRecordsPublished, one: 'workflow run record', many: 'workflow run records' })} to teamai-reports`);
+
   if (result.labelsPublished > 0) log.success(`Published ${plural({ count: result.labelsPublished, one: 'label', many: 'labels' })} to teamai-reports`);
+
   if (result.capturedArchived > 0) log.success(`Archived ${plural({ count: result.capturedArchived, one: 'captured session', many: 'captured sessions' })} to teamai-reports (scrubbed)`);
+
   for (const { run: runId, archived, skipped } of result.steps) {
     if (archived > 0) log.success(`Archived ${plural({ count: archived, one: 'step session', many: 'step sessions' })} of ${runId} to teamai-reports (scrubbed)`);
+
     for (const reason of new Set(skipped.map((pass) => pass.reason))) {
       const skippedPasses = skipped.filter((pass) => pass.reason === reason);
       log.info(`Skipped ${plural({ count: skippedPasses.length, one: 'step session', many: 'step sessions' })} of ${runId}: ${reason} (${skippedPasses.map((pass) => `${pass.step}, pass ${pass.pass}`).join('; ')})`);
     }
   }
+
   if (result.unpublished.length > 0) log.error(unpublishedText(result.unpublished));
+
   for (const { member, reported } of result.usage) {
     if (reported) log.success(`Reported usage to stats/${member}.yaml`);
     else log.error(`Could not report usage to stats/${member}.yaml on teamai-reports. It stays on this machine; run teamai score --drain again.`);
   }
+
   const { leftOpen, unmetIsolation, noJudgeTool, otherPassRunning } = result;
   const ofSessions = leftOpen.filter((entry) => 'sessionId' in entry.subject).length;
   printLeftOpen({
@@ -294,9 +336,11 @@ function print(result: DrainResult): void {
     what: `${plural({ count: noJudgeTool, one: 'judge entry', many: 'judge entries' })}: no judge tool is installed here`,
     driver: (them) => `whose tools judge ${them}`,
   });
+
   if (otherPassRunning > 0) {
     log.info(`Left open: ${plural({ count: otherPassRunning, one: 'judge entry', many: 'judge entries' })}: another judge pass on this machine is running. Run teamai score --drain again once it ends.`);
   }
+
   if (leftOpen.length === 0 && unmetIsolation === 0 && noJudgeTool === 0 && otherPassRunning === 0 && !hasFailed(result)) log.success('Nothing left to do here');
 }
 

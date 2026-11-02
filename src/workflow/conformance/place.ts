@@ -1,7 +1,7 @@
 import type { ConformanceOperation, WorkflowScenario, DriverProfile } from '../conformance-interpreter.js';
 
 /** What the checkout of every place scenario holds on `main`, which origin has too. */
-export const PLACE_CHECKOUT_FILES: Record<string, string> = { 'README.md': '# fixture\n', 'AGENTS.md': 'Trusted base instructions.\n' };
+export const PLACE_CHECKOUT_FILES = { 'README.md': '# fixture\n', 'AGENTS.md': 'Trusted base instructions.\n' } satisfies Record<string, string>;
 
 const PREPARED_CHANGE = `schemaVersion: v1alpha1
 name: build
@@ -102,6 +102,7 @@ function adoptHostPlace(profile: DriverProfile): WorkflowScenario {
     kind: 'next', saveAs: 'work', as: profile, prepare: true, attempt: 'work', adopt,
     expect: { error: { code: 'adopt_mismatch' } }, state: { steps: [{ id: 'work', status: 'leased' }] },
   });
+
   return {
     name: `adopt-host-place (${profile}): a host worktree on the lease's branch is adopted, reported with its changes and left after cleanup; a wrong branch, a dirty tree and another repository answer adopt_mismatch, and the attempt stays leased`,
     workflowName: 'build',

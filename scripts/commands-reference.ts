@@ -30,6 +30,7 @@ Generated: do not edit by hand. Regenerate with
 function renderOption(option: Option): string {
   const hidden = option.hidden ? ' (hidden)' : '';
   const description = option.description ? ` — ${option.description}` : '';
+
   return `  - \`${option.flags}\`${hidden}${description}`;
 }
 
@@ -49,21 +50,27 @@ function visibleSubcommands(command: Command): Command[] {
 
 function renderCommand(command: Command, parents: string[]): string[] {
   const path = [...parents, command.name()];
+
   const args = command.registeredArguments.map((a) => {
     const name = a.variadic ? `${a.name()}...` : a.name();
+
     return a.required ? `<${name}>` : `[${name}]`;
   });
+
   const usage = ['teamai', ...path, ...args].join(' ');
 
   const lines: string[] = [];
   const description = command.description();
   lines.push(`- \`${usage}\`${description ? ` — ${description}` : ''}`);
+
   for (const option of visibleOptions(command)) {
     lines.push(renderOption(option));
   }
+
   for (const sub of visibleSubcommands(command)) {
     lines.push(...renderCommand(sub, path).map((line) => `  ${line}`));
   }
+
   return lines;
 }
 
@@ -72,6 +79,7 @@ export function renderCommandsReference(program: Command): string {
   const sections: string[] = [HEADER];
 
   const globalOptions = visibleOptions(program);
+
   if (globalOptions.length > 0) {
     sections.push(['## Global options', '', ...globalOptions.map(renderOption).map((l) => l.slice(2))].join('\n'));
   }

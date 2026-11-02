@@ -43,6 +43,7 @@ function getBuiltinAgentsDir(): string {
   // Use fileURLToPath (not URL.pathname) so Windows drive-letter paths
   // resolve correctly — a raw `/C:/…` pathname is not resolvable by fs.
   const distDir = path.dirname(fileURLToPath(import.meta.url));
+
   return path.join(distDir, '..', 'agents');
 }
 
@@ -72,14 +73,18 @@ function getBuiltinAgentsDir(): string {
  */
 async function removeStaleAgentSiblings(targetAgentsDir: string, stem: string, targetExt: string): Promise<void> {
   let files: string[];
+
   try {
     files = await listFiles(targetAgentsDir);
   } catch {
     return; // dir missing or unreadable — nothing to clean
   }
+
   for (const file of files) {
     if (agentStemFromFilename(file) !== stem) continue;
+
     if (file === `${stem}${targetExt}`) continue;
+
     try {
       if (await keepsTrackedCopy(path.join(targetAgentsDir, file), path.join(targetAgentsDir, `${stem}${targetExt}`))) continue;
       await remove(path.join(targetAgentsDir, file));
@@ -100,12 +105,15 @@ export async function deployBuiltinAgents(
   },
 ): Promise<number> {
   const builtinDir = getBuiltinAgentsDir();
+
   if (!await pathExists(builtinDir)) {
     log.debug('No built-in agents directory found, skipping deployment');
+
     return 0;
   }
 
   let entries: string[];
+
   try {
     entries = await fs.promises.readdir(builtinDir);
   } catch {
@@ -115,6 +123,7 @@ export async function deployBuiltinAgents(
   const agentFiles = entries
     .filter((f) => f.endsWith('.md') && !f.startsWith('.'))
     .filter((f) => !(options?.skipRecall && f === 'teamai-recall.md'));
+
   if (agentFiles.length === 0) return 0;
 
   const install = installOf(teamConfig, localConfig);
@@ -122,10 +131,12 @@ export async function deployBuiltinAgents(
 
   for (const tool of Object.keys(install.toolPaths)) {
     const where = await locate(tool, 'agents', install);
+
     if (!where.gates.every((gate) => gate.met)) {
       log.debug(`Skipping built-in agent deployment for ${tool}: excluded or not installed`);
       continue;
     }
+
     if (!isAgentToolId(tool)) {
       if (install.toolPaths[tool]?.agents) {
         log.warn(
@@ -133,40 +144,50 @@ export async function deployBuiltinAgents(
           'disable this target or add a native renderer',
         );
       }
+
       continue;
     }
+
     const targetAgentsDir = writable(where)?.path;
+
     if (targetAgentsDir === undefined) {
       log.debug(`Skipping built-in agent deployment for ${tool}: no agents path`);
       continue;
     }
+
     try {
       // A dry run writes nothing (#915): no directory, no sibling removed.
       if (!options?.dryRun) await ensureDir(targetAgentsDir);
     } catch (e) {
       options?.recorder?.failed('builtin');
       options?.toolsMissingAgents?.add(tool);
-      log.warn(`Failed to create agents dir for ${tool}: ${(e as Error).message}`);
+      log.warn(`Failed to create agents dir for ${tool}: ${e instanceof Error ? e.message : String(e)}`);
       continue;
     }
 
     for (const file of agentFiles) {
       const src = path.join(builtinDir, file);
+
       try {
         const source = await readFileSafe(src);
+
         const parsed = source
           ? reverseFromClaude(src, source)
           : { ok: false as const, reason: 'cannot read source file' };
+
         if (!parsed.ok) {
           throw new Error(`invalid built-in agent ${file}: ${parsed.reason}`);
         }
+
         const rendered = renderForTool(parsed.spec, tool, undefined, localConfig.scope);
         const stem = path.basename(file, '.md');
+
         if (options?.dryRun) {
           options.recorder?.report('builtin', path.join(targetAgentsDir, `${stem}${rendered.ext}`));
           deployed++;
           continue;
         }
+
         // Clean up any same-stem sibling with a different extension before
         // writing the (possibly new) native extension — e.g. an upgrade that
         // switches a tool's native extension must not leave the stale file behind.
@@ -178,7 +199,7 @@ export async function deployBuiltinAgents(
       } catch (e) {
         options?.recorder?.failed('builtin');
         options?.toolsMissingAgents?.add(tool);
-        log.warn(`Failed to deploy built-in agent ${file} to ${tool}: ${(e as Error).message}`);
+        log.warn(`Failed to deploy built-in agent ${file} to ${tool}: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
   }

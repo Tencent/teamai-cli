@@ -1,10 +1,12 @@
 import path from 'node:path';
 import YAML from 'yaml';
+import { parseYaml } from './utils/yaml.js';
+import type { JsonValue } from './types.js';
 import { z } from 'zod';
 import { ensureDir, writeFile } from './utils/fs.js';
 import {
   NamespaceSegmentSchema, parseManifest, readManifestFile, assertNoCaseAliasedNamespaces, warnUnknownResourceKeys,
-  HAND_DECLARED_RESOURCE_TYPES, HandDeclaredNamespacesShape, type HandDeclaredResourceType, type NamespaceEntry, parseManifestOnce,
+  HAND_DECLARED_RESOURCE_TYPES, HandDeclaredNamespaceFields, type HandDeclaredResourceType, type NamespaceEntry, parseManifestOnce,
 } from './manifest-schema.js';
 
 const ROLE_RESOURCE_TYPES = ['knowledge', 'skills', 'agents'] as const;
@@ -22,7 +24,7 @@ const RoleResourceNamespacesSchema = z.object({
   // learnings namespaces: roles and projects both contribute them (#1101).
   learnings: z.array(z.string()).optional(),
   // env, hooks, mcp, models, docs: optional, see HAND_DECLARED_RESOURCE_TYPES.
-  ...HandDeclaredNamespacesShape,
+  ...HandDeclaredNamespaceFields,
 }).passthrough();
 
 const RoleSchema = z.object({
@@ -40,6 +42,7 @@ const RolesManifestSchema = z.object({
 });
 
 export type TeamRole = z.infer<typeof RoleSchema>;
+
 export type RolesManifest = z.infer<typeof RolesManifestSchema>;
 
 /**
@@ -55,42 +58,49 @@ export type ResourceNamespaces = Record<RoleResourceType | 'learnings', string[]
 /** Every type a role or project can namespace, in the order resolution walks them. */
 export const NAMESPACED_RESOURCE_TYPES = [...ROLE_RESOURCE_TYPES, ...HAND_DECLARED_RESOURCE_TYPES] as const;
 
-function validateManifestShape(raw: unknown): RolesManifest {
-  if (!raw || typeof raw !== 'object') {
+/**
+ * A roles manifest as roles.yaml holds it, or one built in memory, checked with the same rules; throws on the first
+ * problem. The structure checks come first so each gets its own message before the schema runs.
+ */
+function checkRolesManifest(raw: JsonValue | RolesManifest): RolesManifest {
+  if (!(raw instanceof Object)) {
     throw new Error('Invalid roles manifest: expected an object');
   }
 
-  const candidate = raw as Record<string, unknown>;
-  const roles = candidate.roles;
+  const roles = Array.isArray(raw) ? undefined : raw.roles;
+
   if (!Array.isArray(roles) || roles.length === 0) {
     throw new Error('Invalid roles manifest: roles must be a non-empty array');
   }
 
-  const entries: unknown[] = roles;
-  for (const role of entries) {
-    if (!role || typeof role !== 'object') {
+  for (const role of roles) {
+    if (!(role instanceof Object)) {
       throw new Error('Invalid roles manifest: every role must be an object');
     }
 
     const id = 'id' in role && role.id != null ? String(role.id) : '<unknown>';
     const resources = 'resources' in role ? role.resources : undefined;
-    if (!resources || typeof resources !== 'object' || Array.isArray(resources)) {
+
+    if (!(resources instanceof Object) || Array.isArray(resources)) {
       throw new Error(`Invalid roles manifest: role ${id} is missing resources`);
     }
 
     // Accept 'learnings' for backward compatibility but only validate active types
     const ALLOWED_RESOURCE_KEYS = new Set<string>([...NAMESPACED_RESOURCE_TYPES, 'learnings']);
-    warnUnknownResourceKeys(resources, ALLOWED_RESOURCE_KEYS, 'roles', `role ${id}`);
+    warnUnknownResourceKeys(Object.keys(resources), ALLOWED_RESOURCE_KEYS, 'roles', `role ${id}`);
   }
 
   const manifest = parseManifest(RolesManifestSchema, raw, 'roles');
   const ids = new Set<string>();
+
   for (const role of manifest.roles) {
     if (ids.has(role.id)) {
       throw new Error(`Invalid roles manifest: duplicate role id "${role.id}"`);
     }
+
     ids.add(role.id);
   }
+
   assertNoCaseAliasedNamespaces(roleNamespaceEntries(manifest), 'roles manifest');
 
   return manifest;
@@ -125,18 +135,21 @@ export async function loadRolesManifest(repoPath: string): Promise<RolesManifest
   // only one that becomes RolesManifestNotFoundError: an unreadable or empty file
   // throws a plain error and fails the pull or push.
   const content = await readManifestFile(manifestPath, 'roles');
+
   if (content === null) {
     throw new RolesManifestNotFoundError(manifestPath);
   }
 
   return parseManifestOnce(manifestPath, content, (text) => {
-    let raw: unknown;
+    let raw: JsonValue;
+
     try {
-      raw = YAML.parse(text);
+      raw = parseYaml(text);
     } catch (error) {
-      throw new Error(`Invalid roles manifest YAML: ${(error as Error).message}`, { cause: error });
+      throw new Error(`Invalid roles manifest YAML: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
     }
-    return validateManifestShape(raw);
+
+    return checkRolesManifest(raw);
   });
 }
 
@@ -161,7 +174,7 @@ export async function loadRolesManifestIfPresent(repoPath: string): Promise<Role
 
 export async function saveRolesManifest(repoPath: string, manifest: RolesManifest): Promise<void> {
   // Re-validate before writing to prevent persisting invalid manifests
-  validateManifestShape(manifest);
+  checkRolesManifest(manifest);
 
   const manifestDir = path.join(repoPath, 'manifest');
   const manifestPath = path.join(manifestDir, 'roles.yaml');
@@ -188,9 +201,11 @@ export function describeRoles(roles: Array<Pick<TeamRole, 'id' | 'description'>>
 
 function getRoleOrThrow(manifest: RolesManifest, roleId: string): TeamRole {
   const role = manifest.roles.find((candidate) => candidate.id === roleId);
+
   if (!role) {
     throw new Error(`Unknown role "${roleId}". Valid roles: ${listRoleIds(manifest).join(', ')}`);
   }
+
   return role;
 }
 
@@ -213,13 +228,15 @@ export function resolveRoleResourceNamespaces(input: {
   for (const type of [...NAMESPACED_RESOURCE_TYPES, 'learnings' as const]) {
     const seen = new Set<string>();
     const out: string[] = [];
+
     for (const role of resolvedRoles) {
-      for (const namespace of (role.resources as Record<string, string[] | undefined>)[type] ?? []) {
+      for (const namespace of role.resources[type] ?? []) {
         if (seen.has(namespace)) continue;
         seen.add(namespace);
         out.push(namespace);
       }
     }
+
     if (out.length > 0 || namespaces[type] !== undefined) namespaces[type] = out;
   }
 
@@ -245,6 +262,8 @@ export function activeRoleIds(
   },
 ): string[] | null {
   if (localConfig.roleUnresolved) return [];
+
   if (!localConfig.primaryRole) return localConfig.roleAssignment ? [] : null;
+
   return [...new Set([localConfig.primaryRole, ...(localConfig.additionalRoles ?? [])])];
 }

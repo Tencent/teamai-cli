@@ -30,13 +30,13 @@ import { probeSelfHostedGitLab } from './gitlab/probe.js';
 //
 
 /** Known host → provider name mapping. */
-const HOST_MAP: Record<string, string> = {
-  'github.com': 'github',
-  'git.woa.com': 'tgit',
-  'cnb.cool': 'cnb',
-  'gitlab.com': 'gitlab',
-  'gitcode.com': 'gitcode',
-};
+const HOST_MAP = new Map([
+  ['github.com', 'github'],
+  ['git.woa.com', 'tgit'],
+  ['cnb.cool', 'cnb'],
+  ['gitlab.com', 'gitlab'],
+  ['gitcode.com', 'gitcode'],
+]);
 
 /** Providers we are willing to accept as a default override. */
 const KNOWN_PROVIDERS = new Set(['github', 'tgit', 'cnb', 'gitlab', 'gitcode']);
@@ -52,15 +52,18 @@ const KNOWN_PROVIDERS = new Set(['github', 'tgit', 'cnb', 'gitlab', 'gitcode']);
  */
 export function getDefaultProvider(): string {
   const override = process.env.TEAMAI_DEFAULT_PROVIDER?.trim();
+
   if (override && KNOWN_PROVIDERS.has(override)) return override;
 
   try {
     const pkgName = getCurrentPackageName();
+
     if (pkgName.startsWith('@tencent/')) return 'tgit';
   } catch {
     // package.json is unavailable (rare — only unusual test harnesses hit
     // this). Fall through to github so the CLI remains usable.
   }
+
   return 'github';
 }
 
@@ -83,8 +86,10 @@ export function detectProvider(input: string): string {
 
   // HTTPS URL: extract host
   const httpsMatch = trimmed.match(/^https?:\/\/([^/]+)\//i);
+
   if (httpsMatch) {
     const host = httpsMatch[1].toLowerCase();
+
     return resolveHostProvider(host);
   }
 
@@ -92,6 +97,7 @@ export function detectProvider(input: string): string {
   if (/^ssh:\/\//i.test(trimmed)) {
     try {
       const host = new URL(trimmed).hostname.toLowerCase();
+
       return resolveHostProvider(host);
     } catch {
       return 'git';
@@ -100,8 +106,10 @@ export function detectProvider(input: string): string {
 
   // SSH URL: extract host
   const sshMatch = trimmed.match(/^[^@\s]+@([^:\s]+):/);
+
   if (sshMatch) {
     const host = sshMatch[1].toLowerCase();
+
     return resolveHostProvider(host);
   }
 
@@ -116,8 +124,10 @@ export function detectProvider(input: string): string {
  */
 export async function detectProviderForInit(input: string): Promise<string> {
   const provider = detectProvider(input);
+
   if (provider !== 'git') return provider;
   const detected = await probeSelfHostedGitLab(input);
+
   if (detected) {
     throw new Error(
       `Detected self-hosted GitLab at ${detected.baseUrl}. `
@@ -125,6 +135,7 @@ export async function detectProviderForInit(input: string): Promise<string> {
       + 'and GITLAB_TOKEN (a Personal Access Token with api scope), then run teamai init again.',
     );
   }
+
   return provider;
 }
 
@@ -134,7 +145,7 @@ export async function detectProviderForInit(input: string): Promise<string> {
  * provider for arbitrary hosts.
  */
 function resolveHostProvider(host: string): string {
-  return HOST_MAP[host] ?? detectSelfHostedGitLabHost(host) ?? 'git';
+  return HOST_MAP.get(host) ?? detectSelfHostedGitLabHost(host) ?? 'git';
 }
 
 /**
@@ -156,8 +167,10 @@ function detectSelfHostedGitLabHost(host: string): string | null {
     if (configured === host) return 'gitlab';
     // Strip a port from the configured host so the bare-host URL forms match.
     const withoutPort = configured.replace(/:\d+$/, '');
+
     if (withoutPort === host) return 'gitlab';
   }
+
   return null;
 }
 
@@ -166,9 +179,11 @@ function configuredGitLabHosts(): string[] {
   const hosts: string[] = [];
 
   const override = process.env.TEAMAI_GITLAB_HOST?.trim().toLowerCase();
+
   if (override) hosts.push(override);
 
   const gitlabUrl = process.env.GITLAB_URL?.trim();
+
   if (gitlabUrl) {
     try {
       hosts.push(new URL(gitlabUrl).host.toLowerCase());
@@ -176,20 +191,21 @@ function configuredGitLabHosts(): string[] {
       // ignore malformed GITLAB_URL — resolveGitLabBaseUrl reports it instead
     }
   }
+
   return hosts;
 }
 
 // ─── Provider Factory ────────────────────────────────────
 
 /** Registry of available providers. */
-const PROVIDERS: Record<string, () => GitProvider> = {
-  tgit: () => new TGitProvider(),
-  github: () => new GitHubProvider(),
-  cnb: () => new CNBProvider(),
-  gitlab: () => new GitLabProvider(),
-  gitcode: () => new GitCodeProvider(),
-  git: () => new GenericGitProvider(),
-};
+const PROVIDERS = new Map<string, () => GitProvider>([
+  ['tgit', () => new TGitProvider()],
+  ['github', () => new GitHubProvider()],
+  ['cnb', () => new CNBProvider()],
+  ['gitlab', () => new GitLabProvider()],
+  ['gitcode', () => new GitCodeProvider()],
+  ['git', () => new GenericGitProvider()],
+]);
 
 /**
  * Get a provider instance by name.
@@ -197,12 +213,14 @@ const PROVIDERS: Record<string, () => GitProvider> = {
  */
 export function getProvider(providerName?: string): GitProvider {
   const name = providerName ?? getDefaultProvider();
-  const factory = PROVIDERS[name];
+  const factory = PROVIDERS.get(name);
+
   if (!factory) {
     throw new Error(
-      `Unknown git provider: "${name}". Available: ${Object.keys(PROVIDERS).join(', ')}`,
+      `Unknown git provider: "${name}". Available: ${[...PROVIDERS.keys()].join(', ')}`,
     );
   }
+
   return factory();
 }
 
@@ -211,6 +229,7 @@ export function getProvider(providerName?: string): GitProvider {
  */
 export function getProviderFromUrl(repoUrl: string): GitProvider {
   const name = detectProvider(repoUrl);
+
   return getProvider(name);
 }
 
@@ -233,11 +252,15 @@ export type OriginProvider =
  */
 export function providerForRemote(remoteUrl: string): OriginProvider {
   const hosted = hostingUrl(remoteUrl.trim());
+
   if (!hosted) return { kind: 'transport' };
   const provider = getProviderFromUrl(hosted.href);
+
   if (!provider.pullRequests) return { kind: 'transport' };
+
   try {
     const { owner, repo } = provider.parseRepoInput(hosted.href);
+
     return { kind: 'provider', provider, pullRequests: provider.pullRequests, repo: `${owner}/${repo}`, hostname: hosted.hostname };
   } catch {
     return { kind: 'transport' };
@@ -247,13 +270,18 @@ export function providerForRemote(remoteUrl: string): OriginProvider {
 /** The web URL of a remote in its https, ssh or scp form, without credentials, query or fragment; undefined for any other form. */
 function hostingUrl(remote: string): URL | undefined {
   const scp = /^[^@\s/]+@([^:\s/]+):(.+)$/.exec(remote);
+
   if (scp) {
     const [, host, repoPath] = scp;
+
     return host && repoPath ? parsedUrl(`https://${host}/${repoPath}`) : undefined;
   }
+
   if (!/^(https?|ssh):\/\//i.test(remote)) return undefined;
   const url = parsedUrl(remote);
+
   if (!url) return undefined;
+
   return parsedUrl(url.protocol === 'ssh:' ? `https://${url.hostname}${url.pathname}` : `${url.protocol}//${url.host}${url.pathname}`);
 }
 

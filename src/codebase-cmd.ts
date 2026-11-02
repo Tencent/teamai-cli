@@ -2,12 +2,16 @@ import path from 'node:path';
 import { readFile } from 'node:fs/promises';
 
 import chalk from 'chalk';
+import { z } from 'zod';
 
 import type { GlobalOptions } from './types.js';
 import type { WikiLintSeverity } from './codebase-wiki-lint.js';
 import type { TeamwikiTarget } from './utils/teamwiki-root.js';
 import { DetachedTeamRepoError } from './utils/git.js';
 import { log } from './utils/logger.js';
+
+/** The component list of an evidence `_manifest.json`, which deep enrichment needs at least one of. */
+const EvidenceComponentsSchema = z.object({ components: z.array(z.unknown()).optional().catch(undefined) });
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -32,13 +36,17 @@ export interface CodebaseCmdOptions extends GlobalOptions {
  */
 async function teamwikiTargetFor(opts: CodebaseCmdOptions, readOnly: boolean): Promise<TeamwikiTarget | undefined> {
     const { assertTeamwikiWritable, resolveTeamwiki } = await import('./utils/teamwiki-root.js');
+
     try {
         // A read never persists a config migration (#893).
         const target = await resolveTeamwiki({ output: opts.output, dryRun: opts.dryRun || readOnly });
+
         if (!readOnly && !opts.dryRun) await assertTeamwikiWritable(target);
+
         return target;
     } catch (error) {
         DetachedTeamRepoError.rethrow(error);
+
         return undefined;
     }
 }
@@ -51,6 +59,7 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
 
     if (opts.upgradeWiki) {
         const { upgradeCodebaseWiki } = await import('./codebase-upgrade-wiki.js');
+
         try {
             await upgradeCodebaseWiki({ cwd, dryRun: opts.dryRun, json: opts.json });
         } catch (error) {
@@ -58,11 +67,13 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
             log.error(error.message);
             process.exitCode = 1;
         }
+
         return;
     }
 
     if (opts.status) {
         await printCodebaseStatus(opts);
+
         return;
     }
 
@@ -78,85 +89,108 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
         console.log('  teamai codebase --status                Show knowledge-base git baseline');
         console.log('');
         console.log('Extract code knowledge with `teamai import --dir <path>` or `teamai import --from-repo <url>`.');
+
         return;
     }
 
     // `--lint` alone only reads.
     const { pathExists } = await import('./utils/fs.js');
     let target: TeamwikiTarget | undefined;
+
     try {
         target = await teamwikiTargetFor(opts, !opts.reconcile && !opts.deepEnrich);
     } catch (error) {
         if (!(error instanceof DetachedTeamRepoError)) throw error;
         log.error(error.message);
         process.exitCode = 1;
+
         return;
     }
 
     if (!target || !(await pathExists(target.wikiRoot))) {
         if (opts.lint) {
             await lintWithoutTeamwiki(opts);
+
             return;
         }
+
         console.log('No teamwiki found. Run `teamai import` first.');
+
         if (opts.reconcile || opts.deepEnrich) process.exitCode = 1;
+
         return;
     }
+
     const teamwikiDir = target.wikiRoot;
 
     if (opts.deepEnrich) {
         const project = opts.project?.trim() ?? '';
+
         if (!project) {
             console.log('Deep enrichment requires --project <slug>.');
             process.exitCode = 1;
+
             return;
         }
+
         const { assertWithinRoot } = await import('./utils/path-safety.js');
         const codeRoot = path.join(teamwikiDir, 'evidence', 'code');
         const evidenceDir = path.join(codeRoot, project);
+
         try {
             assertWithinRoot(codeRoot, evidenceDir);
         } catch (e) {
-            console.log((e as Error).message);
+            console.log(e instanceof Error ? e.message : String(e));
             process.exitCode = 1;
+
             return;
         }
+
         if (!(await pathExists(evidenceDir))) {
             console.log(`No extracted evidence found for project "${project}". Run \`teamai import\` first.`);
             process.exitCode = 1;
+
             return;
         }
+
         let componentCount = 0;
+
         try {
-            const manifest = JSON.parse(await readFile(path.join(evidenceDir, '_manifest.json'), 'utf-8')) as {
-                components?: unknown;
-            };
-            componentCount = Array.isArray(manifest.components) ? manifest.components.length : 0;
+            const manifest = EvidenceComponentsSchema.parse(JSON.parse(await readFile(path.join(evidenceDir, '_manifest.json'), 'utf-8')));
+
+            componentCount = manifest.components?.length ?? 0;
         } catch {
             componentCount = 0;
         }
+
         if (componentCount === 0) {
             console.log(`No components in _manifest.json for project "${project}".`);
             process.exitCode = 1;
+
             return;
         }
+
         if (opts.dryRun) {
             if (opts.json) {
                 console.log(JSON.stringify({ project, evidenceDir, dryRun: true }, null, 2));
             } else {
                 console.log(`Deep enrichment preview: project=${project} (no writes)`);
             }
+
             return;
         }
+
         // In the team repo, write under the import lock and publish deep-enrich
         // output the way `teamai import` does, so the next `teamai push` does not
         // find the clone dirty.
         const team = target.team;
         const { lockTeamwiki } = await import('./utils/teamwiki-root.js');
         const releaseLock = team ? await lockTeamwiki(target) : async () => {};
+
         try {
             const { deepEnrich } = await import('./deep-enrich.js');
             const result = await deepEnrich({ project, evidenceDir, wikiRoot: teamwikiDir });
+
             if (opts.json) {
                 console.log(JSON.stringify({
                     project,
@@ -169,31 +203,40 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
                 console.log(`Deep enrichment complete: project=${project}`);
             } else {
                 const parts: string[] = [];
+
                 if (result.missingComponents.length > 0) {
                     parts.push(`missing component docs: ${result.missingComponents.join(', ')}`);
                 }
+
                 if (result.missingArchitecture) parts.push('missing architecture.md');
                 console.log(`Deep enrichment incomplete: project=${project}, ${parts.join(', ')}`);
             }
+
             if (!result.complete) process.exitCode = 1;
+
             if (team) {
                 const repoPath = team.localConfig.repo.localPath;
+
                 const publishPaths = [
                     path.relative(repoPath, evidenceDir),
                     path.relative(repoPath, path.join(teamwikiDir, 'router.md')),
                     path.relative(repoPath, path.join(teamwikiDir, 'index.md')),
                 ].filter((rel) => rel && !rel.startsWith('..'));
+
                 const { autoPushTeamRepo } = await import('./utils/git.js');
+
                 const pushed = await autoPushTeamRepo(
                     repoPath,
                     `[teamai] Deep enrich: ${project}`,
                     publishPaths,
                 );
+
                 if (pushed && !opts.json) log.success(`Pushed to team knowledge repo (${team.localConfig.repo.remote})`);
             }
         } finally {
             await releaseLock();
         }
+
         return;
     }
 
@@ -206,12 +249,15 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
         const team = opts.dryRun ? undefined : target.team;
         const { lockTeamwiki } = await import('./utils/teamwiki-root.js');
         const releaseLock = team ? await lockTeamwiki(target) : async () => {};
+
         try {
             const result = await reconcileKnowledge({ wikiRoot: teamwikiDir, dryRun: opts.dryRun });
+
             if (opts.json) {
                 console.log(JSON.stringify(result, null, 2));
             } else {
                 console.log(`Reconciliation complete: mappings=${result.mappings}, gaps=${result.gaps.length}, conflicts=${result.conflicts.length}`);
+
                 // Proposed relations are printed only here, and only in a dry
                 // run: a person copies the ones they accept into the asset's
                 // `related:` frontmatter, in an ordinary PR (#1563 part 2).
@@ -219,23 +265,28 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
                 if (opts.dryRun && result.relationCandidates.length > 0) {
                     console.log('');
                     console.log('Relation candidates (copy the ones you accept into the asset\'s related:)');
+
                     for (const candidate of result.relationCandidates) {
                         console.log(`  ${candidate.from}  ${candidate.relation}  ${candidate.to}   term "${candidate.term}", confidence ${candidate.confidenceScore.toFixed(1)}`);
                     }
                 }
             }
+
             if (team) {
                 const { autoPushTeamRepo } = await import('./utils/git.js');
+
                 const pushed = await autoPushTeamRepo(
                     team.localConfig.repo.localPath,
                     '[teamai] Reconcile product and code knowledge',
                     [path.relative(team.localConfig.repo.localPath, path.join(teamwikiDir, '.indices', 'graph-index.json'))],
                 );
+
                 if (pushed && !opts.json) log.success(`Pushed to team knowledge repo (${team.localConfig.repo.remote})`);
             }
         } finally {
             await releaseLock();
         }
+
         return;
     }
 
@@ -247,12 +298,15 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
     // Standalone `--output` names no member, so there is no asset data (#1562).
     const assetGraph = opts.output ? null : await lintAssetGraphForMember();
     const report = await lintTeamwiki({ wikiRoot: teamwikiDir, severity: opts.severity });
+
     if (assetGraph) report.assetGraph = assetGraph;
+
     if (opts.json) {
         console.log(JSON.stringify(report, null, 2));
     } else {
         console.log(formatWikiLintReport(report));
     }
+
     if (report.summary.high > 0) process.exitCode = 1;
 }
 
@@ -263,10 +317,13 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
  */
 async function lintWithoutTeamwiki(opts: CodebaseCmdOptions): Promise<void> {
     const assetGraph = opts.output ? null : await lintAssetGraphForMember();
+
     if (!assetGraph) {
         console.log('No teamwiki found. Run `teamai import` first.');
+
         return;
     }
+
     if (opts.json) {
         // The full report shape, with the graph checks absent: graphHealth
         // null reads as "not checked", never a measured 0%, and a script
@@ -287,6 +344,7 @@ async function lintWithoutTeamwiki(opts: CodebaseCmdOptions): Promise<void> {
 // `--lint` only ever reads: the loaders must preview, not persist, a migration (#850).
 async function lintAssetGraphForMember(): Promise<import('./lint-asset-graph.js').LintAssetGraph | null> {
     const { lintAssetGraph } = await import('./lint-asset-graph.js');
+
     return lintAssetGraph({ dryRun: true }).catch(() => null);
 }
 
@@ -298,16 +356,21 @@ async function lintAssetGraphForMember(): Promise<import('./lint-asset-graph.js'
  */
 async function printCodebaseStatus(opts: CodebaseCmdOptions): Promise<void> {
     const teamwikiDir = (await teamwikiTargetFor(opts, true))?.wikiRoot;
+
     if (!teamwikiDir) {
         if (opts.json) {
             console.log(JSON.stringify({ error: 'no-teamwiki' }));
         } else {
             console.log(chalk.yellow('No teamwiki found. Run `teamai init` and `teamai import` first, or pass --output.'));
         }
+
         process.exitCode = 1;
+
         return;
     }
+
     const manifestPath = path.join(teamwikiDir, 'source-manifest.json');
+
     let manifest: {
         headSha?: string;
         repoUrl?: string;
@@ -316,6 +379,7 @@ async function printCodebaseStatus(opts: CodebaseCmdOptions): Promise<void> {
         files?: unknown[];
         ingestedMrs?: Array<{ url: string; headSha?: string; at: string }>;
     };
+
     try {
         manifest = JSON.parse(await readFile(manifestPath, 'utf-8'));
     } catch {
@@ -324,9 +388,12 @@ async function printCodebaseStatus(opts: CodebaseCmdOptions): Promise<void> {
         } else {
             console.log(chalk.yellow(`No source-manifest.json found at ${manifestPath}`));
         }
+
         process.exitCode = 1;
+
         return;
     }
+
     if (opts.json) {
         console.log(JSON.stringify({
             headSha: manifest.headSha ?? null,
@@ -336,8 +403,10 @@ async function printCodebaseStatus(opts: CodebaseCmdOptions): Promise<void> {
             fileCount: Array.isArray(manifest.files) ? manifest.files.length : 0,
             ingestedMrs: manifest.ingestedMrs ?? [],
         }, null, 2));
+
         return;
     }
+
     console.log(chalk.bold('Knowledge-base baseline'));
     console.log(`  headSha:  ${manifest.headSha ?? chalk.dim('(none)')}`);
     console.log(`  repoUrl:  ${manifest.repoUrl ?? chalk.dim('(none)')}`);
@@ -346,6 +415,7 @@ async function printCodebaseStatus(opts: CodebaseCmdOptions): Promise<void> {
     console.log(`  files:    ${Array.isArray(manifest.files) ? manifest.files.length : 0}`);
     const mrs = manifest.ingestedMrs ?? [];
     console.log(`  ingested MRs: ${mrs.length}`);
+
     for (const mr of mrs) {
         const sha = mr.headSha ? mr.headSha.slice(0, 8) : '(no sha)';
         console.log(`    - ${mr.url}  @${sha}  ${mr.at}`);

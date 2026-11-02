@@ -42,9 +42,11 @@ export function parseGitCodeRepoInput(input: string): RepoInfo {
     .replace(/^\/+/, '');
 
   const segs = withoutPrefix.split('/').filter(Boolean);
+
   if (segs.length >= 2) {
     const owner = segs[0];
     const repo = segs[1].replace(/\.git$/i, '');
+
     if (owner && repo) {
       return buildRepoInfo(owner, repo);
     }

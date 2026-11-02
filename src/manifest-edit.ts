@@ -8,12 +8,13 @@ import type { TeamaiConfig, LocalConfig } from './types.js';
 
 export async function pullLatest(repoPath: string): Promise<void> {
     const pullSpin = (await spinner('Pulling latest changes...')).start();
+
     try {
         await pullRepo(repoPath);
         pullSpin.succeed('Up to date');
     } catch (e) {
         DetachedTeamRepoError.rethrow(e);
-        pullSpin.warn(`Pull failed: ${(e as Error).message}`);
+        pullSpin.warn(`Pull failed: ${e instanceof Error ? e.message : String(e)}`);
     }
 }
 
@@ -35,10 +36,13 @@ export async function runManifestEdit(
     if (!options.dryRun && localConfig.repo.kind !== 'self') {
         if (!options.skipPull) await pullLatest(localConfig.repo.localPath);
         await fn(localConfig.repo.localPath, localConfig);
+
         return;
     }
+
     const { withKnowledgeWorktree, withDefaultBranchPreview, EmptyRepoError, DirtyPreviewError } = await import('./utils/reports-branch.js');
     const body = (checkoutConfig: LocalConfig) => fn(checkoutConfig.repo.localPath, checkoutConfig);
+
     try {
         if (options.dryRun) {
             // Real manifest edits also warn and proceed when their pull fails.
@@ -53,7 +57,7 @@ export async function runManifestEdit(
         } else if (e instanceof EmptyRepoError) {
             log.error(e.message);
         } else {
-            log.error(`${label} update failed: ${(e as Error).message}`);
+            log.error(`${label} update failed: ${e instanceof Error ? e.message : String(e)}`);
         }
     }
 }
@@ -78,6 +82,7 @@ export async function pushManifestChange(input: {
 
         if (!hasChanges) {
             log.info('No changes to push (manifest unchanged)');
+
             return;
         }
 
@@ -93,6 +98,6 @@ export async function pushManifestChange(input: {
 
         await checkoutMaster(repoPath);
     } catch (e) {
-        log.error(`Push failed: ${(e as Error).message}`);
+        log.error(`Push failed: ${e instanceof Error ? e.message : String(e)}`);
     }
 }

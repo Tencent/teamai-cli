@@ -1,7 +1,9 @@
 import path from 'node:path';
 
 import fs from 'fs-extra';
+import { z } from 'zod';
 
+import { errnoCode } from './fs.js';
 import { getUserHome } from './home.js';
 import { log } from './logger.js';
 
@@ -11,6 +13,7 @@ const INDEX_FILENAME = '.cache-index.json';
 const DEFAULT_MAX_BYTES = 5 * 1024 * 1024 * 1024; // 5 GB
 const DEFAULT_TARGET_RATIO = 0.8;
 const DEFAULT_STALE_DAYS = 30;
+
 /** 反序列化大小上限：10 MB，防止超大文件导致 OOM。 */
 const MAX_CONFIG_FILE_BYTES = 10 * 1024 * 1024;
 
@@ -39,6 +42,23 @@ export interface CacheIndex {
     entries: CacheIndexEntry[];
 }
 
+/**
+ * The index file as read. Unknown fields are kept, so a save writes them back;
+ * an entry without a cache entry's fields is dropped instead of read as one.
+ */
+const CacheIndexFileSchema = z.looseObject({
+    version: z.literal(1),
+    updated_at: z.string().catch(''),
+    entries: z
+        .array(
+            z
+                .looseObject({ key: z.string(), size_bytes: z.number(), last_used: z.string(), last_synced_sha: z.string().optional() })
+                .nullable()
+                .catch(null),
+        )
+        .transform((entries) => entries.filter((entry) => entry !== null)),
+});
+
 export interface GcOptions {
     /** 默认 DEFAULT_MAX_BYTES（可被 TEAMAI_CACHE_MAX_BYTES 覆盖） */
     maxBytes?: number;
@@ -61,9 +81,11 @@ export interface GcResult {
 /** Parse a complete decimal string as a positive safe integer. */
 export function parsePositiveInteger(value: string): number | undefined {
     const normalized = value.trim();
+
     if (!/^\+?\d+$/.test(normalized)) return undefined;
 
     const parsed = Number(normalized);
+
     return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
 
@@ -101,22 +123,29 @@ function keyToAbsPath(key: string): string {
  */
 export async function loadCacheIndex(): Promise<CacheIndex> {
     const indexPath = path.join(getCacheRoot(), INDEX_FILENAME);
+
     try {
         const stat = await fs.stat(indexPath);
+
         if (stat.size > MAX_CONFIG_FILE_BYTES) {
             throw new Error(`${indexPath} exceeds max allowed size 10MB`);
         }
+
         const raw = await fs.readFile(indexPath, 'utf8');
-        const parsed = JSON.parse(raw) as CacheIndex;
-        if (parsed.version !== 1 || !Array.isArray(parsed.entries)) {
+        const parsed = CacheIndexFileSchema.safeParse(JSON.parse(raw));
+
+        if (!parsed.success) {
             log.debug('[cache-index] Unrecognized index format; using an empty index');
+
             return emptyIndex();
         }
-        return parsed;
+
+        return parsed.data;
     } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        if (errnoCode(err) !== 'ENOENT') {
             log.debug(`[cache-index] Failed to read the index; using an empty index: ${String(err)}`);
         }
+
         return emptyIndex();
     }
 }
@@ -148,10 +177,12 @@ function emptyIndex(): CacheIndex {
 export async function statDirSize(absPath: string): Promise<number> {
     let total = 0;
     let stat: fs.Stats;
+
     try {
         stat = await fs.lstat(absPath);
     } catch (err) {
         log.debug(`[cache-index] statDirSize: lstat failed, skipping ${absPath}: ${String(err)}`);
+
         return 0;
     }
 
@@ -168,18 +199,22 @@ export async function statDirSize(absPath: string): Promise<number> {
     }
 
     let entries: fs.Dirent[];
+
     try {
         entries = await fs.readdir(absPath, { withFileTypes: true });
     } catch (err) {
         log.debug(`[cache-index] statDirSize: readdir failed, skipping ${absPath}: ${String(err)}`);
+
         return 0;
     }
 
     for (const entry of entries) {
         const childPath = path.join(absPath, entry.name);
+
         if (entry.isSymbolicLink()) {
             continue;
         }
+
         if (entry.isDirectory()) {
             total += await statDirSize(childPath);
         } else if (entry.isFile()) {
@@ -230,15 +265,18 @@ export async function touchCacheEntry(args: {
         key,
         size_bytes: sizeBytes,
         last_used: new Date().toISOString(),
-        ...(lastSyncedSha !== undefined ? { last_synced_sha: lastSyncedSha } : {}),
     };
+
+    if (lastSyncedSha !== undefined) newEntry.last_synced_sha = lastSyncedSha;
 
     // 保留已有 last_synced_sha（若本次未提供）
     if (existingIdx >= 0) {
         const existing = idx.entries[existingIdx];
+
         if (lastSyncedSha === undefined && existing.last_synced_sha !== undefined) {
             newEntry.last_synced_sha = existing.last_synced_sha;
         }
+
         idx.entries[existingIdx] = newEntry;
     } else {
         idx.entries.push(newEntry);
@@ -270,8 +308,10 @@ export async function gcCache(opts?: GcOptions): Promise<GcResult> {
     // 解析 maxBytes：opts 优先，其次 env，最后默认
     let maxBytes = opts?.maxBytes ?? DEFAULT_MAX_BYTES;
     const envVal = process.env.TEAMAI_CACHE_MAX_BYTES;
+
     if (opts?.maxBytes === undefined && envVal !== undefined) {
         const parsed = parsePositiveInteger(envVal);
+
         if (parsed !== undefined) {
             maxBytes = parsed;
         }
@@ -299,6 +339,7 @@ export async function gcCache(opts?: GcOptions): Promise<GcResult> {
 
         if (isStale) {
             const absPath = keyToAbsPath(entry.key);
+
             if (!dryRun) {
                 try {
                     await fs.remove(absPath);
@@ -331,7 +372,9 @@ export async function gcCache(opts?: GcOptions): Promise<GcResult> {
                 toKeep.push(entry);
                 continue;
             }
+
             const absPath = keyToAbsPath(entry.key);
+
             if (!dryRun) {
                 try {
                     await fs.remove(absPath);
@@ -355,6 +398,7 @@ export async function gcCache(opts?: GcOptions): Promise<GcResult> {
 
     // 更新索引
     const removedKeys = new Set(removed.map((r) => r.key));
+
     const finalEntries = dryRun
         ? idx.entries.filter((e) => !removedKeys.has(e.key))
         : remaining;
@@ -404,6 +448,7 @@ export async function getCacheStatus(): Promise<{
     for (const entry of idx.entries) {
         const absPath = keyToAbsPath(entry.key);
         const exists = await fs.pathExists(absPath);
+
         if (exists) {
             validEntries.push(entry);
         } else {

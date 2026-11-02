@@ -1,6 +1,7 @@
 /** Plugin lifecycle reconciliation engine. All I/O is injected via `ReconcileDeps` for pure-logic testing. */
 
 import { createHash } from 'node:crypto';
+import { z } from 'zod';
 
 // ---------------------------------------------------------------------------
 // Domain types
@@ -71,6 +72,7 @@ export interface ReconcileDeps {
 const INSTALL_TIMEOUT_MS = 5 * 60 * 1000;
 const UPDATE_TIMEOUT_MS = 5 * 60 * 1000;
 const UNINSTALL_TIMEOUT_MS = 5 * 60 * 1000;
+
 /** Setup daemonizes quickly; allow 1 minute. */
 const RUN_TIMEOUT_MS = 60 * 1000;
 const FAILURE_COOLDOWN_MS = 10 * 60 * 1000;
@@ -92,6 +94,7 @@ const FAILURE_COOLDOWN_MS = 10 * 60 * 1000;
 export function commandFingerprint(d: PluginDescriptor): string {
   const sep = String.fromCharCode(0);
   const parts = [d.installCmd, d.updateCmd ?? '', d.runCmd];
+
   return createHash('sha256').update(parts.join(sep)).digest('hex');
 }
 
@@ -129,6 +132,7 @@ export async function reconcilePlugins(
   // Phase A: install / update / steady-state
   for (const d of desired) {
     const e = local[d.slug];
+
     try {
       if (!e || !e.ready) {
         // Not installed or previous attempt failed → try install (subject to cooldown)
@@ -136,6 +140,7 @@ export async function reconcilePlugins(
           deps.log.debug(`plugin ${d.slug}: in failure cooldown, skip`);
           continue;
         }
+
         deps.log.debug(`plugin ${d.slug}: installing${d.version ? ' version ' + d.version : ''}`);
         await deps.execCommand(d.installCmd, INSTALL_TIMEOUT_MS);
         await deps.execCommand(d.runCmd, RUN_TIMEOUT_MS);
@@ -149,10 +154,12 @@ export async function reconcilePlugins(
         // A stored fingerprint that no longer matches means the provisioning
         // commands (install/update/run, including launch args in runCmd) changed.
         const cmdChanged = e.cmdFingerprint !== undefined && e.cmdFingerprint !== currentFp;
+
         if (versionChanged || cmdChanged) {
           const reason = versionChanged
             ? `version ${e.version ?? '(unknown)'} -> ${d.version}`
             : 'command/launch-arg change';
+
           deps.log.debug(`plugin ${d.slug}: updating (${reason})`);
           await deps.execCommand(d.updateCmd ?? d.installCmd, UPDATE_TIMEOUT_MS);
           await deps.execCommand(d.runCmd, RUN_TIMEOUT_MS);
@@ -172,20 +179,23 @@ export async function reconcilePlugins(
         // else: steady state — plugin self-manages, teamai is no-op
       }
     } catch (err) {
-      const msg = (err as Error).message;
+      const msg = err instanceof Error ? err.message : String(err);
       deps.log.warn(`plugin ${d.slug} reconcile failed: ${msg}`);
       await deps.mutatePlugins((m) => {
         const prev = m[d.slug];
+
         const base: PluginState = prev ?? {
           slug: d.slug,
           version: d.version,
           ready: false,
           uninstallCmd: d.uninstallCmd,
         };
+
         // Preserve ready=true if the plugin was already healthy (transient error)
         if (!prev || !prev.ready) {
           base.ready = false;
         }
+
         base.lastAttemptAt = new Date(deps.now()).toISOString();
         base.lastError = msg;
         m[d.slug] = base;
@@ -197,6 +207,7 @@ export async function reconcilePlugins(
   for (const slug of Object.keys(local)) {
     if (desiredSlugs.has(slug)) continue;
     const e = local[slug];
+
     try {
       deps.log.debug(`plugin ${slug}: uninstalling (removed from desired list)`);
       await deps.execCommand(e.uninstallCmd, UNINSTALL_TIMEOUT_MS);
@@ -205,7 +216,7 @@ export async function reconcilePlugins(
       });
       deps.log.debug(`plugin ${slug}: uninstalled`);
     } catch (err) {
-      deps.log.warn(`plugin ${slug} uninstall failed: ${(err as Error).message}`);
+      deps.log.warn(`plugin ${slug} uninstall failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 }
@@ -218,6 +229,7 @@ export async function reconcilePlugins(
  */
 export async function teardownAllPlugins(deps: ReconcileDeps): Promise<void> {
   const plugins = await deps.readPlugins();
+
   for (const [slug, state] of Object.entries(plugins)) {
     try {
       deps.log.debug(`plugin ${slug}: tearing down`);
@@ -227,7 +239,7 @@ export async function teardownAllPlugins(deps: ReconcileDeps): Promise<void> {
       });
       deps.log.debug(`plugin ${slug}: torn down`);
     } catch (err) {
-      deps.log.warn(`plugin ${slug} teardown failed: ${(err as Error).message}`);
+      deps.log.warn(`plugin ${slug} teardown failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 }
@@ -239,6 +251,7 @@ const PLUGIN_CMD_FIELDS = new Set([
   'run_cmd',
   'version',
 ]);
+
 const PLUGIN_VAR_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /**
@@ -251,31 +264,63 @@ const PLUGIN_VAR_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
  * identifier (`[A-Za-z_][A-Za-z0-9_]*`). Command/version fields are excluded.
  * If two plugin sections share a field name, the later section wins.
  */
-export function parseGetConfig(resp: unknown): { vars: Record<string, string>; plugins: PluginDescriptor[] } {
+export interface PluginConfig {
+  vars: Record<string, string>;
+  plugins: PluginDescriptor[];
+}
+
+const NonEmptyText = z.string().min(1);
+
+/** A get-config section that is a plugin; an optional field that is not a non-empty string reads as absent. */
+const PluginSectionSchema = z.looseObject({
+  install_cmd: NonEmptyText,
+  run_cmd: NonEmptyText,
+  uninstall_cmd: NonEmptyText,
+  version: NonEmptyText.optional().catch(undefined),
+  update_cmd: NonEmptyText.optional().catch(undefined),
+});
+
+/** A substitution var's value: a finite number as its decimal text, or a non-empty string. */
+const PluginVarSchema = z.union([z.number().transform(String), NonEmptyText]);
+
+/** The response's sections by key; an array's entries are keyed by index, and any other response has none. */
+const GetConfigSectionsSchema = z.union([
+  z.record(z.string(), z.unknown()),
+  z.array(z.unknown()).transform((items) => Object.fromEntries(items.entries())),
+]).catch({});
+
+const GetConfigSchema = GetConfigSectionsSchema.transform((sections): PluginConfig => {
   const vars: Record<string, string> = {};
   const plugins: PluginDescriptor[] = [];
-  if (!resp || typeof resp !== 'object') return { vars, plugins };
-  for (const [key, section] of Object.entries(resp as Record<string, unknown>)) {
-    if (!section || typeof section !== 'object') continue;
-    const s = section as Record<string, unknown>;
-    const isStr = (v: unknown): v is string => typeof v === 'string' && v.length > 0;
-    if (!isStr(s['install_cmd']) || !isStr(s['run_cmd']) || !isStr(s['uninstall_cmd'])) continue;
+
+  for (const [key, section] of Object.entries(sections)) {
+    const parsed = PluginSectionSchema.safeParse(section);
+
+    if (!parsed.success) continue;
+    const s = parsed.data;
+
     for (const [field, value] of Object.entries(s)) {
       if (PLUGIN_CMD_FIELDS.has(field) || !PLUGIN_VAR_NAME.test(field)) continue;
-      if (typeof value === 'number' && Number.isFinite(value)) vars[field] = String(value);
-      else if (isStr(value)) vars[field] = value;
+      const text = PluginVarSchema.safeParse(value);
+
+      if (text.success) vars[field] = text.data;
     }
+
     plugins.push({
       slug: key,
-      version: isStr(s['version']) ? (s['version'] as string) : undefined,
-      installCmd: s['install_cmd'] as string,
-      updateCmd: isStr(s['update_cmd']) ? (s['update_cmd'] as string) : undefined,
-      uninstallCmd: s['uninstall_cmd'] as string,
-      runCmd: s['run_cmd'] as string,
+      version: s.version,
+      installCmd: s.install_cmd,
+      updateCmd: s.update_cmd,
+      uninstallCmd: s.uninstall_cmd,
+      runCmd: s.run_cmd,
     });
   }
+
   return { vars, plugins };
-}
+});
+
+/** Parse a raw get-config response; see the contract above. */
+export const parseGetConfig = GetConfigSchema.parse;
 
 /** Replace ${key} occurrences in cmd with vars[key]. Unknown keys are left untouched. */
 export function substituteVars(cmd: string, vars: Record<string, string>): string {
@@ -287,8 +332,10 @@ export function substituteVars(cmd: string, vars: Record<string, string>): strin
 /** Return the list of unresolved ${...} placeholder names remaining in cmd. */
 export function unresolvedPlaceholders(cmd: string): string[] {
   const found = new Set<string>();
+
   for (const match of cmd.matchAll(/\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g)) {
     found.add(match[1]);
   }
+
   return [...found];
 }

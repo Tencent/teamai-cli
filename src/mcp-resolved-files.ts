@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { z } from 'zod';
-import { getDataHome, managedMcpManifestPath, type LocalConfig } from './types.js';
+import { getDataHome, managedMcpManifestPath, type JsonValue, type LocalConfig } from './types.js';
 import { readFileSafe } from './utils/fs.js';
 import { updateFileLocked, type ExcludeUpdate } from './git-exclude.js';
 
@@ -61,24 +61,31 @@ type Sidecar = z.infer<typeof SidecarSchema> & { files: Record<string, z.infer<t
 /** `<dataHome>/workspaces/<id>/managed-mcp-files.json`, or null outside project scope. */
 export function resolvedMcpFilesPath(cfg: LocalConfig): string | null {
   if (cfg.scope !== 'project' || !cfg.projectRoot) return null;
+
   return path.join(path.dirname(managedMcpManifestPath(getDataHome(cfg), cfg.projectRoot)), 'managed-mcp-files.json');
 }
 
 /** Missing, not JSON, of another shape or version: no files. An entry of the wrong shape, or under a relative path, is left out. */
 function parse(content: string): Sidecar {
-  let data: unknown;
+  let data: JsonValue = null;
+
   try {
     data = JSON.parse(content);
   } catch {
-    data = null;
+    // Not JSON: no files.
   }
+
   const parsed = SidecarSchema.safeParse(data);
+
   if (!parsed.success) return { version: 1, files: {} };
   const files: Sidecar['files'] = {};
+
   for (const [file, value] of Object.entries(parsed.data.files)) {
     const entry = FileSchema.safeParse(value);
+
     if (entry.success && path.isAbsolute(file)) files[file] = entry.data;
   }
+
   return { ...parsed.data, files };
 }
 
@@ -86,9 +93,15 @@ function parse(content: string): Sidecar {
 export async function readResolvedMcpFiles(cfg: LocalConfig): Promise<ResolvedMcpFiles> {
   const file = resolvedMcpFilesPath(cfg);
   const content = file === null ? null : await readFileSafe(file).catch(() => null);
+
   if (content === null) return { version: 1, files: {} };
   const sidecar = parse(content);
-  return { version: 1, files: sidecar.files, ...sidecar.earlierMappingsRead === true ? { earlierMappingsRead: true } : {} };
+
+  const resolved: ResolvedMcpFiles = { version: 1, files: sidecar.files };
+
+  if (sidecar.earlierMappingsRead === true) resolved.earlierMappingsRead = true;
+
+  return resolved;
 }
 
 /**
@@ -102,9 +115,12 @@ export function updateResolvedMcpFiles(cfg: LocalConfig, edit: (files: Record<st
 
 async function updateSidecar(cfg: LocalConfig, edit: (sidecar: Sidecar) => boolean): Promise<ExcludeUpdate> {
   const file = resolvedMcpFilesPath(cfg);
+
   if (file === null) return 'unchanged';
+
   return updateFileLocked(file, (content) => {
     const sidecar = parse(content);
+
     return edit(sidecar) ? `${JSON.stringify(sidecar, null, 2)}\n` : null;
   }, { mode: 0o600 });
 }
@@ -113,12 +129,15 @@ async function updateSidecar(cfg: LocalConfig, edit: (sidecar: Sidecar) => boole
 export function trackResolvedMcpFiles(cfg: LocalConfig, targets: Array<{ tool: string; file: string }>): Promise<ExcludeUpdate> {
   return updateResolvedMcpFiles(cfg, (files) => {
     let changed = false;
+
     for (const { tool, file } of targets) {
       const entry = files[file];
+
       if (entry?.tools.includes(tool)) continue;
       files[file] = entry ? { ...entry, tools: [...entry.tools, tool] } : { tools: [tool] };
       changed = true;
     }
+
     return changed;
   });
 }
@@ -127,14 +146,18 @@ export function trackResolvedMcpFiles(cfg: LocalConfig, targets: Array<{ tool: s
 export function untrackResolvedMcpFiles(cfg: LocalConfig, targets: Array<{ tool: string; file: string }>): Promise<ExcludeUpdate> {
   return updateResolvedMcpFiles(cfg, (files) => {
     let changed = false;
+
     for (const { tool, file } of targets) {
       const entry = files[file];
+
       if (!entry?.tools.includes(tool)) continue;
       const tools = entry.tools.filter((t) => t !== tool);
+
       if (tools.length > 0) files[file] = { ...entry, tools };
       else delete files[file];
       changed = true;
     }
+
     return changed;
   });
 }
@@ -146,13 +169,16 @@ export function untrackResolvedMcpFiles(cfg: LocalConfig, targets: Array<{ tool:
 export function recordUnverifiedMcpServers(cfg: LocalConfig, found: Array<{ file: string; names: string[] }>): Promise<ExcludeUpdate> {
   return updateResolvedMcpFiles(cfg, (files) => {
     let changed = false;
+
     for (const { file, names } of found) {
       const entry = files[file];
       const added = names.filter((name) => !entry?.unverified?.includes(name));
+
       if (!entry || added.length === 0) continue;
       entry.unverified = [...entry.unverified ?? [], ...added];
       changed = true;
     }
+
     return changed;
   });
 }
@@ -178,58 +204,73 @@ export function settleResolvedMcpFiles(
   return updateSidecar(cfg, (sidecar) => {
     const { files } = sidecar;
     let changed = options.earlierMappingsRead === true && sidecar.earlierMappingsRead !== true;
+
     if (changed) sidecar.earlierMappingsRead = true;
     // Tools of different formats read different keys of one file: it is empty only when every one of them
     // finds it so, and a noted server stays while any of them finds it and does not own it.
     const ofFile = (file: string): McpFileObservation[] => observations.filter((o) => o.file === file);
     const empty = (file: string): boolean => ofFile(file).every(({ state: s }) => s.kind === 'missing' || (s.kind === 'parsed' && s.servers.length === 0));
     const unparsable = (file: string): boolean => ofFile(file).some(({ state: s }) => s.kind === 'unparsable');
+
     const stillNoted = (file: string, name: string): boolean =>
       ofFile(file).some(({ state: s, owned: o }) => s.kind === 'parsed' && s.servers.includes(name) && !o.includes(name));
+
     for (const { file, tool, holding, tracked, remapped } of observations) {
       const entry = files[file];
+
       if (tracked === true) {
         if (entry?.tools.includes(tool)) continue;
         files[file] = entry ? { ...entry, tools: [...entry.tools, tool], tracked: true } : { tools: [tool], tracked: true };
         changed = true;
         continue;
       }
+
       if (empty(file)) {
         const forget = entry !== undefined && (entry.tracked !== true || tracked === false);
+
         if (forget) delete files[file];
         changed ||= forget;
         continue;
       }
+
       if (entry?.tracked === true && tracked === false) {
         delete entry.tracked;
         changed = true;
       }
+
       if (remapped && holding) {
         if (entry?.tools.includes(tool)) continue;
         files[file] = entry ? { ...entry, tools: [...entry.tools, tool] } : { tools: [tool] };
         changed = true;
         continue;
       }
+
       if (remapped) {
         if (!entry?.tools.includes(tool)) continue;
         const tools = entry.tools.filter((t) => t !== tool);
+
         if (tools.length > 0 || entry.unverified) files[file] = { ...entry, tools };
         else delete files[file];
         changed = true;
         continue;
       }
+
       if (!entry) {
         if (holding) files[file] = { tools: [tool] };
         changed ||= holding;
         continue;
       }
+
       if (unparsable(file) || !entry.unverified) continue;
       const unverified = entry.unverified.filter((name) => stillNoted(file, name));
+
       if (unverified.length === entry.unverified.length) continue;
+
       if (unverified.length > 0) entry.unverified = unverified;
       else delete entry.unverified;
       changed = true;
     }
+
     return changed;
   });
 }

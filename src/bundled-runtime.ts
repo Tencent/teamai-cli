@@ -41,10 +41,13 @@ function compareSemver(a: string, b: string): number {
   const aParts = a.split(/[.-]/).map(s => parseInt(s, 10) || 0);
   const bParts = b.split(/[.-]/).map(s => parseInt(s, 10) || 0);
   const len = Math.max(aParts.length, bParts.length);
+
   for (let i = 0; i < len; i++) {
     const diff = (aParts[i] ?? 0) - (bParts[i] ?? 0);
+
     if (diff !== 0) return diff;
   }
+
   return 0;
 }
 
@@ -59,9 +62,11 @@ const VERSION_DIR = /^\d+(?:\.\d+)*(?:-\d+)?$/;
 function workbuddyVersionDirs(runtime: WorkbuddyRuntime): string[] {
   const home = getUserHome();
   const roots = [process.env.WORKBUDDY_CONFIG_DIR, path.join(home, '.workbuddy'), path.join(home, '.workbuddy-ai')];
+
   return roots.flatMap((root) => {
     if (!root) return [];
     const versionsDir = path.join(root, 'binaries', runtime, 'versions');
+
     try {
       return fs.readdirSync(versionsDir)
         .filter(d => VERSION_DIR.test(d))
@@ -76,6 +81,7 @@ function workbuddyVersionDirs(runtime: WorkbuddyRuntime): string[] {
 /** WorkBuddy's bundled Node: the newest unpacked version that holds the binary. */
 export function resolveWorkbuddyNode(platform: NodeJS.Platform = process.platform): string | null {
   const binary = platform === 'win32' ? 'node.exe' : path.join('bin', 'node');
+
   return workbuddyVersionDirs('node').map(dir => path.join(dir, binary)).find(file => fs.existsSync(file)) ?? null;
 }
 
@@ -85,20 +91,26 @@ export function resolveWorkbuddyNode(platform: NodeJS.Platform = process.platfor
  */
 export function resolveCodebuddyNode(): string | null {
   const home = getUserHome();
+
   try {
     const entries = fs.readdirSync(home);
+
     for (const entry of entries) {
       if (!entry.startsWith('.codebuddy-server')) continue;
+
       try {
         const binDir = path.join(home, entry, 'bin');
         const stableDirs = fs.readdirSync(binDir).filter(d => d.startsWith('stable-'));
+
         for (const stable of stableDirs) {
           const nodeBin = path.join(binDir, stable, 'node');
+
           if (fs.existsSync(nodeBin)) return nodeBin;
         }
       } catch { /* skip unreadable dirs */ }
     }
   } catch { /* home not readable */ }
+
   return null;
 }
 
@@ -113,11 +125,14 @@ export function resolveCodebuddyNode(): string | null {
 function resolveWorkbuddyShell(): string | null {
   if (_wbShellCache === undefined) {
     _wbShellCache = null;
+
     if (process.platform === 'win32') {
       const dir = workbuddyVersionDirs('PortableGit')[0];
+
       if (dir) {
         for (const rel of ['bin', path.join('usr', 'bin')]) {
           const shBin = path.join(dir, rel, 'sh.exe');
+
           if (fs.existsSync(shBin)) {
             _wbShellCache = shBin;
             break;
@@ -126,6 +141,7 @@ function resolveWorkbuddyShell(): string | null {
       }
     }
   }
+
   return _wbShellCache;
 }
 
@@ -142,7 +158,9 @@ export function queryGitInstallPath(): string | null {
       ['query', 'HKLM\\SOFTWARE\\GitForWindows', '/v', 'InstallPath'],
       { timeout: 5000, windowsHide: true, encoding: 'utf8' },
     );
+
     const match = out.match(/InstallPath\s+REG_SZ\s+(.+)/);
+
     return match?.[1]?.trim() || null;
   } catch {
     return null;
@@ -164,19 +182,26 @@ export function findGitBashWindows(
   readInstallPath: () => string | null = queryGitInstallPath,
 ): string | null {
   const candidates: string[] = [];
+
   if (env.ProgramFiles) candidates.push(path.join(env.ProgramFiles, 'Git', 'bin', 'bash.exe'));
+
   if (env['ProgramFiles(x86)']) candidates.push(path.join(env['ProgramFiles(x86)'], 'Git', 'bin', 'bash.exe'));
+
   if (env.LOCALAPPDATA) candidates.push(path.join(env.LOCALAPPDATA, 'Programs', 'Git', 'bin', 'bash.exe'));
   candidates.push(path.join(home, 'AppData', 'Local', 'Programs', 'Git', 'bin', 'bash.exe'));
+
   for (const candidate of candidates) {
     if (fs.existsSync(candidate)) return candidate;
   }
 
   const installPath = readInstallPath();
+
   if (installPath) {
     const candidate = path.join(installPath, 'bin', 'bash.exe');
+
     if (fs.existsSync(candidate)) return candidate;
   }
+
   return null;
 }
 
@@ -192,6 +217,7 @@ function resolveCodebuddyShell(): string | null {
   if (_cbShellCache === undefined) {
     _cbShellCache = process.platform === 'win32' ? findGitBashWindows() : null;
   }
+
   return _cbShellCache;
 }
 
@@ -201,7 +227,7 @@ function resolveCodebuddyShell(): string | null {
  * what git shells out to (a credential helper, ssh) and go last. Git-for-
  * Windows layout, i.e. the same for any host that bundles one.
  */
-function gitPathDirs(root: string): { first: string[]; last: string[] } {
+function gitPathDirs(root: string) {
   return {
     first: [path.join(root, 'cmd')],
     last: [path.join(root, 'usr', 'bin'), path.join(root, 'mingw64', 'bin')],
@@ -241,23 +267,29 @@ const BUNDLED_GIT_RESOLVERS: Array<() => string[]> = [
  */
 export function ensureBundledRuntimeOnPath(platform: NodeJS.Platform = process.platform): void {
   if (platform !== 'win32') return;
+
   if (isOnPath('git', { platform })) {
     log.debug('bundled runtime: git already resolves on PATH; leaving it alone');
+
     return;
   }
+
   const roots = BUNDLED_GIT_RESOLVERS
-    .map(resolve => resolve().find(root => fs.existsSync(path.join(root, 'cmd', 'git.exe'))))
-    .filter((root): root is string => root !== undefined);
+    .flatMap(resolve => resolve().find(root => fs.existsSync(path.join(root, 'cmd', 'git.exe'))) ?? []);
+
   if (roots.length === 0) {
     log.debug('bundled runtime: no bundled git to add to PATH');
+
     return;
   }
+
   const entries = pathDirs();
   const seen = new Set(entries);
   const fresh = (dir: string) => !seen.has(dir) && fs.existsSync(dir);
   const dirs = roots.map(gitPathDirs);
   const prepend = dirs.flatMap(d => d.first).filter(fresh);
   const append = dirs.flatMap(d => d.last).filter(fresh);
+
   if (prepend.length === 0 && append.length === 0) return;
   process.env.PATH = [...prepend, ...entries, ...append].join(path.delimiter);
   log.debug(`bundled runtime: PATH now leads with [${prepend.join('; ')}] and ends with [${append.join('; ')}]`);

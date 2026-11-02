@@ -12,7 +12,9 @@ import { usesBranchWorktree, type LocalConfig, type TeamaiConfig } from '../type
 
 /** Most restrictive first: where two files of one level disagree, the earlier policy wins. */
 const POLICIES = ['off', 'ask', 'auto'] as const;
+
 export type SessionPolicy = typeof POLICIES[number];
+
 const SessionPolicySchema = z.enum(POLICIES);
 const MappingSchema = z.record(z.string(), z.unknown());
 
@@ -30,6 +32,7 @@ function setBy(source: PolicySource): string {
       return 'the team repo, an HTTP repo that keeps no session archive';
     default: {
       const unhandled: never = source;
+
       return unhandled;
     }
   }
@@ -38,31 +41,54 @@ function setBy(source: PolicySource): string {
 /** The policy of each run mode, with what set it. */
 export type SessionPolicies = Record<RunMode, { policy: SessionPolicy; source: PolicySource }>;
 
+/** The policies one setting sets, and a problem for each value it holds that sets nothing. */
+interface PolicyReading {
+  set: Partial<SessionPolicies>;
+  problems: string[];
+}
+
+/** Each run mode's policy, and a problem for each setting that sets nothing. */
+interface ResolvedPolicies {
+  policies: SessionPolicies;
+  problems: string[];
+}
+
 /**
  * The policies `value`, the setting `key` names (such as `teamai.yaml sessions.publish`), sets: a mapping of run modes
  * to policies, or with `booleans`, `true` for `auto` and `false` for `off` in both modes. Each value it cannot use is a
  * problem that names the key and what it allows, and sets nothing, so that mode falls to the next level.
  */
-function read(key: string, value: unknown, { booleans = false }: { booleans?: boolean } = {}): { set: Partial<SessionPolicies>; problems: string[] } {
-  if (booleans && typeof value === 'boolean') {
-    const policy = value ? 'auto' : 'off';
+// oxlint-disable-next-line teamai/no-unknown-parameters -- the parse itself: a setting can hold any YAML value, and each one it cannot use is reported
+function read(key: string, value: unknown, { booleans = false }: { booleans?: boolean } = {}): PolicyReading {
+  const flag = z.boolean().safeParse(value);
+
+  if (booleans && flag.success) {
+    const policy = flag.data ? 'auto' : 'off';
     const source = { kind: 'setting', key } as const;
+
     return { set: { attended: { policy, source }, unattended: { policy, source } }, problems: [] };
   }
+
   const mapping = MappingSchema.safeParse(value);
+
   if (!mapping.success) {
     const allowed = booleans ? 'true, false or a mapping of attended and unattended to off, ask or auto' : 'a mapping of attended and unattended to off, ask or auto';
+
     return { set: {}, problems: [`${key} is ${JSON.stringify(value)}, not ${allowed}, so it is ignored`] };
   }
+
   const set: Partial<SessionPolicies> = {};
   const problems: string[] = [];
+
   for (const [name, policy] of Object.entries(mapping.data)) {
     const mode = RunModeSchema.safeParse(name);
     const parsed = SessionPolicySchema.safeParse(policy);
+
     if (!mode.success) problems.push(`${key}.${name} is not a run mode (attended, unattended), so it is ignored`);
     else if (!parsed.success) problems.push(`${key}.${name} is ${JSON.stringify(policy)}, not off, ask or auto, so it is ignored`);
     else set[mode.data] = { policy: parsed.data, source: { kind: 'setting', key: `${key}.${name}` } };
   }
+
   return { set, problems };
 }
 
@@ -74,18 +100,24 @@ function resolve(levels: ReadonlyArray<ReadonlyArray<Partial<SessionPolicies>>>,
   const of = (mode: RunMode): SessionPolicies[RunMode] => {
     for (const level of levels) {
       const [strictest] = level.flatMap((set) => set[mode] ?? []).sort((left, right) => POLICIES.indexOf(left.policy) - POLICIES.indexOf(right.policy));
+
       if (strictest) return strictest;
     }
+
     return { policy: defaults[mode], source: { kind: 'default' } };
   };
+
   return { attended: of('attended'), unattended: of('unattended') };
 }
 
 /** What the `sessions` setting of `file` sets for `publish`, read as {@link read} reads it. */
-function readPublish(file: string, sessions: unknown): { set: Partial<SessionPolicies>; problems: string[] } {
+// oxlint-disable-next-line teamai/no-unknown-parameters -- the parse itself: `sessions` can hold any YAML value, and one that is not a mapping is reported
+function readPublish(file: string, sessions: unknown): PolicyReading {
   if (sessions === undefined) return { set: {}, problems: [] };
   const mapping = MappingSchema.safeParse(sessions);
+
   if (!mapping.success) return { set: {}, problems: [`${file} sessions is ${JSON.stringify(sessions)}, not a mapping such as publish: { unattended: off }, so it is ignored`] };
+
   return read(`${file} sessions.publish`, mapping.data.publish ?? {});
 }
 
@@ -97,16 +129,18 @@ const publishDefaults = { attended: 'ask', unattended: 'auto' } as const satisfi
  * workspace or self scope, else `teamai.yaml`, else the default. An HTTP team keeps no session archive, so there every
  * mode is `off`, with a problem while one would publish.
  */
-function publish(config: LocalConfig, team: TeamaiConfig | null): { policies: SessionPolicies; problems: string[] } {
+function publish(config: LocalConfig, team: TeamaiConfig | null): ResolvedPolicies {
   // A workspace that sets no `sessions` holds the machine's, which its own file does not.
   const fromMachine = config.sessions !== undefined && ownMemberSettings(config).sessions === undefined;
   const member = readPublish(fromMachine ? '~/.teamai/config.yaml' : 'config.yaml', config.sessions);
   const ofTeam = readPublish('teamai.yaml', team?.sessions);
   const policies = resolve([[member.set], [ofTeam.set]], publishDefaults);
   const problems = [...member.problems, ...ofTeam.problems];
+
   if (usesBranchWorktree(config)) return { policies, problems };
   const off = { policy: 'off', source: { kind: 'http-team' } } as const;
   const wouldPublish = policies.attended.policy !== 'off' || policies.unattended.policy !== 'off';
+
   return {
     policies: { attended: off, unattended: off },
     problems: wouldPublish ? [...problems, 'Sessions are not published: the team repo is an HTTP repo, which keeps no session archive, so sessions.publish acts as off'] : problems,

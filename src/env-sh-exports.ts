@@ -14,6 +14,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { z } from 'zod';
 import { envName } from './resources/env-key.js';
+import type { JsonValue } from './types.js';
 import { readFileSafe, writeJsonAtomic } from './utils/fs.js';
 import { log } from './utils/logger.js';
 
@@ -62,18 +63,23 @@ export function envShMarker(
   recorded: EnvShExports = new Map(),
 ): [string, string] | null {
   const digests = new Set([...exports].map(([key, value]) => markedDigest(key, value)));
+
   for (const kept of recorded.values()) for (const digest of kept) digests.add(digest.slice(0, MARKED_DIGEST_LENGTH));
+
   if (digests.size === 0) return null;
   const name = `TEAMAI_ENV_SH_${crypto.createHash('sha256').update(path.resolve(dataHome)).digest('hex')}`;
+
   return [name, [...digests].join(' ')];
 }
 
 /** Whether a teamai env.sh this environment sourced exported `key=value`, by its markers. */
 export function markedAsExported(env: NodeJS.ProcessEnv): (key: string, value: string) => boolean {
   const marked = new Set<string>();
+
   for (const [name, digests] of Object.entries(env)) {
     if (digests !== undefined && isEnvShMarker(name)) for (const digest of digests.split(' ')) marked.add(digest);
   }
+
   return (key, value) => marked.has(markedDigest(key, value));
 }
 
@@ -85,17 +91,22 @@ export function envShExportsPath(envShPath: string): string {
 async function readRecord(envShPath: string): Promise<Map<string, string[]>> {
   const file = envShExportsPath(envShPath);
   const content = await readFileSafe(file);
+
   if (content === null) return new Map();
-  let raw: unknown;
+  let raw: JsonValue = null;
+
   try {
     raw = JSON.parse(content);
   } catch {
-    raw = null;
+    // Not JSON: no record.
   }
+
   const parsed = RecordSchema.safeParse(raw);
+
   if (parsed.success) return new Map(Object.entries(parsed.data));
   // The next env.sh write replaces it; until then an old export may count as the member's.
   log.debug(`${file} is not a record of env.sh exports; ignoring it until the next pull rewrites it.`);
+
   return new Map();
 }
 
@@ -107,11 +118,14 @@ export async function readEnvShExports(envShPath: string): Promise<EnvShExports>
 /** Add `exports` to the record beside `envShPath`, readable by this user only; answers the record. */
 export async function recordEnvShExports(envShPath: string, exports: Iterable<readonly [string, string]>): Promise<EnvShExports> {
   const record = await readRecord(envShPath);
+
   for (const [key, value] of exports) {
     const digest = exportDigest(key, value);
     const kept = (record.get(key) ?? []).filter((entry) => entry !== digest);
     record.set(key, [...kept, digest].slice(-KEPT_PER_KEY));
   }
+
   await writeJsonAtomic(envShExportsPath(envShPath), Object.fromEntries(record), { mode: 0o600 });
+
   return new Map([...record].map(([key, digests]) => [key, new Set(digests)]));
 }

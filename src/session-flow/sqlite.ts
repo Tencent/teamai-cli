@@ -17,19 +17,24 @@ import { WIN_EXEC_EXTENSIONS } from '../utils/cli-path.js';
  *  Each caller says what a missing CLI means for the write it skips. */
 export function findSqlite3(platform: NodeJS.Platform = process.platform): string | null {
   const names = platform === 'win32' ? WIN_EXEC_EXTENSIONS.map((ext) => `sqlite3${ext}`) : ['sqlite3'];
+
   const onPath = (process.env.PATH ?? '')
     .split(path.delimiter)
     .filter(Boolean)
     .flatMap((d) => names.map((name) => path.join(d, name)));
+
   const candidates =
     platform === 'win32' ? onPath : [...onPath, '/usr/bin/sqlite3', '/opt/homebrew/bin/sqlite3', '/usr/local/bin/sqlite3'];
+
   for (const p of candidates) {
     try {
       fs.accessSync(p, fs.constants.X_OK);
+
       return p;
     } catch {
       // continue
     }
   }
+
   return null;
 }

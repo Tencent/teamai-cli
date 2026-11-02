@@ -16,6 +16,7 @@ export function annotateHotness(
     const docId = entry.filename.replace(/\.md$/i, '');
     const confidence = confidenceMap.get(docId);
     entry.confidence = confidence;
+
     // No data = new doc (neutral); low confidence = cold; high confidence = hot
     if (confidence === undefined) {
       entry.hotness = 1.0;

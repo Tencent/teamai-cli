@@ -29,8 +29,10 @@ export function extractKeywords(text: string): Set<string> {
 
   // 提取英文单词
   const enWords = text.match(/[a-zA-Z]+/g) ?? [];
+
   for (const word of enWords) {
     const lower = word.toLowerCase();
+
     if (lower.length >= 2 && !EN_STOPWORDS.has(lower)) {
       keywords.add(lower);
     }
@@ -38,6 +40,7 @@ export function extractKeywords(text: string): Set<string> {
 
   // 提取 CJK 字符
   const cjkChars = text.match(/[一-鿿]/g) ?? [];
+
   for (const char of cjkChars) {
     if (!CJK_STOPWORDS.has(char)) {
       keywords.add(char);
@@ -58,6 +61,7 @@ export function overlapRatio(a: Set<string>, b: Set<string>): number {
   }
 
   let intersectionSize = 0;
+
   for (const word of a) {
     if (b.has(word)) {
       intersectionSize++;
@@ -65,6 +69,7 @@ export function overlapRatio(a: Set<string>, b: Set<string>): number {
   }
 
   const unionSize = a.size + b.size - intersectionSize;
+
   return intersectionSize / unionSize;
 }
 
@@ -78,14 +83,17 @@ const DATE_PREFIX_RE = /^(\d{4}-\d{2}-\d{2})/;
  */
 async function resolveDocDate(filePath: string, filename: string): Promise<Date> {
   const match = DATE_PREFIX_RE.exec(filename);
+
   if (match) {
     const parsed = new Date(match[1]);
+
     if (!isNaN(parsed.getTime())) {
       return parsed;
     }
   }
 
   const stat = await fs.stat(filePath);
+
   return stat.mtime;
 }
 
@@ -120,6 +128,7 @@ export async function findOverlappingLearnings(
   for (const { file: filename, absPath: filePath } of mdFiles) {
     try {
       const docDate = await resolveDocDate(filePath, path.basename(filename));
+
       if (docDate < cutoffDate) {
         continue;
       }
@@ -133,7 +142,7 @@ export async function findOverlappingLearnings(
         results.push({ filename, overlap: ratio });
       }
     } catch (err: unknown) {
-      log.debug(`dedup: skip ${filename} — ${(err as Error).message}`);
+      log.debug(`dedup: skip ${filename} — ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 

@@ -44,6 +44,33 @@ describe('package manifest and lockfile', () => {
     expect(manifest.packages.claude?.plugins[0].name).toBe('review@official');
   });
 
+  it('saves teamai.yaml with its other keys as written, a .inf and a __proto__ key included', async () => {
+    fs.writeFileSync(path.join(dir, 'teamai.yaml'), [
+      'team: platform',
+      'limits:',
+      '  budget: .inf',
+      '  __proto__: kept',
+      'packages:',
+      '  npm: []',
+      '',
+    ].join('\n'));
+
+    const manifest = await loadPackageManifest(dir);
+    await savePackageManifest(dir, { ...manifest, packages: { npm: [{ name: 'typescript', version: '^5.9.0' }] } });
+
+    expect(fs.readFileSync(path.join(dir, 'teamai.yaml'), 'utf8')).toBe([
+      'team: platform',
+      'limits:',
+      '  budget: .inf',
+      '  __proto__: kept',
+      'packages:',
+      '  npm:',
+      '    - name: typescript',
+      '      version: ^5.9.0',
+      '',
+    ].join('\n'));
+  });
+
   it('rejects undeclared plugin marketplaces', async () => {
     fs.writeFileSync(path.join(dir, 'teamai.yaml'), YAML.stringify({
       packages: {

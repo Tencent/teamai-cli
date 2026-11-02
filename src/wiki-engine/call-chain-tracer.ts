@@ -59,8 +59,11 @@ function classifyLayer(filePath: string, symbol: string): CallChainLayer {
   const combined = `${filePath} ${symbol}`;
 
   if (ENTRY_PATTERNS.some((p) => p.test(combined))) return "entry";
+
   if (ORCHESTRATION_PATTERNS.some((p) => p.test(combined))) return "orchestration";
+
   if (DATA_PATTERNS.some((p) => p.test(combined))) return "data";
+
   return "service";
 }
 
@@ -106,6 +109,7 @@ export function traceCallChains(facts: CodeFact[], files: CodeCollectedFile[]): 
       if (depth >= MAX_DEPTH) return;
 
       const key = `${file}:${symbol}`;
+
       if (visited.has(key)) return;
       visited.add(key);
 
@@ -116,8 +120,10 @@ export function traceCallChains(facts: CodeFact[], files: CodeCollectedFile[]): 
       // Find what this file/symbol calls
       for (const relation of relations) {
         const targetFiles = resolveRelationTarget(relation.name, filesByModule);
+
         for (const targetFile of targetFiles) {
           const targetComponents = componentsByFile.get(targetFile) ?? [];
+
           for (const comp of targetComponents) {
             callsTo.push(comp.name);
           }
@@ -135,9 +141,11 @@ export function traceCallChains(facts: CodeFact[], files: CodeCollectedFile[]): 
       // Recurse into called modules
       for (const relation of relations.slice(0, 5)) {
         const targetFiles = resolveRelationTarget(relation.name, filesByModule);
+
         for (const targetFile of targetFiles.slice(0, 2)) {
           const targetComponents = componentsByFile.get(targetFile) ?? [];
           const primary = targetComponents[0];
+
           if (primary) {
             traceFromEntry(targetFile, primary.name, primary.lineStart, depth + 1);
           }
@@ -148,6 +156,7 @@ export function traceCallChains(facts: CodeFact[], files: CodeCollectedFile[]): 
 
   // Sort chains by depth (deepest first) for more useful output
   chains.sort((a, b) => b.depth - a.depth);
+
   return chains;
 }
 
@@ -172,6 +181,7 @@ function findEntryPoints(facts: CodeFact[], files: CodeCollectedFile[]): EntryPo
 
     if (isEntry) {
       const key = `${fact.file}:${fact.name}`;
+
       if (!seen.has(key)) {
         seen.add(key);
         entryPoints.push({ file: fact.file, symbol: fact.name, lineStart: fact.lineStart });
@@ -182,8 +192,10 @@ function findEntryPoints(facts: CodeFact[], files: CodeCollectedFile[]): EntryPo
   // From files: look for key files that are likely entry points
   for (const file of files) {
     if (!file.isKeyFile) continue;
+
     if (ENTRY_PATTERNS.some((p) => p.test(file.relativePath))) {
       const key = `${file.relativePath}:main`;
+
       if (!seen.has(key)) {
         seen.add(key);
         entryPoints.push({ file: file.relativePath, symbol: "main", lineStart: 1 });
@@ -196,6 +208,7 @@ function findEntryPoints(facts: CodeFact[], files: CodeCollectedFile[]): EntryPo
 
 function buildRelationsByFile(facts: CodeFact[]): Map<string, CodeFact[]> {
   const map = new Map<string, CodeFact[]>();
+
   for (const fact of facts) {
     // Metadata relations (wildcard packages, declaration markers) name no
     // target and would only crowd the bounded relation slice in traversal.
@@ -204,22 +217,26 @@ function buildRelationsByFile(facts: CodeFact[]): Map<string, CodeFact[]> {
     group.push(fact);
     map.set(fact.file, group);
   }
+
   return map;
 }
 
 function buildComponentsByFile(facts: CodeFact[]): Map<string, CodeFact[]> {
   const map = new Map<string, CodeFact[]>();
+
   for (const fact of facts) {
     if (fact.kind !== "component") continue;
     const group = map.get(fact.file) ?? [];
     group.push(fact);
     map.set(fact.file, group);
   }
+
   return map;
 }
 
 function buildFilesByModule(files: CodeCollectedFile[]): Map<string, string[]> {
   const map = new Map<string, string[]>();
+
   for (const file of files) {
     // Index by various forms of the path for flexible resolution
     const relativePath = file.relativePath;
@@ -234,6 +251,7 @@ function buildFilesByModule(files: CodeCollectedFile[]): Map<string, string[]> {
       }
     }
   }
+
   return map;
 }
 
@@ -245,16 +263,19 @@ function resolveRelationTarget(importPath: string, filesByModule: Map<string, st
 
   // Try exact match first
   const exact = filesByModule.get(normalized);
+
   if (exact) return exact;
 
   // Try with common patterns
   const withIndex = `${normalized}/index`;
   const indexMatch = filesByModule.get(withIndex);
+
   if (indexMatch) return indexMatch;
 
   // Try basename only
   const basename = normalized.split("/").pop() ?? "";
   const baseMatch = filesByModule.get(basename);
+
   if (baseMatch) return baseMatch;
 
   return [];

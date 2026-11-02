@@ -56,27 +56,35 @@ export function extractCodeFacts(files: CodeCollectedFile[], context?: Extractor
   const byLanguage = groupByLanguage(files);
   const allFacts: CodeFact[] = [];
   const effectiveContext: ExtractorContext = context ?? { allFiles: files, priorDeclarations: new Map() };
+
   for (const [language, langFiles] of byLanguage) {
     allFacts.push(...extractForLanguage(language, langFiles, effectiveContext));
   }
+
   // Deduplicate facts by kind:name:file (same symbol in same file only kept once)
   const seen = new Set<string>();
+
   const deduped = allFacts.filter(f => {
     if (f.kind === 'relation') return true;
     const key = `${f.kind}:${f.name}:${f.file}`;
+
     if (seen.has(key)) return false;
     seen.add(key);
+
     return true;
   });
+
   return deduped;
 }
 
 function groupByLanguage(files: CodeCollectedFile[]): Map<string, CodeCollectedFile[]> {
   const map = new Map<string, CodeCollectedFile[]>();
+
   for (const file of files) {
     const group = map.get(file.language) ?? [];
     group.push(file);
     map.set(file.language, group);
   }
+
   return map;
 }

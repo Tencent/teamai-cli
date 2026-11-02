@@ -6,13 +6,16 @@ import { z } from 'zod';
 /** The start time of every process, as `ps -o lstart=` prints it, by pid; undefined when ps cannot run. */
 export function processStarts(): Map<number, string> | undefined {
   let stdout: string;
+
   try {
     stdout = execFileSync('ps', ['-A', '-o', 'pid=,lstart='], { encoding: 'utf8' });
   } catch {
     return undefined;
   }
+
   return new Map(stdout.trim().split('\n').map((line) => {
     const [pid, ...start] = line.trim().split(/\s+/);
+
     return [Number(pid), start.join(' ')];
   }));
 }
@@ -27,8 +30,10 @@ const ProcessGroupSchema = z.object({ pid: z.number().int().positive(), start: z
 
 /** The file a teamai before #1523 wrote in a directory: the last process group started there. */
 const LEGACY_GROUP_FILE = 'group.json';
+
 /** The prefix of the files that record a process group started in a directory, one file per group. */
 const GROUP_PREFIX = 'group-';
+
 /** The name of the file that records one process group, by its pid. */
 const GROUP_FILE = /^group-\d+\.json$/;
 
@@ -41,6 +46,7 @@ const GROUP_FILE = /^group-\d+\.json$/;
  */
 export function recordGroup(child: ChildProcess, dir: string): void {
   const start = child.pid === undefined ? undefined : processStarts()?.get(child.pid);
+
   if (child.pid === undefined || start === undefined) return;
   const body = JSON.stringify({ pid: child.pid, start });
   writeGroup(path.join(dir, `${GROUP_PREFIX}${child.pid}.json`), body);
@@ -53,6 +59,7 @@ export function recordGroup(child: ChildProcess, dir: string): void {
 /** Writes the record of one process group, so a reader never sees half of it. */
 function writeGroup(file: string, body: string): void {
   const temporary = `${file}.${process.pid}.tmp`;
+
   try {
     fs.writeFileSync(temporary, body);
     fs.renameSync(temporary, file);
@@ -68,6 +75,7 @@ function writeGroup(file: string, body: string): void {
 export async function stopRecordedGroup(dir: string): Promise<void> {
   for (const file of await recordedGroups(dir)) {
     const recorded = await readGroup(file);
+
     if (recorded !== undefined) await stopGroup(recorded);
     await fs.promises.rm(file, { force: true });
   }
@@ -76,11 +84,13 @@ export async function stopRecordedGroup(dir: string): Promise<void> {
 /** The files in `dir` that record a process group: one per group, and the one a teamai before #1523 wrote. */
 async function recordedGroups(dir: string): Promise<string[]> {
   let names: string[];
+
   try {
     names = await fs.promises.readdir(dir);
   } catch {
     return [];
   }
+
   return names
     .filter((name) => GROUP_FILE.test(name) || name === LEGACY_GROUP_FILE)
     .map((name) => path.join(dir, name));
@@ -114,17 +124,21 @@ export async function stopGroup(group: ProcessGroup): Promise<boolean> {
   if (process.platform === 'win32' || !signalGroup(group.pid, 0)) return false;
   const starts = processStarts();
   const leader = starts?.get(group.pid);
+
   // Without current identities, a pid reused since cannot be told apart, so the group is left alone.
   if (!starts || (leader !== undefined && leader !== group.start)) return false;
   signalGroup(group.pid, 'SIGTERM');
+
   // Counted rather than timed, so a faked clock cannot stretch the grace period.
   for (let probe = 0; signalGroup(group.pid, 0); probe += 1) {
     if (probe === 100) {
       signalGroup(group.pid, 'SIGKILL');
       break;
     }
+
     await new Promise<void>((resolve) => setTimeout(resolve, 50));
   }
+
   return true;
 }
 
@@ -152,7 +166,9 @@ export interface GroupedCommand {
 export function startGroupedCommand(input: { command: string; cwd: string; env: NodeJS.ProcessEnv; detached: boolean; group: string }): GroupedCommand {
   const { command, cwd, env, detached, group } = input;
   const child = spawn(command, { shell: true, cwd, env, detached, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+
   if (detached) recordGroup(child, group);
+
   const exit = new Promise<CommandExit>((resolve) => {
     let stdout = '';
     let stderr = '';
@@ -162,6 +178,7 @@ export function startGroupedCommand(input: { command: string; cwd: string; env: 
     child.on('error', (error) => resolve({ exitCode: 127, stdout, stderr: `${stderr}${error.message}`, output }));
     child.on('close', (code) => resolve({ exitCode: code ?? 1, stdout, stderr, output }));
   });
+
   return { exit, stop: stopProcess(child, exit, detached) };
 }
 
@@ -169,62 +186,81 @@ export function startGroupedCommand(input: { command: string; cwd: string; env: 
 export function stopProcess<T>(child: ChildProcess, exit: Promise<T>, detached: boolean): (signal?: NodeJS.Signals) => Promise<T> {
   let stopping: Promise<T> | undefined;
   let descendants: { pid: number; start: string }[] = [];
+
   /** Whether the signal reached any process in the group or tree. */
   const signal = (name: NodeJS.Signals | 0): boolean => {
     try {
       if (detached && child.pid !== undefined) return process.kill(-child.pid, name);
       let targets = descendants;
+
       if ((name === 0 || name === 'SIGKILL') && descendants.length > 0) {
         // Without current identities, stop only the shell.
         const starts = processStarts() ?? new Map<number, string>();
         // lstart has one-second resolution and the check is not atomic with kill, so this narrows the window but does not close it.
         targets = descendants.filter(({ pid, start }) => starts.get(pid) === start);
       }
+
       let reached = false;
+
       for (const { pid } of targets) {
         try { reached = process.kill(pid, name) || reached; } catch { /* Already exited. */ }
       }
+
       return child.kill(name) || reached;
     } catch {
       return false;
     }
   };
+
   const stop = async (initial: NodeJS.Signals): Promise<T> => {
     if (process.platform === 'win32' && child.pid !== undefined) {
       execFile('taskkill', ['/pid', String(child.pid), '/T', '/F'], () => {});
+
       return exit;
     }
+
     if (!detached && child.pid !== undefined) {
       let stdout = '';
+
       try {
         stdout = execFileSync('ps', ['-A', '-o', 'pid=,ppid=,lstart='], { encoding: 'utf8' });
       } catch {
         // ps may be unavailable in minimal environments; fall back to stopping only the shell.
       }
+
       const children = new Map<number, typeof descendants>();
+
       for (const line of stdout.trim().split('\n')) {
         const [pid, parent, ...start] = line.trim().split(/\s+/);
+
         if (!pid || !parent || start.length === 0) continue;
         const siblings = children.get(Number(parent)) ?? [];
         siblings.push({ pid: Number(pid), start: start.join(' ') });
         children.set(Number(parent), siblings);
       }
+
       // A process that daemonizes away from this snapshot's tree is not reached.
       const pending = [...children.get(child.pid) ?? []];
+
       while (pending.length > 0) {
         const descendant = pending.pop()!;
         descendants.push(descendant);
         pending.push(...children.get(descendant.pid) ?? []);
       }
+
       descendants = descendants.toReversed();
     }
+
     signal(initial);
     let timer: NodeJS.Timeout | undefined;
     let escalated = false;
+
     const killed = new Promise<void>((resolve) => {
       timer = setTimeout(() => { escalated = true; signal('SIGKILL'); resolve(); }, 5000);
     });
+
     const result = await exit;
+
     // A process with its own output can ignore SIGTERM and outlive the shell. Keep SIGKILL while any captured
     // descendant or process in the detached group remains.
     // Descendants may still be exiting when the shell closes. Recheck instead
@@ -234,8 +270,11 @@ export function stopProcess<T>(child: ChildProcess, exit: Promise<T>, detached: 
     while (!escalated && signal(0)) {
       await Promise.race([killed, new Promise<void>((resolve) => setTimeout(resolve, 50))]);
     }
+
     clearTimeout(timer);
+
     return result;
   };
+
   return (initial = 'SIGTERM') => (stopping ??= stop(initial));
 }

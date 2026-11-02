@@ -1,4 +1,4 @@
-import { execSync, spawnSync } from 'node:child_process';
+import { execSync, spawnSync, type SpawnSyncOptions, type SpawnSyncOptionsWithStringEncoding } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -17,6 +17,7 @@ import { TGIT_HOST } from './repo-url.js';
 function gfInstallDir(): string {
   return path.join(getTeamaiHomeDir(), 'gf');
 }
+
 function gfBinPath(): string {
   return path.join(gfInstallDir(), 'gf', 'bin', 'gf');
 }
@@ -36,6 +37,13 @@ function shellQuote(s: string): string {
 
 // ─── Core helpers ────────────────────────────────────────
 
+/** What a gf run printed and how it exited. */
+export interface GfExecResult {
+  stdout: string;
+  stderr: string;
+  status: number;
+}
+
 /**
  * Execute a gf CLI command.
  * gf launcher is a bash script, so we wrap with `bash -c` for compatibility.
@@ -44,7 +52,7 @@ function shellQuote(s: string): string {
 export function gfExec(
   args: string[],
   options?: { inheritStdio?: boolean; cwd?: string; timeoutMs?: number },
-): { stdout: string; stderr: string; status: number } {
+): GfExecResult {
   const gfPath = getGfPath();
   // Shell-quote every token (including the binary path) so values such as repo
   // paths, branch names, titles, and descriptions cannot inject shell
@@ -54,22 +62,27 @@ export function gfExec(
   log.debug(`gf exec: ${cmd}`);
 
   if (options?.inheritStdio) {
-    const result = spawnSync('bash', ['-c', cmd], {
+    const inherited: SpawnSyncOptions = {
       stdio: 'inherit',
       env: { ...process.env },
       cwd: options.cwd,
-      ...(options.timeoutMs ? { timeout: options.timeoutMs } : {}),
-    });
+    };
+
+    if (options.timeoutMs) inherited.timeout = options.timeoutMs;
+    const result = spawnSync('bash', ['-c', cmd], inherited);
+
     return { stdout: '', stderr: '', status: result.status ?? 1 };
   }
 
-  const result = spawnSync('bash', ['-c', cmd], {
+  const captured: SpawnSyncOptionsWithStringEncoding = {
     env: { ...process.env },
     encoding: 'utf-8',
     maxBuffer: 10 * 1024 * 1024,
     cwd: options?.cwd,
-    ...(options?.timeoutMs ? { timeout: options.timeoutMs } : {}),
-  });
+  };
+
+  if (options?.timeoutMs) captured.timeout = options.timeoutMs;
+  const result = spawnSync('bash', ['-c', cmd], captured);
 
   return {
     stdout: (result.stdout ?? '').toString().trim(),
@@ -88,6 +101,7 @@ function getGfPath(): string {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
     });
+
     if (stat.trim() === 'ok') return gfBinPath();
   } catch {
     // not installed locally
@@ -96,6 +110,7 @@ function getGfPath(): string {
   // Fall back to system PATH
   try {
     const which = execSync('which gf', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+
     if (which.trim()) return which.trim();
   } catch {
     // not in PATH
@@ -116,6 +131,7 @@ function getGfDownloadUrl(): string {
   const platform = os.platform(); // 'darwin', 'linux'
 
   let osName: string;
+
   if (platform === 'darwin') {
     osName = 'darwin';
   } else if (platform === 'linux') {
@@ -125,6 +141,7 @@ function getGfDownloadUrl(): string {
   }
 
   let archName: string;
+
   if (arch === 'x64') {
     archName = 'x64';
   } else if (arch === 'arm64') {
@@ -142,6 +159,7 @@ function getGfDownloadUrl(): string {
 export function isGfInstalled(): boolean {
   try {
     getGfPath();
+
     return true;
   } catch {
     return false;
@@ -163,11 +181,14 @@ function parseExpectedSha256(headerText: string): string | null {
   for (const line of headerText.split(/\r?\n/)) {
     if (/^location:/i.test(line)) {
       const hashes = line.match(/[0-9a-f]{64}/gi);
+
       if (hashes?.length) return hashes[hashes.length - 1].toLowerCase();
     }
   }
+
   // Direct-serve fallback: explicit checksum header.
   const header = headerText.match(/^x-checksum-sha256:\s*([0-9a-f]{64})\s*$/im);
+
   return header?.[1]?.toLowerCase() ?? null;
 }
 
@@ -182,6 +203,7 @@ function parseExpectedSha256(headerText: string): string | null {
 export async function ensureGfInstalled(): Promise<void> {
   if (isGfInstalled()) {
     log.debug('gf CLI already installed');
+
     return;
   }
 
@@ -209,14 +231,17 @@ export async function ensureGfInstalled(): Promise<void> {
     // if we cannot obtain an expected digest, we cannot vouch for the binary —
     // abort rather than extract and execute an unverified archive.
     const expected = parseExpectedSha256(fs.readFileSync(headerPath, 'utf-8'));
+
     if (!expected) {
       throw new Error(
         'gf CLI download integrity check failed (mirror advertised no SHA-256 digest)',
       );
     }
+
     const actual = createHash('sha256')
       .update(fs.readFileSync(tarballPath))
       .digest('hex');
+
     if (actual !== expected) {
       throw new Error(
         `gf CLI download integrity check failed (sha256 mismatch: expected ${expected}, got ${actual})`,
@@ -233,7 +258,7 @@ export async function ensureGfInstalled(): Promise<void> {
 
     spin.succeed(`gf CLI installed to ${dir}`);
   } catch (e) {
-    spin.fail(`Failed to install gf CLI: ${(e as Error).message}`);
+    spin.fail(`Failed to install gf CLI: ${e instanceof Error ? e.message : String(e)}`);
     log.info(`You can install it manually from: ${url}`);
     log.info(`Extract to: ${dir}`);
     throw e;
@@ -271,6 +296,7 @@ const AUTH_CWD = os.tmpdir();
 export function gfIsAuthenticated(): boolean {
   try {
     const result = gfExec(['auth', 'whoami'], { cwd: AUTH_CWD });
+
     return result.status === 0 && result.stdout.includes('当前登录用户');
   } catch {
     return false;
@@ -284,11 +310,13 @@ export function gfIsAuthenticated(): boolean {
 export function gfAuthWhoami(): string | null {
   try {
     const result = gfExec(['auth', 'whoami'], { cwd: AUTH_CWD });
+
     if (result.status !== 0) return null;
 
     // Parse "当前登录用户：<username>" or similar
     const output = result.stdout;
     const match = output.match(/当前登录用户[：:]\s*(\S+)/);
+
     return match?.[1] ?? null;
   } catch {
     return null;
@@ -302,6 +330,7 @@ export function gfAuthWhoami(): string | null {
 export function gfAuthLogin(): void {
   log.info('Starting gf authentication...');
   const result = gfExec(['auth', 'login'], { inheritStdio: true, cwd: AUTH_CWD });
+
   if (result.status !== 0) {
     throw new Error('gf auth login failed. Please try again.');
   }
@@ -314,6 +343,7 @@ export function gfAuthLogin(): void {
 export function ensureAuthenticated(): string {
   // First check if already authenticated
   const username = gfAuthWhoami();
+
   if (username) {
     return username;
   }
@@ -339,9 +369,11 @@ export function ensureAuthenticated(): string {
 
   // Verify login succeeded
   const verifiedUsername = gfAuthWhoami();
+
   if (!verifiedUsername) {
     throw new Error('Authentication failed. Please run `teamai init` again.');
   }
+
   return verifiedUsername;
 }
 
@@ -365,9 +397,11 @@ export function gfGetOAuthToken(): string | null {
   // whose HOME points elsewhere keeps working after the upgrade: read the
   // current location first, then the legacy one.
   let candidates: string[];
+
   try {
     candidates = [path.join(getUserHome(), '.netrc')];
     const legacy = legacyUserHome();
+
     if (legacy) candidates.push(path.join(legacy, '.netrc'));
   } catch {
     return null;
@@ -381,16 +415,25 @@ export function gfGetOAuthToken(): string | null {
       // candidate via the `catch`.
       if (!fs.existsSync(netrcPath)) continue;
       const content = fs.readFileSync(netrcPath, 'utf-8');
+
       // Match: machine git.woa.com ... password <TOKEN>
       const match = content.match(
         /machine\s+git\.woa\.com\s+.*?password\s+(\S+)/,
       );
+
       if (match?.[1]) return match[1];
     } catch {
       // Missing or unreadable here — try the next location.
     }
   }
+
   return null;
+}
+
+/** The body of TGit's create-project request. */
+interface TGitCreateProjectBody {
+  name: string;
+  namespace_id?: number;
 }
 
 /**
@@ -404,15 +447,20 @@ export async function gfCreateRepo(owner: string, repo: string): Promise<void> {
   // segment and match against `full_path` which includes parent groups.
   const searchTerm = owner.includes('/') ? owner.split('/').pop()! : owner;
   const nsResp = await tgitFetch(`/namespaces?search=${encodeURIComponent(searchTerm)}`);
+
   if (!nsResp.ok) {
     throw new Error(`Failed to look up namespace "${owner}": ${nsResp.status}`);
   }
-  const namespaces = (await nsResp.json()) as Array<{ id: number; path: string; full_path?: string }>;
+
+  const namespaces = z.array(z.object({ id: z.number(), path: z.string(), full_path: z.string().nullish() }))
+    .parse(await nsResp.json());
+
   const ns = namespaces.find(
     (n) => (n.full_path ?? n.path).toLowerCase() === owner.toLowerCase(),
   );
 
-  const body: Record<string, unknown> = { name: repo };
+  const body: TGitCreateProjectBody = { name: repo };
+
   if (ns) {
     body.namespace_id = ns.id;
   }
@@ -421,6 +469,7 @@ export async function gfCreateRepo(owner: string, repo: string): Promise<void> {
     method: 'POST',
     body: JSON.stringify(body),
   });
+
   if (!createResp.ok) {
     const errBody = await createResp.text().catch(() => '');
     throw new Error(`Failed to create repo: ${createResp.status} ${errBody}`);
@@ -458,6 +507,7 @@ function gitOutputSaysRepoMissing(output: string): boolean {
  */
 export function gfRepoClone(repo: string, localPath: string): void {
   const cloneUrl = tgitGitCloneUrl(`https://git.woa.com/${repo}.git`);
+
   if (cloneUrl) {
     const result = spawnSync('git', ['clone', cloneUrl, localPath], {
       encoding: 'utf-8',
@@ -465,25 +515,31 @@ export function gfRepoClone(repo: string, localPath: string): void {
       timeout: 120_000,
       windowsHide: true,
     });
+
     const allOutput = `${result.stderr ?? ''} ${result.stdout ?? ''}`;
+
     if (gitOutputSaysRepoMissing(allOutput)) {
       throw new RepoNotFoundError(repo);
     }
+
     if (result.status !== 0) {
       // Sanitize output to avoid leaking the token
       const sanitized = allOutput.replace(/oauth2:[^@]+@/g, 'oauth2:***@');
       throw new Error(`git clone failed: ${sanitized.trim()}`);
     }
+
     return;
   }
 
   // No OAuth credential → fall back to `gf repo clone` (interactive/user path).
   const result = gfExec(['repo', 'clone', repo, localPath]);
   const allOutput = `${result.stderr} ${result.stdout}`;
+
   // Only match gf's own "not found" message, not git's object stats (e.g. "reused 404")
   if (allOutput.includes('未在工蜂找到') || allOutput.includes('不存在')) {
     throw new RepoNotFoundError(repo);
   }
+
   if (result.status !== 0) {
     throw new Error(`gf repo clone failed: ${result.stderr || result.stdout}`);
   }
@@ -533,7 +589,8 @@ export function gfMrCreate(opts: GfMrCreateOptions): string {
     args.push('-r', opts.reviewers.join(','));
   }
 
-  const result = gfExec(args, { cwd: opts.cwd, ...(opts.spawnTimeoutMs ? { timeoutMs: opts.spawnTimeoutMs } : {}) });
+  const result = gfExec(args, { cwd: opts.cwd, timeoutMs: opts.spawnTimeoutMs });
+
   if (result.status !== 0) {
     const errMsg = result.stderr || result.stdout;
     throw new Error(`gf mr create failed: ${errMsg}`);
@@ -542,12 +599,14 @@ export function gfMrCreate(opts: GfMrCreateOptions): string {
   // Try to extract MR URL from output
   const output = result.stdout;
   const urlMatch = output.match(/https:\/\/git\.woa\.com\/[^\s]+merge_requests\/\d+/);
+
   if (urlMatch) {
     return urlMatch[0];
   }
 
   // Fallback: construct URL from repo and try to find MR number
   const mrNumMatch = output.match(/!(\d+)/);
+
   if (mrNumMatch) {
     return `https://git.woa.com/${opts.repo}/-/merge_requests/${mrNumMatch[1]}`;
   }
@@ -577,18 +636,26 @@ const TGitOpenMrSchema = z.object({
  */
 export async function tgitFindOpenMr({ repo, source, target, timeoutMs }: PullRequestRef): Promise<string | undefined> {
   const query = new URLSearchParams({ state: 'opened', source_branch: source, target_branch: target, per_page: String(LOOKUP_PAGE) });
+
   const response = await tgitFetch(`/projects/${encodeURIComponent(repo)}/merge_requests?${query}`, {
     redirect: 'manual', signal: AbortSignal.timeout(timeoutMs),
   });
+
   if (!response.ok) throw new Error(`TGit answered the open merge request lookup with HTTP ${response.status}. Check TGIT_TOKEN or the gf login and their access to the project.`);
   const requests = z.array(TGitOpenMrSchema).safeParse(await response.json().catch(() => undefined));
+
   if (!requests.success) throw new Error('TGit answered the open merge request lookup with data TeamAI cannot read.');
+
   const found = requests.data.find((mr) => (mr.state === 'opened' || mr.state === 'reopened') && mr.source_branch === source
     && mr.target_branch === target && mr.source_project_id === mr.target_project_id);
+
   if (!found) {
     if (requests.data.length >= LOOKUP_PAGE) throw new Error('TGit listed more open merge requests than one page, so TeamAI cannot tell whether this branch has one.');
+
     return undefined;
   }
+
   if (!found.web_url.startsWith(`https://${TGIT_HOST}/`)) throw new Error('TGit answered the open merge request lookup with a URL on another host.');
+
   return found.web_url;
 }

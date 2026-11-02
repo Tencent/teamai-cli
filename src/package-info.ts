@@ -1,13 +1,16 @@
 import { createRequire } from 'node:module';
+import { z } from 'zod';
 
 /**
- * Shape of the fields we read from the CLI's own package.json.
+ * The fields we read from the CLI's own package.json.
  * Both fields are guaranteed by npm to exist on a published package.
  */
-interface PackageJsonFields {
-  name: string;
-  version: string;
-}
+const PackageJsonFieldsSchema = z.object({
+  name: z.string(),
+  version: z.string(),
+});
+
+type PackageJsonFields = z.infer<typeof PackageJsonFieldsSchema>;
 
 /**
  * Load the CLI's package.json.
@@ -19,7 +22,8 @@ interface PackageJsonFields {
  */
 function loadPackageJson(): PackageJsonFields {
   const require = createRequire(import.meta.url);
-  return require('../package.json') as PackageJsonFields;
+
+  return PackageJsonFieldsSchema.parse(require('../package.json'));
 }
 
 /**

@@ -8,6 +8,8 @@ import { gitFindsNoRepository } from './utils/git-discovery.js';
 import { checkoutLocation } from './utils/git.js';
 import { withoutGitRepositoryEnv } from './utils/git-env.js';
 import { getUserHome } from './utils/home.js';
+import { z } from 'zod';
+import { isJsonObject, type JsonObject, type JsonValue } from './types.js';
 
 // ─── Git exclude blocks ──────────────────────────────────────
 //
@@ -53,15 +55,24 @@ export function encodeOwnerSegment(name: string): string {
   return [...Buffer.from(name, 'utf8')]
     .map((byte) => {
       const char = String.fromCharCode(byte);
+
       return /[a-z0-9_-]/.test(char) ? char : `%${byte.toString(16).padStart(2, '0')}`;
     })
     .join('');
 }
 
+/** The lines that open and close an owner's block. */
+interface BlockMarkers {
+  start: string;
+  end: string;
+}
+
 /** The owner's markers; `mcp-exclude` keeps #886's, byte for byte. */
-function markersOf(owner: string): { start: string; end: string } {
+function markersOf(owner: string): BlockMarkers {
   if (!OWNER.test(owner)) throw new TypeError(`Invalid git exclude owner "${owner}": use [a-z0-9/_%-] (encodeOwnerSegment)`);
+
   if (owner === MCP_EXCLUDE_OWNER) return { start: MCP_EXCLUDE_START, end: MCP_EXCLUDE_END };
+
   return { start: `# [teamai:${owner}:start]`, end: `# [teamai:${owner}:end]` };
 }
 
@@ -89,6 +100,7 @@ interface ParsedExclude {
 /** One line's value: the owner's parsing (only `\r` stripped; `mcp-exclude` trims). */
 function lineValue(raw: string, owner: string): string {
   const body = raw.replace(/\n$/, '');
+
   return isLegacy(owner) ? body.trim() : body.replace(/\r$/, '');
 }
 
@@ -103,29 +115,42 @@ function parseExclude(content: string): ParsedExclude {
   const damaged: DamagedMarker[] = [];
   const raws = content.match(/[^\n]*\n|[^\n]+$/g) ?? [];
   let open: { owner: string; line: number; raws: string[] } | null = null;
+
   const text = (raw: string): void => {
     const last = segments[segments.length - 1];
+
     if (last?.kind === 'text') last.raw += raw;
     else segments.push({ kind: 'text', raw });
   };
+
   const orphan = (): void => {
     if (!open) return;
     damaged.push({ owner: open.owner, line: open.line, problem: 'unclosed' });
+
     for (const raw of open.raws) text(raw);
     open = null;
   };
+
   raws.forEach((raw, i) => {
     const marker = MARKER.exec(raw.trim());
+
     if (marker?.[2] === 'start') {
       orphan();
       open = { owner: marker[1], line: i + 1, raws: [raw] };
     } else if (marker && open?.owner === marker[1]) {
       const { owner } = open;
-      const lines = [...open.raws.slice(1), raw].slice(0, -1).map((r) => lineValue(r, owner)).filter((l) => l !== '' && !l.startsWith('#'));
+
+      const lines = [...open.raws.slice(1), raw].slice(0, -1).flatMap((r) => {
+        const line = lineValue(r, owner);
+
+        return line !== '' && !line.startsWith('#') ? [line] : [];
+      });
+
       segments.push({ kind: 'block', owner, raw: [...open.raws, raw].join(''), lines });
       open = null;
     } else {
       if (marker) damaged.push({ owner: marker[1], line: i + 1, problem: 'unopened' });
+
       if (open) open.raws.push(raw);
       else text(raw);
     }
@@ -133,20 +158,25 @@ function parseExclude(content: string): ParsedExclude {
   orphan();
   const seen = new Set<string>();
   let line = 1;
+
   for (const segment of segments) {
     if (segment.kind === 'block') {
       if (seen.has(segment.owner)) damaged.push({ owner: segment.owner, line, problem: 'duplicate' });
       seen.add(segment.owner);
     }
+
     line += (segment.raw.match(/\n/g) ?? []).length;
   }
+
   damaged.sort((a, b) => a.line - b.line);
+
   return { segments, damaged };
 }
 
 /** Every line of `owner`'s blocks, duplicates merged, in order. */
 function ownerLines(parsed: ParsedExclude, owner: string): string[] | null {
   const blocks = parsed.segments.filter((s): s is Extract<Segment, { kind: 'block' }> => s.kind === 'block' && s.owner === owner);
+
   return blocks.length === 0 ? null : [...new Set(blocks.flatMap((b) => b.lines))];
 }
 
@@ -162,6 +192,7 @@ export function withOwnerLines(content: string, owner: string, lines: string[]):
   const block = lines.length > 0 ? [start, ...lines, end].map((l) => `${l}${eol}`).join('') : '';
   let placed = false;
   let next = '';
+
   for (const segment of parsed.segments) {
     if (segment.kind === 'block' && segment.owner === owner) {
       if (!placed) next += block;
@@ -170,7 +201,9 @@ export function withOwnerLines(content: string, owner: string, lines: string[]):
       next += segment.raw;
     }
   }
+
   if (!placed && block) next += `${next === '' || next.endsWith('\n') ? '' : eol}${block}`;
+
   return next === content ? null : next;
 }
 
@@ -179,7 +212,7 @@ export function withOwnerLines(content: string, owner: string, lines: string[]):
 /** Git, run where `cwd` is, never where a hook's exported GIT_DIR points (#915). */
 function runGit(args: string[], cwd: string): Promise<ExecResult> {
   return execCommand('git', args, { cwd, timeoutMs: 10_000, env: withoutGitRepositoryEnv() })
-    .catch((e: unknown) => ({ code: -1, stdout: '', stderr: e instanceof Error ? e.message : String(e) }));
+    .catch((cause: unknown) => ({ code: -1, stdout: '', stderr: cause instanceof Error ? cause.message : String(cause) }));
 }
 
 /**
@@ -188,21 +221,26 @@ function runGit(args: string[], cwd: string): Promise<ExecResult> {
  */
 async function locateExclude(dir: string): Promise<{ excludeFile: string; root: string; prefix: string } | { error: string }> {
   if (await gitFindsNoRepository(dir)) return { error: `${dir} is not in a git repository` };
+
   // git cannot start there: an agent's config directory not created yet.
   if (!await pathExists(dir)) return { error: `${dir} does not exist` };
   const located = await checkoutLocation(dir);
+
   if (located) return { excludeFile: located.excludeFile, root: located.toplevel, prefix: located.prefix };
   const result = await runGit(['rev-parse', '--show-toplevel', '--show-prefix', '--git-path', 'info/exclude'], dir);
   const [root = '', prefix = '', gitPath = ''] = result.code === 0 ? result.stdout.split(/\r?\n/) : [];
+
   if (!root || !gitPath) return { error: result.stderr.trim() || `git exited with ${result.code}` };
   // Real path, so one repository reached through a symlink (macOS /var) is one file.
   const base = await fse.realpath(dir).catch(() => dir);
+
   return { excludeFile: path.resolve(base, gitPath), root, prefix };
 }
 
 /** {@link locateExclude}, or null when git cannot say; asked through `context` when given. */
 export async function gitExcludeFile(dir: string, context?: GitContext): Promise<{ excludeFile: string; root: string; prefix: string } | null> {
   const location = await (context ? context.locate(dir) : locateExclude(dir));
+
   return 'error' in location ? null : location;
 }
 
@@ -212,10 +250,12 @@ export async function gitExcludeFiles(
 ): Promise<Map<string, { excludeFile: string; root: string; prefix: string } | null>> {
   const context = new GitContext();
   const found = new Map<string, { excludeFile: string; root: string; prefix: string } | null>();
+
   for (const dir of new Set(dirs)) {
     const location = await context.locate(dir);
     found.set(dir, 'error' in location ? null : location);
   }
+
   return found;
 }
 
@@ -223,6 +263,7 @@ export async function gitExcludeFiles(
 async function insideRepository(dir: string): Promise<boolean> {
   for (let d = path.resolve(dir); ; d = path.dirname(d)) {
     if (await pathExists(path.join(d, '.git'))) return true;
+
     if (path.dirname(d) === d) return false;
   }
 }
@@ -230,7 +271,9 @@ async function insideRepository(dir: string): Promise<boolean> {
 /** The closest directory above `file` that exists. */
 export async function existingAncestor(file: string): Promise<string> {
   let dir = path.dirname(path.resolve(file));
+
   while (!await pathExists(dir) && path.dirname(dir) !== dir) dir = path.dirname(dir);
+
   return dir;
 }
 
@@ -242,6 +285,7 @@ async function realEntryPath(file: string): Promise<string> {
   const dir = await existingAncestor(file);
   // Native realpath: the on-disk spelling on a case-insensitive filesystem (#915).
   const real = await fs.promises.realpath(dir).catch(() => dir);
+
   return path.join(real, path.relative(dir, file));
 }
 
@@ -275,11 +319,14 @@ export type GitTracking =
  */
 export async function gitPathOf(file: string): Promise<{ label: string; path: string }> {
   const landed = await realFilePath(file);
+
   if (landed === file) return { label: file, path: file };
   const linked = await symlinkTarget(file).catch(() => file) !== file;
   const location = linked ? null : await gitExcludeFile(await existingAncestor(landed));
   const inCheckout = location ? path.relative(location.root, landed) : '';
+
   if (inCheckout && !inCheckout.startsWith('..') && file.endsWith(`${path.sep}${inCheckout}`)) return { label: file, path: file };
+
   return { label: `${landed} (where ${file} is written)`, path: landed };
 }
 
@@ -290,12 +337,17 @@ export async function gitPathOf(file: string): Promise<{ label: string; path: st
 export async function gitTracking(file: string): Promise<GitTracking> {
   file = await realFilePath(file);
   const dir = await existingAncestor(file);
+
   if (await gitFindsNoRepository(dir)) return { kind: 'outside-repo' };
   const result = await runGit(['check-ignore', '-q', '--', path.relative(dir, file)], dir);
+
   if (result.code === 0) return { kind: 'ignored' };
+
   if (result.code === 1) return { kind: 'would-commit' };
+
   // Anything else is no repository at all, or git failing inside one.
   if (await insideRepository(dir)) return { kind: 'unknown', error: result.stderr.trim() || `git exited with ${result.code}` };
+
   return { kind: 'outside-repo' };
 }
 
@@ -313,8 +365,11 @@ export async function gitTracks(
   // The file, or even its directory, may be gone from disk and still be in the index.
   const dir = await existingAncestor(file);
   const result = await runGit(['--literal-pathspecs', 'ls-files', '--error-unmatch', '--', path.relative(dir, file)], dir);
+
   if (result.code === 0) return { kind: 'tracked' };
+
   if (result.code === 1) return { kind: 'untracked' };
+
   return { kind: 'unknown', error: result.stderr.trim() || `git exited with ${result.code}` };
 }
 
@@ -325,7 +380,9 @@ export async function gitTracks(
  */
 export async function gitUntracked(file: string, at: 'landed' | 'entry' = 'landed'): Promise<boolean> {
   const tracks = await gitTracks(file, at);
+
   if (tracks.kind !== 'unknown') return tracks.kind === 'untracked';
+
   return (await gitTracking(file)).kind === 'outside-repo';
 }
 
@@ -350,19 +407,25 @@ export async function ignoredByMembersRule(file: string): Promise<boolean> {
   const dir = await existingAncestor(landed);
   const result = await runGit(['check-ignore', '-v', '--', path.relative(dir, landed)], dir);
   const match = result.code === 0 ? /^(.*):(\d+):(.*)\t/.exec(result.stdout) : null;
+
   // A deciding `!` rule re-includes the file: git sees it.
   if (!match || match[3].startsWith('!')) return false;
   // git names the source from the toplevel, whatever the cwd.
   const location = await locateExclude(dir);
   const source = 'error' in location ? path.resolve(dir, match[1]) : path.resolve(location.root, match[1]);
   const content = await readFileSafe(source);
+
   if (content === null) return false;
   let inBlock = false;
+
   for (const line of content.split('\n').slice(0, Number(match[2]) - 1)) {
     const marker = MARKER.exec(line.trim());
+
     if (marker) inBlock = marker[2] === 'start';
   }
+
   if (!inBlock) return true;
+
   // teamai's own line decides, and it hides a member's rule of lower precedence (an earlier line, core.excludesFile).
   return 'error' in location ? false : ignoredWithoutTeamaiBlocks(landed, location.root, location.excludeFile);
 }
@@ -376,25 +439,33 @@ export async function ignoredByMembersRule(file: string): Promise<boolean> {
  */
 async function ignoredWithoutTeamaiBlocks(file: string, root: string, excludeFile: string): Promise<boolean> {
   const configured = await runGit(['config', '--path', 'core.excludesFile'], root);
+
   if (configured.code !== 0 && configured.code !== 1) return false;
   const copies = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-member-rules-')).catch(() => null);
+
   if (copies === null) return false;
+
   try {
     // Unset (exit 1), git reads its default global file; set but empty, none.
     const value = configured.stdout.trim();
+
     const globalFile = configured.code === 1
       ? path.join(process.env.XDG_CONFIG_HOME || path.join(getUserHome(), '.config'), 'git', 'ignore')
       : value ? path.resolve(root, value) : null;
+
     // --exclude-from files rank below every .gitignore, as git's own exclude files do, and the later one
     // wins, as info/exclude wins over core.excludesFile.
     const args = ['--literal-pathspecs', 'ls-files', '--others', '--ignored', '--exclude-per-directory=.gitignore'];
+
     for (const [i, source] of [globalFile, excludeFile].entries()) {
       const parsed = parseExclude((source === null ? null : await readFileSafe(source)) ?? '');
       const copy = path.join(copies, String(i));
       await fse.writeFile(copy, parsed.segments.map((s) => s.kind === 'text' ? s.raw : '').join(''));
       args.push(`--exclude-from=${copy}`);
     }
+
     const listed = await runGit([...args, '--', path.relative(root, file)], root);
+
     return listed.code === 0 && listed.stdout.trim() !== '';
   } catch {
     return false;
@@ -409,6 +480,7 @@ async function reincludingRule(file: string, root: string): Promise<ReincludingR
   const result = await runGit(['check-ignore', '-v', '--', path.relative(dir, file)], dir);
   // <source>:<line>:<pattern><TAB><path>: git names the source from the toplevel, whatever the cwd.
   const match = result.code === 0 ? /^(.*):(\d+):(!.*)\t/.exec(result.stdout) : null;
+
   return match ? { source: path.resolve(root, match[1]), line: match[2], pattern: match[3] } : null;
 }
 
@@ -448,7 +520,8 @@ async function readExisting(file: string): Promise<string | null> {
   try {
     return await readFileIfExists(file);
   } catch (e) {
-    const code = (e as NodeJS.ErrnoException).code;
+    const code = e instanceof Error && 'code' in e ? z.string().optional().catch(undefined).parse(e.code) : undefined;
+
     if (code === 'ENOTDIR') return null;
     throw new NotReadableError(file, code ?? (e instanceof Error ? e.message : String(e)));
   }
@@ -485,15 +558,21 @@ export async function updateFileLocked(
     throw new NotWritableError(file, await existingAncestor(file), e.code === 'EEXIST' || e.code === 'ENOTDIR');
   });
   let held = false;
+
   for (let attempt = 0; attempt < 25 && !held; attempt++) {
     held = await acquireLock(lockPath);
+
     if (!held) await new Promise((resolve) => setTimeout(resolve, lockRetryMs));
   }
+
   if (!held) return 'locked';
+
   try {
     const next = edit((await readExisting(file)) ?? '');
+
     if (next === null) return 'unchanged';
     await writeFileAtomic(file, next, options);
+
     return 'written';
   } finally {
     await releaseLock(lockPath);
@@ -509,14 +588,18 @@ export async function updateFileLocked(
  */
 async function writeBlocker(excludeFile: string): Promise<{ path: string; notDirectory: boolean } | null> {
   const ancestor = await existingAncestor(excludeFile);
+
   if (await fse.stat(ancestor).then((s) => !s.isDirectory(), () => false)) return { path: ancestor, notDirectory: true };
+
   for (const writable of [ancestor, ...(await pathExists(excludeFile) ? [excludeFile] : [])]) {
     const denied = await fse.access(writable, fse.constants.W_OK).then(
       () => false,
       (e: NodeJS.ErrnoException) => ['EACCES', 'EPERM', 'EROFS'].includes(e.code ?? ''),
     );
+
     if (denied) return { path: writable, notDirectory: false };
   }
+
   return null;
 }
 
@@ -551,25 +634,32 @@ function refusal(file: string): RefusedPath | null {
   if (/[\r\n]/.test(file)) {
     return { path: file, problem: 'newline', message: `${JSON.stringify(file)} holds a line break, which no git exclude line can name, so git can still see it` };
   }
+
   if (path.basename(file).endsWith(' ')) {
     return { path: file, problem: 'trailingSpace', message: `${JSON.stringify(file)} ends in a space, which teamai does not write in a git exclude line, so git can still see it` };
   }
+
   return null;
 }
 
 /** `file` with its last part spelled as on disk (a case-insensitive or normalization-insensitive filesystem). */
 async function onDiskSpelling(file: string): Promise<string> {
   const stat = await fse.lstat(file).catch(() => null);
+
   if (!stat) return file;
   const dir = path.dirname(file);
   const base = path.basename(file);
-  const names = await fse.readdir(dir).catch(() => [] as string[]);
+  const names = await fse.readdir(dir).catch((): string[] => []);
+
   if (names.includes(base)) return file;
   const fold = (name: string): string => name.normalize('NFC').toLowerCase();
+
   for (const name of names.filter((n) => fold(n) === fold(base))) {
     const other = await fse.lstat(path.join(dir, name)).catch(() => null);
+
     if (other && other.ino === stat.ino && other.dev === stat.dev) return path.join(dir, name);
   }
+
   return file;
 }
 
@@ -584,7 +674,9 @@ export class GitContext {
 
   locate(dir: string): ReturnType<typeof locateExclude> {
     let found = this.locations.get(dir);
+
     if (!found) this.locations.set(dir, found = this.locateOnce(dir));
+
     return found;
   }
 
@@ -596,23 +688,29 @@ export class GitContext {
    */
   private async locateOnce(dir: string): Promise<Awaited<ReturnType<typeof locateExclude>>> {
     let holder: string | null = dir;
+
     while (holder !== null && !await pathExists(path.join(holder, '.git'))) holder = path.dirname(holder) === holder ? null : path.dirname(holder);
+
     if (holder === null || holder === dir) return locateExclude(dir);
     const location = await this.locate(holder);
     const rel = 'error' in location || location.prefix !== '' ? null : path.relative(location.root, dir);
+
     if (rel === null || rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) return locateExclude(dir);
+
     return { ...location, prefix: `${rel.split(path.sep).join('/')}/` };
   }
 
   /** Whether git there reads names in NFC: `core.precomposeunicode`, which only git for macOS honours. */
   precomposes(root: string): Promise<boolean> {
     let found = this.precompose.get(root);
+
     if (!found) {
       found = process.platform !== 'darwin'
         ? Promise.resolve(false)
         : runGit(['config', '--bool', '--get', 'core.precomposeunicode'], root).then((r) => r.stdout.trim() === 'true');
       this.precompose.set(root, found);
     }
+
     return found;
   }
 
@@ -623,18 +721,24 @@ export class GitContext {
    */
   async place(file: string): Promise<Placement> {
     const refused = refusal(file);
+
     if (refused) return { kind: 'refused', refused };
     const landed = await onDiskSpelling(await realFilePath(file));
     const dir = await existingAncestor(landed);
     const location = await this.locate(dir);
+
     if ('error' in location) return await insideRepository(dir) ? { kind: 'gitFailed', error: location.error } : { kind: 'outsideRepo' };
     let rel = `${location.prefix}${path.relative(dir, landed).split(path.sep).join('/')}`;
+
     // NFC changes no ASCII name, so only another one asks git.
     if (/\P{ASCII}/u.test(rel) && await this.precomposes(location.root)) rel = rel.normalize('NFC');
+
     if (await fse.lstat(landed).then((s) => s.isDirectory(), () => false)) {
       const message = `${JSON.stringify(file)} is a directory, and teamai lists only the files it delivers in a git exclude block, so git can still see what it holds`;
+
       return { kind: 'refused', refused: { path: file, problem: 'directory', message } };
     }
+
     return { kind: 'placed', placed: { path: file, excludeFile: location.excludeFile, root: location.root, rel, line: escapeLine(rel) } };
   }
 }
@@ -696,18 +800,22 @@ export async function sync(
   const context = options.context ?? new GitContext();
   const result: GitExcludeSync = { files: [], refused: [], outsideRepo: [], gitFailed: [] };
   const byFile = new Map<string, Placed[]>();
+
   for (const file of new Set(paths)) {
     const placement = await context.place(file);
+
     if (placement.kind === 'refused') result.refused.push(placement.refused);
     else if (placement.kind === 'outsideRepo') result.outsideRepo.push(file);
     else if (placement.kind === 'gitFailed') result.gitFailed.push({ path: file, error: placement.error });
     else byFile.set(placement.placed.excludeFile, [...byFile.get(placement.placed.excludeFile) ?? [], placement.placed]);
   }
+
   for (const recorded of await owner.record?.files() ?? []) if (!byFile.has(recorded)) byFile.set(recorded, []);
   const addOnly = result.gitFailed.length > 0;
 
   const add: string[] = [];
   const drop: string[] = [];
+
   for (const [excludeFile, placed] of byFile) {
     const checkFailed: GitCheckFailure[] = [];
     const tracked = await trackedPaths(placed, checkFailed);
@@ -715,13 +823,18 @@ export async function sync(
     const wanted = placed.filter((p) => !tracked.some((t) => t.path === p.path)).map((p) => p.line);
     const next = (current: string[]): string[] => [...new Set([...addOnly ? current : [], ...wanted])].sort();
     const { lines, ...outcome } = await writeOwnerLines(excludeFile, owner.name, next, options.dryRun);
+
     const reincludedLines = options.dryRun || outcome.write.kind !== 'written' && outcome.write.kind !== 'unchanged'
       ? []
       : await reincludedPaths(placed.filter((p) => lines.includes(p.line)), checkFailed);
+
     result.files.push({ excludeFile, ...outcome, lines, tracked, reincluded: reincludedLines, checkFailed });
+
     if (outcome.write.kind === 'written' || outcome.write.kind === 'unchanged') (lines.length > 0 ? add : drop).push(excludeFile);
   }
+
   if (!options.dryRun && owner.record && (add.length > 0 || drop.length > 0)) await owner.record.update({ add, drop });
+
   return result;
 }
 
@@ -731,31 +844,45 @@ export async function sync(
  * block holds after it (when the write failed: would hold). A missing exclude
  * file that would get no block is left missing (a deleted repository, or nothing to write).
  */
+/** An owner's lines after a write, and how they differ from before it. */
+interface OwnerLinesDiff {
+  lines: string[];
+  added: string[];
+  dropped: string[];
+}
+
 async function writeOwnerLines(
   excludeFile: string,
   owner: string,
   next: (current: string[]) => string[],
   dryRun = false,
 ): Promise<{ write: GitExcludeWrite; lines: string[]; added: string[]; dropped: string[]; damaged: DamagedMarker[] }> {
-  const diff = (current: string[], lines: string[]): { lines: string[]; added: string[]; dropped: string[] } => ({
+  const diff = (current: string[], lines: string[]): OwnerLinesDiff => ({
     lines,
     added: lines.filter((l) => !current.includes(l)),
     dropped: current.filter((l) => !lines.includes(l)),
   });
+
   let before: string;
+
   try {
     before = (await readExisting(excludeFile)) ?? '';
   } catch (e) {
     if (!(e instanceof NotReadableError)) throw e;
+
     return { write: { kind: 'notReadable', path: excludeFile, message: e.message }, lines: next([]), added: [], dropped: [], damaged: [] };
   }
+
   const parsed = parseExclude(before);
   const damaged = parsed.damaged.filter((d) => d.owner === owner);
   const current = ownerLines(parsed, owner) ?? [];
   const planned = next(current);
+
   if (withOwnerLines(before, owner, planned) === null) return { write: { kind: 'unchanged' }, ...diff(current, planned), damaged };
+
   if (dryRun) return { write: { kind: 'pending' }, ...diff(current, planned), damaged };
   const blocker = await writeBlocker(excludeFile);
+
   if (blocker) {
     return {
       write: { kind: 'notWritable', path: blocker.path, message: new NotWritableError(excludeFile, blocker.path, blocker.notDirectory).message },
@@ -763,17 +890,23 @@ async function writeOwnerLines(
       damaged,
     };
   }
+
   let changes = diff(current, planned);
+
   try {
     const write = await updateFileLocked(excludeFile, (content) => {
       const lines = ownerLines(parseExclude(content), owner) ?? [];
       changes = diff(lines, next(lines));
+
       return withOwnerLines(content, owner, changes.lines);
     });
+
     return { write: { kind: write }, ...changes, damaged };
   } catch (e) {
     if (e instanceof NotWritableError) return { write: { kind: 'notWritable', path: e.blocker, message: e.message }, ...changes, damaged };
+
     if (e instanceof NotReadableError) return { write: { kind: 'notReadable', path: excludeFile, message: e.message }, ...changes, damaged };
+
     return { write: { kind: 'writeFailed', error: e instanceof Error ? e.message : String(e) }, ...changes, damaged };
   }
 }
@@ -781,17 +914,22 @@ async function writeOwnerLines(
 /** Paths among `placed` git tracks, per checkout: one `ls-files` per checkout. A checkout git fails in goes to `failed`. */
 async function trackedPaths(placed: Placed[], failed: GitCheckFailure[]): Promise<TrackedPath[]> {
   const tracked: TrackedPath[] = [];
+
   for (const [root, group] of groupBy(placed, (p) => p.root)) {
     const listed = await runGit(['--literal-pathspecs', 'ls-files', '-z', '--', ...group.map((p) => p.rel)], root);
+
     if (listed.code !== 0) {
       failed.push({ checkout: root, error: listed.stderr.trim() || `git exited with ${listed.code}` });
       continue;
     }
+
     const files = new Set(listed.stdout.split('\0').filter(Boolean));
+
     for (const p of group) {
       if (files.has(p.rel)) tracked.push({ path: p.path, checkout: root });
     }
   }
+
   return tracked;
 }
 
@@ -811,31 +949,41 @@ async function reincludedPaths(placed: Placed[], failed: GitCheckFailure[]): Pro
  */
 async function offeredPaths(placed: Placed[], failed: GitCheckFailure[]): Promise<Map<Placed, string>> {
   const found = new Map<Placed, string>();
+
   for (const [root, group] of groupBy(placed, (p) => p.root)) {
     const listed = await runGit(['--literal-pathspecs', 'ls-files', '-z', '--others', '--exclude-standard', '--', ...group.map((p) => p.rel)], root);
+
     if (listed.code !== 0) {
       if (!failed.some((f) => f.checkout === root)) failed.push({ checkout: root, error: listed.stderr.trim() || `git exited with ${listed.code}` });
       continue;
     }
+
     const visible = listed.stdout.split('\0').filter(Boolean);
+
     for (const p of group) {
       const offered = visible.find((f) => f === p.rel);
+
       if (offered) found.set(p, path.join(root, offered));
     }
   }
+
   return found;
 }
 
 /** The rule `check-ignore -v` names for each offered path: one call per path, so only for the few git still offers. */
 async function reincludingRules(offered: Array<[Placed, string]>): Promise<Array<{ path: string; rule: ReincludingRule | null }>> {
   const found: Array<{ path: string; rule: ReincludingRule | null }> = [];
+
   for (const [p, file] of offered) found.push({ path: p.path, rule: await reincludingRule(file, p.root) });
+
   return found;
 }
 
 function groupBy<T>(items: T[], key: (item: T) => string): Map<string, T[]> {
   const groups = new Map<string, T[]>();
+
   for (const item of items) groups.set(key(item), [...groups.get(key(item)) ?? [], item]);
+
   return groups;
 }
 
@@ -883,12 +1031,16 @@ export async function ensure(
   const context = new GitContext();
   const results: Array<{ path: string; result: GitExcludeEnsure }> = [];
   const add = new Set<string>();
+
   for (const file of new Set(paths)) {
     const { result, excludeFile } = await ensureOne(owner.name, file, context, options);
     results.push({ path: file, result });
+
     if (excludeFile && !options.dryRun) add.add(excludeFile);
   }
+
   if (owner.record && add.size > 0) await owner.record.update({ add: [...add], drop: [] });
+
   return results;
 }
 
@@ -901,15 +1053,20 @@ async function ensureOne(
   const { rerun = 'run `teamai pull` again' } = options;
   const repair = `Fix the repository, or add the file to its .git/info/exclude yourself, then ${rerun}.`;
   const refused = refusal(file);
+
   if (refused) return { result: { kind: 'refused', problem: refused.problem, reason: refused.message, fix: `Rename it, then ${rerun}.` } };
   const tracking = await gitTracking(file);
+
   if (tracking.kind === 'outside-repo') return { result: { kind: 'outsideRepo' } };
+
   // #886's rule, narrowed (#915): an ignore from teamai's own blocks does not count, as they change with the
   // option, the team's config and `uninstall --agent`; only a rule of the member's does.
   if (tracking.kind === 'ignored' && isLegacy(owner) && await ignoredByMembersRule(file)) return { result: { kind: 'excluded', added: false } };
   const inIndex = await gitTracks(file);
+
   if (inIndex.kind === 'tracked') {
     const named = await gitPathOf(file);
+
     return {
       result: {
         kind: 'tracked',
@@ -919,18 +1076,24 @@ async function ensureOne(
       },
     };
   }
+
   if (inIndex.kind === 'unknown') return { result: { kind: 'gitFailed', error: inIndex.error, reason: inIndex.error, fix: repair } };
   // Where the write lands. It and its directory need not exist yet: git is asked from the nearest one that does.
   const placement = await context.place(file);
+
   if (placement.kind === 'refused') {
     return { result: { kind: 'refused', problem: placement.refused.problem, reason: placement.refused.message, fix: `Rename it, then ${rerun}.` } };
   }
+
   if (placement.kind !== 'placed') {
     const error = tracking.kind === 'unknown' ? tracking.error : 'git could not locate .git/info/exclude';
+
     return { result: { kind: 'gitFailed', error, reason: error, fix: repair } };
   }
+
   const { excludeFile, line } = placement.placed;
   const retry = `Make it writable, or add \`${line}\` to it yourself, then ${rerun}.`;
+
   const notWritable = (blocker: string, notDirectory: boolean): GitExcludeEnsure => ({
     kind: 'notWritable',
     path: blocker,
@@ -939,37 +1102,48 @@ async function ensureOne(
       ? `Move ${blocker} aside, then ${rerun}.`
       : `Make ${blocker} writable, or add \`${line}\` to ${excludeFile} yourself, then ${rerun}.`,
   });
+
   // A read-only exclude file is the member's choice; the atomic write would replace it all the same.
   const blocker = await writeBlocker(excludeFile);
+
   if (blocker?.path === excludeFile) {
     return { result: { kind: 'notWritable', path: excludeFile, reason: `${excludeFile} is not writable`, fix: retry } };
   }
+
   if (blocker) return { result: notWritable(blocker.path, blocker.notDirectory) };
   const landed = await realFilePath(file);
   const addLine = (lines: string[]): string[] | null => lines.includes(line) ? null : [...lines, line];
   let write: ExcludeUpdate;
+
   try {
     if (options.dryRun) {
       if (addLine(ownerLines(parseExclude((await readExisting(excludeFile)) ?? ''), owner) ?? []) !== null) {
         // A negated rule in a .gitignore outranks .git/info/exclude: the line would change nothing.
         const rule = await reincludingRule(landed, placement.placed.root);
+
         return { result: rule && path.basename(rule.source) === '.gitignore' ? reincluded(await gitPathOf(file), rule, rerun) : { kind: 'pending' } };
       }
+
       write = 'unchanged';
     } else {
       write = await updateFileLocked(excludeFile, (content) => {
         const next = addLine(ownerLines(parseExclude(content), owner) ?? []);
+
         return next === null ? null : withOwnerLines(content, owner, next);
       });
     }
   } catch (e) {
     if (e instanceof NotWritableError) return { result: notWritable(e.blocker, e.notDirectory) };
+
     if (e instanceof NotReadableError) {
       return { result: { kind: 'notReadable', path: excludeFile, error: e.error, reason: e.message, fix: `Make ${excludeFile} readable, then ${rerun}.` } };
     }
+
     const error = e instanceof Error ? e.message : String(e);
+
     return { result: { kind: 'writeFailed', error, reason: `adding it to ${excludeFile} failed: ${error}`, fix: retry } };
   }
+
   if (write === 'locked') {
     return {
       result: {
@@ -979,13 +1153,17 @@ async function ensureOne(
       },
     };
   }
+
   // Only git saying it ignores the file lets the caller write a secret into it:
   // asked again unless nothing was written since it said so above.
   const after = write === 'unchanged' && tracking.kind === 'ignored' ? tracking : await gitTracking(file);
+
   if (after.kind === 'ignored') return { result: { kind: 'excluded', added: write === 'written' }, excludeFile };
   const named = await gitPathOf(file);
+
   if (after.kind !== 'would-commit') {
     const error = after.kind === 'unknown' ? after.error : 'git says the file is outside any repository';
+
     return {
       result: {
         kind: 'gitFailed',
@@ -996,6 +1174,7 @@ async function ensureOne(
       excludeFile,
     };
   }
+
   // Untracked, as checked above: a rule git reads after teamai's line, or before it, re-includes the file.
   return { result: reincluded(named, await reincludingRule(landed, placement.placed.root), rerun), excludeFile };
 }
@@ -1051,8 +1230,10 @@ export async function remove(
   const files = new Set([...target !== 'all' ? await target.record?.files() ?? [] : [], ...options.files ?? []]);
   const results: GitExcludeFileRemoval[] = [];
   const drop: string[] = [];
+
   for (const excludeFile of files) {
     let content: string | null;
+
     try {
       content = await readExisting(excludeFile);
     } catch (e) {
@@ -1060,36 +1241,50 @@ export async function remove(
       results.push({ excludeFile, write: { kind: 'notReadable', path: excludeFile, message: e.message }, removed: [], kept: [], damaged: [] });
       continue;
     }
+
     if (content === null) {
       results.push({ excludeFile, write: { kind: 'missing' }, removed: [], kept: [], damaged: [] });
       drop.push(excludeFile);
       continue;
     }
+
     const parsed = parseExclude(content);
+
     const owners = target === 'all'
       ? [...new Set(parsed.segments.flatMap((s) => s.kind === 'block' ? [s.owner] : []))].filter((o) => OWNER.test(o))
       : [target.name];
+
     const removed: Array<{ owner: string; lines: string[] }> = [];
     const kept: Array<{ owner: string; lines: string[] }> = [];
+
     for (const owner of owners) {
       const lines = ownerLines(parsed, owner);
+
       if (lines === null) continue;
       const keepLines: string[] = [];
+
       for (const line of lines) if (await options.keep?.({ owner, line, excludeFile })) keepLines.push(line);
       removed.push({ owner, lines: lines.filter((l) => !keepLines.includes(l)) });
+
       if (keepLines.length > 0) kept.push({ owner, lines: keepLines });
     }
+
     const damaged = parsed.damaged.filter((d) => target === 'all' || d.owner === target.name);
     const removal = { excludeFile, removed, kept, damaged };
+
     // Only lines judged here go; one another command added meanwhile stays for its next run.
     const edit = (current: string): string | null => {
       let next = current;
+
       for (const { owner, lines } of removed) {
         const now = ownerLines(parseExclude(next), owner);
+
         if (now !== null) next = withOwnerLines(next, owner, now.filter((l) => !lines.includes(l))) ?? next;
       }
+
       return next === current ? null : next;
     };
+
     if (edit(content) === null) {
       results.push({ ...removal, write: { kind: 'unchanged' } });
     } else if (options.dryRun) {
@@ -1102,20 +1297,24 @@ export async function remove(
           ? { kind: 'notWritable', path: blocker.path, message: new NotWritableError(excludeFile, blocker.path, blocker.notDirectory).message }
           : await updateFileLocked(excludeFile, edit).then(
             (kind): GitExcludeWrite => ({ kind }),
-            (e: unknown): GitExcludeWrite => e instanceof NotWritableError
-              ? { kind: 'notWritable', path: e.blocker, message: e.message }
-              : e instanceof NotReadableError
-                ? { kind: 'notReadable', path: excludeFile, message: e.message }
-                : { kind: 'writeFailed', error: e instanceof Error ? e.message : String(e) },
+            (cause: unknown): GitExcludeWrite => cause instanceof NotWritableError
+              ? { kind: 'notWritable', path: cause.blocker, message: cause.message }
+              : cause instanceof NotReadableError
+                ? { kind: 'notReadable', path: excludeFile, message: cause.message }
+                : { kind: 'writeFailed', error: cause instanceof Error ? cause.message : String(cause) },
           ),
       });
     }
+
     const last = results[results.length - 1];
+
     if ((last.write.kind === 'written' || last.write.kind === 'unchanged') && target !== 'all' && !kept.some((k) => k.owner === target.name)) {
       drop.push(excludeFile);
     }
   }
+
   if (!options.dryRun && target !== 'all' && target.record && drop.length > 0) await target.record.update({ add: [], drop });
+
   return results;
 }
 
@@ -1162,17 +1361,22 @@ export async function report(owner: GitExcludeOwner, expectedPaths: Iterable<str
   markersOf(owner.name);
   const result: GitExcludeReport = { files: [], refused: [], outsideRepo: [], gitFailed: [] };
   const byFile = new Map<string, Placed[]>();
+
   for (const file of new Set(expectedPaths)) {
     const placement = await context.place(file);
+
     if (placement.kind === 'refused') result.refused.push(placement.refused);
     else if (placement.kind === 'outsideRepo') result.outsideRepo.push(file);
     else if (placement.kind === 'gitFailed') result.gitFailed.push({ path: file, error: placement.error });
     else byFile.set(placement.placed.excludeFile, [...byFile.get(placement.placed.excludeFile) ?? [], placement.placed]);
   }
+
   for (const recorded of await owner.record?.files() ?? []) if (!byFile.has(recorded)) byFile.set(recorded, []);
+
   for (const [excludeFile, placed] of byFile) {
     let content: string;
     let notReadable: string | undefined;
+
     try {
       content = (await readExisting(excludeFile)) ?? '';
     } catch (e) {
@@ -1180,16 +1384,19 @@ export async function report(owner: GitExcludeOwner, expectedPaths: Iterable<str
       content = '';
       notReadable = e.message;
     }
+
     const parsed = parseExclude(content);
     const lines = ownerLines(parsed, owner.name) ?? [];
     const checkFailed: GitCheckFailure[] = [];
     // Both only read, so asked together; a checkout keeps the first failure, as when asked in turn.
     const offerFailed: GitCheckFailure[] = [];
     const [tracked, offered] = await Promise.all([trackedPaths(placed, checkFailed), offeredPaths(placed, offerFailed)]);
+
     for (const f of offerFailed) if (!checkFailed.some((c) => c.checkout === f.checkout)) checkFailed.push(f);
     const listed = placed.filter((p) => lines.includes(p.line));
     const missing = notReadable ? [] : placed.filter((p) => !lines.includes(p.line) && !tracked.some((t) => t.path === p.path));
-    result.files.push({
+
+    const fileReport: GitExcludeFileReport = {
       excludeFile,
       listed: listed.map((p) => p.path),
       missing: missing.map((p) => p.path),
@@ -1199,9 +1406,12 @@ export async function report(owner: GitExcludeOwner, expectedPaths: Iterable<str
       damaged: parsed.damaged.filter((d) => d.owner === owner.name),
       checkFailed,
       visible: placed.filter((p) => offered.has(p)).map((p) => p.path),
-      ...notReadable ? { notReadable } : {},
-    });
+    };
+
+    if (notReadable) fileReport.notReadable = notReadable;
+    result.files.push(fileReport);
   }
+
   return result;
 }
 
@@ -1210,6 +1420,7 @@ export async function report(owner: GitExcludeOwner, expectedPaths: Iterable<str
 /** The lines of `owner`'s block in an exclude file's `content`, or null when it has none. */
 export function excludeLines(content: string, owner: string): string[] | null {
   markersOf(owner);
+
   return ownerLines(parseExclude(content), owner);
 }
 
@@ -1220,9 +1431,11 @@ export function excludeLines(content: string, owner: string): string[] | null {
  */
 export function updateExcludeLines(excludeFile: string, owner: string, edit: (lines: string[]) => string[] | null): Promise<ExcludeUpdate> {
   markersOf(owner);
+
   return updateFileLocked(excludeFile, (content) => {
     const lines = ownerLines(parseExclude(content), owner);
     const next = lines === null ? null : edit(lines);
+
     return next === null ? null : withOwnerLines(content, owner, next);
   });
 }
@@ -1235,23 +1448,36 @@ export function updateExcludeLines(excludeFile: string, owner: string, edit: (li
 export function stateHomeRecord(stateHome: string, owner: string): GitExcludeFileRecord {
   markersOf(owner);
   const file = path.join(stateHome, 'git-exclude.json');
-  const parse = (content: string | null): Record<string, unknown> => {
+
+  const parse = (content: string | null): JsonObject => {
     if (content === null || content.trim() === '') return {};
-    let parsed: unknown;
+    let parsed: JsonValue;
+
     try {
       parsed = JSON.parse(content);
     } catch (e) {
       throw new Error(`${file} is not valid JSON (${e instanceof Error ? e.message : String(e)}): fix or delete it, then run the command again.`, { cause: e });
     }
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+
+    if (!isJsonObject(parsed)) {
       throw new Error(`${file} does not hold an object: fix or delete it, then run the command again.`);
     }
-    return parsed as Record<string, unknown>;
+
+    return parsed;
   };
-  const filesOf = (all: Record<string, unknown>): string[] => {
+
+  const filesOf = (all: JsonObject): string[] => {
     const files = all[owner];
-    return Array.isArray(files) ? files.filter((f): f is string => typeof f === 'string') : [];
+
+    return Array.isArray(files)
+      ? files.flatMap((f) => {
+        const name = z.string().safeParse(f);
+
+        return name.success ? [name.data] : [];
+      })
+      : [];
   };
+
   return {
     files: async () => filesOf(parse(await readFileSafe(file))),
     update: async ({ add, drop }) => {
@@ -1259,11 +1485,15 @@ export function stateHomeRecord(stateHome: string, owner: string): GitExcludeFil
         const all = parse(content);
         const before = filesOf(all);
         const files = [...new Set([...before, ...add])].filter((f) => !drop.includes(f)).sort();
+
         if (files.length === before.length && files.every((f) => before.includes(f))) return null;
+
         if (files.length > 0) all[owner] = files;
         else delete all[owner];
+
         return `${JSON.stringify(all, null, 2)}\n`;
       });
+
       if (result === 'locked') throw new Error(`Another teamai command held ${file} past the wait; run the command again.`);
     },
   };

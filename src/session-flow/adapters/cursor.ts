@@ -23,8 +23,10 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { AgentAdapter, ToolUnavailableError, type SessionMeta, type SessionReadRef } from './base.js';
-import type { Session, Message, ContentBlock } from '../ir.js';
-import { imagePlaceholderText } from '../ir.js';
+import { z } from 'zod';
+import type { Session, Message, ContentBlock, ToolArguments } from '../ir.js';
+import { imagePlaceholderText, ToolArgumentsSchema } from '../ir.js';
+import { JsonValueSchema, type JsonValue } from '../../types.js';
 import {
   encodeCwdGeneric,
   decodeCwdGeneric,
@@ -34,32 +36,36 @@ import {
   fileExists,
   dirExists,
   removeDirRecursive,
+  coercedText,
+  OptionalString,
+  TextOrBlocksSchema,
 } from '../fs.js';
 import { sessionStoreDir } from '../../locate.js';
 import { cleanTitleText, fallbackTitle, titleFromCandidates, titleFromUserText, isRenderableText, visibleUserText } from '../title.js';
 import { cursorComposerExists, registerCursorComposer, unregisterCursorComposer, type CursorComposerMessage, type CursorComposerTool } from '../cursor-store.js';
 import { assertSafeSessionFileId, deriveTargetSessionId } from '../ids.js';
 import { log } from '../../utils/logger.js';
+import type { JsonlRecord } from '../../utils/jsonl-store.js';
 
 // ---------------------------------------------------------------------------
 // Tool-name normalization map
 // ---------------------------------------------------------------------------
 
-const CURSOR_TO_IR_TOOL: Record<string, string> = {
-  ReadFile: 'read_file',
-  Read: 'read_file',
-  WriteFile: 'write_file',
-  Write: 'write_file',
-  EditFile: 'edit_file',
-  Edit: 'edit_file',
-  Shell: 'bash',
-  Grep: 'grep',
-  Glob: 'glob',
-  DeleteFile: 'delete_file',
-  WebFetch: 'web_fetch',
-  WebSearch: 'web_search',
-  SemanticSearch: 'semantic_search',
-};
+const CURSOR_TO_IR_TOOL: ReadonlyMap<string, string> = new Map([
+  ['ReadFile', 'read_file'],
+  ['Read', 'read_file'],
+  ['WriteFile', 'write_file'],
+  ['Write', 'write_file'],
+  ['EditFile', 'edit_file'],
+  ['Edit', 'edit_file'],
+  ['Shell', 'bash'],
+  ['Grep', 'grep'],
+  ['Glob', 'glob'],
+  ['DeleteFile', 'delete_file'],
+  ['WebFetch', 'web_fetch'],
+  ['WebSearch', 'web_search'],
+  ['SemanticSearch', 'semantic_search'],
+]);
 
 /**
  * IR → Cursor tool name.
@@ -69,28 +75,28 @@ const CURSOR_TO_IR_TOOL: Record<string, string> = {
  * Source-platform aliases (CodeBuddy / Claude Code) are folded in here too, otherwise they would pass through unchanged as
  * tools Cursor does not recognize, such as execute_command / replace_in_file.
  */
-const IR_TO_CURSOR_TOOL: Record<string, string> = {
-  read_file: 'ReadFile',
-  write_file: 'WriteFile',
-  edit_file: 'EditFile',
-  bash: 'Shell',
-  grep: 'Grep',
-  glob: 'Glob',
-  delete_file: 'DeleteFile',
-  web_fetch: 'WebFetch',
-  web_search: 'WebSearch',
-  semantic_search: 'SemanticSearch',
+const IR_TO_CURSOR_TOOL: ReadonlyMap<string, string> = new Map([
+  ['read_file', 'ReadFile'],
+  ['write_file', 'WriteFile'],
+  ['edit_file', 'EditFile'],
+  ['bash', 'Shell'],
+  ['grep', 'Grep'],
+  ['glob', 'Glob'],
+  ['delete_file', 'DeleteFile'],
+  ['web_fetch', 'WebFetch'],
+  ['web_search', 'WebSearch'],
+  ['semantic_search', 'SemanticSearch'],
   // Source-platform aliases → Cursor semantic tools
-  execute_command: 'Shell',
-  run_command: 'Shell',
-  write_to_file: 'WriteFile',
-  replace_in_file: 'EditFile',
-  multi_edit: 'EditFile',
-  search_file: 'Glob',
-  search_content: 'Grep',
-  list_dir: 'Glob',
-  codebase_search: 'SemanticSearch',
-};
+  ['execute_command', 'Shell'],
+  ['run_command', 'Shell'],
+  ['write_to_file', 'WriteFile'],
+  ['replace_in_file', 'EditFile'],
+  ['multi_edit', 'EditFile'],
+  ['search_file', 'Glob'],
+  ['search_content', 'Grep'],
+  ['list_dir', 'Glob'],
+  ['codebase_search', 'SemanticSearch'],
+]);
 
 /**
  * Tool results and thinking do not go into the DB bubble body:
@@ -98,15 +104,51 @@ const IR_TO_CURSOR_TOOL: Record<string, string> = {
  *   thinking). Leaving that wrapper in the body makes Cursor render it as an HTML block, and markdown plus newlines all break.
  * - Tool results: natively they live in the assistant tool bubble's `toolFormerData.result`, not as a standalone message.
  */
+/** One content block of a transcript message; a field of another type reads as absent. */
+const CursorBlockSchema = z.object({
+  type: JsonValueSchema.optional(),
+  text: coercedText(),
+  id: coercedText(),
+  name: coercedText(),
+  input: ToolArgumentsSchema.optional().catch(undefined),
+});
+
+/** One transcript line, the fields TeamAI reads. Message lines have no `type`; a `turn_ended` line ends a turn. */
+const CursorRecordSchema = z.object({
+  type: OptionalString,
+  role: OptionalString,
+  cwd: OptionalString,
+  message: z.object({ content: TextOrBlocksSchema }).optional().catch(undefined),
+});
+
+type CursorRecord = z.infer<typeof CursorRecordSchema>;
+
+/** The lines of a transcript, each read by `CursorRecordSchema`. */
+function* cursorRecords(lines: Iterable<JsonlRecord>): Generator<CursorRecord> {
+  for (const line of lines) yield CursorRecordSchema.parse(line);
+}
+
+/** A content block TeamAI writes to a Cursor transcript message. */
+type CursorWrittenBlock =
+  | { type: 'text'; text: string }
+  | { type: 'tool_use'; id: string; name: string; input: ToolArguments };
+
+/** A message line TeamAI writes to a Cursor transcript. */
+interface CursorWrittenMessageLine {
+  role: Message['role'];
+  cwd: string;
+  message: { content: CursorWrittenBlock[] };
+}
+
 const THINKING_WRAP_RE = /<thinking>\s*[\s\S]*?\s*<\/thinking>/gi;
 
 function normalizeToolName(cursorName: string): string {
-  return CURSOR_TO_IR_TOOL[cursorName] ?? cursorName;
+  return CURSOR_TO_IR_TOOL.get(cursorName) ?? cursorName;
 }
 
 function denormalizeToolName(irName: string): string {
   // Prefer full names such as ReadFile/WriteFile
-  return IR_TO_CURSOR_TOOL[irName] ?? irName;
+  return IR_TO_CURSOR_TOOL.get(irName) ?? irName;
 }
 
 // ---------------------------------------------------------------------------
@@ -138,9 +180,11 @@ export class CursorAdapter extends AgentAdapter {
 
   private resolveProjectDir(projectPath?: string): string {
     const root = this.storageRoot;
+
     if (projectPath) {
       return path.join(root, encodeCwdGeneric(projectPath));
     }
+
     return root;
   }
 
@@ -152,25 +196,34 @@ export class CursorAdapter extends AgentAdapter {
         sessionId,
         `${sessionId}.jsonl`,
       );
+
       return fileExists(target) ? target : null;
     }
+
     // Walk every project directory
     const root = this.storageRoot;
+
     if (!dirExists(root)) return null;
+
     for (const projDir of fs.readdirSync(root)) {
       const transcriptsDir = path.join(root, projDir, 'agent-transcripts');
+
       if (!dirExists(transcriptsDir)) continue;
+
       for (const sid of fs.readdirSync(transcriptsDir)) {
         const candidate = path.join(transcriptsDir, sid, `${sid}.jsonl`);
+
         if (fileExists(candidate) && sid === sessionId) return candidate;
       }
     }
+
     return null;
   }
 
   async listConversations(projectPath?: string): Promise<SessionMeta[]> {
     const metas: SessionMeta[] = [];
     const root = this.storageRoot;
+
     if (!dirExists(root)) return [];
 
     const projDirs = projectPath
@@ -181,15 +234,19 @@ export class CursorAdapter extends AgentAdapter {
       if (!dirExists(projDir)) continue;
       const cwd = decodeCwdGeneric(path.basename(projDir));
       const transcriptsDir = path.join(projDir, 'agent-transcripts');
+
       if (!dirExists(transcriptsDir)) continue;
 
       for (const sid of fs.readdirSync(transcriptsDir)) {
         const fullPath = path.join(transcriptsDir, sid, `${sid}.jsonl`);
+
         if (!fileExists(fullPath)) continue;
         const meta = this.extractMeta(fullPath, cwd, sid);
+
         if (meta) metas.push(meta);
       }
     }
+
     return metas;
   }
 
@@ -211,24 +268,30 @@ export class CursorAdapter extends AgentAdapter {
 
     try {
       // 50 lines are often all injected blocks; a too-small budget makes sessions with real questions fall back to "Session <id>"
-      for (const record of readJsonlHead(jsonlPath, 200)) {
+      for (const record of cursorRecords(readJsonlHead(jsonlPath, 200))) {
         // Message lines have no type field
         if (record.type === 'turn_ended') continue;
 
-        const role = record.role as string | undefined;
+        const role = record.role;
+
         if (role !== 'user' && role !== 'assistant') continue;
 
         messageCount++;
+
         if (role === 'user' && userTextCandidates.length < 5) {
-          const msg = record.message as Record<string, unknown> | undefined;
-          const content = msg?.content;
+          const content = record.message?.content;
+
           if (Array.isArray(content)) {
             const parts: string[] = [];
-            for (const block of content) {
-              if (block && typeof block === 'object' && (block as Record<string, unknown>).type === 'text') {
-                parts.push(String((block as Record<string, unknown>).text ?? ''));
+
+            for (const item of content) {
+              const block = CursorBlockSchema.safeParse(item);
+
+              if (block.success && block.data.type === 'text') {
+                parts.push(block.data.text);
               }
             }
+
             if (parts.length) userTextCandidates.push(parts.join(' '));
           }
         }
@@ -240,6 +303,7 @@ export class CursorAdapter extends AgentAdapter {
     title = titleFromCandidates(userTextCandidates) || fallbackTitle(sessionId);
 
     let sizeBytes = 0;
+
     try {
       sizeBytes = fs.statSync(jsonlPath).size;
     } catch {
@@ -265,9 +329,11 @@ export class CursorAdapter extends AgentAdapter {
       ref.filePath ??
       this.findSessionFile(ref.sessionId, ref.projectPath) ??
       (ref.projectPath ? this.findSessionFile(ref.sessionId) : null);
+
     if (!jsonlPath) {
       throw new Error(`Cursor session file not found: session_id=${ref.sessionId}`);
     }
+
     // The file name is the id: a listed file decides it, not the request.
     const sessionId = path.basename(jsonlPath, '.jsonl');
 
@@ -277,17 +343,20 @@ export class CursorAdapter extends AgentAdapter {
     const cwd = decodeCwdGeneric(
       path.basename(path.dirname(path.dirname(path.dirname(jsonlPath)))),
     );
-    const records = [...readJsonl(jsonlPath)];
+
+    const records = [...cursorRecords(readJsonl(jsonlPath))];
 
     // The archive key (repoIdentity) prefers the native cwd in the record (a real absolute path);
     // decoding the directory name is lossy, so if recovery fails fall back to the decoded directory name (design doc Key invariant).
     let nativeCwd: string | undefined;
+
     for (const rec of records) {
-      if (typeof rec.cwd === 'string' && path.isAbsolute(rec.cwd)) {
+      if (rec.cwd !== undefined && path.isAbsolute(rec.cwd)) {
         nativeCwd = rec.cwd;
         break;
       }
     }
+
     const sessionCwd = nativeCwd ?? cwd;
 
     const messages: Message[] = [];
@@ -297,15 +366,14 @@ export class CursorAdapter extends AgentAdapter {
       if (rec.type === 'turn_ended') continue;
 
       // Message line (no type field)
-      const role = rec.role as string | undefined;
+      const role = rec.role;
+
       if (role !== 'user' && role !== 'assistant') continue;
 
-      const msg = rec.message as Record<string, unknown> | undefined;
-      const content = msg?.content;
-      const blocks = this.parseContentBlocks(content);
+      const blocks = this.parseContentBlocks(rec.message?.content);
 
       messages.push({
-        role: role as 'user' | 'assistant',
+        role,
         content: blocks,
       });
     }
@@ -316,6 +384,7 @@ export class CursorAdapter extends AgentAdapter {
     // "injection head + real question", so dropping the whole block loses the
     // question. titleFromCandidates unwraps <user_query> and strips metadata.
     const candidates: string[] = [];
+
     for (const msg of messages) {
       if (msg.role === 'user') {
         for (const block of msg.content) {
@@ -325,13 +394,16 @@ export class CursorAdapter extends AgentAdapter {
             candidates.push(block.text);
           }
         }
+
         if (title) break;
       }
     }
+
     if (!title) title = titleFromCandidates(candidates) || fallbackTitle(sessionId);
 
     let createdAt: string;
     let updatedAt: string;
+
     try {
       const stat = fs.statSync(jsonlPath);
       createdAt = stat.birthtime.toISOString();
@@ -353,35 +425,38 @@ export class CursorAdapter extends AgentAdapter {
     };
   }
 
-  private parseContentBlocks(content: unknown): ContentBlock[] {
+  private parseContentBlocks(content: string | JsonValue[] | undefined): ContentBlock[] {
     const blocks: ContentBlock[] = [];
 
-    if (typeof content === 'string') {
+    if (content === undefined) return blocks;
+
+    if (!Array.isArray(content)) {
       blocks.push({ type: 'text', text: content });
+
       return blocks;
     }
 
-    if (!Array.isArray(content)) return blocks;
-
     for (const item of content) {
-      if (!item || typeof item !== 'object') continue;
-      const it = item as Record<string, unknown>;
-      const btype = it.type as string;
+      const parsed = CursorBlockSchema.safeParse(item);
+
+      if (!parsed.success) continue;
+      const it = parsed.data;
+      const btype = it.type;
 
       if (btype === 'text') {
-        blocks.push({ type: 'text', text: String(it.text ?? '') });
+        blocks.push({ type: 'text', text: it.text });
       } else if (btype === 'tool_use') {
         // Some Cursor versions export tool_use without an id (observed 173/173
         // on one transcript). An empty callId then short-circuits the result
         // pairing downstream and every call lands as "cancelled" in targets
         // like CodeBuddy IDE. Synthesize a stable per-parse id instead --
         // same approach as the writeSession fallback below.
-        const rawId = String(it.id ?? '').trim();
+        const rawId = it.id.trim();
         blocks.push({
           type: 'tool_call',
-          toolName: normalizeToolName(String(it.name ?? '')),
+          toolName: normalizeToolName(it.name),
           callId: rawId || `tool_${blocks.length}`,
-          arguments: (it.input as Record<string, unknown>) ?? {},
+          arguments: it.input ?? {},
         });
       }
       // Cursor transcripts carry no tool results and no thinking (the export
@@ -393,14 +468,13 @@ export class CursorAdapter extends AgentAdapter {
     }
 
     // Pair each tool_call that has no tool_result with a placeholder result.
-    const hasResult = new Set(
-      blocks
-        .filter((b): b is Extract<ContentBlock, { type: 'tool_result' }> => b.type === 'tool_result')
-        .map((b) => b.callId),
-    );
+    const hasResult = new Set(blocks.flatMap((b) => (b.type === 'tool_result' ? [b.callId] : [])));
+
     const withResults: ContentBlock[] = [];
+
     for (const block of blocks) {
       withResults.push(block);
+
       if (block.type === 'tool_call' && block.callId && !hasResult.has(block.callId)) {
         withResults.push({
           type: 'tool_result',
@@ -411,6 +485,7 @@ export class CursorAdapter extends AgentAdapter {
         });
       }
     }
+
     return withResults;
   }
 
@@ -418,30 +493,34 @@ export class CursorAdapter extends AgentAdapter {
     if (this.findSessionFile(sessionId, projectPath)) return sessionId;
     // Cursor shows the conversation from its store, which a write would replace, transcript or not.
     const inStore = cursorComposerExists(sessionId, projectPath);
+
     if (!inStore.ok) {
       throw new ToolUnavailableError(
         `Cursor's session store could not be read, so whether session ${sessionId} exists is unknown: ${inStore.reason}`,
       );
     }
+
     return inStore.exists ? sessionId : undefined;
   }
 
   async writeSession(session: Session, projectPath?: string): Promise<string> {
     const cwd = projectPath ?? session.cwd;
+
     const sessionId = deriveTargetSessionId({
       targetPlatform: this.platform,
       targetCwd: cwd,
       sourceSessionId: session.sessionId,
     });
+
     const projDir = path.join(this.storageRoot, encodeCwdGeneric(cwd));
     const transcriptDir = path.join(projDir, 'agent-transcripts', sessionId);
     const jsonlPath = path.join(transcriptDir, `${sessionId}.jsonl`);
 
-    const records: Record<string, unknown>[] = [];
+    const records: Array<CursorWrittenMessageLine | { type: 'turn_ended'; status: 'success' }> = [];
     // Native transcript turn semantics: 1 user + N consecutive assistant + 1 turn_ended.
     // Previously we wrote turn_ended after every assistant, splitting one tool round into dozens of turns.
-    let lastAssistantRecord: Record<string, unknown> | null = null;
-    let lastUserRecord: Record<string, unknown> | null = null;
+    let lastAssistantRecord: CursorWrittenMessageLine | null = null;
+    let lastUserRecord: CursorWrittenMessageLine | null = null;
     let turnHasAssistant = false;
 
     const endTurn = () => {
@@ -458,7 +537,8 @@ export class CursorAdapter extends AgentAdapter {
         // The source platform puts tool results in user messages: they belong to the previous assistant's tool calls,
         // so hang it back on the previous assistant record (as a text block) instead of a fake user message.
         const toolResults: string[] = [];
-        const cursorContent: Record<string, unknown>[] = [];
+        const cursorContent: CursorWrittenBlock[] = [];
+
         for (const block of msg.content) {
           if (block.type === 'tool_result') {
             toolResults.push(`[tool_result${block.isError ? ' (error)' : ''}]\n${block.content}`);
@@ -471,34 +551,40 @@ export class CursorAdapter extends AgentAdapter {
             cursorContent.push({ type: 'text', text: imagePlaceholderText(block) });
           }
         }
+
         if (toolResults.length > 0 && lastAssistantRecord) {
-          const content = lastAssistantRecord.message as { content: Record<string, unknown>[] };
+          const content = lastAssistantRecord.message;
+
           for (const t of toolResults) content.content.push({ type: 'text', text: t });
         }
 
         // Real user prompts: consecutive user messages in one turn merge into one (natives never emit consecutive user messages)
         if (cursorContent.length > 0) {
           if (lastUserRecord && !turnHasAssistant) {
-            const prev = lastUserRecord.message as { content: Record<string, unknown>[] };
+            const prev = lastUserRecord.message;
             prev.content.push(...cursorContent);
           } else {
             endTurn();
-            const rec: Record<string, unknown> = {
+
+            const rec: CursorWrittenMessageLine = {
               role: 'user',
               // write cwd so readSession can recover the real path (archive key depends on it)
               cwd,
               message: { content: cursorContent },
             };
+
             records.push(rec);
             lastUserRecord = rec;
           }
         }
+
         continue;
       }
 
       if (msg.role !== 'assistant') continue;
 
-      const cursorContent: Record<string, unknown>[] = [];
+      const cursorContent: CursorWrittenBlock[] = [];
+
       for (const block of msg.content) {
         switch (block.type) {
           case 'text':
@@ -531,11 +617,12 @@ export class CursorAdapter extends AgentAdapter {
       }
 
       if (cursorContent.length > 0) {
-        const rec: Record<string, unknown> = {
+        const rec: CursorWrittenMessageLine = {
           role: 'assistant',
           cwd,
           message: { content: cursorContent },
         };
+
         records.push(rec);
         lastAssistantRecord = rec;
         turnHasAssistant = true;
@@ -552,23 +639,27 @@ export class CursorAdapter extends AgentAdapter {
     // otherwise the session "migrates successfully" yet is invisible in Cursor. Registration is best-effort: failure only affects visibility.
     try {
       const title = this.buildComposerTitle(session, sessionId);
+
       const reg = registerCursorComposer({
         cwd,
         composerId: sessionId,
         title,
         messages: this.toComposerMessages(session),
       });
+
       if (!reg.ok) {
         const notice =
           `Cursor session list registration failed (transcript written, session may be invisible in Cursor): ${reg.reason ?? 'unknown'}`;
+
         log.debug(`cursor register failed: composer=${sessionId} reason=${reg.reason ?? 'unknown'}`);
         this.noteWrite(notice);
       }
     } catch (e) {
-      const notice = `Cursor session list registration error: ${(e as Error).message}`;
+      const notice = `Cursor session list registration error: ${e instanceof Error ? e.message : String(e)}`;
       log.debug(notice);
       this.noteWrite(notice);
     }
+
     return sessionId;
   }
 
@@ -576,12 +667,15 @@ export class CursorAdapter extends AgentAdapter {
   private buildComposerTitle(session: Session, sessionId: string): string {
     for (const msg of session.messages) {
       if (msg.role !== 'user') continue;
+
       for (const block of msg.content) {
         if (block.type !== 'text') continue;
         const t = titleFromUserText(block.text);
+
         if (t) return t;
       }
     }
+
     return cleanTitleText(session.title) || fallbackTitle(sessionId);
   }
 
@@ -590,6 +684,7 @@ export class CursorAdapter extends AgentAdapter {
     // Collect tool results by callId first: natively they hang on the assistant's tool bubble,
     // never a standalone user message (the UI would sprout hundreds of `[tool_result] {json}` bubbles).
     const toolResults = new Map<string, { content: string; isError: boolean }>();
+
     for (const msg of session.messages) {
       for (const block of msg.content) {
         if (block.type === 'tool_result' && block.callId) {
@@ -599,21 +694,27 @@ export class CursorAdapter extends AgentAdapter {
     }
 
     const out: CursorComposerMessage[] = [];
+
     const fallbackTs = (() => {
       const d = new Date(session.createdAt);
+
       return Number.isNaN(d.getTime()) ? new Date().toISOString() : d.toISOString();
     })();
+
     let lastTs = fallbackTs;
 
     for (const msg of session.messages) {
       if (msg.role !== 'user' && msg.role !== 'assistant') continue;
       const parsed = msg.timestamp ? new Date(msg.timestamp) : null;
+
       const createdAt =
         parsed && !Number.isNaN(parsed.getTime()) ? parsed.toISOString() : lastTs;
+
       lastTs = createdAt;
 
       const textParts: string[] = [];
       const tools: CursorComposerTool[] = [];
+
       for (const block of msg.content) {
         if (block.type === 'text') {
           // AgentSession.copy hands thinking over as `<thinking>...</thinking>` text; writeSession degrades a
@@ -623,6 +724,7 @@ export class CursorAdapter extends AgentAdapter {
           // user bubbles show the real question only: injected blocks (<user_info>/<rules>/<additional_data>/...) and attachment
           // paths are noise (Cursor renders them as chips natively; we cannot).
           const visible = msg.role === 'user' ? visibleUserText(stripped) : stripped;
+
           if (visible && isRenderableText(visible)) textParts.push(visible);
         } else if (block.type === 'image') {
           textParts.push(imagePlaceholderText(block));
@@ -639,7 +741,9 @@ export class CursorAdapter extends AgentAdapter {
         //   the whole thing renders as an HTML block with broken markdown/newlines). Original kept in the transcript.
         // tool_result: already paired into the tool bubble above; never a standalone message.
       }
+
       const text = textParts.join('\n\n');
+
       if (!text.trim() && tools.length === 0) continue;
       out.push({
         role: msg.role,
@@ -649,6 +753,7 @@ export class CursorAdapter extends AgentAdapter {
         modelName: msg.metadata?.model,
       });
     }
+
     return out;
   }
 
@@ -658,13 +763,18 @@ export class CursorAdapter extends AgentAdapter {
     // unregistering first would drop another workspace's copy of the same
     // session id when `rollback --cwd` matched nothing here.
     const jsonlPath = this.findSessionFile(sessionId, projectPath);
+
     if (!jsonlPath) {
       // No transcript, but the composer can still be in the store; with `projectPath`, only one in that workspace.
       const inStore = cursorComposerExists(sessionId, projectPath);
+
       if (!inStore.ok) throw new Error(`Cursor's session store could not be read: ${inStore.reason}`);
+
       if (!inStore.exists) return false;
       const removed = unregisterCursorComposer(sessionId);
+
       if (!removed.ok) throw new Error(`Removing session ${sessionId} from Cursor's store failed: ${removed.reason}`);
+
       return true;
     }
 
@@ -677,10 +787,13 @@ export class CursorAdapter extends AgentAdapter {
 
     // Delete the whole session directory
     const sessionDir = path.dirname(jsonlPath);
+
     if (dirExists(sessionDir)) {
       removeDirRecursive(sessionDir);
+
       return !dirExists(sessionDir);
     }
+
     return false;
   }
 }

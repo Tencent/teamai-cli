@@ -6,7 +6,9 @@
  */
 
 import https from 'node:https';
+import { z } from 'zod';
 
+import type { JsonValue } from '../types.js';
 import { log } from './logger.js';
 
 // ─── 常量 ──────────────────────────────────────────────────
@@ -60,15 +62,14 @@ interface JsonRpcRequest {
   jsonrpc: '2.0';
   id: number;
   method: string;
-  params?: Record<string, unknown>;
+  params?: { name: string; arguments: Record<string, string> };
 }
 
-/** JSON-RPC 2.0 响应体。 */
-interface JsonRpcResponse {
-  jsonrpc: '2.0';
-  id: number;
-  result?: unknown;
-  error?: { code: number; message: string };
+const TextSchema = z.string();
+
+/** The value of `key` when `value` is a JSON object; undefined for any other value. */
+function fieldOf(value: JsonValue | undefined, key: string): JsonValue | undefined {
+  return value instanceof Object && !Array.isArray(value) ? value[key] : undefined;
 }
 
 // ─── 客户端类 ──────────────────────────────────────────────
@@ -103,6 +104,7 @@ export class IWikiClient {
   private async _postRaw(payload: string): Promise<string> {
     return new Promise<string>((resolve, reject) => {
       const url = new URL(MCP_URL);
+
       const options: https.RequestOptions = {
         hostname: url.hostname,
         path: url.pathname + url.search,
@@ -152,7 +154,7 @@ export class IWikiClient {
    * @returns         工具返回值（已解析为 unknown）
    * @throws          API 返回 error 字段时抛出 Error
    */
-  private async _callTool(toolName: string, args: Record<string, unknown>): Promise<unknown> {
+  private async _callTool(toolName: string, args: Record<string, string>): Promise<JsonValue | undefined> {
     const rpcRequest: JsonRpcRequest = {
       jsonrpc: '2.0',
       id: ++this.requestId,
@@ -166,44 +168,44 @@ export class IWikiClient {
     const payload = JSON.stringify(rpcRequest);
     const rawBody = await this._postRaw(payload);
 
-    let response: JsonRpcResponse;
+    let response: JsonValue;
+
     try {
-      response = JSON.parse(rawBody) as JsonRpcResponse;
+      // JSON.parse returns `any`; what it builds is a JsonValue by construction.
+      response = JSON.parse(rawBody);
     } catch (parseErr: unknown) {
       throw new Error(`iWiki MCP response could not be parsed: ${String(parseErr)}; raw response: ${rawBody.slice(0, 200)}`, { cause: parseErr });
     }
 
-    if (response.error) {
-      throw new Error(`iWiki API error: ${response.error.message}`);
+    const error = fieldOf(response, 'error');
+
+    if (error) {
+      throw new Error(`iWiki API error: ${fieldOf(error, 'message')}`);
     }
 
     // MCP 标准响应格式：result.content[0].text 包含实际内容
-    const result = response.result;
+    const result = fieldOf(response, 'result');
+    const content = fieldOf(result, 'content');
+
     // Tool execution failures are successful JSON-RPC responses, but their
     // content is an error description, not a document to import.
-    if (result !== null && typeof result === 'object' && 'isError' in result && result.isError === true) {
-      const content = 'content' in result && Array.isArray(result.content)
-        ? result.content as Array<{ text?: unknown }>
-        : [];
-      const message = content
-        .filter((item) => typeof item.text === 'string')
-        .map((item) => item.text)
+    if (fieldOf(result, 'isError') === true) {
+      const message = (Array.isArray(content) ? content : [])
+        .flatMap((item) => TextSchema.safeParse(fieldOf(item, 'text')).data ?? [])
         .join('\n');
+
       throw new Error(`iWiki MCP tool "${toolName}" failed${message ? `: ${message}` : ''}`);
     }
-    if (
-      result !== null &&
-      typeof result === 'object' &&
-      'content' in result &&
-      Array.isArray((result as Record<string, unknown>).content)
-    ) {
-      const content = (result as { content: Array<{ text?: string }> }).content;
-      if (content.length > 0 && typeof content[0].text === 'string') {
+
+    if (Array.isArray(content) && content.length > 0) {
+      const text = TextSchema.safeParse(fieldOf(content[0], 'text'));
+
+      if (text.success) {
         // text 可能是 JSON 字符串，尝试再次解析
         try {
-          return JSON.parse(content[0].text);
+          return JSON.parse(text.data);
         } catch {
-          return content[0].text;
+          return text.data;
         }
       }
     }
@@ -225,17 +227,19 @@ export class IWikiClient {
         return [];
       }
 
-      return result.map((item: Record<string, unknown>) => ({
-        docid: String(item['docid'] ?? item['id'] ?? ''),
-        title: typeof item['title'] === 'string' ? item['title'] : String(item['docid'] ?? ''),
-        parentid: item['parentid'] !== undefined ? String(item['parentid']) : undefined,
-        has_children:
-          typeof item['has_children'] === 'boolean'
-            ? item['has_children']
-            : Boolean(item['has_children']),
-      }));
+      return result.map((item) => {
+        const parent = fieldOf(item, 'parentid');
+
+        return {
+          docid: String(fieldOf(item, 'docid') ?? fieldOf(item, 'id') ?? ''),
+          title: TextSchema.safeParse(fieldOf(item, 'title')).data ?? String(fieldOf(item, 'docid') ?? ''),
+          parentid: parent !== undefined ? String(parent) : undefined,
+          has_children: Boolean(fieldOf(item, 'has_children')),
+        };
+      });
     } catch (err: unknown) {
       log.warn(`iWiki page tree request failed [parentid=${parentid}]: ${String(err)}`);
+
       return [];
     }
   }
@@ -256,25 +260,22 @@ export class IWikiClient {
     ]);
 
     // getDocument 返回 Markdown 字符串或含 content 字段的对象
+    const contentText = TextSchema.safeParse(contentResult);
+    const contentField = fieldOf(contentResult, 'content');
     let content = '';
-    if (typeof contentResult === 'string') {
-      content = contentResult;
-    } else if (
-      contentResult !== null &&
-      typeof contentResult === 'object' &&
-      'content' in contentResult
-    ) {
-      content = String((contentResult as Record<string, unknown>)['content'] ?? '');
+
+    if (contentText.success) {
+      content = contentText.data;
+    } else if (contentField !== undefined) {
+      content = String(contentField ?? '');
     }
 
     // metadata 返回含 title、id 等字段的对象
+    const titleField = fieldOf(metaResult, 'title');
     let title = '';
-    if (
-      metaResult !== null &&
-      typeof metaResult === 'object' &&
-      'title' in metaResult
-    ) {
-      title = String((metaResult as Record<string, unknown>)['title'] ?? '');
+
+    if (titleField !== undefined) {
+      title = String(titleField ?? '');
     }
 
     return {
@@ -313,6 +314,7 @@ export class IWikiClient {
       const tryDrain = (): void => {
         if (stopped || (queue.length === 0 && running === 0)) {
           resolve();
+
           return;
         }
 
@@ -333,9 +335,12 @@ export class IWikiClient {
                       `Reached the max page limit (${maxPages}); stopped traversing. Collected ${allPages.length} page(s).`,
                     );
                   }
+
                   break;
                 }
+
                 allPages.push(page);
+
                 // 有子文档则加入 BFS 队列
                 if (page.has_children) {
                   queue.push(page.docid);
@@ -344,9 +349,9 @@ export class IWikiClient {
 
               tryDrain();
             })
-            .catch((err: unknown) => {
+            .catch((cause: unknown) => {
               running--;
-              log.warn(`BFS traversal failed for node [parentid=${parentid}]: ${String(err)}`);
+              log.warn(`BFS traversal failed for node [parentid=${parentid}]: ${String(cause)}`);
               // 单节点失败不中断整体，继续处理其他节点
               tryDrain();
             });
@@ -363,14 +368,15 @@ export class IWikiClient {
       // 次调用在遍历开始前就以 "rootId 队列为空" 拒绝。
       if (queue.length === 0) {
         reject(new Error('fetchAllPages: rootId is empty'));
+
         return;
       }
 
       tryDrain();
-    }).catch((err: unknown) => {
+    }).catch((cause: unknown) => {
       // 仅 rootId 为空时抛出，其他错误已在 tryDrain 内处理
       if (allPages.length === 0) {
-        throw err;
+        throw cause;
       }
     });
 

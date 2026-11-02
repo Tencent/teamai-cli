@@ -1658,6 +1658,31 @@ describe('uninstall', () => {
     expect(await fse.pathExists(bridgedTeamHookFile('opencode'))).toBe(true);
   });
 
+  it('removes a local agent rule recorded after a null scope entry in its manifest', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    const agentHome = path.join(homeDir, '.teamai', 'local-agent');
+    await fse.outputJson(path.join(agentHome, 'config.json'), {
+      endpoint: 'https://test.example.com/api',
+      token: 'test-token',
+      localAgentId: 'test-agent-id',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      workspaceBindings: {},
+    });
+    await fse.outputJson(path.join(agentHome, 'manifest.json'), {
+      scopes: { instance: null, user: { rules: { 'agent-rule': { slug: 'agent-rule', installed_at: '2026-01-01T00:00:00.000Z' } } } },
+    });
+    await fse.outputFile(path.join(agentHome, 'resources', 'user', 'rules', 'agent-rule.md'), '# Agent rule\n');
+    const copy = path.join(homeDir, '.claude', 'rules', 'agent-rule.md');
+    await fse.outputFile(copy, '# Agent rule\n');
+    mockAutoDetectInit.mockResolvedValue({ localConfig: makeLocalConfig(homeDir, repoPath), teamConfig: makeTeamConfig() });
+    commitTeamRepo(repoPath);
+
+    await uninstall({ force: true });
+
+    expect(await fse.pathExists(copy)).toBe(false);
+  });
+
   it('uninstalling Kiro with an agent hook recorded for it leaves none of teamai\'s Kiro hooks', async () => {
     const { homeDir, repoPath } = await setupFixture(tmpDir);
     vi.stubEnv('HOME', homeDir);

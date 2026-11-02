@@ -160,7 +160,6 @@ describe('builtin-rules', () => {
                 },
             } as any;
 
-            // Act
             const { deployBuiltinRules } = await import('../builtin-rules.js');
             const deployed = await deployBuiltinRules(teamConfig);
 

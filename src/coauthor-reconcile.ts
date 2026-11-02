@@ -1,5 +1,7 @@
 import path from 'node:path';
+import { z } from 'zod';
 import type { LocalConfig, TeamaiConfig, State } from './types.js';
+import { JsonValueSchema, JsonObjectSchema } from './types.js';
 import { isCodexTool } from './utils/tool-names.js';
 import {
   DEFAULT_CODEX_ROOT,
@@ -60,6 +62,7 @@ type Family = 'claude' | 'codex' | 'cursor';
 
 function familyOf(tool: string): Family {
   if (isCodexTool(tool)) return 'codex';
+
   return CURSOR_TOOLS.has(tool) ? 'cursor' : 'claude';
 }
 
@@ -108,7 +111,9 @@ async function resolveTargets(
 
   for (const [tool, paths] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     if (disabled.has(tool)) continue;
+
     if (whitelist && !whitelist.includes(tool)) continue;
+
     // ZCode, Muse Code and Antigravity CLI expose no documented attribution
     // setting — writing one into their shared config file would be an unknown
     // key the tool never reads.
@@ -118,9 +123,11 @@ async function resolveTargets(
     // Installation probe: the tool's root dir (parent of its resource dir), same
     // heuristic MCP reconcile uses. Skip tools we can't locate on disk.
     const probe = paths.settings ?? paths.skills ?? paths.agents;
+
     if (!probe) continue;
     const probeDir = path.dirname(probe);
     const toolRoot = probeDir === '.' ? path.join(baseDir, probe) : path.join(baseDir, probeDir);
+
     if (!(await pathExists(toolRoot))) {
       log.debug(`[coauthor] Skipping ${tool}: tool not installed`);
       continue;
@@ -130,10 +137,12 @@ async function resolveTargets(
       // Scope-aware settings.json. Requires a `settings` path (some tools —
       // openclaw, hermes, dsh — have none and get no co-author control).
       if (!paths.settings) continue;
+
       if (!projectScope) {
         targets.push({ tool, family, file: path.join(baseDir, paths.settings) });
         continue;
       }
+
       // Project scope: the choice is the member's, and the project's
       // settings.json is often tracked (#993). Claude Code has a personal layer
       // beside it, settings.local.json (as team hooks use, #955); the rest of
@@ -142,6 +151,7 @@ async function resolveTargets(
         log.debug(`[coauthor] Skipping ${tool}: no member-local project settings file`);
         continue;
       }
+
       targets.push({ tool, family, file: path.join(baseDir, path.dirname(paths.settings), 'settings.local.json') });
     } else if (family === 'codex') {
       // User scope only: Codex reads commit_attribution from $CODEX_HOME/config.toml.
@@ -149,6 +159,7 @@ async function resolveTargets(
         log.debug(`[coauthor] Skipping ${tool}: co-author is user-scope only`);
         continue;
       }
+
       // Each Codex keeps config.toml in its own root, not wherever a team maps
       // its skills: tcodex in ~/.tcodex, codex-internal in ~/.codex-internal,
       // codex in ~/.codex or the root the member recorded from CODEX_HOME.
@@ -165,9 +176,11 @@ async function resolveTargets(
         log.debug(`[coauthor] Skipping ${tool}: co-author is user-scope only`);
         continue;
       }
+
       targets.push({ tool, family, file: path.join(cursorConfigDir(localConfig.toolRoots), 'cli-config.json') });
     }
   }
+
   return targets;
 }
 
@@ -178,15 +191,34 @@ async function resolveTargets(
  */
 function preFixSharedTargets(teamConfig: TeamaiConfig, localConfig: LocalConfig): Map<string, string> {
   const files = new Map<string, string>();
+
   if (localConfig.scope !== 'project') return files;
   const baseDir = resolveBaseDir(localConfig);
+
   for (const [tool, paths] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     if (familyOf(tool) !== 'claude' || !paths.settings) continue;
     const file = path.join(baseDir, paths.settings);
+
     if (!files.has(file)) files.set(file, tool);
   }
+
   return files;
 }
+
+/** The `attribution` teamai wrote before #993: exactly `{"commit": "", "pr": ""}`. */
+const PreFixAttributionSchema = z.object({ attribution: z.strictObject({ commit: z.literal(''), pr: z.literal('') }) });
+
+/**
+ * A settings file's `attribution` as a copy to edit: an object's members, an array's entries by index (as a spread
+ * copies them), and nothing for any other value.
+ */
+const AttributionCopySchema = z.union([
+  JsonObjectSchema,
+  z.array(JsonValueSchema).transform((items) => Object.fromEntries(items.entries())),
+]).catch(() => ({}));
+
+/** An `attribution` that holds teamai's empty trailer for commits or PRs. */
+const EmptyTrailerSchema = z.union([z.object({ commit: z.literal('') }), z.object({ pr: z.literal('') })]);
 
 /**
  * A shared settings file's text without its pre-#993 `attribution`, when that
@@ -197,18 +229,19 @@ function preFixSharedTargets(teamConfig: TeamaiConfig, localConfig: LocalConfig)
  */
 async function withoutPreFixAttribution(file: string): Promise<{ kind: 'stripped'; text: string } | { kind: 'none' } | { kind: 'unreadable' }> {
   const source = await readFileSafe(file);
+
   if (source === null) return { kind: 'none' };
   let parsed: unknown;
+
   try {
     parsed = JSON.parse(source);
   } catch {
     return { kind: 'unreadable' };
   }
-  const attribution = (parsed as Record<string, unknown> | null)?.attribution as Record<string, unknown> | undefined;
-  if (typeof attribution !== 'object' || attribution === null) return { kind: 'none' };
-  const keys = Object.keys(attribution);
-  if (keys.length !== 2 || attribution.commit !== '' || attribution.pr !== '') return { kind: 'none' };
+
+  if (!PreFixAttributionSchema.safeParse(parsed).success) return { kind: 'none' };
   const text = removeTopLevelJsonMember(source, 'attribution');
+
   return text === null ? { kind: 'none' } : { kind: 'stripped', text };
 }
 
@@ -220,9 +253,12 @@ async function withoutPreFixAttribution(file: string): Promise<{ kind: 'stripped
  */
 async function writeStripUnlessSet(file: string): Promise<boolean> {
   const read = await readJsonObject(file);
+
   if (read.kind === 'invalid') throw new Error(`${file} is not a JSON object (${read.error})`);
+
   if (read.kind === 'ok' && 'attribution' in read.value) return false;
   await applyClaude(file, false);
+
   return true;
 }
 
@@ -233,6 +269,7 @@ async function writeStripUnlessSet(file: string): Promise<boolean> {
  */
 function removeTopLevelJsonMember(source: string, key: string): string | null {
   interface Member { key: string; start: number; end: number; commaAfter?: number }
+
   const members: Member[] = [];
   let open = -1;
   let depth = 0;
@@ -241,54 +278,70 @@ function removeTopLevelJsonMember(source: string, key: string): string | null {
   let lastKey: { text: string; start: number } | null = null;
   let current: Member | null = null;
   let lastEnd = 0; // index just past the last non-whitespace character
+
   for (let i = 0; i < source.length; i++) {
     const c = source[i];
+
     if (inString) {
       if (c === '\\') i++;
       else if (c === '"') {
         inString = false;
         lastEnd = i + 1;
+
         if (depth === 1 && !current) lastKey = { text: source.slice(stringStart, i + 1), start: stringStart };
       }
+
       continue;
     }
+
     if (/\s/.test(c)) continue;
+
     if (c === '"') {
       inString = true;
       stringStart = i;
       continue;
     }
+
     if (c === '{' || c === '[') {
       if (depth === 0) {
         if (c !== '{' || open !== -1) return null;
         open = i;
       }
+
       depth++;
     } else if (c === '}' || c === ']') {
       if (depth === 1 && current) {
         members.push({ ...current, end: lastEnd });
         current = null;
       }
+
       depth--;
     } else if (depth === 1 && c === ':' && lastKey) {
+      // SAFETY: lastKey.text runs from an opening quote to the quote that closed it in a document that parsed as JSON, so it is a JSON string.
       current = { key: JSON.parse(lastKey.text) as string, start: lastKey.start, end: -1 };
       lastKey = null;
     } else if (depth === 1 && c === ',' && current) {
       members.push({ ...current, end: lastEnd, commaAfter: i });
       current = null;
     }
+
     lastEnd = i + 1;
   }
+
   const matches = members.filter((m) => m.key === key);
+
   if (open === -1 || depth !== 0 || matches.length !== 1) return null;
   const index = members.indexOf(matches[0]);
   const member = members[index];
   const previous = members[index - 1];
+
   // `, "key": value` after a sibling; `"key": value, ` before one; else alone.
   if (previous?.commaAfter !== undefined) return source.slice(0, previous.commaAfter) + source.slice(member.end);
+
   if (member.commaAfter !== undefined && members[index + 1]) {
     return source.slice(0, member.start) + source.slice(members[index + 1].start);
   }
+
   return source.slice(0, open + 1) + source.slice(member.end);
 }
 
@@ -305,16 +358,18 @@ function removeTopLevelJsonMember(source: string, key: string): string | null {
 async function applyClaude(file: string, enabled: boolean): Promise<boolean> {
   // A file that does not parse is the member's to repair: writing it would replace all of it.
   const read = await readJsonObject(file);
+
   if (read.kind === 'invalid') throw new Error(`${file} is not a JSON object (${read.error}); left as it is`);
   const settings = read.kind === 'ok' ? read.value : {};
-  const attribution = (typeof settings.attribution === 'object' && settings.attribution !== null
-    ? { ...(settings.attribution as Record<string, unknown>) }
-    : {}) as Record<string, unknown>;
+
+  const attribution = AttributionCopySchema.parse(settings.attribution);
 
   const before = JSON.stringify(settings.attribution ?? null);
+
   if (enabled) {
     // Restore the default: remove our override rather than guess a trailer.
     if (attribution.commit === '') delete attribution.commit;
+
     if (attribution.pr === '') delete attribution.pr;
   } else {
     attribution.commit = '';
@@ -326,8 +381,10 @@ async function applyClaude(file: string, enabled: boolean): Promise<boolean> {
   } else {
     settings.attribution = attribution;
   }
+
   if (JSON.stringify(settings.attribution ?? null) === before) return false;
   await writeJson(file, settings);
+
   return true;
 }
 
@@ -355,27 +412,34 @@ export function spliceCodexAttribution(source: string, enabled: boolean): string
     // Restore default: drop our line if present, else no-op.
     if (!hasKey) return source;
     const cleanedHead = head.replace(keyRe, '');
+
     return cleanedHead + tail;
   }
 
   const line = 'commit_attribution = ""\n';
+
   if (hasKey) {
     const replacedHead = head.replace(keyRe, line);
+
     return replacedHead + tail;
   }
+
   // Insert at the end of the head region (before the first table / EOF).
   const lead = head.length === 0 || head.endsWith('\n') ? '' : '\n';
   // Keep a blank line before a following `[table]` so the inserted scalar does
   // not sit flush against a table header (valid TOML, but visually misleading).
   const trail = tail.startsWith('[') ? '\n' : '';
+
   return head + lead + line + trail + tail;
 }
 
 async function applyCodex(file: string, enabled: boolean): Promise<boolean> {
   const source = (await readFileSafe(file)) ?? '';
   const next = spliceCodexAttribution(source, enabled);
+
   if (next === source) return false;
   await writeFile(file, next);
+
   return true;
 }
 
@@ -386,13 +450,14 @@ async function applyCodex(file: string, enabled: boolean): Promise<boolean> {
  */
 async function applyCursor(file: string, enabled: boolean): Promise<boolean> {
   const read = await readJsonObject(file);
+
   if (read.kind === 'invalid') throw new Error(`${file} is not a JSON object (${read.error}); left as it is`);
   const config = read.kind === 'ok' ? read.value : {};
-  const attribution = (typeof config.attribution === 'object' && config.attribution !== null
-    ? { ...(config.attribution as Record<string, unknown>) }
-    : {}) as Record<string, unknown>;
+
+  const attribution = AttributionCopySchema.parse(config.attribution);
 
   const before = JSON.stringify(config.attribution ?? null);
+
   if (enabled) {
     if (attribution.attributeCommitsToAgent === false) delete attribution.attributeCommitsToAgent;
   } else {
@@ -404,8 +469,10 @@ async function applyCursor(file: string, enabled: boolean): Promise<boolean> {
   } else {
     config.attribution = attribution;
   }
+
   if (JSON.stringify(config.attribution ?? null) === before) return false;
   await writeJson(file, config);
+
   return true;
 }
 
@@ -422,15 +489,17 @@ export async function coAuthorLocalSettingsFile(
   managed: Readonly<Record<string, boolean>>,
 ): Promise<{ kind: 'holds' | 'unreadable'; file: string } | { kind: 'none' }> {
   const settings = scopedToolPaths(teamConfig, localConfig).claude?.settings;
+
   if (localConfig.scope !== 'project' || !settings) return { kind: 'none' };
   const file = path.join(resolveBaseDir(localConfig), path.dirname(settings), 'settings.local.json');
+
   if (managed[file] ?? true) return { kind: 'none' };
   const read = await readJsonObject(file);
+
   if (read.kind === 'invalid') return { kind: 'unreadable', file };
   const attribution = read.kind === 'ok' ? read.value.attribution : undefined;
-  if (typeof attribution !== 'object' || attribution === null) return { kind: 'none' };
-  const { commit, pr } = attribution as Record<string, unknown>;
-  return commit === '' || pr === '' ? { kind: 'holds', file } : { kind: 'none' };
+
+  return EmptyTrailerSchema.safeParse(attribution).success ? { kind: 'holds', file } : { kind: 'none' };
 }
 
 // ─── Main entry ──────────────────────────────────────────────
@@ -444,7 +513,7 @@ export async function reconcileCoAuthorForConfig(
   localConfig: LocalConfig,
   state: State,
 ): Promise<CoAuthorReconcileResult> {
-  const managed: Record<string, boolean> = { ...state.coAuthorManaged };
+  const managed = { ...state.coAuthorManaged };
   const changes: CoAuthorChange[] = [];
 
   const intent = resolveCoAuthor(localConfig, teamConfig);
@@ -458,15 +527,19 @@ export async function reconcileCoAuthorForConfig(
   // trailer stays as it was; a file with no such place waits for a choice.
   for (const [file, tool] of preFixSharedTargets(teamConfig, localConfig)) {
     if (!(file in managed)) continue;
+
     const moveTo = intent === undefined && file === claudeShared
       ? path.join(path.dirname(file), 'settings.local.json')
       : undefined;
+
     if (intent === undefined && !moveTo) continue;
     const recorded = managed[file];
     const wroteStrip = !recorded && recorded !== undefined;
     delete managed[file];
+
     try {
       const next = wroteStrip ? await withoutPreFixAttribution(file) : { kind: 'none' as const };
+
       if (next.kind !== 'stripped') {
         // An unreadable file proves nothing: keep the record, so a pull after it is repaired settles it.
         if (next.kind === 'unreadable') managed[file] = recorded;
@@ -474,12 +547,13 @@ export async function reconcileCoAuthorForConfig(
         changes.push({ tool, file, enabled: false, action: 'skipped', reason });
         continue;
       }
+
       if (moveTo && await writeStripUnlessSet(moveTo)) managed[moveTo] = false;
       await writeFile(file, next.text);
       changes.push({ tool, file, enabled: false, action: moveTo ? 'moved' : 'removed' });
     } catch (e) {
       managed[file] = recorded;
-      changes.push({ tool, file, enabled: false, action: 'skipped', reason: (e as Error).message, failed: true });
+      changes.push({ tool, file, enabled: false, action: 'skipped', reason: e instanceof Error ? e.message : String(e), failed: true });
     }
   }
 
@@ -489,14 +563,17 @@ export async function reconcileCoAuthorForConfig(
   }
 
   const targets = await resolveTargets(teamConfig, localConfig);
+
   for (const t of targets) {
     // Idempotence: skip when we already wrote this exact intent to this file.
     if (managed[t.file] === intent) {
       changes.push({ tool: t.tool, file: t.file, enabled: intent, action: 'skipped', reason: 'already applied' });
       continue;
     }
+
     try {
       let changed: boolean;
+
       if (t.family === 'claude') changed = await applyClaude(t.file, intent);
       else if (t.family === 'codex') changed = await applyCodex(t.file, intent);
       else changed = await applyCursor(t.file, intent);
@@ -510,7 +587,7 @@ export async function reconcileCoAuthorForConfig(
         reason: changed ? undefined : 'already up-to-date',
       });
     } catch (e) {
-      changes.push({ tool: t.tool, file: t.file, enabled: intent, action: 'skipped', reason: (e as Error).message, failed: true });
+      changes.push({ tool: t.tool, file: t.file, enabled: intent, action: 'skipped', reason: e instanceof Error ? e.message : String(e), failed: true });
     }
   }
 

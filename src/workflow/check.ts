@@ -19,6 +19,7 @@ export type CheckVerdict =
 /** The `result` a check step outputs: the verdict, without its detail. */
 export const CHECK_RESULTS = ['passed', 'failed', 'could_not_run'] as const satisfies ReadonlyArray<CheckVerdict['verdict']>;
 export const CheckOutputSchema = z.object({ result: z.enum(CHECK_RESULTS) });
+
 export type CheckResult = (typeof CHECK_RESULTS)[number];
 
 /** Whether `value` is a relative path written segment by segment, so joined to a directory it stays inside it. */
@@ -44,8 +45,10 @@ export const RepoPathSchema = z.string().min(1).refine(
 export function segmentPattern(segment: string): RegExp | undefined {
   const pattern = segment.replace(/\[(!?)(\]?[^\]]*)\]|[*?.+^${}()|\\]/g, (token, negated: string | undefined, members: string | undefined) => {
     if (members !== undefined) return `[${negated ? '^' : ''}${members.replace(/[\\\]]/g, '\\$&')}]`;
+
     return token === '*' ? '[^/]*' : token === '?' ? '.' : `\\${token}`;
   });
+
   try {
     return new RegExp(`^${pattern}$`);
   } catch {
@@ -71,9 +74,11 @@ export const CheckRunSchema = z.object({
  * the commit start made of the files it names in the suite directory, as `kind` says.
  */
 export const AddedSchema = z.object({ kind: z.enum(['solution', 'suite']), commit: CommitSchema, paths: z.array(z.string().min(1)).nonempty() }).strict();
+
 export type Added = z.infer<typeof AddedSchema>;
 
 const SHELL_SIGNAL_BASE = 128;
+
 /** The highest signal number on Linux, whose real-time signals go up to 64; other POSIX systems stop below it. */
 const MAX_SIGNAL = 64;
 
@@ -88,11 +93,15 @@ export function checkVerdict(exit: CommandExit, platform: NodeJS.Platform): Chec
   switch (exit.kind) {
     case 'exited':
       if (exit.code === 0) return { verdict: 'passed' };
+
       if (exit.code === 127 || (platform === 'win32' && exit.code === 9009)) return { verdict: 'could_not_run', cause: 'not_found' };
+
       if (exit.code === 126) return { verdict: 'could_not_run', cause: 'not_executable' };
+
       if (platform !== 'win32' && exit.code > SHELL_SIGNAL_BASE && exit.code <= SHELL_SIGNAL_BASE + MAX_SIGNAL) {
         return { verdict: 'could_not_run', cause: 'signal', detail: `exit ${exit.code}` };
       }
+
       return { verdict: 'failed', exitCode: exit.code };
     case 'signal':
       return { verdict: 'could_not_run', cause: 'signal', detail: exit.signal };
@@ -102,6 +111,7 @@ export function checkVerdict(exit: CommandExit, platform: NodeJS.Platform): Chec
       return { verdict: 'could_not_run', cause: 'spawn_failed', detail: exit.message };
     default: {
       const unhandled: never = exit;
+
       return unhandled;
     }
   }

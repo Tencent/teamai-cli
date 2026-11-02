@@ -4,12 +4,29 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { getUserHome, expandHome } from './utils/home.js';
 import { log } from './utils/logger.js';
+import { parseYaml } from './utils/yaml.js';
 import { channelsOf, type ToolId } from './tools.js';
 import type { WorkspaceChildren } from './workspace-children.js';
 import type { HeadState } from './utils/git.js';
 import type { RunMode } from './launch-context.js';
 import type { OutcomeKind, SessionUsage, WorkOutcome } from './outcomes.js';
 import { AllowSchema } from './workflow/requirements.js';
+
+/** Any value JSON (or YAML read as JSON) can hold: what arbitrary parsed input is before a domain schema narrows it. */
+export const JsonValueSchema = z.json();
+
+export type JsonValue = z.infer<typeof JsonValueSchema>;
+
+/** A JSON object: a document, or a mapping inside one. */
+export type JsonObject = { [key: string]: JsonValue };
+
+/** A JSON object, parsed: a copy that leaves out `__proto__` keys, so check a file that is written back without it. */
+export const JsonObjectSchema = z.record(z.string(), JsonValueSchema) satisfies z.ZodType<JsonObject>;
+
+/** Whether a JSON value is an object, not an array, a primitive or null: JSON and YAML parse every object as an Object instance. */
+export function isJsonObject(value: JsonValue | undefined): value is JsonObject {
+  return value instanceof Object && !Array.isArray(value);
+}
 
 const COPILOT_USER_MCP_CONFIG = 'mcp-config.json';
 const COPILOT_PROJECT_MCP_CONFIG = '.github/mcp.json';
@@ -62,13 +79,21 @@ export const ToolPathsSchema = z.object({
     .optional(),
 });
 
+/** Tool paths keyed by tool id: the `toolPaths` section of a team config. */
+const ToolPathsTableSchema = z.record(z.string(), ToolPathsSchema);
+
 // ─── Scope ──────────────────────────────────────────────
 
-const unknownScopeError = (issue: { input?: unknown }) => typeof issue.input === 'string'
-  ? `scope "${issue.input}" is not one this teamai knows; a newer teamai may have written it. Run \`teamai update\``
-  : undefined;
+const unknownScopeError = (issue: { input?: unknown }) => {
+  const scope = z.string().safeParse(issue.input);
+
+  return scope.success
+    ? `scope "${scope.data}" is not one this teamai knows; a newer teamai may have written it. Run \`teamai update\``
+    : undefined;
+};
 
 export const ScopeEnum = z.enum(['user', 'project'], { error: unknownScopeError });
+
 export type Scope = z.infer<typeof ScopeEnum>;
 
 /**
@@ -84,7 +109,9 @@ export const InstallScopeSchema = z
 /** The value of a `--scope` option. Every command that takes one reads it here. */
 export function parseInstallScope(value: string): Scope {
   const parsed = InstallScopeSchema.safeParse(value);
+
   if (!parsed.success) throw new Error(`Invalid scope "${value}". Use "workspace" or "user".`);
+
   return parsed.data;
 }
 
@@ -210,16 +237,14 @@ export const SharingConfigSchema = z.object({
 /** Defaulted view of the optional `sharing.intervention` config. */
 export function getInterventionSharing(config: {
   sharing?: { intervention?: { correctionKeywords?: string[] } };
-}): { correctionKeywords: string[] } {
+}) {
   return { correctionKeywords: config.sharing?.intervention?.correctionKeywords ?? [] };
 }
 
 /** Defaulted view of the optional `sharing.hooks` config. */
-export function getHooksSharing(config: { sharing?: { hooks?: { autoApply?: boolean; requireTeamScripts?: boolean } } }): {
-  autoApply: boolean;
-  requireTeamScripts: boolean;
-} {
+export function getHooksSharing(config: { sharing?: { hooks?: { autoApply?: boolean; requireTeamScripts?: boolean } } }) {
   const h = config.sharing?.hooks;
+
   return {
     autoApply: h?.autoApply ?? true,
     requireTeamScripts: h?.requireTeamScripts ?? false,
@@ -229,8 +254,9 @@ export function getHooksSharing(config: { sharing?: { hooks?: { autoApply?: bool
 /** Defaulted view of the optional `sharing.mcp` config. */
 export function getMcpSharing(config: {
   sharing?: { mcp?: { autoApply?: boolean; allowedCommands?: string[]; allowedHosts?: string[] } };
-}): { autoApply: boolean; allowedCommands: string[]; allowedHosts: string[] } {
+}) {
   const m = config.sharing?.mcp;
+
   return {
     autoApply: m?.autoApply ?? true,
     allowedCommands: m?.allowedCommands ?? [],
@@ -239,9 +265,7 @@ export function getMcpSharing(config: {
 }
 
 /** Defaulted view of the optional `sharing.recall` config. */
-export function getRecallSharing(config: { sharing?: { recall?: { enabled?: boolean } } }): {
-  enabled: boolean;
-} {
+export function getRecallSharing(config: { sharing?: { recall?: { enabled?: boolean } } }) {
   return { enabled: config.sharing?.recall?.enabled ?? false };
 }
 
@@ -258,6 +282,7 @@ export function isGitExcludeEnabled(
   teamConfig: { sharing?: { gitExclude?: { enabled?: boolean } } },
 ): boolean {
   const member = isUnmigratedDataHome(localConfig) ? undefined : localConfig.gitExcludeEnabled;
+
   return member ?? teamConfig.sharing?.gitExclude?.enabled ?? false;
 }
 
@@ -273,12 +298,14 @@ export function resolveGitExclude(
   teamConfig: Parameters<typeof isGitExcludeEnabled>[1] | null,
 ): boolean | undefined {
   if (teamConfig || localConfig.repo.kind === 'http') return isGitExcludeEnabled(localConfig, teamConfig ?? {});
+
   return isUnmigratedDataHome(localConfig) ? undefined : localConfig.gitExcludeEnabled;
 }
 
 /** Whether a project config was read from the checkout's own `.teamai/` rather than its partition. */
 export function isUnmigratedDataHome(localConfig: { scope?: string; projectRoot?: string; dataHome?: string }): boolean {
   const { scope, projectRoot, dataHome } = localConfig;
+
   return scope === 'project' && !!projectRoot && !!dataHome && path.resolve(dataHome) === path.resolve(projectRoot, '.teamai');
 }
 
@@ -292,7 +319,9 @@ export function isRecallEnabled(
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
   if (env.TEAMAI_RECALL_DISABLED === '1') return false;
+
   if (localConfig.recallEnabled !== undefined) return localConfig.recallEnabled;
+
   return getRecallSharing(teamConfig).enabled;
 }
 
@@ -306,7 +335,9 @@ export function isContributeHintEnabled(
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
   if (env.TEAMAI_CONTRIBUTE_HINT_DISABLED === '1') return false;
+
   if (localConfig.contributeHintEnabled !== undefined) return localConfig.contributeHintEnabled;
+
   return teamConfig.sharing?.contributeHint?.enabled ?? true;
 }
 
@@ -323,7 +354,9 @@ export function isMrHintEnabled(
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
   if (env.TEAMAI_MR_HINT_DISABLED === '1') return false;
+
   if (localConfig.mrHintEnabled !== undefined) return localConfig.mrHintEnabled;
+
   return teamConfig.sharing?.mrHint?.enabled ?? true;
 }
 
@@ -347,6 +380,7 @@ export function resolveCoAuthor(
   teamConfig: { sharing?: { coAuthor?: { enabled?: boolean } } },
 ): boolean | undefined {
   if (localConfig.coAuthorEnabled !== undefined) return localConfig.coAuthorEnabled;
+
   return teamConfig.sharing?.coAuthor?.enabled;
 }
 
@@ -363,6 +397,7 @@ export function resolveAutoCompactTokens(
   if (localConfig.autoCompactTokens !== undefined) {
     return localConfig.autoCompactTokens > 0 ? localConfig.autoCompactTokens : undefined;
   }
+
   return teamConfig.sharing?.autoCompact?.tokens;
 }
 
@@ -422,6 +457,7 @@ export const TEAMAI_SOURCES_DIR = path.join(getUserHome(), '.teamai', 'sources')
 
 /** Git hosting provider. `git` is the transport-only fallback for arbitrary hosts. */
 export const ProviderNameSchema = z.enum(['tgit', 'github', 'cnb', 'gitlab', 'gitcode', 'git']);
+
 export type ProviderName = z.infer<typeof ProviderNameSchema>;
 
 /** One team-owned Node entrypoint. `path` is relative to the team repo root. */
@@ -781,9 +817,9 @@ export const TeamaiConfigBaseSchema = z.object({
   // A team's `toolPaths` section merges over the built-in defaults tool by tool (#1185):
   // each tool named in the team config overrides that tool's default entry whole,
   // while built-in tools not named by the team retain their defaults.
-  toolPaths: z.record(z.string(), ToolPathsSchema)
+  toolPaths: ToolPathsTableSchema
     .default({})
-    .transform((custom): Record<string, z.infer<typeof ToolPathsSchema>> => ({
+    .transform((custom): z.infer<typeof ToolPathsTableSchema> => ({
       ...DEFAULT_TOOL_PATHS,
       ...custom,
     })),
@@ -796,9 +832,11 @@ export const TeamaiConfigSchema = TeamaiConfigBaseSchema.superRefine((config, ct
   // other's record, so reject the split instead (#904).
   const trae = config.toolPaths.trae;
   const traeCn = config.toolPaths['trae-cn'];
+
   for (const field of ['mcp', 'mcpProject'] as const) {
     const a = trae?.[field];
     const b = traeCn?.[field];
+
     if (a !== undefined && b !== undefined && a !== b) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -912,6 +950,7 @@ export const MemberSettingsSchema = z.object({
     daily_limit: z.union([z.number().int().nonnegative(), z.string()]).optional().catch(({ input }) => JSON.stringify(input)),
   }).optional(),
 });
+
 export type MemberSettings = z.infer<typeof MemberSettingsSchema>;
 
 /** Runtime bookkeeping for restoring local values before a save. */
@@ -1066,6 +1105,7 @@ export interface RoleAssignment {
   /** The selection on disk, which `roles set` no longer changes. */
   local: { primaryRole?: string; additionalRoles: string[] };
 }
+
 export type LocalConfigInput = z.input<typeof LocalConfigSchema>;
 
 // ─── Local state (~/.teamai/state.json) ────────────────────
@@ -1128,6 +1168,7 @@ export const PendingPushSchema = z.object({
 });
 
 export type PendingPushItem = z.infer<typeof PendingPushItemSchema>;
+
 export type PendingPush = z.infer<typeof PendingPushSchema>;
 
 /**
@@ -1146,12 +1187,15 @@ const RecordedAgentModelSchema = z.object({
   source: z.string().optional(),
   alias: z.string().optional(),
 });
+
 export type RecordedAgentModel = z.infer<typeof RecordedAgentModelSchema>;
+
 /** `RecordedAgentModel` by agent stem, then tool. */
 export type AgentModelRecords = Record<string, Record<string, RecordedAgentModel>>;
 
 /** One Codex binary teamai found, and the version its `--version` printed (null when it did not parse). */
 const CodexBuildSchema = z.object({ path: z.string(), version: z.string().nullable() });
+
 export type CodexBuild = z.infer<typeof CodexBuildSchema>;
 
 /**
@@ -1159,10 +1203,12 @@ export type CodexBuild = z.infer<typeof CodexBuildSchema>;
  * newest, and each of `others` hashes at least one of those hooks another way.
  */
 const CodexBuildSkewSchema = z.object({ chosen: CodexBuildSchema, others: z.array(CodexBuildSchema) });
+
 export type CodexBuildSkew = z.infer<typeof CodexBuildSkewSchema>;
 
 /** A repo-backed placement that landed: the placed path and the blob push delivered there. */
 const PlacementRecordSchema = z.object({ path: z.string(), blob: z.string() });
+
 export type PlacementRecord = z.infer<typeof PlacementRecordSchema>;
 
 /**
@@ -1180,6 +1226,7 @@ export const DeliverySelectionSchema = z.object({
   excludedSkills: z.array(z.string()).optional(),
   inheritUserScope: z.boolean().optional(),
 });
+
 export type DeliverySelection = z.infer<typeof DeliverySelectionSchema>;
 
 export const StateSchema = z.object({
@@ -1321,6 +1368,7 @@ export const StateSchema = z.object({
   placements: z.record(z.string(), z.unknown())
     .transform((records) => Object.fromEntries(Object.entries(records).flatMap(([key, record]) => {
       const parsed = PlacementRecordSchema.safeParse(record);
+
       return parsed.success ? [[key, parsed.data] as const] : [];
     })))
     .optional(),
@@ -1426,6 +1474,12 @@ export interface ResourceItem {
   fromInactiveNamespace?: true;
   /** When placed into a namespace, the original relative path superseded by this item. */
   supersedes?: string;
+  /** Agents only: the blob this machine placed at the file this push replaces (`AgentItem.deliveredBlob`). */
+  deliveredBlob?: string;
+  /** Agents only: reached through a placement record that holds no delivered blob yet (`AgentItem.needsDeliveredBlob`). */
+  needsDeliveredBlob?: boolean;
+  /** Repo-backed resources placed into a namespace: the shared-root path the author keeps editing. */
+  prePlacementPath?: string;
 }
 
 export interface ResourceDiff {
@@ -1525,6 +1579,33 @@ export interface HookDef {
   tools?: string[];
 }
 
+// ─── Hook payloads (what an agent sends a hook on stdin) ─────
+
+/**
+ * The fields of an agent's hook payload that teamai's shared hook helpers
+ * read. A field of the wrong type reads as absent; every other field is kept.
+ * The tool fields are PostToolUse's: `tool_response` (Claude and the agents
+ * that copy it), Cursor's `tool_output` string, Copilot's `tool_result`, and a
+ * generated bridge's normalized `tool_status`.
+ */
+export const HookPayloadSchema = z.looseObject({
+  session_id: z.string().optional().catch(undefined),
+  sessionId: z.string().optional().catch(undefined),
+  /** Cursor's session id on its tool hooks. */
+  conversation_id: z.string().optional().catch(undefined),
+  cwd: z.string().optional().catch(undefined),
+  /** Cursor SessionStart's stand-in for `cwd`; a root that is not a string is null. */
+  workspace_roots: z.array(z.string().nullable().catch(null)).optional().catch(undefined),
+  tool_name: z.string().optional().catch(undefined),
+  tool_input: z.record(z.string(), z.unknown()).optional().catch(undefined),
+  tool_response: z.unknown().optional(),
+  tool_output: z.string().optional().catch(undefined),
+  tool_result: z.unknown().optional(),
+  tool_status: z.enum(['success', 'failure', 'unknown']).optional().catch(undefined),
+});
+
+export type HookPayload = z.infer<typeof HookPayloadSchema>;
+
 // ─── MCP server definitions ──────────────────────────────
 //
 //  Team-declared MCP servers (mcp/mcp.yaml) are parsed into this tool-neutral
@@ -1622,13 +1703,14 @@ export type ManagedMcpManifest = Record<string, ManagedMcpRecord[]>;
  * target can update and clean what the other's pull wrote, instead of a
  * per-tool claim the sibling's reconcile would skip as foreign.
  */
-const MCP_MANIFEST_KEY_ALIAS: Readonly<Record<string, string>> = {
+const MCP_MANIFEST_KEY_ALIAS: ReadonlyMap<string, string> = new Map(Object.entries({
   // Trae and Trae CN map the same <root>/.trae/mcp.json (#904).
   'trae-cn': 'trae',
-};
+}));
 
 export function managedMcpManifestKey(tool: string, projectScope: boolean): string {
-  const owner = MCP_MANIFEST_KEY_ALIAS[tool] ?? tool;
+  const owner = MCP_MANIFEST_KEY_ALIAS.get(tool) ?? tool;
+
   return projectScope ? `${owner}:project` : owner;
 }
 
@@ -1653,6 +1735,7 @@ export function managedMcpManifestPath(dataHome: string, workspaceRoot?: string)
   if (workspaceRoot) {
     return path.join(dataHome, 'workspaces', managedMcpWorkspaceId(workspaceRoot), 'managed-mcp.json');
   }
+
   return path.join(dataHome, 'managed-mcp.json');
 }
 
@@ -1764,18 +1847,22 @@ export interface GlobalOptions {
 export function getTeamaiHomeDir(): string {
   return path.join(getUserHome(), '.teamai');
 }
+
 /** User-scope global config path, `~/.teamai/config.yaml`. Evaluated at call time. */
 export function getUserConfigPath(): string {
   return path.join(getTeamaiHomeDir(), 'config.yaml');
 }
+
 /** User-scope global state path, `~/.teamai/state.json`. Evaluated at call time. */
 export function getUserStatePath(): string {
   return path.join(getTeamaiHomeDir(), 'state.json');
 }
+
 /** API token path, `~/.teamai/token` (machine-level). Evaluated at call time. */
 export function getTokenPath(): string {
   return path.join(getTeamaiHomeDir(), 'token');
 }
+
 /** Self-update lock path, `~/.teamai/.update-lock`. Evaluated at call time. */
 export function getUpdateLockPath(): string {
   return path.join(getTeamaiHomeDir(), '.update-lock');
@@ -1921,6 +2008,39 @@ export interface UserStats {
   outcomes?: UserOutcomeStats;
 }
 
+/**
+ * One skill of a stats file. Its count is the history a push adds to, so an entry without one is dropped; a missing
+ * `lastUsed` reads as '', which any real use replaces.
+ */
+const StatsSkillSchema = z.looseObject({ count: z.number(), lastUsed: z.string().catch('') });
+
+/** The fields of a stats file every reader relies on. */
+const UserStatsFileSchema = z.looseObject({
+  username: z.string().min(1),
+  skills: z.record(z.string(), StatsSkillSchema.nullable().catch(null)),
+});
+
+/**
+ * A `stats/<user>.yaml` file, or null for one without a username and a skills table. Throws on bad YAML. The file
+ * keeps its key order, and a skill entry a hand edit broke is dropped rather than the whole file, which a push would
+ * then overwrite.
+ */
+export function parseUserStats(content: string): UserStats | null {
+  const document = parseYaml(content);
+  const parsed = UserStatsFileSchema.safeParse(document);
+
+  if (!isJsonObject(document) || !parsed.success) return null;
+  const skills: UserStats['skills'] = {};
+
+  for (const [name, skill] of Object.entries(parsed.data.skills)) {
+    if (skill !== null) skills[name] = { count: skill.count, lastUsed: skill.lastUsed };
+  }
+
+  // SAFETY: username and skills are checked above. The other fields are optional and come from the stats push of this
+  // or another member's teamai, which writes them from a UserStats.
+  return { ...document, username: parsed.data.username, skills } as UserStats;
+}
+
 /** What a row of {@link UserStats.outcomes} counts: its sessions, and their tokens and interventions in total. */
 export type OutcomeCounts = SessionUsage & { sessions: number };
 
@@ -2008,6 +2128,7 @@ export function emptyTokenUsage(): TokenUsage {
 /** Grand total of all token buckets (input + output + cache read + cache creation). */
 export function totalTokens(t: TokenUsage | undefined): number {
   if (!t) return 0;
+
   return t.input + t.output + t.cacheRead + t.cacheCreation;
 }
 
@@ -2235,14 +2356,19 @@ export interface DashboardSession {
 // carries the key of the data home of the scope that recorded it, which is what
 // a scope's report filters on.
 export const DASHBOARD_DEFAULT_PORT = 3721;
+
 /** Sessions with no activity for this long (ms) are marked idle */
 export const DASHBOARD_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+
 /** Sessions idle for this long (ms) are removed from the dashboard */
 export const DASHBOARD_STALE_TIMEOUT_MS = 30 * 60 * 1000;
+
 /** Compact JSONL when it exceeds this many lines */
 export const DASHBOARD_COMPACTION_THRESHOLD = 5_000;
+
 /** Stopped sessions are removed from the dashboard after this many ms */
 export const DASHBOARD_STOPPED_DISPLAY_MS = 30 * 1000;
+
 /** Interval (ms) between PID liveness checks in the dashboard server */
 export const DASHBOARD_PID_CHECK_INTERVAL_MS = 15_000;
 
@@ -2261,6 +2387,7 @@ export const DASHBOARD_PID_CHECK_INTERVAL_MS = 15_000;
 
 /** Max time (ms) between a stop and the next prompt for it to count as a correction. */
 export const CORRECTION_WINDOW_MS = 60 * 1000;
+
 /** Built-in keywords (lowercased) that mark a prompt as a course-correction, not a new task. */
 export const CORRECTION_KEYWORDS = [
   '不对', '不是', '错了', '错误', '重来', '重新', '撤销', '回退', '别这样', '不要',
@@ -2268,10 +2395,13 @@ export const CORRECTION_KEYWORDS = [
   // Japanese: "that's wrong" / "not that" / "redo" / "you got it wrong" / "on your own" / "put it back".
   '違う', 'ちがう', 'そうじゃな', 'そうではな', 'やり直', 'やりなおし', '間違って', '間違え', '勝手に', '戻して',
 ];
+
 /** Max bytes to scan from a transcript when counting interventions (guards huge files). */
 export const INTERVENTION_SCAN_MAX_BYTES = 50 * 1024 * 1024;
+
 /** Marker that prefixes a user-interrupt entry in the Claude Code transcript. */
 export const TRANSCRIPT_INTERRUPT_PREFIX = '[Request interrupted by user';
+
 /** Prefixes of system-injected user messages that are NOT genuine human prompts.
  *  These arrive as user-role transcript entries / UserPromptSubmit payloads but
  *  are harness or hook injections (background-task completions, system reminders,
@@ -2290,16 +2420,21 @@ export const TRANSCRIPT_SYSTEM_PREFIXES = [
  */
 export function stripInjectedPrompt(raw: string): string {
   const trimmed = raw.trimStart();
+
   // Pure injection: the message itself starts with a marker → no human text.
   if (TRANSCRIPT_SYSTEM_PREFIXES.some((p) => trimmed.startsWith(p))) return '';
   // Mixed: cut at the earliest injected-block marker that appears later.
   let cut = raw.length;
+
   for (const marker of TRANSCRIPT_SYSTEM_PREFIXES) {
     const i = raw.indexOf(marker);
+
     if (i >= 0 && i < cut) cut = i;
   }
+
   return raw.slice(0, cut).trim();
 }
+
 /** Substrings that mark a tool_result as a user rejection (permission deny). */
 export const TRANSCRIPT_REJECT_MARKERS = [
   'The tool use was rejected',
@@ -2375,6 +2510,7 @@ export interface ContributeState {
 
 /** What the friction reminder offers a session with the teamai-share-learnings workflow, as the session's state keeps it. */
 export const SessionShareOfferedSchema = z.object({ publish: z.boolean(), scorers: z.array(z.string()) });
+
 export type SessionShareOffered = z.infer<typeof SessionShareOfferedSchema>;
 
 /**
@@ -2564,31 +2700,110 @@ export interface SearchIndex {
   children?: string;
 }
 
-/** Per-user vote file (votes/<user>.yaml). */
-export interface UserVotes {
-  votes: Record<string, { at: string }>;
-}
+/** Strings from a list a hand edit may have corrupted: other entries are dropped. */
+const VoteIdsSchema = z.array(z.string().nullable().catch(null)).transform((ids) => ids.filter((id) => id !== null));
+
+/** Per-user vote file (votes/<user>.yaml), v1. */
+export const UserVotesSchema = z.looseObject({
+  votes: z.record(z.string(), z.looseObject({ at: z.string().catch('') })),
+});
+
+export type UserVotes = z.infer<typeof UserVotesSchema>;
 
 /** Vote entry with dual counters (V2). */
-export interface VoteEntryV2 {
-  recalled_count: number;
-  upvoted_count: number;
-  last_recalled_at: string;
-  last_upvoted_at?: string;
-}
+const VoteEntryV2Schema = z.looseObject({
+  recalled_count: z.number().catch(0),
+  upvoted_count: z.number().catch(0),
+  last_recalled_at: z.string().catch(''),
+  last_upvoted_at: z.string().optional().catch(undefined),
+});
+
+export type VoteEntryV2 = z.infer<typeof VoteEntryV2Schema>;
 
 /** Unsynchronized delta for a single document (V2). */
-export interface VoteDelta {
-  recalled_delta: number;
-  upvoted_delta: number;
+const VoteDeltaSchema = z.looseObject({
+  recalled_delta: z.number().catch(0),
+  upvoted_delta: z.number().catch(0),
+});
+
+export type VoteDelta = z.infer<typeof VoteDeltaSchema>;
+
+/**
+ * A table of a votes file whose entries a hand edit may have broken: such an entry is dropped, and the next writer
+ * starts it again from zero, as it does for a missing one.
+ */
+function voteTableSchema<TEntry>(entry: z.ZodType<TEntry>) {
+  return z.record(z.string(), entry.nullable().catch(null)).transform((entries) => {
+    const table: Record<string, TEntry> = {};
+
+    for (const [docId, value] of Object.entries(entries)) {
+      if (value !== null) table[docId] = value;
+    }
+
+    return table;
+  });
 }
 
-/** Per-user vote file V2 format (votes/<user>.yaml). */
-export interface UserVotesV2 {
-  version: 2;
-  votes: Record<string, VoteEntryV2>;
-  deltas: Record<string, VoteDelta>;
-}
+const VoteDeltasSchema = voteTableSchema(VoteDeltaSchema);
+
+/**
+ * One session in the upvote ledger. `firstTs` is when the session first
+ * appeared: the ledger TTL counts from it, so a long or resumed session cannot
+ * be credited again just because its entry was refreshed. `ts` is the last
+ * update, kept for observability. Entries written before `firstTs` existed
+ * read it from `ts`.
+ */
+const UpvoteLedgerEntrySchema = z
+  .object({ docIds: VoteIdsSchema, ts: z.string(), firstTs: z.string().optional().catch(undefined) })
+  .transform(({ docIds, ts, firstTs }) => ({ docIds, ts, firstTs: firstTs ?? ts }));
+
+/**
+ * The per-session set of doc-ids already upvoted, keyed by sessionId. It lives
+ * INSIDE the votes file, so the claim and the increment are one locked write.
+ * A malformed entry is dropped (a string `docIds` must not be iterated per
+ * character).
+ */
+const UpvoteLedgerSchema = z
+  .record(z.string(), UpvoteLedgerEntrySchema.nullable().catch(null))
+  .transform((entries) => {
+    const ledger: Record<string, z.output<typeof UpvoteLedgerEntrySchema>> = {};
+
+    for (const [sessionId, entry] of Object.entries(entries)) {
+      if (entry) ledger[sessionId] = entry;
+    }
+
+    return ledger;
+  });
+
+export type UpvoteLedger = z.infer<typeof UpvoteLedgerSchema>;
+
+/**
+ * Delivery record for a stage whose push may have landed without its
+ * confirmation (#1027): the id the stage stamped into the remote file's
+ * `deliveredSyncIds`, plus the delta set it staged, to subtract once delivery
+ * is recognized.
+ */
+const PendingVoteSyncSchema = z.object({ syncId: z.string(), deltas: VoteDeltasSchema });
+
+export type PendingVoteSync = z.infer<typeof PendingVoteSyncSchema>;
+
+/**
+ * Per-user vote file V2 format (votes/<user>.yaml). Besides the counters it
+ * carries ride-along fields: the local file's upvote ledger and pending
+ * delivery record, and the remote file's recent delivery ids. A malformed
+ * ride-along reads as absent; unknown keys are kept so a save writes them back.
+ */
+export const UserVotesV2Schema = z.looseObject({
+  version: z.literal(2),
+  // A table left empty by a hand edit (`deltas:`) is null in YAML, and reads as empty, as it did before the schema.
+  votes: voteTableSchema(VoteEntryV2Schema).nullish().transform((table) => table ?? {}),
+  deltas: VoteDeltasSchema.nullish().transform((table) => table ?? {}),
+  upvotedSessions: UpvoteLedgerSchema.optional().catch(undefined),
+  pendingSync: PendingVoteSyncSchema.optional().catch(undefined),
+  deliveredSyncIds: VoteIdsSchema.optional().catch(undefined),
+});
+
+export type UserVotesV2 = z.infer<typeof UserVotesV2Schema>;
 
 // User-scope (A2) learnings mirror / search index / votes. Getters, not consts,
 // so HOME isolation works in tests (issue #374 P3). The project-scope equivalents
@@ -2598,10 +2813,12 @@ export function getUserLearningsDir(): string {
   // oxlint-disable-next-line teamai/learnings-root -- user-scope mirror definition, independent of the repository learnings roots
   return path.join(getTeamaiHomeDir(), 'learnings');
 }
+
 /** User-scope search index, `~/.teamai/search-index.json`. Evaluated at call time. */
 export function getUserSearchIndexPath(): string {
   return path.join(getTeamaiHomeDir(), 'search-index.json');
 }
+
 /**
  * User-scope votes dir, `~/.teamai/user-votes`. Evaluated at call time. Not
  * `~/.teamai/votes`: every scope used to record there, and an earlier release
@@ -2611,6 +2828,7 @@ export function getUserSearchIndexPath(): string {
 export function getUserVotesDir(): string {
   return path.join(getTeamaiHomeDir(), 'user-votes');
 }
+
 /**
  * The local votes dir of one scope: `<dataHome>/votes`, so each scope pushes
  * only the votes cast where it is set up (#787); the user scope's is
@@ -2621,7 +2839,9 @@ export function getUserVotesDir(): string {
 export function getVotesDir(config: LocalConfig): string {
   if (!config.dataHome && config.scope === 'project' && !config.projectRoot) return getUserVotesDir();
   const dataHome = getDataHome(config);
+
   if (path.resolve(dataHome) !== path.resolve(getTeamaiHomeDir())) return path.join(dataHome, 'votes');
+
   return getUserVotesDir();
 }
 
@@ -2631,15 +2851,18 @@ export const CultureCompanySchema = z.object({
   vision: z.string().optional(),
   values: z.array(z.string()).optional(),
 });
+
 export const CultureTeamSchema = z.object({
   name: z.string(),
   mission: z.string().optional(),
   goals: z.array(z.string()).optional(),
 });
+
 export const CultureFrontmatterSchema = z.object({
   company: CultureCompanySchema.optional(),
   team: CultureTeamSchema.optional(),
 });
+
 export type CultureFrontmatter = z.infer<typeof CultureFrontmatterSchema>;
 
 // ─── Scope helpers ─────────────────────────────────────
@@ -2669,8 +2892,10 @@ export function resolveBaseDir(localConfig: Pick<LocalConfig, 'scope' | 'project
         'refusing to silently fall back to the user home directory. Re-run `teamai init` in this project.',
       );
     }
+
     return localConfig.projectRoot;
   }
+
   return getUserHome();
 }
 
@@ -2735,12 +2960,14 @@ function expandHomeAt(p: string, at: HomePaths): string {
   if (p.startsWith('~/') || p === '~' || (at.path === path.win32 && p.startsWith('~\\'))) {
     return at.path.join(at.home, p.slice(1));
   }
+
   return p;
 }
 
 /** True when `dir` resolves to something inside the user's home directory. */
 function isUnderUserHome(dir: string, at: HomePaths): boolean {
   const rel = at.path.relative(at.home, at.path.resolve(dir));
+
   return rel !== '' && !rel.startsWith('..') && !at.path.isAbsolute(rel);
 }
 
@@ -2758,10 +2985,12 @@ function isUnderUserHome(dir: string, at: HomePaths): boolean {
  */
 function isAddressableRootSegment(segment: string): boolean {
   const segments = segment.split('/');
+
   // `.config` alone is not one of them: `toolInstallRoot('.config/settings.json')`
   // reads it as the two-segment OpenCode-style root, so the gate would look for
   // the settings FILE as the tool's directory and never find it.
   if (segments.length === 1) return segments[0] !== '.config';
+
   return segments[0] === '.config';
 }
 
@@ -2797,7 +3026,12 @@ function isAddressableRootSegment(segment: string): boolean {
  * here for `applyToolRoots` to move. A stale record of either root is not caught
  * by that check.
  */
-export const RELOCATABLE_TOOLS: Readonly<Record<string, RelocatableTool>> = {
+/** Every relocatable tool root, keyed by the name `toolRoots` records it under. */
+export interface RelocatableToolTable {
+  readonly [tool: string]: RelocatableTool;
+}
+
+export const RELOCATABLE_TOOLS: RelocatableToolTable = {
   [CLAUDE_TOOL_ID]: { label: 'Claude Code', envVar: 'CLAUDE_CONFIG_DIR', defaultRoot: DEFAULT_CLAUDE_ROOT },
   [CODEX_TOOL_ID]: { label: 'Codex', envVar: 'CODEX_HOME', defaultRoot: DEFAULT_CODEX_ROOT },
   [CURSOR_DATA_TOOL_ID]: { label: 'Cursor transcripts', envVar: 'CURSOR_DATA_DIR', defaultRoot: DEFAULT_CURSOR_ROOT },
@@ -2811,15 +3045,19 @@ export const RELOCATABLE_TOOLS: Readonly<Record<string, RelocatableTool>> = {
  */
 export function toolRootRejection(dir: string, at: HomePaths = processHomePaths()): string | null {
   const resolved = at.path.resolve(expandHomeAt(dir, at));
+
   if (!isUnderUserHome(resolved, at)) {
     return `it is outside the home directory ${at.home}, and every tool path is resolved relative to it`;
   }
+
   const segment = at.path.relative(at.home, resolved).split(at.path.sep).join('/');
+
   if (!isAddressableRootSegment(segment)) {
     return 'a tool root has to be a directory in the home directory other than '
       + '~/.config itself (~/.claude-work), or a directory under a ~/.config/<name> one, '
       + 'so the "is this tool installed?" check can tell it apart from an unrelated directory';
   }
+
   return null;
 }
 
@@ -2842,7 +3080,9 @@ export function toolRootRejection(dir: string, at: HomePaths = processHomePaths(
 export function detectToolRoot(tool: string, env: NodeJS.ProcessEnv = process.env): string | null {
   const spec = RELOCATABLE_TOOLS[tool];
   const configured = spec ? env[spec.envVar]?.trim() : undefined;
+
   if (!configured) return null;
+
   return path.resolve(expandHome(configured));
 }
 
@@ -2860,8 +3100,11 @@ export function cursorConfigDir(toolRoots?: Record<string, string>): string {
   if (toolRoots?.[CURSOR_CONFIG_TOOL_ID]) {
     return resolveToolRootDir(CURSOR_CONFIG_TOOL_ID, DEFAULT_CURSOR_ROOT, toolRoots);
   }
+
   const xdg = process.env.XDG_CONFIG_HOME?.trim();
+
   if (xdg) return path.join(expandHome(xdg), 'cursor');
+
   return path.join(getUserHome(), DEFAULT_CURSOR_ROOT);
 }
 
@@ -2889,6 +3132,7 @@ export function isAgentExcluded(
   tool: string,
 ): boolean {
   if (isAgentDisabled(localConfig, tool)) return true;
+
   return localConfig.enabledAgents ? !localConfig.enabledAgents.includes(tool) : false;
 }
 
@@ -2906,9 +3150,11 @@ export function isAgentExcluded(
  */
 export function toolInstallRoot(toolPath: string): string {
   const segments = toolPath.split('/');
+
   if (segments[0] === '.config' && segments.length > 1) {
     return `${segments[0]}/${segments[1]}`;
   }
+
   return segments[0] ?? toolPath;
 }
 
@@ -2937,10 +3183,13 @@ export function toolGateRoot(
   at?: HomePaths,
 ): string {
   const recorded = toolRoots?.[tool];
+
   if (recorded) {
     const segment = toolRootSegment(tool, recorded, at);
+
     if (segment && (toolPath === segment || toolPath.startsWith(`${segment}/`))) return segment;
   }
+
   return toolInstallRoot(toolPath);
 }
 
@@ -2970,18 +3219,24 @@ function toolRootSegment(tool: string, configured: string, at: HomePaths = proce
         + (tool === COPILOT_TOOL_ID ? ' Copilot CLI is relocated with COPILOT_HOME instead.' : ''),
       );
     }
+
     return null;
   }
+
   const resolved = at.path.resolve(expandHomeAt(configured, at));
   const rejection = toolRootRejection(resolved, at);
+
   if (rejection) {
     const key = `${tool}:${resolved}`;
+
     if (!warnedToolRoots.has(key)) {
       warnedToolRoots.add(key);
       log.warn(`Ignoring toolRoots.${tool} (${resolved}): ${rejection}.`);
     }
+
     return null;
   }
+
   return at.path.relative(at.home, resolved).split(at.path.sep).join('/');
 }
 
@@ -3006,8 +3261,10 @@ function relocateToolPaths(
   // recording.
   const moved = (value: string | undefined): string | undefined => {
     if (value === undefined) return value;
+
     if (!value.includes('/')) return `${newRoot}/${value}`;
     const root = toolInstallRoot(value);
+
     return oldRoots.has(root) ? newRoot + value.slice(root.length) : value;
   };
 
@@ -3015,21 +3272,27 @@ function relocateToolPaths(
   // where paths resolve against the project root and a member's HOME-relative
   // root says nothing.
   const out: z.infer<typeof ToolPathsSchema> = { ...paths };
+
   for (const field of TOOL_ROOT_FIELDS) {
     if (paths[field] !== undefined) out[field] = moved(paths[field]);
   }
+
   if (paths.userScope) {
     // Rebuilt field by field, copying only what was there: a consumer that asks
     // which user-scope paths a tool declares reads the keys, and an explicit
     // `undefined` would answer "it declares one" for a path that does not exist.
     const userScope: NonNullable<z.infer<typeof ToolPathsSchema>['userScope']> = {};
+
     for (const field of USER_SCOPE_ROOT_FIELDS) {
       const value = paths.userScope[field];
+
       if (value === null) userScope.rules = null;
       else if (value !== undefined) userScope[field] = moved(value);
     }
+
     out.userScope = userScope;
   }
+
   return out;
 }
 
@@ -3049,28 +3312,37 @@ export function applyToolRoots(
 ): Record<string, z.infer<typeof ToolPathsSchema>> {
   if (!toolRoots || Object.keys(toolRoots).length === 0) return toolPaths;
   let out: Record<string, z.infer<typeof ToolPathsSchema>> | undefined;
+
   for (const [tool, configured] of Object.entries(toolRoots)) {
     const paths = toolPaths[tool];
+
     if (!paths) continue;
     const newRoot = toolRootSegment(tool, configured, at);
+
     if (!newRoot) continue;
     // Every root the tool's paths hang off, not just the first one: a team that
     // customized `toolPaths.claude` field by field may have spread them over
     // several. A bare file name (`.claude.json`) is not under a root.
     const oldRoots = new Set<string>();
+
     for (const field of TOOL_ROOT_FIELDS) {
       const value = paths[field];
+
       if (value?.includes('/')) oldRoots.add(toolInstallRoot(value));
     }
+
     for (const field of USER_SCOPE_ROOT_FIELDS) {
       const value = paths.userScope?.[field];
+
       if (value?.includes('/')) oldRoots.add(toolInstallRoot(value));
     }
+
     // Not skipped when the root is unchanged: a bare file name (the MCP
     // companion) still moves inside it (see relocateToolPaths).
     out ??= { ...toolPaths };
     out[tool] = relocateToolPaths(paths, oldRoots, newRoot);
   }
+
   return out ?? toolPaths;
 }
 
@@ -3087,18 +3359,22 @@ export function applyToolRoots(
 function applyWorkBuddyGeneration(
   toolPaths: Record<string, z.infer<typeof ToolPathsSchema>>,
   localConfig: { scope?: Scope; projectRoot?: string },
-): Record<string, z.infer<typeof ToolPathsSchema>> {
+): z.infer<typeof ToolPathsTableSchema> {
   const workbuddy = toolPaths[WORKBUDDY_TOOL_ID];
+
   if (!workbuddy || workbuddy.skills !== '.workbuddy/skills') return toolPaths;
+
   const baseDir = localConfig.scope === 'project' && localConfig.projectRoot !== undefined
     ? localConfig.projectRoot
     : getUserHome();
+
   // The new root present means 5.7+ is the live generation (an upgrade leaves
   // `.workbuddy/` behind as a leftover the app no longer reads), so it wins
   // even when both roots exist (#1290).
   if (fs.existsSync(path.join(baseDir, WORKBUDDY_NEW_GENERATION_ROOT))) {
     return { ...toolPaths, [WORKBUDDY_TOOL_ID]: { ...workbuddy, skills: `${WORKBUDDY_NEW_GENERATION_ROOT}/skills` } };
   }
+
   return toolPaths;
 }
 
@@ -3128,31 +3404,37 @@ export function scopedToolPaths(
   at?: HomePaths,
 ): Record<string, z.infer<typeof ToolPathsSchema>> {
   const generationAdjusted = applyWorkBuddyGeneration(teamConfig.toolPaths, localConfig);
+
   if (localConfig.scope !== 'user') return generationAdjusted;
   const rooted = applyToolRoots(generationAdjusted, localConfig.toolRoots, at);
   const out: Record<string, z.infer<typeof ToolPathsSchema>> = {};
+
   for (const [tool, paths] of Object.entries(rooted)) {
     const us = paths.userScope;
+
     if (!us) {
       out[tool] = paths;
       continue;
     }
-    const scoped = {
-      ...paths,
-      ...(us.skills !== undefined ? { skills: us.skills } : {}),
-      ...(typeof us.rules === 'string' ? { rules: us.rules } : {}),
-      ...(us.settings !== undefined ? { settings: us.settings } : {}),
-      ...(us.agents !== undefined ? { agents: us.agents } : {}),
-      ...(us.hooks !== undefined ? { hooks: us.hooks } : {}),
-      ...(us.claudemd !== undefined ? { claudemd: us.claudemd } : {}),
-    };
+
+    const scoped = { ...paths };
+
+    for (const key of ['skills', 'rules', 'settings', 'agents', 'hooks', 'claudemd'] as const) {
+      const override = us[key];
+
+      if (override !== undefined && override !== null) scoped[key] = override;
+    }
+
     // `rules: null`: no rules directory in user scope.
     if (us.rules === null) delete scoped.rules;
     out[tool] = scoped;
   }
+
   // Copilot loads user hooks only from files directly in `$COPILOT_HOME/hooks/`.
   const copilot = out[COPILOT_TOOL_ID];
+
   if (copilot?.hooks) out[COPILOT_TOOL_ID] = { ...copilot, hooks: `hooks/${path.basename(copilot.hooks)}` };
+
   // Re-apply the WorkBuddy generation swap after the user-scope merge: a
   // `userScope.skills` carrying the default `.workbuddy/skills` restores the
   // unread old path over the adjusted one (#1290).
@@ -3181,14 +3463,19 @@ export function usesBranchWorktree(localConfig: { repo: { kind?: string } }): bo
 
 /** Orphan branch that carries reports (members/sessions/votes/stats) for non-HTTP repos. */
 export const REPORTS_BRANCH = 'teamai-reports';
+
 /** Worktree directory name that checks out the reports orphan branch. */
 export const REPORTS_WORKTREE_DIRNAME = 'reports-wt';
+
 /** Orphan branch that carries `learnings/` for non-HTTP repos. */
 export const LEARNINGS_BRANCH = 'teamai-learnings';
+
 /** Worktree directory name that checks out the learnings orphan branch. */
 export const LEARNINGS_WORKTREE_DIRNAME = 'learnings-wt';
+
 /** Worktree directory (under .teamai) used to stage knowledge PRs off the active tree. */
 export const KNOWLEDGE_WORKTREE_DIRNAME = 'knowledge-wt';
+
 /**
  * Every worktree directory teamai creates. A side branch's `.gitignore` lists
  * all of them, so no worktree can ever nest-track another.
@@ -3198,8 +3485,10 @@ export const WORKTREE_DIRNAMES: readonly string[] = [
   LEARNINGS_WORKTREE_DIRNAME,
   KNOWLEDGE_WORKTREE_DIRNAME,
 ];
+
 /** Lock filename (beside the reports-wt checkout) guarding concurrent reports-branch writes. */
 export const REPORTS_LOCK_FILENAME = '.reports-lock';
+
 /**
  * Partition subdirectory that holds a self-mode repo's side-branch checkouts
  * (#1443). A git-mode team clone inside the same partition keeps its checkouts
@@ -3207,10 +3496,13 @@ export const REPORTS_LOCK_FILENAME = '.reports-lock';
  * installs sharing one partition from claiming the same paths.
  */
 export const SELF_BRANCH_HOME_DIRNAME = 'side-branches';
+
 /** Lock filename (beside the learnings-wt checkout) guarding concurrent learnings-branch writes. */
 export const LEARNINGS_LOCK_FILENAME = '.learnings-lock';
+
 /** Lock filename (under <repo>/.teamai) guarding concurrent self-mode bootstrap. */
 export const BOOTSTRAP_LOCK_FILENAME = '.bootstrap-lock';
+
 /**
  * Lock filename (in the project data home) serializing writes to the SHARED team
  * clone during pull/push. All worktrees of a repo resolve to the same partition
@@ -3253,6 +3545,7 @@ export function getDataHome(localConfig: LocalConfig): string {
   // caller attaches dataHome yet, so this is still exactly getTeamaiHome — the
   // partition redirect is switched on in P1-2B by making detection attach it.
   if (localConfig.dataHome) return localConfig.dataHome;
+
   return getTeamaiHome(localConfig.scope, localConfig.projectRoot);
 }
 
@@ -3264,9 +3557,11 @@ export function getDataHome(localConfig: LocalConfig): string {
  */
 export function getProjectSearchIndexPath(localConfig: LocalConfig): string {
   const dataHome = getDataHome(localConfig);
+
   if (isSelfMode(localConfig)) {
     return path.join(dataHome, 'workspaces', managedMcpWorkspaceId(getBusinessRoot(localConfig)), 'search-index.json');
   }
+
   return path.join(dataHome, 'search-index.json');
 }
 
@@ -3302,9 +3597,11 @@ export function getWorktreeDir(localConfig: LocalConfig, dirname: string): strin
   if (!usesBranchWorktree(localConfig)) {
     return localConfig.repo.localPath;
   }
+
   if (isSelfMode(localConfig)) {
     return path.join(localConfig.branchHome ?? getDataHome(localConfig), dirname);
   }
+
   return path.join(path.dirname(localConfig.repo.localPath), dirname);
 }
 
@@ -3330,8 +3627,10 @@ export function getTeamaiHome(scope: Scope, projectRoot?: string): string {
         'refusing to silently fall back to the user home directory.',
       );
     }
+
     return path.join(projectRoot, '.teamai');
   }
+
   return path.join(getUserHome(), '.teamai');
 }
 
@@ -3356,6 +3655,7 @@ export function getEnvBackupPath(localConfig: LocalConfig): string {
   // in <projectRoot>/.teamai — breaking "zero workspace residue" and leaking
   // sensitive values into the business repo directory.
   const home = getDataHome(localConfig);
+
   return path.join(home, isSelfMode(localConfig) ? 'env.local' : 'env');
 }
 
@@ -3387,9 +3687,11 @@ export function getStatePath(localConfig: LocalConfig): string {
  */
 export function getManagedHooksPath(localConfig: LocalConfig): string {
   if (localConfig.scope !== 'project') return getUserManagedHooksPath();
+
   if (!localConfig.projectRoot) {
     throw new Error('getManagedHooksPath: scope is "project" but projectRoot is missing.');
   }
+
   return path.join(
     getDataHome(localConfig), 'workspaces', managedMcpWorkspaceId(localConfig.projectRoot), 'managed-hooks.json',
   );
@@ -3436,10 +3738,18 @@ export function legacyManagedHooksPath(projectRoot: string): string {
  * rather than throwing — so read-only callers like `doctor` never crash on a
  * partially-broken config.
  */
+/** Where hooks for a config are written, and the scope their tool paths resolve at. */
+export interface HookScopeResolution {
+  baseDir: string;
+  manifestPath: string;
+  scope: Scope;
+}
+
 export function resolveHookScope(
   localConfig: LocalConfig,
-): { baseDir: string; manifestPath: string; scope: Scope } {
+): HookScopeResolution {
   const selfWithRoot = isSelfMode(localConfig) && !!localConfig.projectRoot;
+
   if (localConfig.scope === 'project' && !selfWithRoot) {
     // Hooks resolve to HOME here, so the tool paths must be resolved at *user*
     // scope too: a tool whose user-scope prefix differs from its project-scope
@@ -3448,6 +3758,7 @@ export function resolveHookScope(
     // base dir from one decision instead of re-deriving it (#370, #667).
     return { baseDir: getUserHome(), manifestPath: getUserManagedHooksPath(), scope: 'user' };
   }
+
   return {
     baseDir: resolveBaseDir(localConfig),
     manifestPath: getManagedHooksPath(localConfig),
@@ -3459,6 +3770,7 @@ export function resolveHookScope(
 export function hookToolPathsForConfig(teamConfig: TeamaiConfig, localConfig: LocalConfig): TeamaiConfig['toolPaths'] {
   const paths = scopedToolPaths(teamConfig, { ...localConfig, scope: resolveHookScope(localConfig).scope });
   const user = scopedToolPaths(teamConfig, { ...localConfig, scope: 'user' });
+
   return Object.fromEntries(Object.entries(paths).map(([tool, scoped]) => [tool, channelsOf(tool).hooks.self === 'user' ? user[tool] ?? scoped : scoped]));
 }
 
@@ -3484,6 +3796,7 @@ export function recordedToolRootDir(
 ): string | null {
   const configured = toolRoots?.[tool];
   const segment = configured ? toolRootSegment(tool, configured, at) : null;
+
   return segment === null ? null : at.path.join(at.home, ...segment.split('/'));
 }
 
@@ -3513,8 +3826,11 @@ export function resolveLegacyProjectHookScope(
   localConfig: LocalConfig,
 ): { baseDir: string; manifestPath: string; scope: Scope } | null {
   if (localConfig.scope !== 'project' || !localConfig.projectRoot) return null;
+
   if (isSelfMode(localConfig)) return null;
+
   if (path.resolve(localConfig.projectRoot) === path.resolve(getUserHome())) return null;
+
   return {
     baseDir: localConfig.projectRoot,
     manifestPath: legacyManagedHooksPath(localConfig.projectRoot),
@@ -3718,6 +4034,7 @@ export const WebhookConfigSchema = z.object({
 });
 
 export type WebhookEndpoint = z.infer<typeof WebhookEndpointSchema>;
+
 export type WebhookConfig = z.infer<typeof WebhookConfigSchema>;
 
 export interface WebhookPayload {
@@ -3728,7 +4045,7 @@ export interface WebhookPayload {
   cwd?: string;
   team?: string;
   username?: string;
-  data: Record<string, unknown>;
+  data: JsonObject;
 }
 
 /** Defaulted view of the optional `sharing.webhooks` config. */
@@ -3738,7 +4055,7 @@ export function getWebhookSharing(config: {
       enabled?: boolean;
       endpoints?: Array<{
         url: string;
-        type: string;
+        type: WebhookEndpoint['type'];
         secret?: string;
         events?: string[];
         timeout?: number;
@@ -3748,6 +4065,7 @@ export function getWebhookSharing(config: {
   };
 }): WebhookConfig {
   const w = config.sharing?.webhooks;
+
   return {
     enabled: w?.enabled ?? false,
     // Preserve every schema-accepted field. Previously `secret` was dropped and
@@ -3756,7 +4074,7 @@ export function getWebhookSharing(config: {
     // rejected the (unsigned) webhook (#703).
     endpoints: (w?.endpoints ?? []).map((ep) => ({
       url: ep.url,
-      type: ep.type as 'feishu' | 'wecom' | 'json',
+      type: ep.type,
       secret: ep.secret,
       events: ep.events ?? ['push', 'pull', 'skill-use', 'session-start', 'session-stop'],
       timeout: ep.timeout ?? 5000,

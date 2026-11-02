@@ -32,7 +32,7 @@ const ActionSchema = z.discriminatedUnion('kind', [
 const EventSchema = z.object({ kind: z.string(), step: z.string().optional() }).passthrough();
 const TurnSchema = z.object({
   run: z.string(), actions: z.array(ActionSchema), events: z.array(EventSchema),
-  // oxlint-disable-next-line unicorn/no-thenable
+  // oxlint-disable-next-line unicorn/no-thenable -- a workflow turn names its next step `then`; it is data, not a promise method
   then: z.object({ run: z.string() }).optional(),
 });
 

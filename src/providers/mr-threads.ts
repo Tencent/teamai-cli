@@ -23,10 +23,9 @@ export function isTeamaiComment(body: string, commentMarker?: string): boolean {
  * @param commentMarker  A custom `--comment-marker` to drop besides the default prefix
  */
 export function pruneThreads(threads: MRThread[], commentMarker?: string): MRThread[] {
-  return threads
-    .map((thread) => ({
-      ...thread,
-      notes: thread.notes.filter((note) => note.body.trim() !== '' && !isTeamaiComment(note.body, commentMarker)),
-    }))
-    .filter((thread) => thread.notes.length > 0);
+  return threads.flatMap((thread) => {
+    const notes = thread.notes.filter((note) => note.body.trim() !== '' && !isTeamaiComment(note.body, commentMarker));
+
+    return notes.length > 0 ? [{ ...thread, notes }] : [];
+  });
 }

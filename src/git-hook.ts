@@ -32,6 +32,7 @@ import { gitFindsNoRepository } from './utils/git-discovery.js';
 import { log } from './utils/logger.js';
 
 export const GIT_HOOK_EVENTS = ['post-checkout', 'post-merge', 'post-rewrite'] as const;
+
 export type GitHookEvent = (typeof GIT_HOOK_EVENTS)[number];
 
 /** The `--tool` value of a dispatch git runs. */
@@ -72,6 +73,7 @@ function scriptBlock(event: GitHookEvent): string {
 function withoutScriptBlock(text: string): string {
   const start = text.indexOf(`${BLOCK_START}\n`);
   const end = text.indexOf(`${BLOCK_END}\n`, start);
+
   return start >= 0 && end > start ? text.slice(0, start) + text.slice(end + BLOCK_END.length + 1) : text;
 }
 
@@ -80,7 +82,9 @@ function withScriptBlock(text: string | null, event: GitHookEvent): string | nul
   if (text === null) return `#!/bin/sh\n${scriptBlock(event)}`;
   const rest = withoutScriptBlock(text);
   const shebang = /^#![^\n]*(\n|$)/.exec(rest)?.[0] ?? '';
+
   if (shebang && !/\b(ba|da|k|z)?sh\b/.test(shebang)) return null;
+
   return `${shebang}${shebang && !shebang.endsWith('\n') ? '\n' : ''}${scriptBlock(event)}${rest.slice(shebang.length)}`;
 }
 
@@ -95,22 +99,26 @@ export type GitHookStatus =
   | { installed: false; reason: 'not-a-repository' | 'not-configured' };
 
 type Git = (args: string[]) => ReturnType<typeof execCommand>;
+
 const gitIn = (repoDir: string): Git => (args) => execCommand('git', args, { cwd: repoDir, timeoutMs: 10_000 });
 
 async function eventsToWrite(git: Git): Promise<GitHookEvent[]> {
   // Every teamai hook key in one read, each value once (`-z`: `key\nvalue\0`).
   const values = new Map<string, string[]>();
+
   for (const entry of (await git(['config', '--local', '-z', '--get-regexp', '^hook\\.teamai-'])).stdout.split('\0')) {
     if (!entry) continue;
     const newline = entry.indexOf('\n');
     const key = newline === -1 ? entry : entry.slice(0, newline);
     values.set(key, [...values.get(key) ?? [], newline === -1 ? '' : entry.slice(newline + 1)]);
   }
+
   return GIT_HOOK_EVENTS.filter((event) => {
     const key = `hook.${hookName(event)}`;
     // As `--get` reads it: the last value. As `--get-all`: every value, one per line.
     const current = (values.get(`${key}.command`)?.at(-1) ?? '').trim();
     const events = (values.get(`${key}.event`) ?? []).join('\n').trim();
+
     return current !== gitHookCommand(event) || events !== event;
   });
 }
@@ -120,7 +128,9 @@ const gitVersions = new Map<string | undefined, Promise<string>>();
 /** `git --version`, asked once per PATH: it names the git every repository gets. */
 function readGitVersion(git: Git): Promise<string> {
   let version = gitVersions.get(process.env.PATH);
+
   if (!version) gitVersions.set(process.env.PATH, version = git(['--version']).then((r) => r.stdout.trim()));
+
   return version;
 }
 
@@ -128,26 +138,37 @@ function readGitVersion(git: Git): Promise<string> {
 export async function gitHookStatus(repoDir: string): Promise<GitHookStatus> {
   const git = gitIn(repoDir);
   const version = await readGitVersion(git);
+
   if ((await git(['rev-parse', '--git-dir'])).code !== 0) return { installed: false, reason: 'not-a-repository' };
+
   if (!supportsConfigHooks(version)) {
     const scripts = await scriptsToWrite(git, repoDir);
+
     if (scripts.blocked) return { installed: false, reason: scripts.blocked, gitVersion: version };
+
     return scripts.stale.length === 0 ? { installed: true } : { installed: false, reason: 'not-configured' };
   }
+
   if ((await eventsToWrite(git)).length > 0) return { installed: false, reason: 'not-configured' };
+
   for (const event of GIT_HOOK_EVENTS) {
     const { code, stdout, stderr } = await git(['hook', 'list', event]);
+
     if (code !== 0) throw new Error(`Could not inspect the ${event} hook: ${stderr.trim() || `exit ${code}`}`);
     const entries = stdout.trim().split('\n');
+
     const disabledBy = entries.includes(`event-disabled\t${hookName(event)}`) ? 'event'
       : entries.includes(`disabled\t${hookName(event)}`) ? 'hook' : null;
+
     if (disabledBy) {
       // Where the effective `false` lives decides how to undo it: `--local` cannot override worktree config.
       const key = `hook.${disabledBy === 'event' ? event : hookName(event)}.enabled`;
       const scope = (await git(['config', '--show-scope', '--get', key])).stdout.split('\t')[0].trim();
+
       return { installed: false, reason: 'disabled', event, disabledBy, scope };
     }
   }
+
   return { installed: true };
 }
 
@@ -157,24 +178,30 @@ export function describeMissingGitHook(status: Exclude<GitHookStatus, { installe
     case 'disabled': {
       const key = `hook.${status.disabledBy === 'event' ? status.event : hookName(status.event)}.enabled`;
       const preserved = 'Teamai pull preserves explicit hook disable settings.';
+
       if (status.scope === 'worktree') {
         return `Git disables ${hookName(status.event)} through ${key}=false in this worktree's config, so it will not sync resources. `
           + `Run \`git config --worktree --unset ${key}\` to enable it, then \`teamai pull\` to sync. ${preserved}`;
       }
+
       // Local config overrides global and system; an unreadable scope gets the same advice.
       if (!status.scope || ['local', 'global', 'system'].includes(status.scope)) {
         return `Git disables ${hookName(status.event)} through ${key}=false, so it will not sync resources. `
           + `Run \`git config --local ${key} true\` to enable it for this repository, then \`teamai pull\` to sync. ${preserved}`;
       }
+
       return `Git disables ${hookName(status.event)} through ${key}=false in ${status.scope} config, so it will not sync resources. `
         + `Unset or override it there, then run \`teamai pull\` to sync. ${preserved}`;
     }
+
     case 'hooks-path':
     case 'other-hook': {
       const where = status.reason === 'hooks-path'
         ? 'core.hooksPath is set, so teamai leaves the hook manager\'s files alone'
         : 'a post-checkout, post-merge or post-rewrite hook in .git/hooks is a symlink or not an executable shell script, so teamai leaves it alone';
+
       const owner = status.reason === 'hooks-path' ? 'your hook manager defines' : 'in .git/hooks';
+
       return `${status.gitVersion || 'This git'} has no config-based hooks (Git 2.54 or later) and ${where}: new `
         + 'worktrees and `git pull` get the team\'s resources only at the next session. Either: '
         + '1. Upgrade Git to 2.54 or later, then run `teamai pull`. '
@@ -184,6 +211,7 @@ export function describeMissingGitHook(status: Exclude<GitHookStatus, { installe
         + `\`${guardedGitHookLine('post-rewrite')}\`; wrap each in \`sh -c '...'\` when the hook config is not a `
         + 'shell script. All do nothing on a machine without teamai.';
     }
+
     case 'not-a-repository':
       return 'The project root is not a git repository, so there is no git event to hook.';
     case 'not-configured':
@@ -197,10 +225,13 @@ export function describeMissingGitHook(status: Exclude<GitHookStatus, { installe
  */
 export async function installGitHook(repoDir: string, opts: { dryRun?: boolean } = {}): Promise<GitHookInstall> {
   const git = gitIn(repoDir);
+
   // Three reads, none needing another's answer: asked together, once there is a repository to ask.
   if (await gitFindsNoRepository(repoDir)) return { installed: false, reason: 'not-a-repository' };
   const [scriptDirs, version, stale] = await Promise.all([hookScriptDirs(git, repoDir), readGitVersion(git), eventsToWrite(git)]);
+
   if (!scriptDirs) return { installed: false, reason: 'not-a-repository' };
+
   if (!supportsConfigHooks(version)) return installHookScripts(git, repoDir, opts);
 
   if (opts.dryRun) return { installed: true, changed: stale.length > 0 };
@@ -216,7 +247,9 @@ export async function installGitHook(repoDir: string, opts: { dryRun?: boolean }
     await ok(git(['config', '--local', `${key}.command`, gitHookCommand(event)]), key);
     await ok(git(['config', '--local', '--replace-all', `${key}.event`, event]), key);
   }
+
   if (stale.length > 0) log.debug(`git hook: installed teamai hooks in ${repoDir}`);
+
   return { installed: true, changed: stale.length > 0 };
 }
 
@@ -227,32 +260,44 @@ async function scriptsToWrite(git: Git, repoDir: string): Promise<ScriptPlan> {
   // The common hooks directory, from a linked worktree too.
   const dir = path.resolve(repoDir, (await git(['rev-parse', '--git-path', 'hooks'])).stdout.trim());
   const stale: { file: string; text: string }[] = [];
+
   for (const event of GIT_HOOK_EVENTS) {
     const file = path.join(dir, event);
+
     // A symlink usually points at a hook manager's script, possibly shared by other repositories.
     if (await isSymlink(file)) return { blocked: 'other-hook', stale: [] };
     const current = await readFileIfExists(file);
+
     if (current !== null && process.platform !== 'win32' && ((await fs.stat(file)).mode & 0o111) === 0) {
       return { blocked: 'other-hook', stale: [] };
     }
+
     const text = withScriptBlock(current, event);
+
     if (text === null) return { blocked: 'other-hook', stale: [] };
+
     if (text !== current) stale.push({ file, text });
   }
+
   return { blocked: null, stale };
 }
 
 async function installHookScripts(git: Git, repoDir: string, opts: { dryRun?: boolean }): Promise<GitHookInstall> {
   const plan = await scriptsToWrite(git, repoDir);
+
   if (plan.blocked) return { installed: false, reason: plan.blocked };
+
   if (opts.dryRun) return { installed: true, changed: plan.stale.length > 0 };
   ensureTeamaiWrapper();
+
   for (const { file, text } of plan.stale) {
     await fs.mkdir(path.dirname(file), { recursive: true });
     // The creation mode applies only to a new file. Existing owner modes stay.
     await fs.writeFile(file, text, { mode: 0o755 });
   }
+
   if (plan.stale.length > 0) log.debug(`git hook: installed teamai hook scripts in ${repoDir}`);
+
   return { installed: true, changed: plan.stale.length > 0 };
 }
 
@@ -264,8 +309,10 @@ async function installHookScripts(git: Git, repoDir: string, opts: { dryRun?: bo
 async function hookScriptDirs(git: Git, repoDir: string): Promise<string[] | null> {
   if (await gitFindsNoRepository(repoDir)) return null;
   const { code, stdout } = await git(['rev-parse', '--git-common-dir', '--git-path', 'hooks']);
+
   if (code !== 0) return null;
   const [commonDir = '', hooksPath = ''] = stdout.split(/\r?\n/);
+
   return [...new Set([path.join(path.resolve(repoDir, commonDir.trim()), 'hooks'), path.resolve(repoDir, hooksPath.trim())])];
 }
 
@@ -277,20 +324,27 @@ async function hookScriptDirs(git: Git, repoDir: string): Promise<string[] | nul
  */
 async function removeHookScriptBlocks(dirs: string[], opts: { dryRun?: boolean } = {}): Promise<string[]> {
   const changed: string[] = [];
+
   for (const dir of dirs) {
     for (const event of GIT_HOOK_EVENTS) {
       const file = path.join(dir, event);
+
       if (await isSymlink(file)) continue;
       const current = await readFileIfExists(file);
+
       if (current === null) continue;
       const text = withoutScriptBlock(current);
+
       if (text === current) continue;
       changed.push(file);
+
       if (opts.dryRun) continue;
+
       if (/^(#![^\n]*\n?)?$/.test(text)) await fs.rm(file);
       else await fs.writeFile(file, text);
     }
   }
+
   return changed;
 }
 
@@ -303,16 +357,22 @@ async function removeHookScriptBlocks(dirs: string[], opts: { dryRun?: boolean }
 export async function removeGitHook(repoDir: string, opts: { dryRun?: boolean } = {}): Promise<string[]> {
   const git = gitIn(repoDir);
   const scriptDirs = await hookScriptDirs(git, repoDir);
+
   if (!scriptDirs) return [];
   const removed: string[] = [];
+
   for (const event of GIT_HOOK_EVENTS) {
     const section = `hook.${hookName(event)}`;
     const present = (await git(['config', '--local', '--get-regexp', `^${section.replace(/\./g, '\\.')}\\.`])).stdout.trim();
+
     if (!present) continue;
     removed.push(section);
+
     if (!opts.dryRun) await ok(git(['config', '--local', '--remove-section', section]), section);
   }
+
   removed.push(...await removeHookScriptBlocks(scriptDirs, opts));
+
   return removed;
 }
 
@@ -320,20 +380,23 @@ async function isSymlink(file: string): Promise<boolean> {
   try {
     return (await fs.lstat(file)).isSymbolicLink();
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    if (e instanceof Error && 'code' in e && e.code === 'ENOENT') return false;
     throw e;
   }
 }
 
 async function ok(result: ReturnType<typeof execCommand>, key: string): Promise<void> {
   const { code, stderr } = await result;
+
   if (code !== 0) throw new Error(`git config ${key} failed: ${stderr.trim() || `exit ${code}`}`);
 }
 
 function supportsConfigHooks(versionOutput: string): boolean {
   const m = /(\d+)\.(\d+)/.exec(versionOutput);
+
   if (!m) return false;
   const [major, minor] = [Number(m[1]), Number(m[2])];
+
   return major > MIN_GIT[0] || (major === MIN_GIT[0] && minor >= MIN_GIT[1]);
 }
 
@@ -344,6 +407,7 @@ function supportsConfigHooks(versionOutput: string): boolean {
  */
 export function isNewCheckout(args: readonly string[]): boolean {
   const [oldRef, , branchFlag] = args;
+
   return !!oldRef && ZERO_OID.test(oldRef) && branchFlag === '1';
 }
 
@@ -363,9 +427,13 @@ export async function isRebaseFastForward(
   cwd: string,
 ): Promise<boolean> {
   const [oldRef, newRef, branchFlag] = args;
+
   if (branchFlag !== '1' || !oldRef || !newRef || oldRef === newRef) return false;
+
   if (![oldRef, newRef].every(ref => OID.test(ref) && !ZERO_OID.test(ref))) return false;
+
   if (!/^(?:pull|rebase)(?:\s|$)/.test(reflogAction ?? '')) return false;
+
   return (await gitIn(cwd)(['merge-base', '--is-ancestor', oldRef, newRef])).code === 0;
 }
 
@@ -398,18 +466,19 @@ function failureFile(config: LocalConfig): string {
 }
 
 export function isGitHookEvent(value: unknown): value is GitHookEvent {
-  return (GIT_HOOK_EVENTS as readonly unknown[]).includes(value);
+  return GIT_HOOK_EVENTS.some((event) => event === value);
 }
 
 /** Keep `failure` for `doctor` and the next pull, and write it to debug.log. */
 export async function recordGitHookFailure(config: LocalConfig, failure: GitHookFailure): Promise<void> {
   log.persist(`git hook: ${describeGitHookFailure(failure).message}`);
   await writeJson(failureFile(config), failure)
-    .catch((e) => log.persist(`git hook: could not record the failure: ${(e as Error).message}`));
+    .catch((e) => log.persist(`git hook: could not record the failure: ${e instanceof Error ? e.message : String(e)}`));
 }
 
 export async function readGitHookFailure(config: LocalConfig): Promise<GitHookFailure | null> {
   const failure = await readJson<GitHookFailure>(failureFile(config)).catch(() => null);
+
   return failure && isGitHookEvent(failure.event) ? failure : null;
 }
 
@@ -421,6 +490,7 @@ export function describeGitHookFailure(failure: GitHookFailure): GitHookFailureR
   const when = `(${failure.at})`;
   // git's stderr runs over several lines; the first names the cause, debug.log keeps the rest.
   const firstLine = (error: string) => error.trim().split('\n')[0];
+
   switch (failure.kind) {
     case 'fetch-failed':
       return {

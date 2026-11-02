@@ -19,6 +19,7 @@ async function isTeamRemoteRevision(root: string, revision: string): Promise<boo
     const refs = await createGit(root).raw([
       'for-each-ref', `--contains=${revision}`, '--format=%(refname)', TEAM_REMOTE_REFS,
     ]);
+
     return refs.trim() !== '';
   } catch {
     return false;
@@ -29,7 +30,9 @@ async function isTeamRemoteRevision(root: string, revision: string): Promise<boo
 export async function remotelyReachableRevision(root: string): Promise<ReachableRevision | undefined> {
   try {
     const revision = await getHeadCommit(root);
+
     if (!revision || !await isTeamRemoteRevision(root, revision)) return undefined;
+
     return {
       repositoryRoot: await fs.realpath((await createGit(root).revparse(['--show-toplevel'])).trim()),
       revision,
@@ -43,6 +46,7 @@ export async function withoutStaleTeamRevision<T extends { teamRevision?: string
   if (!cached?.teamRevision || await isTeamRemoteRevision(root, cached.teamRevision)) return cached;
   const next = { ...cached };
   delete next.teamRevision;
+
   return next;
 }
 
@@ -54,13 +58,17 @@ export async function revisionHoldsSources(
 ): Promise<boolean> {
   if (!reachable) return false;
   const git = createGit(knowledgeRoot);
+
   try {
     for (const source of sources) {
       const absolute = path.resolve(knowledgeRoot, source.path);
       const relative = path.relative(reachable.repositoryRoot, await fs.realpath(absolute)).split(path.sep).join('/');
+
       if (relative === '..' || relative.startsWith('../')) return false;
+
       if (await git.show([`${reachable.revision}:${relative}`]) !== source.content) return false;
     }
+
     return true;
   } catch {
     return false;

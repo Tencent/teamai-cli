@@ -15,8 +15,9 @@
  * already ignores, so no new ignore entry is needed for it or its side files.
  */
 import path from 'node:path';
+import { z } from 'zod';
 
-import { appendJsonlBatch, readJsonl } from './utils/jsonl-store.js';
+import { appendJsonlBatch, readJsonl, type JsonlRecord } from './utils/jsonl-store.js';
 import { getDataHome, getTeamaiHomeDir } from './types.js';
 import type { KnowledgeType, LocalConfig } from './types.js';
 import type { AssetRelationType } from './asset-relations.js';
@@ -130,7 +131,7 @@ export interface ConsumedLine {
 
 export type RecallLogLine = RunLine | ClaimLine | EvidenceLine | LinkLine | ConsumedLine;
 
-const KINDS = new Set<string>(['run', 'claim', 'evidence', 'link', 'consumed']);
+const RecallLogKindSchema = z.enum(['run', 'claim', 'evidence', 'link', 'consumed']);
 
 /**
  * The recall log of the scope `config` names, beside its votes: a historical
@@ -141,6 +142,7 @@ export function recallLogPath(config: LocalConfig): string {
   const home = !config.dataHome && config.scope === 'project' && !config.projectRoot
     ? getTeamaiHomeDir()
     : getDataHome(config);
+
   return path.join(home, 'dashboard', 'recall.jsonl');
 }
 
@@ -157,5 +159,6 @@ export async function appendRecallLines(config: LocalConfig, lines: RecallLogLin
 /** Every line of the scope's log, those a busy lock left in side records included. */
 export async function readRecallLog(config: LocalConfig): Promise<RecallLogLine[]> {
   const records = await readJsonl(recallLogPath(config));
-  return records.filter((r): r is RecallLogLine & Record<string, unknown> => typeof r.kind === 'string' && KINDS.has(r.kind));
+
+  return records.filter((r): r is RecallLogLine & JsonlRecord => RecallLogKindSchema.safeParse(r.kind).success);
 }

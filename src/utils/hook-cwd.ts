@@ -1,3 +1,5 @@
+import { HookPayloadSchema, type HookPayload } from '../types.js';
+
 /**
  * Resolve the project working directory from an AI-tool hook payload.
  *
@@ -8,19 +10,26 @@
  * each root as its URI path, so on Windows it arrives as `/c:/...`, which no
  * path API resolves: the leading slash goes.
  */
-export function resolveHookCwd(data: Record<string, unknown>): string | undefined {
-  if (typeof data.cwd === 'string') {
-    const trimmed = data.cwd.trim();
+export function resolveHookCwd(data: HookPayload): string | undefined {
+  // Parsed again: a caller may hand over a payload read without the schema.
+  const { cwd, workspace_roots: roots } = HookPayloadSchema.parse(data);
+
+  if (cwd !== undefined) {
+    const trimmed = cwd.trim();
+
     if (trimmed) return fromUriPath(trimmed);
   }
-  const roots = data.workspace_roots;
-  if (!Array.isArray(roots)) return undefined;
+
+  if (roots === undefined) return undefined;
+
   for (const root of roots) {
-    if (typeof root === 'string') {
+    if (root !== null) {
       const trimmed = root.trim();
+
       if (trimmed) return fromUriPath(trimmed);
     }
   }
+
   return undefined;
 }
 

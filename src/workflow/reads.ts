@@ -1,6 +1,6 @@
 import { isMap, type Node } from 'yaml';
 import {
-  evaluateExpression, expressionPaths, fieldsText, isTruthy, schemaAt, stepFieldSchema, typeProblems, type DeclaredType, type Expression, type ExpressionPath,
+  evaluateExpression, expressionPaths, fieldsText, isTruthy, jsonType, schemaAt, stepFieldSchema, typeProblems, type DeclaredType, type Expression, type ExpressionPath,
 } from './expression.js';
 import {
   isYamlNode, locate, position, scalarString, unavailableField, undeclaredField, undeclaredOutput, type Child, type GraphNode, type ParseContext,
@@ -18,8 +18,10 @@ export interface ConditionNode {
 /** Reports an `if` that is always false, and queues what every other `if` reads for `readDiagnostics`. */
 export function conditionDiagnostics({ file, lineCounter }: ParseContext, conditions: ConditionNode[], reads: ReadSite[]): WorkflowDiagnostic[] {
   const diagnostics: WorkflowDiagnostic[] = [];
+
   for (const condition of conditions) {
     const paths = expressionPaths(condition.expression);
+
     if (paths.length === 0 && !isTruthy(evaluateExpression(condition.expression, { steps: {} }))) {
       diagnostics.push({
         ...locate(file, lineCounter, condition.node, condition.field, `step "${condition.id}" if is always false, so the step never runs`),
@@ -27,8 +29,10 @@ export function conditionDiagnostics({ file, lineCounter }: ParseContext, condit
       });
       continue;
     }
+
     reads.push(expressionSite(condition.id, condition.field, position(lineCounter, condition.node), 'if', [condition.expression]));
   }
+
   return diagnostics;
 }
 
@@ -41,10 +45,14 @@ export function expressionSite(
   expressions: Expression[],
   afterRun?: { code: WorkflowDiagnostic['code'] },
 ): ReadSite {
-  return {
-    id, field, at, what, paths: expressions.flatMap(expressionPaths), ends: expressions.flatMap(endComparisons), expressions,
-    ...(afterRun ? { afterRun: true, code: afterRun.code } : {}),
-  };
+  const site: ReadSite = { id, field, at, what, paths: expressions.flatMap(expressionPaths), ends: expressions.flatMap(endComparisons), expressions };
+
+  if (afterRun) {
+    site.afterRun = true;
+    site.code = afterRun.code;
+  }
+
+  return site;
 }
 
 /** Where a step reads paths, in one of the fields `what` names. */
@@ -100,16 +108,19 @@ export function readScope(
   inputs: Record<string, OutputSchema> | undefined,
   children: Map<string, Child>,
 ): ReadScope {
-  return {
+  const scope: ReadScope = {
     children,
     hitl: new Map(steps.flatMap((step) => step.hitl ? [[step.id, step.hitl.options]] : [])),
     ids: new Set([...needs.keys(), ...steps.map((step) => step.id)]),
     ancestors: (id) => ancestors(needs, id),
     previous: stepLoops(steps).previous,
     outputs: new Map(steps.map((step) => [step.id, step.output])),
-    forEach: new Set(steps.filter((step) => step.forEach).map((step) => step.id)),
-    ...(inputs ? { inputs: { type: 'object', fields: inputs } } : {}),
+    forEach: new Set(steps.flatMap((step) => step.forEach ? [step.id] : [])),
   };
+
+  if (inputs) scope.inputs = { type: 'object', fields: inputs };
+
+  return scope;
 }
 
 /**
@@ -118,30 +129,42 @@ export function readScope(
  */
 export function readDiagnostics(file: string, sites: ReadSite[], scope: ReadScope): WorkflowDiagnostic[] {
   const diagnostics: WorkflowDiagnostic[] = [];
+
   for (const site of sites) {
-    const at = (message: string): WorkflowDiagnostic => ({
-      file, ...site.at, field: site.field, message, ...(site.code ? { code: site.code } : {}),
-    });
+    const at = (message: string): WorkflowDiagnostic => {
+      const diagnostic: WorkflowDiagnostic = { file, ...site.at, field: site.field, message };
+
+      if (site.code) diagnostic.code = site.code;
+
+      return diagnostic;
+    };
+
     const readable = site.workflow !== undefined ? scope.ids : new Set([
       ...scope.ancestors(site.id), ...scope.previous(site.id), ...(site.afterRun && site.reader === undefined ? [site.id] : []),
     ]);
+
     const subject = site.workflow ?? `step "${site.reader ?? site.id}"`;
     const reported = new Set<string>();
     let itemReported = false;
+
     for (const path of site.paths) {
       if (path.root === 'inputs') {
         if (scope.inputs && !schemaAt(scope.inputs, path.fields)) {
           diagnostics.push(at(`${subject} ${site.what} reads inputs${fieldsText(path.fields)}, which is not an input the workflow declares`));
         }
+
         continue;
       }
+
       if (path.root === 'item') {
         if (!site.item && !scope.item && !itemReported) {
           diagnostics.push(at(`${subject} ${site.what} reads item, which is bound only in the templates of a for_each step and in the workflow each item runs`));
         }
+
         itemReported = true;
         continue;
       }
+
       if (!readable.has(path.step)) {
         if (!reported.has(path.step)) {
           diagnostics.push(at(site.workflow !== undefined
@@ -150,36 +173,49 @@ export function readDiagnostics(file: string, sites: ReadSite[], scope: ReadScop
               ? `${subject} ${site.what} reads steps.${path.step}, which is not a step it needs, directly or through its needs`
               : `${subject} ${site.what} reads steps.${path.step}, which is not a step it needs, or one the step that runs its workflow needs, directly or through their needs`));
         }
+
         reported.add(path.step);
         continue;
       }
+
       // A step pull rejected has its own diagnostic already.
       const unavailable = scope.outputs.has(path.step) && unavailableField(path, scope.forEach.has(path.step), scope.hitl.get(path.step));
+
       if (unavailable) {
         diagnostics.push(at(`${subject} ${site.what} ${unavailable}`));
         continue;
       }
+
       const undeclared = undeclaredOutput(scope.children, path);
+
       if (undeclared) {
         diagnostics.push({ ...at(`${subject} ${site.what} ${undeclared}`), code: 'undeclared_output' });
         continue;
       }
+
       const field = undeclaredField(path, scope.outputs.get(path.step), scope.forEach.has(path.step), scope.hitl.get(path.step));
+
       if (field) diagnostics.push(at(`${subject} ${site.what} ${field}`));
     }
+
     // A path this site does not list reads an enclosing workflow, which checks its type.
     const schemaOf = (path: ExpressionPath): DeclaredType | undefined => (site.paths.includes(path) ? declaredSchema(scope, readable, path) : undefined);
+
     for (const problem of site.expressions.flatMap((expression) => typeProblems(expression, schemaOf))) {
       diagnostics.push(at(`${subject} ${site.what} ${problem.message}`));
     }
+
     for (const expression of site.expressions) {
       for (const { step, value } of fieldComparisons(expression, 'choice')) {
         const options = readable.has(step) ? scope.hitl.get(step) : undefined;
+
         if (options && !options.includes(value)) diagnostics.push(at(`${subject} ${site.what} compares steps.${step}.choice with '${value}', which is not one of its options: ${options.join(', ')}`));
       }
     }
+
     for (const { step, end } of site.ends ?? []) {
       const child = readable.has(step) ? scope.children.get(step) : undefined;
+
       if (!child || Object.hasOwn(child.ends ?? {}, end)) continue;
       diagnostics.push({
         ...at(`${subject} ${site.what} compares steps.${step}.end with '${end}', which is not an end ${child.label} declares`),
@@ -187,13 +223,16 @@ export function readDiagnostics(file: string, sites: ReadSite[], scope: ReadScop
       });
     }
   }
+
   return diagnostics;
 }
 
 function declaredSchema(scope: ReadScope, readable: Set<string>, path: ExpressionPath): DeclaredType | undefined {
   if (path.root === 'inputs') return scope.inputs && schemaAt(scope.inputs, path.fields);
+
   if (path.root === 'item' || !readable.has(path.step)) return undefined;
   const schema = stepFieldSchema(path.field, scope.outputs.get(path.step), scope.forEach.has(path.step), scope.hitl.get(path.step));
+
   return schema && schemaAt(schema, path.fields);
 }
 
@@ -201,13 +240,21 @@ function declaredSchema(scope: ReadScope, readable: Set<string>, path: Expressio
  * Splits what steps read into reads of their own workflow, and reads of steps that are not in it.
  * `ids` is undefined for a workflow file, whose steps can read nothing outside it.
  */
-export function splitReads(sites: ReadSite[], ids: Set<string> | undefined): { local: ReadSite[]; outer: ReadSite[] } {
+/** The sites that read a workflow's own steps, and those that read steps outside it. */
+export interface SplitReads {
+  local: ReadSite[];
+  outer: ReadSite[];
+}
+
+export function splitReads(sites: ReadSite[], ids: Set<string> | undefined): SplitReads {
   const inside = (path: ExpressionPath): boolean => !ids || path.root !== 'steps' || ids.has(path.step);
   const endInside = ({ step }: { step: string }): boolean => !ids || ids.has(step);
+
   return {
     local: sites.map((site) => ({ ...site, paths: site.paths.filter(inside), ends: site.ends?.filter(endInside) })),
     outer: sites.flatMap((site) => {
       const paths = site.paths.filter((path) => !inside(path));
+
       return paths.length > 0 ? [{ ...site, paths, ends: site.ends?.filter((end) => !endInside(end)) }] : [];
     }),
   };
@@ -220,12 +267,17 @@ function endComparisons(expression: Expression): Array<{ step: string; end: stri
 
 function fieldComparisons(expression: Expression, field: 'end' | 'choice'): Array<{ step: string; value: string }> {
   if (expression.kind === 'not') return fieldComparisons(expression.operand, field);
+
   if (expression.kind === 'call') return [...fieldComparisons(expression.list, field), ...(expression.name === 'length' ? [] : fieldComparisons(expression.predicate, field))];
+
   if (expression.kind !== 'binary') return [];
+
   if (expression.operator === '&&' || expression.operator === '||') return [...fieldComparisons(expression.left, field), ...fieldComparisons(expression.right, field)];
   const [read, value] = expression.left.kind === 'path' ? [expression.left, expression.right] : [expression.right, expression.left];
+
   if (read.kind !== 'path' || read.path.root !== 'steps' || read.path.field !== field) return [];
-  return value.kind === 'literal' && typeof value.value === 'string' ? [{ step: read.path.step, value: value.value }] : [];
+
+  return value.kind === 'literal' && jsonType(value.value) === 'string' ? [{ step: read.path.step, value: String(value.value) }] : [];
 }
 
 export interface Ending {
@@ -241,18 +293,20 @@ export interface Ending {
 export function endDiagnostics(
   { file, lineCounter }: ParseContext,
   ends: Record<string, EndOutcome> | undefined,
-  endsNode: unknown,
+  endsNode: Node | null | undefined,
   prefix: string,
   endings: Ending[],
   graph: GraphNode[],
 ): WorkflowDiagnostic[] {
   const diagnostics: WorkflowDiagnostic[] = [];
-  const endOnly = new Set(endings.filter((step) => step.only).map((step) => step.id));
+  const endOnly = new Set(endings.flatMap((step) => step.only ? [step.id] : []));
+
   for (const step of graph) {
     for (const need of step.needs.filter((id) => endOnly.has(id))) {
       diagnostics.push(locate(file, lineCounter, step.node, step.field, `step "${step.id}" needs "${need}", which only ends the workflow, so "${step.id}" can never run`));
     }
   }
+
   for (const step of endings) {
     if (!ends) {
       diagnostics.push(locate(file, lineCounter, step.node, step.field, `step "${step.id}" ends with "${step.end}", but the workflow declares no ends`));
@@ -260,12 +314,15 @@ export function endDiagnostics(
       diagnostics.push(locate(file, lineCounter, step.node, step.field, `step "${step.id}" ends with "${step.end}", which is not declared in ends`));
     }
   }
+
   if (isMap(endsNode)) {
     for (const pair of endsNode.items) {
       const name = scalarString(isYamlNode(pair.key) ? pair.key : undefined);
+
       if (!name || endings.some((step) => step.end === name)) continue;
       diagnostics.push(locate(file, lineCounter, isYamlNode(pair.key) ? pair.key : endsNode, `${prefix}ends.${name}`, `end "${name}" is declared in ends, but no step ends with it`));
     }
   }
+
   return diagnostics;
 }

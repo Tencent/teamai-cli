@@ -5,11 +5,14 @@
  * expression as an `if` does. Any other `{{ … }}` is plain text, so prompts about GitHub Actions, Jinja, Vue or an
  * Ansible loop stay as written.
  */
+import { z } from 'zod';
+import type { JsonValue } from '../types.js';
 import {
   evaluateExpression, expressionPaths, parseExpression, parseFields, resolvePath,
   readsLikeExpression, type Expression, type ExpressionContext, type ExpressionPath, type PathField,
 } from './expression.js';
 import type { WorkflowStep } from './types.js';
+import { isJsonObject } from '../types.js';
 
 /** A `{{ with.<name>… }}` read: a value the step's own `with` names. Only templates read it; an `if` cannot. */
 export interface WithPath {
@@ -32,6 +35,11 @@ export type TemplateRead = { source: string; expression: Expression } | { source
 /** Literal text and reads, in source order. */
 export type Template = Array<string | TemplateRead>;
 
+/** Whether a part of a template is a read rather than literal text. */
+function isRead(part: string | TemplateRead): part is TemplateRead {
+  return part instanceof Object;
+}
+
 /** A template that does not parse: the `{{ … }}` as written and why. */
 export interface TemplateError {
   source: string;
@@ -53,6 +61,7 @@ interface Syntax {
 /** `paths` is the regex source of what a template that reads one path holds between its braces. */
 function syntax(paths: string): Syntax {
   const template = new RegExp(`\\{\\{\\s*(${paths})\\s*\\}\\}`);
+
   return { template, recognized: new RegExp(`(?<!\\$)${template.source}`, 'g'), path: new RegExp(`^(?:${paths})`) };
 }
 
@@ -68,12 +77,16 @@ const SYNTAX = {
   /** Those, and `item`, bare or with names and indexes. */
   bound: syntax(String.raw`${PATHS}|item(?![A-Za-z0-9_-])(?:[.[][^{}]*?)?`),
 };
+
 /** `with.<name>`, then any names and indexes inside its value. */
 const WITH_PATH = /^with\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+|\[[^\]]*\]?)*$/;
+
 /** A `{{ … }}`, `${{ … }}` included, up to the first `}}`, that holds no other `{{`. */
 const ANY_BRACES = /\{\{((?:(?!\{\{)[\s\S])*?)\}\}/g;
+
 /** Those not preceded by `$`. */
 const BRACES = new RegExp(`(?<!\\$)${ANY_BRACES.source}`, 'g');
+
 /** `\{{`: a literal `{{`. Only the backslash is dropped, and nothing after it is read as a template. */
 const ESCAPED = '\\{{';
 
@@ -86,18 +99,22 @@ const WITH_MESSAGE = 'with is read only as one path, such as with.<name>; an exp
  */
 export function findTemplate(text: string, item: boolean): string | undefined {
   const { template, path } = item ? SYNTAX.bound : SYNTAX.unbound;
+
   return template.exec(text)?.[0] ?? [...text.matchAll(ANY_BRACES)].find((match) => readsLikeExpression(match[1] ?? '', path))?.[0];
 }
 
 /** What a template reads, or why it does not parse. */
-function readOf(inner: string): { expression: Expression } | { path: WithPath } | string {
+function readOf(inner: string): { ok: true; read: { expression: Expression } | { path: WithPath } } | { ok: false; message: string } {
   if (inner.startsWith('with.')) {
-    if (!WITH_PATH.test(inner)) return WITH_MESSAGE;
+    if (!WITH_PATH.test(inner)) return { ok: false, message: WITH_MESSAGE };
     const parsed = parseFields(inner);
-    return parsed.ok ? { path: { root: 'with', fields: parsed.fields.slice(1) } } : parsed.message;
+
+    return parsed.ok ? { ok: true, read: { path: { root: 'with', fields: parsed.fields.slice(1) } } } : { ok: false, message: parsed.message };
   }
+
   const parsed = parseExpression(inner);
-  return parsed.ok ? { expression: parsed.expression } : parsed.message;
+
+  return parsed.ok ? { ok: true, read: { expression: parsed.expression } } : { ok: false, message: parsed.message };
 }
 
 /**
@@ -110,40 +127,51 @@ export function parseTemplate(text: string, item: boolean): TemplateParse {
   const { recognized, path } = item ? SYNTAX.bound : SYNTAX.unbound;
   const template: Template = [];
   const errors: TemplateError[] = [];
+
   const read = (source: string, inner: string): void => {
     const parsed = readOf(inner);
-    if (typeof parsed === 'string') errors.push({ source, message: parsed });
-    else template.push({ source, ...parsed });
+
+    if (!parsed.ok) errors.push({ source, message: parsed.message });
+    else template.push({ source, ...parsed.read });
   };
+
   const literal = (segment: string): void => {
     let index = 0;
+
     for (const match of segment.matchAll(BRACES)) {
       if (!readsLikeExpression(match[1] ?? '', path)) continue;
+
       if (match.index > index) template.push(segment.slice(index, match.index));
       read(match[0], match[1] ?? '');
       index = match.index + match[0].length;
     }
+
     if (index < segment.length) template.push(segment.slice(index));
   };
+
   const scan = (piece: string): void => {
     let index = 0;
+
     for (const match of piece.matchAll(recognized)) {
       literal(piece.slice(index, match.index));
       read(match[0], match[1] ?? '');
       index = match.index + match[0].length;
     }
+
     literal(piece.slice(index));
   };
+
   text.split(ESCAPED).forEach((piece, at) => {
     if (at > 0) template.push('{{');
     scan(piece);
   });
+
   return errors.length > 0 ? { ok: false, errors } : { ok: true, template };
 }
 
 /** Every expression a template evaluates, one path included, in source order. */
 export function templateExpressions(template: Template): Expression[] {
-  return template.flatMap((part) => (typeof part === 'string' || !('expression' in part) ? [] : [part.expression]));
+  return template.flatMap((part) => (isRead(part) && 'expression' in part ? [part.expression] : []));
 }
 
 /** Every `inputs`, `steps` and `item` path a template reads, in source order. */
@@ -153,42 +181,49 @@ export function templatePaths(template: Template): ExpressionPath[] {
 
 /** Every `with` value a template reads, in source order. */
 export function templateWithPaths(template: Template): WithPath[] {
-  return template.flatMap((part) => (typeof part === 'string' || !('path' in part) ? [] : [part.path]));
+  return template.flatMap((part) => (isRead(part) && 'path' in part ? [part.path] : []));
 }
 
 /**
  * The value a read renders: its expression, evaluated as an `if` is, or its `with` path, which walks the step's `with`
  * values the way an `inputs` path walks the inputs.
  */
-function valueOf(read: TemplateRead, context: TemplateContext): unknown {
+function valueOf(read: TemplateRead, context: TemplateContext): JsonValue {
   if ('expression' in read) return evaluateExpression(read.expression, context);
+
   return resolvePath({ root: 'inputs', fields: read.path.fields, column: 1 }, { inputs: context.with, steps: {} });
 }
 
 /** A value as text: strings as they are, numbers and booleans as text, objects and arrays as JSON, null as ''. */
-function textOf(value: unknown): string {
-  if (value === null || value === undefined) return '';
-  if (typeof value === 'string') return value;
-  if (typeof value === 'object') return JSON.stringify(value);
-  return String(value);
+function textOf(value: JsonValue): string {
+  if (value === null) return '';
+
+  return isJsonObject(value) || Array.isArray(value) ? JSON.stringify(value) : String(value);
 }
 
 /** Renders a template to text. A missing value renders as ''. */
 export function renderText(template: Template, context: TemplateContext): string {
-  return template.map((part) => (typeof part === 'string' ? part : textOf(valueOf(part, context)))).join('');
+  return template.map((part) => (isRead(part) ? textOf(valueOf(part, context)) : part)).join('');
 }
 
 /** Renders a whole value: a template that is exactly one `{{ … }}` keeps the JSON value it reads; anything else is text. */
-export function renderValue(template: Template, context: TemplateContext): unknown {
+export function renderValue(template: Template, context: TemplateContext): JsonValue {
   const only = template.length === 1 ? template[0] : undefined;
-  if (only !== undefined && typeof only !== 'string') return valueOf(only, context);
+
+  if (only !== undefined && isRead(only)) return valueOf(only, context);
+
   return renderText(template, context);
 }
 
 /** Every string inside a value, at any depth: the templates a `with` value holds. */
+// oxlint-disable-next-line teamai/no-unknown-parameters -- a with value is what YAML toJSON gives, which a !!set tag makes a Set rather than JSON
 export function stringsIn(value: unknown): string[] {
-  if (typeof value === 'string') return [value];
-  if (value && typeof value === 'object') return Object.values(value).flatMap(stringsIn);
+  const text = z.string().safeParse(value);
+
+  if (text.success) return [text.data];
+
+  if (value instanceof Object) return Object.values(value).flatMap(stringsIn);
+
   return [];
 }
 
@@ -229,17 +264,25 @@ export function stepExpressions(step: Pick<WorkflowStep, 'if' | 'loop' | 'break'
  * `{{ … }}` keeps the JSON value it reads. Other values stay as they are. Fails at the first template that does not parse.
  * `item` is a template only when `context` binds one.
  */
+// oxlint-disable-next-line teamai/no-unknown-parameters -- engine.ts passes a step's with, whose values YAML toJSON gives, which a !!set tag makes a Set rather than JSON
 export function renderStrings(value: unknown, context: TemplateContext): { ok: true; value: unknown } | { ok: false; error: TemplateError } {
-  if (typeof value === 'string') {
-    const parsed = parseTemplate(value, Object.hasOwn(context, 'item'));
+  const text = z.string().safeParse(value);
+
+  if (text.success) {
+    const parsed = parseTemplate(text.data, Object.hasOwn(context, 'item'));
+
     return parsed.ok ? { ok: true, value: renderValue(parsed.template, context) } : { ok: false, error: parsed.errors[0]! };
   }
-  if (!value || typeof value !== 'object') return { ok: true, value };
+
+  if (!(value instanceof Object)) return { ok: true, value };
   const rendered: Array<[string, unknown]> = [];
+
   for (const [key, item] of Object.entries(value)) {
     const result = renderStrings(item, context);
+
     if (!result.ok) return result;
     rendered.push([key, result.value]);
   }
+
   return { ok: true, value: Array.isArray(value) ? rendered.map(([, item]) => item) : Object.fromEntries(rendered) };
 }

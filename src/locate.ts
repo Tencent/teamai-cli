@@ -8,6 +8,7 @@
  */
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
+import { z } from 'zod';
 import { MCP_SERVER_KEY } from './resources/mcp-format.js';
 import { SESSION_PLATFORM_FACTS, type SessionPlatform, type StoredSessionPlatform } from './session-flow/adapters/platform-facts.js';
 import {
@@ -58,6 +59,7 @@ export function installOf(
     toolRoots: local.toolRoots ?? {},
     gitExclude: isGitExcludeEnabled(local, team),
   };
+
   switch (local.scope) {
     case 'user':
       return { ...shared, scope: 'user' };
@@ -71,6 +73,7 @@ export function installOf(
       };
     default: {
       const unhandled: never = local.scope;
+
       return unhandled;
     }
   }
@@ -280,7 +283,10 @@ export const SHARED_AGENT_SKILLS_PATH = '.agents/skills';
 
 type Locator<R extends Resource> = (tool: string, install: Install, host: Host) => Promise<Location<R>>;
 
-const LOCATORS: { readonly [R in Resource]: Locator<R> } = {
+/** One locator per resource, each typed for its own resource. */
+type Locators = { readonly [R in Resource]: Locator<R> };
+
+const LOCATORS: Locators = {
   skills: locateSkills,
   rules: locateRules,
   blocks: locateBlocks,
@@ -320,12 +326,14 @@ export function isInstalledFor(location: { readonly gates: readonly Gate[] }): b
 /** Every place teamai writes the tool's resource to: its own, then the shared one. */
 export function writesOf<P extends Place>(location: Located<P> & Beside<P>): P[] {
   if (location.channel !== 'files') return [];
+
   return [location.own, location.shared ?? null].filter((place) => place !== null);
 }
 
 /** Every place teamai may hold the tool's resource in: its writes, the activation, the alternate and the places it retired. Uninstall clears these. */
 export function cleanupOf<P extends Place>(location: Located<P> & Beside<P>): Place[] {
   const beside = [location.activation ?? null, location.alternate ?? null].filter((place) => place !== null);
+
   return [...writesOf(location), ...beside, ...location.retired.map((retired) => retired.place)];
 }
 
@@ -358,16 +366,20 @@ export function unreadWrites<P extends Place>(
   const { reads } = location;
   const p = host.path;
   const unread: Unread[] = [];
+
   for (const write of writesOf(location)) {
     const read = reads.find((candidate) => readsPlace(p, candidate, write));
+
     if (!read) {
       unread.push({ write: write.path, reason: 'not-read' });
       continue;
     }
+
     if (read.shadowedBy !== undefined) {
       unread.push({ write: write.path, reason: 'shadowed', by: read.shadowedBy });
       continue;
     }
+
     switch (read.when) {
       case 'always':
         break;
@@ -379,10 +391,12 @@ export function unreadWrites<P extends Place>(
         break;
       default: {
         const unhandled: never = read;
+
         return unhandled;
       }
     }
   }
+
   return unread;
 }
 
@@ -397,6 +411,7 @@ function readsUnderFor(p: path.PlatformPath, session: Session, root: string): bo
       return false;
     default: {
       const unhandled: never = session;
+
       return unhandled;
     }
   }
@@ -413,6 +428,7 @@ function readsPlace(p: path.PlatformPath, read: Read, write: Place): boolean {
         && read.key !== undefined && read.key.length === write.key.length && read.key.every((part, i) => part === write.key[i]);
     default: {
       const unhandled: never = write;
+
       return unhandled;
     }
   }
@@ -424,6 +440,7 @@ function samePathOn(p: path.PlatformPath, a: string, b: string): boolean {
 
 function isAtOrUnder(p: path.PlatformPath, dir: string, root: string): boolean {
   const relative = p.relative(root, dir);
+
   return relative === '' || (relative !== '..' && !relative.startsWith(`..${p.sep}`) && !p.isAbsolute(relative));
 }
 
@@ -451,10 +468,13 @@ type Roots = {
 /** `relative`, a `$HOME`-relative path, re-rooted in `tool`'s home where it falls under the home's root, which a recorded or env move relocates. */
 function underToolHome(tool: string, relative: string, host: Host): string {
   const p = host.path;
+
   if (isToolId(tool)) {
     const root = homeRoot(tool);
+
     if (relative === root || relative.startsWith(`${root}/`)) return p.join(toolHome(tool, host), ...relative.slice(root.length + 1).split('/'));
   }
+
   return p.join(host.home, ...relative.split('/'));
 }
 
@@ -463,27 +483,35 @@ function rootsOf(tool: string, install: Install, host: Host): Roots {
   const at: HomePaths = { home: host.home, path: p };
   const known = isToolId(tool) ? tool : undefined;
   const base = install.scope === 'user' ? host.home : install.projectRoot;
+
   const paths = install.scope === 'user'
     ? scopedToolPaths(install, { scope: 'user', toolRoots: install.toolRoots }, at)[tool]
     : install.toolPaths[tool];
+
   const join = (root: string, relative: string): string => p.join(root, ...relative.split('/'));
   const home = known === undefined ? undefined : { root: homeRoot(known), dir: toolHome(known, host) };
   const underHome = (relative: string): string => underToolHome(tool, relative, host);
+
   const relocated = (relative: string): string =>
     scopedToolPaths({ toolPaths: { [tool]: { skills: relative } } }, { scope: 'user', toolRoots: install.toolRoots }, at)[tool]?.skills ?? relative;
+
   return {
     base,
     home,
     paths,
     configured: (field) => {
       const relative = paths?.[field];
+
       if (relative === undefined) return null;
+
       if (install.scope !== 'user') return join(base, relative);
+
       // User-scope Copilot paths are relative to its home.
       return tool === 'copilot' && home ? join(home.dir, relative) : underHome(relative);
     },
     declared: (from, relative) => {
       if (from === 'project') return join(base, relative);
+
       return underHome(install.scope === 'user' ? relocated(relative) : relative);
     },
     codebuddyConfigDir: movedToolHome('codebuddy', host) ?? host.home,
@@ -502,12 +530,14 @@ export async function userViewOf(install: Install, host: Host = realHost()): Pro
   const toolRoots = install.scope === 'project' && Object.keys(install.toolRoots).length === 0
     ? await host.userToolRoots() ?? {}
     : install.toolRoots;
+
   return { toolPaths: install.toolPaths, agents: install.agents, toolRoots, gitExclude: install.gitExclude, scope: 'user' };
 }
 
 async function gatesOf(tool: string, install: Install, host: Host, roots: Roots = rootsOf(tool, install, host), resource?: Resource): Promise<Gate[]> {
   const selected: Gate = { kind: 'selected', met: !isAgentExcluded(install.agents, tool) };
   const installed = await installedGateOf(tool, install, host, roots, resource);
+
   return installed === null ? [selected] : [selected, installed];
 }
 
@@ -515,8 +545,10 @@ async function installedGateOf(tool: string, install: Install, host: Host, roots
   const { home, join } = roots;
   const enabled = install.agents.enabledAgents?.includes(tool) === true;
   const probe = async (dir: string, met?: boolean): Promise<Gate> => ({ kind: 'installed', probe: dir, met: met ?? await host.exists(dir) });
+
   if (tool === 'openclaw') {
     const workspace = await openclawWorkspaceOf(roots, host);
+
     switch (workspace.kind) {
       case 'found':
         return probe(workspace.dir, true);
@@ -526,14 +558,18 @@ async function installedGateOf(tool: string, install: Install, host: Host, roots
         return probe(workspace.candidate, false);
       default: {
         const unhandled: never = workspace;
+
         return unhandled;
       }
     }
   }
+
   if (tool === 'hermes' && home) return probe(home.dir);
+
   // Copilot's home says it is installed in either scope.
   if (tool === 'copilot' && home) return probe(home.dir, enabled || undefined);
   const installedBy = isToolId(tool) ? installGateOf(tool) : undefined;
+
   if (home && installedBy !== undefined) {
     switch (installedBy) {
       case 'home-edition':
@@ -553,20 +589,25 @@ async function installedGateOf(tool: string, install: Install, host: Host, roots
           && await host.exists(join(roots.base, WORKBUDDY_NEW_GENERATION_ROOT))) {
           return probe(join(roots.base, WORKBUDDY_NEW_GENERATION_ROOT));
         }
+
         return probe(join(roots.base, home.root));
       default: {
         const unhandled: never = installedBy;
+
         return unhandled;
       }
     }
   }
+
   const { paths } = roots;
   // A bare `claudemd` such as `AGENTS.md` is shared by several tools and says nothing about any one of them.
   const nestedClaudemd = paths?.claudemd?.includes('/') ? paths.claudemd : undefined;
   const relative = paths?.skills ?? paths?.agents ?? paths?.rules ?? paths?.settings ?? nestedClaudemd;
+
   if (relative === undefined) return null;
   const gateRoot = toolGateRoot(tool, relative, install.toolRoots, { home: host.home, path: host.path });
   const gateRootLeftByMovedHome = home !== undefined && home.root.startsWith(`${gateRoot}/`) && home.dir !== join(host.home, home.root);
+
   return probe(install.scope !== 'user' ? join(roots.base, gateRoot) : gateRootLeftByMovedHome ? home.dir : roots.underHome(gateRoot));
 }
 
@@ -590,9 +631,11 @@ function openclawStateDir(roots: Roots, host: Host): string {
 
 async function lookupOf(read: FirstExistingRead, roots: Roots, host: Host): Promise<{ readonly files: readonly string[]; readonly first: string }> {
   const files = read.base === 'home'
-    ? read.firstOf.map((file) => typeof file === 'string' ? roots.declared('home', file) : host.path.join(roots.codebuddyConfigDir, file.path))
+    ? read.firstOf.map((file) => file instanceof Object ? host.path.join(roots.codebuddyConfigDir, file.path) : roots.declared('home', file))
     : read.firstOf.map((file) => roots.declared('project', file));
+
   const index = (await Promise.all(files.map((file) => host.exists(file)))).indexOf(true);
+
   return { files, first: files[index === -1 ? 0 : index] };
 }
 
@@ -605,17 +648,21 @@ async function readsOf(
   if (declared === 'unknown') return 'unknown';
   const keyed = key === undefined ? {} : { key };
   const reads: Read[] = [];
+
   for (const read of declared) {
     if ('firstOf' in read) {
       const { files, first } = await lookupOf(read, roots, host);
+
       for (const file of files) {
         const shadowed = file === first ? {} : { shadowedBy: first };
         reads.push(read.base === 'home'
           ? { path: file, ...keyed, ...shadowed, when: 'always' }
           : { path: file, ...keyed, ...shadowed, when: read.when, root: roots.base });
       }
+
       continue;
     }
+
     switch (read.base) {
       case 'home':
         reads.push(read.when === 'workspaceUnderHome'
@@ -627,23 +674,29 @@ async function readsOf(
         break;
       default: {
         const unhandled: never = read;
+
         return unhandled;
       }
     }
   }
+
   return reads;
 }
 
 async function readGatesOf(kinds: readonly ReadGateKind[] | undefined, install: Install, host: Host): Promise<ReadGate[]> {
   if (kinds === undefined) return [];
   const user = await userViewOf(install, host);
+
   const homeGates = kinds.flatMap((kind): ReadGate[] => {
     if (kind !== 'openclaw-hooks-enabled' && kind !== 'openclaw-plugins-enabled') return [];
     const stateDir = openclawStateDir(rootsOf('openclaw', user, host), host);
     const config = resolveOpenclawConfigPath(host, stateDir);
+
     return [kind === 'openclaw-hooks-enabled' ? { kind, config } : { kind, config, plugin: openclawTeamHookPluginIn(stateDir, host) }];
   });
+
   if (install.scope !== 'project') return homeGates;
+
   return [...homeGates, ...kinds.flatMap((kind): ReadGate[] => {
     switch (kind) {
       case 'openclaw-hooks-enabled':
@@ -653,8 +706,10 @@ async function readGatesOf(kinds: readonly ReadGateKind[] | undefined, install: 
         return [{ kind, config: rootsOf('codex', user, host).declared('home', '.codex/config.toml'), checkout: install.projectRoot }];
       case 'pi-project-trust': {
         const roots = rootsOf('pi', user, host);
+
         return [{ kind, config: roots.declared('home', '.pi/agent/trust.json'), settings: roots.declared('home', '.pi/agent/settings.json'), checkout: install.projectRoot }];
       }
+
       case 'muse-workspace-trust':
         return [{ kind, config: rootsOf('muse', user, host).declared('home', '.config/muse/trust.json'), checkout: install.projectRoot }];
       case 'copilot-folder-trust':
@@ -662,6 +717,7 @@ async function readGatesOf(kinds: readonly ReadGateKind[] | undefined, install: 
       case 'claude-mcp-approval': {
         // The user MCP file is ~/.claude.json, which a recorded CLAUDE_CONFIG_DIR moves with the rest.
         const roots = rootsOf('claude', user, host);
+
         return [{
           kind,
           config: roots.configured('mcp') ?? roots.declared('home', '.claude.json'),
@@ -669,28 +725,36 @@ async function readGatesOf(kinds: readonly ReadGateKind[] | undefined, install: 
           checkout: install.projectRoot,
         }];
       }
+
       case 'codebuddy-mcp-approval': {
         const moved = host.env.CODEBUDDY_PROJECT_CONFIG_DIR;
         const dir = moved ? host.path.resolve(install.projectRoot, moved) : host.path.join(install.projectRoot, '.codebuddy');
+
         return [{ kind, config: host.path.join(dir, 'settings.local.json'), checkout: install.projectRoot }];
       }
+
       case 'cursor-mcp-approval': {
         // Cursor CLI 2026.10.21 cursor-config paths: a blank variable counts as unset.
         const home = rootsOf('cursor', user, host).declared('home', '.cursor');
         const data = host.env.CURSOR_DATA_DIR?.trim() ? host.env.CURSOR_DATA_DIR : home;
         const xdg = host.env.XDG_CONFIG_HOME?.trim() ? host.path.join(host.env.XDG_CONFIG_HOME, 'cursor') : home;
         const config = host.env.CURSOR_CONFIG_DIR?.trim() ? host.env.CURSOR_CONFIG_DIR : xdg;
+
         return [{ kind, projects: host.path.join(data, 'projects'), cliConfig: host.path.join(config, 'cli-config.json'), checkout: install.projectRoot }];
       }
+
       case 'qoder-folder-trust':
       case 'qoder-mcp-approval':
         return [{ kind, config: rootsOf('qoder', user, host).declared('home', '.qoder/settings.json'), checkout: install.projectRoot }];
       case 'claude-hooks-enabled': {
         const roots = rootsOf('claude', user, host);
+
         return [{ kind, settings: roots.configured('settings') ?? roots.declared('home', '.claude/settings.json'), checkout: install.projectRoot }];
       }
+
       default: {
         const unhandled: never = kind;
+
         return unhandled;
       }
     }
@@ -703,10 +767,13 @@ function runTimeOf<P extends Place>(channel: RunTime, retired: readonly Retired<
 
 function settled<P extends Place>(own: Place | null, candidates: readonly (Retired<P> | null)[], p: path.PlatformPath): Retired<P>[] {
   const kept: Retired<P>[] = [];
+
   for (const candidate of candidates) {
     if (candidate === null || (own !== null && samePlaceOn(p, own, candidate.place))) continue;
+
     if (!kept.some((other) => samePlaceOn(p, other.place, candidate.place))) kept.push(candidate);
   }
+
   return kept;
 }
 
@@ -714,15 +781,18 @@ function settled<P extends Place>(own: Place | null, candidates: readonly (Retir
 function samePlaceOn(p: path.PlatformPath, a: Place, b: Place): boolean {
   const entry = (place: Place): readonly [readonly string[] | undefined, string | undefined] =>
     place.kind === 'entry' ? [place.key, place.projectKey] : [undefined, undefined];
+
   return samePathOn(p, a.path, b.path) && isDeepStrictEqual(entry(a), entry(b));
 }
 
 async function locateSkills(tool: string, install: Install, host: Host): Promise<Location<'skills'>> {
   const roots = rootsOf(tool, install, host);
   const configured = roots.configured('skills');
+
   if (configured === null) return { channel: 'files', own: null, shared: null, reads: 'unknown', readGates: [], retired: [], gates: [] };
 
   let own: string | null = configured;
+
   // WorkBuddy 5.7+ scans skills from `.workbuddy-ai/skills` and stops reading
   // `.workbuddy/` (#1273), so on an install whose live generation is the new
   // root, skills land where the app scans. Only the default path swaps —
@@ -731,12 +801,15 @@ async function locateSkills(tool: string, install: Install, host: Host): Promise
   // count (#1290: the new root wins even when an upgrade left both behind).
   if (tool === WORKBUDDY_TOOL_ID) {
     const relative = roots.paths?.skills;
+
     if ((relative === `${WORKBUDDY_TOOL_ROOT}/skills` || relative === `${WORKBUDDY_NEW_GENERATION_ROOT}/skills`)
       && await host.exists(roots.join(roots.base, WORKBUDDY_NEW_GENERATION_ROOT))) {
       own = roots.join(roots.base, `${WORKBUDDY_NEW_GENERATION_ROOT}/skills`);
     }
   }
+
   let shared: string | null = null;
+
   if (tool === 'openclaw') {
     const dir = openclawWritesTo(await openclawWorkspaceOf(roots, host));
     own = dir === null ? null : host.path.join(dir, 'skills');
@@ -760,6 +833,7 @@ async function locateSkills(tool: string, install: Install, host: Host): Promise
 function skillReadGatesOf(tool: string): readonly ReadGateKind[] | undefined {
   if (!isToolId(tool)) return undefined;
   const skills: SkillReads = TOOLS[tool].skills;
+
   return skills.readGates;
 }
 
@@ -767,38 +841,47 @@ async function locateRules(tool: string, install: Install, host: Host): Promise<
   const channel = channelsOf(tool).rules[install.scope];
   const roots = rootsOf(tool, install, host);
   const dir = roots.configured('rules');
+
   // An earlier release copied team rules verbatim into any configured rules directory (#993).
   if (channel === 'none' || channel === 'unknown') {
     return { channel, retired: dir === null ? [] : [{ place: { kind: 'dir', path: dir }, was: 'configured' }], gates: await gatesOf(tool, install, host, roots) };
   }
+
   // A team entry written before the tool's rules moved (#938, #946) still names a directory the tool never reads: teamai writes there as the entry says, and doctor fails it.
   if (dir !== null && channel.channel !== 'dir') {
     return { channel: 'files', own: { kind: 'dir', path: dir }, activation: null, reads: [], readGates: [], retired: [], gates: await gatesOf(tool, install, host, roots) };
   }
+
   switch (channel.channel) {
     case 'dir': {
       const retiredActivation = await retiredRulesActivation(tool, install, host, roots);
-      return {
+
+      const location: Location<'rules'> = {
         channel: 'files',
         own: dir === null ? null : { kind: 'dir', path: dir },
         activation: await activationOf(channel.activation, tool, install, host, roots),
         reads: await readsOf(channel.reads, roots, host),
         readGates: [],
         retired: [],
-        ...(retiredActivation === undefined ? {} : { retiredActivation }),
         gates: await gatesOf(tool, install, host, roots),
       };
+
+      return retiredActivation === undefined ? location : { ...location, retiredActivation };
     }
+
     case 'inline': {
       const blocks = await locateBlocks(tool, install, host);
+
       return blocks.channel === 'files' ? { ...blocks, retired: [] } : { channel: 'unknown', retired: [], gates: blocks.gates };
     }
+
     case 'session-hook':
     case 'extension':
     case 'plugin':
       return runTimeOf(channel, [], await gatesOf(tool, await userViewOf(install, host), host));
     default: {
       const unhandled: never = channel;
+
       return unhandled;
     }
   }
@@ -810,24 +893,33 @@ async function locateBlocks(tool: string, install: Install, host: Host): Promise
   const roots = rootsOf(tool, install, host);
   const p = host.path;
   const memberFile = (file: string): FilePlace => ({ kind: 'file', path: file, owned: false, header: null });
+
   const earlier = (blocks.retired?.[install.scope] ?? [])
     .map((file): Retired<FilePlace> => ({ place: memberFile(roots.declared(install.scope === 'user' ? 'home' : 'project', file)), was: 'default' }));
+
   // OpenClaw's default workspace stays read by its default profile (#946).
   const claudemd = tool === 'openclaw' ? null : roots.configured('claudemd');
   // An earlier release wrote the blocks into any claudemd the team mapped.
   const configured: Retired<FilePlace> | null = claudemd === null ? null : { place: memberFile(claudemd), was: 'configured' };
+
   if (channel === 'none' || channel === 'unknown') return { channel, retired: settled(null, [...earlier, configured], p), gates: await gatesOf(tool, install, host, roots) };
+
   if (channel.channel !== 'file') return runTimeOf(channel, settled(null, [...earlier, configured], p), await gatesOf(tool, await userViewOf(install, host), host));
 
   const [file, other] = install.gitExclude && channel.gitExcluded !== undefined
     ? [channel.gitExcluded, channel.file] : [channel.file, channel.gitExcluded];
+
   let { place: own, gates } = await blocksFileOf(file, roots, host);
+
   // Pi reads the first context file in a directory; its override shadows AGENTS.md.
   if (tool === 'pi' && install.scope === 'user' && own !== null) {
     const override = p.join(p.dirname(own.path), 'AGENTS.override.md');
+
     if (await host.exists(override)) own = { ...own, path: override };
   }
+
   const otherPlace = other === undefined ? null : (await blocksFileOf(other, roots, host)).place;
+
   return {
     channel: 'files',
     own,
@@ -842,21 +934,26 @@ async function locateBlocks(tool: string, install: Install, host: Host): Promise
 async function blocksFileOf(file: BlocksFile, roots: Roots, host: Host): Promise<{ readonly place: FilePlace | null; readonly gates: readonly Gate[] }> {
   const placed = (where: string | null): FilePlace | null =>
     where === null ? null : { kind: 'file', path: where, owned: file.owned === true, header: file.header ?? null };
+
   switch (file.in) {
     case 'claudemd':
       return { place: placed(roots.configured('claudemd')), gates: [] };
     case 'rules-dir': {
       const dir = roots.configured('rules');
+
       if (dir !== null) return { place: placed(file.dir === undefined ? host.path.join(dir, file.name) : roots.join(roots.base, `${file.dir}/${file.name}`)), gates: [] };
       const claudemd = roots.configured('claudemd');
+
       return { place: claudemd === null ? null : { kind: 'file', path: claudemd, owned: false, header: null }, gates: [] };
     }
+
     case 'home':
       return { place: placed(roots.declared('home', file.path)), gates: [] };
     case 'project':
       return { place: placed(roots.declared('project', file.path)), gates: [] };
     case 'openclaw-workspace': {
       const workspace = await openclawWorkspaceOf(roots, host);
+
       switch (workspace.kind) {
         case 'found':
           return {
@@ -869,12 +966,15 @@ async function blocksFileOf(file: BlocksFile, roots: Roots, host: Host): Promise
           return { place: null, gates: [{ kind: 'readable-config', file: resolveOpenclawConfigPath(host, openclawStateDir(roots, host)), met: true }] };
         default: {
           const unhandled: never = workspace;
+
           return unhandled;
         }
       }
     }
+
     default: {
       const unhandled: never = file;
+
       return unhandled;
     }
   }
@@ -884,24 +984,31 @@ async function blocksFileOf(file: BlocksFile, roots: Roots, host: Host): Promise
 async function retiredRulesActivation(tool: string, install: Install, host: Host, roots: Roots): Promise<EntryPlace | null | undefined> {
   if (tool !== 'opencode' || install.scope !== 'project') return undefined;
   const channel = channelsOf(tool).mcp[install.scope];
+
   if (channel === 'none' || channel === 'unknown') return null;
   const { file } = await mcpFileOf(channel, install.scope, roots, host);
+
   return file === null ? null : { kind: 'entry', path: file, key: ['instructions'] };
 }
 
 async function activationOf(activation: Activation | undefined, tool: string, install: Install, host: Host, roots: Roots): Promise<EntryPlace | null> {
   if (activation === undefined) return null;
+
   switch (activation.in) {
     case 'mcp-file': {
       const channel = channelsOf(tool).mcp[install.scope];
+
       if (channel === 'none' || channel === 'unknown') return null;
       const { file } = await mcpFileOf(channel, install.scope, roots, host);
+
       return file === null ? null : { kind: 'entry', path: file, key: [activation.key] };
     }
+
     case 'project':
       return { kind: 'entry', path: roots.declared('project', activation.path), key: [activation.key] };
     default: {
       const unhandled: never = activation;
+
       return unhandled;
     }
   }
@@ -913,13 +1020,16 @@ async function locateAgents(tool: string, install: Install, host: Host): Promise
   const gates = await gatesOf(tool, install, host, roots);
   const dir = roots.configured('agents');
   const own: DirPlace | null = dir === null ? null : { kind: 'dir', path: dir };
+
   // An earlier release copied team agents verbatim into any configured agents directory.
   if (channel === 'none' || channel === 'unknown') return { channel, retired: own === null ? [] : [{ place: own, was: 'configured' }], gates };
+
   // Two tools' renders of one agent differ, so a shared directory is the tool's known to read it (Muse's project
   // copy would land in agy's `.agents/agents`). Nothing is retired there: the files in it are the other tool's.
   if (own !== null && channel.reads === 'unknown' && await knownAgentsReader(tool, own.path, install, host)) {
     return { channel: 'unknown', retired: [], gates };
   }
+
   return {
     channel: 'files',
     own,
@@ -935,16 +1045,21 @@ async function locateAgents(tool: string, install: Install, host: Host): Promise
 async function knownAgentsReader(tool: string, dir: string, install: Install, host: Host): Promise<boolean> {
   for (const other of Object.keys(install.toolPaths)) {
     const channel = channelsOf(other).agents[install.scope];
-    if (other === tool || typeof channel !== 'object' || channel.reads === 'unknown') continue;
+
+    if (other === tool || !(channel instanceof Object) || channel.reads === 'unknown') continue;
     const roots = rootsOf(other, install, host);
+
     if (roots.configured('agents') !== dir) continue;
+
     if ((await gatesOf(other, install, host, roots)).every((gate) => gate.met)) return true;
   }
+
   return false;
 }
 
 function mcpKeyOf(channel: Pick<McpUser, 'format' | 'key'>): readonly [string, ...string[]] {
   if (channel.key !== undefined) return channel.key;
+
   return channel.format === 'codex' ? ['mcp_servers'] : [MCP_SERVER_KEY[channel.format]];
 }
 
@@ -952,12 +1067,16 @@ async function mcpFileOf(
   channel: McpUser | McpProject, scope: Scope, roots: Roots, host: Host,
 ): Promise<{ readonly file: string | null; readonly lookup: McpLookup | null }> {
   const configured = roots.configured(scope === 'user' ? 'mcp' : 'mcpProject');
+
   if (configured === null || channel.reads === 'unknown') return { file: configured, lookup: null };
+
   for (const read of channel.reads) {
     if (!('firstOf' in read)) continue;
     const { files, first } = await lookupOf(read, roots, host);
+
     if (files.some((file) => samePathOn(host.path, file, configured))) return { file: first, lookup: { files, mapped: configured } };
   }
+
   return { file: configured, lookup: null };
 }
 
@@ -980,22 +1099,29 @@ async function localScopeOf(
   const file = scope.file === 'user-mcp-file'
     ? rootsOf(tool, await userViewOf(install, host), host).configured('mcp')
     : host.path.join(roots.codebuddyConfigDir, scope.file.path);
+
   if (file === null) return null;
   const projectKey = scope.key === 'git-common-root' ? await claudeProjectKey(install.projectRoot, host) : await host.realpath(install.projectRoot);
   const place: EntryPlace = { kind: 'entry', path: file, key: tree.key, projectKey };
+
   if (!(install.gitExclude || install.workspaceChildren) || (scope.key === 'git-common-root' && install.repo === 'self')) return { place, inUse: false };
+
   return { place, inUse: !await readByAnotherTool(tool, install, host, tree) };
 }
 
 async function readByAnotherTool(writer: string, install: Install, host: Host, tree: EntryPlace): Promise<boolean> {
   for (const reader of Object.keys(TOOLS)) {
     const channel = channelsOf(reader).mcp.project;
-    if (typeof channel !== 'object' || channel.writtenBy !== writer || install.toolPaths[reader] === undefined) continue;
+
+    if (!(channel instanceof Object) || channel.writtenBy !== writer || install.toolPaths[reader] === undefined) continue;
     const roots = rootsOf(reader, install, host);
     const reads = await readsOf(channel.reads, roots, host);
+
     if (reads === 'unknown' || !reads.some((read) => samePathOn(host.path, read.path, tree.path))) continue;
+
     if ((await gatesOf(reader, install, host, roots)).every((gate) => gate.met)) return true;
   }
+
   return false;
 }
 
@@ -1008,13 +1134,16 @@ async function claudeProjectKey(checkout: string, host: Host): Promise<string> {
   const p = host.path;
   const root = await host.realpath(checkout);
   const dotGit = (await host.readText(p.join(root, '.git')))?.trim();
+
   if (dotGit === undefined || !dotGit.startsWith('gitdir:')) return root.normalize('NFC');
   const gitDir = p.resolve(root, dotGit.slice('gitdir:'.length).trim());
   const commondir = await host.readText(p.join(gitDir, 'commondir'));
   const common = commondir === null ? null : p.resolve(gitDir, commondir.trim());
+
   // A `.git` file of a checkout that is not a linked worktree has no `commondir`.
   if (common === null || !await host.exists(common)) return root.normalize('NFC');
   const real = await host.realpath(common);
+
   return (p.basename(real) === '.git' ? p.dirname(real) : real).normalize('NFC');
 }
 
@@ -1023,10 +1152,13 @@ async function locateMcp(tool: string, install: Install, host: Host): Promise<Lo
   const roots = rootsOf(tool, install, host);
   const p = host.path;
   const gates = await gatesOf(tool, install, host, roots);
+
   if (install.scope === 'user') {
     const channel = mcp.user;
+
     if (channel === 'none' || channel === 'unknown') return { channel, retired: [], gates };
     const { tree, lookup, earlier, reads } = await mcpFilesOf(channel, mcp.retired?.user, 'user', roots, host);
+
     return {
       channel: 'files', own: tree, alternate: null, writtenBy: null, lookup, reads, readGates: [], retired: settled(tree, earlier, p),
       gates: await mcpGatesOf(tool, gates, tree, host),
@@ -1034,11 +1166,14 @@ async function locateMcp(tool: string, install: Install, host: Host): Promise<Lo
   }
 
   const channel = mcp.project;
+
   if (channel === 'none' || channel === 'unknown') return { channel, retired: [], gates };
   const readGates = await readGatesOf(channel.readGates, install, host);
+
   if (channel.writtenBy !== undefined) {
     const own = ownOf(await locateMcp(channel.writtenBy, install, host));
     const reads = await readsOf(channel.reads, roots, host, own?.key ?? mcpKeyOf(channel));
+
     return { channel: 'files', own, alternate: null, writtenBy: channel.writtenBy, lookup: null, reads, readGates, retired: [], gates };
   }
 
@@ -1046,8 +1181,10 @@ async function locateMcp(tool: string, install: Install, host: Host): Promise<Lo
   let own = tree;
   const retired = [...earlier];
   const localReads: Read[] = [];
+
   if (tree !== null && channel.localScope !== undefined) {
     const local = await localScopeOf(tool, install, host, roots, channel.localScope, tree);
+
     if (local !== null) {
       own = local.inUse ? local.place : tree;
       retired.push({ place: local.inUse ? tree : local.place, was: 'other-scope' });
@@ -1057,11 +1194,14 @@ async function locateMcp(tool: string, install: Install, host: Host): Promise<Lo
       });
     }
   }
+
   const builtin: Readonly<Record<string, ToolPaths>> = DEFAULT_TOOL_PATHS;
   const builtinFile = mcp.retired?.project?.[0] ?? (Object.hasOwn(builtin, tool) ? builtin[tool].mcpProject : undefined);
+
   if (builtinFile !== undefined && builtinFile !== install.toolPaths[tool]?.mcpProject) {
     retired.push({ place: { kind: 'entry', path: roots.declared('project', builtinFile), key }, was: 'builtin' });
   }
+
   return {
     channel: 'files',
     own,
@@ -1079,6 +1219,7 @@ async function locateMcp(tool: string, install: Install, host: Host): Promise<Lo
 /** Copilot is installed, for its servers, also where its MCP file exists (#628). */
 async function mcpGatesOf(tool: string, gates: readonly Gate[], own: EntryPlace | null, host: Host): Promise<readonly Gate[]> {
   if (tool !== 'copilot' || own === null || !await host.exists(own.path)) return gates;
+
   return gates.map((gate) => gate.kind === 'installed' ? { ...gate, met: true } : gate);
 }
 
@@ -1096,6 +1237,7 @@ async function mcpFilesOf(
   // An earlier release wrote the format's own key: ZCode's servers sat under `mcpServers` in ~/.agents/mcp.json.
   const earlierKey = mcpKeyOf({ format: channel.format });
   const { file, lookup } = await mcpFileOf(channel, scope, roots, host);
+
   return {
     key,
     tree: file === null ? null : entry(file),
@@ -1122,7 +1264,9 @@ const HOOK_LIST_KEY = ['hooks'] as const;
  */
 export function hookSettingsFile(tool: string, baseDir: string, relative: string, host: Host = realHost()): string {
   const p = host.path;
+
   if (channelsOf(tool).hooks.self !== 'user' && !samePathOn(p, baseDir, host.home)) return p.join(baseDir, ...relative.split('/'));
+
   return underToolHome(tool, relative, host);
 }
 
@@ -1143,12 +1287,15 @@ export function hookAdapterDirIn(adapter: Exclude<HookAdapterId, 'openclaw-hook'
 export async function earlierHookAdapterDir(adapter: Exclude<HookAdapterId, 'openclaw-hook'>, host: Host = realHost()): Promise<string | null> {
   const dir = adapterDirIn(adapter, (tool) => defaultToolHome(tool, host), host);
   const current = hookAdapterDir(adapter, host);
+
   if (samePathOn(host.path, dir, current)) return null;
+
   return samePathOn(host.path, await host.realpath(dir), await host.realpath(current)) ? null : dir;
 }
 
 function adapterDirIn(adapter: Exclude<HookAdapterId, 'openclaw-hook'>, homeOf: (tool: ToolId) => string, host: Host): string {
   const p = host.path;
+
   switch (adapter) {
     case 'opencode-plugin':
       return p.join(homeOf('opencode'), 'plugin');
@@ -1168,6 +1315,7 @@ function adapterDirIn(adapter: Exclude<HookAdapterId, 'openclaw-hook'>, homeOf: 
       return p.join(host.home, '.teamai', 'dsh');
     default: {
       const unhandled: never = adapter;
+
       return unhandled;
     }
   }
@@ -1175,21 +1323,28 @@ function adapterDirIn(adapter: Exclude<HookAdapterId, 'openclaw-hook'>, homeOf: 
 
 async function locateHooks(tool: string, install: Install, host: Host): Promise<Location<'hooks'>> {
   const { hooks } = channelsOf(tool);
+
   if (install.scope === 'project' && install.repo === 'self' && hooks.self !== 'user') return settingsHooksOf(tool, hooks.self, install, host);
   const user = await userViewOf(install, host);
   const channel = hooks.user;
+
   if (channel === 'none' || channel === 'unknown') return settingsHooksOf(tool, channel, user, host);
+
   if (channel.channel === 'adapter') return adapterHooksOf(tool, channel, user, host);
   const inUserView = await settingsHooksOf(tool, channel, user, host);
+
   // A project's own settings can hold back the user hooks in its sessions (Claude's disableAllHooks).
   const located = install.scope === 'project' && inUserView.channel === 'files'
     ? { ...inUserView, readGates: await readGatesOf(channel.readGates, install, host) }
     : inUserView;
+
   if (install.scope !== 'project' || hooks.workspace === undefined || located.channel !== 'files') return located;
   const roots = rootsOf(tool, install, host);
   const file = roots.configured(roots.paths?.hooks === undefined ? 'settings' : 'hooks');
+
   if (file === null) return located;
   const reads = await readsOf(hooks.workspace.reads, roots, host, HOOK_LIST_KEY);
+
   return {
     ...located,
     workspace: { kind: 'entry', path: file, key: HOOK_LIST_KEY },
@@ -1212,14 +1367,17 @@ async function settingsHooksOf(
 ): Promise<Location<'hooks'>> {
   const roots = rootsOf(tool, install, host);
   const gates = await gatesOf(tool, install, host, roots);
+
   if (channel === 'none' || channel === 'unknown') return { channel, retired: [], gates };
   const field = roots.paths?.hooks === undefined ? 'settings' : 'hooks';
   const file = roots.configured(field);
   const own: EntryPlace | null = file === null ? null : { kind: 'entry', path: file, key: HOOK_LIST_KEY };
   const relative = roots.paths?.[field];
+
   const unmoved: Retired<EntryPlace> | null = install.scope === 'user' && relative !== undefined && leftDefaultHome(tool, host)
     ? { place: { kind: 'entry', path: roots.join(host.home, relative), key: HOOK_LIST_KEY }, was: 'default' }
     : null;
+
   return {
     channel: 'files',
     own,
@@ -1237,16 +1395,20 @@ async function adapterHooksOf(tool: string, channel: HookAdapter, install: Insta
   const gates = await gatesOf(tool, install, host, roots);
   const { adapter } = channel;
   let dir: string | null;
+
   if (adapter === 'openclaw-hook') {
     const found = openclawWritesTo(await openclawWorkspaceOf(roots, host));
     dir = found === null ? null : host.path.join(found, 'hooks');
   } else {
     dir = adapterDirIn(adapter, (id) => toolHome(id, host), host);
   }
+
   const own: DirPlace | null = dir === null ? null : { kind: 'dir', path: dir };
+
   const unmoved: Retired<DirPlace> | null = adapter !== 'openclaw-hook' && leftDefaultHome(tool, host)
     ? { place: { kind: 'dir', path: adapterDirIn(adapter, (id) => defaultToolHome(id, host), host) }, was: 'default' }
     : null;
+
   return {
     channel: 'files',
     own,
@@ -1257,6 +1419,9 @@ async function adapterHooksOf(tool: string, channel: HookAdapter, install: Insta
     gates,
   };
 }
+
+/** Pi's settings.json `sessionDir`, when it names one. */
+const PiSessionDirSchema = z.object({ sessionDir: z.string() });
 
 /**
  * Where `platform`'s sessions sit on `host`. A `tool-home` store follows the member's recorded
@@ -1272,27 +1437,33 @@ export function sessionStoreDir(
   if ((platform === 'pi' || platform === 'omp') && host.env.PI_CODING_AGENT_SESSION_DIR) {
     return absoluteOn(host.env.PI_CODING_AGENT_SESSION_DIR, host);
   }
+
   const { store } = SESSION_PLATFORM_FACTS[platform];
   const p = host.path;
+
   switch (store.in) {
     case 'tool-home': {
       const dir = recordedToolRootDir('root' in store ? store.root : store.home, toolRoots, host)
         ?? toolHome(store.home, { ...host, home: host.profileHome });
+
       if (platform === 'pi') {
         try {
-          const settings = JSON.parse(host.readTextNow(p.join(dir, 'settings.json')) ?? 'null') as unknown;
-          if (settings && typeof settings === 'object' && 'sessionDir' in settings
-            && typeof settings.sessionDir === 'string' && settings.sessionDir.trim()) return absoluteOn(settings.sessionDir, host);
+          const settings = PiSessionDirSchema.safeParse(JSON.parse(host.readTextNow(p.join(dir, 'settings.json')) ?? 'null'));
+
+          if (settings.success && settings.data.sessionDir.trim()) return absoluteOn(settings.data.sessionDir, host);
         } catch {
           // Pi ignores an unreadable settings file here; use its ordinary session store too.
         }
       }
+
       return p.join(dir, store.dir);
     }
+
     case 'xdg-data':
       return p.join(host.env.XDG_DATA_HOME || p.join(host.profileHome, '.local', 'share'), store.child);
     default: {
       const unhandled: never = store;
+
       return unhandled;
     }
   }
@@ -1301,9 +1472,11 @@ export function sessionStoreDir(
 async function locateSessions(tool: string, install: Install, host: Host): Promise<Location<'sessions'>> {
   if (!isToolId(tool)) return { channel: 'unknown', retired: [], gates: [] };
   const { sessions } = TOOLS[tool];
-  if (typeof sessions === 'string') return { channel: sessions, retired: [], gates: [] };
+
+  if (!(sessions instanceof Object)) return { channel: sessions, retired: [], gates: [] };
   const [platform] = sessions;
   const { toolRoots } = install.scope === 'user' ? install : await userViewOf(install, host);
   const own: DirPlace = { kind: 'dir', path: sessionStoreDir(platform, toolRoots, host) };
+
   return { channel: 'files', own, platform, reads: [{ path: own.path, when: 'always' }], readGates: [], retired: [], gates: [] };
 }

@@ -2,6 +2,7 @@ import type http from 'node:http';
 import { dashboardWorkspaces, ownSessionEvents, workspaceEvents, type DashboardWorkspace } from './dashboard/workspaces.js';
 import fs from 'node:fs';
 import path from 'node:path';
+import { z } from 'zod';
 import { log } from './utils/logger.js';
 import { ensureDir } from './utils/fs.js';
 import { dataHomeKey, readEvents, readLocalRequestRecords, readSessionOutcomes, rebuildSessions, appendEvent, memberEvents, sessionRuns } from './dashboard-collector.js';
@@ -11,6 +12,7 @@ import {
   DASHBOARD_PID_CHECK_INTERVAL_MS,
   type DashboardEvent,
   getDataHome,
+  type JsonValue,
   type LocalConfig,
   type RunModeSplit,
 } from './types.js';
@@ -38,6 +40,9 @@ import type { ReportedHistory } from './dashboard/workflow-runs.js';
 
 type SSEClient = http.ServerResponse;
 
+/** A request to exclude a team skill from this workspace's delivery, or to include it again. */
+const SkillExclusionRequestSchema = z.object({ name: z.string().min(1), excluded: z.boolean() });
+
 const KB_SUMMARY_TTL_MS = 30_000;
 let kbSummaryCache: { ts: number; data: VizSummary } | null = null;
 
@@ -63,18 +68,23 @@ export async function startDashboard(port?: number): Promise<void> {
   // so a project installed (or first seen in events) after boot appears without a
   // restart instead of its sessions silently folding elsewhere (PR #604 review #3).
   let workspacesCache: { ts: number; data: DashboardWorkspace[] } | null = null;
+
   const getWorkspaces = async (events: DashboardEvent[]): Promise<DashboardWorkspace[]> => {
     if (!workspacesCache || Date.now() - workspacesCache.ts > KB_SUMMARY_TTL_MS) {
       workspacesCache = { ts: Date.now(), data: await dashboardWorkspaces(events) };
     }
+
     return workspacesCache.data;
   };
+
   const scopedEvents = async (id: string | null) => {
     const events = await readEvents(eventsPath);
     const workspaces = await getWorkspaces(events);
     const workspace = workspaces.find(w => w.id === id);
+
     return workspace ? workspaceEvents(events, workspace, workspaces) : events;
   };
+
   const clientScopes = new Map<SSEClient, string | null>();
   const contextRequests = new Map<string, Promise<unknown>>();
   const contextCaches = new Map<string, { ts: number; data: unknown }>();
@@ -85,27 +95,33 @@ export async function startDashboard(port?: number): Promise<void> {
   // Watch events file and push updates to SSE clients
   /** The events file as last pushed: its inode, size and last change. */
   let pushedStamp = '';
+
   const eventsStamp = (): Promise<string> =>
     fs.promises.stat(eventsPath).then((s) => `${s.ino}:${s.size}:${s.mtimeMs}`, () => '');
+
   const pushSessions = async () => {
     pushedStamp = await eventsStamp();
+
     try {
       const [events, outcomes] = await Promise.all([readEvents(eventsPath), readSessionOutcomes(eventsPath)]);
       const workspaces = await getWorkspaces(events);
       const sessions = rebuildSessions(events, outcomes);
       const data = JSON.stringify(sessions);
+
       for (const client of clients) {
         const workspace = workspaces.find(w => w.id === clientScopes.get(client));
         client.write(`data: ${workspace ? JSON.stringify(rebuildSessions(workspaceEvents(events, workspace, workspaces), outcomes)) : data}\n\n`);
       }
     } catch (e) {
-      log.debug(`dashboard: SSE push error: ${(e as Error).message}`);
+      log.debug(`dashboard: SSE push error: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
+
   let watchDebounce: ReturnType<typeof setTimeout> | null = null;
   // Compaction atomically replaces events.jsonl. Watching the file itself
   // follows the old inode on Linux and macOS, so watch its directory instead.
   const eventsFileName = path.basename(eventsPath);
+
   const schedulePush = (): void => {
     // Debounce rapid file changes (multiple hooks firing near-simultaneously)
     if (watchDebounce) clearTimeout(watchDebounce);
@@ -114,13 +130,16 @@ export async function startDashboard(port?: number): Promise<void> {
       void pushSessions();
     }, 200);
   };
+
   const watcher = fs.watch(path.dirname(eventsPath), (_eventType, filename) => {
     if (filename && filename.toString() !== eventsFileName) return;
     schedulePush();
   });
+
   // fs.watch on macOS (FSEvents) falls behind on a busy disk: an append went
   // unreported for over 20s. A stat every second pushes what it has not said.
   void eventsStamp().then((stamp) => { pushedStamp ||= stamp; });
+
   const eventsPoll = setInterval(() => {
     void eventsStamp().then((stamp) => { if (stamp !== pushedStamp && !watchDebounce) schedulePush(); });
   }, 1000);
@@ -144,6 +163,7 @@ export async function startDashboard(port?: number): Promise<void> {
       for (const session of sessions) {
         // Only check non-stopped sessions with a monitorPid
         if (session.status === 'stopped') continue;
+
         if (!session.monitorPid) continue;
 
         if (!isProcessAlive(session.monitorPid)) {
@@ -161,6 +181,7 @@ export async function startDashboard(port?: number): Promise<void> {
             // And its mode and who launched it, so a step's exit stays out of the member's sessions.
             ...runs.get(session.sessionId),
           };
+
           await appendEvent(exitEvent);
           log.info(
             `dashboard: detected process exit for session ${session.sessionId.slice(0, 16)}` +
@@ -169,9 +190,10 @@ export async function startDashboard(port?: number): Promise<void> {
         }
       }
     } catch (e) {
-      log.debug(`dashboard: PID check error: ${(e as Error).message}`);
+      log.debug(`dashboard: PID check error: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
+
   const pidCheckInterval = setInterval(() => void checkPids(), DASHBOARD_PID_CHECK_INTERVAL_MS);
 
   // Distribution (#1124): read, preview, and save a workspace's roles and
@@ -180,52 +202,72 @@ export async function startDashboard(port?: number): Promise<void> {
   // and writing it in turn, so two saves cannot both pass the check against
   // one old config and the second overwrite the first.
   let distributionWrites: Promise<unknown> = Promise.resolve();
+
   const freshConfig = async (scopeId: string | null) => {
     workspacesCache = null;
+
     return (await getWorkspaces(await readEvents(eventsPath))).find(w => w.id === scopeId)?.config ?? null;
   };
+
   const handleDistribution = async (req: http.IncomingMessage, res: http.ServerResponse, pathname: string, scopeId: string | null) => {
-    const json = (status: number, body: unknown) => {
+    const json = <TBody>(status: number, body: TBody) => {
       res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
       res.end(JSON.stringify(body));
     };
+
     const route = pathname.slice('/api/distribution'.length);
     const writeRoutes = new Set(['/preview', '/roles', '/projects']);
+
     if (route === '' ? req.method !== 'GET' : !writeRoutes.has(route) || req.method !== 'POST') {
       json(route === '' || writeRoutes.has(route) ? 405 : 404, { error: 'Not supported.' });
+
       return;
     }
+
     const distribution = await import('./dashboard/distribution.js');
+
     try {
       if (route === '') {
         const config = await freshConfig(scopeId);
         json(200, config ? await distribution.readDistribution(config) : { configured: false });
+
         return;
       }
+
       const body = await readJsonBody(req);
+
       if (route === '/preview') {
         const config = await freshConfig(scopeId);
+
         if (!config) throw new HttpError(400, 'Select a workspace with a teamai config.');
         json(200, await distribution.previewDistribution(config, body));
+
         return;
       }
+
       const save = async () => {
         const config = await freshConfig(scopeId);
+
         if (!config) throw new HttpError(400, 'Select a workspace with a teamai config.');
+
         if (route === '/roles') await distribution.saveRoles(config, body);
         else await distribution.saveProjects(config, body);
         const saved = await freshConfig(scopeId);
+
         return saved ? distribution.readDistribution(saved) : { configured: false };
       };
+
       const result = distributionWrites.then(save, save);
       distributionWrites = result.catch(() => undefined);
       json(200, await result);
     } catch (e) {
       if (e instanceof HttpError) {
         json(e.status, { error: e.message });
+
         return;
       }
-      log.debug(`dashboard: ${pathname} failed: ${(e as Error).message}`);
+
+      log.debug(`dashboard: ${pathname} failed: ${e instanceof Error ? e.message : String(e)}`);
       json(500, { error: 'Failed to update distribution.' });
     }
   };
@@ -237,56 +279,77 @@ export async function startDashboard(port?: number): Promise<void> {
       const { listHandoffs, listReportedRuns } = await import('./dashboard/workflow-runs.js');
       // listReportedRuns refreshes the reports checkout the hand-offs are read from.
       const runs = await listReportedRuns(config);
+
       return { state: 'ok', runs, handoffs: await listHandoffs(config) };
     } catch (e) {
       log.debug(`dashboard: reported workflow runs failed: ${e instanceof Error ? e.message : String(e)}`);
+
       return { state: 'unavailable' };
     }
   };
+
   const reportedCaches = new Map<string, { ts: number; last: Promise<ReportedHistory>; refreshing: boolean }>();
+
   // The last history answers while a refresh fetches, so a slow or unreachable origin holds the live local runs only
   // on the first load.
   const reportedHistory = (key: string, config: LocalConfig): Promise<ReportedHistory> => {
     const cached = reportedCaches.get(key);
+
     if (cached && (cached.refreshing || Date.now() - cached.ts <= KB_SUMMARY_TTL_MS)) return cached.last;
     const refresh = loadReportedHistory(config);
     const entry = { ts: Date.now(), last: cached?.last ?? refresh, refreshing: true };
     reportedCaches.set(key, entry);
     void refresh.then((data) => Object.assign(entry, { ts: Date.now(), last: Promise.resolve(data), refreshing: false }));
+
     return entry.last;
   };
+
   const handleWorkflows = async (req: http.IncomingMessage, res: http.ServerResponse, url: URL, workspace: DashboardWorkspace | undefined) => {
     const config = workspace?.config ?? null;
-    const json = (status: number, body: unknown) => {
+
+    const json = <TBody>(status: number, body: TBody) => {
       res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
       res.end(JSON.stringify(body));
     };
+
     const route = url.pathname.slice('/api/workflows'.length);
     const method = route === '/respond' ? 'POST' : 'GET';
+
     if (!['', '/run', '/respond'].includes(route)) {
       json(404, { error: 'Not supported.' });
+
       return;
     }
+
     if (req.method !== method) {
       json(405, { error: 'Not supported.' });
+
       return;
     }
+
     const runs = await import('./dashboard/workflow-runs.js');
+
     try {
       if (route === '') {
         json(200, workspace?.config
           ? { configured: true, local: await runs.listLocalRuns(workspace.config), reported: await reportedHistory(workspace.id, workspace.config) }
           : { configured: false });
+
         return;
       }
+
       if (!config) throw new HttpError(400, 'Select a workspace with a teamai config.');
+
       if (route === '/run') {
         const source = url.searchParams.get('source') === 'reported' ? 'reported' : 'local';
         const detail = await runs.workflowRunDetail(config, source, url.searchParams.get('id') ?? '');
+
         if (detail) json(200, detail);
         else json(404, { error: 'This run is not in the selected workspace.' });
+
         return;
       }
+
       // A browser sends Origin with every fetch POST, so a request without one
       // did not come from the dashboard page. Like the TTY channel, this is a
       // convention, not protection against a local process that sets it.
@@ -295,9 +358,11 @@ export async function startDashboard(port?: number): Promise<void> {
     } catch (e) {
       if (e instanceof HttpError) {
         json(e.status, { error: e.message });
+
         return;
       }
-      log.debug(`dashboard: ${url.pathname} failed: ${(e as Error).message}`);
+
+      log.debug(`dashboard: ${url.pathname} failed: ${e instanceof Error ? e.message : String(e)}`);
       json(500, { error: 'Failed to load workflow runs.' });
     }
   };
@@ -305,19 +370,25 @@ export async function startDashboard(port?: number): Promise<void> {
   // Scorer results (#1182). Like the team run history, the reports checkout is refreshed from origin at most once per
   // TTL; the page asks again on every change of scorer, cohort, window, grouping or commit.
   const scorersRefreshed = new Map<string, number>();
+
   const handleScorers = async (req: http.IncomingMessage, res: http.ServerResponse, url: URL, workspace: DashboardWorkspace | undefined) => {
-    const json = (status: number, body: unknown) => {
+    const json = <TBody>(status: number, body: TBody) => {
       res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
       res.end(JSON.stringify(body));
     };
+
     if (req.method !== 'GET') {
       json(405, { error: 'Not supported.' });
+
       return;
     }
+
     if (!workspace?.config) {
       json(200, { configured: false });
+
       return;
     }
+
     try {
       const { parseScorerQuery, scorerResults } = await import('./dashboard/scorers.js');
       const query = parseScorerQuery(url.searchParams);
@@ -325,43 +396,56 @@ export async function startDashboard(port?: number): Promise<void> {
       const allEvents = await readEvents(eventsPath);
       const events = ownSessionEvents(allEvents, workspace, await getWorkspaces(allEvents));
       const view = await scorerResults({ config: workspace.config, query, events, refresh });
+
       if (refresh) scorersRefreshed.set(workspace.id, Date.now());
       json(200, { configured: true, ...view });
     } catch (e) {
       if (e instanceof HttpError) {
         json(e.status, { error: e.message });
+
         return;
       }
+
       log.debug(`dashboard: ${url.pathname} failed: ${e instanceof Error ? e.message : String(e)}`);
       json(500, { error: 'Failed to load scorer results.' });
     }
   };
+
   const benchmarksRefreshed = new Map<string, number>();
+
   const handleBenchmarks = async (req: http.IncomingMessage, res: http.ServerResponse, url: URL, workspace: DashboardWorkspace | undefined) => {
-    const json = (status: number, body: unknown) => {
+    const json = <TBody>(status: number, body: TBody) => {
       res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
       res.end(JSON.stringify(body));
     };
+
     if (req.method !== 'GET') {
       json(405, { error: 'Not supported.' });
+
       return;
     }
+
     if (!workspace?.config) {
       json(200, { configured: false });
+
       return;
     }
+
     try {
       const { parseBenchmarkQuery, benchmarkHistory } = await import('./dashboard/benchmarks.js');
       const query = parseBenchmarkQuery(url.searchParams);
       const refresh = Date.now() - (benchmarksRefreshed.get(workspace.id) ?? 0) > KB_SUMMARY_TTL_MS;
       const view = await benchmarkHistory({ config: workspace.config, query, refresh });
+
       if (refresh) benchmarksRefreshed.set(workspace.id, Date.now());
       json(200, { configured: true, ...view });
     } catch (e) {
       if (e instanceof HttpError) {
         json(e.status, { error: e.message });
+
         return;
       }
+
       log.debug(`dashboard: ${url.pathname} failed: ${e instanceof Error ? e.message : String(e)}`);
       json(500, { error: 'Failed to load benchmark runs.' });
     }
@@ -380,6 +464,7 @@ export async function startDashboard(port?: number): Promise<void> {
     if (req.method !== 'GET' && req.method !== 'HEAD' && !isLocalWrite(req, serverPort)) {
       res.writeHead(403, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Write requests must come from the local dashboard.' }));
+
       return;
     }
 
@@ -387,20 +472,25 @@ export async function startDashboard(port?: number): Promise<void> {
       // Serve dashboard HTML
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(getDashboardHtml(serverPort));
+
       return;
     }
 
     const scopeId = url.searchParams.get('workspace');
     const workspaces = await getWorkspaces(await readEvents(eventsPath));
     const workspace = workspaces.find(w => w.id === scopeId);
+
     if (scopeId && !workspace) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Unknown workspace' }));
+
       return;
     }
+
     if (url.pathname === '/api/workspaces') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(workspaces.map(({ config, roots, ...item }) => item)));
+
       return;
     }
 
@@ -413,8 +503,9 @@ export async function startDashboard(port?: number): Promise<void> {
         res.end(JSON.stringify(sessions));
       } catch (e) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: (e as Error).message }));
+        res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
       }
+
       return;
     }
 
@@ -424,11 +515,12 @@ export async function startDashboard(port?: number): Promise<void> {
         const key = workspace?.config ? await dataHomeKey(getDataHome(workspace.config)) : undefined;
         const events = workspace && !key ? [] : await readSessionOutcomes(eventsPath);
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(SessionOutcomes.summarize(events, { ...(key ? { dataHomeKey: key } : {}), now: Date.now() })));
+        res.end(JSON.stringify(SessionOutcomes.summarize(events, { dataHomeKey: key, now: Date.now() })));
       } catch (e) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
       }
+
       return;
     }
 
@@ -442,13 +534,16 @@ export async function startDashboard(port?: number): Promise<void> {
         const costs = summarizeSessionCosts(snapshots);
         // The sessions that ended in the current window, by the run mode they recorded.
         const runs = sessionRuns(events);
+
         const ended = (keep: (sessionId: string) => boolean) =>
           summarizeTrendWindow(computeDailyStatsDelta(new Map([...snapshots].filter(([sessionId]) => keep(sessionId))), {}).delta).current.sessionsEnded;
+
         const runModes: RunModeSplit = {
           attended: ended((sessionId) => runs.get(sessionId)?.runMode === 'attended'),
           unattended: ended((sessionId) => runs.get(sessionId)?.runMode === 'unattended'),
           notRecorded: ended((sessionId) => !runs.has(sessionId)),
         };
+
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           current: { ...trends.current, ...costs.current },
@@ -457,8 +552,9 @@ export async function startDashboard(port?: number): Promise<void> {
         }));
       } catch (e) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: (e as Error).message }));
+        res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
       }
+
       return;
     }
 
@@ -466,12 +562,15 @@ export async function startDashboard(port?: number): Promise<void> {
       // The member's requests over 7, 30 or 90 days, from the local request log.
       try {
         const days = Number(url.searchParams.get('days') ?? 7);
+
         if (![7, 30, 90].includes(days)) throw new HttpError(400, 'days must be 7, 30 or 90');
+
         // A workspace's requests are those its data home recorded; older ones, those of its sessions still in the event log.
         const scope = workspace ? {
-          ...(workspace.config ? { dataHomeKey: await dataHomeKey(getDataHome(workspace.config)) } : {}),
+          dataHomeKey: workspace.config ? await dataHomeKey(getDataHome(workspace.config)) : undefined,
           sessionIds: new Set(memberEvents(await scopedEvents(scopeId)).map((event) => event.sessionId)),
         } : undefined;
+
         const records = [...(await readLocalRequestRecords()).values()];
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(summarizeTokenCosts(records, { days, now: new Date(), scope })));
@@ -480,6 +579,7 @@ export async function startDashboard(port?: number): Promise<void> {
         res.writeHead(status, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
       }
+
       return;
     }
 
@@ -488,9 +588,11 @@ export async function startDashboard(port?: number): Promise<void> {
       // and setting names, never a session's text or path.
       try {
         const { readSessionSharing } = await import('./dashboard/session-sharing.js');
+
         const sharing = workspace?.config
           ? await readSessionSharing(workspace.config, { env: process.env, platform: process.platform, now: new Date().toISOString() })
           : { configured: false };
+
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify(sharing));
       } catch (e) {
@@ -498,6 +600,7 @@ export async function startDashboard(port?: number): Promise<void> {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Failed to load session sharing.' }));
       }
+
       return;
     }
 
@@ -513,6 +616,7 @@ export async function startDashboard(port?: number): Promise<void> {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Failed to load member settings.' }));
       }
+
       return;
     }
 
@@ -522,49 +626,60 @@ export async function startDashboard(port?: number): Promise<void> {
       // unassigned bucket pull no team repo, so they get an explicit state.
       try {
         const ownConfig = workspace?.config ?? null;
+
         if (!ownConfig) {
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ configured: false, rules: [] }));
+
           return;
         }
+
         const [{ loadTeamConfig }, { buildRolePullContext }, { collectRulesInventory }, { readWorkspaceChildren }] = await Promise.all([
           import('./config.js'), import('./resources/desired.js'), import('./dashboard/resources.js'), import('./workspace-children.js'),
         ]);
+
         // What pull delivers to a workspace includes its children's selections (#913).
         // Read here, for this request only: session and workspace listing never walk them.
         const config = await readWorkspaceChildren(ownConfig);
         const teamConfig = await loadTeamConfig(config.repo.localPath);
+
         // A scope whose clone carries no teamai.yaml pulls no rules.
         const rules = teamConfig
           ? await collectRulesInventory(teamConfig, config, await buildRolePullContext(config))
           : [];
+
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify({ configured: true, rules }));
       } catch (e) {
-        log.debug(`dashboard: /api/resources/rules failed: ${(e as Error).message}`);
+        log.debug(`dashboard: /api/resources/rules failed: ${e instanceof Error ? e.message : String(e)}`);
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Failed to load rules.' }));
       }
+
       return;
     }
 
     if (url.pathname === '/api/distribution' || url.pathname.startsWith('/api/distribution/')) {
       await handleDistribution(req, res, url.pathname, scopeId);
+
       return;
     }
 
     if (url.pathname === '/api/workflows' || url.pathname.startsWith('/api/workflows/')) {
       await handleWorkflows(req, res, url, workspace);
+
       return;
     }
 
     if (url.pathname === '/api/scorers') {
       await handleScorers(req, res, url, workspace);
+
       return;
     }
 
     if (url.pathname === '/api/benchmarks') {
       await handleBenchmarks(req, res, url, workspace);
+
       return;
     }
 
@@ -574,26 +689,33 @@ export async function startDashboard(port?: number): Promise<void> {
       // the unassigned bucket pull no team repo, so they get an explicit state.
       try {
         const ownConfig = workspace?.config ?? null;
+
         if (!ownConfig) {
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ configured: false, skills: [] }));
+
           return;
         }
+
         const [{ loadTeamConfig }, { buildRolePullContext }, { collectSkillsInventory }, { readWorkspaceChildren }] = await Promise.all([
           import('./config.js'), import('./resources/desired.js'), import('./dashboard/resources-skills.js'), import('./workspace-children.js'),
         ]);
+
         const config = await readWorkspaceChildren(ownConfig);
         const teamConfig = await loadTeamConfig(config.repo.localPath);
+
         const inventory = teamConfig
           ? await collectSkillsInventory(teamConfig, config, await buildRolePullContext(config))
           : { skills: [], skillConflict: null };
+
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify({ configured: true, skills: inventory.skills, skillConflict: inventory.skillConflict }));
       } catch (e) {
-        log.debug(`dashboard: /api/resources/skills failed: ${(e as Error).message}`);
+        log.debug(`dashboard: /api/resources/skills failed: ${e instanceof Error ? e.message : String(e)}`);
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Failed to load skills.' }));
       }
+
       return;
     }
 
@@ -606,26 +728,33 @@ export async function startDashboard(port?: number): Promise<void> {
         // The inventory's own source identity, so a same-name root and its
         // namespaced replacement each answer their own detail (#1123).
         const sourcePath = url.searchParams.get('path') ?? undefined;
+
         if (!ownConfig || name === '') {
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ configured: !!ownConfig, skill: null }));
+
           return;
         }
+
         const [{ loadTeamConfig }, { buildRolePullContext }, { skillDetail }, { readWorkspaceChildren }] = await Promise.all([
           import('./config.js'), import('./resources/desired.js'), import('./dashboard/resources-skills.js'), import('./workspace-children.js'),
         ]);
+
         const config = await readWorkspaceChildren(ownConfig);
         const teamConfig = await loadTeamConfig(config.repo.localPath);
+
         const skill = teamConfig
           ? await skillDetail(teamConfig, config, await buildRolePullContext(config), name, sourcePath)
           : null;
+
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify({ configured: true, skill }));
       } catch (e) {
-        log.debug(`dashboard: /api/resources/skills/detail failed: ${(e as Error).message}`);
+        log.debug(`dashboard: /api/resources/skills/detail failed: ${e instanceof Error ? e.message : String(e)}`);
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Failed to load the skill.' }));
       }
+
       return;
     }
 
@@ -639,40 +768,55 @@ export async function startDashboard(port?: number): Promise<void> {
           req.on('data', (chunk: Buffer) => { data += chunk.toString(); });
           req.on('end', () => resolve(data));
         });
-        let parsed: { name?: unknown; excluded?: unknown };
+
+        let parsed: JsonValue;
+
         try {
-          parsed = JSON.parse(body) as { name?: unknown; excluded?: unknown };
+          parsed = JSON.parse(body);
         } catch {
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: false, error: 'invalid_json' }));
+
           return;
         }
-        const name = parsed.name;
-        const excluded = parsed.excluded;
+
+        const request = SkillExclusionRequestSchema.safeParse(parsed);
         const ownConfig = workspace?.config ?? null;
-        if (typeof name !== 'string' || name === '' || typeof excluded !== 'boolean' || !ownConfig) {
+
+        if (!request.success || !ownConfig) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: false, error: 'invalid_request' }));
+
           return;
         }
+
+        const { name, excluded } = request.data;
+
         const [{ loadTeamConfig }, { buildRolePullContext }, { setSkillExclusion }, { readWorkspaceChildren }] = await Promise.all([
           import('./config.js'), import('./resources/desired.js'), import('./dashboard/resources-skills.js'), import('./workspace-children.js'),
         ]);
+
         const config = await readWorkspaceChildren(ownConfig);
         const teamConfig = await loadTeamConfig(config.repo.localPath);
+
         if (!teamConfig) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: false, error: 'unknown_skill' }));
+
           return;
         }
+
         // The same role context the GET endpoints use, so the response's
         // delivered flag matches the inventory the client reloads next.
         const result = await setSkillExclusion(teamConfig, config, name, excluded, await buildRolePullContext(config));
+
         if (!result.ok) {
           res.writeHead(404, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify(result));
+
           return;
         }
+
         // The saved config changes what this workspace delivers; drop the
         // workspace cache so the next request re-reads it from disk instead
         // of answering from the pre-exclusion in-memory copy.
@@ -680,10 +824,11 @@ export async function startDashboard(port?: number): Promise<void> {
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify({ ...result, note: 'applies on the next pull' }));
       } catch (e) {
-        log.debug(`dashboard: /api/resources/skills/exclusions failed: ${(e as Error).message}`);
+        log.debug(`dashboard: /api/resources/skills/exclusions failed: ${e instanceof Error ? e.message : String(e)}`);
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: 'Failed to save the exclusion.' }));
       }
+
       return;
     }
 
@@ -711,6 +856,7 @@ export async function startDashboard(port?: number): Promise<void> {
         clients.delete(res);
         clientScopes.delete(res);
       });
+
       return;
     }
 
@@ -725,6 +871,7 @@ export async function startDashboard(port?: number): Promise<void> {
         res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
         res.end('Failed to generate KB health report: ' + (e instanceof Error ? e.message : String(e)));
       }
+
       return;
     }
 
@@ -732,23 +879,29 @@ export async function startDashboard(port?: number): Promise<void> {
       try {
         const key = scopeId ?? 'all';
         let cached = contextCaches.get(key);
+
         if (!cached || Date.now() - cached.ts > KB_SUMMARY_TTL_MS) {
           let pending = contextRequests.get(key);
+
           if (!pending) {
             pending = import('./viz.js').then(({ getDashboardContext }) => getDashboardContext(workspace ? { config: workspace.config } : {}));
             contextRequests.set(key, pending);
           }
+
           try { cached = { ts: Date.now(), data: await pending }; }
           finally { contextRequests.delete(key); }
+
           contextCaches.set(key, cached);
         }
+
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify(cached.data));
       } catch (e) {
-        log.debug(`dashboard: /api/context failed: ${(e as Error).message}`);
+        log.debug(`dashboard: /api/context failed: ${e instanceof Error ? e.message : String(e)}`);
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Failed to load knowledge base health.' }));
       }
+
       return;
     }
 
@@ -757,16 +910,19 @@ export async function startDashboard(port?: number): Promise<void> {
       // re-aggregate the whole knowledge base on every dashboard page load
       try {
         const now = Date.now();
+
         if (!kbSummaryCache || now - kbSummaryCache.ts > KB_SUMMARY_TTL_MS) {
           const { getVizSummary } = await import('./viz.js');
           kbSummaryCache = { ts: now, data: await getVizSummary() };
         }
+
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(kbSummaryCache.data));
       } catch (e) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
       }
+
       return;
     }
 
@@ -778,9 +934,11 @@ export async function startDashboard(port?: number): Promise<void> {
   // Loaded here, not at the top: importing node:http loads undici for its
   // WebSocket exports, a few milliseconds every other command paid.
   const { createServer } = await import('node:http');
+
   const server = createServer((req, res) => {
-    handleRequest(req, res).catch((e: unknown) => {
-      log.debug(`dashboard: request error: ${e instanceof Error ? e.message : String(e)}`);
+    handleRequest(req, res).catch((cause: unknown) => {
+      log.debug(`dashboard: request error: ${cause instanceof Error ? cause.message : String(cause)}`);
+
       if (!res.headersSent) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Internal error' }));
@@ -796,6 +954,7 @@ export async function startDashboard(port?: number): Promise<void> {
       log.info(`Or check what's using it: lsof -i :${serverPort}`);
       process.exit(1);
     }
+
     throw err;
   });
 
@@ -811,9 +970,11 @@ export async function startDashboard(port?: number): Promise<void> {
     watcher.close();
     clearInterval(eventsPoll);
     clearInterval(pidCheckInterval);
+
     for (const client of clients) {
       client.end();
     }
+
     server.close();
     process.exit(0);
   };

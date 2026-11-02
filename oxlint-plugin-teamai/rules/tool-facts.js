@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { defineRule } from '@oxlint/plugins';
-import { inProductionSource, isOneOf, lintedPath, sourcePath } from '../utils.js';
+import { inProductionSource, isOneOf, lintedPath, sourcePath, stringLiteralValue } from '../utils.js';
 
 /** The descriptor, the one place a per-tool fact is written. */
 const DESCRIPTOR = 'src/tools.ts';
@@ -23,6 +23,7 @@ function toolIdsFor(context) {
   const relative = sourcePath(context);
   const root = file.slice(0, file.length - relative.length);
   const cached = toolIdsByRoot.get(root);
+
   if (cached) return cached;
   const descriptor = path.join(root, DESCRIPTOR);
   const source = fs.existsSync(descriptor) ? fs.readFileSync(descriptor, 'utf8') : '';
@@ -30,6 +31,7 @@ function toolIdsFor(context) {
   const end = body.indexOf('\n} as const');
   const ids = new Set([...(end < 0 ? '' : body.slice(0, end)).matchAll(/^ {2}'?([a-z][a-z0-9-]*)'?: \{$/gm)].map((match) => match[1]));
   toolIdsByRoot.set(root, ids);
+
   return ids;
 }
 
@@ -45,13 +47,17 @@ function tableTypes(node, context) {
   const types = [];
   let current = node;
   let parent = node.parent;
+
   while (parent && (parent.type === 'TSSatisfiesExpression' || parent.type === 'TSAsExpression') && parent.expression === current) {
     types.push(context.sourceCode.getText(parent.typeAnnotation));
     current = parent;
     parent = parent.parent;
   }
+
   if (!parent || parent.type !== 'VariableDeclarator' || parent.init !== current) return null;
+
   if (parent.id.type === 'Identifier' && parent.id.typeAnnotation) types.push(context.sourceCode.getText(parent.id.typeAnnotation.typeAnnotation));
+
   return types;
 }
 
@@ -71,19 +77,29 @@ export default defineRule({
   create(context) {
     if (!inProductionSource(context) || isOneOf(context, [DESCRIPTOR])) return {};
     const ids = toolIdsFor(context);
+
     if (ids.size === 0) return {};
+
     /** @param {ESTree.Node | null} node */
-    const toolIdOf = (node) => node && node.type === 'Literal' && typeof node.value === 'string' && ids.has(node.value);
+    const toolIdOf = (node) => {
+      const value = stringLiteralValue(node);
+
+      return value !== undefined && ids.has(value);
+    };
+
     return {
       ArrayExpression(node) {
         const named = node.elements.filter((element) => element !== null && element.type !== 'SpreadElement');
+
         if (named.length >= 2 && named.every(toolIdOf)) context.report({ node, message: MESSAGE });
       },
       ObjectExpression(node) {
         const keyed = node.properties.filter((property) => property.type === 'Property' && !property.computed
           && (property.key.type === 'Identifier' ? ids.has(property.key.name) : toolIdOf(property.key)));
+
         if (keyed.length < 2) return;
         const types = tableTypes(node, context);
+
         if (types !== null && !isExhaustive(types)) context.report({ node, message: MESSAGE });
       },
     };

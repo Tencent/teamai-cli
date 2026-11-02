@@ -46,6 +46,14 @@ export interface ShellClassification {
   verb?: string;
 }
 
+/** Command words and what each one does, looked up with `Object.hasOwn` so no prototype key matches. */
+interface VerbTable<Verb> {
+  readonly [word: string]: Verb;
+}
+
+/** The files a reader verb's arguments read. */
+type FileReader = (args: string[]) => string[];
+
 const REDIRECT = /^(?:&>>?|<<<|<<-?|<>|<&|>>|>&|>\||<|>)/;
 
 /** The characters an unquoted backslash escapes: whitespace and those the shell gives a meaning. */
@@ -55,6 +63,7 @@ const HOME_REF = /(?:~|\$HOME|\$\{HOME\})(?=[\\/])/y;
 
 function homeRefLength(line: string, at: number): number {
   HOME_REF.lastIndex = at;
+
   return HOME_REF.exec(line)?.[0].length ?? 0;
 }
 
@@ -76,27 +85,35 @@ export function simpleCommands(command: string, home?: string): SimpleCommand[] 
   let word: string | null = null;
   let quote: string | null = null;
   let redirect: string | null = null;
+
   const endWord = (): void => {
     if (word === null) return;
+
     if (redirect !== null) current.redirects.push({ op: redirect, target: word });
     else current.words.push(word);
     word = null;
     redirect = null;
   };
+
   const endCommand = (op: ShellOperator | null): void => {
     endWord();
+
     if (redirect !== null) current.redirects.push({ op: redirect, target: '' });
     redirect = null;
+
     // An empty command (a blank line, a doubled `;`) ends nothing: the previous command keeps its operator.
     if (current.words.length === 0 && current.redirects.length === 0) return;
     current.op = op;
     commands.push(current);
     current = { words: [], redirects: [], op: null };
   };
+
   const line = command.trimEnd();
+
   for (let i = 0; i < line.length; i++) {
     const c = line[i];
     const next = line[i + 1];
+
     if (quote) {
       if (c === quote) quote = null;
       else if (c === '\\' && quote === '"' && (next === '"' || next === '\\' || next === '$')) word += line[++i];
@@ -118,6 +135,7 @@ export function simpleCommands(command: string, home?: string): SimpleCommand[] 
     } else if (c === '<' || c === '>' || (c === '&' && next === '>')) {
       // A file descriptor written just before the operator belongs to it: `2>&1`.
       const fd = word !== null && /^\d+$/.test(word) ? word : '';
+
       if (fd) word = null;
       else endWord();
       const op = REDIRECT.exec(line.slice(i))![0];
@@ -140,14 +158,18 @@ export function simpleCommands(command: string, home?: string): SimpleCommand[] 
       word = (word ?? '') + c;
     }
   }
+
   endCommand(null);
+
   return commands;
 }
 
 /** A command's words from its command word on, after any `NAME=value` assignments. */
 export function commandWords(words: string[]): string[] {
   let i = 0;
+
   while (i < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i])) i++;
+
   return words.slice(i);
 }
 
@@ -157,15 +179,19 @@ export function commandWords(words: string[]): string[] {
  */
 function operands(args: string[], valueFlags: readonly string[] = []): string[] {
   const out: string[] = [];
+
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
+
     if (a === '--') {
       out.push(...args.slice(i + 1));
       break;
     }
+
     if (valueFlags.includes(a)) i++;
     else if (!a.startsWith('-')) out.push(a);
   }
+
   return out.filter((a) => a !== '-');
 }
 
@@ -181,12 +207,15 @@ function sedPrintFiles(args: string[]): string[] {
   let quiet = false;
   const scripts: string[] = [];
   const rest: string[] = [];
+
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
+
     if (a === '--') {
       rest.push(...args.slice(i + 1));
       break;
     }
+
     if (!a.startsWith('-')) rest.push(a);
     else if (a === '--in-place' || a.startsWith('--in-place=') || (!a.startsWith('--') && a.includes('i'))) return [];
     else if (a === '-e' || a === '--expression') scripts.push(args[++i] ?? '');
@@ -198,15 +227,20 @@ function sedPrintFiles(args: string[]): string[] {
     else if (!a.startsWith('--')) {
       // A cluster of short flags, such as `-nE`; a trailing `e` takes the next word as the script.
       if (a.includes('n')) quiet = true;
+
       if (a.endsWith('e')) scripts.push(args[++i] ?? '');
     }
   }
+
   if (!quiet) return [];
+
   if (scripts.length === 0 && rest.length > 0) scripts.push(rest.shift()!);
+
   return scripts.length > 0 && scripts.every((s) => SED_PRINT.test(s)) ? operands(rest) : [];
 }
 
 const HEAD_TAIL_VALUE_FLAGS = ['-n', '-c', '--lines', '--bytes'];
+
 const BAT_VALUE_FLAGS = ['-l', '--language', '-H', '--highlight-line', '-r', '--line-range', '-m', '--map-syntax',
   '--theme', '--style', '--tabs', '--terminal-width', '--wrap', '--color', '--italic-text', '--decorations',
   '--paging', '--pager', '--file-name'];
@@ -216,7 +250,7 @@ const BAT_VALUE_FLAGS = ['-l', '--language', '-H', '--highlight-line', '-r', '--
  * classification in Codex's codex-rs/shell-command/src/parse_command.rs
  * (Apache-2.0).
  */
-const READERS: Record<string, (args: string[]) => string[]> = {
+const READERS: VerbTable<FileReader> = {
   cat: (args) => operands(args),
   bat: (args) => operands(args, BAT_VALUE_FLAGS),
   batcat: (args) => operands(args, BAT_VALUE_FLAGS),
@@ -243,17 +277,23 @@ const GET_CONTENT_SWITCHES = new Set(['raw', 'wait', 'force', 'asbytestream', 'v
  */
 function getContentFiles(args: string[]): string[] {
   const files: string[] = [];
+
   for (let i = 0; i < args.length; i++) {
     const param = /^-([A-Za-z]+)(:?)(.*)$/.exec(args[i]);
+
     if (!param) {
       files.push(args[i]);
       continue;
     }
+
     const [, name, colon, inline] = param;
+
     if (GET_CONTENT_SWITCHES.has(name.toLowerCase())) continue;
     const value = colon ? inline : args[++i];
+
     if (GET_CONTENT_PATHS.has(name.toLowerCase()) && value) files.push(value);
   }
+
   return files;
 }
 
@@ -262,7 +302,7 @@ function getContentFiles(args: string[]): string[] {
  * Get-Content and its aliases `gc`, `type` (cmd's too) and `cat`. `cat` as
  * written in lowercase is POSIX cat's, which reads `cat -Path x` the same.
  */
-const POWERSHELL_READERS: Record<string, (args: string[]) => string[]> = {
+const POWERSHELL_READERS: VerbTable<FileReader> = {
   'get-content': getContentFiles,
   gc: getContentFiles,
   type: getContentFiles,
@@ -312,7 +352,7 @@ const GREP: SearchVerb = {
  * The search verbs, each with its flags; `git grep` is `git-grep`. Ported from
  * the same Codex classification as the readers.
  */
-const SEARCHERS: Record<string, SearchVerb> = {
+const SEARCHERS: VerbTable<SearchVerb> = {
   grep: GREP,
   egrep: GREP,
   fgrep: GREP,
@@ -357,31 +397,43 @@ const LISTERS = new Set(['ls', 'find', 'fd', 'tree', 'git-ls-files']);
 const EXPANDS = /[$`*?[\]{}()]/;
 
 /** What a search prints, from its flags, and its file or directory operands. */
-function searchArgs(args: string[], verb: SearchVerb): { shows: 'lines' | 'paths' | 'counts'; operands: string[] } {
+interface SearchOperands {
+  shows: 'lines' | 'paths' | 'counts';
+  operands: string[];
+}
+
+function searchArgs(args: string[], verb: SearchVerb): SearchOperands {
   let shows: 'lines' | 'paths' | 'counts' = 'lines';
   let pattern = false;
   const words: string[] = [];
+
   const flag = (f: string): void => {
     if (verb.lists.includes(f)) shows = 'paths';
     else if (verb.counts.includes(f) && shows === 'lines') shows = 'counts';
+
     if (verb.patterns.includes(f)) pattern = true;
   };
+
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
+
     if (a === '--') {
       words.push(...args.slice(i + 1));
       break;
     }
+
     if (a.startsWith('--')) {
       const eq = a.indexOf('=');
       const name = eq === -1 ? a : a.slice(0, eq);
       flag(name);
+
       if (eq === -1 && verb.values.includes(name)) i++;
     } else if (a.startsWith('-') && a.length > 1) {
       // A cluster of short flags, such as `-rn`: one that takes a value takes the rest of it, or the next word.
       for (let j = 1; j < a.length; j++) {
         const f = `-${a[j]}`;
         flag(f);
+
         if (verb.values.includes(f)) {
           if (j === a.length - 1) i++;
           break;
@@ -391,6 +443,7 @@ function searchArgs(args: string[], verb: SearchVerb): { shows: 'lines' | 'paths
       words.push(a);
     }
   }
+
   return { shows, operands: pattern ? words : words.slice(1) };
 }
 
@@ -401,9 +454,12 @@ function searchArgs(args: string[], verb: SearchVerb): { shows: 'lines' | 'paths
  */
 function searchRoot(operand: string): string {
   const glob = /(?:^|[\\/])[^\\/]*[$`*?[\]{}()]/.exec(operand);
+
   if (!glob) return operand;
   const dir = operand.slice(0, glob.index + (glob.index === 0 && !/^[\\/]/.test(operand) ? 0 : 1));
+
   if (/^(?:[A-Za-z]:)?[\\/]$/.test(dir)) return dir;
+
   return dir.replace(/[\\/]$/, '') || '.';
 }
 
@@ -416,6 +472,7 @@ const SHELL: ShellClassification = { category: 'shell', paths: [], simple: false
  */
 function classifySimple(command: SimpleCommand, simple: boolean, flavor: ShellFlavor): ShellClassification {
   const [verb, ...rest] = commandWords(command.words);
+
   if (verb === undefined || !command.redirects.every((r) => r.op.startsWith('2>'))) return SHELL;
   // By path on either platform, `.exe` too: `C:\\…\\cat.exe`, `Microsoft.PowerShell.Management\\Get-Content`.
   const base = verb.split(/[\\/]/).pop()!.replace(/\.exe$/i, '');
@@ -425,19 +482,31 @@ function classifySimple(command: SimpleCommand, simple: boolean, flavor: ShellFl
   // Own keys only: a verb like `constructor` must not hit Object.prototype.
   const read = (Object.hasOwn(READERS, name) ? READERS[name] : undefined)
     ?? (Object.hasOwn(POWERSHELL_READERS, name.toLowerCase()) ? POWERSHELL_READERS[name.toLowerCase()] : undefined);
+
   if (read) {
     const files = read(args);
+
     if (WINDOWS_ONLY_READERS.has(name.toLowerCase()) && !flavor.powershell && !files.every((f) => WINDOWS_PATH.test(f))) return SHELL;
+
     return files.length > 0 && !files.some((f) => EXPANDS.test(f)) ? { category: 'read', paths: files, simple, verb } : SHELL;
   }
+
   if (LISTERS.has(name)) return { category: 'list', paths: [], simple };
   const search = Object.hasOwn(SEARCHERS, name) ? SEARCHERS[name] : undefined;
+
   if (!search) return SHELL;
   const { shows, operands: roots } = searchArgs(args, search);
+
   if (shows === 'paths') return { category: 'list', paths: [], simple };
+
   if (shows === 'counts') return { category: 'search', paths: [], simple, verb };
   const target = roots.length === 1 && !EXPANDS.test(roots[0]) ? roots[0] : undefined;
-  return { category: 'search', paths: roots.length > 0 ? roots.map(searchRoot) : ['.'], ...(target ? { target } : {}), simple, verb };
+
+  const paths = roots.length > 0 ? roots.map(searchRoot) : ['.'];
+
+  if (target) return { category: 'search', paths, target, simple, verb };
+
+  return { category: 'search', paths, simple, verb };
 }
 
 /**
@@ -449,7 +518,9 @@ function classifySimple(command: SimpleCommand, simple: boolean, flavor: ShellFl
 export function classifyShellCommand(command: string, flavor: ShellFlavor = {}, succeeded = false): ShellClassification {
   const commands = simpleCommands(command, flavor.home);
   const pipeline = commands.every((c, i) => c.op === (i === commands.length - 1 ? null : '|'));
+
   if (commands.length === 0) return SHELL;
+
   return pipeline ? classifySimple(commands[0], commands.length === 1, flavor) : classifyList(command, commands, flavor, succeeded);
 }
 
@@ -460,14 +531,18 @@ export function classifyShellCommand(command: string, flavor: ShellFlavor = {}, 
  */
 export function namedReads(command: string, flavor: ShellFlavor = {}): string[] {
   const commands = simpleCommands(command, flavor.home);
+
   if (commands.some((c) => c.redirects.some((r) => r.op.startsWith('<<') && r.op !== '<<<'))) return [];
   const files: string[] = [];
   let moved = false;
+
   for (const c of commands) {
     moved ||= c.words[0] === 'cd';
     const read = classifySimple(c, false, flavor);
+
     if (read.category === 'read') files.push(...read.paths.filter((file) => !moved || isAbsolutePath(file)));
   }
+
   return files;
 }
 
@@ -487,8 +562,10 @@ function isPlainList(command: string): boolean {
   // No word since the start or the last operator, and an `&&` still waiting for its command.
   let empty = true;
   let pending = false;
+
   for (let i = 0; i < command.length; i++) {
     const c = command[i];
+
     if (c === '$' && homeRefLength(command, i) > 0) {
       i += homeRefLength(command, i) - 1;
     } else if (NOT_PLAIN.test(c)) {
@@ -504,6 +581,7 @@ function isPlainList(command: string): boolean {
       i++;
     } else if (c === ';' || (c === '&' && command[i + 1] === '&')) {
       if (empty) return false;
+
       if (c === '&') i++;
       pending = c === '&';
       empty = true;
@@ -514,9 +592,11 @@ function isPlainList(command: string): boolean {
       if (c === '\n') empty = true;
       continue;
     }
+
     empty = false;
     pending = false;
   }
+
   return quote === null && !pending;
 }
 
@@ -537,16 +617,25 @@ type ListItem =
 function listItem(command: SimpleCommand, flavor: ShellFlavor): ListItem | undefined {
   const [name, ...args] = command.words;
   const redirects = command.redirects.every((r) => (r.op === '2>' && r.target === '/dev/null') || (r.op === '2>&' && r.target === '1'));
+
   if (name === undefined || !redirects) return undefined;
+
   if (['pwd', 'true', ':'].includes(name) && args.length === 0) return { kind: 'guard', fails: false };
+
   if (name === 'echo') return { kind: 'guard', fails: false };
+
   if (name === 'ls') return { kind: 'guard', fails: true };
+
   if (name === 'test' && args.length === 2 && FILE_TESTS.has(args[0])) return { kind: 'guard', fails: true };
+
   if (name === '[' && args.length === 3 && FILE_TESTS.has(args[0]) && args[2] === ']') return { kind: 'guard', fails: true };
+
   if (name === 'cd') return args.length === 1 && /^[^-+~]/.test(args[0]) && !EXPANDS.test(args[0]) ? { kind: 'cd', dir: args[0] } : undefined;
+
   // A name with a path, an extension or an assignment may be no reader at all.
   if (/[\\/.=]/.test(name)) return undefined;
   const read = classifySimple(command, false, flavor);
+
   return read.category === 'read' ? { kind: 'read', read } : undefined;
 }
 
@@ -573,25 +662,33 @@ function classifyList(command: string, commands: SimpleCommand[], flavor: ShellF
   let dir: string | null = '';
   let moved = false;
   let sure = true;
+
   for (const [i, c] of commands.entries()) {
     const item = listItem(c, flavor);
+
     if (item === undefined) return SHELL;
+
     if (item.kind === 'read' && (succeeded || sure)) {
       for (const file of item.read.paths) if (dir !== null || isAbsolutePath(file)) paths.add(under(dir ?? '', file));
       verb ??= item.read.verb;
     }
+
     if (item.kind === 'cd') {
       dir = dir === null && !isAbsolutePath(item.dir) ? null : under(dir ?? '', item.dir);
       moved = true;
     }
+
     if (item.kind !== 'guard' || item.fails) sure = false;
+
     if (c.op === ';' && i < commands.length - 1) {
       paths = new Set();
       verb = undefined;
+
       if (moved) dir = null;
       moved = false;
       sure = true;
     }
   }
+
   return paths.size > 0 ? { category: 'read', paths: [...paths], simple: false, verb } : SHELL;
 }

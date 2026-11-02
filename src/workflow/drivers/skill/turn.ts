@@ -205,15 +205,19 @@ export interface SkillError {
  */
 export function errorOf(answer: Answer, context: { invocation: Invocation; same: Literal; run?: RunId; localTool?: string; tool?: string }): SkillError {
   const { invocation, same } = context;
+
   if (answer.kind === 'engine-error') {
     const next = answer.next === null ? null : context.run === undefined || answer.next === 'same' ? same : answer.next === 'poll' ? pollLiteral(invocation, context.run) : nextLiteral(invocation, context.run);
+
     return { ...answer.error, next };
   }
+
   const { refusal } = answer;
-  return {
-    code: refusal.code, message: refusalMessage(refusal, { invocation, tool: context.localTool }), ...(refusal.code === 'orchestrator_active' ? { idleSeconds: refusal.idleSeconds } : {}),
-    next: refusalNext(refusal, { invocation, same, tool: context.tool }),
-  };
+
+  const message = refusalMessage(refusal, { invocation, tool: context.localTool });
+  const next = refusalNext(refusal, { invocation, same, tool: context.tool });
+
+  return refusal.code === 'orchestrator_active' ? { code: refusal.code, message, idleSeconds: refusal.idleSeconds, next } : { code: refusal.code, message, next };
 }
 
 /**
@@ -222,6 +226,7 @@ export function errorOf(answer: Answer, context: { invocation: Invocation; same:
  */
 function refusalNext(refusal: Refusal, context: { invocation: Invocation; same: Literal; tool?: string }): Literal | null {
   const { invocation } = context;
+
   switch (refusal.code) {
     case 'needs_local_driver':
       return null;
@@ -248,6 +253,7 @@ function refusalNext(refusal: Refusal, context: { invocation: Invocation; same: 
       return context.same;
     default: {
       const unhandled: never = refusal;
+
       return unhandled;
     }
   }
@@ -258,20 +264,26 @@ function refusalMessage(refusal: Refusal, local: { invocation: Invocation; tool?
   switch (refusal.code) {
     case 'needs_local_driver': {
       const literal = refusal.run === undefined ? localStartLiteral(local.invocation, refusal.name, { tool: local.tool }) : resumeLiteral(local.invocation, refusal.run, { tool: local.tool });
+
       return `Workflow ${refusal.name} must run with the local driver. ${refusal.reason} Ask the person to run ${literal} in their own terminal.`;
     }
+
     case 'confirm_needed': {
       const lacks = refusal.missing.map((answer) => ({
         confirmed: '--confirmed, the person\'s yes', inputs: '--inputs', parallel: '--parallel', hitl: '--hitl or --auto-approve', tool: '--tools default=<tool>, the tool this coding session works in',
       })[answer]);
+
       const said = [
         ...(lacks.length > 0 ? [`it needs ${lacks.join(', ')}`] : []),
         ...(refusal.outOfRange ? [`--parallel ${refusal.outOfRange.parallel} is above the most this machine runs at once, ${refusal.outOfRange.ceiling}`] : []),
       ];
+
       // The tool is the agent's own answer, which describe asks it for.
       const act = refusal.missing.some((answer) => answer !== 'tool') || refusal.outOfRange ? 'Run the describe literal and ask the person.' : 'Run the describe literal.';
+
       return `Start ${refusal.name} from its describe reply: ${said.join('; ')}. ${act}`;
     }
+
     case 'not_skill_run':
       return `Run ${refusal.run} is not driven by the skill driver on this machine. Ask the person whether to continue it from this session, and run the command in next only when they agree: it takes the run over from the machine that last drove it. The person can instead continue it in a terminal with ${resumeLiteral(local.invocation, refusal.run, { tool: local.tool })}.`;
     case 'tool_needed':
@@ -298,6 +310,7 @@ function refusalMessage(refusal: Refusal, local: { invocation: Invocation; tool?
       return `Run ${refusal.run} is busy: another teamai process holds its driver lock. Run the same call again.`;
     default: {
       const unhandled: never = refusal;
+
       return unhandled;
     }
   }
@@ -326,25 +339,38 @@ function reference(name: 'hosts.md' | 'places.md'): string {
  */
 function titleOf(open: AttemptState): string {
   const suffix = `-${open.attempt}`;
+
   return `${open.step.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 64 - suffix.length)}${suffix}`;
 }
 
 function dispatchOf(state: SkillState, open: Extract<AttemptState, { phase: 'offered' | 'dispatched' }>): DispatchAction {
   const { attempt, step, dispatch } = open;
   const { invocation, run } = state;
-  return {
-    kind: 'dispatch', offer: `dispatch.${attempt}`, attempt, step, title: titleOf(open),
-    needs: { place: dispatch.place, parallel: childCap(state) > 1 && !dispatch.person, person: dispatch.person === true, ...(dispatch.isolation ? { isolation: dispatch.isolation } : {}) },
-    dir: dispatch.dir, brief: dispatch.brief, ...(dispatch.agent !== undefined ? { agent: dispatch.agent } : {}), model: dispatch.model,
+
+  const needs: DispatchAction['needs'] = { place: dispatch.place, parallel: childCap(state) > 1 && !dispatch.person, person: dispatch.person === true };
+
+  if (dispatch.isolation) needs.isolation = dispatch.isolation;
+
+  const action: DispatchAction = {
+    kind: 'dispatch', offer: `dispatch.${attempt}`, attempt, step, title: titleOf(open), needs, dir: dispatch.dir, brief: dispatch.brief, model: dispatch.model,
     ack: ackLiteral(invocation, run, attempt), report: reportLiteral(invocation, run, attempt),
-    ...(dispatch.model.by !== 'definition' ? { unavailable: unavailableLiteral(invocation, run, attempt) } : {}),
-    ...(open.phase === 'offered' && open.reissued ? { reissued: `An earlier session was given this dispatch, and its child may still run as ${titleOf(open)}. Stop that child if you can reach it, then dispatch this one.` } : {}),
   };
+
+  if (dispatch.agent !== undefined) action.agent = dispatch.agent;
+
+  if (dispatch.model.by !== 'definition') action.unavailable = unavailableLiteral(invocation, run, attempt);
+
+  if (open.phase === 'offered' && open.reissued) {
+    action.reissued = `An earlier session was given this dispatch, and its child may still run as ${titleOf(open)}. Stop that child if you can reach it, then dispatch this one.`;
+  }
+
+  return action;
 }
 
 /** The action of `gate`: the person's approval, or the agent's choice. */
 function gateAction(state: SkillState, gate: Gate): GateAction | PersonAction {
   const { step, pass, message } = gate;
+
   if (gate.required) {
     return {
       kind: 'person', why: 'approval', step, pass, message,
@@ -352,10 +378,15 @@ function gateAction(state: SkillState, gate: Gate): GateAction | PersonAction {
       run: gate.options.map((choice) => personRespondLiteral(state.invocation, state.run, { step, pass, choice })),
     };
   }
-  return {
-    kind: 'choose', about: 'gate', decide: gate.decide, step, pass, question: message, ...(gate.default !== undefined ? { default: gate.default } : {}),
+
+  const action: GateAction = {
+    kind: 'choose', about: 'gate', decide: gate.decide, step, pass, question: message,
     options: gate.options.map((choice) => ({ choice, run: respondLiteral(state.invocation, state.run, { step, pass, choice }) })),
   };
+
+  if (gate.default !== undefined) action.default = gate.default;
+
+  return action;
 }
 
 /**
@@ -365,24 +396,42 @@ function gateAction(state: SkillState, gate: Gate): GateAction | PersonAction {
 function actionsOf(state: SkillState): Action[] {
   if (state.host.kind === 'pending') {
     const options = HOST_CHOICES.map((id) => ({ id, label: HOST_PROFILES[id].label, run: chooseHostLiteral(state.invocation, state.run, id) }));
+
     return [{ kind: 'choose', about: 'host', decide: 'agent', question: HOST_QUESTION, options, reference: reference('hosts.md') }];
   }
+
   const stops = state.attempts.flatMap((open): StopAction[] => (open.phase === 'stopping' && open.by === 'agent'
     ? [{ kind: 'stop', attempt: open.attempt, step: open.step, title: titleOf(open), why: open.why, report: reportLiteral(state.invocation, state.run, open.attempt) }]
     : []));
+
   const offers = state.attempts.flatMap((open) => (open.phase === 'offered' ? [dispatchOf(state, open)] : []));
-  const places = state.attempts.flatMap((open): PlaceAction[] => (open.phase === 'placing'
-    ? [{
-      kind: 'place', attempt: open.attempt, step: open.step, ...open.ask, adopt: adoptLiteral(state.invocation, state.run, open.attempt),
-      ...(open.refused !== undefined ? { refused: open.refused } : {}), reference: reference('places.md'),
-    }]
-    : []));
+
+  const places = state.attempts.flatMap((open): PlaceAction[] => {
+    if (open.phase !== 'placing') return [];
+    const place: PlaceAction = { kind: 'place', attempt: open.attempt, step: open.step, ...open.ask, adopt: adoptLiteral(state.invocation, state.run, open.attempt), reference: reference('places.md') };
+
+    if (open.refused !== undefined) place.refused = open.refused;
+
+    return [place];
+  });
+
   const judge = state.judging?.open;
-  const end: Action[] = state.done ? [{
-    kind: 'done', outcome: state.done.outcome, ...(state.done.failure ? { failure: state.done.failure } : {}), prs: state.done.prs, ...(judge ? { judging: { step: judge.step, scorers: judge.scorers } } : {}),
-    ...(state.sessionJudge ? { score: sessionJudgeLiteral(state.invocation, state.run, state.driver, state.orchestrator.tool ?? state.sessionJudge.tool) } : {}),
-  }] : [];
+
+  const end: Action[] = [];
+
+  if (state.done) {
+    const done: Action = { kind: 'done', outcome: state.done.outcome, prs: state.done.prs };
+
+    if (state.done.failure) done.failure = state.done.failure;
+
+    if (judge) done.judging = { step: judge.step, scorers: judge.scorers };
+
+    if (state.sessionJudge) done.score = sessionJudgeLiteral(state.invocation, state.run, state.driver, state.orchestrator.tool ?? state.sessionJudge.tool);
+    end.push(done);
+  }
+
   const gate = state.gate && !state.done ? [gateAction(state, state.gate)] : [];
+
   return [...stops, ...offers, ...places, ...gate, ...end];
 }
 
@@ -405,20 +454,30 @@ function handoffOf(state: SkillState, waiting: { reason: string; held: NonNullab
  * it is open. A `quiet` turn carries no action; any other shows the handoff of a `waiting` that holds steps.
  */
 export function turnOf(state: SkillState, input: { events: TurnEvent[]; after?: NonNullable<Turn['then']>; waiting?: Waiting; quiet?: true; localTool?: string }): Turn {
-  const running = state.attempts.map((open): RunningEntry => ({
-    attempt: open.attempt, step: open.step, phase: open.phase, ...(reportedByAgent(open) ? { report: reportLiteral(state.invocation, state.run, open.attempt) } : {}),
-  }));
+  const running = state.attempts.map((open): RunningEntry => {
+    const entry: RunningEntry = { attempt: open.attempt, step: open.step, phase: open.phase };
+
+    if (reportedByAgent(open)) entry.report = reportLiteral(state.invocation, state.run, open.attempt);
+
+    return entry;
+  });
+
   const waiting = input.waiting && !state.done && state.attempts.length === 0 ? input.waiting : undefined;
   const handoff = waiting?.held && !input.quiet ? [handoffOf(state, { reason: waiting.reason, held: waiting.held }, input.localTool)] : [];
-  return {
+
+  const turn: Turn = {
     run: state.run,
     status: state.done ? 'done' : 'driving',
     actions: input.quiet ? [] : [...actionsOf(state), ...handoff],
     running,
     events: input.events,
-    ...(waiting ? { waiting } : {}),
-    // `then` is a value, never a function, so awaiting a turn does not treat it as a promise.
-    // oxlint-disable-next-line unicorn/no-thenable
-    ...(input.after && (!state.done || state.attempts.length > 0 || state.judging?.open) ? { then: input.after } : {}),
   };
+
+  if (waiting) turn.waiting = waiting;
+
+  // `then` is a value, never a function, so awaiting a turn does not treat it as a promise.
+  // oxlint-disable-next-line unicorn/no-thenable
+  if (input.after && (!state.done || state.attempts.length > 0 || state.judging?.open)) turn.then = input.after;
+
+  return turn;
 }

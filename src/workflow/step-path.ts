@@ -15,6 +15,7 @@ const ITEM = new RegExp(`^([^[\\]]+)\\[(${INDEX})\\]$`);
 export function parseStepPath(path: string): StepPathSegment[] {
   return path.split('.').map((segment) => {
     const item = ITEM.exec(segment);
+
     return item ? { id: item[1]!, index: Number(item[2]) } : { id: segment };
   });
 }

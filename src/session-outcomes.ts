@@ -45,13 +45,26 @@ const FactsSchema = z.object({
   /** The branch checked out at its last Stop that recorded one: the one whose pull request it delivered to. */
   endBranch: z.string().optional(),
 });
+
 type Facts = z.infer<typeof FactsSchema>;
 
 const EntrySchema = z.union([z.object({ reported: z.literal(true) }), z.object({ reported: z.literal(false), facts: FactsSchema })]);
+
 type Entry = z.infer<typeof EntrySchema>;
 
 /** A session this report counts, with what it counts it with: what {@link markReported} records of it. */
 export type FinishedSession = Pick<SessionOutcomeEvent, 'sessionId' | 'tool' | 'runMode' | 'outcomes'> & { counted: SessionUsage };
+
+/** A session's tool and run mode, each left out when the session has none. */
+function sessionLabels({ tool, runMode }: Pick<FinishedSession, 'tool' | 'runMode'>): Pick<FinishedSession, 'tool' | 'runMode'> {
+  const labels: Pick<FinishedSession, 'tool' | 'runMode'> = {};
+
+  if (tool) labels.tool = tool;
+
+  if (runMode) labels.runMode = runMode;
+
+  return labels;
+}
 
 /** What `fold` hands the report: the counts to add, and the sessions they count. */
 export interface OutcomeFold {
@@ -88,6 +101,7 @@ function baselinePath(config: LocalConfig): string {
 /** The scope's baseline, or none before its first report on this release (or when the file is not readable). */
 async function readBaseline(config: LocalConfig): Promise<Record<string, Entry> | undefined> {
   const parsed = z.record(z.string(), EntrySchema).safeParse(await readJson<unknown>(baselinePath(config)));
+
   return parsed.success ? parsed.data : undefined;
 }
 
@@ -105,24 +119,33 @@ function factsOf(member: DashboardEvent[], outcomes: SessionOutcomeEvent[]): Map
   const facts = new Map<string, Facts>();
   const runs = sessionRuns(member);
   const sorted = [...member].sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
+
   for (const event of sorted) {
     const known: Facts = facts.get(event.sessionId) ?? { activeAt: event.timestamp };
     const runMode = runs.get(event.sessionId)?.runMode;
-    facts.set(event.sessionId, {
-      ...known,
-      activeAt: event.timestamp,
-      tool: event.tool,
-      ...(runMode ? { runMode } : {}),
-      ...(event.cwd ? { cwd: event.cwd } : {}),
-      ...(event.projectAnchor ? { anchor: event.projectAnchor } : {}),
-      ...(event.type === 'session_start' && known.startedAt === undefined
-        ? { startedAt: event.timestamp, ...(event.gitAtStart ? { startHead: event.gitAtStart.head } : {}) } : {}),
-      ...(event.gitHead ? { endHead: event.gitHead } : {}),
-      ...(event.gitHead && event.gitBranch ? { endBranch: event.gitBranch } : {}),
-    });
+    const next: Facts = { ...known, activeAt: event.timestamp, tool: event.tool };
+
+    if (runMode) next.runMode = runMode;
+
+    if (event.cwd) next.cwd = event.cwd;
+
+    if (event.projectAnchor) next.anchor = event.projectAnchor;
+
+    if (event.type === 'session_start' && known.startedAt === undefined) {
+      next.startedAt = event.timestamp;
+
+      if (event.gitAtStart) next.startHead = event.gitAtStart.head;
+    }
+
+    if (event.gitHead) next.endHead = event.gitHead;
+
+    if (event.gitHead && event.gitBranch) next.endBranch = event.gitBranch;
+    facts.set(event.sessionId, next);
   }
+
   // A session with no event of its own (a tool teamai records no hooks for) is known by its outcomes.
   const withEvents = new Set(facts.keys());
+
   for (const outcome of outcomes) {
     if (withEvents.has(outcome.sessionId)) continue;
     const known = facts.get(outcome.sessionId);
@@ -130,10 +153,10 @@ function factsOf(member: DashboardEvent[], outcomes: SessionOutcomeEvent[]): Map
     const runMode = outcome.runMode ?? known?.runMode;
     facts.set(outcome.sessionId, {
       activeAt: known && known.activeAt > outcome.timestamp ? known.activeAt : outcome.timestamp,
-      ...(tool ? { tool } : {}),
-      ...(runMode ? { runMode } : {}),
+      ...sessionLabels({ tool, runMode }),
     });
   }
+
   return facts;
 }
 
@@ -141,6 +164,7 @@ function factsOf(member: DashboardEvent[], outcomes: SessionOutcomeEvent[]): Map
 function merged(kept: Facts | undefined, seen: Facts): Facts {
   if (!kept) return seen;
   const { startedAt, startHead } = kept.startedAt !== undefined && (seen.startedAt === undefined || kept.startedAt <= seen.startedAt) ? kept : seen;
+
   return {
     ...kept,
     ...seen,
@@ -156,6 +180,7 @@ async function scopeOutcomes(input: FoldInput): Promise<SessionOutcomeEvent[]> {
   const scoped = new Set(input.scoped.map((event) => event.sessionId));
   const member = new Set(input.member.map((event) => event.sessionId));
   const logged = new Set(input.logged.map((event) => event.sessionId));
+
   return (await readSessionOutcomes()).filter((outcome) => !outcome.counted && !outcome.launchedBy
     && (scoped.has(outcome.sessionId) ? member.has(outcome.sessionId) : !logged.has(outcome.sessionId) && outcome.dataHomeKey === key));
 }
@@ -163,31 +188,43 @@ async function scopeOutcomes(input: FoldInput): Promise<SessionOutcomeEvent[]> {
 /** Where the session's git is read: its own checkout, else, once that is gone (a removed worktree), one of its repository. */
 async function checkoutOf(facts: Facts): Promise<string | undefined> {
   if (facts.cwd && await pathExists(facts.cwd)) return facts.cwd;
+
   return facts.anchor ? await checkoutForProjectAnchor(facts.anchor) ?? undefined : undefined;
 }
 
 /** `facts` with the head and branch `cwd` has checked out now, as its Stop would record them. */
 async function withHeadNow(facts: Facts, cwd: string): Promise<Facts> {
   const [head, branch] = await Promise.all([getHeadCommit(cwd), getCurrentBranch(cwd)]);
-  return head ? { ...facts, endHead: head, ...(branch ? { endBranch: branch } : {}) } : facts;
+
+  if (!head) return facts;
+  const next: Facts = { ...facts, endHead: head };
+
+  if (branch) next.endBranch = branch;
+
+  return next;
 }
 
 /** The commits the member authored in `cwd`, the session's checkout, from its start to its last Stop, oldest first. */
 async function sessionCommits(cwd: string, facts: Facts): Promise<string[]> {
   const { startHead, endHead, startedAt } = facts;
+
   if (!endHead || !startedAt || startHead === endHead) return [];
   const email = (await git(cwd, ['config', '--get', 'user.email'], { timeoutMs: GIT_TIMEOUT_MS })).stdout.trim();
+
   if (!email) return [];
+
   // A commit dated before the session started came in with a pull, whoever wrote it. A start with no head (a repository
   // with no commit yet, or git that failed) leaves the start time alone to bound the session's commits.
   const listed = await git(cwd, [
     'log', '--reverse', '--format=%H', '--fixed-strings', `--author=<${email}>`, `--since=${startedAt}`, startHead ? `${startHead}..${endHead}` : endHead,
   ], { timeoutMs: GIT_TIMEOUT_MS });
+
   return listed.code === 0 ? listed.stdout.split('\n').filter((sha) => CommitIdSchema.safeParse(sha).success) : [];
 }
 
 /** A session's pull request lookup that got an answer, for the branch it asked about: the open pull request it found, or none. */
 const PrLookupSchema = z.object({ branch: z.string(), url: PrUrlSchema.optional() });
+
 type PrLookup = z.infer<typeof PrLookupSchema>;
 
 function prCachePath(config: LocalConfig): string {
@@ -196,6 +233,7 @@ function prCachePath(config: LocalConfig): string {
 
 async function readPrCache(config: LocalConfig): Promise<Record<string, PrLookup>> {
   const parsed = z.record(z.string(), PrLookupSchema).safeParse(await readJson<unknown>(prCachePath(config)));
+
   return parsed.success ? parsed.data : {};
 }
 
@@ -206,11 +244,15 @@ async function readPrCache(config: LocalConfig): Promise<Record<string, PrLookup
  */
 async function lookUpPr({ cwd, branch, commits }: { cwd: string; branch: string; commits: string[] }): Promise<PrLookup | undefined> {
   const target = await getDefaultBranch(cwd);
+
   if (branch === target) return undefined;
+
   const pushed = await Promise.all(commits.map(async (sha) =>
     (await git(cwd, ['merge-base', '--is-ancestor', sha, `refs/remotes/origin/${branch}`], { timeoutMs: GIT_TIMEOUT_MS })).code === 0));
+
   if (!pushed.includes(true)) return undefined;
   const found = await findDelivered(cwd, { branch, target });
+
   switch (found.kind) {
     case 'found': return { branch, url: found.pr };
     case 'none': return { branch };
@@ -218,6 +260,7 @@ async function lookUpPr({ cwd, branch, commits }: { cwd: string; branch: string;
     case 'unsafe': return undefined;
     default: {
       const unhandled: never = found;
+
       return unhandled;
     }
   }
@@ -233,10 +276,13 @@ async function fold(input: FoldInput): Promise<OutcomeFold> {
   const baseline = kept ?? {};
   // Written on the first report even with no session, so a later one never takes its sessions for an earlier release's.
   let changed = kept === undefined;
+
   for (const [sessionId, seen] of factsOf(input.member, outcomes)) {
     const entry = baseline[sessionId];
+
     if (entry?.reported) continue;
     const facts = merged(entry?.facts, seen);
+
     // A drain's first report is an ephemeral runner's every report, so only idle sessions are an earlier release's.
     if (kept === undefined && isIdle(facts, input.now)) {
       baseline[sessionId] = { reported: true };
@@ -245,40 +291,47 @@ async function fold(input: FoldInput): Promise<OutcomeFold> {
       changed = true;
     }
   }
+
   if (changed) await writeJson(baselinePath(input.config), baseline);
 
   const pending = Object.entries(baseline).flatMap(([sessionId, entry]) =>
     (entry.reported ? [] : [{ sessionId, facts: entry.facts, isDue: isFinished(entry.facts, input) }]));
+
   // A session's pull request is looked up at each report until one is found, so one merged before the session is
   // finished still counts, and once more when it is; the answer is kept for a report whose push fails.
   const prs = await readPrCache(input.config);
   let prsChanged = false;
+
   // Each lookup may wait on a host, so they run together; one that fails leaves its pull request out.
   const finished = (await Promise.all(pending.map(async ({ sessionId, facts: pendingFacts, isDue }): Promise<FinishedSession[]> => {
     const cwd = await checkoutOf(pendingFacts);
     const facts = cwd && isDue && sessionId === input.drain?.running ? await withHeadNow(pendingFacts, cwd) : pendingFacts;
     const commits = cwd ? await sessionCommits(cwd, facts) : [];
+
     // A session that has since stopped on another branch is asked about that one.
     if (cwd && commits.length > 0 && facts.endBranch && prs[sessionId]?.branch !== facts.endBranch) {
-      const looked = await lookUpPr({ cwd, branch: facts.endBranch, commits }).catch((e: unknown) => {
-        log.debug(`outcomes: pull request lookup for session ${sessionId} failed: ${e instanceof Error ? e.message : String(e)}`);
+      const looked = await lookUpPr({ cwd, branch: facts.endBranch, commits }).catch((cause: unknown) => {
+        log.debug(`outcomes: pull request lookup for session ${sessionId} failed: ${cause instanceof Error ? cause.message : String(cause)}`);
+
         return undefined;
       });
+
       // A session still going may yet open one, so it keeps only a pull request found.
       if (looked && (isDue || looked.url)) {
         prs[sessionId] = looked;
         prsChanged = true;
       }
     }
+
     if (!isDue) return [];
     const lookup: PrLookup | undefined = prs[sessionId];
     const pr = lookup && lookup.branch === facts.endBranch ? lookup.url : undefined;
     const { tokens } = promptTokensEntry(input.totals.promptTokens[sessionId]);
     const interventions = Object.values(interventionsEntry(input.totals.interventions[sessionId])).reduce((sum, n) => sum + n, 0);
+
     return [{
       sessionId,
-      ...(facts.tool ? { tool: facts.tool } : {}),
-      ...(facts.runMode ? { runMode: facts.runMode } : {}),
+      ...sessionLabels(facts),
       outcomes: uniqueOutcomes([
         ...commits.map((sha): WorkOutcome => ({ kind: 'commit', sha })),
         ...(pr ? [{ kind: 'pr' as const, url: pr }] : []),
@@ -287,18 +340,23 @@ async function fold(input: FoldInput): Promise<OutcomeFold> {
       counted: { tokens: { input: tokens.input, output: tokens.output }, interventions },
     }];
   }))).flat();
+
   if (prsChanged) await writeJson(prCachePath(input.config), prs);
+
   return { delta: rowsOf(finished), finished };
 }
 
 /** The rows `sessions` add up to: each in its run mode's row of every kind it delivered, or of `none`. */
 function rowsOf(sessions: readonly FinishedSession[]): UserOutcomeStats {
   const rows: UserOutcomeStats = {};
+
   for (const session of sessions) {
     const mode = (rows[session.runMode ?? 'notRecorded'] ??= {});
     const kinds = new Set(session.outcomes.map((outcome) => outcome.kind));
+
     for (const kind of kinds.size > 0 ? kinds : ['none' as const]) mode[kind] = addCounts(mode[kind], { sessions: 1, ...session.counted });
   }
+
   return rows;
 }
 
@@ -325,8 +383,9 @@ export interface OutcomeSummary {
 function summarize(events: readonly SessionOutcomeEvent[], { dataHomeKey: key, now }: { dataHomeKey?: string; now: number }): OutcomeSummary {
   const counted = events.flatMap(({ sessionId, tool, runMode, outcomes, counted: usage, timestamp, dataHomeKey: eventKey }): CountedSession[] =>
     (usage && (key === undefined || eventKey === key) && now - Date.parse(timestamp) <= SESSION_OUTCOME_RETENTION_MS
-      ? [{ sessionId, ...(tool ? { tool } : {}), ...(runMode ? { runMode } : {}), countedAt: timestamp, outcomes, counted: usage }]
+      ? [{ sessionId, ...sessionLabels({ tool, runMode }), countedAt: timestamp, outcomes, counted: usage }]
       : []));
+
   return {
     sessions: counted.length,
     delivered: counted.filter((session) => session.outcomes.length > 0).length,
@@ -342,18 +401,22 @@ function summarize(events: readonly SessionOutcomeEvent[], { dataHomeKey: key, n
 async function markReported(config: LocalConfig, finished: readonly FinishedSession[]): Promise<void> {
   if (finished.length === 0) return;
   const baseline = await readBaseline(config) ?? {};
+
   for (const { sessionId } of finished) baseline[sessionId] = { reported: true };
   await writeJson(baselinePath(config), baseline);
   const prs = await readPrCache(config);
   const looked = finished.filter(({ sessionId }) => Object.hasOwn(prs, sessionId));
+
   for (const { sessionId } of looked) delete prs[sessionId];
+
   if (looked.length > 0) await writeJson(prCachePath(config), prs);
   const key = await dataHomeKey(getDataHome(config));
   const timestamp = new Date().toISOString();
+
   for (const session of finished) {
     await appendEvent({
-      type: 'session_outcome', timestamp, sessionId: session.sessionId, ...(session.tool ? { tool: session.tool } : {}), dataHomeKey: key,
-      ...(session.runMode ? { runMode: session.runMode } : {}), outcomes: session.outcomes, counted: session.counted,
+      type: 'session_outcome', timestamp, sessionId: session.sessionId, ...sessionLabels({ tool: session.tool }), dataHomeKey: key,
+      ...sessionLabels({ runMode: session.runMode }), outcomes: session.outcomes, counted: session.counted,
     });
   }
 }

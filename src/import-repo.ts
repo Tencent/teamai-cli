@@ -18,6 +18,7 @@ import { log } from './utils/logger.js';
 import { hasFrontmatter, stripFrontmatter } from './utils/frontmatter.js';
 import { assertTeamwikiWritable, lockTeamwiki, resolveTeamwiki } from './utils/teamwiki-root.js';
 import { isOverrideInvalid } from './tool-launch/call.js';
+import { SourceManifestSchema } from './wiki-engine/code-knowledge/code-collector.js';
 
 // ─── Types ──────────────────────────────────────────────
 
@@ -87,6 +88,7 @@ export function detectCrossRepoEdges(
     const nodeId = (n: SimpleGraphNode): string => n.id ?? n.slug ?? '';
     const nodeLabel = (n: SimpleGraphNode): string => n.label ?? n.title ?? '';
     const nodeKind = (n: SimpleGraphNode): string => n.kind ?? n.type ?? '';
+
     // Both sides this edge spans matter: the side whose own import produced
     // the match, AND the side that match resolved to. Either one being
     // withheld later makes the relationship stale, so both are captured now
@@ -98,6 +100,7 @@ export function detectCrossRepoEdges(
     // round 15 P2) — see `GraphEdge.crossOriginPairs`.
     const crossOriginPair = (a?: string, b?: string): string[][] | undefined => {
         const origins = [a, b].filter((o): o is string => !!o);
+
         return origins.length > 0 ? [origins] : undefined;
     };
 
@@ -107,15 +110,19 @@ export function detectCrossRepoEdges(
     // colliding unqualified slug and win the merge, silently reattributing
     // the final node without updating an edge created from this match.
     const existingIndex = new Map<string, LabelMatch>();
+
     for (const node of existing.nodes) {
         const label = nodeLabel(node);
+
         if (label) existingIndex.set(label.toLowerCase(), { id: nodeId(node), origin: node.origin });
     }
 
     // Build label index for the new graph's components/interfaces
     const overlayIndex = new Map<string, LabelMatch>();
+
     for (const node of overlay.nodes) {
         const label = nodeLabel(node);
+
         if (label) overlayIndex.set(label.toLowerCase(), { id: nodeId(node), origin: node.origin });
     }
 
@@ -127,11 +134,14 @@ export function detectCrossRepoEdges(
         const pascalName = fileName.split(/[-_]/).map(s => s.charAt(0).toUpperCase() + s.slice(1)).join('');
 
         const match = existingIndex.get(pascalName.toLowerCase());
+
         if (match) {
             const fromNode = overlay.nodes.find(n => (n.file ?? n.id ?? n.slug ?? '') === edge.from);
+
             if (fromNode) {
                 const fromId = nodeId(fromNode);
                 const key = `${fromId}|${match.id}`;
+
                 if (!edgeSet.has(key)) {
                     edgeSet.add(key);
                     // The import edge's OWN origin tag, not a fresh lookup of
@@ -154,11 +164,14 @@ export function detectCrossRepoEdges(
         const pascalName = fileName.split(/[-_]/).map(s => s.charAt(0).toUpperCase() + s.slice(1)).join('');
 
         const match = overlayIndex.get(pascalName.toLowerCase());
+
         if (match) {
             const fromNode = existing.nodes.find(n => (n.file ?? n.id ?? n.slug ?? '') === edge.from);
+
             if (fromNode) {
                 const fromId = nodeId(fromNode);
                 const key = `${fromId}|${match.id}`;
+
                 if (!edgeSet.has(key)) {
                     edgeSet.add(key);
                     // Same reasoning as the forward loop above: `existing`
@@ -180,11 +193,14 @@ export function detectCrossRepoEdges(
 
     for (const cfg of overlayConfigs) {
         const cfgName = nodeLabel(cfg).toLowerCase();
+
         if (cfgName.length < 5) continue;
         const cfgId = nodeId(cfg);
         const match = existingIndex.get(cfgName);
+
         if (match) {
             const key = `${match.id}|${cfgId}`;
+
             if (!edgeSet.has(key)) {
                 edgeSet.add(key);
                 crossEdges.push({ from: match.id, to: cfgId, relation: 'DEPENDS_ON', crossOriginPairs: crossOriginPair(match.origin, cfg.origin) });
@@ -194,11 +210,14 @@ export function detectCrossRepoEdges(
 
     for (const cfg of existingConfigs) {
         const cfgName = nodeLabel(cfg).toLowerCase();
+
         if (cfgName.length < 5) continue;
         const cfgId = nodeId(cfg);
         const match = overlayIndex.get(cfgName);
+
         if (match) {
             const key = `${match.id}|${cfgId}`;
+
             if (!edgeSet.has(key)) {
                 edgeSet.add(key);
                 crossEdges.push({ from: match.id, to: cfgId, relation: 'DEPENDS_ON', crossOriginPairs: crossOriginPair(match.origin, cfg.origin) });
@@ -220,8 +239,10 @@ export function detectCrossRepoEdges(
  */
 export function repoSlugForUrl(url: string): string {
     const providerName = detectProvider(url);
+
     if (!providerName) throw new Error(`Unsupported repo URL: ${url}`);
     const { owner, repo } = getProvider(providerName).parseRepoInput(url);
+
     return getRepoSlug(providerName, owner, repo);
 }
 
@@ -253,6 +274,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<boole
 
     // 1. Parse provider and repo info
     const providerName = detectProvider(url);
+
     if (!providerName) {
         throw new Error(`Unsupported repo URL: ${url}`);
     }
@@ -274,17 +296,20 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<boole
     // Where the evidence goes: <output>/teamwiki, else the team repo's teamwiki/.
     // Resolved before the clone so a missing team repo fails fast; a preview
     // without one still reports what it can.
-    const target = await resolveTeamwiki({ output, dryRun }).catch((error: unknown) => {
-        if (!dryRun) throw error;
+    const target = await resolveTeamwiki({ output, dryRun }).catch((cause: unknown) => {
+        if (!dryRun) throw cause;
+
         return undefined;
     });
+
     if (!dryRun) await assertTeamwikiWritable(target);
     const evidenceDest = target ? path.join(target.wikiRoot, 'evidence', 'code', slug) : undefined;
+
     // LAST_SYNC belongs to the shared clone cache: an unchanged cache is skipped
     // only when this teamwiki already holds that commit, not when another
     // --output or team repo was imported at it.
     const publishedHead = async (): Promise<string | undefined> => evidenceDest
-        ? ((await fs.readJson(path.join(evidenceDest, 'source-manifest.json')).catch(() => null)) as { headSha?: string } | null)?.headSha
+        ? SourceManifestSchema.safeParse(await fs.readJson(path.join(evidenceDest, 'source-manifest.json')).catch(() => null)).data?.headSha
         : undefined;
 
     // A preview asks for the target remote commit and stops: the clone replaces the
@@ -292,25 +317,31 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<boole
     if (dryRun) {
         let head: string;
         let previewIncremental = useIncremental;
+
         try {
             head = await remoteHeadSha(url, providerName, {
                 forceSsh, forceAnonymous, cachedRepoPath: useIncremental ? cacheDir : undefined,
             });
         } catch (error) {
             if (!useIncremental) throw error;
-            log.warn(`[incremental] preview refresh failed, previewing a full clone instead: ${(error as Error).message}`);
+            log.warn(`[incremental] preview refresh failed, previewing a full clone instead: ${error instanceof Error ? error.message : String(error)}`);
             head = await remoteHeadSha(url, providerName, { forceSsh, forceAnonymous });
             previewIncremental = false;
         }
+
         const skips = previewIncremental && (await publishedHead()) === head;
+
         const cache = !cacheExists
             ? `not cached yet, a real run would clone it into ${cacheDir}`
             : lastSync?.sha === head
                 ? `cache is current at ${head.slice(0, 8)}${skips ? ', so an incremental run would skip it' : ''}`
                 : `cache would be refreshed from ${lastSync ? lastSync.sha.slice(0, 8) : 'an unrecorded commit'} to ${head.slice(0, 8)}`;
+
         log.info(`[dry-run] Would import ${owner}/${repoName} at ${head.slice(0, 8)} into ${evidenceDest ?? path.join('teamwiki', 'evidence', 'code', slug)}; ${cache}`);
+
         return true;
     }
+
     if (!target || !evidenceDest) throw new Error('unreachable: the teamwiki resolves outside a dry run');
     const { wikiRoot: teamwikiRoot, team } = target;
 
@@ -323,6 +354,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<boole
     if (useIncremental) {
         oldSha = lastSync.sha;
         log.info(`[incremental] cache hit ${cacheDir}, syncing from ${oldSha.slice(0, 8)}`);
+
         try {
             const fetchResult = await shallowFetch(cacheDir, { provider: providerName });
             cloneSha = fetchResult.sha;
@@ -333,10 +365,12 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<boole
                 `[incremental] fetch failed, falling back to full clone: ` +
                 `${fetchErr instanceof Error ? fetchErr.message : String(fetchErr)}`,
             );
+
             try {
                 const cloneResult = await shallowClone(url, cacheDir, providerName, {
                     depth, forceSsh, forceAnonymous,
                 });
+
                 cloneSha = cloneResult.sha;
                 cloneBranch = cloneResult.branch;
                 oldSha = null; // treat as full clone on fallback, skip drift detection
@@ -346,10 +380,12 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<boole
         }
     } else {
         log.info(`Shallow clone to cache: ${cacheDir}`);
+
         try {
             const cloneResult = await shallowClone(url, cacheDir, providerName, {
                 depth, forceSsh, forceAnonymous,
             });
+
             cloneSha = cloneResult.sha;
             cloneBranch = cloneResult.branch;
         } catch (err) {
@@ -365,16 +401,20 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<boole
     if (useIncremental && oldSha && cloneSha === oldSha && (await publishedHead()) === cloneSha) {
         log.info(`[incremental] SHA unchanged (${cloneSha.slice(0, 8)}), skipping AI scan`);
         await writeLastSync(cacheDir, cloneSha);
+
         try {
             await touchCacheEntry({ provider: providerName, owner, repo: repoName, lastSyncedSha: cloneSha });
         } catch {}
+
         log.info(chalk.green(`✓ repo ${owner}/${repoName} unchanged, skipped`));
+
         return true;
     }
 
     // 3. Scan and generate codebase.md (AI scan failure does not block graph extraction)
     log.info(`Scanning repository...`);
     let codebaseMd: string | undefined;
+
     if (skipEnrich) {
         log.debug('AI enrichment skipped (--skip-enrich)');
     } else {
@@ -387,9 +427,11 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<boole
     }
 
     const releaseImportLock = await lockTeamwiki(target);
+
     try {
     // 4. Extract into teamwiki/evidence/code/<slug>/ + append AI narrative to overview.md
     let updated: boolean;
+
     try {
         updated = await importCodebase({
             sourceDir: cacheDir, slug, wikiRoot: teamwikiRoot, incremental, skipEnrich, maxFiles,
@@ -397,6 +439,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<boole
             branch: cloneBranch === 'HEAD' ? undefined : cloneBranch,
             sourceMrUrl,
         });
+
         // Write AI narrative to overview.md (idempotent: replace if exists, append if not)
         if (updated && codebaseMd) {
             const overviewPath = path.join(evidenceDest, 'overview.md');
@@ -405,19 +448,24 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<boole
             const marker = '## AI Architecture Narrative';
             const oldMarker = '## AI 架构叙事';
             let markerIdx = existing.indexOf(marker);
+
             if (markerIdx < 0) markerIdx = existing.indexOf(oldMarker);
             const base = markerIdx >= 0 ? existing.slice(0, markerIdx).trimEnd() : existing.trimEnd();
             let combined: string;
+
             if (!base || !hasFrontmatter(base)) {
                 combined = `---\ntitle: ${slug} overview\ndomain: code-knowledge\n---\n\n${marker}\n\n${aiNarrative}`;
             } else {
                 combined = base + '\n\n---\n\n' + marker + '\n\n' + aiNarrative;
             }
+
             await fs.writeFile(overviewPath, combined, 'utf8');
         }
+
         // Explicit --domain overrides AI inference
         if (updated && explicitDomain) {
             const domainsJsonPath = path.join(evidenceDest, '_domains.json');
+
             if (await fs.pathExists(domainsJsonPath)) {
                 try {
                     const existing = JSON.parse(await fs.readFile(domainsJsonPath, 'utf8'));
@@ -428,6 +476,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<boole
                 await fs.writeFile(domainsJsonPath, JSON.stringify({ domain: explicitDomain }, null, 2), 'utf8');
             }
         }
+
         log.info(chalk.green(updated
             ? `✓ teamwiki/ knowledge graph updated: ${slug}`
             : `✓ ${slug}: no source changes since the last import, teamwiki unchanged`));
@@ -436,6 +485,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<boole
     }
 
     let deepEnrichComplete = true;
+
     if (updated) {
         // 5. Reconcile + deep enrich (synchronous, before push — so all content goes into one MR)
         deepEnrichComplete = await reconcileAndDeepEnrich({ slug, wikiRoot: teamwikiRoot, sourceDir: cacheDir, skipEnrich });
@@ -443,6 +493,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<boole
         // 6. Aggregate global graph + create MR (single-repo mode; batch mode handled by import-repo-list)
         if (!skipAutoPush) {
             await refreshTeamwikiIndexes(teamwikiRoot);
+
             if (team) await publishTeamwikiViaMR(team, `[teamai] Import codebase knowledge from ${owner}/${repoName}`);
         }
     }
@@ -451,11 +502,13 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<boole
 
     // 7. Write LAST_SYNC
     await writeLastSync(cacheDir, cloneSha);
+
     try {
         await touchCacheEntry({ provider: providerName, owner, repo: repoName, lastSyncedSha: cloneSha });
     } catch (touchErr) {
         log.debug(`[cache-index] touchCacheEntry failed: ${String(touchErr)}`);
     }
+
     return deepEnrichComplete;
     } finally {
         await releaseImportLock();

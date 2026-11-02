@@ -4,8 +4,10 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { resolveRunMode } from '../launch-context.js';
+import type { JsonValue } from '../types.js';
 import { agentEvidence } from './attempt-marker.js';
 import { commandOutputs, type NextPrepare, type WorkflowClient } from './protocol.js';
+import type { WorkflowRunRecord } from './records.js';
 import type { DriverCan } from './requirements.js';
 import { callerProvenance } from './run-controls.js';
 import { AttemptIdSchema } from './store.js';
@@ -30,6 +32,9 @@ export function controlsYaml(steps: string): string {
   return `schemaVersion: v1alpha1\nname: build\ndescription: Exercise manual controls.\nsteps:\n${steps}\n`;
 }
 
+/** A JSON object a scenario sends as a body, or that an answer, the run file, or its end record must match. */
+export type ScenarioJson = { [key: string]: JsonValue };
+
 /**
  * A benchmark suite as files: `benchmarks/<name>/suite.yaml` and `tasks/<task>.yaml`, where `{{startingCommit}}` in a
  * task stands for the commit the runner's project starts at. The interpreter never touches the disk.
@@ -44,9 +49,9 @@ interface ScenarioBase {
   name: string;
   operations: ConformanceOperation[];
   /** Expected fields in the persisted run after all operations. */
-  expectState?: Record<string, unknown>;
+  expectState?: ScenarioJson;
   /** Expected fields in the run's queued end record after all operations. */
-  expectRecord?: Record<string, unknown>;
+  expectRecord?: ScenarioJson;
   /**
    * By saved lease: the step it leased reported `changes` on the lease's branch, `changes.to` is that branch's tip on
    * origin, and the tip holds these files. Needs a runner with a `place`.
@@ -63,11 +68,11 @@ interface ScenarioBase {
 /** Where a profile refuses a scenario, and the answer it gets there instead. */
 export interface ConformanceRefusal {
   at: string;
-  expect: Record<string, unknown>;
+  expect: ScenarioJson;
 }
 
 /** The same refusal from both skill profiles: each declares a person, and neither declares tokens or turns. */
-export function bothSkillProfiles<T>(refusal: T): { skill: T; 'skill-bare': T } {
+export function bothSkillProfiles<T>(refusal: T) {
   return { skill: refusal, 'skill-bare': refusal };
 }
 
@@ -106,6 +111,7 @@ export const DRIVER_PROFILES = {
   /** The skill driver's identity declaring only a person and workspaces, so a run owes it no env, setup or tokens. */
   'skill-bare': { kind: 'skill', can: { hitl: true, workspace: ['read-only', 'new', 'continue'] } },
 } as const satisfies Record<string, { kind: string; can: DriverCan }>;
+
 export type DriverProfile = keyof typeof DRIVER_PROFILES;
 
 /** The drivers under test every protocol, place, git and limits scenario runs as. */
@@ -134,7 +140,7 @@ export type ConformanceOperation =
   | {
     kind: 'next'; saveAs: string; as?: DriverProfile; can?: DriverCan; running?: string[]; canTakeLease?: boolean; hitl?: boolean; claim?: boolean; autoApprove?: boolean;
     base?: { ref?: string; commit: string }; prepare?: true; attempt?: string; adopt?: string; promptHas?: string[];
-    cancelled?: string[]; absent?: string[]; expect: Record<string, unknown>; state?: Record<string, unknown>;
+    cancelled?: string[]; absent?: string[]; expect: ScenarioJson; state?: ScenarioJson;
   }
   | { kind: 'host'; name: string; lease: string; on: 'branch' | 'start' | 'other' | 'foreign'; files?: Record<string, string> }
   | { kind: 'edit'; lease: string; files: Record<string, string> }
@@ -143,11 +149,11 @@ export type ConformanceOperation =
    * Starts another run of `workflow`, the scenario's own when omitted, as `workflow start` with `driver` and `--confirmed`
    * does, from a process whose environment adds `env` to the scenario's.
    */
-  | { kind: 'start'; workflow?: string; driver?: StartDriver; confirmed?: boolean; env?: Record<string, string>; expect: Record<string, unknown> }
+  | { kind: 'start'; workflow?: string; driver?: StartDriver; confirmed?: boolean; env?: Record<string, string>; expect: ScenarioJson }
   /** `env`: variables the answering process has beside the scenario's, such as an agent session's. */
-  | { kind: 'respond'; step: string; choice: string; as?: DriverProfile; note?: string; pass?: number; json?: unknown; env?: Record<string, string>; expect: Record<string, unknown> }
-  | { kind: 'retry'; step: string; expect: Record<string, unknown> }
-  | { kind: 'cancel'; step?: string; expect: Record<string, unknown> }
+  | { kind: 'respond'; step: string; choice: string; as?: DriverProfile; note?: string; pass?: number; json?: unknown; env?: Record<string, string>; expect: ScenarioJson }
+  | { kind: 'retry'; step: string; expect: ScenarioJson }
+  | { kind: 'cancel'; step?: string; expect: ScenarioJson }
   | { kind: 'advance'; ms: number }
   | {
     kind: 'report';
@@ -156,27 +162,42 @@ export type ConformanceOperation =
     attempt?: string;
     revision?: number;
     /** Fields added to the `changes` the harness reports from the workspace of this operation's saved lease. */
-    changes?: Record<string, unknown>;
-    body: Record<string, unknown>;
-    expect: Record<string, unknown>;
+    changes?: ScenarioJson;
+    body: ScenarioJson;
+    expect: ScenarioJson;
   };
+
+/** A `next` payload as a scenario sends it: the driver and its `can`, then the fields the operation sets. */
+interface NextBody {
+  driver: DriverIdentity & { can: DriverCan };
+  running?: Array<string | undefined>;
+  canTakeLease?: boolean;
+  claim?: boolean;
+  autoApprove?: boolean;
+  base?: { ref?: string; commit: string };
+}
+
+/** The `hitl` a `next` answers with, whose `respond` names the command that answers it. */
+const AnsweredHitlSchema = z.object({ step: z.string(), pass: z.number(), respond: z.string() });
 
 const SavedLeaseSchema = z.object({
   attempt: z.string(), revision: z.number(), step: z.string(), cwd: z.string().optional(), prompt: z.string().optional(),
   workspace: z.object({ branch: z.string(), base: z.object({ commit: z.string() }), start: z.object({ commit: z.string() }) }).optional(),
 });
+
 type SavedLease = z.infer<typeof SavedLeaseSchema>;
 
 /** The `changes` a report of `lease` carries: the branch and base of its workspace, and the scenario's own fields. */
-function leasedChanges(lease: SavedLease | undefined, fields: Record<string, unknown>): Record<string, unknown> {
+function leasedChanges(lease: SavedLease | undefined, fields: ScenarioJson) {
   if (!lease?.workspace) throw new Error('A report with changes needs a saved lease that ran in a workspace');
+
   return { branch: lease.workspace.branch, base: lease.workspace.base.commit, from: 'a'.repeat(40), to: 'b'.repeat(40), commits: [], ...fields };
 }
 
 /** The assertions a runner lends the interpreter, so the scenarios do not depend on a test framework. */
-export type ConformanceExpect = (actual: unknown, message?: string) => {
-  toMatchObject(expected: Record<string, unknown>): void;
-  toEqual(expected: unknown): void;
+export type ConformanceExpect = <TActual>(actual: TActual, message?: string) => {
+  toMatchObject(expected: ScenarioJson): void;
+  toEqual<TExpected>(expected: TExpected): void;
   not: { toHaveProperty(property: string): void };
 };
 
@@ -210,9 +231,11 @@ export function inProcessConformanceClient(
 ): ConformanceClient {
   return {
     startBenchmark,
-    start: (name, { env, confirmed, checkout } = {}) => client.start(name, {
-      ...(checkout !== undefined ? { checkout } : {}), caller: { evidence: agentEvidence({ ...process.env, ...env }), confirmed: confirmed === true, mode: resolveRunMode({ ...process.env, ...env }) },
-    }),
+    start: (name, { env, confirmed, checkout } = {}) => {
+      const caller = { evidence: agentEvidence({ ...process.env, ...env }), confirmed: confirmed === true, mode: resolveRunMode({ ...process.env, ...env }) };
+
+      return client.start(name, checkout !== undefined ? { checkout, caller } : { caller });
+    },
     next: (runId, body, options) => client.next(runId, body, options),
     report: (runId, body, options) => client.report(runId, body, options),
     retry: (runId, step) => client.retry(runId, step),
@@ -228,7 +251,7 @@ export interface ConformanceRunner {
   client: ConformanceClient;
   readRun(runId: string): Promise<RunState>;
   /** The run's queued end record, undefined while it has none. */
-  readEndRecord(runId: string): Promise<unknown>;
+  readEndRecord(runId: string): Promise<WorkflowRunRecord | undefined>;
   advance(ms: number): Promise<void>;
   expect: ConformanceExpect;
   /** The git checkout the run starts in and the bare origin it pushes to, for scenarios that check places. */
@@ -237,7 +260,9 @@ export interface ConformanceRunner {
 
 async function readOrNull(file: string): Promise<string | null> {
   const stat = await fs.stat(file).catch(() => undefined);
+
   if (!stat) return null;
+
   return stat.isDirectory() ? '' : fs.readFile(file, 'utf8');
 }
 
@@ -250,6 +275,7 @@ const standsForDriverUnderTest = (as: DriverProfile | undefined): as is 'local' 
  */
 export function speaksAsDriverUnderTest(scenario: ConformanceScenario): boolean {
   if (scenario.refusedBy !== undefined) return true;
+
   return scenario.operations.some((operation) => {
     switch (operation.kind) {
       case 'next':
@@ -282,82 +308,121 @@ export async function runConformanceScenario(scenario: ConformanceScenario, runn
   const { client, expect } = runner;
   const speaker = (as: DriverProfile | undefined): DriverProfile => (standsForDriverUnderTest(as) ? profile : as);
   const started = 'benchmark' in scenario ? await client.startBenchmark(scenario.benchmark.name) : await client.start(scenario.workflowName);
+
   if ('error' in started) throw new Error(started.error.message);
   const runId = String(started.data.run);
   const leases = new Map<string, SavedLease>();
   const attemptOf = (name: string): string | undefined => leases.get(name)?.attempt;
+
   const placeOf = (name: string | undefined): string => {
     const place = runner.place;
+
     if (!place) throw new Error('A scenario that checks places needs a runner with a place');
+
     if (name === undefined) return place.checkout;
     const cwd = leases.get(name)?.cwd;
+
     if (cwd === undefined) throw new Error(`Lease ${name} was not prepared`);
+
     return cwd;
   };
+
   const refusal = scenario.refusedBy?.[profile];
   let refused = false;
   const hosts = new Map<string, string>();
+
   const hostOf = (name: string): string => {
     const dir = hosts.get(name);
+
     if (dir === undefined) throw new Error(`No host operation made place ${name}`);
+
     return dir;
   };
+
   for (const operation of scenario.operations) {
     switch (operation.kind) {
       case 'next': {
         const as = speaker(operation.as);
         const { can } = DRIVER_PROFILES[as];
-        const prepare: NextPrepare | undefined = operation.prepare && operation.attempt !== undefined
-          ? { attempt: AttemptIdSchema.parse(attemptOf(operation.attempt)), ...(operation.adopt !== undefined ? { adopt: hostOf(operation.adopt) } : {}) }
-          : operation.prepare;
-        const envelope = await client.next(runId, {
-          driver: { ...profileDriver(as), can: { ...(operation.hitl !== undefined ? { hitl: operation.hitl } : {}), ...can, ...operation.can } },
-          ...(operation.running ? { running: operation.running.map(attemptOf) } : {}),
-          ...(operation.canTakeLease !== undefined ? { canTakeLease: operation.canTakeLease } : {}),
-          ...(operation.claim !== undefined ? { claim: operation.claim } : {}),
-          ...(operation.autoApprove !== undefined ? { autoApprove: operation.autoApprove } : {}),
-          ...(operation.base ? { base: operation.base } : {}),
-        }, prepare ? { prepare } : undefined);
+
+        let prepare: NextPrepare | undefined = operation.prepare;
+
+        if (operation.prepare && operation.attempt !== undefined) {
+          const attempt = AttemptIdSchema.parse(attemptOf(operation.attempt));
+          prepare = operation.adopt !== undefined ? { attempt, adopt: hostOf(operation.adopt) } : { attempt };
+        }
+
+        const declared: DriverCan = operation.hitl !== undefined ? { hitl: operation.hitl } : {};
+        const body: NextBody = { driver: { ...profileDriver(as), can: { ...declared, ...can, ...operation.can } } };
+
+        if (operation.running) body.running = operation.running.map(attemptOf);
+
+        if (operation.canTakeLease !== undefined) body.canTakeLease = operation.canTakeLease;
+
+        if (operation.claim !== undefined) body.claim = operation.claim;
+
+        if (operation.autoApprove !== undefined) body.autoApprove = operation.autoApprove;
+
+        if (operation.base) body.base = operation.base;
+        const envelope = await client.next(runId, body, prepare ? { prepare } : undefined);
+
         if (refusal?.at === operation.saveAs) {
           expect(envelope, `${profile} refuses the scenario at ${operation.saveAs}`).toMatchObject(refusal.expect);
           refused = true;
           break;
         }
+
         expect(envelope).toMatchObject(operation.expect);
+
         if (operation.state) expect(await runner.readRun(runId)).toMatchObject(operation.state);
+
         if ('data' in envelope && envelope.data.hitl) {
-          const hitl = envelope.data.hitl as { step: string; pass: number; respond: string };
+          const hitl = AnsweredHitlSchema.parse(envelope.data.hitl);
           expect(hitl.respond).toEqual(`teamai workflow respond ${runId} ${hitl.step} <option> --pass ${hitl.pass}`);
         }
+
         if (operation.cancelled) expect('data' in envelope && envelope.data.cancelled).toEqual(operation.cancelled.map(attemptOf));
+
         for (const field of operation.absent ?? []) expect('data' in envelope ? envelope.data.lease : undefined).not.toHaveProperty(field);
+
         if ('data' in envelope && envelope.data.lease) {
           const lease = SavedLeaseSchema.parse(envelope.data.lease);
+
           for (const text of operation.promptHas ?? []) expect(lease.prompt?.includes(text), `the prompt of ${operation.saveAs} has ${text}`).toEqual(true);
+
           if (operation.attempt !== undefined) expect(lease.attempt, `next prepared the attempt of ${operation.attempt}`).toEqual(attemptOf(operation.attempt));
+
           if (operation.adopt !== undefined) expect(lease.cwd, `the lease runs in host place ${operation.adopt}`).toEqual(hostOf(operation.adopt));
           leases.set(operation.saveAs, lease);
         }
+
         break;
       }
+
       case 'host': {
         const checkout = placeOf(undefined);
         const workspace = leases.get(operation.lease)?.workspace;
+
         if (!workspace) throw new Error(`Host place ${operation.name} needs lease ${operation.lease} with a workspace`);
         const dir = path.join(path.dirname(checkout), 'hosts', operation.name);
         await fs.mkdir(path.dirname(dir), { recursive: true });
         const { branch, start: { commit } } = workspace;
+
         const steps: Array<[string, string[]]> = operation.on === 'foreign'
           ? [[path.dirname(dir), ['init', '-q', dir]], [dir, ['-c', 'user.name=Host', '-c', 'user.email=host@example.invalid', 'commit', '-q', '--allow-empty', '-m', 'host']]]
           : [[checkout, ['worktree', 'add', '-q', ...{ branch: ['-b', branch], start: ['--detach'], other: ['-b', `host/${operation.name}`] }[operation.on], dir, commit]]];
+
         for (const [cwd, args] of steps) {
           const made = await git(cwd, args);
+
           if (made.code !== 0) throw new Error(`git ${args.join(' ')} failed: ${made.stderr}`);
         }
+
         for (const [file, text] of Object.entries(operation.files ?? {})) await fs.writeFile(path.join(dir, file), text);
         hosts.set(operation.name, dir);
         break;
       }
+
       case 'edit':
         for (const [file, text] of Object.entries(operation.files)) await fs.writeFile(path.join(placeOf(operation.lease), file), text);
         break;
@@ -365,17 +430,20 @@ export async function runConformanceScenario(scenario: ConformanceScenario, runn
         for (const [file, text] of Object.entries(operation.expect)) {
           expect(await readOrNull(path.join(placeOf(operation.lease), file)), file).toEqual(text);
         }
+
         break;
       case 'start': {
         const { workflow, driver, confirmed, env } = operation;
         expect(await client.start(workflow ?? ('workflowName' in scenario ? scenario.workflowName : scenario.benchmark.name), { driver, confirmed, env })).toMatchObject(operation.expect);
         break;
       }
+
       case 'respond': {
         const json = 'json' in operation || !operation.as ? operation.json : { driver: profileDriver(speaker(operation.as)) };
         expect(await client.respond(runId, operation.step, operation.choice, { note: operation.note, pass: operation.pass, json, env: operation.env })).toMatchObject(operation.expect);
         break;
       }
+
       case 'retry':
         expect(await client.retry(runId, operation.step)).toMatchObject(operation.expect);
         break;
@@ -387,28 +455,40 @@ export async function runConformanceScenario(scenario: ConformanceScenario, runn
         break;
       case 'report': {
         const lease = operation.lease ? leases.get(operation.lease) : undefined;
-        expect(await client.report(runId, {
-          attempt: operation.attempt ?? lease?.attempt,
-          revision: operation.revision ?? lease?.revision,
-          driver: profileDriver(speaker(operation.as)),
-          ...operation.body,
-          ...(operation.changes ? { changes: leasedChanges(lease, operation.changes) } : {}),
-        })).toMatchObject(operation.expect);
+
+        const attempt = operation.attempt ?? lease?.attempt;
+        const revision = operation.revision ?? lease?.revision;
+        const body: ScenarioJson = {};
+
+        if (attempt !== undefined) body.attempt = attempt;
+
+        if (revision !== undefined) body.revision = revision;
+        body.driver = { ...profileDriver(speaker(operation.as)) };
+        Object.assign(body, operation.body);
+
+        if (operation.changes) body.changes = leasedChanges(lease, operation.changes);
+        expect(await client.report(runId, body)).toMatchObject(operation.expect);
         break;
       }
+
       default: {
         const unhandled: never = operation;
         throw new Error(`unknown conformance operation ${JSON.stringify(unhandled)}`);
       }
     }
+
     if (refused) break;
   }
+
   if (refusal && !refused) throw new Error(`The scenario says ${profile} refuses it at ${refusal.at}, but no next saved as ${refusal.at} ran`);
+
   if (!refused) await expectEnd(scenario, runner, runId, leases);
   const secrets = Object.entries('benchmark' in scenario ? {} : scenario.env ?? {});
+
   if (secrets.length === 0) return;
   const stored = JSON.stringify(await runner.readRun(runId));
   const record = JSON.stringify(await runner.readEndRecord(runId)) ?? '';
+
   for (const [name, value] of secrets) {
     expect(stored.includes(value), `the run file holds the value of ${name}`).toEqual(false);
     expect(record.includes(value), `the end record holds the value of ${name}`).toEqual(false);
@@ -418,17 +498,22 @@ export async function runConformanceScenario(scenario: ConformanceScenario, runn
 /** The end expectations of a scenario that held: the persisted run, its end record, and what origin got. */
 async function expectEnd(scenario: ConformanceScenario, runner: ConformanceRunner, runId: string, leases: Map<string, SavedLease>): Promise<void> {
   const { expect } = runner;
+
   if (scenario.expectState) expect(await runner.readRun(runId)).toMatchObject(scenario.expectState);
+
   if (scenario.expectRecord) expect(await runner.readEndRecord(runId)).toMatchObject(scenario.expectRecord);
+
   for (const [name, files] of Object.entries(scenario.expectPushed ?? {})) {
     const origin = runner.place?.origin;
     const lease = leases.get(name);
+
     if (!origin || !lease?.workspace) throw new Error(`expectPushed needs a runner with a place and lease ${name} with a workspace`);
     const step = (await runner.readRun(runId)).steps.find((item) => item.id === lease.step);
     const changes = step && 'changes' in step ? step.changes : undefined;
     expect(changes?.branch, `${lease.step} reported changes on its branch`).toEqual(lease.workspace.branch);
     const tip = (await git(origin, ['rev-parse', `refs/heads/${lease.workspace.branch}`])).stdout.trim();
     expect(tip, `${lease.workspace.branch} on origin is the commit ${lease.step} reported`).toEqual(changes?.to);
+
     for (const [file, text] of Object.entries(files)) expect((await git(origin, ['show', `${tip}:${file}`])).stdout).toEqual(text);
   }
 }
@@ -459,24 +544,42 @@ export async function driveByProtocol(input: {
   client: Pick<ConformanceClient, 'next' | 'report'>; runId: string; driver: DriverIdentity; can: DriverCan; claim?: true;
 }): Promise<WorkflowEnvelope> {
   const { client, runId, driver, can } = input;
+
   for (let calls = 0; calls < 20; calls += 1) {
-    const answer = await client.next(runId, { driver: { ...driver, can }, ...(input.claim && calls === 0 ? { claim: true } : {}) }, { prepare: true });
+    const body: NextBody = { driver: { ...driver, can } };
+
+    if (input.claim && calls === 0) body.claim = true;
+    const answer = await client.next(runId, body, { prepare: true });
+
     if ('error' in answer) {
       if (PREPARE_FAILURES.has(answer.error.code)) continue;
+
       return answer;
     }
+
     if (answer.data.done !== undefined) return answer;
     const lease = PreparedCommandSchema.safeParse(answer.data.lease);
+
     if (!lease.success) throw new Error(`Run ${runId} answered neither a prepared command nor its end: ${JSON.stringify(answer)}`);
     const { attempt, revision, step } = lease.data;
     const { exitCode, stdout } = await runCommand(lease.data);
     const outputs = commandOutputs(stdout);
-    const reported = await client.report(runId, {
-      attempt, revision, driver, outcome: exitCode === 0 ? 'success' : 'failed', exitCode,
-      ...(outputs !== undefined ? { outputs } : {}), ...(exitCode !== 0 ? { message: `command exited with status ${exitCode}` } : {}),
-    });
+
+    const report: ScenarioJson = {};
+    report.attempt = attempt;
+    report.revision = revision;
+    report.driver = { ...driver };
+    report.outcome = exitCode === 0 ? 'success' : 'failed';
+    report.exitCode = exitCode;
+
+    if (outputs !== undefined) report.outputs = outputs;
+
+    if (exitCode !== 0) report.message = `command exited with status ${exitCode}`;
+    const reported = await client.report(runId, report);
+
     if ('error' in reported) throw new Error(`The report of ${step} was refused: ${reported.error.message}`);
   }
+
   throw new Error(`Run ${runId} did not end within 20 calls`);
 }
 
@@ -486,12 +589,12 @@ export async function driveByProtocol(input: {
  * `next` is a workflow next that lists that lease in its running, which leaves the run as it was. `at` sets the clock.
  */
 export type JudgeConformanceOperation =
-  | { kind: 'take'; at: string; running?: true; expect: Record<string, unknown> }
-  | { kind: 'renew'; at: string; canTakeLease?: false; expect: Record<string, unknown> }
-  | { kind: 'next'; expect: Record<string, unknown> }
-  | { kind: 'report'; expect: Record<string, unknown> }
-  | { kind: 'submit'; expect: Record<string, unknown> }
-  | { kind: 'idle'; at: string; expect: Record<string, unknown> };
+  | { kind: 'take'; at: string; running?: true; expect: ScenarioJson }
+  | { kind: 'renew'; at: string; canTakeLease?: false; expect: ScenarioJson }
+  | { kind: 'next'; expect: ScenarioJson }
+  | { kind: 'report'; expect: ScenarioJson }
+  | { kind: 'submit'; expect: ScenarioJson }
+  | { kind: 'idle'; at: string; expect: ScenarioJson };
 
 /** A run of workflow `judged` whose scored pass a driver runs to its end, then the judge work of that pass. */
 export interface JudgeConformanceScenario {
@@ -501,21 +604,25 @@ export interface JudgeConformanceScenario {
   scorers: Record<string, string>;
   operations: JudgeConformanceOperation[];
   /** The profiles designed to refuse judge work, each with what its first `score --next` answers, where the scenario ends. */
-  refusedBy?: Partial<Record<JudgeProfile, Record<string, unknown>>>;
+  refusedBy?: Partial<Record<JudgeProfile, ScenarioJson>>;
 }
 
 /** The drivers every judge scenario runs as. */
 export const JUDGES_UNDER_TEST = ['external', 'skill', 'skill-no-judge'] as const;
+
 export type JudgeProfile = typeof JUDGES_UNDER_TEST[number];
 
-const CLAUDE_JUDGE: { isolation: 'verified'; tools: string[] } = { isolation: 'verified', tools: ['claude'] };
+/** The judge a profile declares in `driver.can.judge`. */
+type JudgeDeclaration = { isolation: 'verified'; access?: 'read'; tools: string[] };
+
+const CLAUDE_JUDGE: JudgeDeclaration = { isolation: 'verified', tools: ['claude'] };
 
 /**
  * The drivers a judge scenario speaks as: the workflow driver profile `as` runs the scored pass, then asks
  * `score --next` for judge work with the judge it declares, if any. `ownRun` names the run, so it takes that run's
  * judge work only.
  */
-export const JUDGE_PROFILES: Record<JudgeProfile, { as: DriverProfile; judge?: { isolation: 'verified'; access?: 'read'; tools: string[] }; ownRun: boolean }> = {
+export const JUDGE_PROFILES: Record<JudgeProfile, { as: DriverProfile; judge?: JudgeDeclaration; ownRun: boolean }> = {
   /** A program that judges any pass of the install with a verified Claude Code. */
   external: { as: 'external', judge: CLAUDE_JUDGE, ownRun: false },
   /** The skill driver, which judges its own run with the confined judge of its session's tool, found verified here, which only reads. */
@@ -527,9 +634,9 @@ export const JUDGE_PROFILES: Record<JudgeProfile, { as: DriverProfile; judge?: {
 /** What a runner of judge scenarios provides: its clients, the revision its run file holds, and the clock its calls read. */
 export interface JudgeConformanceRunner {
   client: Pick<ConformanceClient, 'start' | 'next' | 'report'> & {
-    scoreNext: (body: unknown) => Promise<WorkflowEnvelope>;
+    scoreNext: (body: ScenarioJson) => Promise<WorkflowEnvelope>;
     /** Settles judge lease `ref` with `body`, as `teamai score --lease <ref> --submit` does. */
-    submit: (ref: string, body: unknown) => Promise<WorkflowEnvelope>;
+    submit: (ref: string, body: ScenarioJson) => Promise<WorkflowEnvelope>;
   };
   readRevision(runId: string): Promise<number>;
   /** Sets the time every later call reads. */
@@ -537,8 +644,9 @@ export interface JudgeConformanceRunner {
   expect: ConformanceExpect;
 }
 
-function dataOf(envelope: WorkflowEnvelope): Record<string, unknown> {
+function dataOf(envelope: WorkflowEnvelope): Extract<WorkflowEnvelope, { data: unknown }>['data'] {
   if ('error' in envelope) throw new Error(envelope.error.message);
+
   return envelope.data;
 }
 
@@ -555,20 +663,36 @@ export async function runJudgeConformanceScenario(scenario: JudgeConformanceScen
   const work = LeasedSchema.parse(dataOf(await client.next(runId, { driver: { ...driver, can: DRIVER_PROFILES[judging.as].can } })).lease);
   dataOf(await client.report(runId, { ...work, driver, outcome: 'success', outputs: { reviewed: true } }));
   expect(await client.next(runId, { driver })).toMatchObject({ data: { done: {} } });
-  const request = (fields: { running: string[]; canTakeLease?: false }): unknown => ({
-    driver: { ...driver, can: judging.judge ? { judge: judging.judge } : {} }, ...(judging.ownRun ? { run: runId } : {}), ...fields,
-  });
+
+  const request = (fields: { running: string[]; canTakeLease?: false }) => {
+    const body: ScenarioJson = {};
+    body.driver = { ...driver, can: judging.judge ? { judge: { ...judging.judge } } : {} };
+
+    if (judging.ownRun) body.run = runId;
+    body.running = fields.running;
+
+    if (fields.canTakeLease !== undefined) body.canTakeLease = fields.canTakeLease;
+
+    return body;
+  };
+
   const refusal = scenario.refusedBy?.[profile];
+
   /** The answer of `score --next`, or undefined once `profile` refused it as the scenario says. */
-  const scoreNext = async (body: unknown): Promise<WorkflowEnvelope | undefined> => {
+  const scoreNext = async (body: ScenarioJson): Promise<WorkflowEnvelope | undefined> => {
     const answer = await client.scoreNext(body);
+
     if (!refusal) return answer;
     expect(answer, `${profile} is refused judge work`).toMatchObject(refusal);
+
     return undefined;
   };
+
   let ref = '';
+
   for (const operation of scenario.operations) {
     let answer: WorkflowEnvelope | undefined;
+
     switch (operation.kind) {
       case 'take':
         await runner.setClock(operation.at);
@@ -576,7 +700,7 @@ export async function runJudgeConformanceScenario(scenario: JudgeConformanceScen
         break;
       case 'renew':
         await runner.setClock(operation.at);
-        answer = await scoreNext(request({ running: [ref], ...(operation.canTakeLease === false ? { canTakeLease: false } : {}) }));
+        answer = await scoreNext(request(operation.canTakeLease === false ? { running: [ref], canTakeLease: false } : { running: [ref] }));
         break;
       case 'idle':
         await runner.setClock(operation.at);
@@ -588,20 +712,24 @@ export async function runJudgeConformanceScenario(scenario: JudgeConformanceScen
         expect(await runner.readRevision(runId), 'the run as it was').toEqual(before);
         break;
       }
+
       case 'report':
         answer = await client.report(runId, { attempt: ref, revision: 1, driver, outcome: 'success' });
         break;
       case 'submit':
-        answer = await client.submit(ref, { driver, outcome: 'success', answer: { label: 'good', reasoning: 'done' } });
+        answer = await client.submit(ref, { driver: { ...driver }, outcome: 'success', answer: { label: 'good', reasoning: 'done' } });
         break;
       default: {
         const unhandled: never = operation;
         throw new Error(`unknown judge conformance operation ${JSON.stringify(unhandled)}`);
       }
     }
+
     if (!answer) return;
     expect(answer).toMatchObject(operation.expect);
+
     if (operation.kind === 'take') ref = JudgeLeaseSchema.parse(dataOf(answer).lease).ref;
   }
+
   if (refusal) throw new Error(`The scenario says ${profile} is refused judge work, but it made no score --next`);
 }

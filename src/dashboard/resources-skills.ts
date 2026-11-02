@@ -14,6 +14,7 @@ import { installOf, locate, writable } from '../locate.js';
 import { getHandler } from '../resources/index.js';
 import { loadTagsConfig } from '../utils/tags.js';
 import { readFileSafe } from '../utils/fs.js';
+import { FrontmatterDescriptionSchema } from './resources.js';
 import { pathExists } from '../utils/fs.js';
 import { type LocalConfig, type TeamaiConfig } from '../types.js';
 import { loadLocalConfig, loadLocalConfigForScope, loadStateForScope, saveLocalConfig, saveLocalConfigForScope, saveStateForScope } from '../config.js';
@@ -52,11 +53,14 @@ export interface DashboardSkill {
 /** One skill's frontmatter description, or null: the page lists metadata only. */
 async function skillDescription(sourcePath: string): Promise<string | null> {
   const raw = await readFileSafe(pathJoin(sourcePath, 'SKILL.md'));
+
   if (raw === null) return null;
+
   try {
     const { data } = matter(raw);
-    const description = (data as { description?: unknown }).description;
-    return typeof description === 'string' && description.trim() !== '' ? description.trim() : null;
+    const description = FrontmatterDescriptionSchema.parse(data).description?.trim();
+
+    return description ? description : null;
   } catch {
     // Damaged frontmatter must not take the whole listing down.
     return null;
@@ -66,7 +70,9 @@ async function skillDescription(sourcePath: string): Promise<string | null> {
 /** Usernames from a skill's CONTRIBUTORS file; absent file → empty. */
 async function skillContributors(sourcePath: string): Promise<string[]> {
   const raw = await readFileSafe(pathJoin(sourcePath, 'CONTRIBUTORS'));
+
   if (raw === null) return [];
+
   return raw.split('\n').map((line) => line.trim()).filter((line) => line.length > 0);
 }
 
@@ -79,7 +85,9 @@ function pathJoin(dir: string, file: string): string {
 /** Items that have a SKILL.md, the resolver's own inventory filter. */
 async function withSkillMdLocal<T extends { sourcePath: string }>(items: readonly T[]): Promise<T[]> {
   const kept: T[] = [];
+
   for (const item of items) if (await pathExists(item.sourcePath)) kept.push(item);
+
   return kept;
 }
 
@@ -105,12 +113,14 @@ export async function collectSkillsInventory(
   roleContext: RolePullContext | null,
 ): Promise<SkillsInventory> {
   const resolved = await resolveDesiredSkills(teamConfig, localConfig, roleContext);
+
   // A conflict ends the delivery answer, not the inventory: enumerate the
   // whole repo the way the resolver's own scan does, so the page (and the
   // exclusions keyed on these names) survives it.
   const items = resolved.kind === 'resolved'
     ? resolved.teamItems
     : await withSkillMdLocal(await getHandler('skills').scanTeamForPull(teamConfig, localConfig));
+
   // Delivery is keyed by source identity (the team-repo path), not the
   // basename: a root skill and a namespaced copy can share a name, and only
   // the copy actually delivers (#1143 review).
@@ -134,20 +144,24 @@ export async function collectSkillsInventory(
   );
 
   const skills: DashboardSkill[] = [];
+
   for (const item of items) {
     const root = item.namespace === undefined || item.namespace === null;
     let undeliveredReason: DashboardSkill['undeliveredReason'];
     const excluded = excludedSkills.has(item.name);
+
     if (delivered.has(item.relativePath)) undeliveredReason = undefined;
     else if (excluded) undeliveredReason = 'excluded';
     else {
       const winner = winnerByName.get(item.name);
+
       if (shadowed.has(item.relativePath)) undeliveredReason = 'shadowed';
       else if (winner && winner.relativePath !== item.relativePath) undeliveredReason = 'replaced';
       else if (catalogued.has(item.name)) undeliveredReason = 'tags';
       else if (roleContext) undeliveredReason = 'namespace';
       else undeliveredReason = 'tags';
     }
+
     skills.push({
       name: item.name,
       namespace: root ? null : item.namespace ?? null,
@@ -165,6 +179,7 @@ export async function collectSkillsInventory(
       excluded,
     });
   }
+
   return { skills: skills.sort((a, b) => a.name.localeCompare(b.name)), skillConflict: resolved.kind === 'conflict' ? describeDeliveryConflict(resolved) : null };
 }
 
@@ -176,11 +191,15 @@ async function installedAgentsFor(
 ): Promise<string[]> {
   const install = installOf(teamConfig, localConfig);
   const installed: string[] = [];
+
   for (const tool of Object.keys(install.toolPaths)) {
     const skillsDir = writable(await locate(tool, 'skills', install))?.path ?? null;
+
     if (skillsDir === null) continue;
+
     if (await pathExists(pathJoin(skillsDir, skillName))) installed.push(tool);
   }
+
   return installed;
 }
 
@@ -200,7 +219,9 @@ export async function skillDetail(
 ): Promise<DashboardSkill | null> {
   const { skills } = await collectSkillsInventory(teamConfig, localConfig, roleContext);
   const matches = skills.filter((skill) => skill.name === name);
+
   if (sourcePath !== undefined) return matches.find((skill) => skill.path === sourcePath) ?? null;
+
   return matches.find((skill) => skill.delivered) ?? matches[0] ?? null;
 }
 
@@ -228,17 +249,21 @@ export async function setSkillExclusion(
   // the critical section so each write sees the previous one (#1143 review).
   const key = `${localConfig.scope}:${localConfig.projectRoot ?? localConfig.repo.localPath}`;
   const run = exclusionQueues.get(key) ?? Promise.resolve();
+
   const queued = run.then(
     () =>
       setSkillExclusionSerialized(teamConfig, localConfig, name, excluded, roleContext),
     () => setSkillExclusionSerialized(teamConfig, localConfig, name, excluded, roleContext),
   );
+
   exclusionQueues.set(
     key,
     queued.catch(() => undefined),
   );
+
   return queued;
 }
+
 const exclusionQueues = new Map<string, Promise<unknown>>();
 
 async function setSkillExclusionSerialized(
@@ -252,12 +277,16 @@ async function setSkillExclusionSerialized(
   // copy may predate another write.
   const diskConfig = (await reloadLocalConfig(localConfig)) ?? localConfig;
   const { skills } = await collectSkillsInventory(teamConfig, diskConfig, roleContext);
+
   if (!skills.some((skill) => skill.name === name)) {
     return { ok: false, error: 'unknown_skill' };
   }
+
   const existing = new Set(diskConfig.excludedSkills ?? []);
+
   if (excluded) existing.add(name);
   else existing.delete(name);
+
   const nextConfig: LocalConfig = {
     ...diskConfig,
     excludedSkills: existing.size > 0 ? [...existing].sort() : undefined,
@@ -271,6 +300,7 @@ async function setSkillExclusionSerialized(
   } else {
     await saveLocalConfig(nextConfig);
   }
+
   // A changed exclude list must bypass pull's unchanged-revision fast path so
   // excluded skills are removed, or newly included skills are restored.
   try {
@@ -285,6 +315,7 @@ async function setSkillExclusionSerialized(
   // so a re-included skill outside the active namespaces reports
   // delivered: false here too (#1143 review).
   const updated = await skillDetail(teamConfig, nextConfig, roleContext, name);
+
   return { ok: true, skill: updated! };
 }
 
@@ -294,6 +325,7 @@ async function reloadLocalConfig(localConfig: LocalConfig): Promise<LocalConfig 
     // oxlint-disable-next-line teamai/config-load-options -- reload follows a persisted dashboard edit; this path has no preview mode
     return loadLocalConfigForScope('project', localConfig.projectRoot);
   }
+
   // oxlint-disable-next-line teamai/config-load-options -- reload follows a persisted dashboard edit; this path has no preview mode
   return loadLocalConfig();
 }

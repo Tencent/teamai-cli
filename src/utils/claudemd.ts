@@ -23,8 +23,10 @@ export async function injectClaudeMdSection(
     block: string,
 ): Promise<void> {
     const existing = await readFileSafe(filePath);
+
     if (existing === null) {
         await writeFile(filePath, block + '\n');
+
         return;
     }
 
@@ -32,6 +34,7 @@ export async function injectClaudeMdSection(
     const endIdx = existing.indexOf(endMarker);
 
     let updated: string;
+
     if (startIdx !== -1 && endIdx !== -1) {
         // Both markers found → replace
         updated = existing.substring(0, startIdx) + block + existing.substring(endIdx + endMarker.length);
@@ -58,10 +61,12 @@ export async function removeClaudeMdSection(
     options: { deleteIfEmpty?: boolean } = {},
 ): Promise<boolean> {
     const existing = await readFileSafe(filePath);
+
     if (!existing) return false;
 
     const startIdx = existing.indexOf(startMarker);
     const endIdx = existing.indexOf(endMarker);
+
     if (startIdx === -1 || endIdx === -1 || endIdx < startIdx) return false;
 
     const before = existing.substring(0, startIdx).replace(/\n+$/, '\n');
@@ -69,13 +74,16 @@ export async function removeClaudeMdSection(
     // a teamai-created file still reads as teamai's when its next section goes.
     const after = existing.substring(endIdx + endMarker.length).replace(/^\n+/, startIdx === 0 ? '' : '\n');
     const rest = (before + after).trimEnd();
+
     if (options.deleteIfEmpty && rest.trim() === '') {
         // A link is the member's (a dotfiles setup): it stays, and its target is emptied instead.
         const isLink = (await fse.lstat(filePath).catch(() => null))?.isSymbolicLink() ?? false;
+
         if (startIdx === 0 && !isLink) await remove(filePath);
         else await writeFile(filePath, '');
     } else {
         await writeFile(filePath, rest + '\n');
     }
+
     return true;
 }

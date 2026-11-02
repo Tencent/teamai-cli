@@ -24,6 +24,7 @@ export async function withTimeout<T>(
   message: string,
 ): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
+
   const timeoutPromise = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new Error(message)), timeoutMs);
   });

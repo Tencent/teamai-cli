@@ -27,6 +27,7 @@ export function runHookCommand(command: string, opts: { cwd: string | undefined;
     const stderrChunks: Buffer[] = [];
     let settled = false;
     let timeoutTriggered = false;
+
     const finish = (code: number | null, timedOut = false) => {
       if (settled) return;
       settled = true;
@@ -38,14 +39,17 @@ export function runHookCommand(command: string, opts: { cwd: string | undefined;
         timedOut,
       });
     };
+
     const child = spawn(shell === true ? command : shell, spawnArgs, {
-      ...(shell === true ? { shell: true } : {}),
+      // Git Bash runs `-lc command` itself, so Node adds no shell of its own.
+      shell: shell === true,
       cwd: opts.cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
       // Its own process group, so a timeout stops the shell and what it started.
       detached: group,
     });
+
     const kill = (): void => {
       try {
         child.kill('SIGKILL');
@@ -53,8 +57,10 @@ export function runHookCommand(command: string, opts: { cwd: string | undefined;
         // The child already exited.
       }
     };
+
     const timer = setTimeout(() => {
       timeoutTriggered = true;
+
       if (process.platform === 'win32' && child.pid) {
         // Killing Git Bash alone leaves its foreground children alive. Wait for
         // taskkill's /T tree termination before returning a timeout to the host.
@@ -63,6 +69,7 @@ export function runHookCommand(command: string, opts: { cwd: string | undefined;
             stdio: 'ignore',
             windowsHide: true,
           });
+
           taskkill.once('error', () => { kill(); finish(null, true); });
           taskkill.once('close', () => finish(null, true));
         } catch {
@@ -76,9 +83,11 @@ export function runHookCommand(command: string, opts: { cwd: string | undefined;
         } catch {
           // The child already exited.
         }
+
         finish(null, true);
       }
     }, opts.timeout * 1_000);
+
     child.stdout?.on('data', (chunk: Buffer | string) => { stdoutChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); });
     child.stderr?.on('data', (chunk: Buffer | string) => { stderrChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); });
     child.on('error', (error) => { stderrChunks.push(Buffer.from(error.message)); finish(null, timeoutTriggered); });

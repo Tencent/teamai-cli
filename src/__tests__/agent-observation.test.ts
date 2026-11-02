@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
-  isNameShaped,
+  isRecordableName,
   observeLaunch,
   parseReportedAgent,
   readRecordedAgent,
@@ -149,12 +149,12 @@ describe('readRecordedAgent (#1176)', () => {
   });
 });
 
-describe('isNameShaped', () => {
+describe('isRecordableName', () => {
   it('accepts model names and rejects paths, URLs and text', () => {
-    expect(isNameShaped('anthropic/claude-sonnet-4.6@2026')).toBe(true);
-    expect(isNameShaped('2.1.301')).toBe(true);
+    expect(isRecordableName('anthropic/claude-sonnet-4.6@2026')).toBe(true);
+    expect(isRecordableName('2.1.301')).toBe(true);
     for (const value of ['/usr/bin/claude', 'C:\\claude', 'https://x', '../x', 'two words', '']) {
-      expect(isNameShaped(value)).toBe(false);
+      expect(isRecordableName(value)).toBe(false);
     }
   });
 });

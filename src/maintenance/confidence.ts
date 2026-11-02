@@ -2,10 +2,14 @@
 import path from 'node:path';
 
 import matter from 'gray-matter';
+import { z } from 'zod';
 
 import { ensureDir, readFileSafe, writeFile, listFiles } from '../utils/fs.js';
 import { isInWriteRoot, listLearningFiles } from '../utils/learnings-roots.js';
 import { log } from '../utils/logger.js';
+
+/** A frontmatter confidence that counts only when it is a finite number. */
+const FrontmatterNumberSchema = z.number().optional().catch(undefined);
 
 export interface ConfidenceFactors {
   recalledCount: number;
@@ -36,15 +40,18 @@ export function computeConfidence(factors: ConfidenceFactors): number {
       : (lastRecalledAt || lastUpvotedAt || '');
 
   let daysSinceActivity = 180;
+
   if (lastActivityAt) {
     const elapsed = Date.now() - new Date(lastActivityAt).getTime();
     daysSinceActivity = Math.max(0, elapsed / (1000 * 60 * 60 * 24));
   }
+
   const recency = Math.max(0, 1.0 - daysSinceActivity / 180);
 
   const ratio = Math.min(1.0, upvotedCount / Math.max(1, recalledCount));
 
   const score = base * 0.4 + recency * 0.3 + ratio * 0.3;
+
   return Math.round(score * 100) / 100;
 }
 
@@ -60,18 +67,23 @@ export async function computeAllConfidence(votesDir: string): Promise<Map<string
 
   for (const file of files) {
     if (!file.endsWith('.yaml') && !file.endsWith('.yml')) continue;
+
     try {
       const data = await readUserVotes(path.join(votesDir, file));
+
       for (const [docId, entry] of Object.entries(data.votes)) {
         const existing = aggregated.get(docId) ?? { recalled: 0, upvoted: 0, lastRecalled: '' };
         existing.recalled += entry.recalled_count ?? 0;
         existing.upvoted += entry.upvoted_count ?? 0;
+
         if (entry.last_recalled_at > existing.lastRecalled) {
           existing.lastRecalled = entry.last_recalled_at;
         }
+
         if (entry.last_upvoted_at && (!existing.lastUpvoted || entry.last_upvoted_at > existing.lastUpvoted)) {
           existing.lastUpvoted = entry.last_upvoted_at;
         }
+
         aggregated.set(docId, existing);
       }
     } catch {
@@ -86,6 +98,7 @@ export async function computeAllConfidence(votesDir: string): Promise<Map<string
       lastRecalledAt: data.lastRecalled,
       lastUpvotedAt: data.lastUpvoted,
     };
+
     result.set(docId, computeConfidence(factors));
   }
 
@@ -110,19 +123,22 @@ export async function writeBackConfidence(
   for (const { file, absPath } of files) {
     const docId = file.replace(/\.md$/i, '');
     const newConf = confidenceMap.get(docId);
+
     if (newConf === undefined) continue;
 
     const content = await readFileSafe(absPath);
+
     if (!content) continue;
 
     try {
       const { data, content: body } = matter(content);
-      const existingConf = typeof data.confidence === 'number' ? data.confidence : undefined;
+      const existingConf = FrontmatterNumberSchema.parse(data.confidence);
 
       if (existingConf !== undefined && Math.abs(existingConf - newConf) <= 0.05) continue;
 
       data.confidence = newConf;
       const newContent = matter.stringify(body, data);
+
       // An inherited learning lives in a root nothing pushes, so rewriting it
       // there would be discarded by the next realign and never reach the team.
       // The new version goes to the write root instead, where it takes
@@ -130,10 +146,12 @@ export async function writeBackConfidence(
       const target = writeRoot && !isInWriteRoot(absPath, writeRoot)
         ? path.join(writeRoot, file)
         : absPath;
+
       if (!options.dryRun) {
         await ensureDir(path.dirname(target));
         await writeFile(target, newContent);
       }
+
       written.push(target);
     } catch {
       log.debug(`confidence: failed to update frontmatter for: ${file}`);
@@ -143,5 +161,6 @@ export async function writeBackConfidence(
   if (written.length > 0) {
     log.info(`${options.dryRun ? '[dry-run] Would update' : 'Updated'} confidence scores for ${written.length} learning(s)`);
   }
+
   return written;
 }

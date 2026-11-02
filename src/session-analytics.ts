@@ -46,13 +46,16 @@ export function attributeByRepo(events: DashboardEvent[]): RepoStat[] {
     // By label, not key: the directories that are not a repo share `no_repo`.
     const repo = repoLabel(key, allKeys);
     let r = byRepo.get(repo);
+
     if (!r) {
       r = { repo, sessions: 0, prompts: 0, tools: 0, interventions: 0, tokens: emptyTokenUsage() };
       byRepo.set(repo, r);
     }
+
     r.sessions += 1;
     r.tools += sessionTools.get(sid) ?? 0;
     const m = metrics.get(sid);
+
     if (m) {
       r.prompts += m.prompts;
       r.interventions += m.interrupt + m.toolReject + m.correction;
@@ -96,27 +99,34 @@ export function timeAnalytics(events: DashboardEvent[]): TimeAnalytics {
   for (const e of events) {
     const t = new Date(e.timestamp);
     const ms = t.getTime();
+
     if (Number.isNaN(ms)) continue;
     const hour = t.getHours();
     byHour[hour] += 1;
+
     if (hour < 6) nightOwl += 1;
     total += 1;
     const arr = perSession.get(e.sessionId);
+
     if (arr) arr.push(ms);
     else perSession.set(e.sessionId, [ms]);
   }
 
   let activeMs = 0;
+
   for (const times of perSession.values()) {
     times.sort((a, b) => a - b);
+
     for (let i = 1; i < times.length; i++) {
       const gap = times[i] - times[i - 1];
+
       if (gap > 0 && gap < ACTIVE_GAP_MS) activeMs += gap;
     }
   }
 
   let peakHour = -1;
   let peakCount = -1;
+
   for (let h = 0; h < 24; h++) {
     if (byHour[h] > peakCount) {
       peakCount = byHour[h];
@@ -141,6 +151,7 @@ export function timeAnalytics(events: DashboardEvent[]): TimeAnalytics {
 export function renderHourSparkline(byHour: number[]): string {
   const bars = '▁▂▃▄▅▆▇█';
   const max = Math.max(...byHour, 1);
+
   return byHour
     .map((c) => (c === 0 ? '·' : bars[Math.min(bars.length - 1, Math.round((c / max) * (bars.length - 1)))]))
     .join('');

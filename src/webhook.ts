@@ -3,7 +3,7 @@ import { autoDetectInit, loadTeamConfig } from './config.js';
 import { log } from './utils/logger.js';
 import { redactWithEnv } from './utils/redact.js';
 import { getWebhookSharing, type LocalConfig, type WebhookEndpoint, type WebhookConfig, type WebhookPayload } from './types.js';
-import { formatFeishuMessage, formatWecomMessage, formatGenericJson } from './webhook-formatters.js';
+import { formatFeishuMessage, formatWecomMessage, formatGenericJson, type WebhookMessage } from './webhook-formatters.js';
 
 /**
  * Send a webhook notification to all configured endpoints.
@@ -55,15 +55,15 @@ async function sendToEndpoint(
   const { url, type, secret, timeout, retries } = endpoint;
 
   const body = formatMessage(type, payload);
-  const serialized = typeof body === 'string' ? body : JSON.stringify(body);
+  const serialized = JSON.stringify(body);
   // Defense-in-depth: scrub any secret that slipped through the field whitelist
   // before the payload leaves the machine (#701). Route the whole outbound string
   // through the shared redact module rather than hand-masking at the call site.
   const outbound = redactWithEnv(serialized);
 
-  const headers: Record<string, string> = {
-    'Content-Type': type === 'json' ? 'application/json' : 'text/plain; charset=utf-8',
-  };
+  const headerEntries: [string, string][] = [
+    ['Content-Type', type === 'json' ? 'application/json' : 'text/plain; charset=utf-8'],
+  ];
 
   if (secret) {
     // Sign the exact bytes sent so a receiver that verifies the signature over
@@ -71,13 +71,17 @@ async function sendToEndpoint(
     const signature = createHmac('sha256', secret)
       .update(outbound)
       .digest('hex');
-    headers['X-TeamAI-Signature'] = `sha256=${signature}`;
+
+    headerEntries.push(['X-TeamAI-Signature', `sha256=${signature}`]);
   }
+
+  const headers = Object.fromEntries(headerEntries);
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     let failure: string;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeout);
+
     try {
       const response = await fetch(url, {
         method: 'POST',
@@ -88,18 +92,21 @@ async function sendToEndpoint(
 
       if (response.ok) {
         log.debug(`Webhook sent successfully to ${url}`);
+
         return true;
       }
 
       if (response.status >= 400 && response.status < 500 && response.status !== 429) {
         log.warn(`Webhook to ${url} failed with status ${response.status} (not retrying)`);
+
         return false;
       }
+
       failure = `status ${response.status}`;
     } catch (error) {
       failure = error instanceof Error && error.name === 'AbortError'
         ? `timed out after ${timeout}ms`
-        : (error as Error).message;
+        : error instanceof Error ? error.message : String(error);
     } finally {
       clearTimeout(timeoutId);
     }
@@ -112,6 +119,7 @@ async function sendToEndpoint(
       log.warn(`Webhook to ${url} failed after ${retries + 1} attempt(s): ${failure}`);
     }
   }
+
   return false;
 }
 
@@ -121,7 +129,7 @@ async function sendToEndpoint(
 function formatMessage(
   type: WebhookEndpoint['type'],
   payload: WebhookPayload,
-): string | Record<string, unknown> {
+): WebhookMessage {
   switch (type) {
     case 'feishu':
       return formatFeishuMessage(payload);
@@ -142,7 +150,9 @@ export async function loadWebhookConfig(
 ): Promise<WebhookConfig> {
   if (!localConfig) return getWebhookSharing((await autoDetectInit(undefined, options)).teamConfig);
   const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+
   if (!teamConfig) throw new Error(`No usable team config (teamai.yaml) in ${localConfig.repo.localPath}.`);
+
   return getWebhookSharing(teamConfig);
 }
 
@@ -166,11 +176,13 @@ export async function testWebhook(url?: string, options: { dryRun?: boolean } = 
 
   if (options.dryRun) {
     log.info(`[dry-run] Would send a test webhook to ${endpoints.length} endpoint(s).`);
+
     return;
   }
 
   if (endpoints.length === 0) {
     log.warn('No webhook endpoints configured.');
+
     return;
   }
 
@@ -185,6 +197,7 @@ export async function testWebhook(url?: string, options: { dryRun?: boolean } = 
 
   for (const endpoint of endpoints) {
     log.info(`Testing webhook to ${endpoint.url}...`);
+
     if (await sendToEndpoint(endpoint, testPayload)) {
       log.success(`Webhook test successful: ${endpoint.url}`);
     } else {

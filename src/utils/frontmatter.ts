@@ -1,10 +1,22 @@
 import matter from 'gray-matter';
 import { log } from './logger.js';
 
+/**
+ * A value in parsed frontmatter: one of the values js-yaml's safe schema, which
+ * gray-matter parses YAML with, constructs (`!!timestamp` is a Date, `!!binary`
+ * a Buffer).
+ */
+export type FrontmatterValue = string | number | boolean | null | Date | Uint8Array | FrontmatterValue[] | FrontmatterData;
+
+/** A frontmatter mapping: field name to parsed YAML value. */
+export interface FrontmatterData {
+  [field: string]: FrontmatterValue;
+}
+
 /** Result of splitting a document into its YAML frontmatter and body. */
 export interface FrontmatterSplit {
   /** Parsed frontmatter fields. Empty object when absent or unparseable. */
-  data: Record<string, unknown>;
+  data: FrontmatterData;
   /** Whether a present frontmatter block parsed to a plain YAML mapping. Meaningful only when `raw` is non-empty. */
   valid: boolean;
   /** Document body after the frontmatter block (any leading BOM removed). */
@@ -28,9 +40,10 @@ function stripBom(text: string): string {
 }
 
 /** YAML mappings parse to plain records; scalars such as timestamps may still be objects. */
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-    if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+function isPlainRecord(value: FrontmatterValue | undefined): value is FrontmatterData {
+    if (value === null || value === undefined) return false;
     const prototype = Object.getPrototypeOf(value);
+
     return prototype === Object.prototype || prototype === null;
 }
 
@@ -43,35 +56,47 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
  */
 export function splitFrontmatter(content: string): FrontmatterSplit {
     const match = content.match(FRONTMATTER_BLOCK);
+
     if (!match) {
         if (OPENING_FENCE.test(content)) {
             log.warn('Frontmatter block has opening "---" but no closing delimiter; metadata will be ignored');
         }
+
         return { data: {}, valid: false, body: stripBom(content), raw: '' };
     }
+
     const rawFull = match[0];
     const body = content.slice(rawFull.length);
     const raw = stripBom(rawFull);
-    let data: Record<string, unknown> = {};
+    let data: FrontmatterData = {};
     let valid = false;
+
     try {
         // Passing options disables gray-matter's module-level cache. Cache entries
         // otherwise survive parse failures and share mutable `data` references.
         const parsed = matter(raw, {});
-        if (!isPlainRecord(parsed.data)) {
+        // gray-matter types `data` as `any`; FRONTMATTER_BLOCK admits no
+        // language tag on the fence, so it is always YAML from js-yaml's safe
+        // schema, i.e. a FrontmatterValue.
+        const parsedData: FrontmatterValue | undefined = parsed.data;
+
+        if (!isPlainRecord(parsedData)) {
             return { data: {}, valid: false, body, raw };
         }
-        data = { ...parsed.data };
+
+        data = { ...parsedData };
         valid = true;
     } catch {
         data = {};
     }
+
     return { data, valid, body, raw };
 }
 
 /** Parse frontmatter fields and body from a document. */
-export function parseFrontmatter(content: string): { data: Record<string, unknown>; body: string } {
+export function parseFrontmatter(content: string): Pick<FrontmatterSplit, 'data' | 'body'> {
     const { data, body } = splitFrontmatter(content);
+
     return { data, body };
 }
 
@@ -90,6 +115,6 @@ export function hasFrontmatter(content: string): boolean {
  *
  * Produces LF-delimited output in the form `---\n<yaml>---\n<body>`.
  */
-export function stringifyFrontmatter(data: Record<string, unknown>, body: string): string {
+export function stringifyFrontmatter(data: FrontmatterData, body: string): string {
     return matter.stringify(body, data);
 }

@@ -51,6 +51,23 @@ describe('parseTranscriptForVotes', () => {
     expect(result.recalledDocIds).toHaveLength(2);
   });
 
+  it('skips a line that is not an object and reads the lines after it', async () => {
+    const filePath = path.join(tmpDir, 'transcript.jsonl');
+    fs.writeFileSync(filePath, 'null\n42\n"text"\n');
+    writeLine(filePath, {
+      type: 'assistant',
+      message: {
+        content: [{
+          type: 'text',
+          text: '--- [teamai:recall:start] ---\nFile: /path/to/learnings/api-fix.md\n--- [teamai:recall:end] ---',
+        }],
+      },
+    });
+
+    const result = await parseTranscriptForVotes(filePath);
+    expect(result.recalledDocIds).toEqual(['api-fix']);
+  });
+
   it('deduplicates across multiple messages', async () => {
     const filePath = path.join(tmpDir, 'transcript.jsonl');
     writeLine(filePath, {

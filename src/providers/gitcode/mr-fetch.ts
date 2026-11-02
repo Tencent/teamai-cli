@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { type MRData } from '../../types.js';
 import { log } from '../../utils/logger.js';
 import { getGitCodeToken, gitcodeApiBase } from './gitcode-api.js';
@@ -21,33 +22,43 @@ function parseGitCodePRUrl(url: string): ParsedGitCodePR {
   const match = url.match(
     /^https?:\/\/([^/]+)\/([^/]+)\/([^/]+)\/(?:pull|pulls|merge_requests)\/(\d+)/i,
   );
+
   if (!match) {
     throw new Error(`Invalid GitCode PR URL: ${url}`);
   }
+
   const host = match[1].toLowerCase().replace(/^www\./, '');
+
   if (host !== GITCODE_HOST) {
     throw new Error(
       `Refusing to fetch GitCode PR from "${match[1]}": only ${GITCODE_HOST} is supported.`,
     );
   }
+
   return { owner: match[2], repo: match[3], number: match[4] };
 }
 
 /** GitCode REST API 返回的 PR 元信息（仅使用的字段） */
-interface GitCodePR {
-  title: string;
-  body: string | null;
-  user: { login: string };
-  merged_at?: string | null;
-}
+const GitCodePRSchema = z.object({
+  title: z.string(),
+  body: z.string().nullish(),
+  user: z.object({ login: z.string() }).nullish(),
+  merged_at: z.string().nullish(),
+});
 
 /** GitCode REST API 返回的 commit（仅使用的字段） */
-interface GitCodeCommit {
-  sha: string;
-  commit?: { message?: string };
-}
+const GitCodeCommitsSchema = z.array(z.object({
+  sha: z.string(),
+  commit: z.object({ message: z.string().nullish() }).nullish(),
+}));
 
-function authHeaders(token: string): Record<string, string> {
+/** GitCode REST API 返回的 PR 文件（仅使用的字段） */
+const GitCodeFilesSchema = z.array(z.object({
+  patch: z.string().nullish(),
+  diff: z.string().nullish(),
+}));
+
+function authHeaders(token: string) {
   return { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' };
 }
 
@@ -65,6 +76,7 @@ function authHeaders(token: string): Record<string, string> {
 export async function fetchGitCodeMR(url: string): Promise<MRData> {
   const { owner, repo, number } = parseGitCodePRUrl(url);
   const token = getGitCodeToken();
+
   if (!token) {
     throw new Error('GITCODE_TOKEN is not set.');
   }
@@ -75,32 +87,38 @@ export async function fetchGitCodeMR(url: string): Promise<MRData> {
 
   // ── 1. 元信息 ─────────────────────────────────────────────
   const resp = await fetch(base, { headers, redirect: 'manual' });
+
   if (!resp.ok) {
     throw new Error(`GitCode API error ${resp.status}: ${await resp.text()}`);
   }
-  const pr = (await resp.json()) as GitCodePR;
+
+  const pr = GitCodePRSchema.parse(await resp.json());
 
   // ── 2. 提交列表（失败非致命） ─────────────────────────────
   let commits: Array<{ hash: string; message: string }> = [];
+
   try {
     const commitsResp = await fetch(`${base}/commits?per_page=50`, { headers, redirect: 'manual' });
+
     if (commitsResp.ok) {
-      const raw = (await commitsResp.json()) as GitCodeCommit[];
+      const raw = GitCodeCommitsSchema.parse(await commitsResp.json());
       commits = raw.map((c) => ({
         hash: c.sha,
         message: (c.commit?.message ?? '').split('\n')[0],
       }));
     }
   } catch (err) {
-    log.debug(`GitCode PR commits 获取异常，commits 将为空：${(err as Error).message}`);
+    log.debug(`GitCode PR commits 获取异常，commits 将为空：${err instanceof Error ? err.message : String(err)}`);
   }
 
   // ── 3. diff（截断 50KB，失败非致命） ──────────────────────
   let diff = '';
+
   try {
     const filesResp = await fetch(`${base}/files`, { headers, redirect: 'manual' });
+
     if (filesResp.ok) {
-      const files = (await filesResp.json()) as Array<{ patch?: string; diff?: string }>;
+      const files = GitCodeFilesSchema.parse(await filesResp.json());
       diff = files
         .map((f) => f.patch ?? f.diff ?? '')
         .filter(Boolean)
@@ -110,7 +128,7 @@ export async function fetchGitCodeMR(url: string): Promise<MRData> {
       log.debug(`GitCode PR diff 获取失败（${filesResp.status}），diff 将为空`);
     }
   } catch (err) {
-    log.debug(`GitCode PR diff 获取异常，diff 将为空：${(err as Error).message}`);
+    log.debug(`GitCode PR diff 获取异常，diff 将为空：${err instanceof Error ? err.message : String(err)}`);
   }
 
   return {

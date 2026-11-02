@@ -14,12 +14,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const repoPath = process.argv[2];
+
 if (!repoPath) {
   console.error('Usage: npx tsx scripts/backfill-contributors.ts <team-repo-path>');
   process.exit(1);
 }
 
 const skillsDir = path.join(repoPath, 'skills');
+
 if (!fs.existsSync(skillsDir)) {
   console.error(`Skills directory not found: ${skillsDir}`);
   process.exit(1);
@@ -62,6 +64,7 @@ for (const entry of entries) {
     const allAuthors = raw.split('\n').map(l => l.trim()).filter(l => l.length > 0);
     const seen = new Set<string>();
     const contributors: string[] = [];
+
     // git log outputs newest-first; reverse to get chronological order
     for (const author of allAuthors.toReversed()) {
       if (!seen.has(author)) {
@@ -74,7 +77,7 @@ for (const entry of entries) {
     console.log(`  wrote ${skillName} → ${contributors.join(', ')}`);
     updated++;
   } catch (e) {
-    console.error(`  error ${skillName}: ${(e as Error).message}`);
+    console.error(`  error ${skillName}: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 

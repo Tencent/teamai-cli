@@ -17,6 +17,7 @@ export const TeamSelectionSchema = z.object({
   /** The tools the install delivers to; absent: the tool of the step that opens the clone, else the member's enabled agents. */
   enabledAgents: z.array(z.string().min(1)).nonempty().optional(),
 }).strict();
+
 export type TeamSelection = z.infer<typeof TeamSelectionSchema>;
 
 /**
@@ -43,7 +44,9 @@ export const CloneTeamSchema = z.union([
   z.object({ treatment: z.literal('none') }).strict(),
   z.object({ revision: CommitSchema, selection: TeamSelectionSchema, treatment: TreatmentSchema }).strict(),
 ]);
+
 export type CloneTeam = z.infer<typeof CloneTeamSchema>;
+
 /** A team the clone gets assets of: any treatment but `none`. */
 export type InstalledTeam = Extract<CloneTeam, { revision: string }>;
 
@@ -56,4 +59,5 @@ export const ClonePlaceSchema = z.object({
   repo: z.string().min(1).optional(),
   team: CloneTeamSchema,
 }).strict();
+
 export type ClonePlace = z.infer<typeof ClonePlaceSchema>;

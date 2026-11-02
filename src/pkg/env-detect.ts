@@ -8,6 +8,7 @@ export interface EnvironmentVersion {
 
 function normalizeVersion(raw: string): string {
   const match = raw.match(/v?(\d+(?:\.\d+)+)/);
+
   return match?.[1] ?? raw.split('\n')[0]?.trim() ?? '';
 }
 
@@ -19,6 +20,7 @@ export async function detectPackageEnvironment(
     probeBinary('npm', ['--version'], executor),
     probeBinary('claude', ['--version'], executor),
   ]);
+
   return [
     { name: 'Node', version: normalizeVersion(node), available: !!node },
     { name: 'npm', version: normalizeVersion(npm), available: !!npm },

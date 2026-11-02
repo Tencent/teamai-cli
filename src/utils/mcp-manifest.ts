@@ -48,6 +48,7 @@ export async function loadProjectMcpManifest(
 ): Promise<{ manifestPath: string; manifest: ManagedMcpManifest }> {
   const manifestPath = managedMcpManifestPath(dataHome, workspaceRoot);
   const existing = (await readJson<ManagedMcpManifest>(expandHome(manifestPath))) ?? null;
+
   if (existing) return { manifestPath, manifest: existing };
 
   // No per-worktree file yet — attempt one-time migration from any legacy source.
@@ -66,18 +67,23 @@ export async function loadProjectMcpManifest(
   const partitionShared = expandHome(legacyManagedMcpManifestPath(dataHome));
   const workspaceShared = expandHome(path.join(workspaceRoot, '.teamai', 'managed-mcp.json'));
   sources.push({ path: partitionShared, workspaceLocal: dataHome === path.join(workspaceRoot, '.teamai') });
+
   if (workspaceShared !== partitionShared) {
     // The original workspace-local path belongs unambiguously to THIS worktree.
     sources.push({ path: workspaceShared, workspaceLocal: true });
   }
 
   const cleanup: Array<{ path: string; shared: ManagedMcpManifest; keys: string[] }> = [];
+
   for (const src of sources) {
     const shared = (await readJson<ManagedMcpManifest>(src.path)) ?? null;
+
     if (!shared) continue;
     const migratedFrom: string[] = [];
+
     for (const [key, records] of Object.entries(shared)) {
       if (!Array.isArray(records)) continue;
+
       if (claimsThisWorkspace(key, workspaceRoot, src.workspaceLocal)) {
         const tool = key.split(':')[0];
         // Merge (a worktree could have records split across both sources).
@@ -86,35 +92,45 @@ export async function loadProjectMcpManifest(
         migratedFrom.push(key);
       }
     }
+
     if (migratedFrom.length > 0) cleanup.push({ path: src.path, shared, keys: migratedFrom });
   }
+
   if (cleanup.length > 0 && !options.dryRun) {
     // An existing destination ends migration on the next load. Publish all
     // sources together so a failed write cannot leave a partial migration.
     await writeJsonAtomic(expandHome(manifestPath), manifest);
+
     for (const src of cleanup) {
       for (const key of src.keys) delete src.shared[key];
       await writeJsonAtomic(src.path, src.shared).catch(() => {});
     }
   }
+
   return { manifestPath, manifest };
 }
 
 /** Merge two record lists by name (later wins), keeping ownership de-duplicated. */
 function mergeRecords(a: ManagedMcpRecord[] | undefined, b: ManagedMcpRecord[]): ManagedMcpRecord[] {
   const byName = new Map<string, ManagedMcpRecord>();
+
   for (const r of a ?? []) byName.set(r.name, r);
+
   for (const r of b) byName.set(r.name, r);
+
   return Array.from(byName.values());
 }
 
 /** True when a shared-file key belongs to this worktree (see loadProjectMcpManifest). */
 function claimsThisWorkspace(key: string, workspaceRoot: string, workspaceLocal: boolean): boolean {
   const parts = key.split(':');
+
   if (parts.length === 2 && parts[1] === 'project') return workspaceLocal; // bare `<tool>:project`
+
   if (parts.length === 3 && parts[1] === 'project') {
     return parts[2] === managedMcpWorkspaceId(workspaceRoot); // interim `<tool>:project:<id>`
   }
+
   return false;
 }
 
@@ -126,6 +142,7 @@ export async function saveProjectMcpManifest(
   for (const [key, records] of Object.entries(manifest)) {
     if (!Array.isArray(records) || records.length === 0) delete manifest[key];
   }
+
   await writeJsonAtomic(expandHome(manifestPath), manifest);
 }
 

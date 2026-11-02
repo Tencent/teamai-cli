@@ -20,12 +20,14 @@ export async function stageReader(dir: string, file: string): Promise<WorktreeSn
   const before = await snapshotWorktree(dir);
   await fs.mkdir(path.dirname(file), { recursive: true });
   await writeJsonAtomic(file, { ...before, files: [...before.files] });
+
   return before;
 }
 
 /** The snapshot `stageReader` saved in `file`, undefined when it is missing or unreadable. */
 export async function readSnapshot(file: string): Promise<WorktreeSnapshot | undefined> {
   const saved = SnapshotSchema.safeParse(JSON.parse(await readFileSafe(file) ?? 'null'));
+
   return saved.success ? { ...saved.data, files: new Map(saved.data.files) } : undefined;
 }
 
@@ -47,11 +49,15 @@ export async function finishReader(input: {
   readOnly?: true;
 }): Promise<WorkflowFailure | undefined> {
   if (input.interactive && !input.readOnly) return undefined;
+
   if (input.executor === 'command' && input.outcome !== 'success') return undefined;
   const saved = await readSnapshot(input.file);
+
   if (!saved) return { code: 'read_only_dirty', message: unreadableSnapshot(input.dir, input.file) };
   const paths = changedPaths(saved, await snapshotWorktree(input.dir));
+
   if (paths.length === 0) return undefined;
+
   return { code: 'read_only_dirty', message: `Read-only ${input.executor} step changed repository paths: ${paths.join(', ')}` };
 }
 
@@ -78,17 +84,21 @@ export async function leaveReadCopy(input: {
 }): Promise<ReadCopy | WorkflowFailure> {
   const { dir, file, workspace, found, saved, attempt, step } = input;
   const before = await readSnapshot(file);
+
   if (!before?.head) return { code: 'workspace_base', message: unreadableSnapshot(dir, file) };
   const changed = changedPaths(before, await snapshotWorktree(dir));
   // A detach or a switch to another branch at the same commit changes no file, but a later step would commit off the branch.
   // The full ref: --short prints heads/<branch> when a tag has the same name.
   const onBranch = (await git(dir, ['symbolic-ref', '--quiet', 'HEAD'])).stdout.trim() === `refs/heads/${workspace.branch}`;
+
   if (!onBranch && !changed.includes('HEAD')) changed.push('HEAD');
   const unrestored = await restoreOverlay({ dir, configCommit: workspace.configCommit, saved });
   const read = { branch: workspace.branch, base: workspace.base.commit, commit: before.head };
+
   // The copy keeps its mark, so later steps there are refused until it is back.
   if (unrestored) return { read, state: 'unrestored', changed, reason: unrestored, dir };
   const put = await putBackCopy({ dir, branch: read.branch, commit: read.commit, found, changed, attempt, step });
+
   return put.state === 'unrestored' ? { read, changed, dir, ...put } : put.state === 'restored' ? { read, changed, ...put } : { read, ...put };
 }
 
@@ -99,6 +109,7 @@ export async function leaveReadCopy(input: {
 export function readCopyFailure(left: Exclude<ReadCopy, { state: 'untouched' }>, changed: string): WorkflowFailure {
   const { branch, commit } = left.read;
   const lead = changed === '' ? '' : `${changed} `;
+
   switch (left.state) {
     case 'restored':
       return { code: 'read_only_dirty', message: `${lead}Workspace ${branch} was put back at ${commit}. ${keptSentence(left.kept)}` };
@@ -113,6 +124,7 @@ export function readCopyFailure(left: Exclude<ReadCopy, { state: 'untouched' }>,
       };
     default: {
       const unhandled: never = left;
+
       return unhandled;
     }
   }

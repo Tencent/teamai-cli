@@ -23,19 +23,25 @@ type ResolvedResourceNamespaces = NonNullable<Awaited<ReturnType<typeof resolveO
  */
 export async function resolveResourceNamespaces(localConfig: LocalConfig): Promise<ResolvedResourceNamespaces | null> {
   const members = await deliveredMembers(localConfig);
+
   if (!members) return resolveOwnResourceNamespaces(localConfig);
   // A workspace with children (#913): each member resolves as its own scope
   // would, and the workspace activates what any of them does. A member that
   // receives everything unfiltered makes the workspace receive everything.
   const resolved: ResolvedResourceNamespaces[] = [];
+
   for (const member of members) {
     const one = await resolveOwnResourceNamespaces(member);
+
     if (!one) return null;
     resolved.push(one);
   }
+
   const [first, ...rest] = resolved;
+
   if (!first) return null;
   const inAll = (lists: readonly (readonly string[])[]): string[] => (lists[0] ?? []).filter((item) => lists.every((list) => list.includes(item)));
+
   return {
     activeNamespaces: rest.reduce((union, one) => mergeNamespaces(union, one.activeNamespaces), first.activeNamespaces),
     allSkillNamespaces: first.allSkillNamespaces,
@@ -70,6 +76,7 @@ async function resolveOwnResourceNamespaces(localConfig: LocalConfig) {
   // skills/, knowledge/ and agents/ with projects.yaml, so a project's `Common`
   // collides with a role's `common` whether or not this member holds that role.
   let rolesManifest: RolesManifest | null = null;
+
   try {
     rolesManifest = await loadRolesManifest(localConfig.repo.localPath);
   } catch (error) {
@@ -79,6 +86,7 @@ async function resolveOwnResourceNamespaces(localConfig: LocalConfig) {
     // to gate. Let it fail the scope's pull, as an invalid projects manifest
     // already does.
     if (!(error instanceof RolesManifestNotFoundError)) throw error;
+
     if (primaryRole) warnOnce('Roles manifest not found. Skipping role-based filtering.');
   }
 
@@ -97,6 +105,7 @@ async function resolveOwnResourceNamespaces(localConfig: LocalConfig) {
   // ── Role namespaces (optional) ──
   let roleNamespaces: ResourceNamespaces = { knowledge: [], skills: [], learnings: [], agents: [] };
   let allRoleSkillNamespaces = new Set<string>();
+
   if (rolesManifest && projectsManifest) {
     // Each manifest is checked on its own when it loads; the two together share
     // the same skills/, knowledge/ and agents/ directories, so a role's
@@ -106,6 +115,7 @@ async function resolveOwnResourceNamespaces(localConfig: LocalConfig) {
       'manifests (roles.yaml with projects.yaml)',
     );
   }
+
   if (primaryRole) {
     if (rolesManifest) {
       try {
@@ -118,7 +128,9 @@ async function resolveOwnResourceNamespaces(localConfig: LocalConfig) {
       } catch {
         warnOnce(`Role "${localConfig.primaryRole}" not found in manifest.`
           + (rolesAssigned ? ' Delivering shared resources only.' : ' Falling back to unfiltered sync.'));
+
         if (!rolesAssigned) warnOnce('Run `teamai roles set <role>` to pick a valid role.');
+
         // A misconfigured role, with nothing else to scope by, can't filter safely.
         if (!rolesAssigned && !hasProjects && !teamHasProjects) return null;
       }
@@ -134,8 +146,10 @@ async function resolveOwnResourceNamespaces(localConfig: LocalConfig) {
   // namespaces come only from the projects this directory selected.
   let projectNamespaces: ResourceNamespaces = { knowledge: [], skills: [], learnings: [], agents: [] };
   let allProjectSkillNamespaces = new Set<string>();
+
   if (projectsManifest) {
     allProjectSkillNamespaces = new Set(projectsManifest.projects.flatMap((p) => p.resources.skills));
+
     if (hasProjects) {
       try {
         projectNamespaces = resolveProjectResourceNamespaces({
@@ -163,6 +177,7 @@ async function resolveOwnResourceNamespaces(localConfig: LocalConfig) {
     ...(rolesManifest?.roles ?? []).flatMap((role) => role.resources.docs ?? []),
     ...(projectsManifest?.projects ?? []).flatMap((project) => project.resources.docs ?? []),
   ]);
+
   const activeDocs = new Set(activeNamespaces.docs ?? []);
   const inactiveDocsNamespaces = [...declaredDocsNamespaces].filter((namespace) => !activeDocs.has(namespace));
 
@@ -173,6 +188,7 @@ async function resolveOwnResourceNamespaces(localConfig: LocalConfig) {
     ...(rolesManifest?.roles ?? []).flatMap((role) => role.resources.wiki ?? []),
     ...(projectsManifest?.projects ?? []).flatMap((project) => project.resources.wiki ?? []),
   ]);
+
   const activeWiki = new Set(activeNamespaces.wiki ?? []);
   const inactiveWikiNamespaces = [...declaredWikiNamespaces].filter((namespace) => !activeWiki.has(namespace));
 
@@ -184,6 +200,7 @@ async function resolveOwnResourceNamespaces(localConfig: LocalConfig) {
     ...(rolesManifest?.roles ?? []).flatMap((role) => role.resources.prompts ?? []),
     ...(projectsManifest?.projects ?? []).flatMap((project) => project.resources.prompts ?? []),
   ]);
+
   const activePrompts = new Set(activeNamespaces.prompts ?? []);
   const inactivePromptsNamespaces = [...declaredPromptsNamespaces].filter((namespace) => !activePrompts.has(namespace));
 
@@ -193,6 +210,7 @@ async function resolveOwnResourceNamespaces(localConfig: LocalConfig) {
     ...(rolesManifest?.roles ?? []).flatMap((role) => role.resources.scorers ?? []),
     ...(projectsManifest?.projects ?? []).flatMap((project) => project.resources.scorers ?? []),
   ]);
+
   const activeScorers = new Set(activeNamespaces.scorers ?? []);
   const inactiveScorersNamespaces = [...declaredScorersNamespaces].filter((namespace) => !activeScorers.has(namespace));
 
@@ -221,7 +239,9 @@ export interface NamespaceDeclarations {
  */
 export function isNamespaceDir(type: PlaceableType, dir: string, declarations: NamespaceDeclarations): boolean {
   if (type === 'scorers') return declarations.manifestFree || declarations.declares(NAMESPACE_AXIS.scorers, dir);
+
   if (isNestedPlaceableType(type)) return declarations.declares(NAMESPACE_AXIS[type], dir);
+
   return true;
 }
 

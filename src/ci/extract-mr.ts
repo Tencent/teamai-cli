@@ -10,6 +10,7 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { z } from 'zod';
 
 import { importFromMR } from '../import-mr.js';
 // applyCodebaseSuggestions removed: codebase updates now handled by teamwiki/ graph engine
@@ -38,6 +39,9 @@ export interface CiExtractMrOptions {
 
 // ─── Git user setup ───────────────────────────────────────
 
+const GitHubUserSchema = z.object({ login: z.string(), email: z.string().nullish() });
+const TGitUserSchema = z.object({ username: z.string(), email: z.string() });
+
 /**
  * Sets git user.name and user.email automatically.
  *
@@ -54,13 +58,15 @@ async function configureGitUser(repoPath: string, provider: 'github' | 'tgit' | 
   try {
     if (provider === 'github') {
       const token = process.env['GITHUB_TOKEN'];
+
       if (token) {
         const resp = await fetch('https://api.github.com/user', {
           headers: { Authorization: `Bearer ${token}`, 'User-Agent': 'teamai-cli' },
           signal: AbortSignal.timeout(8000),
         });
+
         if (resp.ok) {
-          const user = (await resp.json()) as { login: string; email: string | null };
+          const user = GitHubUserSchema.parse(await resp.json());
           name = user.login;
           email = user.email ?? `${user.login}@users.noreply.github.com`;
         }
@@ -68,6 +74,7 @@ async function configureGitUser(repoPath: string, provider: 'github' | 'tgit' | 
     } else if (provider === 'gitlab') {
       const { gitlabWhoami } = await import('../providers/gitlab/gitlab-api.js');
       const username = await gitlabWhoami();
+
       if (username) {
         name = username;
         email = `${username}@users.noreply.gitlab`;
@@ -76,8 +83,9 @@ async function configureGitUser(repoPath: string, provider: 'github' | 'tgit' | 
       // tgitFetch throws when no TGit credential is available; the outer
       // catch below logs and falls back to the default git user.
       const resp = await tgitFetch('/user', { signal: AbortSignal.timeout(8000) });
+
       if (resp.ok) {
-        const user = (await resp.json()) as { username: string; email: string };
+        const user = TGitUserSchema.parse(await resp.json());
         name = user.username;
         email = user.email;
       }
@@ -121,6 +129,7 @@ async function writeKnowledgeToRepo(
       .replace(/[^a-zA-Z0-9一-鿿_-]/g, '-')
       .replace(/-+/g, '-')
       .slice(0, 50);
+
     const dateStr = new Date().toISOString().slice(0, 10);
     const filename = `${dateStr}-${safeTitle}.md`;
     // oxlint-disable-next-line teamai/learnings-root -- CI runs against a bare checkout, with no LocalConfig
@@ -131,6 +140,7 @@ async function writeKnowledgeToRepo(
       await fs.mkdir(learningsDir, { recursive: true });
       await fs.writeFile(learningPath, learning.content, 'utf-8');
     }
+
     log.success(`Learning written: learnings/${filename}`);
     changedFiles.push(`learnings/${filename}`);
   }
@@ -153,6 +163,7 @@ async function writeKnowledgeToRepo(
           });
         }
       }
+
       log.success(`${suggestions.length} suggestion(s) added to the pending-review queue`);
       changedFiles.push('.teamai/pending-review.jsonl');
     }
@@ -164,11 +175,12 @@ async function writeKnowledgeToRepo(
       const provider = mrUrl.includes('github.com') ? 'github' as const
         : mrUrl.includes('git.woa.com') ? 'tgit' as const
           : 'gitlab' as const;
+
       await configureGitUser(teamRepo, provider);
       await pushRepoDirectly(teamRepo, `[teamai] CI extract knowledge from MR`, changedFiles);
       log.success('Pushed to the team repo');
     } catch (err) {
-      log.warn(`Push failed: ${(err as Error).message}; the files are written locally`);
+      log.warn(`Push failed: ${err instanceof Error ? err.message : String(err)}; the files are written locally`);
     }
   }
 }
@@ -190,14 +202,18 @@ async function importMergedCheckout(teamRepo: string, repoUrl: string, mrUrl: st
   const sourceDir = process.cwd();
   const teamRepoDir = path.resolve(teamRepo);
   const relative = path.relative(sourceDir, teamRepoDir);
+
   if (!relative || (!relative.startsWith('..') && !path.isAbsolute(relative))) {
     log.warn(`Skipped the teamwiki update: the team repo (${teamRepoDir}) is inside the source checkout `
       + `(${sourceDir}), so its files would be extracted as source. Clone it outside the checkout (see examples/ci/).`);
+
     return false;
   }
+
   try {
     const { repoSlugForUrl } = await import('../import-repo.js');
     const { importLocalCheckout } = await import('../import-codebase.js');
+
     const { updated } = await importLocalCheckout({
       sourceDir,
       slug: repoSlugForUrl(repoUrl),
@@ -206,9 +222,11 @@ async function importMergedCheckout(teamRepo: string, repoUrl: string, mrUrl: st
       repoUrl,
       sourceMrUrl: mrUrl,
     });
+
     return updated;
   } catch (err) {
     log.warn(`teamwiki update failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`);
+
     return false;
   }
 }
@@ -256,6 +274,7 @@ export async function ciExtractMr(opts: CiExtractMrOptions): Promise<void> {
   const language = opts.teamRepo
     ? (await import('../config.js').then(({ loadTeamConfig }) => loadTeamConfig(opts.teamRepo!)))?.language
     : undefined;
+
   const result = await importFromMR({
     url: opts.url,
     all: true,
@@ -267,6 +286,7 @@ export async function ciExtractMr(opts: CiExtractMrOptions): Promise<void> {
     commentMarker: opts.commentMarker,
     language,
   });
+
   learning = result.learning;
 
   // Run comment
@@ -283,11 +303,13 @@ export async function ciExtractMr(opts: CiExtractMrOptions): Promise<void> {
         opts.commentMarker,
         opts.dryRun,
       );
+
       if (commentResult.created) {
         log.success('MR comment posted');
       } else {
         log.success('MR comment updated');
       }
+
       if (commentResult.url) {
         log.info(`Comment URL: ${commentResult.url}`);
       }
@@ -298,6 +320,7 @@ export async function ciExtractMr(opts: CiExtractMrOptions): Promise<void> {
   let graphChangeSummary: { added: string[]; removed: string[] } | undefined;
   // The merge touched a source file (added, changed or deleted) in a git checkout.
   let sourceChanged = false;
+
   try {
     const { collectCode, extractCodeFacts, buildCodeGraph } = await import('../wiki-engine/adapters/index.js');
     const { execFileSync } = await import('node:child_process');
@@ -307,31 +330,38 @@ export async function ciExtractMr(opts: CiExtractMrOptions): Promise<void> {
     // Try several ways, to cope with a shallow clone (HEAD~1 does not exist at depth=1)
     let changedFiles: string[] = [];
     const defaultBranch = await getDefaultBranch(businessRepo).catch(() => 'master');
+
     const diffCommands = [
       ['diff', '--name-only', 'HEAD~1', 'HEAD'],
       ['show', '--name-only', '--format=', 'HEAD'],
       ['diff', '--name-only', `origin/${defaultBranch}...HEAD`],
     ];
+
     for (const args of diffCommands) {
       try {
         const diffOutput = execFileSync(
           'git', args,
           { cwd: businessRepo, encoding: 'utf-8', timeout: 10_000, stdio: ['ignore', 'pipe', 'ignore'] },
         );
+
         changedFiles = diffOutput.trim().split('\n')
           .filter(f => f && /\.(ts|tsx|js|jsx|py|go|rs|java|swift|scala)$/.test(f));
+
         if (changedFiles.length > 0) break;
       } catch {
         continue;
       }
     }
+
     if (changedFiles.length === 0) {
       log.debug('[codebase-graph] every git diff attempt failed or no source file changed');
     }
+
     sourceChanged = changedFiles.length > 0;
 
     if (changedFiles.length > 0) {
       const { files } = await collectCode({ root: businessRepo, changedFiles, maxFiles: 50 });
+
       if (files.length > 0) {
         const facts = extractCodeFacts(files);
         const graph = buildCodeGraph(facts);
@@ -343,9 +373,11 @@ export async function ciExtractMr(opts: CiExtractMrOptions): Promise<void> {
         if ((opts.mode === 'comment' || opts.mode === 'both') && graphChangeSummary.added.length > 0) {
           // Infer the affected modules and attach them to the graph comment as a teamwiki update preview
           const affectedModules = [...new Set(changedFiles.map(f => f.split('/')[0]))];
+
           const wikiUpdatePreview = affectedModules.length > 0
             ? `**📚 The teamwiki will be updated incrementally for these modules:**\n${affectedModules.map(m => `- \`${m}\` (evidence + G-document)`).join('\n')}`
             : '';
+
           await postCodebaseGraphComment(
             opts.url,
             { ...graphChangeSummary, wikiUpdatePreview },
@@ -380,11 +412,14 @@ export async function ciExtractMr(opts: CiExtractMrOptions): Promise<void> {
     // Gated on any changed source file, not on graph nodes added: a merge that
     // only deletes or empties files still has to prune them from the teamwiki.
     let graphWritten = false;
+
     if (sourceChanged && !opts.dryRun) {
       let graphRejected = false;
+
       if (opts.individualComments) {
         const parsed = parseMrUrl(opts.url);
         const rejections = await readRejections(opts.url);
+
         if (!shouldWrite('codebase-graph', rejections, parsed.provider)) {
           graphRejected = true;
           log.info('Codebase graph changes rejected; skipping the write');

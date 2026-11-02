@@ -113,6 +113,19 @@ describe('review-store', () => {
         expect(items[1].id).toBe('gooditem0002');
     });
 
+    it('skips a null line and loads the lines around it', async () => {
+        const filePath = getPendingReviewPath(cwd);
+        await fs.ensureDir(path.dirname(filePath));
+        await fs.writeFile(filePath, [
+            JSON.stringify(makeItem({ id: 'beforenull01' })),
+            'null',
+            JSON.stringify(makeItem({ id: 'afternull001' })),
+        ].join('\n') + '\n', 'utf8');
+
+        const items = await loadPendingReview(cwd);
+        expect(items.map((item) => item.id)).toEqual(['beforenull01', 'afternull001']);
+    });
+
     // ── appendPendingReview ──────────────────────────────
 
     it('appendPendingReview：缺 id/ts/risk 自动填充', async () => {

@@ -41,8 +41,9 @@ import type { ChildProcess } from 'node:child_process';
 import crossSpawn from 'cross-spawn';
 import { z } from 'zod';
 import { AgentAdapter, type SessionMeta, type SessionReadRef, type Subagent, type SubagentsRead } from './base.js';
-import type { Session, Message, ContentBlock, ThinkingBlock, ToolCallBlock, ToolResultBlock } from '../ir.js';
-import { imagePlaceholderText } from '../ir.js';
+import type { Session, SessionMetadata, Message, ContentBlock, ImageBlock, ThinkingBlock, ToolArguments, ToolCallBlock, ToolResultBlock } from '../ir.js';
+import { imagePlaceholderText, toolArgumentsFrom } from '../ir.js';
+import { JsonValueSchema, type JsonValue } from '../../types.js';
 import { typedTitle, visibleUserText } from '../title.js';
 import { assertSafeSessionFileId, deriveTargetSessionId } from '../ids.js';
 import { findSqlite3 } from '../sqlite.js';
@@ -58,31 +59,96 @@ import {
   fileExists,
   dirExists,
   scanFiles,
+  coercedText,
+  OptionalString,
+  TextOrBlocksSchema,
 } from '../fs.js';
 import { sessionStoreDir } from '../../locate.js';
+import type { JsonlRecord } from '../../utils/jsonl-store.js';
 
 // ---------------------------------------------------------------------------
 // Tool-name normalization map
 // ---------------------------------------------------------------------------
 
-const CODEX_TO_IR_TOOL: Record<string, string> = {
-  exec_command: 'bash',
-  apply_patch: 'edit_file',
-  read_file: 'read_file',
-  write_file: 'write_file',
-};
+const CODEX_TO_IR_TOOL: ReadonlyMap<string, string> = new Map([
+  ['exec_command', 'bash'],
+  ['apply_patch', 'edit_file'],
+  ['read_file', 'read_file'],
+  ['write_file', 'write_file'],
+]);
 
-const IR_TO_CODEX_TOOL: Record<string, string> = Object.fromEntries(
-  Object.entries(CODEX_TO_IR_TOOL).map(([k, v]) => [v, k]),
-);
+const IR_TO_CODEX_TOOL: ReadonlyMap<string, string> = new Map([...CODEX_TO_IR_TOOL].map(([k, v]) => [v, k]));
 
 function normalizeToolName(codexName: string): string {
-  return CODEX_TO_IR_TOOL[codexName] ?? codexName;
+  return CODEX_TO_IR_TOOL.get(codexName) ?? codexName;
 }
 
 function denormalizeToolName(irName: string): string {
-  return IR_TO_CODEX_TOOL[irName] ?? irName;
+  return IR_TO_CODEX_TOOL.get(irName) ?? irName;
 }
+
+// ---------------------------------------------------------------------------
+// Rollout lines as Codex writes them
+// ---------------------------------------------------------------------------
+
+/** One content item of a message, a tool output list, or a reasoning part. */
+const CodexContentItemSchema = z.object({ type: JsonValueSchema.optional(), text: coercedText(), image_url: OptionalString });
+
+/** A list of content items, or undefined when the field holds anything else. */
+const CodexItemListSchema = z.array(JsonValueSchema).optional().catch(undefined);
+
+/**
+ * The payload of a rollout line, the fields TeamAI reads. A payload that is not an object reads as an empty one; fields
+ * that are coerced or passed through on read keep any JSON value.
+ */
+const CodexPayloadSchema = z
+  .object({
+    type: OptionalString,
+    id: JsonValueSchema.optional(),
+    cwd: JsonValueSchema.optional(),
+    timestamp: JsonValueSchema.optional(),
+    originator: OptionalString,
+    cli_version: JsonValueSchema.optional(),
+    source: JsonValueSchema.optional(),
+    model_provider: JsonValueSchema.optional(),
+    model: OptionalString,
+    role: JsonValueSchema.optional(),
+    content: JsonValueSchema.optional(),
+    item: z.object({ type: JsonValueSchema.optional(), content: CodexItemListSchema }).optional().catch(undefined),
+    name: JsonValueSchema.optional(),
+    call_id: JsonValueSchema.optional(),
+    arguments: JsonValueSchema.optional(),
+    input: OptionalString,
+    output: JsonValueSchema.optional(),
+    rawContent: JsonValueSchema.optional(),
+    summary: JsonValueSchema.optional(),
+  })
+  .catch({});
+
+/** One rollout line, the fields TeamAI reads; a field of another type reads as absent. */
+const CodexRecordSchema = z.object({
+  type: OptionalString,
+  timestamp: JsonValueSchema.optional(),
+  ordinal: z.number().optional().catch(undefined),
+  payload: CodexPayloadSchema,
+});
+
+type CodexRecord = z.infer<typeof CodexRecordSchema>;
+
+/** The lines of a rollout, each read by `CodexRecordSchema`. */
+function* codexRecords(lines: Iterable<JsonlRecord>): Generator<CodexRecord> {
+  for (const line of lines) yield CodexRecordSchema.parse(line);
+}
+
+/** The text of a list of content items, joined by spaces; an item that is not an object adds an empty string. */
+function joinedItemText(items: readonly JsonValue[] | undefined): string {
+  return (items ?? []).map((item) => CodexContentItemSchema.safeParse(item).data?.text ?? '').join(' ');
+}
+
+/** The JSON report of `codex migrate-rollouts --json`: each thread's outcome. */
+const MigrateRolloutsReportSchema = z.object({
+  outcomes: z.array(z.object({ thread_id: JsonValueSchema.optional(), status: OptionalString })).optional(),
+});
 
 // ---------------------------------------------------------------------------
 // UUIDv7 generation
@@ -101,9 +167,11 @@ function generateUuidV7(): string {
   // random bits (low 62)
   const randBytes = crypto.randomBytes(8);
   let rand = 0n;
+
   for (let i = 0; i < 8; i++) {
     rand = (rand << 8n) | BigInt(randBytes[i]);
   }
+
   rand &= (1n << 62n) - 1n;
   uuidInt |= rand;
   // variant bits (62-63 = 10)
@@ -111,11 +179,13 @@ function generateUuidV7(): string {
 
   // format as a UUID string
   const hex = uuidInt.toString(16).padStart(32, '0');
+
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }
 
 function isUuidV7(sid: string): boolean {
   const re = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
   return re.test(sid);
 }
 
@@ -123,17 +193,24 @@ function isUuidV7(sid: string): boolean {
 // Timestamp helpers
 // ---------------------------------------------------------------------------
 
-function parseCodexTimestamp(ts: unknown): string {
-  if (typeof ts === 'number') {
-    return new Date(ts).toISOString();
+/** A rollout time: epoch milliseconds, or a date string (an unparsable one reads as now). */
+function parseCodexTimestamp(ts: JsonValue | undefined): string {
+  const epochMs = z.number().safeParse(ts);
+
+  if (epochMs.success) {
+    return new Date(epochMs.data).toISOString();
   }
-  if (typeof ts === 'string') {
+
+  const text = z.string().safeParse(ts);
+
+  if (text.success) {
     try {
-      return new Date(ts).toISOString();
+      return new Date(text.data).toISOString();
     } catch {
       return new Date().toISOString();
     }
   }
+
   return new Date().toISOString();
 }
 
@@ -158,6 +235,7 @@ function readCodexModelProvider(configPath: string): string {
     if (!fileExists(configPath)) return 'openai';
     const raw = fs.readFileSync(configPath, 'utf-8');
     const m = raw.match(/^[ \t]*model_provider[ \t]*=[ \t]*["']([^"']+)["']/m);
+
     return m?.[1]?.trim() || 'openai';
   } catch {
     return 'openai';
@@ -172,6 +250,20 @@ function readCodexModelProvider(configPath: string): string {
  */
 function isRenderableText(text: string): boolean {
   return /[^\s\-*•·>#`|~_+=()[\]!.,;:?"'\\/0-9—–‘’“”…]/.test(text);
+}
+
+/** A rollout line TeamAI writes, before its ordinal is assigned. */
+interface CodexWrittenLine {
+  timestamp: string;
+  type: 'session_meta' | 'turn_context' | 'event_msg' | 'response_item';
+  payload: JsonValue;
+}
+
+/** The payload of the task_complete event that ends a turn; `last_agent_message` is left out when the turn had none. */
+function taskCompletePayload(turnId: string, lastAgentMessage: string | undefined, completedAt: number): JsonValue {
+  return lastAgentMessage
+    ? { type: 'task_complete', turn_id: turnId, last_agent_message: lastAgentMessage, completed_at: completedAt }
+    : { type: 'task_complete', turn_id: turnId, completed_at: completedAt };
 }
 
 interface ItemCompletedArgs {
@@ -191,16 +283,19 @@ interface ItemCompletedArgs {
  * - UserMessage items do not write client_id (native has no such field; writing it makes UserMessage fail to parse,
  *   which shows up as an empty thread/items/list projection and a blank session after it opens)
  */
-function buildItemCompletedRecord(args: ItemCompletedArgs): Record<string, unknown> {
+function buildItemCompletedRecord(args: ItemCompletedArgs): CodexWrittenLine {
   const isUser = args.itemType === 'UserMessage';
-  const item: Record<string, unknown> = {
+
+  const item = {
     type: args.itemType,
     id: args.itemId,
     content: isUser
       ? [{ type: 'text', text: args.text, text_elements: [] }]
       : [{ type: 'Text', text: args.text }],
   };
+
   const ms = new Date(args.timestamp).getTime();
+
   return {
     timestamp: args.timestamp,
     type: 'event_msg',
@@ -215,7 +310,7 @@ function buildItemCompletedRecord(args: ItemCompletedArgs): Record<string, unkno
   };
 }
 
-function pushItemCompleted(records: Record<string, unknown>[], args: ItemCompletedArgs): void {
+function pushItemCompleted(records: CodexWrittenLine[], args: ItemCompletedArgs): void {
   records.push(buildItemCompletedRecord(args));
 }
 
@@ -228,6 +323,7 @@ async function findCodexCli(): Promise<string | null> {
   for (const candidate of ['codex', ...desktopCodexBinaries()]) {
     if (await probeBinary(candidate)) return candidate;
   }
+
   return null;
 }
 
@@ -241,6 +337,7 @@ const ChildRolloutMetaSchema = z.object({
     subagent_history_start_ordinal: z.number().int().optional(),
   }),
 });
+
 type ChildRollout = { file: string; meta: z.infer<typeof ChildRolloutMetaSchema>['payload'] };
 
 // ---------------------------------------------------------------------------
@@ -285,12 +382,16 @@ export class CodexAdapter extends AgentAdapter {
       // The filename is rollout-<timestamp>-<sessionId>, matched as an infix; but the prefix is only accepted at 8+ characters,
       // otherwise a 4-character prefix substring would read someone else's session
       const base = path.basename(f, '.jsonl');
+
       if (!(base === sessionId || (sessionId.length >= 8 && base.endsWith(sessionId)))) continue;
+
       // rollback --cwd: only the copy that belongs to this project. Without
       // this, deleting one session id would remove every workspace's copy.
       if (projectPath && !this.rolloutMatchesCwd(f, projectPath)) continue;
+
       return f;
     }
+
     return null;
   }
 
@@ -298,8 +399,9 @@ export class CodexAdapter extends AgentAdapter {
   private rolloutMatchesCwd(file: string, projectPath: string): boolean {
     try {
       const rec = this.readFirstLine(file);
-      const payload = (rec?.payload ?? {}) as Record<string, unknown>;
+      const payload = rec ? CodexRecordSchema.parse(rec).payload : {};
       const cwd = String(payload.cwd ?? '');
+
       // Compare resolved paths: listing resolves the cwd the same way, so a
       // bare string compare made `/tmp/x` and `/private/tmp/x` two different
       // workspaces -- `rollback --cwd /tmp/x` then reported "not found" and
@@ -310,7 +412,7 @@ export class CodexAdapter extends AgentAdapter {
     }
   }
 
-  private readFirstLine(filePath: string): Record<string, unknown> | null {
+  private readFirstLine(filePath: string): JsonlRecord | null {
     try {
       for (const record of readJsonlHead(filePath, 1)) {
         return record;
@@ -318,6 +420,7 @@ export class CodexAdapter extends AgentAdapter {
     } catch {
       // ignore
     }
+
     return null;
   }
 
@@ -325,14 +428,18 @@ export class CodexAdapter extends AgentAdapter {
     const name = path.basename(filePath, '.jsonl');
     // rollout-2026-06-09T15-01-17-<uuid>
     const parts = name.split('-', 1);
+
     if (parts.length === 1 && name.startsWith('rollout-')) {
       const tsUuid = name.slice('rollout-'.length);
       const idx = tsUuid.lastIndexOf('-');
+
       if (idx > 0) {
         const tsPart = tsUuid.slice(0, idx);
+
         if (tsPart) return `Session ${tsPart}`;
       }
     }
+
     return name;
   }
 
@@ -340,10 +447,12 @@ export class CodexAdapter extends AgentAdapter {
     const metas: SessionMeta[] = [];
 
     for (const f of archived ? this.scanAllRollouts() : this.scanJsonlFiles()) {
-      const first = this.readFirstLine(f);
+      const firstLine = this.readFirstLine(f);
+      const first = firstLine ? CodexRecordSchema.parse(firstLine) : null;
+
       if (!first || first.type !== 'session_meta') continue;
 
-      const payload = (first.payload as Record<string, unknown>) ?? {};
+      const payload = first.payload;
       const sessionId = String(payload.id ?? '');
       const cwd = String(payload.cwd ?? '');
       const tsRaw = payload.timestamp;
@@ -357,6 +466,7 @@ export class CodexAdapter extends AgentAdapter {
 
       const createdAt = parseCodexTimestamp(tsRaw);
       let updatedAt = createdAt;
+
       try {
         updatedAt = new Date(fs.statSync(f).mtimeMs).toISOString();
       } catch {
@@ -365,6 +475,7 @@ export class CodexAdapter extends AgentAdapter {
 
       const title = this.extractTitle(f);
       let sizeBytes = 0;
+
       try {
         sizeBytes = fs.statSync(f).size;
       } catch {
@@ -377,29 +488,34 @@ export class CodexAdapter extends AgentAdapter {
       // filename fallback produces an unreadable wall of "Session <timestamp>".
       let messageCount = 0;
       let contentTitle = '';
+
       try {
-        for (const rec of readJsonlHead(f, 200)) {
-          const recPayload = (rec.payload as Record<string, unknown>) ?? {};
+        for (const rec of codexRecords(readJsonlHead(f, 200))) {
+          const recPayload = rec.payload;
+
           if (rec.type === 'response_item' && recPayload.type === 'message') messageCount++;
 
           if (contentTitle) continue;
           let text = '';
+
           if (rec.type === 'event_msg' && recPayload.type === 'item_completed') {
-            const item = recPayload.item as Record<string, unknown> | undefined;
+            const item = recPayload.item;
+
             if (item?.type !== 'UserMessage') continue;
-            const content = item.content as Array<Record<string, unknown>> | undefined;
-            text = (content ?? []).map((c) => String(c.text ?? '')).join(' ');
+            text = joinedItemText(item.content);
           } else if (rec.type === 'response_item' && recPayload.type === 'message' && recPayload.role === 'user') {
-            const content = recPayload.content as Array<Record<string, unknown>> | undefined;
-            text = (content ?? []).map((c) => String(c.text ?? '')).join(' ');
+            text = joinedItemText(CodexItemListSchema.parse(recPayload.content));
           }
+
           if (!text) continue;
           const cleaned = typedTitle(text);
+
           if (cleaned) contentTitle = cleaned;
         }
       } catch {
         // ignore
       }
+
       const resolvedTitle = contentTitle || title;
 
       metas.push({
@@ -414,33 +530,43 @@ export class CodexAdapter extends AgentAdapter {
         sizeBytes,
       });
     }
+
     return metas;
   }
 
   async readSession(ref: SessionReadRef): Promise<Session> {
     const f = ref.filePath ?? this.findSessionFile(ref.sessionId, ref.projectPath);
+
     if (!f) {
       const where = ref.projectPath ? ` in ${ref.projectPath}` : '';
       throw new Error(`Codex session not found: ${ref.sessionId}${where}`);
     }
 
-    const records = [...readJsonl(f)];
+    const records = [...codexRecords(readJsonl(f))];
 
     // A suffix of the id finds the session, so the id comes from the rollout opened.
     let sessionId = path.basename(f, '.jsonl');
     let cwd = '';
     let createdAt = new Date().toISOString();
-    const sessionMetadata: Record<string, unknown> = {};
+    const sessionMetadata: SessionMetadata = {};
 
     for (const rec of records) {
       if (rec.type === 'session_meta') {
-        const payload = (rec.payload as Record<string, unknown>) ?? {};
-        if (typeof payload.id === 'string' && payload.id) sessionId = payload.id;
+        const payload = rec.payload;
+        const id = OptionalString.parse(payload.id);
+
+        if (id) sessionId = id;
         cwd = String(payload.cwd ?? '');
         createdAt = parseCodexTimestamp(payload.timestamp);
-        for (const key of ['originator', 'cli_version', 'source', 'model_provider'] as const) {
-          if (payload[key] !== undefined) sessionMetadata[key] = payload[key];
-        }
+
+        if (payload.originator !== undefined) sessionMetadata.originator = payload.originator;
+
+        if (payload.cli_version !== undefined) sessionMetadata.cli_version = payload.cli_version;
+
+        if (payload.source !== undefined) sessionMetadata.source = payload.source;
+
+        if (payload.model_provider !== undefined) sessionMetadata.model_provider = payload.model_provider;
+
         break;
       }
     }
@@ -448,6 +574,7 @@ export class CodexAdapter extends AgentAdapter {
     const messages = this.buildMessages(records);
 
     let updatedAt = createdAt;
+
     if (messages.length > 0 && messages[messages.length - 1].timestamp) {
       updatedAt = messages[messages.length - 1].timestamp!;
     } else {
@@ -461,21 +588,24 @@ export class CodexAdapter extends AgentAdapter {
     // Same content-based extraction as listConversations: the filename fallback
     // would leak "Session <timestamp>" into push archives and resume targets.
     let readTitle = '';
+
     try {
-      for (const rec of readJsonlHead(f, 200)) {
-        const recPayload = (rec.payload as Record<string, unknown>) ?? {};
+      for (const rec of codexRecords(readJsonlHead(f, 200))) {
+        const recPayload = rec.payload;
         let text = '';
+
         if (rec.type === 'event_msg' && recPayload.type === 'item_completed') {
-          const item = recPayload.item as Record<string, unknown> | undefined;
+          const item = recPayload.item;
+
           if (item?.type !== 'UserMessage') continue;
-          const content = item.content as Array<Record<string, unknown>> | undefined;
-          text = (content ?? []).map((c) => String(c.text ?? '')).join(' ');
+          text = joinedItemText(item.content);
         } else if (rec.type === 'response_item' && recPayload.type === 'message' && recPayload.role === 'user') {
-          const content = recPayload.content as Array<Record<string, unknown>> | undefined;
-          text = (content ?? []).map((c) => String(c.text ?? '')).join(' ');
+          text = joinedItemText(CodexItemListSchema.parse(recPayload.content));
         }
+
         if (!text) continue;
         const cleaned = typedTitle(text);
+
         if (cleaned) {
           readTitle = cleaned;
           break;
@@ -484,6 +614,7 @@ export class CodexAdapter extends AgentAdapter {
     } catch {
       // ignore
     }
+
     const title = readTitle || this.extractTitle(f);
 
     return {
@@ -507,36 +638,47 @@ export class CodexAdapter extends AgentAdapter {
   async readSubagents(session: Session, _ref: SessionReadRef): Promise<SubagentsRead> {
     const since = Date.parse(session.createdAt);
     const children = new Map<string, ChildRollout[]>();
+
     for (const file of this.scanAllRollouts()) {
       try {
         if (fs.statSync(file).mtimeMs < since) continue;
       } catch {
         continue;
       }
+
       const parsed = ChildRolloutMetaSchema.safeParse(this.readFirstLine(file));
+
       if (!parsed.success || Date.parse(parsed.data.payload.timestamp ?? '') < since) continue;
       const parent = parsed.data.payload.source.subagent.thread_spawn.parent_thread_id;
       children.set(parent, [...children.get(parent) ?? [], { file, meta: parsed.data.payload }]);
     }
+
     const agents: Subagent[] = [];
+
     const visit = (parent: string, depth: number): void => {
       const spawned = [...children.get(parent) ?? []].sort((left, right) => (left.meta.timestamp ?? '').localeCompare(right.meta.timestamp ?? ''));
+
       for (const child of spawned) {
         if (agents.some((agent) => agent.session.sessionId === child.meta.id)) continue;
         agents.push({ ...this.readChild(child), depth });
         visit(child.meta.id, depth + 1);
       }
     };
+
     visit(session.sessionId, 1);
+
     return { status: 'read', agents };
   }
 
   private readChild({ file, meta }: ChildRollout): Omit<Subagent, 'depth'> {
     const start = meta.subagent_history_start_ordinal;
-    const records = [...readJsonl(file)].filter((record) =>
-      start === undefined || (typeof record.ordinal === 'number' && record.ordinal >= start));
+
+    const records = [...codexRecords(readJsonl(file))].filter((record) =>
+      start === undefined || (record.ordinal !== undefined && record.ordinal >= start));
+
     const messages = this.buildMessages(records);
     const createdAt = parseCodexTimestamp(meta.timestamp);
+
     return {
       session: {
         sessionId: meta.id,
@@ -548,17 +690,17 @@ export class CodexAdapter extends AgentAdapter {
         messages,
         metadata: {},
       },
-      finished: records.some((record) => record.type === 'event_msg'
-        && typeof record.payload === 'object' && record.payload !== null && 'type' in record.payload && record.payload.type === 'task_complete'),
+      finished: records.some((record) => record.type === 'event_msg' && record.payload.type === 'task_complete'),
       start: start === undefined ? 'unknown' : 'recorded',
     };
   }
 
-  private buildMessages(records: Record<string, unknown>[]): Message[] {
+  private buildMessages(records: CodexRecord[]): Message[] {
     const messages: Message[] = [];
     // Images returned by tools go in a user message of their own after the round's tool results
     let toolImages: ContentBlock[] = [];
     let toolImagesTimestamp: string | undefined;
+
     const flushToolImages = () => {
       if (toolImages.length === 0) return;
       messages.push({ role: 'user', content: toolImages, timestamp: toolImagesTimestamp });
@@ -566,51 +708,50 @@ export class CodexAdapter extends AgentAdapter {
     };
 
     for (const rec of records) {
-      const rtype = rec.type as string;
+      const rtype = rec.type;
 
       if (rtype === 'turn_context') {
-        const payload = (rec.payload as Record<string, unknown>) ?? {};
-        const model = payload.model as string | undefined;
+        const model = rec.payload.model;
+
         if (model && messages.length > 0) {
           if (!messages[messages.length - 1].metadata) {
             messages[messages.length - 1].metadata = {};
           }
+
           messages[messages.length - 1].metadata!.model = model;
         }
+
         continue;
       }
 
       if (rtype !== 'response_item') continue;
 
-      const payload = (rec.payload as Record<string, unknown>) ?? {};
-      const ptype = payload.type as string;
+      const payload = rec.payload;
+      const ptype = payload.type;
       // Only items that start a new message end the round; ignored ones (web_search_call, developer messages) don't
       const startsMessage = (ptype === 'message' && payload.role !== 'developer') || ptype === 'function_call' || ptype === 'custom_tool_call' || ptype === 'reasoning';
+
       if (startsMessage) flushToolImages();
 
       if (ptype === 'message') {
-        const role = payload.role as string;
+        const role = payload.role;
+
         if (role === 'developer') continue; // skip the system prompt
 
         const irRole = role === 'user' ? 'user' : 'assistant';
-        const content = this.parseMessageContent(payload);
+        const content = this.parseMessageContent(payload.content);
         messages.push({ role: irRole, content, timestamp: parseCodexTimestamp(rec.timestamp) });
       } else if (ptype === 'function_call' || ptype === 'custom_tool_call') {
         const name = String(payload.name ?? '');
         const irName = normalizeToolName(name);
         const callId = String(payload.call_id ?? '');
-        const argsRaw = payload.arguments;
-        let arguments_: Record<string, unknown>;
-        if (ptype === 'custom_tool_call' && typeof payload.input === 'string') {
+        let arguments_: ToolArguments;
+
+        if (ptype === 'custom_tool_call' && payload.input !== undefined) {
           // Freeform tools (apply_patch) send plain text in `input`, not JSON `arguments`
           arguments_ = { input: payload.input };
         } else {
-          try {
-            const decoded: unknown = typeof argsRaw === 'string' ? JSON.parse(argsRaw) : argsRaw ?? {};
-            arguments_ = typeof decoded === 'object' && decoded !== null && !Array.isArray(decoded) ? { ...decoded } : { _raw: String(argsRaw) };
-          } catch {
-            arguments_ = { _raw: String(argsRaw) };
-          }
+          arguments_ = toolArgumentsFrom(payload.arguments);
         }
 
         const block: ToolCallBlock = { type: 'tool_call', toolName: irName, callId, arguments: arguments_ };
@@ -624,11 +765,13 @@ export class CodexAdapter extends AgentAdapter {
         const callId = String(payload.call_id ?? '');
         const rawOutput = payload.output;
         let output: string;
+
         if (Array.isArray(rawOutput)) {
           // Some tools (images, the JS REPL) return a list of content items instead of a string
-          const items = this.parseMessageContent({ content: rawOutput });
+          const items = this.parseMessageContent(rawOutput);
           output = items.flatMap((b) => (b.type === 'text' ? [b.text] : [])).join('\n');
           const images = items.filter((b) => b.type === 'image');
+
           if (images.length > 0) {
             toolImages.push(...images);
             toolImagesTimestamp = parseCodexTimestamp(rec.timestamp);
@@ -636,6 +779,7 @@ export class CodexAdapter extends AgentAdapter {
         } else {
           output = String(rawOutput ?? '');
         }
+
         const block: ToolResultBlock = { type: 'tool_result', callId, content: output, isError: false };
 
         if (messages.length > 0 && messages[messages.length - 1].role === 'user') {
@@ -646,14 +790,19 @@ export class CodexAdapter extends AgentAdapter {
       } else if (ptype === 'reasoning') {
         // reasoning → ThinkingBlock. Codex writes the readable part to summary and may add content;
         // rawContent is what writeSession emits.
-        const textOf = (parts: unknown, types: string[]): string[] =>
+        const textOf = (parts: JsonValue | undefined, types: string[]): string[] =>
           Array.isArray(parts)
-            ? parts
-                .filter((p) => p && typeof p === 'object' && types.includes(String((p as Record<string, unknown>).type)))
-                .map((p) => String((p as Record<string, unknown>).text ?? ''))
+            ? parts.flatMap((item) => {
+              const part = CodexContentItemSchema.safeParse(item);
+
+              return part.success && types.includes(String(part.data.type)) ? [part.data.text] : [];
+            })
             : [];
+
         let text = textOf(payload.rawContent, ['reasoning_text']).join('');
+
         if (!text) text = textOf(payload.content, ['reasoning_text', 'text']).join('');
+
         if (!text) text = textOf(payload.summary, ['summary_text']).join('\n\n');
         const block: ThinkingBlock = { type: 'thinking', text };
 
@@ -664,41 +813,48 @@ export class CodexAdapter extends AgentAdapter {
         }
       }
     }
+
     flushToolImages();
+
     return messages;
   }
 
-  private parseMessageContent(payload: Record<string, unknown>): ContentBlock[] {
+  private parseMessageContent(stored: JsonValue | undefined): ContentBlock[] {
     const blocks: ContentBlock[] = [];
-    const contentArr = payload.content;
+    const contentArr = TextOrBlocksSchema.parse(stored);
 
-    if (typeof contentArr === 'string') {
+    if (contentArr === undefined) return blocks;
+
+    if (!Array.isArray(contentArr)) {
       blocks.push({ type: 'text', text: contentArr });
+
       return blocks;
     }
 
-    if (!Array.isArray(contentArr)) return blocks;
-
     for (const item of contentArr) {
-      if (!item || typeof item !== 'object') continue;
-      const it = item as Record<string, unknown>;
-      const itemType = it.type as string;
-      const text = String(it.text ?? '');
+      const parsed = CodexContentItemSchema.safeParse(item);
+
+      if (!parsed.success) continue;
+      const it = parsed.data;
+      const itemType = it.type;
+      const text = it.text;
 
       if (itemType === 'input_text' || itemType === 'output_text') {
         blocks.push({ type: 'text', text });
-      } else if (itemType === 'input_image' && typeof it.image_url === 'string') {
+      } else if (itemType === 'input_image' && it.image_url !== undefined) {
         // A pasted image is stored as a data: URL; anything else keeps just the pointer
         const dataUrl = /^data:([^;,]+);base64,(.*)$/s.exec(it.image_url);
         const mimeType = dataUrl?.[1] ?? 'image/png';
-        blocks.push({
-          type: 'image',
-          mimeType,
-          ...(dataUrl ? { data: dataUrl[2] } : { filePath: it.image_url }),
-          label: `image.${mimeType.split('/')[1] ?? 'png'}`,
-        });
+
+        const image: ImageBlock = dataUrl
+          ? { type: 'image', mimeType, data: dataUrl[2] }
+          : { type: 'image', mimeType, filePath: it.image_url };
+
+        image.label = `image.${mimeType.split('/')[1] ?? 'png'}`;
+        blocks.push(image);
       }
     }
+
     return blocks;
   }
 
@@ -710,15 +866,20 @@ export class CodexAdapter extends AgentAdapter {
   async existingSessionId(sessionId: string, projectPath?: string): Promise<string | undefined> {
     for (const f of this.scanAllRollouts()) {
       const base = path.basename(f, '.jsonl');
+
       if (base !== sessionId && !base.endsWith(`-${sessionId}`)) continue;
+
       if (projectPath && !this.rolloutMatchesCwd(f, projectPath)) continue;
+
       return sessionId;
     }
+
     return undefined;
   }
 
   async writeSession(session: Session, projectPath?: string): Promise<string> {
     const cwd = projectPath ?? session.cwd;
+
     const sessionId = deriveTargetSessionId({
       targetPlatform: this.platform,
       targetCwd: cwd,
@@ -739,11 +900,12 @@ export class CodexAdapter extends AgentAdapter {
       String(createdAt.getMonth() + 1).padStart(2, '0'),
       String(createdAt.getDate()).padStart(2, '0'),
     );
+
     const filename = `rollout-${fileTs}-${sessionId}.jsonl`;
     const filePath = path.join(dateDir, filename);
 
     // Build JSONL records
-    const records: Record<string, unknown>[] = [];
+    const records: CodexWrittenLine[] = [];
 
     // 1. session_meta
     // Note: Codex's SessionMeta.payload.timestamp must be an RFC3339 string (not
@@ -755,6 +917,7 @@ export class CodexAdapter extends AgentAdapter {
     const modelProvider = readCodexModelProvider(
       path.join(path.dirname(this.storageRoot), 'config.toml'),
     );
+
     records.push({
       timestamp: tsIso,
       type: 'session_meta',
@@ -782,6 +945,7 @@ export class CodexAdapter extends AgentAdapter {
     let itemCount = 0;
     let lastAgentMessage: string | undefined;
     let userItemEmitted = false;
+
     // The first UserMessage item decides title and list preview. If the session has no real
     // (all injected metadata), write a fallback note or the session has no preview and stays invisible.
     const fallbackUserText = session.messages.some(
@@ -791,14 +955,17 @@ export class CodexAdapter extends AgentAdapter {
     )
       ? null
       : `Migrated session from ${session.platform || 'external agent'}`;
+
     // Insert position for the fallback item (after the first turn's turn_context)
     let firstTurnInsertAt = -1;
     let firstTurnId = '';
 
     for (const msg of session.messages) {
       const parsedTs = msg.timestamp ? new Date(msg.timestamp) : null;
+
       const msgTs =
         parsedTs && !isNaN(parsedTs.getTime()) ? parsedTs.toISOString() : lastTs;
+
       lastTs = msgTs;
 
       // Each user message starts a new turn
@@ -808,16 +975,11 @@ export class CodexAdapter extends AgentAdapter {
           records.push({
             timestamp: msgTs,
             type: 'event_msg',
-            payload: {
-              type: 'task_complete',
-              turn_id: turnId,
-              ...(lastAgentMessage ? { last_agent_message: lastAgentMessage } : {}),
-              completed_at: Math.floor(new Date(msgTs).getTime() / 1000),
-            },
+            payload: taskCompletePayload(turnId, lastAgentMessage, Math.floor(new Date(msgTs).getTime() / 1000)),
           });
         }
+
         lastAgentMessage = undefined;
-        // New turn
         turnId = generateUuidV7();
         records.push({
           timestamp: msgTs,
@@ -847,6 +1009,7 @@ export class CodexAdapter extends AgentAdapter {
           },
         });
         turnStarted = true;
+
         if (firstTurnInsertAt < 0) {
           firstTurnInsertAt = records.length;
           firstTurnId = turnId;
@@ -856,6 +1019,7 @@ export class CodexAdapter extends AgentAdapter {
       // Write each content block of the message
       for (const block of msg.content) {
         const rec = this.blockToResponseItem(msg.role, block, msgTs);
+
         if (rec) records.push(rec);
 
         // Also emit the item_completed event used for UI rendering (aligned with the 0.155 native format; see
@@ -867,6 +1031,7 @@ export class CodexAdapter extends AgentAdapter {
           // (@image:/path) are not real input; what remains becomes the title/preview text.
           // Skip when the whole block is metadata.
           const userText = visibleUserText(block.text);
+
           if (!isRenderableText(userText)) continue;
           userItemEmitted = true;
           pushItemCompleted(records, {
@@ -901,6 +1066,7 @@ export class CodexAdapter extends AgentAdapter {
         itemType: 'UserMessage',
         text: fallbackUserText,
       });
+
       records.splice(firstTurnInsertAt, 0, fallbackRecord);
     }
 
@@ -909,12 +1075,7 @@ export class CodexAdapter extends AgentAdapter {
       records.push({
         timestamp: lastTs,
         type: 'event_msg',
-        payload: {
-          type: 'task_complete',
-          turn_id: turnId,
-          ...(lastAgentMessage ? { last_agent_message: lastAgentMessage } : {}),
-          completed_at: Math.floor(new Date(lastTs).getTime() / 1000),
-        },
+        payload: taskCompletePayload(turnId, lastAgentMessage, Math.floor(new Date(lastTs).getTime() / 1000)),
       });
     }
 
@@ -932,6 +1093,7 @@ export class CodexAdapter extends AgentAdapter {
 
     // 3. Let the Codex CLI convert the legacy rollout to paginated history + items projection.
     await this.paginateRollout(sessionId, path.dirname(this.storageRoot));
+
     return sessionId;
   }
 
@@ -949,16 +1111,20 @@ export class CodexAdapter extends AgentAdapter {
    */
   private async paginateRollout(sessionId: string, codexHome: string): Promise<void> {
     const bin = await findCodexCli();
+
     if (!bin) {
       this.noteWrite(
         'Codex CLI was not found. The rollout was written, but Codex will not list it until the CLI indexes it.',
       );
+
       return;
     }
+
     const opts = { env: { ...process.env, CODEX_HOME: codexHome }, timeoutMs: 120_000 };
 
     const runApply = async (): Promise<string | undefined> => {
       let stdout = '';
+
       try {
         // A non-zero exit (e.g. a corrupted rollout causing "one or more rollout
         // migrations failed") still carries the full JSON report; parse it to
@@ -967,10 +1133,10 @@ export class CodexAdapter extends AgentAdapter {
       } catch {
         // Timed out or could not start: no report.
       }
+
       try {
-        const report = JSON.parse(stdout) as {
-          outcomes?: { thread_id: string; status: string }[];
-        };
+        const report = MigrateRolloutsReportSchema.parse(JSON.parse(stdout));
+
         return report.outcomes?.find((o) => o.thread_id === sessionId)?.status;
       } catch {
         return undefined;
@@ -978,20 +1144,27 @@ export class CodexAdapter extends AgentAdapter {
     };
 
     let status = await runApply();
+
     if (status === 'migrated' || status === 'already_paginated') return;
+
     // A missing JSON report (timeout, incompatible CLI) must not scan every rollout.
     if (status !== 'missing_sqlite_metadata') {
       const notice =
         `Codex indexing skipped for ${sessionId}: ${status ?? 'no JSON report'}. The rollout was written; the session may stay invisible until Codex reindexes.`;
+
       log.debug(notice);
       this.noteWrite(notice);
+
       return;
     }
+
     await this.indexThreadViaAppServer(bin, codexHome);
     status = await runApply();
+
     if (status !== 'migrated' && status !== 'already_paginated') {
       const notice =
         `Codex indexing did not finish for ${sessionId}: ${status ?? 'no JSON report'}. The rollout was written; the session may stay invisible until Codex reindexes.`;
+
       log.debug(notice);
       this.noteWrite(notice);
     }
@@ -1005,6 +1178,7 @@ export class CodexAdapter extends AgentAdapter {
   private indexThreadViaAppServer(bin: string, codexHome: string): Promise<void> {
     return new Promise((resolve) => {
       let child: ChildProcess;
+
       try {
         child = crossSpawn(bin, ['app-server'], {
           env: { ...process.env, CODEX_HOME: codexHome, RUST_LOG: 'error' },
@@ -1013,29 +1187,35 @@ export class CodexAdapter extends AgentAdapter {
         });
       } catch {
         resolve();
+
         return;
       }
 
       let settled = false;
+
       const finish = () => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+
         try {
           child.stdin?.end();
         } catch {
           // ignore
         }
+
         try {
           child.kill();
         } catch {
           // ignore
         }
+
         resolve();
       };
+
       const timer = setTimeout(finish, 30_000);
 
-      const send = (obj: unknown) => {
+      const send = (obj: JsonValue) => {
         try {
           child.stdin?.write(JSON.stringify(obj) + '\n');
         } catch {
@@ -1047,15 +1227,19 @@ export class CodexAdapter extends AgentAdapter {
       child.stdout?.on('data', (chunk: Buffer) => {
         buffer += chunk.toString();
         let idx: number;
+
         while ((idx = buffer.indexOf('\n')) >= 0) {
           const line = buffer.slice(0, idx).trim();
           buffer = buffer.slice(idx + 1);
+
           if (!line) continue;
+
           if (line.includes('"id":1')) {
             send({ jsonrpc: '2.0', method: 'initialized', params: {} });
             send({ jsonrpc: '2.0', id: 2, method: 'thread/list', params: { limit: 50 } });
           } else if (line.includes('"id":2')) {
             finish();
+
             return;
           }
         }
@@ -1072,12 +1256,13 @@ export class CodexAdapter extends AgentAdapter {
     });
   }
 
-  private blockToResponseItem(role: string, block: ContentBlock, timestamp?: string): Record<string, unknown> | null {
+  private blockToResponseItem(role: string, block: ContentBlock, timestamp?: string): CodexWrittenLine | null {
     const ts = timestamp ?? new Date().toISOString();
 
     switch (block.type) {
       case 'text': {
         const contentType = role === 'user' ? 'input_text' : 'output_text';
+
         return {
           timestamp: ts,
           type: 'response_item',
@@ -1091,12 +1276,14 @@ export class CodexAdapter extends AgentAdapter {
           },
         };
       }
+
       case 'image': {
         // Codex keeps user images inline as input_image data: URLs; without data, or in an
         // assistant message, degrade to a placeholder (counted degraded)
         const content = role === 'user' && block.data
           ? [{ type: 'input_image', image_url: `data:${block.mimeType};base64,${block.data}` }]
           : [{ type: role === 'user' ? 'input_text' : 'output_text', text: imagePlaceholderText(block) }];
+
         return {
           timestamp: ts,
           type: 'response_item',
@@ -1108,8 +1295,10 @@ export class CodexAdapter extends AgentAdapter {
           },
         };
       }
+
       case 'tool_call': {
         const codexName = denormalizeToolName(block.toolName);
+
         return {
           timestamp: ts,
           type: 'response_item',
@@ -1122,6 +1311,7 @@ export class CodexAdapter extends AgentAdapter {
           },
         };
       }
+
       case 'tool_result': {
         return {
           timestamp: ts,
@@ -1134,6 +1324,7 @@ export class CodexAdapter extends AgentAdapter {
           },
         };
       }
+
       case 'thinking': {
         // Codex supports reasoning; write it as a reasoning response_item
         return {
@@ -1155,6 +1346,7 @@ export class CodexAdapter extends AgentAdapter {
     // Scope first: unregisterThread is global, so running it before the lookup
     // would drop another workspace's copy when `rollback --cwd` matched nothing.
     const f = this.findSessionFile(sessionId, projectPath);
+
     if (!f || !fileExists(f)) return false;
 
     // Unregister, then delete the body. Removing only the rollout leaves an
@@ -1163,6 +1355,7 @@ export class CodexAdapter extends AgentAdapter {
 
     try {
       fs.unlinkSync(f);
+
       return true;
     } catch {
       return false;
@@ -1181,10 +1374,13 @@ export class CodexAdapter extends AgentAdapter {
     // Require the Codex id shape (uuid v7) AND escape quotes anyway.
     if (!isUuidV7(sessionId)) {
       log.debug(`codex unregister skipped: not a codex session id: ${sessionId.slice(0, 12)}`);
+
       return;
     }
+
     const safeId = sessionId.replace(/'/g, "''");
     const home = path.dirname(this.storageRoot); // ~/.codex
+
     const stmts: Array<[string, string[]]> = [
       [
         path.join(home, 'state_5.sqlite'),
@@ -1201,15 +1397,19 @@ export class CodexAdapter extends AgentAdapter {
         ],
       ],
     ];
+
     const present = stmts.filter(([db]) => fileExists(db));
+
     if (present.length === 0) return;
     const bin = findSqlite3();
+
     if (!bin) {
       throw new Error(
         `The sqlite3 CLI was not found, so TeamAI could not unregister Codex thread ${sessionId} ` +
           'and Codex would keep listing it. Nothing was deleted: install sqlite3 and run the rollback again.',
       );
     }
+
     // Run statement by statement, no transaction: table shapes differ across Codex
     // versions (e.g. no projection_state table) and one error in a transaction
     for (const [db, sqls] of present) {

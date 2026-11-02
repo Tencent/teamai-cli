@@ -1,5 +1,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
+import { z } from 'zod';
+import { HookStdinSchema, stdinString, type HookStdin } from './hook-dispatch.js';
 import { log } from './utils/logger.js';
 import { deriveSessionId } from './utils/session-id.js';
 import { getUserHome } from './utils/home.js';
@@ -23,15 +25,14 @@ import { getUserHome } from './utils/home.js';
 /** TTL for the dedup cache file: 24 hours. Older sessions are treated as fresh. */
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
-interface TodoWriteHintCache {
-  hinted: boolean;
-  updatedAt: string;
-}
+const TodoWriteHintCacheSchema = z.object({ hinted: z.boolean(), updatedAt: z.string() });
+
+type TodoWriteHintCache = z.infer<typeof TodoWriteHintCacheSchema>;
 
 interface HookInput {
   toolName: string;
   sessionId: string;
-  payload: Record<string, unknown>;
+  payload: HookStdin;
 }
 
 /**
@@ -50,11 +51,17 @@ export function getTodoWriteHintCachePath(sessionId: string): string {
 function readCache(sessionId: string): TodoWriteHintCache | null {
   try {
     const cachePath = getTodoWriteHintCachePath(sessionId);
+
     if (!fs.existsSync(cachePath)) return null;
     const raw = fs.readFileSync(cachePath, 'utf-8');
-    const parsed = JSON.parse(raw) as TodoWriteHintCache;
+    const cache = TodoWriteHintCacheSchema.safeParse(JSON.parse(raw));
+
+    if (!cache.success) return null;
+    const parsed = cache.data;
     const age = Date.now() - new Date(parsed.updatedAt).getTime();
+
     if (age > CACHE_TTL_MS) return null;
+
     return parsed;
   } catch {
     return null;
@@ -65,6 +72,7 @@ function writeCache(sessionId: string, cache: TodoWriteHintCache): void {
   try {
     const cachePath = getTodoWriteHintCachePath(sessionId);
     const dir = path.dirname(cachePath);
+
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(cachePath, JSON.stringify(cache), 'utf-8');
   } catch {
@@ -78,9 +86,11 @@ function writeCache(sessionId: string, cache: TodoWriteHintCache): void {
  */
 export function shouldSkipTodoWriteHint(sessionId: string): boolean {
   const cache = readCache(sessionId);
+
   if (cache?.hinted) return true;
 
   writeCache(sessionId, { hinted: true, updatedAt: new Date().toISOString() });
+
   return false;
 }
 
@@ -92,15 +102,22 @@ export async function readStdin(): Promise<HookInput | null> {
   if (process.stdin.isTTY) return null;
 
   const chunks: Buffer[] = [];
+
   for await (const chunk of process.stdin) {
-    chunks.push(chunk as Buffer);
+    chunks.push(chunk);
   }
+
   const raw = Buffer.concat(chunks).toString('utf-8');
+
   if (!raw.trim()) return null;
 
   try {
-    const data = JSON.parse(raw) as Record<string, unknown>;
-    const toolName = typeof data.tool_name === 'string' ? data.tool_name : '';
+    const stdin = HookStdinSchema.safeParse(JSON.parse(raw));
+
+    if (!stdin.success) return null;
+    const data = stdin.data;
+    const toolName = stdinString(data, 'tool_name') ?? '';
+
     return { toolName, sessionId: deriveSessionId(data), payload: data };
   } catch {
     return null;
@@ -125,6 +142,7 @@ export function buildHintMessage(language?: 'en' | 'zh'): string {
       'Skip that when the user already gave enough context or the change is trivial.',
     ].join('\n');
   }
+
   return [
     '[teamai:todowrite-hint] 任务已规划。',
     '',
@@ -151,8 +169,10 @@ export async function todoWriteHint(tool?: string): Promise<void> {
   if (process.env.TEAMAI_RECALL_DISABLED === '1') return;
 
   const input = await readStdin();
+
   if (!input) {
     log.debug('todowrite-hint: no STDIN data');
+
     return;
   }
 
@@ -162,16 +182,19 @@ export async function todoWriteHint(tool?: string): Promise<void> {
 
   if (shouldSkipTodoWriteHint(input.sessionId)) {
     log.debug(`todowrite-hint: already hinted in session ${input.sessionId}`);
+
     return;
   }
 
   const { loadTeamAgentLanguageForHook } = await import('./config.js');
   const language = await loadTeamAgentLanguageForHook(input.payload, tool);
+
   const hookOutput = JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'PostToolUse',
       additionalContext: buildHintMessage(language),
     },
   });
+
   process.stdout.write(hookOutput + '\n');
 }

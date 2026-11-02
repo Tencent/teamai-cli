@@ -29,8 +29,10 @@ export class TGitProvider implements GitProvider {
   async authenticate(): Promise<string> {
     if (this.isAuthenticated()) {
       const username = gfAuthWhoami();
+
       if (username) return username;
     }
+
     return ensureAuthenticated();
   }
 
@@ -45,6 +47,7 @@ export class TGitProvider implements GitProvider {
       if (e instanceof GfRepoNotFoundError) {
         throw new RepoNotFoundError(repo);
       }
+
       throw e;
     }
   }

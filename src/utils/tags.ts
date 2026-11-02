@@ -1,10 +1,40 @@
 import path from 'node:path';
 import YAML from 'yaml';
+import { parseYaml } from './yaml.js';
+import { z } from 'zod';
 import type { TagsConfig, ResourceItem } from '../types.js';
 import { readFileSafe, writeFile } from './fs.js';
 import { log } from './logger.js';
 
 const TAGS_FILE = 'tags.yaml';
+
+/** Resource name → tags. A table that is neither a mapping nor a list is empty, and an entry that is not a list is skipped. */
+const TagTableSchema = z
+    .union([z.record(z.string(), z.unknown()), z.array(z.unknown())])
+    .catch({})
+    .transform((table) => {
+        const tags: Record<string, string[]> = {};
+
+        for (const [name, list] of Object.entries(table)) {
+            if (Array.isArray(list)) {
+                tags[name] = list.map(String);
+            }
+        }
+
+        return tags;
+    });
+
+/** tags.yaml: a mapping, or a list (no tables); a scalar document is no config at all. */
+const TagsFileSchema = z.union([
+    z.object({ skills: TagTableSchema, rules: TagTableSchema }),
+    z.array(z.unknown()).transform((): TagsConfig => ({ skills: {}, rules: {} })),
+]);
+
+/** The items filterByTags keeps and the ones it leaves out. */
+export interface TagFilterResult {
+    included: ResourceItem[];
+    skipped: ResourceItem[];
+}
 
 /**
  * Load the tags config (tags.yaml) from the team repo.
@@ -15,38 +45,16 @@ const TAGS_FILE = 'tags.yaml';
  */
 export async function loadTagsConfig(repoPath: string): Promise<TagsConfig | null> {
     const content = await readFileSafe(path.join(repoPath, TAGS_FILE));
+
     if (!content) {
         return null;
     }
 
     try {
-        const raw = YAML.parse(content);
-        if (!raw || typeof raw !== 'object') {
-            return null;
-        }
-
-        const skills: Record<string, string[]> = {};
-        const rules: Record<string, string[]> = {};
-
-        if (raw.skills && typeof raw.skills === 'object') {
-            for (const [name, tags] of Object.entries(raw.skills)) {
-                if (Array.isArray(tags)) {
-                    skills[name] = tags.map(String);
-                }
-            }
-        }
-
-        if (raw.rules && typeof raw.rules === 'object') {
-            for (const [name, tags] of Object.entries(raw.rules)) {
-                if (Array.isArray(tags)) {
-                    rules[name] = tags.map(String);
-                }
-            }
-        }
-
-        return { skills, rules };
+        return TagsFileSchema.safeParse(parseYaml(content)).data ?? null;
     } catch (e) {
-        log.warn(`Failed to parse ${TAGS_FILE}: ${(e as Error).message}`);
+        log.warn(`Failed to parse ${TAGS_FILE}: ${e instanceof Error ? e.message : String(e)}`);
+
         return null;
     }
 }
@@ -66,7 +74,7 @@ export function filterByTags(
     tagsConfig: TagsConfig | null,
     subscribedTags: string[] | undefined,
     resourceType: 'skills' | 'rules',
-): { included: ResourceItem[]; skipped: ResourceItem[] } {
+): TagFilterResult {
     // No tags.yaml or no subscriptions → include all
     if (!tagsConfig || !subscribedTags || subscribedTags.length === 0) {
         return { included: items, skipped: [] };
@@ -88,6 +96,7 @@ export function filterByTags(
 
         // Check if any item tag matches subscribed tags
         const hasMatch = itemTags.some((tag) => subscribedSet.has(tag));
+
         if (hasMatch) {
             included.push(item);
         } else {
@@ -103,10 +112,12 @@ export function filterByTags(
  */
 export async function saveTagsConfig(repoPath: string, config: TagsConfig): Promise<void> {
     const filePath = path.join(repoPath, TAGS_FILE);
+
     const content = YAML.stringify({
         skills: config.skills,
         rules: config.rules,
     });
+
     await writeFile(filePath, content);
 }
 

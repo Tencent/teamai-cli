@@ -46,19 +46,24 @@ export function deriveTargetSessionId(
 ): string {
   const { targetPlatform, targetCwd, sourceSessionId } = target;
   const paths = platform === 'win32' ? path.win32 : path.posix;
+
   if (!paths.isAbsolute(targetCwd)) {
     throw new Error(
       `Target workspace "${targetCwd}" is not an absolute path, so the session was not written. ` +
         'Pass an absolute directory (--target-cwd for `session migrate`, --cwd for `session resume`).',
     );
   }
+
   const key = `teamai:${targetPlatform}:${canonicalWorkspace(targetCwd, paths)}:${sourceSessionId}`;
+
   if (sessionPlatformFacts(targetPlatform)?.idFormat === 'opencode') {
     const time =
       OPENCODE_SESSION_TIME.exec(sourceSessionId)?.[1] ?? opencodeTime(opencodeClock(createdMs(target.sourceCreatedAt)), 'descending');
+
     return `ses_${time}${base62Suffix(key)}`;
   }
-  return uuidV7Shaped(key);
+
+  return uuidV7FromKey(key);
 }
 
 /**
@@ -69,9 +74,11 @@ export function deriveTargetSessionId(
  */
 export function deriveOpencodeMessageIds(sessionId: string, createdTimes: number[]): string[] {
   let previous = -1n;
+
   return createdTimes.map((ms, index) => {
     const clock = opencodeClock(ms);
     previous = clock > previous ? clock : previous + 1n;
+
     return `msg_${opencodeTime(previous, 'ascending')}${base62Suffix(`${sessionId}:${index}`)}`;
   });
 }
@@ -91,17 +98,20 @@ const opencodeClock = (ms: number): bigint => BigInt(ms) * 4096n + 1n;
 /** OpenCode 2's time part: the low 48 bits of the clock, inverted for descending ids. */
 function opencodeTime(clock: bigint, order: 'ascending' | 'descending'): string {
   const bits = (order === 'descending' ? ~clock : clock) & 0xffff_ffff_ffffn;
+
   return bits.toString(16).padStart(12, '0');
 }
 
 /** A time OpenCode can encode; a missing or unparseable one sorts first. */
 function createdMs(iso: string | undefined): number {
   const ms = iso ? Date.parse(iso) : NaN;
+
   return Number.isFinite(ms) && ms > 0 ? ms : 0;
 }
 
 function base62Suffix(key: string): string {
   const bytes = crypto.createHash('sha256').update(key).digest();
+
   return Array.from(bytes.subarray(0, 14), (byte) => BASE62[byte % 62]).join('');
 }
 
@@ -125,14 +135,18 @@ export function legacyTargetSessionIds(target: {
 }): string[] {
   const { sourcePlatform, targetPlatform, sourceSessionId } = target;
   const ids: string[] = [];
+
   if (sourcePlatform !== targetPlatform && UUID_RE.test(sourceSessionId)) ids.push(sourceSessionId);
-  if (sessionPlatformFacts(targetPlatform)?.legacyIdWithoutWorkspace) ids.push(uuidV7Shaped(`teamai:${targetPlatform}:${sourceSessionId}`));
+
+  if (sessionPlatformFacts(targetPlatform)?.legacyIdWithoutWorkspace) ids.push(uuidV7FromKey(`teamai:${targetPlatform}:${sourceSessionId}`));
+
   return ids;
 }
 
-function uuidV7Shaped(key: string): string {
+function uuidV7FromKey(key: string): string {
   const hex = crypto.createHash('sha256').update(key).digest('hex');
   const variant = ((parseInt(hex[16], 16) & 0x3) | 0x8).toString(16);
+
   // Version nibble 7 keeps the UUIDv7 shape Codex expects of a thread id. The
   // time bits are hash, not a timestamp: sorting comes from session timestamps.
   return [
@@ -157,11 +171,13 @@ function uuidV7Shaped(key: string): string {
 function canonicalWorkspace(cwd: string, paths: path.PlatformPath): string {
   const resolved = paths.resolve(cwd);
   let real: string;
+
   try {
     real = fs.realpathSync.native(resolved);
   } catch {
     real = resolved;
   }
+
   return paths === path.win32 ? real.replace(/^[a-z]:/, (drive) => drive.toUpperCase()) : real;
 }
 

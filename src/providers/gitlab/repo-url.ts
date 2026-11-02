@@ -13,17 +13,21 @@ export const GITLAB_HOST = resolveGitLabHost();
 
 export function resolveGitLabHost(): string {
   const direct = process.env.TEAMAI_GITLAB_HOST?.trim();
+
   if (direct) return direct;
 
   const gitlabUrl = process.env.GITLAB_URL?.trim();
+
   if (gitlabUrl) {
     try {
       const host = new URL(gitlabUrl).host;
+
       if (host) return host;
     } catch {
       // ignore malformed GITLAB_URL — fall through to default host
     }
   }
+
   return 'gitlab.com';
 }
 
@@ -42,11 +46,13 @@ export function parseGitLabRepoInput(input: string): RepoInfo {
 
   // Full URL — host is taken from the URL itself (covers self-hosted instances).
   const httpsMatch = trimmed.match(/^https?:\/\/([^/]+)\/(.+)\/([^/]+?)(?:\.git)?\/?$/);
+
   if (httpsMatch) {
     return buildRepoInfo(httpsMatch[1], httpsMatch[2], httpsMatch[3]);
   }
 
   const sshMatch = trimmed.match(/^git@([^:]+):(.+)\/([^/]+?)(?:\.git)?\/?$/);
+
   if (sshMatch) {
     return buildRepoInfo(sshMatch[1], sshMatch[2], sshMatch[3]);
   }
@@ -55,6 +61,7 @@ export function parseGitLabRepoInput(input: string): RepoInfo {
   const shortMatch = trimmed.match(
     /^([A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*)\/([A-Za-z0-9_.-]+)$/,
   );
+
   if (shortMatch) {
     return buildRepoInfo(GITLAB_HOST, shortMatch[1], shortMatch[2]);
   }
@@ -80,6 +87,7 @@ export function parseGitLabRepoInput(input: string): RepoInfo {
  */
 function stripGitLabRoutePath(input: string): string {
   const marker = input.indexOf('/-/');
+
   return marker === -1 ? input : input.slice(0, marker);
 }
 

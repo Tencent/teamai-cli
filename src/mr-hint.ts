@@ -2,10 +2,13 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { z } from 'zod';
+
 import { getTGitToken, tgitFetch } from './providers/tgit/rest-auth.js';
 import { log } from './utils/logger.js';
+import { lenientList } from './utils/json.js';
 import { getUserHome } from './utils/home.js';
-import type { LocalConfig } from './types.js';
+import { type LocalConfig, JsonObjectSchema } from './types.js';
 
 // ─── MR Hint data flow ──────────────────────────────────
 //
@@ -48,12 +51,14 @@ export interface MRSummary {
 }
 
 /** Persisted cache for a repo. */
-interface HintCache {
+const HintCacheSchema = z.object({
   /** MR IDs that have already been hinted. */
-  hintedMrIds: string[];
+  hintedMrIds: lenientList(z.string()),
   /** ISO 8601 timestamp of last update. */
-  updatedAt: string;
-}
+  updatedAt: z.string(),
+});
+
+type HintCache = z.infer<typeof HintCacheSchema>;
 
 // ─── Cache helpers ───────────────────────────────────────
 
@@ -86,11 +91,13 @@ function getCachePath(owner: string, repo: string): string {
 function loadCache(owner: string, repo: string): HintCache {
   try {
     const raw = fs.readFileSync(getCachePath(owner, repo), 'utf-8');
-    const parsed = JSON.parse(raw) as HintCache;
+    const parsed = HintCacheSchema.parse(JSON.parse(raw));
     const age = Date.now() - new Date(parsed.updatedAt).getTime();
+
     if (age > CACHE_TTL_MS) {
       return { hintedMrIds: [], updatedAt: new Date().toISOString() };
     }
+
     return parsed;
   } catch {
     // cache missing or malformed — start fresh
@@ -105,6 +112,7 @@ function saveCache(owner: string, repo: string, cache: HintCache): void {
   try {
     const cachePath = getCachePath(owner, repo);
     const dir = path.dirname(cachePath);
+
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(cachePath, JSON.stringify(cache), 'utf-8');
   } catch {
@@ -129,7 +137,9 @@ export function getGitRemote(cwd: string): string | null {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
     });
+
     if (result.status !== 0) return null;
+
     return result.stdout.trim() || null;
   } catch {
     return null;
@@ -161,24 +171,28 @@ export function parseRemoteToRepo(remoteUrl: string): RemoteRepo | null {
 
   // TGit HTTPS: https://git.woa.com/group/sub/repo.git
   const tgitHttps = url.match(/^https?:\/\/[^@]*git\.woa\.com\/(.+)\/([^/]+?)(?:\.git)?\/?$/);
+
   if (tgitHttps) {
     return { provider: 'tgit', owner: tgitHttps[1], repo: tgitHttps[2] };
   }
 
   // TGit SSH: git@git.woa.com:group/sub/repo.git
   const tgitSsh = url.match(/^git@git\.woa\.com:(.+)\/([^/]+?)(?:\.git)?\/?$/);
+
   if (tgitSsh) {
     return { provider: 'tgit', owner: tgitSsh[1], repo: tgitSsh[2] };
   }
 
   // GitHub HTTPS: https://github.com/owner/repo.git
   const ghHttps = url.match(/^https?:\/\/[^@]*github\.com\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/);
+
   if (ghHttps) {
     return { provider: 'github', owner: ghHttps[1], repo: ghHttps[2] };
   }
 
   // GitHub SSH: git@github.com:owner/repo.git
   const ghSsh = url.match(/^git@github\.com:([^/]+)\/([^/]+?)(?:\.git)?\/?$/);
+
   if (ghSsh) {
     return { provider: 'github', owner: ghSsh[1], repo: ghSsh[2] };
   }
@@ -189,12 +203,12 @@ export function parseRemoteToRepo(remoteUrl: string): RemoteRepo | null {
 // ─── MR listing ─────────────────────────────────────────
 
 /** TGit API MR object (subset of fields). */
-interface TGitMR {
-  iid: number;
-  title: string;
-  web_url: string;
-  merged_at: string | null;
-}
+const TGitMRSchema = z.object({
+  iid: z.number(),
+  title: z.string(),
+  web_url: z.string(),
+  merged_at: z.string().nullable(),
+});
 
 /**
  * List recently merged MRs from TGit REST API.
@@ -216,10 +230,12 @@ async function listTGitMergedMRs(
     getTGitToken();
   } catch {
     log.debug('mr-hint: no TGit token, skipping TGit MR check');
+
     return [];
   }
 
   const projectId = encodeURIComponent(`${owner}/${repo}`);
+
   const apiPath =
     `/projects/${projectId}/merge_requests` +
     `?state=merged&order_by=updated_at&sort=desc&per_page=${MAX_MRS}`;
@@ -228,12 +244,16 @@ async function listTGitMergedMRs(
     const resp = await tgitFetch(apiPath, {
       signal: AbortSignal.timeout(8000),
     });
+
     if (!resp.ok) {
       log.debug(`mr-hint: TGit API returned ${resp.status}`);
+
       return [];
     }
-    const items = (await resp.json()) as TGitMR[];
+
+    const items = lenientList(TGitMRSchema).parse(await resp.json());
     const sinceMs = since.getTime();
+
     return items
       .filter((mr) => mr.merged_at && new Date(mr.merged_at).getTime() >= sinceMs)
       .map((mr) => ({
@@ -243,27 +263,27 @@ async function listTGitMergedMRs(
         mergedAt: mr.merged_at!,
       }));
   } catch (err) {
-    log.debug(`mr-hint: TGit API error: ${(err as Error).message}`);
+    log.debug(`mr-hint: TGit API error: ${err instanceof Error ? err.message : String(err)}`);
+
     return [];
   }
 }
 
 /** GitHub PR object from gh CLI JSON output. */
-interface GhPR {
-  number: number;
-  title: string;
-  url: string;
-  mergedAt: string;
-}
+const GhPRSchema = z.object({
+  number: z.number(),
+  title: z.string(),
+  url: z.string(),
+  mergedAt: z.string(),
+});
 
 /** GitHub REST API pull request object (subset of fields used). */
-interface GitHubRestPR {
-  number: number;
-  title: string;
-  html_url: string;
-  merged_at: string | null;
-  pull_request?: { merged_at: string | null };
-}
+const GitHubRestPRSchema = z.object({
+  number: z.number(),
+  title: z.string(),
+  html_url: z.string(),
+  merged_at: z.string().nullable(),
+});
 
 /**
  * Fetch merged PRs from the GitHub REST API.
@@ -282,18 +302,23 @@ async function listGitHubMergedMRsViaREST(
   since: Date,
 ): Promise<MRSummary[]> {
   const token = process.env['GITHUB_TOKEN'];
-  const headers: Record<string, string> = { 'User-Agent': 'teamai-cli', Accept: 'application/vnd.github+json' };
-  if (token) headers['Authorization'] = `Bearer ${token}`;
+  const baseHeaders = { 'User-Agent': 'teamai-cli', Accept: 'application/vnd.github+json' };
+  const headers = token ? { ...baseHeaders, Authorization: `Bearer ${token}` } : baseHeaders;
 
   const url = `https://api.github.com/repos/${owner}/${repo}/pulls?state=closed&sort=updated&direction=desc&per_page=${MAX_MRS}`;
+
   try {
     const resp = await fetch(url, { headers, signal: AbortSignal.timeout(8000) });
+
     if (!resp.ok) {
       log.debug(`mr-hint: GitHub REST API returned ${resp.status}`);
+
       return [];
     }
-    const items = (await resp.json()) as GitHubRestPR[];
+
+    const items = lenientList(GitHubRestPRSchema).parse(await resp.json());
     const sinceMs = since.getTime();
+
     return items
       .filter((pr) => pr.merged_at && new Date(pr.merged_at).getTime() >= sinceMs)
       .map((pr) => ({
@@ -303,7 +328,8 @@ async function listGitHubMergedMRsViaREST(
         mergedAt: pr.merged_at!,
       }));
   } catch (err) {
-    log.debug(`mr-hint: GitHub REST API error: ${(err as Error).message}`);
+    log.debug(`mr-hint: GitHub REST API error: ${err instanceof Error ? err.message : String(err)}`);
+
     return [];
   }
 }
@@ -337,9 +363,11 @@ async function listGitHubMergedMRs(
       ],
       { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 8000 },
     );
+
     if (result.status === 0 && result.stdout.trim()) {
-      const items = JSON.parse(result.stdout) as GhPR[];
+      const items = lenientList(GhPRSchema).parse(JSON.parse(result.stdout));
       const sinceMs = since.getTime();
+
       return items
         .filter((pr) => pr.mergedAt && new Date(pr.mergedAt).getTime() >= sinceMs)
         .map((pr) => ({
@@ -349,9 +377,10 @@ async function listGitHubMergedMRs(
           mergedAt: pr.mergedAt,
         }));
     }
+
     log.debug(`mr-hint: gh pr list unavailable (status=${result.status}), falling back to REST API`);
   } catch (err) {
-    log.debug(`mr-hint: gh CLI error: ${(err as Error).message}, falling back to REST API`);
+    log.debug(`mr-hint: gh CLI error: ${err instanceof Error ? err.message : String(err)}, falling back to REST API`);
   }
 
   // ── Fallback: GitHub REST API ────────────────────────────
@@ -370,6 +399,7 @@ export function buildHintMessage(mrs: MRSummary[], language?: 'en' | 'zh'): stri
   // One command for every MR: `--from-mr` takes several URLs, publishes the
   // accepted learnings once and updates each repository's teamwiki once (#1104).
   const command = `  teamai import --from-mr ${mrs.map((mr) => mr.url).join(' ')}`;
+
   if (language === 'en') {
     const lines = [
       `[teamai:mr-hint] Found ${mrs.length} recently merged MR(s) not yet imported into the team knowledge base.`,
@@ -377,13 +407,17 @@ export function buildHintMessage(mrs: MRSummary[], language?: 'en' | 'zh'): stri
       'After this task, tell the user they can turn these MRs into learnings with:',
       '',
     ];
+
     for (const mr of mrs) {
       lines.push(`- ${mr.title} (merged: ${mr.mergedAt.slice(0, 10)})`);
     }
+
     lines.push('');
     lines.push(command);
+
     return lines.join('\n');
   }
+
   const lines: string[] = [
     `[teamai:mr-hint] 发现 ${mrs.length} 个近期已合入但尚未提炼的 MR。`,
     '',
@@ -435,12 +469,14 @@ async function mrHintAllowed(localConfig?: LocalConfig | null): Promise<boolean>
   const { loadTeamConfig } = await import('./config.js');
   const { isMrHintEnabled } = await import('./types.js');
   let teamConfig: Awaited<ReturnType<typeof loadTeamConfig>> = null;
+
   try {
     teamConfig = await loadTeamConfig(localConfig.repo.localPath);
   } catch {
     // An unreadable teamai.yaml is not an instruction to stop; a team with no
     // opinion leaves the hint on, which is what isMrHintEnabled defaults to.
   }
+
   return isMrHintEnabled(localConfig, teamConfig ?? {});
 }
 
@@ -456,11 +492,13 @@ export async function computeMrHintOutput(
   localConfig?: LocalConfig | null,
 ): Promise<string | null> {
   if (process.env.TEAMAI_MR_HINT_DISABLED === '1') return null;
+
   if (!(await mrHintAllowed(localConfig))) return null;
 
   // Detect git remote
   const rawCwd = process.env.TEAMAI_MR_HINT_CWD ?? process.cwd();
   const cwd = path.resolve(rawCwd);
+
   try {
     if (!fs.statSync(cwd).isDirectory()) {
       // 不是目录，静默跳过（避免误报）
@@ -470,15 +508,20 @@ export async function computeMrHintOutput(
     // 路径不存在，静默跳过
     return null;
   }
+
   const remoteUrl = getGitRemote(cwd);
+
   if (!remoteUrl) {
     log.debug('mr-hint: no git remote, skipping');
+
     return null;
   }
 
   const repoInfo = parseRemoteToRepo(remoteUrl);
+
   if (!repoInfo) {
     log.debug(`mr-hint: unrecognized remote URL: ${remoteUrl}`);
+
     return null;
   }
 
@@ -500,8 +543,10 @@ export async function computeMrHintOutput(
 
   // Filter out already-hinted MRs
   const newMrs = allMrs.filter((mr) => !alreadyHinted.has(mr.id));
+
   if (newMrs.length === 0) {
     log.debug('mr-hint: no new merged MRs to hint');
+
     return null;
   }
 
@@ -511,6 +556,7 @@ export async function computeMrHintOutput(
 
   // Build additionalContext hint
   const hintText = buildHintMessage(newMrs, language);
+
   return JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'SessionStart',
@@ -519,23 +565,29 @@ export async function computeMrHintOutput(
   });
 }
 
+/** The SessionStart hook's stdin object; anything else reads as no payload. */
+const HookPayloadSchema = JsonObjectSchema;
+
+type HookPayload = z.infer<typeof HookPayloadSchema>;
+
 export async function mrHint(tool?: string): Promise<void> {
   // Drain STDIN when piped (hook invocation) so the caller doesn't block.
   // The payload's cwd selects the scope whose teamai.yaml `language` applies.
-  let payload: Record<string, unknown> = {};
+  let payload: HookPayload = {};
+
   if (!process.stdin.isTTY) {
     try {
       const chunks: Buffer[] = [];
+
       for await (const chunk of process.stdin) {
-        chunks.push(chunk as Buffer);
+        chunks.push(chunk);
       }
+
       const raw = Buffer.concat(chunks).toString('utf-8').trim();
+
       if (raw) {
         try {
-          const parsed = JSON.parse(raw) as unknown;
-          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-            payload = parsed as Record<string, unknown>;
-          }
+          payload = HookPayloadSchema.safeParse(JSON.parse(raw)).data ?? payload;
         } catch {
           // non-critical: an unparseable payload still drains
         }
@@ -549,6 +601,7 @@ export async function mrHint(tool?: string): Promise<void> {
   // point reads exactly the config the SessionStart hook reads.
   let language: 'en' | 'zh' | undefined;
   let hookConfig: LocalConfig | null = null;
+
   try {
     const { resolveHookConfig } = await import('./dashboard-collector.js');
     const { loadTeamAgentLanguage } = await import('./config.js');
@@ -560,5 +613,6 @@ export async function mrHint(tool?: string): Promise<void> {
   }
 
   const output = await computeMrHintOutput(language, hookConfig);
+
   if (output) process.stdout.write(output + '\n');
 }

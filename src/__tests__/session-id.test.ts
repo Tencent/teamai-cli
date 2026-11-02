@@ -62,7 +62,8 @@ describe('deriveSessionId', () => {
     it('ignores non-string session_id values', () => {
         delete process.env.CLAUDE_SESSION_ID;
         process.env.CLAUDE_SESSION_ID = 'env-session';
-        expect(deriveSessionId({ session_id: 123 })).toBe('env-session');
+        const unparsed: Record<string, unknown> = { session_id: 123 };
+        expect(deriveSessionId(unparsed)).toBe('env-session');
     });
 
     it('includes cwd in pid fallback when includeCwd is true', () => {

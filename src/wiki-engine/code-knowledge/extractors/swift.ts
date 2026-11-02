@@ -22,17 +22,20 @@ export function extractSwift(files: CodeCollectedFile[]): CodeFact[] {
 
       // --- Components ---
       const typeDecl = /^(class|struct|enum|actor)\s+([A-Z]\w*)/u.exec(decl);
+
       if (typeDecl) {
         facts.push(makeFact("component", typeDecl[2], file.relativePath, lineNumber, line, "EXTRACTED"));
       }
 
       const funcDecl = /^func\s+([a-z_]\w*)/u.exec(decl);
+
       if (funcDecl) {
         facts.push(makeFact("component", funcDecl[1], file.relativePath, lineNumber, line, "EXTRACTED"));
       }
 
       // --- Interfaces ---
       const protocolDecl = /^protocol\s+([A-Z]\w*)/u.exec(decl);
+
       if (protocolDecl) {
         facts.push(makeFact("interface", protocolDecl[1], file.relativePath, lineNumber, line, "EXTRACTED"));
       }
@@ -40,9 +43,11 @@ export function extractSwift(files: CodeCollectedFile[]): CodeFact[] {
       // Conformances: `extension Point: Equatable, CustomStringConvertible where ...`
       // An extension declares no new type, so it only contributes protocols.
       const extensionDecl = /^extension\s+([A-Z]\w*)\s*:\s*([^{]+)/u.exec(decl);
+
       if (extensionDecl) {
         for (const conformance of extensionDecl[2].split(/\bwhere\b/u)[0].split(",")) {
           const protocolName = conformance.trim();
+
           if (/^[A-Z]\w*$/u.test(protocolName)) {
             facts.push(
               makeFact("interface", `${extensionDecl[1]}:impl:${protocolName}`, file.relativePath, lineNumber, line, "EXTRACTED")
@@ -53,6 +58,7 @@ export function extractSwift(files: CodeCollectedFile[]): CodeFact[] {
 
       // --- Configs ---
       const envRead = /ProcessInfo\.processInfo\.environment\s*\[\s*"([A-Z][A-Z0-9_]+)"\s*\]/u.exec(line);
+
       if (envRead) {
         facts.push(makeFact("config", envRead[1], file.relativePath, lineNumber, line, "EXTRACTED"));
       }
@@ -64,6 +70,7 @@ export function extractSwift(files: CodeCollectedFile[]): CodeFact[] {
 
       // --- Relations ---
       const importDecl = /^import\s+(?:\w+\s+)?([A-Za-z_]\w*)/u.exec(decl);
+
       if (importDecl) {
         facts.push(makeFact("relation", importDecl[1], file.relativePath, lineNumber, line, "EXTRACTED"));
       }

@@ -19,9 +19,11 @@ import { mergeRuleBodyIntoTeamMd, ruleBodyEqualsTeamMd, rulePaths, teamRuleBody,
  */
 export function teamRuleToKiroSteering(rawTeamRule: string): string {
   const paths = rulePaths(teamRuleData(rawTeamRule));
+
   const frontmatter = paths.length > 0
     ? ['inclusion: fileMatch', `fileMatchPattern: [${paths.map((glob) => JSON.stringify(glob)).join(', ')}]`]
     : ['inclusion: always'];
+
   return `---\n${frontmatter.join('\n')}\n---\n\n${teamRuleBody(rawTeamRule)}\n`;
 }
 

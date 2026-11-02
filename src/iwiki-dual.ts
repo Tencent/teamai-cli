@@ -8,6 +8,7 @@
 
 import path from 'node:path';
 import fs from 'fs-extra';
+import { z } from 'zod';
 
 import { IWikiClient } from './utils/iwiki-client.js';
 import type { IWikiDocument, IWikiPage } from './utils/iwiki-client.js';
@@ -28,11 +29,11 @@ const DOWNLOAD_BATCH_SIZE = 5;
 const DEFAULT_MAX_PAGES = 200;
 
 /** 各章节的中文标题。 */
-const SECTION_TITLES: Record<string, string> = {
-    'business-api': '业务接口',
-    'external-knowledge': '外部知识源',
-    'glossary': '术语表',
-};
+const SECTION_TITLES = new Map<string, string>([
+    ['business-api', '业务接口'],
+    ['external-knowledge', '外部知识源'],
+    ['glossary', '术语表'],
+]);
 
 // ─── 类型 ────────────────────────────────────────────────
 
@@ -56,26 +57,37 @@ export interface IWikiDualOptions {
 }
 
 /** AI 抽取的三章节内容。 */
-interface AiSectionOutput {
-    'business-api': string;
-    'external-knowledge': string;
-    'glossary': string;
-}
+/** The sections the AI extracted; one that is not text reads as absent, and a reply that is not an object as none. */
+const AiSectionOutputSchema = z.object({
+    'business-api': z.string().optional().catch(undefined),
+    'external-knowledge': z.string().optional().catch(undefined),
+    'glossary': z.string().optional().catch(undefined),
+});
 
 // ─── 辅助函数 ────────────────────────────────────────────
 
 /**
  * 解析用户输入，识别 Space ID 或页面 ID（与 import-iwiki 保持一致）。
  */
-function parseIWikiInput(input: string): { type: 'space' | 'page'; id: string } {
+/** What an iWiki input names: a whole space, or one page. */
+interface IWikiTarget {
+    type: 'space' | 'page';
+    id: string;
+}
+
+function parseIWikiInput(input: string): IWikiTarget {
     const trimmed = input.trim();
+
     if (/^\d+$/.test(trimmed)) {
         return { type: 'space', id: trimmed };
     }
+
     const pageMatch = trimmed.match(/\/(?:p|pages)\/([^/?#]+)/);
+
     if (pageMatch) {
         return { type: 'page', id: pageMatch[1] };
     }
+
     throw new Error(
         `Unrecognized iWiki input: "${trimmed}". Enter a numeric Space ID or a page URL containing /p/.`,
     );
@@ -89,11 +101,14 @@ async function downloadDocuments(
     pages: IWikiPage[],
 ): Promise<IWikiDocument[]> {
     const documents: IWikiDocument[] = [];
+
     for (let i = 0; i < pages.length; i += DOWNLOAD_BATCH_SIZE) {
         const batch = pages.slice(i, i + DOWNLOAD_BATCH_SIZE);
+
         const results = await Promise.allSettled(
             batch.map((page) => client.getDocument(page.docid)),
         );
+
         for (const result of results) {
             if (result.status === 'fulfilled') {
                 documents.push(result.value);
@@ -102,6 +117,7 @@ async function downloadDocuments(
             }
         }
     }
+
     return documents;
 }
 
@@ -137,14 +153,18 @@ ${content}
  */
 function extractJson(text: string): string {
     const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+
     if (fenceMatch) {
         return fenceMatch[1].trim();
     }
+
     const start = text.indexOf('{');
     const end = text.lastIndexOf('}');
+
     if (start !== -1 && end !== -1 && end > start) {
         return text.slice(start, end + 1);
     }
+
     return text.trim();
 }
 
@@ -173,12 +193,14 @@ function replaceManagedSection(
     const openTag =
         `<!-- managed-by: import --from-iwiki, section: ${sectionKey}, ` +
         `source: ${source}, syncedAt: ${ts} -->`;
+
     const closeTag = `<!-- /managed-by: ${sectionKey} -->`;
 
     const openRegex = new RegExp(
         `<!--\\s*managed-by:\\s*import\\s*--from-iwiki,[^>]*section:\\s*${sectionKey}[^>]*-->`,
         'g',
     );
+
     const closeRegex = new RegExp(`<!--\\s*/managed-by:\\s*${sectionKey}\\s*-->`, 'g');
 
     const openIdx = content.search(openRegex);
@@ -188,24 +210,28 @@ function replaceManagedSection(
         // 替换 open tag 到 close tag 之间（含两个 tag）
         const before = content.slice(0, openIdx);
         const after = content.slice(closeIdx + `<!-- /managed-by: ${sectionKey} -->`.length);
+
         return `${before}${openTag}\n${newBody}\n${closeTag}${after}`;
     }
 
     // 找到对应章节标题并追加
-    const title = SECTION_TITLES[sectionKey] ?? sectionKey;
+    const title = SECTION_TITLES.get(sectionKey) ?? sectionKey;
     const headingRegex = new RegExp(`(##\\s+${title}\\s*\\n)`, 'm');
     const headingMatch = content.match(headingRegex);
+
     if (headingMatch?.index !== undefined) {
         const insertPos = headingMatch.index + headingMatch[0].length;
         const before = content.slice(0, insertPos);
         const after = content.slice(insertPos);
         const block = `${openTag}\n${newBody}\n${closeTag}\n`;
+
         return `${before}${block}${after}`;
     }
 
     // 找不到标题则在末尾追加整个章节
     const block =
         `\n## ${title}\n${openTag}\n${newBody}\n${closeTag}\n`;
+
     return content + block;
 }
 
@@ -255,6 +281,7 @@ export async function importFromIWikiDual(opts: IWikiDualOptions): Promise<{
 
     // 1. 读取 token
     const token = opts.token ?? process.env['TAI_PAT_TOKEN'];
+
     if (!token) {
         throw new Error(
             'Set the TAI_PAT_TOKEN environment variable (create one at https://tai.it.woa.com/user/pat).',
@@ -270,6 +297,7 @@ export async function importFromIWikiDual(opts: IWikiDualOptions): Promise<{
 
     // 4. 获取页面列表
     let pages: IWikiPage[];
+
     if (type === 'page') {
         pages = [{ docid: id, title: id }];
     } else {
@@ -278,6 +306,7 @@ export async function importFromIWikiDual(opts: IWikiDualOptions): Promise<{
 
     if (pages.length === 0) {
         log.warn('iWiki dual import: No pages found.');
+
         return { sectionsUpdated: [], pendingReview: false };
     }
 
@@ -286,6 +315,7 @@ export async function importFromIWikiDual(opts: IWikiDualOptions): Promise<{
 
     if (documents.length === 0) {
         log.warn('iWiki dual import: All document downloads failed.');
+
         return { sectionsUpdated: [], pendingReview: false };
     }
 
@@ -294,11 +324,13 @@ export async function importFromIWikiDual(opts: IWikiDualOptions): Promise<{
     const rawOutput = (await callTool(prompt, { launchedBy: 'iwiki-dual' })).text;
     const jsonStr = extractJson(rawOutput);
 
-    let aiOutput: Partial<AiSectionOutput> = {};
+    let aiOutput: z.infer<typeof AiSectionOutputSchema> = {};
+
     try {
-        aiOutput = JSON.parse(jsonStr) as Partial<AiSectionOutput>;
+        aiOutput = AiSectionOutputSchema.safeParse(JSON.parse(jsonStr)).data ?? {};
     } catch (err) {
         log.warn(`iWiki dual import: AI output is not valid JSON; skipped all sections. Error: ${String(err)}`);
+
         return { sectionsUpdated: [], pendingReview: false };
     }
 
@@ -310,8 +342,10 @@ export async function importFromIWikiDual(opts: IWikiDualOptions): Promise<{
     if (opts.requireReview) {
         if (!opts.dryRun) {
             const relativeFilePath = path.relative(cwd, filePath);
+
             for (const sectionKey of sections) {
                 const body = aiOutput[sectionKey] ?? '';
+
                 if (!body) continue;
                 await appendPendingReview(cwd, {
                     kind: 'codebase-section',
@@ -321,6 +355,7 @@ export async function importFromIWikiDual(opts: IWikiDualOptions): Promise<{
                 });
             }
         }
+
         return { sectionsUpdated: sections, pendingReview: true };
     }
 
@@ -337,10 +372,12 @@ export async function importFromIWikiDual(opts: IWikiDualOptions): Promise<{
 
         for (const sectionKey of sections) {
             const body = aiOutput[sectionKey] ?? '';
+
             if (!body) {
                 log.warn(`iWiki dual import: Section "${sectionKey}" is empty; skipped.`);
                 continue;
             }
+
             content = replaceManagedSection(content, sectionKey, body, source, ts);
             updatedSections.push(sectionKey);
         }
@@ -354,6 +391,7 @@ export async function importFromIWikiDual(opts: IWikiDualOptions): Promise<{
                 updatedSections.push(sectionKey);
             }
         }
+
         log.info(`[dry-run] Sections to update: ${updatedSections.join(', ')}`);
     }
 

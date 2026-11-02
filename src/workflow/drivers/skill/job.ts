@@ -10,6 +10,7 @@ import { readLease } from './engine-replies.js';
 import type { ReadLease } from './transitions.js';
 
 const JobSchema = z.object({ lease: z.unknown().optional() });
+
 /** What a runner runs: its attempt's lease, masked, as the engine sent it (`raw`) and as this driver reads it. */
 export interface Job {
   raw: unknown;
@@ -24,6 +25,7 @@ export async function readJob(config: LocalConfig, run: RunId, attempt: AttemptI
   try {
     const parsed = JobSchema.safeParse(JSON.parse(await readFileSafe(jobPath(config, run, attempt)) ?? 'null'));
     const lease = parsed.success ? readLease(parsed.data.lease) : undefined;
+
     return parsed.success && lease ? { raw: parsed.data.lease, lease } : undefined;
   } catch {
     return undefined;

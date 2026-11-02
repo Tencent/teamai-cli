@@ -31,15 +31,20 @@ export function canonicalRepo(identity: string): string | null {
   s = s.replace(/^[a-z][a-z0-9+.-]*:\/\//i, ''); // proto://
   s = s.replace(/^git@([^:]+):/i, '$1/'); // git@host:owner/repo → host/owner/repo
   const segs = s.split('/').filter(Boolean);
+
   if (segs.length >= 2) {
     return `${segs[segs.length - 2]}/${segs[segs.length - 1]}`;
   }
+
   // Legacy owner_repo (remote '/' replaced by '_').
   const only = segs[0] ?? '';
+
   if (only.includes('_')) {
     const idx = only.indexOf('_');
+
     return `${only.slice(0, idx)}/${only.slice(idx + 1)}`;
   }
+
   return null;
 }
 
@@ -55,16 +60,21 @@ export function attributeRepo(cwd: string | undefined): string {
 
   if (/:\/\//.test(raw) || raw.startsWith('git@') || /^[^/\s]+\.[^/\s]+\//.test(raw)) {
     const c = canonicalRepo(raw);
+
     if (c) return c;
   }
 
   const segs = raw.replace(/[/\\]+$/, '').split(/[/\\]/).filter(Boolean);
+
   if (segs.length === 0) return 'no_repo';
   const leaf = segs[segs.length - 1];
+
   // A drive root (`C:\`) leaves the bare drive letter as the leaf; it names no
   // project, like `/` on POSIX.
   if (/^[a-z]:$/i.test(leaf)) return 'no_repo';
+
   if (NON_REPO_LEAVES.has(leaf.toLowerCase())) return 'no_repo';
+
   return leaf;
 }
 
@@ -78,12 +88,17 @@ export function attributeRepo(cwd: string | undefined): string {
 export function repoKeys(events: DashboardEvent[]): Map<string, string> {
   const anchors = new Map<string, string>();
   const cwds = new Map<string, string>();
+
   for (const e of events) {
     if (e.projectAnchor) anchors.set(e.sessionId, e.projectAnchor);
+
     if (e.cwd) cwds.set(e.sessionId, e.cwd);
   }
+
   const keys = new Map<string, string>();
+
   for (const e of events) keys.set(e.sessionId, anchors.get(e.sessionId) ?? cwds.get(e.sessionId) ?? '');
+
   return keys;
 }
 
@@ -95,15 +110,19 @@ const namedBy = new Map<string, { dir: string; name: string; repo: boolean }>();
 
 function naming(anchor: string): { dir: string; name: string; repo: boolean } {
   const known = namedBy.get(anchor);
+
   if (known) return known;
   const checkout = existsSync(path.join(anchor, '.git'));
   // A bare git directory: the anchor of a bare repo's worktrees (`repo/.bare`, `repo.git`).
   const bare = !checkout && existsSync(path.join(anchor, 'HEAD')) && existsSync(path.join(anchor, 'objects'));
   const stem = path.basename(anchor).replace(/\.git$/, '');
+
   const named = !bare ? { dir: anchor, name: path.basename(anchor), repo: checkout }
     : stem && !stem.startsWith('.') ? { dir: anchor, name: stem, repo: true }
     : { dir: path.dirname(anchor), name: path.basename(path.dirname(anchor)), repo: true };
+
   namedBy.set(anchor, named);
+
   return named;
 }
 
@@ -136,17 +155,23 @@ export function repoLabel(key: string, allKeys: Iterable<string>): string {
   const nameOf = (k: string) => {
     if (path.isAbsolute(k) && naming(k).repo) return repoName(k);
     const name = attributeRepo(k);
+
     return name === 'no_repo' || !path.isAbsolute(k) ? name : repoName(k);
   };
+
   const name = nameOf(key);
+
   if (name === 'no_repo' || !path.isAbsolute(key)) return name;
   const dir = naming(key).dir;
   const keys = [...new Set(allKeys)];
+
   const others = keys.filter((k) =>
     k !== key && path.isAbsolute(k) && nameOf(k) === name && naming(k).dir !== dir);
+
   if (others.length === 0) return name;
   const qualified = (k: string) => `${path.basename(path.dirname(naming(k).dir))}/${nameOf(k)}`;
   const label = qualified(key);
-  const remoteLabels = new Set(keys.filter((k) => !path.isAbsolute(k)).map(nameOf));
+  const remoteLabels = new Set(keys.flatMap((k) => (path.isAbsolute(k) ? [] : [nameOf(k)])));
+
   return (others.some((k) => qualified(k) === label) || remoteLabels.has(label)) ? dir : label;
 }

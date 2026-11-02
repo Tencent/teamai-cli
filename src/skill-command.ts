@@ -13,6 +13,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { unzipSync } from 'fflate';
+import { z } from 'zod';
 import { ensureDir, remove, writeFile, pathExists, readFileSafe, readJson, writeJson } from './utils/fs.js';
 import { assertSafeResourceName, assertWithinRoot } from './utils/path-safety.js';
 import { log } from './utils/logger.js';
@@ -39,19 +40,24 @@ const MAX_ZIP_BYTES = 50 * 1024 * 1024;
 /** Optional download host allowlist via env (comma-separated). Empty = allow all. */
 function downloadHostAllowlist(): string[] {
   const raw = process.env.TEAMAI_SKILL_DOWNLOAD_HOSTS;
+
   if (!raw) return [];
+
   return raw.split(',').map((h) => h.trim()).filter(Boolean);
 }
 
 function assertAllowedDownloadHost(downloadUrl: string): void {
   const allow = downloadHostAllowlist();
+
   if (allow.length === 0) return;
   let host: string;
+
   try {
     host = new URL(downloadUrl).host;
   } catch {
     throw new Error(`Invalid download_url: ${downloadUrl}`);
   }
+
   if (!allow.includes(host)) {
     throw new Error(`download_url host "${host}" is not in TEAMAI_SKILL_DOWNLOAD_HOSTS allowlist`);
   }
@@ -65,22 +71,29 @@ async function downloadZip(downloadUrl: string): Promise<Uint8Array> {
   assertAllowedDownloadHost(downloadUrl);
   log.debug(`[skill-command] downloading skill package: ${downloadUrl}`);
   const res = await fetch(downloadUrl, { redirect: 'follow' });
+
   if (!res.ok) {
     // Surface the server's response body (truncated) + the URL so a failed
     // install is actually diagnosable from debug.log / the ack error field.
     let detail = '';
+
     try {
       const body = (await res.text()).trim();
+
       if (body) detail = `: ${body.slice(0, 300)}`;
     } catch {
       // body may be unreadable — best-effort only
     }
+
     throw new Error(`download failed: HTTP ${res.status}${detail} (url: ${downloadUrl})`);
   }
+
   const buf = new Uint8Array(await res.arrayBuffer());
+
   if (buf.byteLength > MAX_ZIP_BYTES) {
     throw new Error(`skill package too large: ${buf.byteLength} bytes`);
   }
+
   return buf;
 }
 
@@ -96,22 +109,28 @@ async function downloadZip(downloadUrl: string): Promise<Uint8Array> {
  */
 function resolveSkillPrefix(entries: Record<string, Uint8Array>, slug: string): string | null {
   const has = (k: string) => Object.prototype.hasOwnProperty.call(entries, k);
+
   if (has(`${slug}/SKILL.md`)) return `${slug}/`;
+
   if (has('SKILL.md')) return '';
+
   for (const key of Object.keys(entries)) {
     const m = key.match(/^([^/]+)\/SKILL\.md$/);
+
     if (m) return `${m[1]}/`;
   }
+
   return null;
 }
 
 async function readSkillNameFromExtracted(skillDir: string): Promise<string | null> {
   const content = await readFileSafe(path.join(skillDir, 'SKILL.md'));
+
   if (!content) return null;
   const { data } = parseFrontmatter(content);
-  const name = data['name'];
-  if (typeof name === 'string') return name.trim() || null;
-  return null;
+  const name = z.string().safeParse(data['name']).data;
+
+  return name?.trim() || null;
 }
 
 function slugMapPath(targetSkillsDir: string): string {
@@ -130,8 +149,10 @@ async function writeSlugMapEntry(targetSkillsDir: string, slug: string, dirName:
 
 async function removeSlugMapEntry(targetSkillsDir: string, slug: string): Promise<void> {
   const map = await readSlugMap(targetSkillsDir);
+
   if (!(slug in map)) return;
   delete map[slug];
+
   if (Object.keys(map).length === 0) {
     await remove(slugMapPath(targetSkillsDir));
   } else {
@@ -156,13 +177,15 @@ export async function installSkillZip(
   assertSafeResourceName(slug);
 
   let entries: Record<string, Uint8Array>;
+
   try {
     entries = unzipSync(zip);
   } catch (e) {
-    throw new Error(`failed to unzip skill package: ${(e as Error).message}`, { cause: e });
+    throw new Error(`failed to unzip skill package: ${e instanceof Error ? e.message : String(e)}`, { cause: e });
   }
 
   const prefix = resolveSkillPrefix(entries, slug);
+
   if (prefix === null) {
     throw new Error(`skill package missing ${slug}/SKILL.md (no SKILL.md found at zip root or under any top-level dir — malformed package)`);
   }
@@ -171,6 +194,7 @@ export async function installSkillZip(
   const destRoot = path.join(targetSkillsDir, slug);
   await remove(destRoot);
   const oldMap = await readSlugMap(targetSkillsDir);
+
   if (oldMap[slug] && oldMap[slug] !== slug) {
     await remove(path.join(targetSkillsDir, oldMap[slug]));
   }
@@ -179,9 +203,11 @@ export async function installSkillZip(
 
   for (const [entryPath, bytes] of Object.entries(entries)) {
     if (prefix && !entryPath.startsWith(prefix)) continue;
+
     if (entryPath.endsWith('/')) continue;
 
     const rel = prefix ? entryPath.slice(prefix.length) : entryPath;
+
     if (!rel) continue;
     const outPath = path.resolve(destRoot, rel);
     assertWithinRoot(destRoot, outPath, `path traversal detected in skill package: ${entryPath}`);
@@ -207,6 +233,7 @@ export async function installSkillZip(
   }
 
   await writeSlugMapEntry(targetSkillsDir, slug, actualDir);
+
   return actualDir;
 }
 
@@ -220,37 +247,50 @@ export async function installSkillZip(
  */
 export async function executeSkillCommand(cmd: SkillCommand, targetSkillsDir: string): Promise<void> {
   assertSafeResourceName(cmd.skill_slug);
+  const { type } = cmd;
 
-  switch (cmd.type) {
+  switch (type) {
     case 'install_skill':
     case 'update_skill': {
       if (!cmd.download_url) {
         throw new Error(`${cmd.type} requires download_url`);
       }
+
       const zip = await downloadZip(cmd.download_url);
       const actualDir = await installSkillZip(zip, cmd.skill_slug, targetSkillsDir);
       log.debug(`[skill-command] ${cmd.type} ${cmd.skill_slug}@${cmd.skill_version ?? '?'} → ${targetSkillsDir}/${actualDir}`);
+
       return;
     }
+
     case 'uninstall_skill': {
       const dir = path.join(targetSkillsDir, cmd.skill_slug);
+
       if (await pathExists(dir)) {
         await remove(dir);
       } else {
         const map = await readSlugMap(targetSkillsDir);
         const mapped = map[cmd.skill_slug];
+
         if (mapped && mapped !== cmd.skill_slug) {
           const mappedDir = path.join(targetSkillsDir, mapped);
+
           if (await pathExists(mappedDir)) {
             await remove(mappedDir);
           }
         }
       }
+
       await removeSlugMapEntry(targetSkillsDir, cmd.skill_slug);
       log.debug(`[skill-command] uninstall_skill ${cmd.skill_slug} (from ${targetSkillsDir})`);
+
       return;
     }
-    default:
-      throw new Error(`unknown skill command type: ${(cmd as SkillCommand).type}`);
+
+    default: {
+      // A server on a newer contract can still send a type this release does not know.
+      const unknownType: never = type;
+      throw new Error(`unknown skill command type: ${String(unknownType)}`);
+    }
   }
 }

@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { createDispatcher } from '../hook-dispatch.js';
+import { createDispatcher, HookStdinSchema, type HookStdin } from '../hook-dispatch.js';
 import { buildHandlerRegistry } from '../hook-handlers.js';
 import { isToolId, TOOLS } from '../tools.js';
 import { DEFAULT_TOOL_PATHS, type LocalConfig } from '../types.js';
@@ -70,13 +70,13 @@ function posixPath(p: string): string {
   return p.replaceAll(path.sep, '/');
 }
 
-function fixture(name: string): Record<string, unknown> {
+function fixture(name: string): HookStdin {
   const text = fs.readFileSync(path.join(FIXTURES, `${name}.json`), 'utf-8')
     .replaceAll('${HOME}', posixPath(home))
     .replaceAll('${CWD}', posixPath(cwd));
-  const payload: unknown = JSON.parse(text);
-  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) throw new Error(`${name} is not an object`);
-  return { ...payload };
+  const payload = HookStdinSchema.safeParse(JSON.parse(text));
+  if (!payload.success) throw new Error(`${name} is not an object`);
+  return payload.data;
 }
 
 /** Install a skill under `root`, relative to HOME, or to the project with `project: true`. */
@@ -89,7 +89,7 @@ function install(root: string, options: { project?: boolean; skill?: string } = 
 
 const dispatcher = (localConfig = config()) => createDispatcher({ handlers: buildHandlerRegistry().filter((r) => r.handler.name.startsWith('skill-')), localConfig });
 
-async function toolCall(payload: Record<string, unknown>, tool: string, matcher = '*', localConfig = config()): Promise<void> {
+async function toolCall(payload: HookStdin, tool: string, matcher = '*', localConfig = config()): Promise<void> {
   const result = await dispatcher(localConfig).dispatch('post-tool-use', matcher, payload, tool, 'all');
   expect(result.errors).toEqual([]);
 }
@@ -100,7 +100,7 @@ function writeTeamFile(relative: string, content: string): void {
   fs.writeFileSync(file, content);
 }
 
-async function prompt(payload: Record<string, unknown>, tool: string): Promise<void> {
+async function prompt(payload: HookStdin, tool: string): Promise<void> {
   const result = await dispatcher().dispatch('prompt-submit', '*', payload, tool, 'all');
   expect(result.errors).toEqual([]);
 }

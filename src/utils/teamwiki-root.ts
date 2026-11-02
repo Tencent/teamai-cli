@@ -29,6 +29,7 @@ export async function resolveTeamwiki(opts: { output?: string; dryRun?: boolean 
   if (opts.output) return { wikiRoot: path.resolve(opts.output, 'teamwiki') };
   const { autoDetectInit } = await import('../config.js');
   const team = await autoDetectInit(undefined, { dryRun: opts.dryRun });
+
   return { wikiRoot: path.join(team.localConfig.repo.localPath, 'teamwiki'), team };
 }
 
@@ -50,7 +51,9 @@ export async function assertTeamwikiWritable(target: TeamwikiTarget | undefined)
  */
 export async function lockTeamwiki(target: TeamwikiTarget): Promise<() => Promise<void>> {
   if (!target.team) return async () => {};
+
   await assertTeamwikiWritable(target);
   const { acquireImportLock } = await import('./import-lock.js');
+
   return acquireImportLock(target.team.localConfig.repo.localPath);
 }

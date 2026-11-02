@@ -15,10 +15,11 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
-import { isNameShaped, type RecordedAgent } from '../agent-observation.js';
+import { isRecordableName, type RecordedAgent } from '../agent-observation.js';
 import { loadTeamConfig } from '../config.js';
 import type { LocalConfig } from '../types.js';
-import { getDataHome, isUsageReportEnabled } from '../types.js';
+import { getDataHome, isJsonObject, isUsageReportEnabled, type JsonValue } from '../types.js';
+import { parseJson } from '../utils/json.js';
 import { log } from '../utils/logger.js';
 import { redactJson } from '../utils/redact.js';
 import { acquireLock, releaseLock } from '../update.js';
@@ -34,6 +35,8 @@ import { settled, visibleOutcome, type StepPass, type StepState, type VisibleOut
 import type { TokenUsage } from '../tool-launch/stdout.js';
 import { LIMIT_FAILURES, type Unenforced } from './requirements.js';
 import type { DriverIdentity, RunState, RunStatus, WorkflowFailure } from './types.js';
+import { definedFields } from '../utils/defined-fields.js';
+import { parseYaml } from '../utils/yaml.js';
 
 /**
  * The failure codes the engine writes, then those the local driver sets. A code a model writes into its result, or
@@ -48,10 +51,11 @@ const RECORDED_FAILURES = [
   'delivery_failed', 'protected_path',
   'trial_prepare_failed', 'clone_prepare_failed',
 ] as const;
+
 type RecordedFailure = (typeof RECORDED_FAILURES)[number];
 
 function isRecordedFailure(failure: WorkflowFailure | undefined): failure is WorkflowFailure & { code: RecordedFailure } {
-  return failure !== undefined && (RECORDED_FAILURES as readonly string[]).includes(failure.code);
+  return failure !== undefined && RECORDED_FAILURES.some((code) => code === failure.code);
 }
 
 /** The record's schema tag; see #1083 for the field contract. */
@@ -165,27 +169,26 @@ export function buildStartRecord(
   username: string,
   now: Date = new Date(),
 ): CurrentWorkflowRunRecord {
-  return {
+  // A start record may have no driver yet (a remote driver leases later); the end record always carries the driver
+  // that completed the run. Kind only: the workspace is a banned local path and the hostname is machine-identifying
+  // (#1126 review).
+  return definedFields<CurrentWorkflowRunRecord>({
     schemaVersion: 'v1alpha1',
     run: run.id,
     workflow: run.name,
-    ...(run.alias !== undefined ? { alias: run.alias } : {}),
+    alias: run.alias,
     sourceHash: run.sourceHash,
-    ...(run.teamRevision ? { teamRevision: run.teamRevision } : {}),
+    teamRevision: run.teamRevision || undefined,
     phase: 'start',
-    ...(run.runMode ? { runMode: run.runMode } : {}),
-    ...(run.origin ? { origin: run.origin } : {}),
-    ...(isIsolated(run) ? { isolated: true as const } : {}),
-    // A start record may have no driver yet (a remote driver leases later);
-    // the end record always carries the driver that completed the run.
-    // Kind only: the workspace is a banned local path and the hostname is
-    // machine-identifying (#1126 review).
-    ...(driver ? { driver: { kind: driver.kind } } : {}),
+    runMode: run.runMode || undefined,
+    origin: run.origin || undefined,
+    isolated: isIsolated(run) ? true : undefined,
+    driver: driver ? { kind: driver.kind } : undefined,
     status: 'running',
     startedAt: run.createdAt,
     username,
     publishedAt: iso(now),
-  };
+  });
 }
 
 /**
@@ -194,14 +197,19 @@ export function buildStartRecord(
  */
 function failureOf(run: RunState): RecordedFailure | undefined {
   if (run.status !== 'failed' || run.end !== undefined) return undefined;
+
   if (isRecordedFailure(run.failure)) return run.failure.code;
+
   const failed = run.steps
     .filter((step): step is Extract<StepState, { status: 'failed' | 'cancelled' }> => step.status === 'failed' || step.status === 'cancelled')
     .sort((left, right) => left.settledAt - right.settledAt);
+
   const top = new Set(run.definition.steps.map((step) => step.id));
   const first = failed.find((step) => top.has(step.id));
+
   if (!first) return undefined;
   const under = (step: StepState): boolean => step.id.startsWith(`${first.id}.`) || step.id.startsWith(`${first.id}[`);
+
   return [first, ...failed.filter(under)].map((step) => step.failure).find(isRecordedFailure)?.code;
 }
 
@@ -222,29 +230,33 @@ export function buildEndRecord(
   // An entry per pass: path, and what that pass reported. Message, outputs,
   // results, and session ids never cross.
   const definitionOf = stepDefinitions(run);
+
   const entry = (step: string, pass: number | undefined, reported: Reported | undefined): StepEntry => {
     const name = definitionOf(step)?.agent;
     const agent = reported?.agent ?? (name ? { definition: { name } } : undefined);
     const outcome = reported?.outcome === 'skipped' ? undefined : reported?.outcome;
+
     const outcomes = uniqueOutcomes([
       ...(reported?.changes?.commits ?? []).map((sha): WorkOutcome => ({ kind: 'commit', sha })),
       ...(run.deliveries ?? []).filter((receipt) => receipt.step === step && receipt.pass === (pass ?? 1)).map((receipt): WorkOutcome => ({ kind: 'pr', url: receipt.url })),
       ...(reported?.outcomes ?? []),
     ]);
-    return {
+
+    return definedFields<StepEntry>({
       step,
-      ...(reported?.answer ? { answer: { choice: reported.answer.choice, channel: reported.answer.channel, agent: reported.answer.agent } } : {}),
+      answer: reported?.answer ? { choice: reported.answer.choice, channel: reported.answer.channel, agent: reported.answer.agent } : undefined,
       pass: pass ?? 1,
-      ...(agent ? { agent } : {}),
-      ...(reported?.tool && isLaunchTool(reported.tool) ? { tool: reported.tool } : {}),
-      ...(reported?.model && isNameShaped(reported.model) ? { model: reported.model } : {}),
-      ...(outcome ? { outcome } : {}),
-      ...(reported?.tokens ? { tokens: reported.tokens } : {}),
-      ...(reported?.unenforced ? { unenforced: reported.unenforced } : {}),
-      ...(reported?.runMode ? { runMode: reported.runMode } : {}),
-      ...(outcomes.length > 0 ? { outcomes } : {}),
-    };
+      agent,
+      tool: reported?.tool && isLaunchTool(reported.tool) ? reported.tool : undefined,
+      model: reported?.model && isRecordableName(reported.model) ? reported.model : undefined,
+      outcome: outcome || undefined,
+      tokens: reported?.tokens || undefined,
+      unenforced: reported?.unenforced || undefined,
+      runMode: reported?.runMode || undefined,
+      outcomes: outcomes.length > 0 ? outcomes : undefined,
+    });
   };
+
   // A loop keeps a step's earlier passes in `passes`, and the passes of the
   // instances it removed from the run, such as the items of a for_each it ran
   // again, in `archive`.
@@ -255,18 +267,18 @@ export function buildEndRecord(
     ]),
     ...(run.archive ?? []).map((archived) => entry(archived.step, archived.pass, archived)),
   ];
+
   // Receipts are what delivery recorded, never a step's outputs, and each URL appears once.
   const prs = (run.deliveries ?? []).map((receipt) => receipt.url);
-  return {
+
+  return definedFields<CurrentWorkflowRunRecord>({
     ...buildStartRecord(run, driver, username, now),
     phase: 'end',
     status: run.status,
-    ...(run.end !== undefined ? { end: run.end } : {}),
-    ...(failure ? { failure: { code: failure } } : {}),
+    end: run.end,
+    failure: failure ? { code: failure } : undefined,
     endedAt: run.updatedAt,
-    ...(Number.isFinite(started) && Number.isFinite(ended) && ended >= started
-      ? { durationMs: ended - started }
-      : {}),
+    durationMs: Number.isFinite(started) && Number.isFinite(ended) && ended >= started ? ended - started : undefined,
     steps,
     stepCounts: {
       total: run.steps.length,
@@ -278,9 +290,8 @@ export function buildEndRecord(
     // Cumulative when present; runs from before the counter fall back to the
     // bounded history length (their true count is unknowable now).
     iterations: run.settledCount ?? run.settledAttempts.length,
-    ...(prs.length ? { prs } : {}),
-    ...(isIsolated(run) ? { isolated: true as const } : {}),
-  };
+    prs: prs.length ? prs : undefined,
+  });
 }
 
 /**
@@ -293,11 +304,16 @@ export function buildEndRecord(
  */
 export function mergeRecord(origin: WorkflowRunRecord | null, next: WorkflowRunRecord): WorkflowRunRecord {
   if (!origin) return next;
+
   if (origin.phase === 'end' && next.phase === 'start') return origin;
   const merged = { ...origin, ...next, startedAt: origin.startedAt };
+
   if (next.end === undefined) delete merged.end;
+
   if (next.failure === undefined) delete merged.failure;
+
   if (next.prs === undefined) delete merged.prs;
+
   return merged;
 }
 
@@ -325,13 +341,17 @@ export async function queueRunRecord(
   try {
     if (!await isRecordingEnabled(config)) return false;
     const username = config.username ?? 'unknown';
+
     const record = phase === 'start'
       ? buildStartRecord(run, driver, username)
       : buildEndRecord(run, driver, username);
+
     await enqueueRecord(config, record, secrets);
+
     return true;
   } catch (error) {
     log.warn(`[workflows] Could not queue the ${phase} record of run ${run.id}, so the team report will not include it: ${error instanceof Error ? error.message : String(error)}`);
+
     return false;
   }
 }
@@ -358,8 +378,10 @@ export async function runRecordState(config: LocalConfig, run: RunState): Promis
 /** `runRecordState` of several runs, reading the team config and the queue once for all of them. */
 export async function runRecordStates(config: LocalConfig, runs: RunState[]): Promise<Map<string, RecordState>> {
   const queued = runs.filter((run) => run.endRecordQueued);
+
   if (queued.length === 0 || !await isRecordingEnabled(config)) return new Map();
   const pending = new Set((await pendingRecords(config)).map((record) => record.run));
+
   return new Map(queued.map((run): [string, RecordState] => [run.id, pending.has(run.id) ? 'pending' : 'published']));
 }
 
@@ -384,6 +406,7 @@ function pendingBenchmarksDir(config: LocalConfig): string {
 
 /** What the queue reads of a benchmark record: its run. The rest is the benchmark module's, and is published as it is. */
 const QueuedBenchmarkSchema = z.object({ run: z.string().min(1) }).passthrough();
+
 type QueuedBenchmark = z.infer<typeof QueuedBenchmarkSchema>;
 
 /**
@@ -398,6 +421,7 @@ export async function queueBenchmarkRecord(config: LocalConfig, record: QueuedBe
   const target = path.join(dir, `${record.run}.json`);
   await fs.writeFile(`${target}.tmp`, `${JSON.stringify(redactJson(record, secrets), null, 2)}\n`, 'utf-8');
   await fs.rename(`${target}.tmp`, target);
+
   return true;
 }
 
@@ -410,17 +434,21 @@ export async function pendingBenchmarkRuns(config: LocalConfig): Promise<Set<str
 async function pendingBenchmarks(config: LocalConfig): Promise<Array<{ file: string; text: string; record: QueuedBenchmark }>> {
   const dir = pendingBenchmarksDir(config);
   const files = (await fs.readdir(dir).catch((): string[] => [])).filter((file) => file.endsWith('.json')).sort();
+
   const read = await Promise.all(files.map(async (file) => {
     const text = await fs.readFile(path.join(dir, file), 'utf-8').catch(() => undefined);
-    const parsed = text === undefined ? undefined : QueuedBenchmarkSchema.safeParse(parseJson(text));
+    const parsed = text === undefined ? undefined : QueuedBenchmarkSchema.safeParse(jsonOrUndefined(text));
+
     return text !== undefined && parsed?.success ? [{ file: path.join(dir, file), text, record: parsed.data }] : [];
   }));
+
   return read.flat();
 }
 
-function parseJson(text: string): unknown {
+/** `text` as a JSON value, or undefined when it is not JSON. */
+function jsonOrUndefined(text: string): JsonValue | undefined {
   try {
-    return JSON.parse(text);
+    return parseJson(text);
   } catch {
     return undefined;
   }
@@ -445,35 +473,46 @@ export async function removeQueuedEndRecord(config: LocalConfig, runId: string):
 export async function pendingRecords(config: LocalConfig): Promise<WorkflowRunRecord[]> {
   const dir = pendingDir(config);
   let files: string[];
+
   try {
     files = await fs.readdir(dir);
   } catch {
     return [];
   }
+
   const records: WorkflowRunRecord[] = [];
+
   for (const file of files.sort()) {
     if (!file.endsWith('.json')) continue;
+
     try {
+      // SAFETY: only enqueueRecord writes this directory, and it writes each file from a WorkflowRunRecord.
       records.push(JSON.parse(await fs.readFile(path.join(dir, file), 'utf-8')) as WorkflowRunRecord);
     } catch {
       // A corrupt queue entry must not wedge the whole queue: the next enqueue
       // of the same run+phase overwrites it.
     }
   }
+
   return records;
 }
 
 async function dequeue(config: LocalConfig, record: WorkflowRunRecord): Promise<void> {
   const lock = runLockPath(config, record.run);
+
   if (!await acquireLock(lock)) return;
+
   try {
     const target = pendingPath(config, record);
     let current: WorkflowRunRecord;
+
     try {
+      // SAFETY: only enqueueRecord writes the queue, and it writes each file from a WorkflowRunRecord.
       current = JSON.parse(await fs.readFile(target, 'utf-8')) as WorkflowRunRecord;
     } catch {
       return;
     }
+
     if (current.phase === record.phase && current.endedAt === record.endedAt) await fs.rm(target, { force: true });
   } finally {
     await releaseLock(lock);
@@ -500,44 +539,56 @@ export type RecordDelivery = { state: 'published' } | { state: 'pending'; reason
 export async function publishPendingRecords(config: LocalConfig, options: { run?: string } = {}): Promise<RecordDelivery> {
   const queued = (await pendingRecords(config)).filter((record) => options.run === undefined || record.run === options.run);
   const benchmarks = (await pendingBenchmarks(config)).filter(({ record }) => options.run === undefined || record.run === options.run);
+
   if (queued.length === 0 && benchmarks.length === 0) return { state: 'published' };
   const { updateReports, readReportsOriginFile } = await import('../utils/reports-branch.js');
   const install = (await installOwner(config)).id;
+
   const outcome = await updateReports(config, async (worktree) => {
     const files: string[] = [];
     const byRun = new Map<string, WorkflowRunRecord[]>();
+
     for (const record of queued) {
       if (ownedElsewhere(await readReportsOriginFile(worktree, snapshotPath(record.run)), install)) continue;
       const list = byRun.get(record.run) ?? [];
       list.push(record);
       byRun.set(record.run, list);
     }
+
     const delivered: WorkflowRunRecord[] = [];
     const originByRun = new Map<string, WorkflowRunRecord | null>();
+
     for (const [runId, records] of byRun) {
       // Upsert per run id: the merge base is what origin holds, so a retry
       // never duplicates the logical record and an end phase stays terminal.
       const rel = recordPath(runId);
       const originRaw = await readReportsOriginFile(worktree, rel);
       let origin: WorkflowRunRecord | null = null;
+
       try {
+        // SAFETY: only this function writes record paths on the reports branch, each from a merged WorkflowRunRecord.
         origin = originRaw === null ? null : JSON.parse(originRaw) as WorkflowRunRecord;
       } catch {
         origin = null;
       }
+
       originByRun.set(runId, origin);
       let merged: WorkflowRunRecord | null = null;
+
       for (const record of [...records].sort((a, b) => (a.phase === 'end' ? 1 : 0) - (b.phase === 'end' ? 1 : 0))) {
         merged = mergeRecord(merged, record);
       }
+
       if (origin !== null) {
         merged = mergeRecord(origin, merged!);
       }
+
       await fs.mkdir(path.join(worktree, path.dirname(rel)), { recursive: true });
       await fs.writeFile(path.join(worktree, rel), `${JSON.stringify(merged, null, 2)}\n`, 'utf-8');
       files.push(rel);
       delivered.push(...records);
     }
+
     // Workflow totals ride the same update: one lock, one push, and the stats
     // merge counts only what this update delivered. Each total lands in the
     // stats file of the member who ran it, not of whoever drains the queue.
@@ -545,26 +596,35 @@ export async function publishPendingRecords(config: LocalConfig, options: { run?
     // the other member's totals.
     const { default: YAML } = await import('yaml');
     const delta = statsDeltaRecords(originByRun, delivered);
+
     const usernames = new Set(delta.flatMap((record) => {
       const origin = originByRun.get(record.run);
+
       return origin?.phase === 'end' ? [record.username, origin.username] : [record.username];
     }));
+
     for (const username of usernames) {
       const statsRel = `stats/${username}.yaml`;
       const existingStatsRaw = await readReportsOriginFile(worktree, statsRel);
-      let existingStats: Record<string, unknown> = {};
+      let existingStats: MemberStats = {};
+
       if (existingStatsRaw !== null && existingStatsRaw.trim() !== '') {
         try {
-          existingStats = YAML.parse(existingStatsRaw) as Record<string, unknown>;
+          const document = parseYaml(existingStatsRaw);
+          const parsed = MemberStatsSchema.safeParse(document);
+          // Spread over the file's own keys, so the update writes them back in the order they were read.
+          existingStats = parsed.success && isJsonObject(document) ? { ...document, ...parsed.data } : {};
         } catch {
           existingStats = {};
         }
       }
-      const mergedStats = mergeWorkflowStats(ensureStatsShape(existingStats, username), username, delta, originByRun);
+
+      const mergedStats = mergeWorkflowStats(ensureDigestFields(existingStats, username), username, delta, originByRun);
       await fs.mkdir(path.join(worktree, 'stats'), { recursive: true });
       await fs.writeFile(path.join(worktree, statsRel), YAML.stringify(mergedStats), 'utf-8');
       files.push(statsRel);
     }
+
     // A benchmark record replaces what its key holds, and folds into no stats total.
     for (const { record, text } of benchmarks) {
       const rel = benchmarkRecordPath(record.run);
@@ -572,45 +632,55 @@ export async function publishPendingRecords(config: LocalConfig, options: { run?
       await fs.writeFile(path.join(worktree, rel), text, 'utf-8');
       files.push(rel);
     }
+
     const counts = [
       ...(byRun.size > 0 ? [`${byRun.size} workflow run record${byRun.size === 1 ? '' : 's'}`] : []),
       ...(benchmarks.length > 0 ? [`${benchmarks.length} benchmark record${benchmarks.length === 1 ? '' : 's'}`] : []),
     ];
+
     return {
       files: [...new Set(files)],
       message: `[teamai] Publish ${counts.join(' and ')}`,
     };
   });
+
   switch (outcome.status) {
     case 'published':
     case 'already-present': {
       for (const record of queued) await dequeue(config, record);
+
       for (const benchmark of benchmarks) await dequeueBenchmark(benchmark);
       const remaining = new Set(await fs.readdir(pendingDir(config)).catch(() => []));
       const remainingBenchmarks = new Set((await pendingBenchmarks(config)).map(({ file }) => file));
+
       return queued.some((record) => remaining.has(path.basename(pendingPath(config, record)))) || benchmarks.some(({ file }) => remainingBenchmarks.has(file))
         ? { state: 'pending', reason: 'a record of the same run was still queued after they were delivered' }
         : { state: 'published' };
     }
+
     case 'busy':
       return { state: 'pending', reason: 'another teamai process is writing teamai-reports' };
     case 'failed':
       return { state: 'pending', reason: outcome.reason };
     default: {
       const unhandled: never = outcome;
+
       return unhandled;
     }
   }
 }
 
+/** The part of a published run snapshot that names the install owning the run. */
+const SnapshotOwnerSchema = z.object({ owner: z.object({ id: z.string() }) });
+
 /** Whether `snapshot`, a run's published state as origin holds it, names an install other than `install` as its owner. */
 function ownedElsewhere(snapshot: string | null, install: string): boolean {
   if (snapshot === null) return false;
+
   try {
-    const value: unknown = JSON.parse(snapshot);
-    if (typeof value !== 'object' || value === null || !('owner' in value)) return false;
-    const { owner } = value;
-    return typeof owner === 'object' && owner !== null && 'id' in owner && typeof owner.id === 'string' && owner.id !== install;
+    const parsed = SnapshotOwnerSchema.safeParse(JSON.parse(snapshot));
+
+    return parsed.success && parsed.data.owner.id !== install;
   } catch {
     return false;
   }
@@ -619,22 +689,36 @@ function ownedElsewhere(snapshot: string | null, install: string): boolean {
 // ─── Stats totals ───────────────────────────────────────
 
 /**
+ * A member's stats file on the reports branch: the fields workflow totals read, with every other field kept as written,
+ * so a stats update never drops what other reports put there. A total that is not a number reads as absent.
+ */
+const MemberStatsSchema = z.looseObject({
+  username: z.string().optional().catch(undefined),
+  workflows: z.object({
+    runs: z.number().optional().catch(undefined),
+    succeeded: z.number().optional().catch(undefined),
+    failed: z.number().optional().catch(undefined),
+    totalDurationMs: z.number().optional().catch(undefined),
+  }).optional().catch(undefined),
+});
+
+export type MemberStats = z.infer<typeof MemberStatsSchema>;
+
+/**
  * Guarantee the fields digest's loadTeamStats requires (`username` AND
  * `skills`). A member whose first report is a workflow run — no usage events,
  * no session stats — still gets a digest-visible stats file (#1126 P1).
  * An existing well-formed stats object passes through untouched.
  */
-export function ensureStatsShape(
-  existing: Record<string, unknown>,
-  username: string,
-): Record<string, unknown> {
+export function ensureDigestFields(existing: MemberStats, username: string): MemberStats {
   if (existing.username === username && existing.skills) return existing;
-  return {
-    updatedAt: new Date().toISOString(),
-    ...existing,
-    ...(existing.username === username ? {} : { username }),
-    ...(existing.skills ? {} : { skills: {} }),
-  };
+  const stats: MemberStats = { updatedAt: new Date().toISOString(), ...existing };
+
+  if (existing.username !== username) stats.username = username;
+
+  if (!existing.skills) stats.skills = {};
+
+  return stats;
 }
 
 export interface WorkflowStats {
@@ -657,37 +741,47 @@ export interface WorkflowStats {
  * runs and duration only.
  */
 export function mergeWorkflowStats(
-  existing: Record<string, unknown>,
+  existing: MemberStats,
   username: string,
   records: WorkflowRunRecord[],
   originByRun: ReadonlyMap<string, WorkflowRunRecord | null> = new Map(),
-): Record<string, unknown> {
-  const current = (existing.workflows ?? {}) as Partial<WorkflowStats>;
+): MemberStats {
+  const current = existing.workflows ?? {};
   const byRun = new Map<string, WorkflowRunRecord>();
+
   for (const record of records) {
     const prior = byRun.get(record.run);
+
     // End phase wins within one delivery; a start-only run has not ended yet
     // and is not counted as a run.
     if (!prior || (prior.phase === 'start' && record.phase === 'end')) byRun.set(record.run, record);
   }
+
   let { runs = 0, succeeded = 0, failed = 0, totalDurationMs = 0 } = current;
+
   const fold = (record: WorkflowRunRecord, sign: 1 | -1): void => {
     // An isolated run's steps are measurements, not workflow outcomes, so it is in no workflow total.
     if (record.username !== username || record.isolated === true) return;
     runs += sign;
+
     if (record.status === 'succeeded') succeeded += sign;
+
     if (record.status === 'failed') failed += sign;
     totalDurationMs += sign * (record.durationMs ?? 0);
   };
+
   for (const record of byRun.values()) {
     if (record.phase !== 'end') continue;
     const origin = originByRun.get(record.run);
+
     if (origin?.phase === 'end') {
       if (origin.endedAt === record.endedAt) continue;
       fold(origin, -1);
     }
+
     fold(record, 1);
   }
+
   return { ...existing, workflows: { runs, succeeded, failed, totalDurationMs } };
 }
 
@@ -705,6 +799,7 @@ export function statsDeltaRecords(
   return records.filter((record) => {
     if (record.phase !== 'end') return false;
     const origin = originByRun.get(record.run);
+
     return origin?.phase !== 'end' || origin.endedAt !== record.endedAt;
   });
 }

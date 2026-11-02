@@ -31,6 +31,7 @@ import { errorOf, type SkillAnswer, type SkillError } from './turn.js';
 
 // What the runs offered on teamai-reports are judged by outside this driver, as a resume through it judges them.
 export { canFor } from './host-profiles.js';
+
 export { ceilingOf, isLeft, listOf, localReason, stepNeeds } from './preflight.js';
 
 /** `tool`: `--tools default=<tool>`, the tool of the calling session, which its host may not name. */
@@ -124,6 +125,7 @@ export async function skillContext(input: Pick<SkillContext, 'config' | 'toolPat
   const { config, env } = input;
   const session = await agentSessionFromEnv();
   const evidence = agentEvidence(process.env);
+
   return {
     ...input,
     session: session.id,
@@ -145,6 +147,7 @@ export async function skillContext(input: Pick<SkillContext, 'config' | 'toolPat
  */
 export async function sessionDrivesRun(config: LocalConfig, run: RunId): Promise<boolean> {
   const read = await readSkillState(config, run);
+
   return drivesRun(read.kind === 'found' ? read.state : undefined, (await agentSessionFromEnv()).id);
 }
 
@@ -152,28 +155,38 @@ export async function sessionDrivesRun(config: LocalConfig, run: RunId): Promise
 export async function drivesUndoneRun(config: LocalConfig, session: string): Promise<boolean> {
   const runs = (await fs.readdir(runsDir(config)).catch(() => [])).flatMap((name) => {
     const run = RunIdSchema.safeParse(name);
+
     return run.success ? [run.data] : [];
   });
+
   const states = await Promise.all(runs.map((run) => readSkillState(config, run)));
+
   return states.some((read) => read.kind === 'found' && read.state.done === undefined && drivesRun(read.state, session));
 }
 
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
 /** `--tools default=<tool>`: the tool this coding session works in, for a host that sets no session variable teamai reads. */
 const SessionToolSchema = z.string().transform((tools, ctx) => {
   const [pair = '', ...more] = tools.split(',');
   const separator = pair.indexOf('=');
   const tool = pair.slice(separator + 1).trim();
+
   if (more.length > 0 || pair.slice(0, separator).trim() !== 'default' || tool === '') {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: '--driver skill takes only --tools default=<tool>, the tool this coding session works in' });
+
     return z.NEVER;
   }
+
   if (!isToolId(tool)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: `--tools default=${tool} names no tool teamai knows: ${Object.keys(TOOLS).join(', ')}` });
+
     return z.NEVER;
   }
+
   return tool;
 });
+
 /** The options of a run that a skill start and a skill resume share. */
 const RunOptionsSchema = z.object({
   parallel: z.string().regex(/^[1-9][0-9]*$/, '--parallel takes a whole number of steps, 1 or more').transform(Number).optional(),
@@ -182,18 +195,23 @@ const RunOptionsSchema = z.object({
   autoApprove: z.boolean().optional(),
   tools: SessionToolSchema.optional(),
 });
+
 const ONE_HITL = {
   check: (options: z.infer<typeof RunOptionsSchema>) => !(options.hitl !== undefined && options.autoApprove),
   message: '--hitl and --auto-approve answer the same question: pass one of them, as the describe reply offered',
 };
+
 const StartOptionsSchema = RunOptionsSchema.extend({
   describe: z.boolean().optional(),
   confirmed: z.boolean().optional(),
   inputs: z.string().optional(),
 }).refine(ONE_HITL.check, { message: ONE_HITL.message });
+
 const ResumeOptionsSchema = RunOptionsSchema.extend({ claim: z.boolean().optional(), next: z.boolean().optional(), confirmed: z.boolean().optional() })
   .refine(ONE_HITL.check, { message: ONE_HITL.message });
+
 const OFFER = /^dispatch\.(.+)$/;
+
 const NextOptionsSchema = z.object({
   wait: z.boolean().optional(),
   takeover: z.boolean().optional(),
@@ -201,8 +219,10 @@ const NextOptionsSchema = z.object({
   choice: z.enum(HOST_CHOICES, { error: `--choice takes the id of a host question option: ${HOST_CHOICES.join(', ')}` }).optional(),
   ack: z.string().transform((offer, ctx) => {
     const attempt = AttemptIdSchema.safeParse(OFFER.exec(offer)?.[1]);
+
     if (attempt.success) return attempt.data;
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: `--ack takes the offer of a dispatch action, such as dispatch.a1b2c3d4e; got ${offer}` });
+
     return z.NEVER;
   }).optional(),
   attempt: AttemptIdSchema.optional(),
@@ -216,11 +236,13 @@ const NextOptionsSchema = z.object({
 }).refine((options) => !options.confirmed || options.takeover === true, {
   message: 'next takes --confirmed only with --takeover, as a confirm_needed answer prints it',
 });
+
 const RespondOptionsSchema = z.object({
   pass: z.string({ error: (issue) => issue.input === undefined ? '--driver skill needs --pass, as the choose action printed it' : undefined }).regex(/^[1-9][0-9]*$/, '--pass takes the pass the choose action printed').transform(Number),
   note: z.undefined({ error: '--driver skill takes no --note' }).optional(),
   json: z.undefined({ error: '--driver skill takes no --json: the skill driver composes every request itself' }).optional(),
 });
+
 const ReportOptionsSchema = z.object({
   attempt: AttemptIdSchema,
   modelUnavailable: z.boolean().optional(),
@@ -230,13 +252,18 @@ const ReportOptionsSchema = z.object({
 /** The JSON object `workflow start --inputs` carries, with either driver. */
 export function parseInputsFlag(raw: string): { inputs: unknown } | { error: WorkflowFailure } {
   try {
-    return { inputs: JSON.parse(raw) as unknown };
+    const inputs: unknown = JSON.parse(raw);
+
+    return { inputs };
   } catch {
     return { error: { code: 'invalid_json', message: 'Could not parse --inputs as JSON' } };
   }
 }
 
-function invalid(error: z.ZodError): { error: SkillError } {
+/** A command line the skill driver refuses before it runs anything. */
+type Refused = { error: SkillError };
+
+function invalid(error: z.ZodError): Refused {
   return { error: { code: 'invalid_arguments', message: error.issues[0]?.message ?? 'invalid options', next: null } };
 }
 
@@ -250,21 +277,35 @@ const NOBODY_ANSWERS: SkillError = {
 /** The HITL mode `options` answer optional gates with, unless nobody would answer them in an unattended run. */
 function hitlOf(options: { hitl?: 'person' | 'recommend'; autoApprove?: boolean }, env: NodeJS.ProcessEnv): { hitl?: HitlMode } | { error: SkillError } {
   const hitl: HitlMode | undefined = options.autoApprove ? 'auto-approve' : options.hitl;
+
   if (hitl === 'person' && resolveRunMode(env) === 'unattended') return { error: NOBODY_ANSWERS };
+
   return hitl !== undefined ? { hitl } : {};
 }
 
 /** The resume a `--driver skill` command line asks for, apart from its run, which `resume --next` checks before it picks one. */
+// oxlint-disable-next-line teamai/no-unknown-parameters -- the parse boundary: the command's options as the CLI parser read them
 export function parseSkillResume(options: unknown, env: NodeJS.ProcessEnv): Omit<Extract<SkillCall, { kind: 'resume' }>, 'kind' | 'run'> | { error: SkillError } {
   const parsed = ResumeOptionsSchema.safeParse(options);
+
   if (!parsed.success) return invalid(parsed.error);
   const { claim, next, confirmed, parallel, judge, tools } = parsed.data;
   const hitl = hitlOf(parsed.data, env);
+
   if ('error' in hitl) return hitl;
-  return {
-    claim: next ? 'offered' : claim ? 'any' : 'lacking', confirmed: confirmed === true, ...(tools !== undefined ? { tool: tools } : {}),
-    answers: { ...(parallel !== undefined ? { parallel } : {}), ...hitl, ...(judge === false ? { judge } : {}) },
-  };
+
+  const answers: ResumeAnswers = {};
+
+  if (parallel !== undefined) answers.parallel = parallel;
+
+  if (hitl.hitl !== undefined) answers.hitl = hitl.hitl;
+
+  if (judge === false) answers.judge = judge;
+  const resume: Omit<Extract<SkillCall, { kind: 'resume' }>, 'kind' | 'run'> = { claim: next ? 'offered' : claim ? 'any' : 'lacking', confirmed: confirmed === true, answers };
+
+  if (tools !== undefined) resume.tool = tools;
+
+  return resume;
 }
 
 /**
@@ -281,45 +322,77 @@ export function parseSkillCall(
   if (raw.kind === 'start') {
     if (!NAME.test(raw.name)) return { error: { code: 'invalid_arguments', message: `"${raw.name}" is not a workflow name`, next: null } };
     const options = StartOptionsSchema.safeParse(raw.options);
+
     if (!options.success) return invalid(options.error);
     const tool = options.data.tools !== undefined ? { tool: options.data.tools } : {};
+
     if (options.data.describe) return { kind: 'describe', name: raw.name, ...tool };
     const read = options.data.inputs === undefined ? { inputs: undefined } : parseInputsFlag(options.data.inputs);
+
     if ('error' in read) return { error: { ...read.error, next: null } };
     const { inputs } = read;
     const { parallel, confirmed, judge } = options.data;
     const hitl = hitlOf(options.data, env);
+
     if ('error' in hitl) return hitl;
-    return {
-      kind: 'start', name: raw.name, inputs, ...tool, ...(raw.timeoutMs !== undefined ? { timeoutMs: raw.timeoutMs } : {}),
-      answers: { ...(parallel !== undefined ? { parallel } : {}), confirmed: confirmed === true, ...hitl, ...(judge === false ? { judge } : {}) },
-    };
+
+    const answers: Extract<SkillCall, { kind: 'start' }>['answers'] = { confirmed: confirmed === true };
+
+    if (parallel !== undefined) answers.parallel = parallel;
+
+    if (hitl.hitl !== undefined) answers.hitl = hitl.hitl;
+
+    if (judge === false) answers.judge = judge;
+
+    const call: Extract<SkillCall, { kind: 'start' }> = { kind: 'start', name: raw.name, inputs, ...tool, answers };
+
+    if (raw.timeoutMs !== undefined) call.timeoutMs = raw.timeoutMs;
+
+    return call;
   }
+
   const run = RunIdSchema.safeParse(raw.run);
+
   if (!run.success) return invalid(run.error);
+
   if (raw.kind === 'resume') {
     const resume = parseSkillResume(raw.options, env);
+
     return 'error' in resume ? resume : { kind: 'resume', run: run.data, ...resume };
   }
+
   if (raw.kind === 'next') {
     const options = NextOptionsSchema.safeParse(raw.options);
+
     if (!options.success) return invalid(options.error);
     const { choice, ack, wait, takeover, confirmed, attempt, adopt } = options.data;
+
     if (takeover) return { kind: 'takeover', run: run.data, confirmed: confirmed === true };
+
     if (choice !== undefined) return { kind: 'choose', run: run.data, choice };
+
     if (ack !== undefined) return { kind: 'ack', run: run.data, attempt: ack };
+
     if (attempt !== undefined && adopt !== undefined) return { kind: 'adopt', run: run.data, attempt, dir: path.resolve(adopt) };
+
     return { kind: 'next', run: run.data, wait: wait === true };
   }
+
   if (raw.kind === 'respond') {
     const options = RespondOptionsSchema.safeParse(raw.options);
+
     if (!options.success) return invalid(options.error);
+
     return { kind: 'respond', run: run.data, step: raw.step, pass: options.data.pass, choice: raw.choice };
   }
+
   const options = ReportOptionsSchema.safeParse(raw.options);
+
   if (!options.success) return invalid(options.error);
   const { attempt, modelUnavailable } = options.data;
+
   if (isAttemptRunner(env, run.data, attempt)) return { kind: 'report', run: run.data, attempt, role: 'runner' };
+
   return { kind: 'report', run: run.data, attempt, role: 'agent', modelUnavailable: modelUnavailable === true };
 }
 
@@ -330,30 +403,37 @@ export function parseSkillCall(
  */
 export async function runSkillCall(call: SkillCall, context: SkillContext): Promise<SkillAnswer> {
   let answer: SkillAnswer;
+
   try {
     answer = await answerOf(call, context);
   } catch (error) {
     if (call.kind === 'report' && call.role === 'runner') throw error;
     answer = { error: { code: 'skill_call_failed', message: error instanceof Error ? error.message : String(error), next: null } };
   }
+
   await journalCall(context, call, answer);
+
   return answer;
 }
 
 async function answerOf(call: SkillCall, caller: SkillContext): Promise<SkillAnswer> {
   // The tool a session declares is the one it works in, whatever its host names, as a host may pass its env on to another tool.
   const context = 'tool' in call && call.tool !== undefined ? { ...caller, tool: call.tool } : caller;
+
   switch (call.kind) {
     case 'describe':
     case 'start':
       return start(call, context);
     case 'resume': {
       const ceiling = ceilingOf(context.config);
+
       if (call.answers.parallel !== undefined && call.answers.parallel > ceiling) {
         return { error: { code: 'invalid_arguments', message: `--parallel ${call.answers.parallel} is above the most this machine runs at once, ${ceiling}.`, next: null } };
       }
-      return foreground(context, call.run, { kind: 'resume', claim: call.claim, confirmed: call.confirmed, answers: call.answers, ...(call.tool !== undefined ? { tool: call.tool } : {}) });
+
+      return foreground(context, call.run, { kind: 'resume', claim: call.claim, confirmed: call.confirmed, answers: call.answers, tool: call.tool });
     }
+
     case 'next':
       return call.wait ? poll(context, call.run) : foreground(context, call.run, { kind: 'next' });
     case 'takeover':
@@ -368,9 +448,11 @@ async function answerOf(call: SkillCall, caller: SkillContext): Promise<SkillAns
       return foreground(context, call.run, { kind: 'respond', step: call.step, pass: call.pass, choice: call.choice });
     case 'report':
       if (call.role === 'runner') return runRunner(context, call.run, call.attempt);
+
       return agentReport(context, call.run, call);
     default: {
       const unhandled: never = call;
+
       return unhandled;
     }
   }
@@ -381,45 +463,58 @@ const ANSWERABLE_START_REFUSALS: ReadonlySet<string> = new Set(['invalid_inputs'
 
 async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, context: SkillContext): Promise<SkillAnswer> {
   const ceiling = ceilingOf(context.config);
-  const described = await context.client.describe(call.name, { ceiling, can: canFor(undefined), checkout: context.cwd, ...(context.tool !== undefined ? { tool: context.tool } : {}) });
+  const described = await context.client.describe(call.name, { ceiling, can: canFor(undefined), checkout: context.cwd, tool: context.tool });
+
   if ('error' in described) return { error: { ...described.error, next: null } };
   const { description, judging, undeliverable } = described;
   const local = localReason(description);
   const why = local !== undefined ? { local } : {};
+
   if (call.kind === 'describe') {
     const denied = description.invoke === 'deny' && context.evidence.kind !== 'none' ? { denied: invokeDeniedMessage(description.name, context.evidence, { kind: 'start' }) } : {};
     const attended = attendedReason(description, 'start');
+
     const { row, verdict } = describeRow({
-      needed: neededAnswers(description), ...denied, ...(undeliverable ? { undeliverable: undeliverable.message } : {}), ...why, judged: judgedBy(judging) !== undefined,
-      mode: context.mode, ...(attended !== undefined ? { attended } : {}), needsTool: needsTool(description, { tool: context.tool, judged: true }),
+      needed: neededAnswers(description), ...denied, undeliverable: undeliverable?.message, ...why, judged: judgedBy(judging) !== undefined,
+      mode: context.mode, attended, needsTool: needsTool(description, { tool: context.tool, judged: true }),
     });
+
     context.trace?.(row);
     const caller = { session: context.session, tool: call.tool ?? context.tool };
     const [share, task] = await Promise.all([SessionShare.proposals(context.config, description, caller), SessionToTask.proposals(context.config, description, { ...caller, cwd: context.cwd })]);
     const proposed = { ...share, ...task };
+
     return { data: { describe: { workflow: description, judging, ask: askFor(verdict, description, context.invocation, judging, { local: localPromptTool(context), session: call.tool }, proposed) } } };
   }
+
   const check = checkStartAnswers({ description, answers: call.answers, inputs: call.inputs, ceiling, tool: context.tool });
   const judge = call.answers.judge !== false ? judgedBy(judging) : undefined;
   const attended = context.mode === 'unattended' ? attendedReason(description, 'start') : undefined;
-  const taken = startRow({ name: description.name, check, ...why, ...(attended !== undefined ? { attended } : {}), prompts: description.facts.prompts.length > 0, ...(judge !== undefined ? { judge } : {}) });
+  const taken = startRow({ name: description.name, check, ...why, attended, prompts: description.facts.prompts.length > 0, judge });
   context.trace?.(taken.row);
+
   if (taken.row === 'R25') return { error: { ...taken.error, next: null } };
   const same = describeLiteral(context.invocation, description.name, { tool: call.tool });
+
   if (taken.row !== 'R10') return { error: errorOf({ kind: 'error', refusal: taken.refusal }, { invocation: context.invocation, same, localTool: localPromptTool(context) }) };
   const planned = taken.start;
+
   const started = await context.client.start(description.name, {
-    ...(call.inputs !== undefined ? { inputs: call.inputs } : {}), checkout: context.cwd, caller: { evidence: context.evidence, confirmed: call.answers.confirmed, mode: context.mode },
-    ...(call.timeoutMs !== undefined ? { timeout: call.timeoutMs } : {}),
+    inputs: call.inputs, checkout: context.cwd, caller: { evidence: context.evidence, confirmed: call.answers.confirmed, mode: context.mode },
+    timeout: call.timeoutMs,
   });
+
   if ('error' in started) {
     // No literal for a refusal no other answer fixes: a new describe would only lead back to it.
     return { error: { ...started.error, next: ANSWERABLE_START_REFUSALS.has(started.error.code) ? same : null } };
   }
+
   const run = RunIdSchema.safeParse(started.data.run);
+
   if (!run.success) return { error: { code: 'run_unreadable', message: 'The new run id was missing', next: null } };
   const state = plannedState(context, run.data, planned);
   const saved = await context.locks.take(run.data, (lock) => writeSkillState(context.config, lock, state, context.env.secrets), 0);
+
   switch (saved.kind) {
     case 'held':
       return foreground(context, run.data, { kind: 'next' });
@@ -427,6 +522,7 @@ async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, c
       return { error: { ...saved.error, next: null } };
     default: {
       const unhandled: never = saved;
+
       return unhandled;
     }
   }

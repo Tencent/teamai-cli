@@ -1,6 +1,7 @@
 import { writeFile, readFile, unlink, stat, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { z } from 'zod';
 import { log } from './logger.js';
 
 /** Duration after which a lock file is considered stale and safe to ignore. */
@@ -16,6 +17,23 @@ interface ImportLockMeta {
   startedAt: string;   // ISO
   teamRepo: string;    // resolved team repo path
 }
+
+/**
+ * The lock fields isImportInProgress reads. A mistyped field, or a JSON value that is not an
+ * object, reads as absent, as a bare property read did; a null document is malformed.
+ */
+const ImportLockFieldsSchema = z
+  .unknown()
+  .refine((value) => value !== null)
+  .pipe(
+    z
+      .object({
+        pid: z.number().optional().catch(undefined),
+        host: z.string().optional().catch(undefined),
+        startedAt: z.string().optional().catch(undefined),
+      })
+      .catch({}),
+  );
 
 /**
  * Returns the lock file path for a given team repo directory.
@@ -52,15 +70,17 @@ export async function acquireImportLock(teamRepoPath: string): Promise<() => Pro
     // First acquire: write the lock file.
     try {
       await mkdir(path.dirname(lockPath), { recursive: true });
+
       const meta: ImportLockMeta = {
         pid: process.pid,
         host: os.hostname(),
         startedAt: new Date().toISOString(),
         teamRepo: path.resolve(teamRepoPath),
       };
+
       await writeFile(lockPath, JSON.stringify(meta, null, 2), 'utf8');
     } catch (e) {
-      log.debug(`[import-lock] Failed to write lock file ${lockPath}: ${(e as Error).message}`);
+      log.debug(`[import-lock] Failed to write lock file ${lockPath}: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -75,10 +95,11 @@ export async function acquireImportLock(teamRepoPath: string): Promise<() => Pro
 
     if (next === 0) {
       refCounts.delete(lockPath);
+
       try {
         await unlink(lockPath);
       } catch (e) {
-        log.debug(`[import-lock] Failed to remove lock file ${lockPath}: ${(e as Error).message}`);
+        log.debug(`[import-lock] Failed to remove lock file ${lockPath}: ${e instanceof Error ? e.message : String(e)}`);
       }
     } else {
       refCounts.set(lockPath, next);
@@ -107,6 +128,7 @@ export async function isImportInProgress(teamRepoPath: string): Promise<boolean>
   const lockPath = lockPathFor(teamRepoPath);
 
   let raw: string;
+
   try {
     raw = await readFile(lockPath, 'utf8');
   } catch {
@@ -114,12 +136,11 @@ export async function isImportInProgress(teamRepoPath: string): Promise<boolean>
     return false;
   }
 
-  let meta: ImportLockMeta;
   try {
-    meta = JSON.parse(raw) as ImportLockMeta;
+    const meta = ImportLockFieldsSchema.parse(JSON.parse(raw));
 
     // Check TTL.
-    const parsed = Date.parse(meta.startedAt);
+    const parsed = Date.parse(meta.startedAt ?? '');
     const age = Number.isNaN(parsed) ? Infinity : Date.now() - parsed;
 
     if (age > LOCK_TTL_MS) {
@@ -127,28 +148,28 @@ export async function isImportInProgress(teamRepoPath: string): Promise<boolean>
       try {
         await unlink(lockPath);
       } catch (e) {
-        log.debug(`[import-lock] Failed to remove stale lock ${lockPath}: ${(e as Error).message}`);
+        log.debug(`[import-lock] Failed to remove stale lock ${lockPath}: ${e instanceof Error ? e.message : String(e)}`);
       }
+
       return false;
     }
 
     if (meta.host === os.hostname()) {
       // Same host: probe the locking process via signal 0.
-      try {
-        process.kill(meta.pid, 0);
-        // No exception thrown — process is alive — import is in progress.
+      if (meta.pid !== undefined && isProcessAlive(meta.pid)) {
         return true;
-      } catch {
-        // Process is dead (ESRCH) — stale lock.
-        try {
-          await unlink(lockPath);
-        } catch (e) {
-          log.debug(
-            `[import-lock] Failed to remove dead-process lock ${lockPath}: ${(e as Error).message}`,
-          );
-        }
-        return false;
       }
+
+      // Process is dead (ESRCH), or the lock names none — stale lock.
+      try {
+        await unlink(lockPath);
+      } catch (e) {
+        log.debug(
+          `[import-lock] Failed to remove dead-process lock ${lockPath}: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+
+      return false;
     }
 
     // Different host — cannot probe; treat as active within TTL.
@@ -157,18 +178,31 @@ export async function isImportInProgress(teamRepoPath: string): Promise<boolean>
     // JSON parse failed — fall back to mtime heuristic.
     try {
       const { mtimeMs } = await stat(lockPath);
+
       if (Date.now() - mtimeMs <= LOCK_TTL_MS) {
         // Fresh but unreadable — treat as active to protect uncommitted data.
         return true;
       }
+
       try {
         await unlink(lockPath);
       } catch (e) {
-        log.debug(`[import-lock] Failed to remove malformed lock ${lockPath}: ${(e as Error).message}`);
+        log.debug(`[import-lock] Failed to remove malformed lock ${lockPath}: ${e instanceof Error ? e.message : String(e)}`);
       }
+
       return false;
     } catch {
       return false;
     }
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+
+    return true;
+  } catch {
+    return false;
   }
 }

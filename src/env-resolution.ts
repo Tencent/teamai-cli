@@ -122,6 +122,7 @@ export async function resolveTeamEnv(
   const variables = await withHeldValues(namespaces
     ? await resolveEntries(envEntryReader, localConfig, namespaces.active)
     : await resolveEntriesFor(envEntryReader, localConfig), localConfig, env);
+
   const declarations = await resolveSecretDeclarations(localConfig, namespaces);
   const secretKeys = declaredSecretKeys(declarations) ?? new Set<string>();
   const received = variables.kind === 'resolved' ? variables.entries : [];
@@ -138,11 +139,13 @@ export async function resolveTeamEnv(
   let inheritedVariables: readonly ResolvedEntry<EnvVariable>[] = [];
   let inheritedValues: StoreResolution<VariableValue> = { kind: 'resolved', values: new Map() };
   let keptInheritedValues: ReadonlyMap<string, string> | null = null;
+
   if (localConfig.scope === 'project' && localConfig.inheritUserScope === true) {
     // Whatever its source: the user scope's own pull writes its env.sh from
     // this same resolution, an HTTP team repo's included, and shells load it.
     // oxlint-disable-next-line teamai/config-load-options -- inherited environment resolution retains its existing migration policy; this helper has no preview option
     const userConfig = await loadLocalConfigForScope('user');
+
     if (userConfig) {
       const userEnv = await resolveTeamEnv(userConfig, undefined, env);
       const userSecretKeys = declaredSecretKeys(userEnv.declarations) ?? new Set<string>();
@@ -162,6 +165,7 @@ export async function resolveTeamEnv(
       keptInheritedValues = userEnv.keptValues && new Map([...userEnv.keptValues].filter(([key]) => inherits(key)));
     }
   }
+
   return {
     variables,
     inheritedVariables,
@@ -204,7 +208,9 @@ export interface AppliedTeamEnv {
 export function appliedTeamEnv(teamEnv: TeamEnv): AppliedTeamEnv {
   const part = (values: StoreResolution<VariableValue>, kept: ReadonlyMap<string, string> | null): [string, string][] =>
     kept ? [...kept] : values.kind === 'resolved' ? [...values.values].map(([key, { value }]) => [key, value]) : [];
+
   const values = [...part(teamEnv.inheritedValues, teamEnv.keptInheritedValues), ...part(teamEnv.variableValues, teamEnv.keptValues)];
+
   return {
     variables: new Map(values.filter(([key]) => !isReservedTeamEnvKey(key))),
     secretKeys: [...declaredSecretKeys(teamEnv.declarations) ?? []].filter((key) => !isReservedTeamEnvKey(key)),
@@ -229,33 +235,41 @@ async function withHeldValues(
   const backup = await readEnvBackup(localConfig);
   const unexported = variables.held.filter((key) => !Object.hasOwn(backup, key));
   const team = unexported.length > 0 ? await readSecretStore(getTeamSecretsPath(localConfig)) : NO_VALUES;
+
   const fromEnv = (key: string): boolean => {
     const entry = team.ok ? storeEntry(team.values, key, 'variable') : undefined;
+
     return entry !== undefined && 'env' in entry && storedSecretValue(entry, env) !== undefined;
   };
+
   const kept = variables.held.flatMap((key): ResolvedEntry<EnvVariable>[] => {
     if (!Object.hasOwn(backup, key) && !fromEnv(key)) return [];
     // Without a backup value, the member's entry decides the value (variableValues): this one is never read.
     const [value, source] = Object.hasOwn(backup, key) ? [backup[key], getEnvBackupPath(localConfig)] : ['', getTeamSecretsPath(localConfig)];
+
     return [{ entry: { key, value }, name: key, namespace: null, source, replaces: null, replacedEntry: null }];
   });
+
   return { ...variables, entries: [...variables.entries, ...kept] };
 }
 
 /** What this scope's last pull wrote: the values its env backup holds, and the keys its env.sh keeps from the user scope. */
 async function lastPullOf(localConfig: LocalConfig): Promise<{ values: ReadonlyMap<string, string>; kept: ReadonlySet<string> }> {
   const envSh = await readFileSafe(path.join(getDataHome(localConfig), 'env.sh'));
+
   return { values: new Map(Object.entries(await readEnvBackup(localConfig))), kept: envSh ? parseEnvFileKept(envSh) : new Set() };
 }
 
 /** The variable declarations a scope delivers, with project declarations taking precedence over inherited user ones. */
 export function effectiveTeamEnvVariables(teamEnv: TeamEnv): readonly ResolvedEntry<EnvVariable>[] {
   const effective = new Map<string, ResolvedEntry<EnvVariable>>();
+
   for (const variable of [...teamEnv.inheritedVariables, ...(teamEnv.variables.kind === 'resolved' ? teamEnv.variables.entries : [])]) {
     const key = envName(variable.name);
     effective.delete(key);
     effective.set(key, variable);
   }
+
   return [...effective.values()];
 }
 
@@ -264,6 +278,7 @@ function storeEntry(store: SecretStore, key: string, kind: StoredEntryKind): Sto
   // On Windows a value stored as `token` is `TOKEN`'s: the same environment variable.
   const stored = sameEnvName(Object.keys(store), key);
   const entry = stored === undefined ? undefined : store[stored];
+
   return entry && storedEntryKind(entry) === kind ? entry : undefined;
 }
 
@@ -273,15 +288,27 @@ function staleEntries(
   team: SecretStoreRead,
 ): ReadonlyMap<string, StoredEntryKind> {
   const stale = new Map<string, StoredEntryKind>();
+
   if (!team.ok) return stale;
+
   const check = (key: string, kind: StoredEntryKind): void => {
     const stored = sameEnvName(Object.keys(team.values), key);
     const entry = stored === undefined ? undefined : team.values[stored];
+
     if (entry && storedEntryKind(entry) !== kind) stale.set(key, storedEntryKind(entry));
   };
+
   for (const key of secretKeys) check(key, 'secret');
+
   for (const variable of variables) check(variable.name, 'variable');
+
   return stale;
+}
+
+/** Each secret's value, and the secrets whose stored `env` reference names a variable that is not set. */
+interface SecretValues {
+  values: StoreResolution<SecretValue>;
+  unsetReferences: ReadonlyMap<string, UnsetReference>;
 }
 
 function secretValues(
@@ -290,23 +317,30 @@ function secretValues(
   machine: SecretStoreRead,
   member: MemberEnvironment,
   env: NodeJS.ProcessEnv,
-): { values: StoreResolution<SecretValue>; unsetReferences: ReadonlyMap<string, UnsetReference> } {
+): SecretValues {
   const values = new Map<string, SecretValue>();
   const unsetReferences = new Map<string, UnsetReference>();
   const result = { values: { kind: 'resolved', values }, unsetReferences } as const;
+
   if (keys.size === 0) return result;
+
   if (!team.ok) return { values: { kind: 'store-unreadable', reason: team.reason }, unsetReferences };
+
   if (!machine.ok) return { values: { kind: 'store-unreadable', reason: machine.reason }, unsetReferences };
+
   for (const key of keys) {
     const teamEntry = storeEntry(team.values, key, 'secret');
     const machineEntry = storeEntry(machine.values, key, 'secret');
     const entry = teamEntry ?? machineEntry;
+
     const [source, value]: [SecretValue['source'], string | undefined] = teamEntry ? ['team', storedSecretValue(teamEntry, env)]
       : machineEntry ? ['global', storedSecretValue(machineEntry, env)]
       : ['environment', member(key) || undefined];
+
     if (value !== undefined) values.set(key, { source, value });
     else if (entry && 'env' in entry) unsetReferences.set(key, { variable: entry.env, global: teamEntry === undefined });
   }
+
   return result;
 }
 
@@ -316,8 +350,11 @@ function variableValues(
   env: NodeJS.ProcessEnv,
 ): StoreResolution<VariableValue> {
   const values = new Map<string, VariableValue>();
+
   if (variables.length === 0) return { kind: 'resolved', values };
+
   if (!team.ok) return { kind: 'store-unreadable', reason: team.reason };
+
   for (const variable of variables) {
     const entry = storeEntry(team.values, variable.name, 'variable');
     const member = entry ? storedSecretValue(entry, env) : undefined;
@@ -326,6 +363,7 @@ function variableValues(
       ? { source: 'team', value: member, fromEnv }
       : { source: 'env.yaml', value: variable.entry.value, fromEnv });
   }
+
   return { kind: 'resolved', values };
 }
 
@@ -338,17 +376,22 @@ function variableValues(
  */
 export async function collectTeamSecrets(localConfig: LocalConfig, env: NodeJS.ProcessEnv = process.env): Promise<Record<string, string>> {
   if (!resolvesTeamEnv(localConfig)) return {};
+
   return teamSecretsOf((await resolveTeamEnv(localConfig, undefined, env)).secrets);
 }
 
 function teamSecretsOf(secrets: StoreResolution<SecretValue>): Record<string, string> {
   if (secrets.kind !== 'resolved') {
     warnOnce(`${secrets.reason} Until it can be read, teamai does not mask the team's secret values in what it writes.`);
+
     return {};
   }
+
   return Object.fromEntries([...secrets.values].flatMap(([key, { value }]) => {
     if (value.length >= MIN_DECLARED_SECRET_LENGTH) return [[key, value]];
+
     if (value) warnOnce(`Secret ${key} in env/secrets.yaml is shorter than ${MIN_DECLARED_SECRET_LENGTH} characters, so teamai cannot tell it from ordinary text and does not mask it. Give it a longer value.`);
+
     return [];
   }));
 }
@@ -363,8 +406,9 @@ export async function knownSecrets(localConfig: LocalConfig, env: NodeJS.Process
   return (await resolveWorkflowEnv(localConfig, env)).secrets;
 }
 
-function maskSet(fromEnvironment: Record<string, string>, team: Record<string, string>): Record<string, string> {
+function maskSet(fromEnvironment: Record<string, string>, team: Record<string, string>) {
   const shadowed = Object.entries(fromEnvironment).flatMap(([key, value]) => (key in team && team[key] !== value ? [[`${key} (environment)`, value]] : []));
+
   return { ...fromEnvironment, ...team, ...Object.fromEntries(shadowed) };
 }
 
@@ -384,6 +428,7 @@ export function envShVariables(
 ): EnvVariable[] {
   return variables.flatMap((variable) => {
     const resolved = values.get(variable.name);
+
     return resolved && !resolved.fromEnv && !isReservedTeamEnvKey(variable.name) ? [{ ...variable.entry, value: resolved.value }] : [];
   });
 }
@@ -398,10 +443,12 @@ export function envShVariables(
 export function keptFromUserScope(localConfig: LocalConfig, teamEnv: TeamEnv, exported: readonly EnvVariable[]): string[] {
   if (localConfig.scope !== 'project' || localConfig.inheritUserScope !== true) return [];
   const exportedKeys = new Set(exported.map(({ key }) => key));
+
   const declared = new Set([
     ...(teamEnv.variables.kind === 'resolved' ? teamEnv.variables.entries.map(({ name }) => name) : []),
     ...(declaredSecretKeys(teamEnv.declarations) ?? []),
   ]);
+
   return [...declared].filter((key) => !exportedKeys.has(key) && !isReservedTeamEnvKey(key));
 }
 
@@ -428,23 +475,34 @@ export interface WorkflowEnv {
 export async function resolveWorkflowEnv(localConfig: LocalConfig, live: NodeJS.ProcessEnv = process.env): Promise<WorkflowEnv> {
   const env = { ...live };
   const values = new Map(Object.entries(env).flatMap(([key, value]) => (value ? [[key, value]] : [])));
+
   if (!resolvesTeamEnv(localConfig)) {
     return { facts: { declared: new Set(), secrets: new Set(), present: new Set(values.keys()) }, values, secrets: collectEnvSecrets(env) };
   }
+
   const teamEnv = await resolveTeamEnv(localConfig, undefined, env);
   const applied = appliedTeamEnv(teamEnv);
   // The environment's own value of a declared secret is a secret too, whatever its name, even when the team value differs.
   const personalSecrets = environmentValuesOf(applied.secretKeys, values);
   const declared = new Set([...applied.variables.keys(), ...applied.secretKeys]);
+
   for (const key of declared) values.delete(sameEnvName(values.keys(), key) ?? key);
+
   for (const [key, value] of applied.variables) values.set(key, value);
+
   if (teamEnv.secrets.kind === 'resolved') for (const [key, { value }] of teamEnv.secrets.values) values.set(key, value);
   const failed = [teamEnv.variables, teamEnv.declarations].find((entries) => entries.kind === 'failed');
+
   const unreadable = failed?.kind === 'failed' ? describeEntryFailure(failed.failure)
     : teamEnv.secrets.kind === 'store-unreadable' ? teamEnv.secrets.reason
       : teamEnv.variableValues.kind === 'store-unreadable' ? teamEnv.variableValues.reason : undefined;
+
+  const facts: EnvFacts = { declared, secrets: new Set(applied.secretKeys), present: new Set(values.keys()) };
+
+  if (unreadable !== undefined) facts.unreadable = unreadable;
+
   return {
-    facts: { declared, secrets: new Set(applied.secretKeys), present: new Set(values.keys()), ...(unreadable !== undefined ? { unreadable } : {}) },
+    facts,
     values,
     secrets: maskSet({ ...collectEnvSecrets(env), ...personalSecrets }, teamSecretsOf(teamEnv.secrets)),
   };
@@ -455,6 +513,7 @@ function environmentValuesOf(keys: Iterable<string>, values: ReadonlyMap<string,
   return Object.fromEntries([...keys].flatMap((key) => {
     const name = sameEnvName(values.keys(), key) ?? key;
     const value = values.get(name);
+
     return value !== undefined && value.length >= MIN_DECLARED_SECRET_LENGTH ? [[name, value]] : [];
   }));
 }

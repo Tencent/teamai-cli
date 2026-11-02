@@ -5,12 +5,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fse from 'fs-extra';
+import { z } from 'zod';
 import { loadState, saveState, loadLocalConfig, loadTeamConfig, resolveConfigForDir } from './config.js';
 import { resolveEffectiveUpdatePolicy } from './update-policy.js';
 import { resolveTeamaiEntryScript } from './builtin-hooks.js';
 import { log } from './utils/logger.js';
-import { expandHome, ensureDir } from './utils/fs.js';
-import { getTeamaiHomeDir, getUpdateLockPath, type LocalConfig } from './types.js';
+import { errnoCode, expandHome, ensureDir } from './utils/fs.js';
+import { getTeamaiHomeDir, getUpdateLockPath, JsonValueSchema, type LocalConfig } from './types.js';
 import { askConfirmation, isInteractive } from './utils/prompt.js';
 
 // `getCurrentVersion` and `getCurrentPackageName` live in `./package-info.ts`
@@ -18,6 +19,7 @@ import { askConfirmation, isInteractive } from './utils/prompt.js';
 // without pulling in update.ts' dependency graph. They are re-exported here
 // for backwards compatibility with existing callers of `./update.js`.
 import { getCurrentVersion, getCurrentPackageName } from './package-info.js';
+
 export { getCurrentVersion, getCurrentPackageName };
 
 const execFileAsync = promisify(execFile);
@@ -26,6 +28,7 @@ const execFileAsync = promisify(execFile);
 
 /** Public npm registry (open-source users). */
 const PUBLIC_REGISTRY = 'https://registry.npmjs.org';
+
 /** Tencent internal tnpm registry (for @tencent/ scoped package). */
 const TNPM_REGISTRY = 'http://r.tnpm.oa.com';
 
@@ -43,8 +46,11 @@ const CACHE_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
  */
 export function resolveRegistryForPackage(pkgName: string): string {
   const override = process.env.TEAMAI_NPM_REGISTRY?.trim();
+
   if (override) return override;
+
   if (pkgName.startsWith('@tencent/')) return TNPM_REGISTRY;
+
   return PUBLIC_REGISTRY;
 }
 
@@ -56,8 +62,15 @@ export function resolveRegistryForPackage(pkgName: string): string {
  * of platform — a layout mismatch must not silently disable self-update in
  * exactly the PATH-less contexts this resolver exists for.
  */
-export function resolveNpmCommand(): { cmd: string; args: string[] } {
+/** How to run npm: the program and the arguments that come before npm's own. */
+export interface NpmCommand {
+  cmd: string;
+  args: string[];
+}
+
+export function resolveNpmCommand(): NpmCommand {
   const nodeDir = path.dirname(process.execPath);
+
   const candidates = [
     // Bundled runtimes: npm installed flat next to node.exe.
     path.join(nodeDir, 'node_modules', 'npm', 'bin', 'npm-cli.js'),
@@ -67,10 +80,13 @@ export function resolveNpmCommand(): { cmd: string; args: string[] } {
     // <prefix>/bin with npm at <prefix>/lib/node_modules — one level up.
     path.join(nodeDir, '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
   ];
+
   for (const c of candidates) {
     if (fs.existsSync(c)) return { cmd: process.execPath, args: [c] };
   }
+
   log.debug('No npm-cli.js found next to the running Node; falling back to npm from PATH');
+
   return { cmd: 'npm', args: [] };
 }
 
@@ -89,17 +105,21 @@ export function resolveNpmCommand(): { cmd: string; args: string[] } {
 export function prefixFromEntryPath(entry: string, posix: boolean): { prefix: string; global: boolean } | null {
   const marker = `${path.sep}node_modules${path.sep}`;
   const idx = entry.lastIndexOf(marker);
+
   if (idx <= 0) return null;
   const root = entry.slice(0, idx);
   const pkgDir = getCurrentPackageName();
+
   // POSIX global layout: npm re-adds the lib/ component, so hand it the slice
   // above and let it nest back down to where the running package sits.
   if (posix && path.basename(root) === 'lib') {
     const prefix = path.dirname(root);
+
     return fs.existsSync(path.join(prefix, 'lib', 'node_modules', pkgDir))
       ? { prefix, global: true }
       : null;
   }
+
   // Flat layout (<root>/node_modules/<pkg>): the sanity check verifies the
   // layout that was actually matched, not the one npm would have created.
   return fs.existsSync(path.join(root, 'node_modules', pkgDir))
@@ -133,8 +153,10 @@ export function isVoltaPackageImage(filePath: string, voltaHome = process.env.VO
     const fold = (value: string) => process.platform === 'win32' ? value.toLowerCase() : value;
     const file = fold(resolved);
     const dir = fold(root);
+
     if (file === dir || file.startsWith(dir.endsWith(path.sep) ? dir : dir + path.sep)) return true;
   }
+
   return VOLTA_PACKAGE_IMAGE.test(filePath.replace(/\\/g, '/'));
 }
 
@@ -150,21 +172,27 @@ export async function fetchLatestVersion(
 ): Promise<string | null> {
   const pkgName = getCurrentPackageName();
   const resolvedRegistry = registry ?? resolveRegistryForPackage(pkgName);
+
   try {
     // Async execFile so the hook dispatcher's event loop is not blocked while
     // the registry is queried — a synchronous execSync here would freeze all
     // sibling Stop handlers for up to `timeout` ms.
     const npm = resolveNpmCommand();
+
     const { stdout } = await execFileAsync(
       npm.cmd,
       [...npm.args, 'view', pkgName, 'version', `--registry=${resolvedRegistry}`],
       { timeout, encoding: 'utf-8', windowsHide: true },
     );
+
     const version = stdout.trim();
+
     if (!version) return null;
+
     return version;
   } catch (e) {
-    log.error(`Version check failed: ${(e as Error).message}`);
+    log.error(`Version check failed: ${e instanceof Error ? e.message : String(e)}`);
+
     return null;
   }
 }
@@ -182,16 +210,21 @@ export function compareVersions(a: string, b: string): number {
   const partsA = coreA.split('.').map(Number);
   const partsB = coreB.split('.').map(Number);
   const len = Math.max(partsA.length, partsB.length);
+
   for (let i = 0; i < len; i++) {
     const pa = partsA[i] ?? 0;
     const pb = partsB[i] ?? 0;
+
     if (pa > pb) return 1;
+
     if (pa < pb) return -1;
   }
 
   // Numeric cores are equal — prerelease is lower than release (semver §11)
   if (preA && !preB) return -1;
+
   if (!preA && preB) return 1;
+
   return 0;
 }
 
@@ -200,9 +233,12 @@ export function compareVersions(a: string, b: string): number {
  */
 export function isCacheValid(lastCheck: string | null, ttlMs: number = CACHE_TTL_MS): boolean {
   if (!lastCheck) return false;
+
   try {
     const checkTime = new Date(lastCheck).getTime();
+
     if (isNaN(checkTime)) return false;
+
     return Date.now() - checkTime < ttlMs;
   } catch {
     return false;
@@ -219,6 +255,9 @@ export function isCacheValid(lastCheck: string | null, ttlMs: number = CACHE_TTL
  */
 const heldLockOwners = new Map<string, string>();
 
+/** The `version` of the package.json an update installed, as written. */
+const InstalledPackageSchema = z.object({ version: JsonValueSchema.optional() });
+
 interface LockPayload {
   pid: number;
   startedAt: string;
@@ -231,21 +270,31 @@ interface LockPayload {
  * on-disk lock from a previous install is still evaluated for staleness rather
  * than treated as un-owned garbage.
  */
-function parseLockContent(content: string): { pid: number; owner?: string } | null {
+/** Who holds a lock: its process, and the owner token of a lock written in the JSON payload format. */
+interface LockHolder {
+  pid: number;
+  owner?: string;
+}
+
+/** A lock file's JSON: the legacy bare integer PID, or the payload with a numeric pid. */
+const LockContentSchema = z.union([
+  z.number().refine(Number.isInteger).transform((pid): LockHolder => ({ pid })),
+  z.object({ pid: z.number(), owner: z.string().optional().catch(undefined) }).transform(({ pid, owner }): LockHolder => ({ pid, owner })),
+]);
+
+function parseLockContent(content: string): LockHolder | null {
   const trimmed = content.trim();
+
   if (!trimmed) return null;
+
   try {
-    const json: unknown = JSON.parse(trimmed);
-    // Legacy format: a bare PID, which is valid JSON too.
-    if (typeof json === 'number') return Number.isInteger(json) ? { pid: json } : null;
-    const parsed = json as Partial<LockPayload>;
-    if (typeof parsed.pid === 'number' && !isNaN(parsed.pid)) {
-      return { pid: parsed.pid, owner: typeof parsed.owner === 'string' ? parsed.owner : undefined };
-    }
-    return null;
+    const parsed = LockContentSchema.safeParse(JSON.parse(trimmed));
+
+    return parsed.success ? parsed.data : null;
   } catch {
     // Legacy format: the file held only the bare PID as a string.
     const pid = parseInt(trimmed, 10);
+
     return isNaN(pid) ? null : { pid };
   }
 }
@@ -265,26 +314,35 @@ function parseLockContent(content: string): { pid: number; owner?: string } | nu
  */
 export async function lockState(resolved: string): Promise<'live' | 'stale' | 'missing'> {
   let content: string;
+
   try {
     content = await fse.readFile(resolved, 'utf-8');
   } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
+    const code = errnoCode(err);
+
     if (code === 'ENOENT') return 'missing';
+
     if (code !== 'EACCES' && code !== 'EPERM') throw err;
     log.warn(`${resolved} cannot be read (${code}); treating it as held. Remove it if no teamai process is running.`);
+
     return 'live';
   }
+
   const parsed = parseLockContent(content);
+
   if (!parsed) {
     log.warn(`${resolved} names no owner; treating it as held. Remove it if no teamai process is running.`);
+
     return 'live';
   }
+
   try {
     process.kill(parsed.pid, 0);
+
     return 'live'; // process alive → lock genuinely held
   } catch (err) {
     // EPERM: alive, owned by another user. ESRCH: the owning process is gone.
-    return (err as NodeJS.ErrnoException).code === 'EPERM' ? 'live' : 'stale';
+    return errnoCode(err) === 'EPERM' ? 'live' : 'stale';
   }
 }
 
@@ -297,7 +355,9 @@ export async function lockState(resolved: string): Promise<'live' | 'stale' | 'm
 async function createOrInspect(resolved: string, payload: string): Promise<'acquired' | 'live' | 'stale'> {
   if (await exclusiveCreate(resolved, payload)) return 'acquired';
   const state = await lockState(resolved);
+
   if (state !== 'missing') return state;
+
   return (await exclusiveCreate(resolved, payload)) ? 'acquired' : 'live';
 }
 
@@ -317,11 +377,14 @@ async function createOrInspect(resolved: string, payload: string): Promise<'acqu
 async function exclusiveCreate(target: string, payload: string): Promise<boolean> {
   const tmp = `${target}.${randomUUID()}.tmp`;
   await fse.writeFile(tmp, payload);
+
   try {
     await fse.link(tmp, target);
+
     return true;
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false;
+    if (errnoCode(err) === 'EEXIST') return false;
+
     return await exclusiveCreateInPlace(target, payload);
   } finally {
     await fse.remove(tmp).catch(() => {});
@@ -331,9 +394,10 @@ async function exclusiveCreate(target: string, payload: string): Promise<boolean
 async function exclusiveCreateInPlace(target: string, payload: string): Promise<boolean> {
   try {
     await fse.writeFile(target, payload, { flag: 'wx' });
+
     return true;
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false;
+    if (errnoCode(err) === 'EEXIST') return false;
     throw err;
   }
 }
@@ -346,10 +410,13 @@ async function exclusiveCreateInPlace(target: string, payload: string): Promise<
 async function removeIfOwner(target: string, owner: string): Promise<void> {
   try {
     const content = await fse.readFile(target, 'utf-8').catch(() => null);
+
     if (content !== null) {
       const parsed = parseLockContent(content);
+
       if (parsed?.owner && parsed.owner !== owner) return;
     }
+
     await fse.remove(target);
   } catch {
     // best effort
@@ -373,16 +440,21 @@ async function acquireReclaimSentinel(sentinel: string, owner: string): Promise<
     startedAt: new Date().toISOString(),
     owner,
   } satisfies LockPayload);
+
   if (await exclusiveCreate(sentinel, payload)) return true;
+
   // Sentinel is held. Only reclaim it if its holder is gone.
   if ((await lockState(sentinel)) !== 'stale') return false;
+
   try {
     await fse.rename(sentinel, `${sentinel}.reclaim-${owner}`);
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false; // another process stole it first
+    if (errnoCode(err) === 'ENOENT') return false; // another process stole it first
     throw err;
   }
+
   await fse.remove(`${sentinel}.reclaim-${owner}`).catch(() => {});
+
   return exclusiveCreate(sentinel, payload);
 }
 
@@ -408,6 +480,7 @@ export async function acquireLock(
   options: { dryRun?: boolean } = {},
 ): Promise<boolean> {
   const resolved = lockPath ?? expandHome(getUpdateLockPath());
+
   // A preview does not take the lock, because taking one is itself a write:
   // `ensureDir` below creates the lock's parent directory, which a fresh
   // self-mode clone has no partition for yet and which `releaseLock` has no
@@ -419,6 +492,7 @@ export async function acquireLock(
   try {
     if (options.dryRun) return (await lockState(resolved)) !== 'live';
     const owner = randomUUID();
+
     const payload = JSON.stringify({
       pid: process.pid,
       startedAt: new Date().toISOString(),
@@ -432,22 +506,30 @@ export async function acquireLock(
     // Fast path: no lock present. A live holder means busy; only a stale lock
     // may be reclaimed.
     const first = await createOrInspect(resolved, payload);
+
     if (first === 'acquired') {
       heldLockOwners.set(resolved, owner);
+
       return true;
     }
+
     if (first === 'live') return false;
 
     // Serialize the reclaim so only one process takes over the stale lock.
     const sentinel = `${resolved}.sentinel`;
+
     if (!(await acquireReclaimSentinel(sentinel, owner))) return false;
+
     try {
       // Re-evaluate now that we are the sole reclaimer.
       const second = await createOrInspect(resolved, payload);
+
       if (second === 'acquired') {
         heldLockOwners.set(resolved, owner);
+
         return true; // stale lock had vanished
       }
+
       if (second === 'live') return false; // became live under us
       // Still stale and present, and no other reclaimer can race us: replace it
       // atomically (write to a temp sibling, then rename over the stale file, so
@@ -456,12 +538,13 @@ export async function acquireLock(
       await fse.writeFile(tmp, payload);
       await fse.rename(tmp, resolved);
       heldLockOwners.set(resolved, owner);
+
       return true;
     } finally {
       await removeIfOwner(sentinel, owner);
     }
   } catch (err) {
-    throw new Error(`Cannot acquire lock ${resolved}: ${(err as Error).message}`, { cause: err });
+    throw new Error(`Cannot acquire lock ${resolved}: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
   }
 }
 
@@ -475,14 +558,19 @@ export async function acquireLock(
 export async function releaseLock(lockPath?: string): Promise<void> {
   const resolved = lockPath ?? expandHome(getUpdateLockPath());
   const ourOwner = heldLockOwners.get(resolved);
+
   if (!ourOwner) return;
+
   try {
     const content = await fse.readFile(resolved, 'utf-8').catch(() => null);
+
     if (content !== null) {
       const parsed = parseLockContent(content);
+
       // A recorded owner mismatch means someone else now holds this lock.
       if (parsed?.owner && parsed.owner !== ourOwner) return;
     }
+
     await fse.remove(resolved);
   } catch {
     // Ignore errors on cleanup
@@ -509,8 +597,10 @@ export async function withFileLock<T>(
         await releaseLock(lockPath);
       }
     }
+
     await new Promise((r) => setTimeout(r, wait.delayMs));
   }
+
   return { held: false };
 }
 
@@ -532,12 +622,14 @@ export function sweepHeldLocksOnExit(): void {
     try {
       const content = fs.readFileSync(resolved, 'utf-8');
       const parsed = parseLockContent(content);
+
       if (parsed?.owner && parsed.owner !== owner) continue; // someone else's now
       fs.rmSync(resolved, { force: true });
     } catch {
       // best effort
     }
   }
+
   heldLockOwners.clear();
 }
 
@@ -570,16 +662,20 @@ const LOCK_BASENAMES = new Set([
 async function walkLockCandidates(roots: string[]): Promise<string[]> {
   const found: string[] = [];
   const queue = [...roots];
+
   while (queue.length > 0) {
     const dir = queue.shift()!;
     let entries: fs.Dirent[];
+
     try {
       entries = await fse.readdir(dir, { withFileTypes: true });
     } catch {
       continue; // missing or unreadable directory
     }
+
     for (const entry of entries) {
       const p = path.join(dir, entry.name);
+
       if (entry.isDirectory()) {
         if (entry.name === '.git' || entry.name === 'node_modules') continue;
         queue.push(p);
@@ -588,19 +684,23 @@ async function walkLockCandidates(roots: string[]): Promise<string[]> {
       }
     }
   }
+
   return found;
 }
 
 /** True when `content` is a lock payload whose owning process is provably gone. */
 function isDeadPidLock(content: string): boolean {
   const parsed = parseLockContent(content);
+
   if (!parsed) return false; // names no owner: never provably stale (#760)
+
   try {
     process.kill(parsed.pid, 0);
+
     return false;
   } catch (err) {
     // EPERM: the pid exists, owned by another user. Anything else: gone.
-    return (err as NodeJS.ErrnoException).code !== 'EPERM';
+    return errnoCode(err) !== 'EPERM';
   }
 }
 
@@ -612,6 +712,7 @@ function isDeadPidLock(content: string): boolean {
  */
 export async function listZombieLocks(roots: string[]): Promise<string[]> {
   const zombies: string[] = [];
+
   for (const p of await walkLockCandidates(roots)) {
     try {
       if (isDeadPidLock(await fse.readFile(p, 'utf-8'))) zombies.push(p);
@@ -619,6 +720,7 @@ export async function listZombieLocks(roots: string[]): Promise<string[]> {
       // unreadable: leave it alone
     }
   }
+
   return zombies;
 }
 
@@ -631,6 +733,7 @@ export async function listZombieLocks(roots: string[]): Promise<string[]> {
  */
 export async function removeZombieLocks(roots: string[]): Promise<string[]> {
   const removed: string[] = [];
+
   for (const p of await listZombieLocks(roots)) {
     try {
       if (await acquireLock(p)) {
@@ -641,6 +744,7 @@ export async function removeZombieLocks(roots: string[]): Promise<string[]> {
       // filesystem failure: report it as still present by not removing it
     }
   }
+
   return removed;
 }
 
@@ -664,8 +768,10 @@ export async function checkForUpdate(options?: { force?: boolean; dryRun?: boole
   if (!options?.force && isCacheValid(state.lastUpdateCheck)) {
     if (state.availableUpdate) {
       const cmp = compareVersions(current, state.availableUpdate);
+
       return { available: cmp < 0, current, latest: state.availableUpdate };
     }
+
     return { available: false, current, latest: current };
   }
 
@@ -673,9 +779,11 @@ export async function checkForUpdate(options?: { force?: boolean; dryRun?: boole
   const home = getTeamaiHomeDir();
   const installed = fs.existsSync(home);
   const latest = await fetchLatestVersion();
+
   if (!latest) {
     return { available: false, current, latest: current };
   }
+
   // An uninstall during the query removed the home; saving the check now would recreate it.
   if (installed && !fs.existsSync(home)) {
     return { available: false, current, latest: current };
@@ -683,6 +791,7 @@ export async function checkForUpdate(options?: { force?: boolean; dryRun?: boole
 
   // Compare and save state
   const available = compareVersions(current, latest) < 0;
+
   if (!options?.dryRun) {
     await saveState({
       ...state,
@@ -701,8 +810,10 @@ export async function checkForUpdate(options?: { force?: boolean; dryRun?: boole
  */
 export async function doUpdate(runningScope: LocalConfig | null): Promise<void> {
   const result = await checkForUpdate();
+
   if (!result.available) {
     log.info(`Already up to date (v${result.current})`);
+
     return;
   }
 
@@ -710,16 +821,20 @@ export async function doUpdate(runningScope: LocalConfig | null): Promise<void> 
   // config overrides (user always wins).
   // oxlint-disable-next-line teamai/config-load-options -- automatic update policy retains normal config migration and has no preview option
   const localConfig = (await loadLocalConfig()) ?? runningScope;
+
   const teamConfig = localConfig
     ? await loadTeamConfig(localConfig.repo.localPath)
     : null;
+
   const policy = resolveEffectiveUpdatePolicy(localConfig, teamConfig);
 
   if (policy === 'skip') {
     const reason = teamConfig?.autoUpdate === false && localConfig?.updatePolicy === undefined
       ? 'team policy (autoUpdate: false)'
       : 'local updatePolicy: skip';
+
     log.debug(`Auto-update skipped: ${reason}`);
+
     return;
   }
 
@@ -728,22 +843,28 @@ export async function doUpdate(runningScope: LocalConfig | null): Promise<void> 
   const pkgName = getCurrentPackageName();
   const registry = resolveRegistryForPackage(pkgName);
   const target = resolveInstallPrefix();
+
   if (!target) {
     // A prefix-less `npm install -g` would land in npm's default global
     // prefix — for an `npm link` checkout that replaces the symlink with the
     // registry copy, so the checkout silently stops being the CLI that runs.
     // Hooks discard stderr, so debug.log keeps the record.
     const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+
     const message =
       `Self-update skipped: teamai is running from ${root}, which is not an npm install ` +
       'it can update in place (for example an `npm link` checkout). For a checkout, pull ' +
       'and rebuild it; to switch to the published package, run ' +
       `"npm install -g ${pkgName} --registry=${registry}".`;
+
     log.warn(message);
     log.persist(message);
+
     return;
   }
+
   const entry = fileURLToPath(import.meta.url);
+
   if (isVoltaPackageImage(entry) || isVoltaPackageImage(target.prefix)) {
     // Volta's image looks like a POSIX global prefix (<image>/lib/node_modules),
     // so the check above accepts it. npm -g then deletes the live `teamai`
@@ -753,10 +874,13 @@ export async function doUpdate(runningScope: LocalConfig | null): Promise<void> 
       'npm install -g removes the current executable before the new one is installed, ' +
       'so an interrupted update leaves the `teamai` command missing. ' +
       `Upgrade with "volta install ${pkgName}@latest".`;
+
     log.warn(message);
     log.persist(message);
+
     return;
   }
+
   if (!target.global) {
     // POSIX vendored (flat) layouts cannot be reinstalled by npm without
     // destroying the tree: a non-global install reconciles <prefix> as a
@@ -766,29 +890,37 @@ export async function doUpdate(runningScope: LocalConfig | null): Promise<void> 
     const message =
       `Self-update is not supported for the vendored install at ${target.prefix} ` +
       '(npm would relocate or prune the runtime tree) — update manually.';
+
     log.warn(message);
     log.persist(message);
+
     return;
   }
 
   if (policy === 'prompt') {
     if (!isInteractive()) {
       log.info(`Update available: v${result.current} → v${result.latest}. Run "teamai update" to upgrade.`);
+
       return;
     }
+
     const confirmed = await askConfirmation(
       `Update available: v${result.current} → v${result.latest}. Update now? (y/N) `,
     );
+
     if (!confirmed) {
       log.info('Update skipped');
+
       return;
     }
   }
 
   // auto policy or user confirmed — proceed with install
   const locked = await acquireLock();
+
   if (!locked) {
     log.warn('Another update is in progress, skipping');
+
     return;
   }
 
@@ -812,9 +944,10 @@ export async function doUpdate(runningScope: LocalConfig | null): Promise<void> 
     // here is exactly how self-update silently stops working.
     if (updatedEntry) {
       try {
-        const installed = JSON.parse(fs.readFileSync(
+        const installed = InstalledPackageSchema.parse(JSON.parse(fs.readFileSync(
           path.join(path.dirname(path.dirname(updatedEntry)), 'package.json'), 'utf-8',
-        )) as { version?: string };
+        )));
+
         if (installed.version !== result.latest) {
           log.warn(
             `The running install at ${path.dirname(path.dirname(updatedEntry))} is still ` +
@@ -832,18 +965,19 @@ export async function doUpdate(runningScope: LocalConfig | null): Promise<void> 
       const refresh = updatedEntry
         ? { cmd: process.execPath, args: [updatedEntry, 'hooks', 'inject', '--silent'] }
         : { cmd: 'teamai', args: ['hooks', 'inject', '--silent'] };
+
       await execFileAsync(refresh.cmd, refresh.args, {
         timeout: 15_000,
         windowsHide: true,
       });
       log.success('Refreshed hooks with new version');
     } catch (e) {
-      log.error(`Hook refresh after update skipped: ${(e as Error).message}`);
+      log.error(`Hook refresh after update skipped: ${e instanceof Error ? e.message : String(e)}`);
     }
   } catch (e) {
-    const error = e as NodeJS.ErrnoException;
-    const msg = error.message ?? '';
-    if (msg.includes('EACCES') || error.code === 'EACCES') {
+    const msg = e instanceof Error ? e.message : '';
+
+    if (msg.includes('EACCES') || errnoCode(e) === 'EACCES') {
       log.warn(`Permission denied. Run "teamai update" manually with appropriate permissions.`);
     } else if (msg.includes('ETIMEDOUT') || msg.includes('timed out')) {
       log.warn('Update timed out. Try again later.');
@@ -873,11 +1007,13 @@ export interface UpdateOptions {
 export async function update(options: UpdateOptions): Promise<void> {
   if (options.check || options.dryRun) {
     const result = await checkForUpdate({ dryRun: options.dryRun });
+
     if (result.available) {
       log.info(`Update available: v${result.current} → v${result.latest}. Run "teamai update" to upgrade.`);
     } else {
       log.info(`Already up to date (v${result.current})`);
     }
+
     return;
   }
 

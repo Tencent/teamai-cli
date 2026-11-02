@@ -21,25 +21,34 @@ export async function promoteAndPublish(
   options: Pick<PromoteOptions, 'category'> & { namespaces?: readonly string[] },
 ): Promise<void> {
   assertNotReadOnly(localConfig, 'teamai recall promote');
+
   if (localConfig.repo.ref !== undefined) {
     throw new Error('This workspace follows a pinned team ref. Follow the default branch before promoting a learning.');
   }
+
   const lock = path.join(getDataHome(localConfig), SYNC_LOCK_FILENAME);
+
   if (!await acquireLock(lock)) {
     throw new Error('Another teamai pull/push/migration is in progress. Retry promotion once it finishes.');
   }
+
   try {
     const { repoPath: knowledgeCheckout, votesDir, learningsReadDirs, learningsWriteDir } = await resolveMaintenancePaths(localConfig, { holdsSyncLock: true });
     await fetchPromotionRefs(knowledgeCheckout);
+
     const candidates = await findPromotionCandidates(learningsReadDirs, votesDir, knowledgeCheckout, {
       namespaces: options.namespaces,
     });
+
     const candidate = candidates.find((entry) => entry.docId === learningId);
+
     if (!candidate) throw new Error(`Learning "${learningId}" not found or not eligible for promotion.`);
 
     const message = `[teamai] Promote ${candidate.docId} to ${options.category ?? candidate.suggestedCategory}`;
+
     const { marked } = await withKnowledgeWorktree(localConfig, async (checkoutConfig) => {
       const repoPath = checkoutConfig.repo.localPath;
+
       return executePromotion(candidate, repoPath, {
         ...options,
         learningsWriteDir,
@@ -52,6 +61,7 @@ export async function promoteAndPublish(
           // Push from the detached worktree: a local branch would outlive it in the member's checkout.
           await git.push(['origin', `HEAD:refs/heads/${branch}`]);
           log.success(`Promotion artifact pushed to branch ${branch}`);
+
           if (getProvider(localConfig.provider ?? teamConfig.provider).name === 'git') {
             log.info(`Create a pull/merge request for ${branch} to review the promoted knowledge.`);
           } else if (!await createPrWithFallback(teamConfig, checkoutConfig, branch, message, message)) {
@@ -65,6 +75,7 @@ export async function promoteAndPublish(
 
     if (marked) {
       const result = await publishLearningsMaintenance(localConfig, `[teamai] Mark ${candidate.docId} as promoted`, [marked]);
+
       if (result.status === 'published' || result.status === 'already-present') {
         log.success('Published promotion marker to the learnings branch');
       } else {

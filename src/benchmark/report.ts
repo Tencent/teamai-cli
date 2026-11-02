@@ -7,6 +7,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { getCurrentVersion } from '../package-info.js';
+import { definedFields } from '../utils/defined-fields.js';
 import { publishPendingRecords, queueBenchmarkRecord } from '../workflow/records.js';
 import { findAttemptRun } from '../workflow/run-location.js';
 import { runsDir } from '../workflow/store.js';
@@ -33,25 +34,31 @@ export interface BenchmarkReport {
  */
 export async function reportBenchmark(env: NodeJS.ProcessEnv, secrets: Record<string, string>): Promise<{ report: BenchmarkReport } | { failure: WorkflowFailure }> {
   const found = await findAttemptRun(env);
+
   if ('error' in found) return { failure: found.error };
   const { config, run, step } = found;
   const finalizing = run.finalizing;
+
   if (!finalizing) {
     return { failure: { code: 'invalid_arguments', message: `Step "${step.id}" of run ${run.id} runs before the run's steps ended, so there is nothing to report yet. Run teamai benchmark report as a finally step.` } };
   }
+
   const planned = planOfRun(run);
+
   if ('failure' in planned) return planned;
-  const record: BenchmarkRunRecord = {
+
+  const record = definedFields<BenchmarkRunRecord>({
     schemaVersion: 1,
     run: run.id,
     outcome: finalizing.outcome,
     teamaiVersion: getCurrentVersion(),
     startedAt: run.createdAt,
     finishedAt: finalizing.since,
-    ...(config.username ? { username: config.username } : {}),
+    username: config.username || undefined,
     workflow: { name: run.name, origin: run.origin ?? { source: 'team' }, sourceHash: run.sourceHash },
     ...benchmarkRecord(run, planned.found),
-  };
+  });
+
   const file = benchmarkRecordFile(runsDir(config), run.id);
   await fs.mkdir(path.dirname(file), { recursive: true });
   await fs.writeFile(`${file}.tmp`, `${JSON.stringify(record, null, 2)}\n`, 'utf8');
@@ -61,6 +68,7 @@ export async function reportBenchmark(env: NodeJS.ProcessEnv, secrets: Record<st
   const table = benchmarkTable({ benchmark: record });
   const asked = trialsUnattended(run, planned.found.producer) ? [] : [ASKED_NOTICE];
   const text = [...asked, ...unlaunchedArms(run, planned.found), formatBenchmarkTable(table)].join('\n\n');
+
   return {
     report: {
       text: pending ? `${text}\n\nrecord: pending` : text,

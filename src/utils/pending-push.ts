@@ -34,6 +34,7 @@ function itemKey(type: string, name: string): string {
  */
 export function isRecordedItem(recorded: PendingPushItem, item: ResourceItem): boolean {
   if (recorded.type !== item.type) return false;
+
   return item.status === 'new' ? recorded.name === item.name : recorded.relativePath === item.relativePath;
 }
 
@@ -45,6 +46,7 @@ export function isRecordedItem(recorded: PendingPushItem, item: ResourceItem): b
  */
 export function recordedNamespace(recorded: PendingPushItem): string | undefined {
   const segments = recorded.relativePath.split('/');
+
   return segments.length > 2 ? segments[1] : undefined;
 }
 
@@ -65,11 +67,15 @@ export async function openPrDestinations(input: {
 }): Promise<{ branch: string; recorded: PendingPushItem }[]> {
   const newestFirst = [...input.pending].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   const found: { branch: string; recorded: PendingPushItem }[] = [];
+
   for (const entry of newestFirst) {
     const recorded = entry.items.find((i) => i.type === 'skills' && i.name === input.name);
+
     if (!recorded || found.some((f) => f.recorded.relativePath === recorded.relativePath)) continue;
+
     if (!await pathExists(path.join(input.repoPath, recorded.relativePath))) found.push({ branch: entry.branch, recorded });
   }
+
   return found;
 }
 
@@ -80,13 +86,16 @@ export async function openPrDestinations(input: {
  */
 export async function dropClosedPendingPushes(repoPath: string, pending: PendingPush[]): Promise<PendingPush[]> {
   const kept: PendingPush[] = [];
+
   for (const entry of pending ?? []) {
     if (await remoteBranchExists(repoPath, entry.branch) === false) {
       log.debug(`Dropping pending push ${entry.branch}: branch gone from origin`);
       continue;
     }
+
     kept.push(entry);
   }
+
   return kept;
 }
 
@@ -114,15 +123,19 @@ export async function prunePendingPushes(
 
   for (const entry of entries) {
     const stillScanned = entry.items.some((i) => scannedKeys.has(itemKey(i.type, i.name)));
+
     if (!stillScanned) {
       log.debug(`Dropping pending push ${entry.branch}: resources no longer pending`);
       continue;
     }
+
     const exists = await remoteBranchExists(repoPath, entry.branch);
+
     if (exists === false) {
       log.debug(`Dropping pending push ${entry.branch}: branch gone from origin`);
       continue;
     }
+
     kept.push(entry);
   }
 
@@ -159,15 +172,19 @@ export function planPushGroups(
   const groups: PushGroup[] = [];
 
   const newestFirst = [...(pending ?? [])].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+
   for (const entry of newestFirst) {
     if (entry.items.length === 0) continue;
     const items = entry.items.map((recorded) => selected.find((i) => isRecordedItem(recorded, i)));
+
     if (!items.every((i): i is ResourceItem => i !== undefined && !claimed.has(i))) continue;
+
     for (const i of items) claimed.add(i);
     groups.push({ items, reuse: entry });
   }
 
   const rest = selected.filter((i) => !claimed.has(i));
+
   if (rest.length > 0) groups.push({ items: rest });
 
   return groups;
@@ -183,6 +200,7 @@ export function partiallySelectedEntries(
 ): PendingPush[] {
   return (pending ?? []).filter((entry) => {
     const hits = entry.items.filter((recorded) => selected.some((i) => isRecordedItem(recorded, i))).length;
+
     return hits > 0 && hits < entry.items.length;
   });
 }
@@ -193,6 +211,7 @@ export function partiallySelectedEntries(
  */
 export function pendingNamespaceFor(entry: PendingPush, item: ResourceItem): string | undefined {
   const recorded = entry.items.find((i) => isRecordedItem(i, item));
+
   return recorded && recordedNamespace(recorded);
 }
 
@@ -211,25 +230,31 @@ export function recordPendingPush(state: State, entry: PendingPush): void {
  */
 export async function toPendingItems(items: ResourceItem[], repoPath: string): Promise<PendingPush['items']> {
   const out: PendingPush['items'] = [];
+
   for (const i of items) {
     // A placement is marked only with the blob that can prove it landed:
     // without one, reconcile would have nothing but the path existing, which
     // another member's later file at that path also satisfies (#649 review).
     const placed = isPlacement(i) || isRepoPlacement(i);
     const blob = placed ? await hashObject(repoPath, i.relativePath) : null;
+
     if (placed && !blob) {
       log.warn(`[${i.type}] ${i.name}: could not hash ${i.relativePath}, so this machine will not treat it as its placement once merged.`);
     }
-    const sourcePath = (i as ResourceItem & { prePlacementPath?: string }).prePlacementPath;
-    out.push({
-      type: i.type,
-      name: i.name,
-      relativePath: i.relativePath,
-      namespace: i.namespace,
-      ...(sourcePath ? { sourcePath } : {}),
-      ...(blob ? { placed: true, blob } : {}),
-    });
+
+    const sourcePath = i.prePlacementPath;
+    const pending: PendingPushItem = { type: i.type, name: i.name, relativePath: i.relativePath, namespace: i.namespace };
+
+    if (sourcePath) pending.sourcePath = sourcePath;
+
+    if (blob) {
+      pending.placed = true;
+      pending.blob = blob;
+    }
+
+    out.push(pending);
   }
+
   return out;
 }
 
@@ -254,13 +279,18 @@ export async function toPendingItems(items: ResourceItem[], repoPath: string): P
  * (`needsDeliveredBlob`), the edit gives it one.
  */
 export function isPlacement(item: ResourceItem): boolean {
-  if (item.type === 'agents' && 'supersedes' in item && typeof item.supersedes === 'string') return true;
-  if (item.type === 'agents' && 'deliveredBlob' in item && typeof item.deliveredBlob === 'string') return true;
-  if (item.type === 'agents' && 'needsDeliveredBlob' in item && item.needsDeliveredBlob === true) return true;
+  if (item.type === 'agents' && item.supersedes !== undefined) return true;
+
+  if (item.type === 'agents' && item.deliveredBlob !== undefined) return true;
+
+  if (item.type === 'agents' && item.needsDeliveredBlob === true) return true;
+
   if (item.status !== 'new' || !item.namespace) return false;
+
   // A rule the scanner already found in a subdirectory carries the namespace
   // in its name and matches by full path, so it needs no record.
   if (item.type === 'rules') return !item.name.includes('/');
+
   return item.type === 'agents';
 }
 
@@ -274,10 +304,12 @@ export function isPlacement(item: ResourceItem): boolean {
  */
 function isRepoPlacement(item: ResourceItem): boolean {
   if (!item.namespace) return false;
+
   // Skills, rules and agents keep their own records (placedRules/placedAgents,
   // or a path derived from the skill name), so they are not keyed this way.
   if (item.type === 'skills' || item.type === 'rules' || item.type === 'agents') return false;
-  return 'prePlacementPath' in item && typeof item.prePlacementPath === 'string';
+
+  return item.prePlacementPath !== undefined;
 }
 
 /** The shared-root file(s) that, if present, mean `name` is not ours to redirect. */
@@ -335,17 +367,21 @@ export async function reconcilePlacementRecords(
   // record as "gone" against it would drop them all.
   if (tip && !await getHeadCommit(repoPath, tip)) {
     log.debug(`Placement records not reconciled: ${tip} cannot be resolved here`);
+
     return false;
   }
+
   const exists = tip
     ? async (rel: string) => await getFileContentAtRev(repoPath, tip, `./${rel}`) !== null
     : (rel: string) => pathExists(path.join(repoPath, rel));
+
   const history = tip ?? 'HEAD';
   let changed = false;
   const checkedAt = state.placementsCheckedAt;
   // Recorded in step 1 of this very run, against their own `base`: the
   // previous checkpoint predates them and says nothing about them.
   const recordedNow = new Set<string>();
+
   const fieldFor = (type: string): 'placedRules' | 'placedAgents' | null => (
     type === 'rules' ? 'placedRules' : type === 'agents' ? 'placedAgents' : null
   );
@@ -362,12 +398,14 @@ export async function reconcilePlacementRecords(
       // recorded source path there is nothing to key it by, so the mark is
       // spent rather than guessed at.
       const placementKey = field || !item.sourcePath ? null : `${item.type}:${item.sourcePath}`;
+
       if (!field && !placementKey) {
         item.placed = false;
         delete item.blob;
         changed = true;
         continue;
       }
+
       // Without the blob push wrote, landing cannot be told from another
       // member creating the same path after this PR closed unmerged, so the
       // mark is spent rather than recorded on the path existing (#649 review).
@@ -377,6 +415,7 @@ export async function reconcilePlacementRecords(
         changed = true;
         continue;
       }
+
       if (!await exists(item.relativePath)) {
         // A placement can merge and be deleted before this machine observes
         // it. History still proves that the root copy belongs to that agent.
@@ -387,8 +426,10 @@ export async function reconcilePlacementRecords(
           delete item.blob;
           changed = true;
         }
+
         continue;
       }
+
       // Bounded by `base`: the same bytes may have sat at this path before the
       // push, and a PR closed unmerged must not borrow that history.
       if (await blobInHistory(repoPath, item.blob, item.relativePath, entry.base, history) !== true) {
@@ -408,30 +449,38 @@ export async function reconcilePlacementRecords(
           delete item.blob;
           changed = true;
         }
+
         continue;
       }
+
       // Placement refuses an occupied path, so a deletion since `base` came
       // after this placement landed: what is there now was recreated by
       // someone else, and the placement is spent without a record.
       if (entry.base && await pathDeletedSince(repoPath, entry.base, item.relativePath, history) === true) {
         log.debug(`Not recording placement ${field ?? placementKey}.${item.name}: ${item.relativePath} was deleted after it landed`);
         item.placed = false;
+
         if (field === 'placedAgents') state.retiredPlacedAgents = { ...state.retiredPlacedAgents, [item.name]: item.relativePath };
         delete item.blob;
         changed = true;
         continue;
       }
+
       log.debug(`Recording placement ${field ?? placementKey}.${item.name} → ${item.relativePath}: landed on the default branch`);
+
       if (field) {
         state[field] = { ...state[field], [item.name]: item.relativePath };
+
         if (field === 'placedAgents') {
           state.placedAgentSources = { ...state.placedAgentSources, [item.name]: { path: item.relativePath, blob: item.blob } };
         }
+
         recordedNow.add(`${field}:${item.name}`);
       } else if (placementKey) {
         state.placements = { ...state.placements, [placementKey]: { path: item.relativePath, blob: item.blob } };
         recordedNow.add(placementKey);
       }
+
       // Consumed: a placement is recorded once. Left marked, it would record
       // again after the team deleted the file and another member recreated
       // the path — the blob stays in history, so the check above would still
@@ -445,23 +494,29 @@ export async function reconcilePlacementRecords(
   // 2 and 3. Records the default branch no longer backs.
   for (const [field, root] of [['placedRules', 'rules'], ['placedAgents', 'agents']] as const) {
     const records = state[field];
+
     if (!records) continue;
     const kept: Record<string, string> = {};
+
     for (const [name, recorded] of Object.entries(records)) {
       const valid = placedResourcePath(records, root, name);
+
       if (valid && !await exists(valid)) {
         log.debug(`Dropping placement record ${field}.${name} → ${recorded}: gone from the default branch`);
+
         // The author's flattened copy stood for this agent; once the removal
         // is tombstoned, that is still what the copy is (`removedStems`).
         if (field === 'placedAgents') state.retiredPlacedAgents = { ...state.retiredPlacedAgents, [name]: valid };
         changed = true;
         continue;
       }
+
       // Deleted and recreated between two checks — a removal that merged, then
       // another member's resource at the same path — is not this author's.
       if (valid && checkedAt && !recordedNow.has(`${field}:${name}`)
         && await pathDeletedSince(repoPath, checkedAt, valid, history) === true) {
         log.debug(`Dropping placement record ${field}.${name} → ${recorded}: deleted from the default branch since the last check`);
+
         // The file this record named was deleted, exactly as in the branch
         // above; what is there now is somebody else's, but the author's copy
         // still stood for the removed agent (#649 review).
@@ -469,10 +524,13 @@ export async function reconcilePlacementRecords(
         changed = true;
         continue;
       }
+
       let shadowed: string | undefined;
+
       for (const candidate of sharedRootPaths(root, name)) {
         if (await exists(candidate)) { shadowed = candidate; break; }
       }
+
       if (shadowed && await deliversEveryNamespace()) {
         log.warn(
           `[${root}] ${name}: ${shadowed} now exists at the shared root, so your local ${name} follows that `
@@ -481,8 +539,10 @@ export async function reconcilePlacementRecords(
         changed = true;
         continue;
       }
+
       kept[name] = recorded;
     }
+
     state[field] = kept;
   }
 
@@ -499,6 +559,7 @@ export async function reconcilePlacementRecords(
   }
 
   const agentSources = state.placedAgentSources;
+
   for (const [name, source] of Object.entries(agentSources ?? {})) {
     if (state.placedAgents?.[name] !== source.path) {
       if (agentSources) delete agentSources[name];
@@ -513,6 +574,7 @@ export async function reconcilePlacementRecords(
   if (state.placements) {
     const kept: NonNullable<State['placements']> = {};
     let dropped = false;
+
     for (const [key, recorded] of Object.entries(state.placements)) {
       if (!await exists(recorded.path)) {
         log.debug(`Dropping placement record ${key} → ${recorded.path}: gone from the default branch`);
@@ -520,6 +582,7 @@ export async function reconcilePlacementRecords(
         changed = true;
         continue;
       }
+
       // Deleted and recreated between two checks — a removal that merged, then
       // another member's file at the same path — is not this author's: following
       // the record would route their edits onto that file. Same rule as the
@@ -532,8 +595,10 @@ export async function reconcilePlacementRecords(
         changed = true;
         continue;
       }
+
       kept[key] = recorded;
     }
+
     if (dropped) state.placements = kept;
   }
 
@@ -544,6 +609,7 @@ export async function reconcilePlacementRecords(
   if (Object.keys(state.placedRules ?? {}).length + Object.keys(state.placedAgents ?? {}).length
     + Object.keys(state.placements ?? {}).length > 0) {
     const head = await getHeadCommit(repoPath, history);
+
     if (head && head !== state.placementsCheckedAt) {
       state.placementsCheckedAt = head;
       changed = true;
@@ -552,5 +618,6 @@ export async function reconcilePlacementRecords(
     delete state.placementsCheckedAt;
     changed = true;
   }
+
   return changed;
 }

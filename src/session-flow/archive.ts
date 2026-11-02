@@ -52,49 +52,64 @@ export type SessionArchive = {
  */
 export function openSessionArchive(config: LocalConfig): SessionArchive {
   let latest: Promise<LatestArchive> | undefined;
+
   return {
     restore: async (source, target) => {
       const reports = sessionArchiveRoot(config);
+
       if (!reports) return { status: 'fresh', reason: 'This team keeps no session archive.' };
       const repoIdentity = getRepoIdentity(target.cwd);
       let archive = new SyncManager(reports);
       let entry = archive.findArchived(repoIdentity, source);
       let where = 'on teamai-reports';
       let stale = '';
+
       if (!entry && !isSelfMode(config)) {
         const local = config.repo.localPath;
         latest ??= fetchLatest(local);
         const fetched = await latest;
+
         if ('failed' in fetched) stale = ` Fetching the archive from origin failed, so ${local} was read as it is and may be older than origin: ${fetched.failed}`;
         archive = new SyncManager('root' in fetched ? fetched.root : local);
         entry = archive.findArchived(repoIdentity, source);
         where = `on teamai-reports or ${'root' in fetched ? "on origin's default branch" : `in ${local}`}`;
       }
+
       if (!entry) return { status: 'fresh', reason: `The team session archive ${where} has no ${source.platform} session ${source.sessionId}.${stale}` };
       let session;
+
       try {
         ({ session } = archive.loadSession(repoIdentity, entry.sessionName, entry.author));
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+
         return { status: 'fresh', reason: `The archived ${source.platform} session ${source.sessionId} could not be read: ${message}` };
       }
+
       const refused = noAdapter(target.platform, 'write');
+
       if (refused) return { status: 'fresh', reason: refused.message };
       const adapter = getAdapter(target.platform, await recordedToolRoots(target.cwd));
+
       if (!adapter.isReady()) {
         return { status: 'fresh', reason: `${target.platform} is not installed or its session storage directory was not found.` };
       }
+
       const written = await writeCopyOnce(adapter, {
         session: degradeThinkingBlocks({ ...session, cwd: target.cwd }, target.platform),
         sourcePlatform: source.platform,
         cwd: target.cwd,
       });
+
       if (written.status !== 'done') return { status: 'fresh', reason: written.failure.message };
+
       if (stale) log.warn(`The ${source.platform} session ${source.sessionId} was restored from ${config.repo.localPath}.${stale}`);
+
       return { status: 'restored', sessionId: written.sessionId };
     },
     close: async () => {
       const fetched = await latest;
+
       if (fetched && 'root' in fetched) await fs.rm(fetched.dir, { recursive: true, force: true });
     },
   };
@@ -109,6 +124,7 @@ type LatestArchive = { dir: string; root: string } | { failed: string };
  */
 async function fetchLatest(teamClone: string): Promise<LatestArchive> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-sessions-'));
+
   try {
     const git = createGit(teamClone);
     const branch = await getDefaultBranch(teamClone);
@@ -117,9 +133,11 @@ async function fetchLatest(teamClone: string): Promise<LatestArchive> {
     const root = path.join(dir, 'team');
     await git.raw(['clone', '--quiet', '--shared', '--no-checkout', teamClone, root]);
     await createGit(root).raw(['checkout', '--quiet', '--detach', commit]);
+
     return { dir, root };
   } catch (error) {
     await fs.rm(dir, { recursive: true, force: true });
+
     return { failed: error instanceof Error ? error.message.trim() : String(error) };
   }
 }
@@ -137,6 +155,7 @@ export async function archiveSessions<T extends ArchiveSessionRef>(
   { run, checkout }: { run: string; checkout: string },
 ): Promise<ArchiveDelivery<T>> {
   const root = sessionArchiveRoot(config);
+
   if (!root) return { status: 'failed', message: 'This team keeps no session archive.' };
   const toolRoots = recordedToolRoots(checkout);
   const repoIdentity = getRepoIdentity(checkout);
@@ -145,37 +164,48 @@ export async function archiveSessions<T extends ArchiveSessionRef>(
   const read: Array<{ session: Session; meta: SessionSyncMeta }> = [];
   const archived: T[] = [];
   const skipped: T[] = [];
+
   for (const chain of chains) {
     const unreadable: string[] = [];
     let newest: { ref: T; session: Session; meta: SessionSyncMeta } | undefined;
+
     for (const ref of chain) {
       const found = await AgentSession.find(ref, { scrub, toolRootsFor: () => toolRoots });
+
       if (found.status === 'failed') {
         skipped.push(ref);
         unreadable.push(`The ${ref.platform} session ${ref.sessionId} could not be read: ${found.failure.message}`);
         continue;
       }
+
       const { session } = found;
+
       const meta = defaultSyncMeta({
         platform: ref.platform, author, cwd: session.cwd || checkout, sessionId: ref.sessionId, repoIdentity, title: session.title,
         agent: await SessionCaptures.agentOfSession(ref.platform, session, config),
       }, session.createdAt);
+
       newest = { ref, session, meta };
       break;
     }
+
     if (!newest) {
       // A session another machine already archived still reaches whoever claims the run next.
       const kept = await alreadyArchived(config, root, repoIdentity, chain);
+
       if (!kept) return { status: 'failed', message: unreadable.join(' ') };
       skipped.splice(skipped.indexOf(kept), 1);
       archived.push(kept);
       continue;
     }
+
     archived.push(newest.ref);
     read.push({ session: newest.session, meta: newest.meta });
   }
+
   if (read.length === 0) return { status: 'archived', archived, skipped };
   const delivered = await archiveOnReports(config, read, `sync: archive ${read.length} session(s) of workflow run ${run}`);
+
   return delivered.status === 'archived' ? { status: 'archived', archived, skipped } : { status: 'failed', message: delivered.message };
 }
 
@@ -186,8 +216,10 @@ export async function archiveSessions<T extends ArchiveSessionRef>(
 export async function pushSession(config: LocalConfig, ref: ArchiveSessionRef): Promise<SessionPush> {
   if (!sessionArchiveRoot(config)) return { status: 'failed', message: 'This team keeps no session archive.' };
   const found = await AgentSession.find(ref, { scrub: { secrets: await knownSecrets(config), rewriteLocalPaths: true } });
+
   if (found.status === 'failed') return { status: 'failed', message: found.failure.message };
   const { session } = found;
+
   const meta = defaultSyncMeta({
     platform: ref.platform,
     author: authorForCwd(session.cwd, config.username),
@@ -197,6 +229,7 @@ export async function pushSession(config: LocalConfig, ref: ArchiveSessionRef): 
     title: session.title,
     agent: await SessionCaptures.agentOfSession(ref.platform, session, config),
   }, session.createdAt);
+
   return archiveOnReports(config, [{ session, meta }], `sync: push 1 session(s) from ${ref.platform}`);
 }
 
@@ -212,8 +245,10 @@ async function alreadyArchived<T extends ArchiveSessionRef>(
 ): Promise<T | undefined> {
   const find = (archive: SyncManager) => chain.find((ref) => archive.findArchived(repoIdentity, ref));
   const kept = find(new SyncManager(root));
+
   if (kept || isSelfMode(config)) return kept;
   const fetched = await fetchLatest(config.repo.localPath);
+
   try {
     return find(new SyncManager('root' in fetched ? fetched.root : config.repo.localPath));
   } finally {
@@ -227,12 +262,16 @@ async function archiveOnReports(
   message: string,
 ): Promise<SessionPush> {
   let unsaved: string | undefined;
+
   const result = await updateReports(config, async (worktree) => {
     const archive = new SyncManager(worktree);
     unsaved = await saveAll(archive, worktree, sessions);
+
     return unsaved ? null : { files: archive.writtenFiles(), message };
   });
+
   if (unsaved) return { status: 'failed', message: unsaved };
+
   switch (result.status) {
     case 'published':
     case 'already-present':
@@ -243,6 +282,7 @@ async function archiveOnReports(
       return { status: 'failed', message: result.reason };
     default: {
       const unhandled: never = result;
+
       return unhandled;
     }
   }
@@ -257,10 +297,12 @@ async function saveAll(
   for (const { session, meta } of sessions) {
     try {
       const saved = await archive.saveSession(session, meta, { pathsRewritten: true });
+
       if (saved.status === 'busy') return archiveBusyMessage(root, saved.lockPath);
     } catch (error) {
       return error instanceof Error ? error.message : String(error);
     }
   }
+
   return undefined;
 }

@@ -14,8 +14,11 @@ export function resolveEffectiveUpdatePolicy(
   if (localConfig?.updatePolicy !== undefined) {
     return localConfig.updatePolicy;
   }
+
   if (teamConfig?.autoUpdate === false) return 'skip';
+
   if (teamConfig?.autoUpdate === true) return 'auto';
+
   return 'auto';
 }
 
@@ -29,7 +32,8 @@ export function withUpdatePolicy(
   policy: UpdatePolicy | undefined,
 ): LocalConfig {
   const { updatePolicy: _, ...rest } = config;
-  return policy === undefined ? (rest as LocalConfig) : { ...rest, updatePolicy: policy };
+
+  return policy === undefined ? rest : { ...rest, updatePolicy: policy };
 }
 
 /**
@@ -42,5 +46,6 @@ export function withAutoUpdate(
   value: boolean | undefined,
 ): TeamaiConfig {
   const { autoUpdate: _, ...rest } = config;
-  return value === undefined ? (rest as TeamaiConfig) : { ...rest, autoUpdate: value };
+
+  return value === undefined ? rest : { ...rest, autoUpdate: value };
 }

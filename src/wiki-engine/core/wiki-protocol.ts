@@ -18,7 +18,9 @@ export type WikiCategory =
   | "incident";
 
 export type WikiConfidence = "EXTRACTED" | "INFERRED" | "AMBIGUOUS";
+
 export type WikiReviewState = "draft" | "needs-review" | "accepted";
+
 export type WikiPageStatus = "draft" | "usable" | "stale" | "deprecated";
 
 export const CONFIDENCE_SCORE_DEFAULTS: Record<WikiConfidence, number> = {
@@ -153,13 +155,17 @@ const SENSITIVE_FILE_NAMES = new Set(["credentials.json"]);
 export function safeIgnore(filePath: string): boolean {
   const normalized = toPosix(filePath);
   const parts = normalized.split("/").filter(Boolean);
+
   if (parts.some((part) => SAFE_IGNORE_SEGMENTS.has(part))) {
     return true;
   }
+
   const base = parts.at(-1) ?? "";
+
   if (base.startsWith(".env") || SENSITIVE_FILE_NAMES.has(base)) {
     return true;
   }
+
   return /\.(pem|key|p12|pfx)$/i.test(base);
 }
 
@@ -168,6 +174,7 @@ export function slugifyWiki(value: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9\u4e00-\u9fa5]+/gu, "-")
     .replace(/^-+|-+$/g, "");
+
   return slug || "untitled";
 }
 
@@ -175,13 +182,16 @@ export function wikiPagePath(page: Pick<WikiPageDraft, "slug" | "relativePath" |
   if (page.relativePath) {
     return normalizeRelativePagePath(page.relativePath);
   }
+
   const domain = page.metadata.domain ?? page.metadata.project ?? "general";
   const slug = page.slug ?? slugifyWiki(page.metadata.title);
+
   return normalizeRelativePagePath(path.join(domain, `${page.metadata.category}s`, `${slug}.md`));
 }
 
 export function normalizeRelativePagePath(value: string): string {
   const normalized = toPosix(value).replace(/^\/+/, "");
+
   return normalized.endsWith(".md") ? normalized : `${normalized}.md`;
 }
 

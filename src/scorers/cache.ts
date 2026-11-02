@@ -52,10 +52,12 @@ export const NOT_A_SCORER = 'not a scorer file; scorers/ holds <name>.md and <na
 
 function cacheDir(config: LocalConfig): string {
   const home = getDataHome(config);
+
   // Self mode shares one data home across checkouts, and each checkout has its own scorers/.
   if (isSelfMode(config)) {
     return path.join(home, 'workspaces', managedMcpWorkspaceId(getBusinessRoot(config)), 'scorers', 'cache');
   }
+
   return path.join(home, 'scorers', 'cache');
 }
 
@@ -65,9 +67,12 @@ function cachePath(config: LocalConfig, name: string): string {
 
 async function readCache(config: LocalConfig, name: string): Promise<CacheEntry | null> {
   const raw = await readFileSafe(cachePath(config, name));
+
   if (raw === null) return null;
+
   try {
     const entry = CacheEntrySchema.safeParse(JSON.parse(raw));
+
     return entry.success ? entry.data : null;
   } catch {
     return null;
@@ -79,8 +84,10 @@ export async function loadCachedScorer(config: LocalConfig, name: string): Promi
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) return null;
   const entry = await readCache(config, name);
   const parsed = entry ? parseScorer(entry.relativePath, entry.content) : undefined;
+
   if (!entry || !parsed?.ok || parsed.definition.name !== name) return null;
   const { content: _content, ...rest } = entry;
+
   return { ...rest, definition: parsed.definition };
 }
 
@@ -89,6 +96,7 @@ export async function cachedScorerNames(config: LocalConfig): Promise<string[]> 
   const files = await fs.readdir(cacheDir(config)).catch(() => []);
   const names = files.filter((file) => file.endsWith('.json')).map((file) => file.slice(0, -'.json'.length)).sort();
   const valid = await Promise.all(names.map(async (name) => (await loadCachedScorer(config, name)) !== null));
+
   return names.filter((_, index) => valid[index]);
 }
 
@@ -98,13 +106,19 @@ export async function cachedScorerNames(config: LocalConfig): Promise<string[]> 
  */
 export async function pinScorers(config: LocalConfig, names: Iterable<string>): Promise<Record<string, PinnedScorer>> {
   const pins: Record<string, PinnedScorer> = {};
+
   for (const name of new Set(names)) {
     // A generated scorer, such as teamai:correctness:<task>, comes with the run that lists it; no scorer file has its name.
     if (name.includes(':')) continue;
     const entry = await readCache(config, name);
+
     if (!entry || !(await loadCachedScorer(config, name))) continue;
-    pins[name] = { sourceHash: entry.sourceHash, ...(entry.teamRevision ? { teamRevision: entry.teamRevision } : {}), relativePath: entry.relativePath, content: entry.content };
+    const pin: PinnedScorer = { sourceHash: entry.sourceHash, relativePath: entry.relativePath, content: entry.content };
+
+    if (entry.teamRevision) pin.teamRevision = entry.teamRevision;
+    pins[name] = pin;
   }
+
   return pins;
 }
 
@@ -112,7 +126,9 @@ export async function pinScorers(config: LocalConfig, names: Iterable<string>): 
 async function scorerEntries(dir: string): Promise<Dirent[]> {
   try {
     const stat = await fs.lstat(dir);
+
     if (stat.isSymbolicLink() || !stat.isDirectory()) return [];
+
     return (await fs.readdir(dir, { withFileTypes: true })).sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
   } catch {
     return [];
@@ -123,10 +139,12 @@ async function scorerEntries(dir: string): Promise<Dirent[]> {
 async function scorerCandidates(dir: string): Promise<{ candidates: NamespaceCandidate<string>[]; invalid: ScorerDiagnostic[] }> {
   const candidates: NamespaceCandidate<string>[] = [];
   const invalid: ScorerDiagnostic[] = [];
+
   const walk = async (at: string, namespace: string | null): Promise<void> => {
     for (const entry of await scorerEntries(at)) {
       if (entry.name === 'README.md' || (entry.isFile() && entry.name === SCORING_FILE)) continue;
       const source = `scorers/${namespace === null ? '' : `${namespace}/`}${entry.name}`;
+
       if (entry.isFile() && entry.name.endsWith('.md')) {
         candidates.push({ name: entry.name.slice(0, -'.md'.length), source, namespace, value: path.join(at, entry.name) });
       } else if (namespace === null && entry.isDirectory() && isSafeNamespaceSegment(entry.name)) {
@@ -138,7 +156,9 @@ async function scorerCandidates(dir: string): Promise<{ candidates: NamespaceCan
       }
     }
   };
+
   await walk(dir, null);
+
   return { candidates, invalid };
 }
 
@@ -154,11 +174,14 @@ function namespacesOf(candidates: readonly NamespaceCandidate<string>[]): string
 export async function scorerNamespaces(config: LocalConfig, dirs: readonly string[]): Promise<{ active: string[]; shared: string[] }> {
   if (dirs.length === 0) return { active: [], shared: [] };
   const resolved = await resolveResourceNamespaces(config).catch(() => undefined);
+
   if (resolved === undefined) return { active: [], shared: [] };
+
   if (resolved === null) return { active: [...dirs], shared: [] };
   const active = resolved.activeNamespaces.scorers ?? [];
   const declared = new Set([...active, ...resolved.inactiveScorersNamespaces]);
   const declarations: NamespaceDeclarations = { manifestFree: false, declares: (_axis, dir) => declared.has(dir) };
+
   return {
     active: dirs.filter((dir) => active.includes(dir)),
     shared: dirs.filter((dir) => !isNamespaceDir('scorers', dir, declarations)),
@@ -167,13 +190,16 @@ export async function scorerNamespaces(config: LocalConfig, dirs: readonly strin
 
 async function dropUnsettled(config: LocalConfig, settled: Set<string>): Promise<void> {
   let names: string[];
+
   try {
     names = await fs.readdir(cacheDir(config));
   } catch {
     return;
   }
+
   for (const name of names) {
     const stem = name.replace(/\.json$/, '');
+
     if (stem !== name && !settled.has(stem)) await remove(cachePath(config, stem));
   }
 }
@@ -192,13 +218,16 @@ export async function syncScorerDefinitions(config: LocalConfig, options: SyncSc
   const { active, shared } = options.everyNamespace ? { active: namespacesOf(candidates), shared: [] } : await scorerNamespaces(config, namespacesOf(candidates));
   const files: Array<{ relativePath: string; full: string }> = [];
   const byName = new Map<string, NamespaceCandidate<string>[]>();
+
   for (const candidate of candidates) {
     const key = options.everyNamespace ? candidate.source : candidate.name;
     const placed = candidate.namespace !== null && shared.includes(candidate.namespace) ? { ...candidate, namespace: null } : candidate;
     byName.set(key, [...byName.get(key) ?? [], placed]);
   }
+
   for (const group of byName.values()) {
     const resolution = resolveNamespacedItems(group, active);
+
     if (resolution.kind === 'conflict') {
       const { name, first, second } = resolution;
       result.invalid.push({
@@ -209,23 +238,31 @@ export async function syncScorerDefinitions(config: LocalConfig, options: SyncSc
       });
       continue;
     }
+
     files.push(...resolution.items.map((item) => ({ relativePath: item.source, full: item.value })));
   }
+
   // Asked on the first valid file: a team without scorers starts no git here.
   let reachable: Promise<ReachableRevision | undefined> | undefined;
   let wrote = 0;
+
   for (const { relativePath, full } of files) {
     const content = await readFileSafe(full);
+
     if (content === null) {
       result.invalid.push({ file: relativePath, message: 'could not be read' });
       continue;
     }
+
     const parsed = parseScorer(relativePath, content);
+
     if (!parsed.ok) {
       result.invalid.push(...parsed.diagnostics);
       continue;
     }
+
     const { name } = parsed.definition;
+
     if (parsed.definition.isolation === 'verified') result.verified.push(relativePath);
     const sourceHash = scorerSourceHash(content);
     const revision = await (reachable ??= remotelyReachableRevision(knowledgeRoot));
@@ -233,27 +270,33 @@ export async function syncScorerDefinitions(config: LocalConfig, options: SyncSc
     const previous = await withoutStaleTeamRevision(knowledgeRoot, await readCache(config, name));
     const sameSource = previous?.sourceHash === sourceHash && previous.relativePath === relativePath;
     const teamRevision = (holds ? revision?.revision : undefined) ?? (sameSource ? previous.teamRevision : undefined);
+
     if (!result.cached.includes(name)) result.cached.push(name);
+
     if (options.dryRun || (sameSource && previous.teamRevision === teamRevision)) continue;
     await writeJsonAtomic(cachePath(config, name), {
       relativePath,
       sourceHash,
-      ...(teamRevision ? { teamRevision } : {}),
+      // Left undefined when absent, so the JSON leaves it out.
+      teamRevision: teamRevision || undefined,
       content,
       validatedAt: new Date().toISOString(),
     } satisfies CacheEntry);
     wrote += 1;
   }
+
   if (!options.dryRun) await dropUnsettled(config, new Set(result.cached));
   result.invalid.sort((left, right) => (left.file < right.file ? -1 : left.file > right.file ? 1 : 0));
   result.verified.sort();
 
   for (const diagnostic of result.invalid) log.warn(`[scorers] ${formatScorerDiagnostic(diagnostic)}`);
   const scope = options.scopeLabel ?? config.scope;
+
   if (options.dryRun && result.cached.length > 0) {
     log.info(`[${scope}] [dry-run] Would cache ${result.cached.length} scorer${result.cached.length === 1 ? '' : 's'}`);
   } else if (wrote > 0) {
     log.success(`[${scope}] Synced ${wrote} scorer${wrote === 1 ? '' : 's'}`);
   }
+
   return result;
 }

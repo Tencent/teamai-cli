@@ -11,6 +11,9 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { z } from 'zod';
+import { JsonValueSchema, JsonObjectSchema } from '../types.js';
+import type { Session } from './ir.js';
+import type { JsonlRecord } from '../utils/jsonl-store.js';
 
 // ---------------------------------------------------------------------------
 // cwd encode/decode
@@ -27,6 +30,7 @@ import { z } from 'zod';
  */
 export function resolveRealCwd(cwd: string): string {
   const resolved = path.resolve(cwd);
+
   try {
     return fs.realpathSync(resolved);
   } catch {
@@ -66,19 +70,25 @@ export function encodeCwdCodeBuddy(cwd: string): string {
     .replace(/[/\\:]/g, '-')
     .replace(/^-+|-+$/g, '')
     .replace(/-+/g, '-');
+
   // CodeBuddy 2.173.0: compressWorkspacePathName keeps short names unchanged,
   // truncates by UTF-8 code point, then hashes every original byte with djb2.
   if (Buffer.byteLength(encoded, 'utf8') <= 255) return encoded;
   let prefix = '';
   let bytes = 0;
+
   for (const point of encoded) {
     const size = Buffer.byteLength(point, 'utf8');
+
     if (bytes + size > 180) break;
     bytes += size;
     prefix += point;
   }
+
   let hash = 5381;
+
   for (const byte of Buffer.from(encoded, 'utf8')) hash = (hash * 33) ^ byte;
+
   return `${prefix}-${(hash >>> 0).toString(36)}`;
 }
 
@@ -105,9 +115,12 @@ export function decodeCwdClaude(encoded: string): string {
 export function bestEffortDecodeCwdClaude(encoded: string): string | undefined {
   if (!encoded.startsWith('-')) return undefined;
   const candidate = '/' + encoded.slice(1).replace(/-/g, '/');
+
   try {
     if (!fs.existsSync(candidate)) return undefined;
+
     if (!fs.statSync(candidate).isDirectory()) return undefined;
+
     return fs.realpathSync(candidate);
   } catch {
     return undefined;
@@ -125,50 +138,74 @@ export function decodeCwdGeneric(encoded: string): string {
 // Streaming JSONL read/write
 // ---------------------------------------------------------------------------
 
-const JsonlRecord = z.record(z.string(), z.unknown());
+/** One line of a JSONL transcript: a JSON object, its values not yet read by any platform's schema. */
+const JsonlRecordSchema = JsonObjectSchema satisfies z.ZodType<JsonlRecord>;
 
-export function* readJsonl(filePath: string): Generator<Record<string, unknown>> {
+/** A transcript field read the way `String(value ?? fallback)` reads it: any JSON value, coerced to text. */
+export function coercedText(fallback = '') {
+  return JsonValueSchema.optional().transform((value) => String(value ?? fallback));
+}
+
+/** A transcript field kept only when it holds a string; any other value reads as absent. */
+export const OptionalString = z.string().optional().catch(undefined);
+
+/** A message's content as transcripts store it: the text itself, or a list of blocks; anything else reads as absent. */
+export const TextOrBlocksSchema = z.union([z.string(), z.array(JsonValueSchema)]).optional().catch(undefined);
+
+export function* readJsonl(filePath: string): Generator<JsonlRecord> {
   let pending: string | undefined;
   let count = 0;
+
   for (const line of jsonlLines(filePath)) {
     if (!line.trim()) continue;
+
     if (pending !== undefined) {
-      yield JsonlRecord.parse(JSON.parse(pending));
+      yield JsonlRecordSchema.parse(JSON.parse(pending));
       count++;
     }
+
     pending = line;
   }
+
   if (pending === undefined) return;
   let value: unknown;
+
   try {
     value = JSON.parse(pending);
   } catch (error) {
     if (count === 0) throw error;
+
     return;
   }
-  yield JsonlRecord.parse(value);
+
+  yield JsonlRecordSchema.parse(value);
 }
 
-export function* readJsonlHead(filePath: string, maxLines: number): Generator<Record<string, unknown>> {
+export function* readJsonlHead(filePath: string, maxLines: number): Generator<JsonlRecord> {
   if (maxLines <= 0) return;
   let count = 0;
+
   for (const record of readJsonl(filePath)) {
     yield record;
+
     if (++count >= maxLines) return;
   }
 }
 
 function* jsonlLines(filePath: string): Generator<string> {
   const fd = fs.openSync(filePath, 'r');
+
   try {
     const decoder = new StringDecoder('utf8');
     const chunk = Buffer.alloc(64 * 1024);
     let partial = '';
+
     for (let read = fs.readSync(fd, chunk); read > 0; read = fs.readSync(fd, chunk)) {
       const parts = (partial + decoder.write(chunk.subarray(0, read))).split('\n');
       partial = parts.pop() ?? '';
       yield* parts;
     }
+
     yield partial + decoder.end();
   } finally {
     fs.closeSync(fd);
@@ -181,13 +218,16 @@ function* jsonlLines(filePath: string): Generator<string> {
  * The lines go to a temp file beside the target, renamed into place, so a crash or a full disk
  * never leaves a truncated transcript a tool would read as the session.
  */
-export function writeJsonl(filePath: string, records: Iterable<Record<string, unknown>>): void {
+export function writeJsonl<TRecord extends object>(filePath: string, records: Iterable<TRecord>): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const lines: string[] = [];
+
   for (const record of records) {
     lines.push(JSON.stringify(record));
   }
+
   const tmpPath = `${filePath}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+
   try {
     fs.writeFileSync(tmpPath, lines.join('\n') + '\n', { encoding: 'utf-8', flag: 'wx' });
     fs.renameSync(tmpPath, filePath);
@@ -232,10 +272,13 @@ export function dirExists(p: string): boolean {
 export function scanFiles(rootDir: string, pattern: RegExp): string[] {
   if (!dirExists(rootDir)) return [];
   const results: string[] = [];
+
   const walk = (dir: string) => {
     const entries = fs.readdirSync(dir, { withFileTypes: true });
+
     for (const entry of entries) {
       const fullPath = path.join(dir, entry.name);
+
       if (entry.isDirectory()) {
         walk(fullPath);
       } else if (entry.isFile() && pattern.test(entry.name)) {
@@ -243,6 +286,7 @@ export function scanFiles(rootDir: string, pattern: RegExp): string[] {
       }
     }
   };
+
   walk(rootDir);
   results.sort((a, b) => {
     try {
@@ -251,6 +295,7 @@ export function scanFiles(rootDir: string, pattern: RegExp): string[] {
       return 0;
     }
   });
+
   return results;
 }
 
@@ -273,12 +318,15 @@ const IMAGE_FILE_RE = /\.(png|jpe?g|gif|webp|bmp)$/i;
  * - Otherwise also require an absolute path plus an image extension, so arbitrary files are not read.
  */
 export function mayReadLocalImageFile(
-  session: { metadata?: Record<string, unknown> | undefined } | undefined,
+  session: Pick<Session, 'metadata'> | undefined,
   filePath?: string,
 ): boolean {
   if (!filePath) return false;
+
   if (!path.isAbsolute(filePath)) return false;
+
   if (!IMAGE_FILE_RE.test(filePath)) return false;
+
   return session?.metadata?.untrusted !== true;
 }
 
@@ -292,10 +340,11 @@ export function mayReadLocalImageFile(
 export function safeFileName(raw: string, fallback = 'image.png'): string {
   const base = path
     .basename(String(raw ?? '').replace(/\\/g, '/'))
-    // oxlint-disable-next-line no-control-regex
+    // oxlint-disable-next-line no-control-regex -- control characters are what this replace strips from file names
     .replace(/[\u0000-\u001f<>:"|?*]/g, '_')
     .replace(/^\.+/, '_')
     .trim();
+
   return base || fallback;
 }
 

@@ -9,6 +9,7 @@ import { defineConfig, type Options } from 'tsup';
 // those too (`\uXXXX` means the same character in both, and a surrogate pair
 // stays one code point under the `u` flag), and fail the build on anything left.
 const NON_ASCII = /[\u0080-\uffff]/g;
+
 const asciiOutput: NonNullable<Options['plugins']>[number] = {
   name: 'ascii-output',
   renderChunk(code, chunk) {
@@ -25,16 +26,21 @@ const asciiOutput: NonNullable<Options['plugins']>[number] = {
     });
     let ascii = '';
     let at = 0;
+
     for (const [start, end] of spans.sort((a, b) => a[0] - b[0])) {
       ascii += code.slice(at, start) + code.slice(start, end).replace(NON_ASCII, (char, offset: number, span: string) => {
         if (span[offset - 1] === '\\') throw new Error(`ascii-output: an escaped non-ASCII character at ${chunk.path}:${start + offset} needs a manual \\u escape`);
+
         return `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`;
       });
       at = end;
     }
+
     ascii += code.slice(at);
     const left = ascii.search(NON_ASCII);
+
     if (left !== -1) throw new Error(`ascii-output: non-ASCII character outside a comment or regular expression in ${chunk.path}: ${JSON.stringify(ascii.slice(left - 40, left + 40))}`);
+
     return { code: ascii };
   },
 };

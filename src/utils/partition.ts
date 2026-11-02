@@ -2,9 +2,11 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import YAML from 'yaml';
+import { parseYaml } from './yaml.js';
+import { z } from 'zod';
 import { getUserHome } from './home.js';
-import { readFileSafe, writeFileAtomic, expandHome } from './fs.js';
-import { managedMcpWorkspaceId } from '../types.js';
+import { readFileSafe, writeFileAtomic, expandHome, errnoCode } from './fs.js';
+import { managedMcpWorkspaceId, type JsonValue } from '../types.js';
 import { completeWorktreeList, gitCommonDir, isLiveCheckout, isLiveProjectCheckout, resolveAnchors } from './git.js';
 
 /**
@@ -57,8 +59,10 @@ let caseInsensitiveCache = new Map<string, boolean>();
 export function isCaseInsensitiveFs(probeDir?: string): boolean {
   const base = probeDir ?? path.join(getUserHome(), '.teamai');
   const cached = caseInsensitiveCache.get(base);
+
   if (cached !== undefined) return cached;
   let insensitive = false;
+
   try {
     fs.mkdirSync(base, { recursive: true });
     const token = `.teamai-case-probe-${process.pid}-${Date.now()}`;
@@ -72,7 +76,9 @@ export function isCaseInsensitiveFs(probeDir?: string): boolean {
   } catch {
     insensitive = false;
   }
+
   caseInsensitiveCache.set(base, insensitive);
+
   return insensitive;
 }
 
@@ -94,6 +100,7 @@ function normalizeAnchor(anchor: string): string {
   // and, unlike the anchor itself, is not the business workspace root we want to
   // keep pristine. Falls back to the anchor if it has no parent.
   const probeDir = path.dirname(anchor) || anchor;
+
   return isCaseInsensitiveFs(probeDir) ? anchor.toLowerCase() : anchor;
 }
 
@@ -109,13 +116,16 @@ function safePathPrefix(anchor: string): string {
     .replace(/[^A-Za-z0-9._-]+/g, '-')
     // Trim the leading `-` produced by the root separator, and any trailing one.
     .replace(/^-+|-+$/g, '');
+
   const safe = cleaned || 'project';
   // Bound the segment well under NAME_MAX (255): prefix + '-' + 16-hex hash must
   // fit. Keep the TAIL — the project name and its immediate parents are the
   // identifying part; the hash disambiguates any two paths sharing a truncated
   // head. Drop a partial leading token so we never start mid-word.
   const MAX = 180;
+
   if (safe.length <= MAX) return safe;
+
   return safe.slice(safe.length - MAX).replace(/^[^-]*-/, '');
 }
 
@@ -140,6 +150,7 @@ export function projectSlug(anchor: string): string {
   // same canonical spelling — on a case-insensitive volume this makes the whole
   // slug string identical for any spelling of one directory.
   const norm = normalizeAnchor(anchor);
+
   return `${safePathPrefix(norm)}-${anchorHash(norm)}`;
 }
 
@@ -157,6 +168,7 @@ export function legacyProjectSlug(anchor: string): string {
   const norm = normalizeAnchor(anchor);
   const raw = path.basename(norm) || 'project';
   const cleaned = raw.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+
   return `${(cleaned || 'project').slice(0, 40)}-${anchorHash(norm)}`;
 }
 
@@ -220,15 +232,21 @@ export function projectDataHome(anchor: string): string {
 export async function resolvePartitionDir(anchor: string, options: { dryRun?: boolean } = {}): Promise<string> {
   const canonical = projectDataHome(anchor);
   const legacyDir = path.join(projectsRootDir(), legacyProjectSlug(anchor));
+
   if (legacyDir === canonical) return canonical; // whole-path prefix == basename (root-level anchor)
+
   if (options.dryRun) {
     // A preview adopts nothing: report the directory that holds the data now,
     // the legacy one wherever adoption would move it.
     const canonicalEntries = await fs.promises.readdir(canonical).catch(() => null);
+
     return (await dirExists(legacyDir)) && !canonicalEntries?.length ? legacyDir : canonical;
   }
+
   const dir = await adoptLegacyPartition(canonical, legacyDir);
+
   if (dir === canonical) await rebaseLocalPathAfterAdoption(canonical, legacyDir);
+
   return dir;
 }
 
@@ -236,27 +254,34 @@ export async function resolvePartitionDir(anchor: string, options: { dryRun?: bo
 async function adoptLegacyPartition(canonical: string, legacyDir: string): Promise<string> {
   try {
     await fs.promises.rename(legacyDir, canonical);
+
     return canonical;
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+    if (errnoCode(err) === 'ENOENT') {
       // Nothing to adopt — the common fresh-install case (or a concurrent
       // process just adopted it, in which case canonical now exists).
       return canonical;
     }
+
     const legacyExists = await dirExists(legacyDir);
     // null → canonical does not exist; [] → exists but is empty.
     const canonicalEntries = await fs.promises.readdir(canonical).catch(() => null);
+
     if (canonicalEntries && canonicalEntries.length > 0) {
       return canonical; // authoritative data — never clobber it
     }
+
     if (legacyExists && canonicalEntries) {
       // Canonical is an empty leftover and the FS refused the rename onto it.
       await fs.promises.rmdir(canonical).catch(() => {});
+
       try {
         await fs.promises.rename(legacyDir, canonical);
       } catch { /* fall through to whichever dir actually exists */ }
+
       return canonical;
     }
+
     // Rename failed for a real reason (e.g. permissions) with no canonical
     // dir: keep serving the legacy partition so the data stays reachable.
     return legacyExists ? legacyDir : canonical;
@@ -286,30 +311,37 @@ async function adoptLegacyPartition(canonical: string, legacyDir: string): Promi
 async function rebaseLocalPathAfterAdoption(canonical: string, legacyDir: string): Promise<void> {
   const configPath = path.join(canonical, 'config.yaml');
   const content = await readFileSafe(configPath);
+
   if (!content) return;
-  let doc: Record<string, unknown>;
+  let doc: JsonValue;
+
   try {
-    doc = YAML.parse(content) as Record<string, unknown>;
+    doc = parseYaml(content);
   } catch {
     return; // malformed config — leave it for status/doctor to surface
   }
-  const repo = doc?.repo as { localPath?: string } | undefined;
-  if (!repo?.localPath) return;
-  const rel = path.relative(legacyDir, expandHome(repo.localPath));
+
+  if (!(doc instanceof Object) || Array.isArray(doc) || !(doc.repo instanceof Object) || Array.isArray(doc.repo)) return;
+  const localPath = z.string().safeParse(doc.repo.localPath).data;
+
+  if (!localPath) return;
+  const rel = path.relative(legacyDir, expandHome(localPath));
+
   if (rel === '' ? false : rel.startsWith('..') || path.isAbsolute(rel)) return; // not inside legacyDir
   const rebased = rel === '' ? canonical : path.join(canonical, rel);
-  if (rebased === repo.localPath) return;
-  repo.localPath = rebased;
+
+  if (rebased === localPath) return;
   // Atomic write (same-dir temp + rename): config.yaml is the partition's only
   // copy and the legacy source has already been renamed away, so a partial
   // overwrite (ENOSPC/EFBIG/crash mid-write) would truncate it with no way back.
   // A failed rename leaves the original config.yaml untouched.
-  await writeFileAtomic(configPath, YAML.stringify(doc));
+  await writeFileAtomic(configPath, YAML.stringify({ ...doc, repo: { ...doc.repo, localPath: rebased } }));
 }
 
 async function dirExists(p: string): Promise<boolean> {
   try {
     await fs.promises.access(p);
+
     return true;
   } catch {
     return false;
@@ -337,6 +369,7 @@ export async function readAnchorFile(partitionDir: string): Promise<string | nul
   try {
     const raw = await fs.promises.readFile(path.join(partitionDir, 'anchor'), 'utf-8');
     const trimmed = raw.trim();
+
     return trimmed || null;
   } catch {
     return null;
@@ -354,6 +387,7 @@ const WORKSPACE_ROOT_FILE = 'root';
 export async function writeWorkspaceRoot(dataHome: string, root: string): Promise<void> {
   const dir = path.join(dataHome, 'workspaces', managedMcpWorkspaceId(root));
   const file = path.join(dir, WORKSPACE_ROOT_FILE);
+
   if (await readFileSafe(file) === root) return;
   await fs.promises.mkdir(dir, { recursive: true });
   await writeFileAtomic(file, root);
@@ -378,32 +412,43 @@ export async function writeWorkspaceRoot(dataHome: string, root: string): Promis
  */
 export async function pruneWorkspaceDirs(dataHome: string, currentRoot: string): Promise<string[]> {
   const commonDir = await gitCommonDir(currentRoot);
+
   if (!commonDir) return [];
   const identity = (await resolveAnchors(currentRoot))?.projectAnchor;
   // The current checkout by the path given and its realpath: a writer may have hashed either.
   const current = new Set([currentRoot, await fs.promises.realpath(currentRoot).catch(() => currentRoot)].map(managedMcpWorkspaceId));
   const workspaces = path.join(dataHome, 'workspaces');
   let entries: fs.Dirent[];
+
   try {
     entries = await fs.promises.readdir(workspaces, { withFileTypes: true });
   } catch {
     return [];
   }
+
   const candidates = entries
     .filter((entry) => entry.isDirectory() && /^[0-9a-f]{12}$/.test(entry.name) && !current.has(entry.name))
     .map((entry) => path.join(workspaces, entry.name));
+
   let listed: Promise<Set<string> | null> | undefined;
+
   const listedIds = () => listed ??= completeWorktreeList(currentRoot, commonDir)
     .then((roots) => roots && new Set(roots.map(managedMcpWorkspaceId)));
+
   const stale = (await Promise.all(candidates.map(async (dir) => {
     const root = await readFileSafe(path.join(dir, WORKSPACE_ROOT_FILE));
+
     if (root !== null) return await isLiveCheckout(root, commonDir)
       || (identity && await isLiveProjectCheckout(root, identity)) ? null : dir;
+
     // The local agent may key its resources by a path git did not print.
     if (await fs.promises.lstat(path.join(dir, 'local-agent')).then(() => true, () => false)) return null;
     const ids = await listedIds();
+
     return ids && !ids.has(path.basename(dir)) ? dir : null;
   }))).filter((dir): dir is string => dir !== null);
+
   await Promise.all(stale.map((dir) => fs.promises.rm(dir, { recursive: true, force: true })));
+
   return stale;
 }

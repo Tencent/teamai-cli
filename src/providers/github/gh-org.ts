@@ -1,19 +1,23 @@
+import { z } from 'zod';
 import { log } from '../../utils/logger.js';
 import type { OrgRepoInfo } from '../types.js';
 import { ghExec, isGhInstalled, getGitHubToken } from './gh-cli.js';
 
 // ─── GitHub API types ────────────────────────────────────
 
-interface GhRepoApiItem {
-  clone_url: string;
-  full_name: string;
-  name: string;
-  description: string | null;
-  language: string | null;
-  archived: boolean;
-  stargazers_count: number;
-  pushed_at: string | null;
-}
+/** One page of a GitHub repository listing. An optional field of another type reads as absent. */
+const GhRepoPageSchema = z.array(z.object({
+  clone_url: z.string(),
+  full_name: z.string(),
+  name: z.string(),
+  description: z.string().nullish().catch(undefined),
+  language: z.string().nullish().catch(undefined),
+  archived: z.boolean().optional().catch(undefined),
+  stargazers_count: z.number().optional().catch(undefined),
+  pushed_at: z.string().nullish().catch(undefined),
+}));
+
+type GhRepoApiItem = z.infer<typeof GhRepoPageSchema>[number];
 
 // ─── 分页辅助 ─────────────────────────────────────────────
 
@@ -29,14 +33,15 @@ const REQUEST_TIMEOUT_MS = 30_000;
  * name. Both transports have to recognise that name, so a deadline sends
  * exactly one request and does not fall back to /users.
  */
-function isTimeoutError(err: unknown): boolean {
-  return err instanceof Error && err.name === 'TimeoutError';
+function isTimeoutError(cause: unknown): boolean {
+  return cause instanceof Error && cause.name === 'TimeoutError';
 }
 
 /** Build an error named like the one `AbortSignal.timeout()` produces. */
 function timeoutError(what: string): Error {
   const err = new Error(`${what} timed out after ${REQUEST_TIMEOUT_MS} ms`);
   err.name = 'TimeoutError';
+
   return err;
 }
 
@@ -61,13 +66,16 @@ function ghApiPage(endpoint: string): GhRepoApiItem[] {
     ],
     { timeoutMs: REQUEST_TIMEOUT_MS },
   );
+
   if (result.timedOut) {
     throw timeoutError(`gh api ${endpoint}`);
   }
+
   if (result.status !== 0) {
     throw new Error(`gh api failed (${result.status}): ${result.stderr || result.stdout}`);
   }
-  return JSON.parse(result.stdout) as GhRepoApiItem[];
+
+  return GhRepoPageSchema.parse(JSON.parse(result.stdout));
 }
 
 /**
@@ -81,6 +89,7 @@ const MAX_RESPONSE_BYTES = 50 * 1024 * 1024;
 
 async function fetchApiPage(url: string, token: string): Promise<GhRepoApiItem[]> {
   const signal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+
   // redirect: 'manual' 防止跟随重定向到内网地址（SSRF）
   const resp = await fetch(url, {
     headers: {
@@ -91,11 +100,14 @@ async function fetchApiPage(url: string, token: string): Promise<GhRepoApiItem[]
     redirect: 'manual',
     signal,
   });
+
   if (resp.status >= 300 && resp.status < 400) {
     throw new Error(`Unexpected redirect from GitHub API: ${resp.status}`);
   }
+
   if (!resp.ok) {
     const body = await resp.text().catch(() => '');
+
     if (signal.aborted) throw signal.reason;
     throw new Error(`GitHub API error ${resp.status}: ${body}`);
   }
@@ -104,22 +116,28 @@ async function fetchApiPage(url: string, token: string): Promise<GhRepoApiItem[]
   const reader = resp.body?.getReader();
   let received = 0;
   const chunks: Uint8Array[] = [];
+
   if (reader) {
     while (true) {
-      const { done, value } = await reader.read().catch((err: unknown) => {
-        throw signal.aborted ? signal.reason : err;
+      const { done, value } = await reader.read().catch((cause: unknown) => {
+        throw signal.aborted ? signal.reason : cause;
       });
+
       if (done) break;
       received += value.length;
+
       if (received > MAX_RESPONSE_BYTES) {
         await reader.cancel();
         throw new Error(`GitHub API response exceeds ${MAX_RESPONSE_BYTES} bytes`);
       }
+
       chunks.push(value);
     }
   }
+
   const body = Buffer.concat(chunks).toString('utf-8');
-  return JSON.parse(body) as GhRepoApiItem[];
+
+  return GhRepoPageSchema.parse(JSON.parse(body));
 }
 
 // ─── 转换函数 ─────────────────────────────────────────────
@@ -168,10 +186,12 @@ export async function ghListOrgRepos(
     // 使用 gh CLI 分页拉取
     const tryEndpointPrefix = async (prefix: string, allowFallback = false): Promise<boolean> => {
       let page = 1;
+
       while (results.length < maxRepos) {
         // 不加 type=public，依赖调用者认证（gh CLI）可见范围；GitHub API 默认 type=all
         const endpoint = `${prefix}?per_page=${perPage}&page=${page}`;
         let items: GhRepoApiItem[];
+
         try {
           items = ghApiPage(endpoint);
         } catch (err) {
@@ -179,21 +199,28 @@ export async function ghListOrgRepos(
           // the same way, turning one 30 s wait into two.
           if (page === 1 && allowFallback && !isTimeoutError(err)) {
             log.debug(`gh api ${prefix} failed: ${String(err)}`);
+
             return false;
           }
+
           throw err;
         }
+
         // 第一页空视为 endpoint 不通（触发 fallback），而非"仓库为零"
         if (items.length === 0 && page === 1) return false;
+
         if (items.length === 0) break;
         results.push(...items.map(mapToOrgRepoInfo));
+
         if (items.length < perPage) break;
         page++;
       }
+
       return true;
     };
 
     const orgSuccess = await tryEndpointPrefix(`/orgs/${encodeURIComponent(org)}/repos`, true);
+
     if (!orgSuccess) {
       // fallback: user repos
       await tryEndpointPrefix(`/users/${encodeURIComponent(org)}/repos`);
@@ -201,6 +228,7 @@ export async function ghListOrgRepos(
   } else {
     // 使用 GITHUB_TOKEN 直接调用 REST API
     const token = getGitHubToken();
+
     if (!token) {
       throw new Error(
         'GitHub authentication unavailable: gh CLI not found and GITHUB_TOKEN not set.',
@@ -208,32 +236,42 @@ export async function ghListOrgRepos(
     }
 
     const BASE = opts?.apiBaseUrl ?? 'https://api.github.com';
+
     const tryUrl = async (urlPrefix: string, allowFallback = false): Promise<boolean> => {
       let page = 1;
+
       while (results.length < maxRepos) {
         // 不加 type=public，依赖 GITHUB_TOKEN 可见范围；GitHub API 默认 type=all
         const url = `${urlPrefix}?per_page=${perPage}&page=${page}`;
         let items: GhRepoApiItem[];
+
         try {
           items = await fetchApiPage(url, token);
         } catch (err) {
           if (page === 1 && allowFallback && !isTimeoutError(err)) {
             log.debug(`fetch ${urlPrefix} failed: ${String(err)}`);
+
             return false;
           }
+
           throw err;
         }
+
         // 第一页空视为 endpoint 不通（触发 fallback），而非"仓库为零"
         if (items.length === 0 && page === 1) return false;
+
         if (items.length === 0) break;
         results.push(...items.map(mapToOrgRepoInfo));
+
         if (items.length < perPage) break;
         page++;
       }
+
       return true;
     };
 
     const orgSuccess = await tryUrl(`${BASE}/orgs/${encodeURIComponent(org)}/repos`, true);
+
     if (!orgSuccess) {
       await tryUrl(`${BASE}/users/${encodeURIComponent(org)}/repos`);
     }

@@ -20,9 +20,11 @@ export function astAvailable(): boolean {
   if (process.env.TEAMAI_SKIP_AST === "1") {
     return false;
   }
+
   if (astAvailability !== undefined) {
     return astAvailability;
   }
+
   try {
     require.resolve("web-tree-sitter");
     require.resolve("web-tree-sitter/tree-sitter.wasm");
@@ -31,6 +33,7 @@ export function astAvailable(): boolean {
   } catch {
     astAvailability = false;
   }
+
   return astAvailability;
 }
 
@@ -65,16 +68,20 @@ export async function extractStructuralGraph(
       filesSkipped++;
       continue;
     }
+
     const walked = walkFile(file);
+
     if (walked.parseErrors.length > 0) {
       for (const err of walked.parseErrors) {
         gaps.push({ kind: "PARSE_SKIP", message: err, sources: [file.relativePath] });
       }
+
       if (walked.symbols.length === 0 && walked.imports.length === 0) {
         filesSkipped++;
         continue;
       }
     }
+
     filesParsed++;
     symbols.push(...walked.symbols);
     swiftModuleSymbols.push(...walked.swiftModuleSymbols);
@@ -85,6 +92,7 @@ export async function extractStructuralGraph(
   }
 
   const symbolsByFile = new Map<string, typeof symbols>();
+
   for (const sym of symbols) {
     const list = symbolsByFile.get(sym.file) ?? [];
     list.push(sym);
@@ -105,10 +113,12 @@ export async function extractStructuralGraph(
 
   for (const imp of imports) {
     const key = `${imp.fromFile}:${imp.line}`;
+
     if (imp.isTypeOnly) continue;
 
     const resolved = await resolveImportSpecifier(repoRoot, imp.fromFile, imp.specifier, fileExists);
     resolvedImports.set(key, resolved);
+
     if (resolved) {
       resolvedKeys.add(key);
       edges.push({
@@ -165,9 +175,11 @@ export async function extractStructuralGraph(
   for (const site of implementsSites) {
     const bindings = buildImportBindingsForFile(site.fromFile, imports, resolvedImports, symbolsByFile);
     const localInterfaces = symbolsByFile.get(site.fromFile) ?? [];
+
     for (const ifaceName of site.ifaceNames) {
       let targetFile: string | undefined;
       const sameFile = localInterfaces.find((s) => s.name === ifaceName && s.kind === "interface");
+
       if (sameFile) {
         targetFile = site.fromFile;
       } else {
@@ -175,9 +187,11 @@ export async function extractStructuralGraph(
           bindings.localToFile.get(ifaceName) ??
           findSwiftModuleSymbol(swiftModules, site.fromFile, ifaceName, ["interface"])?.file;
       }
+
       if (!targetFile) {
         continue;
       }
+
       edges.push({
         from: site.fromFile,
         to: targetFile,
@@ -223,14 +237,17 @@ export async function extractStructuralGraphAsFacts(
 ): Promise<{ facts: CodeFact[]; result: StructuralGraphResult }> {
   const result = await extractStructuralGraph(options);
   const facts = structuralEdgesToCodeFacts(result.edges);
+
   return { facts, result };
 }
 
 export function formatAstStatsSummary(stats: StructuralGraphResult["stats"]): string {
   const imports = `${stats.imports} imports (${stats.importsResolved} resolved)`;
   const calls = `${stats.calls} calls (${stats.callsResolved} resolved)`;
+
   return `ast: ${stats.symbols} symbols, ${imports}, ${calls}, ${stats.edges} edges`;
 }
 
 export * from "./types.js";
+
 export { mergeCodeFacts } from "./merge-edges.js";

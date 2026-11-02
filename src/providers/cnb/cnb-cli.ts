@@ -1,4 +1,4 @@
-import { execSync, spawnSync } from 'node:child_process';
+import { execSync, spawnSync, type SpawnSyncOptions, type SpawnSyncOptionsWithStringEncoding } from 'node:child_process';
 import crossSpawn from 'cross-spawn';
 import { log, spinner } from '../../utils/logger.js';
 import { resolveCliPath } from '../../utils/cli-path.js';
@@ -40,34 +40,52 @@ export const CNB_HOST = process.env.TEAMAI_CNB_HOST?.trim() || 'cnb.cool';
 
 // ─── Core exec ───────────────────────────────────────────
 
+/** What a cnb run printed and how it exited. */
+export interface CnbExecResult {
+  stdout: string;
+  stderr: string;
+  status: number;
+}
+
 /** Run a `cnb` subcommand. Returns { stdout, stderr, status }. */
 export function cnbExec(
   args: string[],
   options?: { inheritStdio?: boolean; cwd?: string; timeoutMs?: number },
-): { stdout: string; stderr: string; status: number } {
+): CnbExecResult {
   // Resolve the executable first, then launch it through cross-spawn: on
   // Windows the npm-installed CLI is only a `.cmd` shim, which neither a bare
   // name (ENOENT) nor a direct child_process.spawnSync (EINVAL) can start. That
   // used to come back as status 1 with an empty stderr, so cnbIsAuthenticated()
   // reported "not logged in" for a perfectly installed CLI.
   const cnbPath = resolveCliPath('cnb');
+
   if (!cnbPath) {
     log.debug('cnb CLI not found on PATH');
+
     return { stdout: '', stderr: 'cnb CLI not found on PATH', status: 127 };
   }
 
   log.debug(`cnb exec: ${cnbPath} ${args.join(' ')}`);
+
   if (options?.inheritStdio) {
-    const r = crossSpawn.sync(cnbPath, args, { stdio: 'inherit', env: { ...process.env }, cwd: options.cwd, ...(options.timeoutMs ? { timeout: options.timeoutMs } : {}) });
+    const inherited: SpawnSyncOptions = { stdio: 'inherit', env: { ...process.env }, cwd: options.cwd };
+
+    if (options.timeoutMs) inherited.timeout = options.timeoutMs;
+    const r = crossSpawn.sync(cnbPath, args, inherited);
+
     return { stdout: '', stderr: '', status: r.status ?? 1 };
   }
-  const r = crossSpawn.sync(cnbPath, args, {
+
+  const captured: SpawnSyncOptionsWithStringEncoding = {
     env: { ...process.env },
     encoding: 'utf-8',
     maxBuffer: 10 * 1024 * 1024,
     cwd: options?.cwd,
-    ...(options?.timeoutMs ? { timeout: options.timeoutMs } : {}),
-  });
+  };
+
+  if (options?.timeoutMs) captured.timeout = options.timeoutMs;
+  const r = crossSpawn.sync(cnbPath, args, captured);
+
   return {
     stdout: (r.stdout ?? '').toString().trim(),
     stderr: (r.stderr ?? '').toString().trim(),
@@ -83,8 +101,10 @@ export function cnbExec(
  */
 export function assertCnbApiOk(out: string, action: string): void {
   const m = out.match(/(?:^|["\s])status["\s:]+\s*(\d{3})\b/);
+
   if (!m) return; // no HTTP status in output — nothing to assert
   const code = Number(m[1]);
+
   if (code >= 400) {
     const em = out.match(/errmsg["\s:]+\s*"?([^"\n]+)/i);
     throw new Error(`cnb ${action} failed (HTTP ${code})${em ? `: ${em[1].trim()}` : ''}`);
@@ -101,15 +121,19 @@ export function isCnbInstalled(): boolean {
 export async function ensureCnbInstalled(): Promise<void> {
   if (isCnbInstalled()) {
     log.debug('cnb CLI already installed');
+
     return;
   }
+
   const spin = (await spinner('Installing cnb CLI (@cnbcool/cnb-cli)...')).start();
+
   try {
     execSync('npm install -g @cnbcool/cnb-cli', { stdio: ['pipe', 'pipe', 'pipe'], timeout: 120_000 });
+
     if (!isCnbInstalled()) throw new Error('cnb not found on PATH after install');
     spin.succeed('cnb CLI installed');
   } catch (e) {
-    spin.fail(`Failed to install cnb CLI: ${(e as Error).message}`);
+    spin.fail(`Failed to install cnb CLI: ${e instanceof Error ? e.message : String(e)}`);
     log.info('Install it manually: npm install -g @cnbcool/cnb-cli');
     throw e;
   }
@@ -128,8 +152,10 @@ export function getCnbToken(): string | null {
 /** Authenticated if an env token is present, or `cnb status` reports logged-in. */
 export function cnbIsAuthenticated(): boolean {
   if (getCnbToken()) return true;
+
   try {
     const r = cnbExec(['status']);
+
     return r.status === 0 && (r.stdout.includes('已登录') || /logged\s*in/i.test(r.stdout));
   } catch {
     return false;
@@ -145,13 +171,16 @@ export function cnbIsAuthenticated(): boolean {
 export function cnbWhoami(): string | null {
   try {
     const r = cnbExec(['users', 'get-user-info']);
+
     if (r.status === 0 && r.stdout) {
       const m = r.stdout.match(/(?:^|\n)\s*(?:username|login)\s*:\s*"?([^\s"]+)/i);
+
       if (m) return m[1];
     }
   } catch {
     // fall through to env
   }
+
   return process.env.CNB_USERNAME?.trim() || null;
 }
 
@@ -168,6 +197,7 @@ export function cnbWhoami(): string | null {
 export function cnbLogin(): void {
   log.info('Starting cnb authentication (OAuth2 device flow)...');
   const r = cnbExec(['login', '--host', CNB_HOST], { inheritStdio: true });
+
   if (r.status !== 0) throw new Error('cnb login failed. Please try again.');
 }
 
@@ -175,8 +205,10 @@ export function cnbLogin(): void {
 export function ensureCnbAuthenticated(): string {
   if (cnbIsAuthenticated()) {
     const u = cnbWhoami();
+
     if (u) return u;
   }
+
   // `cnb login` inherits stdio and waits for an OAuth2 device flow. Without a
   // person at a terminal that never completes (issue #711).
   if (!isInteractive()) {
@@ -186,9 +218,12 @@ export function ensureCnbAuthenticated(): string {
         'or run `cnb login` in an interactive shell first.',
     );
   }
+
   cnbLogin();
   const u = cnbWhoami();
+
   if (!u) throw new Error('CNB authentication failed. Please run `teamai init` again.');
+
   return u;
 }
 
@@ -209,13 +244,17 @@ export function cnbParseRepoInput(input: string): RepoInfo {
     .replace(/\/+$/, '') // drop trailing slash(es) first, so `.git` below still anchors
     .replace(/\.git$/i, '')
     .replace(/\/+$/, '');
+
   const segs = s.split('/').filter(Boolean);
+
   if (segs.length < 2) {
     throw new Error(`Invalid CNB repo: "${input}" (expected owner/repo or a cnb.cool URL)`);
   }
+
   const repo = segs[segs.length - 1];
   const owner = segs.slice(0, -1).join('/');
   const full = `${owner}/${repo}`;
+
   return {
     owner,
     repo,
@@ -242,17 +281,21 @@ export function cnbParseRepoInput(input: string): RepoInfo {
 export function cnbRepoClone(repo: string, localPath: string): void {
   const token = getCnbToken();
   let args: string[];
+
   if (token) {
     const url = `https://cnb:${token}@${CNB_HOST}/${repo}.git`;
     args = ['clone', url, localPath];
   } else {
     args = ['-c', 'credential.helper=!cnb git-credential', 'clone', `https://${CNB_HOST}/${repo}.git`, localPath];
   }
+
   const r = spawnSync('git', args, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 120_000, windowsHide: true });
   const out = `${r.stderr ?? ''} ${r.stdout ?? ''}`;
+
   if (/not found|does not exist|Repository not found|404/i.test(out)) {
     throw new CnbRepoNotFoundError(repo);
   }
+
   if (r.status !== 0) {
     const sanitized = out.replace(/cnb:[^@]+@/g, 'cnb:***@').trim();
     throw new Error(`git clone failed: ${sanitized}`);
@@ -268,6 +311,7 @@ export function cnbRepoClone(repo: string, localPath: string): void {
       cwd: localPath,
       windowsHide: true,
     });
+
     if (cfg.status !== 0) {
       log.warn(`Could not persist CNB credential helper: ${(cfg.stderr ?? '').trim()}. Push/pull may prompt for credentials.`);
     }
@@ -294,7 +338,9 @@ export function cnbRepoCreateUrl(): string {
 export function cnbOrganizationExists(org: string): boolean {
   const r = cnbExec(['organizations', 'get-group', '--group', org]);
   const out = r.stdout || r.stderr;
+
   if (/(?:^|["\s])status["\s:]+\s*200\b/.test(out)) return true;
+
   if (/(?:^|["\s])status["\s:]+\s*404\b/.test(out) || /not found|不存在/i.test(out)) return false;
   throw new Error(`cnb get-group failed for "${org}": ${out || `exit ${r.status}`}`);
 }
@@ -312,21 +358,26 @@ export function cnbOrganizationExists(org: string): boolean {
 export async function cnbCreateRepo(owner: string, repo: string): Promise<void> {
   try {
     const r = cnbExec(['repositories', 'create-repo', '--slug', owner, '--name', repo]);
+
     if (r.status !== 0) {
       throw new Error(`cnb create-repo failed: ${r.stderr || r.stdout}`);
     }
+
     assertCnbApiOk(r.stdout, 'create-repo');
   } catch (e) {
-    const msg = (e as Error).message;
+    const msg = e instanceof Error ? e.message : String(e);
+
     if (/HTTP 404|not found|不存在/i.test(msg)) {
       throw new OrganizationNotFoundError(owner, cnbOrganizationCreateUrl());
     }
+
     // The login token lacks the group-resource:rw scope needed to create a repo
     // (403). It cannot be granted via `cnb login`, so guide the user to the web
     // UI instead of surfacing a raw scope error.
     if (/HTTP 403|scope|permission|forbidden|权限/i.test(msg)) {
       throw new RepoCreatePermissionError(`${owner}/${repo}`, cnbRepoCreateUrl());
     }
+
     throw e;
   }
 }
@@ -357,21 +408,27 @@ export function cnbPullCreate(opts: CnbPullCreateOptions): string {
     '--base', opts.target,
     '--title', opts.title,
   ];
+
   if (opts.description) args.push('--body', opts.description);
 
-  const r = cnbExec(args, { cwd: opts.cwd, ...(opts.spawnTimeoutMs ? { timeoutMs: opts.spawnTimeoutMs } : {}) });
+  const r = cnbExec(args, { cwd: opts.cwd, timeoutMs: opts.spawnTimeoutMs });
+
   if (r.status !== 0) {
     throw new Error(`cnb post-pull failed: ${r.stderr || r.stdout}`);
   }
+
   assertCnbApiOk(r.stdout, 'post-pull');
 
   // The CLI prints YAML (not JSON), so parse defensively with regexes: prefer a
   // URL in the response, else build one from the PR number.
   const out = r.stdout;
+
   const urlMatch = out.match(/https?:\/\/[^\s"']+\/(?:pull|pulls|merge_requests)\/\d+/i)
     ?? out.match(/(?:^|\n)\s*(?:url|web_url|html_url)\s*:\s*"?(https?:\/\/[^\s"']+)/i);
+
   if (urlMatch) return urlMatch[urlMatch.length - 1];
   const numMatch = out.match(/(?:^|\n)\s*(?:number|iid)\s*:\s*"?(\d+)/i);
+
   if (numMatch) return `https://${CNB_HOST}/${opts.repo}/-/pulls/${numMatch[1]}`;
   throw new Error(`cnb post-pull succeeded but returned unexpected output: ${out}`);
 }

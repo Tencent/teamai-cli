@@ -1,3 +1,5 @@
+import { z } from 'zod';
+import type { JsonValue } from '../../types.js';
 import type { OrgRepoInfo } from '../types.js';
 import { getGitCodeToken, gitcodeApiBase } from './gitcode-api.js';
 import { GITCODE_HOST } from './repo-url.js';
@@ -6,19 +8,22 @@ const DEFAULT_PER_PAGE = 100;
 const DEFAULT_MAX_REPOS = 200;
 
 /** GitCode API 返回的 repo 条目（仅使用的字段）。 */
-interface GitCodeRepoApiItem {
-  name: string;
-  full_name: string;
-  path?: string;
-  description?: string | null;
-  html_url?: string;
-  archived?: boolean;
-  updated_at?: string;
-  stargazers_count?: number;
-}
+const GitCodeRepoApiItemSchema = z.object({
+  name: z.string(),
+  full_name: z.string(),
+  path: z.string().optional().catch(undefined),
+  description: z.string().nullish().catch(undefined),
+  html_url: z.string().optional().catch(undefined),
+  archived: z.boolean().optional().catch(undefined),
+  updated_at: z.string().optional().catch(undefined),
+  stargazers_count: z.number().optional().catch(undefined),
+});
+
+type GitCodeRepoApiItem = z.infer<typeof GitCodeRepoApiItemSchema>;
 
 function mapItem(item: GitCodeRepoApiItem): OrgRepoInfo {
   const fullName = item.full_name;
+
   return {
     url: item.html_url ?? `https://${GITCODE_HOST}/${fullName}.git`,
     fullName,
@@ -46,6 +51,7 @@ export async function gitcodeListOrgRepos(
   opts?: { maxRepos?: number },
 ): Promise<OrgRepoInfo[]> {
   const token = getGitCodeToken();
+
   if (!token) {
     throw new Error('GitCode token unavailable: set GITCODE_TOKEN (or GC_TOKEN).');
   }
@@ -58,20 +64,28 @@ export async function gitcodeListOrgRepos(
   while (collected.length < maxRepos) {
     const url = `${gitcodeApiBase()}/orgs/${encodeURIComponent(org)}/repos`
       + `?per_page=${DEFAULT_PER_PAGE}&page=${page}`;
+
     const resp = await fetch(url, { headers, redirect: 'manual' });
 
     if (resp.status === 404) {
       throw new Error(`GitCode org ${org} not found or no access`);
     }
+
     if (!resp.ok) {
       throw new Error(`GitCode API HTTP ${resp.status}: ${await resp.text().catch(() => '')}`);
     }
 
-    const items = (await resp.json()) as GitCodeRepoApiItem[];
-    if (!Array.isArray(items) || items.length === 0) break;
+    const listed: JsonValue = await resp.json();
+
+    if (!Array.isArray(listed) || listed.length === 0) break;
+    const parsed = z.array(GitCodeRepoApiItemSchema).safeParse(listed);
+
+    if (!parsed.success) throw new Error('GitCode API returned a malformed repository list');
+    const items = parsed.data;
 
     for (const item of items) {
       collected.push(mapItem(item));
+
       if (collected.length >= maxRepos) break;
     }
 

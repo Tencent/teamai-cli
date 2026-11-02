@@ -1,28 +1,49 @@
 /** The YAML and diagnostic helpers parse.ts and reads.ts share, kept apart so neither imports the other. */
 
-import { isMap, isScalar, type LineCounter, type Node } from 'yaml';
-import { fieldsText, schemaAt, stepFieldSchema, type ExpressionPath } from './expression.js';
+import { isMap, isNode, isScalar, type LineCounter, type Node } from 'yaml';
+import { z } from 'zod';
+import { fieldsText, isIndex, schemaAt, stepFieldSchema, type ExpressionPath } from './expression.js';
 import type { EndOutcome, OutputSchema, WorkflowDefinition, WorkflowDiagnostic } from './types.js';
 
 export function isYamlNode(value: unknown): value is Node {
-  return !!value && typeof value === 'object' && 'range' in value;
+  return isNode(value);
 }
 
 export function locate(file: string, lineCounter: LineCounter, node: Node | null | undefined, field: string, message: string): WorkflowDiagnostic {
   let line = 1;
   let column = 1;
   const offset = node?.range?.[0];
-  if (typeof offset === 'number') {
+
+  if (offset !== undefined) {
     const pos = lineCounter.linePos(offset);
     line = pos.line;
     column = pos.col;
   }
+
   return { file, line, column, field, message };
 }
 
+/** A YAML number, `.nan` and `.inf` included, which `z.number()` refuses. */
+const YamlNumberSchema = z.union([z.number(), z.nan(), z.literal([Infinity, -Infinity])]);
+
+/** A scalar a workflow may write as text: a string, number, or boolean, each read as its text. */
+const ScalarTextSchema = z.union([z.string(), YamlNumberSchema, z.boolean()]).transform(String);
+
+/** The value of a scalar node, decoded by `schema`, or undefined when the node is not a scalar or holds another kind of value. */
+export function scalarOf<T>(node: Node | null | undefined, schema: z.ZodType<T>): T | undefined {
+  if (!isScalar(node)) return undefined;
+  const parsed = schema.safeParse(node.value);
+
+  return parsed.success ? parsed.data : undefined;
+}
+
 export function scalarString(node: Node | null | undefined): string | undefined {
-  if (!isScalar(node) || typeof node.value !== 'string') return undefined;
-  return node.value;
+  return scalarOf(node, z.string());
+}
+
+/** A scalar's text when it is a string, number, or boolean, so `if: false` and `env: { N: 3 }` read as `false` and `3`. */
+export function scalarText(node: Node | null | undefined): string | undefined {
+  return scalarOf(node, ScalarTextSchema);
 }
 
 /** What the checks of one workflow file share: where a diagnostic points, where it goes, and what a sync knows of the other files. */
@@ -53,24 +74,31 @@ export interface Child {
 export function undeclaredOutput(children: Map<string, Child>, path: ExpressionPath): string | undefined {
   if (path.root !== 'steps') return undefined;
   const [index, field, name, nestedField, nestedName] = path.fields;
-  const inPass = (path.field === 'passes' || path.field === 'results') && typeof index === 'number' && field === 'outputs';
-  const inPassResult = path.field === 'passes' && typeof index === 'number' && field === 'results' && typeof name === 'number' && nestedField === 'outputs';
+  const inPass = (path.field === 'passes' || path.field === 'results') && isIndex(index) && field === 'outputs';
+  const inPassResult = path.field === 'passes' && isIndex(index) && field === 'results' && isIndex(name) && nestedField === 'outputs';
   const output = path.field === 'outputs' ? index : inPass ? name : inPassResult ? nestedName : undefined;
+
   if (output === undefined) return undefined;
   const child = children.get(path.step);
+
   if (!child || Object.hasOwn(child.outputs ?? {}, output)) return undefined;
+
   return `reads steps.${path.step}.${path.field}${fieldsText(path.fields)}, which is not an output ${child.label} declares`;
 }
 
 /** Why a step does not expose the field a path reads, shared by step reads and workflow outputs. */
 export function unavailableField(path: ExpressionPath, forEach: boolean, choices?: string[]): string | undefined {
   if (path.root !== 'steps') return undefined;
-  const inPass = path.field === 'passes' && typeof path.fields[0] === 'number';
+  const inPass = path.field === 'passes' && isIndex(path.fields[0]);
   const field = inPass ? path.fields[1] : path.field;
   const step = `steps.${path.step}${inPass ? `.passes[${path.fields[0]}]` : ''}`;
+
   if (!choices && (field === 'choice' || field === 'note')) return `reads ${step}.${field}, but step "${path.step}" has no approve or choose, so it has no ${field}`;
+
   if (forEach && field === 'outputs') return `reads ${step}.outputs, but step "${path.step}" has for_each, so its outputs are in ${step}.results`;
+
   if (!forEach && field === 'results') return `reads ${step}.results, but step "${path.step}" has no for_each, so it has no results`;
+
   return undefined;
 }
 
@@ -78,9 +106,12 @@ export function unavailableField(path: ExpressionPath, forEach: boolean, choices
 export function undeclaredField(path: ExpressionPath, output: OutputSchema | undefined, forEach: boolean, choices?: string[]): string | undefined {
   if (path.root !== 'steps' || (path.field !== 'outputs' && path.field !== 'passes' && path.field !== 'results')) return undefined;
   const schema = stepFieldSchema(path.field, output, forEach, choices);
+
   if (!schema || schemaAt(schema, path.fields)) return undefined;
   const read = `steps.${path.step}.${path.field}${fieldsText(path.fields)}`;
+
   if (path.field === 'outputs') return `reads ${read}, which is not in the output step "${path.step}" declares`;
+
   return path.field === 'passes'
     ? `reads ${read}, which is not in a pass of step "${path.step}": pass, outcome, end, and ${forEach ? 'results with outputs as its output declares' : 'outputs as its output declares'}`
     : `reads ${read}, which is not in a result of step "${path.step}": item, outcome, and outputs as its output declares`;
@@ -93,8 +124,15 @@ export interface GraphNode {
   node: Node;
 }
 
-export function position(lineCounter: LineCounter, node: Node | null | undefined): { line: number; column: number } {
+/** Where a diagnostic points: a 1-based line and column. */
+export interface Position {
+  line: number;
+  column: number;
+}
+
+export function position(lineCounter: LineCounter, node: Node | null | undefined): Position {
   const { line, column } = locate('', lineCounter, node, '', '');
+
   return { line, column };
 }
 
@@ -107,7 +145,8 @@ export function unknownKey(file: string, lineCounter: LineCounter, node: Node | 
 }
 
 /** Where a map's `key` is written: its value, or the key when the value is empty. */
-export function valueNode(map: unknown, key: string): Node | undefined {
+export function valueNode(map: Node | null | undefined, key: string): Node | undefined {
   const pair = isMap(map) ? map.items.find((item) => isScalar(item.key) && String(item.key.value) === key) : undefined;
+
   return isYamlNode(pair?.value) ? pair.value : isYamlNode(pair?.key) ? pair.key : undefined;
 }

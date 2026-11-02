@@ -1,13 +1,14 @@
 import path from 'node:path';
 import YAML from 'yaml';
+import { parseYaml } from './utils/yaml.js';
 import { z } from 'zod';
 import { ensureDir, writeFile } from './utils/fs.js';
 import {
   NamespaceSegmentSchema, parseManifest, readManifestFile, assertNoCaseAliasedNamespaces, warnUnknownResourceKeys,
-  HAND_DECLARED_RESOURCE_TYPES, HandDeclaredNamespacesShape, type NamespaceEntry, parseManifestOnce,
+  HAND_DECLARED_RESOURCE_TYPES, HandDeclaredNamespaceFields, type NamespaceEntry, parseManifestOnce,
 } from './manifest-schema.js';
 import { loadRolesManifest, resolveRoleResourceNamespaces, type ResourceNamespaces } from './roles.js';
-import type { LocalConfig } from './types.js';
+import type { JsonValue, LocalConfig } from './types.js';
 
 /**
  * Project resource types. Unlike roles, `learnings` is an ACTIVE dimension here:
@@ -53,7 +54,7 @@ const ProjectResourceNamespacesSchema = z.object({
   learnings: z.array(NamespaceSegmentSchema).default([]),
   agents: z.array(NamespaceSegmentSchema).default([]),
   // env, hooks, mcp, models, docs: optional, see HAND_DECLARED_RESOURCE_TYPES.
-  ...HandDeclaredNamespacesShape,
+  ...HandDeclaredNamespaceFields,
 }).passthrough();
 
 const ProjectSchema = z.object({
@@ -73,44 +74,53 @@ const ProjectsManifestSchema = z.object({
 });
 
 export type TeamProject = z.infer<typeof ProjectSchema>;
+
 export type ProjectsManifest = z.infer<typeof ProjectsManifestSchema>;
 
-function validateManifestShape(raw: unknown): ProjectsManifest {
-  if (!raw || typeof raw !== 'object') {
+/**
+ * A projects manifest as projects.yaml holds it, or one built in memory, checked with the same rules; throws on the
+ * first problem. The structure checks come first so each gets its own message before the schema runs.
+ */
+function checkProjectsManifest(raw: JsonValue | ProjectsManifest): ProjectsManifest {
+  if (!(raw instanceof Object)) {
     throw new Error('Invalid projects manifest: expected an object');
   }
 
-  const candidate = raw as Record<string, unknown>;
-  const projects = candidate.projects;
+  const projects = Array.isArray(raw) ? undefined : raw.projects;
+
   if (projects !== undefined && !Array.isArray(projects)) {
     throw new Error('Invalid projects manifest: projects must be an array');
   }
 
-  const entries: unknown[] = projects ?? [];
-  for (const project of entries) {
-    if (!project || typeof project !== 'object') {
+  for (const project of projects ?? []) {
+    if (!(project instanceof Object)) {
       throw new Error('Invalid projects manifest: every project must be an object');
     }
 
     const id = 'id' in project && project.id != null ? String(project.id) : '<unknown>';
     const resources = 'resources' in project ? project.resources : undefined;
-    if (resources !== undefined && (typeof resources !== 'object' || Array.isArray(resources))) {
+
+    // A null `resources` passes here and is the schema's to judge.
+    if (resources !== undefined && resources !== null && (!(resources instanceof Object) || Array.isArray(resources))) {
       throw new Error(`Invalid projects manifest: project ${id} has invalid resources`);
     }
 
     if (resources) {
-      warnUnknownResourceKeys(resources, new Set<string>(ALL_PROJECT_RESOURCE_TYPES), 'projects', `project ${id}`);
+      warnUnknownResourceKeys(Object.keys(resources), new Set<string>(ALL_PROJECT_RESOURCE_TYPES), 'projects', `project ${id}`);
     }
   }
 
   const manifest = parseManifest(ProjectsManifestSchema, raw, 'projects');
   const ids = new Set<string>();
+
   for (const project of manifest.projects) {
     if (ids.has(project.id)) {
       throw new Error(`Invalid projects manifest: duplicate project id "${project.id}"`);
     }
+
     ids.add(project.id);
   }
+
   assertNoCaseAliasedNamespaces(projectNamespaceEntries(manifest), 'projects manifest');
 
   return manifest;
@@ -137,29 +147,32 @@ export async function loadProjectsManifest(repoPath: string): Promise<ProjectsMa
   // Only an absent file means "this team has no projects": an unreadable or empty
   // one throws, so the pull fails rather than quietly syncing as if unpartitioned.
   const content = await readManifestFile(manifestPath, 'projects');
+
   if (content === null) {
     return null;
   }
 
   return parseManifestOnce(manifestPath, content, (text) => {
-    let raw: unknown;
+    let raw: JsonValue;
+
     try {
-      raw = YAML.parse(text);
+      raw = parseYaml(text);
     } catch (error) {
-      throw new Error(`Invalid projects manifest YAML: ${(error as Error).message}`, { cause: error });
+      throw new Error(`Invalid projects manifest YAML: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
     }
-    return validateManifestShape(raw);
+
+    return checkProjectsManifest(raw);
   });
 }
 
 /** Validate a manifest built in memory with the same checks a load applies; throws on the first problem. */
-export function validateProjectsManifest(manifest: unknown): ProjectsManifest {
-  return validateManifestShape(manifest);
+export function validateProjectsManifest(manifest: ProjectsManifest): ProjectsManifest {
+  return checkProjectsManifest(manifest);
 }
 
 export async function saveProjectsManifest(repoPath: string, manifest: ProjectsManifest): Promise<void> {
   // Re-validate before writing to prevent persisting invalid manifests
-  validateManifestShape(manifest);
+  checkProjectsManifest(manifest);
 
   const manifestDir = path.join(repoPath, 'manifest');
   const manifestPath = path.join(manifestDir, 'projects.yaml');
@@ -181,6 +194,7 @@ export function listProjectIds(manifest: ProjectsManifest): string[] {
 export function describeProjects(projects: Array<Pick<TeamProject, 'id' | 'name' | 'description'>>): string[] {
   return projects.map((project) => {
     const label = project.name || project.id;
+
     return project.description ? `${label}: ${project.description}` : label;
   });
 }
@@ -192,9 +206,11 @@ export function unknownProjectMessage(manifest: ProjectsManifest, projectId: str
 
 function getProjectOrThrow(manifest: ProjectsManifest, projectId: string): TeamProject {
   const project = findProject(manifest, projectId);
+
   if (!project) {
     throw new Error(unknownProjectMessage(manifest, projectId));
   }
+
   return project;
 }
 
@@ -220,6 +236,7 @@ export function resolveProjectResourceNamespaces(input: {
   for (const type of ALL_PROJECT_RESOURCE_TYPES) {
     const seen = new Set<string>();
     const out: string[] = [];
+
     for (const project of resolved) {
       for (const namespace of project.resources[type] ?? []) {
         if (seen.has(namespace)) continue;
@@ -227,6 +244,7 @@ export function resolveProjectResourceNamespaces(input: {
         out.push(namespace);
       }
     }
+
     if (out.length > 0 || namespaces[type] !== undefined) namespaces[type] = out;
   }
 
@@ -251,12 +269,15 @@ export async function resolveActiveLearningsNamespaces(
 ): Promise<string[]> {
   const repoPath = config.repo.localPath;
   const activeProjects = config.projects ?? [];
+
   // An unknown role or project id, or a manifest that does not parse, degrades
   // to the shared root rather than throw.
   const fromRoles = async (): Promise<string[]> => {
     if (!config.primaryRole) return [];
+
     try {
       const manifest = await loadRolesManifest(repoPath);
+
       return resolveRoleResourceNamespaces({
         manifest, primaryRole: config.primaryRole, additionalRoles: config.additionalRoles ?? [],
       }).learnings;
@@ -264,16 +285,20 @@ export async function resolveActiveLearningsNamespaces(
       return [];
     }
   };
+
   const fromProjects = async (): Promise<string[]> => {
     if (activeProjects.length === 0) return [];
     const manifest = await loadProjectsManifest(repoPath);
+
     if (!manifest) return [];
+
     try {
       return resolveProjectResourceNamespaces({ manifest, activeProjects }).learnings;
     } catch {
       return [];
     }
   };
+
   return [...new Set([...await fromRoles(), ...await fromProjects()])];
 }
 
@@ -289,11 +314,13 @@ export function mergeNamespaces(
   const dedupe = (a: string[], b: string[]): string[] => {
     const seen = new Set<string>();
     const out: string[] = [];
+
     for (const ns of [...a, ...b]) {
       if (seen.has(ns)) continue;
       seen.add(ns);
       out.push(ns);
     }
+
     return out;
   };
 
@@ -303,9 +330,12 @@ export function mergeNamespaces(
     learnings: dedupe(roleNamespaces.learnings, projectNamespaces.learnings),
     agents: dedupe(roleNamespaces.agents, projectNamespaces.agents),
   };
+
   for (const type of HAND_DECLARED_RESOURCE_TYPES) {
     const namespaces = dedupe(roleNamespaces[type] ?? [], projectNamespaces[type] ?? []);
+
     if (namespaces.length > 0) merged[type] = namespaces;
   }
+
   return merged;
 }

@@ -83,6 +83,7 @@ export abstract class AgentAdapter {
   consumeWriteNotice(): string | undefined {
     const notice = this.writeNotice;
     this.writeNotice = undefined;
+
     return notice;
   }
 

@@ -12,7 +12,7 @@ const context: ExpressionContext = {
   },
 };
 
-function evaluate(source: string): unknown {
+function evaluate(source: string) {
   const parsed = parseExpression(source);
   if (!parsed.ok) throw new Error(`${source}: ${parsed.message}`);
   return evaluateExpression(parsed.expression, context);

@@ -20,9 +20,11 @@ import {
  */
 export function teamRuleToAgyRule(rawTeamRule: string): string {
   const globs = [...new Set(rulePaths(teamRuleData(rawTeamRule)).flatMap(expandBraces))];
+
   const frontmatter = globs.length > 0
     ? ['trigger: model_decision', `description: ${JSON.stringify(`Applies when reading or editing files matching ${globs.join(', ')}`)}`]
     : ['trigger: always_on'];
+
   return `---\n${frontmatter.join('\n')}\n---\n\n${teamRuleBody(rawTeamRule)}\n`;
 }
 

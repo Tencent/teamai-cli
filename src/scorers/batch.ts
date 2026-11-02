@@ -18,6 +18,7 @@ const BatchAnswerSchema = z.record(z.string(), LabelAnswerSchema);
 
 /** A judge's answer: `{ label, reasoning }` for one scorer, or `{ "<scorer>": { label, reasoning }, … }` for a batch. */
 export const JudgeAnswerSchema = z.union([LabelAnswerSchema, BatchAnswerSchema]);
+
 export type JudgeAnswer = z.infer<typeof JudgeAnswerSchema>;
 
 export interface Verdict {
@@ -40,19 +41,26 @@ export function verdictsOf<T>(
   const batched = rubrics.length > 1;
   const single = LabelAnswerSchema.safeParse(answer);
   const batch = BatchAnswerSchema.safeParse(answer);
-  const shape = batched
+
+  const expectedAnswer = batched
     ? `{${rubrics.map((definition) => `"${definition.name}":{"label":…,"reasoning":…}`).join(',')}}`
     : '{"label":…,"reasoning":…}';
+
   const verdicts: Array<Verdict & { judged: T }> = [];
+
   for (const item of judged) {
     const definition = definitionOf(item);
     const given = batched ? (batch.success ? batch.data[definition.name] : undefined) : single.success ? single.data : undefined;
-    if (!given) return { ok: false, message: `The answer has no label for scorer ${definition.name}. Answer ${shape}. The lease stays open.` };
+
+    if (!given) return { ok: false, message: `The answer has no label for scorer ${definition.name}. Answer ${expectedAnswer}. The lease stays open.` };
     const label = definition.labels.find((candidate) => candidate.value === given.label);
+
     if (!label) {
       return { ok: false, message: `"${given.label}" is not a label of scorer ${definition.name}. Use one of: ${definition.labels.map((candidate) => candidate.value).join(', ')}. The lease stays open.` };
     }
+
     verdicts.push({ judged: item, scorer: definition.name, label, passed: label.score >= definition.passingScore, reasoning: given.reasoning });
   }
+
   return { ok: true, verdicts };
 }

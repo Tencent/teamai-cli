@@ -27,16 +27,24 @@ import { renderWorkflowSkill, type AdvertisedWorkflow } from './render.js';
 async function advertisedWorkflows(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<AdvertisedWorkflow[]> {
   const advertised: AdvertisedWorkflow[] = [];
   const sharing = await shareBlock({ localConfig, teamConfig }) === null;
+
   for (const cached of await listCachedWorkflows(localConfig)) {
     const { definition, source } = cached;
     const { name, description, invoke } = definition;
+
     if (invoke !== 'allow' && invoke !== 'ask') continue;
     const alias = await startingAlias(localConfig, definition);
+
     if (!sharing && (name === SessionShare.SHARE_LEARNINGS || alias === SessionShare.SHARE_LEARNINGS)) continue;
+
     // No skill for a workflow `start` refuses: a workflow it runs is missing, runs in a cycle, or does not take its inputs.
     if ('failed' in await loadWorkflowTree(localConfig, cached)) continue;
-    advertised.push({ name, description, invoke, source, skill: skillName(name, alias), ...(alias !== undefined ? { alias } : {}) });
+    const workflow: AdvertisedWorkflow = { name, description, invoke, source, skill: skillName(name, alias) };
+
+    if (alias !== undefined) workflow.alias = alias;
+    advertised.push(workflow);
   }
+
   return advertised;
 }
 
@@ -46,6 +54,7 @@ async function advertisedWorkflows(teamConfig: TeamaiConfig, localConfig: LocalC
  */
 function skillName(name: string, alias: string | undefined): string {
   if (alias !== undefined) return `${WORKFLOW_SKILL_PREFIX}${alias}`;
+
   return DefaultWorkflows.named(name) ? name : `${WORKFLOW_SKILL_PREFIX}${name}`;
 }
 
@@ -87,23 +96,30 @@ async function plan(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise
   const skillTarget = skillTargetsFor(teamConfig, localConfig);
   const placed = new Map<string, Placement>();
   const roots = new Map<string, Root>();
+
   for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     if (!toolPath.skills || isAgentExcluded(localConfig, tool)) continue;
     const target = await builtinSkillsTarget(tool, teamConfig, localConfig);
+
     if (!target) continue;
     const { guardBase } = target;
+
     // Codex takes the shared `.agents/skills` copy only when it is free or already generated.
     const ownsShared = async (dir: string): Promise<boolean> => await allowsSkillDirectory(guardBase, dir)
       && (!await pathExists(dir) || (await generatedSkillAt(dir)).kind === 'ours');
+
     for (const dir of [target.skillsDir, ...tool === CODEX_TOOL ? [path.join(guardBase, SHARED_AGENT_SKILLS_PATH)] : []]) {
       if (!roots.has(dir)) roots.set(dir, { dir, guardBase });
     }
+
     for (const workflow of workflows) {
       const dir = await skillTarget({ tool, skillName: workflow.skill, ownsShared }) ?? path.join(target.skillsDir, workflow.skill);
+
       if (placed.has(dir)) continue;
       placed.set(dir, { tool, workflow: workflow.name, skill: workflow.skill, dir, guardBase, content: renderWorkflowSkill(workflow, tool) });
     }
   }
+
   return { placements: [...placed.values()], roots: [...roots.values()] };
 }
 
@@ -123,25 +139,34 @@ function keptEdited(file: string, workflow: string, advertised: boolean): string
  */
 async function place({ tool, workflow, skill, dir, guardBase, content }: Placement): Promise<boolean> {
   const block = await findSkillDirectoryBlock(guardBase, dir);
+
   if (block) {
     warnOnce(describeSkippedSkillDirectory(skill, tool, block));
+
     return false;
   }
+
   const file = path.join(dir, 'SKILL.md');
   const existing = await readFileSafe(file);
   const generated = existing === null ? null : readGenerated(existing);
+
   if (generated?.kind === 'theirs' || (generated === null && await pathExists(dir))) {
     warnOnce(shadowed({ tool, workflow, dir }));
+
     return false;
   }
+
   if (generated?.edited) {
     warnOnce(keptEdited(file, generated.name, true));
+
     return false;
   }
+
   if (existing !== content) {
     await fs.mkdir(dir, { recursive: true });
     await writeFileAtomic(file, content);
   }
+
   return true;
 }
 
@@ -149,12 +174,16 @@ async function place({ tool, workflow, skill, dir, guardBase, content }: Placeme
 async function prune({ dir, guardBase }: Root): Promise<void> {
   if (await findSkillDirectoryBlock(guardBase, dir)) return;
   const generated = await generatedSkillAt(dir);
+
   if (generated.kind === 'theirs') return;
   const file = path.join(dir, 'SKILL.md');
+
   if (generated.edited) {
     warnOnce(keptEdited(file, generated.name, false));
+
     return;
   }
+
   if (await keepsTrackedCopy(file)) return;
   await fs.rm(file);
   // A file the member put beside it keeps the directory.
@@ -175,13 +204,17 @@ export async function deployWorkflowSkills({ teamConfig, localConfig, recorder }
   try {
     const { placements, roots } = await plan(teamConfig, localConfig);
     const placed = new Set(placements.map(({ dir }) => dir));
+
     for (const placement of placements) {
       if (await place(placement)) recorder?.report(WRITER, path.join(placement.dir, 'SKILL.md'));
     }
+
     for (const root of roots) {
       const entries = await fs.readdir(root.dir).catch(() => []);
+
       for (const entry of entries) {
         const dir = path.join(root.dir, entry);
+
         if (mayBeGeneratedSkill(entry) && !placed.has(dir)) await prune({ ...root, dir });
       }
     }
@@ -189,15 +222,19 @@ export async function deployWorkflowSkills({ teamConfig, localConfig, recorder }
     recorder?.failed(WRITER);
     throw error;
   }
+
   recorder?.judgedAll(WRITER);
 }
 
 /** For `teamai doctor`: each generated skill a skill of the team's or the member's stands in for. Writes nothing. */
 export async function shadowedWorkflowSkills({ teamConfig, localConfig }: { teamConfig: TeamaiConfig; localConfig: LocalConfig }): Promise<string[]> {
   const lines: string[] = [];
+
   for (const placement of (await plan(teamConfig, localConfig)).placements) {
     if (await findSkillDirectoryBlock(placement.guardBase, placement.dir) || !await pathExists(placement.dir)) continue;
+
     if ((await generatedSkillAt(placement.dir)).kind === 'theirs') lines.push(shadowed(placement));
   }
+
   return lines;
 }

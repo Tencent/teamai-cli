@@ -4,6 +4,7 @@ import { isJudgeTool, judgeAccess } from '../../../scorers/judge.js';
 import type { DriverCan } from '../../requirements.js';
 
 export const HOST_CHOICES = ['h1', 'h2', 'h3', 'h4'] as const;
+
 export type HostChoice = typeof HOST_CHOICES[number];
 
 export interface HostProfile {
@@ -50,10 +51,17 @@ export function canFor(host: HostChoice | undefined): Required<DriverCan> {
   return HOST_PROFILES[host ?? 'h1'].can;
 }
 
+/** The confined judge a driver offers `score --next`. */
+export interface JudgeOffer {
+  isolation: 'verified';
+  access: JudgeAccess;
+  tools: [string];
+}
+
 /**
  * What the skill driver declares on `score --next`: the confined judge of the session tool, which describe found
  * verified, and what that judge can do. A tool with no judge profile declares `full`, as a judge that does not say counts.
  */
-export function judgeCan(tool: string): { isolation: 'verified'; access: JudgeAccess; tools: [string] } {
+export function judgeCan(tool: string): JudgeOffer {
   return { isolation: 'verified', access: isJudgeTool(tool) ? judgeAccess(tool) : 'full', tools: [tool] };
 }

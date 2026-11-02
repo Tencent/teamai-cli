@@ -100,7 +100,7 @@ Your PR also gets an informational `Code Erosion` report (SlopCodeBench verbosit
 - TypeScript strict mode is on; avoid `any` unless genuinely needed.
 - Prefer async/await over callbacks.
 - Keep commands in `src/*.ts` thin — heavy lifting lives in `src/resources/` or `src/utils/`.
-- Avoid narrating comments ("// increment counter"). Comments should explain _why_, not _what_.
+- Avoid narrating comments ("// increment counter"). Comments should explain _why_, not _what_; `teamai/no-low-value-comments` rejects one that only repeats the name below it.
 
 ## Testing Guidelines
 
@@ -116,6 +116,17 @@ What `npm run lint` reports, and the fix:
 | `path.join(process.env.HOME ?? '', '.teamai')` in `src/sync-cache.ts` | `teamai(home-env): Read the user home through getUserHome() in src/utils/home.ts so USERPROFILE and platform fallbacks remain supported.` | `path.join(getUserHome(), '.teamai')` |
 | `execFileSync('gh', ['pr', 'merge', String(pr), '--auto'])` in `src/providers/github/` | `teamai(no-provider-merge): Providers and workflow delivery must not merge, accept or enable auto-merge on pull requests.` | Leave merging to a maintainer; providers only find and create requests. |
 | `import { startRun } from '../../engine.js'` in `src/workflow/drivers/skill/report.ts` | `teamai(workflow-boundaries): Workflow module boundary forbids src/workflow/drivers/skill/report.ts -> src/workflow/engine.ts.` | Import from `protocol.ts`, which the skill driver may use. |
+| `const team = YAML.parse(text)` in `src/config.ts` | `teamai(yaml-parse): Parse YAML with parseYaml() from src/utils/yaml.ts: it returns JSON values, where yaml's parse turns !!set, !!binary and !!timestamp into a Set, Buffer or Date.` | `const team = parseYaml(text)`, then a zod schema. |
+| `` `push failed: ${(e as Error).message}` `` | `` teamai(require-safety-comment-for-type-assertion): This type assertion has no `SAFETY:` justification. `` | `` `push failed: ${e instanceof Error ? e.message : String(e)}` `` |
+| `typeof lock.pid === 'number' ? lock.pid : undefined` on a parsed lock file | `` teamai(no-runtime-typeof): A `typeof` check narrows a representation without establishing its contract. `` | Parse the file once: `LockSchema.safeParse(parseYaml(text))`, with `pid: z.number().optional()`. |
+
+The anti-slop rules (`teamai/no-*`, `require-*`) check production code only; tests may build partial or malformed values. A cast that stays says what checked it (from `src/types.ts`):
+
+```ts
+// SAFETY: username and skills are checked above. The other fields are optional and come from the stats push of this
+// or another member's teamai, which writes them from a UserStats.
+return { ...document, username: parsed.data.username, skills } as UserStats;
+```
 
 A line that has to break a rule says why, and `--report-unused-disable-directives` fails the comment once the line no longer needs it (from `src/viz.ts`):
 

@@ -2,6 +2,7 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 
+import type { JsonValue } from "../../types.js";
 import { CONFIDENCE_SCORE_DEFAULTS, WIKI_CATEGORIES, type WikiCategory, type WikiConfidence, type WikiEvidence } from "./wiki-protocol.js";
 
 /**
@@ -13,16 +14,7 @@ import { CONFIDENCE_SCORE_DEFAULTS, WIKI_CATEGORIES, type WikiCategory, type Wik
 
 export const GRAPH_INDEX_SCHEMA_VERSION = "team-wiki.graph-index.v1" as const;
 
-export type RelationType =
-  | "DEPENDS_ON"
-  | "IMPLEMENTS"
-  | "MAPS_TO"
-  | "CONTAINS"
-  | "REFERENCES"
-  | "CONFLICTS_WITH"
-  | "SUPERSEDES";
-
-export const RELATION_TYPES: RelationType[] = [
+export const RELATION_TYPES = [
   "DEPENDS_ON",
   "IMPLEMENTS",
   "MAPS_TO",
@@ -30,7 +22,9 @@ export const RELATION_TYPES: RelationType[] = [
   "REFERENCES",
   "CONFLICTS_WITH",
   "SUPERSEDES"
-];
+] as const;
+
+export type RelationType = (typeof RELATION_TYPES)[number];
 
 export interface GraphNode {
   slug: string;
@@ -52,20 +46,9 @@ export interface GraphNode {
   origin?: string;
 }
 
-/** Provenance of a graph edge (compile / reconcile pipeline). */
-export type GraphEdgeSource =
-  | "code-ast"
-  | "code-heuristic"
-  | "doc-structure"
-  | "doc-entity"
-  | "doc-triples"
-  | "bridge-reconcile"
-  | "doc-semantic"
-  | "manual-mapping";
-
 const LEGACY_GRAPH_EDGE_SOURCE = "code-heuristic" as const;
 
-export const GRAPH_EDGE_SOURCES: readonly GraphEdgeSource[] = [
+export const GRAPH_EDGE_SOURCES = [
   "code-ast",
   LEGACY_GRAPH_EDGE_SOURCE,
   "doc-structure",
@@ -74,23 +57,32 @@ export const GRAPH_EDGE_SOURCES: readonly GraphEdgeSource[] = [
   "bridge-reconcile",
   "doc-semantic",
   "manual-mapping",
-];
+] as const;
 
-const WIKI_CONFIDENCES = Object.keys(CONFIDENCE_SCORE_DEFAULTS) as WikiConfidence[];
+/** Provenance of a graph edge (compile / reconcile pipeline). */
+export type GraphEdgeSource = (typeof GRAPH_EDGE_SOURCES)[number];
+
 const WIKI_EVIDENCE_TYPES = ["definition", "implementation", "usage", "schema", "config"] as const;
 const LEGACY_GRAPH_INDEX_SCHEMA_VERSION = 1;
-const LEGACY_WIKI_CONFIDENCES: Record<string, WikiConfidence> = {
-  high: "EXTRACTED",
-  medium: "INFERRED",
-  low: "AMBIGUOUS",
-};
+
+function isWikiConfidence(value: string): value is WikiConfidence {
+  return Object.hasOwn(CONFIDENCE_SCORE_DEFAULTS, value);
+}
+
+const LEGACY_WIKI_CONFIDENCES = new Map<string, WikiConfidence>([
+  ["high", "EXTRACTED"],
+  ["medium", "INFERRED"],
+  ["low", "AMBIGUOUS"],
+]);
+
 /** A relation name `loadGraphIndex` normalizes to a current `RelationType` on load. */
-export const LEGACY_RELATIONS: Record<string, RelationType> = {
-  imports: "DEPENDS_ON",
-};
-const LEGACY_WIKI_CATEGORIES: Record<string, WikiCategory> = {
-  module: "component",
-};
+export const LEGACY_RELATIONS = new Map<string, RelationType>([
+  ["imports", "DEPENDS_ON"],
+]);
+
+const LEGACY_WIKI_CATEGORIES = new Map<string, WikiCategory>([
+  ["module", "component"],
+]);
 
 export interface GraphEdge {
   from: string;
@@ -155,12 +147,13 @@ const WikiEvidenceSchema = z.object({
 }).passthrough();
 
 const WikiConfidenceSchema = z.string().transform((value, context): WikiConfidence => {
-  if (WIKI_CONFIDENCES.includes(value as WikiConfidence)) return value as WikiConfidence;
-  const normalized = Object.hasOwn(LEGACY_WIKI_CONFIDENCES, value)
-    ? LEGACY_WIKI_CONFIDENCES[value]
-    : undefined;
+  if (isWikiConfidence(value)) return value;
+
+  const normalized = LEGACY_WIKI_CONFIDENCES.get(value);
+
   if (normalized) return normalized;
   context.addIssue({ code: z.ZodIssueCode.custom, message: `Invalid wiki confidence: ${value}` });
+
   return z.NEVER;
 });
 
@@ -169,27 +162,46 @@ const GraphIndexVersionSchema = z.union([
   z.literal(LEGACY_GRAPH_INDEX_SCHEMA_VERSION),
 ]).transform(() => GRAPH_INDEX_SCHEMA_VERSION);
 
+const GraphEdgeSourceSchema = z.enum(GRAPH_EDGE_SOURCES);
+
+/** A wiki category, or a legacy name for one. */
+const WikiCategorySchema = z.string()
+  .transform((value) => LEGACY_WIKI_CATEGORIES.get(value) ?? value)
+  .pipe(z.enum(WIKI_CATEGORIES));
+
+/** A stored node, read for the field names graph files used before the current ones. */
+const StoredGraphNodeSchema = z.looseObject({
+  slug: z.unknown().optional(),
+  id: z.unknown().optional(),
+  type: z.unknown().optional(),
+  kind: z.unknown().optional(),
+  title: z.unknown().optional(),
+  label: z.unknown().optional(),
+});
+
 const GraphNodeSchema = z.preprocess((value) => {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
-  const node = value as Record<string, unknown>;
-  const rawType = node.type ?? node.kind;
+  const stored = StoredGraphNodeSchema.safeParse(value);
+
+  if (!stored.success) return value;
+  const node = stored.data;
+
   return {
     ...node,
     slug: node.slug ?? node.id,
-    type: typeof rawType === "string" && Object.hasOwn(LEGACY_WIKI_CATEGORIES, rawType)
-      ? LEGACY_WIKI_CATEGORIES[rawType]
-      : rawType,
+    type: node.type ?? node.kind,
     title: node.title ?? node.label,
   };
 }, z.object({
   slug: z.string(),
-  type: z.custom<WikiCategory>((value) => WIKI_CATEGORIES.includes(value as WikiCategory)),
+  type: WikiCategorySchema,
   confidence: WikiConfidenceSchema,
   title: z.string(),
   domain: z.string().optional(),
-  source: z.custom<GraphEdgeSource>((value) => GRAPH_EDGE_SOURCES.includes(value as GraphEdgeSource)).optional(),
+  source: GraphEdgeSourceSchema.optional(),
   origin: z.string().optional(),
 }).passthrough());
+
+const RelationTypeSchema = z.enum(RELATION_TYPES);
 
 const GraphEdgeSchema = z.object({
   from: z.string(),
@@ -198,20 +210,19 @@ const GraphEdgeSchema = z.object({
   evidence: z.array(WikiEvidenceSchema).optional(),
   weight: z.number().optional(),
   predicate: z.string().optional(),
-  source: z.custom<GraphEdgeSource>((value) => GRAPH_EDGE_SOURCES.includes(value as GraphEdgeSource)).optional(),
+  source: GraphEdgeSourceSchema.optional(),
   origin: z.string().optional(),
   crossOriginPairs: z.array(z.array(z.string())).optional(),
 }).passthrough().transform((edge, context): GraphEdge => {
-  const legacyRelation = Object.hasOwn(LEGACY_RELATIONS, edge.relation)
-    ? LEGACY_RELATIONS[edge.relation]
-    : undefined;
-  const relation = RELATION_TYPES.includes(edge.relation as RelationType)
-    ? edge.relation as RelationType
-    : legacyRelation;
+  const legacyRelation = LEGACY_RELATIONS.get(edge.relation);
+  const relation = RelationTypeSchema.safeParse(edge.relation).data ?? legacyRelation;
+
   if (!relation) {
     context.addIssue({ code: z.ZodIssueCode.custom, message: `Invalid graph relation: ${edge.relation}` });
+
     return z.NEVER;
   }
+
   return {
     ...edge,
     relation,
@@ -227,9 +238,10 @@ const GraphIndexSchema = z.object({
 }).passthrough();
 
 /** Validates and normalizes `value` as a full `GraphIndex` (legacy field fallbacks, relation/confidence normalization included); `null` if it doesn't conform. */
-export function parseGraphIndex(value: unknown): GraphIndex | null {
+export function parseGraphIndex(value: JsonValue): GraphIndex | null {
   const result = GraphIndexSchema.safeParse(value);
-  return result.success ? result.data as GraphIndex : null;
+
+  return result.success ? result.data : null;
 }
 
 /**
@@ -250,6 +262,7 @@ export function createGraphIndex(nodes: GraphNode[] = [], edges: GraphEdge[] = [
  */
 export function addNode(graph: GraphIndex, node: GraphNode): GraphIndex {
   const filtered = graph.nodes.filter((n) => n.slug !== node.slug);
+
   return { ...graph, nodes: [...filtered, node] };
 }
 
@@ -260,9 +273,11 @@ export function addEdge(graph: GraphIndex, edge: GraphEdge): GraphIndex {
   const exists = graph.edges.some(
     (e) => e.from === edge.from && e.to === edge.to && e.relation === edge.relation
   );
+
   if (exists) {
     return graph;
   }
+
   return { ...graph, edges: [...graph.edges, edge] };
 }
 
@@ -276,6 +291,7 @@ export function addEdgeWithConfidence(
   confidence: WikiConfidence
 ): GraphIndex {
   const weight = edge.weight ?? CONFIDENCE_SCORE_DEFAULTS[confidence];
+
   return addEdge(graph, { ...edge, weight });
 }
 
@@ -284,14 +300,17 @@ export function addEdgeWithConfidence(
  */
 export function findNeighbors(graph: GraphIndex, slug: string): string[] {
   const neighbors = new Set<string>();
+
   for (const edge of graph.edges) {
     if (edge.from === slug) {
       neighbors.add(edge.to);
     }
+
     if (edge.to === slug) {
       neighbors.add(edge.from);
     }
   }
+
   return [...neighbors].sort();
 }
 
@@ -311,28 +330,35 @@ export function findNeighborsNHop(
 
   for (let hop = 0; hop < hops; hop++) {
     const nextFrontier = new Set<string>();
+
     for (const current of frontier) {
       for (const edge of graph.edges) {
         if (filterRelations && !filterRelations.includes(edge.relation)) {
           continue;
         }
+
         let neighbor: string | null = null;
+
         if (edge.from === current && !visited.has(edge.to)) {
           neighbor = edge.to;
         } else if (edge.to === current && !visited.has(edge.from)) {
           neighbor = edge.from;
         }
+
         if (neighbor) {
           visited.add(neighbor);
           nextFrontier.add(neighbor);
         }
       }
     }
+
     frontier = nextFrontier;
+
     if (frontier.size === 0) break;
   }
 
   visited.delete(slug); // Remove starting node from results
+
   return [...visited].sort();
 }
 
@@ -366,36 +392,43 @@ export function validateGraph(graph: GraphIndex): GraphValidationResult {
         message: `Duplicate node slug: ${node.slug}`,
       });
     }
+
     slugs.add(node.slug);
   }
 
   for (const edge of graph.edges) {
     const edgeKey = graphEdgeKey(edge);
+
     if (edgeKeys.has(edgeKey)) {
       issues.push({
         code: "edge.duplicate",
         message: `Duplicate edge: ${edge.from} -> ${edge.to} (${edge.relation})`,
       });
     }
+
     edgeKeys.add(edgeKey);
+
     if (!slugs.has(edge.from)) {
       issues.push({
         code: "edge.missing_node",
         message: `Edge references non-existent source node: ${edge.from}`,
       });
     }
+
     if (!slugs.has(edge.to)) {
       issues.push({
         code: "edge.missing_node",
         message: `Edge references non-existent target node: ${edge.to}`,
       });
     }
+
     if (edge.from === edge.to) {
       issues.push({
         code: "edge.self_loop",
         message: `Self-loop edge on node: ${edge.from}`,
       });
     }
+
     if (edge.weight !== undefined && (edge.weight < 0 || edge.weight > 1)) {
       issues.push({
         code: "edge.invalid_weight",
@@ -440,11 +473,14 @@ export function computeGraphHealth(graph: GraphIndex): GraphHealthMetrics {
 
   // Connectivity: BFS/DFS from first node
   let connectivity = 0;
+
   if (nodeCount > 0) {
     const adjacency = new Map<string, Set<string>>();
+
     for (const node of graph.nodes) {
       adjacency.set(node.slug, new Set());
     }
+
     for (const edge of graph.edges) {
       if (slugSet.has(edge.from) && slugSet.has(edge.to)) {
         adjacency.get(edge.from)!.add(edge.to);
@@ -456,9 +492,11 @@ export function computeGraphHealth(graph: GraphIndex): GraphHealthMetrics {
     const visited = new Set<string>();
     const queue: string[] = [graph.nodes[0].slug];
     visited.add(graph.nodes[0].slug);
+
     while (queue.length > 0) {
       const current = queue.shift()!;
       const neighbors = adjacency.get(current);
+
       if (neighbors) {
         for (const neighbor of neighbors) {
           if (!visited.has(neighbor)) {
@@ -468,10 +506,10 @@ export function computeGraphHealth(graph: GraphIndex): GraphHealthMetrics {
         }
       }
     }
+
     connectivity = visited.size / nodeCount;
   }
 
-  // Density
   const density = edgeCount / Math.max(nodeCount, 1);
 
   // Freshness: simplified — if there are nodes, assume 1.0
@@ -479,6 +517,7 @@ export function computeGraphHealth(graph: GraphIndex): GraphHealthMetrics {
 
   // Confidence ratio: edges with weight >= 0.8 / total edges
   let confidenceRatio = 0;
+
   if (edgeCount > 0) {
     const highConfidenceEdges = graph.edges.filter((e) => (e.weight ?? 0) >= 0.8).length;
     confidenceRatio = highConfidenceEdges / edgeCount;
@@ -486,10 +525,12 @@ export function computeGraphHealth(graph: GraphIndex): GraphHealthMetrics {
 
   // Orphan nodes: nodes not referenced in any edge
   const referencedSlugs = new Set<string>();
+
   for (const edge of graph.edges) {
     referencedSlugs.add(edge.from);
     referencedSlugs.add(edge.to);
   }
+
   const orphanNodes = graph.nodes.filter((n) => !referencedSlugs.has(n.slug)).length;
 
   // Broken edges: edges where from or to is not in nodes
@@ -519,9 +560,11 @@ export function computeGraphHealth(graph: GraphIndex): GraphHealthMetrics {
  */
 export async function loadGraphIndex(wikiRoot: string): Promise<GraphIndex | null> {
   const graphPath = path.join(wikiRoot, ".indices", "graph-index.json");
+
   try {
     const raw = await readFile(graphPath, "utf8");
     const parsed = JSON.parse(raw);
+
     return parseGraphIndex(parsed);
   } catch {
     return null;
@@ -537,6 +580,7 @@ export async function saveGraphIndex(wikiRoot: string, graph: GraphIndex): Promi
   await mkdir(dir, { recursive: true });
   const outPath = path.join(dir, "graph-index.json");
   await writeFile(outPath, JSON.stringify(graph, null, 2), "utf8");
+
   return outPath;
 }
 
@@ -551,13 +595,16 @@ export async function saveGraphIndex(wikiRoot: string, graph: GraphIndex): Promi
  */
 export function mergeGraphs(base: GraphIndex, overlay: GraphIndex): GraphIndex {
   const nodeMap = new Map<string, GraphNode>();
-  const nodeKey = (n: GraphNode) => n.slug ?? (n as unknown as { id?: string }).id ?? `${n.title}:${n.type}`;
+  const nodeKey = (n: GraphNode) => n.slug ?? `${n.title}:${n.type}`;
+
   for (const n of base.nodes) nodeMap.set(nodeKey(n), n);
+
   for (const n of overlay.nodes) nodeMap.set(nodeKey(n), n); // overlay wins
 
   const edgeMap = new Map<string, GraphEdge>();
 
   const evidenceLen = (e: GraphEdge) => e.evidence?.length ?? 0;
+
   // Two DIFFERENT codebase PAIRS can independently produce a synthesized
   // cross-repo edge with the identical `from|to|relation` identity (e.g.
   // repo X and repo Y both import something matching the same third repo
@@ -576,14 +623,18 @@ export function mergeGraphs(base: GraphIndex, overlay: GraphIndex): GraphIndex {
     if (!a && !b) return undefined;
     const seen = new Set<string>();
     const merged: string[][] = [];
+
     for (const pair of [...(a ?? []), ...(b ?? [])]) {
       const key = JSON.stringify([...pair].sort());
+
       if (seen.has(key)) continue;
       seen.add(key);
       merged.push(pair);
     }
+
     return merged;
   };
+
   // An edge's plain `origin` is its own one-element provenance pair, same as
   // `scopeGlobalGraph` already treats it (#974 review round 17 P2) — folded
   // in here too, so the LOSING side of a collision doesn't lose it outright.
@@ -595,19 +646,23 @@ export function mergeGraphs(base: GraphIndex, overlay: GraphIndex): GraphIndex {
   // review round 18 P2).
   const edgePairs = (e: GraphEdge): string[][] | undefined => {
     const pairs = [...(e.crossOriginPairs ?? []), ...(e.origin ? [[e.origin]] : [])];
+
     return pairs.length > 0 ? pairs : undefined;
   };
 
   for (const e of base.edges) {
     edgeMap.set(graphEdgeKey(e), e);
   }
+
   for (const e of overlay.edges) {
     const key = graphEdgeKey(e);
     const existing = edgeMap.get(key);
+
     if (!existing) {
       edgeMap.set(key, e);
       continue;
     }
+
     // Prefer the variant with more evidence; on ties, prefer overlay.
     const winner = evidenceLen(e) >= evidenceLen(existing) ? e : existing;
     const crossOriginPairs = mergeCrossOriginPairs(edgePairs(existing), edgePairs(e));

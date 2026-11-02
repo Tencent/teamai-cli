@@ -298,7 +298,7 @@ describe('skill driver', () => {
       run, status: 'driving', actions: [],
       running: [{ attempt: expect.stringMatching(/^a[0-9a-f]{8}$/), step: 'lint', phase: 'running' }],
       events: [{ kind: 'started', step: 'lint', attempt: expect.stringMatching(/^a[0-9a-f]{8}$/) }],
-      // oxlint-disable-next-line unicorn/no-thenable
+      // oxlint-disable-next-line unicorn/no-thenable -- a workflow turn names its next step `then`; it is data, not a promise method
       then: { kind: 'poll', run: `teamai workflow next ${run} --driver skill --wait` },
     });
 
@@ -310,7 +310,7 @@ describe('skill driver', () => {
         { kind: 'settled', step: 'lint', outcome: 'success', exitCode: 0 },
         { kind: 'started', step: 'test', attempt: expect.stringMatching(/^a[0-9a-f]{8}$/) },
       ],
-      // oxlint-disable-next-line unicorn/no-thenable
+      // oxlint-disable-next-line unicorn/no-thenable -- a workflow turn names its next step `then`; it is data, not a promise method
       then: { kind: 'poll', run: `teamai workflow next ${run} --driver skill --wait` },
     } } });
     const ended = await harness.call({ kind: 'next', run, wait: true });
@@ -481,7 +481,7 @@ describe('skill driver', () => {
     const polled = await harness.call({ kind: 'next', run, wait: true });
     expect(polled).toEqual({ data: { turn: expect.objectContaining({
       actions: [],
-      // oxlint-disable-next-line unicorn/no-thenable
+      // oxlint-disable-next-line unicorn/no-thenable -- a workflow turn names its next step `then`; it is data, not a promise method
       then: { kind: 'wake', run: `teamai workflow next ${run} --driver skill` },
     }) } });
 
@@ -673,7 +673,7 @@ describe('skill driver', () => {
     expect(chosen.data.turn.running).toEqual([{ attempt: place.attempt, step: 'work.write', phase: 'placing' }]);
     expect(await harness.call({ kind: 'next', run, wait: true })).toEqual({ data: { turn: expect.objectContaining({
       actions: [],
-      // oxlint-disable-next-line unicorn/no-thenable
+      // oxlint-disable-next-line unicorn/no-thenable -- a workflow turn names its next step `then`; it is data, not a promise method
       then: { kind: 'wake', run: `teamai workflow next ${run} --driver skill` },
     }) } });
 
@@ -962,7 +962,7 @@ steps:
       status: 'done',
       events: [{ kind: 'settled', step: 'review', outcome: 'success' }, { kind: 'judging', step: 'review', scorers: ['review-quality'], ref: expect.stringMatching(/^s[0-9a-f]+\/a[0-9a-f]{8}$/) }],
       actions: [{ kind: 'done', outcome: 'succeeded', prs: [], judging: { step: 'review', scorers: ['review-quality'] } }],
-      // oxlint-disable-next-line unicorn/no-thenable
+      // oxlint-disable-next-line unicorn/no-thenable -- a workflow turn names its next step `then`; it is data, not a promise method
       then: { kind: 'poll', run: `teamai workflow next ${run} --driver skill --wait` },
     } } });
 
@@ -986,7 +986,7 @@ steps:
     expect(done).toMatchObject({ data: { turn: {
       status: 'done',
       actions: [{ kind: 'done', outcome: 'succeeded', judging: { step: 'review', scorers: ['review-quality'] } }],
-      // oxlint-disable-next-line unicorn/no-thenable
+      // oxlint-disable-next-line unicorn/no-thenable -- a workflow turn names its next step `then`; it is data, not a promise method
       then: { kind: 'poll', run: `teamai workflow next ${run} --driver skill --wait` },
     } } });
     const judged = await harness.call({ kind: 'next', run, wait: true }, { mode: 'unattended' });
@@ -1266,7 +1266,7 @@ steps:
       expect(settled).toMatchObject({ data: { turn: {
         status: 'driving', actions: [], running: [], waiting: delivering,
         events: [{ kind: 'settled', step: 'implement', outcome: 'success', exitCode: 0 }],
-        // oxlint-disable-next-line unicorn/no-thenable
+        // oxlint-disable-next-line unicorn/no-thenable -- a workflow turn names its next step `then`; it is data, not a promise method
         then: { kind: 'poll', run: `teamai workflow next ${run} --driver skill --wait` },
       } } });
       expect(await harness.call({ kind: 'next', run, wait: false })).toMatchObject({ data: { turn: { status: 'driving', actions: [], waiting: delivering } } });

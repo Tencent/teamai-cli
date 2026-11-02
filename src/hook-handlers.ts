@@ -13,8 +13,8 @@ import os from 'node:os';
 import path from 'node:path';
 
 import type { ResolvedEntry } from './namespaced-entries.js';
-import type { HookHandler } from './hook-dispatch.js';
-import type { GlobalOptions, LocalConfig } from './types.js';
+import { stdinString, type HookHandler, type HookStdin } from './hook-dispatch.js';
+import type { GlobalOptions, LocalConfig, WebhookPayload } from './types.js';
 import type { GitHookEvent } from './git-hook.js';
 import { deriveDispatchSessionId, deriveSessionId } from './utils/session-id.js';
 import { log } from './utils/logger.js';
@@ -69,20 +69,24 @@ export interface HandlerRegistration {
  * background (detached) pass, which is not awaited by the host.
  */
 const FOREGROUND_HOOK_TIMEOUT_MS = 4_500;
+
 /**
  * TodoWrite runs on a PostToolUse matcher whose host cap is only 3s
  * (builtin-hooks.ts), so it needs a tighter budget than the shared foreground
  * cap. It is a local dedup-cache check that completes in microseconds anyway.
  */
 const TODOWRITE_HINT_TIMEOUT_MS = 2_500;
+
 /** Background (detached) npm-registry update check — not awaited by the host. */
 const UPDATE_TIMEOUT_MS = 10_000;
+
 /**
  * Background (detached) local-agent HTTP report/sync. Detached runs are not
  * awaited by the host, so they keep a full budget to complete real work such as
  * resource downloads. Foreground local-agent runs use FOREGROUND_HOOK_TIMEOUT_MS.
  */
 const LOCAL_AGENT_TIMEOUT_MS = 15_000;
+
 /**
  * Background (detached) upvote LLM-judge (issue #723, opt-in). It shells out to
  * the local signed-in CLI (judgeAdoption caps that call at 30s), so it needs a
@@ -90,6 +94,7 @@ const LOCAL_AGENT_TIMEOUT_MS = 15_000;
  * never delays the host Stop.
  */
 const VOTES_JUDGE_TIMEOUT_MS = 45_000;
+
 /**
  * Budget for the detached session-start pull.
  *
@@ -117,29 +122,36 @@ const pullHandler: HookHandler = {
   name: 'pull',
   async execute(stdin, tool, config) {
     const cwd = resolveHookCwd(stdin);
+
     // No config resolved: teamai is not set up here, or the project config
     // cannot be read. Only the second stops the pull, since what detection
     // loads after that file may be another team's (#784). A cwd that no longer
     // exists holds no project config, and git refuses to open it.
     if (!config && (cwd === undefined || await pathExists(cwd))) {
       const { findUnreadableProjectConfig } = await import('./config.js');
+
       if (await findUnreadableProjectConfig(cwd) !== null) return null;
     }
+
     if (config && !await toolMayDeliver(stdin, tool, config)) return null;
     const hintCwd = cwd ?? process.cwd();
     const packageHints = await import('./pkg/pkg-hint.js');
     const packageHashBeforePull = await packageHints.packageManifestHashForCwd(hintCwd);
+
     try {
       const { seedProjectAgentRoot } = await import('./project-agent-root.js');
       await seedProjectAgentRoot(tool, cwd);
     } catch (e) {
-      log.debug(`hook-dispatch: seedProjectAgentRoot failed: ${(e as Error).message}`);
+      log.debug(`hook-dispatch: seedProjectAgentRoot failed: ${e instanceof Error ? e.message : String(e)}`);
     }
+
     const { pull, settleLateUsageReport } = await import('./pull.js');
     const { SessionCaptures } = await import('./session-flow/captures.js');
     const before = config && await SessionCaptures.checkoutDelivery(config, tool);
+
     if (config && await needsPreparation(hintCwd, config)) await prepareCheckout(hintCwd, 'session-start');
     else await pull({ silent: true });
+
     if (config && before) await SessionCaptures.markTeamChanged(config, tool, stdin, before);
     await packageHints.stashPackageHintAfterPull(
       hintCwd,
@@ -153,11 +165,15 @@ const pullHandler: HookHandler = {
     // Finished attended sessions are judged or published in a process this pass does not wait for, where a scope turns that on.
     const { backgroundPassScopes } = await import('./score-sessions.js');
     const passCwd = await pathExists(hintCwd) ? hintCwd : os.homedir();
-    const scopes = await backgroundPassScopes(passCwd).catch((e: unknown) => {
-      log.debug(`hook-dispatch: could not tell whether sessions are scored or published here: ${e instanceof Error ? e.message : String(e)}`);
+
+    const scopes = await backgroundPassScopes(passCwd).catch((cause: unknown) => {
+      log.debug(`hook-dispatch: could not tell whether sessions are scored or published here: ${cause instanceof Error ? cause.message : String(cause)}`);
+
       return [];
     });
+
     if (scopes.length > 0) await spawnDetachedScoreSessions(passCwd);
+
     return null;
   },
 };
@@ -172,7 +188,8 @@ const sessionCaptureHandler: HookHandler = {
     if (!config) return null;
     const { SessionCaptures } = await import('./session-flow/captures.js');
     await SessionCaptures.addToolVersion(config, tool, stdin);
-    await SessionCaptures.sweep(config).catch((e: unknown) => log.debug(`session capture: could not sweep captures: ${e instanceof Error ? e.message : String(e)}`));
+    await SessionCaptures.sweep(config).catch((cause: unknown) => log.debug(`session capture: could not sweep captures: ${cause instanceof Error ? cause.message : String(cause)}`));
+
     return null;
   },
 };
@@ -199,8 +216,9 @@ const PREPARING_PULL = {
 async function prepareCheckout(cwd: string, trigger: keyof typeof PREPARING_PULL): Promise<void> {
   const { createProjectToolRoots } = await import('./project-agent-root.js');
   const roots = createProjectToolRoots({ cwd });
+
   if (trigger === 'post-checkout') await roots;
-  else await roots.catch((e: unknown) => log.debug(`hook-dispatch: could not create tool roots in ${cwd}: ${e instanceof Error ? e.message : String(e)}`));
+  else await roots.catch((cause: unknown) => log.debug(`hook-dispatch: could not create tool roots in ${cwd}: ${cause instanceof Error ? cause.message : String(cause)}`));
   const { pull } = await import('./pull.js');
   await pull({ silent: true, prepareCheckout: 'once', ...PREPARING_PULL[trigger] });
 }
@@ -213,8 +231,10 @@ async function prepareCheckout(cwd: string, trigger: keyof typeof PREPARING_PULL
  */
 async function needsPreparation(cwd: string, config: LocalConfig): Promise<boolean> {
   if (config.scope !== 'project' || config.repo.kind === 'http' || !config.projectRoot) return false;
+
   if (!await isLinkedWorktree(config.projectRoot)) return false;
   const { deliveringCheckoutRecord } = await import('./pull.js');
+
   return !await deliveringCheckoutRecord(config) && !await isOwnCheckout(cwd, config);
 }
 
@@ -226,12 +246,14 @@ async function needsPreparation(cwd: string, config: LocalConfig): Promise<boole
 async function isLinkedWorktree(root: string): Promise<boolean> {
   const { readFile } = await import('node:fs/promises');
   const pointer = /^gitdir:\s*(.+)$/m.exec(await readFile(path.join(root, '.git'), 'utf8').catch(() => ''));
+
   return pointer !== null && pathExists(path.join(path.resolve(root, pointer[1].trim()), 'commondir'));
 }
 
 /** Checkouts teamai itself creates: its knowledge and reports worktrees, under the scope's data home, the team clone, or the user-scope side-branch names. */
 async function isOwnCheckout(cwd: string, config: LocalConfig): Promise<boolean> {
   const { getDataHome, getTeamaiHomeDir, WORKTREE_DIRNAMES } = await import('./types.js');
+
   return isWithin(cwd, [
     getDataHome(config),
     config.repo.localPath,
@@ -254,8 +276,10 @@ const newWorktreeHandler: HookHandler = {
   async execute(stdin, _tool, config) {
     const { isNewCheckout } = await import('./git-hook.js');
     const args = Array.isArray(stdin.git_args) ? stdin.git_args.map(String) : [];
+
     if (!config || config.scope !== 'project' || !isNewCheckout(args)) return null;
     const cwd = resolveHookCwd(stdin) ?? process.cwd();
+
     if (await isOwnCheckout(cwd, config)) return null;
 
     await recordingFailure(config, 'post-checkout', () => prepareCheckout(cwd, 'post-checkout'));
@@ -263,6 +287,7 @@ const newWorktreeHandler: HookHandler = {
     // `git worktree add` returns; it also retries what failed above, and
     // runs postDeploy when it, not the pull above, writes the first record.
     await spawnDetachedPull(cwd, 'post-checkout', { prepareCheckout: 'once' });
+
     return null;
   },
 };
@@ -278,8 +303,10 @@ const newCheckoutHandler: HookHandler = {
   name: 'new-checkout',
   async execute(stdin, tool, config) {
     const cwd = resolveHookCwd(stdin) ?? process.cwd();
+
     if (!config || !await needsPreparation(cwd, config) || !await toolMayDeliver(stdin, tool, config)) return null;
     await prepareCheckout(cwd, 'tool-use');
+
     return null;
   },
 };
@@ -290,11 +317,13 @@ const newCheckoutHandler: HookHandler = {
  * hooks, since a pull would restore what was removed (#993), nor when a
  * workflow launched the session in a checkout it holds (#1176).
  */
-async function toolMayDeliver(stdin: Record<string, unknown>, tool: string, config: LocalConfig): Promise<boolean> {
+async function toolMayDeliver(stdin: HookStdin, tool: string, config: LocalConfig): Promise<boolean> {
   const { isAgentExcluded } = await import('./types.js');
+
   if (isAgentExcluded(config, tool)) return false;
   const { LAUNCH_PAYLOAD_KEY, launchHoldsCheckout, readLaunch } = await import('./launch-context.js');
   const launch = readLaunch(stdin[LAUNCH_PAYLOAD_KEY]);
+
   return !(launch && await launchHoldsCheckout(config, launch));
 }
 
@@ -314,26 +343,35 @@ const gitPullHandler: HookHandler = {
   name: 'git-pull',
   async execute(stdin, _tool, config) {
     if (!config || config.scope !== 'project') return null;
+
     const event = stdin.hook_event_name === 'post-rewrite' || stdin.hook_event_name === 'post-checkout'
       ? stdin.hook_event_name : 'post-merge';
+
     const args = Array.isArray(stdin.git_args) ? stdin.git_args.map(String) : [];
+
     if (event === 'post-rewrite' && args[0] !== 'rebase') return null;
     const cwd = resolveHookCwd(stdin) ?? process.cwd();
+
     if (event === 'post-checkout') {
       const { isRebaseFastForward } = await import('./git-hook.js');
+
       if (!await isRebaseFastForward(args, process.env.GIT_REFLOG_ACTION, cwd)) return null;
     }
+
     const { getDataHome, isSelfMode } = await import('./types.js');
     const self = isSelfMode(config);
     // teamai's own checkouts; in self mode the team repo is the member's.
     const own = [getDataHome(config), ...await ownCheckoutsDir(cwd)];
+
     if (await isWithin(cwd, self ? own : [...own, config.repo.localPath])) return null;
 
     const { pull } = await import('./pull.js');
     await recordingFailure(config, event, () => pull({
       silent: true, inline: true, gitHook: event, fetchTimeoutMs: GIT_PULL_FETCH_CAP_MS,
     }));
+
     if (!self) await spawnDetachedPull(cwd, event);
+
     return null;
   },
 };
@@ -345,13 +383,13 @@ const gitPullHandler: HookHandler = {
 async function recordingFailure(
   config: LocalConfig,
   event: GitHookEvent,
-  pass: () => Promise<unknown>,
+  pass: () => Promise<void>,
 ): Promise<void> {
   try {
     await pass();
   } catch (e) {
     const { recordGitHookFailure } = await import('./git-hook.js');
-    await recordGitHookFailure(config, { kind: 'hook-error', event, at: new Date().toISOString(), error: (e as Error).message });
+    await recordGitHookFailure(config, { kind: 'hook-error', event, at: new Date().toISOString(), error: e instanceof Error ? e.message : String(e) });
   }
 }
 
@@ -390,6 +428,7 @@ async function ownCheckoutsDir(cwd: string): Promise<string[]> {
   if (!await pathExists(cwd)) return [];
   const { resolveAnchors } = await import('./utils/git.js');
   const anchors = await resolveAnchors(cwd);
+
   return anchors ? [path.join(anchors.mainCheckout ?? anchors.workspaceRoot, '.teamai')] : [];
 }
 
@@ -398,10 +437,13 @@ async function isWithin(dir: string, parents: string[]): Promise<boolean> {
   const { realpath } = await import('node:fs/promises');
   const real = (p: string) => realpath(p).catch(() => path.resolve(p));
   const target = await real(dir);
+
   for (const parent of parents) {
     const rel = path.relative(await real(parent), target);
+
     if (!rel.startsWith('..') && !path.isAbsolute(rel)) return true;
   }
+
   return false;
 }
 
@@ -410,6 +452,7 @@ const updateHandler: HookHandler = {
   async execute(_stdin, _tool, config) {
     const { doUpdate } = await import('./update.js');
     await doUpdate(config);
+
     return null;
   },
 };
@@ -420,14 +463,16 @@ const updateHandler: HookHandler = {
  * keywords only".
  */
 async function teamCorrectionKeywords(
-  stdin: Record<string, unknown>,
+  stdin: HookStdin,
   config: LocalConfig | null,
 ): Promise<readonly string[]> {
-  if (typeof stdin.prompt !== 'string' || !config) return [];
+  if (stdinString(stdin, 'prompt') === undefined || !config) return [];
+
   try {
     const { loadTeamConfig } = await import('./config.js');
     const { getInterventionSharing } = await import('./types.js');
     const teamConfig = await loadTeamConfig(config.repo.localPath);
+
     return teamConfig ? getInterventionSharing(teamConfig).correctionKeywords : [];
   } catch {
     return [];
@@ -445,6 +490,7 @@ const dashboardReportHandler: HookHandler = {
     // The dispatcher's scope, which knows the project even when the event
     // records no cwd (Copilot) or a symlinked one (#785).
     const scopeKey = await dataHomeKey(getDataHome(config));
+
     const event = await parseHookEvent(raw, tool, {
       correctionKeywords: await teamCorrectionKeywords(stdin, config),
       // The gateway model-alias map of the hook's scope, its own entries over this
@@ -452,13 +498,16 @@ const dashboardReportHandler: HookHandler = {
       modelAliases: config.modelAliases,
       dataHomeKey: scopeKey,
     });
+
     if (event) {
       event.dataHomeKey = scopeKey;
+
       const [projectAnchor] = await Promise.all([
         eventProjectAnchor(event.cwd, event.sessionId),
         addGitStateAtStart(event, gitStateIn(stdin)),
         addGitHeadAtStop(event),
       ]);
+
       event.projectAnchor = projectAnchor;
       // The foreground dispatcher's, so a background pass records what the session's own environment said.
       const { readSessionRun } = await import('./launch-context.js');
@@ -467,6 +516,7 @@ const dashboardReportHandler: HookHandler = {
       // Non-blocking compaction
       compactEvents().catch(() => {});
     }
+
     return null;
   },
 };
@@ -483,9 +533,11 @@ const skillUseHandler: HookHandler = {
     // project of a removed worktree (#810).
     if (!config) return null;
     const { creditToolCall } = await import('./skill-use.js');
+
     for (const skillName of await creditToolCall(stdin, tool, config)) {
       await sendWebhookEvent('skill-use', stdin, tool, config, { skillName });
     }
+
     return null;
   },
 };
@@ -503,6 +555,7 @@ const recallAttributionHandler: HookHandler = {
     if (process.env.TEAMAI_RECALL_DISABLED === '1' || !config) return null;
     const { recordToolCall } = await import('./recall-adoption.js');
     await recordToolCall(stdin, tool, config);
+
     return null;
   },
 };
@@ -515,6 +568,7 @@ const skillMentionHandler: HookHandler = {
     if (!config) return null;
     const { creditPromptMentions } = await import('./skill-use.js');
     await creditPromptMentions(stdin, tool, config);
+
     return null;
   },
 };
@@ -552,6 +606,7 @@ export function eligibleUpvotes(
   activeScope: string | undefined,
 ): string[] {
   if (activeScope !== 'project') return [...adoptedDocIds];
+
   return adoptedDocIds.filter((id) => recalledDocScopes[id] !== 'user');
 }
 
@@ -563,6 +618,7 @@ const contributeCheckHandler: HookHandler = {
     // A removed worktree's session keeps its recorded scope (#810).
     const { contributeHintAllowed } = await import('./skill-content.js');
     const { hookScopeDir } = await import('./dashboard-collector.js');
+
     if (!(await contributeHintAllowed(await hookScopeDir(stdin, tool)))) return null;
 
     const { contributeCheckForSession } = await import('./contribute-check.js');
@@ -573,7 +629,7 @@ const contributeCheckHandler: HookHandler = {
     // share the same session id even when stdin.session_id is absent.
     const sessionId = deriveSessionId(stdin, { includeCwd: true });
     const cwd = resolveHookCwd(stdin);
-    const transcriptPath = typeof stdin.transcript_path === 'string' ? stdin.transcript_path : undefined;
+    const transcriptPath = stdinString(stdin, 'transcript_path');
     // Tools whose Stop hook cannot deliver model context: stash the hint (in the same
     // single state write inside contributeCheckForSession) for delivery on the
     // next UserPromptSubmit, so contributeCheckForSession returns null here.
@@ -583,7 +639,9 @@ const contributeCheckHandler: HookHandler = {
     const run = readSessionRun(stdin) ?? sessionRun(process.env);
     const offer = localConfig ? async () => (await import('./session-share.js')).SessionShare.reminderOffer(localConfig, { tool, sessionId, cwd: cwd ?? process.cwd(), run }) : undefined;
     const { hint } = await contributeCheckForSession(sessionId, cwd, transcriptPath, stash, offer);
+
     if (!hint) return null;
+
     // The hint is addressed to the user, so a host that hides the payload needs
     // the model to pass it on. Claude Code prints it and must not be asked (#719).
     return formatStopHookOutput(relayWhenHidden(hint, tool), tool);
@@ -595,6 +653,7 @@ const pendingHintHandler: HookHandler = {
   name: 'pending-hint',
   async execute(stdin, tool) {
     const { stopStdoutUnsupported } = await import('./utils/tool-names.js');
+
     if (!stopStdoutUnsupported(tool)) return null;
 
     // Must match contributeCheckHandler's derivation so Stop and UserPromptSubmit
@@ -615,6 +674,7 @@ const pendingHintHandler: HookHandler = {
     const { contributeHintAllowed } = await import('./skill-content.js');
     const { hookScopeDir } = await import('./dashboard-collector.js');
     const hint = (await contributeHintAllowed(await hookScopeDir(stdin, tool))) ? stashed : null;
+
     if (!hint) return null;
 
     return JSON.stringify({
@@ -631,10 +691,13 @@ const packagePendingHintHandler: HookHandler = {
   name: 'package-pending-hint',
   async execute(stdin, _tool) {
     const { takePendingPackageHint } = await import('./pkg/pkg-hint.js');
+
     const hint = await takePendingPackageHint(
       deriveSessionId(stdin, { includeCwd: true }),
     );
+
     if (!hint) return null;
+
     return JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'UserPromptSubmit',
@@ -671,7 +734,7 @@ const votesSyncHandler: HookHandler = {
       // A subagent's end is not the end of the turn: the main agent waits on
       // this hook, so it only credits locally. The ledger prune and the vote
       // push, a git round trip, wait for the next Stop or pull.
-      const hookEvent = typeof stdin.hook_event_name === 'string' ? stdin.hook_event_name.toLowerCase() : '';
+      const hookEvent = stdinString(stdin, 'hook_event_name')?.toLowerCase() ?? '';
       const subagentStop = hookEvent === 'subagentstop';
       // Copilot's SessionEnd ends the session: it pushes as Stop does, but no
       // one reads its reply, so it prints no summary.
@@ -684,6 +747,7 @@ const votesSyncHandler: HookHandler = {
       if (!subagentStop) await pruneUpvoteLedger(votePath).catch(() => undefined);
 
       const { usesBranchWorktree } = await import('./types.js');
+
       if (subagentStop) {
         // Nothing to push now: see above.
       } else if (usesBranchWorktree(localConfig)) {
@@ -692,6 +756,7 @@ const votesSyncHandler: HookHandler = {
         // Stop fires every turn: skip the fetch when nothing is pending.
         try {
           const { hasPendingVoteDeltas, stageVotesMerge, confirmVotesSynced, readUserVotesFromContent } = await import('./votes.js');
+
           if (await hasPendingVoteDeltas(votesDir, localConfig.username)) {
             const { updateReports, readReportsOriginFile } = await import('./utils/reports-branch.js');
             await updateReports(localConfig, async (wt, { onDelivered }) => {
@@ -700,24 +765,28 @@ const votesSyncHandler: HookHandler = {
               // merged-but-unpushed deltas, and merging onto it again would
               // count them twice on a retry (#1027).
               const origin = await readReportsOriginFile(wt, `votes/${localConfig.username}.yaml`);
+
               const staged = await stageVotesMerge(
                 wt,
                 localConfig.username,
                 votesDir,
                 origin === null ? null : readUserVotesFromContent(origin),
               );
+
               if (!staged) {
                 return {
                   files: [],
                   message: `[teamai] Update votes for ${localConfig.username}`,
                 };
               }
+
               // Deltas are dropped only once origin holds them, and under the
               // reports lock, so a concurrent sync cannot stage the same deltas
               // between this publish and this clear. A busy lock, a failed
               // push, or a crash before delivery keeps them pending for the
               // next Stop (#1027).
               onDelivered(() => confirmVotesSynced(votePath, staged.syncedDeltas));
+
               return {
                 files: [`votes/${localConfig.username}.yaml`],
                 message: `[teamai] Update votes for ${localConfig.username}`,
@@ -766,8 +835,10 @@ const votesSyncHandler: HookHandler = {
       // The summary is for Stop alone.
       if (adoptedDocIds.length > 0 && !subagentStop && !sessionEnd) {
         const { stopStdoutUnsupported } = await import('./utils/tool-names.js');
+
         if (!stopStdoutUnsupported(tool)) {
           const { formatStopHookOutput } = await import('./utils/hook-output.js');
+
           return formatStopHookOutput(buildAdoptedSummary(adoptedDocIds), tool ?? 'claude');
         }
       }
@@ -775,8 +846,9 @@ const votesSyncHandler: HookHandler = {
       // Non-critical for the session (votes retry on next pull), but the failure
       // MUST be traceable: a swallowed error here is exactly why upvote
       // collection could fail silently for an entire team (see #723). Log it.
-      log.debug(`votes-sync handler failed: ${(error as Error)?.stack ?? String(error)}`);
+      log.debug(`votes-sync handler failed: ${(error instanceof Error ? error.stack : undefined) ?? String(error)}`);
     }
+
     return null;
   },
 };
@@ -806,11 +878,13 @@ const votesJudgeHandler: HookHandler = {
   name: 'votes-judge',
   async execute(stdin, _tool, localConfig) {
     if (process.env.TEAMAI_RECALL_DISABLED === '1' || !localConfig) return null;
+
     // Opt-in only. Keeps the default path identical to the tool-use-only fix.
     if (process.env.TEAMAI_UPVOTE_JUDGE !== '1') return null;
 
-    const transcriptPath = typeof stdin.transcript_path === 'string' ? stdin.transcript_path : null;
-    const finalReply = typeof stdin.last_assistant_message === 'string' ? stdin.last_assistant_message.trim() : '';
+    const transcriptPath = stdinString(stdin, 'transcript_path') ?? null;
+    const finalReply = stdinString(stdin, 'last_assistant_message')?.trim() ?? '';
+
     if (!transcriptPath && !finalReply) return null;
 
     try {
@@ -830,6 +904,7 @@ const votesJudgeHandler: HookHandler = {
       // with no recall found there, the settled recall log is the evidence.
       const fromTranscript = transcriptPath ? await parseTranscriptForVotes(transcriptPath) : null;
       let voteData = fromTranscript;
+
       if (finalReply && !fromTranscript?.recalledDocIds.length) {
         const { recalledDocsForSession } = await import('./recall-adoption.js');
         const docs = await recalledDocsForSession(localConfig, dispatchSessionId);
@@ -840,6 +915,7 @@ const votesJudgeHandler: HookHandler = {
           recalledDocScopes: Object.fromEntries(docs.map(d => [d.key, d.scope])),
         };
       }
+
       if (!voteData || voteData.recalledDocIds.length === 0) return null;
 
       // The session's upvote ledger holds every doc the hook path (or an earlier
@@ -866,19 +942,24 @@ const votesJudgeHandler: HookHandler = {
       // judge's excerpt grounding read from this, so a subagent-recalled nested
       // doc is keyed and judged the same as a main-agent one.
       const pathOf = await recalledPathOf(localConfig, dispatchSessionId);
-      const docPaths: Record<string, string> = { ...voteData.recalledDocPaths };
+      const docPaths = { ...voteData.recalledDocPaths };
+
       for (const id of voteData.recalledDocIds) {
         if (docPaths[id] === undefined) {
           const printed = pathOf(id);
+
           if (printed !== undefined) docPaths[id] = printed;
         }
       }
+
       // The parser names a doc by its `File:` basename (`setup`, a skill's
       // `SKILL`); the ledger and the votes use the key its run recorded
       // (`learnings/setup`, `retry`). A path no run printed keeps the parser's id.
       const printedKey = await recalledKeyOf(localConfig, dispatchSessionId);
+
       const keyOf = (id: string): string => {
         const printed = docPaths[id];
+
         return (printed !== undefined ? printedKey(printed) : undefined) ?? id;
       };
 
@@ -888,6 +969,7 @@ const votesJudgeHandler: HookHandler = {
       const scopeEligible = new Set(
         eligibleUpvotes(voteData.recalledDocIds, voteData.recalledDocScopes, localConfig.scope),
       );
+
       // Dedup is ledger-only: a doc already in the shared per-session upvote
       // ledger is never sent to the judge again. A recalled doc that was NOT
       // adopted is re-judged on a later Stop (the judge is opt-in, so this cost
@@ -898,6 +980,7 @@ const votesJudgeHandler: HookHandler = {
       const toJudge = voteData.recalledDocIds.filter(
         (id) => scopeEligible.has(id) && !ledgerCredited.has(keyOf(id)),
       );
+
       if (toJudge.length === 0) return null;
 
       // The judge reads recalled doc excerpts; restrict those reads to trusted
@@ -915,6 +998,7 @@ const votesJudgeHandler: HookHandler = {
 
       // Gate again to recalled (defensive; judgeAdoption already restricts to toJudge).
       const verified = adopted.filter((id) => recalledSet.has(id));
+
       if (verified.length === 0) return null;
 
       const { incrementUpvoted, syncVotesToTeam, hasPendingVoteDeltas, stageVotesMerge, confirmVotesSynced, readUserVotesFromContent } = await import('./votes.js');
@@ -922,6 +1006,7 @@ const votesJudgeHandler: HookHandler = {
       // foreground handler uses, preventing a later foreground open from
       // double-counting the same doc (issue #723 review).
       const credited = await incrementUpvoted(votePath, [...new Set(verified.map(keyOf))], sessionId);
+
       if (credited === null || credited.length === 0) return null;
 
       // Sync using the same path as the foreground handler.
@@ -932,19 +1017,23 @@ const votesJudgeHandler: HookHandler = {
             // See the votes-sync handler: origin's snapshot is the merge base
             // and the deltas are cleared only on delivery, under the lock (#1027).
             const origin = await readReportsOriginFile(wt, `votes/${localConfig.username}.yaml`);
+
             const staged = await stageVotesMerge(
               wt,
               localConfig.username,
               votesDir,
               origin === null ? null : readUserVotesFromContent(origin),
             );
+
             if (!staged) {
               return {
                 files: [],
                 message: `[teamai] Update votes for ${localConfig.username}`,
               };
             }
+
             onDelivered(() => confirmVotesSynced(votePath, staged.syncedDeltas));
+
             return {
               files: [`votes/${localConfig.username}.yaml`],
               message: `[teamai] Update votes for ${localConfig.username}`,
@@ -956,8 +1045,9 @@ const votesJudgeHandler: HookHandler = {
       }
     } catch (error) {
       // Best-effort supplement; never surface failures.
-      log.debug(`votes-judge handler failed: ${(error as Error)?.stack ?? String(error)}`);
+      log.debug(`votes-judge handler failed: ${(error instanceof Error ? error.stack : undefined) ?? String(error)}`);
     }
+
     return null;
   },
 };
@@ -965,6 +1055,7 @@ const votesJudgeHandler: HookHandler = {
 /** `teamai.yaml` `language` for this scope, when that file can be read. */
 async function teamAgentLanguage(config: LocalConfig | null): Promise<'en' | 'zh' | undefined> {
   const { loadTeamAgentLanguage } = await import('./config.js');
+
   return loadTeamAgentLanguage(config);
 }
 
@@ -973,7 +1064,8 @@ const todowriteHintHandler: HookHandler = {
   async execute(stdin, _tool, config) {
     if (process.env.TEAMAI_RECALL_DISABLED === '1') return null;
 
-    const toolName = normalizeToolName(typeof stdin.tool_name === 'string' ? stdin.tool_name : '');
+    const toolName = normalizeToolName(stdinString(stdin, 'tool_name') ?? '');
+
     if (toolName !== 'TodoWrite') return null;
 
     const { shouldSkipTodoWriteHint, buildHintMessage } = await import('./todowrite-hint.js');
@@ -993,6 +1085,7 @@ const mrHintHandler: HookHandler = {
   name: 'mr-hint',
   async execute(_stdin, _tool, config) {
     const { computeMrHintOutput } = await import('./mr-hint.js');
+
     return computeMrHintOutput(await teamAgentLanguage(config), config);
   },
 };
@@ -1001,6 +1094,7 @@ const packageHintHandler: HookHandler = {
   name: 'package-hint',
   async execute(stdin, _tool) {
     const { claimPackageHintOutput } = await import('./pkg/pkg-hint.js');
+
     return claimPackageHintOutput(
       resolveHookCwd(stdin) ?? process.cwd(),
       deriveSessionId(stdin, { includeCwd: true }),
@@ -1026,15 +1120,19 @@ const teamEnvHintHandler: HookHandler = {
     const { declarations } = teamEnv;
     const secrets = declarations.kind === 'resolved' ? declarations.entries.filter(({ name }) => applied.secretKeys.includes(name)) : [];
     const declared = effectiveTeamEnvVariables(teamEnv).filter(({ name }) => applied.variables.has(name) && !applied.secretKeys.includes(name));
+
     // A key a last pull wrote that no file declares now has no description to give.
     const plain = [...declared, ...[...applied.variables.keys()]
-      .filter((name) => !applied.secretKeys.includes(name) && !declared.some((variable) => variable.name === name))
-      .map((name) => ({ name, entry: {} }))];
+      .flatMap((name) => (!applied.secretKeys.includes(name) && !declared.some((variable) => variable.name === name) ? [{ name, entry: {} }] : []))];
+
     if (secrets.length === 0 && plain.length === 0) return null;
+
     const described = (entries: readonly Pick<ResolvedEntry<{ description?: string }>, 'name' | 'entry'>[]): string => entries.map(({ name, entry }) => {
       const description = entry.description?.replace(/\s+/g, ' ').trim();
+
       return description ? `${name} (${description})` : name;
     }).join(', ');
+
     return JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'SessionStart',
@@ -1068,19 +1166,24 @@ const teamRulesHandler: HookHandler = {
     if (!config || config.scope !== 'project' || stdin.source === 'resume') return null;
     const { getsRulesFromSessionHook } = await import('./resources/rule-format.js');
     const { isAgentExcluded } = await import('./types.js');
+
     if (!getsRulesFromSessionHook(tool) || isAgentExcluded(config, tool)) return null;
     const { loadTeamConfig } = await import('./config.js');
     const teamConfig = await loadTeamConfig(config.repo.localPath);
+
     if (!teamConfig) return null;
     const { deliversInstructionsByHook, instructionHookTextFor } = await import('./instruction-targets.js');
     const { teamRulesContext } = await import('./resources/rules.js');
     const text = deliversInstructionsByHook(tool, config.scope) ? await instructionHookTextFor(teamConfig, config, tool) : '';
     const parts = text ? [text] : [];
     const rules = await teamRulesContext(teamConfig, config);
+
     if (rules !== null) parts.push(rules);
+
     if (parts.length === 0) return null;
     // Codex rejects output whose hookEventName is not the event it ran.
     const hookEventName = stdin.hook_event_name === 'SubagentStart' ? 'SubagentStart' : 'SessionStart';
+
     return JSON.stringify({ hookSpecificOutput: { hookEventName, additionalContext: parts.join('\n\n') } });
   },
 };
@@ -1091,10 +1194,13 @@ const cursorUserRulesHandler: HookHandler = {
   async execute(stdin, tool, config) {
     if (tool !== 'cursor' || !config) return null;
     const cwd = resolveHookCwd(stdin);
+
     if (!cwd) return null;
     const { cursorUserRulesContext } = await import('./cursor-user-rules.js');
     const text = await cursorUserRulesContext(cwd, config);
+
     if (text === null) return null;
+
     return JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: text } });
   },
 };
@@ -1112,19 +1218,25 @@ const instructionsHandler: HookHandler = {
     if (!config) return null;
     const { deliversInstructionsByHook, instructionHookTextFor } = await import('./instruction-targets.js');
     const { isAgentExcluded } = await import('./types.js');
+
     if (!deliversInstructionsByHook(tool, config.scope) || isAgentExcluded(config, tool)) return null;
     const { loadTeamConfig } = await import('./config.js');
     const teamConfig = await loadTeamConfig(config.repo.localPath);
+
     if (!teamConfig) return null;
     const text = await instructionHookTextFor(teamConfig, config, tool);
     const parts = text ? [text] : [];
     const { getsRulesFromExtension } = await import('./resources/rule-format.js');
+
     if (config.scope === 'project' && getsRulesFromExtension(tool)) {
       const { teamRulesContext } = await import('./resources/rules.js');
       const rules = await teamRulesContext(teamConfig, config);
+
       if (rules !== null) parts.push(rules);
     }
+
     if (parts.length === 0) return null;
+
     return JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: parts.join('\n\n') } });
   },
 };
@@ -1140,17 +1252,22 @@ const localAgentInstructionsHandler: HookHandler = {
   name: 'http-prompt-instructions',
   async execute(stdin, tool, config) {
     const { isAgentExcluded } = await import('./types.js');
+
     if (config && isAgentExcluded(config, tool)) return null;
     const { deliversInstructionsByHook } = await import('./instruction-targets.js');
     const { getsRulesFromSessionHook } = await import('./resources/rule-format.js');
+
     if (!deliversInstructionsByHook(tool, 'project')) return null;
     const sessionEvent = stdin.hook_event_name === 'SessionStart' || stdin.hook_event_name === 'SubagentStart';
+
     // Each tool through its own channel only; a resumed Codex session holds them already.
     if (getsRulesFromSessionHook(tool) !== sessionEvent || stdin.source === 'resume') return null;
     const { localAgentInstructionText } = await import('./local-agent.js');
     const text = await localAgentInstructionText(resolveHookCwd(stdin) ?? process.cwd(), tool);
+
     if (!text) return null;
     const hookEventName = stdin.hook_event_name === 'SubagentStart' ? 'SubagentStart' : 'SessionStart';
+
     return JSON.stringify({ hookSpecificOutput: { hookEventName, additionalContext: text } });
   },
 };
@@ -1160,14 +1277,17 @@ const localAgentHandler: HookHandler = {
   name: 'local-agent-sync',
   async execute(stdin, tool, config) {
     const { isAgentExcluded } = await import('./types.js');
+
     if (config && isAgentExcluded(config, tool)) return null;
     const { reportAndSyncFromHook } = await import('./local-agent.js');
     const output = await reportAndSyncFromHook(stdin, tool);
+
     // Codex's first prompt must read the cache after this sync, rather than
     // racing it in another handler. SubagentStart reads the parent's cache.
     if (stdin.hook_event_name === 'SessionStart') {
       return await localAgentInstructionsHandler.execute(stdin, tool, config) ?? output;
     }
+
     return output;
   },
 };
@@ -1183,11 +1303,11 @@ const localAgentHandler: HookHandler = {
  * (`sessionStart`) — see dashboard-collector's mapEventType, which handles both.
  * A case-sensitive PascalCase-only map silently dropped the camelCase hosts.
  */
-const WEBHOOK_EVENT_BY_HOOK: Record<string, string> = {
-  sessionstart: 'session-start',
-  stop: 'session-stop',
-  sessionend: 'session-stop',
-};
+const WEBHOOK_EVENT_BY_HOOK = new Map([
+  ['sessionstart', 'session-start'],
+  ['stop', 'session-stop'],
+  ['sessionend', 'session-stop'],
+]);
 
 /**
  * Build the minimal, whitelisted data payload for a webhook event.
@@ -1199,37 +1319,43 @@ const WEBHOOK_EVENT_BY_HOOK: Record<string, string> = {
  */
 function buildWebhookData(
   event: string,
-  stdin: Record<string, unknown>,
-): Record<string, unknown> {
+  stdin: HookStdin,
+): WebhookPayload['data'] {
   if (event === 'session-start' || event === 'session-stop') {
     const sessionId = deriveSessionId(stdin);
+
     return sessionId ? { sessionId } : {};
   }
+
   return {};
 }
 
 /** Send one webhook event to the team's configured endpoints; a failure is logged, never thrown. */
 async function sendWebhookEvent(
   event: string,
-  stdin: Record<string, unknown>,
+  stdin: HookStdin,
   tool: string,
   localConfig: LocalConfig,
-  data: Record<string, unknown>,
+  data: WebhookPayload['data'],
 ): Promise<void> {
   const { sendWebhook, loadWebhookConfig } = await import('./webhook.js');
+
   try {
     const config = await loadWebhookConfig(localConfig);
+
     if (!config.enabled || config.endpoints.length === 0) return;
+
     const payload = {
       tool,
       sessionId: deriveSessionId(stdin),
       cwd: resolveHookCwd(stdin),
-      username: typeof stdin.username === 'string' ? stdin.username : undefined,
+      username: stdinString(stdin, 'username'),
       data,
     };
+
     await sendWebhook(event, payload, config);
   } catch (error) {
-    log.debug(`Webhook dispatch failed: ${(error as Error).message}`);
+    log.debug(`Webhook dispatch failed: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
@@ -1238,13 +1364,15 @@ const webhookHandler: HookHandler = {
   name: 'webhook-dispatch',
   async execute(stdin, tool, localConfig) {
     if (!localConfig) return null;
-    const hookEventName = typeof stdin.hook_event_name === 'string' ? stdin.hook_event_name : '';
+    const hookEventName = stdinString(stdin, 'hook_event_name') ?? '';
     // Case-insensitive so both PascalCase (Claude) and camelCase (Cursor/
     // CodeBuddy) hook names resolve (#702).
-    const event = WEBHOOK_EVENT_BY_HOOK[hookEventName.toLowerCase()];
+    const event = WEBHOOK_EVENT_BY_HOOK.get(hookEventName.toLowerCase());
+
     // Only forward events we can map to a canonical name — never emit `unknown` (#702).
     if (!event) return null;
     await sendWebhookEvent(event, stdin, tool, localConfig, buildWebhookData(event, stdin));
+
     return null;
   },
 };
@@ -1376,8 +1504,10 @@ export function filterHandlersForConfig(
   if (!localConfig) {
     return registry.filter((reg) => reg.requiresConfig !== true);
   }
+
   if (localConfig.repo.kind === 'http') {
     return registry.filter((reg) => reg.gitOnly !== true);
   }
+
   return registry;
 }

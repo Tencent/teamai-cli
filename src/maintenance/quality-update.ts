@@ -42,6 +42,7 @@ export async function findStaleEntries(
   const perDoc = new Map<string, { recalled: number; upvoted: number; users: Set<string> }>();
 
   const voteFiles = await listFiles(votesDir);
+
   for (const file of voteFiles) {
     if (!file.endsWith('.yaml') && !file.endsWith('.yml')) continue;
     const username = file.replace(/\.(yaml|yml)$/, '');
@@ -49,10 +50,12 @@ export async function findStaleEntries(
 
     try {
       const data = await readUserVotes(filePath);
+
       for (const [docId, entry] of Object.entries(data.votes)) {
         const existing = perDoc.get(docId) ?? { recalled: 0, upvoted: 0, users: new Set<string>() };
         existing.recalled += entry.recalled_count ?? 0;
         existing.upvoted += entry.upvoted_count ?? 0;
+
         if ((entry.recalled_count ?? 0) > 0) existing.users.add(username);
         perDoc.set(docId, existing);
       }
@@ -65,10 +68,13 @@ export async function findStaleEntries(
 
   for (const [docId, data] of perDoc) {
     if (data.recalled < minRecalled) continue;
+
     if (data.upvoted > maxUpvoted) continue;
+
     if (data.users.size < minUsers) continue;
 
     const entryPath = await resolveDocPath(docId, knowledgeDirs);
+
     if (!entryPath) continue;
 
     const type = entryPath.includes('/docs/') ? 'docs'
@@ -93,11 +99,14 @@ async function resolveDocPath(
   dirs: { docs?: string; rules?: string; skills?: string },
 ): Promise<string | null> {
   const filename = docId.endsWith('.md') ? docId : `${docId}.md`;
+
   for (const dir of [dirs.docs, dirs.rules, dirs.skills]) {
     if (!dir) continue;
     const candidate = path.join(dir, filename);
+
     if (await pathExists(candidate)) return candidate;
   }
+
   return null;
 }
 
@@ -107,10 +116,12 @@ async function resolveDocPath(
 export function reportStaleEntries(entries: StaleEntry[]): void {
   if (entries.length === 0) {
     log.info('No stale entries found that need quality updates.');
+
     return;
   }
 
   log.info(`Found ${entries.length} entry(ies) recalled often but rarely adopted:`);
+
   for (const entry of entries) {
     log.info(
       `  - [${entry.type}] ${entry.docId}: recalled ${entry.recalledCount}x by ${entry.userCount} users, adopted ${entry.upvotedCount}x`,
@@ -141,10 +152,13 @@ export async function findRelatedAdoptedLearnings(
 
   for (const file of voteFiles) {
     if (!file.endsWith('.yaml') && !file.endsWith('.yml')) continue;
+
     try {
       const data = await readUserVotes(path.join(votesDir, file));
+
       for (const [docId, entry] of Object.entries(data.votes)) {
         if (docId === staleEntry.docId) continue;
+
         if ((entry.upvoted_count ?? 0) > 0) {
           perDoc.set(docId, (perDoc.get(docId) ?? 0) + (entry.upvoted_count ?? 0));
         }
@@ -161,12 +175,16 @@ export async function findRelatedAdoptedLearnings(
   const byName = new Map(
     (await listLearningFiles(learningsDirs, namespaces)).map((learning) => [learning.file, learning.absPath]),
   );
+
   const contents: string[] = [];
+
   for (const [docId] of sorted) {
     const filename = docId.endsWith('.md') ? docId : `${docId}.md`;
     const filePath = byName.get(filename);
+
     if (!filePath) continue;
     const content = await readFileSafe(filePath);
+
     if (content) contents.push(content);
   }
 
@@ -182,6 +200,7 @@ export async function generateUpdateDraft(
   relatedLearnings: string[],
 ): Promise<string | null> {
   const currentContent = await readFileSafe(staleEntry.path);
+
   if (!currentContent) return null;
 
   const { callTool, isOverrideInvalid } = await import('../tool-launch/call.js');
@@ -211,10 +230,12 @@ Output ONLY the updated markdown file content (including frontmatter).`;
 
   try {
     const draft = (await callTool(prompt, { launchedBy: 'quality-update' })).text;
+
     return draft.trim();
   } catch (e) {
     if (isOverrideInvalid(e)) throw e;
-    log.error(`AI update generation failed: ${(e as Error).message}`);
+    log.error(`AI update generation failed: ${e instanceof Error ? e.message : String(e)}`);
+
     return null;
   }
 }

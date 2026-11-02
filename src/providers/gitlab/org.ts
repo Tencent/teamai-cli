@@ -1,3 +1,5 @@
+import { z } from 'zod';
+import type { JsonValue } from '../../types.js';
 import type { OrgRepoInfo } from '../types.js';
 import { getGitLabToken, gitlabApiBase } from './gitlab-api.js';
 
@@ -7,17 +9,20 @@ const DEFAULT_PER_PAGE = 100;
 const DEFAULT_MAX_REPOS = 200;
 const REQUEST_TIMEOUT_MS = 30_000;
 
-interface GitLabProjectApiItem {
-  id: number;
-  name: string;
-  path_with_namespace: string;
-  description?: string | null;
-  http_url_to_repo: string;
-  default_branch?: string | null;
-  archived?: boolean;
-  last_activity_at?: string;
-  star_count?: number;
-}
+/** A project of a GitLab group listing. An optional field of another type reads as absent. */
+const GitLabProjectApiItemSchema = z.object({
+  id: z.number(),
+  name: z.string(),
+  path_with_namespace: z.string(),
+  description: z.string().nullish().catch(undefined),
+  http_url_to_repo: z.string(),
+  default_branch: z.string().nullish().catch(undefined),
+  archived: z.boolean().optional().catch(undefined),
+  last_activity_at: z.string().optional().catch(undefined),
+  star_count: z.number().optional().catch(undefined),
+});
+
+type GitLabProjectApiItem = z.infer<typeof GitLabProjectApiItemSchema>;
 
 /** 将 GitLab API 返回的 project 条目映射为 OrgRepoInfo。 */
 function mapItem(item: GitLabProjectApiItem): OrgRepoInfo {
@@ -53,6 +58,7 @@ export async function gitlabListOrgRepos(
   opts?: { maxRepos?: number },
 ): Promise<OrgRepoInfo[]> {
   const token = getGitLabToken();
+
   if (!token) {
     throw new Error('GitLab token unavailable: set GITLAB_TOKEN (or GITLAB_PRIVATE_TOKEN / GITLAB_PAT).');
   }
@@ -70,14 +76,17 @@ export async function gitlabListOrgRepos(
     // drop every project nested under a subgroup of the requested group.
     const url = `${gitlabApiBase()}/groups/${encodedGroup}/projects`
       + `?per_page=${perPage}&page=${page}&include_subgroups=true`;
+
     const resp = await fetch(url, { headers, redirect: 'manual', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
 
     if (resp.status >= 300 && resp.status < 400) {
       throw new Error(`Unexpected redirect from GitLab API: ${resp.status}`);
     }
+
     if (resp.status === 404) {
       throw new Error(`GitLab group ${group} not found or no access`);
     }
+
     if (!resp.ok) {
       throw new Error(`GitLab API HTTP ${resp.status}: ${await resp.text().catch(() => '')}`);
     }
@@ -86,30 +95,44 @@ export async function gitlabListOrgRepos(
     const reader = resp.body?.getReader();
     let received = 0;
     const chunks: Uint8Array[] = [];
+
     if (reader) {
       while (true) {
         const { done, value } = await reader.read();
+
         if (done) break;
         received += value.length;
+
         if (received > MAX_RESPONSE_BYTES) {
           await reader.cancel();
           throw new Error(`GitLab API response exceeds ${MAX_RESPONSE_BYTES} bytes`);
         }
+
         chunks.push(value);
       }
     }
+
     const bodyText = Buffer.concat(chunks).toString('utf-8').trim();
+
     if (!bodyText) break;
-    let items: GitLabProjectApiItem[];
+    let listed: JsonValue;
+
     try {
-      items = JSON.parse(bodyText) as GitLabProjectApiItem[];
+      // JSON.parse returns `any`; what it builds is a JsonValue by construction.
+      listed = JSON.parse(bodyText);
     } catch {
       throw new Error(`GitLab API returned a malformed project list for group ${group}`);
     }
-    if (!Array.isArray(items) || items.length === 0) break;
+
+    if (!Array.isArray(listed) || listed.length === 0) break;
+    const parsed = z.array(GitLabProjectApiItemSchema).safeParse(listed);
+
+    if (!parsed.success) throw new Error(`GitLab API returned a malformed project list for group ${group}`);
+    const items = parsed.data;
 
     for (const item of items) {
       collected.push(mapItem(item));
+
       if (collected.length >= maxRepos) break;
     }
 

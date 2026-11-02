@@ -8,6 +8,7 @@
  * run, over its suite file and each task file.
  * Each run still shows as a point of its own.
  */
+import { definedFields } from '../utils/defined-fields.js';
 import { runSourceHash } from './plan.js';
 import type { Baseline, BenchmarkRecord, BenchmarkRunRecord } from './result.js';
 import type { TeamChoice } from './suite.js';
@@ -109,6 +110,7 @@ export interface TaskView {
 
 /** What two arms of the current version differ in: exactly one of these, so the difference has one cause. */
 export const ARM_DIMENSIONS = ['team', 'tool', 'model', 'workflow'] as const;
+
 export type ArmDimension = (typeof ARM_DIMENSIONS)[number];
 
 /**
@@ -194,9 +196,11 @@ export interface BenchmarkHistoryView {
 }
 
 type Trial = BenchmarkRecord['trials'][number];
+
 type Arm = BenchmarkRecord['arms'][number];
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
 /** The normal quantile of a two-sided 95% interval. */
 const Z = 1.96;
 
@@ -218,12 +222,13 @@ function beats(left: PassRate, right: PassRate): boolean {
 }
 
 /** The Wilson score interval of `passed` out of `planned`, planned above 0. */
-function wilson({ passed, planned }: PassRate): { low: number; high: number } {
+function wilson({ passed, planned }: PassRate) {
   const p = passed / planned;
   const z2 = Z * Z;
   const denominator = 1 + z2 / planned;
   const center = (p + z2 / (2 * planned)) / denominator;
   const margin = (Z * Math.sqrt((p * (1 - p)) / planned + z2 / (4 * planned * planned))) / denominator;
+
   return { low: Math.max(0, center - margin), high: Math.min(1, center + margin) };
 }
 
@@ -247,6 +252,7 @@ function teamChoiceOf(team: ArmTeam): TeamChoice {
       return { kind: 'without', paths: team.paths };
     default: {
       const unhandled: never = team;
+
       return unhandled;
     }
   }
@@ -254,33 +260,39 @@ function teamChoiceOf(team: ArmTeam): TeamChoice {
 
 function leaderOf({ arms, trials }: BenchmarkRecord): SuiteSummary['leader'] {
   let leader: SuiteSummary['leader'];
+
   for (const { name } of arms) {
     const rate = passRate(trials.filter(({ arm }) => arm === name));
+
     if (rate.planned > 0 && (!leader || beats(rate, leader))) leader = { arm: name, ...rate };
   }
+
   return leader;
 }
 
 function summaryOf(suite: string, runs: readonly BenchmarkRunInput[], newest: BenchmarkRunInput): SuiteSummary {
   const leader = leaderOf(newest.benchmark);
-  return {
+
+  return definedFields<SuiteSummary>({
     suite,
     runs: runs.length,
     lastRunAt: newest.startedAt,
     tasks: newest.benchmark.tasks.length,
     arms: newest.benchmark.arms.length,
-    ...(leader ? { leader } : {}),
+    leader,
     trend: runs.map(({ run, startedAt, benchmark }) => ({ run, startedAt, ...passRate(benchmark.trials) })),
-  };
+  });
 }
 
 function versionsOf(runs: readonly BenchmarkRunInput[]): SuiteVersion[] {
   const versions = new Map<string, SuiteVersion>();
+
   for (const { startedAt, benchmark } of runs) {
     const sourceHash = runSourceHash(benchmark);
     const seen = versions.get(sourceHash);
     versions.set(sourceHash, { sourceHash, runs: (seen?.runs ?? 0) + 1, lastRunAt: startedAt });
   }
+
   return [...versions.values()].sort((left, right) => right.lastRunAt.localeCompare(left.lastRunAt));
 }
 
@@ -293,13 +305,16 @@ interface SuiteRuns {
 
 function armsOf({ runs, current, newest }: SuiteRuns): ArmSeries[] {
   const configs = new Map<string, { arm: Arm; points: RunPoint[]; pooledTrials: ObservedTrial[]; pooledRuns: number; deviations: number; notVerified: number }>();
+
   for (const input of runs) {
     const isPooled = current.includes(input);
     const observed = isPooled ? observedTrials(input) : [];
+
     for (const arm of input.benchmark.arms) {
       const key = armKey(arm);
       const config = configs.get(key) ?? { arm, points: [], pooledTrials: [], pooledRuns: 0, deviations: 0, notVerified: 0 };
       config.points.push({ run: input.run, startedAt: input.startedAt, ...passRate(input.benchmark.trials.filter((trial) => trial.arm === arm.name)) });
+
       if (isPooled) {
         // Each run's arm is compared on its own team revision, as that run's table compares it.
         const own = observed.filter(({ trial }) => trial.arm === arm.name);
@@ -309,26 +324,33 @@ function armsOf({ runs, current, newest }: SuiteRuns): ArmSeries[] {
         config.deviations += deviations;
         config.notVerified += notVerified;
       }
+
       configs.set(key, config);
     }
   }
+
   const order = newest.benchmark.arms.map(armKey);
+
   const rank = (key: string, points: readonly RunPoint[]): [number, string] => {
     const index = order.indexOf(key);
+
     return [index < 0 ? order.length : index, index < 0 ? points.at(-1)?.startedAt ?? '' : ''];
   };
+
   return [...configs].sort(([leftKey, left], [rightKey, right]) => {
     const [leftRank, leftLast] = rank(leftKey, left.points);
     const [rightRank, rightLast] = rank(rightKey, right.points);
+
     return leftRank - rightRank || rightLast.localeCompare(leftLast);
   }).map(([key, { arm, points, pooledTrials, pooledRuns, deviations, notVerified }]) => {
     const pooled = passRate(pooledTrials.map(({ trial }) => trial));
-    return {
-      key, arm: arm.name, tool: arm.tool, ...(arm.model ? { model: arm.model } : {}), ...(arm.effort ? { effort: arm.effort } : {}), team: teamChoiceOf(arm.team), ...(arm.workflow ? { workflow: arm.workflow.name } : {}),
+
+    return definedFields<ArmSeries>({
+      key, arm: arm.name, tool: arm.tool, model: arm.model || undefined, effort: arm.effort || undefined, team: teamChoiceOf(arm.team), workflow: arm.workflow?.name,
       isCurrent: order.includes(key),
-      ...(pooled.planned > 0 ? { pooled: { ...pooled, ...wilson(pooled), runs: pooledRuns, deviations, notVerified, usage: usageOf(pooledTrials) } } : {}),
+      pooled: pooled.planned > 0 ? { ...pooled, ...wilson(pooled), runs: pooledRuns, deviations, notVerified, usage: usageOf(pooledTrials) } : undefined,
       points,
-    };
+    });
   });
 }
 
@@ -340,14 +362,19 @@ function rateFields(rate: PassRate): Partial<PassRate> {
 function tasksOf({ current, newest }: SuiteRuns): TaskView[] {
   return newest.benchmark.tasks.map(({ id }) => {
     const trialsIn = (input: BenchmarkRunInput) => input.benchmark.trials.filter((trial) => trial.task === id);
+
     const runs = current.flatMap((input) => {
       const baseline = input.benchmark.tasks.find((task) => task.id === id)?.baseline;
+
       return baseline ? [{ input, baseline, trials: trialsIn(input) }] : [];
     });
+
     const disagreedRuns = runs.filter(({ input, trials }) => input.benchmark.arms.some(({ name }) => {
       const results = new Set(trials.filter((trial) => trial.arm === name).map(({ result }) => result));
+
       return results.has('passed') && (results.has('failed') || results.has('error'));
     })).length;
+
     return {
       task: id,
       arms: newest.benchmark.arms.map((arm) => ({
@@ -374,7 +401,9 @@ function dimensionOf(left: Arm, right: Arm): ArmDimension | undefined {
     model: JSON.stringify(requestedModel(left)) !== JSON.stringify(requestedModel(right)),
     workflow: (left.workflow?.name ?? null) !== (right.workflow?.name ?? null),
   } satisfies Record<ArmDimension, boolean>;
+
   const [only, ...more] = ARM_DIMENSIONS.filter((dimension) => differs[dimension]);
+
   return more.length === 0 ? only : undefined;
 }
 
@@ -398,63 +427,77 @@ export function pairedDifference({ both, toOnly, fromOnly, neither }: { both: nu
   const value = pTo - pFrom;
   const below = Math.sqrt(Math.max(0, (pTo - toCi.low) ** 2 - 2 * phi * (pTo - toCi.low) * (fromCi.high - pFrom) + (fromCi.high - pFrom) ** 2));
   const above = Math.sqrt(Math.max(0, (toCi.high - pTo) ** 2 - 2 * phi * (toCi.high - pTo) * (pFrom - fromCi.low) + (pFrom - fromCi.low) ** 2));
+
   return { value, low: Math.max(-1, value - below), high: Math.min(1, value + above) };
 }
 
 function comparisonsOf({ current, newest }: SuiteRuns): ArmComparison[] {
   const arms = newest.benchmark.arms;
+
   const ordered = (left: Arm, right: Arm, dimension: ArmDimension): [Arm, Arm] => {
     if (dimension !== 'team') return [left, right];
+
     return TEAM_ORDER[right.team.kind] < TEAM_ORDER[left.team.kind] ? [right, left] : [left, right];
   };
+
   const comparisons: ArmComparison[] = [];
   arms.forEach((left, index) => {
     for (const right of arms.slice(index + 1)) {
       const dimension = dimensionOf(left, right);
+
       if (dimension === undefined) continue;
       const [from, to] = ordered(left, right, dimension);
       const [fromKey, toKey] = [armKey(from), armKey(to)];
       const pairs: Array<{ task: string; from: boolean; to: boolean }> = [];
-      const observed: { from: ObservedTrial[]; to: ObservedTrial[] } = { from: [], to: [] };
+      const observedFrom: ObservedTrial[] = [];
+      const observedTo: ObservedTrial[] = [];
+
       for (const record of current) {
         const named = (key: string): string | undefined => record.benchmark.arms.find((arm) => armKey(arm) === key)?.name;
         const [fromName, toName] = [named(fromKey), named(toKey)];
+
         if (fromName === undefined || toName === undefined) continue;
         const trials = observedTrials(record);
+
         for (const one of trials.filter(({ trial }) => trial.arm === fromName)) {
           const other = trials.find(({ trial: { arm, task, repetition } }) => arm === toName && task === one.trial.task && repetition === one.trial.repetition);
+
           if (!other) continue;
           pairs.push({ task: one.trial.task, from: one.trial.result === 'passed', to: other.trial.result === 'passed' });
-          observed.from.push(one);
-          observed.to.push(other);
+          observedFrom.push(one);
+          observedTo.push(other);
         }
       }
+
       if (pairs.length === 0) continue;
       const count = (test: (pair: { from: boolean; to: boolean }) => boolean): number => pairs.filter(test).length;
       const rate = (of: typeof pairs, side: 'from' | 'to'): PassRate => ({ passed: of.filter((pair) => pair[side]).length, planned: of.length });
       comparisons.push({
         dimension, from: fromKey, to: toKey, pairs: pairs.length,
         rates: { from: rate(pairs, 'from'), to: rate(pairs, 'to') },
-        usage: { from: usageOf(observed.from), to: usageOf(observed.to) },
+        usage: { from: usageOf(observedFrom), to: usageOf(observedTo) },
         difference: pairedDifference({ both: count((p) => p.from && p.to), toOnly: count((p) => p.to && !p.from), fromOnly: count((p) => p.from && !p.to), neither: count((p) => !p.from && !p.to) }),
         tasks: newest.benchmark.tasks.flatMap(({ id }) => {
           const own = pairs.filter((pair) => pair.task === id);
+
           return own.length > 0 ? [{ task: id, from: rate(own, 'from'), to: rate(own, 'to') }] : [];
         }),
       });
     }
   });
+
   return comparisons.sort((left, right) => ARM_DIMENSIONS.indexOf(left.dimension) - ARM_DIMENSIONS.indexOf(right.dimension));
 }
 
 function teamChangesOf({ current }: SuiteRuns): SuiteView['teamChanges'] {
   const configs = new Map<string, TeamConfig>();
   const revisions = new Map<string, { firstRunAt: string; byConfig: Map<string, { runs: Set<string>; trials: Trial[] }> }>();
+
   for (const { run, startedAt, benchmark } of current) {
     for (const arm of benchmark.arms) {
       if (arm.team.kind !== 'pulled' && arm.team.kind !== 'ref') continue;
       const key = configKey(arm);
-      configs.set(key, { key, tool: arm.tool, ...(arm.model ? { model: arm.model } : {}), ...(arm.effort ? { effort: arm.effort } : {}), ...(arm.workflow ? { workflow: arm.workflow.name } : {}) });
+      configs.set(key, definedFields<TeamConfig>({ key, tool: arm.tool, model: arm.model || undefined, effort: arm.effort || undefined, workflow: arm.workflow?.name }));
       const revision = revisions.get(arm.team.revision) ?? { firstRunAt: startedAt, byConfig: new Map() };
       const config = revision.byConfig.get(key) ?? { runs: new Set<string>(), trials: [] };
       config.runs.add(run);
@@ -463,18 +506,24 @@ function teamChangesOf({ current }: SuiteRuns): SuiteView['teamChanges'] {
       revisions.set(arm.team.revision, revision);
     }
   }
+
   const spanning = [...configs.values()].filter(({ key }) => [...revisions.values()].filter(({ byConfig }) => byConfig.has(key)).length > 1);
+
   if (spanning.length === 0) return { configs: [], revisions: [] };
+
   return {
     configs: spanning,
     revisions: [...revisions].sort(([, left], [, right]) => left.firstRunAt.localeCompare(right.firstRunAt)).map(([revision, { firstRunAt, byConfig }]) => ({
       revision, firstRunAt,
       configs: spanning.flatMap(({ key }) => {
         const config = byConfig.get(key);
+
         if (!config) return [];
         const rate = passRate(config.trials);
+
         if (rate.planned === 0) return [];
         const tasks = [...new Set(config.trials.map(({ task }) => task))].map((task) => ({ task, ...passRate(config.trials.filter((trial) => trial.task === task)) }));
+
         return [{ key, runs: config.runs.size, ...rate, ...wilson(rate), tasks }];
       }),
     })),
@@ -484,27 +533,31 @@ function teamChangesOf({ current }: SuiteRuns): SuiteView['teamChanges'] {
 /** The version of each tool the run's prompts reported, the most reported one when they differ. */
 function toolVersionsOf(input: BenchmarkRunInput): Record<string, string> {
   const counts = new Map<string, Map<string, number>>();
+
   for (const { ranAs } of observedTrials(input)) {
     const { name, version } = ranAs?.tool ?? {};
+
     if (name === undefined || version === undefined) continue;
     const versions = counts.get(name) ?? new Map<string, number>();
     versions.set(version, (versions.get(version) ?? 0) + 1);
     counts.set(name, versions);
   }
+
   return Object.fromEntries([...counts].map(([tool, versions]) => [tool, [...versions].sort(([, left], [, right]) => right - left)[0]?.[0] ?? '']));
 }
 
 function runRow(input: BenchmarkRunInput): RunRow {
   const { run, source, startedAt, username, benchmark } = input;
-  return {
-    run, source, startedAt, ...(username ? { username } : {}),
+
+  return definedFields<RunRow>({
+    run, source, startedAt, username: username || undefined,
     sourceHash: runSourceHash(benchmark),
     teamRevision: benchmark.baselineTeamRevision,
     ...passRate(benchmark.trials),
     unmeasuredTasks: benchmark.tasks.filter(({ baseline }) => !isMeasured(baseline)).length,
     toolVersions: toolVersionsOf(input),
     arms: benchmark.arms.map((arm) => ({ key: armKey(arm), ...passRate(benchmark.trials.filter((trial) => trial.arm === arm.name)) })),
-  };
+  });
 }
 
 /**
@@ -515,20 +568,27 @@ function runRow(input: BenchmarkRunInput): RunRow {
 export function regressionOf(current: BenchmarkRunInput, earlier: readonly BenchmarkRunInput[]): Regression {
   const taskVersions = ({ tasks }: BenchmarkRecord): string => JSON.stringify(tasks.map(({ id, sourceHash }) => [id, sourceHash]).sort());
   const treatments = ({ arms }: BenchmarkRecord): string => JSON.stringify(arms.map(armKey).sort());
+
   const [against] = earlier.filter(({ run, outcome, startedAt, benchmark }) => run !== current.run && outcome === 'succeeded' && startedAt < current.startedAt
     && benchmark.suite.name === current.benchmark.suite.name && taskVersions(benchmark) === taskVersions(current.benchmark) && treatments(benchmark) === treatments(current.benchmark))
     .sort((left, right) => right.startedAt.localeCompare(left.startedAt));
+
   if (!against) return { kind: 'no_comparable' };
+
   const arms = current.benchmark.arms.flatMap(({ name }) => {
     const pairs = current.benchmark.trials.filter(({ arm }) => arm === name).flatMap((to) => {
       const from = against.benchmark.trials.find(({ arm, task, repetition }) => arm === name && task === to.task && repetition === to.repetition);
+
       return from ? [{ from: from.result === 'passed', to: to.result === 'passed' }] : [];
     });
+
     const count = (test: (pair: { from: boolean; to: boolean }) => boolean): number => pairs.filter(test).length;
     const difference = pairedDifference({ both: count((p) => p.from && p.to), toOnly: count((p) => p.to && !p.from), fromOnly: count((p) => p.from && !p.to), neither: count((p) => !p.from && !p.to) });
     const rate = (side: 'from' | 'to'): PassRate => ({ passed: count((pair) => pair[side]), planned: pairs.length });
+
     return difference.high < 0 ? [{ arm: name, pairs: pairs.length, rates: { from: rate('from'), to: rate('to') }, difference }] : [];
   });
+
   return arms.length > 0 ? { kind: 'dropped', against: against.run, arms } : { kind: 'held', against: against.run };
 }
 
@@ -540,20 +600,28 @@ export function runComparisons(input: BenchmarkRunInput): ArmComparison[] {
 export const BenchmarkHistory = {
   of({ runs, query, now }: { runs: readonly BenchmarkRunInput[]; query: BenchmarkHistoryQuery; now: Date }): BenchmarkHistoryView {
     const window = { from: new Date(now.getTime() - query.windowDays * DAY_MS).toISOString(), to: now.toISOString() };
+
     const inWindow = runs.filter(({ startedAt }) => startedAt >= window.from && startedAt <= window.to)
       .sort((left, right) => left.startedAt.localeCompare(right.startedAt));
+
     const bySuite = new Map<string, BenchmarkRunInput[]>();
+
     for (const input of inWindow) bySuite.set(input.benchmark.suite.name, [...bySuite.get(input.benchmark.suite.name) ?? [], input]);
+
     const suites = [...bySuite].flatMap(([suite, own]) => {
       const newest = own.at(-1);
+
       return newest ? [summaryOf(suite, own, newest)] : [];
     }).sort((left, right) => right.lastRunAt.localeCompare(left.lastRunAt));
+
     const chosen = suites.find(({ suite }) => suite === query.suite) ?? suites[0];
     const own = chosen ? bySuite.get(chosen.suite) ?? [] : [];
     const newest = own.at(-1);
+
     if (!chosen || !newest) return { window, suites };
     const version = runSourceHash(newest.benchmark);
     const suiteRuns = { runs: own, current: own.filter(({ benchmark }) => runSourceHash(benchmark) === version), newest };
+
     return {
       window,
       suites,

@@ -1,6 +1,7 @@
 import path from 'node:path';
+import { z } from 'zod';
 import { updateFileLocked } from './git-exclude.js';
-import { getDataHome, type GlobalOptions, type LocalConfig } from './types.js';
+import { getDataHome, isJsonObject, type GlobalOptions, type JsonObject, type JsonValue, type LocalConfig } from './types.js';
 import { pathExists, readFileSafe } from './utils/fs.js';
 import { getUserHome } from './utils/home.js';
 import { log } from './utils/logger.js';
@@ -35,6 +36,9 @@ export interface GitExcludeNotices {
 
 const NOTICES_FILE = 'git-exclude-notices.json';
 
+/** A notice as written: every key it has is kept, so a rewrite drops nothing. */
+const GitExcludeNoticeSchema = z.looseObject({ at: z.string(), message: z.string() });
+
 /**
  * Where a record is kept: a project's partition (its pulls'), or one owner's
  * key in a state home's file. `label` names the run a failure came from.
@@ -57,23 +61,35 @@ export function isBackgroundPull(options: Pick<GlobalOptions, 'silent' | 'gitHoo
   return Boolean(options.silent || options.gitHook);
 }
 
-function parseFile(content: string | null): Record<string, unknown> {
+function parseFile(content: string | null): JsonObject {
   if (!content?.trim()) return {};
+
   try {
-    const parsed = JSON.parse(content) as unknown;
-    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+    const parsed: JsonValue = JSON.parse(content);
+
+    return isJsonObject(parsed) ? parsed : {};
   } catch {
     // Nothing in it is worth more than the notices to come.
     return {};
   }
 }
 
-function parse(record: unknown): GitExcludeNotices {
-  const parsed = (typeof record === 'object' && record !== null ? record : {}) as Partial<GitExcludeNotices>;
-  const valid = (n: unknown): n is GitExcludeNotice => typeof (n as GitExcludeNotice)?.message === 'string' && typeof (n as GitExcludeNotice)?.at === 'string';
+function parse(record: JsonValue | undefined): GitExcludeNotices {
+  const fields: JsonObject = isJsonObject(record) ? record : {};
+  const lastFailure = GitExcludeNoticeSchema.safeParse(fields.lastFailure);
+  const written = fields.notices;
+
+  const notices = Array.isArray(written)
+    ? written.flatMap((n) => {
+      const notice = GitExcludeNoticeSchema.safeParse(n);
+
+      return notice.success ? [notice.data] : [];
+    })
+    : [];
+
   return {
-    lastFailure: valid(parsed.lastFailure) ? { ...parsed.lastFailure, said: parsed.lastFailure.said === true } : null,
-    notices: Array.isArray(parsed.notices) ? parsed.notices.filter(valid) : [],
+    lastFailure: lastFailure.success ? { ...lastFailure.data, said: lastFailure.data.said === true } : null,
+    notices,
   };
 }
 
@@ -81,6 +97,7 @@ function parse(record: unknown): GitExcludeNotices {
 export async function readGitExcludeNotices(home: GitExcludeNoticesHome): Promise<GitExcludeNotices> {
   const { file, owner } = locate(home);
   const all = parseFile(await readFileSafe(file));
+
   return parse(owner === null ? all : all[owner]);
 }
 
@@ -91,13 +108,17 @@ export async function readGitExcludeNotices(home: GitExcludeNoticesHome): Promis
  */
 async function updateNotices(home: GitExcludeNoticesHome, edit: (current: GitExcludeNotices) => GitExcludeNotices | null): Promise<void> {
   const { file, owner } = locate(home);
+
   try {
     const result = await updateFileLocked(file, (content) => {
       const all = parseFile(content);
       const next = edit(parse(owner === null ? all : all[owner]));
+
       if (next === null) return null;
+
       return `${JSON.stringify(owner === null ? next : { ...all, [owner]: next }, null, 2)}\n`;
     });
+
     if (result === 'locked') log.persist(`git exclude: ${file} was busy, its update waits for the next run`);
   } catch (e) {
     log.persist(`git exclude: could not update ${file}: ${e instanceof Error ? e.message : String(e)}`);
@@ -112,8 +133,10 @@ async function updateNotices(home: GitExcludeNoticesHome, edit: (current: GitExc
 export async function noticeGitExclude(home: GitExcludeNoticesHome, message: string, options: Pick<GlobalOptions, 'silent' | 'gitHook'>): Promise<void> {
   if (!isBackgroundPull(options)) {
     warnOnce(message);
+
     return;
   }
+
   log.persist(`git exclude: ${message}`);
   await updateNotices(home, (current) => current.notices.some((n) => n.message === message)
     ? null
@@ -140,8 +163,11 @@ export async function clearGitExcludeFailure(home: GitExcludeNoticesHome): Promi
 export async function sayGitExcludeNotices(home: GitExcludeNoticesHome): Promise<boolean> {
   const { lastFailure, notices } = await readGitExcludeNotices(home);
   const failure = lastFailure && !lastFailure.said ? lastFailure : null;
+
   if (failure) log.warn(`${locate(home).label} (${failure.at}) could not keep teamai's git exclude blocks up to date: ${failure.message}`);
+
   for (const notice of notices) warnOnce(notice.message);
+
   if (failure || notices.length > 0) {
     const said = new Set(notices.map((n) => n.message));
     await updateNotices(home, (current) => ({
@@ -149,5 +175,6 @@ export async function sayGitExcludeNotices(home: GitExcludeNoticesHome): Promise
       notices: current.notices.filter((n) => !said.has(n.message)),
     }));
   }
+
   return lastFailure !== null;
 }

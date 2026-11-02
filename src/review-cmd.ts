@@ -9,6 +9,7 @@ import path from 'node:path';
 
 import chalk from 'chalk';
 import fs from 'fs-extra';
+import { z } from 'zod';
 
 import { patchManagedSection } from './section-patcher.js';
 import type { GlobalOptions } from './types.js';
@@ -46,7 +47,9 @@ function riskAtMost(itemRisk: Risk, ceiling: Risk): boolean {
 
 function riskColor(risk: Risk): string {
     if (risk === 'high') return chalk.red(risk);
+
     if (risk === 'medium') return chalk.yellow(risk);
+
     return chalk.green(risk);
 }
 
@@ -56,6 +59,7 @@ function truncate(str: string, maxLen: number): string {
 
 function renderList(items: PendingReviewItem[]): void {
     const counts = { high: 0, medium: 0, low: 0 };
+
     for (const item of items) counts[item.risk]++;
 
     console.log(
@@ -72,12 +76,14 @@ function renderList(items: PendingReviewItem[]): void {
         'TARGET'.padEnd(42),
         'SOURCE',
     ].join('  ');
+
     console.log(chalk.dim(header));
 
     for (const item of items) {
         const target = item.target.section
             ? `${truncate(item.target.file, 20)}:${truncate(item.target.section, 18)}`
             : truncate(item.target.file, 40);
+
         const row = [
             item.id.padEnd(14),
             riskColor(item.risk).padEnd(10 + (riskColor(item.risk).length - item.risk.length)),
@@ -85,6 +91,7 @@ function renderList(items: PendingReviewItem[]): void {
             truncate(target, 40).padEnd(42),
             truncate(item.source, 30),
         ].join('  ');
+
         console.log(row);
     }
 }
@@ -98,23 +105,28 @@ function renderShow(item: PendingReviewItem): void {
     console.log(`  ${chalk.cyan('source')}:  ${item.source}`);
     console.log(`  ${chalk.cyan('target')}:`);
     console.log(`    file:    ${item.target.file}`);
+
     if (item.target.section) {
         console.log(`    section: ${item.target.section}`);
     }
 
-    const content = item.payload['content'];
-    if (typeof content === 'string' && content) {
+    const content = z.string().safeParse(item.payload['content']).data;
+
+    if (content) {
         console.log(`  ${chalk.cyan('content')}:`);
         const lines = content.split('\n').slice(0, 20);
+
         for (const line of lines) {
             console.log(`    ${line}`);
         }
+
         if (content.split('\n').length > 20) {
             console.log(chalk.dim('    ... (truncated)'));
         }
     } else {
         console.log(`  ${chalk.cyan('payload')}: ${JSON.stringify(item.payload)}`);
     }
+
     console.log(chalk.bold('──────────────────────────────────────────'));
 }
 
@@ -130,17 +142,20 @@ async function applyOne(
     }
 
     const { file, section } = item.target;
+
     if (!section) {
         return { ok: false, reason: 'target.section is missing' };
     }
 
     const filePath = path.isAbsolute(file) ? file : path.join(cwd, file);
+
     if (!await fs.pathExists(filePath)) {
         return { ok: false, reason: `target file not found: ${filePath}` };
     }
 
     const oldMd = await fs.readFile(filePath, 'utf8');
     const body = String(item.payload['content'] ?? '');
+
     if (!body) {
         return { ok: false, reason: 'payload.content is empty' };
     }
@@ -150,7 +165,9 @@ async function applyOne(
             source: item.source,
             syncedAt: new Date().toISOString(),
         });
+
         if (!dryRun) await fs.writeFile(filePath, newMd, 'utf8');
+
         return { ok: true };
     } catch (err) {
         return { ok: false, reason: err instanceof Error ? err.message : String(err) };
@@ -169,39 +186,51 @@ export async function reviewCmd(opts: ReviewCmdOptions): Promise<void> {
     // ── all-apply 模式 ────────────────────────────────────
     if (allApply) {
         const items = await loadPendingReview(cwd);
+
         const candidates = items.filter(
             (item) => item.kind === 'codebase-section' && riskAtMost(item.risk, maxRisk),
         );
+
         const skipped = items.filter(
             (item) => item.kind !== 'codebase-section' || !riskAtMost(item.risk, maxRisk),
         );
 
         const results: Array<{ id: string; ok: boolean; reason?: string }> = [];
+
         for (const item of candidates) {
             const result = await applyOne(cwd, item, dryRun);
+
             if (result.ok && !dryRun) {
                 await removePendingReview(cwd, item.id);
             }
+
             results.push({ id: item.id, ok: result.ok, reason: result.reason });
         }
 
         if (jsonMode) {
-            console.log(JSON.stringify({ results, skipped: skipped.map((s) => s.id), ...(dryRun ? { dryRun: true } : {}) }));
+            // JSON.stringify drops an undefined dryRun, so the key appears only in dry runs (same below).
+            console.log(JSON.stringify({ results, skipped: skipped.map((s) => s.id), dryRun: dryRun ? true : undefined }));
+
             return;
         }
 
         const succeeded = results.filter((r) => r.ok);
         const failed = results.filter((r) => !r.ok);
+
         const summary = dryRun
             ? `[dry-run] [review] --all-apply: ${succeeded.length} would apply, ${failed.length} failed, ${skipped.length} skipped`
             : `[review] --all-apply done: ${succeeded.length} succeeded, ${failed.length} failed, ${skipped.length} skipped`;
+
         console.log(chalk.bold(summary));
+
         for (const fail of failed) {
             console.log(chalk.red(`  ✗ ${fail.id}: ${fail.reason}`));
         }
+
         for (const skip of skipped) {
             console.log(chalk.dim(`  ○ skipped ${skip.id} (kind=${skip.kind}, risk=${skip.risk})`));
         }
+
         return;
     }
 
@@ -212,10 +241,12 @@ export async function reviewCmd(opts: ReviewCmdOptions): Promise<void> {
 
         if (jsonMode) {
             console.log(JSON.stringify(sorted));
+
             return;
         }
 
         renderList(sorted);
+
         return;
     }
 
@@ -225,9 +256,11 @@ export async function reviewCmd(opts: ReviewCmdOptions): Promise<void> {
 
     if (!item) {
         log.warn(`[review] not found: id="${idArg}"`);
+
         if (jsonMode) {
-            console.log(JSON.stringify({ ok: false, reason: `not found: id="${idArg}"`, ...(dryRun ? { dryRun: true } : {}) }));
+            console.log(JSON.stringify({ ok: false, reason: `not found: id="${idArg}"`, dryRun: dryRun ? true : undefined }));
         }
+
         return;
     }
 
@@ -236,10 +269,13 @@ export async function reviewCmd(opts: ReviewCmdOptions): Promise<void> {
         if (!dryRun) await removePendingReview(cwd, idArg);
 
         if (jsonMode) {
-            console.log(JSON.stringify({ ok: true, action: 'reject', id: idArg, ...(dryRun ? { dryRun: true } : {}) }));
+            console.log(JSON.stringify({ ok: true, action: 'reject', id: idArg, dryRun: dryRun ? true : undefined }));
+
             return;
         }
+
         console.log(chalk.yellow(dryRun ? `[dry-run] [review] Would reject: ${idArg}` : `[review] rejected: ${idArg}`));
+
         return;
     }
 
@@ -252,7 +288,8 @@ export async function reviewCmd(opts: ReviewCmdOptions): Promise<void> {
         }
 
         if (jsonMode) {
-            console.log(JSON.stringify({ ok: result.ok, reason: result.reason, id: idArg, ...(dryRun ? { dryRun: true } : {}) }));
+            console.log(JSON.stringify({ ok: result.ok, reason: result.reason, id: idArg, dryRun: dryRun ? true : undefined }));
+
             return;
         }
 
@@ -263,13 +300,16 @@ export async function reviewCmd(opts: ReviewCmdOptions): Promise<void> {
         } else {
             console.log(chalk.red(`${dryRun ? '[dry-run] ' : ''}[review] apply failed: ${idArg} — ${result.reason}`));
         }
+
         return;
     }
 
     // ── show 模式（默认，无 --apply / --reject）───────────
     if (jsonMode) {
         console.log(JSON.stringify(item));
+
         return;
     }
+
     renderShow(item);
 }

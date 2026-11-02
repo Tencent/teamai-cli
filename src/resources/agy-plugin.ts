@@ -10,12 +10,14 @@ import { writeJsonAtomic } from '../utils/fs.js';
  */
 const MANIFEST = 'plugin.json';
 const TEAMAI_PLUGIN = { name: 'teamai' } as const;
+
 /** The servers file of a plugin, which teamai writes only in its own plugin's directory. */
 const PLUGIN_MCP_FILE = 'mcp_config.json';
 
 /** Make the directory of `mcpFile` the teamai plugin agy loads, leaving a manifest already there as it is. */
 export async function ensureAgyPluginManifest(mcpFile: string): Promise<void> {
   const manifest = path.join(path.dirname(mcpFile), MANIFEST);
+
   if (fs.existsSync(manifest)) return;
   await writeJsonAtomic(manifest, TEAMAI_PLUGIN);
 }
@@ -27,21 +29,26 @@ export async function ensureAgyPluginManifest(mcpFile: string): Promise<void> {
  */
 export async function removeAgyPluginManifest(mcpFile: string): Promise<void> {
   const dir = path.dirname(mcpFile);
+
   // Every emptied MCP file comes here; only teamai's plugin directory holds a manifest of teamai's.
   if (path.basename(mcpFile) !== PLUGIN_MCP_FILE || path.basename(dir) !== TEAMAI_PLUGIN.name) return;
   const manifest = path.join(dir, MANIFEST);
   let text: string;
+
   try {
     text = await fs.promises.readFile(manifest, 'utf8');
   } catch {
     return;
   }
+
   let parsed: unknown;
+
   try {
     parsed = JSON.parse(text);
   } catch {
     return;
   }
+
   if (JSON.stringify(parsed) !== JSON.stringify(TEAMAI_PLUGIN)) return;
   await fs.promises.rm(manifest, { force: true });
   // rmdir takes only an empty directory: `plugins/` goes too when teamai's was its last plugin.

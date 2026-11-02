@@ -1,5 +1,8 @@
 import path from 'node:path';
 
+import { z } from 'zod';
+
+import type { JsonValue } from '../../types.js';
 import { pathExists, readJson } from '../../utils/fs.js';
 import { formatCommand } from '../../utils/exec.js';
 import { log } from '../../utils/logger.js';
@@ -9,11 +12,25 @@ import {
   type PackageInstallContext,
 } from './base.js';
 
-interface LockPackage {
-  version?: string;
-  integrity?: string;
-  resolved?: string;
-}
+/** A package entry of a lockfile or `list --json`; a malformed one reads as null, a malformed field as absent. */
+const LockPackageSchema = z.object({
+  version: z.string().optional().catch(undefined),
+  integrity: z.string().optional().catch(undefined),
+  resolved: z.string().optional().catch(undefined),
+}).nullable().catch(null);
+
+type LockPackage = z.infer<typeof LockPackageSchema>;
+
+const ListedDependenciesSchema = z.record(z.string(), LockPackageSchema).optional().catch(undefined);
+
+/** `npm list --json` output, and one project of `pnpm list --json`. */
+const NpmListOutputSchema = z.object({
+  dependencies: ListedDependenciesSchema,
+  devDependencies: ListedDependenciesSchema,
+  optionalDependencies: ListedDependenciesSchema,
+});
+
+const PnpmListOutputSchema = z.array(NpmListOutputSchema.nullable().catch(null));
 
 interface NpmPackageLock {
   lockfileVersion?: number;
@@ -21,15 +38,14 @@ interface NpmPackageLock {
   dependencies?: Record<string, LockPackage>;
 }
 
-interface NpmListOutput {
-  dependencies?: Record<string, LockPackage>;
-  devDependencies?: Record<string, LockPackage>;
-  optionalDependencies?: Record<string, LockPackage>;
-}
+/** A project's `package-lock.json`, which npm and the member write: a malformed part reads as absent. */
+const NpmPackageLockSchema = z.object({
+  packages: ListedDependenciesSchema,
+  dependencies: ListedDependenciesSchema,
+});
 
-interface PackageJson {
-  packageManager?: string;
-}
+/** The field teamai reads from a project's `package.json`: one that is not text reads as absent. */
+const PackageJsonSchema = z.object({ packageManager: z.string().optional().catch(undefined) });
 
 type LocalPackageManager = 'npm' | 'pnpm';
 
@@ -49,17 +65,21 @@ async function detectLocalPackageManager(cwd: string): Promise<LocalPackageManag
     if (await pathExists(path.join(at, 'pnpm-workspace.yaml'))) {
       return { manager: 'pnpm', isWorkspaceRoot: at === path.resolve(cwd) };
     }
+
     if (
       await pathExists(path.join(at, 'pnpm-lock.yaml'))
       || await pathExists(path.join(at, 'node_modules', '.pnpm'))
     ) {
       return { manager: 'pnpm', isWorkspaceRoot: false };
     }
-    const packageJson = await readJson<PackageJson>(path.join(at, 'package.json'));
-    const declaredManager = packageJson?.packageManager?.split('@', 1)[0];
+
+    const packageJson = PackageJsonSchema.safeParse(await readJson<JsonValue>(path.join(at, 'package.json')));
+    const declaredManager = packageJson.data?.packageManager?.split('@', 1)[0];
+
     if (declaredManager === 'pnpm') {
       return { manager: 'pnpm', isWorkspaceRoot: false };
     }
+
     // An explicit npm declaration wins over any pnpm marker further up the
     // tree — otherwise a standalone npm project nested under an unrelated
     // pnpm workspace would get routed through pnpm, recreating the exact
@@ -67,6 +87,7 @@ async function detectLocalPackageManager(cwd: string): Promise<LocalPackageManag
     if (declaredManager === 'npm') {
       return { manager: 'npm', isWorkspaceRoot: false };
     }
+
     if (path.dirname(at) === at) return { manager: 'npm', isWorkspaceRoot: false };
   }
 }
@@ -75,7 +96,9 @@ function satisfiesDeclaredVersion(semver: typeof import('semver'), declared: str
   // npm dist-tags such as latest/next cannot be checked without a registry
   // lookup. Exact versions and ranges can be verified entirely from the lock.
   const range = semver.validRange(declared);
+
   if (!range || !semver.valid(actual)) return true;
+
   return semver.satisfies(actual, range, { includePrerelease: true });
 }
 
@@ -88,18 +111,20 @@ export function extractNpmLockEntries(
   declared: NpmSpec[],
 ): NpmLockEntry[] {
   const entries: NpmLockEntry[] = [];
+
   for (const spec of declared) {
     const value = lock.packages?.[`node_modules/${spec.name}`]
       ?? lock.dependencies?.[spec.name];
+
     if (!value?.version) continue;
-    entries.push({
-      name: spec.name,
-      version: value.version,
-      source: 'npm',
-      ...(value.integrity ? { integrity: value.integrity } : {}),
-      ...(value.resolved ? { resolved: value.resolved } : {}),
-    });
+    const entry: NpmLockEntry = { name: spec.name, version: value.version, source: 'npm' };
+
+    if (value.integrity) entry.integrity = value.integrity;
+
+    if (value.resolved) entry.resolved = value.resolved;
+    entries.push(entry);
   }
+
   return entries;
 }
 
@@ -112,7 +137,9 @@ export class NpmAdapter extends PackageAdapter<NpmSpec[], NpmLockEntry[]> {
 
   private async snapshotLocal(cwd: string, declaration: NpmSpec[]): Promise<NpmLockEntry[]> {
     const local = declaration.filter((spec) => !spec.global);
+
     if (local.length === 0) return [];
+
     if ((await detectLocalPackageManager(cwd)).manager === 'pnpm') {
       try {
         const result = await this.execute(
@@ -120,45 +147,56 @@ export class NpmAdapter extends PackageAdapter<NpmSpec[], NpmLockEntry[]> {
           ['list', '--depth=0', '--json'],
           { cwd, timeoutMs: 30_000 },
         );
+
         if (result.code !== 0 || !result.stdout.trim()) return [];
-        const [listed] = JSON.parse(result.stdout) as NpmListOutput[];
+        const [listed] = PnpmListOutputSchema.parse(JSON.parse(result.stdout));
+
         const dependencies = {
           ...listed?.dependencies,
           ...listed?.devDependencies,
           ...listed?.optionalDependencies,
         };
+
         return extractNpmLockEntries({ dependencies }, local);
       } catch {
         return [];
       }
     }
-    const lock = await readJson<NpmPackageLock>(path.join(cwd, 'package-lock.json'));
-    return lock ? extractNpmLockEntries(lock, local) : [];
+
+    const lock = NpmPackageLockSchema.safeParse(await readJson<JsonValue>(path.join(cwd, 'package-lock.json')));
+
+    return lock.success ? extractNpmLockEntries(lock.data, local) : [];
   }
 
   private async snapshotGlobal(declaration: NpmSpec[]): Promise<NpmLockEntry[]> {
     const global = declaration.filter((spec) => spec.global);
+
     if (global.length === 0) return [];
+
     try {
       const result = await this.execute(
         'npm',
         ['list', '--global', '--depth=0', '--json'],
         { timeoutMs: 30_000 },
       );
+
       if (!result.stdout.trim()) return [];
-      const listed = JSON.parse(result.stdout) as NpmListOutput;
+      const listed = NpmListOutputSchema.parse(JSON.parse(result.stdout));
+
       return global.flatMap((spec) => {
         const actual = listed.dependencies?.[spec.name];
+
         if (!actual?.version) return [];
-        return [{
-          name: spec.name,
-          version: actual.version,
-          source: 'npm' as const,
-          global: true,
-          ...(spec.registry ? { registry: spec.registry } : {}),
-          ...(actual.integrity ? { integrity: actual.integrity } : {}),
-          ...(actual.resolved ? { resolved: actual.resolved } : {}),
-        }];
+
+        const entry: NpmLockEntry = { name: spec.name, version: actual.version, source: 'npm', global: true };
+
+        if (spec.registry) entry.registry = spec.registry;
+
+        if (actual.integrity) entry.integrity = actual.integrity;
+
+        if (actual.resolved) entry.resolved = actual.resolved;
+
+        return [entry];
       });
     } catch {
       return [];
@@ -170,6 +208,7 @@ export class NpmAdapter extends PackageAdapter<NpmSpec[], NpmLockEntry[]> {
       this.snapshotLocal(cwd, declaration),
       this.snapshotGlobal(declaration),
     ]);
+
     return [...local, ...global];
   }
 
@@ -179,11 +218,13 @@ export class NpmAdapter extends PackageAdapter<NpmSpec[], NpmLockEntry[]> {
   ): Promise<NpmLockEntry[]> {
     if (declaration.length === 0) return [];
     const local = declaration.filter((spec) => !spec.global);
+
     if (local.length > 0 && !await this.detect(context.cwd)) {
       throw new Error(`npm packages are declared, but package.json was not found in ${context.cwd}`);
     }
 
     const groups = new Map<string, NpmSpec[]>();
+
     for (const spec of declaration) {
       const key = `${spec.global === true ? 'global' : 'project'}\0${spec.registry ?? ''}`;
       const group = groups.get(key) ?? [];
@@ -196,6 +237,7 @@ export class NpmAdapter extends PackageAdapter<NpmSpec[], NpmLockEntry[]> {
       : { manager: 'npm' as const, isWorkspaceRoot: false };
 
     const commandFor = (first: NpmSpec): string => (first.global ? 'npm' : localManager.manager);
+
     const argsFor = (command: string, first: NpmSpec, group: NpmSpec[]): string[] => [
       command === 'pnpm' ? 'add' : 'install',
       ...(first.global ? ['--global'] : []),
@@ -210,6 +252,7 @@ export class NpmAdapter extends PackageAdapter<NpmSpec[], NpmLockEntry[]> {
         const command = commandFor(first);
         log.info(`[dry-run] Would run: ${formatCommand(command, argsFor(command, first, group))}`);
       }
+
       return this.snapshotLocal(context.cwd, declaration);
     }
 
@@ -217,15 +260,18 @@ export class NpmAdapter extends PackageAdapter<NpmSpec[], NpmLockEntry[]> {
       const first = group[0];
       const command = commandFor(first);
       const args = argsFor(command, first, group);
+
       const result = await this.execute(command, args, {
         cwd: context.cwd,
         timeoutMs: 10 * 60_000,
         stream: true,
       });
+
       if (result.code !== 0) {
         throw new Error(`${command} ${args[0]} failed (exit ${result.code}): ${result.stderr.trim()}`);
       }
     }
+
     return this.snapshot(context.cwd, declaration);
   }
 
@@ -236,24 +282,29 @@ export class NpmAdapter extends PackageAdapter<NpmSpec[], NpmLockEntry[]> {
     const installed = new Map(
       (await this.snapshot(context.cwd, declaration)).map((entry) => [entry.name, entry]),
     );
+
     // Loaded here, not at startup: only a package status check compares versions.
     const { default: semver } = await import('semver');
+
     return declaration.map((spec) => {
       const entry = installed.get(spec.name);
+
       const versionMatches = !entry?.version
         || satisfiesDeclaredVersion(semver, spec.version, entry.version);
-      return {
-        name: spec.name,
-        installed: !!entry && versionMatches,
-        ...(entry?.version ? { version: entry.version } : {}),
-        ...(!entry ? {
-          detail: spec.global
-            ? 'declared but not installed globally'
-            : 'declared but not present in package-lock.json',
-        } : !versionMatches ? {
-          detail: `declared ${spec.version}, installed ${entry.version}`,
-        } : {}),
-      };
+
+      const status: PackageStatus = { name: spec.name, installed: !!entry && versionMatches };
+
+      if (entry?.version) status.version = entry.version;
+
+      if (!entry) {
+        status.detail = spec.global
+          ? 'declared but not installed globally'
+          : 'declared but not present in package-lock.json';
+      } else if (!versionMatches) {
+        status.detail = `declared ${spec.version}, installed ${entry.version}`;
+      }
+
+      return status;
     });
   }
 }

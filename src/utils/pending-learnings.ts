@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import fse from 'fs-extra';
-import YAML from 'yaml';
+import { parseYaml } from './yaml.js';
 import { ensureDir, expandHome, listFilesRecursive, readFileSafe } from './fs.js';
 import { normalizeRepoUrlForCompare, redactGitCredentials, remotesMatch } from './git.js';
 import { log } from './logger.js';
@@ -27,6 +27,7 @@ export function pendingLearningsDir(localConfig: LocalConfig): string {
   if (isSelfMode(localConfig)) {
     return path.join(getDataHome(localConfig), 'pending-learnings');
   }
+
   return path.join(path.dirname(localConfig.repo.localPath), 'pending-learnings');
 }
 
@@ -42,6 +43,7 @@ export function pendingLearningsDir(localConfig: LocalConfig): string {
 export async function queueLockPath(home: string): Promise<string> {
   const real = await fs.promises.realpath(home).catch(() => path.resolve(home));
   const key = createHash('sha256').update(real).digest('hex').slice(0, 16);
+
   return path.join(getTeamaiHomeDir(), 'locks', `queue-${key}.lock`);
 }
 
@@ -73,8 +75,10 @@ export async function acquireQueueLock(
   options: { dryRun?: boolean } = {},
 ): Promise<{ acquired: boolean; lockPath: string }> {
   const lockPath = await queueLockPath(home);
+
   for (let attempt = 1; ; attempt++) {
     if (await acquireLock(lockPath, options)) return { acquired: true, lockPath };
+
     if (attempt === QUEUE_LOCK_ATTEMPTS) return { acquired: false, lockPath };
     await new Promise((resolve) => setTimeout(resolve, QUEUE_LOCK_RETRY_MS));
   }
@@ -87,7 +91,9 @@ export async function withQueueLock<T>(
   options: { dryRun?: boolean } = {},
 ): Promise<{ status: 'done'; value: T } | { status: 'busy'; lockPath: string }> {
   const { acquired, lockPath } = await acquireQueueLock(home, options);
+
   if (!acquired) return { status: 'busy', lockPath };
+
   try {
     return { status: 'done', value: await fn() };
   } finally {
@@ -106,21 +112,28 @@ export async function withQueueLock<T>(
 async function installChanged(localConfig: LocalConfig): Promise<{ configPath: string; cause: string } | null> {
   const configPath = path.join(expandHome(getDataHome(localConfig)), 'config.yaml');
   const content = await readFileSafe(configPath);
+
   if (content === null) return { configPath, cause: 'is gone' };
   let raw: unknown;
+
   try {
-    raw = YAML.parse(content);
+    raw = parseYaml(content);
   } catch {
     return { configPath, cause: 'cannot be read' };
   }
+
   const parsed = LocalConfigSchema.safeParse(raw);
+
   if (!parsed.success) return { configPath, cause: 'cannot be read' };
   const now = queueOwner(parsed.data);
   const loaded = queueOwner(localConfig);
+
   if (now.kind !== loaded.kind) return { configPath, cause: `now names a ${now.kind} install, not ${loaded.kind}` };
+
   if (!sameQueueOwner(now, loaded)) {
     return { configPath, cause: `now names ${redactGitCredentials(now.remote)}, not ${redactGitCredentials(loaded.remote)}` };
   }
+
   return null;
 }
 
@@ -168,12 +181,15 @@ export async function savePendingLearning(
   // learnings locks, and no queue lock is held while waiting for another.
   const locked = await withQueueLock(queueHome(localConfig), async (): Promise<QueueWrite> => {
     const changed = await installChanged(localConfig);
+
     if (changed) return { status: 'changed', ...changed };
     const dest = path.join(pendingLearningsDir(localConfig), relPath);
     await ensureDir(path.dirname(dest));
     await fs.promises.writeFile(dest, content, 'utf-8');
+
     return { status: 'saved', path: dest };
   });
+
   return locked.status === 'done' ? locked.value : locked;
 }
 
@@ -196,9 +212,12 @@ export async function listPendingForInstall(
 > {
   const locked = await withQueueLock(queueHome(localConfig), async () => {
     const changed = await installChanged(localConfig);
+
     if (changed) return { status: 'changed' as const, ...changed };
+
     return { status: 'listed' as const, queued: await listPendingLearnings(localConfig) };
   }, options);
+
   return locked.status === 'done' ? locked.value : locked;
 }
 
@@ -217,14 +236,19 @@ export async function readPendingForInstall(
 > {
   const locked = await withQueueLock(queueHome(localConfig), async () => {
     const changed = await installChanged(localConfig);
+
     if (changed) return { status: 'changed' as const, ...changed };
     const queued: Array<{ relPath: string; content: string }> = [];
+
     for (const relPath of await listPendingLearnings(localConfig)) {
       const content = await readPendingLearning(localConfig, relPath);
+
       if (content !== null) queued.push({ relPath, content });
     }
+
     return { status: 'read' as const, queued };
   });
+
   return locked.status === 'done' ? locked.value : locked;
 }
 
@@ -316,25 +340,34 @@ export async function setAsideQueueOnModeSwitch(
   // exists but cannot be read: that one names no owner, and the new install
   // would publish its queue to its own repository.
   const unreadable = path.join(queueHome(next), 'config.yaml');
+
   if (!previous && !fs.existsSync(unreadable)) {
     await save();
+
     return { status: 'switched', aside: null };
   }
+
   if (previous && sameQueueOwner(queueOwner(previous), queueOwner(next))) {
     await save();
+
     return { status: 'switched', aside: null };
   }
+
   // A command that loaded the previous config and queues meanwhile would put
   // its learning into the queue the new install publishes: it waits, then
   // finds the new install (savePendingLearning).
   const dir = previous ? pendingLearningsDir(previous) : pendingLearningsDir(next);
+
   const locked = await withQueueLock(queueHome(next), async () => {
     const aside = path.resolve(dir) === path.resolve(pendingLearningsDir(next))
       ? await setAside(dir, next, previous ? queueOwner(previous) : { unreadable })
       : null;
+
     await save();
+
     return aside;
   });
+
   return locked.status === 'done' ? { status: 'switched', aside: locked.value } : locked;
 }
 
@@ -353,20 +386,26 @@ type PreviousOwner = QueueOwner | { unreadable: string };
 
 async function setAside(queue: string, next: LocalConfig, from: PreviousOwner): Promise<string | null> {
   const queued = await countQueued(queue);
+
   if (queued === 0) return null;
   const live = pendingLearningsDir(next);
   // Another kind is named by its kind, as before; another repository of the
   // same kind by that repository too, or the name would not tell them apart.
   // A config nothing can read names no owner.
   const repo = 'unreadable' in from ? '' : normalizeRepoUrlForCompare(from.remote).replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+
   const suffix = 'unreadable' in from ? 'unknown'
     : from.kind === installKind(next) && repo ? `${from.kind}-${repo}` : from.kind;
+
   let aside = `${live}.${suffix}`;
+
   for (let n = 1; fs.existsSync(aside); n++) aside = `${live}.${suffix}.${n}`;
   // A checkout's queue may sit on another filesystem than the data home.
   await fse.move(queue, aside);
+
   const settle = `Nothing was deleted. If they belong here, move the files into ${live}; ` +
     'otherwise contribute them again from an install of that repository.';
+
   log.warn('unreadable' in from
     ? `Set aside ${queued} queued learning(s) in ${aside}: the previous install's config at ${from.unreadable} ` +
       `could not be read, so nothing says which repository they were written for, and this ` +
@@ -374,6 +413,7 @@ async function setAside(queue: string, next: LocalConfig, from: PreviousOwner): 
     : `Set aside ${queued} queued learning(s) from the previous ${from.kind} install in ${aside}: ` +
       `they were written for ${redactGitCredentials(from.remote) || 'that install\'s repository'}, and this ` +
       `${installKind(next)} install would publish them to its own. ${settle}`);
+
   return aside;
 }
 
@@ -385,22 +425,29 @@ async function setAside(queue: string, next: LocalConfig, from: PreviousOwner): 
  */
 export async function listQueuesIn(dataHome: string): Promise<Array<{ dir: string; count: number }>> {
   let names: string[];
+
   try {
     names = await fs.promises.readdir(dataHome);
   } catch {
     return [];
   }
+
   const queues = [];
+
   for (const name of names.sort()) {
     if (name !== 'pending-learnings' && !name.startsWith('pending-learnings.')) continue;
     const dir = path.join(dataHome, name);
     const count = await countQueued(dir);
+
     if (count > 0) queues.push({ dir, count });
   }
+
   if (names.includes('projects')) {
     const projects = path.join(dataHome, 'projects');
     const slugs = await fs.promises.readdir(projects).catch(() => []);
+
     for (const slug of slugs.sort()) queues.push(...await listQueuesIn(path.join(projects, slug)));
   }
+
   return queues;
 }

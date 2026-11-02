@@ -4,12 +4,14 @@ import { dashboardMessages } from '../dashboard/locales.js';
 import type { HandoffRow } from '../dashboard/workflow-runs.js';
 import { RunIdSchema } from '../workflow/store.js';
 
+const messages: Record<string, string> = dashboardMessages;
+
 /** The panel as the page renders `rows`, in `language`, with every message key it asked to translate. */
 function render(rows: HandoffRow[], language: 'en' | 'zh-CN' = 'en'): { html: string; keys: string[] } {
   const keys: string[] = [];
   const t = (text: string) => {
     keys.push(text);
-    return language === 'zh-CN' && Object.hasOwn(dashboardMessages, text) ? dashboardMessages[text] : text;
+    return language === 'zh-CN' && Object.hasOwn(dashboardMessages, text) ? messages[text] : text;
   };
   const e = (value: unknown) => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   const label = (text: string) => e(t(text));

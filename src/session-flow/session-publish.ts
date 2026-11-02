@@ -37,6 +37,7 @@ type PublicationRecord = PublishedKey & ({ publishedAt: string } | { skippedAt: 
 /** The file that records what this data home did with `key`: its name hashes the platform, or the tool, and the id. */
 function recordFile(config: LocalConfig, key: PublishedKey): string {
   const name = createHash('sha256').update(recordName(key)).digest('hex').slice(0, 32);
+
   return path.join(getDataHome(config), 'sessions', 'published', `${name}.json`);
 }
 
@@ -48,6 +49,7 @@ function recordName(key: PublishedKey): string {
       return `tool\0${key.tool}\0${key.sessionId}`;
     default: {
       const unhandled: never = key;
+
       return unhandled;
     }
   }
@@ -71,6 +73,7 @@ async function record(config: LocalConfig, entry: PublicationRecord): Promise<vo
 /** Counts one more session that failed for `reason` in `unpublished`, one entry per reason. */
 function addUnpublished(unpublished: SessionsPublished['unpublished'], reason: string): void {
   const same = unpublished.find((entry) => entry.reason === reason);
+
   if (same) same.sessions += 1;
   else unpublished.push({ sessions: 1, reason });
 }
@@ -78,10 +81,13 @@ function addUnpublished(unpublished: SessionsPublished['unpublished'], reason: s
 /** Archives each session captured here in `mode` that is finished at `now` and not archived from here yet. */
 async function captured(config: LocalConfig, mode: RunMode, now: string): Promise<SessionsPublished> {
   const published: SessionsPublished = { archived: 0, unpublished: [] };
+
   for (const { platform, sessionId } of await SessionWork.finished(await SessionCaptures.list(config), now, (of) => of === mode)) {
     const ref = { platform, sessionId };
+
     if (await isRecorded(config, ref)) continue;
     const pushed = await pushSession(config, ref);
+
     switch (pushed.status) {
       case 'archived':
         await record(config, { ...platformKey(ref), publishedAt: now });
@@ -93,10 +99,12 @@ async function captured(config: LocalConfig, mode: RunMode, now: string): Promis
         break;
       default: {
         const unhandled: never = pushed;
+
         return unhandled;
       }
     }
   }
+
   return published;
 }
 
@@ -116,11 +124,15 @@ async function unarchivableReason(key: PublishedKey, toolRootsFor: ToolRootsLook
       return `teamai reads no sessions from ${key.tool}`;
     case 'platform': {
       const found = await AgentSession.find({ platform: key.platform, sessionId: key.sessionId }, { scrub: false, toolRootsFor });
+
       if (found.status === 'done') return undefined;
+
       return `the ${key.platform} session ${key.sessionId} cannot be read here: ${found.failure.message.replace(/\.$/, '')}`;
     }
+
     default: {
       const unhandled: never = key;
+
       return unhandled;
     }
   }
@@ -136,19 +148,25 @@ type UnrecordedPass = { pass: RunPass; key: PublishedKey };
 async function unrecordedSteps(config: LocalConfig, mode: RunMode): Promise<Array<{ run: RunState; passes: UnrecordedPass[] }>> {
   // An isolated run stays on the machine that started it, and so do its steps' sessions.
   const ended = (await localRuns(config)).filter((run) => run.status !== 'running' && !isIsolated(run) && (run.runMode ?? 'attended') === mode);
+
   if (ended.length === 0) return [];
   const install = (await installOwner(config)).id;
   const runs: Array<{ run: RunState; passes: UnrecordedPass[] }> = [];
+
   for (const run of ended) {
     const passes: UnrecordedPass[] = [];
+
     for (const pass of runPasses(run)) {
       if (pass.tool === undefined || pass.session === undefined || !settledHere(run, pass, install)) continue;
       const platform = AgentSession.platformForTool(pass.tool);
       const key: PublishedKey = platform ? { kind: 'platform', platform, sessionId: pass.session } : { kind: 'tool', tool: pass.tool, sessionId: pass.session };
+
       if (!await hasRecord(config, key)) passes.push({ pass, key });
     }
+
     runs.push({ run, passes });
   }
+
   return runs;
 }
 
@@ -164,30 +182,38 @@ async function waitingSteps(config: LocalConfig, mode: RunMode): Promise<number>
  */
 async function steps(config: LocalConfig, mode: RunMode, now: string): Promise<StepSessionsPublished[]> {
   const published: StepSessionsPublished[] = [];
+
   for (const { run, passes } of await unrecordedSteps(config, mode)) {
     const checkout = run.checkout ?? SessionWork.leaseCwd(config);
     const toolRoots = recordedToolRoots(checkout);
     const refs = new Map<string, ArchiveSessionRef>();
     const skipped: StepSessionsPublished['skipped'] = [];
+
     for (const { pass, key } of passes) {
       const reason = await unarchivableReason(key, () => toolRoots);
+
       if (reason !== undefined) {
         skipped.push({ step: pass.step, pass: pass.pass, reason });
         await record(config, { ...key, skippedAt: now, reason });
       } else if (key.kind === 'platform') refs.set(sessionKey(key), { platform: key.platform, sessionId: key.sessionId });
     }
+
     if (refs.size === 0) {
       if (skipped.length > 0) published.push({ run: run.id, archived: 0, skipped });
       continue;
     }
+
     const delivered = await archiveSessions(config, [...refs.values()].map((ref) => [ref]), { run: run.id, checkout });
+
     if (delivered.status === 'failed') {
       published.push({ run: run.id, archived: 0, skipped, unpublished: { sessions: refs.size, reason: delivered.message } });
       continue;
     }
+
     for (const ref of delivered.archived) await record(config, { ...platformKey(ref), publishedAt: now });
     published.push({ run: run.id, archived: delivered.archived.length, skipped });
   }
+
   return published;
 }
 

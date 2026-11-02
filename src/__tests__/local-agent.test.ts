@@ -3999,3 +3999,53 @@ describe('local-agent: project installs stay out of git, and a member\'s file st
     expect(blockOf(app)).toEqual(before);
   });
 });
+
+describe('local-agent: config.json a person edited', () => {
+  async function writeConfig(json: object): Promise<void> {
+    const configDir = path.join(tmpDir, '.teamai', 'local-agent');
+    await fse.ensureDir(configDir);
+    await fse.writeJson(path.join(configDir, 'config.json'), json);
+  }
+
+  it('reads a config whose endpoint is not text as no config', async () => {
+    await writeConfig({ endpoint: 1, createdAt: 'x', workspaceBindings: {} });
+
+    const { loadLocalAgentConfig } = await import('../local-agent.js');
+
+    expect(await loadLocalAgentConfig({ dryRun: true, envFallback: false })).toBeNull();
+  });
+
+  it('reads a config with no createdAt without making one up', async () => {
+    await writeConfig({ endpoint: 'https://test.example.com/api', workspaceBindings: {} });
+
+    const { loadLocalAgentConfig } = await import('../local-agent.js');
+
+    expect((await loadLocalAgentConfig({ dryRun: true, envFallback: false }))?.createdAt).toBeUndefined();
+  });
+
+  it('leaves out a workspace binding that is not an object', async () => {
+    const ok = { projectId: 3, projectName: 'p', boundAt: 'x' };
+    await writeConfig({ endpoint: 'https://test.example.com/api', createdAt: 'x', workspaceBindings: { '/ws/bad': null, '/ws/ok': ok } });
+
+    const { loadLocalAgentConfig } = await import('../local-agent.js');
+
+    expect((await loadLocalAgentConfig({ dryRun: true }))?.workspaceBindings).toEqual({ '/ws/ok': ok });
+  });
+
+  it('reads a token or route override of another type as absent', async () => {
+    await writeConfig({
+      endpoint: 'https://test.example.com/api',
+      token: 2,
+      createdAt: 'x',
+      routes: { sync: 1, report: '/custom/report' },
+      workspaceBindings: {},
+    });
+
+    const { DEFAULT_ROUTES, loadLocalAgentConfig, resolveRoute } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig({ dryRun: true });
+
+    expect(config?.token).toBeUndefined();
+    expect(config && resolveRoute(config, 'sync')).toBe(DEFAULT_ROUTES.sync);
+    expect(config && resolveRoute(config, 'report')).toBe('/custom/report');
+  });
+});

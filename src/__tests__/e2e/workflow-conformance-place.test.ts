@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { DRIVERS_UNDER_TEST, runConformanceScenario, speaksAsDriverUnderTest } from '../../workflow/conformance-interpreter.js';
 import { PLACE_CHECKOUT_FILES, workflowPlaceConformanceScenarios } from '../../workflow/conformance/place.js';
+import type { WorkflowRunRecord } from '../../workflow/records.js';
 import type { RunState, WorkflowEnvelope } from '../../workflow/types.js';
 import { cliConformanceClient, envelope, fileUnder, runCLI } from '../helpers/cli-conformance.js';
 
@@ -68,7 +69,7 @@ describe.each(DRIVERS_UNDER_TEST)('workflow place conformance through the CLI as
         },
         readEndRecord: async (runId) => {
           const file = fileUnder(home, path.join('workflows', 'pending', `${runId}.end.json`));
-          return file ? JSON.parse(fs.readFileSync(file, 'utf8')) as unknown : undefined;
+          return file ? JSON.parse(fs.readFileSync(file, 'utf8')) as WorkflowRunRecord : undefined;
         },
         advance: (ms) => new Promise((resolve) => { setTimeout(resolve, ms); }),
         expect,

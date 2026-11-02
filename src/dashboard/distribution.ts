@@ -7,6 +7,7 @@
  * value.
  */
 import { createHash } from 'node:crypto';
+import { z } from 'zod';
 import { loadRolesManifestIfPresent, type RolesManifest } from '../roles.js';
 import { loadProjectsManifest, type ProjectsManifest } from '../projects.js';
 import { readWorkspaceChildren } from '../workspace-children.js';
@@ -14,7 +15,7 @@ import { saveScopeSelection } from '../scope-selection.js';
 import { log } from '../utils/logger.js';
 import type { LocalConfig } from '../types.js';
 import { diffDelivery, pickNamespaces, resolveDelivery, type Delivery } from './delivery.js';
-import { HttpError } from './http.js';
+import { HttpError, type JsonBody } from './http.js';
 import { ROLE_ASSIGNMENTS_FILE } from '../role-assignments.js';
 
 /**
@@ -48,6 +49,7 @@ function selectionOf(config: Pick<LocalConfig, 'primaryRole' | 'additionalRoles'
  */
 function revisionOf(config: LocalConfig): string {
   const identity = { scope: config.scope, dataHome: config.dataHome ?? null, projectRoot: config.projectRoot ?? null };
+
   return createHash('sha256').update(JSON.stringify({ identity, selection: selectionOf(config) })).digest('hex').slice(0, 16);
 }
 
@@ -63,9 +65,11 @@ type ManifestRead<T> = { state: 'ok'; manifest: T } | { state: 'missing' } | { s
 async function readManifest<T>(kind: 'roles' | 'projects', load: (repoPath: string) => Promise<T | null>, repoPath: string): Promise<ManifestRead<T>> {
   try {
     const manifest = await load(repoPath);
+
     return manifest ? { state: 'ok', manifest } : { state: 'missing' };
   } catch (error) {
-    log.debug(`dashboard: manifest/${kind}.yaml: ${(error as Error).message}`);
+    log.debug(`dashboard: manifest/${kind}.yaml: ${error instanceof Error ? error.message : String(error)}`);
+
     return { state: 'invalid', error: `manifest/${kind}.yaml cannot be read or parsed. Run \`teamai ${kind} list\` for details.` };
   }
 }
@@ -76,7 +80,9 @@ const readProjects = (repoPath: string) => readManifest<ProjectsManifest>('proje
 /** The manifest a save checks ids against; a 409 when the team has none or it cannot be read. */
 function manifestOrConflict<T>(kind: 'roles' | 'projects', read: ManifestRead<T>): T {
   if (read.state === 'missing') throw new HttpError(409, `This team repo defines no ${kind} (no manifest/${kind}.yaml).`);
+
   if (read.state === 'invalid') throw new HttpError(409, read.error);
+
   return read.manifest;
 }
 
@@ -89,16 +95,19 @@ async function deliveryOf(config: LocalConfig): Promise<Delivery | { error: stri
   try {
     return await resolveDelivery(config);
   } catch (error) {
-    log.debug(`dashboard: distribution resolution failed: ${(error as Error).message}`);
+    log.debug(`dashboard: distribution resolution failed: ${error instanceof Error ? error.message : String(error)}`);
+
     return { error: UNRESOLVED };
   }
 }
 
 // ─── Requests ───────────────────────────────────────────
 
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === 'string');
-}
+/** A role change a request sends: `{ primaryRole, additionalRoles? }`. */
+const RoleChangeBodySchema = z.object({ primaryRole: z.string(), additionalRoles: z.array(z.string()).default([]) });
+
+/** A project change a request sends: `{ projects }`. */
+const ProjectChangeBodySchema = z.object({ projects: z.array(z.string()) });
 
 /** An id is one path segment: the manifest names a directory with it. */
 function assertSafeId(kind: 'role' | 'project', id: string): void {
@@ -116,30 +125,39 @@ function assertKnown(kind: 'role' | 'project', ids: readonly string[], known: re
 interface RoleChange { primaryRole: string; additionalRoles: string[] }
 
 /** `{ primaryRole, additionalRoles? }`, checked against the roles manifest. */
-async function roleChange(repoPath: string, body: Record<string, unknown>): Promise<RoleChange & { version: number }> {
-  const { primaryRole, additionalRoles = [] } = body;
-  if (typeof primaryRole !== 'string' || !isStringArray(additionalRoles)) {
+async function roleChange(repoPath: string, body: JsonBody): Promise<RoleChange & { version: number }> {
+  const parsed = RoleChangeBodySchema.safeParse(body);
+
+  if (!parsed.success) {
     throw new HttpError(400, 'Expected { primaryRole: string, additionalRoles?: string[] }.');
   }
+
+  const { primaryRole, additionalRoles } = parsed.data;
+
   for (const id of [primaryRole, ...additionalRoles]) assertSafeId('role', id);
   const manifest = manifestOrConflict('roles', await readRoles(repoPath));
   const change = { primaryRole, additionalRoles: [...new Set(additionalRoles)].filter((id) => id !== primaryRole) };
   assertKnown('role', [change.primaryRole, ...change.additionalRoles], manifest.roles.map((role) => role.id));
+
   return { ...change, version: manifest.version };
 }
 
 /** `{ projects }`, checked against the projects manifest. An empty list is allowed. */
-async function projectChange(repoPath: string, body: Record<string, unknown>): Promise<string[]> {
-  const { projects } = body;
-  if (!isStringArray(projects)) throw new HttpError(400, 'Expected { projects: string[] }.');
+async function projectChange(repoPath: string, body: JsonBody): Promise<string[]> {
+  const parsed = ProjectChangeBodySchema.safeParse(body);
+
+  if (!parsed.success) throw new HttpError(400, 'Expected { projects: string[] }.');
+  const { projects } = parsed.data;
+
   for (const id of projects) assertSafeId('project', id);
   const manifest = manifestOrConflict('projects', await readProjects(repoPath));
   const ids = [...new Set(projects)];
   assertKnown('project', ids, manifest.projects.map((project) => project.id));
+
   return ids;
 }
 
-function assertRevision(ownConfig: LocalConfig, body: Record<string, unknown>): void {
+function assertRevision(ownConfig: LocalConfig, body: JsonBody): void {
   if (body.revision !== revisionOf(ownConfig)) {
     throw new HttpError(409, 'The selection changed since it was previewed. Reload and preview again.');
   }
@@ -153,6 +171,7 @@ export async function readDistribution(ownConfig: LocalConfig) {
   const [roles, projects] = await Promise.all([readRoles(repoPath), readProjects(repoPath)]);
   // What pull delivers to a workspace includes its children's selections (#913).
   const withChildren = await readWorkspaceChildren(ownConfig);
+
   return {
     configured: true as const,
     revision: revisionOf(ownConfig),
@@ -181,19 +200,23 @@ export async function readDistribution(ownConfig: LocalConfig) {
  * What the next pull would add and remove if this workspace selected `body`
  * instead: `primaryRole`/`additionalRoles`, `projects`, or both. Writes nothing.
  */
-export async function previewDistribution(ownConfig: LocalConfig, body: Record<string, unknown>) {
+export async function previewDistribution(ownConfig: LocalConfig, body: JsonBody) {
   const repoPath = ownConfig.repo.localPath;
   let candidate: LocalConfig = { ...ownConfig };
+
   if ('primaryRole' in body || 'additionalRoles' in body) {
     assertRolesEditable(ownConfig);
     const { primaryRole, additionalRoles } = await roleChange(repoPath, body);
     candidate = { ...candidate, primaryRole, additionalRoles };
   }
+
   if ('projects' in body) candidate = { ...candidate, projects: await projectChange(repoPath, body) };
   const before = await deliveryOf(await readWorkspaceChildren(ownConfig));
   const after = await deliveryOf(await readWorkspaceChildren(candidate));
+
   if ('error' in before || 'error' in after) throw new HttpError(409, UNRESOLVED);
   const [roles, projects] = await Promise.all([readRoles(repoPath), readProjects(repoPath)]);
+
   return {
     revision: revisionOf(ownConfig),
     selection: selectionOf(candidate),
@@ -205,7 +228,7 @@ export async function previewDistribution(ownConfig: LocalConfig, body: Record<s
 }
 
 /** Save this workspace's roles, as `roles set` does. Takes effect on the next pull. */
-export async function saveRoles(ownConfig: LocalConfig, body: Record<string, unknown>): Promise<void> {
+export async function saveRoles(ownConfig: LocalConfig, body: JsonBody): Promise<void> {
   assertRolesEditable(ownConfig);
   assertRevision(ownConfig, body);
   const { primaryRole, additionalRoles, version } = await roleChange(ownConfig.repo.localPath, body);
@@ -213,7 +236,7 @@ export async function saveRoles(ownConfig: LocalConfig, body: Record<string, unk
 }
 
 /** Save this workspace's active projects, as `projects set` does. An empty list is allowed. */
-export async function saveProjects(ownConfig: LocalConfig, body: Record<string, unknown>): Promise<void> {
+export async function saveProjects(ownConfig: LocalConfig, body: JsonBody): Promise<void> {
   assertRevision(ownConfig, body);
   await saveScopeSelection(ownConfig, { ...ownConfig, projects: await projectChange(ownConfig.repo.localPath, body) });
 }

@@ -38,11 +38,14 @@ export interface ProcessEntry {
  */
 export function parseWindowsProcessTable(text: string): Map<number, ProcessEntry> {
     const table = new Map<number, ProcessEntry>();
+
     for (const line of text.split(/\r?\n/)) {
         const row = /^\s*(\d+)\s+(\d+)\s+(.+?)\s*$/.exec(line);
+
         if (!row) continue;
         table.set(Number(row[1]), { ppid: Number(row[2]), comm: row[3] });
     }
+
     return table;
 }
 
@@ -62,6 +65,7 @@ let windowsProcessTableRead: { table: Map<number, ProcessEntry> | undefined } | 
  */
 function readWindowsProcessTable(): Map<number, ProcessEntry> | undefined {
     windowsProcessTableRead ??= { table: queryWindowsProcessTable() };
+
     return windowsProcessTableRead.table;
 }
 
@@ -90,6 +94,7 @@ function queryWindowsProcessTable(): Map<number, ProcessEntry> | undefined {
             ],
             { encoding: 'utf-8', timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true },
         );
+
         return parseWindowsProcessTable(out);
     } catch {
         return undefined;
@@ -103,6 +108,7 @@ function queryWindowsProcessTable(): Map<number, ProcessEntry> | undefined {
 export function getParentPid(pid: number): number | undefined {
     if (process.platform === 'win32') {
         const ppid = readWindowsProcessTable()?.get(pid)?.ppid;
+
         return ppid !== undefined && ppid > 0 ? ppid : undefined;
     }
 
@@ -112,10 +118,12 @@ export function getParentPid(pid: number): number | undefined {
         // Field 4 is ppid. Field 2 (comm) can contain spaces/parens, so split carefully.
         // Format: pid (comm) state ppid ...
         const closeParen = stat.lastIndexOf(') ');
+
         if (closeParen === -1) return undefined;
         const fields = stat.slice(closeParen + 2).split(' ');
         // fields[0]=state, fields[1]=ppid
         const ppid = parseInt(fields[1], 10);
+
         return ppid > 0 ? ppid : undefined;
     } catch {
         // not Linux, or PID gone
@@ -128,7 +136,9 @@ export function getParentPid(pid: number): number | undefined {
             timeout: 2000,
             stdio: ['pipe', 'pipe', 'pipe'],
         });
+
         const ppid = parseInt(out.trim(), 10);
+
         return ppid > 0 ? ppid : undefined;
     } catch {
         return undefined;
@@ -158,6 +168,7 @@ export function getProcessComm(pid: number): string | undefined {
             timeout: 2000,
             stdio: ['pipe', 'pipe', 'pipe'],
         });
+
         // ps on macOS may return full path
         return out.trim().split('/').pop();
     } catch {
@@ -182,12 +193,14 @@ export function walkToNonShell(
 
     for (let depth = 0; depth < 5; depth++) {
         const comm = commOf(current);
+
         if (comm && !SHELL_COMMS.has(normalizeComm(comm))) {
             // Found a non-shell process — this is likely the AI tool
             return current;
         }
 
         const parent = ppidOf(current);
+
         if (!parent || parent <= 1) break;
 
         best = parent;
@@ -208,6 +221,7 @@ export function walkToNonShell(
 export function resolveMonitorPid(hookPpid: number): number {
     if (process.platform === 'win32') {
         const table = readWindowsProcessTable();
+
         if (table) {
             return walkToNonShell(
                 hookPpid,
@@ -229,11 +243,15 @@ export function resolveMonitorPid(hookPpid: number): number {
 export function isProcessAlive(pid: number): boolean {
     try {
         process.kill(pid, 0);
+
         return true;
     } catch (err: unknown) {
-        const code = (err as NodeJS.ErrnoException).code;
+        const code = err instanceof Error && 'code' in err ? err.code : undefined;
+
         if (code === 'ESRCH') return false;  // No such process
+
         if (code === 'EPERM') return true;   // Exists, but no permission
+
         return false;
     }
 }

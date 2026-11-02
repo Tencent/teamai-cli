@@ -1,6 +1,8 @@
 import path from 'node:path';
 import fse from 'fs-extra';
 import YAML from 'yaml';
+import { parseYaml } from './utils/yaml.js';
+import { z } from 'zod';
 import { isSelfMode, LocalConfigSchema, SYNC_LOCK_FILENAME, WORKTREE_DIRNAMES, type LocalConfig } from './types.js';
 import { getRemoteUrl, resolveAnchors } from './utils/git.js';
 import { resolvePartitionDir, writeAnchorFile } from './utils/partition.js';
@@ -54,6 +56,7 @@ const SKIP_ENTRIES = new Set<string>([
  * contending process creates and removes them while the copy runs (#760).
  */
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+
 const LOCK_ARTIFACT = new RegExp(
   `^(?:${[SYNC_LOCK_FILENAME, '.update-lock'].map((l) => l.replace(/\./g, '\\.')).join('|')})` +
     `(?:\\.sentinel(?:\\.${UUID}\\.tmp|\\.reclaim-${UUID})?|\\.${UUID}\\.tmp|\\.new-${UUID})$`,
@@ -193,6 +196,7 @@ const SUPERSEDED_ENTRIES = [
  */
 export async function planMigration(cwd?: string, options: { dryRun?: boolean } = {}): Promise<MigrationPlan | null> {
   const anchors = await resolveAnchors(cwd ?? process.cwd());
+
   if (!anchors) return null;
 
   const legacyDir = path.join(anchors.workspaceRoot, '.teamai');
@@ -214,12 +218,14 @@ export async function planMigration(cwd?: string, options: { dryRun?: boolean } 
   // migrate" rather than crashing a write command.
   const legacyContent = await readFileSafe(legacyConfig);
   const gateContent = legacyContent ?? (await readFileSafe(path.join(partitionDir, 'config.yaml')));
+
   if (!gateContent) return null;
   let scope: string | undefined;
   let kind: string | undefined;
   let legacyOwner: QueueOwner;
+
   try {
-    const parsed = LocalConfigSchema.parse(YAML.parse(gateContent));
+    const parsed = LocalConfigSchema.parse(parseYaml(gateContent));
     scope = parsed.scope;
     kind = parsed.repo.kind;
     legacyOwner = queueOwner(parsed);
@@ -232,8 +238,10 @@ export async function planMigration(cwd?: string, options: { dryRun?: boolean } 
           'they belong to. Fix that file; the next init, pull or push moves them.',
       );
     }
+
     return null;
   }
+
   if (scope !== 'project') return null;
 
   // Self mode (P2): the legacy `.teamai/` mixes class-B knowledge (committed to
@@ -245,18 +253,22 @@ export async function planMigration(cwd?: string, options: { dryRun?: boolean } 
   // relocation (config.yaml already moved, env.local not yet) is still finished.
   if (kind === 'self') {
     const hasLegacyEntries = await anyExists(legacyDir, SELF_LEGACY_ENTRIES);
+
     if (!hasLegacyEntries) return null;
     // As for the other kinds (#797): the checkout's config is then the only one
     // that loads, and the relocation would drop it for the broken one.
     const partition = await readPartitionState(partitionDir, anchors.workspaceRoot);
+
     if (partition.state === 'unreadable') {
       log.warn(
         `Kept the machine data in ${legacyDir}: ${partition.configPath} cannot be read ` +
           `(${partition.error.split('\n')[0]}). If that persists, fix the file; the next init, pull or push ` +
           `then moves it into ${partitionDir}.`,
       );
+
       return null;
     }
+
     return { legacyDir, partitionDir, anchor: anchors.projectAnchor, mode: 'self', legacyOwner };
   }
 
@@ -270,6 +282,7 @@ export async function planMigration(cwd?: string, options: { dryRun?: boolean } 
   // authoritative partition — just finish the job by retiring the leftover
   // legacy dir, so the workspace really does end up residue-free.
   const partition = await readPartitionState(partitionDir, anchors.workspaceRoot);
+
   if (partition.state === 'built') {
     // Another checkout switched the project to self mode, and this one has
     // checked out the knowledge that switch committed: retiring the whole dir
@@ -277,8 +290,10 @@ export async function planMigration(cwd?: string, options: { dryRun?: boolean } 
     if (isSelfMode(partition.config) && (await holdsSelfKnowledge(legacyDir))) {
       return { legacyDir, partitionDir, anchor: anchors.projectAnchor, mode: 'superseded', previousOwner: legacyOwner };
     }
+
     return { legacyDir, partitionDir, anchor: anchors.projectAnchor, mode: 'retire-only', legacyOwner };
   }
+
   // A partition config that detection cannot read is not "built": the legacy dir
   // holds the only config that still loads. Leave it in place; once the member
   // fixes the file, the next run retires it (#797).
@@ -286,6 +301,7 @@ export async function planMigration(cwd?: string, options: { dryRun?: boolean } 
   // for a full copy: the copy replaces the whole dir, and its data with it.
   if (await pathExists(partitionDir)) {
     warnKeptLegacy(legacyDir, partitionDir, partition);
+
     return null;
   }
 
@@ -301,8 +317,10 @@ function warnKeptLegacy(legacyDir: string, partitionDir: string, partition: Part
       `Kept ${legacyDir}: ${partition.configPath} cannot be read (${reason}). ` +
         `If that persists, fix the file; the next init, pull or push then retires ${legacyDir} to a .teamai.bak backup.`,
     );
+
     return;
   }
+
   log.warn(
     `Kept ${legacyDir}: ${partitionDir} exists without a config.yaml. Restore that file, ` +
       `or move ${partitionDir} aside so the next init, pull or push migrates ${legacyDir} into a fresh one.`,
@@ -321,10 +339,13 @@ type PartitionState =
  */
 async function readPartitionState(partitionDir: string, workspaceRoot: string): Promise<PartitionState> {
   let unreadable: PartitionState | undefined;
+
   const config = await readConfigFrom(partitionDir, workspaceRoot, undefined, (configPath, error) => {
     unreadable = { state: 'unreadable', configPath, error };
   });
+
   if (config) return { state: 'built', config };
+
   return unreadable ?? { state: 'absent' };
 }
 
@@ -333,6 +354,7 @@ async function anyExists(dir: string, names: readonly string[]): Promise<boolean
   for (const n of names) {
     if (await pathExists(path.join(dir, n))) return true;
   }
+
   return false;
 }
 
@@ -376,13 +398,17 @@ export async function runMigration(
       );
     } else if (mode === 'self') {
       const present = [];
+
       for (const n of [SELF_LEGACY_QUEUE, ...SELF_A1_ENTRIES]) {
         if (await pathExists(path.join(legacyDir, n))) present.push(n);
       }
+
       const stale = [];
+
       for (const n of SELF_STALE_ENTRIES) {
         if (await pathExists(path.join(legacyDir, n))) stale.push(n);
       }
+
       log.info(
         `[dry-run] self mode: would relocate ${present.length} machine-data item(s) ` +
           `(${present.join(', ')}) from ${legacyDir} to ${partitionDir}` +
@@ -401,27 +427,34 @@ export async function runMigration(
           `to ${partitionDir}, then rename the old directory to ${legacyDir}.bak`,
       );
     }
+
     return 'dry-run';
   }
 
   const lockPath = path.join(legacyDir, SYNC_LOCK_FILENAME);
+
   if (!(await acquireLock(lockPath))) {
     log.debug('migration skipped: a concurrent pull/push holds the sync lock');
+
     return 'busy';
   }
+
   // A command that loaded the config in legacyDir and queues a learning while
   // this moves it would leave that learning behind (#823 item 11). The queue
   // lock lives outside legacyDir, so it is held until the dir or its config has
   // moved; the writer then finds its config gone and saves nothing.
   const queueLock = await acquireQueueLock(legacyDir);
+
   if (!queueLock.acquired) {
     await releaseLock(lockPath);
     log.debug('migration skipped: a queue write holds the queue lock');
+
     return 'busy';
   }
 
   const staging = `${partitionDir}.staging`;
   let lockReleased = false;
+
   try {
     // 'self' (P2): selectively relocate the class-A1 whitelist from the repo's
     // `.teamai/` into the partition, leaving class-B knowledge and the
@@ -430,6 +463,7 @@ export async function runMigration(
     if (plan.mode === 'self') {
       return (await migrateSelfA1(legacyDir, partitionDir, plan.legacyOwner)) ? 'migrated' : 'skipped';
     }
+
     if (plan.mode === 'superseded') {
       return (await retireSupersededInstall(legacyDir, partitionDir, plan.previousOwner)) ? 'migrated' : 'skipped';
     }
@@ -445,6 +479,7 @@ export async function runMigration(
       // Not always an interrupted run: a linked worktree lands here once another
       // checkout of the repo built the partition.
       log.success(`Retired ${legacyDir} to ${backup}: this project's data already lives in ${partitionDir}`);
+
       return 'migrated';
     }
 
@@ -453,16 +488,20 @@ export async function runMigration(
     // legacy dir rather than copying onto the authoritative partition; if any
     // other partition dir is there, keep the legacy dir as planMigration does.
     const partition = await readPartitionState(partitionDir, path.dirname(legacyDir));
+
     if (partition.state === 'built') {
       if (!(await queueSettled(legacyDir, partitionDir, plan.legacyOwner))) return 'skipped';
       await releaseLock(lockPath);
       lockReleased = true;
       const backup = await retireLegacy(legacyDir);
       log.debug(`partition built by a concurrent process; retired ${legacyDir} to ${backup}`);
+
       return 'migrated';
     }
+
     if (await pathExists(partitionDir)) {
       warnKeptLegacy(legacyDir, partitionDir, partition);
+
       return 'skipped';
     }
 
@@ -476,8 +515,10 @@ export async function runMigration(
       overwrite: true,
       filter: (src) => {
         const rel = path.relative(legacyDir, src);
+
         if (!rel) return true; // the root itself
         const top = rel.split(path.sep)[0];
+
         return !isSkippedEntry(top);
       },
     });
@@ -513,6 +554,7 @@ export async function runMigration(
       `Old data preserved at ${backup} — remove it once you've confirmed ` +
         `everything works (downgrading to an older teamai is not supported).`,
     );
+
     return 'migrated';
   } catch (e) {
     // Any failure before the rename leaves the source untouched; discard the
@@ -532,8 +574,11 @@ export async function runMigration(
  */
 export async function maybeMigrate(opts: { dryRun?: boolean } = {}): Promise<MigrationResult | undefined> {
   const plan = await planMigration(undefined, opts);
+
   if (plan) return runMigration(plan, opts);
+
   if (!opts.dryRun) await settleOrphanQueue();
+
   return undefined;
 }
 
@@ -545,12 +590,16 @@ export async function maybeMigrate(opts: { dryRun?: boolean } = {}): Promise<Mig
  */
 async function settleOrphanQueue(): Promise<void> {
   const anchors = await resolveAnchors(process.cwd());
+
   if (!anchors) return;
   const legacyDir = path.join(anchors.workspaceRoot, '.teamai');
+
   if (!(await holdsQueued(path.join(legacyDir, SELF_LEGACY_QUEUE)))) return;
+
   if (await pathExists(path.join(legacyDir, 'config.yaml'))) return;
   const partitionDir = await resolvePartitionDir(anchors.projectAnchor);
   const partition = await readPartitionState(partitionDir, anchors.workspaceRoot);
+
   if (partition.state !== 'built') return;
   const remote = (await getRemoteUrl(anchors.workspaceRoot)) ?? '';
   await settleCheckoutQueue(legacyDir, partitionDir, { kind: 'self', remote });
@@ -581,18 +630,23 @@ export async function queueKeptInCheckout(
       throw new Error(`Unhandled migration result: ${String(unhandled)}`);
     }
   }
+
   const anchors = await resolveAnchors(process.cwd());
+
   if (!anchors) return null;
   const legacyDir = path.join(anchors.workspaceRoot, '.teamai');
   // A home that is itself a git repo: its `.teamai/` is the user scope's data
   // home, and the queue there is the user scope's.
   const home = getUserHome();
+
   if (anchors.workspaceRoot === (await realpath(home).catch(() => home))) return null;
   const config = await detectProjectConfig(anchors.workspaceRoot, undefined, options);
   const queueDir = config ? pendingLearningsDir(config) : null;
+
   if (queueDir && isInside(queueDir, legacyDir)) {
     const partitionDir = await resolvePartitionDir(anchors.projectAnchor, options);
     const partition = await readPartitionState(partitionDir, anchors.workspaceRoot);
+
     switch (partition.state) {
       case 'unreadable':
         return keptInCheckout(
@@ -615,13 +669,16 @@ export async function queueKeptInCheckout(
       }
     }
   }
+
   const queue = path.join(legacyDir, SELF_LEGACY_QUEUE);
+
   if (await holdsQueued(queue)) {
     return keptInCheckout(
       `the learnings queued in ${queue} could not be moved; see the warning above`,
       'Do what it says, then run this again.',
     );
   }
+
   return null;
 }
 
@@ -632,8 +689,12 @@ function keptInCheckout(cause: string, next: string): string {
 /** True when `p` is `dir` or inside it. */
 function isInside(p: string, dir: string): boolean {
   const rel = path.relative(dir, p);
+
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
+
+/** The staged config's `repo.localPath`, the one path it records under the legacy dir. */
+const StagedRepoSchema = z.object({ localPath: z.string() });
 
 /**
  * Rewrite absolute paths in the staged config.yaml that pointed into the legacy
@@ -648,17 +709,24 @@ async function rebaseConfigPaths(
   partitionDir: string,
 ): Promise<void> {
   const content = await readFileSafe(stagedConfig);
+
   if (!content) return;
-  let doc: Record<string, unknown>;
+  let doc: unknown;
+
   try {
-    doc = YAML.parse(content);
+    doc = parseYaml(content);
   } catch {
     return; // verifyStaging already validated parseability; be defensive anyway
   }
-  const repo = doc?.repo as { localPath?: string } | undefined;
-  const rebased = await rebasePath(repo?.localPath, legacyDir, partitionDir);
-  if (repo && rebased !== undefined && rebased !== repo.localPath) {
-    repo.localPath = rebased;
+
+  if (!(doc instanceof Object) || !('repo' in doc) || !(doc.repo instanceof Object)) return;
+  const { repo } = doc;
+  const localPath = StagedRepoSchema.safeParse(repo).data?.localPath;
+  const rebased = await rebasePath(localPath, legacyDir, partitionDir);
+
+  if (rebased !== undefined && rebased !== localPath) {
+    // Assigned in place, so every other key of the staged config is written back as read.
+    Object.assign(repo, { localPath: rebased });
     await writeFile(stagedConfig, YAML.stringify(doc));
   }
 }
@@ -684,8 +752,11 @@ async function rebasePath(
   const expanded = expandHome(p);
   const canonical = await realpath(expanded).catch(() => expanded);
   const rel = path.relative(fromDir, canonical);
+
   if (rel === '') return toDir;
+
   if (rel.startsWith('..') || path.isAbsolute(rel)) return p;
+
   return path.join(toDir, rel);
 }
 
@@ -722,6 +793,7 @@ async function retireLegacy(legacyDir: string): Promise<string> {
         `selectively, never by renaming the whole directory.`,
     );
   }
+
   // Its config leaves the checkout: mark it as a project's for the env loader first.
   const { markEnvScopePending } = await import('./resources/env-loader.js');
   await markEnvScopePending(path.dirname(legacyDir));
@@ -732,6 +804,7 @@ async function retireLegacy(legacyDir: string): Promise<string> {
 
   const backup = await freeBackupPath(legacyDir);
   await fse.rename(legacyDir, backup);
+
   return backup;
 }
 
@@ -740,9 +813,11 @@ const BACKUP_GITIGNORE = '# teamai migration backup — ignore everything\n*\n';
 /** The first free `.bak` name beside `legacyDir`: an existing backup is never overwritten. */
 async function freeBackupPath(legacyDir: string): Promise<string> {
   let backup = `${legacyDir}.bak`;
+
   for (let n = 1; await pathExists(backup); n++) {
     backup = `${legacyDir}.bak.${n}`;
   }
+
   return backup;
 }
 
@@ -758,35 +833,49 @@ async function freeBackupPath(legacyDir: string): Promise<string> {
  */
 async function retireSupersededInstall(legacyDir: string, partitionDir: string, previousOwner: QueueOwner): Promise<boolean> {
   const present: string[] = [];
+
   for (const name of SUPERSEDED_ENTRIES) {
     const src = path.join(legacyDir, name);
+
     if (!(await pathExists(src))) continue;
+
     if (name === 'env' && (await isDirectory(src))) continue;
     present.push(name);
   }
+
   const backup = await freeBackupPath(legacyDir);
+
   if (present.length > 0) {
     await fse.ensureDir(backup);
     await writeFile(path.join(backup, '.gitignore'), BACKUP_GITIGNORE);
   }
+
   const move = (name: string) => fse.move(path.join(legacyDir, name), path.join(backup, name));
+
   for (const name of present) if (name !== 'config.yaml') await move(name);
+
   if (!(await queueSettled(legacyDir, partitionDir, previousOwner))) {
     log.warn(
       `Kept ${path.join(legacyDir, 'config.yaml')} beside the learnings still queued in ` +
         `${path.join(legacyDir, SELF_LEGACY_QUEUE)}: it tells the next run which install queued them. ` +
         'The next init, pull or push tries again.',
     );
+
     return false;
   }
+
   if (present.includes('config.yaml')) await move('config.yaml');
+
   if (present.length === 0) return true;
   log.success(
     `Moved what the previous ${previousOwner.kind} install left in ${legacyDir} (${present.join(', ')}) ` +
       `to ${backup}; the team knowledge stays in place. Remove the backup once you no longer need it.`,
   );
+
   return true;
 }
+
+const SelfModeTeamaiYamlSchema = z.object({ mode: z.literal('self') });
 
 /**
  * True when `dir` (a `.teamai/`) carries single-repo team knowledge — a
@@ -795,10 +884,11 @@ async function retireSupersededInstall(legacyDir: string, partitionDir: string, 
  */
 async function holdsSelfKnowledge(dir: string): Promise<boolean> {
   const content = await readFileSafe(path.join(dir, 'teamai.yaml'));
+
   if (!content) return false;
+
   try {
-    const raw = YAML.parse(content) as { mode?: string } | null;
-    return raw?.mode === 'self';
+    return SelfModeTeamaiYamlSchema.safeParse(parseYaml(content)).success;
   } catch {
     return false;
   }
@@ -832,13 +922,18 @@ async function holdsSelfKnowledge(dir: string): Promise<boolean> {
  */
 async function migrateSelfA1(legacyDir: string, partitionDir: string, legacyOwner: QueueOwner): Promise<boolean> {
   await fse.ensureDir(partitionDir);
+
   if (!(await queueSettled(legacyDir, partitionDir, legacyOwner))) return false;
+
   for (const name of SELF_STALE_ENTRIES) await remove(path.join(legacyDir, name));
   const moved: string[] = [];
+
   for (const name of SELF_A1_ENTRIES) {
     const src = path.join(legacyDir, name);
+
     if (!(await pathExists(src))) continue;
     const dest = path.join(partitionDir, name);
+
     if (await pathExists(dest)) {
       if (await isDirectory(src)) {
         // A DIRECTORY entry (workspaces/) may hold per-worktree children the
@@ -852,10 +947,12 @@ async function migrateSelfA1(legacyDir: string, partitionDir: string, legacyOwne
         moved.push(name);
         continue;
       }
+
       // A FILE entry: the partition copy is authoritative. Drop the stale source.
       await remove(src);
       continue;
     }
+
     // Destination-first, atomic: copy into a temp sibling, then rename onto dest
     // (rename is atomic within the partition filesystem). Verify, THEN delete the
     // source. A leftover .tmp from an earlier crash is cleared first.
@@ -863,12 +960,15 @@ async function migrateSelfA1(legacyDir: string, partitionDir: string, legacyOwne
     await remove(tmp);
     await fse.copy(src, tmp, { overwrite: true });
     await fse.rename(tmp, dest);
+
     if (!(await pathExists(dest))) {
       throw new Error(`self migration: failed to relocate ${name} to the partition`);
     }
+
     await remove(src);
     moved.push(name);
   }
+
   if (moved.length > 0) {
     log.success(
       `Slimmed single-repo .teamai/: relocated ${moved.length} machine-data item(s) ` +
@@ -877,6 +977,7 @@ async function migrateSelfA1(legacyDir: string, partitionDir: string, legacyOwne
   } else {
     log.debug('self migration: nothing left to relocate');
   }
+
   return true;
 }
 
@@ -894,10 +995,12 @@ async function migrateSelfA1(legacyDir: string, partitionDir: string, legacyOwne
  */
 async function settleCheckoutQueue(legacyDir: string, partitionDir: string, owner: QueueOwner): Promise<void> {
   const queue = path.join(legacyDir, SELF_LEGACY_QUEUE);
+
   if (!(await pathExists(queue))) return;
   // The install read below decides where the queue goes; an init switching it
   // meanwhile would publish what lands in its live queue (#823 item 11).
   const settled = await withQueueLock(partitionDir, () => settleByPartitionOwner(legacyDir, partitionDir, owner));
+
   if (settled.status === 'busy') {
     log.warn(
       `Kept the learnings queued in ${queue}: another teamai command holds ${settled.lockPath}. ` +
@@ -909,9 +1012,11 @@ async function settleCheckoutQueue(legacyDir: string, partitionDir: string, owne
 async function settleByPartitionOwner(legacyDir: string, partitionDir: string, owner: QueueOwner): Promise<void> {
   const queue = path.join(legacyDir, SELF_LEGACY_QUEUE);
   const partition = await readPartitionState(partitionDir, path.dirname(legacyDir));
+
   switch (partition.state) {
     case 'absent':
       await drainLegacyQueue(legacyDir, partitionDir);
+
       return;
     case 'built':
       if (sameQueueOwner(queueOwner(partition.config), owner)) {
@@ -919,12 +1024,14 @@ async function settleByPartitionOwner(legacyDir: string, partitionDir: string, o
       } else {
         await setAsideCheckoutQueue(queue, partition.config, owner);
       }
+
       return;
     case 'unreadable':
       log.warn(
         `Kept the learnings queued in ${queue}: ${partition.configPath} cannot be read, so teamai cannot tell ` +
           'which repository they would be published to. Fix that file; the next init, pull or push moves them.',
       );
+
       return;
     default: {
       const unhandled: never = partition;
@@ -941,6 +1048,7 @@ async function settleByPartitionOwner(legacyDir: string, partitionDir: string, o
  */
 async function queueSettled(legacyDir: string, partitionDir: string, legacyOwner: QueueOwner): Promise<boolean> {
   await settleCheckoutQueue(legacyDir, partitionDir, legacyOwner);
+
   return !(await holdsQueued(path.join(legacyDir, SELF_LEGACY_QUEUE)));
 }
 
@@ -960,6 +1068,7 @@ async function holdsQueued(queue: string): Promise<boolean> {
  */
 async function drainLegacyQueue(legacyDir: string, partitionDir: string): Promise<void> {
   const src = path.join(legacyDir, SELF_LEGACY_QUEUE);
+
   if (!(await pathExists(src))) return;
   const dest = path.join(partitionDir, SELF_LEGACY_QUEUE);
   const kept: string[] = [];
@@ -967,14 +1076,17 @@ async function drainLegacyQueue(legacyDir: string, partitionDir: string): Promis
   // In the partition queue now, moved by this run or by one that stopped
   // before it dropped the indexes.
   let placed = 0;
+
   for (const relPath of await listFilesRecursive(src)) {
     const from = path.join(src, relPath);
     const to = path.join(dest, relPath);
     // Gone since the listing: a concurrent drain (contribute beside a pull)
     // already moved it. What is written below is what was read here.
     const content = await readFileIfExists(from);
+
     if (content === null) continue;
     const existing = await readFileIfExists(to);
+
     if (existing === null) {
       const tmp = `${to}.${process.pid}.tmp`;
       await remove(tmp);
@@ -986,23 +1098,29 @@ async function drainLegacyQueue(legacyDir: string, partitionDir: string): Promis
       kept.push(from);
       continue;
     }
+
     placed++;
     await remove(from);
   }
+
   if (placed > 0) {
     // No checkout's index may have them yet; recall rebuilds a missing one.
     const { dropCheckoutIndexes } = await import('./utils/search-index.js');
     await dropCheckoutIndexes(partitionDir);
   }
+
   if (moved > 0) log.success(`Moved ${moved} queued learning(s) from ${src} to ${dest}.`);
+
   if (kept.length > 0) {
     log.warn(
       `Kept ${kept.length} queued learning(s) in ${src}: ${dest} already has a different file ` +
         `under the same name (${kept.map((f) => path.relative(src, f)).join(', ')}). Compare the two, ` +
         `delete the one you do not want, and the next init, pull or push moves what is left.`,
     );
+
     return;
   }
+
   // A contribute may have queued here since the listing; leave that for the next run.
   if ((await listFilesRecursive(src)).length === 0) await remove(src);
 }
@@ -1029,8 +1147,10 @@ async function isDirectory(p: string): Promise<boolean> {
 async function mergeDirIntoPartition(src: string, dest: string): Promise<void> {
   await fse.ensureDir(dest);
   const children = await fse.readdir(src);
+
   for (const child of children) {
     const childDest = path.join(dest, child);
+
     if (await pathExists(childDest)) continue; // partition child wins; leave it
     const childSrc = path.join(src, child);
     const tmp = `${childDest}.${process.pid}.tmp`;
@@ -1043,6 +1163,7 @@ async function mergeDirIntoPartition(src: string, dest: string): Promise<void> {
 /** Top-level entries under a legacy `.teamai/` that migration will copy. */
 async function listMigratableEntries(legacyDir: string): Promise<string[]> {
   const names = await fse.readdir(legacyDir);
+
   return names.filter((n) => !isSkippedEntry(n));
 }
 
@@ -1060,19 +1181,24 @@ async function listMigratableEntries(legacyDir: string): Promise<string[]> {
 async function verifyStaging(legacyDir: string, staging: string): Promise<void> {
   const stagedConfig = path.join(staging, 'config.yaml');
   const content = await readFileSafe(stagedConfig);
+
   if (!content) throw new Error(`migration verify: ${stagedConfig} missing after copy`);
+
   try {
-    LocalConfigSchema.parse(YAML.parse(content));
+    LocalConfigSchema.parse(parseYaml(content));
   } catch (e) {
-    throw new Error(`migration verify: staged config.yaml is invalid (${(e as Error).message})`, { cause: e });
+    throw new Error(`migration verify: staged config.yaml is invalid (${e instanceof Error ? e.message : String(e)})`, { cause: e });
   }
 
   const legacyGit = path.join(legacyDir, 'team-repo', '.git');
+
   if (await pathExists(legacyGit)) {
     const stagedRepo = path.join(staging, 'team-repo');
+
     if (!(await pathExists(path.join(stagedRepo, '.git')))) {
       throw new Error('migration verify: team-repo/.git missing after copy (clone would be broken)');
     }
+
     // Smoke-check the clone: a working rev-parse proves the .git is intact, not
     // just present. Catches a partial/corrupt copy that a mere existence check
     // would wave through.
@@ -1083,13 +1209,14 @@ async function verifyStaging(legacyDir: string, staging: string): Promise<void> 
     } catch (e) {
       throw new Error(
         `migration verify: the staged team-repo clone is not a usable git ` +
-          `repository (${(e as Error).message})`,
+          `repository (${e instanceof Error ? e.message : String(e)})`,
         { cause: e },
       );
     }
   }
 
   const expected = await listMigratableEntries(legacyDir);
+
   for (const name of expected) {
     if (!(await pathExists(path.join(staging, name)))) {
       throw new Error(`migration verify: ${name} missing after copy`);

@@ -11,12 +11,12 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { z } from 'zod';
 import { runHookCommand } from './hook-command.js';
 
-export interface CodebuddyProjectGate {
-  root: string;
-  children: string[];
-}
+const CodebuddyProjectGateSchema = z.object({ root: z.string(), children: z.array(z.string()) });
+
+export type CodebuddyProjectGate = z.infer<typeof CodebuddyProjectGateSchema>;
 
 /** Encode path data as one shell-safe argument (base64url has no shell metacharacters). */
 export function encodeCodebuddyProjectGate(root: string, children: readonly string[] = []): string {
@@ -26,11 +26,9 @@ export function encodeCodebuddyProjectGate(root: string, children: readonly stri
 /** Decode a rendered project-gate argument without trusting arbitrary JSON. */
 export function decodeCodebuddyProjectGate(value: string): CodebuddyProjectGate | null {
   try {
-    const parsed: unknown = JSON.parse(Buffer.from(value, 'base64url').toString('utf8'));
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
-    const { root, children } = parsed as { root?: unknown; children?: unknown };
-    if (typeof root !== 'string' || !Array.isArray(children) || !children.every((child) => typeof child === 'string')) return null;
-    return { root, children };
+    const gate = CodebuddyProjectGateSchema.safeParse(JSON.parse(Buffer.from(value, 'base64url').toString('utf8')));
+
+    return gate.success ? gate.data : null;
   } catch {
     return null;
   }
@@ -51,19 +49,26 @@ export interface RenderedCodebuddyTeamGate {
 /** Parse only a complete teamai-rendered CodeBuddy project dispatcher command. */
 export function parseCodebuddyTeamGate(command: string): RenderedCodebuddyTeamGate | null {
   const match = CODEBUDDY_TEAM_GATE_RE.exec(command);
+
   if (!match) return null;
   const gate = decodeCodebuddyProjectGate(match[3]);
+
   if (!gate) return null;
   const timeout = match[5] === undefined ? undefined : Number(match[5]);
+
   if (timeout !== undefined && (!Number.isFinite(timeout) || timeout <= 0)) return null;
-  return {
+
+  const rendered: RenderedCodebuddyTeamGate = {
     event: match[1],
     id: match[2],
     gate,
     encodedGate: match[3],
     encodedCommand: match[4],
-    ...(timeout === undefined ? {} : { timeout }),
   };
+
+  if (timeout !== undefined) rendered.timeout = timeout;
+
+  return rendered;
 }
 
 /** Replace a rendered gate's encoded root/children while preserving its payload. */
@@ -73,7 +78,9 @@ export function regateCodebuddyTeamHookCommand(
   children: readonly string[] = [],
 ): string | null {
   const rendered = parseCodebuddyTeamGate(command);
+
   if (!rendered) return null;
+
   return command.replace(`--team-hook-gate ${rendered.encodedGate}`, `--team-hook-gate ${encodeCodebuddyProjectGate(root, children)}`);
 }
 
@@ -85,6 +92,7 @@ function resolvedPath(value: string): string {
 /** Whether `cwd` is `root` or one of its descendants. */
 function isInProject(root: string, cwd: string): boolean {
   const relative = path.relative(resolvedPath(root), resolvedPath(cwd));
+
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }
 
@@ -95,6 +103,7 @@ function isInProject(root: string, cwd: string): boolean {
  */
 export function isCodebuddyTeamGateForProject(command: string, root: string): boolean {
   const rendered = parseCodebuddyTeamGate(command);
+
   return rendered !== null && resolvedPath(rendered.gate.root) === resolvedPath(root);
 }
 
@@ -104,10 +113,13 @@ async function readHookPayload(): Promise<string> {
   const chunks: Buffer[] = [];
   let timer: NodeJS.Timeout | undefined;
   let timedOut = false;
+
   const read = (async () => {
-    for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
+    for await (const chunk of process.stdin) chunks.push(chunk);
   })();
+
   void read.catch(() => {});
+
   try {
     await Promise.race([
       read,
@@ -119,7 +131,9 @@ async function readHookPayload(): Promise<string> {
   } finally {
     if (timer) clearTimeout(timer);
   }
+
   if (timedOut && !process.stdin.destroyed) process.stdin.destroy();
+
   return Buffer.concat(chunks).toString('utf8');
 }
 
@@ -134,28 +148,40 @@ export async function runCodebuddyTeamHook(
   timeout?: number,
 ): Promise<number> {
   const gate = decodeCodebuddyProjectGate(encodedGate);
+
   if (!gate) {
     process.stderr.write('teamai: invalid CodeBuddy project hook gate\n');
+
     return 1;
   }
+
   const cwd = process.cwd();
+
   if (!isInProject(gate.root, cwd) || gate.children.some((child) => isInProject(child, cwd))) return 0;
 
   let command: string;
+
   try {
     command = Buffer.from(encodedCommand, 'base64url').toString('utf8');
   } catch {
     process.stderr.write('teamai: invalid CodeBuddy team hook command\n');
+
     return 1;
   }
+
   if (!command) return 0;
 
   const result = await runHookCommand(command, { cwd, timeout: timeout ?? 60, stdin: await readHookPayload() });
+
   if (result.stdout) await new Promise<void>((resolve) => process.stdout.write(result.stdout, () => resolve()));
+
   if (result.stderr) await new Promise<void>((resolve) => process.stderr.write(result.stderr, () => resolve()));
+
   if (result.timedOut) {
     process.stderr.write(`teamai: CodeBuddy team hook timed out after ${timeout ?? 60}s\n`);
+
     return 1;
   }
+
   return result.code ?? 1;
 }

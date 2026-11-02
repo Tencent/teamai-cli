@@ -60,6 +60,12 @@ describe('the team hooks a bridge runs', () => {
     });
   });
 
+  it.each(['constructor', 'toString', '__proto__'])('a hook gets a tool named %s under that name', async (name) => {
+    install('pi', { PreToolUse: [entry('cat > seen.json')] });
+    await runBridgedTeamHooks('pi', 'PreToolUse', JSON.stringify({ cwd: project, tool_name: name, tool_input: {} }));
+    expect(JSON.parse(fs.readFileSync(path.join(project, 'seen.json'), 'utf8')).tool_name).toBe(name);
+  });
+
   it('a JSON permission decision of deny blocks, as in Claude Code', async () => {
     const deny = JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'No writes under migrations/' } });
     install('opencode', { PreToolUse: [entry(`echo '${deny}'`, 'Write')] });

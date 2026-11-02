@@ -55,6 +55,7 @@ export async function detectShellProfile(
   if (platform === 'win32') {
     for (const name of ['.bash_profile', '.bash_login', '.profile']) {
       const candidate = path.join(home, name);
+
       if (await pathExists(candidate)) return candidate;
     }
   }
@@ -84,11 +85,14 @@ export async function envLoaderProfile(
   shell: string = process.env.SHELL ?? '',
 ): Promise<{ path: string; ignoredOverride: string | null }> {
   const overridePath = override ? expandHome(override) : null;
+
   if (overridePath !== null && !isZshFile(overridePath) && !shell.includes('zsh')) {
     return { path: overridePath, ignoredOverride: null };
   }
+
   const profile = await resolveActiveShellProfile(loaderPath, platform, shell);
   const ignored = overridePath !== null && isZshFile(overridePath) && !sameFile(overridePath, profile, platform);
+
   return { path: profile, ignoredOverride: ignored ? overridePath : null };
 }
 
@@ -118,20 +122,26 @@ export async function envLoaderProfiles(
   // A `$SHELL` that is neither zsh nor bash (fish) reads none of bash's files.
   const ownRead = otherShell === 'bash' || bashInstalled;
   const paths = ownRead ? [own.path] : [];
+
   if (!sameFile(other.path, own.path, platform)
     && ((platform !== 'win32' && isOnPath(otherShell, { platform })) || await pathExists(other.path))) {
     paths.push(other.path);
   }
+
   // A bash override names the file for the startup mode it serves: an
   // interactive bash still reads `.bashrc` (or a file it sources).
   if (ownRead && platform !== 'win32' && override && !isZshFile(expandHome(override))) {
     const interactive = await resolveActiveShellProfile(loaderPath, platform, 'bash');
+
     if (!await reachesAny(interactive, paths, platform) && (bashInstalled || await pathExists(interactive))) {
       paths.push(interactive);
     }
   }
+
   const login = ownRead ? await bashLoginProfile(loaderPath, platform, paths, bashInstalled) : null;
+
   if (login !== null) paths.push(login);
+
   return { paths, ignoredOverride: ownRead ? own.ignoredOverride : null };
 }
 
@@ -140,6 +150,7 @@ async function reachesAny(start: string, paths: string[], platform: NodeJS.Platf
   for await (const { file } of profileChain(start)) {
     if (paths.some((known) => sameFile(known, file, platform))) return true;
   }
+
   return false;
 }
 
@@ -164,16 +175,22 @@ async function bashLoginProfile(
   if (platform === 'win32') return null;
   const home = getUserHome();
   let login: string | null = null;
+
   for (const name of ['.bash_profile', '.bash_login', '.profile']) {
     const candidate = path.join(home, name);
+
     if (await pathExists(candidate)) { login = candidate; break; }
   }
+
   if (login === null) return bashInstalled ? path.join(home, '.profile') : null;
   let withBlock: string | null = null;
+
   for await (const { file, content } of profileChain(login)) {
     if (paths.some((known) => sameFile(known, file, platform))) return null;
+
     if (withBlock === null && content && findEnvBlockFor(content, loaderPath)) withBlock = file;
   }
+
   return withBlock ?? login;
 }
 
@@ -217,6 +234,7 @@ export function sameFile(a: string, b: string, platform: NodeJS.Platform = proce
   const resolve = platform === 'win32' ? path.win32.resolve : path.posix.resolve;
   const left = resolve(a);
   const right = resolve(b);
+
   return platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right;
 }
 
@@ -249,14 +267,19 @@ export interface EnvBlock {
 export function findEnvBlocks(profileContent: string): EnvBlock[] {
   const blocks: EnvBlock[] = [];
   let from = 0;
+
   for (;;) {
     const start = profileContent.indexOf(TEAMAI_ENV_START, from);
+
     if (start === -1) return blocks;
     const endMarker = profileContent.indexOf(TEAMAI_ENV_END, start);
+
     if (endMarker === -1) {
       blocks.push({ text: profileContent.slice(start), start, end: null });
+
       return blocks;
     }
+
     const end = endMarker + TEAMAI_ENV_END.length;
     blocks.push({ text: profileContent.slice(start, endMarker), start, end });
     from = end;
@@ -301,7 +324,9 @@ export function envBlockSourcesPath(block: string, envShPath: string): boolean {
   // generator's own format — e.g. #661's legacy unconverted backslash path,
   // which must still fail this check.
   if (!block.includes(posixPath)) return false;
+
   if (!/\s/.test(posixPath)) return true;
+
   return block.includes(`"${posixPath}"`) || block.includes(`'${posixPath}'`);
 }
 
@@ -321,6 +346,7 @@ function candidateSpellings(envShPath: string): string[] {
   const spellings = new Set<string>([envShPath, toGeneratedForm(envShPath)]);
 
   const drive = /^([A-Za-z]):[\\/](.*)$/.exec(envShPath);
+
   if (drive) {
     spellings.add(`/${drive[1].toLowerCase()}/${drive[2].replace(/\\/g, '/')}`);
   }
@@ -339,8 +365,10 @@ function candidateSpellings(envShPath: string): string[] {
 function includesAsPath(text: string, spelling: string): boolean {
   for (let at = text.indexOf(spelling); at !== -1; at = text.indexOf(spelling, at + 1)) {
     const after = at + spelling.length;
+
     if ((at === 0 || /[\s'"]/.test(text[at - 1])) && (after === text.length || /[\s'";]/.test(text[after]))) return true;
   }
+
   return false;
 }
 
@@ -368,6 +396,7 @@ export function envBlockReferencesDataHome(block: string, envShPath: string): bo
       return true;
     }
   }
+
   return false;
 }
 
@@ -383,6 +412,7 @@ export function envBlockReferencesDataHome(block: string, envShPath: string): bo
 function homeRelativeRef(name: string): string {
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const suffix = `${escaped}(?![\\w.-])`;
+
   return `(?:~/${suffix}|\\$\\{?HOME\\}?/${suffix}|"\\$\\{?HOME\\}?/${suffix}")`;
 }
 
@@ -400,6 +430,7 @@ function opensUnverifiedBlock(line: string): boolean {
     || line === '{'
     || line === '(';
 }
+
 function closesUnverifiedBlock(line: string): boolean {
   return /^(?:fi|done|esac)\b/.test(line) || /^\}(?:\s|$)/.test(line) || /^\)(?:\s|$)/.test(line);
 }
@@ -427,11 +458,13 @@ function logicalLines(content: string): string[] {
       const { terminator, stripTabs } = heredocQueue[0];
       const withoutCR = rawLines[i].replace(/\r$/, '');
       const candidate = stripTabs ? withoutCR.replace(/^\t+/, '') : withoutCR;
+
       if (candidate === terminator) heredocQueue.shift();
       continue;
     }
 
     let line = rawLines[i].trim();
+
     while (i + 1 < rawLines.length && (
       (line.endsWith('\\') && !line.endsWith('\\\\')) || line.endsWith('&&') || line.endsWith('||')
     )) {
@@ -439,6 +472,7 @@ function logicalLines(content: string): string[] {
       const next = rawLines[i].trim();
       line = line.endsWith('\\') ? `${line.slice(0, -1).trimEnd()} ${next}`.trim() : `${line} ${next}`.trim();
     }
+
     if (!line) continue;
 
     // A self-contained one-liner (`if ...; then ...; fi`, `case ... esac`,
@@ -458,6 +492,7 @@ function logicalLines(content: string): string[] {
 
     result.push(line);
   }
+
   return result;
 }
 
@@ -495,22 +530,28 @@ function logicalLines(content: string): string[] {
 async function referencesCandidate(content: string, name: string): Promise<boolean> {
   const ref = homeRelativeRef(name);
   const bareSource = new RegExp(`^(?:\\.|source)\\s+${ref}$`);
+
   const existenceGuard = new RegExp(
     `^(?:test\\s+-f\\s+${ref}|\\[\\s+-f\\s+${ref}\\s*\\])\\s*&&\\s*(?:\\.|source)\\s+${ref}$`,
   );
 
   let depth = 0;
   let halted = false;
+
   for (const line of logicalLines(content)) {
     if (opensUnverifiedBlock(line)) { depth += 1; continue; }
+
     if (closesUnverifiedBlock(line)) { depth = Math.max(0, depth - 1); continue; }
+
     if (depth > 0) continue;
 
     if (/^(?:return|exit)(?:\s+\S+)?$/.test(line)) { halted = true; continue; }
+
     if (halted) continue;
 
     if (bareSource.test(line) || existenceGuard.test(line)) return true;
   }
+
   return false;
 }
 
@@ -559,9 +600,12 @@ export async function resolveActiveShellProfile(
   const activePick = await detectShellProfile(platform, shell);
 
   let firstWithBlock: string | null = null;
+
   for await (const { file, content } of profileChain(activePick)) {
     if (!content) continue;
+
     if (findEnvBlockFor(content, envShPath)) return file;
+
     if (firstWithBlock === null && findEnvBlocks(content).length > 0) firstWithBlock = file;
   }
 
@@ -577,17 +621,19 @@ async function* profileChain(start: string): AsyncGenerator<{ file: string; cont
   const home = getUserHome();
   const visited = new Set<string>();
   const queue: string[] = [start];
-  while (queue.length > 0) {
-    const current = queue.shift() as string;
+
+  for (let current = queue.shift(); current !== undefined; current = queue.shift()) {
     if (visited.has(current)) continue;
     visited.add(current);
 
     const content = await readFileSafe(current);
     yield { file: current, content };
+
     if (!content) continue;
 
     for (const name of SHELL_PROFILE_CANDIDATE_NAMES) {
       const candidate = path.join(home, name);
+
       if (candidate !== current && !visited.has(candidate) && await referencesCandidate(content, name)) {
         queue.push(candidate);
       }

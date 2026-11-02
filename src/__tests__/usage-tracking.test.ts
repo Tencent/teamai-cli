@@ -37,7 +37,7 @@ import { aggregateUsage, showStats } from '../stats.js';
 import { mergeStats } from '../team-push.js';
 import { calculateSkillHealth, scoreToStars, calculateTeamHealth } from '../skill-health.js';
 import { getRecommendations } from '../skill-recommend.js';
-import type { LocalConfig, UsageEvent, UserStats } from '../types.js';
+import { parseUserStats, type LocalConfig, type UsageEvent, type UserStats } from '../types.js';
 
 // ─── Test helpers ──────────────────────────────────────
 
@@ -1387,6 +1387,40 @@ describe('extractSkillName', () => {
 });
 
 // ─── mergeStats tests ──────────────────────────────────
+
+describe('parseUserStats', () => {
+  const file = [
+    'username: alice',
+    'updatedAt: "2026-06-01T00:00:00.000Z"',
+    'skills:',
+    '  release:',
+    '    count: 40',
+    '    lastUsed: "2026-06-01T00:00:00.000Z"',
+    '  review:',
+    '    count: 3',
+    '  broken: null',
+    'workflows:',
+    '  runs: 5',
+    '  succeeded: 4',
+    '  failed: 1',
+    '  totalDurationMs: 900',
+    '',
+  ].join('\n');
+
+  it('keeps the history of a file one skill entry of which a hand edit broke', () => {
+    const merged = mergeStats(parseUserStats(file), 'alice', [{ name: 'release', count: 1, lastUsed: new Date('2026-07-01T00:00:00.000Z') }]);
+
+    expect(merged.skills).toEqual({
+      release: { count: 41, lastUsed: '2026-07-01T00:00:00.000Z' },
+      review: { count: 3, lastUsed: '' },
+    });
+    expect(merged.workflows).toEqual({ runs: 5, succeeded: 4, failed: 1, totalDurationMs: 900 });
+  });
+
+  it('keeps the key order of the file', () => {
+    expect(Object.keys(parseUserStats(file) ?? {})).toEqual(['username', 'updatedAt', 'skills', 'workflows']);
+  });
+});
 
 describe('mergeStats', () => {
   it('creates fresh stats when no existing data', () => {

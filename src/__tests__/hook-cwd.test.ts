@@ -38,6 +38,7 @@ describe('resolveHookCwd', () => {
   it('returns undefined when neither cwd nor workspace_roots is usable', () => {
     expect(resolveHookCwd({})).toBeUndefined();
     expect(resolveHookCwd({ cwd: '  ', workspace_roots: [] })).toBeUndefined();
-    expect(resolveHookCwd({ workspace_roots: [123, null] })).toBeUndefined();
+    const unparsed: Record<string, unknown> = { workspace_roots: [123, null] };
+    expect(resolveHookCwd(unparsed)).toBeUndefined();
   });
 });

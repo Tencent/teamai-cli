@@ -3,9 +3,10 @@ import fs from 'node:fs';
 import { realpath } from 'node:fs/promises';
 import path from 'node:path';
 import fse from 'fs-extra';
-import { simpleGit, type SimpleGit, type outputHandler } from 'simple-git';
+import { simpleGit, type SimpleGit, type SimpleGitOptions, type outputHandler } from 'simple-git';
 import { z } from 'zod';
 import { execCommand } from './exec.js';
+import { errnoCode } from './fs.js';
 import { GitAnswers } from './git-answers.js';
 import { gitFindsNoRepository, linkedWorktreesStamp, repositoryStamp } from './git-discovery.js';
 import { log } from './logger.js';
@@ -39,17 +40,21 @@ export function gitBinary(
 ): string {
   if ((options.platform ?? process.platform) === 'win32') return 'git';
   const pathEnv = options.pathEnv ?? process.env.PATH ?? '';
+
   if (resolvedGit?.pathEnv !== pathEnv || !stillExecutable(resolvedGit.binary)) {
     resolvedGit = { pathEnv, binary: lookUpGit(pathEnv) };
   }
+
   return resolvedGit.binary;
 }
 
 /** One access(2) per call, where a bare-name spawn would walk PATH again. */
 function stillExecutable(binary: string): boolean {
   if (binary === 'git') return true;
+
   try {
     fs.accessSync(binary, fs.constants.X_OK);
+
     return true;
   } catch {
     return false;
@@ -61,17 +66,24 @@ function lookUpGit(pathEnv: string): string {
     if (!path.isAbsolute(dir)) return 'git';
     const candidate = path.join(dir, 'git');
     let stat: fs.Stats;
+
     try {
       stat = fs.statSync(candidate);
     } catch (e) {
       // A miss moves on, as the spawn's own lookup does; anything else (a
       // symlink loop, say) is left to that lookup and the error it gives.
-      if (typeof e === 'object' && e !== null && 'code' in e && (e.code === 'ENOENT' || e.code === 'ENOTDIR')) continue;
+      const code = errnoCode(e);
+
+      if (code === 'ENOENT' || code === 'ENOTDIR') continue;
+
       return 'git';
     }
+
     if (!stat.isFile() || !SIMPLE_GIT_SAFE_BINARY.test(candidate)) return 'git';
+
     return spawnsByPath(candidate) ? candidate : 'git';
   }
+
   return 'git';
 }
 
@@ -84,6 +96,7 @@ function lookUpGit(pathEnv: string): string {
  */
 function spawnsByPath(candidate: string): boolean {
   if (isNativeExecutable(candidate)) return true;
+
   return spawnSync(candidate, ['--version'], { stdio: 'ignore', timeout: 10_000 }).error === undefined;
 }
 
@@ -99,8 +112,10 @@ function isNativeExecutable(file: string): boolean {
   try {
     fs.accessSync(file, fs.constants.X_OK);
     const fd = fs.openSync(file, 'r');
+
     try {
       const head = Buffer.alloc(4);
+
       return fs.readSync(fd, head, 0, 4, 0) === 4 && NATIVE_MAGIC.has(head.toString('hex'));
     } finally {
       fs.closeSync(fd);
@@ -127,6 +142,7 @@ function isNativeExecutable(file: string): boolean {
  */
 const NO_PROMPT_VAR = 'GIT_TERMINAL_PROMPT' as const;
 const NO_PROMPT_VAL = '0' as const;
+
 const GIT_ENVIRONMENT = [
   NO_PROMPT_VAR,
   'GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_AUTHOR_DATE',
@@ -163,12 +179,15 @@ export function disableGitTerminalPrompt(): void {
  */
 export function gitBlockTimeoutMs(): number {
   const raw = process.env.TEAMAI_INIT_PUSH_TIMEOUT_MS;
+
   if (raw !== undefined) {
     const parsed = Number(raw);
+
     if (Number.isFinite(parsed) && parsed > 0) {
       return parsed;
     }
   }
+
   return 30_000;
 }
 
@@ -186,14 +205,18 @@ export function createGit(basePath?: string, abort?: AbortSignal): SimpleGit {
   // Role filtering happens after checkout: an inactive skill's long path can
   // otherwise block the whole pull. Keep this override in the Git process.
   const config = process.platform === 'win32' ? ['core.longpaths=true'] : [];
-  const git = simpleGit({
-    ...(basePath ? { baseDir: basePath } : {}),
+
+  const options: Partial<SimpleGitOptions> = {
     binary: gitBinary(),
     abort,
     config,
     // The caller owns ambient Git configuration; the guard still checks explicit .env() additions.
     allowEnvironment: [...GIT_ENVIRONMENT, ...Object.keys(process.env)],
-  });
+  };
+
+  if (basePath) options.baseDir = basePath;
+  const git = simpleGit(options);
+
   return git.outputHandler(markOutputSeen);
 }
 
@@ -214,6 +237,7 @@ const markOutputSeen: outputHandler = (_command, stdout) => {
  */
 export function createGitWithBlockTimeout(basePath?: string): SimpleGit {
   const block = gitBlockTimeoutMs();
+
   // The kill reaches git alone: its HTTP helper would keep the stalled
   // connection, and the CLI with it, until the server dropped it. curl's own
   // stall limit ends the helper, a second after the kill so the kill still
@@ -222,13 +246,17 @@ export function createGitWithBlockTimeout(basePath?: string): SimpleGit {
     ...(process.platform === 'win32' ? ['core.longpaths=true'] : []),
     'http.lowSpeedLimit=1', `http.lowSpeedTime=${Math.ceil(block / 1000) + 1}`,
   ];
-  const git = simpleGit({
-    ...(basePath ? { baseDir: basePath } : {}),
+
+  const options: Partial<SimpleGitOptions> = {
     binary: gitBinary(),
     timeout: { block },
     config,
     allowEnvironment: [...GIT_ENVIRONMENT, ...Object.keys(process.env)],
-  });
+  };
+
+  if (basePath) options.baseDir = basePath;
+  const git = simpleGit(options);
+
   return git.outputHandler(markOutputSeen);
 }
 
@@ -260,8 +288,10 @@ export async function commitSkippingHooks(
   options: { identityFallback?: boolean } = {},
 ) {
   const identity = options.identityFallback ? await fallbackIdentityConfig(git) : [];
+
   if (paths === undefined && identity.length === 0) return git.commit(message, { '--no-verify': null });
   const commit = [...identity, '--literal-pathspecs', 'commit', '--no-verify', '-m', message];
+
   return git.raw(paths === undefined ? commit : [...commit, '--', ...paths]);
 }
 
@@ -270,9 +300,11 @@ async function fallbackIdentityConfig(git: SimpleGit): Promise<string[]> {
   try {
     await git.raw(['var', 'GIT_AUTHOR_IDENT']);
     await git.raw(['var', 'GIT_COMMITTER_IDENT']);
+
     return [];
   } catch {
     const unset = async (key: string) => (await git.raw(['config', '--get', key]).catch(() => '')).trim() === '';
+
     return [
       ...(await unset('user.name') ? ['-c', 'user.name=TeamAI'] : []),
       ...(await unset('user.email') ? ['-c', 'user.email=teamai@localhost'] : []),
@@ -291,6 +323,7 @@ export async function isGitRepo(localPath: string): Promise<boolean> {
   if (!(await fse.pathExists(localPath))) {
     return false;
   }
+
   return fse.pathExists(path.join(localPath, '.git'));
 }
 
@@ -339,6 +372,7 @@ export async function configureGitUser(
  */
 export async function getHeadRev(localPath: string): Promise<string> {
   const git = createGit(localPath);
+
   return git.revparse(['--short', 'HEAD']);
 }
 
@@ -349,8 +383,10 @@ export async function getHeadRev(localPath: string): Promise<string> {
  */
 export async function getRemoteUrl(localPath: string, remoteName = 'origin'): Promise<string | null> {
   const git = createGit(localPath);
+
   try {
     const url = (await git.raw(['remote', 'get-url', remoteName])).trim();
+
     return url || null;
   } catch {
     return null;
@@ -360,8 +396,10 @@ export async function getRemoteUrl(localPath: string, remoteName = 'origin'): Pr
 /** Read the literal configured remote URL without applying url.*.insteadOf rewrites. */
 export async function getConfiguredRemoteUrl(localPath: string, remoteName = 'origin'): Promise<string | null> {
   const git = createGit(localPath);
+
   try {
     const url = (await git.raw(['config', '--get', `remote.${remoteName}.url`])).trim();
+
     return url || null;
   } catch {
     return null;
@@ -391,6 +429,7 @@ export function normalizeRepoUrlForCompare(url: string): string {
 
   // scp-form: git@host:owner/repo(.git) → host/owner/repo
   const scp = /^[^/@]+@([^:/]+):(.+)$/.exec(s);
+
   if (scp) {
     s = `${scp[1]}/${scp[2]}`;
   } else {
@@ -401,6 +440,7 @@ export function normalizeRepoUrlForCompare(url: string): string {
   // Drop an explicit port and surrounding slashes, then a trailing `.git`
   // (strip slashes first so `repo.git/` also matches).
   s = s.replace(/:(\d+)\//, '/').replace(/^\/+/, '').replace(/\/+$/, '').replace(/\.git$/i, '');
+
   return s.toLowerCase();
 }
 
@@ -432,20 +472,27 @@ export const SCHEMES: ReadonlyMap<string, { readonly family: string; readonly de
  */
 export function repoIdentity(url: string): string {
   const trimmed = url.trim();
+
   const key = (family: string, host: string, port: string, repoPath: string): string => {
     const name = repoPath.replace(/^\/+/, '').replace(/\/+$/, '').replace(/\.git$/i, '');
+
     return `${family}://${host.toLowerCase()}${port ? `:${port}` : ''}/${name}`;
   };
+
   const scp = /^[^/@]+@([^:/]+):(.+)$/.exec(trimmed);
+
   if (scp) return key('ssh', scp[1] ?? '', '', scp[2] ?? '');
   let parsed: URL;
+
   try {
     parsed = new URL(trimmed);
   } catch {
     return trimmed;
   }
+
   const scheme = parsed.protocol.slice(0, -1).toLowerCase();
   const known = SCHEMES.get(scheme);
+
   return key(known?.family ?? scheme, parsed.hostname, parsed.port === known?.defaultPort ? '' : parsed.port, parsed.pathname);
 }
 
@@ -456,12 +503,14 @@ export function repoIdentity(url: string): string {
  */
 export async function hasCommits(localPath: string): Promise<boolean> {
   const git = createGit(localPath);
+
   try {
     // On an unborn HEAD `rev-parse --verify HEAD^{commit}` exits non-zero and
     // simple-git throws, so the catch below is the primary guard. The sha-shape
     // check is a belt-and-suspenders guard for the rare case a build resolves
     // HEAD to empty/whitespace output without throwing.
     const out = (await git.raw(['rev-parse', '--verify', 'HEAD^{commit}'])).trim();
+
     return /^[0-9a-f]{7,40}$/.test(out);
   } catch {
     return false;
@@ -485,12 +534,14 @@ export async function commitPaths(
 ): Promise<boolean> {
   const git = createGit(localPath);
   const existing = files.filter((f) => fs.existsSync(path.join(localPath, f)));
+
   if (existing.length === 0) return false;
   // Add each path individually and tolerate `git add` failing on an
   // explicitly-gitignored path (it errors "Use -f if you really want to add
   // them"). Callers should not pass ignored paths, but a stray one must not
   // abort the whole commit. `--` guards against paths that look like options.
   const added: string[] = [];
+
   for (const f of existing) {
     try {
       await git.raw(['--literal-pathspecs', 'add', '--', f]);
@@ -499,14 +550,18 @@ export async function commitPaths(
       // ignored/unaddable path — skip it
     }
   }
+
   if (added.length === 0) return false;
+
   const staged = (await git.raw([
     '--literal-pathspecs', 'diff', '--cached', '--name-only', '--no-renames', '-z', '--', ...added,
   ])).split('\0').filter(Boolean);
+
   if (staged.length === 0) return false;
   // A path-limited commit leaves the rest of the user's index intact, including
   // partially staged files. Use literal, NUL-delimited names from the index.
   await git.raw(['--literal-pathspecs', 'commit', '--only', '-m', message, '--', ...staged]);
+
   return true;
 }
 
@@ -516,13 +571,14 @@ export class DetachedTeamRepoError extends Error {
     this.name = 'DetachedTeamRepoError';
   }
 
-  static rethrow(error: unknown): void {
-    if (error instanceof DetachedTeamRepoError) throw error;
+  static rethrow(cause: unknown): void {
+    if (cause instanceof DetachedTeamRepoError) throw cause;
   }
 }
 
 export async function assertAttachedTeamRepo(git: SimpleGit, localPath: string): Promise<void> {
   if (await gitFindsNoRepository(localPath) || !await isDedicatedRepoRoot(localPath)) return;
+
   if (!(await git.raw(['symbolic-ref', '-q', 'HEAD'])).trim()) {
     throw new DetachedTeamRepoError(await getDefaultBranch(localPath));
   }
@@ -550,18 +606,22 @@ export async function pullRepo(localPath: string, abort?: AbortSignal): Promise<
 
   try {
     const result = await git.pull(['--ff-only']);
+
     if (result.summary.changes === 0 && result.summary.insertions === 0 && result.summary.deletions === 0) {
       return 'already up to date';
     }
+
     return `${result.summary.changes} file(s) changed`;
   } catch (err) {
     // ff-only failed. A hard reset to origin is the only recovery, but it is
     // destructive — only safe on a dedicated team-repo clone. On a business-repo
     // subdir it would bubble up to the user's repo, so bail and surface the cause.
     const dedicated = await isDedicatedRepoRoot(localPath);
+
     if (!dedicated) {
       throw err;
     }
+
     // Only a recovery needs the branch: a pull that fast-forwards never asks.
     const branch = (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();
     const reason = err instanceof Error ? err.message : String(err);
@@ -569,24 +629,30 @@ export async function pullRepo(localPath: string, abort?: AbortSignal): Promise<
     await git.fetch(['origin', branch]);
 
     let ahead = 0;
+
     try {
       const out = (await git.raw(['rev-list', '--count', `origin/${branch}..HEAD`])).trim();
       ahead = Number.parseInt(out, 10) || 0;
     } catch {
       // best-effort count; proceed with the reset regardless
     }
+
     const status = await git.status();
     // `reset --hard` discards tracked changes (and ahead commits) but leaves
     // untracked files in place, so count tracked changes only — every changed
     // path appears once in status.files; subtract the untracked (not_added) ones.
     const dirtyCount = status.files.length - status.not_added.length;
+
     if (ahead > 0 || dirtyCount > 0) {
       const notice = `Team repo diverged from origin/${branch}; realigning discards `
         + `${ahead} local commit(s) and ${dirtyCount} uncommitted change(s).`;
+
       log.warn(notice);
       log.persist(notice);
     }
+
     await git.reset(['--hard', `origin/${branch}`]);
+
     return 'reset to origin (diverged)';
   }
 }
@@ -601,6 +667,7 @@ export async function pullRepo(localPath: string, abort?: AbortSignal): Promise<
  * Result is cached per-repo for the process lifetime to avoid repeated git calls.
  */
 const defaultBranchCache = new Map<string, string>();
+
 /**
  * Fast-forward-only refresh of a local team-repo clone.
  *
@@ -614,15 +681,18 @@ export async function pullRepoFastForward(localPath: string): Promise<string> {
   const git = createGit(localPath);
   await assertAttachedTeamRepo(git, localPath);
   const result = await git.pull(['--ff-only']);
+
   if (result.summary.changes === 0 && result.summary.insertions === 0 && result.summary.deletions === 0) {
     return 'already up to date';
   }
+
   return `${result.summary.changes} file(s) changed`;
 }
 
 
 export async function getDefaultBranch(localPath: string): Promise<string> {
   const cached = defaultBranchCache.get(localPath);
+
   if (cached) return cached;
 
   const git = createGit(localPath);
@@ -630,6 +700,7 @@ export async function getDefaultBranch(localPath: string): Promise<string> {
 
   try {
     const ref = (await git.revparse(['--abbrev-ref', 'origin/HEAD'])).trim();
+
     if (ref.startsWith('origin/')) {
       branch = ref.slice('origin/'.length);
     }
@@ -651,6 +722,7 @@ export async function getDefaultBranch(localPath: string): Promise<string> {
 
   branch = branch ?? 'main';
   defaultBranchCache.set(localPath, branch);
+
   return branch;
 }
 
@@ -675,25 +747,34 @@ export async function pushRepoDirectly(
   const git = opts.initPush ? createGitWithBlockTimeout(localPath) : createGit(localPath);
   await assertAttachedTeamRepo(git, localPath);
   const existingFiles = [];
+
   for (const f of files) {
     const fullPath = fs.existsSync(`${localPath}/${f}`);
+
     if (fullPath) existingFiles.push(f);
   }
+
   if (existingFiles.length === 0) {
     log.debug('No files to add');
+
     return false;
   }
+
   await git.add(existingFiles);
   const staged = (await git.raw(['diff', '--cached', '--name-only', '--', ...existingFiles])).trim();
+
   if (staged) {
     await git.commit(message, existingFiles);
   } else if (!(await hasUnpushedCommits(git))) {
     log.debug('Nothing to commit');
+
     return false;
   }
+
   // Use --set-upstream for first push on repos initialized from empty remotes
   const branch = (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();
   await git.push(['-u', 'origin', branch]);
+
   return true;
 }
 
@@ -701,6 +782,7 @@ export async function pushRepoDirectly(
 async function hasUnpushedCommits(git: SimpleGit): Promise<boolean> {
   try {
     const branch = (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();
+
     return (await git.raw(['rev-list', '--count', `origin/${branch}..HEAD`])).trim() !== '0';
   } catch {
     return false;
@@ -732,13 +814,16 @@ export async function pushLearningToOrigin(
   // (e.g. `alpha-notes/foo.md`); normalize to forward slashes for git.
   await git.add([`learnings/${relPath.split(path.sep).join('/')}`]);
   const status = await git.status();
+
   if (status.staged.length > 0) {
     await git.commit(message);
   }
+
   const branch = (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();
   await git.push(['origin', branch]);
   await git.fetch(['origin', branch]);
   const ahead = (await git.raw(['rev-list', '--count', `origin/${branch}..HEAD`])).trim();
+
   return ahead === '0' || ahead === '';
 }
 
@@ -754,14 +839,15 @@ export async function autoPushTeamRepo(repoPath: string, message: string, files:
     return await pushRepoDirectly(repoPath, message, files);
   } catch (err) {
     DetachedTeamRepoError.rethrow(err);
-    const lines = (err as Error).message.split('\n').map(line => line.trim()).filter(Boolean);
+    const failure = err instanceof Error ? err.message : String(err);
+    const lines = failure.split('\n').map(line => line.trim()).filter(Boolean);
     // Keep the lines that say why git refused: the `! [rejected]` ref line (fetch first,
     // pre-receive hook declined, protected branch), the hook's `remote:` output and the generic
     // error:/fatal: line. git prints the remote URL first, which is not a cause.
     const reasonLines = lines.filter(line => /^(error|fatal|remote):/.test(line) || /^!\s/.test(line) || /\[(remote )?rejected\]/.test(line));
     const reason = (reasonLines.length > 0 ? reasonLines : lines.slice(0, 1)).join('\n') || 'unknown error';
     // Only a stale clone is fixed by pulling; a protected branch or a hook rejection is not.
-    const stale = /\(fetch first\)|\(non-fast-forward\)/.test((err as Error).message);
+    const stale = /\(fetch first\)|\(non-fast-forward\)/.test(failure);
     const advice = stale ? '\nRun `teamai pull`, then rerun this command.' : '';
     throw new Error(`Push to the team repo failed: ${reason}${advice}`, { cause: err });
   }
@@ -783,23 +869,29 @@ export async function autoPushViaMR(
   try {
     const branchName = generateBranchName(localConfig.username);
     const pushed = await pushRepoBranch(repoPath, message, files, branchName, { initPush: opts.initPush });
+
     if (!pushed) {
       log.debug('[git] autoPushViaMR: nothing to commit');
+
       return null;
     }
 
     const { createPrWithFallback } = await import('../push.js');
+
     const prUrl = await createPrWithFallback(
       teamConfig, localConfig, branchName, message, message,
       opts.initPush ? { spawnTimeoutMs: gitBlockTimeoutMs() } : {},
     );
 
     await checkoutMaster(repoPath);
+
     return prUrl;
   } catch (err) {
     DetachedTeamRepoError.rethrow(err);
-    log.warn(`[git] autoPushViaMR failed (non-blocking): ${(err as Error).message}`);
+    log.warn(`[git] autoPushViaMR failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`);
+
     try { await checkoutMaster(repoPath); } catch { /* best effort */ }
+
     return null;
   }
 }
@@ -811,6 +903,7 @@ export async function autoPushViaMR(
  */
 export function isMetadataOnlyDiff(diff: string): boolean {
   if (!diff.trim()) return true;
+
   if (/^(?:new file mode|deleted file mode|old mode|new mode|rename from|rename to|copy from|copy to|Binary files)\b/m.test(diff)) return false;
 
   const METADATA_PATTERNS = [
@@ -822,12 +915,16 @@ export function isMetadataOnlyDiff(diff: string): boolean {
   ];
 
   const lines = diff.split('\n');
+
   for (const line of lines) {
     if (!line.startsWith('+') && !line.startsWith('-')) continue;
+
     if (line.startsWith('---') || line.startsWith('+++')) continue;
     const content = line.slice(1);
+
     if (!content.trim()) continue;
     const isMetadata = METADATA_PATTERNS.some(pat => pat.test(content));
+
     if (!isMetadata) return false;
   }
 
@@ -847,9 +944,11 @@ export async function remoteBranchExists(
 ): Promise<boolean | null> {
   try {
     const out = await createGit(localPath).listRemote(['--heads', 'origin', `refs/heads/${branchName}`]);
+
     return out.trim().length > 0;
   } catch (e) {
-    log.debug(`ls-remote failed for ${branchName}: ${(e as Error).message}`);
+    log.debug(`ls-remote failed for ${branchName}: ${e instanceof Error ? e.message : String(e)}`);
+
     return null;
   }
 }
@@ -886,8 +985,9 @@ export async function pushRepoBranch(
     try {
       await git.fetch(['origin', branchName]);
     } catch (e) {
-      log.debug(`Could not fetch ${branchName}: ${(e as Error).message}`);
+      log.debug(`Could not fetch ${branchName}: ${e instanceof Error ? e.message : String(e)}`);
     }
+
     // -B resets a leftover local branch of the same name onto the default branch.
     await git.checkout(['-B', branchName]);
   } else {
@@ -898,6 +998,7 @@ export async function pushRepoBranch(
   // Stage files
   await git.add(files);
   const status = await git.status();
+
   if (status.staged.length === 0) {
     // checkout would otherwise carry unmatched copied files back to the
     // default branch as unstaged/untracked changes (#331).
@@ -906,17 +1007,20 @@ export async function pushRepoBranch(
     const defaultBranch = await getDefaultBranch(localPath);
     log.debug(`Nothing to commit, switching back to ${defaultBranch}`);
     await leaveAndDeletePushBranch(git, defaultBranch, branchName);
+
     return false;
   }
 
   // Second gate: skip if all staged changes are metadata-only (timestamps)
   const diffOutput = await git.diff(['--cached', '--unified=0']);
+
   if (isMetadataOnlyDiff(diffOutput)) {
     await git.reset(['--hard', 'HEAD']);
     await git.clean('f', ['-d']);
     const defaultBranch = await getDefaultBranch(localPath);
     log.debug(`Only metadata/timestamp changes detected, switching back to ${defaultBranch}`);
     await leaveAndDeletePushBranch(git, defaultBranch, branchName);
+
     return false;
   }
 
@@ -931,9 +1035,12 @@ export async function pushRepoBranch(
       log.debug(`Remote branch ${branchName} already holds this tree, skipping force-push`);
       const defaultBranch = await getDefaultBranch(localPath);
       await leaveAndDeletePushBranch(git, defaultBranch, branchName);
+
       return false;
     }
+
     await git.push(['--force-with-lease', '-u', 'origin', branchName]);
+
     return true;
   }
 
@@ -950,6 +1057,7 @@ async function treeMatchesRemoteBranch(git: SimpleGit, branchName: string): Prom
   try {
     const local = (await git.revparse([`${branchName}^{tree}`])).trim();
     const remote = (await git.revparse([`refs/remotes/origin/${branchName}^{tree}`])).trim();
+
     return local.length > 0 && local === remote;
   } catch {
     return false;
@@ -970,13 +1078,17 @@ async function treeMatchesRemoteBranch(git: SimpleGit, branchName: string): Prom
 async function switchToDefaultBranch(git: SimpleGit, defaultBranch: string): Promise<boolean> {
   try {
     await git.checkout(defaultBranch);
+
     return true;
   } catch (e) {
-    const msg = (e as Error).message ?? '';
+    const msg = e instanceof Error ? e.message : '';
+
     if (/already (used|checked out) by worktree|is already checked out/i.test(msg)) {
       log.debug(`Skipping switch to ${defaultBranch}: already checked out in another worktree`);
+
       return false;
     }
+
     throw e;
   }
 }
@@ -996,10 +1108,13 @@ async function leaveAndDeletePushBranch(
   branchName: string,
 ): Promise<void> {
   const switched = await switchToDefaultBranch(git, defaultBranch);
+
   if (!switched) {
     log.debug(`Leaving ${branchName} in place: default branch busy in another worktree`);
+
     return;
   }
+
   await git.deleteLocalBranch(branchName, true);
 }
 
@@ -1028,6 +1143,7 @@ export function generateBranchName(username: string): string {
   const now = new Date();
   const pad = (n: number) => n.toString().padStart(2, '0');
   const timestamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+
   return `${PUSH_BRANCH_PREFIX}${username}/${timestamp}`;
 }
 
@@ -1040,14 +1156,19 @@ export function generateBranchName(username: string): string {
 export async function unusedBranchName(localPath: string, username: string): Promise<string> {
   const name = generateBranchName(username);
   const prefixes = ['refs/heads/', 'refs/remotes/origin/'];
+
   // A ref name holds no glob character, so `name` matches only itself.
   const listed = await createGit(localPath)
     .raw(['for-each-ref', '--format=%(refname)', ...prefixes.flatMap((p) => [`${p}${name}`, `${p}${name}-*`])])
     .catch(() => '');
+
   const taken = new Set(listed.split('\n').filter(Boolean)
     .map((ref) => ref.slice(prefixes.find((p) => ref.startsWith(p))?.length ?? 0)));
+
   let candidate = name;
+
   for (let n = 2; taken.has(candidate); n++) candidate = `${name}-${n}`;
+
   return candidate;
 }
 
@@ -1068,6 +1189,7 @@ export async function unusedBranchName(localPath: string, username: string): Pro
 export async function isDedicatedRepoRoot(repoPath: string): Promise<boolean> {
   if (await gitFindsNoRepository(repoPath)) return true;
   let toplevel: string;
+
   try {
     toplevel = (await checkoutLocation(repoPath))?.toplevel ?? (await createGit(repoPath).revparse(['--show-toplevel'])).trim();
   } catch {
@@ -1075,12 +1197,14 @@ export async function isDedicatedRepoRoot(repoPath: string): Promise<boolean> {
     // so treat repoPath as a plain dedicated dir (historical behavior). fail-open.
     return true;
   }
+
   try {
     // revparse succeeded: repoPath is inside SOME git repo. Confirm it is repoPath's
     // OWN root, not an enclosing business repo. Resolve symlinks on both sides first
     // (macOS /tmp -> /private/tmp) so path comparison is not fooled by a symlinked
     // prefix. If realpath itself fails, we cannot confirm safety → fail-closed.
     const [realTop, realRepo] = await Promise.all([realpath(toplevel), realpath(repoPath)]);
+
     return realTop === realRepo;
   } catch {
     return false;
@@ -1134,28 +1258,35 @@ const anchorsByDir = new Map<string, ProjectAnchors>();
 export async function resolveAnchors(cwd?: string): Promise<ProjectAnchors | null> {
   const dir = path.resolve(cwd ?? process.cwd());
   const known = anchorsByDir.get(dir);
+
   if (known) return known;
   const anchors = await readAnchors(cwd);
+
   if (anchors) anchorsByDir.set(dir, anchors);
+
   return anchors;
 }
 
 async function readAnchors(cwd?: string): Promise<ProjectAnchors | null> {
   if (await gitFindsNoRepository(cwd ?? process.cwd())) return null;
+
   try {
     const dir = cwd ?? process.cwd();
     const located = await checkoutLocation(dir);
     const toplevel = located?.toplevel ?? (await execCommand('git', ['rev-parse', '--show-toplevel'], { cwd: dir, timeoutMs: 10_000 })).stdout.trim();
     const entries = await readWorktreeList(cwd) ?? await readWorktreeList(cwd, true);
     const first = entries?.[0];
+
     if (!toplevel || !first) return null;
     const workspaceRoot = await realpath(toplevel);
     let projectAnchor = first.path;
     const commonDir = await gitCommonDir(workspaceRoot);
     let mainCheckout: string | null = first.bare ? null : projectAnchor;
+
     if (!first.bare && projectAnchor === commonDir) {
       const worktree = await execCommand('git', ['--git-dir', commonDir, 'config', '--get', 'core.worktree'], { cwd: workspaceRoot, timeoutMs: 10_000 })
         .then(({ code, stdout }) => code === 0 ? stdout : '').catch(() => '');
+
       if (worktree.trim()) {
         mainCheckout = await realpath(path.resolve(commonDir, worktree.trim()));
       } else {
@@ -1163,15 +1294,19 @@ async function readAnchors(cwd?: string): Promise<ProjectAnchors | null> {
         mainCheckout = gitDir === commonDir ? workspaceRoot : null;
       }
     }
+
     // Superproject worktrees clone submodules into their own modules directory.
     // Only an existing original submodule can supply their shared identity.
     if (commonDir && projectAnchor === commonDir) {
       const clone = commonDir.match(/^(.*)[\\/]worktrees[\\/][^\\/]+[\\/]modules[\\/](.+)$/);
+
       if (clone) {
         const original = path.join(clone[1], 'modules', clone[2]);
+
         if (await fse.pathExists(original)) projectAnchor = await realpath(original);
       }
     }
+
     return { workspaceRoot, projectAnchor, mainCheckout };
   } catch {
     return null;
@@ -1193,6 +1328,7 @@ export interface WorktreeListEntry {
 export function parseWorktreeList(output: string): WorktreeListEntry[] {
   const entries: WorktreeListEntry[] = [];
   let entry: WorktreeListEntry | null = null;
+
   for (const field of output.split('\0')) {
     if (field.startsWith('worktree ')) {
       entry = { path: field.slice('worktree '.length), bare: false, prunable: false };
@@ -1203,6 +1339,7 @@ export function parseWorktreeList(output: string): WorktreeListEntry[] {
       entry.prunable = true;
     }
   }
+
   return entries;
 }
 
@@ -1236,7 +1373,9 @@ const checkoutLocations = GitAnswers.of('locations', z.object({
  */
 export async function checkoutLocation(dir: string): Promise<CheckoutLocation | null> {
   const found = await repositoryStamp(dir);
+
   if (found === null) return null;
+
   return checkoutLocations.answer(path.resolve(dir), found.stamp, () => readCheckoutLocation(dir, found.gitDir));
 }
 
@@ -1244,11 +1383,14 @@ async function readCheckoutLocation(dir: string, stampGitDir: string): Promise<C
   try {
     const result = await execCommand('git', ['rev-parse', '--show-toplevel', '--show-prefix', '--git-common-dir', '--git-path', 'info/exclude', '--git-dir'], { cwd: dir, timeoutMs: 10_000 });
     const [toplevel = '', prefix = '', commonDir = '', gitPath = '', gitDir = ''] = result.code === 0 ? result.stdout.split(/\r?\n/) : [];
+
     if (!toplevel || !commonDir || !gitPath || !gitDir) return null;
     // Git prints relative paths from where it runs: the real path, symlinks resolved.
     const base = await realpath(dir);
     const [opened, stamped] = await Promise.all([realpath(path.resolve(base, gitDir)), realpath(stampGitDir)]);
+
     if (opened !== stamped) return null;
+
     return { toplevel, prefix, commonDir: await realpath(path.resolve(base, commonDir)), excludeFile: path.resolve(base, gitPath) };
   } catch {
     return null;
@@ -1266,10 +1408,14 @@ export async function gitCommonDir(cwd: string): Promise<string | null> {
   // Remembered by checkoutLocation while the repository on disk stays the same;
   // anything else asks git each time.
   const located = await checkoutLocation(cwd);
+
   if (located) return located.commonDir;
+
   try {
     const result = await execCommand('git', ['rev-parse', '--git-common-dir'], { cwd, timeoutMs: 10_000 });
+
     if (result.code !== 0) return null;
+
     return await realpath(path.resolve(await realpath(cwd), result.stdout.replace(/\r?\n$/, '')));
   } catch {
     return null;
@@ -1284,11 +1430,15 @@ export async function gitCommonDir(cwd: string): Promise<string | null> {
  */
 export async function nearestGitEntry(dir: string): Promise<string | null> {
   const exists = (p: string): Promise<boolean> => fs.promises.lstat(p).then(() => true, () => false);
+
   // A directory that does not exist is in no repository git failed to read.
   if (!await exists(dir)) return null;
+
   for (let at = path.resolve(dir); ; at = path.dirname(at)) {
     const entry = path.join(at, '.git');
+
     if (await exists(entry)) return entry;
+
     if (path.dirname(at) === at) return null;
   }
 }
@@ -1303,12 +1453,14 @@ export async function nearestGitEntry(dir: string): Promise<string | null> {
  */
 export async function isLiveCheckout(root: string, commonDir: string): Promise<boolean> {
   if (!await fse.pathExists(path.join(root, '.git'))) return false;
+
   return await gitCommonDir(root) === commonDir;
 }
 
 /** A live checkout sharing a TeamAI identity, including inherited submodule clones. */
 export async function isLiveProjectCheckout(root: string, projectAnchor: string): Promise<boolean> {
   if (!await fse.pathExists(path.join(root, '.git'))) return false;
+
   return (await resolveAnchors(root))?.projectAnchor === projectAnchor;
 }
 
@@ -1316,13 +1468,17 @@ export async function isLiveProjectCheckout(root: string, projectAnchor: string)
 export async function checkoutForProjectAnchor(anchor: string, recordedRoot?: string): Promise<string | null> {
   if (!await fse.pathExists(anchor)) return null;
   const worktree = await createGit(anchor).raw(['config', '--get', 'core.worktree']).catch(() => '');
+
   const candidates = [anchor, ...(worktree.trim() ? [path.resolve(anchor, worktree.trim())] : []),
     ...recordedRoot ? [recordedRoot] : [], ...await listWorktrees(anchor)];
+
   for (const candidate of candidates) {
     if (!await fse.pathExists(path.join(candidate, '.git'))) continue;
     const anchors = await resolveAnchors(candidate);
+
     if (anchors?.projectAnchor === anchor) return anchors.mainCheckout ?? anchors.workspaceRoot;
   }
+
   return null;
 }
 
@@ -1348,25 +1504,32 @@ const worktreeLists = GitAnswers.of('worktreeLists', z.string());
  */
 async function readWorktreeList(cwd?: string, newlineSplit = false): Promise<ListedWorktree[] | null> {
   const dir = cwd ?? process.cwd();
+
   if (await gitFindsNoRepository(dir)) return null;
   // Taken before git runs: a worktree changed meanwhile changes the next stamp.
   const commonDir = (await checkoutLocation(dir))?.commonDir ?? null;
   const linked = commonDir === null ? null : await linkedWorktreesStamp(commonDir);
+
   const readList = async (): Promise<string | null> => {
     try {
       // Discovery must use the same repository environment as checkoutLocation.
       const result = await execCommand('git', ['worktree', 'list', '--porcelain', ...newlineSplit ? [] : ['-z']], { cwd: dir, timeoutMs: 10_000 });
+
       return result.code === 0 ? result.stdout : null;
     } catch {
       return null;
     }
   };
+
   // The list is the repository's, whichever of its directories git runs in.
   let list = commonDir === null || linked === null
     ? await readList()
     : await worktreeLists.answer(`${newlineSplit}\0${commonDir}`, linked, readList);
+
   if (list === null) return null;
+
   if (newlineSplit) list = list.split(/\r?\n/).join('\0');
+
   return Promise.all(parseWorktreeList(list)
     .filter((entry) => entry.path)
     .map(async (entry) => ({ ...entry, listed: entry.path, path: await realpath(entry.path).catch(() => entry.path) })));
@@ -1391,8 +1554,10 @@ function listedCheckouts(entries: ListedWorktree[], commonDir: string | null): L
  */
 export async function listWorktrees(cwd?: string): Promise<string[]> {
   const entries = await readWorktreeList(cwd) ?? await readWorktreeList(cwd, true);
+
   if (!entries) return [];
   const commonDir = await gitCommonDir(path.resolve(cwd ?? process.cwd()));
+
   return [...new Set(listedCheckouts(entries, commonDir).map((entry) => entry.path))];
 }
 
@@ -1407,7 +1572,9 @@ export async function listWorktrees(cwd?: string): Promise<string[]> {
  */
 export async function completeWorktreeList(cwd: string, commonDir: string): Promise<string[] | null> {
   const entries = await readWorktreeList(cwd);
+
   if (!entries || entries.some((entry) => !entry.bare && entry.path === commonDir)) return null;
+
   return [...new Set(listedCheckouts(entries, commonDir).flatMap((entry) => [entry.listed, entry.path]))];
 }
 
@@ -1433,6 +1600,7 @@ export async function resetToCleanMaster(git: SimpleGit, localPath: string): Pro
   await assertAttachedTeamRepo(git, localPath);
   const status = await git.status();
   const hasConflicts = status.conflicted.length > 0;
+
   const isDirty = hasConflicts
     || status.modified.length > 0
     || status.not_added.length > 0
@@ -1451,6 +1619,7 @@ export async function resetToCleanMaster(git: SimpleGit, localPath: string): Pro
   // Ensure we're on the default branch (previous push may have left us on a feature branch)
   const branch = (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();
   const defaultBranch = await getDefaultBranch(localPath);
+
   if (branch !== defaultBranch) {
     log.debug(`Switching from stale branch '${branch}' back to ${defaultBranch}`);
     await switchToDefaultBranch(git, defaultBranch);
@@ -1483,9 +1652,11 @@ export async function blobInHistory(
   try {
     const range = since ? `${since}..${tip}` : tip;
     const out = await createGit(repoPath).raw(['log', range, `--find-object=${blob}`, '--format=%H', '--', filePath]);
+
     return out.trim().length > 0;
   } catch (e) {
-    log.debug(`git log --find-object failed for ${filePath}: ${(e as Error).message}`);
+    log.debug(`git log --find-object failed for ${filePath}: ${e instanceof Error ? e.message : String(e)}`);
+
     return null;
   }
 }
@@ -1523,9 +1694,11 @@ async function pathChangedSince(
 ): Promise<boolean | null> {
   try {
     const out = await createGit(repoPath).raw(['log', `${since}..${tip}`, `--diff-filter=${filter}`, '--format=%H', '--', filePath]);
+
     return out.trim().length > 0;
   } catch (e) {
-    log.debug(`git log --diff-filter=${filter} failed for ${filePath}: ${(e as Error).message}`);
+    log.debug(`git log --diff-filter=${filter} failed for ${filePath}: ${e instanceof Error ? e.message : String(e)}`);
+
     return null;
   }
 }
@@ -1538,9 +1711,11 @@ async function pathChangedSince(
 export async function getFileContentWhenAdded(repoPath: string, filePath: string): Promise<Buffer | null> {
   try {
     const sha = (await createGit(repoPath).raw(['log', 'HEAD', '--diff-filter=A', '--format=%H', '-1', '--', filePath])).trim();
+
     return sha ? await getFileContentAtRev(repoPath, sha, `./${filePath}`) : null;
   } catch (e) {
-    log.debug(`git log --diff-filter=A failed for ${filePath}: ${(e as Error).message}`);
+    log.debug(`git log --diff-filter=A failed for ${filePath}: ${e instanceof Error ? e.message : String(e)}`);
+
     return null;
   }
 }
@@ -1585,7 +1760,9 @@ export const HEAD_STATUS = ['--no-optional-locks', 'status', '--porcelain=v2', '
 export function headStateOf(out: string): HeadState | null {
   const lines = out.split('\n').filter(Boolean);
   const head = lines.find((l) => l.startsWith('# branch.oid '))?.slice('# branch.oid '.length).trim();
+
   if (!head || head === '(initial)') return null;
+
   return { head, dirty: lines.some((l) => !l.startsWith('#')) };
 }
 
@@ -1596,6 +1773,7 @@ export function headStateOf(out: string): HeadState | null {
  */
 export async function isPastVersionOf(repoPath: string, absFile: string, relPath: string): Promise<boolean> {
   const blob = await hashObject(repoPath, absFile);
+
   return blob !== null && await blobInHistory(repoPath, blob, relPath) === true;
 }
 
@@ -1610,15 +1788,18 @@ export async function listTreeAtRev(repoPath: string, rev: string, dir: string):
   try {
     const raw = await createGit(repoPath).raw(['ls-tree', '-r', '-z', rev, '--', dir]);
     const entries: GitTreeEntry[] = [];
+
     for (const line of raw.split('\0')) {
       if (!line) continue;
       const tabIndex = line.indexOf('\t');
+
       if (tabIndex === -1) continue;
       const meta = line.slice(0, tabIndex);
       const filePath = line.slice(tabIndex + 1);
       const mode = meta.split(' ')[0] ?? '';
       entries.push({ path: filePath, mode });
     }
+
     return entries;
   } catch {
     return [];
@@ -1644,8 +1825,10 @@ export async function getFileContentAtRev(
   filePath: string,
 ): Promise<Buffer | null> {
   const git = createGit(repoPath);
+
   try {
     const result = await git.show([`${rev}:${filePath}`]);
+
     return Buffer.from(result);
   } catch {
     return null;
@@ -1656,6 +1839,7 @@ export async function getRepoStatus(localPath: string): Promise<{ ahead: number;
   const git = createGit(localPath);
   await git.fetch();
   const status = await git.status();
+
   return {
     ahead: status.ahead,
     behind: status.behind,

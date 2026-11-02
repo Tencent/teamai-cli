@@ -1,5 +1,6 @@
 import path from 'node:path';
-import YAML from 'yaml';
+import { parseYaml } from './utils/yaml.js';
+import type { JsonValue } from './types.js';
 import { z } from 'zod';
 import { caseFoldKey, emptyManifestError, parseManifest, parseManifestOnce, readManifestFile } from './manifest-schema.js';
 import { getDefaultBranch, getFileContentAtRev, getHeadCommit } from './utils/git.js';
@@ -54,25 +55,29 @@ export class RoleAssignmentsNotFoundError extends Error {
   }
 }
 
-function validateAssignments(raw: unknown): RoleAssignments {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+function validateAssignments(raw: JsonValue): RoleAssignments {
+  if (!(raw instanceof Object) || Array.isArray(raw)) {
     throw new Error('Invalid members manifest: expected an object');
   }
+
   const manifest = parseManifest(RoleAssignmentsSchema, raw, 'members');
 
   // Two keys that differ only by case are one person to a forge that folds
   // usernames, and the member they describe would hold whichever the YAML
   // parser kept last. Say so instead of picking one.
   const seen = new Map<string, string>();
+
   for (const username of Object.keys(manifest.members)) {
     const key = caseFoldKey(username);
     const prior = seen.get(key);
+
     if (prior !== undefined && prior !== username) {
       throw new Error(
         `Invalid members manifest: "${prior}" and "${username}" differ only by case or Unicode normalization. `
         + 'Keep one entry per member',
       );
     }
+
     seen.set(key, username);
   }
 
@@ -87,6 +92,7 @@ function validateAssignments(raw: unknown): RoleAssignments {
 async function fetchedDefaultBranch(repoPath: string): Promise<string | null> {
   try {
     const tip = `origin/${await getDefaultBranch(repoPath)}`;
+
     return (await getHeadCommit(repoPath, tip)) ? tip : null;
   } catch {
     return null;
@@ -107,25 +113,30 @@ export async function loadRoleAssignments(repoPath: string, repo: { kind?: strin
   const tip = repo.kind === 'http' ? null : await fetchedDefaultBranch(repoPath);
   let content: string | null;
   let where: string;
+
   if (tip) {
     where = `${ROLE_ASSIGNMENTS_FILE} at ${tip}`;
     // `./`: relative to the directory git runs in, which in single-repo mode
     // is `.teamai/` inside the business repo rather than its root.
     content = (await getFileContentAtRev(repoPath, tip, `./${ROLE_ASSIGNMENTS_FILE}`))?.toString('utf-8') ?? null;
+
     if (content !== null && content.trim() === '') throw emptyManifestError('members', where);
   } else {
     where = manifestPath;
     content = await readManifestFile(manifestPath, 'members');
   }
+
   if (content === null) throw new RoleAssignmentsNotFoundError(where);
 
   return parseManifestOnce(manifestPath, content, (text) => {
-    let raw: unknown;
+    let raw: JsonValue;
+
     try {
-      raw = YAML.parse(text);
+      raw = parseYaml(text);
     } catch (error) {
-      throw new Error(`Invalid members manifest YAML: ${(error as Error).message}`, { cause: error });
+      throw new Error(`Invalid members manifest YAML: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
     }
+
     return validateAssignments(raw);
   });
 }
@@ -143,6 +154,12 @@ export async function loadRoleAssignmentsIfPresent(repoPath: string, repo: { kin
   }
 }
 
+/** The roles a member holds, and whether the file lists them or they fell back to `default`. */
+export interface AssignedRoles {
+  roles: string[];
+  source: 'assigned' | 'default';
+}
+
 /**
  * The roles the team assigned to `username`, primary first. A member the file
  * does not list gets `default`, which is usually no roles at all.
@@ -153,10 +170,12 @@ export async function loadRoleAssignmentsIfPresent(repoPath: string, repo: { kin
 export function resolveAssignedRoles(
   manifest: RoleAssignments,
   username: string,
-): { roles: string[]; source: 'assigned' | 'default' } {
+): AssignedRoles {
   const listed = Object.prototype.hasOwnProperty.call(manifest.members, username)
     ? manifest.members[username]
     : undefined;
+
   const roles = listed ?? manifest.default;
+
   return { roles: [...new Set(roles)], source: listed ? 'assigned' : 'default' };
 }

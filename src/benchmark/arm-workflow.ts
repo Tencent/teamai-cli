@@ -7,9 +7,9 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { parse } from 'yaml';
 import { z } from 'zod';
-import { getKnowledgeDir, type LocalConfig } from '../types.js';
+import { getKnowledgeDir, isJsonObject, JsonObjectSchema, JsonValueSchema, type JsonObject, type JsonValue, type LocalConfig } from '../types.js';
+import { parseYaml } from '../utils/yaml.js';
 import { loadCachedWorkflow, loadWorkflowTree, syncWorkflowDefinitions, withTeamRevision, workflowsRunBy, type SyncWorkflowResult } from '../workflow/cache.js';
 import { parseWorkflow } from '../workflow/parse.js';
 import { stepWorkflow, type InlineWorkflow, type WorkflowStep } from '../workflow/types.js';
@@ -23,11 +23,10 @@ export interface PinnedArmWorkflow {
   /** The key of the copy a trial runs. */
   key: string;
   /** Every copy, the workflow's and its sub-workflows', by key, as workflow files write them. */
-  files: Record<string, Record<string, unknown>>;
+  files: Record<string, JsonObject>;
 }
 
-const FileSchema = z.object({ steps: z.array(z.record(z.string(), z.unknown())) }).passthrough();
-type FileStep = Record<string, unknown>;
+const FileSchema = z.object({ steps: z.array(JsonObjectSchema) }).catchall(JsonValueSchema);
 
 /** Why plan refuses an arm's workflow: the member receives two versions of a workflow it runs, or a trial cannot run it. */
 type Refusal = { ok: false; code: 'workflow_namespace_conflict' | 'arm_workflow_unrunnable'; message: string };
@@ -44,73 +43,107 @@ export async function pinArmWorkflow(
 ): Promise<{ ok: true; pinned: PinnedArmWorkflow } | Refusal> {
   const runs = `Arm "${arm.name}" runs workflow "${name}"`;
   const refuse = (message: string, code: Refusal['code'] = 'arm_workflow_unrunnable'): Refusal => ({ ok: false, code, message });
+
   const read = await withTeamRevision(config, revision, async (at) => {
     const synced = await syncWorkflowDefinitions(at, { scopeLabel: `team commit ${revision.slice(0, 7)}` });
     const conflicted = await namespaceConflict(at, name, synced);
+
     if (conflicted) {
       const through = conflicted.workflow === name ? '' : `, which runs workflow "${conflicted.workflow}"`;
+
       return { conflict: `${runs}${through}, which this member receives from more than one namespace: ${conflicted.message}` };
     }
+
     const top = await loadCachedWorkflow(at, name);
+
     if (!top) return { missing: `${runs}, which has no runnable version at team commit ${revision.slice(0, 7)}` };
     const tree = await loadWorkflowTree(at, top);
+
     if ('failed' in tree) return { missing: `${runs}, which cannot run: ${tree.failed.message}` };
     const children = await Promise.all(Object.keys(tree.workflows).map(async (child) => [child, await loadCachedWorkflow(at, child)] as const));
+
     return { top, tree, children };
   });
+
   if ('failed' in read) return refuse(`${runs}, and team commit ${revision.slice(0, 7)} could not be read: ${read.failed}. Repair the team repo, or run teamai pull, and start again.`);
+
   if ('conflict' in read) return refuse(`${read.conflict}. Keep it in one namespace, push it, run teamai pull, and start again.`, 'workflow_namespace_conflict');
+
   if ('missing' in read) return refuse(`${read.missing}. Fix the arm's workflow, push it, run teamai pull, and start again.`);
   const { top, tree, children } = read;
+
   if (top.definition.inputs?.task?.type !== 'string') {
     return refuse(`${runs}, which takes no input task, the task's prompt each trial passes it. Add inputs: { task: string } to it, push it, run teamai pull, and start again.`);
   }
+
   // Every input is required, and a trial passes only task.
   const otherInputs = Object.keys(top.definition.inputs).filter((input) => input !== 'task');
+
   if (otherInputs.length > 0) {
     return refuse(`${runs}, which also requires inputs ${otherInputs.join(', ')}, and a trial passes only task. Remove them from its inputs, push it, run teamai pull, and start again.`);
   }
+
   // A trial runs it by name, and only a run of a workflow runs its finally steps.
   if (top.definition.finally) {
     return refuse(`${runs}, which has finally steps, and a trial runs it as a step, where they would not run. Move them into its steps, push it, run teamai pull, and start again.`);
   }
+
   const sources = new Map([[top.definition.name, top], ...children.flatMap(([child, cached]) => (cached ? [[child, cached] as const] : []))]);
+
   for (const [file, cached] of sources) {
     const refused = unrunnableStep(cached.definition.steps);
+
     if (refused !== undefined) {
       const holder = file === top.definition.name ? '' : `, which runs workflow "${file}"`;
+
       return refuse(`${runs}${holder}, whose step "${refused.step}" ${refused.why}. A trial runs unattended in its own clone: change the workflow, push it, run teamai pull, and start again.`);
     }
   }
+
   // With no model, the arm runs on its tool's default, which the model an agent's definition sets would replace.
   for (const [file, cached] of arm.model === undefined ? sources : []) {
     const found = agentPrompt(cached.definition.steps);
+
     if (found !== undefined) {
       const holder = file === top.definition.name ? '' : `, which runs workflow "${file}"`;
+
       return refuse(`${runs}${holder}, whose step "${found.step}" runs agent "${found.agent}", and the arm sets no model, so the agent's own model could replace the tool's default it compares. Set model in the suite's defaults, which the arm inherits, and start again.`);
     }
   }
+
   const raws = new Map<string, { raw: z.infer<typeof FileSchema>; parsed: readonly WorkflowStep[] }>();
+
   for (const [file, cached] of sources) {
-    const raw = FileSchema.safeParse(cached.content === undefined ? undefined : parse(cached.content));
+    const raw = FileSchema.safeParse(cached.content === undefined ? undefined : parseYaml(cached.content));
+
     if (!raw.success) return refuse(`${runs}, and this member's cache holds no source of workflows/${file}.yaml to copy. Run teamai pull, and start again.`);
     raws.set(file, { raw: raw.data, parsed: cached.definition.steps });
   }
-  const files: Record<string, Record<string, unknown>> = {};
+
+  const files: Record<string, JsonObject> = {};
   const keys = new Map<string, string>();
+
   // Sub-workflows first, so a copy names the keys of the copies it runs; the tree has no cycle, and holds every file.
   const keyOf = (file: string): string => {
     const known = keys.get(file);
     const source = raws.get(file);
+
     if (known !== undefined || !source) return known ?? file;
     const { name: _name, defaults, ...header } = source.raw;
-    const { model: _model, ...keptDefaults } = z.record(z.string(), z.unknown()).catch({}).parse(defaults ?? {});
-    const body = { ...header, ...(Object.keys(keptDefaults).length > 0 ? { defaults: keptDefaults } : {}), steps: copySteps(source.raw.steps, source.parsed, { arm, unattended }, keyOf) };
+    const written: JsonObject = isJsonObject(defaults) ? defaults : {};
+    const { model: _model, ...keptDefaults } = written;
+    // `header` holds `steps` first, so the copy keeps the place the schema gave it.
+    const body: JsonObject = { ...header };
+
+    if (Object.keys(keptDefaults).length > 0) body.defaults = keptDefaults;
+    body.steps = copySteps(source.raw.steps, source.parsed, { arm, unattended }, keyOf);
     const key = `${file}.${createHash('sha256').update(JSON.stringify(body)).digest('hex').slice(0, 12)}`;
     files[key] = { ...body, name: key };
     keys.set(file, key);
+
     return key;
   };
+
   return { ok: true, pinned: { name, sourceHash: tree.sourceHash, key: keyOf(top.definition.name), files } };
 }
 
@@ -123,16 +156,20 @@ async function namespaceConflict(config: LocalConfig, name: string, synced: Pick
   if (seen.has(name)) return undefined;
   seen.add(name);
   const conflict = synced.invalid.find((diagnostic) => diagnostic.code === 'workflow_namespace_conflict' && path.posix.basename(diagnostic.file, '.yaml') === name);
+
   if (conflict) return { workflow: name, message: conflict.message };
   const cached = await loadCachedWorkflow(config, name);
   const unrunnable = cached ? undefined : synced.unrunnable.find((file) => path.posix.basename(file, '.yaml') === name);
   const content = unrunnable === undefined ? undefined : await fs.readFile(path.join(getKnowledgeDir(config), unrunnable), 'utf8').catch(() => undefined);
   const parsed = content === undefined ? undefined : parseWorkflow(unrunnable ?? '', content);
   const definition = cached?.definition ?? (parsed?.ok ? parsed.definition : undefined);
+
   for (const { workflow } of definition ? workflowsRunBy(definition) : []) {
     const found = await namespaceConflict(config, workflow, synced, seen);
+
     if (found) return found;
   }
+
   return undefined;
 }
 
@@ -140,18 +177,26 @@ async function namespaceConflict(config: LocalConfig, name: string, synced: Pick
 function unrunnableStep(steps: readonly WorkflowStep[], prefix = ''): { step: string; why: string } | undefined {
   for (const step of steps) {
     const id = `${prefix}${step.id}`;
+
     if (step.deliver !== undefined) return { step: id, why: 'delivers a pull request' };
+
     if (step.hitl !== undefined || step.interactive === true) return { step: id, why: 'asks a person' };
+
     if (step.workspace !== undefined && step.workspace !== 'continue') return { step: id, why: 'opens a workspace other than continue' };
+
     if (step.command !== undefined && step.workspace === undefined) return { step: id, why: 'runs a command in the member\'s checkout; give it workspace: continue' };
     const child = stepWorkflow(step);
+
     // Its items' steps would each open a copy of the trial's clone, which the clone place has none of.
     if (child !== undefined && step.forEach !== undefined && step.workspace === 'continue') return { step: id, why: 'runs its workflow per item, each in a copy of its own, which a trial cannot open' };
+
     // A trial runs the arm's workflow from the benchmark plan's output, which may run no `from` step.
     if (child?.kind === 'from') return { step: id, why: `runs a workflow step "${child.step}" makes, which a trial cannot run` };
     const inner = child?.kind === 'inline' ? unrunnableStep(child.workflow.steps, `${id}.`) : undefined;
+
     if (inner) return inner;
   }
+
   return undefined;
 }
 
@@ -159,11 +204,14 @@ function unrunnableStep(steps: readonly WorkflowStep[], prefix = ''): { step: st
 function agentPrompt(steps: readonly WorkflowStep[], prefix = ''): { step: string; agent: string } | undefined {
   for (const step of steps) {
     const id = `${prefix}${step.id}`;
+
     if (step.prompt !== undefined && step.agent !== undefined) return { step: id, agent: step.agent };
     const child = stepWorkflow(step);
     const inner = child?.kind === 'inline' ? agentPrompt(child.workflow.steps, `${id}.`) : undefined;
+
     if (inner) return inner;
   }
+
   return undefined;
 }
 
@@ -178,27 +226,43 @@ interface CopiedPrompt {
  * and every workflow it runs by name run by its copy's key. `parsed` are the same steps as the cache holds them, in the
  * same order.
  */
-function copySteps(raw: readonly FileStep[], parsed: readonly WorkflowStep[], prompts: CopiedPrompt, keyOf: (file: string) => string): FileStep[] {
+function copySteps(raw: readonly JsonObject[], parsed: readonly WorkflowStep[], prompts: CopiedPrompt, keyOf: (file: string) => string): JsonObject[] {
   const { arm, unattended } = prompts;
+
   return raw.map((step, index) => {
     const definition = parsed[index];
+
     if (!definition) return step;
+
     if (definition.prompt !== undefined) {
       const { prompt_file: _file, model: _model, ...rest } = step;
       const { permissions: _permissions, ...written } = rest;
-      return {
-        ...written, prompt: definition.prompt, tool: arm.tool, ...(arm.model ? { model: { name: arm.model, ...(arm.effort ? { effort: arm.effort } : {}) } } : {}),
-        ...(unattended ? { permissions: 'unattended' } : {}),
-      };
+      const copied: JsonObject = { ...written, prompt: definition.prompt, tool: arm.tool };
+
+      if (arm.model) {
+        const model: JsonObject = { name: arm.model };
+
+        if (arm.effort) model.effort = arm.effort;
+        copied.model = model;
+      }
+
+      if (unattended) copied.permissions = 'unattended';
+
+      return copied;
     }
+
     const child = stepWorkflow(definition);
+
     if (child?.kind === 'named') return { ...step, workflow: keyOf(child.name) };
+
     if (child?.kind === 'inline') return { ...step, workflow: copyInline(step.workflow, child.workflow, prompts, keyOf) };
+
     return step;
   });
 }
 
-function copyInline(raw: unknown, parsed: InlineWorkflow, prompts: CopiedPrompt, keyOf: (file: string) => string): unknown {
+function copyInline(raw: JsonValue, parsed: InlineWorkflow, prompts: CopiedPrompt, keyOf: (file: string) => string): JsonValue {
   const file = FileSchema.safeParse(raw);
+
   return file.success ? { ...file.data, steps: copySteps(file.data.steps, parsed.steps, prompts, keyOf) } : raw;
 }

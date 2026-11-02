@@ -11,6 +11,11 @@
  * - SessionMetadata adds originator/sourcePlatform
  */
 
+import { z } from 'zod';
+import { JsonValueSchema, type JsonValue, JsonObjectSchema } from '../types.js';
+import { coercedText, OptionalString } from './fs.js';
+import { parseJson } from '../utils/json.js';
+
 // ---------------------------------------------------------------------------
 // Content blocks (ContentBlock)
 // ---------------------------------------------------------------------------
@@ -30,7 +35,33 @@ export interface ToolCallBlock {
   type: 'tool_call';
   toolName: string;
   callId: string;
-  arguments: Record<string, unknown>;
+  arguments: ToolArguments;
+}
+
+/** A tool call's input as the source platform recorded it: arbitrary JSON keyed by argument name. */
+export const ToolArgumentsSchema = JsonObjectSchema;
+
+export type ToolArguments = z.infer<typeof ToolArgumentsSchema>;
+
+/**
+ * Tool-call arguments as a transcript stores them: an object, or that object JSON-encoded. Anything else, or a string
+ * that does not decode to an object, is kept as text under `_raw`; absent arguments read as none.
+ */
+export function toolArgumentsFrom(stored: JsonValue | undefined): ToolArguments {
+  const text = z.string().safeParse(stored);
+  let decoded: JsonValue = stored ?? {};
+
+  if (text.success) {
+    try {
+      decoded = parseJson(text.data);
+    } catch {
+      return { _raw: text.data };
+    }
+  }
+
+  const args = ToolArgumentsSchema.safeParse(decoded);
+
+  return args.success ? args.data : { _raw: String(stored) };
 }
 
 export interface ToolResultBlock {
@@ -60,63 +91,101 @@ export interface ImageBlock {
 export function imagePlaceholderText(block: ImageBlock): string {
   const sizeKb = block.data ? Math.round((block.data.length * 3) / 4 / 1024) : null;
   const sizePart = sizeKb !== null ? `, ${sizeKb}KB` : '';
+
   return `[image: ${block.label ?? 'image'}${sizePart}]`;
 }
 
 export type ContentBlock = TextBlock | ThinkingBlock | ToolCallBlock | ToolResultBlock | ImageBlock;
 
-export function blockToDict(block: ContentBlock): Record<string, unknown> {
+export function blockToDict(block: ContentBlock): ContentBlock {
   switch (block.type) {
     case 'text':
       return { type: 'text', text: block.text };
-    case 'thinking':
-      return { type: 'thinking', text: block.text, ...(block.signature ? { signature: block.signature } : {}) };
+    case 'thinking': {
+      const thinking: ThinkingBlock = { type: 'thinking', text: block.text };
+
+      if (block.signature) thinking.signature = block.signature;
+
+      return thinking;
+    }
+
     case 'tool_call':
       return { type: 'tool_call', toolName: block.toolName, callId: block.callId, arguments: block.arguments };
     case 'tool_result':
       return { type: 'tool_result', callId: block.callId, content: block.content, isError: block.isError };
-    case 'image':
-      return {
-        type: 'image',
-        mimeType: block.mimeType,
-        ...(block.data ? { data: block.data } : {}),
-        ...(block.filePath ? { filePath: block.filePath } : {}),
-        ...(block.label ? { label: block.label } : {}),
-      };
+    case 'image': {
+      const image: ImageBlock = { type: 'image', mimeType: block.mimeType };
+
+      if (block.data) image.data = block.data;
+
+      if (block.filePath) image.filePath = block.filePath;
+
+      if (block.label) image.label = block.label;
+
+      return image;
+    }
   }
 }
 
-export function blockFromDict(data: Record<string, unknown>): ContentBlock {
-  const t = data.type as string;
+/** One content block as an archive line stores it; fields of other block types are ignored by the switch below. */
+const StoredBlockSchema = z.object({
+  type: JsonValueSchema.optional(),
+  text: coercedText(),
+  signature: JsonValueSchema.optional(),
+  toolName: coercedText(),
+  callId: coercedText(),
+  arguments: ToolArgumentsSchema.optional().catch(undefined),
+  content: coercedText(),
+  isError: JsonValueSchema.optional(),
+  mimeType: coercedText('image/png'),
+  data: OptionalString,
+  filePath: OptionalString,
+  label: OptionalString,
+});
+
+export function blockFromDict(record: JsonValue): ContentBlock {
+  const data = StoredBlockSchema.parse(record);
+  const t = data.type;
+
   switch (t) {
     case 'text':
-      return { type: 'text', text: String(data.text ?? '') };
-    case 'thinking':
-      return { type: 'thinking', text: String(data.text ?? ''), ...(data.signature ? { signature: String(data.signature) } : {}) };
+      return { type: 'text', text: data.text };
+    case 'thinking': {
+      const thinking: ThinkingBlock = { type: 'thinking', text: data.text };
+
+      if (data.signature) thinking.signature = String(data.signature);
+
+      return thinking;
+    }
+
     case 'tool_call':
       return {
         type: 'tool_call',
-        toolName: String(data.toolName ?? ''),
-        callId: String(data.callId ?? ''),
-        arguments: (data.arguments as Record<string, unknown>) ?? {},
+        toolName: data.toolName,
+        callId: data.callId,
+        arguments: data.arguments ?? {},
       };
     case 'tool_result':
       return {
         type: 'tool_result',
-        callId: String(data.callId ?? ''),
-        content: String(data.content ?? ''),
+        callId: data.callId,
+        content: data.content,
         isError: Boolean(data.isError ?? false),
       };
-    case 'image':
-      return {
-        type: 'image',
-        mimeType: String(data.mimeType ?? 'image/png'),
-        ...(typeof data.data === 'string' ? { data: data.data } : {}),
-        ...(typeof data.filePath === 'string' ? { filePath: data.filePath } : {}),
-        ...(typeof data.label === 'string' ? { label: data.label } : {}),
-      };
+    case 'image': {
+      const image: ImageBlock = { type: 'image', mimeType: data.mimeType };
+
+      if (data.data !== undefined) image.data = data.data;
+
+      if (data.filePath !== undefined) image.filePath = data.filePath;
+
+      if (data.label !== undefined) image.label = data.label;
+
+      return image;
+    }
+
     default:
-      throw new Error(`Unknown content block type: ${t}`);
+      throw new Error(`Unknown content block type: ${String(t)}`);
   }
 }
 
@@ -128,7 +197,7 @@ export interface MessageMetadata {
   model?: string;
   isMeta?: boolean;
   promptId?: string;
-  [key: string]: unknown;
+  [key: string]: JsonValue | undefined;
 }
 
 export interface Message {
@@ -140,7 +209,17 @@ export interface Message {
   metadata?: MessageMetadata;
 }
 
-export function messageToDict(msg: Message): Record<string, unknown> {
+/** A message as an archive line stores it: absent optional fields are written as null. */
+export interface MessageRecord {
+  role: Message['role'];
+  content: ContentBlock[];
+  timestamp: string | null;
+  messageId: string | null;
+  parentId: string | null;
+  metadata: MessageMetadata;
+}
+
+export function messageToDict(msg: Message): MessageRecord {
   return {
     role: msg.role,
     content: msg.content.map(blockToDict),
@@ -151,15 +230,34 @@ export function messageToDict(msg: Message): Record<string, unknown> {
   };
 }
 
-export function messageFromDict(data: Record<string, unknown>): Message {
-  const rawContent = (data.content as Array<Record<string, unknown>>) ?? [];
+/** Message metadata read from JSON: the typed keys are dropped when they hold another type, every other key passes through. */
+export const MessageMetadataSchema = z
+  .object({
+    model: OptionalString,
+    isMeta: z.boolean().optional().catch(undefined),
+    promptId: OptionalString,
+  })
+  .catchall(JsonValueSchema);
+
+const StoredMessageSchema = z.object({
+  role: z.enum(['user', 'assistant']),
+  content: z.array(JsonValueSchema).nullish(),
+  timestamp: z.string().nullish(),
+  messageId: z.string().nullish(),
+  parentId: z.string().nullish(),
+  metadata: MessageMetadataSchema.nullish(),
+});
+
+export function messageFromDict(record: JsonValue): Message {
+  const data = StoredMessageSchema.parse(record);
+
   return {
-    role: data.role as 'user' | 'assistant',
-    content: rawContent.map(blockFromDict),
-    timestamp: (data.timestamp as string) ?? undefined,
-    messageId: (data.messageId as string) ?? undefined,
-    parentId: (data.parentId as string) ?? undefined,
-    metadata: (data.metadata as MessageMetadata) ?? {},
+    role: data.role,
+    content: (data.content ?? []).map(blockFromDict),
+    timestamp: data.timestamp ?? undefined,
+    messageId: data.messageId ?? undefined,
+    parentId: data.parentId ?? undefined,
+    metadata: data.metadata ?? {},
   };
 }
 
@@ -173,7 +271,7 @@ export interface SessionMetadata {
   version?: string;
   originator?: string;
   sourcePlatform?: string;
-  [key: string]: unknown;
+  [key: string]: JsonValue | undefined;
 }
 
 export interface Session {
@@ -187,7 +285,19 @@ export interface Session {
   metadata?: SessionMetadata;
 }
 
-export function sessionToDict(session: Session): Record<string, unknown> {
+/** A session as a single JSON document stores it. */
+export interface SessionRecord {
+  sessionId: string;
+  title: string;
+  cwd: string;
+  platform: string;
+  createdAt: string;
+  updatedAt: string;
+  messages: MessageRecord[];
+  metadata: SessionMetadata;
+}
+
+export function sessionToDict(session: Session): SessionRecord {
   return {
     sessionId: session.sessionId,
     title: session.title,
@@ -200,16 +310,38 @@ export function sessionToDict(session: Session): Record<string, unknown> {
   };
 }
 
-export function sessionFromDict(data: Record<string, unknown>): Session {
-  const rawMessages = (data.messages as Array<Record<string, unknown>>) ?? [];
+const StoredSessionMetadataSchema = z
+  .object({
+    model: OptionalString,
+    gitBranch: OptionalString,
+    version: OptionalString,
+    originator: OptionalString,
+    sourcePlatform: OptionalString,
+  })
+  .catchall(JsonValueSchema);
+
+const StoredSessionSchema = z.object({
+  sessionId: coercedText(),
+  title: coercedText(),
+  cwd: coercedText(),
+  platform: coercedText(),
+  createdAt: JsonValueSchema.optional(),
+  updatedAt: JsonValueSchema.optional(),
+  messages: z.array(JsonValueSchema).nullish(),
+  metadata: StoredSessionMetadataSchema.nullish(),
+});
+
+export function sessionFromDict(record: JsonValue): Session {
+  const data = StoredSessionSchema.parse(record);
+
   return {
-    sessionId: String(data.sessionId ?? ''),
-    title: String(data.title ?? ''),
-    cwd: String(data.cwd ?? ''),
-    platform: String(data.platform ?? ''),
+    sessionId: data.sessionId,
+    title: data.title,
+    cwd: data.cwd,
+    platform: data.platform,
     createdAt: String(data.createdAt ?? new Date().toISOString()),
     updatedAt: String(data.updatedAt ?? new Date().toISOString()),
-    messages: rawMessages.map(messageFromDict),
-    metadata: (data.metadata as SessionMetadata) ?? {},
+    messages: (data.messages ?? []).map(messageFromDict),
+    metadata: data.metadata ?? {},
   };
 }

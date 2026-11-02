@@ -3,6 +3,7 @@ import path from 'node:path';
 import readline from 'node:readline/promises';
 
 import matter from 'gray-matter';
+import { z } from 'zod';
 
 import { fetchGitHubPR } from './providers/github/mr-fetch.js';
 import { fetchGitLabMR } from './providers/gitlab/mr-fetch.js';
@@ -29,26 +30,32 @@ async function fetchMR(url: string, opts: MRFetchOptions): Promise<MRData> {
   if (url.includes('github.com')) {
     return fetchGitHubPR(url, opts);
   }
+
   if (url.includes('git.woa.com')) {
     return fetchTGitMR(url, opts);
   }
+
   // GitLab (incl. self-hosted): the `/-/merge_requests/` route is unique to
   // GitLab, so it identifies the platform on any host.
   if (/\/-\/merge_requests\/\d+/.test(url)) {
     return fetchGitLabMR(url, opts);
   }
+
   throw new Error(`Unsupported MR URL: ${url}. Only GitHub, TGit and GitLab are supported`);
 }
 
 /** Characters of the prompt the review threads may take (#1187). */
 const THREADS_BUDGET = 6000;
+
 /** Characters one thread may take before it is shortened to its first and last notes. */
 const THREAD_MAX = 1500;
+
 /** Characters one note may take. */
 const NOTE_MAX = 500;
 
 function clip(text: string, max: number): string {
   const trimmed = text.trim();
+
   return trimmed.length <= max ? trimmed : `${trimmed.slice(0, max - 1)}…`;
 }
 
@@ -70,28 +77,37 @@ export function formatMrThreads(threads: MRThread[], mrAuthor: string | undefine
   const ordered = [...threads.filter((t) => t.notes.length > 1), ...threads.filter((t) => t.notes.length <= 1)];
   const sections: string[] = [];
   let used = 0;
+
   for (const [index, thread] of ordered.entries()) {
     const anchor = thread.file ? ` — ${thread.file}${thread.line !== undefined ? `:${thread.line}` : ''}` : '';
     const state = thread.resolved === undefined ? '' : thread.resolved ? ' (resolved)' : ' (unresolved)';
     const header = `### Thread ${index + 1}${anchor}${state}`;
+
     const line = (note: MRThread['notes'][number]): string => {
       const role = note.author !== undefined && note.author === mrAuthor ? 'author' : 'reviewer';
       const who = note.author ? `${role} ${note.author}` : role;
+
       return `- [${who}] ${clip(note.body, NOTE_MAX).replace(/\n+/g, '\n  ')}`;
     };
+
     let lines = thread.notes.map(line);
+
     if (lines.join('\n').length > THREAD_MAX && thread.notes.length > 2) {
       lines = [lines[0], `- (${thread.notes.length - 2} notes omitted)`, lines[lines.length - 1]];
     }
+
     const section = `${header}\n${lines.join('\n')}`;
+
     if (used + section.length + 2 > budget) {
       const left = ordered.length - index;
       sections.push(`(${left} more thread${left === 1 ? '' : 's'} omitted)`);
       break;
     }
+
     sections.push(section);
     used += section.length + 2;
   }
+
   return sections.join('\n\n');
 }
 
@@ -112,10 +128,12 @@ export function extractMRLearningPrompt(mr: MRData, language?: 'en' | 'zh'): str
   const commitsFormatted = mr.commits
     .map((c) => `- ${c.hash.slice(0, 8)}: ${c.message}`)
     .join('\n');
+
   const diff3000 = mr.diff.slice(0, 3000);
   const author = mr.author ?? 'unknown';
   const date = mr.mergedAt ? mr.mergedAt.slice(0, 10) : new Date().toISOString().slice(0, 10);
   const threads = mr.discussions && mr.discussions.length > 0 ? formatMrThreads(mr.discussions, mr.author) : '';
+
   const frontmatter = (titleHint: string): string => `---
 title: "${titleHint}"
 author: ${author}
@@ -213,21 +231,38 @@ ${diff3000}${threads ? `\n\nReview threads（${mr.discussions!.length}）：\n${
  * @param raw  Raw string returned by the AI
  * @returns    Normalized content plus parsed frontmatter data (empty object on parse failure)
  */
-export function parseLearningDraft(raw: string): { content: string; data: Record<string, unknown> } {
+/** The frontmatter fields a learning draft is read for; one of the wrong type reads as absent, and other keys pass through. */
+const DraftFrontmatterSchema = z.looseObject({
+  title: z.string().optional().catch(undefined),
+  tags: z.array(z.string().optional().catch(undefined)).optional().catch(undefined),
+});
+
+/** A learning draft's normalized content and its frontmatter. */
+interface ParsedLearningDraft {
+  content: string;
+  data: z.infer<typeof DraftFrontmatterSchema>;
+}
+
+export function parseLearningDraft(raw: string): ParsedLearningDraft {
   let content = raw
     .replace(/^```(?:markdown|md|yaml)?\s*\n/m, '')
     .replace(/\n```\s*$/, '');
+
   // AI may emit conversational text before the frontmatter; start at the first `---`
   const frontmatterStart = content.indexOf('---');
+
   if (frontmatterStart > 0) {
     content = content.slice(frontmatterStart);
   }
+
   try {
     const parsed = matter(content);
-    return { content, data: parsed.data };
+
+    return { content, data: DraftFrontmatterSchema.safeParse(parsed.data).data ?? {} };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     log.warn(`⚠️  Failed to parse learning frontmatter, using fallback: ${message}`);
+
     return { content, data: {} };
   }
 }
@@ -240,8 +275,10 @@ export function parseLearningDraft(raw: string): { content: string; data: Record
  */
 async function promptConfirm(question: string): Promise<boolean> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+
   try {
     const answer = await rl.question(`${question} `);
+
     return answer.trim().toLowerCase() !== 'n';
   } finally {
     rl.close();
@@ -257,13 +294,17 @@ async function promptConfirm(question: string): Promise<boolean> {
 function extractRepoUrlFromMrUrl(mrUrl: string): string {
   // GitHub: https://github.com/owner/repo/pull/123 → https://github.com/owner/repo.git
   const ghMatch = mrUrl.match(/^(https:\/\/github\.com\/[^/]+\/[^/]+)\/pull\//);
+
   if (ghMatch) return `${ghMatch[1]}.git`;
   // TGit: https://git.woa.com/group[/subgroup]/repo/merge_requests/123
   const tgitMatch = mrUrl.match(/^(https:\/\/git\.woa\.com\/.+\/[^/]+)\/merge_requests\//);
+
   if (tgitMatch) return `${tgitMatch[1]}.git`;
   // GitLab: https://<host>/group[/subgroup]/repo/-/merge_requests/123
   const gitlabMatch = mrUrl.match(/^(https?:\/\/.+?\/.+\/[^/]+)\/-\/merge_requests\//);
+
   if (gitlabMatch) return `${gitlabMatch[1]}.git`;
+
   // Cannot reliably extract; return empty string so caller skips incremental update
   return '';
 }
@@ -309,6 +350,7 @@ export async function importFromMR(opts: {
   fetchSpinner.start();
 
   let mr: MRData;
+
   try {
     mr = await fetchMR(opts.url, { discussions: opts.discussions ?? true, commentMarker: opts.commentMarker });
     fetchSpinner.succeed(mr.discussions?.length
@@ -324,6 +366,7 @@ export async function importFromMR(opts: {
   aiSpinner.start();
 
   let learningContent: string;
+
   try {
     learningContent = (await callTool(extractMRLearningPrompt(mr, opts.language), { launchedBy: 'import-mr' })).text;
     aiSpinner.succeed('AI analysis complete');
@@ -335,9 +378,10 @@ export async function importFromMR(opts: {
   // ── 步骤 3：解析 learning 草稿 + dedup ─────────────────
   const { content: normalizedContent, data: frontmatter } = parseLearningDraft(learningContent);
   learningContent = normalizedContent;
-  const learningTitle = typeof frontmatter['title'] === 'string' ? frontmatter['title'] : mr.title;
+  const learningTitle = frontmatter.title ?? mr.title;
 
   const draftKeywords = extractKeywords(learningContent);
+
   const possibleDuplicates = (await findOverlappingLearnings(draftKeywords, learningsDirs, { namespaces: opts.learningsNamespaces }))
     .map((entry) => entry.filename);
 
@@ -349,9 +393,8 @@ export async function importFromMR(opts: {
   // ── 步骤 4：打印摘要 ────────────────────────────────────
   log.info(`✅ Learning draft generated: ${learningTitle}`);
 
-  const tags = Array.isArray(frontmatter['tags'])
-    ? frontmatter['tags'].filter((tag): tag is string => typeof tag === 'string')
-    : [];
+  const tags = (frontmatter.tags ?? []).flatMap((tag) => (tag === undefined ? [] : [tag]));
+
   if (tags.length > 0) {
     log.info(`   Tags: ${tags.join(', ')}`);
   }
@@ -370,6 +413,7 @@ export async function importFromMR(opts: {
 
   // ── 步骤 6：写文件 ─────────────────────────────────────
   let learningFile: string | undefined;
+
   if (!opts.dryRun && acceptLearning) {
     learningFile = await writeLearning(learning, opts.outputDir, opts.queueLearning, opts.outputFileName);
   }
@@ -406,6 +450,7 @@ async function writeLearning(
     const filePath = path.join(outputDir, outputFileName ?? 'learning.md');
     await fs.writeFile(filePath, draft.content, 'utf-8');
     log.info(`Learning written: ${filePath}`);
+
     return filePath;
   }
 
@@ -415,9 +460,11 @@ async function writeLearning(
     const { generateFilename } = await import('./contribute.js');
     const filePath = await queueLearning(generateFilename(draft.title), draft.content);
     log.info(`Learning written: ${filePath}`);
+
     return filePath;
   }
 
   log.warn('No outputDir or learnings directory specified, learning draft not saved to disk');
+
   return undefined;
 }

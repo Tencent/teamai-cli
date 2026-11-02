@@ -36,6 +36,7 @@ export type Host = {
 /** `env` without any variable that moves a tool's home: under an install's home, each tool's home is the install's. */
 function withoutToolHomeVariables(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const names = new Set(Object.keys(TOOLS).filter(isToolId).flatMap(homeVariables));
+
   return Object.fromEntries(Object.entries(env).filter(([name]) => !names.has(name)));
 }
 
@@ -83,11 +84,15 @@ export type EnvToolHome = { readonly dir: string; readonly variable: string; rea
  */
 export function envToolHome(tool: ToolId, host: Host = realHost()): EnvToolHome | null {
   const { home } = TOOLS[tool];
+
   if (!('moves' in home)) return null;
+
   for (const move of home.moves.by) {
     const moved = moveOf(move, host);
+
     if (moved !== null) return moved;
   }
+
   return null;
 }
 
@@ -95,16 +100,20 @@ function moveOf(move: HomeMove, host: Host): EnvToolHome | null {
   switch (move.kind) {
     case 'env': {
       const value = host.env[move.name]?.trim();
+
       return value ? { dir: absoluteOn(value, host), variable: move.name, kind: 'own' } : null;
     }
+
     case 'qoder-home':
       return qoderHome(host);
     case 'qoder-cn-home':
       return qoderCnHome(host);
     case 'xdg': {
       const dir = absoluteEnv(host, 'XDG_CONFIG_HOME');
+
       return dir === null ? null : { dir: host.path.join(dir, move.child), variable: 'XDG_CONFIG_HOME', kind: 'xdg' };
     }
+
     case 'openclaw-state':
       return openclawState(host);
     case 'omp-agent':
@@ -113,6 +122,7 @@ function moveOf(move: HomeMove, host: Host): EnvToolHome | null {
       return hermesHome(host);
     default: {
       const unhandled: never = move;
+
       return unhandled;
     }
   }
@@ -121,16 +131,20 @@ function moveOf(move: HomeMove, host: Host): EnvToolHome | null {
 /** Qoder gives QODER_CONFIG_DIR precedence; QODER_CLI_HOME holds its `.qoder` store otherwise. */
 function qoderHome(host: Host): EnvToolHome | null {
   const config = host.env.QODER_CONFIG_DIR?.trim();
+
   if (config) return { dir: absoluteOn(config, host), variable: 'QODER_CONFIG_DIR', kind: 'own' };
   const cliHome = host.env.QODER_CLI_HOME?.trim();
+
   return cliHome ? { dir: host.path.join(absoluteOn(cliHome, host), '.qoder'), variable: 'QODER_CLI_HOME', kind: 'own' } : null;
 }
 
 /** Qoder CN gives QODERCN_CONFIG_DIR precedence; QODERCN_CLI_HOME holds its `.qoder-cn` store otherwise. */
 function qoderCnHome(host: Host): EnvToolHome | null {
   const config = host.env.QODERCN_CONFIG_DIR?.trim();
+
   if (config) return { dir: absoluteOn(config, host), variable: 'QODERCN_CONFIG_DIR', kind: 'own' };
   const cliHome = host.env.QODERCN_CLI_HOME?.trim();
+
   return cliHome ? { dir: host.path.join(absoluteOn(cliHome, host), '.qoder-cn'), variable: 'QODERCN_CLI_HOME', kind: 'own' } : null;
 }
 
@@ -140,16 +154,26 @@ function openclawState(host: Host): EnvToolHome | null {
   const openclawHome = raw && raw !== 'undefined' && raw !== 'null' ? absoluteOn(raw, host) : null;
   const effective: Host = openclawHome === null ? host : { ...host, home: openclawHome };
   const state = host.env.OPENCLAW_STATE_DIR?.trim();
+
   if (state) return { dir: absoluteOn(state, effective), variable: 'OPENCLAW_STATE_DIR', kind: 'own' };
   const profile = host.env.OPENCLAW_PROFILE?.trim();
   const dir = !profile || profile.toLowerCase() === 'default' ? '.openclaw' : `.openclaw-${profile}`;
+
   if (openclawHome !== null) return { dir: host.path.join(openclawHome, dir), variable: profile ? 'OPENCLAW_HOME and OPENCLAW_PROFILE' : 'OPENCLAW_HOME', kind: 'own' };
+
   return profile ? { dir: host.path.join(host.home, dir), variable: 'OPENCLAW_PROFILE', kind: 'own' } : null;
 }
 
+/** The variable that selects an OMP profile, and the profile it names; both null when neither is set. */
+export interface OmpProfile {
+  readonly variable: 'OMP_PROFILE' | 'PI_PROFILE' | null;
+  readonly name: string | null;
+}
+
 /** OMP_PROFILE wins whenever it is defined, even blank; a named profile does not use Pi's default agent directory. */
-export function ompProfile(env: Readonly<Record<string, string | undefined>>): { readonly variable: 'OMP_PROFILE' | 'PI_PROFILE' | null; readonly name: string | null } {
+export function ompProfile(env: Readonly<Record<string, string | undefined>>): OmpProfile {
   const variable = env.OMP_PROFILE !== undefined ? 'OMP_PROFILE' : env.PI_PROFILE !== undefined ? 'PI_PROFILE' : null;
+
   return { variable, name: variable === null ? null : env[variable]?.trim() || null };
 }
 
@@ -158,23 +182,31 @@ function ompAgentDir(host: Host): EnvToolHome | null {
   const { env } = host;
   const base = p.join(host.home, env.PI_CONFIG_DIR || '.omp');
   const { variable: selector, name: profile } = ompProfile(env);
+
   if (selector !== null && profile && profile !== 'default') return { dir: p.join(base, 'profiles', profile, 'agent'), variable: selector, kind: 'own' };
+
   if (env.PI_CONFIG_DIR) return { dir: p.join(base, 'agent'), variable: 'PI_CONFIG_DIR', kind: 'own' };
+
   return selector !== null && profile ? { dir: p.join(base, 'agent'), variable: selector, kind: 'own' } : null;
 }
 
 function hermesHome(host: Host): EnvToolHome | null {
   const raw = host.env.HERMES_HOME?.trim();
+
   if (raw) return { dir: absoluteOn(raw, host), variable: 'HERMES_HOME', kind: 'own' };
   const { native, appData } = hermesNative(host);
+
   if (host.env.HERMES_DATA_DIR_SUFFIX) return { dir: native, variable: 'HERMES_DATA_DIR_SUFFIX', kind: 'own' };
+
   return appData ? { dir: native, variable: 'LOCALAPPDATA', kind: 'platform-default' } : null;
 }
 
-function hermesNative(host: Host): { readonly native: string; readonly appData: boolean } {
+function hermesNative(host: Host) {
   const p = host.path;
   const suffix = host.env.HERMES_DATA_DIR_SUFFIX ?? '';
+
   if (host.platform !== 'win32') return { native: p.join(host.home, `.hermes${suffix}`), appData: false };
+
   return { native: p.join(absoluteEnv(host, 'LOCALAPPDATA') ?? p.join(host.home, 'AppData', 'Local'), `hermes${suffix}`), appData: true };
 }
 
@@ -187,20 +219,25 @@ function hermesNative(host: Host): { readonly native: string; readonly appData: 
  */
 function hermesProfile(home: string, host: Host): string {
   const p = host.path;
+
   if (p.basename(p.dirname(home)) === 'profiles') return home;
   const { native } = hermesNative(host);
   const fromNative = p.relative(native, home);
   const outsideNative = fromNative.startsWith('..') || p.isAbsolute(fromNative);
   const name = host.readTextNow(p.join(outsideNative ? home : native, 'active_profile'))?.trim();
+
   if (!name || name === 'default') return home;
   const dir = p.join(home, 'profiles', name);
+
   return host.existsNow(dir) ? dir : home;
 }
 
 function absoluteEnv(host: Host, name: string): string | null {
   const value = host.env[name]?.trim();
+
   if (!value) return null;
   const expanded = expandHomeOn(value, host);
+
   return host.path.isAbsolute(expanded) ? host.path.resolve(expanded) : null;
 }
 
@@ -212,14 +249,17 @@ export function toolHome(tool: ToolId, host: Host = realHost()): string {
 /** The recorded home, else the env's, or null when nothing moves `tool`'s home. */
 export function movedToolHome(tool: ToolId, host: Host = realHost()): string | null {
   const moved = recordedHomes(host)[tool] ?? envToolHome(tool, host)?.dir ?? null;
+
   if (!followsActiveProfile(tool)) return moved;
   const unmoved = defaultToolHome(tool, host);
   const home = hermesProfile(moved ?? unmoved, host);
+
   return moved === null && home === unmoved ? null : home;
 }
 
 function followsActiveProfile(tool: ToolId): boolean {
   const { home }: ToolDescriptor = TOOLS[tool];
+
   return home.moves?.by.some((move) => move.kind === 'hermes-home') ?? false;
 }
 
@@ -234,6 +274,7 @@ export async function toolHomesAcrossProfiles(tool: 'hermes' | 'omp' | 'opencode
   const history = reloadToolHomesHistory()[tool] ?? [];
   const moves = [recordedHomes(host)[tool], envToolHome(tool, host)?.dir, ...history].filter((home): home is string => home !== undefined);
   const homes = [toolHome(tool, host), ...history];
+
   switch (tool) {
     case 'hermes':
       // A `profiles/<name>` home sits in a root that holds the default and the other profiles.
@@ -241,39 +282,50 @@ export async function toolHomesAcrossProfiles(tool: 'hermes' | 'omp' | 'opencode
         p.basename(p.dirname(home)) === 'profiles' ? [home, p.dirname(p.dirname(home))] : [home])])) {
         homes.push(base, ...(await subdirs(p.join(base, 'profiles'))).map((name) => p.join(base, 'profiles', name)));
       }
+
       break;
     case 'omp':
       homes.push(...moves);
+
       // A moved home is `<root>/agent` or `<root>/profiles/<name>/agent`; its root holds the other profiles.
       const roots = moves.map((home) => {
         const profiles = p.dirname(p.dirname(home));
+
         return p.basename(profiles) === 'profiles' ? p.dirname(profiles) : p.dirname(home);
       });
+
       for (const base of new Set([p.dirname(defaultToolHome(tool, host)), p.join(host.home, host.env.PI_CONFIG_DIR || '.omp'), ...roots])) {
         homes.push(p.join(base, 'agent'), ...(await subdirs(p.join(base, 'profiles'))).map((name) => p.join(base, 'profiles', name, 'agent')));
       }
+
       break;
     case 'opencode':
       homes.push(defaultToolHome(tool, host), ...moves);
       break;
     default: {
       const unhandled: never = tool;
+
       return unhandled;
     }
   }
+
   const seen = new Set<string>();
   const found: string[] = [];
+
   for (const home of homes) {
     const real = await host.realpath(home);
+
     if (seen.has(real) || !await host.exists(home)) continue;
     seen.add(real);
     found.push(home);
   }
+
   return found;
 }
 
 async function subdirs(dir: string): Promise<string[]> {
   const entries = await fs.promises.readdir(dir, { withFileTypes: true }).catch(() => []);
+
   return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
 }
 
@@ -290,21 +342,25 @@ export function defaultToolHome(tool: ToolId, host: Pick<Host, 'home' | 'path'>)
 /** The `$HOME`-relative directory a home move replaces: `moves.root`, else `home.dir`. */
 export function homeRoot(tool: ToolId): string {
   const { home } = TOOLS[tool];
+
   return 'moves' in home && 'root' in home.moves ? home.moves.root : home.dir;
 }
 
 /** `value`, `~` expanded, as an absolute path: a relative one resolves against the session's directory. */
 export function absoluteOn(value: string, host: Host): string {
   const expanded = expandHomeOn(value, host);
+
   return host.path.isAbsolute(expanded) ? host.path.resolve(expanded) : host.path.resolve(host.cwd(), expanded);
 }
 
 /** `~` and `~/x` against the host's home. */
 export function expandHomeOn(value: string, host: Pick<Host, 'home' | 'platform' | 'path'>): string {
   const p = host.path;
+
   if (value === '~' || value.startsWith('~/') || (host.platform === 'win32' && value.startsWith('~\\'))) {
     return p.join(host.home, value.slice(1));
   }
+
   return value;
 }
 
@@ -328,14 +384,18 @@ const ToolHomesHistorySchema = z.record(
 /** Read the old homes retained across re-init, treating a missing file as an empty history. */
 export function reloadToolHomesHistory(): ToolHomesHistory {
   let raw: string;
+
   try {
     raw = fs.readFileSync(toolHomesHistoryPath(), 'utf8');
   } catch (e) {
     if (e instanceof Error && 'code' in e && e.code === 'ENOENT') return {};
+
     return {};
   }
+
   try {
     const parsed = ToolHomesHistorySchema.safeParse(JSON.parse(raw));
+
     return parsed.success ? parsed.data : {};
   } catch {
     return {};
@@ -347,7 +407,9 @@ export async function rememberToolHome(tool: string, home: string): Promise<void
   const history: Record<string, string[]> = Object.fromEntries(
     Object.entries(reloadToolHomesHistory()).map(([key, homes]) => [key, [...homes]]),
   );
+
   const homes = history[tool] ?? [];
+
   if (homes.includes(home)) return;
   history[tool] = [...homes, home];
   await writeJsonAtomic(toolHomesHistoryPath(), history);
@@ -369,6 +431,7 @@ let toolHomesReadCache: { readonly file: string; readonly stamp: string | null; 
 function stampOf(file: string): string | null {
   try {
     const stat = fs.statSync(file, { throwIfNoEntry: false });
+
     return stat === undefined ? null : `${stat.mtimeMs}:${stat.size}`;
   } catch {
     return null;
@@ -381,24 +444,31 @@ export function reloadToolHomes(): ToolHomesRead {
   const stamp = stampOf(file);
   const read = parseToolHomes(file);
   toolHomesReadCache = { file, stamp, read };
+
   return read;
 }
 
 function parseToolHomes(file: string): ToolHomesRead {
   let raw: string;
+
   try {
     raw = fs.readFileSync(file, 'utf8');
   } catch (e) {
     if (e instanceof Error && 'code' in e && e.code === 'ENOENT') return { kind: 'missing' };
+
     return { kind: 'invalid', error: e instanceof Error ? e.message : String(e) };
   }
+
   let value: unknown;
+
   try {
     value = JSON.parse(raw);
   } catch (e) {
     return { kind: 'invalid', error: e instanceof Error ? e.message : String(e) };
   }
+
   const parsed = ToolHomesSchema.safeParse(value);
+
   return parsed.success ? { kind: 'ok', homes: parsed.data } : { kind: 'invalid', error: describeIssues(parsed.error) };
 }
 
@@ -408,6 +478,7 @@ function describeIssues(error: z.ZodError): string {
 
 function cachedToolHomesRead(): ToolHomesRead {
   const cached = toolHomesReadCache;
+
   return cached !== undefined && cached.file === toolHomesPath() && cached.stamp === stampOf(cached.file) ? cached.read : reloadToolHomes();
 }
 

@@ -2,11 +2,15 @@
 import path from 'node:path';
 
 import matter from 'gray-matter';
+import { z } from 'zod';
 
 import { readFileSafe, ensureDir, remove, copyFile } from '../utils/fs.js';
 import { isInWriteRoot, listLearningFiles } from '../utils/learnings-roots.js';
 import { log } from '../utils/logger.js';
 import { computeAllConfidence } from './confidence.js';
+
+/** A frontmatter field that counts only when it is a string. */
+const FrontmatterTextSchema = z.string().optional().catch(undefined);
 
 export interface PruneCandidate {
   filename: string;
@@ -44,17 +48,20 @@ export async function findPruneCandidates(
   for (const { file, absPath } of files) {
     const docId = file.replace(/\.md$/i, '');
     const content = await readFileSafe(absPath);
+
     if (!content) continue;
 
     let date = '';
+
     try {
       const { data } = matter(content);
-      date = typeof data.date === 'string' ? data.date : '';
+      date = FrontmatterTextSchema.parse(data.date) ?? '';
     } catch {
       continue;
     }
 
     const confidence = confidenceMap.get(docId);
+
     // Skip docs with no vote data — they haven't been recalled yet (new or just migrated)
     if (confidence === undefined) continue;
     const daysSinceCreate = date ? (now - new Date(date).getTime()) / (1000 * 60 * 60 * 24) : Infinity;
@@ -96,6 +103,7 @@ export async function executePrune(
 
   if (options.dryRun) {
     log.info(`[dry-run] Would ${options.archive ? 'archive' : 'remove'} ${candidates.length} file(s)`);
+
     return { archived: 0, removed: 0, changed };
   }
 
@@ -109,6 +117,7 @@ export async function executePrune(
       inherited.push(candidate.filename);
       continue;
     }
+
     if (options.archive) {
       const archiveDir = path.join(learningsWriteDir, '_archive');
       const archivedCopy = path.join(archiveDir, candidate.filename);
@@ -125,12 +134,15 @@ export async function executePrune(
   }
 
   if (archived > 0) log.success(`Archived ${archived} learning(s)`);
+
   if (removed > 0) log.success(`Removed ${removed} learning(s)`);
+
   if (inherited.length > 0) {
     log.warn(
       `${inherited.length} learning(s) are on the default branch and cannot be pruned from here: `
       + `${inherited.join(', ')}. Remove them with a pull request against the team repo.`,
     );
   }
+
   return { archived, removed, changed };
 }

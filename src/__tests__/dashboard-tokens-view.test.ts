@@ -4,6 +4,8 @@ import { dashboardMessages } from '../dashboard/locales.js';
 import type { TokenCostSummary } from '../dashboard/token-costs.js';
 import { tokensView } from '../dashboard/tokens-view.js';
 
+const messages: Record<string, string> = dashboardMessages;
+
 const usage = (input: number, output: number, cacheRead: number, cacheCreation: number) => ({ input, output, cacheRead, cacheCreation });
 
 // A week of one developer: Claude Code on a refactor, a Codex review, Pi with a
@@ -29,7 +31,7 @@ async function renderPage(summary: TokenCostSummary, language: 'en' | 'zh-CN' = 
   const keys: string[] = [];
   const t = (text: string) => {
     keys.push(text);
-    return language === 'zh-CN' && Object.hasOwn(dashboardMessages, text) ? dashboardMessages[text] : text;
+    return language === 'zh-CN' && Object.hasOwn(dashboardMessages, text) ? messages[text] : text;
   };
   const e = (value: unknown) => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   const label = (text: string) => e(t(text));

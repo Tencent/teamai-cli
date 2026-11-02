@@ -26,7 +26,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { findProject, loadProjectsManifest, resolveActiveLearningsNamespaces } from './projects.js';
-import type { LocalConfig } from './types.js';
+import type { JsonValue, LocalConfig } from './types.js';
 import { readFileSafe, readJsonObject, writeJson } from './utils/fs.js';
 import { remotesMatch } from './utils/git.js';
 import { log } from './utils/logger.js';
@@ -81,6 +81,7 @@ export interface WorkspaceChildren {
  */
 export async function readWorkspaceChildren(workspace: LocalConfig): Promise<LocalConfig> {
   const { projectRoot } = workspace;
+
   if (workspace.scope !== 'project' || !projectRoot) return workspace;
   const root = await walkRoot(projectRoot);
   const gitWorkspace = await lstatOrNull(path.join(root, '.git')) !== null;
@@ -93,19 +94,24 @@ export async function readWorkspaceChildren(workspace: LocalConfig): Promise<Loc
   const leftOut: LeftOutChild[] = [];
   const anchors = new Set<string>();
   const roots: string[] = [];
+
   for (const { path: childPath, root: childRoot, read } of found) {
     if (read.kind === 'unreadable') {
       roots.push(childRoot);
       leftOut.push({ path: childPath, reason: `its teamai config cannot be read (${read.reason})` });
       continue;
     }
+
     const { config } = read;
     const anchor = path.resolve(config.dataHome ?? childPath);
+
     if (anchor === ownAnchor) continue;
     // Every checkout of a child is its own, a second one of the same anchor included.
     roots.push(childRoot);
+
     if (anchors.has(anchor)) continue;
     anchors.add(anchor);
+
     if (config.repo.kind === 'self') {
       leftOut.push({ path: childPath, reason: 'it is set up in single-repo mode, so its team repo is the repo itself' });
     } else if (!remotesMatch(config.repo.remote, workspace.repo.remote)) {
@@ -114,9 +120,12 @@ export async function readWorkspaceChildren(workspace: LocalConfig): Promise<Loc
       children.push({ path: childPath, root: childRoot, anchor, selection: selectionOf(config) });
     }
   }
+
   if (children.length === 0 && leftOut.length === 0) return workspace;
+
   // Run from a linked worktree, the children read are the main checkout's; the same folders in this checkout are theirs too.
   if (root !== projectRoot) roots.push(...roots.map((childRoot) => path.join(projectRoot, path.relative(root, childRoot))));
+
   return { ...workspace, children: { children, leftOut, roots, fingerprint: fingerprintOf(children, leftOut) } };
 }
 
@@ -129,37 +138,44 @@ export async function readWorkspaceChildren(workspace: LocalConfig): Promise<Loc
  */
 export async function deliveredMembers(config: LocalConfig): Promise<readonly LocalConfig[] | null> {
   const found = config.children?.children;
+
   if (!found || found.length === 0) return null;
   const { children: _children, ...own } = config;
+
   const manifest = found.some((child) => (child.selection.projects ?? []).length > 0)
     ? await loadProjectsManifest(own.repo.localPath)
     : null;
+
   const members: LocalConfig[] = hasOwnSelection(own) ? [own] : [];
+
   for (const child of found) {
     const projects = (child.selection.projects ?? []).filter((id) => {
       if (!manifest || findProject(manifest, id)) return true;
       warnOnce(`Workspace child ${child.path} selects project "${id}", which manifest/projects.yaml does not declare, so that project is left out of this workspace.`);
+
       return false;
     });
+
     const { roleUnresolved: _roleUnresolved, ...base } = own;
+
     // With roles assigned in the team repo (#1186) every member of this
     // workspace holds the workspace's assignment: a child cannot select a role,
     // so the selection it recorded is not a selection to honour.
     const roles = own.roleAssignment
       ? { primaryRole: own.primaryRole, additionalRoles: own.additionalRoles ?? [] }
-      : {
-        ...(child.selection.primaryRole ? { primaryRole: child.selection.primaryRole } : {}),
-        additionalRoles: child.selection.additionalRoles ?? [],
-      };
+      // withoutSelection() already holds the primaryRole key, so an unset one stays undefined.
+      : { primaryRole: child.selection.primaryRole || undefined, additionalRoles: child.selection.additionalRoles ?? [] };
+
     members.push({
       ...base,
       ...withoutSelection(),
       ...roles,
       projects,
-      ...(child.selection.subscribedTags ? { subscribedTags: child.selection.subscribedTags } : {}),
-      ...(child.selection.excludedSkills ? { excludedSkills: child.selection.excludedSkills } : {}),
+      subscribedTags: child.selection.subscribedTags,
+      excludedSkills: child.selection.excludedSkills,
     });
   }
+
   return members;
 }
 
@@ -170,11 +186,13 @@ export async function deliveredMembers(config: LocalConfig): Promise<readonly Lo
  */
 export async function deliveredLearningsNamespaces(config: LocalConfig): Promise<string[]> {
   const namespaces = new Set<string>();
+
   for (const member of await deliveredMembers(config) ?? [config]) {
     for (const namespace of await resolveActiveLearningsNamespaces({ ...member, repo: config.repo })) {
       namespaces.add(namespace);
     }
   }
+
   return [...namespaces];
 }
 
@@ -194,7 +212,7 @@ export function selectedProjects(config: LocalConfig): string[] {
  */
 export function formatProjectsManifestWarning(
   caller: string,
-  error: unknown,
+  cause: unknown,
   config: LocalConfig,
   options: {
     verb?: string;
@@ -205,18 +223,22 @@ export function formatProjectsManifestWarning(
 ): string {
   const projects = selectedProjects(config);
   const verb = options.verb ?? 'read';
-  const errText = error instanceof Error ? error.message : String(error);
+  const errText = cause instanceof Error ? cause.message : String(cause);
   const action = options.rebuildAction ? ` and ${options.rebuildAction}` : '';
   let subject = '';
+
   if (projects.length > 0) {
     subject = `The learnings of ${projects.length === 1 ? 'project' : 'projects'} ${projects.join(', ')}`;
+
     if (options.extraHeldBack) subject += `, and ${options.extraHeldBack},`;
   } else if (options.extraHeldBack) {
     subject = options.extraHeldBack.charAt(0).toUpperCase() + options.extraHeldBack.slice(1);
   }
+
   const projectSummary = subject === ''
     ? ''
     : ` ${subject} stay out of ${options.targetName ?? caller} until manifest/projects.yaml is fixed${action}; \`teamai doctor\` shows the problem.`;
+
   return `${caller} ${verb} the shared learnings only: ${errText}.${projectSummary}`;
 }
 
@@ -233,6 +255,7 @@ export async function safeDeliveredLearningsNamespaces(
     return await deliveredLearningsNamespaces(config);
   } catch (e) {
     log.warn(formatProjectsManifestWarning(caller, e, config));
+
     return [];
   }
 }
@@ -258,11 +281,14 @@ export async function unionMemberItems<TItem>(input: {
 }): Promise<{ items: TItem[]; held: HeldBackItem<TItem>[] }> {
   const byName = new Map<string, TItem>();
   const held = new Map<string, HeldBackItem<TItem>>();
+
   for (const items of input.perMember) {
     for (const item of items) {
       const name = input.nameOf(item);
+
       if (held.has(name)) continue;
       const first = byName.get(name);
+
       if (first === undefined) {
         byName.set(name, item);
       } else if (first !== item && !await input.sameContent(first, item)) {
@@ -271,31 +297,38 @@ export async function unionMemberItems<TItem>(input: {
       }
     }
   }
+
   return { items: [...byName.values()], held: [...held.values()] };
 }
 
 /** The lines `pull` and `status` print about the children, or none for a scope without any. */
 export function describeWorkspaceChildren(config: LocalConfig): string[] {
   const found = config.children;
+
   if (!found) return [];
   const lines: string[] = [];
+
   if (found.children.length > 0) {
     const count = found.children.length === 1 ? '1 child' : `${found.children.length} children`;
     lines.push(`Workspace with ${count}: ${found.children.map((child) => child.path).join(', ')}`);
   }
+
   for (const child of found.leftOut) {
     lines.push(`Workspace child ${child.path} is left out: ${child.reason}. Set it up with this workspace's team repo to include it.`);
   }
+
   return lines;
 }
 
 /** One line about the children, for `status`, or null for a scope without any. */
 export function summarizeWorkspaceChildren(config: LocalConfig): string | null {
   const found = config.children;
+
   if (!found) return null;
   const read = found.children.length === 1 ? '1 child' : `${found.children.length} children`;
   const names = found.children.length > 0 ? `: ${found.children.map((child) => child.path).join(', ')}` : '';
   const leftOut = found.leftOut.length > 0 ? ` (${found.leftOut.length} left out; run \`teamai doctor\` for why)` : '';
+
   return `workspace: ${read}${names}${leftOut}`;
 }
 
@@ -318,6 +351,7 @@ export async function findAncestorWorkspaces(childRoot: string): Promise<string[
   const main = gitDir && /[\\/]worktrees[\\/][^\\/]+$/.test(gitDir) ? await mainCheckoutOf(gitDir) : null;
   const mainRoot = main ? await fs.promises.realpath(main).catch(() => main) : null;
   const found = [...await climb(start, mainRoot), ...mainRoot ? await climb(mainRoot, mainRoot) : []];
+
   return [...new Set(found)];
 }
 
@@ -349,46 +383,60 @@ export async function syncWorkspaceInstructionExcludes(input: {
       path.join(workspace, 'AGENTS.md'),
       path.join(workspace, '.claude', 'rules', '**'),
     ]);
+
   if (desired.length === 0 && input.previous.length === 0) return [];
   const read = await readJsonObject(input.settingsFile);
+
   if (read.kind === 'invalid') {
     if (!input.withdraw) log.warn(`${input.settingsFile} is not valid JSON (${read.error}), so this workspace's instructions were not excluded there. Fix the file, then run \`teamai pull\`.`);
+
     return [...input.previous];
   }
+
   const settings = read.kind === 'ok' ? read.value : {};
   const current = Array.isArray(settings.claudeMdExcludes) ? settings.claudeMdExcludes : [];
-  const stale = new Set(input.previous.filter((entry) => !desired.includes(entry)));
-  const kept = current.filter((entry) => typeof entry !== 'string' || !stale.has(entry));
+  // Only strings are ever stale, so any other entry is kept.
+  const stale = new Set<JsonValue>(input.previous.filter((entry) => !desired.includes(entry)));
+  const kept = current.filter((entry) => !stale.has(entry));
   const next = [...kept, ...desired.filter((entry) => !kept.includes(entry))];
   // An entry the member already had stays the member's, so withdrawing leaves it.
   const owned = desired.filter((entry) => input.previous.includes(entry) || !current.includes(entry));
+
   if (input.dryRun || JSON.stringify(next) === JSON.stringify(current)) return owned;
   const { claudeMdExcludes: _old, ...rest } = settings;
   await writeJson(input.settingsFile, next.length > 0 ? { ...rest, claudeMdExcludes: next } : rest);
+
   return owned;
 }
 
 /** The configured folders above `start` a downward walk would pass through; `own` is the child's own anchor, never its workspace. */
 async function climb(start: string, own: string | null): Promise<string[]> {
   const found: string[] = [];
+
   if (!isWalkable(path.basename(start))) return found;
   let dir = start;
+
   for (let level = 1; level <= MAX_CHILD_DEPTH; level++) {
     const parent = path.dirname(dir);
+
     if (parent === dir) break;
     const parentGit = await lstatOrNull(path.join(parent, '.git'));
     // The same anchor the walk reads a child from: a linked worktree or a submodule keeps its config in its anchor's partition.
     const anchor = parentGit?.isDirectory() ? parent : parentGit?.isFile() ? await anchorOfGitFile(parent) : null;
+
     // Detection's order: the partition, then a config still in the checkout's `.teamai`.
     const configs = [
       ...anchor ? [path.join(await resolvePartitionDir(anchor, { dryRun: true }), 'config.yaml')] : [],
       path.join(parent, '.teamai', 'config.yaml'),
     ];
+
     if (parent !== own && (await Promise.all(configs.map(lstatOrNull))).some(Boolean)) found.push(parent);
+
     // The walk never goes through a repo, a dot folder or node_modules.
     if (parentGit || !isWalkable(path.basename(parent))) break;
     dir = parent;
   }
+
   return found;
 }
 
@@ -407,7 +455,9 @@ async function walk(input: {
   await Promise.all(entries.filter((entry) => entry.isDirectory() && isWalkable(entry.name)).map(async (entry) => {
     const dir = path.join(input.dir, entry.name);
     const read = await readChildConfig(dir, input.gitWorkspace);
+
     if (read) input.found.push({ path: path.relative(input.root, dir).split(path.sep).join('/'), root: dir, read });
+
     // The walk stops at any repo: worktrees and folders inside it are its own.
     if (input.depth < MAX_CHILD_DEPTH && await lstatOrNull(path.join(dir, '.git')) === null) {
       await walk({ ...input, dir, depth: input.depth + 1 });
@@ -428,38 +478,49 @@ async function readChildConfig(dir: string, gitWorkspace: boolean): Promise<Chil
   const { detectProjectConfig, readConfigFrom, resolveLegacyRole } = await import('./config.js');
   let unreadable: string | null = null;
   const onUnreadable = (_configPath: string, error: string): void => { unreadable ??= error; };
+
   // The fast reads below skip detection, so they resolve `hai` as it does.
   const read = async (dataHomeDir: string): Promise<LocalConfig | null> => {
     const config = await readConfigFrom(dataHomeDir, dir, undefined, onUnreadable, { selfHeal: false });
+
     return config && resolveLegacyRole(config);
   };
+
   const outcome = (config: LocalConfig | null): ChildRead | null => {
     if (unreadable !== null) return { kind: 'unreadable', reason: unreadable };
+
     return config ? { kind: 'config', config } : null;
   };
+
   const probe = async (): Promise<ChildRead | null> => outcome(
     await detectProjectConfig(dir, onUnreadable, { dryRun: true, selfHeal: false }),
   );
 
   const dotGit = await lstatOrNull(path.join(dir, '.git'));
+
   if (!dotGit) {
     // Outside a repo a folder is set up through its own `.teamai`; inside one,
     // such a folder is part of the workspace's checkout, not a child.
     if (gitWorkspace) return null;
+
     return outcome(await read(path.join(dir, '.teamai')));
   }
 
   let anchor: string | null;
+
   if (dotGit.isDirectory()) {
     const gitConfig = await readFileSafe(path.join(dir, '.git', 'config'));
     anchor = gitConfig && /^\s*worktree\s*=/m.test(gitConfig) ? null : await fs.promises.realpath(dir);
   } else {
     anchor = await anchorOfGitFile(dir);
   }
+
   if (anchor === null) return probe();
   const partition = await resolvePartitionDir(anchor, { dryRun: true });
   const fromPartition = await read(partition);
+
   if (fromPartition || unreadable !== null) return outcome(fromPartition);
+
   return await lstatOrNull(path.join(dir, '.teamai')) ? probe() : null;
 }
 
@@ -470,14 +531,19 @@ async function readChildConfig(dir: string, gitWorkspace: boolean): Promise<Chil
  */
 async function anchorOfGitFile(dir: string): Promise<string | null> {
   const gitDir = await gitDirOf(dir);
+
   if (!gitDir) return null;
+
   if (/[\\/]worktrees[\\/][^\\/]+$/.test(gitDir) && !/[\\/]modules[\\/]/.test(gitDir)) {
     const main = await mainCheckoutOf(gitDir);
+
     return main ? fs.promises.realpath(main).catch(() => null) : null;
   }
+
   if (/[\\/]modules[\\/]/.test(gitDir) && !/[\\/]worktrees[\\/]/.test(gitDir)) {
     return fs.promises.realpath(gitDir).catch(() => null);
   }
+
   return null;
 }
 
@@ -485,14 +551,17 @@ async function anchorOfGitFile(dir: string): Promise<string | null> {
 async function gitDirOf(dir: string): Promise<string | null> {
   const text = await readFileSafe(path.join(dir, '.git'));
   const pointer = text ? /^gitdir:\s*(.+)$/m.exec(text)?.[1]?.trim() : undefined;
+
   return pointer ? path.resolve(dir, pointer) : null;
 }
 
 /** The main checkout of a linked worktree's git dir, or null for a bare repo or an unusual layout. */
 async function mainCheckoutOf(worktreeGitDir: string): Promise<string | null> {
   const common = await readFileSafe(path.join(worktreeGitDir, 'commondir'));
+
   if (!common) return null;
   const commonDir = path.resolve(worktreeGitDir, common.trim());
+
   return path.basename(commonDir) === '.git' ? path.dirname(commonDir) : null;
 }
 
@@ -503,9 +572,11 @@ async function mainCheckoutOf(worktreeGitDir: string): Promise<string | null> {
  */
 async function walkRoot(projectRoot: string): Promise<string> {
   const dotGit = await lstatOrNull(path.join(projectRoot, '.git'));
+
   if (!dotGit?.isFile()) return projectRoot;
   const gitDir = await gitDirOf(projectRoot);
   const main = gitDir && /[\\/]worktrees[\\/][^\\/]+$/.test(gitDir) ? await mainCheckoutOf(gitDir) : null;
+
   return main ?? projectRoot;
 }
 
@@ -523,17 +594,21 @@ function withoutSelection(): Pick<LocalConfig, 'additionalRoles' | 'projects'> &
 }
 
 function selectionOf(config: LocalConfig): ChildSelection {
-  return {
-    ...(config.primaryRole ? { primaryRole: config.primaryRole } : {}),
-    additionalRoles: config.additionalRoles ?? [],
-    projects: config.projects ?? [],
-    ...(config.subscribedTags ? { subscribedTags: config.subscribedTags } : {}),
-    ...(config.excludedSkills ? { excludedSkills: config.excludedSkills } : {}),
-  };
+  const role: Pick<ChildSelection, 'primaryRole'> = {};
+
+  if (config.primaryRole) role.primaryRole = config.primaryRole;
+  const selection: ChildSelection = { ...role, additionalRoles: config.additionalRoles ?? [], projects: config.projects ?? [] };
+
+  if (config.subscribedTags) selection.subscribedTags = config.subscribedTags;
+
+  if (config.excludedSkills) selection.excludedSkills = config.excludedSkills;
+
+  return selection;
 }
 
 function fingerprintOf(children: readonly WorkspaceChild[], leftOut: readonly LeftOutChild[]): string {
   const sorted = (values: readonly string[] | undefined): string[] => [...values ?? []].sort();
+
   const data = {
     children: children.map((child) => ({
       anchor: child.anchor,
@@ -545,6 +620,7 @@ function fingerprintOf(children: readonly WorkspaceChild[], leftOut: readonly Le
     })),
     leftOut: leftOut.map((child) => `${child.path}\0${child.reason}`),
   };
+
   return createHash('sha256').update(JSON.stringify(data)).digest('hex').slice(0, 16);
 }
 
@@ -554,5 +630,6 @@ async function lstatOrNull(p: string): Promise<fs.Stats | null> {
 
 function compareStrings(a: string, b: string): number {
   if (a < b) return -1;
+
   return a > b ? 1 : 0;
 }

@@ -19,20 +19,25 @@ const SESSION_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
 async function findSessionLog(sessionId: string): Promise<string | null> {
   if (!SESSION_UUID_RE.test(sessionId)) return null;
   const dataHome = process.env.XDG_DATA_HOME?.trim() || path.join(getUserHome(), '.local', 'share');
-  const subdirs = async (dir: string) => (await fs.promises.readdir(dir).catch(() => [] as string[]))
+
+  const subdirs = async (dir: string) => (await fs.promises.readdir(dir).catch((): string[] => []))
     .filter((name) => /^\d+$/.test(name)).sort().toReversed().map((name) => path.join(dir, name));
+
   for (const year of await subdirs(path.join(dataHome, 'muse', 'sessions'))) {
     for (const month of await subdirs(year)) {
       for (const day of await subdirs(month)) {
         const file = path.join(day, sessionId, 'session.jsonl');
+
         if (await pathExists(file)) return file;
       }
     }
   }
+
   return null;
 }
 
 const Count = z.number().finite().nonnegative().catch(0).default(0);
+
 /** Muse counts the cached part inside `input_tokens`, as Codex does. */
 const Call = z.object({
   id: z.string().min(1),
@@ -53,6 +58,7 @@ const Call = z.object({
     }),
   }),
 });
+
 /** The session rollup older logs hold, without a model. */
 const Rollup = z.object({
   payload: z.object({
@@ -71,12 +77,14 @@ const Rollup = z.object({
  */
 export async function readMuseSession(source: TokenSource): Promise<TokenReading> {
   const file = await findSessionLog(source.sessionId);
+
   if (!file) return { tokens: emptyTokenUsage(), requests: [] };
   const requests: TokenRequest[] = [];
   const counted = new Set<string>();
   let rollup = emptyTokenUsage();
   await forEachJsonLine(file, ['"model_completed"', '"automated_review_completed"', '"goal_usage_attribution"'], (entry) => {
     const call = Call.safeParse(entry);
+
     if (call.success) {
       const { usage, model } = call.data.payload.event;
       const key = call.data.payload.source_run_record_id ?? call.data.id;
@@ -84,17 +92,22 @@ export async function readMuseSession(source: TokenSource): Promise<TokenReading
       const cacheRead = Math.min(input, usage.cache_read_tokens || usage.cached_input_tokens || usage.cached_tokens);
       const cacheCreation = Math.min(input - cacheRead, usage.cache_write_tokens);
       const tokens = { input: input - cacheRead - cacheCreation, output: usage.output_tokens, cacheRead, cacheCreation };
+
       if (counted.has(key) || input + usage.output_tokens === 0) return;
       counted.add(key);
       requests.push({ key, timestamp: new Date(Math.trunc(call.data.recorded_at / 1000)).toISOString(), model, tokens, speed: 'standard' });
+
       return;
     }
+
     const total = Rollup.safeParse(entry);
+
     if (!total.success) return;
     const { input_tokens: input, output_tokens: output, cached_tokens: cached } = total.data.payload.event.record.quantity;
     const cacheRead = Math.min(input, cached);
     rollup = addTokenUsage(rollup, { input: input - cacheRead, output, cacheRead, cacheCreation: 0 });
   });
   const tokens = requests.reduce((sum, request) => addTokenUsage(sum, request.tokens), emptyTokenUsage());
+
   return { tokens: requests.length ? tokens : rollup, scope: 'session', requests };
 }

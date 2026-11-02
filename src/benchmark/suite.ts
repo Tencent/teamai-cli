@@ -14,6 +14,7 @@ import { durationMs } from '../workflow/parse.js';
 import { SetupSchema, type Setup } from '../workflow/requirements.js';
 import type { WorkflowDiagnostic } from '../workflow/types.js';
 import { CommitSchema, TeamPathSchema } from '../workflow/clone.js';
+import { definedFields } from '../utils/defined-fields.js';
 import { CheckRunSchema, isRelativePath, RepoPathSchema, segmentPattern } from '../workflow/check.js';
 import { BENCHMARK_NAME, BenchmarkNameSchema, type TrialLimits } from './terms.js';
 
@@ -21,6 +22,7 @@ import { BENCHMARK_NAME, BenchmarkNameSchema, type TrialLimits } from './terms.j
 const RepoUrlSchema = z.string().refine((value) => {
   if (!URL.canParse(value)) return false;
   const url = new URL(value);
+
   return ['https:', 'ssh:', 'git:'].includes(url.protocol) && url.username === '' && url.password === '';
 }, 'must be an https, ssh or git URL without credentials');
 
@@ -29,14 +31,17 @@ const SuitePathSchema = z.string().min(1).refine(isRelativePath, 'must be a path
 
 const TOKENS = 'must be a positive whole number of tokens';
 const WHOLE = 'must be a positive whole number';
+
 /** The run's last step waits on every lane, in one expression, which nests at most 100 levels. */
 const MAX_LANES = 32;
 const LANES = `must be a whole number from 1 to ${MAX_LANES}`;
 
 const DurationSchema = z.string({ error: (issue) => issue.input === undefined ? 'timeout is required: the run\'s timeout, such as 6h' : undefined }).transform((text, ctx): number => {
   const ms = durationMs(text);
+
   if (ms !== undefined) return ms;
   ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'must be a positive duration, such as 30m or 6h' });
+
   return z.NEVER;
 });
 
@@ -52,9 +57,11 @@ export type TeamChoice =
   | { kind: 'without'; paths: [string, ...string[]] };
 
 const PULLED: TeamChoice = { kind: 'pulled' };
+
 /** A workflow file's name, as `workflows/<name>.yaml` names it. */
 const WorkflowNameSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, 'must be the name of a workflow, as workflows/<name>.yaml names it');
 const TEAM_HELP = 'must be pulled, none, a branch, tag or commit of the team repo, or { without: [<path>, ...] }';
+
 /** A ref as git names one, which a plan and a record carry: no leading "-", no "..", "//" or trailing "/" or ".". */
 const TEAM_REF = /^(?!-)(?!.*\.\.)(?!.*\/\/)[A-Za-z0-9._/-]+(?<![/.])$/;
 
@@ -63,17 +70,23 @@ const TeamValueSchema = z.union([
   z.object({
     without: z.array(TeamPathSchema).nonempty('lists the team repo paths the arm runs without, at least one').superRefine((paths, ctx) => {
       const twice = paths.find((one, index) => paths.indexOf(one) !== index);
+
       if (twice !== undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, message: `lists ${twice} twice; list each path once` });
       const [nested] = paths.flatMap((inner) => paths.filter((outer) => inner.startsWith(`${outer}/`)).map((outer) => ({ inner, outer })));
+
       if (nested !== undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, message: `lists ${nested.inner}, which is inside ${nested.outer}; list only ${nested.outer}` });
     }),
   }).strict(),
 ]).transform((value): TeamChoice => {
-  if (typeof value !== 'string') {
+  // A transform per option would hide the option's own message behind the union's "Invalid input".
+  if (value instanceof Object) {
     const [first, ...rest] = [...value.without].sort();
+
     return { kind: 'without', paths: [first, ...rest] };
   }
+
   if (value === 'pulled') return PULLED;
+
   return value === 'none' ? { kind: 'none' } : { kind: 'ref', ref: value };
 });
 
@@ -90,8 +103,11 @@ const ArmValuesSchema = z.object({
   /** A team workflow each trial runs on the task, as its input `task`, instead of one prompt. Absent: one prompt. */
   workflow: WorkflowNameSchema.optional(),
 }).strict();
+
 export type ArmValues = z.infer<typeof ArmValuesSchema>;
+
 type ArmKey = keyof ArmValues;
+
 const ARM_KEYS = ArmValuesSchema.keyof().options;
 
 const ArmFileSchema = ArmValuesSchema.partial().extend({ name: BenchmarkNameSchema }).strict();
@@ -102,8 +118,10 @@ const MatrixSchema = z.object({
   model: z.array(z.string().min(1)).nonempty().optional(),
   team: z.array(TeamValueSchema).nonempty().optional(),
   workflow: z.array(WorkflowNameSchema).nonempty().optional(),
-}).strict() satisfies z.ZodType<Partial<Record<ArmKey, unknown>>>;
+}).strict() satisfies z.ZodType<{ [Key in ArmKey]?: Array<NonNullable<ArmValues[Key]>> }>;
+
 type Matrix = z.infer<typeof MatrixSchema>;
+
 const MAX_MATRIX_ARMS = 12;
 
 const SuiteFileSchema = z.object({
@@ -124,34 +142,48 @@ const SuiteFileSchema = z.object({
     timeout: DurationSchema.optional(),
     budget: z.object({ tokens: z.number().int(TOKENS).positive(TOKENS) }).strict().optional(),
     max_turns: z.number().int(WHOLE).positive(WHOLE).optional(),
-  }).strict().transform((trial): TrialLimits => ({
-    ...(trial.timeout !== undefined ? { timeoutMs: trial.timeout } : {}),
-    ...(trial.budget ? { tokens: trial.budget.tokens } : {}),
-    ...(trial.max_turns !== undefined ? { maxTurns: trial.max_turns } : {}),
-  })).optional(),
+  }).strict().transform((trial) => {
+    const limits: TrialLimits = {};
+
+    if (trial.timeout !== undefined) limits.timeoutMs = trial.timeout;
+
+    if (trial.budget) limits.tokens = trial.budget.tokens;
+
+    if (trial.max_turns !== undefined) limits.maxTurns = trial.max_turns;
+
+    return limits;
+  }).optional(),
   setup: SetupSchema.optional(),
   scorers: z.array(z.string().min(1)).default([]),
 }).strict().superRefine((suite, ctx) => {
   if (suite.trial?.timeoutMs !== undefined && suite.trial.timeoutMs >= suite.timeout) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['trial', 'timeout'], message: 'trial.timeout must be shorter than timeout, which bounds the whole run' });
   }
+
   if ((suite.arms === undefined) === (suite.matrix === undefined)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: [], message: 'a suite has exactly one of arms and matrix' });
+
     return;
   }
+
   if (suite.matrix) {
     const problem = matrixProblem(suite.defaults, suite.matrix);
+
     if (problem !== undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['matrix'], message: problem });
+
     return;
   }
+
   const seen = new Set<string>();
   let unchanged: string | undefined;
   suite.arms?.forEach((arm, index) => {
     if (seen.has(arm.name)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['arms', index, 'name'], message: `arm "${arm.name}" is named twice; arm names are unique` });
     }
+
     seen.add(arm.name);
     const changed = changedKeys(suite.defaults, arm);
+
     if (changed.length > 1) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['arms', index], message: `arm "${arm.name}" changes ${changed.join(' and ')}; an arm changes at most one of the defaults keys` });
     } else if (changed.length === 0 && unchanged !== undefined) {
@@ -165,6 +197,7 @@ const SuiteFileSchema = z.object({
 /** The defaults keys `arm` sets to a value other than the defaults'. An absent team is the pulled revision. */
 function changedKeys(defaults: ArmValues, arm: Partial<ArmValues>): ArmKey[] {
   const resolved = { ...defaults, team: defaults.team ?? PULLED };
+
   return ARM_KEYS.filter((key) => arm[key] !== undefined && JSON.stringify(arm[key]) !== JSON.stringify(resolved[key]));
 }
 
@@ -174,6 +207,7 @@ function matrixArms(defaults: ArmValues, matrix: Matrix): Arm[] {
   const models = matrix.model ?? [defaults.model];
   const teams = matrix.team ?? [defaults.team ?? PULLED];
   const workflows = matrix.workflow ?? [defaults.workflow];
+
   return tools.flatMap((tool) => models.flatMap((model) => teams.flatMap((team) => workflows.map((workflow): Arm => {
     const segments = [
       ...(tools.length > 1 ? [tool] : []),
@@ -181,7 +215,8 @@ function matrixArms(defaults: ArmValues, matrix: Matrix): Arm[] {
       ...(teams.length > 1 ? [teamSegment(team)] : []),
       ...(workflows.length > 1 && workflow !== undefined ? [workflow] : []),
     ];
-    return { name: segments.map(nameSegment).join('-'), tool, ...(model !== undefined ? { model } : {}), team, ...(workflow !== undefined ? { workflow } : {}) };
+
+    return definedFields<Arm>({ name: segments.map(nameSegment).join('-'), tool, model, team, workflow });
   }))));
 }
 
@@ -196,6 +231,7 @@ function teamSegment(team: TeamChoice): string {
       return ['without', ...team.paths].join('-');
     default: {
       const unhandled: never = team;
+
       return unhandled;
     }
   }
@@ -209,13 +245,17 @@ function nameSegment(value: string): string {
 function matrixProblem(defaults: ArmValues, matrix: Matrix): string | undefined {
   if (!ARM_KEYS.some((key) => (matrix[key]?.length ?? 0) > 1)) return 'the matrix varies no key; list two values or more under tool, model, team or workflow';
   const arms = matrixArms(defaults, matrix);
+
   if (arms.length > MAX_MATRIX_ARMS) return `the matrix makes ${arms.length} arms; a suite has 1 to ${MAX_MATRIX_ARMS}`;
   const names = new Set<string>();
+
   for (const { name } of arms) {
     if (!BENCHMARK_NAME.test(name)) return `the matrix names an arm "${name}", which must be letters, digits, "-" or "_"; list values that start with a letter or digit`;
+
     if (names.has(name)) return `the matrix names two arms "${name}"; list values whose names differ`;
     names.add(name);
   }
+
   return undefined;
 }
 
@@ -237,10 +277,14 @@ const CheckFileSchema = CheckRunSchema.extend({
  */
 function pathspecMatches(spec: readonly string[], file: readonly string[]): boolean {
   const [head, ...rest] = spec;
+
   if (head === undefined) return true;
+
   if (head === '**') return rest.length === 0 || file.some((_, at) => pathspecMatches(rest, file.slice(at)));
   const [name, ...below] = file;
+
   if (name === undefined) return false;
+
   return segmentPattern(head)?.test(name) === true && pathspecMatches(rest, below);
 }
 
@@ -262,31 +306,43 @@ function taskFileSchema(files: ReadonlyMap<string, SuiteFile>) {
     source: z.object({ platform: z.string().min(1), sessionId: z.string().min(1) }).strict().optional(),
   }).strict().transform(({ check, successCriteria, ...task }, ctx) => {
     if (successCriteria !== undefined && !check) return { ...task, judge: { kind: 'criteria', successCriteria } satisfies TaskJudge };
+
     if (!check || successCriteria !== undefined) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['check'], message: 'a task has exactly one of check and successCriteria' });
+
       return z.NEVER;
     }
+
     const { add = [], ...rest } = check;
-    const [firstSolved, ...otherSolved] = add.flatMap((entry) => (typeof entry === 'string' ? [entry] : []));
+    const [firstSolved, ...otherSolved] = add.flatMap((entry) => (entry instanceof Object ? [] : [entry]));
     const solution = task.solutionCommit;
+
     if (firstSolved !== undefined && solution === undefined) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['check', 'add'], message: 'check.add writes its files from solutionCommit; add solutionCommit, the full commit with the solution that brought them' });
+
       return z.NEVER;
     }
+
     const issues: Array<{ path: Array<string | number>; message: string }> = [];
+
     // Each path check.add writes, with the entry and field a diagnostic names, and for a `{ from, to }` entry its bytes.
     const written = add.flatMap((entry, index): Array<{ at: Array<string | number>; path: string; file?: CheckFile }> => {
-      if (typeof entry === 'string') return [{ at: ['check', 'add', index], path: entry }];
+      if (!(entry instanceof Object)) return [{ at: ['check', 'add', index], path: entry }];
       const copied = filesAt(files, entry);
+
       if (copied.length === 0) issues.push({ path: ['check', 'add', index, 'from'], message: `"${entry.from}" is no file or directory of the suite directory; a symlink is not one` });
+
       return copied.map((file) => ({ at: ['check', 'add', index, 'to'], path: file.path, file }));
     });
+
     const seen = new Set<string>();
     // Each directory of a path written so far, with the first path written under it.
     const under = new Map<string, string>();
+
     for (const { at, path: target } of written) {
       const parts = target.split('/');
       const directories = parts.slice(1).map((_, end) => parts.slice(0, end + 1).join('/'));
+
       if (!rest.protect.some((spec) => pathspecMatches(spec.split('/'), target.split('/')))) {
         issues.push({ path: at, message: `check.add "${target}" is not under check.protect, so the agent could supply it; add a protect path that covers it` });
       } else if (seen.has(target)) {
@@ -296,26 +352,31 @@ function taskFileSchema(files: ReadonlyMap<string, SuiteFile>) {
         const outer = directories.find((directory) => seen.has(directory));
         const inner = under.get(target);
         const [file, nested] = outer !== undefined ? [outer, target] : [target, inner];
+
         if (outer !== undefined || inner !== undefined) {
           issues.push({ path: at, message: `check.add writes "${file}" as a file and as the directory of "${nested}"; write paths that do not nest` });
         }
       }
+
       seen.add(target);
+
       for (const directory of directories) if (!under.has(directory)) under.set(directory, target);
     }
+
     if (issues.length > 0) {
       for (const issue of issues) ctx.addIssue({ code: z.ZodIssueCode.custom, ...issue });
+
       return z.NEVER;
     }
+
     const [firstFile, ...otherFiles] = written.flatMap(({ file }) => (file ? [file] : []));
-    return {
-      ...task,
-      judge: {
-        kind: 'check', ...rest,
-        ...(firstSolved !== undefined && solution !== undefined ? { add: { commit: solution, paths: [firstSolved, ...otherSolved] } } : {}),
-        ...(firstFile ? { files: [firstFile, ...otherFiles] } : {}),
-      } satisfies TaskJudge,
-    };
+    const judge: Extract<TaskJudge, { kind: 'check' }> = { kind: 'check', ...rest };
+
+    if (firstSolved !== undefined && solution !== undefined) judge.add = { commit: solution, paths: [firstSolved, ...otherSolved] };
+
+    if (firstFile) judge.files = [firstFile, ...otherFiles];
+
+    return { ...task, judge };
   });
 }
 
@@ -325,9 +386,12 @@ function taskFileSchema(files: ReadonlyMap<string, SuiteFile>) {
  */
 function filesAt(files: ReadonlyMap<string, SuiteFile>, { from, to }: { from: string; to: string }): CheckFile[] {
   const own = files.get(from);
+
   if (own) return [{ path: to, mode: own.mode, base64: own.base64 }];
+
   return [...files].flatMap(([at, file]) => {
     const below = at.startsWith(`${from}/`) ? at.slice(from.length + 1) : undefined;
+
     return below !== undefined && !below.split('/').some((name) => name.startsWith('.')) ? [{ below, file }] : [];
   }).sort((left, right) => (left.below < right.below ? -1 : 1))
     .map(({ below, file }) => ({ path: `${to}/${below}`, mode: file.mode, base64: file.base64 }));
@@ -423,69 +487,84 @@ export type SuiteParse =
  */
 export function parseSuite(input: { suite: SourceFile; tasks: readonly SourceFile[]; files?: readonly SuiteFile[]; isAlias?: (model: string) => boolean }): SuiteParse {
   const parsed = parseFile(input.suite, SuiteFileSchema);
+
   if (!parsed.ok) return parsed;
   const { value: file, document, lineCounter } = parsed;
   const suiteDir = path.posix.dirname(input.suite.relativePath);
   const directory = path.posix.basename(suiteDir);
+
   if (file.name !== directory) {
     return { ok: false, diagnostics: [diagnosticAt(input.suite.relativePath, lineCounter, document, ['name'], `suite "${file.name}" must be named after its directory, "${directory}"`)] };
   }
+
   const TaskFileSchema = taskFileSchema(new Map((input.files ?? []).flatMap((suiteFile) => (
     suiteFile.relativePath.startsWith(`${suiteDir}/`) ? [[suiteFile.relativePath.slice(suiteDir.length + 1), suiteFile] as const] : []
   ))));
+
   const diagnostics: WorkflowDiagnostic[] = [];
   const tasks: Task[] = [];
+
   for (const source of [...input.tasks].sort((left, right) => left.relativePath.localeCompare(right.relativePath))) {
     const id = path.posix.basename(source.relativePath, '.yaml');
+
     if (!BENCHMARK_NAME.test(id)) {
       diagnostics.push({ file: source.relativePath, line: 1, column: 1, field: '(file)', message: 'a task file name must be letters, digits, "-" or "_", with no "."' });
       continue;
     }
+
     const task = parseFile(source, TaskFileSchema);
+
     if (!task.ok) {
       diagnostics.push(...task.diagnostics);
       continue;
     }
+
     const { title, prompt, startingCommit, solutionCommit, judge, source: origin } = task.value;
-    tasks.push({
-      id, relativePath: source.relativePath, title, prompt, startingCommit, ...(solutionCommit ? { solutionCommit } : {}), judge,
-      ...(origin ? { source: origin } : {}), sourceHash: taskHash(source.content, judge),
-    });
+    tasks.push(definedFields<Task>({
+      id, relativePath: source.relativePath, title, prompt, startingCommit, solutionCommit: solutionCommit || undefined, judge,
+      source: origin, sourceHash: taskHash(source.content, judge),
+    }));
   }
+
   const [first, ...rest] = tasks;
+
   if (!first) {
     return { ok: false, diagnostics: [{ file: input.suite.relativePath, line: 1, column: 1, field: 'tasks', message: `suite ${file.name} has no valid task` }, ...diagnostics] };
   }
+
   const arm = ({ name, ...values }: z.infer<typeof ArmFileSchema>): Arm => ({ name, ...file.defaults, ...values, team: values.team ?? file.defaults.team ?? PULLED });
   const arms = file.matrix ? matrixArms(file.defaults, file.matrix) : (file.arms ?? []).map(arm);
   const [firstArm, ...otherArms] = arms;
+
   if (!firstArm) return { ok: false, diagnostics: [{ file: input.suite.relativePath, line: 1, column: 1, field: 'arms', message: 'a suite has 1 to 6 arms' }] };
   const toolArm = file.arms?.find((candidate) => changedKeys(file.defaults, candidate).includes('tool'));
   const variesTool = toolArm ? `arm "${toolArm.name}" changes the tool` : (file.matrix?.tool?.length ?? 0) > 1 ? 'the matrix varies the tool' : undefined;
   const isUnaliasedAcrossTools = (model: string): boolean => variesTool !== undefined && input.isAlias !== undefined && !input.isAlias(model);
   const nameWarning = (at: Array<string | number>, field: string, model: string): WorkflowDiagnostic => diagnosticAt(input.suite.relativePath, lineCounter, document, at, `${field} "${model}" is a model name, not an alias in models/aliases.yaml, and ${variesTool}; use an alias that names a model for each tool`);
+
   const warnings = [
     ...(file.defaults.model !== undefined && isUnaliasedAcrossTools(file.defaults.model) ? [nameWarning(['defaults', 'model'], 'defaults.model', file.defaults.model)] : []),
     ...(file.matrix?.model ?? []).flatMap((model, index) => (isUnaliasedAcrossTools(model) ? [nameWarning(['matrix', 'model', index], `matrix.model.${index}`, model)] : [])),
   ];
+
   return {
     ok: true,
-    suite: {
+    suite: definedFields<Suite>({
       name: file.name,
       relativePath: input.suite.relativePath,
-      ...(file.description !== undefined ? { description: file.description } : {}),
+      description: file.description,
       repo: file.repo,
       defaults: file.defaults,
       arms: [firstArm, ...otherArms],
       repetitions: file.repetitions,
       parallel: file.parallel,
       timeoutMs: file.timeout,
-      ...(file.trial ? { trial: file.trial } : {}),
-      ...(file.setup ? { setup: file.setup } : {}),
+      trial: file.trial,
+      setup: file.setup,
       scorers: file.scorers,
       tasks: [first, ...rest],
       sourceHash: hashOf(input.suite.content),
-    },
+    }),
     diagnostics,
     warnings,
   };
@@ -504,10 +583,15 @@ export function checkFilesNamed(tasks: readonly SourceFile[]): string[] {
   const named = tasks.flatMap(({ content }) => {
     const document = parseDocument(content, { uniqueKeys: true });
     const add = z.object({ check: z.object({ add: z.array(z.unknown()) }) }).safeParse(document.errors.length > 0 ? undefined : document.toJS()).data?.check.add ?? [];
+
     return add.flatMap((entry) => z.object({ from: SuitePathSchema }).safeParse(entry).data?.from ?? []);
   });
+
   return [...new Set(named)];
 }
+
+/** A segment of a zod issue's path that names a YAML node: a key or an index, never a symbol. */
+const PathSegmentSchema = z.union([z.string(), z.number()]);
 
 type FileParse<T> =
   | { ok: true; value: T; document: ReturnType<typeof parseDocument>; lineCounter: LineCounter }
@@ -516,20 +600,26 @@ type FileParse<T> =
 function parseFile<T>({ relativePath, content }: SourceFile, schema: z.ZodType<T>): FileParse<T> {
   const lineCounter = new LineCounter();
   const document = parseDocument(content, { lineCounter, uniqueKeys: true });
+
   const errors = document.errors.map((error): WorkflowDiagnostic => {
     const position = lineCounter.linePos(error.pos[0]);
+
     return { file: relativePath, line: position.line, column: position.col, field: '(document)', message: error.message };
   });
+
   const value: unknown = errors.length > 0 ? undefined : document.toJS();
   const result = errors.length > 0 ? undefined : schema.safeParse(value);
+
   if (result?.success) return { ok: true, value: result.data, document, lineCounter };
-  const diagnostics = result ? result.error.issues.map((issue) => diagnosticAt(relativePath, lineCounter, document, issue.path.filter((part) => typeof part !== 'symbol'), issue.message)) : errors;
+  const diagnostics = result ? result.error.issues.map((issue) => diagnosticAt(relativePath, lineCounter, document, issue.path.flatMap((part) => PathSegmentSchema.safeParse(part).data ?? []), issue.message)) : errors;
   const [first, ...rest] = diagnostics;
+
   return { ok: false, diagnostics: [first ?? { file: relativePath, line: 1, column: 1, field: '(root)', message: 'file is empty' }, ...rest] };
 }
 
 function diagnosticAt(file: string, lineCounter: LineCounter, document: ReturnType<typeof parseDocument>, at: ReadonlyArray<string | number>, message: string): WorkflowDiagnostic {
   const node: unknown = at.length > 0 ? document.getIn(at, true) : document.contents;
+
   return locate(file, lineCounter, isYamlNode(node) ? node : undefined, at.join('.') || '(root)', message);
 }
 
@@ -543,6 +633,8 @@ function hashOf(content: string | Buffer): string {
  */
 function taskHash(content: string, judge: TaskJudge): string {
   const files = judge.kind === 'check' ? judge.files ?? [] : [];
+
   if (files.length === 0) return hashOf(content);
+
   return hashOf(JSON.stringify([hashOf(content), ...files.map((file) => [file.path, file.mode, hashOf(Buffer.from(file.base64, 'base64'))])]));
 }

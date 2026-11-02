@@ -31,6 +31,7 @@ export function needsTool(description: WorkflowDescription, input: { tool: ToolI
  * always goes to the person.
  */
 export const HITL_MODES = ['person', 'recommend', 'auto-approve'] as const;
+
 export type HitlMode = typeof HITL_MODES[number];
 
 export type StartCheck =
@@ -50,13 +51,17 @@ export function neededAnswers(description: WorkflowDescription): StartAnswer[] {
 /** Why `description` must run with the local driver, or undefined when this driver runs it: its benchmark trials, or its local route. */
 export function localReason(description: WorkflowDescription): string | undefined {
   const { name, facts } = description;
+
   if (facts.held.some((held) => held.missing.includes('prepare'))) {
     return `${name} is a benchmark, whose trials run only on a driver that declares a sandbox, and this driver does not. Add --sandbox on a machine that is one.`;
   }
+
   const route = facts.localRoute;
+
   if (!route) return undefined;
   const keys = facts.held.find((held) => held.step === route.held)?.env ?? [];
   const lacks = missingReason(route.missing, keys);
+
   return `Step ${route.held} works in the workspace ${route.opener} opened, and ${lacks}. Only the driver that opened that workspace may go on in it, so the local driver runs the whole of ${name}.`;
 }
 
@@ -67,7 +72,9 @@ export function localReason(description: WorkflowDescription): string | undefine
  */
 export function attendedReason(description: WorkflowDescription, act: 'start' | 'continue', settled: ReadonlySet<string> = new Set()): string | undefined {
   const needs = [...(description.invoke === 'ask' ? [INVOKE_ASK_NEED] : []), ...stepNeeds(description, settled)];
+
   if (needs.length === 0) return undefined;
+
   return unattendedReason(description.name, listOf(needs), act);
 }
 
@@ -84,6 +91,7 @@ export function stepNeeds(description: WorkflowDescription, settled: ReadonlySet
   const gates = facts.gates.filter((gate) => left(gate.step));
   const required = gates.filter((gate) => gate.required);
   const open = gates.filter((gate) => !gate.required && gate.kind === 'choose' && gate.default === undefined);
+
   return [
     ...(interactive.length > 0 ? [`${listOf(interactive)} ${interactive.length > 1 ? 'are' : 'is'} interactive, worked with a person`] : []),
     ...(required.length > 0 ? [`only a person can answer the ${gatesNoun(required)} at ${listOf(required.map((gate) => gate.step))}`] : []),
@@ -109,12 +117,22 @@ export function checkStartAnswers(input: {
   tool: ToolId | undefined;
 }): StartCheck {
   const { description, answers, inputs, ceiling } = input;
+
   const given: Record<StartAnswer, boolean> = {
     confirmed: answers.confirmed, inputs: inputs !== undefined, parallel: answers.parallel !== undefined, hitl: answers.hitl !== undefined, tool: input.tool !== undefined,
   };
+
   const missing = [...neededAnswers(description), ...(needsTool(description, { tool: input.tool, judged: answers.judge !== false }) ? ['tool' as const] : [])].filter((answer) => !given[answer]);
   const outOfRange = answers.parallel !== undefined && answers.parallel > ceiling ? { parallel: answers.parallel, ceiling } : undefined;
-  if (missing.length > 0 || outOfRange) return { kind: 'confirm-needed', missing, ...(outOfRange ? { outOfRange } : {}) };
+
+  if (missing.length > 0 || outOfRange) {
+    const check: StartCheck = { kind: 'confirm-needed', missing };
+
+    if (outOfRange) check.outOfRange = outOfRange;
+
+    return check;
+  }
+
   return { kind: 'ok', parallel: answers.parallel ?? 1, hitl: answers.hitl ?? 'person' };
 }
 
@@ -126,8 +144,10 @@ export function listOf(items: readonly string[]): string {
 /** What `gates` are, by kind: approvals, choices, or both; one gate's noun is singular unless `plural`. */
 function gatesNoun(gates: ReadonlyArray<{ kind: 'approve' | 'choose' }>, plural = gates.length > 1): string {
   const kinds = new Set(gates.map((gate) => gate.kind));
+
   if (kinds.size > 1) return 'approvals and choices';
   const noun = kinds.has('choose') ? 'choice' : 'approval';
+
   return plural ? `${noun}s` : noun;
 }
 
@@ -145,10 +165,13 @@ function optionalGateFact(gate: GateFact): string {
       return `Optional approval at ${gate.step}: ${guardsFact(gate.guards)}${gate.deliver ? ', then opens a pull request' : ''}.`;
     case 'choose': {
       const picks = gate.default !== undefined ? `"answer automatically" picks ${gate.default}` : 'no default, so "answer automatically" leaves it to you';
+
       return `Optional choice at ${gate.step}: one of ${gate.options.join(', ')}; ${picks}.`;
     }
+
     default: {
       const unhandled: never = gate;
+
       return unhandled;
     }
   }
@@ -171,6 +194,7 @@ function guardsFact(guards: GateGuards): string {
       return `no action; ${guards.waiting.length > 0 ? `${listOf(guards.waiting)} wait${guards.waiting.length > 1 ? '' : 's'} for it` : 'no step waits for it'}`;
     default: {
       const unhandled: never = guards;
+
       return unhandled;
     }
   }
@@ -185,6 +209,7 @@ function optionalAnswersFact(optional: readonly GateFact[], answering: GateAnswe
   const choices = optional.filter((gate) => gate.kind === 'choose');
   const choiceAnswer = `each choice with its default${choices.some((gate) => gate.default === undefined) ? ', if it has one' : ''}`;
   const answers = [...(optional.some((gate) => gate.kind === 'approve') ? ['each approval yes'] : []), ...(choices.length > 0 ? [choiceAnswer] : [])].join(' and ');
+
   return answering === 'auto-approve' ? `It answers optional ${noun} automatically: ${answers}.`
     : `The recommended start lets this session's agent answer optional ${noun} and say why; "${autoAnswered(noun)}" answers ${answers}.`;
 }
@@ -204,6 +229,7 @@ function typeOf(schema: OutputSchema): string {
       return `list of ${typeOf(schema.items)}`;
     default: {
       const unhandled: never = schema;
+
       return unhandled;
     }
   }
@@ -212,6 +238,7 @@ function typeOf(schema: OutputSchema): string {
 /** `ms` in the largest unit that divides it: `2h`, `90s`. */
 function durationOf(ms: number): string {
   const unit = ([['h', 3_600_000], ['m', 60_000], ['s', 1_000]] as const).find(([, size]) => ms % size === 0);
+
   return unit ? `${ms / unit[1]}${unit[0]}` : `${ms}ms`;
 }
 
@@ -220,17 +247,22 @@ type HeldFact = WorkflowDescription['facts']['held'][number];
 /** Why a coding session cannot give a held step what it lacks, `missing`; `env` is the keys the step requires. */
 function missingReason(missing: HeldFact['missing'][number], env: readonly string[]): string {
   if (missing === 'env') return `needs env ${listOf(env)}, which a coding session keeps from its agents`;
+
   if (missing === 'tokens') return 'runs under a token budget, which no coding session meters for teamai';
+
   if (missing.startsWith('policy.')) return `needs ${missing.slice('policy.'.length)}, which workflows.allow in this machine's local config does not allow`;
+
   return `needs ${missing}, which a coding session does not provide`;
 }
 
 /** Why this driver is held from step `held`, and what the person does about it. */
 function heldFact(held: HeldFact): string {
   const reasons = held.missing.map((missing) => missingReason(missing, held.env));
+
   const after = held.missing.some((missing) => missing.startsWith('policy.'))
     ? 'so no driver on this machine runs it'
     : 'so you finish it in your own terminal with teamai workflow resume once the run reaches it';
+
   return `${held.step} ${reasons.join(', and ')}, ${after}.`;
 }
 
@@ -244,6 +276,7 @@ function factsOf(description: WorkflowDescription, judging: Judging, answering: 
   const missing = facts.requiresEnv.missingHere;
   const [one, many] = [missing.length === 1, interactive.length > 1];
   const scored = listOf(facts.scored.map((step) => step.step));
+
   return [
     ...(named.length > 0 ? [`${name} needs the input${named.length > 1 ? 's' : ''} ${listOf(named)}.`] : []),
     ...(facts.width > 1 ? [`It can run up to ${facts.width} steps at once.`] : []),
@@ -272,10 +305,11 @@ function factsOf(description: WorkflowDescription, judging: Judging, answering: 
  */
 function optionsOf(description: WorkflowDescription, judging: Judging, invocation: Invocation, tool: ToolId | undefined): Array<{ label: string; start: Literal }> {
   const { name, facts } = description;
-  const flags = { ...startFlags(description), ...(tool !== undefined ? { tool } : {}) };
+  const flags = { ...startFlags(description), tool };
   const noun = gatesNoun(facts.gates.filter((gate) => !gate.required), true);
   const judged = judgedBy(judging) !== undefined;
   const recommended = recommendedPick(description);
+
   const others: Array<{ label: string; pick: StartPick }> = [
     ...(recommended.hitl ? [
       { label: `Same, but ask me at optional ${noun}`, pick: { ...recommended, hitl: 'person' as const } },
@@ -284,12 +318,15 @@ function optionsOf(description: WorkflowDescription, judging: Judging, invocatio
     ...(recommended.parallel !== undefined ? [{ label: 'Same, but one step at a time', pick: { ...recommended, parallel: 1 } }] : []),
     ...(judged ? [{ label: 'Same, but without judging', pick: { ...recommended, noJudge: true as const } }] : []),
   ];
+
   const parts = [
     ...(recommended.parallel !== undefined ? [`up to ${recommended.parallel} steps at once`] : []),
     ...(recommended.hitl ? [`you decide optional ${noun}`] : []),
     ...(judged ? ['with judging'] : []),
   ];
+
   const first = others.length > 0 ? `Recommended: ${parts.join(', ')}` : flags.confirmed ? 'Yes, start it' : 'Start it';
+
   return [{ label: first, pick: recommended }, ...others].map(({ label, pick }) => ({ label, start: startLiteral(invocation, name, { ...flags, ...pick }) }));
 }
 
@@ -301,15 +338,23 @@ interface StartPick {
 }
 
 /** Whether every start of `description` carries the person's yes, and the `{inputs}` slot. */
-function startFlags(description: WorkflowDescription): { confirmed: boolean; inputs: boolean } {
+function startFlags(description: WorkflowDescription) {
   const needed = neededAnswers(description);
+
   return { confirmed: needed.includes('confirmed'), inputs: needed.includes('inputs') };
 }
 
 /** The answers of the recommended start: every step it can run at once, and the agent deciding optional gates. */
 function recommendedPick(description: WorkflowDescription): StartPick {
   const needed = neededAnswers(description);
-  return { ...(needed.includes('parallel') ? { parallel: description.facts.width } : {}), ...(needed.includes('hitl') ? { hitl: 'recommend' as const } : {}) };
+
+  const pick: StartPick = {};
+
+  if (needed.includes('parallel')) pick.parallel = description.facts.width;
+
+  if (needed.includes('hitl')) pick.hitl = 'recommend';
+
+  return pick;
 }
 
 /** The inputs of `description`, as describe lists them for its `{inputs}` slot, each with what `proposed` holds for it. */
@@ -329,6 +374,7 @@ export type Proposed = Readonly<Record<string, { value?: unknown; why: string }>
 export function localPromptTool({ config, tool, aiTools }: { config: LocalConfig; tool: ToolId | undefined; aiTools: readonly string[] }): LaunchTool | undefined {
   const picks = (named: string) => isLaunchTool(named) || !LAUNCH_ORDER.some((launched) => launched === named);
   const picked = !!config.workflows?.tools.default || aiTools.some(picks);
+
   return !picked && tool !== undefined && isLaunchTool(tool) ? tool : undefined;
 }
 
@@ -341,14 +387,17 @@ export function askFor(verdict: DescribeVerdict, description: WorkflowDescriptio
   const { name } = description;
   const session = tools.session !== undefined ? { tool: tools.session } : {};
   const facts = factsOf(description, judging, verdict.ask === 'unattended' ? 'auto-approve' : 'picked').map((fact) => `- ${fact}`);
+
   switch (verdict.ask) {
     case 'start':
-      return { kind: 'start', ...(facts.length > 0 ? { say: facts.join('\n') } : {}), start: startLiteral(invocation, name, session) };
+      return startAsk(facts, startLiteral(invocation, name, session), []);
     case 'unattended': {
       const inputs = inputsOf(description, proposed);
       const start = startLiteral(invocation, name, { ...startFlags(description), ...recommendedPick(description), hitl: 'auto-approve', ...session });
-      return { kind: 'start', ...(facts.length > 0 ? { say: facts.join('\n') } : {}), start, ...(inputs.length > 0 ? { inputs } : {}) };
+
+      return startAsk(facts, start, inputs);
     }
+
     case 'tool':
       return {
         kind: 'tool', reason: 'This coding session names no tool, which the run needs for the models of its steps or its judging.', describe: describeLiteral(invocation, name, { tool: '{tool}' }), tools: Object.keys(TOOLS),
@@ -360,15 +409,30 @@ export function askFor(verdict: DescribeVerdict, description: WorkflowDescriptio
       const options = optionsOf(description, judging, invocation, tools.session);
       const confirmed = description.invoke === 'ask';
       const inputs = inputsOf(description, proposed);
+
       const closing = options.length > 1 ? (confirmed ? 'Start it, and if so, how should it run?' : 'How should it run?')
         : confirmed || inputs.length === 0 ? 'Start it?' : `What should the input${inputs.length > 1 ? 's' : ''} be?`;
+
       return { kind: 'ask', question: { text: [...facts, closing].join('\n'), inputs, options } };
     }
+
     default: {
       const unhandled: never = verdict;
+
       return unhandled;
     }
   }
+}
+
+/** The `start` ask: the facts to say before it, when there are any, and the inputs its `{inputs}` slot lists, when it has one. */
+function startAsk(facts: string[], start: Literal, inputs: DescribedInput[]): DescribeAsk {
+  const ask: DescribeAsk = { kind: 'start', start };
+
+  if (facts.length > 0) ask.say = facts.join('\n');
+
+  if (inputs.length > 0) ask.inputs = inputs;
+
+  return ask;
 }
 
 /** The most steps the skill driver runs at once when the member set no `workflows.max_parallel`. */

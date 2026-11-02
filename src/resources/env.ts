@@ -2,11 +2,12 @@ import path from 'node:path';
 import { readFile, realpath } from 'node:fs/promises';
 import { z } from 'zod';
 import YAML from 'yaml';
+import { parseYaml } from '../utils/yaml.js';
 import { ResourceHandler } from './base.js';
 import { placedCopy } from './repo-resource.js';
 import { loadStateForScope } from '../config.js';
-import type { ResourceItem, ResourceItemStatus, TeamaiConfig, LocalConfig } from '../types.js';
-import { TEAMAI_ENV_START, TEAMAI_ENV_END, getDataHome, getEnvBackupPath, getTeamaiHome, isSelfMode } from '../types.js';
+import type { JsonValue, ResourceItem, ResourceItemStatus, TeamaiConfig, LocalConfig } from '../types.js';
+import { TEAMAI_ENV_START, TEAMAI_ENV_END, getDataHome, isJsonObject, getEnvBackupPath, getTeamaiHome, isSelfMode } from '../types.js';
 import { pathExists, readFileIfExists, readFileSafe, writeFile, ensureDir, fileContentEqual, remove, symlinkTarget } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { envShExportsPath, envShMarker, isEnvShMarker, recordEnvShExports } from '../env-sh-exports.js';
@@ -50,10 +51,11 @@ const EnvYamlSchema = z.object({
 });
 
 export type EnvVariable = z.infer<typeof EnvVariableSchema>;
+
 export type EnvYaml = z.infer<typeof EnvYamlSchema>;
 
 /** The keys `variable` was written with that env.yaml does not know: pull does not deliver it (#822). */
-export function unknownEnvVariableKeys(variable: object): string[] {
+export function unknownEnvVariableKeys(variable: EnvVariable): string[] {
   return Object.keys(variable).filter((key) => !Object.hasOwn(EnvVariableSchema.shape, key));
 }
 
@@ -71,19 +73,26 @@ export const envEntryReader: EntryReader<EnvVariable> = {
   type: 'env',
   async read(absolutePath, relativePath) {
     const file = await readEntryFileText(absolutePath, relativePath);
+
     if (!file.ok) return file;
     const content = file.text;
+
     if (content === null) return null;
-    let raw: unknown;
+    let raw: JsonValue | undefined;
+
     try {
-      raw = YAML.parse(content);
+      raw = parseYaml(content);
     } catch (e) {
       return { ok: false, reason: `${relativePath} is not valid YAML: ${e instanceof Error ? e.message : String(e)}` };
     }
-    const shapeProblem = describeEnvYamlShapeProblem(raw);
-    if (shapeProblem) return { ok: false, reason: `${relativePath} declares no variables: ${shapeProblem}` };
+
+    const missingVariables = describeMissingVariablesKey(raw);
+
+    if (missingVariables) return { ok: false, reason: `${relativePath} declares no variables: ${missingVariables}` };
     const read = parseEnvYamlDocument(raw, relativePath);
+
     if (!read.ok) return read;
+
     return { ok: true, entries: read.variables, unknownKeys: unknownEntryKeys(raw, 'variables', read.variables, EnvVariableSchema) };
   },
   nameOf: (variable) => variable.key,
@@ -111,10 +120,11 @@ export const envEntryReader: EntryReader<EnvVariable> = {
  *
  * @returns the warning to log, or `null` when there is nothing to report.
  */
-export function describeEnvYamlShapeProblem(raw: unknown): string | null {
-  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null;
+export function describeMissingVariablesKey(raw: JsonValue | undefined): string | null {
+  if (!isJsonObject(raw)) return null;
 
-  const keys = Object.keys(raw as Record<string, unknown>);
+  const keys = Object.keys(raw);
+
   if (keys.length === 0 || keys.includes('variables')) return null;
 
   return [
@@ -134,6 +144,7 @@ export function describeEnvYamlShapeProblem(raw: unknown): string | null {
  */
 export function maskEnvValue(value: string): string {
   if (value.length < 4) return '****';
+
   return `${value.slice(0, 2)}****`;
 }
 
@@ -151,12 +162,15 @@ export function parseEnvFile(content: string): Map<string, string> {
   const assignments = new Map<string, string>();
 
   let i = 0;
+
   while (i < content.length) {
     const eq = content.startsWith(PREFIX, i) ? content.indexOf('=', i + PREFIX.length) : -1;
     const key = eq === -1 ? '' : content.slice(i + PREFIX.length, eq);
+
     // The marker is not a team variable (env-sh-exports.ts), and fits on its line.
     if (eq === -1 || !ENV_KEY_RE.test(key) || content[eq + 1] !== "'" || isEnvShMarker(key)) {
       const nl = content.indexOf('\n', i);
+
       if (nl === -1) break;
       i = nl + 1;
       continue;
@@ -165,6 +179,7 @@ export function parseEnvFile(content: string): Map<string, string> {
     let j = eq + 2;
     let value = '';
     let closed = false;
+
     while (j < content.length) {
       if (content[j] !== "'") {
         value += content[j];
@@ -179,6 +194,7 @@ export function parseEnvFile(content: string): Map<string, string> {
         break;
       }
     }
+
     // An unterminated quote means the rest of the file is not ours to read.
     if (!closed) break;
 
@@ -213,8 +229,10 @@ const KEEP_PREFIX = 'case " ${__teamai_keys-} " in *" "';
 export function parseEnvFileKept(content: string): Set<string> {
   const lines = content.split('\n');
   const exports = lines.findIndex((line) => !line.startsWith(KEEP_PREFIX));
+
   return new Set(lines.slice(0, exports === -1 ? lines.length : exports).flatMap((line) => {
     const key = envNamePatternKey(line.slice(KEEP_PREFIX.length).split('"')[0]);
+
     return ENV_KEY_RE.test(key) ? [key] : [];
   }));
 }
@@ -232,47 +250,63 @@ export async function readEnvBackup(localConfig: LocalConfig): Promise<Record<st
   // uses env.local, not env (which is a committed directory there).
   const backupPath = getEnvBackupPath(localConfig);
   let content: string;
+
   try {
     content = await readFile(backupPath, 'utf-8');
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return table;
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return table;
     const reason = error instanceof Error ? error.message : String(error);
     throw new Error(`Env backup is unreadable at ${backupPath}: ${reason}`, { cause: error });
   }
+
   if (content.trimStart().startsWith('{')) {
-    const values = backupValues(content);
-    if (typeof values === 'string') throw new Error(`Env backup is unreadable at ${backupPath}: ${values}`);
-    for (const [key, value] of Object.entries(values)) table[key] = value;
+    const backup = backupValues(content);
+
+    if (!backup.ok) throw new Error(`Env backup is unreadable at ${backupPath}: ${backup.reason}`);
+
+    for (const [key, value] of Object.entries(backup.values)) table[key] = value;
+
     return table;
   }
+
   for (const line of content.split('\n')) {
     const trimmed = line.trim();
+
     if (!trimmed || trimmed.startsWith('#')) continue;
     const eq = trimmed.indexOf('=');
+
     if (eq <= 0) continue;
     table[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1).trim();
   }
+
   return table;
 }
 
+/** A JSON env backup: each exported name and its value. */
+const EnvBackupSchema = z.record(z.string(), z.string());
+
 /** The values of a JSON env backup, or why it holds none. */
-function backupValues(content: string): Record<string, string> | string {
-  let parsed: unknown;
+function backupValues(content: string): { ok: true; values: Record<string, string> } | { ok: false; reason: string } {
+  let parsed: JsonValue;
+
   try {
     parsed = JSON.parse(content);
   } catch (error) {
-    return error instanceof Error ? error.message : String(error);
+    return { ok: false, reason: error instanceof Error ? error.message : String(error) };
   }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return 'not a JSON object';
-  return Object.values(parsed).every((value) => typeof value === 'string') ? parsed as Record<string, string> : 'a value is not a string';
+
+  if (!isJsonObject(parsed)) return { ok: false, reason: 'not a JSON object' };
+  const values = EnvBackupSchema.safeParse(parsed);
+
+  return values.success ? { ok: true, values: values.data } : { ok: false, reason: 'a value is not a string' };
 }
 
 /** Validate a parsed env.yaml document; `label` names the file in the reason. */
-function parseEnvYamlDocument(raw: unknown, label: string): EnvYamlRead {
+function parseEnvYamlDocument(raw: JsonValue | undefined, label: string): EnvYamlRead {
   // An empty document is a file with nothing to deliver, not a broken one.
   if (raw === null || raw === undefined) return { ok: true, variables: [] };
 
-  if (typeof raw !== 'object' || Array.isArray(raw) || !('variables' in raw)) {
+  if (!isJsonObject(raw) || !('variables' in raw)) {
     return {
       ok: false,
       reason: `${label} declares no variables. Its top-level key must be \`variables:\`, a list `
@@ -281,9 +315,11 @@ function parseEnvYamlDocument(raw: unknown, label: string): EnvYamlRead {
   }
 
   const parsed = EnvYamlSchema.safeParse(raw);
+
   if (!parsed.success) {
     return { ok: false, reason: `${label} does not match the env.yaml schema: ${parsed.error.message}` };
   }
+
   return { ok: true, variables: parsed.data.variables };
 }
 
@@ -302,21 +338,27 @@ const SOURCES_ENV_SH = /(?:^|[\s;&|])(?:source|\.)\s[^\n;&|]*env\.sh/m;
  * and for the user scope the inline-export one, which only it ever wrote
  * (project scopes came after env.sh).
  */
-function withoutOldBlocks(content: string, loaderPath: string, scopeEnvSh?: string): { content: string; dropped: EnvBlock[] } {
+function withoutOldBlocks(content: string, loaderPath: string, scopeEnvSh?: string) {
   const userEnvSh = path.join(getTeamaiHome('user'), 'env.sh');
+
   const dropped = findEnvBlocks(content).filter((block): block is EnvBlock & { end: number } => {
     if (block.end === null || envBlockReferencesDataHome(block.text, loaderPath)) return false;
+
     if (SOURCES_ENV_SH.test(block.text)) return scopeEnvSh === undefined || envBlockReferencesDataHome(block.text, scopeEnvSh);
     const inline = block.text.split('\n').slice(1).every((line) => line === '' || line.startsWith('#') || line.startsWith('export '));
+
     return inline && (scopeEnvSh === undefined || scopeEnvSh === userEnvSh);
   });
+
   let kept = content;
+
   // One blank line stays between the text around a block, none at either end.
   for (const block of dropped.toReversed()) {
     const head = kept.substring(0, block.start).replace(/\n+$/, '');
     const tail = kept.substring(block.end).replace(/^\n+/, '');
     kept = head && tail ? `${head}\n\n${tail}` : head ? `${head}\n` : tail;
   }
+
   return { content: kept, dropped };
 }
 
@@ -346,22 +388,29 @@ export class EnvHandler extends ResourceHandler {
       // Without it the unchanged original reads as new on every run and the
       // placement collides with the copy it already wrote.
       const placements = (await loadStateForScope(localConfig)).placements ?? {};
+
       for (const { relativePath, absolutePath: activeEnv } of await listEnvFiles(activeRoot)) {
         const baseEnv = path.join(localConfig.repo.localPath, ...relativePath.split('/'));
         // Not in the baseline → new; present but different → modified; equal → skip.
         const baseExists = await pathExists(baseEnv);
+
         if (baseExists && await fileContentEqual(activeEnv, baseEnv)) continue;
+
         if (!baseExists) {
           // An earlier push may have placed this file under a namespace.
           const placed = await placedCopy('env', relativePath.slice('env/'.length), relativePath, activeEnv, localConfig, placements);
+
           if (placed === 'delivered') continue;
+
           if (placed) {
             items.push(placed);
             continue;
           }
         }
+
         items.push(envPushItem(relativePath, activeEnv, baseExists ? 'modified' : 'new'));
       }
+
       return items;
     }
 
@@ -375,6 +424,7 @@ export class EnvHandler extends ResourceHandler {
     // non-ASCII path unquoted, so it matches the name on disk.
     let changed: Set<string> | null = null;
     let untracked: Set<string> = new Set();
+
     try {
       const [changedRes, untrackedRes] = await Promise.all([
         execFileAsync(
@@ -388,6 +438,7 @@ export class EnvHandler extends ResourceHandler {
           { cwd: repoPath },
         ),
       ]);
+
       changed = new Set(changedRes.stdout.split('\0').filter(Boolean));
       untracked = new Set(untrackedRes.stdout.split('\0').filter(Boolean));
     } catch {
@@ -395,16 +446,19 @@ export class EnvHandler extends ResourceHandler {
     }
 
     const items: ResourceItem[] = [];
+
     for (const { relativePath, absolutePath } of await listEnvFiles(repoPath)) {
       if (changed && !changed.has(relativePath)) continue;
       const status = untracked.has(relativePath) || !changed ? 'new' : 'modified';
       items.push(envPushItem(relativePath, absolutePath, status));
     }
+
     return items;
   }
 
   async scanTeamForPull(_teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<ResourceItem[]> {
     const envYamlPath = path.join(localConfig.repo.localPath, 'env', 'env.yaml');
+
     if (!await pathExists(envYamlPath)) return [];
 
     return [{
@@ -426,11 +480,14 @@ export class EnvHandler extends ResourceHandler {
     const repoRoot = path.resolve(localConfig.repo.localPath);
     const dest = path.resolve(repoRoot, ...item.relativePath.split('/'));
     const original = path.resolve(item.sourcePath);
+
     if (original !== dest) {
       await ensureDir(path.dirname(dest));
       const content = await readFileSafe(original);
+
       if (content !== null) {
         await writeFile(dest, content);
+
         // Retire the clone-local original, as pushRepoResourceItem does: the
         // placement moved the file, and a leftover env/env.yaml stays untracked
         // and is rediscovered as new by the next push, which then aborts
@@ -450,6 +507,7 @@ export class EnvHandler extends ResourceHandler {
   async pullItem(_item: ResourceItem, teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
     const resolution = await resolveEntriesFor(envEntryReader, localConfig);
     reportEntryResolution(resolution);
+
     if (resolution.kind === 'failed') return;
     await this.writeResolvedEnv(resolution.entries.map((entry) => entry.entry), teamConfig, localConfig);
   }
@@ -464,6 +522,7 @@ export class EnvHandler extends ResourceHandler {
    */
   async writeResolvedEnv(variables: EnvVariable[], teamConfig: TeamaiConfig, localConfig: LocalConfig, kept: readonly string[] = []): Promise<boolean> {
     const warning = reservedTeamEnvWarning(variables.map(({ key }) => key));
+
     if (warning) log.warn(warning);
     // getEnvBackupPath returns <teamaiHome>/env normally, but <teamaiHome>/env.local
     // in self mode — where <teamaiHome>/env is a committed DIRECTORY (env/env.yaml)
@@ -472,11 +531,14 @@ export class EnvHandler extends ResourceHandler {
     const envShPath = path.join(teamaiHome, 'env.sh');
     const inject = teamConfig.sharing.env.injectShellProfile ?? true;
     const needsEnvGate = localConfig.scope === 'project' && localConfig.inheritUserScope === true;
+
     // Until its row is written, nothing else tells the loader this checkout is a project's.
     if (localConfig.scope === 'project' && localConfig.projectRoot) await markEnvScopePending(localConfig.projectRoot);
+
     if (variables.length === 0 && kept.length === 0 && !await pathExists(envShPath) && !needsEnvGate) {
       await this.updateShellProfile(teamConfig, envShPath, inject, localConfig);
       await registerEnvScope(localConfig, inject);
+
       return false;
     }
 
@@ -493,13 +555,16 @@ export class EnvHandler extends ResourceHandler {
     const backupBefore = await readFileIfExists(backupPath);
     const exported = variables.filter(({ key }) => isExportedEnvKey(key));
     const previous = parseEnvFile(before ?? '');
+
     const recorded = await recordEnvShExports(envShPath, [
       ...previous,
       ...exported.map((v): [string, string] => [v.key, v.value]),
     ]);
+
     const envSh = this.generateEnvFile(variables, kept);
     const marker = envShMarker(teamaiHome, parseEnvFile(envSh), recorded);
     const content = marker ? `${envSh}export ${marker[0]}='${marker[1]}'\n` : envSh;
+
     // The machine-local backup of what this pull exports (readEnvBackup), which
     // env exec and MCP read: it changes only with env.sh, so they never get
     // values the shells do not. The record goes back with them: an export that
@@ -509,7 +574,9 @@ export class EnvHandler extends ResourceHandler {
       [envShPath, before, content],
       [backupPath, backupBefore, `${JSON.stringify(Object.fromEntries(exported.map((v) => [v.key, v.value])), null, 2)}\n`],
     ];
+
     const started: [file: string, before: string | null][] = [[recordFile, recordBefore]];
+
     try {
       for (const [file, previousContent, next] of writes) {
         started.push([file, previousContent]);
@@ -524,6 +591,7 @@ export class EnvHandler extends ResourceHandler {
         throw new Error(`Could not write ${envShPath} and the env backup (${String(error)}), nor put them and ${recordFile} back as they were (${String(restoreError)}). `
           + `${closed ? 'Shells load no team env from it' : 'Shells may load what was written of it'} until teamai pull runs again once all are writable.`, { cause: restoreError });
       }
+
       throw error;
     }
 
@@ -531,6 +599,7 @@ export class EnvHandler extends ResourceHandler {
     // If a profile write fails, the old route remains active and visible.
     await this.updateShellProfile(teamConfig, envShPath, inject, localConfig);
     await registerEnvScope(localConfig, inject, { envChanged: content !== before });
+
     return true;
   }
 
@@ -544,18 +613,23 @@ export class EnvHandler extends ResourceHandler {
   async registerUnresolvedScope(teamConfig: TeamaiConfig, localConfig: LocalConfig, secretKeys: readonly string[]): Promise<void> {
     const envShPath = path.join(getDataHome(localConfig), 'env.sh');
     const last = await readFileIfExists(envShPath);
+
     if (last !== null && secretKeys.length > 0) {
       const exports = [...parseEnvFile(last)];
       const keeps = [...parseEnvFileKept(last)];
       const kept = exports.filter(([key]) => sameEnvName(secretKeys, key) === undefined);
       const inherits = localConfig.scope === 'project' && localConfig.inheritUserScope === true;
       const newKeeps = inherits ? secretKeys.filter((key) => sameEnvName(keeps, key) === undefined && !isReservedTeamEnvKey(key)) : [];
+
       if (kept.length < exports.length || newKeeps.length > 0) {
         await this.writeResolvedEnv(kept.map(([key, value]) => ({ key, value })), teamConfig, localConfig, [...keeps, ...newKeeps]);
+
         return;
       }
     }
+
     const inject = teamConfig.sharing.env.injectShellProfile ?? true;
+
     if (localConfig.scope === 'project' && localConfig.projectRoot) await markEnvScopePending(localConfig.projectRoot);
     await this.updateShellProfile(teamConfig, envShPath, inject, localConfig);
     await registerEnvScope(localConfig, inject && await pathExists(envShPath));
@@ -582,10 +656,12 @@ export class EnvHandler extends ResourceHandler {
     const { paths: profilePaths, ignoredOverride } = await envLoaderProfiles(override, loaderPath);
     // An older version wrote its block to the override whatever the shell.
     const overridden = override ? [expandHome(override)] : [];
+
     if (ignoredOverride) {
       log.warn(`teamai.yaml sets sharing.env.shellProfilePath to ${ignoredOverride}, which not every zsh reads: `
         + `the team env loader goes in ${profilePaths[0]} instead.`);
     }
+
     await writeEnvLoader();
     const shellBlock = this.generateShellBlock(loaderPath);
     await this.injectShellProfile({ files: profilePaths, block: shellBlock }, loaderPath, overridden);
@@ -596,6 +672,7 @@ export class EnvHandler extends ResourceHandler {
    */
   async parseEnvYaml(filePath: string): Promise<EnvYaml> {
     const read = await this.readEnvYaml(filePath);
+
     return { variables: read.ok ? read.variables : [] };
   }
 
@@ -610,24 +687,30 @@ export class EnvHandler extends ResourceHandler {
    */
   async readEnvYaml(filePath: string): Promise<EnvYamlRead> {
     const content = await readFileSafe(filePath);
+
     if (content === null) return { ok: true, variables: [] };
 
-    let raw: unknown;
+    let raw: JsonValue | undefined;
+
     try {
-      raw = YAML.parse(content);
+      raw = parseYaml(content);
     } catch (e) {
-      return { ok: false, reason: `${filePath} is not valid YAML: ${(e as Error).message}` };
+      return { ok: false, reason: `${filePath} is not valid YAML: ${e instanceof Error ? e.message : String(e)}` };
     }
+
     const read = parseEnvYamlDocument(raw, filePath);
+
     if (!read.ok) return read;
     // A rewrite keeps every key a variable was written with: dropping a
     // misspelled `roles:` would deliver the variable to every member (#822).
-    const written = writtenList(raw, 'variables');
+    const written = z.array(z.unknown()).catch([]).parse(writtenList(raw, 'variables'));
+
     return {
       ok: true,
       variables: read.variables.map((variable, index) => {
-        const entry: unknown = Array.isArray(written) ? written[index] : undefined;
-        return entry !== null && typeof entry === 'object' ? { ...entry, ...variable } : variable;
+        const entry = z.looseObject({}).safeParse(written[index]);
+
+        return entry.success ? { ...entry.data, ...variable } : variable;
       }),
     };
   }
@@ -664,12 +747,14 @@ export class EnvHandler extends ResourceHandler {
    */
   generateShellBlock(loaderPath: string): string {
     const quoted = shellQuoteValue(isWindowsFormPath(loaderPath) ? loaderPath.replace(/\\/g, '/') : loaderPath);
+
     const lines = [
       TEAMAI_ENV_START,
       '# DO NOT EDIT: This section is auto-managed by teamai',
       `[ -f ${quoted} ] && . ${quoted}`,
       TEAMAI_ENV_END,
     ];
+
     return lines.join('\n');
   }
 
@@ -698,11 +783,11 @@ export class EnvHandler extends ResourceHandler {
    */
   generateEnvFile(variables: EnvVariable[], kept: readonly string[] = []): string {
     const lines = variables
-      .filter(v => isExportedEnvKey(v.key))
-      .map(v => `export ${v.key}=${shellQuoteValue(v.value)}`);
+      .flatMap(v => (isExportedEnvKey(v.key) ? [`export ${v.key}=${shellQuoteValue(v.value)}`] : []));
+
     const keeps = kept
-      .filter(isExportedEnvKey)
-      .map(key => `${KEEP_PREFIX}${envNamePattern(key)}" "*) __teamai_env_keep '${envNamePattern(key)}' ;; esac`);
+      .flatMap(key => (isExportedEnvKey(key) ? [`${KEEP_PREFIX}${envNamePattern(key)}" "*) __teamai_env_keep '${envNamePattern(key)}' ;; esac`] : []));
+
     return [...keeps, ...lines].join('\n') + '\n';
   }
 
@@ -747,20 +832,26 @@ export class EnvHandler extends ResourceHandler {
     const home = getUserHome();
     // The loader's files first: if its block cannot go in, no older block is touched.
     const files = new Map<string, string>();
+
     for (const file of [...loader?.files ?? [], ...overridden, ...SHELL_PROFILE_CANDIDATE_NAMES.map((name) => path.join(home, name))]) {
       const target = await realpath(file).catch(() => symlinkTarget(file));
+
       if (![...files.keys()].some((known) => sameFile(known, target))) files.set(target, file);
     }
+
     // `created` is the first directory a write makes on the way to a new
     // file, as when a link points into a dotfiles directory not there yet.
     const writes: { file: string; target: string; before: string | null; created: string | null; content: string }[] = [];
+
     for (const [target, file] of files) {
       const original = await readFileIfExists(file);
       const stripped = withoutOldBlocks(original ?? '', loaderPath, scopeEnvSh);
       removed.push(...stripped.dropped);
       let content = stripped.content;
+
       if (loader?.files.includes(file)) {
         const own = findEnvBlocks(content).find((b) => b.end !== null && envBlockReferencesDataHome(b.text, loaderPath));
+
         if (own?.end != null) {
           content = content.substring(0, own.start) + loader.block + content.substring(own.end);
         } else {
@@ -768,17 +859,21 @@ export class EnvHandler extends ResourceHandler {
           content += '\n' + loader.block + '\n';
         }
       }
+
       // Skip the write when nothing changed: this runs on every pull,
       // including the one a SessionStart hook runs each session.
       if (content === (original ?? '')) continue;
       const exists = await pathExists(target);
       let created: string | null = null;
+
       // `exists` is a one-time short-circuit (never meant to change); the walk up `dir` is what ends the loop.
       // oxlint-disable-next-line no-unmodified-loop-condition
       for (let dir = path.dirname(target); !exists && !await pathExists(dir); dir = path.dirname(dir)) created = dir;
       writes.push({ file, target, before: exists ? original ?? '' : null, created, content });
     }
+
     const written: typeof writes = [];
+
     try {
       for (const write of writes) {
         // Before the write: one that fails part way has emptied the file.
@@ -788,6 +883,7 @@ export class EnvHandler extends ResourceHandler {
       }
     } catch (error) {
       const unrestored: string[] = [];
+
       for (const { file, target, before, created } of written.toReversed()) {
         try {
           await putBack(before === null ? created ?? target : file, before);
@@ -795,9 +891,11 @@ export class EnvHandler extends ResourceHandler {
           unrestored.push(`${file} (${String(restoreError)})`);
         }
       }
+
       if (unrestored.length > 0) {
         throw new Error(`Could not update the shell profile (${String(error)}), nor put back as they were: ${unrestored.join(', ')}. Check the teamai env blocks in those files.`, { cause: error });
       }
+
       throw error;
     }
 
@@ -807,9 +905,11 @@ export class EnvHandler extends ResourceHandler {
     // A removed block that sources no env.sh is the inline-export one, the user scope's.
     const hadUserBlock = removed.some((b) => !SOURCES_ENV_SH.test(b.text) || envBlockReferencesDataHome(b.text, userEnvSh));
     const hadProjectBlock = removed.some((b) => SOURCES_ENV_SH.test(b.text) && !envBlockReferencesDataHome(b.text, userEnvSh));
+
     if (hadUserBlock && hadProjectBlock) {
       const notice = 'User-scope env no longer loads inside project directories: each directory now gets its own scope\'s env. '
         + 'To keep user env variables in a project, set `inheritUserScope: true` there (`teamai init <repo> --inherit-user-scope`).';
+
       log.info(notice);
       // The session-start pull is silent: debug.log keeps it.
       log.persist(notice);
@@ -818,6 +918,7 @@ export class EnvHandler extends ResourceHandler {
 
   async removeItem(_name: string, _teamConfig: TeamaiConfig, _localConfig: LocalConfig): Promise<string[]> {
     log.warn('Use `teamai env remove <key>` to manage env variables.');
+
     return [];
   }
 }

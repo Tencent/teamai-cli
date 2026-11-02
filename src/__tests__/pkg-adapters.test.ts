@@ -122,6 +122,35 @@ describe('NpmAdapter', () => {
     );
   });
 
+  it('reads a packageManager that is not text as no declaration', async () => {
+    fs.writeFileSync(path.join(dir, 'pnpm-workspace.yaml'), 'packages:\n  - apps/*\n');
+    const nested = path.join(dir, 'apps', 'app');
+    fs.mkdirSync(nested, { recursive: true });
+    fs.writeFileSync(path.join(nested, 'package.json'), JSON.stringify({ packageManager: 1 }));
+    const execute = vi.fn<CommandExecutor>().mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+
+    await new NpmAdapter(execute).install(
+      [{ name: 'is-odd', version: '*' }],
+      { cwd: nested, scope: 'project' },
+    );
+
+    expect(execute).toHaveBeenCalledWith(
+      'pnpm',
+      ['add', 'is-odd'],
+      expect.objectContaining({ cwd: nested }),
+    );
+  });
+
+  it('reads a package-lock version that is not text as not installed', async () => {
+    fs.writeFileSync(path.join(dir, 'package.json'), '{}');
+    fs.writeFileSync(path.join(dir, 'package-lock.json'), JSON.stringify({
+      packages: { 'node_modules/typescript': { version: 5 } },
+    }));
+    const execute = vi.fn<CommandExecutor>();
+
+    expect(await new NpmAdapter(execute).snapshot(dir, [{ name: 'typescript', version: '*' }])).toEqual([]);
+  });
+
   it('passes --workspace-root when installing at the pnpm workspace root itself', async () => {
     fs.writeFileSync(path.join(dir, 'pnpm-workspace.yaml'), 'packages:\n  - packages/*\n');
     fs.writeFileSync(path.join(dir, 'package.json'), '{}');

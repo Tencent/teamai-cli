@@ -21,7 +21,12 @@ import { sessionStoreDir } from '../../locate.js';
 /** Builds a platform's adapter on its store, which follows the member's recorded `toolRoots` (`sessionStoreDir`). */
 export type AdapterFactory = (toolRoots?: LocalConfig['toolRoots']) => AgentAdapter;
 
-export const ADAPTER_REGISTRY: Record<string, AdapterFactory> = {
+/** Platform id → adapter factory. Open to any id so a test can register a stand-in platform. */
+export interface AdapterRegistry {
+  [platform: string]: AdapterFactory;
+}
+
+export const ADAPTER_REGISTRY: AdapterRegistry = {
   // Base platforms
   'claude-code': (toolRoots) => new ClaudeCodeAdapter('claude-code', sessionStoreDir('claude-code', toolRoots)),
   codex: (toolRoots) => new CodexAdapter('codex', sessionStoreDir('codex', toolRoots)),
@@ -48,9 +53,11 @@ export const ADAPTER_REGISTRY: Record<string, AdapterFactory> = {
 
 export function getAdapter(platform: string, toolRoots?: LocalConfig['toolRoots']): AgentAdapter {
   const factory = ADAPTER_REGISTRY[platform];
+
   if (!factory) {
     throw new Error(`Unsupported platform: ${platform}. Registered: ${Object.keys(ADAPTER_REGISTRY).join(', ')}`);
   }
+
   return factory(toolRoots);
 }
 
@@ -60,24 +67,36 @@ export function listAvailablePlatforms(): string[] {
 
 export function listInstalledPlatforms(toolRoots?: LocalConfig['toolRoots'], projectPath = process.cwd()): string[] {
   const installed: string[] = [];
+
   for (const [platform, factory] of Object.entries(ADAPTER_REGISTRY)) {
     try {
       const adapter = factory(toolRoots);
+
       if (adapter.isReady(projectPath)) installed.push(platform);
     } catch {
       // skip
     }
   }
+
   return installed;
 }
 
 export { AgentAdapter, type SessionMeta } from './base.js';
+
 export { ClaudeCodeAdapter } from './claude-code.js';
+
 export { CodexAdapter } from './codex.js';
+
 export { CodeBuddyAdapter } from './codebuddy.js';
+
 export { CodeBuddyIdeAdapter } from './codebuddy-ide.js';
+
 export { WorkBuddyAdapter } from './workbuddy.js';
+
 export { CursorAdapter } from './cursor.js';
+
 export { OpencodeAdapter } from './opencode.js';
+
 export { AgyAdapter } from './agy.js';
+
 export { PiAdapter } from './pi.js';

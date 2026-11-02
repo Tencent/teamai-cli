@@ -37,12 +37,14 @@ let cachedMachineId: string | null = null;
 export function getMachineId(): string {
   if (cachedMachineId !== null) return cachedMachineId;
   cachedMachineId = detectMachineId();
+
   return cachedMachineId;
 }
 
 /** @internal — exported for tests that need to bypass the cache. */
 export function detectMachineId(platform: NodeJS.Platform = process.platform): string {
   let id = '';
+
   try {
     switch (platform) {
       case 'darwin':
@@ -58,6 +60,7 @@ export function detectMachineId(platform: NodeJS.Platform = process.platform): s
   } catch {
     // platform reader threw — fall through to hostname fallback
   }
+
   return id || os.hostname() || '';
 }
 
@@ -66,7 +69,9 @@ function readDarwinMachineId(): string {
     encoding: 'utf-8',
     timeout: 3000,
   });
+
   const match = out.match(/"IOPlatformUUID"\s*=\s*"([^"]+)"/);
+
   return match ? match[1].trim() : '';
 }
 
@@ -77,7 +82,9 @@ function readWindowsMachineId(): string {
     ['query', 'HKLM\\SOFTWARE\\Microsoft\\Cryptography', '/v', 'MachineGuid'],
     { encoding: 'utf-8', timeout: 3000 },
   );
+
   const match = out.match(/MachineGuid\s+REG_SZ\s+([^\s]+)/i);
+
   return match ? match[1].trim() : '';
 }
 
@@ -85,11 +92,13 @@ function readLinuxMachineId(): string {
   for (const p of ['/etc/machine-id', '/var/lib/dbus/machine-id']) {
     try {
       const content = fs.readFileSync(p, 'utf-8').trim();
+
       if (content) return content;
     } catch {
       // try next source
     }
   }
+
   return '';
 }
 
@@ -106,6 +115,7 @@ function sha1Hex(input: string): string {
  */
 export function deriveLocalAgentId(agentType: string, machineId: string, installPath: string): string {
   const pathHash = sha1Hex(installPath).slice(0, 8);
+
   return sha1Hex(`${agentType}${machineId}${pathHash}`).slice(0, 16);
 }
 

@@ -26,12 +26,14 @@ import readline from 'node:readline';
  */
 export function isInteractive(): boolean {
   if (!process.stdin.isTTY) return false;
+
   return !envFlag('CI') && !envFlag('TEAMAI_NONINTERACTIVE');
 }
 
 /** Whether variable `name` of `env` is set: non-empty, and other than `0` and `false`. */
 export function envFlag(name: string, env: NodeJS.ProcessEnv = process.env): boolean {
   const v = env[name]?.trim().toLowerCase();
+
   return v !== undefined && v !== '' && v !== '0' && v !== 'false';
 }
 
@@ -47,6 +49,7 @@ function getReadline(): readline.Interface {
     });
     _rl.on('close', () => { _rl = null; });
   }
+
   return _rl;
 }
 
@@ -70,6 +73,7 @@ export function closePrompt(): void {
  */
 function question(rl: readline.Interface, prompt: string): Promise<string> {
   process.stdin.ref();
+
   return new Promise((resolve) => {
     rl.question(prompt, (answer) => {
       process.stdin.unref();
@@ -92,6 +96,7 @@ export function askQuestion(prompt: string, defaultValue?: string): Promise<stri
     if (defaultValue !== undefined) {
       return Promise.resolve(defaultValue);
     }
+
     return Promise.reject(
       new Error(`Cannot prompt in non-interactive mode: "${prompt.trim()}"`),
     );
@@ -102,7 +107,7 @@ export function askQuestion(prompt: string, defaultValue?: string): Promise<stri
 
 /** Ask for a secret without echoing it to the terminal. */
 export function askSecret(prompt: string): Promise<string> {
-  if (!isInteractive() || !process.stdout.isTTY || typeof process.stdin.setRawMode !== 'function') {
+  if (!isInteractive() || !process.stdout.isTTY || !process.stdin.setRawMode) {
     return Promise.reject(new Error(`Cannot prompt for a secret in non-interactive mode: "${prompt.trim()}"`));
   }
 
@@ -117,6 +122,7 @@ export function askSecret(prompt: string): Promise<string> {
 
   return new Promise((resolve, reject) => {
     let value = '';
+
     const finish = (error?: Error) => {
       process.stdin.off('data', onData);
       process.stdin.off('end', onEnd);
@@ -125,19 +131,26 @@ export function askSecret(prompt: string): Promise<string> {
       process.stdin.pause();
       process.stdin.unref();
       process.stdout.write('\n');
+
       if (error) reject(error);
       else resolve(value);
     };
+
     const onData = (chunk: string | Buffer) => {
       const text = String(chunk);
+
       for (const char of text) {
         if (char === '\r' || char === '\n') return finish();
+
         if (char === '\u0003') return finish(new Error('Prompt cancelled'));
+
         if (char === '\u0004') return finish(value ? undefined : new Error('Prompt cancelled'));
+
         if (char === '\u007f' || char === '\b') value = value.slice(0, -1);
         else if (char >= ' ') value += char;
       }
     };
+
     const onEnd = () => finish(new Error('Prompt cancelled'));
     process.stdin.on('data', onData);
     process.stdin.once('end', onEnd);
@@ -151,7 +164,9 @@ export function askSecret(prompt: string): Promise<string> {
  */
 export async function readStdin(): Promise<string> {
   let value = '';
+
   for await (const chunk of process.stdin) value += String(chunk);
+
   return value.replace(/[\r\n]+$/, '');
 }
 
@@ -194,16 +209,20 @@ export function parseSelection(input: string, maxItems: number): number[] | null
 
   for (const part of parts) {
     const rangeMatch = part.match(/^(\d+)\s*-\s*(\d+)$/);
+
     if (rangeMatch) {
       const start = Number.parseInt(rangeMatch[1], 10);
       const end = Number.parseInt(rangeMatch[2], 10);
+
       if (Number.isNaN(start) || Number.isNaN(end) || start < 1 || end > maxItems || start > end) {
         return null;
       }
+
       for (let i = start; i <= end; i++) indices.add(i - 1);
     } else {
       if (!/^\d+$/.test(part)) return null;
       const num = Number.parseInt(part, 10);
+
       if (Number.isNaN(num) || num < 1 || num > maxItems) return null;
       indices.add(num - 1);
     }

@@ -2005,7 +2005,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       const { run } = await started(made);
       expect(await made.call({ kind: 'next', run, wait: true })).toEqual({ data: { turn: expect.objectContaining({
         status: 'driving', actions: [], events: [],
-        // oxlint-disable-next-line unicorn/no-thenable
+        // oxlint-disable-next-line unicorn/no-thenable -- a workflow turn names its next step `then`; it is data, not a promise method
         then: { kind: 'poll', run: `teamai workflow next ${run} --driver skill --wait` },
       }) } });
       return made.rows;
@@ -2131,7 +2131,7 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
       expect(done.events).toContainEqual(expect.objectContaining({ kind: 'judging', step: 'review', scorers: ['review-quality'] }));
       expect(await turnOf(await made.call({ kind: 'next', run: done.run, wait: false }))).toMatchObject({
         status: 'done', actions: [{ kind: 'done', judging: { step: 'review', scorers: ['review-quality'] } }],
-        // oxlint-disable-next-line unicorn/no-thenable
+        // oxlint-disable-next-line unicorn/no-thenable -- a workflow turn names its next step `then`; it is data, not a promise method
         then: { kind: 'poll' },
       });
       expect((await turnOf(await made.call({ kind: 'next', run: done.run, wait: true }))).events).toEqual([{ kind: 'judged', step: 'review', scorer: 'review-quality', label: 'thorough' }]);

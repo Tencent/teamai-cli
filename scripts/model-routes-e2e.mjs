@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 const cli = path.resolve('dist/index.js');
+
 assert.ok(fs.existsSync(cli), 'Run npm run build before this end-to-end check');
 
 function write(file, content) {
@@ -22,12 +23,15 @@ function run(home, args, status = 0, extraEnv = {}) {
     env: { ...process.env, HOME: home, MODEL_TEST_KEY: 'isolated-test-key', ...extraEnv },
     encoding: 'utf8',
   });
+
   assert.equal(result.status, status, `${args.join(' ')}: ${result.stdout}\n${result.stderr}`);
+
   return `${result.stdout}${result.stderr}`;
 }
 
 for (const provider of ['git', 'gitlab', 'github']) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-model-cli-'));
+
   try {
     const repo = path.join(home, 'team-repo');
     write(path.join(repo, 'teamai.yaml'), `team: HAI Platform\nrepo: https://example.test/team\nprovider: ${provider}\n`);
@@ -100,6 +104,7 @@ for (const provider of ['git', 'gitlab', 'github']) {
       ANTHROPIC_CUSTOM_MODEL_OPTION: 'previous-model',
       ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: 'Previous Model',
     } };
+
     write(claude, JSON.stringify(delivered));
     run(home, ['switch', 'tokenhub', '--agent', 'claude'], 0, delivered.env);
     assert.equal(readJson(claude).env.ANTHROPIC_CUSTOM_MODEL_OPTION, undefined);
