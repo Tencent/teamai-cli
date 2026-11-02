@@ -123,9 +123,9 @@ What `npm run lint` reports, and the fix:
 The anti-slop rules (`teamai/no-*`, `require-*`) check production code only; tests may build partial or malformed values. A cast that stays says what checked it (from `src/types.ts`):
 
 ```ts
-// SAFETY: the schema checked username and every skills entry. The other fields are optional and come from the
-// stats push of this or another member's teamai, which writes them from a UserStats.
-return parsed.success ? parsed.data as UserStats : null;
+// SAFETY: username and skills are checked above. The other fields are optional and come from the stats push of this
+// or another member's teamai, which writes them from a UserStats.
+return { ...document, username: parsed.data.username, skills } as UserStats;
 ```
 
 A line that has to break a rule says why, and `--report-unused-disable-directives` fails the comment once the line no longer needs it (from `src/viz.ts`):
