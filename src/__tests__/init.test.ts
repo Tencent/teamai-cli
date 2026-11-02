@@ -197,7 +197,9 @@ let pathExistsFn: (p: string) => boolean = () => false;
 
 const mockRemove = vi.fn();
 
-vi.mock('../utils/fs.js', () => ({
+vi.mock('../utils/fs.js', async (importOriginal) => ({
+  // A pure helper: the real one reads the error code init's file checks branch on.
+  errnoCode: (await importOriginal<typeof import('../utils/fs.js')>()).errnoCode,
   ensureDir: vi.fn(),
   writeFile: vi.fn(),
   pathExists: vi.fn(async (p: string) => pathExistsFn(p)),
