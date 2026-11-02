@@ -2,7 +2,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
-import { parse as parseToml } from 'smol-toml';
+import { z } from 'zod';
+import { parse as parseToml, type TomlTable, type TomlValue } from 'smol-toml';
 import { withoutTomlBom } from '../utils/toml.js';
 import { getUserHome } from '../utils/home.js';
 import { agyGatewayOf, agyKeyFilePath, agyKeyFunction } from './agy-gateway.js';
@@ -12,8 +13,8 @@ import { acquireLock, releaseLock } from '../update.js';
 import { entryHash } from '../resources/mcp-format.js';
 import { detectShellProfile, SHELL_PROFILE_CANDIDATE_NAMES, shellQuoteValue, toGeneratedForm } from '../utils/shell-profile.js';
 import { resolveMemberToolRoots } from '../config.js';
-import { recordedToolRootDir, RELOCATABLE_TOOLS, type LocalConfig } from '../types.js';
-import { ALL_MODEL_AGENTS, type ModelAgent, type ModelProtocol, type ResolvedModelProfile, sameTeamIdentity } from './profile.js';
+import { JsonValueSchema, recordedToolRootDir, RELOCATABLE_TOOLS, type JsonValue, type LocalConfig } from '../types.js';
+import { ALL_MODEL_AGENTS, ModelAgentSchema, type ModelAgent, type ModelProtocol, type ResolvedModelProfile, sameTeamIdentity } from './profile.js';
 
 export { ALL_MODEL_AGENTS } from './profile.js';
 
@@ -33,16 +34,42 @@ const CLAUDE_ENV_KEYS = [
 
 const CLAUDE_PROVIDER_KEYS = ['CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY'] as const;
 
+/** A JSON object: a settings document, or the part of one a snapshot records. */
+type JsonObject = { [key: string]: JsonValue };
+
+const JsonObjectSchema = z.record(z.string(), JsonValueSchema);
+
+/** Whether a JSON value is an object, rather than an array, a primitive or null. */
+function isJsonObject(value: JsonValue | undefined): value is JsonObject {
+  return JsonObjectSchema.safeParse(value).success;
+}
+
+/** The message of a caught error, which fs, JSON and YAML raise as an `Error`. */
+function messageOf(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
+}
+
+/** Whether a caught error is Node's report that the path does not exist. */
+function isMissingPath(cause: unknown): boolean {
+  return cause instanceof Error && 'code' in cause && cause.code === 'ENOENT';
+}
+
+/**
+ * The settings TeamAI manages for one agent, as the manifest stores them: each
+ * agent's snapshot type below, read back as plain JSON.
+ */
+type Snapshot = JsonValue;
+
 interface AgentState {
   profile: string;
   /** Team repository identity for `team:` profiles. */
   team?: string;
   /** Default model chosen with `--model`, kept for later re-applies. */
   model?: string;
-  previous: unknown;
-  lastWritten: unknown;
+  previous: Snapshot;
+  lastWritten: Snapshot;
   filePath?: string;
-  pending?: { kind: 'switch' | 'restore'; before: unknown; prior?: AgentState | null };
+  pending?: { kind: 'switch' | 'restore'; before: Snapshot; prior?: AgentState | null };
 }
 
 interface ModelSwitchManifest {
@@ -202,24 +229,33 @@ async function readOptionalFile(file: string): Promise<string | null> {
   try {
     return await fs.promises.readFile(file, 'utf8');
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    if (isMissingPath(error)) return null;
     throw error;
   }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
+/** An agent's entry in the manifest, unknown keys kept so a save writes them back. */
+const AgentStateSchema = z.looseObject({
+  profile: z.string(),
+  team: z.string().optional(),
+  model: z.string().optional(),
+  filePath: z.string().optional(),
+  previous: JsonValueSchema,
+  lastWritten: JsonValueSchema,
+});
 
-function validAgentState(state: unknown): state is AgentState {
-  return isRecord(state)
-    && typeof state.profile === 'string'
-    && (state.team === undefined || typeof state.team === 'string')
-    && (state.model === undefined || typeof state.model === 'string')
-    && (state.filePath === undefined || typeof state.filePath === 'string')
-    && Object.prototype.hasOwnProperty.call(state, 'previous')
-    && Object.prototype.hasOwnProperty.call(state, 'lastWritten');
-}
+/** A write-ahead entry; `prior` is the agent's entry before the switch, which has no pending entry of its own. */
+const PendingSchema = z.looseObject({
+  kind: z.enum(['switch', 'restore']),
+  before: JsonValueSchema,
+  prior: AgentStateSchema.extend({ pending: z.never().optional() }).nullable().optional(),
+});
+
+const ManifestRootSchema = z.looseObject({
+  version: z.literal(1),
+  agents: z.record(z.string(), JsonValueSchema),
+  legacyValueDeclines: JsonValueSchema.optional(),
+});
 
 async function loadManifest(): Promise<ModelSwitchManifest | null> {
   const file = manifestPath();
@@ -232,33 +268,45 @@ async function loadManifest(): Promise<ModelSwitchManifest | null> {
     throw new Error(`Cannot parse model ownership manifest: ${file}`);
   }
 
-  if (!isRecord(parsed) || parsed.version !== 1 || !isRecord(parsed.agents)) {
+  const root = ManifestRootSchema.safeParse(parsed);
+
+  if (!root.success) {
     throw new Error(`Invalid model ownership manifest: ${file}`);
   }
 
-  for (const [agent, state] of Object.entries(parsed.agents)) {
-    if (!(ALL_MODEL_AGENTS as string[]).includes(agent) || !validAgentState(state)) {
+  const { agents: entries, legacyValueDeclines, ...rest } = root.data;
+  const agents: ModelSwitchManifest['agents'] = {};
+
+  for (const [agent, entry] of Object.entries(entries)) {
+    const name = ModelAgentSchema.safeParse(agent);
+    const state = AgentStateSchema.safeParse(entry);
+
+    if (!name.success || !state.success) {
       throw new Error(`Invalid model ownership entry for ${agent}: ${file}`);
     }
 
-    const pending = state.pending;
+    // A falsy `pending` has always read as no pending entry.
+    const { pending: written, ...fields } = state.data;
+    const pending = written ? PendingSchema.safeParse(written) : undefined;
 
-    if (pending && (!isRecord(pending) || !['switch', 'restore'].includes(pending.kind as string)
-      || !Object.prototype.hasOwnProperty.call(pending, 'before')
-      || (pending.kind === 'switch' && !Object.prototype.hasOwnProperty.call(pending, 'prior'))
-      || (pending.prior !== undefined && pending.prior !== null
-        && (!validAgentState(pending.prior) || pending.prior.pending !== undefined)))) {
+    if (pending && (!pending.success || (pending.data.kind === 'switch' && !('prior' in pending.data)))) {
       throw new Error(`Invalid pending model ownership entry for ${agent}: ${file}`);
     }
+
+    agents[name.data] = pending ? { ...fields, pending: pending.data } : fields;
   }
 
-  if (parsed.legacyValueDeclines !== undefined
-    && (!Array.isArray(parsed.legacyValueDeclines)
-      || parsed.legacyValueDeclines.some((key) => typeof key !== 'string'))) {
+  const declines = z.array(z.string()).optional().safeParse(legacyValueDeclines);
+
+  if (!declines.success) {
     throw new Error(`Invalid legacy value declines: ${file}`);
   }
 
-  return parsed as unknown as ModelSwitchManifest;
+  const manifest: ModelSwitchManifest = { ...rest, agents };
+
+  if (declines.data !== undefined) manifest.legacyValueDeclines = declines.data;
+
+  return manifest;
 }
 
 async function saveManifest(manifest: ModelSwitchManifest): Promise<void> {
@@ -283,25 +331,37 @@ export async function refuseLegacyValue(key: string): Promise<void> {
   });
 }
 
-function hash(value: unknown): string {
-  function canonical(item: unknown): unknown {
+/** A value TeamAI compares: a snapshot, or a value of a JSON, YAML or TOML settings file. */
+type SettingsValue = JsonValue | TomlValue | undefined;
+
+type CanonicalValue = SettingsValue | CanonicalValue[] | { [key: string]: CanonicalValue };
+
+function hash(value: SettingsValue): string {
+  function canonical(item: SettingsValue): CanonicalValue {
     if (Array.isArray(item)) return item.map(canonical);
 
-    if (isRecord(item)) {
-      return Object.fromEntries(Object.entries(item)
-        .filter(([, entry]) => entry !== undefined)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, entry]) => [key, canonical(entry)]));
-    }
+    // A JSON or YAML mapping, a TOML table (which has no prototype) or a TOML date: an object whose entries sort.
+    if (item === null || item === undefined || Object(item) !== item) return item;
 
-    return item;
+    return Object.fromEntries(Object.entries(item)
+      .filter(([, entry]) => entry !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => [key, canonical(entry)]));
   }
 
   return crypto.createHash('sha256').update(JSON.stringify(canonical(value)) ?? 'undefined').digest('hex');
 }
 
-function equal(a: unknown, b: unknown): boolean {
+function equal(a: SettingsValue, b: SettingsValue): boolean {
   return hash(a) === hash(b);
+}
+
+/** `snapshot` without `key`, a field the snapshot carries but ownership never compares. */
+function withoutField(snapshot: Snapshot | undefined, key: string): Snapshot | undefined {
+  if (!isJsonObject(snapshot)) return snapshot;
+  const { [key]: _omitted, ...rest } = snapshot;
+
+  return rest;
 }
 
 /**
@@ -309,23 +369,16 @@ function equal(a: unknown, b: unknown): boolean {
  * the user choosing among the models TeamAI offered, not taking over, so the
  * top-level model never decides ownership.
  */
-function sameManaged(agent: ModelAgent, a: unknown, b: unknown): boolean {
+function sameManaged(agent: ModelAgent, a: Snapshot | undefined, b: Snapshot | undefined): boolean {
   // `id` keys the provider for TeamAI and is never written to the file, so it
   // is compared out: the recorded snapshot carries it, the one read back off
   // disk cannot, and an exact-equality check would report the agent as taken
   // over on every restore.
-  if (agent === 'pi' || agent === 'omp') {
-    const { id: _left, ...left } = (a ?? {}) as Record<string, unknown>;
-    const { id: _right, ...right } = (b ?? {}) as Record<string, unknown>;
-
-    return equal(left, right);
-  }
+  if (agent === 'pi' || agent === 'omp') return equal(withoutField(a ?? {}, 'id'), withoutField(b ?? {}, 'id'));
 
   if (agent !== 'claude') return equal(a, b);
-  const { model: _left, ...left } = a as ClaudeSnapshot;
-  const { model: _right, ...right } = b as ClaudeSnapshot;
 
-  return equal(left, right);
+  return equal(withoutField(a, 'model'), withoutField(b, 'model'));
 }
 
 async function writableTarget(file: string): Promise<string> {
@@ -334,17 +387,17 @@ async function writableTarget(file: string): Promise<string> {
       ? await fs.promises.realpath(file)
       : file;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return file;
+    if (isMissingPath(error)) return file;
     throw error;
   }
 }
 
-async function writeAgentJson(file: string, value: unknown): Promise<void> {
+async function writeAgentJson(file: string, value: JsonValue): Promise<void> {
   await writeJsonAtomic(await writableTarget(file), value, { mode: 0o600 });
 }
 
 /** Read a YAML mapping, the shape OMP's `models.yml` uses. */
-async function yamlObject(file: string): Promise<Record<string, unknown>> {
+async function yamlObject(file: string): Promise<JsonObject> {
   const raw = await readOptionalFile(file);
 
   if (raw === null || raw.trim() === '') return {};
@@ -353,16 +406,17 @@ async function yamlObject(file: string): Promise<Record<string, unknown>> {
   try {
     parsed = YAML.parse(raw);
   } catch (error) {
-    throw new Error(`Cannot parse ${file}: ${(error as Error).message}`, { cause: error });
+    throw new Error(`Cannot parse ${file}: ${messageOf(error)}`, { cause: error });
   }
 
   if (parsed === null || parsed === undefined) return {};
+  const root = JsonObjectSchema.safeParse(parsed);
 
-  if (!isRecord(parsed)) {
+  if (!root.success) {
     throw new Error(`Cannot update ${file}: the root must be a YAML mapping`);
   }
 
-  return parsed;
+  return root.data;
 }
 
 /**
@@ -372,11 +426,11 @@ async function yamlObject(file: string): Promise<Record<string, unknown>> {
  * `indent: 2` and a trailing newline match the layout OMP's own docs show; the
  * exact spelling is TeamAI's to choose, since OMP never rewrites the file.
  */
-async function writeAgentYaml(file: string, doc: unknown): Promise<void> {
+async function writeAgentYaml(file: string, doc: JsonObject): Promise<void> {
   await writeFileAtomic(file, YAML.stringify(doc, { indent: 2 }), { mode: 0o600 });
 }
 
-async function jsonObject(file: string): Promise<Record<string, unknown>> {
+async function jsonObject(file: string): Promise<JsonObject> {
   const raw = await readOptionalFile(file);
 
   if (raw === null || raw.trim() === '') return {};
@@ -385,14 +439,16 @@ async function jsonObject(file: string): Promise<Record<string, unknown>> {
   try {
     parsed = JSON.parse(raw);
   } catch (error) {
-    throw new Error(`Cannot parse ${file}: ${(error as Error).message}`, { cause: error });
+    throw new Error(`Cannot parse ${file}: ${messageOf(error)}`, { cause: error });
   }
 
-  if (!isRecord(parsed)) {
+  const root = JsonObjectSchema.safeParse(parsed);
+
+  if (!root.success) {
     throw new Error(`Cannot update ${file}: the root must be a JSON object`);
   }
 
-  return parsed;
+  return root.data;
 }
 
 async function installed(agent: ModelAgent, roots: AgentRoots): Promise<boolean> {
@@ -449,11 +505,13 @@ function piProviderKey(profile: ResolvedModelProfile): string {
   return profile.ref;
 }
 
+type PiModel = { id: string; api?: string; baseUrl?: string };
+
 interface PiProvider {
   /** Provider-level api and url; a model may override both. */
   api: string;
   baseUrl: string;
-  models: Array<Record<string, unknown>>;
+  models: PiModel[];
 }
 
 /**
@@ -467,7 +525,7 @@ interface PiProvider {
  * every model reached through another carries both fields itself.
  */
 function piProvider(profile: ResolvedModelProfile): PiProvider | null {
-  const models: Array<Record<string, unknown>> = [];
+  const models: PiModel[] = [];
   const of = new Map<string, { api: string; baseUrl: string }>();
   let fallback: { api: string; baseUrl: string } | undefined;
 
@@ -496,20 +554,20 @@ function piProvider(profile: ResolvedModelProfile): PiProvider | null {
 }
 
 /** The provider entry TeamAI owns, or null when it owns none. */
-type PiSnapshot = Record<string, unknown> | null;
+type PiSnapshot = JsonObject | null;
 
 /**
  * Read the provider TeamAI manages. Its key is the profile ref, which is not
  * part of the snapshot, so `reference` names it — the snapshot last written for
  * this agent, and the same role OpenCode's constant `teamai` key plays there.
  */
-function piSnapshot(doc: Record<string, unknown>, reference?: unknown): PiSnapshot {
+function piSnapshot(doc: JsonObject, reference?: Snapshot): PiSnapshot {
   const id = piKeyOf(reference);
 
   if (id === null) return null;
-  const provider = (isRecord(doc.providers) ? doc.providers : {})[id];
+  const provider = (isJsonObject(doc.providers) ? doc.providers : {})[id];
 
-  return isRecord(provider) ? provider : null;
+  return isJsonObject(provider) ? provider : null;
 }
 
 /**
@@ -519,18 +577,18 @@ function piSnapshot(doc: Record<string, unknown>, reference?: unknown): PiSnapsh
  * wrote the entry and the restore that later removes it, with no second copy to
  * keep in step.
  */
-function piKeyOf(reference: unknown): string | null {
-  const id = isRecord(reference) ? reference.id : undefined;
+function piKeyOf(reference: Snapshot | undefined): string | null {
+  const id = z.string().safeParse(isJsonObject(reference) ? reference.id : undefined);
 
-  return typeof id === 'string' ? id : null;
+  return id.success ? id.data : null;
 }
 
 /** The file and reader for the Pi-family agent whose provider TeamAI manages. */
-async function piDoc(agent: 'pi' | 'omp'): Promise<Record<string, unknown>> {
+async function piDoc(agent: 'pi' | 'omp'): Promise<JsonObject> {
   const file = ownSettingsPath(agent);
   const doc = agent === 'omp' ? await yamlObject(file) : await jsonObject(file);
 
-  if (doc.providers !== undefined && !isRecord(doc.providers)) {
+  if (doc.providers !== undefined && !isJsonObject(doc.providers)) {
     throw new Error(`Cannot update ${file}: providers must be an object`);
   }
 
@@ -545,10 +603,10 @@ async function piDoc(agent: 'pi' | 'omp'): Promise<Record<string, unknown>> {
  * wrote: its key is used when `snapshot` has none, and dropped when this write
  * does not use it, so re-pointing a profile at a different ref leaves no orphan.
  */
-async function writePi(agent: 'pi' | 'omp', snapshot: PiSnapshot, previousManaged?: unknown): Promise<void> {
+async function writePi(agent: 'pi' | 'omp', snapshot: PiSnapshot, previousManaged?: Snapshot): Promise<void> {
   const file = ownSettingsPath(agent);
   const doc = await piDoc(agent);
-  const providers = { ...(isRecord(doc.providers) ? doc.providers : {}) };
+  const providers: JsonObject = isJsonObject(doc.providers) ? { ...doc.providers } : {};
   const managed = piKeyOf(previousManaged);
   const id = piKeyOf(snapshot) ?? managed;
 
@@ -573,27 +631,39 @@ async function writePi(agent: 'pi' | 'omp', snapshot: PiSnapshot, previousManage
 
 // ─── Claude ───────────────────────────────────────────────
 
-type ClaudeSnapshot = Record<(typeof CLAUDE_ENV_KEYS)[number] | 'model' | 'modelPicker', unknown>;
+type ClaudeSnapshot = Record<(typeof CLAUDE_ENV_KEYS)[number] | 'model' | 'modelPicker', JsonValue>;
 
-function claudeEnv(settings: Record<string, unknown>): Record<string, unknown> {
-  return isRecord(settings.env) ? settings.env : {};
+function claudeEnv(settings: JsonObject): JsonObject {
+  return isJsonObject(settings.env) ? settings.env : {};
 }
 
-function claudeSnapshot(settings: Record<string, unknown>): ClaudeSnapshot {
+function claudeSnapshot(settings: JsonObject): ClaudeSnapshot {
   const env = claudeEnv(settings);
+  const managed = (key: keyof ClaudeSnapshot) => (key === 'model' || key === 'modelPicker' ? settings[key] : env[key]) ?? null;
 
   return {
-    ...Object.fromEntries(CLAUDE_ENV_KEYS.map((key) => [key, env[key] ?? null])),
-    model: settings.model ?? null,
-    modelPicker: settings.modelPicker ?? null,
-  } as ClaudeSnapshot;
+    ANTHROPIC_BASE_URL: managed('ANTHROPIC_BASE_URL'),
+    ANTHROPIC_AUTH_TOKEN: managed('ANTHROPIC_AUTH_TOKEN'),
+    ANTHROPIC_API_KEY: managed('ANTHROPIC_API_KEY'),
+    ANTHROPIC_CUSTOM_HEADERS: managed('ANTHROPIC_CUSTOM_HEADERS'),
+    ANTHROPIC_MODEL: managed('ANTHROPIC_MODEL'),
+    ANTHROPIC_DEFAULT_OPUS_MODEL: managed('ANTHROPIC_DEFAULT_OPUS_MODEL'),
+    ANTHROPIC_DEFAULT_SONNET_MODEL: managed('ANTHROPIC_DEFAULT_SONNET_MODEL'),
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: managed('ANTHROPIC_DEFAULT_HAIKU_MODEL'),
+    ANTHROPIC_CUSTOM_MODEL_OPTION: managed('ANTHROPIC_CUSTOM_MODEL_OPTION'),
+    ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: managed('ANTHROPIC_CUSTOM_MODEL_OPTION_NAME'),
+    CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: managed('CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY'),
+    model: managed('model'),
+    modelPicker: managed('modelPicker'),
+  };
 }
 
-async function writeClaude(snapshot: ClaudeSnapshot, roots: AgentRoots): Promise<void> {
+/** Write a Claude snapshot; a key the snapshot leaves null or out is removed from settings.json. */
+async function writeClaude(snapshot: Partial<ClaudeSnapshot>, roots: AgentRoots): Promise<void> {
   const file = claudeSettingsPath(roots);
   const settings = await jsonObject(file);
 
-  if (settings.env !== undefined && !isRecord(settings.env)) {
+  if (settings.env !== undefined && !isJsonObject(settings.env)) {
     throw new Error(`Cannot update ${file}: env must be an object`);
   }
 
@@ -615,12 +685,17 @@ async function writeClaude(snapshot: ClaudeSnapshot, roots: AgentRoots): Promise
   await writeAgentJson(file, settings);
 }
 
+/** The models a Claude snapshot's `modelPicker` offers, as `desiredSnapshot` writes it. */
+const ClaudeModelPickerSchema = z.object({ options: z.array(z.object({ model: JsonValueSchema.optional() })).optional() }).nullable();
+
 /** A settings.json model without Claude's `[1m]` context suffix. */
-function claudeModelId(value: unknown): string | undefined {
-  return typeof value === 'string' ? value.replace(/\[1m\]$/i, '') : undefined;
+function claudeModelId(value: JsonValue | undefined): string | undefined {
+  const model = z.string().safeParse(value);
+
+  return model.success ? model.data.replace(/\[1m\]$/i, '') : undefined;
 }
 
-function claudeProviderFlagEnabled(value: unknown): boolean {
+function claudeProviderFlagEnabled(value: JsonValue | undefined): boolean {
   return value !== undefined && value !== null && value !== '' && value !== '0' && value !== 'false' && value !== false;
 }
 
@@ -630,51 +705,60 @@ function claudeProviderFlagEnabled(value: unknown): boolean {
  * it there. Host apps (for example the Claude Code desktop app) set their own
  * values, so this is a warning, not a refusal.
  */
-function claudeShellOverrides(desired: ClaudeSnapshot): string[] {
+function claudeShellOverrides(desired: Partial<ClaudeSnapshot>): string[] {
   return Object.keys(process.env).filter((key) => {
     const value = process.env[key];
 
     if (value === '') return false;
 
-    if ((CLAUDE_PROVIDER_KEYS as readonly string[]).includes(key)) return claudeProviderFlagEnabled(value);
+    if (CLAUDE_PROVIDER_KEYS.some((flag) => flag === key)) return claudeProviderFlagEnabled(value);
+    const managed = CLAUDE_ENV_KEYS.find((envKey) => envKey === key);
 
-    return (CLAUDE_ENV_KEYS as readonly string[]).includes(key) && value !== desired[key as (typeof CLAUDE_ENV_KEYS)[number]];
+    return managed !== undefined && value !== desired[managed];
   }).sort();
 }
 
 // ─── Codex ────────────────────────────────────────────────
 
-interface CodexSnapshot {
-  model?: string;
-  model_provider?: string;
-  providerBlock?: string;
-}
+const CodexSnapshotSchema = z.object({
+  model: z.string().optional(),
+  model_provider: z.string().optional(),
+  providerBlock: z.string().optional(),
+});
+
+type CodexSnapshot = z.infer<typeof CodexSnapshotSchema>;
 
 const CODEX_PROVIDER_BLOCK_RE = /^\[model_providers\.teamai\]\s*$[\s\S]*?(?=^\[(?!model_providers\.teamai[.\]])|(?![\s\S]))/m;
 
-function parseCodex(source: string): Record<string, unknown> {
+function parseCodex(source: string): TomlTable {
   try {
-    return parseToml(withoutTomlBom(source)) as Record<string, unknown>;
+    return parseToml(withoutTomlBom(source));
   } catch (error) {
-    throw new Error(`Cannot parse Codex config.toml: ${(error as Error).message}`, { cause: error });
+    throw new Error(`Cannot parse Codex config.toml: ${messageOf(error)}`, { cause: error });
   }
+}
+
+/** A top-level string setting of config.toml, which TeamAI refuses to update when it holds anything else. */
+function codexString(parsed: TomlTable, key: 'model' | 'model_provider'): string | undefined {
+  const value = z.string().optional().safeParse(parsed[key]);
+
+  if (!value.success) throw new Error(`Cannot update Codex config.toml: ${key} must be a string`);
+
+  return value.data;
 }
 
 function codexSnapshot(source: string): CodexSnapshot {
   const parsed = parseCodex(source);
 
-  for (const key of ['model', 'model_provider'] as const) {
-    if (parsed[key] !== undefined && typeof parsed[key] !== 'string') {
-      throw new Error(`Cannot update Codex config.toml: ${key} must be a string`);
-    }
-  }
-
   return {
-    model: parsed.model as string | undefined,
-    model_provider: parsed.model_provider as string | undefined,
+    model: codexString(parsed, 'model'),
+    model_provider: codexString(parsed, 'model_provider'),
     providerBlock: withoutTomlBom(source).match(CODEX_PROVIDER_BLOCK_RE)?.[0].replace(/\n+$/, ''),
   };
 }
+
+/** A TOML table of a parsed config.toml: only the table itself is checked, its values are what `parseToml` read. */
+const TomlTableSchema = z.record(z.string(), z.custom<TomlValue>());
 
 function setTopLevelString(source: string, key: string, value: string | undefined): string {
   const re = new RegExp(`^([ \\t]*(?:${key}|"${key}"|'${key}')[ \\t]*=[ \\t]*)(.*)$`, 'm');
@@ -742,19 +826,19 @@ async function writeCodex(snapshot: CodexSnapshot, roots: AgentRoots): Promise<v
   // (multiline strings, inline tables) can never produce a broken config or
   // one that differs from the intended settings.
   const unsafe = new Error(`Cannot safely update ${file}; set model, model_provider, and [model_providers.teamai] manually`);
-  let parsed: Record<string, unknown>;
+  let parsed: TomlTable;
 
   try {
-    parsed = parseToml(withoutTomlBom(source)) as Record<string, unknown>;
+    parsed = parseToml(withoutTomlBom(source));
   } catch {
     throw unsafe;
   }
 
   const wantedProvider = snapshot.providerBlock
-    ? (parseToml(snapshot.providerBlock) as { model_providers?: Record<string, unknown> }).model_providers?.teamai
+    ? TomlTableSchema.safeParse(parseToml(snapshot.providerBlock).model_providers).data?.teamai
     : undefined;
 
-  const providers = isRecord(parsed.model_providers) ? parsed.model_providers : {};
+  const providers = TomlTableSchema.safeParse(parsed.model_providers).data ?? {};
 
   if (parsed.model !== snapshot.model || parsed.model_provider !== snapshot.model_provider || !equal(providers.teamai, wantedProvider)) {
     throw unsafe;
@@ -840,12 +924,14 @@ async function writeKeyExport(keys: KeyFile, keyExport: string | null, writeSett
   await writeFileAtomic(profile, `${content}${content && !content.endsWith('\n') ? '\n' : ''}${block}`);
 }
 
-interface MuseSnapshot {
-  model?: unknown;
-  endpoint_transport?: unknown;
+const MuseSnapshotSchema = z.object({
+  model: JsonValueSchema.optional(),
+  endpoint_transport: JsonValueSchema.optional(),
   /** The content of Muse's key file; null when there is none. */
-  keyExport: string | null;
-}
+  keyExport: z.string().nullable(),
+});
+
+type MuseSnapshot = z.infer<typeof MuseSnapshotSchema>;
 
 async function museSnapshot(): Promise<MuseSnapshot> {
   const settings = await jsonObject(museSettingsPath());
@@ -860,7 +946,7 @@ async function museSnapshot(): Promise<MuseSnapshot> {
 async function writeMuse(snapshot: MuseSnapshot): Promise<void> {
   const file = museSettingsPath();
   // Muse refuses a settings.json without schema_version.
-  const settings: Record<string, unknown> = { schema_version: 1, ...await jsonObject(file) };
+  const settings = Object.assign({ schema_version: 1 }, await jsonObject(file));
 
   for (const key of ['model', 'endpoint_transport'] as const) {
     if (snapshot[key] === undefined) delete settings[key];
@@ -876,11 +962,13 @@ async function writeMuse(snapshot: MuseSnapshot): Promise<void> {
  * Its `model` names an entry of agy's own catalog by display name, and agy sends
  * that entry's Gemini model id whatever the gateway serves, so it is left to the member.
  */
-interface AgySnapshot {
-  modelProvider?: unknown;
+const AgySnapshotSchema = z.object({
+  modelProvider: JsonValueSchema.optional(),
   /** The content of agy's key file; null when there is none. */
-  keyExport: string | null;
-}
+  keyExport: z.string().nullable().catch(null),
+});
+
+type AgySnapshot = z.infer<typeof AgySnapshotSchema>;
 
 async function agySnapshot(): Promise<AgySnapshot> {
   const settings = await jsonObject(agySettingsPath());
@@ -889,15 +977,14 @@ async function agySnapshot(): Promise<AgySnapshot> {
 }
 
 /** Write a snapshot `agySnapshot` or `desiredSnapshot` made, read back from the manifest as it was saved. */
-async function writeAgy(snapshot: unknown): Promise<void> {
-  const recorded = isRecord(snapshot) ? snapshot : {};
+async function writeAgy(snapshot: Snapshot): Promise<void> {
+  const recorded = AgySnapshotSchema.safeParse(isJsonObject(snapshot) ? snapshot : {}).data ?? { keyExport: null };
   const file = agySettingsPath();
   const settings = await jsonObject(file);
 
   if (recorded.modelProvider === undefined) delete settings.modelProvider;
   else settings.modelProvider = recorded.modelProvider;
-  const keyExport = typeof recorded.keyExport === 'string' ? recorded.keyExport : null;
-  await writeKeyExport(AGY_KEYS, keyExport, () => writeAgentJson(file, settings));
+  await writeKeyExport(AGY_KEYS, recorded.keyExport, () => writeAgentJson(file, settings));
 }
 
 // ─── OpenCode ─────────────────────────────────────────────
@@ -910,16 +997,27 @@ const OPENCODE_PROVIDERS = [
 
 const OPENCODE_PROVIDER_IDS: string[] = OPENCODE_PROVIDERS.map(([, id]) => id);
 
-interface OpenCodeSnapshot {
-  model: unknown;
-  providers: Record<string, unknown>;
+/** A provider TeamAI writes into opencode.json. */
+type OpenCodeProvider = {
+  npm: string;
+  name: string;
+  options: { baseURL: string; apiKey: string };
+  models: Record<string, { name: string }>;
+};
+
+const OpenCodeSnapshotSchema = z.object({
+  model: JsonValueSchema.optional(),
+  /** Each TeamAI provider id, with null where the file has none. */
+  providers: JsonObjectSchema,
+});
+
+type OpenCodeSnapshot = z.infer<typeof OpenCodeSnapshotSchema>;
+
+function openCodeProviders(doc: JsonObject): JsonObject {
+  return isJsonObject(doc.provider) ? doc.provider : {};
 }
 
-function openCodeProviders(doc: Record<string, unknown>): Record<string, unknown> {
-  return isRecord(doc.provider) ? doc.provider : {};
-}
-
-function openCodeSnapshot(doc: Record<string, unknown>): OpenCodeSnapshot {
+function openCodeSnapshot(doc: JsonObject): OpenCodeSnapshot {
   const providers = openCodeProviders(doc);
 
   return {
@@ -932,7 +1030,7 @@ async function writeOpenCode(snapshot: OpenCodeSnapshot): Promise<void> {
   const file = openCodeSettingsPath();
   const doc = await jsonObject(file);
 
-  if (doc.provider !== undefined && !isRecord(doc.provider)) {
+  if (doc.provider !== undefined && !isJsonObject(doc.provider)) {
     throw new Error(`Cannot update ${file}: provider must be an object`);
   }
 
@@ -955,17 +1053,23 @@ async function writeOpenCode(snapshot: OpenCodeSnapshot): Promise<void> {
 
 type BuddyAgent = 'codebuddy' | 'workbuddy';
 
-interface BuddySnapshot {
-  entries: Record<string, unknown | null>;
-  allowed?: Record<string, boolean | undefined>;
+const BuddySnapshotSchema = z.object({
+  /** Each managed model id's entry, or null where the file has none. */
+  entries: JsonObjectSchema,
+  allowed: z.record(z.string(), z.boolean()).optional(),
+});
+
+type BuddySnapshot = z.infer<typeof BuddySnapshotSchema>;
+
+/** A Buddy agent's models.json: the root, its model entries, and the ids its `availableModels` allows. */
+interface BuddyDoc {
+  file: string;
+  doc: JsonObject | JsonValue[];
+  models: JsonValue[];
+  availableModels?: string[];
 }
 
-async function buddyDoc(agent: BuddyAgent): Promise<{
-  file: string;
-  doc: Record<string, unknown> | unknown[];
-  models: unknown[];
-  availableModels?: string[];
-}> {
+async function buddyDoc(agent: BuddyAgent): Promise<BuddyDoc> {
   const file = ownSettingsPath(agent);
   const raw = await readOptionalFile(file);
 
@@ -973,28 +1077,30 @@ async function buddyDoc(agent: BuddyAgent): Promise<{
   let parsed: unknown;
 
   try { parsed = JSON.parse(raw); } catch (error) {
-    throw new Error(`Cannot parse ${file}: ${(error as Error).message}`, { cause: error });
+    throw new Error(`Cannot parse ${file}: ${messageOf(error)}`, { cause: error });
   }
 
-  if (Array.isArray(parsed)) return { file, doc: parsed, models: parsed };
+  const root = z.union([z.array(JsonValueSchema), JsonObjectSchema]).safeParse(parsed);
 
-  if (!isRecord(parsed)) throw new Error(`Cannot update ${file}: root must be an object or array`);
+  if (!root.success) throw new Error(`Cannot update ${file}: root must be an object or array`);
 
-  if (parsed.availableModels !== undefined && (!Array.isArray(parsed.availableModels) || !parsed.availableModels.every((id) => typeof id === 'string'))) {
+  if (Array.isArray(root.data)) return { file, doc: root.data, models: root.data };
+  const doc = root.data;
+  const availableModels = z.array(z.string()).optional().safeParse(doc.availableModels);
+
+  if (!availableModels.success) {
     throw new Error(`Cannot update ${file}: availableModels must be an array of model IDs`);
   }
 
-  const availableModels = parsed.availableModels as string[] | undefined;
+  if (doc.models === undefined) return { file, doc, models: [], availableModels: availableModels.data };
 
-  if (parsed.models === undefined) return { file, doc: parsed, models: [], availableModels };
+  if (!Array.isArray(doc.models)) throw new Error(`Cannot update ${file}: models must be an array`);
 
-  if (!Array.isArray(parsed.models)) throw new Error(`Cannot update ${file}: models must be an array`);
-
-  return { file, doc: parsed, models: parsed.models, availableModels };
+  return { file, doc, models: doc.models, availableModels: availableModels.data };
 }
 
-function buddyEntry(models: unknown[], id: string): unknown {
-  return models.find((entry) => isRecord(entry) && entry.id === id);
+function buddyEntry(models: JsonValue[], id: string): JsonValue | undefined {
+  return models.find((entry) => isJsonObject(entry) && entry.id === id);
 }
 
 function buddyAllowed(availableModels: string[] | undefined, ids: string[]): Record<string, boolean> {
@@ -1012,21 +1118,28 @@ function reconcileBuddyAllowed(availableModels: string[] | undefined, allowed: R
   return next;
 }
 
-async function localAgentOwnsBuddyEntry(agent: BuddyAgent, id: string, entry: unknown): Promise<boolean> {
+async function localAgentOwnsBuddyEntry(agent: BuddyAgent, id: string, entry: JsonValue): Promise<boolean> {
   const manifest = await jsonObject(path.join(getUserHome(), '.teamai', 'local-agent', 'model-manifest.json'));
   const owned = manifest[agent];
 
-  return isRecord(owned) && owned[id] === entryHash(entry);
+  return isJsonObject(owned) && owned[id] === entryHash(entry);
 }
 
 // Buddy apps add their own metadata to entries. Only the fields TeamAI wrote
 // decide ownership.
-function buddyOwnedEntry(entry: unknown, written: unknown): unknown {
+function buddyOwnedEntry(entry: JsonValue | undefined, written: JsonValue): JsonValue {
   if (entry === undefined) return null;
 
-  if (!isRecord(entry) || !isRecord(written)) return entry;
+  if (!isJsonObject(entry) || !isJsonObject(written)) return entry;
+  const owned: JsonObject = {};
 
-  return Object.fromEntries(Object.keys(written).map((key) => [key, entry[key]]));
+  for (const key of Object.keys(written)) {
+    const value = entry[key];
+
+    if (value !== undefined) owned[key] = value;
+  }
+
+  return owned;
 }
 
 /**
@@ -1044,14 +1157,19 @@ async function replaceBuddy(
   const { file, doc, models, availableModels } = await buddyDoc(agent);
   const previousEntries = previousManaged?.entries ?? {};
   const managedIds = new Set([...Object.keys(previousEntries), ...Object.keys(desired.entries)]);
-  const next = models.filter((entry) => !(isRecord(entry) && typeof entry.id === 'string' && managedIds.has(entry.id)));
+
+  const next = models.filter((entry) => {
+    const id = isJsonObject(entry) ? z.string().safeParse(entry.id) : undefined;
+
+    return !(id?.success && managedIds.has(id.data));
+  });
 
   for (const [id, entry] of Object.entries(desired.entries)) {
     if (entry === null) continue;
     const current = buddyEntry(models, id);
     const prior = previousEntries[id];
 
-    if (keepAppMetadata && isRecord(current) && isRecord(prior) && isRecord(entry)) {
+    if (keepAppMetadata && isJsonObject(current) && isJsonObject(prior) && isJsonObject(entry)) {
       const extras = Object.fromEntries(Object.entries(current).filter(([key]) => !(key in prior)));
       next.push({ ...extras, ...entry });
     } else next.push(entry);
@@ -1060,8 +1178,17 @@ async function replaceBuddy(
   next.push(...Object.values(released?.entries ?? {}).filter((entry) => entry !== null));
   const allowed = desired.allowed || released?.allowed ? { ...released?.allowed, ...desired.allowed } : undefined;
 
-  if (Array.isArray(doc)) await writeAgentJson(file, next);
-  else await writeAgentJson(file, { ...doc, models: next, ...(allowed ? { availableModels: reconcileBuddyAllowed(availableModels, allowed) } : {}) });
+  if (Array.isArray(doc)) {
+    await writeAgentJson(file, next);
+
+    return;
+  }
+
+  const written = Object.assign({}, doc, { models: next });
+  const reconciled = allowed ? reconcileBuddyAllowed(availableModels, allowed) : undefined;
+
+  if (reconciled !== undefined) written.availableModels = reconciled;
+  await writeAgentJson(file, written);
 }
 
 // ─── Snapshots ────────────────────────────────────────────
@@ -1070,7 +1197,7 @@ async function replaceBuddy(
  * Read the fields TeamAI manages for an agent. Buddy snapshots cover the
  * model IDs in `reference` (the last written or the desired snapshot).
  */
-async function currentSnapshot(agent: ModelAgent, roots: AgentRoots, reference?: unknown): Promise<unknown> {
+async function currentSnapshot(agent: ModelAgent, roots: AgentRoots, reference?: Snapshot): Promise<Snapshot> {
   if (agent === 'claude') return claudeSnapshot(await jsonObject(claudeSettingsPath(roots)));
 
   if (agent === 'codex') return codexSnapshot((await readOptionalFile(codexSettingsPath(roots))) ?? '');
@@ -1082,40 +1209,60 @@ async function currentSnapshot(agent: ModelAgent, roots: AgentRoots, reference?:
   if (agent === 'agy') return agySnapshot();
 
   if (agent === 'pi' || agent === 'omp') return piSnapshot(await piDoc(agent), reference);
-  const written = reference as BuddySnapshot | undefined;
+  const written = reference === undefined ? undefined : buddySnapshotOf(agent, reference);
   const { models, availableModels } = await buddyDoc(agent);
   const entries = written?.entries ?? {};
+  const snapshot: BuddySnapshot = { entries: {} };
 
-  return {
-    entries: Object.fromEntries(Object.entries(entries).map(([id, entry]) => [id, buddyOwnedEntry(buddyEntry(models, id), entry)])),
-    ...(written?.allowed ? { allowed: buddyAllowed(availableModels, Object.keys(written.allowed)) } : {}),
-  } satisfies BuddySnapshot;
+  for (const [id, entry] of Object.entries(entries)) snapshot.entries[id] = buddyOwnedEntry(buddyEntry(models, id), entry);
+
+  if (written?.allowed) snapshot.allowed = buddyAllowed(availableModels, Object.keys(written.allowed));
+
+  return snapshot;
+}
+
+/** A Buddy snapshot recorded for `agent`; anything else in its place is a manifest TeamAI did not write. */
+function buddySnapshotOf(agent: BuddyAgent, snapshot: Snapshot): BuddySnapshot {
+  const parsed = BuddySnapshotSchema.safeParse(snapshot);
+
+  if (!parsed.success) throw new Error(`Invalid model ownership snapshot for ${agent}`);
+
+  return parsed.data;
+}
+
+/** Parse a snapshot recorded for `agent` with that agent's schema. */
+function recordedSnapshot<T>(agent: ModelAgent, schema: z.ZodType<T>, snapshot: Snapshot): T {
+  const parsed = schema.safeParse(snapshot);
+
+  if (!parsed.success) throw new Error(`Invalid model ownership snapshot for ${agent}`);
+
+  return parsed.data;
 }
 
 async function writeSnapshot(
   agent: ModelAgent,
   roots: AgentRoots,
-  snapshot: unknown,
-  previousManaged?: unknown,
+  snapshot: Snapshot,
+  previousManaged?: Snapshot,
   keepAppMetadata = false,
   released?: BuddySnapshot,
 ): Promise<void> {
-  if (agent === 'claude') return writeClaude(snapshot as ClaudeSnapshot, roots);
+  if (agent === 'claude') return writeClaude(recordedSnapshot(agent, JsonObjectSchema, snapshot), roots);
 
-  if (agent === 'codex') return writeCodex(snapshot as CodexSnapshot, roots);
+  if (agent === 'codex') return writeCodex(recordedSnapshot(agent, CodexSnapshotSchema, snapshot), roots);
 
-  if (agent === 'opencode') return writeOpenCode(snapshot as OpenCodeSnapshot);
+  if (agent === 'opencode') return writeOpenCode(recordedSnapshot(agent, OpenCodeSnapshotSchema, snapshot));
 
-  if (agent === 'muse') return writeMuse(snapshot as MuseSnapshot);
+  if (agent === 'muse') return writeMuse(recordedSnapshot(agent, MuseSnapshotSchema, snapshot));
 
   if (agent === 'agy') return writeAgy(snapshot);
 
-  if (agent === 'pi' || agent === 'omp') return writePi(agent, snapshot as PiSnapshot, previousManaged);
+  if (agent === 'pi' || agent === 'omp') return writePi(agent, isJsonObject(snapshot) ? snapshot : null, previousManaged);
 
-  return replaceBuddy(agent, previousManaged as BuddySnapshot | undefined, snapshot as BuddySnapshot, keepAppMetadata, released);
+  return replaceBuddy(agent, previousManaged === undefined ? undefined : buddySnapshotOf(agent, previousManaged), buddySnapshotOf(agent, snapshot), keepAppMetadata, released);
 }
 
-function desiredSnapshot(agent: ModelAgent, profile: ResolvedModelProfile): unknown {
+function desiredSnapshot(agent: ModelAgent, profile: ResolvedModelProfile): Snapshot {
   const envRef = profile.api_key_env;
 
   if (agent === 'claude') {
@@ -1184,7 +1331,7 @@ function desiredSnapshot(agent: ModelAgent, profile: ResolvedModelProfile): unkn
   }
 
   if (agent === 'opencode') {
-    const providers: Record<string, unknown> = Object.fromEntries(OPENCODE_PROVIDER_IDS.map((id) => [id, null]));
+    const built = new Map<string, OpenCodeProvider>();
     const providerOf = new Map<string, string>();
 
     // A model served over several protocols is registered once, preferring
@@ -1198,15 +1345,19 @@ function desiredSnapshot(agent: ModelAgent, profile: ResolvedModelProfile): unkn
       for (const model of route.models) {
         if (providerOf.has(model)) continue;
         providerOf.set(model, id);
-        const existing = providers[id] as { models: Record<string, unknown> } | null;
-        providers[id] = {
+        const existing = built.get(id);
+        built.set(id, {
           npm,
           name: `${profile.profile.name} (${protocol})`,
           options: { baseURL: route.base_url, apiKey: envRef ? `{env:${envRef}}` : profile.api_key_value ?? '' },
           models: { ...existing?.models, [model]: { name: model } },
-        };
+        });
       }
     }
+
+    const providers: JsonObject = {};
+
+    for (const id of OPENCODE_PROVIDER_IDS) providers[id] = built.get(id) ?? null;
 
     // A model the profile serves only over Gemini has no OpenCode provider.
     const reachable = profile.profile.model_groups.flatMap((group) => group.models).filter((model) => providerOf.has(model));
@@ -1237,7 +1388,7 @@ function desiredSnapshot(agent: ModelAgent, profile: ResolvedModelProfile): unkn
         : profile.api_key_value ?? '',
       api: provider.api,
       models: provider.models,
-    } satisfies Record<string, unknown>;
+    } satisfies JsonObject;
   }
 
   const route = profile.routes['openai-chat-completions']!;
@@ -1255,12 +1406,14 @@ function desiredSnapshot(agent: ModelAgent, profile: ResolvedModelProfile): unkn
   } satisfies BuddySnapshot;
 }
 
-async function firstSnapshot(agent: ModelAgent, roots: AgentRoots, desired: unknown): Promise<unknown> {
+async function firstSnapshot(agent: ModelAgent, roots: AgentRoots, desired: Snapshot): Promise<Snapshot> {
   if (agent !== 'codebuddy' && agent !== 'workbuddy') return currentSnapshot(agent, roots);
   const { models } = await buddyDoc(agent);
-  const ids = Object.keys((desired as BuddySnapshot).entries);
+  const snapshot: BuddySnapshot = { entries: {} };
 
-  return { entries: Object.fromEntries(ids.map((id) => [id, buddyEntry(models, id) ?? null])) } satisfies BuddySnapshot;
+  for (const id of Object.keys(buddySnapshotOf(agent, desired).entries)) snapshot.entries[id] = buddyEntry(models, id) ?? null;
+
+  return snapshot;
 }
 
 // A write-ahead entry makes either side of an interrupted file replacement
@@ -1296,9 +1449,10 @@ async function firstSwitchCollision(agent: ModelAgent, roots: AgentRoots, profil
   if (agent === 'codex') {
     const source = (await readOptionalFile(codexSettingsPath(roots))) ?? '';
     const providers = parseCodex(source).model_providers;
+    const table = TomlTableSchema.safeParse(providers);
 
-    const taken = providers !== undefined && (!isRecord(providers)
-      || Object.prototype.hasOwnProperty.call(providers, 'teamai')
+    const taken = providers !== undefined && (!table.success
+      || Object.prototype.hasOwnProperty.call(table.data, 'teamai')
       // An inline `model_providers = {...}` table cannot be extended.
       || /^\s*(?:model_providers|"model_providers"|'model_providers')\s*=\s*\{/m.test(source));
 
@@ -1317,7 +1471,7 @@ async function firstSwitchCollision(agent: ModelAgent, roots: AgentRoots, profil
     // provider under that ref is refused rather than silently overwritten.
     const id = piProviderKey(profile);
     const doc = await piDoc(agent);
-    const providers = isRecord(doc.providers) ? doc.providers : {};
+    const providers = isJsonObject(doc.providers) ? doc.providers : {};
 
     return providers[id] !== undefined ? `${agent} already has a user-owned provider named ${id}` : undefined;
   }
@@ -1326,7 +1480,7 @@ async function firstSwitchCollision(agent: ModelAgent, roots: AgentRoots, profil
 }
 
 async function buddyCollision(agent: BuddyAgent, desired: BuddySnapshot, state: AgentState | undefined): Promise<string | undefined> {
-  const managedIds = new Set(Object.keys((state?.lastWritten as BuddySnapshot | undefined)?.entries ?? {}));
+  const managedIds = new Set(Object.keys(state ? buddySnapshotOf(agent, state.lastWritten).entries : {}));
   const { models } = await buddyDoc(agent);
 
   for (const id of Object.keys(desired.entries)) {
@@ -1375,11 +1529,11 @@ async function switchModelProfileUnlocked(
   const manifest = (await loadManifest()) ?? { version: 1, agents: {} };
   const results: ModelSwitchResult[] = [];
 
-  const metadata: Pick<AgentState, 'profile' | 'team' | 'model'> = {
-    profile: profile.ref,
-    ...(profile.team ? { team: profile.team } : {}),
-    ...(profile.model ? { model: profile.model } : {}),
-  };
+  const metadata: Pick<AgentState, 'profile' | 'team' | 'model'> = { profile: profile.ref };
+
+  if (profile.team) metadata.team = profile.team;
+
+  if (profile.model) metadata.model = profile.model;
 
   for (const agent of agents) {
     try {
@@ -1431,11 +1585,11 @@ async function switchModelProfileUnlocked(
         continue;
       }
 
-      const desired = desiredSnapshot(agent, profile);
+      let desired = desiredSnapshot(agent, profile);
       let warning: string | undefined;
 
       if (agent === 'claude') {
-        const overrides = claudeShellOverrides(desired as ClaudeSnapshot);
+        const overrides = claudeShellOverrides(isJsonObject(desired) ? desired : {});
 
         if (overrides.length > 0) {
           warning = `This shell sets ${overrides.join(', ')}, which override settings.json for Claude sessions started from it`;
@@ -1443,7 +1597,7 @@ async function switchModelProfileUnlocked(
       }
 
       if (agent === 'muse') {
-        const { base_url: baseUrl } = (desired as MuseSnapshot).endpoint_transport as { base_url: string };
+        const baseUrl = isJsonObject(desired) ? stringField(desired.endpoint_transport, 'base_url') : undefined;
         warning = `Shells started before this switch lack the profile's META_API_KEY: open a new shell before running muse, or Muse Code sends your saved Meta credential to ${baseUrl}`;
       }
 
@@ -1458,25 +1612,28 @@ async function switchModelProfileUnlocked(
         continue;
       }
 
-      const previous = state ? structuredClone(state.previous) : await firstSnapshot(agent, roots, desired);
+      let previous = state ? structuredClone(state.previous) : await firstSnapshot(agent, roots, desired);
       let released: BuddySnapshot | undefined;
 
       if (agent === 'codebuddy' || agent === 'workbuddy') {
-        const desiredBuddy = desired as BuddySnapshot;
-        const prior = previous as BuddySnapshot;
+        const desiredBuddy = buddySnapshotOf(agent, desired);
+        const prior = buddySnapshotOf(agent, previous);
         const { availableModels } = await buddyDoc(agent);
         const managedIds = Object.keys(desiredBuddy.entries);
 
         // A model the catalog dropped gets its original entry back now and
         // leaves TeamAI's records, so a later restore never touches an ID
         // TeamAI no longer writes (the user may have reused it).
-        const dropped = Object.keys((state?.lastWritten as BuddySnapshot | undefined)?.entries ?? {})
+        const dropped = Object.keys(state ? buddySnapshotOf(agent, state.lastWritten).entries : {})
           .filter((id) => !managedIds.includes(id));
 
-        released = {
-          entries: Object.fromEntries(dropped.map((id) => [id, prior.entries[id] ?? null])),
-          ...(prior.allowed ? { allowed: Object.fromEntries(dropped.filter((id) => id in prior.allowed!).map((id) => [id, prior.allowed![id]])) } : {}),
-        };
+        released = { entries: Object.fromEntries(dropped.map((id) => [id, prior.entries[id] ?? null])) };
+        const priorAllowed = prior.allowed;
+
+        if (priorAllowed) {
+          released.allowed = Object.fromEntries(dropped.flatMap((id) => (id in priorAllowed ? [[id, priorAllowed[id]] as const] : [])));
+        }
+
         prior.entries = Object.fromEntries(managedIds.map((id) => [id, prior.entries[id] ?? null]));
 
         if (availableModels?.length || prior.allowed) {
@@ -1484,14 +1641,18 @@ async function switchModelProfileUnlocked(
           prior.allowed = Object.fromEntries(managedIds.map((id) => [id, prior.allowed?.[id] ?? existing[id]]));
           desiredBuddy.allowed = Object.fromEntries(managedIds.map((id) => [id, true]));
         }
+
+        desired = desiredBuddy;
+        previous = prior;
       }
 
       if (agent === 'claude' && state && !profile.model) {
         // Keep the model the user picked in Claude if the catalog still has it.
-        const picked = claudeModelId((current as ClaudeSnapshot).model);
+        const currentModel = isJsonObject(current) ? current.model : undefined;
+        const picked = claudeModelId(currentModel);
 
-        if (picked && profile.routes.anthropic!.models.includes(picked)) {
-          (desired as ClaudeSnapshot).model = (current as ClaudeSnapshot).model;
+        if (picked && profile.routes.anthropic!.models.includes(picked) && isJsonObject(desired) && currentModel !== undefined) {
+          desired.model = currentModel;
         }
       }
 
@@ -1501,12 +1662,12 @@ async function switchModelProfileUnlocked(
           await saveManifest(manifest);
         }
 
-        results.push({ agent, status: 'unchanged', message: `${agent} already uses ${profile.ref}`, ...(warning ? { warning } : {}) });
+        results.push(withWarning({ agent, status: 'unchanged', message: `${agent} already uses ${profile.ref}` }, warning));
         continue;
       }
 
       const collision = agent === 'codebuddy' || agent === 'workbuddy'
-        ? await buddyCollision(agent, desired as BuddySnapshot, state)
+        ? await buddyCollision(agent, buddySnapshotOf(agent, desired), state)
         : state ? undefined : await firstSwitchCollision(agent, roots, profile);
 
       if (collision) {
@@ -1539,18 +1700,24 @@ async function switchModelProfileUnlocked(
         await saveManifest(manifest);
       }
 
-      results.push({
+      results.push(withWarning({
         agent,
         status: 'switched',
         message: options.dryRun ? `${agent} would switch to ${profile.ref}` : `${agent} switched to ${profile.ref}`,
-        ...(warning ? { warning } : {}),
-      });
+      }, warning));
     } catch (error) {
-      results.push({ agent, status: 'failed', message: `${agent} failed: ${(error as Error).message}` });
+      results.push({ agent, status: 'failed', message: `${agent} failed: ${messageOf(error)}` });
     }
   }
 
   return results;
+}
+
+/** `result`, with `warning` when there is one. */
+function withWarning(result: ModelSwitchResult, warning: string | undefined): ModelSwitchResult {
+  if (warning) result.warning = warning;
+
+  return result;
 }
 
 export async function restoreModelProfiles(
@@ -1606,12 +1773,14 @@ async function restoreModelProfilesUnlocked(
       if (agent === 'claude') {
         // Put back the original model only if the current one is still one
         // TeamAI offered; a model the user chose elsewhere stays.
-        const offered = (((state.lastWritten as ClaudeSnapshot).modelPicker as { options?: Array<{ model?: unknown }> } | null)?.options ?? [])
-          .map((option) => option.model);
+        const picker = ClaudeModelPickerSchema.safeParse(isJsonObject(state.lastWritten) ? state.lastWritten.modelPicker : null);
+        const offered = (picker.data?.options ?? []).map((option) => option.model);
+        const currentModel = isJsonObject(current) ? current.model : undefined;
+        const picked = claudeModelId(currentModel);
 
-        const picked = claudeModelId((current as ClaudeSnapshot).model);
-
-        if (picked && !offered.includes(picked)) restored = { ...(state.previous as ClaudeSnapshot), model: (current as ClaudeSnapshot).model };
+        if (picked && !offered.includes(picked) && isJsonObject(state.previous) && currentModel !== undefined) {
+          restored = { ...state.previous, model: currentModel };
+        }
       }
 
       if (!options.dryRun) {
@@ -1630,19 +1799,19 @@ async function restoreModelProfilesUnlocked(
         await saveManifest(manifest);
       }
 
-      results.push({
+      const warning = agent === 'muse'
+        ? "Shells started before this restore still export the profile's META_API_KEY: open a new shell before running muse"
+        : agent === 'agy'
+          ? "Shells started before this restore still define teamai's agy function, which sends agy to the profile's gateway: open a new shell before running agy"
+          : undefined;
+
+      results.push(withWarning({
         agent,
         status: 'restored',
         message: options.dryRun ? `${agent} model settings would be restored` : `${agent} model settings restored`,
-        ...(agent === 'muse'
-          ? { warning: "Shells started before this restore still export the profile's META_API_KEY: open a new shell before running muse" }
-          : {}),
-        ...(agent === 'agy'
-          ? { warning: "Shells started before this restore still define teamai's agy function, which sends agy to the profile's gateway: open a new shell before running agy" }
-          : {}),
-      });
+      }, warning));
     } catch (error) {
-      results.push({ agent, status: 'failed', message: `${agent} restore failed: ${(error as Error).message}` });
+      results.push({ agent, status: 'failed', message: `${agent} restore failed: ${messageOf(error)}` });
     }
   }
 
@@ -1653,10 +1822,17 @@ async function restoreModelProfilesUnlocked(
 export async function activeModelProfiles(): Promise<Partial<Record<ModelAgent, ActiveModelProfile>>> {
   const manifest = await loadManifest();
 
-  return Object.fromEntries(Object.entries(manifest?.agents ?? {}).map(([agent, state]) => [
-    agent,
-    { profile: state.profile, ...(state.team ? { team: state.team } : {}), ...(state.model ? { model: state.model } : {}) },
-  ]));
+  return Object.fromEntries(Object.entries(manifest?.agents ?? {}).map(([agent, state]) => [agent, activeProfileOf(state)]));
+}
+
+function activeProfileOf(state: AgentState): ActiveModelProfile {
+  const active: ActiveModelProfile = { profile: state.profile };
+
+  if (state.team) active.team = state.team;
+
+  if (state.model) active.model = state.model;
+
+  return active;
 }
 
 /** Whether a model profile switch still controls one agent, or why that cannot be told. */
@@ -1676,8 +1852,9 @@ export async function liveModelSwitches(localConfig: Pick<LocalConfig, 'toolRoot
   try {
     manifest = await loadManifest();
   } catch (error) {
-    const unreadable: LiveModelSwitch = { ok: false, reason: (error as Error).message };
+    const unreadable: LiveModelSwitch = { ok: false, reason: messageOf(error) };
 
+    // SAFETY: ALL_MODEL_AGENTS is ModelAgentSchema.options, so the entries name every ModelAgent.
     return Object.fromEntries(ALL_MODEL_AGENTS.map((agent) => [agent, unreadable])) as Record<ModelAgent, LiveModelSwitch>;
   }
 
@@ -1691,10 +1868,11 @@ export async function liveModelSwitches(localConfig: Pick<LocalConfig, 'toolRoot
     try {
       return [agent, { ok: true, switched: sameManaged(agent, await currentSnapshot(agent, roots, state.lastWritten), state.lastWritten) }];
     } catch (error) {
-      return [agent, { ok: false, reason: (error as Error).message }];
+      return [agent, { ok: false, reason: messageOf(error) }];
     }
   }));
 
+  // SAFETY: `entries` maps ALL_MODEL_AGENTS, which is ModelAgentSchema.options, so it names every ModelAgent.
   return Object.fromEntries(entries) as Record<ModelAgent, LiveModelSwitch>;
 }
 
@@ -1727,53 +1905,72 @@ export async function switchedGatewayOrigins(localConfig: LocalConfig): Promise<
   return byProfile;
 }
 
-/** The gateway URLs in one agent's written snapshot, as `desiredSnapshot` lays them out. */
-function writtenGatewayUrls(agent: ModelAgent, snapshot: unknown): string[] {
-  if (!isRecord(snapshot)) return [];
+/** The string at `key` of a JSON object, when it is one. */
+function stringField(value: JsonValue | undefined, key: string): string | undefined {
+  return isJsonObject(value) ? z.string().safeParse(value[key]).data : undefined;
+}
 
-  if (agent === 'claude') return typeof snapshot.ANTHROPIC_BASE_URL === 'string' ? [snapshot.ANTHROPIC_BASE_URL] : [];
+/** The gateway URLs in one agent's written snapshot, as `desiredSnapshot` lays them out. */
+function writtenGatewayUrls(agent: ModelAgent, snapshot: Snapshot): string[] {
+  if (!isJsonObject(snapshot)) return [];
+
+  if (agent === 'claude') {
+    const url = stringField(snapshot, 'ANTHROPIC_BASE_URL');
+
+    return url === undefined ? [] : [url];
+  }
 
   if (agent === 'codex') {
-    const line = typeof snapshot.providerBlock === 'string' ? /^base_url = (".*")$/m.exec(snapshot.providerBlock) : null;
+    const block = stringField(snapshot, 'providerBlock');
+    const line = block === undefined ? null : /^base_url = (".*")$/m.exec(block);
 
     if (!line?.[1]) return [];
 
     try {
-      const url: unknown = JSON.parse(line[1]);
+      const url = z.string().safeParse(JSON.parse(line[1]));
 
-      return typeof url === 'string' ? [url] : [];
+      return url.success ? [url.data] : [];
     } catch {
       return [];
     }
   }
 
   if (agent === 'opencode') {
-    const providers = isRecord(snapshot.providers) ? Object.values(snapshot.providers) : [];
+    const providers = isJsonObject(snapshot.providers) ? Object.values(snapshot.providers) : [];
 
-    return providers.flatMap((provider) => (
-      isRecord(provider) && isRecord(provider.options) && typeof provider.options.baseURL === 'string'
-        ? [provider.options.baseURL]
-        : []
-    ));
+    return providers.flatMap((provider) => {
+      const url = stringField(isJsonObject(provider) ? provider.options : undefined, 'baseURL');
+
+      return url === undefined ? [] : [url];
+    });
   }
 
-  if (agent === 'pi' || agent === 'omp') return typeof snapshot.baseUrl === 'string' ? [snapshot.baseUrl] : [];
+  if (agent === 'pi' || agent === 'omp') {
+    const url = stringField(snapshot, 'baseUrl');
+
+    return url === undefined ? [] : [url];
+  }
 
   if (agent === 'muse') {
-    const transport = snapshot.endpoint_transport;
+    const url = stringField(snapshot.endpoint_transport, 'base_url');
 
-    return isRecord(transport) && typeof transport.base_url === 'string' ? [transport.base_url] : [];
+    return url === undefined ? [] : [url];
   }
 
   if (agent === 'agy') {
-    const url = typeof snapshot.keyExport === 'string' ? agyGatewayOf(snapshot.keyExport, {})?.GOOGLE_GEMINI_BASE_URL : undefined;
+    const keyExport = stringField(snapshot, 'keyExport');
+    const url = keyExport === undefined ? undefined : agyGatewayOf(keyExport, {})?.GOOGLE_GEMINI_BASE_URL;
 
     return url ? [url] : [];
   }
 
-  const entries = isRecord(snapshot.entries) ? Object.values(snapshot.entries) : [];
+  const entries = isJsonObject(snapshot.entries) ? Object.values(snapshot.entries) : [];
 
-  return entries.flatMap((entry) => (isRecord(entry) && typeof entry.url === 'string' ? [entry.url] : []));
+  return entries.flatMap((entry) => {
+    const url = stringField(entry, 'url');
+
+    return url === undefined ? [] : [url];
+  });
 }
 
 export async function isModelProfileManaged(agent: ModelAgent): Promise<boolean> {
