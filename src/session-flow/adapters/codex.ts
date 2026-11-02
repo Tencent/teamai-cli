@@ -980,7 +980,6 @@ export class CodexAdapter extends AgentAdapter {
         }
 
         lastAgentMessage = undefined;
-        // New turn
         turnId = generateUuidV7();
         records.push({
           timestamp: msgTs,

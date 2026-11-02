@@ -49,7 +49,6 @@ export function extractSql(files: CodeCollectedFile[]): CodeFact[] {
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i].trim();
-      // CREATE TABLE
       const createTable = line.match(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"']?(\w+)[`"']?/i);
 
       if (createTable) {
@@ -57,7 +56,6 @@ export function extractSql(files: CodeCollectedFile[]): CodeFact[] {
         continue;
       }
 
-      // ALTER TABLE
       const alterTable = line.match(/ALTER\s+TABLE\s+[`"']?(\w+)[`"']?/i);
 
       if (alterTable) {
@@ -65,7 +63,6 @@ export function extractSql(files: CodeCollectedFile[]): CodeFact[] {
         continue;
       }
 
-      // CREATE INDEX
       const createIndex = line.match(/CREATE\s+(?:UNIQUE\s+)?INDEX\s+[`"']?(\w+)[`"']?/i);
 
       if (createIndex) {

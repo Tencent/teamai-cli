@@ -325,9 +325,6 @@ export async function pruneEmptyDirs(target: string): Promise<boolean> {
   }
 }
 
-/**
- * Copy a file
- */
 export async function copyFile(src: string, dest: string): Promise<void> {
   const destExpanded = expandHome(dest);
   await fse.ensureDir(path.dirname(destExpanded));

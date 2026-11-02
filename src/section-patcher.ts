@@ -81,7 +81,7 @@ export function hashBody(body: string): string {
  *   - 标题行被剥离，仅 title 字段保留
  *   - slug 重复时第二个加 -2 后缀，第三个 -3，依此类推
  *
- * @returns { prelude, sections } 顺序保留
+ * @returns `{ prelude, sections }`, in document order
  */
 export function splitToSections(md: string): SectionedMarkdown {
     const { frontmatter, rest } = extractFrontmatter(md);

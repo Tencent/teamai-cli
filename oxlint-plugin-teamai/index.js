@@ -13,6 +13,7 @@ import rulesLocate from './rules/rules-locate.js';
 import workflowFailureCodes from './rules/workflow-failure-codes.js';
 import configLoadOptions from './rules/config-load-options.js';
 import toolFacts from './rules/tool-facts.js';
+import noLowValueComments from './rules/no-low-value-comments.js';
 import suppressionReason from './rules/suppression-reason.js';
 import yamlParse from './rules/yaml-parse.js';
 
@@ -38,6 +39,7 @@ export default definePlugin({
     'remove-delivered': removeDelivered,
     'learnings-root': learningsRoot,
     'tool-facts': toolFacts,
+    'no-low-value-comments': noLowValueComments,
     'suppression-reason': suppressionReason,
     'yaml-parse': yamlParse,
     ...antiSlopRules,

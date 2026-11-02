@@ -5498,8 +5498,8 @@ async function syncLocalAgent(context: LocalAgentContext): Promise<boolean> {
     // is treated as "cmds not available" and falls back too — the backend sends
     // identical data in both arrays, so this only affects old backends where
     // cmds is genuinely absent/empty while commands still carries the work.
-    // TODO(jiahe, cmds-migration): drop the `commands` fallback once the backend
-    // guarantees `cmds` on all sync responses (clawpro iwiki ch.7).
+    // The `commands` fallback can go once the backend guarantees `cmds` on all
+    // sync responses (clawpro iwiki ch.7).
     const cmds = syncResponse.cmds;
     const commands = cmds && cmds.length > 0 ? cmds : (syncResponse.commands ?? []);
 

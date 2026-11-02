@@ -510,7 +510,6 @@ export function computeGraphHealth(graph: GraphIndex): GraphHealthMetrics {
     connectivity = visited.size / nodeCount;
   }
 
-  // Density
   const density = edgeCount / Math.max(nodeCount, 1);
 
   // Freshness: simplified — if there are nodes, assume 1.0

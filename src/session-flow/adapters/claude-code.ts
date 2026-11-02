@@ -757,7 +757,6 @@ export class ClaudeCodeAdapter extends AgentAdapter {
 
     if (!updatedAt) updatedAt = createdAt;
 
-    // Metadata
     const metadata: SessionMetadata = {};
 
     for (let i = rawRecords.length - 1; i >= 0; i--) {

@@ -96,7 +96,6 @@ export async function status(options: GlobalOptions): Promise<void> {
     log.warn(`Could not check git status: ${e instanceof Error ? e.message : String(e)}`);
   }
 
-  // State
   const state = await loadStateForScope(localConfig);
   console.log('');
   log.info('Sync state:');

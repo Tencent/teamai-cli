@@ -100,7 +100,7 @@ Your PR also gets an informational `Code Erosion` report (SlopCodeBench verbosit
 - TypeScript strict mode is on; avoid `any` unless genuinely needed.
 - Prefer async/await over callbacks.
 - Keep commands in `src/*.ts` thin — heavy lifting lives in `src/resources/` or `src/utils/`.
-- Avoid narrating comments ("// increment counter"). Comments should explain _why_, not _what_.
+- Avoid narrating comments ("// increment counter"). Comments should explain _why_, not _what_; `teamai/no-low-value-comments` rejects one that only repeats the name below it.
 
 ## Testing Guidelines
 

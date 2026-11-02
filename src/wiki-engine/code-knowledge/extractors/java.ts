@@ -88,7 +88,6 @@ export function extractJava(files: CodeCollectedFile[]): CodeFact[] {
         facts.push(makeFact("config", propRef[1], file.relativePath, lineNumber, line, "INFERRED"));
       }
 
-      // --- Errors ---
       const errorEnum = /^(?:public|protected|private)?\s*enum\s+([A-Z][A-Za-z0-9_]*(?:Error|Code|Status))\b/u.exec(line);
 
       if (errorEnum) {

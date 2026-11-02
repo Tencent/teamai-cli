@@ -555,7 +555,6 @@ export async function generateDigest(): Promise<void> {
 
     console.log('');
 
-    // Total events
     const totalEvents = teamStats.reduce(
       (sum, u) => sum + Object.values(u.skills).reduce((s, sk) => s + sk.count, 0),
       0,

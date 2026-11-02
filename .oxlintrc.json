@@ -111,6 +111,8 @@
     "teamai/no-widen-then-assert": "warn",
     "teamai/require-readable-spacing": "warn",
     "teamai/require-safety-comment-for-type-assertion": "warn",
+    // CONTRIBUTING: comments explain why, not what (from pingdotgg/t3code).
+    "teamai/no-low-value-comments": "error",
     // A suppression with no reason can't be reviewed or removed later.
     "teamai/suppression-reason": "error"
   },
