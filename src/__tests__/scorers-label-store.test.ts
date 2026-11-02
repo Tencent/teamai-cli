@@ -13,7 +13,7 @@ vi.mock('../utils/reports-branch.js', async (importOriginal) => {
   } };
 });
 
-import { labelId, parseScoreLabels, type ScoreLabel } from '../scorers/label.js';
+import { labelId, newestLabels, parseScoreLabels, type ScoreLabel } from '../scorers/label.js';
 import { LabelStore } from '../scorers/label-store.js';
 import type { LocalConfig } from '../types.js';
 
@@ -93,7 +93,20 @@ describe('ScoreLabel', () => {
 
     expect(parseScoreLabels(JSON.stringify(label))).toEqual([label]);
     // The key of this label without `agent`, as the release before labels carried one computed it.
-    expect(labelId(label)).toBe('2edad399ba08d8ad48d1e9a6ac3fd495fc66d3802ab32f6e5b001367ddf943cd');
+    const { agent: _agent, ...before } = label;
+    expect(labelId(label)).toBe(labelId(before));
+  });
+
+  it('keeps one label per model judge: another tool or model sits beside the first, and the same judge replaces it', () => {
+    const claude = modelLabel('2026-10-22T11:00:00.000Z', 'bad');
+    const codex: ScoreLabel = { ...modelLabel('2026-10-22T12:00:00.000Z'), judge: { kind: 'model', tool: 'codex', isolation: 'verified', access: 'read' } };
+    const strongerClaude: ScoreLabel = { ...modelLabel('2026-10-22T12:30:00.000Z'), judge: { kind: 'model', tool: 'claude', model: { reported: 'claude-opus-5-5' }, isolation: 'verified', access: 'read' } };
+    const claudeAgain = modelLabel('2026-10-22T13:00:00.000Z', 'good');
+    const hand: ScoreLabel = { ...modelLabel('2026-10-22T09:00:00.000Z'), judge: { kind: 'human' } };
+    expect(newestLabels([claude, codex, strongerClaude, claudeAgain, hand]).map((label) => [label.judge.kind === 'model' ? label.judge.tool : 'human', label.scoredAt]))
+      .toEqual([['claude', '2026-10-22T13:00:00.000Z'], ['codex', '2026-10-22T12:00:00.000Z'], ['claude', '2026-10-22T12:30:00.000Z'], ['human', '2026-10-22T09:00:00.000Z']]);
+    expect(labelId(codex)).not.toBe(labelId(claude));
+    expect(labelId(claudeAgain)).toBe(labelId(claude));
   });
 });
 
@@ -115,6 +128,19 @@ describe('LabelStore', () => {
     expect(published.map((label) => [label.label, label.scoredAt])).toEqual([['good', '2026-10-22T12:00:00.000Z']]);
     expect(git(remote, 'ls-tree', '-r', '--name-only', 'teamai-reports')).not.toContain('reasoning');
     expect(fs.readdirSync(path.join(first.dataHome ?? '', 'scores', 'pending'))).toEqual([]);
+  });
+
+  it('publishes and clears a label an older teamai left in the outbox under the file name of its older key', async () => {
+    const remote = origin();
+    const config = clone(remote, 'upgraded');
+    const { id } = await LabelStore.append(config, modelLabel('2026-10-22T11:00:00.000Z', 'bad'), 'scored before the upgrade');
+    const pending = path.join(config.dataHome ?? '', 'scores', 'pending');
+    fs.renameSync(path.join(pending, `${id}.json`), path.join(pending, `${'0'.repeat(64)}.json`));
+
+    expect(await LabelStore.local(config)).toMatchObject([{ label: 'bad' }]);
+    expect(await LabelStore.publish(config)).toEqual({ state: 'published' });
+    expect(parseScoreLabels(git(remote, 'show', 'teamai-reports:scores/alice/2026-10.jsonl')).map((label) => label.label)).toEqual(['bad']);
+    expect(fs.readdirSync(pending)).toEqual([]);
   });
 
   it('keeps labels pending while usage reporting is off', async () => {

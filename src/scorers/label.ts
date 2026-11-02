@@ -158,9 +158,33 @@ export function parseScoreLabels(text: string): ScoreLabel[] {
   });
 }
 
-/** The logical key: a newer label with the same key replaces an older one, so a model rescore never replaces a hand label. */
+/** A judge as labels and cohorts tell judges apart: a model judge by its tool and the model it recorded. */
+export type JudgeCohort =
+  | { kind: 'human' }
+  | { kind: 'model'; tool: string; model?: { id: string; isReported: boolean; alias?: string } };
+
+export function judgeCohort(judge: ScoreLabel['judge']): JudgeCohort {
+  switch (judge.kind) {
+    case 'human':
+      return { kind: 'human' };
+    case 'model': {
+      const id = judge.model?.reported ?? judge.model?.requested;
+      return { kind: 'model', tool: judge.tool, ...(id ? { model: { id, isReported: judge.model?.reported !== undefined } } : {}) };
+    }
+    default: {
+      const unhandled: never = judge;
+      return unhandled;
+    }
+  }
+}
+
+/**
+ * The logical key: a newer label with the same key replaces an older one. The judge is its cohort, so a model rescore
+ * never replaces a hand label, and the label of one model judge never replaces another's. An outbox file named by an
+ * older key is still read by its content.
+ */
 function labelKey(label: Pick<ScoreLabel, 'scorer' | 'rubric' | 'subject' | 'judge'>): string {
-  return canonicalJson({ scorer: label.scorer, sourceHash: label.rubric.sourceHash, subject: label.subject, judge: label.judge.kind });
+  return canonicalJson({ scorer: label.scorer, sourceHash: label.rubric.sourceHash, subject: label.subject, judge: judgeCohort(label.judge) });
 }
 
 /** sha256 of the canonical logical key: the name of the label's outbox file. */

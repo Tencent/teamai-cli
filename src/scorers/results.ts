@@ -8,7 +8,7 @@ import { agentHarnessOf, type AgentHarness, type AgentObservation, type Recorded
 import { wilson } from '../benchmark/history.js';
 import type { RunMode } from '../launch-context.js';
 import { canonicalJson } from '../utils/canonical-json.js';
-import { DECIDERS, isStageDecider, labelId, type Decider, type ScoreLabel } from './label.js';
+import { DECIDERS, isStageDecider, judgeCohort, labelId, type Decider, type JudgeCohort, type ScoreLabel } from './label.js';
 
 /** A label as the view reads it: who published it, and what the judged work ran as when that was recorded. */
 export type ViewedLabel = {
@@ -22,11 +22,6 @@ export type ViewedLabel = {
   /** Where the run a workflow label judges is listed: this machine's runs, or the team's records. */
   runSource?: 'local' | 'reported';
 };
-
-/** A judge as a cohort tells judges apart: a model judge by its tool and the model it recorded. */
-export type JudgeCohort =
-  | { kind: 'human' }
-  | { kind: 'model'; tool: string; model?: { id: string; isReported: boolean; alias?: string } };
 
 /** One measurement. `runMode` is null for labels that recorded none. */
 export type Cohort = {
@@ -251,28 +246,6 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** The windows a view offers, in days of `scoredAt`. */
 export const SCORER_WINDOWS = [7, 30, 90, 180] as const;
-
-function judgeCohort(judge: ScoreLabel['judge']): JudgeCohort {
-  switch (judge.kind) {
-    case 'human':
-      return { kind: 'human' };
-    case 'model': {
-      const id = judge.model?.reported ?? judge.model?.requested;
-
-      const cohort: Extract<JudgeCohort, { kind: 'model' }> = { kind: 'model', tool: judge.tool };
-
-      if (id) cohort.model = { id, isReported: judge.model?.reported !== undefined };
-
-      return cohort;
-    }
-
-    default: {
-      const unhandled: never = judge;
-
-      return unhandled;
-    }
-  }
-}
 
 /** A model judge with the team alias its newest label named it by, which a cohort shows but never tells judges apart by. */
 function withAlias(judge: JudgeCohort, newestFirst: readonly ViewedLabel[]): JudgeCohort {

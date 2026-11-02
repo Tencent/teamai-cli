@@ -451,6 +451,20 @@ describe('agreement with hand labels', () => {
     ]);
   });
 
+  it('pairs every model judge that labelled the same sessions, so a second tool does not hide the first one\'s pairs', () => {
+    const codex = { kind: 'model', tool: 'codex', model: { reported: 'gpt-5.1-codex' }, isolation: 'best-effort', access: 'read' } as const;
+    const labels = [0, 1].flatMap((n) => [
+      viewed(sessionLabel({ subject: session(n), scoredAt: '2026-03-17T00:00:00.000Z' })),
+      viewed(sessionLabel({ subject: session(n), judge: codex, scoredAt: '2026-03-18T00:00:00.000Z', ...(n === 1 ? missedBug : {}) })),
+      viewed(byHand(n)),
+    ]);
+    const { selected } = ScorerResults.of({ labels, query: { windowDays: 30 }, now: NOW });
+    expect(selected?.agreement.judges).toMatchObject([
+      { judge: { tool: 'claude' }, labels: 2, paired: 2, agree: 2 },
+      { judge: { tool: 'codex' }, labels: 2, paired: 2, agree: 1, judgeFailedHumanPassed: 1 },
+    ]);
+  });
+
   it('counts only the newest hand label of a session, whichever member gave it', () => {
     const labels = [
       viewed(sessionLabel({ subject: session(0) })),
