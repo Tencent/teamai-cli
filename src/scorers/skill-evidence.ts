@@ -28,13 +28,21 @@ export function skillsEvidence(
   used: readonly string[],
   mask: (text: string) => string,
 ): { skills: SkillsEvidence } | { gap: 'skills_unknown' } {
-  if (!captures.some((capture) => capture.teamSkillInfo !== undefined)) return { gap: 'skills_unknown' };
+  const available = availableTeamSkills(captures);
+  if (!available) return { gap: 'skills_unknown' };
+  return { skills: { available: available.map((skill) => ({ ...skill, ...(skill.description !== undefined ? { description: mask(skill.description) } : {}) })), used: [...used] } };
+}
+
+/** The delivered team skills a session's `captures` record, unmasked and without what it used: what `skillsEvidence`
+ * builds `skills.available` from, for work that only needs which skills there are, such as their routing questions.
+ * Undefined when no capture recorded any, as a capture written before #1469 does. */
+export function availableTeamSkills(captures: SkillCaptures): AvailableSkill[] | undefined {
+  if (!captures.some((capture) => capture.teamSkillInfo !== undefined)) return undefined;
   const latest = new Map<string, DeliveredSkillInfo>();
   for (const capture of captures) {
     for (const [name, info] of Object.entries(capture.teamSkillInfo ?? {})) latest.set(name, info);
   }
-  const available = [...latest.entries()]
-    .map(([name, info]): AvailableSkill => ({ name, ...info, ...(info.description !== undefined ? { description: mask(info.description) } : {}) }))
+  return [...latest.entries()]
+    .map(([name, info]): AvailableSkill => ({ name, ...info }))
     .sort((left, right) => left.name.localeCompare(right.name));
-  return { skills: { available, used: [...used] } };
 }

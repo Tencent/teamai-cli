@@ -289,6 +289,15 @@ daily_limit: 10                                  # per data home: on a fresh CI 
 | `ask` | When the friction reminder offers [`teamai-share-learnings`](workflow.md#teamai-share-learnings-and-teamai-share-session), it proposes the scorers that sample the session, and they judge it once the person confirms. | Acts as `off`, since nobody is there to answer. |
 | `auto` | A session is judged once nothing has happened in it for six hours, by the background judge. | A session is judged when `teamai score --drain` runs, before the job ends. The default. |
 
+`skill_routing` turns on the routing questions of `#1469` for the sessions `sessions` already judges, off by default:
+
+```yaml
+# scorers/scoring.yaml, or scorers/<namespace>/scoring.yaml
+skill_routing: true
+```
+
+Each finished session then gets one generated question per team skill its own captures delivered — `teamai:routing:<skill>` for a root skill, `teamai:routing:<namespace>:<skill>` for a namespaced one — judged by the same rubric whatever the skill's description says: fit (loaded, and the session needed it) and idle (not loaded, and it did not) pass, extra (loaded where it was not needed) and missed (not loaded where it was) fail. A skill whose delivery record cannot tell its namespace gets no question: judging it could judge another skill of the same name. The questions are never sampled, always share one judge launch however many there are, and count toward the same `daily_limit`; with `batch` a session still costs one launch. The names resolve on demand too, whatever `skill_routing` says — `teamai score --session <id> --scorer teamai:routing:<namespace>:<skill>` — but only for a skill in that session's `skills.available`, else `scorer_not_found`.
+
 Each mode resolves on its own, from the first of these that sets it: a member's `scoring.sessions` in `config.yaml`, the active namespaces' `scoring.yaml` files, the root `scorers/scoring.yaml`, the default. When two active namespaces disagree, the most restrictive policy wins (`off`, then `ask`, then `auto`), and so does the lowest `daily_limit`. A partial mapping such as `{ attended: ask }` leaves the other mode to the next level:
 
 ```yaml

@@ -21,6 +21,8 @@ import { chooseJudgeModel, type JudgeModelChoice } from '../scorers/judge-model.
 import type { ScoreLabel, SessionSubject } from '../scorers/label.js';
 import { LabelStore, reasoningPath, shareFailedLabelHint } from '../scorers/label-store.js';
 import { pinnedDefinition, type PinnedScorer } from '../scorers/pin.js';
+import { isRoutingScorer, parseRoutingScorer, routingScorer, routingSkillOf } from '../scorers/skill-routing.js';
+import { availableTeamSkills } from '../scorers/skill-evidence.js';
 import type { LocalConfig } from '../types.js';
 import { readWorkspaceChildren } from '../workspace-children.js';
 import { readFileSafe } from '../utils/fs.js';
@@ -257,7 +259,9 @@ export async function scoreSession(from: LocalConfig, demand: SessionDemand, now
   if (demand.ownJudge) {
     const file = demand.scorers.find(isScorerFile);
     if (file !== undefined) return failure('invalid_arguments', `A lease judges cached scorers, and ${file} is a scorer file. Leave out --json to try it here.`);
-    if (new Set(demand.scorers).size > 1 && !demand.batch) return failure('invalid_arguments', 'A lease judges one scorer, or several in one judge call. Pass one --scorer, or add --batch.');
+    // Routing questions are the one exception to one scorer per lease: a session's routing always shares one judge
+    // call, whatever `--batch` says (#1469).
+    if (new Set(demand.scorers).size > 1 && !demand.batch && !demand.scorers.every(isRoutingScorer)) return failure('invalid_arguments', 'A lease judges one scorer, or several in one judge call. Pass one --scorer, or add --batch.');
     if (demand.push) return failure('invalid_arguments', 'A lease\'s label is published when its answer is submitted. Leave out --push.');
     if (demand.teamSession) return failure('invalid_arguments', 'A lease\'s judge reads the session from a tool on this machine, and --team-session names a pushed one. Leave out --json to judge it here.');
   }
@@ -284,9 +288,10 @@ export async function scoreSession(from: LocalConfig, demand: SessionDemand, now
   if (unavailable) return failure('scoring_unavailable', unavailable);
   const scoring = await scopeScoring(config);
   if (!scoring.ok) return failure('scoring_settings_invalid', scoring.reason);
-  const pins = await pinScorers(config, demand.scorers.filter((value) => !files.has(value)));
+  const pins = await pinScorers(config, demand.scorers.filter((value) => !files.has(value) && !isRoutingScorer(value)));
   const asked: Asked[] = [];
   for (const value of new Set(demand.scorers)) {
+    if (isRoutingScorer(value)) continue;
     const file = files.get(value);
     const pin = pins[value];
     const definition = pin && pinnedDefinition(value, pin);
@@ -301,9 +306,35 @@ export async function scoreSession(from: LocalConfig, demand: SessionDemand, now
     }
     asked.push(candidate);
   }
+  // A routing name resolves only against the team skills the session's own captures delivered, whatever
+  // `skill_routing` says: one question per named skill, or `scorer_not_found`.
+  const routingValues = [...new Set(demand.scorers)].filter(isRoutingScorer);
+  const routingAvailable = routingValues.length === 0 ? undefined
+    : availableTeamSkills(pushedBy === undefined ? await SessionCaptures.read(config, platform, session.sessionId) : []);
+  for (const value of routingValues) {
+    const parsedName = parseRoutingScorer(value);
+    const skill = parsedName && routingAvailable !== undefined ? routingSkillOf(parsedName, routingAvailable) : undefined;
+    if (!parsedName || skill === undefined) {
+      const tellable = (routingAvailable ?? []).filter(({ namespaceUnknown }) => !namespaceUnknown);
+      const untellable = parsedName && (routingAvailable ?? []).some(({ name, namespaceUnknown }) => namespaceUnknown && name === parsedName.skill);
+      const why = routingAvailable === undefined
+        ? 'The session\'s captures record no delivered team skills, so no routing question can name one.'
+        : routingAvailable.length === 0
+          ? 'The session\'s checkout held no team skills.'
+          : untellable
+            ? `Its delivery record cannot tell the namespace of team skill ${parsedName.skill}, so judging it could judge another skill of the same name: it has no routing question.`
+            : `It names no team skill in this session's skills.available: ${tellable.map(({ name, namespace }) => (namespace === undefined ? `teamai:routing:${name}` : `teamai:routing:${namespace}:${name}`)).join(', ')}.`;
+      return failure('scorer_not_found', `Scorer ${value} is not a routing question of ${platform} session ${session.sessionId}. ${why}`);
+    }
+    const question = routingScorer(skill);
+    if (question.scorer !== value) return failure('scorer_not_found', `Scorer ${value} is not a routing question of ${platform} session ${session.sessionId}. It names ${question.scorer}.`);
+    asked.push({ scorer: value, pin: question.pin, definition: question.definition });
+  }
   if (demand.ownJudge) {
     const subject = { platform, sessionId: session.sessionId };
-    return sessionJudgeLease(config, { ...demand.ownJudge, entries: { source: 'session', subject, scorers: asked, batch: demand.batch === true } }, now);
+    // A lease's one judge call takes the routing questions together, whatever `--batch` says.
+    const batch = demand.batch === true || asked.some(({ scorer }) => isRoutingScorer(scorer));
+    return sessionJudgeLease(config, { ...demand.ownJudge, entries: { source: 'session', subject, scorers: asked, batch } }, now);
   }
   const byHand = demand.label === undefined ? undefined : handValueOf(asked, demand.label);
   if (byHand && 'error' in byHand) return byHand;
@@ -332,7 +363,13 @@ export async function scoreSession(from: LocalConfig, demand: SessionDemand, now
     if (!chosen.ok) return failure('judge_model_unavailable', chosen.message);
     if (chosen.note) log.info(chosen.note);
     const judgedMember = { ...member, ...(chosen.choice.alias !== undefined ? { alias: chosen.choice.alias } : {}) };
-    const group = batch ? groups.find(({ choice }) => choice.tool === chosen.choice.tool && choice.model?.name === chosen.choice.model?.name && choice.model?.effort === chosen.choice.model?.effort) : undefined;
+    // A session's routing questions always share one judge call (#1469); a team scorer joins them, and they join a
+    // team scorer, only where `batch` puts scorers of one session together.
+    const routingMember = isRoutingScorer(member.scorer);
+    const group = batch || routingMember
+      ? groups.find(({ choice, members }) => choice.tool === chosen.choice.tool && choice.model?.name === chosen.choice.model?.name && choice.model?.effort === chosen.choice.model?.effort
+        && (batch || members.every(({ scorer }) => isRoutingScorer(scorer))))
+      : undefined;
     if (group) group.members.push(judgedMember);
     else groups.push({ choice: chosen.choice, members: [judgedMember] });
   }
