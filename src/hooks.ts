@@ -122,8 +122,8 @@ type HookMatcher = {
 };
 
 interface ClaudeSettingsJson {
-  hooks?: Record<string, HookMatcher[]>;
-  [key: string]: JsonValue | Record<string, HookMatcher[]> | undefined;
+  hooks?: Record<string, JsonValue[]>;
+  [key: string]: JsonValue | undefined;
 }
 
 type CursorHookEntry = {
@@ -134,7 +134,7 @@ type CursorHookEntry = {
 
 interface CursorHooksJson {
   version: number;
-  hooks: Record<string, CursorHookEntry[]>;
+  hooks: Record<string, JsonValue[]>;
 }
 
 type CodexHookEntry = {
@@ -167,7 +167,7 @@ type CopilotHookEntry = {
 
 interface CopilotHooksJson {
   version: number;
-  hooks: Record<string, CopilotHookEntry[]>;
+  hooks: Record<string, JsonValue[]>;
 }
 
 const COPILOT_HOOK_SCHEMA_VERSION = 1;
@@ -194,8 +194,8 @@ type ZcodeHookMatcher = {
 
 interface ZcodeHooksBlock {
   enabled?: boolean;
-  events?: Record<string, ZcodeHookMatcher[]>;
-  [key: string]: JsonValue | Record<string, ZcodeHookMatcher[]> | undefined;
+  events?: Record<string, JsonValue[]>;
+  [key: string]: JsonValue | undefined;
 }
 
 interface ZcodeHooksJson {
@@ -464,6 +464,7 @@ const FileHookSchema = z.object({
   command: OptionalTextSchema,
   commandWindows: OptionalTextSchema,
   args: z.array(z.unknown()).optional().catch(undefined),
+  timeout: z.number().optional().catch(undefined),
 }).catch({});
 
 /**
@@ -1637,13 +1638,14 @@ async function heldCodexFileHooks(file: string, recorded: readonly ManagedHookRe
 
   for (const record of records) {
     const entries = hooks[record.event] ?? [];
-    const entry = entries.find((_, index) => ownsCodexEntry(record, record.event, index, entries));
+    const entry = hookFileEntryOf(entries.find((_, index) => ownsCodexEntry(record, record.event, index, entries)));
     const hook = entry?.hooks?.length === 1 ? entry.hooks[0] : undefined;
 
-    if (!entry || !hook || found.some((f) => f.id === record.id)) continue;
+    if (!entry || hook?.command === undefined || found.some((f) => f.id === record.id)) continue;
     const fileHook: CodexTeamHook = { id: record.id, event: record.event, command: hook.command };
+    const matcher = OptionalTextSchema.parse(entry.matcher);
 
-    if (entry.matcher && entry.matcher !== '*') fileHook.matcher = entry.matcher;
+    if (matcher && matcher !== '*') fileHook.matcher = matcher;
 
     if (hook.timeout !== undefined) fileHook.timeout = hook.timeout;
     found.push(fileHook);
@@ -2160,12 +2162,16 @@ async function reconcileClaudeFormat(
   // Reconciling keeps matching every copy, since it writes the desired one back.
   const unreleased = opts.removeAll ? [...priorRecords] : priorRecords;
 
-  const isManaged = (event: string, e: HookMatcher): boolean => {
+  const isManaged = (event: string, e: HookFileEntry | null): boolean => {
+    if (!e) return false;
+
     if (opts.teamOnly) {
       if (isExactBuiltinEntry(event, tool, e)) return true;
 
-      const index = e.hooks?.length === 1 ? unreleased.findIndex((r) =>
-        r.event === event && (r.matcher ?? '*') === (e.matcher ?? '*') && r.command === e.hooks[0].command
+      const only = e.hooks?.length === 1 ? e.hooks[0] : undefined;
+
+      const index = only ? unreleased.findIndex((r) =>
+        r.event === event && (r.matcher ?? '*') === (e.matcher ?? '*') && r.command === only.command
         && teamHookIdOf(e.description) === r.id) : -1;
 
       if (index >= 0 && opts.removeAll) unreleased.splice(index, 1);
@@ -2222,7 +2228,7 @@ async function reconcileClaudeFormat(
 
   for (const event of events) {
     const existing = settings.hooks[event] ?? [];
-    const untouched = existing.filter((e, index) => isHeld(event, existing, index) || !isManaged(event, e));
+    const untouched = existing.filter((e, index) => isHeld(event, existing, index) || !isManaged(event, hookFileEntryOf(e)));
     const desiredEntries = defs.filter((d) => d.event === event).map(toClaudeEntry);
     const newArr = [...untouched, ...desiredEntries];
 
@@ -2258,8 +2264,11 @@ async function reconcileCursorFormat(
 
   if (!hooksJson.hooks) hooksJson.hooks = {};
 
-  const isManaged = (entry: CursorHookEntry): boolean =>
-    isTeamaiHookCommand(entry.command) || priorTeamCommands.has(entry.command);
+  const isManaged = (entry: JsonValue): boolean => {
+    const command = hookFileEntryOf(entry)?.command;
+
+    return command !== undefined && (isTeamaiHookCommand(command) || priorTeamCommands.has(command));
+  };
 
   const defs = opts.removeAll ? [] : desiredDefs(tool, teamDefs, opts);
   const desiredByEvent: Record<string, CursorHookEntry[]> = {};
@@ -2277,7 +2286,7 @@ async function reconcileCursorFormat(
   for (const event of Object.keys(hooksJson.hooks)) {
     const existing = hooksJson.hooks[event];
     const untouched = existing.filter((e, index) => isHeld(event, existing, index) || !isManaged(e));
-    let newArr: CursorHookEntry[];
+    let newArr: JsonValue[];
 
     if (desiredByEvent[event]) {
       newArr = [...untouched, ...desiredByEvent[event]];
@@ -2403,13 +2412,17 @@ async function markCopilotGlobalBuiltins(file: string): Promise<void> {
 
   for (const entries of Object.values(json.hooks ?? {})) {
     for (const entry of entries) {
+      if (!isJsonObject(entry)) continue;
+      const read = hookFileEntryOf(entry);
+
       for (const field of ['bash', 'powershell', 'command'] as const) {
-        const command = entry[field] && unmarkCopilotGlobal(entry[field]);
+        const current = read?.[field];
+        const command = current && unmarkCopilotGlobal(current);
 
         if (command && commands.has(command)) {
           const marked = command.replace('--tool copilot', `--tool copilot --copilot-global ${copilotGlobalSource(file)}`);
 
-          if (entry[field] === marked) continue;
+          if (current === marked) continue;
           entry[field] = marked;
           changed = true;
         }
@@ -2451,11 +2464,15 @@ async function reconcileCopilotFormat(
     copilotEntryCommands(toCopilotEntry(def)),
   ));
 
-  const isManaged = (entry: CopilotHookEntry): boolean => copilotEntryCommands(entry).some(command =>
-    priorTeamCommands.has(command) || (opts.teamOnly || opts.copilotGlobal
-      ? builtinCommands.has(unmarkCopilotGlobal(command))
-      : TEAMAI_COMMAND_MARKERS.some(marker => command.includes(marker))),
-  );
+  const isManaged = (entry: JsonValue): boolean => {
+    const read = hookFileEntryOf(entry);
+
+    return read !== null && copilotEntryCommands(read).some(command =>
+      priorTeamCommands.has(command) || (opts.teamOnly || opts.copilotGlobal
+        ? builtinCommands.has(unmarkCopilotGlobal(command))
+        : TEAMAI_COMMAND_MARKERS.some(marker => command.includes(marker))),
+    );
+  };
 
   const defs = opts.removeAll ? [] : desiredDefs(tool, teamDefs, opts);
   const desiredByEvent: Record<string, CopilotHookEntry[]> = {};
@@ -2557,7 +2574,7 @@ export async function editCodexHookFile(
 
   for (const [event, groups] of Object.entries(hooks)) {
     if (Object.hasOwn(planned, event)) continue;
-    groups.forEach((group, index) => group?.hooks?.forEach((_, handler) => {
+    groups.forEach((group, index) => hookFileEntryOf(group)?.hooks?.forEach((_, handler) => {
       const key = codexHookKey(file, event, index, handler);
       retained.set(key, key);
     }));
@@ -2579,7 +2596,7 @@ export async function editCodexHookFile(
       const group = 'keep' in slot ? before[slot.keep] : slot.write;
 
       if (from !== undefined) {
-        group?.hooks?.forEach((_, handler) => retained.set(codexHookKey(file, event, index, handler), codexHookKey(file, event, from, handler)));
+        hookFileEntryOf(group)?.hooks?.forEach((_, handler) => retained.set(codexHookKey(file, event, index, handler), codexHookKey(file, event, from, handler)));
       }
 
       return group;
@@ -2626,7 +2643,9 @@ async function reconcileCodexFormat(
   await ensureDir(path.dirname(expanded));
 
   const isManaged = (event: string, index: number, entries: readonly CodexHookMatcher[]): boolean => {
-    const entry = entries[index];
+    const entry = hookFileEntryOf(entries[index]);
+
+    if (!entry) return false;
     const cmd = entry.hooks?.[0]?.command ?? '';
 
     // The team-hook dispatchers have their own pass (reconcileCodexDispatchers).
@@ -2851,8 +2870,11 @@ async function reconcileZcodeFormat(
   // ZCode hook entries carry no description field, so managed-entry detection
   // relies on the teamai command markers plus the managed-hooks manifest —
   // same strategy as the Codex format.
-  const isManaged = (entry: ZcodeHookMatcher): boolean => {
-    const cmd = zcodeEntryCommand(entry);
+  const isManaged = (entry: JsonValue): boolean => {
+    const read = hookFileEntryOf(entry);
+
+    if (!read) return false;
+    const cmd = zcodeEntryCommand(read);
 
     if (opts.teamOnly) return priorTeamCommands.has(cmd);
 
@@ -2975,9 +2997,9 @@ export function agentHookDescription(slug: string): string {
   return `${TEAMAI_AGENT_HOOK_PREFIX}${slug}]`;
 }
 
-/** True if the HookMatcher entry is a teamai agent hook (optionally scoped to a slug). */
-function isAgentClaudeEntry(entry: HookMatcher, slug?: string): boolean {
-  const desc = entry.description ?? '';
+/** True if a hook file entry is a teamai agent hook (optionally scoped to a slug). */
+function isAgentClaudeEntry(entry: Pick<HookFileEntry, 'description'> | null, slug?: string): boolean {
+  const desc = entry?.description ?? '';
 
   if (slug !== undefined) {
     return desc === agentHookDescription(slug);
@@ -3025,7 +3047,7 @@ export async function applyAgentHook(
   // a unique command per codex agent-hook slug so replace/remove stay precise.
   if (format === 'codex') {
     const entry = toCodexEntry(hookDef);
-    const isAgent = (group: CodexHookMatcher): boolean => (group.hooks?.[0]?.command ?? '') === def.command;
+    const isAgent = (group: CodexHookMatcher): boolean => (hookFileEntryOf(group)?.hooks?.[0]?.command ?? '') === def.command;
 
     const written = await editCodexHookFile(expanded, tool, (hooks) => {
       const existing = hooks[def.event] ?? [];
@@ -3049,7 +3071,7 @@ export async function applyAgentHook(
 
     if (!settings.hooks) settings.hooks = {};
     const existing = settings.hooks[def.event] ?? [];
-    const untouched = existing.filter((e) => !isAgentClaudeEntry(e, def.slug));
+    const untouched = existing.filter((e) => !isAgentClaudeEntry(hookFileEntryOf(e), def.slug));
     const newArr = [...untouched, toClaudeEntry(hookDef)];
 
     if (JSON.stringify(existing) !== JSON.stringify(newArr)) {
@@ -3086,7 +3108,7 @@ export async function removeAgentHook(
 
     const written = await editCodexHookFile(expanded, tool, (hooks) => Object.fromEntries(
       Object.entries(hooks).flatMap(([event, groups]): Array<[string, CodexGroupSlot[] | null]> => {
-        const kept = groups.flatMap((group, index) => (group.hooks?.[0]?.command ?? '') === opts.command ? [] : [{ keep: index }]);
+        const kept = groups.flatMap((group, index) => (hookFileEntryOf(group)?.hooks?.[0]?.command ?? '') === opts.command ? [] : [{ keep: index }]);
 
         return kept.length === groups.length ? [] : [[event, kept.length > 0 ? kept : null]];
       })), codexTrust);
@@ -3100,7 +3122,7 @@ export async function removeAgentHook(
 
     for (const event of Object.keys(settings.hooks)) {
       const before = settings.hooks[event];
-      const after = before.filter((e) => !isAgentClaudeEntry(e, opts.slug));
+      const after = before.filter((e) => !isAgentClaudeEntry(hookFileEntryOf(e), opts.slug));
 
       if (after.length !== before.length) {
         changed = true;
@@ -3134,7 +3156,7 @@ export async function applyBridgedAgentHook(tool: string, def: AgentHookDef): Pr
 export async function hasBridgedAgentHook(tool: string, slug: string): Promise<boolean> {
   const settings = await readHookFile<ClaudeSettingsJson>(bridgedTeamHookFile(tool), {}, 'claude');
 
-  return Object.values(settings.hooks ?? {}).some((entries) => entries.some((entry) => isAgentClaudeEntry(entry, slug)));
+  return Object.values(settings.hooks ?? {}).some((entries) => entries.some((entry) => isAgentClaudeEntry(hookFileEntryOf(entry), slug)));
 }
 
 /** Remove an agent hook `applyBridgedAgentHook` installed. */

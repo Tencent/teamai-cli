@@ -21,7 +21,7 @@ import type { HookDef, LocalConfig, ResourceItem, TeamaiConfig } from '../types.
 
 vi.mock('../utils/logger.js', () => ({
   log: {
-    info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn(),
+    info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn(), persist: vi.fn(),
   },
 }));
 
@@ -237,6 +237,23 @@ describe('GitHub Copilot adapter', () => {
     expect(parsed.hooks.PostToolUse.map((entry) => entry.matcher)).toEqual([undefined, 'TodoWrite']);
     expect(JSON.stringify(parsed.hooks.PostToolUse)).not.toContain('--matcher Skill');
     expect(await fse.readFile(settingsPath, 'utf8')).toBe(settings);
+  });
+
+  it('keeps malformed entries in the user hooks file when it marks the built-ins there while the team hooks do not resolve', async () => {
+    const hookPath = path.join(copilotHome, 'hooks', COPILOT_HOOK_FILE);
+    await reconcileTeamHooksForConfig(teamConfig, localConfig('user'));
+    await fse.outputFile(path.join(repo, 'hooks', 'hooks.yaml'), 'hooks: [\n');
+    // SAFETY: the reconcile above wrote the Copilot hooks file with a SessionStart list.
+    const json = await fse.readJson(hookPath) as { hooks: { SessionStart: unknown[] } };
+    const malformed = [null, 1, { bash: 2, command: 3 }];
+    json.hooks.SessionStart = [...malformed, ...json.hooks.SessionStart];
+    await fse.writeJson(hookPath, json);
+
+    await reconcileTeamHooksForConfig(teamConfig, localConfig('user'));
+
+    // SAFETY: as above; the second reconcile keeps every event.
+    const reconciled = await fse.readJson(hookPath) as { hooks: { SessionStart: unknown[] } };
+    expect(reconciled.hooks.SessionStart.slice(0, malformed.length)).toEqual(malformed);
   });
 
   it('preserves team-defined Copilot hook matchers', async () => {

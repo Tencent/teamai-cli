@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { getHookStatus, hasTeamaiHooks, reconcileHooks } from '../hooks.js';
+import { applyAgentHook, getHookStatus, hasTeamaiHooks, reconcileHooks, removeAgentHook } from '../hooks.js';
 
 let tmpDir: string;
 
@@ -73,5 +73,78 @@ describe('reconcileHooks on a hook file the member edited', () => {
       `${file}: ${problem}, so teamai left the file as it is. Fix it, then run the command again.`,
     );
     expect(fs.readFileSync(file, 'utf8')).toBe(before);
+  });
+});
+
+describe('reconcileHooks on a hook file whose entries the member edited', () => {
+  type Written = { hooks: { SessionStart: unknown[]; sessionStart: unknown[]; events: { SessionStart: unknown[] } } };
+
+  const claude = {
+    fileOf: (entries: unknown[]) => ({ hooks: { SessionStart: entries } }),
+    listOf: (written: Written) => written.hooks.SessionStart,
+    entries: [
+      null, 1, { matcher: 1, hooks: [{ command: 2 }] }, { hooks: [null] }, { hooks: {} }, { description: 3, hooks: 'x' },
+      { description: '[teamai:hook:x] mine', hooks: [{ command: 2 }] },
+    ],
+  };
+
+  const flat = (version: object, event: 'SessionStart' | 'sessionStart') => ({
+    fileOf: (entries: unknown[]) => ({ ...version, hooks: { [event]: entries } }),
+    listOf: (written: Written) => written.hooks[event],
+    entries: [null, 1, { command: 2, bash: 3, powershell: 4, matcher: 5 }],
+  });
+
+  const codex = {
+    fileOf: (entries: unknown[]) => ({ hooks: { SessionStart: entries } }),
+    listOf: (written: Written) => written.hooks.SessionStart,
+    entries: [false, 1, { matcher: 1, hooks: [{ command: 2 }] }, { hooks: [false] }, { hooks: {} }],
+  };
+
+  const zcode = {
+    fileOf: (entries: unknown[]) => ({ hooks: { events: { SessionStart: entries } } }),
+    listOf: (written: Written) => written.hooks.events.SessionStart,
+    entries: [null, 1, { hooks: [{ command: 2 }] }, { hooks: [{ args: [3] }] }, { hooks: [null] }],
+  };
+
+  it.each([
+    ['claude', 'no options', claude, {}],
+    ['claude', 'teamOnly', claude, { teamOnly: true }],
+    ['claude', 'removeAll', claude, { removeAll: true }],
+    ['claude', 'a project root', claude, { teamHookProjectRoot: '/elsewhere', manifestPath: 'managed-hooks.json' }],
+    ['cursor', 'no options', flat({ version: 1 }, 'sessionStart'), {}],
+    ['copilot', 'no options', flat({ version: 1 }, 'SessionStart'), {}],
+    ['copilot', 'teamOnly', flat({ version: 1 }, 'SessionStart'), { teamOnly: true }],
+    ['codex', 'no options', codex, {}],
+    ['codex', 'teamOnly', codex, { teamOnly: true }],
+    ['zcode', 'no options', zcode, {}],
+    ['zcode', 'teamOnly', zcode, { teamOnly: true }],
+  ])('keeps malformed %s entries in place as the member wrote them, with %s', async (tool, _, format, opts) => {
+    const file = write('hooks.json', format.fileOf(format.entries));
+    const manifestPath = 'manifestPath' in opts ? path.join(tmpDir, opts.manifestPath) : undefined;
+
+    await reconcileHooks(file, tool, [], { ...opts, manifestPath });
+
+    // SAFETY: each row's file holds the event list its listOf reads, and reconcileHooks keeps every event.
+    const written = JSON.parse(fs.readFileSync(file, 'utf8')) as Written;
+    expect(format.listOf(written).slice(0, format.entries.length)).toEqual(format.entries);
+  });
+});
+
+describe('agent hooks in a hook file whose entries the member edited', () => {
+  const agentHook = { slug: 'audit', event: 'SessionStart', command: 'echo audit' };
+
+  it.each([
+    ['claude', [null, 1, { description: 3, hooks: 'x' }, { hooks: [{ command: 2 }] }]],
+    ['codex', [false, 1, { hooks: {} }, { hooks: [{ command: 2 }] }]],
+  ])('installs and removes a %s agent hook beside malformed entries, which stay as written', async (tool, entries) => {
+    const file = write('hooks.json', { hooks: { SessionStart: entries } });
+
+    await applyAgentHook(file, tool, agentHook, { kind: 'disabled' });
+    // SAFETY: the file holds the SessionStart list written above, and the agent hook writes only to that list.
+    const installed = JSON.parse(fs.readFileSync(file, 'utf8')) as { hooks: { SessionStart: unknown[] } };
+    expect(installed.hooks.SessionStart).toEqual([...entries, expect.objectContaining({ hooks: [expect.objectContaining({ command: 'echo audit' })] })]);
+
+    await removeAgentHook(file, tool, { slug: agentHook.slug, command: agentHook.command }, { kind: 'disabled' });
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ hooks: { SessionStart: entries } });
   });
 });
