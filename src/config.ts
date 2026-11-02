@@ -22,6 +22,8 @@ import {
   WorkflowToolSchema,
   type MemberSettings,
   type MemberWorkflowSettings,
+  type RoleAssignment,
+  type JsonValue,
   SELF_BRANCH_HOME_DIRNAME,
 } from './types.js';
 import { readFileIfExists, readFileSafe, readJson, writeFileAtomic, writeJsonAtomic, expandHome, pathExists } from './utils/fs.js';
@@ -93,7 +95,7 @@ export async function resolveLegacyRole(config: LocalConfig): Promise<LocalConfi
     // variable. The role is unknown for this run: skills fail closed in
     // resolveResourceNamespaces, and role-scoped entries reach nobody.
     if (error instanceof RolesManifestNotFoundError) return config;
-    log.warn(`Legacy role migration skipped: ${(error as Error).message}`);
+    log.warn(`Legacy role migration skipped: ${error instanceof Error ? error.message : String(error)}`);
 
     return { ...config, roleUnresolved: true };
   }
@@ -139,7 +141,7 @@ async function applyRoleAssignment(config: LocalConfig): Promise<LocalConfig> {
   try {
     assignments = await loadRoleAssignmentsIfPresent(config.repo.localPath, config.repo);
   } catch (error) {
-    warnOnce(`${ROLE_ASSIGNMENTS_FILE} could not be read: ${(error as Error).message}`);
+    warnOnce(`${ROLE_ASSIGNMENTS_FILE} could not be read: ${error instanceof Error ? error.message : String(error)}`);
     warnOnce(`Roles are assigned in ${ROLE_ASSIGNMENTS_FILE} while that file exists, so this run holds none. `
       + 'Fix it in the team repo, or ask a code owner of manifest/ to.');
 
@@ -166,7 +168,7 @@ async function declaredRoles(repoPath: string, roles: string[]): Promise<string[
     // The id doubles as a namespace in the legacy fallback, but guessing that
     // here would deliver directories no reviewed manifest named.
     warnOnce(`${ROLE_ASSIGNMENTS_FILE} assigns ${roles.join(', ')}, but manifest/roles.yaml could not be read: `
-      + `${(error as Error).message}. No role resources are delivered until it can.`);
+      + `${error instanceof Error ? error.message : String(error)}. No role resources are delivered until it can.`);
 
     return [];
   }
@@ -199,12 +201,12 @@ function withLocalMemberSettings(config: LocalConfig): LocalConfig {
   if (!config.memberSettingsOverlay) return config;
   const { memberSettingsOverlay, ...rest } = config;
 
-  for (const key of MEMBER_SETTING_KEYS) delete (rest as Record<string, unknown>)[key];
+  for (const key of MEMBER_SETTING_KEYS) delete rest[key];
   const restored = { ...rest, ...memberSettingsOverlay.local };
 
   if (restored.workflows && !restored.workflows.tools) restored.workflows.tools = {};
 
-  return restored as LocalConfig;
+  return restored;
 }
 
 /**
@@ -229,7 +231,10 @@ export async function refreshRoleAssignment(config: LocalConfig): Promise<void> 
     // keeps its settings below the in-memory ones. Rank them the same here so
     // the reconcile that follows acts on what the save writes (#1484).
     const { workflows, ...machine } = await readSettingsOnlyConfig(expandHome(getUserConfigPath()));
-    resolved = { ...machine, ...(workflows ? { workflows: { ...workflows, tools: workflows.tools ?? {} } } : {}), ...resolved };
+    const below: MemberSettings = { ...machine };
+
+    if (workflows) below.workflows = { ...workflows, tools: workflows.tools ?? {} };
+    resolved = { ...below, ...resolved };
   }
 
   // `resolved` can alias `config` when there is no role or settings overlay.
@@ -238,7 +243,7 @@ export async function refreshRoleAssignment(config: LocalConfig): Promise<void> 
   // a local override such as recallEnabled: false.
   const refreshed = { ...resolved };
 
-  for (const key of MEMBER_SETTING_KEYS) delete (config as Record<string, unknown>)[key];
+  for (const key of MEMBER_SETTING_KEYS) delete config[key];
   delete config.memberSettingsOverlay;
   // Role assignment is runtime-only too. Clear the old overlay before copying
   // the refreshed result, otherwise an assignment removal keeps the previous
@@ -252,18 +257,10 @@ export async function refreshRoleAssignment(config: LocalConfig): Promise<void> 
 /** `roles` as this member's effective selection, primary first. */
 function withAssignedRoles(config: LocalConfig, roles: string[], source: 'assigned' | 'default'): LocalConfig {
   const [primaryRole, ...additionalRoles] = roles;
+  const local: RoleAssignment['local'] = { additionalRoles: config.additionalRoles ?? [] };
 
-  const assigned: LocalConfig = {
-    ...config,
-    additionalRoles,
-    roleAssignment: {
-      source,
-      local: {
-        ...(config.primaryRole ? { primaryRole: config.primaryRole } : {}),
-        additionalRoles: config.additionalRoles ?? [],
-      },
-    },
-  };
+  if (config.primaryRole) local.primaryRole = config.primaryRole;
+  const assigned: LocalConfig = { ...config, additionalRoles, roleAssignment: { source, local } };
 
   if (primaryRole) assigned.primaryRole = primaryRole;
   else delete assigned.primaryRole;
@@ -313,7 +310,7 @@ export async function loadTeamAgentLanguage(
  * recorded. A lookup failure keeps the historical bilingual text.
  */
 export async function loadTeamAgentLanguageForHook(
-  payload: Record<string, unknown>,
+  payload: Parameters<typeof import('./dashboard-collector.js').resolveHookConfig>[0],
   tool?: string,
 ): Promise<'en' | 'zh' | undefined> {
   try {
@@ -325,32 +322,33 @@ export async function loadTeamAgentLanguageForHook(
   }
 }
 
+/** A YAML mapping read from a machine file, its values not validated yet. */
+const RawMappingSchema = z.looseObject({});
+
+type RawMapping = z.infer<typeof RawMappingSchema>;
+
+/** A YAML mapping, or undefined for a list, a scalar or nothing. */
+const OptionalMappingSchema = RawMappingSchema.optional().catch(undefined);
+
 /**
  * Whether a config file is an install record. Member settings live in the same
  * path as the historical user install, but a file without `repo` is only a
  * machine-settings file and must not be treated as an initialized user scope.
  */
-function isSettingsOnlyConfig(raw: unknown): raw is Record<string, unknown> {
-  return typeof raw === 'object' && raw !== null && !Array.isArray(raw)
-    && !Object.prototype.hasOwnProperty.call(raw, 'repo');
+function isSettingsOnlyConfig(raw: JsonValue): boolean {
+  return RawMappingSchema.safeParse(raw).success && !Object.prototype.hasOwnProperty.call(raw, 'repo');
 }
 
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : undefined;
-}
-
-const MEMBER_SETTING_KEYS = Object.keys(MemberSettingsSchema.shape) as Array<keyof MemberSettings>;
+const MEMBER_SETTING_KEYS = MemberSettingsSchema.keyof().options;
 
 /** Warn about one invalid machine-level setting while still accepting its valid siblings. */
-function memberSettingAt(
-  raw: Record<string, unknown>,
+function memberSettingAt<S extends z.ZodType>(
+  raw: RawMapping,
   key: string,
-  schema: z.ZodTypeAny,
+  schema: S,
   configPath: string,
-  invalidValue?: unknown,
-): unknown {
+  invalidValue?: z.output<S>,
+): z.output<S> | undefined {
   if (!Object.prototype.hasOwnProperty.call(raw, key)) return undefined;
   const parsed = schema.safeParse(raw[key]);
 
@@ -361,8 +359,8 @@ function memberSettingAt(
 }
 
 /** The valid values of `workflows` in a machine file, merged by key rather than as one all-or-nothing object. */
-function readMachineWorkflowSettings(raw: Record<string, unknown>, configPath: string): MemberWorkflowSettings | undefined {
-  const workflow = asRecord(raw.workflows);
+function readMachineWorkflowSettings(raw: RawMapping, configPath: string): MemberWorkflowSettings | undefined {
+  const workflow = OptionalMappingSchema.parse(raw.workflows);
 
   if (!workflow) {
     if (Object.prototype.hasOwnProperty.call(raw, 'workflows')) {
@@ -372,7 +370,7 @@ function readMachineWorkflowSettings(raw: Record<string, unknown>, configPath: s
     return undefined;
   }
 
-  const settings: Record<string, unknown> = {};
+  const settings: RawMapping = {};
 
   for (const key of ['max_parallel', 'auto_approve', 'sandbox'] as const) {
     const value = memberSettingAt(workflow, key, MemberWorkflowSettingsSchema.shape[key], configPath);
@@ -380,7 +378,7 @@ function readMachineWorkflowSettings(raw: Record<string, unknown>, configPath: s
     if (value !== undefined) settings[key] = value;
   }
 
-  const tools = asRecord(workflow.tools);
+  const tools = OptionalMappingSchema.parse(workflow.tools);
 
   if (tools) {
     const accepted: Record<string, string> = {};
@@ -397,10 +395,10 @@ function readMachineWorkflowSettings(raw: Record<string, unknown>, configPath: s
     warnOnce(`Ignoring workflows.tools in ${configPath}: expected an object.`);
   }
 
-  const allow = asRecord(workflow.allow);
+  const allow = OptionalMappingSchema.parse(workflow.allow);
 
   if (allow) {
-    const accepted: Record<string, unknown> = {};
+    const accepted: RawMapping = {};
 
     for (const [key, schema] of Object.entries(AllowSchema.shape)) {
       const invalidFallback = key === 'network' ? false : [];
@@ -425,17 +423,17 @@ export async function loadMemberSettings(configPath = expandHome(getUserConfigPa
   const content = await readFileSafe(configPath);
 
   if (!content) return {};
-  let raw: Record<string, unknown> | undefined;
+  let raw: RawMapping | undefined;
 
   try {
-    raw = asRecord(YAML.parse(content));
+    raw = OptionalMappingSchema.parse(YAML.parse(content));
   } catch {
     return {};
   }
 
   if (!raw) return {};
 
-  const settings: Record<string, unknown> = {};
+  const settings: RawMapping = {};
 
   for (const key of MEMBER_SETTING_KEYS) {
     if (key === 'workflows') continue;
@@ -468,10 +466,10 @@ export async function machineWorkflowAllowProblem(): Promise<string | undefined>
   }
 
   if (!content) return undefined;
-  let workflows: Record<string, unknown> | undefined;
+  let workflows: RawMapping | undefined;
 
   try {
-    workflows = asRecord(asRecord(YAML.parse(content))?.workflows);
+    workflows = OptionalMappingSchema.parse(OptionalMappingSchema.parse(YAML.parse(content))?.workflows);
   } catch (e) {
     return `${configPath} is not valid YAML (${describeConfigError(e)}), so the workflows.allow restrictions it may set are unknown. `
       + 'A workflow does not run until it is fixed.';
@@ -555,12 +553,15 @@ export function markMemberSettingsWritten(config: LocalConfig, written: MemberSe
       }
     : undefined;
 
-  return {
-    ...config,
-    ...written,
-    ...(workflows ? { workflows: { ...workflows, tools: workflows.tools ?? {} } } : {}),
-    memberSettingsOverlay: { local: { ...local, ...written, ...(workflows ? { workflows } : {}) } },
-  } as LocalConfig;
+  const overlaid: MemberSettings = { ...local, ...written };
+  const marked: LocalConfig = { ...config, ...written, memberSettingsOverlay: { local: overlaid } };
+
+  if (workflows) {
+    marked.workflows = { ...workflows, tools: workflows.tools ?? {} };
+    overlaid.workflows = workflows;
+  }
+
+  return marked;
 }
 
 /** Whether `configPath` holds an install. A file that cannot be read or parsed counts as one, so its install is kept. */
@@ -645,18 +646,11 @@ function serializeLocalConfig(config: LocalConfig, carriedSettings?: MemberSetti
   const { dataHome: _dataHome, branchHome: _branchHome, roleUnresolved: _roleUnresolved, children: _children, roleAssignment: _assignment, memberSettingsOverlay: overlay, ...persisted } = withLocalRoles(config);
   const localSettings = overlay?.local ?? MemberSettingsSchema.parse(persisted);
 
-  const settings = {
-    ...localSettings,
-    ...(localSettings.workflows ? {
-      workflows: {
-        ...localSettings.workflows,
-        ...(localSettings.workflows.tools ? { tools: localSettings.workflows.tools } : {}),
-        ...(localSettings.workflows.allow ? { allow: localSettings.workflows.allow } : {}),
-      },
-    } : {}),
-  };
+  const settings = { ...localSettings };
 
-  for (const key of MEMBER_SETTING_KEYS) delete (persisted as Record<string, unknown>)[key];
+  if (localSettings.workflows) settings.workflows = { ...localSettings.workflows };
+
+  for (const key of MEMBER_SETTING_KEYS) delete persisted[key];
 
   return YAML.stringify({ ...carriedSettings, ...settings, ...persisted, scope: installScopeName(persisted.scope) });
 }
@@ -697,7 +691,7 @@ async function writeLocalConfig(configPath: string, config: LocalConfig): Promis
  * Load the local state (~/.teamai/state.json)
  */
 export async function loadState(): Promise<State> {
-  const raw = await readJson<Record<string, unknown>>(expandHome(getUserStatePath()));
+  const raw = await readJson<JsonValue>(expandHome(getUserStatePath()));
 
   if (!raw) return StateSchema.parse({});
 
@@ -899,7 +893,7 @@ export async function saveLocalConfigForScope(
  */
 export async function loadStateForScope(localConfig: LocalConfig): Promise<State> {
   const statePath = getStatePath(localConfig);
-  const raw = await readJson<Record<string, unknown>>(expandHome(statePath));
+  const raw = await readJson<JsonValue>(expandHome(statePath));
 
   if (!raw) return StateSchema.parse({});
 
@@ -1303,9 +1297,9 @@ function isUserTeamaiDir(dataHomeDir: string, projectRoot: string): boolean {
  * A scope this CLI does not know is most likely one a newer teamai wrote, as
  * `workspace` is for a CLI older than #1099, so it says how to get past it.
  */
-function describeConfigError(e: unknown): string {
-  if (e instanceof ZodError) {
-    return e.issues.map((issue) => {
+function describeConfigError(cause: unknown): string {
+  if (cause instanceof ZodError) {
+    return cause.issues.map((issue) => {
       if (issue.code === 'invalid_value' && issue.path.join('.') === 'scope' && issue.message.startsWith('scope "')) {
         return issue.message;
       }
@@ -1314,7 +1308,7 @@ function describeConfigError(e: unknown): string {
     }).join('; ');
   }
 
-  return e instanceof Error ? e.message : String(e);
+  return cause instanceof Error ? cause.message : String(cause);
 }
 
 /**
