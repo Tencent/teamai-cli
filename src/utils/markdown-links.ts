@@ -216,12 +216,8 @@ function withoutSpansAndComments(text: string): string {
   return kept + text.slice(at);
 }
 
-/** A named character reference → the text it stands for. */
-interface NamedReferenceTable {
-  readonly [name: string]: string;
-}
-
-const NAMED_CHARACTER_REFERENCES: NamedReferenceTable = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: '\u00a0' };
+/** A named character reference → the text it stands for. A `Map`, so `&constructor;` is not looked up on `Object.prototype`. */
+const NAMED_CHARACTER_REFERENCES = new Map(Object.entries({ amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: '\u00a0' }));
 
 /** `text` with numeric character references and the common named ones (`&amp;`, `&lt;`, …) decoded, as Markdown reads a destination. */
 function decodeCharacterReferences(text: string): string {
@@ -230,7 +226,7 @@ function decodeCharacterReferences(text: string): string {
 
     if (codePoint !== undefined) return codePoint > 0 && codePoint <= 0x10ffff ? String.fromCodePoint(codePoint) : '\ufffd';
 
-    return (name !== undefined ? NAMED_CHARACTER_REFERENCES[name] : undefined) ?? reference;
+    return (name !== undefined ? NAMED_CHARACTER_REFERENCES.get(name) : undefined) ?? reference;
   });
 }
 
