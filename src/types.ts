@@ -2008,20 +2008,37 @@ export interface UserStats {
   outcomes?: UserOutcomeStats;
 }
 
-/** The fields of a stats file every reader relies on, in the order the stats push writes them. */
+/**
+ * One skill of a stats file. Its count is the history a push adds to, so an entry without one is dropped; a missing
+ * `lastUsed` reads as '', which any real use replaces.
+ */
+const StatsSkillSchema = z.looseObject({ count: z.number(), lastUsed: z.string().catch('') });
+
+/** The fields of a stats file every reader relies on. */
 const UserStatsFileSchema = z.looseObject({
   username: z.string().min(1),
-  updatedAt: z.string().optional(),
-  skills: z.record(z.string(), z.looseObject({ count: z.number(), lastUsed: z.string() })),
+  skills: z.record(z.string(), StatsSkillSchema.nullable().catch(null)),
 });
 
-/** A `stats/<user>.yaml` file, or null for one without a username and a well-formed skills table. Throws on bad YAML. */
+/**
+ * A `stats/<user>.yaml` file, or null for one without a username and a skills table. Throws on bad YAML. The file
+ * keeps its key order, and a skill entry a hand edit broke is dropped rather than the whole file, which a push would
+ * then overwrite.
+ */
 export function parseUserStats(content: string): UserStats | null {
-  const parsed = UserStatsFileSchema.safeParse(parseYaml(content));
+  const document = parseYaml(content);
+  const parsed = UserStatsFileSchema.safeParse(document);
 
-  // SAFETY: the schema checked username and every skills entry. The other fields are optional and come from the
-  // stats push of this or another member's teamai, which writes them from a UserStats.
-  return parsed.success ? parsed.data as UserStats : null;
+  if (!isJsonObject(document) || !parsed.success) return null;
+  const skills: UserStats['skills'] = {};
+
+  for (const [name, skill] of Object.entries(parsed.data.skills)) {
+    if (skill !== null) skills[name] = { count: skill.count, lastUsed: skill.lastUsed };
+  }
+
+  // SAFETY: username and skills are checked above. The other fields are optional and come from the stats push of this
+  // or another member's teamai, which writes them from a UserStats.
+  return { ...document, username: parsed.data.username, skills } as UserStats;
 }
 
 /** What a row of {@link UserStats.outcomes} counts: its sessions, and their tokens and interventions in total. */
