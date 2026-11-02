@@ -19,6 +19,16 @@ import { PACKAGED_SKILL_DIGESTS } from './packaged-skill-digests.js';
 import { keepsTrackedCopy } from './resources/delivered-copies.js';
 import { generatedSkillAt } from './workflow/discovery/generated-marker.js';
 import type { DeliveryRecorder } from './git-exclude-delivered.js';
+import { z } from 'zod';
+
+const ErrnoErrorSchema = z.object({ code: z.string() });
+
+/** The error code (`ENOENT`, `EEXIST`, ...) a failed fs or process call carries, or undefined when the thrown value has none. */
+function errnoCode(cause: unknown): string | undefined {
+  const parsed = ErrnoErrorSchema.safeParse(cause);
+
+  return parsed.success ? parsed.data.code : undefined;
+}
 
 // ─── Built-in skills deployment ──────────────────────────
 //
@@ -188,7 +198,7 @@ async function removeEmptyDirs(dir: string): Promise<{ file: string; error: stri
   try {
     entries = await fs.promises.readdir(dir, { withFileTypes: true });
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') failures.push({ file: dir, error: (e as Error).message });
+    if (errnoCode(e) !== 'ENOENT') failures.push({ file: dir, error: e instanceof Error ? e.message : String(e) });
 
     return failures;
   }
@@ -203,12 +213,12 @@ async function removeEmptyDirs(dir: string): Promise<{ file: string; error: stri
     // Not empty is the expected outcome for a directory holding the member's
     // files — and some platforms say EACCES for that under a read-only parent,
     // so the directory's contents, not the error code, decide.
-    const code = (e as NodeJS.ErrnoException).code;
+    const code = errnoCode(e);
 
     const stillHolds = code === 'ENOTEMPTY' || code === 'EEXIST'
       || (await fs.promises.readdir(dir).catch(() => [])).length > 0;
 
-    if (!stillHolds) failures.push({ file: dir, error: (e as Error).message });
+    if (!stillHolds) failures.push({ file: dir, error: e instanceof Error ? e.message : String(e) });
   }
 
   return failures;
@@ -271,10 +281,10 @@ export async function removeOwnedFiles(
     entries = await walkFiles(dir);
   } catch (e) {
     // Another tool may have removed this same tree through an allowed root alias.
-    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return result;
+    if (errnoCode(e) === 'ENOENT') return result;
     // An unreadable subdirectory. Reporting it is the point: a silent return
     // leaves the tree in place while `pull` says it succeeded.
-    result.notRemoved.push({ file: dir, error: (e as Error).message });
+    result.notRemoved.push({ file: dir, error: e instanceof Error ? e.message : String(e) });
 
     return result;
   }
@@ -295,7 +305,7 @@ export async function removeOwnedFiles(
       if (!(await fs.promises.lstat(file)).isSymbolicLink() && await isOwnedFile(file, relative, owned)) proven.add(relative);
     } catch (e) {
       // Unreadable, so unprovable: kept, and said so.
-      result.notRemoved.push({ file, error: (e as Error).message });
+      result.notRemoved.push({ file, error: e instanceof Error ? e.message : String(e) });
     }
   }
 
@@ -330,7 +340,7 @@ export async function removeOwnedFiles(
       } catch (e) {
         // A full disk, a read-only home, a colliding copy. Keep the file: a
         // backup that did not happen must not authorise the delete.
-        result.unbackedUp.push({ file, error: (e as Error).message });
+        result.unbackedUp.push({ file, error: e instanceof Error ? e.message : String(e) });
         continue;
       }
     }
@@ -340,7 +350,7 @@ export async function removeOwnedFiles(
     } catch (e) {
       // A read-only parent. The archive holds the copy, but the original stays,
       // so the tree is half-pruned: say so rather than let a debug line carry it.
-      result.notRemoved.push({ file, error: (e as Error).message });
+      result.notRemoved.push({ file, error: e instanceof Error ? e.message : String(e) });
     }
   }
 
@@ -694,7 +704,7 @@ export async function deployBuiltinSkills(
         deployedHere++;
       } catch (e) {
         options?.recorder?.failed('builtin');
-        log.error(`Failed to deploy built-in skill ${skillName} to ${toolPath.skills}: ${(e as Error).message}`);
+        log.error(`Failed to deploy built-in skill ${skillName} to ${toolPath.skills}: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
 
