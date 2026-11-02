@@ -203,7 +203,7 @@ Run it twice on the same failures and the second run opens nothing: each failure
 | --- | --- |
 | The branch conflicts with the default branch | Fails `improve` with `merge_conflict` before the agent starts. Merge the default branch into it, or delete it. |
 | A teammate pushed to the branch while the run worked | Fails `improve` with `push_failed`, and pushes nothing over that commit. The next run starts from it. |
-| The agent changed a file `teamai pull` would not place or would reject | Fails `improve` with `push_failed`, naming each file: outside the directories pull places (outside `.teamai/` in single-repo mode), a symlink, a benchmark file in no suite, or a workflow, scorer or suite pull rejects. Nothing is pushed. |
+| The agent changed a file `teamai pull` would not place or would reject | Fails `improve` with `push_failed`, naming each file: outside the directories pull places (outside `.teamai/` in single-repo mode), a symlink, a benchmark file in no suite, or a workflow, scorer or suite pull rejects and did not reject on the default branch, such as a workflow whose scorer the agent deleted. Nothing is pushed. |
 | The PR was squash-merged, and the branch kept | Pushes nothing and opens no PR while the branch holds what the default branch holds. |
 | The PR was closed without merging, and the branch kept | Goes on from the branch, and opens a new PR when it has new failures. Delete the branch with the PR to drop the proposal. |
 

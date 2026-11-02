@@ -202,7 +202,7 @@ $ teamai digest --json --scorer review-quality --suite benchmarks/regressions --
 | --- | --- |
 | 分支和默认分支冲突 | `improve` 在 agent 开始前以 `merge_conflict` 失败。把默认分支合并进去，或者删掉它。 |
 | 运行期间队友推送到了分支 | `improve` 以 `push_failed` 失败，不会覆盖那个提交。下一次运行从它开始。 |
-| agent 改了 `teamai pull` 不会放置或会拒绝的文件 | `improve` 以 `push_failed` 失败并逐个列出文件：在 pull 放置的目录之外（单仓库模式下在 `.teamai/` 之外）、符号链接、不属于任何套件的 benchmark 文件，或 pull 会拒绝的工作流、评分器、套件。什么也不推送。 |
+| agent 改了 `teamai pull` 不会放置或会拒绝的文件 | `improve` 以 `push_failed` 失败并逐个列出文件：在 pull 放置的目录之外（单仓库模式下在 `.teamai/` 之外）、符号链接、不属于任何套件的 benchmark 文件，或 pull 会拒绝、而默认分支上原本接受的工作流、评分器、套件（比如 agent 删掉了某个工作流所用的评分器）。什么也不推送。 |
 | PR 被 squash 合并，分支保留 | 分支内容和默认分支相同时，什么也不推送，也不打开 PR。 |
 | PR 未合并就被关闭，分支保留 | 从分支继续，有新失败时打开一个新 PR。要放弃提案，关闭 PR 时一并删除分支。 |
 
