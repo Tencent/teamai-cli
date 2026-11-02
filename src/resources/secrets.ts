@@ -33,8 +33,13 @@ const SecretsYamlSchema = z.object({
 
 export type SecretDeclaration = z.infer<typeof SecretDeclarationSchema>;
 
+/** A declaration as written, every key kept, so a rewrite drops nothing the file had. */
+const WrittenSecretDeclarationSchema = z.looseObject(SecretDeclarationSchema.shape);
+
+export type WrittenSecretDeclaration = z.infer<typeof WrittenSecretDeclarationSchema>;
+
 /** The keys `declaration` was written with that secrets.yaml does not know: that secret is not declared. */
-export function unknownSecretDeclarationKeys(declaration: object): string[] {
+export function unknownSecretDeclarationKeys(declaration: WrittenSecretDeclaration): string[] {
   return Object.keys(declaration).filter((key) => !Object.hasOwn(SecretDeclarationSchema.shape, key));
 }
 
@@ -73,9 +78,9 @@ export const secretsEntryReader: EntryReader<SecretDeclaration> = {
     }
 
     if (raw === null || raw === undefined) return { ok: true, entries: [] };
-    const shapeProblem = missingTopLevelKeyReason(raw, SecretsYamlSchema);
+    const topLevelProblem = missingTopLevelKeyReason(raw, SecretsYamlSchema);
 
-    if (shapeProblem) return { ok: false, reason: `${relativePath} declares no secrets: ${shapeProblem}` };
+    if (topLevelProblem) return { ok: false, reason: `${relativePath} declares no secrets: ${topLevelProblem}` };
     const parsed = SecretsYamlSchema.safeParse(raw);
 
     if (!parsed.success) {
@@ -101,7 +106,7 @@ export const secretsEntryReader: EntryReader<SecretDeclaration> = {
 export async function readSecretsForEdit(
   absolutePath: string,
   relativePath: string,
-): Promise<{ ok: true; secrets: Record<string, unknown>[] } | { ok: false; reason: string }> {
+): Promise<{ ok: true; secrets: WrittenSecretDeclaration[] } | { ok: false; reason: string }> {
   const read = await secretsEntryReader.read(absolutePath, relativePath);
 
   if (read === null) return { ok: true, secrets: [] };
@@ -109,9 +114,14 @@ export async function readSecretsForEdit(
   if (!read.ok) return read;
   const text = await readFileSafe(absolutePath);
   const written = writtenList(text === null ? null : YAML.parse(text), 'secrets');
-  const isEntry = (entry: unknown): entry is Record<string, unknown> => entry !== null && typeof entry === 'object';
+  // The read above validated every entry, so each one parses here with all its keys.
+  const entries = z.array(z.unknown()).catch([]).parse(written);
 
-  return { ok: true, secrets: Array.isArray(written) ? written.filter(isEntry) : [] };
+  return { ok: true, secrets: entries.flatMap((entry) => {
+    const declaration = WrittenSecretDeclarationSchema.safeParse(entry);
+
+    return declaration.success ? [declaration.data] : [];
+  }) };
 }
 
 /** Write a secrets file with these declarations and nothing else. */

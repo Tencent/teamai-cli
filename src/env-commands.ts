@@ -2,11 +2,11 @@ import { requireInit, detectProjectConfig, describeUnreadableConfig, loadTeamCon
 import { DetachedTeamRepoError, pullRepo } from './utils/git.js';
 import { pathExists } from './utils/fs.js';
 import { log, spinner } from './utils/logger.js';
-import { EnvHandler, envEntryReader, unknownEnvVariableKeys, type EnvYaml } from './resources/env.js';
+import { EnvHandler, envEntryReader, unknownEnvVariableKeys, type EnvVariable, type EnvYaml } from './resources/env.js';
 import { ENV_KEY_RE, envName, envValue, sameEnvName } from './resources/env-key.js';
 import {
   SECRETS_LAYOUT, declaredSecretKeys, readSecretsForEdit, resolveSecretDeclarations, unknownSecretDeclarationKeys,
-  writeSecretsFile,
+  writeSecretsFile, type WrittenSecretDeclaration,
 } from './resources/secrets.js';
 import { getMachineSecretsPath, getTeamSecretsPath, readSecretStore, updateSecretStore, type StoredSecret } from './secret-store.js';
 import { askSecret, isInteractive, readStdin } from './utils/prompt.js';
@@ -353,7 +353,7 @@ async function reconcileCurrentScopeMcp(localConfig: LocalConfig): Promise<boole
 
     return true;
   } catch (e) {
-    log.debug(`MCP reconcile skipped: ${(e as Error).message}`);
+    log.debug(`MCP reconcile skipped: ${e instanceof Error ? e.message : String(e)}`);
 
     return false;
   }
@@ -506,7 +506,7 @@ export async function envAdd(
     // Same for a removed per-entry key, which the schema keeps so it can be
     // detected rather than stripped: `roles:` on env and `projects:` reach nobody.
     const updated = envConfig.variables[existingIdx];
-    const removed: string[] = [];
+    const removed: Array<'roles' | 'projects'> = [];
 
     if (updated.projects !== undefined) removed.push('projects');
 
@@ -520,7 +520,7 @@ export async function envAdd(
       const files: string[] = [];
 
       for (const removedKey of removed) {
-        files.push(...await targets.forIds(removedKey as 'roles' | 'projects', updated[removedKey as 'roles' | 'projects'] ?? []));
+        files.push(...await targets.forIds(removedKey, updated[removedKey] ?? []));
       }
 
       log.warn(
@@ -530,7 +530,7 @@ export async function envAdd(
       );
     }
   } else {
-    const newVar: { key: string; value: string; description?: string } = { key, value };
+    const newVar: EnvVariable = { key, value };
 
     if (options.description) {
       newVar.description = options.description;
@@ -573,14 +573,13 @@ async function declareSecret(
   const isUpdate = index !== -1;
 
   // On Windows a key typed in another case is the declared one: it keeps its declared name.
-  if (isUpdate && typeof secrets[index]?.key === 'string') key = secrets[index].key;
+  if (isUpdate) key = secrets[index].key;
 
-  const declaration = {
-    ...(isUpdate ? secrets[index] : {}),
-    key,
-    ...(options.description !== undefined ? { description: options.description } : {}),
-    ...(options.url !== undefined ? { url: options.url } : {}),
-  };
+  const declaration: WrittenSecretDeclaration = isUpdate ? { ...secrets[index], key } : { key };
+
+  if (options.description !== undefined) declaration.description = options.description;
+
+  if (options.url !== undefined) declaration.url = options.url;
 
   if (isUpdate) secrets[index] = declaration;
   else secrets.push(declaration);
@@ -709,7 +708,7 @@ async function removeSecret(
 }
 
 /** `values` without `key`, in every case of it on Windows, where they are one environment variable. */
-function withoutKey<T>(values: Readonly<Record<string, T>>, key: string): Record<string, T> {
+function withoutKey<T>(values: Readonly<Record<string, T>>, key: string) {
   const rest = { ...values };
 
   for (const other of Object.keys(rest)) if (envName(other) === envName(key)) delete rest[other];
@@ -718,17 +717,17 @@ function withoutKey<T>(values: Readonly<Record<string, T>>, key: string): Record
 }
 
 /** Whether an entry's `key` is `key`: the same environment variable, so in any case on Windows. */
-function sameEntryKey(declared: unknown, key: string): boolean {
-  return typeof declared === 'string' && envName(declared) === envName(key);
+function sameEntryKey(declared: string, key: string): boolean {
+  return envName(declared) === envName(key);
 }
 
 /** Remove the declarations of `key` after the first `keep` of them from `secrets`; answers how many. */
-function dropDuplicateSecrets(secrets: Record<string, unknown>[], key: string, keep = 1): number {
+function dropDuplicateSecrets(secrets: WrittenSecretDeclaration[], key: string, keep = 1): number {
   let seen = 0;
   let removed = 0;
 
   for (let i = 0; i < secrets.length; i++) {
-    if (!sameEntryKey(secrets[i]?.key, key) || ++seen <= keep) continue;
+    if (!sameEntryKey(secrets[i].key, key) || ++seen <= keep) continue;
     secrets.splice(i--, 1);
     removed++;
   }
@@ -764,14 +763,14 @@ async function refreshTeamRepo(localConfig: LocalConfig, project: string | undef
     }
 
     if (project === undefined) {
-      pullSpin.warn(`Pull failed: ${(e as Error).message}`);
+      pullSpin.warn(`Pull failed: ${e instanceof Error ? e.message : String(e)}`);
 
       return true;
     }
 
-    pullSpin.fail(`Pull failed: ${(e as Error).message}`);
+    pullSpin.fail(`Pull failed: ${e instanceof Error ? e.message : String(e)}`);
     fail(
-      `The team repo could not be refreshed (${(e as Error).message}), so the env namespace of project "${project}" `
+      `The team repo could not be refreshed (${e instanceof Error ? e.message : String(e)}), so the env namespace of project "${project}" `
       + 'may be out of date. Nothing was changed. Fix the pull (run `teamai pull` to see why) and retry, or pass --role <ns>.',
     );
 
@@ -804,7 +803,7 @@ interface EntryFileTarget {
  * The secrets file to edit, or null when it does not parse, reported as for
  * env.yaml.
  */
-async function readSecretsFileForEdit(file: EntryFileTarget): Promise<Record<string, unknown>[] | null> {
+async function readSecretsFileForEdit(file: EntryFileTarget): Promise<WrittenSecretDeclaration[] | null> {
   const read = await readSecretsForEdit(file.filePath, file.relativePath);
 
   if (read.ok) return read.secrets;

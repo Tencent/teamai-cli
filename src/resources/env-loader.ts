@@ -164,13 +164,15 @@ async function scopeEntry(localConfig: LocalConfig, inShells = true): Promise<{ 
   let [kind, key] = ['user', '-'];
 
   if (localConfig.scope === 'project') {
-    if (!localConfig.projectRoot) return null;
-    const common = await gitCommonDir(localConfig.projectRoot);
+    const { projectRoot } = localConfig;
 
-    if (!common && await nearestGitEntry(localConfig.projectRoot)) return 'repository-unreadable';
+    if (!projectRoot) return null;
+    const common = await gitCommonDir(projectRoot);
+
+    if (!common && await nearestGitEntry(projectRoot)) return 'repository-unreadable';
     [kind, key] = common
       ? ['git', common]
-      : ['dir', await fs.promises.realpath(localConfig.projectRoot).catch(() => localConfig.projectRoot as string)];
+      : ['dir', await fs.promises.realpath(projectRoot).catch(() => projectRoot)];
   }
 
   const envSh = path.join(getDataHome(localConfig), 'env.sh');
@@ -300,7 +302,7 @@ async function userScopeLine(): Promise<string | null> {
 
   const entry = await scopeEntry(user, team.sharing.env.injectShellProfile ?? true);
 
-  return typeof entry === 'object' ? entry?.line ?? null : null;
+  return entry === null || entry === 'repository-unreadable' ? null : entry.line;
 }
 
 /** Whether the registry lets the user scope's env.sh load in shells. */

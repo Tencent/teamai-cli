@@ -5,7 +5,8 @@ import YAML from 'yaml';
 import { ResourceHandler } from './base.js';
 import { placedCopy } from './repo-resource.js';
 import { loadStateForScope } from '../config.js';
-import type { ResourceItem, ResourceItemStatus, TeamaiConfig, LocalConfig } from '../types.js';
+import type { JsonValue, ResourceItem, ResourceItemStatus, TeamaiConfig, LocalConfig } from '../types.js';
+import { isJsonObject } from './mcp-format.js';
 import { TEAMAI_ENV_START, TEAMAI_ENV_END, getDataHome, getEnvBackupPath, getTeamaiHome, isSelfMode } from '../types.js';
 import { pathExists, readFileIfExists, readFileSafe, writeFile, ensureDir, fileContentEqual, remove, symlinkTarget } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
@@ -54,7 +55,7 @@ export type EnvVariable = z.infer<typeof EnvVariableSchema>;
 export type EnvYaml = z.infer<typeof EnvYamlSchema>;
 
 /** The keys `variable` was written with that env.yaml does not know: pull does not deliver it (#822). */
-export function unknownEnvVariableKeys(variable: object): string[] {
+export function unknownEnvVariableKeys(variable: EnvVariable): string[] {
   return Object.keys(variable).filter((key) => !Object.hasOwn(EnvVariableSchema.shape, key));
 }
 
@@ -77,7 +78,7 @@ export const envEntryReader: EntryReader<EnvVariable> = {
     const content = file.text;
 
     if (content === null) return null;
-    let raw: unknown;
+    let raw: JsonValue | undefined;
 
     try {
       raw = YAML.parse(content);
@@ -85,9 +86,9 @@ export const envEntryReader: EntryReader<EnvVariable> = {
       return { ok: false, reason: `${relativePath} is not valid YAML: ${e instanceof Error ? e.message : String(e)}` };
     }
 
-    const shapeProblem = describeEnvYamlShapeProblem(raw);
+    const missingVariables = describeMissingVariablesKey(raw);
 
-    if (shapeProblem) return { ok: false, reason: `${relativePath} declares no variables: ${shapeProblem}` };
+    if (missingVariables) return { ok: false, reason: `${relativePath} declares no variables: ${missingVariables}` };
     const read = parseEnvYamlDocument(raw, relativePath);
 
     if (!read.ok) return read;
@@ -119,10 +120,10 @@ export const envEntryReader: EntryReader<EnvVariable> = {
  *
  * @returns the warning to log, or `null` when there is nothing to report.
  */
-export function describeEnvYamlShapeProblem(raw: unknown): string | null {
-  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null;
+export function describeMissingVariablesKey(raw: JsonValue | undefined): string | null {
+  if (!isJsonObject(raw)) return null;
 
-  const keys = Object.keys(raw as Record<string, unknown>);
+  const keys = Object.keys(raw);
 
   if (keys.length === 0 || keys.includes('variables')) return null;
 
@@ -253,17 +254,17 @@ export async function readEnvBackup(localConfig: LocalConfig): Promise<Record<st
   try {
     content = await readFile(backupPath, 'utf-8');
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return table;
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return table;
     const reason = error instanceof Error ? error.message : String(error);
     throw new Error(`Env backup is unreadable at ${backupPath}: ${reason}`, { cause: error });
   }
 
   if (content.trimStart().startsWith('{')) {
-    const values = backupValues(content);
+    const backup = backupValues(content);
 
-    if (typeof values === 'string') throw new Error(`Env backup is unreadable at ${backupPath}: ${values}`);
+    if (!backup.ok) throw new Error(`Env backup is unreadable at ${backupPath}: ${backup.reason}`);
 
-    for (const [key, value] of Object.entries(values)) table[key] = value;
+    for (const [key, value] of Object.entries(backup.values)) table[key] = value;
 
     return table;
   }
@@ -281,27 +282,31 @@ export async function readEnvBackup(localConfig: LocalConfig): Promise<Record<st
   return table;
 }
 
+/** A JSON env backup: each exported name and its value. */
+const EnvBackupSchema = z.record(z.string(), z.string());
+
 /** The values of a JSON env backup, or why it holds none. */
-function backupValues(content: string): Record<string, string> | string {
-  let parsed: unknown;
+function backupValues(content: string): { ok: true; values: Record<string, string> } | { ok: false; reason: string } {
+  let parsed: JsonValue;
 
   try {
     parsed = JSON.parse(content);
   } catch (error) {
-    return error instanceof Error ? error.message : String(error);
+    return { ok: false, reason: error instanceof Error ? error.message : String(error) };
   }
 
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return 'not a JSON object';
+  if (!isJsonObject(parsed)) return { ok: false, reason: 'not a JSON object' };
+  const values = EnvBackupSchema.safeParse(parsed);
 
-  return Object.values(parsed).every((value) => typeof value === 'string') ? parsed as Record<string, string> : 'a value is not a string';
+  return values.success ? { ok: true, values: values.data } : { ok: false, reason: 'a value is not a string' };
 }
 
 /** Validate a parsed env.yaml document; `label` names the file in the reason. */
-function parseEnvYamlDocument(raw: unknown, label: string): EnvYamlRead {
+function parseEnvYamlDocument(raw: JsonValue | undefined, label: string): EnvYamlRead {
   // An empty document is a file with nothing to deliver, not a broken one.
   if (raw === null || raw === undefined) return { ok: true, variables: [] };
 
-  if (typeof raw !== 'object' || Array.isArray(raw) || !('variables' in raw)) {
+  if (!isJsonObject(raw) || !('variables' in raw)) {
     return {
       ok: false,
       reason: `${label} declares no variables. Its top-level key must be \`variables:\`, a list `
@@ -333,7 +338,7 @@ const SOURCES_ENV_SH = /(?:^|[\s;&|])(?:source|\.)\s[^\n;&|]*env\.sh/m;
  * and for the user scope the inline-export one, which only it ever wrote
  * (project scopes came after env.sh).
  */
-function withoutOldBlocks(content: string, loaderPath: string, scopeEnvSh?: string): { content: string; dropped: EnvBlock[] } {
+function withoutOldBlocks(content: string, loaderPath: string, scopeEnvSh?: string) {
   const userEnvSh = path.join(getTeamaiHome('user'), 'env.sh');
 
   const dropped = findEnvBlocks(content).filter((block): block is EnvBlock & { end: number } => {
@@ -685,12 +690,12 @@ export class EnvHandler extends ResourceHandler {
 
     if (content === null) return { ok: true, variables: [] };
 
-    let raw: unknown;
+    let raw: JsonValue | undefined;
 
     try {
       raw = YAML.parse(content);
     } catch (e) {
-      return { ok: false, reason: `${filePath} is not valid YAML: ${(e as Error).message}` };
+      return { ok: false, reason: `${filePath} is not valid YAML: ${e instanceof Error ? e.message : String(e)}` };
     }
 
     const read = parseEnvYamlDocument(raw, filePath);
@@ -698,14 +703,14 @@ export class EnvHandler extends ResourceHandler {
     if (!read.ok) return read;
     // A rewrite keeps every key a variable was written with: dropping a
     // misspelled `roles:` would deliver the variable to every member (#822).
-    const written = writtenList(raw, 'variables');
+    const written = z.array(z.unknown()).catch([]).parse(writtenList(raw, 'variables'));
 
     return {
       ok: true,
       variables: read.variables.map((variable, index) => {
-        const entry: unknown = Array.isArray(written) ? written[index] : undefined;
+        const entry = z.looseObject({}).safeParse(written[index]);
 
-        return entry !== null && typeof entry === 'object' ? { ...entry, ...variable } : variable;
+        return entry.success ? { ...entry.data, ...variable } : variable;
       }),
     };
   }
@@ -778,12 +783,10 @@ export class EnvHandler extends ResourceHandler {
    */
   generateEnvFile(variables: EnvVariable[], kept: readonly string[] = []): string {
     const lines = variables
-      .filter(v => isExportedEnvKey(v.key))
-      .map(v => `export ${v.key}=${shellQuoteValue(v.value)}`);
+      .flatMap(v => (isExportedEnvKey(v.key) ? [`export ${v.key}=${shellQuoteValue(v.value)}`] : []));
 
     const keeps = kept
-      .filter(isExportedEnvKey)
-      .map(key => `${KEEP_PREFIX}${envNamePattern(key)}" "*) __teamai_env_keep '${envNamePattern(key)}' ;; esac`);
+      .flatMap(key => (isExportedEnvKey(key) ? [`${KEEP_PREFIX}${envNamePattern(key)}" "*) __teamai_env_keep '${envNamePattern(key)}' ;; esac`] : []));
 
     return [...keeps, ...lines].join('\n') + '\n';
   }

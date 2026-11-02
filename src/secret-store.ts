@@ -42,7 +42,7 @@ export function storedEntryKind(entry: StoredSecret): StoredEntryKind {
 
 // Not z.record: it drops a `__proto__` key, which ENV_KEY_RE accepts.
 const SecretStoreSchema = z
-  .custom<object>((raw) => raw !== null && typeof raw === 'object' && !Array.isArray(raw))
+  .custom<object>((raw) => raw instanceof Object && !Array.isArray(raw))
   .transform((raw) => Object.entries(raw))
   .pipe(z.array(z.tuple([z.string().regex(ENV_KEY_RE), StoredSecretSchema])))
   .transform((entries) => envTable(entries));
@@ -158,7 +158,7 @@ export async function readSecretStore(filePath: string): Promise<SecretStoreRead
   try {
     content = await fs.promises.readFile(filePath, 'utf8');
   } catch (error) {
-    const code = error instanceof Error && 'code' in error && typeof error.code === 'string' ? error.code : undefined;
+    const code = error instanceof Error && 'code' in error ? z.string().optional().catch(undefined).parse(error.code) : undefined;
 
     if (code === 'ENOENT') return { ok: true, values: {} };
 
@@ -181,8 +181,8 @@ export async function readSecretStore(filePath: string): Promise<SecretStoreRead
   const parsed = SecretStoreSchema.safeParse(raw);
 
   if (parsed.success) return { ok: true, values: parsed.data };
-  const index = parsed.error.issues[0]?.path[0];
-  const entry = typeof index === 'number' ? index + 1 : 0;
+  const index = z.number().safeParse(parsed.error.issues[0]?.path[0]);
+  const entry = index.success ? index.data + 1 : 0;
 
   return {
     ok: false,

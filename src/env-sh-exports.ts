@@ -14,6 +14,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { z } from 'zod';
 import { envName } from './resources/env-key.js';
+import type { JsonValue } from './types.js';
 import { readFileSafe, writeJsonAtomic } from './utils/fs.js';
 import { log } from './utils/logger.js';
 
@@ -92,12 +93,12 @@ async function readRecord(envShPath: string): Promise<Map<string, string[]>> {
   const content = await readFileSafe(file);
 
   if (content === null) return new Map();
-  let raw: unknown;
+  let raw: JsonValue = null;
 
   try {
     raw = JSON.parse(content);
   } catch {
-    raw = null;
+    // Not JSON: no record.
   }
 
   const parsed = RecordSchema.safeParse(raw);

@@ -50,8 +50,14 @@ const FORWARDED_SIGNALS: readonly NodeJS.Signals[] = ['SIGTERM', 'SIGHUP'];
  */
 const TERMINAL_SIGNALS: readonly NodeJS.Signals[] = ['SIGINT', 'SIGQUIT'];
 
+/** The signals teamai passes on to an attached command, and the ones it ignores while the command runs. */
+export interface CommandSignalPolicy {
+  forwarded: readonly NodeJS.Signals[];
+  ignored: readonly NodeJS.Signals[];
+}
+
 /** Signal policy for an attached command, shared with foreground workflow tools. */
-export function commandSignalPolicy(reachesCommand: boolean): { forwarded: readonly NodeJS.Signals[]; ignored: readonly NodeJS.Signals[] } {
+export function commandSignalPolicy(reachesCommand: boolean): CommandSignalPolicy {
   return {
     forwarded: reachesCommand ? FORWARDED_SIGNALS : [...FORWARDED_SIGNALS, ...TERMINAL_SIGNALS],
     ignored: reachesCommand ? TERMINAL_SIGNALS : [],

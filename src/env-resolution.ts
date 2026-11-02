@@ -305,13 +305,19 @@ function staleEntries(
   return stale;
 }
 
+/** Each secret's value, and the secrets whose stored `env` reference names a variable that is not set. */
+interface SecretValues {
+  values: StoreResolution<SecretValue>;
+  unsetReferences: ReadonlyMap<string, UnsetReference>;
+}
+
 function secretValues(
   keys: ReadonlySet<string>,
   team: SecretStoreRead,
   machine: SecretStoreRead,
   member: MemberEnvironment,
   env: NodeJS.ProcessEnv,
-): { values: StoreResolution<SecretValue>; unsetReferences: ReadonlyMap<string, UnsetReference> } {
+): SecretValues {
   const values = new Map<string, SecretValue>();
   const unsetReferences = new Map<string, UnsetReference>();
   const result = { values: { kind: 'resolved', values }, unsetReferences } as const;
@@ -400,7 +406,7 @@ export async function knownSecrets(localConfig: LocalConfig, env: NodeJS.Process
   return (await resolveWorkflowEnv(localConfig, env)).secrets;
 }
 
-function maskSet(fromEnvironment: Record<string, string>, team: Record<string, string>): Record<string, string> {
+function maskSet(fromEnvironment: Record<string, string>, team: Record<string, string>) {
   const shadowed = Object.entries(fromEnvironment).flatMap(([key, value]) => (key in team && team[key] !== value ? [[`${key} (environment)`, value]] : []));
 
   return { ...fromEnvironment, ...team, ...Object.fromEntries(shadowed) };
@@ -491,8 +497,12 @@ export async function resolveWorkflowEnv(localConfig: LocalConfig, live: NodeJS.
     : teamEnv.secrets.kind === 'store-unreadable' ? teamEnv.secrets.reason
       : teamEnv.variableValues.kind === 'store-unreadable' ? teamEnv.variableValues.reason : undefined;
 
+  const facts: EnvFacts = { declared, secrets: new Set(applied.secretKeys), present: new Set(values.keys()) };
+
+  if (unreadable !== undefined) facts.unreadable = unreadable;
+
   return {
-    facts: { declared, secrets: new Set(applied.secretKeys), present: new Set(values.keys()), ...(unreadable !== undefined ? { unreadable } : {}) },
+    facts,
     values,
     secrets: maskSet({ ...collectEnvSecrets(env), ...personalSecrets }, teamSecretsOf(teamEnv.secrets)),
   };
