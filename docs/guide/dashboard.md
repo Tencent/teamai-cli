@@ -9,7 +9,7 @@ teamai dashboard
 teamai dashboard --port 8080
 ```
 
-Open `http://localhost:3721`. The sidebar is Overview, then three groups: Execution (Sessions, Tokens & Cost, Workflow Runs, Scorers), Context (Knowledge Base, Resources, Distribution), and Improvement (Improvement Center). Sessions and trends are from this machine; the Knowledge Base and the Improvement Center read the team repo.
+Open `http://localhost:3721`. The sidebar is Overview, then three groups: Execution (Sessions, Tokens & Cost, Workflow Runs, Scorers, Distribution), Context (Knowledge Base, Resources), and Improvement (Improvement Center). Sessions and trends are from this machine; the Knowledge Base and the Improvement Center read the team repo.
 
 ## Improvement Center
 
