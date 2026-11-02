@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { clearVersionCache } from '../agent-version.js';
 import { buildInstructionDeliveryChecks } from '../doctor-delivery.js';
 import { TeamaiConfigSchema, type LocalConfig } from '../types.js';
 
@@ -10,7 +11,7 @@ import { TeamaiConfigSchema, type LocalConfig } from '../types.js';
  * Pi reads `AGENTS.md`, which pull leaves without team blocks when the
  * override exists, so doctor names the version.
  */
-const NAME = 'pi reads the AGENTS.override.md holding the team instructions';
+const NAME = 'Pi reads the AGENTS.override.md holding the team instructions';
 let home = '';
 
 beforeEach(() => {
@@ -22,6 +23,7 @@ beforeEach(() => {
   vi.stubEnv('USERPROFILE', home);
   vi.stubEnv('PI_CODING_AGENT_DIR', undefined);
   vi.stubEnv('PATH', `${path.join(home, 'bin')}${path.delimiter}${process.env.PATH ?? ''}`);
+  clearVersionCache();
 });
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -56,6 +58,18 @@ posixIt('fails when the override holds the team instructions and Pi is older tha
   expect(await check?.check()).toBe(false);
   expect(check?.fix).toContain(`Pi 0.73.1 reads ${path.join(home, '.pi', 'agent', 'AGENTS.md')}`);
   expect(check?.fix).toContain('0.84.0');
+  // Its `pi` command belongs to @mariozechner/pi-coding-agent, so installing the new package over it fails with EEXIST.
+  expect(check?.fix).toContain('npm uninstall -g @mariozechner/pi-coding-agent && npm install -g @earendil-works/pi-coding-agent');
+});
+
+posixIt('upgrades an @earendil-works Pi older than 0.84.0 in place', async () => {
+  fs.writeFileSync(path.join(home, '.pi', 'agent', 'AGENTS.override.md'), 'Personal override.\n');
+  installPi('0.83.0');
+
+  const check = await overrideCheck();
+
+  expect(await check?.check()).toBe(false);
+  expect(check?.fix).toContain('Upgrade Pi (`npm install -g @earendil-works/pi-coding-agent`)');
 });
 
 posixIt('passes from Pi 0.84.0', async () => {

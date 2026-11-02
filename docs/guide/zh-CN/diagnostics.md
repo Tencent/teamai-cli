@@ -48,8 +48,8 @@ Pi 扩展会启动 `teamai pull` 或 `teamai hooks inject` 记录的 Node 可执
 Pi 从 0.84.0（`@earendil-works/pi-coding-agent`）起先读 `AGENTS.override.md`，再读 `AGENTS.md`。保留 override 文件时，pull 把团队指令写进 override，更旧的 Pi 读不到：
 
 ```text
-  ✖ pi reads the AGENTS.override.md holding the team instructions
-    → Pi 0.73.1 reads /home/ana/.pi/agent/AGENTS.md, not /home/ana/.pi/agent/AGENTS.override.md, so it never sees the team instructions: Pi reads AGENTS.override.md from 0.84.0. Upgrade Pi (`npm install -g @earendil-works/pi-coding-agent`), or move your text from /home/ana/.pi/agent/AGENTS.override.md into AGENTS.md, delete the override, and run `teamai pull`.
+  ✖ Pi reads the AGENTS.override.md holding the team instructions
+    → Pi 0.73.1 reads /home/ana/.pi/agent/AGENTS.md, not /home/ana/.pi/agent/AGENTS.override.md, so it never sees the team instructions: Pi reads AGENTS.override.md from 0.84.0. Upgrade Pi (`npm uninstall -g @mariozechner/pi-coding-agent && npm install -g @earendil-works/pi-coding-agent`), or move your text from /home/ana/.pi/agent/AGENTS.override.md into AGENTS.md, delete the override, and run `teamai pull`.
 ```
 
 Hermes hooks 和指令插件会启动 `teamai hooks inject` 或 `teamai pull` 记录的 Node 可执行文件与 TeamAI 入口。移动或重新安装后，请重新运行其中一个命令并重启 Hermes。
@@ -89,8 +89,8 @@ $ teamai doctor
 只以无界面方式运行工具的机器（CI runner、跑 workflow 的机器）永远不会被询问，按修复提示加上那一项即可：
 
 ```bash
-# Pi，信任 ~/work 下的所有 checkout
-echo '{ "/home/ci/work": true }' > ~/.pi/agent/trust.json
+# Pi，信任 ~/work 下的所有 checkout（runner 上还没有 trust.json 时）
+mkdir -p ~/.pi/agent && echo '{ "/home/ci/work": true }' > ~/.pi/agent/trust.json
 ```
 
 | 工具 | 等待的内容 | 结论保存在 | 如何给出 |
@@ -98,7 +98,7 @@ echo '{ "/home/ci/work": true }' > ~/.pi/agent/trust.json
 | Claude Code | `.mcp.json` 里的 server（交互式会话） | `~/.claude/settings.json`、主 checkout 的 `.claude/settings*.json`，信任记录在 `~/.claude.json` | 信任文件夹，再批准 server |
 | Codex | 项目 agents、`.codex/config.toml` | `~/.codex/config.toml` 的 `[projects."<主 checkout>"]` | Codex 询问时信任项目 |
 | Copilot CLI | `.github/mcp.json`、`.github/hooks` | `~/.copilot/config.json` 的 `trustedFolders` | "Yes, and remember this folder" |
-| Pi | `.pi/skills`、`.pi/mcp.json` | `~/.pi/agent/trust.json` | "Trust" |
+| Pi（0.79.0 起） | `.pi/skills`、`.pi/mcp.json` | `~/.pi/agent/trust.json` | "Trust" |
 | Muse Code | `.agents/skills`、`.mcp.json`、`.muse/hooks.json` | `~/.config/muse/trust.json`，每个 worktree 一项 | "Trust and continue" |
 | Qoder CLI | `.qoder/settings.json`（交互式会话） | `~/.qoder/settings.json` 的 `permissions.trustDirectories` 和 `mcp.*ProjectMcpServers` | 信任文件夹，再批准 server |
 | CodeBuddy Code | `.mcp.json` 里的 server，`-p` 也一样 | `.codebuddy/settings.local.json` | "Use this MCP server" |

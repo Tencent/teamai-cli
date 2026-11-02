@@ -48,8 +48,8 @@ Pi extensions launch the Node executable and TeamAI entry recorded by `teamai pu
 Pi reads `AGENTS.override.md` before `AGENTS.md` from 0.84.0 (`@earendil-works/pi-coding-agent`). When you keep an override, pull writes the team instructions there, and an older Pi never sees them:
 
 ```text
-  ✖ pi reads the AGENTS.override.md holding the team instructions
-    → Pi 0.73.1 reads /home/ana/.pi/agent/AGENTS.md, not /home/ana/.pi/agent/AGENTS.override.md, so it never sees the team instructions: Pi reads AGENTS.override.md from 0.84.0. Upgrade Pi (`npm install -g @earendil-works/pi-coding-agent`), or move your text from /home/ana/.pi/agent/AGENTS.override.md into AGENTS.md, delete the override, and run `teamai pull`.
+  ✖ Pi reads the AGENTS.override.md holding the team instructions
+    → Pi 0.73.1 reads /home/ana/.pi/agent/AGENTS.md, not /home/ana/.pi/agent/AGENTS.override.md, so it never sees the team instructions: Pi reads AGENTS.override.md from 0.84.0. Upgrade Pi (`npm uninstall -g @mariozechner/pi-coding-agent && npm install -g @earendil-works/pi-coding-agent`), or move your text from /home/ana/.pi/agent/AGENTS.override.md into AGENTS.md, delete the override, and run `teamai pull`.
 ```
 
 Hermes hooks and its instructions plugin launch the Node executable and TeamAI entry recorded by `teamai hooks inject` or `teamai pull`. After moving or reinstalling either, rerun one of those commands and restart Hermes.
@@ -89,8 +89,8 @@ A server someone turned down once stays off and is never offered again:
 A machine that only runs tools headless (a CI runner, a workflow box) is never asked, so add the entry the fix names:
 
 ```bash
-# Pi, for every checkout under ~/work
-echo '{ "/home/ci/work": true }' > ~/.pi/agent/trust.json
+# Pi, for every checkout under ~/work, on a runner with no trust.json yet
+mkdir -p ~/.pi/agent && echo '{ "/home/ci/work": true }' > ~/.pi/agent/trust.json
 ```
 
 | Tool | What waits | Where the answer is kept | How to give it |
@@ -98,7 +98,7 @@ echo '{ "/home/ci/work": true }' > ~/.pi/agent/trust.json
 | Claude Code | `.mcp.json` servers, in an interactive session | `~/.claude/settings.json`, `.claude/settings*.json` of the main checkout, trust in `~/.claude.json` | Trust the folder, then approve the servers |
 | Codex | project agents, `.codex/config.toml` | `[projects."<main checkout>"]` in `~/.codex/config.toml` | Trust the project when Codex asks |
 | Copilot CLI | `.github/mcp.json`, `.github/hooks` | `trustedFolders` in `~/.copilot/config.json` | "Yes, and remember this folder" |
-| Pi | `.pi/skills`, `.pi/mcp.json` | `~/.pi/agent/trust.json` | "Trust" |
+| Pi, from 0.79.0 | `.pi/skills`, `.pi/mcp.json` | `~/.pi/agent/trust.json` | "Trust" |
 | Muse Code | `.agents/skills`, `.mcp.json`, `.muse/hooks.json` | `~/.config/muse/trust.json`, one entry per worktree | "Trust and continue" |
 | Qoder CLI | `.qoder/settings.json`, in an interactive session | `permissions.trustDirectories` and `mcp.*ProjectMcpServers` in `~/.qoder/settings.json` | Trust the folder, then approve the servers |
 | CodeBuddy Code | `.mcp.json` servers, `-p` too | `.codebuddy/settings.local.json` | "Use this MCP server" |

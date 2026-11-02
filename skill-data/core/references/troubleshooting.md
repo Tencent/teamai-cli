@@ -491,7 +491,7 @@ Doctor checks the serialized rules reply against the user config `hooks.maxOutpu
 
 Pi reads `AGENTS.override.md` before `AGENTS.md` in the same directory. In user scope, pull writes rules and instruction blocks into the existing override and strips only TeamAI blocks from the older configured file. Personal text in both files is preserved, including on uninstall. Without an override, the configured user file remains the target.
 
-Pi reads the override from 0.84.0 (`@earendil-works/pi-coding-agent`). An older Pi, including every `@mariozechner/pi-coding-agent` release, reads only `AGENTS.md` and never sees the team instructions; `doctor` fails `pi reads the AGENTS.override.md holding the team instructions`. Upgrade Pi, or move the member's text from the override into `AGENTS.md`, delete the override, and run `teamai pull`.
+Pi reads the override from 0.84.0 (`@earendil-works/pi-coding-agent`). An older Pi, including every `@mariozechner/pi-coding-agent` release, reads only `AGENTS.md` and never sees the team instructions; `doctor` fails `Pi reads the AGENTS.override.md holding the team instructions`. Upgrade Pi (from `@mariozechner/pi-coding-agent`, uninstall that package first, or npm stops on the existing `pi` command), or move the member's text from the override into `AGENTS.md`, delete the override, and run `teamai pull`.
 
 ## A file blocks skill delivery
 

@@ -2,6 +2,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
 import { spawnSync } from 'node:child_process';
+import semver from 'semver';
 import { expandHome, listFilesRecursive, pathExists, readFileSafe, readJsonObject } from './utils/fs.js';
 import {
   DEFAULT_TOOL_PATHS, getDataHome, getMcpSharing, getTeamaiHome, isAgentExcluded, isGitExcludeEnabled, managedMcpManifestKey, MUSE_TOOL_ID,
@@ -2539,16 +2540,19 @@ export async function buildInstructionDeliveryChecks(ctx: DoctorContext): Promis
   // Pi reads AGENTS.override.md before AGENTS.md only from 0.84.0; an older
   // Pi reads AGENTS.md, which pull leaves without team blocks beside it.
   const piOverride = targets.find((target) => target.tools.includes('pi') && path.basename(target.path) === 'AGENTS.override.md');
-  const { probeBinary } = await import('./utils/exec.js');
-  const piVersion = piOverride ? /^(\d+)\.(\d+)\.\d+/.exec(await probeBinary('pi')) : null;
-  if (piOverride && piVersion) {
-    const readsOverride = Number(piVersion[1]) > 0 || Number(piVersion[2]) >= 84;
+  const { getAgentVersion } = await import('./agent-version.js');
+  const piVersion = piOverride ? semver.valid(await getAgentVersion('pi')) : null;
+  if (piOverride && piVersion !== null) {
+    // Before 0.74.0 Pi was @mariozechner/pi-coding-agent, whose `pi` command blocks installing the new package (EEXIST).
+    const upgrade = semver.lt(piVersion, '0.74.0')
+      ? 'Upgrade Pi (`npm uninstall -g @mariozechner/pi-coding-agent && npm install -g @earendil-works/pi-coding-agent`), '
+      : 'Upgrade Pi (`npm install -g @earendil-works/pi-coding-agent`), ';
     checks.push({
-      name: 'pi reads the AGENTS.override.md holding the team instructions',
+      name: 'Pi reads the AGENTS.override.md holding the team instructions',
       source: 'local',
-      check: async () => readsOverride,
-      fix: `Pi ${piVersion[0]} reads ${path.join(path.dirname(piOverride.path), 'AGENTS.md')}, not ${piOverride.path}, so it never sees the team instructions: `
-        + 'Pi reads AGENTS.override.md from 0.84.0. Upgrade Pi (`npm install -g @earendil-works/pi-coding-agent`), '
+      check: async () => semver.gte(piVersion, '0.84.0'),
+      fix: `Pi ${piVersion} reads ${path.join(path.dirname(piOverride.path), 'AGENTS.md')}, not ${piOverride.path}, so it never sees the team instructions: `
+        + `Pi reads AGENTS.override.md from 0.84.0. ${upgrade}`
         + `or move your text from ${piOverride.path} into AGENTS.md, delete the override, and run \`teamai pull\`.`,
     });
   }
