@@ -108,7 +108,7 @@ const DocsNamespaceList = z.array(NamespaceSegmentSchema.refine(
 )).optional();
 
 /** Spread into the roles and projects `resources:` schemas. */
-export const HandDeclaredNamespacesShape = {
+export const HandDeclaredNamespaceFields = {
   env: OptionalNamespaceList,
   hooks: OptionalNamespaceList,
   mcp: OptionalNamespaceList,

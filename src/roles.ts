@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { ensureDir, writeFile } from './utils/fs.js';
 import {
   NamespaceSegmentSchema, parseManifest, readManifestFile, assertNoCaseAliasedNamespaces, warnUnknownResourceKeys,
-  HAND_DECLARED_RESOURCE_TYPES, HandDeclaredNamespacesShape, type HandDeclaredResourceType, type NamespaceEntry, parseManifestOnce,
+  HAND_DECLARED_RESOURCE_TYPES, HandDeclaredNamespaceFields, type HandDeclaredResourceType, type NamespaceEntry, parseManifestOnce,
 } from './manifest-schema.js';
 
 const ROLE_RESOURCE_TYPES = ['knowledge', 'skills', 'agents'] as const;
@@ -22,7 +22,7 @@ const RoleResourceNamespacesSchema = z.object({
   // learnings namespaces: roles and projects both contribute them (#1101).
   learnings: z.array(z.string()).optional(),
   // env, hooks, mcp, models, docs: optional, see HAND_DECLARED_RESOURCE_TYPES.
-  ...HandDeclaredNamespacesShape,
+  ...HandDeclaredNamespaceFields,
 }).passthrough();
 
 const RoleSchema = z.object({

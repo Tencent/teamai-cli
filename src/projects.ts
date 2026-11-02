@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { ensureDir, writeFile } from './utils/fs.js';
 import {
   NamespaceSegmentSchema, parseManifest, readManifestFile, assertNoCaseAliasedNamespaces, warnUnknownResourceKeys,
-  HAND_DECLARED_RESOURCE_TYPES, HandDeclaredNamespacesShape, type NamespaceEntry, parseManifestOnce,
+  HAND_DECLARED_RESOURCE_TYPES, HandDeclaredNamespaceFields, type NamespaceEntry, parseManifestOnce,
 } from './manifest-schema.js';
 import { loadRolesManifest, resolveRoleResourceNamespaces, type ResourceNamespaces } from './roles.js';
 import type { LocalConfig } from './types.js';
@@ -53,7 +53,7 @@ const ProjectResourceNamespacesSchema = z.object({
   learnings: z.array(NamespaceSegmentSchema).default([]),
   agents: z.array(NamespaceSegmentSchema).default([]),
   // env, hooks, mcp, models, docs: optional, see HAND_DECLARED_RESOURCE_TYPES.
-  ...HandDeclaredNamespacesShape,
+  ...HandDeclaredNamespaceFields,
 }).passthrough();
 
 const ProjectSchema = z.object({
