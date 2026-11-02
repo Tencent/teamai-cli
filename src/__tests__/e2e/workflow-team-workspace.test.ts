@@ -46,12 +46,12 @@ const RunSchema = z.object({
 type RunOptions = { name?: string; inputs?: Record<string, string> };
 
 /** Runs edit-team on topic alpha with the local driver, or workflow `name` on `inputs`; `script`, at `edit`, is what its step does in the team clone. */
-async function runEdit(fixture: BenchmarkFixture, edit: string, script: string, { name = 'edit-team', inputs = { topic: 'alpha' } }: RunOptions): Promise<{ outcome: unknown; state: z.infer<typeof RunSchema>; said: string }> {
+async function runEdit(fixture: BenchmarkFixture, edit: string, script: string, { name = 'edit-team', inputs = { topic: 'alpha' } }: RunOptions): Promise<{ run: string; outcome: unknown; state: z.infer<typeof RunSchema>; said: string }> {
   fs.writeFileSync(edit, script);
   const ran = await fixture.teamai(['workflow', 'start', name, '--driver', 'local', '--inputs', JSON.stringify(inputs)]);
   const done = z.object({ run: z.string(), outcome: z.string() }).safeParse(envelope(ran).data?.done);
   if (!done.success) throw new Error(`no run: ${said(ran)}`);
-  return { outcome: done.data.outcome, state: RunSchema.parse(fixture.runFile(done.data.run)), said: said(ran) };
+  return { run: done.data.run, outcome: done.data.outcome, state: RunSchema.parse(fixture.runFile(done.data.run)), said: said(ran) };
 }
 
 describe('a step in the team workspace, run through the real CLI', () => {
@@ -243,6 +243,19 @@ describe('a step in the team workspace, run through the real CLI', () => {
       message: expect.stringContaining(`${BRANCH} conflicts with main on the team repo's origin in rules/notes.md`),
     });
     expect(branchHead()).toBe(before);
+  }, 120_000);
+
+  it('publishes no run whose step worked in the team workspace, since another machine could not reach its clone', async () => {
+    const ran = await run("require('fs').writeFileSync('rules/epsilon.md', '# Epsilon\\n');", { inputs: { topic: 'epsilon' } });
+    expect(ran.outcome, ran.said).toBe('succeeded');
+
+    const published = await fixture.teamai(['workflow', 'publish', ran.run]);
+
+    expect(published.code, said(published)).not.toBe(0);
+    expect(envelope(published).error).toMatchObject({
+      code: 'isolated_run',
+      message: `Run ${ran.run} has a step in the team workspace, whose clone is on this machine only, so it cannot be published. Start the workflow again on the other machine.`,
+    });
   }, 120_000);
 });
 

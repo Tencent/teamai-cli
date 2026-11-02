@@ -168,13 +168,23 @@ function teamOf(step: WorkflowStep): TeamPlace | undefined {
  */
 export function isIsolated(run: Pick<RunState, 'definition' | 'workflows'>): boolean {
   // What a `from` step runs is admitted only when its producer reports, after the run started, so it may open one.
-  const opens = (steps: readonly WorkflowStep[]): boolean => steps.some((step) => {
+  return someStep(run, (step) => cloneOf(step) !== undefined || stepWorkflow(step)?.kind === 'from');
+}
+
+/** Whether a step of `run`, or of a workflow it runs, works in the team workspace, whose clone only the machine that ran it has. */
+export function worksInTeam(run: Pick<RunState, 'definition' | 'workflows'>): boolean {
+  return someStep(run, (step) => teamOf(step) !== undefined);
+}
+
+/** Whether `matches` holds for a step of `run`, of a workflow it runs inline, or of one it admitted. */
+function someStep(run: Pick<RunState, 'definition' | 'workflows'>, matches: (step: WorkflowStep) => boolean): boolean {
+  const found = (steps: readonly WorkflowStep[]): boolean => steps.some((step) => {
     const child = stepWorkflow(step);
 
-    return cloneOf(step) !== undefined || child?.kind === 'from' || (child?.kind === 'inline' && opens(child.workflow.steps));
+    return matches(step) || (child?.kind === 'inline' && found(child.workflow.steps));
   });
 
-  return [run.definition, ...Object.values(run.workflows ?? {})].some((definition) => opens(definition.steps));
+  return [run.definition, ...Object.values(run.workflows ?? {})].some((definition) => found(definition.steps));
 }
 
 /** Whether a step runs in the member's checkout as it is: read-only, with no enclosing step that opens a copy. */
