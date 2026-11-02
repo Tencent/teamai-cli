@@ -1,7 +1,7 @@
 /**
  * Real CLI: a prompt step with `workspace: new` and `role: review` runs in a worktree copy that gets the review role's
  * knowledge and the member's channels, through the copy's own pull. A pull in the copy keeps the role, the step's branch
- * holds only its edit, the member's checkout, config and recall index are as they were, and the run records the role.
+ * holds only its edit, the member's checkout, config and recall are as they were, and the run records the role.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -106,6 +106,13 @@ function harness(paths: readonly string[], hooks: string): Record<string, boolea
 
 const REVIEW_HARNESS = { 'rv-only': true, 'rv-docs': true, 'fe-guard': true, 'fe-only': false, 'fe-docs': false, 'rv-hook': false };
 
+/** The team files the member's recall returns, in their checkout, for a query both roles' docs match. */
+function recalled(fixture: BenchmarkFixture): string[] {
+  const answer = spawnSync(path.join(fixture.bin, 'teamai'), ['recall', 'design system review checklist', '--depth', 'lookup'], { cwd: fixture.work, env: fixture.env, encoding: 'utf8' });
+  if (answer.status !== 0) throw new Error(`recall failed: ${answer.stdout}${answer.stderr}`);
+  return [...answer.stdout.matchAll(/^File: .*\/team-repo\/(.+)$/gm)].map(([, file]) => file ?? '');
+}
+
 async function next(fixture: BenchmarkFixture, run: string): Promise<Lease> {
   const answer = envelope(await fixture.teamai(['workflow', 'next', run, '--prepare', '--json', JSON.stringify({ driver: { ...EXTERNAL, can: CAN }, running: [] })]));
   const leased = LeasedSchema.safeParse(answer);
@@ -129,7 +136,7 @@ describe('a prompt step with workspace: new and role: review', () => {
     const memberHome = memberDataHome(fixture);
     const memberConfig = fs.readFileSync(path.join(memberHome, 'config.yaml'), 'utf8');
     const memberRecords = checkoutRecords(memberHome);
-    const memberIndex = fs.readFileSync(path.join(memberHome, 'search-index.json'), 'utf8');
+    const memberRecall = recalled(fixture);
     const memberStatus = fixture.status();
     const memberFiles = filesUnder(fixture.work);
     const run = z.string().parse(envelope(await fixture.teamai(['workflow', 'start', 'review'])).data?.run);
@@ -160,10 +167,11 @@ describe('a prompt step with workspace: new and role: review', () => {
     // 3. The step's branch holds its edit, and nothing that was delivered.
     expect(envelope(reported).data?.accepted, said(reported)).toBe(true);
     expect(committed).toBe('answer.js');
-    // 4. The member's config, checkout record and recall index are as they were.
+    // 4. The member's config, checkout record and recall are as they were: recall serves the member's docs, not the role's.
     expect(fs.readFileSync(path.join(memberHome, 'config.yaml'), 'utf8')).toBe(memberConfig);
     expect(Object.fromEntries(Object.entries(checkoutRecords(memberHome)).filter(([key]) => key in memberRecords))).toEqual(memberRecords);
-    expect(fs.readFileSync(path.join(memberHome, 'search-index.json'), 'utf8')).toBe(memberIndex);
+    expect(memberRecall).toEqual(['docs/fe-docs/components.md']);
+    expect(recalled(fixture)).toEqual(memberRecall);
     expect(fixture.status()).toBe(memberStatus);
     expect(filesUnder(fixture.work).filter((file) => !file.startsWith('.teamai/'))).toEqual(memberFiles.filter((file) => !file.startsWith('.teamai/')));
     // The run records the role of the copy teamai prepared, not the one the driver reported.

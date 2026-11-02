@@ -139,12 +139,12 @@ describe('the indexes a rebuild or a source update drops', () => {
   }
   const left = (files: Record<string, string>): string[] => Object.entries(files).filter(([, file]) => fs.existsSync(file)).map(([name]) => name);
 
-  it("drops no other index when a role copy's own is rebuilt", async () => {
+  it("drops every other index, the shared one included, when a role copy's own is rebuilt, as its pull may have moved the team clone or learnings they read", async () => {
     const files = indexes();
 
     await dropIndexesAfterRebuild(team().copy);
 
-    expect(left(files)).toEqual(['shared', 'roleCopy', 'other']);
+    expect(left(files)).toEqual(['roleCopy']);
   });
 
   it("drops the role copies' indexes when the member's is rebuilt, which rebuild cold with their role", async () => {

@@ -38,11 +38,13 @@ import { parseYaml } from './yaml.js';
  * index of that role's knowledge. A member's rebuild drops every per-checkout
  * index in the partition but its own: recall rebuilds a missing one from that
  * checkout's own roots and selection, a role copy's with its role. A role
- * copy's rebuild drops nothing: what it read, every other index reads too.
- * Only `search-index.json` files are touched.
+ * copy's pull may have moved the team clone or the learnings checkout that
+ * every index reads, the shared one included, so its rebuild drops them all
+ * but its own, as a source update does. Only `search-index.json` files are
+ * touched.
  */
 export async function dropIndexesAfterRebuild(localConfig: LocalConfig): Promise<void> {
-  if (localConfig.stepRole !== undefined) return;
+  if (localConfig.stepRole !== undefined) return dropIndexesAfterSourceUpdate(localConfig);
   await dropCheckoutIndexes(getDataHome(localConfig), getProjectSearchIndexPath(localConfig));
 }
 
