@@ -177,7 +177,7 @@ jobs:
 | 步骤 | 作用 |
 | --- | --- |
 | `plan` | `teamai digest --json --scorer <scorer> --suite <dir> --proposal teamai/self-improvement/<scorer>`：在 `data.improvement` 里输出能作为任务起点的失败：[`digest --json`](#teamai-读取什么) 里这个评分器的失败中，记录了本检出也有的开始 commit、且团队仓库默认分支和提案上都还没有套件任务指向它的那些。每个对象只取一次，按时间从新到旧。`ready` 表示 `improve` 是否运行。 |
-| `improve` | `ready` 时运行：两个或以上失败，或者 origin 上已有提案时再多一个。单个失败不构成规律，即使另一个失败已有合并的任务覆盖。它在团队仓库的全新克隆里运行，在 `teamai/self-improvement/<scorer>` 上并合并默认分支，或从默认分支新建这个分支（[`workspace: { team }`](workflow.md#团队工作区)）。agent 读每个失败、它的 learnings 和评分标准，修改资产，并为每个失败写一个任务。`deliver: pr` 推送分支并打开它的 PR，或更新已经打开的那个。 |
+| `improve` | `ready` 时运行：两个或以上失败，或者 origin 上有默认分支尚未包含的提案时再多一个。单个失败不构成规律，即使另一个失败已有合并的任务覆盖。它在团队仓库的全新克隆里运行，在 `teamai/self-improvement/<scorer>` 上并合并默认分支，或从默认分支新建这个分支（[`workspace: { team }`](workflow.md#团队工作区)）。agent 读每个失败、它的 learnings 和评分标准，修改资产，并为每个失败写一个任务。`deliver: pr` 推送分支并打开它的 PR，或更新已经打开的那个。 |
 
 ```console
 $ teamai digest --json --scorer review-quality --suite benchmarks/regressions --proposal teamai/self-improvement/review-quality \

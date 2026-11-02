@@ -130,7 +130,7 @@ const SUITE_DIR = new RegExp(`^benchmarks/(?:${BENCHMARK_NAME.source.slice(1, -1
 /**
  * The tasks of `suite` that name a subject as their `source`, by the subject's canonical JSON, as `<suite>/tasks/<file>`:
  * those on `proposal` first, then those on the default branch, both as origin has them now, read in the member's team
- * checkout. `hasProposal`: origin has `proposal`. `busy` while a teamai pull or push holds that checkout: the fetch
+ * checkout. `hasProposal`: origin has `proposal`, and its default branch does not hold it. `busy` while a teamai pull or push holds that checkout: the fetch
  * updates the refs a pull updates.
  */
 async function coveringTasks(config: LocalConfig, input: { suite: string; proposal?: string }): Promise<{ tasks: Map<string, string>; hasProposal: boolean } | 'busy'> {
@@ -150,10 +150,13 @@ async function tasksOnOrigin(teamCheckout: string, { suite, proposal }: { suite:
   const prefix = await git(teamCheckout, ['rev-parse', '--show-prefix']);
   const listed = await git(top, ['ls-remote', '--symref', 'origin', 'HEAD', ...(proposal !== undefined ? [`refs/heads/${proposal}`] : [])]);
   const base = /^ref: refs\/heads\/(\S+)\s+HEAD$/m.exec(listed)?.[1];
-  const hasProposal = proposal !== undefined && listed.split('\n').some((line) => line.endsWith(`\trefs/heads/${proposal}`));
-  const branches = [...(hasProposal && proposal !== undefined ? [proposal] : []), ...(base !== undefined ? [base] : [])];
+  const onOrigin = proposal !== undefined && listed.split('\n').some((line) => line.endsWith(`\trefs/heads/${proposal}`));
+  const branches = [...(onOrigin && proposal !== undefined ? [proposal] : []), ...(base !== undefined ? [base] : [])];
 
   if (branches.length > 0) await git(top, ['fetch', '-q', '--no-tags', 'origin', ...branches.map((branch) => `+refs/heads/${branch}:refs/remotes/origin/${branch}`)]);
+  // A branch the default branch holds is a proposal that merged and was kept, as the dashboard reads it: none is open.
+  const merged = onOrigin && base !== undefined && await git(top, ['merge-base', '--is-ancestor', `refs/remotes/origin/${proposal}`, `refs/remotes/origin/${base}`]).then(() => true, () => false);
+  const hasProposal = onOrigin && !merged;
   const tasks = new Map<string, string>();
 
   for (const branch of branches) {

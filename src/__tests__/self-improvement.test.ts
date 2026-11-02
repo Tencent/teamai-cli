@@ -162,6 +162,22 @@ describe('the tasks that already cover a failure', () => {
     });
   });
 
+  it('says there is no proposal once main holds the branch, as after its pull request merged and kept it', async () => {
+    const { writer, member } = team();
+    git(writer, 'checkout', '-q', '-b', 'teamai/self-improvement/review-quality');
+    commit(writer, { 'benchmarks/regressions/tasks/proposed.yaml': task('s2') }, 'proposal');
+    git(writer, 'push', '-q', 'origin', 'teamai/self-improvement/review-quality');
+    git(writer, 'checkout', '-q', 'main');
+    git(writer, 'merge', '-q', '--no-ff', '-m', 'merge the proposal', 'teamai/self-improvement/review-quality');
+    git(writer, 'push', '-q', 'origin', 'main');
+
+    const covered = await SelfImprovement.coveringTasks(member, { suite: 'benchmarks/regressions', proposal: 'teamai/self-improvement/review-quality' });
+
+    if (covered === 'busy') throw new Error('the sync lock was free');
+    expect(covered.hasProposal).toBe(false);
+    expect(Object.keys(Object.fromEntries(covered.tasks))).toContain(canonicalJson(session('s2')));
+  });
+
   it('says there is no proposal when origin has no such branch', async () => {
     const { member } = team();
 
