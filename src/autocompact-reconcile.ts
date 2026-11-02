@@ -1,12 +1,14 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import YAML from 'yaml';
-import type { LocalConfig, TeamaiConfig } from './types.js';
+import { z } from 'zod';
+import type { JsonValue, LocalConfig, TeamaiConfig } from './types.js';
 import { TOOL_IDS, TOOLS, type ToolDescriptor, type ToolId } from './tools.js';
-import { isAgentExcluded, recordedToolRootDir, resolveAutoCompactTokens } from './types.js';
+import { JsonValueSchema, isAgentExcluded, recordedToolRootDir, resolveAutoCompactTokens } from './types.js';
 import { toolHome } from './tool-home.js';
 import { withFileLock } from './update.js';
 import { pathExists, readFileSafe, readJsonObject, writeFile, writeJson, writeJsonAtomic } from './utils/fs.js';
+import type { JsonObjectRead } from './utils/fs.js';
 import { getUserHome } from './utils/home.js';
 
 // ─── Auto-compact reconcile engine ───────────────────────────
@@ -98,7 +100,11 @@ export async function loadAutoCompactRecord(): Promise<Record<string, string>> {
 
   if (read.kind !== 'ok') return {};
 
-  return Object.fromEntries(Object.entries(read.value).filter((e): e is [string, string] => typeof e[1] === 'string'));
+  return Object.fromEntries(Object.entries(read.value).flatMap(([file, value]) => {
+    const text = z.string().safeParse(value);
+
+    return text.success ? [[file, text.data]] : [];
+  }));
 }
 
 export async function saveAutoCompactRecord(record: Readonly<Record<string, string>>): Promise<void> {
@@ -150,10 +156,18 @@ async function resolveTargets(localConfig: LocalConfig): Promise<Target[]> {
 // ─── Per-kind value computation ──────────────────────────────
 
 /** The value to write, or a reason not to write one for this tool. */
-type Desired = { value: unknown } | { skip: string };
+type Desired = { value: JsonValue } | { skip: string };
 
-function claudeValue(tokens: number, settings: Record<string, unknown>): Desired {
-  const env = settings.env as Record<string, unknown> | undefined;
+/** A settings.json as read, kept whole so a write puts back every key teamai does not own. */
+type SettingsDoc = Extract<JsonObjectRead, { kind: 'ok' }>['value'];
+
+/** The one settings.json field that overrides autoCompactWindow; an `env` that is not an object holds none. */
+const ClaudeEnvOverrideSchema = z.object({
+  env: z.object({ CLAUDE_CODE_AUTO_COMPACT_WINDOW: z.unknown().optional() }).optional().catch(undefined),
+});
+
+function claudeValue(tokens: number, settings: SettingsDoc): Desired {
+  const { env } = ClaudeEnvOverrideSchema.parse(settings);
 
   if (process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW || env?.CLAUDE_CODE_AUTO_COMPACT_WINDOW !== undefined) {
     return { skip: 'CLAUDE_CODE_AUTO_COMPACT_WINDOW is set and overrides autoCompactWindow' };
@@ -190,7 +204,7 @@ async function buddyRatio(home: string): Promise<number> {
     const read = await readJsonObject(path.join(dir, name));
 
     if (read.kind !== 'ok') continue;
-    const ratio = findEmergencyRatio(read.value);
+    const ratio = findEmergencyRatio(JsonValueSchema.parse(read.value));
 
     if (ratio !== undefined) return ratio;
   }
@@ -198,14 +212,18 @@ async function buddyRatio(home: string): Promise<number> {
   return BUDDY_DEFAULT_RATIO;
 }
 
-function findEmergencyRatio(node: unknown): number | undefined {
-  if (!node || typeof node !== 'object') return undefined;
-  const thresholds = (node as Record<string, unknown>).tokenUsageThresholds as Record<string, unknown> | undefined;
-  const emergency = (thresholds?.inputTokens as Record<string, unknown> | undefined)?.emergency;
+/** `tokenUsageThresholds.inputTokens.emergency` on one node of a product config, when it is a usable ratio. */
+const EmergencyRatioSchema = z.object({
+  tokenUsageThresholds: z.object({ inputTokens: z.object({ emergency: z.number().gt(0).lte(1) }) }),
+});
 
-  if (typeof emergency === 'number' && emergency > 0 && emergency <= 1) return emergency;
+function findEmergencyRatio(node: JsonValue): number | undefined {
+  if (node === null || !(node instanceof Object)) return undefined;
+  const match = EmergencyRatioSchema.safeParse(node);
 
-  for (const child of Object.values(node as Record<string, unknown>)) {
+  if (match.success) return match.data.tokenUsageThresholds.inputTokens.emergency;
+
+  for (const child of Object.values(node)) {
     const found = findEmergencyRatio(child);
 
     if (found !== undefined) return found;
@@ -222,7 +240,7 @@ async function buddyValue(tokens: number, tool: ToolId, home: string): Promise<D
   const models = await readJsonObject(path.join(home, 'models.json'));
   const list = models.kind === 'ok' ? models.value.models : undefined;
 
-  if (Array.isArray(list) && list.some((m) => !(typeof (m as Record<string, unknown>)?.maxInputTokens === 'number'))) {
+  if (Array.isArray(list) && list.some((m) => !BuddyModelWindowSchema.safeParse(m).success)) {
     return { skip: `a custom model in ${tool}'s models.json has no maxInputTokens, so ${tool} would compact it only at autoCompactWindow itself` };
   }
 
@@ -235,6 +253,17 @@ async function buddyValue(tokens: number, tool: ToolId, home: string): Promise<D
 
   return { value: window };
 }
+
+/** A models.json entry whose context window CodeBuddy knows. */
+const BuddyModelWindowSchema = z.object({ maxInputTokens: z.number() });
+
+/** A model an `llm-pi-ai` provider lists; an entry without both fields is skipped. */
+const PiAiModelSchema = z.object({ id: z.string(), contextWindow: z.number() }).nullable().catch(null);
+
+/** The `llm-pi-ai` row config: providers by name, each with its model list. Anything else reads as no models. */
+const PiAiConfigSchema = z.object({
+  providers: z.record(z.string(), z.object({ models: z.array(PiAiModelSchema).catch([]) }).nullable().catch(null)).catch({}),
+}).catch({ providers: {} });
 
 /** Context windows of the models dsh can route to: DeepSeek's own, plus the `llm-pi-ai` providers patched in. */
 async function dshModels(home: string): Promise<{ provider: string; model: string; window: number }[]> {
@@ -254,13 +283,12 @@ async function dshModels(home: string): Promise<{ provider: string; model: strin
 
     for (const row of rows ?? []) {
       if (row?.id !== 'llm-pi-ai') continue;
-      const providers = (row.config as Record<string, unknown> | undefined)?.providers as Record<string, { models?: unknown }> | undefined;
+      const { providers } = PiAiConfigSchema.parse(row.config);
 
-      for (const [provider, def] of Object.entries(providers ?? {})) {
-        for (const m of Array.isArray(def?.models) ? def.models : []) {
-          const { id, contextWindow } = m as { id?: unknown; contextWindow?: unknown };
-
-          if (typeof id !== 'string' || typeof contextWindow !== 'number') continue;
+      for (const [provider, def] of Object.entries(providers)) {
+        for (const m of def?.models ?? []) {
+          if (m === null) continue;
+          const { id, contextWindow } = m;
 
           if (!models.some((x) => x.provider === provider && x.model === id)) models.push({ provider, model: id, window: contextWindow });
         }
@@ -283,7 +311,12 @@ async function dshValue(tokens: number, home: string): Promise<Desired> {
 
 // ─── Reading and writing each file kind ──────────────────────
 
-function parseRows(source: string | null): Record<string, unknown>[] | null {
+/** One row of a cordis.patch.yml list; a row that is not a map reads as null. */
+const DshRowSchema = z.object({ id: z.unknown().optional(), config: z.unknown().optional() }).nullable().catch(null);
+
+type DshRow = z.infer<typeof DshRowSchema>;
+
+function parseRows(source: string | null): DshRow[] | null {
   if (source === null) return [];
   const doc = YAML.parseDocument(source);
 
@@ -291,8 +324,9 @@ function parseRows(source: string | null): Record<string, unknown>[] | null {
   const value: unknown = doc.toJS();
 
   if (value === null || value === undefined) return [];
+  const rows = z.array(DshRowSchema).safeParse(value);
 
-  return Array.isArray(value) ? value as Record<string, unknown>[] : null;
+  return rows.success ? rows.data : null;
 }
 
 const CODEX_KEY = 'model_auto_compact_token_limit';
@@ -302,15 +336,27 @@ const codexKeyLineRe = new RegExp(`^[ \\t]*(?:${CODEX_KEY}|"${CODEX_KEY}"|'${COD
 
 type MultilineQuote = '"""' | "'''";
 
+/** The top-level key line: its byte range and its raw value text. */
+interface TomlKeyLine {
+  start: number;
+  end: number;
+  value: string;
+}
+
+interface TomlTop {
+  tableAt: number;
+  key: TomlKeyLine | null;
+}
+
 /**
  * The top level of a config.toml: where the first table header starts
  * (`source.length` when there is none) and the top-level key line, if any.
  * Lines inside a multiline string are content, never a header or a key, so a
  * `[Rules]` in `developer_instructions = """..."""` does not end the region.
  */
-function scanTomlTop(source: string): { tableAt: number; key: { start: number; end: number; value: string } | null } {
+function scanTomlTop(source: string): TomlTop {
   let open: MultilineQuote | null = null;
-  let key: { start: number; end: number; value: string } | null = null;
+  let key: TomlKeyLine | null = null;
   let offset = 0;
 
   while (offset < source.length) {
@@ -363,7 +409,7 @@ function multilineOpenAfter(line: string, open: MultilineQuote | null): Multilin
     if (c === '#') return null;
 
     if (line.startsWith('"""', i) || line.startsWith("'''", i)) {
-      open = line.slice(i, i + 3) as MultilineQuote;
+      open = line.startsWith('"""', i) ? '"""' : "'''";
       i += 3;
     } else if (c === '"' || c === "'") {
       // A one-line string: skip to its closing quote.
@@ -402,7 +448,7 @@ export function spliceCodexAutoCompact(source: string, value: number | null): st
 }
 
 /** The current value as JSON text (undefined when absent), or `unreadable`. */
-async function readCurrent(t: Target): Promise<{ current: string | undefined; doc?: Record<string, unknown> } | 'unreadable'> {
+async function readCurrent(t: Target): Promise<{ current: string | undefined; doc?: SettingsDoc } | 'unreadable'> {
   if (t.kind === 'claude' || t.kind === 'buddy') {
     const read = await readJsonObject(t.file);
 
@@ -429,7 +475,7 @@ async function readCurrent(t: Target): Promise<{ current: string | undefined; do
 }
 
 /** Write `value`, or remove the setting when it is null. */
-async function apply(t: Target, value: unknown, doc?: Record<string, unknown>): Promise<void> {
+async function apply(t: Target, value: JsonValue, doc?: SettingsDoc): Promise<void> {
   if (t.kind === 'claude' || t.kind === 'buddy') {
     const next = { ...doc };
 
@@ -443,6 +489,7 @@ async function apply(t: Target, value: unknown, doc?: Record<string, unknown>): 
   const source = (await readFileSafe(t.file)) ?? '';
 
   if (t.kind === 'codex') {
+    // SAFETY: reconcileAutoCompactForConfig gives a codex target only `tokens` (a number) or null.
     await writeFile(t.file, spliceCodexAutoCompact(source, value as number | null));
 
     return;
@@ -451,7 +498,9 @@ async function apply(t: Target, value: unknown, doc?: Record<string, unknown>): 
   const yamlDoc: YAML.Document = YAML.parseDocument(source);
 
   if (yamlDoc.contents === null) yamlDoc.contents = yamlDoc.createNode([]);
-  const rows = yamlDoc.contents as YAML.YAMLSeq;
+  const rows = yamlDoc.contents;
+
+  if (!YAML.isSeq(rows)) throw new Error(`${t.file} does not hold a list of rows`);
   rows.items = rows.items.filter((row) => !(YAML.isMap(row) && row.get('id') === DSH_ROW_ID));
 
   if (value !== null) rows.items.push(yamlDoc.createNode({ id: DSH_ROW_ID, config: value }));
@@ -470,7 +519,7 @@ export async function reconcileAutoCompactForConfig(
   localConfig: LocalConfig,
   record: Readonly<Record<string, string>>,
 ): Promise<AutoCompactReconcileResult> {
-  const managed: Record<string, string> = { ...record };
+  const managed = { ...record };
   const changes: AutoCompactChange[] = [];
   const tokens = resolveAutoCompactTokens(localConfig, teamConfig);
   const targets = await resolveTargets(localConfig);
@@ -530,7 +579,7 @@ export async function reconcileAutoCompactForConfig(
       managed[t.file] = value;
       changes.push({ tool: t.tool, file: t.file, action: 'updated', value });
     } catch (e) {
-      changes.push({ tool: t.tool, file: t.file, action: 'skipped', reason: (e as Error).message, notable: true });
+      changes.push({ tool: t.tool, file: t.file, action: 'skipped', reason: e instanceof Error ? e.message : String(e), notable: true });
     }
   }
 
