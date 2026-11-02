@@ -250,12 +250,15 @@ jobs:
           gh pr edit "$PR" -R "$GITHUB_REPOSITORY" --body-file body.md
       - name: Fail on a regression
         run: |
-          jq -e '[.data.done.outputs.table.pairs[]? | select(.dimension == "team")] as $pairs
-            | ($pairs | length) > 0
+          jq -e '.data.done.outputs.table as $table
+            | [$table.pairs[]? | select(.dimension == "team")] as $pairs
+            | ($table.invalid | length) == 0
+              and all($table.results[]?; .counts.not_run == 0)
+              and ($pairs | length) > 0
               and all($pairs[].tasks[]; .to.planned > 0 and .to.passed * .from.planned >= .from.passed * .to.planned)' done.json
 ```
 
-It runs on any PR that changes an asset, a person's too, so every change is measured against every failure fixed before. Each push to the PR runs it again and replaces the section between the two markers; the rest of the body stays, so the file list `teamai push` wrote when it opened the PR does not grow when a later run updates it: the PR's files tab has the current set. `--team-ref "$HEAD_REF"` pins the run to the PR's branch: the `pulled` arms and the suite's tasks come from it, the `main` arms from `main`. The judge agreement table lists the scorer a self-improvement PR is for, and every scorer on a person's PR. The last step fails the job when a task passes less often on the PR than on `main` with any tool, or when the run compared no `main` and PR arms. Mark the job required in the team repo's merge rules to keep a change that fails it out of `main`.
+It runs on any PR that changes an asset, a person's too, so every change is measured against every failure fixed before. Each push to the PR runs it again and replaces the section between the two markers; the rest of the body stays, so the file list `teamai push` wrote when it opened the PR does not grow when a later run updates it: the PR's files tab has the current set. `--team-ref "$HEAD_REF"` pins the run to the PR's branch: the `pulled` arms and the suite's tasks come from it, the `main` arms from `main`. The judge agreement table lists the scorer a self-improvement PR is for, and every scorer on a person's PR. The last step fails the job when a task passes less often on the PR than on `main` with any tool, when a task's check could not run or passed before any change, when a trial did not run, or when the run compared no `main` and PR arms. Mark the job required in the team repo's merge rules to keep a change that fails it out of `main`.
 
 The dashboard's [Self-improvement page](dashboard.md#self-improvement) follows each proposal and each landed change: the assets it touched, its proof on the regression suite per tool, and the scorer's pass rate before and after it landed.
 
