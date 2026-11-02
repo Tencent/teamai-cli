@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fse from 'fs-extra';
 import os from 'node:os';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 vi.mock('../config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../config.js')>()),
@@ -166,6 +167,101 @@ describe('doctor — the tool trusts the project it reads team files from', () =
       const found = await check('Pi trusts this project, so it loads its team MCP servers');
       expect(await found?.check()).toBe(false);
       expect(found?.fix).toContain(`${path.join(projectRoot, '.pi', 'mcp.json')} holds team MCP servers (issues)`);
+    });
+  });
+
+  // Muse Code 1.4.14 keeps `{ "schema_version": 1, "projects": { "<git root>":
+  // { "decision": "trusted" | "untrusted" } } }` in $XDG_CONFIG_HOME/muse/trust.json,
+  // keyed by the real path of the checkout's own git root, exact match only.
+  // `muse exec` runs an undecided workspace untrusted.
+  describe('Muse Code workspace trust', () => {
+    const SKILLS = 'Muse Code trusts this project, so it loads its team skills';
+    const trustFile = (): string => path.join(homeDir, '.config', 'muse', 'trust.json');
+    const decided = (dir: string, decision: string): object => ({ schema_version: 1, projects: { [dir]: { decision } } });
+
+    beforeEach(async () => {
+      execFileSync('git', ['init', '-q'], { cwd: projectRoot });
+      await fse.ensureDir(path.join(homeDir, '.config', 'muse'));
+      teamConfig.toolPaths = { muse: { skills: '.agents/skills' } };
+      await deliverSkill('.agents/skills', 'release-notes');
+    });
+
+    it('fails while Muse has no decision for the project, naming the entry that trusts it', async () => {
+      const found = await check(SKILLS);
+
+      expect(await found?.check()).toBe(false);
+      expect(found?.fix).toContain(`${path.join(projectRoot, '.agents', 'skills')} holds team skills (release-notes)`);
+      expect(found?.fix).toContain(trustFile());
+      expect(found?.fix).toContain(`"${projectRoot}": {"decision": "trusted"}`);
+    });
+
+    it('passes once Muse trusts the git root', async () => {
+      await fse.outputJson(trustFile(), decided(projectRoot, 'trusted'));
+
+      expect(await (await check(SKILLS))?.check()).toBe(true);
+    });
+
+    it('fails on a recorded "untrusted", which Muse never asks about again', async () => {
+      await fse.outputJson(trustFile(), decided(projectRoot, 'untrusted'));
+
+      const found = await check(SKILLS);
+      expect(await found?.check()).toBe(false);
+      expect(found?.fix).toContain('records "untrusted"');
+    });
+
+    it('does not count a trusted parent folder', async () => {
+      await fse.outputJson(trustFile(), decided(tempDir, 'trusted'));
+
+      expect(await (await check(SKILLS))?.check()).toBe(false);
+    });
+
+    it('wants an entry of its own for a linked worktree', async () => {
+      const git = (...args: string[]): void => {
+        execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...args], { cwd: projectRoot });
+      };
+      git('commit', '-q', '--allow-empty', '-m', 'init');
+      const main = projectRoot;
+      const worktree = path.join(tempDir, 'web-app-review');
+      git('worktree', 'add', '-q', worktree);
+      Object.assign(localConfig, { projectRoot: worktree });
+      projectRoot = worktree;
+      await deliverSkill('.agents/skills', 'release-notes');
+      await fse.outputJson(trustFile(), decided(main, 'trusted'));
+
+      const found = await check(SKILLS);
+      expect(await found?.check()).toBe(false);
+      expect(found?.fix).toContain(`"${worktree}": {"decision": "trusted"}`);
+    });
+
+    it('reads trust.json under XDG_CONFIG_HOME', async () => {
+      const xdg = path.join(tempDir, 'xdg');
+      vi.stubEnv('XDG_CONFIG_HOME', xdg);
+      await fse.ensureDir(path.join(xdg, 'muse'));
+      await fse.outputJson(path.join(xdg, 'muse', 'trust.json'), decided(projectRoot, 'trusted'));
+
+      expect(await (await check(SKILLS))?.check()).toBe(true);
+    });
+
+    it('checks the team MCP servers it reads from the project .mcp.json', async () => {
+      teamConfig.toolPaths = { claude: { mcp: '.claude.json', mcpProject: '.mcp.json' }, muse: { mcp: '.config/muse/settings.json' } };
+      await fse.outputFile(path.join(repoPath, 'mcp', 'mcp.yaml'), 'servers:\n  - name: issues\n    transport: stdio\n    command: issues-server\n');
+      await fse.outputJson(path.join(projectRoot, '.mcp.json'), { mcpServers: { issues: { type: 'stdio', command: 'issues-server' } } });
+      await fse.outputJson(managedMcpManifestPath(getDataHome(localConfig), projectRoot), { [managedMcpManifestKey('claude', true)]: [{ name: 'issues', hash: 'h' }] });
+
+      const found = await check('Muse Code trusts this project, so it loads its team MCP servers');
+      expect(await found?.check()).toBe(false);
+      expect(found?.fix).toContain(`${path.join(projectRoot, '.mcp.json')} holds team MCP servers (issues)`);
+    });
+
+    it('checks teamai\'s hooks in a self-mode project\'s .muse/hooks.json', async () => {
+      Object.assign(localConfig, { repo: { kind: 'self', localPath: projectRoot, remote: 'owner/repo' } });
+      teamConfig.toolPaths = { muse: { settings: '.muse/hooks.json' } };
+      const hooksFile = path.join(projectRoot, '.muse', 'hooks.json');
+      await fse.outputJson(hooksFile, { hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'teamai hook-dispatch session-start' }] }] } });
+
+      const found = await check('Muse Code trusts this project, so it loads its team hooks');
+      expect(await found?.check()).toBe(false);
+      expect(found?.fix).toContain(`${hooksFile} holds teamai's hooks`);
     });
   });
 });

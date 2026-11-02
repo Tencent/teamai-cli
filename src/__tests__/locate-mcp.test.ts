@@ -119,7 +119,8 @@ const ROWS: readonly MatrixRow[] = [
     writtenBy: 'claude',
     existingDirs: ['~/.config/muse'], installed: { probe: '~/.config/muse', met: true },
     reads: [{ at: '<root>/.mcp.json', key: ['mcpServers'], when: 'workspaceUnder' }],
-    source: "muse-bin 1.4.11: Muse reads <root>/.mcp.json, the file the claude target writes",
+    readGates: [{ kind: 'muse-workspace-trust', config: '~/.config/muse/trust.json', checkout: '<root>' }],
+    source: 'muse-bin 1.4.11: Muse reads <root>/.mcp.json, the file the claude target writes; 1.4.14 only in a trusted workspace',
   },
   {
     tool: 'opencode', scope: 'project',

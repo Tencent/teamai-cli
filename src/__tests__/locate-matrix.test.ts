@@ -88,7 +88,8 @@ const ROWS: readonly FilesRow[] = [
     writes: ['<root>/.agents/skills'],
     existingDirs: ['/xdg/muse'], installed: { probe: '/xdg/muse', met: true },
     reads: [{ at: '<root>/.agents/skills', when: 'workspaceUnder' }],
-    source: MUSE_SOURCE,
+    readGates: [{ kind: 'muse-workspace-trust', config: '/xdg/muse/trust.json', checkout: '<root>' }],
+    source: `${MUSE_SOURCE}; Muse Code 1.4.14 reads trust.json beside its settings`,
   },
   {
     tool: 'hermes', scope: 'user', platforms: ['darwin', 'linux'],

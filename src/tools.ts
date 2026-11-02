@@ -122,7 +122,7 @@ export type RunTimeVia = 'session-hook' | 'extension' | 'plugin';
  * teamai wrote there: its trust in the project, or its approval of the
  * project's MCP servers. `read-gates.ts` evaluates each one.
  */
-export type ReadGateKind = 'codex-project-trust' | 'pi-project-trust';
+export type ReadGateKind = 'codex-project-trust' | 'pi-project-trust' | 'muse-workspace-trust';
 
 /** The frontmatter teamai writes above its blocks when it creates an owned blocks file a rules loader reads. */
 export type BlocksHeader = 'always-apply' | 'apply-to-all' | 'trigger-always-on' | 'inclusion-always';
@@ -221,7 +221,7 @@ export type McpChannels = Scoped<McpUser, McpProject> & {
 export type HookFormat = 'claude' | 'cursor' | 'codex' | 'copilot' | 'zcode';
 
 /** teamai's entries in the hook list of the scope's configured hook file (`toolPaths.settings`, Copilot's `toolPaths.hooks`), in `format`. */
-export type HookSettings<R> = { readonly channel: 'settings'; readonly format: HookFormat; readonly reads: Reads<R> };
+export type HookSettings<R> = { readonly channel: 'settings'; readonly format: HookFormat; readonly reads: Reads<R>; readonly readGates?: readonly ReadGateKind[] };
 
 /** A file or directory of teamai's own the tool loads from its home, written by the tool's own adapter. */
 export type HookAdapterId = 'opencode-plugin' | 'pi-extension' | 'omp-extension' | 'hermes-plugin' | 'openclaw-hook' | 'dsh-hooks' | 'kiro-hooks' | 'agy-hooks';
@@ -1277,6 +1277,7 @@ export const TOOLS = {
         { base: 'home', path: '.claude/skills', evidence: 'verified' },
       ],
       project: [{ base: 'project', path: '.agents/skills', when: 'workspaceUnder', evidence: 'verified' }],
+      readGates: ['muse-workspace-trust'],
     },
     rules: {
       user: { channel: 'inline', label: 'Muse Code AGENTS.md' },
@@ -1292,10 +1293,10 @@ export const TOOLS = {
     },
     mcp: {
       user: { format: 'muse', reads: [{ base: 'home', path: '.config/muse/settings.json', evidence: 'source' }] },
-      project: { format: 'muse', writtenBy: 'claude', reads: [{ base: 'project', path: '.mcp.json', when: 'workspaceUnder', evidence: 'source' }] },
+      project: { format: 'muse', writtenBy: 'claude', reads: [{ base: 'project', path: '.mcp.json', when: 'workspaceUnder', evidence: 'source' }], readGates: ['muse-workspace-trust'] },
     },
     // Muse takes Codex's hook shape: it drops a group carrying any key but `matcher` and `hooks`, so Claude's described groups never reach it.
-    hooks: { user: { channel: 'settings', format: 'codex', reads: [{ base: 'home', path: '.config/muse/settings.json', evidence: 'verified' }] }, self: { channel: 'settings', format: 'codex', reads: [{ base: 'project', path: '.muse/hooks.json', when: 'workspaceUnder', evidence: 'verified' }] } },
+    hooks: { user: { channel: 'settings', format: 'codex', reads: [{ base: 'home', path: '.config/muse/settings.json', evidence: 'verified' }] }, self: { channel: 'settings', format: 'codex', reads: [{ base: 'project', path: '.muse/hooks.json', when: 'workspaceUnder', evidence: 'verified' }], readGates: ['muse-workspace-trust'] } },
     sessions: 'none',
     launch: 'muse',
     tokens: 'muse-session',

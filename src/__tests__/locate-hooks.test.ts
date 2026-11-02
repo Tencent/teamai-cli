@@ -155,7 +155,10 @@ const ROWS: readonly (FilesRow | OtherRow)[] = [
     retired: [{ at: '~/.config/muse/settings.json', was: 'default' }],
     source: `${MUSE_SOURCE}; earlier releases wrote the hooks to ~/.config/muse`,
   }),
-  selfSettings('muse', '<root>/.muse/hooks.json', '~/.config/muse', 'workspaceUnder', { source: `${SELF}: runs only in a trusted workspace` }),
+  selfSettings('muse', '<root>/.muse/hooks.json', '~/.config/muse', 'workspaceUnder', {
+    readGates: [{ kind: 'muse-workspace-trust', config: '~/.config/muse/trust.json', checkout: '<root>' }],
+    source: `${SELF}: runs only in a trusted workspace (Muse Code 1.4.14 trust.json)`,
+  }),
   settings('muse', 'project', '/xdg/muse/settings.json', '/xdg/muse', {
     env: { XDG_CONFIG_HOME: '/xdg' }, reads: [{ at: '/xdg/muse/settings.json', when: 'always', key: HOOK_LIST }],
     retired: [{ at: '~/.config/muse/settings.json', was: 'default' }],

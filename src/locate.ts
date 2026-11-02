@@ -145,7 +145,9 @@ export type ReadGate =
    * `config`: Pi's trust.json, whose nearest entry walking up from the
    * checkout decides; else `defaultProjectTrust` in `settings`.
    */
-  | { readonly kind: 'pi-project-trust'; readonly config: string; readonly settings: string; readonly checkout: string };
+  | { readonly kind: 'pi-project-trust'; readonly config: string; readonly settings: string; readonly checkout: string }
+  /** `config`: Muse's trust.json, whose entry for the real path of the checkout's git root decides. */
+  | { readonly kind: 'muse-workspace-trust'; readonly config: string; readonly checkout: string };
 
 /**
  * A place teamai wrote this resource to before and no longer writes, and why.
@@ -617,6 +619,8 @@ async function readGatesOf(kinds: readonly ReadGateKind[] | undefined, install: 
         const roots = rootsOf('pi', user, host);
         return { kind, config: roots.declared('home', '.pi/agent/trust.json'), settings: roots.declared('home', '.pi/agent/settings.json'), checkout: install.projectRoot };
       }
+      case 'muse-workspace-trust':
+        return { kind, config: rootsOf('muse', user, host).declared('home', '.config/muse/trust.json'), checkout: install.projectRoot };
       default: {
         const unhandled: never = kind;
         return unhandled;
@@ -1147,7 +1151,7 @@ async function settingsHooksOf(
     format: channel.format,
     workspace: null,
     reads: await readsOf(channel.reads, roots, host, HOOK_LIST_KEY),
-    readGates: [],
+    readGates: await readGatesOf(channel.readGates, install, host),
     retired: settled(own, [unmoved], host.path),
     gates,
   };

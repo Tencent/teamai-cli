@@ -28,6 +28,8 @@ export function readGateCheckName(gate: ReadGate, noun: string): string {
       return `Codex trusts this project, so it loads its team ${noun}`;
     case 'pi-project-trust':
       return `Pi trusts this project, so it loads its team ${noun}`;
+    case 'muse-workspace-trust':
+      return `Muse Code trusts this project, so it loads its team ${noun}`;
     default: {
       const unhandled: never = gate;
       return unhandled;
@@ -45,6 +47,8 @@ export async function readGateVerdict(gate: ReadGate, held: Held): Promise<ReadG
     }
     case 'pi-project-trust':
       return piProjectTrust(gate, `${held.summary}, but Pi loads a project's ${held.noun} only in a trusted project`);
+    case 'muse-workspace-trust':
+      return museWorkspaceTrust(gate, `${held.summary}, but Muse Code loads a project's ${held.noun} only in a trusted workspace`);
     default: {
       const unhandled: never = gate;
       return unhandled;
@@ -98,5 +102,35 @@ async function piProjectTrust(gate: Extract<ReadGate, { kind: 'pi-project-trust'
     met: false,
     fix: `${cause}, and ${gate.config} has no entry for ${root} or a folder above it. Start \`pi\` in ${root} and choose Trust, `
       + `or ${grant}. Until then a headless run (\`pi -p\`) skips them.`,
+  };
+}
+
+/**
+ * Muse Code 1.4.14: the entry for the real path of the checkout's own git
+ * root decides, exactly (no parent, and a linked worktree is its own); a store
+ * Muse cannot parse fails closed to untrusted. `muse exec` runs an undecided
+ * workspace untrusted.
+ */
+async function museWorkspaceTrust(gate: Extract<ReadGate, { kind: 'muse-workspace-trust' }>, cause: string): Promise<ReadGateVerdict> {
+  const { resolveAnchors } = await import('./utils/git.js');
+  const target = (await resolveAnchors(gate.checkout))?.workspaceRoot ?? await realFilePath(gate.checkout);
+  const grant = `add ${JSON.stringify(target)}: {"decision": "trusted"} under "projects" in ${gate.config}, beside "schema_version": 1`;
+  const store = await readJsonObject(gate.config);
+  if (store.kind === 'invalid') return unreadable(cause, gate.config, `does not parse (${store.error})`, 'Muse Code');
+  if (store.kind === 'ok') {
+    const { schema_version: version, projects } = store.value;
+    if (version !== 1) return unreadable(cause, gate.config, `has schema_version ${JSON.stringify(version)}, where Muse Code takes 1`, 'Muse Code');
+    const entry = typeof projects === 'object' && projects !== null ? Object.entries(projects).find(([dir]) => dir === target)?.[1] : undefined;
+    const decision = typeof entry === 'object' && entry !== null && 'decision' in entry ? entry.decision : undefined;
+    if (decision === 'trusted') return MET;
+    if (decision === 'untrusted') {
+      return { met: false, fix: `${cause}, and ${gate.config} records "untrusted" for ${target}, so Muse Code never asks again. Set that decision to "trusted".` };
+    }
+    if (decision !== undefined) return unreadable(cause, gate.config, `holds the decision ${JSON.stringify(decision)} for ${target}, where Muse Code takes "trusted" or "untrusted"`, 'Muse Code');
+  }
+  return {
+    met: false,
+    fix: `${cause}, and ${gate.config} has no decision for ${target}. Start \`muse\` in ${target} and choose "Trust and continue", `
+      + `or ${grant}. Each worktree needs its own entry. Until then \`muse exec\` skips them.`,
   };
 }

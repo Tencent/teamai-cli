@@ -1741,6 +1741,28 @@ export async function buildLocalAgentMcpLocationChecks(ctx: DoctorContext): Prom
 }
 
 /**
+ * A tool that runs a project's hook file only in a trusted project (Muse Code
+ * in self mode): teamai's hooks there are inert until the member trusts it.
+ * Built per gate `locate` declares, while the file holds a teamai hook.
+ */
+export async function buildHookReadGateChecks(ctx: DoctorContext): Promise<Check[]> {
+  const { localConfig, teamConfig } = ctx;
+  if (!teamConfig || localConfig.scope !== 'project') return [];
+  const install = installOf(teamConfig, localConfig);
+  const { TEAMAI_HOOK_SUBCOMMANDS } = await import('./hooks.js');
+  const checks: Check[] = [];
+  for (const tool of Object.keys(ctx.toolPaths)) {
+    const where = await locate(tool, 'hooks', install);
+    // Only a hook file is gated; an adapter's directory is the tool's home.
+    if (where.channel !== 'files' || !('format' in where) || where.readGates.length === 0) continue;
+    const own = writable(where);
+    if (own === null || !(await readFileSafe(own.path))?.includes(`teamai ${TEAMAI_HOOK_SUBCOMMANDS[0]}`)) continue;
+    checks.push(...await readGateChecks(where.readGates, { summary: `${own.path} holds teamai's hooks`, noun: 'hooks', names: [] }));
+  }
+  return checks;
+}
+
+/**
  * A tool that reads a project's MCP file only once it trusts the project, or
  * starts its servers only once the member approves them (Codex #954): team
  * servers a pull or `teamai mcp inject` wrote there are on disk and inert
