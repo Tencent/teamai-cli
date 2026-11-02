@@ -19,6 +19,7 @@ export const ArmTeamSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('without'), paths: z.tuple([TeamPathSchema], TeamPathSchema), revision: CommitSchema }).strict(),
   z.object({ kind: z.literal('none') }).strict(),
 ]);
+
 export type ArmTeam = z.infer<typeof ArmTeamSchema>;
 
 /**
@@ -31,6 +32,7 @@ export const SkillChangesSchema = z.object({
   defaults: BenchmarkNameSchema.optional(),
   skills: z.array(z.object({ name: z.string().min(1), change: z.enum(['added', 'removed', 'changed']) }).strict()).nonempty(),
 }).strict();
+
 export type SkillChanges = z.infer<typeof SkillChangesSchema>;
 
 /**
@@ -45,6 +47,7 @@ export const TrialLimitsSchema = z.object({
   /** Agent turns, as the tool counts them. */
   maxTurns: z.number().int().positive().optional(),
 }).strict();
+
 export type TrialLimits = z.infer<typeof TrialLimitsSchema>;
 
 /**
@@ -52,5 +55,6 @@ export type TrialLimits = z.infer<typeof TrialLimitsSchema>;
  * the commit start made of the files it names in the suite directory, as `kind` says.
  */
 export const AddedSchema = z.object({ kind: z.enum(['solution', 'suite']), commit: CommitSchema, paths: z.array(z.string().min(1)).nonempty() }).strict();
+
 export type Added = z.infer<typeof AddedSchema>;
 

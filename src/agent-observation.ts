@@ -100,7 +100,7 @@ export function isRecordableName(value: string): boolean {
   return NAME.test(value);
 }
 
-export function isLabelShaped(value: string): boolean {
+export function isRecordableLabel(value: string): boolean {
   return LABEL.test(value);
 }
 

@@ -15,6 +15,7 @@ import type { ArchivedPass, StepPass, StepState } from '../workflow/step-state.j
 import { stepDefinitions } from '../workflow/scope.js';
 import { LimitSchema } from '../workflow/requirements.js';
 import type { RunState } from '../workflow/types.js';
+import { definedFields } from '../utils/defined-fields.js';
 import { CheckOutputSchema, type CheckResult } from './check.js';
 import { compareAgent } from './agent-match.js';
 import { baselineStepOf, checkStepOf, correctnessScorerName, type BenchmarkPlan, type PlannedArm, type PlannedTask, type PlannedTrial } from './plan.js';
@@ -22,14 +23,17 @@ import type { RunPlan } from './run-plan.js';
 import { ArmTeamSchema, SkillChangesSchema, TrialLimitsSchema } from './terms.js';
 
 export const TRIAL_RESULTS = ['passed', 'failed', 'error', 'unscored', 'not_run'] as const;
+
 export type TrialResult = (typeof TRIAL_RESULTS)[number];
 
 /** What trying a task's check on its clean starting commit showed. Only `valid` lets its trials run. */
 const BASELINES = ['valid', 'invalid', 'could_not_run', 'not_run', 'not_needed'] as const;
+
 export type Baseline = (typeof BASELINES)[number];
 
 /** The not enforced requirements of a trial's prompt that the record keeps: those of the suite's limits. */
 const UNENFORCED_LIMITS = ['max_turns', 'budget', 'on_limit'] as const;
+
 type UnenforcedLimit = (typeof UNENFORCED_LIMITS)[number];
 
 /**
@@ -76,6 +80,7 @@ export const BenchmarkRecordSchema = z.object({
     scoringCost: z.object({ amount: z.number().nonnegative(), unit: z.string().min(1), complete: z.boolean() }).optional(),
   })),
 });
+
 export type BenchmarkRecord = z.infer<typeof BenchmarkRecordSchema>;
 
 /** A benchmark run's record: its plan's trials, classified, with the run they ran in. No prompt, command, URL or path. */
@@ -92,6 +97,7 @@ export const BenchmarkRunRecordSchema = BenchmarkRecordSchema.extend({
   /** The workflow the run ran: the team's `teamai-benchmark`, or teamai's default, by the hash of its bytes. */
   workflow: z.object({ name: z.string(), origin: RunOriginSchema, sourceHash: z.string() }),
 });
+
 export type BenchmarkRunRecord = z.infer<typeof BenchmarkRunRecordSchema>;
 
 /** `runs/<run>/benchmark.json`: where a run's benchmark record is kept on this machine. */
@@ -105,39 +111,51 @@ export function benchmarkRecordFile(runsRoot: string, run: string): string {
  */
 export function benchmarkRecord(run: RunState, { plan, prefix }: RunPlan): BenchmarkRecord {
   const stateOf = (step: string): StepState | undefined => run.steps.find((state) => state.id === `${prefix}${step}`);
+
   const verdictsOf = (trial: PlannedTrial): EntryVerdict[] => {
     const pass = stateOf(trial.step)?.pass ?? 1;
+
     return (run.verdicts ?? []).filter((verdict) => verdict.step === `${prefix}${trial.step}` && verdict.pass === pass);
   };
+
   const watched = [...new Set((plan.skillChanges ?? []).flatMap(({ skills }) => skills.map(({ name }) => name)))];
-  return {
+
+  return definedFields<BenchmarkRecord>({
     suite: { name: plan.suite.name, sourceHash: plan.suite.sourceHash },
     repetitions: plan.repetitions,
-    ...(plan.limits ? { limits: plan.limits } : {}),
+    limits: plan.limits,
     baselineTeamRevision: plan.baselineTeamRevision,
     scorers: plan.scorers,
     tasks: plan.tasks.map((task) => ({ id: task.id, startingCommit: task.startingCommit, sourceHash: task.sourceHash, baseline: baselineOf(stateOf(baselineStepOf(task.id)), task) })),
     arms: plan.arms,
-    ...(plan.skillChanges ? { skillChanges: plan.skillChanges } : {}),
+    skillChanges: plan.skillChanges,
     trials: plan.trials.map((trial) => {
       const verdicts = verdictsOf(trial);
       const scoringCost = scoringCostOf(verdicts);
       const work = stateOf(trial.step);
       const result = trialResultOf({ prompt: work, work: workOf(run, `${prefix}${trial.step}`), check: stateOf(checkStepOf(trial)), verdicts }, plan, trial);
       const arm = plan.arms.find(({ name }) => name === trial.arm);
+
       const entry = arm?.workflow
         ? projectionOf(promptPassesUnder(run, `${prefix}${trial.step}`), { arm, watched, unenforced: plan.limits?.maxTurns !== undefined ? ['max_turns'] : [] })
         : projectionOf(settledPass(work), { arm, watched, unenforced: [] });
-      return { ...trial, step: `${prefix}${trial.step}`, result, ...entry, ...(scoringCost ? { scoringCost } : {}) };
+
+      const recorded: BenchmarkRecord['trials'][number] = { ...trial, step: `${prefix}${trial.step}`, result, ...entry };
+
+      if (scoringCost) recorded.scoringCost = scoringCost;
+
+      return recorded;
     }),
-  };
+  });
 }
 
 /** The trial's judge costs in the unit the first one stated: incomplete when one stated none or another unit. */
 function scoringCostOf(verdicts: readonly EntryVerdict[]): BenchmarkRecord['trials'][number]['scoringCost'] {
   const [first] = verdicts.flatMap(({ scoringCost }) => scoringCost ?? []);
+
   if (!first) return undefined;
   const inUnit = verdicts.flatMap(({ scoringCost }) => (scoringCost?.unit === first.unit ? [scoringCost] : []));
+
   return {
     amount: inUnit.reduce((sum, cost) => sum + cost.amount, 0),
     unit: first.unit,
@@ -147,6 +165,7 @@ function scoringCostOf(verdicts: readonly EntryVerdict[]): BenchmarkRecord['tria
 
 /** What one prompt pass reported, as a step keeps it. */
 type PromptPass = Pick<StepPass, 'limit' | 'unenforced' | 'durationMs' | 'tokens' | 'cost' | 'agent' | 'used'>;
+
 type TrialEntry = Pick<BenchmarkRecord['trials'][number], 'limit' | 'unenforced' | 'durationMs' | 'tokens' | 'cost' | 'agent' | 'used'>;
 
 /** What `state` reported of its current pass, or nothing when that pass settled no report. */
@@ -166,6 +185,7 @@ function settledPass(state: StepState | undefined): PromptPass[] {
       return [];
     default: {
       const unhandled: never = state;
+
       return unhandled;
     }
   }
@@ -176,6 +196,7 @@ function promptPassesUnder(run: RunState, step: string): PromptPass[] {
   const definitionOf = stepDefinitions(run);
   const isPromptUnder = (id: string): boolean => id.startsWith(`${step}.`) && definitionOf(id)?.prompt !== undefined;
   const launched = (pass: StepPass): boolean => pass.attempt !== undefined;
+
   return [
     ...(run.archive ?? []).filter((pass) => isPromptUnder(pass.step) && launched(pass)),
     ...run.steps.flatMap((state) => (isPromptUnder(state.id) ? [...(state.passes ?? []).filter(launched), ...settledPass(state)] : [])),
@@ -201,24 +222,33 @@ function projectionOf(passes: readonly PromptPass[], { arm, watched, unenforced 
   const notEnforced = [...new Set([...unenforced, ...passes.flatMap((pass) => (pass.unenforced ?? []).flatMap(({ requirement }) => UNENFORCED_LIMITS.filter((known) => known === requirement)))])];
   const durationMs = passes.every((pass) => pass.durationMs !== undefined) ? sum(passes.map((pass) => pass.durationMs)) : undefined;
   const [input, output, cachedInput] = (['input', 'output', 'cachedInput'] as const).map((field) => sum(stated.map((one) => one[field])));
-  const tokens = stated.length > 0 ? {
-    ...(input !== undefined ? { input } : {}), ...(output !== undefined ? { output } : {}), ...(cachedInput !== undefined ? { cachedInput } : {}),
-    complete: passes.every((pass) => pass.tokens?.input !== undefined && pass.tokens.output !== undefined),
-  } : undefined;
-  return {
-    ...(limit ? { limit } : {}),
-    ...(notEnforced.length > 0 ? { unenforced: notEnforced } : {}),
-    ...(durationMs !== undefined ? { durationMs } : {}),
-    ...(tokens ? { tokens } : {}),
-    ...(costed ? { cost: { amount: inUnit.reduce((total, cost) => total + cost.amount, 0), unit: costed.unit, complete: inUnit.length === passes.length } } : {}),
-    ...(agent ? { agent } : {}),
-    ...(observed.length > 0 ? { used: usedOf(observed.flatMap(({ skills }) => skills), observed.length < passes.length ? watched : []) } : {}),
-  };
+  const entry: TrialEntry = {};
+
+  if (limit) entry.limit = limit;
+
+  if (notEnforced.length > 0) entry.unenforced = notEnforced;
+
+  if (durationMs !== undefined) entry.durationMs = durationMs;
+
+  if (stated.length > 0) {
+    entry.tokens = definedFields<NonNullable<TrialEntry['tokens']>>({
+      input, output, cachedInput,
+      complete: passes.every((pass) => pass.tokens?.input !== undefined && pass.tokens.output !== undefined),
+    });
+  }
+
+  if (costed) entry.cost = { amount: inUnit.reduce((total, cost) => total + cost.amount, 0), unit: costed.unit, complete: inUnit.length === passes.length };
+
+  if (agent) entry.agent = agent;
+
+  if (observed.length > 0) entry.used = usedOf(observed.flatMap(({ skills }) => skills), observed.length < passes.length ? watched : []);
+
+  return entry;
 }
 
 /** Each skill in `loaded`, and each of `unsure` not in it as `unknown`. */
 function usedOf(loaded: readonly string[], unsure: readonly string[]): NonNullable<TrialEntry['used']> {
-  return Object.fromEntries([...unsure.filter((skill) => !loaded.includes(skill)).map((skill) => [skill, 'unknown'] as const), ...loaded.map((skill) => [skill, 'loaded'] as const)]);
+  return Object.fromEntries([...unsure.flatMap((skill) => (loaded.includes(skill) ? [] : [[skill, 'unknown'] as const])), ...loaded.map((skill) => [skill, 'loaded'] as const)]);
 }
 
 /**
@@ -239,10 +269,13 @@ function baselineOf(state: StepState | undefined, task: PlannedTask): Baseline {
       break;
     default: {
       const unhandled: never = task.judge;
+
       return unhandled;
     }
   }
+
   const result = checkResultOf(state);
+
   switch (result) {
     case 'failed':
       return 'valid';
@@ -254,6 +287,7 @@ function baselineOf(state: StepState | undefined, task: PlannedTask): Baseline {
       return state?.status === 'failed' || (state?.status === 'cancelled' && state.attempt !== undefined) ? 'could_not_run' : 'not_run';
     default: {
       const unhandled: never = result;
+
       return unhandled;
     }
   }
@@ -269,6 +303,7 @@ type TrialWork = { states: StepState[]; archived: ArchivedPass[]; isPrompt: (id:
 function workOf(run: RunState, step: string): TrialWork {
   const isWork = (id: string): boolean => id === step || id.startsWith(`${step}.`);
   const definitionOf = stepDefinitions(run);
+
   return {
     states: run.steps.filter((state) => isWork(state.id)),
     archived: (run.archive ?? []).filter((pass) => isWork(pass.step)),
@@ -282,6 +317,7 @@ function workOf(run: RunState, step: string): TrialWork {
  */
 function unleased({ states, archived }: TrialWork, counted: (id: string) => boolean = () => true): boolean {
   const leased = (pass: StepPass): boolean => pass.attempt !== undefined;
+
   return !states.some((state) => counted(state.id) && (('attempt' in state && state.attempt !== undefined) || (state.passes ?? []).some(leased)))
     && !archived.some((pass) => counted(pass.step) && leased(pass));
 }
@@ -330,10 +366,13 @@ function trialResultOf({ prompt, work, check, verdicts }: { prompt: StepState | 
       break;
     default: {
       const unhandled: never = prompt;
+
       return unhandled;
     }
   }
+
   const judge = plan.tasks.find((task) => task.id === trial.task)?.judge;
+
   switch (judge?.kind) {
     case 'check':
       return checkResult(check);
@@ -343,6 +382,7 @@ function trialResultOf({ prompt, work, check, verdicts }: { prompt: StepState | 
       return 'unscored';
     default: {
       const unhandled: never = judge;
+
       return unhandled;
     }
   }
@@ -351,6 +391,7 @@ function trialResultOf({ prompt, work, check, verdicts }: { prompt: StepState | 
 function criteriaResult(verdict: EntryVerdict | undefined): TrialResult {
   if (!verdict) return 'unscored';
   const { outcome } = verdict;
+
   switch (outcome.kind) {
     case 'labelled':
       return outcome.passed ? 'passed' : 'failed';
@@ -358,6 +399,7 @@ function criteriaResult(verdict: EntryVerdict | undefined): TrialResult {
       return 'unscored';
     default: {
       const unhandled: never = outcome;
+
       return unhandled;
     }
   }
@@ -365,6 +407,7 @@ function criteriaResult(verdict: EntryVerdict | undefined): TrialResult {
 
 function checkResult(check: StepState | undefined): TrialResult {
   const result = checkResultOf(check);
+
   switch (result) {
     case 'passed':
       return 'passed';
@@ -375,6 +418,7 @@ function checkResult(check: StepState | undefined): TrialResult {
       return 'error';
     default: {
       const unhandled: never = result;
+
       return unhandled;
     }
   }
@@ -383,5 +427,6 @@ function checkResult(check: StepState | undefined): TrialResult {
 /** The result a check step output; undefined when it output none, as one that never ran to a verdict. */
 function checkResultOf(state: StepState | undefined): CheckResult | undefined {
   const output = CheckOutputSchema.safeParse(state && 'outputs' in state ? state.outputs : undefined);
+
   return output.success ? output.data.result : undefined;
 }

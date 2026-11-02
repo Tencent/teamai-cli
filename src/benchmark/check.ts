@@ -17,9 +17,11 @@ export type CheckVerdict =
 /** The `result` a check step outputs: the verdict, without its detail. */
 export const CHECK_RESULTS = ['passed', 'failed', 'could_not_run'] as const satisfies ReadonlyArray<CheckVerdict['verdict']>;
 export const CheckOutputSchema = z.object({ result: z.enum(CHECK_RESULTS) });
+
 export type CheckResult = (typeof CHECK_RESULTS)[number];
 
 const SHELL_SIGNAL_BASE = 128;
+
 /** The highest signal number on Linux, whose real-time signals go up to 64; other POSIX systems stop below it. */
 const MAX_SIGNAL = 64;
 
@@ -34,11 +36,15 @@ export function checkVerdict(exit: CommandExit, platform: NodeJS.Platform): Chec
   switch (exit.kind) {
     case 'exited':
       if (exit.code === 0) return { verdict: 'passed' };
+
       if (exit.code === 127 || (platform === 'win32' && exit.code === 9009)) return { verdict: 'could_not_run', cause: 'not_found' };
+
       if (exit.code === 126) return { verdict: 'could_not_run', cause: 'not_executable' };
+
       if (platform !== 'win32' && exit.code > SHELL_SIGNAL_BASE && exit.code <= SHELL_SIGNAL_BASE + MAX_SIGNAL) {
         return { verdict: 'could_not_run', cause: 'signal', detail: `exit ${exit.code}` };
       }
+
       return { verdict: 'failed', exitCode: exit.code };
     case 'signal':
       return { verdict: 'could_not_run', cause: 'signal', detail: exit.signal };
@@ -48,6 +54,7 @@ export function checkVerdict(exit: CommandExit, platform: NodeJS.Platform): Chec
       return { verdict: 'could_not_run', cause: 'spawn_failed', detail: exit.message };
     default: {
       const unhandled: never = exit;
+
       return unhandled;
     }
   }

@@ -16,14 +16,18 @@ export type Comparison = 'match' | 'deviation' | 'not_verified';
 export function compareAgent(arm: Pick<BenchmarkRecord['arms'][number], 'tool' | 'model' | 'team'>, observed: AgentObservation): Comparison {
   const compare = (intended: string, recorded: string | undefined, same = (left: string, right: string): boolean => left === right): Comparison => {
     if (recorded === undefined) return 'not_verified';
+
     return same(intended, recorded) ? 'match' : 'deviation';
   };
+
   const comparisons = new Set([
     compare(arm.tool, observed.tool.name),
     compareTeam(arm.team, observed.team),
     ...(arm.model !== undefined && !isNativeModelAlias(arm.model) ? [compare(arm.model, observed.model?.reported, sameModel)] : []),
   ]);
+
   if (comparisons.has('deviation')) return 'deviation';
+
   return comparisons.has('not_verified') ? 'not_verified' : 'match';
 }
 
@@ -34,7 +38,9 @@ export function compareAgent(arm: Pick<BenchmarkRecord['arms'][number], 'tool' |
  */
 function compareTeam(intended: BenchmarkRecord['arms'][number]['team'], recorded: AgentObservation['team']): Comparison {
   if (intended.kind === 'none') return recorded === undefined ? 'match' : 'deviation';
+
   if (recorded === undefined) return 'not_verified';
+
   return recorded.revision === intended.revision ? 'match' : 'deviation';
 }
 
@@ -44,12 +50,17 @@ function compareTeam(intended: BenchmarkRecord['arms'][number]['team'], recorded
  */
 function sameModel(requested: string, reported: string): boolean {
   if (requested === reported) return true;
+
   const split = (model: string): { provider?: string; id: string } => {
     const slash = model.lastIndexOf('/');
+
     return slash < 0 ? { id: model } : { provider: model.slice(0, slash), id: model.slice(slash + 1) };
   };
+
   const asked = split(requested);
   const ran = split(reported);
+
   if (asked.provider !== undefined && ran.provider !== undefined && asked.provider !== ran.provider) return false;
+
   return ran.id === asked.id || (ran.id.startsWith(asked.id) && /^[-@]\d{4}-?\d{2}-?\d{2}$/.test(ran.id.slice(asked.id.length)));
 }

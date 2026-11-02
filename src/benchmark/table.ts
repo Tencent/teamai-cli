@@ -4,11 +4,13 @@
  * published record after the suite left the cache.
  */
 import type { AgentObservation } from '../agent-observation.js';
+import { definedFields } from '../utils/defined-fields.js';
 import { compareAgent } from './agent-match.js';
 import { TRIAL_RESULTS, type Baseline, type BenchmarkRecord, type TrialResult } from './result.js';
 import type { SkillChanges } from './terms.js';
 
 type RecordedArm = BenchmarkRecord['arms'][number];
+
 type RecordedTrial = BenchmarkRecord['trials'][number];
 
 export interface ArmResults extends Pick<RecordedArm, 'tool' | 'model' | 'effort' | 'source' | 'team'> {
@@ -135,6 +137,7 @@ export function usageOf(trials: readonly ObservedTrial[]): Omit<ArmUsage, 'arm'>
 /** How many of `arm`'s `trials` ran as something other than the arm, and how many could not be compared with it. */
 export function deviationsOf(arm: RecordedArm, trials: readonly ObservedTrial[]): Pick<ArmResults, 'deviations' | 'notVerified'> {
   const compared = trials.flatMap(({ trial, ranAs }) => (ranAs ? [trial.unenforced ? 'deviation' as const : compareAgent(arm, ranAs)] : []));
+
   return {
     deviations: compared.filter((comparison) => comparison === 'deviation').length,
     notVerified: compared.filter((comparison) => comparison === 'not_verified').length,
@@ -144,34 +147,37 @@ export function deviationsOf(arm: RecordedArm, trials: readonly ObservedTrial[])
 export function benchmarkTable(record: BenchmarkTableInput): BenchmarkTable {
   const { arms, trials, tasks } = record.benchmark;
   const observed = observedTrials(record);
+
   return {
     invalid: tasks.flatMap(({ id, baseline }) => (baseline === 'invalid' || baseline === 'could_not_run' ? [{ task: id, baseline }] : [])),
     results: arms.map((arm) => {
       const own = trials.filter((trial) => trial.arm === arm.name);
       const count = (result: TrialResult): number => own.filter((trial) => trial.result === result).length;
       const counts = { passed: count('passed'), failed: count('failed'), error: count('error'), unscored: count('unscored'), not_run: count('not_run') } satisfies Record<TrialResult, number>;
-      return {
-        arm: arm.name, tool: arm.tool, ...(arm.model ? { model: arm.model } : {}), ...(arm.effort ? { effort: arm.effort } : {}), source: arm.source, team: arm.team,
+
+      return definedFields<ArmResults>({
+        arm: arm.name, tool: arm.tool, model: arm.model || undefined, effort: arm.effort || undefined, source: arm.source, team: arm.team,
         planned: own.length, counts,
         stoppedByLimit: own.filter((trial) => trial.limit !== undefined).length,
         ...deviationsOf(arm, observed.filter(({ trial }) => trial.arm === arm.name)),
         ...passRateOf(own),
-      };
+      });
     }),
     matrix: tasks.map(({ id }) => ({
       task: id,
       arms: arms.map(({ name }) => ({ arm: name, ...passRateOf(trials.filter((trial) => trial.task === id && trial.arm === name)) })),
     })),
     usage: arms.map(({ name }) => ({ arm: name, ...usageOf(observed.filter(({ trial }) => trial.arm === name)) })),
-    skills: (record.benchmark.skillChanges ?? []).flatMap(({ arm, defaults, skills }) => skills.map(({ name, change }) => ({
-      arm, skill: name, change, here: skillLoadsOf(trials, arm, name), ...(defaults ? { defaults: skillLoadsOf(trials, defaults, name) } : {}),
+    skills: (record.benchmark.skillChanges ?? []).flatMap(({ arm, defaults, skills }) => skills.map(({ name, change }) => definedFields<BenchmarkTable['skills'][number]>({
+      arm, skill: name, change, here: skillLoadsOf(trials, arm, name), defaults: defaults ? skillLoadsOf(trials, defaults, name) : undefined,
     }))),
   };
 }
 
 /** How `arm`'s trials whose work ran loaded `skill`: a trial with no `used` went unseen. */
 function skillLoadsOf(trials: readonly RecordedTrial[], arm: string, skill: string): SkillLoads {
-  const seen = trials.filter((trial) => trial.arm === arm && trial.agent).map(({ used }) => (used ? used[skill] ?? 'not_loaded' : 'unknown'));
+  const seen = trials.flatMap(({ arm: ran, agent, used }) => (ran === arm && agent ? [used ? used[skill] ?? 'not_loaded' : 'unknown'] : []));
+
   return { loaded: seen.filter((load) => load === 'loaded').length, observed: seen.filter((load) => load !== 'unknown').length, unknown: seen.filter((load) => load === 'unknown').length };
 }
 
@@ -179,7 +185,8 @@ function skillLoadsOf(trials: readonly RecordedTrial[], arm: string, skill: stri
 export function benchmarkCells(table: BenchmarkTable): BenchmarkCells {
   // Every arm on the pulled revision, as most suites run: the column would repeat one commit on every row.
   const namesTeam = table.results.some(({ team }) => team.kind !== 'pulled');
-  return {
+
+  return definedFields<BenchmarkCells>({
     results: {
       header: ['Arm', 'Tool', 'Model (source)', ...(namesTeam ? ['Team'] : []), 'Planned', ...TRIAL_RESULTS.map((result) => RESULT_COLUMNS[result]), 'Stopped by a limit', 'Deviations', 'Not verified', 'Pass rate'],
       rows: table.results.map((arm) => [
@@ -197,15 +204,13 @@ export function benchmarkCells(table: BenchmarkTable): BenchmarkCells {
       header: ['Task', ...table.results.map(({ arm }) => arm)],
       rows: table.matrix.map(({ task, arms }) => [task, ...arms.map(({ passRate }) => formatPassRate(passRate))]),
     },
-    ...(table.invalid.length > 0 ? { invalid: { header: ['Task', 'Baseline'], rows: table.invalid.map(({ task, baseline }) => [task, INVALID_REASONS[baseline]]) } } : {}),
-    ...(table.skills.length > 0 ? {
-      skills: {
-        header: ['Arm', 'Skill', 'Change', 'Loaded in this arm', 'Loaded in the defaults arm'],
-        rows: table.skills.map(({ arm, skill, change, here, defaults }) => [arm, skill, change, formatSkillLoads(here), defaults ? formatSkillLoads(defaults) : '-']),
-      },
-    } : {}),
+    invalid: table.invalid.length > 0 ? { header: ['Task', 'Baseline'], rows: table.invalid.map(({ task, baseline }) => [task, INVALID_REASONS[baseline]]) } : undefined,
+    skills: table.skills.length > 0 ? {
+      header: ['Arm', 'Skill', 'Change', 'Loaded in this arm', 'Loaded in the defaults arm'],
+      rows: table.skills.map(({ arm, skill, change, here, defaults }) => [arm, skill, change, formatSkillLoads(here), defaults ? formatSkillLoads(defaults) : '-']),
+    } : undefined,
     caption: BENCHMARK_CAPTION,
-  };
+  });
 }
 
 /** benchmarkCells as Markdown pipe tables, so the same text reads in a terminal and renders in a CI job summary. */
@@ -213,12 +218,14 @@ export function formatBenchmarkTable(table: BenchmarkTable): string {
   const { results, usage, matrix, invalid, skills, caption } = benchmarkCells(table);
   const line = (cells: readonly string[]): string => `| ${cells.join(' | ')} |`;
   const markdown = ({ header, rows }: TextTable): string => [line(header), line(header.map(() => '---')), ...rows.map(line)].join('\n');
+
   return [...[results, usage, matrix, ...(invalid ? [invalid] : []), ...(skills ? [skills] : [])].map(markdown), caption].join('\n\n');
 }
 
 /** `1/2` loaded of the trials seen, `1/2, 1 unknown` with some unseen, `unknown (3)` with none seen. */
 function formatSkillLoads({ loaded, observed, unknown }: SkillLoads): string {
   if (observed === 0) return `unknown (${unknown})`;
+
   return unknown > 0 ? `${loaded}/${observed}, ${unknown} unknown` : `${loaded}/${observed}`;
 }
 
@@ -239,6 +246,7 @@ function formatTeam(team: RecordedArm['team']): string {
       return 'none';
     default: {
       const unhandled: never = team;
+
       return unhandled;
     }
   }
@@ -253,6 +261,7 @@ function median(values: readonly number[]): Median {
   const sorted = [...values].sort((left, right) => left - right);
   const lower = sorted[Math.ceil(sorted.length / 2) - 1];
   const upper = sorted[Math.floor(sorted.length / 2)];
+
   return lower === undefined || upper === undefined ? { used: 0 } : { value: (lower + upper) / 2, used: sorted.length };
 }
 
@@ -261,10 +270,13 @@ function costTotal(parts: ReadonlyArray<RecordedTrial['cost']>): CostTotal {
   const known = parts.flatMap((part) => (part ? [part] : []));
   const units = [...new Set(known.map(({ unit }) => unit))].sort();
   const [unit, ...others] = units;
+
   if (unit === undefined) return { kind: 'unknown' };
+
   if (others.length > 0) return { kind: 'mixed', units };
   const amount = known.reduce((sum, part) => sum + part.amount, 0);
   const unknown = parts.length - known.length;
+
   return unknown > 0 ? { kind: 'incomplete', amount, unit, used: known.length, unknown } : { kind: 'known', amount, unit, used: known.length };
 }
 
@@ -274,6 +286,7 @@ function formatMedian({ value, used }: Median, format: (value: number) => string
 
 function formatCost(cost: CostTotal): string {
   const amount = (value: number): string => String(Math.round(value * 10_000) / 10_000);
+
   switch (cost.kind) {
     case 'known':
       return `${amount(cost.amount)} ${cost.unit} (${cost.used})`;
@@ -285,6 +298,7 @@ function formatCost(cost: CostTotal): string {
       return 'unknown (0)';
     default: {
       const unhandled: never = cost;
+
       return unhandled;
     }
   }

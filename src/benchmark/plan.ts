@@ -11,8 +11,10 @@
  */
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { isLabelShaped, isNameShaped } from '../agent-observation.js';
+import { isRecordableLabel, isRecordableName } from '../agent-observation.js';
 import type { PinnedScorer } from '../scorers/pin.js';
+import type { JsonObject } from '../types.js';
+import { definedFields } from '../utils/defined-fields.js';
 import type { Suite, Task, TaskJudge } from './suite.js';
 import type { CommittedSuite } from './trial.js';
 import type { PinnedArmWorkflow } from './arm-workflow.js';
@@ -25,12 +27,12 @@ const Sha256 = z.string().regex(/^[0-9a-f]{64}$/);
 const PlannedArmSchema = z.object({
   name: BenchmarkNameSchema,
   /** Shaped like the names a record publishes, as start checks, so a run file that holds anything else reads as corrupt. */
-  tool: z.string().refine(isLabelShaped),
+  tool: z.string().refine(isRecordableLabel),
   /** The model name the arm's alias resolved to at start, or its model name as written; absent: the tool's default. */
-  model: z.string().refine(isNameShaped).optional(),
+  model: z.string().refine(isRecordableName).optional(),
   /** The alias the suite named, when the model came from one: what arms on different tools share. */
-  alias: z.string().refine(isNameShaped).optional(),
-  effort: z.string().refine(isLabelShaped).optional(),
+  alias: z.string().refine(isRecordableName).optional(),
+  effort: z.string().refine(isRecordableLabel).optional(),
   /** Whose aliases resolved the model: the team's, or the member's with `--member-aliases`. */
   source: z.enum(['team', 'member']),
   /** The team assets the arm's trials get. */
@@ -38,6 +40,7 @@ const PlannedArmSchema = z.object({
   /** The team workflow the arm's trials run on each task instead of one prompt, by the hash of its sources and theirs. */
   workflow: z.object({ name: z.string().min(1), sourceHash: Sha256 }).strict().optional(),
 }).strict();
+
 export type PlannedArm = z.infer<typeof PlannedArmSchema>;
 
 const PlannedTaskSchema = z.object({
@@ -53,6 +56,7 @@ const PlannedTaskSchema = z.object({
     z.object({ kind: z.literal('criteria') }).strict(),
   ]),
 }).strict();
+
 export type PlannedTask = z.infer<typeof PlannedTaskSchema>;
 
 const PlannedTrialSchema = z.object({
@@ -66,6 +70,7 @@ const PlannedTrialSchema = z.object({
    */
   step: z.string().min(1),
 }).strict();
+
 export type PlannedTrial = z.infer<typeof PlannedTrialSchema>;
 
 /** The plan's `schemaVersion`. A plan of another version makes the run unreadable here, so no step reads it. */
@@ -95,6 +100,7 @@ export const BenchmarkPlanSchema = z.object({
   scorers: z.array(z.object({ name: z.string().min(1), rubric: z.object({ sourceHash: z.string().min(1) }).strict() }).strict()),
   trials: z.array(PlannedTrialSchema),
 }).strict();
+
 export type BenchmarkPlan = z.infer<typeof BenchmarkPlanSchema>;
 
 /**
@@ -103,9 +109,11 @@ export type BenchmarkPlan = z.infer<typeof BenchmarkPlanSchema>;
  */
 export function trialsOf(tasks: readonly Pick<Task, 'id'>[], arms: readonly Pick<PlannedArm, 'name' | 'workflow'>[], repetitions: number, parallel = 1): PlannedTrial[] {
   const trials: PlannedTrial[] = [];
+
   for (let repetition = 1; repetition <= repetitions; repetition += 1) {
     const shift = (repetition - 1) % arms.length;
     const rotated = [...arms.slice(shift), ...arms.slice(0, shift)];
+
     for (const task of tasks) {
       for (const arm of rotated) {
         const lane = parallel > 1 ? `${laneOf((trials.length % parallel) + 1)}.` : '';
@@ -113,6 +121,7 @@ export function trialsOf(tasks: readonly Pick<Task, 'id'>[], arms: readonly Pick
       }
     }
   }
+
   return trials;
 }
 
@@ -154,32 +163,39 @@ export function freezePlan(input: {
   const { suite, files } = input.committed;
   const [first, ...rest] = suite.tasks;
   const planned = (task: Task): PlannedTask => ({ id: task.id, sourceHash: task.sourceHash, startingCommit: task.startingCommit, judge: plannedJudge(task.judge, files.get(task.id)) });
-  return {
+
+  return definedFields<BenchmarkPlan>({
     schemaVersion: BENCHMARK_PLAN_SCHEMA_VERSION,
     suite: { name: suite.name, sourceHash: suite.sourceHash, repo: suite.repo },
     baselineTeamRevision: input.baselineTeamRevision,
     selection: input.selection,
     repetitions: suite.repetitions,
-    ...(suite.parallel > 1 ? { parallel: suite.parallel } : {}),
-    ...(suite.trial ? { limits: suite.trial } : {}),
+    parallel: suite.parallel > 1 ? suite.parallel : undefined,
+    limits: suite.trial,
     tasks: [planned(first), ...rest.map(planned)],
     arms: input.arms,
-    ...(input.skillChanges && input.skillChanges.length > 0 ? { skillChanges: input.skillChanges } : {}),
+    skillChanges: input.skillChanges && input.skillChanges.length > 0 ? input.skillChanges : undefined,
     scorers: Object.entries({ ...input.scorers, ...correctnessScorers(suite) }).map(([name, pin]) => ({ name, rubric: { sourceHash: pin.sourceHash } })),
     trials: trialsOf(suite.tasks, input.arms, suite.repetitions, suite.parallel),
-  };
+  });
 }
 
 function plannedJudge(judge: TaskJudge, checkFiles: Added | undefined): PlannedTask['judge'] {
   switch (judge.kind) {
     case 'check': {
       const [added, ...more] = addedOf(judge, checkFiles);
-      return { kind: 'check', run: judge.run, protect: judge.protect, ...(added ? { add: [added, ...more] } : {}) };
+      const planned: PlannedTask['judge'] = { kind: 'check', run: judge.run, protect: judge.protect };
+
+      if (added) planned.add = [added, ...more];
+
+      return planned;
     }
+
     case 'criteria':
       return { kind: 'criteria' };
     default: {
       const unhandled: never = judge;
+
       return unhandled;
     }
   }
@@ -199,7 +215,14 @@ const BASELINES = 'baselines';
 const SETTLED_END = 'settled';
 
 /** A workflow step as a workflow file writes it, which admission parses. */
-type FileStep = { id: string } & Record<string, unknown>;
+type FileStep = { id: string } & JsonObject;
+
+/** What `compileBundle` answers: the workflow, as a workflow file writes it, its arms' workflow copies by key, and the generated scorers. */
+export interface CompiledBundle {
+  definition: JsonObject;
+  workflows: Record<string, JsonObject>;
+  scorers: Record<string, PinnedScorer>;
+}
 
 /**
  * The workflow a benchmark run's `from` step runs, as a workflow file writes it, with the generated correctness scorers
@@ -229,82 +252,107 @@ type FileStep = { id: string } & Record<string, unknown>;
  */
 export function compileBundle(
   plan: BenchmarkPlan, { suite }: CommittedSuite, { armWorkflows = new Map(), unattended }: { armWorkflows?: ReadonlyMap<string, PinnedArmWorkflow>; unattended: boolean },
-): {
-  definition: Record<string, unknown>; workflows: Record<string, Record<string, unknown>>; scorers: Record<string, PinnedScorer>;
-} {
+): CompiledBundle {
   const tasks = new Map(suite.tasks.map((task) => [task.id, task]));
   const arms = new Map(plan.arms.map((arm) => [arm.name, arm]));
   const checkOutput = { result: CHECK_RESULTS.join(' | ') };
+
   const baselines = chained(suite.tasks.flatMap((task): FileStep[] => (task.judge.kind === 'check'
     ? [{ id: task.id, command: 'teamai benchmark check --baseline', workspace: { clone: { commit: task.startingCommit, repo: suite.repo, team: { treatment: 'none' } } }, output: checkOutput }]
     : [])), plan.parallel ?? 1);
+
   const tried = baselines.length > 0;
+
   const workOf = (arm: PlannedArm, task: Task): FileStep => {
     const names = [...suite.scorers, ...(task.judge.kind === 'criteria' ? [correctnessScorerName(task.id)] : [])];
-    const limits = plan.limits;
     const pinned = armWorkflows.get(arm.name);
+    const timeoutMs = plan.limits?.timeoutMs;
+    const tokens = plan.limits?.tokens;
     // A workflow step's timeout and budget are an allowance its prompts spend; no allowance caps turns.
-    const ends = { ...limits, ...(pinned ? { maxTurns: undefined } : {}) };
+    const maxTurns = pinned ? undefined : plan.limits?.maxTurns;
     // Both fields are templates; escaped, the task's text renders as written, braces and all.
     const text = task.prompt.replaceAll('{{', '\\{{');
-    return {
-      ...(pinned
-        ? { id: 'workflow', workflow: pinned.key, with: { task: text } }
-        : { id: 'prompt', prompt: text, tool: arm.tool, ...(arm.model ? { model: { name: arm.model, ...(arm.effort ? { effort: arm.effort } : {}) } } : {}), ...(unattended ? { permissions: 'unattended' } : {}) }),
-      workspace: 'continue',
-      ...(ends.timeoutMs !== undefined ? { timeout: `${ends.timeoutMs}ms` } : {}),
-      ...(ends.maxTurns !== undefined ? { max_turns: ends.maxTurns } : {}),
-      ...(ends.tokens !== undefined ? { budget: { tokens: ends.tokens } } : {}),
-      ...(ends.timeoutMs !== undefined || ends.maxTurns !== undefined || ends.tokens !== undefined ? { on_limit: 'end_turn' } : {}),
-      ...(names.length > 0 ? { scorers: { names, sampling: 'all' } } : {}),
-    };
+    const step: FileStep = pinned ? { id: 'workflow', workflow: pinned.key, with: { task: text } } : { id: 'prompt', prompt: text, tool: arm.tool };
+
+    if (!pinned && arm.model) {
+      const model: JsonObject = { name: arm.model };
+
+      if (arm.effort) model.effort = arm.effort;
+      step.model = model;
+    }
+
+    if (!pinned && unattended) step.permissions = 'unattended';
+    step.workspace = 'continue';
+
+    if (timeoutMs !== undefined) step.timeout = `${timeoutMs}ms`;
+
+    if (maxTurns !== undefined) step.max_turns = maxTurns;
+
+    if (tokens !== undefined) step.budget = { tokens };
+
+    if (timeoutMs !== undefined || maxTurns !== undefined || tokens !== undefined) step.on_limit = 'end_turn';
+
+    if (names.length > 0) step.scorers = { names, sampling: 'all' };
+
+    return step;
   };
+
   const trialOf = (trial: PlannedTrial): FileStep[] => {
     const task = tasks.get(trial.task);
     const arm = arms.get(trial.arm);
+
     if (!task || !arm) return [];
     const work = workOf(arm, task);
     const check = task.judge.kind === 'check' ? [{ id: 'check', needs: [work.id], command: 'teamai benchmark check --trial', workspace: 'continue', output: checkOutput }] : [];
-    return [{
-      id: arm.name, ...(task.judge.kind === 'check' ? { if: `steps.${BASELINES}.outputs.${task.id} == 'failed'` } : {}),
-      // The arm's tool, not the first step's: a workflow arm may open its clone with a command.
-      workspace: { clone: { commit: task.startingCommit, repo: suite.repo, team: cloneTeamOf(arm.team, { ...plan.selection, enabledAgents: [arm.tool] }) } },
-      workflow: { steps: [work, ...check] },
-    }];
+    const step: FileStep = { id: arm.name };
+
+    if (task.judge.kind === 'check') step.if = `steps.${BASELINES}.outputs.${task.id} == 'failed'`;
+    // The arm's tool, not the first step's: a workflow arm may open its clone with a command.
+    step.workspace = { clone: { commit: task.startingCommit, repo: suite.repo, team: cloneTeamOf(arm.team, { ...plan.selection, enabledAgents: [arm.tool] }) } };
+    step.workflow = { steps: [work, ...check] };
+
+    return [step];
   };
+
   // A lane's trials, in plan order, nested by repetition and task, each step after the one before it. A trial, not its
   // task, reads the baseline, so a task whose baseline skips its trials still settles, and the next one in the lane runs.
   const laneSteps = (trials: readonly PlannedTrial[]): FileStep[] => chained([...new Set(trials.map((trial) => trial.repetition))].map((repetition): FileStep => {
     const ofRepetition = trials.filter((trial) => trial.repetition === repetition);
+
     const taskSteps = [...new Set(ofRepetition.map((trial) => trial.task))].map((id): FileStep => ({
       id, workflow: { steps: chained(ofRepetition.filter((trial) => trial.task === id).flatMap(trialOf)) },
     }));
+
     return { id: `r${repetition}`, workflow: { steps: chained(taskSteps) } };
   }));
+
   const parallel = plan.parallel ?? 1;
-  const afterBaselines = tried ? { needs: [BASELINES], if: `steps.${BASELINES}.outcome != null` } : { needs: [] };
+  const afterBaselines: JsonObject = tried ? { needs: [BASELINES], if: `steps.${BASELINES}.outcome != null` } : { needs: [] };
   const [firstStep, ...laterSteps] = parallel > 1 ? [] : laneSteps(plan.trials);
+
   const repetitions: FileStep[] = parallel > 1
     // Only the lanes a trial is in: a suite may allow more than it has trials, and a workflow has no empty step list.
     ? Array.from({ length: parallel }, (_, index) => laneOf(index + 1)).flatMap((lane) => {
       const trials = plan.trials.filter((trial) => trial.step.startsWith(`${lane}.`));
+
       return trials.length > 0 ? [{ id: lane, ...afterBaselines, workflow: { steps: laneSteps(trials) } }] : [];
     })
     : [...(firstStep ? [{ ...firstStep, ...afterBaselines }] : []), ...laterSteps];
+
   const scopes: FileStep[] = [
     ...(tried ? [{ id: BASELINES, workflow: { outputs: Object.fromEntries(baselines.map(({ id }) => [id, `steps.${id}.outputs.result`])), steps: baselines } }] : []),
     ...repetitions,
   ];
+
   const needs = scopes.map(({ id }) => id);
+  const definition: JsonObject = { schemaVersion: 'v1alpha1', name: suite.name, description: suite.description ?? `Benchmark suite ${suite.name}` };
+
+  if (suite.setup) definition.setup = suite.setup;
+  definition.ends = { [SETTLED_END]: 'succeeded' };
+  definition.steps = [...scopes, { id: SETTLED_END, needs, if: needs.map((id) => `steps.${id}.outcome != null`).join(' && '), end: SETTLED_END }];
+
   return {
-    definition: {
-      schemaVersion: 'v1alpha1',
-      name: suite.name,
-      description: suite.description ?? `Benchmark suite ${suite.name}`,
-      ...(suite.setup ? { setup: suite.setup } : {}),
-      ends: { [SETTLED_END]: 'succeeded' },
-      steps: [...scopes, { id: SETTLED_END, needs, if: needs.map((id) => `steps.${id}.outcome != null`).join(' && '), end: SETTLED_END }],
-    },
+    definition,
     workflows: Object.fromEntries([...armWorkflows.values()].flatMap(({ files }) => Object.entries(files))),
     scorers: correctnessScorers(suite),
   };
@@ -317,9 +365,12 @@ export function compileBundle(
 function chained(steps: readonly FileStep[], lanes = 1): FileStep[] {
   return steps.map((step, index) => {
     const before = steps[index - lanes];
+
     if (!before) return { ...step, needs: [] };
     const ran = `steps.${before.id}.outcome != null`;
-    return { ...step, needs: [before.id], if: typeof step.if === 'string' ? `${ran} && ${step.if}` : ran };
+    const condition = z.string().safeParse(step.if).data;
+
+    return { ...step, needs: [before.id], if: condition === undefined ? ran : `${ran} && ${condition}` };
   });
 }
 
@@ -346,6 +397,7 @@ function cloneTeamOf(team: ArmTeam, selection: TeamSelection): CloneTeam {
       return { revision: team.revision, selection, treatment: { without: team.paths } };
     default: {
       const unhandled: never = team;
+
       return unhandled;
     }
   }
@@ -389,5 +441,6 @@ function correctnessPin(task: Task, successCriteria: string): PinnedScorer {
     successCriteria,
     '',
   ].join('\n');
+
   return { sourceHash: createHash('sha256').update(content).digest('hex'), relativePath: task.relativePath, content, generated: true };
 }
