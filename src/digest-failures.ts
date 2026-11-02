@@ -44,7 +44,8 @@ async function read(config: LocalConfig, { now = new Date(), refresh = true }: {
 
 /**
  * Prints the digest's JSON envelope on stdout, and only that. With `improvement`, its data also holds what a
- * self-improvement of that scorer starts from; a suite or scorer it cannot read prints an error envelope and exits 1.
+ * self-improvement of that scorer starts from; a suite or scorer it cannot read prints an error envelope, its message on
+ * stderr, and exits 1.
  */
 async function print({ improvement }: { improvement?: { scorer: string; suite: string; proposal?: string } } = {}): Promise<void> {
   const config = await detectProjectConfig(undefined, undefined, { dryRun: true }) ?? (await requireInit({ dryRun: true })).localConfig;
@@ -61,6 +62,8 @@ async function print({ improvement }: { improvement?: { scorer: string; suite: s
 
   if ('code' in planned) {
     console.log(JSON.stringify({ error: planned }));
+    // A workflow step that fails shows only its stderr.
+    console.error(planned.message);
     process.exitCode = 1;
 
     return;

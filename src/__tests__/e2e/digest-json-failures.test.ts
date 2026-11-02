@@ -168,4 +168,13 @@ describe('teamai digest --json', () => {
     }
     expect(result.stdout.trim().split('\n')).toHaveLength(1);
   });
+
+  it('says on stderr too why it cannot plan an improvement, as a failed workflow step shows only stderr', async () => {
+    const result = await runCLI(['digest', '--json', '--scorer', 'review-qualty', '--suite', 'benchmarks/regressions'], app, env);
+
+    expect(result.code).toBe(1);
+    const message = 'The team has no scorer review-qualty. Run teamai pull, or give one teamai list scorers shows.';
+    expect(JSON.parse(result.stdout)).toEqual({ error: { code: 'scorer_not_found', message } });
+    expect(result.stderr).toContain(message);
+  });
 });
