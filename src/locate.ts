@@ -153,7 +153,13 @@ export type ReadGate =
   /** `config`: Qoder's user settings.json, whose `permissions.trustDirectories` covers the checkout. */
   | { readonly kind: 'qoder-folder-trust'; readonly config: string; readonly checkout: string }
   /** `config`: Qoder's user settings.json, where its approval dialog records `mcp.*ProjectMcpServers`; the project's own settings add theirs. */
-  | { readonly kind: 'qoder-mcp-approval'; readonly config: string; readonly checkout: string };
+  | { readonly kind: 'qoder-mcp-approval'; readonly config: string; readonly checkout: string }
+  /**
+   * `config`: Claude Code's ~/.claude.json, whose `projects` entry for the main
+   * checkout holds its trust; `settings`: its user settings.json, which approves
+   * servers whatever the trust.
+   */
+  | { readonly kind: 'claude-mcp-approval'; readonly config: string; readonly settings: string; readonly checkout: string };
 
 /**
  * A place teamai wrote this resource to before and no longer writes, and why.
@@ -629,6 +635,16 @@ async function readGatesOf(kinds: readonly ReadGateKind[] | undefined, install: 
         return { kind, config: rootsOf('muse', user, host).declared('home', '.config/muse/trust.json'), checkout: install.projectRoot };
       case 'copilot-folder-trust':
         return { kind, config: rootsOf('copilot', user, host).declared('home', '.copilot/config.json'), checkout: install.projectRoot };
+      case 'claude-mcp-approval': {
+        // The user MCP file is ~/.claude.json, which a recorded CLAUDE_CONFIG_DIR moves with the rest.
+        const roots = rootsOf('claude', user, host);
+        return {
+          kind,
+          config: roots.configured('mcp') ?? roots.declared('home', '.claude.json'),
+          settings: roots.configured('settings') ?? roots.declared('home', '.claude/settings.json'),
+          checkout: install.projectRoot,
+        };
+      }
       case 'qoder-folder-trust':
       case 'qoder-mcp-approval':
         return { kind, config: rootsOf('qoder', user, host).declared('home', '.qoder/settings.json'), checkout: install.projectRoot };
@@ -1012,7 +1028,8 @@ async function locateMcp(tool: string, install: Install, host: Host): Promise<Lo
     writtenBy: null,
     lookup,
     reads: reads === 'unknown' ? reads : [...reads, ...localReads],
-    readGates,
+    // The gates are on the project's own file; a local scope in the tool's user config waits on none.
+    readGates: own === tree ? readGates : [],
     retired: settled(own, retired, p),
     gates: await mcpGatesOf(tool, gates, own, host),
   };

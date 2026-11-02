@@ -453,4 +453,93 @@ describe('doctor — the tool trusts the project it reads team files from', () =
       });
     });
   });
+  // Claude Code 2.1.316 starts a project's .mcp.json server in an interactive
+  // session only once it is approved: `disabledMcpjsonServers` in any settings
+  // file rejects it; `enabledMcpjsonServers` or `enableAllProjectMcpServers`
+  // approves it, from ~/.claude/settings.json always, and from the project's
+  // own settings only once ~/.claude.json trusts the main checkout. `claude -p`
+  // starts a pending one anyway.
+  describe('Claude Code MCP approval', () => {
+    const APPROVAL = 'Claude Code approves this project\'s team MCP servers';
+    const userSettings = (): string => path.join(homeDir, '.claude', 'settings.json');
+    const claudeJson = (): string => path.join(homeDir, '.claude.json');
+    const trust = async (dir: string): Promise<void> => {
+      await fse.outputJson(claudeJson(), { projects: { [dir]: { hasTrustDialogAccepted: true } } });
+    };
+
+    beforeEach(async () => {
+      execFileSync('git', ['init', '-q'], { cwd: projectRoot });
+      await fse.ensureDir(path.join(homeDir, '.claude'));
+      teamConfig.toolPaths = { claude: { mcp: '.claude.json', mcpProject: '.mcp.json' } };
+      await fse.outputFile(path.join(repoPath, 'mcp', 'mcp.yaml'), 'servers:\n  - name: issues\n    transport: stdio\n    command: issues-server\n');
+      await fse.outputJson(path.join(projectRoot, '.mcp.json'), { mcpServers: { issues: { type: 'stdio', command: 'issues-server' } } });
+      await fse.outputJson(managedMcpManifestPath(getDataHome(localConfig), projectRoot), { [managedMcpManifestKey('claude', true)]: [{ name: 'issues', hash: 'h' }] });
+    });
+
+    it('fails in an untrusted project, naming the trust dialog and the file that approves without it', async () => {
+      const found = await check(APPROVAL);
+
+      expect(await found?.check()).toBe(false);
+      expect(found?.fix).toContain(`${path.join(projectRoot, '.mcp.json')} holds team MCP servers (issues)`);
+      expect(found?.fix).toContain('issues waits for approval');
+      expect(found?.fix).toContain(`${claudeJson()} does not trust ${projectRoot}`);
+      expect(found?.fix).toContain(`enabledMcpjsonServers in ${userSettings()}`);
+    });
+
+    it('passes once the project is trusted and its local settings approve the server', async () => {
+      await trust(projectRoot);
+      await fse.outputJson(path.join(projectRoot, '.claude', 'settings.local.json'), { enabledMcpjsonServers: ['issues'] });
+
+      expect(await (await check(APPROVAL))?.check()).toBe(true);
+    });
+
+    it('does not take the local settings\' approval while the project is untrusted', async () => {
+      await fse.outputJson(path.join(projectRoot, '.claude', 'settings.local.json'), { enableAllProjectMcpServers: true });
+
+      expect(await (await check(APPROVAL))?.check()).toBe(false);
+    });
+
+    it('passes when the user settings approve the server, trusted or not', async () => {
+      await fse.outputJson(userSettings(), { enabledMcpjsonServers: ['issues'] });
+
+      expect(await (await check(APPROVAL))?.check()).toBe(true);
+    });
+
+    it('fails on a rejection in any settings file, naming it and how to be asked again', async () => {
+      await trust(projectRoot);
+      await fse.outputJson(userSettings(), { enableAllProjectMcpServers: true });
+      const projectSettings = path.join(projectRoot, '.claude', 'settings.json');
+      await fse.outputJson(projectSettings, { disabledMcpjsonServers: ['issues'] });
+
+      const found = await check(APPROVAL);
+      expect(await found?.check()).toBe(false);
+      expect(found?.fix).toContain('issues was rejected');
+      expect(found?.fix).toContain(`disabledMcpjsonServers in ${projectSettings}`);
+      expect(found?.fix).toContain('claude mcp reset-project-choices');
+    });
+
+    it('in a linked worktree, reads the trust and local approval of the main checkout', async () => {
+      const git = (...args: string[]): void => {
+        execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...args], { cwd: projectRoot });
+      };
+      git('commit', '-q', '--allow-empty', '-m', 'init');
+      const main = projectRoot;
+      const worktree = path.join(tempDir, 'web-app-review');
+      git('worktree', 'add', '-q', worktree);
+      Object.assign(localConfig, { projectRoot: worktree });
+      await fse.copy(path.join(main, '.mcp.json'), path.join(worktree, '.mcp.json'));
+      await fse.outputJson(managedMcpManifestPath(getDataHome(localConfig), worktree), { [managedMcpManifestKey('claude', true)]: [{ name: 'issues', hash: 'h' }] });
+      await trust(main);
+      await fse.outputJson(path.join(main, '.claude', 'settings.local.json'), { enabledMcpjsonServers: ['issues'] });
+
+      expect(await (await check(APPROVAL))?.check()).toBe(true);
+    });
+
+    it('builds no check while the servers go to the local scope in ~/.claude.json', async () => {
+      Object.assign(localConfig, { gitExcludeEnabled: true });
+      await fse.outputJson(claudeJson(), { projects: { [projectRoot]: { mcpServers: { issues: { type: 'stdio', command: 'issues-server' } } } } });
+
+      expect(await check(APPROVAL)).toBeUndefined();
+    });
+  });
 });

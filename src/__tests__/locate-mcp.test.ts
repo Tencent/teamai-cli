@@ -24,6 +24,7 @@ const ROWS: readonly MatrixRow[] = [
     existingDirs: ['<root>/.claude'], installed: { probe: '<root>/.claude', met: true },
     reads: CLAUDE_PROJECT_READS,
     retired: [{ at: '~/.claude.json', was: 'other-scope' }],
+    readGates: [{ kind: 'claude-mcp-approval', config: '~/.claude.json', settings: '~/.claude/settings.json', checkout: '<root>' }],
     source: 'Claude Code docs: project servers in <root>/.mcp.json, local ones under projects[<git root>] of ~/.claude.json',
   },
   {
@@ -48,6 +49,7 @@ const ROWS: readonly MatrixRow[] = [
     existingDirs: ['<root>/.claude'], installed: { probe: '<root>/.claude', met: true },
     reads: CLAUDE_PROJECT_READS,
     retired: [{ at: '~/.claude.json', was: 'other-scope' }],
+    readGates: [{ kind: 'claude-mcp-approval', config: '~/.claude.json', settings: '~/.claude/settings.json', checkout: '<root>' }],
     source: "Claude Code files every worktree under one key, so one worktree's pull would undo another's in a self team (#915)",
   },
   {
@@ -56,6 +58,7 @@ const ROWS: readonly MatrixRow[] = [
     existingDirs: ['<root>/.claude', '~/.config/muse'], installed: { probe: '<root>/.claude', met: true },
     reads: CLAUDE_PROJECT_READS,
     retired: [{ at: '~/.claude.json', was: 'other-scope' }],
+    readGates: [{ kind: 'claude-mcp-approval', config: '~/.claude.json', settings: '~/.claude/settings.json', checkout: '<root>' }],
     source: "Muse reads claude's <root>/.mcp.json and has no local scope, so the file stays while Muse is installed (#915)",
   },
   {

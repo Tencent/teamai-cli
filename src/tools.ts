@@ -123,7 +123,7 @@ export type RunTimeVia = 'session-hook' | 'extension' | 'plugin';
  * project's MCP servers. `read-gates.ts` evaluates each one.
  */
 export type ReadGateKind = 'codex-project-trust' | 'pi-project-trust' | 'muse-workspace-trust' | 'copilot-folder-trust' | 'qoder-folder-trust'
-  | 'qoder-mcp-approval';
+  | 'qoder-mcp-approval' | 'claude-mcp-approval';
 
 /** The frontmatter teamai writes above its blocks when it creates an owned blocks file a rules loader reads. */
 export type BlocksHeader = 'always-apply' | 'apply-to-all' | 'trigger-always-on' | 'inclusion-always';
@@ -374,6 +374,8 @@ export const TOOLS = {
       project: {
         format: 'claude', localScope: { file: 'user-mcp-file', key: 'git-common-root' },
         reads: [{ base: 'project', path: '.mcp.json', when: 'workspaceUnder', evidence: 'verified' }],
+        // Claude Code 2.1.316: an interactive session starts a .mcp.json server only once it is approved.
+        readGates: ['claude-mcp-approval'],
       },
     },
     hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.claude/settings.json', evidence: 'verified' }] }, self: { channel: 'settings', format: 'claude', reads: [{ base: 'project', path: '.claude/settings.json', when: 'workspaceUnder', evidence: 'verified' }, { base: 'project', path: '.claude/settings.local.json', when: 'workspaceUnder', evidence: 'verified' }] } },

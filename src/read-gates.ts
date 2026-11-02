@@ -36,6 +36,8 @@ export function readGateCheckName(gate: ReadGate, noun: string): string {
       return `Qoder CLI trusts this folder, so it loads its team ${noun}`;
     case 'qoder-mcp-approval':
       return 'Qoder CLI approves this project\'s team MCP servers';
+    case 'claude-mcp-approval':
+      return 'Claude Code approves this project\'s team MCP servers';
     default: {
       const unhandled: never = gate;
       return unhandled;
@@ -61,6 +63,8 @@ export async function readGateVerdict(gate: ReadGate, held: Held): Promise<ReadG
       return qoderFolderTrust(gate, `${held.summary}, but an interactive Qoder CLI session loads a project's ${held.noun} only in a trusted folder`);
     case 'qoder-mcp-approval':
       return qoderMcpApproval(gate, held);
+    case 'claude-mcp-approval':
+      return claudeMcpApproval(gate, held);
     default: {
       const unhandled: never = gate;
       return unhandled;
@@ -268,4 +272,61 @@ async function qoderMcpApproval(gate: Extract<ReadGate, { kind: 'qoder-mcp-appro
     pending: held.names.filter((name) => !disabled.has(name) && !all && !enabled.has(name)),
   }, `Approve them when an interactive \`qodercli\` asks, or add them to mcp.enabledProjectMcpServers in ${gate.config}.`,
   `Remove the rejected ones from mcp.disabledProjectMcpServers in ${files.join(', ')}, or run \`qodercli mcp reset-project-choices\` to be asked again.`);
+}
+
+/**
+ * Claude Code 2.1.316: a server in `disabledMcpjsonServers` of any settings
+ * file is rejected. One in `enabledMcpjsonServers`, or any with
+ * `enableAllProjectMcpServers`, is approved by ~/.claude/settings.json always,
+ * and by the project's settings.json and the main checkout's
+ * settings.local.json (where the dialog writes, a worktree's own as an older
+ * layer) only once ~/.claude.json trusts the main checkout. Keys an earlier
+ * Claude Code kept in that `projects` entry count as the local settings, where
+ * its next start moves them. An interactive session waits for the rest;
+ * `claude -p` starts them.
+ */
+async function claudeMcpApproval(gate: Extract<ReadGate, { kind: 'claude-mcp-approval' }>, held: Held): Promise<ReadGateVerdict> {
+  const cause = `${held.summary}, but Claude Code starts a project's .mcp.json servers in an interactive session only once you approve them`;
+  const { resolveAnchors } = await import('./utils/git.js');
+  const root = await realFilePath(gate.checkout);
+  const main = (await resolveAnchors(gate.checkout))?.mainCheckout ?? root;
+  const config = await readJsonObject(gate.config);
+  if (config.kind === 'invalid') return unreadable(cause, gate.config, `does not parse (${config.error})`, 'Claude Code');
+  const entry = fieldOf(fieldOf(config.kind === 'ok' ? config.value : {}, 'projects'), main);
+  const trusted = fieldOf(entry, 'hasTrustDialogAccepted') === true;
+  const local = path.join(main, '.claude', 'settings.local.json');
+  const sources: { readonly file: string; readonly counts: boolean; readonly value?: unknown }[] = [
+    { file: gate.settings, counts: true },
+    { file: path.join(root, '.claude', 'settings.json'), counts: trusted },
+    { file: local, counts: trusted },
+    ...root === main ? [] : [{ file: path.join(root, '.claude', 'settings.local.json'), counts: trusted }],
+    { file: gate.config, counts: trusted, value: entry },
+  ];
+  const enabled = new Set<string>();
+  const rejectedIn = new Set<string>();
+  const disabled = new Set<string>();
+  let all = false;
+  for (const source of sources) {
+    let value = source.value;
+    if (value === undefined && source.file !== gate.config) {
+      const settings = await readJsonObject(source.file);
+      if (settings.kind === 'invalid') return unreadable(cause, source.file, `does not parse (${settings.error})`, 'Claude Code');
+      value = settings.kind === 'ok' ? settings.value : undefined;
+    }
+    const off = namesIn(fieldOf(value, 'disabledMcpjsonServers'));
+    if (held.names.some((name) => off.has(name))) rejectedIn.add(source.file);
+    for (const name of off) disabled.add(name);
+    if (!source.counts) continue;
+    for (const name of namesIn(fieldOf(value, 'enabledMcpjsonServers'))) enabled.add(name);
+    all ||= fieldOf(value, 'enableAllProjectMcpServers') === true;
+  }
+  const how = trusted
+    ? `Approve them when an interactive \`claude\` in ${main} lists new MCP servers, or add them to enabledMcpjsonServers in ${local}. \`claude -p\` starts them either way.`
+    : `${gate.config} does not trust ${main}, so only enabledMcpjsonServers in ${gate.settings} can approve them now. `
+      + `Start \`claude\` in ${main}, accept the trust dialog and approve them when it lists new MCP servers, or add them to enabledMcpjsonServers in ${gate.settings}. `
+      + '`claude -p` starts them either way.';
+  return approvalVerdict(cause, {
+    rejected: held.names.filter((name) => disabled.has(name)),
+    pending: held.names.filter((name) => !disabled.has(name) && !all && !enabled.has(name)),
+  }, how, `Remove the rejected ones from disabledMcpjsonServers in ${[...rejectedIn].join(', ')}; \`claude mcp reset-project-choices\` in ${main} clears the local settings' choices.`);
 }
