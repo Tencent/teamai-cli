@@ -124,6 +124,9 @@ function teamRepo(): LocalConfig {
   dirs.push(root);
   const knowledge = path.join(root, 'knowledge');
   fs.mkdirSync(path.join(knowledge, 'workflows'), { recursive: true });
+  // The roles the pages' examples run steps as.
+  fs.mkdirSync(path.join(knowledge, 'manifest'));
+  fs.writeFileSync(path.join(knowledge, 'manifest', 'roles.yaml'), `version: 1\nroles:\n${['review', 'spec'].map((id) => `  - id: ${id}\n    resources: { knowledge: [${id}], skills: [${id}] }\n`).join('')}`);
 
   return {
     repo: { localPath: knowledge, remote: 'local', kind: 'self' },

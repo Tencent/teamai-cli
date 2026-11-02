@@ -362,6 +362,8 @@ interface BodyOptions {
   finally?: WorkflowStep[];
   /** Whether a loop around an inline workflow runs it again; asked once every step around it is parsed. */
   runsAgain?: () => boolean;
+  /** Whether a step around the inline workflow opens a clone, which its steps continue with the clone's role. */
+  inClone?: boolean;
 }
 
 /** A parsed workflow body, and what its steps read of enclosing steps. */
@@ -382,7 +384,7 @@ function parseBody(
   ctx: ParseContext,
   inputs: Record<string, OutputSchema> | undefined,
   itemBound: boolean,
-  { parent, checks, list = 'steps', finally: finallySteps = [], runsAgain = () => false }: BodyOptions = {},
+  { parent, checks, list = 'steps', finally: finallySteps = [], runsAgain = () => false, inClone = false }: BodyOptions = {},
 ): ParsedBody {
   const { file, lineCounter, diagnostics, promptFileLocations, files } = ctx;
   const header = (key: string): (typeof root.items)[number] | undefined => (list === 'steps' ? root.items.find((pair) => scalarString(pair.key) === key) : undefined);
@@ -512,6 +514,7 @@ function parseBody(
       const inline = workflowMap && !workflowFromPair
         ? parseInline(workflowMap, `${field}.workflow`, stepLabel, ctx, inputs, bindsItem, {
           parent: { steps, needs }, checks: queue,
+          inClone: inClone || typeof parseStepWorkspace(item.items.find((pair) => scalarString(pair.key) === 'workspace')?.value) === 'object',
           runsAgain: () => runsAgain() || loop !== undefined || [...stepLoops(steps).ranges.values()].some((range) => range.has(id ?? '')),
         })
         : undefined;
@@ -819,17 +822,27 @@ function parseBody(
 
       const rolePair = item.items.find((pair) => scalarString(pair.key) === 'role');
       const role = scalarString(rolePair?.value)?.trim();
+      // A role is the knowledge of the copy a prompt works in: one a clone step opens for every step continuing it, or
+      // the worktree copy a prompt step opens or continues.
+      const runsPrompt = promptPair !== undefined || promptFilePair !== undefined;
 
       const roleProblem = !rolePair ? undefined
         : role === undefined || !TOKEN.test(role) ? `${stepLabel} role must be the id of a role in manifest/roles.yaml, such as review`
-          : typeof workspace !== 'object' ? `${stepLabel} has role ${role} but opens no clone; set role on the step whose workspace is { clone: … }, and every step continuing that clone runs with it`
-            : !('revision' in workspace.clone.team) ? `${stepLabel} has role ${role} but its clone installs no team (team: { treatment: none }); give the clone a team revision and selection, or remove role`
-              : files?.roles === undefined || files.roles.has(role) ? undefined
-                : files.roles.size === 0 ? `${stepLabel} has role ${role}, which manifest/roles.yaml does not declare; the team repo declares no role, so add it to manifest/roles.yaml or remove role`
-                  : `${stepLabel} has role ${role}, which manifest/roles.yaml does not declare; add it there, or name a role it declares: ${[...files.roles].join(', ')}`;
+          : typeof workspace === 'object' ? !('revision' in workspace.clone.team) ? `${stepLabel} has role ${role} but its clone installs no team (team: { treatment: none }); give the clone a team revision and selection, or remove role` : undefined
+            : inClone ? `${stepLabel} has role ${role} but continues a clone, which runs with the role of the step that opens it; set role on that step`
+              : commandPair !== undefined && !runsPrompt ? `${stepLabel} has role ${role}, but a command step launches no agent to take the role's knowledge; set role on the prompt step that opens or continues the copy`
+                : !runsPrompt || (workspace !== 'new' && workspace !== 'continue') ? `${stepLabel} has role ${role} but neither opens nor continues a copy; give the prompt step workspace: new to open a copy that runs with the role, or workspace: continue to run with it in the copy around it`
+                  : undefined;
 
-      if (rolePair && roleProblem !== undefined) {
-        diagnostics.push({ ...locate(file, lineCounter, rolePair.value ?? rolePair.key ?? item, `${field}.role`, roleProblem), code: 'bad_role' });
+      const roleUndeclared = !rolePair || roleProblem !== undefined || role === undefined ? undefined
+        : files?.roles === undefined || files.roles.has(role) ? undefined
+          : files.roles.size === 0 ? `${stepLabel} has role ${role}, which manifest/roles.yaml does not declare; the team repo declares no role, so add it to manifest/roles.yaml or remove role`
+            : `${stepLabel} has role ${role}, which manifest/roles.yaml does not declare; add it there, or name a role it declares: ${[...files.roles].join(', ')}`;
+
+      const roleRefused = roleProblem ?? roleUndeclared;
+
+      if (rolePair && roleRefused !== undefined) {
+        diagnostics.push({ ...locate(file, lineCounter, rolePair.value ?? rolePair.key ?? item, `${field}.role`, roleRefused), code: 'bad_role' });
       }
 
       const sessionPair = item.items.find((pair) => scalarString(pair.key) === 'session');

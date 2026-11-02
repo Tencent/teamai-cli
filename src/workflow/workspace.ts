@@ -594,6 +594,11 @@ export function planWorkspace(
   const cloned = mode === 'clone' ? { clone: cloneOf(definition), instance: state.id, pass: state.pass ?? 1 }
     : owner && cloneOf(owner.step) ? { clone: cloneOf(owner.step), instance: owner.instance, pass: owner.pass } : undefined;
 
+  // A clone runs with the role it was opened with; a step another file runs there may name another only by mistake.
+  if (cloned?.clone && mode !== 'clone' && owner && definition.role !== undefined && definition.role !== owner.step.role) {
+    return { mode, fail: { code: 'role_unavailable', message: `step "${state.id}" has role ${definition.role} but continues the clone step "${owner.instance}" opened ${owner.step.role === undefined ? 'without a role' : `with role ${owner.step.role}`}, which every step there runs with; remove role from step "${state.id}", or set it on step "${owner.instance}"` } };
+  }
+
   if (cloned?.clone) return planClone(run, state, request, { ...cloned, clone: cloned.clone, mode, session, handback });
 
   if (mode === 'clone') return { mode, fail: { code: 'workspace_base', message: `step "${state.id}" opens a clone this teamai cannot read` } };
@@ -735,6 +740,24 @@ export function cloneRoleOf(run: StepTree, path: string): string | undefined {
   const owner = ancestorsOf(run, path).toReversed().find((ancestor) => opensCopy(ancestor.step));
 
   return owner && cloneOf(owner.step) ? owner.step.role : undefined;
+}
+
+/**
+ * The team role step instance `path` runs with: its clone's, as `cloneRoleOf` reads it, in a clone; else its own, which
+ * only a prompt step that opens or continues a worktree copy may name. Undefined when it runs with the member's roles.
+ */
+export function stepRoleOf(run: StepTree, path: string): string | undefined {
+  return cloneBranchOwner(run, path) ? cloneRoleOf(run, path) : stepDefinitions(run)(path)?.role;
+}
+
+/** Whether step instance `path` opens a clone or runs in one. */
+function cloneBranchOwner(run: StepTree, path: string): boolean {
+  const own = stepDefinitions(run)(path);
+
+  if (own && cloneOf(own)) return true;
+  const owner = ancestorsOf(run, path).toReversed().find((ancestor) => opensCopy(ancestor.step));
+
+  return owner !== undefined && cloneOf(owner.step) !== undefined;
 }
 
 /** Whether the steps inside `step` run in a copy it opens rather than in the one around it. */

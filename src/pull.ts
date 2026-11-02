@@ -1620,8 +1620,18 @@ function awaitingFullSync(records: Record<string, CheckoutRecord>): Record<strin
   }));
 }
 
+/**
+ * What a pull did for the checkout it ran in: `delivered` its selection,
+ * found it `unchanged` since its last delivery (the fast path), `skipped` it
+ * because another teamai held the partition's sync lock past the wait, or
+ * `failed` to deliver all of it.
+ */
+export type PullDelivery = 'delivered' | 'unchanged' | 'skipped' | 'failed';
+
 type PullSyncResult = {
   completed: boolean;
+  /** A scope found its checkout delivered already, on the fast path. */
+  unchanged?: true;
   docsSyncFailed: boolean;
   agentModelsHeld: boolean;
   teamRepoFailed: boolean;
@@ -1988,9 +1998,9 @@ async function pullForScope(
       // An index already on disk follows the last source away (#1006): left
       // alone, it would keep serving what the member no longer receives.
       if (hasAnySource || effectiveCodebaseDir || await pathExists(indexPath)) {
-        const { buildIndex, dropOtherCheckoutIndexes } = await import('./utils/search-index.js');
+        const { buildIndex, dropIndexesAfterRebuild } = await import('./utils/search-index.js');
         // Other checkouts' indexes: this checkout's rebuild goes ahead without them.
-        await dropOtherCheckoutIndexes(localConfig)
+        await dropIndexesAfterRebuild(localConfig)
           .catch((cause: unknown) => log.warn(`[${scopeLabel}] Could not remove the search indexes of this project's other checkouts: ${unresolvedReason(cause)}. `
             + 'Recall there may return what you no longer receive until you fix the cause and run `teamai pull` in each.'));
 
@@ -2257,7 +2267,7 @@ async function pullForScope(
           await syncLearningsAndRebuildIndex();
           await syncWorkflows(localConfig, freshConfig, !!options.dryRun, scopeLabel, recorder);
 
-          if (result && result.delivery !== 'failed') result.delivery = 'complete';
+          if (result && result.delivery !== 'failed') { result.delivery = 'complete'; result.unchanged = true; }
 
           return;
         }
@@ -3583,9 +3593,10 @@ export async function pull(
    * a real (non-dry-run) sync. Left false on dry-run, the "Already synced" fast
    * path, and error/skip paths — so the CLI does not fire a misleading "Pull
    * Complete" webhook on those (#702 follow-up). Also false when any scope
-   * failed to sync docs or held an agent for its model (#830).
+   * failed to sync docs or held an agent for its model (#830). `delivery`
+   * is what the pull did for the checkout it ran in (`PullDelivery`).
    */
-  result?: { completed: boolean },
+  result?: { completed: boolean; delivery?: PullDelivery },
 ): Promise<void> {
   if (options.teamRef !== undefined && options.dryRun) {
     const message = `--team-ref cannot be previewed: a dry run would show the workspace's current team revision, not "${options.teamRef}". Run teamai pull --team-ref ${options.teamRef} without --dry-run.`;
@@ -4176,7 +4187,12 @@ export async function pull(
       }
     }
 
-    if (result) result.completed = syncResult.completed && !syncResult.docsSyncFailed && !syncResult.agentModelsHeld;
+    if (result) {
+      result.completed = syncResult.completed && !syncResult.docsSyncFailed && !syncResult.agentModelsHeld;
+      result.delivery = [...contended].some((scope) => scope.scope === 'project') ? 'skipped'
+        : syncResult.delivery !== 'complete' ? 'failed'
+          : syncResult.unchanged ? 'unchanged' : 'delivered';
+    }
 
     const finishReportAndReleaseLocks = async () => {
       // Other pull stages save whole state snapshots. Record report outcomes

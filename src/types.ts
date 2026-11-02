@@ -3454,6 +3454,11 @@ export function isSelfMode(localConfig: { repo: { kind?: string } }): boolean {
   return localConfig.repo.kind === 'self';
 }
 
+/** The tracked `.teamai/.gitignore` a self-mode checkout's pull may rewrite in place; undefined outside self mode. */
+export function selfModeGitignorePath(localConfig: Pick<LocalConfig, 'repo' | 'projectRoot'>): string | undefined {
+  return isSelfMode(localConfig) && localConfig.projectRoot ? path.join(localConfig.projectRoot, '.teamai', '.gitignore') : undefined;
+}
+
 /**
  * True when report dirs (`members/` `sessions/` `votes/` `stats/`) live on the
  * `teamai-reports` orphan branch instead of the default branch. HTTP backends
@@ -3561,10 +3566,16 @@ export function getDataHome(localConfig: LocalConfig): string {
  * The project-scope search index. Every checkout of a repo shares one data
  * home, but in self mode each checkout indexes its own branch's docs, rules
  * and skills, so the index is kept per checkout, the way managed MCP is
- * (#808). Elsewhere the knowledge is one clone, and so is the index.
+ * (#808). So is a workflow copy's that runs with a team role (`stepRole`):
+ * it indexes that role's knowledge, which the member does not receive.
+ * Elsewhere the knowledge is one clone, and so is the index.
  */
 export function getProjectSearchIndexPath(localConfig: LocalConfig): string {
   const dataHome = getDataHome(localConfig);
+
+  if (localConfig.stepRole !== undefined && localConfig.projectRoot !== undefined) {
+    return path.join(dataHome, 'workspaces', managedMcpWorkspaceId(localConfig.projectRoot), 'search-index.json');
+  }
 
   if (isSelfMode(localConfig)) {
     return path.join(dataHome, 'workspaces', managedMcpWorkspaceId(getBusinessRoot(localConfig)), 'search-index.json');

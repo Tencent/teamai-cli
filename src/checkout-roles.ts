@@ -62,6 +62,31 @@ export async function recordCheckoutRole(input: { config: LocalConfig; checkout:
 }
 
 /**
+ * Records that `checkout` runs with no team role: its entry goes. Without an entry, or with a file no load can read
+ * either, there is nothing to clear and no lock is taken, so a copy that never ran with a role is not held up by one.
+ */
+export async function clearCheckoutRole(input: { config: LocalConfig; checkout: string }): Promise<CheckoutRoleWrite> {
+  const key = await checkoutKeyOf(input.checkout);
+  const file = getCheckoutRolesPath(input.config);
+  const seen = await readCheckoutRoles(file);
+
+  if (seen.kind === 'unreadable' || !(key in seen.roles)) return { kind: 'recorded' };
+  const lock = `${file}.lock`;
+
+  const written = await withFileLock(lock, CHECKOUT_ROLES_LOCK_WAIT, async (): Promise<CheckoutRoleWrite> => {
+    const read = await readCheckoutRoles(file);
+
+    if (read.kind === 'unreadable') return { kind: 'unreadable', file, error: read.error };
+    const { [key]: _cleared, ...rest } = read.roles;
+    await writeJsonAtomic(file, rest);
+
+    return { kind: 'recorded' };
+  });
+
+  return written.held ? written.value : { kind: 'busy', lock };
+}
+
+/**
  * `config` with `stepRole` set to the role recorded for the copy it governs, or without one when none is. A project
  * config only: a copy runs only under a project install. Applied after the member's role assignment, at every load.
  */

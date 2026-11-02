@@ -153,4 +153,5 @@ h1{font-weight:550;letter-spacing:-.5px}
 @media(max-width:1000px){.imp-charts,.imp-cols,.imp-share{grid-template-columns:1fr}.imp-cols>div+div{border-left:0;border-top:1px solid var(--line);padding-top:10px}}
 @media(max-width:760px){.imp-tiles{grid-template-columns:1fr 1fr}.imp-tile{border-left:0!important;border-top:1px solid var(--line)}.imp-tile:nth-child(-n+2){border-top:0}.imp-tile:nth-child(even){border-left:1px solid var(--line)!important}.imp-actions li{grid-template-columns:1fr}.imp-frow{grid-template-columns:1fr}.imp-fval{text-align:left}.imp-toolbar{flex-wrap:wrap}}
 .decider{display:inline-block;font-size:11px;line-height:1.5;border:1px solid currentColor;border-radius:4px;padding:0 6px;white-space:nowrap}.decider-judge{color:var(--link,#71b5f4)}.decider-check,.decider-ci,.decider-protected{color:var(--amber)}.decider-not-recorded{color:var(--muted)}.decided .kpis{padding:0 23px 16px}.decided .scorer-hint{padding:12px 23px 18px}
+.harness{line-height:1.5;overflow-wrap:anywhere;min-width:160px}.harness .role-of{white-space:nowrap}.harness .role-of.step{color:var(--link);border:1px solid currentColor;border-radius:4px;padding:0 5px}
 `;

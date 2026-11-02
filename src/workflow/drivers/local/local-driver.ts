@@ -34,7 +34,7 @@ import {
   type LocalToolRun,
 } from './local-tool-adapter.js';
 import { attemptDir, AttemptIdSchema, attemptResultPath, attemptsDir, readRun, RunIdSchema, withRunLock, type RunId, type RunLock } from '../../store.js';
-import { abandonPlace, cloneDelivery, cloneHead, placeLeaseOf, placeOf, placeRoot, preparedClone, preparePlace, roleDeliveryProblem, runPlaceSetup, sweepClones, type StepEnd } from '../../place/place.js';
+import { abandonPlace, cloneDelivery, cloneHead, placeLeaseOf, placeOf, placeRoot, preparedClone, preparePlace, roleDeliveryProblem, runPlaceSetup, sweepClones, worktreeRoleProblem, type StepEnd } from '../../place/place.js';
 import { commandEnd, managedReport, unreadablePlace } from '../../protocol.js';
 import { memberTools, type MemberTool } from '../../../tool-launch/call.js';
 import { startGroupedCommand, stopRecordedGroup, type CommandExit, type GroupedCommand } from '../../../tool-launch/process-stop.js';
@@ -435,13 +435,19 @@ async function promptReport(
   const clone = contract && contract.mode !== 'read-only' && contract.clone ? contract.branch : undefined;
   const prepared = clone !== undefined ? await preparedClone(config, lock.run, clone) : undefined;
 
-  // The clone was checked as it was prepared; a later step there checks again, as something may have pulled since.
-  if (lease.role !== undefined) {
+  // The copy was checked as it was prepared; it is checked again right before launch, as something may have pulled since.
+  if (lease.role !== undefined && clone !== undefined) {
     const why = prepared?.install
       ? await roleDeliveryProblem({ install: prepared.install, tools: [selected], role: lease.role })
       : 'teamai prepared no clone with a team install on this machine. Start the workflow again, as a run with a clone cannot be retried.';
 
     if (why !== undefined) return giveUp({ code: 'role_unavailable', message: `Role ${lease.role} was not delivered into the clone for step "${lease.step}": ${why}` }, selected);
+  } else if (lease.role !== undefined) {
+    const refused = lease.cwd !== undefined
+      ? await worktreeRoleProblem({ dir: lease.cwd, step: lease.step, role: lease.role, tools: [selected] })
+      : { code: 'role_unavailable', message: `Role ${lease.role} was not delivered for step "${lease.step}": its lease names no copy for teamai to deliver the role into. Update teamai, then retry the step.` };
+
+    if (refused !== undefined) return giveUp(refused, selected);
   }
 
   const teamConfig = clone !== undefined

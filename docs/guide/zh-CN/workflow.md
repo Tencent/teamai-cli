@@ -242,6 +242,28 @@ steps:
     command: node -e "require('fs').writeFileSync('joined.txt', 'J')"
 ```
 
+### 以团队角色运行步骤
+
+打开或沿用工作区的提示词步骤，可以用 `manifest/roles.yaml` 中你本人之外的角色运行。下例中，规划步骤知道规格撰写者知道的内容，评审步骤知道评审者知道的内容：
+
+```yaml
+schemaVersion: v1alpha1
+name: plan-and-review
+description: Plan a change as a spec writer, then review the plan as a reviewer.
+steps:
+  - id: plan
+    role: spec
+    workspace: new
+    prompt: Write the plan for the change in PLAN.md.
+  - id: review
+    needs: [plan]
+    role: review
+    workspace: new
+    prompt: Review PLAN.md and list what must change before anyone builds it.
+```
+
+用 `teamai workflow start plan-and-review --driver local` 运行它。每个步骤的 worktree 获得其角色和你的项目的 skill、规则、agent、文档、wiki 和经验，并保留你的 hook、MCP 服务器、env 和模型。你的检出目录和配置不会改变，每条分支只包含步骤自己的修改。运行记录在评审步骤上带有 `agent.team.selection.stepRole: review`，位于你的 `primaryRole` 旁边；仪表盘的运行视图把该角色标为步骤的角色。`role` 能写在哪里、步骤何时以 `role_unavailable` 失败，见[以团队角色运行步骤](workflow-advanced.md#以团队角色运行步骤)。
+
 ## 交付 PR
 
 在写分支的步骤上设置 `deliver: pr`，步骤成功后 TeamAI 会从这条分支开一个 pull request，并且从不合并它。设置了 `workspace: new` 或 `continue` 的步骤会写分支，位于已开分支的工作流中的提示词步骤也会。交付的命令必须设置 `workspace`，因为没有 `workspace` 的命令是只读的。设置了 `workspace: new` 的 `workflow` 步骤为它的全部步骤只交付一次自己的分支。其中写自己分支的步骤，需要有后续步骤通过 `needs` 合并那条分支，或者自己设置 `deliver: pr`。否则交付以 `delivery_failed` 失败，因为 pull request 会漏掉那部分工作。`for_each` 步骤的每个 item 各自交付自己的分支。

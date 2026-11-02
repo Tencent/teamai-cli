@@ -1740,15 +1740,46 @@ steps:
     expect(result.definition.steps[0]?.role).toBe('review');
   });
 
-  it('refuses a role on a step that opens no clone, the steps continuing one included', () => {
+  it('keeps a role on a prompt step that opens a copy, and on one that continues the copy around it', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Plan in one copy, review in another.
+steps:
+  - id: plan
+    role: spec
+    workspace: new
+    prompt: Write the spec.
+  - id: change
+    needs: [plan]
+    workspace: new
+    workflow:
+      steps:
+        - id: review
+          role: review
+          workspace: continue
+          prompt: Review the change.
+`);
+    expect(result.ok, result.ok ? '' : result.diagnostics.map(formatDiagnostic).join('\n')).toBe(true);
+    if (!result.ok) return;
+    const [plan, change] = result.definition.steps;
+    expect(plan?.role).toBe('spec');
+    const inline = change && stepWorkflow(change);
+    expect(inline?.kind === 'inline' ? inline.workflow.steps[0]?.role : undefined).toBe('review');
+  });
+
+  it('refuses a role on a step that runs in no copy, on a command step, and on a step continuing a clone', () => {
     expect(rejected(`schemaVersion: v1alpha1
 name: build
-description: Review in a copy.
+description: Review where no role reaches.
 steps:
-  - id: copy
+  - id: read
+    role: review
+    prompt: Review the change.
+  - id: check
+    needs: []
     role: review
     workspace: new
-    prompt: Review the change.
+    command: npm test
   - id: clone
     needs: []
     workspace: { clone: { commit: ${COMMIT}, team: ${TEAM} } }
@@ -1759,8 +1790,9 @@ steps:
           workspace: continue
           prompt: Review the change.
 `)).toEqual([
-      { code: 'bad_role', message: 'workflows/build.yaml:6: field "steps[0].role": step "copy" has role review but opens no clone; set role on the step whose workspace is { clone: … }, and every step continuing that clone runs with it' },
-      { code: 'bad_role', message: 'workflows/build.yaml:15: field "steps[1].workflow.steps[0].role": step "look" has role review but opens no clone; set role on the step whose workspace is { clone: … }, and every step continuing that clone runs with it' },
+      { code: 'bad_role', message: 'workflows/build.yaml:6: field "steps[0].role": step "read" has role review but neither opens nor continues a copy; give the prompt step workspace: new to open a copy that runs with the role, or workspace: continue to run with it in the copy around it' },
+      { code: 'bad_role', message: 'workflows/build.yaml:10: field "steps[1].role": step "check" has role review, but a command step launches no agent to take the role\'s knowledge; set role on the prompt step that opens or continues the copy' },
+      { code: 'bad_role', message: 'workflows/build.yaml:19: field "steps[2].workflow.steps[0].role": step "look" has role review but continues a clone, which runs with the role of the step that opens it; set role on that step' },
     ]);
   });
 

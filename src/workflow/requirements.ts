@@ -124,9 +124,9 @@ const ENFORCEMENT = {
   tools: 'strict',
   /** A prompt step with `permissions: unattended`: the driver launches its tool in that tool's unattended mode. */
   unattended: 'strict',
-  /** A step in a clone is leased only through `next --prepare`, so teamai made its clone. Process-only. */
+  /** A step in a clone or with a role is leased only through `next --prepare`, so teamai made its copy. Process-only. */
   prepare: 'strict',
-  /** A step in a clone opened with `role`: the driver runs it with what teamai delivered there for that role. */
+  /** A step that runs with a team `role`: the driver runs it with what teamai delivered into its copy for that role. */
   role: 'strict',
 } as const satisfies Record<string, 'strict' | 'bestEffort'> & Record<keyof Floor | 'env', 'strict' | 'bestEffort'>;
 
@@ -381,7 +381,7 @@ export interface Offer {
   clone: boolean;
   /** The caller asked `next --prepare`. */
   prepare: boolean;
-  /** The team role the step's clone runs with. */
+  /** The team role the step's copy runs with: its clone's, or the step's own in a worktree copy. */
   role?: string;
 }
 
@@ -439,7 +439,8 @@ export function negotiate(offer: Offer, can: DriverCan, allow: Allow, env: EnvFa
     ...(offer.unattended && !can.unattended ? ['unattended' as const] : []),
     ...(floor.isolation !== undefined && rank(floor.isolation) > rank(provided) ? ['isolation' as const] : []),
     ...(floor.network === false && !can.network ? ['network' as const] : []),
-    ...(offer.clone && !offer.prepare ? ['prepare' as const] : []),
+    // Only teamai delivers a role into a copy: one a driver makes itself gets the member's assets.
+    ...((offer.clone || offer.role !== undefined) && !offer.prepare ? ['prepare' as const] : []),
     ...(offer.role !== undefined && !can.role ? ['role' as const] : []),
     ...(offer.interactive && !can.hitl ? ['hitl' as const] : []),
     ...(offer.setup && !can.setup ? ['setup' as const] : []),

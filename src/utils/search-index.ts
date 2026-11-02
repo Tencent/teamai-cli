@@ -12,7 +12,6 @@ import {
   SEARCH_INDEX_VERSION,
   getDataHome,
   getProjectSearchIndexPath,
-  isSelfMode,
   type LocalConfig,
   type KnowledgeDomain,
   type LearningDocMeta,
@@ -32,15 +31,34 @@ import type { FrontmatterValue } from './frontmatter.js';
 import { parseYaml } from './yaml.js';
 
 /**
- * Self mode keeps one index per checkout, but every checkout shares the
- * learnings checkout and the queue, so a rebuild in one leaves the others'
- * indexes without what it just published or pulled (#808). Drop the other
- * checkouts' indexes in this partition; recall rebuilds a missing one from
- * that checkout's own roots. Only `search-index.json` files are touched.
+ * After this checkout's index is rebuilt by a pull. Self mode keeps one index
+ * per checkout, but every checkout shares the learnings checkout and the
+ * queue, so a rebuild in one leaves the others' indexes without what it just
+ * pulled (#808); and a workflow copy that runs with a team role keeps its own
+ * index of that role's knowledge. A member's rebuild drops every per-checkout
+ * index in the partition but its own: recall rebuilds a missing one from that
+ * checkout's own roots and selection, a role copy's with its role. A role
+ * copy's rebuild drops nothing: what it read, every other index reads too.
+ * Only `search-index.json` files are touched.
  */
-export async function dropOtherCheckoutIndexes(localConfig: LocalConfig): Promise<void> {
-  if (!isSelfMode(localConfig)) return;
+export async function dropIndexesAfterRebuild(localConfig: LocalConfig): Promise<void> {
+  if (localConfig.stepRole !== undefined) return;
   await dropCheckoutIndexes(getDataHome(localConfig), getProjectSearchIndexPath(localConfig));
+}
+
+/**
+ * After a source every index reads changed under this checkout: a
+ * contribution or a published learning. Every other index in the partition
+ * goes, the shared one included, in any mode, so none serves the source as it
+ * was; each rebuilds from its own roots and selection when recall next reads it.
+ */
+export async function dropIndexesAfterSourceUpdate(localConfig: LocalConfig): Promise<void> {
+  const dataHome = getDataHome(localConfig);
+  const own = getProjectSearchIndexPath(localConfig);
+  const shared = path.join(dataHome, 'search-index.json');
+
+  if (own !== shared) await rm(shared, { force: true });
+  await dropCheckoutIndexes(dataHome, own);
 }
 
 /**

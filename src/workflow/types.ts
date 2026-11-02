@@ -98,8 +98,9 @@ export interface WorkflowStep {
    */
   workspace?: StepWorkspace;
   /**
-   * The team role from `manifest/roles.yaml` the clone this step opens runs with: the role's skills, rules, agents and
-   * other knowledge, with the member's hooks, MCP, env and models. Every step continuing that clone runs with it.
+   * The team role from `manifest/roles.yaml` the copy this step runs in gets: the role's skills, rules, agents and other
+   * knowledge, with the member's hooks, MCP, env and models. On a clone step, every step continuing that clone runs
+   * with it; on a prompt step with `workspace: new` or `continue`, the step runs with it in that worktree copy.
    */
   role?: string;
   /** Opens a review request after the branch's work succeeds. TeamAI never merges it. */

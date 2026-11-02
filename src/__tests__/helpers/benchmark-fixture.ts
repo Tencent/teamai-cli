@@ -87,12 +87,14 @@ export type JudgeLaunch = z.infer<typeof JudgeLaunchSchema>;
 
 /**
  * Where one launch of a fake tool ran: when it started, in ms since the epoch, which tool, the `--model` and the effort it was launched with (null without one), its cwd,
- * that cwd's own `.git`, its HEAD and its remotes, every file in it outside `.git`, its AGENTS.md and CLAUDE.md, and the
- * team instructions pull wrote for Claude, .claude/rules/teamai-context.md (null when missing).
+ * that cwd's own `.git`, its HEAD and its remotes, every file in it outside `.git`, its AGENTS.md and CLAUDE.md, the
+ * team instructions pull wrote for Claude, .claude/rules/teamai-context.md, and Claude's local project settings, where its project hooks go,
+ * .claude/settings.local.json (null when missing).
  */
 const ToolLaunchSchema = z.object({
   at: z.number(), tool: z.string(), model: z.string().nullable(), effort: z.string().nullable(), cwd: z.string(), ownGit: z.boolean(), head: z.string(), remotes: z.string(),
   paths: z.array(z.string()), agentFiles: z.object({ 'AGENTS.md': z.string().nullable(), 'CLAUDE.md': z.string().nullable() }), teamContext: z.string().nullable(),
+  claudeSettings: z.string().nullable(),
 });
 export type ToolLaunch = z.infer<typeof ToolLaunchSchema>;
 
@@ -447,12 +449,15 @@ const launchedWith = process.argv.includes('--model') ? process.argv[process.arg
 const codexEffort = process.argv.find((arg) => arg.startsWith('model_reasoning_effort='));
 const effort = process.argv.includes('--effort') ? process.argv[process.argv.indexOf('--effort') + 1] : codexEffort ? codexEffort.slice('model_reasoning_effort='.length) : null;
 const hooked = { ...process.env, HOME: ${JSON.stringify(hookHome)} };
+// A worktree copy is on its branch, which the probe leaves it on again; a clone is at a detached HEAD.
+const onBranch = spawnSync('git', ['symbolic-ref', '-q', '--short', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
 spawnSync('git', ['checkout', '-q', '-b', 'hook-probe'], { env: hooked });
-spawnSync('git', ['checkout', '-q', '--detach', head], { env: hooked });
+spawnSync('git', onBranch ? ['checkout', '-q', onBranch] : ['checkout', '-q', '--detach', head], { env: hooked });
 spawnSync('git', ['branch', '-q', '-D', 'hook-probe']);
 fs.appendFileSync(${JSON.stringify(toolLog)}, JSON.stringify({
   at: Date.now(), tool: ${JSON.stringify(tool)}, model: launchedWith, effort, cwd: process.cwd(), ownGit: fs.statSync('.git').isDirectory(), head, remotes: git('remote'),
   paths: files('.'), agentFiles: { 'AGENTS.md': read('AGENTS.md'), 'CLAUDE.md': read('CLAUDE.md') }, teamContext: read('.claude/rules/teamai-context.md'),
+  claudeSettings: read('.claude/settings.local.json'),
 }) + '\\n');
 ${options.printsEnv ? `fs.writeFileSync(${JSON.stringify(path.join(root, 'tool.env'))}, execFileSync('sh', ['-c', 'env'], { encoding: 'utf8' }));` : ''}
 ${options.firstLaunch ? firstLaunch[options.firstLaunch] : ''}

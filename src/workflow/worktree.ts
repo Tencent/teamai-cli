@@ -464,11 +464,12 @@ export async function mergeBranch(dir: string, commit: string): Promise<
 
 /**
  * Replaces agent configuration with the copy at `commit` and points hooks at an empty directory.
- * `saved`, a directory that does not exist yet, receives the branch's own copy, put back for paths the step does not edit.
+ * `saved`, a directory that does not exist yet, receives the branch's own copy, put back for paths the step does not edit:
+ * AGENT_PATHS, or `paths` when the copy's install delivers elsewhere in it too, such as team docs.
  * With `resume`, a `saved` an interrupted run of this left is the branch's copy, and the rest is done again over it.
  */
 export async function applyBaseConfig(
-  dir: string, commit: string, hooks: string, saved: string, options: { resume?: true } = {},
+  dir: string, commit: string, hooks: string, saved: string, options: { resume?: true; paths?: readonly string[] } = {},
 ): Promise<{ ok: true; saved: string } | { ok: false; message: string }> {
   await git(dir, ['config', '--worktree', 'core.hooksPath', hooks]);
   const linked = await symlinkedParent(dir);
@@ -512,7 +513,7 @@ export async function applyBaseConfig(
   if (!kept) {
     await fs.mkdir(copying);
     await fs.writeFile(path.join(copying, '_conflicts'), (await git(dir, ['ls-files', '-u', '-z', '--', ...AGENT_PATHS])).stdout);
-    await saveConfig(dir, copying);
+    await saveConfig(dir, copying, options.paths);
     await fs.rename(copying, saved);
   }
 

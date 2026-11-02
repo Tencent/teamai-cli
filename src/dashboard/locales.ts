@@ -378,6 +378,8 @@ export const dashboardMessages = {
   "Waiting for an answer": "等待回答",
   "Waiting": "等待中",
   "No team revision": "无团队修订",
+  "step role": "步骤角色",
+  "member role": "成员角色",
   "Source": "源",
   "Pending publication": "待发布",
   "Published": "已发布",

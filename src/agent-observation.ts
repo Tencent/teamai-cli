@@ -149,8 +149,11 @@ export async function observeLaunch(launch: ToolLaunch): Promise<ReportedAgent> 
   return { ...observed, ...checkout };
 }
 
-/** What `observeLaunch` reads from the checkout and the pull record, without running the tool for its version. */
-export async function observeCheckout(launch: ToolLaunch): Promise<ReportedAgent> {
+/**
+ * What `observeLaunch` reads from the checkout and the pull record, without running the tool for its version: teamai's
+ * own reading, so it keeps the role a workflow copy was delivered for.
+ */
+export async function observeCheckout(launch: ToolLaunch): Promise<PreparedAgent> {
   const { teamDelivery } = await import('./pull.js');
 
   const [delivery, head] = await Promise.all([

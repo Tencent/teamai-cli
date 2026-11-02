@@ -242,6 +242,28 @@ steps:
     command: node -e "require('fs').writeFileSync('joined.txt', 'J')"
 ```
 
+### Run a step as a team role
+
+A prompt step that opens or continues a workspace can run with a role from `manifest/roles.yaml` other than yours. Here a planning step knows what spec writers know, and a review step what reviewers know:
+
+```yaml
+schemaVersion: v1alpha1
+name: plan-and-review
+description: Plan a change as a spec writer, then review the plan as a reviewer.
+steps:
+  - id: plan
+    role: spec
+    workspace: new
+    prompt: Write the plan for the change in PLAN.md.
+  - id: review
+    needs: [plan]
+    role: review
+    workspace: new
+    prompt: Review PLAN.md and list what must change before anyone builds it.
+```
+
+Run it with `teamai workflow start plan-and-review --driver local`. Each step's worktree gets the skills, rules, agents, docs, wiki and learnings of its role and of your projects. It keeps your hooks, MCP servers, env and models. Your checkout and config do not change, and each branch holds only the step's own edits. The run record has `agent.team.selection.stepRole: review` on the review step, beside your `primaryRole`, and the dashboard's run view marks the role as the step's. See [Run a step as a team role](workflow-advanced.md#run-a-step-as-a-team-role) for where `role` goes and when a step fails `role_unavailable`.
+
 ## Deliver a PR
 
 Set `deliver: pr` on a step that writes a branch, and TeamAI opens a pull request from that branch once the step succeeds. It never merges it. A step writes a branch when it has `workspace: new` or `continue`, or when it is a prompt inside a workflow that opened one. A command that delivers must set `workspace`, since a command without one is read-only. A `workflow` step with `workspace: new` delivers its branch once, for all its steps. A step inside it that writes a branch of its own needs a later step that merges that branch through `needs`, or its own `deliver: pr`. Otherwise the delivery fails with `delivery_failed`, since the pull request would leave that work out. On a `for_each` step, each item delivers its own branch.

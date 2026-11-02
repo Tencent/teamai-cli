@@ -46,7 +46,7 @@ import { findAttemptRun } from '../run-location.js';
 import { readRun, runsDir, type RunId } from '../store.js';
 import type { RunState, WorkflowFailure } from '../types.js';
 import { cloneBranchOf } from '../workspace.js';
-import { copyKnowledgePaths, roleCopyRefusal } from './role-copy.js';
+import { copyKnowledgePaths, roleCopyRefusal, roleDeliveryGap } from './role-copy.js';
 import { commitWithout } from './team-without.js';
 import { AGENT_PATHS, boundedGit, commitWork, recordConfigOverlay, replaceConfig, restoreUneditedConfig, saveConfig, savedConfigPaths, untrustedGit, type Git } from '../worktree.js';
 
@@ -662,21 +662,19 @@ function recordedRoleProblem(written: CheckoutRoleWrite): string | undefined {
  * `tools`, or undefined when it did: its checkout record holds a complete delivery made for that role.
  */
 export async function roleDeliveryProblem(input: { install: LocalConfig; tools: readonly string[]; role: string }): Promise<string | undefined> {
-  const loaded = await withCheckoutRole(input.install);
+  const gap = await roleDeliveryGap(input);
 
-  if (loaded.stepRole !== input.role) return `the clone's install does not load it (it loads ${loaded.stepRole ?? 'no role'}). Start the workflow again, as a run with a clone cannot be retried.`;
-  const { teamDelivery } = await import('../../pull.js');
+  switch (gap?.kind) {
+    case undefined: return undefined;
+    case 'not_loaded': return `the clone's install does not load it (it loads ${gap.loaded ?? 'no role'}). Start the workflow again, as a run with a clone cannot be retried.`;
+    case 'incomplete': return `its pull did not record a complete delivery for ${gap.tool} (${gap.gap}). Start the workflow again, as a run with a clone cannot be retried.`;
+    case 'other_role': return `its pull delivered for ${gap.delivered ?? 'the member\'s roles'} instead. Start the workflow again, as a run with a clone cannot be retried.`;
+    default: {
+      const unhandled: never = gap;
 
-  for (const tool of input.tools) {
-    const delivery = await teamDelivery(loaded, tool).catch(() => undefined);
-
-    if (!delivery?.complete) return `its pull did not record a complete delivery for ${tool} (${delivery?.gap ?? 'its record cannot be read'}). Start the workflow again, as a run with a clone cannot be retried.`;
-    const delivered = delivery.record.selection?.stepRole;
-
-    if (delivered !== input.role) return `its pull delivered for ${delivered ?? 'the member\'s roles'} instead. Start the workflow again, as a run with a clone cannot be retried.`;
+      return unhandled;
+    }
   }
-
-  return undefined;
 }
 
 /** The root, then the receipt that names it. rm retries a busy file, as Windows reports one still being closed. */

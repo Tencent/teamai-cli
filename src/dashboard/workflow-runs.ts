@@ -16,7 +16,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { RunOriginSchema, type RunOrigin } from '../default-workflows.js';
-import { readRecordedAgent } from '../agent-observation.js';
+import { readRecordedAgent, type RecordedAgent } from '../agent-observation.js';
 import { getReportsDir, usesBranchWorktree, type LocalConfig } from '../types.js';
 import { knownSecrets, resolveWorkflowEnv } from '../env-resolution.js';
 import { LabelStore, type PassScore } from '../scorers/label-store.js';
@@ -149,6 +149,41 @@ interface StepRow {
   scores?: PassScore[];
   /** What this pass delivered (#1387): the outcomes the page can read, a pull request only on https. */
   outcomes?: WorkOutcome[];
+  /** What the pass ran as, when its record observed a tool. */
+  harness?: StepHarness;
+}
+
+/**
+ * The harness one pass ran with, from its recorded agent: the tool, the model and effort it reported or else asked for,
+ * the role its knowledge came from, and the team revision delivered. `role.of` is `step` when the step ran with a role of
+ * its own in a workflow copy, `member` when it ran with the member's roles.
+ */
+type StepHarness = {
+  tool: string;
+  model?: string;
+  effort?: string;
+  role?: { of: 'step' | 'member'; names: string[] };
+  teamRevision?: string;
+};
+
+function harnessOf(agent: RecordedAgent | undefined): StepHarness | undefined {
+  if (!agent || !('tool' in agent)) return undefined;
+  const model = agent.model?.reported ?? agent.model?.requested;
+  const effort = agent.effort?.reported ?? agent.effort?.requested;
+  const selection = agent.team?.selection;
+  const memberRoles = selection ? [...selection.primaryRole !== undefined ? [selection.primaryRole] : [], ...selection.additionalRoles] : [];
+
+  const role = selection?.stepRole !== undefined
+    ? { of: 'step' as const, names: [selection.stepRole] }
+    : memberRoles.length > 0 ? { of: 'member' as const, names: memberRoles } : undefined;
+
+  return {
+    tool: agent.tool.name,
+    ...(model !== undefined ? { model } : {}),
+    ...(effort !== undefined ? { effort } : {}),
+    ...(role ? { role } : {}),
+    ...(agent.team ? { teamRevision: agent.team.revision } : {}),
+  };
 }
 
 /** What judging a run cost, kept apart from the run's own tokens: every attempt on this machine, or the published labels. */
@@ -230,6 +265,7 @@ function stepRow(entry: StepEntry, status: string, scores: ReadonlyMap<string, P
     return parsed.success ? [parsed.data] : [];
   });
 
+  const harness = harnessOf(entry.agent);
   const row: StepRow = { step: entry.step, pass: entry.pass, status };
 
   if (entry.tokens) row.tokens = entry.tokens;
@@ -241,6 +277,8 @@ function stepRow(entry: StepEntry, status: string, scores: ReadonlyMap<string, P
   if (passScores) row.scores = passScores.map(scoreCell);
 
   if (outcomes?.length) row.outcomes = outcomes;
+
+  if (harness) row.harness = harness;
 
   return row;
 }

@@ -8,8 +8,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { resolveActiveLearningsNamespaces } from '../projects.js';
+import { buildRolePullContext, resolveDesiredRules } from '../resources/desired.js';
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
-import type { LocalConfig } from '../types.js';
+import type { LocalConfig, TeamaiConfig } from '../types.js';
 
 const dirs: string[] = [];
 
@@ -63,5 +64,31 @@ describe('the namespaces of a copy that runs with a team role', () => {
     const namespaces = await resolveActiveLearningsNamespaces(memberOf(teamRepo(), { stepRole: 'review' }));
 
     expect(namespaces).toEqual(['rv-notes']);
+  });
+});
+
+describe('the rules a copy that runs with a team role gets', () => {
+  it("takes the role's rules and a rule tagged outside the member's subscription, which only the member's checkout leaves out", async () => {
+    const repo = teamRepo();
+    for (const [file, text] of [['review/review.md', 'Read every changed line.\n'], ['frontend/frontend.md', 'Use the design system.\n'], ['server-only.md', 'Log every request.\n']]) {
+      fs.mkdirSync(path.dirname(path.join(repo, 'rules', file)), { recursive: true });
+      fs.writeFileSync(path.join(repo, 'rules', file), text);
+    }
+    fs.writeFileSync(path.join(repo, 'tags.yaml'), 'rules:\n  server-only: [server]\n');
+    const team: TeamaiConfig = {
+      team: 'acme', description: '', repo: 'https://github.com/acme/team.git', provider: 'github', reviewers: [],
+      sharing: { skills: {}, rules: { enforced: [] }, docs: { localDir: '' }, env: { injectShellProfile: true } },
+      toolPaths: {},
+    };
+    const rulesOf = async (member: LocalConfig): Promise<string[]> => {
+      const config = { ...member, projectRoot: repo, dataHome: path.join(repo, '.data') };
+      return (await resolveDesiredRules(team, config, await buildRolePullContext(config))).items.map((rule) => rule.name).sort();
+    };
+
+    const inCopy = await rulesOf(memberOf(repo, { subscribedTags: ['ui'], stepRole: 'review' }));
+    const inMember = await rulesOf(memberOf(repo, { subscribedTags: ['ui'] }));
+
+    expect(inCopy).toEqual(['review/review', 'server-only']);
+    expect(inMember).toEqual(['frontend/frontend']);
   });
 });

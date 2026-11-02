@@ -275,6 +275,25 @@ describe('a clone place', () => {
     expect(fs.existsSync(clones) ? fs.readdirSync(clones) : []).toEqual([]);
   });
 
+  it('fails a step another workflow file runs in a clone with a role other than the clone\'s, rather than run it with either', async () => {
+    const team = {
+      'teamai.yaml': 'team: acme\nrepo: https://git.example.com/acme/team.git\nprovider: git\n',
+      'manifest/roles.yaml': rolesYaml(['review', 'spec']),
+      'workflows/look.yaml': 'schemaVersion: v1alpha1\nname: look\ndescription: Look at the change as a spec writer.\nsteps:\n  - id: look\n    role: spec\n    workspace: continue\n    prompt: Write the spec.\n',
+    };
+    const { config, runId } = await fixture((commit) => ROLE_CLONE(commit).replace(/    workflow:\n[\s\S]*$/, '    workflow: look\n'), {}, team);
+    const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
+
+    const answer = await client.next(runId, { driver: { ...driver, can: { ...can, role: true } }, running: [] }, { prepare: true });
+
+    const run = await readRun(config, RunIdSchema.parse(runId));
+    expect(answer).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    expect(typeof run === 'object' && run.steps.find((step) => step.id === 'review.look')).toMatchObject({ status: 'failed', failure: {
+      code: 'role_unavailable',
+      message: 'step "review.look" has role spec but continues the clone step "review" opened with role review, which every step there runs with; remove role from step "review.look", or set it on step "review"',
+    } });
+  });
+
   it('fails a read-only step inside a clone, as a clone has no reader place', async () => {
     const { config, runId } = await fixture((commit) => PROMPTED(commit).replace('workspace: continue\n          prompt: Make a file.', 'workspace: read-only\n          prompt: Make a file.'));
     const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
