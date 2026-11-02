@@ -14,6 +14,7 @@ const JOYCODE_SOURCE = 'JoyCode Desktop 0.6.0: JOYCODE_HOME moves the user hooks
 const HERMES_SOURCE = 'hermes-agent hermes_constants.py:51-58: HERMES_HOME, else %LOCALAPPDATA%\\hermes on Windows, else ~/.hermes; shell hooks registered in config.yaml';
 const SELF = 'issue #1221 matrix, Self scope';
 const TEAM = 'resolveHookScope: a workspace takes the user hooks (#264)';
+const CLAUDE_HOOKS_SWITCH = 'Claude Code 2.1.316 (`claude -p`): disableAllHooks in the checkout\'s settings.local.json, else its settings.json, else the user settings.json, holds back every hook';
 
 /** A tool's hook list in `file`, which it reads from any session: `probe` says it is installed. */
 const settings = (tool: string, scope: 'user' | 'project', file: Spot, probe: Spot, rest: Partial<FilesRow> = {}): FilesRow => ({
@@ -41,16 +42,22 @@ const ROWS: readonly (FilesRow | OtherRow)[] = [
     toolRoots: { claude: '~/.claude-work' }, reads: [{ at: '~/.claude-work/settings.json', when: 'always', key: HOOK_LIST }],
     source: 'CLAUDE_CONFIG_DIR recorded by teamai init (RELOCATABLE_TOOLS)',
   }),
-  settings('claude', 'project', '~/.claude/settings.json', '~/.claude', { source: 'resolveHookScope: a workspace takes the user hooks (#264)' }),
+  settings('claude', 'project', '~/.claude/settings.json', '~/.claude', {
+    readGates: [{ kind: 'claude-hooks-enabled', settings: '~/.claude/settings.json', checkout: '<root>' }],
+    source: `resolveHookScope: a workspace takes the user hooks (#264); ${CLAUDE_HOOKS_SWITCH}`,
+  }),
   settings('claude', 'project', '~/.claude-work/settings.json', '~/.claude-work', {
     userToolRoots: { claude: '~/.claude-work' }, reads: [{ at: '~/.claude-work/settings.json', when: 'always', key: HOOK_LIST }],
-    source: 'a project config that records no toolRoots follows the user config (resolveMemberToolRoots)',
+    readGates: [{ kind: 'claude-hooks-enabled', settings: '~/.claude-work/settings.json', checkout: '<root>' }],
+    source: `a project config that records no toolRoots follows the user config (resolveMemberToolRoots); ${CLAUDE_HOOKS_SWITCH}`,
   }),
   selfSettings('claude', '<root>/.claude/settings.json', '<root>/.claude', 'workspaceUnder', {
     reads: [
       { at: '<root>/.claude/settings.json', when: 'workspaceUnder', key: HOOK_LIST },
       { at: '<root>/.claude/settings.local.json', when: 'workspaceUnder', key: HOOK_LIST },
     ],
+    readGates: [{ kind: 'claude-hooks-enabled', settings: '~/.claude/settings.json', checkout: '<root>' }],
+    source: `${SELF}; ${CLAUDE_HOOKS_SWITCH}`,
   }),
   settings('codex', 'user', '~/.codex/hooks.json', '~/.codex'),
   settings('codex', 'project', '~/.codex/hooks.json', '~/.codex', { source: 'resolveHookScope: a workspace takes the user hooks (#264)' }),
@@ -79,7 +86,8 @@ const ROWS: readonly (FilesRow | OtherRow)[] = [
       { at: '~/.copilot/hooks/teamai.json', when: 'always', key: HOOK_LIST },
       { at: '<root>/.github/hooks/teamai.json', when: 'workspaceUnder', key: HOOK_LIST },
     ],
-    source: 'resolveHookScope: a workspace takes the user hooks (#264), and the team hooks in the project file Copilot CLI loads from .github/hooks',
+    readGates: [{ kind: 'copilot-folder-trust', config: '~/.copilot/config.json', checkout: '<root>' }],
+    source: 'resolveHookScope: a workspace takes the user hooks (#264), and the team hooks in the project file Copilot CLI loads from .github/hooks in a trusted folder (Copilot CLI 1.0.105)',
   }),
   settings('copilot', 'project', '/copilot-home/hooks/teamai.json', '/copilot-home', {
     env: { COPILOT_HOME: '/copilot-home' },
@@ -88,10 +96,12 @@ const ROWS: readonly (FilesRow | OtherRow)[] = [
       { at: '/copilot-home/hooks/teamai.json', when: 'always', key: HOOK_LIST },
       { at: '<root>/.github/hooks/teamai.json', when: 'workspaceUnder', key: HOOK_LIST },
     ],
-    source: 'Copilot CLI 1.0.98: COPILOT_HOME moves the user hooks; the project file stays in the project',
+    readGates: [{ kind: 'copilot-folder-trust', config: '/copilot-home/config.json', checkout: '<root>' }],
+    source: 'Copilot CLI 1.0.98: COPILOT_HOME moves the user hooks and config.json; the project file stays in the project',
   }),
   selfSettings('copilot', '<root>/.github/hooks/teamai.json', '~/.copilot', 'workspaceUnder', {
-    source: `${SELF}: whether repo hooks wait for folder trust is not traced`,
+    readGates: [{ kind: 'copilot-folder-trust', config: '~/.copilot/config.json', checkout: '<root>' }],
+    source: `${SELF}: Copilot CLI 1.0.105 runs repo hooks only in a trusted folder (copilot -p, verified)`,
   }),
   settings('qoder', 'user', '~/.qoder/settings.json', '~/.qoder'),
   settings('qoder', 'user', '/qoder/settings.json', '/qoder', {
@@ -108,7 +118,8 @@ const ROWS: readonly (FilesRow | OtherRow)[] = [
   }),
   selfSettings('qoder', '<root>/.qoder/settings.json', '~/.qoder', 'cwdOnly', {
     broken: { 'project-subdir': { reason: 'cwd-only', issue: '#1221' } },
-    source: `${SELF}: <cwd>/.qoder/settings.json, shared with Qoder CN`,
+    readGates: [{ kind: 'qoder-folder-trust', config: '~/.qoder/settings.json', checkout: '<root>' }],
+    source: `${SELF}: <cwd>/.qoder/settings.json, shared with Qoder CN; Qoder CLI 1.1.81 reads it only in a trusted folder`,
   }),
   settings('qoder-cn', 'user', '~/.qoder-cn/settings.json', '~/.qoder-cn'),
   settings('qoder-cn', 'user', '/qodercn/settings.json', '/qodercn', {
@@ -155,7 +166,10 @@ const ROWS: readonly (FilesRow | OtherRow)[] = [
     retired: [{ at: '~/.config/muse/settings.json', was: 'default' }],
     source: `${MUSE_SOURCE}; earlier releases wrote the hooks to ~/.config/muse`,
   }),
-  selfSettings('muse', '<root>/.muse/hooks.json', '~/.config/muse', 'workspaceUnder', { source: `${SELF}: runs only in a trusted workspace` }),
+  selfSettings('muse', '<root>/.muse/hooks.json', '~/.config/muse', 'workspaceUnder', {
+    readGates: [{ kind: 'muse-workspace-trust', config: '~/.config/muse/trust.json', checkout: '<root>' }],
+    source: `${SELF}: runs only in a trusted workspace (Muse Code 1.4.14 trust.json)`,
+  }),
   settings('muse', 'project', '/xdg/muse/settings.json', '/xdg/muse', {
     env: { XDG_CONFIG_HOME: '/xdg' }, reads: [{ at: '/xdg/muse/settings.json', when: 'always', key: HOOK_LIST }],
     retired: [{ at: '~/.config/muse/settings.json', was: 'default' }],

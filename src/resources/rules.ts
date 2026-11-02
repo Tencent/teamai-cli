@@ -1235,7 +1235,7 @@ export class RulesHandler extends ResourceHandler {
   ): Promise<void> {
     const target = await this.opencodeInstructionsTarget(teamConfig, localConfig, rules);
     if (target === null) return;
-    // OpenCode V2 ignores the globs, and teamai's plugin adds the rules (#915).
+    // teamai's plugin adds the rules on OpenCode V2 (#915), which would apply the globs too.
     const { opencodeDeliversThroughPlugin } = await import('../opencode-hooks.js');
     if (await opencodeDeliversThroughPlugin(teamConfig, localConfig)) return;
 

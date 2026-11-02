@@ -13,7 +13,7 @@ import { SESSION_PLATFORM_FACTS, type SessionPlatform, type StoredSessionPlatfor
 import {
   channelsOf, installGateOf, isToolId, hasDefaultHomeLeftovers, TOOLS,
   type Activation, type BlocksFile, type BlocksHeader, type ChannelProbe, type FirstExistingRead, type HomeRead, type HookAdapter,
-  type HookAdapterId, type HookFormat, type HookSettings, type McpProject, type McpUser, type ProjectRead, type ReadGateKind, type RunTime,
+  type HookAdapterId, type HookFormat, type HookSettings, type McpProject, type McpUser, type ProjectRead, type ReadGateKind, type RunTime, type SkillReads,
   type RunTimeVia,
 } from './tools.js';
 import {
@@ -138,12 +138,38 @@ export type Gate =
  * Declared, not evaluated: doctor evaluates it, and pull writes regardless,
  * so a trust a later step of the same pull grants never holds a write back.
  */
-export type ReadGate = {
-  readonly kind: ReadGateKind;
-  /** The tool config that holds the verdict. */
-  readonly config: string;
-  readonly checkout: string;
-};
+export type ReadGate =
+  /** `config`: Codex's config.toml, whose `projects` entry for the checkout or its main checkout decides. */
+  | { readonly kind: 'codex-project-trust'; readonly config: string; readonly checkout: string }
+  /**
+   * `config`: Pi's trust.json, whose nearest entry walking up from the
+   * checkout decides; else `defaultProjectTrust` in `settings`.
+   */
+  | { readonly kind: 'pi-project-trust'; readonly config: string; readonly settings: string; readonly checkout: string }
+  /** `config`: Muse's trust.json, whose entry for the real path of the checkout's git root decides. */
+  | { readonly kind: 'muse-workspace-trust'; readonly config: string; readonly checkout: string }
+  /** `config`: Copilot's config.json, whose `trustedFolders` covers the checkout or its main checkout. */
+  | { readonly kind: 'copilot-folder-trust'; readonly config: string; readonly checkout: string }
+  /** `config`: Qoder's user settings.json, whose `permissions.trustDirectories` covers the checkout. */
+  | { readonly kind: 'qoder-folder-trust'; readonly config: string; readonly checkout: string }
+  /** `config`: Qoder's user settings.json, where its approval dialog records `mcp.*ProjectMcpServers`; the project's own settings add theirs. */
+  | { readonly kind: 'qoder-mcp-approval'; readonly config: string; readonly checkout: string }
+  /**
+   * `config`: Claude Code's ~/.claude.json, whose `projects` entry for the main
+   * checkout holds its trust; `settings`: its user settings.json, which approves
+   * servers whatever the trust.
+   */
+  | { readonly kind: 'claude-mcp-approval'; readonly config: string; readonly settings: string; readonly checkout: string }
+  /** `config`: the project's .codebuddy/settings.local.json (`CODEBUDDY_PROJECT_CONFIG_DIR` moves it), the only file CodeBuddy Code reads approvals from. */
+  | { readonly kind: 'codebuddy-mcp-approval'; readonly config: string; readonly checkout: string }
+  /**
+   * `projects`: the Cursor CLI's per-project state (`CURSOR_DATA_DIR` moves
+   * it from ~/.cursor); `cliConfig`: the file it writes on any run, whose
+   * absence means the member is on the Cursor IDE alone.
+   */
+  | { readonly kind: 'cursor-mcp-approval'; readonly projects: string; readonly cliConfig: string; readonly checkout: string }
+  /** `settings`: Claude's user settings.json, the last file whose `disableAllHooks` decides, after the checkout's local and project settings. */
+  | { readonly kind: 'claude-hooks-enabled'; readonly settings: string; readonly checkout: string };
 
 /**
  * A place teamai wrote this resource to before and no longer writes, and why.
@@ -611,6 +637,44 @@ async function readGatesOf(kinds: readonly ReadGateKind[] | undefined, install: 
     switch (kind) {
       case 'codex-project-trust':
         return { kind, config: rootsOf('codex', user, host).declared('home', '.codex/config.toml'), checkout: install.projectRoot };
+      case 'pi-project-trust': {
+        const roots = rootsOf('pi', user, host);
+        return { kind, config: roots.declared('home', '.pi/agent/trust.json'), settings: roots.declared('home', '.pi/agent/settings.json'), checkout: install.projectRoot };
+      }
+      case 'muse-workspace-trust':
+        return { kind, config: rootsOf('muse', user, host).declared('home', '.config/muse/trust.json'), checkout: install.projectRoot };
+      case 'copilot-folder-trust':
+        return { kind, config: rootsOf('copilot', user, host).declared('home', '.copilot/config.json'), checkout: install.projectRoot };
+      case 'claude-mcp-approval': {
+        // The user MCP file is ~/.claude.json, which a recorded CLAUDE_CONFIG_DIR moves with the rest.
+        const roots = rootsOf('claude', user, host);
+        return {
+          kind,
+          config: roots.configured('mcp') ?? roots.declared('home', '.claude.json'),
+          settings: roots.configured('settings') ?? roots.declared('home', '.claude/settings.json'),
+          checkout: install.projectRoot,
+        };
+      }
+      case 'codebuddy-mcp-approval': {
+        const moved = host.env.CODEBUDDY_PROJECT_CONFIG_DIR;
+        const dir = moved ? host.path.resolve(install.projectRoot, moved) : host.path.join(install.projectRoot, '.codebuddy');
+        return { kind, config: host.path.join(dir, 'settings.local.json'), checkout: install.projectRoot };
+      }
+      case 'cursor-mcp-approval': {
+        // Cursor CLI 2026.10.21 cursor-config paths: a blank variable counts as unset.
+        const home = rootsOf('cursor', user, host).declared('home', '.cursor');
+        const data = host.env.CURSOR_DATA_DIR?.trim() ? host.env.CURSOR_DATA_DIR : home;
+        const xdg = host.env.XDG_CONFIG_HOME?.trim() ? host.path.join(host.env.XDG_CONFIG_HOME, 'cursor') : home;
+        const config = host.env.CURSOR_CONFIG_DIR?.trim() ? host.env.CURSOR_CONFIG_DIR : xdg;
+        return { kind, projects: host.path.join(data, 'projects'), cliConfig: host.path.join(config, 'cli-config.json'), checkout: install.projectRoot };
+      }
+      case 'qoder-folder-trust':
+      case 'qoder-mcp-approval':
+        return { kind, config: rootsOf('qoder', user, host).declared('home', '.qoder/settings.json'), checkout: install.projectRoot };
+      case 'claude-hooks-enabled': {
+        const roots = rootsOf('claude', user, host);
+        return { kind, settings: roots.configured('settings') ?? roots.declared('home', '.claude/settings.json'), checkout: install.projectRoot };
+      }
       default: {
         const unhandled: never = kind;
         return unhandled;
@@ -673,10 +737,16 @@ async function locateSkills(tool: string, install: Install, host: Host): Promise
     own: own === null ? null : { kind: 'dir', path: own },
     shared: shared === null ? null : { kind: 'dir', path: shared },
     reads: await readsOf(isToolId(tool) ? TOOLS[tool].skills[install.scope] : 'unknown', roots, host),
-    readGates: [],
+    readGates: await readGatesOf(skillReadGatesOf(tool), install, host),
     retired: [],
     gates: await gatesOf(tool, install, host, roots, 'skills'),
   };
+}
+
+function skillReadGatesOf(tool: string): readonly ReadGateKind[] | undefined {
+  if (!isToolId(tool)) return undefined;
+  const skills: SkillReads = TOOLS[tool].skills;
+  return skills.readGates;
 }
 
 async function locateRules(tool: string, install: Install, host: Host): Promise<Location<'rules'>> {
@@ -985,7 +1055,8 @@ async function locateMcp(tool: string, install: Install, host: Host): Promise<Lo
     writtenBy: null,
     lookup,
     reads: reads === 'unknown' ? reads : [...reads, ...localReads],
-    readGates,
+    // The gates are on the project's own file; a local scope in the tool's user config waits on none.
+    readGates: own === tree ? readGates : [],
     retired: settled(own, retired, p),
     gates: await mcpGatesOf(tool, gates, own, host),
   };
@@ -1095,7 +1166,11 @@ async function locateHooks(tool: string, install: Install, host: Host): Promise<
   const channel = hooks.user;
   if (channel === 'none' || channel === 'unknown') return settingsHooksOf(tool, channel, user, host);
   if (channel.channel === 'adapter') return adapterHooksOf(tool, channel, user, host);
-  const located = await settingsHooksOf(tool, channel, user, host);
+  const inUserView = await settingsHooksOf(tool, channel, user, host);
+  // A project's own settings can hold back the user hooks in its sessions (Claude's disableAllHooks).
+  const located = install.scope === 'project' && inUserView.channel === 'files'
+    ? { ...inUserView, readGates: await readGatesOf(channel.readGates, install, host) }
+    : inUserView;
   if (install.scope !== 'project' || hooks.workspace === undefined || located.channel !== 'files') return located;
   const roots = rootsOf(tool, install, host);
   const file = roots.configured(roots.paths?.hooks === undefined ? 'settings' : 'hooks');
@@ -1105,6 +1180,8 @@ async function locateHooks(tool: string, install: Install, host: Host): Promise<
     ...located,
     workspace: { kind: 'entry', path: file, key: HOOK_LIST_KEY },
     reads: located.reads === 'unknown' || reads === 'unknown' ? located.reads : [...located.reads, ...reads],
+    // The user hooks wait on nothing; these gate the project file.
+    readGates: await readGatesOf(hooks.workspace.readGates, install, host),
   };
 }
 
@@ -1135,7 +1212,7 @@ async function settingsHooksOf(
     format: channel.format,
     workspace: null,
     reads: await readsOf(channel.reads, roots, host, HOOK_LIST_KEY),
-    readGates: [],
+    readGates: await readGatesOf(channel.readGates, install, host),
     retired: settled(own, [unmoved], host.path),
     gates,
   };

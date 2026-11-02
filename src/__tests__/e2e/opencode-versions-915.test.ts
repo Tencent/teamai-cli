@@ -5,8 +5,8 @@
  *   `.opencode/opencode.json` and its MCP servers in the root `opencode.json`
  *   stay there, and are listed in the git exclude block while only teamai
  *   writes them.
- * - V2 ignores `instructions`, and teamai's plugin in HOME adds the team
- *   context and rules. Once that plugin is current, the team MCP servers go to
+ * - On V2 teamai's plugin in HOME adds the team context and rules; V2 also
+ *   applies `instructions`, so teamai stops listing them there. Once that plugin is current, the team MCP servers go to
  *   `.opencode/teamai-mcp.json`, which the plugin reads, and teamai takes its
  *   V1 entries out of the opencode.json files git does not track, keeping
  *   the member's entries there. A file git tracks is left, and doctor names it.
