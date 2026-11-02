@@ -650,27 +650,29 @@ const CheckRunsSchema = z.object({
   total_count: z.number(),
   check_runs: z.array(z.object({ status: z.string(), conclusion: z.string().nullable() })),
 });
-const CombinedStatusSchema = z.object({ state: z.string(), total_count: z.number() });
+const CombinedStatusSchema = z.object({ total_count: z.number(), statuses: z.array(z.object({ state: z.string() })) });
 /** Conclusions that fail a check run. A cancelled or stale run says nothing of the commit, as a skipped or neutral one passes it. */
 const FAILED_CONCLUSIONS = new Set(['failure', 'timed_out', 'action_required', 'startup_failure']);
 const PASSED_CONCLUSIONS = new Set(['success', 'neutral', 'skipped']);
 
 /**
- * How the CI of a commit went on GitHub: its check runs (Actions and apps) and its combined commit status. Any still
- * running, or more check runs than one page shows, leaves it pending, since the CI has not finished; else any failed one
- * fails it; else any that passed passes it; else it has none.
+ * How the CI of a commit went on GitHub: its check runs (Actions and apps) and each context of its commit status. Any
+ * still running, or more of either than one page shows, leaves it pending, since the CI has not finished; else any
+ * failed one fails it; else any that passed passes it; else it has none.
  */
 export async function ghCommitChecks({ repo, commit, timeoutMs }: CommitRef): Promise<CiStatus> {
   const [runsAnswer, statusAnswer] = await Promise.all([
     ghApiGet(`repos/${repo}/commits/${commit}/check-runs?per_page=100`, timeoutMs, CHECKS_LOOKUP),
-    ghApiGet(`repos/${repo}/commits/${commit}/status`, timeoutMs, CHECKS_LOOKUP),
+    ghApiGet(`repos/${repo}/commits/${commit}/status?per_page=100`, timeoutMs, CHECKS_LOOKUP),
   ]);
   const runs = CheckRunsSchema.safeParse(runsAnswer);
   const status = CombinedStatusSchema.safeParse(statusAnswer);
   if (!runs.success || !status.success) throw new Error(unreadable(CHECKS_LOOKUP));
   const conclusions = runs.data.check_runs.map((run) => (run.status === 'completed' ? run.conclusion ?? 'unknown' : 'running'));
-  const statuses = status.data.total_count > 0 ? [status.data.state] : [];
-  if (conclusions.includes('running') || statuses.includes('pending') || runs.data.total_count > runs.data.check_runs.length) return 'pending';
+  // Each commit status context, not the combined state, which reads failure while another context is still pending.
+  const statuses = status.data.statuses.map((context) => context.state);
+  const isPartial = runs.data.total_count > runs.data.check_runs.length || status.data.total_count > status.data.statuses.length;
+  if (conclusions.includes('running') || statuses.includes('pending') || isPartial) return 'pending';
   if (conclusions.some((conclusion) => FAILED_CONCLUSIONS.has(conclusion)) || statuses.some((state) => state === 'failure' || state === 'error')) return 'failed';
   return conclusions.some((conclusion) => PASSED_CONCLUSIONS.has(conclusion)) || statuses.includes('success') ? 'passed' : 'none';
 }

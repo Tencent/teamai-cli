@@ -115,9 +115,16 @@ setInterval(() => {}, 1000);
 const SHA = 'c'.repeat(40);
 const commit: CommitRef = { repo: 'acme/app', commit: SHA, timeoutMs: 3000 };
 const run = (status: string, conclusion: string | null = null) => ({ status, conclusion });
+type CombinedStatus = { state: string; total_count: number; statuses: Array<{ state: string }> };
 
 /** Answers GitHub's check runs and combined status of a commit, by path. */
-function githubAnswering(runs: unknown[], status: { state: string; total_count: number }) {
+/** The combined status GitHub answers for commit statuses in `states`: its state as GitHub combines them, and each context. */
+function statuses(...states: string[]): CombinedStatus {
+  const state = states.some((each) => each === 'failure' || each === 'error') ? 'failure' : states.includes('pending') || states.length === 0 ? 'pending' : 'success';
+  return { state, total_count: states.length, statuses: states.map((each) => ({ state: each })) };
+}
+
+function githubAnswering(runs: unknown[], status: CombinedStatus) {
   const fetcher = vi.fn<typeof fetch>().mockImplementation(async (url) => {
     const { pathname } = new URL(String(url));
     if (pathname.endsWith('/check-runs')) return new Response(JSON.stringify({ total_count: runs.length, check_runs: runs }));
@@ -135,16 +142,19 @@ describe('GitHub commit checks', () => {
   });
 
   it.each([
-    ['a check run that failed', [run('completed', 'success'), run('completed', 'failure')], { state: 'pending', total_count: 0 }, 'failed'],
-    ['a check run that timed out', [run('completed', 'timed_out')], { state: 'pending', total_count: 0 }, 'failed'],
-    ['a commit status that failed', [run('completed', 'success')], { state: 'failure', total_count: 1 }, 'failed'],
-    ['a check run still running', [run('completed', 'success'), run('in_progress')], { state: 'pending', total_count: 0 }, 'pending'],
-    ['a failed check run while another still runs', [run('completed', 'failure'), run('in_progress')], { state: 'pending', total_count: 0 }, 'pending'],
-    ['a failed check run while a commit status is pending', [run('completed', 'failure')], { state: 'pending', total_count: 1 }, 'pending'],
-    ['a commit status still pending', [run('completed', 'success')], { state: 'pending', total_count: 2 }, 'pending'],
-    ['every check passed or skipped', [run('completed', 'success'), run('completed', 'skipped')], { state: 'success', total_count: 1 }, 'passed'],
-    ['no check at all', [], { state: 'pending', total_count: 0 }, 'none'],
-    ['only cancelled check runs', [run('completed', 'cancelled')], { state: 'pending', total_count: 0 }, 'none'],
+    ['a check run that failed', [run('completed', 'success'), run('completed', 'failure')], statuses(), 'failed'],
+    ['a check run that timed out', [run('completed', 'timed_out')], statuses(), 'failed'],
+    ['a commit status that failed', [run('completed', 'success')], statuses('failure'), 'failed'],
+    ['a check run still running', [run('completed', 'success'), run('in_progress')], statuses(), 'pending'],
+    ['a failed check run while another still runs', [run('completed', 'failure'), run('in_progress')], statuses(), 'pending'],
+    ['a failed check run while a commit status is pending', [run('completed', 'failure')], statuses('pending'), 'pending'],
+    // GitHub's combined state is failure here, though one context has not finished.
+    ['a failed commit status while another is pending', [run('completed', 'success')], statuses('failure', 'pending'), 'pending'],
+    ['more commit statuses than one page shows', [run('completed', 'success')], { ...statuses('failure'), total_count: 101 }, 'pending'],
+    ['a commit status still pending', [run('completed', 'success')], statuses('pending', 'success'), 'pending'],
+    ['every check passed or skipped', [run('completed', 'success'), run('completed', 'skipped')], statuses('success'), 'passed'],
+    ['no check at all', [], statuses(), 'none'],
+    ['only cancelled check runs', [run('completed', 'cancelled')], statuses(), 'none'],
   ])('reads %s', async (_case, runs, status, expected) => {
     const fetcher = githubAnswering(runs, status);
 
@@ -161,7 +171,7 @@ describe('GitHub commit checks', () => {
     expect(await lookup().checks?.(commit)).toBe('failed');
     expect(gh.calls().sort((left, right) => String(left.args[1]).localeCompare(String(right.args[1])))).toMatchObject([
       { args: ['api', `repos/acme/app/commits/${SHA}/check-runs?per_page=100`], prompt: '0' },
-      { args: ['api', `repos/acme/app/commits/${SHA}/status`], prompt: '0' },
+      { args: ['api', `repos/acme/app/commits/${SHA}/status?per_page=100`], prompt: '0' },
     ]);
   });
 

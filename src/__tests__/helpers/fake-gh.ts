@@ -19,7 +19,7 @@ export interface FakeGhOptions {
   create?: 'fail' | 'fail-after-open';
   open?: unknown[];
   hold?: 'lookup' | 'create';
-  checks?: { runs: unknown[]; status?: { state: string; total_count: number } };
+  checks?: { runs: unknown[]; status?: { state: string; total_count: number; statuses: Array<{ state: string }> } };
 }
 
 function script(dir: string): string {
@@ -42,7 +42,7 @@ if (args[0] === 'api') {
   hold('lookup');
   const checks = options.checks || { runs: [] };
   if (String(args[1]).includes('/check-runs')) { console.log(JSON.stringify({ total_count: checks.runs.length, check_runs: checks.runs })); process.exit(0); }
-  if (String(args[1]).endsWith('/status')) { console.log(JSON.stringify(checks.status || { state: 'pending', total_count: 0 })); process.exit(0); }
+  if (String(args[1]).includes('/status')) { console.log(JSON.stringify(checks.status || { state: 'pending', total_count: 0, statuses: [] })); process.exit(0); }
   console.log(JSON.stringify(open));
   process.exit(0);
 }
