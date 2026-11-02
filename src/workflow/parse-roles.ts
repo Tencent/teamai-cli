@@ -38,10 +38,11 @@ interface Caller {
 }
 
 /**
- * Which copies take a role: none, only clones that pin a team revision, whose setup checks the role against that
- * revision's `manifest/roles.yaml`, or one that runs with the team pulled now, so its manifest must declare the role.
+ * Which copies take a role: none; only clones that pin a team revision, whose setup checks the role against that
+ * revision's `manifest/roles.yaml`; only a copy that a step running this file opens, which that file checks as it walks
+ * this one, and a lease checks again; or one that runs with the team pulled now, so its manifest must declare the role.
  */
-type RoleTaker = 'none' | 'pinned_clone' | 'current_team';
+type RoleTaker = 'none' | 'pinned_clone' | 'enclosing_copy' | 'current_team';
 
 /** A role a step inside may take: this file's `defaults.role` or a `workflow` step's, until a copy runs with it. */
 interface RoleSource {
@@ -273,12 +274,13 @@ export function roleDiagnostics(root: Node, workflow: { defaults?: WorkflowDefau
 
   /**
    * Reports the role id `level` names itself when a copy that runs with the team pulled now takes it and that team's
-   * manifest/roles.yaml does not declare it. A pinned clone's setup checks it at the clone's revision instead.
+   * manifest/roles.yaml does not declare it. A pinned clone's setup checks it at the clone's revision instead, and a
+   * copy a step running this file opens is checked where that step is.
    */
   const ownRoleDeclared = (level: Level, by: Exclude<RoleTaker, 'none'>): void => {
     const id = level.role && roleIdNamedNow(level.role);
 
-    if (by === 'pinned_clone' || !level.written || id === undefined) return;
+    if (by !== 'current_team' || !level.written || id === undefined) return;
     const undeclared = undeclaredRole(level.label, id, ctx.files);
 
     if (undeclared !== undefined) report('bad_role', valueNode(level.written.item, 'role'), `${level.written.field}.role`, undeclared);
@@ -292,10 +294,9 @@ export function roleDiagnostics(root: Node, workflow: { defaults?: WorkflowDefau
     const copy = copyOf(levels);
 
     if (!copy) {
-      if (runsWith(levels).kind === 'unknown') {
-        consume(levels, 'current_team');
-        ownRoleDeclared(last, 'current_team');
-      } else if (last.step.role !== undefined && last.written) {
+      // The copy this step continues is opened by a step running this file, whose walk of it checks the copy's role.
+      if (runsWith(levels).kind === 'unknown') consume(levels, 'enclosing_copy');
+      else if (last.step.role !== undefined && last.written) {
         report('bad_role', valueNode(last.written.item, 'role'), `${last.written.field}.role`, `${last.label} has role ${last.step.role} but neither opens nor continues a copy; give the prompt step workspace: new to open a copy that runs with the role, or workspace: continue to run with it in the copy around it`);
       }
 
@@ -426,6 +427,7 @@ export function roleDiagnostics(root: Node, workflow: { defaults?: WorkflowDefau
         report('bad_role', source.node, source.field, source.unconsumedMessage);
         break;
       case 'pinned_clone':
+      case 'enclosing_copy':
         break;
       case 'current_team':
         if (undeclared !== undefined) report('bad_role', source.node, source.field, undeclared);
