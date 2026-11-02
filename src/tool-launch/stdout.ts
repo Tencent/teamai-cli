@@ -217,9 +217,12 @@ export function tokenMeter(adapter: LaunchAdapterId): (line: string) => TokenUsa
         if (typeof started?.id === 'string') current = started.id;
         const usage = started ? tokenUsage(started) : event?.type === 'message_delta' ? tokenUsage(event) : undefined;
         if (current === undefined || !usage) continue;
-        count(messages.get(current), -1);
-        count(usage, 1);
-        messages.set(current, usage);
+        // A message_delta may state only the counts that changed, such as output tokens; the others keep their value.
+        const previous = messages.get(current);
+        const merged = { ...previous, ...usage };
+        count(previous, -1);
+        count(merged, 1);
+        messages.set(current, merged);
       }
       const tokens: TokenUsage = {};
       for (const key of keys) if (totals[key].stated > 0) tokens[key] = totals[key].sum;

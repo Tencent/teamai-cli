@@ -234,6 +234,13 @@ describe('local tool adapter', () => {
       JSON.stringify({ type: 'assistant', message: { id: 'm2', usage: { input_tokens: 30, output_tokens: 2, cache_read_input_tokens: 500 } } }),
       JSON.stringify({ type: 'stream_event', event: { type: 'message_delta', usage: { input_tokens: 30, output_tokens: 50, cache_read_input_tokens: 500 } } }),
     ]],
+    // A message_delta may state only what changed since the message's start; the rest keeps the start's value.
+    ['headless Claude, whose message_delta states only output tokens', 'claude', [
+      JSON.stringify({ type: 'stream_event', event: { type: 'message_start', message: { id: 'm1', usage: { input_tokens: 10, output_tokens: 1, cache_read_input_tokens: 500 } } } }),
+      JSON.stringify({ type: 'stream_event', event: { type: 'message_delta', usage: { output_tokens: 20 } } }),
+      JSON.stringify({ type: 'stream_event', event: { type: 'message_start', message: { id: 'm2', usage: { input_tokens: 30, output_tokens: 1, cache_read_input_tokens: 500 } } } }),
+      JSON.stringify({ type: 'stream_event', event: { type: 'message_delta', usage: { output_tokens: 50 } } }),
+    ]],
     ['OpenCode, counting each finished step', 'opencode', [
       JSON.stringify({ type: 'step_finish', part: { type: 'step-finish', tokens: { input: 10, output: 20, cache: { read: 500 } } } }),
       JSON.stringify({ type: 'step_finish', part: { type: 'step-finish', tokens: { input: 30, output: 50, cache: { read: 500 } } } }),
