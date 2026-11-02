@@ -5,19 +5,24 @@ import { loadLocalConfigForScope, readConfigFrom } from '../config.js';
 import { ATTEMPT_ENV } from '../launch-context.js';
 import { LocalConfigSchema, getDataHome, type LocalConfig } from '../types.js';
 import { readFileSafe } from '../utils/fs.js';
+import { memberHome } from '../utils/home.js';
 import { projectsRootDir } from '../utils/partition.js';
 import type { LeasedStep } from './step-state.js';
 import { isRunId, readRun } from './store.js';
 import type { RunState, WorkflowFailure } from './types.js';
 
-/** Each project partition of this machine, with the config stored in it: enough to read the partition's local state. */
+/**
+ * Each project partition of this machine, with the config stored in it: enough to read the partition's local state.
+ * Under the member's home, as is every run: a command a step starts in its clone uses the clone's install for the rest.
+ */
 export async function projectPartitions(): Promise<LocalConfig[]> {
+  const root = projectsRootDir(memberHome());
   let dirs: import('node:fs').Dirent[] = [];
-  try { dirs = await fs.readdir(projectsRootDir(), { withFileTypes: true }); } catch { /* No project partitions yet. */ }
+  try { dirs = await fs.readdir(root, { withFileTypes: true }); } catch { /* No project partitions yet. */ }
   const partitions: LocalConfig[] = [];
   for (const entry of dirs) {
     if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
-    const dir = path.join(projectsRootDir(), entry.name);
+    const dir = path.join(root, entry.name);
     const raw = await readFileSafe(path.join(dir, 'config.yaml'));
     if (!raw) continue;
     try {
@@ -38,7 +43,7 @@ export async function partitionConfig(partition: LocalConfig, anchor?: string): 
 export async function findRunConfig(runId: string, current?: LocalConfig): Promise<{ config: LocalConfig; run: RunState } | { error: WorkflowFailure }> {
   if (!isRunId(runId)) return { error: { code: 'invalid_run', message: 'Run id must look like r followed by 8 or 16 hex digits' } };
   const candidates: LocalConfig[] = current ? [current] : [];
-  const user = await loadLocalConfigForScope('user', undefined, { dryRun: true });
+  const user = await loadLocalConfigForScope('user', undefined, { dryRun: true, home: memberHome() });
   if (user) candidates.push(user);
   for (const partition of await projectPartitions()) {
     const stored = await readRun(partition, runId);

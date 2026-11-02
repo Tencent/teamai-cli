@@ -38,6 +38,26 @@ export function normalizeHomePath(home: string): string {
  * on any real machine at least one of the three is always set.
  */
 export function getUserHome(): string {
+  return installHome ?? memberHome();
+}
+
+let installHome: string | undefined;
+
+/**
+ * Moves the home teamai itself reads and writes under to `home`, the home of the install a step's clone has, for the
+ * rest of this process. The environment keeps HOME, so the processes teamai starts, such as a check, keep the member's.
+ */
+export function useInstallHome(home: string): void {
+  installHome = home;
+}
+
+/** Whether {@link useInstallHome} moved teamai's home, so a tool home variable in the environment names the member's tool, not the install's. */
+export function usesInstallHome(): boolean {
+  return installHome !== undefined;
+}
+
+/** The home this process was started with: the member's, also after {@link useInstallHome}. Runs are found under it. */
+export function memberHome(): string {
   const home = process.env.HOME?.trim()
     || process.env.USERPROFILE?.trim()
     || os.homedir();

@@ -8,6 +8,7 @@ import type { MaintenancePaths } from './maintenance/paths.js';
 import type { ScoreOptions } from './score-commands.js';
 import { GLOBAL_OPTIONS } from './global-options.js';
 import { ATTEMPT_ENV } from './launch-context.js';
+import { useInstallHome } from './utils/home.js';
 import { TEAMAI_HOOK_SUBCOMMANDS } from './hooks.js';
 import { dryRunRefusal } from './dry-run-guard.js';
 import { registerPackagesCommand } from './pkg/register-command.js';
@@ -116,6 +117,13 @@ program
 for (const [flags, description] of GLOBAL_OPTIONS) program.option(flags, description);
 program
   .hook('preAction', async (thisCommand, actionCommand) => {
+    // A command a step starts in its clone reads and writes under that clone's own install, as the install's pull did,
+    // so nothing it writes reaches the member's home. First, so every path resolved below is the install's.
+    if (process.env[ATTEMPT_ENV] !== undefined) {
+      const { attemptCloneHome } = await import('./workflow/place/place.js');
+      const home = await attemptCloneHome(process.cwd(), process.env);
+      if (home) useInstallHome(home);
+    }
     const opts = thisCommand.opts();
     if (opts.verbose) setVerbose(true);
 
@@ -226,12 +234,6 @@ program
   .action(async (cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     if (cmdOpts.silent) setSilent(true);
-    // A pull a step starts in its clone runs as that clone's own install did, so nothing it writes reaches the member's home.
-    if (process.env[ATTEMPT_ENV] !== undefined) {
-      const { attemptCloneInstall, useInstallHome } = await import('./workflow/place/place.js');
-      const install = await attemptCloneInstall(process.cwd(), process.env);
-      if (install) useInstallHome(process.env, install.home);
-    }
     const { pull } = await import('./pull.js');
     // Only notify when a real (non-dry-run) sync completed. The SessionStart hook
     // drives its own `session-start` webhook, so the silent hook pull never fires

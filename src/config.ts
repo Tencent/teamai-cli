@@ -32,7 +32,6 @@ import { log } from './utils/logger.js';
 import { listRoleIds, loadRolesManifest, RolesManifestNotFoundError } from './roles.js';
 import { loadRoleAssignmentsIfPresent, resolveAssignedRoles, ROLE_ASSIGNMENTS_FILE } from './role-assignments.js';
 import { warnOnce } from './utils/warn-once.js';
-import { ATTEMPT_ENV } from './launch-context.js';
 import { AllowSchema } from './workflow/requirements.js';
 
 /**
@@ -48,6 +47,8 @@ type LoadOptions = {
    * the clone-time self-heal. For `init`, which sets the project up itself.
    */
   selfHeal?: boolean;
+  /** The home whose `.teamai` holds a user-scope config, with that data home attached; teamai's own home by default. */
+  home?: string;
 };
 
 async function migrateLegacyRoleConfig(
@@ -726,14 +727,16 @@ export async function loadLocalConfigForScope(
       options,
     );
   }
-  const configPath = getConfigPath(scope, projectRoot);
+  const dataHome = scope === 'user' && options.home !== undefined ? path.join(options.home, '.teamai') : undefined;
+  const configPath = dataHome !== undefined ? path.join(dataHome, 'config.yaml') : getConfigPath(scope, projectRoot);
   const content = await readFileSafe(expandHome(configPath));
   if (!content) return null;
   try {
     const raw = YAML.parse(content);
     if (scope === 'user' && isSettingsOnlyConfig(raw)) return null;
     const parsed = LocalConfigSchema.parse(raw);
-    return await withBranchHome(await migrateLegacyRoleConfig(await applyConfigOverlays(parsed), configPath, options), options);
+    const loaded = await withBranchHome(await migrateLegacyRoleConfig(await applyConfigOverlays(parsed), configPath, options), options);
+    return dataHome !== undefined ? { ...loaded, dataHome } : loaded;
   } catch (e) {
     log.error(`Invalid ${installScopeName(scope)} config at ${configPath}: ${describeConfigError(e)}`);
     return null;
@@ -949,9 +952,7 @@ async function findProjectConfig(
     // before the #546 naming widening still carries the legacy
     // `<basename>-<hash>` name; adoption renames it into the current name so
     // detection — and every command after it — keeps finding the config.
-    // A step's clone holds its own install, under the clone's root: a tool the step starts there keeps the member's HOME.
-    const partitionDir = (process.env[ATTEMPT_ENV] !== undefined ? (await (await import('./workflow/place/place.js')).attemptCloneInstall(anchors.workspaceRoot, process.env))?.partition : undefined)
-      ?? await resolvePartitionDir(anchors.projectAnchor, options);
+    const partitionDir = await resolvePartitionDir(anchors.projectAnchor, options);
     const fromPartition = await readConfigFrom(partitionDir, anchors.workspaceRoot, undefined, onUnreadable);
     if (fromPartition) return fromPartition;
     // 2. No partition config yet. A workspace that declares `mode: self` self-heals

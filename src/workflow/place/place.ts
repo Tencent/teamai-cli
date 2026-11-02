@@ -36,7 +36,7 @@ export async function placeRoot({ cwd, checkout }: { cwd: string; checkout: stri
   return here !== null && here !== there ? cwd : checkout;
 }
 
-export { attemptCloneInstall, cloneDelivery, cloneHead, commitCacheOf, freshClone, preparedClone, scratchCloneRoot, stageSettledEvidence, sweepClones, useInstallHome } from './clone.js';
+export { attemptCloneHome, cloneDelivery, cloneHead, commitCacheOf, freshClone, preparedClone, scratchCloneRoot, stageSettledEvidence, sweepClones } from './clone.js';
 
 /**
  * The place key two attempts of one driver must not share: the copy of the lease's branch, its clone, else the checkout.

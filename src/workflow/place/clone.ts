@@ -204,27 +204,23 @@ export async function preparedClone(config: LocalConfig, run: RunId, branch: str
 }
 
 /**
- * The clone's own install, when `dir` is in the clone of the step the attempt marker in `env` names: its HOME and its
- * partition. A tool the step starts there keeps the member's HOME, so the partition it would look up there is not the
- * one the install wrote. Undefined otherwise.
+ * The home of the clone's own install, when `dir` is in the clone of the step the attempt marker in `env` names; else
+ * undefined. A tool the step starts there keeps the member's HOME, while the install is under that home.
  */
-export async function attemptCloneInstall(dir: string, env: NodeJS.ProcessEnv): Promise<{ home: string; partition: string } | undefined> {
+export async function attemptCloneHome(dir: string, env: NodeJS.ProcessEnv): Promise<string | undefined> {
+  // Every clone is at <tmp>/teamai-clones/<root>/r, so a command run anywhere else looks up no run, as each hook would.
+  const parts = path.resolve(dir).split(path.sep);
+  const at = parts.lastIndexOf(CLONES);
+  if (at < 0 || parts[at + 2] !== 'r') return undefined;
   const found = await findAttemptRun(env);
   if ('error' in found) return undefined;
   const branch = cloneBranchOf(found.run, found.step.id);
   const receipt = branch === undefined ? undefined : await readReceipt(receiptPath(runsDir(found.config), found.run.id, branch));
   if (receipt === undefined || receipt.state.kind === 'preparing' || receipt.state.install === undefined) return undefined;
   const anchors = await resolveAnchors(dir);
-  const real = (at: string): Promise<string> => fs.realpath(at).catch(() => path.resolve(at));
+  const real = (file: string): Promise<string> => fs.realpath(file).catch(() => path.resolve(file));
   const [clone, root] = await Promise.all([real(path.join(receipt.root, 'r')), anchors ? real(anchors.workspaceRoot) : undefined]);
-  return clone === root ? { home: path.join(receipt.root, 'h'), partition: receipt.state.install.dataHome } : undefined;
-}
-
-/** Makes `env` the one the clone's own install runs in: HOME is `home`, and no tool home variable points elsewhere. */
-export function useInstallHome(env: NodeJS.ProcessEnv, home: string): void {
-  env.HOME = home;
-  env.USERPROFILE = home;
-  for (const name of TOOL_HOME_VARIABLES) delete env[name];
+  return clone === root ? path.join(receipt.root, 'h') : undefined;
 }
 
 /**
@@ -465,8 +461,8 @@ async function installTeam(input: {
   await createProjectToolRoots({ config, tools });
   const entry = resolveCliEntry();
   if (!entry) return failed('The teamai CLI that runs this workflow could not be found, so the clone\'s own teamai pull could not run.');
-  const env: NodeJS.ProcessEnv = { ...input.env };
-  useInstallHome(env, home);
+  const env: NodeJS.ProcessEnv = { ...input.env, HOME: home, USERPROFILE: home };
+  for (const name of TOOL_HOME_VARIABLES) delete env[name];
   // The lease's deadline bounds the pull too, so a slow one does not hold the run past its timeout.
   const timeoutMs = lease.expiresAt === undefined ? PULL_TIMEOUT_MS : Math.max(0, Math.min(PULL_TIMEOUT_MS, Date.parse(lease.expiresAt) - Date.now()));
   const pulled = await execCommand(process.execPath, [entry, 'pull', '--team-ref', pulling], { cwd: clone, env, timeoutMs })

@@ -343,24 +343,32 @@ timeout: 10m
 `;
 const RULE = 'CLONE-RULE-SENTINEL: keep the answer right.\n';
 
-/** Every file under the member's Claude and Codex homes, with its content. */
-function toolHomeFiles(fixture: BenchmarkFixture): string[][] {
-  return ['.claude', '.codex'].map((dir) => path.join(fixture.home, dir)).filter((dir) => fs.existsSync(dir))
+/** Every file under the member's Claude and Codex homes and teamai's local dashboard, with its content. */
+function homeFiles(fixture: BenchmarkFixture): string[][] {
+  return ['.claude', '.codex', path.join('.teamai', 'dashboard')].map((dir) => path.join(fixture.home, dir)).filter((dir) => fs.existsSync(dir))
     .flatMap((dir) => fs.readdirSync(dir, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => path.join(entry.parentPath, entry.name)))
     .sort().map((file) => [path.relative(fixture.home, file), fs.readFileSync(file, 'utf8')]);
 }
 
+/**
+ * A Codex trial driven up to its prompt, with its clone prepared, and `teamai` as the trial's tool would run it there: in a
+ * subdirectory of the clone, with the member's HOME and the attempt marker.
+ */
+async function inTrialClone(): Promise<{ fixture: BenchmarkFixture; runId: string; lease: z.infer<typeof PromptLeaseSchema>; dir: string; teamai: (args: string[], input?: string) => ReturnType<typeof spawnSync> }> {
+  const fixture = await benchmarkFixture({ tool: 'fixes', sandbox: true, tools: ['codex'], suite: CODEX_SUITE, team: { 'rules/answer.md': RULE } });
+  fixtures.push(fixture);
+  const runId = await startFixBenchmark(fixture);
+  const lease = PromptLeaseSchema.parse(await drive(fixture, runId, (leased) => leased.prompt !== undefined, { ...SANDBOX_CLAUDE, tools: ['codex'] }));
+  const dir = path.join(lease.cwd, 'nested');
+  fs.mkdirSync(dir);
+  const env = withheld(fixture.env, lease.envScope.withhold, { TEAMAI_WORKFLOW_ATTEMPT: `${runId}/${lease.attempt}` });
+  return { fixture, runId, lease, dir, teamai: (args, input = '') => spawnSync(path.join(fixture.bin, 'teamai'), args, { cwd: dir, env, input, encoding: 'utf8' }) };
+}
+
 describe('teamai run in a trial clone', () => {
-  it("resolves the clone's own install from a subdirectory of the clone", async () => {
-    const fixture = await benchmarkFixture({ tool: 'fixes', sandbox: true, tools: ['codex'], suite: CODEX_SUITE, team: { 'rules/answer.md': RULE } });
-    fixtures.push(fixture);
-    const runId = await startFixBenchmark(fixture);
-    const lease = PromptLeaseSchema.parse(await drive(fixture, runId, (leased) => leased.prompt !== undefined, { ...SANDBOX_CLAUDE, tools: ['codex'] }));
-    const dir = path.join(lease.cwd, 'nested');
-    fs.mkdirSync(dir);
-    const env = withheld(fixture.env, lease.envScope.withhold, { TEAMAI_WORKFLOW_ATTEMPT: `${runId}/${lease.attempt}` });
-    const teamai = (args: string[], input = ''): ReturnType<typeof spawnSync> => spawnSync(path.join(fixture.bin, 'teamai'), args, { cwd: dir, env, input, encoding: 'utf8' });
-    const before = { member: memberSide(fixture), homes: toolHomeFiles(fixture) };
+  it("resolves the clone's own install from a subdirectory of the clone, and writes nothing into the member's home", async () => {
+    const { fixture, dir, teamai } = await inTrialClone();
+    const before = { member: memberSide(fixture), homes: homeFiles(fixture) };
 
     const hook = teamai(['hook-dispatch', 'session-start', '--tool', 'codex'], JSON.stringify({ cwd: dir, session_id: 'in-clone', hook_event_name: 'SessionStart', source: 'startup' }));
     const pulled = teamai(['pull']);
@@ -369,6 +377,33 @@ describe('teamai run in a trial clone', () => {
     expect(String(hook.stdout)).toContain('CLONE-RULE-SENTINEL');
     expect(pulled.status, `${String(pulled.stdout)}${String(pulled.stderr)}`).toBe(0);
     expect(String(pulled.stdout)).toContain('[workspace] Already synced');
-    expect({ member: memberSide(fixture), homes: toolHomeFiles(fixture) }).toEqual(before);
+    expect({ member: memberSide(fixture), homes: homeFiles(fixture) }).toEqual(before);
   }, 180_000);
+
+  it("records a learning contributed in the clone on the trial's step", async () => {
+    const { fixture, runId, lease, dir, teamai } = await inTrialClone();
+    const file = path.join(dir, 'learning.md');
+    fs.writeFileSync(file, '# Run the answer check first\n\nThe answer check names the expected value.\n');
+
+    const contributed = teamai(['contribute', '--file', file, '--title', 'Run the answer check first']);
+    await report(fixture, runId, { attempt: lease.attempt, revision: lease.revision, tool: lease.tool, durationMs: 1, outcome: 'success' });
+
+    expect(contributed.status, `${String(contributed.stdout)}${String(contributed.stderr)}`).toBe(0);
+    const step = z.object({ steps: z.array(z.object({ id: z.string(), outcomes: z.array(z.unknown()).optional() }).passthrough()) })
+      .parse(fixture.runFile(runId)).steps.find(({ id }) => id === 'trials.r1.fix.codex.prompt');
+    expect(step?.outcomes).toEqual([{ kind: 'learning', id: expect.stringMatching(/^run-the-answer-check-first-/) }]);
+  }, 180_000);
+
+  it("runs the trial's check with the member's HOME, not the clone install's", async () => {
+    const homeCheck = "if (process.env.HOME.split(require('node:path').sep).includes('teamai-clones')) throw new Error('HOME is ' + process.env.HOME);\nrequire('./test.js');\n";
+    const fixture = await benchmarkFixture({
+      tool: 'fixes', sandbox: true, tools: ['claude'], team: { 'rules/answer.md': RULE }, app: { 'home-check.js': homeCheck },
+      tasks: { fix: fixTask('{{startingCommit}}').replace('run: node test.js', 'run: node home-check.js').replace('protect: [test.js]', 'protect: [test.js, home-check.js]') },
+    });
+    fixtures.push(fixture);
+
+    const runId = await runFixBenchmark(fixture);
+
+    expect(RunSchema.parse(fixture.runFile(runId)).steps.find((step) => step.id === 'trials.r1.fix.claude.check')).toMatchObject({ status: 'succeeded' });
+  }, 120_000);
 });
