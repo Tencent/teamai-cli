@@ -6,7 +6,7 @@
  */
 import type { Node } from 'yaml';
 import { isSeq } from 'yaml';
-import { isYamlNode, locate, valueNode, type ParseContext } from './parse-context.js';
+import { isYamlNode, locate, valueNode, type ParseContext, type WorkflowFiles } from './parse-context.js';
 import { stepWorkflow, type WorkflowDefaults, type WorkflowDiagnostic, type WorkflowStep } from './types.js';
 import type { StepRoleSpec } from './template.js';
 import { cloneOf, copyOf, copyRoleConflict, resolveMode, resolvedRoleOf, roleLevelOf, writtenRole, type RoleLevel, type StepCopy } from './workspace.js';
@@ -37,13 +37,55 @@ interface Caller {
   runs: readonly string[];
 }
 
+/**
+ * Which copies take a role: none, only clones that pin a team revision, whose setup checks the role against that
+ * revision's `manifest/roles.yaml`, or one that runs with the team pulled now, so its manifest must declare the role.
+ */
+type RoleTaker = 'none' | 'pinned_clone' | 'current_team';
+
 /** A role a step inside may take: this file's `defaults.role` or a `workflow` step's, until a copy runs with it. */
 interface RoleSource {
   node: Node | undefined;
   field: string;
   unconsumedMessage: string;
-  isConsumed: boolean;
+  /** Who names the role, as `undeclaredRole` words it, and its id; none for a template each item's lease renders. */
+  owner: string;
+  role: string | undefined;
+  takenBy: RoleTaker;
 }
+
+/** Whether `step` opens a clone of a pinned team revision, whose roles may differ from the team pulled now. */
+function opensPinnedClone(step: WorkflowStep): boolean {
+  const clone = cloneOf(step);
+
+  return clone !== undefined && 'revision' in clone.team;
+}
+
+/**
+ * Why `owner`, a step label or `defaults`, may not name `role`: `manifest/roles.yaml` does not declare it. Undefined when
+ * it does, or when the sync could not read the manifest, so a lease checks the role then.
+ */
+export function undeclaredRole(owner: string, role: string, files: WorkflowFiles | undefined): string | undefined {
+  if (files?.roles === undefined || files.roles.has(role)) return undefined;
+
+  return files.roles.size === 0
+    ? `${owner} has role ${role}, which manifest/roles.yaml does not declare; the team repo declares no role, so add it to manifest/roles.yaml or remove role`
+    : `${owner} has role ${role}, which manifest/roles.yaml does not declare; add it there, or name a role it declares: ${[...files.roles].join(', ')}`;
+}
+
+/** The id a step `role` names as parse reads it, to check against `manifest/roles.yaml`; none for a template, which each item's lease checks. */
+export function roleIdNamedNow(role: StepRoleSpec): string | undefined {
+  switch (role.kind) {
+    case 'id': return role.id;
+    case 'item_template': return undefined;
+    default: {
+      const unhandled: never = role;
+
+      return unhandled;
+    }
+  }
+}
+
 
 /**
  * What a step runs with, as far as this file can tell: a role id, the member's roles, no team, or `unknown`, in a copy
@@ -150,13 +192,13 @@ export function roleDiagnostics(root: Node, workflow: { defaults?: WorkflowDefau
 
   if (defaultRole !== undefined) {
     sources.set('defaults.role', {
-      node: valueNode(valueNode(root, 'defaults'), 'role'), field: 'defaults.role', isConsumed: false,
+      node: valueNode(valueNode(root, 'defaults'), 'role'), field: 'defaults.role', owner: 'defaults', role: defaultRole, takenBy: 'none',
       unconsumedMessage: `defaults.role ${defaultRole} is the role of no step: no step that names no role of its own opens or continues a copy, so none runs with it; give such a step workspace: new, or remove defaults.role`,
     });
   }
 
-  /** Marks the source of the role `levels` resolve as taken by a copy. */
-  const consume = (levels: readonly Level[]): void => {
+  /** Marks the source of the role `levels` resolve as taken by a copy, which `by` runs with. */
+  const consume = (levels: readonly Level[], by: Exclude<RoleTaker, 'none'>): void => {
     const resolved = resolvedRoleOf(levels);
 
     if (resolved === undefined) return;
@@ -164,7 +206,7 @@ export function roleDiagnostics(root: Node, workflow: { defaults?: WorkflowDefau
     const key = resolved.from === 'defaults' ? (levels.at(-1)?.isOwnDefaultRole ? 'defaults.role' : undefined) : level?.written && `${level.written.field}.role`;
     const source = key === undefined ? undefined : sources.get(key);
 
-    if (source) source.isConsumed = true;
+    if (source && source.takenBy !== 'current_team') source.takenBy = by;
   };
 
   /**
@@ -237,7 +279,7 @@ export function roleDiagnostics(root: Node, workflow: { defaults?: WorkflowDefau
     const copy = copyOf(levels);
 
     if (!copy) {
-      if (runsWith(levels).kind === 'unknown') consume(levels);
+      if (runsWith(levels).kind === 'unknown') consume(levels, 'current_team');
       else if (last.step.role !== undefined && last.written) {
         report('bad_role', valueNode(last.written.item, 'role'), `${last.written.field}.role`, `${last.label} has role ${last.step.role} but neither opens nor continues a copy; give the prompt step workspace: new to open a copy that runs with the role, or workspace: continue to run with it in the copy around it`);
       }
@@ -254,8 +296,10 @@ export function roleDiagnostics(root: Node, workflow: { defaults?: WorkflowDefau
     }
 
     // The copy runs with its opener's role whatever a step there resolves, and a conflict is reported once, as such.
-    consume(levels);
-    consume(levels.slice(0, copy.opener + 1));
+    const opener = levels[copy.opener];
+    const by = opener && opensPinnedClone(opener.step) ? 'pinned_clone' : 'current_team';
+    consume(levels, by);
+    consume(levels.slice(0, copy.opener + 1), by);
     // Whether a role template agrees with the copy's is known once a lease renders it for an item.
     const templated = rendersPerItem(resolvedRoleOf(levels)?.role) || rendersPerItem(copy.runsWith.kind === 'role' ? copy.runsWith.role : undefined);
 
@@ -303,7 +347,7 @@ export function roleDiagnostics(root: Node, workflow: { defaults?: WorkflowDefau
 
       if (step.role !== undefined && runs !== undefined && level.written) {
         sources.set(`${level.written.field}.role`, {
-          node: valueNode(level.written.item, 'role'), field: `${level.written.field}.role`, isConsumed: false,
+          node: valueNode(level.written.item, 'role'), field: `${level.written.field}.role`, owner: level.label, role: level.role && roleIdNamedNow(level.role), takenBy: 'none',
           unconsumedMessage: `${level.label} has role ${step.role}, but no step in it that names no role of its own opens or continues a copy, so none runs with it; give such a step workspace: new, or remove role`,
         });
       }
@@ -322,7 +366,7 @@ export function roleDiagnostics(root: Node, workflow: { defaults?: WorkflowDefau
           const child = caller?.runs.includes(runs.name) ? null : ctx.files?.runnable(runs.name) ?? null;
 
           // A workflow this sync cannot read takes the role, as far as this file can tell; its lease checks it.
-          if (!child) consume(levels);
+          if (!child) consume(levels, 'current_team');
           else {
             walk(child.steps, {
               node: undefined, at: '', outer: levels, defaults: child.defaults?.role !== undefined ? { role: child.defaults.role, isOwn: false } : defaults,
@@ -338,7 +382,7 @@ export function roleDiagnostics(root: Node, workflow: { defaults?: WorkflowDefau
 
         case 'from':
           // A workflow a step outputs is admitted when it reports; its lease checks the role then.
-          consume(levels);
+          consume(levels, 'current_team');
           break;
         default: {
           const unhandled: never = runs;
@@ -359,7 +403,22 @@ export function roleDiagnostics(root: Node, workflow: { defaults?: WorkflowDefau
   walk(workflow.steps, { node: valueNode(root, 'steps'), at: '', outer: [], defaults: { role: defaultRole, isOwn: true }, caller: undefined });
 
   for (const source of sources.values()) {
-    if (!source.isConsumed) report('bad_role', source.node, source.field, source.unconsumedMessage);
+    const undeclared = source.role === undefined ? undefined : undeclaredRole(source.owner, source.role, ctx.files);
+
+    switch (source.takenBy) {
+      case 'none':
+        report('bad_role', source.node, source.field, source.unconsumedMessage);
+        break;
+      case 'pinned_clone':
+        break;
+      case 'current_team':
+        if (undeclared !== undefined) report('bad_role', source.node, source.field, undeclared);
+        break;
+      default: {
+        const unhandled: never = source.takenBy;
+        void unhandled;
+      }
+    }
   }
 
   return diagnostics;

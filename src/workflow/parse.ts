@@ -16,7 +16,7 @@ import {
   conditionDiagnostics, endDiagnostics, expressionSite, readDiagnostics, readScope, splitReads, type ConditionNode, type Ending, type ReadSite,
 } from './reads.js';
 import { parseHitl } from './parse-hitl.js';
-import { roleDiagnostics } from './parse-roles.js';
+import { roleDiagnostics, roleIdNamedNow, undeclaredRole } from './parse-roles.js';
 import { loopProblems, stepLoops } from './loop.js';
 import { modelValueProblem } from '../models/aliases.js';
 import { isRoleId } from '../roles.js';
@@ -838,7 +838,10 @@ function parseBody(
             : commandPair !== undefined && !runsPrompt ? `${stepLabel} has role ${role}, but a command step launches no agent to take the role's knowledge; set role on the prompt step that opens or continues the copy`
               : undefined;
 
-      const checkedId = roleSpec && roleIdNamedNow(roleSpec);
+      // A clone installs the team at the revision it pins, whose roles.yaml its setup checks; the one pulled now may
+      // name other roles. A `workflow` step's role is checked where its steps take it (`roleDiagnostics`).
+      const opensPinnedClone = workspace instanceof Object && 'revision' in workspace.clone.team;
+      const checkedId = roleSpec && !opensPinnedClone && workflowPair === undefined ? roleIdNamedNow(roleSpec) : undefined;
       const roleRefused = roleProblem ?? (checkedId === undefined ? undefined : undeclaredRole(stepLabel, checkedId, files));
 
       if (rolePair && roleRefused !== undefined) {
@@ -1379,18 +1382,6 @@ function parseStepModel(node: Node | null | undefined, field: string, ctx: Parse
   return model;
 }
 
-/**
- * Why `owner`, a step label or `defaults`, may not name `role`: `manifest/roles.yaml` does not declare it. Undefined when
- * it does, or when the sync could not read the manifest, so a lease checks the role then.
- */
-function undeclaredRole(owner: string, role: string, files: WorkflowFiles | undefined): string | undefined {
-  if (files?.roles === undefined || files.roles.has(role)) return undefined;
-
-  return files.roles.size === 0
-    ? `${owner} has role ${role}, which manifest/roles.yaml does not declare; the team repo declares no role, so add it to manifest/roles.yaml or remove role`
-    : `${owner} has role ${role}, which manifest/roles.yaml does not declare; add it there, or name a role it declares: ${[...files.roles].join(', ')}`;
-}
-
 /** Whether parse admits a step `role` read as `role`: an id shaped like one, or, where an item is bound, a template of it. */
 function isAdmittedRole(role: StepRoleSpec, bindsItem: boolean): boolean {
   switch (role.kind) {
@@ -1404,26 +1395,12 @@ function isAdmittedRole(role: StepRoleSpec, bindsItem: boolean): boolean {
   }
 }
 
-/** The id a step `role` names as parse reads it, to check against `manifest/roles.yaml`; none for a template, which each item's lease checks. */
-function roleIdNamedNow(role: StepRoleSpec): string | undefined {
-  switch (role.kind) {
-    case 'id': return role.id;
-    case 'item_template': return undefined;
-    default: {
-      const unhandled: never = role;
-
-      return unhandled;
-    }
-  }
-}
-
-/** `defaults.role`: the id of a role `manifest/roles.yaml` declares, as on a step. */
+/** `defaults.role`: the id of a role, which `roleDiagnostics` checks against `manifest/roles.yaml` where steps take it. */
 function parseDefaultRole(node: Node | undefined, ctx: ParseContext): string | undefined {
   const role = scalarString(node)?.trim();
-  const refused = role === undefined || !isRoleId(role) ? 'defaults.role must be the id of a role in manifest/roles.yaml, such as review' : undeclaredRole('defaults', role, ctx.files);
 
-  if (refused === undefined) return role;
-  ctx.diagnostics.push({ ...locate(ctx.file, ctx.lineCounter, node, 'defaults.role', refused), code: 'bad_role' });
+  if (role !== undefined && isRoleId(role)) return role;
+  ctx.diagnostics.push({ ...locate(ctx.file, ctx.lineCounter, node, 'defaults.role', 'defaults.role must be the id of a role in manifest/roles.yaml, such as review'), code: 'bad_role' });
 
   return undefined;
 }
