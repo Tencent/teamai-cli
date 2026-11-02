@@ -40,15 +40,12 @@ interface Ran {
   stderr: string;
 }
 
-/**
- * The one job of the one GitHub Actions workflow the guide shows for running a suite. The team repo's job for task pull
- * requests, headed `# .github/workflows/benchmark-tasks.yml`, has its own test.
- */
+/** The one job of the one GitHub Actions workflow the guide shows that runs a suite with `teamai-cli benchmark run`. */
 function guideJob(): z.infer<typeof JobSchema> {
   const text = fs.readFileSync(GUIDE, 'utf8');
   const workflows = [...text.matchAll(/^```yaml\n([\s\S]*?)^```/gm)]
     .map((match) => match[1] ?? '')
-    .filter((body) => !body.startsWith('# .github/workflows/benchmark-tasks.yml'))
+    .filter((body) => body.includes('teamai-cli benchmark run'))
     .map((body): unknown => parseDocument(body).toJS())
     .filter((value) => !!value && typeof value === 'object' && 'jobs' in value)
     .map((value) => z.object({ jobs: z.record(z.string(), z.unknown()) }).parse(value));
