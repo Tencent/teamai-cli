@@ -126,7 +126,7 @@ async function offer(config: LocalConfig, { session, tool, cwd }: { session: str
   const platform = AgentSession.platformForTool(tool);
 
   return {
-    session: namingTasks({ value: session, why: 'This session: the one that made the change.' }, proposed, (task) => task.source?.sessionId === session),
+    session: namingTasks({ value: session, why: 'This session: the one that made the change.' }, proposed, (task) => task.source !== undefined && 'sessionId' in task.source && task.source.sessionId === session),
     source: platform === undefined ? { value: tool, why: 'This session\'s tool.' } : { value: platform, why: 'This session\'s tool, as teamai session list names it.' },
     suite,
     start,

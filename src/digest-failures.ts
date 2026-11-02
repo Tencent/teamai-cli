@@ -5,11 +5,13 @@
  * left out, and it never reads a judge's reasoning, a prompt or a transcript.
  */
 import matter from 'gray-matter';
+import { listCachedSuites } from './benchmark/suite-cache.js';
 import { detectProjectConfig, requireInit } from './config.js';
 import { readScorerLabels, rubricLabelsOf } from './dashboard/scorers.js';
 import { SessionSubjectSchema, type SessionSubject } from './scorers/label.js';
 import { ScorerResults, type Failure, type ScorerFailures } from './scorers/results.js';
 import type { LocalConfig } from './types.js';
+import { canonicalJson } from './utils/canonical-json.js';
 import { readFileSafe } from './utils/fs.js';
 import { indexableLearningsRoots, listLearningFiles } from './utils/learnings-roots.js';
 import { safeDeliveredLearningsNamespaces } from './workspace-children.js';
@@ -17,8 +19,11 @@ import { safeDeliveredLearningsNamespaces } from './workspace-children.js';
 /** A learning as a failure lists it: its id, its path under `learnings/` without `.md`, and the file it is read from. */
 export type LinkedLearning = { id: string; path: string };
 
-/** A failing session lists the learnings whose `session` names it, `[]` when none does; a workflow pass lists none. */
-export type DigestFailure = Failure & { learnings?: LinkedLearning[] };
+/**
+ * A failing session lists the learnings whose `session` names it, `[]` when none does; a workflow pass lists none.
+ * `task`: the benchmark task this checkout pulled whose `source` is the failure's subject, so it is a regression already.
+ */
+export type DigestFailure = Failure & { task?: string; learnings?: LinkedLearning[] };
 
 export type DigestFailuresView = Omit<ScorerFailures, 'failures'> & { failures: DigestFailure[] };
 
@@ -49,15 +54,28 @@ async function learningsBySession(config: LocalConfig): Promise<Map<string, Link
   return bySession;
 }
 
+/** The task of each subject a pulled suite's task names as its `source`, by the subject's canonical JSON. */
+async function tasksBySource(config: LocalConfig): Promise<Map<string, string>> {
+  const tasks = new Map<string, string>();
+  for (const suite of await listCachedSuites(config)) {
+    for (const task of suite.tasks) {
+      if (task.source && !tasks.has(canonicalJson(task.source))) tasks.set(canonicalJson(task.source), task.relativePath);
+    }
+  }
+  return tasks;
+}
+
 async function failures(config: LocalConfig, now = new Date()): Promise<DigestFailuresView> {
   const labels = await readScorerLabels(config);
-  const [rubricLabels, learnings] = await Promise.all([rubricLabelsOf(config, labels.map(({ label }) => label)), learningsBySession(config)]);
+  const [rubricLabels, learnings, tasks] = await Promise.all([rubricLabelsOf(config, labels.map(({ label }) => label)), learningsBySession(config), tasksBySource(config)]);
   const view = ScorerResults.failures({ labels, windowDays: WINDOW_DAYS, now, rubricLabels });
   return {
     ...view,
-    failures: view.failures.map((entry) => (entry.failure.source === 'session'
-      ? { ...entry, learnings: learnings.get(sessionKey(entry.failure.subject)) ?? [] }
-      : entry)),
+    failures: view.failures.map((entry) => {
+      const task = tasks.get(canonicalJson(entry.failure.subject));
+      const linked = { ...entry, ...task ? { task } : {} };
+      return entry.failure.source === 'session' ? { ...linked, learnings: learnings.get(sessionKey(entry.failure.subject)) ?? [] } : linked;
+    }),
   };
 }
 

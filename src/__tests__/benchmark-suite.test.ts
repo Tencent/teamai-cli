@@ -55,6 +55,9 @@ function suiteFile(relativePath: string, text: string, mode: SuiteFile['mode'] =
   return { relativePath: `benchmarks/fix/${relativePath}`, base64: Buffer.from(text).toString('base64'), mode };
 }
 
+
+const SOURCE_HELP = 'source names where the task came from: a session, { platform, sessionId }, or a workflow pass, { runId, step, pass }';
+
 describe('parseSuite', () => {
   it('accepts a suite whose arms each change one key', () => {
     const parsed = parse(suiteText({ defaults: '{ tool: claude, model: strong }', arms: '[{ name: baseline }, { name: codex, tool: codex }, { name: fast, model: fast }]' }));
@@ -182,6 +185,8 @@ describe('parseSuite', () => {
     ['a short startingCommit', taskText({ startingCommit: 'abc1234' }), 'startingCommit', 'must be a full 40-character commit'],
     ['a short solutionCommit', taskText({ solutionCommit: '9a1d4e7' }), 'solutionCommit', 'must be a full 40-character commit'],
     ['a commit in source, which only says where the task came from', taskText({ source: `{ platform: claude-code, sessionId: s1, fix: ${'b'.repeat(40)} }` }), 'source', 'Unrecognized key: "fix"'],
+    ['a source that mixes a session and a workflow pass', taskText({ source: '{ platform: claude-code, sessionId: s1, runId: r0123456789abcdef, step: review, pass: 1 }' }), 'source', SOURCE_HELP],
+    ['a workflow pass source with no pass number', taskText({ source: '{ runId: r0123456789abcdef, step: review }' }), 'source', SOURCE_HELP],
     ['check.add without solutionCommit', taskText({ check: "{ run: node test.js, protect: ['test/**'], add: [test/startup.test.js] }" }), 'check.add', 'check.add writes its files from solutionCommit; add solutionCommit, the full commit with the solution that brought them'],
     ['check.add outside protect', taskText({ check: "{ run: node test.js, protect: ['test/**'], add: [lib/startup.test.js] }", solutionCommit: 'b'.repeat(40) }), 'check.add.0', 'check.add "lib/startup.test.js" is not under check.protect, so the agent could supply it; add a protect path that covers it'],
     ['a glob in check.add', taskText({ check: "{ run: node test.js, protect: ['test/**'], add: ['test/*.js'] }", solutionCommit: 'b'.repeat(40) }), 'check.add.0', 'must name one file, without glob characters'],
@@ -197,6 +202,12 @@ describe('parseSuite', () => {
 
     expect(parsed).toMatchObject({ ok: true, suite: { tasks: [{ id: 'fix' }] } });
     expect(parsed.diagnostics).toEqual([expect.objectContaining({ file: 'benchmarks/fix/tasks/bad.yaml', field, message })]);
+  });
+
+  it('keeps the workflow pass a regression task came from as its source', () => {
+    const parsed = parse(suiteText(), { fix: taskText({ source: '{ runId: r0123456789abcdef, step: review, pass: 2 }' }) });
+
+    expect(parsed).toMatchObject({ ok: true, diagnostics: [], suite: { tasks: [{ id: 'fix', source: { runId: 'r0123456789abcdef', step: 'review', pass: 2 } }] } });
   });
 
   it('keeps the solutionCommit a task names, and the session it came from as its source', () => {

@@ -81,6 +81,8 @@ describe('teamai digest --json', () => {
     commitBranch(root, bare, 'main', {
       'teamai.yaml': `team: acme\nrepo: ${TEAM_URL}\nprovider: github\n`,
       'scorers/review-quality.md': SCORER,
+      'benchmarks/regressions/suite.yaml': `schemaVersion: v1alpha1\nname: regressions\ndescription: Failures the team fixed.\nrepo: https://github.com/acme/app.git\ndefaults:\n  tool: claude\narms:\n  - name: claude\nrepetitions: 1\ntimeout: 10m\n`,
+      'benchmarks/regressions/tasks/review-missed-null-check.yaml': `schemaVersion: v1alpha1\ntitle: Catch the missed null check\nprompt: Review the change.\nstartingCommit: ${PASS_START}\nsuccessCriteria: The review names the null check the change drops.\nsource: { runId: r1a2b3c4d, step: review, pass: 1 }\n`,
       'manifest/projects.yaml': 'version: 1\nprojects:\n  - id: infra\n    name: Infra\n    resources:\n      learnings: [k8s]\n',
     });
     const learning = (title: string, session?: string) => `---\ntitle: ${title}\n${session ? `session: { platform: claude-code, sessionId: ${session} }\n` : ''}---\n${title}.\n`;
@@ -145,6 +147,7 @@ describe('teamai digest --json', () => {
       [{ platform: 'claude-code', sessionId: '9d2f0000' }, { kind: 'model', tool: 'claude', model: { id: 'claude-model', isReported: true } }, { refused: 'tracked_changes' }],
     ]);
     expect(failures[0]?.failure).toMatchObject({ author: 'bob', runMode: 'unattended', agent: { tool: { name: 'codex' } } });
+    expect(failures.map(({ task }) => task)).toEqual(['benchmarks/regressions/tasks/review-missed-null-check.yaml', undefined, undefined, undefined, undefined]);
     expect(result.stdout).not.toContain('rbe0c0000');
   });
 
