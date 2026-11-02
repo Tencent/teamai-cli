@@ -456,7 +456,7 @@ async function buildRelationContexts(
         hidden: scope === 'user' ? projectEntryKeys : undefined,
       }));
     } catch (e) {
-      log.debug(`recall: relations unavailable for ${installScopeName(scope)}: ${(e as Error).message}`);
+      log.debug(`recall: relations unavailable for ${installScopeName(scope)}: ${e instanceof Error ? e.message : String(e)}`);
     }
   }));
 
@@ -855,7 +855,7 @@ export async function autoUpvote(
       log.debug(`autoUpvote: skipped recalled_count bump for ${docIds.length} doc(s) (votes file busy)`);
     }
   } catch (e) {
-    log.error(`autoUpvote failed: ${(e as Error).message}`);
+    log.error(`autoUpvote failed: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
@@ -886,10 +886,11 @@ async function recordRun(
       ts: new Date().toISOString(),
       run,
       session: session.id ?? null,
-      ...(session.agent ? { agent: session.agent } : {}),
+      // An undefined field is left out of the JSON line.
+      agent: session.agent || undefined,
       via: session.id ? 'env' : 'none',
       unambiguous: session.unambiguous,
-      ...(caller ? { caller } : {}),
+      caller: caller || undefined,
       docs: results.map((r, i) => {
         const scope = r.scope ?? config.scope;
 
@@ -909,7 +910,7 @@ async function recordRun(
 
     return run;
   } catch (e) {
-    log.warn(`Recall could not record this run in ${recallLogPath(config)}: ${(e as Error).message}. `
+    log.warn(`Recall could not record this run in ${recallLogPath(config)}: ${e instanceof Error ? e.message : String(e)}. `
       + 'Docs opened after it will not be upvoted.');
 
     return undefined;
@@ -1152,7 +1153,7 @@ export async function recall(
   } catch (e) {
     // A cwd that no longer exists holds no project: user scope, as in
     // resolveConfigForDir.
-    const gone = typeof e === 'object' && e !== null && 'code' in e && e.code === 'ENOENT';
+    const gone = e instanceof Error && 'code' in e && e.code === 'ENOENT';
 
     if (!gone) projectUnreadable = true;
     log.debug('recall: workspace scope detection failed');
@@ -1204,7 +1205,7 @@ export async function recall(
         scopeIndexes.push({ index: result.index, scope: 'project', config: projectConfig, learningsBase: result.learningsBase });
       } else if (result) indexEmpty = true;
     } catch (e) {
-      log.debug(`recall: workspace scope not available: ${(e as Error).message}`);
+      log.debug(`recall: workspace scope not available: ${e instanceof Error ? e.message : String(e)}`);
     }
 
     if (projectConfig.inheritUserScope === true) {
@@ -1220,7 +1221,7 @@ export async function recall(
           } else if (result) indexEmpty = true;
         }
       } catch (e) {
-        log.debug(`recall: inherited user scope not available: ${(e as Error).message}`);
+        log.debug(`recall: inherited user scope not available: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
   } else {
@@ -1234,7 +1235,7 @@ export async function recall(
         scopeIndexes.push({ index: result.index, scope: 'user', config: userConfig, learningsBase: result.learningsBase });
       } else if (result) indexEmpty = true;
     } catch (e) {
-      log.debug(`recall: user scope not available: ${(e as Error).message}`);
+      log.debug(`recall: user scope not available: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -1309,11 +1310,8 @@ export async function recall(
     // identifier names one module. Only identifier-shaped tokens count — a
     // hyphen, underscore, digit or inner capital — so ordinary words
     // ("service", "payment", "retry") never name a module.
-    const queryIdentifiers = [...query.matchAll(/[A-Za-z][A-Za-z0-9_-]{3,}/g)]
-      .map((match) => match[0])
-      .filter((token) => token.length >= 5
-        && (/[-_\d]/.test(token) || /[a-z][A-Z]/.test(token)))
-      .map((token) => token.toLowerCase());
+    const queryIdentifiers = [...query.matchAll(/[A-Za-z][A-Za-z0-9_-]{3,}/g)].flatMap(([token]) => (token.length >= 5
+      && (/[-_\d]/.test(token) || /[a-z][A-Z]/.test(token)) ? [token.toLowerCase()] : []));
 
     // A wiki codebase slug declared under `resources.wiki` but not active for
     // this directory stays out of recall, the same way docs are scoped
@@ -1552,7 +1550,7 @@ export async function recall(
         try {
           await autoUpvote(scopeResults, scopeInfo.config);
         } catch (e) {
-          log.error(`autoUpvote skipped for ${installScopeName(scopeInfo.scope)}: ${(e as Error).message}`);
+          log.error(`autoUpvote skipped for ${installScopeName(scopeInfo.scope)}: ${e instanceof Error ? e.message : String(e)}`);
         }
       }
     }

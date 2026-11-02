@@ -1,5 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs';
+import { z } from 'zod';
 import type { SearchResult } from './utils/search-index.js';
 import { getUserHome } from './utils/home.js';
 
@@ -49,6 +50,16 @@ function getCachePath(sessionId: string): string {
     );
 }
 
+/** The cache file as written; a field of another type reads as its zero. */
+const StoredRecallCacheSchema = z.object({
+    queries: z.array(z.string()).catch([]),
+    count: z.number().catch(0),
+    updatedAt: z.string().optional().catch(undefined),
+    topScore: z.number().catch(0),
+    hitCount: z.number().catch(0),
+    missCount: z.number().catch(0),
+});
+
 function readCache(sessionId: string): RecallCache | null {
     try {
         const cachePath = getCachePath(sessionId);
@@ -56,24 +67,16 @@ function readCache(sessionId: string): RecallCache | null {
         if (!fs.existsSync(cachePath)) return null;
 
         const raw = fs.readFileSync(cachePath, 'utf-8');
-        const parsed = JSON.parse(raw) as Partial<RecallCache>;
+        const cache = StoredRecallCacheSchema.safeParse(JSON.parse(raw));
+
+        if (!cache.success) return null;
+        const parsed = cache.data;
 
         const age = Date.now() - new Date(parsed.updatedAt ?? '').getTime();
 
         if (age > CACHE_TTL_MS) return null;
 
-        const queries = Array.isArray(parsed.queries) && parsed.queries.every((q) => typeof q === 'string')
-            ? parsed.queries
-            : [];
-
-        return {
-            queries,
-            count: typeof parsed.count === 'number' ? parsed.count : 0,
-            updatedAt: parsed.updatedAt ?? new Date().toISOString(),
-            topScore: typeof parsed.topScore === 'number' ? parsed.topScore : 0,
-            hitCount: typeof parsed.hitCount === 'number' ? parsed.hitCount : 0,
-            missCount: typeof parsed.missCount === 'number' ? parsed.missCount : 0,
-        };
+        return { ...parsed, updatedAt: parsed.updatedAt ?? new Date().toISOString() };
     } catch {
         return null;
     }

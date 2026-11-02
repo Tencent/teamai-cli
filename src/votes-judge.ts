@@ -20,8 +20,9 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { z } from 'zod';
 
-import type { LocalConfig } from './types.js';
+import type { JsonValue, LocalConfig } from './types.js';
 import { log } from './utils/logger.js';
 
 /** Max wall-clock for a single judge call. Kept modest — this is a yes/no classification. */
@@ -151,6 +152,9 @@ function readExcerpt(filePath: string, canonicalRoots: string[]): string {
   }
 }
 
+/** The judge's id list; an entry that is not text is skipped. */
+const JudgedIdsSchema = z.array(z.string().nullable().catch(null));
+
 /**
  * Parse the judge's raw stdout into a validated doc-id subset. Only ids present
  * in `allowed` survive; anything else (hallucinated id, malformed output) is
@@ -162,19 +166,21 @@ export function parseJudgeOutput(raw: string, allowed: string[]): string[] {
   const match = raw.match(/\[[^\]]*\]/);
 
   if (!match) return [];
-  let parsed: unknown;
+  let json: JsonValue;
 
   try {
-    parsed = JSON.parse(match[0]);
+    json = JSON.parse(match[0]);
   } catch {
     return [];
   }
 
-  if (!Array.isArray(parsed)) return [];
+  const parsed = JudgedIdsSchema.safeParse(json);
+
+  if (!parsed.success) return [];
   const out = new Set<string>();
 
-  for (const item of parsed) {
-    if (typeof item === 'string') {
+  for (const item of parsed.data) {
+    if (item !== null) {
       const id = item.trim().replace(/^['"]|['"]$/g, '');
 
       if (allowedSet.has(id)) out.add(id);
@@ -246,7 +252,7 @@ export async function judgeAdoption(
     return adopted;
   } catch (error) {
     // Soft-fail: judging is a best-effort supplement to the tool-use signal.
-    log.debug(`[votes-judge] failed: ${(error as Error)?.message ?? String(error)}`);
+    log.debug(`[votes-judge] failed: ${error instanceof Error ? error.message : String(error)}`);
 
     return [];
   }

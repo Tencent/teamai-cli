@@ -17,12 +17,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { Option } from 'commander';
+import { z } from 'zod';
 
 import { GLOBAL_OPTIONS } from './global-options.js';
+import { HookStdinSchema, type HookStdin } from './hook-dispatch.js';
 import { appendRecallLines, readRecallLog, recallLogPath } from './recall-log.js';
 import type { Actor, ClaimLine, EvidenceLine, LinkLine, RecallLogLine, RecalledDoc, RunLine } from './recall-log.js';
 import { getVotesDir } from './types.js';
-import type { LocalConfig } from './types.js';
+import type { JsonValue, LocalConfig } from './types.js';
 import { isAbsolutePath, pathKey, samePath } from './utils/agent-path.js';
 import { rewriteJsonl } from './utils/jsonl-store.js';
 import { log } from './utils/logger.js';
@@ -99,20 +101,25 @@ function invokesRecall(command: string): boolean {
   });
 }
 
-function nonEmpty(value: unknown): string | undefined {
-  return typeof value === 'string' && value ? value : undefined;
+const NonEmptyTextSchema = z.string().min(1);
+
+function nonEmpty(value: JsonValue | undefined): string | undefined {
+  const text = NonEmptyTextSchema.safeParse(value);
+
+  return text.success ? text.data : undefined;
 }
 
 /** The actor a hook payload names: its session, and the subagent it fired in, if any. */
-function actorOf(stdin: Record<string, unknown>, tool: string): Actor {
+function actorOf(stdin: HookStdin, tool: string): Actor {
   const agentId = nonEmpty(stdin.agent_id);
   const agentType = nonEmpty(stdin.agent_type);
+  const actor: Actor = { session: deriveDispatchSessionId(stdin, tool) };
 
-  return {
-    session: deriveDispatchSessionId(stdin, tool),
-    ...(agentId ? { agentId } : {}),
-    ...(agentType ? { agentType } : {}),
-  };
+  if (agentId) actor.agentId = agentId;
+
+  if (agentType) actor.agentType = agentType;
+
+  return actor;
 }
 
 /**
@@ -124,16 +131,16 @@ function actorOf(stdin: Record<string, unknown>, tool: string): Actor {
  * counts is the reducer's call. The command itself is never recorded. All of
  * a call's lines go in one write, however many files a search showed.
  */
-export async function recordToolCall(stdin: Record<string, unknown>, tool: string, config: LocalConfig): Promise<void> {
+export async function recordToolCall(stdin: HookStdin, tool: string, config: LocalConfig): Promise<void> {
   await appendRecallLines(config, await toolCallLines(stdin, tool, config));
 }
 
-async function toolCallLines(stdin: Record<string, unknown>, tool: string, config: LocalConfig): Promise<RecallLogLine[]> {
+async function toolCallLines(stdin: HookStdin, tool: string, config: LocalConfig): Promise<RecallLogLine[]> {
   const lines: RecallLogLine[] = [];
   // A subagent's own session, which a bridge names on the call that ran it (OpenCode's task tool) or on the subagent's first call (OMP).
-  const link = stdin.session_link !== null && typeof stdin.session_link === 'object' ? stdin.session_link as Record<string, unknown> : {};
-  const child = nonEmpty(link.child);
-  const parent = nonEmpty(link.parent);
+  const link = HookStdinSchema.safeParse(stdin.session_link);
+  const child = link.success ? nonEmpty(link.data.child) : undefined;
+  const parent = link.success ? nonEmpty(link.data.parent) : undefined;
 
   if (child && parent && child !== parent) {
     lines.push({ kind: 'link', ts: new Date().toISOString(), child, parent });
@@ -441,7 +448,7 @@ async function creditRoot(config: LocalConfig, index: LogIndex, sessionId: strin
     await appendRecallLines(config, crediting.map((evidenceId) => ({ kind: 'consumed', ts, evidence: evidenceId })));
   } catch (e) {
     // The ledger still holds the credit for its window; past it this evidence could credit again.
-    log.debug(`recall adoption: could not mark ${crediting.length} evidence line(s) consumed: ${(e as Error).message}`);
+    log.debug(`recall adoption: could not mark ${crediting.length} evidence line(s) consumed: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   return { credited, recalled };
@@ -571,7 +578,9 @@ export async function recallSessions(config: LocalConfig, limit: number): Promis
     const agent = named.reduce<RunLine | undefined>((a, r) => (!a || r.ts > a.ts ? r : a), undefined);
     const family = agent ? agentOf(agent) : undefined;
 
-    return { session, ...(family ? { agent: family } : {}), runs: runs.length, recalled, adopted, viaRelation, last: last.ts };
+    const counts = { runs: runs.length, recalled, adopted, viaRelation, last: last.ts };
+
+    return family ? { session, agent: family, ...counts } : { session, ...counts };
   });
 }
 
@@ -597,7 +606,7 @@ export async function drainRecallLog(config: LocalConfig): Promise<void> {
     try {
       await creditPendingSessions(config);
     } catch (e) {
-      log.debug(`recall adoption: could not credit pending sessions from ${file}: ${(e as Error).message}`);
+      log.debug(`recall adoption: could not credit pending sessions from ${file}: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -607,7 +616,7 @@ export async function drainRecallLog(config: LocalConfig): Promise<void> {
   try {
     await rewriteJsonl(file, (lines) => retainedLines(lines, Date.now()));
   } catch (e) {
-    if (typeof e === 'object' && e !== null && 'code' in e && e.code === 'ENOENT') return;
+    if (e instanceof Error && 'code' in e && e.code === 'ENOENT') return;
     log.error(`Could not prune ${file}: ${e instanceof Error ? e.message : String(e)}. It is pruned again at the next pull.`);
   }
 }
@@ -625,6 +634,12 @@ async function creditPendingSessions(config: LocalConfig): Promise<void> {
     if ((await creditRoot(config, index, root)).credited === null) return;
   }
 }
+
+/** What retention requires of a raw line: a kind and a time. The line itself is kept as written. */
+const RetainedLineSchema = z.looseObject({ kind: z.string(), ts: z.string() });
+
+/** A field of a retained line that retention reads as text, which a hand-edited line may lack. */
+const LineTextSchema = z.string();
 
 interface LogEntry {
   text: string;
@@ -646,20 +661,23 @@ function retainedLines(raw: string[], now: number): string[] | null {
   const entries: LogEntry[] = [];
 
   for (const text of raw) {
-    let line: unknown;
+    let json: JsonValue;
 
     try {
-      line = JSON.parse(text);
+      json = JSON.parse(text);
     } catch {
       continue;
     }
 
-    if (line === null || typeof line !== 'object' || Array.isArray(line)) continue;
-    const { kind, ts } = line as { kind?: unknown; ts?: unknown };
-    const at = typeof ts === 'string' ? Date.parse(ts) : NaN;
+    const parsed = RetainedLineSchema.safeParse(json);
 
-    if (typeof kind !== 'string' || !Number.isFinite(at)) continue;
-    entries.push({ text, line: line as RecallLogLine, at });
+    if (!parsed.success) continue;
+    const at = Date.parse(parsed.data.ts);
+
+    if (!Number.isFinite(at)) continue;
+    // SAFETY: appendRecallLines writes every line of this log from a RecallLogLine; its kind and time are checked
+    // above, and retention parses the evidence id and session it reads before using them.
+    entries.push({ text, line: parsed.data as typeof parsed.data & RecallLogLine, at });
   }
 
   // Units in file order: each evidence with its consumed lines, at the evidence's time and place; each other line alone.
@@ -667,7 +685,7 @@ function retainedLines(raw: string[], now: number): string[] | null {
   const unitOf = new Map<string, LogEntry[]>();
 
   for (const entry of entries) {
-    if (entry.line.kind !== 'evidence' || typeof entry.line.id !== 'string' || unitOf.has(entry.line.id)) continue;
+    if (entry.line.kind !== 'evidence' || !LineTextSchema.safeParse(entry.line.id).success || unitOf.has(entry.line.id)) continue;
     unitOf.set(entry.line.id, [entry]);
   }
 
@@ -701,7 +719,7 @@ function retainedLines(raw: string[], now: number): string[] | null {
 
   if (survivors.size === raw.length) return null;
 
-  return entries.filter((entry) => survivors.has(entry)).map((entry) => entry.text);
+  return entries.flatMap((entry) => (survivors.has(entry) ? [entry.text] : []));
 }
 
 /**
@@ -719,8 +737,11 @@ function neededForPending(entries: LogEntry[], now: number): Set<LogEntry> {
   if (pending.length === 0) return new Set();
   const opens = (e: LogEntry & { line: EvidenceLine }, run: RunLine): boolean => inWindow(e.at, run) && docsOpened(e.line.path, run.docs).length > 0;
 
-  const runs = entries.filter((r): r is LogEntry & { line: RunLine } => r.line.kind === 'run'
-    && Array.isArray(r.line.docs) && pending.some((e) => opens(e, r.line as RunLine)));
+  const runs = entries.filter((r): r is LogEntry & { line: RunLine } => {
+    const { line } = r;
+
+    return line.kind === 'run' && Array.isArray(line.docs) && pending.some((e) => opens(e, line));
+  });
 
   const runIds = new Set(runs.map((r) => r.line.run));
   const claims = entries.filter((c) => c.line.kind === 'claim' && runIds.has(c.line.run));
@@ -730,7 +751,10 @@ function neededForPending(entries: LogEntry[], now: number): Set<LogEntry> {
   const sessions = new Set<string>();
 
   for (const { line } of needed) {
-    if ((line.kind === 'run' || line.kind === 'claim' || line.kind === 'evidence') && typeof line.session === 'string') sessions.add(line.session);
+    if (line.kind !== 'run' && line.kind !== 'claim' && line.kind !== 'evidence') continue;
+    const session = LineTextSchema.safeParse(line.session);
+
+    if (session.success) sessions.add(session.data);
   }
 
   const links = entries.filter((l): l is LogEntry & { line: LinkLine } => l.line.kind === 'link');

@@ -5,10 +5,12 @@
  * Implements scored mode with graph neighbor boosting.
  */
 
+import type { Dirent } from 'node:fs';
 import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 
 import matter from 'gray-matter';
+import { z } from 'zod';
 
 import type { GraphIndex } from './wiki-engine/core/graph-index.schema.js';
 import { tokenize, tokenCount, MAX_TOKENIZE_CHARS } from './utils/tokenizer.js';
@@ -49,7 +51,7 @@ interface PageDoc {
 const BM25_K1 = 1.5;
 const BM25_B = 0.75;
 const TITLE_BOOST = 3.0;
-const RELATION_WEIGHT: Record<string, number> = { DEPENDS_ON: 3, REFERENCES: 2, MAPS_TO: 2, CONTAINS: 1 };
+const RELATION_WEIGHT = new Map([['DEPENDS_ON', 3], ['REFERENCES', 2], ['MAPS_TO', 2], ['CONTAINS', 1]]);
 const ENTRY_NODE_BOOST = 8;
 
 /** 导航文件：在 context 模式下排除，避免模板文案干扰 BM25 */
@@ -205,7 +207,7 @@ function computeGraphBoost(
       const neighborName = (neighborParts.pop() ?? '').toLowerCase();
 
       if (neighborName && (pageTitle.includes(neighborName) || pageFile.includes(neighborName))) {
-        const relWeight = RELATION_WEIGHT[relation] ?? 1;
+        const relWeight = RELATION_WEIGHT.get(relation) ?? 1;
         const boost = relWeight * 0.8; // 1-hop
 
         if (boost > maxBoost) maxBoost = boost;
@@ -221,7 +223,7 @@ function computeGraphBoost(
         const hop2Name = (hop2Parts.pop() ?? '').toLowerCase();
 
         if (hop2Name && (pageTitle.includes(hop2Name) || pageFile.includes(hop2Name))) {
-          const relWeight = RELATION_WEIGHT[rel2] ?? 1;
+          const relWeight = RELATION_WEIGHT.get(rel2) ?? 1;
           const boost = relWeight * 0.4; // 2-hop: half weight
 
           if (boost > maxBoost) maxBoost = boost;
@@ -517,6 +519,12 @@ export function extractSourceDescriptions(sources: string[], pageContent: string
   });
 }
 
+/** The frontmatter a page is indexed by; a field of another type counts as absent, a source that is not text is skipped. */
+const PageFrontmatterSchema = z.object({
+  title: z.string().optional().catch(undefined),
+  source: z.union([z.array(z.string().nullable().catch(null)), z.string()]).optional().catch(undefined),
+});
+
 async function loadPagesRecursive(
   dir: string,
   relativePath: string,
@@ -527,7 +535,7 @@ async function loadPagesRecursive(
   if (currentDepth >= MAX_RECURSION_DEPTH) return;
 
   const entries = await readdir(dir, { withFileTypes: true })
-    .catch(() => [] as import('node:fs').Dirent[]);
+    .catch((): Dirent[] => []);
 
   for (const entry of entries) {
     const fullPath = path.join(dir, entry.name);
@@ -556,16 +564,14 @@ async function loadPagesRecursive(
         let sources: string[] | undefined;
 
         try {
-          const { data } = matter(content);
-          title = typeof data.title === 'string' && data.title.trim()
-            ? data.title.trim()
-            : entry.name.replace('.md', '');
+          const data = PageFrontmatterSchema.parse(matter(content).data);
+          title = data.title?.trim() || entry.name.replace('.md', '');
           const raw = data.source;
 
           if (Array.isArray(raw)) {
-            const filtered = raw.filter((s): s is string => typeof s === 'string' && s.trim() !== '');
+            const filtered = raw.flatMap((s) => (s !== null && s.trim() !== '' ? [s] : []));
             sources = filtered.length > 0 ? filtered : undefined;
-          } else if (typeof raw === 'string' && raw.trim() !== '') {
+          } else if (raw !== undefined && raw.trim() !== '') {
             sources = [raw.trim()];
           } else {
             sources = undefined;
@@ -615,7 +621,7 @@ async function loadGraph(wikiRoot: string, withheldCodebases: string[] = []): Pr
   const { scopeGlobalGraph } = await import('./graph-aggregate.js');
   const withheld = new Set(withheldCodebases.map((slug) => caseFoldKey(slug)));
 
-  return (await scopeGlobalGraph(wikiRoot, withheld)) as GraphIndex | null;
+  return scopeGlobalGraph(wikiRoot, withheld);
 }
 
 export interface QueryCodeKnowledgeOptions {
@@ -675,7 +681,7 @@ export async function queryCodeKnowledge(
 
   scored.sort((a, b) => b.score - a.score);
 
-  const TOKEN_BUDGET: Record<string, number> = { route: 2000, context: 5000, lookup: 20000 };
+  const TOKEN_BUDGET: Record<NonNullable<QueryCodeKnowledgeOptions['depth']>, number> = { route: 2000, context: 5000, lookup: 20000 };
   const budget = TOKEN_BUDGET[depth] ?? 5000;
   const estimateTokens = (text: string) => Math.ceil(text.length / 3.5);
 
