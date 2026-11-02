@@ -36,8 +36,10 @@ export type TeamCheckout = { checkout: string; target: string };
  */
 function deliveryPlace(run: RunState, branch: string, team: TeamCheckout | undefined): { checkout: string; base: string; target: string } | undefined {
   const copy = run.copies?.[branch];
+
   if (copy?.kind === 'team') return team && copy.base !== undefined ? { checkout: team.checkout, base: copy.base, target: team.target } : undefined;
   const target = deliveryTarget(run, branch);
+
   return run.checkout && run.base && target !== undefined ? { checkout: run.checkout, base: run.base.commit, target } : undefined;
 }
 

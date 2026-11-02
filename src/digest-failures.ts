@@ -30,11 +30,13 @@ async function read(config: LocalConfig, { now = new Date(), refresh = true }: {
   const labels = await readScorerLabels(config, { refresh });
   const [rubricLabels, links] = await Promise.all([rubricLabelsOf(config, labels.map(({ label }) => label)), FailureLinks.read(config)]);
   const view = ScorerResults.failures({ labels, windowDays: WINDOW_DAYS, now, rubricLabels });
+
   return {
     ...view,
     failures: view.failures.map((entry) => {
       const task = links.taskOf(entry.failure.subject);
-      const linked = { ...entry, ...task ? { task } : {} };
+      const linked = { ...entry, task: task || undefined };
+
       return entry.failure.source === 'session' ? { ...linked, learnings: links.learningsOf(entry.failure.subject) } : linked;
     }),
   };
@@ -47,17 +49,23 @@ async function read(config: LocalConfig, { now = new Date(), refresh = true }: {
 async function print({ improvement }: { improvement?: { scorer: string; suite: string; proposal?: string } } = {}): Promise<void> {
   const config = await detectProjectConfig(undefined, undefined, { dryRun: true }) ?? (await requireInit({ dryRun: true })).localConfig;
   const view = await read(config);
+
   if (improvement === undefined) {
     console.log(JSON.stringify({ data: view }));
+
     return;
   }
+
   const { SelfImprovement } = await import('./self-improvement.js');
   const planned = await SelfImprovement.plan(config, { failures: view.failures, ...improvement });
+
   if ('code' in planned) {
     console.log(JSON.stringify({ error: planned }));
     process.exitCode = 1;
+
     return;
   }
+
   console.log(JSON.stringify({ data: { ...view, improvement: planned } }));
 }
 

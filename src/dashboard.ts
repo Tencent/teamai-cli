@@ -410,26 +410,34 @@ export async function startDashboard(port?: number): Promise<void> {
       json(500, { error: 'Failed to load scorer results.' });
     }
   };
+
   // The Self-improvement page (#1249): the loop from a scorer's failing labels to the changes it made, refreshed from
   // origin, with the proposals on the team repo, at most once per TTL like the Scorers page.
   const selfImprovementRefreshed = new Map<string, number>();
+
   const handleSelfImprovement = async (req: http.IncomingMessage, res: http.ServerResponse, workspace: DashboardWorkspace | undefined) => {
-    const json = (status: number, body: unknown) => {
+    const json = <TBody>(status: number, body: TBody) => {
       res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
       res.end(JSON.stringify(body));
     };
+
     if (req.method !== 'GET') {
       json(405, { error: 'Not supported.' });
+
       return;
     }
+
     if (!workspace?.config) {
       json(200, { configured: false });
+
       return;
     }
+
     try {
       const { selfImprovementView } = await import('./dashboard/self-improvement.js');
       const refresh = Date.now() - (selfImprovementRefreshed.get(workspace.id) ?? 0) > KB_SUMMARY_TTL_MS;
       const view = await selfImprovementView({ config: workspace.config, refresh });
+
       if (refresh) selfImprovementRefreshed.set(workspace.id, Date.now());
       json(200, { configured: true, ...view });
     } catch (e) {
@@ -437,6 +445,7 @@ export async function startDashboard(port?: number): Promise<void> {
       json(500, { error: 'Failed to load self-improvement.' });
     }
   };
+
   const benchmarksRefreshed = new Map<string, number>();
 
   const handleBenchmarks = async (req: http.IncomingMessage, res: http.ServerResponse, url: URL, workspace: DashboardWorkspace | undefined) => {
@@ -705,6 +714,7 @@ export async function startDashboard(port?: number): Promise<void> {
 
     if (url.pathname === '/api/self-improvement') {
       await handleSelfImprovement(req, res, workspace);
+
       return;
     }
 

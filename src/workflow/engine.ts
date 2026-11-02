@@ -2307,9 +2307,12 @@ function workspaceMismatch(report: ReportInput, contract: WorkspaceContract | un
   // The team clone's base is origin's default branch when the clone was made, which only the place knows.
   if (contract?.mode === 'team') {
     if (report.read) return `read names branch ${report.read.branch}, but attempt ${report.attempt} was leased team branch ${contract.branch}`;
+
     if (report.changes && report.changes.branch !== contract.branch) return `changes name branch ${report.changes.branch}, but attempt ${report.attempt} was leased team branch ${contract.branch}`;
+
     return undefined;
   }
+
   const readOnly = contract?.mode === 'read-only';
   const leased = contract ? `${readOnly ? 'read-only ' : ''}branch ${contract.branch} on base ${contract.base.commit}` : 'no workspace';
   const elsewhere = (branch: string, base: string): boolean => !contract || branch !== contract.branch || base !== contract.base.commit;

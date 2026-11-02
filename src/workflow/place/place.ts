@@ -16,7 +16,7 @@ import type { RunPass } from '../loop.js';
 import { stageEvidence } from '../scoring-evidence.js';
 import { attemptDir, AttemptIdSchema, attemptsDir, readRun, type AttemptId, type RunId, type RunLock } from '../store.js';
 import type { RunState, WorkflowFailure } from '../types.js';
-import { contractClone, type CopyContract, type WorkspaceContract } from '../workspace.js';
+import { type CopyContract, type WorkspaceContract } from '../workspace.js';
 import { clearWorktreeHooks, headCommit, markReadCopy, markSetup, removeWorktree, reopenConfigConflicts, stepCheckout, worktreePath } from '../worktree.js';
 import { adoptRefusal, takeAdopted } from './adopted.js';
 import { cloneEnv, cloneKeyOf, commitClone, markCloneReady, openClone, preparedClone, removeClone, type CloneLease } from './clone.js';
@@ -360,19 +360,26 @@ async function prepareTeam(input: {
   config: LocalConfig; run: RunId; root: string; lease: PlaceLease; recorded: PlaceRecord | undefined; workspace: Extract<WorkspaceContract, { mode: 'team' }>;
 }): Promise<PlacePrepared> {
   const { config, run, root, lease, workspace, recorded } = input;
+
   if (recorded?.phase === 'ready' && recorded.place.role === 'team') return preparedOf(recorded, lease.prompt);
   const opened = await openTeamClone({ config, run, step: lease.step, branch: workspace.branch });
+
   const base: OpeningBase = {
     version: 1, run, attempt: lease.attempt, step: lease.step, executor: lease.executor, root,
-    ...(lease.interactive ? { interactive: true as const } : {}),
   };
+
+  if (lease.interactive) base.interactive = true;
+
   if ('code' in opened) {
     await removeTeamClone(config, run, workspace.branch);
+
     return { kind: 'failed', failure: opened };
   }
+
   const { dir, root: clone, base: commit, start, found } = opened;
-  const ready: Placed = { ...base, dir, place: { role: 'team', workspace, clone, base: commit, start, ...(found !== undefined ? { found } : {}) }, phase: 'ready' };
+  const ready: Placed = { ...base, dir, place: { role: 'team', workspace, clone, base: commit, start, found }, phase: 'ready' };
   await writePlaceRecord(config, ready);
+
   return preparedOf(ready, lease.prompt);
 }
 

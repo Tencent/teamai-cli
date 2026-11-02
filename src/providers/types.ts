@@ -103,8 +103,10 @@ export type MergedAs = { head: string; commit: string };
  */
 export function endedRequest({ url, title, openedAt, state, closedAt, merge }: { url: string; title: string; openedAt: string; state: string; closedAt: string | null | undefined; merge?: MergedAs }): PullRequestRecord {
   if (state === 'opened' || state === 'reopened' || state === 'open') return { url, title, openedAt, state: 'open' };
+
   if (state !== 'merged') return { url, title, openedAt, state: 'closed', closedAt: closedAt ?? openedAt };
-  return { url, title, openedAt, state: 'merged', closedAt: closedAt ?? openedAt, ...merge ? { merge } : {} };
+
+  return { url, title, openedAt, state: 'merged', closedAt: closedAt ?? openedAt, merge: merge || undefined };
 }
 
 /** `merge` when the host stated both commits of it. */

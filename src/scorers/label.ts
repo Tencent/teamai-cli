@@ -169,10 +169,13 @@ export function judgeCohort(judge: ScoreLabel['judge']): JudgeCohort {
       return { kind: 'human' };
     case 'model': {
       const id = judge.model?.reported ?? judge.model?.requested;
-      return { kind: 'model', tool: judge.tool, ...(id ? { model: { id, isReported: judge.model?.reported !== undefined } } : {}) };
+
+      return { kind: 'model', tool: judge.tool, model: id ? { id, isReported: judge.model?.reported !== undefined } : undefined };
     }
+
     default: {
       const unhandled: never = judge;
+
       return unhandled;
     }
   }

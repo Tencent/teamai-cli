@@ -23,8 +23,10 @@ const run = promisify(execFile);
 
 /** teamai's default workflow that `teamai self-improvement run` starts, unless the team pushed its own of that name. */
 const WORKFLOW = 'teamai-self-improvement';
+
 /** The suite a run puts its regression tasks in unless `--suite` names another. */
 const SUITE = 'benchmarks/regressions';
+
 /** The prefix of the branch every run proposes on. */
 const BRANCH_PREFIX = 'teamai/self-improvement/';
 
@@ -72,36 +74,47 @@ function pick({ failures, scorer, tasks, hasCommit }: {
   const why = ({ start }: DigestFailure): Unusable | undefined => ('refused' in start ? start.refused : hasCommit(start.commit) ? undefined : 'not_in_checkout');
   // Each subject's failures, newest first: one label of it may have a start another lacks, such as a hand label's.
   const bySubject = new Map<string, [DigestFailure, ...DigestFailure[]]>();
+
   for (const entry of failures) {
     if (entry.failure.scorer !== scorer) continue;
     const subject = canonicalJson(entry.failure.subject);
     const listed = bySubject.get(subject);
+
     if (listed) listed.push(entry);
     else bySubject.set(subject, [entry]);
   }
+
   for (const [subject, [newest, ...older]] of bySubject) {
     const task = tasks.get(subject);
+
     if (task !== undefined) {
       if (!picked.covered.includes(task)) picked.covered.push(task);
       continue;
     }
+
     const refused = why(newest);
     const usable = refused === undefined ? newest : older.find((entry) => why(entry) === undefined);
+
     if (usable !== undefined) picked.failures.push(usable);
     else if (refused !== undefined) picked.refused.push({ subject: newest.failure.subject, why: refused });
   }
+
   return picked;
 }
 
 /** The commits of `commits` the checkout `cwd` has, asked of git once; none when `cwd` is not a checkout. */
 async function commitsIn(cwd: string, commits: Iterable<string>): Promise<Set<string>> {
   const wanted = [...new Set(commits)];
+
   if (wanted.length === 0) return new Set();
+
   const answer = await new Promise<string>((resolve, reject) => {
     const child = execFile('git', ['cat-file', '--batch-check=%(objecttype)'], { cwd, maxBuffer: 16 * 1024 * 1024 }, (error, stdout) => (error ? reject(error) : resolve(stdout)));
     child.stdin?.end(wanted.map((commit) => `${commit}^{commit}\n`).join(''));
   }).catch(() => '');
+
   const types = answer.split('\n');
+
   return new Set(wanted.filter((_, index) => types[index] === 'commit'));
 }
 
@@ -124,17 +137,23 @@ async function coveringTasks(teamCheckout: string, { suite, proposal }: { suite:
   const base = /^ref: refs\/heads\/(\S+)\s+HEAD$/m.exec(listed)?.[1];
   const hasProposal = proposal !== undefined && listed.split('\n').some((line) => line.endsWith(`\trefs/heads/${proposal}`));
   const branches = [...(hasProposal && proposal !== undefined ? [proposal] : []), ...(base !== undefined ? [base] : [])];
+
   if (branches.length > 0) await git(top, ['fetch', '-q', '--no-tags', 'origin', ...branches.map((branch) => `+refs/heads/${branch}:refs/remotes/origin/${branch}`)]);
   const tasks = new Map<string, string>();
+
   for (const branch of branches) {
     const ref = `refs/remotes/origin/${branch}`;
+
     const files = (await git(top, ['ls-tree', '-r', '--name-only', ref, '--', `${prefix}${suite}/tasks/`])).split('\n')
       .filter((file) => file.endsWith('.yaml') && !file.slice(`${prefix}${suite}/tasks/`.length).includes('/')).sort();
+
     for (const file of files) {
       const source = taskSourceOf(await git(top, ['show', `${ref}:${file}`]));
+
       if (source !== undefined && !tasks.has(canonicalJson(source))) tasks.set(canonicalJson(source), file.slice(prefix.length));
     }
   }
+
   return { tasks, hasProposal };
 }
 
@@ -148,16 +167,22 @@ export type Improvement = Picked & { ready: boolean; hasProposal: boolean };
  */
 async function plan(config: LocalConfig, input: { failures: readonly DigestFailure[]; scorer: string; suite: string; proposal?: string }): Promise<Improvement | { code: string; message: string }> {
   const { failures, scorer, suite, proposal } = input;
+
   if (!SUITE_DIR.test(suite)) return { code: 'invalid_arguments', message: `--suite ${suite} is not a suite directory. Give one under benchmarks/, such as benchmarks/regressions.` };
+
   if (!BENCHMARK_NAME.test(scorer) || await loadCachedScorer(config, scorer) === null) {
     return { code: 'scorer_not_found', message: `The team has no scorer ${scorer}. Run teamai pull, or give one teamai list scorers shows.` };
   }
+
   const starts = failures.flatMap(({ start }) => ('commit' in start ? [start.commit] : []));
+
   const [covering, present] = await Promise.all([
-    coveringTasks(config.repo.localPath, { suite, ...(proposal !== undefined ? { proposal } : {}) }),
+    coveringTasks(config.repo.localPath, { suite, proposal }),
     commitsIn(config.projectRoot ?? process.cwd(), starts),
   ]);
+
   const picked = pick({ failures, scorer, tasks: covering.tasks, hasCommit: (commit) => present.has(commit) });
+
   return { ...picked, ready: isReady({ startable: picked.failures.length, hasProposal: covering.hasProposal }), hasProposal: covering.hasProposal };
 }
 

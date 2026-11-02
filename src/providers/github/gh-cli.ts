@@ -774,9 +774,12 @@ export async function ghPullHistory({ repo, source, target, timeoutMs }: PullReq
   const owner = repo.split('/')[0] ?? repo;
   const query = new URLSearchParams({ state: 'all', head: `${owner}:${source}`, base: target, per_page: String(HISTORY_PAGE) });
   const pulls = z.array(GhPullHistorySchema).safeParse(await ghApiGet(`repos/${repo}/pulls?${query}`, timeoutMs, HISTORY_LOOKUP));
+
   if (!pulls.success) throw new Error(unreadable(HISTORY_LOOKUP));
+
   if (pulls.data.length >= HISTORY_PAGE) throw new Error('GitHub listed more pull requests than one page, so TeamAI cannot tell how this branch\'s requests ended.');
   const ours = (name: string | undefined): boolean => name?.toLowerCase() === repo.toLowerCase();
+
   return pulls.data
     .filter((pull) => pull.head.ref === source && pull.base.ref === target && ours(pull.head.repo?.full_name) && ours(pull.base.repo.full_name))
     .map((pull) => endedRequest({

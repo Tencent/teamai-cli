@@ -842,18 +842,24 @@ function planTeam(run: RunState, state: StepState, request: WorkspaceRequest, in
   const { team, session, handback } = input;
   const mode = 'team';
   const parsed = team.branch === undefined ? undefined : parseTemplate(team.branch, false);
+
   if (parsed && !parsed.ok) return { mode, fail: { code: 'workspace_base', message: `step "${state.id}" workspace team branch ${team.branch} is not a template teamai reads` } };
   const branch = parsed ? renderText(parsed.template, { inputs: run.inputs ?? {}, steps: {} }) : branchName(run.id, state.id, state.pass ?? 1);
+
   if (!GIT_BRANCH.test(branch)) {
     return { mode, fail: { code: 'workspace_base', message: `step "${state.id}" commits to team branch "${branch}", which git cannot name a branch. Give inputs that make workspace team branch a branch name.` } };
   }
+
   if (!handback && !(request.modes ?? []).includes('team')) {
     return { mode, defer: { reason: `step "${state.id}" runs in the team workspace, which this driver does not provide`, needs: 'team' } };
   }
+
   const copy = run.copies?.[branch];
+
   if (!handback && copy?.owner && !sameDriver(copy.owner, request.driver)) {
     return { mode, defer: { reason: `step "${state.id}" commits to team branch ${branch}, which another driver of this run holds` } };
   }
+
   return { mode, ...session, contract: { mode, branch } };
 }
 

@@ -1308,14 +1308,18 @@ program
   .action(async (cmdOpts: { json?: boolean; scorer?: string; suite: string; proposal?: string }) => {
     if (cmdOpts.json) {
       const { DigestFailures } = await import('./digest-failures.js');
-      await DigestFailures.print(cmdOpts.scorer === undefined ? {} : { improvement: { scorer: cmdOpts.scorer, suite: cmdOpts.suite, ...(cmdOpts.proposal !== undefined ? { proposal: cmdOpts.proposal } : {}) } });
+      await DigestFailures.print(cmdOpts.scorer === undefined ? {} : { improvement: { scorer: cmdOpts.scorer, suite: cmdOpts.suite, proposal: cmdOpts.proposal } });
+
       return;
     }
+
     if (cmdOpts.scorer !== undefined || cmdOpts.proposal !== undefined) {
       log.error('invalid_arguments: --scorer and --proposal print with --json. Add --json.');
       process.exitCode = 1;
+
       return;
     }
+
     const { generateDigest } = await import('./digest.js');
     await generateDigest();
   });

@@ -845,9 +845,12 @@ function parseBody(
         diagnostics.push({ ...locate(file, lineCounter, rolePair.value ?? rolePair.key ?? item, `${field}.role`, roleProblem), code: 'bad_role' });
       }
 
-      if (workspacePair && workspace instanceof Object && 'team' in workspace) {
+      const team = workspace === undefined || workspace === 'read-only' || workspace === 'new' || workspace === 'continue' || !('team' in workspace) ? undefined : workspace.team;
+
+      if (workspacePair && team) {
         const node = workspacePair.value ?? workspacePair.key ?? item;
-        const branch = workspace.team.branch === undefined ? undefined : parseTemplate(workspace.team.branch, false);
+        const branch = team.branch === undefined ? undefined : parseTemplate(team.branch, false);
+
         const problem = workflowPair || forEachPair ? `${stepLabel} workspace team is only allowed on a command or prompt step that runs once: each step in the team workspace clones the team repo again`
           : branch && !branch.ok ? `${stepLabel} workspace team branch template ${branch.errors[0]?.source}: ${branch.errors[0]?.message}`
             : branch?.ok && !templateExpressions(branch.template).every((read) => read.kind === 'path' && read.path.root === 'inputs')

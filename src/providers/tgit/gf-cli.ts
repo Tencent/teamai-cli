@@ -675,14 +675,20 @@ const TGitMrHistorySchema = TGitOpenMrSchema.extend({
  */
 export async function tgitMrHistory({ repo, source, target, timeoutMs }: PullRequestRef): Promise<PullRequestRecord[]> {
   const query = new URLSearchParams({ state: 'all', source_branch: source, target_branch: target, per_page: String(LOOKUP_PAGE) });
+
   const response = await tgitFetch(`/projects/${encodeURIComponent(repo)}/merge_requests?${query}`, {
     redirect: 'manual', signal: AbortSignal.timeout(timeoutMs),
   });
+
   if (!response.ok) throw new Error(`TGit answered the merge request history lookup with HTTP ${response.status}. Check TGIT_TOKEN or the gf login and their access to the project.`);
   const requests = z.array(TGitMrHistorySchema).safeParse(await response.json().catch(() => undefined));
+
   if (!requests.success) throw new Error('TGit answered the merge request history lookup with data TeamAI cannot read.');
+
   if (requests.data.length >= LOOKUP_PAGE) throw new Error('TGit listed more merge requests than one page, so TeamAI cannot tell how this branch\'s requests ended.');
   const ours = requests.data.filter((mr) => mr.source_branch === source && mr.target_branch === target && mr.source_project_id === mr.target_project_id);
+
   if (ours.some((mr) => !mr.web_url.startsWith(`https://${TGIT_HOST}/`))) throw new Error('TGit answered the merge request history lookup with a URL on another host.');
+
   return ours.map((mr) => endedRequest({ url: mr.web_url, title: mr.title, openedAt: mr.created_at, state: mr.state, closedAt: mr.closed_at ?? mr.merged_at ?? mr.updated_at }));
 }

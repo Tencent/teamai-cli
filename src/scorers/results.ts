@@ -712,18 +712,21 @@ function defaultCohort(scored: ReadonlyArray<{ summary: CohortSummary; all: View
 
 function startOf(agent: RecordedAgent | undefined): FailureStart {
   const project = observed(agent)?.project;
+
   if (!project) return { refused: 'not_recorded' };
+
   return project.dirty ? { refused: 'tracked_changes' } : { commit: project.commit };
 }
 
 function failureOf(entry: ViewedLabel, cohort: CohortIdentity): Failure {
   const { label, author, agent, sessionName } = entry;
   const { scorer, rubric, label: value, score, scoredAt, runMode, used } = label;
-  const recorded = { scorer, cohort: cohort.id, judge: cohort.judge, rubric, label: value, score, scoredAt, author, ...runMode ? { runMode } : {}, ...agent ? { agent } : {}, ...used ? { used } : {} };
+  const recorded = { scorer, cohort: cohort.id, judge: cohort.judge, rubric, label: value, score, scoredAt, author, runMode, agent, used };
+
   return {
     failure: label.source === 'session' ? { ...recorded, source: 'session', subject: label.subject } : { ...recorded, source: 'workflow', subject: label.subject },
     start: startOf(agent),
-    ...sessionName ? { session: { name: sessionName } } : {},
+    session: sessionName ? { name: sessionName } : undefined,
   };
 }
 
@@ -747,10 +750,11 @@ export const ScorerResults = {
    * with their counts and, for a model judge, how it agrees with hand labels.
    */
   failures({ labels, windowDays, now, rubricLabels }: { labels: readonly ViewedLabel[]; windowDays: number; now: Date; rubricLabels?: RubricLabels }): ScorerFailures {
-    const view = ScorerResults.of({ labels, query: { windowDays }, now, ...rubricLabels ? { rubricLabels } : {} });
+    const view = ScorerResults.of({ labels, query: { windowDays }, now, rubricLabels });
     const { from, to } = view.window;
     const inWindow = (entry: ViewedLabel) => entry.label.scoredAt >= from && entry.label.scoredAt <= to;
     const kept = current(labels);
+
     const scorers = view.scorers.map(({ scorer, cohorts }) => ({
       scorer,
       cohorts: cohorts.map(({ trend: _trend, lastScoredAt: _last, ...cohort }): CohortFailures => {
@@ -758,14 +762,18 @@ export const ScorerResults = {
         const identity = kept.map((entry) => identityOf(entry.label).cohort).find(({ id }) => id === cohort.id)?.judge;
         const row = agreement({ labels: kept, scorer, sourceHash: cohort.rubric.sourceHash, source: cohort.source, inWindow, rubricLabels });
         const judged = row.judges.find(({ judge }) => canonicalJson(judge) === canonicalJson(identity));
+
         if (!judged) return cohort;
         const { judge: _judge, labels: _labels, ...counts } = judged;
+
         return { ...cohort, agreement: { handLabelled: row.handLabelled, ...counts } };
       }),
     }));
+
     const failures = kept.filter((entry) => !entry.label.passed && inWindow(entry))
       .sort((left, right) => right.label.scoredAt.localeCompare(left.label.scoredAt))
       .map((entry) => failureOf(entry, identityOf(entry.label).cohort));
+
     return { window: view.window, scorers, failures };
   },
 

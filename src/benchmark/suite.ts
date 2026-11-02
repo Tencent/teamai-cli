@@ -7,7 +7,8 @@
  */
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { LineCounter, parse as parseYaml, parseDocument } from 'yaml';
+import { LineCounter, parseDocument } from 'yaml';
+import { parseYaml } from '../utils/yaml.js';
 import { z } from 'zod';
 import { isYamlNode, locate } from '../workflow/parse-context.js';
 import { durationMs } from '../workflow/parse.js';
@@ -315,6 +316,7 @@ function pathspecMatches(spec: readonly string[], file: readonly string[]): bool
 export const TaskSourceSchema = z.union([SessionSubjectSchema.strict(), RunSubjectSchema.strict()], {
   error: 'source names where the task came from: a session, { platform, sessionId }, or a workflow pass, { runId, step, pass }',
 });
+
 export type TaskSource = z.infer<typeof TaskSourceSchema>;
 
 const TaskWithSourceSchema = z.object({ source: TaskSourceSchema });
@@ -322,12 +324,15 @@ const TaskWithSourceSchema = z.object({ source: TaskSourceSchema });
 /** The work the task file `text` names as its `source`, or undefined for a file that is not YAML or names none. */
 export function taskSourceOf(text: string): TaskSource | undefined {
   let task: unknown;
+
   try {
     task = parseYaml(text);
   } catch {
     return undefined;
   }
+
   const parsed = TaskWithSourceSchema.safeParse(task);
+
   return parsed.success ? parsed.data.source : undefined;
 }
 

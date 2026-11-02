@@ -52,35 +52,46 @@ export async function openTeamClone(input: { config: LocalConfig; run: RunId; st
   await fs.rm(root, { recursive: true, force: true });
   await fs.mkdir(path.dirname(root), { recursive: true });
   const cloned = await git(path.dirname(root), ['clone', '-q', '--', config.repo.remote, root], ORIGIN);
+
   if (cloned.code !== 0) {
     return { code: 'workspace_base', message: `Step "${step}" could not clone the team repo ${config.repo.remote}: ${said(cloned)}. Check this machine's access to it, then run the workflow again.` };
   }
+
   const head = await git(root, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']);
   const target = head.code === 0 ? head.stdout.trim().replace(/^origin\//, '') : '';
   const base = target === '' ? undefined : await git(root, ['rev-parse', '--verify', '-q', `refs/remotes/origin/${target}^{commit}`]);
+
   if (base?.code !== 0) {
     return { code: 'workspace_base', message: `Step "${step}" found no default branch on the team repo's origin ${config.repo.remote}, so it has nothing to start ${branch} from. Push a default branch there, then run the workflow again.` };
   }
+
   const found = await git(root, ['rev-parse', '--verify', '-q', `refs/remotes/origin/${branch}^{commit}`]);
+
   const started = found.code === 0
     ? await git(root, ['checkout', '-q', '-B', branch, `refs/remotes/origin/${branch}`])
     : await git(root, ['checkout', '-q', '-b', branch, `refs/remotes/origin/${target}`]);
+
   if (started.code !== 0) return { code: 'workspace_base', message: `Step "${step}" could not check out ${branch} in the team repo: ${said(started)}` };
+
   if (found.code === 0) {
     const merged = await git(root, [...TEAMAI, 'merge', '-q', '--no-edit', `refs/remotes/origin/${target}`]);
+
     if (merged.code !== 0) {
       const unmerged = await git(root, ['diff', '--name-only', '--diff-filter=U']);
       const files = unmerged.stdout.trim().split('\n').filter(Boolean).join(', ');
+
       return {
         code: 'merge_conflict',
         message: `${branch} conflicts with ${target} on the team repo's origin${files ? ` in ${files}` : ''}, so step "${step}" did not run. Merge ${target} into ${branch} and push it, or delete ${branch} to start over, then run the workflow again.`,
       };
     }
   }
+
   const start = await git(root, ['rev-parse', 'HEAD']);
   const dir = isSelfMode(config) ? path.join(root, '.teamai') : root;
   await fs.mkdir(dir, { recursive: true });
-  return { root, dir, target, base: base.stdout.trim(), start: start.stdout.trim(), ...(found.code === 0 ? { found: found.stdout.trim() } : {}) };
+
+  return { root, dir, target, base: base.stdout.trim(), start: start.stdout.trim(), found: found.code === 0 ? found.stdout.trim() : undefined };
 }
 
 /**
@@ -93,12 +104,15 @@ async function rejectedTeamFiles(dir: string, files: ReadonlySet<string>): Promi
     import('../../benchmark/suite-cache.js'),
     import('../parse.js'),
   ]);
+
   const dataHome = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-team-files-'));
   const wasSilent = isSilent();
   setSilent(true);
+
   try {
     const config = { ...LocalConfigSchema.parse({ repo: { localPath: dir, remote: 'local' }, username: 'team-files' }), dataHome };
     const result = await syncTeamDefinitions(config, { dryRun: true, everyNamespace: true, scopeLabel: 'team files' });
+
     return [...new Set(result.invalid.filter((diagnostic) => files.has(diagnostic.file)).map(formatDiagnostic))];
   } finally {
     setSilent(wasSilent);
@@ -115,29 +129,36 @@ async function rejectedTeamFiles(dir: string, files: ReadonlySet<string>): Promi
 export async function finishTeamClone(input: { root: string; dir: string; step: string; branch: string; base: string; start: string; found?: string }): Promise<{ changes: StepChanges } | WorkflowFailure> {
   const { root, dir, step, branch, base, found } = input;
   const committed = await commitWork(root, `teamai: ${step}`, input.start);
+
   if ('error' in committed) return { code: 'push_failed', message: `Step "${step}" could not commit its work in the team repo clone ${root}: ${committed.error}` };
   const from = found ?? base;
   const listed = committed.to === from ? { stdout: '' } : await git(root, ['rev-list', '--reverse', `${from}..${committed.to}`]);
   const changes: StepChanges = { branch, base, from, to: committed.to, commits: listed.stdout.split('\n').map((line) => line.trim()).filter(Boolean) };
+
   // Nothing beyond what origin has: no push, and nothing to deliver unless the branch already holds work.
   if (committed.to === base || committed.to === found) return { changes };
   const changed = await git(dir, ['diff', '--relative', '--no-renames', '--name-only', '-z', base, committed.to, '--']);
   const rejected = await rejectedTeamFiles(dir, new Set(changed.stdout.split('\0').filter(Boolean)));
+
   if (rejected.length > 0) {
     return {
       code: 'push_failed',
       message: `Step "${step}" left team files teamai pull would reject, so nothing was pushed to ${branch}:\n${rejected.join('\n')}\nIts commit ${committed.to} stays in ${root}. Have the step fix them, then run the workflow again.`,
     };
   }
+
   const pushed = await git(root, ['push', '-q', `--force-with-lease=refs/heads/${branch}:${found ?? ''}`, 'origin', `HEAD:refs/heads/${branch}`], ORIGIN);
+
   if (pushed.code === 0) return { changes };
   const tip = await git(root, ['ls-remote', 'origin', `refs/heads/${branch}`], ORIGIN);
   const now = tip.code === 0 ? tip.stdout.split('\t')[0]?.trim() ?? '' : undefined;
+
   if (now !== undefined && now !== (found ?? '')) {
     return {
       code: 'push_failed',
       message: `${branch} moved on origin while step "${step}" ran, so nothing was pushed and origin keeps it. The step's commit ${committed.to} stays in ${root}. Run the workflow again to start from the branch as origin has it now.`,
     };
   }
+
   return { code: 'push_failed', message: `Step "${step}" could not push ${branch} to the team repo's origin: ${said(pushed)}. Its commit ${committed.to} stays in ${root}.` };
 }
