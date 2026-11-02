@@ -4,7 +4,7 @@
  *
  *   parse flags and --path         → refuse before touching any repo
  *   fetch origin/<default>         → the base the pull request is built on
- *   tree checks at that base       → no symlink on the way, a benchmark task belongs to a suite, same bytes = no change
+ *   placementAt that base          → no symlink on the way, a benchmark task belongs to a suite; same bytes = no change
  *   blob → temp index → commit     → the base's tree with only the destination changed
  *   push <commit>:<branch>         → a new branch, or the --branch of an open pull request, force-pushed with a lease
  *   open or update the PR          → push's pull request code; an open one of that branch is updated in place
@@ -136,15 +136,14 @@ export async function pushFile(options: GlobalOptions & PushFileOptions, result?
 }
 
 /**
- * Builds and pushes the commit that changes only the destination against the team repo's default branch on its remote.
- * Refuses a path that goes through a symlink or names no regular file at that base, and a benchmark task whose suite has
- * no suite.yaml there. A `branch` that origin already has is force-pushed with a lease on the tip it had, so its open
+ * Builds and pushes the commit that changes only the destination against the team repo's default branch on its remote,
+ * once `placementAt` accepts the destination in that branch's tree. A `branch` that origin already has is force-pushed with a lease on the tip it had, so its open
  * pull request, looked up afterwards, shows the new file.
  */
 async function proposeFile({ source, destination, teamRoot, branch: requested, dryRun, username }: {
   source: string; destination: Destination; teamRoot: string; branch?: string; dryRun: boolean; username: string;
 }): Promise<Pushed> {
-  const { teamPath, suiteDir } = destination;
+  const { teamPath } = destination;
   // In single-repo mode the team root is .teamai/ of the project repo, so a team path sits under that prefix in its
   // tree. Every command runs at the top level, where git reads a path as one from the root of the tree.
   const prefix = (await createGit(teamRoot).revparse(['--show-prefix'])).trim();
@@ -165,27 +164,12 @@ async function proposeFile({ source, destination, teamRoot, branch: requested, d
     return { kind: 'stopped' };
   }
   const base = (await git.revparse([`refs/remotes/origin/${defaultBranch}`])).trim();
-  const entryAt = async (at: string): Promise<{ mode: string; type: string; object: string } | undefined> => {
-    const [mode, type, object] = (await git.raw(['ls-tree', base, '--', `${prefix}${at}`])).trim().split(/\s+/);
-    return mode !== undefined && type !== undefined && object !== undefined ? { mode, type, object } : undefined;
-  };
-  const segments = teamPath.split('/');
-  for (let depth = 1; depth < segments.length; depth += 1) {
-    const directory = segments.slice(0, depth).join('/');
-    if ((await entryAt(directory))?.mode === '120000') {
-      refuse(`${teamPath} goes through the symlink ${directory} in the team repo, so it is not pushed. Give a path whose directories are real directories.`, 2);
-      return { kind: 'stopped' };
-    }
-  }
-  const existing = await entryAt(teamPath);
-  if (existing !== undefined && (existing.type !== 'blob' || existing.mode === '120000')) {
-    refuse(`${teamPath} is not a regular file in the team repo, so it is not pushed. Give the path of a file.`, 2);
+  const placement = await placementAt(git, { base, prefix, destination });
+  if (placement.kind === 'refused') {
+    refuse(placement.message, placement.code);
     return { kind: 'stopped' };
   }
-  if (suiteDir !== undefined && (await entryAt(`${suiteDir}/suite.yaml`))?.type !== 'blob') {
-    refuse(`${suiteDir}/suite.yaml does not exist, so ${teamPath} belongs to no suite. Pick a suite the team repo has under benchmarks/.`);
-    return { kind: 'stopped' };
-  }
+  const { existing } = placement;
   // A dry run hashes without writing the object.
   const blob = (await git.raw(['hash-object', '--no-filters', ...(dryRun ? [] : ['-w']), '--', source])).trim();
   if (existing?.object === blob) {
@@ -225,6 +209,43 @@ async function proposeFile({ source, destination, teamRoot, branch: requested, d
   } finally {
     await fs.rm(index, { recursive: true, force: true });
   }
+}
+
+/** A tree entry, as `git ls-tree` prints it. */
+interface TreeEntry {
+  mode: string;
+  type: string;
+  object: string;
+}
+
+/** Whether the destination can take the file in the tree of `base`, and the entry it replaces, when there is one. */
+type Placement = { kind: 'placeable'; existing?: TreeEntry } | { kind: 'refused'; message: string; code: 1 | 2 };
+
+/**
+ * Checks the destination against the tree of `base`, whose paths sit under `prefix`: refuses a path that goes through a
+ * symlink or names no regular file, and a benchmark task whose suite has no suite.yaml. Every check that needs the team
+ * repo's tree lives here; `destinationOf` holds the ones that need no repo.
+ */
+async function placementAt(git: ReturnType<typeof createGit>, { base, prefix, destination: { teamPath, suiteDir } }: { base: string; prefix: string; destination: Destination }): Promise<Placement> {
+  const entryAt = async (at: string): Promise<TreeEntry | undefined> => {
+    const [mode, type, object] = (await git.raw(['ls-tree', base, '--', `${prefix}${at}`])).trim().split(/\s+/);
+    return mode !== undefined && type !== undefined && object !== undefined ? { mode, type, object } : undefined;
+  };
+  const segments = teamPath.split('/');
+  for (let depth = 1; depth < segments.length; depth += 1) {
+    const directory = segments.slice(0, depth).join('/');
+    if ((await entryAt(directory))?.mode === '120000') {
+      return { kind: 'refused', message: `${teamPath} goes through the symlink ${directory} in the team repo, so it is not pushed. Give a path whose directories are real directories.`, code: 2 };
+    }
+  }
+  const existing = await entryAt(teamPath);
+  if (existing !== undefined && (existing.type !== 'blob' || existing.mode === '120000')) {
+    return { kind: 'refused', message: `${teamPath} is not a regular file in the team repo, so it is not pushed. Give the path of a file.`, code: 2 };
+  }
+  if (suiteDir !== undefined && (await entryAt(`${suiteDir}/suite.yaml`))?.type !== 'blob') {
+    return { kind: 'refused', message: `${suiteDir}/suite.yaml does not exist, so ${teamPath} belongs to no suite. Pick a suite the team repo has under benchmarks/.`, code: 1 };
+  }
+  return existing !== undefined ? { kind: 'placeable', existing } : { kind: 'placeable' };
 }
 
 /** How long the host may take to say which pull request of a branch is open. */
