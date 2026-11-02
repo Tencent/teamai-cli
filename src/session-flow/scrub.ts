@@ -217,11 +217,12 @@ function scrubBlock(
     case 'tool_call': {
       // Arguments are structured: serialize, redact as a whole, then parse
       // back so string fields are covered too, not just top-level strings.
-      // Known secrets are masked in each string first: one with a quote or
-      // backslash is escaped in the serialized form and would not match there. Paths are rewritten in each string for
+      // Each string is masked first: a known secret with a quote or backslash,
+      // or a `"password": "…"` pair inside a string, is escaped in the serialized
+      // form and would not match there. Paths are rewritten in each string for
       // the same reason: a Windows path is escaped once serialized.
       const raw = JSON.stringify(block.arguments ?? {});
-      const next = mask(JSON.stringify(mapStrings(JsonValueSchema.parse(redactJson(block.arguments ?? {}, envSecrets)), rewrite)));
+      const next = mask(JSON.stringify(mapStrings(JsonValueSchema.parse(redactJson(block.arguments ?? {}, envSecrets)), (text) => rewrite(mask(text)))));
 
       if (next === raw) return { block, count: 0 };
       const count = countRedactions(raw, next);
