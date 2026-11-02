@@ -265,7 +265,7 @@ async function findProfile(reference: string | ProfileRef, options: { dryRun?: b
   const [context, local] = await Promise.all([teamContext(options), loadLocalProfiles()]);
 
   if (!context) return null;
-  const ref = typeof reference === 'string' ? resolveProfileRef(reference, context.team, local) : reference;
+  const ref = reference instanceof Object ? reference : resolveProfileRef(reference, context.team, local);
 
   if (ref.source === 'team' && context.localConfig) ref.team = getTeamIdentity(context.localConfig);
 
@@ -295,6 +295,7 @@ async function activeAgentsFor(
   const name = profileRefName(ref);
   const agents: ModelAgent[] = [];
 
+  // SAFETY: `active` is keyed by ModelAgent and holds no undefined entry, as activeModelProfiles builds it.
   for (const [agent, state] of Object.entries(active) as Array<[ModelAgent, ActiveModelProfile]>) {
     if (state.profile !== name) continue;
 
@@ -389,7 +390,7 @@ interface AddOptions extends ApiKeyOptions {
   model?: string;
 }
 
-function parseProfile(data: unknown): ProfileRef['profile'] {
+function parseProfile(data: ProfileRef['profile']): ProfileRef['profile'] {
   const result = ModelProfileSchema.safeParse(data);
 
   if (!result.success) {
@@ -501,12 +502,12 @@ export async function modelsConfigure(reference: string, options: ConfigureOptio
       groups = addModelProtocol(groups, models.length ? models : profileModels(ref.profile), protocol);
     }
 
-    edited = parseProfile({
-      ...ref.profile,
-      ...(options.name ? { name: options.name } : {}),
-      ...(options.baseUrl ? { base_url: options.baseUrl } : {}),
-      model_groups: groups,
-    });
+    const candidate: ProfileRef['profile'] = { ...ref.profile, model_groups: groups };
+
+    if (options.name) candidate.name = options.name;
+
+    if (options.baseUrl) candidate.base_url = options.baseUrl;
+    edited = parseProfile(candidate);
   }
 
   const file = valuesPathFor(ref, context);
@@ -720,6 +721,7 @@ export async function syncTeamModelProfiles(localConfig: LocalConfig, options: {
   const identity = getTeamIdentity(localConfig);
   const groups = new Map<string, { profile: string; model?: string; agents: ModelAgent[] }>();
 
+  // SAFETY: activeModelProfiles keys its result by ModelAgent and holds no undefined entry.
   for (const [agent, state] of Object.entries(await activeModelProfiles()) as Array<[ModelAgent, ActiveModelProfile]>) {
     if (!state.profile.startsWith('team:') || !sameTeamIdentity(state.team, localConfig)) continue;
     const groupKey = `${state.profile}\0${state.model ?? ''}`;
@@ -781,11 +783,13 @@ export async function syncTeamModelProfiles(localConfig: LocalConfig, options: {
     try {
       resolved = resolveProfile(ref, values, model && profileModels(profile).includes(model) ? model : undefined);
     } catch (error) {
-      log.warn(`Cannot update agents using ${name}: ${(error as Error).message}`);
+      log.warn(`Cannot update agents using ${name}: ${error instanceof Error ? error.message : String(error)}`);
       continue;
     }
 
-    const onlyIfActive = { profile: name, team: identity, ...(model ? { model } : {}) };
+    const onlyIfActive: ActiveModelProfile = { profile: name, team: identity };
+
+    if (model) onlyIfActive.model = model;
 
     for (const result of await switchModelProfile(resolved, agents, { ...options, onlyIfActive, localConfig })) {
       if (result.status === 'switched') {

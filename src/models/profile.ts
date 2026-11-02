@@ -293,40 +293,35 @@ export function getTeamIdentity(localConfig: LocalConfig): string {
  * is the authoritative one for a path-shaped claim.
  */
 function repoClaim(localPath: string): { claim: string; provider?: string } | null {
+  const fields = teamYamlFields(localPath);
+  const claim = fields?.repo?.trim();
+
+  if (!claim) return null;
+  const provider = fields?.provider?.trim();
+
+  return provider ? { claim, provider } : { claim };
+}
+
+/** The teamai.yaml fields a team identity reads; a field holding anything but a string reads as absent. */
+const TeamYamlFieldsSchema = z.object({
+  repo: z.string().optional().catch(undefined),
+  provider: z.string().optional().catch(undefined),
+  team: z.string().optional().catch(undefined),
+});
+
+/** The identity fields of `localPath`'s teamai.yaml, or undefined when it is absent, unreadable or not a mapping. */
+function teamYamlFields(localPath: string): z.infer<typeof TeamYamlFieldsSchema> | undefined {
   try {
-    const raw = YAML.parse(fs.readFileSync(path.join(localPath, 'teamai.yaml'), 'utf8')) as unknown;
-
-    if (typeof raw === 'object' && raw !== null && !Array.isArray(raw)) {
-      const repo = (raw as { repo?: unknown }).repo;
-
-      if (typeof repo === 'string' && repo.trim()) {
-        const provider = (raw as { provider?: unknown }).provider;
-
-        return { claim: repo.trim(), ...(typeof provider === 'string' && provider.trim() ? { provider: provider.trim() } : {}) };
-      }
-    }
+    return TeamYamlFieldsSchema.safeParse(YAML.parse(fs.readFileSync(path.join(localPath, 'teamai.yaml'), 'utf8'))).data;
   } catch {
     // teamai.yaml may be absent or unreadable.
+    return undefined;
   }
-
-  return null;
 }
 
 /** The team's own `provider:` in teamai.yaml — authoritative for path-shaped identities even when the `repo:` claim is absent. */
 function teamProvider(localPath: string): string | undefined {
-  try {
-    const raw = YAML.parse(fs.readFileSync(path.join(localPath, 'teamai.yaml'), 'utf8')) as unknown;
-
-    if (typeof raw === 'object' && raw !== null && !Array.isArray(raw)) {
-      const provider = (raw as { provider?: unknown }).provider;
-
-      if (typeof provider === 'string' && provider.trim()) return provider.trim();
-    }
-  } catch {
-    // teamai.yaml may be absent or unreadable.
-  }
-
-  return undefined;
+  return teamYamlFields(localPath)?.provider?.trim() || undefined;
 }
 
 /**
@@ -361,7 +356,7 @@ function legacyTeamValueHashes(localConfig: LocalConfig): LegacyDigest[] {
   const { remote, url, localPath } = localConfig.repo;
   const configuredRemote = remote && remote !== 'origin' && remote !== 'upstream' ? remote : undefined;
   const claim = repoClaim(localPath);
-  const urlShaped = (value?: string) => value !== undefined && isRepoReference(value);
+  const isRepositoryBound = (value?: string) => value !== undefined && isRepoReference(value);
 
   const candidates: Array<{ identity?: string; fileNeedsSlug: boolean; recordNeedsSlug: boolean }> = [
     // A claim overrode everything below it; with a claim, the old
@@ -370,9 +365,9 @@ function legacyTeamValueHashes(localConfig: LocalConfig): LegacyDigest[] {
     // A path-shaped claim is provider-ambiguous — the legacy digest hashed
     // the bare claim — so files need the user's explicit adoption and switch
     // records need this checkout's slug.
-    { identity: claim?.claim, fileNeedsSlug: !urlShaped(claim?.claim), recordNeedsSlug: !urlShaped(claim?.claim) },
+    { identity: claim?.claim, fileNeedsSlug: !isRepositoryBound(claim?.claim), recordNeedsSlug: !isRepositoryBound(claim?.claim) },
     ...(claim === null ? [
-      { identity: configuredRemote, fileNeedsSlug: !urlShaped(configuredRemote), recordNeedsSlug: !urlShaped(configuredRemote) },
+      { identity: configuredRemote, fileNeedsSlug: !isRepositoryBound(configuredRemote), recordNeedsSlug: !isRepositoryBound(configuredRemote) },
       { identity: url, fileNeedsSlug: false, recordNeedsSlug: false },
       // Only when the old implementation would have keyed on the path itself:
       // no repository identity exists there, so the slug separates teams.
@@ -397,20 +392,8 @@ function legacyTeamValueHashes(localConfig: LocalConfig): LegacyDigest[] {
 
 /** The team slug the old implementation prefixed, as this checkout computes it now. */
 function legacyTeamSlug(localPath: string): string {
-  let teamName = '';
-
-  try {
-    const raw = YAML.parse(fs.readFileSync(path.join(localPath, 'teamai.yaml'), 'utf8')) as unknown;
-
-    if (typeof raw === 'object' && raw !== null && !Array.isArray(raw)) {
-      const candidate = (raw as { team?: unknown }).team;
-
-      if (typeof candidate === 'string') teamName = candidate;
-    }
-  } catch {
-    // Older team repositories may not have a readable teamai.yaml.
-  }
-
+  // Older team repositories may not have a readable teamai.yaml.
+  const teamName = teamYamlFields(localPath)?.team ?? '';
   const fallback = path.basename(localPath) || 'team';
 
   return (teamName || fallback).normalize('NFKC').toLowerCase()
@@ -696,16 +679,16 @@ export async function loadModelInputs(filePath: string): Promise<StoredModelInpu
   try {
     content = await fs.promises.readFile(filePath, 'utf8');
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {};
-    throw new Error(`Cannot read local model inputs at ${filePath}: ${(error as Error).message}`, { cause: error });
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return {};
+    throw new Error(`Cannot read local model inputs at ${filePath}: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
   }
 
   let raw: unknown;
 
   try {
-    raw = JSON.parse(content) as unknown;
+    raw = JSON.parse(content);
   } catch (error) {
-    throw new Error(`Cannot parse local model inputs at ${filePath}: ${(error as Error).message}`, { cause: error });
+    throw new Error(`Cannot parse local model inputs at ${filePath}: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
   }
 
   const parsed = StoredModelInputsSchema.safeParse(raw);
@@ -753,7 +736,7 @@ export async function withTeamValuesLock<T>(filePath: string, run: () => Promise
  * the later map wins when both hold the same gateway key.
  */
 export function mergeModelInputs(into: StoredModelInputs, later: StoredModelInputs): StoredModelInputs {
-  return { ...into, ...later };
+  return Object.assign({}, into, later);
 }
 
 export function resolveProfileRef(
@@ -766,11 +749,11 @@ export function resolveProfileRef(
   const teamRef = (profile: ModelProfile): ProfileRef => {
     const from = team.origins?.get(profile.id);
 
-    return { source: 'team', profile, ...(from ? { from } : {}) };
+    return from ? { source: 'team', profile, from } : { source: 'team', profile };
   };
 
   if (qualified) {
-    const source = qualified[1] as ModelProfileSource;
+    const source: ModelProfileSource = qualified[1] === 'team' ? 'team' : 'local';
     const id = qualified[2];
     const file = source === 'team' ? team : local;
     const profile = file.profiles.find((candidate) => candidate.id === id);
@@ -901,23 +884,28 @@ export function resolveProfile(
 
   const root = ref.profile.base_url.replace(/\/+$/, '');
 
-  const routes = Object.fromEntries(Object.entries(profileRoutes(ref.profile)).map(([protocol, models]) => [
-    protocol,
-    {
+  const served = profileRoutes(ref.profile);
+  const routes: ResolvedModelProfile['routes'] = {};
+
+  for (const protocol of ModelProtocolSchema.options) {
+    const models = served[protocol];
+
+    if (!models) continue;
+
+    routes[protocol] = {
       // Anthropic and Gemini clients add their own version path to the root.
       base_url: protocol === 'anthropic' || protocol === 'gemini' ? root : `${root}/v1`,
       // The chosen default leads every route that serves it; other routes keep
       // the catalog order and default to their own first model.
       models: model && models.includes(model) ? [model, ...models.filter((item) => item !== model)] : models,
-    },
-  ])) as ResolvedModelProfile['routes'];
+    };
+  }
 
-  return {
-    ...ref,
-    ref: reference,
-    routes,
-    ...(model ? { model } : {}),
-    api_key_value: secret?.env ? process.env[secret.env] : secret?.value,
-    api_key_env: secret?.env,
-  };
+  const resolved: ResolvedModelProfile = { ...ref, ref: reference, routes };
+
+  if (model) resolved.model = model;
+  resolved.api_key_value = secret?.env ? process.env[secret.env] : secret?.value;
+  resolved.api_key_env = secret?.env;
+
+  return resolved;
 }

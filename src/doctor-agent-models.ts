@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import type { AgentModelRecords, RecordedAgentModel, ResourceItem } from './types.js';
 import type { AgentSpec, ToolName } from './resources/agent-format.js';
 import type { ModelAliases, ModelResolution } from './models/aliases.js';
@@ -241,7 +242,7 @@ async function describeModel(spec: AgentSpec, tool: ToolName, resolved: Recorded
   // An effort the tool's extras set is written after the alias's, and wins,
   // except on a switched tool, which receives none.
   const extrasEffort = effortField === undefined || step === 'switched' ? undefined : toolExtrasFor(spec, tool)?.[effortField];
-  const effort = resolved.effort ?? (typeof extrasEffort === 'string' ? extrasEffort : undefined);
+  const effort = resolved.effort ?? z.string().safeParse(extrasEffort).data;
 
   let value = model ?? (step === 'local' ? `tool default (chosen in ${source})` : 'tool default');
 

@@ -41,7 +41,7 @@ const JsonObjectSchema = z.record(z.string(), JsonValueSchema);
 
 /** Whether a JSON value is an object, rather than an array, a primitive or null. */
 function isJsonObject(value: JsonValue | undefined): value is JsonObject {
-  return JsonObjectSchema.safeParse(value).success;
+  return value instanceof Object && !Array.isArray(value);
 }
 
 /** The message of a caught error, which fs, JSON and YAML raise as an `Error`. */
