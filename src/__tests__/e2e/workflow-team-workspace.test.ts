@@ -141,6 +141,10 @@ describe('a step in the team workspace, run through the real CLI', () => {
       "const fs = require('fs');",
       "fs.writeFileSync('notes.txt', 'loose\\n');",
       "fs.symlinkSync('notes.md', 'rules/link.md');",
+      // A repository of its own inside the clone, which git add records as a submodule.
+      "const { execFileSync } = require('child_process');",
+      "fs.mkdirSync('rules/vendored');",
+      "for (const args of [['init', '-q'], ['-c', 'user.name=A', '-c', 'user.email=a@example.com', 'commit', '-q', '--allow-empty', '-m', 'vendored']]) execFileSync('git', args, { cwd: 'rules/vendored' });",
       "fs.mkdirSync('benchmarks/nowhere/tasks', { recursive: true });",
       "fs.writeFileSync('benchmarks/nowhere/tasks/orphan.yaml', 'prompt: nothing runs this\\n');",
       "fs.mkdirSync('benchmarks/broken', { recursive: true });",
@@ -155,6 +159,7 @@ describe('a step in the team workspace, run through the real CLI', () => {
     expect(lines).toEqual(expect.arrayContaining([
       'notes.txt: not in a directory teamai pulls, such as skills/, rules/, scorers/ or benchmarks/',
       'rules/link.md: a symlink, which teamai pull does not place',
+      'rules/vendored: a submodule, which teamai pull does not place',
       'benchmarks/nowhere/tasks/orphan.yaml: in no suite, since no directory above it under benchmarks/ has a suite.yaml',
       expect.stringMatching(/^benchmarks\/broken\/suite\.yaml:\d+: /),
     ]));
