@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
 import { spawnSync } from 'node:child_process';
 import semver from 'semver';
+import { z } from 'zod';
+import { isToolId } from './tools.js';
 import { expandHome, listFilesRecursive, pathExists, readFileSafe, readJsonObject } from './utils/fs.js';
 import {
   DEFAULT_TOOL_PATHS, getDataHome, getMcpSharing, getTeamaiHome, isAgentExcluded, isGitExcludeEnabled, managedMcpManifestKey, MUSE_TOOL_ID,
@@ -153,8 +155,7 @@ async function walkDelivery(
  */
 function describeProblems(problems: Map<string, string[]>, labels: readonly string[]): string {
   return labels
-    .filter((label) => (problems.get(label)?.length ?? 0) > 0)
-    .map((label) => `${label}: ${nameList(problems.get(label) ?? [])}`)
+    .flatMap((label) => ((problems.get(label)?.length ?? 0) > 0 ? [`${label}: ${nameList(problems.get(label) ?? [])}`] : []))
     .join('; ');
 }
 
@@ -305,33 +306,33 @@ export function toolPathsDroppedKeyNotes(ctx: DoctorContext): string[] {
 
   // What each key's absence does, for the note text. Keys the default entry
   // does not provide cannot be dropped, so the loop below never looks them up.
-  const CONSEQUENCES: Record<string, string> = {
-    settings: 'hook reconciliation silently skips the tool',
-    skills: 'no skills are delivered to it',
-    rules: 'no rules are delivered to it',
-    claudemd: 'the team rules have no instructions file to inline into',
-    agents: 'no agents are delivered to it',
-    mcp: 'team MCP servers are not written to its user config',
-    mcpProject: 'team MCP servers are not written to its project config',
-  };
+  const CONSEQUENCES = new Map([
+    ['settings', 'hook reconciliation silently skips the tool'],
+    ['skills', 'no skills are delivered to it'],
+    ['rules', 'no rules are delivered to it'],
+    ['claudemd', 'the team rules have no instructions file to inline into'],
+    ['agents', 'no agents are delivered to it'],
+    ['mcp', 'team MCP servers are not written to its user config'],
+    ['mcpProject', 'team MCP servers are not written to its project config'],
+  ]);
 
-  const defaults = DEFAULT_TOOL_PATHS as unknown as Record<string, Record<string, string>>;
   const notes: string[] = [];
 
   // The team's own entries, not `toolPaths`: that one is scoped, and user scope
   // drops keys on purpose (joycode's `rules: null`). `teamConfig.toolPaths` is
   // already merged over the defaults, so a tool the team did not name holds its
   // default and drops nothing. The enabled filter still comes from `toolPaths`.
-  for (const [tool, entryRaw] of Object.entries(teamConfig.toolPaths)) {
+  for (const [tool, entry] of Object.entries(teamConfig.toolPaths)) {
     if (toolPaths[tool] === undefined) continue; // not enabled or excluded here.
-    const def = defaults[tool];
 
-    if (!def) continue; // a custom tool: no default entry to drop keys from.
-    const entry = entryRaw as unknown as Record<string, string | undefined>;
+    if (!isToolId(tool)) continue; // a custom tool: no default entry to drop keys from.
+    const kept = new Map(Object.entries(entry));
 
-    const dropped = Object.keys(def)
-      .filter((key) => key !== 'userScope' && entry[key] === undefined && CONSEQUENCES[key] !== undefined)
-      .map((key) => `\`${key}\` (${def[key]} — ${CONSEQUENCES[key]})`);
+    const dropped = Object.entries(DEFAULT_TOOL_PATHS[tool]).flatMap(([key, value]) => {
+      const consequence = CONSEQUENCES.get(key);
+
+      return key !== 'userScope' && kept.get(key) === undefined && consequence !== undefined ? [`\`${key}\` (${String(value)} — ${consequence})`] : [];
+    });
 
     if (dropped.length === 0) continue;
     notes.push(`toolPaths.${tool} replaces the tool's default entry whole and drops keys the default provides: `
@@ -941,8 +942,11 @@ async function buildRulesActivationChecks(ctx: DoctorContext, items: ResourceIte
     const globs = items.length > 0 ? opencode.globs : [];
     const missing = globs.filter((glob) => !instructions?.includes(glob));
 
-    const stale = (instructions ?? []).filter((entry): entry is string =>
-      typeof entry === 'string' && opencode.owns(entry) && !globs.includes(entry));
+    const stale = (instructions ?? []).flatMap((entry) => {
+      const glob = z.string().safeParse(entry);
+
+      return glob.success && opencode.owns(glob.data) && !globs.includes(glob.data) ? [glob.data] : [];
+    });
 
     const relativeStale = stale.filter((entry) => !path.isAbsolute(entry));
     const namespaceStale = stale.filter((entry) => path.isAbsolute(entry));
@@ -1037,11 +1041,10 @@ async function buildCursorUserRulesHookChecks(ctx: DoctorContext): Promise<Check
   const disabledByTeam = builtin.known && (builtin.override?.disabled ?? []).includes('Hook dispatch session-start');
   const file = path.join(resolveBaseDir(localConfig), toolPath.settings);
   const read = await readJsonObject(file);
-  const hooks = read.kind === 'ok' ? read.value.hooks : undefined;
-  const sessionStart = hooks !== null && typeof hooks === 'object' ? (hooks as { sessionStart?: unknown }).sessionStart : undefined;
+  const hooks = read.kind === 'ok' ? CursorHooksSchema.parse(read.value).hooks : undefined;
 
-  const registered = Array.isArray(sessionStart) && sessionStart.some((entry: unknown) => {
-    const command = entry !== null && typeof entry === 'object' ? String((entry as { command?: unknown }).command ?? '') : '';
+  const registered = hooks !== undefined && hooks.sessionStart.some((entry) => {
+    const command = entry === null ? '' : String(entry.command ?? '');
 
     return /\bhook-dispatch session-start\b/.test(command) && /--tool[= ]cursor(?![\w-])/.test(command);
   });
@@ -1094,18 +1097,38 @@ async function buildCursorUserRulesHookChecks(ctx: DoctorContext): Promise<Check
   return checks;
 }
 
+/** One hook entry in a SessionStart group; an entry that is not an object reads as null. */
+const DispatchHookSchema = z.object({ command: z.unknown().optional(), args: z.array(z.unknown()).catch([]) }).nullable().catch(null);
+
+/** A Claude-shaped map of hook events, read for its `SessionStart` groups; a malformed map or group holds none. */
+const HookEventMapSchema = z.object({
+  SessionStart: z.array(z.object({ hooks: z.array(DispatchHookSchema).catch([]) }).nullable().catch(null)).catch([]),
+}).catch({ SessionStart: [] });
+
+type HookEventMap = z.infer<typeof HookEventMapSchema>;
+
+/** Cursor's settings `hooks.sessionStart` list; any other `hooks` value registers nothing. */
+const CursorHooksSchema = z.object({
+  hooks: z.object({ sessionStart: z.array(z.object({ command: z.unknown().optional() }).nullable().catch(null)) }).optional().catch(undefined),
+});
+
+/** ZCode's `hooks` block: its switch, its event map and its stdout cap; a block that is not an object holds none. */
+const ZcodeHooksSchema = z.object({
+  hooks: z.object({
+    enabled: z.unknown().optional(),
+    events: HookEventMapSchema,
+    maxOutputBytes: z.unknown().optional(),
+  }).optional().catch(undefined),
+});
+
+/** An MCP server entry on the sse transport. */
+const SseEntrySchema = z.object({ type: z.literal('sse') });
+
 /** The entries under `SessionStart` that dispatch a teamai session-start. */
-function sessionStartDispatchEntries(eventMap: unknown): { command: string; args: string[] }[] {
-  const groups = (eventMap as Record<string, unknown> | null | undefined)?.SessionStart;
-
-  if (!Array.isArray(groups)) return [];
-
-  return groups
-    .flatMap((group) => (Array.isArray(group?.hooks) ? group.hooks : []))
-    .map((entry: { command?: unknown; args?: unknown }) => ({
-      command: String(entry?.command ?? ''),
-      args: (Array.isArray(entry?.args) ? entry.args : []).map(String),
-    }))
+function sessionStartDispatchEntries(eventMap: HookEventMap | undefined): { command: string; args: string[] }[] {
+  return (eventMap?.SessionStart ?? [])
+    .flatMap((group) => group?.hooks ?? [])
+    .flatMap((entry) => (entry === null ? [] : [{ command: String(entry.command ?? ''), args: entry.args.map(String) }]))
     .filter(({ command, args }) => [command, ...args].join(' ').includes('hook-dispatch session-start'));
 }
 
@@ -1114,7 +1137,7 @@ function sessionStartDispatchEntries(eventMap: unknown): { command: string; args
  * Claude-shaped map of hook events (ZCode's `hooks.events`, the dsh bridge's
  * `hooks`).
  */
-function sessionStartDispatches(eventMap: unknown): string[] {
+function sessionStartDispatches(eventMap: HookEventMap): string[] {
   return sessionStartDispatchEntries(eventMap).map(({ command, args }) => [command, ...args].join(' '));
 }
 
@@ -1191,7 +1214,7 @@ async function buildProjectRulesHookChecks(ctx: DoctorContext): Promise<Check[]>
   if (zcodeSettings && !isAgentExcluded(localConfig, 'zcode') && await pathExists(path.join(home, '.zcode'))) {
     const file = path.join(home, zcodeSettings);
     const read = await readJsonObject(file);
-    const hooks = read.kind === 'ok' ? read.value.hooks as { enabled?: unknown; events?: unknown; maxOutputBytes?: unknown } | undefined : undefined;
+    const hooks = read.kind === 'ok' ? ZcodeHooksSchema.parse(read.value).hooks : undefined;
     const entries = sessionStartDispatchEntries(hooks?.events);
     const registered = entries.length > 0;
     const enabled = hooks?.enabled === true;
@@ -1223,11 +1246,11 @@ async function buildProjectRulesHookChecks(ctx: DoctorContext): Promise<Check[]>
         // Other session hints can make the final reply larger; this is a lower bound.
         const bytes = Buffer.byteLength(JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: rules } }), 'utf8');
         const limit = hooks?.maxOutputBytes ?? 32_768;
-        const valid = typeof limit === 'number' && Number.isSafeInteger(limit) && limit > 0;
+        const budget = z.int().positive().safeParse(limit);
         checks.push({
           name: 'Project rules fit the zcode hook stdout budget',
           source: 'local',
-          check: async () => valid && bytes <= limit,
+          check: async () => budget.success && bytes <= budget.data,
           fix: `The project rules alone need ${bytes} UTF-8 bytes of hook stdout, before other session hints. `
             + `${file} uses hooks.maxOutputBytes=${String(limit)} (default 32768). ZCode truncates oversized stdout and drops the reply when it no longer parses, `
             + 'so registration can be healthy while no rules reach the model. Shorten the project rules or set '
@@ -1256,7 +1279,7 @@ async function buildProjectRulesHookChecks(ctx: DoctorContext): Promise<Check[]>
     const homePatchPath = resolveDshHomePatchPath();
     const mounted = await isDshHooksMounted(configPath);
     const read = await readJsonObject(configPath);
-    const registered = read.kind === 'ok' && sessionStartDispatches(read.value.hooks).length > 0;
+    const registered = read.kind === 'ok' && sessionStartDispatches(HookEventMapSchema.parse(read.value.hooks)).length > 0;
     const broken = [...(mounted ? [] : [homePatchPath]), ...(registered ? [] : [configPath])];
     checks.push({
       name: 'Project rules reach dsh through its session-start hook',
@@ -1746,7 +1769,7 @@ export async function mcpTransportNotes(ctx: DoctorContext): Promise<string[]> {
       const installed = await installedMcpEntries({ tool, format: 'claude', file: fallback.path, key: fallback.key, projectScope: false });
       const { manifest } = await loadMcpManifest(ctx.localConfig, true);
       const records = manifest.zcode ?? [];
-      const names = [...installed ?? []].filter(([name, entry]) => !records.some((record) => record.name === name && record.hash === entryHash(entry))).map(([name]) => name);
+      const names = [...installed ?? []].flatMap(([name, entry]) => (records.some((record) => record.name === name && record.hash === entryHash(entry)) ? [] : [name]));
 
       if (names.length > 0) notes.push(`⚠ ZCode reads ~/.agents/mcp.json only while ~/.zcode/cli/config.json has no servers; move these servers there: ${names.sort().join(', ')}`);
     }
@@ -1845,9 +1868,7 @@ export async function buildMcpDeliveryChecks(ctx: DoctorContext): Promise<Check[
     const museReads = mcpTargetAgents(target).includes(MUSE_TOOL_ID);
 
     if (museReads && installed) {
-      const sse = [...installed]
-        .filter(([, entry]) => typeof entry === 'object' && entry !== null && (entry as { type?: unknown }).type === 'sse')
-        .map(([name]) => name);
+      const sse = [...installed].flatMap(([name, entry]) => (SseEntrySchema.safeParse(entry).success ? [name] : []));
 
       checks.push({
         name: 'MCP servers load in muse',
@@ -2422,7 +2443,7 @@ async function envDeliveryProblems(
   const { sameEnvName } = await import('./resources/env-key.js');
 
   /** The keys of `owed` that `delivered` lacks, and those it holds another value for, in any case on Windows. */
-  const compare = (owed: readonly EnvVariable[], delivered: ReadonlyMap<string, string>): { undelivered: string[]; stale: string[] } => {
+  const compare = (owed: readonly EnvVariable[], delivered: ReadonlyMap<string, string>) => {
     const valueOf = (key: string): string | undefined => {
       const name = sameEnvName(delivered.keys(), key);
 
@@ -2430,8 +2451,8 @@ async function envDeliveryProblems(
     };
 
     return {
-      undelivered: owed.filter(({ key }) => valueOf(key) === undefined).map(({ key }) => key),
-      stale: owed.filter(({ key, value }) => valueOf(key) !== undefined && valueOf(key) !== value).map(({ key }) => key),
+      undelivered: owed.flatMap(({ key }) => (valueOf(key) === undefined ? [key] : [])),
+      stale: owed.flatMap(({ key, value }) => (valueOf(key) !== undefined && valueOf(key) !== value ? [key] : [])),
     };
   };
 
