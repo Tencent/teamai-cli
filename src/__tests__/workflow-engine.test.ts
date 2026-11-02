@@ -4201,16 +4201,19 @@ describe('for_each', () => {
     ]);
   });
 
-  it('fails the step with invalid_items when for_each gives no list, and skips what needs it', async () => {
+  it.each([
+    ['web', 'a string'],
+    [null, 'null'],
+  ])('fails the step with invalid_items when for_each gives %j, and skips what needs it', async (targets, kind) => {
     const { config, runId } = await startTree({ fan: FAN_PLAN.replace('    output:\n      targets: [string]\n', '') }, 'fan');
 
-    const { leased, done } = await driveLoop(config, runId, () => ({ outputs: { targets: 'web' } }));
+    const { leased, done } = await driveLoop(config, runId, () => ({ outputs: { targets } }));
 
     expect(leased).toEqual(['plan#1']);
     expect(done).toEqual({ run: runId, record: 'pending', outcome: 'failed' });
     expect(await readRun(config, runId)).toMatchObject({ steps: [
       { id: 'plan', status: 'succeeded' },
-      { id: 'build', status: 'failed', failure: { code: 'invalid_items', message: 'step "build" for_each gives a string, not a list of items' } },
+      { id: 'build', status: 'failed', failure: { code: 'invalid_items', message: `step "build" for_each gives ${kind}, not a list of items` } },
       { id: 'ship', status: 'skipped' },
     ] });
   });

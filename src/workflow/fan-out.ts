@@ -37,7 +37,7 @@ export function addItems(run: RunState, state: StepState, items: unknown[]): voi
 }
 
 function kindOf(value: JsonValue | undefined): string {
-  if (value === undefined) return 'null';
+  if (value === undefined || value === null) return 'null';
   const type = jsonType(value);
 
   return type === 'object' ? 'an object' : `a ${type}`;
