@@ -255,6 +255,8 @@ interface HarnessOptions {
   scorers?: Record<string, string>;
   /** The member's `scoring` settings. */
   scoring?: LocalConfig['scoring'];
+  /** Other files of the team repository, by path inside it: `manifest/roles.yaml`, say. */
+  teamFiles?: Record<string, string>;
   /** An install of a `sharedTeam` to drive from, instead of a checkout and team repository of the harness's own. */
   install?: TeamInstall;
   /** The member's `ai.tool` in ~/.teamai/config.yaml; none unless a test sets it. */
@@ -318,6 +320,10 @@ async function ownInstall(root: string, workflows: Record<string, string>, optio
   fs.mkdirSync(path.join(repo, 'workflows'), { recursive: true });
   fs.mkdirSync(path.join(repo, 'scorers'));
   for (const [name, text] of Object.entries(options.scorers ?? {})) fs.writeFileSync(path.join(repo, 'scorers', `${name}.md`), text);
+  for (const [file, text] of Object.entries(options.teamFiles ?? {})) {
+    fs.mkdirSync(path.dirname(path.join(repo, file)), { recursive: true });
+    fs.writeFileSync(path.join(repo, file), text);
+  }
   git(work, 'init', '-q', '-b', 'main');
   git(work, 'config', 'user.name', 'Test');
   git(work, 'config', 'user.email', 'test@example.invalid');

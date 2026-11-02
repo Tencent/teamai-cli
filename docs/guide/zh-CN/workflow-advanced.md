@@ -588,7 +588,7 @@ teamai workflow start review-parts --driver local --inputs '{"parts":[{"path":"w
 
 像其他工作流一样用 `teamai workflow start review` 启动它。所有延续该克隆的步骤都使用这个角色。克隆的安装获得 `review` 和你的项目的知识：skill、规则、agent、文档、wiki 和 learnings。你可以运行的东西保持不变：你的角色的 hook、MCP 服务器、env 和模型，以及你能找到的工作流、prompt、scorer 和 benchmark。在克隆中运行的 `teamai pull` 或 hook 保留这个角色，你自己的配置和检出目录不会改变。
 
-运行会记录它：克隆中的每个步骤在你的 `primaryRole` 旁边带有 `agent.team.selection.stepRole: review`，scorer 结果把这样的步骤归在 `review` 下。在克隆中，`role` 写在 workspace 为 `{ clone: … }` 的步骤上，且该克隆必须安装团队。pull 会以 `bad_role` 拒绝写在沿用该克隆的步骤上、与克隆不同的 role，以及 `manifest/roles.yaml` 未声明的 role。角色无法交付到克隆中时，步骤以 `role_unavailable` 失败并说明原因。例如，`sharing.docs.localDir` 可能把文档放在克隆之外，所有检出目录都会读到它们。步骤的提交只包含它自己的修改，不包含安装交付的内容。只有声明了 [`can.role`](#要求和限制) 的驱动才会接这个步骤，例如 `local`。编程会话的 skill 驱动不声明它，因此该步骤会等待，`wait.held[].missing` 列出 `role`。0.29.0 之前的 teamai 会丢弃带步骤 `role` 或 `defaults.role` 的工作流，`teamai review --branch` 会对此发出警告。
+运行会记录它：克隆中的每个步骤在你的 `primaryRole` 旁边带有 `agent.team.selection.stepRole: review`，scorer 结果把这样的步骤归在 `review` 下。在克隆中，`role` 写在 workspace 为 `{ clone: … }` 的步骤上，且该克隆必须安装团队。pull 会以 `bad_role` 拒绝写在沿用该克隆的步骤上、与克隆不同的 role，以及 `manifest/roles.yaml` 未声明的 role。角色无法交付到克隆中时，步骤以 `role_unavailable` 失败并说明原因。例如，`sharing.docs.localDir` 可能把文档放在克隆之外，所有检出目录都会读到它们。步骤的提交只包含它自己的修改，不包含安装交付的内容。只有声明了 [`can.role`](#要求和限制) 的驱动才会接这个步骤，例如 `local`。编程会话的 skill 驱动不声明它：describe 会让你用 `--driver local` 启动这样的工作流；若仍把该步骤交给它，步骤会等待，`wait.held[].missing` 列出 `role`。0.29.0 之前的 teamai 会丢弃带步骤 `role` 或 `defaults.role` 的工作流，`teamai review --branch` 会对此发出警告。
 
 ### 隔离运行
 
