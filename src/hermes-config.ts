@@ -4,7 +4,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { toolHome } from './tool-home.js';
 import { readFileSafe, writeFile, ensureDir, remove, pathExists, readJson, writeJson } from './utils/fs.js';
-import { TEAMAI_RULES_START, TEAMAI_RULES_END } from './types.js';
+import { TEAMAI_RULES_START, TEAMAI_RULES_END, isJsonObject, type JsonValue } from './types.js';
 
 /** Markers that delimit the teamai-managed block inside SOUL.md. */
 const RULES_BLOCK_START = TEAMAI_RULES_START;
@@ -211,9 +211,22 @@ function entriesBesides(list: z.infer<typeof YamlListSchema>, command: string): 
     || (YamlMapSchema.safeParse(entry).success && HookCommandSchema.safeParse(entry).data?.command !== command));
 }
 
-/** Shape of the allowlist JSON file. */
-interface AllowlistFile {
-  approvals: Array<{ event: string; command: string }>;
+/** One approval of the allowlist, as teamai reads it: Hermes and the member edit the file, so a field of another type reads as absent. */
+const ApprovalSchema = z.object({
+  event: z.string().optional().catch(undefined),
+  command: z.string().optional().catch(undefined),
+});
+
+/** The approvals list of an allowlist file as written, or null when the file holds none. */
+function approvalsOf(file: JsonValue | null): JsonValue[] | null {
+  return isJsonObject(file) && Array.isArray(file.approvals) ? file.approvals : null;
+}
+
+/** Whether an approval names `command`, and `event` when given. An entry that is not an object names nothing. */
+function approves(entry: JsonValue, command: string, event?: string): boolean {
+  const approval = ApprovalSchema.safeParse(entry);
+
+  return approval.success && approval.data.command === command && (event === undefined || approval.data.event === event);
 }
 
 /**
@@ -318,17 +331,18 @@ export async function removeHermesHookByCommand(command: string, home = toolHome
  */
 export async function addHermesAllowlist(event: string, command: string): Promise<boolean> {
   const filePath = getHermesAllowlistPath();
-  const raw = await readJson<AllowlistFile>(filePath);
+  const raw = await readJson<JsonValue>(filePath);
+  const approvals = approvalsOf(raw);
 
-  const data: AllowlistFile =
-    raw && Array.isArray(raw.approvals) ? raw : { approvals: [] };
+  if (approvals?.some((entry) => approves(entry, command, event))) return false;
 
-  const exists = data.approvals.some((a) => a.event === event && a.command === command);
-
-  if (exists) return false;
-
-  data.approvals.push({ event, command });
-  await writeJson(filePath, data);
+  if (approvals) {
+    // `approvals` is the file's own list: the file is written back as read, with the approval appended.
+    approvals.push({ event, command });
+    await writeJson(filePath, raw);
+  } else {
+    await writeJson(filePath, { approvals: [{ event, command }] });
+  }
 
   return true;
 }
@@ -348,9 +362,9 @@ export async function hasHermesHookCommands(commands: readonly string[], home = 
       return hook.success && commands.includes(hook.data.command);
     });
   })) return true;
-  const approvals = await readJson<AllowlistFile>(getHermesAllowlistPath(home));
+  const approvals = approvalsOf(await readJson<JsonValue>(getHermesAllowlistPath(home)));
 
-  return Array.isArray(approvals?.approvals) && approvals.approvals.some(entry => commands.includes(entry.command));
+  return approvals?.some((entry) => commands.some((command) => approves(entry, command))) ?? false;
 }
 
 /**
@@ -362,15 +376,13 @@ export async function hasHermesHookCommands(commands: readonly string[], home = 
  */
 export async function removeHermesAllowlist(event: string, command: string, home = toolHome('hermes')): Promise<void> {
   const filePath = getHermesAllowlistPath(home);
-  const raw = await readJson<AllowlistFile>(filePath);
+  const approvals = approvalsOf(await readJson<JsonValue>(filePath));
 
-  if (!raw || !Array.isArray(raw.approvals)) return;
+  if (!approvals) return;
 
-  const filtered = raw.approvals.filter(
-    (a) => !(a.event === event && a.command === command),
-  );
+  const filtered = approvals.filter((entry) => !approves(entry, command, event));
 
-  if (filtered.length === raw.approvals.length) return;
+  if (filtered.length === approvals.length) return;
 
   await writeJson(filePath, { approvals: filtered });
 }
