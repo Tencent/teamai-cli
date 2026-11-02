@@ -14,6 +14,7 @@ const JOYCODE_SOURCE = 'JoyCode Desktop 0.6.0: JOYCODE_HOME moves the user hooks
 const HERMES_SOURCE = 'hermes-agent hermes_constants.py:51-58: HERMES_HOME, else %LOCALAPPDATA%\\hermes on Windows, else ~/.hermes; shell hooks registered in config.yaml';
 const SELF = 'issue #1221 matrix, Self scope';
 const TEAM = 'resolveHookScope: a workspace takes the user hooks (#264)';
+const CLAUDE_HOOKS_SWITCH = 'Claude Code 2.1.316 (`claude -p`): disableAllHooks in the checkout\'s settings.local.json, else its settings.json, else the user settings.json, holds back every hook';
 
 /** A tool's hook list in `file`, which it reads from any session: `probe` says it is installed. */
 const settings = (tool: string, scope: 'user' | 'project', file: Spot, probe: Spot, rest: Partial<FilesRow> = {}): FilesRow => ({
@@ -41,16 +42,22 @@ const ROWS: readonly (FilesRow | OtherRow)[] = [
     toolRoots: { claude: '~/.claude-work' }, reads: [{ at: '~/.claude-work/settings.json', when: 'always', key: HOOK_LIST }],
     source: 'CLAUDE_CONFIG_DIR recorded by teamai init (RELOCATABLE_TOOLS)',
   }),
-  settings('claude', 'project', '~/.claude/settings.json', '~/.claude', { source: 'resolveHookScope: a workspace takes the user hooks (#264)' }),
+  settings('claude', 'project', '~/.claude/settings.json', '~/.claude', {
+    readGates: [{ kind: 'claude-hooks-enabled', settings: '~/.claude/settings.json', checkout: '<root>' }],
+    source: `resolveHookScope: a workspace takes the user hooks (#264); ${CLAUDE_HOOKS_SWITCH}`,
+  }),
   settings('claude', 'project', '~/.claude-work/settings.json', '~/.claude-work', {
     userToolRoots: { claude: '~/.claude-work' }, reads: [{ at: '~/.claude-work/settings.json', when: 'always', key: HOOK_LIST }],
-    source: 'a project config that records no toolRoots follows the user config (resolveMemberToolRoots)',
+    readGates: [{ kind: 'claude-hooks-enabled', settings: '~/.claude-work/settings.json', checkout: '<root>' }],
+    source: `a project config that records no toolRoots follows the user config (resolveMemberToolRoots); ${CLAUDE_HOOKS_SWITCH}`,
   }),
   selfSettings('claude', '<root>/.claude/settings.json', '<root>/.claude', 'workspaceUnder', {
     reads: [
       { at: '<root>/.claude/settings.json', when: 'workspaceUnder', key: HOOK_LIST },
       { at: '<root>/.claude/settings.local.json', when: 'workspaceUnder', key: HOOK_LIST },
     ],
+    readGates: [{ kind: 'claude-hooks-enabled', settings: '~/.claude/settings.json', checkout: '<root>' }],
+    source: `${SELF}; ${CLAUDE_HOOKS_SWITCH}`,
   }),
   settings('codex', 'user', '~/.codex/hooks.json', '~/.codex'),
   settings('codex', 'project', '~/.codex/hooks.json', '~/.codex', { source: 'resolveHookScope: a workspace takes the user hooks (#264)' }),

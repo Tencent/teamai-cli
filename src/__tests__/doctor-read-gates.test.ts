@@ -481,6 +481,61 @@ describe('doctor — the tool trusts the project it reads team files from', () =
   // approves it, from ~/.claude/settings.json always, and from the project's
   // own settings only once ~/.claude.json trusts the main checkout. `claude -p`
   // starts a pending one anyway.
+  // Claude Code 2.1.316 runs no hooks while the settings file that decides sets
+  // `disableAllHooks`: the checkout's .claude/settings.local.json, then its
+  // .claude/settings.json, then the user's. Checked with `claude -p`.
+  describe('Claude Code hooks switch', () => {
+    const HOOKS = 'Claude Code has not turned hooks off with disableAllHooks';
+    const hook = { hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'teamai hook-dispatch session-start' }] }] } };
+    const projectSettings = (): string => path.join(projectRoot, '.claude', 'settings.json');
+    const localSettings = (): string => path.join(projectRoot, '.claude', 'settings.local.json');
+
+    beforeEach(async () => {
+      await fse.ensureDir(path.join(homeDir, '.claude'));
+      Object.assign(localConfig, { repo: { kind: 'self', localPath: projectRoot, remote: 'owner/repo' } });
+      teamConfig.toolPaths = { claude: { settings: '.claude/settings.json' } };
+      await fse.outputJson(projectSettings(), hook);
+    });
+
+    it('passes while no settings file turns hooks off', async () => {
+      expect(await (await check(HOOKS))?.check()).toBe(true);
+    });
+
+    it('fails while the local settings turn hooks off, naming the file', async () => {
+      await fse.outputJson(localSettings(), { disableAllHooks: true });
+
+      const found = await check(HOOKS);
+      expect(await found?.check()).toBe(false);
+      expect(found?.fix).toContain(`${projectSettings()} holds teamai's hooks`);
+      expect(found?.fix).toContain(`Remove "disableAllHooks" from ${localSettings()}`);
+    });
+
+    it('takes the local settings over the project\'s', async () => {
+      await fse.outputJson(projectSettings(), { ...hook, disableAllHooks: true });
+      await fse.outputJson(localSettings(), { disableAllHooks: false });
+
+      expect(await (await check(HOOKS))?.check()).toBe(true);
+    });
+
+    it('fails while only the user settings turn hooks off', async () => {
+      await fse.outputJson(path.join(homeDir, '.claude', 'settings.json'), { disableAllHooks: true });
+
+      expect(await (await check(HOOKS))?.check()).toBe(false);
+    });
+
+    it('checks the team hooks a team-repo project keeps in the user settings, which the project\'s settings can turn off', async () => {
+      Object.assign(localConfig, { repo: { localPath: repoPath, remote: 'owner/repo' } });
+      teamConfig.toolPaths = { claude: { settings: '.claude/settings.json' } };
+      const userSettings = path.join(homeDir, '.claude', 'settings.json');
+      await fse.outputJson(userSettings, hook);
+      await fse.outputJson(localSettings(), { disableAllHooks: true });
+
+      const found = await check(HOOKS);
+      expect(await found?.check()).toBe(false);
+      expect(found?.fix).toContain(`${userSettings} holds teamai's hooks`);
+    });
+  });
+
   describe('Claude Code MCP approval', () => {
     const APPROVAL = 'Claude Code approves this project\'s team MCP servers';
     const userSettings = (): string => path.join(homeDir, '.claude', 'settings.json');

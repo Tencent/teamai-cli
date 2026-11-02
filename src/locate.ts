@@ -167,7 +167,9 @@ export type ReadGate =
    * it from ~/.cursor); `cliConfig`: the file it writes on any run, whose
    * absence means the member is on the Cursor IDE alone.
    */
-  | { readonly kind: 'cursor-mcp-approval'; readonly projects: string; readonly cliConfig: string; readonly checkout: string };
+  | { readonly kind: 'cursor-mcp-approval'; readonly projects: string; readonly cliConfig: string; readonly checkout: string }
+  /** `settings`: Claude's user settings.json, the last file whose `disableAllHooks` decides, after the checkout's local and project settings. */
+  | { readonly kind: 'claude-hooks-enabled'; readonly settings: string; readonly checkout: string };
 
 /**
  * A place teamai wrote this resource to before and no longer writes, and why.
@@ -669,6 +671,10 @@ async function readGatesOf(kinds: readonly ReadGateKind[] | undefined, install: 
       case 'qoder-folder-trust':
       case 'qoder-mcp-approval':
         return { kind, config: rootsOf('qoder', user, host).declared('home', '.qoder/settings.json'), checkout: install.projectRoot };
+      case 'claude-hooks-enabled': {
+        const roots = rootsOf('claude', user, host);
+        return { kind, settings: roots.configured('settings') ?? roots.declared('home', '.claude/settings.json'), checkout: install.projectRoot };
+      }
       default: {
         const unhandled: never = kind;
         return unhandled;
@@ -1160,7 +1166,11 @@ async function locateHooks(tool: string, install: Install, host: Host): Promise<
   const channel = hooks.user;
   if (channel === 'none' || channel === 'unknown') return settingsHooksOf(tool, channel, user, host);
   if (channel.channel === 'adapter') return adapterHooksOf(tool, channel, user, host);
-  const located = await settingsHooksOf(tool, channel, user, host);
+  const inUserView = await settingsHooksOf(tool, channel, user, host);
+  // A project's own settings can hold back the user hooks in its sessions (Claude's disableAllHooks).
+  const located = install.scope === 'project' && inUserView.channel === 'files'
+    ? { ...inUserView, readGates: await readGatesOf(channel.readGates, install, host) }
+    : inUserView;
   if (install.scope !== 'project' || hooks.workspace === undefined || located.channel !== 'files') return located;
   const roots = rootsOf(tool, install, host);
   const file = roots.configured(roots.paths?.hooks === undefined ? 'settings' : 'hooks');

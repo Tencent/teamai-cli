@@ -96,6 +96,7 @@ mkdir -p ~/.pi/agent && echo '{ "/home/ci/work": true }' > ~/.pi/agent/trust.jso
 | 工具 | 等待的内容 | 结论保存在 | 如何给出 |
 |---|---|---|---|
 | Claude Code | `.mcp.json` 里的 server（交互式会话） | `~/.claude/settings.json`、主 checkout 的 `.claude/settings*.json`，信任记录在 `~/.claude.json` | 信任文件夹，再批准 server |
+| Claude Code | `disableAllHooks` 为 true 时的 teamai hooks | 依次为 `.claude/settings.local.json`、`.claude/settings.json`、`~/.claude/settings.json` | 删除 `disableAllHooks`，或设为 `false` |
 | Codex | 项目 agents、`.codex/config.toml` | `~/.codex/config.toml` 的 `[projects."<主 checkout>"]` | Codex 询问时信任项目 |
 | Copilot CLI | `.github/mcp.json`、`.github/hooks` | `~/.copilot/config.json` 的 `trustedFolders` | "Yes, and remember this folder" |
 | Pi（0.79.0 起） | `.pi/skills`、`.pi/mcp.json` | `~/.pi/agent/trust.json` | "Trust" |

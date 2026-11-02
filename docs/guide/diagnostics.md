@@ -96,6 +96,7 @@ mkdir -p ~/.pi/agent && echo '{ "/home/ci/work": true }' > ~/.pi/agent/trust.jso
 | Tool | What waits | Where the answer is kept | How to give it |
 |---|---|---|---|
 | Claude Code | `.mcp.json` servers, in an interactive session | `~/.claude/settings.json`, `.claude/settings*.json` of the main checkout, trust in `~/.claude.json` | Trust the folder, then approve the servers |
+| Claude Code | teamai's hooks, while `disableAllHooks` is true | `.claude/settings.local.json`, then `.claude/settings.json`, then `~/.claude/settings.json` | Remove `disableAllHooks`, or set it to `false` |
 | Codex | project agents, `.codex/config.toml` | `[projects."<main checkout>"]` in `~/.codex/config.toml` | Trust the project when Codex asks |
 | Copilot CLI | `.github/mcp.json`, `.github/hooks` | `trustedFolders` in `~/.copilot/config.json` | "Yes, and remember this folder" |
 | Pi, from 0.79.0 | `.pi/skills`, `.pi/mcp.json` | `~/.pi/agent/trust.json` | "Trust" |

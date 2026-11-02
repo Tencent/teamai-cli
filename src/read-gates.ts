@@ -45,6 +45,8 @@ export function readGateCheckName(gate: ReadGate, noun: string): string {
       return 'CodeBuddy Code approves this project\'s team MCP servers';
     case 'cursor-mcp-approval':
       return 'Cursor CLI approves this project\'s team MCP servers';
+    case 'claude-hooks-enabled':
+      return 'Claude Code has not turned hooks off with disableAllHooks';
     default: {
       const unhandled: never = gate;
       return unhandled;
@@ -76,6 +78,8 @@ export async function readGateVerdict(gate: ReadGate, held: Held): Promise<ReadG
       return codebuddyMcpApproval(gate, held);
     case 'cursor-mcp-approval':
       return cursorMcpApproval(gate, held);
+    case 'claude-hooks-enabled':
+      return claudeHooksEnabled(gate, `${held.summary}, but Claude Code runs no hooks while the settings that decide set disableAllHooks`);
     default: {
       const unhandled: never = gate;
       return unhandled;
@@ -265,6 +269,24 @@ function listedApproval(
     rejected: names.filter((name) => disabled.has(name)),
     pending: names.filter((name) => !disabled.has(name) && !all && !enabled.has(name)),
   };
+}
+
+/**
+ * Claude Code 2.1.316: the first of the checkout's .claude/settings.local.json,
+ * its .claude/settings.json and the user settings.json that sets
+ * `disableAllHooks` decides (`claude -p` runs no hook while it is true).
+ * Managed policy, which can also turn hooks off, is not read.
+ */
+async function claudeHooksEnabled(gate: Extract<ReadGate, { kind: 'claude-hooks-enabled' }>, cause: string): Promise<ReadGateVerdict> {
+  const files = [path.join(gate.checkout, '.claude', 'settings.local.json'), path.join(gate.checkout, '.claude', 'settings.json'), gate.settings];
+  for (const file of files) {
+    const settings = await readJsonObject(file);
+    if (settings.kind === 'invalid') return unreadable({ cause, file, reason: `does not parse (${settings.error})`, question: 'Claude Code runs hooks' });
+    const disabled = settings.kind === 'ok' ? settings.value.disableAllHooks : undefined;
+    if (disabled === true) return { met: false, fix: `${cause}, and ${file} sets it. Remove "disableAllHooks" from ${file}, or set it to false.` };
+    if (disabled === false) return MET;
+  }
+  return MET;
 }
 
 /** Cursor CLI 2026.10.21's interpolation, over every string of an MCP entry: an unset name stays as written. */
