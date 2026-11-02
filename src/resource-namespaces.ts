@@ -34,10 +34,20 @@ const STEP_ROLE_PURPOSE = {
 } as const satisfies Record<NamespacedType, 'knowledge' | 'channel' | 'discovery'>;
 
 /**
+ * Whether the member's personal filters, the tags they subscribe to and the skills they exclude, apply to what `config`
+ * delivers. Not in a workflow copy that runs with a team role: it gets the role's knowledge as the role defines it, so
+ * the same role knows the same for every member. In a workspace with children this holds for the workspace's own
+ * filters and for each child's.
+ */
+export function usesMemberFilters(config: Pick<LocalConfig, 'stepRole'>): boolean {
+  return config.stepRole === undefined;
+}
+
+/**
  * The namespaces of `member`'s roles with each knowledge type replaced by `stepRole`'s. A role the manifest does not
  * declare throws: a copy recorded to run with a role never falls back to the member's knowledge or to everything.
  */
-function withStepRoleKnowledge(manifest: RolesManifest | null, stepRole: string, member: ResourceNamespaces): ResourceNamespaces {
+export function withStepRoleKnowledge(manifest: RolesManifest | null, stepRole: string, member: ResourceNamespaces): ResourceNamespaces {
   if (!manifest) {
     throw new Error(`This workflow copy runs with role "${stepRole}", but the team repo has no manifest/roles.yaml to declare it, so nothing is delivered for it. Declare the role in manifest/roles.yaml, or run the step without a role.`);
   }

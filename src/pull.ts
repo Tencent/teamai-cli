@@ -72,7 +72,7 @@ import {
   type DeliverySelection,
 } from './types.js';
 import type { CultureFrontmatter } from './types.js';
-import { deliversEveryNamespace } from './resource-namespaces.js';
+import { deliversEveryNamespace, usesMemberFilters } from './resource-namespaces.js';
 import { reportEntryResolution } from './namespaced-entries.js';
 import { resetWarnOnce, warnOnce } from './utils/warn-once.js';
 import { describeNoLongerTeamaiOnly, describeUnknownTracking, judgeTeamaiOnlyFiles, keptOutByMcpExclude, type SharedFileJudgement } from './teamai-only-files.js';
@@ -2284,7 +2284,7 @@ async function pullForScope(
   // every already-synced pull.
   if (modelCatalogHint) log.info(`[${scopeLabel}] ${modelCatalogHint}`);
 
-  const excludedSkills = new Set(localConfig.excludedSkills ?? []);
+  const excludedSkills = new Set(usesMemberFilters(localConfig) ? localConfig.excludedSkills ?? [] : []);
 
   // What teamai last wrote into this checkout: a copy changed since is kept,
   // and this pull's writes are recorded when the state is saved (#822).

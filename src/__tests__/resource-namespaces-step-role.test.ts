@@ -65,6 +65,11 @@ describe('the namespaces of a copy that runs with a team role', () => {
 
     expect(namespaces).toEqual(['rv-notes']);
   });
+
+  it("refuses the learnings of a role the manifest does not declare rather than give the copy the shared ones", async () => {
+    await expect(resolveActiveLearningsNamespaces(memberOf(teamRepo(), { stepRole: 'auditor' })))
+      .rejects.toThrow('This workflow copy runs with role "auditor", which manifest/roles.yaml does not declare (it declares frontend, review), so nothing is delivered for it. Add the role to manifest/roles.yaml, or run the step with a role it declares.');
+  });
 });
 
 describe('the rules a copy that runs with a team role gets', () => {
