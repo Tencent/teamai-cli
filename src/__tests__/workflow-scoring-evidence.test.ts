@@ -717,6 +717,25 @@ console.log(JSON.stringify({ type: 'result', structured_output: { label: 'comple
     } });
     expect(await LabelStore.local(config)).toEqual([]);
   });
+
+  it('still judges a second scorer when the first one\'s check cannot run, and says which label it kept', async () => {
+    const scorer = unsampled.replace('passingScore: 1', "passingScore: 1\ncheck: { run: teamai-no-such-check-1247, protect: ['test/**'] }");
+    const { config, runId } = await deliveredRun(scorer);
+    fs.writeFileSync(path.join(config.repo.localPath, 'scorers', 'tests.md'), unsampled);
+    await syncWorkflowDefinitions(config);
+    fakeClaude();
+
+    const answered = await scoreOnDemand(config, { run: runId, step: 'change', scorers: ['quality', 'tests'] });
+
+    expect(answered).toEqual({ error: {
+      code: 'check_could_not_run',
+      message: expect.stringMatching(/^The check of scorer quality, .+ No label was written\. Kept the label of tests: complete\.$/),
+      labels: [expect.objectContaining({ scorer: 'tests', label: 'complete', decidedBy: 'judge' })],
+    } });
+    expect(await LabelStore.local(config)).toEqual([expect.objectContaining({ scorer: 'tests', label: 'complete' })]);
+    // No lease is left behind for another driver to wait out.
+    expect(data(await nextJudgeLease(config, request))).toMatchObject({ idle: { open: 0, leased: 0 } });
+  });
 });
 
 describe('subject evidence removal', () => {

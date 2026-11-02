@@ -1452,6 +1452,15 @@ export async function scoreOnDemand(config: LocalConfig, demand: ScoreDemand, no
   const ids = asked.map(({ scorer }) => entryIdOf(scorer, subject));
   const labelled: SucceededAttempt[] = [];
   let published = true;
+  // A scorer that closed unscored fails the command, but only once the other scorers' leases are judged, so none is left
+  // for another driver to wait out.
+  let unscored: ReturnType<typeof error> | undefined;
+  /** `failure`, with the labels the other scorers got, when they got any. */
+  const keeping = ({ error: failure }: ReturnType<typeof error>): WorkflowEnvelope => {
+    if (labelled.length === 0) return { error: failure };
+    const kept = labelled.map((attempt) => `${attempt.scorer}: ${attempt.verdict.label}`).join(', ');
+    return { error: { ...failure, message: `${failure.message} Kept the label of ${kept}.`, labels: labelled.map((attempt) => labelAnswer(config, attempt)) } };
+  };
   for (;;) {
     const taken = await takeJudgeLease(config, { driver, judge: { isolation: 'verified', tools: [tool, ...tools] }, running: [], entries: { source: 'workflow', ids } }, now);
     if (taken.kind === 'busy') return error('busy', 'The judge attempts are locked by another process. Ask again.');
@@ -1463,9 +1472,11 @@ export async function scoreOnDemand(config: LocalConfig, demand: ScoreDemand, no
     for (const closed of taken.closed) {
       switch (closed.code) {
         case 'evidence_empty':
-          return error('evidence_empty', 'No recorded evidence could be read for this pass. Restore its commits or session, then run this command again.');
+          unscored ??= error('evidence_empty', 'No recorded evidence could be read for this pass. Restore its commits or session, then run this command again.');
+          break;
         case 'check_could_not_run':
-          return error('check_could_not_run', `${closed.message} Fix the check, then run this command again. No label was written.`);
+          unscored ??= error('check_could_not_run', `${closed.message} Fix the check, then run this command again. No label was written.`);
+          break;
         default: {
           const unhandled: never = closed;
           return unhandled;
@@ -1474,16 +1485,14 @@ export async function scoreOnDemand(config: LocalConfig, demand: ScoreDemand, no
     }
     if (taken.kind === 'idle') {
       if (taken.skipped.length === 0) break;
-      const message = taken.skipped.map((skipped) => skipped.message).join(' ');
-      if (labelled.length === 0) return error('judge_model_unavailable', message);
-      const kept = labelled.map((attempt) => `${attempt.scorer}: ${attempt.verdict.label}`).join(', ');
-      return { error: { code: 'judge_model_unavailable', message: `${message} Kept the label of ${kept}.`, labels: labelled.map((attempt) => labelAnswer(config, attempt)) } };
+      return keeping(error('judge_model_unavailable', taken.skipped.map((skipped) => skipped.message).join(' ')));
     }
     const judged = await judgeLease(config, taken.lease.ref, driver);
     if ('error' in judged) return judged;
     labelled.push(...judged.attempts);
     published &&= judged.published;
   }
+  if (unscored) return keeping(unscored);
   if (labelled.length === 0) return error('entry_leased', 'Another driver holds the judge lease for this pass. Retry once it settles or lapses (30 minutes), or add --queue.');
   return ok({ ...labelsAnswer(config, labelled), published });
 }
