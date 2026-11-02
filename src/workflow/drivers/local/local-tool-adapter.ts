@@ -3,11 +3,13 @@ import { StringDecoder } from 'node:string_decoder';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import crossSpawn from 'cross-spawn';
+import { z } from 'zod';
 import { launchEnv, type Launch } from '../../../launch-context.js';
 import { opencodeMajorVersion } from '../../../opencode-hooks.js';
 import { resolveCliPath } from '../../../utils/cli-path.js';
 import { writeJsonAtomic } from '../../../utils/fs.js';
 import { log } from '../../../utils/logger.js';
+import type { toolExtrasFor } from '../../../resources/agent-format.js';
 import { stopProcess } from '../../../tool-launch/process-stop.js';
 import { tokenMeter, toolStdout, type TokenUsage, type ToolReport } from '../../../tool-launch/stdout.js';
 import type { LaunchAdapter } from '../../../tool-launch/adapters.js';
@@ -24,7 +26,7 @@ export interface LocalToolRun {
   cwd: string;
   resultPath: string;
   /** The definition the step runs as. `settings` are the deployed OpenCode file's other fields, such as `mode` and `variant`. */
-  agent?: { name: string; instructions: string; model?: string; settings?: Record<string, unknown> };
+  agent?: { name: string; instructions: string; model?: string; settings?: NonNullable<ReturnType<typeof toolExtrasFor>> };
   /** The model and effort the launch passes: the step's, which replaces the definition's, or on Codex and OpenCode the definition's own. */
   model?: StepModel;
   /** The workflow launch the tool's session-start hook reads from its environment (#1176). */
@@ -157,27 +159,14 @@ function invocation(tool: LaunchTool, input: LocalToolRun, opencodeMajor: number
   }
 }
 
-function parseResultFile(value: unknown): ResultFile | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const record = value as Record<string, unknown>;
-  const result: ResultFile = {};
-
-  if ('output' in record) result.output = record.output;
-
-  if (record.failure !== undefined) {
-    if (!record.failure || typeof record.failure !== 'object' || Array.isArray(record.failure)) return null;
-    const failure = record.failure as Record<string, unknown>;
-
-    if (typeof failure.code !== 'string' || typeof failure.message !== 'string') return null;
-    result.failure = { code: failure.code, message: failure.message };
-  }
-
-  return result;
-}
+/** The result file a tool writes: its output, when it wrote one, and a failure with a code and a message. */
+const ResultFileSchema = z.object({ output: z.unknown().optional(), failure: z.object({ code: z.string(), message: z.string() }).optional() });
 
 async function readResultFile(resultPath: string): Promise<ResultFile | null> {
   try {
-    return parseResultFile(JSON.parse(await fs.readFile(resultPath, 'utf8')) as unknown);
+    const result = ResultFileSchema.safeParse(JSON.parse(await fs.readFile(resultPath, 'utf8')));
+
+    return result.success ? result.data : null;
   } catch {
     return null;
   }
@@ -192,7 +181,7 @@ function redactFailure(result: ResultFile, input: LocalToolRun): void {
 }
 
 async function persistFallback(resultPath: string, result: ResultFile): Promise<void> {
-  const artifact: Record<string, unknown> = {};
+  const artifact: ResultFile = {};
 
   if ('output' in result) artifact.output = result.output;
 
@@ -295,22 +284,23 @@ export function createLocalToolAdapter(
         let child: ChildProcess;
 
         try {
+          const env: NodeJS.ProcessEnv = { ...input.env ?? process.env };
+
+          // A model switch hands agy its gateway through a shell function, and this launch runs no shell.
+          if (launchAdapterIdOf(tool) === 'agy') Object.assign(env, agyGatewayEnv(input.env ?? process.env));
+
+          if (input.launch) Object.assign(env, launchEnv(input.launch));
+          env.TEAMAI_WORKFLOW_RESULT = input.resultPath;
           child = spawnTool(executable, args, {
             cwd: input.cwd,
-            env: {
-              ...input.env ?? process.env,
-              // A model switch hands agy its gateway through a shell function, and this launch runs no shell.
-              ...(launchAdapterIdOf(tool) === 'agy' ? agyGatewayEnv(input.env ?? process.env) : {}),
-              ...(input.launch ? launchEnv(input.launch) : {}),
-              TEAMAI_WORKFLOW_RESULT: input.resultPath,
-            },
+            env,
             // OpenCode waits for the end of a piped stdin before it starts.
             stdio: interactive ? 'inherit' : ['ignore', 'pipe', 'pipe'],
             detached: !interactive && process.platform !== 'win32',
             windowsHide: true,
           });
         } catch (error) {
-          resolve({ exitCode: 1, stdout: '', error: error as NodeJS.ErrnoException });
+          resolve({ exitCode: 1, stdout: '', error: error instanceof Error ? error : new Error(String(error)) });
 
           return;
         }
