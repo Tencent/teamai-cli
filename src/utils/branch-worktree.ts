@@ -27,7 +27,7 @@
  */
 import path from 'node:path';
 import fse from 'fs-extra';
-import { GitPluginError, type SimpleGit, type StatusResult } from 'simple-git';
+import type { SimpleGit, StatusResult } from 'simple-git';
 import { createGitWithBlockTimeout, isGitRepo, commitSkippingHooks, isDedicatedRepoRoot, gitCommonDir, checkoutLocation } from './git.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { ensureDir, writeFile, pathExists } from './fs.js';
@@ -808,6 +808,9 @@ async function writeWorktreeGitignore(wt: string): Promise<void> {
 
 const MAX_PUSH_RETRIES = 5;
 
+/** The line `git push --porcelain` prints for a ref origin refused. */
+const REFUSED_REF = /^!\t/m;
+
 // Init pushes are non-blocking (init completes and writes local config + skills
 // regardless); a failed push is retried on the next init. Bounding retries to 1
 // during init prevents a stuck remote from holding init for 5× the timeout via
@@ -884,11 +887,13 @@ async function commitAndPushAt(
 
       return { status: 'published' };
     } catch (pushErr) {
-      // Killed by the block timeout: origin stopped answering, which no
-      // fetch + rebase fixes, and each retry would wait on it again.
-      const stalled = pushErr instanceof GitPluginError && pushErr.plugin === 'timeout';
+      // Only a ref origin refused (porcelain `!`, such as a lost race) can land
+      // after a fetch + rebase. A push that never got that far (origin down,
+      // unreachable, refusing auth, or killed by the block timeout) fails the
+      // same way on every retry, and each would wait on origin again.
+      const refused = REFUSED_REF.test(pushErr instanceof Error ? pushErr.message : String(pushErr));
 
-      if (attempt === maxRetries || stalled) {
+      if (attempt === maxRetries || !refused) {
         log.debug(`[${spec.logTag}] push failed after ${attempt} attempts: ${pushErr instanceof Error ? pushErr.message : String(pushErr)}`);
 
         return { status: 'failed', reason: failureReason(pushErr) };
