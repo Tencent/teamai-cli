@@ -2015,6 +2015,43 @@ steps:
     ]);
   });
 
+  it('names every workflow on the way when a step two workflow files down continues the copy with another role', () => {
+    const look = parse(`schemaVersion: v1alpha1
+name: look
+description: Look at the change.
+steps:
+  - id: note
+    role: audit
+    workspace: continue
+    prompt: Note what you saw.
+`, 'workflows/look.yaml');
+    if (!look.ok) throw new Error(look.diagnostics.map(formatDiagnostic).join('\n'));
+    const lookFiles = { runnable: (name: string) => (name === 'look' ? look.definition : null), cycle: () => undefined };
+    const outer = parseWorkflow('workflows/outer.yaml', `schemaVersion: v1alpha1
+name: outer
+description: Look through another workflow.
+steps:
+  - id: inner
+    workflow: look
+`, lookFiles);
+    if (!outer.ok) throw new Error(outer.diagnostics.map(formatDiagnostic).join('\n'));
+    const files = { runnable: (name: string) => (name === 'outer' ? outer.definition : name === 'look' ? look.definition : null), cycle: () => undefined };
+    const result = parseWorkflow(FILE, `schemaVersion: v1alpha1
+name: build
+description: Review the change in a reviewer's copy.
+steps:
+  - id: change
+    workspace: new
+    role: review
+    workflow: outer
+`, files);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.diagnostics.map((diagnostic) => ({ message: formatDiagnostic(diagnostic), code: diagnostic.code }))).toEqual([
+      { code: 'bad_role', message: 'workflows/build.yaml:8: field "steps[0].workflow": step "change" runs workflow "outer" > "look", whose step "note" has role audit but continues the copy step "change" opens with role review, which every step there runs with; remove role from step "note", or set it on step "change"' },
+    ]);
+  });
+
   it('lets a workflow step\'s role reach a workflow file it runs by name, whose steps open a copy', () => {
     const child = parse(`schemaVersion: v1alpha1
 name: fix

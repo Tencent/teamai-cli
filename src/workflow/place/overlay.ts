@@ -24,10 +24,12 @@ export async function applyOverlay({ root, dir, configCommit, saved, resume, ste
   const delivery = await deliverTeamAssets(dir);
   const refused = role !== undefined ? await worktreeRoleProblem({ dir, step, role, tools: tool !== undefined ? [tool] : [], delivery }) : undefined;
 
-  if (refused) {
+  if (refused && role !== undefined) {
     const unrestored = await restoreOverlay({ dir, configCommit, saved, unfinished: true });
 
-    return unrestored ? { ...refused, message: `${refused.message} ${unrestoredConfig(unrestored, dir)}` } : refused;
+    if (!unrestored) return refused;
+
+    return { ...refused, message: `Role ${role} was not delivered into the copy for step "${step}", and the branch's agent files were not put back: ${unrestored}. Fix what git reported and copy those files into ${dir}, then retry the step. Why the role was not delivered: ${refused.message}` };
   }
 
   await recordConfigOverlay(dir, saved);

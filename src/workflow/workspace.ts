@@ -728,24 +728,34 @@ export function planWorkspace(
  */
 function copyRoleFailure(path: string, { copy, resolved }: NonNullable<ReturnType<typeof copyRoleConflict<RoleIdSpec>>>): WorkflowFailure {
   const opener = path.split('.').slice(0, copy.opener + 1).join('.');
-  const opened = copy.runsWith.kind === 'role' ? `with role ${copy.runsWith.role.id}` : 'without a role';
+  const copyRole = copy.runsWith.kind === 'role' ? copy.runsWith.role.id : undefined;
   const failed = (message: string): WorkflowFailure => ({ code: 'role_unavailable', message });
 
   if (resolved === undefined) {
-    return failed(`step "${path}" runs with your roles but continues the copy step "${opener}" opened ${opened}, which every step there runs with; give step "${path}" that role, or remove it from step "${opener}"`);
+    return failed(copyRole === undefined
+      ? `step "${path}" runs with your roles but continues the copy step "${opener}" opened without a role, which every step there runs with; give step "${path}" that role, or remove it from step "${opener}"`
+      : `step "${path}" runs with your roles but continues the copy step "${opener}" opened with role ${copyRole}, which every step there runs with; give step "${path}" that role, or remove it from step "${opener}"`);
   }
 
+  const role = resolved.role.id;
+
   if (resolved.from === 'defaults') {
-    return failed(`step "${path}" gets role ${resolved.role.id} from defaults.role but continues the copy step "${opener}" opened ${opened}, which every step there runs with; give the steps continuing that copy its role, or set role ${resolved.role.id} on step "${opener}"`);
+    return failed(copyRole === undefined
+      ? `step "${path}" gets role ${role} from defaults.role but continues the copy step "${opener}" opened without a role, which every step there runs with; give the steps continuing that copy its role, or set role ${role} on step "${opener}"`
+      : `step "${path}" gets role ${role} from defaults.role but continues the copy step "${opener}" opened with role ${copyRole}, which every step there runs with; give the steps continuing that copy its role, or set role ${role} on step "${opener}"`);
   }
 
   const named = path.split('.').slice(0, resolved.from + 1).join('.');
 
   if (named === path) {
-    return failed(`step "${path}" has role ${resolved.role.id} but continues the copy step "${opener}" opened ${opened}, which every step there runs with; remove role from step "${path}", or set it on step "${opener}"`);
+    return failed(copyRole === undefined
+      ? `step "${path}" has role ${role} but continues the copy step "${opener}" opened without a role, which every step there runs with; remove role from step "${path}", or set it on step "${opener}"`
+      : `step "${path}" has role ${role} but continues the copy step "${opener}" opened with role ${copyRole}, which every step there runs with; remove role from step "${path}", or set it on step "${opener}"`);
   }
 
-  return failed(`step "${path}" gets role ${resolved.role.id} from step "${named}" but continues the copy step "${opener}" opened ${opened}, which every step there runs with; remove role from step "${named}", or set it on step "${opener}"`);
+  return failed(copyRole === undefined
+    ? `step "${path}" gets role ${role} from step "${named}" but continues the copy step "${opener}" opened without a role, which every step there runs with; remove role from step "${named}", or set it on step "${opener}"`
+    : `step "${path}" gets role ${role} from step "${named}" but continues the copy step "${opener}" opened with role ${copyRole}, which every step there runs with; remove role from step "${named}", or set it on step "${opener}"`);
 }
 
 /**
