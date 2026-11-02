@@ -9,8 +9,12 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { resolveActiveLearningsNamespaces } from '../projects.js';
 import { buildRolePullContext, resolveDesiredRules } from '../resources/desired.js';
+import { resolveEntriesFor, type EntryReader } from '../namespaced-entries.js';
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
+import { envEntryReader } from '../resources/env.js';
+import { mcpEntryReader } from '../resources/mcp.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
+import { loadCachedWorkflow, syncWorkflowDefinitions } from '../workflow/cache.js';
 
 const dirs: string[] = [];
 
@@ -53,6 +57,66 @@ describe('the namespaces of a copy that runs with a team role', () => {
       knowledge: ['review'], skills: ['review', 'app'], agents: ['review'], docs: ['rv-docs'], learnings: ['rv-notes'],
       hooks: ['frontend'], mcp: ['frontend'], env: ['frontend'], models: ['frontend'], workflows: ['frontend'],
     });
+  });
+
+  it('finds every namespace of the discovery of a member with nothing to filter by, as that member does', async () => {
+    const repo = teamRepo();
+    fs.rmSync(path.join(repo, 'manifest', 'projects.yaml'));
+    // On disk, each type has the two roles' namespaces and one that no role declares.
+    for (const type of ['workflows', 'prompts', 'scorers']) {
+      for (const namespace of ['frontend', 'rv-flows', 'shared-tools']) fs.mkdirSync(path.join(repo, type, namespace), { recursive: true });
+    }
+    const member = memberOf(repo, { primaryRole: undefined, projects: [] });
+    expect(await resolveResourceNamespaces(member)).toBeNull();
+
+    const resolved = await resolveResourceNamespaces({ ...member, stepRole: 'review' });
+
+    const every = ['frontend', 'rv-flows', 'shared-tools'];
+    expect(resolved?.activeNamespaces).toMatchObject({
+      knowledge: ['review'], skills: ['review'], agents: ['review'], docs: ['rv-docs'], learnings: ['rv-notes'],
+      workflows: every, prompts: every, scorers: every,
+    });
+    expect(resolved?.inactivePromptsNamespaces).toEqual([]);
+    expect(resolved?.inactiveScorersNamespaces).toEqual([]);
+  });
+
+  it("gives such a member's copy the env and MCP servers that member gets, the shared ones only", async () => {
+    const repo = teamRepo();
+    fs.rmSync(path.join(repo, 'manifest', 'projects.yaml'));
+    fs.mkdirSync(path.join(repo, 'env', 'rv-env'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'env', 'env.yaml'), 'variables: [{ key: SHARED, value: shared }]\n');
+    fs.writeFileSync(path.join(repo, 'env', 'rv-env', 'env.yaml'), 'variables: [{ key: ONLY_REVIEW, value: review }]\n');
+    fs.mkdirSync(path.join(repo, 'mcp', 'rv-mcp'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'mcp', 'mcp.yaml'), 'servers: [{ name: shared, description: Shared, transport: stdio, command: shared }]\n');
+    fs.writeFileSync(path.join(repo, 'mcp', 'rv-mcp', 'mcp.yaml'), 'servers: [{ name: review-only, description: Review only, transport: stdio, command: review-only }]\n');
+    const member = memberOf(repo, { primaryRole: undefined, projects: [] });
+    const names = async <E>(reader: EntryReader<E>, config: LocalConfig): Promise<string[]> => {
+      const resolution = await resolveEntriesFor(reader, config);
+      return resolution.kind === 'resolved' ? resolution.entries.map((entry) => entry.name) : [`not resolved: ${resolution.kind}`];
+    };
+
+    for (const reader of [envEntryReader, mcpEntryReader] as const) {
+      const delivered = await names<unknown>(reader, member);
+      expect(delivered).toEqual(reader === envEntryReader ? ['SHARED'] : ['shared']);
+      expect(await names<unknown>(reader, { ...member, stepRole: 'review' })).toEqual(delivered);
+    }
+  });
+
+  it("leaves the workflows such a member finds as they were when a copy of theirs pulls with a role", async () => {
+    const repo = teamRepo();
+    fs.rmSync(path.join(repo, 'manifest', 'projects.yaml'));
+    for (const namespace of ['frontend', 'rv-flows']) {
+      fs.mkdirSync(path.join(repo, 'workflows', namespace), { recursive: true });
+      fs.writeFileSync(path.join(repo, 'workflows', namespace, `${namespace}.yaml`), `schemaVersion: v1alpha1\nname: ${namespace}\ndescription: Run ${namespace}.\nsteps:\n  - id: check\n    command: echo okay\n`);
+    }
+    // Not self mode: the workflow cache is the data home's, shared by every checkout of this member.
+    const member = memberOf(repo, { primaryRole: undefined, projects: [], projectRoot: repo, dataHome: path.join(repo, '.data') });
+    expect((await syncWorkflowDefinitions(member)).cached.toSorted()).toEqual(['frontend', 'rv-flows']);
+
+    const inCopy = await syncWorkflowDefinitions({ ...member, projectRoot: path.join(repo, 'copy'), stepRole: 'review' });
+
+    expect(inCopy.cached.toSorted()).toEqual(['frontend', 'rv-flows']);
+    expect((await loadCachedWorkflow(member, 'frontend'))?.source).toBe('team');
   });
 
   it('refuses a role the manifest does not declare rather than deliver the member\'s knowledge or everything', async () => {

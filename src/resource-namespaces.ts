@@ -1,3 +1,4 @@
+import path from 'node:path';
 import type { LocalConfig } from './types.js';
 import {
   findRole,
@@ -13,6 +14,7 @@ import {
 import { loadProjectsManifest, resolveProjectResourceNamespaces, mergeNamespaces, projectNamespaceEntries, type AllProjectResourceType } from './projects.js';
 import { isNestedPlaceableType, NAMESPACE_AXIS, type PlaceableType } from './push-namespaces.js';
 import { assertNoCaseAliasedNamespaces } from './manifest-schema.js';
+import { listDirs } from './utils/fs.js';
 import { warnOnce } from './utils/warn-once.js';
 import { deliveredMembers } from './workspace-children.js';
 
@@ -64,6 +66,39 @@ export function withStepRoleKnowledge(manifest: RolesManifest | null, stepRole: 
   }
 
   return resolved;
+}
+
+/**
+ * What a member with no role and no project to filter by finds of each discovery type, which a copy of theirs that runs
+ * with a team role keeps: every namespace directory of that type in the team repo, as the workflow, prompt and scorer
+ * caches read it with no filter, and for benchmarks every namespace a role declares, as the suite cache does. Channels
+ * stay empty, as the member's own: with no filter, env, hooks, MCP and models deliver their root file only
+ * (`resolveEntries`). Knowledge stays empty: the step role replaces it.
+ */
+async function everyDiscoveryNamespace(repoPath: string, manifest: RolesManifest | null): Promise<ResourceNamespaces> {
+  const every: ResourceNamespaces = { knowledge: [], skills: [], learnings: [], agents: [] };
+
+  for (const type of NAMESPACED_RESOURCE_TYPES) {
+    const purpose = STEP_ROLE_PURPOSE[type];
+
+    switch (purpose) {
+      case 'knowledge':
+      case 'channel':
+        break;
+      case 'discovery':
+        every[type] = type === 'benchmarks'
+          ? [...new Set((manifest?.roles ?? []).flatMap((role) => role.resources.benchmarks ?? []))]
+          : (await listDirs(path.join(repoPath, type))).toSorted();
+        break;
+      default: {
+        const unhandled: never = purpose;
+
+        return unhandled;
+      }
+    }
+  }
+
+  return every;
 }
 
 /**
@@ -151,10 +186,12 @@ async function resolveOwnResourceNamespaces(localConfig: LocalConfig) {
   // through to an unfiltered sync that reinstalls every project's skills/rules.
   // So we return a real (possibly empty-active) context and let the cleanup path
   // below prune the now-inactive project namespaces.
-  // A copy that runs with a team role is filtered by that role whatever the member holds.
+  // A copy that runs with a team role is filtered by that role whatever the member holds, but only for knowledge: a
+  // member with nothing to filter by keeps the discovery and channels such a member has there too.
   const { stepRole } = localConfig;
+  let memberResolvesNoFilter = !rolesAssigned && !hasRole && !hasProjects && !teamHasProjects;
 
-  if (!rolesAssigned && !hasRole && !hasProjects && !teamHasProjects && stepRole === undefined) return null;
+  if (memberResolvesNoFilter && stepRole === undefined) return null;
 
   // ── Role namespaces (optional) ──
   let roleNamespaces: ResourceNamespaces = { knowledge: [], skills: [], learnings: [], agents: [] };
@@ -186,14 +223,22 @@ async function resolveOwnResourceNamespaces(localConfig: LocalConfig) {
         if (!rolesAssigned) warnOnce('Run `teamai roles set <role>` to pick a valid role.');
 
         // A misconfigured role, with nothing else to scope by, can't filter safely.
-        if (!rolesAssigned && !hasProjects && !teamHasProjects && stepRole === undefined) return null;
+        if (!rolesAssigned && !hasProjects && !teamHasProjects) {
+          if (stepRole === undefined) return null;
+          memberResolvesNoFilter = true;
+        }
       }
-    } else if (!rolesAssigned && !hasProjects && !teamHasProjects && stepRole === undefined) {
-      return null;
+    } else if (!rolesAssigned && !hasProjects && !teamHasProjects) {
+      if (stepRole === undefined) return null;
+      memberResolvesNoFilter = true;
     }
   }
 
-  if (stepRole !== undefined) roleNamespaces = withStepRoleKnowledge(rolesManifest, stepRole, roleNamespaces);
+  if (stepRole !== undefined) {
+    const member = memberResolvesNoFilter ? await everyDiscoveryNamespace(localConfig.repo.localPath, rolesManifest) : roleNamespaces;
+
+    roleNamespaces = withStepRoleKnowledge(rolesManifest, stepRole, member);
+  }
 
   // ── Project namespaces ──
   // Populate the full set of project skill namespaces from the manifest whenever
