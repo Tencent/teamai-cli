@@ -146,6 +146,20 @@ describe('scrubSession', () => {
     });
   });
 
+  it('masks a key=value secret nested in an argument array', () => {
+    const session = makeSession();
+    session.messages[1].content[1] = {
+      type: 'tool_call', toolName: 'bash', callId: 'toolu_1',
+      arguments: { options: { args: [`--data={"token": "Nested0nested0nested0"}`] } },
+    };
+
+    const { session: scrubbed } = scrubSession(session);
+
+    expect(scrubbed.messages[1].content[1]).toMatchObject({
+      arguments: { options: { args: [`--data={"token": "<REDACTED:kv>"}`] } },
+    });
+  });
+
   it('无敏感内容时原样返回、计数为 0', () => {
     const clean = makeSession();
     clean.title = '普通提问';
