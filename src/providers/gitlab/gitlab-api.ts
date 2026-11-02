@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { z } from 'zod';
 import { GITLAB_HOST } from './repo-url.js';
 import { sanitizeGitUrl } from '../../utils/redact.js';
-import { endedRequest, type CiStatus, type CommitRef, type PullRequestRecord, type PullRequestRef } from '../types.js';
+import { endedRequest, mergedAs, type CiStatus, type CommitRef, type PullRequestRecord, type PullRequestRef } from '../types.js';
 
 /**
  * GitLab REST API client (API v4).
@@ -510,6 +510,9 @@ const GitLabMrHistorySchema = GitLabOpenMrSchema.extend({
   closed_at: z.string().nullish(),
   merged_at: z.string().nullish(),
   updated_at: z.string().nullish(),
+  sha: z.string().nullish(),
+  merge_commit_sha: z.string().nullish(),
+  squash_commit_sha: z.string().nullish(),
 });
 
 /**
@@ -528,7 +531,11 @@ export async function gitlabMrHistory({ repo, source, target, timeoutMs }: PullR
   if (requests.data.length >= LOOKUP_PAGE) throw new Error('GitLab listed more merge requests than one page, so TeamAI cannot tell how this branch\'s requests ended.');
   const ours = requests.data.filter((mr) => mr.source_branch === source && mr.target_branch === target && mr.source_project_id === mr.target_project_id);
   if (ours.some((mr) => hostOf(mr.web_url) !== hostOf(gitlabBaseUrl()))) throw new Error('GitLab answered the merge request history lookup with a URL on another host.');
-  return ours.map((mr) => endedRequest({ url: mr.web_url, title: mr.title, openedAt: mr.created_at, state: mr.state, closedAt: mr.closed_at ?? mr.merged_at ?? mr.updated_at }));
+  // A fast-forward merge without a squash puts the head itself on the target branch.
+  return ours.map((mr) => endedRequest({
+    url: mr.web_url, title: mr.title, openedAt: mr.created_at, state: mr.state, closedAt: mr.closed_at ?? mr.merged_at ?? mr.updated_at,
+    merge: mergedAs({ head: mr.sha, commit: mr.merge_commit_sha ?? mr.squash_commit_sha ?? mr.sha }),
+  }));
 }
 
 function hostOf(url: string): string | undefined {

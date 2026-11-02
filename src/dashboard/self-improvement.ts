@@ -136,12 +136,12 @@ async function sourceAt(config: LocalConfig, { commit, file }: { commit: string;
  * The changes on the team clone's checked-out branch since `since` that add a regression task made from a scorer's
  * failure: each commit as the default branch got it, so a merge counts once, with everything it brought.
  */
-async function landedChanges(config: LocalConfig, { since, scorersOf, namedIn }: {
+async function landedChanges(config: LocalConfig, { since, scorersOf, proposalOf }: {
   since: Date;
   /** The scorers that failed each subject, by its canonical JSON. */
   scorersOf: ReadonlyMap<string, ReadonlySet<string>>;
-  /** The scorer whose proposal a commit title names, from its branch or its merged request. */
-  namedIn: (title: string) => string | undefined;
+  /** The proposal a commit landed: its scorer, and the head the host merged when it states it. */
+  proposalOf: (commit: { commit: string; title: string }) => { scorer: string; head?: string } | undefined;
 }): Promise<Array<Found<'landed'>>> {
   const log = await teamGit(config, ['log', '--first-parent', '--diff-merges=first-parent', `--since=${since.toISOString()}`, '--relative', '--no-renames', '--name-status', '--format=%x00%H%x09%P%x09%cI%x09%s', 'HEAD']);
   if (log === undefined) return [];
@@ -160,13 +160,13 @@ async function landedChanges(config: LocalConfig, { since, scorersOf, namedIn }:
     const candidates = [...new Set(scored.flatMap(({ scorers }) => [...scorers]))]
       .map((name) => ({ name, tasks: scored.filter(({ scorers }) => scorers.has(name)).length }))
       .sort((left, right) => right.tasks - left.tasks || left.name.localeCompare(right.name));
-    const named = namedIn(title);
-    const scorer = candidates.find(({ name }) => name === named)?.name ?? candidates[0]?.name;
+    const proposal = proposalOf({ commit, title });
+    const scorer = candidates.find(({ name }) => name === proposal?.scorer)?.name ?? candidates[0]?.name;
     if (scorer === undefined) continue;
     const files = entries.filter(({ status }) => status !== 'D').map(({ file }) => file).sort();
     changes.push({
       change: { state: 'landed', scorer, commit, title, at, files, tasks: scored.filter(({ scorers }) => scorers.has(scorer)).map(({ file }) => file).sort() },
-      revisions: [commit, ...parents.split(' ').slice(1)],
+      revisions: [commit, ...parents.split(' ').slice(1), ...proposal?.scorer === scorer && proposal.head ? [proposal.head] : []],
     });
   }
   return changes;
@@ -249,17 +249,12 @@ async function proposedChanges(config: LocalConfig, { refresh }: { refresh: bool
 /**
  * The newest of `runs` whose pulled arm installed one of `revisions`: the run a job pinned to the change, as
  * `benchmark run --team-ref` pins a pull request. An arm on a named ref, such as the default branch, is the baseline a
- * run compares against, so a later run whose baseline has the change proves another one. A landed change also takes
- * the newest pulled run before `landedAt` that had every task it added: its pull request's, when a squash or a rebase
- * left the branch's head out of the default branch.
+ * run compares against, so a later run whose baseline has the change proves another one. A squash- or rebase-merged
+ * change has its request's head among `revisions` when the host stated it: no other run is taken for its proof.
  */
-function proofOf(runs: readonly BenchmarkRunInput[], { revisions, tasks, landedAt }: { revisions: readonly string[]; tasks: readonly string[]; landedAt?: string }): Proof | undefined {
-  const ids = tasks.map((file) => path.posix.basename(file, '.yaml'));
-  const ranBefore = (run: BenchmarkRunInput): boolean => landedAt !== undefined && ids.length > 0 && Date.parse(run.startedAt) <= Date.parse(landedAt)
-    && ids.every((id) => run.benchmark.tasks.some((task) => task.id === id))
-    && !run.benchmark.arms.some(({ team }) => team.kind !== 'pulled' && 'revision' in team && revisions.includes(team.revision));
+function proofOf(runs: readonly BenchmarkRunInput[], { revisions }: { revisions: readonly string[] }): Proof | undefined {
   const run = runs
-    .filter((candidate) => candidate.benchmark.arms.some(({ team }) => team.kind === 'pulled' && (revisions.includes(team.revision) || ranBefore(candidate))))
+    .filter((candidate) => candidate.benchmark.arms.some(({ team }) => team.kind === 'pulled' && revisions.includes(team.revision)))
     .sort((left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt))[0];
   if (run === undefined) return undefined;
   const armOf = (key: string): ProofArm | undefined => {
@@ -349,24 +344,32 @@ export async function selfImprovementView({ config, now = new Date(), refresh = 
     scorersOf.set(subject, new Set([...scorersOf.get(subject) ?? [], label.scorer]));
   }
   const starts = digest.failures.flatMap(({ start }) => ('commit' in start ? [start.commit] : []));
-  const [proposed, runs, setup, loop, present, target] = await Promise.all([
+  const [proposed, runs, setup, loop, present, target, suites] = await Promise.all([
     proposedChanges(config, { refresh }),
     benchmarkRuns(config, { refresh: false }),
     setupOf(config),
     loopRuns(config),
     SelfImprovement.commitsIn(config.projectRoot ?? process.cwd(), starts),
     defaultBranch(config),
+    listCachedSuites(config),
   ]);
   const asked = [...new Set([...summaries.scorers.map(({ scorer }) => scorer), ...proposed.map(({ change }) => change.scorer)])].sort();
   const listed = await historiesOf(config, { scorers: asked, target, refresh });
-  const namedIn = (title: string): string | undefined => {
+  const merged = [...listed ?? []].flatMap(([scorer, requests]) => requests.flatMap((request) => (request.state === 'merged' ? [{ scorer, request }] : [])));
+  // The request the host merged as the commit, else one its title names by number; else the branch its title names whole.
+  const proposalOf = ({ commit, title }: { commit: string; title: string }): { scorer: string; head?: string } | undefined => {
     const numbers = new Set([...title.matchAll(/#(\d+)\b/g)].map(([, number]) => number));
-    return asked.find((scorer) => title.includes(SelfImprovement.branchOf(scorer))
-      || (listed?.get(scorer) ?? []).some(({ state, url }) => state === 'merged' && numbers.has(/\/(\d+)$/.exec(url)?.[1] ?? '')));
+    const found = merged.find(({ request }) => request.merge?.commit === commit) ?? merged.find(({ request }) => numbers.has(/\/(\d+)$/.exec(request.url)?.[1] ?? ''));
+    if (found) return { scorer: found.scorer, ...found.request.merge ? { head: found.request.merge.head } : {} };
+    const words = title.split(/[\s'"`:]+/);
+    const scorer = asked.find((name) => words.some((word) => word === SelfImprovement.branchOf(name) || word.endsWith(`/${SelfImprovement.branchOf(name)}`)));
+    return scorer === undefined ? undefined : { scorer };
   };
-  const landed = await landedChanges(config, { since: new Date(now.getTime() - CHANGE_DAYS * DAY_MS), scorersOf, namedIn });
+  const landed = await landedChanges(config, { since: new Date(now.getTime() - CHANGE_DAYS * DAY_MS), scorersOf, proposalOf });
   // The tasks a run of the command reads: its suite's on the default branch, and those its open proposal adds, as plan clones it.
-  const pulled = digest.failures.flatMap((entry) => (entry.task?.startsWith(`${SelfImprovement.SUITE}/tasks/`) ? [[canonicalJson(entry.failure.subject), entry.task] as const] : []));
+  const pulled = suites.flatMap(({ tasks }) => tasks.flatMap(({ source, relativePath }) => (
+    source && relativePath.startsWith(`${SelfImprovement.SUITE}/tasks/`) ? [[canonicalJson(source), relativePath] as const] : []
+  )));
   const tasksOf = (scorer: string) => new Map([...pulled, ...proposed.find(({ change }) => change.scorer === scorer)?.sources ?? []]);
   const scorers = summaries.scorers.flatMap(({ scorer, defaultCohort, cohorts }): ScorerLoop[] => {
     const cohort = cohorts.find(({ id }) => id === defaultCohort);
@@ -387,7 +390,7 @@ export async function selfImprovementView({ config, now = new Date(), refresh = 
     }];
   });
   const proven = <T extends Exclude<Change, ClosedChange>>(change: T, revisions: readonly string[]): T => {
-    const proof = proofOf(runs, { revisions, tasks: change.tasks, ...change.state === 'landed' ? { landedAt: change.at } : {} });
+    const proof = proofOf(runs, { revisions });
     return proof === undefined ? change : { ...change, proof };
   };
   const withImpact = await Promise.all(landed.map(async ({ change, revisions }): Promise<Change> => {

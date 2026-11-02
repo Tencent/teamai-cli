@@ -200,6 +200,30 @@ describe('dashboard self-improvement', () => {
     expect(view.scorers).toEqual([expect.objectContaining({ startable: 2, covered: [], isReady: true })]);
   });
 
+  it('counts a failure as covered by the suite its command plans, when another suite has a task for it too', async () => {
+    const start = project();
+    const { config, repo } = team(start.dir);
+    write(path.join(repo, 'benchmarks/api-regressions/suite.yaml'), [
+      'schemaVersion: v1alpha1', 'name: api-regressions', 'repo: https://github.com/acme/api.git',
+      'defaults: { tool: claude }', 'matrix: { team: [main, pulled] }', 'repetitions: 1', 'timeout: 1h', '',
+    ].join('\n'));
+    write(path.join(repo, 'benchmarks/api-regressions/tasks/api-null-check.yaml'), [
+      'schemaVersion: v1alpha1', 'title: api-null-check', 'prompt: Review the change.', `startingCommit: ${start.commit}`,
+      'successCriteria: Flags the missing null check.', 'source: { platform: claude, sessionId: new-1 }', '',
+    ].join('\n'));
+    task(repo, 'missed-null-check', 'new-1', start.commit);
+    commit(repo, 'Two suites with a task for the same failure');
+    await syncTeamDefinitions(config);
+    publishLabels(config, [
+      label('new-1', { recorded: agent({ commit: start.commit }) }),
+      label('new-2', { recorded: agent({ commit: start.commit }) }),
+    ]);
+
+    const view = await selfImprovementView({ config, now: NOW, refresh: false });
+
+    expect(view.scorers).toEqual([expect.objectContaining({ startable: 1, covered: ['benchmarks/regressions/tasks/missed-null-check.yaml'], isReady: false })]);
+  });
+
   it('lists a change that landed on the default branch with the assets it changed, the tasks it added and the scorer\'s pass rate before and after it', async () => {
     const start = project();
     const { config, repo } = team(start.dir);
@@ -245,9 +269,10 @@ describe('dashboard self-improvement', () => {
     const { config, repo } = team(start.dir);
     task(repo, 'skipped-the-diff', 'new-1', start.commit);
     commit(repo, 'Merge pull request #12 from acme/teamai/self-improvement/review-quality');
+    // A scorer whose branch name starts the named one's is not the one named.
     publishLabels(config, [
       label('new-1', { recorded: agent({ commit: start.commit }) }),
-      { ...label('new-1', { recorded: agent({ commit: start.commit }) }), scorer: 'security' },
+      { ...label('new-1', { recorded: agent({ commit: start.commit }) }), scorer: 'review' },
     ]);
 
     const view = await selfImprovementView({ config, now: NOW, refresh: false });
@@ -307,19 +332,37 @@ describe('dashboard self-improvement', () => {
     ]);
   });
 
-  it('keeps the proof of a proposal squash-merged into the default branch, and no longer lists it as proposed', async () => {
+  it('keeps the proof of a proposal squash-merged into the default branch, from the head the host says it merged', async () => {
     const start = project();
     const { config, repo, origin } = team(start.dir);
     const head = proposal(origin, start.commit);
     publishBenchmark(config, { run: 'r00000000000000a1', main: git(repo, 'rev-parse', 'HEAD'), pulled: head, trials: { 'skipped-the-diff': { main: 'failed', pulled: 'passed' } } });
     write(path.join(repo, 'agents/reviewer.md'), '# Reviewer\nRead the whole diff first.\n');
     task(repo, 'skipped-the-diff', 'new-1', start.commit);
-    const squashed = commit(repo, 'Reviewer: read the whole diff first (#12)');
+    const squashed = commit(repo, 'Reviewer: read the whole diff first');
     publishLabels(config, [label('new-1', { recorded: agent({ commit: start.commit }) })]);
+    const history = async () => [{
+      url: 'https://github.com/acme/team/pull/12', title: 'Reviewer: read the whole diff first', openedAt: '2026-03-18T09:00:00Z',
+      state: 'merged' as const, closedAt: '2026-03-19T11:00:00Z', merge: { head, commit: squashed },
+    }];
+    vi.spyOn(registry, 'providerForRemote').mockReturnValue({ kind: 'provider', provider: new GitHubProvider(), pullRequests: { findOpen: async () => undefined, history }, repo: 'acme/team', hostname: 'github.com' });
 
     const view = await selfImprovementView({ config, now: NOW, refresh: true });
 
     expect(view.changes).toEqual([expect.objectContaining({ state: 'landed', commit: squashed, proof: expect.objectContaining({ run: 'r00000000000000a1' }) })]);
+  });
+
+  it('gives a squash-merged change no proof from a run of another revision that ran a task of the same name', async () => {
+    const start = project();
+    const { config, repo } = team(start.dir);
+    publishBenchmark(config, { run: 'r00000000000000b1', main: 'b'.repeat(40), pulled: 'c'.repeat(40), trials: { 'skipped-the-diff': { main: 'failed', pulled: 'passed' } } });
+    task(repo, 'skipped-the-diff', 'new-1', start.commit);
+    commit(repo, 'Reviewer: read the whole diff first (#12)');
+    publishLabels(config, [label('new-1', { recorded: agent({ commit: start.commit }) })]);
+
+    const view = await selfImprovementView({ config, now: NOW, refresh: false });
+
+    expect(view.changes).toEqual([expect.not.objectContaining({ proof: expect.anything() })]);
   });
 
   it('shows with a proposal the regression suite run that pinned it: each task on the default branch and on the proposal', async () => {

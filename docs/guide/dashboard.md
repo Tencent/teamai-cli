@@ -158,7 +158,7 @@ Landed    Review skill: check every early return       review-quality  skills/co
 | Closed | A pull request from a `teamai/self-improvement/<scorer>` branch that the host closed without merging: a change the team turned down. |
 | Pull requests merged | Of the requests from every scorer's branch that ended, how many the host merged. GitHub, GitLab, TGit and GitCode answer when this machine can sign in to them. Another host, or one that does not answer, shows **Open proposals** instead. |
 | Assets | The files the change adds or edits, by top directory and name. Regression tasks are counted, not listed. |
-| Proof | The newest benchmark run whose `pulled` arms ran the change: each tool's pass rate on `main`, then on the change. The run opens from the date under it. |
+| Proof | The newest benchmark run whose `pulled` arms ran the change: each tool's pass rate on `main`, then on the change. A squash- or rebase-merged pull request keeps the run of the head the host merged, which GitHub and GitLab report. The run opens from the date under it. |
 | Pass rate before → after | The scorer's default measurement split at the change's commit, as **Split at team commit** on the Scorers page does, over 180 days. |
 
 **Scorers in the loop** shows, for each scorer with labels in the last 30 days, what a run would start from now:

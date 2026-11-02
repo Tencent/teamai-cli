@@ -5,7 +5,7 @@ import type { JsonValue } from '../../types.js';
 import { log } from '../../utils/logger.js';
 import { resolveCliPath } from '../../utils/cli-path.js';
 import { isInteractive } from '../../utils/prompt.js';
-import { endedRequest, type CiStatus, type CommitRef, type PullRequestRecord, type PullRequestRef } from '../types.js';
+import { endedRequest, mergedAs, type CiStatus, type CommitRef, type PullRequestRecord, type PullRequestRef } from '../types.js';
 
 // ─── Constants ───────────────────────────────────────────
 
@@ -762,6 +762,8 @@ const GhPullHistorySchema = GhPullSchema.extend({
   created_at: z.string(),
   closed_at: z.string().nullable(),
   merged_at: z.string().nullable(),
+  head: GhPullSchema.shape.head.extend({ sha: z.string().nullish() }),
+  merge_commit_sha: z.string().nullish(),
 });
 
 /**
@@ -777,7 +779,10 @@ export async function ghPullHistory({ repo, source, target, timeoutMs }: PullReq
   const ours = (name: string | undefined): boolean => name?.toLowerCase() === repo.toLowerCase();
   return pulls.data
     .filter((pull) => pull.head.ref === source && pull.base.ref === target && ours(pull.head.repo?.full_name) && ours(pull.base.repo.full_name))
-    .map((pull) => endedRequest({ url: pull.html_url, title: pull.title, openedAt: pull.created_at, state: pull.merged_at === null ? pull.state : 'merged', closedAt: pull.closed_at }));
+    .map((pull) => endedRequest({
+      url: pull.html_url, title: pull.title, openedAt: pull.created_at, state: pull.merged_at === null ? pull.state : 'merged', closedAt: pull.closed_at,
+      merge: mergedAs({ head: pull.head.sha, commit: pull.merge_commit_sha }),
+    }));
 }
 
 

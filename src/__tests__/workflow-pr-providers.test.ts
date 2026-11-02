@@ -196,14 +196,15 @@ describe('GitHub pull request history', () => {
     resolveGh(null);
     vi.stubEnv('GITHUB_TOKEN', 'test-token');
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify([
-      ended(ref.source, 9, 'open', null), ended(ref.source, 8, 'closed', null), ended(ref.source, 6, 'closed', null, 'fork/app'), ended(ref.source, 5, 'closed', '2026-10-05T12:00:00Z'),
+      ended(ref.source, 9, 'open', null), ended(ref.source, 8, 'closed', null), ended(ref.source, 6, 'closed', null, 'fork/app'),
+      { ...ended(ref.source, 5, 'closed', '2026-10-05T12:00:00Z'), head: { ref: ref.source, repo: { full_name: 'acme/app' }, sha: 'h'.repeat(40) }, merge_commit_sha: 's'.repeat(40) },
     ])));
     vi.stubGlobal('fetch', fetcher);
 
     expect(await lookup().history(ref)).toEqual([
       { url: 'https://github.com/acme/app/pull/9', title: 'Change 9', openedAt: '2026-10-09T10:00:00Z', state: 'open' },
       { url: 'https://github.com/acme/app/pull/8', title: 'Change 8', openedAt: '2026-10-08T10:00:00Z', state: 'closed', closedAt: '2026-10-08T12:00:00Z' },
-      { url: 'https://github.com/acme/app/pull/5', title: 'Change 5', openedAt: '2026-10-05T10:00:00Z', state: 'merged', closedAt: '2026-10-05T12:00:00Z' },
+      { url: 'https://github.com/acme/app/pull/5', title: 'Change 5', openedAt: '2026-10-05T10:00:00Z', state: 'merged', closedAt: '2026-10-05T12:00:00Z', merge: { head: 'h'.repeat(40), commit: 's'.repeat(40) } },
     ]);
     const url = new URL(String(fetcher.mock.calls[0]?.[0]));
     expect([url.pathname, url.searchParams.get('state'), url.searchParams.get('head'), url.searchParams.get('base')])
@@ -283,13 +284,17 @@ describe('GitLab merge request lookup', () => {
     const at = (iid: number, state: string, ended: Record<string, string | null>) => ({ ...mr(ref.source, iid), state, title: `Change ${iid}`, created_at: `2026-10-0${iid}T10:00:00Z`, ...ended });
     const fetcher = answering([
       at(9, 'opened', { closed_at: null, merged_at: null }), at(8, 'closed', { closed_at: '2026-10-08T12:00:00Z', merged_at: null }),
-      { ...at(6, 'closed', { closed_at: '2026-10-06T12:00:00Z', merged_at: null }), source_project_id: 2 }, at(5, 'merged', { closed_at: null, merged_at: '2026-10-05T12:00:00Z' }),
+      { ...at(6, 'closed', { closed_at: '2026-10-06T12:00:00Z', merged_at: null }), source_project_id: 2 },
+      at(5, 'merged', { closed_at: null, merged_at: '2026-10-05T12:00:00Z', sha: 'h'.repeat(40), merge_commit_sha: null, squash_commit_sha: 's'.repeat(40) }),
+      // A fast-forward merge: the head is the commit the target branch got.
+      at(4, 'merged', { closed_at: null, merged_at: '2026-10-04T12:00:00Z', sha: 'f'.repeat(40), merge_commit_sha: null }),
     ]);
 
     expect(await lookupOf(new GitLabProvider()).history(ref)).toEqual([
       { url: 'https://gitlab.com/acme/app/-/merge_requests/9', title: 'Change 9', openedAt: '2026-10-09T10:00:00Z', state: 'open' },
       { url: 'https://gitlab.com/acme/app/-/merge_requests/8', title: 'Change 8', openedAt: '2026-10-08T10:00:00Z', state: 'closed', closedAt: '2026-10-08T12:00:00Z' },
-      { url: 'https://gitlab.com/acme/app/-/merge_requests/5', title: 'Change 5', openedAt: '2026-10-05T10:00:00Z', state: 'merged', closedAt: '2026-10-05T12:00:00Z' },
+      { url: 'https://gitlab.com/acme/app/-/merge_requests/5', title: 'Change 5', openedAt: '2026-10-05T10:00:00Z', state: 'merged', closedAt: '2026-10-05T12:00:00Z', merge: { head: 'h'.repeat(40), commit: 's'.repeat(40) } },
+      { url: 'https://gitlab.com/acme/app/-/merge_requests/4', title: 'Change 4', openedAt: '2026-10-04T10:00:00Z', state: 'merged', closedAt: '2026-10-04T12:00:00Z', merge: { head: 'f'.repeat(40), commit: 'f'.repeat(40) } },
     ]);
     expect(new URL(String(fetcher.mock.calls[0]?.[0])).searchParams.get('state')).toBe('all');
     answering([{ ...at(7, 'opened', {}), web_url: 'https://evil.example/acme/app/-/merge_requests/7' }]);
