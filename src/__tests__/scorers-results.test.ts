@@ -141,6 +141,21 @@ describe('scorer results', () => {
       expect(groups(labels, 'role')).toEqual(['frontend n=1', 'review n=1']);
     });
 
+    it("says whether each role group ran with the step's role, the member's, or both", () => {
+      const team = (selection: { primaryRole: string; stepRole?: string }) => ({ revision: REV_A, localChanges: false, selection: { scope: 'project' as const, additionalRoles: [], ...selection } });
+      const labels = [
+        viewed(sessionLabel(), { agent: observed({ team: team({ primaryRole: 'frontend', stepRole: 'review' }) }) }),
+        viewed(sessionLabel(), { agent: observed({ team: team({ primaryRole: 'frontend' }) }) }),
+        viewed(sessionLabel(), { agent: observed({ team: team({ primaryRole: 'frontend', stepRole: 'spec' }) }) }),
+        viewed(sessionLabel(), { agent: observed({ team: team({ primaryRole: 'spec' }) }) }),
+        viewed(sessionLabel()),
+      ];
+      const roleGroups = ScorerResults.of({ labels, query: { windowDays: 30, groupBy: 'role' }, now: NOW }).selected?.groups
+        ?.map((group) => (group.kind === 'value' ? `${group.value} ${group.roleOf ?? '-'}` : group.kind));
+      expect(roleGroups).toEqual(['spec both', 'frontend member', 'review step', 'not recorded']);
+      expect(groups(labels, 'tool')).toEqual(['claude n=4', 'not recorded n=1']);
+    });
+
     it('counts a label under every skill it used, and one that used none under none', () => {
       const labels = [
         viewed(sessionLabel({ used: { skills: ['tdd', 'review'] } })),

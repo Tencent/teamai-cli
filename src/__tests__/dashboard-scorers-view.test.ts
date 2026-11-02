@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { AgentObservation } from '../agent-observation.js';
 import { agentHarnessView } from '../dashboard/agent-harness-view.js';
 import { dashboardMessages } from '../dashboard/locales.js';
+import { dashboardStyles } from '../dashboard/styles.js';
 import { scorersClient } from '../dashboard/scorers-client.js';
 import type { ScoreLabel } from '../scorers/label.js';
 import { ScorerResults, type ViewedLabel } from '../scorers/results.js';
@@ -71,10 +72,26 @@ function rowsUnder(html: string, heading: string): string[] {
 }
 
 describe('the Scorers page of a workflow whose review step runs with a role of its own', () => {
-  it('groups the labels by the role each pass ran with, the review step under its own role beside the member steps', async () => {
+  it("groups the labels by the role each pass ran with, and marks whether that was the step's role or the member's", async () => {
     const { html } = await renderPage(LABELS);
 
-    expect(rowsUnder(html, 'By Role')).toEqual(['review 2 1 1 50%', 'frontend 1 0 1 0%', 'Not recorded 1 0 1 0%']);
+    expect(rowsUnder(html, 'By Role')).toEqual(['review step 2 1 1 50%', 'frontend member 1 0 1 0%', 'Not recorded 1 0 1 0%']);
+    expect(html).toContain('<span class="role-of step">step</span>');
+    expect(html).toContain('<span class="role-of member">member</span>');
+  });
+
+  it("lays both tables out as cards by the panel's own width, so a narrow panel beside the sidebar keeps every column", async () => {
+    const { html } = await renderPage(LABELS);
+    const cellNames = (table: string) => {
+      const [row] = [...html.matchAll(new RegExp(`<table class="session-table ${table}">.*?<tbody>(<tr[^>]*>.*?</tr>)`, 'gs'))].map(([, first]) => first ?? '');
+      return [...(row ?? '').matchAll(/<td[^>]*data-label="([^"]+)"/g)].map(([, name]) => name);
+    };
+
+    expect(html).toContain('<div class="table-scroll card-table"><table class="session-table scorer-groups">');
+    expect(html).toContain('<div class="table-scroll card-table"><table class="session-table failing-labels">');
+    expect(cellNames('scorer-groups')).toEqual(['VALUE', 'LABELS', 'PASSED', 'FAILED', 'PASS RATE']);
+    expect(dashboardStyles).toContain('.card-table{container-type:inline-size}');
+    expect(dashboardStyles).toMatch(/@container\(max-width:760px\)\{[^@]*\.failing-labels thead,[^@]*\.scorer-groups thead[^{]*\{display:none\}/);
   });
 
   it('shows each failing label\'s harness on one line, opens a run still listed, and says when the harness was not recorded', async () => {
@@ -85,6 +102,7 @@ describe('the Scorers page of a workflow whose review step runs with a role of i
       '2026-10-25T10:00:00.000Z ana missed-defect codex · gpt-5 · frontend member role · bbbbbbb Workflow run — r0000000000000003 Run not found implement #1',
       '2026-10-24T10:00:00.000Z ana missed-defect Harness not recorded Workflow run — r0000000000000004 Run not found implement #1',
     ]);
+    expect(html).toContain('<span class="role-of step">step role</span>');
     expect(html).toContain('data-run="r0000000000000001" data-run-source="reported"');
     expect(html).toContain(`title="Team revision ${REVIEWED}"`);
   });
@@ -98,10 +116,10 @@ describe('the Scorers page of a workflow whose review step runs with a role of i
     expect(section).toContain('class="session-table failing-labels"');
   });
 
-  it('translates every label the failing list asks for', async () => {
+  it('translates every label the role groups and the failing list ask for', async () => {
     const { keys } = await renderPage(LABELS, { language: 'zh-CN' });
 
-    expect(keys).toEqual(expect.arrayContaining(['HARNESS', 'Harness not recorded', 'step role', 'member role', 'Team revision']));
+    expect(keys).toEqual(expect.arrayContaining(['HARNESS', 'Harness not recorded', 'step role', 'member role', 'Team revision', 'step', 'member']));
     expect([...new Set(keys)].filter((key) => !Object.hasOwn(dashboardMessages, key))).toEqual([]);
   });
 });

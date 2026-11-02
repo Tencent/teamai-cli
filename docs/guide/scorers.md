@@ -143,11 +143,13 @@ On the dashboard's [Scorers page](dashboard.md#scorers), **Group by** `Role` cou
 
 ```text
 By Role
-VALUE         LABELS  PASSED  FAILED  PASS RATE
-frontend      14      11      3       79%
-review        12      7       5       58%
-Not recorded  3       2       1       67%
+VALUE            LABELS  PASSED  FAILED  PASS RATE
+frontend member  14      11      3       79%
+review step      12      7       5       58%
+Not recorded     3       2       1       67%
 ```
+
+Beside each role, `step` means its labels ran with a step's role, `member` with the member's, and `both` some of each.
 
 **Failing labels** names the harness of each label and opens its run while the run is still listed. Select a group to list only its own:
 

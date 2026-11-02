@@ -80,7 +80,7 @@ function historyChart(sel){
  });
  svg+='</svg>';
  const marks=(runs.some((r,i)=>i>0&&r.sourceHash!==runs[i-1].sourceHash)?'<span><i class="mark version"></i>'+label('Suite changed')+'</span>':'')+(runs.some((r,i)=>i>0&&r.teamRevision!==runs[i-1].teamRevision)?'<span><i class="mark team-change"></i>'+label('Team assets changed')+'</span>':'')+(runs.some((r,i)=>toolChange(r,i).length)?'<span><i class="mark tool-change"></i>'+label('Tool updated')+'</span>':'');
- const legend='<div class="legend">'+sel.arms.map((a,i)=>'<span class="'+(a.isCurrent?'':'muted')+'">'+armName(a,i)+(a.isCurrent?'':' <small>'+label('earlier configuration')+'</small>')+'</span>').join('')+marks+'</div>';
+ const legend='<div class="legend">'+sel.arms.map((a,i)=>'<span class="arm-label'+(a.isCurrent?'':' muted')+'">'+armName(a,i)+(a.isCurrent?'':' <small>'+label('earlier configuration')+'</small>')+'</span>').join('')+marks+'</div>';
  return '<section class="panel bench-panel"><div class="panelhead"><h2>'+label('Pass rate per run')+'</h2><span class="label">'+label('Each point is one run of one arm. A dashed line marks a change to the suite\\'s files: runs on either side measured different tasks.')+'</span></div><div class="chart-scroll">'+svg+'</div>'+legend+'</section>';
 }
 const usedBy=n=>number(n)+' '+t('trials reported it');
@@ -188,7 +188,7 @@ function comparePanel(sel){
  const dim=dims.some(([key])=>key===benchDimension)?benchDimension:dims[0][0];
  const list=sel.comparisons.filter(c=>c.dimension===dim);
  const chosen=list.find(c=>comparisonId(c)===benchComparison)||list[0];
- const chips='<div class="chips" role="group" aria-label="'+e(t('Compare by'))+'">'+dims.map(([key,name])=>'<button class="chip'+(dim===key?' active':'')+'" data-bench-dimension="'+key+'" aria-pressed="'+(dim===key)+'">'+label(name)+'</button>').join('')+'</div>';
+ const chips=dims.length===1?'<span class="compare-by-only">'+label(dims[0][1])+'</span>':'<div class="chips" role="group" aria-label="'+e(t('Compare by'))+'">'+dims.map(([key,name])=>'<button class="chip'+(dim===key?' active':'')+'" data-bench-dimension="'+key+'" aria-pressed="'+(dim===key)+'">'+label(name)+'</button>').join('')+'</div>';
  return '<div class="bench-compare-head"><span class="label">'+label('Compare by')+'</span>'+chips+'</div>'+compareKpis(sel,chosen)+'<div class="bench-grid">'+forestPanel(sel,list,chosen)+arrowPanel(sel,list,chosen)+'</div>'+taskDeltaPanel(sel,chosen);
 }
 function compareKpis(sel,c){
@@ -201,7 +201,7 @@ function compareKpis(sel,c){
  const third=hasCost?kpiCard(label('Cost per passed trial'),'<span class="'+(costs[1]<=costs[0]?'up':'down')+'">'+change(costs[0],costs[1])+'</span>',e(costNumber(costs[0])+' → '+costNumber(costs[1])+' '+unit))
   :kpiCard(label('Median tokens per trial'),hasTokens?change(tokens[0],tokens[1]):'—',hasTokens?number(Math.round(tokens[0]))+' → '+number(Math.round(tokens[1])):label('Not every arm reported it'));
  return '<div class="kpis bench-kpis">'
-  +kpiCard('<span><span data-verbatim>'+e(sideName(sel,c.to,c.dimension))+'</span> '+label('against')+' <span data-verbatim>'+e(sideName(sel,c.from,c.dimension))+'</span></span>','<span class="'+diffClass(d)+'">'+pp(d.value)+'</span>','95% '+pp(d.low)+' '+label('to')+' '+pp(d.high)+(diffClass(d)==='amber'?' · <b class="amber">'+label('not separated')+'</b>':''))
+  +kpiCard('<span data-verbatim>'+e(sideName(sel,c.from,c.dimension))+' → '+e(sideName(sel,c.to,c.dimension))+'</span>','<span class="'+diffClass(d)+'">'+pp(d.value)+'</span>','95% '+pp(d.low)+' '+label('to')+' '+pp(d.high)+(diffClass(d)==='amber'?' · <b class="amber">'+label('not separated')+'</b>':''))
   +kpiCard(label('Pass rate'),pct(passOf(c.rates.from))+' → '+pct(passOf(c.rates.to)),number(c.pairs)+' '+label('paired trials'))
   +third
   +kpiCard(label('Tasks'),number(up)+' <span class="up">↑</span> · '+number(down)+' <span class="down">↓</span> · '+number(c.tasks.length-up-down)+' =',label('pass rate on each task, against the arm it is measured from'))
@@ -223,10 +223,17 @@ function arrowPanel(sel,list,chosen){
  const x=v=>pl+v/max*pw, y=r=>pt+(1-r)*ph;
  const svg='<svg viewBox="0 0 '+W+' '+H+'" role="img" aria-label="'+e(t('Pass rate against cost, from one arm to the other'))+'"><defs>'+[['up','green'],['down','error'],['amber','amber']].map(([cls,color])=>'<marker id="bench-arrow-'+cls+'" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" style="fill:var(--'+color+')"/></marker>').join('')+'</defs>'
   +usageGrid({W,H,pl,pr,pb,pw,x,y,max,axis,unit})
-  +placed.map(q=>{const active=q.c===chosen, x1=x(q.fx), y1=y(q.fy), x2=x(q.tx), y2=y(q.ty), len=Math.hypot(x2-x1,y2-y1)||1, k=Math.max(0,(len-9)/len), flip=x2>W*0.7;
-   return '<g class="arrow'+(active?' active':'')+'" data-bench-comparison="'+e(comparisonId(q.c))+'"><title>'+e(sideName(sel,q.c.from,q.c.dimension)+' → '+sideName(sel,q.c.to,q.c.dimension)+' · '+facetOf(sel,q.c)+': '+Math.round(q.fy*100)+'% → '+Math.round(q.ty*100)+'%')+'</title><line class="'+diffClass(q.c.difference)+'" x1="'+x1.toFixed(1)+'" y1="'+y1.toFixed(1)+'" x2="'+(x1+(x2-x1)*k).toFixed(1)+'" y2="'+(y1+(y2-y1)*k).toFixed(1)+'" marker-end="url(#bench-arrow-'+diffClass(q.c.difference)+')"/><circle class="from" cx="'+x1.toFixed(1)+'" cy="'+y1.toFixed(1)+'" r="5"/><circle class="to" cx="'+x2.toFixed(1)+'" cy="'+y2.toFixed(1)+'" r="6"/>'+(active?'<text class="point-label" x="'+(flip?x2-10:x2+10)+'" y="'+(y2+4)+'"'+(flip?' text-anchor="end"':'')+'>'+e(facetOf(sel,q.c)||sideName(sel,q.c.to,q.c.dimension))+'</text>':'')+'</g>';}).join('')
+  +placed.map(q=>{const active=q.c===chosen, x1=x(q.fx), y1=y(q.fy), x2=x(q.tx), y2=y(q.ty), len=Math.hypot(x2-x1,y2-y1)||1, k=Math.max(0,(len-9)/len);
+   return '<g class="arrow'+(active?' active':'')+'" data-bench-comparison="'+e(comparisonId(q.c))+'"><title>'+e(sideName(sel,q.c.from,q.c.dimension)+' → '+sideName(sel,q.c.to,q.c.dimension)+' · '+facetOf(sel,q.c)+': '+Math.round(q.fy*100)+'% → '+Math.round(q.ty*100)+'%')+'</title><line class="'+diffClass(q.c.difference)+'" x1="'+x1.toFixed(1)+'" y1="'+y1.toFixed(1)+'" x2="'+(x1+(x2-x1)*k).toFixed(1)+'" y2="'+(y1+(y2-y1)*k).toFixed(1)+'" marker-end="url(#bench-arrow-'+diffClass(q.c.difference)+')"/><circle class="from" cx="'+x1.toFixed(1)+'" cy="'+y1.toFixed(1)+'" r="5"/><circle class="to" cx="'+x2.toFixed(1)+'" cy="'+y2.toFixed(1)+'" r="6"/>'+(active?arrowLabels(sel,q.c,{x1,y1,x2,y2,W,H,pb}):'')+'</g>';}).join('')
   +'</svg>';
  return '<section class="panel bench-panel">'+head+'<div class="chart-scroll">'+svg+'</div><p class="scorer-hint">'+label('Hollow: the arm the difference is measured from. Filled: the other. An arrow up and to the left passes more for less.')+'</p></section>';
+}
+// The filled end names the arm, or what both arms share. Compared by role, the hollow end names its role too, so the arrow reads from one role to the other.
+function arrowLabels(sel,c,{x1,y1,x2,y2,W,H,pb}){
+ const flip=x2>W*0.7, to='<text class="point-label" x="'+(flip?x2-10:x2+10)+'" y="'+(y2+4)+'"'+(flip?' text-anchor="end"':'')+'>'+e(c.dimension==='role'?sideName(sel,c.to,c.dimension):facetOf(sel,c)||sideName(sel,c.to,c.dimension))+'</text>';
+ if(c.dimension!=='role')return to;
+ const below=y1+18<=H-pb-4, anchor=x1>W*0.7?'end':x1<W*0.3?'start':'middle';
+ return '<text class="point-label from" x="'+x1.toFixed(1)+'" y="'+(below?y1+18:y1-10).toFixed(1)+'" text-anchor="'+anchor+'">'+e(sideName(sel,c.from,c.dimension))+'</text>'+to;
 }
 function taskDeltaPanel(sel,c){
  const rows=c.tasks.map(x=>({x,f:passOf(x.from),to:passOf(x.to)}));

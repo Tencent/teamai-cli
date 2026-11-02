@@ -61,7 +61,7 @@ teamai dashboard --port 8080
 
 在交出运行的那个安装上，下一步改为 `teamai workflow resume <run>`，在那里把它收回。待接手的本机运行，或现在由其他安装持有的本机运行，会在状态下方注明。**运行器需要**（需要人工的运行上为**其机器需要**）列出剩余步骤的 `requires.env` 键和提示词步骤：照[其作业](workflow.md#从-ci-接手交出的运行)那样在运行器上配好。**本机缺少**是本机缺的那部分，与 `teamai workflow resume` 列为 `cannot run here` 的一致。状态栏统计待接手的运行和需要人工的运行。页面本身不认领任何运行：命令在接手运行的机器上启动驱动。
 
-页面显示运行记录会发布的内容，以及每个步骤的实时状态和等待中 HITL 请求的选项。输入、`for_each` 条目、输出、提示词、HITL 消息和本地路径都留在运行文件里。HITL 问题请在运行的驱动提问处阅读。运行详情显示每个 pass 的产出：它分支上的 commit、为它交付的拉取请求，以及 `teamai contribute` 在它的 attempt 中记录的经验。每个 pass 的评分显示标签，不是评审模型判定时还显示判定它的阶段，例如 `delivered: partial  合并请求 CI`。运行的评审次数不计入这些标签。已结束的[基准测试](benchmarks.md)运行的详情显示它的结果、用量和任务 × arm 表格，与 CLI 打印的一致。
+页面显示运行记录会发布的内容，以及每个步骤的实时状态和等待中 HITL 请求的选项。输入、`for_each` 条目、输出、提示词、HITL 消息和本地路径都留在运行文件里。HITL 问题请在运行的驱动提问处阅读。运行详情显示每个 pass 的产出：它分支上的 commit、为它交付的拉取请求，以及 `teamai contribute` 在它的 attempt 中记录的经验。每个 pass 标出它的 Harness，例如 `claude · claude-sonnet-5-5 · review 步骤角色 · 3bb7751`。每个 pass 的评分显示标签，不是评审模型判定时还显示判定它的阶段，例如 `delivered: partial  合并请求 CI`。运行的评审次数不计入这些标签。已结束的[基准测试](benchmarks.md)运行的详情显示它的结果、用量和任务 × arm 表格，与 CLI 打印的一致。
 
 等待中的 approve 或 choose 请求可以在运行详情里回答。回答和 CLI 走同一个 `respond` 操作，渠道为 `dashboard`，`agent: false`，因此可以回答必需审批。在 agent 会话中启动的仪表盘记录为 `agent: true`，与从该 shell 回答相同，不能回答必需审批。回答带上页面显示的 pass：如果该请求期间已被回答或替换，页面会显示拒绝原因并刷新。其他网站无法提交回答。不带 `Origin` 请求头的请求（如普通 `curl`）也会被拒绝。这只表明回答来自浏览器，并不能阻止自行设置该请求头的本地脚本。
 
@@ -141,7 +141,7 @@ partial 未通过     alice   good 通过  codex / gpt-5.1-codex            10/2
 
 | 问题 | 标签页和面板 | 显示了什么 |
 |---|---|---|
-| 团队资产对 onboarding 文档帮助有多大？ | **对比**，按 **团队资产** | claude 上 `已拉取的团队版本 对比 无团队资产 +41 pp · 95% +16 pp 至 +59 pp`，共 27 个配对 trial，每个通过 trial 的成本 `−60%`。 |
+| 团队资产对 onboarding 文档帮助有多大？ | **对比**，按 **团队资产** | claude 上 `无团队资产 → 已拉取的团队版本 +41 pp · 95% +16 pp 至 +59 pp`，共 27 个配对 trial，每个通过 trial 的成本 `−60%`。 |
 | 对 codex 帮助一样大吗？ | **每对 arm 的差异** | codex 提升 +15 pp，但区间跨过零：这些运行区分不了它的两个 arm。 |
 | 资产修好了哪个任务？ | **每个任务** | `oncall-runbook` 带资产后从 1/9 到 7/9；`first-pr-guide` 几乎没变。 |
 | auth-tokens skill 对 `fix-auth` 上的 claude 有帮助吗？ | **团队变更**，选 `claude · claude-opus-5-5` | 按提交顺序的三个团队版本上是 67%、62%、70%，没有一个与前一个可区分。点击 `67ee2ce · Add the auth-tokens skill and a security reviewer`：它改了三个文件，`session-fixation` 从 1/12 到 3/12。 |

@@ -10,7 +10,7 @@ const NOW = new Date('2026-10-28T12:00:00Z');
 const TEAM = 'b'.repeat(40);
 
 /** A team lead's suite: one review task, on claude and codex, each with the frontend role and the review role. */
-function roleRun(results: Record<string, TrialResult>): BenchmarkRunInput {
+function roleRun(results: Record<string, TrialResult>, tokens: Record<string, number> = {}): BenchmarkRunInput {
   const arms = Object.keys(results).map((name) => {
     const [tool = '', role = ''] = name.split('-');
     return { name, tool, role, source: 'team' as const, team: { kind: 'pulled' as const, revision: TEAM } };
@@ -21,7 +21,8 @@ function roleRun(results: Record<string, TrialResult>): BenchmarkRunInput {
       suite: { name: 'review-roles', sourceHash: 'v1' }, repetitions: 1, baselineTeamRevision: TEAM, scorers: [],
       tasks: [{ id: 'flag-unsafe-sql', startingCommit: 'a'.repeat(40), sourceHash: 't1', baseline: 'valid' }],
       arms,
-      trials: arms.map(({ name }, index) => ({ task: 'flag-unsafe-sql', arm: name, repetition: 1, order: index + 1, step: `trials.r1.flag-unsafe-sql.${name}.prompt`, result: results[name] ?? 'failed' })),
+      trials: arms.map(({ name }, index) => ({ task: 'flag-unsafe-sql', arm: name, repetition: 1, order: index + 1, step: `trials.r1.flag-unsafe-sql.${name}.prompt`, result: results[name] ?? 'failed',
+        ...(tokens[name] ? { tokens: { input: tokens[name], output: 0, complete: true } } : {}) })),
     },
   };
 }
@@ -70,7 +71,8 @@ describe('the Benchmarks page of a suite that compares roles', () => {
     const byTool = text(toolHtml);
 
     expect(byRole).toContain('Compare by Tool Role');
-    expect(byRole).toContain('review role against frontend role +100 pp');
+    // One direction everywhere: the arm the difference is measured from, then the other.
+    expect(byRole).toContain('frontend role → review role +100 pp');
     expect(byRole).toContain('frontend role → review role claude');
     expect(byRole).toContain('frontend role → review role codex');
     expect(byTool).toContain('claude → codex frontend role');
@@ -78,6 +80,22 @@ describe('the Benchmarks page of a suite that compares roles', () => {
     expect(toolHtml.match(/<button class="forest-row/g)).toHaveLength(2);
     // The pair the page opens on names the role both of its arms ran with.
     expect(byTool).toContain('Each task · claude → codex · frontend role');
+  });
+
+  it("shows each arm's role on its own line under its name in the run legend too", async () => {
+    const html = await renderPage(runs);
+    const legend = html.split('<div class="legend">')[1] ?? '';
+
+    expect(legend).toMatch(/^<span class="arm-label"><i class="swatch"[^>]*><\/i><span data-verbatim>claude-frontend<\/span><span class="arm-role" data-verbatim>frontend role<\/span>/);
+  });
+
+  it('names the two roles at the ends of the cost arrow, and says what it compares by when that is the only choice', async () => {
+    const html = await renderPage([roleRun({ 'claude-frontend': 'passed', 'claude-review': 'passed' }, { 'claude-frontend': 1200, 'claude-review': 1000 })], { view: 'compare' });
+    const arrow = html.split('<g class="arrow active"')[1]?.split('</g>')[0] ?? '';
+
+    expect([...arrow.matchAll(/<text class="point-label[^"]*"[^>]*>([^<]*)<\/text>/g)].map(([, name]) => name)).toEqual(['frontend role', 'review role']);
+    expect(html).not.toContain('data-bench-dimension');
+    expect(text(html)).toContain('Compare by Role frontend role → review role 0 pp');
   });
 
   it('labels a role in Chinese, keeping the role id as written', async () => {

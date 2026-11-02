@@ -112,9 +112,15 @@ export type Side = 'before' | 'after';
 /** A cohort's labels split at a team commit. Labels on no revision this clone has are `notRecorded`. */
 export type Split = { commit: string; before: Stats; after: Stats; notRecorded: Stats };
 
-/** The labels of a cohort that recorded one value of a dimension, or none, or did not record it. */
+/** Whether a role group's labels ran with a workflow step's own role, the member's role, or some of each. */
+export type RoleOf = 'step' | 'member' | 'both';
+
+/**
+ * The labels of a cohort that recorded one value of a dimension, or none, or did not record it. A role group says
+ * where its role came from in `roleOf`.
+ */
 export type Group = { key: string; stats: Stats; split?: Omit<Split, 'commit'> } & (
-  | ({ kind: 'value' } & GroupValue)
+  | ({ kind: 'value'; roleOf?: RoleOf } & GroupValue)
   | { kind: 'none' }
   | { kind: 'not recorded' }
 );
@@ -500,7 +506,9 @@ function groups(labels: readonly ViewedLabel[], dimension: Dimension, sideOf: Re
     return counted;
   };
 
-  const counted: Group[] = [...values].map(([key, { value, labels: members }]) => ({ key, kind: 'value' as const, ...value, ...counts(members) }))
+  const counted: Group[] = [...values].map(([key, { value, labels: members }]) => ({
+    key, kind: 'value' as const, ...value, ...dimension === 'role' ? { roleOf: roleOf(members) } : {}, ...counts(members),
+  }))
     .sort((left, right) => right.stats.n - left.stats.n || left.key.localeCompare(right.key));
 
   if (none.length > 0) counted.push({ key: NONE_KEY, kind: 'none', ...counts(none) });
@@ -508,6 +516,15 @@ function groups(labels: readonly ViewedLabel[], dimension: Dimension, sideOf: Re
   if (notRecorded.length > 0) counted.push({ key: NOT_RECORDED_KEY, kind: 'not recorded', ...counts(notRecorded) });
 
   return counted;
+}
+
+/** Where the role of a role group's `labels` came from: the step's own role in a workflow copy, else the member's. */
+function roleOf(labels: readonly ViewedLabel[]): RoleOf {
+  const isStep = labels.map((entry) => observed(entry.agent)?.team?.selection?.stepRole !== undefined);
+
+  if (isStep.every(Boolean)) return 'step';
+
+  return isStep.some(Boolean) ? 'both' : 'member';
 }
 
 /** The values `labels` stored, as stored: the scorer file is never read to rename, add or reorder them. */

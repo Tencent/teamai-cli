@@ -5,7 +5,7 @@ import { agentHarnessView } from '../dashboard/agent-harness-view.js';
 
 const messages: Record<string, string> = dashboardMessages;
 
-/** The line the Steps table shows under a pass's step, as the page renders `harness` in `language`, with every message key it asked for. */
+/** The line a run's Steps and the Scorers failing labels show for a pass, as the page renders `harness` in `language`, with every message key it asked for. */
 function render(harness: AgentHarness | undefined, language: 'en' | 'zh-CN' = 'en'): { html: string; keys: string[] } {
   const keys: string[] = [];
   const t = (text: string) => {
@@ -21,18 +21,24 @@ function render(harness: AgentHarness | undefined, language: 'en' | 'zh-CN' = 'e
 const text = (html: string): string => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 const REVISION = 'c'.repeat(40);
 
-describe("the harness line of a pass in a run's Steps table", () => {
-  it("names the tool, model, effort and the step's own role, marked as the step's, with the team revision on hover", () => {
+/** Each part of the line that must not break inside, as text. */
+const parts = (html: string): string[] => [...html.matchAll(/<span class="harness-part"[^>]*>(.*?)<\/span>(?= · |<\/span>$)/g)].map(([, part]) => text(part ?? ''));
+
+describe('the harness line of a pass', () => {
+  it("names the tool, model, effort, the step's own role marked as the step's, and the short team revision, with the full one on hover", () => {
     const { html } = render({ tool: 'claude', model: 'claude-review-1', effort: 'high', role: { of: 'step', names: ['review'] }, teamRevision: REVISION });
 
-    expect(text(html)).toBe('claude · claude-review-1 · high · review step role');
+    expect(text(html)).toBe('claude · claude-review-1 · high · review step role · ccccccc');
+    expect(parts(html)).toEqual(['claude', 'claude-review-1', 'high', 'review step role', 'ccccccc']);
+    expect(html).toContain('<span class="role-of step">step role</span>');
     expect(html).toContain(`title="Team revision ${REVISION}"`);
   });
 
-  it("names the member's roles, marked as the member's, on a pass that ran without a role of its own", () => {
+  it("names the member's roles, marked as the member's in the same kind of marker, on a pass that ran without a role of its own", () => {
     const { html } = render({ tool: 'codex', model: 'gpt-5', role: { of: 'member', names: ['frontend', 'ops'] }, teamRevision: REVISION });
 
-    expect(text(html)).toBe('codex · gpt-5 · frontend, ops member role');
+    expect(text(html)).toBe('codex · gpt-5 · frontend, ops member role · ccccccc');
+    expect(html).toContain('<span class="role-of member">member role</span>');
   });
 
   it('shows nothing for a pass that ran no tool, and no hover for one with no team delivered', () => {
