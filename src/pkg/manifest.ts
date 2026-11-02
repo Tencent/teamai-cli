@@ -6,7 +6,7 @@ import YAML from 'yaml';
 import { parseYaml } from '../utils/yaml.js';
 import { z } from 'zod';
 
-import { getDataHome, getTeamaiHome, isSelfMode, type JsonValue, type LocalConfig, JsonObjectSchema } from '../types.js';
+import { getDataHome, getTeamaiHome, isSelfMode, type JsonValue, type LocalConfig, isJsonObject } from '../types.js';
 import { pathExists, readFileSafe, writeFile } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import {
@@ -93,9 +93,6 @@ export async function packageLockDir(localConfig: LocalConfig, options: { readOn
   return dir;
 }
 
-/** teamai.yaml read as a map, its keys in file order so a save writes them back in place. */
-const YamlObjectSchema = JsonObjectSchema;
-
 /** The fields of teamai.yaml that can name the team; one of the wrong type reads as absent. */
 const TeamNameSchema = z.object({
   name: z.string().optional().catch(undefined),
@@ -103,13 +100,14 @@ const TeamNameSchema = z.object({
 });
 
 function parseYamlObject(content: string, filePath: string): Record<string, JsonValue> {
-  const parsed = YamlObjectSchema.safeParse(parseYaml(content));
+  // The parsed document itself: a schema copy would drop a `__proto__` key and refuse a `.inf` the save writes back.
+  const parsed = parseYaml(content);
 
-  if (!parsed.success) {
+  if (!isJsonObject(parsed)) {
     throw new Error(`${filePath} must contain a YAML object`);
   }
 
-  return parsed.data;
+  return parsed;
 }
 
 export async function loadPackageManifest(repoPath: string): Promise<PackageManifest> {

@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
+import { parseJson } from '../utils/json.js';
 import { parseYaml } from '../utils/yaml.js';
 import { z } from 'zod';
 import { parse as parseToml, type TomlTable, type TomlValue } from 'smol-toml';
@@ -387,7 +388,7 @@ async function yamlObject(file: string): Promise<JsonObject> {
   const raw = await readOptionalFile(file);
 
   if (raw === null || raw.trim() === '') return {};
-  let parsed: unknown;
+  let parsed: JsonValue;
 
   try {
     parsed = parseYaml(raw);
@@ -395,14 +396,14 @@ async function yamlObject(file: string): Promise<JsonObject> {
     throw new Error(`Cannot parse ${file}: ${messageOf(error)}`, { cause: error });
   }
 
-  if (parsed === null || parsed === undefined) return {};
-  const root = JsonObjectSchema.safeParse(parsed);
+  if (parsed === null) return {};
 
-  if (!root.success) {
+  // The parsed document itself, not a schema copy, which would drop a `__proto__` key the file holds.
+  if (!isJsonObject(parsed)) {
     throw new Error(`Cannot update ${file}: the root must be a YAML mapping`);
   }
 
-  return root.data;
+  return parsed;
 }
 
 /**
@@ -420,21 +421,20 @@ async function jsonObject(file: string): Promise<JsonObject> {
   const raw = await readOptionalFile(file);
 
   if (raw === null || raw.trim() === '') return {};
-  let parsed: unknown;
+  let parsed: JsonValue;
 
   try {
-    parsed = JSON.parse(raw);
+    parsed = parseJson(raw);
   } catch (error) {
     throw new Error(`Cannot parse ${file}: ${messageOf(error)}`, { cause: error });
   }
 
-  const root = JsonObjectSchema.safeParse(parsed);
-
-  if (!root.success) {
+  // The parsed document itself, not a schema copy, which would drop a `__proto__` key the file holds.
+  if (!isJsonObject(parsed)) {
     throw new Error(`Cannot update ${file}: the root must be a JSON object`);
   }
 
-  return root.data;
+  return parsed;
 }
 
 async function installed(agent: ModelAgent, roots: AgentRoots): Promise<boolean> {

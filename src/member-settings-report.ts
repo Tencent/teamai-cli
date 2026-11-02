@@ -17,7 +17,6 @@ import {
   isMrHintEnabled,
   isRecallEnabled,
   isUsageReportEnabled,
-  JsonValueSchema,
   MemberSettingsSchema,
   resolveAutoCompactTokens,
   resolveCoAuthor,
@@ -27,6 +26,7 @@ import {
   JsonObjectSchema,
 } from './types.js';
 import { readFileSafe } from './utils/fs.js';
+import { parseJson } from './utils/json.js';
 
 /** `http-team`: an HTTP team repo, which keeps no session archive, so it turns session publishing off whatever a level sets. */
 export type MemberSettingLevel = 'environment' | 'scope' | 'machine' | 'team' | 'http-team' | 'default';
@@ -209,7 +209,7 @@ function readPath(tree: JsonValue | undefined, parts: string[]): JsonValue | und
 function asJsonTree<TConfig>(config: TConfig): JsonValue | undefined {
   const text = JSON.stringify(config);
 
-  return text === undefined ? undefined : JsonValueSchema.parse(JSON.parse(text));
+  return text === undefined ? undefined : parseJson(text);
 }
 
 async function readYamlObject(file: string): Promise<ConfigObject> {

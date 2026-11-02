@@ -14,6 +14,7 @@
 import { z } from 'zod';
 import { JsonValueSchema, type JsonValue, JsonObjectSchema } from '../types.js';
 import { coercedText, OptionalString } from './fs.js';
+import { parseJson } from '../utils/json.js';
 
 // ---------------------------------------------------------------------------
 // Content blocks (ContentBlock)
@@ -52,7 +53,7 @@ export function toolArgumentsFrom(stored: JsonValue | undefined): ToolArguments 
 
   if (text.success) {
     try {
-      decoded = JsonValueSchema.parse(JSON.parse(text.data));
+      decoded = parseJson(text.data);
     } catch {
       return { _raw: text.data };
     }

@@ -126,6 +126,7 @@ import { hookSettingsFile, installOf, locate, ownOf, writable, type FilePlace } 
 import { mcpFormatOf } from './tools.js';
 import { acquireLock, releaseLock } from './update.js';
 import { isJsonObject, type JsonObject } from './types.js';
+import { parseJson } from './utils/json.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -1381,7 +1382,7 @@ async function localAgentFetch<T = JsonValue>(
 
   if (text.trim()) {
     try {
-      body = JsonValueSchema.parse(JSON.parse(text));
+      body = parseJson(text);
     } catch {
       body = text;
     }
@@ -3814,7 +3815,7 @@ function parseDeliveredModels(raw: string | undefined): DeliveredModels {
   let parsed: JsonValue;
 
   try {
-    parsed = JsonValueSchema.parse(JSON.parse(raw));
+    parsed = parseJson(raw);
   } catch {
     throw new Error('apply_model_config: cmd must be valid JSON');
   }
@@ -3911,7 +3912,7 @@ async function readJsonObject(filePath: string): Promise<JsonObject> {
   if (source === null) return {};
 
   try {
-    const parsed = JsonValueSchema.parse(JSON.parse(source));
+    const parsed = parseJson(source);
 
     if (!isJsonObject(parsed)) {
       throw new Error('root must be an object');
@@ -4008,7 +4009,7 @@ async function mayHoldModelKey(file: string): Promise<boolean> {
   if (content === null) return false;
 
   try {
-    const parsed = JsonValueSchema.parse(JSON.parse(content));
+    const parsed = parseJson(content);
     const entries = Array.isArray(parsed) ? parsed : isJsonObject(parsed) ? parsed.models : undefined;
 
     if (entries === undefined && isJsonObject(parsed)) return false;
@@ -4137,7 +4138,7 @@ async function removeWorkspaceModels(): Promise<string[]> {
 
   try {
     const raw = await readFileIfExists(getModelManifestPath());
-    const parsed = raw === null ? {} : JsonValueSchema.parse(JSON.parse(raw));
+    const parsed = raw === null ? {} : parseJson(raw);
 
     if (!isJsonObject(parsed)) throw new Error('not a JSON object');
     const record = ModelConfigManifestSchema.safeParse(parsed);
@@ -4186,7 +4187,7 @@ async function readBuddyModelEntries(filePath: string): Promise<BuddyModelsDocum
   if (source === null) return { existing: [], doc: {} };
 
   try {
-    const doc = JsonValueSchema.parse(JSON.parse(source));
+    const doc = parseJson(source);
 
     if (Array.isArray(doc)) return { existing: doc };
 
@@ -6391,7 +6392,7 @@ async function finishAgentHookTeardown(
   if (left.caches.length > 0 || entries.length > 0) keep.add(path.basename(getManifestPath()));
   const gitExcludeRecord = path.join(home, 'git-exclude.json');
   // A record that cannot be read may name blocks still in place: it stays.
-  const recorded = await readFileIfExists(gitExcludeRecord).then((raw) => raw === null ? {} : JsonValueSchema.parse(JSON.parse(raw))).catch(() => null);
+  const recorded = await readFileIfExists(gitExcludeRecord).then((raw) => raw === null ? {} : parseJson(raw)).catch(() => null);
 
   // Only an empty object or array is a record with nothing left in it.
   if (!(recorded instanceof Object) || Object.keys(recorded).length > 0) keep.add(path.basename(gitExcludeRecord));

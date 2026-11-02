@@ -39,9 +39,10 @@ import { z } from 'zod';
 import { AgentObservationSchema, type AgentObservation } from '../agent-observation.js';
 import type { Session } from './ir.js';
 import { OptionalString } from './fs.js';
-import { JsonValueSchema, JsonObjectSchema } from '../types.js';
+import { JsonValueSchema, isJsonObject } from '../types.js';
 import { titleSpellsLocalPath, type LocalPathRoots } from './scrub.js';
 import { messageToDict, messageFromDict } from './ir.js';
+import { parseJson } from '../utils/json.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1263,7 +1264,7 @@ export class SyncManager {
     const messages = content
       .split('\n')
       .filter((l) => l.trim())
-      .map((l) => messageFromDict(JsonValueSchema.parse(JSON.parse(l))));
+      .map((l) => messageFromDict(parseJson(l)));
 
     // Extract the title from meta + sessionName
     // Prefer the persisted title; the file name slug is truncated + lowercased
@@ -1553,9 +1554,9 @@ export class SyncManager {
     // an index rebuild, not a session change, so retain the committed bytes
     // when its session projection is already identical.
     try {
-      const current = JsonObjectSchema.parse(JSON.parse(fs.readFileSync(indexPath, 'utf-8')));
+      const current = parseJson(fs.readFileSync(indexPath, 'utf-8'));
 
-      if (JSON.stringify({ ...current, updatedAt: undefined }) === JSON.stringify({ ...rebuilt, updatedAt: undefined })) {
+      if (isJsonObject(current) && JSON.stringify({ ...current, updatedAt: undefined }) === JSON.stringify({ ...rebuilt, updatedAt: undefined })) {
         return entries.length;
       }
     } catch {

@@ -49,6 +49,7 @@ import {
   titleFromCandidates,
 } from '../title.js';
 import type { JsonlRecord } from '../../utils/jsonl-store.js';
+import { parseJson } from '../../utils/json.js';
 
 // ---------------------------------------------------------------------------
 // Tool-name normalization map
@@ -440,7 +441,7 @@ const SubagentMetaSchema = z.object({
 
 function readJsonFile(file: string): JsonValue | undefined {
   try {
-    return JsonValueSchema.parse(JSON.parse(fs.readFileSync(file, 'utf-8')));
+    return parseJson(fs.readFileSync(file, 'utf-8'));
   } catch {
     return undefined;
   }

@@ -29,6 +29,7 @@ import { isSafeSessionFileId } from '../ids.js';
 import { findSqlite3 } from '../sqlite.js';
 import { execCommand, type ExecResult } from '../../utils/exec.js';
 import { log } from '../../utils/logger.js';
+import { parseJson } from '../../utils/json.js';
 
 const SummaryRow = z.object({
   conversation_id: z.string(),
@@ -263,7 +264,7 @@ const IR_TOOL: ReadonlyMap<string, string> = new Map([
 /** An argument as agy stored it, JSON-encoded, decoded; a value that is not JSON is kept as it is. */
 function decodedArgument(text: string): JsonValue {
   try {
-    return JsonValueSchema.parse(JSON.parse(text));
+    return parseJson(text);
   } catch {
     return text;
   }
