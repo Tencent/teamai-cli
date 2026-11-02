@@ -2686,6 +2686,14 @@ export const CURSOR_CONFIG_TOOL_ID = 'cursor-config';
 /** The root segment both Cursor CLI roots fall back to when their variable is unset. */
 export const DEFAULT_CURSOR_ROOT = '.cursor';
 
+/** Qoder (a Claude Code fork): `QODER_CONFIG_DIR` moves the whole `~/.qoder` root. */
+export const QODER_TOOL_ID = 'qoder';
+export const DEFAULT_QODER_ROOT = '.qoder';
+
+/** Qoder CN is the same CLI under `~/.qoder-cn`, moved by the QODERCN_ variables. */
+export const QODERCN_TOOL_ID = 'qoder-cn';
+export const DEFAULT_QODERCN_ROOT = '.qoder-cn';
+
 /** A tool whose user root can be moved, and the variable that moves it. */
 export interface RelocatableTool {
   /** Display name in init output and doctor checks. */
@@ -2778,6 +2786,11 @@ export const RELOCATABLE_TOOLS: Readonly<Record<string, RelocatableTool>> = {
   [CODEX_TOOL_ID]: { label: 'Codex', envVar: 'CODEX_HOME', defaultRoot: DEFAULT_CODEX_ROOT },
   [CURSOR_DATA_TOOL_ID]: { label: 'Cursor transcripts', envVar: 'CURSOR_DATA_DIR', defaultRoot: DEFAULT_CURSOR_ROOT },
   [CURSOR_CONFIG_TOOL_ID]: { label: 'Cursor config', envVar: 'CURSOR_CONFIG_DIR', defaultRoot: DEFAULT_CURSOR_ROOT },
+  // Qoder moves its whole root like Claude Code: transcripts, settings, rules
+  // and agents all hang off QODER_CONFIG_DIR (QODER_CLI_HOME is the fallback
+  // the CLI itself reads; one variable can be recorded).
+  [QODER_TOOL_ID]: { label: 'Qoder', envVar: 'QODER_CONFIG_DIR', defaultRoot: DEFAULT_QODER_ROOT },
+  [QODERCN_TOOL_ID]: { label: 'Qoder CN', envVar: 'QODERCN_CONFIG_DIR', defaultRoot: DEFAULT_QODERCN_ROOT },
 };
 
 /**

@@ -68,6 +68,34 @@ export const SESSION_PLATFORM_FACTS = {
     sqliteRegistrationOnWindows: false,
     idFormat: 'uuid',
   },
+  // Qoder CLI 1.1.78, a Claude Code fork: the same transcript JSONL under
+  // ~/.qoder/projects/<encoded-cwd>, subagents under <id>/subagents/.
+  // QODER_CONFIG_DIR moves the root; a relocated install records it in toolRoots.
+  'qoder': {
+    store: { in: 'tool-home', home: 'qoder', dir: 'projects' },
+    resume: (id) => `qoder --resume ${id}`,
+    thinking: true, images: true,
+    nativeTools: new Set([
+      'read_file', 'write_file', 'edit_file', 'multi_edit', 'bash', 'glob', 'grep',
+      'web_search', 'web_fetch', 'task', 'todo_write', 'notebook_edit', 'lsp',
+    ]),
+    legacyIdWithoutWorkspace: true,
+    sqliteRegistrationOnWindows: false,
+    idFormat: 'uuid',
+  },
+  // Qoder CN is the same CLI and store layout under ~/.qoder-cn (QODERCN_ variables).
+  'qoder-cn': {
+    store: { in: 'tool-home', home: 'qoder-cn', dir: 'projects' },
+    resume: (id) => `qoder --resume ${id}`,
+    thinking: true, images: true,
+    nativeTools: new Set([
+      'read_file', 'write_file', 'edit_file', 'multi_edit', 'bash', 'glob', 'grep',
+      'web_search', 'web_fetch', 'task', 'todo_write', 'notebook_edit', 'lsp',
+    ]),
+    legacyIdWithoutWorkspace: true,
+    sqliteRegistrationOnWindows: false,
+    idFormat: 'uuid',
+  },
   'codex': {
     store: { in: 'tool-home', home: 'codex', dir: 'sessions' },
     resume: (id) => `codex resume ${id}`,

@@ -34,6 +34,9 @@ export const ADAPTER_REGISTRY: Record<string, AdapterFactory> = {
   // TeamAI variants (different path prefixes, identical format)
   'claude-internal': (toolRoots) => new ClaudeCodeAdapter('claude-internal', sessionStoreDir('claude-internal', toolRoots)),
   tclaude: (toolRoots) => new ClaudeCodeAdapter('tclaude', sessionStoreDir('tclaude', toolRoots)),
+  // Qoder (CLI 1.1.78), a Claude Code fork: same transcript format, own store.
+  qoder: (toolRoots) => new ClaudeCodeAdapter('qoder', sessionStoreDir('qoder', toolRoots)),
+  'qoder-cn': (toolRoots) => new ClaudeCodeAdapter('qoder-cn', sessionStoreDir('qoder-cn', toolRoots)),
   'codex-internal': (toolRoots) => new CodexAdapter('codex-internal', sessionStoreDir('codex-internal', toolRoots)),
   tcodex: (toolRoots) => new CodexAdapter('tcodex', sessionStoreDir('tcodex', toolRoots)),
 } satisfies Record<SessionPlatform, AdapterFactory>;

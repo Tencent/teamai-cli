@@ -45,7 +45,7 @@ describe('session platform facts (#1140)', () => {
   });
 
   it('reads no session platform for a tool whose sessions are none or unknown', () => {
-    for (const tool of ['copilot', 'muse', 'pi', 'kiro', 'qoder', 'openclaw', 'joycode']) expect(AgentSession.platformForTool(tool)).toBeUndefined();
+    for (const tool of ['copilot', 'muse', 'pi', 'kiro', 'openclaw', 'joycode']) expect(AgentSession.platformForTool(tool)).toBeUndefined();
   });
 
   it('prints the resume command each CLI accepts', () => {
