@@ -7,6 +7,7 @@ import { AgentSession } from '../session-flow/agent-session.js';
 import { judgedTranscript } from '../session-flow/session-work.js';
 import { knownSecrets } from '../env-resolution.js';
 import type { LocalConfig } from '../types.js';
+import { readFileIfExists } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { redact } from '../utils/redact.js';
 import { scoresDir } from '../scorers/attempts.js';
@@ -268,8 +269,8 @@ export async function stageEvidence(config: LocalConfig, run: RunState, subject:
  * when `dir` holds none.
  */
 export async function evidenceHash(dir: string): Promise<string | undefined> {
-  const fenced = await fs.readFile(path.join(dir, FENCED)).catch(() => undefined);
-  return fenced && `sha256:${createHash('sha256').update(fenced).digest('hex')}`;
+  const fenced = await readFileIfExists(path.join(dir, FENCED));
+  return fenced === null ? undefined : `sha256:${createHash('sha256').update(fenced).digest('hex')}`;
 }
 
 /** Writes prompt.md in `dir`, which collectEvidence filled: what `rubrics` ask, then the fenced evidence. */
