@@ -23,7 +23,7 @@ import { getTeamHookDispatchCommand, getTeamHookDispatchCommandWindows } from '.
 import { runHookCommand } from './hook-command.js';
 import { stdinString, type HookStdin } from './hook-dispatch.js';
 import type { CodexGroupSlot, CodexTrustPolicy } from './hooks.js';
-import { CODEX_TOOL_ID, getTeamaiHomeDir } from './types.js';
+import { CODEX_TOOL_ID, getTeamaiHomeDir, type JsonValue } from './types.js';
 import { checkoutForProjectAnchor } from './utils/git.js';
 import { readJson, readJsonObject, writeJsonAtomic } from './utils/fs.js';
 import { log, setStderrOnly } from './utils/logger.js';
@@ -215,8 +215,8 @@ export async function reconcileCodexDispatchers(hooksFile: string, codexTrust: C
   }
 
   if (timeouts.size === 0 && (await readJsonObject(hooksFile)).kind === 'missing') return;
-  const { editCodexHookFile } = await import('./hooks.js');
-  const isDispatcher = (group: { hooks?: Array<{ command?: string }> }) => isCodexTeamHookDispatcher(group?.hooks?.[0]?.command ?? '');
+  const { codexGroupCommand, editCodexHookFile } = await import('./hooks.js');
+  const isDispatcher = (group: JsonValue) => isCodexTeamHookDispatcher(codexGroupCommand(group));
 
   const written = await editCodexHookFile(hooksFile, CODEX_TOOL_ID, (all) => Object.fromEntries(
     [...new Set([...Object.keys(all), ...timeouts.keys()])].map((event) => {

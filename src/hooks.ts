@@ -505,6 +505,11 @@ function hookEventsOf(json: JsonValue | null, format: HookFormat): Map<string, J
   return new Map(Object.entries(events).map(([event, entries]) => [event, Array.isArray(entries) ? entries : []]));
 }
 
+/** The first handler's command of a Codex hook group as the member's file holds it, or '' when it has none. */
+export function codexGroupCommand(group: JsonValue | undefined): string {
+  return hookFileEntryOf(group)?.hooks?.[0]?.command ?? '';
+}
+
 /** The event key and entry a reconciler writes for a hook. */
 interface HookRender {
   event?: string;
@@ -2562,13 +2567,13 @@ type CodexHookPlan = Record<string, CodexGroupSlot[] | null>;
 export async function editCodexHookFile(
   file: string,
   tool: string,
-  plan: (hooks: Readonly<Record<string, readonly CodexHookMatcher[]>>) => CodexHookPlan,
+  plan: (hooks: Readonly<Record<string, readonly JsonValue[]>>) => CodexHookPlan,
   codexTrust: CodexTrustPolicy,
 ): Promise<boolean> {
   const doc = await readHookFile<CodexHooksJson>(file, {}, 'codex');
-  const all = isJsonObject(doc.hooks) ? doc.hooks : {};
-  const hooks = Object.fromEntries(Object.entries(all).filter(([, groups]) => Array.isArray(groups)));
-  const next = { ...all };
+  // readHookFile refused a file whose hooks are not an object of lists.
+  const hooks = doc.hooks ?? {};
+  const next = { ...hooks };
   const planned = plan(hooks);
   const retained = new Map<string, string>();
 
@@ -2642,11 +2647,11 @@ async function reconcileCodexFormat(
   const expanded = expandHome(hooksPath);
   await ensureDir(path.dirname(expanded));
 
-  const isManaged = (event: string, index: number, entries: readonly CodexHookMatcher[]): boolean => {
+  const isManaged = (event: string, index: number, entries: readonly JsonValue[]): boolean => {
     const entry = hookFileEntryOf(entries[index]);
 
     if (!entry) return false;
-    const cmd = entry.hooks?.[0]?.command ?? '';
+    const cmd = codexGroupCommand(entries[index]);
 
     // The team-hook dispatchers have their own pass (reconcileCodexDispatchers).
     if (!opts.removeAll && isCodexTeamHookDispatcher(cmd)) return false;
@@ -3047,7 +3052,7 @@ export async function applyAgentHook(
   // a unique command per codex agent-hook slug so replace/remove stay precise.
   if (format === 'codex') {
     const entry = toCodexEntry(hookDef);
-    const isAgent = (group: CodexHookMatcher): boolean => (hookFileEntryOf(group)?.hooks?.[0]?.command ?? '') === def.command;
+    const isAgent = (group: JsonValue): boolean => codexGroupCommand(group) === def.command;
 
     const written = await editCodexHookFile(expanded, tool, (hooks) => {
       const existing = hooks[def.event] ?? [];
@@ -3108,7 +3113,7 @@ export async function removeAgentHook(
 
     const written = await editCodexHookFile(expanded, tool, (hooks) => Object.fromEntries(
       Object.entries(hooks).flatMap(([event, groups]): Array<[string, CodexGroupSlot[] | null]> => {
-        const kept = groups.flatMap((group, index) => (hookFileEntryOf(group)?.hooks?.[0]?.command ?? '') === opts.command ? [] : [{ keep: index }]);
+        const kept = groups.flatMap((group, index) => codexGroupCommand(group) === opts.command ? [] : [{ keep: index }]);
 
         return kept.length === groups.length ? [] : [[event, kept.length > 0 ? kept : null]];
       })), codexTrust);
