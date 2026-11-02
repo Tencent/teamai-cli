@@ -12,7 +12,7 @@ import { archiveUnder, isUnder } from './loop.js';
 import { spentTokens, startLimits } from './limits.js';
 import { publishRunRecords, removeQueuedEndRecord } from './records.js';
 import { contextOf, localId, statesIn } from './scope.js';
-import { answerHitl, cancel, cancellable, redeliver, repend, resetIteration, resetPending, settled, start, stopAttempt, stopWhere, stopped, type StepState } from './step-state.js';
+import { answerHitl, cancel, cancellable, redeliver, repend, resetIteration, resetPending, settled, start, stopAttempt, stopWhere, stopped, type HitlAnswer, type StepState } from './step-state.js';
 import type { DriverIdentity, RunState, WorkflowEnvelope } from './types.js';
 import { isIsolated } from './workspace.js';
 
@@ -218,7 +218,13 @@ export async function respondToHitl(config: LocalConfig, runId: string, secrets:
     if (hitl.required && agentCause) return agentInPath(run, state, hitl.options, agentCause);
     const agent = agentCause !== undefined;
     const answered = { step: state.id, pass: state.pass ?? 1, choice: input.choice, channel, agent };
-    answerHitl(state, { choice: input.choice, ...(input.note !== undefined ? { note: input.note } : {}), at: now, channel, agent, ...(driver ? { driver } : {}) });
+    const noted: Pick<HitlAnswer, 'note'> = {};
+
+    if (input.note !== undefined) noted.note = input.note;
+    const answer: HitlAnswer = { choice: input.choice, ...noted, at: now, channel, agent };
+
+    if (driver) answer.driver = driver;
+    answerHitl(state, answer);
     const reconciled = reconcileRun(run, now);
 
     if ('unreadable' in reconciled) return error('run_unreadable', reconciled.unreadable);
@@ -314,7 +320,7 @@ function retryContainers(run: RunState, target: StepState): RetryContainer[] | W
       runner = scope.runner;
       const parsed = parseReads(run, scope);
 
-      if (typeof parsed === 'string') return error('run_unreadable', parsed);
+      if (!(parsed instanceof Object)) return error('run_unreadable', parsed);
       reads = parsed;
       dependencies = (state) => {
         const id = localId(scope, state);
@@ -512,7 +518,8 @@ export async function retryStep(config: LocalConfig, runId: string, secrets: Rec
 
     if ('outcome' in reconciled) await finish(reconciled);
 
-    return ok({ retried: { step: target.id, pass: target.pass ?? 1 }, reopened, run: runData(run),
-      ...(reopened && run.status === 'running' ? { resume: `teamai workflow resume ${run.id}` } : {}) });
+    const retried = { retried: { step: target.id, pass: target.pass ?? 1 }, reopened, run: runData(run) };
+
+    return ok(reopened && run.status === 'running' ? { ...retried, resume: `teamai workflow resume ${run.id}` } : retried);
   });
 }

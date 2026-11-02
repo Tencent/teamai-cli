@@ -80,7 +80,9 @@ function definitionModel(agent: AgentSpec | undefined, tool: ToolName): string |
   if (agent === undefined) return undefined;
   const own = tool === 'agy' ? toolExtrasFor(agent, 'agy')?.['model'] : undefined;
 
-  return typeof own === 'string' ? own : agent.model;
+  const named = z.string().safeParse(own);
+
+  return named.success ? named.data : agent.model;
 }
 
 export async function chooseStepModel(request: StepModelRequest): Promise<StepModelChoice> {
@@ -100,7 +102,11 @@ export async function chooseStepModel(request: StepModelRequest): Promise<StepMo
     if (!agent || !defined || family === undefined || family === 'claude' || family === 'codebuddy') return { ok: true };
     const variant = family === 'opencode' ? toolExtrasFor(agent, 'opencode')?.['variant'] : undefined;
 
-    return { ok: true, by: 'definition', model: { name: defined, ...(variant !== undefined ? { effort: String(variant) } : {}) } };
+    const model: StepModel = { name: defined };
+
+    if (variant !== undefined) model.effort = String(variant);
+
+    return { ok: true, by: 'definition', model };
   }
 
   const aliases = await loadModelAliases(request.config);
@@ -112,12 +118,11 @@ export async function chooseStepModel(request: StepModelRequest): Promise<StepMo
     return unavailable(stepModelUnavailableText(step, chosen.origin, value, noModelCause(resolution, tool), noModelReason(resolution)));
   }
 
-  return {
-    ok: true,
-    by: chosen.origin,
-    model: { name: resolution.model, ...(resolution.effort !== undefined ? { effort: resolution.effort } : {}) },
-    ...(isModelAlias(aliases, chosen.value) ? { alias: chosen.value } : {}),
-  };
+  const model: StepModel = { name: resolution.model };
+
+  if (resolution.effort !== undefined) model.effort = resolution.effort;
+
+  return isModelAlias(aliases, chosen.value) ? { ok: true, by: chosen.origin, model, alias: chosen.value } : { ok: true, by: chosen.origin, model };
 }
 
 /**

@@ -284,8 +284,8 @@ type CancelledStep = StepIn<'cancelled'>;
 
 type Settlement<T extends StepState> = Omit<T, keyof StepBase | 'status' | 'outcome'>;
 
-const BASE_KEYS = Object.keys(StepBaseSchema.shape) as Array<keyof StepBase>;
-const SETTLED_KEYS = Object.keys(settledFields) as Array<keyof typeof settledFields>;
+const BASE_KEYS = StepBaseSchema.keyof().options;
+const SETTLED_KEYS = z.object(settledFields).keyof().options;
 const VISIBLE_OUTCOMES = { succeeded: 'success', failed: 'failed', skipped: 'skipped', cancelled: 'cancelled' } as const;
 
 /** The outcome expressions and records read of a settled step: a failure with code `timeout` reads as `timeout`. */
@@ -298,11 +298,13 @@ export function visibleOutcome(step: Extract<StepState, { status: keyof typeof V
  * In place, because `run.steps` holds the instance and the engine finds positions in it by identity.
  */
 function become<T extends StepState>(state: StepState | HandedLease, next: Omit<T, keyof StepBase>): T {
-  const fields = state as Record<string, unknown>;
+  // oxlint-disable-next-line teamai/no-unsafe-dictionary-type -- rewrites the step's own keys in place, whatever its variant
+  const fields: Record<string, unknown> = state;
   const kept = Object.fromEntries(BASE_KEYS.filter((key) => fields[key] !== undefined).map((key) => [key, fields[key]]));
 
   for (const key of Object.keys(fields)) delete fields[key];
 
+  // SAFETY: every key was deleted above, so the object holds only the base fields it had and the fields of `next`, which together are a T
   return Object.assign(fields, kept, next) as T;
 }
 
@@ -371,7 +373,7 @@ export function lease(state: StepState, held: StepLease): LeasedStep {
  * A workflow step starts; `inputs` are the values its `with` passed, when that workflow declares inputs, and `limits`
  * when its timeout ends it and where its workflow's budget counts from.
  */
-export function start(state: StepState, inputs?: Record<string, unknown>, limits: Pick<RunningStep, 'expiresAt' | 'limitsFrom'> = {}): RunningStep {
+export function start(state: StepState, inputs?: RunningStep['inputs'], limits: Pick<RunningStep, 'expiresAt' | 'limitsFrom'> = {}): RunningStep {
   const running = become<RunningStep>(state, { status: 'running', ...limits });
 
   if (inputs) running.inputs = inputs;
@@ -423,7 +425,13 @@ function stoppedLease(state: StepState): Pick<StepLease, 'unenforced' | 'runMode
   if (state.status !== 'leased') return {};
   const { unenforced, runMode } = state.lease;
 
-  return { attempt: state.attempt, ...(unenforced ? { unenforced } : {}), ...(runMode ? { runMode } : {}) };
+  const left: ReturnType<typeof stoppedLease> = { attempt: state.attempt };
+
+  if (unenforced) left.unenforced = unenforced;
+
+  if (runMode) left.runMode = runMode;
+
+  return left;
 }
 
 /**

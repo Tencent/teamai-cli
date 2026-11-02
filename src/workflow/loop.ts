@@ -59,7 +59,7 @@ export function stepLoops(steps: LoopStep[]): StepLoops {
     waitsFor: (id, reads) => {
       const used = [...needs.get(id) ?? [], ...reads];
 
-      return [...ranges].filter(([, range]) => !range.has(id) && used.some((read) => range.has(read))).map(([owner]) => owner);
+      return [...ranges].flatMap(([owner, range]) => (!range.has(id) && used.some((read) => range.has(read)) ? [owner] : []));
     },
     previous: (id) => {
       const range = [...ranges.values()].find((members) => members.has(id)) ?? [];
@@ -343,9 +343,22 @@ export function firstPass(run: RunState, path: string): number {
 }
 
 function expressionPasses(passes: StepPass[]): ExpressionPass[] {
-  return passes.map(({ pass, outcome, outputs, end, results, answer }) => ({
-    pass, outcome, ...(answer ? { choice: answer.choice, note: answer.note } : {}), ...(outputs !== undefined ? { outputs } : {}), ...(end !== undefined ? { end } : {}), ...(results !== undefined ? { results } : {}),
-  }));
+  return passes.map(({ pass, outcome, outputs, end, results, answer }) => {
+    const read: ExpressionPass = { pass, outcome };
+
+    if (answer) {
+      read.choice = answer.choice;
+      read.note = answer.note;
+    }
+
+    if (outputs !== undefined) read.outputs = outputs;
+
+    if (end !== undefined) read.end = end;
+
+    if (results !== undefined) read.results = results;
+
+    return read;
+  });
 }
 
 /** `steps.<id>.passes`: the passes a loop archived on the instance, then its current pass once it settled. */
@@ -361,5 +374,9 @@ export function previousPass(state: StepState): ExpressionStep {
   const { pass: _pass, ...latest } = passes.at(-1) ?? {};
   const branches = branchNames('results' in latest ? latest.results : undefined);
 
-  return { ...latest, passes, ...(branches ? { branches } : {}) };
+  const previous: ExpressionStep = { ...latest, passes };
+
+  if (branches) previous.branches = branches;
+
+  return previous;
 }
