@@ -1471,7 +1471,7 @@ program
   .description('Inspect and maintain the teamwiki that `teamai import` writes')
   .addOption(new Option('--project <name>', 'Codebase slug under teamwiki/evidence/code/, required for --deep-enrich').hideHelp())
   .addOption(new Option('--upgrade-wiki', 'Migrate docs/team-codebase/ to teamwiki/ graph format').hideHelp())
-  .option('--lint', 'Run global consistency lint over the teamwiki knowledge graph')
+  .option('--lint', 'Run global consistency lint over the teamwiki knowledge graph, and count the member\'s asset relations (assets, relations, without a relation, unresolved)')
   .option('--reconcile', 'Reconcile product and code knowledge in teamwiki')
   .option('--deep-enrich', 'Generate deep knowledge docs from extracted evidence')
   .addOption(new Option('--fix', 'Deprecated: teamwiki lint has no autofix; runs lint in report-only mode').hideHelp())
