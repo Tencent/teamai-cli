@@ -1,16 +1,16 @@
 schemaVersion: v1alpha1
 name: teamai-session-to-task
-description: Turn the bug this session fixed into a benchmark task, proposed to the team as a pull request. Use when the person asks to keep this fix as a benchmark task or add it to a benchmark suite.
+description: Turn the work this session finished, such as a bug fix, a feature or a refactor, into a benchmark task, proposed to the team as a pull request. Use when the person asks to keep this session, fix or change as a benchmark task or add it to a benchmark suite.
 invoke: ask
 inputs: { session: string, source: string, suite: string, start: string, fix: string }
 steps:
   - id: draft
     interactive: true
     prompt: |
-      Turn the bug this {{ inputs.source }} session {{ inputs.session }} fixed into one task of the benchmark suite in {{ inputs.suite }}.
-      Work it with the person. The task starts at commit {{ inputs.start }}; the fix is commit {{ inputs.fix }} (empty when there is none).
+      Turn the work this {{ inputs.source }} session {{ inputs.session }} finished (a bug fix, a feature, a refactor) into one task of the benchmark suite in {{ inputs.suite }}.
+      Work it with the person. The task starts at commit {{ inputs.start }}; the fix, the commit that completes it, is {{ inputs.fix }} (empty when there is none).
       Write the task file outside the repository, in the format of the files under {{ inputs.suite }}/tasks/:
-      schemaVersion v1alpha1; title; prompt, the bug as the person first described it, without the fix;
+      schemaVersion v1alpha1; title; prompt, the bug or the request as the person first described it, without the fix;
       startingCommit {{ inputs.start }}; exactly one of check or successCriteria;
       and source with platform {{ inputs.source }}, sessionId {{ inputs.session }} and, when there is a fix, fix {{ inputs.fix }}.
       check has run, and protect listing every test, config, script and manifest the check reads.

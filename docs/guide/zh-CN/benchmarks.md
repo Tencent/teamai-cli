@@ -323,7 +323,7 @@ setup-error    setup failed           not tried                          1: name
 
 ## 把会话变成任务
 
-你和 agent 一起修好的 bug，是套件能得到的最好任务：真实的 bug，在你的代码里，还有证明它的修复。让修好它的那个会话把它留下来：
+你和 agent 一起完成的工作，无论是修 bug、加功能还是重构，都是套件能得到的最好任务：真实的工作，在你的代码里，还有证明它能完成的提交。让完成它的那个会话把它留下来：
 
 ```text
 你：     把这个修复变成 benchmark 任务
@@ -364,7 +364,9 @@ source: { platform: claude-code, sessionId: 7c1e2b9a, fix: 9a1d4e7c2b8f0a3d6e5c1
 | 修了 bug 并新增 `test/auth/refresh-race.test.ts` | `check`，带 `add: [test/auth/refresh-race.test.ts]`，如上 |
 | 修了 bug 并在 `test/auth/refresh.test.ts` 里加了一个用例 | `check`，带 `add: [test/auth/refresh.test.ts]`：文件取修复时的内容，含该用例 |
 | 修了一个没有测试覆盖的布局 bug | `successCriteria: "The checkout button stays visible at 320 px wide."`，由模型评判 |
-| 只是在探索，没有修复 | 什么都不起草：你说它不是好任务，运行结束，不开拉取请求 |
+| 新增 `POST /sessions/revoke-all` 及 `test/auth/revoke-all.test.ts` | `check`，带 `add: [test/auth/revoke-all.test.ts]`；prompt 写出测试调用的端点及其返回 |
+| 把 token 存储移到 `TokenStore` 之后，行为不变 | `successCriteria: "Every read and write of tokens goes through TokenStore; the auth tests still pass."`：改动前测试也通过，`check` 分不出它和没有改动 |
+| 只是在探索，没有提交任何东西 | 什么都不起草：你说它不是好任务，运行结束，不开拉取请求 |
 
 ### describe 提议什么
 
@@ -380,12 +382,12 @@ describe 为调用它的会话填好每个输入，并说明原因，没有提�
 ```text
 start     HEAD         proposal
 3f2c9a7   9a1d4e7      both
-3f2c9a7   3f2c9a7      start only: "No value: HEAD is still the starting commit. Commit the fix, then ask again, or give the commit."
-3f2c9a7   9a1d4e7 *    start only: "No value: tracked files are modified. Commit the fix, then ask again, or give the commit."
+3f2c9a7   3f2c9a7      start only: "No value: HEAD is still the starting commit. Commit the change, then ask again, or give the commit."
+3f2c9a7   9a1d4e7 *    start only: "No value: tracked files are modified. Commit the change, then ask again, or give the commit."
 (none)    9a1d4e7      neither: give both
 ```
 
-当该套件已有任务来自本会话或这个修复时，`session` 或 `fix` 的 why 会写出它，例如 `benchmarks/fix-auth/tasks/refresh-race.yaml already comes from it.`，避免同一个修复被提议两次。
+`fix` 是完成任务的那个提交，无论是什么工作：修复，或功能、重构的提交。当该套件已有任务来自本会话或这个提交时，`session` 或 `fix` 的 why 会写出它，例如 `benchmarks/fix-auth/tasks/refresh-race.yaml already comes from it.`，避免同一份工作被提议两次。
 
 | 你怎样启动 | 谁回答“Propose … as a pull request?” |
 | --- | --- |

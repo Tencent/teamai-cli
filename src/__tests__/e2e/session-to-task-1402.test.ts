@@ -187,7 +187,7 @@ describe('teamai-session-to-task from a Claude Code session', () => {
         expect(action.step).toBe('draft');
         turn = TurnSchema.parse(agentRuns(m, action.ack).turn);
         const brief = fs.readFileSync(action.brief, 'utf8');
-        expect(brief).toContain(`The task starts at commit ${start}; the fix is commit ${fix}`);
+        expect(brief).toContain(`The task starts at commit ${start}; the fix, the commit that completes it, is ${fix}`);
         // The session drafts the task with the person: the fix's test is hidden in check.add.
         fs.writeFileSync(taskFile, `schemaVersion: v1alpha1
 title: Reused refresh tokens are accepted

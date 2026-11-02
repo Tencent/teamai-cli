@@ -73,10 +73,10 @@ describe('a teamai-session-to-task run', () => {
     const run = await sessionToTask(DRAFT);
 
     expect(run.ran).toEqual([
-      'draft: Turn the bug this claude-code session 7c1e0000-0000-4000-8000-000000000004 fixed into one task of the benchmark suite in benchmarks/frontend.',
+      'draft: Turn the work this claude-code session 7c1e0000-0000-4000-8000-000000000004 finished (a bug fix, a feature, a refactor) into one task of the benchmark suite in benchmarks/frontend.',
       'propose: teamai push --file "$FILE" --path "$TASK_PATH"',
     ]);
-    expect(run.prompts[0]).toContain(`The task starts at commit ${START}; the fix is commit ${FIX}`);
+    expect(run.prompts[0]).toContain(`The task starts at commit ${START}; the fix, the commit that completes it, is ${FIX}`);
     expect(run.asked).toEqual(['propose: Propose benchmarks/frontend/tasks/pod-startup.yaml to the team as a pull request?']);
     expect(run.envs).toEqual([{ FILE: '/tmp/pod-startup.yaml', TASK_PATH: 'benchmarks/frontend/tasks/pod-startup.yaml' }]);
     expect(run.outcome).toBe('succeeded');

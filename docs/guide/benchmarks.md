@@ -323,7 +323,7 @@ setup-error    setup failed           not tried                          1: name
 
 ## Turn a session into a task
 
-A bug you fixed with your agent is the best task a suite can get: a real bug, in your code, with the fix that proves it. Ask the session that fixed it to keep it:
+Work you finished with your agent, a bug fix, a feature or a refactor, is the best task a suite can get: real work, in your code, with the commit that proves it can be done. Ask the session that did it to keep it:
 
 ```text
 you:    turn this fix into a benchmark task
@@ -364,7 +364,9 @@ Other sessions draft other tasks:
 | Fixed a bug and added `test/auth/refresh-race.test.ts` | `check` with `add: [test/auth/refresh-race.test.ts]`, as above |
 | Fixed a bug and added a case to `test/auth/refresh.test.ts` | `check` with `add: [test/auth/refresh.test.ts]`: the file as the fix has it, case included |
 | Fixed a layout bug no test covers | `successCriteria: "The checkout button stays visible at 320 px wide."`, judged by a model |
-| Was exploring, not fixing | Nothing: you say it is not a good task, the run ends, no pull request |
+| Added `POST /sessions/revoke-all` with `test/auth/revoke-all.test.ts` | `check` with `add: [test/auth/revoke-all.test.ts]`; the prompt names the endpoint and what it returns, as the test calls it |
+| Moved token storage behind `TokenStore`, behavior unchanged | `successCriteria: "Every read and write of tokens goes through TokenStore; the auth tests still pass."`: the tests pass before the change too, so a `check` could not tell it from no change |
+| Was exploring, with nothing committed | Nothing: you say it is not a good task, the run ends, no pull request |
 
 ### What describe proposes
 
@@ -380,12 +382,12 @@ describe fills every input for the calling session, and says why, also when it p
 ```text
 start     HEAD         proposal
 3f2c9a7   9a1d4e7      both
-3f2c9a7   3f2c9a7      start only: "No value: HEAD is still the starting commit. Commit the fix, then ask again, or give the commit."
-3f2c9a7   9a1d4e7 *    start only: "No value: tracked files are modified. Commit the fix, then ask again, or give the commit."
+3f2c9a7   3f2c9a7      start only: "No value: HEAD is still the starting commit. Commit the change, then ask again, or give the commit."
+3f2c9a7   9a1d4e7 *    start only: "No value: tracked files are modified. Commit the change, then ask again, or give the commit."
 (none)    9a1d4e7      neither: give both
 ```
 
-When a task of that suite already comes from this session or this fix, the why of `session` or `fix` names it, for example `benchmarks/fix-auth/tasks/refresh-race.yaml already comes from it.`, so the same fix is not proposed twice.
+`fix` is the commit that completes the task, whatever the work was: the fix, or the feature's or refactor's commit. When a task of that suite already comes from this session or this commit, the why of `session` or `fix` names it, for example `benchmarks/fix-auth/tasks/refresh-race.yaml already comes from it.`, so the same work is not proposed twice.
 
 | How you start it | Who answers "Propose … as a pull request?" |
 | --- | --- |

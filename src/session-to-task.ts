@@ -44,22 +44,22 @@ interface SessionStart {
 
 /**
  * The commit session's earliest start recorded, when tracked files were not modified then. Resume and compaction also
- * write a start, so only the earliest one is the commit the bug was found at.
+ * write a start, so only the earliest one is the commit the task starts from.
  */
 function startProposal(starts: readonly SessionStart[]): Proposal {
   const [earliest] = [...starts].sort((left, right) => left.timestamp.localeCompare(right.timestamp));
-  if (earliest?.gitAtStart === undefined) return { why: 'No value: teamai did not record the commit this session started at. Give the commit the bug was found at.' };
-  if (earliest.gitAtStart.dirty) return { why: 'No value: tracked files were modified when this session started, so no commit holds the bug. Give the commit the bug was found at.' };
+  if (earliest?.gitAtStart === undefined) return { why: 'No value: teamai did not record the commit this session started at. Give the commit the task starts from.' };
+  if (earliest.gitAtStart.dirty) return { why: 'No value: tracked files were modified when this session started, so no commit holds the starting state. Give the commit the task starts from.' };
   return { value: earliest.gitAtStart.head, why: 'The commit this session started at.' };
 }
 
 /** HEAD of the caller's checkout, when it holds a fix: it differs from `start`, and no tracked file is modified. */
 function fixProposal(start: string | undefined, head: HeadState | null): Proposal {
-  if (start === undefined) return { why: 'No value: there is no starting commit to compare HEAD with. Give the fix\'s commit.' };
-  if (head === null) return { why: 'No value: this directory has no commit checked out. Give the fix\'s commit.' };
-  if (head.dirty) return { why: 'No value: tracked files are modified. Commit the fix, then ask again, or give the commit.' };
-  if (head.head === start) return { why: 'No value: HEAD is still the starting commit. Commit the fix, then ask again, or give the commit.' };
-  return { value: head.head, why: 'The commit at HEAD: the fix this session made.' };
+  if (start === undefined) return { why: 'No value: there is no starting commit to compare HEAD with. Give the commit that completes the task.' };
+  if (head === null) return { why: 'No value: this directory has no commit checked out. Give the commit that completes the task.' };
+  if (head.dirty) return { why: 'No value: tracked files are modified. Commit the change, then ask again, or give the commit.' };
+  if (head.head === start) return { why: 'No value: HEAD is still the starting commit. Commit the change, then ask again, or give the commit.' };
+  return { value: head.head, why: 'The commit at HEAD: the change this session made.' };
 }
 
 /**
@@ -105,7 +105,7 @@ async function offer(config: LocalConfig, { session, tool, cwd }: { session: str
   const { proposal: suite, suite: proposed } = suiteProposal(origin, suites);
   const platform = AgentSession.platformForTool(tool);
   return {
-    session: namingTasks({ value: session, why: 'This session: the one that fixed the bug.' }, proposed, (source) => source.sessionId === session),
+    session: namingTasks({ value: session, why: 'This session: the one that made the change.' }, proposed, (source) => source.sessionId === session),
     source: platform === undefined ? { value: tool, why: 'This session\'s tool.' } : { value: platform, why: 'This session\'s tool, as teamai session list names it.' },
     suite,
     start,
@@ -118,8 +118,8 @@ const NO_SESSION: Record<ContractInput, Proposal> = {
   session: { why: NO_SESSION_WHY },
   source: { why: NO_SESSION_WHY },
   suite: { why: 'No value: no agent session found. Give the suite\'s directory, such as benchmarks/frontend.' },
-  start: { why: 'No value: no agent session found. Give the commit the bug was found at.' },
-  fix: { why: 'No value: no agent session found. Give the fix\'s commit.' },
+  start: { why: 'No value: no agent session found. Give the commit the task starts from.' },
+  fix: { why: 'No value: no agent session found. Give the commit that completes the task.' },
 };
 
 /**
