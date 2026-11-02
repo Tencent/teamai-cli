@@ -18,7 +18,8 @@ import { encodeCwdClaude } from '../session-flow/fs.js';
 import { AgentSession } from '../session-flow/agent-session.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
-import { nextJudgeLease, submitJudgeLease, type JudgeRequest } from '../workflow/scoring.js';
+import { nextJudgeLease, scoreOnDemand, submitJudgeLease, type JudgeRequest } from '../workflow/scoring.js';
+import { LabelStore } from '../scorers/label-store.js';
 import { branchName } from '../workflow/workspace.js';
 import { worktreePath } from '../workflow/worktree.js';
 import type { DriverIdentity, WorkflowEnvelope } from '../workflow/types.js';
@@ -375,7 +376,7 @@ steps:
 `;
 
 /** A run of SHIP whose `change` step delivered a pagination commit, with the issue's text as `read-issue` returned it. */
-async function deliveredRun(): Promise<{ config: LocalConfig; runId: string }> {
+async function deliveredRun(): Promise<{ config: LocalConfig; runId: string; checkout: string }> {
   const checkout = path.join(root, 'app');
   fs.mkdirSync(checkout, { recursive: true });
   git(checkout, 'init', '-q', '-b', 'main');
@@ -411,7 +412,7 @@ async function deliveredRun(): Promise<{ config: LocalConfig; runId: string }> {
     attempt: change.attempt, revision: change.revision, outcome: 'success', driver: external,
     outputs: { summary: 'paginated' }, changes: { branch: change.workspace.branch, base: from, from, to, commits: [to] },
   }));
-  return { config, runId };
+  return { config, runId, checkout };
 }
 
 describe('evidence of what a run delivered', () => {
@@ -427,6 +428,23 @@ describe('evidence of what a run delivered', () => {
       'change#1': { summary: 'paginated' },
     });
     expect(read(lease.prompt)).toContain('Add pagination to /users');
+  });
+
+  it('labels the delivered pass as decided by the judge, with the hash of its evidence, unchanged when it is scored again', async () => {
+    const { config, runId, checkout } = await deliveredRun();
+    await settle(config, LeaseSchema.parse(data(await nextJudgeLease(config, request)).lease));
+    const [first] = await LabelStore.local(config);
+    // The issue is edited and main moves on after delivery: neither is evidence of the run.
+    fs.writeFileSync(path.join(checkout, 'users.ts'), 'export const users = (page = 1, filter = "") => all();\n');
+    git(checkout, 'commit', '-qam', 'filters on main');
+
+    data(await scoreOnDemand(config, { run: runId, step: 'change', scorers: ['quality'], queue: true }));
+    await settle(config, LeaseSchema.parse(data(await nextJudgeLease(config, request)).lease));
+
+    const [second] = await LabelStore.local(config);
+    expect(first).toMatchObject({ subject: { runId, step: 'change', pass: 1 }, decidedBy: 'judge', evidenceHash: expect.stringMatching(/^sha256:[0-9a-f]{64}$/) });
+    expect(second?.scoredAt).not.toBe(first?.scoredAt);
+    expect(second).toMatchObject({ evidenceHash: first && 'evidenceHash' in first ? first.evidenceHash : 'missing' });
   });
 });
 

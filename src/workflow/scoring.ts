@@ -26,7 +26,7 @@ import {
 import { observedEffort, observedModel } from '../agent-observation.js';
 import {
   ACCESS_LEVELS, ISOLATIONS, JudgeUsageSchema, sumUsage, type Isolation, type JudgeAccess, type JudgeUsage, type RunSubject, type ScoreLabel, type SessionLabel,
-  type SessionSubject,
+  type SessionSubject, type Decider,
 } from '../scorers/label.js';
 import { LabelStore, reasoningPath, shareFailedLabelHint } from '../scorers/label-store.js';
 import { installedJudgeTools, isJudgeTool, runLocalJudge } from '../scorers/judge.js';
@@ -40,7 +40,7 @@ import { scopeScoring } from '../scorers/settings.js';
 import { answerSchema, evidenceDirOf, sweepEvidence, type Rubrics } from '../scorers/evidence.js';
 import { agreedRunMode } from '../launch-context.js';
 import { sessionLabel, SessionWork, writeSessionEvidence, type JudgedSession, type NamedSession, type SessionEntry } from '../session-flow/session-work.js';
-import { buildEvidence, evidencePlan } from './scoring-evidence.js';
+import { buildEvidence, evidenceHash, evidencePlan } from './scoring-evidence.js';
 import { isUnsettled, judgeablePasses, sameSubject, scoredPasses, verdictEntries, verdictsFrozen } from './scoring-entries.js';
 import { error, ok } from './engine.js';
 import { stepDefinitions } from './scope.js';
@@ -951,19 +951,25 @@ function toSucceeded(attempt: LeasedAttempt, settled: { settledAt: string; usage
  * With `publish: false` the labels stay pending, for the next pull to publish.
  */
 async function labelJudgeLease(
-  config: LocalConfig, ref: string, submission: Extract<JudgeSubmission, { outcome: 'success' }>, now: string, { local, publish = true }: { local?: LocalRun; publish?: boolean } = {},
+  config: LocalConfig, ref: string, submission: Extract<JudgeSubmission, { outcome: 'success' }>, now: string,
+  { local, publish = true, decidedBy = 'judge' }: { local?: LocalRun; publish?: boolean; decidedBy?: Decider } = {},
 ): Promise<SettledLease> {
   const result = await settleJudgeLease(config, ref, submission.driver, now, async (lease): Promise<Labelled | Refusal> => {
     switch (lease.source) {
-      case 'workflow':
+      case 'workflow': {
+        const hash = await evidenceHash(evidenceDir(config, lease.members[0].attempt.attempt));
         return labelMembers({ config, submission, now, local, members: lease.members, labelOf: (attempt, { scorer, rubric, label, score, passed, judge, scoredAt }) => {
           const judged = evidencePlan(lease.run, attempt.subject).passes;
           const reported = judged.flatMap((pass) => pass.used ?? []);
           const used = reported.length > 0 ? { skills: [...new Set(reported.flatMap((each) => each.skills))].sort() } : undefined;
           // The pass's mode, or the one every pass a workflow step ran agrees on: never the judge's.
           const runMode = agreedRunMode(judged.map((pass) => pass.runMode));
-          return { label: { scorer, rubric, label, score, passed, source: 'workflow', subject: attempt.subject, ...(used ? { used } : {}), judge, ...(runMode ? { runMode } : {}), scoredAt } };
+          return { label: {
+            scorer, rubric, label, score, passed, source: 'workflow', subject: attempt.subject, ...(used ? { used } : {}), judge, ...(runMode ? { runMode } : {}),
+            decidedBy, ...(hash ? { evidenceHash: hash } : {}), scoredAt,
+          } };
         } });
+      }
       case 'session':
         return labelMembers({ config, submission, now, local, members: lease.members, labelOf: (attempt, verdict) => ({
           label: sessionLabel(verdict, attempt.subject, attempt.session), prompt: attempt.session.prompt, sessionId: attempt.subject.sessionId,

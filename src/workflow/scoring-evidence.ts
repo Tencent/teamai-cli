@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -232,6 +233,15 @@ export async function stageEvidence(config: LocalConfig, run: RunState, subject:
     });
   if (!collected.ok) await fs.rm(dir, { recursive: true, force: true, maxRetries: 3 });
   return dir;
+}
+
+/**
+ * `sha256:<hex>` of the evidence collectEvidence wrote in `dir`, as the judge reads it quoted, without any rubric; undefined
+ * when `dir` holds none.
+ */
+export async function evidenceHash(dir: string): Promise<string | undefined> {
+  const fenced = await fs.readFile(path.join(dir, FENCED)).catch(() => undefined);
+  return fenced && `sha256:${createHash('sha256').update(fenced).digest('hex')}`;
 }
 
 /** Writes prompt.md in `dir`, which collectEvidence filled: what `rubrics` ask, then the fenced evidence. */
