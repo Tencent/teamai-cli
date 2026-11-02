@@ -421,7 +421,7 @@ jobs:
         shell: bash
         env: { BASE_REF: "${{ github.base_ref }}" }
         run: |
-          tasks=$(git -C ../team diff --name-only --diff-filter=AM "origin/$BASE_REF...HEAD" -- 'benchmarks/fix-auth/tasks/*.yaml')
+          tasks=$(git -C ../team diff --name-only --no-renames --diff-filter=AM "origin/$BASE_REF...HEAD" -- 'benchmarks/fix-auth/tasks/*.yaml')
           failed=0
           for file in $tasks; do              # task paths have no spaces
             teamai benchmark try "../team/$file" || failed=1
@@ -470,7 +470,7 @@ jobs:
         shell: bash
         env: { BASE_REF: "${{ github.base_ref }}", SUITE: "${{ matrix.suite }}" }
         run: |
-          tasks=$(git -C ../team diff --name-only --diff-filter=AM "origin/$BASE_REF...HEAD" -- "$SUITE/tasks/*.yaml")
+          tasks=$(git -C ../team diff --name-only --no-renames --diff-filter=AM "origin/$BASE_REF...HEAD" -- "$SUITE/tasks/*.yaml")
           failed=0
           for file in $tasks; do
             teamai benchmark try "../team/$file" || failed=1

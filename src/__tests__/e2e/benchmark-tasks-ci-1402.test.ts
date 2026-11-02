@@ -42,10 +42,10 @@ const OTHER_CASE = "require('node:assert').ok(true);\n";
 
 /**
  * The suite's repo, acme/auth-service, with the commits each task names, checked out at `project`; and the team repo with the
- * suite benchmarks/fix-auth on main, checked out at `team` on a pull request branch that adds `tasks`. The job's step
+ * suite benchmarks/fix-auth on main, checked out at `team` on a pull request branch that adds `tasks` (null deletes one). The job's step
  * runs in `project`, with `teamai` on PATH running the CLI under test.
  */
-function pullRequest(tasks: (commits: Record<string, string>) => Record<string, string>, job: { header: string; env: Record<string, string> } = { header: JOB_FILE, env: { BASE_REF: 'main' } }): { code: number | null; output: string; commits: Record<string, string> } {
+function pullRequest(tasks: (commits: Record<string, string>) => Record<string, string | null>, job: { header: string; env: Record<string, string> } = { header: JOB_FILE, env: { BASE_REF: 'main' } }): { code: number | null; output: string; commits: Record<string, string> } {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-tasks-ci-')));
   roots.push(root);
   const home = path.join(root, 'home');
@@ -60,8 +60,12 @@ function pullRequest(tasks: (commits: Record<string, string>) => Record<string, 
     PATH: [bin, process.env.PATH ?? ''].join(path.delimiter), TMPDIR: path.join(root, 'tmp'), FORCE_COLOR: '0', ...job.env,
   };
   const git = (cwd: string, args: string[]): string => execFileSync('git', args, { cwd, env, encoding: 'utf8' }).trim();
-  const commit = (cwd: string, files: Record<string, string>, subject: string): string => {
+  const commit = (cwd: string, files: Record<string, string | null>, subject: string): string => {
     for (const [file, text] of Object.entries(files)) {
+      if (text === null) {
+        fs.rmSync(path.join(cwd, file));
+        continue;
+      }
       fs.mkdirSync(path.dirname(path.join(cwd, file)), { recursive: true });
       fs.writeFileSync(path.join(cwd, file), text);
     }
@@ -137,6 +141,13 @@ describe('the guide\'s CI job for benchmark task pull requests', () => {
     expect(job.code, job.output).not.toBe(0);
     expect(job.output).toContain(said(job.commits));
     expect(job.output).toContain(`and passes at the fix ${short(job.commits.fix)}`);
+  }, 120_000);
+
+  it('tries a task the pull request renames and changes', () => {
+    const job = pullRequest((c) => ({ existing: null, renamed: task(c.start, { fix: c.fix }) }));
+
+    expect(job.code, job.output).not.toBe(0);
+    expect(job.output).toContain(`the check fails at the fix ${short(job.commits.fix)}`);
   }, 120_000);
 
   it('tries, per matrix entry, only the tasks of that entry\'s suite', () => {
