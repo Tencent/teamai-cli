@@ -5,12 +5,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fse from 'fs-extra';
+import { z } from 'zod';
 import { loadState, saveState, loadLocalConfig, loadTeamConfig, resolveConfigForDir } from './config.js';
 import { resolveEffectiveUpdatePolicy } from './update-policy.js';
 import { resolveTeamaiEntryScript } from './builtin-hooks.js';
 import { log } from './utils/logger.js';
 import { expandHome, ensureDir } from './utils/fs.js';
-import { getTeamaiHomeDir, getUpdateLockPath, type LocalConfig } from './types.js';
+import { getTeamaiHomeDir, getUpdateLockPath, JsonValueSchema, type LocalConfig } from './types.js';
 import { askConfirmation, isInteractive } from './utils/prompt.js';
 
 // `getCurrentVersion` and `getCurrentPackageName` live in `./package-info.ts`
@@ -61,7 +62,13 @@ export function resolveRegistryForPackage(pkgName: string): string {
  * of platform — a layout mismatch must not silently disable self-update in
  * exactly the PATH-less contexts this resolver exists for.
  */
-export function resolveNpmCommand(): { cmd: string; args: string[] } {
+/** How to run npm: the program and the arguments that come before npm's own. */
+export interface NpmCommand {
+  cmd: string;
+  args: string[];
+}
+
+export function resolveNpmCommand(): NpmCommand {
   const nodeDir = path.dirname(process.execPath);
 
   const candidates = [
@@ -184,7 +191,7 @@ export async function fetchLatestVersion(
 
     return version;
   } catch (e) {
-    log.error(`Version check failed: ${(e as Error).message}`);
+    log.error(`Version check failed: ${e instanceof Error ? e.message : String(e)}`);
 
     return null;
   }
@@ -248,6 +255,18 @@ export function isCacheValid(lastCheck: string | null, ttlMs: number = CACHE_TTL
  */
 const heldLockOwners = new Map<string, string>();
 
+const ErrnoErrorSchema = z.object({ code: z.string() });
+
+/** The error code (`ENOENT`, `EPERM`, ...) a failed fs or process call carries, or undefined when the thrown value has none. */
+function errnoCode(cause: unknown): string | undefined {
+  const parsed = ErrnoErrorSchema.safeParse(cause);
+
+  return parsed.success ? parsed.data.code : undefined;
+}
+
+/** The `version` of the package.json an update installed, as written. */
+const InstalledPackageSchema = z.object({ version: JsonValueSchema.optional() });
+
 interface LockPayload {
   pid: number;
   startedAt: string;
@@ -260,23 +279,27 @@ interface LockPayload {
  * on-disk lock from a previous install is still evaluated for staleness rather
  * than treated as un-owned garbage.
  */
-function parseLockContent(content: string): { pid: number; owner?: string } | null {
+/** Who holds a lock: its process, and the owner token of a lock written in the JSON payload format. */
+interface LockHolder {
+  pid: number;
+  owner?: string;
+}
+
+/** A lock file's JSON: the legacy bare integer PID, or the payload with a numeric pid. */
+const LockContentSchema = z.union([
+  z.number().refine(Number.isInteger).transform((pid): LockHolder => ({ pid })),
+  z.object({ pid: z.number(), owner: z.string().optional().catch(undefined) }).transform(({ pid, owner }): LockHolder => ({ pid, owner })),
+]);
+
+function parseLockContent(content: string): LockHolder | null {
   const trimmed = content.trim();
 
   if (!trimmed) return null;
 
   try {
-    const json: unknown = JSON.parse(trimmed);
+    const parsed = LockContentSchema.safeParse(JSON.parse(trimmed));
 
-    // Legacy format: a bare PID, which is valid JSON too.
-    if (typeof json === 'number') return Number.isInteger(json) ? { pid: json } : null;
-    const parsed = json as Partial<LockPayload>;
-
-    if (typeof parsed.pid === 'number' && !isNaN(parsed.pid)) {
-      return { pid: parsed.pid, owner: typeof parsed.owner === 'string' ? parsed.owner : undefined };
-    }
-
-    return null;
+    return parsed.success ? parsed.data : null;
   } catch {
     // Legacy format: the file held only the bare PID as a string.
     const pid = parseInt(trimmed, 10);
@@ -304,7 +327,7 @@ export async function lockState(resolved: string): Promise<'live' | 'stale' | 'm
   try {
     content = await fse.readFile(resolved, 'utf-8');
   } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
+    const code = errnoCode(err);
 
     if (code === 'ENOENT') return 'missing';
 
@@ -328,7 +351,7 @@ export async function lockState(resolved: string): Promise<'live' | 'stale' | 'm
     return 'live'; // process alive → lock genuinely held
   } catch (err) {
     // EPERM: alive, owned by another user. ESRCH: the owning process is gone.
-    return (err as NodeJS.ErrnoException).code === 'EPERM' ? 'live' : 'stale';
+    return errnoCode(err) === 'EPERM' ? 'live' : 'stale';
   }
 }
 
@@ -369,7 +392,7 @@ async function exclusiveCreate(target: string, payload: string): Promise<boolean
 
     return true;
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false;
+    if (errnoCode(err) === 'EEXIST') return false;
 
     return await exclusiveCreateInPlace(target, payload);
   } finally {
@@ -383,7 +406,7 @@ async function exclusiveCreateInPlace(target: string, payload: string): Promise<
 
     return true;
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false;
+    if (errnoCode(err) === 'EEXIST') return false;
     throw err;
   }
 }
@@ -435,7 +458,7 @@ async function acquireReclaimSentinel(sentinel: string, owner: string): Promise<
   try {
     await fse.rename(sentinel, `${sentinel}.reclaim-${owner}`);
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false; // another process stole it first
+    if (errnoCode(err) === 'ENOENT') return false; // another process stole it first
     throw err;
   }
 
@@ -530,7 +553,7 @@ export async function acquireLock(
       await removeIfOwner(sentinel, owner);
     }
   } catch (err) {
-    throw new Error(`Cannot acquire lock ${resolved}: ${(err as Error).message}`, { cause: err });
+    throw new Error(`Cannot acquire lock ${resolved}: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
   }
 }
 
@@ -686,7 +709,7 @@ function isDeadPidLock(content: string): boolean {
     return false;
   } catch (err) {
     // EPERM: the pid exists, owned by another user. Anything else: gone.
-    return (err as NodeJS.ErrnoException).code !== 'EPERM';
+    return errnoCode(err) !== 'EPERM';
   }
 }
 
@@ -930,9 +953,9 @@ export async function doUpdate(runningScope: LocalConfig | null): Promise<void> 
     // here is exactly how self-update silently stops working.
     if (updatedEntry) {
       try {
-        const installed = JSON.parse(fs.readFileSync(
+        const installed = InstalledPackageSchema.parse(JSON.parse(fs.readFileSync(
           path.join(path.dirname(path.dirname(updatedEntry)), 'package.json'), 'utf-8',
-        )) as { version?: string };
+        )));
 
         if (installed.version !== result.latest) {
           log.warn(
@@ -958,13 +981,12 @@ export async function doUpdate(runningScope: LocalConfig | null): Promise<void> 
       });
       log.success('Refreshed hooks with new version');
     } catch (e) {
-      log.error(`Hook refresh after update skipped: ${(e as Error).message}`);
+      log.error(`Hook refresh after update skipped: ${e instanceof Error ? e.message : String(e)}`);
     }
   } catch (e) {
-    const error = e as NodeJS.ErrnoException;
-    const msg = error.message ?? '';
+    const msg = e instanceof Error ? e.message : '';
 
-    if (msg.includes('EACCES') || error.code === 'EACCES') {
+    if (msg.includes('EACCES') || errnoCode(e) === 'EACCES') {
       log.warn(`Permission denied. Run "teamai update" manually with appropriate permissions.`);
     } else if (msg.includes('ETIMEDOUT') || msg.includes('timed out')) {
       log.warn('Update timed out. Try again later.');
