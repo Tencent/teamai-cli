@@ -268,9 +268,13 @@ successCriteria: answer.js exports 42.
   }, 240_000);
 
   it.each([
-    { why: 'delivers a pull request', step: '    deliver: pr\n    workspace: new\n' },
-    { why: 'opens a workspace other than continue', step: '    workspace: new\n' },
-    { why: 'runs a command in the member\'s checkout; give it workspace: continue', step: '' },
+    { why: 'delivers a pull request', step: '    prompt: Ship it.\n    deliver: pr\n    workspace: new\n' },
+    { why: 'opens a workspace other than continue', step: '    command: echo more\n    workspace: new\n' },
+    { why: 'runs a command in the member\'s checkout; give it workspace: continue', step: '    command: echo more\n' },
+    {
+      why: 'runs its workflow per item, each in a copy of its own, which a trial cannot open',
+      step: '    for_each: "[]"\n    workspace: continue\n    workflow:\n      steps:\n        - id: item\n          prompt: Fix {{ item }}.\n',
+    },
   ])('refuses before any run a workflow arm whose step $why', async ({ why, step }) => {
     const unrunnable = `schemaVersion: v1alpha1
 name: fixer
@@ -281,7 +285,7 @@ steps:
     prompt: "{{ inputs.task }}"
   - id: more
     needs: [fix]
-${step.includes('deliver') ? '    prompt: Ship it.\n' : '    command: echo more\n'}${step}`;
+${step}`;
     const fixture = await fixtureWith(SUITE, { fixer: unrunnable });
 
     const ran = await fixture.teamai(['benchmark', 'run', 'fix']);

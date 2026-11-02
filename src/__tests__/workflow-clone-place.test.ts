@@ -251,6 +251,23 @@ describe('a clone place', () => {
     expect(inClone.filter((line) => line.includes('withheld-token'))).toEqual([]);
   });
 
+  it.skipIf(process.platform === 'win32')('reads the head of a clone without what the current lease withholds, also when the lease that opened it withheld nothing', async () => {
+    const { config, runId } = await fixture((commit) => PROMPTED(commit));
+    const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
+    const { branch } = z.object({ data: z.object({ lease: z.object({ workspace: z.object({ branch: z.string() }) }) }) }).parse(await prepared(client, runId)).data.lease.workspace;
+    const bin = path.join(path.dirname(config.repo.localPath), 'bin');
+    const seen = path.join(path.dirname(config.repo.localPath), 'git-seen.txt');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'git'), `#!/bin/sh\necho "\${GH_TOKEN:-none}" >> ${JSON.stringify(seen)}\nexec ${JSON.stringify(execFileSync('which', ['git'], { encoding: 'utf8' }).trim())} "$@"\n`, { mode: 0o755 });
+    vi.stubEnv('GH_TOKEN', 'withheld-token');
+    vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH ?? ''}`);
+
+    const head = await cloneHead(config, RunIdSchema.parse(runId), branch, { withhold: ['GH_TOKEN'] });
+
+    expect(head).not.toBeNull();
+    expect(fs.readFileSync(seen, 'utf8').split('\n').filter((line) => line === 'withheld-token')).toEqual([]);
+  });
+
   it.skipIf(process.platform === 'win32')('stops reading the head of a clone at its deadline when git there never returns', async () => {
     const { config, runId } = await fixture((commit) => PROMPTED(commit));
     const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
@@ -261,7 +278,7 @@ describe('a clone place', () => {
     vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH ?? ''}`);
     const started = Date.now();
 
-    const head = await cloneHead(config, RunIdSchema.parse(runId), branch, new Date(started + 500).toISOString());
+    const head = await cloneHead(config, RunIdSchema.parse(runId), branch, { withhold: [], expiresAt: new Date(started + 500).toISOString() });
 
     expect(head).toBeNull();
     expect(Date.now() - started).toBeLessThan(10_000);

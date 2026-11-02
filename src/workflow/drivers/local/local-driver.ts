@@ -403,7 +403,7 @@ async function promptReport(
       tool: selected,
       cwd,
       // In a clone, git reads its head without the names the place withholds, which setup could have handed a hook.
-      ...(clone !== undefined ? { head: await cloneHead(config, lock.run, clone, lease.expiresAt) } : {}),
+      ...(clone !== undefined ? { head: await cloneHead(config, lock.run, clone, { withhold: lease.envScope?.withhold ?? [], ...(lease.expiresAt !== undefined ? { expiresAt: lease.expiresAt } : {}) }) } : {}),
       delivery: delivery ?? null,
       ...(lease.agent && loaded ? { definition: { stem: lease.agent, file: loaded.file, ...definitionModel } } : {}),
       ...(chosen.model && chosen.by !== 'definition'

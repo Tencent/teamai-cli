@@ -125,7 +125,7 @@ arms:
     workflow: plan-then-fix   # workflows/plan-then-fix.yaml，带 inputs: { task: string }
 ```
 
-运行在 arm 的团队修订上读取该工作流及其运行的工作流，像任何团队工作流一样经过你接收的命名空间，并在 arm 的工具、模型和 effort 上运行其中每个 prompt 步骤，像 trial 自己的 prompt 一样无人值守。工作流没有输入 `task`、还要求其他输入，或有 `finally` 步骤时，它的某个步骤会交付、询问某个人、打开 `continue` 以外的工作区，或运行 `workflow: { from }` 时，或者它的某个 prompt 运行 `agent` 而 arm 没有设置 `model`（agent 自己的模型可能取代工具的默认模型；请在 `defaults` 中设置 `model`：带 `workflow` 的 arm 不能再改其他键）时，运行拒绝该 arm（`arm_workflow_unrunnable`）；你接收的两个命名空间都有该工作流时，以 `workflow_namespace_conflict` 拒绝。trial 的 check 或评判根据工作流留在克隆中的内容判定。它的时长是各个 prompt 轮次之和，token 和成本是各个 prompt 之和。[trial 限制](#trial-限制)的 `timeout` 和 `budget` 是它的 prompt 加起来可以花费的量；`max_turns` 不执行，会列在 `unenforced` 中。
+运行在 arm 的团队修订上读取该工作流及其运行的工作流，像任何团队工作流一样经过你接收的命名空间，并在 arm 的工具、模型和 effort 上运行其中每个 prompt 步骤，像 trial 自己的 prompt 一样无人值守。工作流没有输入 `task`、还要求其他输入，或有 `finally` 步骤时，它的某个步骤会交付、询问某个人、打开 `continue` 以外的工作区、以 `workspace: continue` 按 `for_each` 的每一项运行工作流，或运行 `workflow: { from }` 时，或者它的某个 prompt 运行 `agent` 而 arm 没有设置 `model`（agent 自己的模型可能取代工具的默认模型；请在 `defaults` 中设置 `model`：带 `workflow` 的 arm 不能再改其他键）时，运行拒绝该 arm（`arm_workflow_unrunnable`）；你接收的两个命名空间都有该工作流时，以 `workflow_namespace_conflict` 拒绝。trial 的 check 或评判根据工作流留在克隆中的内容判定。它的时长是各个 prompt 轮次之和，token 和成本是各个 prompt 之和。[trial 限制](#trial-限制)的 `timeout` 和 `budget` 是它的 prompt 加起来可以花费的量；`max_turns` 不执行，会列在 `unenforced` 中。
 
 ### 用 matrix 交叉工具和团队资产
 
