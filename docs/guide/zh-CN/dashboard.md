@@ -171,7 +171,7 @@ review-quality  61% · 23 labels     3 can become a task · 3 covered           
 test-quality    80% · 5 labels      1 can become a task · 0 covered               Waiting for a second failure a task can start from                            0 open · 0 merged · 0 closed
 ```
 
-评分器有两个能开始任务的失败，或者 origin 上已有提案时再有一个，就可以运行，和 `self-improvement plan` 输出的 `ready` 一样。**设置**检查其余部分：生效的工作流（默认的，或团队的 `workflows/teamai-self-improvement.yaml`）、`.github/workflows/` 或 `.gitlab-ci.yml` 里运行 `teamai self-improvement run` 的定时任务和运行 `teamai benchmark run` 的 pull request 任务，以及回归套件和它的任务。**最近运行**列出这个工作流最近十次运行。点击评分器会在评分器页面打开它。
+评分器有两个能开始任务的失败，或者 origin 上已有提案时再有一个，就可以运行，和 `digest --json --scorer` 输出的 `data.improvement.ready` 一样。**设置**检查其余部分：生效的工作流（默认的，或团队的 `workflows/teamai-self-improvement.yaml`）、`.github/workflows/` 或 `.gitlab-ci.yml` 里运行 `teamai self-improvement run` 的定时任务和运行 `teamai benchmark run` 的 pull request 任务，以及回归套件和它的任务。**最近运行**列出这个工作流最近十次运行。点击评分器会在评分器页面打开它。
 
 ## 基准测试（Benchmarks）
 

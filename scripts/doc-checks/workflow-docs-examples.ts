@@ -14,7 +14,7 @@ import { isJsonObject, JsonValueSchema, type JsonObject, type JsonValue, type Lo
 import { formatUnknownScorer, syncWorkflowDefinitions } from '../../src/workflow/cache.js';
 import { leaseNext, reportAttempt, startRun } from '../../src/workflow/engine.js';
 import { formatDiagnostic } from '../../src/workflow/parse.js';
-import type { DriverIdentity, WorkflowEnvelope } from '../../src/workflow/types.js';
+import { WORKSPACE_MODES, type DriverIdentity, type WorkflowEnvelope } from '../../src/workflow/types.js';
 import { knownSecrets } from '../../src/env-resolution.js';
 import { parseSuite, type SourceFile } from '../../src/benchmark/suite.js';
 
@@ -408,9 +408,9 @@ for (const page of PAGES) {
         }
 
         // Some inputs, such as the `after` of a for_each item, are read only when the first step is leased. It asks as
-        // the local driver does, taking a step's role and preparing its copy, so an example whose first step has a role leases.
+        // the local driver does, offering every workspace and taking a step's role, so an example whose first step has a role leases.
         const next = await leaseNext(config, String(started.data.run), driver, {
-          can: { workspace: ['read-only', 'new', 'continue'], role: true },
+          can: { workspace: [...WORKSPACE_MODES], role: true },
           base: { ref: 'main', commit: 'fixture-base' },
           prepare: true,
         });

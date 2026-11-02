@@ -10,8 +10,9 @@ review-quality failed 4 sessions this month, 2 of them also by hand
 Monday 06:00   self-improvement job
   teamai self-improvement run review-quality --tools default=claude --sandbox
     plan      → 4 failures with the commit each started at, 0 tasks yet
-    improve   → edits skills/code-review/SKILL.md and rules/backend.md, writes 4 tasks in benchmarks/regressions/tasks/
-    propose   → opens the PR on teamai/self-improvement/review-quality, or updates the one already open
+    improve   → in a fresh clone of the team repo on teamai/self-improvement/review-quality:
+                edits skills/code-review/SKILL.md and rules/backend.md, writes 4 tasks in benchmarks/regressions/tasks/,
+                pushes the branch and opens its PR, or updates the one already open
 
 On the PR      regressions job
   teamai pull --team-ref teamai/self-improvement/review-quality
@@ -93,7 +94,7 @@ $ teamai digest --json | jq '.data.failures[0]'
 | `session.name` | 团队归档里有这个会话时，推送的会话名。 |
 | `learnings` | 仅会话有：frontmatter 里 `session` 指向它的 learnings（`teamai contribute` 从那个会话写出），没有时是 `[]`。`id` 是 `learnings/` 下去掉 `.md` 的路径；`path` 是要读的文件。 |
 
-回归任务在 `source` 里写明它来自哪个失败，这样 `digest` 和 `self-improvement plan` 能认出它已被覆盖。工作流 pass 的写法和标签里一样：
+回归任务在 `source` 里写明它来自哪个失败，这样 `digest` 和 `plan` 步骤能认出它已被覆盖。工作流 pass 的写法和标签里一样：
 
 ```yaml
 # benchmarks/regressions/tasks/missed-null-check.yaml
@@ -133,7 +134,7 @@ setup:
   command: npm ci
 ```
 
-`team: [main, pulled]` 就是改动前后：`main` 是团队的默认分支，`pulled` 是任务固定的版本，即 PR 的版本。`tool` 列出团队同步到的每个工具，这样改动在每个工具上都得到证明。先推送这个不带任务的文件：`teamai push --file` 只会把任务放进默认分支已有的套件。
+`team: [main, pulled]` 就是改动前后：`main` 是团队的默认分支，`pulled` 是任务固定的版本，即 PR 的版本。`tool` 列出团队同步到的每个工具，这样改动在每个工具上都得到证明。先推送这个不带任务的文件：一次运行只会把任务写进团队仓库默认分支已有的套件。
 
 ### 2. 运行它的任务
 
@@ -175,16 +176,15 @@ jobs:
 
 | 步骤 | 作用 |
 | --- | --- |
-| `plan` | `teamai self-improvement plan <scorer> --suite <dir>`：把团队仓库克隆到数据目录，origin 有 `teamai/self-improvement/<scorer>` 时就在那个分支上并合并默认分支，然后输出能作为任务起点的失败：[`digest --json`](#teamai-读取什么) 里这个评分器的失败中，记录了本检出也有的开始 commit、且那个克隆里套件还没有任务指向它的那些。每个对象只取一次，按时间从新到旧。`ready` 表示 `improve` 是否运行。 |
-| `improve` | `ready` 时运行：两个或以上失败，或者 origin 上已有提案时再多一个。单个失败不构成规律，即使另一个失败已有合并的任务覆盖。agent 读每个失败、它的 learnings 和评分标准，在克隆里修改资产，并在那里为每个失败写一个任务。 |
-| `propose` | `teamai self-improvement propose --team <clone> --branch <branch>`：把克隆相对默认分支新增或修改的每个文件，像 `teamai push --file --path --branch` 一样放进一个 PR 推送。分支已有打开的 PR 时，用新的文件集重建分支，那个 PR 随之更新。 |
+| `plan` | `teamai digest --json --scorer <scorer> --suite <dir> --proposal teamai/self-improvement/<scorer>`：在 `data.improvement` 里输出能作为任务起点的失败：[`digest --json`](#teamai-读取什么) 里这个评分器的失败中，记录了本检出也有的开始 commit、且团队仓库默认分支和提案上都还没有套件任务指向它的那些。每个对象只取一次，按时间从新到旧。`ready` 表示 `improve` 是否运行。 |
+| `improve` | `ready` 时运行：两个或以上失败，或者 origin 上已有提案时再多一个。单个失败不构成规律，即使另一个失败已有合并的任务覆盖。它在团队仓库的全新克隆里运行，在 `teamai/self-improvement/<scorer>` 上并合并默认分支，或从默认分支新建这个分支（[`workspace: { team }`](workflow.md#团队工作区)）。agent 读每个失败、它的 learnings 和评分标准，修改资产，并为每个失败写一个任务。`deliver: pr` 推送分支并打开它的 PR，或更新已经打开的那个。 |
 
 ```console
-$ teamai self-improvement plan review-quality --suite benchmarks/regressions | jq '{team, branch, ready, failures: (.failures | length), covered, refused}'
+$ teamai digest --json --scorer review-quality --suite benchmarks/regressions --proposal teamai/self-improvement/review-quality \
+    | jq '.data.improvement | {ready, hasProposal, failures: (.failures | length), covered, refused}'
 {
-  "team": "/home/runner/.teamai/projects/…/self-improvement/review-quality",
-  "branch": "teamai/self-improvement/review-quality",
   "ready": true,
+  "hasProposal": true,
   "failures": 1,
   "covered": [
     "benchmarks/regressions/tasks/missed-null-check.yaml",
@@ -196,7 +196,15 @@ $ teamai self-improvement plan review-quality --suite benchmarks/regressions | j
 }
 ```
 
-在同样的失败上再跑一次，第二次什么也不会打开：每个失败在提案分支上已经有任务，所以 `plan` 一个也不保留，`improve` 被跳过。同一评分器的新失败会更新同一个 PR，并保留它已有的任务。和默认分支冲突的提案会让 `plan` 以 `proposal_conflict` 停止：把默认分支合并进去，或者删掉它。运行期间队友推送到提案分支的提交会让这次运行的 `propose` 停止，不会在它上面推送任何东西；下一次运行从它开始。删除分支即可关闭提案：origin 上有这个分支却没有打开的 PR 时，`push` 会拒绝。
+在同样的失败上再跑一次，第二次什么也不会打开：每个失败在提案分支上已经有任务，所以 `plan` 一个也不保留，`improve` 被跳过。同一评分器的新失败会更新同一个 PR，并保留它已有的任务。提案分支的各种情况：
+
+| origin 上 | 下一次运行 |
+| --- | --- |
+| 分支和默认分支冲突 | `improve` 在 agent 开始前以 `merge_conflict` 失败。把默认分支合并进去，或者删掉它。 |
+| 运行期间队友推送到了分支 | `improve` 以 `push_failed` 失败，不会覆盖那个提交。下一次运行从它开始。 |
+| agent 改了 `teamai pull` 不会放置或会拒绝的文件 | `improve` 以 `push_failed` 失败并逐个列出文件：在 pull 放置的目录之外（单仓库模式下在 `.teamai/` 之外）、符号链接、不属于任何套件的 benchmark 文件，或 pull 会拒绝的工作流、评分器、套件。什么也不推送。 |
+| PR 被 squash 合并，分支保留 | 分支内容和默认分支相同时，什么也不推送，也不打开 PR。 |
+| PR 未合并就被关闭，分支保留 | 从分支继续，有新失败时打开一个新 PR。要放弃提案，关闭 PR 时一并删除分支。 |
 
 想按自己的方式运行，就推送你自己的 `workflows/teamai-self-improvement.yaml`：它会替换 `self-improvement run` 用的默认工作流，`self-improvement run` 会给它输入 `scorer` 和 `suite`，所以它要声明这两个输入。`teamai list workflows` 显示当前生效的是哪一个。
 
@@ -256,7 +264,7 @@ jobs:
               and all($pairs[].tasks[]; .to.planned > 0 and .to.passed * .from.planned >= .from.passed * .to.planned)' done.json
 ```
 
-它在每个 PR 上运行，人提的 PR 也一样，所以每次改动都会和之前修好的每个失败对比。它没有 `paths:` 过滤：被过滤跳过的必需检查在 GitHub 上会一直等待，会挡住所有不在这些路径里的 PR。PR 每推送一次就再跑一次，替换两个标记之间的部分；正文其余部分保持不变，所以 `teamai push` 打开 PR 时写的文件列表，在后来的运行更新 PR 时不会增加：当前的文件集看 PR 的 files 标签页。`--team-ref "$HEAD_REF"` 把运行固定到 PR 的分支：`pulled` 组和套件的任务来自它，`main` 组来自 `main`。评审一致性表格在自我改进 PR 上只列这个 PR 针对的评分器，在人提的 PR 上列出所有评分器。最后一步在任何工具上有任务在 PR 上比在 `main` 上通过得少，有任务的检查无法运行或在改动前就通过、有试验没有运行，或者某个有 PR 组的工具没有可以对比的 `main` 组时，让任务失败：只看这些配对，所以去掉 PR 组或 `main` 组的套件也会让它失败。在团队仓库的合并规则里把这个任务设为必需，就能把没通过的改动挡在 `main` 之外。
+它在每个 PR 上运行，人提的 PR 也一样，所以每次改动都会和之前修好的每个失败对比。它没有 `paths:` 过滤：被过滤跳过的必需检查在 GitHub 上会一直等待，会挡住所有不在这些路径里的 PR。PR 每推送一次就再跑一次，替换两个标记之间的部分；正文其余部分保持不变。`--team-ref "$HEAD_REF"` 把运行固定到 PR 的分支：`pulled` 组和套件的任务来自它，`main` 组来自 `main`。评审一致性表格在自我改进 PR 上只列这个 PR 针对的评分器，在人提的 PR 上列出所有评分器。最后一步在任何工具上有任务在 PR 上比在 `main` 上通过得少，有任务的检查无法运行或在改动前就通过、有试验没有运行，或者某个有 PR 组的工具没有可以对比的 `main` 组时，让任务失败：只看这些配对，所以去掉 PR 组或 `main` 组的套件也会让它失败。在团队仓库的合并规则里把这个任务设为必需，就能把没通过的改动挡在 `main` 之外。
 
 Dashboard 的[自我改进页面](dashboard.md#自我改进self-improvement)跟踪每个提议和每个已合并的修改：它改了哪些资产、它在回归套件上每个工具的证明，以及合并前后评分器的通过率。
 

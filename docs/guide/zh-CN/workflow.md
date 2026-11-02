@@ -308,6 +308,39 @@ steps:
 ⚠ [workflows] workflows/review-fix.yaml:17: field "steps[0].workflow.steps[0].workflow.steps[1].role": step "look" has role spec but continues the copy step "change" opens with role review, which every step there runs with; remove role from step "look", or set it on step "change"
 ```
 
+### 团队工作区
+
+`workspace: { team: { branch } }` 让步骤在团队仓库的一个全新克隆里运行，用于修改团队资产而不是项目的工作。配合 `deliver: pr`，它的 pull request 合入团队仓库的默认分支。
+
+```yaml
+schemaVersion: v1alpha1
+name: tighten-rule
+description: Tighten one team rule, as a pull request on the team repo.
+inputs: { rule: string }
+steps:
+  - id: tighten
+    workspace: { team: { branch: "tighten/{{ inputs.rule }}" } }
+    deliver: pr
+    prompt: "Make rules/{{ inputs.rule }}.md shorter and more precise. Change no other file."
+```
+
+```text
+teamai workflow start tighten-rule --inputs '{"rule":"backend"}'
+  克隆团队仓库                     origin 有 tighten/backend？从它继续，并合并 main
+                                   否则从 main 新建分支
+  在克隆里运行步骤                 单仓库模式下在项目仓库克隆的 .teamai/ 里
+  提交、检查、推送 tighten/backend  以克隆时看到的分支顶端作为 lease
+  打开合入 main 的 pull request    或更新已经打开的那个
+```
+
+- `branch` 只能读取 `{{ inputs.* }}`，这样之后输入相同的运行会沿用同一个分支和 pull request。不写时，步骤使用运行为该步骤和 pass 命名的分支。分支是团队仓库的默认分支时，步骤以 `workspace_base` 失败。
+- 分支和默认分支冲突时，步骤在运行前以 `merge_conflict` 失败。把默认分支合并进它，或者删除它。
+- 只有只运行一次的 command 或 prompt 步骤能用它，`workflow` 步骤和 `for_each` 不行。只有本地驱动运行它。
+- 推送前，提交必须是 `teamai pull` 会接受的：改动的每个文件都在 pull 放置的目录里（`skills/`、`rules/`、`scorers/`、`benchmarks/` 等），不能是符号链接或子模块；benchmark 文件必须在有 `suite.yaml` 的套件里；改动的工作流、评分器和套件必须能通过 pull 的校验。否则步骤以 `push_failed` 失败，逐个列出文件和原因，什么也不推送。
+- 步骤运行期间队友推送到该分支的提交会让步骤以 `push_failed` 失败。origin 保留那个提交，下一次运行从它开始。
+- 分支的内容和默认分支相同时（比如它的 pull request 已被 squash 合并），步骤什么也不推送，也不打开 pull request。
+- 成员的团队仓库被 `teamai pull` 或 `push` 占用时，打开 pull request 会等待。
+
 ## 交付 PR
 
 在写分支的步骤上设置 `deliver: pr`，步骤成功后 TeamAI 会从这条分支开一个 pull request，并且从不合并它。设置了 `workspace: new` 或 `continue` 的步骤会写分支，位于已开分支的工作流中的提示词步骤也会。交付的命令必须设置 `workspace`，因为没有 `workspace` 的命令是只读的。设置了 `workspace: new` 的 `workflow` 步骤为它的全部步骤只交付一次自己的分支。其中写自己分支的步骤，需要有后续步骤通过 `needs` 合并那条分支，或者自己设置 `deliver: pr`。否则交付以 `delivery_failed` 失败，因为 pull request 会漏掉那部分工作。`for_each` 步骤的每个 item 各自交付自己的分支。

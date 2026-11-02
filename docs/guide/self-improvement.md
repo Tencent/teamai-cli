@@ -10,8 +10,9 @@ review-quality failed 4 sessions this month, 2 of them also by hand
 Monday 06:00   self-improvement job
   teamai self-improvement run review-quality --tools default=claude --sandbox
     plan      → 4 failures with the commit each started at, 0 tasks yet
-    improve   → edits skills/code-review/SKILL.md and rules/backend.md, writes 4 tasks in benchmarks/regressions/tasks/
-    propose   → opens the PR on teamai/self-improvement/review-quality, or updates the one already open
+    improve   → in a fresh clone of the team repo on teamai/self-improvement/review-quality:
+                edits skills/code-review/SKILL.md and rules/backend.md, writes 4 tasks in benchmarks/regressions/tasks/,
+                pushes the branch and opens its PR, or updates the one already open
 
 On the PR      regressions job
   teamai pull --team-ref teamai/self-improvement/review-quality
@@ -93,7 +94,7 @@ $ teamai digest --json | jq '.data.failures[0]'
 | `session.name` | The name of the pushed session, when the team archive holds it. |
 | `learnings` | Only for a session: the learnings whose frontmatter `session` names it (written by `teamai contribute` from that session), `[]` when none does. `id` is the path under `learnings/` without `.md`; `path` is the file to read. |
 
-A regression task names the failure it came from in `source`, so `digest` marks it as `task` and `self-improvement plan` lists it as covered. A workflow pass is named as a label names it:
+A regression task names the failure it came from in `source`, so `digest` marks it as `task` and the `plan` step lists it as covered. A workflow pass is named as a label names it:
 
 ```yaml
 # benchmarks/regressions/tasks/missed-null-check.yaml
@@ -134,7 +135,7 @@ setup:
   command: npm ci
 ```
 
-`team: [main, pulled]` is the before and after: `main` is the team's default branch, `pulled` the revision the job pinned, the PR's. `tool` lists every tool the team syncs to, so the change is proven on each. Push this file with no tasks first: `teamai push --file` puts a task only in a suite the default branch has.
+`team: [main, pulled]` is the before and after: `main` is the team's default branch, `pulled` the revision the job pinned, the PR's. `tool` lists every tool the team syncs to, so the change is proven on each. Push this file with no tasks first: a run writes tasks only into a suite the team repo's default branch has.
 
 ### 2. The job that runs it
 
@@ -176,16 +177,15 @@ jobs:
 
 | Step | Does |
 | --- | --- |
-| `plan` | `teamai self-improvement plan <scorer> --suite <dir>`: clones the team repo into the data home, on `teamai/self-improvement/<scorer>` when origin has it with the default branch merged in, and prints the failures a task can start from: the scorer's failures in [`digest --json`](#what-teamai-reads) with a recorded start commit this checkout has, and no task of the suite in that clone naming them. Each subject once, newest first. `ready` says whether `improve` runs. |
-| `improve` | Runs when `ready`: two failures or more, or one more for a proposal already on origin. A single failure is not a pattern, even when a task that landed covers another. The agent reads each failure, its learnings and the rubric, changes the assets in the clone, and writes one task per failure there. |
-| `propose` | `teamai self-improvement propose --team <clone> --branch <branch>`: pushes every file the clone adds or changes against the default branch, in one PR, as `teamai push --file --path --branch` does. When the branch has an open PR, it is rebuilt with the new set and that PR is updated. |
+| `plan` | `teamai digest --json --scorer <scorer> --suite <dir> --proposal teamai/self-improvement/<scorer>`: prints in `data.improvement` the failures a task can start from: the scorer's failures in [`digest --json`](#what-teamai-reads) with a recorded start commit this checkout has, and no task of the suite naming them on the team repo's default branch or on the proposal. Each subject once, newest first. `ready` says whether `improve` runs. |
+| `improve` | Runs when `ready`: two failures or more, or one more for a proposal already on origin. A single failure is not a pattern, even when a task that landed covers another. It runs in a fresh clone of the team repo, on `teamai/self-improvement/<scorer>` with the default branch merged in, or a new branch from it ([`workspace: { team }`](workflow.md#the-team-workspace)). The agent reads each failure, its learnings and the rubric, changes the assets, and writes one task per failure. `deliver: pr` pushes the branch and opens its PR, or updates the one already open. |
 
 ```console
-$ teamai self-improvement plan review-quality --suite benchmarks/regressions | jq '{team, branch, ready, failures: (.failures | length), covered, refused}'
+$ teamai digest --json --scorer review-quality --suite benchmarks/regressions --proposal teamai/self-improvement/review-quality \
+    | jq '.data.improvement | {ready, hasProposal, failures: (.failures | length), covered, refused}'
 {
-  "team": "/home/runner/.teamai/projects/…/self-improvement/review-quality",
-  "branch": "teamai/self-improvement/review-quality",
   "ready": true,
+  "hasProposal": true,
   "failures": 1,
   "covered": [
     "benchmarks/regressions/tasks/missed-null-check.yaml",
@@ -197,7 +197,15 @@ $ teamai self-improvement plan review-quality --suite benchmarks/regressions | j
 }
 ```
 
-Run it twice on the same failures and the second run opens nothing: each failure has its task on the proposal's branch, so `plan` keeps none and `improve` is skipped. A new failure of the same scorer updates the same PR, keeping the tasks it had. A proposal that conflicts with the default branch stops `plan` with `proposal_conflict`: merge the default branch into it, or delete it. A commit a teammate pushes to the proposal while a run works stops that run's `propose`, which pushes nothing over it; the next run starts from it. Close a proposal by deleting its branch: `push` refuses a branch that origin has with no open PR.
+Run it twice on the same failures and the second run opens nothing: each failure has its task on the proposal's branch, so `plan` keeps none and `improve` is skipped. A new failure of the same scorer updates the same PR, keeping the tasks it had. What happens to the proposal's branch:
+
+| On origin | The next run |
+| --- | --- |
+| The branch conflicts with the default branch | Fails `improve` with `merge_conflict` before the agent starts. Merge the default branch into it, or delete it. |
+| A teammate pushed to the branch while the run worked | Fails `improve` with `push_failed`, and pushes nothing over that commit. The next run starts from it. |
+| The agent changed a file `teamai pull` would not place or would reject | Fails `improve` with `push_failed`, naming each file: outside the directories pull places (outside `.teamai/` in single-repo mode), a symlink, a benchmark file in no suite, or a workflow, scorer or suite pull rejects. Nothing is pushed. |
+| The PR was squash-merged, and the branch kept | Pushes nothing and opens no PR while the branch holds what the default branch holds. |
+| The PR was closed without merging, and the branch kept | Goes on from the branch, and opens a new PR when it has new failures. Delete the branch with the PR to drop the proposal. |
 
 To run it your way, push your own `workflows/teamai-self-improvement.yaml`: it replaces the default for `self-improvement run`, which gives it the inputs `scorer` and `suite`, so it declares both. `teamai list workflows` shows which one is in effect.
 
@@ -257,7 +265,7 @@ jobs:
               and all($pairs[].tasks[]; .to.planned > 0 and .to.passed * .from.planned >= .from.passed * .to.planned)' done.json
 ```
 
-It runs on every PR, a person's too, so every change is measured against every failure fixed before. It has no `paths:` filter: GitHub leaves a required check that a filter skipped pending, which would block every PR outside those paths. Each push to the PR runs it again and replaces the section between the two markers; the rest of the body stays, so the file list `teamai push` wrote when it opened the PR does not grow when a later run updates it: the PR's files tab has the current set. `--team-ref "$HEAD_REF"` pins the run to the PR's branch: the `pulled` arms and the suite's tasks come from it, the `main` arms from `main`. The judge agreement table lists the scorer a self-improvement PR is for, and every scorer on a person's PR. The last step fails the job when a task passes less often on the PR than on `main` with any tool, when a task's check could not run or passed before any change, when a trial did not run, or when a tool with a PR arm has no `main` arm to compare it with: only those pairs count, so a suite that drops the PR's or `main`'s arms fails it. Mark the job required in the team repo's merge rules to keep a change that fails it out of `main`.
+It runs on every PR, a person's too, so every change is measured against every failure fixed before. It has no `paths:` filter: GitHub leaves a required check that a filter skipped pending, which would block every PR outside those paths. Each push to the PR runs it again and replaces the section between the two markers; the rest of the body stays. `--team-ref "$HEAD_REF"` pins the run to the PR's branch: the `pulled` arms and the suite's tasks come from it, the `main` arms from `main`. The judge agreement table lists the scorer a self-improvement PR is for, and every scorer on a person's PR. The last step fails the job when a task passes less often on the PR than on `main` with any tool, when a task's check could not run or passed before any change, when a trial did not run, or when a tool with a PR arm has no `main` arm to compare it with: only those pairs count, so a suite that drops the PR's or `main`'s arms fails it. Mark the job required in the team repo's merge rules to keep a change that fails it out of `main`.
 
 The dashboard's [Self-improvement page](dashboard.md#self-improvement) follows each proposal and each landed change: the assets it touched, its proof on the regression suite per tool, and the scorer's pass rate before and after it landed.
 

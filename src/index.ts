@@ -956,7 +956,7 @@ selfImprovementCmd
   .command('run <scorer>')
   .description('Start the workflow teamai-self-improvement with --inputs {"scorer":"<scorer>","suite":"<--suite>"} and drive it. A team\'s workflows/teamai-self-improvement.yaml replaces teamai\'s default, and must take inputs scorer and suite. The default reads digest --json --scorer and improves only when it says ready: two failures or more of the scorer in the last 30 days that a task can start from, or one more for a proposal already on origin. Its prompt step needs a sandbox, and runs in a fresh clone of the team repo on teamai/self-improvement/<scorer>, whose pull request it opens or updates. Prints the run\'s done envelope.')
   .option('--suite <dir>', 'The suite the regression tasks go in, which the team repo\'s default branch must have', 'benchmarks/regressions')
-  .option('--driver <kind>', 'The driver that runs it: local (default), or skill')
+  .option('--driver <kind>', 'The driver that runs it: local (default), or skill, which only a team workflow with invoke: allow or ask accepts; teamai\'s default denies agents')
   .option('--tools <list>', 'The tools its prompt steps run on, as workflow start --tools takes them, such as default=claude')
   .option('--sandbox', 'With --driver local, declare this machine a sandbox for this process, where the prompt step, which edits files without asking, may run. workflows.sandbox in config declares it for every process.')
   .action(async (scorer: string, cmdOpts: { suite: string; driver?: string; tools?: string; sandbox?: boolean }) => {

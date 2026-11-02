@@ -7,7 +7,7 @@
  *          ─► proof (the regression suite, main against the change) ─► landed (on the default branch)
  *          ─► impact (the scorer's pass rate before and after the change)
  *
- * The queue is what `teamai self-improvement plan` picks, with the same `SelfImprovement.pick`, over the failures
+ * The queue is what `teamai digest --json --scorer` picks, with the same `SelfImprovement.pick`, over the failures
  * `digest --json` lists.
  */
 import fs from 'node:fs/promises';
@@ -40,7 +40,7 @@ export type ScorerLoop = {
   /** Regression tasks the team repo already has for its failures. */
   covered: string[];
   refused: Record<Unusable, number>;
-  /** Whether a run would change anything, as `self-improvement plan` prints `ready`. */
+  /** Whether a run would change anything, as `digest --json --scorer` prints `data.improvement.ready`. */
   isReady: boolean;
   command: string;
   /** How the host ended the requests of the scorer's proposal branch; absent when it was not asked or could not answer. */
