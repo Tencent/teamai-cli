@@ -462,6 +462,7 @@ const OptionalTextSchema = z.string().optional().catch(undefined);
 const FileHookSchema = z.object({
   type: OptionalTextSchema,
   command: OptionalTextSchema,
+  commandWindows: OptionalTextSchema,
   args: z.array(z.unknown()).optional().catch(undefined),
 }).catch({});
 
@@ -2386,9 +2387,9 @@ export async function removeCopilotGlobalBuiltins(): Promise<void> {
 
   for (const name of files.filter(f => f.endsWith('.json')).sort()) {
     const file = path.resolve(dir, name);
-    const json = await readJson<CopilotHooksJson>(file);
+    const json = await readJson<JsonValue>(file);
 
-    if (json?.version === COPILOT_HOOK_SCHEMA_VERSION && json.hooks) {
+    if (isJsonObject(json) && json.version === COPILOT_HOOK_SCHEMA_VERSION && json.hooks) {
       await reconcileHooks(file, COPILOT_TOOL_ID, [], { removeAll: true, copilotGlobal: file });
     }
   }
@@ -4384,20 +4385,23 @@ async function reconcileMainCheckoutTeamHooks(
 async function removeCheckoutTeamHooks(
   file: string, tool: string, manifestPath: string, sharedManifestPath: string, root?: string, codexTrust?: CodexTrustPolicy,
 ): Promise<void> {
-  const before = tool === CODEX_TOOL_ID && root ? await readJson<CodexHooksJson>(file) : null;
+  const before = tool === CODEX_TOOL_ID && root ? hookEventsOf(await readJson<JsonValue>(file), 'codex') : null;
   const owned = before ? (await readManifest(manifestPath))[tool] ?? [] : [];
   const surviving = new Map<string, number[]>();
 
-  for (const [event, entries] of Object.entries(before?.hooks ?? {})) {
-    surviving.set(event, entries.flatMap((entry, index) =>
-      isExactBuiltinEntry(event, tool, entry) || owned.some((record) => ownsCodexEntry(record, event, index, entries))
-        ? [] : [index]));
+  for (const [event, entries] of before ?? []) {
+    surviving.set(event, entries.flatMap((entry, index) => {
+      const read = hookFileEntryOf(entry);
+
+      return (read && isExactBuiltinEntry(event, tool, read)) || owned.some((record) => ownsCodexEntry(record, event, index, entries))
+        ? [] : [index];
+    }));
   }
 
   await reconcileHooks(file, tool, [], { manifestPath, removeAll: true, teamOnly: true, codexTrust });
 
-  if (!before?.hooks || !root) return;
-  const after = await readJson<CodexHooksJson>(file);
+  if (!before || !root) return;
+  const after = hookEventsOf(await readJson<JsonValue>(file), 'codex');
 
   const siblingPaths = new Set([sharedManifestPath, ...(await listWorktrees(root))
     .map((worktree) => path.join(getTeamaiHome('project', worktree), 'managed-main-checkout-hooks.json'))]);
@@ -4411,11 +4415,11 @@ async function removeCheckoutTeamHooks(
       const index = record.codexEntryIndex;
 
       if (index === undefined || !record.codexEntry
-        || !isDeepStrictEqual(before.hooks[record.event]?.[index], record.codexEntry)) continue;
+        || !isDeepStrictEqual(before.get(record.event)?.[index], record.codexEntry)) continue;
       const shifted = surviving.get(record.event)?.indexOf(index) ?? -1;
 
       if (shifted < 0 || shifted === index
-        || !isDeepStrictEqual(after?.hooks?.[record.event]?.[shifted], record.codexEntry)) continue;
+        || !isDeepStrictEqual(after?.get(record.event)?.[shifted], record.codexEntry)) continue;
       record.codexEntryIndex = shifted;
       changed = true;
     }
@@ -4442,15 +4446,18 @@ interface CodexTrustTargets {
 
 /** Select recorded team entries, not every occurrence of a managed command. */
 async function teamaiCodexHooks(file: string, manifestPath: string): Promise<CodexTrustTargets['hooks']> {
-  const json = await readJson<CodexHooksJson>(file);
+  const events = hookEventsOf(await readJson<JsonValue>(file), 'codex');
 
-  if (!json?.hooks) return [];
+  if (!events) return [];
   const records = (await readManifest(manifestPath))[CODEX_TOOL_ID] ?? [];
   const builtins = builtinHookDefs(CODEX_TOOL_ID);
 
-  return Object.entries(json.hooks).flatMap(([event, groups]) => (groups ?? []).flatMap((group, index) => {
-    // The file is the member's: a command that is not a string is no hook of teamai's.
-    const command = OptionalTextSchema.parse(group.hooks?.[0]?.command);
+  return [...events].flatMap(([event, groups]) => groups.flatMap((entry, index) => {
+    // The file is the member's: an entry that is not an object, or a command that is not a string, is no hook of teamai's.
+    const group = hookFileEntryOf(entry);
+
+    if (!group) return [];
+    const command = group.hooks?.[0]?.command;
 
     const builtin = group.hooks?.length === 1 && (isCodexTeamHookDispatcher(command ?? '') || builtins.some((def) =>
       def.event === event && def.command === command && toCodexEntry(def).matcher === group.matcher));
@@ -4468,7 +4475,7 @@ function codexHookKey(file: string, event: string, group: number, handler: numbe
 }
 
 /** One Codex hooks.json entry as a trust pass names it, with Codex's file/event/position key. */
-function codexTrustHook(file: string, event: string, index: number, group: CodexHookMatcher): CodexTrustTargets['hooks'][number] {
+function codexTrustHook(file: string, event: string, index: number, group: HookFileEntry): CodexTrustTargets['hooks'][number] {
   const commandWindows = group.hooks?.[0]?.commandWindows;
 
   const command = group.hooks?.[0]?.command ?? '';
@@ -4484,15 +4491,16 @@ function codexTrustHook(file: string, event: string, index: number, group: Codex
  */
 export async function trustCodexAgentHook(settingsPath: string, event: string, command: string): Promise<CodexTrust> {
   const file = expandHome(settingsPath);
-  const groups = (await readJson<CodexHooksJson>(file))?.hooks?.[event] ?? [];
-  const index = groups.findIndex((group) => group.hooks?.[0]?.command === command);
+  const groups = (hookEventsOf(await readJson<JsonValue>(file), 'codex')?.get(event) ?? []).map(hookFileEntryOf);
+  const index = groups.findIndex((group) => group?.hooks?.[0]?.command === command);
+  const group = groups[index];
 
-  if (index === -1) return { kind: 'failed', reason: `${command} is not in ${file}` };
+  if (!group) return { kind: 'failed', reason: `${command} is not in ${file}` };
 
   return trustCodexHooks({
     codexHome: path.dirname(file),
     cwd: getUserHome(),
-    hooks: [codexTrustHook(file, event, index, groups[index])],
+    hooks: [codexTrustHook(file, event, index, group)],
   });
 }
 

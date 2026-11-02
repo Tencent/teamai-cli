@@ -19,7 +19,7 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 import fc from 'fast-check';
-import { applyAgentHook, codexTrustPolicy, readCodexHookTrustForScope, reconcileHooks, reconcileTeamHooksForConfig, removeAgentHook, reportCodexTrust, trustCodexForScope, type CodexTrustPolicy } from '../hooks.js';
+import { applyAgentHook, codexTrustPolicy, readCodexHookTrustForScope, reconcileHooks, reconcileTeamHooksForConfig, removeAgentHook, reportCodexTrust, trustCodexAgentHook, trustCodexForScope, type CodexTrustPolicy } from '../hooks.js';
 import { readCodexHookTrust, removeOwnedCodexProjectTrust, trustCodexHooks, trustCodexProject } from '../codex-trust.js';
 import { reconcileCodexDispatchers, setCodexDispatcherHooks } from '../codex-team-hooks.js';
 import crossSpawn from 'cross-spawn';
@@ -1326,5 +1326,28 @@ describe('Codex trust — which Codex build answers (#1244)', () => {
     await writeAndTrust(userConfig());
 
     expect(started(desktop)).toBe(2);
+  });
+});
+
+describe('Codex trust — a hooks.json the member edited', () => {
+  const group = { hooks: [{ type: 'command', command: 'npm run lint' }] };
+
+  it('trusts a recorded hook beside an event that is not a list and an entry that is not an object', async () => {
+    const file = path.join(codexHome(), 'hooks.json');
+    await fse.writeJson(file, { hooks: { Stop: false, PreToolUse: [1, group] } });
+    await fse.outputJson(path.join(home, '.teamai', 'managed-hooks.json'), {
+      codex: [{ id: 'lint', event: 'PreToolUse', command: 'npm run lint' }],
+    });
+
+    expect(await trustCodexForScope(teamConfig, userConfig())).toEqual({ kind: 'trusted', hooks: 1 });
+    expect(trustedKeys()).toEqual([`${file}:pre_tool_use:1:0`]);
+  });
+
+  it('reports an agent hook under an event that is not a list as not written', async () => {
+    const file = path.join(codexHome(), 'hooks.json');
+    await fse.writeJson(file, { hooks: { SessionStart: false } });
+
+    expect(await trustCodexAgentHook(file, 'SessionStart', 'npm run lint'))
+      .toEqual({ kind: 'failed', reason: `npm run lint is not in ${file}` });
   });
 });
