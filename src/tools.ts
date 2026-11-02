@@ -798,7 +798,9 @@ export const TOOLS = {
     },
   },
   joycode: {
-    home: { dir: '.joycode', moves: { by: [{ kind: 'env', name: 'JOYCODE_HOME', evidence: 'source' }] } },
+    // JoyCode Desktop 0.6.0's dist/main.js resolves JOYCODE_HOME (default ~/.joycode) and passes it on as CODEX_HOME (#1572).
+    // The JoyCode 3.8.71 IDE extension never reads it and keeps everything under os.homedir()/.joycode.
+    home: { dir: '.joycode', moves:{ by: [{ kind: 'env', name: 'JOYCODE_HOME', evidence: 'source' }] } },
     skillLoad: { calls: [] },
     skills: UNKNOWN_READS,
     rules: {
