@@ -438,7 +438,7 @@ function toolLabel(tool: string): string {
  */
 async function localMcpFileOf(tool: string, projectRoot: string, toolRoots: Readonly<Record<string, string>> = {}): Promise<string | null> {
   const where = await locate(tool, 'mcp', {
-    toolPaths: DEFAULT_TOOL_PATHS, agents: {}, toolRoots, gitExclude: true, scope: 'project', projectRoot, repo: 'team', workspaceChildren: false,
+    toolPaths: DEFAULT_TOOL_PATHS, agents: {}, toolRoots, gitExclude: true, scope: 'project', projectRoot, repo: 'team', workspaceChildren: false, keepsKnowledgeInside: false,
   });
 
   if (where.channel !== 'files') return null;

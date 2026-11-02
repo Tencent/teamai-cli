@@ -62,9 +62,9 @@ function git(args: string[], cwd: string): string {
 /**
  * A self-mode project whose member has role frontend, delivering to `tools`, its team declaring roles frontend and
  * review with a skill each and the `rules` given, and a started run of `yaml` with `inputs`, whose steps run on the
- * first tool.
+ * first tool. With `baseTeamYaml`, the run's base commit holds that teamai.yaml instead.
  */
-async function roleWorkspace(yaml: string, options: { tools: readonly string[]; rules?: Record<string, string>; inputs?: unknown }): Promise<{ config: LocalConfig; workspace: string; runId: string }> {
+async function roleWorkspace(yaml: string, options: { tools: readonly string[]; rules?: Record<string, string>; inputs?: unknown; baseTeamYaml?: string }): Promise<{ config: LocalConfig; workspace: string; runId: string }> {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-worktree-role-')));
   dirs.push(root);
   const workspace = path.join(root, 'workspace');
@@ -110,6 +110,10 @@ async function roleWorkspace(yaml: string, options: { tools: readonly string[]; 
   if (!config) throw new Error('project config was not found');
   config.workflows = { tools: { default: options.tools[0] ?? 'claude' }, max_parallel: 1 };
   await syncWorkflowDefinitions(config);
+  if (options.baseTeamYaml !== undefined) {
+    fs.writeFileSync(path.join(knowledge, 'teamai.yaml'), options.baseTeamYaml);
+    git(['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qam', 'team config'], workspace);
+  }
   const started = await startRun(config, 'build', options.inputs ?? {}, { secrets: await knownSecrets(config), checkout: workspace, base: { ref: 'main', commit: git(['rev-parse', 'HEAD'], workspace) } });
   if ('error' in started) throw new Error(started.error.message);
   return { config, workspace, runId: String(started.data.run) };
@@ -311,6 +315,46 @@ steps:
       .filter((entry) => !entry.split(path.sep).includes('.git'))
       .filter((entry) => fs.lstatSync(path.join(copy, entry)).isDirectory() && fs.readdirSync(path.join(copy, entry)).length === 0);
     expect(empty).toEqual([path.join('.claude', 'skills', 'step-made')]);
+  });
+
+  it("keeps the role out of the member's Hermes skills, which Hermes takes from the member's home, while a Claude step in the copy runs with it", async () => {
+    const hermesSkills = path.join(os.homedir(), '.hermes', 'skills');
+    fs.mkdirSync(path.join(hermesSkills, 'mine'), { recursive: true });
+    fs.writeFileSync(path.join(hermesSkills, 'mine', 'SKILL.md'), '---\nname: mine\ndescription: The member\'s own.\n---\nMine.\n');
+    const { config, workspace, runId } = await roleWorkspace(REVIEW_IN_COPY.replace('    role: review\n', '    role: review\n    tool: claude\n'), { tools: ['claude', 'hermes'] });
+    const snapshot = (): Record<string, string> => Object.fromEntries(fs.readdirSync(hermesSkills, { recursive: true, encoding: 'utf8' })
+      .filter((entry) => fs.statSync(path.join(hermesSkills, entry)).isFile())
+      .sort()
+      .map((entry) => [entry, fs.readFileSync(path.join(hermesSkills, entry), 'utf8')]));
+    const before = snapshot();
+    const seen: { during?: Record<string, string>; copySkills?: string[] } = {};
+
+    const done = await runLocalDriver(config, runId, workspace, {
+      adapter: fakeTool(async (input) => {
+        seen.during = snapshot();
+        seen.copySkills = fs.readdirSync(path.join(input.cwd, '.claude', 'skills')).sort();
+      }),
+    });
+
+    expect(done, JSON.stringify(done)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(Object.keys(before)).toContain(path.join('fe-only', 'SKILL.md'));
+    expect(seen).toEqual({ during: before, copySkills: expect.arrayContaining(['rv-only']) });
+    expect(seen.copySkills).not.toContain('fe-only');
+    expect(snapshot()).toEqual(before);
+  });
+
+  it("fails the step before anything is delivered when the team's teamai.yaml cannot be loaded, as where the copy's knowledge lands is then unknown", async () => {
+    const { config, workspace, runId } = await roleWorkspace(REVIEW_IN_COPY, { tools: ['claude'], baseTeamYaml: 'team: [unclosed\n' });
+    const ran: string[] = [];
+
+    const done = await runLocalDriver(config, runId, workspace, { adapter: fakeTool(async (input) => { ran.push(input.prompt); }) });
+
+    expect(done, JSON.stringify(done)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    expect(ran).toEqual([]);
+    const run = await readRun(config, RunIdSchema.parse(runId));
+    expect(typeof run === 'object' && run.steps.find((step) => step.id === 'review')).toMatchObject({
+      status: 'failed', failure: { code: 'role_unavailable', message: expect.stringContaining('teamai.yaml in the team repo is missing or does not parse') },
+    });
   });
 
   it.each([['with a role', REVIEW_IN_COPY], ['without one', REVIEW_IN_COPY.replace('    role: review\n', '')]])(

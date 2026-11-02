@@ -456,7 +456,7 @@ export async function cleanupInactiveNamespaceSkills(
  * taken for one that writes alone.
  */
 async function writesSkillsAlone(tool: string, install: Install): Promise<boolean> {
-  const asProject: Install = { ...install, scope: 'project', projectRoot: path.join(os.tmpdir(), 'teamai-project-probe'), repo: 'team', workspaceChildren: false };
+  const asProject: Install = { ...install, scope: 'project', projectRoot: path.join(os.tmpdir(), 'teamai-project-probe'), repo: 'team', workspaceChildren: false, keepsKnowledgeInside: false };
   const dir = ownOf(await locate(tool, 'skills', asProject))?.path;
 
   return dir !== undefined && isWithin(dir, asProject.projectRoot);

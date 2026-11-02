@@ -44,13 +44,18 @@ export type Install = {
     /** `self`: the business repo is the team repo. */
     readonly repo: 'team' | 'self';
     readonly workspaceChildren: boolean;
+    /**
+     * A workflow copy that runs with a team role (`stepRole`): a knowledge place outside `projectRoot` is shared with
+     * other checkouts, so `locate` gives none there, and no writer or cleanup touches it.
+     */
+    readonly keepsKnowledgeInside: boolean;
   }
 );
 
 /** The one parse of the config shapes into an `Install`; a project config without its root throws `resolveBaseDir`'s error. */
 export function installOf(
   team: Pick<TeamaiConfig, 'toolPaths'> & Parameters<typeof isGitExcludeEnabled>[1],
-  local: Pick<LocalConfig, 'scope' | 'projectRoot' | 'toolRoots' | 'enabledAgents' | 'disabledAgents' | 'gitExcludeEnabled' | 'dataHome' | 'children'>
+  local: Pick<LocalConfig, 'scope' | 'projectRoot' | 'toolRoots' | 'enabledAgents' | 'disabledAgents' | 'gitExcludeEnabled' | 'dataHome' | 'children' | 'stepRole'>
     & Parameters<typeof isSelfMode>[0],
 ): Install {
   const shared = {
@@ -70,6 +75,7 @@ export function installOf(
         projectRoot: resolveBaseDir(local),
         repo: isSelfMode(local) ? 'self' : 'team',
         workspaceChildren: hasWorkspaceChildren(local),
+        keepsKnowledgeInside: local.stepRole !== undefined,
       };
     default: {
       const unhandled: never = local.scope;
@@ -81,6 +87,15 @@ export function installOf(
 
 /** Resources `locate` answers for. */
 export type Resource = 'skills' | 'rules' | 'blocks' | 'agents' | 'mcp' | 'hooks' | 'sessions';
+
+/** The resources that carry knowledge, rather than a channel the member's roles grant or a session store. */
+export const KNOWLEDGE_RESOURCES = ['skills', 'rules', 'blocks', 'agents'] as const satisfies readonly Resource[];
+
+export type KnowledgeResource = (typeof KNOWLEDGE_RESOURCES)[number];
+
+function isKnowledgeResource(resource: Resource): resource is KnowledgeResource {
+  return KNOWLEDGE_RESOURCES.some((knowledge) => knowledge === resource);
+}
 
 /** A directory teamai writes one file or folder per item into: skills, agents, rule files. */
 export type DirPlace = { readonly kind: 'dir'; readonly path: string };
@@ -298,10 +313,47 @@ const LOCATORS: Locators = {
 
 /** Where `tool` takes `resource` on `host` under `install`. */
 export async function locate<R extends Resource>(tool: string, resource: R, install: Install, host: Host = realHost()): Promise<Location<R>> {
-  return LOCATORS[resource](tool, install, host);
+  const location = await LOCATORS[resource](tool, install, host);
+
+  if (install.scope !== 'project' || !install.keepsKnowledgeInside || !isKnowledgeResource(resource)) return location;
+
+  return keptInside(location, await resolvedPathOn(host, install.projectRoot), host);
 }
 
 type Beside<P extends Place> = { readonly shared?: P | null; readonly activation?: EntryPlace | null; readonly alternate?: EntryPlace | null };
+
+/** `file` with symlinked parents resolved on `host`: the real path of its nearest existing ancestor, and the rest as written. */
+export async function resolvedPathOn(host: Host, file: string): Promise<string> {
+  const absolute = host.path.resolve(file);
+
+  if (await host.exists(absolute)) return host.realpath(absolute);
+  const parent = host.path.dirname(absolute);
+
+  return parent === absolute ? absolute : host.path.join(await resolvedPathOn(host, parent), host.path.basename(absolute));
+}
+
+/** `location` with no place outside `root`, a real path: what is left outside is no place of the resource. */
+async function keptInside<L extends Located<Place> & Beside<Place> & { readonly retiredActivation?: EntryPlace | null; readonly sidecar?: SidecarFile | null }>(
+  location: L, root: string, host: Host,
+): Promise<L> {
+  const isInside = async (place: Place): Promise<boolean> => isAtOrUnder(host.path, await resolvedPathOn(host, place.path), root);
+  const kept = async <P extends Place>(place: P | null | undefined): Promise<P | null | undefined> => place && !await isInside(place) ? null : place;
+  const keeps = await Promise.all(location.retired.map((retired) => isInside(retired.place)));
+  const retired = location.retired.filter((_, at) => keeps[at]);
+
+  if (location.channel !== 'files') return { ...location, retired };
+
+  return {
+    ...location,
+    retired,
+    own: await kept(location.own),
+    ...location.shared !== undefined ? { shared: await kept(location.shared) } : {},
+    ...location.activation !== undefined ? { activation: await kept(location.activation) } : {},
+    ...location.alternate !== undefined ? { alternate: await kept(location.alternate) } : {},
+    ...location.retiredActivation !== undefined ? { retiredActivation: await kept(location.retiredActivation) } : {},
+    ...location.sidecar !== undefined ? { sidecar: await kept(location.sidecar) } : {},
+  };
+}
 
 /** `own` when the channel writes files and every gate is met, else null: the one rule a writer applies. */
 export function writable<P extends Place>(location: Located<P>): P | null {

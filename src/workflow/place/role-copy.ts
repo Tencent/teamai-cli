@@ -9,7 +9,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { clearCheckoutRole, recordCheckoutRole, withCheckoutRole, type CheckoutRoleWrite } from '../../checkout-roles.js';
 import { detectProjectConfig, loadTeamConfig } from '../../config.js';
-import { cleanupOf, installOf, locate, type Location, type Place } from '../../locate.js';
+import { cleanupOf, installOf, KNOWLEDGE_RESOURCES, locate, resolvedPathOn, type KnowledgeResource, type Location, type Place } from '../../locate.js';
 import type { PullDelivery } from '../../pull.js';
 import { resolveDocsDestination } from '../../resources/docs.js';
 import { listRoleIds, loadRolesManifestIfPresent } from '../../roles.js';
@@ -18,11 +18,6 @@ import { getProjectSearchIndexPath, selfModeGitignorePath, type LocalConfig, typ
 import { log } from '../../utils/logger.js';
 import type { WorkflowFailure } from '../types.js';
 import { AGENT_PATHS } from '../worktree.js';
-
-/** The resources `locate` answers for that carry knowledge rather than a channel the member's roles grant. */
-const KNOWLEDGE_RESOURCES = ['skills', 'rules', 'blocks', 'agents'] as const;
-
-type KnowledgeResource = (typeof KNOWLEDGE_RESOURCES)[number];
 
 /** Every place a location may hold the resource in: its writes and cleanups when it writes files, its retired ones else. */
 function placesOf(location: Location<KnowledgeResource>): readonly Place[] {
@@ -36,8 +31,13 @@ interface KnowledgePlace {
   path: string;
 }
 
+/**
+ * Every knowledge place of `install` for each tool it delivers to, including those a role copy's `locate` leaves out
+ * because they are outside the copy, so a caller sees which tool would lose one.
+ */
 async function knowledgePlacesOf(team: TeamaiConfig, install: LocalConfig, host: Host): Promise<KnowledgePlace[]> {
-  const located = installOf(team, install);
+  const installed = installOf(team, install);
+  const located = installed.scope === 'project' ? { ...installed, keepsKnowledgeInside: false } : installed;
   const places: KnowledgePlace[] = [];
 
   for (const tool of install.enabledAgents ?? []) {
@@ -49,17 +49,6 @@ async function knowledgePlacesOf(team: TeamaiConfig, install: LocalConfig, host:
   places.push({ tool: 'every tool', resource: 'docs', path: resolveDocsDestination(team, install) });
 
   return places;
-}
-
-/** `file` with symlinked parents resolved: the real path of its nearest existing ancestor, and the rest as written. */
-async function resolvedPath(file: string): Promise<string> {
-  const absolute = path.resolve(file);
-  const parent = path.dirname(absolute);
-  const real = await fs.realpath(absolute).catch(() => undefined);
-
-  if (real !== undefined) return real;
-
-  return parent === absolute ? absolute : path.join(await resolvedPath(parent), path.basename(absolute));
 }
 
 function isInside(root: string, file: string): boolean {
@@ -77,10 +66,11 @@ export async function roleCopyRefusal(input: { team: TeamaiConfig; install: Loca
   const { team, install, role } = input;
 
   if (install.projectRoot === undefined) return undefined;
-  const copy = await resolvedPath(install.projectRoot);
+  const host = input.host ?? realHost();
+  const copy = await resolvedPathOn(host, install.projectRoot);
 
-  for (const place of await knowledgePlacesOf(team, install, input.host ?? realHost())) {
-    const resolved = await resolvedPath(place.path);
+  for (const place of await knowledgePlacesOf(team, install, host)) {
+    const resolved = await resolvedPathOn(host, place.path);
 
     if (isInside(copy, resolved)) continue;
 
@@ -103,13 +93,14 @@ export async function copyKnowledgePaths(input: { team: TeamaiConfig; install: L
   const { team, install } = input;
 
   if (install.projectRoot === undefined) return [];
-  const copy = await resolvedPath(install.projectRoot);
+  const host = input.host ?? realHost();
+  const copy = await resolvedPathOn(host, install.projectRoot);
   const covered = (relative: string): boolean => AGENT_PATHS.some((root) => relative === root || relative.startsWith(`${root}/`));
   const paths = new Set<string>();
   const gitignore = selfModeGitignorePath(install);
 
-  for (const place of [...await knowledgePlacesOf(team, install, input.host ?? realHost()), ...gitignore ? [{ path: gitignore }] : []]) {
-    const resolved = await resolvedPath(place.path);
+  for (const place of [...await knowledgePlacesOf(team, install, host), ...gitignore ? [{ path: gitignore }] : []]) {
+    const resolved = await resolvedPathOn(host, place.path);
 
     if (!isInside(copy, resolved)) continue;
     const relative = path.relative(copy, resolved).split(path.sep).join('/');
@@ -151,6 +142,7 @@ export async function roleDeliveryGap(input: { install: LocalConfig; tools: read
 /** Why a worktree copy did not get its step's role: one of the checks setup and launch make, in the order they make them. */
 type WorktreeRoleGap =
   | { kind: 'no_project_install' }
+  | { kind: 'no_team_config'; repo: string }
   | { kind: 'undeclared'; declared: readonly string[] }
   | { kind: 'role_file'; written: Exclude<CheckoutRoleWrite, { kind: 'recorded' }> }
   | { kind: 'pull'; delivery: Exclude<PullDelivery, 'delivered' | 'unchanged'> }
@@ -164,6 +156,8 @@ function worktreeRoleFailure(input: { gap: WorktreeRoleGap; role: string; step: 
   switch (gap.kind) {
     case 'no_project_install':
       return failed(`Role ${role} was not delivered into the copy for step "${step}": no project install of teamai governs ${dir}, and only one delivers a step's role. Run teamai init in the project, then retry the step.`);
+    case 'no_team_config':
+      return failed(`Role ${role} was not delivered into the copy for step "${step}": teamai.yaml in the team repo is missing or does not parse (${gap.repo}), so where the copy's knowledge would land is unknown. Run teamai pull in ${dir} to see why, fix teamai.yaml, then retry the step.`);
     case 'undeclared':
       return failed(`Role ${role} was not delivered into the copy for step "${step}": manifest/roles.yaml in the team repo does not declare it (it declares ${gap.declared.join(', ') || 'no role'}), so the copy would get no role's knowledge. Add the role to manifest/roles.yaml, push it and run teamai pull, or give the step a role it declares, then retry the step.`);
     case 'role_file':
@@ -217,14 +211,13 @@ export async function setUpWorktreeRole(input: { dir: string; step: string; role
   const declared = manifest ? listRoleIds(manifest) : [];
 
   if (!declared.includes(role)) return refused({ kind: 'undeclared', declared });
+
+  if (!team) return refused({ kind: 'no_team_config', repo: project.repo.localPath });
+  // Only the step's tool needs its knowledge places: for every other tool, a place outside the copy is no place (`locate`).
   const tools = input.tool !== undefined ? [input.tool] : project.enabledAgents ?? [];
+  const outside = await roleCopyRefusal({ team, install: { ...project, enabledAgents: tools }, role });
 
-  if (team) {
-    const outside = await roleCopyRefusal({ team, install: { ...project, enabledAgents: tools }, role });
-
-    if (outside) return outside;
-  }
-
+  if (outside) return outside;
   const written = await recordCheckoutRole({ config: project, checkout: dir, role });
 
   if (written.kind !== 'recorded') return refused({ kind: 'role_file', written });

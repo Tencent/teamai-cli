@@ -536,7 +536,7 @@ steps:
 
 `teamai workflow start review-change --driver local` 以 `review` 运行 `build`、`review` 和 `test`。每个步骤开始前，teamai 在数据目录的 `checkout-roles.json` 中记录副本运行时使用的角色，副本自己的 pull 按该角色交付。副本获得该角色的 skill、规则、agent、文档、wiki 和经验，加上你的项目；你的标签和 skill 排除不会过滤它。它保留你的 hook、MCP 服务器、env 和模型。在副本中运行的 `teamai pull` 或 hook 会保留该角色，步骤在那里启动的会话不会自己再 pull，那里的 `teamai recall` 读取副本自己的索引。你的检出目录、它的索引和你的配置都不会改变，步骤的提交不包含 pull 交付的任何内容。
 
-`role` 写在打开或沿用副本的提示词步骤上，写在 `workflow` 步骤上（作用于其中的步骤），或写在 `defaults` 中；优先级见[以团队角色运行步骤](workflow.md#以团队角色运行步骤)。pull 会以 `bad_role` 拒绝：命令步骤上的 `role`、不在任何副本中运行的提示词步骤上的 `role`、以不同于副本的角色沿用副本的步骤，以及没有任何副本中的步骤采用的 `role` 或 `defaults.role`。以下情况步骤会以 `role_unavailable` 失败并说明原因：没有 teamai 的项目安装管理该检出目录，`manifest/roles.yaml` 未声明该角色，某个工具的知识会落在副本之外，或副本的 pull 没有按该角色交付（例如另一个 pull 占着团队的锁）。修复原因后重试该步骤。只有声明了 [`can.role`](#要求和限制) 并用 `next --prepare` 请求的驱动才会接这个步骤，这样角色由 teamai 交付。运行按 teamai 交付的内容记录 `agent.team.selection.stepRole`，从不采用驱动报告的值。
+`role` 写在打开或沿用副本的提示词步骤上，写在 `workflow` 步骤上（作用于其中的步骤），或写在 `defaults` 中；优先级见[以团队角色运行步骤](workflow.md#以团队角色运行步骤)。pull 会以 `bad_role` 拒绝：命令步骤上的 `role`、不在任何副本中运行的提示词步骤上的 `role`、以不同于副本的角色沿用副本的步骤，以及没有任何副本中的步骤采用的 `role` 或 `defaults.role`。以下情况步骤会以 `role_unavailable` 失败并说明原因：没有 teamai 的项目安装管理该检出目录，`manifest/roles.yaml` 未声明该角色，步骤的工具会从副本之外读取知识，或副本的 pull 没有按该角色交付（例如另一个 pull 占着团队的锁）。修复原因后重试该步骤。对你启用的任何工具，副本的 pull 都不会把角色的知识交付到副本之外的地方：像 Hermes 这样从你的 home 读取 skill 的工具不会得到该角色的任何内容。只有声明了 [`can.role`](#要求和限制) 并用 `next --prepare` 请求的驱动才会接这个步骤，这样角色由 teamai 交付。运行按 teamai 交付的内容记录 `agent.team.selection.stepRole`，从不采用驱动报告的值。
 
 `for_each` 步骤可以让每一项以自己的角色运行：`role: "{{ item.role }}"`。下面的评审把 UI 改动交给前端评审，把 API 改动交给代码评审：
 
