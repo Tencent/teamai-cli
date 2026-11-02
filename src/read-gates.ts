@@ -5,6 +5,8 @@
  * it. Read-only: it never grants a verdict.
  */
 import path from 'node:path';
+import semver from 'semver';
+import { getAgentVersion } from './agent-version.js';
 import type { ReadGate } from './locate.js';
 import { codexProjectTrust, codexTrustFix } from './codex-project-trust.js';
 import { realFilePath } from './git-exclude.js';
@@ -81,7 +83,7 @@ export async function readGateVerdict(gate: ReadGate, held: Held): Promise<ReadG
 }
 
 /** `question`: what the file would have answered ("Pi trusts this project"). */
-function unreadable(cause: string, file: string, reason: string, question: string): ReadGateVerdict {
+function unreadable({ cause, file, reason, question }: { cause: string; file: string; reason: string; question: string }): ReadGateVerdict {
   return {
     met: false,
     fix: `${cause}, and ${file} ${reason}, so whether ${question} is unknown. Fix ${file}, then run \`teamai doctor\` again.`,
@@ -100,14 +102,17 @@ function upFrom(dir: string): string[] {
  * the real path of the directory Pi starts in, decides; with none,
  * `defaultProjectTrust` does ("always", "never", else Pi asks, and `pi -p`
  * takes that as untrusted). A value other than a boolean or null stops Pi.
+ * Pi before 0.79.0 has no project trust and loads them all.
  */
 async function piProjectTrust(gate: Extract<ReadGate, { kind: 'pi-project-trust' }>, cause: string): Promise<ReadGateVerdict> {
+  const version = semver.valid(await getAgentVersion('pi'));
+  if (version !== null && semver.lt(version, '0.79.0')) return MET;
   const root = await realFilePath(gate.checkout);
   const trust = await readJsonObject(gate.config);
-  if (trust.kind === 'invalid') return unreadable(cause, gate.config, `does not parse (${trust.error})`, 'Pi trusts this project');
+  if (trust.kind === 'invalid') return unreadable({ cause, file: gate.config, reason: `does not parse (${trust.error})`, question: 'Pi trusts this project' });
   const entries = trust.kind === 'ok' ? trust.value : {};
-  const odd = Object.entries(entries).find(([, value]) => value !== true && value !== false && value !== null);
-  if (odd) return unreadable(cause, gate.config, `holds ${JSON.stringify(odd[1])} for ${odd[0]}, where Pi takes true, false or null`, 'Pi trusts this project');
+  const invalidEntry = Object.entries(entries).find(([, value]) => value !== true && value !== false && value !== null);
+  if (invalidEntry) return unreadable({ cause, file: gate.config, reason: `holds ${JSON.stringify(invalidEntry[1])} for ${invalidEntry[0]}, where Pi takes true, false or null`, question: 'Pi trusts this project' });
   const grant = `add ${JSON.stringify(root)}: true to ${gate.config}`;
   for (const dir of upFrom(root)) {
     const value = entries[dir];
@@ -117,7 +122,7 @@ async function piProjectTrust(gate: Extract<ReadGate, { kind: 'pi-project-trust'
     }
   }
   const settings = await readJsonObject(gate.settings);
-  if (settings.kind === 'invalid') return unreadable(cause, gate.settings, `does not parse (${settings.error})`, 'Pi trusts this project');
+  if (settings.kind === 'invalid') return unreadable({ cause, file: gate.settings, reason: `does not parse (${settings.error})`, question: 'Pi trusts this project' });
   const fallback = settings.kind === 'ok' ? settings.value.defaultProjectTrust : undefined;
   if (fallback === 'always') return MET;
   if (fallback === 'never') {
@@ -141,17 +146,17 @@ async function museWorkspaceTrust(gate: Extract<ReadGate, { kind: 'muse-workspac
   const target = (await resolveAnchors(gate.checkout))?.workspaceRoot ?? await realFilePath(gate.checkout);
   const grant = `add ${JSON.stringify(target)}: {"decision": "trusted"} under "projects" in ${gate.config}, beside "schema_version": 1`;
   const store = await readJsonObject(gate.config);
-  if (store.kind === 'invalid') return unreadable(cause, gate.config, `does not parse (${store.error})`, 'Muse Code trusts this project');
+  if (store.kind === 'invalid') return unreadable({ cause, file: gate.config, reason: `does not parse (${store.error})`, question: 'Muse Code trusts this project' });
   if (store.kind === 'ok') {
     const { schema_version: version, projects } = store.value;
-    if (version !== 1) return unreadable(cause, gate.config, `has schema_version ${JSON.stringify(version)}, where Muse Code takes 1`, 'Muse Code trusts this project');
+    if (version !== 1) return unreadable({ cause, file: gate.config, reason: `has schema_version ${JSON.stringify(version)}, where Muse Code takes 1`, question: 'Muse Code trusts this project' });
     const entry = typeof projects === 'object' && projects !== null ? Object.entries(projects).find(([dir]) => dir === target)?.[1] : undefined;
     const decision = typeof entry === 'object' && entry !== null && 'decision' in entry ? entry.decision : undefined;
     if (decision === 'trusted') return MET;
     if (decision === 'untrusted') {
       return { met: false, fix: `${cause}, and ${gate.config} records "untrusted" for ${target}, so Muse Code never asks again. Set that decision to "trusted".` };
     }
-    if (decision !== undefined) return unreadable(cause, gate.config, `holds the decision ${JSON.stringify(decision)} for ${target}, where Muse Code takes "trusted" or "untrusted"`, 'Muse Code trusts this project');
+    if (decision !== undefined) return unreadable({ cause, file: gate.config, reason: `holds the decision ${JSON.stringify(decision)} for ${target}, where Muse Code takes "trusted" or "untrusted"`, question: 'Muse Code trusts this project' });
   }
   return {
     met: false,
@@ -171,7 +176,7 @@ async function copilotFolderTrust(gate: Extract<ReadGate, { kind: 'copilot-folde
   const root = await realFilePath(gate.checkout);
   const main = (await resolveAnchors(gate.checkout))?.mainCheckout ?? root;
   const config = await readCommentedJsonObject(gate.config);
-  if (config.kind === 'invalid') return unreadable(cause, gate.config, `does not parse (${config.error})`, 'Copilot CLI trusts this project');
+  if (config.kind === 'invalid') return unreadable({ cause, file: gate.config, reason: `does not parse (${config.error})`, question: 'Copilot CLI trusts this project' });
   const folders = config.kind === 'ok' ? [config.value.trustedFolders, config.value.trusted_folders].flatMap((list) => Array.isArray(list) ? list : []) : [];
   for (const folder of folders) {
     if (typeof folder !== 'string') continue;
@@ -216,7 +221,7 @@ async function readCommentedJsonObject(file: string): Promise<JsonObjectRead> {
 async function qoderFolderTrust(gate: Extract<ReadGate, { kind: 'qoder-folder-trust' }>, cause: string): Promise<ReadGateVerdict> {
   const root = await realFilePath(gate.checkout);
   const settings = await readJsonObject(gate.config);
-  if (settings.kind === 'invalid') return unreadable(cause, gate.config, `does not parse (${settings.error})`, 'Qoder CLI trusts this folder');
+  if (settings.kind === 'invalid') return unreadable({ cause, file: gate.config, reason: `does not parse (${settings.error})`, question: 'Qoder CLI trusts this folder' });
   const value = settings.kind === 'ok' ? settings.value : {};
   if (fieldOf(fieldOf(fieldOf(value, 'security'), 'folderTrust'), 'enabled') === false) return MET;
   const permissions = fieldOf(value, 'permissions');
@@ -239,15 +244,26 @@ function fieldOf(object: unknown, key: string): unknown {
 /** The team's servers a tool holds back: `rejected` it never starts, `pending` it starts once approved. */
 type Approval = { readonly rejected: readonly string[]; readonly pending: readonly string[] };
 
-/** A verdict from `approval`: `how` says how to approve, `undo` how to lift a rejection. */
-function approvalVerdict(cause: string, approval: Approval, how: string, undo: string): ReadGateVerdict {
+/** A verdict from `approval`: `approve` says how to approve, `undo` how to lift a rejection. */
+function approvalVerdict({ cause, approval, approve, undo }: { cause: string; approval: Approval; approve: string; undo: string }): ReadGateVerdict {
   const { rejected, pending } = approval;
   if (rejected.length === 0 && pending.length === 0) return MET;
   const parts = [
     ...pending.length === 0 ? [] : [`${pending.join(', ')} ${pending.length === 1 ? 'waits' : 'wait'} for approval`],
     ...rejected.length === 0 ? [] : [`${rejected.join(', ')} ${rejected.length === 1 ? 'was' : 'were'} rejected`],
   ];
-  return { met: false, fix: `${cause}, and ${parts.join(', and ')}. ${[...pending.length === 0 ? [] : [how], ...rejected.length === 0 ? [] : [undo]].join(' ')}` };
+  return { met: false, fix: `${cause}, and ${parts.join(', and ')}. ${[...pending.length === 0 ? [] : [approve], ...rejected.length === 0 ? [] : [undo]].join(' ')}` };
+}
+
+/** Approval kept as name lists: `disabled` rejects, `enabled` or `all` approves, and the rest wait. */
+function listedApproval(
+  names: readonly string[],
+  { enabled, disabled, all }: { enabled: ReadonlySet<string>; disabled: ReadonlySet<string>; all: boolean },
+): Approval {
+  return {
+    rejected: names.filter((name) => disabled.has(name)),
+    pending: names.filter((name) => !disabled.has(name) && !all && !enabled.has(name)),
+  };
 }
 
 /** Names in a string-array value, as a set. */
@@ -270,17 +286,18 @@ async function qoderMcpApproval(gate: Extract<ReadGate, { kind: 'qoder-mcp-appro
   let all = false;
   for (const file of files) {
     const settings = await readJsonObject(file);
-    if (settings.kind === 'invalid') return unreadable(cause, file, `does not parse (${settings.error})`, 'Qoder CLI approved these servers');
+    if (settings.kind === 'invalid') return unreadable({ cause, file, reason: `does not parse (${settings.error})`, question: 'Qoder CLI approved these servers' });
     const mcp = settings.kind === 'ok' ? fieldOf(settings.value, 'mcp') : undefined;
     for (const name of namesIn(fieldOf(mcp, 'enabledProjectMcpServers'))) enabled.add(name);
     for (const name of namesIn(fieldOf(mcp, 'disabledProjectMcpServers'))) disabled.add(name);
     all ||= fieldOf(mcp, 'enableAllProjectMcpServers') === true;
   }
-  return approvalVerdict(cause, {
-    rejected: held.names.filter((name) => disabled.has(name)),
-    pending: held.names.filter((name) => !disabled.has(name) && !all && !enabled.has(name)),
-  }, `Approve them when an interactive \`qodercli\` asks, or add them to mcp.enabledProjectMcpServers in ${gate.config}.`,
-  `Remove the rejected ones from mcp.disabledProjectMcpServers in ${files.join(', ')}, or run \`qodercli mcp reset-project-choices\` to be asked again.`);
+  return approvalVerdict({
+    cause,
+    approval: listedApproval(held.names, { enabled, disabled, all }),
+    approve: `Approve them when an interactive \`qodercli\` asks, or add them to mcp.enabledProjectMcpServers in ${gate.config}.`,
+    undo: `Remove the rejected ones from mcp.disabledProjectMcpServers in ${files.join(', ')}, or run \`qodercli mcp reset-project-choices\` to be asked again.`,
+  });
 }
 
 /**
@@ -300,7 +317,7 @@ async function claudeMcpApproval(gate: Extract<ReadGate, { kind: 'claude-mcp-app
   const root = await realFilePath(gate.checkout);
   const main = (await resolveAnchors(gate.checkout))?.mainCheckout ?? root;
   const config = await readJsonObject(gate.config);
-  if (config.kind === 'invalid') return unreadable(cause, gate.config, `does not parse (${config.error})`, 'Claude Code approved these servers');
+  if (config.kind === 'invalid') return unreadable({ cause, file: gate.config, reason: `does not parse (${config.error})`, question: 'Claude Code approved these servers' });
   const entry = fieldOf(fieldOf(config.kind === 'ok' ? config.value : {}, 'projects'), main);
   const trusted = fieldOf(entry, 'hasTrustDialogAccepted') === true;
   const local = path.join(main, '.claude', 'settings.local.json');
@@ -319,7 +336,7 @@ async function claudeMcpApproval(gate: Extract<ReadGate, { kind: 'claude-mcp-app
     let value = source.value;
     if (value === undefined && source.file !== gate.config) {
       const settings = await readJsonObject(source.file);
-      if (settings.kind === 'invalid') return unreadable(cause, source.file, `does not parse (${settings.error})`, 'Claude Code approved these servers');
+      if (settings.kind === 'invalid') return unreadable({ cause, file: source.file, reason: `does not parse (${settings.error})`, question: 'Claude Code approved these servers' });
       value = settings.kind === 'ok' ? settings.value : undefined;
     }
     const off = namesIn(fieldOf(value, 'disabledMcpjsonServers'));
@@ -334,10 +351,12 @@ async function claudeMcpApproval(gate: Extract<ReadGate, { kind: 'claude-mcp-app
     : `${gate.config} does not trust ${main}, so only enabledMcpjsonServers in ${gate.settings} can approve them now. `
       + `Start \`claude\` in ${main}, accept the trust dialog and approve them when it lists new MCP servers, or add them to enabledMcpjsonServers in ${gate.settings}. `
       + '`claude -p` starts them either way.';
-  return approvalVerdict(cause, {
-    rejected: held.names.filter((name) => disabled.has(name)),
-    pending: held.names.filter((name) => !disabled.has(name) && !all && !enabled.has(name)),
-  }, how, `Remove the rejected ones from disabledMcpjsonServers in ${[...rejectedIn].join(', ')}; \`claude mcp reset-project-choices\` in ${main} clears the local settings' choices.`);
+  return approvalVerdict({
+    cause,
+    approval: listedApproval(held.names, { enabled, disabled, all }),
+    approve: how,
+    undo: `Remove the rejected ones from disabledMcpjsonServers in ${[...rejectedIn].join(', ')}; \`claude mcp reset-project-choices\` in ${main} clears the local settings' choices.`,
+  });
 }
 
 /**
@@ -349,16 +368,17 @@ async function claudeMcpApproval(gate: Extract<ReadGate, { kind: 'claude-mcp-app
 async function codebuddyMcpApproval(gate: Extract<ReadGate, { kind: 'codebuddy-mcp-approval' }>, held: Held): Promise<ReadGateVerdict> {
   const cause = `${held.summary}, but CodeBuddy Code starts a project's .mcp.json servers only once you approve them`;
   const settings = await readJsonObject(gate.config);
-  if (settings.kind === 'invalid') return unreadable(cause, gate.config, `does not parse (${settings.error})`, 'CodeBuddy Code approved these servers');
+  if (settings.kind === 'invalid') return unreadable({ cause, file: gate.config, reason: `does not parse (${settings.error})`, question: 'CodeBuddy Code approved these servers' });
   const value = settings.kind === 'ok' ? settings.value : {};
   const enabled = namesIn(fieldOf(value, 'enabledMcpjsonServers'));
   const disabled = namesIn(fieldOf(value, 'disabledMcpjsonServers'));
   const all = fieldOf(value, 'enableAllProjectMcpServers') === true;
-  return approvalVerdict(cause, {
-    rejected: held.names.filter((name) => disabled.has(name)),
-    pending: held.names.filter((name) => !disabled.has(name) && !all && !enabled.has(name)),
-  }, `Start \`codebuddy\` in ${gate.checkout} and choose "Use this MCP server", or add them to enabledMcpjsonServers in ${gate.config}.`,
-  `Remove the rejected ones from disabledMcpjsonServers in ${gate.config}.`);
+  return approvalVerdict({
+    cause,
+    approval: listedApproval(held.names, { enabled, disabled, all }),
+    approve: `Start \`codebuddy\` in ${gate.checkout} and choose "Use this MCP server", or add them to enabledMcpjsonServers in ${gate.config}.`,
+    undo: `Remove the rejected ones from disabledMcpjsonServers in ${gate.config}.`,
+  });
 }
 
 /**
@@ -383,7 +403,7 @@ async function cursorMcpApproval(gate: Extract<ReadGate, { kind: 'cursor-mcp-app
     try {
       lists[key] = namesIn(JSON.parse(raw));
     } catch (error) {
-      return unreadable(cause, path.join(dir, file), `does not parse (${error instanceof Error ? error.message : String(error)})`, 'the Cursor CLI approved these servers');
+      return unreadable({ cause, file: path.join(dir, file), reason: `does not parse (${error instanceof Error ? error.message : String(error)})`, question: 'the Cursor CLI approved these servers' });
     }
   }
   const { disabled, approvals } = lists;
@@ -392,7 +412,10 @@ async function cursorMcpApproval(gate: Extract<ReadGate, { kind: 'cursor-mcp-app
   const rejected = held.names.filter((name) => disabled?.has(name));
   const pending = approvals === null ? [] : held.names.filter((name) => !rejected.includes(name) && !approved(name));
   const enable = (names: readonly string[]): string => names.map((name) => `\`cursor-agent mcp enable ${name}\``).join(', ');
-  return approvalVerdict(cause, { rejected, pending },
-    `Run ${enable(pending)} in ${root}, or approve them when an interactive \`cursor-agent\` asks.`,
-    `Run ${enable(rejected)} in ${root}: it clears ${path.join(dir, 'mcp-disabled.json')} and approves the server.`);
+  return approvalVerdict({
+    cause,
+    approval: { rejected, pending },
+    approve: `Run ${enable(pending)} in ${root}, or approve them when an interactive \`cursor-agent\` asks.`,
+    undo: `Run ${enable(rejected)} in ${root}: it clears ${path.join(dir, 'mcp-disabled.json')} and approves the server.`,
+  });
 }

@@ -21,6 +21,7 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 import { loadLocalConfig, loadTeamConfig } from '../config.js';
+import { clearVersionCache } from '../agent-version.js';
 import { buildChecks, resolveDoctorContext, type Check } from '../doctor.js';
 import { getDataHome, managedMcpManifestKey, managedMcpManifestPath, type LocalConfig, type TeamaiConfig } from '../types.js';
 
@@ -88,6 +89,7 @@ describe('doctor — the tool trusts the project it reads team files from', () =
 
   afterEach(async () => {
     vi.unstubAllEnvs();
+    clearVersionCache();
     vi.clearAllMocks();
     await fse.remove(tempDir);
   });
@@ -120,6 +122,15 @@ describe('doctor — the tool trusts the project it reads team files from', () =
       ['a folder above it', (): string => tempDir],
     ])('passes once trust.json trusts %s', async (_label, dir) => {
       await fse.outputJson(trustFile(), { [dir()]: true });
+
+      expect(await (await check(SKILLS))?.check()).toBe(true);
+    });
+
+    it.skipIf(process.platform === 'win32')('has no verdict to wait for on a Pi older than 0.79.0, which loads project files untrusted', async () => {
+      const bin = path.join(tempDir, 'bin');
+      await fse.outputFile(path.join(bin, 'pi'), '#!/bin/sh\necho 0.78.1\n', { mode: 0o755 });
+      vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH ?? ''}`);
+      clearVersionCache();
 
       expect(await (await check(SKILLS))?.check()).toBe(true);
     });
