@@ -6,7 +6,8 @@
  *   fetch origin/<default>         → the base the pull request is built on
  *   placementAt that base          → no symlink on the way, a benchmark task belongs to a suite; same bytes = no change
  *   blob → temp index → commit     → the base's tree with only the destination changed
- *   push <commit>:<branch>         → a new branch, or the --branch of an open pull request, force-pushed with a lease
+ *   push <commit>:<branch>         → a new branch, or the --branch of an open pull request, force-pushed with a lease;
+ *                                    any other branch origin has is refused
  *   open or update the PR          → push's pull request code; an open one of that branch is updated in place
  *
  * The commit is built with git's plumbing in a temporary index, so the clone's files, index and HEAD stay as they
@@ -37,6 +38,8 @@ export interface PushFileOptions {
   role?: string;
   project?: string;
   shared?: boolean;
+  all?: boolean;
+  carried?: string[];
   branch?: string;
 }
 
@@ -92,8 +95,8 @@ export async function pushFile(options: GlobalOptions & PushFileOptions, result?
     refuse('--file and --path go together: --file names the local file, --path where it goes in the team repo.', 2);
     return;
   }
-  if (options.skill !== undefined || options.role !== undefined || options.project !== undefined || options.shared) {
-    refuse('--path names the destination, so it cannot be combined with --skill, --role, --project or --shared.', 2);
+  if (options.skill !== undefined || options.role !== undefined || options.project !== undefined || options.shared || options.all || (options.carried ?? []).length > 0) {
+    refuse('--path names the destination, so it cannot be combined with --skill, --role, --project, --shared, --all or --carried.', 2);
     return;
   }
   const destination = destinationOf(options.path);
@@ -120,7 +123,7 @@ export async function pushFile(options: GlobalOptions & PushFileOptions, result?
     return;
   }
   try {
-    const pushed = await proposeFile({ source, destination, teamRoot, ...(options.branch !== undefined ? { branch: options.branch } : {}), dryRun: options.dryRun === true, username: localConfig.username });
+    const pushed = await proposeFile({ source, isExecutable: (stat.mode & 0o111) !== 0, destination, teamRoot, ...(options.branch !== undefined ? { branch: options.branch } : {}), dryRun: options.dryRun === true, username: localConfig.username });
     if (pushed.kind === 'stopped') return;
     if (pushed.updated !== undefined) {
       log.success(`Updated pull request ${pushed.updated}`);
@@ -137,11 +140,12 @@ export async function pushFile(options: GlobalOptions & PushFileOptions, result?
 
 /**
  * Builds and pushes the commit that changes only the destination against the team repo's default branch on its remote,
- * once `placementAt` accepts the destination in that branch's tree. A `branch` that origin already has is force-pushed with a lease on the tip it had, so its open
- * pull request, looked up afterwards, shows the new file.
+ * once `placementAt` accepts the destination in that branch's tree. A `branch` that origin already has is rebuilt only
+ * when it has an open pull request, force-pushed with a lease on the tip it had, so that request shows the new file. A new
+ * file is executable when the local file is.
  */
-async function proposeFile({ source, destination, teamRoot, branch: requested, dryRun, username }: {
-  source: string; destination: Destination; teamRoot: string; branch?: string; dryRun: boolean; username: string;
+async function proposeFile({ source, isExecutable, destination, teamRoot, branch: requested, dryRun, username }: {
+  source: string; isExecutable: boolean; destination: Destination; teamRoot: string; branch?: string; dryRun: boolean; username: string;
 }): Promise<Pushed> {
   const { teamPath } = destination;
   // In single-repo mode the team root is .teamai/ of the project repo, so a team path sits under that prefix in its
@@ -183,6 +187,14 @@ async function proposeFile({ source, destination, teamRoot, branch: requested, d
   }
   const title = `[teamai] ${existing ? 'Update' : 'Add'} ${teamPath} from ${username}`;
   const branch = requested ?? generateBranchName(username);
+  // Rebuilding a branch replaces its commits, so only the branch of an open pull request is rebuilt: that request is
+  // what the rebuild updates. When the host cannot say, the branch is left alone too.
+  const [tip] = (await git.raw(['ls-remote', 'origin', `refs/heads/${branch}`])).trim().split(/\s+/);
+  const updated = tip ? await openRequestOf(top, { branch, target: defaultBranch }) : undefined;
+  if (tip && updated === undefined) {
+    refuse(`--branch ${branch} already exists on origin and teamai found no open pull request of it, so it is not rebuilt. Name a new branch, or the branch of your open pull request.`, 2);
+    return { kind: 'stopped' };
+  }
   const index = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-push-file-'));
   try {
     const env = { ...withoutGitRepositoryEnv(), GIT_INDEX_FILE: path.join(index, 'index') };
@@ -190,16 +202,13 @@ async function proposeFile({ source, destination, teamRoot, branch: requested, d
       execFile('git', args, { cwd: top, env }, (error, stdout) => (error ? reject(error) : resolve(stdout.trim())));
     });
     await indexed(['read-tree', base]);
-    await indexed(['update-index', '--add', '--cacheinfo', `${existing?.mode ?? '100644'},${blob},${prefix}${teamPath}`]);
+    await indexed(['update-index', '--add', '--cacheinfo', `${existing?.mode ?? (isExecutable ? '100755' : '100644')},${blob},${prefix}${teamPath}`]);
     const commit = (await git.raw(['commit-tree', await indexed(['write-tree']), '-p', base, '-m', title])).trim();
     const pushSpin = (await spinner(`Pushing ${teamPath}...`)).start();
     try {
-      const [tip] = (await git.raw(['ls-remote', 'origin', `refs/heads/${branch}`])).trim().split(/\s+/);
       const lease = tip ? [`--force-with-lease=refs/heads/${branch}:${tip}`] : [];
       await git.push([...lease, 'origin', `${commit}:refs/heads/${branch}`]);
       pushSpin.succeed(`Pushed branch ${branch}`);
-      if (!tip) return { kind: 'pushed', branch, title };
-      const updated = await openRequestOf(top, { branch, target: defaultBranch });
       return { kind: 'pushed', branch, title, ...(updated !== undefined ? { updated } : {}) };
     } catch (error) {
       pushSpin.fail(`Push failed: ${messageOf(error)}`);
@@ -223,7 +232,7 @@ type Placement = { kind: 'placeable'; existing?: TreeEntry } | { kind: 'refused'
 
 /**
  * Checks the destination against the tree of `base`, whose paths sit under `prefix`: refuses a path that goes through a
- * symlink or names no regular file, and a benchmark task whose suite has no suite.yaml. Every check that needs the team
+ * symlink or a file, or names no regular file, and a benchmark task whose suite has no suite.yaml. Every check that needs the team
  * repo's tree lives here; `destinationOf` holds the ones that need no repo.
  */
 async function placementAt(git: ReturnType<typeof createGit>, { base, prefix, destination: { teamPath, suiteDir } }: { base: string; prefix: string; destination: Destination }): Promise<Placement> {
@@ -234,8 +243,12 @@ async function placementAt(git: ReturnType<typeof createGit>, { base, prefix, de
   const segments = teamPath.split('/');
   for (let depth = 1; depth < segments.length; depth += 1) {
     const directory = segments.slice(0, depth).join('/');
-    if ((await entryAt(directory))?.mode === '120000') {
+    const entry = await entryAt(directory);
+    if (entry?.mode === '120000') {
       return { kind: 'refused', message: `${teamPath} goes through the symlink ${directory} in the team repo, so it is not pushed. Give a path whose directories are real directories.`, code: 2 };
+    }
+    if (entry !== undefined && entry.type !== 'tree') {
+      return { kind: 'refused', message: `${teamPath} goes through the file ${directory} in the team repo, so it is not pushed. Give a path whose directories are real directories.`, code: 2 };
     }
   }
   const existing = await entryAt(teamPath);

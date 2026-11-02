@@ -215,7 +215,7 @@ program
   .option('--file <local file>', 'Push exactly this local file, byte for byte, to the team path --path names, as a pull request. '
     + 'No other change in the team clone joins it; requires --path')
   .option('--path <team path>', 'Where --file goes in the team repo, such as benchmarks/frontend/tasks/pod-startup.yaml or scorers/review.md. '
-    + 'Placed exactly there, never relocated; cannot combine with --skill, --role, --project or --shared')
+    + 'Placed exactly there, never relocated; cannot combine with --skill, --role, --project, --shared, --all or --carried')
   .option('--carried <path@blob>', 'Override the stop for a push that would overwrite or delete a placed agent file a teammate changed. '
     + 'Use it only after carrying that change into your root copy, with the value the stop printed; '
     + 'a later team edit stops the push again. Repeatable', (val: string, acc: string[]) => acc.concat(val), [] as string[])

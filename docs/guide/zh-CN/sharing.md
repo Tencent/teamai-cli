@@ -414,7 +414,7 @@ $ teamai push --file /tmp/refresh-race.yaml --path benchmarks/missing/tasks/refr
 ✖ benchmarks/missing/suite.yaml does not exist, so benchmarks/missing/tasks/refresh-race.yaml belongs to no suite. Pick a suite the team repo has under benchmarks/.
 
 $ teamai push --file /tmp/refresh-race.yaml --path benchmarks/fix-auth/tasks/refresh-race.yaml --role web
-✖ --path names the destination, so it cannot be combined with --skill, --role, --project or --shared.
+✖ --path names the destination, so it cannot be combined with --skill, --role, --project, --shared, --all or --carried.
 ```
 
 [teamai-session-to-task](benchmarks.md#把会话变成任务) 就是这样提议它起草的任务文件。
@@ -425,7 +425,7 @@ $ teamai push --file /tmp/refresh-race.yaml --path benchmarks/fix-auth/tasks/ref
 | 只给其中一个 | 拒绝：两者必须一起用。 |
 | 同时给 `--skill`、`--role`、`--project` 或 `--shared` | 拒绝，如上。 |
 | 同时给 `--all` | `--all` 不改变任何东西。 |
-| 同时给 `--branch` | 推送到该分支（不能是默认分支）。该分支已有打开的拉取请求时，会以默认分支加上这个文件重建它，并更新那个拉取请求，而不是新开一个：修改文件后再运行同一条命令即可。 |
+| 同时给 `--branch` | 推送到该分支（不能是默认分支）。该分支已有打开的拉取请求时，会以默认分支加上这个文件重建它，并更新那个拉取请求，而不是新开一个：修改文件后再运行同一条命令即可。重建后只含这个文件，之前推送到该分支的其他文件会离开该拉取请求。远端已有但没有打开的拉取请求的分支会被拒绝，其提交保持不变。 |
 | `--path` 不在 `skills/`、`rules/`、`scorers/`、`benchmarks/` 或 teamai 拉取的其他目录下、含 `..`，或经过团队仓库中的符号链接 | 拒绝。 |
 | `--path` 在 `benchmarks/` 下 | 必须是默认分支上某个套件的任务。 |
 

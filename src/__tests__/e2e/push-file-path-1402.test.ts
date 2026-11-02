@@ -211,6 +211,18 @@ describe('teamai push --file --path', () => {
     expect(git(member.origin, ['show', `${branch}:skills/deploy/notes/rollback.md`])).toBe(bytes.trimEnd());
   });
 
+  it('keeps a new script executable', async () => {
+    const member = teamMember();
+    const file = localFile(member, 'rollback.sh', '#!/bin/sh\nkubectl rollout undo deployment/web\n');
+    fs.chmodSync(file, 0o755);
+
+    const pushed = teamai(member, ['push', '--file', file, '--path', 'skills/deploy/scripts/rollback.sh']);
+
+    expect(pushed.code, pushed.output).toBe(0);
+    const [branch] = Object.keys(proposed(member));
+    expect(git(member.origin, ['ls-tree', `${branch}`, '--', 'skills/deploy/scripts/rollback.sh']).split(/\s+/)[0]).toBe('100755');
+  });
+
   it('pushes a scorer to the exact path given', async () => {
     const member = teamMember();
     const file = localFile(member, 'review.md', '---\nlabels: [pass, fail]\n---\nDid the review name a risk?\n');
@@ -249,6 +261,20 @@ describe('teamai push --file --path', () => {
     expect(member.gh.calls().filter((call) => call.args[1] === 'create')).toHaveLength(1);
   });
 
+  it('refuses a --branch that origin has with no open pull request, and leaves that branch as it was', async () => {
+    const member = teamMember();
+    git(path.join(member.root, 'seed-team'), ['push', '-q', member.origin, 'main:refs/heads/release']);
+    const release = git(member.origin, ['rev-parse', 'release']);
+    const file = localFile(member, 'pod-startup.yaml', TASK);
+
+    const pushed = teamai(member, ['push', '--file', file, '--path', 'benchmarks/frontend/tasks/pod-startup.yaml', '--branch', 'release']);
+
+    expect(pushed.code).not.toBe(0);
+    expect(pushed.output).toContain('--branch release already exists on origin and teamai found no open pull request of it, so it is not rebuilt. Name a new branch, or the branch of your open pull request.');
+    expect(git(member.origin, ['rev-parse', 'release'])).toBe(release);
+    expect(member.gh.calls().filter((call) => call.args[1] === 'create')).toEqual([]);
+  });
+
   it('answers no changes when the path already holds the same bytes', async () => {
     const member = teamMember();
     const file = localFile(member, 'old-bug.yaml', TASK);
@@ -263,11 +289,13 @@ describe('teamai push --file --path', () => {
   it.each([
     [['--path', 'benchmarks/frontend/tasks/pod-startup.yaml'], '--file and --path go together: --file names the local file, --path where it goes in the team repo.'],
     [['--file', '{file}'], '--file and --path go together: --file names the local file, --path where it goes in the team repo.'],
-    [['--file', '{file}', '--path', 'benchmarks/frontend/tasks/pod-startup.yaml', '--role', 'web'], '--path names the destination, so it cannot be combined with --skill, --role, --project or --shared.'],
+    [['--file', '{file}', '--path', 'benchmarks/frontend/tasks/pod-startup.yaml', '--role', 'web'], '--path names the destination, so it cannot be combined with --skill, --role, --project, --shared, --all or --carried.'],
+    [['--file', '{file}', '--path', 'benchmarks/frontend/tasks/pod-startup.yaml', '--carried', 'skills/deploy/SKILL.md@0123abc'], '--path names the destination, so it cannot be combined with --skill, --role, --project, --shared, --all or --carried.'],
     [['--file', '{file}', '--path', 'benchmarks/frontend/pod-startup.yaml'], 'benchmarks/frontend/pod-startup.yaml is not a benchmark task path. A task goes in benchmarks/<suite>/tasks/<task>.yaml or benchmarks/<namespace>/<suite>/tasks/<task>.yaml.'],
     [['--file', '{file}', '--path', 'benchmarks/missing/tasks/pod-startup.yaml'], 'benchmarks/missing/suite.yaml does not exist, so benchmarks/missing/tasks/pod-startup.yaml belongs to no suite. Pick a suite the team repo has under benchmarks/.'],
     [['--file', '{file}', '--path', 'skills/../../escape.md'], 'skills/../../escape.md is not a path inside the team repo. Give a relative path with "/" between its parts, such as benchmarks/frontend/tasks/pod-startup.yaml.'],
     [['--file', '{file}', '--path', 'notes/pod-startup.yaml'], 'notes/pod-startup.yaml is not under a team resource directory. Give a path under skills/, rules/, scorers/, benchmarks/ or another directory teamai pulls.'],
+    [['--file', '{file}', '--path', 'skills/deploy/SKILL.md/notes.md'], 'skills/deploy/SKILL.md/notes.md goes through the file skills/deploy/SKILL.md in the team repo, so it is not pushed. Give a path whose directories are real directories.'],
     [['--file', '{file}', '--path', 'skills/linked/SKILL.md'], 'skills/linked/SKILL.md goes through the symlink skills/linked in the team repo, so it is not pushed. Give a path whose directories are real directories.'],
     [['--file', '{file}', '--path', 'benchmarks/frontend/tasks/pod-startup.yaml', '--branch', 'main'], '--branch main is the team repo\'s default branch, so the file would skip review. Name the pull request\'s branch, or leave --branch out.'],
   ])('refuses %j and pushes nothing', async (args, message) => {
