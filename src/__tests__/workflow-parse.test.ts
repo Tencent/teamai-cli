@@ -1738,7 +1738,7 @@ steps:
     ]);
   });
 
-  it('rejects a branch that reads a step, and a team workspace on a step that runs a workflow or runs per item', () => {
+  it('rejects a branch that reads a step, and a team workspace on a step that runs a workflow, runs per item, or is scored', () => {
     const result = parse(`schemaVersion: v1alpha1
 name: build
 description: Tidy the team's rules.
@@ -1756,12 +1756,18 @@ steps:
     for_each: inputs.targets
     workspace: { team: {} }
     command: ./tidy.sh
+  - id: scored
+    needs: []
+    workspace: { team: {} }
+    scorers: [review-quality]
+    prompt: Tidy the rules.
 `);
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.diagnostics.map(formatDiagnostic)).toEqual([
       'workflows/build.yaml:11: field "steps[1].workspace": step "fromStep" workspace team branch may read only {{ inputs.<name> }}, so every run with the same inputs goes on with the same branch',
       'workflows/build.yaml:16: field "steps[2].workspace": step "perItem" workspace team is only allowed on a command or prompt step that runs once: each step in the team workspace clones the team repo again',
+      'workflows/build.yaml:20: field "steps[3].workspace": step "scored" workspace team is not allowed with scorers: the team clone is gone once the step reports, so a scorer could not read what it changed',
     ]);
   });
 });

@@ -852,10 +852,11 @@ function parseBody(
         const branch = team.branch === undefined ? undefined : parseTemplate(team.branch, false);
 
         const problem = workflowPair || forEachPair ? `${stepLabel} workspace team is only allowed on a command or prompt step that runs once: each step in the team workspace clones the team repo again`
-          : branch && !branch.ok ? `${stepLabel} workspace team branch template ${branch.errors[0]?.source}: ${branch.errors[0]?.message}`
-            : branch?.ok && !templateExpressions(branch.template).every((read) => read.kind === 'path' && read.path.root === 'inputs')
-              ? `${stepLabel} workspace team branch may read only {{ inputs.<name> }}, so every run with the same inputs goes on with the same branch`
-              : undefined;
+          : scorersPair ? `${stepLabel} workspace team is not allowed with scorers: the team clone is gone once the step reports, so a scorer could not read what it changed`
+            : branch && !branch.ok ? `${stepLabel} workspace team branch template ${branch.errors[0]?.source}: ${branch.errors[0]?.message}`
+              : branch?.ok && !templateExpressions(branch.template).every((read) => read.kind === 'path' && read.path.root === 'inputs')
+                ? `${stepLabel} workspace team branch may read only {{ inputs.<name> }}, so every run with the same inputs goes on with the same branch`
+                : undefined;
 
         if (problem) diagnostics.push({ ...locate(file, lineCounter, node, `${field}.workspace`, problem), code: 'bad_workspace' });
         else if (branch?.ok && inGraph) reads.push({ ...expressionSite(id, `${field}.workspace`, position(lineCounter, node), 'workspace team branch', templateExpressions(branch.template)), code: 'bad_template' });
