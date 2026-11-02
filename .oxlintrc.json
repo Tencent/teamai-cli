@@ -91,13 +91,24 @@
     "oxc/no-accumulating-spread": "warn",
     // The generic rules of dmmulroy/anti-slop (#828), vendored in
     // oxlint-plugin-teamai/anti-slop. Production code only: see overrides.
+    "teamai/no-array-filter-map": "warn",
+    "teamai/no-chained-type-assertions": "warn",
+    "teamai/no-conditional-empty-object-spread": "warn",
+    "teamai/no-known-value-widening": "warn",
     "teamai/no-module-mocking": "warn",
+    "teamai/no-object-parameters": "warn",
     "teamai/no-reduce-accumulator-copy": "warn",
     "teamai/no-reflect-apply": "warn",
     "teamai/no-reflect-get": "warn",
+    "teamai/no-runtime-typeof": "warn",
+    "teamai/no-shape-in-symbol-names": "warn",
+    "teamai/no-unknown-parameters": "warn",
+    "teamai/no-unknown-returns": "warn",
     "teamai/no-unknown-type-aliases": "warn",
+    "teamai/no-unsafe-dictionary-type": "warn",
     "teamai/no-widen-then-assert": "warn",
     "teamai/require-readable-spacing": "warn",
+    "teamai/require-safety-comment-for-type-assertion": "warn",
     // A suppression with no reason can't be reviewed or removed later.
     "teamai/suppression-reason": "error"
   },

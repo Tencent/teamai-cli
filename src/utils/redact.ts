@@ -182,11 +182,14 @@ export function redact(text: string, options: RedactOptions = {}): string {
  * A copy of the JSON value `value` with each known secret value masked in every string it holds, as `redact` masks
  * text without the shape patterns. Keys are strings too: output may put a secret in a computed property name.
  */
+// oxlint-disable-next-line teamai/no-unknown-parameters, teamai/no-unknown-returns -- masks secrets in any value a caller is about to send or log, and returns the same kind of value
 export function redactJson(value: unknown, envSecrets: Record<string, string>): unknown {
+  // oxlint-disable-next-line teamai/no-runtime-typeof -- the walk itself: strings are masked, other values pass through
   if (typeof value === 'string') return redact(value, { envSecrets, patterns: false });
 
   if (Array.isArray(value)) return value.map((item) => redactJson(item, envSecrets));
 
+  // oxlint-disable-next-line teamai/no-runtime-typeof -- the walk itself: an object's keys and values are masked
   if (value !== null && typeof value === 'object') {
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [redact(key, { envSecrets, patterns: false }), redactJson(item, envSecrets)]));
   }

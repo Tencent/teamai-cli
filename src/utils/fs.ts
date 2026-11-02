@@ -2,7 +2,7 @@ import fse from 'fs-extra';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { z } from 'zod';
-import type { JsonValue } from '../types.js';
+import { isJsonObject, type JsonValue } from '../types.js';
 import { log } from './logger.js';
 import { expandHome } from './home.js';
 
@@ -153,6 +153,8 @@ export async function readJson<T = unknown>(filePath: string): Promise<T | null>
   if (content === null) return null;
 
   try {
+    // SAFETY: not checked. Each caller names the type of a file teamai writes itself and trusts it as written; a caller
+    // reading a file another tool or a person edits passes `JsonValue` and parses the result.
     return JSON.parse(content) as T;
   } catch {
     log.warn(`Failed to parse JSON: ${filePath}`);
@@ -165,6 +167,7 @@ export async function readJson<T = unknown>(filePath: string): Promise<T | null>
 export type JsonObjectRead =
   | { kind: 'missing' }
   | { kind: 'invalid'; error: string }
+  // oxlint-disable-next-line teamai/no-unsafe-dictionary-type -- callers merge their own typed entries into the object and write it back
   | { kind: 'ok'; value: Record<string, unknown> };
 
 /** Read a file that should hold a JSON object, saying why when it does not. Never throws, never logs. */
@@ -177,7 +180,7 @@ export async function readJsonObject(filePath: string): Promise<JsonObjectRead> 
     // JSON.parse returns `any`; what it builds is a JsonValue by construction.
     const value: JsonValue = JSON.parse(raw);
 
-    return value instanceof Object && !Array.isArray(value)
+    return isJsonObject(value)
       ? { kind: 'ok', value }
       : { kind: 'invalid', error: 'not a JSON object' };
   } catch (e) {
