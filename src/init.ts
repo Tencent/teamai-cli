@@ -1,5 +1,5 @@
 import YAML from 'yaml';
-import type { ZodTypeAny } from 'zod';
+import { z, type ZodTypeAny } from 'zod';
 import fs from 'node:fs';
 import path from 'node:path';
 import { readWorkspaceChildren } from './workspace-children.js';
@@ -104,6 +104,9 @@ interface SalvagedConfig {
  * key that validates on its own. One bad value then costs that value, not the member's settings
  * (#1500). Null when the file is not a YAML mapping or records no team repo.
  */
+/** A config file's mapping that records its team repo's `remote`; nothing else in it is validated yet. */
+const RecordedRepoConfigSchema = z.looseObject({ repo: z.looseObject({ remote: z.string() }) });
+
 async function salvageConfigFile(configPath: string): Promise<SalvagedConfig | null> {
   let raw: unknown;
 
@@ -113,13 +116,13 @@ async function salvageConfigFile(configPath: string): Promise<SalvagedConfig | n
     return null;
   }
 
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-  const entries = raw as Record<string, unknown>;
-  const remote = (entries.repo as { remote?: unknown } | null | undefined)?.remote;
+  const recorded = RecordedRepoConfigSchema.safeParse(raw);
 
-  if (typeof remote !== 'string') return null;
+  if (!recorded.success) return null;
+  const entries = recorded.data;
+  const { remote } = entries.repo;
   const fields: Record<string, ZodTypeAny | undefined> = LocalConfigSchema.shape;
-  const settings: Record<string, unknown> = {};
+  const settings: Array<[string, LocalConfig[keyof LocalConfig]]> = [];
   const dropped: string[] = [];
 
   for (const [key, value] of Object.entries(entries)) {
@@ -128,15 +131,19 @@ async function salvageConfigFile(configPath: string): Promise<SalvagedConfig | n
     if (!field) continue;
     const parsed = field.safeParse(value);
 
-    if (parsed.success) settings[key] = parsed.data;
+    if (parsed.success) settings.push([key, parsed.data]);
     else dropped.push(`${key} in ${configPath} is ${JSON.stringify(value)} (${parsed.error.issues[0]?.message}), so it was dropped`);
   }
 
-  const kind = LocalConfigSchema.shape.repo.shape.kind.safeParse((entries.repo as { kind?: unknown }).kind);
-  const username = typeof entries.username === 'string' ? entries.username : '';
-  const repo = { localPath: '', remote, ...(kind.success && kind.data ? { kind: kind.data } : {}) };
+  const kind = LocalConfigSchema.shape.repo.shape.kind.safeParse(entries.repo.kind);
+  const username = z.string().catch('').parse(entries.username);
+  const repo: LocalConfig['repo'] = { localPath: '', remote };
 
-  return { file: { ...settings, username, repo } as LocalConfig, dropped };
+  if (kind.success && kind.data) repo.kind = kind.data;
+
+  // SAFETY: each entry in `settings` passed its own LocalConfigSchema field and `username` and `repo` are filled; as
+  // SalvagedConfig says, this is a salvage rather than a full parse, so a defaulted key the file lacks stays absent.
+  return { file: { ...Object.fromEntries(settings), username, repo } as LocalConfig, dropped };
 }
 
 /**
@@ -613,6 +620,9 @@ async function resolveProjectsForInit(
   return { projects: selected.map((index) => manifest.projects[index].id) };
 }
 
+/** The install scope init uses, and whether `--scope` chose it. */
+interface ResolvedInitScope { scope: Scope; projectRoot?: string; explicit: boolean; fallbackReason?: string }
+
 /**
  * Resolve init install scope from `--scope` / default.
  *
@@ -627,7 +637,7 @@ export function resolveInitScope(
   rawScope: string | undefined,
   cwd: string,
   homeDir: string,
-): { scope: Scope; projectRoot?: string; explicit: boolean; fallbackReason?: string } {
+): ResolvedInitScope {
   const cwdResolved = resolveRealPath(cwd);
   const homeResolved = resolveRealPath(homeDir);
   const atHome = cwdResolved === homeResolved;
@@ -861,7 +871,7 @@ export async function initHttp(
   try {
     ({ scope, projectRoot, explicit, fallbackReason, existingLocalConfig } = await resolveInitContext(options.scope));
   } catch (e) {
-    log.error((e as Error).message);
+    log.error((e instanceof Error ? e.message : String(e)));
     process.exit(1);
 
     return;
@@ -876,7 +886,7 @@ export async function initHttp(
       existingLocalConfig?.inheritUserScope,
     );
   } catch (e) {
-    log.error((e as Error).message);
+    log.error((e instanceof Error ? e.message : String(e)));
     process.exit(1);
 
     return;
@@ -951,11 +961,14 @@ export async function initHttp(
     scope,
     projectRoot,
     additionalRoles: [],
-    ...(scope === 'project' ? { dataHome: teamaiHome } : {}),
-    ...(inheritUserScope !== undefined ? { inheritUserScope } : {}),
-    // A re-init keeps the member's workflow settings.
-    ...(existingLocalConfig?.workflows ? { workflows: existingLocalConfig.workflows } : {}),
   };
+
+  if (scope === 'project') localConfig.dataHome = teamaiHome;
+
+  if (inheritUserScope !== undefined) localConfig.inheritUserScope = inheritUserScope;
+
+  // A re-init keeps the member's workflow settings.
+  if (existingLocalConfig?.workflows) localConfig.workflows = existingLocalConfig.workflows;
 
   try {
     Object.assign(localConfig, await promptForRoleProfile(localConfig.repo, localConfig.username, options.role));
@@ -1031,7 +1044,7 @@ export async function initHttp(
 
     if (seeded.length > 0) log.debug(`Seeded tool dirs for: ${seeded.join(', ')}`);
   } catch (e) {
-    log.debug(`Tool-dir seeding skipped: ${(e as Error).message}`);
+    log.debug(`Tool-dir seeding skipped: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   // Step 5: inject hooks (built-in dispatch incl. the reporter) via the same
@@ -1051,7 +1064,7 @@ export async function initHttp(
     // the credentials this machine already has, so this init did not finish.
     localAgentFailed = true;
     process.exitCode = 1;
-    log.error(`Local agent init: ${(e as Error).message}`);
+    log.error(`Local agent init: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   await runInitScript(localConfig, 'postInit', options.dryRun, true);
@@ -1084,7 +1097,7 @@ async function reconcileHooksForInit(
     reconciled = await reconcileTeamHooksForConfig(teamConfig, await readWorkspaceChildren(localConfig), { filterAgents });
   } catch (e) {
     // The agent hooks are in place; the rest of init still runs.
-    log.error((e as Error).message);
+    log.error((e instanceof Error ? e.message : String(e)));
     process.exitCode = 1;
 
     return;
@@ -1102,7 +1115,7 @@ async function reconcileHooksForInit(
 
     for (const problem of await instructionChannelProblems(teamConfig, localConfig)) log.warn(problem);
   } catch (e) {
-    log.debug(`Team instruction check skipped: ${(e as Error).message}`);
+    log.debug(`Team instruction check skipped: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   // A tool with no rules channel in this scope is told so here, not left to
@@ -1244,7 +1257,7 @@ export function buildProjectScopeGitignore(): string {
  * not commented lines), and ensures `env.local` and `teamai.lock` are ignored.
  * Returns whether anything changed plus the new content.
  */
-export function migrateSelfModeGitignoreContent(content: string): { changed: boolean; content: string } {
+export function migrateSelfModeGitignoreContent(content: string) {
   const lines = content.split('\n');
   let changed = false;
 
@@ -1316,7 +1329,7 @@ export async function migrateSelfModeGitignore(localConfig: LocalConfig): Promis
       + 'please `git add .teamai/.gitignore` and commit it.',
     );
   } catch (e) {
-    log.debug(`[self-mode] gitignore migration skipped: ${(e as Error).message}`);
+    log.debug(`[self-mode] gitignore migration skipped: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
@@ -1507,7 +1520,7 @@ export async function initSelfRepo(options: GlobalOptions & {
     preInitConfig = await loadLocalConfigForScope('project', businessRepoRoot, { selfHeal: false });
     inheritUserScope = resolveInheritUserScope('project', options.inheritUserScope, preInitConfig?.inheritUserScope);
   } catch (e) {
-    log.error((e as Error).message);
+    log.error((e instanceof Error ? e.message : String(e)));
     process.exit(1);
 
     return;
@@ -1556,7 +1569,7 @@ export async function initSelfRepo(options: GlobalOptions & {
   try {
     providerName = await selectInitProvider(remoteUrl, options.provider);
   } catch (e) {
-    log.error((e as Error).message);
+    log.error((e instanceof Error ? e.message : String(e)));
     process.exit(1);
 
     return;
@@ -1573,7 +1586,7 @@ export async function initSelfRepo(options: GlobalOptions & {
       ? parseGenericGitExistingRemote(remoteUrl)
       : provider.parseRepoInput(remoteUrl);
   } catch (e) {
-    log.error(`Could not parse the business repo remote "${redactGitCredentials(remoteUrl)}": ${(e as Error).message}`);
+    log.error(`Could not parse the business repo remote "${redactGitCredentials(remoteUrl)}": ${e instanceof Error ? e.message : String(e)}`);
     process.exit(1);
 
     return;
@@ -1588,7 +1601,7 @@ export async function initSelfRepo(options: GlobalOptions & {
     username = await provider.authenticate();
     authSpin.succeed(`Authenticated as ${username}`);
   } catch (e) {
-    authSpin.fail(`Authentication failed: ${(e as Error).message}`);
+    authSpin.fail(`Authentication failed: ${e instanceof Error ? e.message : String(e)}`);
     process.exit(1);
 
     return;
@@ -1618,7 +1631,7 @@ export async function initSelfRepo(options: GlobalOptions & {
     try {
       teamProvider = await newTeamConfigProvider(remoteUrl, providerName, options.provider);
     } catch (e) {
-      log.error((e as Error).message);
+      log.error((e instanceof Error ? e.message : String(e)));
       process.exit(1);
 
       return;
@@ -1661,21 +1674,27 @@ export async function initSelfRepo(options: GlobalOptions & {
   // Step 4: assemble local config (kind: self). dataHome points at the partition
   // so config/state and every other class-A1 write lands outside the repo (P2);
   // repo.localPath stays <repo>/.teamai — that is the class-B knowledge anchor.
+  const chosenProvider: Pick<LocalConfig, 'provider'> = {};
+
+  if (options.provider) chosenProvider.provider = options.provider;
+
   const localConfig: LocalConfig = {
     ...settingsReinitKeeps(replacedFile, repoInfo.httpsUrl),
     repo: { localPath, remote: repoInfo.httpsUrl, kind: 'self', businessRepoRoot },
     username,
-    ...(options.provider ? { provider: options.provider } : {}),
+    ...chosenProvider,
     scope: 'project',
     projectRoot: businessRepoRoot,
     dataHome: partitionHome,
     // Side branches are shared with the user scope of the same repo (#1443).
     branchHome: path.join(partitionHome, SELF_BRANCH_HOME_DIRNAME),
     additionalRoles: [],
-    ...(inheritUserScope !== undefined ? { inheritUserScope } : {}),
-    // A re-init keeps the member's workflow settings.
-    ...(preInitConfig?.workflows ? { workflows: preInitConfig.workflows } : {}),
   };
+
+  if (inheritUserScope !== undefined) localConfig.inheritUserScope = inheritUserScope;
+
+  // A re-init keeps the member's workflow settings.
+  if (preInitConfig?.workflows) localConfig.workflows = preInitConfig.workflows;
 
   try {
     Object.assign(localConfig, await promptForRoleProfile(localConfig.repo, localConfig.username, options.role));
@@ -1747,7 +1766,7 @@ export async function initSelfRepo(options: GlobalOptions & {
 
     if (seeded.length > 0) log.debug(`Seeded tool dirs for: ${seeded.join(', ')}`);
   } catch (e) {
-    log.debug(`Tool-dir seeding skipped: ${(e as Error).message}`);
+    log.debug(`Tool-dir seeding skipped: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   // Step 5.4: inject hooks BEFORE the skeleton commit, so each selected tool's
@@ -1803,7 +1822,7 @@ export async function initSelfRepo(options: GlobalOptions & {
         );
       }
     } catch (e) {
-      log.warn(`Could not commit the .teamai/ skeleton (do it manually before \`teamai push\`): ${(e as Error).message}`);
+      log.warn(`Could not commit the .teamai/ skeleton (do it manually before \`teamai push\`): ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -1819,7 +1838,7 @@ export async function initSelfRepo(options: GlobalOptions & {
     for (const file of await deliveredHookFiles(teamConfig, localConfig)) recorder.report('hooks', file);
     await syncDeliveredGitExclude(localConfig, recorder);
   } catch (e) {
-    log.warn(`Could not update teamai's delivered git exclude block: ${(e as Error).message}. Fix the cause, then run \`teamai pull\`.`);
+    log.warn(`Could not update teamai's delivered git exclude block: ${e instanceof Error ? e.message : String(e)}. Fix the cause, then run \`teamai pull\`.`);
   }
 
   // Step 6: register member on the reports orphan branch (never touches main / active tree).
@@ -1874,7 +1893,7 @@ export async function initSelfRepo(options: GlobalOptions & {
           : 'Member roster updated on the teamai-reports branch');
       }
     } catch (e) {
-      log.warn(`Member registration skipped (non-blocking): ${(e as Error).message}`);
+      log.warn(`Member registration skipped (non-blocking): ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -1967,7 +1986,7 @@ export async function init(options: GlobalOptions & {
       throw new Error('--provider cannot be combined with --http: an HTTP team repo has no git provider.');
     }
   } catch (e) {
-    log.error((e as Error).message);
+    log.error((e instanceof Error ? e.message : String(e)));
     process.exit(1);
 
     return;
@@ -1999,7 +2018,7 @@ export async function init(options: GlobalOptions & {
   try {
     ({ scope, projectRoot, explicit, fallbackReason, existingLocalConfig } = await resolveInitContext(options.scope));
   } catch (e) {
-    log.error((e as Error).message);
+    log.error((e instanceof Error ? e.message : String(e)));
     process.exit(1);
 
     return;
@@ -2027,7 +2046,7 @@ export async function init(options: GlobalOptions & {
       carriedConfig?.inheritUserScope,
     );
   } catch (e) {
-    log.error((e as Error).message);
+    log.error((e instanceof Error ? e.message : String(e)));
     process.exit(1);
 
     return;
@@ -2066,7 +2085,7 @@ export async function init(options: GlobalOptions & {
   try {
     repoInput = resolveInitRepo(options.repoPositional, options.repo) ?? '';
   } catch (e) {
-    log.error((e as Error).message);
+    log.error((e instanceof Error ? e.message : String(e)));
     process.exit(1);
 
     return;
@@ -2090,7 +2109,7 @@ export async function init(options: GlobalOptions & {
   try {
     providerName = await selectInitProvider(repoInput, forcedProvider);
   } catch (e) {
-    log.error((e as Error).message);
+    log.error((e instanceof Error ? e.message : String(e)));
     process.exit(1);
 
     return;
@@ -2105,7 +2124,7 @@ export async function init(options: GlobalOptions & {
   try {
     repoInfo = provider.parseRepoInput(repoInput);
   } catch (e) {
-    log.error((e as Error).message);
+    log.error((e instanceof Error ? e.message : String(e)));
     process.exit(1);
   }
 
@@ -2126,7 +2145,7 @@ export async function init(options: GlobalOptions & {
       log.success(isGenericGit ? `Using Git identity ${username}` : `Authenticated as ${username}`);
     }
   } catch (e) {
-    authSpin.fail(`Authentication failed: ${(e as Error).message}`);
+    authSpin.fail(`Authentication failed: ${e instanceof Error ? e.message : String(e)}`);
     process.exit(1);
   }
 
@@ -2140,7 +2159,7 @@ export async function init(options: GlobalOptions & {
     try {
       inheritUserScope = resolveInheritUserScope(scope, options.inheritUserScope, carriedConfig.inheritUserScope);
     } catch (e) {
-      log.error((e as Error).message);
+      log.error((e instanceof Error ? e.message : String(e)));
       process.exit(1);
 
       return;
@@ -2165,8 +2184,9 @@ export async function init(options: GlobalOptions & {
       scope,
       projectRoot,
       additionalRoles: [],
-      ...(scope === 'project' ? { dataHome: teamaiHome } : {}),
     };
+
+    if (scope === 'project') next.dataHome = teamaiHome;
 
     for (const line of salvaged?.dropped ?? []) log.warn(line);
 
@@ -2228,8 +2248,9 @@ export async function init(options: GlobalOptions & {
           scope,
           projectRoot,
           additionalRoles: existingLocalConfig?.additionalRoles ?? [],
-          ...(scope === 'project' ? { dataHome: teamaiHome } : {}),
         };
+
+        if (scope === 'project') previous.dataHome = teamaiHome;
 
         const changesOwner = !sameQueueOwner(
           queueOwner(previous),
@@ -2261,7 +2282,7 @@ export async function init(options: GlobalOptions & {
                 throw new Error(
                   `The old clone was kept at ${aside}, but Git could not repair its worktree links. ` +
                     `Run \`git -C ${aside} worktree repair\` to recover them before retrying init. ` +
-                    `Git reported: ${(e as Error).message}`,
+                    `Git reported: ${e instanceof Error ? e.message : String(e)}`,
                   { cause: e },
                 );
               }
@@ -2277,7 +2298,7 @@ export async function init(options: GlobalOptions & {
             }
           }));
         } catch (e) {
-          log.error((e as Error).message);
+          log.error((e instanceof Error ? e.message : String(e)));
           process.exit(1);
 
           return;
@@ -2305,7 +2326,7 @@ export async function init(options: GlobalOptions & {
           }
 
           log.error(
-            `Failed to refresh existing clone at ${localPath}: ${(e as Error).message}. ` +
+            `Failed to refresh existing clone at ${localPath}: ${e instanceof Error ? e.message : String(e)}. ` +
             'The local clone was left unchanged. Fix network/auth or resolve ' +
             `divergence (commit/stash local edits), or remove ${localPath} manually to start fresh.`,
           );
@@ -2346,7 +2367,7 @@ export async function init(options: GlobalOptions & {
         // exists. Creating a repo under a missing org fails anyway, and the CLI
         // token cannot create an org, so detect it up front and guide the user
         // to the web UI instead of a confusing create-repo failure.
-        if (typeof provider.organizationExists === 'function') {
+        if (provider.organizationExists !== undefined) {
           let orgMissing = false;
 
           try {
@@ -2354,7 +2375,7 @@ export async function init(options: GlobalOptions & {
           } catch (checkErr) {
             // Existence couldn't be determined (network/auth) — fall through to
             // the normal create flow rather than blocking on an unknown.
-            log.debug(`Organization check failed: ${(checkErr as Error).message}`);
+            log.debug(`Organization check failed: ${checkErr instanceof Error ? checkErr.message : String(checkErr)}`);
           }
 
           if (orgMissing) {
@@ -2400,7 +2421,7 @@ export async function init(options: GlobalOptions & {
             process.exit(1);
           }
 
-          const msg = (ce as Error).message;
+          const msg = (ce instanceof Error ? ce.message : String(ce));
 
           if (/already been taken|already exists/i.test(msg)) {
             // Repo already exists — not fatal; fall through to retry the clone.
@@ -2418,11 +2439,11 @@ export async function init(options: GlobalOptions & {
           provider.cloneRepo(cloneTarget, localPath);
           retryCloneSpin.succeed('Team repo cloned');
         } catch (ce) {
-          retryCloneSpin.fail(`Clone failed: ${(ce as Error).message}`);
+          retryCloneSpin.fail(`Clone failed: ${ce instanceof Error ? ce.message : String(ce)}`);
           process.exit(1);
         }
       } else {
-        cloneSpin.fail(`Clone failed: ${(e as Error).message}`);
+        cloneSpin.fail(`Clone failed: ${e instanceof Error ? e.message : String(e)}`);
         process.exit(1);
       }
     }
@@ -2436,7 +2457,7 @@ export async function init(options: GlobalOptions & {
         await initRepo(repoInfo.httpsUrl, localPath);
         initSpin.succeed('Empty repo initialized');
       } catch (e) {
-        initSpin.fail(`Init failed: ${(e as Error).message}`);
+        initSpin.fail(`Init failed: ${e instanceof Error ? e.message : String(e)}`);
         process.exit(1);
       }
     }
@@ -2481,7 +2502,7 @@ export async function init(options: GlobalOptions & {
     try {
       teamProvider = await newTeamConfigProvider(repoInput, providerName, forcedProvider);
     } catch (e) {
-      log.error((e as Error).message);
+      log.error((e instanceof Error ? e.message : String(e)));
       process.exit(1);
 
       return;
@@ -2526,7 +2547,7 @@ export async function init(options: GlobalOptions & {
     try {
       projectsManifest = await loadProjectsManifest(localPath);
     } catch (error) {
-      log.error((error as Error).message);
+      log.error((error instanceof Error ? error.message : String(error)));
       process.exit(1);
     }
   }
@@ -2537,7 +2558,7 @@ export async function init(options: GlobalOptions & {
     try {
       roleProfile = await promptForRoleProfile({ localPath }, username, options.role);
     } catch (error) {
-      const msg = (error as Error).message;
+      const msg = (error instanceof Error ? error.message : String(error));
 
       if (msg.includes('Roles manifest not found')) {
         log.debug('No roles manifest found — skipping role selection');
@@ -2554,7 +2575,7 @@ export async function init(options: GlobalOptions & {
     resolvedProjects = (await resolveProjectsForInit(localPath, options.project, projectsManifest)).projects ?? [];
   } catch (error) {
     // A bad --project is a user error on the main init path: fail loudly.
-    log.error((error as Error).message);
+    log.error((error instanceof Error ? error.message : String(error)));
     process.exit(1);
   }
 
@@ -2584,7 +2605,7 @@ export async function init(options: GlobalOptions & {
         'Skeleton push',
       );
     } catch (e) {
-      log.warn(`Push failed (you can push manually later): ${(e as Error).message}`);
+      log.warn(`Push failed (you can push manually later): ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -2650,7 +2671,7 @@ export async function init(options: GlobalOptions & {
         log.info(`Member ${username} already registered`);
       }
     } catch (e) {
-      log.warn(`Member registration skipped (non-blocking): ${(e as Error).message}`);
+      log.warn(`Member registration skipped (non-blocking): ${e instanceof Error ? e.message : String(e)}`);
     }
   } else {
     log.info(`[dry-run] Would register member ${username} on the teamai-reports branch`);
@@ -2679,7 +2700,7 @@ export async function init(options: GlobalOptions & {
         const configContent = await readFileSafe(configPath);
 
         if (configContent) {
-          const configData = YAML.parse(configContent) as Record<string, unknown>;
+          const configData = z.looseObject({}).parse(YAML.parse(configContent));
           configData.reviewers = reviewers;
           await writeFile(configPath, YAML.stringify(configData));
           log.success(`Configured ${reviewers.length} reviewer(s): ${reviewers.join(', ')}`);
@@ -2694,11 +2715,12 @@ export async function init(options: GlobalOptions & {
               // stalled gh/gf process cannot block the event loop past it.
               const mrTeamConfig = await loadTeamConfig(localPath);
 
-              const mrLocalConfig = {
+              const mrLocalConfig: Pick<LocalConfig, 'repo' | 'username' | 'provider'> = {
                 repo: { remote: repoInfo.httpsUrl, localPath },
                 username,
-                ...(forcedProvider ? { provider: forcedProvider } : {}),
               };
+
+              if (forcedProvider) mrLocalConfig.provider = forcedProvider;
 
               if (mrTeamConfig) {
                 const prUrl = await withTimeout(
@@ -2721,7 +2743,7 @@ export async function init(options: GlobalOptions & {
                 }
               }
             } catch (e) {
-              log.warn(`Push failed (you can push manually later): ${(e as Error).message}`);
+              log.warn(`Push failed (you can push manually later): ${e instanceof Error ? e.message : String(e)}`);
             }
           }
         }
@@ -2730,25 +2752,32 @@ export async function init(options: GlobalOptions & {
   }
 
   // Step 6: Save local config
+  const chosenProvider: Pick<LocalConfig, 'provider'> = {};
+
+  if (forcedProvider) chosenProvider.provider = forcedProvider;
+
   const localConfig: LocalConfig = {
     ...settingsReinitKeeps(replacedFile, repoInfo.httpsUrl),
     repo: { localPath, remote: repoInfo.httpsUrl },
     username,
-    ...(forcedProvider ? { provider: forcedProvider } : {}),
+    ...chosenProvider,
     scope,
     projectRoot,
     additionalRoles: [],
-    ...(scope === 'project' ? { dataHome: teamaiHome } : {}),
-    ...(inheritUserScope !== undefined ? { inheritUserScope } : {}),
-    // A re-init keeps the member's workflow settings.
-    ...(carriedConfig?.workflows ? { workflows: carriedConfig.workflows } : {}),
   };
+
+  if (scope === 'project') localConfig.dataHome = teamaiHome;
+
+  if (inheritUserScope !== undefined) localConfig.inheritUserScope = inheritUserScope;
+
+  // A re-init keeps the member's workflow settings.
+  if (carriedConfig?.workflows) localConfig.workflows = carriedConfig.workflows;
 
   if (!rolePromptedEarly) {
     try {
       roleProfile = await promptForRoleProfile({ localPath }, username, options.role);
     } catch (error) {
-      const msg = (error as Error).message;
+      const msg = (error instanceof Error ? error.message : String(error));
 
       if (msg.includes('Roles manifest not found')) {
         log.debug('No roles manifest found — skipping role selection');
@@ -2871,7 +2900,7 @@ export async function init(options: GlobalOptions & {
 
       if (seeded.length > 0) log.debug(`Seeded tool dirs for: ${seeded.join(', ')}`);
     } catch (e) {
-      log.debug(`Tool-dir seeding skipped: ${(e as Error).message}`);
+      log.debug(`Tool-dir seeding skipped: ${e instanceof Error ? e.message : String(e)}`);
     }
 
     await runInitScript(localConfig, 'preInit', options.dryRun);
@@ -2888,7 +2917,7 @@ export async function init(options: GlobalOptions & {
         log.debug(`Deployed ${stubDeployed} built-in skill(s)`);
       }
     } catch (e) {
-      log.warn(`The built-in teamai skill was not deployed: ${(e as Error).message}`);
+      log.warn(`The built-in teamai skill was not deployed: ${e instanceof Error ? e.message : String(e)}`);
     }
 
     // After hooks. There is no closing pull; sync MCP here so a value the
@@ -2913,7 +2942,7 @@ export async function init(options: GlobalOptions & {
       for (const file of await deliveredHookFiles(reloadedTeamConfig, localConfig)) recorder.report('hooks', file);
       await syncDeliveredGitExclude(localConfig, recorder);
     } catch (e) {
-      log.warn(`Could not update teamai's delivered git exclude block: ${(e as Error).message}. Fix the cause, then run \`teamai pull\`.`);
+      log.warn(`Could not update teamai's delivered git exclude block: ${e instanceof Error ? e.message : String(e)}. Fix the cause, then run \`teamai pull\`.`);
     }
   }
 

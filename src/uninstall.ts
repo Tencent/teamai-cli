@@ -1,12 +1,13 @@
 import { lstat, readdir, realpath } from 'node:fs/promises';
 import path from 'node:path';
+import { z } from 'zod';
 import { autoDetectInit, loadLocalConfig, loadStateForScope, readConfigFrom, resolveMemberToolRoots, saveLocalConfig, saveLocalConfigForScope, saveStateForScope, UnreadableProjectConfigError, detectProjectConfig } from './config.js';
 import { createDeliveryRecorder, deliveredOwner, deliveredOwnerElsewhere } from './git-exclude-delivered.js';
 import { gitExcludeFile, gitTracks, gitUntracked, MCP_EXCLUDE_OWNER, realFilePath, remove as removeGitExclude, stateHomeRecord, type GitExcludeFileRemoval } from './git-exclude.js';
 import {
   codexTrustPolicy, migrateLegacyManagedHooks, OPENCLAW_TOOLS, reconcileHooks, hasTeamaiHooks, hasUnrecordedTeamHooks, mainCheckoutHookFile, resolveMainCheckoutHooks, selfLocalTeamHookFile,
   stopCodexTeamHookDispatch, teamHookHistory, canonicalProjectRoot, getToolCheckouts, unregisterCheckoutFromSharedManifest,
-  type CodexTrustPolicy, type MainCheckoutHooks, type SharedHooksManifest, type TeamHookHistory,
+  type CodexTrustPolicy, type MainCheckoutHooks, type ReconcileHooksOptions, type SharedHooksManifest, type TeamHookHistory,
 } from './hooks.js';
 import { codexTeamHookIndexPath } from './codex-team-hooks.js';
 import { bridgedTeamHookDir, bridgedTeamHookFile, isBridgedTeamHookTool } from './bridged-team-hooks.js';
@@ -50,6 +51,7 @@ import {
   type LocalConfig,
   type Scope,
   type ManagedMcpManifest,
+  type JsonValue,
   installScopeName,
 } from './types.js';
 import { BUILTIN_RULE_NAMES, TEAMAI_CONTEXT_RULE_NAME } from './builtin-rules.js';
@@ -322,6 +324,15 @@ const CLAUDEMD_MARKER_PAIRS: Array<[string, string]> = [
   [TEAMAI_TEAM_RULES_START, TEAMAI_TEAM_RULES_END],
 ];
 
+/** The local-agent manifest as uninstall reads it: each scope's skills, under the name each landed as, and rules. */
+const LocalAgentManifestSchema = z.object({
+  scopes: z.record(z.string(), z.object({
+    skills: z.record(z.string(), z.object({ dir_name: z.string().optional().catch(undefined) }).nullable().catch(null))
+      .optional().catch(undefined),
+    rules: z.looseObject({}).optional().catch(undefined),
+  }).catch({})).optional().catch(undefined),
+});
+
 const INSTRUCTION_BLOCK_STARTS: Record<InstructionBlock, string> = {
   culture: TEAMAI_CULTURE_START,
   claudemd: TEAMAI_CLAUDEMD_START,
@@ -338,9 +349,8 @@ const INSTRUCTION_BLOCK_STARTS: Record<InstructionBlock, string> = {
  * legacy `[teamai:rules]` block any more.
  */
 function instructionBlocksWrittenBy(tool: string): string[] {
-  return (Object.keys(INSTRUCTION_BLOCK_STARTS) as InstructionBlock[])
-    .filter((block) => block !== 'team-rules' || (tool !== 'hermes' && inlineRulesLabelOf(tool) !== null))
-    .map((block) => INSTRUCTION_BLOCK_STARTS[block]);
+  return Object.entries(INSTRUCTION_BLOCK_STARTS).flatMap(([block, start]) =>
+    (block !== 'team-rules' || (tool !== 'hermes' && inlineRulesLabelOf(tool) !== null) ? [start] : []));
 }
 
 /**
@@ -417,10 +427,15 @@ async function collectTeamAgentNames(repoPath: string): Promise<Map<string, stri
   return names;
 }
 
+/** A hook file's `hooks` mapping, its events not validated yet. */
+const HookEventsFileSchema = z.looseObject({ hooks: z.looseObject({}) });
+
 /** Detect hooks cleared to empty arrays — a residue of prior teamai installation. */
-function isEmptyHooksResidue(parsed: Record<string, unknown> | null): boolean {
-  if (parsed == null || !('hooks' in parsed) || typeof parsed.hooks !== 'object' || parsed.hooks == null) return false;
-  const entries = Object.values(parsed.hooks as Record<string, unknown>);
+function isEmptyHooksResidue(parsed: JsonValue | null): boolean {
+  const file = HookEventsFileSchema.safeParse(parsed);
+
+  if (!file.success) return false;
+  const entries = Object.values(file.data.hooks);
 
   return entries.length > 0 && entries.every((v) => Array.isArray(v) && v.length === 0);
 }
@@ -431,7 +446,7 @@ function isEmptyHooksResidue(parsed: Record<string, unknown> | null): boolean {
  * nothing from it. A file git tracks stays, as the hook pass keeps it.
  */
 async function removeEmptiedCopilotHookFile(file: string): Promise<void> {
-  const parsed = await readJson<Record<string, unknown>>(file);
+  const parsed = await readJson<JsonValue>(file);
 
   if (parsed === null || !Object.keys(parsed).every((key) => key === 'version' || key === 'hooks') || !isEmptyHooksResidue(parsed)) return;
 
@@ -531,14 +546,12 @@ async function discoverToolResources(
     // A project's Copilot file holds only team hooks, so lost records leave no marker behind (#993).
     if (hooksPath !== null && await pathExists(hooksPath)
       && (await hasTeamaiHooks(hooksPath, tool, standaloneHookManifestPath)
-        || isEmptyHooksResidue(await readJson<Record<string, unknown>>(hooksPath))
+        || isEmptyHooksResidue(await readJson<JsonValue>(hooksPath))
         || await hasUnrecordedTeamHooks(hooksPath, tool, { teamHookHistory: hookTargets[0]?.teamHookHistory, teamOnly }))) {
-      res.hookFiles.push({
-        path: hooksPath,
-        tool,
-        manifestPath: standaloneHookManifestPath,
-        ...(teamOnly ? { teamOnly } : {}),
-      });
+      const found: ToolResources['hookFiles'][number] = { path: hooksPath, tool, manifestPath: standaloneHookManifestPath };
+
+      if (teamOnly) found.teamOnly = teamOnly;
+      res.hookFiles.push(found);
     }
   } else if (tool === 'dsh') {
     const { isDshHooksMounted, resolveDshHomePatchPath, resolveDshHookConfigPath, resolveDshPatchPath } = await import('./dsh-hooks.js');
@@ -569,7 +582,7 @@ async function discoverToolResources(
         if (await pathExists(path.join(pluginDir, OPENCODE_HOOK_FILE))) res.keptGlobal.push(path.join(pluginDir, OPENCODE_HOOK_FILE));
 
         // Server-pushed agent hooks there are as global.
-        for (const file of await listFiles(pluginDir).catch(() => [] as string[])) {
+        for (const file of await listFiles(pluginDir).catch((): string[] => [])) {
           if (path.basename(file).startsWith('teamai-agent-')) res.keptGlobal.push(path.join(pluginDir, path.basename(file)));
         }
 
@@ -702,13 +715,20 @@ async function discoverToolResources(
             || await hasTeamaiHooks(settingsPath, tool, manifestPath)
             || (legacyManifestPath && await hasTeamaiHooks(settingsPath, tool, legacyManifestPath))
             || (mainCheckout?.checkoutManifestPath && await hasTeamaiHooks(settingsPath, tool, mainCheckout.checkoutManifestPath))
-            || isEmptyHooksResidue(await readJson<Record<string, unknown>>(settingsPath))
+            || isEmptyHooksResidue(await readJson<JsonValue>(settingsPath))
             || await hasUnrecordedTeamHooks(settingsPath, tool, { teamHookHistory: history, teamHookProjectRoot, teamOnly }))) {
-          res.hookFiles.push({ path: settingsPath, tool, manifestPath,
-            ...(teamOnly ? { teamOnly, legacyManifestPath, mainCheckout } : {}),
-            ...(teamHookProjectRoot ? { teamHookProjectRoot } : {}),
-            ...(keepRecords ? { keepRecords } : {}),
-          });
+          const found: ToolResources['hookFiles'][number] = { path: settingsPath, tool, manifestPath };
+
+          if (teamOnly) {
+            found.teamOnly = teamOnly;
+            found.legacyManifestPath = legacyManifestPath;
+            found.mainCheckout = mainCheckout;
+          }
+
+          if (teamHookProjectRoot) found.teamHookProjectRoot = teamHookProjectRoot;
+
+          if (keepRecords) found.keepRecords = keepRecords;
+          res.hookFiles.push(found);
         }
       }
     }
@@ -743,8 +763,10 @@ async function discoverToolResources(
 
     if (globalAdapters) res.bridgedTeamHookFiles.push(bridgedFile);
     else if (home && await hasTeamaiHooks(bridgedFile, tool, home.manifestPath)) {
-      res.hookFiles.push({ path: bridgedFile, tool, manifestPath: home.manifestPath, teamOnly: true,
-        ...(home.teamHookProjectRoot ? { teamHookProjectRoot: home.teamHookProjectRoot } : {}) });
+      const found: ToolResources['hookFiles'][number] = { path: bridgedFile, tool, manifestPath: home.manifestPath, teamOnly: true };
+
+      if (home.teamHookProjectRoot) found.teamHookProjectRoot = home.teamHookProjectRoot;
+      res.hookFiles.push(found);
     } else res.keptGlobal.push(bridgedFile);
   }
 
@@ -1125,12 +1147,12 @@ async function buildRemovalPlan(
       const raw = await readFileSafe(localAgentManifestPath);
 
       if (raw) {
-        const manifest = JSON.parse(raw) as { scopes?: Record<string, { skills?: Record<string, { dir_name?: unknown } | null>; rules?: Record<string, unknown> }> };
+        const manifest = LocalAgentManifestSchema.parse(JSON.parse(raw));
 
         for (const scopeVal of Object.values(manifest.scopes ?? {})) {
           // A skill lands under its SKILL.md name, which the manifest records when it is not the slug.
           for (const [slug, entry] of Object.entries(scopeVal.skills ?? {})) {
-            localAgentSkillNames.add(typeof entry?.dir_name === 'string' ? entry.dir_name : slug);
+            localAgentSkillNames.add(entry?.dir_name ?? slug);
           }
 
           for (const slug of Object.keys(scopeVal.rules ?? {})) localAgentRuleNames.add(slug);
@@ -1175,12 +1197,13 @@ async function buildRemovalPlan(
 
   // A non-self project scope's HOME team hooks are gated to the project: judge
   // and remove them as pull renders them, beside other projects' (#993).
-  const hookTargets: HookTarget[] = [{
-    ...primaryHookScope,
-    teamHookHistory: hookHistory,
-    ...(localConfig.scope === 'project' && !isSelfMode(localConfig) && localConfig.projectRoot
-      ? { teamHookProjectRoot: localConfig.projectRoot } : {}),
-  }];
+  const primaryTarget: HookTarget = { ...primaryHookScope, teamHookHistory: hookHistory };
+
+  if (localConfig.scope === 'project' && !isSelfMode(localConfig) && localConfig.projectRoot) {
+    primaryTarget.teamHookProjectRoot = localConfig.projectRoot;
+  }
+
+  const hookTargets: HookTarget[] = [primaryTarget];
 
   // A tool that keeps its user hooks in a project (ZCode) reads them from HOME; a project removes only its gated team hooks.
   const hookPaths = hookToolPathsForConfig(teamConfig, localConfig);
@@ -1464,8 +1487,11 @@ async function buildRemovalPlan(
     ];
 
     for (const { configFile, owns, deleteIfEmpty } of files) {
-      const entries = ((await readOpencodeInstructionList(configFile)) ?? [])
-        .filter((entry): entry is string => typeof entry === 'string' && owns(entry));
+      const entries = ((await readOpencodeInstructionList(configFile)) ?? []).flatMap((entry) => {
+        const glob = z.string().safeParse(entry);
+
+        return glob.success && owns(glob.data) ? [glob.data] : [];
+      });
 
       if (entries.length > 0) opencodeRes.opencodeOwnedGlobs.push({ configFile, entries, deleteIfEmpty });
     }
@@ -2156,7 +2182,7 @@ async function planGitExcludeBlocks(plan: RemovalPlan, localConfig: LocalConfig)
     const stateHome = path.join(getUserHome(), '.teamai', 'local-agent');
     localAgentFiles = [...await stateHomeRecord(stateHome, 'local-agent').files(), ...await stateHomeRecord(stateHome, 'credentials').files()];
   } catch (e) {
-    log.warn(`Could not read where the local agent's git exclude blocks are: ${(e as Error).message}`);
+    log.warn(`Could not read where the local agent's git exclude blocks are: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   const files = new Set([...ownFiles, ...await elsewhere.record?.files() ?? [], ...plan.gitExcludes.keys(), ...localAgentFiles]);
@@ -2316,7 +2342,7 @@ async function planHomeGitExcludeBlocks(home: string): Promise<HomeGitExcludeBlo
       }
     }
   } catch (e) {
-    log.warn(`Could not read where teamai's git exclude blocks are: ${(e as Error).message}`);
+    log.warn(`Could not read where teamai's git exclude blocks are: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   const roots = new Set<string>();
@@ -2464,7 +2490,7 @@ async function forgetUninstalledToolPaths(
     const paths = toolPaths[id] ?? {};
     const fields = [paths.skills, paths.rules, paths.agents, paths.settings, paths.hooks, paths.claudemd, paths.mcpProject];
 
-    return fields.filter((p): p is string => typeof p === 'string' && p !== '');
+    return fields.filter((p): p is string => p !== undefined && p !== '');
   };
 
   const codexShared = (id: string): string[] => id === CODEX_TOOL ? [SHARED_AGENT_SKILLS_PATH] : [];
@@ -2573,7 +2599,7 @@ async function executeRemoval(
       await removeGitHook(repoDir);
       log.info(`Removed the teamai git hook from ${repoDir}`);
     } catch (e) {
-      log.warn(`Could not remove the teamai git hook from ${repoDir}: ${(e as Error).message}. `
+      log.warn(`Could not remove the teamai git hook from ${repoDir}: ${e instanceof Error ? e.message : String(e)}. `
         + 'Remove it yourself: `git config --local --remove-section hook.teamai-post-checkout` (and hook.teamai-post-merge and hook.teamai-post-rewrite), '
         + 'and the `# >>> teamai git hook` block in .git/hooks/post-checkout, post-merge and post-rewrite.');
     }
@@ -2594,19 +2620,24 @@ async function executeRemoval(
     const records = `${manifestPath}\0${tool}`;
 
     try {
-      await reconcileHooks(settingsPath, tool, [], { removeAll: true, manifestPath, keepRecords: keepRecords || failedRecords.has(records), teamHookHistory: plan.teamHookHistory, codexTrust,
-        ...(keepBuiltins ? { keepBuiltins } : {}),
-        ...(teamOnly ? { teamOnly, legacyManifestPath,
-          // Uninstalling a partition removes this tool for the whole installation.
-          mainCheckout: plan.sharedPartition && !mainCheckout?.worktreeScoped ? undefined : mainCheckout,
-        } : {}),
-        ...(teamHookProjectRoot ? { teamHookProjectRoot } : {}),
-      });
+      const opts: ReconcileHooksOptions = { removeAll: true, manifestPath, keepRecords: keepRecords || failedRecords.has(records), teamHookHistory: plan.teamHookHistory, codexTrust };
+
+      if (keepBuiltins) opts.keepBuiltins = keepBuiltins;
+
+      if (teamOnly) {
+        opts.teamOnly = teamOnly;
+        opts.legacyManifestPath = legacyManifestPath;
+        // Uninstalling a partition removes this tool for the whole installation.
+        opts.mainCheckout = plan.sharedPartition && !mainCheckout?.worktreeScoped ? undefined : mainCheckout;
+      }
+
+      if (teamHookProjectRoot) opts.teamHookProjectRoot = teamHookProjectRoot;
+      await reconcileHooks(settingsPath, tool, [], opts);
 
       if (hookFormatOf(tool) === 'copilot') await removeEmptiedCopilotHookFile(settingsPath);
     } catch (e) {
       failedRecords.add(records);
-      log.warn(`Failed to remove hooks from ${settingsPath}: ${(e as Error).message}`);
+      log.warn(`Failed to remove hooks from ${settingsPath}: ${e instanceof Error ? e.message : String(e)}`);
       hooksLeft.push({ what: settingsPath, tool });
     }
   }
@@ -2646,7 +2677,7 @@ async function executeRemoval(
 
         if (changed) await writeJson(target.manifestPath, updated);
       } catch (e) {
-        log.warn(`Failed to unregister checkout from shared hooks manifest: ${(e as Error).message}`);
+        log.warn(`Failed to unregister checkout from shared hooks manifest: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
   }
@@ -2656,7 +2687,7 @@ async function executeRemoval(
     try {
       await removeOpenClawHooks(hooksDir);
     } catch (e) {
-      log.warn(`Failed to remove OpenClaw hook from ${hooksDir}: ${(e as Error).message}`);
+      log.warn(`Failed to remove OpenClaw hook from ${hooksDir}: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -2664,7 +2695,7 @@ async function executeRemoval(
     try {
       await removeOpenClawHookEntry();
     } catch (e) {
-      log.warn(`Failed to remove the teamai hook entry from OpenClaw's config: ${(e as Error).message}. `
+      log.warn(`Failed to remove the teamai hook entry from OpenClaw's config: ${e instanceof Error ? e.message : String(e)}. `
         + 'OpenClaw keeps it, and while it is there OpenClaw loads only the hooks openclaw.json names. '
         + `Run \`openclaw hooks disable ${OPENCLAW_HOOK_KEY}\`, or remove it from openclaw.json by hand.`);
     }
@@ -2684,7 +2715,7 @@ async function executeRemoval(
         }
       }
     } catch (e) {
-      log.warn(`Failed to remove OpenCode hook from ${pluginDir}: ${(e as Error).message}`);
+      log.warn(`Failed to remove OpenCode hook from ${pluginDir}: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -2694,7 +2725,7 @@ async function executeRemoval(
       const { removeOmpHooks } = await import('./omp-hooks.js');
       await removeOmpHooks(path.dirname(file));
     } catch (e) {
-      log.warn(`Failed to remove OMP hook ${file}: ${(e as Error).message}`);
+      log.warn(`Failed to remove OMP hook ${file}: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -2708,7 +2739,7 @@ async function executeRemoval(
       const { reconcileAgyHooks } = await import('./agy-hooks.js');
       await reconcileAgyHooks({ removeAll: true });
     } catch (e) {
-      log.warn(`Failed to remove Antigravity hooks from ${plan.agyHookFile}: ${(e as Error).message}`);
+      log.warn(`Failed to remove Antigravity hooks from ${plan.agyHookFile}: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -2718,7 +2749,7 @@ async function executeRemoval(
       await remove(hookFile);
       log.success(`Removed Pi hook from ${hookFile}`);
     } catch (e) {
-      log.warn(`Failed to remove Pi hook ${hookFile}: ${(e as Error).message}`);
+      log.warn(`Failed to remove Pi hook ${hookFile}: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -2729,7 +2760,7 @@ async function executeRemoval(
       const { reconcileDshHooks } = await import('./dsh-hooks.js');
       await reconcileDshHooks([], { manifestPath: plan.hookManifestPath, removeAll: true });
     } catch (e) {
-      log.warn(`Failed to remove DeepSeek Harness hooks: ${(e as Error).message}`);
+      log.warn(`Failed to remove DeepSeek Harness hooks: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -2759,7 +2790,7 @@ async function executeRemoval(
 
     if (plan.globalAdapters) hooksLeft.push(...(await removeAllAgentHooks()).map((hook) => ({ what: `agent hook ${hook.slug} (${hook.tool})`, tool: hook.tool })));
   } catch (e) {
-    log.warn(`Failed to remove agent hooks: ${(e as Error).message}`);
+    log.warn(`Failed to remove agent hooks: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   // (b) Clean CLAUDE.md teamai section blocks
@@ -2777,7 +2808,7 @@ async function executeRemoval(
       if (changed) log.success(`Cleaned ${claudeMdPath}`);
     } catch (e) {
       filesLeft.push(claudeMdPath);
-      log.warn(`Failed to clean ${claudeMdPath}: ${(e as Error).message}`);
+      log.warn(`Failed to clean ${claudeMdPath}: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -2789,7 +2820,7 @@ async function executeRemoval(
 
       if (await reconcileOpencodeInstructions(config, entry, false, 'team instructions')) log.success(`Removed "${entry}" from the instructions of ${config}`);
     } catch (e) {
-      log.warn(`Failed to remove "${entry}" from the instructions of ${config}: ${(e as Error).message}`);
+      log.warn(`Failed to remove "${entry}" from the instructions of ${config}: ${e instanceof Error ? e.message : String(e)}`);
     }
 
     const { readOpencodeInstructionList } = await import('./resources/opencode-config.js');
@@ -2839,7 +2870,7 @@ async function executeRemoval(
       }
     } catch (e) {
       filesLeft.push(skillDir);
-      log.warn(`Failed to remove skill ${skillDir}: ${(e as Error).message}`);
+      log.warn(`Failed to remove skill ${skillDir}: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -2868,7 +2899,7 @@ async function executeRemoval(
       await remove(ruleFile);
     } catch (e) {
       filesLeft.push(ruleFile);
-      log.warn(`Failed to remove rule ${ruleFile}: ${(e as Error).message}`);
+      log.warn(`Failed to remove rule ${ruleFile}: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -2884,7 +2915,7 @@ async function executeRemoval(
         log.success(`Removed ${entries.length} OpenCode rules globs from ${configFile}`);
       }
     } catch (e) {
-      log.warn(`Failed to remove the OpenCode rules globs from ${configFile}: ${(e as Error).message}. `
+      log.warn(`Failed to remove the OpenCode rules globs from ${configFile}: ${e instanceof Error ? e.message : String(e)}. `
         + `They stay listed in its \`instructions\` and point at rule files uninstall deleted. `
         + `Remove ${entries.map((entry) => `\`${entry}\``).join(', ')} from that list by hand.`);
     }
@@ -2904,12 +2935,12 @@ async function executeRemoval(
           }, { kind: 'remove', file: path.basename(agentFile) });
         } catch (e) {
           filesLeft.push(indexPath);
-          log.warn(`Failed to clean JoyCode agent index ${indexPath}: ${(e as Error).message}`);
+          log.warn(`Failed to clean JoyCode agent index ${indexPath}: ${e instanceof Error ? e.message : String(e)}`);
         }
       }
     } catch (e) {
       filesLeft.push(agentFile);
-      log.warn(`Failed to remove agent ${agentFile}: ${(e as Error).message}`);
+      log.warn(`Failed to remove agent ${agentFile}: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -2943,7 +2974,7 @@ async function executeRemoval(
         log.success(`Cleaned shell profile: ${profilePath}`);
       }
     } catch (e) {
-      log.warn(`Failed to clean shell profile ${profilePath}: ${(e as Error).message}`);
+      log.warn(`Failed to clean shell profile ${profilePath}: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -2966,7 +2997,7 @@ async function executeRemoval(
     } catch (e) {
       docsKept = true;
       filesLeft.push(plan.docsDir);
-      log.warn(`Failed to remove docs: ${(e as Error).message}`);
+      log.warn(`Failed to remove docs: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -3031,7 +3062,7 @@ async function executeRemoval(
           + `Run \`teamai uninstall\` in each project to remove it; after the last one, \`teamai uninstall\` outside any project removes ${plan.teamaiHome}.`);
       }
     } catch (e) {
-      log.warn(`Failed to remove ${plan.teamaiHome}: ${(e as Error).message}`);
+      log.warn(`Failed to remove ${plan.teamaiHome}: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -3056,7 +3087,7 @@ async function executeRemoval(
         }
       }
     } catch (e) {
-      log.warn(`Failed to clean synthetic main checkout hooks manifest: ${(e as Error).message}`);
+      log.warn(`Failed to clean synthetic main checkout hooks manifest: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -3072,7 +3103,7 @@ async function executeRemoval(
 
       for (const soul of plan.hermesSouls) await removeSoulRules(soul);
     } catch (e) {
-      log.debug(`Hermes uninstall cleanup skipped: ${(e as Error).message}`);
+      log.debug(`Hermes uninstall cleanup skipped: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -3263,7 +3294,7 @@ async function removeConfirmed(
         modelRestoreIncomplete = true;
       }
     } catch (e) {
-      log.warn(`Failed to restore TeamAI-managed model settings: ${(e as Error).message}`);
+      log.warn(`Failed to restore TeamAI-managed model settings: ${e instanceof Error ? e.message : String(e)}`);
       modelRestoreIncomplete = true;
     }
 
@@ -3365,7 +3396,7 @@ async function removeConfirmed(
         }
       }
     } catch (e) {
-      log.warn(`Failed to remove MCP servers: ${(e as Error).message}`);
+      log.warn(`Failed to remove MCP servers: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -3450,7 +3481,7 @@ async function withdrawWorkspaceInstructionExcludes(teamConfig: TeamaiConfig, lo
 
       if (kept.length > 0) left.push(settingsFile);
     } catch (e) {
-      log.warn(`Could not take the workspace instruction excludes out of ${settingsFile}: ${(e as Error).message}`);
+      log.warn(`Could not take the workspace instruction excludes out of ${settingsFile}: ${e instanceof Error ? e.message : String(e)}`);
       left.push(settingsFile);
     }
   }
@@ -3467,7 +3498,7 @@ async function stopCodexDispatch(teamConfig: TeamaiConfig, localConfig: LocalCon
     return await stopCodexTeamHookDispatch(teamConfig, localConfig, retireIdentity);
   } catch (e) {
     const index = path.join('~', '.teamai', 'codex-team-hooks.json');
-    log.warn(`Failed to remove the Codex team-hook dispatchers: ${(e as Error).message}.`);
+    log.warn(`Failed to remove the Codex team-hook dispatchers: ${e instanceof Error ? e.message : String(e)}.`);
 
     return index;
   }
@@ -3529,7 +3560,7 @@ async function uninstallHomeOnly(opts: UninstallOptions): Promise<void> {
         return;
       }
     } catch (e) {
-      log.warn(`Failed to restore TeamAI-managed model settings: ${(e as Error).message}`);
+      log.warn(`Failed to restore TeamAI-managed model settings: ${e instanceof Error ? e.message : String(e)}`);
       process.exitCode = 1;
 
       return;
@@ -3564,6 +3595,6 @@ async function uninstallHomeOnly(opts: UninstallOptions): Promise<void> {
     log.success(kept.paths.length > 0 ? `Removed ${home}/ but ${kept.paths.join(', ')}` : `Removed ${home}/`);
     log.success('teamai uninstalled');
   } catch (e) {
-    log.warn(`Failed to remove ${home}: ${(e as Error).message}`);
+    log.warn(`Failed to remove ${home}: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
