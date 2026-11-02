@@ -39,7 +39,10 @@ async function advertisedWorkflows(teamConfig: TeamaiConfig, localConfig: LocalC
 
     // No skill for a workflow `start` refuses: a workflow it runs is missing, runs in a cycle, or does not take its inputs.
     if ('failed' in await loadWorkflowTree(localConfig, cached)) continue;
-    advertised.push({ name, description, invoke, source, skill: skillName(name, alias), ...(alias !== undefined ? { alias } : {}) });
+    const workflow: AdvertisedWorkflow = { name, description, invoke, source, skill: skillName(name, alias) };
+
+    if (alias !== undefined) workflow.alias = alias;
+    advertised.push(workflow);
   }
 
   return advertised;

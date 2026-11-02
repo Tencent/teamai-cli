@@ -59,7 +59,7 @@ export async function findRunConfig(runId: string, current?: LocalConfig): Promi
     const stored = await readRun(partition, runId);
 
     if (stored === 'missing') continue;
-    const config = await partitionConfig(partition, typeof stored === 'object' ? stored.checkout : undefined);
+    const config = await partitionConfig(partition, stored === 'corrupt' ? undefined : stored.checkout);
 
     if (config) candidates.push(config);
   }
@@ -75,7 +75,7 @@ export async function findRunConfig(runId: string, current?: LocalConfig): Promi
     const run = await readRun(config, runId);
 
     if (run !== 'missing') {
-      const anchored = typeof run === 'object' && run.checkout && config.scope === 'project'
+      const anchored = run !== 'corrupt' && run.checkout && config.scope === 'project'
         ? await readConfigFrom(home, run.checkout, undefined, undefined, { dryRun: true, selfHeal: false }) : null;
 
       matches.push({ config: anchored ?? config, run });

@@ -47,12 +47,15 @@ export function nextDelivery(
       continue;
     }
 
-    return {
+    const job: DeliveryJob = {
       key, runId: run.id, runName: run.name, checkout: run.checkout, base: run.base.commit, target,
       recordedHead: run.copies?.[key.branch]?.commit, childWork: childWorkOff(run, step, key.branch),
       openedBy: run.steps.find((item) => item !== step && branchName(run.id, item.id, item.pass ?? 1) === key.branch)?.id,
-      ...(step.delivery.reported ? { reported: step.delivery.reported } : {}),
     };
+
+    if (step.delivery.reported) job.reported = step.delivery.reported;
+
+    return job;
   }
 
   return undefined;
@@ -86,6 +89,11 @@ function recordReceipt(run: RunState, key: DeliveryKey, target: string, url: PrU
   return true;
 }
 
+/** `requeueEnd`: the receipt reached a run that already ended, whose end record must go out again to list it. */
+export interface DeliveryApplied {
+  requeueEnd: boolean;
+}
+
 /**
  * Applies a delivery's outcome to the job it was picked as. A pull request gets its receipt whatever became of the step
  * meanwhile: one opened while a cancel landed cannot be taken back, so the run says it exists. The receipt settles the
@@ -98,8 +106,8 @@ function recordReceipt(run: RunState, key: DeliveryKey, target: string, url: PrU
  */
 export function completeDelivery(
   run: RunState, job: DeliveryJob, outcome: DeliveryOutcome,
-  reconcile: (run: RunState) => unknown, writerLeased: (run: RunState, branch: string) => boolean,
-): { requeueEnd: boolean } {
+  reconcile: (run: RunState) => void, writerLeased: (run: RunState, branch: string) => boolean,
+): DeliveryApplied {
   const create = { ...job.key, target: job.target };
   const unchecked = (): boolean => writerLeased(run, job.key.branch) || run.copies?.[job.key.branch]?.commit !== job.recordedHead;
   const settles = !unchecked();
@@ -123,15 +131,14 @@ export function completeDelivery(
  * Applies what a lookup said of a request in `run.creating`, and touches no step. One the host holds gets its receipt,
  * and unsafe URLs are dropped. Empty and failed answers stay until the second empty or third failed lookup.
  */
-export function resolveCreate(run: RunState, create: UnresolvedCreate, found: Awaited<ReturnType<typeof findDelivered>>): { requeueEnd: boolean } {
+export function resolveCreate(run: RunState, create: UnresolvedCreate, found: Awaited<ReturnType<typeof findDelivered>>): DeliveryApplied {
   const listed = run.creating?.find((item) => sameCreate(item, create));
 
   if (!listed) return { requeueEnd: false };
-  const lookups = listed.lookups ?? { total: 0, none: 0, failed: 0 };
   listed.lookups = {
-    total: lookups.total + 1,
-    none: lookups.none + (found.kind === 'none' ? 1 : 0),
-    failed: lookups.failed + (found.kind === 'failed' ? 1 : 0),
+    total: (listed.lookups?.total ?? 0) + 1,
+    none: (listed.lookups?.none ?? 0) + (found.kind === 'none' ? 1 : 0),
+    failed: (listed.lookups?.failed ?? 0) + (found.kind === 'failed' ? 1 : 0),
   };
   const receipted = found.kind === 'found' && recordReceipt(run, create, create.target, found.pr);
 

@@ -41,9 +41,12 @@ function sanitize(value: string): { url: string } | { reason: string } {
 }
 
 /** Why a reported URL was not kept is said without the value, which may hold a token. */
+// oxlint-disable-next-line teamai/no-unknown-parameters -- the URL an agent reported, which no schema has parsed yet
 export function sanitizePrUrl(value: unknown): { url: PrUrl; reason?: never } | { url?: never; reason: string } {
-  if (typeof value !== 'string') return { reason: 'must be a URL string' };
-  const parsed = PrUrlSchema.safeParse(value);
+  const text = z.string().safeParse(value);
+
+  if (!text.success) return { reason: 'must be a URL string' };
+  const parsed = PrUrlSchema.safeParse(text.data);
 
   return parsed.success ? { url: parsed.data } : { reason: parsed.error.issues[0]?.message ?? 'is not a valid URL' };
 }

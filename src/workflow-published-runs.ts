@@ -92,15 +92,20 @@ async function list(config: LocalConfig, { taker, env }: { taker: Taker; env: Wo
   const running = snapshots.filter((snapshot): snapshot is RunSnapshot => snapshot?.status === 'running');
   const toolLacksOf = taker.driver === 'local' ? toolLacks(config, taker.tools, await memberTools(config)) : () => [];
 
-  const runs = await Promise.all(running.map(async (snapshot): Promise<PublishedRun> => ({
-    run: RunIdSchema.parse(snapshot.run),
-    workflow: snapshot.name,
-    ...(snapshot.alias !== undefined ? { alias: snapshot.alias } : {}),
-    owner: snapshot.owner,
-    ownedAt: snapshot.ownedAt,
-    ...(snapshot.repository !== undefined ? { repository: snapshot.repository } : {}),
-    ...(snapshot.offered ? { offer: await offerOf(config, snapshot, snapshot.offered.at, { taker, env, toolLacksOf }) } : {}),
-  })));
+  const runs = await Promise.all(running.map(async (snapshot): Promise<PublishedRun> => {
+    const run = RunIdSchema.parse(snapshot.run);
+    const aliased: Pick<PublishedRun, 'alias'> = {};
+
+    if (snapshot.alias !== undefined) aliased.alias = snapshot.alias;
+    const located: Pick<PublishedRun, 'repository'> = {};
+
+    if (snapshot.repository !== undefined) located.repository = snapshot.repository;
+    const published: PublishedRun = { run, workflow: snapshot.name, ...aliased, owner: snapshot.owner, ownedAt: snapshot.ownedAt, ...located };
+
+    if (snapshot.offered) published.offer = await offerOf(config, snapshot, snapshot.offered.at, { taker, env, toolLacksOf });
+
+    return published;
+  }));
 
   const offered = runs.filter((run) => run.offer).sort((left, right) => (left.offer?.at ?? '').localeCompare(right.offer?.at ?? ''));
   const held = runs.filter((run) => !run.offer).sort((left, right) => right.ownedAt.localeCompare(left.ownedAt));
@@ -146,7 +151,11 @@ async function offerOf(config: LocalConfig, snapshot: RunSnapshot, at: string, {
 
   const uses = { env: [...new Set(left.flatMap((run) => run.env))], prompts: left.flatMap((run) => (run.executor === 'prompt' ? [run.step] : [])) };
 
-  return { at, needs, uses, lacks: [...envLacks(left, env.facts), ...toolLacksOf(left)], ...(refusal ? { refusal } : {}) };
+  const offer: Offer = { at, needs, uses, lacks: [...envLacks(left, env.facts), ...toolLacksOf(left)] };
+
+  if (refusal) offer.refusal = refusal;
+
+  return offer;
 }
 
 /** A step that runs a command or a prompt, with what it needs of the machine that runs it, as describe gives it. */
