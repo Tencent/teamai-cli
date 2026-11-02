@@ -1,8 +1,7 @@
 /** @import { ESTree } from '@oxlint/plugins' */
 import { defineRule } from '@oxlint/plugins';
 import { KNOWN_FAILURE_CODES } from '../failure-codes.js';
-import { stringLiteralValue } from '../utils.js';
-import { inProductionSource, lintedPath } from '../utils.js';
+import { inProductionSource, lintedPath, stringLiteralValue } from '../utils.js';
 
 export default defineRule({
   meta: { type: 'problem', docs: { description: 'Classify workflow failure producers before publishing records.' } },
