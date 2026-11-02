@@ -914,7 +914,7 @@ async function validateWorkflows(localConfig: LocalConfig, dryRun: boolean): Pro
 }
 
 export async function push(
-  options: GlobalOptions & { all?: boolean; role?: string; project?: string; shared?: boolean; branch?: string; carried?: string[] },
+  options: GlobalOptions & { all?: boolean; skill?: string; role?: string; project?: string; shared?: boolean; branch?: string; carried?: string[]; file?: string; path?: string },
   /**
    * Optional out-param: set to `{ completed: true }` only when a real push
    * actually happened (resources or config pushed) — never on dry-run, cancel,
@@ -923,6 +923,9 @@ export async function push(
    */
   result?: { completed: boolean },
 ): Promise<void> {
+  // --file and --path name one file and its destination: no scan, no placement. push-file imports this module's PR code.
+  const { pushFile } = await import('./push-file.js');
+  if (await pushFile(options, result)) return;
   if (options.shared && (options.role || options.project)) {
     log.error('Use --shared without --role or --project.');
     process.exitCode = 2;
