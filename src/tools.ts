@@ -1706,7 +1706,7 @@ export function sessionPlatformsOf(tool: string): readonly SessionPlatform[] {
   if (!isToolId(tool)) return [];
   const { sessions }: ToolDescriptor = TOOLS[tool];
 
-  return typeof sessions === 'string' ? [] : sessions;
+  return sessions instanceof Object ? sessions : [];
 }
 
 /** The tool whose `sessions` lists `platform`, if one does. */
@@ -1763,7 +1763,7 @@ export function ruleFormatIdOf(tool: string): RuleFormatId | 'verbatim' {
   const { rules } = channelsOf(tool);
 
   for (const channel of [rules.user, rules.project]) {
-    if (typeof channel === 'object' && channel.channel === 'dir') return channel.format;
+    if (channel instanceof Object && channel.channel === 'dir') return channel.format;
   }
 
   return 'verbatim';
@@ -1773,7 +1773,7 @@ export function ruleFormatIdOf(tool: string): RuleFormatId | 'verbatim' {
 export function runTimeRulesOf(tool: string): RunTimeVia | null {
   const { project } = channelsOf(tool).rules;
 
-  if (typeof project !== 'object') return null;
+  if (!(project instanceof Object)) return null;
 
   switch (project.channel) {
     case 'dir':
@@ -1794,7 +1794,7 @@ export function runTimeRulesOf(tool: string): RunTimeVia | null {
 export function hookSettingsFormatOf(tool: string): HookFormat | null {
   const { hooks } = channelsOf(tool);
 
-  for (const channel of [hooks.user, hooks.self]) if (typeof channel === 'object' && channel.channel === 'settings') return channel.format;
+  for (const channel of [hooks.user, hooks.self]) if (channel instanceof Object && channel.channel === 'settings') return channel.format;
 
   return null;
 }
@@ -1808,7 +1808,7 @@ export function hookFormatOf(tool: string): HookFormat {
 export function mcpFormatOf(tool: string): McpFormat | null {
   const { mcp } = channelsOf(tool);
 
-  for (const channel of [mcp.user, mcp.project]) if (typeof channel === 'object') return channel.format;
+  for (const channel of [mcp.user, mcp.project]) if (channel instanceof Object) return channel.format;
 
   return null;
 }
