@@ -407,6 +407,26 @@ export async function getConfiguredRemoteUrl(localPath: string, remoteName = 'or
 }
 
 /**
+ * The `credential.*` and `http.*` settings the config of the repo at `localPath` holds itself, in order, as key and
+ * value: where `init` keeps the credential helper of a GitHub or GitLab clone, and `actions/checkout` its auth header.
+ * A fresh clone of the same origin needs them to fetch and push as this one does.
+ */
+export async function checkoutCredentials(localPath: string): Promise<Array<[string, string]>> {
+  try {
+    const listed = await createGit(localPath).raw(['config', '--local', '--null', '--get-regexp', '^(credential|http)\\.']);
+
+    return listed.split('\0').filter(Boolean).map((entry): [string, string] => {
+      const newline = entry.indexOf('\n');
+
+      return newline === -1 ? [entry, ''] : [entry.slice(0, newline), entry.slice(newline + 1)];
+    });
+  } catch {
+    // git config exits 1 when no key matches.
+    return [];
+  }
+}
+
+/**
  * Strip embedded credentials from a git remote URL for safe display, e.g.
  * `https://oauth2:TOKEN@host/o/r.git` → `https://host/o/r.git`. Leaves URLs
  * without credentials (and scp-form `git@host:o/r.git`) untouched.

@@ -14,6 +14,7 @@ import path from 'node:path';
 import { isPlaceableType } from '../../push-namespaces.js';
 import { isSelfMode, LocalConfigSchema, type LocalConfig } from '../../types.js';
 import { NON_INTERACTIVE_GIT_ENV } from '../../utils/git-env.js';
+import { checkoutCredentials, getConfiguredRemoteUrl, redactGitCredentials } from '../../utils/git.js';
 import { isSilent, setSilent } from '../../utils/logger.js';
 import type { StepChanges } from '../workspace.js';
 import { runsDir, type RunId } from '../store.js';
@@ -44,19 +45,27 @@ export async function removeTeamClone(config: LocalConfig, run: RunId, branch: s
 const said = (result: { stderr: string; stdout: string }): string => (result.stderr || result.stdout).trim();
 
 /**
- * Clones the team repo afresh for `step`, on `branch`. A branch that conflicts with the default branch fails as
- * `merge_conflict`, and the step does not run.
+ * Clones the team repo afresh for `step`, on `branch`, from the origin of the member's team checkout and with the
+ * credential settings that checkout's config holds, which the clone keeps for its push. A branch that conflicts with
+ * the default branch fails as `merge_conflict`, and the step does not run.
  */
 export async function openTeamClone(input: { config: LocalConfig; run: RunId; step: string; branch: string }): Promise<TeamStart | WorkflowFailure> {
   const { config, run, step, branch } = input;
   const root = teamRoot(config, run, branch);
   await fs.rm(root, { recursive: true, force: true });
   await fs.mkdir(path.dirname(root), { recursive: true });
-  const cloned = await git(path.dirname(root), ['clone', '-q', '--', config.repo.remote, root], ORIGIN);
+  // The checkout's URL, which may carry its credential, as a TGit clone's does; init keeps a GitHub one in its config.
+  const remote = await getConfiguredRemoteUrl(config.repo.localPath) ?? config.repo.remote;
+  const credentials = await checkoutCredentials(config.repo.localPath);
+  const cloned = await git(path.dirname(root), [...credentials.flatMap(([key, value]) => ['-c', `${key}=${value}`]), 'clone', '-q', '--', remote, root], ORIGIN);
 
   if (cloned.code !== 0) {
-    return { code: 'workspace_base', message: `Step "${step}" could not clone the team repo ${config.repo.remote}: ${said(cloned)}. Check this machine's access to it, then run the workflow again.` };
+    const output = said(cloned).replaceAll(remote, redactGitCredentials(remote));
+
+    return { code: 'workspace_base', message: `Step "${step}" could not clone the team repo ${config.repo.remote}: ${output}. Check this machine's access to it, then run the workflow again.` };
   }
+
+  for (const [key, value] of credentials) await git(root, ['config', '--local', '--add', key, value]);
 
   const head = await git(root, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']);
   const target = head.code === 0 ? head.stdout.trim().replace(/^origin\//, '') : '';
