@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { JsonValueSchema, type JsonValue } from '../types.js';
 import type { JudgeAccess } from '../scorers/label.js';
 import type { Evidence } from '../tools.js';
 import { agyRun, readToolMetadata, type TokenUsage } from './stdout.js';
@@ -66,14 +67,41 @@ export interface LaunchAdapter {
   readonly judge?: JudgeLaunch;
 }
 
-function jsonLines(stdout: string): unknown[] {
+function jsonLines(stdout: string): JsonValue[] {
   return stdout.split(/\r?\n/).flatMap((line) => {
     const trimmed = line.trim();
 
     if (!trimmed.startsWith('{')) return [];
 
-    try { return [JSON.parse(trimmed) as unknown]; } catch { return []; }
+    try {
+      const value = JsonValueSchema.safeParse(JSON.parse(trimmed));
+
+      return value.success ? [value.data] : [];
+    } catch { return []; }
   });
+}
+
+/** A call that gave no answer, with the reason the tool reported when it reported one. */
+function failed(message: string | undefined): CallReading {
+  return message === undefined ? { ok: false } : { ok: false, message };
+}
+
+/** A call's answer, with the tokens it billed when the tool reported them. */
+function answered(text: string, tokens: TokenUsage | undefined): CallReading {
+  return tokens === undefined ? { ok: true, text } : { ok: true, text, tokens };
+}
+
+/** The counts a tool reported, or undefined when it reported none. */
+function reportedTokens(counts: TokenUsage): TokenUsage | undefined {
+  const tokens: TokenUsage = {};
+
+  if (counts.input !== undefined) tokens.input = counts.input;
+
+  if (counts.output !== undefined) tokens.output = counts.output;
+
+  if (counts.cachedInput !== undefined) tokens.cachedInput = counts.cachedInput;
+
+  return Object.keys(tokens).length > 0 ? tokens : undefined;
 }
 
 const ClaudeResult = z.object({
@@ -94,16 +122,10 @@ function readClaudeResult({ stdout }: CallOutput): CallReading {
   if (!record) return { ok: false };
 
   // An error exits 1 with the reason in `result`; stderr carries only a tag such as `[claude-code:unrecognized_model]`.
-  if (record.is_error || record.result === undefined) return { ok: false, ...(record.result ? { message: record.result } : {}) };
+  if (record.is_error || record.result === undefined) return failed(record.result || undefined);
   const usage = record.usage;
 
-  const tokens: TokenUsage = {
-    ...(usage?.input_tokens !== undefined ? { input: usage.input_tokens } : {}),
-    ...(usage?.output_tokens !== undefined ? { output: usage.output_tokens } : {}),
-    ...(usage?.cache_read_input_tokens !== undefined ? { cachedInput: usage.cache_read_input_tokens } : {}),
-  };
-
-  return { ok: true, text: record.result.trim(), ...(Object.keys(tokens).length > 0 ? { tokens } : {}) };
+  return answered(record.result.trim(), reportedTokens({ input: usage?.input_tokens, output: usage?.output_tokens, cachedInput: usage?.cache_read_input_tokens }));
 }
 
 const CodexError = z.union([
@@ -122,12 +144,10 @@ function readCodexExec({ stdout, lastMessage }: CallOutput): CallReading {
       return parsed.success ? [parsed.data] : [];
     }).at(-1);
 
-    return { ok: false, ...(error ? { message: error.type === 'error' ? error.message : error.error.message } : {}) };
+    return failed(error?.type === 'error' ? error.message : error?.error.message);
   }
 
-  const tokens = readToolMetadata(stdout)?.tokens;
-
-  return { ok: true, text, ...(tokens ? { tokens } : {}) };
+  return answered(text, readToolMetadata(stdout)?.tokens);
 }
 
 const OpenCodeEvent = z.union([
@@ -146,10 +166,9 @@ function readOpenCodeRun({ stdout }: CallOutput): CallReading {
   const error = events.flatMap((event) => event.type === 'error' ? [event.error.message] : []).at(-1);
   const text = events.flatMap((event) => event.type === 'text' ? [event.part.text] : []).join('\n').trim();
 
-  if (error !== undefined || !text) return { ok: false, ...(error !== undefined ? { message: error } : {}) };
-  const tokens = readToolMetadata(stdout)?.tokens;
+  if (error !== undefined || !text) return failed(error);
 
-  return { ok: true, text, ...(tokens ? { tokens } : {}) };
+  return answered(text, readToolMetadata(stdout)?.tokens);
 }
 
 const OpenClawEnvelope = z.object({
@@ -170,14 +189,9 @@ function readOpenClawExec({ stdout }: CallOutput): CallReading {
   if (!parsed.success) return { ok: false };
   const { ok, final, usage, error } = parsed.data;
 
-  if (!ok || !final?.trim()) return { ok: false, ...(error ? { message: error.message } : {}) };
+  if (!ok || !final?.trim()) return failed(error?.message);
 
-  const tokens: TokenUsage = {
-    ...(usage?.input !== undefined ? { input: usage.input } : {}),
-    ...(usage?.output !== undefined ? { output: usage.output } : {}),
-  };
-
-  return { ok: true, text: final.trim(), ...(Object.keys(tokens).length > 0 ? { tokens } : {}) };
+  return answered(final.trim(), reportedTokens({ input: usage?.input, output: usage?.output }));
 }
 
 const PiReply = z.object({
@@ -202,19 +216,13 @@ function readPiJson({ stdout }: CallOutput): CallReading {
   if (!reply) return { ok: false };
 
   // pi exits 0 on a provider error; the reply's stop reason says it failed.
-  if (reply.stopReason === 'error' || reply.stopReason === 'aborted') return { ok: false, ...(reply.errorMessage ? { message: reply.errorMessage } : {}) };
+  if (reply.stopReason === 'error' || reply.stopReason === 'aborted') return failed(reply.errorMessage || undefined);
   const text = reply.content.flatMap((part) => part.type === 'text' && part.text !== undefined ? [part.text] : []).join('\n').trim();
 
   if (!text) return { ok: false };
   const { usage } = reply;
 
-  const tokens: TokenUsage = {
-    ...(usage?.input !== undefined ? { input: usage.input } : {}),
-    ...(usage?.output !== undefined ? { output: usage.output } : {}),
-    ...(usage?.cacheRead !== undefined ? { cachedInput: usage.cacheRead } : {}),
-  };
-
-  return { ok: true, text, ...(Object.keys(tokens).length > 0 ? { tokens } : {}) };
+  return answered(text, reportedTokens({ input: usage?.input, output: usage?.output, cachedInput: usage?.cacheRead }));
 }
 
 const MuseRecord = z.object({ payload_type: z.string(), payload: z.record(z.string(), z.unknown()) });
@@ -238,7 +246,7 @@ function readMuseExec({ stdout }: CallOutput): CallReading {
   if (!terminal) return { ok: false };
   const text = terminal.text?.trim();
 
-  if (terminal.terminal !== 'completed' || !text) return { ok: false, ...(terminal.reason ? { message: terminal.reason } : {}) };
+  if (terminal.terminal !== 'completed' || !text) return failed(terminal.reason || undefined);
 
   const models = records.flatMap((record) => {
     const parsed = record.payload_type === 'run.usage' ? MuseUsage.safeParse(record.payload) : undefined;
@@ -247,15 +255,8 @@ function readMuseExec({ stdout }: CallOutput): CallReading {
   });
 
   const sum = (key: 'input_tokens' | 'cached_tokens' | 'output_tokens') => models.some((model) => model[key] !== undefined) ? models.reduce((total, model) => total + (model[key] ?? 0), 0) : undefined;
-  const [input, output, cachedInput] = [sum('input_tokens'), sum('output_tokens'), sum('cached_tokens')];
 
-  const tokens: TokenUsage = {
-    ...(input !== undefined ? { input } : {}),
-    ...(output !== undefined ? { output } : {}),
-    ...(cachedInput !== undefined ? { cachedInput } : {}),
-  };
-
-  return { ok: true, text, ...(Object.keys(tokens).length > 0 ? { tokens } : {}) };
+  return answered(text, reportedTokens({ input: sum('input_tokens'), output: sum('output_tokens'), cachedInput: sum('cached_tokens') }));
 }
 
 /** agy's stream-json output ends with a `result` event: the response on SUCCESS, else the error, and the turn's usage. */
@@ -265,9 +266,9 @@ function readAgyStream({ stdout }: CallOutput): CallReading {
   if (!result) return { ok: false };
   const text = result.response?.trim();
 
-  if (result.status !== 'SUCCESS' || !text) return { ok: false, ...(result.error ? { message: result.error } : {}) };
+  if (result.status !== 'SUCCESS' || !text) return failed(result.error || undefined);
 
-  return { ok: true, text, ...(tokens ? { tokens } : {}) };
+  return answered(text, tokens);
 }
 
 /** A tool that prints only its reply, as plain text. */

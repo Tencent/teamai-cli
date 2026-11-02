@@ -111,8 +111,10 @@ type Picked = { tool: LaunchOrderTool; executable: string };
 function callEnv(launchedBy: LaunchedBy, tool: string): NodeJS.ProcessEnv {
   const { TEAMAI_LAUNCHED_TOOL: _tool, TEAMAI_LAUNCHED_CHECKOUT: _checkout, ...env } = process.env;
 
+  const gateway = tool === 'agy' ? agyGatewayEnv(env) : undefined;
+
   // Our own session, not the user's: its hooks would print the share-learnings hint into the answer we read.
-  return { ...env, ...(tool === 'agy' ? agyGatewayEnv(env) : {}), TEAMAI_CONTRIBUTE_HINT_DISABLED: '1', [LAUNCHED_BY_ENV]: launchedBy, [RUN_MODE_ENV]: resolveRunMode(process.env) };
+  return { ...env, ...gateway, TEAMAI_CONTRIBUTE_HINT_DISABLED: '1', [LAUNCHED_BY_ENV]: launchedBy, [RUN_MODE_ENV]: resolveRunMode(process.env) };
 }
 
 /** A caller that resolves its tool once per scope and reuses it for every call there. */
@@ -164,7 +166,7 @@ export function createToolCaller({ resolveTool = resolveCliPath, resolveScope = 
     const cached = picked.get(key);
 
     if (cached) return cached;
-    const picking = resolve(first).catch((error: unknown) => { picked.delete(key); throw error; });
+    const picking = resolve(first).catch((cause: unknown) => { picked.delete(key); throw cause; });
     picked.set(key, picking);
 
     return picking;
@@ -193,7 +195,11 @@ export function createToolCaller({ resolveTool = resolveCliPath, resolveScope = 
           throw new CallError('call_failed', `AI call failed (tool: ${tool}): ${reason}`);
         }
 
-        return { text: reading.text, tool, ...(reading.tokens ? { tokens: reading.tokens } : {}) };
+        const result: CallResult = { text: reading.text, tool };
+
+        if (reading.tokens) result.tokens = reading.tokens;
+
+        return result;
       } finally {
         await fs.rm(scratch, { recursive: true, force: true, maxRetries: 3 });
       }
