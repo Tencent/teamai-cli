@@ -104,6 +104,19 @@ describe('a step in the team workspace, run through the real CLI', () => {
     expect(gh.pulls()).toHaveLength(1);
   }, 120_000);
 
+  it('pushes nothing when the step leaves a team file teamai pull would reject, and names it', async () => {
+    const before = branchHead();
+
+    const refused = await run("require('fs').writeFileSync('workflows/broken.yaml', 'schemaVersion: v1alpha1\\nname: broken\\nsteps: []\\n');");
+
+    expect(refused.outcome, refused.said).toBe('failed');
+    expect(refused.state.steps.find((step) => step.id === 'edit')?.failure).toMatchObject({
+      code: 'push_failed',
+      message: expect.stringMatching(/^Step "edit" left team files teamai pull would reject, so nothing was pushed to teamai\/notes\/alpha:\nworkflows\/broken\.yaml:\d+: /),
+    });
+    expect(branchHead()).toBe(before);
+  }, 120_000);
+
   it('runs nothing on a branch that conflicts with main, and says how to resolve it', async () => {
     const before = branchHead();
     fixture.pushTeam({ 'rules/notes.md': '# Notes\nfrom main\n' });

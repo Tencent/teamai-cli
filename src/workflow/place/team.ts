@@ -9,9 +9,11 @@
  */
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
-import { isSelfMode, type LocalConfig } from '../../types.js';
+import { isSelfMode, LocalConfigSchema, type LocalConfig } from '../../types.js';
 import { NON_INTERACTIVE_GIT_ENV } from '../../utils/git-env.js';
+import { isSilent, setSilent } from '../../utils/logger.js';
 import type { StepChanges } from '../workspace.js';
 import { runsDir, type RunId } from '../store.js';
 import type { WorkflowFailure } from '../types.js';
@@ -82,12 +84,36 @@ export async function openTeamClone(input: { config: LocalConfig; run: RunId; st
 }
 
 /**
- * Commits what `step` left in the clone at `root`, deletions included, and pushes it to `branch` while origin still has
- * the branch at `found`, or still has none. The changes run from the commit the branch had, so they hold the merge of
- * the default branch too.
+ * What `teamai pull` would say against the team files in `dir` that `files` names, each as `<file>:<line>: <message>`:
+ * workflows, scorers and suites, read as a review of a branch reads them, without this machine's cache.
  */
-export async function finishTeamClone(input: { root: string; step: string; branch: string; base: string; start: string; found?: string }): Promise<{ changes: StepChanges } | WorkflowFailure> {
-  const { root, step, branch, base, found } = input;
+async function rejectedTeamFiles(dir: string, files: ReadonlySet<string>): Promise<string[]> {
+  const [{ syncTeamDefinitions }, { formatDiagnostic }] = await Promise.all([
+    // oxlint-disable-next-line teamai/workflow-boundaries -- pull validates suites with the team's other definitions, and this must reject what pull rejects
+    import('../../benchmark/suite-cache.js'),
+    import('../parse.js'),
+  ]);
+  const dataHome = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-team-files-'));
+  const wasSilent = isSilent();
+  setSilent(true);
+  try {
+    const config = { ...LocalConfigSchema.parse({ repo: { localPath: dir, remote: 'local' }, username: 'team-files' }), dataHome };
+    const result = await syncTeamDefinitions(config, { dryRun: true, everyNamespace: true, scopeLabel: 'team files' });
+    return [...new Set(result.invalid.filter((diagnostic) => files.has(diagnostic.file)).map(formatDiagnostic))];
+  } finally {
+    setSilent(wasSilent);
+    await fs.rm(dataHome, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Commits what `step` left in the clone at `root`, deletions included, and pushes it to `branch` while origin still has
+ * the branch at `found`, or still has none, unless a team file it changed is one `teamai pull` would reject. The
+ * changes run from the commit the branch had, so they hold the merge of the default branch too. `dir` is where the
+ * team files are: `root`, or its `.teamai/` in single-repo mode.
+ */
+export async function finishTeamClone(input: { root: string; dir: string; step: string; branch: string; base: string; start: string; found?: string }): Promise<{ changes: StepChanges } | WorkflowFailure> {
+  const { root, dir, step, branch, base, found } = input;
   const committed = await commitWork(root, `teamai: ${step}`, input.start);
   if ('error' in committed) return { code: 'push_failed', message: `Step "${step}" could not commit its work in the team repo clone ${root}: ${committed.error}` };
   const from = found ?? base;
@@ -95,6 +121,14 @@ export async function finishTeamClone(input: { root: string; step: string; branc
   const changes: StepChanges = { branch, base, from, to: committed.to, commits: listed.stdout.split('\n').map((line) => line.trim()).filter(Boolean) };
   // Nothing beyond what origin has: no push, and nothing to deliver unless the branch already holds work.
   if (committed.to === base || committed.to === found) return { changes };
+  const changed = await git(dir, ['diff', '--relative', '--no-renames', '--name-only', '-z', base, committed.to, '--']);
+  const rejected = await rejectedTeamFiles(dir, new Set(changed.stdout.split('\0').filter(Boolean)));
+  if (rejected.length > 0) {
+    return {
+      code: 'push_failed',
+      message: `Step "${step}" left team files teamai pull would reject, so nothing was pushed to ${branch}:\n${rejected.join('\n')}\nIts commit ${committed.to} stays in ${root}. Have the step fix them, then run the workflow again.`,
+    };
+  }
   const pushed = await git(root, ['push', '-q', `--force-with-lease=refs/heads/${branch}:${found ?? ''}`, 'origin', `HEAD:refs/heads/${branch}`], ORIGIN);
   if (pushed.code === 0) return { changes };
   const tip = await git(root, ['ls-remote', 'origin', `refs/heads/${branch}`], ORIGIN);
