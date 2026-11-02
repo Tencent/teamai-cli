@@ -18,6 +18,7 @@
  */
 
 import path from 'node:path';
+import { z } from 'zod';
 
 /** The relations an asset may declare. The other three code-graph relations (`DEPENDS_ON`, `CONTAINS`, `IMPLEMENTS`) relate code to code and can never be declared on an asset. */
 export const ASSET_RELATIONS = ['MAPS_TO', 'REFERENCES', 'SUPERSEDES', 'CONFLICTS_WITH'] as const;
@@ -26,6 +27,17 @@ export type AssetRelationType = (typeof ASSET_RELATIONS)[number];
 
 /** Every code-graph relation name, so a code-only key gets its own message instead of "unknown". */
 const CODE_ONLY_RELATIONS = ['DEPENDS_ON', 'CONTAINS', 'IMPLEMENTS'] as const;
+
+const ASSET_RELATION_NAMES = new Set<string>(ASSET_RELATIONS);
+
+const CODE_ONLY_RELATION_NAMES = new Set<string>(CODE_ONLY_RELATIONS);
+
+function isAssetRelation(key: string): key is AssetRelationType {
+  return ASSET_RELATION_NAMES.has(key);
+}
+
+/** A relation's targets as written: one string, or a list whose non-strings are reported. Anything else is null. */
+const RelationTargetsSchema = z.union([z.string().transform((target) => [target]), z.array(z.unknown())]).nullable().catch(null);
 
 /** The kind of asset a relation endpoint names. */
 export type AssetKind = 'rule' | 'doc' | 'learning' | 'skill' | 'teamwiki';
@@ -150,39 +162,42 @@ export function parseRelatedBlock(
 ): StoredRelation[] {
   if (rawRelated === undefined || rawRelated === null) return [];
 
-  if (typeof rawRelated !== 'object' || Array.isArray(rawRelated)) {
+  if (!(rawRelated instanceof Object) || Array.isArray(rawRelated)) {
     report(structuralSeverity, '`related` is not a mapping; all of it is ignored.');
 
     return [];
   }
 
-  const block = rawRelated as Record<string, unknown>;
   const out: StoredRelation[] = [];
   const seen = new Set<string>();
   const useList = `Use ${ASSET_RELATIONS.join(', ').replace(/, ([^,]*)$/, ' or $1')}.`;
 
-  for (const [rawKey, rawValue] of Object.entries(block)) {
+  for (const [rawKey, rawValue] of Object.entries(rawRelated)) {
     const key = rawKey.toUpperCase();
 
-    if ((CODE_ONLY_RELATIONS as readonly string[]).includes(key)) {
+    if (CODE_ONLY_RELATION_NAMES.has(key)) {
       report(structuralSeverity, `${key} relates code to code and cannot be declared on a ${sourceKind}. ${useList}`);
       continue;
     }
 
-    if (!(ASSET_RELATIONS as readonly string[]).includes(key)) {
+    if (!isAssetRelation(key)) {
       report(structuralSeverity, `"${rawKey}" is not a relation. ${useList}`);
       continue;
     }
 
-    const relation = key as AssetRelationType;
-    const values: unknown[] | null = typeof rawValue === 'string' ? [rawValue] : Array.isArray(rawValue) ? rawValue : null;
+    const relation = key;
+    const values = RelationTargetsSchema.parse(rawValue);
 
     if (values === null) {
       report(structuralSeverity, `${key} is not a string or a list; that key is ignored.`);
       continue;
     }
 
-    const strings = values.filter((v): v is string => typeof v === 'string');
+    const strings = values.flatMap((v) => {
+      const target = z.string().safeParse(v);
+
+      return target.success ? [target.data] : [];
+    });
 
     if (strings.length !== values.length) {
       report(structuralSeverity, `${key} mixes strings with other values; the strings are kept, the rest ignored.`);
