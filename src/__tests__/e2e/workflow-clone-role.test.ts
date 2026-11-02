@@ -10,6 +10,7 @@ import { promisify } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { benchmarkFixture, envelope, said, TEAM_URL, type BenchmarkFixture } from '../helpers/benchmark-fixture.js';
+import { waitForDetachedChildren } from '../helpers/detached-processes.js';
 
 const ROLES = `version: 1
 roles:
@@ -151,6 +152,8 @@ describe('a clone step with role: review', () => {
     const hook = spawnSync(path.join(fixture.bin, 'teamai'), ['hook-dispatch', 'session-start', '--tool', 'codex'], {
       cwd: nested, env, encoding: 'utf8', input: JSON.stringify({ cwd: nested, session_id: 'in-clone', hook_event_name: 'SessionStart', source: 'startup' }),
     });
+    // The hook's pull runs detached and holds the sync lock until it is done; the member's pull comes after it.
+    await waitForDetachedChildren();
     const pulledInClone = spawnSync(path.join(fixture.bin, 'teamai'), ['pull'], { cwd: nested, env, encoding: 'utf8' });
     const pulledAgain = spawnSync(path.join(fixture.bin, 'teamai'), ['pull', '--force'], { cwd: nested, env, encoding: 'utf8' });
     const afterPulls = filesUnder(look.cwd);
