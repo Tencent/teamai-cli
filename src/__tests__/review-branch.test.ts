@@ -636,6 +636,21 @@ steps:
     ]);
   });
 
+  it('fails a shared workflow a role overrides, which a member the team assigned no role still pulls', async () => {
+    await fse.outputFile(path.join(repoDir, 'manifest', 'roles.yaml'), 'version: 1\nroles:\n  - id: ops\n    resources: { knowledge: [], skills: [], workflows: [ops] }\n');
+    await writeWorkflow(repoDir, 'release', MISSING_PROMPT);
+    await fse.outputFile(path.join(repoDir, 'workflows', 'ops', 'release.yaml'), VALID_BUILD.replace('name: build', 'name: release'));
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(review.findings).toContainEqual({
+      level: 'fail',
+      check: 'workflows',
+      path: 'workflows/release.yaml',
+      message: 'workflows/release.yaml:6: field "steps[0].prompt_file": prompt_file "prompts/release.md" must be a readable, non-symlink file under prompts/',
+    });
+  });
+
   it('fails a workflow and the workflow that runs it when the child has no runnable version', async () => {
     await writeWorkflow(repoDir, 'ship', runsWorkflow('ship', 'check'));
     await writeWorkflow(repoDir, 'check', runsWorkflow('check', 'gone'));
@@ -1435,7 +1450,7 @@ describe('reviewBranchDir — model aliases', () => {
 
     expect(modelFindings(await reviewBranchDir(BRANCH, repoDir))).toEqual([{
       level: 'fail', check: 'models', path: 'agents/reviewer.yaml',
-      message: 'Agent "reviewer" asks for model alias "fast", which has no model for claude in models/aliases.yaml (no role or project, role ops). Add one, or remove model from the agent.',
+      message: 'Agent "reviewer" asks for model alias "fast", which has no model for claude in models/aliases.yaml (no role or project, assigned no role, role ops). Add one, or remove model from the agent.',
     }]);
   });
 

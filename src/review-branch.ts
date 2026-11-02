@@ -1398,7 +1398,7 @@ async function receivedDefinitions(config: LocalConfig): Promise<Received> {
   }
 }
 
-/** The members of one selection of the branch: no role or project, one role, or one project. */
+/** The members of one selection of the branch: no role or project, assigned no role, one role, or one project. */
 interface ModelContext {
   /** How a finding names these members: `role dev`. */
   label: string;
@@ -1413,6 +1413,9 @@ async function modelContexts(repoDir: string, roles: RolesManifest | null, proje
 
   const selections: Array<{ label: string; config: LocalConfig }> = [
     { label: 'no role or project', config: base },
+    // With no role and no project, a roles-only team delivers every namespace, so a namespace that overrides a shared
+    // resource hides it; a member the team assigned no role receives the shared resources only.
+    ...(roles?.roles.length ? [{ label: 'assigned no role', config: { ...base, roleAssignment: { source: 'default' as const, local: { additionalRoles: [] } } } }] : []),
     ...(roles?.roles ?? []).map((role) => ({ label: `role ${role.id}`, config: { ...base, primaryRole: role.id } })),
     ...(projects?.projects ?? []).map((project) => ({ label: `project ${project.id}`, config: { ...base, projects: [project.id] } })),
   ];
