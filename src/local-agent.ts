@@ -588,10 +588,17 @@ function emptyManifestScope(): ManifestScope {
   return { skills: {}, rules: {}, claudemd: {} };
 }
 
+/** A manifest scope as a JSON object; a hand edit can leave one null. */
+const ManifestScopeObjectSchema = z.looseObject({});
+
 async function loadManifest(): Promise<LocalAgentManifest> {
   const manifest = await readJson<LocalAgentManifest>(getManifestPath());
 
-  return manifest ?? { scopes: {} };
+  if (!manifest) return { scopes: {} };
+  // A scope that is not an object records nothing to update or remove; the others stay as written.
+  const scopes = Object.entries(manifest.scopes ?? {}).filter(([, scope]) => ManifestScopeObjectSchema.safeParse(scope).success);
+
+  return { ...manifest, scopes: Object.fromEntries(scopes) };
 }
 
 async function saveManifest(manifest: LocalAgentManifest): Promise<void> {
