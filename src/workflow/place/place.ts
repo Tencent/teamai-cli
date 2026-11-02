@@ -19,10 +19,10 @@ import type { RunState, WorkflowFailure } from '../types.js';
 import type { WorkspaceContract } from '../workspace.js';
 import { clearWorktreeHooks, headCommit, markReadCopy, markSetup, removeWorktree, reopenConfigConflicts, stepCheckout, worktreePath } from '../worktree.js';
 import { adoptRefusal, takeAdopted } from './adopted.js';
-import { cloneEnv, cloneKeyOf, commitClone, markCloneReady, openClone, removeClone, type CloneLease } from './clone.js';
+import { cloneEnv, cloneKeyOf, commitClone, markCloneReady, openClone, preparedClone, removeClone, type CloneLease } from './clone.js';
 import { openWorktree } from './created.js';
 import { applyOverlay, restoreOverlay, unrestoredConfig } from './overlay.js';
-import { releaseWorktreeRole } from './role-copy.js';
+import { cloneRoleProblem, launchedTools, releaseWorktreeRole, roleNotDeliveredFailure } from './role-copy.js';
 import { finishReader, leaveReadCopy, readCopyFailure, stageReader } from './reader.js';
 import { PlaceFinishedSchema, readPlaceRecord, writePlaceRecord, type PlaceRecord } from './record.js';
 import { runSetup } from './setup.js';
@@ -291,7 +291,7 @@ async function prepareClone(input: {
   // No opening record: the clone's receipt names its root before anything under it exists, for the sweep.
   const withhold = lease.envScope?.withhold ?? [];
 
-  const cloneLease: CloneLease = { attempt: lease.attempt, step: lease.step, branch: workspace.branch, clone: workspace.clone, start: workspace.start.commit, withhold };
+  const cloneLease: CloneLease = { attempt: lease.attempt, step: lease.step, executor: lease.executor, branch: workspace.branch, clone: workspace.clone, start: workspace.start.commit, withhold };
 
   if (lease.tool !== undefined) cloneLease.tool = lease.tool;
 
@@ -312,6 +312,23 @@ async function prepareClone(input: {
     await writePlaceRecord(config, { ...base, dir, place, phase: 'abandoned', at: new Date().toISOString() });
 
     return { kind: 'failed', failure: opened.failure };
+  }
+
+  // A later step in the clone launches tools of its own, which the clone's setup checked the role for only when its
+  // first step launched them.
+  if (!opened.created && lease.role !== undefined) {
+    const { role, step } = lease;
+    const install = (await preparedClone(config, run, workspace.branch))?.install;
+
+    const refused = install
+      ? await cloneRoleProblem({ install, step, role, tools: launchedTools({ executor: lease.executor, tool: lease.tool, enabled: install.enabledAgents ?? [] }) })
+      : roleNotDeliveredFailure({ role, step, notDelivered: { copy: 'clone', gap: { kind: 'no_install' } } });
+
+    if (refused !== undefined) {
+      await writePlaceRecord(config, { ...base, dir, place, phase: 'abandoned', at: new Date().toISOString() });
+
+      return { kind: 'failed', failure: refused };
+    }
   }
 
   if (opened.created && lease.setup) {

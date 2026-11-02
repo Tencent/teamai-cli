@@ -15,6 +15,7 @@ import { resolveDocsDestination } from '../../resources/docs.js';
 import { roleDeclaration, type RoleDeclaration } from '../../roles.js';
 import { realHost, type Host } from '../../tool-home.js';
 import { getProjectSearchIndexPath, selfModeGitignorePath, type LocalConfig, type TeamaiConfig } from '../../types.js';
+import { getHeadCommit } from '../../utils/git.js';
 import { log } from '../../utils/logger.js';
 import type { Executor } from '../requirements.js';
 import type { WorkflowFailure } from '../types.js';
@@ -362,7 +363,7 @@ export async function setUpWorktreeRole(input: { dir: string; step: string; exec
 }
 
 /** The tools a step of `executor` launches in a copy: none for a command, else its `tool`, or any tool `enabled`. */
-function launchedTools(input: { executor: Executor; tool: string | undefined; enabled: readonly string[] }): string[] {
+export function launchedTools(input: { executor: Executor; tool: string | undefined; enabled: readonly string[] }): string[] {
   switch (input.executor) {
     case 'command':
       return [];
@@ -410,12 +411,24 @@ export async function worktreeRoleProblem(input: { dir: string; step: string; ro
 }
 
 /**
- * Why step `step` must not run in its clone with role `role` on `tools`, or undefined when it may: `install`, the clone's
- * own install as every teamai in the clone loads it, delivered the role, and its record says so for each tool. Checked
- * as the clone's setup ends and again right before launch.
+ * Why step `step` must not run in its clone with role `role` on `tools`, the tools it launches there, or undefined when
+ * it may: each of `tools` takes the role's knowledge inside the clone, `install`, the clone's own install as every
+ * teamai in the clone loads it, delivered the role, and its record says so for each tool. Checked as the clone's setup
+ * ends, as each later step in it is prepared, and again right before launch.
  */
 export async function cloneRoleProblem(input: { install: LocalConfig; step: string; role: string; tools: readonly string[] }): Promise<WorkflowFailure | undefined> {
   const { install, step, role, tools } = input;
+  const team = await loadTeamConfig(install.repo.localPath).catch(() => null);
+
+  if (!team) {
+    const revision = await getHeadCommit(install.repo.localPath) ?? 'HEAD';
+
+    return roleNotDeliveredFailure({ role, step, notDelivered: { copy: 'clone', gap: { kind: 'no_team_config', revision } } });
+  }
+
+  const outside = await roleCopyRefusal({ team, install: { ...install, enabledAgents: [...tools] }, role });
+
+  if (outside) return outside;
   const gap = await roleDeliveryGap({ install, tools, role });
 
   return gap && roleNotDeliveredFailure({ role, step, notDelivered: { copy: 'clone', gap } });

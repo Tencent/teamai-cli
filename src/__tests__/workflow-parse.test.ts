@@ -1979,6 +1979,34 @@ steps:
     expect(result.definition.defaults?.role).toBe('spec');
   });
 
+  it("says to declare a role manifest/roles.yaml does not declare before setting it on the step that opens the copy", () => {
+    const child = parse(`schemaVersion: v1alpha1
+name: look
+description: Look at the change.
+steps:
+  - id: note
+    role: audit
+    workspace: continue
+    prompt: Note what you saw.
+`, 'workflows/look.yaml');
+    if (!child.ok) throw new Error(child.diagnostics.map(formatDiagnostic).join('\n'));
+    const files = { runnable: (name: string) => (name === 'look' ? child.definition : null), cycle: () => undefined, roles: new Set(['review']) };
+    const result = parseWorkflow(FILE, `schemaVersion: v1alpha1
+name: build
+description: Review the change in a reviewer's copy.
+steps:
+  - id: change
+    role: review
+    workspace: new
+    workflow: look
+`, files);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.diagnostics.map((diagnostic) => ({ message: formatDiagnostic(diagnostic), code: diagnostic.code }))).toEqual([
+      { code: 'bad_role', message: 'workflows/build.yaml:8: field "steps[0].workflow": step "change" runs workflow "look", whose step "note" has role audit but continues the copy step "change" opens with role review, which every step there runs with; remove role from step "note", or set it on step "change" once manifest/roles.yaml declares audit, which it does not: it declares review' },
+    ]);
+  });
+
   it('checks the steps of a workflow file a step runs by name against the copy that step opens, at that step', () => {
     const child = parse(`schemaVersion: v1alpha1
 name: look

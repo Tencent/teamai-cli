@@ -2469,6 +2469,35 @@ steps:
     expect(result.cached).toEqual(['continued']);
   });
 
+  it("caches a workflow a pinned clone runs by name, whose step continues the clone with its role, by its own role or its defaults.role, though the team pulled now does not declare it", async () => {
+    const config = testConfig();
+    fs.mkdirSync(path.join(config.repo.localPath, 'manifest'), { recursive: true });
+    fs.writeFileSync(path.join(config.repo.localPath, 'manifest', 'roles.yaml'), 'version: 1\nroles:\n  - id: review\n    resources: { knowledge: [], skills: [review] }\n');
+    writeWorkflow(config, 'continued', cloneStep('old-review').replace('name: review', 'name: continued').replace('    prompt: Review the change.\n', '    workflow: look\n'));
+    writeWorkflow(config, 'again', cloneStep('old-review').replace('name: review', 'name: again').replace('    prompt: Review the change.\n', '    workflow: defaulted-look\n'));
+    writeWorkflow(config, 'look', 'schemaVersion: v1alpha1\nname: look\ndescription: Look at the change.\nsteps:\n  - id: look\n    role: old-review\n    workspace: continue\n    prompt: Review the change.\n');
+    writeWorkflow(config, 'defaulted-look', 'schemaVersion: v1alpha1\nname: defaulted-look\ndescription: Look at the change.\ndefaults:\n  role: old-review\nsteps:\n  - id: look\n    workspace: continue\n    prompt: Review the change.\n');
+
+    const result = await syncWorkflowDefinitions(config);
+
+    expect(result.invalid.map(formatDiagnostic)).toEqual([]);
+    expect(result.cached.toSorted()).toEqual(['again', 'continued', 'defaulted-look', 'look']);
+  });
+
+  it("refuses a role the team pulled now does not declare on a step that continues a copy no step opens, in a file no workflow runs by name", async () => {
+    const config = testConfig();
+    fs.mkdirSync(path.join(config.repo.localPath, 'manifest'), { recursive: true });
+    fs.writeFileSync(path.join(config.repo.localPath, 'manifest', 'roles.yaml'), 'version: 1\nroles:\n  - id: review\n    resources: { knowledge: [], skills: [review] }\n');
+    writeWorkflow(config, 'look', 'schemaVersion: v1alpha1\nname: look\ndescription: Look at the change.\nsteps:\n  - id: look\n    role: old-review\n    workspace: continue\n    prompt: Review the change.\n');
+
+    const result = await syncWorkflowDefinitions(config);
+
+    expect(result.cached).toEqual([]);
+    expect(result.invalid.map((diagnostic) => ({ message: formatDiagnostic(diagnostic), code: diagnostic.code }))).toEqual([
+      { code: 'bad_role', message: 'workflows/look.yaml:6: field "steps[0].role": step "look" has role old-review, which manifest/roles.yaml does not declare; add it there, or name a role it declares: review' },
+    ]);
+  });
+
   it("refuses a role the team pulled now does not declare where a step runs with that team: a new copy, one a workflow step's role reaches, or a clone and a copy that share defaults.role", async () => {
     const config = testConfig();
     fs.mkdirSync(path.join(config.repo.localPath, 'manifest'), { recursive: true });

@@ -21,7 +21,7 @@ import { z } from 'zod';
 import { observeCheckout, PreparedAgentSchema, type PreparedAgent } from '../../agent-observation.js';
 import { resolveCliEntry } from '../../builtin-hooks.js';
 import { recordCheckoutRole, withCheckoutRole } from '../../checkout-roles.js';
-import { loadTeamConfig, saveLocalConfigForScope } from '../../config.js';
+import { loadTeamConfig, refreshRoleAssignment, saveLocalConfigForScope } from '../../config.js';
 import { stepEnvironment } from '../../env-exec.js';
 import { removeGitHook } from '../../git-hook.js';
 import { createProjectToolRoots } from '../../project-agent-root.js';
@@ -36,7 +36,7 @@ import { getDefaultBranch, HEAD_STATUS, headStateOf, resolveAnchors, type HeadSt
 import { log } from '../../utils/logger.js';
 import { projectSlug } from '../../utils/partition.js';
 import type { TeamDelivery } from '../../pull.js';
-import { CommitSchema, type ClonePlace, type InstalledTeam } from '../clone.js';
+import { CommitSchema, type ClonePlace, type InstalledTeam, type TeamSelection } from '../clone.js';
 import { runDeadline } from '../limits.js';
 import { runPasses } from '../loop.js';
 import { stepDefinitions } from '../scope.js';
@@ -44,9 +44,10 @@ import { stageEvidence } from '../scoring-evidence.js';
 import { settled } from '../step-state.js';
 import { findAttemptRun } from '../run-location.js';
 import { readRun, runsDir, type RunId } from '../store.js';
+import type { Executor } from '../requirements.js';
 import type { RunState, WorkflowFailure } from '../types.js';
 import { cloneBranchOf } from '../workspace.js';
-import { cloneRoleProblem, copyKnowledgePaths, roleCopyRefusal, roleNotDeliveredFailure, type CloneRoleGap } from './role-copy.js';
+import { cloneRoleProblem, copyKnowledgePaths, launchedTools, roleCopyRefusal, roleNotDeliveredFailure, type CloneRoleGap } from './role-copy.js';
 import { commitWithout } from './team-without.js';
 import { AGENT_PATHS, boundedGit, commitWork, recordConfigOverlay, replaceConfig, restoreUneditedConfig, saveConfig, savedConfigPaths, untrustedGit, type Git } from '../worktree.js';
 
@@ -126,6 +127,8 @@ export interface CloneLease {
   start: string;
   /** The names the clone's git, its install, and whatever they start never get. */
   withhold: readonly string[];
+  /** Whether the step that opens the clone runs a command, which launches no tool, or a prompt. */
+  executor: Executor;
   /** The tool the step runs on, which the install delivers to; else the member's enabled agents. */
   tool?: string;
   /** The team role the clone runs with, the step's `role`: the install delivers that role's knowledge, not the member's. */
@@ -491,6 +494,29 @@ interface InstalledClone {
   without?: Without;
 }
 
+/**
+ * Why the clone's install would not get the roles `selection` names: manifest/members.yaml at the clone's team
+ * `revision` assigns the member `config` names others, and decides a member's roles while it exists, as every load in
+ * the clone applies it. Undefined when the selection names no role, or names the ones the file assigns.
+ */
+async function assignedOverSelection(input: { config: LocalConfig; selection: TeamSelection; revision: string }): Promise<string | undefined> {
+  const { config, selection, revision } = input;
+
+  if (selection.primaryRole === undefined && selection.additionalRoles.length === 0) return undefined;
+  const effective: LocalConfig = { ...config };
+  await refreshRoleAssignment(effective);
+
+  if (!effective.roleAssignment) return undefined;
+  const assigned = effective.additionalRoles ?? [];
+  const sameAdditional = assigned.length === selection.additionalRoles.length && assigned.every((id) => selection.additionalRoles.includes(id));
+
+  if (effective.primaryRole === selection.primaryRole && sameAdditional) return undefined;
+  const roles = (primary: string | undefined, additional: readonly string[]): string => `primaryRole ${primary ?? 'none'} and additionalRoles [${additional.join(', ')}]`;
+  const named = selection.primaryRole ?? selection.additionalRoles[0] ?? '';
+
+  return `The clone's team selection names ${roles(selection.primaryRole, selection.additionalRoles)}, but manifest/members.yaml at team revision ${revision} assigns ${config.username} ${roles(effective.primaryRole, assigned)}, and while that file exists it decides a member's roles, so the clone would not install the selection it names. Remove primaryRole and additionalRoles from the selection to install the roles it assigns, and to run the step with ${named}'s knowledge, also give it role: ${named}. A benchmark writes the selection from your roles as the run starts, so run its arm on a team revision whose manifest/members.yaml assigns you the same ones.`;
+}
+
 async function installTeam(input: {
   config: LocalConfig; root: string; lease: CloneLease; team: InstalledTeam; env: NodeJS.ProcessEnv;
 }): Promise<InstalledClone | WorkflowFailure> {
@@ -498,6 +524,8 @@ async function installTeam(input: {
   const failed = (message: string): WorkflowFailure => ({ code: 'clone_prepare_failed', message });
   const { revision, selection } = team;
   const tools = selection.enabledAgents ?? (lease.tool !== undefined ? [lease.tool] : member.enabledAgents ?? []);
+  // The install delivers for every tool a step in the clone may run; the role is checked for the ones this step launches.
+  const launched = launchedTools({ executor: lease.executor, tool: lease.tool, enabled: tools });
   const clone = path.join(root, 'r');
   const saved = path.join(root, 'saved');
   const anchors = await resolveAnchors(clone);
@@ -564,6 +592,9 @@ async function installTeam(input: {
     recallEnabled: false, contributeHintEnabled: false, mrHintEnabled: false, usageReportEnabled: false, coAuthorEnabled: false, codexTrustEnabled: false,
   };
 
+  const overridden = await assignedOverSelection({ config, selection, revision });
+
+  if (overridden !== undefined) return failed(overridden);
   const { role } = lease;
   const undelivered = (forRole: string, gap: CloneRoleGap): WorkflowFailure => roleNotDeliveredFailure({ role: forRole, step: lease.step, notDelivered: { copy: 'clone', gap } });
 
@@ -578,7 +609,7 @@ async function installTeam(input: {
   if (role !== undefined) {
     // Without a teamai.yaml that parses, where the clone's knowledge would land is unknown, so nothing is delivered.
     if (!teamConfig) return undelivered(role, { kind: 'no_team_config', revision });
-    const refused = await roleCopyRefusal({ team: teamConfig, install: config, role });
+    const refused = await roleCopyRefusal({ team: teamConfig, install: { ...config, enabledAgents: launched }, role });
 
     if (refused) return refused;
   }
@@ -617,7 +648,7 @@ async function installTeam(input: {
   }
 
   if (role !== undefined) {
-    const refused = await cloneRoleProblem({ install: config, step: lease.step, role, tools });
+    const refused = await cloneRoleProblem({ install: config, step: lease.step, role, tools: launched });
 
     if (refused) return refused;
   }

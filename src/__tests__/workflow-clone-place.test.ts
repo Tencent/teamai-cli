@@ -286,6 +286,48 @@ describe('a clone place', () => {
     expect(fs.existsSync(clones) ? fs.readdirSync(clones) : []).toEqual([]);
   });
 
+  it('prepares a clone that runs with a role for the command step that opens it, though the member enables Hermes, which takes skills from their home: a command launches no tool', async () => {
+    const { config, runId } = await roleRun({ committed: ['review'], declared: ['review'], workflow: ROLE_CLONE_COMMAND_FIRST('claude') });
+    // The clone's own pull, standing in for one that delivered for no tool: the command step needs none.
+    childCli.entry = path.join(path.dirname(config.repo.localPath), 'quiet-teamai.mjs');
+    fs.writeFileSync(childCli.entry, 'process.exit(0);\n');
+    const member: LocalConfig = { ...config, enabledAgents: ['claude', 'hermes'] };
+    const client = inProcessClient({ config: member, env: await resolveWorkflowEnv(member) });
+
+    const answer = await client.next(runId, { driver: { ...driver, can: { ...can, role: true } }, running: [] }, { prepare: true });
+
+    expect(answer).toMatchObject({ data: { lease: { step: 'review.install', role: 'review' } } });
+  });
+
+  it('fails a later step in a clone that runs with a role when that step launches Hermes, which takes the role\'s skills from the member\'s home', async () => {
+    const { config, runId } = await roleRun({ committed: ['review'], declared: ['review'], workflow: ROLE_CLONE_COMMAND_FIRST('hermes') });
+    childCli.entry = path.join(path.dirname(config.repo.localPath), 'quiet-teamai.mjs');
+    fs.writeFileSync(childCli.entry, 'process.exit(0);\n');
+    const member: LocalConfig = { ...config, enabledAgents: ['claude', 'hermes'] };
+    const client = inProcessClient({ config: member, env: await resolveWorkflowEnv(member) });
+    const roleDriver = { ...driver, can: { ...can, tools: ['hermes'], role: true } };
+    const install = leaseOf(await client.next(runId, { driver: roleDriver, running: [] }, { prepare: true }));
+    await client.report(runId, { attempt: install.attempt, revision: install.revision, outcome: 'success', driver: roleDriver });
+
+    const answer = await client.next(runId, { driver: roleDriver, running: [] }, { prepare: true });
+    const run = await readRun(member, runId);
+
+    expect(answer).toMatchObject({ error: { code: 'role_unavailable', message: `Role review was not delivered into ${fs.realpathSync(install.cwd)}: hermes takes its skills from ${path.join(fs.realpathSync(os.homedir()), '.hermes', 'skills')}, outside the copy, where every checkout would read them. Run the step on a tool that takes them inside the project, or without a role.` } });
+    expect(typeof run === 'object' && run.steps.find((step) => step.id === 'review.look')).toMatchObject({ status: 'failed', failure: { code: 'role_unavailable' } });
+  });
+
+  it("fails a clone whose team selection names a role manifest/members.yaml at the clone's revision does not assign the member, rather than install the assigned one silently", async () => {
+    const { config, runId, revision } = await roleRun({ committed: ['review', 'audit'], declared: ['review', 'audit'], members: 'version: 1\nmembers:\n  tester: [audit]\ndefault: []\n', workflow: SELECTED_CLONE('review') });
+    // Refused before the clone's own pull, which says so if it is reached.
+    childCli.entry = path.join(path.dirname(config.repo.localPath), 'reached-teamai.mjs');
+    fs.writeFileSync(childCli.entry, "process.stderr.write('the pull ran'); process.exit(3);\n");
+    const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
+
+    const answer = await prepared(client, runId);
+
+    expect(answer).toMatchObject({ error: { code: 'clone_prepare_failed', message: `The clone's team selection names primaryRole review and additionalRoles [], but manifest/members.yaml at team revision ${revision} assigns tester primaryRole audit and additionalRoles [], and while that file exists it decides a member's roles, so the clone would not install the selection it names. Remove primaryRole and additionalRoles from the selection to install the roles it assigns, and to run the step with review's knowledge, also give it role: review. A benchmark writes the selection from your roles as the run starts, so run its arm on a team revision whose manifest/members.yaml assigns you the same ones.` } });
+  });
+
   it('fails a read-only step inside a clone, as a clone has no reader place', async () => {
     const { config, runId } = await fixture((commit) => PROMPTED(commit).replace('workspace: continue\n          prompt: Make a file.', 'workspace: read-only\n          prompt: Make a file.'));
     const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
@@ -532,6 +574,40 @@ steps:
           prompt: Review the change.
 `;
 
+/** ROLE_CLONE opened by a command step, with a prompt on `tool` continuing it. */
+const ROLE_CLONE_COMMAND_FIRST = (tool: string) => (commit: string): string => `schemaVersion: v1alpha1
+name: build
+description: Install, then review, in a clean clone.
+steps:
+  - id: review
+    role: review
+    workspace: { clone: { commit: ${commit}, team: { revision: ${'d'.repeat(40)}, selection: { additionalRoles: [], projects: [], excludedSkills: [] }, treatment: pulled } } }
+    workflow:
+      steps:
+        - id: install
+          workspace: continue
+          command: node -e "0"
+        - id: look
+          needs: [install]
+          workspace: continue
+          tool: ${tool}
+          prompt: Review the change.
+`;
+
+/** A clone of `commit` whose team selection names primaryRole `primary`, with no step role, and a prompt continuing it. */
+const SELECTED_CLONE = (primary: string) => (commit: string): string => `schemaVersion: v1alpha1
+name: build
+description: Work in a clean clone with a team selection.
+steps:
+  - id: trial
+    workspace: { clone: { commit: ${commit}, team: { revision: ${'d'.repeat(40)}, selection: { primaryRole: ${primary}, additionalRoles: [], projects: [], excludedSkills: [] }, treatment: pulled } } }
+    workflow:
+      steps:
+        - id: work
+          workspace: continue
+          prompt: Make a file.
+`;
+
 /** `roles.yaml` declaring `ids`. */
 function rolesYaml(ids: readonly string[]): string {
   return `version: 1\nroles:\n${ids.map((id) => `  - id: ${id}\n    resources: { knowledge: [], skills: [${id}] }\n`).join('')}`;
@@ -541,9 +617,9 @@ function rolesYaml(ids: readonly string[]): string {
  * A started run of ROLE_CLONE whose clone installs the team at a commit of the team repo: `committed` the roles
  * manifest/roles.yaml declares at that revision, `declared` the roles it declares in the member's team repo now.
  */
-async function roleRun(roles: { committed: readonly string[]; declared: readonly string[]; committedTeamYaml?: string } = { committed: ['review'], declared: ['review'] }): Promise<{ config: LocalConfig; runId: string; revision: string }> {
+async function roleRun(roles: { committed: readonly string[]; declared: readonly string[]; committedTeamYaml?: string; members?: string; workflow?: (commit: string) => string } = { committed: ['review'], declared: ['review'] }): Promise<{ config: LocalConfig; runId: string; revision: string }> {
   const teamYaml = 'team: acme\nrepo: https://git.example.com/acme/team.git\nprovider: git\n';
-  const team = { 'teamai.yaml': roles.committedTeamYaml ?? teamYaml, 'manifest/roles.yaml': rolesYaml(roles.committed) };
+  const team = { 'teamai.yaml': roles.committedTeamYaml ?? teamYaml, 'manifest/roles.yaml': rolesYaml(roles.committed), ...roles.members ? { 'manifest/members.yaml': roles.members } : {} };
   const { config, workspace, first } = await fixture(CLONED, {}, team);
   const knowledge = config.repo.localPath;
   git(['init', '-q', '-b', 'main'], knowledge);
@@ -552,7 +628,7 @@ async function roleRun(roles: { committed: readonly string[]; declared: readonly
   const revision = git(['rev-parse', 'HEAD'], knowledge);
   fs.writeFileSync(path.join(knowledge, 'manifest', 'roles.yaml'), rolesYaml(roles.declared));
   fs.writeFileSync(path.join(knowledge, 'teamai.yaml'), teamYaml);
-  fs.writeFileSync(path.join(knowledge, 'workflows', 'build.yaml'), ROLE_CLONE(first).replace('d'.repeat(40), revision));
+  fs.writeFileSync(path.join(knowledge, 'workflows', 'build.yaml'), (roles.workflow ?? ROLE_CLONE)(first).replace('d'.repeat(40), revision));
   await syncWorkflowDefinitions(config);
   const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config), checkout: workspace, base: { ref: 'main', commit: git(['rev-parse', 'HEAD'], workspace) } });
   if ('error' in started) throw new Error(started.error.message);
