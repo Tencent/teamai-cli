@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { recordCheckoutRole, withCheckoutRole } from '../checkout-roles.js';
+import { clearCheckoutRole, recordCheckoutRole, withCheckoutRole } from '../checkout-roles.js';
 import { readConfigFrom, refreshRoleAssignment, saveLocalConfigForScope } from '../config.js';
 import { getCheckoutRolesPath, type LocalConfig } from '../types.js';
 import { withFileLock } from '../update.js';
@@ -50,6 +50,24 @@ describe('the role a copy runs with', () => {
     expect(recorded).toEqual({ held: true, value: { kind: 'busy', lock } });
     expect((await withCheckoutRole(config)).stepRole).toBeUndefined();
   }, 15_000);
+
+  it('drops the role of a copy that no longer exists at its next write, so a copy made later at that path runs with none', async () => {
+    const dataHome = tmp();
+    const [abandoned, kept, next] = [tmp(), tmp(), tmp()];
+    const record = (copy: string, role: string) => recordCheckoutRole({ config: configOf(dataHome, copy), checkout: copy, role });
+    await record(abandoned, 'review');
+    await record(kept, 'frontend');
+    fs.rmSync(abandoned, { recursive: true });
+
+    await record(next, 'review');
+    fs.mkdirSync(abandoned);
+    const remade = await withCheckoutRole(configOf(dataHome, abandoned));
+    fs.rmSync(next, { recursive: true });
+    await clearCheckoutRole({ config: configOf(dataHome, kept), checkout: kept });
+
+    expect(remade.stepRole).toBeUndefined();
+    expect(JSON.parse(fs.readFileSync(getCheckoutRolesPath(configOf(dataHome, kept)), 'utf8'))).toEqual({});
+  });
 
   it('leaves a role file it cannot read as it is, and names it', async () => {
     const dataHome = tmp();

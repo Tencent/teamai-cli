@@ -8,7 +8,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { getCheckoutRolesPath, type LocalConfig } from './types.js';
-import { readJsonObject, writeJsonAtomic } from './utils/fs.js';
+import { pathExists, readJsonObject, writeJsonAtomic } from './utils/fs.js';
 import { warnOnce } from './utils/warn-once.js';
 import { withFileLock } from './update.js';
 
@@ -38,6 +38,18 @@ async function readCheckoutRoles(file: string): Promise<RolesRead> {
   return parsed.success ? { kind: 'ok', roles: parsed.data } : { kind: 'unreadable', error: 'a value is not a role id' };
 }
 
+/**
+ * `roles` without the entries of copies that no longer exist. Each write keeps only these, so the entry of a copy no
+ * release cleared, such as an abandoned one teamai does not remove, goes with the next write rather than give its role
+ * to a copy made later at that path.
+ */
+async function liveRoles(roles: CheckoutRoles): Promise<CheckoutRoles> {
+  const entries = Object.entries(roles);
+  const live = await Promise.all(entries.map(([copy]) => pathExists(copy)));
+
+  return Object.fromEntries(entries.filter((_, at) => live[at]));
+}
+
 /** The key of `checkout` in the file: its real path, as `resolveAnchors` gives a workspace root. */
 async function checkoutKeyOf(checkout: string): Promise<string> {
   return fs.realpath(checkout).catch(() => path.resolve(checkout));
@@ -53,7 +65,7 @@ export async function recordCheckoutRole(input: { config: LocalConfig; checkout:
     const read = await readCheckoutRoles(file);
 
     if (read.kind === 'unreadable') return { kind: 'unreadable', file, error: read.error };
-    await writeJsonAtomic(file, { ...read.roles, [key]: input.role });
+    await writeJsonAtomic(file, { ...await liveRoles(read.roles), [key]: input.role });
 
     return { kind: 'recorded' };
   });
@@ -78,7 +90,7 @@ export async function clearCheckoutRole(input: { config: LocalConfig; checkout: 
 
     if (read.kind === 'unreadable') return { kind: 'unreadable', file, error: read.error };
     const { [key]: _cleared, ...rest } = read.roles;
-    await writeJsonAtomic(file, rest);
+    await writeJsonAtomic(file, await liveRoles(rest));
 
     return { kind: 'recorded' };
   });
