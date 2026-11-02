@@ -65,6 +65,10 @@ export async function openTeamClone(input: { config: LocalConfig; run: RunId; st
     return { code: 'workspace_base', message: `Step "${step}" found no default branch on the team repo's origin ${config.repo.remote}, so it has nothing to start ${branch} from. Push a default branch there, then run the workflow again.` };
   }
 
+  if (branch === target) {
+    return { code: 'workspace_base', message: `Step "${step}" would commit to ${branch}, the team repo's default branch, so its work would skip review. Give workspace team branch another name.` };
+  }
+
   const found = await git(root, ['rev-parse', '--verify', '-q', `refs/remotes/origin/${branch}^{commit}`]);
 
   const started = found.code === 0

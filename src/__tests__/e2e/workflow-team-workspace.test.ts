@@ -25,6 +25,18 @@ steps:
     command: node ${JSON.stringify(edit)}
 `;
 
+/** A workflow whose step commits to the branch its input names whole. */
+const anyBranch = (edit: string): string => `schemaVersion: v1alpha1
+name: edit-any
+description: Add a line to the team's notes rule on the branch the input names.
+inputs: { branch: string }
+steps:
+  - id: edit
+    workspace: { team: { branch: "{{ inputs.branch }}" } }
+    deliver: pr
+    command: node ${JSON.stringify(edit)}
+`;
+
 const RunSchema = z.object({
   steps: z.array(z.object({ id: z.string(), status: z.string(), failure: z.object({ code: z.string(), message: z.string() }).optional() })),
   deliveries: z.array(z.object({ url: z.string(), branch: z.string(), base: z.string(), step: z.string(), pass: z.number() })).optional(),
@@ -40,10 +52,10 @@ describe('a step in the team workspace, run through the real CLI', () => {
   const onBranch = (file: string): string => git(['show', `${BRANCH}:${file}`]);
   const filesOnBranch = (): string[] => git(['ls-tree', '-r', '--name-only', BRANCH]).split('\n');
 
-  /** Runs edit-team on topic alpha with the local driver; `script` is what its step does in the team clone. */
-  const run = async (script: string): Promise<{ outcome: unknown; state: z.infer<typeof RunSchema>; said: string }> => {
+  /** Runs edit-team on topic alpha with the local driver, or `workflow` on `inputs`; `script` is what its step does in the team clone. */
+  const run = async (script: string, { workflow = 'edit-team', inputs = { topic: 'alpha' } }: { workflow?: string; inputs?: Record<string, string> } = {}): Promise<{ outcome: unknown; state: z.infer<typeof RunSchema>; said: string }> => {
     fs.writeFileSync(edit, script);
-    const ran = await fixture.teamai(['workflow', 'start', 'edit-team', '--driver', 'local', '--inputs', '{"topic":"alpha"}']);
+    const ran = await fixture.teamai(['workflow', 'start', workflow, '--driver', 'local', '--inputs', JSON.stringify(inputs)]);
     const done = z.object({ run: z.string(), outcome: z.string() }).safeParse(envelope(ran).data?.done);
     if (!done.success) throw new Error(`no run: ${said(ran)}`);
     return { outcome: done.data.outcome, state: RunSchema.parse(fixture.runFile(done.data.run)), said: said(ran) };
@@ -54,7 +66,7 @@ describe('a step in the team workspace, run through the real CLI', () => {
     gh = fakeGhHost(path.join(fixture.root, 'gh'));
     fs.symlinkSync(gh.bin, path.join(fixture.bin, 'gh'));
     edit = path.join(fixture.root, 'edit.js');
-    fixture.pushTeam({ 'workflows/edit-team.yaml': workflow(edit), 'rules/old.md': '# Old\n', 'rules/notes.md': '# Notes\n' });
+    fixture.pushTeam({ 'workflows/edit-team.yaml': workflow(edit), 'workflows/edit-any.yaml': anyBranch(edit), 'rules/old.md': '# Old\n', 'rules/notes.md': '# Notes\n' });
     const pulled = await fixture.teamai(['pull']);
     expect(pulled.code, said(pulled)).toBe(0);
   }, 120_000);
@@ -115,6 +127,19 @@ describe('a step in the team workspace, run through the real CLI', () => {
       message: expect.stringMatching(/^Step "edit" left team files teamai pull would reject, so nothing was pushed to teamai\/notes\/alpha:\nworkflows\/broken\.yaml:\d+: /),
     });
     expect(branchHead()).toBe(before);
+  }, 120_000);
+
+  it('runs nothing on the team repo\'s default branch, so no change skips review', async () => {
+    const main = git(['rev-parse', 'main']);
+
+    const refused = await run("require('fs').appendFileSync('rules/notes.md', 'unreviewed\\n');", { workflow: 'edit-any', inputs: { branch: 'main' } });
+
+    expect(refused.outcome, refused.said).toBe('failed');
+    expect(refused.state.steps.find((step) => step.id === 'edit')?.failure).toEqual({
+      code: 'workspace_base',
+      message: 'Step "edit" would commit to main, the team repo\'s default branch, so its work would skip review. Give workspace team branch another name.',
+    });
+    expect(git(['rev-parse', 'main'])).toBe(main);
   }, 120_000);
 
   it('runs nothing on a branch that conflicts with main, and says how to resolve it', async () => {
