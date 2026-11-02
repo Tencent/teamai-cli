@@ -15,7 +15,7 @@ import { listCachedSuites } from './benchmark/suite-cache.js';
 import type { Suite } from './benchmark/suite.js';
 import { AgentSession } from './session-flow/agent-session.js';
 import type { LocalConfig } from './types.js';
-import { getHeadState, getRemoteUrl, remotesMatch, type HeadState } from './utils/git.js';
+import { getConfiguredRemoteUrl, getHeadState, getRemoteUrl, remotesMatch, type HeadState } from './utils/git.js';
 import type { OutputSchema } from './workflow/types.js';
 
 const SESSION_TO_TASK = 'teamai-session-to-task';
@@ -66,10 +66,13 @@ function fixProposal(start: string | undefined, head: HeadState | null): Proposa
   return { value: head.head, why: 'The commit at HEAD: the fix this session made.' };
 }
 
-/** The directory of the one suite in `suites` whose repo is `origin`. */
-function suiteProposal(origin: string | null, suites: readonly Suite[]): { proposal: Proposal; suite?: Suite } {
-  if (origin === null) return { proposal: { why: `No value: this checkout has no origin remote. ${GIVE_SUITE}` } };
-  const matching = suites.filter((suite) => remotesMatch(suite.repo, origin));
+/**
+ * The directory of the one suite in `suites` whose repo is `origin`, as written or as git rewrites it: a member's
+ * `url.<base>.insteadOf` may point the team's URL at a mirror, or the other way round.
+ */
+function suiteProposal(origin: readonly string[], suites: readonly Suite[]): { proposal: Proposal; suite?: Suite } {
+  if (origin.length === 0) return { proposal: { why: `No value: this checkout has no origin remote. ${GIVE_SUITE}` } };
+  const matching = suites.filter((suite) => origin.some((url) => remotesMatch(suite.repo, url)));
   const [only, ...more] = matching;
   if (only === undefined) return { proposal: { why: `No value: no benchmark suite this checkout received has its origin as repo. ${GIVE_SUITE}` } };
   if (more.length > 0) {
@@ -99,7 +102,8 @@ async function headOf(cwd: string): Promise<HeadState | null> {
 async function offer(config: LocalConfig, { session, tool, cwd }: { session: string; tool: string; cwd: string }): Promise<Record<ContractInput, Proposal>> {
   // The skill driver imports this module for describe, so it loads the dashboard reader only here.
   const { readEvents } = await import('./dashboard-collector.js');
-  const [events, head, origin, suites] = await Promise.all([readEvents(), headOf(cwd), getRemoteUrl(cwd), listCachedSuites(config)]);
+  const [events, head, written, rewritten, suites] = await Promise.all([readEvents(), headOf(cwd), getConfiguredRemoteUrl(cwd), getRemoteUrl(cwd), listCachedSuites(config)]);
+  const origin = [...new Set([written, rewritten].flatMap((url) => (url === null ? [] : [url])))];
   const start = startProposal(events.filter((event) => event.type === 'session_start' && event.sessionId === session));
   const fix = fixProposal(start.value, head);
   const { proposal: suite, suite: proposed } = suiteProposal(origin, suites);

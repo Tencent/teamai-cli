@@ -42,6 +42,8 @@ interface Fixture {
   team?: Record<string, string> | ((head: string) => Record<string, string>);
   /** The checkout's origin, or none. */
   origin?: string | null;
+  /** A URL git rewrites the origin to, as `url.<base>.insteadOf` does. */
+  rewrittenTo?: string;
   /** The session's dashboard events, oldest first; `start` stands for the commit the checkout starts at. */
   events?: (start: string) => Array<{ type: string; timestamp: string; gitAtStart?: { head: string; dirty: boolean } }>;
   /** What the session did to the checkout after it started. */
@@ -59,6 +61,7 @@ async function described(fixture: Fixture): Promise<{ inputs: unknown[]; start: 
   const { work, config } = harness;
   const origin = fixture.origin === undefined ? ORIGIN : fixture.origin;
   if (origin !== null) git(work, 'remote', 'add', 'origin', origin);
+  if (origin !== null && fixture.rewrittenTo !== undefined) git(work, 'config', `url.${fixture.rewrittenTo}.insteadOf`, origin);
   const start = git(work, 'rev-parse', 'HEAD');
   const events = (fixture.events ?? ((head) => [{ type: 'session_start', timestamp: '2026-11-02T09:00:00.000Z', gitAtStart: { head, dirty: false } }]))(start);
   const dashboard = path.join(harness.root, 'home', '.teamai', 'dashboard');
@@ -178,6 +181,12 @@ describe('describe of teamai-session-to-task', () => {
     });
 
     expect(input(inputs, 'suite')).toEqual({ name: 'suite', type: STRING, value: 'benchmarks/web/frontend', why: 'The one benchmark suite whose repo is this checkout\'s origin.' });
+  });
+
+  it('matches the origin as written, when git rewrites it to a mirror', async () => {
+    const { inputs } = await described({ rewrittenTo: 'ssh://git@mirror.example.com/acme/frontend.git' });
+
+    expect(input(inputs, 'suite')).toMatchObject({ value: 'benchmarks/frontend' });
   });
 
   it('proposes no suite when two suites, or none, have this checkout\'s origin as repo', async () => {
