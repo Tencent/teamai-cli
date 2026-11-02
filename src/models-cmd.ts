@@ -295,9 +295,10 @@ async function activeAgentsFor(
   const name = profileRefName(ref);
   const agents: ModelAgent[] = [];
 
-  // SAFETY: `active` is keyed by ModelAgent and holds no undefined entry, as activeModelProfiles builds it.
-  for (const [agent, state] of Object.entries(active) as Array<[ModelAgent, ActiveModelProfile]>) {
-    if (state.profile !== name) continue;
+  for (const [key, state] of Object.entries(active)) {
+    const agent = ModelAgentSchema.safeParse(key).data;
+
+    if (agent === undefined || state === undefined || state.profile !== name) continue;
 
     if (ref.source !== 'local' && state.team
       && !(localConfig ? sameTeamIdentity(state.team, localConfig) : state.team === ref.team)) continue;
@@ -721,9 +722,11 @@ export async function syncTeamModelProfiles(localConfig: LocalConfig, options: {
   const identity = getTeamIdentity(localConfig);
   const groups = new Map<string, { profile: string; model?: string; agents: ModelAgent[] }>();
 
-  // SAFETY: activeModelProfiles keys its result by ModelAgent and holds no undefined entry.
-  for (const [agent, state] of Object.entries(await activeModelProfiles()) as Array<[ModelAgent, ActiveModelProfile]>) {
-    if (!state.profile.startsWith('team:') || !sameTeamIdentity(state.team, localConfig)) continue;
+  // The manifest's agent keys are as written: one this teamai does not know is skipped.
+  for (const [key, state] of Object.entries(await activeModelProfiles())) {
+    const agent = ModelAgentSchema.safeParse(key).data;
+
+    if (agent === undefined || state === undefined || !state.profile.startsWith('team:') || !sameTeamIdentity(state.team, localConfig)) continue;
     const groupKey = `${state.profile}\0${state.model ?? ''}`;
     const group = groups.get(groupKey) ?? { profile: state.profile, model: state.model, agents: [] };
     group.agents.push(agent);
