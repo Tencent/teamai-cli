@@ -3,22 +3,19 @@
  * knowledge, while the member's index stays the member's. Rebuilds and source updates drop the indexes that would
  * otherwise serve what their checkout no longer reads.
  */
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-
-vi.mock('../config.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../config.js')>()),
-  detectProjectConfig: vi.fn(),
-}));
 
 vi.mock('../code-knowledge-recall.js', () => ({
   queryCodeKnowledge: vi.fn().mockResolvedValue([]),
 }));
 
 const { recall } = await import('../recall.js');
-const { detectProjectConfig } = await import('../config.js');
+const { resolveProjectDataHome, saveLocalConfigForScope } = await import('../config.js');
+const { recordCheckoutRole } = await import('../checkout-roles.js');
 const { dropIndexesAfterRebuild, dropIndexesAfterSourceUpdate } = await import('../utils/search-index.js');
 const { managedMcpWorkspaceId } = await import('../types.js');
 type LocalConfig = import('../types.js').LocalConfig;
@@ -37,6 +34,7 @@ function learning(title: string, body: string): string {
 
 let root: string;
 let captured: string;
+const originalCwd = process.cwd();
 
 beforeEach(() => {
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-recall-step-role-')));
@@ -49,6 +47,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  process.chdir(originalCwd);
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
   fs.rmSync(root, { recursive: true, force: true });
@@ -74,8 +73,31 @@ function team(): { member: LocalConfig; copy: LocalConfig } {
   return { member, copy: { ...member, projectRoot: path.join(root, 'work', '.teamai', 'workflow-worktrees', 'review'), stepRole: 'review' } };
 }
 
-async function recallIn(config: LocalConfig, query: string): Promise<string> {
-  vi.mocked(detectProjectConfig).mockResolvedValue(config);
+/**
+ * The member's project install of `team()`'s repo in the git checkout `work`, and a worktree of it at the path a workflow
+ * copy takes, recorded to run with role `review`, as a copy's setup records it.
+ */
+async function installed(): Promise<{ member: LocalConfig; copyDir: string }> {
+  const { member } = team();
+  const work = path.join(root, 'work');
+  fs.mkdirSync(work);
+  const git = (args: string[]): void => {
+    execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.test', ...args], { cwd: work, stdio: 'ignore' });
+  };
+  git(['init', '-q']);
+  git(['commit', '-q', '--allow-empty', '-m', 'start']);
+  const copyDir = path.join(work, '.teamai', 'workflow-worktrees', 'review');
+  git(['worktree', 'add', '-q', '--detach', copyDir]);
+  const installedMember: LocalConfig = { ...member, projectRoot: work, dataHome: await resolveProjectDataHome(work) };
+  await saveLocalConfigForScope(installedMember);
+  const recorded = await recordCheckoutRole({ config: installedMember, checkout: copyDir, role: 'review' });
+  if (recorded.kind !== 'recorded') throw new Error(`the copy's role was not recorded: ${recorded.kind}`);
+  return { member: installedMember, copyDir: fs.realpathSync(copyDir) };
+}
+
+/** What recall prints for `query` run in `dir`, with the config teamai detects there. */
+async function recallIn(dir: string, query: string): Promise<string> {
+  process.chdir(dir);
   captured = '';
   await recall(query, {});
   return captured;
@@ -83,17 +105,19 @@ async function recallIn(config: LocalConfig, query: string): Promise<string> {
 
 describe('recall in a workflow copy that runs with a team role', () => {
   it("finds the role's learning in the copy, cold, and never in the member's checkout", async () => {
-    const { member, copy } = team();
+    const { member, copyDir } = await installed();
+    const work = member.projectRoot ?? '';
+    const dataHome = member.dataHome ?? '';
 
-    const memberBefore = await recallIn(member, 'flaky retry zebrafish');
-    const inCopy = await recallIn(copy, 'flaky retry zebrafish');
-    const memberAfter = await recallIn(member, 'flaky retry zebrafish');
+    const memberBefore = await recallIn(work, 'flaky retry zebrafish');
+    const inCopy = await recallIn(copyDir, 'flaky retry zebrafish');
+    const memberAfter = await recallIn(work, 'flaky retry zebrafish');
 
     expect(memberBefore).not.toContain('Reviewer flaky retries');
     expect(inCopy).toContain('Reviewer flaky retries');
     expect(memberAfter).not.toContain('Reviewer flaky retries');
-    expect(fs.existsSync(path.join(root, 'data', 'search-index.json'))).toBe(true);
-    expect(fs.existsSync(path.join(root, 'data', 'workspaces', managedMcpWorkspaceId(copy.projectRoot ?? ''), 'search-index.json'))).toBe(true);
+    expect(fs.existsSync(path.join(dataHome, 'search-index.json'))).toBe(true);
+    expect(fs.existsSync(path.join(dataHome, 'workspaces', managedMcpWorkspaceId(copyDir), 'search-index.json'))).toBe(true);
   });
 });
 
