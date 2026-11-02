@@ -157,7 +157,7 @@ describe('GitHub commit checks', () => {
     const gh = fakeGh(dir, { checks: { runs: [run('completed', 'failure')] } });
 
     expect(await lookup().checks?.(commit)).toBe('failed');
-    expect(gh.calls()).toMatchObject([
+    expect(gh.calls().sort((left, right) => String(left.args[1]).localeCompare(String(right.args[1])))).toMatchObject([
       { args: ['api', `repos/acme/app/commits/${SHA}/check-runs?per_page=100`], prompt: '0' },
       { args: ['api', `repos/acme/app/commits/${SHA}/status`], prompt: '0' },
     ]);

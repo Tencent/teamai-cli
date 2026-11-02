@@ -378,14 +378,22 @@ steps:
     scorers: [quality]
 `;
 
+function writeAll(dir: string, files: Record<string, string>): void {
+  for (const [file, content] of Object.entries(files)) {
+    fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+    fs.writeFileSync(path.join(dir, file), content);
+  }
+}
+
 /** A run of SHIP whose `change` step delivered a pagination commit, with the issue's text as `read-issue` returned it. */
-async function deliveredRun(scorer = SCORER): Promise<{ config: LocalConfig; runId: string; checkout: string }> {
+async function deliveredRun(scorer = SCORER, files: { base?: Record<string, string>; change?: Record<string, string> } = {}): Promise<{ config: LocalConfig; runId: string; checkout: string }> {
   const checkout = path.join(root, 'app');
   fs.mkdirSync(checkout, { recursive: true });
   git(checkout, 'init', '-q', '-b', 'main');
   git(checkout, 'config', 'user.email', 't@example.com');
   git(checkout, 'config', 'user.name', 'T');
   fs.writeFileSync(path.join(checkout, 'users.ts'), 'export const users = () => all();\n');
+  writeAll(checkout, files.base ?? {});
   git(checkout, 'add', '-A');
   git(checkout, 'commit', '-qm', 'base');
   const from = git(checkout, 'rev-parse', 'HEAD');
@@ -408,7 +416,9 @@ async function deliveredRun(scorer = SCORER): Promise<{ config: LocalConfig; run
   const change = z.object({ attempt: z.string(), revision: z.number(), workspace: z.object({ branch: z.string() }) }).parse(data(await leaseNext(config, runId, external, can)).lease);
   git(checkout, 'checkout', '-q', '-B', change.workspace.branch, from);
   fs.writeFileSync(path.join(checkout, 'users.ts'), 'export const users = (page = 1) => all().slice((page - 1) * 50, page * 50);\n');
-  git(checkout, 'commit', '-qam', 'paginate');
+  writeAll(checkout, files.change ?? {});
+  git(checkout, 'add', '-A');
+  git(checkout, 'commit', '-qm', 'paginate');
   const to = git(checkout, 'rev-parse', 'HEAD');
   git(checkout, 'checkout', '-q', 'main');
   data(await reportAttempt(config, runId, {
@@ -510,6 +520,46 @@ describe('evidence of what a run delivered', () => {
     const change = typeof after === 'object' ? after.steps.find((step) => step.id === 'change') : undefined;
     const delivered = change && 'delivery' in change ? change.delivery?.head : undefined;
     expect(gh.calls().map((call) => call.args[1])).toContain(`repos/acme/app/commits/${delivered}/check-runs?per_page=100`);
+  });
+
+  /** A check that passes when users.ts holds `word`, as the base commit's test/users.cjs reads it. */
+  const checked = (word: string) => ({
+    scorer: DELIVERED.replace('passingScore: 1', "passingScore: 1\ncheck: { run: node test/users.cjs, protect: ['test/**'] }"),
+    base: { 'test/users.cjs': `process.exit(require('fs').readFileSync('users.ts', 'utf8').includes('${word}') ? 0 : 1);\n` },
+  });
+
+  it('runs the scorer\'s check on the delivered commit with the protected paths put back, and a failed check decides', async () => {
+    const { scorer, base } = checked('limit');
+    // The agent made its own copy of the test pass; the check runs the base commit's.
+    const { config, runId } = await deliveredRun(scorer, { base, change: { 'test/users.cjs': 'process.exit(0);\n' } });
+
+    const answer = data(await nextJudgeLease(config, request));
+
+    expect(answer).not.toHaveProperty('lease');
+    expect(answer.decided).toEqual([expect.objectContaining({ label: 'partial', decidedBy: 'check' })]);
+    expect(await LabelStore.local(config)).toMatchObject([{ label: 'partial', passed: false, decidedBy: 'check' }]);
+  });
+
+  it('hands the delivered pass to the judge once the scorer\'s check passes', async () => {
+    const { scorer, base } = checked('page');
+    const { config } = await deliveredRun(scorer, { base });
+
+    const lease = LeaseSchema.parse(data(await nextJudgeLease(config, request)).lease);
+
+    expect(lease.subject).toMatchObject({ step: 'change' });
+    expect(await LabelStore.local(config)).toEqual([]);
+  });
+
+  it('settles the entry unscored, with no judge and no label, when the scorer\'s check cannot run', async () => {
+    const scorer = DELIVERED.replace('passingScore: 1', "passingScore: 1\ncheck: { run: teamai-no-such-check-1247, protect: ['test/**'] }");
+    const { config } = await deliveredRun(scorer);
+
+    const answer = data(await nextJudgeLease(config, request));
+
+    expect(answer).not.toHaveProperty('lease');
+    expect(answer.closed).toEqual([expect.objectContaining({ code: 'check_could_not_run' })]);
+    expect(await LabelStore.local(config)).toEqual([]);
+    expect(data(await nextJudgeLease(config, request))).toMatchObject({ idle: { open: 0 } });
   });
 
   it('hands a delivered pull request whose CI is still running to the judge, as one with no CI', async () => {

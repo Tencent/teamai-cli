@@ -41,7 +41,7 @@ import { answerSchema, evidenceDirOf, sweepEvidence, type Rubrics } from '../sco
 import { agreedRunMode } from '../launch-context.js';
 import { sessionLabel, SessionWork, writeSessionEvidence, type JudgedSession, type NamedSession, type SessionEntry } from '../session-flow/session-work.js';
 import { buildEvidence, evidenceHash, evidencePlan } from './scoring-evidence.js';
-import { decideBeforeJudge, failingLabel, isDelivered } from './scoring-stages.js';
+import { decideBeforeJudge, failingLabel, isDelivered, judgedAlone } from './scoring-stages.js';
 import { isUnsettled, judgeablePasses, sameSubject, scoredPasses, verdictEntries, verdictsFrozen } from './scoring-entries.js';
 import { error, ok } from './engine.js';
 import { stepDefinitions } from './scope.js';
@@ -632,8 +632,10 @@ async function takeOneLease(
         continue;
       }
       const mates: Array<{ entry: RunEntry; choice: JudgeChoice }> = [];
-      for (const other of entry.batch ? runs : []) {
+      const alone = (judged: RunEntry) => judgedAlone(judged.run, judged.subject, judged.definition);
+      for (const other of entry.batch && !alone(entry) ? runs : []) {
         if (other === entry || other.subject.runId !== entry.subject.runId || other.subject.step !== entry.subject.step || other.subject.pass !== entry.subject.pass) continue;
+        if (alone(other)) continue;
         const choice = chooseJudgeModel(aliases, other.definition, request.judge.tools);
         if (choice.ok && sameChoice(choice.choice, chosen.choice) && leasable(other) && await isFresh(other)) mates.push({ entry: other, choice: choice.choice });
       }
@@ -665,7 +667,19 @@ async function takeOneLease(
         await fs.rm(evidenceDir(config, attempt.attempt), { recursive: true, force: true, maxRetries: 3 });
         return { kind: 'evidence_empty', closed: leased.members.map((member) => ({ ref: leaseRefOf(member.attempt), code: built.code })) };
       }
-      const stage = isDelivered(entry.run, entry.subject) ? await decideBeforeJudge(entry.run, entry.subject) : { kind: 'judge' as const };
+      const [only, ...more] = leased.members;
+      const check = more.length === 0 && only.entry.definition.check ? { scorer: only.entry.scorer, check: only.entry.definition.check, expiresAt: attempt.expiresAt } : undefined;
+      const stage = isDelivered(entry.run, entry.subject) ? await decideBeforeJudge(entry.run, entry.subject, check) : { kind: 'judge' as const };
+      if (stage.kind === 'unrunnable') {
+        log.warn(`${stage.message} Its entry settles unscored; fix the check, then score the pass again with teamai score --run.`);
+        const failed = await AttemptStore.locked(config, async () => {
+          const current = await AttemptStore.get(config, attempt.entry, attempt.attempt);
+          if (current?.status === 'leased') await AttemptStore.write(config, { ...current, status: 'failed', code: 'check_could_not_run', settledAt: now });
+        });
+        if (failed.status === 'busy') return { kind: 'busy' };
+        await fs.rm(evidenceDir(config, attempt.attempt), { recursive: true, force: true, maxRetries: 3 });
+        return { kind: 'evidence_empty', closed: [{ ref: leaseRefOf(attempt), code: 'check_could_not_run' }] };
+      }
       if (stage.kind === 'decided') {
         // Published with the next label a judge submits, or by the caller, as a drain publishes once at its end.
         const settled = await labelJudgeLease(config, leaseRefOf(attempt), {

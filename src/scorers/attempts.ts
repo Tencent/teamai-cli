@@ -23,7 +23,8 @@ const RubricSchema = PinnedScorerSchema.pick({ sourceHash: true, content: true }
 type Rubric = z.infer<typeof RubricSchema>;
 
 /** Why a judge attempt closed without a label. */
-export const JUDGE_FAILURES = ['judge_failed', 'lease_expired', 'evidence_empty', 'judge_answer_invalid', 'judge_tool_unavailable'] as const;
+/** `check_could_not_run`: the scorer's check of a delivered pass (#1247) could not start, was killed or timed out. */
+export const JUDGE_FAILURES = ['judge_failed', 'lease_expired', 'evidence_empty', 'judge_answer_invalid', 'judge_tool_unavailable', 'check_could_not_run'] as const;
 export type JudgeFailureCode = (typeof JUDGE_FAILURES)[number];
 
 export type JudgeDriver = z.infer<typeof DriverSchema>;

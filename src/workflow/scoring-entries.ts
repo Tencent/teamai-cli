@@ -147,7 +147,9 @@ function scoringCostOf({ state, attempts }: VerdictEntry): EntryVerdict['scoring
   const [first] = spending.flatMap((attempt) => attempt.usage?.cost ?? []);
   if (!first) return undefined;
   const inUnit = spending.flatMap((attempt) => (attempt.usage?.cost?.unit === first.unit ? [attempt.usage.cost.amount] : []));
-  const ranJudge = (attempt: AttemptRecord) => attempt.status === 'succeeded' || (attempt.status === 'failed' && (attempt.code === 'judge_failed' || attempt.code === 'judge_answer_invalid'));
+  // A label a stage decided before the judge (#1247) ran none, so it states no cost.
+  const ranJudge = (attempt: AttemptRecord) => (attempt.status === 'succeeded' && (attempt.verdict.decidedBy ?? 'judge') === 'judge')
+    || (attempt.status === 'failed' && (attempt.code === 'judge_failed' || attempt.code === 'judge_answer_invalid'));
   const complete = spending.every((attempt) => (attempt.usage?.cost ? attempt.usage.cost.unit === first.unit : !ranJudge(attempt)))
     && (state.kind !== 'labelled' || attempts.some((attempt) => attempt.status === 'succeeded'));
   return { amount: inUnit.reduce((sum, amount) => sum + amount, 0), unit: first.unit, complete };
