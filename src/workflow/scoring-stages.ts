@@ -68,9 +68,11 @@ function protectedStage(pass: StepPass | undefined): StageVerdict {
  */
 async function checkStage(run: RunState, subject: RunSubject, pass: StepPass | undefined, { scorer, check, expiresAt }: StageCheck): Promise<StageVerdict> {
   const head = pass?.delivery?.head;
+  // A pass that changed nothing delivered no commit: the check has nothing of it to say, as CI has not.
+  if (!head) return { kind: 'judge' };
   const startingCommit = evidencePlan(run, subject).diff?.from ?? run.base?.commit;
-  if (!head || !startingCommit || !run.checkout) {
-    return { kind: 'unrunnable', message: `The check of scorer ${scorer} has no delivered commit of step "${subject.step}" to run on.` };
+  if (!startingCommit || !run.checkout) {
+    return { kind: 'unrunnable', message: `The check of scorer ${scorer} cannot run on commit ${head} of step "${subject.step}": the run recorded no commit its work started from, or no checkout.` };
   }
   const ran = await tryCheckAt({ commit: head, startingCommit, command: check.run, protect: check.protect, sources: [run.checkout], expiresAt });
   if (ran.kind === 'error') return { kind: 'unrunnable', message: `The check of scorer ${scorer} could not be set up on commit ${head}: ${ran.failure.message}` };

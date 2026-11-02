@@ -188,7 +188,7 @@ The stages run in this order, and the first that fails decides:
 | Pull request CI | The CI of the delivered commit failed. GitHub: any check run that failed, timed out or needs action, or a failed commit status. GitLab: the newest pipeline failed. | `ci` |
 | Protected paths | The pass changed a path the run protects, so the step failed with `protected_path` and delivered nothing. | `protected` |
 
-The failing label is the highest one below `passingScore`, here `partial`. No judge is launched and no tokens are spent. When every stage passes, or CI is still running, has no checks, or the origin is not GitHub or GitLab, the judge decides and the label says `"decidedBy":"judge"`. A scorer without `check` skips that stage.
+The failing label is the highest one below `passingScore`, here `partial`. No judge is launched and no tokens are spent. When every stage passes, or CI is still running, has no checks, or the origin is not GitHub or GitLab, the judge decides and the label says `"decidedBy":"judge"`. A scorer without `check` skips that stage. A pass that changed nothing delivered no commit, so its check and CI are skipped too.
 
 The judge of a delivering step also reads the run's inputs (`inputs.json`) and the outputs of every step, so it can compare the pull request with the issue `read-issue` returned.
 

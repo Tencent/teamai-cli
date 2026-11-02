@@ -1,8 +1,10 @@
 /**
- * Real CLI: a run of ship-issue delivers a pull request on a GitHub origin, and a member scores it on demand with only
- * `teamai score --run <id> --scorer delivered`. When the pull request's CI failed, the label comes from the CI before
- * any judge runs, and says so; when it passed, the judge decides. `gh` is the fake every delivery test shares,
- * answering the same check runs for any commit.
+ * Real CLI: the example of docs/guide/scorers.md#score-what-a-run-delivered. A run of ship-issue reads an issue into a
+ * typed output, then delivers a pull request on a GitHub origin, and a member scores it on demand with only
+ * `teamai score --run <id> --scorer delivered`. The scorer's check (`node test.js`, with test.js protected) runs on the
+ * delivered commit first, then the pull request's CI is read; the first that fails decides the label with no judge, and
+ * the label says which. When both pass, the judge decides. `gh` is the fake every delivery test shares, answering the
+ * same check runs for any commit.
  */
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -19,6 +21,7 @@ labels:
   - { value: off-target, score: 0, description: Delivers something other than what was asked. }
 passingScore: 1
 samplingRate: 100
+check: { run: node test.js, protect: [test.js] }
 ---
 Judge whether the pull request delivers what the issue asked, and only that.
 `;
@@ -27,16 +30,23 @@ name: ship-issue
 description: Make the change an issue asks for and deliver it for review.
 inputs: { issue: number }
 steps:
+  - id: read-issue
+    command: node read-issue.js
+    env: { ISSUE: "{{ inputs.issue }}" }
+    output: { title: string, body: string }
   - id: change
-    prompt: Make answer.js export 42, as issue {{ inputs.issue }} asks.
+    needs: [read-issue]
+    prompt: "Do what issue {{ inputs.issue }} asks: {{ steps.read-issue.outputs.body }}"
     tool: claude
     workspace: new
     deliver: pr
     scorers: [delivered]
 `;
+// What the issue tracker answers for an issue, as a typed output.
+const READ_ISSUE = "console.log(JSON.stringify({ title: 'Answer 42', body: 'Issue ' + process.env.ISSUE + ': make answer.js export 42.' }));\n";
 // The fixture's claude, as a prompt tool, ends on a detached HEAD, which a new workspace refuses. This one fixes the
-// answer, leaves HEAD where it was and its session where Claude Code keeps it; as a judge, or asked its version, it is
-// the fixture's.
+// answer, except for issue 13, where it writes 43; it leaves HEAD where it was and its session where Claude Code keeps
+// it. As a judge, or asked its version, it is the fixture's.
 const CLAUDE = `#!/usr/bin/env node
 const fs = require('node:fs');
 const path = require('node:path');
@@ -44,7 +54,7 @@ const { spawnSync } = require('node:child_process');
 if (process.argv.includes('--json-schema') || process.argv.includes('--version')) {
   process.exit(spawnSync(path.join(__dirname, 'claude-fixture'), process.argv.slice(2), { stdio: 'inherit' }).status ?? 1);
 }
-fs.writeFileSync('answer.js', 'module.exports = 42;\\n');
+fs.writeFileSync('answer.js', process.argv.some((arg) => arg.includes('issue 13 ')) ? 'module.exports = 43;\\n' : 'module.exports = 42;\\n');
 const project = path.join(process.env.HOME, '.claude', 'projects', process.cwd().replace(/[^a-zA-Z0-9]/g, '-'));
 fs.mkdirSync(project, { recursive: true });
 const base = { cwd: process.cwd(), sessionId: 'fake-session', timestamp: new Date().toISOString() };
@@ -78,12 +88,13 @@ function published(fixture: BenchmarkFixture): { text: string; labels: Array<z.i
 }
 
 /**
- * Runs ship-issue against a GitHub origin whose `gh` answers `checkRuns` for any commit, then scores its delivering pass
- * on demand with only --run and --scorer.
+ * Runs ship-issue for `issue` against a GitHub origin whose `gh` answers `checkRuns` for any commit, then scores its
+ * delivering pass on demand with only --run and --scorer.
  */
-async function shipAndScore(checkRuns: unknown[]): Promise<{ fixture: BenchmarkFixture; run: string }> {
+async function shipAndScore(checkRuns: unknown[], issue = 42): Promise<{ fixture: BenchmarkFixture; run: string }> {
   const fixture = await benchmarkFixture({
     tool: 'does-nothing', sandbox: false, tools: ['claude'], team: { 'scorers/delivered.md': DELIVERED, 'workflows/ship-issue.yaml': SHIP },
+    app: { 'read-issue.js': READ_ISSUE },
   });
   fixtures.push(fixture);
   fs.renameSync(path.join(fixture.bin, 'claude'), path.join(fixture.bin, 'claude-fixture'));
@@ -91,7 +102,7 @@ async function shipAndScore(checkRuns: unknown[]): Promise<{ fixture: BenchmarkF
   const gh = fakeGhHost(path.join(fixture.root, 'gh'), { checks: { runs: checkRuns } });
   fixture.env.PATH = [path.dirname(gh.bin), fixture.env.PATH ?? ''].join(path.delimiter);
 
-  const started = await fixture.teamai(['workflow', 'start', 'ship-issue', '--inputs', '{"issue":42}', '--driver', 'local']);
+  const started = await fixture.teamai(['workflow', 'start', 'ship-issue', '--inputs', JSON.stringify({ issue }), '--driver', 'local']);
   expect(started.code, said(started)).toBe(0);
   const { done } = DoneSchema.parse(envelope(started).data);
   expect(done.outcome, said(started)).toBe('succeeded');
@@ -113,7 +124,18 @@ describe('scoring what a workflow run delivered, through the real CLI', () => {
       subject: { runId: run, step: 'change', pass: 1 },
     })]);
     expect(labels[0]?.judge).not.toHaveProperty('usage');
-    for (const secret of ['answer.js', 'Make answer.js export 42', 'reasoning']) expect(text).not.toContain(secret);
+    // Neither the issue the run read, the prompt, the diff nor the reasoning leaves this machine.
+    for (const secret of ['Answer 42', 'make answer.js export 42', 'Do what issue', 'module.exports', 'reasoning']) expect(text).not.toContain(secret);
+  }, 180_000);
+
+  it('labels a delivered pull request whose scorer check fails from the check, before its CI is read', async () => {
+    // Issue 13's answer is 43, so the base commit's test.js fails on the delivered commit; CI would pass.
+    const { fixture, run } = await shipAndScore([{ name: 'test', status: 'completed', conclusion: 'success' }], 13);
+
+    expect(fixture.judgeLaunches()).toEqual([]);
+    expect(published(fixture).labels).toEqual([expect.objectContaining({
+      label: 'partial', passed: false, decidedBy: 'check', subject: { runId: run, step: 'change', pass: 1 },
+    })]);
   }, 180_000);
 
   it('hands a delivered pull request whose CI passed to the judge, which decides its label', async () => {

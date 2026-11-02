@@ -566,6 +566,22 @@ describe('evidence of what a run delivered', () => {
     expect(await LabelStore.local(config)).toEqual([]);
   });
 
+  it('hands a pass that delivered no commit to the judge, since the scorer\'s check has nothing of it to run on', async () => {
+    const { scorer, base } = checked('limit');
+    const { config, runId } = await deliveredRun(scorer, { base });
+    // The agent changed nothing, so the step succeeded with no delivery.
+    await rewriteChange(config, runId, (step) => {
+      if (step.status !== 'delivering') return step;
+      const { delivery: _, ...rest } = step;
+      return { ...rest, status: 'succeeded', outcome: 'success' };
+    });
+
+    const lease = LeaseSchema.parse(data(await nextJudgeLease(config, request)).lease);
+
+    expect(lease.subject).toMatchObject({ step: 'change' });
+    expect(await LabelStore.local(config)).toEqual([]);
+  });
+
   it('settles the entry unscored, with no judge and no label, when the scorer\'s check cannot run', async () => {
     const scorer = DELIVERED.replace('passingScore: 1', "passingScore: 1\ncheck: { run: teamai-no-such-check-1247, protect: ['test/**'] }");
     const { config } = await deliveredRun(scorer);
