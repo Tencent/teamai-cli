@@ -60,9 +60,12 @@ describe('a step in the team workspace, run through the real CLI', () => {
   let edit: string;
 
   const git = (args: string[]): string => execFileSync('git', ['--git-dir', fixture.teamOrigin, ...args], { encoding: 'utf8' }).trim();
-  const branchHead = (): string => spawnSync('git', ['--git-dir', fixture.teamOrigin, 'rev-parse', '--verify', '-q', `refs/heads/${BRANCH}`], { encoding: 'utf8' }).stdout.trim();
-  const onBranch = (file: string): string => git(['show', `${BRANCH}:${file}`]);
-  const filesOnBranch = (): string[] => git(['ls-tree', '-r', '--name-only', BRANCH]).split('\n');
+  /** The tip of `branch` on the team origin, or '' when origin has no such branch. */
+  const branchHead = (branch = BRANCH): string => spawnSync('git', ['--git-dir', fixture.teamOrigin, 'rev-parse', '--verify', '-q', `refs/heads/${branch}`], { encoding: 'utf8' }).stdout.trim();
+  const onBranch = (branch: string, file: string): string => git(['show', `${branch}:${file}`]);
+  const filesOnBranch = (branch: string): string[] => git(['ls-tree', '-r', '--name-only', branch]).split('\n');
+  /** The open pull requests from `branch`; each test reads its own branch's, whatever another test opened or closed. */
+  const pullsFrom = (branch: string) => gh.pulls().filter((pull) => pull.head === branch);
 
   const run = (script: string, options: RunOptions = {}) => runEdit(fixture, edit, script, options);
 
@@ -82,43 +85,49 @@ describe('a step in the team workspace, run through the real CLI', () => {
     const first = await run("require('fs').appendFileSync('rules/notes.md', 'first\\n');");
 
     expect(first.outcome, first.said).toBe('succeeded');
-    expect(onBranch('rules/notes.md')).toBe('# Notes\nfirst');
-    expect(gh.pulls().map((pull) => pull.head)).toEqual([BRANCH]);
-    expect(first.state.deliveries).toEqual([{ url: gh.pulls()[0]?.url, branch: BRANCH, base: 'main', step: 'edit', pass: 1 }]);
+    expect(onBranch(BRANCH, 'rules/notes.md')).toBe('# Notes\nfirst');
+    expect(pullsFrom(BRANCH)).toHaveLength(1);
+    expect(first.state.deliveries).toEqual([{ url: pullsFrom(BRANCH)[0]?.url, branch: BRANCH, base: 'main', step: 'edit', pass: 1 }]);
   }, 120_000);
 
   it('goes on from the branch as origin has it, with main merged in, deletes what the step deletes, and keeps the one pull request', async () => {
-    const before = branchHead();
+    const beta = 'teamai/notes/beta';
+    const first = await run("require('fs').appendFileSync('rules/notes.md', 'first\\n');", { inputs: { topic: 'beta' } });
+    expect(first.outcome, first.said).toBe('succeeded');
+    const before = branchHead(beta);
     fixture.pushTeam({ 'rules/later.md': '# Later\n' });
 
-    const second = await run("const fs = require('fs'); fs.appendFileSync('rules/notes.md', 'second\\n'); fs.rmSync('rules/old.md');");
+    const second = await run("const fs = require('fs'); fs.appendFileSync('rules/notes.md', 'second\\n'); fs.rmSync('rules/old.md');", { inputs: { topic: 'beta' } });
 
     expect(second.outcome, second.said).toBe('succeeded');
-    expect(onBranch('rules/notes.md')).toBe('# Notes\nfirst\nsecond');
-    expect(filesOnBranch()).toContain('rules/later.md');
-    expect(filesOnBranch()).not.toContain('rules/old.md');
-    expect(git(['merge-base', '--is-ancestor', before, BRANCH])).toBe('');
-    expect(gh.pulls().map((pull) => pull.head)).toEqual([BRANCH]);
+    expect(onBranch(beta, 'rules/notes.md')).toBe('# Notes\nfirst\nsecond');
+    expect(filesOnBranch(beta)).toContain('rules/later.md');
+    expect(filesOnBranch(beta)).not.toContain('rules/old.md');
+    expect(git(['merge-base', '--is-ancestor', before, beta])).toBe('');
+    expect(pullsFrom(beta)).toHaveLength(1);
   }, 120_000);
 
   it('pushes nothing over a commit a teammate pushed to the branch while the step ran, and says so', async () => {
+    const eta = 'teamai/notes/eta';
+    const first = await run("require('fs').appendFileSync('rules/notes.md', 'first\\n');", { inputs: { topic: 'eta' } });
+    expect(first.outcome, first.said).toBe('succeeded');
     const teammate = path.join(fixture.root, 'teammate');
     const failed = await run([
       "const { execFileSync } = require('child_process');",
-      `execFileSync('git', ['clone', '-q', '--branch', ${JSON.stringify(BRANCH)}, ${JSON.stringify(fixture.teamOrigin)}, ${JSON.stringify(teammate)}]);`,
+      `execFileSync('git', ['clone', '-q', '--branch', ${JSON.stringify(eta)}, ${JSON.stringify(fixture.teamOrigin)}, ${JSON.stringify(teammate)}]);`,
       `require('fs').writeFileSync(${JSON.stringify(path.join(teammate, 'rules/theirs.md'))}, '# Theirs\\n');`,
-      `for (const args of [['add', '-A'], ['-c', 'user.name=Bob', '-c', 'user.email=bob@example.com', 'commit', '-qm', 'theirs'], ['push', '-q', 'origin', ${JSON.stringify(BRANCH)}]]) execFileSync('git', args, { cwd: ${JSON.stringify(teammate)} });`,
+      `for (const args of [['add', '-A'], ['-c', 'user.name=Bob', '-c', 'user.email=bob@example.com', 'commit', '-qm', 'theirs'], ['push', '-q', 'origin', ${JSON.stringify(eta)}]]) execFileSync('git', args, { cwd: ${JSON.stringify(teammate)} });`,
       "require('fs').appendFileSync('rules/notes.md', 'mine\\n');",
-    ].join('\n'));
+    ].join('\n'), { inputs: { topic: 'eta' } });
 
     expect(failed.outcome, failed.said).toBe('failed');
     const theirs = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: teammate, encoding: 'utf8' }).trim();
-    expect(branchHead()).toBe(theirs);
+    expect(branchHead(eta)).toBe(theirs);
     expect(failed.state.steps.find((step) => step.id === 'edit')?.failure).toMatchObject({
       code: 'push_failed',
-      message: expect.stringContaining(`${BRANCH} moved on origin while step "edit" ran, so nothing was pushed and origin keeps it.`),
+      message: expect.stringContaining(`${eta} moved on origin while step "edit" ran, so nothing was pushed and origin keeps it.`),
     });
-    expect(gh.pulls()).toHaveLength(1);
+    expect(pullsFrom(eta)).toHaveLength(1);
   }, 120_000);
 
   it('pushes nothing when the step leaves a team file teamai pull would reject, and names it', async () => {
@@ -190,10 +199,9 @@ describe('a step in the team workspace, run through the real CLI', () => {
 
   it('pushes nothing and opens no pull request once the branch holds what main holds, as after a squash merge', async () => {
     const gamma = 'teamai/notes/gamma';
-    const headOf = (): string => git(['rev-parse', gamma]);
     const first = await run("require('fs').writeFileSync('rules/gamma.md', '# Gamma\\n');", { inputs: { topic: 'gamma' } });
     expect(first.outcome, first.said).toBe('succeeded');
-    const proposed = headOf();
+    const proposed = branchHead(gamma);
     // The host squash-merges the proposal into main and closes its request, and keeps the branch.
     fixture.pushTeam({ 'rules/gamma.md': '# Gamma\n' });
     gh.configure({ open: [] });
@@ -201,9 +209,9 @@ describe('a step in the team workspace, run through the real CLI', () => {
     const again = await run('', { inputs: { topic: 'gamma' } });
 
     expect(again.outcome, again.said).toBe('succeeded');
-    expect(headOf()).toBe(proposed);
+    expect(branchHead(gamma)).toBe(proposed);
     expect(again.state.deliveries).toBeUndefined();
-    expect(gh.pulls()).toEqual([]);
+    expect(pullsFrom(gamma)).toEqual([]);
   }, 120_000);
 
   it('opens the pull request only once a teamai pull or push in progress lets go of the team repo', async () => {
@@ -214,13 +222,13 @@ describe('a step in the team workspace, run through the real CLI', () => {
     const running = run("require('fs').writeFileSync('rules/delta.md', '# Delta\\n');", { inputs: { topic: 'delta' } });
 
     try {
-      for (const until = Date.now() + 60_000; spawnSync('git', ['--git-dir', fixture.teamOrigin, 'rev-parse', '--verify', '-q', `refs/heads/${delta}`]).status !== 0;) {
+      for (const until = Date.now() + 60_000; branchHead(delta) === '';) {
         if (Date.now() > until) throw new Error('the step never pushed its branch');
         await new Promise((resolve) => setTimeout(resolve, 200));
       }
 
       await new Promise((resolve) => setTimeout(resolve, 3000));
-      expect(gh.pulls().map((pull) => pull.head)).not.toContain(delta);
+      expect(pullsFrom(delta)).toEqual([]);
     } finally {
       fs.rmSync(lock, { force: true });
     }
@@ -228,21 +236,24 @@ describe('a step in the team workspace, run through the real CLI', () => {
     const delivered = await running;
 
     expect(delivered.outcome, delivered.said).toBe('succeeded');
-    expect(gh.pulls().map((pull) => pull.head)).toContain(delta);
+    expect(pullsFrom(delta)).toHaveLength(1);
   }, 180_000);
 
   it('runs nothing on a branch that conflicts with main, and says how to resolve it', async () => {
-    const before = branchHead();
-    fixture.pushTeam({ 'rules/notes.md': '# Notes\nfrom main\n' });
+    const zeta = 'teamai/notes/zeta';
+    const first = await run("require('fs').writeFileSync('rules/zeta.md', '# Zeta\\nfrom the branch\\n');", { inputs: { topic: 'zeta' } });
+    expect(first.outcome, first.said).toBe('succeeded');
+    const before = branchHead(zeta);
+    fixture.pushTeam({ 'rules/zeta.md': '# Zeta\nfrom main\n' });
 
-    const conflicted = await run("require('fs').appendFileSync('rules/notes.md', 'never\\n');");
+    const conflicted = await run("require('fs').appendFileSync('rules/zeta.md', 'never\\n');", { inputs: { topic: 'zeta' } });
 
     expect(conflicted.outcome, conflicted.said).toBe('failed');
     expect(conflicted.state.steps.find((step) => step.id === 'edit')?.failure).toMatchObject({
       code: 'merge_conflict',
-      message: expect.stringContaining(`${BRANCH} conflicts with main on the team repo's origin in rules/notes.md`),
+      message: expect.stringContaining(`${zeta} conflicts with main on the team repo's origin in rules/zeta.md`),
     });
-    expect(branchHead()).toBe(before);
+    expect(branchHead(zeta)).toBe(before);
   }, 120_000);
 
   it('publishes no run whose step worked in the team workspace, since another machine could not reach its clone', async () => {
