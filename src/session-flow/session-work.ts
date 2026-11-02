@@ -27,19 +27,24 @@ import { skillsEvidence, availableTeamSkills, type SkillsEvidence } from '../sco
 import { routingScorers } from '../scorers/skill-routing.js';
 import type { ScopeScoring } from '../scorers/settings.js';
 import { typedIn, usedSkills } from '../skill-use.js';
-import { getDataHome, type LocalConfig } from '../types.js';
+import { getDataHome, JsonValueSchema, type LocalConfig } from '../types.js';
 import { readWorkspaceChildren } from '../workspace-children.js';
+import { mapStrings } from '../utils/json.js';
 import { redact } from '../utils/redact.js';
 import { AgentSession, sessionKey } from './agent-session.js';
 import type { SubagentsRead } from './adapters/base.js';
 import { SessionCaptures, type CapturedSession, type SessionCapture } from './captures.js';
 import type { Session } from './ir.js';
 
-function transcriptOf(session: Session, budget: number): string {
+/**
+ * Each string of a tool call's arguments is masked before they are serialized: a `"password": "…"` pair or a known
+ * secret with a quote is escaped once serialized, and escaped again in the transcript, so masking the body misses it.
+ */
+function transcriptOf(session: Session, budget: number, mask: (text: string) => string): string {
   const capped: Session = {
     ...session,
     messages: session.messages.map((message) => ({ ...message, content: message.content.map((block) =>
-      block.type === 'tool_call' ? { ...block, arguments: { excerpt: keepEnds(JSON.stringify(block.arguments), TOOL_CALL_MAX_CHARS) } } : block) })),
+      block.type === 'tool_call' ? { ...block, arguments: { excerpt: keepEnds(JSON.stringify(mapStrings(JsonValueSchema.parse(block.arguments ?? {}), mask)), TOOL_CALL_MAX_CHARS) } } : block) })),
   };
 
   return keepEnds(AgentSession.transcript(capped).map((entry) => `### ${entry.role}\n${entry.text}\n${entry.toolOutput}`).join('\n\n'), budget);
@@ -52,14 +57,18 @@ export interface JudgedTranscript {
 }
 
 /** A read session's transcript followed by each of its subagents', each kept to its budget, and what of them could not be read. */
-export function judgedTranscript(found: { session: Session; subagents?: SubagentsRead }, budget: { session: number; subagent: number }): JudgedTranscript {
+export function judgedTranscript(
+  found: { session: Session; subagents?: SubagentsRead },
+  budget: { session: number; subagent: number },
+  mask: (text: string) => string,
+): JudgedTranscript {
   const gaps: EvidenceGap[] = [];
-  let body = transcriptOf(found.session, budget.session);
+  let body = transcriptOf(found.session, budget.session, mask);
 
   if (found.subagents?.status !== 'read') gaps.push('subagents_unread');
   else for (const agent of found.subagents.agents) {
     if (agent.start === 'unknown') gaps.push('subagent_boundary_unknown');
-    body += `\n\n## Subagent (depth ${agent.depth}${agent.finished === false ? ', not finished' : ''})\n\n${transcriptOf(agent.session, budget.subagent)}`;
+    body += `\n\n## Subagent (depth ${agent.depth}${agent.finished === false ? ', not finished' : ''})\n\n${transcriptOf(agent.session, budget.subagent, mask)}`;
   }
 
   return { body, gaps };
@@ -137,7 +146,7 @@ export function judgeSession({ platform, found, captures, mask, agent: archived 
   agent?: AgentObservation;
 }): JudgedSession {
   const { session } = found;
-  const transcript = judgedTranscript(found, { session: Number.POSITIVE_INFINITY, subagent: Number.POSITIVE_INFINITY });
+  const transcript = judgedTranscript(found, { session: Number.POSITIVE_INFINITY, subagent: Number.POSITIVE_INFINITY }, mask);
   const subject = { platform, sessionId: session.sessionId };
   const used = usedSkills(AgentSession.toolForPlatform(platform), found, capturedTeamSkillsAt(captures));
   const skills = skillsEvidence(captures, used, mask);
