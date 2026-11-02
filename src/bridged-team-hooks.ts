@@ -206,7 +206,8 @@ function claudePayload(tool: string, event: string, host: HookStdin, bridge: Bri
 
   const toolName = stdinString(host, 'tool_name');
 
-  if (toolName !== undefined) payload.tool_name = bridge.tools[toolName] ?? toolName;
+  // hasOwn: `constructor` or `__proto__` is a tool name, not a key of Object.prototype.
+  if (toolName !== undefined) payload.tool_name = Object.hasOwn(bridge.tools, toolName) ? bridge.tools[toolName] : toolName;
   const input = HookStdinSchema.safeParse(host.tool_input);
 
   if (input.success && input.data.file_path === undefined) {
