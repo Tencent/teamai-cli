@@ -1,6 +1,8 @@
 import path from 'node:path';
+import { z } from 'zod';
 import { updateFileLocked } from './git-exclude.js';
-import { getDataHome, type GlobalOptions, type LocalConfig } from './types.js';
+import { isJsonObject, type JsonObject } from './resources/mcp-format.js';
+import { getDataHome, type GlobalOptions, type JsonValue, type LocalConfig } from './types.js';
 import { pathExists, readFileSafe } from './utils/fs.js';
 import { getUserHome } from './utils/home.js';
 import { log } from './utils/logger.js';
@@ -35,6 +37,9 @@ export interface GitExcludeNotices {
 
 const NOTICES_FILE = 'git-exclude-notices.json';
 
+/** A notice as written: every key it has is kept, so a rewrite drops nothing. */
+const GitExcludeNoticeSchema = z.looseObject({ at: z.string(), message: z.string() });
+
 /**
  * Where a record is kept: a project's partition (its pulls'), or one owner's
  * key in a state home's file. `label` names the run a failure came from.
@@ -57,26 +62,35 @@ export function isBackgroundPull(options: Pick<GlobalOptions, 'silent' | 'gitHoo
   return Boolean(options.silent || options.gitHook);
 }
 
-function parseFile(content: string | null): Record<string, unknown> {
+function parseFile(content: string | null): JsonObject {
   if (!content?.trim()) return {};
 
   try {
-    const parsed = JSON.parse(content) as unknown;
+    const parsed: JsonValue = JSON.parse(content);
 
-    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+    return isJsonObject(parsed) ? parsed : {};
   } catch {
     // Nothing in it is worth more than the notices to come.
     return {};
   }
 }
 
-function parse(record: unknown): GitExcludeNotices {
-  const parsed = (typeof record === 'object' && record !== null ? record : {}) as Partial<GitExcludeNotices>;
-  const valid = (n: unknown): n is GitExcludeNotice => typeof (n as GitExcludeNotice)?.message === 'string' && typeof (n as GitExcludeNotice)?.at === 'string';
+function parse(record: JsonValue | undefined): GitExcludeNotices {
+  const fields: JsonObject = isJsonObject(record) ? record : {};
+  const lastFailure = GitExcludeNoticeSchema.safeParse(fields.lastFailure);
+  const written = fields.notices;
+
+  const notices = Array.isArray(written)
+    ? written.flatMap((n) => {
+      const notice = GitExcludeNoticeSchema.safeParse(n);
+
+      return notice.success ? [notice.data] : [];
+    })
+    : [];
 
   return {
-    lastFailure: valid(parsed.lastFailure) ? { ...parsed.lastFailure, said: parsed.lastFailure.said === true } : null,
-    notices: Array.isArray(parsed.notices) ? parsed.notices.filter(valid) : [],
+    lastFailure: lastFailure.success ? { ...lastFailure.data, said: lastFailure.data.said === true } : null,
+    notices,
   };
 }
 

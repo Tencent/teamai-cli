@@ -1,4 +1,7 @@
 import path from 'node:path';
+import { z } from 'zod';
+import type { JsonValue } from '../types.js';
+import { isJsonObject, type JsonObject } from './mcp-format.js';
 import { readFileSafe, writeJsonAtomic, pathExists, remove, symlinkTarget } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 
@@ -152,21 +155,21 @@ export async function reconcileOpencodeInstructionSet(
 
   if (raw === null) return false;
 
-  let data: Record<string, unknown>;
+  let data: JsonObject;
 
   if (raw.trim() === '') {
     data = {};
   } else {
     try {
-      const parsed = JSON.parse(raw) as unknown;
+      const parsed: JsonValue = JSON.parse(raw);
 
-      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      if (!isJsonObject(parsed)) {
         log.warn(`Could not parse ${configFileAbs} as a JSON object — skipping OpenCode ${purpose}`);
 
         return false;
       }
 
-      data = parsed as Record<string, unknown>;
+      data = parsed;
     } catch {
       log.warn(`Could not parse ${configFileAbs} — skipping OpenCode ${purpose}`);
 
@@ -178,8 +181,14 @@ export async function reconcileOpencodeInstructionSet(
   // entries — string globs and any non-string entries alike — is preserved.
   // (OpenCode may treat instruction order as precedence, so reordering the
   // user's entries on every pull would silently change their config.)
-  const original = Array.isArray(data.instructions) ? [...(data.instructions as unknown[])] : [];
-  const kept = original.filter((entry) => typeof entry !== 'string' || !owns(entry) || desired.includes(entry));
+  const original = Array.isArray(data.instructions) ? [...data.instructions] : [];
+
+  const kept = original.filter((entry) => {
+    const glob = z.string().safeParse(entry);
+
+    return !glob.success || !owns(glob.data) || desired.includes(glob.data);
+  });
+
   const next = [...kept, ...desired.filter((entry) => !kept.includes(entry))];
 
   if (next.length === original.length && next.every((entry, i) => entry === original[i])) return false;
@@ -237,7 +246,7 @@ export async function reconcileOpencodeInstructions(
  * The `instructions` entries of an opencode.json, or null when the file is
  * missing or is not a JSON object, the two cases in which pull leaves it alone.
  */
-export async function readOpencodeInstructionList(configFile: string): Promise<unknown[] | null> {
+export async function readOpencodeInstructionList(configFile: string): Promise<JsonValue[] | null> {
   const raw = await readFileSafe(configFile);
 
   if (raw === null) return null;
@@ -245,10 +254,10 @@ export async function readOpencodeInstructionList(configFile: string): Promise<u
   if (raw.trim() === '') return [];
 
   try {
-    const parsed: unknown = JSON.parse(raw);
+    const parsed: JsonValue = JSON.parse(raw);
 
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
-    const { instructions } = parsed as { instructions?: unknown };
+    if (!isJsonObject(parsed)) return null;
+    const { instructions } = parsed;
 
     return Array.isArray(instructions) ? instructions : [];
   } catch {
@@ -263,7 +272,13 @@ export async function readOpencodeInstructionList(configFile: string): Promise<u
  * from the project root, which OpenCode resolves the same way from any
  * subdirectory; the root `opencode.json` is left alone.
  */
-export function opencodeContextReference(contextFile: string, scope: 'user' | 'project', projectRoot: string): { config: string; entry: string } {
+/** An opencode.json and the `instructions` entry in it that loads a context file. */
+export interface OpencodeContextReference {
+  config: string;
+  entry: string;
+}
+
+export function opencodeContextReference(contextFile: string, scope: 'user' | 'project', projectRoot: string): OpencodeContextReference {
   if (scope === 'user') {
     return { config: path.join(path.dirname(contextFile), 'opencode.json'), entry: contextFile };
   }

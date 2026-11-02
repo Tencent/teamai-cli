@@ -219,9 +219,13 @@ export async function deliveredUnion(checkouts: ListedCheckout[]): Promise<Deliv
       const inside = rel !== '' && !rel.startsWith(`..${path.sep}`) && rel !== '..' && !path.isAbsolute(rel);
       const portable = rel.split(path.sep).join('/');
       const foreign = inside && !PERSONAL.has(portable) ? await foreignIn(all.filter((other) => other !== checkout), rel, file, facts) : [];
-      result.foreign.push(...foreign.map((other) => ({
-        path: file, rel: portable, checkout: other.root, file: other.file, ...other.unlisted ? { unlisted: true } : {},
-      })));
+
+      for (const other of foreign) {
+        const entry: ForeignPath = { path: file, rel: portable, checkout: other.root, file: other.file };
+
+        if (other.unlisted) entry.unlisted = true;
+        result.foreign.push(entry);
+      }
 
       if (foreign.length === 0) result.paths.push(file);
     }
@@ -418,6 +422,13 @@ export async function reportDeliveredGitExclude(
   ];
 }
 
+/** Paths by the exclude file git reads them through; `unlocated` are also in `elsewhere`. */
+interface RepositorySplit {
+  here: string[];
+  elsewhere: string[];
+  unlocated: string[];
+}
+
 /**
  * `paths` split by whether git reads them through `ownExclude` (any checkout
  * of the project's repository) or through another repository's exclude file.
@@ -429,8 +440,8 @@ export async function reportDeliveredGitExclude(
  */
 async function byRepository(
   ownExclude: string | null, paths: Iterable<string>, context: GitContext,
-): Promise<{ here: string[]; elsewhere: string[]; unlocated: string[] }> {
-  const split = { here: [] as string[], elsewhere: [] as string[], unlocated: [] as string[] };
+): Promise<RepositorySplit> {
+  const split: RepositorySplit = { here: [], elsewhere: [], unlocated: [] };
 
   for (const file of paths) {
     let dir: string | null = await existingAncestor(await realFilePath(file));

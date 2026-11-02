@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { z } from 'zod';
 import { gitTracks, realFilePath } from './git-exclude.js';
 import { judgeTeamaiOnlyCodexHooks } from './hooks.js';
 import { holdsOnlyInstructionBlocks, resolveInstructionTargets } from './instruction-targets.js';
@@ -7,9 +8,10 @@ import { installOf, locate, ownOf } from './locate.js';
 import { findMcpGitExcludes } from './mcp-git-exclude.js';
 import { judgeTeamaiOnlyMcpConfigs, opencodeV1Servers } from './mcp-reconcile.js';
 import { opencodeDeliversThroughPlugin } from './opencode-hooks.js';
+import { isJsonObject } from './resources/mcp-format.js';
 import { opencodeContextReference, readOpencodeInstructionList, reconcileOpencodeInstructionSet } from './resources/opencode-config.js';
 import { RulesHandler } from './resources/rules.js';
-import { resolveBaseDir, type LocalConfig, type TeamaiConfig } from './types.js';
+import { resolveBaseDir, type JsonValue, type LocalConfig, type TeamaiConfig } from './types.js';
 import { readFileSafe } from './utils/fs.js';
 
 // ─── teamai-only files (#915) ─────────────────────────────────
@@ -134,7 +136,7 @@ async function shownPath(file: string, projectRoot: string): Promise<string> {
 async function opencodeInstructionEntries(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
-): Promise<{ file: string; ours: (entry: unknown) => boolean } | null> {
+): Promise<{ file: string; ours: (entry: JsonValue) => boolean } | null> {
   const target = await new RulesHandler().opencodeInstructionsTarget(teamConfig, localConfig, []);
 
   if (target === null) return null;
@@ -144,7 +146,11 @@ async function opencodeInstructionEntries(
 
   return {
     file,
-    ours: (entry) => typeof entry === 'string' && (target.owns(entry) || (context?.config === file && entry === context.entry)),
+    ours: (entry) => {
+      const glob = z.string().safeParse(entry);
+
+      return glob.success && (target.owns(glob.data) || (context?.config === file && glob.data === context.entry));
+    },
   };
 }
 
@@ -219,7 +225,7 @@ async function judgeOpencodeInstructions(teamConfig: TeamaiConfig, localConfig: 
   const raw = await readFileSafe(file);
 
   if (raw === null || raw.trim() === '') return null;
-  let data: unknown;
+  let data: JsonValue;
 
   try {
     data = JSON.parse(raw);
@@ -227,8 +233,8 @@ async function judgeOpencodeInstructions(teamConfig: TeamaiConfig, localConfig: 
     return { file, teamaiOnly: false };
   }
 
-  if (typeof data !== 'object' || data === null || Array.isArray(data)) return { file, teamaiOnly: false };
-  const { instructions, ...others } = data as { instructions?: unknown };
+  if (!isJsonObject(data)) return { file, teamaiOnly: false };
+  const { instructions, ...others } = data;
 
   if (Object.keys(others).length > 0) return { file, teamaiOnly: false };
 

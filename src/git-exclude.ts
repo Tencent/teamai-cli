@@ -8,6 +8,9 @@ import { gitFindsNoRepository } from './utils/git-discovery.js';
 import { checkoutLocation } from './utils/git.js';
 import { withoutGitRepositoryEnv } from './utils/git-env.js';
 import { getUserHome } from './utils/home.js';
+import { z } from 'zod';
+import type { JsonValue } from './types.js';
+import { isJsonObject, type JsonObject } from './resources/mcp-format.js';
 
 // ─── Git exclude blocks ──────────────────────────────────────
 //
@@ -59,8 +62,14 @@ export function encodeOwnerSegment(name: string): string {
     .join('');
 }
 
+/** The lines that open and close an owner's block. */
+interface BlockMarkers {
+  start: string;
+  end: string;
+}
+
 /** The owner's markers; `mcp-exclude` keeps #886's, byte for byte. */
-function markersOf(owner: string): { start: string; end: string } {
+function markersOf(owner: string): BlockMarkers {
   if (!OWNER.test(owner)) throw new TypeError(`Invalid git exclude owner "${owner}": use [a-z0-9/_%-] (encodeOwnerSegment)`);
 
   if (owner === MCP_EXCLUDE_OWNER) return { start: MCP_EXCLUDE_START, end: MCP_EXCLUDE_END };
@@ -131,7 +140,13 @@ function parseExclude(content: string): ParsedExclude {
       open = { owner: marker[1], line: i + 1, raws: [raw] };
     } else if (marker && open?.owner === marker[1]) {
       const { owner } = open;
-      const lines = [...open.raws.slice(1), raw].slice(0, -1).map((r) => lineValue(r, owner)).filter((l) => l !== '' && !l.startsWith('#'));
+
+      const lines = [...open.raws.slice(1), raw].slice(0, -1).flatMap((r) => {
+        const line = lineValue(r, owner);
+
+        return line !== '' && !line.startsWith('#') ? [line] : [];
+      });
+
       segments.push({ kind: 'block', owner, raw: [...open.raws, raw].join(''), lines });
       open = null;
     } else {
@@ -198,7 +213,7 @@ export function withOwnerLines(content: string, owner: string, lines: string[]):
 /** Git, run where `cwd` is, never where a hook's exported GIT_DIR points (#915). */
 function runGit(args: string[], cwd: string): Promise<ExecResult> {
   return execCommand('git', args, { cwd, timeoutMs: 10_000, env: withoutGitRepositoryEnv() })
-    .catch((e: unknown) => ({ code: -1, stdout: '', stderr: e instanceof Error ? e.message : String(e) }));
+    .catch((cause: unknown) => ({ code: -1, stdout: '', stderr: cause instanceof Error ? cause.message : String(cause) }));
 }
 
 /**
@@ -506,7 +521,7 @@ async function readExisting(file: string): Promise<string | null> {
   try {
     return await readFileIfExists(file);
   } catch (e) {
-    const code = (e as NodeJS.ErrnoException).code;
+    const code = e instanceof Error && 'code' in e ? z.string().optional().catch(undefined).parse(e.code) : undefined;
 
     if (code === 'ENOTDIR') return null;
     throw new NotReadableError(file, code ?? (e instanceof Error ? e.message : String(e)));
@@ -635,7 +650,7 @@ async function onDiskSpelling(file: string): Promise<string> {
   if (!stat) return file;
   const dir = path.dirname(file);
   const base = path.basename(file);
-  const names = await fse.readdir(dir).catch(() => [] as string[]);
+  const names = await fse.readdir(dir).catch((): string[] => []);
 
   if (names.includes(base)) return file;
   const fold = (name: string): string => name.normalize('NFC').toLowerCase();
@@ -830,13 +845,20 @@ export async function sync(
  * block holds after it (when the write failed: would hold). A missing exclude
  * file that would get no block is left missing (a deleted repository, or nothing to write).
  */
+/** An owner's lines after a write, and how they differ from before it. */
+interface OwnerLinesDiff {
+  lines: string[];
+  added: string[];
+  dropped: string[];
+}
+
 async function writeOwnerLines(
   excludeFile: string,
   owner: string,
   next: (current: string[]) => string[],
   dryRun = false,
 ): Promise<{ write: GitExcludeWrite; lines: string[]; added: string[]; dropped: string[]; damaged: DamagedMarker[] }> {
-  const diff = (current: string[], lines: string[]): { lines: string[]; added: string[]; dropped: string[] } => ({
+  const diff = (current: string[], lines: string[]): OwnerLinesDiff => ({
     lines,
     added: lines.filter((l) => !current.includes(l)),
     dropped: current.filter((l) => !lines.includes(l)),
@@ -1276,11 +1298,11 @@ export async function remove(
           ? { kind: 'notWritable', path: blocker.path, message: new NotWritableError(excludeFile, blocker.path, blocker.notDirectory).message }
           : await updateFileLocked(excludeFile, edit).then(
             (kind): GitExcludeWrite => ({ kind }),
-            (e: unknown): GitExcludeWrite => e instanceof NotWritableError
-              ? { kind: 'notWritable', path: e.blocker, message: e.message }
-              : e instanceof NotReadableError
-                ? { kind: 'notReadable', path: excludeFile, message: e.message }
-                : { kind: 'writeFailed', error: e instanceof Error ? e.message : String(e) },
+            (cause: unknown): GitExcludeWrite => cause instanceof NotWritableError
+              ? { kind: 'notWritable', path: cause.blocker, message: cause.message }
+              : cause instanceof NotReadableError
+                ? { kind: 'notReadable', path: excludeFile, message: cause.message }
+                : { kind: 'writeFailed', error: cause instanceof Error ? cause.message : String(cause) },
           ),
       });
     }
@@ -1374,7 +1396,8 @@ export async function report(owner: GitExcludeOwner, expectedPaths: Iterable<str
     for (const f of offerFailed) if (!checkFailed.some((c) => c.checkout === f.checkout)) checkFailed.push(f);
     const listed = placed.filter((p) => lines.includes(p.line));
     const missing = notReadable ? [] : placed.filter((p) => !lines.includes(p.line) && !tracked.some((t) => t.path === p.path));
-    result.files.push({
+
+    const fileReport: GitExcludeFileReport = {
       excludeFile,
       listed: listed.map((p) => p.path),
       missing: missing.map((p) => p.path),
@@ -1384,8 +1407,10 @@ export async function report(owner: GitExcludeOwner, expectedPaths: Iterable<str
       damaged: parsed.damaged.filter((d) => d.owner === owner.name),
       checkFailed,
       visible: placed.filter((p) => offered.has(p)).map((p) => p.path),
-      ...notReadable ? { notReadable } : {},
-    });
+    };
+
+    if (notReadable) fileReport.notReadable = notReadable;
+    result.files.push(fileReport);
   }
 
   return result;
@@ -1425,9 +1450,9 @@ export function stateHomeRecord(stateHome: string, owner: string): GitExcludeFil
   markersOf(owner);
   const file = path.join(stateHome, 'git-exclude.json');
 
-  const parse = (content: string | null): Record<string, unknown> => {
+  const parse = (content: string | null): JsonObject => {
     if (content === null || content.trim() === '') return {};
-    let parsed: unknown;
+    let parsed: JsonValue;
 
     try {
       parsed = JSON.parse(content);
@@ -1435,17 +1460,23 @@ export function stateHomeRecord(stateHome: string, owner: string): GitExcludeFil
       throw new Error(`${file} is not valid JSON (${e instanceof Error ? e.message : String(e)}): fix or delete it, then run the command again.`, { cause: e });
     }
 
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    if (!isJsonObject(parsed)) {
       throw new Error(`${file} does not hold an object: fix or delete it, then run the command again.`);
     }
 
-    return parsed as Record<string, unknown>;
+    return parsed;
   };
 
-  const filesOf = (all: Record<string, unknown>): string[] => {
+  const filesOf = (all: JsonObject): string[] => {
     const files = all[owner];
 
-    return Array.isArray(files) ? files.filter((f): f is string => typeof f === 'string') : [];
+    return Array.isArray(files)
+      ? files.flatMap((f) => {
+        const name = z.string().safeParse(f);
+
+        return name.success ? [name.data] : [];
+      })
+      : [];
   };
 
   return {
