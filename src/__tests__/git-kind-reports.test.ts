@@ -10,7 +10,7 @@ import path from 'node:path';
 import { simpleGit } from 'simple-git';
 
 import { getDataHome, getReportsDir, getVotesDir, REPORTS_WORKTREE_DIRNAME, type LocalConfig } from '../types.js';
-import { commitAndPushReports, ensureReportsWorktree, refreshReportsWorktree, updateReports } from '../utils/reports-branch.js';
+import { commitAndPushReports, ensureReportsWorktree, readReportsOriginFiles, refreshReportsWorktree, updateReports } from '../utils/reports-branch.js';
 import { isPublished } from '../utils/branch-worktree.js';
 import { pushRepoDirectly } from '../utils/git.js';
 import { reportUsage } from '../team-push.js';
@@ -374,6 +374,30 @@ describe('git-kind reports: read-only cold start (#558)', () => {
 
     expect(await publish(cfg, 'members/alice.yaml', 'username: alice\n')).toBe(true);
     expect(await originReportsFile(origin, 'members/alice.yaml')).toBe('username: alice\n');
+  });
+});
+
+describe('git-kind reports: reading what origin holds', () => {
+  it('reads several files as origin holds them, and null for one origin does not have', async () => {
+    const { origin, clone } = await seedBareOrigin();
+    const alice = gitConfig(clone, origin);
+    expect(await publish(alice, 'members/alice.yaml', 'username: alice\n')).toBe(true);
+    expect(await publish(alice, 'stats/Alice Smith.yaml', 'name: Zoë\n')).toBe(true);
+    const wt = await ensureReportsWorktree(alice);
+    // Committed here but never pushed: not what origin holds.
+    fs.mkdirSync(path.join(wt, 'votes'), { recursive: true });
+    fs.writeFileSync(path.join(wt, 'votes', 'alice.yaml'), 'version: 2\n');
+    await simpleGit(wt).add(['votes/alice.yaml']);
+    await simpleGit(wt).commit('local only');
+
+    const read = await readReportsOriginFiles(wt, ['stats/Alice Smith.yaml', 'votes/alice.yaml', 'members/alice.yaml', 'members/nobody.yaml']);
+
+    expect(Object.fromEntries(read)).toEqual({
+      'stats/Alice Smith.yaml': 'name: Zoë\n',
+      'votes/alice.yaml': null,
+      'members/alice.yaml': 'username: alice\n',
+      'members/nobody.yaml': null,
+    });
   });
 });
 
