@@ -169,6 +169,24 @@ describe('a step in the team workspace, run through the real CLI', () => {
     expect(git(['rev-parse', 'main'])).toBe(main);
   }, 120_000);
 
+  it('pushes nothing and opens no pull request once the branch holds what main holds, as after a squash merge', async () => {
+    const gamma = 'teamai/notes/gamma';
+    const headOf = (): string => git(['rev-parse', gamma]);
+    const first = await run("require('fs').writeFileSync('rules/gamma.md', '# Gamma\\n');", { inputs: { topic: 'gamma' } });
+    expect(first.outcome, first.said).toBe('succeeded');
+    const proposed = headOf();
+    // The host squash-merges the proposal into main and closes its request, and keeps the branch.
+    fixture.pushTeam({ 'rules/gamma.md': '# Gamma\n' });
+    gh.configure({ open: [] });
+
+    const again = await run('', { inputs: { topic: 'gamma' } });
+
+    expect(again.outcome, again.said).toBe('succeeded');
+    expect(headOf()).toBe(proposed);
+    expect(again.state.deliveries).toBeUndefined();
+    expect(gh.pulls()).toEqual([]);
+  }, 120_000);
+
   it('runs nothing on a branch that conflicts with main, and says how to resolve it', async () => {
     const before = branchHead();
     fixture.pushTeam({ 'rules/notes.md': '# Notes\nfrom main\n' });

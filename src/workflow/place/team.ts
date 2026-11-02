@@ -183,8 +183,14 @@ export async function finishTeamClone(input: { root: string; dir: string; step: 
   const listed = committed.to === from ? { stdout: '' } : await git(root, ['rev-list', '--reverse', `${from}..${committed.to}`]);
   const changes: StepChanges = { branch, base, from, to: committed.to, commits: listed.stdout.split('\n').map((line) => line.trim()).filter(Boolean) };
 
+  const trees = await git(root, ['rev-parse', `${committed.to}^{tree}`, `${base}^{tree}`]);
+  const [tree, baseTree] = trees.stdout.split('\n');
+
+  // The branch holds what the default branch holds, as once its proposal was squash-merged: nothing to push or propose.
+  if (trees.code === 0 && tree === baseTree) return { changes: { branch, base, from: base, to: base, commits: [] } };
+
   // Nothing beyond what origin has: no push, and nothing to deliver unless the branch already holds work.
-  if (committed.to === base || committed.to === found) return { changes };
+  if (committed.to === found) return { changes };
   const { files, unplaced } = await unplacedTeamFiles({ root, dir, base, to: committed.to });
   const rejected = [...unplaced, ...await rejectedTeamFiles(dir, files)];
 
