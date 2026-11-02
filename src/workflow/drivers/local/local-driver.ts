@@ -299,15 +299,17 @@ const LocalLeaseSchema = LeaseWireSchema.or(z.preprocess((raw) => (isRecord(raw)
 
 /**
  * Gets the lease a place to run under `root`, with the team env resolved for it. `signal` stops setup, which
- * then fails, and the workspace it was preparing is removed.
+ * then fails, and the workspace it was preparing is removed. A prompt step's place is prepared for `launches`, the tool
+ * `promptReport` launches there, when the lease names none.
  */
-async function stageLease(lease: Lease, { config, lock, root, env, mode, signal }: {
+async function stageLease(lease: Lease, { config, lock, root, env, mode, signal, launches }: {
   config: LocalConfig;
   lock: RunLock;
   root: string;
   env: WorkflowEnv;
   mode: RunMode;
   signal?: AbortSignal;
+  launches?: string;
 }): Promise<WorkflowFailure | undefined> {
   if (lease.unreadableWorkspace) return unreadablePlace(lock.run);
   // A lease is handed back to a driver after one of this run was killed: the setup or command that one left running
@@ -323,7 +325,7 @@ async function stageLease(lease: Lease, { config, lock, root, env, mode, signal 
     lease.processEnv = withRunningCli(process.env);
   }
 
-  const prepared = await preparePlace({ config, lock, root, lease: placeLeaseOf(lease) });
+  const prepared = await preparePlace({ config, lock, root, lease: { ...placeLeaseOf(lease), ...(lease.tool === undefined && launches !== undefined ? { tool: launches } : {}) } });
 
   if (prepared.kind !== 'prepared') return prepared.failure;
   lease.cwd = prepared.dir;
@@ -1013,7 +1015,9 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
 
         if (maxParallel === 1) handle(STOP_SIGNALS);
         prompts.set(lease.attempt, { lease, controller, exit: (async () => {
-          const failure = await stageLease(lease, { config, lock, root, env: turn, mode, signal: controller.signal });
+          // A role copy is checked and delivered for the tool the step launches, so another tool the member enables does not refuse it.
+          const launch = lease.role !== undefined ? launchToolFor({ agent: lease.agent, tool: lease.tool }, config, options.tools ?? {}, await memberTools(config)) : undefined;
+          const failure = await stageLease(lease, { config, lock, root, env: turn, mode, signal: controller.signal, ...(launch?.ok ? { launches: launch.tool } : {}) });
 
           if (!startable(lease, controller.signal)) {
             await abandonPlace({ config, lock, attempt: lease.attempt });

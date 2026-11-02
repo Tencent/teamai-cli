@@ -317,11 +317,14 @@ steps:
     expect(empty).toEqual([path.join('.claude', 'skills', 'step-made')]);
   });
 
-  it("keeps the role out of the member's Hermes skills, which Hermes takes from the member's home, while a Claude step in the copy runs with it", async () => {
+  it.each([
+    ['names claude as its tool', REVIEW_IN_COPY.replace('    role: review\n', '    role: review\n    tool: claude\n')],
+    ['names no tool and launches claude, the run\'s default', REVIEW_IN_COPY],
+  ])("keeps the role out of the member's Hermes skills, which Hermes takes from the member's home, while a step that %s runs with it", async (_label, yaml) => {
     const hermesSkills = path.join(os.homedir(), '.hermes', 'skills');
     fs.mkdirSync(path.join(hermesSkills, 'mine'), { recursive: true });
     fs.writeFileSync(path.join(hermesSkills, 'mine', 'SKILL.md'), '---\nname: mine\ndescription: The member\'s own.\n---\nMine.\n');
-    const { config, workspace, runId } = await roleWorkspace(REVIEW_IN_COPY.replace('    role: review\n', '    role: review\n    tool: claude\n'), { tools: ['claude', 'hermes'] });
+    const { config, workspace, runId } = await roleWorkspace(yaml, { tools: ['claude', 'hermes'] });
     const snapshot = (): Record<string, string> => Object.fromEntries(fs.readdirSync(hermesSkills, { recursive: true, encoding: 'utf8' })
       .filter((entry) => fs.statSync(path.join(hermesSkills, entry)).isFile())
       .sort()
