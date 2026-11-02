@@ -1,19 +1,23 @@
+import { z } from 'zod';
 import { log } from '../../utils/logger.js';
 import type { OrgRepoInfo } from '../types.js';
 import { ghExec, isGhInstalled, getGitHubToken } from './gh-cli.js';
 
 // ─── GitHub API types ────────────────────────────────────
 
-interface GhRepoApiItem {
-  clone_url: string;
-  full_name: string;
-  name: string;
-  description: string | null;
-  language: string | null;
-  archived: boolean;
-  stargazers_count: number;
-  pushed_at: string | null;
-}
+/** One page of a GitHub repository listing. An optional field of another type reads as absent. */
+const GhRepoPageSchema = z.array(z.object({
+  clone_url: z.string(),
+  full_name: z.string(),
+  name: z.string(),
+  description: z.string().nullish().catch(undefined),
+  language: z.string().nullish().catch(undefined),
+  archived: z.boolean().optional().catch(undefined),
+  stargazers_count: z.number().optional().catch(undefined),
+  pushed_at: z.string().nullish().catch(undefined),
+}));
+
+type GhRepoApiItem = z.infer<typeof GhRepoPageSchema>[number];
 
 // ─── 分页辅助 ─────────────────────────────────────────────
 
@@ -29,8 +33,8 @@ const REQUEST_TIMEOUT_MS = 30_000;
  * name. Both transports have to recognise that name, so a deadline sends
  * exactly one request and does not fall back to /users.
  */
-function isTimeoutError(err: unknown): boolean {
-  return err instanceof Error && err.name === 'TimeoutError';
+function isTimeoutError(cause: unknown): boolean {
+  return cause instanceof Error && cause.name === 'TimeoutError';
 }
 
 /** Build an error named like the one `AbortSignal.timeout()` produces. */
@@ -71,7 +75,7 @@ function ghApiPage(endpoint: string): GhRepoApiItem[] {
     throw new Error(`gh api failed (${result.status}): ${result.stderr || result.stdout}`);
   }
 
-  return JSON.parse(result.stdout) as GhRepoApiItem[];
+  return GhRepoPageSchema.parse(JSON.parse(result.stdout));
 }
 
 /**
@@ -115,8 +119,8 @@ async function fetchApiPage(url: string, token: string): Promise<GhRepoApiItem[]
 
   if (reader) {
     while (true) {
-      const { done, value } = await reader.read().catch((err: unknown) => {
-        throw signal.aborted ? signal.reason : err;
+      const { done, value } = await reader.read().catch((cause: unknown) => {
+        throw signal.aborted ? signal.reason : cause;
       });
 
       if (done) break;
@@ -133,7 +137,7 @@ async function fetchApiPage(url: string, token: string): Promise<GhRepoApiItem[]
 
   const body = Buffer.concat(chunks).toString('utf-8');
 
-  return JSON.parse(body) as GhRepoApiItem[];
+  return GhRepoPageSchema.parse(JSON.parse(body));
 }
 
 // ─── 转换函数 ─────────────────────────────────────────────

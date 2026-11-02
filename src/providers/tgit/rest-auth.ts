@@ -4,6 +4,18 @@ import { log } from '../../utils/logger.js';
 /** Authentication scheme accepted by the git.woa.com REST API. */
 export type TGitAuthScheme = 'private-token' | 'bearer';
 
+/** A TGit credential and the auth scheme it requires. */
+export interface TGitCredential {
+  token: string;
+  scheme: TGitAuthScheme;
+}
+
+/** The header that carries a TGit credential, by scheme. */
+export type TGitAuthHeaders = { Authorization: string } | { 'PRIVATE-TOKEN': string };
+
+/** A fetch init for {@link tgitFetch}; its headers are a plain record, merged over the JSON content type. */
+export type TGitFetchInit = Omit<RequestInit, 'headers'> & { headers?: Record<string, string> };
+
 /** Base URL for the TGit REST API (git.woa.com/api/v3). */
 const TGIT_API_BASE = 'https://git.woa.com/api/v3';
 
@@ -25,7 +37,7 @@ let cachedScheme: TGitAuthScheme | null = null;
  * @returns the token and the auth scheme it requires
  * @throws Error when no credential is available
  */
-export function getTGitToken(): { token: string; scheme: TGitAuthScheme } {
+export function getTGitToken(): TGitCredential {
   const envToken = process.env['TGIT_TOKEN'];
 
   if (envToken && envToken.length > 0) {
@@ -79,7 +91,7 @@ export function tgitGitCloneUrl(httpsUrl: string): string | null {
  * Like {@link getTGitToken} but returns null instead of throwing when no
  * credential is available (lets callers choose a no-token fallback path).
  */
-export function tryGetTGitToken(): { token: string; scheme: TGitAuthScheme } | null {
+export function tryGetTGitToken(): TGitCredential | null {
   try {
     return getTGitToken();
   } catch {
@@ -94,7 +106,7 @@ export function tryGetTGitToken(): { token: string; scheme: TGitAuthScheme } | n
  * @param scheme - 'bearer' or 'private-token'
  * @returns a header object carrying the credential
  */
-export function tgitAuthHeaders(token: string, scheme: TGitAuthScheme): Record<string, string> {
+export function tgitAuthHeaders(token: string, scheme: TGitAuthScheme): TGitAuthHeaders {
   if (scheme === 'bearer') {
     return { Authorization: `Bearer ${token}` };
   }
@@ -115,13 +127,12 @@ export function tgitAuthHeaders(token: string, scheme: TGitAuthScheme): Record<s
  * @returns the final Response (callers inspect status themselves)
  * @throws Error when no TGit credential is available
  */
-export async function tgitFetch(path: string, init?: RequestInit): Promise<Response> {
+export async function tgitFetch(path: string, init?: TGitFetchInit): Promise<Response> {
   const { token, scheme: resolvedScheme } = getTGitToken();
   const scheme = cachedScheme ?? resolvedScheme;
   const url = `${TGIT_API_BASE}${path}`;
 
-  const callerHeaders = { ...(init?.headers as Record<string, string> | undefined) };
-  const baseHeaders: Record<string, string> = { 'Content-Type': 'application/json', ...callerHeaders };
+  const baseHeaders = { 'Content-Type': 'application/json', ...init?.headers };
 
   // A fresh timeout signal per attempt when the caller supplied none: an
   // already-fired timeout signal cannot be reused for the fallback retry.

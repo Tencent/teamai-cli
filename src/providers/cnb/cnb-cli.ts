@@ -1,4 +1,4 @@
-import { execSync, spawnSync } from 'node:child_process';
+import { execSync, spawnSync, type SpawnSyncOptions, type SpawnSyncOptionsWithStringEncoding } from 'node:child_process';
 import crossSpawn from 'cross-spawn';
 import { log, spinner } from '../../utils/logger.js';
 import { resolveCliPath } from '../../utils/cli-path.js';
@@ -40,11 +40,18 @@ export const CNB_HOST = process.env.TEAMAI_CNB_HOST?.trim() || 'cnb.cool';
 
 // ─── Core exec ───────────────────────────────────────────
 
+/** What a cnb run printed and how it exited. */
+export interface CnbExecResult {
+  stdout: string;
+  stderr: string;
+  status: number;
+}
+
 /** Run a `cnb` subcommand. Returns { stdout, stderr, status }. */
 export function cnbExec(
   args: string[],
   options?: { inheritStdio?: boolean; cwd?: string; timeoutMs?: number },
-): { stdout: string; stderr: string; status: number } {
+): CnbExecResult {
   // Resolve the executable first, then launch it through cross-spawn: on
   // Windows the npm-installed CLI is only a `.cmd` shim, which neither a bare
   // name (ENOENT) nor a direct child_process.spawnSync (EINVAL) can start. That
@@ -61,18 +68,23 @@ export function cnbExec(
   log.debug(`cnb exec: ${cnbPath} ${args.join(' ')}`);
 
   if (options?.inheritStdio) {
-    const r = crossSpawn.sync(cnbPath, args, { stdio: 'inherit', env: { ...process.env }, cwd: options.cwd, ...(options.timeoutMs ? { timeout: options.timeoutMs } : {}) });
+    const inherited: SpawnSyncOptions = { stdio: 'inherit', env: { ...process.env }, cwd: options.cwd };
+
+    if (options.timeoutMs) inherited.timeout = options.timeoutMs;
+    const r = crossSpawn.sync(cnbPath, args, inherited);
 
     return { stdout: '', stderr: '', status: r.status ?? 1 };
   }
 
-  const r = crossSpawn.sync(cnbPath, args, {
+  const captured: SpawnSyncOptionsWithStringEncoding = {
     env: { ...process.env },
     encoding: 'utf-8',
     maxBuffer: 10 * 1024 * 1024,
     cwd: options?.cwd,
-    ...(options?.timeoutMs ? { timeout: options.timeoutMs } : {}),
-  });
+  };
+
+  if (options?.timeoutMs) captured.timeout = options.timeoutMs;
+  const r = crossSpawn.sync(cnbPath, args, captured);
 
   return {
     stdout: (r.stdout ?? '').toString().trim(),
@@ -121,7 +133,7 @@ export async function ensureCnbInstalled(): Promise<void> {
     if (!isCnbInstalled()) throw new Error('cnb not found on PATH after install');
     spin.succeed('cnb CLI installed');
   } catch (e) {
-    spin.fail(`Failed to install cnb CLI: ${(e as Error).message}`);
+    spin.fail(`Failed to install cnb CLI: ${e instanceof Error ? e.message : String(e)}`);
     log.info('Install it manually: npm install -g @cnbcool/cnb-cli');
     throw e;
   }
@@ -353,7 +365,7 @@ export async function cnbCreateRepo(owner: string, repo: string): Promise<void> 
 
     assertCnbApiOk(r.stdout, 'create-repo');
   } catch (e) {
-    const msg = (e as Error).message;
+    const msg = e instanceof Error ? e.message : String(e);
 
     if (/HTTP 404|not found|不存在/i.test(msg)) {
       throw new OrganizationNotFoundError(owner, cnbOrganizationCreateUrl());
@@ -399,7 +411,7 @@ export function cnbPullCreate(opts: CnbPullCreateOptions): string {
 
   if (opts.description) args.push('--body', opts.description);
 
-  const r = cnbExec(args, { cwd: opts.cwd, ...(opts.spawnTimeoutMs ? { timeoutMs: opts.spawnTimeoutMs } : {}) });
+  const r = cnbExec(args, { cwd: opts.cwd, timeoutMs: opts.spawnTimeoutMs });
 
   if (r.status !== 0) {
     throw new Error(`cnb post-pull failed: ${r.stderr || r.stdout}`);

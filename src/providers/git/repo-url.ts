@@ -9,7 +9,7 @@ function invalidRepoUrl(reason?: string): Error {
   return new Error(`Invalid Git repo URL${detail} (${SUPPORTED_URL_HINT})`);
 }
 
-function parsePath(rawPath: string): { owner: string; repo: string; fullPath: string } {
+function parsePath(rawPath: string) {
   const fullPath = rawPath
     .replace(/^\/+/, '')
     .replace(/\/+$/, '');

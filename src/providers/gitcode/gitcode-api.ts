@@ -62,7 +62,7 @@ function requireToken(): string {
   return token;
 }
 
-function authHeaders(token: string): Record<string, string> {
+function authHeaders(token: string) {
   return {
     'Authorization': `Bearer ${token}`,
     'Content-Type': 'application/json',
@@ -180,9 +180,9 @@ export async function gitcodeWhoami(): Promise<string | null> {
     });
 
     if (!resp.ok) return null;
-    const data = (await resp.json()) as { login?: string };
+    const data = z.object({ login: z.string().optional().catch(undefined) }).safeParse(await resp.json());
 
-    return data.login ?? null;
+    return data.data?.login ?? null;
   } catch {
     return null;
   }
@@ -270,7 +270,7 @@ export async function gitcodeCreateRepo(owner: string, repo: string): Promise<vo
     ? `${gitcodeApiBase()}/orgs/${encodeURIComponent(owner)}/repos`
     : `${gitcodeApiBase()}/user/repos`;
 
-  const body: Record<string, unknown> = { name: repo, private: true, auto_init: true };
+  const body = { name: repo, private: true, auto_init: true };
 
   const resp = await fetch(endpoint, {
     method: 'POST',
@@ -303,6 +303,14 @@ export interface GitCodePullCreateOptions {
   spawnTimeoutMs?: number;
 }
 
+/** The body of GitCode's create-pull-request request. */
+interface GitCodePullCreateBody {
+  title: string;
+  head: string;
+  base: string;
+  body?: string;
+}
+
 /**
  * Create a pull request via the GitCode REST API.
  * `POST /repos/{owner}/{repo}/pulls` with Gitee-style body { head, base, title, body }.
@@ -311,7 +319,7 @@ export interface GitCodePullCreateOptions {
 export async function gitcodePullCreate(opts: GitCodePullCreateOptions): Promise<string> {
   const token = requireToken();
 
-  const body: Record<string, unknown> = {
+  const body: GitCodePullCreateBody = {
     title: opts.title,
     head: opts.source,
     base: opts.target,
@@ -324,7 +332,7 @@ export async function gitcodePullCreate(opts: GitCodePullCreateOptions): Promise
     headers: authHeaders(token),
     body: JSON.stringify(body),
     redirect: 'manual',
-    ...(opts.spawnTimeoutMs ? { signal: AbortSignal.timeout(opts.spawnTimeoutMs) } : {}),
+    signal: opts.spawnTimeoutMs ? AbortSignal.timeout(opts.spawnTimeoutMs) : undefined,
   });
 
   if (!resp.ok) {
@@ -332,7 +340,11 @@ export async function gitcodePullCreate(opts: GitCodePullCreateOptions): Promise
     throw new Error(`Failed to create GitCode PR: ${resp.status} ${errBody}`);
   }
 
-  const pr = (await resp.json()) as { html_url?: string; number?: number };
+  // A field of another type, or a body that is no object, reads as absent.
+  const pr = z.object({
+    html_url: z.string().optional().catch(undefined),
+    number: z.number().optional().catch(undefined),
+  }).catch({}).parse(await resp.json());
 
   if (pr.html_url) return pr.html_url;
 

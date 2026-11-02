@@ -1,4 +1,5 @@
-import { type MRData, type MRFetchOptions, type MRThread } from '../../types.js';
+import { z } from 'zod';
+import { type JsonValue, type MRData, type MRFetchOptions, type MRThread } from '../../types.js';
 import { log } from '../../utils/logger.js';
 import { pruneThreads } from '../mr-threads.js';
 import { tgitFetch } from './rest-auth.js';
@@ -29,32 +30,36 @@ function parseTGitMRUrl(url: string): ParsedTGitMR {
 }
 
 /** TGit REST API 返回的 MR 元信息（仅使用的字段） */
-interface TGitMR {
-  id: number;
-  iid: number;
-  title: string;
-  description: string;
-  author: { username: string };
+const TGitUserSchema = z.object({ username: z.string() });
+
+const TGitMRSchema = z.object({
+  id: z.number(),
+  iid: z.union([z.number(), z.string()]),
+  title: z.string(),
+  description: z.string().nullish(),
+  author: TGitUserSchema.nullish(),
   // 部分工蜂版本不返回 merged_at，回退到 resolved_at / updated_at
-  merged_at?: string | null;
-  resolved_at?: string | null;
-  updated_at?: string | null;
-}
+  merged_at: z.string().nullish(),
+  resolved_at: z.string().nullish(),
+  updated_at: z.string().nullish(),
+});
 
 /** /changes 接口的 diff 载荷：工蜂用 `files`，标准 GitLab 用 `changes` */
-interface TGitChangesResponse {
-  files?: Array<{ diff: string }>;
-  changes?: Array<{ diff: string }>;
-}
+const FileDiffsSchema = z.array(z.object({ diff: z.string() })).nullish();
+
+const TGitChangesResponseSchema = z.object({
+  files: FileDiffsSchema,
+  changes: FileDiffsSchema,
+});
 
 /** A note of the MR, as the notes endpoint `teamai ci` also uses returns it (the fields read). */
-interface TGitNote {
-  body: string;
-  author?: { username: string };
-  system?: boolean;
+const TGitNoteSchema = z.object({
+  body: z.string().nullish(),
+  author: TGitUserSchema.nullish(),
+  system: z.boolean().nullish(),
   /** Notes of one thread share it, where the instance reports threads. */
-  discussion_id?: string | number | null;
-}
+  discussion_id: z.union([z.string(), z.number()]).nullish(),
+});
 
 /** Pages of 100 notes read at most. */
 const MAX_NOTE_PAGES = 10;
@@ -67,7 +72,7 @@ const MAX_NOTE_PAGES = 10;
  * @throws Error on an API error; the caller keeps the extraction going without threads
  */
 async function fetchTGitThreads(enc: string, mrGlobalId: number, commentMarker?: string): Promise<MRThread[]> {
-  const notes: TGitNote[] = [];
+  const notes: z.infer<typeof TGitNoteSchema>[] = [];
 
   for (let page = 1; page <= MAX_NOTE_PAGES; page++) {
     const resp = await tgitFetch(`/projects/${enc}/merge_requests/${mrGlobalId}/notes?per_page=100&page=${page}`);
@@ -76,12 +81,13 @@ async function fetchTGitThreads(enc: string, mrGlobalId: number, commentMarker?:
       throw new Error(`TGit API error ${resp.status}`);
     }
 
-    const raw = (await resp.json()) as TGitNote[];
+    const listed: JsonValue = await resp.json();
 
-    if (!Array.isArray(raw)) {
+    if (!Array.isArray(listed)) {
       throw new Error('TGit API returned no note list');
     }
 
+    const raw = z.array(TGitNoteSchema).parse(listed);
     notes.push(...raw);
 
     if (raw.length < 100) break;
@@ -139,13 +145,15 @@ export async function fetchTGitMR(url: string, opts: MRFetchOptions = {}): Promi
     throw new Error(`TGit API 返回错误 ${resp.status}：${await resp.text()}`);
   }
 
-  const mrList = await resp.json() as TGitMR[];
+  const mrList: JsonValue = await resp.json();
 
   if (!Array.isArray(mrList)) {
     throw new Error(`TGit API 返回了非预期的响应（期望 MR 列表）：${JSON.stringify(mrList).slice(0, 200)}`);
   }
 
-  const mr = mrList.find((m) => String(m.iid) === mrIid);
+  // An entry that is no readable MR is skipped, as one with another iid is.
+  const mr = z.array(TGitMRSchema.nullable().catch(null)).parse(mrList)
+    .find((m) => m !== null && String(m.iid) === mrIid);
 
   if (!mr) {
     throw new Error(`TGit MR !${mrIid} 不存在`);
@@ -158,14 +166,14 @@ export async function fetchTGitMR(url: string, opts: MRFetchOptions = {}): Promi
     const diffResp = await tgitFetch(`/projects/${enc}/merge_request/${mr.id}/changes`);
 
     if (diffResp.ok) {
-      const diffData = await diffResp.json() as TGitChangesResponse;
+      const diffData = TGitChangesResponseSchema.parse(await diffResp.json());
       const fileDiffs = diffData.files ?? diffData.changes ?? [];
       diff = fileDiffs.map((c) => c.diff).join('\n').slice(0, 50000);
     } else {
       log.debug(`TGit MR diff 获取失败（${diffResp.status}），diff 将为空`);
     }
   } catch (err) {
-    log.debug(`TGit MR diff 获取异常，diff 将为空：${(err as Error).message}`);
+    log.debug(`TGit MR diff 获取异常，diff 将为空：${err instanceof Error ? err.message : String(err)}`);
   }
 
   // ── 3. 获取评审 threads（失败非致命） ─────────────────────
@@ -175,11 +183,11 @@ export async function fetchTGitMR(url: string, opts: MRFetchOptions = {}): Promi
     try {
       discussions = await fetchTGitThreads(enc, mr.id, opts.commentMarker);
     } catch (err) {
-      log.warn(`Review threads not read (${(err as Error).message}); the learning is extracted without them`);
+      log.warn(`Review threads not read (${err instanceof Error ? err.message : String(err)}); the learning is extracted without them`);
     }
   }
 
-  return {
+  const data: MRData = {
     title: mr.title,
     description: mr.description ?? '',
     author: mr.author?.username,
@@ -187,6 +195,9 @@ export async function fetchTGitMR(url: string, opts: MRFetchOptions = {}): Promi
     commits: [],
     diff,
     url,
-    ...(discussions ? { discussions } : {}),
   };
+
+  if (discussions) data.discussions = discussions;
+
+  return data;
 }

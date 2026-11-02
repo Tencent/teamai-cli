@@ -1,3 +1,5 @@
+import { z } from 'zod';
+import type { JsonValue } from '../../types.js';
 import type { OrgRepoInfo } from '../types.js';
 import { getTGitToken, tgitAuthHeaders } from './rest-auth.js';
 import { log } from '../../utils/logger.js';
@@ -9,17 +11,25 @@ const DEFAULT_MAX_REPOS = 200;
 // 响应体最大 50 MB，防止恶意服务器返回超大响应导致 OOM
 const MAX_RESPONSE_BYTES = 50 * 1024 * 1024;
 
-interface TgitProjectApiItem {
-    id: number;
-    name: string;
-    path_with_namespace: string;
-    description?: string | null;
-    http_url_to_repo: string;
-    default_branch?: string | null;
-    archived?: boolean;
-    last_activity_at?: string;
-    star_count?: number;
-}
+/** A project of a TGit listing. An optional field of another type reads as absent. */
+const TgitProjectApiItemSchema = z.object({
+    id: z.number(),
+    name: z.string(),
+    path_with_namespace: z.string(),
+    description: z.string().nullish().catch(undefined),
+    http_url_to_repo: z.string(),
+    default_branch: z.string().nullish().catch(undefined),
+    archived: z.boolean().optional().catch(undefined),
+    last_activity_at: z.string().optional().catch(undefined),
+    star_count: z.number().optional().catch(undefined),
+});
+
+type TgitProjectApiItem = z.infer<typeof TgitProjectApiItemSchema>;
+
+/** A group's projects as TGit returns them; a `projects` that is no list of projects reads as absent. */
+const TgitGroupSchema = z.object({
+    projects: z.array(TgitProjectApiItemSchema).optional().catch(undefined),
+});
 
 /**
  * 将工蜂 API 返回的 project 条目映射为 OrgRepoInfo。
@@ -114,9 +124,11 @@ export async function gfListOrgRepos(
         }
 
         const bodyText = Buffer.concat(chunks).toString('utf-8');
-        const items = JSON.parse(bodyText) as TgitProjectApiItem[];
+        // JSON.parse returns `any`; what it builds is a JsonValue by construction.
+        const listed: JsonValue = JSON.parse(bodyText);
 
-        if (!Array.isArray(items) || items.length === 0) break;
+        if (!Array.isArray(listed) || listed.length === 0) break;
+        const items = z.array(TgitProjectApiItemSchema).parse(listed);
 
         for (const item of items) {
             collected.push(mapItem(item));
@@ -166,9 +178,9 @@ export async function gfListOrgRepos(
         }
 
         const bodyText = Buffer.concat(chunks).toString('utf-8');
-        const groupData = JSON.parse(bodyText) as { projects?: TgitProjectApiItem[] };
+        const groupData = TgitGroupSchema.parse(JSON.parse(bodyText));
 
-        if (groupData.projects && Array.isArray(groupData.projects)) {
+        if (groupData.projects) {
             for (const item of groupData.projects) {
                 collected.push(mapItem(item));
 

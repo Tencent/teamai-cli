@@ -1,4 +1,4 @@
-import { execSync, spawnSync } from 'node:child_process';
+import { execSync, spawnSync, type SpawnSyncOptions, type SpawnSyncOptionsWithStringEncoding } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -37,6 +37,13 @@ function shellQuote(s: string): string {
 
 // ─── Core helpers ────────────────────────────────────────
 
+/** What a gf run printed and how it exited. */
+export interface GfExecResult {
+  stdout: string;
+  stderr: string;
+  status: number;
+}
+
 /**
  * Execute a gf CLI command.
  * gf launcher is a bash script, so we wrap with `bash -c` for compatibility.
@@ -45,7 +52,7 @@ function shellQuote(s: string): string {
 export function gfExec(
   args: string[],
   options?: { inheritStdio?: boolean; cwd?: string; timeoutMs?: number },
-): { stdout: string; stderr: string; status: number } {
+): GfExecResult {
   const gfPath = getGfPath();
   // Shell-quote every token (including the binary path) so values such as repo
   // paths, branch names, titles, and descriptions cannot inject shell
@@ -55,23 +62,27 @@ export function gfExec(
   log.debug(`gf exec: ${cmd}`);
 
   if (options?.inheritStdio) {
-    const result = spawnSync('bash', ['-c', cmd], {
+    const inherited: SpawnSyncOptions = {
       stdio: 'inherit',
       env: { ...process.env },
       cwd: options.cwd,
-      ...(options.timeoutMs ? { timeout: options.timeoutMs } : {}),
-    });
+    };
+
+    if (options.timeoutMs) inherited.timeout = options.timeoutMs;
+    const result = spawnSync('bash', ['-c', cmd], inherited);
 
     return { stdout: '', stderr: '', status: result.status ?? 1 };
   }
 
-  const result = spawnSync('bash', ['-c', cmd], {
+  const captured: SpawnSyncOptionsWithStringEncoding = {
     env: { ...process.env },
     encoding: 'utf-8',
     maxBuffer: 10 * 1024 * 1024,
     cwd: options?.cwd,
-    ...(options?.timeoutMs ? { timeout: options.timeoutMs } : {}),
-  });
+  };
+
+  if (options?.timeoutMs) captured.timeout = options.timeoutMs;
+  const result = spawnSync('bash', ['-c', cmd], captured);
 
   return {
     stdout: (result.stdout ?? '').toString().trim(),
@@ -247,7 +258,7 @@ export async function ensureGfInstalled(): Promise<void> {
 
     spin.succeed(`gf CLI installed to ${dir}`);
   } catch (e) {
-    spin.fail(`Failed to install gf CLI: ${(e as Error).message}`);
+    spin.fail(`Failed to install gf CLI: ${e instanceof Error ? e.message : String(e)}`);
     log.info(`You can install it manually from: ${url}`);
     log.info(`Extract to: ${dir}`);
     throw e;
@@ -419,6 +430,12 @@ export function gfGetOAuthToken(): string | null {
   return null;
 }
 
+/** The body of TGit's create-project request. */
+interface TGitCreateProjectBody {
+  name: string;
+  namespace_id?: number;
+}
+
 /**
  * Create a repo on TGit using the REST API.
  * Authentication (token + scheme) is handled by {@link tgitFetch}.
@@ -435,13 +452,14 @@ export async function gfCreateRepo(owner: string, repo: string): Promise<void> {
     throw new Error(`Failed to look up namespace "${owner}": ${nsResp.status}`);
   }
 
-  const namespaces = (await nsResp.json()) as Array<{ id: number; path: string; full_path?: string }>;
+  const namespaces = z.array(z.object({ id: z.number(), path: z.string(), full_path: z.string().nullish() }))
+    .parse(await nsResp.json());
 
   const ns = namespaces.find(
     (n) => (n.full_path ?? n.path).toLowerCase() === owner.toLowerCase(),
   );
 
-  const body: Record<string, unknown> = { name: repo };
+  const body: TGitCreateProjectBody = { name: repo };
 
   if (ns) {
     body.namespace_id = ns.id;
@@ -571,7 +589,7 @@ export function gfMrCreate(opts: GfMrCreateOptions): string {
     args.push('-r', opts.reviewers.join(','));
   }
 
-  const result = gfExec(args, { cwd: opts.cwd, ...(opts.spawnTimeoutMs ? { timeoutMs: opts.spawnTimeoutMs } : {}) });
+  const result = gfExec(args, { cwd: opts.cwd, timeoutMs: opts.spawnTimeoutMs });
 
   if (result.status !== 0) {
     const errMsg = result.stderr || result.stdout;

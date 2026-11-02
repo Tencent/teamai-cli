@@ -1,4 +1,5 @@
-import { type MRData, type MRFetchOptions, type MRThread } from '../../types.js';
+import { z } from 'zod';
+import { type JsonValue, type MRData, type MRFetchOptions, type MRThread } from '../../types.js';
 import { log } from '../../utils/logger.js';
 import { pruneThreads } from '../mr-threads.js';
 import { getGitLabToken, gitlabBaseUrl } from './gitlab-api.js';
@@ -94,51 +95,55 @@ function hostMatchesConfigured(urlHost: string): boolean {
   return normalizeHost(urlHost) === normalizeHost(resolveGitLabHost());
 }
 
+const GitLabUserSchema = z.object({ username: z.string() });
+
 /** GitLab REST API 返回的 MR 元信息（仅使用的字段） */
-interface GitLabMR {
-  title: string;
-  description: string | null;
-  author: { username: string };
-  merged_at?: string | null;
-}
+const GitLabMRSchema = z.object({
+  title: z.string(),
+  description: z.string().nullish(),
+  author: GitLabUserSchema.nullish(),
+  merged_at: z.string().nullish(),
+});
 
 /** GitLab REST API 返回的 commit（仅使用的字段） */
-interface GitLabCommit {
-  id: string;
-  title: string;
-}
+const GitLabCommitsSchema = z.array(z.object({
+  id: z.string(),
+  title: z.string(),
+}));
 
 /** /changes 接口的 diff 载荷：`changes` 数组，每项含 `diff` 字段 */
-interface GitLabChangesResponse {
-  changes?: Array<{ diff: string }>;
-}
+const GitLabChangesResponseSchema = z.object({
+  changes: z.array(z.object({ diff: z.string() })).nullish(),
+});
 
 /** 鉴权头（GitLab PAT 用 PRIVATE-TOKEN）。 */
-function authHeaders(token: string): Record<string, string> {
+function authHeaders(token: string) {
   return { 'PRIVATE-TOKEN': token, 'Accept': 'application/json' };
 }
 
 /** A note of a `/discussions` entry (the fields read). */
-interface GitLabDiscussionNote {
-  body: string;
-  author?: { username: string };
+const GitLabDiscussionNoteSchema = z.object({
+  body: z.string(),
+  author: GitLabUserSchema.nullish(),
   /** A system note ("changed the description", "approved"), not a review remark. */
-  system?: boolean;
-  resolvable?: boolean;
-  resolved?: boolean;
+  system: z.boolean().nullish(),
+  resolvable: z.boolean().nullish(),
+  resolved: z.boolean().nullish(),
   /** Set for a diff comment: the file and line the thread is anchored to. */
-  position?: {
-    new_path?: string | null;
-    old_path?: string | null;
-    new_line?: number | null;
-    old_line?: number | null;
-  };
-}
+  position: z.object({
+    new_path: z.string().nullish(),
+    old_path: z.string().nullish(),
+    new_line: z.number().nullish(),
+    old_line: z.number().nullish(),
+  }).nullish(),
+});
 
-/** One entry of `GET /projects/:id/merge_requests/:iid/discussions`. */
-interface GitLabDiscussion {
-  notes?: GitLabDiscussionNote[];
-}
+/** The entries of `GET /projects/:id/merge_requests/:iid/discussions`. */
+const GitLabDiscussionsSchema = z.array(z.object({
+  notes: z.array(GitLabDiscussionNoteSchema).nullish(),
+}));
+
+type GitLabDiscussion = z.infer<typeof GitLabDiscussionsSchema>[number];
 
 /** Pages of 100 discussions read at most; an MR with more review is unusual. */
 const MAX_DISCUSSION_PAGES = 20;
@@ -182,7 +187,7 @@ async function fetchGitLabDiscussions(
       throw new Error(`GitLab API error ${resp.status}`);
     }
 
-    const raw = (await resp.json()) as GitLabDiscussion[];
+    const raw = GitLabDiscussionsSchema.parse(await resp.json());
     threads.push(...raw.map(toThread));
 
     if (!resp.headers.get('x-next-page')) break;
@@ -230,13 +235,13 @@ export async function fetchGitLabMR(url: string, opts: MRFetchOptions = {}): Pro
     throw new Error(`GitLab API error ${resp.status}: ${await resp.text()}`);
   }
 
-  const mr = (await resp.json()) as GitLabMR;
+  const mr = GitLabMRSchema.parse(await resp.json());
 
   // ── 2. 获取提交列表（失败非致命） ──────────────────────────
   let commits: Array<{ hash: string; message: string }> = [];
 
   try {
-    const fetched: GitLabCommit[] = [];
+    const fetched: z.infer<typeof GitLabCommitsSchema> = [];
     let page = 1;
 
     while (page <= MAX_COMMIT_PAGES) {
@@ -248,9 +253,10 @@ export async function fetchGitLabMR(url: string, opts: MRFetchOptions = {}): Pro
       );
 
       if (!commitsResp.ok) throw new Error(`GitLab API error ${commitsResp.status}`);
-      const raw = (await commitsResp.json()) as GitLabCommit[];
+      const listed: JsonValue = await commitsResp.json();
 
-      if (!Array.isArray(raw)) throw new Error('GitLab API returned no commit list');
+      if (!Array.isArray(listed)) throw new Error('GitLab API returned no commit list');
+      const raw = GitLabCommitsSchema.parse(listed);
       fetched.push(...raw);
       const next = commitsResp.headers.get('x-next-page');
 
@@ -263,7 +269,7 @@ export async function fetchGitLabMR(url: string, opts: MRFetchOptions = {}): Pro
     if (page > MAX_COMMIT_PAGES) throw new Error('GitLab commit page limit reached');
     commits = fetched.map((c) => ({ hash: c.id, message: c.title }));
   } catch (err) {
-    log.debug(`GitLab MR commits 获取异常，commits 将为空：${(err as Error).message}`);
+    log.debug(`GitLab MR commits 获取异常，commits 将为空：${err instanceof Error ? err.message : String(err)}`);
   }
 
   // ── 3. 获取 diff（截断至 50KB，失败非致命） ────────────────
@@ -276,13 +282,13 @@ export async function fetchGitLabMR(url: string, opts: MRFetchOptions = {}): Pro
     );
 
     if (diffResp.ok) {
-      const diffData = (await diffResp.json()) as GitLabChangesResponse;
+      const diffData = GitLabChangesResponseSchema.parse(await diffResp.json());
       diff = (diffData.changes ?? []).map((c) => c.diff).join('\n').slice(0, 50000);
     } else {
       log.debug(`GitLab MR diff 获取失败（${diffResp.status}），diff 将为空`);
     }
   } catch (err) {
-    log.debug(`GitLab MR diff 获取异常，diff 将为空：${(err as Error).message}`);
+    log.debug(`GitLab MR diff 获取异常，diff 将为空：${err instanceof Error ? err.message : String(err)}`);
   }
 
   // ── 4. 获取评审 threads（失败非致命） ─────────────────────
@@ -292,11 +298,11 @@ export async function fetchGitLabMR(url: string, opts: MRFetchOptions = {}): Pro
     try {
       discussions = await fetchGitLabDiscussions(apiBase, enc, mrIid, headers, opts.commentMarker);
     } catch (err) {
-      log.warn(`Review threads not read (${(err as Error).message}); the learning is extracted without them`);
+      log.warn(`Review threads not read (${err instanceof Error ? err.message : String(err)}); the learning is extracted without them`);
     }
   }
 
-  return {
+  const data: MRData = {
     title: mr.title,
     description: mr.description ?? '',
     author: mr.author?.username,
@@ -304,6 +310,9 @@ export async function fetchGitLabMR(url: string, opts: MRFetchOptions = {}): Pro
     commits,
     diff,
     url,
-    ...(discussions ? { discussions } : {}),
   };
+
+  if (discussions) data.discussions = discussions;
+
+  return data;
 }

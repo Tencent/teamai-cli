@@ -1,3 +1,5 @@
+import { z } from 'zod';
+import type { JsonValue } from '../../types.js';
 import type { OrgRepoInfo } from '../types.js';
 import { getGitLabToken, gitlabApiBase } from './gitlab-api.js';
 
@@ -7,17 +9,20 @@ const DEFAULT_PER_PAGE = 100;
 const DEFAULT_MAX_REPOS = 200;
 const REQUEST_TIMEOUT_MS = 30_000;
 
-interface GitLabProjectApiItem {
-  id: number;
-  name: string;
-  path_with_namespace: string;
-  description?: string | null;
-  http_url_to_repo: string;
-  default_branch?: string | null;
-  archived?: boolean;
-  last_activity_at?: string;
-  star_count?: number;
-}
+/** A project of a GitLab group listing. An optional field of another type reads as absent. */
+const GitLabProjectApiItemSchema = z.object({
+  id: z.number(),
+  name: z.string(),
+  path_with_namespace: z.string(),
+  description: z.string().nullish().catch(undefined),
+  http_url_to_repo: z.string(),
+  default_branch: z.string().nullish().catch(undefined),
+  archived: z.boolean().optional().catch(undefined),
+  last_activity_at: z.string().optional().catch(undefined),
+  star_count: z.number().optional().catch(undefined),
+});
+
+type GitLabProjectApiItem = z.infer<typeof GitLabProjectApiItemSchema>;
 
 /** 将 GitLab API 返回的 project 条目映射为 OrgRepoInfo。 */
 function mapItem(item: GitLabProjectApiItem): OrgRepoInfo {
@@ -110,15 +115,20 @@ export async function gitlabListOrgRepos(
     const bodyText = Buffer.concat(chunks).toString('utf-8').trim();
 
     if (!bodyText) break;
-    let items: GitLabProjectApiItem[];
+    let listed: JsonValue;
 
     try {
-      items = JSON.parse(bodyText) as GitLabProjectApiItem[];
+      // JSON.parse returns `any`; what it builds is a JsonValue by construction.
+      listed = JSON.parse(bodyText);
     } catch {
       throw new Error(`GitLab API returned a malformed project list for group ${group}`);
     }
 
-    if (!Array.isArray(items) || items.length === 0) break;
+    if (!Array.isArray(listed) || listed.length === 0) break;
+    const parsed = z.array(GitLabProjectApiItemSchema).safeParse(listed);
+
+    if (!parsed.success) throw new Error(`GitLab API returned a malformed project list for group ${group}`);
+    const items = parsed.data;
 
     for (const item of items) {
       collected.push(mapItem(item));

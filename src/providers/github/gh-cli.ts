@@ -1,6 +1,7 @@
-import { spawnSync } from 'node:child_process';
+import { spawnSync, type SpawnSyncOptions, type SpawnSyncOptionsWithStringEncoding } from 'node:child_process';
 import crossSpawn from 'cross-spawn';
 import { z } from 'zod';
+import type { JsonValue } from '../../types.js';
 import { log } from '../../utils/logger.js';
 import { resolveCliPath } from '../../utils/cli-path.js';
 import { isInteractive } from '../../utils/prompt.js';
@@ -45,6 +46,15 @@ function hitTimeout(result: { error?: Error | null }): boolean {
   return error instanceof Error && 'code' in error && error.code === 'ETIMEDOUT';
 }
 
+/** What a gh run printed and how it exited. */
+export interface GhExecResult {
+  stdout: string;
+  stderr: string;
+  status: number;
+  /** Set when the deadline fired. */
+  timedOut?: boolean;
+}
+
 /**
  * Execute a gh CLI command.
  * Returns { stdout, stderr, status }, plus `timedOut` when a deadline fired.
@@ -64,7 +74,7 @@ export function ghExec(
     timeoutMs?: number;
     maxBuffer?: number;
   },
-): { stdout: string; stderr: string; status: number; timedOut?: boolean } {
+): GhExecResult {
   const ghPath = getGhPath();
 
   if (!ghPath) {
@@ -76,35 +86,40 @@ export function ghExec(
   log.debug(`gh exec: ${ghPath} ${args.join(' ')}`);
 
   if (options?.inheritStdio) {
-    const result = crossSpawn.sync(ghPath, args, {
+    const inherited: SpawnSyncOptions = {
       stdio: 'inherit',
       env: { ...process.env, ...options.env },
       cwd: options.cwd,
-      ...(options.timeoutMs ? { timeout: options.timeoutMs } : {}),
-    });
-
-    return {
-      stdout: '',
-      stderr: '',
-      status: result.status ?? 1,
-      ...(hitTimeout(result) ? { timedOut: true } : {}),
     };
+
+    if (options.timeoutMs) inherited.timeout = options.timeoutMs;
+    const result = crossSpawn.sync(ghPath, args, inherited);
+    const ran: GhExecResult = { stdout: '', stderr: '', status: result.status ?? 1 };
+
+    if (hitTimeout(result)) ran.timedOut = true;
+
+    return ran;
   }
 
-  const result = crossSpawn.sync(ghPath, args, {
+  const captured: SpawnSyncOptionsWithStringEncoding = {
     env: { ...process.env, ...options?.env },
     encoding: 'utf-8',
     maxBuffer: options?.maxBuffer ?? 10 * 1024 * 1024,
     cwd: options?.cwd,
-    ...(options?.timeoutMs ? { timeout: options.timeoutMs } : {}),
-  });
+  };
 
-  return {
+  if (options?.timeoutMs) captured.timeout = options.timeoutMs;
+  const result = crossSpawn.sync(ghPath, args, captured);
+
+  const ran: GhExecResult = {
     stdout: (result.stdout ?? '').toString().trim(),
     stderr: (result.stderr ?? '').toString().trim(),
     status: result.status ?? 1,
-    ...(hitTimeout(result) ? { timedOut: true } : {}),
   };
+
+  if (hitTimeout(result)) ran.timedOut = true;
+
+  return ran;
 }
 
 // ─── Installation guidance ───────────────────────────────
@@ -203,9 +218,9 @@ export async function ghFetchLogin(token: string): Promise<string | null> {
     });
 
     if (!resp.ok) return null;
-    const data = (await resp.json()) as { login?: string };
+    const data = z.object({ login: z.string().optional().catch(undefined) }).safeParse(await resp.json());
 
-    return data.login ?? null;
+    return data.data?.login ?? null;
   } catch {
     return null;
   }
@@ -589,7 +604,7 @@ function ghPrCreateViaCli(opts: GhPrCreateOptions): string {
     args.push('-r', opts.reviewers.join(','));
   }
 
-  const result = ghExec(args, { cwd: opts.cwd, ...(opts.spawnTimeoutMs ? { timeoutMs: opts.spawnTimeoutMs } : {}) });
+  const result = ghExec(args, { cwd: opts.cwd, timeoutMs: opts.spawnTimeoutMs });
 
   if (result.status !== 0) {
     const errMsg = result.stderr || result.stdout;
@@ -622,7 +637,7 @@ async function ghPrCreateViaApi(opts: GhPrCreateOptions): Promise<string> {
     {
       method: 'POST',
       headers: authHeaders,
-      ...(opts.spawnTimeoutMs ? { signal: AbortSignal.timeout(opts.spawnTimeoutMs) } : {}),
+      signal: opts.spawnTimeoutMs ? AbortSignal.timeout(opts.spawnTimeoutMs) : undefined,
       body: JSON.stringify({
         title: opts.title,
         body: opts.description ?? opts.title,
@@ -637,7 +652,11 @@ async function ghPrCreateViaApi(opts: GhPrCreateOptions): Promise<string> {
     throw new Error(`Failed to create PR: ${resp.status} ${errBody}`);
   }
 
-  const pr = (await resp.json()) as { html_url?: string; number?: number };
+  // A field of another type, or a body that is no object, reads as absent: no html_url is reported below.
+  const pr = z.object({
+    html_url: z.string().optional().catch(undefined),
+    number: z.number().optional().catch(undefined),
+  }).catch({}).parse(await resp.json());
 
   // Request reviewers in a separate call (GitHub REST API design)
   if (opts.reviewers && opts.reviewers.length > 0 && pr.number) {
@@ -688,7 +707,7 @@ export async function ghFindOpenPull({ repo, source, target, timeoutMs }: PullRe
     && ours(pull.head.repo?.full_name) && ours(pull.base.repo.full_name))?.html_url;
 }
 
-async function ghApiGet(path: string, timeoutMs: number): Promise<unknown> {
+async function ghApiGet(path: string, timeoutMs: number): Promise<JsonValue> {
   const ghPath = getGhPath();
 
   if (ghPath) {

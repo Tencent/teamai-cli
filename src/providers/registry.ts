@@ -30,13 +30,13 @@ import { probeSelfHostedGitLab } from './gitlab/probe.js';
 //
 
 /** Known host → provider name mapping. */
-const HOST_MAP: Record<string, string> = {
-  'github.com': 'github',
-  'git.woa.com': 'tgit',
-  'cnb.cool': 'cnb',
-  'gitlab.com': 'gitlab',
-  'gitcode.com': 'gitcode',
-};
+const HOST_MAP = new Map([
+  ['github.com', 'github'],
+  ['git.woa.com', 'tgit'],
+  ['cnb.cool', 'cnb'],
+  ['gitlab.com', 'gitlab'],
+  ['gitcode.com', 'gitcode'],
+]);
 
 /** Providers we are willing to accept as a default override. */
 const KNOWN_PROVIDERS = new Set(['github', 'tgit', 'cnb', 'gitlab', 'gitcode']);
@@ -145,7 +145,7 @@ export async function detectProviderForInit(input: string): Promise<string> {
  * provider for arbitrary hosts.
  */
 function resolveHostProvider(host: string): string {
-  return HOST_MAP[host] ?? detectSelfHostedGitLabHost(host) ?? 'git';
+  return HOST_MAP.get(host) ?? detectSelfHostedGitLabHost(host) ?? 'git';
 }
 
 /**
@@ -198,14 +198,14 @@ function configuredGitLabHosts(): string[] {
 // ─── Provider Factory ────────────────────────────────────
 
 /** Registry of available providers. */
-const PROVIDERS: Record<string, () => GitProvider> = {
-  tgit: () => new TGitProvider(),
-  github: () => new GitHubProvider(),
-  cnb: () => new CNBProvider(),
-  gitlab: () => new GitLabProvider(),
-  gitcode: () => new GitCodeProvider(),
-  git: () => new GenericGitProvider(),
-};
+const PROVIDERS = new Map<string, () => GitProvider>([
+  ['tgit', () => new TGitProvider()],
+  ['github', () => new GitHubProvider()],
+  ['cnb', () => new CNBProvider()],
+  ['gitlab', () => new GitLabProvider()],
+  ['gitcode', () => new GitCodeProvider()],
+  ['git', () => new GenericGitProvider()],
+]);
 
 /**
  * Get a provider instance by name.
@@ -213,11 +213,11 @@ const PROVIDERS: Record<string, () => GitProvider> = {
  */
 export function getProvider(providerName?: string): GitProvider {
   const name = providerName ?? getDefaultProvider();
-  const factory = PROVIDERS[name];
+  const factory = PROVIDERS.get(name);
 
   if (!factory) {
     throw new Error(
-      `Unknown git provider: "${name}". Available: ${Object.keys(PROVIDERS).join(', ')}`,
+      `Unknown git provider: "${name}". Available: ${[...PROVIDERS.keys()].join(', ')}`,
     );
   }
 

@@ -122,7 +122,7 @@ function requireToken(): string {
   return token;
 }
 
-function authHeaders(token: string): Record<string, string> {
+function authHeaders(token: string) {
   return {
     'PRIVATE-TOKEN': token,
     'Content-Type': 'application/json',
@@ -153,9 +153,9 @@ export async function gitlabWhoami(): Promise<string | null> {
     });
 
     if (!resp.ok) return null;
-    const data = (await resp.json()) as { username?: string };
+    const data = z.object({ username: z.string().optional().catch(undefined) }).safeParse(await resp.json());
 
-    return data.username ?? null;
+    return data.data?.username ?? null;
   } catch {
     return null;
   }
@@ -270,9 +270,17 @@ async function resolveNamespaceId(owner: string, token: string): Promise<number 
   );
 
   if (!resp.ok) return null;
-  const group = (await resp.json()) as { id?: number };
+  const group = z.object({ id: z.number().optional().catch(undefined) }).safeParse(await resp.json());
 
-  return group.id ?? null;
+  return group.data?.id ?? null;
+}
+
+/** The body of GitLab's create-project request. */
+interface GitLabCreateProjectBody {
+  name: string;
+  path: string;
+  visibility: 'private';
+  namespace_id?: number;
 }
 
 /**
@@ -282,7 +290,7 @@ async function resolveNamespaceId(owner: string, token: string): Promise<number 
 export async function gitlabCreateRepo(owner: string, repo: string): Promise<void> {
   const token = requireToken();
   const login = await gitlabWhoami();
-  const body: Record<string, unknown> = { name: repo, path: repo, visibility: 'private' };
+  const body: GitLabCreateProjectBody = { name: repo, path: repo, visibility: 'private' };
 
   if (!login || login.toLowerCase() !== owner.toLowerCase()) {
     const namespaceId = await resolveNamespaceId(owner, token);
@@ -333,9 +341,15 @@ export interface GitLabMrCreateOptions {
   spawnTimeoutMs?: number;
 }
 
-interface GitLabUser {
-  id: number;
-  username: string;
+const GitLabUsersSchema = z.array(z.object({ id: z.number(), username: z.string() }));
+
+/** The body of GitLab's create-merge-request request. */
+interface GitLabMrCreateBody {
+  source_branch: string;
+  target_branch: string;
+  title: string;
+  description?: string;
+  reviewer_ids?: number[];
 }
 
 /** Resolve reviewer usernames to GitLab user IDs (best-effort, skips misses). */
@@ -355,7 +369,7 @@ async function resolveReviewerIds(
       );
 
       if (!resp.ok) continue;
-      const users = (await resp.json()) as GitLabUser[];
+      const users = GitLabUsersSchema.parse(await resp.json());
       const exact = users.find((u) => u.username.toLowerCase() === username.toLowerCase());
 
       if (exact) ids.push(exact.id);
@@ -379,7 +393,7 @@ export async function gitlabMrCreate(opts: GitLabMrCreateOptions): Promise<strin
   // An expired lookup must not continue in the background and post a late MR.
   const signal = AbortSignal.timeout(opts.spawnTimeoutMs ?? 30_000);
 
-  const body: Record<string, unknown> = {
+  const body: GitLabMrCreateBody = {
     source_branch: opts.source,
     target_branch: opts.target,
     title: opts.title,
@@ -404,7 +418,11 @@ export async function gitlabMrCreate(opts: GitLabMrCreateOptions): Promise<strin
     throw new Error(`Failed to create GitLab MR: ${resp.status} ${errBody}`);
   }
 
-  const mr = (await resp.json()) as { web_url?: string; iid?: number };
+  // A field of another type, or a body that is no object, reads as absent.
+  const mr = z.object({
+    web_url: z.string().optional().catch(undefined),
+    iid: z.number().optional().catch(undefined),
+  }).catch({}).parse(await resp.json());
 
   if (mr.web_url) return mr.web_url;
 

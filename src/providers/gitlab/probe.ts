@@ -1,3 +1,5 @@
+import { z } from 'zod';
+
 const PROBE_TIMEOUT_MS = 3_000;
 const MAX_RESPONSE_BYTES = 128 * 1024;
 
@@ -24,16 +26,16 @@ function webOrigin(input: string): string | null {
   }
 }
 
+/** GitLab's `x-gitlab-meta` header: a JSON object with a non-empty `correlation_id` and `version`. */
+const GitLabMetaSchema = z.looseObject({ correlation_id: z.string().min(1), version: z.string().min(1) });
+
 function hasGitLabHeader(response: Response): boolean {
   const value = response.headers.get('x-gitlab-meta');
 
   if (!value) return false;
 
   try {
-    const meta = JSON.parse(value);
-
-    return typeof meta?.correlation_id === 'string' && meta.correlation_id.length > 0
-      && typeof meta?.version === 'string' && meta.version.length > 0;
+    return GitLabMetaSchema.safeParse(JSON.parse(value)).success;
   } catch {
     return false;
   }
