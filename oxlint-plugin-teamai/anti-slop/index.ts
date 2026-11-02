@@ -17,7 +17,7 @@ import { noWidenThenAssertRule } from './rules/no-widen-then-assert.ts';
 import { requireReadableSpacingRule } from './rules/require-readable-spacing.ts';
 import { requireSafetyCommentForTypeAssertionRule } from './rules/require-safety-comment-for-type-assertion.ts';
 
-/** The generic rules of dmmulroy/anti-slop, under the names lint reports as `teamai/<name>`. */
+/** The generic rules of anti-slop, under the names lint reports as `teamai/<name>`. */
 export const antiSlopRules = {
   'no-array-filter-map': noArrayFilterMapRule,
   'no-chained-type-assertions': noChainedTypeAssertionsRule,

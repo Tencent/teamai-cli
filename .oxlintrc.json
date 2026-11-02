@@ -1,7 +1,7 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
   "jsPlugins": ["./oxlint-plugin-teamai/index.js"],
-  // Vendored unchanged from dmmulroy/anti-slop, and linted there.
+  // Vendored unchanged from anti-slop, and linted there.
   "ignorePatterns": [
     "oxlint-plugin-teamai/anti-slop/rules/**",
     "oxlint-plugin-teamai/anti-slop/shared/**",
@@ -91,7 +91,7 @@
     "teamai/yaml-parse": "error",
     // A reducer that copies its accumulator each step is quadratic.
     "oxc/no-accumulating-spread": "warn",
-    // The generic rules of dmmulroy/anti-slop (#828), vendored in
+    // The generic rules of anti-slop (#828), vendored in
     // oxlint-plugin-teamai/anti-slop. Production code only: see overrides.
     "teamai/no-array-filter-map": "warn",
     "teamai/no-chained-type-assertions": "warn",

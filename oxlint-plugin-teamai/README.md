@@ -20,7 +20,7 @@ This repository's own lint rules. `npm run lint` loads them through `jsPlugins` 
 | `teamai/no-low-value-comments` | A comment that only repeats the name below it (`// State` above `const state`), commented-out code, a `TODO` with no issue, or a JSDoc type in TypeScript. Issue numbers and `// ───` dividers stay allowed. |
 | `teamai/suppression-reason` | An `oxlint-disable` / `eslint-disable`, or a `@ts-expect-error` / `@ts-ignore` / `@ts-nocheck`, that says nothing about why. End it with `-- reason` (after a TypeScript directive, just the reason), or put the reason in a comment on the line above. |
 
-The plugin also carries the generic rules of [dmmulroy/anti-slop](https://github.com/dmmulroy/anti-slop), vendored in `anti-slop/` (`anti-slop/UPSTREAM.md` says from where). They report as `teamai/<rule>` and hold production code only; tests are exempt. Each message names its fix, for example:
+The plugin also carries the generic rules of anti-slop, vendored in `anti-slop/` (`anti-slop/UPSTREAM.md` says from where). They report as `teamai/<rule>` and hold production code only; tests are exempt. Each message names its fix, for example:
 
 | You wrote | `npm run lint` says | Fix |
 |---|---|---|
