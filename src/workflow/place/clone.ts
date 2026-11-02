@@ -587,10 +587,14 @@ async function installTeam(input: {
     }
   }
 
-  // Without a teamai.yaml the pull delivers nothing, which the check of a role's delivery below reports.
   const teamConfig = await loadTeamConfig(teamClone);
 
-  if (role !== undefined && teamConfig) {
+  if (role !== undefined) {
+    // Without a teamai.yaml that parses, where the clone's knowledge would land is unknown, so nothing is delivered.
+    if (!teamConfig) {
+      return unavailable(`Role ${role} was not delivered into the clone for step "${lease.step}": teamai.yaml at team revision ${revision} is missing or does not parse, so where the clone's knowledge would land is unknown. Fix teamai.yaml at that revision, or run the step on another revision.`);
+    }
+
     const refused = await roleCopyRefusal({ team: teamConfig, install: config, role });
 
     if (refused) return refused;

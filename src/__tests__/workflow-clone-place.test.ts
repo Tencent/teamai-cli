@@ -249,6 +249,17 @@ describe('a clone place', () => {
     expect(typeof run === 'object' && run.steps.find((step) => step.id === 'review.look')).toMatchObject({ status: 'failed', failure: { code: 'role_unavailable' } });
   });
 
+  it("fails a step in a clone that runs with a role when the pinned team revision's teamai.yaml does not parse, before the clone's own pull", async () => {
+    const { config, runId, revision } = await roleRun({ committed: ['review'], declared: ['review'], committedTeamYaml: 'team: [unclosed\n' });
+    childCli.entry = path.join(path.dirname(config.repo.localPath), 'reached-teamai.mjs');
+    fs.writeFileSync(childCli.entry, "process.stderr.write('the pull ran'); process.exit(3);\n");
+    const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
+
+    const answer = await client.next(runId, { driver: { ...driver, can: { ...can, role: true } }, running: [] }, { prepare: true });
+
+    expect(answer).toMatchObject({ error: { code: 'role_unavailable', message: `Role review was not delivered into the clone for step "review.look": teamai.yaml at team revision ${revision} is missing or does not parse, so where the clone's knowledge would land is unknown. Fix teamai.yaml at that revision, or run the step on another revision.` } });
+  });
+
   it.each([
     {
       write: { kind: 'busy', lock: '/data/checkout-roles.json.lock' } as const,
@@ -530,8 +541,9 @@ function rolesYaml(ids: readonly string[]): string {
  * A started run of ROLE_CLONE whose clone installs the team at a commit of the team repo: `committed` the roles
  * manifest/roles.yaml declares at that revision, `declared` the roles it declares in the member's team repo now.
  */
-async function roleRun(roles: { committed: readonly string[]; declared: readonly string[] } = { committed: ['review'], declared: ['review'] }): Promise<{ config: LocalConfig; runId: string; revision: string }> {
-  const team = { 'teamai.yaml': 'team: acme\nrepo: https://git.example.com/acme/team.git\nprovider: git\n', 'manifest/roles.yaml': rolesYaml(roles.committed) };
+async function roleRun(roles: { committed: readonly string[]; declared: readonly string[]; committedTeamYaml?: string } = { committed: ['review'], declared: ['review'] }): Promise<{ config: LocalConfig; runId: string; revision: string }> {
+  const teamYaml = 'team: acme\nrepo: https://git.example.com/acme/team.git\nprovider: git\n';
+  const team = { 'teamai.yaml': roles.committedTeamYaml ?? teamYaml, 'manifest/roles.yaml': rolesYaml(roles.committed) };
   const { config, workspace, first } = await fixture(CLONED, {}, team);
   const knowledge = config.repo.localPath;
   git(['init', '-q', '-b', 'main'], knowledge);
@@ -539,6 +551,7 @@ async function roleRun(roles: { committed: readonly string[]; declared: readonly
   git(['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'team'], knowledge);
   const revision = git(['rev-parse', 'HEAD'], knowledge);
   fs.writeFileSync(path.join(knowledge, 'manifest', 'roles.yaml'), rolesYaml(roles.declared));
+  fs.writeFileSync(path.join(knowledge, 'teamai.yaml'), teamYaml);
   fs.writeFileSync(path.join(knowledge, 'workflows', 'build.yaml'), ROLE_CLONE(first).replace('d'.repeat(40), revision));
   await syncWorkflowDefinitions(config);
   const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config), checkout: workspace, base: { ref: 'main', commit: git(['rev-parse', 'HEAD'], workspace) } });
