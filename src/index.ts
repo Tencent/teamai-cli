@@ -230,9 +230,9 @@ program
   .option('--shared', 'Place new resources at the shared root for all roles; cannot combine with --role or --project')
   .option('--branch <name>', 'Push to this destination branch instead of a generated teamai/push branch')
   .option('--file <local file>', 'Push exactly this local file, byte for byte, to the team path --path names, as a pull request. '
-    + 'No other change in the team clone joins it; requires --path')
+    + 'No other change in the team clone joins it; requires --path. Repeatable: each --file goes with the --path in the same position, all in one pull request', (val: string, acc: string[]) => acc.concat(val), [] as string[])
   .option('--path <team path>', 'Where --file goes in the team repo, such as benchmarks/frontend/tasks/pod-startup.yaml or scorers/review.md. '
-    + 'Placed exactly there, never relocated; cannot combine with --skill, --role, --project, --shared, --all or --carried')
+    + 'Placed exactly there, never relocated; cannot combine with --skill, --role, --project, --shared, --all or --carried. Repeatable, once per --file', (val: string, acc: string[]) => acc.concat(val), [] as string[])
   .option('--carried <path@blob>', 'Override the stop for a push that would overwrite or delete a placed agent file a teammate changed. '
     + 'Use it only after carrying that change into your root copy, with the value the stop printed; '
     + 'a later team edit stops the push again. Repeatable', (val: string, acc: string[]) => acc.concat(val), [])
