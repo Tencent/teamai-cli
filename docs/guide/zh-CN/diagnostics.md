@@ -43,6 +43,13 @@ OpenCode hooks 使用 `teamai hooks inject` 或 `teamai pull` 记录的 Node 可
 
 `doctor` 会检查 Hermes 的整个 `SOUL.md`，包括个人内容。Hermes 的 `config.yaml` 中显式设置的 `context_file_max_chars` 是明确上限；未设置时，上限随模型变化，超过最低 20,000 字符会产生提示性警告。请缩短文件或检查上限；`pull` 不会截断你的指令。
 
+在项目中，Hermes 通过 teamai 插件的提示段获得团队指令。所有插件的提示段共享 8,000 字符和 32 段的上限，Hermes 按段 id 顺序填充，放不下的段整段丢弃。其他插件添加哪些段只有运行后才知道，所以 `doctor` 读取 Hermes 在 `logs/agent.log` 中记录的最近一次结果。该日志不记录项目，所以段被丢弃时只给警告：
+
+```text
+  ⚠ Hermes's last logged session took teamai's instructions section
+    → The Hermes session at 2026-11-01 10:22:03 got none of the team instructions: teamai.instructions exceeded the aggregate session budget (8000 chars) and was skipped. Plugin sections share 8,000 characters and 32 sections, filled in id order, and other plugins' sections sorting before teamai.instructions took them first. Disable a plugin you do not need (plugins.disabled in /home/ana/.hermes/config.yaml) or shorten its section, then start a new Hermes session. /home/ana/.hermes/logs/agent.log lists each section Hermes rendered and its size.
+```
+
 Pi 扩展会启动 `teamai pull` 或 `teamai hooks inject` 记录的 Node 可执行文件和 TeamAI 入口。移动或重新安装后，请重新运行其中一个命令并重启 Pi。
 
 Pi 从 0.84.0（`@earendil-works/pi-coding-agent`）起先读 `AGENTS.override.md`，再读 `AGENTS.md`。保留 override 文件时，pull 把团队指令写进 override，更旧的 Pi 读不到：
@@ -56,19 +63,23 @@ Hermes hooks 和指令插件会启动 `teamai hooks inject` 或 `teamai pull` �
 
 ## 工具还没有信任这个项目
 
-有些工具要等你信任项目后才读取项目里的文件，或者要等你批准后才启动项目的 MCP server。`pull` 照常写入文件；`doctor` 读取每个工具自己的结论，在你给出之前一直报失败。
+有些工具要等你信任项目后才读取项目里的文件，或者要等你批准后才启动项目的 MCP server。`pull` 照常写入文件；`doctor` 读取每个工具自己的结论：
 
-新 checkout 第一次 pull 之后：
+- `⚠` 工具还没问过。你第一次在项目里打开它时它会问。`doctor` 仍然通过，所以今天不用的工具不会让你多做什么。
+- `✖` 结论是否：你或某个设置拒绝了，或者 teamai 读不出结论。打开工具也不会改变，所以 `doctor` 报失败。
+
+新 checkout 第一次 pull 之后，装了 Pi 和 Claude Code：
 
 ```text
 $ teamai doctor
-  ✖ Pi trusts this project, so it loads its team skills
+  ⚠ Pi trusts this project, so it loads its team skills
     → /home/ana/work/web-app/.pi/skills holds team skills (release-notes), but Pi loads a project's skills only in a trusted project, and /home/ana/.pi/agent/trust.json has no entry for /home/ana/work/web-app or a folder above it. Start `pi` in /home/ana/work/web-app and choose Trust, or add "/home/ana/work/web-app": true to /home/ana/.pi/agent/trust.json. Until then a headless run (`pi -p`) skips them.
-  ✖ Claude Code approves this project's team MCP servers
+  ⚠ Claude Code approves this project's team MCP servers
     → /home/ana/work/web-app/.mcp.json holds team MCP servers (issues), but Claude Code starts a project's .mcp.json servers in an interactive session only once you approve them, and issues waits for approval. ...
+All checks passed!
 ```
 
-在项目里把每个工具各打开一次，回答它的提示：
+在项目里打开某个工具时，回答它的提示：
 
 ```text
 $ cd ~/work/web-app
@@ -79,7 +90,7 @@ $ teamai doctor
   ✔ Claude Code approves this project's team MCP servers
 ```
 
-有人拒绝过一次的 server 会一直关闭，也不会再被询问：
+有人拒绝过一次的 server 会一直关闭，也不会再被询问，所以这一项报失败：
 
 ```text
   ✖ Claude Code approves this project's team MCP servers

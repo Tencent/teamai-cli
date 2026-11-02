@@ -21,7 +21,7 @@ import { getUserHome } from './home.js';
 import { resolveHookCwd } from './hook-cwd.js';
 import { classifyShellCommand } from './shell-command.js';
 import { normalizeToolName } from './tool-names.js';
-import type { ToolId } from '../types.js';
+import { isToolId, TOOLS } from '../tools.js';
 
 /** What a call did: `read`/`search`/`list` whether a tool or a shell command did it; `shell` for any other shell call. */
 export type ToolCategory = 'read' | 'shell' | 'search' | 'list' | 'unknown';
@@ -83,15 +83,13 @@ const CATEGORY_OF: Record<string, Exclude<ToolCategory, 'unknown'>> = {
  */
 const LISTS_BY_DEFAULT = new Set(['Grep', 'grep_code']);
 
-/**
- * Agents whose search tool output no line rule reads yet: OMP's grep prints
- * a markdown tree, Cursor's Grep format is unverified. Their shell searches
- * still count.
- */
-const NO_SEARCH_EVIDENCE = new Set<string>(['omp', 'cursor'] satisfies ToolId[]);
-
 /** Agents whose read path can carry a selector inline (OMP's `x.md:50-200`, `x.md:raw`). */
 const READ_SELECTORS = new Set(['omp']);
+
+/** Whether a line rule reads `agent`'s search tool output (`searchEvidence`); an unknown agent's is read. */
+function readsSearchEvidence(agent: string | undefined): boolean {
+  return agent === undefined || !isToolId(agent) || TOOLS[agent].searchEvidence;
+}
 
 function asObject(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
@@ -266,7 +264,7 @@ export function classifyToolCall(stdin: Record<string, unknown>, agent?: string)
     const mode = typeof given === 'string' ? given : LISTS_BY_DEFAULT.has(name) ? 'files_with_matches' : 'content';
     if (mode === 'files_with_matches') return { category: 'list', paths: [], status, simple: true };
     const output = searchOutputOf(response);
-    if (mode !== 'content' || output === undefined || NO_SEARCH_EVIDENCE.has(agent ?? '')) {
+    if (mode !== 'content' || output === undefined || !readsSearchEvidence(agent)) {
       return { category, paths: [], status, simple: true };
     }
     // Relative output paths are relative to the searched path (Pi), else to the cwd.

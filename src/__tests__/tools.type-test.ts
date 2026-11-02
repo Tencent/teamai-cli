@@ -52,19 +52,30 @@ declare const withoutHooks: Omit<ToolDescriptor, 'hooks'>;
 export const noHooks: ToolDescriptor = withoutHooks;
 
 // @ts-expect-error a settings channel names the shape of its hook list
-export const shapeless: ToolDescriptor = { ...full, hooks: { user: { channel: 'settings', reads: 'unknown' }, self: 'user' } };
+export const shapeless: ToolDescriptor = { ...full, hooks: { ...full.hooks, user: { channel: 'settings', reads: 'unknown' }, self: 'user' } };
 
 // @ts-expect-error an adapter writes in the tool's home: self mode takes it from the user scope ('user')
-export const projectAdapter: ToolDescriptor = { ...full, hooks: { user: 'none', self: { channel: 'adapter', adapter: 'pi-extension', evidence: 'verified' } } };
+export const projectAdapter: ToolDescriptor = { ...full, hooks: { ...full.hooks, user: 'none', self: { channel: 'adapter', adapter: 'pi-extension', evidence: 'verified' } } };
 
 export const projectHookReadInUserScope: ToolDescriptor = {
   ...full,
   hooks: {
+    ...full.hooks,
     // @ts-expect-error a user-scope hook file is read under $HOME only
     user: { channel: 'settings', format: 'claude', reads: [{ base: 'project', path: 'x', when: 'cwdOnly', evidence: 'docs' }] },
     self: 'user',
   },
 };
+
+declare const hooksWithoutStopReply: Omit<ToolDescriptor['hooks'], 'stopReply'>;
+
+// @ts-expect-error every tool states whether its Stop hook takes the reply, so a new one is decided, not left out of a list
+export const noStopReply: ToolDescriptor = { ...full, hooks: hooksWithoutStopReply };
+
+declare const withoutAutoCompact: Omit<ToolDescriptor, 'autoCompact'>;
+
+// @ts-expect-error every tool states the format teamai writes its auto-compact threshold in, or 'none'
+export const noAutoCompact: ToolDescriptor = withoutAutoCompact;
 
 declare const withoutFeatures: Omit<ToolDescriptor, 'features'>;
 

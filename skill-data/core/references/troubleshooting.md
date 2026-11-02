@@ -119,13 +119,14 @@ This is the #1 onboarding issue. In order:
    names (each home must be an absolute directory), or delete the file and
    re-run `teamai init` from a shell your tools run in.
 9. **The files are there, but the tool has not trusted the project.**
-   `teamai doctor` fails `<Tool> trusts this project, so it loads its team
+   `teamai doctor` reports `<Tool> trusts this project, so it loads its team
    <resource>` or `<Tool> approves this project's team MCP servers` and names
-   the tool's own file. Have the user open that tool once in the project and
-   accept its trust or MCP prompt. On a machine that only runs the tool
-   headless, add the entry the fix names. A server listed as rejected is never
-   offered again: follow the fix to clear the rejection. Do not edit a trust
-   file for the user without asking.
+   the tool's own file. `⚠` means the tool has not asked yet: it asks when the
+   user opens it in the project, and doctor still passes, so nothing is needed
+   for a tool the user does not use here. `✖` means a no (a rejection, a
+   setting that turns it off) or an answer teamai cannot read: follow the fix.
+   On a machine that only runs the tool headless, add the entry the fix names.
+   Do not edit a trust file for the user without asking.
 
 ## Path names appear in skill usage statistics
 
@@ -355,8 +356,8 @@ hook entry; if unsure of the exact config, run `teamai doctor` and `teamai hooks
 to see what should be present, then have them replicate it. Until then, they can
 sync with a manual `teamai pull`.
 
-Skip this on WorkBuddy 5.7+ with only `~/.workbuddy-ai/`. teamai does not know yet
-where 5.7 reads hooks, so it writes none, and `teamai doctor` names them under
+Skip this on WorkBuddy AI (the international edition) with only `~/.workbuddy-ai/`. TeamAI
+does not know yet where it runs hooks from, so it writes none, and `teamai doctor` names them under
 `workbuddy receives ...`. Do not hand-register a hook there; sync with `teamai pull`.
 
 ### Muse Code
@@ -510,3 +511,13 @@ A recreated namespace source can be edited directly; the retired flattened copy 
 ## Hermes hooks after moving Node or TeamAI
 
 The generated status script and instructions plugin capture the installed Node executable and TeamAI entry. After moving or reinstalling either, run `teamai pull` or `teamai hooks inject`, then restart Hermes.
+
+## Hermes sessions miss the team instructions
+
+`doctor` warns "Hermes's last logged session took teamai's instructions section" when Hermes logged that it dropped teamai's plugin section in a session on this machine, whichever project it ran in. The fix line quotes Hermes's reason:
+
+- `exceeded the aggregate session budget` or `section-count budget`: other plugins' sections, filled first when their id sorts before `teamai.instructions`, took Hermes's 8,000-character, 32-section budget. Disable a plugin the member does not need (`plugins.disabled` in the Hermes `config.yaml`) or shorten its section.
+- `exceeded max_chars`: that project's team instructions are over 4,000 characters. Run `teamai doctor` in that project; it names what to shorten.
+- Anything else: run `teamai hooks inject`.
+
+Then start a new Hermes session. `logs/agent.log` in the Hermes home lists each section and its size.

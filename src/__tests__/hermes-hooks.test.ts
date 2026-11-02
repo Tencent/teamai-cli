@@ -4,7 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import YAML from 'yaml';
 import * as builtinHooks from '../builtin-hooks.js';
-import { injectHermesHooks, removeHermesHooks, hasHermesHooks, getReportScriptPath, getInstructionsPluginDir, getTeamHookScriptPath } from '../hermes-hooks.js';
+import { injectHermesHooks, removeHermesHooks, hasHermesHooks, getReportScriptPath, getInstructionsPluginDir, getTeamHookScriptPath, lastInstructionsSection } from '../hermes-hooks.js';
 import { bridgedTeamHookFile } from '../bridged-team-hooks.js';
 import { shellQuoteValue } from '../utils/shell-profile.js';
 import { log } from '../utils/logger.js';
@@ -210,5 +210,47 @@ describe('Hermes: the team\'s hooks', () => {
     await removeHermesHooks();
     expect(hooks()).toBeUndefined();
     expect(fs.existsSync(script)).toBe(false);
+  });
+});
+
+describe('lastInstructionsSection', () => {
+  // Lines as Hermes v0.22.5 logs them (hermes_logging.py _LOG_FORMAT, plugins_dispatch.py render_system_prompt_sections).
+  const rendered = '2026-11-01 09:00:00,001 INFO [s1] hermes_cli.plugins: Session plugin prompt section: id=teamai.instructions plugin=teamai-instructions position=after_memory chars=812';
+  const overBudget = '2026-11-01 10:22:03,123 WARNING [s2] hermes_cli.plugins: Plugin system prompt section teamai.instructions (teamai-instructions) exceeded the aggregate session budget (8000 chars) and was skipped';
+  const overCount = '2026-11-01 11:00:00,000 WARNING hermes_cli.plugins: Plugin system prompt section teamai.instructions exceeded the section-count budget (32) and was skipped';
+  const raised = '2026-11-01 12:00:00,000 WARNING [s4] hermes_cli.plugins: Plugin system prompt section teamai.instructions (teamai-instructions) raised and was skipped: boom';
+  const tooLong = '2026-11-01 14:00:00,000 WARNING [s6] hermes_cli.plugins: Plugin system prompt section teamai.instructions (teamai-instructions) exceeded max_chars (4210 > 4000) and was skipped';
+  const other = '2026-11-01 13:00:00,000 INFO [s5] hermes_cli.plugins: Session plugin prompt section: id=acme.notes plugin=acme position=after_memory chars=7000';
+  const writeLog = (...lines: string[]) => {
+    fs.mkdirSync(path.join(tmpDir, 'logs'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, 'logs', 'agent.log'), lines.map((line) => `${line}\n`).join(''));
+  };
+
+  it('has seen nothing without a log or a line about teamai\'s section', async () => {
+    expect(await lastInstructionsSection()).toEqual({ kind: 'unseen' });
+    writeLog(other);
+    expect(await lastInstructionsSection()).toEqual({ kind: 'unseen' });
+  });
+
+  it('reports the section the last session rendered', async () => {
+    writeLog(overBudget, rendered, other);
+    expect(await lastInstructionsSection()).toEqual({ kind: 'rendered', at: '2026-11-01 09:00:00' });
+  });
+
+  it('reports a skip for the shared budget, naming when it happened', async () => {
+    writeLog(rendered, other, overBudget);
+    expect(await lastInstructionsSection()).toEqual({ kind: 'crowded-out', at: '2026-11-01 10:22:03', reason: 'exceeded the aggregate session budget (8000 chars) and was skipped' });
+  });
+
+  it('reports a skip for the section count as crowded out too', async () => {
+    writeLog(rendered, overCount);
+    expect(await lastInstructionsSection()).toEqual({ kind: 'crowded-out', at: '2026-11-01 11:00:00', reason: 'exceeded the section-count budget (32) and was skipped' });
+  });
+
+  it('reports a skip of teamai\'s own section apart', async () => {
+    writeLog(rendered, raised);
+    expect(await lastInstructionsSection()).toEqual({ kind: 'skipped', at: '2026-11-01 12:00:00', reason: 'raised and was skipped: boom' });
+    writeLog(rendered, tooLong);
+    expect(await lastInstructionsSection()).toEqual({ kind: 'too-long', at: '2026-11-01 14:00:00', reason: 'exceeded max_chars (4210 > 4000) and was skipped' });
   });
 });

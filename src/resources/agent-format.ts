@@ -1022,6 +1022,7 @@ export function mergeReverseResults(
  * tclaude reads `tool_extras.claude`, tcodex `tool_extras.codex`. Model
  * alias inheritance is a separate, wider table (`ALIAS_BASE_TOOL`).
  */
+// oxlint-disable-next-line teamai/tool-facts -- aliases: a tool left out keeps its own extras, the right default for a new tool
 export const EXTRAS_BASE_TOOL: Readonly<Partial<Record<ToolName, ToolName>>> = { tclaude: 'claude', tcodex: 'codex' };
 
 /**

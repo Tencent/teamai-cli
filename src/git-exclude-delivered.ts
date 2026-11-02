@@ -15,6 +15,7 @@ import {
   type GitExcludeReport,
   type GitExcludeWrite,
 } from './git-exclude.js';
+import { selfLocalSettingsOf, TOOL_IDS } from './tools.js';
 import { getDataHome, isUnmigratedDataHome, type LocalConfig } from './types.js';
 import { pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
@@ -176,8 +177,8 @@ export interface DeliveredUnion {
   foreign: ForeignPath[];
 }
 
-/** Claude Code reads it as the member's own, per checkout: never foreign in another checkout. */
-const PERSONAL = new Set(['.claude/settings.local.json']);
+/** A tool's `selfLocalSettingsOf` is the member's own, per checkout: never foreign in another checkout. */
+const PERSONAL: ReadonlySet<string> = new Set(TOOL_IDS.map(selfLocalSettingsOf).filter((file) => file !== null));
 
 /**
  * The paths teamai's `delivered` blocks list for a project: the union of the

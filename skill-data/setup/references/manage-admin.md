@@ -92,7 +92,7 @@ Antigravity takes user servers in `~/.gemini/config/mcp_config.json`. It reads a
 
 WorkBuddy uses the first existing user file in `~/.workbuddy/.mcp.json`, `~/.workbuddy/mcp.json`, and `~/.codebuddy.json`. `CODEBUDDY_CONFIG_DIR` moves the last file. A project uses `.mcp.json`, or `mcp.json` when only that exists. With `sharing.gitExclude` on, its servers use `projects[<project path>].mcpServers` in `.codebuddy.json`. These paths follow the CodeBuddy 2.168.0 engine; WorkBuddy's launcher binding is not certified. Pull removes only unchanged teamai entries from the former `.workbuddy/mcp.json` project file.
 
-When `.workbuddy-ai/` exists in the home or project (WorkBuddy 5.7+), the default skills path moves to `.workbuddy-ai/skills`. Every other surface still waits for `.workbuddy/`, so a member with only `.workbuddy-ai/` gets no rules, team instructions, agents, MCP servers or hooks, and `teamai doctor` fails `workbuddy receives ...` with the ones held.
+When `.workbuddy-ai/` exists in the home or project (WorkBuddy AI, the international edition), the default skills path moves to `.workbuddy-ai/skills`. Every other surface still waits for `.workbuddy/`, so a member with only `.workbuddy-ai/` gets no rules, team instructions, agents, MCP servers or hooks, and `teamai doctor` fails `workbuddy receives ...` with the ones held.
 
 When a tool's home or configured MCP path moves, pull leaves old copies in place and names them once. Remove them after no tool reads them. Doctor reports unread mappings, moved files, and project MCP that is read only from a session started at the project root. Internal builds with an unknown MCP channel get a note instead of a guessed config.
 
@@ -241,6 +241,10 @@ true|false` in the project's `config.yaml` (`~/.teamai/projects/<slug>/config.ya
 Either takes effect on the next pull, no `--force`; turned off, the next pull
 removes only that block. `teamai doctor` says where the setting comes from and
 what git still sees; `teamai pull --dry-run` previews the block.
+In a single-repo team the committed hook settings keep only the built-ins; the
+team's hooks for Claude Code, CodeBuddy and Qoder go to the `settings.local.json`
+beside them, listed in that block, and Codex's run from `~/.codex/hooks.json`.
+The other tools have no such file, so their team hooks stay in the committed file.
 
 ## Team dashboard (web UI)
 

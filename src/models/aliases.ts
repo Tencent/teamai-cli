@@ -104,6 +104,7 @@ const ALIAS_NAME_RE = /^[a-z][a-z0-9-]*$/;
  * none of their own. Not the extras inheritance: that one covers only tclaude
  * and tcodex (`toolExtrasFor`).
  */
+// oxlint-disable-next-line teamai/tool-facts -- aliases: a tool left out reads only its own catalog, the right default for a new tool
 const ALIAS_BASE_TOOL: Partial<Record<ToolName, ToolName>> = {
   'claude-internal': 'claude',
   tclaude: 'claude',

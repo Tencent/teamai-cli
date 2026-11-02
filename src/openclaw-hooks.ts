@@ -33,7 +33,7 @@ import path from 'node:path';
 import { writeIfChanged, pathExists, readJsonObject, writeJsonAtomic, remove, symlinkTarget } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { getUserHome } from './utils/home.js';
-import { resolveOpenclawConfigPath, resolveOpenclawStateDir } from './openclaw-home.js';
+import { OPENCLAW_TEAM_HOOK_PLUGIN, openclawTeamHookPluginIn, resolveOpenclawConfigPath, resolveOpenclawStateDir } from './openclaw-home.js';
 import { resolveCliEntry } from './builtin-hooks.js';
 import { openclawWorkspaceDir } from './locate.js';
 import { bridgedTeamHookEvents, bridgedTeamHookFile } from './bridged-team-hooks.js';
@@ -191,17 +191,6 @@ export async function refreshOpenClawTeamHooks(): Promise<void> {
   if (wsDir) await reconcileOpenClawTeamHooks(entry, wsDir);
 }
 
-/** The team-hook plugin's id, which OpenClaw takes from its file name. */
-const TEAM_HOOK_PLUGIN = 'teamai-team-hooks';
-
-/**
- * In a directory of its own: OpenClaw reads a standalone plugin's manifest,
- * when there is one, from the file's directory.
- */
-function openclawTeamHookPluginFile(stateDir = resolveOpenclawStateDir()): string {
-  return path.join(stateDir, 'teamai', `${TEAM_HOOK_PLUGIN}.mjs`);
-}
-
 /** The entry teamai writes under `plugins.entries`: conversation access lets the plugin read the prompt. */
 const TEAM_HOOK_PLUGIN_ENTRY = { enabled: true, hooks: { allowConversationAccess: true } };
 
@@ -281,7 +270,7 @@ const teamHooks = (event, ctx, payload) => new Promise((resolve) => {
 });
 
 export default {
-  id: ${JSON.stringify(TEAM_HOOK_PLUGIN)},
+  id: ${JSON.stringify(OPENCLAW_TEAM_HOOK_PLUGIN)},
   name: "teamai team hooks",
   description: "Runs the team's hooks from hooks/hooks.yaml.",
   register(api) {
@@ -323,14 +312,14 @@ async function reconcileOpenClawTeamHooks(entry: string, wsDir: string): Promise
     await removeOpenClawTeamHooks();
     return;
   }
-  const file = openclawTeamHookPluginFile();
+  const file = openclawTeamHookPluginIn(resolveOpenclawStateDir());
   if (await writeIfChanged(file, buildTeamHookPluginSource(entry, wsDir))) log.success(`Installed the teamai OpenClaw team hooks plugin at ${file}`);
   await updateOpenClawPluginConfig(file, 'load');
 }
 
 /** Remove the team-hook plugin and its openclaw.json entries. */
 export async function removeOpenClawTeamHooks(): Promise<void> {
-  const file = openclawTeamHookPluginFile();
+  const file = openclawTeamHookPluginIn(resolveOpenclawStateDir());
   await updateOpenClawPluginConfig(file, 'unload');
   if (await pathExists(file)) {
     await remove(path.dirname(file));
@@ -340,18 +329,20 @@ export async function removeOpenClawTeamHooks(): Promise<void> {
 
 type PluginsConfig = { enabled?: unknown; allow?: unknown; deny?: unknown; load?: { paths?: unknown }; entries?: Record<string, unknown> };
 
-function pluginsOf(config: Record<string, unknown>): PluginsConfig {
+export function pluginsOf(config: Record<string, unknown>): PluginsConfig {
   return config.plugins && typeof config.plugins === 'object' ? config.plugins as PluginsConfig : {};
 }
 
 /** Why the plugin does not load under this config and the fix, or null when it loads once listed and enabled. */
-function teamHookPluginBlocker(plugins: PluginsConfig): string | null {
-  const listed = (list: unknown) => Array.isArray(list) && list.includes(TEAM_HOOK_PLUGIN);
+export function teamHookPluginBlocker(plugins: PluginsConfig): string | null {
+  // OpenClaw trims and lowercases the ids these lists hold.
+  const listed = (list: unknown) => Array.isArray(list)
+    && list.some((id) => typeof id === 'string' && id.trim().toLowerCase() === OPENCLAW_TEAM_HOOK_PLUGIN);
   if (plugins.enabled === false) return 'plugins are switched off (plugins.enabled: false); turn them on';
-  if (listed(plugins.deny)) return `plugins.deny lists ${TEAM_HOOK_PLUGIN}; take it out`;
-  if (Array.isArray(plugins.allow) && plugins.allow.length > 0 && !listed(plugins.allow)) return `plugins.allow does not list ${TEAM_HOOK_PLUGIN}; add it`;
-  const entry = plugins.entries?.[TEAM_HOOK_PLUGIN];
-  if (entry && typeof entry === 'object' && (entry as { enabled?: unknown }).enabled === false) return `plugins.entries.${TEAM_HOOK_PLUGIN}.enabled is false; set it to true`;
+  if (listed(plugins.deny)) return `plugins.deny lists ${OPENCLAW_TEAM_HOOK_PLUGIN}; take it out`;
+  if (Array.isArray(plugins.allow) && plugins.allow.length > 0 && !listed(plugins.allow)) return `plugins.allow does not list ${OPENCLAW_TEAM_HOOK_PLUGIN}; add it`;
+  const entry = plugins.entries?.[OPENCLAW_TEAM_HOOK_PLUGIN];
+  if (entry && typeof entry === 'object' && (entry as { enabled?: unknown }).enabled === false) return `plugins.entries.${OPENCLAW_TEAM_HOOK_PLUGIN}.enabled is false; set it to true`;
   return null;
 }
 
@@ -360,11 +351,11 @@ function withTeamHookPlugin(config: Record<string, unknown>, file: string, actio
   const plugins = pluginsOf(config);
   const paths = Array.isArray(plugins.load?.paths) ? plugins.load.paths.filter((p) => p !== file) : [];
   const entries = plugins.entries && typeof plugins.entries === 'object' ? plugins.entries : {};
-  const ownEntry = JSON.stringify(entries[TEAM_HOOK_PLUGIN]) === JSON.stringify(TEAM_HOOK_PLUGIN_ENTRY);
+  const ownEntry = JSON.stringify(entries[OPENCLAW_TEAM_HOOK_PLUGIN]) === JSON.stringify(TEAM_HOOK_PLUGIN_ENTRY);
   const nextPaths = action === 'load' ? [...paths, file] : paths;
   const nextEntries = action === 'load'
-    ? { ...entries, [TEAM_HOOK_PLUGIN]: TEAM_HOOK_PLUGIN_ENTRY }
-    : ownEntry ? withoutKey(entries, TEAM_HOOK_PLUGIN) ?? {} : entries;
+    ? { ...entries, [OPENCLAW_TEAM_HOOK_PLUGIN]: TEAM_HOOK_PLUGIN_ENTRY }
+    : ownEntry ? withoutKey(entries, OPENCLAW_TEAM_HOOK_PLUGIN) ?? {} : entries;
   const load = { ...plugins.load, paths: nextPaths };
   const nextLoad = nextPaths.length > 0 ? load : withoutKey(load, 'paths');
   const next: Record<string, unknown> = { ...plugins, load: nextLoad, entries: nextEntries };
@@ -427,11 +418,9 @@ function isOpenEndedDiscovery(internal: OpenclawInternalHooks, entries: Record<s
   return internal.enabled === true && !Object.keys(entries).some((name) => name.trim()) && !hasExtraDirs;
 }
 
-/** True when OpenClaw's config loads teamai's workspace hook: internal hooks on and its entry enabled. */
-export async function isOpenclawHookEnabled(): Promise<boolean> {
-  const read = await readJsonObject(resolveOpenclawConfigPath());
-  if (read.kind !== 'ok') return false;
-  const internal = internalHooksOf(read.value);
+/** True when this openclaw.json loads teamai's workspace hook: internal hooks on and its entry enabled. */
+export function openclawHookEnabledIn(config: Record<string, unknown>): boolean {
+  const internal = internalHooksOf(config);
   return internal.enabled !== false && internal.entries?.[OPENCLAW_HOOK_KEY]?.enabled === true;
 }
 

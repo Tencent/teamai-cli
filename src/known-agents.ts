@@ -12,7 +12,8 @@ import {
 } from './types.js';
 import { isToolId, TOOLS } from './tools.js';
 import { installOf, isInstalledFor, locate, ownOf } from './locate.js';
-import type { LocalConfig, TeamaiConfig, Scope, ToolId } from './types.js';
+import type { LocalConfig, TeamaiConfig, Scope } from './types.js';
+import type { ToolId } from './tools.js';
 import { getUserHome } from './utils/home.js';
 import { realHost, toolHome, type Host } from './tool-home.js';
 
@@ -22,6 +23,7 @@ import { realHost, toolHome, type Host } from './tool-home.js';
  * against the user's HOME in non-interactive contexts. Order is the display order.
  * Kept small on purpose — the common coding agents, not the full KNOWN_AGENTS list.
  */
+// oxlint-disable-next-line teamai/tool-facts -- the picker's choices in display order; a tool missing here is still detected
 export const SELF_MODE_AGENT_CHOICES = ['claude', 'codex', 'cursor', 'copilot', 'pi', 'joycode', 'codebuddy', 'workbuddy', 'muse', 'agy'] as const satisfies readonly ToolId[];
 
 /**

@@ -5,8 +5,8 @@ import path from 'node:path';
 
 import { ALL_MODEL_AGENTS } from '../../src/models/profile.js';
 import { runsTeamHookOn } from '../../src/hooks.js';
-import { isToolId, TOOLS, type Support } from '../../src/tools.js';
-import { DEFAULT_TOOL_PATHS, type ToolId } from '../../src/types.js';
+import { isToolId, TOOLS, type Support, type ToolId } from '../../src/tools.js';
+import { DEFAULT_TOOL_PATHS } from '../../src/types.js';
 
 const ROOT = process.cwd();
 const READMES = fs

@@ -1,5 +1,5 @@
 import { TOOLS } from '../tools.js';
-import type { ToolId } from '../types.js';
+import type { ToolId } from '../tools.js';
 import { LAUNCH_ADAPTERS, type LaunchAdapter, type LaunchAdapterId } from './adapters.js';
 
 /** The tools whose `launch` facet names an adapter. */
@@ -11,6 +11,7 @@ export type LaunchedToolId = { [T in ToolId]: (typeof TOOLS)[T]['launch'] extend
  * did not run it before #1389, and it sits before CodeBuddy, WorkBuddy and OpenClaw, so a member with OpenCode and one
  * of those, and no Claude or Codex, now gets OpenCode. Moving OpenCode last instead would change the default judge.
  */
+// oxlint-disable-next-line teamai/tool-facts -- priority order; tools.type-test.ts checks it holds every tool TOOLS.launch names
 export const LAUNCH_ORDER = ['claude', 'claude-internal', 'tclaude', 'codex', 'codex-internal', 'tcodex', 'opencode', 'codebuddy', 'workbuddy', 'openclaw', 'cursor', 'copilot', 'qoder', 'kiro', 'pi', 'omp', 'muse', 'hermes', 'agy'] as const satisfies readonly LaunchedToolId[];
 
 export type LaunchOrderTool = (typeof LAUNCH_ORDER)[number];

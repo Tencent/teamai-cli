@@ -3,7 +3,6 @@ import type { RuleFormatId } from './resources/rule-format.js';
 import type { SessionPlatform, StoredSessionPlatform } from './session-flow/adapters/platform-facts.js';
 import type { TokenFormatId } from './token-usage/index.js';
 import type { LaunchAdapterId } from './tool-launch/adapters.js';
-import type { ToolId } from './types.js';
 
 export type Evidence = 'verified' | 'source' | 'docs' | 'assumed';
 
@@ -123,7 +122,8 @@ export type RunTimeVia = 'session-hook' | 'extension' | 'plugin';
  * project's MCP servers. `read-gates.ts` evaluates each one.
  */
 export type ReadGateKind = 'codex-project-trust' | 'pi-project-trust' | 'muse-workspace-trust' | 'copilot-folder-trust' | 'qoder-folder-trust'
-  | 'qoder-mcp-approval' | 'claude-mcp-approval' | 'codebuddy-mcp-approval' | 'cursor-mcp-approval' | 'claude-hooks-enabled';
+  | 'qoder-mcp-approval' | 'claude-mcp-approval' | 'codebuddy-mcp-approval' | 'cursor-mcp-approval' | 'claude-hooks-enabled'
+  | 'openclaw-hooks-enabled' | 'openclaw-plugins-enabled';
 
 /** The frontmatter teamai writes above its blocks when it creates an owned blocks file a rules loader reads. */
 export type BlocksHeader = 'always-apply' | 'apply-to-all' | 'trigger-always-on' | 'inclusion-always';
@@ -211,6 +211,12 @@ export type McpProject = McpCommon<HomeRead | ProjectRead | FirstExistingRead> &
   readonly alternate?: { readonly path: string; readonly when: 'opencode-v2-plugin' };
   /** The tool reads another tool's project file and has none of its own: Muse and tclaude read claude's `.mcp.json`. */
   readonly writtenBy?: ToolId;
+  /**
+   * Whether a project file holding only teamai's servers is judged teamai's (#915). Not for
+   * Claude's and CodeBuddy's `.mcp.json`, whose servers have a per-member place outside the
+   * project, or Qoder's `settings.json`, which also holds its settings.
+   */
+  readonly judgedTeamaiOnly: boolean;
 };
 
 export type McpChannels = Scoped<McpUser, McpProject> & {
@@ -226,7 +232,7 @@ export type HookSettings<R> = { readonly channel: 'settings'; readonly format: H
 
 /** A file or directory of teamai's own the tool loads from its home, written by the tool's own adapter. */
 export type HookAdapterId = 'opencode-plugin' | 'pi-extension' | 'omp-extension' | 'hermes-plugin' | 'openclaw-hook' | 'dsh-hooks' | 'kiro-hooks' | 'agy-hooks';
-export type HookAdapter = { readonly channel: 'adapter'; readonly adapter: HookAdapterId; readonly evidence: Evidence };
+export type HookAdapter = { readonly channel: 'adapter'; readonly adapter: HookAdapterId; readonly evidence: Evidence; readonly readGates?: readonly ReadGateKind[] };
 
 /**
  * Where teamai installs the tool's hooks. A workspace takes the user hooks
@@ -242,6 +248,36 @@ export type HooksChannels = {
    * `.github/hooks/teamai.json`). Absent: the workspace takes the user hooks only.
    */
   readonly workspace?: HookSettings<ProjectRead>;
+  /**
+   * Whether teamai's built-in SubagentStop hook goes in: the tool fires SubagentStop with the
+   * parent's session id, so the recall reducer can credit a read a subagent made after the
+   * session's last Stop (#884). Claude Code, Codex, CodeBuddy and Qoder document it, and their
+   * internal builds share the format. The installed Codex 0.159 knows `SubagentStop`, and Codex
+   * main's `HookEventsToml` (codex-rs/config/src/hook_config.rs) has no `deny_unknown_fields`, so
+   * it skips an event key it does not know; how older hook-capable builds treat one is unverified
+   * (a hooks.json Codex cannot parse is dropped whole). Not WorkBuddy, whose shipped engine version
+   * is unverified; not Cursor or Copilot, whose subagents run in sessions of their own that no hook
+   * links to the parent; not ZCode, which has no such event and rejects the whole hooks block on an
+   * unknown key.
+   */
+  readonly subagentStop: boolean;
+  /**
+   * Whether the Stop hook takes the reply `formatStopHookOutput` writes. Otherwise the
+   * share-learnings hint is stashed as pending state at Stop and injected on the next
+   * UserPromptSubmit. CodeBuddy and WorkBuddy ignore Stop stdout, and Codex and Muse Code reject
+   * Stop additionalContext. `false` costs a hint delivered one prompt late; a wrong `true` loses
+   * it outright, as Codex ids missing from the old deny-list did (#719). So `true` only once the
+   * tool's Stop handling is confirmed, for each id of a family: hook dispatch matches the raw
+   * lowercase `--tool` literal, not its `normalizeAgentType`.
+   */
+  readonly stopReply: boolean;
+  /** The shell hook commands run through: the tool's own bundled one (`src/bundled-runtime.ts`), or the system's `/bin/sh`. */
+  readonly shell: 'bundled' | 'system';
+  /**
+   * Where a non-self project scope keeps the team's hooks: in the main checkout,
+   * which every linked worktree reads (#955), or in HOME behind a `$PWD` gate.
+   */
+  readonly teamHooks: 'main-checkout' | 'home';
 };
 
 /**
@@ -326,6 +362,24 @@ export type ToolDescriptor = {
    * where the tool keeps it is unknown.
    */
   readonly tokens: TokenFormatId | 'copilot-shutdown' | 'none' | 'unknown';
+  /** The settings format teamai writes the team's auto-compact threshold in (`src/autocompact-reconcile.ts`), or `'none'`. */
+  readonly autoCompact: 'claude' | 'buddy' | 'codex' | 'dsh' | 'none';
+  /** Whether the tool's skills take `allowed-tools`, so a workflow skill with `invoke: allow` starts without a permission prompt. */
+  readonly skillAllowedTools: boolean;
+  /**
+   * Whether a line rule reads the output of the tool's search tool as evidence of a read. Not
+   * OMP, whose grep prints a markdown tree, or Cursor, whose Grep format is unverified. Shell
+   * searches count either way.
+   */
+  readonly searchEvidence: boolean;
+  /**
+   * Whether the tool takes a project's team instructions through a channel in its home
+   * (an extension, a plugin, HOME hooks), so uninstalling it from one project only
+   * excludes it there and keeps that channel.
+   */
+  readonly projectFromHome: boolean;
+  /** Whether a team's legacy `agents/<name>.md` reaches the tool copied verbatim: its agents read Claude Code's Markdown. */
+  readonly legacyAgentMd: boolean;
   /** Data only: nothing reads it but the support page (`scripts/tool-support.ts`). */
   readonly features: ToolFeatures;
 };
@@ -333,6 +387,41 @@ export type ToolDescriptor = {
 const UNKNOWN_READS = { user: 'unknown', project: 'unknown' } as const;
 const NONE = { user: 'none', project: 'none' } as const;
 const UNKNOWN = { user: 'unknown', project: 'unknown' } as const;
+
+/**
+ * Every built-in tool. Adding a tool starts here: `TOOLS` then needs its entry, and the type
+ * check lists every other table that must decide it. Custom tools in a team's `toolPaths` stay plain strings.
+ */
+export const TOOL_IDS = [
+  'claude',
+  'codex',
+  'codex-internal',
+  'claude-internal',
+  'tclaude',
+  'tcodex',
+  'cursor',
+  'copilot',
+  'joycode',
+  'qoder',
+  'qoder-cn',
+  'kiro',
+  'trae',
+  'trae-cn',
+  'zcode',
+  'omp',
+  'pi',
+  'codebuddy',
+  'openclaw',
+  'hermes',
+  'dsh',
+  'workbuddy',
+  'opencode',
+  'muse',
+  'agy',
+] as const;
+
+/** A built-in tool (`TOOL_IDS`). */
+export type ToolId = (typeof TOOL_IDS)[number];
 
 /**
  * What teamai knows about each built-in tool.
@@ -372,6 +461,7 @@ export const TOOLS = {
     mcp: {
       user: { format: 'claude', reads: [{ base: 'home', path: '.claude.json', evidence: 'verified' }] },
       project: {
+        judgedTeamaiOnly: false,
         format: 'claude', localScope: { file: 'user-mcp-file', key: 'git-common-root' },
         reads: [{ base: 'project', path: '.mcp.json', when: 'workspaceUnder', evidence: 'verified' }],
         // Claude Code 2.1.316: an interactive session starts a .mcp.json server only once it is approved.
@@ -381,9 +471,18 @@ export const TOOLS = {
     hooks: {
       user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.claude/settings.json', evidence: 'verified' }], readGates: ['claude-hooks-enabled'] },
       self: { channel: 'settings', format: 'claude', reads: [{ base: 'project', path: '.claude/settings.json', when: 'workspaceUnder', evidence: 'verified' }, { base: 'project', path: '.claude/settings.local.json', when: 'workspaceUnder', evidence: 'verified' }], readGates: ['claude-hooks-enabled'] },
+      subagentStop: true,
+      stopReply: true,
+      shell: 'system',
+      teamHooks: 'main-checkout',
     },
     sessions: ['claude-code'],
     launch: 'claude',
+    autoCompact: 'claude',
+    skillAllowedTools: true,
+    searchEvidence: true,
+    projectFromHome: false,
+    legacyAgentMd: true,
     tokens: 'claude-jsonl',
     features: {
       env: '✓t',
@@ -420,11 +519,16 @@ export const TOOLS = {
     },
     mcp: {
       user: { format: 'codex', reads: [{ base: 'home', path: '.codex/config.toml', evidence: 'verified' }] },
-      project: { format: 'codex', reads: [{ base: 'project', path: '.codex/config.toml', when: 'workspaceUnder', evidence: 'verified' }], readGates: ['codex-project-trust'] },
+      project: { judgedTeamaiOnly: true, format: 'codex', reads: [{ base: 'project', path: '.codex/config.toml', when: 'workspaceUnder', evidence: 'verified' }], readGates: ['codex-project-trust'] },
     },
-    hooks: { user: { channel: 'settings', format: 'codex', reads: [{ base: 'home', path: '.codex/hooks.json', evidence: 'verified' }] }, self: { channel: 'settings', format: 'codex', reads: [{ base: 'project', path: '.codex/hooks.json', when: 'workspaceUnder', evidence: 'verified' }] } },
+    hooks: { user: { channel: 'settings', format: 'codex', reads: [{ base: 'home', path: '.codex/hooks.json', evidence: 'verified' }] }, self: { channel: 'settings', format: 'codex', reads: [{ base: 'project', path: '.codex/hooks.json', when: 'workspaceUnder', evidence: 'verified' }] }, subagentStop: true, stopReply: false, shell: 'system', teamHooks: 'main-checkout' },
     sessions: ['codex'],
     launch: 'codex',
+    autoCompact: 'codex',
+    skillAllowedTools: false,
+    searchEvidence: true,
+    projectFromHome: true,
+    legacyAgentMd: false,
     tokens: 'codex-rollout',
     features: {
       env: '✓t',
@@ -450,9 +554,14 @@ export const TOOLS = {
     },
     agents: { user: { reads: 'unknown' }, project: { reads: 'unknown' } },
     mcp: UNKNOWN,
-    hooks: { user: { channel: 'settings', format: 'codex', reads: [{ base: 'home', path: '.codex-internal/hooks.json', evidence: 'assumed' }] }, self: { channel: 'settings', format: 'codex', reads: 'unknown' } },
+    hooks: { user: { channel: 'settings', format: 'codex', reads: [{ base: 'home', path: '.codex-internal/hooks.json', evidence: 'assumed' }] }, self: { channel: 'settings', format: 'codex', reads: 'unknown' }, subagentStop: true, stopReply: false, shell: 'system', teamHooks: 'home' },
     sessions: ['codex-internal'],
     launch: 'codex',
+    autoCompact: 'codex',
+    skillAllowedTools: false,
+    searchEvidence: true,
+    projectFromHome: true,
+    legacyAgentMd: false,
     tokens: 'codex-rollout',
     features: {
       env: '?',
@@ -474,9 +583,14 @@ export const TOOLS = {
     blocks: { user: { channel: 'file', file: { in: 'claudemd' }, reads: 'unknown' }, project: { channel: 'file', file: { in: 'claudemd' }, reads: 'unknown' } },
     agents: { user: { reads: 'unknown' }, project: { reads: 'unknown' } },
     mcp: UNKNOWN,
-    hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.claude-internal/settings.json', evidence: 'assumed' }] }, self: { channel: 'settings', format: 'claude', reads: 'unknown' } },
+    hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.claude-internal/settings.json', evidence: 'assumed' }] }, self: { channel: 'settings', format: 'claude', reads: 'unknown' }, subagentStop: true, stopReply: true, shell: 'system', teamHooks: 'home' },
     sessions: ['claude-internal'],
     launch: 'claude',
+    autoCompact: 'claude',
+    skillAllowedTools: false,
+    searchEvidence: true,
+    projectFromHome: false,
+    legacyAgentMd: true,
     tokens: 'claude-jsonl',
     features: {
       env: '?',
@@ -499,11 +613,16 @@ export const TOOLS = {
     agents: { user: { reads: 'unknown' }, project: { reads: 'unknown' } },
     mcp: {
       user: { format: 'claude', reads: 'unknown' },
-      project: { format: 'claude', writtenBy: 'claude', reads: [{ base: 'project', path: '.mcp.json', when: 'workspaceUnder', evidence: 'assumed' }] },
+      project: { judgedTeamaiOnly: false, format: 'claude', writtenBy: 'claude', reads: [{ base: 'project', path: '.mcp.json', when: 'workspaceUnder', evidence: 'assumed' }] },
     },
-    hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.tclaude/settings.json', evidence: 'assumed' }] }, self: { channel: 'settings', format: 'claude', reads: 'unknown' } },
+    hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.tclaude/settings.json', evidence: 'assumed' }] }, self: { channel: 'settings', format: 'claude', reads: 'unknown' }, subagentStop: true, stopReply: true, shell: 'system', teamHooks: 'home' },
     sessions: ['tclaude'],
     launch: 'claude',
+    autoCompact: 'claude',
+    skillAllowedTools: false,
+    searchEvidence: true,
+    projectFromHome: false,
+    legacyAgentMd: true,
     tokens: 'claude-jsonl',
     features: {
       env: '?',
@@ -529,9 +648,14 @@ export const TOOLS = {
     },
     agents: { user: { reads: 'unknown' }, project: { reads: 'unknown' } },
     mcp: UNKNOWN,
-    hooks: { user: { channel: 'settings', format: 'codex', reads: [{ base: 'home', path: '.tcodex/hooks.json', evidence: 'assumed' }] }, self: { channel: 'settings', format: 'codex', reads: 'unknown' } },
+    hooks: { user: { channel: 'settings', format: 'codex', reads: [{ base: 'home', path: '.tcodex/hooks.json', evidence: 'assumed' }] }, self: { channel: 'settings', format: 'codex', reads: 'unknown' }, subagentStop: true, stopReply: false, shell: 'system', teamHooks: 'home' },
     sessions: ['tcodex'],
     launch: 'codex',
+    autoCompact: 'codex',
+    skillAllowedTools: false,
+    searchEvidence: true,
+    projectFromHome: true,
+    legacyAgentMd: false,
     tokens: 'codex-rollout',
     features: {
       env: '?',
@@ -574,11 +698,16 @@ export const TOOLS = {
     mcp: {
       user: { format: 'cursor', reads: [{ base: 'home', path: '.cursor/mcp.json', evidence: 'source' }] },
       // The Cursor CLI (2026.10.21, verified) loads a project server only once it is approved; the IDE's approvals are not traced.
-      project: { format: 'cursor', reads: [{ base: 'project', path: '.cursor/mcp.json', when: 'workspaceUnder', evidence: 'source' }], readGates: ['cursor-mcp-approval'] },
+      project: { judgedTeamaiOnly: true, format: 'cursor', reads: [{ base: 'project', path: '.cursor/mcp.json', when: 'workspaceUnder', evidence: 'source' }], readGates: ['cursor-mcp-approval'] },
     },
-    hooks: { user: { channel: 'settings', format: 'cursor', reads: [{ base: 'home', path: '.cursor/hooks.json', evidence: 'source' }] }, self: { channel: 'settings', format: 'cursor', reads: [{ base: 'project', path: '.cursor/hooks.json', when: 'workspaceUnder', evidence: 'source' }] } },
+    hooks: { user: { channel: 'settings', format: 'cursor', reads: [{ base: 'home', path: '.cursor/hooks.json', evidence: 'source' }] }, self: { channel: 'settings', format: 'cursor', reads: [{ base: 'project', path: '.cursor/hooks.json', when: 'workspaceUnder', evidence: 'source' }] }, subagentStop: false, stopReply: true, shell: 'system', teamHooks: 'home' },
     sessions: ['cursor'],
     launch: 'cursor',
+    autoCompact: 'none',
+    skillAllowedTools: false,
+    searchEvidence: false,
+    projectFromHome: false,
+    legacyAgentMd: false,
     tokens: 'none',
     features: {
       env: '?',
@@ -621,16 +750,25 @@ export const TOOLS = {
     },
     mcp: {
       user: { format: 'copilot', reads: [{ base: 'home', path: '.copilot/mcp-config.json', evidence: 'verified' }] },
-      project: { format: 'copilot', reads: [{ base: 'project', path: '.github/mcp.json', when: 'workspaceUnder', evidence: 'verified' }], readGates: ['copilot-folder-trust'] },
+      project: { judgedTeamaiOnly: true, format: 'copilot', reads: [{ base: 'project', path: '.github/mcp.json', when: 'workspaceUnder', evidence: 'verified' }], readGates: ['copilot-folder-trust'] },
     },
     hooks: {
       user: { channel: 'settings', format: 'copilot', reads: [{ base: 'home', path: '.copilot/hooks/teamai.json', evidence: 'source' }] },
       // Copilot 1.0.105 runs repo hooks only in a trusted folder (verified with `copilot -p`).
       self: { channel: 'settings', format: 'copilot', reads: [{ base: 'project', path: '.github/hooks/teamai.json', when: 'workspaceUnder', evidence: 'source' }], readGates: ['copilot-folder-trust'] },
       workspace: { channel: 'settings', format: 'copilot', reads: [{ base: 'project', path: '.github/hooks/teamai.json', when: 'workspaceUnder', evidence: 'source' }], readGates: ['copilot-folder-trust'] },
+      subagentStop: false,
+      stopReply: true,
+      shell: 'system',
+      teamHooks: 'home',
     },
     sessions: 'none',
     launch: 'copilot',
+    autoCompact: 'none',
+    skillAllowedTools: false,
+    searchEvidence: true,
+    projectFromHome: false,
+    legacyAgentMd: false,
     tokens: 'copilot-shutdown',
     features: {
       env: '?',
@@ -663,9 +801,14 @@ export const TOOLS = {
     },
     mcp: NONE,
     // ~/.joycode/hooks.json and <project>/.joycode/hooks.json take Claude-shaped hooks (command type, timeout in seconds).
-    hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.joycode/hooks.json', evidence: 'source' }] }, self: { channel: 'settings', format: 'claude', reads: [{ base: 'project', path: '.joycode/hooks.json', when: 'workspaceUnder', evidence: 'source' }] } },
+    hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.joycode/hooks.json', evidence: 'source' }] }, self: { channel: 'settings', format: 'claude', reads: [{ base: 'project', path: '.joycode/hooks.json', when: 'workspaceUnder', evidence: 'source' }] }, subagentStop: false, stopReply: false, shell: 'system', teamHooks: 'home' },
     sessions: ['joycode'],
     launch: 'none',
+    autoCompact: 'none',
+    skillAllowedTools: false,
+    searchEvidence: true,
+    projectFromHome: false,
+    legacyAgentMd: true,
     tokens: 'codex-rollout',
     features: {
       env: '?',
@@ -698,12 +841,18 @@ export const TOOLS = {
     },
     mcp: {
       user: { format: 'claude', reads: [{ base: 'home', path: '.qoder/settings.json', evidence: 'source' }] },
-      project: { format: 'claude', reads: [{ base: 'project', path: '.qoder/settings.json', when: 'workspaceUnder', evidence: 'source' }], readGates: ['qoder-folder-trust', 'qoder-mcp-approval'] },
+      project: { judgedTeamaiOnly: false, format: 'claude', reads: [{ base: 'project', path: '.qoder/settings.json', when: 'workspaceUnder', evidence: 'source' }], readGates: ['qoder-folder-trust', 'qoder-mcp-approval'] },
     },
-    hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.qoder/settings.json', evidence: 'source' }] }, self: { channel: 'settings', format: 'claude', reads: [{ base: 'project', path: '.qoder/settings.json', when: 'cwdOnly', evidence: 'source' }], readGates: ['qoder-folder-trust'] } },
+    // qodercli 1.1.81 loads project, then project-local (settings.local.json), then user hooks; both project files wait on folder trust.
+    hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.qoder/settings.json', evidence: 'source' }] }, self: { channel: 'settings', format: 'claude', reads: [{ base: 'project', path: '.qoder/settings.json', when: 'cwdOnly', evidence: 'source' }, { base: 'project', path: '.qoder/settings.local.json', when: 'cwdOnly', evidence: 'source' }], readGates: ['qoder-folder-trust'] }, subagentStop: true, stopReply: true, shell: 'system', teamHooks: 'home' },
     // Qoder CLI 1.1.78: <id>.jsonl under <QODER_CONFIG_DIR or QODER_CLI_HOME/.qoder or ~/.qoder>/projects/<cwd>.
     sessions: ['qoder'],
     launch: 'qoder',
+    autoCompact: 'none',
+    skillAllowedTools: false,
+    searchEvidence: true,
+    projectFromHome: false,
+    legacyAgentMd: false,
     tokens: 'claude-jsonl',
     features: {
       env: '?',
@@ -736,12 +885,17 @@ export const TOOLS = {
     },
     mcp: {
       user: { format: 'claude', reads: [{ base: 'home', path: '.qoder-cn/settings.json', evidence: 'source' }] },
-      project: { format: 'claude', reads: [{ base: 'project', path: '.qoder/settings.json', when: 'workspaceUnder', evidence: 'assumed' }] },
+      project: { judgedTeamaiOnly: false, format: 'claude', reads: [{ base: 'project', path: '.qoder/settings.json', when: 'workspaceUnder', evidence: 'assumed' }] },
     },
-    hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.qoder-cn/settings.json', evidence: 'source' }] }, self: { channel: 'settings', format: 'claude', reads: [{ base: 'project', path: '.qoder/settings.json', when: 'cwdOnly', evidence: 'source' }] } },
+    hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.qoder-cn/settings.json', evidence: 'source' }] }, self: { channel: 'settings', format: 'claude', reads: [{ base: 'project', path: '.qoder/settings.json', when: 'cwdOnly', evidence: 'source' }, { base: 'project', path: '.qoder/settings.local.json', when: 'cwdOnly', evidence: 'assumed' }] }, subagentStop: true, stopReply: true, shell: 'system', teamHooks: 'home' },
     // Qoder CN: the same layout under ~/.qoder-cn, moved by QODERCN_CONFIG_DIR.
     sessions: ['qoder-cn'],
     launch: 'none',
+    autoCompact: 'none',
+    skillAllowedTools: false,
+    searchEvidence: true,
+    projectFromHome: false,
+    legacyAgentMd: false,
     tokens: 'claude-jsonl',
     features: {
       env: '?',
@@ -773,13 +927,18 @@ export const TOOLS = {
     },
     mcp: {
       user: { format: 'claude', reads: [{ base: 'home', path: '.kiro/settings/mcp.json', evidence: 'docs' }] },
-      project: { format: 'claude', reads: [{ base: 'project', path: '.kiro/settings/mcp.json', when: 'workspaceUnder', evidence: 'docs' }] },
+      project: { judgedTeamaiOnly: true, format: 'claude', reads: [{ base: 'project', path: '.kiro/settings/mcp.json', when: 'workspaceUnder', evidence: 'docs' }] },
     },
     // Kiro CLI V3 loads every hook file in ~/.kiro/hooks, whatever agent runs (#1341).
-    hooks: { user: { channel: 'adapter', adapter: 'kiro-hooks', evidence: 'docs' }, self: 'user' },
+    hooks: { user: { channel: 'adapter', adapter: 'kiro-hooks', evidence: 'docs' }, self: 'user', subagentStop: false, stopReply: false, shell: 'system', teamHooks: 'home' },
     // Kiro CLI docs: sessions under ~/.kiro, moved by KIRO_HOME.
     sessions: 'none',
     launch: 'kiro',
+    autoCompact: 'none',
+    skillAllowedTools: false,
+    searchEvidence: true,
+    projectFromHome: false,
+    legacyAgentMd: false,
     tokens: 'none',
     features: {
       env: '?',
@@ -815,12 +974,17 @@ export const TOOLS = {
     },
     mcp: {
       user: 'none',
-      project: { format: 'claude', reads: [{ base: 'project', path: '.trae/mcp.json', when: 'workspaceUnder', evidence: 'docs' }] },
+      project: { judgedTeamaiOnly: true, format: 'claude', reads: [{ base: 'project', path: '.trae/mcp.json', when: 'workspaceUnder', evidence: 'docs' }] },
     },
-    hooks: { user: 'unknown', self: 'unknown' },
+    hooks: { user: 'unknown', self: 'unknown', subagentStop: false, stopReply: false, shell: 'system', teamHooks: 'home' },
     // Trae docs: chat history in the IDE's ModularData database, which no variable moves.
     sessions: 'none',
     launch: 'none',
+    autoCompact: 'none',
+    skillAllowedTools: false,
+    searchEvidence: true,
+    projectFromHome: false,
+    legacyAgentMd: false,
     tokens: 'none',
     features: {
       env: '?',
@@ -854,12 +1018,17 @@ export const TOOLS = {
     },
     mcp: {
       user: 'none',
-      project: { format: 'claude', reads: [{ base: 'project', path: '.trae/mcp.json', when: 'workspaceUnder', evidence: 'docs' }] },
+      project: { judgedTeamaiOnly: true, format: 'claude', reads: [{ base: 'project', path: '.trae/mcp.json', when: 'workspaceUnder', evidence: 'docs' }] },
     },
-    hooks: { user: 'unknown', self: 'unknown' },
+    hooks: { user: 'unknown', self: 'unknown', subagentStop: false, stopReply: false, shell: 'system', teamHooks: 'home' },
     // Trae CN docs: the same database under Trae CN's application data.
     sessions: 'none',
     launch: 'none',
+    autoCompact: 'none',
+    skillAllowedTools: false,
+    searchEvidence: true,
+    projectFromHome: false,
+    legacyAgentMd: false,
     tokens: 'none',
     features: {
       env: '?',
@@ -893,12 +1062,17 @@ export const TOOLS = {
     },
     mcp: {
       user: { format: 'claude', key: ['mcp', 'servers'], reads: [{ base: 'home', path: '.zcode/cli/config.json', evidence: 'source' }] },
-      project: { format: 'claude', key: ['mcp', 'servers'], reads: [{ base: 'project', path: '.zcode/config.json', when: 'workspaceUnder', evidence: 'source' }] },
+      project: { judgedTeamaiOnly: true, format: 'claude', key: ['mcp', 'servers'], reads: [{ base: 'project', path: '.zcode/config.json', when: 'workspaceUnder', evidence: 'source' }] },
       retired: { user: ['.agents/mcp.json'] },
     },
-    hooks: { user: { channel: 'settings', format: 'zcode', reads: [{ base: 'home', path: '.zcode/cli/config.json', evidence: 'source' }] }, self: 'user' },
+    hooks: { user: { channel: 'settings', format: 'zcode', reads: [{ base: 'home', path: '.zcode/cli/config.json', evidence: 'source' }] }, self: 'user', subagentStop: false, stopReply: true, shell: 'system', teamHooks: 'home' },
     sessions: 'none',
     launch: 'none',
+    autoCompact: 'none',
+    skillAllowedTools: false,
+    searchEvidence: true,
+    projectFromHome: true,
+    legacyAgentMd: false,
     tokens: 'unknown',
     features: {
       env: '✓t',
@@ -938,12 +1112,17 @@ export const TOOLS = {
     },
     mcp: {
       user: { format: 'claude', reads: [{ base: 'home', path: '.omp/agent/mcp.json', evidence: 'verified' }] },
-      project: { format: 'claude', reads: [{ base: 'project', path: '.omp/mcp.json', when: 'cwdOnly', evidence: 'verified' }] },
+      project: { judgedTeamaiOnly: true, format: 'claude', reads: [{ base: 'project', path: '.omp/mcp.json', when: 'cwdOnly', evidence: 'verified' }] },
     },
-    hooks: { user: { channel: 'adapter', adapter: 'omp-extension', evidence: 'verified' }, self: 'user' },
+    hooks: { user: { channel: 'adapter', adapter: 'omp-extension', evidence: 'verified' }, self: 'user', subagentStop: false, stopReply: true, shell: 'system', teamHooks: 'home' },
     // Oh My Pi 18.12.6: Pi v3 JSONL with a leading title record under the resolved profile agent root.
     sessions: ['omp'],
     launch: 'omp',
+    autoCompact: 'none',
+    skillAllowedTools: false,
+    searchEvidence: false,
+    projectFromHome: true,
+    legacyAgentMd: true,
     tokens: 'pi-session',
     features: {
       env: '✓s',
@@ -977,12 +1156,17 @@ export const TOOLS = {
     agents: NONE,
     mcp: {
       user: { format: 'pi', reads: [{ base: 'home', path: '.pi/agent/mcp.json', evidence: 'verified' }] },
-      project: { format: 'pi', reads: [{ base: 'project', path: '.pi/mcp.json', when: 'cwdOnly', evidence: 'verified' }], readGates: ['pi-project-trust'] },
+      project: { judgedTeamaiOnly: true, format: 'pi', reads: [{ base: 'project', path: '.pi/mcp.json', when: 'cwdOnly', evidence: 'verified' }], readGates: ['pi-project-trust'] },
     },
-    hooks: { user: { channel: 'adapter', adapter: 'pi-extension', evidence: 'verified' }, self: 'user' },
+    hooks: { user: { channel: 'adapter', adapter: 'pi-extension', evidence: 'verified' }, self: 'user', subagentStop: false, stopReply: true, shell: 'system', teamHooks: 'home' },
     // Pi 1.4.0: v3 JSONL under --session-dir > PI_CODING_AGENT_SESSION_DIR > the sessionDir setting > PI_CODING_AGENT_DIR/sessions.
     sessions: ['pi'],
     launch: 'pi',
+    autoCompact: 'none',
+    skillAllowedTools: false,
+    searchEvidence: true,
+    projectFromHome: true,
+    legacyAgentMd: false,
     tokens: 'pi-session',
     features: {
       env: '✓s',
@@ -1034,6 +1218,7 @@ export const TOOLS = {
         reads: [{ base: 'home', firstOf: ['.codebuddy/.mcp.json', '.codebuddy/mcp.json', { in: 'codebuddy-config-dir', path: '.codebuddy.json' }], evidence: 'source' }],
       },
       project: {
+        judgedTeamaiOnly: false,
         format: 'buddy',
         localScope: { file: { in: 'codebuddy-config-dir', path: '.codebuddy.json' }, key: 'realpath' },
         reads: [{ base: 'project', firstOf: ['.mcp.json', 'mcp.json'], when: 'cwdOnly', evidence: 'source' }],
@@ -1041,9 +1226,15 @@ export const TOOLS = {
         readGates: ['codebuddy-mcp-approval'],
       },
     },
-    hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.codebuddy/settings.json', evidence: 'source' }] }, self: { channel: 'settings', format: 'claude', reads: [{ base: 'project', path: '.codebuddy/settings.json', when: 'cwdOnly', evidence: 'source' }] } },
+    // CodeBuddy Code 2.179.1 (`-p`) runs the hooks of the project's settings.json and settings.local.json, merged.
+    hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.codebuddy/settings.json', evidence: 'source' }] }, self: { channel: 'settings', format: 'claude', reads: [{ base: 'project', path: '.codebuddy/settings.json', when: 'cwdOnly', evidence: 'source' }, { base: 'project', path: '.codebuddy/settings.local.json', when: 'cwdOnly', evidence: 'verified' }] }, subagentStop: true, stopReply: false, shell: 'bundled', teamHooks: 'home' },
     sessions: ['codebuddy'],
     launch: 'codebuddy',
+    autoCompact: 'buddy',
+    skillAllowedTools: true,
+    searchEvidence: true,
+    projectFromHome: false,
+    legacyAgentMd: true,
     tokens: 'codebuddy',
     features: {
       env: '?',
@@ -1077,10 +1268,15 @@ export const TOOLS = {
     },
     agents: NONE,
     mcp: NONE,
-    hooks: { user: { channel: 'adapter', adapter: 'openclaw-hook', evidence: 'verified' }, self: 'user' },
+    hooks: { user: { channel: 'adapter', adapter: 'openclaw-hook', evidence: 'verified', readGates: ['openclaw-hooks-enabled', 'openclaw-plugins-enabled'] }, self: 'user', subagentStop: false, stopReply: false, shell: 'system', teamHooks: 'home' },
     // OpenClaw 2026.10: rows in ~/.openclaw/agents/<id>/agent/openclaw-agent.sqlite, moved by OPENCLAW_STATE_DIR.
     sessions: 'none',
     launch: 'openclaw',
+    autoCompact: 'none',
+    skillAllowedTools: false,
+    searchEvidence: true,
+    projectFromHome: false,
+    legacyAgentMd: false,
     tokens: 'none',
     features: {
       env: '◐d',
@@ -1112,9 +1308,14 @@ export const TOOLS = {
     },
     agents: NONE,
     mcp: NONE,
-    hooks: { user: { channel: 'adapter', adapter: 'hermes-plugin', evidence: 'verified' }, self: 'user' },
+    hooks: { user: { channel: 'adapter', adapter: 'hermes-plugin', evidence: 'verified' }, self: 'user', subagentStop: false, stopReply: false, shell: 'system', teamHooks: 'home' },
     sessions: 'none',
     launch: 'hermes',
+    autoCompact: 'none',
+    skillAllowedTools: false,
+    searchEvidence: true,
+    projectFromHome: true,
+    legacyAgentMd: false,
     tokens: 'none',
     features: {
       env: '◐s',
@@ -1142,9 +1343,14 @@ export const TOOLS = {
     },
     agents: NONE,
     mcp: NONE,
-    hooks: { user: { channel: 'adapter', adapter: 'dsh-hooks', evidence: 'source' }, self: 'user' },
+    hooks: { user: { channel: 'adapter', adapter: 'dsh-hooks', evidence: 'source' }, self: 'user', subagentStop: false, stopReply: true, shell: 'system', teamHooks: 'home' },
     sessions: 'none',
     launch: 'none',
+    autoCompact: 'dsh',
+    skillAllowedTools: false,
+    searchEvidence: true,
+    projectFromHome: false,
+    legacyAgentMd: false,
     tokens: 'none',
     features: {
       env: '✗s',
@@ -1187,15 +1393,21 @@ export const TOOLS = {
         reads: [{ base: 'home', firstOf: ['.workbuddy/.mcp.json', '.workbuddy/mcp.json', { in: 'codebuddy-config-dir', path: '.codebuddy.json' }], evidence: 'source' }],
       },
       project: {
+        judgedTeamaiOnly: true,
         format: 'buddy',
         localScope: { file: { in: 'codebuddy-config-dir', path: '.codebuddy.json' }, key: 'realpath' },
         reads: [{ base: 'project', firstOf: ['.mcp.json', 'mcp.json'], when: 'cwdOnly', evidence: 'source' }],
       },
       retired: { project: ['.workbuddy/mcp.json'] },
     },
-    hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.workbuddy/settings.json', evidence: 'assumed' }] }, self: { channel: 'settings', format: 'claude', reads: 'unknown' } },
+    hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.workbuddy/settings.json', evidence: 'assumed' }] }, self: { channel: 'settings', format: 'claude', reads: 'unknown' }, subagentStop: false, stopReply: false, shell: 'bundled', teamHooks: 'home' },
     sessions: ['workbuddy'],
     launch: 'codebuddy',
+    autoCompact: 'buddy',
+    skillAllowedTools: false,
+    searchEvidence: true,
+    projectFromHome: false,
+    legacyAgentMd: false,
     tokens: 'codebuddy',
     features: {
       env: '?',
@@ -1252,6 +1464,7 @@ export const TOOLS = {
     mcp: {
       user: { format: 'opencode', reads: [{ base: 'home', path: '.config/opencode/opencode.json', evidence: 'verified' }] },
       project: {
+        judgedTeamaiOnly: true,
         format: 'opencode', alternate: { path: '.opencode/teamai-mcp.json', when: 'opencode-v2-plugin' },
         reads: [
           { base: 'project', path: 'opencode.json', when: 'workspaceUnder', evidence: 'verified' },
@@ -1259,9 +1472,14 @@ export const TOOLS = {
         ],
       },
     },
-    hooks: { user: { channel: 'adapter', adapter: 'opencode-plugin', evidence: 'source' }, self: 'user' },
+    hooks: { user: { channel: 'adapter', adapter: 'opencode-plugin', evidence: 'source' }, self: 'user', subagentStop: false, stopReply: true, shell: 'system', teamHooks: 'home' },
     sessions: ['opencode'],
     launch: 'opencode',
+    autoCompact: 'none',
+    skillAllowedTools: false,
+    searchEvidence: true,
+    projectFromHome: true,
+    legacyAgentMd: false,
     tokens: 'opencode-db',
     features: {
       env: '?',
@@ -1303,12 +1521,17 @@ export const TOOLS = {
     },
     mcp: {
       user: { format: 'muse', reads: [{ base: 'home', path: '.config/muse/settings.json', evidence: 'source' }] },
-      project: { format: 'muse', writtenBy: 'claude', reads: [{ base: 'project', path: '.mcp.json', when: 'workspaceUnder', evidence: 'source' }], readGates: ['muse-workspace-trust'] },
+      project: { judgedTeamaiOnly: true, format: 'muse', writtenBy: 'claude', reads: [{ base: 'project', path: '.mcp.json', when: 'workspaceUnder', evidence: 'source' }], readGates: ['muse-workspace-trust'] },
     },
     // Muse takes Codex's hook shape: it drops a group carrying any key but `matcher` and `hooks`, so Claude's described groups never reach it.
-    hooks: { user: { channel: 'settings', format: 'codex', reads: [{ base: 'home', path: '.config/muse/settings.json', evidence: 'verified' }] }, self: { channel: 'settings', format: 'codex', reads: [{ base: 'project', path: '.muse/hooks.json', when: 'workspaceUnder', evidence: 'verified' }], readGates: ['muse-workspace-trust'] } },
+    hooks: { user: { channel: 'settings', format: 'codex', reads: [{ base: 'home', path: '.config/muse/settings.json', evidence: 'verified' }] }, self: { channel: 'settings', format: 'codex', reads: [{ base: 'project', path: '.muse/hooks.json', when: 'workspaceUnder', evidence: 'verified' }], readGates: ['muse-workspace-trust'] }, subagentStop: false, stopReply: false, shell: 'system', teamHooks: 'home' },
     sessions: 'none',
     launch: 'muse',
+    autoCompact: 'none',
+    skillAllowedTools: false,
+    searchEvidence: true,
+    projectFromHome: false,
+    legacyAgentMd: false,
     tokens: 'muse-session',
     features: {
       env: '✓t',
@@ -1346,11 +1569,16 @@ export const TOOLS = {
     },
     mcp: {
       user: { format: 'agy', reads: [{ base: 'home', path: '.gemini/config/mcp_config.json', evidence: 'verified' }] },
-      project: { format: 'agy', reads: [{ base: 'project', path: '.agents/plugins/teamai/mcp_config.json', when: 'workspaceUnder', evidence: 'verified' }] },
+      project: { judgedTeamaiOnly: true, format: 'agy', reads: [{ base: 'project', path: '.agents/plugins/teamai/mcp_config.json', when: 'workspaceUnder', evidence: 'verified' }] },
     },
-    hooks: { user: { channel: 'adapter', adapter: 'agy-hooks', evidence: 'verified' }, self: 'user' },
+    hooks: { user: { channel: 'adapter', adapter: 'agy-hooks', evidence: 'verified' }, self: 'user', subagentStop: false, stopReply: false, shell: 'system', teamHooks: 'home' },
     sessions: ['agy'],
     launch: 'agy',
+    autoCompact: 'none',
+    skillAllowedTools: false,
+    searchEvidence: true,
+    projectFromHome: false,
+    legacyAgentMd: false,
     tokens: 'agy-transcript',
     features: {
       env: { cell: '✓v', note: 'agy 1.4.8 run_command inherits the environment agy starts in' },
@@ -1454,12 +1682,29 @@ const CUSTOM_TOOL = {
   agents: NONE,
   mcp: NONE,
   // A custom tool with a configured `settings` file takes Claude-shaped hooks there, as it always has.
-  hooks: { user: { channel: 'settings', format: 'claude', reads: 'unknown' }, self: { channel: 'settings', format: 'claude', reads: 'unknown' } },
+  hooks: {
+    user: { channel: 'settings', format: 'claude', reads: 'unknown' },
+    self: { channel: 'settings', format: 'claude', reads: 'unknown' },
+    subagentStop: false,
+    stopReply: false,
+    shell: 'system',
+    teamHooks: 'home',
+  },
 } as const satisfies Pick<ToolDescriptor, 'rules' | 'blocks' | 'agents' | 'mcp' | 'hooks'>;
 
 /** The channels of `tool`: its descriptor's, or `CUSTOM_TOOL`'s for a custom tool id. */
 export function channelsOf(tool: string): Pick<ToolDescriptor, 'rules' | 'blocks' | 'agents' | 'mcp' | 'hooks'> {
   return isToolId(tool) ? TOOLS[tool] : CUSTOM_TOOL;
+}
+
+/**
+ * The `settings.local.json` beside a tool's project hook settings, from the project root, when the tool
+ * merges its hooks with theirs (Claude Code, CodeBuddy, Qoder): the member's own file in each checkout.
+ */
+export function selfLocalSettingsOf(tool: string): string | null {
+  const self = channelsOf(tool).hooks.self;
+  if (typeof self !== 'object' || self.reads === 'unknown') return null;
+  return self.reads.find((read) => read.base === 'project' && read.path.endsWith('/settings.local.json'))?.path ?? null;
 }
 
 /** Whether teamai renders agents for `tool` in either scope (`AgentToolId`). */

@@ -1,9 +1,9 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import YAML from 'yaml';
-import type { LocalConfig, TeamaiConfig, ToolId } from './types.js';
+import type { LocalConfig, TeamaiConfig } from './types.js';
+import { TOOL_IDS, TOOLS, type ToolDescriptor, type ToolId } from './tools.js';
 import { isAgentExcluded, recordedToolRootDir, resolveAutoCompactTokens } from './types.js';
-import { CODEX_TOOL_IDS } from './utils/tool-names.js';
 import { toolHome } from './tool-home.js';
 import { withFileLock } from './update.js';
 import { pathExists, readFileSafe, readJsonObject, writeFile, writeJson, writeJsonAtomic } from './utils/fs.js';
@@ -46,10 +46,10 @@ import { getUserHome } from './utils/home.js';
 //  teamai removes its value if the file still holds exactly that. A record is
 //  kept while its tool is excluded or missing, so the value stays teamai's.
 
-const CLAUDE_TOOLS: readonly ToolId[] = ['claude', 'tclaude', 'claude-internal'];
-const BUDDY_TOOLS: readonly ToolId[] = ['codebuddy', 'workbuddy'];
+type Kind = Exclude<ToolDescriptor['autoCompact'], 'none'>;
 
-type Kind = 'claude' | 'buddy' | 'codex' | 'dsh';
+/** The file under the tool's home that holds the threshold, per settings format. */
+const FILE_OF: Record<Kind, string> = { claude: 'settings.json', buddy: 'settings.json', codex: 'config.toml', dsh: 'cordis.patch.yml' };
 
 const WINDOW_MIN = 100_000;
 const WINDOW_MAX = 1_000_000;
@@ -123,22 +123,15 @@ export async function reconcileAutoCompactLocked(
 
 /** Installed, not excluded tools this policy can reach, with the file each reads. */
 async function resolveTargets(localConfig: LocalConfig): Promise<Target[]> {
-  const families: [readonly ToolId[], Kind, string][] = [
-    [CLAUDE_TOOLS, 'claude', 'settings.json'],
-    [BUDDY_TOOLS, 'buddy', 'settings.json'],
-    [CODEX_TOOL_IDS, 'codex', 'config.toml'],
-    [['dsh'], 'dsh', 'cordis.patch.yml'],
-  ];
   const targets: Target[] = [];
-  for (const [tools, kind, file] of families) {
-    for (const tool of tools) {
-      if (isAgentExcluded(localConfig, tool)) continue;
-      // A root the member recorded at init (CODEX_HOME, CLAUDE_CONFIG_DIR) wins,
-      // so a pull from a shell without the variable still finds it.
-      const home = recordedToolRootDir(tool, localConfig.toolRoots) ?? toolHome(tool);
-      if (!(await pathExists(home))) continue;
-      targets.push({ tool, kind, file: path.join(home, file) });
-    }
+  for (const tool of TOOL_IDS) {
+    const kind = TOOLS[tool].autoCompact;
+    if (kind === 'none' || isAgentExcluded(localConfig, tool)) continue;
+    // A root the member recorded at init (CODEX_HOME, CLAUDE_CONFIG_DIR) wins,
+    // so a pull from a shell without the variable still finds it.
+    const home = recordedToolRootDir(tool, localConfig.toolRoots) ?? toolHome(tool);
+    if (!(await pathExists(home))) continue;
+    targets.push({ tool, kind, file: path.join(home, FILE_OF[kind]) });
   }
   return targets;
 }

@@ -36,6 +36,12 @@ const adapter = (tool: string, scope: 'user' | 'project', dir: Spot, probe: Spot
   ...rest,
 });
 
+/** OpenClaw's switches for teamai's workspace hook and the team hooks plugin, both in the openclaw.json of `stateDir` unless `config` moves it. */
+const openclawGates = (stateDir: `~/${string}` | `/${string}`, config: Spot = `${stateDir}/openclaw.json`): FilesRow['readGates'] => [
+  { kind: 'openclaw-hooks-enabled', config },
+  { kind: 'openclaw-plugins-enabled', config, plugin: `${stateDir}/teamai/teamai-team-hooks.mjs` },
+];
+
 const ROWS: readonly (FilesRow | OtherRow)[] = [
   settings('claude', 'user', '~/.claude/settings.json', '~/.claude'),
   settings('claude', 'user', '~/.claude-work/settings.json', '~/.claude-work', {
@@ -117,9 +123,13 @@ const ROWS: readonly (FilesRow | OtherRow)[] = [
     env: { QODER_CLI_HOME: '/qoder-cli' }, reads: [{ at: '/qoder-cli/.qoder/settings.json', when: 'always', key: HOOK_LIST }], source: 'QODER_CLI_HOME moves the project install user hook file',
   }),
   selfSettings('qoder', '<root>/.qoder/settings.json', '~/.qoder', 'cwdOnly', {
+    reads: [
+      { at: '<root>/.qoder/settings.json', when: 'cwdOnly', key: HOOK_LIST },
+      { at: '<root>/.qoder/settings.local.json', when: 'cwdOnly', key: HOOK_LIST },
+    ],
     broken: { 'project-subdir': { reason: 'cwd-only', issue: '#1221' } },
     readGates: [{ kind: 'qoder-folder-trust', config: '~/.qoder/settings.json', checkout: '<root>' }],
-    source: `${SELF}: <cwd>/.qoder/settings.json, shared with Qoder CN; Qoder CLI 1.1.81 reads it only in a trusted folder`,
+    source: `${SELF}: <cwd>/.qoder/settings.json, shared with Qoder CN, then settings.local.json beside it; Qoder CLI 1.1.81 reads both only in a trusted folder`,
   }),
   settings('qoder-cn', 'user', '~/.qoder-cn/settings.json', '~/.qoder-cn'),
   settings('qoder-cn', 'user', '/qodercn/settings.json', '/qodercn', {
@@ -135,6 +145,10 @@ const ROWS: readonly (FilesRow | OtherRow)[] = [
     env: { QODERCN_CLI_HOME: '/qodercn-cli' }, reads: [{ at: '/qodercn-cli/.qoder-cn/settings.json', when: 'always', key: HOOK_LIST }], source: 'QODERCN_CLI_HOME supplies the parent of the Qoder CN project install user hook file',
   }),
   selfSettings('qoder-cn', '<root>/.qoder/settings.json', '~/.qoder-cn', 'cwdOnly', {
+    reads: [
+      { at: '<root>/.qoder/settings.json', when: 'cwdOnly', key: HOOK_LIST },
+      { at: '<root>/.qoder/settings.local.json', when: 'cwdOnly', key: HOOK_LIST },
+    ],
     broken: { 'project-subdir': { reason: 'cwd-only', issue: '#1221' } },
     source: `${SELF}: Qoder CN's project hooks are Qoder's <cwd>/.qoder/settings.json`,
   }),
@@ -155,8 +169,12 @@ const ROWS: readonly (FilesRow | OtherRow)[] = [
     source: `${CODEBUDDY_SOURCE}; a workspace takes the user hooks`,
   }),
   selfSettings('codebuddy', '<root>/.codebuddy/settings.json', '<root>/.codebuddy', 'cwdOnly', {
+    reads: [
+      { at: '<root>/.codebuddy/settings.json', when: 'cwdOnly', key: HOOK_LIST },
+      { at: '<root>/.codebuddy/settings.local.json', when: 'cwdOnly', key: HOOK_LIST },
+    ],
     broken: { 'project-subdir': { reason: 'cwd-only', issue: '#1221' } },
-    source: `${SELF}: CodeBuddy reads project settings from the session cwd only`,
+    source: `${SELF}: CodeBuddy Code 2.179.1 runs the hooks of settings.json and settings.local.json, from the session cwd only`,
   }),
   settings('workbuddy', 'user', '~/.workbuddy/settings.json', '~/.workbuddy', { source: 'issue #1221 matrix, WorkBuddy user hooks (t)' }),
   selfSettings('workbuddy', '<root>/.workbuddy/settings.json', '<root>/.workbuddy', 'cwdOnly', { reads: 'unknown', source: `${SELF}: WorkBuddy (?t)` }),
@@ -211,13 +229,13 @@ const ROWS: readonly (FilesRow | OtherRow)[] = [
     source: `issue #1221 matrix, PI_CODING_AGENT_DIR row (v); ${TEAM}`,
   }),
   adapter('omp', 'user', '~/.omp/agent/extensions', '~/.omp', { source: 'issue #1221 matrix, Oh My Pi user hooks (v, 18.2.1)' }),
-  adapter('openclaw', 'user', '/oc-home/.openclaw/workspace/hooks', '/oc-home/.openclaw/workspace', { env: { OPENCLAW_HOME: '/oc-home' }, source: OPENCLAW_HOME_SOURCE }),
-  adapter('openclaw', 'user', '/oc-home/.openclaw-work/workspace/hooks', '/oc-home/.openclaw-work/workspace', { env: { OPENCLAW_HOME: '/oc-home' }, envLiterals: { OPENCLAW_PROFILE: 'work' }, source: OPENCLAW_HOME_SOURCE }),
+  adapter('openclaw', 'user', '/oc-home/.openclaw/workspace/hooks', '/oc-home/.openclaw/workspace', { readGates: openclawGates('/oc-home/.openclaw'), env: { OPENCLAW_HOME: '/oc-home' }, source: OPENCLAW_HOME_SOURCE }),
+  adapter('openclaw', 'user', '/oc-home/.openclaw-work/workspace/hooks', '/oc-home/.openclaw-work/workspace', { readGates: openclawGates('/oc-home/.openclaw-work'), env: { OPENCLAW_HOME: '/oc-home' }, envLiterals: { OPENCLAW_PROFILE: 'work' }, source: OPENCLAW_HOME_SOURCE }),
   adapter('hermes', 'user', '~/.hermes-canary/hooks', '~/.hermes-canary', { platforms: ['darwin', 'linux'], envLiterals: { HERMES_DATA_DIR_SUFFIX: '-canary' }, source: HERMES_PROFILE_SOURCE }),
   adapter('hermes', 'user', '$LOCALAPPDATA/hermes-canary/hooks', '$LOCALAPPDATA/hermes-canary', { platforms: ['win32'], envLiterals: { HERMES_DATA_DIR_SUFFIX: '-canary' }, source: HERMES_PROFILE_SOURCE }),
   adapter('hermes', 'user', '~/.hermes/profiles/work/hooks', '~/.hermes/profiles/work', { platforms: ['darwin', 'linux'], texts: [{ at: '~/.hermes/active_profile', text: 'work\n' }], source: HERMES_PROFILE_SOURCE }),
-  adapter('openclaw', 'project', '/oc-home/.openclaw/workspace/hooks', '/oc-home/.openclaw/workspace', { env: { OPENCLAW_HOME: '/oc-home' }, source: `${OPENCLAW_HOME_SOURCE}; ${TEAM}` }),
-  adapter('openclaw', 'project', '/oc-home/.openclaw-work/workspace/hooks', '/oc-home/.openclaw-work/workspace', { env: { OPENCLAW_HOME: '/oc-home' }, envLiterals: { OPENCLAW_PROFILE: 'work' }, source: `${OPENCLAW_HOME_SOURCE}; ${TEAM}` }),
+  adapter('openclaw', 'project', '/oc-home/.openclaw/workspace/hooks', '/oc-home/.openclaw/workspace', { readGates: openclawGates('/oc-home/.openclaw'), env: { OPENCLAW_HOME: '/oc-home' }, source: `${OPENCLAW_HOME_SOURCE}; ${TEAM}` }),
+  adapter('openclaw', 'project', '/oc-home/.openclaw-work/workspace/hooks', '/oc-home/.openclaw-work/workspace', { readGates: openclawGates('/oc-home/.openclaw-work'), env: { OPENCLAW_HOME: '/oc-home' }, envLiterals: { OPENCLAW_PROFILE: 'work' }, source: `${OPENCLAW_HOME_SOURCE}; ${TEAM}` }),
   adapter('hermes', 'project', '~/.hermes-canary/hooks', '~/.hermes-canary', { platforms: ['darwin', 'linux'], envLiterals: { HERMES_DATA_DIR_SUFFIX: '-canary' }, source: `${HERMES_PROFILE_SOURCE}; ${TEAM}` }),
   adapter('hermes', 'project', '$LOCALAPPDATA/hermes-canary/hooks', '$LOCALAPPDATA/hermes-canary', { platforms: ['win32'], envLiterals: { HERMES_DATA_DIR_SUFFIX: '-canary' }, source: `${HERMES_PROFILE_SOURCE}; ${TEAM}` }),
   adapter('hermes', 'project', '~/.hermes/profiles/work/hooks', '~/.hermes/profiles/work', { platforms: ['darwin', 'linux'], texts: [{ at: '~/.hermes/active_profile', text: 'work\n' }], source: `${HERMES_PROFILE_SOURCE}; ${TEAM}` }),
@@ -235,30 +253,30 @@ const ROWS: readonly (FilesRow | OtherRow)[] = [
   adapter('hermes', 'user', '/recorded/hermes/hooks', '/recorded/hermes', {
     toolHomes: { hermes: '/recorded/hermes' }, source: `${HERMES_SOURCE}; a recorded home wins over a shell without HERMES_HOME`,
   }),
-  adapter('openclaw', 'user', '~/.openclaw/workspace/hooks', '~/.openclaw/workspace', {
+  adapter('openclaw', 'user', '~/.openclaw/workspace/hooks', '~/.openclaw/workspace', { readGates: openclawGates('~/.openclaw'),
     source: 'OpenClaw 884a96d1 loads workspace hooks from <workspace>/hooks (issue #1221 matrix, v)',
   }),
-  adapter('openclaw', 'user', '/oc-state/workspace/hooks', '/oc-state/workspace', {
+  adapter('openclaw', 'user', '/oc-state/workspace/hooks', '/oc-state/workspace', { readGates: openclawGates('/oc-state'),
     env: { OPENCLAW_STATE_DIR: '/oc-state' }, source: 'OpenClaw: the workspace defaults to <state dir>/workspace',
   }),
-  adapter('openclaw', 'project', '/oc-state/workspace/hooks', '/oc-state/workspace', {
+  adapter('openclaw', 'project', '/oc-state/workspace/hooks', '/oc-state/workspace', { readGates: openclawGates('/oc-state'),
     env: { OPENCLAW_STATE_DIR: '/oc-state' }, source: `OpenClaw: the workspace defaults to <state dir>/workspace; ${TEAM}`,
   }),
-  adapter('openclaw', 'user', '~/.openclaw-work/workspace/hooks', '~/.openclaw-work/workspace', {
+  adapter('openclaw', 'user', '~/.openclaw-work/workspace/hooks', '~/.openclaw-work/workspace', { readGates: openclawGates('~/.openclaw-work'),
     envLiterals: { OPENCLAW_PROFILE: 'work' }, source: 'OpenClaw: a profile other than default is ~/.openclaw-<profile>, its workspace included',
   }),
-  adapter('openclaw', 'project', '~/.openclaw-work/workspace/hooks', '~/.openclaw-work/workspace', {
+  adapter('openclaw', 'project', '~/.openclaw-work/workspace/hooks', '~/.openclaw-work/workspace', { readGates: openclawGates('~/.openclaw-work'),
     envLiterals: { OPENCLAW_PROFILE: 'work' }, source: `OpenClaw: a profile other than default is ~/.openclaw-<profile>; ${TEAM}`,
   }),
-  adapter('openclaw', 'user', '/oc-ws/hooks', '/oc-ws', {
+  adapter('openclaw', 'user', '/oc-ws/hooks', '/oc-ws', { readGates: openclawGates('~/.openclaw'),
     env: { OPENCLAW_WORKSPACE_DIR: '/oc-ws' }, source: 'OpenClaw: OPENCLAW_WORKSPACE_DIR names the workspace when openclaw.json names none',
   }),
-  adapter('openclaw', 'user', '~/oc-cfg-ws/hooks', '~/oc-cfg-ws', {
+  adapter('openclaw', 'user', '~/oc-cfg-ws/hooks', '~/oc-cfg-ws', { readGates: openclawGates('~/.openclaw', '/oc-cfg/openclaw.json'),
     env: { OPENCLAW_CONFIG_PATH: '/oc-cfg/openclaw.json', OPENCLAW_WORKSPACE_DIR: '/oc-ws' },
     json: [{ at: '/oc-cfg/openclaw.json', value: { agents: { defaults: { workspace: '~/oc-cfg-ws' } } } }],
     source: 'OpenClaw: OPENCLAW_CONFIG_PATH names the openclaw.json read, whose workspace wins over OPENCLAW_WORKSPACE_DIR',
   }),
-  adapter('openclaw', 'user', '~/.openclaw/workspace/hooks', '~/.openclaw/workspace', {
+  adapter('openclaw', 'user', '~/.openclaw/workspace/hooks', '~/.openclaw/workspace', { readGates: openclawGates('~/.openclaw'),
     invalidJson: ['~/.openclaw/openclaw.json'],
     source: 'an openclaw.json teamai cannot parse leaves the workspace OPENCLAW_WORKSPACE_DIR or the state dir gives, where the hook still goes',
   }),

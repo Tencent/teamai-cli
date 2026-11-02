@@ -9,7 +9,7 @@ import { listFiles, listDirs, pathExists, copyFile, ensureDir, remove, fileConte
 import { log } from '../utils/logger.js';
 import { installScopeName, isAgentExcluded, isSelfMode } from '../types.js';
 import { BUILTIN_AGENT_NAMES } from '../builtin-agents.js';
-import { isAgentToolId } from '../tools.js';
+import { isAgentToolId, isToolId, TOOLS } from '../tools.js';
 import { cleanupOf, installOf, locate, ownOf, writable, type SidecarFile } from '../locate.js';
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
 import { isSafeNamespaceSegment } from '../manifest-schema.js';
@@ -1120,7 +1120,7 @@ export class AgentsHandler extends ResourceHandler {
    * writes there.
    *
    * An agent's desired set is a relation, not a product: a YAML spec carries
-   * `targets`, a legacy `.md` only reaches LEGACY_MD_TOOLS, and the filename
+   * `targets`, a legacy `.md` only reaches the tools with `legacyAgentMd`, and the filename
    * extension comes from the render rather than the item. So this is the only
    * place that can answer where an agent lands.
    */
@@ -1238,7 +1238,7 @@ export class AgentsHandler extends ResourceHandler {
 
   /**
    * What `pullItem` writes for this agent on this tool, or null when the tool
-   * is not a target (legacy `.md` only reaches LEGACY_MD_TOOLS, a YAML spec
+   * is not a target (legacy `.md` only reaches the tools with `legacyAgentMd`, a YAML spec
    * honours `targets`, an unparsable spec is skipped like pull skips it) or
    * its model cannot be resolved, which holds the deployed copy. With
    * `recorded`, the bytes it wrote with that recorded model instead.
@@ -1253,7 +1253,7 @@ export class AgentsHandler extends ResourceHandler {
     const content = await readFileSafe(item.sourcePath);
     if (content === null) return null;
     if (isLegacyAgent(item)) {
-      return LEGACY_MD_TOOLS.has(tool) ? { ext: '.md', content } : null;
+      return isToolId(tool) && TOOLS[tool].legacyAgentMd ? { ext: '.md', content } : null;
     }
     const parsed = parseAgentYaml(content, `${item.name}.yaml`);
     if (!parsed.ok) return null;
@@ -1356,9 +1356,6 @@ function reportHeld(held: DeliveryLedger['held'], lead = '[agents] Held'): void 
       : `${lead} ${files}: ${reason}. ${its} deployed copies are kept and no new ones are written until the file is fixed.`);
   }
 }
-
-/** Tools that receive a legacy `agents/<name>.md` copied verbatim. */
-const LEGACY_MD_TOOLS = new Set(['claude', 'claude-internal', 'tclaude', 'codebuddy', 'joycode', 'omp']);
 
 /** The TeamAI-owned entry that makes JoyCode load a rendered Markdown agent. */
 type JoycodeIndexChange =
@@ -1754,6 +1751,7 @@ interface DeployedModel {
  * their base tool's only. 0.26.0 and earlier wrote these, with the spec's
  * `model` as written and no delivery record.
  */
+// oxlint-disable-next-line teamai/tool-facts -- frozen: what 0.26.0 and earlier wrote
 const PRE_830_EXTRAS_TOOL: Readonly<Partial<Record<ToolName, ToolName>>> = {
   qoder: 'claude', 'qoder-cn': 'claude', zcode: 'claude', omp: 'claude', tclaude: 'claude', tcodex: 'codex',
 };

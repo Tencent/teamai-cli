@@ -10,10 +10,16 @@ import { execFileSync } from 'node:child_process';
 import { getUserHome } from './utils/home.js';
 import { isOnPath, pathDirs } from './utils/lookpath.js';
 import { log } from './utils/logger.js';
-import type { ToolId } from './types.js';
+import { isToolId, TOOLS, type ToolId } from './tools.js';
 
-const WORKBUDDY_BUNDLED_NODE_DIR = '.workbuddy/bundled/node/versions';
-const WORKBUDDY_PORTABLE_GIT_DIR = '.workbuddy/binaries/PortableGit/versions';
+/**
+ * WorkBuddy 5.6.2 and 5.7.6 (`VENDOR_ASSETS` in main/index.js) unpack each
+ * runtime into `<data root>/binaries/<name>/versions/<version>[-<variant>]`.
+ * The data root is `WORKBUDDY_CONFIG_DIR` when the app was started with it,
+ * else `~/.workbuddy` (WorkBuddy) or `~/.workbuddy-ai` (WorkBuddy AI, the
+ * international edition); teamai looks in each.
+ */
+type WorkbuddyRuntime = 'node' | 'PortableGit';
 
 let _wbShellCache: string | null | undefined;
 let _cbShellCache: string | null | undefined;
@@ -31,8 +37,9 @@ export function resetBundledRuntimeCache(): void {
  * hook-injection fast path and must not drag in update's import graph.
  */
 function compareSemver(a: string, b: string): number {
-  const aParts = a.split('.').map(s => parseInt(s, 10) || 0);
-  const bParts = b.split('.').map(s => parseInt(s, 10) || 0);
+  // WorkBuddy's `<version>-<variant>` dirs: the variant counts as one more segment.
+  const aParts = a.split(/[.-]/).map(s => parseInt(s, 10) || 0);
+  const bParts = b.split(/[.-]/).map(s => parseInt(s, 10) || 0);
   const len = Math.max(aParts.length, bParts.length);
   for (let i = 0; i < len; i++) {
     const diff = (aParts[i] ?? 0) - (bParts[i] ?? 0);
@@ -41,40 +48,35 @@ function compareSemver(a: string, b: string): number {
   return 0;
 }
 
-/**
- * All versioned runtime directories under a bundled-runtime root, newest
- * first (numeric semver comparison — avoids '9.0.0' > '10.11.0' lexicographic
- * error). Empty when the root is absent or unreadable.
- */
-function versionDirsNewestFirst(relDir: string): string[] {
-  try {
-    const versionsDir = path.join(getUserHome(), relDir);
-    return fs.readdirSync(versionsDir)
-      .filter(d => !d.startsWith('.'))
-      .sort((a, b) => compareSemver(b, a))
-      .map(v => path.join(versionsDir, v));
-  } catch {
-    return [];
-  }
-}
+/** Beside the version dirs sit a `current` file and unfinished unpacks (`.installing.`, `.extracting.`). */
+const VERSION_DIR = /^\d+(?:\.\d+)*(?:-\d+)?$/;
 
 /**
- * Resolve <home>/<relDir>/<latest-version> — the newest versioned runtime
- * directory under a bundled-runtime root, or null when absent.
+ * Every version dir of a WorkBuddy runtime, per data root, newest first
+ * (numeric semver comparison: '9.0.0' sorts below '10.11.0'). Empty when none
+ * is there or readable.
  */
-function latestVersionDir(relDir: string): string | null {
-  return versionDirsNewestFirst(relDir)[0] ?? null;
+function workbuddyVersionDirs(runtime: WorkbuddyRuntime): string[] {
+  const home = getUserHome();
+  const roots = [process.env.WORKBUDDY_CONFIG_DIR, path.join(home, '.workbuddy'), path.join(home, '.workbuddy-ai')];
+  return roots.flatMap((root) => {
+    if (!root) return [];
+    const versionsDir = path.join(root, 'binaries', runtime, 'versions');
+    try {
+      return fs.readdirSync(versionsDir)
+        .filter(d => VERSION_DIR.test(d))
+        .sort((a, b) => compareSemver(b, a))
+        .map(v => path.join(versionsDir, v));
+    } catch {
+      return [];
+    }
+  });
 }
 
-/**
- * Find WorkBuddy's bundled Node binary. WorkBuddy ships its own Node under
- * ~/.workbuddy/bundled/node/versions/<ver>/bin/node. Pick the latest version
- * using numeric semver comparison.
- */
-export function resolveWorkbuddyNode(): string | null {
-  const dir = latestVersionDir(WORKBUDDY_BUNDLED_NODE_DIR);
-  const nodeBin = dir && path.join(dir, 'bin', 'node');
-  return nodeBin && fs.existsSync(nodeBin) ? nodeBin : null;
+/** WorkBuddy's bundled Node: the newest unpacked version that holds the binary. */
+export function resolveWorkbuddyNode(platform: NodeJS.Platform = process.platform): string | null {
+  const binary = platform === 'win32' ? 'node.exe' : path.join('bin', 'node');
+  return workbuddyVersionDirs('node').map(dir => path.join(dir, binary)).find(file => fs.existsSync(file)) ?? null;
 }
 
 /**
@@ -102,7 +104,7 @@ export function resolveCodebuddyNode(): string | null {
 
 /**
  * Find the sh binary inside WorkBuddy's bundled PortableGit runtime
- * (~/.workbuddy/binaries/PortableGit/versions/<ver>/, either bin/sh.exe or
+ * (`<data root>/binaries/PortableGit/versions/<ver>/`, either bin/sh.exe or
  * usr/bin/sh.exe). Windows builds of WorkBuddy ship this MSYS shell, so hook
  * commands are executable there even though /bin/sh does not exist. Memoized
  * — the bundled runtime cannot change mid-process. Returns null when not
@@ -112,7 +114,7 @@ function resolveWorkbuddyShell(): string | null {
   if (_wbShellCache === undefined) {
     _wbShellCache = null;
     if (process.platform === 'win32') {
-      const dir = latestVersionDir(WORKBUDDY_PORTABLE_GIT_DIR);
+      const dir = workbuddyVersionDirs('PortableGit')[0];
       if (dir) {
         for (const rel of ['bin', path.join('usr', 'bin')]) {
           const shBin = path.join(dir, rel, 'sh.exe');
@@ -215,7 +217,7 @@ function gitPathDirs(root: string): { first: string[]; last: string[] } {
  * spawned it), so a key would only invite a per-host lookup that never happens.
  */
 const BUNDLED_GIT_RESOLVERS: Array<() => string[]> = [
-  () => versionDirsNewestFirst(WORKBUDDY_PORTABLE_GIT_DIR), // workbuddy
+  () => workbuddyVersionDirs('PortableGit'), // workbuddy
 ];
 
 /**
@@ -261,20 +263,23 @@ export function ensureBundledRuntimeOnPath(platform: NodeJS.Platform = process.p
   log.debug(`bundled runtime: PATH now leads with [${prepend.join('; ')}] and ends with [${append.join('; ')}]`);
 }
 
-/**
- * Tools that provide a shell their hook commands can execute with, per tool id.
- * A tool without an entry falls back to the conservative /bin/sh gate.
- */
-const BUNDLED_SHELLS: Record<string, () => string | null> = {
+/** The tools whose hook commands run through a shell of their own (`hooks.shell: 'bundled'`). */
+type BundledShellTool = { [T in ToolId]: (typeof TOOLS)[T]['hooks']['shell'] extends 'bundled' ? T : never }[ToolId];
+
+/** How each tool with a bundled shell finds it. Every other tool falls back to the conservative /bin/sh gate. */
+const BUNDLED_SHELLS: Record<BundledShellTool, () => string | null> = {
   workbuddy: resolveWorkbuddyShell,
   codebuddy: resolveCodebuddyShell,
-} satisfies Partial<Record<ToolId, () => string | null>>;
+};
+
+function isBundledShellTool(tool: string): tool is BundledShellTool {
+  return isToolId(tool) && TOOLS[tool].hooks.shell === 'bundled';
+}
 
 /**
  * Return the shell a tool provides for hook commands, or null when it provides
  * none (the caller should then fall back to the /bin/sh check).
  */
 export function bundledShellFor(tool: string): string | null {
-  const resolver = BUNDLED_SHELLS[tool];
-  return resolver ? resolver() : null;
+  return isBundledShellTool(tool) ? BUNDLED_SHELLS[tool]() : null;
 }

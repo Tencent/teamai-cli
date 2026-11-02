@@ -8,7 +8,6 @@ import type {
   McpServerDef,
   ManagedMcpManifest,
   ManagedMcpRecord,
-  ToolId,
 } from './types.js';
 import {
   DEFAULT_TOOL_PATHS,
@@ -1374,13 +1373,14 @@ export async function unclaimedMcpServers(target: McpTarget, claimed: readonly s
 }
 
 /**
- * Tools whose project MCP config is not judged teamai-only (#915): Claude's
- * and CodeBuddy's `.mcp.json`, whose servers have a per-member place outside
- * the project, and Qoder's `settings.json`, which also holds its settings.
- * In a single-repo team Claude keeps `.mcp.json` (`mcpRelocated`), and it is
- * judged.
+ * Whether `tool`'s project MCP config is never judged teamai-only (#915, its
+ * `judgedTeamaiOnly`). In a single-repo team Claude keeps `.mcp.json`
+ * (`mcpRelocated`), and it is judged.
  */
-const NOT_TEAMAI_ONLY_MCP_TOOLS = new Set<string>(['claude', 'tclaude', 'codebuddy', 'qoder', 'qoder-cn'] satisfies ToolId[]);
+function neverJudgedTeamaiOnly(tool: string, localConfig: LocalConfig): boolean {
+  const project = channelsOf(tool).mcp.project;
+  return typeof project === 'object' && !project.judgedTeamaiOnly && !(tool === 'claude' && isSelfMode(localConfig));
+}
 
 /**
  * Each project MCP config of this checkout that holds anything, and whether
@@ -1403,7 +1403,7 @@ export async function judgeTeamaiOnlyMcpConfigs(
   const verdicts: Array<{ file: string; teamaiOnly: boolean }> = [];
   for (const file of new Set(targets.map((t) => t.file))) {
     const writers = targets.filter((t) => t.file === file);
-    if (writers.some((t) => NOT_TEAMAI_ONLY_MCP_TOOLS.has(t.tool) && !(t.tool === 'claude' && isSelfMode(localConfig)))) continue;
+    if (writers.some((t) => neverJudgedTeamaiOnly(t.tool, localConfig))) continue;
     if (!(await fs.promises.lstat(file).catch(() => null))?.isFile()) continue;
     const raw = await readFileSafe(file);
     if (raw === null || raw.trim() === '') continue;

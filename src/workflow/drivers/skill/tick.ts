@@ -3,7 +3,7 @@
  * effect, and feeds each answer back as the next input. It holds the lock only while it ticks, never across a sleep.
  */
 import { driverIdentity } from '../../../driver-identity.js';
-import type { ToolId } from '../../../types.js';
+import type { ToolId } from '../../../tools.js';
 import { canonicalJson } from '../../../utils/canonical-json.js';
 import type { ResumeClaim, RunReadied } from '../../protocol.js';
 import type { AttemptId, RunId, RunLock } from '../../store.js';

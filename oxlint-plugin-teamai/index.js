@@ -11,6 +11,7 @@ import windowsTests from './rules/windows-tests.js';
 import rulesLocate from './rules/rules-locate.js';
 import workflowFailureCodes from './rules/workflow-failure-codes.js';
 import configLoadOptions from './rules/config-load-options.js';
+import toolFacts from './rules/tool-facts.js';
 
 export default definePlugin({
   meta: { name: 'teamai' },
@@ -26,5 +27,6 @@ export default definePlugin({
     'home-env': homeEnv,
     'remove-delivered': removeDelivered,
     'learnings-root': learningsRoot,
+    'tool-facts': toolFacts,
   },
 });

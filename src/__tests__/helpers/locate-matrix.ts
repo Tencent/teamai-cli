@@ -12,7 +12,8 @@ import { describe, expect, it } from 'vitest';
 import { locate, unreadWrites, writesOf, type Install, type Location, type Place, type Resource, type Retired } from '../../locate.js';
 import { isToolId, TOOLS, type BlocksHeader, type ChannelProbe, type HomeMove, type ReadGateKind, type RunTimeVia, type ToolDescriptor } from '../../tools.js';
 import type { Host } from '../../tool-home.js';
-import { DEFAULT_TOOL_PATHS, type TeamaiConfig, type ToolId } from '../../types.js';
+import { DEFAULT_TOOL_PATHS, type TeamaiConfig } from '../../types.js';
+import type { ToolId } from '../../tools.js';
 
 type Platform = 'darwin' | 'linux' | 'win32';
 /** The session's directory: a project root in $HOME, a subdirectory of it, or a root outside $HOME (#1197). */
@@ -82,10 +83,10 @@ export type FilesRow = RowCommon & {
     /** The root of a `workspaceUnder` or `cwdOnly` read: the project root unless the row says otherwise. */
     readonly root?: Spot;
   }[] | 'unknown';
-  /** Each gate's files: `config` for most; `settings` a second file (Pi's `defaultProjectTrust`); Cursor's `projects` and `cliConfig`. */
+  /** Each gate's files: `config` for most; `settings` a second file (Pi's `defaultProjectTrust`); Cursor's `projects` and `cliConfig`; OpenClaw's `plugin`. A gate on the checkout names it. */
   readonly readGates?: readonly {
-    readonly kind: ReadGateKind; readonly checkout: Spot;
-    readonly config?: Spot; readonly settings?: Spot; readonly projects?: Spot; readonly cliConfig?: Spot;
+    readonly kind: ReadGateKind; readonly checkout?: Spot;
+    readonly config?: Spot; readonly settings?: Spot; readonly projects?: Spot; readonly cliConfig?: Spot; readonly plugin?: Spot;
   }[];
   /** OpenCode's `instructions` key (rules, blocks); null when the row omits it and the location has the field. */
   readonly activation?: PlaceSpec;
@@ -220,9 +221,8 @@ function expectFiles(row: FilesRow, where: Location, cell: Cell, host: Host): vo
     ...(read.shadowedBy === undefined ? {} : { shadowedBy: at(read.shadowedBy, cell) }),
     ...(read.when === 'always' ? { when: read.when } : { when: read.when, root: at(read.root ?? '<root>', cell) }),
   })));
-  expect(where.readGates).toEqual((row.readGates ?? []).map(({ kind, checkout, ...files }) => ({
+  expect(where.readGates).toEqual((row.readGates ?? []).map(({ kind, ...files }) => ({
     kind,
-    checkout: at(checkout, cell),
     ...Object.fromEntries(Object.entries(files).flatMap(([field, spot]) => spot === undefined ? [] : [[field, at(spot, cell)]])),
   })));
   if ('activation' in where) expect(where.activation).toEqual(row.activation === undefined ? null : expect.objectContaining(placeOf(row.activation, cell)));

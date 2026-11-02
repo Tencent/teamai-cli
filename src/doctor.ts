@@ -109,7 +109,7 @@ export interface Check {
    * broken because of unrelated leftover state (#693 review round 6).
    */
   informational?: boolean;
-  check: () => Promise<boolean>;
+  check: () => Promise<CheckOutcome>;
   fix?: string;
 }
 
@@ -147,11 +147,18 @@ export interface DoctorOptions extends GlobalOptions {
 }
 
 /** One check after it ran. */
-export interface CheckResult {
-  name: string;
-  ok: boolean;
-  fix?: string;
-}
+/**
+ * What a check finds: `true` passes, `false` fails, and `'warn'` passes with
+ * something left for the member to do, such as a prompt the tool shows the
+ * first time it opens in the project (`⚠` and the fix).
+ */
+export type CheckOutcome = boolean | 'warn';
+
+/** A check's result: `warning` marks a pass that still names something to do. */
+export type CheckResult =
+  | { name: string; ok: true; warning?: undefined; fix?: undefined }
+  | { name: string; ok: true; warning: true; fix?: string }
+  | { name: string; ok: false; warning?: undefined; fix?: string };
 
 /** What `doctor --json` prints. One object, one place that builds it. */
 export interface DoctorReport {
@@ -447,20 +454,20 @@ async function buildHookChecks(
       continue;
     }
     if (tool === 'openclaw') {
-      // OpenClaw has no settings file: its hook is a workspace hook directory,
-      // which OpenClaw loads only once openclaw.json enables its entry.
-      const { isOpenclawHookEnabled, OPENCLAW_HOOK_DIR, OPENCLAW_HOOK_KEY } = await import('./openclaw-hooks.js');
-      const hooksDir = ownOf(await locate(tool, 'hooks', install))?.path;
-      if (!hooksDir || !await pathExists(path.join(hooksDir, OPENCLAW_HOOK_DIR))) continue;
-      checks.push({
-        name: 'OpenClaw hook enabled',
-        source: 'local',
-        check: isOpenclawHookEnabled,
-        fix: `OpenClaw loads teamai's hook only when openclaw.json sets hooks.internal.entries.${OPENCLAW_HOOK_KEY}.enabled `
-          + `(and internal hooks are not switched off), so OpenClaw sends no status report or sync. `
-          + `Run \`openclaw hooks enable ${OPENCLAW_HOOK_KEY}\`. If it is enabled already, openclaw.json is not plain JSON `
-          + `(comments, JSON5), which teamai cannot read: \`openclaw hooks info ${OPENCLAW_HOOK_KEY}\` shows what OpenClaw sees.`,
-      });
+      // OpenClaw has no settings file: its hook is a workspace hook directory, and the
+      // team's hooks a plugin. openclaw.json decides whether each loads (the gates `locate` declares).
+      const { OPENCLAW_HOOK_DIR } = await import('./openclaw-hooks.js');
+      const { readGateChecks } = await import('./doctor-delivery.js');
+      const where = await locate(tool, 'hooks', install);
+      const hooksDir = ownOf(where)?.path;
+      // Each gate counts once teamai wrote what it holds back.
+      for (const gate of where.channel === 'files' ? where.readGates : []) {
+        if (gate.kind === 'openclaw-hooks-enabled' && hooksDir !== undefined && await pathExists(path.join(hooksDir, OPENCLAW_HOOK_DIR))) {
+          checks.push(...await readGateChecks([gate], { summary: `${path.join(hooksDir, OPENCLAW_HOOK_DIR)} holds teamai's hook`, noun: 'hook', names: [] }));
+        } else if (gate.kind === 'openclaw-plugins-enabled' && await pathExists(gate.plugin)) {
+          checks.push(...await readGateChecks([gate], { summary: `${gate.plugin} holds the team's hooks`, noun: 'hooks', names: [] }));
+        }
+      }
       continue;
     }
     const settings = hookToolPaths[tool]?.settings;
@@ -947,8 +954,8 @@ export async function runChecks(
 ): Promise<CheckResult[]> {
   const results: CheckResult[] = [];
   for (const { name, check, fix } of checks) {
-    const ok = await check();
-    const result: CheckResult = ok ? { name, ok } : { name, ok, fix };
+    const outcome = await check();
+    const result: CheckResult = outcome === 'warn' ? { name, ok: true, warning: true, fix } : outcome ? { name, ok: true } : { name, ok: false, fix };
     results.push(result);
     onResult?.(result);
   }
@@ -965,9 +972,10 @@ function emitReport(report: DoctorReport): void {
  * prints the same shape through the logger rather than stdout — one definition
  * of the glyphs and the indent, two sinks.
  */
-export function formatCheckResult({ name, ok, fix }: CheckResult): string[] {
-  if (ok) return [`  ✔ ${name}`];
-  return fix ? [`  ✖ ${name}`, `    → ${fix}`] : [`  ✖ ${name}`];
+export function formatCheckResult({ name, ok, warning, fix }: CheckResult): string[] {
+  if (ok && !warning) return [`  ✔ ${name}`];
+  const mark = warning ? '⚠' : '✖';
+  return fix ? [`  ${mark} ${name}`, `    → ${fix}`] : [`  ${mark} ${name}`];
 }
 
 /** The run mode row: the mode and its source, with a warning when TEAMAI_MODE held a value it ignored. */

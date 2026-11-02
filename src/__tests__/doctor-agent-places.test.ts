@@ -168,13 +168,14 @@ describe('doctor — where a tool takes agents', () => {
       teamConfig.toolPaths = { codex: { agents: '.codex/agents' } };
     });
 
-    it('fails while Codex has no entry for the project, naming the agents it would skip', async () => {
+    it('warns while Codex has not asked about the project yet, naming the agents it would skip', async () => {
       const codexConfig = path.join(homeDir, '.codex', 'config.toml');
       await fse.outputFile(codexConfig, 'model = "gpt-5"\n');
       const real = await fse.realpath(project);
 
-      const check = (await failing()).find((c) => c.name === NAME);
+      const check = (await checks()).find((c) => c.name === NAME);
 
+      expect(await check?.check()).toBe('warn');
       expect(check?.fix).toBe(`${path.join(project, '.codex', 'agents')} holds team agents (reviewer), but Codex loads a project's agents only in a trusted project, `
         + `and ${codexConfig} does not trust ${real}. Open Codex in ${real} and trust the project when it asks, `
         + `or add a [projects.${JSON.stringify(real)}] table holding trust_level = "trusted" to ${codexConfig}. Trusting the main checkout covers every worktree of it.`);

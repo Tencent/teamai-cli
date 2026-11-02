@@ -15,6 +15,7 @@ This repository's own lint rules. `npm run lint` loads them through `jsPlugins` 
 | `teamai/workflow-failure-codes` | Unclassified failure producers and unexplained forwarded codes. |
 | `teamai/config-load-options` | Missing preview options at named `loadLocalConfig`, `loadLocalConfigForScope`, and `autoDetectInit` calls outside their owner. Forwarded options are accepted; wrapper behavior still needs tests. |
 | `teamai/remove-delivered` | A bare `remove(` of a delivered copy in pull's files, which leaves a stale entry on the delivery record (#1577). Use `removeDelivered(ledger, dest)`. It checks only the files in `PULL_SIDE_FILES`: a new file that deletes delivered copies must be added there. |
+| `teamai/tool-facts` | A list of tool ids, or a table keyed by tool that leaves some out, outside `src/tools.ts`. Put the fact in `TOOLS`, or key the table by every tool (`Record<ToolId, ...>`), so a new tool fails the type check until it is decided. An ordered registry, an alias map or a frozen history table carries an explained disable. |
 
 ## Add a rule
 
