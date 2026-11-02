@@ -356,8 +356,8 @@ hook entry; if unsure of the exact config, run `teamai doctor` and `teamai hooks
 to see what should be present, then have them replicate it. Until then, they can
 sync with a manual `teamai pull`.
 
-Skip this on WorkBuddy 5.7+ with only `~/.workbuddy-ai/`. teamai does not know yet
-where 5.7 reads hooks, so it writes none, and `teamai doctor` names them under
+Skip this on WorkBuddy AI (the international edition) with only `~/.workbuddy-ai/`. TeamAI
+does not know yet where it runs hooks from, so it writes none, and `teamai doctor` names them under
 `workbuddy receives ...`. Do not hand-register a hook there; sync with `teamai pull`.
 
 ### Muse Code

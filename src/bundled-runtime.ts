@@ -12,8 +12,14 @@ import { isOnPath, pathDirs } from './utils/lookpath.js';
 import { log } from './utils/logger.js';
 import { isToolId, TOOLS, type ToolId } from './tools.js';
 
-const WORKBUDDY_BUNDLED_NODE_DIR = '.workbuddy/bundled/node/versions';
-const WORKBUDDY_PORTABLE_GIT_DIR = '.workbuddy/binaries/PortableGit/versions';
+/**
+ * WorkBuddy 5.6.2 and 5.7.6 (`VENDOR_ASSETS` in main/index.js) unpack each
+ * runtime into `<data root>/binaries/<name>/versions/<version>[-<variant>]`.
+ * The data root is `WORKBUDDY_CONFIG_DIR` when the app was started with it,
+ * else `~/.workbuddy` (WorkBuddy) or `~/.workbuddy-ai` (WorkBuddy AI, the
+ * international edition); teamai looks in each.
+ */
+type WorkbuddyRuntime = 'node' | 'PortableGit';
 
 let _wbShellCache: string | null | undefined;
 let _cbShellCache: string | null | undefined;
@@ -41,40 +47,35 @@ function compareSemver(a: string, b: string): number {
   return 0;
 }
 
-/**
- * All versioned runtime directories under a bundled-runtime root, newest
- * first (numeric semver comparison — avoids '9.0.0' > '10.11.0' lexicographic
- * error). Empty when the root is absent or unreadable.
- */
-function versionDirsNewestFirst(relDir: string): string[] {
-  try {
-    const versionsDir = path.join(getUserHome(), relDir);
-    return fs.readdirSync(versionsDir)
-      .filter(d => !d.startsWith('.'))
-      .sort((a, b) => compareSemver(b, a))
-      .map(v => path.join(versionsDir, v));
-  } catch {
-    return [];
-  }
-}
+/** Beside the version dirs sit a `current` file and unfinished unpacks (`.installing.`, `.extracting.`). */
+const VERSION_DIR = /^\d+(?:\.\d+)*(?:-\d+)?$/;
 
 /**
- * Resolve <home>/<relDir>/<latest-version> — the newest versioned runtime
- * directory under a bundled-runtime root, or null when absent.
+ * Every version dir of a WorkBuddy runtime, per data root, newest first
+ * (numeric semver comparison: '9.0.0' sorts below '10.11.0'). Empty when none
+ * is there or readable.
  */
-function latestVersionDir(relDir: string): string | null {
-  return versionDirsNewestFirst(relDir)[0] ?? null;
+function workbuddyVersionDirs(runtime: WorkbuddyRuntime): string[] {
+  const home = getUserHome();
+  const roots = [process.env.WORKBUDDY_CONFIG_DIR, path.join(home, '.workbuddy'), path.join(home, '.workbuddy-ai')];
+  return roots.flatMap((root) => {
+    if (!root) return [];
+    const versionsDir = path.join(root, 'binaries', runtime, 'versions');
+    try {
+      return fs.readdirSync(versionsDir)
+        .filter(d => VERSION_DIR.test(d))
+        .sort((a, b) => compareSemver(b, a))
+        .map(v => path.join(versionsDir, v));
+    } catch {
+      return [];
+    }
+  });
 }
 
-/**
- * Find WorkBuddy's bundled Node binary. WorkBuddy ships its own Node under
- * ~/.workbuddy/bundled/node/versions/<ver>/bin/node. Pick the latest version
- * using numeric semver comparison.
- */
-export function resolveWorkbuddyNode(): string | null {
-  const dir = latestVersionDir(WORKBUDDY_BUNDLED_NODE_DIR);
-  const nodeBin = dir && path.join(dir, 'bin', 'node');
-  return nodeBin && fs.existsSync(nodeBin) ? nodeBin : null;
+/** WorkBuddy's bundled Node: the newest unpacked version that holds the binary. */
+export function resolveWorkbuddyNode(platform: NodeJS.Platform = process.platform): string | null {
+  const binary = platform === 'win32' ? 'node.exe' : path.join('bin', 'node');
+  return workbuddyVersionDirs('node').map(dir => path.join(dir, binary)).find(file => fs.existsSync(file)) ?? null;
 }
 
 /**
@@ -102,7 +103,7 @@ export function resolveCodebuddyNode(): string | null {
 
 /**
  * Find the sh binary inside WorkBuddy's bundled PortableGit runtime
- * (~/.workbuddy/binaries/PortableGit/versions/<ver>/, either bin/sh.exe or
+ * (`<data root>/binaries/PortableGit/versions/<ver>/`, either bin/sh.exe or
  * usr/bin/sh.exe). Windows builds of WorkBuddy ship this MSYS shell, so hook
  * commands are executable there even though /bin/sh does not exist. Memoized
  * — the bundled runtime cannot change mid-process. Returns null when not
@@ -112,7 +113,7 @@ function resolveWorkbuddyShell(): string | null {
   if (_wbShellCache === undefined) {
     _wbShellCache = null;
     if (process.platform === 'win32') {
-      const dir = latestVersionDir(WORKBUDDY_PORTABLE_GIT_DIR);
+      const dir = workbuddyVersionDirs('PortableGit')[0];
       if (dir) {
         for (const rel of ['bin', path.join('usr', 'bin')]) {
           const shBin = path.join(dir, rel, 'sh.exe');
@@ -215,7 +216,7 @@ function gitPathDirs(root: string): { first: string[]; last: string[] } {
  * spawned it), so a key would only invite a per-host lookup that never happens.
  */
 const BUNDLED_GIT_RESOLVERS: Array<() => string[]> = [
-  () => versionDirsNewestFirst(WORKBUDDY_PORTABLE_GIT_DIR), // workbuddy
+  () => workbuddyVersionDirs('PortableGit'), // workbuddy
 ];
 
 /**
