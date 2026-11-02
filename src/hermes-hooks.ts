@@ -58,7 +58,7 @@ export type InstructionsSection =
  */
 export async function lastInstructionsSection(home = toolHome('hermes')): Promise<InstructionsSection> {
   const agentLog = await readFileSafe(path.join(home, 'logs', 'agent.log'));
-  const id = HERMES_INSTRUCTIONS_SECTION.replace('.', '\\.');
+  const id = HERMES_INSTRUCTIONS_SECTION.replaceAll('.', '\\.');
   const rendered = new RegExp(`: Session plugin prompt section: id=${id} `);
   const skipped = new RegExp(`: Plugin system prompt section ${id} (?:\\([^)]*\\) )?(.+)$`);
   // Python writes the log in text mode: CRLF on Windows.

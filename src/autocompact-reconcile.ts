@@ -124,16 +124,14 @@ export async function reconcileAutoCompactLocked(
 /** Installed, not excluded tools this policy can reach, with the file each reads. */
 async function resolveTargets(localConfig: LocalConfig): Promise<Target[]> {
   const targets: Target[] = [];
-  for (const kind of ['claude', 'buddy', 'codex', 'dsh'] as const satisfies readonly Kind[]) {
-    const file = FILE_OF[kind];
-    for (const tool of TOOL_IDS.filter((id) => TOOLS[id].autoCompact === kind)) {
-      if (isAgentExcluded(localConfig, tool)) continue;
-      // A root the member recorded at init (CODEX_HOME, CLAUDE_CONFIG_DIR) wins,
-      // so a pull from a shell without the variable still finds it.
-      const home = recordedToolRootDir(tool, localConfig.toolRoots) ?? toolHome(tool);
-      if (!(await pathExists(home))) continue;
-      targets.push({ tool, kind, file: path.join(home, file) });
-    }
+  for (const tool of TOOL_IDS) {
+    const kind = TOOLS[tool].autoCompact;
+    if (kind === 'none' || isAgentExcluded(localConfig, tool)) continue;
+    // A root the member recorded at init (CODEX_HOME, CLAUDE_CONFIG_DIR) wins,
+    // so a pull from a shell without the variable still finds it.
+    const home = recordedToolRootDir(tool, localConfig.toolRoots) ?? toolHome(tool);
+    if (!(await pathExists(home))) continue;
+    targets.push({ tool, kind, file: path.join(home, FILE_OF[kind]) });
   }
   return targets;
 }

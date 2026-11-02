@@ -162,7 +162,7 @@ sharing:
 
 `teamai pull` lists the paths it delivered in this clone's `.git/info/exclude`. It does not change `.gitignore`. The tools still load the files. `git status` does not show them.
 
-In a single-repo team, the committed hook settings keep only teamai's built-in hooks, so a fresh clone still has them. The team's own hooks go to the file beside them that the tool reads as yours:
+In a single-repo team, these tools' committed hook settings keep only teamai's built-in hooks, so a fresh clone still has them. The team's own hooks go to the file beside them that the tool reads as yours:
 
 | Tool | Committed | Team hooks |
 |---|---|---|

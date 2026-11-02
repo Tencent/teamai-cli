@@ -146,7 +146,7 @@ describe('ensureBundledRuntimeOnPath', () => {
 
     ensureBundledRuntimeOnPath('win32');
 
-    expect(process.env.PATH!.split(path.delimiter)[0]).toBe(path.join(root, 'cmd'));
+    expect((process.env.PATH ?? '').split(path.delimiter)[0]).toBe(path.join(root, 'cmd'));
   });
 
   it('leaves PATH alone off Windows', () => {
@@ -203,6 +203,7 @@ describe('resolveWorkbuddyNode', () => {
   it('takes the newest complete version, past the active-version file and an unfinished unpack', () => {
     const versions = versionsIn(path.join(homeState.home, '.workbuddy'));
     makeNode(path.join(versions, '22.9.0-3'));
+    makeNode(path.join(versions, '22.22.2-3'));
     const newest = makeNode(path.join(versions, '22.22.2-6'));
     fs.mkdirSync(path.join(versions, '24.0.0-1'), { recursive: true });
     fs.mkdirSync(path.join(versions, '24.1.0-1.installing.42'), { recursive: true });

@@ -420,8 +420,6 @@ const SUBAGENT_START_SPEC: BuiltinHookSpec = {
  * uses Git Bash but its IDE uses cmd.exe, so its built-ins launch Git Bash
  * explicitly through a script that keeps the fail-open contract.
  */
-
-
 export function builtinHookDefs(tool: string): HookDef[] {
   // ZCode renders per-event timeouts from the ZCODE_TIMEOUT_MS table in its own
   // writer (toZcodeEntry), so def.timeout stays unset for it.

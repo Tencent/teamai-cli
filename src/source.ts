@@ -1525,7 +1525,7 @@ async function legacyCopyKeeper(
   const toolPaths = scopedToolPaths(teamConfig, localConfig);
   const install = installOf(teamConfig, localConfig);
   const legacyRoots: string[] = [];
-// oxlint-disable-next-line teamai/tool-facts -- frozen: the tools whose skills releases before #993 put in the scope root
+  // oxlint-disable-next-line teamai/tool-facts -- frozen: the tools whose skills releases before #993 put in the scope root
   for (const tool of ['hermes', 'openclaw']) {
     const configured = toolPaths[tool]?.skills;
     if (!configured) continue;

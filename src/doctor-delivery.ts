@@ -2659,6 +2659,8 @@ export async function buildInstructionDeliveryChecks(ctx: DoctorContext): Promis
 /**
  * Whether Hermes's last session took teamai's prompt section, as its log says: the team
  * instructions reach Hermes only through it. Null while the log records no outcome for it.
+ * The log names no project, so a section other plugins crowded out may have been another
+ * project's, whose section was longer: that warns. A section of teamai's own that failed fails.
  */
 async function hermesSectionCheck(): Promise<Check | null> {
   const { HERMES_INSTRUCTIONS_SECTION, lastInstructionsSection } = await import('./hermes-hooks.js');
@@ -2675,8 +2677,8 @@ async function hermesSectionCheck(): Promise<Check | null> {
       return {
         name,
         source: 'local',
-        check: async () => false,
-        fix: `Hermes's session at ${section.at} got none of the team instructions: ${HERMES_INSTRUCTIONS_SECTION} ${section.reason}. `
+        check: async () => 'warn',
+        fix: `The last Hermes session on this machine, at ${section.at}, got none of the team instructions: ${HERMES_INSTRUCTIONS_SECTION} ${section.reason}. `
           + `Plugin sections share 8,000 characters and 32 sections, filled in id order, and other plugins' sections sorting before `
           + `${HERMES_INSTRUCTIONS_SECTION} took them first. Disable a plugin you do not need (plugins.disabled in ${getHermesConfigPath()}) `
           + `or shorten its section, then start a new Hermes session. ${agentLog} lists each section Hermes rendered and its size.`,
@@ -2686,7 +2688,7 @@ async function hermesSectionCheck(): Promise<Check | null> {
         name,
         source: 'local',
         check: async () => false,
-        fix: `Hermes's session at ${section.at} got none of the team instructions: ${HERMES_INSTRUCTIONS_SECTION} ${section.reason}. `
+        fix: `The last Hermes session on this machine, at ${section.at}, got none of the team instructions: ${HERMES_INSTRUCTIONS_SECTION} ${section.reason}. `
           + `Run \`teamai hooks inject\`, then start a new Hermes session; ${agentLog} has the details.`,
       };
     default: {

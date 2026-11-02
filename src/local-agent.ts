@@ -3464,7 +3464,7 @@ async function removeWorkspaceModels(): Promise<string[]> {
   }
   const left: string[] = [];
   for (const [workspacePath, scopeManifest] of Object.entries(manifest.workspaceModels ?? {})) {
-// oxlint-disable-next-line teamai/tool-facts -- the keys of a workspace's buddy models record (BuddyAgent)
+    // oxlint-disable-next-line teamai/tool-facts -- the keys of a workspace's buddy models record (BuddyAgent)
     for (const agentKind of ['codebuddy', 'workbuddy'] as const) {
       if (scopeManifest[agentKind] === undefined) continue;
       try {

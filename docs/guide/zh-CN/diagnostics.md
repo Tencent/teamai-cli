@@ -43,11 +43,11 @@ OpenCode hooks 使用 `teamai hooks inject` 或 `teamai pull` 记录的 Node 可
 
 `doctor` 会检查 Hermes 的整个 `SOUL.md`，包括个人内容。Hermes 的 `config.yaml` 中显式设置的 `context_file_max_chars` 是明确上限；未设置时，上限随模型变化，超过最低 20,000 字符会产生提示性警告。请缩短文件或检查上限；`pull` 不会截断你的指令。
 
-在项目中，Hermes 通过 teamai 插件的提示段获得团队指令。所有插件的提示段共享 8,000 字符和 32 段的上限，Hermes 按段 id 顺序填充，放不下的段整段丢弃。其他插件添加哪些段只有运行后才知道，所以 `doctor` 读取 Hermes 在 `logs/agent.log` 中记录的最近一次结果：
+在项目中，Hermes 通过 teamai 插件的提示段获得团队指令。所有插件的提示段共享 8,000 字符和 32 段的上限，Hermes 按段 id 顺序填充，放不下的段整段丢弃。其他插件添加哪些段只有运行后才知道，所以 `doctor` 读取 Hermes 在 `logs/agent.log` 中记录的最近一次结果。该日志不记录项目，所以段被挤掉时只给警告；teamai 插件自身生成段失败时才算失败：
 
 ```text
-  ✖ Hermes's last session took teamai's instructions section
-    → Hermes's session at 2026-11-01 10:22:03 got none of the team instructions: teamai.instructions exceeded the aggregate session budget (8000 chars) and was skipped. Plugin sections share 8,000 characters and 32 sections, filled in id order, and other plugins' sections sorting before teamai.instructions took them first. Disable a plugin you do not need (plugins.disabled in /home/ana/.hermes/config.yaml) or shorten its section, then start a new Hermes session. /home/ana/.hermes/logs/agent.log lists each section Hermes rendered and its size.
+  ⚠ Hermes's last session took teamai's instructions section
+    → The last Hermes session on this machine, at 2026-11-01 10:22:03, got none of the team instructions: teamai.instructions exceeded the aggregate session budget (8000 chars) and was skipped. Plugin sections share 8,000 characters and 32 sections, filled in id order, and other plugins' sections sorting before teamai.instructions took them first. Disable a plugin you do not need (plugins.disabled in /home/ana/.hermes/config.yaml) or shorten its section, then start a new Hermes session. /home/ana/.hermes/logs/agent.log lists each section Hermes rendered and its size.
 ```
 
 Pi 扩展会启动 `teamai pull` 或 `teamai hooks inject` 记录的 Node 可执行文件和 TeamAI 入口。移动或重新安装后，请重新运行其中一个命令并重启 Pi。

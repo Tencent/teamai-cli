@@ -460,13 +460,12 @@ async function buildHookChecks(
       const { readGateChecks } = await import('./doctor-delivery.js');
       const where = await locate(tool, 'hooks', install);
       const hooksDir = ownOf(where)?.path;
-      if (!hooksDir || !await pathExists(path.join(hooksDir, OPENCLAW_HOOK_DIR))) continue;
+      // Each gate counts once teamai wrote what it holds back.
       for (const gate of where.channel === 'files' ? where.readGates : []) {
-        if (gate.kind === 'openclaw-plugins-enabled') {
-          if (!await pathExists(gate.plugin)) continue;
-          checks.push(...await readGateChecks([gate], { summary: `${gate.plugin} holds the team's hooks`, noun: 'hooks', names: [] }));
-        } else {
+        if (gate.kind === 'openclaw-hooks-enabled' && hooksDir !== undefined && await pathExists(path.join(hooksDir, OPENCLAW_HOOK_DIR))) {
           checks.push(...await readGateChecks([gate], { summary: `${path.join(hooksDir, OPENCLAW_HOOK_DIR)} holds teamai's hook`, noun: 'hook', names: [] }));
+        } else if (gate.kind === 'openclaw-plugins-enabled' && await pathExists(gate.plugin)) {
+          checks.push(...await readGateChecks([gate], { summary: `${gate.plugin} holds the team's hooks`, noun: 'hooks', names: [] }));
         }
       }
       continue;

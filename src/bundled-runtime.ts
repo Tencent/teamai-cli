@@ -37,8 +37,9 @@ export function resetBundledRuntimeCache(): void {
  * hook-injection fast path and must not drag in update's import graph.
  */
 function compareSemver(a: string, b: string): number {
-  const aParts = a.split('.').map(s => parseInt(s, 10) || 0);
-  const bParts = b.split('.').map(s => parseInt(s, 10) || 0);
+  // WorkBuddy's `<version>-<variant>` dirs: the variant counts as one more segment.
+  const aParts = a.split(/[.-]/).map(s => parseInt(s, 10) || 0);
+  const bParts = b.split(/[.-]/).map(s => parseInt(s, 10) || 0);
   const len = Math.max(aParts.length, bParts.length);
   for (let i = 0; i < len; i++) {
     const diff = (aParts[i] ?? 0) - (bParts[i] ?? 0);
@@ -271,14 +272,14 @@ const BUNDLED_SHELLS: Record<BundledShellTool, () => string | null> = {
   codebuddy: resolveCodebuddyShell,
 };
 
-/**
- * Return the shell a tool provides for hook commands, or null when it provides
- * none (the caller should then fall back to the /bin/sh check).
- */
 function isBundledShellTool(tool: string): tool is BundledShellTool {
   return isToolId(tool) && TOOLS[tool].hooks.shell === 'bundled';
 }
 
+/**
+ * Return the shell a tool provides for hook commands, or null when it provides
+ * none (the caller should then fall back to the /bin/sh check).
+ */
 export function bundledShellFor(tool: string): string | null {
   return isBundledShellTool(tool) ? BUNDLED_SHELLS[tool]() : null;
 }

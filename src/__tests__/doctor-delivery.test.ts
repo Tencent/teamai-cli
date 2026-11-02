@@ -227,18 +227,22 @@ describe('doctor — skills delivered on disk', () => {
     });
 
     it.each([
-      ['the entry is missing', { hooks: { internal: { enabled: true } } }, false],
-      ['the entry is disabled', { hooks: { internal: { entries: { 'teamai-status-report': { enabled: false } } } } }, false],
-      ['internal hooks are off', { hooks: { internal: { enabled: false, entries: { 'teamai-status-report': { enabled: true } } } } }, false],
-      ['the entry is enabled', { hooks: { internal: { enabled: true, entries: { 'teamai-status-report': { enabled: true } } } } }, true],
-    ])('reports %s', async (_label, cfg, ok) => {
+      ['the entry is missing', { hooks: { internal: { enabled: true } } }],
+      ['the entry is disabled', { hooks: { internal: { entries: { 'teamai-status-report': { enabled: false } } } } }],
+      ['internal hooks are off', { hooks: { internal: { enabled: false, entries: { 'teamai-status-report': { enabled: true } } } } }],
+    ])('fails when %s, giving the command that enables it', async (_label, cfg) => {
       await fse.writeJson(path.join(stateDir(), 'openclaw.json'), cfg);
 
       const check = await hookCheck();
 
-      expect(check).toBeDefined();
-      expect(await check!.check()).toBe(ok);
-      if (!ok) expect(check!.fix).toContain('openclaw hooks enable teamai-status-report');
+      expect(await check?.check()).toBe(false);
+      expect(check?.fix).toContain('openclaw hooks enable teamai-status-report');
+    });
+
+    it('passes when the entry is enabled', async () => {
+      await fse.writeJson(path.join(stateDir(), 'openclaw.json'), { hooks: { internal: { enabled: true, entries: { 'teamai-status-report': { enabled: true } } } } });
+
+      expect(await (await hookCheck())?.check()).toBe(true);
     });
 
     it('fails on an openclaw.json teamai cannot read, naming JSON5', async () => {
@@ -297,6 +301,21 @@ describe('doctor — skills delivered on disk', () => {
       await fse.writeJson(path.join(stateDir(), 'openclaw.json'), { plugins: loaded() });
 
       expect(await (await pluginCheck())?.check()).toBe(true);
+    });
+
+    it('matches the plugin id as OpenClaw does, ignoring case and spaces', async () => {
+      await fse.writeJson(path.join(stateDir(), 'openclaw.json'), { plugins: { ...loaded(), allow: [' TEAMAI-Team-Hooks '] } });
+      expect(await (await pluginCheck())?.check()).toBe(true);
+
+      await fse.writeJson(path.join(stateDir(), 'openclaw.json'), { plugins: { ...loaded(), deny: ['Teamai-Team-Hooks'] } });
+      expect(await (await pluginCheck())?.check()).toBe(false);
+    });
+
+    it('is built without teamai\'s workspace hook too', async () => {
+      await fse.remove(path.join(stateDir(), 'workspace', 'hooks'));
+      await fse.writeJson(path.join(stateDir(), 'openclaw.json'), { plugins: { ...loaded(), enabled: false } });
+
+      expect(await (await pluginCheck())?.check()).toBe(false);
     });
 
     it('is not built while the team has no hooks for OpenClaw', async () => {
