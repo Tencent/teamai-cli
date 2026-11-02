@@ -55,6 +55,17 @@ type Entry = z.infer<typeof EntrySchema>;
 /** A session this report counts, with what it counts it with: what {@link markReported} records of it. */
 export type FinishedSession = Pick<SessionOutcomeEvent, 'sessionId' | 'tool' | 'runMode' | 'outcomes'> & { counted: SessionUsage };
 
+/** A session's tool and run mode, each left out when the session has none. */
+function sessionLabels({ tool, runMode }: Pick<FinishedSession, 'tool' | 'runMode'>): Pick<FinishedSession, 'tool' | 'runMode'> {
+  const labels: Pick<FinishedSession, 'tool' | 'runMode'> = {};
+
+  if (tool) labels.tool = tool;
+
+  if (runMode) labels.runMode = runMode;
+
+  return labels;
+}
+
 /** What `fold` hands the report: the counts to add, and the sessions they count. */
 export interface OutcomeFold {
   delta: UserOutcomeStats;
@@ -112,18 +123,24 @@ function factsOf(member: DashboardEvent[], outcomes: SessionOutcomeEvent[]): Map
   for (const event of sorted) {
     const known: Facts = facts.get(event.sessionId) ?? { activeAt: event.timestamp };
     const runMode = runs.get(event.sessionId)?.runMode;
-    facts.set(event.sessionId, {
-      ...known,
-      activeAt: event.timestamp,
-      tool: event.tool,
-      ...(runMode ? { runMode } : {}),
-      ...(event.cwd ? { cwd: event.cwd } : {}),
-      ...(event.projectAnchor ? { anchor: event.projectAnchor } : {}),
-      ...(event.type === 'session_start' && known.startedAt === undefined
-        ? { startedAt: event.timestamp, ...(event.gitAtStart ? { startHead: event.gitAtStart.head } : {}) } : {}),
-      ...(event.gitHead ? { endHead: event.gitHead } : {}),
-      ...(event.gitHead && event.gitBranch ? { endBranch: event.gitBranch } : {}),
-    });
+    const next: Facts = { ...known, activeAt: event.timestamp, tool: event.tool };
+
+    if (runMode) next.runMode = runMode;
+
+    if (event.cwd) next.cwd = event.cwd;
+
+    if (event.projectAnchor) next.anchor = event.projectAnchor;
+
+    if (event.type === 'session_start' && known.startedAt === undefined) {
+      next.startedAt = event.timestamp;
+
+      if (event.gitAtStart) next.startHead = event.gitAtStart.head;
+    }
+
+    if (event.gitHead) next.endHead = event.gitHead;
+
+    if (event.gitHead && event.gitBranch) next.endBranch = event.gitBranch;
+    facts.set(event.sessionId, next);
   }
 
   // A session with no event of its own (a tool teamai records no hooks for) is known by its outcomes.
@@ -136,8 +153,7 @@ function factsOf(member: DashboardEvent[], outcomes: SessionOutcomeEvent[]): Map
     const runMode = outcome.runMode ?? known?.runMode;
     facts.set(outcome.sessionId, {
       activeAt: known && known.activeAt > outcome.timestamp ? known.activeAt : outcome.timestamp,
-      ...(tool ? { tool } : {}),
-      ...(runMode ? { runMode } : {}),
+      ...sessionLabels({ tool, runMode }),
     });
   }
 
@@ -180,7 +196,12 @@ async function checkoutOf(facts: Facts): Promise<string | undefined> {
 async function withHeadNow(facts: Facts, cwd: string): Promise<Facts> {
   const [head, branch] = await Promise.all([getHeadCommit(cwd), getCurrentBranch(cwd)]);
 
-  return head ? { ...facts, endHead: head, ...(branch ? { endBranch: branch } : {}) } : facts;
+  if (!head) return facts;
+  const next: Facts = { ...facts, endHead: head };
+
+  if (branch) next.endBranch = branch;
+
+  return next;
 }
 
 /** The commits the member authored in `cwd`, the session's checkout, from its start to its last Stop, oldest first. */
@@ -289,8 +310,8 @@ async function fold(input: FoldInput): Promise<OutcomeFold> {
 
     // A session that has since stopped on another branch is asked about that one.
     if (cwd && commits.length > 0 && facts.endBranch && prs[sessionId]?.branch !== facts.endBranch) {
-      const looked = await lookUpPr({ cwd, branch: facts.endBranch, commits }).catch((e: unknown) => {
-        log.debug(`outcomes: pull request lookup for session ${sessionId} failed: ${e instanceof Error ? e.message : String(e)}`);
+      const looked = await lookUpPr({ cwd, branch: facts.endBranch, commits }).catch((cause: unknown) => {
+        log.debug(`outcomes: pull request lookup for session ${sessionId} failed: ${cause instanceof Error ? cause.message : String(cause)}`);
 
         return undefined;
       });
@@ -310,8 +331,7 @@ async function fold(input: FoldInput): Promise<OutcomeFold> {
 
     return [{
       sessionId,
-      ...(facts.tool ? { tool: facts.tool } : {}),
-      ...(facts.runMode ? { runMode: facts.runMode } : {}),
+      ...sessionLabels(facts),
       outcomes: uniqueOutcomes([
         ...commits.map((sha): WorkOutcome => ({ kind: 'commit', sha })),
         ...(pr ? [{ kind: 'pr' as const, url: pr }] : []),
@@ -363,7 +383,7 @@ export interface OutcomeSummary {
 function summarize(events: readonly SessionOutcomeEvent[], { dataHomeKey: key, now }: { dataHomeKey?: string; now: number }): OutcomeSummary {
   const counted = events.flatMap(({ sessionId, tool, runMode, outcomes, counted: usage, timestamp, dataHomeKey: eventKey }): CountedSession[] =>
     (usage && (key === undefined || eventKey === key) && now - Date.parse(timestamp) <= SESSION_OUTCOME_RETENTION_MS
-      ? [{ sessionId, ...(tool ? { tool } : {}), ...(runMode ? { runMode } : {}), countedAt: timestamp, outcomes, counted: usage }]
+      ? [{ sessionId, ...sessionLabels({ tool, runMode }), countedAt: timestamp, outcomes, counted: usage }]
       : []));
 
   return {
@@ -395,8 +415,8 @@ async function markReported(config: LocalConfig, finished: readonly FinishedSess
 
   for (const session of finished) {
     await appendEvent({
-      type: 'session_outcome', timestamp, sessionId: session.sessionId, ...(session.tool ? { tool: session.tool } : {}), dataHomeKey: key,
-      ...(session.runMode ? { runMode: session.runMode } : {}), outcomes: session.outcomes, counted: session.counted,
+      type: 'session_outcome', timestamp, sessionId: session.sessionId, ...sessionLabels({ tool: session.tool }), dataHomeKey: key,
+      ...sessionLabels({ runMode: session.runMode }), outcomes: session.outcomes, counted: session.counted,
     });
   }
 }

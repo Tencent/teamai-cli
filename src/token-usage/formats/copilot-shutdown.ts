@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import type { TokenUsage } from '../../types.js';
+import type { JsonValue, TokenUsage } from '../../types.js';
 import type { TokenRequest } from '../index.js';
 
 const Count = z.number().finite().nonnegative().optional().catch(undefined);
@@ -47,7 +47,7 @@ function fromUsage(usage: z.infer<typeof ModelUsage>): TokenUsage | undefined {
  * record of a run stays with the dashboard collector. Undefined for any other
  * record; `tokens` is absent from a shutdown without counters.
  */
-export function readCopilotShutdown(record: unknown): { tokens?: TokenUsage; requests: TokenRequest[] } | undefined {
+export function readCopilotShutdown(record: JsonValue): { tokens?: TokenUsage; requests: TokenRequest[] } | undefined {
   const shutdown = Shutdown.safeParse(record);
 
   if (!shutdown.success) return undefined;

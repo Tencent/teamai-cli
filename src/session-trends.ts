@@ -1,3 +1,5 @@
+import { z } from 'zod';
+
 import {
   DASHBOARD_IDLE_TIMEOUT_MS,
   type DailyUserStats,
@@ -114,36 +116,31 @@ function positiveDelta(current: number, previous: number | undefined): number {
   return Math.max(0, current - (previous ?? 0));
 }
 
+/** A count a snapshot file holds, 0 for what is not a number. */
+export const SnapshotCountSchema = z.number().catch(0);
+
+/** A day's request costs read from a file, 0 (or no price version) for each field it does not hold. */
+const RequestCostEntrySchema = z.object({
+  pricedRequests: SnapshotCountSchema,
+  costMicros: SnapshotCountSchema,
+  cacheReadTokens: SnapshotCountSchema,
+  cacheEligibleInputTokens: SnapshotCountSchema,
+  priceVersion: z.string().catch(''),
+});
+
+/** Request costs per day read from a file, without the days that are not objects; empty for what is not one. */
+const RequestDailySchema = z.record(z.string(), RequestCostEntrySchema.optional().catch(undefined))
+  .transform((days) => Object.fromEntries(Object.entries(days).flatMap(([date, request]) => (request ? [[date, request]] : []))))
+  .catch({});
+
 /** Request costs per day read from a file; empty for what is not one. */
-export function parseRequestDaily(value: unknown): Record<string, RequestCostMetrics> {
-  const requestDaily: Record<string, RequestCostMetrics> = {};
-
-  if (!value || typeof value !== 'object') return requestDaily;
-
-  for (const [date, request] of Object.entries(value)) {
-    if (!request || typeof request !== 'object') continue;
-
-    const num = (field: string) => {
-      const n: unknown = Object.entries(request).find(([k]) => k === field)?.[1];
-
-      return typeof n === 'number' ? n : 0;
-    };
-
-    const version: unknown = Object.entries(request).find(([k]) => k === 'priceVersion')?.[1];
-    requestDaily[date] = {
-      pricedRequests: num('pricedRequests'), costMicros: num('costMicros'), cacheReadTokens: num('cacheReadTokens'),
-      cacheEligibleInputTokens: num('cacheEligibleInputTokens'), priceVersion: typeof version === 'string' ? version : '',
-    };
-  }
-
-  return requestDaily;
-}
+export const parseRequestDaily = RequestDailySchema.parse;
 
 /** Request costs per day summed, `a`'s price version where both hold a day. */
 export function addRequestDaily(
   a: Record<string, RequestCostMetrics>,
   b: Record<string, RequestCostMetrics>,
-): Record<string, RequestCostMetrics> {
+) {
   const sum = { ...a };
 
   for (const [date, request] of Object.entries(b)) {
@@ -158,43 +155,46 @@ export function addRequestDaily(
   return sum;
 }
 
-/** A daily snapshot entry read from a file, or undefined when it is not one. */
-export function parseDailySnapshot(value: unknown): DailySessionSnapshot | undefined {
-  if (!value || typeof value !== 'object') return undefined;
+/**
+ * A daily snapshot entry read from a file: one with a string `date` and numeric `prompts` and `durationMs`. A
+ * snapshot from before costs were kept per day holds them as session fields (`pricedRequests` and the rest).
+ */
+const DailySnapshotEntrySchema = z.object({
+  date: z.string(),
+  prompts: z.number(),
+  durationMs: z.number(),
+  succeeded: z.unknown().optional(),
+  corrected: z.unknown().optional(),
+  requestDaily: RequestDailySchema.optional(),
+  sessionCacheReadTokens: z.number().optional().catch(undefined),
+  sessionCacheEligibleTokens: z.number().optional().catch(undefined),
+  ...RequestCostEntrySchema.shape,
+}).transform((value): DailySessionSnapshot => {
+  // A snapshot from before costs were kept per day: read its session fields as
+  // the costs of the session's day, as the delta does.
+  const { pricedRequests, costMicros, cacheReadTokens, cacheEligibleInputTokens, priceVersion } = value;
 
-  if (!('date' in value) || typeof value.date !== 'string' || !('prompts' in value) || typeof value.prompts !== 'number'
-    || !('durationMs' in value) || typeof value.durationMs !== 'number') return undefined;
+  const requestDaily = value.requestDaily
+    ?? (pricedRequests || costMicros || cacheReadTokens || cacheEligibleInputTokens
+      ? { [value.date]: { pricedRequests, costMicros, cacheReadTokens, cacheEligibleInputTokens, priceVersion } }
+      : {});
 
-  // A snapshot from before costs were kept per day holds them as session fields,
-  // on the session's day: read them as that day's, as the delta does.
-  const legacy = (field: string): number => {
-    const n: unknown = Object.entries(value).find(([k]) => k === field)?.[1];
-
-    return typeof n === 'number' ? n : 0;
-  };
-
-  const version: unknown = Object.entries(value).find(([k]) => k === 'priceVersion')?.[1];
-
-  const requestDaily = 'requestDaily' in value
-    ? parseRequestDaily(value.requestDaily)
-    : legacy('pricedRequests') || legacy('costMicros') || legacy('cacheReadTokens') || legacy('cacheEligibleInputTokens')
-      ? { [value.date]: {
-        pricedRequests: legacy('pricedRequests'), costMicros: legacy('costMicros'), cacheReadTokens: legacy('cacheReadTokens'),
-        cacheEligibleInputTokens: legacy('cacheEligibleInputTokens'), priceVersion: typeof version === 'string' ? version : '',
-      } }
-      : {};
-
-  return {
+  const snapshot: DailySessionSnapshot = {
     date: value.date, prompts: value.prompts, durationMs: value.durationMs,
-    succeeded: 'succeeded' in value && value.succeeded === 1 ? 1 : 0,
-    corrected: 'corrected' in value && value.corrected === 1 ? 1 : 0,
+    succeeded: value.succeeded === 1 ? 1 : 0,
+    corrected: value.corrected === 1 ? 1 : 0,
     requestDaily,
-    ...('sessionCacheReadTokens' in value && typeof value.sessionCacheReadTokens === 'number'
-      ? { sessionCacheReadTokens: value.sessionCacheReadTokens } : {}),
-    ...('sessionCacheEligibleTokens' in value && typeof value.sessionCacheEligibleTokens === 'number'
-      ? { sessionCacheEligibleTokens: value.sessionCacheEligibleTokens } : {}),
   };
-}
+
+  if (value.sessionCacheReadTokens !== undefined) snapshot.sessionCacheReadTokens = value.sessionCacheReadTokens;
+
+  if (value.sessionCacheEligibleTokens !== undefined) snapshot.sessionCacheEligibleTokens = value.sessionCacheEligibleTokens;
+
+  return snapshot;
+});
+
+/** A daily snapshot entry read from a file, or undefined when it is not one. */
+export const parseDailySnapshot = DailySnapshotEntrySchema.optional().catch(undefined).parse;
 
 /** A reported snapshot's request costs per day, from its session-level fields if it predates them. */
 function reportedRequestDaily(previous: DailySessionSnapshot | undefined): Record<string, RequestCostMetrics> {
@@ -211,6 +211,11 @@ function reportedRequestDaily(previous: DailySessionSnapshot | undefined): Recor
   );
 }
 
+interface SessionCacheTokens {
+  read: number;
+  eligible: number;
+}
+
 /**
  * A reported snapshot's session cache tokens. A session reported under the old
  * code has no sessionCache* fields but does have requestDaily cache: summed as
@@ -219,12 +224,18 @@ function reportedRequestDaily(previous: DailySessionSnapshot | undefined): Recor
 function reportedSessionCache(
   previous: DailySessionSnapshot | undefined,
   requestDaily: Record<string, RequestCostMetrics>,
-): { read: number; eligible: number } {
+): SessionCacheTokens {
   return {
     read: previous?.sessionCacheReadTokens ?? Object.values(requestDaily).reduce((sum, r) => sum + r.cacheReadTokens, 0),
     eligible: previous?.sessionCacheEligibleTokens
       ?? Object.values(requestDaily).reduce((sum, r) => sum + r.cacheEligibleInputTokens, 0),
   };
+}
+
+/** A run's share of a snapshot, and what remains of it for the other runs. */
+export interface DailySessionSplit {
+  taken: DailySessionSnapshot;
+  left: DailySessionSnapshot;
 }
 
 /**
@@ -237,12 +248,12 @@ function reportedSessionCache(
 export function takeDailySession(
   run: DailySessionSnapshot,
   left: DailySessionSnapshot,
-): { taken: DailySessionSnapshot; left: DailySessionSnapshot } {
+): DailySessionSplit {
   const upTo = (own: number, rest: number) => Math.max(0, Math.min(own, rest));
   const leftDaily = reportedRequestDaily(left);
   const leftCache = reportedSessionCache(left, leftDaily);
   const takenDaily: Record<string, RequestCostMetrics> = {};
-  const restDaily: Record<string, RequestCostMetrics> = { ...leftDaily };
+  const restDaily = { ...leftDaily };
 
   for (const [date, request] of Object.entries(run.requestDaily)) {
     const rest = leftDaily[date];
@@ -285,11 +296,17 @@ export function takeDailySession(
   };
 }
 
+/** The daily stats a report adds, and the snapshots it reported them from. */
+export interface DailyStatsDelta {
+  delta: Record<string, DailyUserStats>;
+  nextReported: ReportedDailySessions;
+}
+
 /** Compute idempotent daily deltas while keeping resumed work on the first Stop day. */
 export function computeDailyStatsDelta(
   current: Map<string, DailySessionSnapshot>,
   reported: ReportedDailySessions,
-): { delta: Record<string, DailyUserStats>; nextReported: ReportedDailySessions } {
+): DailyStatsDelta {
   const delta: Record<string, DailyUserStats> = {};
   const nextReported: ReportedDailySessions = {};
 
@@ -340,8 +357,8 @@ export function computeDailyStatsDelta(
 export function mergeDailyStats(
   existing: Record<string, DailyUserStats> | undefined,
   delta: Record<string, DailyUserStats>,
-): Record<string, DailyUserStats> {
-  const merged: Record<string, DailyUserStats> = { ...existing };
+) {
+  const merged = { ...existing };
 
   for (const [date, increment] of Object.entries(delta)) {
     const current = merged[date] ?? emptyDaily();
@@ -372,6 +389,12 @@ export interface TrendPeriod {
   correctionRate: number | null;
 }
 
+/** The trend of the last seven days, and of the seven before them. */
+export interface TrendWindow {
+  current: TrendPeriod;
+  previous: TrendPeriod;
+}
+
 function summarizePeriod(buckets: DailyUserStats[]): TrendPeriod {
   const totals = buckets.reduce((sum, value) => ({
     sessionsEnded: sum.sessionsEnded + value.sessionsEnded,
@@ -399,7 +422,7 @@ function summarizePeriod(buckets: DailyUserStats[]): TrendPeriod {
 export function summarizeTrendWindow(
   daily: Record<string, DailyUserStats>,
   now = new Date(),
-): { current: TrendPeriod; previous: TrendPeriod } {
+): TrendWindow {
   const end = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
   const currentStart = end - 6 * 86_400_000;
   const previousStart = currentStart - 7 * 86_400_000;
@@ -416,14 +439,23 @@ export function summarizeTrendWindow(
   return { current: summarizePeriod(current), previous: summarizePeriod(previous) };
 }
 
+/** A period's average session cost, over the sessions with priced requests. */
+export interface SessionCostPeriod {
+  avgSessionCostMicros: number | null;
+  pricedSessions: number;
+}
+
+/** The session costs of the last seven days, and of the seven before them. */
+export interface SessionCostWindow {
+  current: SessionCostPeriod;
+  previous: SessionCostPeriod;
+}
+
 /** Session-cost cohorts use the first Stop day, including the session's known request costs.
  * Sessions with no priced requests are excluded, rather than treated as free.
  * Kept separate from request-day digest totals for backwards compatibility.
  */
-export function summarizeSessionCosts(sessions: Map<string, DailySessionSnapshot>, now = new Date()): {
-  current: { avgSessionCostMicros: number | null; pricedSessions: number };
-  previous: { avgSessionCostMicros: number | null; pricedSessions: number };
-} {
+export function summarizeSessionCosts(sessions: Map<string, DailySessionSnapshot>, now = new Date()): SessionCostWindow {
   const end = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) + 86_400_000;
   const currentStart = end - 7 * 86_400_000;
   const previousStart = currentStart - 7 * 86_400_000;

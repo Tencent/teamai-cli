@@ -134,7 +134,7 @@ export function collectSession(sessionId: string, events: DashboardEvent[]): Ses
 
   const keys = repoKeys(events);
 
-  return {
+  const summary: SessionSummary = {
     sessionId,
     tool,
     project: repoLabel(keys.get(sessionId) ?? '', new Set(keys.values())),
@@ -149,8 +149,11 @@ export function collectSession(sessionId: string, events: DashboardEvent[]): Ses
     prompts: metrics.prompts,
     firstPrompt,
     valuable: isValuable({ interventionCount, distinctTools }),
-    ...gitStart ? { gitAtStart: gitStart.state } : {},
   };
+
+  if (gitStart) summary.gitAtStart = gitStart.state;
+
+  return summary;
 }
 
 /** Short, stable id fragment for headings (first segment of a UUID). */
@@ -242,7 +245,7 @@ export async function appendMonthlyLog(
     try {
       existing = await fs.promises.readFile(file, 'utf-8');
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
     }
 
     if (existing.includes(marker)) return null;

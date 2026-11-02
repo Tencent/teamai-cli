@@ -6,13 +6,14 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { readEvents, dataHomeKey, isHumanPromptEntry } from './dashboard-collector.js';
+import { z } from 'zod';
+import { readEvents, dataHomeKey, isHumanPromptEntry, TranscriptEntrySchema, type TranscriptEntry } from './dashboard-collector.js';
 import { readFileSafe, ensureDir, pathExists, readJson } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import type { RequestCostMetrics, TokenUsage } from './types.js';
-import { getDataHome, getTeamaiHomeDir, emptyTokenUsage } from './types.js';
+import { getDataHome, getTeamaiHomeDir, emptyTokenUsage, JsonValueSchema } from './types.js';
 import { projectsRootDir } from './utils/partition.js';
-import { parseDailySnapshot, type DailySessionSnapshot } from './session-trends.js';
+import { parseDailySnapshot, SnapshotCountSchema, type DailySessionSnapshot, type ReportedDailySessions } from './session-trends.js';
 
 /** Snapshot of already-reported per-session intervention counts (idempotency basis). */
 export type ReportedInterventions = Record<string, { interrupt: number; toolReject: number; correction: number }>;
@@ -80,7 +81,7 @@ async function knownDataHomes(options: { suppressMigrationNotice?: boolean } = {
   // A project whose data home is in its workspace is under no partition; a
   // session of it still in the log leads to it.
   const { resolveConfigForDir } = await import('./config.js');
-  const cwds = new Set((await readEvents()).flatMap((e) => (typeof e.cwd === 'string' ? [e.cwd] : [])));
+  const cwds = new Set((await readEvents()).flatMap((e) => (e.cwd !== undefined ? [e.cwd] : [])));
 
   for (const cwd of cwds) {
     // A read: the config is loaded, never migrated.
@@ -92,28 +93,32 @@ async function knownDataHomes(options: { suppressMigrationNotice?: boolean } = {
   return [...new Set(homes.map((home) => path.resolve(home)))];
 }
 
+/** A snapshot entry's reported prompts and its tokens summed, 0 for what it does not hold. */
+const ReportedSizeSchema = z.object({
+  prompts: SnapshotCountSchema,
+  tokens: z.union([z.array(SnapshotCountSchema), z.record(z.string(), SnapshotCountSchema)]).catch([]),
+}).transform(({ prompts, tokens }) => ({ prompts, tokens: Object.values(tokens).reduce((sum, n) => sum + n, 0) }))
+  .catch(() => ({ prompts: 0, tokens: 0 }));
+
 /** A snapshot entry's reported prompts and tokens, 0 for what it does not hold. */
-export function reportedSize(entry: unknown): { prompts: number; tokens: number } {
-  if (!entry || typeof entry !== 'object') return { prompts: 0, tokens: 0 };
-  const prompts = 'prompts' in entry && typeof entry.prompts === 'number' ? entry.prompts : 0;
+export const reportedSize = ReportedSizeSchema.parse;
 
-  const tokens = 'tokens' in entry && entry.tokens && typeof entry.tokens === 'object'
-    ? Object.values(entry.tokens).reduce((sum: number, n: unknown) => sum + (typeof n === 'number' ? n : 0), 0)
-    : 0;
+/** A snapshot file: entries by session ID, each read by the parser of its kind; null for what is not one. */
+const SnapshotFileSchema = z.record(z.string(), JsonValueSchema).nullable().catch(null);
 
-  return { prompts, tokens };
-}
+/** A snapshot as its file holds it, or as this report computed it. */
+type ScopeSnapshot = z.infer<typeof SnapshotFileSchema> | ReportedInterventions | ReportedPromptTokens | ReportedDailySessions;
 
 /** A scope's three snapshots (the shared ones for no data home), as a file holds them. */
 export interface ScopeSnapshots {
-  interventions: Record<string, unknown> | null;
-  promptTokens: Record<string, unknown> | null;
-  daily: Record<string, unknown> | null;
+  interventions: ScopeSnapshot;
+  promptTokens: ScopeSnapshot;
+  daily: ScopeSnapshot;
 }
 
 export async function readSnapshotsIn(dataHome: string | undefined): Promise<ScopeSnapshots> {
-  const read = (name: ReportedSnapshotName) =>
-    readJson<Record<string, unknown>>(dataHome === undefined ? sharedSnapshotPath(name) : snapshotPathIn(dataHome, name));
+  const read = async (name: ReportedSnapshotName) =>
+    SnapshotFileSchema.parse(await readJson(dataHome === undefined ? sharedSnapshotPath(name) : snapshotPathIn(dataHome, name)));
 
   const [interventions, promptTokens, daily] = await Promise.all(REPORTED_SNAPSHOTS.map(read));
 
@@ -121,31 +126,34 @@ export async function readSnapshotsIn(dataHome: string | undefined): Promise<Sco
 }
 
 /** An intervention entry read from a file, zero for what it does not hold. */
-export function interventionsEntry(value: unknown): ReportedInterventions[string] {
-  const count = (field: 'interrupt' | 'toolReject' | 'correction') =>
-    (value && typeof value === 'object' && field in value && typeof Object.entries(value).find(([k]) => k === field)?.[1] === 'number'
-      ? Number(Object.entries(value).find(([k]) => k === field)?.[1]) : 0);
+const InterventionsEntrySchema = z.object({
+  interrupt: SnapshotCountSchema,
+  toolReject: SnapshotCountSchema,
+  correction: SnapshotCountSchema,
+}).catch(() => ({ interrupt: 0, toolReject: 0, correction: 0 }));
 
-  return { interrupt: count('interrupt'), toolReject: count('toolReject'), correction: count('correction') };
-}
+/** An intervention entry read from a file, zero for what it does not hold. */
+export const interventionsEntry = InterventionsEntrySchema.parse;
+
+/** The token counts of a prompt-token entry read from a file, zero for what it does not hold. */
+const SnapshotTokensSchema = z.object({
+  input: SnapshotCountSchema,
+  output: SnapshotCountSchema,
+  cacheRead: SnapshotCountSchema,
+  cacheCreation: SnapshotCountSchema,
+}).catch(() => emptyTokenUsage());
 
 /** A prompt-token entry read from a file, zero for what it does not hold. */
-export function promptTokensEntry(value: unknown): ReportedPromptTokens[string] {
-  const tokens = emptyTokenUsage();
+const PromptTokensEntrySchema = z.object({
+  prompts: SnapshotCountSchema,
+  tokens: SnapshotTokensSchema,
+}).catch(() => ({ prompts: 0, tokens: emptyTokenUsage() }));
 
-  if (value && typeof value === 'object' && 'tokens' in value && value.tokens && typeof value.tokens === 'object') {
-    for (const [field, n] of Object.entries(value.tokens)) {
-      if (typeof n !== 'number') continue;
-
-      if (field === 'input' || field === 'output' || field === 'cacheRead' || field === 'cacheCreation') tokens[field] = n;
-    }
-  }
-
-  return { prompts: reportedSize(value).prompts, tokens };
-}
+/** A prompt-token entry read from a file, zero for what it does not hold. */
+export const promptTokensEntry = PromptTokensEntrySchema.parse;
 
 /** What a scope's snapshots hold of `id`: prompts, tokens and intervention counts. */
-function heldIn(snapshots: ScopeSnapshots, id: string): { prompts: number; tokens: number; interventions: number } {
+function heldIn(snapshots: ScopeSnapshots, id: string) {
   const fromTokens = reportedSize(snapshots.promptTokens?.[id]);
   const iv = interventionsEntry(snapshots.interventions?.[id]);
 
@@ -163,7 +171,7 @@ function heldIn(snapshots: ScopeSnapshots, id: string): { prompts: number; token
  */
 export function showsReported(own: ScopeSnapshots, shared: ScopeSnapshots, id: string): boolean {
   const inShared = [shared.interventions, shared.promptTokens, shared.daily].some((snapshot) =>
-    !!snapshot && typeof snapshot === 'object' && Object.hasOwn(snapshot, id));
+    !!snapshot && Object.hasOwn(snapshot, id));
 
   if (!inShared) return true;
   const a = heldIn(own, id);
@@ -228,15 +236,44 @@ function creditOf(held: Array<{ key: string; snapshots: ScopeSnapshots }>, id: s
 
   const latest = days.reduce<DailySessionSnapshot | undefined>((a, b) => (!a || b.prompts > a.prompts ? b : a), undefined);
 
-  return {
+  const credit: OwnerCredit = {
     interventions,
     promptTokens: { prompts, tokens },
     parts: held.map((part) => ({
       key: part.key, prompts: heldIn(part.snapshots, id).prompts, stop: stops.includes(part.snapshots),
     })),
-    ...(latest ? { daily: { ...latest, prompts, durationMs: days.reduce((sum, day) => sum + day.durationMs, 0) } } : {}),
   };
+
+  if (latest) credit.daily = { ...latest, prompts, durationMs: days.reduce((sum, day) => sum + day.durationMs, 0) };
+
+  return credit;
 }
+
+/** A line of the session owners file: the owner of a session ID and, seeded from split snapshots, its credit. */
+interface SessionOwnerLine {
+  sessionId: string;
+  dataHomeKey: string;
+  credit?: OwnerCredit;
+}
+
+/** A credit part read from the session owners file. */
+const CreditPartSchema = z.object({ key: z.string(), prompts: SnapshotCountSchema, stop: z.unknown().optional() })
+  .transform(({ key, prompts, stop }): CreditPart => ({ key, prompts, stop: stop === true }));
+
+/** A credit read from the session owners file, zero for what it does not hold; a part without a string key is skipped. */
+const OwnerCreditLineSchema = z.object({
+  interventions: InterventionsEntrySchema,
+  promptTokens: PromptTokensEntrySchema,
+  daily: z.unknown().optional(),
+  parts: z.array(CreditPartSchema.optional().catch(undefined)).catch([]),
+});
+
+/** A line of the session owners file as read; a field of the wrong type reads as absent. */
+const SessionOwnerLineSchema = z.object({
+  sessionId: z.string(),
+  dataHomeKey: z.string().optional().catch(undefined),
+  credit: OwnerCreditLineSchema.optional().catch(undefined),
+});
 
 /**
  * The owners the per-scope snapshots of an earlier release imply, as the file's
@@ -252,7 +289,7 @@ async function ownersFromSnapshots(options: { suppressMigrationNotice?: boolean 
     const snapshots = await readSnapshotsIn(dataHome);
 
     const ids = new Set([snapshots.interventions, snapshots.promptTokens, snapshots.daily].flatMap((snapshot) =>
-      (snapshot && typeof snapshot === 'object' ? Object.keys(snapshot) : [])));
+      (snapshot ? Object.keys(snapshot) : [])));
 
     const key = await dataHomeKey(dataHome);
 
@@ -278,8 +315,10 @@ async function ownersFromSnapshots(options: { suppressMigrationNotice?: boolean 
       && size(part).prompts === size(best).prompts && size(part).tokens === size(best).tokens);
 
     if (tied) continue;
-    const credit = held.length > 1 ? creditOf(held, sessionId) : undefined;
-    lines.push(JSON.stringify({ sessionId, dataHomeKey: best.key, ...(credit ? { credit } : {}) }));
+    const line: SessionOwnerLine = { sessionId, dataHomeKey: best.key };
+
+    if (held.length > 1) line.credit = creditOf(held, sessionId);
+    lines.push(JSON.stringify(line));
   }
 
   return lines.map((line) => `${line}\n`).join('');
@@ -295,37 +334,29 @@ function parseOwnerCredits(content: string | null): Map<string, OwnerCredit> {
   const seen = new Set<string>();
 
   for (const line of (content ?? '').split('\n')) {
-    let parsed: unknown;
+    let parsed: z.infer<typeof SessionOwnerLineSchema>;
 
     try {
-      parsed = JSON.parse(line);
+      const owner = SessionOwnerLineSchema.safeParse(JSON.parse(line));
+
+      if (!owner.success) continue;
+      parsed = owner.data;
     } catch {
       continue;
     }
 
-    if (!parsed || typeof parsed !== 'object' || !('sessionId' in parsed) || typeof parsed.sessionId !== 'string') continue;
-
     if (seen.has(parsed.sessionId)) continue;
     seen.add(parsed.sessionId);
 
-    if (!('credit' in parsed) || !parsed.credit || typeof parsed.credit !== 'object') continue;
-    const credit = parsed.credit;
-    const daily = 'daily' in credit ? parseDailySnapshot(credit.daily) : undefined;
-    const parts: CreditPart[] = [];
+    if (!parsed.credit) continue;
+    const daily = parseDailySnapshot(parsed.credit.daily);
+    const parts = parsed.credit.parts.flatMap((part) => (part ? [part] : []));
+    const credit: OwnerCredit = { interventions: parsed.credit.interventions, promptTokens: parsed.credit.promptTokens };
 
-    if ('parts' in credit && Array.isArray(credit.parts)) {
-      for (const part of credit.parts) {
-        if (!part || typeof part !== 'object' || !('key' in part) || typeof part.key !== 'string') continue;
-        parts.push({ key: part.key, prompts: reportedSize(part).prompts, stop: 'stop' in part && part.stop === true });
-      }
-    }
+    if (daily) credit.daily = daily;
 
-    credits.set(parsed.sessionId, {
-      interventions: interventionsEntry('interventions' in credit ? credit.interventions : undefined),
-      promptTokens: promptTokensEntry('promptTokens' in credit ? credit.promptTokens : undefined),
-      ...(daily ? { daily } : {}),
-      ...(parts.length > 0 ? { parts } : {}),
-    });
+    if (parts.length > 0) credit.parts = parts;
+    credits.set(parsed.sessionId, credit);
   }
 
   return credits;
@@ -360,7 +391,7 @@ async function readSessionOwnersContent(options: { dryRun?: boolean; suppressMig
       // Exclusive: a report in another scope may be writing it too.
       await fs.promises.writeFile(sessionOwnersPath(), await ownersFromSnapshots(options), { flag: 'wx' });
     } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') log.debug(`Could not seed session owners: ${(e as Error).message}`);
+      if (!(e instanceof Error && 'code' in e && e.code === 'EEXIST')) log.debug(`Could not seed session owners: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -374,11 +405,10 @@ function parseSessionOwners(content: string | null): Map<string, string> {
     if (!line.trim()) continue;
 
     try {
-      const parsed: unknown = JSON.parse(line);
+      const parsed = SessionOwnerLineSchema.safeParse(JSON.parse(line));
 
-      if (parsed && typeof parsed === 'object' && 'sessionId' in parsed && 'dataHomeKey' in parsed
-        && typeof parsed.sessionId === 'string' && typeof parsed.dataHomeKey === 'string'
-        && !owners.has(parsed.sessionId)) owners.set(parsed.sessionId, parsed.dataHomeKey);
+      if (parsed.success && parsed.data.dataHomeKey !== undefined
+        && !owners.has(parsed.data.sessionId)) owners.set(parsed.data.sessionId, parsed.data.dataHomeKey);
     } catch {
       // A torn or hand-edited line records no owner.
     }
@@ -389,9 +419,9 @@ function parseSessionOwners(content: string | null): Map<string, string> {
 
 /** The IDs of a scope's snapshots that show it reported them (see {@link showsReported}). */
 export async function reportedBeyondShared(
-  promptTokens: Record<string, unknown>,
-  interventions: Record<string, unknown>,
-  daily: Record<string, unknown>,
+  promptTokens: ReportedPromptTokens,
+  interventions: ReportedInterventions,
+  daily: ReportedDailySessions,
 ): Promise<string[]> {
   const shared = await readSnapshotsIn(undefined);
   const own: ScopeSnapshots = { interventions, promptTokens, daily };
@@ -412,7 +442,7 @@ export async function recordSessionOwners(sessionIds: Iterable<string>, key: str
     await fs.promises.appendFile(sessionOwnersPath(),
       [...ids].map((sessionId) => JSON.stringify({ sessionId, dataHomeKey: key })).join('\n') + '\n');
   } catch (e) {
-    log.debug(`Could not record session owners: ${(e as Error).message}`);
+    log.debug(`Could not record session owners: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
@@ -457,17 +487,18 @@ export async function creditedPrompts(credit: OwnerCredit, transcripts: string[]
     const prompts: string[] = [];
 
     for (const line of content.split('\n')) {
-      let entry: unknown;
+      let entry: TranscriptEntry;
 
       try {
-        entry = JSON.parse(line);
+        const parsed = TranscriptEntrySchema.safeParse(JSON.parse(line));
+
+        if (!parsed.success) continue;
+        entry = parsed.data;
       } catch {
         continue;
       }
 
-      if (!isHumanPromptEntry(entry) || !entry || typeof entry !== 'object' || !('cwd' in entry)) continue;
-
-      if (typeof entry.cwd === 'string') prompts.push(entry.cwd);
+      if (isHumanPromptEntry(entry) && entry.cwd !== undefined) prompts.push(entry.cwd);
     }
 
     if (prompts.length < covered) continue;

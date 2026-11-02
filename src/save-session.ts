@@ -135,7 +135,7 @@ export async function saveSession(options: SaveSessionOptions): Promise<void> {
       localConfig = projectConfig ?? (await requireInit(loadOpts)).localConfig;
     }
   } catch (e) {
-    log.error(`Cannot push: ${(e as Error).message}`);
+    log.error(`Cannot push: ${e instanceof Error ? e.message : String(e)}`);
     log.info('The local log was still saved.');
     process.exitCode = 1;
 
@@ -145,7 +145,7 @@ export async function saveSession(options: SaveSessionOptions): Promise<void> {
   try {
     assertNotReadOnly(localConfig, 'teamai session save --push');
   } catch (e) {
-    log.error((e as Error).message);
+    log.error(e instanceof Error ? e.message : String(e));
     log.info('The local log was still saved.');
     process.exitCode = 1;
 
@@ -202,7 +202,7 @@ export async function saveSession(options: SaveSessionOptions): Promise<void> {
       }
     }
   } catch (e) {
-    spin.fail(`Team push failed: ${(e as Error).message}`);
+    spin.fail(`Team push failed: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   log.info('The local log was still saved. Retry later with: teamai session save --push');

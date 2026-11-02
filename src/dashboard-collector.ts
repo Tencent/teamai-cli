@@ -37,6 +37,7 @@ import {
   type SessionMetrics,
   type RequestCostMetrics,
   type LocalConfig,
+  type JsonValue,
 } from './types.js';
 import { getUserHome } from './utils/home.js';
 import type { HeadState } from './utils/git.js';
@@ -69,6 +70,7 @@ async function readStdin(): Promise<string> {
   const chunks: Buffer[] = [];
 
   for await (const chunk of process.stdin) {
+    // SAFETY: process.stdin has no encoding set, so its async iterator yields Buffer chunks.
     chunks.push(chunk as Buffer);
   }
 
@@ -82,6 +84,12 @@ const TRANSCRIPT_TAIL_BYTES = 10240;
 
 /** Maximum characters for stoppedOutput. */
 const STOPPED_OUTPUT_MAX_CHARS = 500;
+
+/** A Claude Code assistant transcript entry: `{type: "assistant", message: {content: [{type: "text", text: "..."}]}}`. */
+const AssistantTranscriptEntrySchema = z.object({
+  type: z.literal('assistant'),
+  message: z.object({ content: z.array(z.looseObject({ type: z.unknown().optional(), text: z.unknown().optional() })) }),
+});
 
 /**
  * Read the last assistant message from a Claude Code transcript file.
@@ -111,13 +119,10 @@ export async function readLastAssistantOutput(transcriptPath: string): Promise<s
 
       for (const line of lines) {
         try {
-          const entry = JSON.parse(line);
+          const entry = AssistantTranscriptEntrySchema.safeParse(JSON.parse(line));
 
-          // Claude Code transcript format: {type: "assistant", message: {content: [{type: "text", text: "..."}]}}
-          if (entry.type === 'assistant' && entry.message?.content) {
-            const textParts = (entry.message.content as Array<{ type: string; text?: string }>)
-              .filter((c) => c.type === 'text' && c.text)
-              .map((c) => c.text);
+          if (entry.success) {
+            const textParts = entry.data.message.content.flatMap((c) => (c.type === 'text' && c.text ? [c.text] : []));
 
             if (textParts.length > 0) {
               lastAssistantText = textParts.join('\n');
@@ -136,7 +141,7 @@ export async function readLastAssistantOutput(transcriptPath: string): Promise<s
       await fh.close();
     }
   } catch (e) {
-    log.warn(`dashboard: failed to read transcript: ${(e as Error).message}`);
+    log.warn(`dashboard: failed to read transcript: ${e instanceof Error ? e.message : String(e)}`);
 
     return '';
   }
@@ -245,7 +250,9 @@ async function recordTokenRequests(
     const kept = logged.get(id);
     // A request stays with the workspace that first recorded it, even when its session resumes in another.
     const dataHome = kept?.dataHomeKey ?? options?.dataHomeKey;
-    const owner = { tool: kept?.tool ?? event.tool, sessionId: kept?.sessionId ?? event.sessionId, ...(dataHome ? { dataHomeKey: dataHome } : {}) };
+    const owner: Pick<LocalRequestRecord, 'tool' | 'sessionId' | 'dataHomeKey'> = { tool: kept?.tool ?? event.tool, sessionId: kept?.sessionId ?? event.sessionId };
+
+    if (dataHome) owner.dataHomeKey = dataHome;
 
     if (kept && isPriced(kept)) return { ...kept, ...owner };
 
@@ -265,13 +272,16 @@ async function recordTokenRequests(
     if (!priced) return { ...base, costMicros: null, priceVersion: null };
     const savings = cacheSavingsMicros(request, aliases);
 
-    return {
+    const pricedRecord: PricedRequestRecord = {
       ...base,
       costMicros: priced.costMicros,
       costSource: priced.source,
       priceVersion: priced.priceVersion,
-      ...(savings === undefined ? {} : { cacheSavingsMicros: savings }),
     };
+
+    if (savings !== undefined) pricedRecord.cacheSavingsMicros = savings;
+
+    return pricedRecord;
   });
 
   const priced = records.filter(isPriced);
@@ -315,31 +325,59 @@ export async function scanTranscriptStop(transcriptPath: string): Promise<Transc
   return scanJsonlTranscriptOnce(transcriptPath);
 }
 
+/** A tool_result's `content`: plain text, or parts whose string `text` is joined. */
+const ToolResultContentSchema = z.union([
+  z.string(),
+  z.array(z.object({ text: z.string().optional().catch(undefined) }).catch({})),
+]).optional().catch(undefined);
+
+/** One part of a transcript message's `content`; a part that is not an object matches no part type. */
+const TranscriptPartSchema = z.object({
+  type: z.unknown().optional(),
+  text: z.string().optional().catch(undefined),
+  is_error: z.unknown().optional(),
+  content: ToolResultContentSchema,
+}).catch({});
+
+/**
+ * The fields of a Claude transcript line the Stop scan and the session owner
+ * scan read. A field of the wrong type reads as absent, as does a message that
+ * is not an object.
+ */
+export const TranscriptEntrySchema = z.object({
+  type: z.unknown().optional(),
+  isMeta: z.unknown().optional(),
+  isSidechain: z.unknown().optional(),
+  cwd: z.string().optional().catch(undefined),
+  message: z.object({
+    content: z.union([z.string(), z.array(TranscriptPartSchema)]).optional().catch(undefined),
+  }).optional().catch(undefined),
+});
+
+export type TranscriptEntry = z.infer<typeof TranscriptEntrySchema>;
+
 /**
  * Whether a Claude transcript entry is a human turn, what the Stop scan counts
  * as a prompt: plain-string user content, or user content with text that is
  * neither an interrupt marker nor a system injection; never meta or sidechain.
  * One human turn per user entry (tool_result-only entries have no human text).
  */
-export function isHumanPromptEntry(entry: unknown): boolean {
-  if (!entry || typeof entry !== 'object' || !('type' in entry) || entry.type !== 'user') return false;
+export function isHumanPromptEntry(entry: TranscriptEntry): boolean {
+  if (entry.type !== 'user') return false;
 
-  if (('isMeta' in entry && entry.isMeta === true) || ('isSidechain' in entry && entry.isSidechain === true)) return false;
-  const message = 'message' in entry && entry.message && typeof entry.message === 'object' ? entry.message : undefined;
-  const content: unknown = message && 'content' in message ? message.content : undefined;
+  if (entry.isMeta === true || entry.isSidechain === true) return false;
+  const content = entry.message?.content;
 
-  if (typeof content === 'string') {
+  if (content === undefined) return false;
+
+  if (!Array.isArray(content)) {
     const text = content.trim();
 
     return !!text && !text.startsWith(TRANSCRIPT_INTERRUPT_PREFIX) && !TRANSCRIPT_SYSTEM_PREFIXES.some((p) => text.startsWith(p));
   }
 
-  if (!Array.isArray(content)) return false;
-
-  return content.some((item: unknown) => {
-    if (!item || typeof item !== 'object' || !('type' in item) || item.type !== 'text' || !('text' in item)) return false;
-
-    if (typeof item.text !== 'string' || item.text.startsWith(TRANSCRIPT_INTERRUPT_PREFIX)) return false;
+  return content.some((item) => {
+    if (item.type !== 'text' || item.text === undefined || item.text.startsWith(TRANSCRIPT_INTERRUPT_PREFIX)) return false;
     const text = item.text.trim();
 
     return !!text && !TRANSCRIPT_SYSTEM_PREFIXES.some((p) => text.startsWith(p));
@@ -374,15 +412,13 @@ async function scanJsonlTranscriptOnce(transcriptPath: string): Promise<Transcri
       // Cheap pre-filter: friction and prompts are on user records only.
       if (!trimmed || !trimmed.includes('"user"')) continue;
 
-      let entry: {
-        type?: string;
-        isMeta?: unknown;
-        isSidechain?: unknown;
-        message?: { content?: unknown };
-      };
+      let entry: TranscriptEntry;
 
       try {
-        entry = JSON.parse(trimmed);
+        const parsed = TranscriptEntrySchema.safeParse(JSON.parse(trimmed));
+
+        if (!parsed.success) continue;
+        entry = parsed.data;
       } catch {
         continue;
       }
@@ -394,16 +430,15 @@ async function scanJsonlTranscriptOnce(transcriptPath: string): Promise<Transcri
 
       if (!Array.isArray(content)) continue;
 
-      for (const item of content as Array<Record<string, unknown>>) {
-        if (item?.type === 'text' && typeof item.text === 'string') {
+      for (const item of content) {
+        if (item.type === 'text' && item.text !== undefined) {
           if (item.text.startsWith(TRANSCRIPT_INTERRUPT_PREFIX)) interrupt++;
-        } else if (item?.type === 'tool_result' && item.is_error === true) {
-          const text = typeof item.content === 'string'
-            ? item.content
+        } else if (item.type === 'tool_result' && item.is_error === true) {
+          const text = item.content === undefined
+            ? ''
             : Array.isArray(item.content)
-              ? (item.content as Array<{ text?: string }>)
-                .map((c) => (typeof c?.text === 'string' ? c.text : '')).join(' ')
-              : '';
+              ? item.content.map((c) => c.text ?? '').join(' ')
+              : item.content;
 
           if (TRANSCRIPT_REJECT_MARKERS.some((m) => text.includes(m))) {
             toolReject++;
@@ -416,21 +451,14 @@ async function scanJsonlTranscriptOnce(transcriptPath: string): Promise<Transcri
       }
     }
   } catch (e) {
-    log.warn(`dashboard: failed to scan transcript: ${(e as Error).message}`);
+    log.warn(`dashboard: failed to scan transcript: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   return { interrupt, toolReject, toolError, prompts };
 }
 
-/** Narrow an unknown JSON value to an object record. */
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null;
-}
-
 function isCodexTool(tool: string | undefined): boolean {
-  return typeof tool === 'string' && tool.toLowerCase().includes('codex');
+  return tool !== undefined && tool.toLowerCase().includes('codex');
 }
 
 const COPILOT_USAGE_TAIL_BYTES = 256 * 1024;
@@ -441,6 +469,16 @@ const COPILOT_SHUTDOWN_EVENT = 'session.shutdown';
 const COPILOT_SESSION_STATE_DIR = 'session-state';
 const COPILOT_SESSION_EVENTS_FILE = 'events.jsonl';
 const COPILOT_SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+/** The run linkage fields of a Copilot event log record; a field of the wrong type reads as absent. */
+const CopilotLogRecordSchema = z.object({
+  type: z.unknown().optional(),
+  id: z.string().optional().catch(undefined),
+  parentId: z.string().optional().catch(undefined),
+  timestamp: z.union([z.string(), z.number()]).optional().catch(undefined),
+});
+
+type CopilotLogRecord = z.infer<typeof CopilotLogRecordSchema>;
 
 interface CopilotUsageObservation {
   shutdownObserved: boolean;
@@ -465,7 +503,7 @@ function copilotUsageEquals(
 }
 
 /** Parse only Copilot's final token counters from a shutdown record. */
-function parseCopilotShutdown(entry: unknown): CopilotUsageObservation {
+function parseCopilotShutdown(entry: JsonValue): CopilotUsageObservation {
   const shutdown = readCopilotShutdown(entry);
 
   return shutdown ? { shutdownObserved: true, ...shutdown } : { shutdownObserved: false };
@@ -592,14 +630,13 @@ async function findCopilotRunMarkerAfter(
 
         if (line.includes('"session.start"') || line.includes('"session.resume"')) {
           try {
-            const record = asRecord(JSON.parse(line));
+            const parsed = CopilotLogRecordSchema.safeParse(JSON.parse(line));
+            const record = parsed.success ? parsed.data : undefined;
             const markerTime = record?.timestamp;
-
-            const time = typeof markerTime === 'string' || typeof markerTime === 'number'
-              ? new Date(markerTime).getTime() : NaN;
+            const time = markerTime === undefined ? NaN : new Date(markerTime).getTime();
 
             if ((record?.type === 'session.start' || record?.type === 'session.resume')
-              && typeof record.id === 'string'
+              && record.id !== undefined
               && offset + lineStart >= startOffset
               && (!useProviderTime || (Number.isFinite(time)
                 && time >= startedAt && time <= endedAt))) {
@@ -648,25 +685,30 @@ async function readCopilotUsageForRun(
 
     try {
       for await (const line of lines) {
-        let record: Record<string, unknown> | null;
+        let json: JsonValue;
+        let record: CopilotLogRecord;
 
         try {
-          record = asRecord(JSON.parse(line));
+          json = JSON.parse(line);
+          const parsed = CopilotLogRecordSchema.safeParse(json);
+
+          if (!parsed.success) continue;
+          record = parsed.data;
         } catch {
           continue;
         }
 
-        if (!record || typeof record.id !== 'string') continue;
+        if (record.id === undefined) continue;
 
         if ((record.type === 'session.start' || record.type === 'session.resume')
           && record.id !== marker.id) break;
 
-        if (typeof record.parentId === 'string' && descendants.has(record.parentId)) {
+        if (record.parentId !== undefined && descendants.has(record.parentId)) {
           descendants.add(record.id);
         }
 
         if (record.type === COPILOT_SHUTDOWN_EVENT && descendants.has(record.id)) {
-          latest = parseCopilotShutdown(record);
+          latest = parseCopilotShutdown(json);
         }
       }
     } finally {
@@ -732,7 +774,7 @@ async function readCodebuddyIndexPrompts(transcriptPath: string): Promise<number
 
     return index.success ? index.data.messages.filter((m) => m.role === 'user').length : null;
   } catch (e) {
-    log.warn(`dashboard: failed to scan CodeBuddy index: ${(e as Error).message}`);
+    log.warn(`dashboard: failed to scan CodeBuddy index: ${e instanceof Error ? e.message : String(e)}`);
 
     return null;
   }
@@ -743,6 +785,30 @@ const CODEBUDDY_BLOB_MAX_COUNT = 2000;
 
 /** User-rejection marker CodeBuddy writes into a cancelled tool's result.errorMessage. */
 const CODEBUDDY_REJECT_MARKER = 'User rejected this command';
+
+/** A CodeBuddy message blob; `extra` and `message` hold JSON documents as strings. */
+const CodebuddyBlobSchema = z.object({
+  role: z.unknown().optional(),
+  extra: z.string().optional().catch(undefined),
+  message: z.string().optional().catch(undefined),
+});
+
+/** An assistant blob's parsed `extra`: tool call status by call id; an entry that is not an object matches nothing. */
+const CodebuddyExtraSchema = z.object({
+  toolStatus: z.record(z.string(), z.object({
+    status: z.unknown().optional(),
+    result: z.object({ errorMessage: z.string().optional().catch(undefined) }).nullish().catch(undefined),
+  }).catch({})),
+});
+
+/** A tool blob's parsed `message`: its tool results; an item that is not an object matches nothing. */
+const CodebuddyToolMessageSchema = z.object({
+  content: z.array(z.object({
+    type: z.unknown().optional(),
+    toolCallId: z.string().optional().catch(undefined),
+    isError: z.unknown().optional(),
+  }).catch({})),
+});
 
 /**
  * Scan CodeBuddy message blobs for tool-reject and tool-error friction signals.
@@ -804,71 +870,50 @@ async function scanCodebuddyBlobs(
 
       const raw = await fs.promises.readFile(blobPath, 'utf-8');
 
-      const blob = JSON.parse(raw) as {
-        role?: unknown;
-        extra?: unknown;
-        message?: unknown;
-      };
+      const blob = CodebuddyBlobSchema.safeParse(JSON.parse(raw));
 
-      if (blob.role === 'assistant') {
-        if (typeof blob.extra !== 'string') continue;
-        let extra: unknown;
+      if (!blob.success) continue;
+
+      if (blob.data.role === 'assistant') {
+        if (blob.data.extra === undefined) continue;
+        let extra: z.infer<typeof CodebuddyExtraSchema>;
 
         try {
-          extra = JSON.parse(blob.extra);
+          const parsed = CodebuddyExtraSchema.safeParse(JSON.parse(blob.data.extra));
+
+          if (!parsed.success) continue;
+          extra = parsed.data;
         } catch {
           continue;
         }
 
-        const toolStatus = (extra as { toolStatus?: unknown } | null)?.toolStatus;
-
-        if (!toolStatus || typeof toolStatus !== 'object') continue;
-
-        for (const [callId, entry] of Object.entries(
-          toolStatus as Record<string, unknown>,
-        )) {
-          if (!entry || typeof entry !== 'object') continue;
-
-          const e = entry as {
-            status?: unknown;
-            result?: { errorMessage?: unknown } | null;
-          };
-
+        for (const [callId, e] of Object.entries(extra.toolStatus)) {
           if (
             e.status === 'cancelled' &&
-            typeof e.result?.errorMessage === 'string' &&
+            e.result?.errorMessage !== undefined &&
             e.result.errorMessage.includes(CODEBUDDY_REJECT_MARKER)
           ) {
             rejectedCallIds.add(callId);
           }
         }
-      } else if (blob.role === 'tool') {
-        if (typeof blob.message !== 'string') continue;
-        let message: unknown;
+      } else if (blob.data.role === 'tool') {
+        if (blob.data.message === undefined) continue;
+        let message: z.infer<typeof CodebuddyToolMessageSchema>;
 
         try {
-          message = JSON.parse(blob.message);
+          const parsed = CodebuddyToolMessageSchema.safeParse(JSON.parse(blob.data.message));
+
+          if (!parsed.success) continue;
+          message = parsed.data;
         } catch {
           continue;
         }
 
-        const content = (message as { content?: unknown } | null)?.content;
-
-        if (!Array.isArray(content)) continue;
-
-        for (const item of content) {
-          if (!item || typeof item !== 'object') continue;
-
-          const i = item as {
-            type?: unknown;
-            toolCallId?: unknown;
-            isError?: unknown;
-          };
-
+        for (const i of message.content) {
           if (
             i.type === 'tool-result' &&
             i.isError === true &&
-            typeof i.toolCallId === 'string'
+            i.toolCallId !== undefined
           ) {
             erroredCallIds.add(i.toolCallId);
           }
@@ -989,6 +1034,9 @@ export interface ParseHookEventOptions {
   dataHomeKey?: string;
 }
 
+/** The answers Codex wraps in a question reply prompt: a non-empty array, each with a string `answer`. */
+const CodexQuestionRepliesSchema = z.array(z.object({ answer: z.string() })).min(1);
+
 function codexReplyText(prompt: string): string {
   // JSON.parse skips the whitespace around the array, so the pattern needs no
   // whitespace quantifiers inside the tags: those backtrack on long runs.
@@ -997,25 +1045,35 @@ function codexReplyText(prompt: string): string {
   if (!match) return prompt;
 
   try {
-    const replies: unknown = JSON.parse(match[1]);
+    const replies = CodexQuestionRepliesSchema.safeParse(JSON.parse(match[1]));
 
-    if (!Array.isArray(replies) || replies.length === 0) return prompt;
-    const items: unknown[] = replies;
-    const answers: string[] = [];
-
-    for (const reply of items) {
-      if (!reply || typeof reply !== 'object' || !('answer' in reply) || typeof reply.answer !== 'string') return prompt;
-      answers.push(reply.answer);
-    }
+    if (!replies.success) return prompt;
 
     // A reply with no answer text keeps the prompt, so the turn is still counted.
-    const text = answers.join('\n');
+    const text = replies.data.map((reply) => reply.answer).join('\n');
 
     return text.trim() ? text : prompt;
   } catch {
     return prompt;
   }
 }
+
+/** A hook's STDIN payload: a JSON object, whose fields each reader parses for itself. */
+const HookStdinSchema = z.looseObject({});
+
+export type HookStdin = z.infer<typeof HookStdinSchema>;
+
+/**
+ * The hook STDIN fields the collector reads; a field of the wrong type reads as
+ * absent. Other fields pass through for the session id and cwd resolvers.
+ */
+const HookPayloadSchema = HookStdinSchema.extend({
+  hook_event_name: z.string().optional().catch(undefined),
+  timestamp: z.union([z.string(), z.number()]).optional().catch(undefined),
+  tool_name: z.string().optional().catch(undefined),
+  prompt: z.string().optional().catch(undefined),
+  transcript_path: z.string().optional().catch(undefined),
+});
 
 /**
  * Parse a hook STDIN JSON payload into a DashboardEvent.
@@ -1029,24 +1087,24 @@ export async function parseHookEvent(
 ): Promise<DashboardEvent | null> {
   if (!raw.trim()) return null;
 
-  let hookData: Record<string, unknown>;
+  let json: JsonValue;
 
   try {
-    hookData = JSON.parse(raw);
+    json = JSON.parse(raw);
   } catch {
     log.error('dashboard-collector: failed to parse STDIN JSON');
 
     return null;
   }
 
-  // Determine event type from hook_event_name field
-  const hookEventName = typeof hookData.hook_event_name === 'string'
-    ? hookData.hook_event_name
-    : '';
+  const payload = HookPayloadSchema.safeParse(json);
+  const hookData = payload.success ? payload.data : undefined;
 
+  // Determine event type from hook_event_name field
+  const hookEventName = hookData?.hook_event_name ?? '';
   const eventType = mapEventType(hookEventName);
 
-  if (!eventType) {
+  if (!eventType || !hookData) {
     log.debug(`dashboard-collector: unknown hook event: ${hookEventName}`);
 
     return null;
@@ -1062,8 +1120,7 @@ export async function parseHookEvent(
 
   const cwd = isCopilot ? undefined : resolveHookCwd(hookData);
 
-  const providerTime = isCopilot && (typeof hookData.timestamp === 'string'
-    || typeof hookData.timestamp === 'number')
+  const providerTime = isCopilot && hookData.timestamp !== undefined
     ? new Date(hookData.timestamp).getTime() : NaN;
 
   const event: DashboardEvent = {
@@ -1076,7 +1133,7 @@ export async function parseHookEvent(
   };
 
   // Extract tool name from PostToolUse (normalize IDE-style names)
-  if (eventType === 'tool_use' && typeof hookData.tool_name === 'string') {
+  if (eventType === 'tool_use' && hookData.tool_name !== undefined) {
     event.toolName = normalizeToolName(hookData.tool_name);
   }
 
@@ -1099,7 +1156,7 @@ export async function parseHookEvent(
   // hook — a background task completing is not a human prompt turn. A prompt that
   // is purely injected content produces no event at all, so it neither inflates the
   // prompt count nor shows up as a session prompt.
-  if (eventType === 'prompt_submit' && typeof hookData.prompt === 'string') {
+  if (eventType === 'prompt_submit' && hookData.prompt !== undefined) {
     const prompt = isCodexTool(tool) ? codexReplyText(hookData.prompt) : hookData.prompt;
     const human = stripInjectedPrompt(prompt);
 
@@ -1123,14 +1180,14 @@ export async function parseHookEvent(
   // SessionStart on a resume from another project names a file that never
   // exists, so it is not kept there.
   if ((eventType === 'prompt_submit' || eventType === 'session_end') && !isCopilot
-    && typeof hookData.transcript_path === 'string') {
+    && hookData.transcript_path !== undefined) {
     event.transcriptPath = hookData.transcript_path;
   }
 
   // Extract transcript path, AI output and intervention counts from Stop event.
   // DSH sends an empty transcript_path.
   const stopTranscript = eventType === 'stop' && !isCopilot
-    && typeof hookData.transcript_path === 'string' && hookData.transcript_path
+    && hookData.transcript_path
     ? hookData.transcript_path : undefined;
 
   if (stopTranscript) {
@@ -1224,11 +1281,11 @@ export async function parseHookEvent(
           const reused = previousStarts.some((entry) => entry.copilotRunMarkerId === candidate.id);
 
           const unclaimedPrior = previousStarts.some(
-            (entry) => typeof entry.copilotRunMarkerId !== 'string',
+            (entry) => entry.copilotRunMarkerId === undefined,
           );
 
           const closed = shutdown.shutdownObserved
-            && typeof shutdown.shutdownOffset === 'number'
+            && shutdown.shutdownOffset !== undefined
             && shutdown.shutdownOffset > candidate.offset;
 
           if (!reused && !unclaimedPrior && !closed) {
@@ -1277,14 +1334,14 @@ export async function parseHookEvent(
       const boundary = start?.copilotRunStartOffset;
 
       const recovered = Number.isFinite(providerTime)
-        && typeof boundary === 'number' && Number.isFinite(boundary)
+        && boundary !== undefined && Number.isFinite(boundary)
         ? await findCopilotRunMarkerAfter(
           transcriptPath, boundary, startTime, endTime, Number.isFinite(providerTime),
         )
         : undefined;
 
-      const stored = typeof start?.copilotRunMarkerId === 'string'
-        && typeof start.copilotRunMarkerOffset === 'number'
+      const stored = start?.copilotRunMarkerId !== undefined
+        && start.copilotRunMarkerOffset !== undefined
         && Number.isFinite(start.copilotRunMarkerOffset)
         ? { id: start.copilotRunMarkerId, offset: start.copilotRunMarkerOffset }
         : undefined;
@@ -1360,7 +1417,7 @@ export async function readLocalRequestRecords(): Promise<Map<string, LocalReques
   return records;
 }
 
-function aggregateRequestDaily(records: readonly PricedRequestRecord[]): Record<string, RequestCostMetrics> {
+function aggregateRequestDaily(records: readonly PricedRequestRecord[]) {
   const daily: Record<string, RequestCostMetrics> = {};
 
   for (const record of records) {
@@ -1402,7 +1459,7 @@ export async function reconcileRequestLog(
       try {
         lock = await fs.promises.open(lockPath, 'wx', 0o600);
       } catch (e) {
-        if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+        if (!(e instanceof Error && 'code' in e && e.code === 'EEXIST')) throw e;
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
     }
@@ -1439,7 +1496,7 @@ export async function reconcileRequestLog(
     await fs.promises.writeFile(tempPath, content ? `${content}\n` : '', { encoding: 'utf-8', mode: 0o600 });
     await fs.promises.rename(tempPath, requestsPath);
   } catch (e) {
-    log.warn(`dashboard: failed to update local request log: ${(e as Error).message}`);
+    log.warn(`dashboard: failed to update local request log: ${e instanceof Error ? e.message : String(e)}`);
   } finally {
     await lock?.close().catch(() => undefined);
 
@@ -1570,12 +1627,18 @@ async function foldPendingEvents(eventsPath: string): Promise<void> {
   }
 }
 
+/** The fields a side file's line is folded by; a field of the wrong type reads as absent. */
+const PendingLineSchema = z.object({
+  timestamp: z.string().optional().catch(undefined),
+  pendingId: z.string().optional().catch(undefined),
+});
+
 /** The timestamp of the event a side file holds, for folding side files in time order. */
 function pendingTimestampOf(content: string): string {
   try {
-    const { timestamp } = JSON.parse(content) as { timestamp?: unknown };
+    const pending = PendingLineSchema.safeParse(JSON.parse(content));
 
-    return typeof timestamp === 'string' ? timestamp : '';
+    return pending.success ? pending.data.timestamp ?? '' : '';
   } catch {
     return '';
   }
@@ -1586,9 +1649,9 @@ function pendingIdOf(line: string): string | undefined {
   if (!line.includes('"pendingId"')) return undefined;
 
   try {
-    const { pendingId } = JSON.parse(line) as { pendingId?: unknown };
+    const pending = PendingLineSchema.safeParse(JSON.parse(line));
 
-    return typeof pendingId === 'string' ? pendingId : undefined;
+    return pending.success ? pending.data.pendingId : undefined;
   } catch {
     return undefined;
   }
@@ -1642,7 +1705,7 @@ export async function appendEvent(event: DashboardEvent | SessionOutcomeEvent): 
     await fs.promises.writeFile(pendingPath, JSON.stringify({ ...event, pendingId }) + '\n', { encoding: 'utf-8', flag: 'wx', mode });
     log.debug(`${summary} (in ${path.basename(pendingPath)}; ${path.basename(eventsPath)}.lock is held)`);
   } catch (e) {
-    log.error(`dashboard: failed to write event: ${(e as Error).message}`);
+    log.error(`dashboard: failed to write event: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
@@ -1678,6 +1741,8 @@ async function readLogRaw(filePath: string): Promise<{ events: DashboardEvent[];
     if (!trimmed) continue;
 
     try {
+      // SAFETY: only appendEvent, the side file fold and compaction write this log, each line a serialized
+      // DashboardEvent or SessionOutcomeEvent; a line without its type, session id and timestamp is dropped below.
       const parsed = JSON.parse(trimmed) as DashboardEvent | SessionOutcomeEvent;
 
       if (!parsed.type || !parsed.sessionId || !parsed.timestamp) continue;
@@ -1738,7 +1803,7 @@ function eventSignature(e: DashboardEvent): string {
 /** Higher = richer payload; the richer record is kept as the surviving carrier. */
 function eventPayloadScore(e: DashboardEvent): number {
   return (e.tokens ? 8 : 0) + (e.stoppedOutput ? 4 : 0) + (e.interventions ? 2 : 0)
-    + (typeof e.prompts === 'number' ? 2 : 0) + (e.requestMetrics || e.requestDaily ? 2 : 0)
+    + (e.prompts !== undefined ? 2 : 0) + (e.requestMetrics || e.requestDaily ? 2 : 0)
     + (e.monitorPid ? 1 : 0);
 }
 
@@ -1797,6 +1862,7 @@ export async function readEvents(eventsPath?: string): Promise<DashboardEvent[]>
   const filePath = eventsPath ?? getEventsPath();
 
   return dedupeEvents(await readEventsRaw(filePath)).map((event) => {
+    // SAFETY: readEventsRaw keeps the pendingId a folded side file gave its line, a key DashboardEvent does not declare.
     delete (event as DashboardEvent & { pendingId?: unknown }).pendingId;
 
     return event;
@@ -2035,7 +2101,13 @@ export function memberEvents(events: DashboardEvent[]): DashboardEvent[] {
 export function sessionRuns(events: DashboardEvent[]): Map<string, SessionRun> {
   const runs = new Map<string, SessionRun>();
 
-  for (const { sessionId, runMode, launchedBy } of events) if (runMode) runs.set(sessionId, { runMode, ...(launchedBy ? { launchedBy } : {}) });
+  for (const { sessionId, runMode, launchedBy } of events) {
+    if (!runMode) continue;
+    const run: SessionRun = { runMode };
+
+    if (launchedBy) run.launchedBy = launchedBy;
+    runs.set(sessionId, run);
+  }
 
   return runs;
 }
@@ -2088,7 +2160,7 @@ export function aggregateSessionMetrics(
       map.set(event.sessionId, m);
     }
 
-    if (typeof event.transcriptPath === 'string') {
+    if (event.transcriptPath !== undefined) {
       const since = transcriptSince.get(event.sessionId) ?? new Map<string, string>();
       const first = since.get(event.transcriptPath);
 
@@ -2097,7 +2169,7 @@ export function aggregateSessionMetrics(
       lastTranscript.set(event.sessionId, event.transcriptPath);
     }
 
-    if (event.tokenScope === 'transcript' || (isCodexTool(event.tool) && typeof event.transcriptPath === 'string')) {
+    if (event.tokenScope === 'transcript' || (isCodexTool(event.tool) && event.transcriptPath !== undefined)) {
       rolloutSessions.add(event.sessionId);
     }
 
@@ -2116,7 +2188,7 @@ export function aggregateSessionMetrics(
       transcriptSubmits.set(event.sessionId, submits);
     }
 
-    if (event.type === 'stop' && typeof event.transcriptPath === 'string') {
+    if (event.type === 'stop' && event.transcriptPath !== undefined) {
       const rollout = event.transcriptPath;
       // The latest Stop by its timestamp, as for tokens: background Stop
       // handlers may append an older scan after a newer one.
@@ -2137,7 +2209,7 @@ export function aggregateSessionMetrics(
         maps.set(event.sessionId, perRollout);
       };
 
-      if (typeof event.prompts === 'number') record(transcriptPrompts, event.prompts);
+      if (event.prompts !== undefined) record(transcriptPrompts, event.prompts);
 
       if (event.interventions) {
         record(transcriptInterventions, { interrupt: event.interventions.interrupt, toolReject: event.interventions.toolReject });
@@ -2154,7 +2226,7 @@ export function aggregateSessionMetrics(
         m.toolReject = event.interventions.toolReject;
       }
 
-      if (typeof event.prompts === 'number') {
+      if (event.prompts !== undefined) {
         stopPrompts.set(event.sessionId, event.prompts);
       }
 
@@ -2349,7 +2421,7 @@ export async function compactEvents(eventsPath?: string): Promise<void> {
       const monitored = new Map<string, number>();
 
       for (const e of chronological) {
-        if (e.type === 'session_start' && typeof e.monitorPid === 'number') monitored.set(e.sessionId, e.monitorPid);
+        if (e.type === 'session_start' && e.monitorPid !== undefined) monitored.set(e.sessionId, e.monitorPid);
       }
 
       for (const [sessionId, pid] of monitored) {
@@ -2402,7 +2474,7 @@ export async function compactEvents(eventsPath?: string): Promise<void> {
     // compaction try again, rather than reporting a lost race as a failure.
     if (!locked) log.debug(`dashboard: ${path.basename(filePath)}.lock is still held after 5 s, so compaction is skipped`);
   } catch (e) {
-    log.error(`dashboard: compaction failed: ${(e as Error).message}`);
+    log.error(`dashboard: compaction failed: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
@@ -2446,7 +2518,7 @@ function recordedScope(sessionId: string, cwd: string): Promise<RecordedScope> {
 }
 
 /** Recover the latest missing directory when the launcher's process cwd is gone. */
-export async function recordedHookCwd(hookData: Record<string, unknown>, tool: string): Promise<string | undefined> {
+export async function recordedHookCwd(hookData: HookStdin, tool: string): Promise<string | undefined> {
   const sessionId = deriveDispatchSessionId(hookData, tool);
   const events = (await readEvents()).filter(event => event.sessionId === sessionId).toReversed();
 
@@ -2461,7 +2533,7 @@ const recordedWorkspaces = new Map<string, Promise<string | undefined>>();
  * process, as the scope above is: events.jsonl grows with the session. The home
  * is part of the key, as the events it reads live there.
  */
-function recordedWorkspace(hookData: Record<string, unknown>, tool: string): Promise<string | undefined> {
+function recordedWorkspace(hookData: HookStdin, tool: string): Promise<string | undefined> {
   const sessionId = deriveDispatchSessionId(hookData, tool);
   const key = `${sessionId}\0${getUserHome()}`;
   let known = recordedWorkspaces.get(key);
@@ -2486,7 +2558,7 @@ function recordedWorkspace(hookData: Record<string, unknown>, tool: string): Pro
  * the hook gets no scope, never the user scope, #748). With nothing recorded to
  * match, it is the cwd, today's answer. A cwd that exists costs nothing more.
  */
-export async function hookScopeDir(hookData: Record<string, unknown>, tool: string): Promise<string | undefined> {
+export async function hookScopeDir(hookData: HookStdin, tool: string): Promise<string | undefined> {
   const cwd = resolveHookCwd(hookData);
 
   if (!cwd || fs.existsSync(cwd)) return cwd;
@@ -2521,7 +2593,7 @@ const HOSTS_SENDING_OWN_CWD = new Set(['codebuddy']);
  * no teamai scope, so every handler that needs one was dropped and the
  * session's tool use was never recorded.
  */
-export async function resolveHookScopeFor(hookData: Record<string, unknown>, tool: string): Promise<{ config: LocalConfig | null; dir: string | undefined }> {
+export async function resolveHookScopeFor(hookData: HookStdin, tool: string): Promise<{ config: LocalConfig | null; dir: string | undefined }> {
   const { resolveConfigForDir } = await import('./config.js');
   const scope = await hookScopeDir(hookData, tool);
   const config = await resolveConfigForDir(scope);
@@ -2550,7 +2622,7 @@ export async function resolveHookScopeFor(hookData: Record<string, unknown>, too
  * ({@link resolveHookScopeFor}). The dispatcher and the legacy `dashboard-report`,
  * `track` and `track-slash` entry points all resolve through here.
  */
-export async function resolveHookConfig(hookData: Record<string, unknown>, tool: string): Promise<LocalConfig | null> {
+export async function resolveHookConfig(hookData: HookStdin, tool: string): Promise<LocalConfig | null> {
   return (await resolveHookScopeFor(hookData, tool)).config;
 }
 
@@ -2592,14 +2664,15 @@ const GIT_STATE_TIMEOUT_MS = 2_000;
  */
 export const GIT_AT_START_PAYLOAD_KEY = 'teamai_git_at_start';
 
-/** The git state `payload` carries from its session start's one read: a state, null for none, undefined when it carries none. */
-export function gitStateIn(payload: Record<string, unknown>): HeadState | null | undefined {
-  if (!(GIT_AT_START_PAYLOAD_KEY in payload)) return undefined;
-  const value = payload[GIT_AT_START_PAYLOAD_KEY];
+/** The git state the session-start dispatcher hands on under {@link GIT_AT_START_PAYLOAD_KEY}. */
+const GitAtStartPayloadSchema = z.object({ head: z.string(), dirty: z.boolean() });
 
-  return value !== null && typeof value === 'object' && 'head' in value && typeof value.head === 'string' && 'dirty' in value && typeof value.dirty === 'boolean'
-    ? { head: value.head, dirty: value.dirty }
-    : null;
+/** The git state `payload` carries from its session start's one read: a state, null for none, undefined when it carries none. */
+export function gitStateIn(payload: HookStdin): HeadState | null | undefined {
+  if (!(GIT_AT_START_PAYLOAD_KEY in payload)) return undefined;
+  const state = GitAtStartPayloadSchema.safeParse(payload[GIT_AT_START_PAYLOAD_KEY]);
+
+  return state.success ? state.data : null;
 }
 
 /**
@@ -2678,14 +2751,12 @@ export async function dashboardReport(toolArg?: string): Promise<void> {
   }
 
   // Asked about the session's cwd, never the directory this process started in.
-  let hookData: Record<string, unknown> = {};
+  let hookData: HookStdin = {};
 
   try {
-    const parsed: unknown = JSON.parse(raw);
+    const parsed = HookStdinSchema.safeParse(JSON.parse(raw));
 
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      hookData = parsed as Record<string, unknown>;
-    }
+    if (parsed.success) hookData = parsed.data;
   } catch {
     // parseHookEvent reports the malformed payload below; nothing to gate on yet.
   }

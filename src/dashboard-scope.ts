@@ -4,12 +4,32 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { z } from 'zod';
 import { dataHomeKey, resolveCopilotUsageTranscript } from './dashboard-collector.js';
-import { pathExists, readJson } from './utils/fs.js';
+import { pathExists } from './utils/fs.js';
 import type { DashboardEvent, LocalConfig } from './types.js';
 import { getDataHome } from './types.js';
 import { getUserHome } from './utils/home.js';
-import { REPORTED_SNAPSHOTS, readSessionOwners, snapshotPathIn } from './session-owners.js';
+import { readSessionOwners, readSnapshotsIn } from './session-owners.js';
+
+/** The fields of a logged event that split the log into runs. The log is hand-editable: a field of the wrong type reads as absent. */
+const RunFieldsSchema = z.object({
+  transcriptPath: z.string().optional().catch(undefined),
+  dataHomeKey: z.string().optional().catch(undefined),
+  dataHome: z.string().optional().catch(undefined),
+  processExitAfter: z.string().optional().catch(undefined),
+  monitorPid: z.number().optional().catch(undefined),
+});
+
+/** The fields of a transcript line that name the directory its session started in; a field of the wrong type reads as absent. */
+const TranscriptOriginSchema = z.object({
+  cwd: z.string().optional().catch(undefined),
+  type: z.unknown().optional(),
+  payload: z.object({ cwd: z.string().optional().catch(undefined) }).optional().catch(undefined),
+  data: z.object({
+    context: z.object({ cwd: z.string().optional().catch(undefined) }).optional().catch(undefined),
+  }).optional().catch(undefined),
+});
 
 /**
  * The dashboard events a scope reports (#785): every event of the sessions
@@ -76,8 +96,8 @@ export async function filterEventsByScope(
     if (run === undefined) return;
 
     // Copilot's session log is found by its ID; the event holds no path (#666).
-    const transcript = typeof e.transcriptPath === 'string' ? e.transcriptPath
-      : e.tool === 'copilot' ? resolveCopilotUsageTranscript(e.sessionId) : null;
+    const transcript = RunFieldsSchema.parse(e).transcriptPath
+      ?? (e.tool === 'copilot' ? resolveCopilotUsageTranscript(e.sessionId) : null);
 
     const known = transcripts.get(run) ?? [];
 
@@ -128,10 +148,8 @@ async function transcriptOwner(
     if (!config) return undefined;
     const dataHome = getDataHome(config);
 
-    const snapshots = await Promise.all(REPORTED_SNAPSHOTS.map((name) =>
-      readJson<Record<string, unknown>>(snapshotPathIn(dataHome, name))));
-
-    const held = snapshots.some((snapshot) => !!snapshot && typeof snapshot === 'object' && Object.hasOwn(snapshot, sessionId));
+    const { interventions, promptTokens, daily } = await readSnapshotsIn(dataHome);
+    const held = [interventions, promptTokens, daily].some((snapshot) => !!snapshot && Object.hasOwn(snapshot, sessionId));
 
     return held ? dataHomeKey(dataHome) : undefined;
   }
@@ -164,28 +182,22 @@ async function transcriptOrigin(transcript: string): Promise<string | undefined>
   }
 
   for (const line of head.split('\n')) {
-    let entry: unknown;
+    let entry: z.infer<typeof TranscriptOriginSchema>;
 
     try {
-      entry = JSON.parse(line);
+      const parsed = TranscriptOriginSchema.safeParse(JSON.parse(line));
+
+      if (!parsed.success) continue;
+      entry = parsed.data;
     } catch {
       continue;
     }
 
-    if (!entry || typeof entry !== 'object') continue;
+    if (entry.cwd !== undefined) return entry.cwd;
 
-    if ('cwd' in entry && typeof entry.cwd === 'string') return entry.cwd;
+    if (entry.type === 'session_meta' && entry.payload?.cwd !== undefined) return entry.payload.cwd;
 
-    if ('type' in entry && entry.type === 'session_meta' && 'payload' in entry && entry.payload
-      && typeof entry.payload === 'object' && 'cwd' in entry.payload && typeof entry.payload.cwd === 'string') {
-      return entry.payload.cwd;
-    }
-
-    if ('type' in entry && entry.type === 'session.start' && 'data' in entry && entry.data && typeof entry.data === 'object'
-      && 'context' in entry.data && entry.data.context && typeof entry.data.context === 'object'
-      && 'cwd' in entry.data.context && typeof entry.data.context.cwd === 'string') {
-      return entry.data.context.cwd;
-    }
+    if (entry.type === 'session.start' && entry.data?.context?.cwd !== undefined) return entry.data.context.cwd;
   }
 
   return undefined;
@@ -200,18 +212,27 @@ async function keysOf(events: DashboardEvent[]): Promise<Array<string | undefine
   const hashes = new Map<string, Promise<string>>();
 
   return Promise.all(events.map((e) => {
-    if (typeof e.dataHomeKey === 'string') return e.dataHomeKey;
+    const fields = RunFieldsSchema.parse(e);
 
-    if (typeof e.dataHome !== 'string') return undefined;
-    let key = hashes.get(e.dataHome);
+    if (fields.dataHomeKey !== undefined) return fields.dataHomeKey;
+
+    if (fields.dataHome === undefined) return undefined;
+    let key = hashes.get(fields.dataHome);
 
     if (!key) {
-      key = dataHomeKey(e.dataHome);
-      hashes.set(e.dataHome, key);
+      key = dataHomeKey(fields.dataHome);
+      hashes.set(fields.dataHome, key);
     }
 
     return key;
   }));
+}
+
+/** Each event's run (none for an exit whose run is gone), each run's ID, and the event that decides its scope. */
+interface LogRuns {
+  runOf: Array<number | undefined>;
+  runIds: string[];
+  deciding: Array<number | undefined>;
 }
 
 /**
@@ -235,11 +256,7 @@ async function keysOf(events: DashboardEvent[]): Promise<Array<string | undefine
  * fallback ID before the next start did not end the open run: it was observed
  * before that run began, and belongs to the run closed before it.
  */
-function splitRuns(events: DashboardEvent[], eventKeys: Array<string | undefined>): {
-  runOf: Array<number | undefined>;
-  runIds: string[];
-  deciding: Array<number | undefined>;
-} {
+function splitRuns(events: DashboardEvent[], eventKeys: Array<string | undefined>): LogRuns {
   const runOf: Array<number | undefined> = [];
   const runPid: Array<number | undefined> = [];
   const observedRuns = new Map<string, number>();
@@ -261,14 +278,15 @@ function splitRuns(events: DashboardEvent[], eventKeys: Array<string | undefined
   }
 
   events.forEach((e, i) => {
+    const { processExitAfter, monitorPid } = RunFieldsSchema.parse(e);
     const fallback = e.sessionId.startsWith('pid-');
     const ends = e.type === 'session_end' || e.type === 'process_exit';
-    const observed = e.type === 'process_exit' && typeof e.processExitAfter === 'string';
-    const starts = e.type === 'session_start' && typeof e.monitorPid === 'number';
+    const observed = e.type === 'process_exit' && processExitAfter !== undefined;
+    const starts = e.type === 'session_start' && monitorPid !== undefined;
     const open = openRun.get(e.sessionId);
 
     if (starts && open !== undefined && fallback
-      && typeof runPid[open] === 'number' && runPid[open] !== e.monitorPid) {
+      && runPid[open] !== undefined && runPid[open] !== monitorPid) {
       // Nothing ended it (a crash), but a late exit of it must still find it.
       openRun.delete(e.sessionId);
       closedRun.set(e.sessionId, open);
@@ -279,7 +297,7 @@ function splitRuns(events: DashboardEvent[], eventKeys: Array<string | undefined
     const stale = e.type === 'process_exit' && !observed && fallback && open !== undefined && closed !== undefined
       && continues[i];
 
-    let run = observed ? observedRuns.get(`${e.sessionId}@${e.processExitAfter}`)
+    let run = observed ? observedRuns.get(`${e.sessionId}@${processExitAfter}`)
       : stale ? closed : openRun.get(e.sessionId) ?? (ends ? closed : undefined);
 
     // The observed run may have been compacted. Its delayed exit must not
@@ -302,7 +320,7 @@ function splitRuns(events: DashboardEvent[], eventKeys: Array<string | undefined
       openRun.set(e.sessionId, run);
     }
 
-    if (starts) runPid[run] ??= e.monitorPid;
+    if (starts) runPid[run] ??= monitorPid;
     runOf.push(run);
     observedRuns.set(`${e.sessionId}@${e.timestamp}`, run);
     const current = deciding[run];
