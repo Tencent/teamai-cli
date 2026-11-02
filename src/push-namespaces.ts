@@ -56,7 +56,7 @@ export const PLACEABLE_TYPES: readonly PlaceableType[] = [
 ];
 
 export function isPlaceableType(type: ResourceType | string): type is PlaceableType {
-  return (PLACEABLE_TYPES as readonly string[]).includes(type);
+  return PLACEABLE_TYPES.some((placeable) => placeable === type);
 }
 
 /**

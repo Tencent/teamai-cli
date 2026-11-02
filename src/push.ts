@@ -1,6 +1,7 @@
 import { chmod, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import YAML from 'yaml';
+import { z } from 'zod';
 import { autoDetectInit, loadStateForScope, saveStateForScope } from './config.js';
 import { assertNotReadOnly } from './read-only.js';
 import {
@@ -145,7 +146,7 @@ async function namespaceCandidates(
       if (!(e instanceof RolesManifestNotFoundError)) {
         return {
           ok: false,
-          message: `Cannot resolve where new ${type} should go: ${(e as Error).message}. `
+          message: `Cannot resolve where new ${type} should go: ${e instanceof Error ? e.message : String(e)}. `
             + 'Fix manifest/roles.yaml, run `teamai roles set <role>`, or pass --role <ns> '
             + 'to name the namespace for this push.',
         };
@@ -176,7 +177,7 @@ async function namespaceCandidates(
   } catch (e) {
     return {
       ok: false,
-      message: `Cannot list the team repo's skills namespaces: ${(e as Error).message}. `
+      message: `Cannot list the team repo's skills namespaces: ${e instanceof Error ? e.message : String(e)}. `
         + 'Pass --role <ns> to name the namespace for this push.',
     };
   }
@@ -433,7 +434,7 @@ async function createPrWithFallback(
 
     return prUrl;
   } catch (e) {
-    mrSpin.fail(`Failed to create PR: ${(e as Error).message}`);
+    mrSpin.fail(`Failed to create PR: ${e instanceof Error ? e.message : String(e)}`);
     log.info(`Branch ${branchName} has been pushed. You can create a PR manually.`);
 
     if (localConfig.provider === 'git') {
@@ -468,7 +469,7 @@ type PushRepoStatus = {
   created?: string[];
   deleted?: string[];
   staged?: string[];
-  renamed?: Array<string | { from: string; to: string }>;
+  renamed?: Array<{ from: string; to: string }>;
 };
 
 /** Return every path that would be at risk before a destructive push reset. */
@@ -487,11 +488,8 @@ function collectDirtyPaths(status: PushRepoStatus): string[] {
   }
 
   for (const renamed of status.renamed ?? []) {
-    if (typeof renamed === 'string') paths.add(renamed);
-    else {
-      paths.add(renamed.from);
-      paths.add(renamed.to);
-    }
+    paths.add(renamed.from);
+    paths.add(renamed.to);
   }
 
   return [...paths].sort();
@@ -504,7 +502,7 @@ async function hasGitModeChange(
   // The content snapshot is enough only when the file mode is unchanged. Check
   // both the index and worktree diffs because a chmod can be staged, unstaged,
   // or both alongside a content edit (#690 review).
-  if (typeof git.raw !== 'function') return false;
+  if (git.raw === undefined) return false;
 
   try {
     const [worktreeDiff, indexDiff] = await Promise.all([
@@ -590,14 +588,29 @@ function collisionPaths(type: PlaceableType, placedAt: string): string[] {
   return [`${stem}.yaml`, `${stem}.md`];
 }
 
+/** Fields a scanner or placement attaches to a pushed item beyond `ResourceItem`. */
+type PushItem = ResourceItem & {
+  /** Why the scan held the item back (skills and agents scans). */
+  skipReason?: string;
+  /** The blob this machine delivered to the file the item replaces (agents scan). */
+  deliveredBlob?: string;
+  /** The path the item was scanned at, before placement moved it into a namespace. */
+  prePlacementPath?: string;
+};
+
 /** The team-relative path `pushItem` retired while writing `item`, if any. */
 function supersededPathOf(item: ResourceItem): string | undefined {
-  return 'supersedes' in item && typeof item.supersedes === 'string' ? item.supersedes : undefined;
+  return item.supersedes;
 }
 
 /** The blob this machine delivered to the placed file `item` replaces, when its merge was proven. */
-function deliveredBlobOf(item: ResourceItem): string | undefined {
-  return 'deliveredBlob' in item && typeof item.deliveredBlob === 'string' ? item.deliveredBlob : undefined;
+function deliveredBlobOf(item: PushItem): string | undefined {
+  return item.deliveredBlob;
+}
+
+/** Keep the path `item` was scanned at, so the snapshot keyed by it can still be found after placement. */
+function rememberPrePlacementPath(item: PushItem): void {
+  item.prePlacementPath = item.relativePath;
 }
 
 /**
@@ -625,13 +638,13 @@ function reuseRecordedDestinations(groups: PushGroup[]): Set<ResourceItem> {
       if (item.type === 'skills') {
         // A skill's path is derived from its name, so the recorded namespace
         // replaces whatever a --role/--project override wrote above.
-        (item as ResourceItem & { prePlacementPath?: string }).prePlacementPath = item.relativePath;
+        rememberPrePlacementPath(item);
         item.namespace = ns;
         item.relativePath = ns ? skillNamespacePath(ns, item.name) : `skills/${item.name}`;
       } else if (ns && isAtSharedRoot(item)) {
         // A rule or agent carries its own path from the scanner, and that path
         // is authoritative when it already names a namespace (#654).
-        (item as ResourceItem & { prePlacementPath?: string }).prePlacementPath = item.relativePath;
+        rememberPrePlacementPath(item);
         item.namespace = ns;
         item.relativePath = withNamespace(item.relativePath, ns, rootSegmentsFor(item.type));
       }
@@ -766,7 +779,7 @@ async function placeNewResources(args: {
           item.namespace = destination.namespace;
           // Save the pre-placement path so the snapshot delete (pushGroup
           // cleanup) can find the entry keyed by the root path.
-          (item as ResourceItem & { prePlacementPath?: string }).prePlacementPath = item.relativePath;
+          rememberPrePlacementPath(item);
           item.relativePath = placedAt;
           // Do NOT mark the pre-placement path as `supersedes`: the original
           // root file was never in the clone, so staging its path would fail
@@ -835,7 +848,7 @@ async function pushGroup(args: {
           log.debug('Refreshed marketplace.json');
         }
       } catch (e) {
-        log.debug(`Marketplace refresh skipped: ${(e as Error).message}`);
+        log.debug(`Marketplace refresh skipped: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
 
@@ -965,7 +978,7 @@ async function pushGroup(args: {
     // the `push` webhook (#702 follow-up).
     return prFailed ? 'pr-failed' : 'pushed';
   } catch (e) {
-    pushSpin.fail(`Push failed: ${(e as Error).message}`);
+    pushSpin.fail(`Push failed: ${e instanceof Error ? e.message : String(e)}`);
 
     if (workingTreeDirtied) {
       try {
@@ -975,7 +988,7 @@ async function pushGroup(args: {
         log.debug('Rolled back team repo working tree after failed push');
       } catch (cleanupErr) {
         log.warn(
-          `Warning: team repo may be in a dirty state. Run \`git -C ${localConfig.repo.localPath} reset --hard && git clean -fd\` manually. (${(cleanupErr as Error).message})`,
+          `Warning: team repo may be in a dirty state. Run \`git -C ${localConfig.repo.localPath} reset --hard && git clean -fd\` manually. (${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)})`,
         );
       }
     }
@@ -991,7 +1004,7 @@ async function pushGroup(args: {
  * `~` goes through `getUserHome()` like every other home-relative path, so
  * `push --skill ~/...` reads the same home the scan and the credentials use.
  */
-function resolveRequestedSkill(skill: string): { requestedPath: string; skillPath: string } {
+function resolveRequestedSkill(skill: string) {
   const requestedPath = skill.startsWith('~') ? path.join(getUserHome(), skill.slice(1)) : path.resolve(skill);
 
   return { requestedPath, skillPath: resolveReal(requestedPath) };
@@ -1063,19 +1076,14 @@ export async function push(
 
   try {
     const configContent = await readFileSafe(path.join(localConfig.repo.localPath, 'teamai.yaml'));
-    const rawConfig = configContent === null ? null : YAML.parse(configContent);
+    const rawConfig = z.looseObject({}).safeParse(configContent === null ? null : YAML.parse(configContent));
 
-    if (
-      rawConfig
-      && typeof rawConfig === 'object'
-      && !Array.isArray(rawConfig)
-      && Object.prototype.hasOwnProperty.call(rawConfig, 'packages')
-    ) {
+    if (rawConfig.success && Object.prototype.hasOwnProperty.call(rawConfig.data, 'packages')) {
       const { loadPackageManifest } = await import('./pkg/manifest.js');
       await loadPackageManifest(localConfig.repo.localPath);
     }
   } catch (e) {
-    log.error(`Cannot push invalid package declarations: ${(e as Error).message}`);
+    log.error(`Cannot push invalid package declarations: ${e instanceof Error ? e.message : String(e)}`);
     process.exitCode = 1;
 
     return;
@@ -1140,7 +1148,7 @@ export async function push(
         if (e instanceof EmptyRepoError) {
           log.error(e.message);
         } else {
-          log.error(`Push failed: ${(e as Error).message}`);
+          log.error(`Push failed: ${e instanceof Error ? e.message : String(e)}`);
         }
 
         process.exitCode = 1;
@@ -1458,7 +1466,7 @@ async function pushCore(
         await writeFile(target, content);
         await chmod(target, mode);
       } catch (e) {
-        lost.push(`${relativePath} (${(e as Error).message})`);
+        lost.push(`${relativePath} (${e instanceof Error ? e.message : String(e)})`);
       }
     }
 
@@ -1590,7 +1598,7 @@ async function pushCore(
       pullSpin.succeed('Up to date');
     } catch (e) {
       teamRepoStale = true;
-      pullSpin.warn(`Pull failed: ${(e as Error).message}`);
+      pullSpin.warn(`Pull failed: ${e instanceof Error ? e.message : String(e)}`);
     }
 
     if (lostEnvFiles.length > 0) {
@@ -1644,7 +1652,7 @@ async function pushCore(
     try {
       projectsManifest = await loadProjectsManifestReimported(localConfig.repo.localPath);
     } catch (e) {
-      log.error(`Cannot resolve --project destinations: ${(e as Error).message}`);
+      log.error(`Cannot resolve --project destinations: ${e instanceof Error ? e.message : String(e)}`);
       process.exitCode = 2;
 
       return;
@@ -1674,9 +1682,9 @@ async function pushCore(
 
   if (options.role) {
     try {
-      const roles = await loadRolesManifest(localConfig.repo.localPath).catch((e: unknown) => {
-        if (e instanceof RolesManifestNotFoundError) return null;
-        throw e;
+      const roles = await loadRolesManifest(localConfig.repo.localPath).catch((cause: unknown) => {
+        if (cause instanceof RolesManifestNotFoundError) return null;
+        throw cause;
       });
 
       const projects = await loadProjectsManifest(localConfig.repo.localPath);
@@ -1684,7 +1692,7 @@ async function pushCore(
         ? [...roles ? roleNamespaceEntries(roles) : [], ...projects ? projectNamespaceEntries(projects) : []]
         : null;
     } catch (e) {
-      log.error(`Cannot check where --role ${options.role} may place resources: ${(e as Error).message}`);
+      log.error(`Cannot check where --role ${options.role} may place resources: ${e instanceof Error ? e.message : String(e)}`);
       process.exitCode = 2;
 
       return;
@@ -1725,7 +1733,7 @@ async function pushCore(
       }
     } catch (e) {
       log.error(
-        `Could not bring this machine's placement records up to date (${(e as Error).message}), `
+        `Could not bring this machine's placement records up to date (${e instanceof Error ? e.message : String(e)}), `
         + 'so where your resources belong cannot be worked out safely. Nothing was pushed. '
         + 'Check that the teamai state file is writable, then retry.',
       );
@@ -1903,7 +1911,7 @@ async function pushCore(
       // the manifest to tell which namespaces are the member's. Report that
       // before anything is pushed instead of an uncaught stack trace.
       spin.stop();
-      const error = e as Error;
+      const error = e instanceof Error ? e : new Error(String(e));
       log.debug(error.stack ?? error.message);
       log.error(
         `Could not scan local ${type}: ${error.message.replace(/\.$/, '')}. Nothing was pushed. `
@@ -1926,7 +1934,7 @@ async function pushCore(
   try {
     resolvedNamespaces = await resolveResourceNamespaces(localConfig);
   } catch (e) {
-    log.error(`${(e as Error).message}`);
+    log.error(`${e instanceof Error ? e.message : String(e)}`);
     process.exitCode = 2;
 
     return;
@@ -1969,8 +1977,8 @@ async function pushCore(
 
   // Preserve blocked items in the full scan so their pending PR records survive.
   // Exclude them before selection and grouping: pushItem cannot write their paths.
-  const listed = fullScan.filter((item) => {
-    if ('skipReason' in item && typeof item.skipReason === 'string' && item.skipReason) {
+  const listed = fullScan.filter((item: PushItem) => {
+    if (item.skipReason) {
       log.warn(`[${item.type}] Skipped ${item.name}: ${item.skipReason}`);
 
       return false;
@@ -2024,7 +2032,7 @@ async function pushCore(
     try {
       assertSafeResourceName(path.basename(skillPath));
     } catch (e) {
-      console.error(`[push] Invalid --skill argument: ${(e as Error).message}`);
+      console.error(`[push] Invalid --skill argument: ${e instanceof Error ? e.message : String(e)}`);
       process.exitCode = 2;
 
       return;
@@ -2128,26 +2136,31 @@ async function pushCore(
           : destination.kind === 'team' && !unresolved ? destination.teamSkill.namespace
             : undefined;
 
-        const constructed = createSkillPushItem({
+        const pushInput: Parameters<typeof createSkillPushItem>[0] = {
           name: skillName,
           sourcePath: skillPath,
           status,
           namespace,
-          ...proven ? { fromInactiveNamespace: true } : {},
-          ...deliveryRecorded ? { deliveryRecorded: true } : {},
-          ...proven ? { originProven: true } : {},
-          ...(deliveryRecorded && !proven ? { reportSourcePath: requestedPath } : {}),
           originCandidates: copies,
           repoPath: localConfig.repo.localPath,
-        });
+        };
+
+        if (proven) {
+          pushInput.fromInactiveNamespace = true;
+          pushInput.originProven = true;
+        }
+
+        if (deliveryRecorded) pushInput.deliveryRecorded = true;
+
+        if (deliveryRecorded && !proven) pushInput.reportSourcePath = requestedPath;
+        const constructed = createSkillPushItem(pushInput);
 
         if (!constructed) return;
         matchedItem = constructed;
         log.debug(`Force-pushing skill from explicit path: ${skillPath}`);
       } else {
         const skillNames = allItems
-          .filter(i => i.type === 'skills')
-          .map(i => `  - ${i.name} (from: ${i.sourcePath})`)
+          .flatMap(i => (i.type === 'skills' ? [`  - ${i.name} (from: ${i.sourcePath})`] : []))
           .join('\n');
 
         log.error(`Skill not found at path: ${options.skill}`);
@@ -2220,7 +2233,7 @@ async function pushCore(
       // claim the problem is with a skill.
       assertSafeResourceName(options.role);
     } catch (e) {
-      log.error(`Invalid --role value "${options.role}": ${(e as Error).message}`);
+      log.error(`Invalid --role value "${options.role}": ${e instanceof Error ? e.message : String(e)}`);
       process.exitCode = 2;
 
       return;
@@ -2251,7 +2264,7 @@ async function pushCore(
         }
       }
     } catch (e) {
-      log.error(`Invalid skill name: ${(e as Error).message}`);
+      log.error(`Invalid skill name: ${e instanceof Error ? e.message : String(e)}`);
       process.exitCode = 2;
 
       return;
@@ -2388,7 +2401,9 @@ async function pushCore(
   const conflictsWithRequest = (
     recorded: PendingPushItem,
   ): boolean => {
-    if (!isPlaceableType(recorded.type as ResourceType)) return false;
+    const { type } = recorded;
+
+    if (!isPlaceableType(type)) return false;
     const scanned = allItems.find((item) => isRecordedItem(recorded, item));
 
     if (!scanned) return false;
@@ -2408,7 +2423,7 @@ async function pushCore(
     // destination as any namespace. Letting it through would reuse that PR's
     // branch and rebuild it with the namespaced path, moving a review the
     // user did not name from "everyone" to one namespace (#649 review).
-    const requested = requestedNamespaceFor(recorded.type as PlaceableType);
+    const requested = requestedNamespaceFor(type);
 
     return requested !== undefined && requested !== (recordedNamespace(recorded) ?? '');
   };
@@ -2600,7 +2615,8 @@ async function pushCore(
         // The snapshot was keyed by the pre-placement path; placement rewrote
         // item.relativePath to the namespaced destination, so look up both.
         pendingEnvFiles.delete(item.relativePath);
-        const prePath = (item as ResourceItem & { prePlacementPath?: string }).prePlacementPath;
+        const pushed: PushItem = item;
+        const prePath = pushed.prePlacementPath;
 
         if (prePath) pendingEnvFiles.delete(prePath);
       }
@@ -2741,7 +2757,7 @@ async function pushTeamConfigOnly(
 
     await checkoutMaster(localConfig.repo.localPath);
   } catch (e) {
-    pushSpin.fail(`Push failed: ${(e as Error).message}`);
+    pushSpin.fail(`Push failed: ${e instanceof Error ? e.message : String(e)}`);
 
     // pushRepoBranch may have left the repo on the push branch (e.g. it threw
     // mid-push after creating the local branch). Switch back to the default
@@ -2749,7 +2765,7 @@ async function pushTeamConfigOnly(
     try {
       await checkoutMaster(localConfig.repo.localPath);
     } catch (cleanupErr) {
-      log.debug(`Could not switch back to default branch: ${(cleanupErr as Error).message}`);
+      log.debug(`Could not switch back to default branch: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`);
     }
 
     process.exitCode = 1;
