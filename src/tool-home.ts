@@ -163,8 +163,14 @@ function openclawState(host: Host): EnvToolHome | null {
   return profile ? { dir: host.path.join(host.home, dir), variable: 'OPENCLAW_PROFILE', kind: 'own' } : null;
 }
 
+/** The variable that selects an OMP profile, and the profile it names; both null when neither is set. */
+export interface OmpProfile {
+  readonly variable: 'OMP_PROFILE' | 'PI_PROFILE' | null;
+  readonly name: string | null;
+}
+
 /** OMP_PROFILE wins whenever it is defined, even blank; a named profile does not use Pi's default agent directory. */
-export function ompProfile(env: Readonly<Record<string, string | undefined>>): { readonly variable: 'OMP_PROFILE' | 'PI_PROFILE' | null; readonly name: string | null } {
+export function ompProfile(env: Readonly<Record<string, string | undefined>>): OmpProfile {
   const variable = env.OMP_PROFILE !== undefined ? 'OMP_PROFILE' : env.PI_PROFILE !== undefined ? 'PI_PROFILE' : null;
 
   return { variable, name: variable === null ? null : env[variable]?.trim() || null };
@@ -194,7 +200,7 @@ function hermesHome(host: Host): EnvToolHome | null {
   return appData ? { dir: native, variable: 'LOCALAPPDATA', kind: 'platform-default' } : null;
 }
 
-function hermesNative(host: Host): { readonly native: string; readonly appData: boolean } {
+function hermesNative(host: Host) {
   const p = host.path;
   const suffix = host.env.HERMES_DATA_DIR_SUFFIX ?? '';
 
