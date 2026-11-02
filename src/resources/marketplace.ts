@@ -2,6 +2,7 @@ import path from 'node:path';
 import { readFileSafe, writeFile, pathExists, listDirs } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { parseFrontmatter } from '../utils/frontmatter.js';
+import type { JsonValue } from '../types.js';
 
 // ─── Marketplace refresh ────────────────────────────────
 //
@@ -25,7 +26,7 @@ interface MarketplacePlugin {
   category?: string;
   keywords?: string[];
   strict?: boolean;
-  [key: string]: unknown;
+  [key: string]: JsonValue | undefined;
 }
 
 interface MarketplaceJson {
@@ -34,7 +35,7 @@ interface MarketplaceJson {
   version: string;
   owner: { name: string; email: string };
   plugins: MarketplacePlugin[];
-  [key: string]: unknown;
+  [key: string]: JsonValue | MarketplacePlugin[];
 }
 
 /**

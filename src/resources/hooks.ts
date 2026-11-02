@@ -78,10 +78,10 @@ async function readHooksFile(absolutePath: string, relativePath: string): Promis
 
   try {
     const raw: unknown = YAML.parse(content);
-    const shapeProblem = missingTopLevelKeyReason(raw, HooksYamlSchema);
+    const topLevelProblem = missingTopLevelKeyReason(raw, HooksYamlSchema);
 
-    if (shapeProblem) return { ok: false, reason: `${relativePath} does not parse: ${shapeProblem}` };
-    const declaresBuiltin = !!raw && typeof raw === 'object' && 'builtin' in raw;
+    if (topLevelProblem) return { ok: false, reason: `${relativePath} does not parse: ${topLevelProblem}` };
+    const declaresBuiltin = raw instanceof Object && 'builtin' in raw;
     const yaml = HooksYamlSchema.parse(raw ?? {});
 
     return { ok: true, yaml, declaresBuiltin, unknownKeys: unknownEntryKeys(raw, 'hooks', yaml.hooks, TeamHookSchema) };

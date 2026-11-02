@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { lstat, realpath } from 'node:fs/promises';
 import YAML from 'yaml';
+import { z } from 'zod';
 import { ResourceHandler, type ScanForPushOptions } from './base.js';
 import type { CopyOrigin, PendingPush, ResourceItem, ResourceItemStatus, DeliveryTarget, TeamaiConfig, LocalConfig } from '../types.js';
 import { getPushignorePath, resolveBaseDir, scopedToolPaths, SELF_KNOWLEDGE_SCAN_KEY } from '../types.js';
@@ -433,8 +434,8 @@ export function withSkillFrontmatter(content: string, skillName: string): string
   if (!valid) return content;
 
   // Frontmatter exists — check for missing fields
-  const hasName = typeof data['name'] === 'string' && String(data['name']).trim() !== '';
-  const hasDescription = typeof data['description'] === 'string' && String(data['description']).trim() !== '';
+  const hasName = z.string().catch('').parse(data['name']).trim() !== '';
+  const hasDescription = z.string().catch('').parse(data['description']).trim() !== '';
 
   if (hasName && hasDescription) return content;
 
@@ -661,6 +662,19 @@ async function matchingRecordedOrigins<TCopy extends { dir: string }>(
   return matched;
 }
 
+/** A local skill copy push may send, before the newest copy per destination is chosen. */
+interface SkillPushCandidate {
+  name: string;
+  sourcePath: string;
+  mtime: number;
+  status: ResourceItemStatus;
+  namespace?: string;
+  fromInactiveNamespace?: true;
+  deliveryRecorded?: true;
+  originProven?: true;
+  originCandidates?: readonly { dir: string }[];
+}
+
 /** Build a skill push item with the origin fields shared by every push path. */
 export function createSkillPushItem(input: {
   name: string;
@@ -686,15 +700,18 @@ export function createSkillPushItem(input: {
     ? `skills/${input.namespace}/${input.name}`
     : `skills/${input.name}`;
 
-  return {
+  const item: ResourceItem = {
     name: input.name,
     type: 'skills',
     sourcePath: input.sourcePath,
     relativePath,
     status: input.status,
     namespace: input.namespace,
-    ...input.fromInactiveNamespace ? { fromInactiveNamespace: true } : {},
   };
+
+  if (input.fromInactiveNamespace) item.fromInactiveNamespace = true;
+
+  return item;
 }
 
 /**
@@ -1159,7 +1176,7 @@ export class SkillsHandler extends ResourceHandler {
       sourceSkillNames = await getSourcePushQuarantineNames(localConfig);
       sourcePathOwners = await getSourcePathOwners();
     } catch (error) {
-      log.warn(`Skipping skill push because source ownership tracking could not be read safely: ${(error as Error).message}`);
+      log.warn(`Skipping skill push because source ownership tracking could not be read safely: ${error instanceof Error ? error.message : String(error)}`);
 
       return [];
     }
@@ -1173,10 +1190,7 @@ export class SkillsHandler extends ResourceHandler {
     // proven or not, so two copies of one skill are one candidate and copies
     // with different destinations never meet. New skills keep the existing
     // name-based placement and deduplication behavior.
-    const candidates = new Map<string, {
-      name: string; sourcePath: string; mtime: number; status: ResourceItemStatus; namespace?: string; fromInactiveNamespace?: true;
-      deliveryRecorded?: true; originProven?: true; originCandidates?: readonly { dir: string }[];
-    }>();
+    const candidates = new Map<string, SkillPushCandidate>();
 
     // Scan each tool's skills directory
     const install = installOf(teamConfig, localConfig);
@@ -1218,7 +1232,7 @@ export class SkillsHandler extends ResourceHandler {
 
         const destination = await resolveDestination({
           name: dir, dest: localDirPath, team, delivered, pending: options?.pending ?? [], repoPath: localConfig.repo.localPath,
-          role: options?.namespace, ...deliveredSources ? { deliveredSources } : {},
+          role: options?.namespace, deliveredSources: deliveredSources ?? undefined,
         });
 
         if (destination.kind === 'unproven') {
@@ -1340,12 +1354,18 @@ export class SkillsHandler extends ResourceHandler {
             // A destination one copy proves stays proven whichever copy is
             // newer, so a flag cannot move it.
             const proven = fromInactiveNamespace || existing?.originProven === true;
-            candidates.set(candidateKey, {
-              name: dir, sourcePath: localDirPath, mtime, status, namespace: target.namespace,
-              ...proven ? { fromInactiveNamespace: true } : {},
-              ...fromInactiveNamespace ? { deliveryRecorded: true } : {},
-              ...proven ? { originProven: true, originCandidates: [target] } : {},
-            });
+            const candidate: SkillPushCandidate = { name: dir, sourcePath: localDirPath, mtime, status, namespace: target.namespace };
+
+            if (proven) candidate.fromInactiveNamespace = true;
+
+            if (fromInactiveNamespace) candidate.deliveryRecorded = true;
+
+            if (proven) {
+              candidate.originProven = true;
+              candidate.originCandidates = [target];
+            }
+
+            candidates.set(candidateKey, candidate);
           } else {
             if (fromInactiveNamespace && !existing.originProven) {
               candidates.set(candidateKey, {
@@ -1371,9 +1391,9 @@ export class SkillsHandler extends ResourceHandler {
         sourcePath: candidate.sourcePath,
         status: candidate.status,
         namespace: candidate.namespace,
-        ...candidate.fromInactiveNamespace ? { fromInactiveNamespace: true } : {},
-        ...candidate.deliveryRecorded ? { deliveryRecorded: true } : {},
-        ...candidate.originProven ? { originProven: true } : {},
+        fromInactiveNamespace: candidate.fromInactiveNamespace,
+        deliveryRecorded: candidate.deliveryRecorded,
+        originProven: candidate.originProven,
         originCandidates: candidate.originCandidates,
         repoPath: localConfig.repo.localPath,
       });
@@ -1584,7 +1604,7 @@ export class SkillsHandler extends ResourceHandler {
         log.debug(`Synced skill ${item.name} → ${tool}`);
       } catch (e) {
         ledger?.recorder?.failed('skills');
-        log.warn(`Failed to sync skill ${item.name} to ${tool}: ${(e as Error).message}`);
+        log.warn(`Failed to sync skill ${item.name} to ${tool}: ${e instanceof Error ? e.message : String(e)}`);
         ledger?.failed.push({ name: item.name, tool });
         ledger?.toolsMissingSkills.add(tool);
       }

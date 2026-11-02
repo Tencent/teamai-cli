@@ -41,9 +41,9 @@ import {
   agentStemFromFilename,
   museAgentDrops,
   agentRejection,
-  AgentFieldsSchema,
+  ParsedFieldsSchema,
 } from './agent-format.js';
-import type { AgentFieldValue, AgentFields, AgentSpec, ToolName, ParseResult, MergeConflict, MergeResult, RenderResult } from './agent-format.js';
+import type { ParsedValue, ParsedFields, AgentSpec, ToolName, ParseResult, MergeConflict, MergeResult, RenderResult } from './agent-format.js';
 
 /**
  * Extended ResourceItem for agents — carries merged spec or skip reason
@@ -524,7 +524,7 @@ export class AgentsHandler extends ResourceHandler {
 
         // Validation normalizes known fields, but unrelated canonical fields
         // must survive edits from a tool that cannot represent them.
-        canonicalSpec = { ...AgentFieldsSchema.parse(parseYaml(raw!)), ...parsed.spec };
+        canonicalSpec = { ...ParsedFieldsSchema.parse(parseYaml(raw!)), ...parsed.spec };
         // Compare like with like: native files against the rendering pull
         // writes, aliases resolved. Unchanged/untargeted copies must not join a merge.
         let unresolved: string | undefined;
@@ -1879,10 +1879,10 @@ function mergeCanonicalEdits(
   const drift: string[] = [];
   const merged = { ...canonical };
   const extras = { ...canonical.tool_extras };
-  const changes = new Map<string, { value: AgentFieldValue | undefined; apply: () => void }>();
+  const changes = new Map<string, { value: ParsedValue | undefined; apply: () => void }>();
   const conflicts: MergeConflict[] = [];
 
-  const propose = (key: string, value: AgentFieldValue | undefined, apply: () => void) => {
+  const propose = (key: string, value: ParsedValue | undefined, apply: () => void) => {
     const previous = changes.get(key);
 
     if (previous && !isDeepStrictEqual(previous.value, value)) {
@@ -1902,13 +1902,13 @@ function mergeCanonicalEdits(
     const baseline = reverseByTool(tool, `${canonical.name}${rendered.ext}`, rendered.content);
 
     if (!baseline.ok) return { merge: { ok: false, conflicts: [{ field: tool, values: { error: baseline.reason } }] }, drift };
-    const before: AgentFields = { ...Object.values(baseline.spec.tool_extras ?? {})[0] };
-    const after: AgentFields = { ...Object.values(edited.tool_extras ?? {})[0] };
+    const before: ParsedFields = { ...Object.values(baseline.spec.tool_extras ?? {})[0] };
+    const after: ParsedFields = { ...Object.values(edited.tool_extras ?? {})[0] };
     // tclaude and tcodex also render what `claude` and `codex` carry, and a
     // project's Trae copy what the other edition carries.
     const inheritance = inheritedExtras(canonical, tool, scope);
     const base = inheritance?.from;
-    const inherited: AgentFields = inheritance?.extras ?? {};
+    const inherited: ParsedFields = inheritance?.extras ?? {};
     // A model pin, the tool's own or inherited, reaches the copy as its native
     // `model`, which reverse parsing reads as the root field: compared as an
     // extras key, a change to it stays this tool's, and the root model and the

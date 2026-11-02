@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import { ResourceHandler } from './base.js';
 import { loadStateForScope } from '../config.js';
 import { isSelfMode, type LocalConfig, type ResourceItem, type ResourceType, type State, type TeamaiConfig } from '../types.js';
-import { namespaceOfPlacedPath, type PlaceableType } from '../push-namespaces.js';
+import { isPlaceableType, namespaceOfPlacedPath } from '../push-namespaces.js';
 import { ensureDir, fileContentEqual, pathExists } from '../utils/fs.js';
 import { hashObject } from '../utils/git.js';
 
@@ -72,7 +72,7 @@ export async function placedCopy(
     type,
     sourcePath: activeFile,
     relativePath: record.path,
-    namespace: namespaceOfPlacedPath(type as PlaceableType, record.path),
+    namespace: isPlaceableType(type) ? namespaceOfPlacedPath(type, record.path) : undefined,
     status: 'modified',
     prePlacementPath: authorPath,
   };

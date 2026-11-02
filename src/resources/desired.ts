@@ -476,9 +476,7 @@ async function resolveWorkspaceSkills(
   const sources = new Set(delivered.map((item) => item.relativePath));
   const deliveredNames = new Map(delivered.map((item) => [item.name, item.relativePath]));
 
-  const overrides = [...new Map(resolved.flatMap((desired) => desired.overrides)
-    .filter((override) => sources.has(override.source))
-    .map((override) => [override.source, override] as const)).values()];
+  const overrides = overridesFrom(resolved, sources);
 
   return {
     kind: 'resolved',
@@ -551,11 +549,13 @@ export async function deliveredIndexSources(
   if (!teamConfig) return { docFiles, ruleFiles: [], skills: { kind: 'dirs', dirs: [] } };
   const roleContext = await buildRolePullContext(localConfig);
 
-  return {
-    docFiles,
-    ...(hasRules ? { ruleFiles: await indexedRuleFiles(teamConfig, localConfig, roleContext) } : {}),
-    ...(hasSkills ? { skills: await indexedSkills(teamConfig, localConfig, roleContext) } : {}),
-  };
+  const indexed: Pick<BuildIndexOptions, 'docFiles' | 'ruleFiles' | 'skills'> = { docFiles };
+
+  if (hasRules) indexed.ruleFiles = await indexedRuleFiles(teamConfig, localConfig, roleContext);
+
+  if (hasSkills) indexed.skills = await indexedSkills(teamConfig, localConfig, roleContext);
+
+  return indexed;
 }
 
 export interface DesiredRules {
@@ -781,7 +781,18 @@ async function claudemdCandidates(repoPath: string, roleContext: RolePullContext
   return { candidates, overrides: roleContext ? resolveRootOverrides(candidates, namespaceDirs) : [] };
 }
 
-function claudemdDelivered({ candidates, overrides }: ClaudemdCandidates): { delivered: Set<string>; overrides: NamespaceOverride[] } {
+/** The overrides of `resolved` whose source is in `sources`, one per source: the last one listed. */
+function overridesFrom(resolved: readonly { readonly overrides: readonly NamespaceOverride[] }[], sources: ReadonlySet<string>): NamespaceOverride[] {
+  const bySource = new Map<string, NamespaceOverride>();
+
+  for (const desired of resolved) {
+    for (const override of desired.overrides) if (sources.has(override.source)) bySource.set(override.source, override);
+  }
+
+  return [...bySource.values()];
+}
+
+function claudemdDelivered({ candidates, overrides }: ClaudemdCandidates) {
   const replaced = new Set(overrides.map((override) => override.replaces));
 
   return { delivered: new Set(candidates.map((candidate) => candidate.source).filter((source) => !replaced.has(source))), overrides };
@@ -834,8 +845,6 @@ async function resolveWorkspaceAgents(teamConfig: TeamaiConfig, members: readonl
   return {
     kind: 'resolved',
     items,
-    overrides: [...new Map(resolved.flatMap((desired) => desired.overrides)
-      .filter((override) => sources.has(override.source))
-      .map((override) => [override.source, override] as const)).values()],
+    overrides: overridesFrom(resolved, sources),
   };
 }

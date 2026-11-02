@@ -166,7 +166,11 @@ export function flatStemsOfRemoved(tool: string, removed: Iterable<string>, team
   if (!ruleFormatForTool(tool)?.flat) return new Set();
   const live = new Set(ruleStemsForTool(tool, teamNames).values());
 
-  return new Set([...removed].filter((name) => name.includes('/')).map(flatStem).filter((stem) => !live.has(stem)));
+  return new Set([...removed].flatMap((name) => {
+    const stem = name.includes('/') ? flatStem(name) : null;
+
+    return stem !== null && !live.has(stem) ? [stem] : [];
+  }));
 }
 
 /**

@@ -236,14 +236,17 @@ export class RulesHandler extends ResourceHandler {
       // it on the item so an open PR can reuse the destination, the way skills do.
       const segments = candidate.teamRelPath.split('/');
       const namespace = segments.length > 2 ? segments[1] : undefined;
-      items.push({
+
+      const item: ResourceItem = {
         name,
         type: 'rules',
         sourcePath: candidate.sourcePath,
         relativePath: candidate.teamRelPath,
         status: candidate.status,
-        ...(namespace ? { namespace } : {}),
-      });
+      };
+
+      if (namespace) item.namespace = namespace;
+      items.push(item);
     }
 
     return items;
@@ -389,14 +392,17 @@ export class RulesHandler extends ResourceHandler {
         continue;
       }
 
-      targets.push({
+      const delivery: DeliveryTarget = {
         tool,
         dest,
         content,
         origin: ruleOrigin(tool, localConfig.repo.localPath, item.relativePath),
-        ...(supersededStem !== undefined ? { supersedes: path.join(destDir, `${supersededStem}${ext}`) } : {}),
-        ...(stem !== localName ? { movedFrom: path.join(destDir, `${localName}${ext}`) } : {}),
-      });
+      };
+
+      if (supersededStem !== undefined) delivery.supersedes = path.join(destDir, `${supersededStem}${ext}`);
+
+      if (stem !== localName) delivery.movedFrom = path.join(destDir, `${localName}${ext}`);
+      targets.push(delivery);
     }
 
     return targets;
@@ -541,7 +547,7 @@ export class RulesHandler extends ResourceHandler {
         log.debug(`Synced rule ${item.name} → ${tool}`);
       } catch (e) {
         ledger?.recorder?.failed('rules');
-        log.warn(`Failed to sync rule ${item.name} to ${tool}: ${(e as Error).message}`);
+        log.warn(`Failed to sync rule ${item.name} to ${tool}: ${e instanceof Error ? e.message : String(e)}`);
         ledger?.failed.push({ name: item.name, tool });
         ledger?.toolsMissingRules.add(tool);
       }
@@ -1109,7 +1115,7 @@ export class RulesHandler extends ResourceHandler {
       await removeSoulRules(soul);
       log.info(`Removed the team rules an older project pull wrote to ${soul}: Hermes gets no project rules`);
     } catch (e) {
-      log.warn(`Could not remove the team rules an older project pull wrote to ${soul}: ${(e as Error).message}. `
+      log.warn(`Could not remove the team rules an older project pull wrote to ${soul}: ${e instanceof Error ? e.message : String(e)}. `
         + 'Hermes keeps applying them until this succeeds; run `teamai pull` again once the cause above is fixed.');
     }
   }
@@ -1153,7 +1159,7 @@ export class RulesHandler extends ResourceHandler {
         await upsertSoulRules(soul.path, await inlinedRulesText(rules));
       } catch (e) {
         toolsMissingRules?.add('hermes');
-        log.warn(`Could not write the team rules to ${soul.path}: ${(e as Error).message}. Hermes reads that `
+        log.warn(`Could not write the team rules to ${soul.path}: ${e instanceof Error ? e.message : String(e)}. Hermes reads that `
           + 'file as it is until this succeeds; run `teamai pull` again once the cause above is fixed.');
       }
     }
@@ -1192,7 +1198,7 @@ export class RulesHandler extends ResourceHandler {
       } catch (e) {
         if (writing) toolsMissingRules?.add(tool);
         const action = writing ? 'write the team-rules block to' : 'remove the team-rules block from';
-        log.warn(`Could not ${action} ${file}: ${(e as Error).message}. ${tool} reads that file as it is until this succeeds; `
+        log.warn(`Could not ${action} ${file}: ${e instanceof Error ? e.message : String(e)}. ${tool} reads that file as it is until this succeeds; `
           + 'run `teamai pull` again once the cause above is fixed.');
       }
     }
@@ -1429,7 +1435,7 @@ export class RulesHandler extends ResourceHandler {
     try {
       await reconcileOpencodeInstructionSet(target.configFile, rules.length > 0 ? target.globs : [], target.owns);
     } catch (e) {
-      log.warn(`Failed to update OpenCode instructions in ${target.configFile}: ${(e as Error).message}. `
+      log.warn(`Failed to update OpenCode instructions in ${target.configFile}: ${e instanceof Error ? e.message : String(e)}. `
         + 'OpenCode loads the rules that file listed before this pull, so a new or moved team rule does not reach it. '
         + 'Fix the cause above, then run `teamai pull`.');
 
@@ -1445,7 +1451,7 @@ export class RulesHandler extends ResourceHandler {
     try {
       await reconcileOpencodeInstructionSet(target.retired.configFile, [], target.retired.owns);
     } catch (e) {
-      log.warn(`Failed to update OpenCode instructions in ${target.retired.configFile}: ${(e as Error).message}. `
+      log.warn(`Failed to update OpenCode instructions in ${target.retired.configFile}: ${e instanceof Error ? e.message : String(e)}. `
         + `The rules glob an earlier release listed there stays beside the one in ${target.configFile}. `
         + 'Remove teamai\'s rules entry from that file\'s `instructions`, or fix the cause above and run `teamai pull`.');
     }
@@ -1621,7 +1627,7 @@ export async function rulesReceivingTools(teamConfig: TeamaiConfig, localConfig:
  */
 function legacyRulesSectionPaths(tool: string, scope: Install['scope'], location: Location<'blocks'>): string[] {
   const channel = channelsOf(tool).blocks[scope];
-  const namesClaudemd = typeof channel === 'object' && channel.channel === 'file' && channel.file.in === 'claudemd';
+  const namesClaudemd = channel !== 'none' && channel !== 'unknown' && channel.channel === 'file' && channel.file.in === 'claudemd';
   const own = ownOf(location);
   const keepOwn = namesClaudemd || tool === 'openclaw';
   const paths: string[] = [];
@@ -1647,7 +1653,7 @@ function rulesDirOf(location: Location<'rules'>): string | null {
 export function inlineRulesLabelOf(tool: string): string | null {
   const channel = channelsOf(tool).rules.user;
 
-  return typeof channel === 'object' && channel.channel === 'inline' ? channel.label : null;
+  return channel !== 'none' && channel !== 'unknown' && channel.channel === 'inline' ? channel.label : null;
 }
 
 /**
@@ -1763,12 +1769,11 @@ function keptNestedCopyMessage(tool: string, file: string, name: string, flatCop
  */
 export function ruleOrigin(tool: string, repoPath: string, relativePath: string): CopyOrigin {
   const renders = ruleFormatForTool(tool) ? deliveredRenders(tool) : [];
+  const origin: CopyOrigin = { repoPath, pathspec: relativePath };
 
-  return {
-    repoPath,
-    pathspec: relativePath,
-    ...(renders.length > 0 ? { renders: renders.map((render) => (content: Buffer) => render(content.toString('utf-8'))) } : {}),
-  };
+  if (renders.length > 0) origin.renders = renders.map((render) => (content: Buffer) => render(content.toString('utf-8')));
+
+  return origin;
 }
 
 /**

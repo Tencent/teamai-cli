@@ -1,4 +1,5 @@
 import type { RuleFormat } from './rule-format.js';
+import type { ParsedFields } from './agent-format.js';
 import { mergeRuleBodyIntoTeamMd, ruleBodyEqualsTeamMd, rulePaths, teamRuleBody, teamRuleData } from './team-rule.js';
 
 /**
@@ -40,9 +41,10 @@ interface CursorFrontmatter {
  * (`globs` + `alwaysApply: false`). A rule with no `paths` is treated as a
  * mandatory team rule and made always-on (`alwaysApply: true`).
  */
-function deriveCursorFrontmatter(data: Record<string, unknown>): CursorFrontmatter {
+function deriveCursorFrontmatter(data: ParsedFields): CursorFrontmatter {
   // `globs` is read too: a rule authored in Cursor's own spelling stays scoped.
-  const patterns = rulePaths({ paths: data.paths ?? data.globs });
+  const paths = data.paths ?? data.globs;
+  const patterns = rulePaths(paths === undefined ? {} : { paths });
 
   if (patterns.length > 0) {
     return { globs: patterns.join(', '), alwaysApply: false };

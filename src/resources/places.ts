@@ -29,7 +29,7 @@ const RECORDED = ['skills', 'rules', 'blocks', 'agents'] as const satisfies read
 
 type Recorded = (typeof RECORDED)[number];
 
-const LEFT_LINE: { readonly [R in Recorded]: (left: LeftPlace, scopeLabel: string) => string } = {
+const LEFT_LINE = {
   skills: ({ tool, place, currentPlace }, scopeLabel) =>
     `[${scopeLabel}] ${tool} takes skills from ${currentPlace} now, so teamai no longer updates its copies in ${place}. Delete them once no tool reads that directory.`,
   rules: ({ tool, place, currentPlace }, scopeLabel) =>
@@ -38,7 +38,7 @@ const LEFT_LINE: { readonly [R in Recorded]: (left: LeftPlace, scopeLabel: strin
     `[${scopeLabel}] ${tool} takes the instruction blocks from ${currentPlace} now, so teamai no longer updates them in ${place}. Delete them there once no tool reads it.`,
   agents: ({ tool, place, currentPlace }, scopeLabel) =>
     `[${scopeLabel}] ${tool} takes agents from ${currentPlace} now, so teamai no longer updates its copies in ${place}. Delete them once no tool reads that directory.`,
-};
+} satisfies { readonly [R in Recorded]: (left: LeftPlace, scopeLabel: string) => string };
 
 /** The places a checkout record names: an earlier release's `skillDirs` reads as `places.skills`. */
 export function placesRecordOf(record: Pick<CheckoutRecord, 'places' | 'skillDirs'> | undefined): PlacesRecord | undefined {
@@ -111,7 +111,7 @@ async function realOrSelf(place: string): Promise<string> {
   try {
     return await realpath(place);
   } catch (e) {
-    if (typeof e === 'object' && e !== null && 'code' in e && (e.code === 'ENOENT' || e.code === 'ENOTDIR')) return place;
+    if (e instanceof Object && 'code' in e && (e.code === 'ENOENT' || e.code === 'ENOTDIR')) return place;
     throw e;
   }
 }

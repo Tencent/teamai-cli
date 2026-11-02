@@ -409,10 +409,16 @@ export async function ownsSkillDir(
  * Read-only; `remove` and `uninstall` delete only teamai's and keep the directory while anything
  * is left in it.
  */
+/** A skill directory's files by whose they are, absolute. */
+export interface SkillFileOwners {
+  teamais: string[];
+  members: string[];
+}
+
 export async function teamaiSkillFiles(
   previous: DeliveredHashes | undefined, dir: string, origin: CopyOrigin,
-): Promise<{ teamais: string[]; members: string[] }> {
-  const result = { teamais: [] as string[], members: [] as string[] };
+): Promise<SkillFileOwners> {
+  const result: SkillFileOwners = { teamais: [], members: [] };
 
   const walk = async (current: string, rel: string): Promise<void> => {
     for (const entry of await fse.readdir(current, { withFileTypes: true }).catch(() => [])) {

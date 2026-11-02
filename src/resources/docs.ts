@@ -83,7 +83,7 @@ export async function keepDocsSearchWhitelist(
 
     if (edit.teamaiOnly) result.paths = [...paths, listed].sort();
   } catch (e) {
-    result.failure = describeWhitelistFailure(file, e, 'run `teamai pull` again');
+    result.failure = describeWhitelistFailure(file, e instanceof Error ? e.message : String(e), 'run `teamai pull` again');
   }
 
   return result;
@@ -100,12 +100,12 @@ export async function removeDocsSearchWhitelist(projectRoot: string, options: { 
   try {
     return { file, removed: (await editDocsSearchWhitelist(file, false, options)).change === 'remove', failure: null };
   } catch (e) {
-    return { file, removed: false, failure: describeWhitelistFailure(file, e, 'delete its lines from `# [teamai:delivered:start]` to `# [teamai:delivered:end]` yourself') };
+    return { file, removed: false, failure: describeWhitelistFailure(file, e instanceof Error ? e.message : String(e), 'delete its lines from `# [teamai:delivered:start]` to `# [teamai:delivered:end]` yourself') };
   }
 }
 
-function describeWhitelistFailure(file: string, error: unknown, next: string): string {
-  return `Could not update teamai's docs search whitelist in ${file}: ${(error as Error).message}. Fix the cause, then ${next}.`;
+function describeWhitelistFailure(file: string, reason: string, next: string): string {
+  return `Could not update teamai's docs search whitelist in ${file}: ${reason}. Fix the cause, then ${next}.`;
 }
 
 /**
@@ -149,7 +149,7 @@ async function readEntries(dir: string) {
   try {
     return await fse.readdir(dir, { withFileTypes: true });
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return [];
     throw error;
   }
 }

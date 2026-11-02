@@ -1,4 +1,6 @@
 import matter from 'gray-matter';
+import { z } from 'zod';
+import { ParsedValueSchema, type ParsedFields } from './agent-format.js';
 
 /**
  * The tool-neutral team rule: a `.md` whose optional frontmatter holds
@@ -51,6 +53,9 @@ function quoteYamlUnsafeScalars(block: string): string {
     .join('\n');
 }
 
+/** Front matter by key; a value none of the parsers' types covers (a `!!binary` one) reads as null. */
+const RuleDataSchema = z.record(z.string(), ParsedValueSchema.catch(null));
+
 /**
  * A team rule's frontmatter data, parsed with gray-matter and retried once
  * with alias-unsafe scalars quoted, so a rule authored as `paths: **\/*.ts` is
@@ -60,9 +65,9 @@ function quoteYamlUnsafeScalars(block: string): string {
  * failed parse too, so a second render of the same rule skipped the retry and
  * came out unscoped.
  */
-export function teamRuleData(raw: string): Record<string, unknown> {
+export function teamRuleData(raw: string): ParsedFields {
   try {
-    return matter(raw, {}).data;
+    return RuleDataSchema.parse(matter(raw, {}).data);
   } catch {
     // Invalid YAML — retry below with unsafe scalars quoted.
   }
@@ -73,7 +78,7 @@ export function teamRuleData(raw: string): Record<string, unknown> {
   const quoted = quoteYamlUnsafeScalars(block);
 
   try {
-    return matter(quoted.endsWith('\n') ? quoted : `${quoted}\n`, {}).data;
+    return RuleDataSchema.parse(matter(quoted.endsWith('\n') ? quoted : `${quoted}\n`, {}).data);
   } catch {
     return {};
   }
@@ -118,15 +123,17 @@ function splitTopLevelCommas(value: string): string[] {
  * The globs a team rule's `paths:` frontmatter scopes it to; empty when
  * unscoped. A string is split on its top-level commas.
  */
-export function rulePaths(data: Record<string, unknown>): string[] {
+export function rulePaths(data: ParsedFields): string[] {
   const value = data.paths;
 
   if (Array.isArray(value)) {
     return value.map((entry) => String(entry).trim()).filter(Boolean);
   }
 
-  if (typeof value === 'string') {
-    return splitTopLevelCommas(value).map((entry) => entry.trim()).filter(Boolean);
+  const glob = z.string().safeParse(value);
+
+  if (glob.success) {
+    return splitTopLevelCommas(glob.data).map((entry) => entry.trim()).filter(Boolean);
   }
 
   return [];
