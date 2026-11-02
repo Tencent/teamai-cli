@@ -43,6 +43,12 @@ describe('unified dashboard', () => {
     expect(html).toContain('Omitted by tag subscriptions');
   });
 
+  it('groups Distribution with Execution: it decides what this machine installs on pull', () => {
+    const html = getDashboardHtml(3721);
+    expect(html).toContain("['Execution',['execution','tokens','workflows','scorers','benchmarks','distribution']]");
+    expect(html).toContain("['Context',['context','resources']]");
+  });
+
   it('adds a Distribution page that previews before it saves and never runs pull (#1028)', () => {
     const html = getDashboardHtml(3721);
     expect(html).toContain("distribution: 'Distribution'");

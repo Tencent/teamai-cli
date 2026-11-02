@@ -20,7 +20,7 @@ const e = value => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt
 const label = text => e(t(text));
 const escapeHtml = e;
 const pageNames = { overview: 'Overview', execution: 'Sessions', tokens: 'Tokens & Cost', workflows: 'Workflow Runs', scorers: 'Scorers', benchmarks: 'Benchmarks', context: 'Knowledge Base', resources: 'Resources', distribution: 'Distribution', improvement: 'Improvement Center' };
-const navGroups = [[null,['overview']],['Execution',['execution','tokens','workflows','scorers','benchmarks']],['Context',['context','resources','distribution']],['Improvement',['improvement']]];
+const navGroups = [[null,['overview']],['Execution',['execution','tokens','workflows','scorers','benchmarks','distribution']],['Context',['context','resources']],['Improvement',['improvement']]];
 const statusNames = { running:'Working', waiting_for_input:'Your turn', error:'Error', idle:'Idle', stopped:'Ended' };
 let page = Object.hasOwn(pageNames,location.hash.slice(1)) ? location.hash.slice(1) : 'overview';
 let sessions = [], haveSessions = false, connected = false, trends = null, kb = null;
