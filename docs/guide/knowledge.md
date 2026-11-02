@@ -84,8 +84,9 @@ The other code-graph relations (`DEPENDS_ON`, `CONTAINS`, `IMPLEMENTS`)
 relate code to code and cannot be declared on an asset.
 
 `teamai recall` prints each relation as a `Related:` line after the hit's
-`File:` line — `→` for a relation the hit declares, `←` for one the other
-asset declares, at most 5 per hit. A relation whose other end this recall
+`File:` line — `→` for a relation from the hit, `←` for one the other asset
+declares, at most 5 per hit. A `→ MAPS_TO` / `← MAPS_TO` pair can also
+be derived from a rule's `paths:` glob (below), not only declared. A relation whose other end this recall
 cannot see (another scope's asset, a withheld codebase's page, a target that
 does not exist) prints nothing. Hits, their order and their scores do not
 change. `teamai review --branch` fails a rule or doc whose `related:` block
@@ -219,6 +220,18 @@ $ teamai codebase --reconcile
 Reconciliation complete: mappings=3, gaps=1, conflicts=0
 ✔ Pushed to team knowledge repo (https://git.example.com/acme/team-ai.git)
 ```
+
+`--dry-run` writes nothing and additionally prints relation candidates: team rules and docs matched against the code pages by the key terms they share, proposed as `related:` declarations for you to copy into the asset's frontmatter and land in an ordinary PR (`review --branch` checks it). A candidate shows in recall only once it has been merged into the asset:
+
+```text
+$ teamai codebase --reconcile --dry-run
+Reconciliation complete: mappings=0, gaps=1, conflicts=0
+
+Relation candidates (copy the ones you accept into the asset's related:)
+  docs/payments-overview.md  MAPS_TO  teamwiki/evidence/code/pay/modules/ledger-receipts.md   term "LedgerReceipts", confidence 0.9
+```
+
+A rule's `paths:` globs also derive relations without anyone writing them: when a glob matches the `source:` files of a code page of exactly one codebase, recall shows the same `Related: → MAPS_TO` / `← MAPS_TO` pair as a declared one. A glob matching pages of two codebases is ambiguous (globs are repository-relative) and gives no edge.
 
 `import` also runs this deep enrich with your AI tool. When it cannot finish, the evidence is still published, but `import` exits 1 and prints the command that resumes it. In a team repo that is the same import, which publishes the docs it adds:
 

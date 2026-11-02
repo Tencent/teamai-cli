@@ -59,11 +59,22 @@ function writeTeamFiles(root: string): void {
     'The flow is in [the overview](../docs/payments-overview.md).',
     '',
   ].join('\n'));
-  fs.writeFileSync(path.join(root, 'docs', 'payments-overview.md'), 'How the payment flow works.\n');
+  fs.writeFileSync(path.join(root, 'docs', 'payments-overview.md'), 'How the payment flow works: every payment goes through `LedgerReceipts`.\n');
   fs.writeFileSync(path.join(root, 'skills', 'release', 'SKILL.md'), '---\nname: release\ndescription: Release workflow\n---\n\n# Release\n');
   fs.writeFileSync(path.join(root, 'skills', 'pay', 'deploy', 'SKILL.md'), '---\nname: deploy\ndescription: Pay deploy workflow\n---\n\n# Pay deploy\n');
   fs.writeFileSync(path.join(root, 'teamwiki', 'evidence', 'code', 'pay', 'modules', 'ledger-receipts.md'), [
-    '---', 'title: ledger-receipts', '---', '', '# Ledger receipts module', '',
+    '---', 'title: ledger-receipts', 'source:', '  - src/ledger/receipts.ts', '---', '', '# Ledger receipts module', '',
+    '`LedgerReceipts` writes the receipts.',
+    '',
+  ].join('\n'));
+  // A rule scoped by paths derives a MAPS_TO edge to the page whose source
+  // its glob matches (#1563 part 1) — no declaration involved.
+  fs.writeFileSync(path.join(root, 'rules', 'ledger-scoped.md'), [
+    '---',
+    'paths: [src/ledger/**]',
+    '---',
+    'Ledger receipt writes must be idempotent; no direct writes to ledger.',
+    '',
   ].join('\n'));
 }
 
@@ -116,6 +127,11 @@ describe('asset relations e2e (#1552 first slice)', () => {
     expect(withRelations.match(new RegExp(`Related: → REFERENCES ${docPath.replace(/[/.]/g, '\\$&')}`, 'g'))?.length).toBe(1);
     // The other ends answer with ←.
     expect(withRelations).toContain(`Related: ← MAPS_TO ${rulePath}`);
+    // Derived from the rule's paths: glob → the page's source file.
+    const scopedPath = path.join(teamRepo, 'rules', 'ledger-scoped.md');
+    expect(withRelations).toContain(`Related: → MAPS_TO ${wikiPath}`);
+    expect(withRelations.match(new RegExp(`Related: → MAPS_TO ${wikiPath.replace(/[/.]/g, '\\$&')}`, 'g'))?.length).toBe(2); // declared + derived
+    expect(withRelations).toContain(`Related: ← MAPS_TO ${scopedPath}`);
 
     // Ranking output is byte-identical once the Related: lines drop out.
     const strip = (s: string): string => s.split('\n').filter((l) => !l.startsWith('Related:')).join('\n');
@@ -207,5 +223,17 @@ describe('asset relations e2e (#1552 first slice)', () => {
     expect(result.stdout + result.stderr).toContain('[relations] docs/payments-overview.md: "related" could not be parsed (');
 expect(result.stdout + result.stderr).toContain('duplicated mapping key');
 expect(result.stdout + result.stderr).toContain('); all of it is ignored.');
+  });
+
+  it('codebase --reconcile --dry-run prints relation candidates and writes nothing', () => {
+    // Earlier branch tests leave the clone on their branch; reconcile reads main's tree.
+    git(['checkout', '-q', 'main'], teamRepo);
+    const before = git(['status', '--porcelain'], teamRepo);
+    const out = run(['codebase', '--reconcile', '--dry-run'], projectRoot);
+    expect(out).toContain('Relation candidates (copy the ones you accept into the asset\'s related:)');
+    expect(out).toContain('docs/payments-overview.md  MAPS_TO  teamwiki/evidence/code/pay/modules/ledger-receipts.md');
+    expect(out).toContain('term "LedgerReceipts", confidence 0.9');
+    // The dry run changes no file.
+    expect(git(['status', '--porcelain'], teamRepo)).toBe(before);
   });
 });
