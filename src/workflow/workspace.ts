@@ -130,8 +130,8 @@ export function resolveMode(step: WorkflowStep, ancestors: WorkflowStep[]): Work
   return 'read-only';
 }
 
-/** The clone `step` opens, or undefined when it opens none. */
-export function cloneOf(step: WorkflowStep): ClonePlace | undefined {
+/** The place `step`'s workspace names, a clone or the team repo, or undefined when it names a mode or none. */
+function placeOf(step: WorkflowStep): Exclude<WorkflowStep['workspace'], string | undefined> | undefined {
   switch (step.workspace) {
     case undefined:
     case 'read-only':
@@ -139,8 +139,15 @@ export function cloneOf(step: WorkflowStep): ClonePlace | undefined {
     case 'continue':
       return undefined;
     default:
-      return 'clone' in step.workspace ? step.workspace.clone : undefined;
+      return step.workspace;
   }
+}
+
+/** The clone `step` opens, or undefined when it opens none. */
+export function cloneOf(step: WorkflowStep): ClonePlace | undefined {
+  const place = placeOf(step);
+
+  return place && 'clone' in place ? place.clone : undefined;
 }
 
 /** The clone a lease's contract runs in, or undefined when it runs in none. */
@@ -150,15 +157,9 @@ export function contractClone(contract: WorkspaceContract | undefined): ClonePla
 
 /** The team repo branch `step` commits to, or undefined when it runs in no team workspace. */
 function teamOf(step: WorkflowStep): TeamPlace | undefined {
-  switch (step.workspace) {
-    case undefined:
-    case 'read-only':
-    case 'new':
-    case 'continue':
-      return undefined;
-    default:
-      return 'team' in step.workspace ? step.workspace.team : undefined;
-  }
+  const place = placeOf(step);
+
+  return place && 'team' in place ? place.team : undefined;
 }
 
 /**
