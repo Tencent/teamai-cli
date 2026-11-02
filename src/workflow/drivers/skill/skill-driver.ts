@@ -9,6 +9,7 @@ import { resolveCliEntry } from '../../../builtin-hooks.js';
 import type { WorkflowEnv } from '../../../env-resolution.js';
 import { resolveRunMode, type RunMode } from '../../../launch-context.js';
 import { SessionShare } from '../../../session-share.js';
+import { SessionTask } from '../../../session-task.js';
 import type { CommandExit } from '../../../tool-launch/process-stop.js';
 import { isToolId, TOOLS } from '../../../tools.js';
 import type { LocalConfig, TeamaiConfig } from '../../../types.js';
@@ -393,7 +394,8 @@ async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, c
       mode: context.mode, ...(attended !== undefined ? { attended } : {}), needsTool: needsTool(description, { tool: context.tool, judged: true }),
     });
     context.trace?.(row);
-    const proposed = await SessionShare.proposals(context.config, description, { session: context.session, tool: call.tool ?? context.tool });
+    const caller = { session: context.session, tool: call.tool ?? context.tool };
+    const proposed = { ...await SessionShare.proposals(context.config, description, caller), ...await SessionTask.proposals(context.config, description, { ...caller, cwd: context.cwd }) };
     return { data: { describe: { workflow: description, judging, ask: askFor(verdict, description, context.invocation, judging, { local: localPromptTool(context), session: call.tool }, proposed) } } };
   }
   const check = checkStartAnswers({ description, answers: call.answers, inputs: call.inputs, ceiling, tool: context.tool });

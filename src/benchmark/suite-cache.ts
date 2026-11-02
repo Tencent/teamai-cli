@@ -1,6 +1,6 @@
 /**
  * Benchmark suites as a member receives them: `syncTeamDefinitions` syncs the team's scorers and workflows, then parses
- * each suite under benchmarks/ and caches the valid ones, where `loadCachedSuite` reads them back. A suite's
+ * each suite under benchmarks/ and caches the valid ones, where `loadCachedSuite` and `listCachedSuites` read them back. A suite's
  * diagnostics and the scorers it lists that do not exist join the workflows' own.
  */
 import fs from 'node:fs/promises';
@@ -101,6 +101,13 @@ export async function loadCachedSuite(config: LocalConfig, name: string): Promis
   if (!entry.success) return null;
   const parsed = parseSuite(entry.data);
   return parsed.ok && parsed.suite.name === name ? parsed.suite : null;
+}
+
+/** Every suite this member received the last valid version of, in name order. */
+export async function listCachedSuites(config: LocalConfig): Promise<Suite[]> {
+  const files = await fs.readdir(suiteCacheDir(config)).catch((): string[] => []);
+  const names = files.flatMap((file) => (file.endsWith('.json') ? [file.slice(0, -'.json'.length)] : [])).sort();
+  return (await Promise.all(names.map((name) => loadCachedSuite(config, name)))).flatMap((suite) => (suite ? [suite] : []));
 }
 
 /**
