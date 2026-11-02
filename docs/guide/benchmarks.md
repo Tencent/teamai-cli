@@ -421,10 +421,11 @@ jobs:
         shell: bash
         env: { BASE_REF: "${{ github.base_ref }}" }
         run: |
+          tasks=$(git -C ../team diff --name-only --diff-filter=AM "origin/$BASE_REF...HEAD" -- 'benchmarks/fix-auth/tasks/*.yaml')
           failed=0
-          while read -r file; do
+          for file in $tasks; do              # task paths have no spaces
             teamai benchmark try "../team/$file" || failed=1
-          done < <(git -C ../team diff --name-only --diff-filter=AM "origin/$BASE_REF...HEAD" -- 'benchmarks/fix-auth/tasks/*.yaml')
+          done
           exit "$failed"
 ```
 
@@ -438,7 +439,7 @@ add-missing    not tried           not tried       fails: "test/auth/refresh-rac
 no-fix         check fails  ✔      not tried       passes, and says the check was not tried on a fix
 ```
 
-Every task is tried, and the job lists each failure before it fails. Mark it required in the team repo's merge rules, so a task that fails it never reaches the suite. `PROJECT_READ_TOKEN` reads the suite's repo. A fix that is not on that repo's remote fails the job naming the commit: push the fix's branch, or set `source.fix` to the commit that landed it on the default branch, and re-run.
+Every task is tried, and the job lists each failure before it fails. If `git diff` cannot read the base branch, the job fails rather than trying nothing. Mark it required in the team repo's merge rules, so a task that fails it never reaches the suite. `PROJECT_READ_TOKEN` reads the suite's repo. A fix that is not on that repo's remote fails the job naming the commit: push the fix's branch, or set `source.fix` to the commit that landed it on the default branch, and re-run.
 
 A team with suites for several repositories tries each suite against its own repository:
 
@@ -469,10 +470,11 @@ jobs:
         shell: bash
         env: { BASE_REF: "${{ github.base_ref }}", SUITE: "${{ matrix.suite }}" }
         run: |
+          tasks=$(git -C ../team diff --name-only --diff-filter=AM "origin/$BASE_REF...HEAD" -- "$SUITE/tasks/*.yaml")
           failed=0
-          while read -r file; do
+          for file in $tasks; do
             teamai benchmark try "../team/$file" || failed=1
-          done < <(git -C ../team diff --name-only --diff-filter=AM "origin/$BASE_REF...HEAD" -- "$SUITE/tasks/*.yaml")
+          done
           exit "$failed"
 ```
 

@@ -150,4 +150,11 @@ describe('the guide\'s CI job for benchmark task pull requests', () => {
     expect(checkout.code, checkout.output).toBe(0);
     expect(checkout.output).toBe('');
   }, 120_000);
+
+  it.each([[JOB_FILE, {}], [MATRIX_JOB_FILE, { SUITE: 'benchmarks/fix-auth' }]] as const)('fails, rather than trying nothing, when the base branch is missing: %s', (header, more) => {
+    const job = pullRequest((c) => ({ 'pod-startup': task(c.start, { fix: c.fix, add: true }) }), { header, env: { BASE_REF: 'renamed-default', ...more } });
+
+    expect(job.code, job.output).not.toBe(0);
+    expect(job.output).toContain('origin/renamed-default');
+  }, 120_000);
 });

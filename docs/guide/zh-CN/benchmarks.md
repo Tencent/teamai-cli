@@ -421,10 +421,11 @@ jobs:
         shell: bash
         env: { BASE_REF: "${{ github.base_ref }}" }
         run: |
+          tasks=$(git -C ../team diff --name-only --diff-filter=AM "origin/$BASE_REF...HEAD" -- 'benchmarks/fix-auth/tasks/*.yaml')
           failed=0
-          while read -r file; do
+          for file in $tasks; do              # task paths have no spaces
             teamai benchmark try "../team/$file" || failed=1
-          done < <(git -C ../team diff --name-only --diff-filter=AM "origin/$BASE_REF...HEAD" -- 'benchmarks/fix-auth/tasks/*.yaml')
+          done
           exit "$failed"
 ```
 
@@ -438,7 +439,7 @@ add-missing    not tried           not tried       fails: "test/auth/refresh-rac
 no-fix         check fails  ✔      not tried       passes, and says the check was not tried on a fix
 ```
 
-每个任务都会被试一遍，job 在失败前列出每个失败。在团队仓库的合并规则里把它设为必需，失败的任务就进不了套件。`PROJECT_READ_TOKEN` 读取套件的仓库。修复不在那个仓库的远端时，job 会失败并写出该提交：推送修复所在的分支，或把 `source.fix` 设为把修复合入默认分支的提交，再重跑。
+每个任务都会被试一遍，job 在失败前列出每个失败。`git diff` 读不到基础分支时，job 直接失败，而不是什么都不试。在团队仓库的合并规则里把它设为必需，失败的任务就进不了套件。`PROJECT_READ_TOKEN` 读取套件的仓库。修复不在那个仓库的远端时，job 会失败并写出该提交：推送修复所在的分支，或把 `source.fix` 设为把修复合入默认分支的提交，再重跑。
 
 团队有多个仓库的套件时，每个套件对它自己的仓库试：
 
@@ -469,10 +470,11 @@ jobs:
         shell: bash
         env: { BASE_REF: "${{ github.base_ref }}", SUITE: "${{ matrix.suite }}" }
         run: |
+          tasks=$(git -C ../team diff --name-only --diff-filter=AM "origin/$BASE_REF...HEAD" -- "$SUITE/tasks/*.yaml")
           failed=0
-          while read -r file; do
+          for file in $tasks; do
             teamai benchmark try "../team/$file" || failed=1
-          done < <(git -C ../team diff --name-only --diff-filter=AM "origin/$BASE_REF...HEAD" -- "$SUITE/tasks/*.yaml")
+          done
           exit "$failed"
 ```
 
