@@ -66,7 +66,7 @@ function collectInvocations(): Invocation[] {
 }
 
 /** Walk the command chain an invocation names, and return the command it lands on. */
-function resolveCommand(program: Command, tokens: string[]): { command: Command; rest: string[] } {
+function resolveCommand(program: Command, tokens: string[]) {
   let command = program;
   let index = 0;
 

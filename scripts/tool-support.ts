@@ -24,6 +24,20 @@ export type ToolSupportLang = keyof typeof TOOL_SUPPORT_PAGES;
 
 const FEATURE_KEYS = ['env', 'workflows', 'unattended', 'recall', 'stats', 'tokens', 'aiBackend', 'votesJudge', 'sessionJudge', 'agentHooks'] as const satisfies readonly (keyof ToolFeatures)[];
 
+/** The translated headers, legend and column names of one support page. */
+type PageText = {
+  readonly title: string;
+  readonly intro: readonly string[];
+  readonly legend: readonly string[];
+  readonly user: string;
+  readonly project: string;
+  readonly projectNote: string;
+  readonly features: string;
+  readonly featuresNote: string;
+  readonly notes: string;
+  readonly columns: Readonly<Record<'tool' | 'home' | 'skills' | 'rules' | 'blocks' | 'agents' | 'hooks' | 'mcp' | 'sessions' | (typeof FEATURE_KEYS)[number], string>>;
+};
+
 const TEXT = {
   en: {
     title: '# Tool support',
@@ -69,14 +83,14 @@ const TEXT = {
       env: '环境变量', workflows: '工作流（本地驱动）', unattended: '无人值守提示', recall: 'Recall', stats: '统计', tokens: 'Token 与费用', aiBackend: 'AI 后端', votesJudge: '投票评审', sessionJudge: '会话评审', agentHooks: 'HTTP agent hooks',
     },
   },
-} as const satisfies Record<ToolSupportLang, unknown>;
+} as const satisfies Record<ToolSupportLang, PageText>;
 
 const EVIDENCE: Record<Evidence, string> = { verified: 'v', source: 's', docs: 'd', assumed: 't' };
 
 type Read = HomeRead | ProjectRead | FirstExistingRead;
 
 function file(path: string | CodebuddyConfigFile, base: 'home' | 'project'): string {
-  if (typeof path !== 'string') return '`~/.codebuddy.json` (in `$CODEBUDDY_CONFIG_DIR` when set)';
+  if (path instanceof Object) return '`~/.codebuddy.json` (in `$CODEBUDDY_CONFIG_DIR` when set)';
 
   return base === 'home' ? `\`~/${path}\`` : `\`${path}\``;
 }
@@ -167,7 +181,7 @@ function userRow(tool: ToolId, d: ToolDescriptor): string[] {
     agentsRead(d, 'user'),
     channel(hooks.user, (c) => c.channel === 'settings' ? reads(c.reads) : `${c.adapter} ${EVIDENCE[c.evidence]}`),
     channel(d.mcp.user, (c) => reads(c.reads)),
-    typeof d.sessions === 'string' ? channel(d.sessions, () => '') : d.sessions.join(', '),
+    Array.isArray(d.sessions) ? d.sessions.join(', ') : channel(d.sessions, () => ''),
   ];
 }
 
@@ -186,7 +200,7 @@ function projectRow(tool: ToolId, d: ToolDescriptor): string[] {
 }
 
 function featureCell(support: Support, notes: string[]): string {
-  if (typeof support === 'string') return support;
+  if (!(support instanceof Object)) return support;
 
   if (!notes.includes(support.note)) notes.push(support.note);
 

@@ -36,7 +36,7 @@ const COLUMNS = [
 type Column = (typeof COLUMNS)[number];
 
 /** The README's row label for each tool it lists. */
-const LABELS: Readonly<Record<string, ToolId>> = {
+const LABELS: ReadonlyMap<string, ToolId> = new Map(Object.entries({
   'Claude Code': 'claude',
   Codex: 'codex',
   Cursor: 'cursor',
@@ -58,7 +58,7 @@ const LABELS: Readonly<Record<string, ToolId>> = {
   JoyCode: 'joycode',
   'Muse Code': 'muse',
   Antigravity: 'agy',
-};
+} satisfies Record<string, ToolId>));
 
 /** Internal builds the README leaves out. */
 const UNLISTED: ReadonlySet<ToolId> = new Set(['claude-internal', 'codex-internal', 'tclaude', 'tcodex']);
@@ -82,7 +82,7 @@ function cell(row: readonly string[], column: Column): string | undefined {
 
 /** `✓` or `—` when the descriptor's mark decides it, else undefined (`?`). */
 function decided(support: Support): '✓' | '—' | undefined {
-  const mark = typeof support === 'string' ? support : support.cell;
+  const mark = support instanceof Object ? support.cell : support;
 
   if (mark === '?') return undefined;
 
@@ -96,7 +96,7 @@ await check('lists every tool but the internal builds', () => {
     .filter(isToolId)
     .filter((tool) => !UNLISTED.has(tool));
 
-  assert.deepEqual([...matrix.keys()].map((label) => LABELS[label]).sort(), tools.sort());
+  assert.deepEqual([...matrix.keys()].map((label) => LABELS.get(label)).sort(), tools.sort());
 });
 
 for (const file of READMES.filter((candidate) => candidate !== 'README.md')) {
@@ -107,17 +107,18 @@ for (const file of READMES.filter((candidate) => candidate !== 'README.md')) {
 
 for (const [label, row] of matrix) {
   await check(`${label} agrees with the tool descriptor`, () => {
-    const tool = LABELS[label];
+    const tool = LABELS.get(label);
+    assert.ok(tool, `${label} is not a README label`);
     const d = TOOLS[tool];
-    const blocks = typeof d.blocks.user === 'object' || typeof d.blocks.project === 'object';
+    const blocks = d.blocks.user instanceof Object || d.blocks.project instanceof Object;
 
-    if (typeof d.rules.user === 'object' && d.rules.user.channel === 'inline') assert.equal(cell(row, 'rules'), '✓¹');
+    if (d.rules.user instanceof Object && d.rules.user.channel === 'inline') assert.equal(cell(row, 'rules'), '✓¹');
     assert.equal(cell(row, 'culture'), blocks ? '✓' : '—');
     assert.equal(cell(row, 'models'), ALL_MODEL_AGENTS.some((agent) => agent === tool) ? '✓' : '—');
     // ✓ is teamai's hooks and the team's hooks/hooks.yaml both.
     assert.equal(
       cell(row, 'hooks'),
-      typeof d.hooks.user === 'object' && runsTeamHookOn(tool, 'SessionStart') ? '✓' : '—',
+      d.hooks.user instanceof Object && runsTeamHookOn(tool, 'SessionStart') ? '✓' : '—',
     );
     const usage = decided(d.features.stats);
 

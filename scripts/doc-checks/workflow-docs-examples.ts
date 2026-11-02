@@ -10,7 +10,7 @@ import { LeaseWireSchema } from '../../src/workflow/lease-wire.js';
 import { syncScorerDefinitions } from '../../src/scorers/cache.js';
 import { ciRecipesOf, runCommandsOf } from '../ci-recipe.js';
 import { formatScorerDiagnostic } from '../../src/scorers/definition.js';
-import type { LocalConfig } from '../../src/types.js';
+import { isJsonObject, JsonValueSchema, type JsonObject, type JsonValue, type LocalConfig } from '../../src/types.js';
 import { formatUnknownScorer, syncWorkflowDefinitions } from '../../src/workflow/cache.js';
 import { leaseNext, reportAttempt, startRun } from '../../src/workflow/engine.js';
 import { formatDiagnostic } from '../../src/workflow/parse.js';
@@ -50,18 +50,20 @@ function examplesOf(page: string): Example[] {
   });
 }
 
-function isWorkflow(value: unknown): value is { name?: unknown } {
-  return !!value && typeof value === 'object' && !Array.isArray(value) && 'steps' in value;
+function isWorkflow(value: JsonValue): value is JsonObject {
+  return isJsonObject(value) && 'steps' in value;
 }
 
-function promptFiles(value: unknown): string[] {
+function promptFiles(value: JsonValue): string[] {
   if (Array.isArray(value)) return value.flatMap(promptFiles);
 
-  if (!value || typeof value !== 'object') return [];
+  if (!isJsonObject(value)) return [];
 
-  return Object.entries(value).flatMap(([key, field]) =>
-    key === 'prompt_file' && typeof field === 'string' ? [field] : promptFiles(field),
-  );
+  return Object.entries(value).flatMap(([key, field]) => {
+    const file = key === 'prompt_file' ? z.string().safeParse(field).data : undefined;
+
+    return file === undefined ? promptFiles(field) : [file];
+  });
 }
 
 /** Workflows a start line names that its page declares only in prose, as `inputs: { … }` in the same paragraph. */
@@ -76,7 +78,7 @@ interface Start {
 }
 
 /** Each `teamai workflow start <name> … --inputs '<json>'` on `page`, and each `--inputs` with a value it could not read as one. */
-function startsOf(page: string): { starts: Start[]; unread: string[] } {
+function startsOf(page: string) {
   const text = fs.readFileSync(path.join(ROOT, page), 'utf8');
   const lineOf = (index: number): number => text.slice(0, index).split('\n').length;
 
@@ -90,12 +92,16 @@ function startsOf(page: string): { starts: Start[]; unread: string[] } {
     paragraph: text.split(/\n\s*\n/).find((block) => block.includes(match[0])) ?? '',
   }));
 
-  const unread = [...text.matchAll(/--inputs[ =]['"{]/g)]
-    .map((match) => lineOf(match.index))
-    .filter((line) => !starts.some((start) => start.line === line))
+  const unread = [...text.matchAll(/--inputs[ =]['"{]/g)].flatMap((match) => {
+    const line = lineOf(match.index);
+
+    if (starts.some((start) => start.line === line)) return [];
+
     // Actions expressions become JSON only inside the job; the documented CLI path has its own real-CLI E2E.
-    .filter((line) => !text.split('\n')[line - 1]?.includes('${{'))
-    .map((line) => `${page}:${line}: --inputs is not part of a teamai workflow start line`);
+    if (text.split('\n')[line - 1]?.includes('${{')) return [];
+
+    return [`${page}:${line}: --inputs is not part of a teamai workflow start line`];
+  });
 
   return { starts, unread };
 }
@@ -133,7 +139,7 @@ function teamRepo(): LocalConfig {
 const driver: DriverIdentity = { kind: 'local', machine: 'docs', workspace: '/work' };
 
 /** Writes each complete workflow example on `page` into the team repo, and the prompt files they name. */
-function writeExamples(page: string, config: LocalConfig): { byFile: Map<string, string>; failures: string[] } {
+function writeExamples(page: string, config: LocalConfig) {
   const failures: string[] = [];
   const byFile = new Map<string, string>();
 
@@ -145,7 +151,7 @@ function writeExamples(page: string, config: LocalConfig): { byFile: Map<string,
       continue;
     }
 
-    const value: unknown = document.toJS();
+    const value: JsonValue = document.toJS();
 
     if (!isWorkflow(value)) continue;
     const file = `workflows/${String(value.name)}.yaml`;
@@ -177,17 +183,17 @@ const ExampleLeaseSchema = LeaseWireSchema.safeExtend({ pass: z.number() });
 
 type Lease = z.infer<typeof ExampleLeaseSchema>;
 
-const ExampleEnvelopeSchema = z.object({ data: z.record(z.string(), z.unknown()) });
+const ExampleEnvelopeSchema = z.object({ data: z.record(z.string(), JsonValueSchema) });
 
 /** Each first group of `pattern` on `page`, parsed as JSON. */
-function jsonOn(page: string, pattern: RegExp): unknown[] {
+function jsonOn(page: string, pattern: RegExp): JsonValue[] {
   return [...fs.readFileSync(path.join(ROOT, page), 'utf8').matchAll(pattern)].map((match) =>
     JSON.parse(match[1] ?? ''),
   );
 }
 
 /** `value` with its run and attempt ids masked, which differ in every run. */
-function withoutIds(value: unknown): unknown {
+function withoutIds(value: WorkflowEnvelope | JsonValue | undefined): JsonValue {
   return JSON.parse(
     JSON.stringify(value)
       .replace(/"run":"r[0-9a-f]+"/g, '"run":"<run>"')
@@ -203,7 +209,7 @@ function leaseOf(answer: WorkflowEnvelope): Lease | undefined {
 async function startExample(
   page: string,
   name: string,
-  inputs: unknown = {},
+  inputs: JsonValue = {},
 ): Promise<{ config: LocalConfig; runId: string }> {
   const config = teamRepo();
   writeExamples(page, config);
@@ -463,7 +469,7 @@ for (const page of ADVANCED) {
     `${page}: the for_each results are what fan-build renders, in item order`,
     async () => {
       const [shown] = z
-        .array(z.array(z.object({ item: z.unknown(), outcome: z.enum(['success', 'failed']) })))
+        .array(z.array(z.object({ item: JsonValueSchema, outcome: z.enum(['success', 'failed']) })))
         .parse(jsonOn(page, /^```json\n(\[.*\])\n```/gm));
 
       if (!shown) throw new Error(`${page} shows no results`);

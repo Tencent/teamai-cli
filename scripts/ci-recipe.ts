@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import { parseDocument } from 'yaml';
 import { z } from 'zod';
 
+import { isJsonObject, type JsonValue } from '../src/types.js';
+
 const RecipeSchema = z.object({
   jobs: z.record(z.string(), z.object({
     'runs-on': z.string().optional(),
@@ -17,9 +19,9 @@ export function ciRecipesOf(file: string): CiRecipe[] {
   const text = fs.readFileSync(file, 'utf8');
 
   return [...text.matchAll(/^```yaml\n([\s\S]*?)^```/gm)].flatMap((match) => {
-    const value: unknown = parseDocument(match[1] ?? '').toJS();
+    const value: JsonValue = parseDocument(match[1] ?? '').toJS();
 
-    return value && typeof value === 'object' && 'jobs' in value ? [RecipeSchema.parse(value)] : [];
+    return isJsonObject(value) && 'jobs' in value ? [RecipeSchema.parse(value)] : [];
   });
 }
 
