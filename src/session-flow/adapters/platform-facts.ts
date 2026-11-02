@@ -1,4 +1,4 @@
-import type { ToolId } from '../../types.js';
+import type { ToolId } from '../../tools.js';
 
 /**
  * Where a platform keeps its sessions on a machine, resolved by `sessionStoreDir` (locate.ts).
@@ -33,6 +33,7 @@ export interface SessionPlatformFacts {
   readOnly?: true;
 }
 
+// oxlint-disable-next-line teamai/tool-facts -- keyed by session platform, which this table defines; a tool lists its own in TOOLS.sessions
 export const SESSION_PLATFORM_FACTS = {
   'claude-code': {
     store: { in: 'tool-home', home: 'claude', dir: 'projects' },

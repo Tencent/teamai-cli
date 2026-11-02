@@ -1,7 +1,7 @@
 import { withFileLock } from './update.js';
 import { homeVariables, isToolId, TOOLS } from './tools.js';
 import { envToolHome, realHost, type EnvToolHome, recordedHomes, reloadToolHomes, rememberToolHome, saveToolHomes, toolHomesPath, type Host } from './tool-home.js';
-import type { ToolId } from './types.js';
+import type { ToolId } from './tools.js';
 import { log } from './utils/logger.js';
 
 /** A change to the record: `dir` null when it was cleared. */

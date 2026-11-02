@@ -10,7 +10,7 @@ import { execFileSync } from 'node:child_process';
 import { getUserHome } from './utils/home.js';
 import { isOnPath, pathDirs } from './utils/lookpath.js';
 import { log } from './utils/logger.js';
-import type { ToolId } from './types.js';
+import { isToolId, TOOLS, type ToolId } from './tools.js';
 
 const WORKBUDDY_BUNDLED_NODE_DIR = '.workbuddy/bundled/node/versions';
 const WORKBUDDY_PORTABLE_GIT_DIR = '.workbuddy/binaries/PortableGit/versions';
@@ -261,20 +261,23 @@ export function ensureBundledRuntimeOnPath(platform: NodeJS.Platform = process.p
   log.debug(`bundled runtime: PATH now leads with [${prepend.join('; ')}] and ends with [${append.join('; ')}]`);
 }
 
-/**
- * Tools that provide a shell their hook commands can execute with, per tool id.
- * A tool without an entry falls back to the conservative /bin/sh gate.
- */
-const BUNDLED_SHELLS: Record<string, () => string | null> = {
+/** The tools whose hook commands run through a shell of their own (`hooks.shell: 'bundled'`). */
+type BundledShellTool = { [T in ToolId]: (typeof TOOLS)[T]['hooks']['shell'] extends 'bundled' ? T : never }[ToolId];
+
+/** How each tool with a bundled shell finds it. Every other tool falls back to the conservative /bin/sh gate. */
+const BUNDLED_SHELLS: Record<BundledShellTool, () => string | null> = {
   workbuddy: resolveWorkbuddyShell,
   codebuddy: resolveCodebuddyShell,
-} satisfies Partial<Record<ToolId, () => string | null>>;
+};
 
 /**
  * Return the shell a tool provides for hook commands, or null when it provides
  * none (the caller should then fall back to the /bin/sh check).
  */
+function isBundledShellTool(tool: string): tool is BundledShellTool {
+  return isToolId(tool) && TOOLS[tool].hooks.shell === 'bundled';
+}
+
 export function bundledShellFor(tool: string): string | null {
-  const resolver = BUNDLED_SHELLS[tool];
-  return resolver ? resolver() : null;
+  return isBundledShellTool(tool) ? BUNDLED_SHELLS[tool]() : null;
 }

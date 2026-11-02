@@ -1,7 +1,8 @@
 /** Before a run: what describe asks the person, and whether a start carries every answer it needs. */
 import { isLaunchTool, LAUNCH_ORDER, type LaunchTool } from '../../../tool-launch/tools.js';
 import { TOOLS } from '../../../tools.js';
-import type { LocalConfig, ToolId } from '../../../types.js';
+import type { LocalConfig } from '../../../types.js';
+import type { ToolId } from '../../../tools.js';
 import type { GateGuards, WorkflowDescription } from '../../describe.js';
 import { INVOKE_ASK_NEED, unattendedReason, type Judging } from '../../protocol.js';
 import { envAdvice } from '../../requirements.js';

@@ -4,7 +4,7 @@
  * are the tables under `## The skill driver` in docs/dev/workflow-engine.md, cell by cell.
  */
 import type { RunMode } from '../../../launch-context.js';
-import type { ToolId } from '../../../types.js';
+import type { ToolId } from '../../../tools.js';
 import type { Judging, RunReadied, RunVersion } from '../../protocol.js';
 import type { EnvScope } from '../../requirements.js';
 import type { AttemptId, RunId } from '../../store.js';

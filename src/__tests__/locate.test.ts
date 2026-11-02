@@ -5,7 +5,7 @@ import { cleanupOf, installOf, ownOf, unreadWrites, writable, writesOf, type Ent
 import { envToolHome, movedToolHome, toolHome, type Host } from '../tool-home.js';
 import { isToolId, TOOLS } from '../tools.js';
 import { samePlaces } from '../resources/places.js';
-import type { ToolId } from '../types.js';
+import type { ToolId } from '../tools.js';
 
 function linuxHost(env: Record<string, string>, existing: readonly string[] = ['/new/hermes', '/x/opencode', '/home/m/.openclaw']): Host {
   return {

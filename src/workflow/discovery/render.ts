@@ -1,7 +1,7 @@
 /** The skill `teamai pull` generates for a workflow an agent may start: it routes to the guide and names the workflow. */
 import { generatedStartPatterns } from '../drivers/skill/literals.js';
 import { markerLines, signGenerated } from './generated-marker.js';
-import type { ToolId } from '../../types.js';
+import { isToolId, TOOLS } from '../../tools.js';
 import type { WorkflowSource } from '../types.js';
 
 export interface AdvertisedWorkflow {
@@ -16,8 +16,6 @@ export interface AdvertisedWorkflow {
   skill: string;
 }
 
-/** The tools whose skills take `allowed-tools`, so an `invoke: allow` start runs without a permission prompt. */
-const PREAPPROVING_TOOLS = new Set<string>(['claude', 'codebuddy'] satisfies ToolId[]);
 
 const DESCRIPTION_LIMIT = 400;
 
@@ -34,7 +32,7 @@ export function renderWorkflowSkill(workflow: AdvertisedWorkflow, tool: string):
   const whose = workflow.source === 'default' ? 'teamai\'s default workflow, which the team can replace' : 'A team workflow';
   const suffix = `${alias ? ` Alias: ${alias}.` : ''} ${whose}: prefer it over doing the task ad hoc.`;
   const description = `${oneLine(workflow.description, DESCRIPTION_LIMIT - suffix.length)}.${suffix}`;
-  const preapproves = PREAPPROVING_TOOLS.has(tool);
+  const preapproves = isToolId(tool) && TOOLS[tool].skillAllowedTools;
   return signGenerated([
     '---',
     `name: ${workflow.skill}`,

@@ -213,6 +213,7 @@ function readPlainReply({ stdout }: CallOutput): CallReading {
 }
 
 /** How teamai launches each family of tools headless. A tool picks its adapter with the `launch` facet in `TOOLS`. */
+// oxlint-disable-next-line teamai/tool-facts -- keyed by launch adapter id, which this table defines; a tool picks one with TOOLS.launch
 export const LAUNCH_ADAPTERS = {
   claude: {
     call: { evidence: 'verified', prompt: 'stdin', args: () => ['-p', '--output-format', 'json'], read: readClaudeResult },

@@ -2,8 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { TEAMAI_HOOK_DESCRIPTION_PREFIX } from './types.js';
-import { CODEX_TOOL_IDS, isCodexTool } from './utils/tool-names.js';
-import type { HookDef, ToolId } from './types.js';
+import { isCodexTool } from './utils/tool-names.js';
+import type { HookDef } from './types.js';
+import { channelsOf, type HookAdapterId } from './tools.js';
 import { getUserHome } from './utils/home.js';
 import { log } from './utils/logger.js';
 import { bundledShellFor, findGitBashWindows, resetBundledRuntimeCache, resolveCodebuddyNode, resolveWorkbuddyNode } from './bundled-runtime.js';
@@ -36,13 +37,15 @@ const WRAPPER_NAME = 'teamai';
 const CODEBUDDY_HOOK_WRAPPER = 'teamai-codebuddy-hook';
 
 /**
- * Tools whose hook commands need a shell to execute at all: their hook runner
- * hands the rendered `command` string to a shell instead of an argv vector.
- * Which shell that is depends on the tool (and platform) — see
- * bundled-runtime.ts. Injection is skipped for a tool when no shell resolves,
- * because its hook commands could never run.
+ * Whether `tool`'s hook commands need a shell of its own to execute at all
+ * (`hooks.shell: 'bundled'`): its hook runner hands the rendered `command`
+ * string to a shell instead of an argv vector. Which shell that is depends on
+ * the tool (and platform) — see bundled-runtime.ts. Injection is skipped for a
+ * tool when no shell resolves, because its hook commands could never run.
  */
-export const SHELL_DEPENDENT_TOOLS = new Set<string>(['workbuddy', 'codebuddy'] satisfies ToolId[]);
+export function isShellDependentTool(tool: string): boolean {
+  return channelsOf(tool).hooks.shell === 'bundled';
+}
 
 /**
  * Check whether /bin/sh exists.  Remote containers (e.g. CloudStudio AI
@@ -170,7 +173,7 @@ export function skipToolsWithoutShell(tools: string[]): Set<string> {
   const skipped = new Set<string>();
   let withShell = false;
   for (const tool of tools) {
-    if (!SHELL_DEPENDENT_TOOLS.has(tool)) continue;
+    if (!isShellDependentTool(tool)) continue;
     if (hasShellFor(tool)) {
       withShell = true;
     } else {
@@ -403,23 +406,6 @@ const SUBAGENT_START_SPEC: BuiltinHookSpec = {
 };
 
 /**
- * Tools that fire SubagentStop with the parent's session id, so the recall
- * reducer can credit a read a subagent made after the session's last Stop
- * (#884): Claude Code, Codex, CodeBuddy and Qoder document it, and their
- * internal builds share the format. The installed Codex 0.159 knows
- * `SubagentStop`, and Codex main's `HookEventsToml` (codex-rs/config/src/
- * hook_config.rs) has no `deny_unknown_fields`, so it skips an event key it
- * does not know; how older hook-capable builds treat one is unverified (a
- * hooks.json Codex cannot parse is dropped whole). Not WorkBuddy, whose shipped engine version is unverified; not Cursor
- * or Copilot, whose subagents run in sessions of their own that no hook links
- * to the parent; not ZCode, which has no such event and rejects the whole
- * hooks block on an unknown key.
- */
-const SUBAGENT_STOP_TOOLS = new Set<string>([
-  'claude', 'claude-internal', 'tclaude', ...CODEX_TOOL_IDS, 'codebuddy', 'qoder', 'qoder-cn',
-] satisfies ToolId[]);
-
-/**
  * Build the built-in hook definitions for a tool.
  *
  * Tool-specific by design: Cursor, WorkBuddy, CodeBuddy and the Codex family
@@ -434,7 +420,6 @@ const SUBAGENT_STOP_TOOLS = new Set<string>([
  * uses Git Bash but its IDE uses cmd.exe, so its built-ins launch Git Bash
  * explicitly through a script that keeps the fail-open contract.
  */
-const WRAPPER_TOOLS = SHELL_DEPENDENT_TOOLS;
 
 
 export function builtinHookDefs(tool: string): HookDef[] {
@@ -445,13 +430,13 @@ export function builtinHookDefs(tool: string): HookDef[] {
     ? getRawDispatchCommand
     : toolUsesPwshShell(tool)
       ? getPwshDispatchCommand
-      : WRAPPER_TOOLS.has(tool) || tool === 'dsh'
+      : isShellDependentTool(tool) || tool === 'dsh'
         ? getWrapperDispatchCommand
         : getDispatchCommand;
   const specs = [
     ...BUILTIN_HOOK_SPECS,
     ...(tool === 'copilot' ? [COPILOT_SESSION_END_SPEC] : []),
-    ...(SUBAGENT_STOP_TOOLS.has(tool) ? [SUBAGENT_STOP_SPEC] : []),
+    ...(channelsOf(tool).hooks.subagentStop ? [SUBAGENT_STOP_SPEC] : []),
     ...(isCodexTool(tool) ? [SUBAGENT_START_SPEC] : []),
   ];
   return specs.map((spec) => ({
@@ -478,13 +463,14 @@ export function builtinHookDefs(tool: string): HookDef[] {
  * cover a narrower slice, and spawn the dispatcher directly — so the shell
  * wrapper the settings tools carry would misreport what is on disk.
  *
- * A tool in neither place is not listed: it has no hook surface teamai writes.
+ * Keyed by the tool's hook adapter. A tool with neither a settings file nor an
+ * adapter here has no hook surface teamai writes.
  */
-const ADAPTER_BUILTIN_HOOKS: Record<string, { keys: string[]; suffix?: string }> = {
-  kiro: { keys: ['Hook dispatch session-start'] },
+const ADAPTER_BUILTIN_HOOKS: Record<HookAdapterId, { keys: string[]; suffix?: string } | null> = {
+  'kiro-hooks': { keys: ['Hook dispatch session-start'] },
   // agy-hooks.ts maps the same four events as OMP into agy's hooks.json
   // (SessionStart, PreInvocation, PostToolUse, Stop).
-  agy: {
+  'agy-hooks': {
     keys: [
       'Hook dispatch session-start',
       'Hook dispatch stop',
@@ -494,11 +480,11 @@ const ADAPTER_BUILTIN_HOOKS: Record<string, { keys: string[]; suffix?: string }>
   },
   // hermes-hooks.ts registers one on_session_start script whose single line is
   // the dispatch command with errors swallowed (buildReportScript).
-  hermes: { keys: ['Hook dispatch session-start'], suffix: ' >/dev/null 2>&1 || true' },
+  'hermes-plugin': { keys: ['Hook dispatch session-start'], suffix: ' >/dev/null 2>&1 || true' },
   // omp-hooks.ts subscribes to four OMP extension events and spawns the
   // dispatcher with argv; `tool_result` carries no matcher, so the TodoWrite
   // pass does not exist there.
-  omp: {
+  'omp-extension': {
     keys: [
       'Hook dispatch session-start',
       'Hook dispatch stop',
@@ -507,7 +493,7 @@ const ADAPTER_BUILTIN_HOOKS: Record<string, { keys: string[]; suffix?: string }>
     ],
   },
   // opencode-hooks.ts maps the same four events as OMP.
-  opencode: {
+  'opencode-plugin': {
     keys: [
       'Hook dispatch session-start',
       'Hook dispatch stop',
@@ -520,7 +506,7 @@ const ADAPTER_BUILTIN_HOOKS: Record<string, { keys: string[]; suffix?: string }>
   // TodoWrite matcher concept, so post-tool-use is wildcard-only there
   // too. tool_execution_start only caches the tool input for the later
   // post-tool-use dispatch — it never calls hook-dispatch itself.
-  pi: {
+  'pi-extension': {
     keys: [
       'Hook dispatch session-start',
       'Hook dispatch stop',
@@ -533,7 +519,9 @@ const ADAPTER_BUILTIN_HOOKS: Record<string, { keys: string[]; suffix?: string }>
   // argv. Only `openclaw`:
   // the other claw variants share its workspace resolver, so reconciliation
   // does not route them (see reconcileHooksToAllTools).
-  openclaw: { keys: ['Hook dispatch session-start', 'Hook dispatch prompt-submit'] },
+  'openclaw-hook': { keys: ['Hook dispatch session-start', 'Hook dispatch prompt-submit'] },
+  // dsh's hooks file is reconciled like a settings file, so dsh takes the full `builtinHookDefs`.
+  'dsh-hooks': null,
 };
 
 /**
@@ -547,7 +535,8 @@ const ADAPTER_BUILTIN_HOOKS: Record<string, { keys: string[]; suffix?: string }>
  */
 export function installedBuiltinHookDefs(tool: string, settingsDriven: boolean): HookDef[] {
   if (settingsDriven) return builtinHookDefs(tool);
-  const adapter = ADAPTER_BUILTIN_HOOKS[tool];
+  const channel = channelsOf(tool).hooks.user;
+  const adapter = typeof channel === 'object' && channel.channel === 'adapter' ? ADAPTER_BUILTIN_HOOKS[channel.adapter] : null;
   if (!adapter) return [];
   return BUILTIN_HOOK_SPECS.filter((spec) => adapter.keys.includes(spec.key)).map((spec) => ({
     source: 'builtin' as const,

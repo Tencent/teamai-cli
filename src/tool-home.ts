@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
 import { TOOLS, type HomeMove, type ToolDescriptor } from './tools.js';
-import type { ToolId } from './types.js';
+import type { ToolId } from './tools.js';
 import { pathExists, readFileSafe, readJsonObject, writeJsonAtomic, type JsonObjectRead } from './utils/fs.js';
 import { getUserHome, normalizeHomePath } from './utils/home.js';
 

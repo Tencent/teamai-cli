@@ -14,12 +14,12 @@ import {
   channelsOf, installGateOf, isToolId, hasDefaultHomeLeftovers, TOOLS,
   type Activation, type BlocksFile, type BlocksHeader, type ChannelProbe, type FirstExistingRead, type HomeRead, type HookAdapter,
   type HookAdapterId, type HookFormat, type HookSettings, type McpProject, type McpUser, type ProjectRead, type ReadGateKind, type RunTime, type SkillReads,
-  type RunTimeVia,
+  type RunTimeVia, type ToolId,
 } from './tools.js';
 import {
   DEFAULT_TOOL_PATHS, isAgentExcluded, isGitExcludeEnabled, isSelfMode, recordedToolRootDir, resolveBaseDir, scopedToolPaths, toolGateRoot,
   WORKBUDDY_NEW_GENERATION_ROOT, WORKBUDDY_TOOL_ID, WORKBUDDY_TOOL_ROOT,
-  type HomePaths, type LocalConfig, type Scope, type TeamaiConfig, type ToolId,
+  type HomePaths, type LocalConfig, type Scope, type TeamaiConfig,
 } from './types.js';
 import { absoluteOn, defaultToolHome, homeRoot, movedToolHome, realHost, toolHome, type Host } from './tool-home.js';
 import { resolveOpenclawConfigPath, resolveOpenclawWorkspace, type OpenclawWorkspace } from './openclaw-home.js';

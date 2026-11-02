@@ -19,7 +19,8 @@ import {
   hookToolPathsForConfig,
   toolGateRoot,
 } from './types.js';
-import type { HookDef, TeamaiConfig, LocalConfig, ManagedMcpManifest, Scope, ToolId } from './types.js';
+import type { HookDef, TeamaiConfig, LocalConfig, ManagedMcpManifest, Scope } from './types.js';
+import type { ToolId } from './tools.js';
 import {
   CODEX_TOOL_ID,
   DEFAULT_CODEX_ROOT,
@@ -50,7 +51,7 @@ import {
 } from './codex-trust.js';
 import { codexDispatcherCheckouts, codexDispatcherProjects, dispatchedCodexHooks, isCodexTeamHookDispatcher, reconcileCodexDispatchers, runsFromCodexDispatcher, setCodexDispatcherHooks } from './codex-team-hooks.js';
 import type { CodexTeamHook } from './codex-team-hooks.js';
-import { channelsOf, hookFormatOf, hookSettingsFormatOf, type HookFormat } from './tools.js';
+import { channelsOf, hookFormatOf, hookSettingsFormatOf, TOOL_IDS, TOOLS, type HookFormat } from './tools.js';
 import { BRIDGED_TEAM_HOOK_EVENTS, bridgedTeamHookFile, isBridgedTeamHookTool } from './bridged-team-hooks.js';
 import { earlierHookAdapterDir, hookSettingsFile, installOf, locate, openclawWorkspaceDir, ownOf, workspaceHooksOf } from './locate.js';
 import { toolHome } from './tool-home.js';
@@ -1002,7 +1003,8 @@ function gatedProjectRoot(command: string): string | null {
  * HOME, which every worktree reads from its first session. Every other tool
  * keeps its team hooks in HOME behind a `$PWD` gate.
  */
-const MAIN_CHECKOUT_TEAM_HOOK_TOOLS = ['claude', 'codex'] as const satisfies readonly ToolId[];
+type MainCheckoutTeamHookTool = { [T in ToolId]: (typeof TOOLS)[T]['hooks']['teamHooks'] extends 'main-checkout' ? T : never }[ToolId];
+const MAIN_CHECKOUT_TEAM_HOOK_TOOLS = TOOL_IDS.filter((tool): tool is MainCheckoutTeamHookTool => TOOLS[tool].hooks.teamHooks === 'main-checkout');
 
 /** Where a non-self project scope keeps Claude/Codex team hooks. */
 export interface MainCheckoutHooks {
