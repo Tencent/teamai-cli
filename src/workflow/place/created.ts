@@ -1,9 +1,9 @@
 import type { WorkflowFailure } from '../types.js';
-import type { WorkspaceContract } from '../workspace.js';
+import type { CopyContract } from '../workspace.js';
 import { ensureWorktree, fetchMissingCommits, markSetup, removeWorktree, setupUnfinished, unrestoredCopy, worktreePath } from '../worktree.js';
 
 /** Each commit a lease starts from, merges, or restores agent files from, with the branch that holds it. */
-export function leaseCommits(workspace: WorkspaceContract): Array<{ commit: string; branch?: string }> {
+export function leaseCommits(workspace: CopyContract): Array<{ commit: string; branch?: string }> {
   const { base, start } = workspace;
   const startBranch = start.branch ?? (start.commit === base.commit ? base.ref : workspace.branch);
 
@@ -19,7 +19,7 @@ export async function openWorktree({ root, run, step, workspace, setup }: {
   root: string;
   run: string;
   step: string;
-  workspace: WorkspaceContract;
+  workspace: CopyContract;
   setup: boolean;
 }): Promise<{ dir: string; created: boolean } | WorkflowFailure> {
   const place = worktreePath(root, workspace.branch);

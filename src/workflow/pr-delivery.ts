@@ -281,7 +281,7 @@ async function originTip(checkout: string, branch: string): Promise<{ kind: 'rea
 /** The files the delivered head changes against the run base, read in the run's checkout once it fetched what it lacks. */
 async function changedFiles({ key, runId, checkout, base }: DeliveryJob): Promise<{ files: string[] } | { fault: DeliveryFault }> {
   if (!OBJECT_ID.test(key.head) || !OBJECT_ID.test(base)) return { fault: { kind: 'unreadable' } };
-  const fetched = await fetchMissingCommits(checkout, { run: runId, commits: [base, key.head] }, ORIGIN_GIT);
+  const fetched = await fetchMissingCommits(checkout, { run: runId, commits: [base, key.head], branch: key.branch }, ORIGIN_GIT);
 
   if (fetched.missing.length > 0) return { fault: { kind: 'unreadable' } };
   const diff = await git(checkout, ['diff', '--no-renames', '--name-only', '-z', base, key.head, '--']);
@@ -292,9 +292,9 @@ async function changedFiles({ key, runId, checkout, base }: DeliveryJob): Promis
 }
 
 /** Whether `commit` holds `ancestor`, read in the run's checkout once it fetched what it lacks. */
-async function contains({ runId, checkout }: DeliveryJob, { commit, ancestor }: { commit: string; ancestor: string }): Promise<{ contains: boolean } | { fault: DeliveryFault }> {
+async function contains({ runId, checkout, key }: DeliveryJob, { commit, ancestor }: { commit: string; ancestor: string }): Promise<{ contains: boolean } | { fault: DeliveryFault }> {
   if (!OBJECT_ID.test(commit) || !OBJECT_ID.test(ancestor)) return { contains: false };
-  const fetched = await fetchMissingCommits(checkout, { run: runId, commits: [ancestor, commit] }, ORIGIN_GIT);
+  const fetched = await fetchMissingCommits(checkout, { run: runId, commits: [ancestor, commit], branch: key.branch }, ORIGIN_GIT);
 
   if (fetched.missing.includes(commit)) return { fault: { kind: 'unreadable' } };
 

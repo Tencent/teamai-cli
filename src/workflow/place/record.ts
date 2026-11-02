@@ -4,13 +4,13 @@ import { readFileSafe, writeJsonAtomic } from '../../utils/fs.js';
 import { LeaseSetupSchema } from '../requirements.js';
 import { ChangesSchema, FailureSchema, ReadSchema } from '../step-state.js';
 import { AttemptIdSchema, placeRecordPath, RunIdSchema, type AttemptId, type RunId } from '../store.js';
-import { WorkspaceContractSchema } from '../workspace.js';
+import { CopyContractSchema, TeamContractSchema } from '../workspace.js';
 
 /** A lease without a workspace contract, in the checkout itself: what it changes there fails it, unless it is interactive and may write. */
 const CheckoutRoleSchema = z.object({ role: z.literal('checkout') });
 
 /** A read-only lease in a copy of `workspace.branch`, which held `found` untracked when it was marked as read. */
-const ReaderRoleSchema = z.object({ role: z.literal('reader'), workspace: WorkspaceContractSchema, found: z.array(z.string()) });
+const ReaderRoleSchema = z.object({ role: z.literal('reader'), workspace: CopyContractSchema, found: z.array(z.string()) });
 
 /**
  * A lease that commits to `workspace.branch`, reporting the range from `rangeFrom`. `conflicts` hashes each file
@@ -18,7 +18,7 @@ const ReaderRoleSchema = z.object({ role: z.literal('reader'), workspace: Worksp
  */
 const WriterRoleSchema = z.object({
   role: z.literal('writer'),
-  workspace: WorkspaceContractSchema,
+  workspace: CopyContractSchema,
   rangeFrom: z.string().optional(),
   conflicts: z.record(z.string(), z.string()),
   conflictNote: z.string().optional(),
@@ -31,7 +31,7 @@ const WriterRoleSchema = z.object({
  */
 const CloneRoleSchema = z.object({
   role: z.literal('clone'),
-  workspace: WorkspaceContractSchema,
+  workspace: CopyContractSchema,
   rangeFrom: z.string(),
   withhold: z.array(z.string()),
   created: z.literal(true).optional(),
@@ -39,10 +39,25 @@ const CloneRoleSchema = z.object({
 });
 
 /**
+ * A lease in `clone`, a fresh clone of the team repo, on `workspace.branch`, which commits there from `start` and pushes
+ * the branch only where origin still has it as the clone found it. `base` is the commit of origin's default branch the
+ * clone merged, or started from, which the step's changes are compared with.
+ */
+const TeamRoleSchema = z.object({
+  role: z.literal('team'),
+  workspace: TeamContractSchema,
+  clone: z.string(),
+  base: z.string(),
+  start: z.string(),
+  /** The commit origin's branch was at when the clone was made; absent when origin had no such branch. */
+  found: z.string().optional(),
+});
+
+/**
  * How the attempt uses its place. The snapshot a reader is checked against is `before.json` beside the record, and the
  * branch's agent files kept while the base overlay is in place are in `overlay/`.
  */
-const PlaceRoleSchema = z.discriminatedUnion('role', [CheckoutRoleSchema, ReaderRoleSchema, WriterRoleSchema, CloneRoleSchema]);
+const PlaceRoleSchema = z.discriminatedUnion('role', [CheckoutRoleSchema, ReaderRoleSchema, WriterRoleSchema, CloneRoleSchema, TeamRoleSchema]);
 
 /** What finishing a place made of the step's end, masked: the report the attempt settles with. */
 export const PlaceFinishedSchema = z.object({

@@ -172,13 +172,21 @@ export interface StepLoop {
 }
 
 /**
- * Where a step runs: in the checkout as it is, in a new copy, in the copy an enclosing step opened, or in a fresh clone
- * teamai prepares. A driver lists the ones it provides in `can.workspace`.
+ * Where a step runs: in the checkout as it is, in a new copy, in the copy an enclosing step opened, in a fresh clone
+ * teamai prepares, or in a fresh clone of the team repo. A driver lists the ones it provides in `can.workspace`.
  */
-export const WORKSPACE_MODES = ['read-only', 'new', 'continue', 'clone'] as const;
+export const WORKSPACE_MODES = ['read-only', 'new', 'continue', 'clone', 'team'] as const;
 
-/** A step's `workspace` as written: a mode, or the clone it opens. */
-export type StepWorkspace = Exclude<typeof WORKSPACE_MODES[number], 'clone'> | { clone: ClonePlace };
+/**
+ * The team repo branch a step commits to, `{ team: { branch } }`: a template that reads only `inputs`, so every run
+ * with the same inputs goes on with the same branch and its one pull request. Without `branch`, the run's own.
+ */
+export interface TeamPlace {
+  branch?: string;
+}
+
+/** A step's `workspace` as written: a mode, the clone it opens, or the team repo branch it commits to. */
+export type StepWorkspace = Exclude<typeof WORKSPACE_MODES[number], 'clone' | 'team'> | { clone: ClonePlace } | { team: TeamPlace };
 
 /** The keys that give a step its action, as YAML writes them, each with the definition field it fills. */
 export const STEP_ACTIONS = { command: 'command', prompt: 'prompt', prompt_file: 'promptFile', workflow: 'workflow' } as const satisfies Record<string, keyof WorkflowStep>;
@@ -463,9 +471,10 @@ export interface RunState {
    * `used` is set once a step ran in the copy: a report on a lease of it was accepted, neither `released` nor a setup
    * failure. Only a lease on an unused copy carries setup, and only an unused copy's owner gives it up when it hands its
    * lease back. `used` is local run state only. `kind: clone` is a clone a step opened, which teamai prepared on its
-   * owner's machine: it is never pushed.
+   * owner's machine: it is never pushed. `kind: team` is a branch of the team repo, and `base` the commit of the team
+   * repo's default branch its last step started from, which a pull request from it is compared with.
    */
-  copies?: Record<string, { owner?: DriverIdentity; commit?: string; from?: string; used?: true; kind?: 'clone' }>;
+  copies?: Record<string, { owner?: DriverIdentity; commit?: string; from?: string; used?: true } & ({ kind?: 'clone' } | { kind: 'team'; base?: string })>;
   /**
    * The pull requests delivered on this run, once each, in the order they first appeared. Append-only: a receipt says a
    * request was opened, never that it is still open, so whether a delivery reuses one is its host's lookup to say.

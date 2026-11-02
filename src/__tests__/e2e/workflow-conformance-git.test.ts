@@ -7,7 +7,7 @@ import { DRIVER_PROFILES, DRIVERS_UNDER_TEST, driveByProtocol, profileDriver } f
 import { workflowGitConformanceScenarios, type GitConformanceName } from '../../workflow/conformance/git.js';
 import type { StepState } from '../../workflow/step-state.js';
 import type { RunState, WorkflowEnvelope } from '../../workflow/types.js';
-import type { WorkspaceContract } from '../../workflow/workspace.js';
+import type { CopyContract } from '../../workflow/workspace.js';
 import { cliConformanceClient, envelope, runCLI } from '../helpers/cli-conformance.js';
 
 const TEAM_URL = 'https://github.com/acme/team.git';
@@ -99,7 +99,7 @@ describe.each(DRIVERS_UNDER_TEST)('workflow git conformance through the CLI as %
       for (const step of scenario.elsewhere ?? []) {
         const next = await call(['next', runId, '--json', JSON.stringify({ driver: other })], elsewhere, starter);
         if (!('data' in next) || !next.data.lease) throw new Error(`no lease for ${step.step}: ${JSON.stringify(next)}`);
-        const lease = next.data.lease as { step: string; attempt: string; revision: number; workspace: WorkspaceContract };
+        const lease = next.data.lease as { step: string; attempt: string; revision: number; workspace: CopyContract };
         expect(lease).toMatchObject({ step: step.step, workspace: { merge: [] } });
         const { branch, start, base } = lease.workspace;
         git(elsewhere, 'checkout', '-q', '-B', branch, start.commit);

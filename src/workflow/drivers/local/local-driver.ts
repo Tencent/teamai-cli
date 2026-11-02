@@ -42,7 +42,7 @@ import { executableOf, isLaunchTool, LAUNCH_ORDER, LAUNCH_TOOLS, launchAdapterId
 import { chooseStepModel, loadDeployedAgent, type StepModel } from '../../step-model.js';
 import type { DriverIdentity, RunState, StepHitl, WorkflowEnvelope, WorkflowFailure, WorkflowStep } from '../../types.js';
 import { isWorkflowError, stepWorkflow, WORKSPACE_MODES } from '../../types.js';
-import type { SessionRef } from '../../workspace.js';
+import { contractClone, type SessionRef } from '../../workspace.js';
 import { headCommit } from '../../worktree.js';
 
 const STOP_SIGNALS: readonly NodeJS.Signals[] = ['SIGINT', 'SIGQUIT', 'SIGTERM', 'SIGHUP'];
@@ -442,7 +442,7 @@ async function promptReport(
   // A worktree has its own pull record, so the tool launched there is observed and bound as that checkout. A clone has
   // its own install, never the member's config, and none when its place installs no team.
   const contract = lease.workspace;
-  const clone = contract && contract.mode !== 'read-only' && contract.clone ? contract.branch : undefined;
+  const clone = contractClone(contract) ? contract?.branch : undefined;
   const prepared = clone !== undefined ? await preparedClone(config, lock.run, clone) : undefined;
 
   // The copy was checked as it was prepared; it is checked again right before launch, as something may have pulled since.

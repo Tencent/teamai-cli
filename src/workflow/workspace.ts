@@ -12,7 +12,8 @@ import { parseStepPath } from './step-path.js';
 import { renderValue, stepRoleSpec, type StepRoleSpec } from './template.js';
 import { passOf, type Delivery, type StepState } from './step-state.js';
 import { ClonePlaceSchema, type ClonePlace } from './clone.js';
-import { isWorkflowFile, stepWorkflow, workflowRunBy, type DriverIdentity, type InlineWorkflow, type RunState, type WorkflowDefinition, type WorkflowFailure, type WorkflowStep, type WORKSPACE_MODES } from './types.js';
+import { parseTemplate, renderText } from './template.js';
+import { isWorkflowFile, stepWorkflow, workflowRunBy, type DriverIdentity, type InlineWorkflow, type RunState, type TeamPlace, type WorkflowDefinition, type WorkflowFailure, type WorkflowStep, type WORKSPACE_MODES } from './types.js';
 
 export type WorkspaceMode = typeof WORKSPACE_MODES[number];
 
@@ -28,8 +29,13 @@ export interface StepChanges {
 /**
  * The git contract on a lease that runs in a copy. Paths stay off it. A `new` or `continue` step commits to `branch`.
  * A `read-only` step inside a copy runs in `branch`'s worktree, merges and commits nothing, and leaves it as it was.
+ * A `team` step commits to `branch` of the team repo, in a clone the driver makes of it: the commits it starts from and
+ * merges are origin's when the clone is made, so none is named here.
  */
-export type WorkspaceContract = {
+export type WorkspaceContract = CopyContract | z.infer<typeof TeamContractSchema>;
+
+/** The contract of a copy of the run's repository, or of a clone teamai prepares. */
+export type CopyContract = {
   base: { ref?: string; commit: string };
   /** The commit agent configuration is restored from before the step runs. */
   configCommit: string;
@@ -48,10 +54,16 @@ const ContractFields = {
   start: z.object({ commit: z.string(), branch: z.string().optional() }),
 };
 
-export const WorkspaceContractSchema = z.discriminatedUnion('mode', [
+const CopyContractOptions = [
   z.object({ ...ContractFields, mode: z.enum(['new', 'continue']), merge: z.array(z.object({ branch: z.string(), commit: z.string() })), clone: ClonePlaceSchema.optional() }),
   z.object({ ...ContractFields, mode: z.literal('read-only'), merge: z.tuple([]) }),
-]) satisfies z.ZodType<WorkspaceContract>;
+] as const;
+
+export const CopyContractSchema = z.discriminatedUnion('mode', CopyContractOptions) satisfies z.ZodType<CopyContract>;
+
+export const TeamContractSchema = z.object({ mode: z.literal('team'), branch: z.string().min(1) });
+
+export const WorkspaceContractSchema = z.discriminatedUnion('mode', [...CopyContractOptions, TeamContractSchema]) satisfies z.ZodType<WorkspaceContract>;
 
 export interface SessionRef {
   tool: string;
@@ -102,7 +114,7 @@ export function resolveMode(step: WorkflowStep, ancestors: WorkflowStep[]): Work
     case 'continue':
       return step.workspace;
     default:
-      return 'clone';
+      return 'clone' in step.workspace ? 'clone' : 'team';
   }
 
   if (step.command !== undefined && step.prompt === undefined && step.promptFile === undefined) return 'read-only';
@@ -127,7 +139,25 @@ export function cloneOf(step: WorkflowStep): ClonePlace | undefined {
     case 'continue':
       return undefined;
     default:
-      return step.workspace.clone;
+      return 'clone' in step.workspace ? step.workspace.clone : undefined;
+  }
+}
+
+/** The clone a lease's contract runs in, or undefined when it runs in none. */
+export function contractClone(contract: WorkspaceContract | undefined): ClonePlace | undefined {
+  return contract?.mode === 'new' || contract?.mode === 'continue' ? contract.clone : undefined;
+}
+
+/** The team repo branch `step` commits to, or undefined when it runs in no team workspace. */
+function teamOf(step: WorkflowStep): TeamPlace | undefined {
+  switch (step.workspace) {
+    case undefined:
+    case 'read-only':
+    case 'new':
+    case 'continue':
+      return undefined;
+    default:
+      return 'team' in step.workspace ? step.workspace.team : undefined;
   }
 }
 
@@ -177,7 +207,8 @@ export function deliveryProblem(
       const child = childOf(step);
 
       if (step.deliver === 'pr') {
-        delivering ??= path;
+        // A team step's pull request goes into the team repo's default branch, whatever the checkout has checked out.
+        if (!teamOf(step)) delivering ??= path;
 
         if (step.workflow !== undefined && step.workspace !== 'new' && !step.forEach) {
           return { code: 'bad_delivery', message: `Step "${path}" delivers its workflow, so it needs workspace: new to own the branch it delivers.` };
@@ -281,7 +312,10 @@ export function deliverableOf(run: RunState, state: StepState, step: WorkflowSte
     head = branch === undefined ? undefined : run.copies?.[branch]?.commit;
   }
 
-  return branch === undefined || head === undefined || head === run.base?.commit ? undefined : { branch, head };
+  const copy = branch === undefined ? undefined : run.copies?.[branch];
+  const base = copy?.kind === 'team' ? copy.base : run.base?.commit;
+
+  return branch === undefined || head === undefined || head === base ? undefined : { branch, head };
 }
 
 /** The branch workflow step `state` delivers: its own copy, else the branch its latest step wrote. */
@@ -642,6 +676,10 @@ export function planWorkspace(
 
   if (cloned?.clone) return planClone(run, state, request, { ...cloned, clone: cloned.clone, mode, session, handback });
 
+  const team = teamOf(definition);
+
+  if (team) return planTeam(run, state, request, { team, session, handback });
+
   if (mode === 'clone') return { mode, fail: { code: 'workspace_base', message: `step "${state.id}" opens a clone this teamai cannot read` } };
 
   if (ancestors.some((ancestor) => cloneOf(ancestor.step))) {
@@ -791,6 +829,32 @@ function planClone(run: RunState, state: StepState, request: WorkspaceRequest, i
     mode, ...session,
     contract: { mode: mode === 'clone' ? 'new' : 'continue', base: { commit: clone.commit }, configCommit: clone.commit, branch, start: { commit: copy?.commit ?? clone.commit }, merge: [], clone },
   };
+}
+
+/** A branch name git takes, of letters, digits and "._/-": no "..", "//", "/." or ".lock" part, and no "/", "." or "-" at an end. */
+const GIT_BRANCH = /^(?!.*(?:\.\.|\/\/|\/\.|\.lock(?:\/|$)))(?![-./])[\w./-]*[\w-]$/;
+
+/**
+ * The contract of a step in the team workspace: `team.branch` rendered with the run's inputs, else the run's own branch
+ * of the step. Only a driver that provides `team` takes it, and a step the copy's owner did not lease waits for it.
+ */
+function planTeam(run: RunState, state: StepState, request: WorkspaceRequest, input: { team: TeamPlace; session: { session?: LeaseSession }; handback: boolean }): WorkspacePlan {
+  const { team, session, handback } = input;
+  const mode = 'team';
+  const parsed = team.branch === undefined ? undefined : parseTemplate(team.branch, false);
+  if (parsed && !parsed.ok) return { mode, fail: { code: 'workspace_base', message: `step "${state.id}" workspace team branch ${team.branch} is not a template teamai reads` } };
+  const branch = parsed ? renderText(parsed.template, { inputs: run.inputs ?? {}, steps: {} }) : branchName(run.id, state.id, state.pass ?? 1);
+  if (!GIT_BRANCH.test(branch)) {
+    return { mode, fail: { code: 'workspace_base', message: `step "${state.id}" commits to team branch "${branch}", which git cannot name a branch. Give inputs that make workspace team branch a branch name.` } };
+  }
+  if (!handback && !(request.modes ?? []).includes('team')) {
+    return { mode, defer: { reason: `step "${state.id}" runs in the team workspace, which this driver does not provide`, needs: 'team' } };
+  }
+  const copy = run.copies?.[branch];
+  if (!handback && copy?.owner && !sameDriver(copy.owner, request.driver)) {
+    return { mode, defer: { reason: `step "${state.id}" commits to team branch ${branch}, which another driver of this run holds` } };
+  }
+  return { mode, ...session, contract: { mode, branch } };
 }
 
 /**

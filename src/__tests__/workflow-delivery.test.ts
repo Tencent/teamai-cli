@@ -476,7 +476,7 @@ describe('delivering a step', () => {
 
     expect(await take(config, runId)).toMatchObject({ step: 'review' });
     const env = { GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: 'echo', GCM_INTERACTIVE: 'never' };
-    expect(fetches).toHaveBeenCalledWith(cwd, { run: runId, commits: [fix.workspace?.base.commit, to] }, { timeoutMs: 30000, env });
+    expect(fetches).toHaveBeenCalledWith(cwd, { run: runId, commits: [fix.workspace?.base.commit, to], branch: fix.workspace?.branch }, { timeoutMs: 30000, env });
     const askpass = fs.readFileSync(log, 'utf8').trim().split('\n');
     expect(askpass.length).toBeGreaterThanOrEqual(3);
     expect(askpass.filter((given) => given !== 'echo')).toEqual([]);

@@ -816,7 +816,7 @@ function parseBody(
 
       if (workspacePair && !workspace) {
         diagnostics.push({
-          ...locate(file, lineCounter, workspacePair.value ?? workspacePair.key ?? item, `${field}.workspace`, `${stepLabel} workspace must be read-only, new, continue, or { clone: { commit, repo?, team } } with a full commit and team { treatment: none } or { revision, selection, treatment }`),
+          ...locate(file, lineCounter, workspacePair.value ?? workspacePair.key ?? item, `${field}.workspace`, `${stepLabel} workspace must be read-only, new, continue, { team: { branch? } }, or { clone: { commit, repo?, team } } with a full commit and team { treatment: none } or { revision, selection, treatment }`),
           code: 'bad_workspace',
         });
       }
@@ -834,7 +834,8 @@ function parseBody(
         : roleSpec === undefined || !isAdmittedRole(roleSpec, bindsItem) ? bindsItem
           ? `${stepLabel} role must be the id of a role in manifest/roles.yaml, such as review, or a template that reads only its item, such as {{ item.role }}`
           : `${stepLabel} role must be the id of a role in manifest/roles.yaml, such as review`
-          : workspace instanceof Object ? !('revision' in workspace.clone.team) ? `${stepLabel} has role ${role} but its clone installs no team (team: { treatment: none }); give the clone a team revision and selection, or remove role` : undefined
+          : workspace instanceof Object ? 'team' in workspace ? `${stepLabel} has role ${role} but runs in the team workspace, which takes no role's knowledge; remove role`
+            : !('revision' in workspace.clone.team) ? `${stepLabel} has role ${role} but its clone installs no team (team: { treatment: none }); give the clone a team revision and selection, or remove role` : undefined
             : commandPair !== undefined && !runsPrompt ? `${stepLabel} has role ${role}, but a command step launches no agent to take the role's knowledge; set role on the prompt step that opens or continues the copy`
               : undefined;
 
@@ -842,6 +843,19 @@ function parseBody(
       // setup checks it at the team revision the clone pins.
       if (rolePair && roleProblem !== undefined) {
         diagnostics.push({ ...locate(file, lineCounter, rolePair.value ?? rolePair.key ?? item, `${field}.role`, roleProblem), code: 'bad_role' });
+      }
+
+      if (workspacePair && workspace instanceof Object && 'team' in workspace) {
+        const node = workspacePair.value ?? workspacePair.key ?? item;
+        const branch = workspace.team.branch === undefined ? undefined : parseTemplate(workspace.team.branch, false);
+        const problem = workflowPair || forEachPair ? `${stepLabel} workspace team is only allowed on a command or prompt step that runs once: each step in the team workspace clones the team repo again`
+          : branch && !branch.ok ? `${stepLabel} workspace team branch template ${branch.errors[0]?.source}: ${branch.errors[0]?.message}`
+            : branch?.ok && !templateExpressions(branch.template).every((read) => read.kind === 'path' && read.path.root === 'inputs')
+              ? `${stepLabel} workspace team branch may read only {{ inputs.<name> }}, so every run with the same inputs goes on with the same branch`
+              : undefined;
+
+        if (problem) diagnostics.push({ ...locate(file, lineCounter, node, `${field}.workspace`, problem), code: 'bad_workspace' });
+        else if (branch?.ok && inGraph) reads.push({ ...expressionSite(id, `${field}.workspace`, position(lineCounter, node), 'workspace team branch', templateExpressions(branch.template)), code: 'bad_template' });
       }
 
       const sessionPair = item.items.find((pair) => scalarString(pair.key) === 'session');
@@ -1618,16 +1632,23 @@ function withheldKeys(requires: InEffect, env: readonly string[] = []): string[]
   return requires.floor?.isolation === 'sandbox' ? env.filter((key) => sameEnvName(SANDBOX_WITHHELD_ENV, key) !== undefined) : [];
 }
 
-/** A step's `workspace`: `read-only`, `new`, `continue`, or `{ clone: … }`; undefined when it is none of them. */
+const TeamWorkspaceSchema = z.object({ team: z.object({ branch: z.string().min(1).optional() }).strict() }).strict();
+
+/** A step's `workspace`: `read-only`, `new`, `continue`, `{ team: … }` or `{ clone: … }`; undefined when it is none of them. */
 function parseStepWorkspace(node: Node | null | undefined): StepWorkspace | undefined {
   const text = scalarString(node)?.trim();
 
   if (text === 'read-only' || text === 'new' || text === 'continue') return text;
 
   if (!isMap(node)) return undefined;
-  const parsed = z.object({ clone: ClonePlaceSchema }).strict().safeParse(node.toJSON());
+  const parsed = z.union([z.object({ clone: ClonePlaceSchema }).strict(), TeamWorkspaceSchema]).safeParse(node.toJSON());
 
-  return parsed.success ? parsed.data : undefined;
+  if (!parsed.success) return undefined;
+
+  if (!('team' in parsed.data)) return parsed.data;
+  const { branch } = parsed.data.team;
+
+  return { team: branch === undefined ? {} : { branch } };
 }
 
 /** `setup: { command, requires: { env } }`. A key this version does not know, at either level, is `unknown_key`. */
