@@ -3,12 +3,16 @@ import path from 'node:path';
 import { writeFile as writeNewFile } from 'node:fs/promises';
 
 import matter from 'gray-matter';
+import { z } from 'zod';
 import { readFileSafe, writeFile, listFiles, ensureDir, pathExists } from '../utils/fs.js';
 import { assertSafePath } from '../utils/path-safety.js';
 import { createGit, getDefaultBranch, PUSH_BRANCH_PREFIX } from '../utils/git.js';
 import { isInWriteRoot, listLearningFiles } from '../utils/learnings-roots.js';
 import { log } from '../utils/logger.js';
 import { computeAllConfidence } from './confidence.js';
+
+/** A frontmatter field that counts only when it is a string. */
+const FrontmatterTextSchema = z.string().optional().catch(undefined);
 
 export interface PromotionCandidate {
   docId: string;
@@ -49,11 +53,9 @@ export async function findPromotionCandidates(
   knowledgeCheckout?: string | PromotionCandidatesOptions,
   options?: PromotionCandidatesOptions,
 ): Promise<PromotionCandidate[]> {
-  const checkout = typeof knowledgeCheckout === 'string' ? knowledgeCheckout : undefined;
+  const checkout = knowledgeCheckout instanceof Object ? undefined : knowledgeCheckout;
 
-  const opts = typeof knowledgeCheckout === 'object' && knowledgeCheckout !== null
-    ? knowledgeCheckout
-    : options;
+  const opts = knowledgeCheckout instanceof Object ? knowledgeCheckout : options;
 
   const namespaces = opts?.namespaces;
   const confidenceMap = await computeAllConfidence(votesDir);
@@ -87,9 +89,9 @@ export async function findPromotionCandidates(
 
     try {
       const { data } = matter(content);
-      title = typeof data.title === 'string' ? data.title : docId;
-      date = typeof data.date === 'string' ? data.date : '';
-      promotedTo = typeof data.promoted_to === 'string' ? data.promoted_to : undefined;
+      title = FrontmatterTextSchema.parse(data.title) ?? docId;
+      date = FrontmatterTextSchema.parse(data.date) ?? '';
+      promotedTo = FrontmatterTextSchema.parse(data.promoted_to);
     } catch {
       continue;
     }
@@ -182,7 +184,7 @@ async function generatePromotedContent(
   category: 'skills' | 'rules' | 'docs',
   title: string,
 ): Promise<string> {
-  const categoryGuide: Record<string, string> = {
+  const categoryGuide = {
     skills: `a reusable skill/SOP. Format it with:
 - A clear "when to use" trigger description
 - Step-by-step numbered procedure
@@ -221,7 +223,7 @@ Output ONLY the transformed markdown content (including YAML frontmatter with ti
     return text.trim();
   } catch (e) {
     if (isOverrideInvalid(e)) throw e;
-    log.warn(`AI content generation failed, using original content: ${(e as Error).message}`);
+    log.warn(`AI content generation failed, using original content: ${e instanceof Error ? e.message : String(e)}`);
 
     return originalContent;
   }

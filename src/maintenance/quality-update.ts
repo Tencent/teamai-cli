@@ -234,7 +234,7 @@ Output ONLY the updated markdown file content (including frontmatter).`;
     return draft.trim();
   } catch (e) {
     if (isOverrideInvalid(e)) throw e;
-    log.error(`AI update generation failed: ${(e as Error).message}`);
+    log.error(`AI update generation failed: ${e instanceof Error ? e.message : String(e)}`);
 
     return null;
   }

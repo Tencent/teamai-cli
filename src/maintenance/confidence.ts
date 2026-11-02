@@ -2,10 +2,14 @@
 import path from 'node:path';
 
 import matter from 'gray-matter';
+import { z } from 'zod';
 
 import { ensureDir, readFileSafe, writeFile, listFiles } from '../utils/fs.js';
 import { isInWriteRoot, listLearningFiles } from '../utils/learnings-roots.js';
 import { log } from '../utils/logger.js';
+
+/** A frontmatter confidence that counts only when it is a finite number. */
+const FrontmatterNumberSchema = z.number().optional().catch(undefined);
 
 export interface ConfidenceFactors {
   recalledCount: number;
@@ -128,7 +132,7 @@ export async function writeBackConfidence(
 
     try {
       const { data, content: body } = matter(content);
-      const existingConf = typeof data.confidence === 'number' ? data.confidence : undefined;
+      const existingConf = FrontmatterNumberSchema.parse(data.confidence);
 
       if (existingConf !== undefined && Math.abs(existingConf - newConf) <= 0.05) continue;
 
