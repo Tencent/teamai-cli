@@ -11,6 +11,13 @@ vi.mock('../tool-launch/call.js', () => ({
     callTool: vi.fn(),
 }));
 
+vi.mock('../utils/logger.js', () => ({
+    log: {
+        info: vi.fn(),
+        warn: vi.fn(),
+    },
+}));
+
 vi.mock('../utils/iwiki-client.js', () => ({
     IWikiClient: vi.fn().mockImplementation(function () {
         return {
@@ -46,6 +53,7 @@ vi.mock('../review-store.js', async (importOriginal) => {
 import { importFromIWikiDual } from '../iwiki-dual.js';
 import { callTool } from '../tool-launch/call.js';
 import { appendPendingReview } from '../review-store.js';
+import { log } from '../utils/logger.js';
 
 // ─── 辅助 ────────────────────────────────────────────────
 
@@ -74,8 +82,23 @@ describe('importFromIWikiDual', () => {
     });
 
     afterEach(async () => {
+        vi.unstubAllEnvs();
         process.chdir(originalCwd);
         await fs.remove(cwd);
+    });
+
+    it('reports missing credentials in English', async () => {
+        vi.stubEnv('TAI_PAT_TOKEN', '');
+
+        await expect(importFromIWikiDual({ input: '12345' })).rejects.toThrow(
+            'Set the TAI_PAT_TOKEN environment variable',
+        );
+    });
+
+    it('reports invalid input in English', async () => {
+        await expect(importFromIWikiDual({ input: 'not-an-id', token: 'test-token' })).rejects.toThrow(
+            'Unrecognized iWiki input',
+        );
     });
 
     it('首次创建写出三章节骨架', async () => {
@@ -125,7 +148,7 @@ describe('importFromIWikiDual', () => {
     });
 
     it('AI 输出非 JSON → warn 并不写', async () => {
-        (callTool as ReturnType<typeof vi.fn>).mockResolvedValue({ text: '这不是 JSON 内容', tool: 'claude' });
+        (callTool as ReturnType<typeof vi.fn>).mockResolvedValue({ text: 'not JSON', tool: 'claude' });
 
         const result = await importFromIWikiDual({ input: '12345', token: 'test-token' });
 
@@ -133,6 +156,19 @@ describe('importFromIWikiDual', () => {
         const filePath = path.join(cwd, 'docs/team-codebase/external-knowledge.md');
         // 不写文件（因为 AI 输出无效）
         expect(await fs.pathExists(filePath)).toBe(false);
+        expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('AI output is not valid JSON'));
+        expect(log.warn).not.toHaveBeenCalledWith(expect.stringMatching(/[\u3400-\u9fff]/u));
+    });
+
+    it('dry-run reports the sections to update in English', async () => {
+        (callTool as ReturnType<typeof vi.fn>).mockResolvedValue({ text: VALID_AI_OUTPUT, tool: 'claude' });
+
+        await importFromIWikiDual({ input: '12345', token: 'test-token', dryRun: true });
+
+        expect(log.info).toHaveBeenCalledWith(
+            '[dry-run] Sections to update: business-api, external-knowledge, glossary',
+        );
+        expect(log.info).not.toHaveBeenCalledWith(expect.stringMatching(/[\u3400-\u9fff]/u));
     });
 
     it('requireReview=true → 调 appendPendingReview 且不动 external-knowledge.md', async () => {
