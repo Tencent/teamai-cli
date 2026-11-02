@@ -82,7 +82,11 @@ export async function snapshotWorktree(workspace: string, run: Git = git, depth 
   const head = headRead.stdout.trim();
   const branch = branchRead.stdout.trim();
 
-  if (!status.ok) return { ok: false, files: new Map(), ...(head ? { head } : {}), branch };
+  const resolved: Pick<WorktreeSnapshot, 'head'> = {};
+
+  if (head) resolved.head = head;
+
+  if (!status.ok) return { ok: false, files: new Map(), ...resolved, branch };
   const files = new Map<string, string>();
 
   for (const { mark, relative } of statusEntries(status.text)) {
@@ -98,7 +102,7 @@ export async function snapshotWorktree(workspace: string, run: Git = git, depth 
     files.set(relative, `${mark}:${staged}:${mode}:${body}`);
   }
 
-  return { ok: true, files, ...(head ? { head } : {}), branch };
+  return { ok: true, files, ...resolved, branch };
 }
 
 async function submoduleSnapshot(dir: string, run: Git, depth: number): Promise<string> {

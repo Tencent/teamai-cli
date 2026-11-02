@@ -73,7 +73,13 @@ export async function rememberConflicts(dir: string): Promise<Record<string, str
   try {
     const parsed = z.record(z.string(), z.unknown()).safeParse(JSON.parse(await fs.readFile(file, 'utf8')));
 
-    if (parsed.success) saved = new Map(Object.entries(parsed.data).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
+    if (parsed.success) {
+      saved = new Map(Object.entries(parsed.data).flatMap<[string, string]>(([relative, note]) => {
+        const text = z.string().safeParse(note);
+
+        return text.success ? [[relative, text.data]] : [];
+      }));
+    }
   } catch {
     saved = new Map();
   }
@@ -169,7 +175,7 @@ export async function finishWriter(input: {
   const pushed = await pushIfOrigin(dir, workspace.branch, committed.commits);
   const changes = { branch: workspace.branch, base: workspace.base.commit, from: committed.from, to: committed.to, commits: committed.commits };
 
-  if (typeof pushed !== 'object') return { changes };
+  if (!(pushed instanceof Object)) return { changes };
   const unpushed = `Step "${step}" committed on ${workspace.branch} in ${dir}, but pushing it to origin failed. The commits stay on ${workspace.branch}. Fix what blocked the push, then push ${workspace.branch} from ${dir} or retry the step. Git said: ${pushed.error}`;
 
   return failed ? { changes, unpushed } : { changes, failure: { code: 'push_failed', message: unpushed } };
