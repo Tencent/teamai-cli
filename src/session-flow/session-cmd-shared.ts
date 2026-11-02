@@ -102,8 +102,10 @@ export function ask(question: string): Promise<string> {
   startLineReader();
 
   return new Promise((resolve) => {
-    if (lineQueue.length > 0) {
-      resolve(lineQueue.shift() as string);
+    const queued = lineQueue.shift();
+
+    if (queued !== undefined) {
+      resolve(queued);
 
       return;
     }
@@ -420,8 +422,8 @@ export async function pullArchive(syncMgr: SyncManager, repoRoot: string): Promi
 }
 
 /** The first line ("Command failed: git ...") only repeats the command; git's fatal/error line is the actual reason. */
-function gitFailureReason(err: unknown): string {
-  const msg = err instanceof Error ? err.message : String(err);
+function gitFailureReason(cause: unknown): string {
+  const msg = cause instanceof Error ? cause.message : String(cause);
   const fatal = msg.split('\n').find((l) => /^(fatal|error):/i.test(l.trim()));
 
   return safeText(fatal?.trim() ?? msg.split('\n')[0]);

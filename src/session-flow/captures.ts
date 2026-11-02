@@ -7,7 +7,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
-import { AgentObservationSchema, observeCheckout, settleObservation, type AgentObservation } from '../agent-observation.js';
+import { AgentObservationSchema, observeCheckout, settleObservation, type AgentObservation, type ToolLaunch } from '../agent-observation.js';
 import { getAgentVersion } from '../agent-version.js';
 import { agreedRunMode, launchedBy, resolveRunMode, RunModeSchema, type RunMode } from '../launch-context.js';
 import type { CheckoutRecord } from '../pull.js';
@@ -16,6 +16,7 @@ import { getDataHome, type DeliverySelection, type LocalConfig } from '../types.
 import { acquireLock, releaseLock } from '../update.js';
 import { log } from '../utils/logger.js';
 import { AgentSession } from './agent-session.js';
+import { OptionalString } from './fs.js';
 import type { Session } from './ir.js';
 
 export const SessionCaptureSchema = z.object({
@@ -46,6 +47,27 @@ export const CAPTURE_PAYLOAD_KEY = 'teamai_capture';
 
 const SEGMENT = /^(?!\.{1,2}$)[A-Za-z0-9._-]{1,200}$/;
 
+/** The session-start hook payload fields a capture reads: a session id safe as a path segment, and the session's cwd. */
+const StartPayloadSchema = z.object({
+  session_id: z.string().regex(SEGMENT),
+  cwd: z.string(),
+  model: OptionalString,
+  transcript_path: OptionalString,
+});
+
+/** The background pass's payload: its session and the capture the start wrote, both safe as path segments. */
+const ToolVersionPayloadSchema = z.object({
+  session_id: z.string().regex(SEGMENT),
+  [CAPTURE_PAYLOAD_KEY]: z.string().regex(SEGMENT),
+});
+
+/** The post-pull payload: its session, and the cwd and capture id when the hook carries them. */
+const PulledPayloadSchema = z.object({
+  session_id: z.string().regex(SEGMENT),
+  cwd: OptionalString,
+  [CAPTURE_PAYLOAD_KEY]: OptionalString,
+});
+
 function sessionDir(config: LocalConfig, platform: string, sessionId: string): string {
   return path.join(getDataHome(config), 'sessions', 'captures', platform, sessionId);
 }
@@ -65,30 +87,38 @@ async function writeCapture(config: LocalConfig, capture: SessionCapture): Promi
  */
 async function atStart(config: LocalConfig, tool: string, payload: Record<string, unknown>, env: NodeJS.ProcessEnv): Promise<string | undefined> {
   const platform = AgentSession.platformForTool(tool);
-  const sessionId = payload.session_id;
-  const cwd = payload.cwd;
 
   if (launchedBy(env) || payload.source === 'compact') return undefined;
+  const fields = StartPayloadSchema.safeParse(payload);
 
-  if (!platform || typeof sessionId !== 'string' || !SEGMENT.test(sessionId) || typeof cwd !== 'string') return undefined;
+  if (!platform || !fields.success) return undefined;
+  const { session_id: sessionId, cwd, model: requested, transcript_path: file } = fields.data;
 
   try {
-    const model = typeof payload.model === 'string' ? { requested: payload.model } : undefined;
+    const model = requested === undefined ? undefined : { requested };
     const { gitStateIn } = await import('../dashboard-collector.js');
     const head = gitStateIn(payload);
-    const reported = await observeCheckout({ config, tool, cwd, beforeOwnPull: true, ...(head !== undefined ? { head } : {}) });
-    const agent = settleObservation({ agent: { ...reported, ...(model ? { model } : {}) }, tool, driver: { kind: 'session' } }, undefined);
+    const launch: ToolLaunch = { config, tool, cwd, beforeOwnPull: true };
+
+    if (head !== undefined) launch.head = head;
+    const reported = await observeCheckout(launch);
+    const agent = settleObservation({ agent: model ? { ...reported, model } : { ...reported }, tool, driver: { kind: 'session' } }, undefined);
 
     if (!agent) return undefined;
-    const file = payload.transcript_path;
     const { teamDelivery } = await import('../pull.js');
     const record = (await teamDelivery(config, tool, { beforeOwnPull: true }).catch(() => undefined))?.record;
 
     const capture: SessionCapture = {
       captureId: randomUUID(), platform, sessionId, capturedAt: new Date().toISOString(), runMode: resolveRunMode(env), agent,
-      ...(typeof file === 'string' && path.isAbsolute(file) ? { sessionFile: file } : {}),
-      ...(record?.delivered ? await deliveredTeamSkills(config, cwd, record.delivered, record.rev) : {}),
     };
+
+    if (file !== undefined && path.isAbsolute(file)) capture.sessionFile = file;
+
+    if (record?.delivered) {
+      const delivered = await deliveredTeamSkills(config, cwd, record.delivered, record.rev);
+      capture.teamSkills = delivered.teamSkills;
+      capture.teamSkillInfo = delivered.teamSkillInfo;
+    }
 
     await writeCapture(config, capture);
 
@@ -142,9 +172,10 @@ async function rewrite(config: LocalConfig, platform: string, sessionId: string,
 /** In the hook's background pass: adds the tool's version, which the start leaves out so it never waits on it. */
 async function addToolVersion(config: LocalConfig, tool: string, payload: Record<string, unknown>): Promise<void> {
   const platform = AgentSession.platformForTool(tool);
-  const { session_id: sessionId, [CAPTURE_PAYLOAD_KEY]: captureId } = payload;
+  const fields = ToolVersionPayloadSchema.safeParse(payload);
 
-  if (!platform || typeof sessionId !== 'string' || !SEGMENT.test(sessionId) || typeof captureId !== 'string' || !SEGMENT.test(captureId)) return;
+  if (!platform || !fields.success) return;
+  const { session_id: sessionId, [CAPTURE_PAYLOAD_KEY]: captureId } = fields.data;
   const version = await getAgentVersion(tool);
 
   if (!version) return;
@@ -201,22 +232,24 @@ function withTeamSkillInfo(capture: SessionCapture, pulled: Record<string, Deliv
  */
 async function markTeamChanged(config: LocalConfig, tool: string, payload: Record<string, unknown>, before: CheckoutDelivery): Promise<void> {
   const platform = AgentSession.platformForTool(tool);
-  const { session_id: sessionId, cwd, [CAPTURE_PAYLOAD_KEY]: captureId } = payload;
+  const fields = PulledPayloadSchema.safeParse(payload);
 
-  if (!platform || typeof sessionId !== 'string' || !SEGMENT.test(sessionId)) return;
+  if (!platform || !fields.success) return;
+  const { session_id: sessionId, cwd, [CAPTURE_PAYLOAD_KEY]: captureId } = fields.data;
   const record = await checkoutRecord(config, tool);
   const changed = !isDeepStrictEqual(deliveryOf(record), before);
 
   try {
-    const pulled = record?.delivered && typeof cwd === 'string' && typeof captureId === 'string'
+    const pulled = record?.delivered && cwd !== undefined && captureId !== undefined
       ? await deliveredTeamSkills(config, cwd, record.delivered, record.rev) : undefined;
 
     if (!changed && !pulled) return;
-    await rewrite(config, platform, sessionId, () => true, (capture) => ({
-      ...(capture.captureId === captureId && pulled
-        ? withTeamSkillInfo(withTeamSkills(capture, pulled.teamSkills), pulled.teamSkillInfo) : capture),
-      ...(changed ? { teamChanged: true } : {}),
-    }));
+    await rewrite(config, platform, sessionId, () => true, (capture) => {
+      const next = capture.captureId === captureId && pulled
+        ? withTeamSkillInfo(withTeamSkills(capture, pulled.teamSkills), pulled.teamSkillInfo) : capture;
+
+      return changed ? { ...next, teamChanged: true } : { ...next };
+    });
   } catch (e) {
     log.debug(`session capture: could not record what the pull of ${platform} session ${sessionId} delivered: ${e instanceof Error ? e.message : String(e)}`);
   }
@@ -339,7 +372,7 @@ function agentOf(captures: readonly SessionCapture[], reportedModel: string | un
   const { tool, model, effort, team, project, teamai, driver } = first.agent;
 
   const settled = settleObservation({
-    agent: { tool, model: { ...model, ...(reportedModel ? { reported: reportedModel } : {}) }, effort, team: teamChanged ? undefined : team, project },
+    agent: { tool, model: reportedModel ? { ...model, reported: reportedModel } : { ...model }, effort, team: teamChanged ? undefined : team, project },
     tool: tool.name,
     driver: { kind: driver },
   }, undefined);

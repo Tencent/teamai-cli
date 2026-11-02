@@ -41,14 +41,28 @@ function setBy(source: PolicySource): string {
 /** The policy of each run mode, with what set it. */
 export type SessionPolicies = Record<RunMode, { policy: SessionPolicy; source: PolicySource }>;
 
+/** The policies one setting sets, and a problem for each value it holds that sets nothing. */
+interface PolicyReading {
+  set: Partial<SessionPolicies>;
+  problems: string[];
+}
+
+/** Each run mode's policy, and a problem for each setting that sets nothing. */
+interface ResolvedPolicies {
+  policies: SessionPolicies;
+  problems: string[];
+}
+
 /**
  * The policies `value`, the setting `key` names (such as `teamai.yaml sessions.publish`), sets: a mapping of run modes
  * to policies, or with `booleans`, `true` for `auto` and `false` for `off` in both modes. Each value it cannot use is a
  * problem that names the key and what it allows, and sets nothing, so that mode falls to the next level.
  */
-function read(key: string, value: unknown, { booleans = false }: { booleans?: boolean } = {}): { set: Partial<SessionPolicies>; problems: string[] } {
-  if (booleans && typeof value === 'boolean') {
-    const policy = value ? 'auto' : 'off';
+function read(key: string, value: unknown, { booleans = false }: { booleans?: boolean } = {}): PolicyReading {
+  const flag = z.boolean().safeParse(value);
+
+  if (booleans && flag.success) {
+    const policy = flag.data ? 'auto' : 'off';
     const source = { kind: 'setting', key } as const;
 
     return { set: { attended: { policy, source }, unattended: { policy, source } }, problems: [] };
@@ -96,7 +110,7 @@ function resolve(levels: ReadonlyArray<ReadonlyArray<Partial<SessionPolicies>>>,
 }
 
 /** What the `sessions` setting of `file` sets for `publish`, read as {@link read} reads it. */
-function readPublish(file: string, sessions: unknown): { set: Partial<SessionPolicies>; problems: string[] } {
+function readPublish(file: string, sessions: unknown): PolicyReading {
   if (sessions === undefined) return { set: {}, problems: [] };
   const mapping = MappingSchema.safeParse(sessions);
 
@@ -113,7 +127,7 @@ const publishDefaults = { attended: 'ask', unattended: 'auto' } as const satisfi
  * workspace or self scope, else `teamai.yaml`, else the default. An HTTP team keeps no session archive, so there every
  * mode is `off`, with a problem while one would publish.
  */
-function publish(config: LocalConfig, team: TeamaiConfig | null): { policies: SessionPolicies; problems: string[] } {
+function publish(config: LocalConfig, team: TeamaiConfig | null): ResolvedPolicies {
   // A workspace that sets no `sessions` holds the machine's, which its own file does not.
   const fromMachine = config.sessions !== undefined && ownMemberSettings(config).sessions === undefined;
   const member = readPublish(fromMachine ? '~/.teamai/config.yaml' : 'config.yaml', config.sessions);

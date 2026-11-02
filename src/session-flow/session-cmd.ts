@@ -19,6 +19,7 @@
  */
 
 import type { Command } from 'commander';
+import { z } from 'zod';
 import fs from 'node:fs';
 import path from 'node:path';
 import { listAvailablePlatforms, listInstalledPlatforms } from './adapters/index.js';
@@ -89,6 +90,9 @@ function archivedSessions(
   return found;
 }
 
+/** The part of `<workspace>/.pi/settings.json` that moves the workspace's sessions. */
+const PiSessionDirSettingsSchema = z.object({ sessionDir: z.string() });
+
 /**
  * Pi can move a workspace's sessions with `<workspace>/.pi/settings.json`.
  * Its native global scan cannot discover those arbitrary directories, so --all
@@ -104,10 +108,9 @@ async function listPushSource(platform: string, cwd: string, all: boolean) {
   const roots = [...new Set([cwd, ...workspaces.filter((workspace) => workspace.scope === 'project').flatMap((workspace) => workspace.roots)])]
     .filter((root) => {
       try {
-        const settings = JSON.parse(fs.readFileSync(path.join(root, '.pi', 'settings.json'), 'utf8')) as unknown;
+        const settings = PiSessionDirSettingsSchema.safeParse(JSON.parse(fs.readFileSync(path.join(root, '.pi', 'settings.json'), 'utf8')));
 
-        return settings !== null && typeof settings === 'object' && 'sessionDir' in settings
-          && typeof settings.sessionDir === 'string' && settings.sessionDir.trim().length > 0;
+        return settings.success && settings.data.sessionDir.trim().length > 0;
       } catch {
         return false;
       }
@@ -155,7 +158,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
   // and merge them with the command's own options (see the init/push/pull
   // actions in src/index.ts); keep the same pattern here.
   const root = sessionCmd.parent ?? sessionCmd;
-  const isDryRun = (): boolean => Boolean((root.opts() as { dryRun?: boolean }).dryRun);
+  const isDryRun = (): boolean => Boolean(root.opts().dryRun);
 
   // ── session platforms ──────────────────────────────────────
   sessionCmd
@@ -685,7 +688,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       try {
         ({ session } = syncMgr.loadSession(repoIdentity, sessionName, opts.author));
       } catch (e) {
-        console.error(`Error: ${(e as Error).message}`);
+        console.error(`Error: ${e instanceof Error ? e.message : String(e)}`);
         console.error('The session may be archived under another project identity.');
         console.error('Try `teamai session search --all <keyword>` to find it,');
         console.error('or rerun with `--cwd <project path>` of the project it belongs to.');

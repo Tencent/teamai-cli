@@ -45,8 +45,14 @@ function transcriptOf(session: Session, budget: number): string {
   return keepEnds(AgentSession.transcript(capped).map((entry) => `### ${entry.role}\n${entry.text}\n${entry.toolOutput}`).join('\n\n'), budget);
 }
 
+/** A transcript a judge reads, and what of the session it could not read. */
+export interface JudgedTranscript {
+  body: string;
+  gaps: EvidenceGap[];
+}
+
 /** A read session's transcript followed by each of its subagents', each kept to its budget, and what of them could not be read. */
-export function judgedTranscript(found: { session: Session; subagents?: SubagentsRead }, budget: { session: number; subagent: number }): { body: string; gaps: EvidenceGap[] } {
+export function judgedTranscript(found: { session: Session; subagents?: SubagentsRead }, budget: { session: number; subagent: number }): JudgedTranscript {
   const gaps: EvidenceGap[] = [];
   let body = transcriptOf(found.session, budget.session);
 
@@ -84,11 +90,17 @@ function firstPrompt(session: Session): string {
   return flat.length > 200 ? `${flat.slice(0, 200)}…` : flat;
 }
 
+/** A session read down to its first prompt, with no subagents. */
+export interface PromptOnlyRead {
+  session: Session;
+  subagents: SubagentsRead;
+}
+
 /**
  * `found` with only its first prompt as the member typed it: no tool calls, no replies, no subagents. The control a
  * scorer file is tried on (#1399): a rubric that passes it may not judge the agent's work.
  */
-export function firstPromptOnly(found: { session: Session }): { session: Session; subagents: SubagentsRead } {
+export function firstPromptOnly(found: { session: Session }): PromptOnlyRead {
   const { session } = found;
   const first = session.messages.find((message) => message.content.some((block) => typedIn(message, block) !== ''));
 
@@ -130,26 +142,27 @@ export function judgeSession({ platform, found, captures, mask, agent: archived 
   const used = usedSkills(AgentSession.toolForPlatform(platform), found, capturedTeamSkillsAt(captures));
   const skills = skillsEvidence(captures, used, mask);
 
-  const manifest = {
-    subject, kind: 'session' as const,
+  const manifest: JudgedSession['manifest'] = {
+    subject, kind: 'session',
     gaps: 'gap' in skills ? [...transcript.gaps, skills.gap] : transcript.gaps,
-    ...('skills' in skills ? { skills: skills.skills } : {}),
   };
+
+  if ('skills' in skills) manifest.skills = skills.skills;
 
   const framing = `## evidence.json\n\n${JSON.stringify(manifest)}\n\n## transcripts/session.md\n\n`.length;
   const agent = archived ?? SessionCaptures.agentOf(captures, SessionCaptures.reportedModelOf(session));
   const runMode = SessionCaptures.runModeOf(captures);
+  const context: SessionLabelContext = { used: { skills: used }, prompt: mask(firstPrompt(session)) };
+
+  if (agent) context.agent = agent;
+
+  if (runMode) context.runMode = runMode;
 
   return {
     subject,
     body: keepEnds(mask(transcript.body), EVIDENCE_MAX_CHARS - framing),
     manifest,
-    context: {
-      ...(agent ? { agent } : {}),
-      ...(runMode ? { runMode } : {}),
-      used: { skills: used },
-      prompt: mask(firstPrompt(session)),
-    },
+    context,
     mask,
   };
 }
@@ -172,7 +185,13 @@ export async function writeSessionEvidence(dir: string, judged: JudgedSession, r
 export function sessionLabel(verdict: Omit<SessionLabel, 'source' | 'subject' | 'agent' | 'used' | 'runMode'>, subject: SessionSubject, context: SessionLabelContext): SessionLabel {
   const { scorer, rubric, label, score, passed, judge, scoredAt } = verdict;
 
-  return { scorer, rubric, label, score, passed, source: 'session', subject, ...(context.agent ? { agent: context.agent } : {}), used: context.used, judge, ...(context.runMode ? { runMode: context.runMode } : {}), scoredAt };
+  const sessionLabeled: SessionLabel = { scorer, rubric, label, score, passed, source: 'session', subject, used: context.used, judge, scoredAt };
+
+  if (context.agent) sessionLabeled.agent = context.agent;
+
+  if (context.runMode) sessionLabeled.runMode = context.runMode;
+
+  return sessionLabeled;
 }
 
 /** Nothing happened in an attended session for this long: it is finished, and judge work. */
@@ -231,15 +250,18 @@ function selectedAs(scope: LocalConfig, selection: CaptureSelection): LocalConfi
 
   if (selection.children !== children?.fingerprint) return undefined;
 
-  return {
+  const selected: LocalConfig = {
     ...own,
     primaryRole: selection.primaryRole,
     additionalRoles: selection.additionalRoles,
     projects: selection.projects ?? [],
     subscribedTags: selection.subscribedTags,
     excludedSkills: selection.excludedSkills,
-    ...(children ? { children } : {}),
   };
+
+  if (children) selected.children = children;
+
+  return selected;
 }
 
 /**
@@ -478,7 +500,7 @@ const localDay = (at: string) => new Date(at).toDateString();
 function launchesToday(attempts: Iterable<AttemptRecord>, now: string): number {
   const today = localDay(now);
 
-  return new Set([...attempts].filter((attempt) => attempt.source === 'session' && localDay(attempt.leasedAt) === today).map((attempt) => attempt.attempt)).size;
+  return new Set([...attempts].flatMap((attempt) => (attempt.source === 'session' && localDay(attempt.leasedAt) === today ? [attempt.attempt] : []))).size;
 }
 
 /**
@@ -488,10 +510,10 @@ function launchesToday(attempts: Iterable<AttemptRecord>, now: string): number {
 function gone(attempts: ReadonlyMap<string, readonly AttemptRecord[]>, captured: ReadonlySet<string>, now: string): string[] {
   const today = localDay(now);
 
-  return [...attempts].filter(([, ofEntry]) => ofEntry.length > 0 && ofEntry.every((attempt) => attempt.source === 'session'
+  return [...attempts].flatMap(([entry, ofEntry]) => (ofEntry.length > 0 && ofEntry.every((attempt) => attempt.source === 'session'
     && !captured.has(sessionKey(attempt.subject))
     && localDay(attempt.leasedAt) !== today
-    && !(attempt.status === 'leased' && !hasLapsed(attempt, now)))).map(([entry]) => entry);
+    && !(attempt.status === 'leased' && !hasLapsed(attempt, now))) ? [entry] : []));
 }
 
 /**
@@ -501,7 +523,7 @@ function gone(attempts: ReadonlyMap<string, readonly AttemptRecord[]>, captured:
 async function read(config: LocalConfig, subject: SessionSubject): Promise<{ ok: true; judged: JudgedSession } | { ok: false }> {
   const captures = await SessionCaptures.read(config, subject.platform, subject.sessionId);
   const filePath = captures.flatMap((capture) => capture.sessionFile ?? []).at(-1);
-  const found = await AgentSession.find({ ...subject, ...(filePath ? { filePath } : {}) }, { subagents: true });
+  const found = await AgentSession.find(filePath ? { ...subject, filePath } : { ...subject }, { subagents: true });
 
   if (found.status !== 'done' || found.session.messages.length === 0) return { ok: false };
   const envSecrets = await knownSecrets(config);

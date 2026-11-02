@@ -63,7 +63,7 @@ export function deriveTargetSessionId(
     return `ses_${time}${base62Suffix(key)}`;
   }
 
-  return uuidV7Shaped(key);
+  return uuidV7FromKey(key);
 }
 
 /**
@@ -138,12 +138,12 @@ export function legacyTargetSessionIds(target: {
 
   if (sourcePlatform !== targetPlatform && UUID_RE.test(sourceSessionId)) ids.push(sourceSessionId);
 
-  if (sessionPlatformFacts(targetPlatform)?.legacyIdWithoutWorkspace) ids.push(uuidV7Shaped(`teamai:${targetPlatform}:${sourceSessionId}`));
+  if (sessionPlatformFacts(targetPlatform)?.legacyIdWithoutWorkspace) ids.push(uuidV7FromKey(`teamai:${targetPlatform}:${sourceSessionId}`));
 
   return ids;
 }
 
-function uuidV7Shaped(key: string): string {
+function uuidV7FromKey(key: string): string {
   const hex = crypto.createHash('sha256').update(key).digest('hex');
   const variant = ((parseInt(hex[16], 16) & 0x3) | 0x8).toString(16);
 

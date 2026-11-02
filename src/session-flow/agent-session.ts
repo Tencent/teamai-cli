@@ -213,7 +213,7 @@ function adapterFor(platform: string, use: 'read' | 'write', toolRoots: ToolRoot
   return noAdapter(platform, use) ?? ADAPTER_REGISTRY[platform](toolRoots);
 }
 
-const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+const messageOf = (cause: unknown): string => (cause instanceof Error ? cause.message : String(cause));
 
 const failed = (failure: AgentSessionFailure): AgentSessionCopy => ({ status: 'failed', failure });
 
@@ -405,17 +405,19 @@ async function listPlatform(platform: string, cwd: string | undefined, toolRoots
     return { sessions: [], failures: [{ code: 'list_failed', platform, message: `Listing ${platform} sessions failed: ${message}` }] };
   }
 
-  const sessions = metas.map((meta): AgentSessionListed => ({
-    platform,
-    sessionId: meta.sessionId,
-    cwd: meta.cwd,
-    ...(meta.filePath ? { filePath: meta.filePath } : {}),
-    title: meta.title,
-    createdAt: meta.createdAt,
-    updatedAt: meta.updatedAt,
-    ...(meta.messageCount === undefined ? {} : { messageCount: meta.messageCount }),
-    ...(meta.sizeBytes === undefined ? {} : { sizeBytes: meta.sizeBytes }),
-  }));
+  const sessions = metas.map((meta): AgentSessionListed => {
+    const ref: AgentSessionRef = meta.filePath
+      ? { platform, sessionId: meta.sessionId, cwd: meta.cwd, filePath: meta.filePath }
+      : { platform, sessionId: meta.sessionId, cwd: meta.cwd };
+
+    const listed: AgentSessionListed = { ...ref, cwd: meta.cwd, title: meta.title, createdAt: meta.createdAt, updatedAt: meta.updatedAt };
+
+    if (meta.messageCount !== undefined) listed.messageCount = meta.messageCount;
+
+    if (meta.sizeBytes !== undefined) listed.sizeBytes = meta.sizeBytes;
+
+    return listed;
+  });
 
   return { sessions, failures: [] };
 }
@@ -525,16 +527,13 @@ async function copy({ from, to, scrub = false, toolRootsFor = recordedToolRoots 
   const notice = target.consumeWriteNotice();
   const filePath = await listedFilePath(target, write.sessionId, to.cwd);
 
-  return {
-    status: 'done',
-    sessionId: write.sessionId,
-    cwd: to.cwd,
-    reused: false,
-    fidelity,
-    ...redacted,
-    ...(filePath ? { filePath } : {}),
-    ...(notice ? { notice } : {}),
-  };
+  const done: Extract<AgentSessionCopy, { status: 'done' }> = { status: 'done', sessionId: write.sessionId, cwd: to.cwd, reused: false, fidelity, ...redacted };
+
+  if (filePath) done.filePath = filePath;
+
+  if (notice) done.notice = notice;
+
+  return done;
 }
 
 /**
@@ -576,12 +575,12 @@ function blockText(block: ContentBlock): string {
  * Redaction is the caller's: pass a redacted session.
  */
 function transcript(session: Session): AgentSessionTranscriptEntry[] {
-  return session.messages.map((message) => ({
-    role: message.role,
-    ...(message.timestamp ? { timestamp: message.timestamp } : {}),
-    text: message.content.filter((block) => block.type !== 'tool_result').map(blockText).join('\n'),
-    toolOutput: message.content.filter((block) => block.type === 'tool_result').map(blockText).join('\n'),
-  }));
+  return session.messages.map((message): AgentSessionTranscriptEntry => {
+    const text = message.content.filter((block) => block.type !== 'tool_result').map(blockText).join('\n');
+    const toolOutput = message.content.filter((block) => block.type === 'tool_result').map(blockText).join('\n');
+
+    return message.timestamp ? { role: message.role, timestamp: message.timestamp, text, toolOutput } : { role: message.role, text, toolOutput };
+  });
 }
 
 /**

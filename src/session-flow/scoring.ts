@@ -18,7 +18,7 @@ import { scopeScoring } from '../scorers/settings.js';
 import { installedJudgeTools, runLocalJudge, type LocalJudgeResult } from '../scorers/judge.js';
 import type { JudgeTool } from '../tool-launch/tools.js';
 import { chooseJudgeModel, type JudgeModelChoice } from '../scorers/judge-model.js';
-import type { ScoreLabel, SessionSubject } from '../scorers/label.js';
+import type { ScoreLabel, SessionLabel, SessionLabelContext, SessionSubject } from '../scorers/label.js';
 import { LabelStore, reasoningPath, shareFailedLabelHint } from '../scorers/label-store.js';
 import { pinnedDefinition, type PinnedScorer } from '../scorers/pin.js';
 import { isRoutingScorer, parseRoutingScorer, routingScorer, routingSkillOf } from '../scorers/skill-routing.js';
@@ -214,7 +214,11 @@ async function pushedSession(config: LocalConfig, { name, author }: TeamSession)
 
     if (!session.platform || !session.sessionId) return failure('session_not_found', `The pushed session ${name} records no platform or session id it ran as, so it cannot be scored.`);
 
-    return { platform: session.platform, found: { session: scrubSession(session).session }, config, pushedBy: entry.author, ...(meta.agent ? { agent: meta.agent } : {}) };
+    const pushed: NamedSession = { platform: session.platform, found: { session: scrubSession(session).session }, config, pushedBy: entry.author };
+
+    if (meta.agent) pushed.agent = meta.agent;
+
+    return pushed;
   }
 
   return failure('session_not_found', `No session ${name} is pushed for ${repoIdentity ?? 'this directory'}. Run teamai session list to see the pushed sessions, after teamai session pull for the newest.`);
@@ -223,9 +227,27 @@ async function pushedSession(config: LocalConfig, { name, author }: TeamSession)
 /** One scorer file the command tries: the labels stored for its scorer, and the control's verdict or why it has none. */
 interface Tried {
   scorer: string;
-  stored: Array<Record<string, unknown>>;
-  control: Record<string, unknown>;
+  stored: ReturnType<typeof storedOf>;
+  control: ControlOutcome;
 }
+
+/** The control's verdict on a scorer file, or why it has none. */
+type ControlOutcome = { label: string; score: number; passed: boolean; warning?: string } | { error: { code: string; message: string } };
+
+/** A label the command prints: the verdict, and the team skills the session used when it used any. */
+interface ScoreAnswer {
+  scorer: string;
+  subject: SessionSubject;
+  label: string;
+  score: number;
+  passed: boolean;
+  used?: SessionLabelContext['used'];
+}
+
+/** A printed label, with where it was kept, or the scorer file it was only tried from. */
+type PrintedAnswer =
+  | (ScoreAnswer & { labelId: string; reasoning: string })
+  | (ScoreAnswer & { file: string; rubric: SessionLabel['rubric']; reasoning: string; stored: false });
 
 /** Why a rubric that passes the control may not judge the work. Printed, never a failure: a rubric may judge the prompt by design. */
 const CONTROL_WARNING = 'This rubric passes a session where the agent did nothing, so it may not judge the work.';
@@ -271,7 +293,7 @@ async function judgeOnce(config: LocalConfig, judged: JudgedSession, members: re
 }
 
 /** The newest label this scope keeps of `scorer` on `subject` for each rubric and judge kind, newest first. */
-function storedOf(labels: readonly ScoreLabel[], scorer: string, subject: SessionSubject): Array<Record<string, unknown>> {
+function storedOf(labels: readonly ScoreLabel[], scorer: string, subject: SessionSubject) {
   return labels
     .filter((label) => label.source === 'session' && label.scorer === scorer && label.subject.platform === subject.platform && label.subject.sessionId === subject.sessionId)
     .sort((left, right) => (left.scoredAt < right.scoredAt ? 1 : left.scoredAt > right.scoredAt ? -1 : 0))
@@ -432,7 +454,7 @@ export async function scoreSession(from: LocalConfig, demand: SessionDemand, now
     if (!chosen.ok) return failure('judge_model_unavailable', chosen.message);
 
     if (chosen.note) log.info(chosen.note);
-    const judgedMember = { ...member, ...(chosen.choice.alias !== undefined ? { alias: chosen.choice.alias } : {}) };
+    const judgedMember = chosen.choice.alias === undefined ? { ...member } : { ...member, alias: chosen.choice.alias };
     // A session's routing questions always share one judge call (#1469); a team scorer joins them, and they join a
     // team scorer, only where `batch` puts scorers of one session together.
     const routingMember = isRoutingScorer(member.scorer);
@@ -447,7 +469,7 @@ export async function scoreSession(from: LocalConfig, demand: SessionDemand, now
   }
 
   const control = files.size > 0 ? judgeSession({ platform, found: firstPromptOnly(found), captures, mask }) : undefined;
-  const answers: Array<Record<string, unknown>> = [];
+  const answers: PrintedAnswer[] = [];
   const tried: Tried[] = [];
 
   for (const { choice, members } of groups) {
@@ -458,14 +480,19 @@ export async function scoreSession(from: LocalConfig, demand: SessionDemand, now
 
     const labels = result.verdicts.map(({ judged: member, label, passed, reasoning }) => {
       const model = observedModel({ ...result.judge.model, alias: member.alias });
+      const judge: SessionLabel['judge'] = { kind: 'model', ...result.judge };
+
+      if (model) judge.model = model;
+
+      if (members.length > 1) judge.batched = true;
 
       return { member, reasoning, label: sessionLabel({
         scorer: member.scorer,
-        rubric: { sourceHash: member.pin.sourceHash, ...(member.pin.teamRevision ? { teamRevision: member.pin.teamRevision } : {}) },
+        rubric: member.pin.teamRevision ? { sourceHash: member.pin.sourceHash, teamRevision: member.pin.teamRevision } : { sourceHash: member.pin.sourceHash },
         label: label.value,
         score: label.score,
         passed,
-        judge: { kind: 'model', ...result.judge, ...(model ? { model } : {}), ...(members.length > 1 ? { batched: true as const } : {}) },
+        judge,
         scoredAt: now,
       }, subject, judged.context) };
     });
@@ -493,7 +520,9 @@ export async function scoreSession(from: LocalConfig, demand: SessionDemand, now
     for (const outcome of written.value) {
       const { member, label } = outcome;
       const verdict = `${label.label} (score ${label.score}, ${label.passed ? 'passed' : 'did not pass'})`;
-      const answer = { scorer: label.scorer, subject, label: label.label, score: label.score, passed: label.passed, ...(used.skills.length > 0 ? { used } : {}) };
+      const answer: ScoreAnswer = { scorer: label.scorer, subject, label: label.label, score: label.score, passed: label.passed };
+
+      if (used.skills.length > 0) answer.used = used;
 
       if (outcome.kind === 'stored') {
         const file = reasoningPath(config, outcome.kept.version);
@@ -515,7 +544,9 @@ export async function scoreSession(from: LocalConfig, demand: SessionDemand, now
         scorer: label.scorer,
         stored: storedOf(storedLabels, label.scorer, subject),
         control: controlVerdict
-          ? { label: controlVerdict.label.value, score: controlVerdict.label.score, passed: controlVerdict.passed, ...(controlVerdict.passed ? { warning: CONTROL_WARNING } : {}) }
+          ? controlVerdict.passed
+            ? { label: controlVerdict.label.value, score: controlVerdict.label.score, passed: controlVerdict.passed, warning: CONTROL_WARNING }
+            : { label: controlVerdict.label.value, score: controlVerdict.label.score, passed: controlVerdict.passed }
           : { error: controlled && !controlled.ok ? controlled.envelope.error : { code: 'judge_failed', message: 'The judge gave the control no label.' } },
       });
     }
@@ -524,15 +555,18 @@ export async function scoreSession(from: LocalConfig, demand: SessionDemand, now
   const [only, ...more] = answers;
   const [firstTried] = tried;
 
-  const scored = only && more.length === 0
-    ? { label: only, ...(firstTried ? { stored: firstTried.stored, control: firstTried.control } : {}) }
-    : { labels: answers, ...(firstTried ? { stored: Object.fromEntries(tried.map(({ scorer, stored }) => [scorer, stored])), control: Object.fromEntries(tried.map(({ scorer, control: scorerControl }) => [scorer, scorerControl])) } : {}) };
+  const isSingle = only && more.length === 0;
+  let scored;
+
+  if (!firstTried) scored = isSingle ? { label: only } : { labels: answers };
+  else if (isSingle) scored = { label: only, stored: firstTried.stored, control: firstTried.control };
+  else scored = { labels: answers, stored: Object.fromEntries(tried.map(({ scorer, stored }) => [scorer, stored])), control: Object.fromEntries(tried.map(({ scorer, control: scorerControl }) => [scorer, scorerControl])) };
 
   return answered(config, scored, demand.push);
 }
 
 /** The answer of a scoring, after publishing the scope's pending labels with `push`. */
-async function answered(config: LocalConfig, scored: Record<string, unknown>, push: boolean | undefined): Promise<WorkflowEnvelope> {
+async function answered<TScored extends Record<string, unknown>>(config: LocalConfig, scored: TScored, push: boolean | undefined): Promise<WorkflowEnvelope> {
   if (!push) return { data: scored };
   const pushed = await LabelStore.push(config);
 
@@ -553,13 +587,13 @@ function handValueOf([member]: readonly Asked[], value: string): { member: Asked
  * Keeps the member's own label of `judged` with `value`, its score and verdict as the scorer gives them, as a model
  * label is kept but with no judge and no reasoning file. It shares no key with a model label, so neither replaces the other.
  */
-async function labelByHand(config: LocalConfig, { member, given, judged, now }: { member: Asked; given: ScorerLabel; judged: JudgedSession; now: string }): Promise<{ label: Record<string, unknown> } | Failure> {
+async function labelByHand(config: LocalConfig, { member, given, judged, now }: { member: Asked; given: ScorerLabel; judged: JudgedSession; now: string }) {
   const { scorer, pin, definition } = member;
   const passed = given.score >= definition.passingScore;
 
   const label = sessionLabel({
     scorer,
-    rubric: { sourceHash: pin.sourceHash, ...(pin.teamRevision ? { teamRevision: pin.teamRevision } : {}) },
+    rubric: pin.teamRevision ? { sourceHash: pin.sourceHash, teamRevision: pin.teamRevision } : { sourceHash: pin.sourceHash },
     label: given.value,
     score: given.score,
     passed,
