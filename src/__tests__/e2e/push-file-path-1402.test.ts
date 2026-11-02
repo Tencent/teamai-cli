@@ -269,6 +269,7 @@ describe('teamai push --file --path', () => {
     [['--file', '{file}', '--path', 'skills/../../escape.md'], 'skills/../../escape.md is not a path inside the team repo. Give a relative path with "/" between its parts, such as benchmarks/frontend/tasks/pod-startup.yaml.'],
     [['--file', '{file}', '--path', 'notes/pod-startup.yaml'], 'notes/pod-startup.yaml is not under a team resource directory. Give a path under skills/, rules/, scorers/, benchmarks/ or another directory teamai pulls.'],
     [['--file', '{file}', '--path', 'skills/linked/SKILL.md'], 'skills/linked/SKILL.md goes through the symlink skills/linked in the team repo, so it is not pushed. Give a path whose directories are real directories.'],
+    [['--file', '{file}', '--path', 'benchmarks/frontend/tasks/pod-startup.yaml', '--branch', 'main'], '--branch main is the team repo\'s default branch, so the file would skip review. Name the pull request\'s branch, or leave --branch out.'],
   ])('refuses %j and pushes nothing', async (args, message) => {
     const member = teamMember();
     const seed = path.join(member.root, 'seed-team');
@@ -277,12 +278,14 @@ describe('teamai push --file --path', () => {
     git(seed, ['-c', 'user.name=Seed', '-c', 'user.email=seed@example.com', 'commit', '-qm', 'link']);
     git(seed, ['push', '-q', member.origin, 'main']);
     const file = localFile(member, 'pod-startup.yaml', TASK);
+    const main = git(member.origin, ['rev-parse', 'main']);
 
     const pushed = teamai(member, ['push', ...args.map((arg) => arg.replace('{file}', file))]);
 
     expect(pushed.code).not.toBe(0);
     expect(pushed.output).toContain(message);
     expect(proposed(member)).toEqual({});
+    expect(git(member.origin, ['rev-parse', 'main'])).toBe(main);
   });
 
   it('in single-repo mode proposes .teamai/<path>, and leaves the checkout\'s files, index and HEAD as they were', async () => {

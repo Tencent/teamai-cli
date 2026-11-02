@@ -151,6 +151,10 @@ async function proposeFile({ source, destination, teamRoot, branch: requested, d
   const top = (await createGit(teamRoot).revparse(['--show-toplevel'])).trim();
   const git = createGit(top);
   const defaultBranch = await getDefaultBranch(teamRoot);
+  if (requested === defaultBranch) {
+    refuse(`--branch ${defaultBranch} is the team repo's default branch, so the file would skip review. Name the pull request's branch, or leave --branch out.`, 2);
+    return { kind: 'stopped' };
+  }
   const spin = (await spinner(`Fetching ${defaultBranch}...`)).start();
   try {
     await git.fetch(['origin', defaultBranch]);
