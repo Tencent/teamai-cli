@@ -14,6 +14,7 @@ import workflowFailureCodes from './rules/workflow-failure-codes.js';
 import configLoadOptions from './rules/config-load-options.js';
 import toolFacts from './rules/tool-facts.js';
 import suppressionReason from './rules/suppression-reason.js';
+import yamlParse from './rules/yaml-parse.js';
 
 // The anti-slop rules are vendored TypeScript. oxlint imports plugins with plain
 // Node, and `npm run lint` runs on Node 20 in CI, which can't import TypeScript:
@@ -38,6 +39,7 @@ export default definePlugin({
     'learnings-root': learningsRoot,
     'tool-facts': toolFacts,
     'suppression-reason': suppressionReason,
+    'yaml-parse': yamlParse,
     ...antiSlopRules,
   },
 });

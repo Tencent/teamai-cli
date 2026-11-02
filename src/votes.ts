@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
 import YAML from 'yaml';
+import { parseYaml } from './utils/yaml.js';
 
 import { UserVotesSchema, UserVotesV2Schema } from './types.js';
 import type { LocalConfig, PendingVoteSync, UpvoteLedger, UserVotes, UserVotesV2, VoteEntryV2 } from './types.js';
@@ -179,7 +180,7 @@ function parseUserVotesContent(content: string): { data: UserVotesV2; migrated: 
   let parsed: unknown;
 
   try {
-    parsed = YAML.parse(content);
+    parsed = parseYaml(content);
   } catch {
     return null;
   }
@@ -563,7 +564,7 @@ export async function readIndexVoteFiles(config: LocalConfig): Promise<Array<{ p
       const parsed = parseUserVotesContent(source?.content ?? '');
 
       if (parsed?.migrated && source) {
-        const legacy = UserVotesSchema.parse(YAML.parse(source.content));
+        const legacy = UserVotesSchema.parse(parseYaml(source.content));
 
         for (const id of Object.keys(deltas)) delete legacy.votes[id];
 

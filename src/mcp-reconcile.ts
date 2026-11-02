@@ -22,7 +22,7 @@ import {
   managedMcpManifestKey,
   resolveBaseDir,
 } from './types.js';
-import YAML from 'yaml';
+import { parseYaml } from './utils/yaml.js';
 import { z } from 'zod';
 import { parse as parseToml } from 'smol-toml';
 import { withoutTomlBom } from './utils/toml.js';
@@ -1938,7 +1938,7 @@ export async function earlierMappedMcpTargets(
 
     if (revision !== null) {
       try {
-        mappings = EarlierMcpMappingsSchema.parse(YAML.parse((await reads[i - 1])?.toString() ?? ''));
+        mappings = EarlierMcpMappingsSchema.parse(parseYaml((await reads[i - 1])?.toString() ?? ''));
       } catch {
         continue;
       }

@@ -19,7 +19,7 @@
  * this teamai does not know is dropped with a problem instead, so a newer CLI's additions never stop this one.
  */
 import path from 'node:path';
-import YAML from 'yaml';
+import { parseYaml } from '../utils/yaml.js';
 import { z } from 'zod';
 import { getKnowledgeDir, type LocalConfig } from '../types.js';
 import { readEntryFileText } from '../namespaced-entries.js';
@@ -53,7 +53,7 @@ export function parseScoringFile(relativePath: string, text: string): ScoringFil
   let document: unknown;
 
   try {
-    document = YAML.parse(text);
+    document = parseYaml(text);
   } catch (error) {
     const [message = ''] = (error instanceof Error ? error.message : String(error)).split('\n');
 

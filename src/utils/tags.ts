@@ -1,5 +1,6 @@
 import path from 'node:path';
 import YAML from 'yaml';
+import { parseYaml } from './yaml.js';
 import { z } from 'zod';
 import type { TagsConfig, ResourceItem } from '../types.js';
 import { readFileSafe, writeFile } from './fs.js';
@@ -50,7 +51,7 @@ export async function loadTagsConfig(repoPath: string): Promise<TagsConfig | nul
     }
 
     try {
-        return TagsFileSchema.safeParse(YAML.parse(content)).data ?? null;
+        return TagsFileSchema.safeParse(parseYaml(content)).data ?? null;
     } catch (e) {
         log.warn(`Failed to parse ${TAGS_FILE}: ${e instanceof Error ? e.message : String(e)}`);
 

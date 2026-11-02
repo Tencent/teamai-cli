@@ -1,7 +1,6 @@
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { parse as parseYaml } from 'yaml';
 import matter from 'gray-matter';
 import { z } from 'zod';
 import { ResourceHandler, type PlacementRecords, type ScanForPushOptions } from './base.js';
@@ -44,6 +43,7 @@ import {
   ParsedFieldsSchema,
 } from './agent-format.js';
 import type { ParsedValue, ParsedFields, AgentSpec, ToolName, ParseResult, MergeConflict, MergeResult, RenderResult } from './agent-format.js';
+import { parseYaml } from '../utils/yaml.js';
 
 /**
  * Extended ResourceItem for agents — carries merged spec or skip reason

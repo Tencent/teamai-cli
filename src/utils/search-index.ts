@@ -29,6 +29,7 @@ import { parseRelatedBlock, relationsFromLinks } from '../asset-relations.js';
 import type { StoredRelation } from '../asset-relations.js';
 import { localLinkTargets } from './markdown-links.js';
 import type { FrontmatterValue } from './frontmatter.js';
+import { parseYaml } from './yaml.js';
 
 /**
  * Self mode keeps one index per checkout, but every checkout shares the
@@ -399,8 +400,7 @@ async function aggregateVotes(votesDir?: string, voteScope?: LocalConfig): Promi
     if (!content) continue;
 
     try {
-      const YAML = (await import('yaml')).default;
-      const parsed = YAML.parse(content);
+      const parsed = parseYaml(content);
       const v2 = UserVotesV2Schema.safeParse(parsed);
 
       if (v2.success) {

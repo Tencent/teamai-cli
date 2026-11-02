@@ -2,6 +2,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import fse from 'fs-extra';
 import YAML from 'yaml';
+import { parseYaml } from './utils/yaml.js';
 import { z } from 'zod';
 import { loadTeamConfig, autoDetectInit, loadLocalConfig, detectProjectConfig } from './config.js';
 import { assertAttachedTeamRepo, createGit, DetachedTeamRepoError, pullRepo } from './utils/git.js';
@@ -46,7 +47,7 @@ import type {
   SourceInstallManifest,
   GlobalOptions,
 } from './types.js';
-import { isAgentExcluded, resolveBaseDir, scopedToolPaths, SOURCE_PULL_TTL_MS } from './types.js';
+import { isAgentExcluded, isJsonObject, resolveBaseDir, scopedToolPaths, SOURCE_PULL_TTL_MS } from './types.js';
 import type { DeliveryRecorder } from './git-exclude-delivered.js';
 
 // ─── Source repo management ──────────────────────────────
@@ -528,13 +529,16 @@ async function sourceAddLocked(repoUrl: string, options: { name?: string } & Glo
     return;
   }
 
-  const raw = YAML.parse(content);
+  const raw = parseYaml(content);
+  const sources = isJsonObject(raw) ? raw.sources ?? [] : null;
 
-  if (!raw.sources) {
-    raw.sources = [];
+  if (!isJsonObject(raw) || !Array.isArray(sources)) {
+    log.error(`${yamlPath} is not a YAML mapping whose sources is a list, so the source was not added. Fix the file, then run the command again.`);
+
+    return;
   }
 
-  raw.sources.push({ name, repo: repoUrl });
+  raw.sources = [...sources, { name, repo: repoUrl }];
   await fse.writeFile(yamlPath, YAML.stringify(raw));
 
   log.success(`Added source "${name}" (${repoUrl})`);
@@ -642,8 +646,16 @@ async function sourceRemoveLocked(name: string, options: GlobalOptions, localCon
       return;
     }
 
-    const raw = YAML.parse(content);
-    raw.sources = (raw.sources ?? []).filter((s: SourceConfig) => s.name !== name);
+    const raw = parseYaml(content);
+    const sources = isJsonObject(raw) ? raw.sources ?? [] : null;
+
+    if (!isJsonObject(raw) || !Array.isArray(sources)) {
+      log.error(`${yamlPath} is not a YAML mapping whose sources is a list, so the subscription was not removed from it. Fix the file, then run the command again.`);
+
+      return;
+    }
+
+    raw.sources = sources.filter((entry) => !(isJsonObject(entry) && entry.name === name));
     await fse.writeFile(yamlPath, YAML.stringify(raw));
   }
 

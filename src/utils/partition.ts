@@ -2,6 +2,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import YAML from 'yaml';
+import { parseYaml } from './yaml.js';
 import { z } from 'zod';
 import { getUserHome } from './home.js';
 import { readFileSafe, writeFileAtomic, expandHome, errnoCode } from './fs.js';
@@ -315,7 +316,7 @@ async function rebaseLocalPathAfterAdoption(canonical: string, legacyDir: string
   let doc: JsonValue;
 
   try {
-    doc = YAML.parse(content);
+    doc = parseYaml(content);
   } catch {
     return; // malformed config — leave it for status/doctor to surface
   }

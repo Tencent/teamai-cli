@@ -1,6 +1,6 @@
 import { chmod, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
-import YAML from 'yaml';
+import { parseYaml } from './utils/yaml.js';
 import { z } from 'zod';
 import { autoDetectInit, loadStateForScope, saveStateForScope } from './config.js';
 import { assertNotReadOnly } from './read-only.js';
@@ -1076,7 +1076,7 @@ export async function push(
 
   try {
     const configContent = await readFileSafe(path.join(localConfig.repo.localPath, 'teamai.yaml'));
-    const rawConfig = z.looseObject({}).safeParse(configContent === null ? null : YAML.parse(configContent));
+    const rawConfig = z.looseObject({}).safeParse(configContent === null ? null : parseYaml(configContent));
 
     if (rawConfig.success && Object.prototype.hasOwnProperty.call(rawConfig.data, 'packages')) {
       const { loadPackageManifest } = await import('./pkg/manifest.js');

@@ -1,5 +1,5 @@
 import path from 'node:path';
-import YAML from 'yaml';
+import { parseYaml } from './utils/yaml.js';
 import type { JsonValue } from './types.js';
 import { z } from 'zod';
 import { caseFoldKey, emptyManifestError, parseManifest, parseManifestOnce, readManifestFile } from './manifest-schema.js';
@@ -132,7 +132,7 @@ export async function loadRoleAssignments(repoPath: string, repo: { kind?: strin
     let raw: JsonValue;
 
     try {
-      raw = YAML.parse(text);
+      raw = parseYaml(text);
     } catch (error) {
       throw new Error(`Invalid members manifest YAML: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
     }

@@ -16,7 +16,7 @@ import { log } from './utils/logger.js';
 import type {
   UserStats, UserModeStats, UserInterventionStats, SessionMetrics, TokenUsage, DashboardEvent, LocalConfig, RequestCostMetrics, UserVotesV2,
 } from './types.js';
-import { getVotesDir, getDataHome, getReportsDir, emptyTokenUsage, addTokenUsage, usesBranchWorktree, JsonValueSchema } from './types.js';
+import { getVotesDir, getDataHome, getReportsDir, emptyTokenUsage, addTokenUsage, usesBranchWorktree, JsonValueSchema, parseUserStats } from './types.js';
 import { filterEventsByScope, runsOfLog } from './dashboard-scope.js';
 import {
   creditedPrompts, interventionsEntry, promptTokensEntry, readOwnerCredits, recordSessionOwners, reportedBeyondShared, reportedSize,
@@ -80,11 +80,9 @@ async function readExistingStats(statsPath: string): Promise<UserStats | null> {
     const content = await readFileSafe(statsPath);
 
     if (!content) return null;
-    // SAFETY: stats/<user>.yaml is written only by this module, from a merged UserStats; a file without the
-    // username and skills every such write carries is dropped below.
-    const parsed = YAML.parse(content) as UserStats;
+    const parsed = parseUserStats(content);
 
-    if (parsed?.username && parsed?.skills) return parsed;
+    if (parsed) return parsed;
 
     return null;
   } catch {

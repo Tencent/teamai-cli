@@ -1,6 +1,7 @@
 import path from 'node:path';
 import fse from 'fs-extra';
 import YAML from 'yaml';
+import { parseYaml } from './utils/yaml.js';
 import { z } from 'zod';
 import { isSelfMode, LocalConfigSchema, SYNC_LOCK_FILENAME, WORKTREE_DIRNAMES, type LocalConfig } from './types.js';
 import { getRemoteUrl, resolveAnchors } from './utils/git.js';
@@ -224,7 +225,7 @@ export async function planMigration(cwd?: string, options: { dryRun?: boolean } 
   let legacyOwner: QueueOwner;
 
   try {
-    const parsed = LocalConfigSchema.parse(YAML.parse(gateContent));
+    const parsed = LocalConfigSchema.parse(parseYaml(gateContent));
     scope = parsed.scope;
     kind = parsed.repo.kind;
     legacyOwner = queueOwner(parsed);
@@ -713,7 +714,7 @@ async function rebaseConfigPaths(
   let doc: unknown;
 
   try {
-    doc = YAML.parse(content);
+    doc = parseYaml(content);
   } catch {
     return; // verifyStaging already validated parseability; be defensive anyway
   }
@@ -887,7 +888,7 @@ async function holdsSelfKnowledge(dir: string): Promise<boolean> {
   if (!content) return false;
 
   try {
-    return SelfModeTeamaiYamlSchema.safeParse(YAML.parse(content)).success;
+    return SelfModeTeamaiYamlSchema.safeParse(parseYaml(content)).success;
   } catch {
     return false;
   }
@@ -1184,7 +1185,7 @@ async function verifyStaging(legacyDir: string, staging: string): Promise<void> 
   if (!content) throw new Error(`migration verify: ${stagedConfig} missing after copy`);
 
   try {
-    LocalConfigSchema.parse(YAML.parse(content));
+    LocalConfigSchema.parse(parseYaml(content));
   } catch (e) {
     throw new Error(`migration verify: staged config.yaml is invalid (${e instanceof Error ? e.message : String(e)})`, { cause: e });
   }

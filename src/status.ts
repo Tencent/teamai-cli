@@ -1,5 +1,5 @@
 import path from 'node:path';
-import YAML from 'yaml';
+import { parseYaml } from './utils/yaml.js';
 import { autoDetectInit, loadStateForScope } from './config.js';
 import { listCachedWorkflows, resolveStart, startingAlias } from './workflow/cache.js';
 import { summarizeWorkspaceChildren } from './workspace-children.js';
@@ -257,7 +257,7 @@ async function statusAll(): Promise<void> {
 
     if (cfgRaw) {
       try {
-        const parsed = LocalConfigSchema.parse(YAML.parse(cfgRaw));
+        const parsed = LocalConfigSchema.parse(parseYaml(cfgRaw));
         scope = installScopeName(parsed.scope);
         kind = parsed.repo.kind;
         const recordedRoot = parsed.repo.businessRepoRoot ?? parsed.projectRoot;

@@ -1,11 +1,10 @@
-import YAML from 'yaml';
 import { readSessionOwnerState, type SessionOwnerState } from './session-owners.js';
 import path from 'node:path';
 import { readUsageEvents } from './usage-tracker.js';
 import { readFileSafe } from './utils/fs.js';
 import { resolveConfigForDir } from './config.js';
 import { readEvents, aggregateSessionMetrics, memberEvents } from './dashboard-collector.js';
-import { totalTokens, addTokenUsage, emptyTokenUsage } from './types.js';
+import { totalTokens, addTokenUsage, emptyTokenUsage, parseUserStats } from './types.js';
 import { attributeByRepo, timeAnalytics, renderHourSparkline } from './session-analytics.js';
 import { formatTokenCount } from './digest.js';
 import { log } from './utils/logger.js';
@@ -73,11 +72,9 @@ async function loadReportedStats(dryRun = false): Promise<UserStats | null> {
     const content = await readFileSafe(statsPath);
 
     if (!content) return null;
-    // SAFETY: the stats push writes this file from a UserStats; the check below rejects any file without its
-    // username and skills, and every other field is optional.
-    const parsed = YAML.parse(content) as UserStats;
+    const parsed = parseUserStats(content);
 
-    if (parsed?.username && parsed?.skills) return parsed;
+    if (parsed) return parsed;
 
     return null;
   } catch {

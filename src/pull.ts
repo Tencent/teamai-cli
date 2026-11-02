@@ -1,4 +1,4 @@
-import { hookToolPathsForConfig } from './types.js';
+import { hookToolPathsForConfig, parseUserStats } from './types.js';
 import os from 'node:os';
 import path from 'node:path';
 import { readFile, realpath, stat } from 'node:fs/promises';
@@ -3054,7 +3054,6 @@ async function pullForScope(
   // Step 6: Show skill recommendations, among the skills Step 2 delivers
   if (!options.silent && !options.dryRun && desiredSkillNames) {
     try {
-      const YAML = (await import('yaml')).default;
       const { listFiles: listStatsFiles, readFileSafe: readStatsFile } = await import('./utils/fs.js');
       const { getRecommendations, displayRecommendations } = await import('./skill-recommend.js');
       // stats/ is read from the refreshed reports worktree (see resolveReportsReadRoot).
@@ -3070,9 +3069,9 @@ async function pullForScope(
         if (!content) continue;
 
         try {
-          const parsed = YAML.parse(content);
+          const parsed = parseUserStats(content);
 
-          if (parsed?.username && parsed?.skills) teamStats.push(parsed);
+          if (parsed) teamStats.push(parsed);
         } catch { /* skip */ }
       }
 

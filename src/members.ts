@@ -1,4 +1,4 @@
-import YAML from 'yaml';
+import { parseYaml } from './utils/yaml.js';
 import path from 'node:path';
 import { requireInit, detectProjectConfig } from './config.js';
 import { readFileSafe, listFiles } from './utils/fs.js';
@@ -17,7 +17,7 @@ export async function getMemberConfig(repoPath: string, username: string): Promi
   if (!content) return null;
 
   try {
-    const raw = YAML.parse(content);
+    const raw = parseYaml(content);
 
     return MemberConfigSchema.parse(raw);
   } catch {
@@ -165,7 +165,7 @@ export async function listMembers(options: GlobalOptions): Promise<void> {
     if (!content) continue;
 
     try {
-      const raw = YAML.parse(content);
+      const raw = parseYaml(content);
       const member = MemberConfigSchema.parse(raw);
       const isSelf = member.username === localConfig.username;
       const marker = isSelf ? ' (you)' : '';

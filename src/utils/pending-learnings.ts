@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import fse from 'fs-extra';
-import YAML from 'yaml';
+import { parseYaml } from './yaml.js';
 import { ensureDir, expandHome, listFilesRecursive, readFileSafe } from './fs.js';
 import { normalizeRepoUrlForCompare, redactGitCredentials, remotesMatch } from './git.js';
 import { log } from './logger.js';
@@ -117,7 +117,7 @@ async function installChanged(localConfig: LocalConfig): Promise<{ configPath: s
   let raw: unknown;
 
   try {
-    raw = YAML.parse(content);
+    raw = parseYaml(content);
   } catch {
     return { configPath, cause: 'cannot be read' };
   }

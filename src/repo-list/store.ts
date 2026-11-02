@@ -1,8 +1,8 @@
 // -*- coding: utf-8 -*-
 import fs from 'fs-extra';
-import { parse as parseYaml } from 'yaml';
 
 import { RepoListFileSchema, type RepoListFile } from './schema.js';
+import { parseYaml } from '../utils/yaml.js';
 
 /** 反序列化大小上限：10 MB，防止超大文件导致 OOM。 */
 const MAX_CONFIG_FILE_BYTES = 10 * 1024 * 1024;

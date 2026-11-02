@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import YAML from 'yaml';
+import { parseYaml } from '../utils/yaml.js';
 import { ResourceHandler } from './base.js';
 import type { JsonValue, LocalConfig, McpServerDef, ResourceItem, TeamaiConfig } from '../types.js';
 import { readFileSafe, writeFile } from '../utils/fs.js';
@@ -71,7 +72,7 @@ function parseMcpContent(content: string | null): McpYamlRead {
   if (!content) return { ok: true, yaml: null, unknownKeys: new Map() };
 
   try {
-    const raw: JsonValue = YAML.parse(content);
+    const raw: JsonValue = parseYaml(content);
     const topLevelProblem = missingTopLevelKeyReason(raw, McpYamlSchema);
 
     if (topLevelProblem) return { ok: false, reason: topLevelProblem };

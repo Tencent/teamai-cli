@@ -1,4 +1,5 @@
 import YAML from 'yaml';
+import { parseYaml } from './utils/yaml.js';
 import { ZodError, z } from 'zod';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -281,7 +282,7 @@ export async function loadTeamConfig(repoPath: string): Promise<TeamaiConfig | n
   }
 
   try {
-    const raw = YAML.parse(content);
+    const raw = parseYaml(content);
 
     return TeamaiConfigSchema.parse(raw);
   } catch (e) {
@@ -426,7 +427,7 @@ export async function loadMemberSettings(configPath = expandHome(getUserConfigPa
   let raw: RawMapping | undefined;
 
   try {
-    raw = OptionalMappingSchema.parse(YAML.parse(content));
+    raw = OptionalMappingSchema.parse(parseYaml(content));
   } catch {
     return {};
   }
@@ -469,7 +470,7 @@ export async function machineWorkflowAllowProblem(): Promise<string | undefined>
   let workflows: RawMapping | undefined;
 
   try {
-    workflows = OptionalMappingSchema.parse(OptionalMappingSchema.parse(YAML.parse(content))?.workflows);
+    workflows = OptionalMappingSchema.parse(OptionalMappingSchema.parse(parseYaml(content))?.workflows);
   } catch (e) {
     return `${configPath} is not valid YAML (${describeConfigError(e)}), so the workflows.allow restrictions it may set are unknown. `
       + 'A workflow does not run until it is fixed.';
@@ -572,7 +573,7 @@ async function holdsInstall(configPath: string): Promise<boolean> {
   if (content === null) return true;
 
   try {
-    return !isSettingsOnlyConfig(YAML.parse(content));
+    return !isSettingsOnlyConfig(parseYaml(content));
   } catch {
     return true;
   }
@@ -593,7 +594,7 @@ async function readAiSetting(configPath: string): Promise<LocalConfig['ai']> {
   if (!content) return undefined;
 
   try {
-    const parsed = LocalConfigSchema.pick({ ai: true }).safeParse(YAML.parse(content));
+    const parsed = LocalConfigSchema.pick({ ai: true }).safeParse(parseYaml(content));
 
     if (parsed.success) return parsed.data.ai;
     log.warn(`Ignoring ai in ${configPath}: ${describeConfigError(parsed.error)}. Set it as ai: { tool: <tool id> }.`);
@@ -615,7 +616,7 @@ export async function loadLocalConfig(options: LoadOptions = {}): Promise<LocalC
   if (!content) return null;
 
   try {
-    const raw = YAML.parse(content);
+    const raw = parseYaml(content);
 
     if (isSettingsOnlyConfig(raw)) return null;
     const parsed = LocalConfigSchema.parse(raw);
@@ -662,7 +663,7 @@ async function readSettingsOnlyConfig(configPath: string): Promise<MemberSetting
   if (!content) return {};
 
   try {
-    if (!isSettingsOnlyConfig(YAML.parse(content))) return {};
+    if (!isSettingsOnlyConfig(parseYaml(content))) return {};
   } catch {
     return {};
   }
@@ -832,7 +833,7 @@ export async function loadLocalConfigForScope(
   if (!content) return null;
 
   try {
-    const raw = YAML.parse(content);
+    const raw = parseYaml(content);
 
     if (scope === 'user' && isSettingsOnlyConfig(raw)) return null;
     const parsed = LocalConfigSchema.parse(raw);
@@ -1177,7 +1178,7 @@ export async function readConfigFrom(
   }
 
   try {
-    const raw = YAML.parse(content);
+    const raw = parseYaml(content);
     const config = LocalConfigSchema.parse(raw);
 
     if (config.scope !== 'project') {

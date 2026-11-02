@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import fse from 'fs-extra';
 import YAML from 'yaml';
+import { parseYaml } from '../utils/yaml.js';
 import { z } from 'zod';
 
 import { getDataHome, getTeamaiHome, isSelfMode, JsonValueSchema, type JsonValue, type LocalConfig } from '../types.js';
@@ -102,7 +103,7 @@ const TeamNameSchema = z.object({
 });
 
 function parseYamlObject(content: string, filePath: string): Record<string, JsonValue> {
-  const parsed = YamlObjectSchema.safeParse(YAML.parse(content));
+  const parsed = YamlObjectSchema.safeParse(parseYaml(content));
 
   if (!parsed.success) {
     throw new Error(`${filePath} must contain a YAML object`);
@@ -152,7 +153,7 @@ export async function loadPackageLock(cwd: string): Promise<PackageLock | null> 
   if (content === null) return null;
 
   try {
-    return PackageLockSchema.parse(YAML.parse(content));
+    return PackageLockSchema.parse(parseYaml(content));
   } catch {
     return null;
   }

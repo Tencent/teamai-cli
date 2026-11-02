@@ -40,7 +40,7 @@
  * a newer CLI's additions never freeze this one.
  */
 import path from 'node:path';
-import YAML from 'yaml';
+import { parseYaml } from '../utils/yaml.js';
 import { z } from 'zod';
 import { getTeamaiHomeDir, isJsonObject, JsonValueSchema, type JsonObject, type JsonValue, type LocalConfig } from '../types.js';
 import { activeEntryNamespaces, describeEntryFailure, entryLayout, listEntryFiles, namespaceDir, readEntryFileText, type EntryLayout } from '../namespaced-entries.js';
@@ -420,7 +420,7 @@ async function readAliasesFile(
   let document: unknown;
 
   try {
-    document = read.text === null ? null : YAML.parse(read.text);
+    document = read.text === null ? null : parseYaml(read.text);
   } catch (error) {
     // The parser's first line names the problem and its position; the code frame under it would split every message it is quoted in.
     const message = (error instanceof Error ? error.message : String(error)).split('\n')[0]!.replace(/:\s*$/, '');

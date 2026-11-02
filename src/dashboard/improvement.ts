@@ -2,7 +2,7 @@
 // teamai-reports, the team repo's skills and the KB maintenance candidates.
 import fs from 'node:fs';
 import path from 'node:path';
-import YAML from 'yaml';
+import { parseYaml } from '../utils/yaml.js';
 import { z } from 'zod';
 import { BUILTIN_SKILL_NAMES, LEGACY_BUILTIN_SKILL_NAMES } from '../builtin-skills.js';
 
@@ -77,7 +77,7 @@ async function readStats(statsDir: string): Promise<StatsFile[]> {
 
   for (const name of names.filter((n) => n.endsWith('.yaml'))) {
     try {
-      const parsed = StatsFileSchema.safeParse(YAML.parse(await fs.promises.readFile(path.join(statsDir, name), 'utf-8')));
+      const parsed = StatsFileSchema.safeParse(parseYaml(await fs.promises.readFile(path.join(statsDir, name), 'utf-8')));
 
       if (parsed.success) out.push(parsed.data);
     } catch { /* one unreadable member file does not hide the rest */ }

@@ -1,4 +1,3 @@
-import YAML from 'yaml';
 import path from 'node:path';
 import fs from 'node:fs';
 import { log } from './utils/logger.js';
@@ -9,7 +8,7 @@ import { calculateTeamHealth } from './skill-health.js';
 import { createGit } from './utils/git.js';
 import type { RunModeSplit, UserStats, UserModeStats, UserOutcomeStats, TokenUsage } from './types.js';
 import { OUTCOME_MODES, OUTCOME_ROWS, addOutcomeStats } from './outcomes.js';
-import { totalTokens } from './types.js';
+import { parseUserStats, totalTokens } from './types.js';
 import { mergeDailyStats, summarizeTrendWindow, type TrendPeriod } from './session-trends.js';
 
 interface SkillChange {
@@ -57,11 +56,9 @@ async function loadTeamStats(repoPath: string): Promise<UserStats[]> {
       if (!content) continue;
 
       try {
-        // SAFETY: stats/<user>.yaml is written by teamai's stats push from a UserStats value, and the
-        // check below drops a file without username or skills. No UserStats schema exists to check the rest.
-        const parsed = YAML.parse(content) as UserStats;
+        const parsed = parseUserStats(content);
 
-        if (parsed?.username && parsed?.skills) {
+        if (parsed) {
           stats.push(parsed);
         }
       } catch {

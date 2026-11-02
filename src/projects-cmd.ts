@@ -1,5 +1,5 @@
 import path from 'node:path';
-import YAML from 'yaml';
+import { parseYaml } from './utils/yaml.js';
 import { autoDetectInit } from './config.js';
 import { saveScopeSelection } from './scope-selection.js';
 import {
@@ -221,7 +221,7 @@ export async function projectsMembers(
       if (!content) continue;
 
       try {
-        const member = MemberConfigSchema.parse(YAML.parse(content));
+        const member = MemberConfigSchema.parse(parseYaml(content));
 
         if ((member.projects ?? []).includes(projectId)) {
           const display = member.displayName ? ` — ${member.displayName}` : '';

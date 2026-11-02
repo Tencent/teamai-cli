@@ -1,4 +1,5 @@
 import YAML from 'yaml';
+import { parseYaml } from './utils/yaml.js';
 import { z, type ZodTypeAny } from 'zod';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -83,7 +84,7 @@ async function loadConfigSetAside(configPath: string): Promise<LocalConfig | nul
 /** The config file at `configPath` as written: nothing a load fills in from another level. Null when it cannot be read. */
 async function readConfigFile(configPath: string): Promise<LocalConfig | null> {
   try {
-    return LocalConfigSchema.parse(YAML.parse(await readFileSafe(configPath) ?? ''));
+    return LocalConfigSchema.parse(parseYaml(await readFileSafe(configPath) ?? ''));
   } catch (e) {
     log.debug(`Not carrying settings from ${configPath}: ${e instanceof Error ? e.message : String(e)}`);
 
@@ -111,7 +112,7 @@ async function salvageConfigFile(configPath: string): Promise<SalvagedConfig | n
   let raw: unknown;
 
   try {
-    raw = YAML.parse(await readFileSafe(configPath) ?? '');
+    raw = parseYaml(await readFileSafe(configPath) ?? '');
   } catch {
     return null;
   }
@@ -2700,7 +2701,7 @@ export async function init(options: GlobalOptions & {
         const configContent = await readFileSafe(configPath);
 
         if (configContent) {
-          const configData = z.looseObject({}).parse(YAML.parse(configContent));
+          const configData = z.looseObject({}).parse(parseYaml(configContent));
           configData.reviewers = reviewers;
           await writeFile(configPath, YAML.stringify(configData));
           log.success(`Configured ${reviewers.length} reviewer(s): ${reviewers.join(', ')}`);

@@ -11,6 +11,7 @@
  */
 import path from 'node:path';
 import YAML from 'yaml';
+import { parseYaml } from '../utils/yaml.js';
 import { z } from 'zod';
 import {
   entryLayout, missingTopLevelKeyReason, readEntryFileText, resolveEntries, resolveEntriesFor, unknownEntryKeys,
@@ -72,7 +73,7 @@ export const secretsEntryReader: EntryReader<SecretDeclaration> = {
     let raw: JsonValue;
 
     try {
-      raw = YAML.parse(file.text);
+      raw = parseYaml(file.text);
     } catch (e) {
       return { ok: false, reason: `${relativePath} is not valid YAML: ${e instanceof Error ? e.message : String(e)}` };
     }
@@ -113,7 +114,7 @@ export async function readSecretsForEdit(
 
   if (!read.ok) return read;
   const text = await readFileSafe(absolutePath);
-  const written = writtenList(text === null ? null : YAML.parse(text), 'secrets');
+  const written = writtenList(text === null ? null : parseYaml(text), 'secrets');
   // The read above validated every entry, so each one parses here with all its keys.
   const entries = z.array(z.unknown()).catch([]).parse(written);
 

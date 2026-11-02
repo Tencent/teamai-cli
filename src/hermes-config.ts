@@ -1,4 +1,5 @@
 import YAML from 'yaml';
+import { parseYaml } from './utils/yaml.js';
 import path from 'node:path';
 import { z } from 'zod';
 import { toolHome } from './tool-home.js';
@@ -22,7 +23,7 @@ export async function hermesContextFileBudget(): Promise<{ limit: number; explic
   const raw = await readFileSafe(getHermesConfigPath());
 
   try {
-    const config = ContextFileBudgetSchema.safeParse(raw ? YAML.parse(raw) : null);
+    const config = ContextFileBudgetSchema.safeParse(raw ? parseYaml(raw) : null);
     const value = config.success ? config.data.context_file_max_chars : undefined;
 
     if (value !== undefined) {

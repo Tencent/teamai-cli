@@ -4,7 +4,7 @@
  * for the selected workspace.
  */
 import path from 'node:path';
-import YAML from 'yaml';
+import { parseYaml } from './utils/yaml.js';
 import { z } from 'zod';
 import { hasUserScopeInstall, loadLocalConfig, loadMemberSettings, loadTeamConfig } from './config.js';
 import { RUN_MODES, type RunMode } from './launch-context.js';
@@ -213,7 +213,7 @@ function asJsonTree<TConfig>(config: TConfig): JsonValue | undefined {
 
 async function readYamlObject(file: string): Promise<ConfigObject> {
   try {
-    return configObject(asJsonTree(YAML.parse(await readFileSafe(file) ?? ''))) ?? {};
+    return configObject(asJsonTree(parseYaml(await readFileSafe(file) ?? ''))) ?? {};
   } catch {
     return {};
   }

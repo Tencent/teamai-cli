@@ -25,7 +25,7 @@ import path from 'node:path';
 
 import chalk from 'chalk';
 import fse from 'fs-extra';
-import YAML from 'yaml';
+import { parseYaml } from './utils/yaml.js';
 import { z } from 'zod';
 
 import { resolveConfigForDir } from './config.js';
@@ -1262,7 +1262,7 @@ async function sessionsFindings(repoDir: string, readText: (p: string) => Promis
   let team: unknown;
 
   try {
-    team = YAML.parse(text);
+    team = parseYaml(text);
   } catch {
     return [];
   }

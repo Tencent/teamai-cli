@@ -4,6 +4,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { getUserHome, expandHome } from './utils/home.js';
 import { log } from './utils/logger.js';
+import { parseYaml } from './utils/yaml.js';
 import { channelsOf, type ToolId } from './tools.js';
 import type { WorkspaceChildren } from './workspace-children.js';
 import type { HeadState } from './utils/git.js';
@@ -2002,6 +2003,22 @@ export interface UserStats {
    * commit sha, pull request URL or learning id leaves the machine.
    */
   outcomes?: UserOutcomeStats;
+}
+
+/** The fields of a stats file every reader relies on, in the order the stats push writes them. */
+const UserStatsFileSchema = z.looseObject({
+  username: z.string().min(1),
+  updatedAt: z.string().optional(),
+  skills: z.record(z.string(), z.looseObject({ count: z.number(), lastUsed: z.string() })),
+});
+
+/** A `stats/<user>.yaml` file, or null for one without a username and a well-formed skills table. Throws on bad YAML. */
+export function parseUserStats(content: string): UserStats | null {
+  const parsed = UserStatsFileSchema.safeParse(parseYaml(content));
+
+  // SAFETY: the schema checked username and every skills entry. The other fields are optional and come from the
+  // stats push of this or another member's teamai, which writes them from a UserStats.
+  return parsed.success ? parsed.data as UserStats : null;
 }
 
 /** What a row of {@link UserStats.outcomes} counts: its sessions, and their tokens and interventions in total. */

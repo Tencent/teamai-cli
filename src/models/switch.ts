@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
+import { parseYaml } from '../utils/yaml.js';
 import { z } from 'zod';
 import { parse as parseToml, type TomlTable, type TomlValue } from 'smol-toml';
 import { withoutTomlBom } from '../utils/toml.js';
@@ -391,7 +392,7 @@ async function yamlObject(file: string): Promise<JsonObject> {
   let parsed: unknown;
 
   try {
-    parsed = YAML.parse(raw);
+    parsed = parseYaml(raw);
   } catch (error) {
     throw new Error(`Cannot parse ${file}: ${messageOf(error)}`, { cause: error });
   }

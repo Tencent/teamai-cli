@@ -2,6 +2,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import YAML from 'yaml';
+import { parseYaml } from '../utils/yaml.js';
 import { z } from 'zod';
 import type { LocalConfig } from '../types.js';
 import { getTeamaiHomeDir } from '../types.js';
@@ -312,7 +313,7 @@ const TeamYamlFieldsSchema = z.object({
 /** The identity fields of `localPath`'s teamai.yaml, or undefined when it is absent, unreadable or not a mapping. */
 function teamYamlFields(localPath: string): z.infer<typeof TeamYamlFieldsSchema> | undefined {
   try {
-    return TeamYamlFieldsSchema.safeParse(YAML.parse(fs.readFileSync(path.join(localPath, 'teamai.yaml'), 'utf8'))).data;
+    return TeamYamlFieldsSchema.safeParse(parseYaml(fs.readFileSync(path.join(localPath, 'teamai.yaml'), 'utf8'))).data;
   } catch {
     // teamai.yaml may be absent or unreadable.
     return undefined;
@@ -594,7 +595,7 @@ async function readProfilesFile(filePath: string, label: string): Promise<EntryF
   let parsed: unknown;
 
   try {
-    parsed = YAML.parse(raw);
+    parsed = parseYaml(raw);
   } catch (error) {
     return { ok: false, reason: `Invalid model profile YAML at ${label}: ${error instanceof Error ? error.message : String(error)}` };
   }

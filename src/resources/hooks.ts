@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { z } from 'zod';
-import YAML from 'yaml';
+import { parseYaml } from '../utils/yaml.js';
 import { ResourceHandler } from './base.js';
 import type { HookDef, JsonValue, LocalConfig, ResourceItem, TeamaiConfig } from '../types.js';
 import { TEAMAI_CUSTOM_HOOK_PREFIX, areTeamHooksDisabled, getHooksSharing } from '../types.js';
@@ -77,7 +77,7 @@ async function readHooksFile(absolutePath: string, relativePath: string): Promis
   if (content === null) return null;
 
   try {
-    const raw: JsonValue = YAML.parse(content);
+    const raw: JsonValue = parseYaml(content);
     const topLevelProblem = missingTopLevelKeyReason(raw, HooksYamlSchema);
 
     if (topLevelProblem) return { ok: false, reason: `${relativePath} does not parse: ${topLevelProblem}` };
@@ -93,7 +93,7 @@ async function readHooksFile(absolutePath: string, relativePath: string): Promis
 /** The hooks one hooks file's text declares, or null when it does not parse: for reading a past revision. */
 export function parseTeamHooks(content: string): TeamHook[] | null {
   try {
-    const raw: JsonValue = YAML.parse(content);
+    const raw: JsonValue = parseYaml(content);
 
     if (missingTopLevelKeyReason(raw, HooksYamlSchema)) return null;
 
@@ -187,7 +187,7 @@ export async function readBuiltinDisabledListing(
   let raw: unknown;
 
   try {
-    raw = YAML.parse(file.text);
+    raw = parseYaml(file.text);
   } catch {
     return 'unreadable';
   }

@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
+import { stringify as stringifyYaml } from 'yaml';
 import matter from 'gray-matter';
 import { stringify as stringifyToml, parse as parseToml } from 'smol-toml';
 import { z } from 'zod';
@@ -8,6 +8,7 @@ import { agyToolsFor } from '../agy-hook-io.js';
 import { getDispatchCommand } from '../builtin-hooks.js';
 import type { AgentToolId } from '../tools.js';
 import type { Scope } from '../types.js';
+import { parseYaml } from '../utils/yaml.js';
 
 // ─── Tool name type ──────────────────────────────────────────────────────────
 

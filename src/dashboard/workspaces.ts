@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import YAML from 'yaml';
+import { parseYaml } from '../utils/yaml.js';
 import { LocalConfigSchema, getDataHome, type LocalConfig, type DashboardEvent } from '../types.js';
 import { getUserHome } from '../utils/home.js';
 import { checkoutForProjectAnchor, resolveAnchors } from '../utils/git.js';
@@ -22,7 +22,7 @@ export interface DashboardWorkspace {
 }
 
 async function configAt(home: string): Promise<LocalConfig | null> {
-  try { return LocalConfigSchema.parse(YAML.parse(await fs.readFile(path.join(home, 'config.yaml'), 'utf8'))); }
+  try { return LocalConfigSchema.parse(parseYaml(await fs.readFile(path.join(home, 'config.yaml'), 'utf8'))); }
   catch { return null; }
 }
 

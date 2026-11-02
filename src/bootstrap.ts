@@ -16,6 +16,7 @@
  */
 import path from 'node:path';
 import YAML from 'yaml';
+import { parseYaml } from './utils/yaml.js';
 import { z } from 'zod';
 import {
   BOOTSTRAP_LOCK_FILENAME,
@@ -51,7 +52,7 @@ export async function readSelfModeMarker(dir: string): Promise<{ repo?: string; 
   if (!content) return null;
 
   try {
-    const marker = SelfModeMarkerSchema.safeParse(YAML.parse(content)).data;
+    const marker = SelfModeMarkerSchema.safeParse(parseYaml(content)).data;
 
     if (marker) {
       return { repo: marker.repo, provider: marker.provider };

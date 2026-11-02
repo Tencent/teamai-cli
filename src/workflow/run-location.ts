@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import YAML from 'yaml';
+import { parseYaml } from '../utils/yaml.js';
 import { loadLocalConfigForScope, readConfigFrom } from '../config.js';
 import { ATTEMPT_ENV } from '../launch-context.js';
 import { LocalConfigSchema, getDataHome, type LocalConfig } from '../types.js';
@@ -31,7 +31,7 @@ export async function projectPartitions(): Promise<LocalConfig[]> {
     if (!raw) continue;
 
     try {
-      const parsed = LocalConfigSchema.parse(YAML.parse(raw));
+      const parsed = LocalConfigSchema.parse(parseYaml(raw));
 
       if (parsed.scope === 'project') partitions.push({ ...parsed, dataHome: dir });
     } catch { /* An unusable config cannot authorize a run mutation. */ }
