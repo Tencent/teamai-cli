@@ -6,6 +6,7 @@
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
@@ -42,6 +43,17 @@ const RunSchema = z.object({
   deliveries: z.array(z.object({ url: z.string(), branch: z.string(), base: z.string(), step: z.string(), pass: z.number() })).optional(),
 });
 
+type RunOptions = { name?: string; inputs?: Record<string, string> };
+
+/** Runs edit-team on topic alpha with the local driver, or workflow `name` on `inputs`; `script`, at `edit`, is what its step does in the team clone. */
+async function runEdit(fixture: BenchmarkFixture, edit: string, script: string, { name = 'edit-team', inputs = { topic: 'alpha' } }: RunOptions): Promise<{ outcome: unknown; state: z.infer<typeof RunSchema>; said: string }> {
+  fs.writeFileSync(edit, script);
+  const ran = await fixture.teamai(['workflow', 'start', name, '--driver', 'local', '--inputs', JSON.stringify(inputs)]);
+  const done = z.object({ run: z.string(), outcome: z.string() }).safeParse(envelope(ran).data?.done);
+  if (!done.success) throw new Error(`no run: ${said(ran)}`);
+  return { outcome: done.data.outcome, state: RunSchema.parse(fixture.runFile(done.data.run)), said: said(ran) };
+}
+
 describe('a step in the team workspace, run through the real CLI', () => {
   let fixture: BenchmarkFixture;
   let gh: FakeGh;
@@ -52,14 +64,7 @@ describe('a step in the team workspace, run through the real CLI', () => {
   const onBranch = (file: string): string => git(['show', `${BRANCH}:${file}`]);
   const filesOnBranch = (): string[] => git(['ls-tree', '-r', '--name-only', BRANCH]).split('\n');
 
-  /** Runs edit-team on topic alpha with the local driver, or workflow `name` on `inputs`; `script` is what its step does in the team clone. */
-  const run = async (script: string, { name = 'edit-team', inputs = { topic: 'alpha' } }: { name?: string; inputs?: Record<string, string> } = {}): Promise<{ outcome: unknown; state: z.infer<typeof RunSchema>; said: string }> => {
-    fs.writeFileSync(edit, script);
-    const ran = await fixture.teamai(['workflow', 'start', name, '--driver', 'local', '--inputs', JSON.stringify(inputs)]);
-    const done = z.object({ run: z.string(), outcome: z.string() }).safeParse(envelope(ran).data?.done);
-    if (!done.success) throw new Error(`no run: ${said(ran)}`);
-    return { outcome: done.data.outcome, state: RunSchema.parse(fixture.runFile(done.data.run)), said: said(ran) };
-  };
+  const run = (script: string, options: RunOptions = {}) => runEdit(fixture, edit, script, options);
 
   beforeAll(async () => {
     fixture = await benchmarkFixture({ tool: 'does-nothing', sandbox: false });
@@ -223,6 +228,53 @@ describe('a step in the team workspace, run through the real CLI', () => {
       code: 'merge_conflict',
       message: expect.stringContaining(`${BRANCH} conflicts with main on the team repo's origin in rules/notes.md`),
     });
+    expect(branchHead()).toBe(before);
+  }, 120_000);
+});
+
+describe('a step in the team workspace in single-repo mode, where the team files are .teamai/ of the project repo', () => {
+  let fixture: BenchmarkFixture;
+  let gh: FakeGh;
+  let edit: string;
+
+  const onBranch = (file: string): string => execFileSync('git', ['--git-dir', fixture.productOrigin, 'show', `${BRANCH}:${file}`], { encoding: 'utf8' }).trim();
+  const branchHead = (): string => spawnSync('git', ['--git-dir', fixture.productOrigin, 'rev-parse', '--verify', '-q', `refs/heads/${BRANCH}`], { encoding: 'utf8' }).stdout.trim();
+  const run = (script: string) => runEdit(fixture, edit, script, {});
+
+  // The workflow names the script, so it lives outside the fixture the workflow seeds.
+  const scripts = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-team-edit-'));
+
+  beforeAll(async () => {
+    edit = path.join(scripts, 'edit.js');
+    fixture = await benchmarkFixture({ tool: 'does-nothing', sandbox: false, selfMode: true, team: { 'workflows/edit-team.yaml': workflow(edit), 'rules/notes.md': '# Notes\n' } });
+    gh = fakeGhHost(path.join(fixture.root, 'gh'));
+    fs.symlinkSync(gh.bin, path.join(fixture.bin, 'gh'));
+  }, 120_000);
+
+  afterAll(() => {
+    fixture?.remove();
+    fs.rmSync(scripts, { recursive: true, force: true });
+  });
+
+  it('runs the step in .teamai/ of a fresh clone, and proposes its commit to the project repo\'s main', async () => {
+    const first = await run("require('fs').appendFileSync('rules/notes.md', 'first\\n');");
+
+    expect(first.outcome, first.said).toBe('succeeded');
+    expect(onBranch('.teamai/rules/notes.md')).toBe('# Notes\nfirst');
+    expect(gh.pulls().map((pull) => pull.head)).toEqual([BRANCH]);
+    expect(first.state.deliveries).toEqual([{ url: gh.pulls()[0]?.url, branch: BRANCH, base: 'main', step: 'edit', pass: 1 }]);
+  }, 120_000);
+
+  it('pushes nothing the step changed in the project outside .teamai/', async () => {
+    const before = branchHead();
+
+    const refused = await run("require('fs').writeFileSync('../answer.js', 'module.exports = 42;\\n');");
+
+    expect(refused.outcome, refused.said).toBe('failed');
+    expect(refused.state.steps.find((step) => step.id === 'edit')?.failure?.message.split('\n').slice(0, 2)).toEqual([
+      `Step "edit" left team files teamai pull would reject, so nothing was pushed to ${BRANCH}:`,
+      'answer.js: outside .teamai/, where the team files are',
+    ]);
     expect(branchHead()).toBe(before);
   }, 120_000);
 });
