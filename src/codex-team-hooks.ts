@@ -18,8 +18,10 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { z } from 'zod';
 import { getTeamHookDispatchCommand, getTeamHookDispatchCommandWindows } from './builtin-hooks.js';
 import { runHookCommand } from './hook-command.js';
+import { stdinString, type HookStdin } from './hook-dispatch.js';
 import type { CodexGroupSlot, CodexTrustPolicy } from './hooks.js';
 import { CODEX_TOOL_ID, getTeamaiHomeDir } from './types.js';
 import { checkoutForProjectAnchor } from './utils/git.js';
@@ -92,11 +94,13 @@ export function codexTeamHookIndexPath(): string {
   return path.join(getTeamaiHomeDir(), 'codex-team-hooks.json');
 }
 
+/** What the index must be to be read: an object of projects. The file itself is kept as written. */
+const CodexTeamHookIndexSchema = z.looseObject({ projects: z.record(z.string(), z.unknown()) });
+
 async function readIndex(): Promise<CodexTeamHookIndex> {
   const data = await readJson<CodexTeamHookIndex>(codexTeamHookIndexPath());
 
-  return data && typeof data === 'object' && data.projects && typeof data.projects === 'object'
-    ? data : { projects: {} };
+  return data !== null && CodexTeamHookIndexSchema.safeParse(data).success ? data : { projects: {} };
 }
 
 /** Every key the index holds a record under. */
@@ -249,27 +253,27 @@ export async function reconcileCodexDispatchers(hooksFile: string, codexTrust: C
 }
 
 /** The payload field Codex tests an event's matcher against; events without one ignore it. */
-const MATCHED_FIELD: Record<string, string> = {
-  PreToolUse: 'tool_name',
-  PostToolUse: 'tool_name',
-  PermissionRequest: 'tool_name',
-  SessionStart: 'source',
-  SessionEnd: 'reason',
-  PreCompact: 'trigger',
-  PostCompact: 'trigger',
-  SubagentStart: 'agent_type',
-  SubagentStop: 'agent_type',
-};
+const MATCHED_FIELD = new Map([
+  ['PreToolUse', 'tool_name'],
+  ['PostToolUse', 'tool_name'],
+  ['PermissionRequest', 'tool_name'],
+  ['SessionStart', 'source'],
+  ['SessionEnd', 'reason'],
+  ['PreCompact', 'trigger'],
+  ['PostCompact', 'trigger'],
+  ['SubagentStart', 'agent_type'],
+  ['SubagentStop', 'agent_type'],
+]);
 
 /** Whether `hook`'s matcher selects this payload: a regex over the whole value, `*` or none for all. */
-function matches(hook: CodexTeamHook, payload: Record<string, unknown>): boolean {
+function matches(hook: CodexTeamHook, payload: HookStdin): boolean {
   const matcher = hook.matcher;
-  const field = MATCHED_FIELD[hook.event];
+  const field = MATCHED_FIELD.get(hook.event);
 
   if (!matcher || matcher === '*' || !field) return true;
-  const value = payload[field];
+  const value = stdinString(payload, field);
 
-  if (typeof value !== 'string') return false;
+  if (value === undefined) return false;
   // Codex lets `Edit` and `Write` select apply_patch, which still reports itself by name.
   const values = value === 'apply_patch' ? [value, 'Edit', 'Write'] : [value];
   let regex: RegExp | null = null;
@@ -300,7 +304,8 @@ export async function runCodexDispatcher(event: string): Promise<number> {
   const { readStdin, parseStdin } = await import('./hook-dispatch-cli.js');
   const raw = await readStdin();
   const payload = parseStdin(raw, event);
-  const cwd = typeof payload.cwd === 'string' && fs.existsSync(payload.cwd) ? payload.cwd : undefined;
+  const payloadCwd = stdinString(payload, 'cwd');
+  const cwd = payloadCwd !== undefined && fs.existsSync(payloadCwd) ? payloadCwd : undefined;
   const { resolveHookConfig } = await import('./dashboard-collector.js');
   const localConfig = await resolveHookConfig(payload, CODEX_TOOL_ID);
   const { codexTeamHookCheckout, codexTeamHookProject } = await import('./hooks.js');

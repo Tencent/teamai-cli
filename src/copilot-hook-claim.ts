@@ -14,24 +14,31 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { z } from 'zod';
 import { getTeamaiHomeDir } from './types.js';
+import type { JsonValue } from './types.js';
 
 const CLAIMS_DIR = 'copilot-hook-claims';
 
 /** Days of claims kept; an event's copies all run well within the first. */
 const KEEP_DAYS = 2;
 
+/** The part of a Copilot hook payload a claim is keyed by. */
+const ClaimPayloadSchema = z.object({ timestamp: z.union([z.number(), z.string().min(1)]) });
+
 function claimDay(raw: string): string | null {
-  let timestamp: unknown;
+  let payload: JsonValue;
 
   try {
-    timestamp = (JSON.parse(raw) as { timestamp?: unknown } | null)?.timestamp;
+    payload = JSON.parse(raw);
   } catch {
     return null;
   }
 
-  if (typeof timestamp !== 'number' && (typeof timestamp !== 'string' || !timestamp)) return null;
-  const time = new Date(timestamp).getTime();
+  const claim = ClaimPayloadSchema.safeParse(payload);
+
+  if (!claim.success) return null;
+  const time = new Date(claim.data.timestamp).getTime();
 
   return Number.isFinite(time) ? new Date(time).toISOString().slice(0, 10) : null;
 }
@@ -64,6 +71,6 @@ export function claimCopilotHookEvent(event: string, matcher: string, raw: strin
 
     return true;
   } catch (e) {
-    return (e as NodeJS.ErrnoException).code !== 'EEXIST';
+    return !(e instanceof Error && 'code' in e && e.code === 'EEXIST');
   }
 }

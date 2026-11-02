@@ -1,11 +1,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { z } from 'zod';
 import { log } from './utils/logger.js';
+import { HookStdinSchema, type HookStdin } from './hook-dispatch.js';
 import {
   DEFAULT_TOOL_PATHS,
   getDataHome,
   getTeamaiHomeDir,
   SKILL_NAME_REGEX,
+  type JsonValue,
   type LocalConfig,
   type UsageEvent,
 } from './types.js';
@@ -68,13 +71,17 @@ function getKnownSkillsPath(): string {
  * If the value looks like a file path (e.g. "/root/.cursor/skills/tdd/SKILL.md"),
  * extracts the skill directory name as the skill identifier.
  */
-export function extractSkillName(toolInput: string | Record<string, unknown>): string | null {
+export function extractSkillName(toolInput: string | z.input<typeof SkillToolInputSchema>): string | null {
   try {
-    const parsed = typeof toolInput === 'string' ? JSON.parse(toolInput) : toolInput;
-    const raw: unknown = parsed?.skill ?? parsed?.name ?? parsed?.id ?? parsed?.skill_name ?? parsed?.command ?? null;
+    const text = z.string().safeParse(toolInput);
+    const input = SkillToolInputSchema.safeParse(text.success ? JSON.parse(text.data) : toolInput);
 
-    if (typeof raw !== 'string') return null;
-    const trimmed = raw.trim();
+    if (!input.success) return null;
+    const { skill, name, id, skill_name: skillName, command } = input.data;
+    const raw = z.string().safeParse(skill ?? name ?? id ?? skillName ?? command ?? null);
+
+    if (!raw.success) return null;
+    const trimmed = raw.data.trim();
 
     if (!trimmed) return null;
 
@@ -95,6 +102,15 @@ export function extractSkillName(toolInput: string | Record<string, unknown>): s
     return null;
   }
 }
+
+/** The fields a skill tool's input may name its skill in; the first one present names it. */
+const SkillToolInputSchema = z.looseObject({
+  skill: z.unknown().optional(),
+  name: z.unknown().optional(),
+  id: z.unknown().optional(),
+  skill_name: z.unknown().optional(),
+  command: z.unknown().optional(),
+});
 
 /**
  * Validate a skill name against allowed characters.
@@ -199,9 +215,12 @@ export async function appendUsageEvent(event: UsageEvent, config: LocalConfig): 
     const pendingPath = await appendJsonl(usagePath, event, usageStoreOptions(config, usagePath));
     log.debug(pendingPath ? `Tracked skill: ${event.skill} (in ${pendingPath}; ${usagePath}.lock is held)` : `Tracked skill: ${event.skill}`);
   } catch (e) {
-    log.error(`Failed to write usage event: ${(e as Error).message}`);
+    log.error(`Failed to write usage event: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
+
+/** A usage line as a reader needs it: one without a skill or a time is skipped. No reader reads `tool`. */
+const UsageLineSchema = z.object({ skill: z.string().min(1), timestamp: z.string().min(1), tool: z.string().catch('') });
 
 /**
  * Read all usage events from a scope's JSONL file.
@@ -212,10 +231,10 @@ export async function readUsageEvents(config: LocalConfig): Promise<UsageEvent[]
     const events: UsageEvent[] = [];
 
     // Side records count once a lock holder folds them in, as before the store.
-    for (const parsed of (await readJsonl(getUsagePath(config), { includePending: false })) as Partial<UsageEvent>[]) {
-      if (parsed.skill && parsed.timestamp) {
-        events.push({ skill: parsed.skill, timestamp: parsed.timestamp, tool: parsed.tool } as UsageEvent);
-      }
+    for (const record of await readJsonl(getUsagePath(config), { includePending: false })) {
+      const parsed = UsageLineSchema.safeParse(record);
+
+      if (parsed.success) events.push(parsed.data);
     }
 
     return events;
@@ -234,7 +253,7 @@ export async function truncateUsageAfterReport(reportedCount: number, config: Lo
     await rewriteUsageFile(config, (lines) => lines.slice(reportedCount));
     log.debug(`Truncated usage.jsonl: removed ${reportedCount} reported events`);
   } catch (e) {
-    log.error(`Failed to truncate usage.jsonl: ${(e as Error).message}`);
+    log.error(`Failed to truncate usage.jsonl: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
@@ -262,7 +281,7 @@ export async function capUsageEvents(config: LocalConfig): Promise<void> {
 
     if (dropped) log.debug(`Capped usage.jsonl: dropped ${dropped} oldest events`);
   } catch (e) {
-    if (typeof e === 'object' && e !== null && 'code' in e && e.code === 'ENOENT') return;
+    if (e instanceof Error && 'code' in e && e.code === 'ENOENT') return;
     log.error(`Could not cap ${getUsagePath(config)} to ${USAGE_EVENT_CAP} events: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
@@ -303,7 +322,7 @@ async function ignoreUsageSideFiles(config: LocalConfig, usagePath: string): Pro
     // A full disk or a kill mid-write must not leave it empty: it also ignores `token` and `env`.
     await writeFileAtomic(gitignorePath, lines.join('\n'));
   } catch (e) {
-    if (typeof e === 'object' && e !== null && 'code' in e && e.code === 'ENOENT') return;
+    if (e instanceof Error && 'code' in e && e.code === 'ENOENT') return;
     log.debug(`Could not add the usage side files to ${gitignorePath}: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
@@ -334,9 +353,12 @@ export async function updateKnownSkills(skillName: string): Promise<void> {
     if (updated.held) return;
     log.debug(`${lockPath} is still held, so ${skillName} was not added to known-skills.json; its usage event is recorded`);
   } catch (e) {
-    log.error(`Failed to update known-skills: ${(e as Error).message}`);
+    log.error(`Failed to update known-skills: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
+
+/** known-skills.json: a list of skill names; an entry that is not a name is skipped. */
+const KnownSkillsSchema = z.array(z.string().nullable().catch(null)).transform((names) => names.filter((name) => name !== null));
 
 /**
  * Read the set of skills the current user has ever used.
@@ -356,12 +378,10 @@ export async function readKnownSkills(): Promise<Set<string>> {
 
   // Source 2: known-skills.json (survives truncation)
   try {
-    const known = await readJson<string[]>(getKnownSkillsPath());
+    const known = KnownSkillsSchema.safeParse(await readJson(getKnownSkillsPath()));
 
-    if (Array.isArray(known)) {
-      for (const name of known) {
-        if (typeof name === 'string') skills.add(name);
-      }
+    if (known.success) {
+      for (const name of known.data) skills.add(name);
     }
   } catch {
     // known-skills.json missing or corrupted — use only JSONL data
@@ -381,7 +401,7 @@ async function readStdin(): Promise<string> {
   const chunks: Buffer[] = [];
 
   for await (const chunk of process.stdin) {
-    chunks.push(chunk as Buffer);
+    chunks.push(chunk);
   }
 
   return Buffer.concat(chunks).toString('utf-8');
@@ -410,7 +430,7 @@ export async function track(rawToolName: string, toolInput: string, tool?: strin
 }
 
 /** A hook payload from STDIN, or null when there is none or it is not a JSON object. */
-async function readHookStdin(): Promise<Record<string, unknown> | null> {
+async function readHookStdin(): Promise<HookStdin | null> {
   const raw = await readStdin();
 
   if (!raw.trim()) {
@@ -419,7 +439,7 @@ async function readHookStdin(): Promise<Record<string, unknown> | null> {
     return null;
   }
 
-  let parsed: unknown;
+  let parsed: JsonValue = null;
 
   try {
     parsed = JSON.parse(raw);
@@ -427,7 +447,9 @@ async function readHookStdin(): Promise<Record<string, unknown> | null> {
     parsed = null;
   }
 
-  if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) return { ...parsed };
+  const stdin = HookStdinSchema.safeParse(parsed);
+
+  if (stdin.success) return stdin.data;
   log.error('Failed to parse STDIN JSON');
 
   return null;

@@ -41,7 +41,8 @@ export function runHookCommand(command: string, opts: { cwd: string | undefined;
     };
 
     const child = spawn(shell === true ? command : shell, spawnArgs, {
-      ...(shell === true ? { shell: true } : {}),
+      // Git Bash runs `-lc command` itself, so Node adds no shell of its own.
+      shell: shell === true,
       cwd: opts.cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,

@@ -13,8 +13,8 @@ import os from 'node:os';
 import path from 'node:path';
 
 import type { ResolvedEntry } from './namespaced-entries.js';
-import type { HookHandler } from './hook-dispatch.js';
-import type { GlobalOptions, LocalConfig } from './types.js';
+import { stdinString, type HookHandler, type HookStdin } from './hook-dispatch.js';
+import type { GlobalOptions, LocalConfig, WebhookPayload } from './types.js';
 import type { GitHookEvent } from './git-hook.js';
 import { deriveDispatchSessionId, deriveSessionId } from './utils/session-id.js';
 import { log } from './utils/logger.js';
@@ -142,7 +142,7 @@ const pullHandler: HookHandler = {
       const { seedProjectAgentRoot } = await import('./project-agent-root.js');
       await seedProjectAgentRoot(tool, cwd);
     } catch (e) {
-      log.debug(`hook-dispatch: seedProjectAgentRoot failed: ${(e as Error).message}`);
+      log.debug(`hook-dispatch: seedProjectAgentRoot failed: ${e instanceof Error ? e.message : String(e)}`);
     }
 
     const { pull, settleLateUsageReport } = await import('./pull.js');
@@ -166,8 +166,8 @@ const pullHandler: HookHandler = {
     const { backgroundPassScopes } = await import('./score-sessions.js');
     const passCwd = await pathExists(hintCwd) ? hintCwd : os.homedir();
 
-    const scopes = await backgroundPassScopes(passCwd).catch((e: unknown) => {
-      log.debug(`hook-dispatch: could not tell whether sessions are scored or published here: ${e instanceof Error ? e.message : String(e)}`);
+    const scopes = await backgroundPassScopes(passCwd).catch((cause: unknown) => {
+      log.debug(`hook-dispatch: could not tell whether sessions are scored or published here: ${cause instanceof Error ? cause.message : String(cause)}`);
 
       return [];
     });
@@ -188,7 +188,7 @@ const sessionCaptureHandler: HookHandler = {
     if (!config) return null;
     const { SessionCaptures } = await import('./session-flow/captures.js');
     await SessionCaptures.addToolVersion(config, tool, stdin);
-    await SessionCaptures.sweep(config).catch((e: unknown) => log.debug(`session capture: could not sweep captures: ${e instanceof Error ? e.message : String(e)}`));
+    await SessionCaptures.sweep(config).catch((cause: unknown) => log.debug(`session capture: could not sweep captures: ${cause instanceof Error ? cause.message : String(cause)}`));
 
     return null;
   },
@@ -218,7 +218,7 @@ async function prepareCheckout(cwd: string, trigger: keyof typeof PREPARING_PULL
   const roots = createProjectToolRoots({ cwd });
 
   if (trigger === 'post-checkout') await roots;
-  else await roots.catch((e: unknown) => log.debug(`hook-dispatch: could not create tool roots in ${cwd}: ${e instanceof Error ? e.message : String(e)}`));
+  else await roots.catch((cause: unknown) => log.debug(`hook-dispatch: could not create tool roots in ${cwd}: ${cause instanceof Error ? cause.message : String(cause)}`));
   const { pull } = await import('./pull.js');
   await pull({ silent: true, prepareCheckout: 'once', ...PREPARING_PULL[trigger] });
 }
@@ -317,7 +317,7 @@ const newCheckoutHandler: HookHandler = {
  * hooks, since a pull would restore what was removed (#993), nor when a
  * workflow launched the session in a checkout it holds (#1176).
  */
-async function toolMayDeliver(stdin: Record<string, unknown>, tool: string, config: LocalConfig): Promise<boolean> {
+async function toolMayDeliver(stdin: HookStdin, tool: string, config: LocalConfig): Promise<boolean> {
   const { isAgentExcluded } = await import('./types.js');
 
   if (isAgentExcluded(config, tool)) return false;
@@ -383,13 +383,13 @@ const gitPullHandler: HookHandler = {
 async function recordingFailure(
   config: LocalConfig,
   event: GitHookEvent,
-  pass: () => Promise<unknown>,
+  pass: () => Promise<void>,
 ): Promise<void> {
   try {
     await pass();
   } catch (e) {
     const { recordGitHookFailure } = await import('./git-hook.js');
-    await recordGitHookFailure(config, { kind: 'hook-error', event, at: new Date().toISOString(), error: (e as Error).message });
+    await recordGitHookFailure(config, { kind: 'hook-error', event, at: new Date().toISOString(), error: e instanceof Error ? e.message : String(e) });
   }
 }
 
@@ -463,10 +463,10 @@ const updateHandler: HookHandler = {
  * keywords only".
  */
 async function teamCorrectionKeywords(
-  stdin: Record<string, unknown>,
+  stdin: HookStdin,
   config: LocalConfig | null,
 ): Promise<readonly string[]> {
-  if (typeof stdin.prompt !== 'string' || !config) return [];
+  if (stdinString(stdin, 'prompt') === undefined || !config) return [];
 
   try {
     const { loadTeamConfig } = await import('./config.js');
@@ -629,7 +629,7 @@ const contributeCheckHandler: HookHandler = {
     // share the same session id even when stdin.session_id is absent.
     const sessionId = deriveSessionId(stdin, { includeCwd: true });
     const cwd = resolveHookCwd(stdin);
-    const transcriptPath = typeof stdin.transcript_path === 'string' ? stdin.transcript_path : undefined;
+    const transcriptPath = stdinString(stdin, 'transcript_path');
     // Tools whose Stop hook cannot deliver model context: stash the hint (in the same
     // single state write inside contributeCheckForSession) for delivery on the
     // next UserPromptSubmit, so contributeCheckForSession returns null here.
@@ -734,7 +734,7 @@ const votesSyncHandler: HookHandler = {
       // A subagent's end is not the end of the turn: the main agent waits on
       // this hook, so it only credits locally. The ledger prune and the vote
       // push, a git round trip, wait for the next Stop or pull.
-      const hookEvent = typeof stdin.hook_event_name === 'string' ? stdin.hook_event_name.toLowerCase() : '';
+      const hookEvent = stdinString(stdin, 'hook_event_name')?.toLowerCase() ?? '';
       const subagentStop = hookEvent === 'subagentstop';
       // Copilot's SessionEnd ends the session: it pushes as Stop does, but no
       // one reads its reply, so it prints no summary.
@@ -846,7 +846,7 @@ const votesSyncHandler: HookHandler = {
       // Non-critical for the session (votes retry on next pull), but the failure
       // MUST be traceable: a swallowed error here is exactly why upvote
       // collection could fail silently for an entire team (see #723). Log it.
-      log.debug(`votes-sync handler failed: ${(error as Error)?.stack ?? String(error)}`);
+      log.debug(`votes-sync handler failed: ${(error instanceof Error ? error.stack : undefined) ?? String(error)}`);
     }
 
     return null;
@@ -882,8 +882,8 @@ const votesJudgeHandler: HookHandler = {
     // Opt-in only. Keeps the default path identical to the tool-use-only fix.
     if (process.env.TEAMAI_UPVOTE_JUDGE !== '1') return null;
 
-    const transcriptPath = typeof stdin.transcript_path === 'string' ? stdin.transcript_path : null;
-    const finalReply = typeof stdin.last_assistant_message === 'string' ? stdin.last_assistant_message.trim() : '';
+    const transcriptPath = stdinString(stdin, 'transcript_path') ?? null;
+    const finalReply = stdinString(stdin, 'last_assistant_message')?.trim() ?? '';
 
     if (!transcriptPath && !finalReply) return null;
 
@@ -942,7 +942,7 @@ const votesJudgeHandler: HookHandler = {
       // judge's excerpt grounding read from this, so a subagent-recalled nested
       // doc is keyed and judged the same as a main-agent one.
       const pathOf = await recalledPathOf(localConfig, dispatchSessionId);
-      const docPaths: Record<string, string> = { ...voteData.recalledDocPaths };
+      const docPaths = { ...voteData.recalledDocPaths };
 
       for (const id of voteData.recalledDocIds) {
         if (docPaths[id] === undefined) {
@@ -1045,7 +1045,7 @@ const votesJudgeHandler: HookHandler = {
       }
     } catch (error) {
       // Best-effort supplement; never surface failures.
-      log.debug(`votes-judge handler failed: ${(error as Error)?.stack ?? String(error)}`);
+      log.debug(`votes-judge handler failed: ${(error instanceof Error ? error.stack : undefined) ?? String(error)}`);
     }
 
     return null;
@@ -1064,7 +1064,7 @@ const todowriteHintHandler: HookHandler = {
   async execute(stdin, _tool, config) {
     if (process.env.TEAMAI_RECALL_DISABLED === '1') return null;
 
-    const toolName = normalizeToolName(typeof stdin.tool_name === 'string' ? stdin.tool_name : '');
+    const toolName = normalizeToolName(stdinString(stdin, 'tool_name') ?? '');
 
     if (toolName !== 'TodoWrite') return null;
 
@@ -1123,8 +1123,7 @@ const teamEnvHintHandler: HookHandler = {
 
     // A key a last pull wrote that no file declares now has no description to give.
     const plain = [...declared, ...[...applied.variables.keys()]
-      .filter((name) => !applied.secretKeys.includes(name) && !declared.some((variable) => variable.name === name))
-      .map((name) => ({ name, entry: {} }))];
+      .flatMap((name) => (!applied.secretKeys.includes(name) && !declared.some((variable) => variable.name === name) ? [{ name, entry: {} }] : []))];
 
     if (secrets.length === 0 && plain.length === 0) return null;
 
@@ -1304,11 +1303,11 @@ const localAgentHandler: HookHandler = {
  * (`sessionStart`) — see dashboard-collector's mapEventType, which handles both.
  * A case-sensitive PascalCase-only map silently dropped the camelCase hosts.
  */
-const WEBHOOK_EVENT_BY_HOOK: Record<string, string> = {
-  sessionstart: 'session-start',
-  stop: 'session-stop',
-  sessionend: 'session-stop',
-};
+const WEBHOOK_EVENT_BY_HOOK = new Map([
+  ['sessionstart', 'session-start'],
+  ['stop', 'session-stop'],
+  ['sessionend', 'session-stop'],
+]);
 
 /**
  * Build the minimal, whitelisted data payload for a webhook event.
@@ -1320,8 +1319,8 @@ const WEBHOOK_EVENT_BY_HOOK: Record<string, string> = {
  */
 function buildWebhookData(
   event: string,
-  stdin: Record<string, unknown>,
-): Record<string, unknown> {
+  stdin: HookStdin,
+): WebhookPayload['data'] {
   if (event === 'session-start' || event === 'session-stop') {
     const sessionId = deriveSessionId(stdin);
 
@@ -1334,10 +1333,10 @@ function buildWebhookData(
 /** Send one webhook event to the team's configured endpoints; a failure is logged, never thrown. */
 async function sendWebhookEvent(
   event: string,
-  stdin: Record<string, unknown>,
+  stdin: HookStdin,
   tool: string,
   localConfig: LocalConfig,
-  data: Record<string, unknown>,
+  data: WebhookPayload['data'],
 ): Promise<void> {
   const { sendWebhook, loadWebhookConfig } = await import('./webhook.js');
 
@@ -1350,13 +1349,13 @@ async function sendWebhookEvent(
       tool,
       sessionId: deriveSessionId(stdin),
       cwd: resolveHookCwd(stdin),
-      username: typeof stdin.username === 'string' ? stdin.username : undefined,
+      username: stdinString(stdin, 'username'),
       data,
     };
 
     await sendWebhook(event, payload, config);
   } catch (error) {
-    log.debug(`Webhook dispatch failed: ${(error as Error).message}`);
+    log.debug(`Webhook dispatch failed: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
@@ -1365,10 +1364,10 @@ const webhookHandler: HookHandler = {
   name: 'webhook-dispatch',
   async execute(stdin, tool, localConfig) {
     if (!localConfig) return null;
-    const hookEventName = typeof stdin.hook_event_name === 'string' ? stdin.hook_event_name : '';
+    const hookEventName = stdinString(stdin, 'hook_event_name') ?? '';
     // Case-insensitive so both PascalCase (Claude) and camelCase (Cursor/
     // CodeBuddy) hook names resolve (#702).
-    const event = WEBHOOK_EVENT_BY_HOOK[hookEventName.toLowerCase()];
+    const event = WEBHOOK_EVENT_BY_HOOK.get(hookEventName.toLowerCase());
 
     // Only forward events we can map to a canonical name — never emit `unknown` (#702).
     if (!event) return null;

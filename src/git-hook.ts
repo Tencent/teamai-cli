@@ -380,7 +380,7 @@ async function isSymlink(file: string): Promise<boolean> {
   try {
     return (await fs.lstat(file)).isSymbolicLink();
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    if (e instanceof Error && 'code' in e && e.code === 'ENOENT') return false;
     throw e;
   }
 }
@@ -466,14 +466,14 @@ function failureFile(config: LocalConfig): string {
 }
 
 export function isGitHookEvent(value: unknown): value is GitHookEvent {
-  return (GIT_HOOK_EVENTS as readonly unknown[]).includes(value);
+  return GIT_HOOK_EVENTS.some((event) => event === value);
 }
 
 /** Keep `failure` for `doctor` and the next pull, and write it to debug.log. */
 export async function recordGitHookFailure(config: LocalConfig, failure: GitHookFailure): Promise<void> {
   log.persist(`git hook: ${describeGitHookFailure(failure).message}`);
   await writeJson(failureFile(config), failure)
-    .catch((e) => log.persist(`git hook: could not record the failure: ${(e as Error).message}`));
+    .catch((e) => log.persist(`git hook: could not record the failure: ${e instanceof Error ? e.message : String(e)}`));
 }
 
 export async function readGitHookFailure(config: LocalConfig): Promise<GitHookFailure | null> {

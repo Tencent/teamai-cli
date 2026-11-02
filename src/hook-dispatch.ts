@@ -12,10 +12,24 @@
  *   - Compatible structured outputs are merged so concurrent hints are preserved
  */
 
+import { z } from 'zod';
+import { JsonValueSchema } from './types.js';
 import type { LocalConfig } from './types.js';
 import { log } from './utils/logger.js';
 
 // ─── Public types ───────────────────────────────────────
+
+/** A hook's STDIN payload: the JSON object the host wrote. */
+export const HookStdinSchema = z.record(z.string(), JsonValueSchema);
+
+export type HookStdin = z.infer<typeof HookStdinSchema>;
+
+/** The string `stdin` carries in `field`, or undefined when that field is absent or not a string. */
+export function stdinString(stdin: HookStdin, field: string): string | undefined {
+  const value = z.string().safeParse(stdin[field]);
+
+  return value.success ? value.data : undefined;
+}
 
 export interface HookHandler {
   name: string;
@@ -25,7 +39,7 @@ export interface HookHandler {
    * Handlers read their scope from it, never from the process cwd: the
    * dispatcher's chdir into the hook's cwd can fail (#752).
    */
-  execute(stdin: Record<string, unknown>, tool: string, config: LocalConfig | null): Promise<string | null>;
+  execute(stdin: HookStdin, tool: string, config: LocalConfig | null): Promise<string | null>;
 }
 
 export interface HandlerRegistration {
@@ -57,9 +71,9 @@ function contextLength(output: string | null): number {
   if (output === null) return 0;
 
   try {
-    const context = asObject(asObject(JSON.parse(output))?.hookSpecificOutput)?.additionalContext;
+    const reply = HookContextReplySchema.safeParse(JSON.parse(output));
 
-    return typeof context === 'string' ? context.trim().length : 0;
+    return reply.success ? reply.data.hookSpecificOutput.additionalContext.trim().length : 0;
   } catch {
     return 0;
   }
@@ -90,7 +104,7 @@ export interface Dispatcher {
   dispatch(
     event: string,
     matcher: string,
-    stdin: Record<string, unknown>,
+    stdin: HookStdin,
     tool: string,
     mode?: DispatchMode,
   ): Promise<DispatchResult>;
@@ -103,13 +117,13 @@ export interface Dispatcher {
 /** Default timeout: 60 seconds (matches Claude Code's default hook timeout). */
 const DEFAULT_TIMEOUT_MS = 60_000;
 
-type JsonObject = Record<string, unknown>;
+/** A reply whose context a host injects. */
+const HookContextReplySchema = z.object({ hookSpecificOutput: z.object({ additionalContext: z.string() }) });
 
-function asObject(value: unknown): JsonObject | null {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? value as JsonObject
-    : null;
-}
+/** A hook reply in either structured schema: a JSON object. */
+const HookReplySchema = z.record(z.string(), JsonValueSchema);
+
+const StringsSchema = z.array(z.string());
 
 /** Merge the two hook output schemas used by the supported hosts. */
 export function mergeHookOutputs(outputs: string[]): string | null {
@@ -117,42 +131,39 @@ export function mergeHookOutputs(outputs: string[]): string | null {
 
   if (outputs.length === 1) return outputs[0];
 
-  let parsed: JsonObject[];
+  let parsed: Array<z.infer<typeof HookReplySchema>>;
 
   try {
     parsed = outputs.map((output) => {
-      const value = asObject(JSON.parse(output));
+      const value = HookReplySchema.safeParse(JSON.parse(output));
 
-      if (!value) throw new Error('Hook output is not an object');
+      if (!value.success) throw new Error('Hook output is not an object');
 
-      return value;
+      return value.data;
     });
   } catch {
     // Preserve the historical first-output behavior for unknown/plain schemas.
     return outputs[0];
   }
 
-  const followups = parsed.map((value) => value.followup_message);
+  const followups = StringsSchema.safeParse(parsed.map((value) => value.followup_message));
 
-  if (followups.every((value): value is string => typeof value === 'string')) {
-    return JSON.stringify({ ...parsed[0], followup_message: followups.join('\n') });
+  if (followups.success) {
+    return JSON.stringify({ ...parsed[0], followup_message: followups.data.join('\n') });
   }
 
-  const specificOutputs = parsed.map((value) => asObject(value.hookSpecificOutput));
+  const specificOutputs = z.array(HookReplySchema).safeParse(parsed.map((value) => value.hookSpecificOutput));
 
-  if (specificOutputs.every((value): value is JsonObject => value !== null)) {
-    const contexts = specificOutputs.map((value) => value.additionalContext);
-    const eventNames = new Set(specificOutputs.map((value) => value.hookEventName).filter(Boolean));
+  if (specificOutputs.success) {
+    const contexts = StringsSchema.safeParse(specificOutputs.data.map((value) => value.additionalContext));
+    const eventNames = new Set(specificOutputs.data.map((value) => value.hookEventName).filter(Boolean));
 
-    if (
-      contexts.every((value): value is string => typeof value === 'string')
-      && eventNames.size <= 1
-    ) {
+    if (contexts.success && eventNames.size <= 1) {
       return JSON.stringify({
         ...parsed[0],
         hookSpecificOutput: {
-          ...specificOutputs[0],
-          additionalContext: contexts.join('\n'),
+          ...specificOutputs.data[0],
+          additionalContext: contexts.data.join('\n'),
         },
       });
     }
@@ -225,11 +236,11 @@ export function createDispatcher(config: DispatcherConfig): Dispatcher {
 
               return value;
             },
-            (err: unknown) => {
+            (cause: unknown) => {
               // The message duplicates what hook-dispatch-cli already logs for a
               // failed handler; 'timeout' names the case that log cannot explain.
-              record(err instanceof Error && /exceeded timeout/.test(err.message) ? 'timeout' : 'failed');
-              throw err;
+              record(cause instanceof Error && /exceeded timeout/.test(cause.message) ? 'timeout' : 'failed');
+              throw cause;
             },
           );
         }),
@@ -273,8 +284,8 @@ export function createDispatcher(config: DispatcherConfig): Dispatcher {
       const length = contextLength(output);
 
       if (tool === 'cursor' && length > CURSOR_HOOK_CONTEXT_LIMIT && outputs.some(({ reg }) => reg.yieldsToContextLimit)) {
-        const rest = mergeHookOutputs(outputs.filter(({ reg }) => !reg.yieldsToContextLimit).map(({ value }) => value));
-        const yielded = outputs.filter(({ reg }) => reg.yieldsToContextLimit).map(({ reg }) => reg.handler.name).join(', ');
+        const rest = mergeHookOutputs(outputs.flatMap(({ reg, value }) => (reg.yieldsToContextLimit ? [] : [value])));
+        const yielded = outputs.flatMap(({ reg }) => (reg.yieldsToContextLimit ? [reg.handler.name] : [])).join(', ');
 
         if (contextLength(rest) <= CURSOR_HOOK_CONTEXT_LIMIT) {
           log.debug(`[hook-dispatch] ${event}/${tool}: reply context is ${length} characters, over the ${CURSOR_HOOK_CONTEXT_LIMIT}-character limit; left out ${yielded}`);

@@ -1,5 +1,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
+import { z } from 'zod';
+import { HookStdinSchema, stdinString, type HookStdin } from './hook-dispatch.js';
 import { log } from './utils/logger.js';
 import { deriveSessionId } from './utils/session-id.js';
 import { getUserHome } from './utils/home.js';
@@ -23,15 +25,14 @@ import { getUserHome } from './utils/home.js';
 /** TTL for the dedup cache file: 24 hours. Older sessions are treated as fresh. */
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
-interface TodoWriteHintCache {
-  hinted: boolean;
-  updatedAt: string;
-}
+const TodoWriteHintCacheSchema = z.object({ hinted: z.boolean(), updatedAt: z.string() });
+
+type TodoWriteHintCache = z.infer<typeof TodoWriteHintCacheSchema>;
 
 interface HookInput {
   toolName: string;
   sessionId: string;
-  payload: Record<string, unknown>;
+  payload: HookStdin;
 }
 
 /**
@@ -53,7 +54,10 @@ function readCache(sessionId: string): TodoWriteHintCache | null {
 
     if (!fs.existsSync(cachePath)) return null;
     const raw = fs.readFileSync(cachePath, 'utf-8');
-    const parsed = JSON.parse(raw) as TodoWriteHintCache;
+    const cache = TodoWriteHintCacheSchema.safeParse(JSON.parse(raw));
+
+    if (!cache.success) return null;
+    const parsed = cache.data;
     const age = Date.now() - new Date(parsed.updatedAt).getTime();
 
     if (age > CACHE_TTL_MS) return null;
@@ -100,7 +104,7 @@ export async function readStdin(): Promise<HookInput | null> {
   const chunks: Buffer[] = [];
 
   for await (const chunk of process.stdin) {
-    chunks.push(chunk as Buffer);
+    chunks.push(chunk);
   }
 
   const raw = Buffer.concat(chunks).toString('utf-8');
@@ -108,8 +112,11 @@ export async function readStdin(): Promise<HookInput | null> {
   if (!raw.trim()) return null;
 
   try {
-    const data = JSON.parse(raw) as Record<string, unknown>;
-    const toolName = typeof data.tool_name === 'string' ? data.tool_name : '';
+    const stdin = HookStdinSchema.safeParse(JSON.parse(raw));
+
+    if (!stdin.success) return null;
+    const data = stdin.data;
+    const toolName = stdinString(data, 'tool_name') ?? '';
 
     return { toolName, sessionId: deriveSessionId(data), payload: data };
   } catch {
