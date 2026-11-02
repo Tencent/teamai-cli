@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { isPlaceableType } from '../../push-namespaces.js';
-import { isSelfMode, type LocalConfig } from '../../types.js';
+import { isSelfMode, LocalConfigSchema, type LocalConfig } from '../../types.js';
 import { NON_INTERACTIVE_GIT_ENV } from '../../utils/git-env.js';
 import { checkoutCredentials, getConfiguredRemoteUrl, redactGitCredentials } from '../../utils/git.js';
 import type { StepChanges } from '../workspace.js';
@@ -124,7 +124,9 @@ async function unplacedTeamFiles(input: { root: string; dir: string; base: strin
     modes.set(entry.slice(tab + 1), entry.slice(0, entry.indexOf(' ')));
   }
 
-  const suites = [...modes.keys()].flatMap((file) => (file.startsWith(`${under}benchmarks/`) && file.endsWith('/suite.yaml') ? [file.slice(under.length, -'suite.yaml'.length)] : []));
+  // oxlint-disable-next-line teamai/workflow-boundaries -- a benchmark file goes only into a suite pull reads, which suite discovery owns
+  const { suiteDirectories } = await import('../../benchmark/suite-cache.js');
+  const suites = await suiteDirectories(LocalConfigSchema.parse({ repo: { localPath: dir, remote: 'local' }, username: 'team-files' }));
   const files = new Set<string>();
   const unplaced: string[] = [];
 
@@ -141,8 +143,8 @@ async function unplacedTeamFiles(input: { root: string; dir: string; base: strin
     if (!isPlaceableType(top) || below.length === 0) unplaced.push(`${teamPath}: not in a directory teamai pulls, such as skills/, rules/, scorers/ or benchmarks/`);
     else if (mode === '120000') unplaced.push(`${teamPath}: a symlink, which teamai pull does not place`);
     else if (mode === '160000') unplaced.push(`${teamPath}: a submodule, which teamai pull does not place`);
-    else if (top === 'benchmarks' && mode !== undefined && !suites.some((suite) => teamPath.startsWith(suite))) {
-      unplaced.push(`${teamPath}: in no suite, since no directory above it under benchmarks/ has a suite.yaml`);
+    else if (top === 'benchmarks' && mode !== undefined && !suites.some((suite) => teamPath.startsWith(`${suite}/`))) {
+      unplaced.push(`${teamPath}: in no suite teamai pull reads: a suite is benchmarks/<suite>/ or benchmarks/<namespace>/<suite>/ with a suite.yaml`);
     } else files.add(teamPath);
   }
 

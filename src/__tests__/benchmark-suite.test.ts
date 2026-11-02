@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { LocalConfig } from '../types.js';
-import { loadCachedSuite, syncTeamDefinitions } from '../benchmark/suite-cache.js';
+import { loadCachedSuite, suiteDirectories, syncTeamDefinitions } from '../benchmark/suite-cache.js';
 import { formatUnknownScorer } from '../workflow/cache.js';
 import { parseSuite, type SuiteFile } from '../benchmark/suite.js';
 
@@ -369,6 +369,18 @@ describe('suite sync', () => {
     expect((await loadCachedSuite(dev, 'dev-fix'))?.relativePath).toBe('benchmarks/dev/dev-fix/suite.yaml');
     expect(await loadCachedSuite(ops, 'dev-fix')).toBeNull();
     expect((await loadCachedSuite(ops, 'fix'))?.relativePath).toBe('benchmarks/fix/suite.yaml');
+  });
+
+  it('answers every suite pull reads for anyone, whatever the member\'s role, and no directory nested in an undeclared one', async () => {
+    const config = team({
+      'manifest/roles.yaml': ROLES,
+      ...suiteAt('fix', 'fix'),
+      ...suiteAt('dev/fix', 'fix'),
+      ...suiteAt('ops/fix', 'fix'),
+      ...suiteAt('web/regressions', 'regressions'),
+    });
+
+    expect((await suiteDirectories({ ...config, primaryRole: 'dev' })).sort()).toEqual(['benchmarks/dev/fix', 'benchmarks/fix', 'benchmarks/ops/fix']);
   });
 
   it('names each scorer a suite lists that this member receives no valid scorer of', async () => {

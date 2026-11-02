@@ -147,6 +147,16 @@ async function suiteNamespaces(config: LocalConfig, everyNamespace: boolean): Pr
 }
 
 /**
+ * The directory of every suite `teamai pull` reads from the team files of `config`, in any namespace:
+ * benchmarks/<suite>, or benchmarks/<namespace>/<suite> for a namespace a manifest declares.
+ */
+export async function suiteDirectories(config: LocalConfig): Promise<string[]> {
+  const { sources } = await suiteSources(config, true);
+
+  return sources.map(({ suite }) => path.posix.dirname(suite.relativePath));
+}
+
+/**
  * The files of each suite under benchmarks/ this member receives, read the way workflow files are: symlinks are not
  * files. A namespace suite replaces the shared suite of its name; one name in two active namespaces reads neither.
  */

@@ -149,6 +149,10 @@ describe('a step in the team workspace, run through the real CLI', () => {
       "fs.writeFileSync('benchmarks/nowhere/tasks/orphan.yaml', 'prompt: nothing runs this\\n');",
       "fs.mkdirSync('benchmarks/broken', { recursive: true });",
       "fs.writeFileSync('benchmarks/broken/suite.yaml', 'schemaVersion: v1alpha1\\nname: broken\\n');",
+      // web is no benchmarks namespace a manifest declares, so pull reads no suite under it.
+      "fs.mkdirSync('benchmarks/web/regressions/tasks', { recursive: true });",
+      "fs.writeFileSync('benchmarks/web/regressions/suite.yaml', 'schemaVersion: v1alpha1\\nname: regressions\\n');",
+      "fs.writeFileSync('benchmarks/web/regressions/tasks/hidden.yaml', 'prompt: nothing runs this\\n');",
       "fs.mkdirSync('scorers', { recursive: true });",
       "fs.writeFileSync('scorers/broken.md', '---\\nname: broken\\n---\\nNo labels.\\n');",
     ].join('\n'));
@@ -162,7 +166,9 @@ describe('a step in the team workspace, run through the real CLI', () => {
       'notes.txt: not in a directory teamai pulls, such as skills/, rules/, scorers/ or benchmarks/',
       'rules/link.md: a symlink, which teamai pull does not place',
       'rules/vendored: a submodule, which teamai pull does not place',
-      'benchmarks/nowhere/tasks/orphan.yaml: in no suite, since no directory above it under benchmarks/ has a suite.yaml',
+      'benchmarks/nowhere/tasks/orphan.yaml: in no suite teamai pull reads: a suite is benchmarks/<suite>/ or benchmarks/<namespace>/<suite>/ with a suite.yaml',
+      'benchmarks/web/regressions/suite.yaml: in no suite teamai pull reads: a suite is benchmarks/<suite>/ or benchmarks/<namespace>/<suite>/ with a suite.yaml',
+      'benchmarks/web/regressions/tasks/hidden.yaml: in no suite teamai pull reads: a suite is benchmarks/<suite>/ or benchmarks/<namespace>/<suite>/ with a suite.yaml',
       expect.stringMatching(/^benchmarks\/broken\/suite\.yaml:\d+: /),
       expect.stringMatching(/^scorers\/broken\.md\b/),
     ]));

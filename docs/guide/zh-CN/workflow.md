@@ -336,7 +336,7 @@ teamai workflow start tighten-rule --inputs '{"rule":"backend"}'
 - `branch` 只能读取 `{{ inputs.* }}`，这样之后输入相同的运行会沿用同一个分支和 pull request。不写时，步骤使用运行为该步骤和 pass 命名的分支。分支是团队仓库的默认分支时，步骤以 `workspace_base` 失败。
 - 分支和默认分支冲突时，步骤在运行前以 `merge_conflict` 失败。把默认分支合并进它，或者删除它。
 - 只有只运行一次的 command 或 prompt 步骤能用它，`workflow` 步骤和 `for_each` 不行。只有本地驱动运行它。
-- 推送前，提交必须是 `teamai pull` 会接受的：改动的每个文件都在 pull 放置的目录里（`skills/`、`rules/`、`scorers/`、`benchmarks/` 等），不能是符号链接或子模块；benchmark 文件必须在有 `suite.yaml` 的套件里；改动的工作流、评分器和套件必须能通过 pull 的校验。否则步骤以 `push_failed` 失败，逐个列出文件和原因，什么也不推送。
+- 推送前，提交必须是 `teamai pull` 会接受的：改动的每个文件都在 pull 放置的目录里（`skills/`、`rules/`、`scorers/`、`benchmarks/` 等），不能是符号链接或子模块；benchmark 文件必须在 pull 读取的套件里，即带 `suite.yaml` 的 `benchmarks/<suite>/` 或 `benchmarks/<namespace>/<suite>/`；改动的工作流、评分器和套件必须能通过 pull 的校验。否则步骤以 `push_failed` 失败，逐个列出文件和原因，什么也不推送。
 - 步骤运行期间队友推送到该分支的提交会让步骤以 `push_failed` 失败。origin 保留那个提交，下一次运行从它开始。
 - 分支的内容和默认分支相同时（比如它的 pull request 已被 squash 合并），步骤什么也不推送，也不打开 pull request。
 - 成员的团队仓库被 `teamai pull` 或 `push` 占用时，打开 pull request 会等待。
