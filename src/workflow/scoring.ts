@@ -40,7 +40,7 @@ import { scopeScoring } from '../scorers/settings.js';
 import { answerSchema, evidenceDirOf, sweepEvidence, type Rubrics } from '../scorers/evidence.js';
 import { agreedRunMode } from '../launch-context.js';
 import { sessionLabel, SessionWork, writeSessionEvidence, type JudgedSession, type NamedSession, type SessionEntry } from '../session-flow/session-work.js';
-import { buildEvidence, evidenceHash, evidencePlan } from './scoring-evidence.js';
+import { buildEvidence, evidenceHash, evidencePlan, missingEvidence } from './scoring-evidence.js';
 import { decideBeforeJudge, failingLabel, isDelivered, judgedAlone } from './scoring-stages.js';
 import { isUnsettled, judgeablePasses, sameSubject, scoredPasses, verdictEntries, verdictsFrozen } from './scoring-entries.js';
 import { error, ok } from './engine.js';
@@ -1363,10 +1363,11 @@ export async function judgeRunEntries(config: LocalConfig, runId: string, cwd: s
   }
 }
 
-/** What `teamai score --run <id> --step <path> [--pass <n>] --scorer <name>… [--queue] [--batch]` asks for. */
+/** What `teamai score --run <id> [--step <path>] [--pass <n>] --scorer <name>… [--queue] [--batch]` asks for. */
 export interface ScoreDemand {
   run: string;
-  step: string;
+  /** Omitted: the one step of the run whose definition lists every scorer asked for. */
+  step?: string;
   /** Omitted: the step's latest succeeded pass. */
   pass?: number;
   scorers: readonly string[];
@@ -1391,16 +1392,31 @@ export async function scoreOnDemand(config: LocalConfig, demand: ScoreDemand, no
     const ids = (await localRuns(config)).toReversed().slice(0, 10).map((known) => known.id);
     return error('run_not_found', `Run ${demand.run} is not on this machine. ${ids.length > 0 ? `Runs here, newest first: ${ids.join(', ')}.` : 'This scope has no runs.'}`);
   }
-  const judgeable = judgeablePasses(run).map(({ pass }) => pass);
-  const ofStep = judgeable.filter((pass) => pass.step === demand.step).map((pass) => pass.pass).sort((left, right) => left - right);
+  const judgeablePass = judgeablePasses(run);
+  const judgeable = judgeablePass.map(({ pass }) => pass);
+  const steps = [...new Set(judgeable.map((pass) => pass.step))];
+  let { step } = demand;
+  if (step === undefined) {
+    const named = demand.scorers.join(', ');
+    const listing = [...new Set(judgeablePass.filter(({ definition }) => demand.scorers.every((scorer) => definition.scorers?.names.includes(scorer))).map(({ pass }) => pass.step))];
+    if (listing.length > 1) return error('step_ambiguous', `Run ${run.id} lists scorer ${named} on steps ${listing.join(', ')}. Pass --step <path> to pick one.`);
+    [step] = listing;
+    if (step === undefined) {
+      return error('step_not_found', `Run ${run.id} lists scorer ${named} on no step with a succeeded pass. ${steps.length > 0 ? `Pass --step <path> to pick one: ${steps.join(', ')}.` : 'No step of it succeeded.'}`);
+    }
+  }
+  const ofStep = judgeable.filter((pass) => pass.step === step).map((pass) => pass.pass).sort((left, right) => left - right);
   const latest = ofStep.at(-1);
   if (latest === undefined) {
-    const steps = [...new Set(judgeable.map((pass) => pass.step))];
-    return error('step_not_found', `Step ${demand.step} has no succeeded pass in run ${run.id}. ${steps.length > 0 ? `Steps with one: ${steps.join(', ')}.` : 'No step of it succeeded.'}`);
+    return error('step_not_found', `Step ${step} has no succeeded pass in run ${run.id}. ${steps.length > 0 ? `Steps with one: ${steps.join(', ')}.` : 'No step of it succeeded.'}`);
   }
   const pass = demand.pass ?? latest;
-  if (!ofStep.includes(pass)) return error('pass_not_found', `Pass ${pass} of step ${demand.step} did not succeed in run ${run.id}. Succeeded passes: ${ofStep.join(', ')}.`);
-  const subject: RunSubject = { runId: run.id, step: demand.step, pass };
+  if (!ofStep.includes(pass)) return error('pass_not_found', `Pass ${pass} of step ${step} did not succeed in run ${run.id}. Succeeded passes: ${ofStep.join(', ')}.`);
+  const subject: RunSubject = { runId: run.id, step, pass };
+  const missing = await missingEvidence(run, subject);
+  if (missing.length > 0) {
+    return error('evidence_missing', `Pass ${pass} of step ${step} in run ${run.id} cannot be scored: ${missing.join('; ')} ${missing.length > 1 ? 'are' : 'is'} no longer on this machine. Restore ${missing.length > 1 ? 'them' : 'it'}, or score another pass. No label was written.`);
+  }
   const cached = await pinScorers(config, demand.scorers.filter((name) => !Object.hasOwn(run.scorers ?? {}, name)));
   const asked: Array<{ scorer: string; pin: PinnedScorer }> = [];
   for (const scorer of new Set(demand.scorers)) {

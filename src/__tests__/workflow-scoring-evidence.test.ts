@@ -386,7 +386,9 @@ function writeAll(dir: string, files: Record<string, string>): void {
 }
 
 /** A run of SHIP whose `change` step delivered a pagination commit, with the issue's text as `read-issue` returned it. */
-async function deliveredRun(scorer = SCORER, files: { base?: Record<string, string>; change?: Record<string, string> } = {}): Promise<{ config: LocalConfig; runId: string; checkout: string }> {
+async function deliveredRun(
+  scorer = SCORER, files: { base?: Record<string, string>; change?: Record<string, string>; session?: string } = {},
+): Promise<{ config: LocalConfig; runId: string; checkout: string }> {
   const checkout = path.join(root, 'app');
   fs.mkdirSync(checkout, { recursive: true });
   git(checkout, 'init', '-q', '-b', 'main');
@@ -422,7 +424,7 @@ async function deliveredRun(scorer = SCORER, files: { base?: Record<string, stri
   const to = git(checkout, 'rev-parse', 'HEAD');
   git(checkout, 'checkout', '-q', 'main');
   data(await reportAttempt(config, runId, {
-    attempt: change.attempt, revision: change.revision, outcome: 'success', driver: external,
+    attempt: change.attempt, revision: change.revision, outcome: 'success', driver: external, ...(files.session ? { tool: 'claude', session: files.session } : {}),
     outputs: { summary: 'paginated' }, changes: { branch: change.workspace.branch, base: from, from, to, commits: [to] },
   }));
   return { config, runId, checkout };
@@ -570,6 +572,55 @@ describe('evidence of what a run delivered', () => {
     const lease = LeaseSchema.parse(data(await nextJudgeLease(config, request)).lease);
 
     expect(lease.subject).toMatchObject({ step: 'change' });
+    expect(await LabelStore.local(config)).toEqual([]);
+  });
+});
+
+describe('scoring what a run delivered on demand', () => {
+  /** A claude on PATH that judges every pass `complete`. */
+  function fakeClaude(): void {
+    const bin = path.join(root, 'bin');
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(path.join(bin, 'claude'), `#!${process.execPath}
+if (process.argv.includes('--version')) { console.log('2.1.308 (Claude Code)'); process.exit(); }
+process.stdin.resume(); process.stdin.on('end', () => {
+console.log(JSON.stringify({ type: 'result', structured_output: { label: 'complete', reasoning: 'delivers the pagination' } }));
+});\n`, { mode: 0o755 });
+    vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH ?? ''}`);
+  }
+  const unsampled = DELIVERED.replace('samplingRate: 100', 'samplingRate: 0');
+
+  it('scores the delivering pass with only --run and --scorer, whatever sampling says', async () => {
+    const { config, runId } = await deliveredRun(unsampled);
+    fakeClaude();
+    expect(data(await nextJudgeLease(config, request))).toMatchObject({ idle: { open: 0 } });
+
+    expect(data(await scoreOnDemand(config, { run: runId, scorers: ['quality'] }))).toMatchObject({
+      label: { scorer: 'quality', subject: { runId, step: 'change', pass: 1 }, label: 'complete', passed: true, decidedBy: 'judge' },
+    });
+    expect(await LabelStore.local(config)).toMatchObject([{ subject: { runId, step: 'change', pass: 1 }, decidedBy: 'judge', evidenceHash: expect.stringMatching(/^sha256:/) }]);
+  });
+
+  it('asks for --step when the run lists the scorer on no step', async () => {
+    const { config, runId } = await deliveredRun(unsampled);
+    fs.writeFileSync(path.join(config.repo.localPath, 'scorers', 'tests.md'), unsampled);
+    await syncWorkflowDefinitions(config);
+    fakeClaude();
+
+    expect(await scoreOnDemand(config, { run: runId, scorers: ['tests'] })).toEqual({ error: {
+      code: 'step_not_found',
+      message: `Run ${runId} lists scorer tests on no step with a succeeded pass. Pass --step <path> to pick one: read-issue, change.`,
+    } });
+  });
+
+  it('fails, names the session that is gone, and writes no label', async () => {
+    const { config, runId } = await deliveredRun(unsampled, { session: 'session-change' });
+    fakeClaude();
+
+    expect(await scoreOnDemand(config, { run: runId, scorers: ['quality'] })).toEqual({ error: {
+      code: 'evidence_missing',
+      message: `Pass 1 of step change in run ${runId} cannot be scored: claude-code session session-change of change#1 is no longer on this machine. Restore it, or score another pass. No label was written.`,
+    } });
     expect(await LabelStore.local(config)).toEqual([]);
   });
 });

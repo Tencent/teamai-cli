@@ -68,6 +68,29 @@ export function evidencePlan(run: RunState, subject: RunSubject, settling?: RunP
 }
 
 /**
+ * What `subject`'s evidence needs that is no longer on this machine, each as a person restores it: a commit its diff
+ * spans, or a session one of its passes recorded. Empty when everything is there, or when the step ran in a clone, whose
+ * evidence was copied when it settled.
+ */
+export async function missingEvidence(run: RunState, subject: RunSubject): Promise<string[]> {
+  if (cloneBranchOf(run, subject.step) !== undefined) return [];
+  const plan = evidencePlan(run, subject);
+  const ranges = plan.diff ? [plan.diff] : plan.ranges;
+  const commits = [...new Set(ranges.flatMap((range) => [range.from, range.to]))];
+  const gitIn: GitIn = { env: process.env, config: [] };
+  const has = async (commit: string) => plan.checkout !== undefined && await git(plan.checkout, ['cat-file', '-e', `${commit}^{commit}`], gitIn).then(() => true, () => false);
+  const missing: string[] = [];
+  for (const commit of commits) if (!await has(commit)) missing.push(`commit ${commit} of branch ${ranges.find((range) => range.from === commit || range.to === commit)?.branch ?? 'unknown'}`);
+  for (const pass of plan.passes) {
+    const platform = pass.tool && AgentSession.platformForTool(pass.tool);
+    if (!pass.session || !platform) continue;
+    const found = await AgentSession.find({ platform, sessionId: pass.session, cwd: ranIn(run, pass) });
+    if (found.status !== 'done') missing.push(`${platform} session ${pass.session} of ${pass.step}#${pass.pass}`);
+  }
+  return missing;
+}
+
+/**
  * The environment git gets in the checkout evidence is read from, the settings it starts with there, and when it must
  * stop: past `expiresAt`, each git is stopped and no more starts.
  */
