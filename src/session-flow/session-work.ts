@@ -23,7 +23,8 @@ import type { ScoreLabel, SessionLabel, SessionLabelContext, SessionSubject } fr
 import { LabelStore } from '../scorers/label-store.js';
 import { pinnedDefinition, type PinnedScorer } from '../scorers/pin.js';
 import { isSampled } from '../scorers/sampling.js';
-import { skillsEvidence, type SkillsEvidence } from '../scorers/skill-evidence.js';
+import { skillsEvidence, availableTeamSkills, type SkillsEvidence } from '../scorers/skill-evidence.js';
+import { routingScorers } from '../scorers/skill-routing.js';
 import type { ScopeScoring } from '../scorers/settings.js';
 import { typedIn, usedSkills } from '../skill-use.js';
 import { getDataHome, type LocalConfig } from '../types.js';
@@ -306,25 +307,47 @@ async function prunableBy(config: LocalConfig): Promise<ReadonlySet<string> | un
 
 /**
  * The session entries of this scope, oldest activity first: each finished session captured here, for each scorer of
- * the scope that judges sessions and samples it, while the policy of the run mode it was captured in is `auto` (a
- * capture with no mode counts as attended), and every session captured here by `platform\0sessionId`. None while no
- * mode's policy is `auto` or no scorer judges sessions; `captured` is then listed only while session attempts are kept,
- * so they are pruned after the team or the member turned it off.
+ * the scope that judges sessions and samples it and — while `skill_routing` is on — one routing question per team
+ * skill its captures delivered (#1469), while the policy of the run mode it was captured in is `auto` (a capture with
+ * no mode counts as attended), and every session captured here by `platform\0sessionId`. None while no mode's policy
+ * is `auto` or no scorer judges sessions and routing is off; `captured` is then listed only while session attempts are
+ * kept, so they are pruned after the team or the member turned it off.
  */
 async function entries(config: LocalConfig, now: string, scoring: Extract<ScopeScoring, { ok: true }>): Promise<{ entries: SessionEntry[]; captured?: ReadonlySet<string> }> {
   const { policies } = scoring.sessions;
   if (!RUN_MODES.some((mode) => policies[mode].policy === 'auto')) return { entries: [], captured: await prunableBy(config) };
   const scorers = await sessionScorers(config);
-  if (scorers.length === 0) return { entries: [], captured: await prunableBy(config) };
+  const routing = scoring.skillRouting;
+  if (scorers.length === 0 && !routing) return { entries: [], captured: await prunableBy(config) };
   const captured = await SessionCaptures.list(config);
   const keys = new Set(captured.map(sessionKey));
   if (captured.length === 0) return { entries: [], captured: keys };
   const pick = await sampler(config, now, scorers);
   const batch = batchesScorers({ team: scoring.batch });
+  // A routing question needs only which skills its session's captures delivered, never the session's read.
+  const noLabels: ScoreLabel[] = [];
+  const noAttempts = new Map<string, readonly AttemptRecord[]>();
+  const [labels, attempts] = routing
+    ? await Promise.all([LabelStore.local(config), AttemptStore.read(config)])
+    : [noLabels, noAttempts];
   const found: SessionEntry[] = [];
   for (const session of await finished(captured, now, (mode) => policies[mode].policy === 'auto')) {
     const subject = { platform: session.platform, sessionId: session.sessionId };
     for (const sampled of await pick(session)) found.push({ source: 'session', ...sampled, subject, batch });
+    // A routing question is never sampled — every finished session the judge leases gets them — and one session's
+    // questions always share a judge call, whatever `batch` says, so their entries batch together.
+    if (routing) {
+      const available = availableTeamSkills(session.captures);
+      if (available) {
+        for (const question of routingScorers(available)) {
+          const id = sessionEntryIdOf(question.scorer, question.pin.sourceHash, subject);
+          const state = sessionEntryState({ labels: labels.filter((label) => sameSessionKey(label, question.scorer, question.pin.sourceHash, subject)), attempts: attempts.get(id) ?? [], now });
+          if (state.kind === 'open' || state.kind === 'leased') {
+            found.push({ source: 'session', id, scorer: question.scorer, pin: question.pin, definition: question.definition, subject, batch: true, state });
+          }
+        }
+      }
+    }
   }
   return { entries: found, captured: keys };
 }
