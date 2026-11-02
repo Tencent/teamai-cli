@@ -2094,7 +2094,7 @@ function desiredEventOrder(defs: HookDef[], mapEvent: (e: string) => string | un
 // ─── Claude / CodeBuddy (settings.json) reconcile ───────────
 
 /** True if a settings entry is a teamai built-in (A) hook. */
-function isBuiltinClaudeEntry(entry: HookMatcher): boolean {
+function isBuiltinClaudeEntry(entry: Pick<HookFileEntry, 'description' | 'hooks'>): boolean {
   const desc = entry.description ?? '';
 
   if (desc.startsWith(TEAMAI_HOOK_DESCRIPTION_PREFIX + ' ') || desc === TEAMAI_HOOK_DESCRIPTION_PREFIX) return true;
@@ -2118,7 +2118,7 @@ function isExactBuiltinEntry(event: string, tool: string, entry: HookFileEntry):
 }
 
 /** True if a settings entry is a teamai team (B) hook. */
-function isTeamClaudeEntry(entry: HookMatcher): boolean {
+function isTeamClaudeEntry(entry: Pick<HookFileEntry, 'description'>): boolean {
   return (entry.description ?? '').startsWith(TEAMAI_CUSTOM_HOOK_PREFIX);
 }
 
@@ -3481,73 +3481,37 @@ export async function hasTeamaiHooks(
   // NOT count as "still using teamai" — intersect manifest with actual content.
   const priorTeamCommands = new Set((manifest?.[tool] ?? []).map((r) => r.command));
 
-  const expanded = expandHome(settingsPath);
   const format = hookFormatOf(tool);
+  const events = hookEventsOf(await readJson<JsonValue>(expandHome(settingsPath)), format);
 
-  if (format === 'cursor') {
-    const j = await readJson<CursorHooksJson>(expanded);
+  if (!events) return false;
 
-    if (!j?.hooks) return false;
+  // The file is the member's: an entry that is not an object holds no hook.
+  const entries = [...events.values()].flat().flatMap((entry) => {
+    const read = hookFileEntryOf(entry);
 
-    return Object.values(j.hooks).some((entries) =>
-      (entries ?? []).some((e) => isTeamaiHookCommand(e.command) || priorTeamCommands.has(e.command)),
-    );
+    return read ? [read] : [];
+  });
+
+  const isTeamaiCommand = (command: string) => TEAMAI_COMMAND_MARKERS.some((m) => command.includes(m)) || priorTeamCommands.has(command);
+
+  switch (format) {
+    case 'cursor':
+      return entries.some((e) => e.command !== undefined && (isTeamaiHookCommand(e.command) || priorTeamCommands.has(e.command)));
+    case 'copilot':
+      return entries.some((entry) => copilotEntryCommands(entry).some(isTeamaiCommand));
+    case 'codex':
+      return entries.some((e) => isTeamaiCommand(e.hooks?.[0]?.command ?? ''));
+    case 'zcode':
+      return entries.some((e) => isTeamaiCommand(zcodeEntryCommand(e)));
+    case 'claude':
+      return entries.some((e) => isBuiltinClaudeEntry(e) || isTeamClaudeEntry(e) || priorTeamCommands.has(e.hooks?.[0]?.command ?? ''));
+    default: {
+      const unhandled: never = format;
+
+      return unhandled;
+    }
   }
-
-  if (format === 'copilot') {
-    const j = await readJson<CopilotHooksJson>(expanded);
-
-    if (!j?.hooks) return false;
-
-    return Object.values(j.hooks).some((entries) =>
-      (entries ?? []).some((entry) => copilotEntryCommands(entry).some((command) =>
-        TEAMAI_COMMAND_MARKERS.some((marker) => command.includes(marker))
-        || priorTeamCommands.has(command),
-      )),
-    );
-  }
-
-  if (format === 'codex') {
-    const j = await readJson<CodexHooksJson>(expanded);
-
-    if (!j?.hooks) return false;
-
-    return Object.values(j.hooks).some((entries) =>
-      (entries ?? []).some((e) => {
-        const cmd = e.hooks?.[0]?.command ?? '';
-
-        return TEAMAI_COMMAND_MARKERS.some((m) => cmd.includes(m)) || priorTeamCommands.has(cmd);
-      }),
-    );
-  }
-
-  if (format === 'zcode') {
-    const j = await readJson<ZcodeHooksJson>(expanded);
-    const eventsMap = j?.hooks?.events;
-
-    if (!eventsMap) return false;
-
-    return Object.values(eventsMap).some((entries) =>
-      (entries ?? []).some((e) => {
-        const cmd = zcodeEntryCommand(e);
-
-        return TEAMAI_COMMAND_MARKERS.some((m) => cmd.includes(m)) || priorTeamCommands.has(cmd);
-      }),
-    );
-  }
-
-  const s = await readJson<ClaudeSettingsJson>(expanded);
-
-  if (!s?.hooks) return false;
-
-  return Object.values(s.hooks).some((entries) =>
-    (entries ?? []).some((e) => {
-      if (isBuiltinClaudeEntry(e) || isTeamClaudeEntry(e)) return true;
-      const cmd = e.hooks?.[0]?.command ?? '';
-
-      return priorTeamCommands.has(cmd);
-    }),
-  );
 }
 
 /**

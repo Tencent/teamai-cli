@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { getHookStatus } from '../hooks.js';
+import { getHookStatus, hasTeamaiHooks } from '../hooks.js';
 
 let tmpDir: string;
 
@@ -40,5 +40,17 @@ describe('getHookStatus on a hook file the member edited', () => {
     ['zcode', { hooks: { events: { SessionStart: [null, 1] } } }],
   ])('reads a %s entry that is not an object as no hook', async (tool, json) => {
     await expect(getHookStatus(write('hooks.json', json), tool)).resolves.toBe('missing');
+  });
+});
+
+describe('hasTeamaiHooks on a hook file the member edited', () => {
+  it.each([
+    ['claude', { hooks: { SessionStart: {}, Stop: [null, 1] } }],
+    ['cursor', { version: 1, hooks: { sessionStart: {}, stop: [null, 1] } }],
+    ['copilot', { version: 1, hooks: { SessionStart: {}, Stop: [null, 1] } }],
+    ['codex', { hooks: { SessionStart: {}, Stop: [null, 1] } }],
+    ['zcode', { hooks: { events: { SessionStart: {}, Stop: [null, 1] } } }],
+  ])('reads malformed %s events and entries as no teamai hook', async (tool, json) => {
+    await expect(hasTeamaiHooks(write('hooks.json', json), tool)).resolves.toBe(false);
   });
 });
