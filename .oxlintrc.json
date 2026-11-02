@@ -1,8 +1,20 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
   "jsPlugins": ["./oxlint-plugin-teamai/index.js"],
-  // Vendored unchanged from anti-slop, and linted there.
   "ignorePatterns": [
+    // Agent tooling a member's tools install into the checkout: their skills and hooks, not this repository's source.
+    ".agent/**",
+    ".agents/**",
+    ".claude/**",
+    ".codex/**",
+    ".continue/**",
+    ".cursor/**",
+    ".gemini/**",
+    ".opencode/**",
+    ".pi/**",
+    ".roo/**",
+    ".windsurf/**",
+    // Vendored unchanged from anti-slop, and linted there.
     "oxlint-plugin-teamai/anti-slop/rules/**",
     "oxlint-plugin-teamai/anti-slop/shared/**",
     "oxlint-plugin-teamai/anti-slop/vendor/**"
@@ -90,28 +102,28 @@
     // parseYaml returns JSON values; yaml's own parse can return a Set, Buffer or Date.
     "teamai/yaml-parse": "error",
     // A reducer that copies its accumulator each step is quadratic.
-    "oxc/no-accumulating-spread": "warn",
+    "oxc/no-accumulating-spread": "error",
     // The generic rules of anti-slop (#828), vendored in
     // oxlint-plugin-teamai/anti-slop. Production code only: see overrides.
-    "teamai/no-array-filter-map": "warn",
-    "teamai/no-chained-type-assertions": "warn",
-    "teamai/no-conditional-empty-object-spread": "warn",
-    "teamai/no-known-value-widening": "warn",
-    "teamai/no-module-mocking": "warn",
-    "teamai/no-object-parameters": "warn",
-    "teamai/no-reduce-accumulator-copy": "warn",
-    "teamai/no-reflect-apply": "warn",
-    "teamai/no-reflect-get": "warn",
-    "teamai/no-runtime-typeof": "warn",
-    "teamai/no-shape-in-symbol-names": "warn",
-    "teamai/no-unknown-parameters": "warn",
-    "teamai/no-unknown-returns": "warn",
-    "teamai/no-unknown-type-aliases": "warn",
-    "teamai/no-unsafe-dictionary-type": "warn",
-    "teamai/no-widen-then-assert": "warn",
-    "teamai/require-readable-spacing": "warn",
-    "teamai/require-safety-comment-for-type-assertion": "warn",
-    // CONTRIBUTING: comments explain why, not what (from pingdotgg/t3code).
+    "teamai/no-array-filter-map": "error",
+    "teamai/no-chained-type-assertions": "error",
+    "teamai/no-conditional-empty-object-spread": "error",
+    "teamai/no-known-value-widening": "error",
+    "teamai/no-module-mocking": "error",
+    "teamai/no-object-parameters": "error",
+    "teamai/no-reduce-accumulator-copy": "error",
+    "teamai/no-reflect-apply": "error",
+    "teamai/no-reflect-get": "error",
+    "teamai/no-runtime-typeof": "error",
+    "teamai/no-shape-in-symbol-names": "error",
+    "teamai/no-unknown-parameters": "error",
+    "teamai/no-unknown-returns": "error",
+    "teamai/no-unknown-type-aliases": "error",
+    "teamai/no-unsafe-dictionary-type": "error",
+    "teamai/no-widen-then-assert": "error",
+    "teamai/require-readable-spacing": "error",
+    "teamai/require-safety-comment-for-type-assertion": "error",
+    // CONTRIBUTING: comments explain why, not what.
     "teamai/no-low-value-comments": "error",
     // A suppression with no reason can't be reviewed or removed later.
     "teamai/suppression-reason": "error"
