@@ -415,7 +415,7 @@ export async function gitlabFindOpenMr({ repo, source, target, timeoutMs }: Pull
 }
 
 const PipelinesSchema = z.array(z.object({ status: z.string() }));
-const PIPELINE_RUNNING = ['created', 'waiting_for_resource', 'preparing', 'pending', 'running', 'scheduled', 'manual'];
+const PIPELINE_RUNNING = new Set(['created', 'waiting_for_resource', 'preparing', 'pending', 'running', 'scheduled', 'manual']);
 
 /**
  * How the CI of a commit went on GitLab: its newest pipeline. A canceled or skipped one says nothing of the commit, as
@@ -433,7 +433,7 @@ export async function gitlabCommitPipelines({ repo, commit, timeoutMs }: CommitR
   const status = pipelines.data[0]?.status;
   if (status === 'success') return 'passed';
   if (status === 'failed') return 'failed';
-  return status !== undefined && PIPELINE_RUNNING.includes(status) ? 'pending' : 'none';
+  return status !== undefined && PIPELINE_RUNNING.has(status) ? 'pending' : 'none';
 }
 
 function hostOf(url: string): string | undefined {

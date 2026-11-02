@@ -4,6 +4,7 @@
  * the delivery's protected-path refusal (#1090). The first stage that fails decides the label; one that passes or has
  * nothing to say hands the pass on, and the judge runs only once every stage did.
  */
+// oxlint-disable-next-line teamai/workflow-boundaries -- a scorer's check runs exactly as a benchmark trial's check does (#1180), and trial.ts owns that runner
 import { tryCheckAt } from '../benchmark/trial.js';
 import type { ScorerDefinition, ScorerLabel } from '../scorers/definition.js';
 import type { Decider, RunSubject } from '../scorers/label.js';

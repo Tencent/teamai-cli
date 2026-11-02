@@ -547,7 +547,7 @@ describe('evidence of what a run delivered', () => {
   it('runs the scorer\'s check on the delivered commit with the protected paths put back, and a failed check decides', async () => {
     const { scorer, base } = checked('limit');
     // The agent made its own copy of the test pass; the check runs the base commit's.
-    const { config, runId } = await deliveredRun(scorer, { base, change: { 'test/users.cjs': 'process.exit(0);\n' } });
+    const { config } = await deliveredRun(scorer, { base, change: { 'test/users.cjs': 'process.exit(0);\n' } });
 
     const answer = data(await nextJudgeLease(config, request));
 

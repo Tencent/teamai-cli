@@ -652,8 +652,8 @@ const CheckRunsSchema = z.object({
 });
 const CombinedStatusSchema = z.object({ state: z.string(), total_count: z.number() });
 /** Conclusions that fail a check run. A cancelled or stale run says nothing of the commit, as a skipped or neutral one passes it. */
-const FAILED_CONCLUSIONS = ['failure', 'timed_out', 'action_required', 'startup_failure'];
-const PASSED_CONCLUSIONS = ['success', 'neutral', 'skipped'];
+const FAILED_CONCLUSIONS = new Set(['failure', 'timed_out', 'action_required', 'startup_failure']);
+const PASSED_CONCLUSIONS = new Set(['success', 'neutral', 'skipped']);
 
 /**
  * How the CI of a commit went on GitHub: its check runs (Actions and apps) and its combined commit status. Any failed one
@@ -670,9 +670,9 @@ export async function ghCommitChecks({ repo, commit, timeoutMs }: CommitRef): Pr
   if (!runs.success || !status.success) throw new Error(unreadable(CHECKS_LOOKUP));
   const conclusions = runs.data.check_runs.map((run) => (run.status === 'completed' ? run.conclusion ?? 'unknown' : 'running'));
   const statuses = status.data.total_count > 0 ? [status.data.state] : [];
-  if (conclusions.some((conclusion) => FAILED_CONCLUSIONS.includes(conclusion)) || statuses.some((state) => state === 'failure' || state === 'error')) return 'failed';
+  if (conclusions.some((conclusion) => FAILED_CONCLUSIONS.has(conclusion)) || statuses.some((state) => state === 'failure' || state === 'error')) return 'failed';
   if (conclusions.includes('running') || statuses.includes('pending') || runs.data.total_count > runs.data.check_runs.length) return 'pending';
-  return conclusions.some((conclusion) => PASSED_CONCLUSIONS.includes(conclusion)) || statuses.includes('success') ? 'passed' : 'none';
+  return conclusions.some((conclusion) => PASSED_CONCLUSIONS.has(conclusion)) || statuses.includes('success') ? 'passed' : 'none';
 }
 
 /** One GitHub read, as its failures name it: what gh could not do, and the lookup GitHub answered. */
