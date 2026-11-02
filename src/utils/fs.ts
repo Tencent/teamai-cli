@@ -153,8 +153,9 @@ export async function readJson<T = unknown>(filePath: string): Promise<T | null>
   if (content === null) return null;
 
   try {
-    // SAFETY: not checked. Each caller names the type of a file teamai writes itself and trusts it as written; a caller
-    // reading a file another tool or a person edits passes `JsonValue` and parses the result.
+    // SAFETY: not checked. A caller names T only for a file that teamai alone writes (a manifest, stamp, or cache) and
+    // trusts it as written. A file another tool or a person may edit, even one teamai also writes, is read as
+    // `JsonValue` (or `unknown`) and narrowed with a schema before use.
     return JSON.parse(content) as T;
   } catch {
     log.warn(`Failed to parse JSON: ${filePath}`);
