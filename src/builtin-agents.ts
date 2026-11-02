@@ -161,7 +161,7 @@ export async function deployBuiltinAgents(
     } catch (e) {
       options?.recorder?.failed('builtin');
       options?.toolsMissingAgents?.add(tool);
-      log.warn(`Failed to create agents dir for ${tool}: ${(e as Error).message}`);
+      log.warn(`Failed to create agents dir for ${tool}: ${e instanceof Error ? e.message : String(e)}`);
       continue;
     }
 
@@ -199,7 +199,7 @@ export async function deployBuiltinAgents(
       } catch (e) {
         options?.recorder?.failed('builtin');
         options?.toolsMissingAgents?.add(tool);
-        log.warn(`Failed to deploy built-in agent ${file} to ${tool}: ${(e as Error).message}`);
+        log.warn(`Failed to deploy built-in agent ${file} to ${tool}: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
   }

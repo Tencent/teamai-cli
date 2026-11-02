@@ -230,7 +230,7 @@ async function listRoles(options: { json?: boolean }): Promise<void> {
     try {
         manifest = await loadRolesManifest(repoPath);
     } catch (e) {
-        log.error((e as Error).message);
+        log.error(e instanceof Error ? e.message : String(e));
         log.info('Run `teamai roles init` to create a roles manifest.');
 
         return;
@@ -291,7 +291,7 @@ export async function rolesSet(
     try {
         manifest = await loadRolesManifest(repoPath);
     } catch (e) {
-        log.error((e as Error).message);
+        log.error(e instanceof Error ? e.message : String(e));
         log.info('Run `teamai roles init` to create a roles manifest first.');
 
         return;
@@ -365,7 +365,7 @@ export async function rolesAdd(
         try {
             manifest = await loadRolesManifest(repoPath);
         } catch (e) {
-            log.error((e as Error).message);
+            log.error(e instanceof Error ? e.message : String(e));
             log.info('Run `teamai roles init` to create a roles manifest first.');
 
             return;
@@ -427,7 +427,7 @@ export async function rolesRemove(
         try {
             manifest = await loadRolesManifest(repoPath);
         } catch (e) {
-            log.error((e as Error).message);
+            log.error(e instanceof Error ? e.message : String(e));
             log.info('Run `teamai roles init` to create a roles manifest first.');
 
             return;
@@ -501,7 +501,7 @@ export async function rolesUpdate(
         try {
             manifest = await loadRolesManifest(repoPath);
         } catch (e) {
-            log.error((e as Error).message);
+            log.error(e instanceof Error ? e.message : String(e));
             log.info('Run `teamai roles init` to create a roles manifest first.');
 
             return;

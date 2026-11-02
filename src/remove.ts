@@ -64,7 +64,7 @@ export async function remove(
       } else if (e instanceof EmptyRepoError) {
         log.error(e.message);
       } else {
-        log.error(`Remove failed: ${(e as Error).message}`);
+        log.error(`Remove failed: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
 
@@ -76,7 +76,7 @@ export async function remove(
 
 function refuseUnrefreshedRemoval(names: string[], error: unknown): void {
   log.error(
-    `The team repo could not be refreshed (${(error as Error).message}), so what "${names.join(', ')}" `
+    `The team repo could not be refreshed (${error instanceof Error ? error.message : String(error)}), so what "${names.join(', ')}" `
     + 'names cannot be resolved against the current default branch. Nothing was removed. '
     + 'Fix the pull (run `teamai pull` to see why) and retry.',
   );
@@ -124,7 +124,7 @@ async function removeCore(
     }
   } catch (e) {
     log.error(
-      `Could not bring this machine's placement records up to date (${(e as Error).message}), `
+      `Could not bring this machine's placement records up to date (${e instanceof Error ? e.message : String(e)}), `
       + 'so the names given cannot be resolved safely. Nothing was removed. '
       + 'Check that the teamai state file is writable, then retry.',
     );
@@ -303,7 +303,7 @@ async function removeCore(
         log.debug('Refreshed marketplace.json after skill removal');
       }
     } catch (e) {
-      log.debug(`Marketplace refresh skipped: ${(e as Error).message}`);
+      log.debug(`Marketplace refresh skipped: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -355,7 +355,7 @@ async function removeCore(
       await checkoutMaster(localConfig.repo.localPath);
     }
   } catch (e) {
-    spin.fail(`Git push failed: ${(e as Error).message}`);
+    spin.fail(`Git push failed: ${e instanceof Error ? e.message : String(e)}`);
 
     return;
   }

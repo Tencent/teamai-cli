@@ -14,7 +14,7 @@ export async function pullLatest(repoPath: string): Promise<void> {
         pullSpin.succeed('Up to date');
     } catch (e) {
         DetachedTeamRepoError.rethrow(e);
-        pullSpin.warn(`Pull failed: ${(e as Error).message}`);
+        pullSpin.warn(`Pull failed: ${e instanceof Error ? e.message : String(e)}`);
     }
 }
 
@@ -57,7 +57,7 @@ export async function runManifestEdit(
         } else if (e instanceof EmptyRepoError) {
             log.error(e.message);
         } else {
-            log.error(`${label} update failed: ${(e as Error).message}`);
+            log.error(`${label} update failed: ${e instanceof Error ? e.message : String(e)}`);
         }
     }
 }
@@ -98,6 +98,6 @@ export async function pushManifestChange(input: {
 
         await checkoutMaster(repoPath);
     } catch (e) {
-        log.error(`Push failed: ${(e as Error).message}`);
+        log.error(`Push failed: ${e instanceof Error ? e.message : String(e)}`);
     }
 }

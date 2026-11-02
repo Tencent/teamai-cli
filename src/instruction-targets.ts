@@ -884,7 +884,7 @@ export async function applyInstructionPlan(
         if (content === null) await remove(file);
         else await writeFile(file, content);
       } catch (e) {
-        failures.push(`Could not update ${file}: ${(e as Error).message}. Check that it is a writable file, then run teamai pull again.`);
+        failures.push(`Could not update ${file}: ${e instanceof Error ? e.message : String(e)}. Check that it is a writable file, then run teamai pull again.`);
         files.set(file, { path: file, status: 'failed' });
         continue;
       }

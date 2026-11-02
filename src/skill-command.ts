@@ -182,7 +182,7 @@ export async function installSkillZip(
   try {
     entries = unzipSync(zip);
   } catch (e) {
-    throw new Error(`failed to unzip skill package: ${(e as Error).message}`, { cause: e });
+    throw new Error(`failed to unzip skill package: ${e instanceof Error ? e.message : String(e)}`, { cause: e });
   }
 
   const prefix = resolveSkillPrefix(entries, slug);

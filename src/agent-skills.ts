@@ -82,7 +82,7 @@ export async function buildClassifyContext(localConfig: LocalConfig): Promise<Cl
 
     sourceSkills = origins;
   } catch (error) {
-    log.warn(`Source provenance could not be determined: ${(error as Error).message}. Source labels may be incomplete; do not treat local-only as proof of local ownership.`);
+    log.warn(`Source provenance could not be determined: ${error instanceof Error ? error.message : String(error)}. Source labels may be incomplete; do not treat local-only as proof of local ownership.`);
   }
 
   return { teamSkills, sourceSkills, sourceSkillPaths, pathTrackedSources };

@@ -297,7 +297,7 @@ async function editProjectsManifest(
     try {
       current = await loadProjectsManifest(repoPath);
     } catch (e) {
-      log.error((e as Error).message);
+      log.error(e instanceof Error ? e.message : String(e));
 
       return;
     }
@@ -309,7 +309,7 @@ async function editProjectsManifest(
     try {
       validateProjectsManifest(result.manifest);
     } catch (e) {
-      log.error((e as Error).message);
+      log.error(e instanceof Error ? e.message : String(e));
 
       return;
     }

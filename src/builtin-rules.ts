@@ -139,7 +139,7 @@ export async function deployBuiltinRules(
         } catch (e) {
             options?.recorder?.failed('builtin');
             options?.toolsMissingRules?.add(tool);
-            log.error(`Failed to deploy built-in rules to ${tool}: ${(e as Error).message}`);
+            log.error(`Failed to deploy built-in rules to ${tool}: ${e instanceof Error ? e.message : String(e)}`);
         }
     }
 

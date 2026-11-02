@@ -93,7 +93,7 @@ export async function status(options: GlobalOptions): Promise<void> {
       console.log('  up to date');
     }
   } catch (e) {
-    log.warn(`Could not check git status: ${(e as Error).message}`);
+    log.warn(`Could not check git status: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   // State
@@ -181,7 +181,7 @@ export async function status(options: GlobalOptions): Promise<void> {
     } catch (e) {
       // A manifest that does not parse fails the pull and the push; status is
       // where the member looks to find out why, so it reports and goes on.
-      log.warn(`  [${handler.type}] could not scan: ${(e as Error).message}`);
+      log.warn(`  [${handler.type}] could not scan: ${e instanceof Error ? e.message : String(e)}`);
       anyUnscanned = true;
       continue;
     }

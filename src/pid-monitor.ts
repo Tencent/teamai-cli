@@ -246,7 +246,7 @@ export function isProcessAlive(pid: number): boolean {
 
         return true;
     } catch (err: unknown) {
-        const code = (err as NodeJS.ErrnoException).code;
+        const code = err instanceof Error && 'code' in err ? err.code : undefined;
 
         if (code === 'ESRCH') return false;  // No such process
 

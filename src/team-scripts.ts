@@ -163,7 +163,7 @@ export async function runTeamScript(
 
     return { status: 'ran', code };
   } catch (e) {
-    log.debug(`scripts.${event}: skipped: ${(e as Error).message}`);
+    log.debug(`scripts.${event}: skipped: ${e instanceof Error ? e.message : String(e)}`);
 
     return { status: 'skipped', code: null };
   }
@@ -189,7 +189,7 @@ export async function syncMcpAfterPostInit(localConfig: LocalConfig): Promise<vo
       log.info('Run `teamai pull` to finish updating MCP servers.');
     }
   } catch (e) {
-    log.warn(`MCP sync after scripts.postInit failed: ${(e as Error).message}`);
+    log.warn(`MCP sync after scripts.postInit failed: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
@@ -226,7 +226,7 @@ async function resolveScript(
   try {
     assertSafePath(scriptPath, [repoPath]);
   } catch (e) {
-    log.debug(`scripts.${event}: skipped: ${(e as Error).message}`);
+    log.debug(`scripts.${event}: skipped: ${e instanceof Error ? e.message : String(e)}`);
 
     return 'unsafe';
   }

@@ -294,7 +294,7 @@ export async function bootstrapSelfRepo(
       const { seedSelfModeToolDirs } = await import('./known-agents.js');
       await seedSelfModeToolDirs(localConfig, teamConfig);
     } catch (e) {
-      log.debug(`[bootstrap] tool-dir seeding skipped: ${(e as Error).message}`);
+      log.debug(`[bootstrap] tool-dir seeding skipped: ${e instanceof Error ? e.message : String(e)}`);
     }
 
     // Inject hooks so session-start pull/report fire from now on.
@@ -319,7 +319,7 @@ export async function bootstrapSelfRepo(
         else if (codexTrust) log.debug(`[bootstrap] Codex trust: ${codexTrust.kind}`);
       }
     } catch (e) {
-      log.debug(`[bootstrap] hook injection failed (non-blocking): ${(e as Error).message}`);
+      log.debug(`[bootstrap] hook injection failed (non-blocking): ${e instanceof Error ? e.message : String(e)}`);
     }
 
     // Register member on the reports orphan branch. Best-effort: no write access
@@ -348,14 +348,14 @@ export async function bootstrapSelfRepo(
         return { files: ['members/'], message: `[teamai] Register member: ${username}` };
       });
     } catch (e) {
-      log.debug(`[bootstrap] member registration skipped (non-blocking): ${(e as Error).message}`);
+      log.debug(`[bootstrap] member registration skipped (non-blocking): ${e instanceof Error ? e.message : String(e)}`);
     }
 
     info('teamai single-repo project initialized locally. Team skills/rules are now active.');
 
     return 'bootstrapped';
   } catch (e) {
-    log.debug(`[bootstrap] failed (non-blocking): ${(e as Error).message}`);
+    log.debug(`[bootstrap] failed (non-blocking): ${e instanceof Error ? e.message : String(e)}`);
 
     return 'skip';
   } finally {
