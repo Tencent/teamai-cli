@@ -19,6 +19,11 @@ import type {
   ReconcileStats,
 } from './reconciler-v2-types.js';
 
+/** A repo-relative path in posix form, the shape `related:` targets use. */
+function toPosix(relPath: string): string {
+  return relPath.split(path.sep).join('/');
+}
+
 // ─── Public interfaces ───────────────────────────────────────────────────────
 
 export interface ReconcileOptions {
@@ -26,6 +31,12 @@ export interface ReconcileOptions {
   dryRun?: boolean;
   productDirs?: string[];
   codeDirs?: string[];
+  /**
+   * The team repo root holding `rules/` and `docs/` (#1563 part 2). Defaults
+   * to the parent of a `teamwiki/` wikiRoot; pass a directory without
+   * rules/docs (a standalone `--output` tree) and no candidates are proposed.
+   */
+  assetRoot?: string;
 }
 
 export interface ReconcileGraphEdge {
@@ -58,7 +69,26 @@ export interface ReconcileResult {
   apiMatches: ApiInterfaceMatch[];
   ruleMatches: RuleCodeMatch[];
   staleWarnings: ReconcileStaleWarning[];
+  /**
+   * Proposed `related:` relations from a team rule or doc to a teamwiki code
+   * page (#1563 part 2), derived by the same term match as the product pages.
+   * Never written: a person copies the ones they accept into the asset's
+   * frontmatter, in an ordinary PR that `review --branch` checks.
+   */
+  relationCandidates: RelationCandidate[];
   stats: ReconcileStats;
+}
+
+/** A proposed relation from a team rule or doc to a teamwiki code page. */
+export interface RelationCandidate {
+  /** The declaring asset's team-tree path (e.g. `docs/payments-overview.md`). */
+  from: string;
+  /** The repo-relative teamwiki page path. */
+  to: string;
+  relation: 'MAPS_TO';
+  /** The key term the match rests on — the explicit basis of the proposal. */
+  term: string;
+  confidenceScore: number;
 }
 
 // ─── Internal types ──────────────────────────────────────────────────────────
@@ -307,6 +337,7 @@ export async function reconcileKnowledge(options: ReconcileOptions): Promise<Rec
   const apiMatches: ApiInterfaceMatch[] = [];
   const ruleMatches: RuleCodeMatch[] = [];
   const staleWarnings: ReconcileStaleWarning[] = [];
+  const relationCandidates: RelationCandidate[] = [];
 
   // Phase 1 — product → code term matching
   const mappedCodePaths = new Set<string>();
@@ -378,6 +409,39 @@ export async function reconcileKnowledge(options: ReconcileOptions): Promise<Rec
   for (const cp of codePages) {
     if (!mappedCodePaths.has(cp.path)) {
       gaps.push({ kind: 'NO_PRODUCT_DOC', message: `Code page "${cp.title}" has no matching product documentation`, sources: [cp.path] });
+    }
+  }
+
+  // Phase 1.5 — team rules/docs → code term match (#1563 part 2). Every rule
+  // and doc in the team clone becomes an input to the same term match as the
+  // product pages; the proposals are never written and never read by recall
+  // until a person copies one into the asset's `related:` frontmatter.
+  const assetRoot = options.assetRoot
+    ?? (path.basename(wikiRoot) === 'teamwiki' ? path.dirname(wikiRoot) : undefined);
+  if (assetRoot) {
+    const assetPages: PageRecord[] = [];
+    for (const dir of ['rules', 'docs']) {
+      assetPages.push(...await readPages(path.join(assetRoot, dir)));
+    }
+    for (const assetPage of assetPages) {
+      const terms = keyTerms(assetPage);
+      if (terms.length === 0) continue;
+      for (const codePage of codePages) {
+        const matchedTerms = terms.filter(t => codePage.text.includes(t));
+        if (matchedTerms.length === 0) continue;
+        const term = matchedTerms[0];
+        const nearTitle = codePage.title.includes(term);
+        relationCandidates.push({
+          from: toPosix(path.relative(assetRoot, assetPage.path)),
+          to: toPosix(path.relative(assetRoot, codePage.path)),
+          relation: 'MAPS_TO',
+          term,
+          confidenceScore: buildConfidence([
+            { name: 'direct_match', weight: 0.9 },
+            ...(nearTitle ? [{ name: 'title_proximity', weight: 0.1 }] : []),
+          ]).score,
+        });
+      }
     }
   }
 
@@ -527,6 +591,7 @@ export async function reconcileKnowledge(options: ReconcileOptions): Promise<Rec
     apiMatches,
     ruleMatches,
     staleWarnings,
+    relationCandidates,
     stats,
   };
 }

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import matter from 'gray-matter';
 import { requireInit, detectProjectConfig, describeUnreadableConfig, loadLocalConfigForScope } from './config.js';
 import { loadIndex, buildIndex, indexInMemory, search, isLegacyIndex } from './utils/search-index.js';
 import type { BuildIndexOptions, SearchResult, UnreadableFile } from './utils/search-index.js';
@@ -20,6 +21,8 @@ import { classifyTreePath, teamwikiCodebaseSlug } from './asset-relations.js';
 import type { AssetRelationType, RelationVia } from './asset-relations.js';
 import { caseFoldKey } from './manifest-schema.js';
 import type { SearchIndexEntry } from './types.js';
+import { expandBraces, rulePaths } from './resources/team-rule.js';
+import { matchGlob } from './utils/glob.js';
 
 /** Relevance threshold for codebase graph hits.
  *  These are log-compressed to a bounded [0,10] range (see `queryCodeKnowledge`
@@ -334,6 +337,79 @@ export interface RelationContext {
    *  then no teamwiki target resolves — never "everything allowed". */
   readonly withheld: ReadonlySet<string> | null;
   readonly learningsBase?: string;
+  /**
+   * Rule entries' `paths:` globs by the rule's team-tree path (#1563 part 1).
+   * A glob that matches the `source:` files of exactly one visible codebase's
+   * page derives a `MAPS_TO` edge at render time; the edges themselves are
+   * never stored.
+   */
+  readonly ruleGlobs?: ReadonlyMap<string, readonly string[]>;
+  /**
+   * Codebase pages this scope can see: the `source:` files of every
+   * `teamwiki/evidence/code/<slug>/…` page in its own wiki clone. Derived
+   * edges are judged against this pool, not against the pages a query
+   * happened to return, so every query in this recall derives the same
+   * edges (#1563, #1636 review).
+   */
+  readonly codePages?: ReadonlyArray<{ treePath: string; slug: string; sources: readonly string[] }>;
+}
+
+/** The `source:` files a teamwiki code page names, read where the page sits. */
+function pageSourcePaths(pageAbsPath: string | undefined): string[] {
+  if (!pageAbsPath || !existsSync(pageAbsPath)) return [];
+  try {
+    const raw = matter(readFileSync(pageAbsPath, 'utf-8')).data['source'];
+    const list = Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : [];
+    return list.filter((s): s is string => typeof s === 'string' && s.trim() !== '').map((s) => s.trim());
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The code pages under `<teamwikiRoot>/evidence/code/<slug>/…`, with each
+ * page's `source:` files. These are the pages graph retrieval can return for
+ * this scope's wiki, so derived edges are judged against them — never against
+ * the subset one query happened to return (#1636 review). A withheld codebase
+ * contributes nothing, matching how declared `teamwiki/…` targets resolve;
+ * `withheld === null` (the list cannot be read) hides every page, never
+ * "everything allowed".
+ */
+export function collectCodePages(
+  teamwikiRoot: string,
+  withheld: ReadonlySet<string> | null,
+): Array<{ treePath: string; slug: string; sources: readonly string[] }> {
+  const pages: Array<{ treePath: string; slug: string; sources: readonly string[] }> = [];
+  if (withheld === null) return pages;
+  const codeRoot = path.join(teamwikiRoot, 'evidence', 'code');
+  let rels: string[];
+  try {
+    rels = readdirSync(codeRoot, { recursive: true }) as string[];
+  } catch {
+    return pages; // no code pages in this wiki
+  }
+  for (const rel of rels) {
+    if (!rel.endsWith('.md')) continue;
+    const treePath = `teamwiki/evidence/code/${rel.split(path.sep).join('/')}`;
+    const slug = teamwikiCodebaseSlug(treePath);
+    if (slug === null || withheld.has(caseFoldKey(slug))) continue;
+    const sources = pageSourcePaths(path.join(codeRoot, rel));
+    if (sources.length > 0) pages.push({ treePath, slug, sources });
+  }
+  return pages;
+}
+
+/** The `paths:` globs of a rule entry's file; empty when unscoped or unreadable. */
+function entryRuleGlobs(entry: SearchIndexEntry): string[] {
+  if (!entry.path || !existsSync(entry.path)) return [];
+  try {
+    // Braces expand here, the same pass the rule renderers run
+    // (rulePaths(...).flatMap(expandBraces), src/resources/team-rule.ts), so
+    // paths: ["src/{pay,other}/**"] derives edges exactly as the rule applies.
+    return rulePaths(matter(readFileSync(entry.path, 'utf-8')).data).flatMap(expandBraces);
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -375,6 +451,7 @@ export async function buildRelationContext(args: {
   const { index, config, learningsBase, hidden } = args;
   const byTreePath = new Map<string, SearchIndexEntry>();
   const incoming = new Map<string, IncomingRelation[]>();
+  const ruleGlobs = new Map<string, string[]>();
   for (const entry of index.entries) {
     if (!entry.treePath || hidden?.has(`${entry.type}:${entry.filename}`)) continue;
     byTreePath.set(entry.treePath, entry);
@@ -382,6 +459,10 @@ export async function buildRelationContext(args: {
       const list = incoming.get(r.target) ?? [];
       list.push({ from: entry.treePath, relation: r.relation, via: r.via });
       incoming.set(r.target, list);
+    }
+    if (entry.type === 'rules') {
+      const globs = entryRuleGlobs(entry);
+      if (globs.length > 0) ruleGlobs.set(entry.treePath, globs);
     }
   }
   for (const list of incoming.values()) list.sort((a, b) => a.from.localeCompare(b.from));
@@ -397,12 +478,18 @@ export async function buildRelationContext(args: {
   } catch {
     withheld = null;
   }
+  const teamwikiRoot = path.join(config.repo.localPath, 'teamwiki');
+  // Teams without scoped rules never look at code pages; skipping the walk
+  // saves ~65 ms per recall at 3,000 pages (#1636 review).
+  const codePages = ruleGlobs.size > 0 ? collectCodePages(teamwikiRoot, withheld) : [];
   return {
     byTreePath,
     incoming,
-    teamwikiRoot: path.join(config.repo.localPath, 'teamwiki'),
+    teamwikiRoot,
     withheld,
     learningsBase,
+    ruleGlobs,
+    codePages,
   };
 }
 
@@ -422,12 +509,17 @@ function resolveRelationTarget(ctx: RelationContext, target: string): string | n
 
 /**
  * The `Related:` lines for one hit: declared outgoing first, then declared
- * incoming, then link outgoing, then link incoming; within each group
- * outgoing keeps the file's order and incoming sorts by the source's tree
- * path. A declared relation beats a link between the same two assets in the
- * same direction. Capped at {@link RELATION_LINES_CAP}.
+ * incoming, then path-derived, then link outgoing, then link incoming; within
+ * each group outgoing keeps the file's order and incoming sorts by the
+ * source's tree path. A declared relation beats a derived or linked one
+ * between the same two assets in the same direction. Capped at
+ * {@link RELATION_LINES_CAP}.
  */
-export function relationLines(ctx: RelationContext, entry: SearchIndexEntry): string[] {
+export function relationLines(
+  ctx: RelationContext,
+  entry: SearchIndexEntry,
+  derived?: { out?: ReadonlySet<string>; in?: ReadonlySet<string> },
+): string[] {
   if (!entry.treePath) return [];
   const lines: string[] = [];
   const seen = new Set<string>();
@@ -443,11 +535,75 @@ export function relationLines(ctx: RelationContext, entry: SearchIndexEntry): st
   const incoming = [...(ctx.incoming.get(entry.treePath) ?? [])].sort((a, b) => a.from.localeCompare(b.from));
   for (const r of own) if (r.via === 'declared') push('→', r.relation, r.target);
   for (const r of incoming) if (r.via === 'declared') push('←', r.relation, r.from);
+  // A declared relation to the same asset wins over a derived or linked one.
   const declaredOut = new Set(own.filter((r) => r.via === 'declared').map((r) => r.target));
   const declaredIn = new Set(incoming.filter((r) => r.via === 'declared').map((r) => r.from));
+  for (const target of [...(derived?.out ?? [])].sort()) {
+    if (!declaredOut.has(target)) push('→', 'MAPS_TO', target);
+  }
+  for (const from of [...(derived?.in ?? [])].sort()) {
+    if (!declaredIn.has(from)) push('←', 'MAPS_TO', from);
+  }
   for (const r of own) if (r.via === 'link' && !declaredOut.has(r.target)) push('→', r.relation, r.target);
   for (const r of incoming) if (r.via === 'link' && !declaredIn.has(r.from)) push('←', r.relation, r.from);
   return lines.slice(0, RELATION_LINES_CAP);
+}
+
+/**
+ * Path-derived relations (#1563 part 1): a rule's `paths:` glob that matches
+ * the `source:` files of a code page this recall already loaded is an edge
+ * with an explicit basis, computed at render time and never stored.
+ *
+ * Edges are computed and kept PER SCOPE: a relation stays inside its owner
+ * (#1552), so a user rule's glob never marks a workspace rule or page — each
+ * scope's rules match independently, and a hit renders only its own scope's
+ * edges. Ambiguity is judged per glob: a glob matching pages of two
+ * codebases is repository-relative and ambiguous, so that glob gives no
+ * edge, while another glob of the same rule that matches one codebase still
+ * does. Pages of withheld codebases never appear here, because recall never
+ * loads them.
+ */
+export interface DerivedEdges {
+  /** rule tree path → page tree paths its globs derive a `MAPS_TO` to */
+  readonly out: ReadonlyMap<string, ReadonlySet<string>>;
+  /** page tree path → rule tree paths deriving a `MAPS_TO` to it */
+  readonly in: ReadonlyMap<string, ReadonlySet<string>>;
+}
+
+function addEdge(map: Map<string, Set<string>>, from: string, to: string): void {
+  const set = map.get(from) ?? new Set<string>();
+  set.add(to);
+  map.set(from, set);
+}
+
+/** The derived edges of each scope, keyed like `relationContexts`. */
+export function computeDerivedRelations(
+  contexts: ReadonlyMap<string, RelationContext>,
+): Map<string, DerivedEdges> {
+  // Edges are judged against the pages each scope can see (its own index),
+  // never against the pages this query returned: a query that returns only
+  // one of two same-glob pages must not flip a certain edge into ambiguity,
+  // and a rule hit must show its → MAPS_TO even when the page is not a hit.
+  const byScope = new Map<string, DerivedEdges>();
+  for (const [scope, ctx] of contexts) {
+    const out = new Map<string, Set<string>>();
+    const inn = new Map<string, Set<string>>();
+    for (const [rule, globs] of ctx.ruleGlobs ?? []) {
+      // Each glob is judged on its own: two globs matching two different
+      // codebases are two certain edges, not one ambiguous pair.
+      for (const glob of globs) {
+        const matched = (ctx.codePages ?? []).filter((pg) => pg.sources.some((s) => matchGlob(glob, s)));
+        const slugs = new Set(matched.map((m) => m.slug));
+        if (slugs.size !== 1) continue; // no match, or this glob spans codebases
+        for (const pg of matched) {
+          addEdge(out, rule, pg.treePath);
+          addEdge(inn, pg.treePath, rule);
+        }
+      }
+    }
+    byScope.set(scope, { out, in: inn });
+  }
+  return byScope;
 }
 
 /**
@@ -463,6 +619,10 @@ export function formatResults(
   lines.push(`--- [teamai:recall:start] --- (${results.length} result${results.length !== 1 ? 's' : ''})${runId ? ` run=${runId}` : ''}`);
   lines.push('');
   const fallbackCtx = relationContexts?.values().next().value as RelationContext | undefined;
+  // Path-derived rule→page edges, computed once over the pages each scope
+  // can see (#1563 part 1). Never stored, and independent of which pages
+  // this query returned.
+  const derived = relationContexts ? computeDerivedRelations(relationContexts) : undefined;
 
   for (let i = 0; i < results.length; i++) {
     const { entry, score, scope, sources, matchedTerms, missingTerms } = results[i];
@@ -491,7 +651,15 @@ export function formatResults(
       // scope has no index there is nothing it can see, and falling back
       // would attach a user relation to a workspace page.
       const ctx = scope !== undefined ? relationContexts.get(scope) : fallbackCtx;
-      if (ctx) lines.push(...relationLines(ctx, entry));
+      if (ctx) {
+        // Derived edges belong to the hit's scope like every other relation:
+        // a hit never borrows another scope's rules (#1552).
+        const derivedForScope = (scope !== undefined ? derived?.get(scope) : undefined)
+          ?? (scope === undefined ? derived?.values().next().value as DerivedEdges | undefined : undefined);
+        lines.push(...relationLines(ctx, entry, derivedForScope && entry.treePath
+          ? { out: derivedForScope.out.get(entry.treePath), in: derivedForScope.in.get(entry.treePath) }
+          : undefined));
+      }
     }
     if (sources && sources.length > 0) {
       lines.push(`Sources: ${sources.map((s) => s.desc ? `${s.path} (${s.desc})` : s.path).join(', ')}`);

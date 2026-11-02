@@ -208,6 +208,17 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
                 console.log(JSON.stringify(result, null, 2));
             } else {
                 console.log(`Reconciliation complete: mappings=${result.mappings}, gaps=${result.gaps.length}, conflicts=${result.conflicts.length}`);
+                // Proposed relations are printed only here, and only in a dry
+                // run: a person copies the ones they accept into the asset's
+                // `related:` frontmatter, in an ordinary PR (#1563 part 2).
+                // Until merged there, recall never shows a candidate.
+                if (opts.dryRun && result.relationCandidates.length > 0) {
+                    console.log('');
+                    console.log('Relation candidates (copy the ones you accept into the asset\'s related:)');
+                    for (const candidate of result.relationCandidates) {
+                        console.log(`  ${candidate.from}  ${candidate.relation}  ${candidate.to}   term "${candidate.term}", confidence ${candidate.confidenceScore.toFixed(1)}`);
+                    }
+                }
             }
             if (team) {
                 const { autoPushTeamRepo } = await import('./utils/git.js');
