@@ -45,6 +45,7 @@ import { hooksEntryReader } from './resources/hooks.js';
 import { getHandler } from './resources/index.js';
 import { listRepoFilesRecursive } from './resources/repo-resource.js';
 import { isNamespaceDir, resolveResourceNamespaces } from './resource-namespaces.js';
+import { loadRoleAssignmentsIfPresent } from './role-assignments.js';
 import { loadRolesManifestIfPresent, type RolesManifest } from './roles.js';
 import { AGENT_TOOLS } from './tools.js';
 import { LocalConfigSchema, type GlobalOptions, type LocalConfig, type ResourceItem, type TeamaiConfig } from './types.js';
@@ -1408,6 +1409,18 @@ interface ModelContext {
   agentNamespaces: readonly string[] | null;
 }
 
+/** Whether `manifest/members.yaml` leaves a member with no role: one it lists with none, or every one it does not list. */
+async function assignsNoRole(repoDir: string): Promise<boolean> {
+  try {
+    const assignments = await loadRoleAssignmentsIfPresent(repoDir);
+
+    return assignments !== null && (assignments.default.length === 0 || Object.values(assignments.members).some((held) => held.length === 0));
+  } catch {
+    // A file that does not read gives every member no role, as pull does.
+    return true;
+  }
+}
+
 async function modelContexts(repoDir: string, roles: RolesManifest | null, projects: ProjectsManifest | null): Promise<ModelContext[]> {
   const base = reviewTreeConfig(repoDir, os.tmpdir());
 
@@ -1415,7 +1428,7 @@ async function modelContexts(repoDir: string, roles: RolesManifest | null, proje
     { label: 'no role or project', config: base },
     // With no role and no project, a roles-only team delivers every namespace, so a namespace that overrides a shared
     // resource hides it; a member the team assigned no role receives the shared resources only.
-    ...(roles?.roles.length ? [{ label: 'assigned no role', config: { ...base, roleAssignment: { source: 'default' as const, local: { additionalRoles: [] } } } }] : []),
+    ...(await assignsNoRole(repoDir) ? [{ label: 'assigned no role', config: { ...base, roleAssignment: { source: 'default' as const, local: { additionalRoles: [] } } } }] : []),
     ...(roles?.roles ?? []).map((role) => ({ label: `role ${role.id}`, config: { ...base, primaryRole: role.id } })),
     ...(projects?.projects ?? []).map((project) => ({ label: `project ${project.id}`, config: { ...base, projects: [project.id] } })),
   ];
