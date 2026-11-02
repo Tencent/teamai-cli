@@ -11,6 +11,8 @@
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
+import { z } from 'zod';
+import { JsonValueSchema, type JsonValue } from './types.js';
 import { shellQuoteValue } from './utils/shell-profile.js';
 import { findGitBashWindows } from './bundled-runtime.js';
 
@@ -24,17 +26,46 @@ const COPILOT_MARKER = '--tool copilot';
  * Copilot runs goes through this one predicate. The shell guard runs the same
  * logic from COPILOT_RUNS_ENTRIES_SOURCE; claude-hook-host.test.ts runs both.
  */
-export function copilotRunsEntries(data: unknown): Array<[string, string | undefined, string]> {
-  const file = data as { version?: unknown; disableAllHooks?: unknown; hooks?: unknown } | null;
+export function copilotRunsEntries(data: JsonValue): Array<[string, string | undefined, string]> {
+  const file = CopilotRunsFileSchema.safeParse(data);
 
-  if (file?.version !== 1 || file.disableAllHooks || !file.hooks || typeof file.hooks !== 'object') return [];
+  if (!file.success || file.data.disableAllHooks) return [];
 
-  return Object.entries(file.hooks).flatMap(([event, entries]) => !Array.isArray(entries) ? [] : entries
-    .filter(entry => entry?.type === 'command')
-    .flatMap(entry => [entry.bash, entry.powershell, entry.command]
-      .filter(command => typeof command === 'string')
-      .map((command): [string, string | undefined, string] => [event, entry.matcher, command])));
+  return Object.entries(file.data.hooks).flatMap(([event, entries]) => {
+    const list = z.array(JsonValueSchema).safeParse(entries);
+
+    return !list.success ? [] : list.data.flatMap((value) => {
+      const entry = CopilotRunsEntrySchema.safeParse(value);
+
+      if (!entry.success) return [];
+      const { bash, powershell, command, matcher } = entry.data;
+
+      return [bash, powershell, command].flatMap((run): Array<[string, string | undefined, string]> => (run === undefined ? [] : [[event, matcher, run]]));
+    });
+  });
 }
+
+/** A file Copilot loads hooks from: version 1, with an object (or list) of events. */
+const CopilotRunsFileSchema = z.object({
+  version: z.literal(1),
+  disableAllHooks: JsonValueSchema.optional(),
+  hooks: z.union([z.record(z.string(), JsonValueSchema), z.array(JsonValueSchema)]),
+});
+
+/** A command field Copilot runs; one that is not text runs nothing. */
+const CopilotRunsCommandSchema = z.string().optional().catch(undefined);
+
+/**
+ * A hook entry Copilot runs. An entry whose matcher is not text is left out:
+ * its matcher equals no matcher teamai writes.
+ */
+const CopilotRunsEntrySchema = z.object({
+  type: z.literal('command'),
+  matcher: z.string().optional(),
+  bash: CopilotRunsCommandSchema,
+  powershell: CopilotRunsCommandSchema,
+  command: CopilotRunsCommandSchema,
+});
 
 // copilotRunsEntries as plain JavaScript, for the shell guard. A fixed string,
 // not copilotRunsEntries.toString(): the bundler may rename the function's

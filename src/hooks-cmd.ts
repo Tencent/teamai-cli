@@ -260,7 +260,7 @@ export async function hooksList(_options: GlobalOptions): Promise<void> {
             rows.push({
                 tool,
                 status: present.every(Boolean) ? 'installed' : 'missing',
-                settingsPath: formatDisplayPath(artifacts[0] as string),
+                settingsPath: formatDisplayPath(artifacts[0]),
                 builtinDefs: installedBuiltinHookDefs(tool, false),
             });
             continue;
@@ -337,7 +337,7 @@ export async function hooksList(_options: GlobalOptions): Promise<void> {
     } else {
         console.log(`Team hooks (B) — hooks/ (${teamHooks.entries.length}):`);
         // The tools listed above with a hook surface.
-        const hookTools = rows.filter((row) => row.status !== 'not configured').map((row) => row.tool);
+        const hookTools = rows.flatMap((row) => (row.status !== 'not configured' ? [row.tool] : []));
 
         if (teamHooks.entries.length === 0) console.log('  (none)');
 
@@ -397,7 +397,7 @@ export async function hooksRemove(_options: GlobalOptions): Promise<void> {
                 }
             } catch (e) {
                 keepRecordsFor.add(tool);
-                log.warn(`Failed to remove hooks from ${place.path}: ${(e as Error).message}`);
+                log.warn(`Failed to remove hooks from ${place.path}: ${e instanceof Error ? e.message : String(e)}`);
             }
         }
     }
@@ -416,7 +416,7 @@ export async function hooksRemove(_options: GlobalOptions): Promise<void> {
         // The project's Claude and Codex team hooks live in the main checkout.
         mainCheckout: await resolveMainCheckoutHooks(localConfig, teamConfig.toolPaths),
         // Self mode: and the team hooks in each tool's settings.local.json (#915).
-        ...(isSelfMode(localConfig) ? { selfLocalTeamHooks: { relocate: false } } : {}),
+        selfLocalTeamHooks: isSelfMode(localConfig) ? { relocate: false } : undefined,
         codexTrust: codexTrustPolicy(localConfig),
         keepRecordsFor,
         unwritten,

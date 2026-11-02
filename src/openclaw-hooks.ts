@@ -30,6 +30,7 @@
  */
 
 import path from 'node:path';
+import { z } from 'zod';
 import { writeIfChanged, pathExists, readJsonObject, writeJsonAtomic, remove, symlinkTarget } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { getUserHome } from './utils/home.js';
@@ -68,13 +69,13 @@ export const OPENCLAW_HOOK_KEY = OPENCLAW_HOOK_DIR;
  * OpenClaw emits (docs/automation/hooks/event-types.md). `command:stop` only
  * observes a cancel, so it is not a stop.
  */
-const EVENT_MAP: Record<string, string> = {
+const EVENT_MAP = {
   'command:new': 'session-start',
   'command:reset': 'session-start',
   'session:auto-reset': 'session-start',
   'gateway:startup': 'session-start',
   'message:received': 'prompt-submit',
-};
+} satisfies Record<string, string>;
 
 function buildHookMd(tool: string): string {
   const events = Object.keys(EVENT_MAP);
@@ -346,35 +347,57 @@ export async function removeOpenClawTeamHooks(): Promise<void> {
   }
 }
 
-type PluginsConfig = { enabled?: unknown; allow?: unknown; deny?: unknown; load?: { paths?: unknown }; entries?: Record<string, unknown> };
+/** A JSON object of openclaw.json. teamai reads it in place and writes it back key for key. */
+const ConfigObjectSchema = z.record(z.string(), z.unknown());
 
-export function pluginsOf(config: Record<string, unknown>): PluginsConfig {
-  return config.plugins && typeof config.plugins === 'object' ? config.plugins as PluginsConfig : {};
+type ConfigObject = z.infer<typeof ConfigObjectSchema>;
+
+function isConfigObject(value: unknown): value is ConfigObject {
+  return ConfigObjectSchema.safeParse(value).success;
+}
+
+/** A list of openclaw.json. */
+const ConfigListSchema = z.array(z.unknown());
+
+/** A directory OpenClaw searches: a name that is not blank. */
+const ExtraDirSchema = z.string().trim().min(1);
+
+export function pluginsOf(config: ConfigObject): ConfigObject {
+  return isConfigObject(config.plugins) ? config.plugins : {};
+}
+
+/** The object `object` holds under `key`, as written, or undefined when it holds none. */
+function childObject(object: ConfigObject | undefined, key: string): ConfigObject | undefined {
+  const child = object?.[key];
+
+  return isConfigObject(child) ? child : undefined;
 }
 
 /** Why the plugin does not load under this config and the fix, or null when it loads once listed and enabled. */
-export function teamHookPluginBlocker(plugins: PluginsConfig): string | null {
+export function teamHookPluginBlocker(plugins: ConfigObject): string | null {
   // OpenClaw trims and lowercases the ids these lists hold.
-  const listed = (list: unknown) => Array.isArray(list)
-    && list.some((id) => typeof id === 'string' && id.trim().toLowerCase() === OPENCLAW_TEAM_HOOK_PLUGIN);
+  const listed = (key: 'allow' | 'deny'): boolean => (ConfigListSchema.safeParse(plugins[key]).data ?? [])
+    .some((id) => z.string().safeParse(id).data?.trim().toLowerCase() === OPENCLAW_TEAM_HOOK_PLUGIN);
 
   if (plugins.enabled === false) return 'plugins are switched off (plugins.enabled: false); turn them on';
 
-  if (listed(plugins.deny)) return `plugins.deny lists ${OPENCLAW_TEAM_HOOK_PLUGIN}; take it out`;
+  if (listed('deny')) return `plugins.deny lists ${OPENCLAW_TEAM_HOOK_PLUGIN}; take it out`;
+  const allow = ConfigListSchema.safeParse(plugins.allow).data;
 
-  if (Array.isArray(plugins.allow) && plugins.allow.length > 0 && !listed(plugins.allow)) return `plugins.allow does not list ${OPENCLAW_TEAM_HOOK_PLUGIN}; add it`;
-  const entry = plugins.entries?.[OPENCLAW_TEAM_HOOK_PLUGIN];
+  if (allow && allow.length > 0 && !listed('allow')) return `plugins.allow does not list ${OPENCLAW_TEAM_HOOK_PLUGIN}; add it`;
+  const entry = childObject(childObject(plugins, 'entries'), OPENCLAW_TEAM_HOOK_PLUGIN);
 
-  if (entry && typeof entry === 'object' && (entry as { enabled?: unknown }).enabled === false) return `plugins.entries.${OPENCLAW_TEAM_HOOK_PLUGIN}.enabled is false; set it to true`;
+  if (entry?.enabled === false) return `plugins.entries.${OPENCLAW_TEAM_HOOK_PLUGIN}.enabled is false; set it to true`;
 
   return null;
 }
 
 /** `config` with the plugin's load path and entry added (`load`) or taken out (`unload`), dropping parents left empty. */
-function withTeamHookPlugin(config: Record<string, unknown>, file: string, action: 'load' | 'unload'): Record<string, unknown> {
+function withTeamHookPlugin(config: ConfigObject, file: string, action: 'load' | 'unload'): ConfigObject {
   const plugins = pluginsOf(config);
-  const paths = Array.isArray(plugins.load?.paths) ? plugins.load.paths.filter((p) => p !== file) : [];
-  const entries = plugins.entries && typeof plugins.entries === 'object' ? plugins.entries : {};
+  const pluginsLoad = childObject(plugins, 'load');
+  const paths = ConfigListSchema.safeParse(pluginsLoad?.paths).data?.filter((p) => p !== file) ?? [];
+  const entries = childObject(plugins, 'entries') ?? {};
   const ownEntry = JSON.stringify(entries[OPENCLAW_TEAM_HOOK_PLUGIN]) === JSON.stringify(TEAM_HOOK_PLUGIN_ENTRY);
   const nextPaths = action === 'load' ? [...paths, file] : paths;
 
@@ -382,9 +405,9 @@ function withTeamHookPlugin(config: Record<string, unknown>, file: string, actio
     ? { ...entries, [OPENCLAW_TEAM_HOOK_PLUGIN]: TEAM_HOOK_PLUGIN_ENTRY }
     : ownEntry ? withoutKey(entries, OPENCLAW_TEAM_HOOK_PLUGIN) ?? {} : entries;
 
-  const load = { ...plugins.load, paths: nextPaths };
+  const load = { ...pluginsLoad, paths: nextPaths };
   const nextLoad = nextPaths.length > 0 ? load : withoutKey(load, 'paths');
-  const next: Record<string, unknown> = { ...plugins, load: nextLoad, entries: nextEntries };
+  const next: ConfigObject = { ...plugins, load: nextLoad, entries: nextEntries };
 
   if (!nextLoad) delete next.load;
 
@@ -434,26 +457,18 @@ async function updateOpenClawPluginConfig(file: string, action: 'load' | 'unload
     : `Unloaded the teamai OpenClaw team hooks plugin in ${cfgPath}`);
 }
 
-type OpenclawInternalHooks = {
-  enabled?: unknown;
-  entries?: Record<string, { enabled?: unknown } | undefined>;
-  load?: { extraDirs?: unknown };
-};
-
-function internalHooksOf(cfg: Record<string, unknown>): OpenclawInternalHooks {
-  const hooks = cfg.hooks as { internal?: unknown } | undefined;
-  const internal = hooks && typeof hooks === 'object' ? hooks.internal : undefined;
-
-  return internal && typeof internal === 'object' ? internal as OpenclawInternalHooks : {};
+/** `hooks.internal` of openclaw.json, as written. */
+function internalHooksOf(cfg: ConfigObject): ConfigObject {
+  return childObject(childObject(cfg, 'hooks'), 'internal') ?? {};
 }
 
 /**
  * True when OpenClaw would load every hook it discovers with these entries:
  * master flag on, no named entry, no extra dir (src/hooks/configured.ts).
  */
-function isOpenEndedDiscovery(internal: OpenclawInternalHooks, entries: Record<string, unknown>): boolean {
-  const extraDirs = internal.load?.extraDirs;
-  const hasExtraDirs = Array.isArray(extraDirs) && extraDirs.some((d) => typeof d === 'string' && d.trim());
+function isOpenEndedDiscovery(internal: ConfigObject, entries: ConfigObject): boolean {
+  const extraDirs = ConfigListSchema.safeParse(childObject(internal, 'load')?.extraDirs).data;
+  const hasExtraDirs = extraDirs !== undefined && extraDirs.some((d) => ExtraDirSchema.safeParse(d).success);
 
   return internal.enabled === true && !Object.keys(entries).some((name) => name.trim()) && !hasExtraDirs;
 }
@@ -462,7 +477,7 @@ function isOpenEndedDiscovery(internal: OpenclawInternalHooks, entries: Record<s
 export function openclawHookEnabledIn(config: Record<string, unknown>): boolean {
   const internal = internalHooksOf(config);
 
-  return internal.enabled !== false && internal.entries?.[OPENCLAW_HOOK_KEY]?.enabled === true;
+  return internal.enabled !== false && childObject(childObject(internal, 'entries'), OPENCLAW_HOOK_KEY)?.enabled === true;
 }
 
 /**
@@ -501,8 +516,8 @@ async function enableOpenClawHookEntry(hookKey: string): Promise<void> {
 
   const config = read.kind === 'ok' ? read.value : {};
   const internal = internalHooksOf(config);
-  const entries = internal.entries && typeof internal.entries === 'object' ? internal.entries : {};
-  const entry = entries[hookKey];
+  const entries = childObject(internal, 'entries') ?? {};
+  const entry = childObject(entries, hookKey);
 
   if (internal.enabled === false) {
     log.warn(`OpenClaw internal hooks are switched off (hooks.internal.enabled: false in ${cfgPath}), `
@@ -533,19 +548,19 @@ async function enableOpenClawHookEntry(hookKey: string): Promise<void> {
     return;
   }
 
-  const hooks = config.hooks && typeof config.hooks === 'object' ? config.hooks as Record<string, unknown> : {};
+  const hooks = childObject(config, 'hooks') ?? {};
   config.hooks = { ...hooks, internal: { ...internal, entries: { ...entries, [hookKey]: { ...entry, enabled: true } } } };
 
   try {
     await writeJsonAtomic(await symlinkTarget(cfgPath), config);
     log.success(`Enabled the teamai OpenClaw hook ${hookKey} in ${cfgPath}`);
   } catch (e) {
-    log.warn(`OpenClaw: could not enable the teamai hook ${hookKey} in ${cfgPath}: ${(e as Error).message}. Run ${enableCmd}.`);
+    log.warn(`OpenClaw: could not enable the teamai hook ${hookKey} in ${cfgPath}: ${e instanceof Error ? e.message : String(e)}. Run ${enableCmd}.`);
   }
 }
 
 /** `obj` without `key`; `undefined` when nothing is left. */
-function withoutKey(obj: Record<string, unknown>, key: string): Record<string, unknown> | undefined {
+function withoutKey(obj: ConfigObject, key: string): ConfigObject | undefined {
   const { [key]: _dropped, ...rest } = obj;
 
   return Object.keys(rest).length > 0 ? rest : undefined;
@@ -573,9 +588,9 @@ export async function removeOpenClawHookEntry(hookKey: string = OPENCLAW_HOOK_KE
 
   const cfg = read.value;
   const internal = internalHooksOf(cfg);
-  const entries = internal.entries;
+  const entries = childObject(internal, 'entries');
 
-  if (!entries || typeof entries !== 'object' || !Object.hasOwn(entries, hookKey)) return;
+  if (!entries || !Object.hasOwn(entries, hookKey)) return;
   const rest = withoutKey(entries, hookKey);
 
   if (isOpenEndedDiscovery(internal, rest ?? {})) {
@@ -585,7 +600,7 @@ export async function removeOpenClawHookEntry(hookKey: string = OPENCLAW_HOOK_KE
   }
 
   const nextInternal = rest ? { ...internal, entries: rest } : withoutKey(internal, 'entries');
-  const hooks = cfg.hooks as Record<string, unknown>;
+  const hooks = childObject(cfg, 'hooks') ?? {};
   const nextHooks = nextInternal ? { ...hooks, internal: nextInternal } : withoutKey(hooks, 'internal');
   const next = nextHooks ? { ...cfg, hooks: nextHooks } : withoutKey(cfg, 'hooks') ?? {};
   await writeJsonAtomic(await symlinkTarget(cfgPath), next);

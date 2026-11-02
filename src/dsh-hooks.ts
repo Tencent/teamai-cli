@@ -50,7 +50,7 @@ export function resolveDshHomePatchPath(): string {
   return path.join(toolHome('dsh'), DSH_PATCH_FILE);
 }
 
-const isTeamaiRow = (entry: unknown): boolean => YAML.isMap(entry) && entry.get('id') === DSH_HOOK_PLUGIN_ID;
+const isTeamaiRow = (entry: unknown): entry is YAML.YAMLMap => YAML.isMap(entry) && entry.get('id') === DSH_HOOK_PLUGIN_ID;
 
 /**
  * Set teamai's row in `$DSH_HOME/cordis.patch.yml` to mount `configPath`, or

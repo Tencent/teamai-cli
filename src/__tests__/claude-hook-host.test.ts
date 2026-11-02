@@ -4,13 +4,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { COPILOT_RUNS_ENTRIES_SOURCE, claudeHookOtherHostSkip, claudeHookUsesPowerShell, copilotRunsEntries } from '../claude-hook-host.js';
+import type { JsonValue } from '../types.js';
 
 // The shell guard runs COPILOT_RUNS_ENTRIES_SOURCE; the CLI runs copilotRunsEntries.
 const guardRuns = new Function(`return ${COPILOT_RUNS_ENTRIES_SOURCE};`)() as (data: unknown) => unknown;
 
-const hook = (fields: Record<string, unknown>) => ({ type: 'command', ...fields });
+const hook = (fields: { [key: string]: JsonValue }) => ({ type: 'command', ...fields });
 
-const FILES: Array<[string, unknown]> = [
+const FILES: Array<[string, JsonValue]> = [
   ['null', null],
   ['a non-object', 'hooks'],
   ['version 2', { version: 2, hooks: { sessionStart: [hook({ bash: 'a' })] } }],

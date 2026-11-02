@@ -1,9 +1,26 @@
 import path from 'node:path';
+import { z } from 'zod';
 import { getDispatchCommand, getTeamHookDispatchCommand } from './builtin-hooks.js';
 import { bridgedTeamHookEvents } from './bridged-team-hooks.js';
 import { listDirs, listFiles, pathExists, readFileSafe, readJsonObject, remove, writeFile, writeIfChanged } from './utils/fs.js';
 import { getUserHome } from './utils/home.js';
 import { hookAdapterDir } from './locate.js';
+
+/** A Kiro hook file's list of hooks, each as written. */
+const KiroHookListSchema = z.array(z.unknown());
+
+/** A Kiro hook entry teamai named. */
+const NamedKiroHookSchema = z.object({ name: z.string() });
+
+/** The built-in entry teamai writes in kiroHookFile, as far as teamai recognizes it. */
+const OwnKiroHookSchema = z.object({ name: z.literal('teamai-session-start'), action: z.object({ command: z.string() }) });
+
+/** An object of a legacy agent file: its `hooks` or one of their entries, edited in place and written back. */
+const KiroJsonObjectSchema = z.record(z.string(), z.unknown());
+
+function isKiroJsonObject(value: unknown): value is z.infer<typeof KiroJsonObjectSchema> {
+  return KiroJsonObjectSchema.safeParse(value).success;
+}
 
 /** Kiro CLI V3 loads user hook files independently of the selected agent. */
 export function kiroHookFile(): string {
@@ -35,9 +52,13 @@ function buildKiroTeamHooks(events: ReadonlyMap<string, number>): string {
 
 async function ownsKiroTeamHooks(): Promise<boolean> {
   const read = await readJsonObject(kiroTeamHookFile());
-  const hooks = read.kind === 'ok' ? read.value.hooks : undefined;
+  const hooks = KiroHookListSchema.safeParse(read.kind === 'ok' ? read.value.hooks : undefined);
 
-  return Array.isArray(hooks) && hooks.every((hook: { name?: unknown }) => typeof hook?.name === 'string' && hook.name.startsWith(TEAM_HOOK_NAME));
+  return hooks.success && hooks.data.every((hook) => {
+    const named = NamedKiroHookSchema.safeParse(hook);
+
+    return named.success && named.data.name.startsWith(TEAM_HOOK_NAME);
+  });
 }
 
 /** Write Kiro's team hook entries from the bridged file, or remove them when the team has none. */
@@ -67,10 +88,13 @@ export async function ownsKiroHooks(): Promise<boolean> {
   if (content === null) return false;
 
   try {
-    const parsed = JSON.parse(content) as { hooks?: { name?: string; action?: { command?: string } }[] };
+    const hooks = z.object({ hooks: KiroHookListSchema }).safeParse(JSON.parse(content));
 
-    return Array.isArray(parsed.hooks) && parsed.hooks.some(hook => hook?.name === 'teamai-session-start'
-      && typeof hook.action?.command === 'string' && hook.action.command.includes('hook-dispatch session-start --tool kiro'));
+    return hooks.success && hooks.data.hooks.some((hook) => {
+      const own = OwnKiroHookSchema.safeParse(hook);
+
+      return own.success && own.data.action.command.includes('hook-dispatch session-start --tool kiro');
+    });
   } catch {
     return false;
   }
@@ -138,15 +162,14 @@ export async function injectKiroHooks(projectRoot?: string): Promise<void> {
       const read = await readJsonObject(file);
 
       if (read.kind !== 'ok') continue;
-      const hooks = read.value.hooks;
+      const map = read.value.hooks;
 
-      if (typeof hooks !== 'object' || hooks === null || Array.isArray(hooks)) continue;
-      const map = hooks as Record<string, unknown>;
+      if (!isKiroJsonObject(map)) continue;
 
       if (!Array.isArray(map.agentSpawn)) continue;
+      const legacy = getDispatchCommand('session-start', 'kiro');
 
-      const remaining = map.agentSpawn.filter((entry: unknown) => typeof entry !== 'object' || entry === null
-        || !('command' in entry) || entry.command !== getDispatchCommand('session-start', 'kiro'));
+      const remaining = map.agentSpawn.filter((entry) => !isKiroJsonObject(entry) || !('command' in entry) || entry.command !== legacy);
 
       if (remaining.length === map.agentSpawn.length) continue;
 

@@ -108,7 +108,13 @@ export function foreignInstructionsPlugin(): string {
  * Outside a project `hook-dispatch instructions` prints nothing and the
  * section is empty: the user-scope blocks are in SOUL.md.
  */
-export function buildInstructionsPlugin(entry = resolveCliEntry()): { manifest: string; init: string } {
+/** The files of teamai's Hermes instructions plugin. */
+export interface HermesInstructionsPlugin {
+  manifest: string;
+  init: string;
+}
+
+export function buildInstructionsPlugin(entry = resolveCliEntry()): HermesInstructionsPlugin {
   if (!entry) throw new Error('Cannot resolve the teamai CLI entry; run `teamai hooks inject` from the installed CLI.');
 
   const manifest = [
@@ -307,7 +313,7 @@ export async function injectHermesHooks(): Promise<void> {
   try {
     await chmod(scriptPath, 0o755);
   } catch (e) {
-    log.warn(`Failed to chmod Hermes hook script: ${(e as Error).message}`);
+    log.warn(`Failed to chmod Hermes hook script: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   // Retire the unquoted command as well as its exact-match approval on upgrade.
@@ -378,13 +384,13 @@ export async function removeHermesHooks(home = toolHome('hermes')): Promise<void
 }
 
 /** The Hermes shell-hook event an earlier release registered each agent hook event under (#1220). */
-const AGENT_TO_HERMES_EVENTS: Readonly<Record<string, string>> = {
-  SessionStart: 'on_session_start',
-  UserPromptSubmit: 'pre_llm_call',
-  PreToolUse: 'pre_tool_call',
-  PostToolUse: 'post_tool_call',
-  Stop: 'on_session_end',
-};
+const AGENT_TO_HERMES_EVENTS: ReadonlyMap<string, string> = new Map([
+  ['SessionStart', 'on_session_start'],
+  ['UserPromptSubmit', 'pre_llm_call'],
+  ['PreToolUse', 'pre_tool_call'],
+  ['PostToolUse', 'post_tool_call'],
+  ['Stop', 'on_session_end'],
+]);
 
 /**
  * Remove the agent hook entry an earlier release registered in Hermes
@@ -403,7 +409,7 @@ export async function removeHermesAgentHook(opts: {
 
   if (opts.event !== undefined) {
     // Versions before #1220 allowlisted the agent event name itself.
-    for (const event of new Set([AGENT_TO_HERMES_EVENTS[opts.event], opts.event])) {
+    for (const event of new Set([AGENT_TO_HERMES_EVENTS.get(opts.event), opts.event])) {
       if (event) await removeHermesAllowlist(event, opts.command);
     }
   }

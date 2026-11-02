@@ -1,5 +1,6 @@
 import YAML from 'yaml';
 import path from 'node:path';
+import { z } from 'zod';
 import { toolHome } from './tool-home.js';
 import { readFileSafe, writeFile, ensureDir, remove, pathExists, readJson, writeJson } from './utils/fs.js';
 import { TEAMAI_RULES_START, TEAMAI_RULES_END } from './types.js';
@@ -13,15 +14,18 @@ export function getHermesConfigPath(home = toolHome('hermes')): string {
   return path.join(home, 'config.yaml');
 }
 
+/** The cap config.yaml sets on context files: a finite number above zero, else none. */
+const ContextFileBudgetSchema = z.object({ context_file_max_chars: z.number().positive().optional().catch(undefined) });
+
 /** Hermes uses an explicit cap, or a model-dependent cap with a 20,000-character floor. */
 export async function hermesContextFileBudget(): Promise<{ limit: number; explicit: boolean; error?: string }> {
   const raw = await readFileSafe(getHermesConfigPath());
 
   try {
-    const config = raw ? YAML.parse(raw) as { context_file_max_chars?: unknown } | null : null;
-    const value = config?.context_file_max_chars;
+    const config = ContextFileBudgetSchema.safeParse(raw ? YAML.parse(raw) : null);
+    const value = config.success ? config.data.context_file_max_chars : undefined;
 
-    if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+    if (value !== undefined) {
       return { limit: Math.trunc(value), explicit: true };
     }
 
@@ -35,25 +39,25 @@ export async function hermesContextFileBudget(): Promise<{ limit: number; explic
  * Read the Hermes config.yaml as a YAML Document, preserving comments and
  * formatting. Returns an empty Document when the file is missing or empty.
  */
-async function readConfigDoc(home = toolHome('hermes')): Promise<YAML.Document.Parsed> {
+async function readConfigDoc(home = toolHome('hermes')): Promise<YAML.Document> {
   const content = await readFileSafe(getHermesConfigPath(home));
 
-  if (!content || content.trim() === '') return new YAML.Document({}) as YAML.Document.Parsed;
+  if (!content || content.trim() === '') return new YAML.Document({});
   const doc = YAML.parseDocument(content);
 
   // If the top level is not a map (unexpected), start fresh to stay safe.
   if (!doc.contents || !YAML.isMap(doc.contents)) {
-    return new YAML.Document({}) as YAML.Document.Parsed;
+    return new YAML.Document({});
   }
 
-  return doc as YAML.Document.Parsed;
+  return doc;
 }
 
 /**
  * Serialize and write the Hermes config.yaml Document, creating the home dir
  * if needed. Comments and key order in the original file are preserved.
  */
-async function writeConfigDoc(doc: YAML.Document.Parsed, home = toolHome('hermes')): Promise<void> {
+async function writeConfigDoc(doc: YAML.Document, home = toolHome('hermes')): Promise<void> {
   await ensureDir(home);
   await writeFile(getHermesConfigPath(home), doc.toString());
 }
@@ -188,6 +192,24 @@ interface HookEntry {
   timeout?: number;
 }
 
+/** A list of config.yaml as written: its entries need not be JSON (`.inf`) and are kept whole. */
+const YamlListSchema = z.array(z.unknown());
+
+/** A mapping of config.yaml as written, kept key for key. */
+const YamlMapSchema = z.record(z.string(), z.unknown());
+
+/** A hook entry teamai matches by its `command`. */
+const HookCommandSchema = z.object({ command: z.string() });
+
+/**
+ * The entries of a hook list that stay when the entry for `command` is
+ * removed or rewritten: each mapping (or list) with another command, as written.
+ */
+function entriesBesides(list: z.infer<typeof YamlListSchema>, command: string): z.infer<typeof YamlListSchema> {
+  return list.filter((entry) => Array.isArray(entry)
+    || (YamlMapSchema.safeParse(entry).success && HookCommandSchema.safeParse(entry).data?.command !== command));
+}
+
 /** Shape of the allowlist JSON file. */
 interface AllowlistFile {
   approvals: Array<{ event: string; command: string }>;
@@ -213,9 +235,9 @@ export async function upsertHermesHook(
 
   // Get current hooks[event] as a plain JS array.
   const rawSeq = doc.getIn(['hooks', event]);
-  const currentJs: unknown = YAML.isSeq(rawSeq) ? rawSeq.toJSON() : rawSeq;
-  const arr: HookEntry[] = Array.isArray(currentJs) ? (currentJs as HookEntry[]) : [];
-  const untouched = arr.filter((e) => e && typeof e === 'object' && e.command !== entry.command);
+  const current = YamlListSchema.safeParse(YAML.isSeq(rawSeq) ? rawSeq.toJSON() : rawSeq);
+  const arr = current.success ? current.data : [];
+  const untouched = entriesBesides(arr, entry.command);
 
   // Build clean entry without undefined keys to avoid YAML null values.
   const cleanEntry: HookEntry = { command: entry.command };
@@ -249,17 +271,16 @@ export async function removeHermesHookByCommand(command: string, home = toolHome
   // Get hooks as a plain JS object for iteration.
   const rawHooks = doc.getIn(['hooks']);
 
-  const hooks: Record<string, unknown> | null = YAML.isMap(rawHooks)
-    ? (rawHooks.toJSON() as Record<string, unknown>)
-    : null;
+  const hooks = YamlMapSchema.safeParse(YAML.isMap(rawHooks) ? rawHooks.toJSON() : null);
 
-  if (!hooks || typeof hooks !== 'object') return;
+  if (!hooks.success) return;
 
   let changed = false;
 
-  for (const event of Object.keys(hooks)) {
-    const arr: HookEntry[] = Array.isArray(hooks[event]) ? (hooks[event] as HookEntry[]) : [];
-    const filtered = arr.filter((e) => e && typeof e === 'object' && e.command !== command);
+  for (const [event, entries] of Object.entries(hooks.data)) {
+    const list = YamlListSchema.safeParse(entries);
+    const arr = list.success ? list.data : [];
+    const filtered = entriesBesides(arr, command);
 
     if (filtered.length !== arr.length) {
       changed = true;
@@ -277,11 +298,9 @@ export async function removeHermesHookByCommand(command: string, home = toolHome
   // If hooks map is now empty, remove the hooks key entirely.
   const remainingRaw = doc.getIn(['hooks']);
 
-  const remaining: Record<string, unknown> | null = YAML.isMap(remainingRaw)
-    ? (remainingRaw.toJSON() as Record<string, unknown>)
-    : null;
+  const remaining = YamlMapSchema.safeParse(YAML.isMap(remainingRaw) ? remainingRaw.toJSON() : null);
 
-  if (!remaining || Object.keys(remaining).length === 0) {
+  if (!remaining.success || Object.keys(remaining.data).length === 0) {
     doc.deleteIn(['hooks']);
   }
 
@@ -317,10 +336,17 @@ export async function addHermesAllowlist(event: string, command: string): Promis
 export async function hasHermesHookCommands(commands: readonly string[], home = toolHome('hermes')): Promise<boolean> {
   const doc = await readConfigDoc(home);
   const raw = doc.getIn(['hooks']);
-  const hooks = YAML.isMap(raw) ? raw.toJSON() as Record<string, unknown> : {};
+  const hooks = YamlMapSchema.safeParse(YAML.isMap(raw) ? raw.toJSON() : null);
 
-  if (Object.values(hooks).some(entries => Array.isArray(entries)
-    && entries.some((entry: HookEntry) => entry && typeof entry === 'object' && commands.includes(entry.command)))) return true;
+  if (hooks.success && Object.values(hooks.data).some((entries) => {
+    const list = YamlListSchema.safeParse(entries);
+
+    return list.success && list.data.some((entry) => {
+      const hook = HookCommandSchema.safeParse(entry);
+
+      return hook.success && commands.includes(hook.data.command);
+    });
+  })) return true;
   const approvals = await readJson<AllowlistFile>(getHermesAllowlistPath(home));
 
   return Array.isArray(approvals?.approvals) && approvals.approvals.some(entry => commands.includes(entry.command));
@@ -357,9 +383,9 @@ export async function enableHermesPlugin(name: string): Promise<boolean> {
   const doc = await readConfigDoc();
   const disabled = doc.getIn(['plugins', 'disabled']);
 
-  if (YAML.isSeq(disabled) && (disabled.toJSON() as unknown[]).includes(name)) return false;
+  if (YAML.isSeq(disabled) && disabled.toJSON().includes(name)) return false;
   const enabled = doc.getIn(['plugins', 'enabled']);
-  const list = YAML.isSeq(enabled) ? (enabled.toJSON() as unknown[]) : [];
+  const list = YAML.isSeq(enabled) ? enabled.toJSON() : [];
 
   if (list.includes(name)) return false;
   doc.setIn(['plugins', 'enabled'], [...list, name]);
@@ -374,7 +400,7 @@ export async function disableHermesPlugin(name: string, home = toolHome('hermes'
   const enabled = doc.getIn(['plugins', 'enabled']);
 
   if (!YAML.isSeq(enabled)) return;
-  const list = enabled.toJSON() as unknown[];
+  const list = enabled.toJSON();
 
   if (!list.includes(name)) return;
   const rest = list.filter((entry) => entry !== name);
@@ -391,12 +417,12 @@ export async function disableHermesPlugin(name: string, home = toolHome('hermes'
 export async function isHermesPluginDisabled(name: string): Promise<boolean> {
   const disabled = (await readConfigDoc()).getIn(['plugins', 'disabled']);
 
-  return YAML.isSeq(disabled) && (disabled.toJSON() as unknown[]).includes(name);
+  return YAML.isSeq(disabled) && disabled.toJSON().includes(name);
 }
 
 /** Whether `name` is in `plugins.enabled` of the Hermes config.yaml. */
 export async function isHermesPluginEnabled(name: string): Promise<boolean> {
   const enabled = (await readConfigDoc()).getIn(['plugins', 'enabled']);
 
-  return YAML.isSeq(enabled) && (enabled.toJSON() as unknown[]).includes(name);
+  return YAML.isSeq(enabled) && enabled.toJSON().includes(name);
 }

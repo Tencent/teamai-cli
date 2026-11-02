@@ -11,12 +11,12 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { z } from 'zod';
 import { runHookCommand } from './hook-command.js';
 
-export interface CodebuddyProjectGate {
-  root: string;
-  children: string[];
-}
+const CodebuddyProjectGateSchema = z.object({ root: z.string(), children: z.array(z.string()) });
+
+export type CodebuddyProjectGate = z.infer<typeof CodebuddyProjectGateSchema>;
 
 /** Encode path data as one shell-safe argument (base64url has no shell metacharacters). */
 export function encodeCodebuddyProjectGate(root: string, children: readonly string[] = []): string {
@@ -26,14 +26,9 @@ export function encodeCodebuddyProjectGate(root: string, children: readonly stri
 /** Decode a rendered project-gate argument without trusting arbitrary JSON. */
 export function decodeCodebuddyProjectGate(value: string): CodebuddyProjectGate | null {
   try {
-    const parsed: unknown = JSON.parse(Buffer.from(value, 'base64url').toString('utf8'));
+    const gate = CodebuddyProjectGateSchema.safeParse(JSON.parse(Buffer.from(value, 'base64url').toString('utf8')));
 
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
-    const { root, children } = parsed as { root?: unknown; children?: unknown };
-
-    if (typeof root !== 'string' || !Array.isArray(children) || !children.every((child) => typeof child === 'string')) return null;
-
-    return { root, children };
+    return gate.success ? gate.data : null;
   } catch {
     return null;
   }
@@ -63,14 +58,17 @@ export function parseCodebuddyTeamGate(command: string): RenderedCodebuddyTeamGa
 
   if (timeout !== undefined && (!Number.isFinite(timeout) || timeout <= 0)) return null;
 
-  return {
+  const rendered: RenderedCodebuddyTeamGate = {
     event: match[1],
     id: match[2],
     gate,
     encodedGate: match[3],
     encodedCommand: match[4],
-    ...(timeout === undefined ? {} : { timeout }),
   };
+
+  if (timeout !== undefined) rendered.timeout = timeout;
+
+  return rendered;
 }
 
 /** Replace a rendered gate's encoded root/children while preserving its payload. */
@@ -117,7 +115,7 @@ async function readHookPayload(): Promise<string> {
   let timedOut = false;
 
   const read = (async () => {
-    for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
+    for await (const chunk of process.stdin) chunks.push(chunk);
   })();
 
   void read.catch(() => {});

@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { realpathSync } from 'node:fs';
 import { lstat, readdir, realpath, rm } from 'node:fs/promises';
+import { z } from 'zod';
 import { readJson, readJsonObject, writeJson, readFileSafe, writeFile, expandHome, ensureDir, pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import {
@@ -19,7 +20,8 @@ import {
   hookToolPathsForConfig,
   toolGateRoot,
 } from './types.js';
-import type { HookDef, TeamaiConfig, LocalConfig, ManagedMcpManifest, Scope } from './types.js';
+import { JsonValueSchema } from './types.js';
+import type { HookDef, JsonValue, TeamaiConfig, LocalConfig, ManagedMcpManifest, Scope } from './types.js';
 import type { ToolId } from './tools.js';
 import {
   CODEX_TOOL_ID,
@@ -75,8 +77,13 @@ export const TEAMAI_HOOK_SUBCOMMANDS = ['hook-dispatch'] as const;
 /** Legacy subcommands that are cleaned up during migration. */
 export const TEAMAI_LEGACY_HOOK_SUBCOMMANDS = ['pull', 'update', 'track', 'track-slash', 'dashboard-report', 'contribute-check', 'auto-recall', 'todowrite-hint', 'mr-hint'] as const;
 
+/** The name another host gives each Claude hook event it supports. */
+export interface HookEventNames {
+  [claudeEvent: string]: string;
+}
+
 /** Claude PascalCase event → Cursor camelCase event (for tests / docs). */
-export const CLAUDE_TO_CURSOR_EVENTS: Record<string, string> = {
+export const CLAUDE_TO_CURSOR_EVENTS: HookEventNames = {
   SessionStart: 'sessionStart',
   Stop: 'stop',
   PostToolUse: 'postToolUse',
@@ -88,7 +95,7 @@ export const CLAUDE_TO_CURSOR_EVENTS: Record<string, string> = {
  * PascalCase also keeps Copilot's stdin payload snake_case, which is the
  * contract consumed by hook-dispatch.
  */
-export const CLAUDE_TO_COPILOT_EVENTS: Record<string, string> = {
+export const CLAUDE_TO_COPILOT_EVENTS: HookEventNames = {
   SessionStart: 'SessionStart',
   SessionEnd: 'SessionEnd',
   Stop: 'Stop',
@@ -99,64 +106,64 @@ export const CLAUDE_TO_COPILOT_EVENTS: Record<string, string> = {
 
 // ─── On-disk shapes ─────────────────────────────────────────
 
-interface HookEntry {
+type HookEntry = {
   type: string;
   command: string;
   /** Explicit shell for a command that differs from Claude's detected default. */
   shell?: 'powershell';
   /** Per-hook timeout in seconds. Falls back to the tool default if omitted. */
   timeout?: number;
-}
+};
 
-interface HookMatcher {
+type HookMatcher = {
   matcher: string;
   hooks: HookEntry[];
   description?: string;
-}
+};
 
 interface ClaudeSettingsJson {
   hooks?: Record<string, HookMatcher[]>;
-  [key: string]: unknown;
+  [key: string]: JsonValue | Record<string, HookMatcher[]> | undefined;
 }
 
-interface CursorHookEntry {
+type CursorHookEntry = {
   command: string;
   timeout?: number;
   matcher?: string;
-}
+};
 
 interface CursorHooksJson {
   version: number;
   hooks: Record<string, CursorHookEntry[]>;
 }
 
-interface CodexHookEntry {
+type CodexHookEntry = {
   type: string;
   command: string;
   /** The command Codex runs instead on Windows, where its hook shell is PowerShell. */
   commandWindows?: string;
   timeout?: number;
   additionalContextLimit?: number;
-}
+};
 
-interface CodexHookMatcher {
+type CodexHookMatcher = {
   matcher?: string;
   hooks: CodexHookEntry[];
-}
+};
 
 interface CodexHooksJson {
   hooks?: Record<string, CodexHookMatcher[]>;
-  [key: string]: unknown;
+  [key: string]: JsonValue | Record<string, CodexHookMatcher[]> | undefined;
 }
 
-interface CopilotHookEntry {
+type CopilotHookEntry = {
   type: 'command';
   bash: string;
   powershell: string;
   command: string;
   matcher?: string;
   timeoutSec?: number;
-}
+};
 
 interface CopilotHooksJson {
   version: number;
@@ -173,25 +180,27 @@ const COPILOT_HOOK_SCHEMA_VERSION = 1;
 // bare string `bash -lc "..."` through ZCode's command-type shell is
 // unreliable on Windows, where PATH order can resolve `bash` to the WSL
 // launcher instead of Git Bash.
-interface ZcodeHookEntry {
+type ZcodeHookEntry = {
   type: string;
   command: string;
   args?: string[];
   timeoutMs?: number;
-}
+};
 
-interface ZcodeHookMatcher {
+type ZcodeHookMatcher = {
   matcher?: string;
   hooks: ZcodeHookEntry[];
+};
+
+interface ZcodeHooksBlock {
+  enabled?: boolean;
+  events?: Record<string, ZcodeHookMatcher[]>;
+  [key: string]: JsonValue | Record<string, ZcodeHookMatcher[]> | undefined;
 }
 
 interface ZcodeHooksJson {
-  hooks?: {
-    enabled?: boolean;
-    events?: Record<string, ZcodeHookMatcher[]>;
-    [key: string]: unknown;
-  };
-  [key: string]: unknown;
+  hooks?: ZcodeHooksBlock;
+  [key: string]: JsonValue | ZcodeHooksBlock | undefined;
 }
 
 // ─── Unified reconcile engine (issue #19) ───────────────────
@@ -447,8 +456,61 @@ export async function hasUnrecordedTeamHooks(
   return (await judgeUnrecordedTeamEntries(settingsPath, tool, [], [], opts)).adopted.length > 0;
 }
 
-/** An entry of a hook file, in any tool's format. */
-type HookFileEntry = HookMatcher | CodexHookMatcher | CursorHookEntry | CopilotHookEntry | ZcodeHookMatcher;
+const OptionalTextSchema = z.string().optional().catch(undefined);
+
+/** One hook of a hook file entry, as teamai reads it: a field of another type reads as absent. */
+const FileHookSchema = z.object({
+  type: OptionalTextSchema,
+  command: OptionalTextSchema,
+  args: z.array(z.unknown()).optional().catch(undefined),
+}).catch({});
+
+/**
+ * An entry of a hook file, in any tool's format, as teamai reads it. The member may
+ * have edited it: a field of another type reads as absent, but `matcher` stays as
+ * written, so one that is not a string still matches no hook.
+ */
+const HookFileEntrySchema = z.object({
+  matcher: JsonValueSchema.optional(),
+  description: OptionalTextSchema,
+  command: OptionalTextSchema,
+  bash: OptionalTextSchema,
+  powershell: OptionalTextSchema,
+  hooks: z.array(FileHookSchema).optional().catch(undefined),
+});
+
+type HookFileEntry = z.infer<typeof HookFileEntrySchema>;
+
+/** The fields teamai reads from a hook file entry, or null for an entry that is not a JSON object. */
+function hookFileEntryOf(entry: JsonValue | undefined): HookFileEntry | null {
+  const parsed = HookFileEntrySchema.safeParse(entry);
+
+  return parsed.success ? parsed.data : null;
+}
+
+/** The event key and entry a reconciler writes for a hook. */
+interface HookRender {
+  event?: string;
+  entry: JsonValue;
+}
+
+/** A team hook's render. */
+interface TeamHookRender extends HookRender {
+  def: HookDef;
+}
+
+/**
+ * Whether a parsed value is JSON, checked without copying it: a copy would drop
+ * a `__proto__` key the file holds, and the value is written back.
+ */
+function isJsonValue(value: unknown): value is JsonValue {
+  return JsonValueSchema.safeParse(value).success;
+}
+
+/** Whether `value` is a JSON object (not an array or null), checked without copying it. */
+function isJsonObject(value: JsonValue | undefined): value is { [key: string]: JsonValue } {
+  return z.record(z.string(), z.unknown()).safeParse(value).success;
+}
 
 /** What `judgeUnrecordedTeamEntries` found in a hook file. */
 interface UnrecordedTeamEntries {
@@ -482,17 +544,16 @@ async function judgeUnrecordedTeamEntries(
   // A Claude file outside a project is swept by marker: every marked entry is teamai's already.
   if (!opts.teamHookHistory || (format === 'claude' && !opts.teamOnly && !opts.teamHookProjectRoot)) return result;
   const file = expandHome(settingsPath);
-  const json = await readJson<{ hooks?: Record<string, unknown> }>(file);
+  const json = await readJson<JsonValue>(file);
+  const block = isJsonObject(json) ? json.hooks : undefined;
+  const hooks = format === 'zcode' ? (isJsonObject(block) ? block.events : undefined) : block;
 
-  const hooks = (format === 'zcode' ? (json as ZcodeHooksJson | null)?.hooks?.events : json?.hooks) as
-    Record<string, HookFileEntry[]> | undefined;
-
-  if (!hooks || typeof hooks !== 'object') return result;
+  if (!isJsonObject(hooks)) return result;
 
   const zcodeLauncher = zcodeLauncherPath(file);
 
   // The event key and entry each reconciler writes for a hook.
-  const render = (def: HookDef): { event?: string; entry: unknown } => {
+  const render = (def: HookDef): HookRender => {
     switch (format) {
       case 'cursor': return { event: CLAUDE_TO_CURSOR_EVENTS[def.event], entry: toCursorEntry(def) };
       case 'copilot': return { event: CLAUDE_TO_COPILOT_EVENTS[def.event], entry: toCopilotEntry(def) };
@@ -502,7 +563,7 @@ async function judgeUnrecordedTeamEntries(
     }
   };
 
-  let renders: Array<{ def: HookDef; event?: string; entry: unknown }> | undefined;
+  let renders: TeamHookRender[] | undefined;
 
   const loadRenders = async () => {
     if (renders) return renders;
@@ -525,29 +586,28 @@ async function judgeUnrecordedTeamEntries(
     : (format === 'copilot' || format === 'zcode') && commands.some(marked);
 
   // The commands each reconciler owns an entry by; none for an entry its built-in handling claims while nothing is held.
-  const commandsOf = (event: string, entry: HookFileEntry): string[] => {
-    if (!entry || typeof entry !== 'object') return [];
+  const commandsOf = (event: string, entry: HookFileEntry | null): string[] => {
+    if (!entry) return [];
     const unlessBuiltin = (commands: string[]): string[] => held.size === 0 && builtinClaims(commands) ? [] : commands;
 
     switch (format) {
       case 'cursor': {
-        const { command } = entry as CursorHookEntry;
+        const { command } = entry;
 
-        return typeof command === 'string' ? unlessBuiltin([command]) : [];
+        return command === undefined ? [] : unlessBuiltin([command]);
       }
 
-      case 'copilot': return unlessBuiltin(copilotEntryCommands(entry as CopilotHookEntry));
+      case 'copilot': return unlessBuiltin(copilotEntryCommands(entry));
       case 'zcode': {
-        const command = zcodeEntryCommand(entry as ZcodeHookMatcher);
+        const command = zcodeEntryCommand(entry);
 
         return command ? unlessBuiltin([command]) : [];
       }
 
       default: {
-        const matcher = entry as HookMatcher | CodexHookMatcher;
-        const command = matcher.hooks?.length === 1 && matcher.hooks[0].type === 'command' ? matcher.hooks[0].command : undefined;
+        const command = entry.hooks?.length === 1 && entry.hooks[0].type === 'command' ? entry.hooks[0].command : undefined;
 
-        return typeof command === 'string' && !isExactBuiltinEntry(event, tool, matcher) ? [command] : [];
+        return command !== undefined && !isExactBuiltinEntry(event, tool, entry) ? [command] : [];
       }
     }
   };
@@ -556,19 +616,20 @@ async function judgeUnrecordedTeamEntries(
     if (!Array.isArray(entries)) continue;
 
     for (const [index, entry] of entries.entries()) {
-      const commands = commandsOf(event, entry);
+      const read = hookFileEntryOf(entry);
+      const commands = commandsOf(event, read);
 
-      if (commands.length === 0) continue;
+      if (!read || commands.length === 0) continue;
       const command = commands[0];
-      const marker = format === 'claude' ? teamHookIdOf((entry as HookMatcher).description) : null;
+      const marker = format === 'claude' ? teamHookIdOf(read.description) : null;
 
       // Only a marked entry can equal a Claude render, whose description carries the marker.
       if (format === 'claude' && marker === null) continue;
 
       const owned = recorded.some((record) => format === 'claude'
-        ? record.event === event && (record.matcher ?? '*') === ((entry as HookMatcher).matcher ?? '*') && record.command === command && record.id === marker
+        ? record.event === event && (record.matcher ?? '*') === (read.matcher ?? '*') && record.command === command && record.id === marker
         : format === 'codex' && tool === CODEX_TOOL_ID
-          ? ownsCodexEntry(record, event, index, entries as CodexHookMatcher[])
+          ? ownsCodexEntry(record, event, index, entries)
           : commands.includes(record.command));
 
       if (owned) continue;
@@ -597,11 +658,18 @@ async function judgeUnrecordedTeamEntries(
 
       if (ids.length === 1) {
         const { def } = matches[0];
-        result.adopted.push({
-          id: ids[0], event: def.event, command: installedCommand?.(def) ?? def.command,
-          ...(def.matcher && def.matcher !== '*' ? { matcher: def.matcher } : {}),
-          ...(format === 'codex' && tool === CODEX_TOOL_ID ? { codexEntryIndex: index, codexEntry: entry as CodexHookMatcher } : {}),
-        });
+        const adopted: ManagedHookRecord = { id: ids[0], event: def.event, command: installedCommand?.(def) ?? def.command };
+
+        if (def.matcher && def.matcher !== '*') adopted.matcher = def.matcher;
+
+        if (format === 'codex' && tool === CODEX_TOOL_ID) {
+          adopted.codexEntryIndex = index;
+          // SAFETY: the entry equals a Codex render (toCodexEntry's CodexHookMatcher), or does once
+          // mapStrings regates it, which swaps strings for strings and keeps every field's place.
+          adopted.codexEntry = entry as CodexHookMatcher;
+        }
+
+        result.adopted.push(adopted);
       } else if (ids.length > 1) {
         result.kept.push(`Kept the ${event} hook entry in ${settingsPath}: it matches more than one team hook (${ids.join(', ')}), `
           + 'so teamai cannot tell which one it is. Delete it if it is a copy teamai wrote.');
@@ -616,7 +684,7 @@ async function judgeUnrecordedTeamEntries(
 }
 
 /** One injected team hook recorded in the manifest. */
-export interface ManagedHookRecord {
+export type ManagedHookRecord = {
   id: string;
   event: string;
   matcher?: string;
@@ -624,7 +692,7 @@ export interface ManagedHookRecord {
   /** Codex matcher-group position and complete definition written by reconciliation. */
   codexEntryIndex?: number;
   codexEntry?: CodexHookMatcher;
-}
+};
 
 /** ~/.teamai/managed-hooks.json — team hooks injected per tool. */
 export type ManagedHooksManifest = Record<string, ManagedHookRecord[]>;
@@ -640,7 +708,7 @@ export type BuiltinsOnly = 'with-overrides' | 'defaults-where-none';
 async function readManifest(manifestPath: string): Promise<ManagedHooksManifest> {
   const data = await readJson<ManagedHooksManifest>(expandHome(manifestPath));
 
-  return data && typeof data === 'object' ? data : {};
+  return isJsonObject(data) ? data : {};
 }
 
 /** ~/.teamai/managed-main-checkout-hooks.json — team hooks injected into the main checkout, with checkout tracking. */
@@ -654,24 +722,20 @@ export function getToolCheckouts(manifest: SharedHooksManifest, tool: string): s
     return manifest.checkouts;
   }
 
-  if (manifest.checkouts && typeof manifest.checkouts === 'object') {
-    const list = (manifest.checkouts as Record<string, string[]>)[tool];
+  const list = manifest.checkouts?.[tool];
 
-    if (Array.isArray(list)) return list;
-  }
-
-  return [];
+  return Array.isArray(list) ? list : [];
 }
 
 export function setToolCheckouts(manifest: SharedHooksManifest, tool: string, checkouts: string[]): void {
-  if (Array.isArray(manifest.checkouts)) {
-    const existingCheckouts = manifest.checkouts;
-    manifest.checkouts = Object.fromEntries(MAIN_CHECKOUT_TEAM_HOOK_TOOLS.map((t) => [t, [...existingCheckouts]]));
-  } else if (!manifest.checkouts) {
-    manifest.checkouts = {};
-  }
+  const existing = manifest.checkouts;
 
-  (manifest.checkouts as Record<string, string[]>)[tool] = checkouts;
+  const byTool = Array.isArray(existing)
+    ? Object.fromEntries(MAIN_CHECKOUT_TEAM_HOOK_TOOLS.map((t) => [t, [...existing]]))
+    : existing || {};
+
+  byTool[tool] = checkouts;
+  manifest.checkouts = byTool;
 }
 
 /** Release registration even when the checkout's hook file was already deleted. */
@@ -712,7 +776,7 @@ export async function migrateLegacyManagedHooks(localConfig: LocalConfig): Promi
   const legacyPath = legacyManagedHooksPath(localConfig.projectRoot);
   const legacy = await readJson<ManagedHooksManifest>(legacyPath);
 
-  if (!legacy || typeof legacy !== 'object' || Array.isArray(legacy)) return;
+  if (!isJsonObject(legacy)) return;
   const moving = Object.keys(legacy).filter((tool) => isSelfMode(localConfig) || tool === COPILOT_TOOL_ID);
 
   if (moving.length > 0) {
@@ -945,10 +1009,12 @@ function regateTeamHookCommand(command: string, projectRoot: string, childRoots:
 }
 
 /** `value` with each string in it, at any depth, replaced by `map`'s result. */
-function mapStrings(value: unknown, map: (value: string) => string): unknown {
-  return typeof value === 'string' ? map(value)
+function mapStrings(value: JsonValue, map: (value: string) => string): JsonValue {
+  const text = z.string().safeParse(value);
+
+  return text.success ? map(text.data)
     : Array.isArray(value) ? value.map((item) => mapStrings(item, map))
-      : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).map(([key, field]) => [key, mapStrings(field, map)]))
+      : isJsonObject(value) ? Object.fromEntries(Object.entries(value).map(([key, field]) => [key, mapStrings(field, map)]))
         : value;
 }
 
@@ -973,18 +1039,20 @@ async function regateHeldTeamHooks(
   }
 
   if (regated.size === 0) return held;
-  const swap = (value: unknown): unknown => mapStrings(value, (command) => regated.get(command) ?? command);
+  const swap = (value: JsonValue): JsonValue => mapStrings(value, (command) => regated.get(command) ?? command);
   const file = expandHome(settingsPath);
   const contents = await readJsonObject(file);
 
-  if (contents.kind !== 'ok') return held;
+  if (contents.kind !== 'ok' || !isJsonValue(contents.value)) return held;
   await writeJson(file, swap(contents.value));
 
+  // SAFETY: mapStrings keeps every field of a record in place with its JSON type, and swaps only a
+  // held command for its regated form, so each result is the record with its commands regated.
   return held.map((record) => swap(record) as ManagedHookRecord);
 }
 
 /** Whether `entries[index]` of a hook file's `event` is a held hook's entry (#913). */
-type HeldEntryCheck = (event: string, entries: readonly HookFileEntry[], index: number) => boolean;
+type HeldEntryCheck = (event: string, entries: readonly JsonValue[], index: number) => boolean;
 
 /**
  * The check each format makes before any other claim on an entry: one that
@@ -1008,29 +1076,29 @@ function heldEntryCheck(
 
   const commandsOf = (entry: HookFileEntry): string[] => {
     switch (format) {
-      case 'cursor': return [(entry as CursorHookEntry).command];
-      case 'copilot': return copilotEntryCommands(entry as CopilotHookEntry);
-      case 'zcode': return [zcodeEntryCommand(entry as ZcodeHookMatcher)];
+      case 'cursor': return entry.command === undefined ? [] : [entry.command];
+      case 'copilot': return copilotEntryCommands(entry);
+      case 'zcode': return [zcodeEntryCommand(entry)];
       default: {
-        const { hooks } = entry as HookMatcher | CodexHookMatcher;
+        const command = entry.hooks?.length === 1 ? entry.hooks[0].command : undefined;
 
-        return hooks?.length === 1 ? [hooks[0].command] : [];
+        return command === undefined ? [] : [command];
       }
     }
   };
 
   return (event, entries, index) => {
-    const entry = entries[index];
+    const entry = hookFileEntryOf(entries[index]);
 
-    if (held.length === 0 || !entry || typeof entry !== 'object') return false;
+    if (held.length === 0 || !entry) return false;
     const commands = commandsOf(entry);
 
     const record = held.find((r) => !found.has(r) && fileEvent(r.event) === event
       && (format === 'codex' && tool === CODEX_TOOL_ID
-        ? ownsCodexEntry(r, event, index, entries as CodexHookMatcher[])
-        : (r.matcher ?? '*') === ((entry as { matcher?: string }).matcher ?? '*')
+        ? ownsCodexEntry(r, event, index, entries)
+        : (r.matcher ?? '*') === (entry.matcher ?? '*')
           && (format === 'claude' && byMarker || commands.includes(r.command))
-          && (format !== 'claude' || teamHookIdOf((entry as HookMatcher).description) === r.id)));
+          && (format !== 'claude' || teamHookIdOf(entry.description) === r.id)));
 
     if (record) found.set(record, commands.length === 1 ? commands[0] : record.command);
 
@@ -1172,11 +1240,14 @@ export async function resolveMainCheckoutHooks(
     const original = anchors?.projectAnchor === await gitCommonDir(root)
       || anchors?.projectAnchor === root;
 
-    return {
+    const hooks: MainCheckoutHooks = {
       root, current: canonicalProjectRoot(localConfig.projectRoot), worktreeScoped,
       manifestPath: path.join(manifestRoot, manifestName), files,
-      ...(!worktreeScoped && original ? { checkoutManifestPath: path.join(checkoutHome, manifestName) } : {}),
     };
+
+    if (!worktreeScoped && original) hooks.checkoutManifestPath = path.join(checkoutHome, manifestName);
+
+    return hooks;
   }
 
   // Every checkout shares the main checkout's files, so their ownership lives
@@ -1308,8 +1379,8 @@ async function isSharedWithOtherInstall(
 
     if (Array.isArray(manifest.checkouts)) {
       for (const c of manifest.checkouts) allCheckouts.add(canonicalProjectRoot(c));
-    } else if (manifest.checkouts && typeof manifest.checkouts === 'object') {
-      for (const list of Object.values(manifest.checkouts as Record<string, string[]>)) {
+    } else if (manifest.checkouts) {
+      for (const list of Object.values(manifest.checkouts)) {
         if (Array.isArray(list)) {
           for (const c of list) allCheckouts.add(canonicalProjectRoot(c));
         }
@@ -1458,7 +1529,7 @@ export async function stopCodexTeamHookDispatch(
       else await setCodexDispatcherHooks(key, hooks);
     }
 
-    log.warn(`Could not remove the Codex team-hook dispatchers from ${homeFile}: ${(e as Error).message}. The Codex team hooks of ${project} still run.`);
+    log.warn(`Could not remove the Codex team-hook dispatchers from ${homeFile}: ${e instanceof Error ? e.message : String(e)}. The Codex team hooks of ${project} still run.`);
 
     return homeFile;
   }
@@ -1500,7 +1571,7 @@ async function holdsForeignCodexHooks(
   const raw = await readFileSafe(file);
 
   if (raw === null || raw.trim() === '') return false;
-  let json: unknown;
+  let json: JsonValue;
 
   try {
     json = JSON.parse(raw);
@@ -1508,27 +1579,27 @@ async function holdsForeignCodexHooks(
     return true;
   }
 
-  if (typeof json !== 'object' || json === null || Array.isArray(json)) return true;
-  const { hooks, ...others } = json as { hooks?: unknown };
+  if (!isJsonObject(json)) return true;
+  const { hooks, ...others } = json;
 
   if (Object.keys(others).length > 0) return true;
 
   if (hooks === undefined) return false;
 
-  if (typeof hooks !== 'object' || hooks === null || Array.isArray(hooks)) return true;
+  if (!isJsonObject(hooks)) return true;
   const owners = [...recorded, ...(await judgeUnrecordedTeamEntries(file, CODEX_TOOL_ID, teamDefs, recorded, { teamOnly: true, teamHookHistory: history })).adopted];
 
   for (const [event, entries] of Object.entries(hooks)) {
     if (!Array.isArray(entries)) return true;
 
     for (let index = 0; index < entries.length; index++) {
-      const entry = entries[index] as CodexHookMatcher;
+      const entry = hookFileEntryOf(entries[index]);
 
-      if (!entry || typeof entry !== 'object') return true;
+      if (!entry) return true;
 
       if (isExactBuiltinEntry(event, CODEX_TOOL_ID, entry)) continue;
 
-      if (!owners.some((record) => ownsCodexEntry(record, event, index, entries as CodexHookMatcher[]))) return true;
+      if (!owners.some((record) => ownsCodexEntry(record, event, index, entries))) return true;
     }
   }
 
@@ -1558,12 +1629,13 @@ async function heldCodexFileHooks(file: string, recorded: readonly ManagedHookRe
     const entry = entries.find((_, index) => ownsCodexEntry(record, record.event, index, entries));
     const hook = entry?.hooks?.length === 1 ? entry.hooks[0] : undefined;
 
-    if (!hook || found.some((f) => f.id === record.id)) continue;
-    found.push({
-      id: record.id, event: record.event, command: hook.command,
-      ...(entry!.matcher && entry!.matcher !== '*' ? { matcher: entry!.matcher } : {}),
-      ...(hook.timeout !== undefined ? { timeout: hook.timeout } : {}),
-    });
+    if (!entry || !hook || found.some((f) => f.id === record.id)) continue;
+    const fileHook: CodexTeamHook = { id: record.id, event: record.event, command: hook.command };
+
+    if (entry.matcher && entry.matcher !== '*') fileHook.matcher = entry.matcher;
+
+    if (hook.timeout !== undefined) fileHook.timeout = hook.timeout;
+    found.push(fileHook);
   }
 
   return found;
@@ -1597,19 +1669,29 @@ async function placeCodexTeamHooks(
     : placement.gitExclude === undefined ? current
       : placement.gitExclude && (placement.self || await holdsForeignCodexHooks(file, teamDefs, recorded, opts.teamHookHistory));
 
-  const inFile = (hooks: CodexTeamHook[]): HookDef[] => hooks.map((hook) => ({
-    source: 'team', key: hook.id, event: hook.event, command: hook.command, description: `[teamai:hook:${hook.id}]`, tools: [CODEX_TOOL_ID],
-    ...(hook.matcher ? { matcher: hook.matcher } : {}),
-    ...(hook.timeout !== undefined ? { timeout: hook.timeout } : {}),
-  }));
+  const inFile = (hooks: CodexTeamHook[]): HookDef[] => hooks.map((hook) => {
+    const def: HookDef = {
+      source: 'team', key: hook.id, event: hook.event, command: hook.command, description: `[teamai:hook:${hook.id}]`, tools: [CODEX_TOOL_ID],
+    };
+
+    if (hook.matcher) def.matcher = hook.matcher;
+
+    if (hook.timeout !== undefined) def.timeout = hook.timeout;
+
+    return def;
+  });
 
   const stay: CodexTeamHookPlace = { dispatched: current, heldIntoFile: [], heldOutOfFile: [] };
 
-  const hooks: CodexTeamHook[] = [...teamDefsForTool(teamDefs, CODEX_TOOL_ID).map((def) => ({
-    id: def.key, event: def.event, command: def.command,
-    ...(def.matcher && def.matcher !== '*' ? { matcher: def.matcher } : {}),
-    ...(def.timeout !== undefined ? { timeout: def.timeout } : {}),
-  })), ...heldHooks, ...heldInFile];
+  const hooks: CodexTeamHook[] = [...teamDefsForTool(teamDefs, CODEX_TOOL_ID).map((def) => {
+    const hook: CodexTeamHook = { id: def.key, event: def.event, command: def.command };
+
+    if (def.matcher && def.matcher !== '*') hook.matcher = def.matcher;
+
+    if (def.timeout !== undefined) hook.timeout = def.timeout;
+
+    return hook;
+  }), ...heldHooks, ...heldInFile];
 
   if (!await setCodexDispatcherHooks(placement.project, dispatch && hooks.length > 0 ? hooks : null, placement.checkout)) {
     log.warn(`Could not update ${path.join('~', '.teamai', 'codex-team-hooks.json')}: another teamai process held it. `
@@ -1628,7 +1710,7 @@ async function placeCodexTeamHooks(
     return { dispatched: true, heldIntoFile: [], heldOutOfFile: heldInFile.map((hook) => hook.id) };
   } catch (e) {
     await setCodexDispatcherHooks(placement.project, null, placement.checkout);
-    log.warn(`Could not add the Codex team-hook dispatchers to ${placement.homeFile ?? '~/.codex/hooks.json'}: ${(e as Error).message}. `
+    log.warn(`Could not add the Codex team-hook dispatchers to ${placement.homeFile ?? '~/.codex/hooks.json'}: ${e instanceof Error ? e.message : String(e)}. `
       + `The team hooks stay in ${file}; fix the cause above, then run \`teamai pull\`.`);
 
     return { dispatched: false, heldIntoFile: inFile(heldHooks), heldOutOfFile: [] };
@@ -1698,13 +1780,13 @@ async function reconcileSelfLocalTeamHooks(
 
 /** Delete an untracked hook file that holds nothing but empty hook lists. */
 async function removeEmptyHookFile(file: string): Promise<void> {
-  const json = await readJson<Record<string, unknown>>(file);
+  const json = await readJson<JsonValue>(file);
 
-  if (!json || typeof json !== 'object' || Array.isArray(json)) return;
+  if (!isJsonObject(json)) return;
   const hooks = json.hooks;
 
   const empty = Object.keys(json).every((key) => key === 'hooks')
-    && (hooks === undefined || (typeof hooks === 'object' && hooks !== null
+    && (hooks === undefined || ((isJsonObject(hooks) || Array.isArray(hooks))
       && Object.values(hooks).every((entries) => Array.isArray(entries) && entries.length === 0)));
 
   if (!empty) return;
@@ -1749,12 +1831,14 @@ function scopedTeamDefs(
   childRoots: readonly string[] = [],
   codebuddyDualRunner = false,
 ): HookDef[] {
-  const prepared = teamDefs.map((def) => ({
-    ...def,
-    command: skipWhenAnotherHostLoadsClaudeSettings(def, tool, legacyGuard),
-    ...(tool === 'claude' && def.source === 'team' && process.platform === 'win32' && !legacyGuard
-      && claudeHookUsesPowerShell() ? { shell: 'powershell' as const } : {}),
-  }));
+  const prepared = teamDefs.map((def) => {
+    const next: HookDef = { ...def, command: skipWhenAnotherHostLoadsClaudeSettings(def, tool, legacyGuard) };
+
+    if (tool === 'claude' && def.source === 'team' && process.platform === 'win32' && !legacyGuard
+      && claudeHookUsesPowerShell()) next.shell = 'powershell';
+
+    return next;
+  });
 
   if (!projectRoot) return prepared;
 
@@ -1787,29 +1871,23 @@ function manifestRecordsForTool(
   if (removeAll) return [];
 
   // The command as the file holds it, the children's gate included (#913).
-  return teamDefsForTool(scopedTeamDefs(teamDefs, projectRoot, tool, false, childRoots, codebuddyDualRunner), tool).map((d) => ({
-    id: d.key,
-    event: d.event,
-    ...(d.matcher && d.matcher !== '*' ? { matcher: d.matcher } : {}),
-    command: d.command,
-  }));
+  return teamDefsForTool(scopedTeamDefs(teamDefs, projectRoot, tool, false, childRoots, codebuddyDualRunner), tool).map((d) => (
+    d.matcher && d.matcher !== '*'
+      ? { id: d.key, event: d.event, matcher: d.matcher, command: d.command }
+      : { id: d.key, event: d.event, command: d.command }
+  ));
 }
 
 // ─── Render helpers (HookDef → on-disk entry) ───────────────
 
 function toClaudeEntry(def: HookDef): HookMatcher {
-  return {
-    matcher: def.matcher ?? '*',
-    hooks: [
-      {
-        type: 'command',
-        command: def.command,
-        ...(def.shell ? { shell: def.shell } : {}),
-        ...(def.timeout !== undefined ? { timeout: def.timeout } : {}),
-      },
-    ],
-    description: def.description,
-  };
+  const hook: HookEntry = { type: 'command', command: def.command };
+
+  if (def.shell) hook.shell = def.shell;
+
+  if (def.timeout !== undefined) hook.timeout = def.timeout;
+
+  return { matcher: def.matcher ?? '*', hooks: [hook], description: def.description };
 }
 
 function toCursorEntry(def: HookDef): CursorHookEntry {
@@ -1832,17 +1910,14 @@ function toCursorEntry(def: HookDef): CursorHookEntry {
 function toCodexEntry(def: HookDef): CodexHookMatcher {
   const commandWindows = codexWindowsCommand(def.command);
 
-  const entry: CodexHookMatcher = {
-    hooks: [
-      {
-        type: 'command',
-        command: def.command,
-        ...(commandWindows !== undefined ? { commandWindows } : {}),
-        ...(def.timeout !== undefined ? { timeout: def.timeout } : {}),
-        ...(def.additionalContextLimit !== undefined ? { additionalContextLimit: def.additionalContextLimit } : {}),
-      },
-    ],
-  };
+  const hook: CodexHookEntry = { type: 'command', command: def.command };
+
+  if (commandWindows !== undefined) hook.commandWindows = commandWindows;
+
+  if (def.timeout !== undefined) hook.timeout = def.timeout;
+
+  if (def.additionalContextLimit !== undefined) hook.additionalContextLimit = def.additionalContextLimit;
+  const entry: CodexHookMatcher = { hooks: [hook] };
 
   if (def.matcher && def.matcher !== '*') entry.matcher = def.matcher;
 
@@ -1900,14 +1975,13 @@ function toCopilotEntry(def: HookDef, globalSource?: string): CopilotHookEntry {
     ? def.command.replace('--tool copilot', `--tool copilot --copilot-global ${copilotGlobalSource(globalSource)}`)
     : def.command;
 
-  return {
-    type: 'command',
-    bash: command,
-    powershell: copilotPowershellCommand(command),
-    command,
-    ...(def.matcher && def.matcher !== '*' ? { matcher: def.matcher } : {}),
-    ...(def.timeout !== undefined ? { timeoutSec: def.timeout } : {}),
-  };
+  const entry: CopilotHookEntry = { type: 'command', bash: command, powershell: copilotPowershellCommand(command), command };
+
+  if (def.matcher && def.matcher !== '*') entry.matcher = def.matcher;
+
+  if (def.timeout !== undefined) entry.timeoutSec = def.timeout;
+
+  return entry;
 }
 
 function toZcodeEntry(def: HookDef, launcherPath: string): ZcodeHookMatcher {
@@ -1915,12 +1989,12 @@ function toZcodeEntry(def: HookDef, launcherPath: string): ZcodeHookMatcher {
   // pull (SSH to the team host), which on slower links exceeds the 10–15s
   // builtin defaults and gets killed mid-pull — so the timeouts here are
   // network-scale, not the shell-hook defaults.
-  const ZCODE_TIMEOUT_MS: Record<string, number> = {
-    SessionStart: 180000,
-    Stop: 60000,
-    PostToolUse: 30000,
-    UserPromptSubmit: 60000,
-  };
+  const ZCODE_TIMEOUT_MS = new Map([
+    ['SessionStart', 180000],
+    ['Stop', 60000],
+    ['PostToolUse', 30000],
+    ['UserPromptSubmit', 60000],
+  ]);
 
   // A Windows entry points at a launcher rather than at the dispatch itself,
   // and that launcher is a Node script. ZCode talks to a `process` hook over
@@ -1938,7 +2012,7 @@ function toZcodeEntry(def: HookDef, launcherPath: string): ZcodeHookMatcher {
   // one the user asked for and still wins, as it does on every other tool.
   // `def.timeout` is in seconds; ZCode entries are in milliseconds.
   const timeoutMs =
-    def.timeout !== undefined ? def.timeout * 1000 : ZCODE_TIMEOUT_MS[def.event] ?? 60000;
+    def.timeout !== undefined ? def.timeout * 1000 : ZCODE_TIMEOUT_MS.get(def.event) ?? 60000;
 
   const entry: ZcodeHookEntry =
     process.platform === 'win32'
@@ -1976,7 +2050,7 @@ function toZcodeEntry(def: HookDef, launcherPath: string): ZcodeHookMatcher {
 }
 
 /** Shell payload of a ZCode hook entry, for managed-entry matching. */
-function zcodeEntryCommand(entry: ZcodeHookMatcher): string {
+function zcodeEntryCommand(entry: HookFileEntry): string {
   const hook = entry.hooks?.[0];
 
   // The launcher carries the command tail as its LAST argument —
@@ -1984,8 +2058,8 @@ function zcodeEntryCommand(entry: ZcodeHookMatcher): string {
   // ([launcherPath, 'wait', tail]). Reading the last slot recognizes both shapes
   // (and team commands, which carry no teamai marker and are matched against
   // the managed-hooks manifest) so they get replaced or removed, not duplicated.
-  if (Array.isArray(hook?.args) && hook.args.length > 0) {
-    return hook.args[hook.args.length - 1] ?? '';
+  if (hook?.args && hook.args.length > 0) {
+    return OptionalTextSchema.parse(hook.args[hook.args.length - 1]) ?? '';
   }
 
   return hook?.command ?? '';
@@ -2020,7 +2094,7 @@ function isBuiltinClaudeEntry(entry: HookMatcher): boolean {
 }
 
 /** Match standard built-ins exactly when cleaning a project team-only file. */
-function isExactBuiltinEntry(event: string, tool: string, entry: HookMatcher | CodexHookMatcher): boolean {
+function isExactBuiltinEntry(event: string, tool: string, entry: HookFileEntry): boolean {
   if (entry.hooks?.length !== 1 || entry.hooks[0].type !== 'command') return false;
   const command = entry.hooks[0].command;
 
@@ -2067,7 +2141,7 @@ async function reconcileClaudeFormat(
   // Hook ids this reconcile declares for the tool, used to recognise our own
   // entries even when an older CLI rendered them differently.
   const desiredTeamIds = new Set(
-    teamDefs.filter((d) => !d.tools || d.tools.includes(tool)).map((d) => d.key),
+    teamDefs.flatMap((d) => !d.tools || d.tools.includes(tool) ? [d.key] : []),
   );
 
   // Removal releases one entry per record, as Codex does by position: an older
@@ -2232,8 +2306,8 @@ async function reconcileCursorFormat(
 
 // ─── GitHub Copilot CLI (standalone hooks/*.json) reconcile ──
 
-function copilotEntryCommands(entry: CopilotHookEntry): string[] {
-  return [entry.bash, entry.powershell, entry.command].filter(Boolean);
+function copilotEntryCommands(entry: HookFileEntry): string[] {
+  return [entry.bash, entry.powershell, entry.command].flatMap((command) => command ? [command] : []);
 }
 
 function unmarkCopilotGlobal(command: string): string {
@@ -2280,9 +2354,9 @@ export async function copilotBuiltinInstalled(event: string, matcher: string, pr
   if (project) dirs.push(path.join(project, '.github', 'hooks'));
 
   for (const dir of dirs) {
-    for (const name of await readdir(dir).catch(() => [] as string[])) {
+    for (const name of await readdir(dir).catch((): string[] => [])) {
       if (!name.endsWith('.json')) continue;
-      const json = await readJson<unknown>(path.join(dir, name));
+      const json = await readJson<JsonValue>(path.join(dir, name));
 
       if (copilotRunsEntries(json).some(([entryEvent, entryMatcher, command]) => entryEvent === CLAUDE_TO_COPILOT_EVENTS[def.event]
         && entryMatcher === expected.matcher && [expected.bash, expected.powershell].includes(unmarkCopilotGlobal(command)))) return true;
@@ -2298,7 +2372,7 @@ export async function copilotBuiltinInstalled(event: string, matcher: string, pr
  */
 export async function removeCopilotGlobalBuiltins(): Promise<void> {
   const dir = path.join(toolHome(COPILOT_TOOL_ID), 'hooks');
-  const files = await readdir(dir).catch(() => [] as string[]);
+  const files = await readdir(dir).catch((): string[] => []);
 
   for (const name of files.filter(f => f.endsWith('.json')).sort()) {
     const file = path.resolve(dir, name);
@@ -2464,7 +2538,7 @@ export async function editCodexHookFile(
   codexTrust: CodexTrustPolicy,
 ): Promise<boolean> {
   const doc = await readHookFile<CodexHooksJson>(file, {});
-  const all = doc.hooks && typeof doc.hooks === 'object' && !Array.isArray(doc.hooks) ? doc.hooks : {};
+  const all = isJsonObject(doc.hooks) ? doc.hooks : {};
   const hooks = Object.fromEntries(Object.entries(all).filter(([, groups]) => Array.isArray(groups)));
   const next = { ...all };
   const planned = plan(hooks);
@@ -2588,14 +2662,16 @@ async function reconcileCodexFormat(
       if (shifts.size > 0) newIndexByOld.set(event, shifts);
       eventDefs.forEach((def, index) => {
         if (def.source !== 'team') return;
-        records.push({
-          id: def.key, event, command: def.command,
-          ...(def.matcher && def.matcher !== '*' ? { matcher: def.matcher } : {}),
-          ...(tool === CODEX_TOOL_ID ? {
-            codexEntryIndex: placedAt[index],
-            codexEntry: desiredEntries[index],
-          } : {}),
-        });
+        const record: ManagedHookRecord = { id: def.key, event, command: def.command };
+
+        if (def.matcher && def.matcher !== '*') record.matcher = def.matcher;
+
+        if (tool === CODEX_TOOL_ID) {
+          record.codexEntryIndex = placedAt[index];
+          record.codexEntry = desiredEntries[index];
+        }
+
+        records.push(record);
       });
 
       return [event, slots];
@@ -2611,7 +2687,7 @@ async function reconcileCodexFormat(
 }
 
 /** Recover only a unique match on the definition or fields the manifest recorded. */
-function ownsCodexEntry(record: ManagedHookRecord, event: string, index: number, entries: readonly CodexHookMatcher[]): boolean {
+function ownsCodexEntry(record: ManagedHookRecord, event: string, index: number, entries: readonly JsonValue[]): boolean {
   if (record.event !== event) return false;
   const entry = entries[index];
 
@@ -2620,11 +2696,16 @@ function ownsCodexEntry(record: ManagedHookRecord, event: string, index: number,
   // Legacy manifests omitted timeout and additionalContextLimit. Requiring
   // those unrecorded options to be absent would orphan hooks on upgrade.
   const matches = record.codexEntry
-    ? (candidate: CodexHookMatcher) => isDeepStrictEqual(candidate, record.codexEntry)
-    : (candidate: CodexHookMatcher) => candidate.matcher === record.matcher
-      && candidate.hooks?.length === 1
-      && candidate.hooks[0].type === 'command'
-      && candidate.hooks[0].command === record.command;
+    ? (candidate: JsonValue) => isDeepStrictEqual(candidate, record.codexEntry)
+    : (candidate: JsonValue) => {
+      const read = hookFileEntryOf(candidate);
+
+      return read !== null
+        && read.matcher === record.matcher
+        && read.hooks?.length === 1
+        && read.hooks[0].type === 'command'
+        && read.hooks[0].command === record.command;
+    };
 
   return matches(entry) && entries.filter(matches).length === 1;
 }
@@ -2734,7 +2815,7 @@ async function reconcileZcodeFormat(
 
     // Mirror zcode-app-cli's own schema (number().int().positive(),
     // vendor/zcode.cjs): a failing value would drop the whole hooks block.
-    if (typeof v !== 'number' || !Number.isInteger(v) || v <= 0) {
+    if (!z.number().int().positive().safeParse(v).success) {
       delete cfg.hooks[k];
       changed = true;
       log.warn(
@@ -2822,7 +2903,7 @@ const AGENT_HOOK_FORMATS: Readonly<Record<HookFormat, boolean>> = { claude: true
 export function isAgentHookSupportedTool(tool: string): boolean {
   const channel = channelsOf(tool).hooks.user;
 
-  if (typeof channel !== 'object') return false;
+  if (channel === 'none' || channel === 'unknown') return false;
 
   switch (channel.channel) {
     case 'settings': return AGENT_HOOK_FORMATS[channel.format];
@@ -2844,7 +2925,7 @@ export function isAgentHookSupportedTool(tool: string): boolean {
 export function runsTeamHookOn(tool: string, event: string): boolean {
   const channel = channelsOf(tool).hooks.user;
 
-  if (typeof channel !== 'object') return false;
+  if (channel === 'none' || channel === 'unknown') return false;
 
   switch (channel.channel) {
     case 'settings':
@@ -2922,9 +3003,10 @@ export async function applyAgentHook(
     event: def.event,
     matcher: def.matcher ?? '*',
     command: def.command,
-    ...(def.timeout !== undefined ? { timeout: def.timeout } : {}),
     description: agentHookDescription(def.slug),
   };
+
+  if (def.timeout !== undefined) hookDef.timeout = def.timeout;
 
   // Codex entries carry no description field, so agent hooks are matched by
   // their exact command string (and tracked in the local-agent agent-hook
@@ -3057,7 +3139,7 @@ export async function removeBridgedAgentHook(tool: string, slug: string): Promis
 async function rewireBridgedTeamHooks(tool: string): Promise<void> {
   const channel = channelsOf(tool).hooks.user;
 
-  if (typeof channel !== 'object' || channel.channel !== 'adapter') return;
+  if (channel === 'none' || channel === 'unknown' || channel.channel !== 'adapter') return;
 
   switch (channel.adapter) {
     case 'kiro-hooks': {
@@ -3119,6 +3201,8 @@ export async function readHookFile<T>(file: string, fallback: T): Promise<T> {
     throw new Error(`${file} does not parse (${read.error}), so teamai left it as it is. Fix it, then run the command again.`);
   }
 
+  // SAFETY: readJsonObject checked that the file holds a JSON object, and every T a caller names is a
+  // hook file type whose top level is a JSON object; the entries under it are as checked as each reconciler checks them.
   return read.kind === 'ok' ? read.value as T : fallback;
 }
 
@@ -3507,7 +3591,7 @@ async function reconcileOpencodePlugin(baseDir: string, removeAll = false, insta
 async function isBridgedToolInstalled(tool: string, baseDir: string, installedBaseDir: string | undefined): Promise<boolean> {
   const channel = channelsOf(tool).hooks.user;
 
-  if (typeof channel !== 'object' || channel.channel !== 'adapter') return false;
+  if (channel === 'none' || channel === 'unknown' || channel.channel !== 'adapter') return false;
 
   switch (channel.adapter) {
     case 'opencode-plugin':
@@ -3545,10 +3629,13 @@ async function clearEarlierHomeHooks(target: {
   if (earlier === target.current || path.resolve(target.baseDir) !== path.resolve(getUserHome()) || !await pathExists(earlier)) return;
 
   if (await realpath(earlier).catch(() => earlier) === await realpath(target.current).catch(() => target.current)) return;
-  await reconcileHooks(earlier, target.tool, [], {
+
+  const options: ReconcileHooksOptions = {
     manifestPath: target.manifestPath, removeAll: true, keepRecords: true, teamHookHistory: target.teamHookHistory,
-    ...(target.teamHookProjectRoot ? { teamHookProjectRoot: target.teamHookProjectRoot } : {}),
-  });
+  };
+
+  if (target.teamHookProjectRoot) options.teamHookProjectRoot = target.teamHookProjectRoot;
+  await reconcileHooks(earlier, target.tool, [], options);
 }
 
 /**
@@ -3701,7 +3788,7 @@ export async function injectHooksToAllTools(toolPaths: Record<string, { settings
         const { injectKiroHooks } = await import('./kiro-hooks.js');
         await injectKiroHooks(resolvedBaseDir);
       } catch (e) {
-        log.warn(`Failed to inject Kiro hooks: ${(e as Error).message}`);
+        log.warn(`Failed to inject Kiro hooks: ${e instanceof Error ? e.message : String(e)}`);
       }
     } else if (tool === 'agy') {
       try {
@@ -3709,13 +3796,13 @@ export async function injectHooksToAllTools(toolPaths: Record<string, { settings
 
         if (await pathExists(toolHome('agy'))) await reconcileAgyHooks();
       } catch (e) {
-        log.warn(`Failed to inject Antigravity hooks: ${(e as Error).message}`);
+        log.warn(`Failed to inject Antigravity hooks: ${e instanceof Error ? e.message : String(e)}`);
       }
     } else if (tool === 'pi') {
       try {
         await reconcilePiExtension(resolvedBaseDir);
       } catch (e) {
-        log.warn(`Failed to inject Pi hook: ${(e as Error).message}`);
+        log.warn(`Failed to inject Pi hook: ${e instanceof Error ? e.message : String(e)}`);
       }
     } else if (paths.settings && hookSettingsFormatOf(tool) !== null) {
       const toolRoot = hookSettingsFile(tool, resolvedBaseDir, toolGateRoot(tool, paths.settings, toolRoots));
@@ -3726,7 +3813,7 @@ export async function injectHooksToAllTools(toolPaths: Record<string, { settings
       try {
         await injectHooks(settingsPath, tool, codexTrust);
       } catch (e) {
-        log.warn(`Failed to inject hook into ${tool}: ${(e as Error).message}`);
+        log.warn(`Failed to inject hook into ${tool}: ${e instanceof Error ? e.message : String(e)}`);
       }
     } else if (tool === 'openclaw') {
       // Only OpenClaw itself, as in reconcileHooksToAllTools: a claw variant here would overwrite OpenClaw's handler with its own --tool.
@@ -3734,26 +3821,26 @@ export async function injectHooksToAllTools(toolPaths: Record<string, { settings
         const { injectOpenClawHooks } = await import('./openclaw-hooks.js');
         await injectOpenClawHooks(tool);
       } catch (e) {
-        log.warn(`Failed to inject OpenClaw hook into ${tool}: ${(e as Error).message}`);
+        log.warn(`Failed to inject OpenClaw hook into ${tool}: ${e instanceof Error ? e.message : String(e)}`);
       }
     } else if (tool === 'hermes') {
       try {
         const { injectHermesHooks } = await import('./hermes-hooks.js');
         await injectHermesHooks();
       } catch (e) {
-        log.warn(`Failed to inject Hermes hook: ${(e as Error).message}`);
+        log.warn(`Failed to inject Hermes hook: ${e instanceof Error ? e.message : String(e)}`);
       }
     } else if (tool === 'opencode') {
       try {
         await reconcileOpencodePlugin(resolvedBaseDir);
       } catch (e) {
-        log.warn(`Failed to inject OpenCode hook into ${tool}: ${(e as Error).message}`);
+        log.warn(`Failed to inject OpenCode hook into ${tool}: ${e instanceof Error ? e.message : String(e)}`);
       }
     } else if (tool === 'omp') {
       try {
         await reconcileOmpExtension();
       } catch (e) {
-        log.warn(`Failed to inject OMP hook into ${tool}: ${(e as Error).message}`);
+        log.warn(`Failed to inject OMP hook into ${tool}: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
   }
@@ -3865,16 +3952,20 @@ export async function reconcileHooksToAllTools(
   const reconcileBridged = async (tool: string): Promise<void> => {
     if (!opts.removeAll && !await isBridgedToolInstalled(tool, baseDir, opts.installedBaseDir)) return;
     const homeHooks = opts.scope === 'project';
-    await reconcileBridgedTeamHooks(tool, defs, {
+
+    const options: ReconcileHooksOptions = {
       manifestPath: teamManifestPath,
       removeAll: opts.removeAll,
       teamHookProjectRoot: homeHooks ? opts.installedBaseDir ?? baseDir : opts.teamHookProjectRoot,
-      ...(homeHooks && opts.removeAll ? { teamOnly: true } : {}),
-      ...(opts.teamHookChildRoots ? { teamHookChildRoots: opts.teamHookChildRoots } : {}),
       heldTeamHookIds: opts.heldTeamHookIds,
       teamHookHistory: opts.teamHookHistory,
       keepRecords: opts.keepRecordsFor?.has(tool),
-    });
+    };
+
+    if (homeHooks && opts.removeAll) options.teamOnly = true;
+
+    if (opts.teamHookChildRoots) options.teamHookChildRoots = opts.teamHookChildRoots;
+    await reconcileBridgedTeamHooks(tool, defs, options);
   };
 
   for (const [tool, paths] of Object.entries(toolPaths)) {
@@ -3892,7 +3983,7 @@ export async function reconcileHooksToAllTools(
         if (opts.removeAll) await removeKiroHooks();
         else await injectKiroHooks(opts.installedBaseDir ?? baseDir);
       } catch (e) {
-        log.warn(`Failed to reconcile Kiro hooks: ${(e as Error).message}`);
+        log.warn(`Failed to reconcile Kiro hooks: ${e instanceof Error ? e.message : String(e)}`);
         opts.unwritten?.push(tool);
       }
 
@@ -3917,7 +4008,7 @@ export async function reconcileHooksToAllTools(
           await injectHermesHooks();
         }
       } catch (e) {
-        log.warn(`Failed to reconcile Hermes hooks: ${(e as Error).message}`);
+        log.warn(`Failed to reconcile Hermes hooks: ${e instanceof Error ? e.message : String(e)}`);
         opts.unwritten?.push(tool);
       }
 
@@ -3949,7 +4040,7 @@ export async function reconcileHooksToAllTools(
           await injectOpenClawHooks(tool);
         }
       } catch (e) {
-        log.warn(`Failed to reconcile OpenClaw hooks for ${tool}: ${(e as Error).message}`);
+        log.warn(`Failed to reconcile OpenClaw hooks for ${tool}: ${e instanceof Error ? e.message : String(e)}`);
         opts.unwritten?.push(tool);
       }
 
@@ -3966,7 +4057,7 @@ export async function reconcileHooksToAllTools(
         await reconcileBridged(tool);
         await reconcileOpencodePlugin(baseDir, opts.removeAll, opts.installedBaseDir);
       } catch (e) {
-        log.warn(`Failed to reconcile OpenCode hooks: ${(e as Error).message}`);
+        log.warn(`Failed to reconcile OpenCode hooks: ${e instanceof Error ? e.message : String(e)}`);
         opts.unwritten?.push(tool);
       }
 
@@ -3982,7 +4073,7 @@ export async function reconcileHooksToAllTools(
         await reconcileBridged(tool);
         await reconcileOmpExtension(opts.removeAll);
       } catch (e) {
-        log.warn(`Failed to reconcile OMP hooks: ${(e as Error).message}`);
+        log.warn(`Failed to reconcile OMP hooks: ${e instanceof Error ? e.message : String(e)}`);
         opts.unwritten?.push(tool);
       }
 
@@ -4009,7 +4100,7 @@ export async function reconcileHooksToAllTools(
 
         if (opts.removeAll || await pathExists(toolHome('agy'))) await reconcileAgyHooks({ removeAll: opts.removeAll });
       } catch (e) {
-        log.warn(`Failed to reconcile Antigravity hooks: ${(e as Error).message}`);
+        log.warn(`Failed to reconcile Antigravity hooks: ${e instanceof Error ? e.message : String(e)}`);
         opts.unwritten?.push(tool);
       }
 
@@ -4027,7 +4118,7 @@ export async function reconcileHooksToAllTools(
         await reconcileBridged(tool);
         await reconcilePiExtension(baseDir, opts.removeAll, opts.installedBaseDir);
       } catch (e) {
-        log.warn(`Failed to reconcile Pi hooks: ${(e as Error).message}`);
+        log.warn(`Failed to reconcile Pi hooks: ${e instanceof Error ? e.message : String(e)}`);
         opts.unwritten?.push(tool);
       }
 
@@ -4053,7 +4144,7 @@ export async function reconcileHooksToAllTools(
           });
         }
       } catch (e) {
-        log.warn(`Failed to reconcile DeepSeek Harness hooks: ${(e as Error).message}`);
+        log.warn(`Failed to reconcile DeepSeek Harness hooks: ${e instanceof Error ? e.message : String(e)}`);
         opts.unwritten?.push(tool);
       }
 
@@ -4139,19 +4230,22 @@ export async function reconcileHooksToAllTools(
               teamHookProjectRoot: opts.teamHookProjectRoot, teamHookHistory: opts.teamHookHistory });
           }
 
-          await reconcileHooks(settingsPath, tool, fileDefs, {
+          const options: ReconcileHooksOptions = {
             manifestPath: teamManifestPath,
             removeAll: opts.removeAll,
             builtinOverride: opts.builtinOverride,
             teamHookProjectRoot: homeHooks ? opts.installedBaseDir ?? baseDir : opts.teamHookProjectRoot,
-            ...(homeHooks && opts.removeAll ? { teamOnly: true } : {}),
-            ...(opts.teamHookChildRoots ? { teamHookChildRoots: opts.teamHookChildRoots } : {}),
             heldTeamHookIds,
             teamHookHistory: opts.teamHookHistory,
             codexTrust: opts.codexTrust,
             keepRecords: opts.keepRecordsFor?.has(tool),
             codebuddyDualRunner: opts.codebuddyDualRunner,
-          });
+          };
+
+          if (homeHooks && opts.removeAll) options.teamOnly = true;
+
+          if (opts.teamHookChildRoots) options.teamHookChildRoots = opts.teamHookChildRoots;
+          await reconcileHooks(settingsPath, tool, fileDefs, options);
         }
       }
 
@@ -4172,7 +4266,7 @@ export async function reconcileHooksToAllTools(
         reconciledMainTools.add(tool);
       }
     } catch (e) {
-      log.warn(`Failed to reconcile hooks for ${tool}: ${(e as Error).message}`);
+      log.warn(`Failed to reconcile hooks for ${tool}: ${e instanceof Error ? e.message : String(e)}`);
       opts.unwritten?.push(tool);
     }
   }
@@ -4253,8 +4347,8 @@ async function reconcileMainCheckoutTeamHooks(
       return;
     }
 
-    if (manifest.checkouts && typeof manifest.checkouts === 'object' && !Array.isArray(manifest.checkouts)) {
-      delete (manifest.checkouts as Record<string, string[]>)[tool];
+    if (isJsonObject(manifest.checkouts)) {
+      delete manifest.checkouts[tool];
 
       if (Object.keys(manifest.checkouts).length === 0) {
         delete manifest.checkouts;
@@ -4283,6 +4377,7 @@ async function reconcileMainCheckoutTeamHooks(
     const checkout = await readManifest(checkoutPath);
 
     if (!checkout[tool]?.length) continue;
+    // SAFETY: a tool id is never `checkouts`, the one key of the shared manifest that holds no tool's records.
     manifest[tool] = [...((manifest[tool] as ManagedHookRecord[]) ?? []), ...checkout[tool]];
     adopted.push({ path: checkoutPath, manifest: checkout });
   }
@@ -4311,8 +4406,8 @@ async function reconcileMainCheckoutTeamHooks(
 
       setToolCheckouts(updated, tool, checkouts);
     } else {
-      if (updated.checkouts && typeof updated.checkouts === 'object' && !Array.isArray(updated.checkouts)) {
-        delete (updated.checkouts as Record<string, string[]>)[tool];
+      if (isJsonObject(updated.checkouts)) {
+        delete updated.checkouts[tool];
 
         if (Object.keys(updated.checkouts).length === 0) {
           delete updated.checkouts;
@@ -4393,12 +4488,13 @@ async function teamaiCodexHooks(file: string, manifestPath: string): Promise<Cod
   const builtins = builtinHookDefs(CODEX_TOOL_ID);
 
   return Object.entries(json.hooks).flatMap(([event, groups]) => (groups ?? []).flatMap((group, index) => {
-    const command = group.hooks?.[0]?.command;
+    // The file is the member's: a command that is not a string is no hook of teamai's.
+    const command = OptionalTextSchema.parse(group.hooks?.[0]?.command);
 
     const builtin = group.hooks?.length === 1 && (isCodexTeamHookDispatcher(command ?? '') || builtins.some((def) =>
       def.event === event && def.command === command && toCodexEntry(def).matcher === group.matcher));
 
-    if (typeof command !== 'string' || !(builtin || records.some((r) => ownsCodexEntry(r, event, index, groups)))) return [];
+    if (command === undefined || !(builtin || records.some((r) => ownsCodexEntry(r, event, index, groups)))) return [];
 
     return [codexTrustHook(file, event, index, group)];
   }));
@@ -4414,12 +4510,10 @@ function codexHookKey(file: string, event: string, group: number, handler: numbe
 function codexTrustHook(file: string, event: string, index: number, group: CodexHookMatcher): CodexTrustTargets['hooks'][number] {
   const commandWindows = group.hooks?.[0]?.commandWindows;
 
-  return {
-    file,
-    command: group.hooks?.[0]?.command ?? '',
-    ...(commandWindows !== undefined ? { commandWindows } : {}),
-    key: codexHookKey(file, event, index, 0),
-  };
+  const command = group.hooks?.[0]?.command ?? '';
+  const key = codexHookKey(file, event, index, 0);
+
+  return commandWindows === undefined ? { file, command, key } : { file, command, commandWindows, key };
 }
 
 /**
@@ -4500,14 +4594,13 @@ async function codexTrustTargets(
 
   const codexHome = resolveToolRootDir(CODEX_TOOL_ID, DEFAULT_CODEX_ROOT, localConfig.toolRoots);
 
-  return {
-    codexHome,
-    cwd: anchor ?? baseDir,
-    hooks,
-    ...(anchor && projectLayer ? { project: anchor } : {}),
-    inputs: [...sources.map((s) => s.file), path.join(codexHome, 'config.toml')],
-    mcpRecords,
-  };
+  const cwd = anchor ?? baseDir;
+  const inputs = [...sources.map((s) => s.file), path.join(codexHome, 'config.toml')];
+
+  // The key order is part of the trust fingerprint.
+  return anchor && projectLayer
+    ? { codexHome, cwd, hooks, project: anchor, inputs, mcpRecords }
+    : { codexHome, cwd, hooks, inputs, mcpRecords };
 }
 
 /**
@@ -4552,11 +4645,13 @@ export async function trustCodexForScope(
   const last = await loadStateForScope(localConfig);
 
   if (!opts.force && last.codexTrustFingerprint === await codexTrustFingerprint(targets)) {
-    return {
-      kind: 'trusted', hooks: 0,
-      ...(targets.project ? { project: targets.project } : {}),
-      ...(last.codexBuildSkew ? { skew: last.codexBuildSkew } : {}),
-    };
+    const trusted: CodexTrust = { kind: 'trusted', hooks: 0 };
+
+    if (targets.project) trusted.project = targets.project;
+
+    if (last.codexBuildSkew) trusted.skew = last.codexBuildSkew;
+
+    return trusted;
   }
 
   const trust = await trustCodexHooks({ ...targets, onProjectTrusted: async (project) => {
@@ -4661,7 +4756,7 @@ export async function sweepLegacyProjectHooks(
       const { removeOpencodeHooks } = await import('./opencode-hooks.js');
       await removeOpencodeHooks(legacy.baseDir, 'project');
     } catch (e) {
-      log.warn(`Failed to remove legacy OpenCode project plugin: ${(e as Error).message}`);
+      log.warn(`Failed to remove legacy OpenCode project plugin: ${e instanceof Error ? e.message : String(e)}`);
       unwritten?.push('opencode');
     }
   }
@@ -4671,7 +4766,7 @@ export async function sweepLegacyProjectHooks(
       const { removePiProjectHooks } = await import('./pi-hooks.js');
       await removePiProjectHooks(legacy.baseDir);
     } catch (e) {
-      log.warn(`Failed to remove legacy Pi project extension: ${(e as Error).message}`);
+      log.warn(`Failed to remove legacy Pi project extension: ${e instanceof Error ? e.message : String(e)}`);
       unwritten?.push('pi');
     }
   }
@@ -4855,15 +4950,13 @@ export async function reconcileTeamHooksForConfig(
     }
   }
 
-  const reconciledMainTools = await reconcileHooksToAllTools(hookToolPaths, baseDir, teamDefs, manifestPath, {
+  const reconcileOptions: Parameters<typeof reconcileHooksToAllTools>[4] = {
     removeAll: opts.removeAll,
     builtinOverride: builtin,
     filterAgents,
     teamHookProjectRoot: localConfig.scope === 'project' && !isSelfMode(localConfig)
       ? localConfig.projectRoot
       : undefined,
-    ...(localConfig.children ? { teamHookChildRoots: localConfig.children.roots } : {}),
-    ...(heldTeamHookIds ? { heldTeamHookIds } : {}),
     installedBaseDir: localConfig.scope === 'project' ? (localConfig.projectRoot ?? baseDir) : undefined,
     scope: localConfig.scope,
     toolRoots: localConfig.toolRoots,
@@ -4873,20 +4966,28 @@ export async function reconcileTeamHooksForConfig(
     teamHookHistory: history,
     unwritten,
     codexTrust,
-    ...(isSelfMode(localConfig) && localConfig.scope === 'project' && localConfig.projectRoot
-      ? { selfLocalTeamHooks: { relocate: isGitExcludeEnabled(localConfig, teamConfig) } }
-      : {}),
-    ...(codexProject
-      ? { codexTeamHooks: { project: codexProject, checkout: (await codexTeamHookCheckout(localConfig)) ?? canonicalProjectRoot(localConfig.projectRoot!), gitExclude: resolveGitExclude(localConfig, teamConfig), self: isSelfMode(localConfig), homeFile: codexHome } }
-      : {}),
-  });
+  };
+
+  if (localConfig.children) reconcileOptions.teamHookChildRoots = localConfig.children.roots;
+
+  if (heldTeamHookIds) reconcileOptions.heldTeamHookIds = heldTeamHookIds;
+
+  if (isSelfMode(localConfig) && localConfig.scope === 'project' && localConfig.projectRoot) {
+    reconcileOptions.selfLocalTeamHooks = { relocate: isGitExcludeEnabled(localConfig, teamConfig) };
+  }
+
+  if (codexProject) {
+    reconcileOptions.codexTeamHooks = { project: codexProject, checkout: (await codexTeamHookCheckout(localConfig)) ?? canonicalProjectRoot(localConfig.projectRoot!), gitExclude: resolveGitExclude(localConfig, teamConfig), self: isSelfMode(localConfig), homeFile: codexHome };
+  }
+
+  const reconciledMainTools = await reconcileHooksToAllTools(hookToolPaths, baseDir, teamDefs, manifestPath, reconcileOptions);
 
   // The dispatcher entries follow every project's choice, this one's included.
   if (codexProject && codexHome && !builtinsOnly && (!filterAgents || filterAgents.includes(CODEX_TOOL_ID))) {
     try {
       await reconcileCodexDispatchers(codexHome, codexTrust);
     } catch (e) {
-      log.warn(`Failed to reconcile the Codex team-hook dispatchers in ${codexHome}: ${(e as Error).message}`);
+      log.warn(`Failed to reconcile the Codex team-hook dispatchers in ${codexHome}: ${e instanceof Error ? e.message : String(e)}`);
       unwritten.push(CODEX_TOOL_ID);
     }
   }
@@ -5062,7 +5163,7 @@ export async function judgeTeamaiOnlyCodexHooks(
   const raw = await readFileSafe(file);
 
   if (raw === null || raw.trim() === '') return null;
-  let json: unknown;
+  let json: JsonValue;
 
   try {
     json = JSON.parse(raw);
@@ -5070,12 +5171,12 @@ export async function judgeTeamaiOnlyCodexHooks(
     return { file, teamaiOnly: false };
   }
 
-  if (typeof json !== 'object' || json === null || Array.isArray(json)) return { file, teamaiOnly: false };
+  if (!isJsonObject(json)) return { file, teamaiOnly: false };
 
   if (Object.keys(json).length === 0) return null;
-  const { hooks, ...others } = json as { hooks?: unknown };
+  const { hooks, ...others } = json;
 
-  if (Object.keys(others).length > 0 || typeof hooks !== 'object' || hooks === null || Array.isArray(hooks)) return { file, teamaiOnly: false };
+  if (Object.keys(others).length > 0 || !isJsonObject(hooks)) return { file, teamaiOnly: false };
   const records = (await readManifest(manifestPath))[CODEX_TOOL_ID] ?? [];
   let owned = 0;
 
@@ -5083,7 +5184,7 @@ export async function judgeTeamaiOnlyCodexHooks(
     if (!Array.isArray(entries)) return { file, teamaiOnly: false };
 
     for (let index = 0; index < entries.length; index++) {
-      if (!records.some((record) => ownsCodexEntry(record, event, index, entries as CodexHookMatcher[]))) return { file, teamaiOnly: false };
+      if (!records.some((record) => ownsCodexEntry(record, event, index, entries))) return { file, teamaiOnly: false };
       owned++;
     }
   }
@@ -5105,7 +5206,7 @@ async function installProjectGitHook(localConfig: LocalConfig, opts: { dryRun?: 
   try {
     result = await installGitHook(localConfig.projectRoot, opts);
   } catch (e) {
-    throw new Error(`Could not install the teamai git hook in ${localConfig.projectRoot}: ${(e as Error).message}. `
+    throw new Error(`Could not install the teamai git hook in ${localConfig.projectRoot}: ${e instanceof Error ? e.message : String(e)}. `
       + 'New worktrees and `git pull` get the team\'s resources only at the next session. '
       + 'Fix the cause, then run `teamai pull` to install it.', { cause: e });
   }

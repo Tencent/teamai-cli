@@ -465,19 +465,31 @@ export function builtinHookDefs(tool: string): HookDef[] {
     ...(isCodexTool(tool) ? [SUBAGENT_START_SPEC] : []),
   ];
 
-  return specs.map((spec) => ({
-    source: 'builtin' as const,
-    key: spec.key,
-    event: spec.event,
-    matcher: spec.matcher,
-    command: (tool === 'zcode' && process.platform !== 'win32' ? `PATH="$HOME/${TEAMAI_BIN_DIR}:$PATH" ` : '')
-      + buildCommand(spec.dispatchEvent, tool, spec.matcher),
-    timeout: withTimeout ? spec.timeoutSec : undefined,
+  return specs.map((spec): HookDef => {
+    const def = {
+      source: 'builtin' as const,
+      key: spec.key,
+      event: spec.event,
+      matcher: spec.matcher,
+      command: (tool === 'zcode' && process.platform !== 'win32' ? `PATH="$HOME/${TEAMAI_BIN_DIR}:$PATH" ` : '')
+        + buildCommand(spec.dispatchEvent, tool, spec.matcher),
+      timeout: withTimeout ? spec.timeoutSec : undefined,
+    };
+
+    const description = `${TEAMAI_HOOK_DESCRIPTION_PREFIX} ${spec.key}`;
+
     // The team rules reach the Codex family through its start hooks (#938);
     // Codex would otherwise keep only the start and end of a large rule set.
-    ...(isCodexTool(tool) && (spec.event === 'SessionStart' || spec.event === 'SubagentStart') ? { additionalContextLimit: 0 } : {}),
-    description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} ${spec.key}`,
-  }));
+    return isCodexTool(tool) && (spec.event === 'SessionStart' || spec.event === 'SubagentStart')
+      ? { ...def, additionalContextLimit: 0, description }
+      : { ...def, description };
+  });
+}
+
+/** The built-in hooks one adapter installs, and what its artifact appends to each dispatch command. */
+interface AdapterBuiltinHooks {
+  keys: string[];
+  suffix?: string;
 }
 
 /**
@@ -492,7 +504,7 @@ export function builtinHookDefs(tool: string): HookDef[] {
  * Keyed by the tool's hook adapter. A tool with neither a settings file nor an
  * adapter here has no hook surface teamai writes.
  */
-const ADAPTER_BUILTIN_HOOKS: Record<HookAdapterId, { keys: string[]; suffix?: string } | null> = {
+const ADAPTER_BUILTIN_HOOKS: Record<HookAdapterId, AdapterBuiltinHooks | null> = {
   'kiro-hooks': { keys: ['Hook dispatch session-start'] },
   // agy-hooks.ts maps the same four events as OMP into agy's hooks.json
   // (SessionStart, PreInvocation, PostToolUse, Stop).
@@ -566,14 +578,14 @@ export function installedBuiltinHookDefs(tool: string, settingsDriven: boolean):
 
   if (!adapter) return [];
 
-  return BUILTIN_HOOK_SPECS.filter((spec) => adapter.keys.includes(spec.key)).map((spec) => ({
+  return BUILTIN_HOOK_SPECS.flatMap((spec) => (adapter.keys.includes(spec.key) ? [{
     source: 'builtin' as const,
     key: spec.key,
     event: spec.event,
     matcher: spec.matcher,
     command: getRawDispatchCommand(spec.dispatchEvent, tool, spec.matcher) + (adapter.suffix ?? ''),
     description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} ${spec.key}`,
-  }));
+  }] : []));
 }
 
 /** §4.8 team override of built-in hooks. Only whitelisted fields are honored. */
@@ -593,11 +605,10 @@ export function applyBuiltinOverride(defs: HookDef[], override?: BuiltinHookOver
   if (!override) return defs;
   const disabled = new Set(override.disabled ?? []);
 
-  return defs
-    .filter((d) => !disabled.has(d.key))
-    .map((d) => {
-      const o = override.overrides?.[d.key];
+  return defs.flatMap((d) => {
+    if (disabled.has(d.key)) return [];
+    const o = override.overrides?.[d.key];
 
-      return o && o.timeout !== undefined ? { ...d, timeout: o.timeout } : d;
-    });
+    return [o && o.timeout !== undefined ? { ...d, timeout: o.timeout } : d];
+  });
 }
