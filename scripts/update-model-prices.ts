@@ -20,9 +20,9 @@ const COMMITS = 'https://api.github.com/repos/BerriAI/litellm/commits?path=model
 const LatestCommit = z.array(z.object({ sha: z.string(), commit: z.object({ committer: z.object({ date: z.string() }) }) })).min(1);
 
 async function fetchOk(url: string, accept: string): Promise<Response> {
-  const headers: Record<string, string> = { accept, 'user-agent': 'teamai-cli-model-prices' };
+  const headers = new Headers({ accept, 'user-agent': 'teamai-cli-model-prices' });
 
-  if (process.env.GITHUB_TOKEN) headers.authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
+  if (process.env.GITHUB_TOKEN) headers.set('authorization', `Bearer ${process.env.GITHUB_TOKEN}`);
   const response = await fetch(url, { headers });
 
   if (!response.ok) throw new Error(`GET ${url} failed: HTTP ${response.status}`);

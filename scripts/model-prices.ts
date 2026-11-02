@@ -8,11 +8,11 @@ import { z } from 'zod';
 
 import { canonicalModelName } from '../src/token-usage/model-name.js';
 import type { ModelPrice, PriceCatalog, TieredRates, TokenRates } from '../src/token-usage/pricing.js';
+import { isJsonObject, type JsonObject, type JsonValue } from '../src/types.js';
 
 const LITELLM_FILE = 'model_prices_and_context_window.json';
-const CHAT_MODES = new Set(['chat', 'responses']);
+const ChatMode = z.enum(['chat', 'responses']);
 const Rate = z.number().finite().nonnegative();
-const Entry = z.record(z.string(), z.unknown());
 const ProviderEntry = z.object({ fast: z.number().finite().positive().optional() }).loose();
 
 /** USD per token to USD per million tokens, without float noise such as 0.09999999999999999. */
@@ -21,7 +21,7 @@ function perMillion(perToken: number): number {
 }
 
 /** The four rates under one LiteLLM suffix (`''`, `_priority`, `_above_272k_tokens`, ...). */
-function readRates(entry: Record<string, unknown>, suffix: string): TokenRates | undefined {
+function readRates(entry: JsonObject, suffix: string): TokenRates | undefined {
   const input = Rate.safeParse(entry[`input_cost_per_token${suffix}`]);
   const output = Rate.safeParse(entry[`output_cost_per_token${suffix}`]);
 
@@ -31,16 +31,19 @@ function readRates(entry: Record<string, unknown>, suffix: string): TokenRates |
   const cacheWrite = Rate.safeParse(entry[`cache_creation_input_token_cost${suffix}`]);
   const cacheWrite1h = Rate.safeParse(entry[`cache_creation_input_token_cost_above_1hr${suffix}`]);
 
-  return {
+  const rates: TokenRates = {
     input: perMillion(input.data),
     output: perMillion(output.data),
     cacheRead: perMillion(cacheRead.success ? cacheRead.data : input.data),
     cacheWrite: perMillion(cacheWrite.success ? cacheWrite.data : input.data),
-    ...(cacheWrite1h.success ? { cacheWrite1h: perMillion(cacheWrite1h.data) } : {}),
   };
+
+  if (cacheWrite1h.success) rates.cacheWrite1h = perMillion(cacheWrite1h.data);
+
+  return rates;
 }
 
-function readTiered(entry: Record<string, unknown>, speed: '' | '_priority' | '_flex'): TieredRates | undefined {
+function readTiered(entry: JsonObject, speed: '' | '_priority' | '_flex'): TieredRates | undefined {
   const base = readRates(entry, speed);
 
   if (!base) return undefined;
@@ -60,24 +63,21 @@ function readTiered(entry: Record<string, unknown>, speed: '' | '_priority' | '_
 function scaled(rates: TieredRates, multiple: number): TieredRates {
   const times = (rate: number) => perMillion((rate * multiple) / 1_000_000);
 
-  const scale = (r: TokenRates): TokenRates => ({
-    input: times(r.input),
-    output: times(r.output),
-    cacheRead: times(r.cacheRead),
-    cacheWrite: times(r.cacheWrite),
-    ...(r.cacheWrite1h === undefined ? {} : { cacheWrite1h: times(r.cacheWrite1h) }),
-  });
+  const scale = (r: TokenRates): TokenRates => {
+    const scaledRates: TokenRates = { input: times(r.input), output: times(r.output), cacheRead: times(r.cacheRead), cacheWrite: times(r.cacheWrite) };
+
+    if (r.cacheWrite1h !== undefined) scaledRates.cacheWrite1h = times(r.cacheWrite1h);
+
+    return scaledRates;
+  };
 
   const base = scale(rates);
 
   return rates.above ? { ...base, above: rates.above.map((tier) => ({ tokens: tier.tokens, ...scale(tier) })) } : base;
 }
 
-function readModel(raw: unknown): ModelPrice | undefined {
-  const parsed = Entry.safeParse(raw);
-
-  if (!parsed.success || typeof parsed.data.mode !== 'string' || !CHAT_MODES.has(parsed.data.mode)) return undefined;
-  const entry = parsed.data;
+function readModel(entry: JsonValue): ModelPrice | undefined {
+  if (!isJsonObject(entry) || !ChatMode.safeParse(entry.mode).success) return undefined;
   const standard = readTiered(entry, '');
 
   // A model listed at no cost is a preview or a placeholder, not a free model.
@@ -90,7 +90,13 @@ function readModel(raw: unknown): ModelPrice | undefined {
 
   const flex = readTiered(entry, '_flex');
 
-  return { ...standard, ...(fast ? { fast } : {}), ...(flex ? { flex } : {}) };
+  const price: ModelPrice = { ...standard };
+
+  if (fast) price.fast = fast;
+
+  if (flex) price.flex = flex;
+
+  return price;
 }
 
 /**
@@ -116,10 +122,11 @@ function consensus(own: ModelPrice | undefined, resold: ModelPrice[]): ModelPric
 }
 
 /** The catalog of every LiteLLM chat model with token prices, keyed by `canonicalModelName`. */
-export function catalogFromLiteLlm(document: unknown, source: { revision: string; date: string }): PriceCatalog {
+export function catalogFromLiteLlm(document: JsonValue, source: { revision: string; date: string }): PriceCatalog {
+  if (!isJsonObject(document)) throw new Error(`${LITELLM_FILE} is not a JSON object`);
   const byName = new Map<string, { own?: ModelPrice; resold: ModelPrice[] }>();
 
-  for (const [key, raw] of Object.entries(Entry.parse(document))) {
+  for (const [key, raw] of Object.entries(document)) {
     const price = readModel(raw);
 
     if (!price) continue;
@@ -158,7 +165,7 @@ const CatalogSchema = z.object({
 });
 
 /** A catalog file as `formatCatalog` writes it; throws on any other shape. */
-export function parseCatalog(json: unknown): PriceCatalog {
+export function parseCatalog(json: JsonValue): PriceCatalog {
   return CatalogSchema.parse(json);
 }
 
