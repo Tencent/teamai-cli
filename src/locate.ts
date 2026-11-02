@@ -8,6 +8,7 @@
  */
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
+import { z } from 'zod';
 import { MCP_SERVER_KEY } from './resources/mcp-format.js';
 import { SESSION_PLATFORM_FACTS, type SessionPlatform, type StoredSessionPlatform } from './session-flow/adapters/platform-facts.js';
 import {
@@ -282,7 +283,10 @@ export const SHARED_AGENT_SKILLS_PATH = '.agents/skills';
 
 type Locator<R extends Resource> = (tool: string, install: Install, host: Host) => Promise<Location<R>>;
 
-const LOCATORS: { readonly [R in Resource]: Locator<R> } = {
+/** One locator per resource, each typed for its own resource. */
+type Locators = { readonly [R in Resource]: Locator<R> };
+
+const LOCATORS: Locators = {
   skills: locateSkills,
   rules: locateRules,
   blocks: locateBlocks,
@@ -627,7 +631,7 @@ function openclawStateDir(roots: Roots, host: Host): string {
 
 async function lookupOf(read: FirstExistingRead, roots: Roots, host: Host): Promise<{ readonly files: readonly string[]; readonly first: string }> {
   const files = read.base === 'home'
-    ? read.firstOf.map((file) => typeof file === 'string' ? roots.declared('home', file) : host.path.join(roots.codebuddyConfigDir, file.path))
+    ? read.firstOf.map((file) => file instanceof Object ? host.path.join(roots.codebuddyConfigDir, file.path) : roots.declared('home', file))
     : read.firstOf.map((file) => roots.declared('project', file));
 
   const index = (await Promise.all(files.map((file) => host.exists(file)))).indexOf(true);
@@ -852,16 +856,17 @@ async function locateRules(tool: string, install: Install, host: Host): Promise<
     case 'dir': {
       const retiredActivation = await retiredRulesActivation(tool, install, host, roots);
 
-      return {
+      const location: Location<'rules'> = {
         channel: 'files',
         own: dir === null ? null : { kind: 'dir', path: dir },
         activation: await activationOf(channel.activation, tool, install, host, roots),
         reads: await readsOf(channel.reads, roots, host),
         readGates: [],
         retired: [],
-        ...(retiredActivation === undefined ? {} : { retiredActivation }),
         gates: await gatesOf(tool, install, host, roots),
       };
+
+      return retiredActivation === undefined ? location : { ...location, retiredActivation };
     }
 
     case 'inline': {
@@ -1041,7 +1046,7 @@ async function knownAgentsReader(tool: string, dir: string, install: Install, ho
   for (const other of Object.keys(install.toolPaths)) {
     const channel = channelsOf(other).agents[install.scope];
 
-    if (other === tool || typeof channel !== 'object' || channel.reads === 'unknown') continue;
+    if (other === tool || !(channel instanceof Object) || channel.reads === 'unknown') continue;
     const roots = rootsOf(other, install, host);
 
     if (roots.configured('agents') !== dir) continue;
@@ -1108,7 +1113,7 @@ async function readByAnotherTool(writer: string, install: Install, host: Host, t
   for (const reader of Object.keys(TOOLS)) {
     const channel = channelsOf(reader).mcp.project;
 
-    if (typeof channel !== 'object' || channel.writtenBy !== writer || install.toolPaths[reader] === undefined) continue;
+    if (!(channel instanceof Object) || channel.writtenBy !== writer || install.toolPaths[reader] === undefined) continue;
     const roots = rootsOf(reader, install, host);
     const reads = await readsOf(channel.reads, roots, host);
 
@@ -1415,6 +1420,9 @@ async function adapterHooksOf(tool: string, channel: HookAdapter, install: Insta
   };
 }
 
+/** Pi's settings.json `sessionDir`, when it names one. */
+const PiSessionDirSchema = z.object({ sessionDir: z.string() });
+
 /**
  * Where `platform`'s sessions sit on `host`. A `tool-home` store follows the member's recorded
  * root first, then its tool's home, as that tool's other files do. A recorded root is checked
@@ -1440,10 +1448,9 @@ export function sessionStoreDir(
 
       if (platform === 'pi') {
         try {
-          const settings = JSON.parse(host.readTextNow(p.join(dir, 'settings.json')) ?? 'null') as unknown;
+          const settings = PiSessionDirSchema.safeParse(JSON.parse(host.readTextNow(p.join(dir, 'settings.json')) ?? 'null'));
 
-          if (settings && typeof settings === 'object' && 'sessionDir' in settings
-            && typeof settings.sessionDir === 'string' && settings.sessionDir.trim()) return absoluteOn(settings.sessionDir, host);
+          if (settings.success && settings.data.sessionDir.trim()) return absoluteOn(settings.data.sessionDir, host);
         } catch {
           // Pi ignores an unreadable settings file here; use its ordinary session store too.
         }
@@ -1466,7 +1473,7 @@ async function locateSessions(tool: string, install: Install, host: Host): Promi
   if (!isToolId(tool)) return { channel: 'unknown', retired: [], gates: [] };
   const { sessions } = TOOLS[tool];
 
-  if (typeof sessions === 'string') return { channel: sessions, retired: [], gates: [] };
+  if (!(sessions instanceof Object)) return { channel: sessions, retired: [], gates: [] };
   const [platform] = sessions;
   const { toolRoots } = install.scope === 'user' ? install : await userViewOf(install, host);
   const own: DirPlace = { kind: 'dir', path: sessionStoreDir(platform, toolRoots, host) };
