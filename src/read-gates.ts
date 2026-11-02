@@ -38,6 +38,8 @@ export function readGateCheckName(gate: ReadGate, noun: string): string {
       return 'Qoder CLI approves this project\'s team MCP servers';
     case 'claude-mcp-approval':
       return 'Claude Code approves this project\'s team MCP servers';
+    case 'codebuddy-mcp-approval':
+      return 'CodeBuddy Code approves this project\'s team MCP servers';
     default: {
       const unhandled: never = gate;
       return unhandled;
@@ -65,6 +67,8 @@ export async function readGateVerdict(gate: ReadGate, held: Held): Promise<ReadG
       return qoderMcpApproval(gate, held);
     case 'claude-mcp-approval':
       return claudeMcpApproval(gate, held);
+    case 'codebuddy-mcp-approval':
+      return codebuddyMcpApproval(gate, held);
     default: {
       const unhandled: never = gate;
       return unhandled;
@@ -329,4 +333,25 @@ async function claudeMcpApproval(gate: Extract<ReadGate, { kind: 'claude-mcp-app
     rejected: held.names.filter((name) => disabled.has(name)),
     pending: held.names.filter((name) => !disabled.has(name) && !all && !enabled.has(name)),
   }, how, `Remove the rejected ones from disabledMcpjsonServers in ${[...rejectedIn].join(', ')}; \`claude mcp reset-project-choices\` in ${main} clears the local settings' choices.`);
+}
+
+/**
+ * CodeBuddy Code 2.179.1: the project's settings.local.json alone decides. A
+ * server in `disabledMcpjsonServers` is rejected; one in
+ * `enabledMcpjsonServers`, or any with `enableAllProjectMcpServers`, is
+ * approved; the rest wait, in `codebuddy -p` too.
+ */
+async function codebuddyMcpApproval(gate: Extract<ReadGate, { kind: 'codebuddy-mcp-approval' }>, held: Held): Promise<ReadGateVerdict> {
+  const cause = `${held.summary}, but CodeBuddy Code starts a project's .mcp.json servers only once you approve them`;
+  const settings = await readJsonObject(gate.config);
+  if (settings.kind === 'invalid') return unreadable(cause, gate.config, `does not parse (${settings.error})`, 'CodeBuddy Code');
+  const value = settings.kind === 'ok' ? settings.value : {};
+  const enabled = namesIn(fieldOf(value, 'enabledMcpjsonServers'));
+  const disabled = namesIn(fieldOf(value, 'disabledMcpjsonServers'));
+  const all = fieldOf(value, 'enableAllProjectMcpServers') === true;
+  return approvalVerdict(cause, {
+    rejected: held.names.filter((name) => disabled.has(name)),
+    pending: held.names.filter((name) => !disabled.has(name) && !all && !enabled.has(name)),
+  }, `Start \`codebuddy\` in ${gate.checkout} and choose "Use this MCP server", or add them to enabledMcpjsonServers in ${gate.config}.`,
+  `Remove the rejected ones from disabledMcpjsonServers in ${gate.config}.`);
 }

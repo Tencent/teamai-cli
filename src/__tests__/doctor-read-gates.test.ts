@@ -542,4 +542,68 @@ describe('doctor — the tool trusts the project it reads team files from', () =
       expect(await check(APPROVAL)).toBeUndefined();
     });
   });
+  // CodeBuddy Code 2.179.1 reads the approval of a project's .mcp.json servers
+  // from <session cwd>/.codebuddy/settings.local.json only (or
+  // $CODEBUDDY_PROJECT_CONFIG_DIR/settings.local.json), and holds a pending
+  // server back in `codebuddy -p` too.
+  describe('CodeBuddy Code MCP approval', () => {
+    const APPROVAL = 'CodeBuddy Code approves this project\'s team MCP servers';
+    const localSettings = (): string => path.join(projectRoot, '.codebuddy', 'settings.local.json');
+
+    beforeEach(async () => {
+      vi.stubEnv('CODEBUDDY_CONFIG_DIR', undefined);
+      vi.stubEnv('CODEBUDDY_PROJECT_CONFIG_DIR', undefined);
+      await fse.ensureDir(path.join(homeDir, '.codebuddy'));
+      teamConfig.toolPaths = { codebuddy: { mcp: '.codebuddy/.mcp.json', mcpProject: '.mcp.json' } };
+      await fse.outputFile(path.join(repoPath, 'mcp', 'mcp.yaml'), 'servers:\n  - name: issues\n    transport: stdio\n    command: issues-server\n');
+      await fse.outputJson(path.join(projectRoot, '.mcp.json'), { mcpServers: { issues: { type: 'stdio', command: 'issues-server' } } });
+      await fse.outputJson(managedMcpManifestPath(getDataHome(localConfig), projectRoot), { [managedMcpManifestKey('codebuddy', true)]: [{ name: 'issues', hash: 'h' }] });
+    });
+
+    it('fails while the server waits for approval, naming the file that approves it', async () => {
+      const found = await check(APPROVAL);
+
+      expect(await found?.check()).toBe(false);
+      expect(found?.fix).toContain(`${path.join(projectRoot, '.mcp.json')} holds team MCP servers (issues)`);
+      expect(found?.fix).toContain('issues waits for approval');
+      expect(found?.fix).toContain(`enabledMcpjsonServers in ${localSettings()}`);
+    });
+
+    it.each([
+      ['by name', { enabledMcpjsonServers: ['issues'] }],
+      ['all at once', { enableAllProjectMcpServers: true }],
+    ])('passes once the project\'s local settings approve it %s', async (_label, settings) => {
+      await fse.outputJson(localSettings(), settings);
+
+      expect(await (await check(APPROVAL))?.check()).toBe(true);
+    });
+
+    it('fails on a rejection, whatever approves all', async () => {
+      await fse.outputJson(localSettings(), { enableAllProjectMcpServers: true, disabledMcpjsonServers: ['issues'] });
+
+      const found = await check(APPROVAL);
+      expect(await found?.check()).toBe(false);
+      expect(found?.fix).toContain('issues was rejected');
+    });
+
+    it('does not take an approval in the user settings, which CodeBuddy ignores for this', async () => {
+      await fse.outputJson(path.join(homeDir, '.codebuddy', 'settings.json'), { enabledMcpjsonServers: ['issues'] });
+
+      expect(await (await check(APPROVAL))?.check()).toBe(false);
+    });
+
+    it('reads the approval from CODEBUDDY_PROJECT_CONFIG_DIR, resolved from the project', async () => {
+      vi.stubEnv('CODEBUDDY_PROJECT_CONFIG_DIR', 'alt');
+      await fse.outputJson(path.join(projectRoot, 'alt', 'settings.local.json'), { enabledMcpjsonServers: ['issues'] });
+
+      expect(await (await check(APPROVAL))?.check()).toBe(true);
+    });
+
+    it('builds no check while the servers go to the local scope in ~/.codebuddy.json', async () => {
+      Object.assign(localConfig, { gitExcludeEnabled: true });
+      await fse.outputJson(path.join(homeDir, '.codebuddy.json'), { projects: { [projectRoot]: { mcpServers: { issues: { type: 'stdio', command: 'issues-server' } } } } });
+
+      expect(await check(APPROVAL)).toBeUndefined();
+    });
+  });
 });

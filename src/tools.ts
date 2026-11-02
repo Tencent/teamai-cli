@@ -123,7 +123,7 @@ export type RunTimeVia = 'session-hook' | 'extension' | 'plugin';
  * project's MCP servers. `read-gates.ts` evaluates each one.
  */
 export type ReadGateKind = 'codex-project-trust' | 'pi-project-trust' | 'muse-workspace-trust' | 'copilot-folder-trust' | 'qoder-folder-trust'
-  | 'qoder-mcp-approval' | 'claude-mcp-approval';
+  | 'qoder-mcp-approval' | 'claude-mcp-approval' | 'codebuddy-mcp-approval';
 
 /** The frontmatter teamai writes above its blocks when it creates an owned blocks file a rules loader reads. */
 export type BlocksHeader = 'always-apply' | 'apply-to-all' | 'trigger-always-on' | 'inclusion-always';
@@ -1033,6 +1033,8 @@ export const TOOLS = {
         format: 'buddy',
         localScope: { file: { in: 'codebuddy-config-dir', path: '.codebuddy.json' }, key: 'realpath' },
         reads: [{ base: 'project', firstOf: ['.mcp.json', 'mcp.json'], when: 'cwdOnly', evidence: 'source' }],
+        // CodeBuddy Code 2.179.1 starts a .mcp.json server only once it is approved, in `codebuddy -p` too.
+        readGates: ['codebuddy-mcp-approval'],
       },
     },
     hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.codebuddy/settings.json', evidence: 'source' }] }, self: { channel: 'settings', format: 'claude', reads: [{ base: 'project', path: '.codebuddy/settings.json', when: 'cwdOnly', evidence: 'source' }] } },

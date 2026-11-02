@@ -159,7 +159,9 @@ export type ReadGate =
    * checkout holds its trust; `settings`: its user settings.json, which approves
    * servers whatever the trust.
    */
-  | { readonly kind: 'claude-mcp-approval'; readonly config: string; readonly settings: string; readonly checkout: string };
+  | { readonly kind: 'claude-mcp-approval'; readonly config: string; readonly settings: string; readonly checkout: string }
+  /** `config`: the project's .codebuddy/settings.local.json (`CODEBUDDY_PROJECT_CONFIG_DIR` moves it), the only file CodeBuddy Code reads approvals from. */
+  | { readonly kind: 'codebuddy-mcp-approval'; readonly config: string; readonly checkout: string };
 
 /**
  * A place teamai wrote this resource to before and no longer writes, and why.
@@ -644,6 +646,11 @@ async function readGatesOf(kinds: readonly ReadGateKind[] | undefined, install: 
           settings: roots.configured('settings') ?? roots.declared('home', '.claude/settings.json'),
           checkout: install.projectRoot,
         };
+      }
+      case 'codebuddy-mcp-approval': {
+        const moved = host.env.CODEBUDDY_PROJECT_CONFIG_DIR;
+        const dir = moved ? host.path.resolve(install.projectRoot, moved) : host.path.join(install.projectRoot, '.codebuddy');
+        return { kind, config: host.path.join(dir, 'settings.local.json'), checkout: install.projectRoot };
       }
       case 'qoder-folder-trust':
       case 'qoder-mcp-approval':
