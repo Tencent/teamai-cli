@@ -196,7 +196,7 @@ const PROPOSAL_REFS = `refs/remotes/origin/${SelfImprovement.BRANCH_PREFIX}`;
 /** How long the host may take to list a proposal branch's requests. */
 const LOOKUP_TIMEOUT_MS = 15_000;
 
-/** The requests the host last listed for each proposal branch, by repository and branch: a load that does not refresh reads these. */
+/** The requests the host last listed for each proposal branch, by host, repository and branch: a load that does not refresh reads these. */
 const histories = new Map<string, PullRequestRecord[]>();
 
 /**
@@ -210,7 +210,7 @@ async function historiesOf(config: LocalConfig, { scorers, target, refresh }: { 
 
   const answers = await Promise.all(scorers.map(async (scorer) => {
     const source = SelfImprovement.branchOf(scorer);
-    const key = `${origin.repo} ${source}`;
+    const key = `${origin.hostname} ${origin.repo} ${source}`;
 
     if (refresh) {
       const listed = await origin.pullRequests.history({ repo: origin.repo, source, target, timeoutMs: LOOKUP_TIMEOUT_MS }).catch(() => undefined);

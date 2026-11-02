@@ -16,7 +16,7 @@ import { syncTeamDefinitions } from '../benchmark/suite-cache.js';
 import { selfImprovementView } from '../dashboard/self-improvement.js';
 import { GitHubProvider } from '../providers/github/index.js';
 import * as registry from '../providers/registry.js';
-import type { PullRequestRef } from '../providers/types.js';
+import type { PullRequestRecord, PullRequestRef } from '../providers/types.js';
 import type { ScoreLabel } from '../scorers/label.js';
 import { getReportsDir, type LocalConfig } from '../types.js';
 
@@ -305,6 +305,26 @@ describe('dashboard self-improvement', () => {
     }]);
     // As self-improvement plan reads the proposal's branch, its tasks cover their failures: the next run updates it.
     expect(view.scorers).toEqual([expect.objectContaining({ startable: 0, covered: ['benchmarks/regressions/tasks/skipped-the-diff.yaml'] })]);
+  });
+
+  it('keeps the requests each host listed apart, for repositories of one name on two hosts', async () => {
+    const start = project();
+    const { config, origin } = team(start.dir);
+    proposal(origin, start.commit);
+    publishLabels(config, [label('new-1', { recorded: agent({ commit: start.commit }) })]);
+    const on = (hostname: string, history: () => Promise<PullRequestRecord[]>) => {
+      vi.spyOn(registry, 'providerForRemote').mockReturnValue({ kind: 'provider', provider: new GitHubProvider(), pullRequests: { findOpen: async () => undefined, history }, repo: 'acme/team', hostname });
+    };
+
+    on('github.com', async () => [{ url: 'https://github.com/acme/team/pull/12', title: 'Reviewer: read the diff first', openedAt: '2026-03-18T09:00:00Z', state: 'open' }]);
+    await selfImprovementView({ config, now: NOW, refresh: true });
+    on('gitlab.example.com', async () => [{ url: 'https://gitlab.example.com/acme/team/-/merge_requests/3', title: 'Review skill: null checks', openedAt: '2026-03-01T09:00:00Z', state: 'merged', closedAt: '2026-03-02T09:00:00Z' }]);
+    await selfImprovementView({ config, now: NOW, refresh: true });
+    on('github.com', async () => []);
+
+    const view = await selfImprovementView({ config, now: NOW, refresh: false });
+
+    expect(view.requests).toEqual({ kind: 'answered', open: 1, merged: 0, closed: 0 });
   });
 
   it('counts how the host ended each scorer\'s pull requests, and lists one closed without merging as a change', async () => {
