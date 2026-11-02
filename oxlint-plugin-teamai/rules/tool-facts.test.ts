@@ -1,13 +1,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
-import { TOOLS } from '../../src/tools.ts';
 import { ruleHarness } from '../test/harness.ts';
 
 const TOOLS_SOURCE = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'src', 'tools.ts'), 'utf8');
 const files = { 'src/tools.ts': TOOLS_SOURCE };
+/** The ids `TOOL_IDS` lists, which the type check holds `TOOLS` to: a second source for the keys the rule reads. */
+const TOOL_IDS = [...(/export const TOOL_IDS = \[([^\]]*)\] as const/.exec(TOOLS_SOURCE)?.[1] ?? '').matchAll(/'([^']+)'/g)].map((match) => match[1]);
 const rule = ruleHarness('teamai/tool-facts', { filename: 'src/hooks.ts' });
 
 describe('teamai/tool-facts', () => {
@@ -69,7 +70,11 @@ const CHOICES = ['claude', 'codex'];
   rule.valid('stays out of tests', `const LIST = ['claude', 'codex'];`, { filename: 'src/__tests__/x.test.ts', files });
 
   // A tool missing from what the rule reads would let its tables through, so every id of TOOLS must be caught.
-  for (const tool of Object.keys(TOOLS)) {
+  it('finds the TOOL_IDS list it checks against', () => {
+    expect(TOOL_IDS).toContain('claude');
+    expect(TOOL_IDS).toContain('agy');
+  });
+  for (const tool of TOOL_IDS) {
     rule.invalid(`knows the tool ${tool}`, `const LIST = new Set(['${tool}', '${tool === 'claude' ? 'codex' : 'claude'}']);`, undefined, { files });
   }
 });
