@@ -24,8 +24,8 @@ import {
 } from './utils/shell-profile.js';
 import { getUserHome } from './utils/home.js';
 import { loadStateForScope } from './config.js';
-import { installOf, isInstalledFor, locate, ownOf, unreadWrites, writable, writesOf, type DirPlace, type FilesChannel, type Install, type Location, type Session, type Unread } from './locate.js';
-import { codexProjectTrust, codexTrustFix } from './codex-project-trust.js';
+import { installOf, isInstalledFor, locate, ownOf, unreadWrites, writable, writesOf, type DirPlace, type FilesChannel, type Install, type Location, type ReadGate, type Session, type Unread } from './locate.js';
+import { readGateCheckName, readGateVerdict, type Held } from './read-gates.js';
 import { amongPlaces, placesRecordOf, samePlaces } from './resources/places.js';
 import { realHost } from './tool-home.js';
 import { getsRulesFromExtension, ruleFormatForTool, ruleStemsForTool } from './resources/rule-format.js';
@@ -226,6 +226,19 @@ export function nameList(names: string[]): string {
   if (names.length <= MAX_NAMED_IN_FIX) return names.join(', ');
   const shown = names.slice(0, MAX_NAMED_IN_FIX).join(', ');
   return `${shown} and ${names.length - MAX_NAMED_IN_FIX} more`;
+}
+
+/** One check per gate a tool's read of `held` waits on: the tool's own verdict on this project (`read-gates.ts`). */
+async function readGateChecks(gates: readonly ReadGate[], held: Held): Promise<Check[]> {
+  return Promise.all(gates.map(async (gate): Promise<Check> => {
+    const verdict = await readGateVerdict(gate, held);
+    return {
+      name: readGateCheckName(gate, held.noun),
+      source: 'local',
+      check: async () => verdict.met,
+      fix: verdict.met ? '' : verdict.fix,
+    };
+  }));
 }
 
 /**
@@ -1321,25 +1334,7 @@ async function agentsTrustChecks(ctx: DoctorContext, handler: ResourceHandler, i
       if ((await handler.deliveryTargets(teamConfig, localConfig, item, received)).some((target) => target.tool === tool)) names.push(item.name);
     }
     if (names.length === 0) continue;
-    for (const gate of where.readGates) {
-      switch (gate.kind) {
-        case 'codex-project-trust': {
-          const trust = await codexProjectTrust(gate);
-          const cause = `${own} holds team agents (${nameList(names)}), but Codex loads a project's agents only in a trusted project`;
-          checks.push({
-            name: 'Codex trusts this project, so it loads its team agents',
-            source: 'local',
-            check: async () => trust.kind === 'trusted',
-            fix: trust.kind === 'trusted' ? '' : codexTrustFix(trust, gate, cause),
-          });
-          break;
-        }
-        default: {
-          const unhandled: never = gate.kind;
-          return unhandled;
-        }
-      }
-    }
+    checks.push(...await readGateChecks(where.readGates, { summary: `${own} holds team agents (${nameList(names)})`, noun: 'agents', names }));
   }
   return checks;
 }
@@ -1732,44 +1727,40 @@ export async function buildLocalAgentMcpLocationChecks(ctx: DoctorContext): Prom
 }
 
 /**
- * Codex loads a project's `.codex/config.toml` only in a trusted project, and
- * skips an untrusted one silently (#954), so team servers a pull or
- * `teamai mcp inject` wrote there are on disk and inert. Built while that file
- * holds a server this worktree's `managed-mcp.json` records for Codex.
- * Read-only: this check only reads Codex's config.
+ * A tool that reads a project's MCP file only once it trusts the project, or
+ * starts its servers only once the member approves them (Codex #954): team
+ * servers a pull or `teamai mcp inject` wrote there are on disk and inert
+ * until then. Built per gate `locate` declares, while the file holds a server
+ * this worktree's `managed-mcp.json` records. Read-only: it only reads the
+ * tool's own config.
  */
-export async function buildCodexProjectTrustCheck(ctx: DoctorContext): Promise<Check[]> {
+export async function buildMcpReadGateChecks(ctx: DoctorContext): Promise<Check[]> {
   const { localConfig, teamConfig } = ctx;
   const { projectRoot } = localConfig;
   if (!teamConfig || localConfig.scope !== 'project' || !projectRoot) return [];
 
+  const install = installOf(teamConfig, localConfig);
   const { resolveMcpTargets, mcpTargetExcluded, installedMcpEntries } = await import('./mcp-reconcile.js');
-  const { isCodexTrustGatedTool } = await import('./hooks.js');
-  const target = (await resolveMcpTargets(teamConfig, localConfig))
-    .find((candidate) => isCodexTrustGatedTool(candidate.tool) && !mcpTargetExcluded(localConfig, candidate));
-  if (!target) return [];
-
   const { loadProjectMcpManifest } = await import('./utils/mcp-manifest.js');
-  const { manifest } = await loadProjectMcpManifest(getDataHome(localConfig), projectRoot, { dryRun: true });
-  const installed = await installedMcpEntries(target);
-  const names = (manifest[managedMcpManifestKey(target.tool, true)] ?? [])
-    .map((record) => record.name)
-    .filter((name) => installed?.has(name));
-  if (names.length === 0) return [];
-
-  const where = await locate(target.tool, 'mcp', installOf(teamConfig, localConfig));
-  const gate = where.channel === 'files' ? where.readGates.find((readGate) => readGate.kind === 'codex-project-trust') : undefined;
-  if (gate === undefined) return [];
-  const trust = await codexProjectTrust(gate);
-  const cause = `${target.file} holds team MCP servers (${nameList(names)}), but Codex loads a project's `
-    + '.codex/config.toml only in a trusted project';
-
-  return [{
-    name: 'Codex trusts this project, so it loads its team MCP servers',
-    source: 'local',
-    check: async () => trust.kind === 'trusted',
-    fix: trust.kind === 'trusted' ? '' : codexTrustFix(trust, gate, cause),
-  }];
+  let targets: McpTarget[] | undefined;
+  let manifest: Awaited<ReturnType<typeof loadProjectMcpManifest>>['manifest'] | undefined;
+  const checks: Check[] = [];
+  for (const tool of Object.keys(ctx.toolPaths)) {
+    const where = await locate(tool, 'mcp', install);
+    if (where.channel !== 'files' || where.readGates.length === 0) continue;
+    const writer = where.writtenBy ?? tool;
+    targets ??= await resolveMcpTargets(teamConfig, localConfig);
+    const target = targets.find((candidate) => candidate.tool === writer && !mcpTargetExcluded(localConfig, candidate));
+    if (!target) continue;
+    manifest ??= (await loadProjectMcpManifest(getDataHome(localConfig), projectRoot, { dryRun: true })).manifest;
+    const installed = await installedMcpEntries(target);
+    const names = (manifest[managedMcpManifestKey(writer, true)] ?? [])
+      .map((record) => record.name)
+      .filter((name) => installed?.has(name));
+    if (names.length === 0) continue;
+    checks.push(...await readGateChecks(where.readGates, { summary: `${target.file} holds team MCP servers (${nameList(names)})`, noun: 'MCP servers', names }));
+  }
+  return checks;
 }
 
 /**
