@@ -183,8 +183,8 @@ function promptPassesUnder(run: RunState, step: string): PromptPass[] {
 }
 
 /**
- * One trial's measures over the prompt passes it ran, the one-trial projection: duration, tokens and cost summed, the
- * latter two incomplete when a pass stated none; the first pass that ran as something other than `arm`, else the first
+ * One trial's measures over the prompt passes it ran, the one-trial projection: tokens and cost summed, incomplete when
+ * a pass stated none, or for tokens not both input and output; duration summed, absent when a pass stated none; the first pass that ran as something other than `arm`, else the first
  * observed; each skill a pass loaded; the first limit that ended a turn; and the limits a driver did not enforce, with
  * `unenforced`, those no step of the trial could. Each `watched` skill no observed pass loaded is `unknown` when a pass went
  * unobserved; `used` is absent when none was observed. Empty for a trial whose work never ran.
@@ -199,11 +199,11 @@ function projectionOf(passes: readonly PromptPass[], { arm, watched, unenforced 
   const observed = passes.flatMap(({ used }) => (used ? [used] : []));
   const limit = passes.find((pass) => pass.limit !== undefined)?.limit;
   const notEnforced = [...new Set([...unenforced, ...passes.flatMap((pass) => (pass.unenforced ?? []).flatMap(({ requirement }) => UNENFORCED_LIMITS.filter((known) => known === requirement)))])];
-  const durationMs = sum(passes.map((pass) => pass.durationMs));
+  const durationMs = passes.every((pass) => pass.durationMs !== undefined) ? sum(passes.map((pass) => pass.durationMs)) : undefined;
   const [input, output, cachedInput] = (['input', 'output', 'cachedInput'] as const).map((field) => sum(stated.map((one) => one[field])));
   const tokens = stated.length > 0 ? {
     ...(input !== undefined ? { input } : {}), ...(output !== undefined ? { output } : {}), ...(cachedInput !== undefined ? { cachedInput } : {}),
-    complete: stated.length === passes.length,
+    complete: passes.every((pass) => pass.tokens?.input !== undefined && pass.tokens.output !== undefined),
   } : undefined;
   return {
     ...(limit ? { limit } : {}),

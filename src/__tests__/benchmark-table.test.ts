@@ -322,6 +322,32 @@ describe('benchmark usage', () => {
   });
 });
 
+describe('a trial of more than one prompt pass', () => {
+  it('has a complete token total only when every pass stated input and output, and a duration only when every pass stated one', async () => {
+    const { config, runId } = await startTen();
+    await settleBaselines(config, runId, driver, can);
+    const prompt = LeaseSchema.parse(await leaseNext(config, runId, driver, { can, prepare: true })).data.lease;
+    await reportAttempt(config, runId, { attempt: prompt.attempt, revision: prompt.revision, outcome: 'failed', driver, tool: 'claude', tokens: { input: 80, output: 20 }, durationMs: 1000 });
+    await cancelRun(config, runId, {});
+    const run = await readRun(config, runId);
+    if (typeof run !== 'object') throw new Error(`run ${runId} is ${run}`);
+    const planned = planOfRun(run);
+    if ('failure' in planned) throw new Error(planned.failure.message);
+    const step = run.steps.find((state) => state.id === 'trials.r1.fix.claude.prompt');
+    const [trial, arm] = [planned.found.plan.trials[0], planned.found.plan.arms[0]];
+    if (!step || !trial || !arm) throw new Error('trial step missing');
+    // A workflow arm's trial, whose workflow loops its prompt: an earlier pass, whose tool stated output tokens only and no duration.
+    Object.assign(arm, { workflow: { name: 'fixer', sourceHash: 'a'.repeat(64) } });
+    Object.assign(trial, { step: trial.step.replace(/\.prompt$/, '') });
+    Object.assign(step, { passes: [{ pass: 1, attempt: 'earlier', outcome: 'success', tokens: { output: 10 } }] });
+
+    const [recorded] = benchmarkRecord(run, planned.found).trials;
+
+    expect(recorded?.tokens).toEqual({ input: 80, output: 30, complete: false });
+    expect(recorded).not.toHaveProperty('durationMs');
+  });
+});
+
 describe('a trial cancelled before its next lease', () => {
   it.each([
     ['a loop keeps', (run: RunState, step: StepState) => Object.assign(step, { passes: [{ pass: 1, attempt: 'earlier', outcome: 'success' }] })],
