@@ -659,7 +659,7 @@ console.log(JSON.stringify({ type: 'result', structured_output: { label: 'comple
 
     expect(await scoreOnDemand(config, { run: runId, scorers: ['tests'] })).toEqual({ error: {
       code: 'step_not_found',
-      message: `Run ${runId} lists scorer tests on no step with a succeeded pass. Pass --step <path> to pick one: read-issue, change.`,
+      message: `Run ${runId} lists scorer tests on no step. Pass --step <path> to pick one: read-issue, change.`,
     } });
   });
 

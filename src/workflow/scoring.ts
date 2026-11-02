@@ -1413,7 +1413,7 @@ export async function scoreOnDemand(config: LocalConfig, demand: ScoreDemand, no
     if (listing.length > 1) return error('step_ambiguous', `Run ${run.id} lists scorer ${named} on steps ${listing.join(', ')}. Pass --step <path> to pick one.`);
     [step] = listing;
     if (step === undefined) {
-      return error('step_not_found', `Run ${run.id} lists scorer ${named} on no step with a succeeded pass. ${steps.length > 0 ? `Pass --step <path> to pick one: ${steps.join(', ')}.` : 'No step of it succeeded.'}`);
+      return error('step_not_found', `Run ${run.id} lists scorer ${named} on no step. ${steps.length > 0 ? `Pass --step <path> to pick one: ${steps.join(', ')}.` : 'No step of it succeeded.'}`);
     }
   }
   const ofStep = judgeable.filter((pass) => pass.step === step).map((pass) => pass.pass).sort((left, right) => left - right);
