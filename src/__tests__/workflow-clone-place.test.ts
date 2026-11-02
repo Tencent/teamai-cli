@@ -316,6 +316,18 @@ describe('a clone place', () => {
     expect(typeof run === 'object' && run.steps.find((step) => step.id === 'review.look')).toMatchObject({ status: 'failed', failure: { code: 'role_unavailable' } });
   });
 
+  it("fails a clone whose team selection names a role manifest/members.yaml at the clone's revision does not assign the member, rather than install the assigned one silently", async () => {
+    const { config, runId, revision } = await roleRun({ committed: ['review', 'audit'], declared: ['review', 'audit'], members: 'version: 1\nmembers:\n  tester: [audit]\ndefault: []\n', workflow: SELECTED_CLONE('review') });
+    // Refused before the clone's own pull, which says so if it is reached.
+    childCli.entry = path.join(path.dirname(config.repo.localPath), 'reached-teamai.mjs');
+    fs.writeFileSync(childCli.entry, "process.stderr.write('the pull ran'); process.exit(3);\n");
+    const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
+
+    const answer = await prepared(client, runId);
+
+    expect(answer).toMatchObject({ error: { code: 'clone_prepare_failed', message: `The clone's team selection names primaryRole review and additionalRoles [], but manifest/members.yaml at team revision ${revision} assigns tester primaryRole audit and additionalRoles [], and while that file exists it decides a member's roles, so the clone would not install the selection it names. Remove primaryRole and additionalRoles from the selection to install the roles it assigns, or give the step role: review to run it with that role's knowledge.` } });
+  });
+
   it('fails a read-only step inside a clone, as a clone has no reader place', async () => {
     const { config, runId } = await fixture((commit) => PROMPTED(commit).replace('workspace: continue\n          prompt: Make a file.', 'workspace: read-only\n          prompt: Make a file.'));
     const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
@@ -582,6 +594,20 @@ steps:
           prompt: Review the change.
 `;
 
+/** A clone of `commit` whose team selection names primaryRole `primary`, with no step role, and a prompt continuing it. */
+const SELECTED_CLONE = (primary: string) => (commit: string): string => `schemaVersion: v1alpha1
+name: build
+description: Work in a clean clone with a team selection.
+steps:
+  - id: trial
+    workspace: { clone: { commit: ${commit}, team: { revision: ${'d'.repeat(40)}, selection: { primaryRole: ${primary}, additionalRoles: [], projects: [], excludedSkills: [] }, treatment: pulled } } }
+    workflow:
+      steps:
+        - id: work
+          workspace: continue
+          prompt: Make a file.
+`;
+
 /** `roles.yaml` declaring `ids`. */
 function rolesYaml(ids: readonly string[]): string {
   return `version: 1\nroles:\n${ids.map((id) => `  - id: ${id}\n    resources: { knowledge: [], skills: [${id}] }\n`).join('')}`;
@@ -591,9 +617,9 @@ function rolesYaml(ids: readonly string[]): string {
  * A started run of ROLE_CLONE whose clone installs the team at a commit of the team repo: `committed` the roles
  * manifest/roles.yaml declares at that revision, `declared` the roles it declares in the member's team repo now.
  */
-async function roleRun(roles: { committed: readonly string[]; declared: readonly string[]; committedTeamYaml?: string; workflow?: (commit: string) => string } = { committed: ['review'], declared: ['review'] }): Promise<{ config: LocalConfig; runId: string; revision: string }> {
+async function roleRun(roles: { committed: readonly string[]; declared: readonly string[]; committedTeamYaml?: string; members?: string; workflow?: (commit: string) => string } = { committed: ['review'], declared: ['review'] }): Promise<{ config: LocalConfig; runId: string; revision: string }> {
   const teamYaml = 'team: acme\nrepo: https://git.example.com/acme/team.git\nprovider: git\n';
-  const team = { 'teamai.yaml': roles.committedTeamYaml ?? teamYaml, 'manifest/roles.yaml': rolesYaml(roles.committed) };
+  const team = { 'teamai.yaml': roles.committedTeamYaml ?? teamYaml, 'manifest/roles.yaml': rolesYaml(roles.committed), ...roles.members ? { 'manifest/members.yaml': roles.members } : {} };
   const { config, workspace, first } = await fixture(CLONED, {}, team);
   const knowledge = config.repo.localPath;
   git(['init', '-q', '-b', 'main'], knowledge);

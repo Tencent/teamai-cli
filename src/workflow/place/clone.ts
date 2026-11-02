@@ -21,7 +21,7 @@ import { z } from 'zod';
 import { observeCheckout, PreparedAgentSchema, type PreparedAgent } from '../../agent-observation.js';
 import { resolveCliEntry } from '../../builtin-hooks.js';
 import { recordCheckoutRole, withCheckoutRole } from '../../checkout-roles.js';
-import { loadTeamConfig, saveLocalConfigForScope } from '../../config.js';
+import { loadTeamConfig, refreshRoleAssignment, saveLocalConfigForScope } from '../../config.js';
 import { stepEnvironment } from '../../env-exec.js';
 import { removeGitHook } from '../../git-hook.js';
 import { createProjectToolRoots } from '../../project-agent-root.js';
@@ -36,7 +36,7 @@ import { getDefaultBranch, HEAD_STATUS, headStateOf, resolveAnchors, type HeadSt
 import { log } from '../../utils/logger.js';
 import { projectSlug } from '../../utils/partition.js';
 import type { TeamDelivery } from '../../pull.js';
-import { CommitSchema, type ClonePlace, type InstalledTeam } from '../clone.js';
+import { CommitSchema, type ClonePlace, type InstalledTeam, type TeamSelection } from '../clone.js';
 import { runDeadline } from '../limits.js';
 import { runPasses } from '../loop.js';
 import { stepDefinitions } from '../scope.js';
@@ -494,6 +494,29 @@ interface InstalledClone {
   without?: Without;
 }
 
+/**
+ * Why the clone's install would not get the roles `selection` names: manifest/members.yaml at the clone's team
+ * `revision` assigns the member `config` names others, and decides a member's roles while it exists, as every load in
+ * the clone applies it. Undefined when the selection names no role, or names the ones the file assigns.
+ */
+async function assignedOverSelection(input: { config: LocalConfig; selection: TeamSelection; revision: string }): Promise<string | undefined> {
+  const { config, selection, revision } = input;
+
+  if (selection.primaryRole === undefined && selection.additionalRoles.length === 0) return undefined;
+  const effective: LocalConfig = { ...config };
+  await refreshRoleAssignment(effective);
+
+  if (!effective.roleAssignment) return undefined;
+  const assigned = effective.additionalRoles ?? [];
+  const sameAdditional = assigned.length === selection.additionalRoles.length && assigned.every((id) => selection.additionalRoles.includes(id));
+
+  if (effective.primaryRole === selection.primaryRole && sameAdditional) return undefined;
+  const roles = (primary: string | undefined, additional: readonly string[]): string => `primaryRole ${primary ?? 'none'} and additionalRoles [${additional.join(', ')}]`;
+  const named = selection.primaryRole ?? selection.additionalRoles[0] ?? '';
+
+  return `The clone's team selection names ${roles(selection.primaryRole, selection.additionalRoles)}, but manifest/members.yaml at team revision ${revision} assigns ${config.username} ${roles(effective.primaryRole, assigned)}, and while that file exists it decides a member's roles, so the clone would not install the selection it names. Remove primaryRole and additionalRoles from the selection to install the roles it assigns, or give the step role: ${named} to run it with that role's knowledge.`;
+}
+
 async function installTeam(input: {
   config: LocalConfig; root: string; lease: CloneLease; team: InstalledTeam; env: NodeJS.ProcessEnv;
 }): Promise<InstalledClone | WorkflowFailure> {
@@ -569,6 +592,9 @@ async function installTeam(input: {
     recallEnabled: false, contributeHintEnabled: false, mrHintEnabled: false, usageReportEnabled: false, coAuthorEnabled: false, codexTrustEnabled: false,
   };
 
+  const overridden = await assignedOverSelection({ config, selection, revision });
+
+  if (overridden !== undefined) return failed(overridden);
   const { role } = lease;
   const undelivered = (forRole: string, gap: CloneRoleGap): WorkflowFailure => roleNotDeliveredFailure({ role: forRole, step: lease.step, notDelivered: { copy: 'clone', gap } });
 
