@@ -188,6 +188,8 @@ describe('parseSuite', () => {
     ['the path itself', '[test/startup.test.js]', 'test/startup.test.js'],
     ['a path with a literal ^', "['test/^check.js']", 'test/^check.js'],
     ['a class with a literal *', "['test/[ab*].js']", 'test/a.js'],
+    ['a class whose first member is a literal ]', "['test/[]a].js']", 'test/a.js'],
+    ['a negated class whose first member is a literal ]', "['test/[!]b].js']", 'test/a.js'],
   ])('keeps the files check.add writes from solutionCommit, under %s in protect', (_case, protect, added) => {
     const solution = 'b'.repeat(40);
     const parsed = parse(suiteText(), { fix: taskText({ check: `{ run: node test.js, protect: ${protect}, add: [${added}] }`, solutionCommit: solution }) });

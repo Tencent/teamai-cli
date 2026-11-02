@@ -235,11 +235,12 @@ function matrixProblem(defaults: ArmValues, matrix: Matrix): string | undefined 
 
 /**
  * One segment of a glob pathspec as a regular expression, undefined when its `[` class never closes. A class stays a
- * class, `[!a]` as `[^a]`, whose `*` and `?` are literal; a `^` that opens no class is literal, as git reads it.
+ * class, `[!a]` as `[^a]`, whose `*` and `?` are literal, and so is a `]` right after `[` or `[!`; a `^` that opens no
+ * class is literal, as git reads it.
  */
 function segmentPattern(segment: string): RegExp | undefined {
-  const pattern = segment.replace(/\[(!?)([^\]]*)\]|[*?.+^${}()|\\]/g, (token, negated: string | undefined, members: string | undefined) => {
-    if (members !== undefined) return `[${negated ? '^' : ''}${members.replace(/\\/g, '\\\\')}]`;
+  const pattern = segment.replace(/\[(!?)(\]?[^\]]*)\]|[*?.+^${}()|\\]/g, (token, negated: string | undefined, members: string | undefined) => {
+    if (members !== undefined) return `[${negated ? '^' : ''}${members.replace(/[\\\]]/g, '\\$&')}]`;
     return token === '*' ? '[^/]*' : token === '?' ? '.' : `\\${token}`;
   });
   try {
