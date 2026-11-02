@@ -323,16 +323,16 @@ describe('#1083 workflow run records', () => {
   });
 
   it('seeds the required stats shape so digest never skips workflow-only stats', async () => {
-    const { ensureStatsShape } = await import('../workflow/records.js');
+    const { ensureDigestFields } = await import('../workflow/records.js');
     // digest's loadTeamStats requires username AND skills; a first workflow
     // run with no prior stats file must still produce a digest-visible file.
-    const seeded = ensureStatsShape({}, 'tester');
+    const seeded = ensureDigestFields({}, 'tester');
     expect(seeded.username).toBe('tester');
     expect(seeded.skills).toEqual({});
     expect(typeof seeded.updatedAt).toBe('string');
     // An existing stats file keeps its shape untouched.
     const existing = { username: 'tester', skills: { review: { count: 5 } }, updatedAt: 'x' };
-    expect(ensureStatsShape(existing, 'tester')).toBe(existing);
+    expect(ensureDigestFields(existing, 'tester')).toBe(existing);
   });
 
   it('merges a record published with a string agent, which reads as its definition (#1176)', () => {

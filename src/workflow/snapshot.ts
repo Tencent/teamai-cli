@@ -6,6 +6,7 @@ import { RunOriginSchema } from '../default-workflows.js';
 import { RunModeSchema } from '../launch-context.js';
 import { canonicalJson } from '../utils/canonical-json.js';
 import { redact } from '../utils/redact.js';
+import type { JsonValue } from '../types.js';
 import { isRecord } from './expression.js';
 import { CommitIdSchema, DeliveryReceiptSchema, UnresolvedCreateSchema } from './delivery-schema.js';
 import {
@@ -150,7 +151,7 @@ export function snapshotBody(snapshot: RunSnapshot): SnapshotBody {
  * the run would continue without it on this machine and lose it on the next publish.
  */
 export function parseSnapshot(text: string, runId: string): Parsed<RunSnapshot> {
-  let value: unknown;
+  let value: JsonValue;
 
   try {
     value = JSON.parse(text);
@@ -193,7 +194,7 @@ function unsupported(runId: string, field: string, problem: string, next = 'Upda
 }
 
 /** The first field of `input` that parsing left out of `output`, as a path. */
-function droppedField(input: unknown, output: unknown, at: Array<string | number>): string | undefined {
+function droppedField<Output>(input: JsonValue | undefined, output: Output, at: Array<string | number>): string | undefined {
   if (Array.isArray(input)) {
     if (!Array.isArray(output)) return fieldPath(at);
 
@@ -221,7 +222,7 @@ function droppedField(input: unknown, output: unknown, at: Array<string | number
 }
 
 function fieldPath(at: ReadonlyArray<PropertyKey>): string {
-  return at.map((part, index) => (typeof part === 'number' ? `[${part}]` : index === 0 ? String(part) : `.${String(part)}`)).join('') || 'snapshot';
+  return at.map((part, index) => (Number.isInteger(part) ? `[${String(part)}]` : index === 0 ? String(part) : `.${String(part)}`)).join('') || 'snapshot';
 }
 
 /** Replaces every failure message: it is free text from a tool or the engine, and no expression reads it. */
@@ -239,7 +240,7 @@ type KeysOfUnion<T> = T extends unknown ? keyof T : never;
 type FieldRules<T> = { readonly [K in KeysOfUnion<T>]-?: 'publish' | 'drop' | 'rewrite' };
 
 /** A handler for every field `R` marks `rewrite`, and for no other: what the snapshot carries in that field's place. */
-type Rewrites<T, R> = { readonly [K in keyof R as R[K] extends 'rewrite' ? K : never]: (value: T) => Record<string, unknown> };
+type Rewrites<T, R> = { readonly [K in keyof R as R[K] extends 'rewrite' ? K : never]: (value: T) => Partial<Record<string, JsonValue>> };
 
 const RUN_RULES = {
   schemaVersion: 'publish', id: 'rewrite', name: 'publish', alias: 'publish', revision: 'publish', status: 'publish', driver: 'drop',
@@ -323,13 +324,14 @@ const RUN_REWRITES = {
 } satisfies Rewrites<RunState, typeof RUN_RULES>;
 
 /** `value` as a snapshot carries it under `rules`, with each rewritten field replaced by what its handler builds. */
-function handed<T extends object, R extends FieldRules<T>>(value: T, rules: R, rewrites: Rewrites<T, R>): Record<string, unknown> {
+function handed<T extends object, R extends FieldRules<T>>(value: T, rules: R, rewrites: Rewrites<T, R>): Record<string, JsonValue> {
   const entries: Array<[string, unknown]> = Object.entries(rules);
-  const builders: Array<(value: T) => Record<string, unknown>> = Object.values(rewrites);
-  const fields = new Map(Object.entries(value));
+  const builders: Array<(value: T) => Partial<Record<string, JsonValue>>> = Object.values(rewrites);
+  // A run's fields are what its JSON file holds, so each published one is a JSON value.
+  const fields = new Map<string, JsonValue | undefined>(Object.entries(value));
 
   const kept = entries.flatMap(([key, rule]) => {
-    const field: unknown = fields.get(key);
+    const field = fields.get(key);
 
     return rule === 'publish' && field !== undefined ? [[key, field] as const] : [];
   });
@@ -384,7 +386,7 @@ function holdsLocalPath(text: string): boolean {
 
 type Unfit = { kind: 'secret'; label: string } | { kind: 'path' };
 
-function firstUnpublishable(runId: string, body: Record<string, unknown>, envSecrets: Record<string, string>): SnapshotError | undefined {
+function firstUnpublishable(runId: string, body: Record<string, JsonValue>, envSecrets: Record<string, string>): SnapshotError | undefined {
   const labelOf = (text: string): string | undefined => {
     const redacted = redact(text, { envSecrets });
 
@@ -402,7 +404,7 @@ function firstUnpublishable(runId: string, body: Record<string, unknown>, envSec
   const found = (step: string | undefined, at: ReadonlyArray<string | number>, unfit: Unfit): SnapshotError => {
     const field = fieldPath(at);
     const where = step === undefined ? `field "${field}"` : `step "${step}" field "${field}"`;
-    const named = { ...(step === undefined ? {} : { step }), field };
+    const named: { step?: string; field: string } = step === undefined ? { field } : { step, field };
 
     switch (unfit.kind) {
       case 'secret':
@@ -426,12 +428,8 @@ function firstUnpublishable(runId: string, body: Record<string, unknown>, envSec
     }
   };
 
-  const search = (value: unknown, step: string | undefined, at: Array<string | number>): SnapshotError | undefined => {
-    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-      const unfit = unfitOf(String(value));
-
-      return unfit === undefined ? undefined : found(step, at, unfit);
-    }
+  const search = (value: JsonValue | undefined, step: string | undefined, at: Array<string | number>): SnapshotError | undefined => {
+    if (value === null || value === undefined) return undefined;
 
     if (Array.isArray(value)) {
       for (const [index, item] of value.entries()) {
@@ -443,7 +441,11 @@ function firstUnpublishable(runId: string, body: Record<string, unknown>, envSec
       return undefined;
     }
 
-    if (!isRecord(value)) return undefined;
+    if (!isRecord(value)) {
+      const unfit = unfitOf(String(value));
+
+      return unfit === undefined ? undefined : found(step, at, unfit);
+    }
 
     for (const [key, item] of Object.entries(value)) {
       const unfit = unfitOf(key);
