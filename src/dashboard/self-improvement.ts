@@ -25,6 +25,7 @@ import { canonicalJson } from '../utils/canonical-json.js';
 import { execCommand } from '../utils/exec.js';
 import { getConfiguredRemoteUrl } from '../utils/git.js';
 import { loadCachedWorkflow } from '../workflow/cache.js';
+import type { ResolvedWorkflow } from '../workflow/types.js';
 import { benchmarkRuns } from './benchmarks.js';
 import { readScorerLabels, rubricLabelsOf, sidesOf } from './scorers.js';
 import { listLocalRuns, listReportedRuns, type LocalRunRow, type ReportedRunRow } from './workflow-runs.js';
@@ -40,7 +41,7 @@ export type ScorerLoop = {
   /** Regression tasks the team repo already has for its failures. */
   covered: string[];
   refused: Record<Unusable, number>;
-  /** Whether a run would change anything, as `digest --json --scorer` prints `data.improvement.ready`. */
+  /** Whether a run would propose a change: the `if` of the workflow's step that delivers it holds (`wouldImprove`). */
   isReady: boolean;
   command: string;
   /** How the host ended the requests of the scorer's proposal branch; absent when it was not asked or could not answer. */
@@ -338,8 +339,8 @@ async function ciJobs(config: LocalConfig): Promise<Setup['jobs']> {
   return { improve, proof };
 }
 
-async function setupOf(config: LocalConfig): Promise<Setup> {
-  const [workflow, jobs, suites] = await Promise.all([loadCachedWorkflow(config, SelfImprovement.WORKFLOW), ciJobs(config), listCachedSuites(config)]);
+async function setupOf(config: LocalConfig, workflow: ResolvedWorkflow | null): Promise<Setup> {
+  const [jobs, suites] = await Promise.all([ciJobs(config), listCachedSuites(config)]);
 
   return {
     workflow: workflow === null ? { source: 'missing' } : workflow.source === 'team' ? { source: 'team', path: workflow.relativePath } : { source: 'default' },
@@ -398,10 +399,12 @@ export async function selfImprovementView({ config, now = new Date(), refresh = 
 
   const starts = digest.failures.flatMap(({ start }) => ('commit' in start ? [start.commit] : []));
 
+  const workflow = await loadCachedWorkflow(config, SelfImprovement.WORKFLOW);
+
   const [proposed, runs, setup, loop, present, target, suites] = await Promise.all([
     proposedChanges(config, { refresh }),
     benchmarkRuns(config, { refresh: false }),
-    setupOf(config),
+    setupOf(config, workflow),
     loopRuns(config),
     SelfImprovement.commitsIn(config.projectRoot ?? process.cwd(), starts),
     defaultBranch(config),
@@ -450,7 +453,10 @@ export async function selfImprovementView({ config, now = new Date(), refresh = 
       startable: picked.failures.length,
       covered: picked.covered,
       refused,
-      isReady: SelfImprovement.isReady({ startable: picked.failures.length, hasProposal: proposed.some(({ change }) => change.scorer === scorer) }),
+      isReady: SelfImprovement.wouldImprove(workflow?.definition, {
+        inputs: { scorer, suite: SelfImprovement.SUITE },
+        improvement: { ...picked, hasProposal: proposed.some(({ change }) => change.scorer === scorer) },
+      }),
       command: SelfImprovement.commandOf(scorer),
       requests: listed?.has(scorer) ? countsOf(listed.get(scorer) ?? []) : undefined,
     }];

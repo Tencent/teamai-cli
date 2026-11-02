@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import type { DigestFailure } from '../digest-failures.js';
 import { SelfImprovement } from '../self-improvement.js';
+import { parseWorkflow } from '../workflow/parse.js';
 import { LocalConfigSchema, type LocalConfig } from '../types.js';
 import { canonicalJson } from '../utils/canonical-json.js';
 
@@ -100,11 +101,23 @@ describe('picking the failures a self-improvement starts from', () => {
 });
 
 describe('whether a run improves the harness', () => {
-  it('needs two failures to start from, or one more for a proposal already open, never one beside a task that landed', () => {
-    expect(SelfImprovement.isReady({ startable: 2, hasProposal: false })).toBe(true);
-    expect(SelfImprovement.isReady({ startable: 1, hasProposal: true })).toBe(true);
-    expect(SelfImprovement.isReady({ startable: 1, hasProposal: false })).toBe(false);
-    expect(SelfImprovement.isReady({ startable: 0, hasProposal: true })).toBe(false);
+  const parsed = parseWorkflow('workflows/teamai-self-improvement.yaml', fs.readFileSync(path.join(process.cwd(), 'workflows/teamai-self-improvement.yaml'), 'utf8'));
+  const workflow = parsed.ok ? parsed.definition : undefined;
+  const inputs = { scorer: 'review-quality', suite: 'benchmarks/regressions' };
+  const improvement = (startable: number, hasProposal: boolean) => ({
+    failures: Array.from({ length: startable }, (_, index) => failing(`s${index}`, { commit: HERE })), covered: ['benchmarks/regressions/tasks/landed.yaml'], refused: [], hasProposal,
+  });
+
+  it('needs, in the default workflow, two failures to start from, or one more for a proposal already open, never one beside a task that landed', () => {
+    expect(workflow).toBeDefined();
+    expect([[2, false], [1, true], [1, false], [0, true]].map(([startable, hasProposal]) => (
+      SelfImprovement.wouldImprove(workflow, { inputs, improvement: improvement(Number(startable), Boolean(hasProposal)) })
+    ))).toEqual([true, true, false, false]);
+  });
+
+  it('never improves from a workflow with no step that delivers a pull request', () => {
+    const own = parseWorkflow('workflows/teamai-self-improvement.yaml', 'schemaVersion: v1alpha1\nname: teamai-self-improvement\ndescription: Only plans.\nsteps:\n  - id: plan\n    command: ./plan.sh\n');
+    expect(SelfImprovement.wouldImprove(own.ok ? own.definition : undefined, { inputs, improvement: improvement(3, true) })).toBe(false);
   });
 });
 

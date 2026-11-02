@@ -7,10 +7,11 @@ steps:
   - id: plan
     command: teamai digest --json --scorer "$SCORER" --suite "$SUITE" --proposal "teamai/self-improvement/$SCORER"
     env: { SCORER: "{{ inputs.scorer }}", SUITE: "{{ inputs.suite }}" }
-    output: { data: { improvement: { ready: boolean, failures: [json], covered: [string] } } }
+    output: { data: { improvement: { hasProposal: boolean, failures: [json], covered: [string] } } }
   - id: improve
     needs: [plan]
-    if: steps.plan.outputs.data.improvement.ready
+    # Two failures a task can start from, since one is not a pattern, or one more for a proposal already open.
+    if: length(steps.plan.outputs.data.improvement.failures) >= 2 || (length(steps.plan.outputs.data.improvement.failures) >= 1 && steps.plan.outputs.data.improvement.hasProposal)
     workspace: { team: { branch: "teamai/self-improvement/{{ inputs.scorer }}" } }
     deliver: pr
     permissions: unattended

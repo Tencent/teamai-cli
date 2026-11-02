@@ -171,7 +171,7 @@ review-quality  61% · 23 labels     3 can become a task · 3 covered           
 test-quality    80% · 5 labels      1 can become a task · 0 covered               Waiting for a second failure a task can start from                            0 open · 0 merged · 0 closed
 ```
 
-A scorer is ready, as `digest --json --scorer` prints `data.improvement.ready`, with two failures a task can start from, or one more for a proposal already on origin. **Setup** checks the rest: the workflow in effect (the default, or the team's `workflows/teamai-self-improvement.yaml`), a scheduled job that runs `teamai self-improvement run` and a pull request job that runs `teamai benchmark run`, in `.github/workflows/` or `.gitlab-ci.yml`, and the regression suite with its tasks. **Recent runs** lists the last ten runs of the workflow. Click a scorer to open it on the Scorers page.
+A scorer is ready when the `if` of the workflow's `improve` step holds for what `digest --json --scorer` prints: by default two failures a task can start from, or one more for a proposal already on origin. **Setup** checks the rest: the workflow in effect (the default, or the team's `workflows/teamai-self-improvement.yaml`), a scheduled job that runs `teamai self-improvement run` and a pull request job that runs `teamai benchmark run`, in `.github/workflows/` or `.gitlab-ci.yml`, and the regression suite with its tasks. **Recent runs** lists the last ten runs of the workflow. Click a scorer to open it on the Scorers page.
 
 ## Benchmarks
 

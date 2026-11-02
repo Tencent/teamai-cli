@@ -177,14 +177,13 @@ jobs:
 
 | Step | Does |
 | --- | --- |
-| `plan` | `teamai digest --json --scorer <scorer> --suite <dir> --proposal teamai/self-improvement/<scorer>`: prints in `data.improvement` the failures a task can start from: the scorer's failures in [`digest --json`](#what-teamai-reads) with a recorded start commit this checkout has, and no task of the suite naming them on the team repo's default branch or on the proposal. Each subject once, newest first. `ready` says whether `improve` runs. |
-| `improve` | Runs when `ready`: two failures or more, or one more for a proposal on origin that the default branch does not hold yet. A single failure is not a pattern, even when a task that landed covers another. It runs in a fresh clone of the team repo, on `teamai/self-improvement/<scorer>` with the default branch merged in, or a new branch from it ([`workspace: { team }`](workflow.md#the-team-workspace)). The agent reads each failure, its learnings and the rubric, changes the assets, and writes one task per failure. `deliver: pr` pushes the branch and opens its PR, or updates the one already open. |
+| `plan` | `teamai digest --json --scorer <scorer> --suite <dir> --proposal teamai/self-improvement/<scorer>`: prints in `data.improvement` the failures a task can start from: the scorer's failures in [`digest --json`](#what-teamai-reads) with a recorded start commit this checkout has, and no task of the suite naming them on the team repo's default branch or on the proposal. Each subject once, newest first, with `hasProposal`: whether the proposal is open on origin. |
+| `improve` | Runs when its `if` holds: two failures or more, or one more for a proposal on origin that the default branch does not hold yet. A single failure is not a pattern, even when a task that landed covers another. It runs in a fresh clone of the team repo, on `teamai/self-improvement/<scorer>` with the default branch merged in, or a new branch from it ([`workspace: { team }`](workflow.md#the-team-workspace)). The agent reads each failure, its learnings and the rubric, changes the assets, and writes one task per failure. `deliver: pr` pushes the branch and opens its PR, or updates the one already open. |
 
 ```console
 $ teamai digest --json --scorer review-quality --suite benchmarks/regressions --proposal teamai/self-improvement/review-quality \
-    | jq '.data.improvement | {ready, hasProposal, failures: (.failures | length), covered, refused}'
+    | jq '.data.improvement | {hasProposal, failures: (.failures | length), covered, refused}'
 {
-  "ready": true,
   "hasProposal": true,
   "failures": 1,
   "covered": [
@@ -195,6 +194,15 @@ $ teamai digest --json --scorer review-quality --suite benchmarks/regressions --
     { "subject": { "platform": "claude-code", "sessionId": "9d2f…" }, "why": "tracked_changes" }
   ]
 }
+```
+
+The threshold is the `if` of `improve`. To start from one failure, [override the default](workflow.md#override-a-default) with `cp "$(npm root -g)/teamai-cli/workflows/teamai-self-improvement.yaml" workflows/` in the team repo, change that line, push and pull. The dashboard reads the same `if` to say whether a scorer is ready:
+
+```diff
+   - id: improve
+     needs: [plan]
+-    if: length(steps.plan.outputs.data.improvement.failures) >= 2 || (length(steps.plan.outputs.data.improvement.failures) >= 1 && steps.plan.outputs.data.improvement.hasProposal)
++    if: length(steps.plan.outputs.data.improvement.failures) >= 1
 ```
 
 Run it twice on the same failures and the second run opens nothing: each failure has its task on the proposal's branch, so `plan` keeps none and `improve` is skipped. A new failure of the same scorer updates the same PR, keeping the tasks it had. What happens to the proposal's branch:

@@ -226,6 +226,22 @@ describe('dashboard self-improvement', () => {
     expect(view.scorers).toEqual([expect.objectContaining({ startable: 1, covered: ['benchmarks/regressions/tasks/missed-null-check.yaml'], isReady: false })]);
   });
 
+  it('reads whether a run is ready from the if of the team\'s own workflow, so a team that starts from one failure sees it ready', async () => {
+    const start = project();
+    const { config, repo } = team(start.dir);
+    const workflow = fs.readFileSync(path.join(process.cwd(), 'workflows/teamai-self-improvement.yaml'), 'utf8')
+      .replace(/^    if: .*$/m, '    if: length(steps.plan.outputs.data.improvement.failures) >= 1');
+    write(path.join(repo, 'workflows/teamai-self-improvement.yaml'), workflow);
+    commit(repo, 'Start from one failure');
+    await syncTeamDefinitions(config);
+    publishLabels(config, [label('new-1', { recorded: agent({ commit: start.commit }) })]);
+
+    const view = await selfImprovementView({ config, now: NOW, refresh: false });
+
+    expect(view.setup.workflow).toEqual({ source: 'team', path: 'workflows/teamai-self-improvement.yaml' });
+    expect(view.scorers).toEqual([expect.objectContaining({ startable: 1, isReady: true })]);
+  });
+
   it('lists a change that landed on the default branch with the assets it changed, the tasks it added and the scorer\'s pass rate before and after it', async () => {
     const start = project();
     const { config, repo } = team(start.dir);

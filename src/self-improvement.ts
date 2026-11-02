@@ -20,6 +20,8 @@ import { loadCachedScorer } from './scorers/cache.js';
 import { getDataHome, SYNC_LOCK_FILENAME, type LocalConfig } from './types.js';
 import { acquireLock, releaseLock } from './update.js';
 import { canonicalJson } from './utils/canonical-json.js';
+import { evaluateExpression, isTruthy, parseExpression } from './workflow/expression.js';
+import type { WorkflowDefinition } from './workflow/types.js';
 
 const run = promisify(execFile);
 
@@ -38,11 +40,19 @@ function branchOf(scorer: string): string {
 }
 
 /**
- * Whether a run changes the harness: two failures a task can start from, since one is not a pattern, or one more for a
- * proposal already on origin. A task that landed on the default branch does not make one new failure a pattern.
+ * Whether a run of `workflow` for `inputs` would propose a change from `improvement`, as `plan` prints it: whether the `if`
+ * of its step that delivers a pull request holds, reading `steps.plan` as that step's output. The workflow holds the
+ * threshold, so a team changes it there. False for a workflow with no such step, or an `if` that does not parse.
  */
-function isReady({ startable, hasProposal }: { startable: number; hasProposal: boolean }): boolean {
-  return startable >= 2 || (startable >= 1 && hasProposal);
+function wouldImprove(workflow: WorkflowDefinition | undefined, { inputs, improvement }: { inputs: { scorer: string; suite: string }; improvement: Improvement }): boolean {
+  const step = workflow?.steps.find((candidate) => candidate.deliver === 'pr');
+
+  if (step?.if === undefined) return step !== undefined;
+  const parsed = parseExpression(step.if);
+
+  if (!parsed.ok) return false;
+
+  return isTruthy(evaluateExpression(parsed.expression, { inputs, steps: { plan: { outcome: 'success', outputs: { data: { improvement } } } } }));
 }
 
 /** The command that runs the loop for `scorer` on a machine to throw away, as the guide's scheduled job does. */
@@ -196,7 +206,7 @@ async function tasksOnOrigin(teamCheckout: string, { suite, proposal }: { suite:
 }
 
 /** What a run of the workflow starts from, as `digest --json --scorer` prints it in `data.improvement`. */
-export type Improvement = Picked & { ready: boolean; hasProposal: boolean };
+export type Improvement = Picked & { hasProposal: boolean };
 
 /**
  * The improvement `scorer`'s `failures` call for, with the tasks of `suite` on origin and on `proposal` covering the
@@ -225,7 +235,7 @@ async function plan(config: LocalConfig, input: { failures: readonly DigestFailu
 
   const picked = pick({ failures, scorer, tasks: covering.tasks, hasCommit: (commit) => present.has(commit) });
 
-  return { ...picked, ready: isReady({ startable: picked.failures.length, hasProposal: covering.hasProposal }), hasProposal: covering.hasProposal };
+  return { ...picked, hasProposal: covering.hasProposal };
 }
 
-export const SelfImprovement = { WORKFLOW, SUITE, BRANCH_PREFIX, TASK_FILE, holdsProposal, pick, isReady, commandOf, branchOf, commitsIn, coveringTasks, plan } as const;
+export const SelfImprovement = { WORKFLOW, SUITE, BRANCH_PREFIX, TASK_FILE, holdsProposal, pick, wouldImprove, commandOf, branchOf, commitsIn, coveringTasks, plan } as const;

@@ -176,14 +176,13 @@ jobs:
 
 | 步骤 | 作用 |
 | --- | --- |
-| `plan` | `teamai digest --json --scorer <scorer> --suite <dir> --proposal teamai/self-improvement/<scorer>`：在 `data.improvement` 里输出能作为任务起点的失败：[`digest --json`](#teamai-读取什么) 里这个评分器的失败中，记录了本检出也有的开始 commit、且团队仓库默认分支和提案上都还没有套件任务指向它的那些。每个对象只取一次，按时间从新到旧。`ready` 表示 `improve` 是否运行。 |
-| `improve` | `ready` 时运行：两个或以上失败，或者 origin 上有默认分支尚未包含的提案时再多一个。单个失败不构成规律，即使另一个失败已有合并的任务覆盖。它在团队仓库的全新克隆里运行，在 `teamai/self-improvement/<scorer>` 上并合并默认分支，或从默认分支新建这个分支（[`workspace: { team }`](workflow.md#团队工作区)）。agent 读每个失败、它的 learnings 和评分标准，修改资产，并为每个失败写一个任务。`deliver: pr` 推送分支并打开它的 PR，或更新已经打开的那个。 |
+| `plan` | `teamai digest --json --scorer <scorer> --suite <dir> --proposal teamai/self-improvement/<scorer>`：在 `data.improvement` 里输出能作为任务起点的失败：[`digest --json`](#teamai-读取什么) 里这个评分器的失败中，记录了本检出也有的开始 commit、且团队仓库默认分支和提案上都还没有套件任务指向它的那些。每个对象只取一次，按时间从新到旧；`hasProposal` 表示 origin 上的提案是否还开着。 |
+| `improve` | 它的 `if` 成立时运行：两个或以上失败，或者 origin 上有默认分支尚未包含的提案时再多一个。单个失败不构成规律，即使另一个失败已有合并的任务覆盖。它在团队仓库的全新克隆里运行，在 `teamai/self-improvement/<scorer>` 上并合并默认分支，或从默认分支新建这个分支（[`workspace: { team }`](workflow.md#团队工作区)）。agent 读每个失败、它的 learnings 和评分标准，修改资产，并为每个失败写一个任务。`deliver: pr` 推送分支并打开它的 PR，或更新已经打开的那个。 |
 
 ```console
 $ teamai digest --json --scorer review-quality --suite benchmarks/regressions --proposal teamai/self-improvement/review-quality \
-    | jq '.data.improvement | {ready, hasProposal, failures: (.failures | length), covered, refused}'
+    | jq '.data.improvement | {hasProposal, failures: (.failures | length), covered, refused}'
 {
-  "ready": true,
   "hasProposal": true,
   "failures": 1,
   "covered": [
@@ -194,6 +193,15 @@ $ teamai digest --json --scorer review-quality --suite benchmarks/regressions --
     { "subject": { "platform": "claude-code", "sessionId": "9d2f…" }, "why": "tracked_changes" }
   ]
 }
+```
+
+阈值就是 `improve` 的 `if`。要从一个失败开始，在团队仓库里用 `cp "$(npm root -g)/teamai-cli/workflows/teamai-self-improvement.yaml" workflows/` [覆盖默认工作流](workflow.md#覆盖默认工作流)，改这一行，推送并 pull。仪表盘读同一个 `if` 来判断评分器是否可以运行：
+
+```diff
+   - id: improve
+     needs: [plan]
+-    if: length(steps.plan.outputs.data.improvement.failures) >= 2 || (length(steps.plan.outputs.data.improvement.failures) >= 1 && steps.plan.outputs.data.improvement.hasProposal)
++    if: length(steps.plan.outputs.data.improvement.failures) >= 1
 ```
 
 在同样的失败上再跑一次，第二次什么也不会打开：每个失败在提案分支上已经有任务，所以 `plan` 一个也不保留，`improve` 被跳过。同一评分器的新失败会更新同一个 PR，并保留它已有的任务。提案分支的各种情况：
