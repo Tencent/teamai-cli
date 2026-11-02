@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { sameEnvName } from '../resources/env-key.js';
 import { mergeRequirements, negotiate, requiredEnvKeys, type Allow, type DriverCan, type EnvFacts, type InEffect, type Missing, type Setup } from './requirements.js';
 import { stepWorkflow, workflowRunBy, type Invoke, type OutputSchema, type WorkflowDefinition, type WorkflowSource, type WorkflowStep } from './types.js';
-import { copyOf, opensCopy, resolveMode, runsInCheckout, type RoleLevel } from './workspace.js';
+import { copyOf, opensCopy, resolveMode, roleLevelOf, runsInCheckout, writtenRole, type RoleLevel } from './workspace.js';
 
 /**
  * Why a driver cannot run a workflow to its end: a step it takes works in the workspace copy `opener` opened, and a
@@ -175,8 +175,8 @@ export function describeWorkflow(input: {
     const requires = mergeRequirements(scope.requires, step.requires);
     const executor = step.command !== undefined ? 'command' : 'prompt';
     // The role of the copy it runs in, as the engine's `stepRoleOf` finds it; a role template stands for its item's role.
-    const runsWith = copyOf([...scope.roleLevels, { step, ...(scope.defaultRole !== undefined ? { defaultRole: scope.defaultRole } : {}) }])?.runsWith;
-    const role = runsWith?.kind === 'role' ? runsWith.role : undefined;
+    const runsWith = copyOf([...scope.roleLevels, roleLevelOf(step, scope.defaultRole)])?.runsWith;
+    const role = runsWith?.kind === 'role' ? writtenRole(runsWith.role) : undefined;
     const setupEnv = hasContract ? scope.setup?.requires?.env ?? [] : [];
     const run: Facts['runs'][number] = { step: path, executor, env: [...new Set([...requires.env ?? [], ...setupEnv])] };
 
@@ -287,7 +287,7 @@ export function describeWorkflow(input: {
           setup,
           copy: opensCopy(step) ? path : scope.copy,
           defaultModel,
-          roleLevels: [...scope.roleLevels, { step, defaultRole: scope.defaultRole }],
+          roleLevels: [...scope.roleLevels, roleLevelOf(step, scope.defaultRole)],
           defaultRole,
         });
       } else if (step.command !== undefined || step.prompt !== undefined || step.promptFile !== undefined) {

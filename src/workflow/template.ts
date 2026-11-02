@@ -180,15 +180,20 @@ export function templatePaths(template: Template): ExpressionPath[] {
 }
 
 /**
- * A step `role` written as a template that reads only the item its `for_each` instance runs for, such as
- * `{{ item.role }}`, which the lease of each item renders. Undefined for any other role, such as an id.
+ * A step `role` as parse admits it: the id of a role in `manifest/roles.yaml`, or, where an item is bound, a template
+ * that reads only the item its `for_each` instance runs for, such as `{{ item.role }}`, which the lease of each item
+ * renders to an id.
  */
-export function itemRoleTemplate(role: string): Template | undefined {
+export type StepRoleSpec = { kind: 'id'; id: string } | { kind: 'item_template'; source: string; template: Template };
+
+/** A step `role` as written, read as a template of its item when it is one (`StepRoleSpec`), else as an id. */
+export function stepRoleSpec(role: string): StepRoleSpec {
   const parsed = parseTemplate(role, true);
 
-  if (!parsed.ok || parsed.template.every((part) => typeof part === 'string') || templateWithPaths(parsed.template).length > 0) return undefined;
+  const readsItemOnly = parsed.ok && parsed.template.some((part) => typeof part !== 'string') && templateWithPaths(parsed.template).length === 0
+    && templatePaths(parsed.template).every((path) => path.root === 'item');
 
-  return templatePaths(parsed.template).every((path) => path.root === 'item') ? parsed.template : undefined;
+  return parsed.ok && readsItemOnly ? { kind: 'item_template', source: role, template: parsed.template } : { kind: 'id', id: role };
 }
 
 /** Every `with` value a template reads, in source order. */

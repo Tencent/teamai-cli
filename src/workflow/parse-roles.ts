@@ -8,8 +8,8 @@ import type { Node } from 'yaml';
 import { isSeq } from 'yaml';
 import { isYamlNode, locate, valueNode, type ParseContext } from './parse-context.js';
 import { stepWorkflow, type WorkflowDefaults, type WorkflowDiagnostic, type WorkflowStep } from './types.js';
-import { itemRoleTemplate } from './template.js';
-import { cloneOf, copyOf, copyRoleConflict, resolveMode, resolvedRoleOf, type RoleLevel, type StepCopy } from './workspace.js';
+import type { StepRoleSpec } from './template.js';
+import { cloneOf, copyOf, copyRoleConflict, resolveMode, resolvedRoleOf, roleLevelOf, writtenRole, type RoleLevel, type StepCopy } from './workspace.js';
 
 /** A step on the way to a step: its label, and, in this file, its field and YAML mapping. */
 interface Level extends RoleLevel {
@@ -42,9 +42,26 @@ interface RoleSource {
   consumed: boolean;
 }
 
-/** Whether `role`, as parse kept it, is a template of the item it runs for rather than an id. */
-function isRoleTemplate(role: string | undefined): boolean {
-  return role !== undefined && itemRoleTemplate(role) !== undefined;
+/**
+ * What a step runs with, as far as this file can tell: a role id, the member's roles, no team, or `unknown`, in a copy
+ * whose role a lease renders for its item, or that a step running this file opens.
+ */
+type RunsWith = { kind: 'role'; role: string } | { kind: 'member' } | { kind: 'no_team' } | { kind: 'unknown' };
+
+/** Whether `role` is known only once each item's lease renders it. */
+function rendersPerItem(role: StepRoleSpec | undefined): boolean {
+  switch (role?.kind) {
+    case undefined:
+    case 'id':
+      return false;
+    case 'item_template':
+      return true;
+    default: {
+      const unhandled: never = role;
+
+      return unhandled;
+    }
+  }
 }
 
 /** The `bad_role` and `bad_session` diagnostics of the roles of `workflow`, the file whose YAML mapping is `root`. */
@@ -85,13 +102,36 @@ export function roleDiagnostics(root: Node, workflow: { defaults?: WorkflowDefau
    * What a step runs with, as `levels` reach it, or `unknown` in a copy that a step running this file opens, or that runs
    * with a role template, which each item's lease renders.
    */
-  const runsWith = (levels: readonly Level[]): StepCopy['runsWith'] | { kind: 'unknown' } => {
+  const runsWith = (levels: readonly Level[]): RunsWith => {
     const copy = copyOf(levels);
     const last = levels.at(-1);
 
-    if (copy) return copy.runsWith.kind === 'role' && isRoleTemplate(copy.runsWith.role) ? { kind: 'unknown' } : copy.runsWith;
+    if (!copy) return last && resolveMode(last.step, levels.slice(0, -1).map((level) => level.step)) === 'continue' ? { kind: 'unknown' } : { kind: 'member' };
 
-    return last && resolveMode(last.step, levels.slice(0, -1).map((level) => level.step)) === 'continue' ? { kind: 'unknown' } : { kind: 'member' };
+    switch (copy.runsWith.kind) {
+      case 'member':
+      case 'no_team':
+        return copy.runsWith;
+      case 'role': {
+        const { role } = copy.runsWith;
+
+        switch (role.kind) {
+          case 'id': return { kind: 'role', role: role.id };
+          case 'item_template': return { kind: 'unknown' };
+          default: {
+            const unhandled: never = role;
+
+            return unhandled;
+          }
+        }
+      }
+
+      default: {
+        const unhandled: never = copy.runsWith;
+
+        return unhandled;
+      }
+    }
   };
 
   /**
@@ -105,8 +145,9 @@ export function roleDiagnostics(root: Node, workflow: { defaults?: WorkflowDefau
 
     // A copy that a workflow this file runs opens is that file's to check.
     if (!last || !opener?.written || resolved === undefined) return;
-    const opened = copy.runsWith.kind === 'role' ? `with role ${copy.runsWith.role}` : 'without a role';
+    const opened = copy.runsWith.kind === 'role' ? `with role ${writtenRole(copy.runsWith.role)}` : 'without a role';
     const named = resolved.from === 'defaults' ? undefined : levels[resolved.from];
+    const role = writtenRole(resolved.role);
 
     const said = (message: string): void => {
       const own = resolved.from === 'defaults' ? (last.ownDefaults ? sources.get('defaults.role') : undefined)
@@ -117,13 +158,13 @@ export function roleDiagnostics(root: Node, workflow: { defaults?: WorkflowDefau
     };
 
     if (resolved.from === 'defaults') {
-      said(`defaults.role ${resolved.role} is the role of ${last.label}, but it continues the copy step "${opener.step.id}" opens ${opened}, which every step there runs with; remove defaults.role, or set role ${resolved.role} on step "${opener.step.id}"`);
+      said(`defaults.role ${role} is the role of ${last.label}, but it continues the copy step "${opener.step.id}" opens ${opened}, which every step there runs with; remove defaults.role, or set role ${role} on step "${opener.step.id}"`);
     } else if (named && named !== last) {
-      said(`${named.label} has role ${resolved.role}, but ${last.label} in it continues the copy step "${opener.step.id}" opens ${opened}, which every step there runs with; remove role from ${named.label}, or set it on step "${opener.step.id}"`);
+      said(`${named.label} has role ${role}, but ${last.label} in it continues the copy step "${opener.step.id}" opens ${opened}, which every step there runs with; remove role from ${named.label}, or set it on step "${opener.step.id}"`);
     } else if (cloneOf(opener.step)) {
-      said(`${last.label} has role ${resolved.role} but continues a clone, which runs with the role of the step that opens it; set role on that step`);
+      said(`${last.label} has role ${role} but continues a clone, which runs with the role of the step that opens it; set role on that step`);
     } else {
-      said(`${last.label} has role ${resolved.role} but continues the copy step "${opener.step.id}" opens ${opened}, which every step there runs with; remove role from ${last.label}, or set it on step "${opener.step.id}"`);
+      said(`${last.label} has role ${role} but continues the copy step "${opener.step.id}" opens ${opened}, which every step there runs with; remove role from ${last.label}, or set it on step "${opener.step.id}"`);
     }
   };
 
@@ -155,7 +196,7 @@ export function roleDiagnostics(root: Node, workflow: { defaults?: WorkflowDefau
     consume(levels);
     consume(levels.slice(0, copy.opener + 1));
     // Whether a role template agrees with the copy's is known once a lease renders it for an item.
-    const templated = isRoleTemplate(resolvedRoleOf(levels)?.role) || copy.runsWith.kind === 'role' && isRoleTemplate(copy.runsWith.role);
+    const templated = rendersPerItem(resolvedRoleOf(levels)?.role) || rendersPerItem(copy.runsWith.kind === 'role' ? copy.runsWith.role : undefined);
 
     if (!templated && copyRoleConflict(levels)) conflictAt(levels, copy, caller);
   };
@@ -170,7 +211,7 @@ export function roleDiagnostics(root: Node, workflow: { defaults?: WorkflowDefau
     const theirs = runsWith(from);
 
     if (!last?.written || own.kind === 'unknown' || theirs.kind === 'unknown') return;
-    const roleOf = (runs: StepCopy['runsWith']): string | undefined => (runs.kind === 'role' ? runs.role : undefined);
+    const roleOf = (runs: Exclude<RunsWith, { kind: 'unknown' }>): string | undefined => (runs.kind === 'role' ? runs.role : undefined);
 
     if (roleOf(own) === roleOf(theirs)) return;
     const named = (role: string | undefined): string => (role === undefined ? 'your roles' : `role ${role}`);
@@ -188,7 +229,7 @@ export function roleDiagnostics(root: Node, workflow: { defaults?: WorkflowDefau
       const item: unknown = isSeq(node) ? node.items[index] : undefined;
 
       return {
-        step, label: `step "${step.id}"`, ownDefaults: defaults.own, ...(defaults.role !== undefined ? { defaultRole: defaults.role } : {}),
+        ...roleLevelOf(step, defaults.role), label: `step "${step.id}"`, ownDefaults: defaults.own,
         ...(caller ? {} : { written: { field: `${at}steps[${index}]`, item: isYamlNode(item) ? item : undefined } }),
       };
     };

@@ -2,7 +2,7 @@ import { isMap, isScalar, isSeq, LineCounter, parseDocument, type Node, type YAM
 import { z } from 'zod';
 import { fieldsText, parseExpression, type ExpressionPath } from './expression.js';
 import {
-  findTemplate, itemRoleTemplate, parseTemplate, stepExpressions, templatedTexts, templateExpressions, templateWithPaths, type StepExpression, type Template,
+  findTemplate, parseTemplate, stepRoleSpec, stepExpressions, templatedTexts, templateExpressions, templateWithPaths, type StepExpression, type StepRoleSpec, type Template,
 } from './template.js';
 import type {
   Budget, EndOutcome, ForEach, InlineWorkflow, OutputSchema, StepLoop, StepScorers, StepWorkspace, WorkflowDefaults, WorkflowDefinition, WorkflowDiagnostic, WorkflowLoop, WorkflowStep,
@@ -19,6 +19,7 @@ import { parseHitl } from './parse-hitl.js';
 import { roleDiagnostics } from './parse-roles.js';
 import { loopProblems, stepLoops } from './loop.js';
 import { modelValueProblem } from '../models/aliases.js';
+import { isRoleId } from '../roles.js';
 import type { StepModel } from './step-model.js';
 import { ClonePlaceSchema } from './clone.js';
 import { mergeRequirements, ON_LIMIT, REQUIREMENT_KEYS, RequirementsSchema, SANDBOX_WITHHELD_ENV, SetupSchema, type InEffect, type OnLimit, type Requirements, type Setup } from './requirements.js';
@@ -827,17 +828,18 @@ function parseBody(
       // (`roleDiagnostics`); only what no enclosing step changes is checked here.
       const runsPrompt = promptPair !== undefined || promptFilePair !== undefined;
       // Where an item is bound, a role may be a template of it, which the lease of each item checks as it checks an id.
-      const roleTemplate = role !== undefined && bindsItem && !TOKEN.test(role) ? itemRoleTemplate(role) : undefined;
+      const roleSpec = role === undefined ? undefined : stepRoleSpec(role);
 
       const roleProblem = !rolePair ? undefined
-        : role === undefined || !TOKEN.test(role) && !roleTemplate ? bindsItem
+        : roleSpec === undefined || !isAdmittedRole(roleSpec, bindsItem) ? bindsItem
           ? `${stepLabel} role must be the id of a role in manifest/roles.yaml, such as review, or a template that reads only its item, such as {{ item.role }}`
           : `${stepLabel} role must be the id of a role in manifest/roles.yaml, such as review`
           : typeof workspace === 'object' ? !('revision' in workspace.clone.team) ? `${stepLabel} has role ${role} but its clone installs no team (team: { treatment: none }); give the clone a team revision and selection, or remove role` : undefined
             : commandPair !== undefined && !runsPrompt ? `${stepLabel} has role ${role}, but a command step launches no agent to take the role's knowledge; set role on the prompt step that opens or continues the copy`
               : undefined;
 
-      const roleRefused = roleProblem ?? (role === undefined || roleTemplate ? undefined : undeclaredRole(stepLabel, role, files));
+      const checkedId = roleSpec && roleIdNamedNow(roleSpec);
+      const roleRefused = roleProblem ?? (checkedId === undefined ? undefined : undeclaredRole(stepLabel, checkedId, files));
 
       if (rolePair && roleRefused !== undefined) {
         diagnostics.push({ ...locate(file, lineCounter, rolePair.value ?? rolePair.key ?? item, `${field}.role`, roleRefused), code: 'bad_role' });
@@ -1389,10 +1391,36 @@ function undeclaredRole(owner: string, role: string, files: WorkflowFiles | unde
     : `${owner} has role ${role}, which manifest/roles.yaml does not declare; add it there, or name a role it declares: ${[...files.roles].join(', ')}`;
 }
 
+/** Whether parse admits a step `role` read as `role`: an id shaped like one, or, where an item is bound, a template of it. */
+function isAdmittedRole(role: StepRoleSpec, bindsItem: boolean): boolean {
+  switch (role.kind) {
+    case 'id': return isRoleId(role.id);
+    case 'item_template': return bindsItem;
+    default: {
+      const unhandled: never = role;
+
+      return unhandled;
+    }
+  }
+}
+
+/** The id a step `role` names as parse reads it, to check against `manifest/roles.yaml`; none for a template, which each item's lease checks. */
+function roleIdNamedNow(role: StepRoleSpec): string | undefined {
+  switch (role.kind) {
+    case 'id': return role.id;
+    case 'item_template': return undefined;
+    default: {
+      const unhandled: never = role;
+
+      return unhandled;
+    }
+  }
+}
+
 /** `defaults.role`: the id of a role `manifest/roles.yaml` declares, as on a step. */
 function parseDefaultRole(node: Node | undefined, ctx: ParseContext): string | undefined {
   const role = scalarString(node)?.trim();
-  const refused = role === undefined || !TOKEN.test(role) ? 'defaults.role must be the id of a role in manifest/roles.yaml, such as review' : undeclaredRole('defaults', role, ctx.files);
+  const refused = role === undefined || !isRoleId(role) ? 'defaults.role must be the id of a role in manifest/roles.yaml, such as review' : undeclaredRole('defaults', role, ctx.files);
 
   if (refused === undefined) return role;
   ctx.diagnostics.push({ ...locate(ctx.file, ctx.lineCounter, node, 'defaults.role', refused), code: 'bad_role' });

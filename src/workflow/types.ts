@@ -101,7 +101,8 @@ export interface WorkflowStep {
    * The team role from `manifest/roles.yaml` the copy this step runs in gets: the role's skills, rules, agents and other
    * knowledge, with the member's hooks, MCP, env and models. On a step that opens a copy, every step continuing that
    * copy runs with it; on a `workflow` step, it is the role of each step inside that names none (`resolvedRoleOf`).
-   * Where an item is bound it may be a template of it, such as `{{ item.role }}`, which each item's lease renders.
+   * Where an item is bound it may be a template of it, such as `{{ item.role }}`, which each item's lease renders. Kept
+   * as written, as run files and the cache store it; read it through `roleLevelOf`, which tells an id from a template.
    */
   role?: string;
   /** Opens a review request after the branch's work succeeds. TeamAI never merges it. */

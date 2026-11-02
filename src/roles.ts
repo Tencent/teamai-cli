@@ -46,6 +46,19 @@ export type TeamRole = z.infer<typeof RoleSchema>;
 export type RolesManifest = z.infer<typeof RolesManifestSchema>;
 
 /**
+ * A role id as a workflow step, `defaults.role` or a benchmark arm names one: a token such as `review`, which a copy
+ * runs with and a record publishes. `manifest/roles.yaml` itself takes any non-empty id.
+ */
+const ROLE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+export const RoleIdSchema = z.string().regex(ROLE_ID, 'must be the id of a role in manifest/roles.yaml, such as review');
+
+/** Whether `value` is shaped like a role id a workflow or a benchmark names (`RoleIdSchema`). */
+export function isRoleId(value: string): boolean {
+  return ROLE_ID.test(value);
+}
+
+/**
  * Active resource namespaces after resolving roles ∪ projects. Both dimensions
  * contribute `learnings` (#1101). Kept as a superset of the role resource types
  * so role and project resolutions share one shape and can be unioned directly.

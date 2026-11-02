@@ -16,6 +16,7 @@ import type { WorkflowDiagnostic } from '../workflow/types.js';
 import { CommitSchema, TeamPathSchema } from '../workflow/clone.js';
 import { definedFields } from '../utils/defined-fields.js';
 import { CheckRunSchema, isRelativePath, RepoPathSchema, segmentPattern } from '../workflow/check.js';
+import { RoleIdSchema } from '../roles.js';
 import { BENCHMARK_NAME, BenchmarkNameSchema, type TrialLimits } from './terms.js';
 
 /** The project the tasks start from. A URL, never a local path or a URL with credentials: it travels in plan and record. */
@@ -64,9 +65,6 @@ const TEAM_HELP = 'must be pulled, none, a branch, tag or commit of the team rep
 
 /** A ref as git names one, which a plan and a record carry: no leading "-", no "..", "//" or trailing "/" or ".". */
 const TEAM_REF = /^(?!-)(?!.*\.\.)(?!.*\/\/)[A-Za-z0-9._/-]+(?<![/.])$/;
-
-/** A role id as a workflow step names one: a trial's clone runs with that role's knowledge, and a record publishes it. */
-const RoleIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, 'must be the id of a role in manifest/roles.yaml, such as review');
 
 const TeamValueSchema = z.union([
   z.string().regex(TEAM_REF, TEAM_HELP),

@@ -12,6 +12,7 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { isRecordableLabel, isRecordableName } from '../agent-observation.js';
+import { RoleIdSchema } from '../roles.js';
 import type { PinnedScorer } from '../scorers/pin.js';
 import type { JsonObject } from '../types.js';
 import { definedFields } from '../utils/defined-fields.js';
@@ -39,8 +40,8 @@ const PlannedArmSchema = z.object({
   team: ArmTeamSchema,
   /** The team workflow the arm's trials run on each task instead of one prompt, by the hash of its sources and theirs. */
   workflow: z.object({ name: z.string().min(1), sourceHash: Sha256 }).strict().optional(),
-  /** The team role the arm's trial clones run with, as its suite named it; absent: the member's roles. */
-  role: z.string().refine(isRecordableLabel).optional(),
+  /** The team role the arm's trial clones run with, as its suite named it, no longer than a record label; absent: the member's roles. */
+  role: RoleIdSchema.refine(isRecordableLabel).optional(),
 }).strict();
 
 export type PlannedArm = z.infer<typeof PlannedArmSchema>;
