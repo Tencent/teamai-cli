@@ -289,10 +289,11 @@ export function roleDiagnostics(root: Node, workflow: { defaults?: WorkflowDefau
     const levelOf = (step: WorkflowStep, index: number): Level => {
       const item: unknown = isSeq(node) ? node.items[index] : undefined;
 
-      return {
-        ...roleLevelOf(step, defaults.role), label: `step "${step.id}"`, isOwnDefaultRole: defaults.isOwn,
-        ...(caller ? {} : { written: { field: `${at}steps[${index}]`, item: isYamlNode(item) ? item : undefined } }),
-      };
+      const level: Level = { ...roleLevelOf(step, defaults.role), label: `step "${step.id}"`, isOwnDefaultRole: defaults.isOwn };
+
+      if (!caller) level.written = { field: `${at}steps[${index}]`, item: isYamlNode(item) ? item : undefined };
+
+      return level;
     };
 
     steps.forEach((step, index) => {
@@ -355,7 +356,7 @@ export function roleDiagnostics(root: Node, workflow: { defaults?: WorkflowDefau
     });
   };
 
-  walk(workflow.steps, { node: valueNode(root, 'steps'), at: '', outer: [], defaults: { ...(defaultRole !== undefined ? { role: defaultRole } : {}), isOwn: true }, caller: undefined });
+  walk(workflow.steps, { node: valueNode(root, 'steps'), at: '', outer: [], defaults: { role: defaultRole, isOwn: true }, caller: undefined });
 
   for (const source of sources.values()) {
     if (!source.isConsumed) report('bad_role', source.node, source.field, source.unconsumedMessage);

@@ -4,6 +4,8 @@
  */
 import { z } from 'zod';
 import { sameDriver } from '../driver-identity.js';
+import type { JsonValue } from '../types.js';
+import { jsonType } from './expression.js';
 import { itemsAfter, itemsOf } from './fan-out.js';
 import { localId, statesIn, stepDefinitions, type Scope } from './scope.js';
 import { parseStepPath } from './step-path.js';
@@ -820,7 +822,13 @@ export interface RoleLevel<TRole extends StepRoleSpec = StepRoleSpec> {
 
 /** The level of `step`, whose `role` is read once as an id or a template of its item, under `defaultRole`. */
 export function roleLevelOf(step: WorkflowStep, defaultRole: string | undefined): RoleLevel {
-  return { step, ...(step.role !== undefined ? { role: stepRoleSpec(step.role) } : {}), ...(defaultRole !== undefined ? { defaultRole } : {}) };
+  const level: RoleLevel = { step };
+
+  if (step.role !== undefined) level.role = stepRoleSpec(step.role);
+
+  if (defaultRole !== undefined) level.defaultRole = defaultRole;
+
+  return level;
 }
 
 /** `role` as the workflow file writes it: the id, or the template's source. */
@@ -929,7 +937,12 @@ function roleLevelsOf(run: StepTree, path: string): RoleLevel<RoleIdSpec>[] | Wo
     const role = written.role === undefined ? undefined : itemRoleOf({ path: `${prefix}${segment}`, role: written.role, item });
 
     if (role !== undefined && 'code' in role) return role;
-    levels.push({ step, ...(role !== undefined ? { role } : {}), ...(defaultRole !== undefined ? { defaultRole } : {}) });
+    const level: RoleLevel<RoleIdSpec> = { step };
+
+    if (role !== undefined) level.role = role;
+
+    if (defaultRole !== undefined) level.defaultRole = defaultRole;
+    levels.push(level);
     workflow = workflowRunBy(run, step, prefix);
 
     if (workflow && isWorkflowFile(workflow)) defaultRole = workflow.defaults?.role ?? defaultRole;
@@ -953,7 +966,9 @@ function itemRoleOf(input: { path: string; role: StepRoleSpec; item: { value: un
     case 'item_template': {
       const rendered = item ? renderValue(role.template, { steps: {}, item: item.value }) : undefined;
 
-      if (typeof rendered === 'string' && rendered !== '') return { kind: 'id', id: rendered };
+      const id = z.string().min(1).safeParse(rendered).data;
+
+      if (id !== undefined) return { kind: 'id', id };
 
       return {
         code: 'role_unavailable',
@@ -970,10 +985,11 @@ function itemRoleOf(input: { path: string; role: StepRoleSpec; item: { value: un
 }
 
 /** What a role template gave, as a role failure names it. */
-function renderedKind(rendered: unknown): string {
+function renderedKind(rendered: JsonValue | undefined): string {
   if (rendered === undefined || rendered === null || rendered === '') return 'nothing';
+  const type = jsonType(rendered);
 
-  return Array.isArray(rendered) ? 'a list' : typeof rendered === 'object' ? 'an object' : `a ${typeof rendered}`;
+  return type === 'array' ? 'a list' : type === 'object' ? 'an object' : `a ${type}`;
 }
 
 /**

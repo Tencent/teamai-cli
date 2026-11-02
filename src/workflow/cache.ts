@@ -1023,7 +1023,9 @@ function checkReferences(checked: Checked[], kept: Map<string, CachedWorkflow | 
   };
 
   const check = (stem: string, version: Version): WorkflowDiagnostic[] => {
-    const files: WorkflowFiles = { runnable: runs, cycle: (workflow) => cycleBack(workflow, stem), ...(roles ? { roles } : {}) };
+    const files: WorkflowFiles = { runnable: runs, cycle: (workflow) => cycleBack(workflow, stem) };
+
+    if (roles) files.roles = roles;
     const parsed = parseWorkflow(version.relativePath, version.content, files);
     const diagnostics = parsed.ok ? [] : parsed.diagnostics;
 

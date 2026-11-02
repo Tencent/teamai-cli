@@ -403,8 +403,11 @@ async function withPreparedCopy(config: LocalConfig, runId: RunId, report: Repor
     switch (stepRole.kind) {
       case 'role': {
         const team = await preparedCopyTeam({ config, run: runId, attempt: attempt.data, tool });
+        const agent: NonNullable<ReportInput['agent']> = { ...sent };
 
-        return { ...report, agent: { ...sent, ...(team ? { team } : {}) } };
+        if (team) agent.team = team;
+
+        return { ...report, agent };
       }
 
       case 'none':

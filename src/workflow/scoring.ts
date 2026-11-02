@@ -1263,7 +1263,7 @@ function toSucceeded(attempt: LeasedAttempt, settled: { settledAt: string; usage
  */
 function judgedAgent(run: RunState, judged: readonly RunPass[]): AgentObservation | undefined {
   const definitionOf = stepDefinitions(run);
-  const [first, ...rest] = judged.filter((pass) => definitionOf(pass.step)?.prompt !== undefined).map((pass) => pass.agent);
+  const [first, ...rest] = judged.flatMap((pass) => (definitionOf(pass.step)?.prompt === undefined ? [] : [pass.agent]));
 
   if (!first) return undefined;
 

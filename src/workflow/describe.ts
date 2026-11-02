@@ -188,7 +188,7 @@ export function describeWorkflow(input: {
     const negotiation = negotiate({
       // Whether the driver calls next --prepare is not part of its can: a step in a clone, or with a role, is described as a
       // driver with clone, or with role, takes it.
-      step: path, executor, requires, prepare: role !== undefined, clone: false, ...(role !== undefined ? { role } : {}),
+      step: path, executor, requires, prepare: role !== undefined, clone: false, role,
       interactive: step.interactive === true, hasContract, envKeys: Object.keys(step.env ?? {}), runEnvKeys, budgeted: step.prompt !== undefined && scope.budgeted,
       maxTurns: step.maxTurns, setup: hasContract ? scope.setup : undefined,
       tool: step.tool,

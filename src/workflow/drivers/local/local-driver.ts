@@ -328,7 +328,10 @@ async function stageLease(lease: Lease, { config, lock, root, env, mode, signal,
     lease.processEnv = withRunningCli(process.env);
   }
 
-  const prepared = await preparePlace({ config, lock, root, lease: { ...placeLeaseOf(lease), ...(lease.tool === undefined && launches !== undefined ? { tool: launches } : {}) } });
+  const placeLease = placeLeaseOf(lease);
+
+  if (lease.tool === undefined && launches !== undefined) placeLease.tool = launches;
+  const prepared = await preparePlace({ config, lock, root, lease: placeLease });
 
   if (prepared.kind !== 'prepared') return prepared.failure;
   lease.cwd = prepared.dir;
@@ -1022,7 +1025,7 @@ async function driveRun(config: LocalConfig, lock: RunLock, cwd: string, options
         prompts.set(lease.attempt, { lease, controller, exit: (async () => {
           // A role copy is checked and delivered for the tool the step launches, so another tool the member enables does not refuse it.
           const launch = lease.role !== undefined ? launchToolFor({ agent: lease.agent, tool: lease.tool }, config, options.tools ?? {}, await memberTools(config)) : undefined;
-          const failure = await stageLease(lease, { config, lock, root, env: turn, mode, signal: controller.signal, ...(launch?.ok ? { launches: launch.tool } : {}) });
+          const failure = await stageLease(lease, { config, lock, root, env: turn, mode, signal: controller.signal, launches: launch?.ok ? launch.tool : undefined });
 
           if (!startable(lease, controller.signal)) {
             await abandonPlace({ config, lock, attempt: lease.attempt });

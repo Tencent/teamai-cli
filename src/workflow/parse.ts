@@ -320,7 +320,7 @@ export function parseWorkflow(file: string, content: string, files?: WorkflowFil
 
   if (diagnostics.length === 0) withheldEnvRequired(root, { defaults, steps }, '', {}, ctx, { says: '', runs: [] });
 
-  if (diagnostics.length === 0) diagnostics.push(...roleDiagnostics(root, { ...(defaults ? { defaults } : {}), steps }, ctx));
+  if (diagnostics.length === 0) diagnostics.push(...roleDiagnostics(root, { defaults, steps }, ctx));
 
   if (diagnostics.length > 0 || !name || !description) return { ok: false, diagnostics };
   const header: Omit<WorkflowDefinition, 'schemaVersion' | 'name' | 'description' | 'steps' | 'finally'> = {};
@@ -834,7 +834,7 @@ function parseBody(
         : roleSpec === undefined || !isAdmittedRole(roleSpec, bindsItem) ? bindsItem
           ? `${stepLabel} role must be the id of a role in manifest/roles.yaml, such as review, or a template that reads only its item, such as {{ item.role }}`
           : `${stepLabel} role must be the id of a role in manifest/roles.yaml, such as review`
-          : typeof workspace === 'object' ? !('revision' in workspace.clone.team) ? `${stepLabel} has role ${role} but its clone installs no team (team: { treatment: none }); give the clone a team revision and selection, or remove role` : undefined
+          : workspace instanceof Object ? !('revision' in workspace.clone.team) ? `${stepLabel} has role ${role} but its clone installs no team (team: { treatment: none }); give the clone a team revision and selection, or remove role` : undefined
             : commandPair !== undefined && !runsPrompt ? `${stepLabel} has role ${role}, but a command step launches no agent to take the role's knowledge; set role on the prompt step that opens or continues the copy`
               : undefined;
 

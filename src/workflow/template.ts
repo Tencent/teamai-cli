@@ -190,7 +190,7 @@ export type StepRoleSpec = { kind: 'id'; id: string } | { kind: 'item_template';
 export function stepRoleSpec(role: string): StepRoleSpec {
   const parsed = parseTemplate(role, true);
 
-  const readsItemOnly = parsed.ok && parsed.template.some((part) => typeof part !== 'string') && templateWithPaths(parsed.template).length === 0
+  const readsItemOnly = parsed.ok && parsed.template.some(isRead) && templateWithPaths(parsed.template).length === 0
     && templatePaths(parsed.template).every((path) => path.root === 'item');
 
   return parsed.ok && readsItemOnly ? { kind: 'item_template', source: role, template: parsed.template } : { kind: 'id', id: role };

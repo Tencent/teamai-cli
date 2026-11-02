@@ -476,7 +476,7 @@ function failuresByHarness(failing: readonly ViewedLabel[]): HarnessFailures[] {
   for (const entry of failing) {
     const harness = agentHarnessOf(entry.agent);
     const key = canonicalJson(harness ?? null);
-    const count = counts.get(key) ?? { ...harness ? { harness } : {}, failed: 0 };
+    const count = counts.get(key) ?? (harness ? { harness, failed: 0 } : { failed: 0 });
     count.failed += 1;
     counts.set(key, count);
   }
@@ -558,9 +558,13 @@ function groups(labels: readonly ViewedLabel[], dimension: Dimension, sideOf: Re
     return counted;
   };
 
-  const counted: Group[] = [...values].map(([key, { value, labels: members }]) => ({
-    key, kind: 'value' as const, ...value, ...dimension === 'role' ? { roleOf: roleOf(members) } : {}, ...counts(members),
-  }))
+  const counted: Group[] = [...values].map(([key, { value, labels: members }]) => {
+    const role: Pick<Extract<Group, { kind: 'value' }>, 'roleOf'> = {};
+
+    if (dimension === 'role') role.roleOf = roleOf(members);
+
+    return { key, kind: 'value' as const, ...value, ...role, ...counts(members) };
+  })
     .sort((left, right) => right.stats.n - left.stats.n || left.key.localeCompare(right.key));
 
   if (none.length > 0) counted.push({ key: NONE_KEY, kind: 'none', ...counts(none) });

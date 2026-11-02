@@ -1410,7 +1410,7 @@ function offerTerms(
   run: RunState, id: string, { scope, step }: { scope: Scope; step: WorkflowStep }, plan: WorkspacePlan | undefined, context: OfferContext,
 ): OfferedTerms {
   const stepRole = stepRoleOf(run, id);
-  let role: { role?: string };
+  let role: Pick<GrantedTerms, 'role'>;
 
   switch (stepRole.kind) {
     case 'role':

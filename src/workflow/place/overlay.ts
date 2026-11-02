@@ -1,5 +1,5 @@
 import fs from 'node:fs/promises';
-import type { PullDelivery } from '../../pull.js';
+import type { PullDelivery, PullOutcome } from '../../pull.js';
 import { pathExists } from '../../utils/fs.js';
 import type { WorkflowFailure } from '../types.js';
 import { applyBaseConfig, hooksPath, recordConfigOverlay, restoreUneditedConfig } from '../worktree.js';
@@ -15,10 +15,10 @@ import { setUpWorktreeRole, worktreeRoleProblem } from './role-copy.js';
 export async function applyOverlay({ root, dir, configCommit, saved, resume, step, role, tool }: {
   root: string; dir: string; configCommit: string; saved: string; resume?: true; step: string; role?: string; tool?: string;
 }): Promise<WorkflowFailure | undefined> {
-  const set = await setUpWorktreeRole({ dir, step, ...(role !== undefined ? { role } : {}), ...(tool !== undefined ? { tool } : {}) });
+  const set = await setUpWorktreeRole({ dir, step, role, tool });
 
   if ('code' in set) return set;
-  const applied = await applyBaseConfig(dir, configCommit, hooksPath(root), saved, { paths: set.paths, ...resume ? { resume } : {} });
+  const applied = await applyBaseConfig(dir, configCommit, hooksPath(root), saved, resume ? { paths: set.paths, resume } : { paths: set.paths });
 
   if (!applied.ok) return { code: 'base_config', message: applied.message };
   const delivery = await deliverTeamAssets(dir);
@@ -71,7 +71,7 @@ async function deliverTeamAssets(dir: string): Promise<PullDelivery> {
     const { createProjectToolRoots } = await import('../../project-agent-root.js');
     await createProjectToolRoots({ cwd: dir });
     const { pull } = await import('../../pull.js');
-    const result: { completed: boolean; delivery?: PullDelivery } = { completed: false };
+    const result: PullOutcome = { completed: false };
     await pull({ silent: true, inline: true, force: true, gitHook: 'post-checkout', prepareCheckout: 'always', cwd: dir }, result);
 
     return result.delivery ?? 'failed';

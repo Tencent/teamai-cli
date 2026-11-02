@@ -343,16 +343,16 @@ async function keptInside<L extends Located<Place> & Beside<Place> & { readonly 
 
   if (location.channel !== 'files') return { ...location, retired };
 
-  return {
-    ...location,
-    retired,
-    own: await kept(location.own),
-    ...location.shared !== undefined ? { shared: await kept(location.shared) } : {},
-    ...location.activation !== undefined ? { activation: await kept(location.activation) } : {},
-    ...location.alternate !== undefined ? { alternate: await kept(location.alternate) } : {},
-    ...location.retiredActivation !== undefined ? { retiredActivation: await kept(location.retiredActivation) } : {},
-    ...location.sidecar !== undefined ? { sidecar: await kept(location.sidecar) } : {},
-  };
+  const inside = { ...location, retired, own: await kept(location.own) };
+
+  // A place the locator gave none of stays absent; one it gave is kept, or null when it is outside.
+  for (const key of ['shared', 'activation', 'alternate', 'retiredActivation', 'sidecar'] as const) {
+    const place = location[key];
+
+    if (place !== undefined) Object.assign(inside, { [key]: await kept(place) });
+  }
+
+  return inside;
 }
 
 /** `own` when the channel writes files and every gate is met, else null: the one rule a writer applies. */

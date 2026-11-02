@@ -445,8 +445,7 @@ async function overlaid(config: LocalConfig, record: Preparing, lease: OverlaidL
   const { prompt, role, tool } = lease;
 
   const failure = await applyOverlay({
-    root, dir, configCommit: place.workspace.configCommit, saved: placeFiles(config, record.run, record.attempt).overlay, step,
-    ...(role !== undefined ? { role } : {}), ...(tool !== undefined ? { tool } : {}), ...resume,
+    root, dir, configCommit: place.workspace.configCommit, saved: placeFiles(config, record.run, record.attempt).overlay, step, role, tool, ...resume,
   });
 
   if (failure) {

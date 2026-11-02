@@ -1628,6 +1628,9 @@ function awaitingFullSync(records: Record<string, CheckoutRecord>): Record<strin
  */
 export type PullDelivery = 'delivered' | 'unchanged' | 'skipped' | 'failed';
 
+/** The out-param of `pull`: whether a scope really synced, and what the pull did for the checkout it ran in. */
+export type PullOutcome = { completed: boolean; delivery?: PullDelivery };
+
 type PullSyncResult = {
   completed: boolean;
   /** A scope found its checkout delivered already, on the fast path. */
@@ -3596,7 +3599,7 @@ export async function pull(
    * failed to sync docs or held an agent for its model (#830). `delivery`
    * is what the pull did for the checkout it ran in (`PullDelivery`).
    */
-  result?: { completed: boolean; delivery?: PullDelivery },
+  result?: PullOutcome,
 ): Promise<void> {
   if (options.teamRef !== undefined && options.dryRun) {
     const message = `--team-ref cannot be previewed: a dry run would show the workspace's current team revision, not "${options.teamRef}". Run teamai pull --team-ref ${options.teamRef} without --dry-run.`;

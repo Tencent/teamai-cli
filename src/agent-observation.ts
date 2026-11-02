@@ -353,13 +353,17 @@ export function agentHarnessOf(agent: RecordedAgent | undefined): AgentHarness |
     ? { of: 'step' as const, names: [selection.stepRole] }
     : memberRoles.length > 0 ? { of: 'member' as const, names: memberRoles } : undefined;
 
-  return {
-    tool: agent.tool.name,
-    ...(model !== undefined ? { model } : {}),
-    ...(effort !== undefined ? { effort } : {}),
-    ...(role ? { role } : {}),
-    ...(agent.team ? { teamRevision: agent.team.revision } : {}),
-  };
+  const harness: AgentHarness = { tool: agent.tool.name };
+
+  if (model !== undefined) harness.model = model;
+
+  if (effort !== undefined) harness.effort = effort;
+
+  if (role) harness.role = role;
+
+  if (agent.team) harness.teamRevision = agent.team.revision;
+
+  return harness;
 }
 
 /**
@@ -378,7 +382,19 @@ export type HarnessChange =
   | { part: 'tool' | 'model' | 'effort' | 'teamRevision'; from?: string; to?: string }
   | { part: 'role'; from?: AgentHarness['role']; to?: AgentHarness['role'] };
 
-const fromTo = <TValue>(from: TValue | undefined, to: TValue | undefined) => ({ ...from !== undefined ? { from } : {}, ...to !== undefined ? { to } : {} });
+/** The two ends of a changed part, each absent when its pass recorded none. */
+type ChangeEnds<TValue> = { from?: TValue; to?: TValue };
+
+function fromTo<TValue>(from: TValue | undefined, to: TValue | undefined): ChangeEnds<TValue> {
+  const ends: ChangeEnds<TValue> = {};
+
+  if (from !== undefined) ends.from = from;
+
+  if (to !== undefined) ends.to = to;
+
+  return ends;
+}
+
 const roleText = (role: AgentHarness['role']): string => (role ? `${role.of}:${role.names.join(',')}` : '');
 
 /** What differs from the harness `before` to `after`, in the order the harness line names the parts. */
