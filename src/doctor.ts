@@ -37,9 +37,9 @@ import {
 import { hookSettingsFile, installOf, isInstalledFor, locate, ownOf, writable, type Gate, type Install } from './locate.js';
 import { samePlace } from './resources/places.js';
 import { describeInvalidToolHomes, envToolHome, ompProfile, realHost, reloadToolHomes, toolHomesPath } from './tool-home.js';
-import { isToolId } from './tools.js';
+import { hookFormatOf, isToolId } from './tools.js';
 import { isCodexTool } from './utils/tool-names.js';
-import { TEAMAI_HOOK_SUBCOMMANDS, isCodexTrustGatedTool, codexTrustReminder, keptTeamHookEntries, readCodexHookTrustForScope } from './hooks.js';
+import { TEAMAI_HOOK_SUBCOMMANDS, isCodexTrustGatedTool, codexTrustReminder, keptTeamHookEntries, readCodexHookTrustForScope, readHookFile } from './hooks.js';
 import { codexBuildSkewMessage } from './codex-trust.js';
 import {
   buildDeliveryChecks,
@@ -529,6 +529,11 @@ async function buildHookChecks(
     // An uninstalled tool has no hooks to check. Whether it should be installed
     // at all is a different question — see buildEnabledToolChecks.
     if (!installed) continue;
+
+    // `hooks inject` leaves a hook file teamai cannot read as it is, as pull does: the fix is the file.
+    const unreadable = await readHookFile(settingsPath, {}, hookFormatOf(tool))
+      .then(() => undefined, (cause: unknown) => (cause instanceof Error ? cause.message : String(cause)));
+
     checks.push({
       name: `teamai hooks in ${tool} settings`,
       source: 'local',
@@ -546,7 +551,7 @@ async function buildHookChecks(
 
         return missing.length === 0;
       },
-      fix: 'Run `teamai hooks inject` to inject/update hooks',
+      fix: unreadable ?? 'Run `teamai hooks inject` to inject/update hooks',
     });
 
     // ZCode and DeepSeek Harness get the rules from their session-start hook
