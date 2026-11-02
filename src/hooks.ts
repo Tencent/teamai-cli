@@ -471,6 +471,7 @@ const FileHookSchema = z.object({
  * written, so one that is not a string still matches no hook.
  */
 const HookFileEntrySchema = z.object({
+  type: OptionalTextSchema,
   matcher: JsonValueSchema.optional(),
   description: OptionalTextSchema,
   command: OptionalTextSchema,
@@ -486,6 +487,20 @@ function hookFileEntryOf(entry: JsonValue | undefined): HookFileEntry | null {
   const parsed = HookFileEntrySchema.safeParse(entry);
 
   return parsed.success ? parsed.data : null;
+}
+
+/**
+ * The events of a hook file in `format`, each with its entries as written, or
+ * null when the file holds no events object. The member may have edited it: an
+ * event that is not a list holds no entries.
+ */
+function hookEventsOf(json: JsonValue | null, format: HookFormat): Map<string, JsonValue[]> | null {
+  const block = isJsonObject(json) ? json.hooks : undefined;
+  const events = format === 'zcode' ? (isJsonObject(block) ? block.events : undefined) : block;
+
+  if (!isJsonObject(events)) return null;
+
+  return new Map(Object.entries(events).map(([event, entries]) => [event, Array.isArray(entries) ? entries : []]));
 }
 
 /** The event key and entry a reconciler writes for a hook. */
@@ -3367,37 +3382,39 @@ export async function getHookStatus(
   const defs = applyBuiltinOverride(builtinHookDefs(toolName), builtinOverride);
 
   const format = hookFormatOf(toolName);
+  const json = await readJson<JsonValue>(expanded);
+  const events = hookEventsOf(json, format);
+
+  if (!events || (format === 'copilot' && !(isJsonObject(json) && json.version === COPILOT_HOOK_SCHEMA_VERSION))) return 'missing';
+
+  // The file is the member's: an entry that is not an object holds no hook.
+  const entriesOf = (event: string): HookFileEntry[] => (events.get(event) ?? []).flatMap((entry) => {
+    const read = hookFileEntryOf(entry);
+
+    return read ? [read] : [];
+  });
 
   if (format === 'cursor') {
-    const hooksJson = await readJson<CursorHooksJson>(expanded);
-
-    if (!hooksJson?.hooks) return 'missing';
-
     const present = defs.every((def) => {
       const cursorEvent = CLAUDE_TO_CURSOR_EVENTS[def.event];
 
       if (!cursorEvent) return true;
       const want = toCursorEntry(def);
-      const entries = hooksJson.hooks[cursorEvent] ?? [];
 
-      return entries.some((e) => e.command === want.command && e.matcher === want.matcher);
+      return entriesOf(cursorEvent).some((e) => e.command === want.command && e.matcher === want.matcher);
     });
 
     return present ? 'installed' : 'missing';
   }
 
   if (format === 'copilot') {
-    const hooksJson = await readJson<CopilotHooksJson>(expanded);
-
-    if (hooksJson?.version !== COPILOT_HOOK_SCHEMA_VERSION || !hooksJson.hooks) return 'missing';
-
     const present = defs.every((def) => {
       const event = CLAUDE_TO_COPILOT_EVENTS[def.event];
 
       if (!event) return true;
       const want = toCopilotEntry(def);
 
-      return (hooksJson.hooks[event] ?? []).some((entry) =>
+      return entriesOf(event).some((entry) =>
         entry.type === want.type
         && (entry.bash && unmarkCopilotGlobal(entry.bash)) === want.bash
         && (entry.powershell && unmarkCopilotGlobal(entry.powershell)) === want.powershell
@@ -3410,15 +3427,10 @@ export async function getHookStatus(
   }
 
   if (format === 'codex') {
-    const hooksJson = await readJson<CodexHooksJson>(expanded);
-
-    if (!hooksJson?.hooks) return 'missing';
-
     const present = defs.every((def) => {
       const want = toCodexEntry(def);
-      const entries = hooksJson.hooks?.[def.event] ?? [];
 
-      return entries.some((e) => e.matcher === want.matcher && e.hooks?.[0]?.command === want.hooks[0].command);
+      return entriesOf(def.event).some((e) => e.matcher === want.matcher && e.hooks?.[0]?.command === want.hooks[0].command);
     });
 
     return present ? 'installed' : 'missing';
@@ -3426,10 +3438,6 @@ export async function getHookStatus(
 
   if (format === 'zcode') {
     const launcherPath = zcodeLauncherPath(expanded);
-    const cfg = await readJson<ZcodeHooksJson>(expanded);
-    const eventsMap = cfg?.hooks?.events;
-
-    if (!eventsMap) return 'missing';
 
     // On Windows the entries are dead without the launcher — a deleted, stale,
     // or AV-quarantined script must not be reported as installed.
@@ -3438,23 +3446,17 @@ export async function getHookStatus(
     const present = defs.every((def) => {
       const want = toZcodeEntry(def, launcherPath);
       const wantCmd = zcodeEntryCommand(want);
-      const entries = eventsMap[def.event] ?? [];
 
-      return entries.some((e) => e.matcher === want.matcher && zcodeEntryCommand(e) === wantCmd);
+      return entriesOf(def.event).some((e) => e.matcher === want.matcher && zcodeEntryCommand(e) === wantCmd);
     });
 
     return present ? 'installed' : 'missing';
   }
 
-  const settings = await readJson<ClaudeSettingsJson>(expanded);
-
-  if (!settings?.hooks) return 'missing';
-
   const present = defs.every((def) => {
     const want = toClaudeEntry(def);
-    const entries = settings.hooks?.[def.event] ?? [];
 
-    return entries.some((e) => e.matcher === want.matcher && e.hooks?.[0]?.command === want.hooks[0].command);
+    return entriesOf(def.event).some((e) => e.matcher === want.matcher && e.hooks?.[0]?.command === want.hooks[0].command);
   });
 
   return present ? 'installed' : 'missing';
