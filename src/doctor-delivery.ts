@@ -236,8 +236,8 @@ async function readGateChecks(gates: readonly ReadGate[], held: Held): Promise<C
     return {
       name: readGateCheckName(gate, held.noun),
       source: 'local',
-      check: async () => verdict.met,
-      fix: verdict.met ? '' : verdict.fix,
+      check: async () => verdict.kind === 'met' || (verdict.kind === 'unanswered' ? 'warn' : false),
+      fix: verdict.kind === 'met' ? '' : verdict.fix,
     };
   }));
 }

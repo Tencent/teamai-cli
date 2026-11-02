@@ -56,19 +56,23 @@ Hermes hooks and its instructions plugin launch the Node executable and TeamAI e
 
 ## A tool has not trusted the project yet
 
-Some tools load a project's files only after you trust the project, or start its MCP servers only after you approve them. `pull` writes the files either way. `doctor` reads each tool's own answer and fails until you give it.
+Some tools load a project's files only after you trust the project, or start its MCP servers only after you approve them. `pull` writes the files either way. `doctor` reads each tool's own answer:
 
-A new checkout, right after the first pull:
+- `⚠` the tool has not asked yet. It asks the first time you open it in the project. `doctor` still passes, so a tool you do not use today costs you nothing.
+- `✖` the answer is no: you or a setting turned it down, or teamai cannot read the answer. Opening the tool changes nothing, so `doctor` fails.
+
+A new checkout, right after the first pull, with Pi and Claude Code installed:
 
 ```text
 $ teamai doctor
-  ✖ Pi trusts this project, so it loads its team skills
+  ⚠ Pi trusts this project, so it loads its team skills
     → /home/ana/work/web-app/.pi/skills holds team skills (release-notes), but Pi loads a project's skills only in a trusted project, and /home/ana/.pi/agent/trust.json has no entry for /home/ana/work/web-app or a folder above it. Start `pi` in /home/ana/work/web-app and choose Trust, or add "/home/ana/work/web-app": true to /home/ana/.pi/agent/trust.json. Until then a headless run (`pi -p`) skips them.
-  ✖ Claude Code approves this project's team MCP servers
+  ⚠ Claude Code approves this project's team MCP servers
     → /home/ana/work/web-app/.mcp.json holds team MCP servers (issues), but Claude Code starts a project's .mcp.json servers in an interactive session only once you approve them, and issues waits for approval. ...
+All checks passed!
 ```
 
-Open each tool once in the project and answer its prompt:
+When you open a tool in the project, answer its prompt:
 
 ```text
 $ cd ~/work/web-app
@@ -79,7 +83,7 @@ $ teamai doctor
   ✔ Claude Code approves this project's team MCP servers
 ```
 
-A server someone turned down once stays off and is never offered again:
+A server someone turned down once stays off and is never offered again, so that one fails:
 
 ```text
   ✖ Claude Code approves this project's team MCP servers

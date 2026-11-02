@@ -109,7 +109,7 @@ export interface Check {
    * broken because of unrelated leftover state (#693 review round 6).
    */
   informational?: boolean;
-  check: () => Promise<boolean>;
+  check: () => Promise<CheckOutcome>;
   fix?: string;
 }
 
@@ -147,11 +147,18 @@ export interface DoctorOptions extends GlobalOptions {
 }
 
 /** One check after it ran. */
-export interface CheckResult {
-  name: string;
-  ok: boolean;
-  fix?: string;
-}
+/**
+ * What a check finds: `true` passes, `false` fails, and `'warn'` passes with
+ * something left for the member to do, such as a prompt the tool shows the
+ * first time it opens in the project (`⚠` and the fix).
+ */
+export type CheckOutcome = boolean | 'warn';
+
+/** A check's result: `warning` marks a pass that still names something to do. */
+export type CheckResult =
+  | { name: string; ok: true; warning?: undefined; fix?: undefined }
+  | { name: string; ok: true; warning: true; fix?: string }
+  | { name: string; ok: false; warning?: undefined; fix?: string };
 
 /** What `doctor --json` prints. One object, one place that builds it. */
 export interface DoctorReport {
@@ -947,8 +954,8 @@ export async function runChecks(
 ): Promise<CheckResult[]> {
   const results: CheckResult[] = [];
   for (const { name, check, fix } of checks) {
-    const ok = await check();
-    const result: CheckResult = ok ? { name, ok } : { name, ok, fix };
+    const outcome = await check();
+    const result: CheckResult = outcome === 'warn' ? { name, ok: true, warning: true, fix } : outcome ? { name, ok: true } : { name, ok: false, fix };
     results.push(result);
     onResult?.(result);
   }
@@ -965,9 +972,10 @@ function emitReport(report: DoctorReport): void {
  * prints the same shape through the logger rather than stdout — one definition
  * of the glyphs and the indent, two sinks.
  */
-export function formatCheckResult({ name, ok, fix }: CheckResult): string[] {
-  if (ok) return [`  ✔ ${name}`];
-  return fix ? [`  ✖ ${name}`, `    → ${fix}`] : [`  ✖ ${name}`];
+export function formatCheckResult({ name, ok, warning, fix }: CheckResult): string[] {
+  if (ok && !warning) return [`  ✔ ${name}`];
+  const mark = warning ? '⚠' : '✖';
+  return fix ? [`  ${mark} ${name}`, `    → ${fix}`] : [`  ${mark} ${name}`];
 }
 
 /** The run mode row: the mode and its source, with a warning when TEAMAI_MODE held a value it ignored. */

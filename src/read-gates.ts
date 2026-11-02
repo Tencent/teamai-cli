@@ -20,9 +20,18 @@ import { readFileSafe, readJsonObject, type JsonObjectRead } from './utils/fs.js
  */
 export type Held = { readonly summary: string; readonly noun: string; readonly names: readonly string[] };
 
-export type ReadGateVerdict = { readonly met: true } | { readonly met: false; readonly fix: string };
+/**
+ * What the tool answers for the held resource. `unanswered`: the tool has not
+ * asked yet, and asks the first time the member opens it here, so doctor warns
+ * without failing. `blocked`: the member or a setting said no, or the answer
+ * cannot be read, so opening the tool changes nothing and doctor fails.
+ */
+export type ReadGateVerdict =
+  | { readonly kind: 'met' }
+  | { readonly kind: 'unanswered'; readonly fix: string }
+  | { readonly kind: 'blocked'; readonly fix: string };
 
-const MET: ReadGateVerdict = { met: true };
+const MET: ReadGateVerdict = { kind: 'met' };
 
 /** The doctor check's name: what the gate decides for the held resource. */
 export function readGateCheckName(gate: ReadGate, noun: string): string {
@@ -60,7 +69,11 @@ export async function readGateVerdict(gate: ReadGate, held: Held): Promise<ReadG
       const trust = await codexProjectTrust(gate);
       return trust.kind === 'trusted'
         ? MET
-        : { met: false, fix: codexTrustFix(trust, gate, `${held.summary}, but Codex loads a project's ${held.noun} only in a trusted project`) };
+        : {
+          // Codex asks about a checkout that no entry decides; an entry that does, or a config it cannot read, it does not.
+          kind: trust.kind === 'untrusted' && !trust.decidedBy ? 'unanswered' : 'blocked',
+          fix: codexTrustFix(trust, gate, `${held.summary}, but Codex loads a project's ${held.noun} only in a trusted project`),
+        };
     }
     case 'pi-project-trust':
       return piProjectTrust(gate, `${held.summary}, but Pi loads a project's ${held.noun} only in a trusted project`);
@@ -90,7 +103,7 @@ export async function readGateVerdict(gate: ReadGate, held: Held): Promise<ReadG
 /** `question`: what the file would have answered ("Pi trusts this project"). */
 function unreadable({ cause, file, reason, question }: { cause: string; file: string; reason: string; question: string }): ReadGateVerdict {
   return {
-    met: false,
+    kind: 'blocked',
     fix: `${cause}, and ${file} ${reason}, so whether ${question} is unknown. Fix ${file}, then run \`teamai doctor\` again.`,
   };
 }
@@ -123,7 +136,7 @@ async function piProjectTrust(gate: Extract<ReadGate, { kind: 'pi-project-trust'
     const value = entries[dir];
     if (value === true) return MET;
     if (value === false) {
-      return { met: false, fix: `${cause}, and ${gate.config} sets ${JSON.stringify(dir)}: false, the entry Pi reads for ${root}. Set it to true, or ${grant}.` };
+      return { kind: 'blocked', fix: `${cause}, and ${gate.config} sets ${JSON.stringify(dir)}: false, the entry Pi reads for ${root}. Set it to true, or ${grant}.` };
     }
   }
   const settings = await readJsonObject(gate.settings);
@@ -131,10 +144,10 @@ async function piProjectTrust(gate: Extract<ReadGate, { kind: 'pi-project-trust'
   const fallback = settings.kind === 'ok' ? settings.value.defaultProjectTrust : undefined;
   if (fallback === 'always') return MET;
   if (fallback === 'never') {
-    return { met: false, fix: `${cause}, and ${gate.settings} sets defaultProjectTrust to "never" while ${gate.config} has no entry for ${root}. To trust this project only, ${grant}.` };
+    return { kind: 'blocked', fix: `${cause}, and ${gate.settings} sets defaultProjectTrust to "never" while ${gate.config} has no entry for ${root}. To trust this project only, ${grant}.` };
   }
   return {
-    met: false,
+    kind: 'unanswered',
     fix: `${cause}, and ${gate.config} has no entry for ${root} or a folder above it. Start \`pi\` in ${root} and choose Trust, `
       + `or ${grant}. Until then a headless run (\`pi -p\`) skips them.`,
   };
@@ -159,12 +172,12 @@ async function museWorkspaceTrust(gate: Extract<ReadGate, { kind: 'muse-workspac
     const decision = typeof entry === 'object' && entry !== null && 'decision' in entry ? entry.decision : undefined;
     if (decision === 'trusted') return MET;
     if (decision === 'untrusted') {
-      return { met: false, fix: `${cause}, and ${gate.config} records "untrusted" for ${target}, so Muse Code never asks again. Set that decision to "trusted".` };
+      return { kind: 'blocked', fix: `${cause}, and ${gate.config} records "untrusted" for ${target}, so Muse Code never asks again. Set that decision to "trusted".` };
     }
     if (decision !== undefined) return unreadable({ cause, file: gate.config, reason: `holds the decision ${JSON.stringify(decision)} for ${target}, where Muse Code takes "trusted" or "untrusted"`, question: 'Muse Code trusts this project' });
   }
   return {
-    met: false,
+    kind: 'unanswered',
     fix: `${cause}, and ${gate.config} has no decision for ${target}. Start \`muse\` in ${target} and choose "Trust and continue", `
       + `or ${grant}. Each worktree needs its own entry. Until then \`muse exec\` skips them.`,
   };
@@ -189,7 +202,7 @@ async function copilotFolderTrust(gate: Extract<ReadGate, { kind: 'copilot-folde
     if ([root, main].some((dir) => isAtOrUnder(dir, real))) return MET;
   }
   return {
-    met: false,
+    kind: 'unanswered',
     fix: `${cause}, and no folder in "trustedFolders" of ${gate.config} covers ${main}. Start \`copilot\` in ${main} and choose `
       + `"Yes, and remember this folder for future sessions", or add ${JSON.stringify(main)} to "trustedFolders" in ${gate.config}. `
       + 'Trusting the main checkout covers every worktree of it. Until then `copilot -p` skips them unless it runs with `--trust-folder`.',
@@ -235,7 +248,7 @@ async function qoderFolderTrust(gate: Extract<ReadGate, { kind: 'qoder-folder-tr
     if (typeof folder === 'string' && isAtOrUnder(root, await realFilePath(folder))) return MET;
   }
   return {
-    met: false,
+    kind: 'unanswered',
     fix: `${cause}, and permissions.trustDirectories in ${gate.config} does not cover ${root}. Start \`qodercli\` in ${root} and trust the folder `
       + `when it asks, or add ${JSON.stringify(root)} to permissions.trustDirectories in ${gate.config}. \`qodercli -p\` loads them either way.`,
   };
@@ -257,7 +270,8 @@ function approvalVerdict({ cause, approval, approve, undo }: { cause: string; ap
     ...pending.length === 0 ? [] : [`${pending.join(', ')} ${pending.length === 1 ? 'waits' : 'wait'} for approval`],
     ...rejected.length === 0 ? [] : [`${rejected.join(', ')} ${rejected.length === 1 ? 'was' : 'were'} rejected`],
   ];
-  return { met: false, fix: `${cause}, and ${parts.join(', and ')}. ${[...pending.length === 0 ? [] : [approve], ...rejected.length === 0 ? [] : [undo]].join(' ')}` };
+  // A rejection stays until someone lifts it; a server only waiting is asked about when the member opens the tool.
+  return { kind: rejected.length > 0 ? 'blocked' : 'unanswered', fix: `${cause}, and ${parts.join(', and ')}. ${[...pending.length === 0 ? [] : [approve], ...rejected.length === 0 ? [] : [undo]].join(' ')}` };
 }
 
 /** Approval kept as name lists: `disabled` rejects, `enabled` or `all` approves, and the rest wait. */
@@ -283,7 +297,7 @@ async function claudeHooksEnabled(gate: Extract<ReadGate, { kind: 'claude-hooks-
     const settings = await readJsonObject(file);
     if (settings.kind === 'invalid') return unreadable({ cause, file, reason: `does not parse (${settings.error})`, question: 'Claude Code runs hooks' });
     const disabled = settings.kind === 'ok' ? settings.value.disableAllHooks : undefined;
-    if (disabled === true) return { met: false, fix: `${cause}, and ${file} sets it. Remove "disableAllHooks" from ${file}, or set it to false.` };
+    if (disabled === true) return { kind: 'blocked', fix: `${cause}, and ${file} sets it. Remove "disableAllHooks" from ${file}, or set it to false.` };
     if (disabled === false) return MET;
   }
   return MET;

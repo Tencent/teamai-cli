@@ -109,10 +109,10 @@ describe('doctor — the tool trusts the project it reads team files from', () =
       await deliverSkill('.pi/skills', 'release-notes');
     });
 
-    it('fails while Pi has no verdict for the project, naming the skills and the line that trusts it', async () => {
+    it('warns while Pi has no verdict for the project, naming the skills and the line that trusts it', async () => {
       const found = await check(SKILLS);
 
-      expect(await found?.check()).toBe(false);
+      expect(await found?.check()).toBe('warn');
       expect(found?.fix).toContain(`${path.join(projectRoot, '.pi', 'skills')} holds team skills (release-notes)`);
       expect(found?.fix).toContain(trustFile());
       expect(found?.fix).toContain(`"${projectRoot}": true`);
@@ -147,7 +147,7 @@ describe('doctor — the tool trusts the project it reads team files from', () =
     it.each([
       ['always', true],
       ['never', false],
-      ['ask', false],
+      ['ask', 'warn'],
     ])('with no entry, defaultProjectTrust "%s" decides', async (value, ok) => {
       await fse.outputJson(path.join(homeDir, '.pi', 'agent', 'settings.json'), { defaultProjectTrust: value });
 
@@ -160,7 +160,7 @@ describe('doctor — the tool trusts the project it reads team files from', () =
       await fse.outputJson(trustFile(), { [projectRoot]: true });
 
       const found = await check(SKILLS);
-      expect(await found?.check()).toBe(false);
+      expect(await found?.check()).toBe('warn');
       expect(found?.fix).toContain(path.join(agentDir, 'trust.json'));
     });
 
@@ -179,7 +179,7 @@ describe('doctor — the tool trusts the project it reads team files from', () =
       await fse.outputJson(managedMcpManifestPath(getDataHome(localConfig), projectRoot), { [managedMcpManifestKey('pi', true)]: [{ name: 'issues', hash: 'h' }] });
 
       const found = await check('Pi trusts this project, so it loads its team MCP servers');
-      expect(await found?.check()).toBe(false);
+      expect(await found?.check()).toBe('warn');
       expect(found?.fix).toContain(`${path.join(projectRoot, '.pi', 'mcp.json')} holds team MCP servers (issues)`);
     });
   });
@@ -200,10 +200,10 @@ describe('doctor — the tool trusts the project it reads team files from', () =
       await deliverSkill('.agents/skills', 'release-notes');
     });
 
-    it('fails while Muse has no decision for the project, naming the entry that trusts it', async () => {
+    it('warns while Muse has no decision for the project, naming the entry that trusts it', async () => {
       const found = await check(SKILLS);
 
-      expect(await found?.check()).toBe(false);
+      expect(await found?.check()).toBe('warn');
       expect(found?.fix).toContain(`${path.join(projectRoot, '.agents', 'skills')} holds team skills (release-notes)`);
       expect(found?.fix).toContain(trustFile());
       expect(found?.fix).toContain(`"${projectRoot}": {"decision": "trusted"}`);
@@ -226,7 +226,7 @@ describe('doctor — the tool trusts the project it reads team files from', () =
     it('does not count a trusted parent folder', async () => {
       await fse.outputJson(trustFile(), decided(tempDir, 'trusted'));
 
-      expect(await (await check(SKILLS))?.check()).toBe(false);
+      expect(await (await check(SKILLS))?.check()).toBe('warn');
     });
 
     it('wants an entry of its own for a linked worktree', async () => {
@@ -243,7 +243,7 @@ describe('doctor — the tool trusts the project it reads team files from', () =
       await fse.outputJson(trustFile(), decided(main, 'trusted'));
 
       const found = await check(SKILLS);
-      expect(await found?.check()).toBe(false);
+      expect(await found?.check()).toBe('warn');
       expect(found?.fix).toContain(`"${worktree}": {"decision": "trusted"}`);
     });
 
@@ -263,7 +263,7 @@ describe('doctor — the tool trusts the project it reads team files from', () =
       await fse.outputJson(managedMcpManifestPath(getDataHome(localConfig), projectRoot), { [managedMcpManifestKey('claude', true)]: [{ name: 'issues', hash: 'h' }] });
 
       const found = await check('Muse Code trusts this project, so it loads its team MCP servers');
-      expect(await found?.check()).toBe(false);
+      expect(await found?.check()).toBe('warn');
       expect(found?.fix).toContain(`${path.join(projectRoot, '.mcp.json')} holds team MCP servers (issues)`);
     });
 
@@ -284,7 +284,7 @@ describe('doctor — the tool trusts the project it reads team files from', () =
       await fse.outputJson(hooksFile, { hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'teamai hook-dispatch session-start' }] }] } });
 
       const found = await check('Muse Code trusts this project, so it loads its team hooks');
-      expect(await found?.check()).toBe(false);
+      expect(await found?.check()).toBe('warn');
       expect(found?.fix).toContain(`${hooksFile} holds teamai's hooks`);
     });
   });
@@ -309,11 +309,11 @@ describe('doctor — the tool trusts the project it reads team files from', () =
       await fse.outputJson(managedMcpManifestPath(getDataHome(localConfig), projectRoot), { [managedMcpManifestKey('copilot', true)]: [{ name: 'issues', hash: 'h' }] });
     });
 
-    it('fails while no trusted folder covers the project, naming the folder to add', async () => {
+    it('warns while no trusted folder covers the project, naming the folder to add', async () => {
       await writeConfig({ firstLaunchAt: '2026-11-02T04:32:36.393Z' });
 
       const found = await check(MCP);
-      expect(await found?.check()).toBe(false);
+      expect(await found?.check()).toBe('warn');
       expect(found?.fix).toContain(`${path.join(projectRoot, '.github', 'mcp.json')} holds team MCP servers (issues)`);
       expect(found?.fix).toContain(`add "${projectRoot}" to "trustedFolders" in ${configFile()}`);
     });
@@ -331,7 +331,7 @@ describe('doctor — the tool trusts the project it reads team files from', () =
     it('does not take a sibling folder that shares the name as a prefix', async () => {
       await writeConfig({ trustedFolders: [`${projectRoot}-old`] });
 
-      expect(await (await check(MCP))?.check()).toBe(false);
+      expect(await (await check(MCP))?.check()).toBe('warn');
     });
 
     it('passes in a linked worktree whose main checkout is trusted', async () => {
@@ -356,7 +356,7 @@ describe('doctor — the tool trusts the project it reads team files from', () =
       await writeConfig({ trustedFolders: [projectRoot] });
 
       const found = await check(MCP);
-      expect(await found?.check()).toBe(false);
+      expect(await found?.check()).toBe('warn');
       expect(found?.fix).toContain(path.join(copilotHome, 'config.json'));
     });
 
@@ -379,7 +379,7 @@ describe('doctor — the tool trusts the project it reads team files from', () =
       await writeConfig({});
 
       const found = await check('Copilot CLI trusts this folder, so it loads its team hooks');
-      expect(await found?.check()).toBe(false);
+      expect(await found?.check()).toBe('warn');
       expect(found?.fix).toContain(`${hooksFile} holds teamai's hooks`);
     });
   });
@@ -399,11 +399,11 @@ describe('doctor — the tool trusts the project it reads team files from', () =
       await fse.outputJson(managedMcpManifestPath(getDataHome(localConfig), projectRoot), { [managedMcpManifestKey('qoder', true)]: [{ name: 'issues', hash: 'h' }] });
     });
 
-    it('fails while no trusted directory covers the project, naming the entry to add', async () => {
+    it('warns while no trusted directory covers the project, naming the entry to add', async () => {
       await fse.outputJson(userSettings(), { permissions: { trustDirectories: [] } });
 
       const found = await check(TRUST);
-      expect(await found?.check()).toBe(false);
+      expect(await found?.check()).toBe('warn');
       expect(found?.fix).toContain(`${path.join(projectRoot, '.qoder', 'settings.json')} holds team MCP servers (issues)`);
       expect(found?.fix).toContain(`add "${projectRoot}" to permissions.trustDirectories in ${userSettings()}`);
     });
@@ -420,7 +420,7 @@ describe('doctor — the tool trusts the project it reads team files from', () =
     it('does not take the project\'s own settings as trust', async () => {
       await fse.outputJson(path.join(projectRoot, '.qoder', 'settings.local.json'), { permissions: { trustDirectories: [projectRoot] } });
 
-      expect(await (await check(TRUST))?.check()).toBe(false);
+      expect(await (await check(TRUST))?.check()).toBe('warn');
     });
 
     it('reads the user settings from QODER_CONFIG_DIR', async () => {
@@ -437,7 +437,7 @@ describe('doctor — the tool trusts the project it reads team files from', () =
       await fse.outputJson(path.join(projectRoot, '.qoder', 'settings.json'), { hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'teamai hook-dispatch session-start' }] }] } });
 
       const found = await check('Qoder CLI trusts this folder, so it loads its team hooks');
-      expect(await found?.check()).toBe(false);
+      expect(await found?.check()).toBe('warn');
     });
 
     // Approval is by server name across every project: `mcp.enabledProjectMcpServers`,
@@ -446,11 +446,11 @@ describe('doctor — the tool trusts the project it reads team files from', () =
     describe('MCP approval', () => {
       const APPROVAL = 'Qoder CLI approves this project\'s team MCP servers';
 
-      it('fails while the server waits for approval, naming it and the key', async () => {
+      it('warns while the server waits for approval, naming it and the key', async () => {
         await fse.outputJson(userSettings(), { permissions: { trustDirectories: [projectRoot] } });
 
         const found = await check(APPROVAL);
-        expect(await found?.check()).toBe(false);
+        expect(await found?.check()).toBe('warn');
         expect(found?.fix).toContain('issues waits for approval');
         expect(found?.fix).toContain(`mcp.enabledProjectMcpServers in ${userSettings()}`);
       });
@@ -553,10 +553,10 @@ describe('doctor — the tool trusts the project it reads team files from', () =
       await fse.outputJson(managedMcpManifestPath(getDataHome(localConfig), projectRoot), { [managedMcpManifestKey('claude', true)]: [{ name: 'issues', hash: 'h' }] });
     });
 
-    it('fails in an untrusted project, naming the trust dialog and the file that approves without it', async () => {
+    it('warns in an untrusted project, naming the trust dialog and the file that approves without it', async () => {
       const found = await check(APPROVAL);
 
-      expect(await found?.check()).toBe(false);
+      expect(await found?.check()).toBe('warn');
       expect(found?.fix).toContain(`${path.join(projectRoot, '.mcp.json')} holds team MCP servers (issues)`);
       expect(found?.fix).toContain('issues waits for approval');
       expect(found?.fix).toContain(`${claudeJson()} does not trust ${projectRoot}`);
@@ -573,7 +573,7 @@ describe('doctor — the tool trusts the project it reads team files from', () =
     it('does not take the local settings\' approval while the project is untrusted', async () => {
       await fse.outputJson(path.join(projectRoot, '.claude', 'settings.local.json'), { enableAllProjectMcpServers: true });
 
-      expect(await (await check(APPROVAL))?.check()).toBe(false);
+      expect(await (await check(APPROVAL))?.check()).toBe('warn');
     });
 
     it('passes when the user settings approve the server, trusted or not', async () => {
@@ -637,10 +637,10 @@ describe('doctor — the tool trusts the project it reads team files from', () =
       await fse.outputJson(managedMcpManifestPath(getDataHome(localConfig), projectRoot), { [managedMcpManifestKey('codebuddy', true)]: [{ name: 'issues', hash: 'h' }] });
     });
 
-    it('fails while the server waits for approval, naming the file that approves it', async () => {
+    it('warns while the server waits for approval, naming the file that approves it', async () => {
       const found = await check(APPROVAL);
 
-      expect(await found?.check()).toBe(false);
+      expect(await found?.check()).toBe('warn');
       expect(found?.fix).toContain(`${path.join(projectRoot, '.mcp.json')} holds team MCP servers (issues)`);
       expect(found?.fix).toContain('issues waits for approval');
       expect(found?.fix).toContain(`enabledMcpjsonServers in ${localSettings()}`);
@@ -666,7 +666,7 @@ describe('doctor — the tool trusts the project it reads team files from', () =
     it('does not take an approval in the user settings, which CodeBuddy ignores for this', async () => {
       await fse.outputJson(path.join(homeDir, '.codebuddy', 'settings.json'), { enabledMcpjsonServers: ['issues'] });
 
-      expect(await (await check(APPROVAL))?.check()).toBe(false);
+      expect(await (await check(APPROVAL))?.check()).toBe('warn');
     });
 
     it('reads the approval from CODEBUDDY_PROJECT_CONFIG_DIR, resolved from the project', async () => {
@@ -709,11 +709,11 @@ describe('doctor — the tool trusts the project it reads team files from', () =
       expect(found?.fix).toContain('cursor-agent mcp enable issues');
     });
 
-    it('fails when the CLI approved other servers here and not this one', async () => {
+    it('warns when the CLI approved other servers here and not this one', async () => {
       await fse.outputJson(path.join(projectDir(), 'mcp-approvals.json'), ['docs-9e751cee26e3f96a']);
 
       const found = await check(APPROVAL);
-      expect(await found?.check()).toBe(false);
+      expect(await found?.check()).toBe('warn');
       expect(found?.fix).toContain('issues waits for approval');
     });
 
@@ -727,11 +727,11 @@ describe('doctor — the tool trusts the project it reads team files from', () =
       expect(await (await check(APPROVAL))?.check()).toBe(true);
     });
 
-    it('fails when the approval is for an earlier definition of the server, which the CLI asks about again', async () => {
+    it('warns when the approval is for an earlier definition of the server, which the CLI asks about again', async () => {
       await fse.outputJson(path.join(projectDir(), 'mcp-approvals.json'), [cursorKey('issues', { command: 'old-issues-server' })]);
 
       const found = await check(APPROVAL);
-      expect(await found?.check()).toBe(false);
+      expect(await found?.check()).toBe('warn');
       expect(found?.fix).toContain('issues waits for approval');
     });
 
@@ -756,17 +756,17 @@ describe('doctor — the tool trusts the project it reads team files from', () =
         await fse.outputJson(path.join(projectDir(), 'mcp-approvals.json'), [cursorKey('issues', earlier)]);
 
         const found = await check(APPROVAL);
-        expect(await found?.check()).toBe(false);
+        expect(await found?.check()).toBe('warn');
         expect(found?.fix).toContain('issues waits for approval');
         expect(found?.fix).toContain('with the env of this shell');
       });
     });
 
-    it('fails with no approvals for the project once the CLI has run on this machine', async () => {
+    it('warns with no approvals for the project once the CLI has run on this machine', async () => {
       await fse.outputJson(path.join(homeDir, '.cursor', 'cli-config.json'), { version: 1 });
 
       const found = await check(APPROVAL);
-      expect(await found?.check()).toBe(false);
+      expect(await found?.check()).toBe('warn');
       expect(found?.fix).toContain('issues waits for approval');
     });
 

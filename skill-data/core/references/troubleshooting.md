@@ -119,13 +119,14 @@ This is the #1 onboarding issue. In order:
    names (each home must be an absolute directory), or delete the file and
    re-run `teamai init` from a shell your tools run in.
 9. **The files are there, but the tool has not trusted the project.**
-   `teamai doctor` fails `<Tool> trusts this project, so it loads its team
+   `teamai doctor` reports `<Tool> trusts this project, so it loads its team
    <resource>` or `<Tool> approves this project's team MCP servers` and names
-   the tool's own file. Have the user open that tool once in the project and
-   accept its trust or MCP prompt. On a machine that only runs the tool
-   headless, add the entry the fix names. A server listed as rejected is never
-   offered again: follow the fix to clear the rejection. Do not edit a trust
-   file for the user without asking.
+   the tool's own file. `⚠` means the tool has not asked yet: it asks when the
+   user opens it in the project, and doctor still passes, so nothing is needed
+   for a tool the user does not use here. `✖` means a no (a rejection, a
+   setting that turns it off) or an answer teamai cannot read: follow the fix.
+   On a machine that only runs the tool headless, add the entry the fix names.
+   Do not edit a trust file for the user without asking.
 
 ## Path names appear in skill usage statistics
 
