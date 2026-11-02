@@ -507,6 +507,29 @@ steps:
 
 带 `workspace: { clone: { commit, repo?, team } }` 的步骤在检出目录之外、`commit` 的全新克隆中运行：有自己的 git 数据，没有远程仓库，hook 关闭。`team` 指明为它安装的团队资产，安装在它自己的 home 下：`{ treatment: none }`，或 `{ revision, selection, treatment }`，其中 `treatment` 为 `pulled`、一个 ref 或 `{ without: [<path>, ...] }`。`selection` 包含与你的配置同名的 `primaryRole`、`additionalRoles`、`projects`、`subscribedTags` 和 `excludedSkills`，以及 `enabledAgents`，即资产安装到的工具：默认为打开克隆的步骤的工具，否则为你启用的 agent。teamai 离线创建克隆，来源是运行的检出目录或提交缓存；`repo` 只指明缓存，从不是 URL。打开克隆的 workflow 步骤拥有它，供其下每个 `continue` 步骤使用。克隆中的任何内容都不会被推送或交付。[Benchmark](benchmarks.md) 会为你写出这些步骤。
 
+### 以团队角色运行克隆
+
+克隆步骤可以使用 `manifest/roles.yaml` 中的另一个角色运行，而不是你的角色。例如，让代码审查步骤知道审查者知道的内容：
+
+```yaml
+  - id: review
+    role: review
+    workspace:
+      clone:
+        commit: 3f2c9a7d1e0b4c6a8f5d2e1b0c9a8f7e6d5c4b3a
+        team: { revision: 9b1d4e7a2c5f8b0d3e6a9c2f5b8d1e4a7c0f3b6d, selection: { additionalRoles: [], projects: [], excludedSkills: [] }, treatment: pulled }
+    workflow:
+      steps:
+        - id: look
+          workspace: continue
+          tool: claude
+          prompt: Review the change and list what must be fixed.
+```
+
+像其他工作流一样用 `teamai workflow start review` 启动它。所有延续该克隆的步骤都使用这个角色。克隆的安装获得 `review` 和你的项目的知识：skill、规则、agent、文档、wiki 和 learnings。你可以运行的东西保持不变：你的角色的 hook、MCP 服务器、env 和模型，以及你能找到的工作流、prompt、scorer 和 benchmark。在克隆中运行的 `teamai pull` 或 hook 保留这个角色，你自己的配置和检出目录不会改变。
+
+运行会记录它：克隆中的每个步骤在你的 `primaryRole` 旁边带有 `agent.team.selection.stepRole: review`，scorer 结果把这样的步骤归在 `review` 下。`role` 只能写在 workspace 为 `{ clone: … }` 的步骤上，且该克隆必须安装团队。pull 会以 `bad_role` 拒绝写在其他地方的 role，以及 `manifest/roles.yaml` 未声明的 role。角色无法交付到克隆中时，步骤以 `role_unavailable` 失败并说明原因。例如，`sharing.docs.localDir` 可能把文档放在克隆之外，所有检出目录都会读到它们。步骤的提交只包含它自己的修改，不包含安装交付的内容。只有声明了 [`can.role`](#要求和限制) 的驱动才会接这个步骤，例如 `local`。编程会话的 skill 驱动不声明它，因此该步骤会等待，`wait.held[].missing` 列出 `role`。0.29.0 之前的 teamai 会丢弃带步骤 `role` 的工作流，`teamai review --branch` 会对此发出警告。
+
 ### 隔离运行
 
 某个步骤打开克隆或运行 `workflow: { from }` 时，运行就是隔离的。它只在启动它的机器上运行：`workflow publish` 和 `--claim` 以 `isolated_run` 拒绝它，`workflow retry` 拒绝它并给出启动新运行的命令。它的记录带 `isolated: true`，使用统计上报开启时仍会到达 `teamai-reports`，并且不计入任何工作流总量。
@@ -726,8 +749,9 @@ workflows:
 | `tools` | 在这些工具上启动指定了 `tool` 的 prompt 步骤，例如 `["claude"]`。没有它，就不会拿到这样的步骤。 |
 | `end_turn` | 在 `lease.limits` 处结束 prompt 的这一轮，并报告它停在的 `limit` 和 `durationMs`。 |
 | `unattended` | 对租约带 `permissions: "unattended"` 的 prompt，以其工具自己的无需询问即可编辑和运行命令的模式启动它；工具没有这种模式时让步骤失败，而不是照常启动。 |
+| `role` | 接受[以团队角色运行](#以团队角色运行克隆)的克隆中的步骤（租约带 `role`），并在 teamai 为该角色准备的克隆中运行它。 |
 
-省略的键表示驱动做不到。隔离是尽力而为，除非 `strict: true` 让它成为下限。`next` 会在 `ignored` 中列出其他键。[编程会话](workflow.md#在编程会话中运行)的 skill 驱动声明 `hitl`、所有 `workspace` 模式、`env: "commands"` 和 `setup`。它从不声明 `tokens`、`max_turns`、`network` 或 `unattended`，其 `isolation` 为 `none`：编程会话绝不绕过使用者自己的权限。
+省略的键表示驱动做不到。隔离是尽力而为，除非 `strict: true` 让它成为下限。`next` 会在 `ignored` 中列出其他键。[编程会话](workflow.md#在编程会话中运行)的 skill 驱动声明 `hitl`、所有 `workspace` 模式、`env: "commands"` 和 `setup`。它从不声明 `tokens`、`max_turns`、`network`、`unattended` 或 `role`，其 `isolation` 为 `none`：编程会话绝不绕过使用者自己的权限。
 
 ### 无人值守的 prompt
 
@@ -1040,7 +1064,7 @@ TeamAI 为准备 attempt 记录的内容只保存在本机：路径和文件指�
 teamai workflow next <run> --prepare --json '{"driver":{"kind":"script","machine":"runner","workspace":"/work","can":{"workspace":["read-only","new","continue","clone"],"isolation":"sandbox","env":true,"setup":true,"tools":["claude"],"end_turn":true}},"running":[]}'
 ```
 
-带上 `--prepare` 时，teamai 在本机为[克隆步骤](#克隆工作区)创建克隆、安装其团队资产并运行 setup，然后返回带 `cwd`（即该克隆）的租约。一次调用可能要等 setup 运行完。驱动未在 `workspace` 中列出 `clone`，或没有用 `--prepare` 请求时，克隆步骤会被暂缓，`wait.held[].missing` 列出 `workspace.clone` 或 `prepare`。
+带上 `--prepare` 时，teamai 在本机为[克隆步骤](#克隆工作区)创建克隆、安装其团队资产并运行 setup，然后返回带 `cwd`（即该克隆）的租约。一次调用可能要等 setup 运行完。驱动未在 `workspace` 中列出 `clone`，或没有用 `--prepare` 请求时，克隆步骤会被暂缓，`wait.held[].missing` 列出 `workspace.clone` 或 `prepare`。以团队角色运行的克隆还需要 `can.role`。
 
 对每个租约，驱动：
 

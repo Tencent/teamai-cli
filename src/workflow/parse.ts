@@ -29,9 +29,15 @@ import { sameEnvName } from '../resources/env-key.js';
  */
 export const INVOKE_ALIAS_SINCE = '0.28.0';
 
+/**
+ * The first release that reads a step's `role`. An older CLI refuses it as an unknown key and drops the workflow, which
+ * `review --branch` warns about.
+ */
+export const STEP_ROLE_SINCE = '0.29.0';
+
 const HEADER_KEYS = new Set(['schemaVersion', 'name', 'description', 'inputs', 'defaults', 'ends', 'outputs', 'loop', 'timeout', 'budget', 'setup', 'steps', 'finally', 'invoke', 'alias']);
 const ACTION_KEYS = Object.keys(STEP_ACTIONS);
-const STEP_KEYS = new Set(['id', 'needs', 'if', ...ACTION_KEYS, 'env', 'with', 'agent', 'tool', 'model', 'output', 'end', 'loop', 'break', 'for_each', 'approve', 'choose', 'interactive', 'workspace', 'session', 'scorers', 'requires', 'timeout', 'budget', 'max_turns', 'on_limit', 'permissions', 'deliver']);
+const STEP_KEYS = new Set(['id', 'needs', 'if', ...ACTION_KEYS, 'env', 'with', 'agent', 'tool', 'model', 'output', 'end', 'loop', 'break', 'for_each', 'approve', 'choose', 'interactive', 'workspace', 'role', 'session', 'scorers', 'requires', 'timeout', 'budget', 'max_turns', 'on_limit', 'permissions', 'deliver']);
 const EXACT_MODEL_KEYS: ReadonlySet<string> = new Set(['name', 'effort']);
 const STEP_LOOP_KEYS = new Set(['back_to', 'while', 'max_iterations']);
 const FOR_EACH_KEYS = new Set(['items', 'max_parallel']);
@@ -811,6 +817,21 @@ function parseBody(
         });
       }
 
+      const rolePair = item.items.find((pair) => scalarString(pair.key) === 'role');
+      const role = scalarString(rolePair?.value)?.trim();
+
+      const roleProblem = !rolePair ? undefined
+        : role === undefined || !TOKEN.test(role) ? `${stepLabel} role must be the id of a role in manifest/roles.yaml, such as review`
+          : typeof workspace !== 'object' ? `${stepLabel} has role ${role} but opens no clone; set role on the step whose workspace is { clone: … }, and every step continuing that clone runs with it`
+            : !('revision' in workspace.clone.team) ? `${stepLabel} has role ${role} but its clone installs no team (team: { treatment: none }); give the clone a team revision and selection, or remove role`
+              : files?.roles === undefined || files.roles.has(role) ? undefined
+                : files.roles.size === 0 ? `${stepLabel} has role ${role}, which manifest/roles.yaml does not declare; the team repo declares no role, so add it to manifest/roles.yaml or remove role`
+                  : `${stepLabel} has role ${role}, which manifest/roles.yaml does not declare; add it there, or name a role it declares: ${[...files.roles].join(', ')}`;
+
+      if (rolePair && roleProblem !== undefined) {
+        diagnostics.push({ ...locate(file, lineCounter, rolePair.value ?? rolePair.key ?? item, `${field}.role`, roleProblem), code: 'bad_role' });
+      }
+
       const sessionPair = item.items.find((pair) => scalarString(pair.key) === 'session');
       const deliverPair = item.items.find((pair) => scalarString(pair.key) === 'deliver');
       const deliver = scalarString(deliverPair?.value)?.trim();
@@ -916,6 +937,8 @@ function parseBody(
         if (forEach) step.forEach = forEach;
 
         if (workspace) step.workspace = workspace;
+
+        if (role) step.role = role;
 
         if (deliver === 'pr') step.deliver = deliver;
 

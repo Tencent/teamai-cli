@@ -724,6 +724,19 @@ export function cloneBranchOf(run: StepTree & Pick<RunState, 'id'>, path: string
   return owner && cloneOf(owner.step) ? branchName(run.id, owner.instance, owner.pass) : undefined;
 }
 
+/**
+ * The team role step instance `path` runs with: the role of the clone step it opens, else of the step that opened the
+ * clone of its nearest enclosing copy. Undefined when it runs in no clone, or in one opened without a role.
+ */
+export function cloneRoleOf(run: StepTree, path: string): string | undefined {
+  const own = stepDefinitions(run)(path);
+
+  if (own && cloneOf(own)) return own.role;
+  const owner = ancestorsOf(run, path).toReversed().find((ancestor) => opensCopy(ancestor.step));
+
+  return owner && cloneOf(owner.step) ? owner.step.role : undefined;
+}
+
 /** Whether the steps inside `step` run in a copy it opens rather than in the one around it. */
 export function opensCopy(step: WorkflowStep): boolean {
   return step.workspace === 'new' || cloneOf(step) !== undefined || (step.forEach !== undefined && step.workspace === 'continue');

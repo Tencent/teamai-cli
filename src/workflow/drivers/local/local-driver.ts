@@ -34,7 +34,7 @@ import {
   type LocalToolRun,
 } from './local-tool-adapter.js';
 import { attemptDir, AttemptIdSchema, attemptResultPath, attemptsDir, readRun, RunIdSchema, withRunLock, type RunId, type RunLock } from '../../store.js';
-import { abandonPlace, cloneDelivery, cloneHead, placeLeaseOf, placeOf, placeRoot, preparedClone, preparePlace, runPlaceSetup, sweepClones, type StepEnd } from '../../place/place.js';
+import { abandonPlace, cloneDelivery, cloneHead, placeLeaseOf, placeOf, placeRoot, preparedClone, preparePlace, roleDeliveryProblem, runPlaceSetup, sweepClones, type StepEnd } from '../../place/place.js';
 import { commandEnd, managedReport, unreadablePlace } from '../../protocol.js';
 import { memberTools, type MemberTool } from '../../../tool-launch/call.js';
 import { startGroupedCommand, stopRecordedGroup, type CommandExit, type GroupedCommand } from '../../../tool-launch/process-stop.js';
@@ -435,6 +435,15 @@ async function promptReport(
   const clone = contract && contract.mode !== 'read-only' && contract.clone ? contract.branch : undefined;
   const prepared = clone !== undefined ? await preparedClone(config, lock.run, clone) : undefined;
 
+  // The clone was checked as it was prepared; a later step there checks again, as something may have pulled since.
+  if (lease.role !== undefined) {
+    const why = prepared?.install
+      ? await roleDeliveryProblem({ install: prepared.install, tools: [selected], role: lease.role })
+      : 'teamai prepared no clone with a team install on this machine. Start the workflow again, as a run with a clone cannot be retried.';
+
+    if (why !== undefined) return giveUp({ code: 'role_unavailable', message: `Role ${lease.role} was not delivered into the clone for step "${lease.step}": ${why}` }, selected);
+  }
+
   const teamConfig = clone !== undefined
     ? prepared?.install
     : contract && lease.cwd ? await detectProjectConfig(lease.cwd) ?? config : config;
@@ -651,7 +660,7 @@ function rememberSecrets(seen: Record<string, string>, secrets: Record<string, s
  * one whose tool has none.
  */
 function localCan({ strict, hitl, tools }: { strict: StrictCan; hitl: boolean; tools: string[] }): Required<DriverCan> {
-  return { hitl, workspace: [...WORKSPACE_MODES], ...strict, tokens: true, max_turns: true, setup: true, tools, end_turn: true, unattended: true };
+  return { hitl, workspace: [...WORKSPACE_MODES], ...strict, tokens: true, max_turns: true, setup: true, tools, end_turn: true, unattended: true, role: true };
 }
 
 type StrictCan = Required<Pick<DriverCan, 'network' | 'isolation' | 'env'>>;

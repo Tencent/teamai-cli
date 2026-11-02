@@ -9,7 +9,7 @@ import { log } from '../utils/logger.js';
 import { pathExists, readFileSafe, remove, writeJsonAtomic } from '../utils/fs.js';
 import { isSafeNamespaceSegment } from '../manifest-schema.js';
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
-import type { ResourceNamespaces } from '../roles.js';
+import { listRoleIds, loadRolesManifestIfPresent, type ResourceNamespaces } from '../roles.js';
 import { resolveNamespacedItems, type NamespaceCandidate } from '../namespace-resolver.js';
 import {
   getBusinessRoot,
@@ -495,7 +495,7 @@ export async function syncWorkflowDefinitions(
     }
   }
 
-  const settle = checkReferences(checked, kept);
+  const settle = checkReferences(checked, kept, await declaredRoleIds(knowledgeRoot));
 
   const conflicted = new Set<string>();
 
@@ -932,6 +932,20 @@ export async function withTeamRevision<T>(
 }
 
 /**
+ * The role ids the team repo's `manifest/roles.yaml` declares, none without one, or undefined when it cannot be read:
+ * a step's role is then checked when its clone is prepared.
+ */
+async function declaredRoleIds(knowledgeRoot: string): Promise<ReadonlySet<string> | undefined> {
+  try {
+    const manifest = await loadRolesManifestIfPresent(knowledgeRoot);
+
+    return new Set(manifest ? listRoleIds(manifest) : []);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Settles what each file runs after this sync, checking every version only against the versions the others settle to.
  * Each file starts at this revision when it passed its own checks, else at the kept copy unless a code dropped it.
  * A version that fails falls back (revision, then kept copy, then nothing) and every version is checked again, until none fails.
@@ -939,7 +953,7 @@ export async function withTeamRevision<T>(
  * that fits. When every failing version waits, they run each other in a cycle: the revisions on it fall back first, because
  * a kept copy taken out of a cycle only leaves the file that runs it with nothing to run.
  */
-function checkReferences(checked: Checked[], kept: Map<string, CachedWorkflow | null>): (stem: string) => Settled {
+function checkReferences(checked: Checked[], kept: Map<string, CachedWorkflow | null>, roles: ReadonlySet<string> | undefined): (stem: string) => Settled {
   const candidates = new Map(checked.flatMap((file) => ('definition' in file ? [[file.stem, file] as const] : [])));
 
   // The version each file is at; a file with no version left is not in the map.
@@ -1000,7 +1014,7 @@ function checkReferences(checked: Checked[], kept: Map<string, CachedWorkflow | 
   };
 
   const check = (stem: string, version: Version): WorkflowDiagnostic[] => {
-    const files: WorkflowFiles = { runnable: runs, cycle: (workflow) => cycleBack(workflow, stem) };
+    const files: WorkflowFiles = { runnable: runs, cycle: (workflow) => cycleBack(workflow, stem), ...(roles ? { roles } : {}) };
     const parsed = parseWorkflow(version.relativePath, version.content, files);
     const diagnostics = parsed.ok ? [] : parsed.diagnostics;
 

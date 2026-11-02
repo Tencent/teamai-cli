@@ -2414,3 +2414,34 @@ steps:
     ]);
   });
 });
+
+describe('workflow cache: the role a clone step names', () => {
+  const COMMIT = 'c'.repeat(40);
+  const REVISION = 'd'.repeat(40);
+  const cloneStep = (role: string): string => `schemaVersion: v1alpha1
+name: review
+description: Review in a clean clone.
+steps:
+  - id: review
+    role: ${role}
+    workspace: { clone: { commit: ${COMMIT}, team: { revision: ${REVISION}, selection: { additionalRoles: [], projects: [], excludedSkills: [] }, treatment: pulled } } }
+    prompt: Review the change.
+`;
+
+  it('caches a workflow whose role manifest/roles.yaml declares, and leaves one naming another role unrunnable', async () => {
+    const config = testConfig();
+    fs.mkdirSync(path.join(config.repo.localPath, 'manifest'), { recursive: true });
+    fs.writeFileSync(path.join(config.repo.localPath, 'manifest', 'roles.yaml'), 'version: 1\nroles:\n  - id: review\n    resources: { knowledge: [], skills: [review] }\n');
+    writeWorkflow(config, 'review', cloneStep('review'));
+    writeWorkflow(config, 'audit', cloneStep('auditor').replace('name: review', 'name: audit'));
+
+    const result = await syncWorkflowDefinitions(config);
+
+    expect(result.cached).toEqual(['review']);
+    expect(result.unrunnable).toEqual(['workflows/audit.yaml']);
+    expect(result.invalid.map(formatDiagnostic)).toEqual([
+      'workflows/audit.yaml:6: field "steps[0].role": step "review" has role auditor, which manifest/roles.yaml does not declare; add it there, or name a role it declares: review',
+    ]);
+    expect(result.invalid[0]).toMatchObject({ code: 'bad_role' });
+  });
+});

@@ -265,22 +265,23 @@ export function resolveProjectResourceNamespaces(input: {
  * them declares a learnings namespace (→ contribution lands at the shared root).
  */
 export async function resolveActiveLearningsNamespaces(
-  config: { repo: Pick<LocalConfig['repo'], 'localPath'> } & Partial<Pick<LocalConfig, 'projects' | 'primaryRole' | 'additionalRoles'>>,
+  config: { repo: Pick<LocalConfig['repo'], 'localPath'> } & Partial<Pick<LocalConfig, 'projects' | 'primaryRole' | 'additionalRoles' | 'stepRole'>>,
 ): Promise<string[]> {
   const repoPath = config.repo.localPath;
   const activeProjects = config.projects ?? [];
+  // Learnings are knowledge: a workflow copy that runs with a team role reads and writes that role's alone.
+  const primaryRole = config.stepRole ?? config.primaryRole;
+  const additionalRoles = config.stepRole !== undefined ? [] : config.additionalRoles ?? [];
 
   // An unknown role or project id, or a manifest that does not parse, degrades
   // to the shared root rather than throw.
   const fromRoles = async (): Promise<string[]> => {
-    if (!config.primaryRole) return [];
+    if (!primaryRole) return [];
 
     try {
       const manifest = await loadRolesManifest(repoPath);
 
-      return resolveRoleResourceNamespaces({
-        manifest, primaryRole: config.primaryRole, additionalRoles: config.additionalRoles ?? [],
-      }).learnings;
+      return resolveRoleResourceNamespaces({ manifest, primaryRole, additionalRoles }).learnings;
     } catch {
       return [];
     }

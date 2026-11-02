@@ -49,7 +49,7 @@ const RECORDED_FAILURES = [
   'merge_conflict', 'base_config', 'push_failed', 'workspace_base', 'bad_session',
   ...LIMIT_FAILURES,
   'delivery_failed', 'protected_path',
-  'trial_prepare_failed', 'clone_prepare_failed',
+  'trial_prepare_failed', 'clone_prepare_failed', 'role_unavailable',
 ] as const;
 
 type RecordedFailure = (typeof RECORDED_FAILURES)[number];

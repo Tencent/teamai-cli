@@ -507,6 +507,29 @@ steps:
 
 A step with `workspace: { clone: { commit, repo?, team } }` runs in a fresh clone of `commit` outside the checkout: its own git data, no remotes, hooks off. `team` names the team assets installed for it, under a home of its own: `{ treatment: none }`, or `{ revision, selection, treatment }` with `treatment` `pulled`, a ref, or `{ without: [<path>, ...] }`. `selection` holds `primaryRole`, `additionalRoles`, `projects`, `subscribedTags` and `excludedSkills` as your config names them, and `enabledAgents`, the tools the assets install for: by default the tool of the step that opens the clone, else your enabled agents. teamai makes the clone offline, from the run's checkout or the commit cache; `repo` only names the cache, never a URL. A workflow step that opens a clone owns it for every `continue` step under it. Nothing in a clone is pushed or delivered. [Benchmarks](benchmarks.md) write these steps for you.
 
+### Run a clone as a team role
+
+A clone step can run with a role from `manifest/roles.yaml` other than yours, such as a review step that should know what reviewers know:
+
+```yaml
+  - id: review
+    role: review
+    workspace:
+      clone:
+        commit: 3f2c9a7d1e0b4c6a8f5d2e1b0c9a8f7e6d5c4b3a
+        team: { revision: 9b1d4e7a2c5f8b0d3e6a9c2f5b8d1e4a7c0f3b6d, selection: { additionalRoles: [], projects: [], excludedSkills: [] }, treatment: pulled }
+    workflow:
+      steps:
+        - id: look
+          workspace: continue
+          tool: claude
+          prompt: Review the change and list what must be fixed.
+```
+
+Start it as any workflow, `teamai workflow start review`. Every step that continues the clone runs with its role. The clone's install gets the knowledge of `review` and of your projects: skills, rules, agents, docs, wiki and learnings. It keeps what you may run: your roles' hooks, MCP servers, env and models, and the workflows, prompts, scorers and benchmarks you can find. A `teamai pull` or a hook run inside the clone keeps the role, and your own config and checkout are not changed.
+
+The run records it: each step in the clone has `agent.team.selection.stepRole: review` beside your `primaryRole`, and the scorer results group such a step under `review`. `role` goes only on the step whose workspace is `{ clone: … }`, and that clone must install a team. Pull refuses a role elsewhere, or one `manifest/roles.yaml` does not declare, as `bad_role`. When the role cannot be delivered into the clone, the step fails `role_unavailable` and says why. For example, `sharing.docs.localDir` may put the docs outside the clone, where every checkout reads them. The step's commit holds only its own edits, and none of what the install delivered. Only a driver that declares [`can.role`](#requirements-and-limits) takes the step, such as `local`. The skill driver of a coding session does not, so the step waits with `wait.held[].missing` naming `role`. teamai before 0.29.0 drops a workflow with a step `role`, and `teamai review --branch` warns about it.
+
 ### Isolated runs
 
 A run is isolated when one of its steps opens a clone or runs `workflow: { from }`. It runs only on the machine that started it: `workflow publish` and `--claim` refuse it with `isolated_run`, and `workflow retry` refuses it and names the command that starts a new run. Its record carries `isolated: true`, still reaches `teamai-reports` with usage reporting on, and counts in no workflow total.
@@ -726,8 +749,9 @@ A driver other than `local` declares what it can do in `driver.can` on each `nex
 | `tools` | Launches a prompt step that names its `tool` on these tools, such as `["claude"]`. Without it, no such step. |
 | `end_turn` | Ends a prompt's turn at `lease.limits` and reports the `limit` it stopped at, with `durationMs`. |
 | `unattended` | Launches a prompt leased with `permissions: "unattended"` in its tool's own mode for editing and running commands without asking, and fails the step rather than launch a tool that has none. |
+| `role` | Takes a step in a clone that [runs as a team role](#run-a-clone-as-a-team-role), leased with `role`, and runs it where teamai prepared the clone for that role. |
 
-An omitted key means the driver cannot. Isolation is best effort, unless `strict: true` makes it a floor. `next` lists any other key in `ignored`. The skill driver of a [coding session](workflow.md#run-from-a-coding-session) declares `hitl`, every `workspace` mode, `env: "commands"`, and `setup`. It never declares `tokens`, `max_turns`, `network`, or `unattended`, and its `isolation` is `none`: a coding session never bypasses its person's permissions.
+An omitted key means the driver cannot. Isolation is best effort, unless `strict: true` makes it a floor. `next` lists any other key in `ignored`. The skill driver of a [coding session](workflow.md#run-from-a-coding-session) declares `hitl`, every `workspace` mode, `env: "commands"`, and `setup`. It never declares `tokens`, `max_turns`, `network`, `unattended`, or `role`, and its `isolation` is `none`: a coding session never bypasses its person's permissions.
 
 ### Unattended prompts
 
@@ -1040,7 +1064,7 @@ What TeamAI records to prepare an attempt stays on this machine: paths and file 
 teamai workflow next <run> --prepare --json '{"driver":{"kind":"script","machine":"runner","workspace":"/work","can":{"workspace":["read-only","new","continue","clone"],"isolation":"sandbox","env":true,"setup":true,"tools":["claude"],"end_turn":true}},"running":[]}'
 ```
 
-With `--prepare`, teamai makes a [clone step](#clone-workspaces)'s clone on this machine, installs its team assets and runs setup, then answers the lease with `cwd`, the clone. A call can take as long as setup takes. A clone step is held from a driver that does not list `clone` in `workspace` or does not ask with `--prepare`, and `wait.held[].missing` names `workspace.clone` or `prepare`.
+With `--prepare`, teamai makes a [clone step](#clone-workspaces)'s clone on this machine, installs its team assets and runs setup, then answers the lease with `cwd`, the clone. A call can take as long as setup takes. A clone step is held from a driver that does not list `clone` in `workspace` or does not ask with `--prepare`, and `wait.held[].missing` names `workspace.clone` or `prepare`. A clone that runs as a team role also needs `can.role`.
 
 For each lease the driver:
 

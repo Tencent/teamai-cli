@@ -30,7 +30,7 @@ import { allowanceInUse, budgetSpent, countLateTokens, expire, itemsSpent, lease
 import { addItems, afterStanding, expandItems, isItem, itemsAfter, itemsOf, itemsSettled, startedItems } from './fan-out.js';
 import { decideRound, decideStepLoop, exhaustedAtStart, firstPass, isUnder, loopSettled } from './loop.js';
 import { childScope, contextOf, finallyScope, insertChildren, localId, statesIn, stepDefinitions, topScope, type Scope } from './scope.js';
-import { deliverableOf, deliveryTarget, planWorkspace, plannedBranch, sessionOf, workLeftUndelivered, type LeaseSession, type SessionRef, type WorkspaceContract, type WorkspacePlan } from './workspace.js';
+import { cloneRoleOf, deliverableOf, deliveryTarget, planWorkspace, plannedBranch, sessionOf, workLeftUndelivered, type LeaseSession, type SessionRef, type WorkspaceContract, type WorkspacePlan } from './workspace.js';
 import {
   deliverPr, deliveryFailure, findDelivered, reportedPrMismatch, type DeliveryJob,
 } from './pr-delivery.js';
@@ -398,6 +398,7 @@ function leaseData(
   { requires, envScope, maxTurns, setup }: Omit<Terms, 'unenforced' | 'limits'>, plan?: WorkspacePlan,
 ): LeaseAnswer {
   const expiresAt = leaseDeadline(run, state);
+  const role = cloneRoleOf(run, state.id);
 
   const wire: LeaseData = {
     run: run.id,
@@ -427,6 +428,8 @@ function leaseData(
 
   if (plan?.contract) wire.workspace = plan.contract;
 
+  if (role !== undefined) wire.role = role;
+
   if (plan?.session) wire.session = plan.session;
 
   if (definition.interactive) wire.interactive = true;
@@ -448,6 +451,13 @@ function leaseData(
   if (expiresAt !== undefined) wire.expiresAt = expiresAt;
 
   return { lease: wire };
+}
+
+/** The team role step instance `id` runs with, as an offer and a lease carry it: absent without one. */
+function roleOffer(run: RunState, id: string): { role?: string } {
+  const role = cloneRoleOf(run, id);
+
+  return role !== undefined ? { role } : {};
 }
 
 /**
@@ -1420,6 +1430,7 @@ function offerTerms(
     unattended: step.permissions === 'unattended',
     clone: plan?.contract?.mode !== 'read-only' && plan?.contract?.clone !== undefined,
     prepare: context.prepare,
+    ...roleOffer(run, id),
   }, context.can, context.allow, context.facts);
 }
 
@@ -1786,7 +1797,9 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
           });
 
           if (plan.defer) {
-            held.push({ step: state.id, reason: plan.defer.reason, missing: plan.defer.needs ? [`workspace.${plan.defer.needs}`] : [] });
+            // A driver that cannot give the step its role is told so too, as it would be held for it once it had the place.
+            const roleGap = cloneRoleOf(run, state.id) !== undefined && !can.role ? ['role' as const] : [];
+            held.push({ step: state.id, reason: plan.defer.reason, missing: [...plan.defer.needs ? [`workspace.${plan.defer.needs}` as const] : [], ...roleGap] });
             continue;
           }
 

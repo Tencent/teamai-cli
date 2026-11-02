@@ -1361,7 +1361,7 @@ function setChildren(record: CheckoutRecord, localConfig: LocalConfig): void {
 
 /** The selection `localConfig` makes a pull deliver for, as the checkout's record keeps it. */
 export function deliverySelection(localConfig: LocalConfig): DeliverySelection {
-  const { scope, primaryRole, additionalRoles, roleAssignment, projects, subscribedTags, excludedSkills, inheritUserScope } = localConfig;
+  const { scope, primaryRole, additionalRoles, roleAssignment, stepRole, projects, subscribedTags, excludedSkills, inheritUserScope } = localConfig;
   const lists = Object.entries({ projects, subscribedTags, excludedSkills }).flatMap(([key, values]) => values ? [[key, [...values].sort()]] : []);
 
   const selection: DeliverySelection = { scope, additionalRoles: [...additionalRoles].sort(), ...Object.fromEntries(lists) };
@@ -1370,18 +1370,21 @@ export function deliverySelection(localConfig: LocalConfig): DeliverySelection {
 
   if (roleAssignment) selection.rolesAssigned = true;
 
+  if (stepRole !== undefined) selection.stepRole = stepRole;
+
   if (inheritUserScope !== undefined) selection.inheritUserScope = inheritUserScope;
 
   return DeliverySelectionSchema.parse(selection);
 }
 
 /**
- * The part of a selection that manifest/members.yaml decides (#1186). The rest
- * changes only through commands that clear lastPullRev; an assignment arrives
- * with a fetch, so the fast path has to compare this itself.
+ * The part of a selection that manifest/members.yaml decides (#1186), and the
+ * role a workflow copy runs with. The rest changes only through commands that
+ * clear lastPullRev; an assignment arrives with a fetch, and a copy's role
+ * with no command at all, so the fast path has to compare these itself.
  */
-function assignedRolePart(selection: DeliverySelection): Pick<DeliverySelection, 'primaryRole' | 'additionalRoles' | 'rolesAssigned'> {
-  return { primaryRole: selection.primaryRole, additionalRoles: [...selection.additionalRoles].sort(), rolesAssigned: selection.rolesAssigned ?? false };
+function assignedRolePart(selection: DeliverySelection): Pick<DeliverySelection, 'primaryRole' | 'additionalRoles' | 'rolesAssigned' | 'stepRole'> {
+  return { primaryRole: selection.primaryRole, additionalRoles: [...selection.additionalRoles].sort(), rolesAssigned: selection.rolesAssigned ?? false, stepRole: selection.stepRole };
 }
 
 /** Put `agentModels` on `record`, leaving the key out while there are none. */

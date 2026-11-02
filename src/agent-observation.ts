@@ -82,11 +82,19 @@ export const ReportedAgentSchema = z.object({
   tool: z.object({ name: z.string().optional(), version: z.string().optional() }).optional(),
   model: z.object({ requested: z.string().optional(), reported: z.string().optional(), alias: z.string().optional() }).optional(),
   effort: z.object({ requested: z.string().optional(), reported: z.string().optional() }).optional(),
-  team: z.object({ revision: z.string(), localChanges: z.boolean(), selection: Selection.optional() }).optional(),
+  // The role a workflow copy ran with is teamai's to say, from the clone it prepared: a driver's is dropped.
+  team: z.object({ revision: z.string(), localChanges: z.boolean(), selection: Selection.omit({ stepRole: true }).optional() }).optional(),
   project: z.object({ commit: z.string(), dirty: z.boolean() }).optional(),
 });
 
 export type ReportedAgent = z.infer<typeof ReportedAgentSchema>;
+
+/** What teamai observed in a clone it prepared, as its receipt keeps it: a report's fields, and the role the clone ran with. */
+export const PreparedAgentSchema = ReportedAgentSchema.extend({
+  team: z.object({ revision: z.string(), localChanges: z.boolean(), selection: Selection.optional() }).optional(),
+});
+
+export type PreparedAgent = z.infer<typeof PreparedAgentSchema>;
 
 const DefinitionOnlySchema = z.object({ definition: z.object({ name: z.string().min(1) }) });
 

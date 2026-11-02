@@ -337,8 +337,10 @@ export async function resolveDesiredSkills(
   if (members) return resolveWorkspaceSkills(teamConfig, localConfig, members);
   const handler = getHandler('skills');
   const tagsConfig = await loadTagsConfig(localConfig.repo.localPath);
-  const subscribedTags = localConfig.subscribedTags;
-  const excludedSkills = new Set(localConfig.excludedSkills ?? []);
+  // A workflow copy that runs with a team role gets that role's skills as the role defines them, not the member's
+  // personal filters, so the same role knows the same for every member.
+  const subscribedTags = localConfig.stepRole === undefined ? localConfig.subscribedTags : undefined;
+  const excludedSkills = new Set(localConfig.stepRole === undefined ? localConfig.excludedSkills ?? [] : []);
 
   let directoryItems: ResourceItem[];
   let shadowed: ShadowedSkill[] = [];
@@ -598,8 +600,9 @@ export async function resolveDesiredRules(
 
   // The tag channel first: only a namespace rule this member receives
   // replaces the root rule of its name.
+  // As for skills, a workflow copy that runs with a team role takes no member tag subscription.
   const { included, skipped } = filterByTags(
-    filterRulesByKnowledgeNamespaces(allItems, knowledgeNs), tagsConfig, localConfig.subscribedTags, 'rules',
+    filterRulesByKnowledgeNamespaces(allItems, knowledgeNs), tagsConfig, localConfig.stepRole === undefined ? localConfig.subscribedTags : undefined, 'rules',
   );
 
   if (!knowledgeNs) return { items: included, overrides: [], replaced: [], skippedByTags: skipped.length };

@@ -29,6 +29,8 @@ export const LeaseWireSchema = LeaseIdSchema.extend({
   defaultModel: z.string().optional(),
   output: z.unknown().optional(),
   workspace: WorkspaceContractSchema.optional(),
+  /** The team role the step's clone was opened with: teamai delivers that role's knowledge there, for `can.role`. */
+  role: z.string().optional(),
   session: LeaseSessionSchema.optional(),
   /** The person works in the step. */
   interactive: z.literal(true).optional(),

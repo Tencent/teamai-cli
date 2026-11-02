@@ -1,6 +1,9 @@
 import type { LocalConfig } from './types.js';
 import {
+  findRole,
+  listRoleIds,
   loadRolesManifest,
+  NAMESPACED_RESOURCE_TYPES,
   resolveRoleResourceNamespaces,
   roleNamespaceEntries,
   RolesManifestNotFoundError,
@@ -14,6 +17,44 @@ import { warnOnce } from './utils/warn-once.js';
 import { deliveredMembers } from './workspace-children.js';
 
 type ResolvedResourceNamespaces = NonNullable<Awaited<ReturnType<typeof resolveOwnResourceNamespaces>>>;
+
+/** Every type a role or project namespaces. */
+type NamespacedType = (typeof NAMESPACED_RESOURCE_TYPES)[number] | 'learnings';
+
+/**
+ * Whose roles each namespaced type follows in a workflow copy that runs with a team role (`stepRole`). `knowledge`, what
+ * the agent knows, follows that role; `channel`, what it may execute or reach, and `discovery`, what the member can run
+ * or find, follow the member's own roles, so a role never grants a capability the member's roles do not. Projects apply
+ * to all three. Exhaustive: a new namespaced type fails to compile until it is classified here.
+ */
+const STEP_ROLE_PURPOSE = {
+  knowledge: 'knowledge', skills: 'knowledge', agents: 'knowledge', docs: 'knowledge', wiki: 'knowledge', learnings: 'knowledge',
+  env: 'channel', hooks: 'channel', mcp: 'channel', models: 'channel',
+  workflows: 'discovery', prompts: 'discovery', scorers: 'discovery', benchmarks: 'discovery',
+} as const satisfies Record<NamespacedType, 'knowledge' | 'channel' | 'discovery'>;
+
+/**
+ * The namespaces of `member`'s roles with each knowledge type replaced by `stepRole`'s. A role the manifest does not
+ * declare throws: a copy recorded to run with a role never falls back to the member's knowledge or to everything.
+ */
+function withStepRoleKnowledge(manifest: RolesManifest | null, stepRole: string, member: ResourceNamespaces): ResourceNamespaces {
+  if (!manifest) {
+    throw new Error(`This workflow copy runs with role "${stepRole}", but the team repo has no manifest/roles.yaml to declare it, so nothing is delivered for it. Declare the role in manifest/roles.yaml, or run the step without a role.`);
+  }
+
+  if (!findRole(manifest, stepRole)) {
+    throw new Error(`This workflow copy runs with role "${stepRole}", which manifest/roles.yaml does not declare (it declares ${listRoleIds(manifest).join(', ')}), so nothing is delivered for it. Add the role to manifest/roles.yaml, or run the step with a role it declares.`);
+  }
+
+  const step = resolveRoleResourceNamespaces({ manifest, primaryRole: stepRole, additionalRoles: [] });
+  const resolved: ResourceNamespaces = { ...member };
+
+  for (const type of [...NAMESPACED_RESOURCE_TYPES, 'learnings' as const]) {
+    if (STEP_ROLE_PURPOSE[type] === 'knowledge') resolved[type] = step[type] ?? [];
+  }
+
+  return resolved;
+}
 
 /**
  * Resolve the same role/project activation policy for resource pull and push.
@@ -100,7 +141,10 @@ async function resolveOwnResourceNamespaces(localConfig: LocalConfig) {
   // through to an unfiltered sync that reinstalls every project's skills/rules.
   // So we return a real (possibly empty-active) context and let the cleanup path
   // below prune the now-inactive project namespaces.
-  if (!rolesAssigned && !hasRole && !hasProjects && !teamHasProjects) return null;
+  // A copy that runs with a team role is filtered by that role whatever the member holds.
+  const { stepRole } = localConfig;
+
+  if (!rolesAssigned && !hasRole && !hasProjects && !teamHasProjects && stepRole === undefined) return null;
 
   // ── Role namespaces (optional) ──
   let roleNamespaces: ResourceNamespaces = { knowledge: [], skills: [], learnings: [], agents: [] };
@@ -132,12 +176,14 @@ async function resolveOwnResourceNamespaces(localConfig: LocalConfig) {
         if (!rolesAssigned) warnOnce('Run `teamai roles set <role>` to pick a valid role.');
 
         // A misconfigured role, with nothing else to scope by, can't filter safely.
-        if (!rolesAssigned && !hasProjects && !teamHasProjects) return null;
+        if (!rolesAssigned && !hasProjects && !teamHasProjects && stepRole === undefined) return null;
       }
-    } else if (!rolesAssigned && !hasProjects && !teamHasProjects) {
+    } else if (!rolesAssigned && !hasProjects && !teamHasProjects && stepRole === undefined) {
       return null;
     }
   }
+
+  if (stepRole !== undefined) roleNamespaces = withStepRoleKnowledge(rolesManifest, stepRole, roleNamespaces);
 
   // ── Project namespaces ──
   // Populate the full set of project skill namespaces from the manifest whenever

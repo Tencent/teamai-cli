@@ -132,6 +132,14 @@ export async function resolveLegacyRole(config: LocalConfig): Promise<LocalConfi
  * with the selection the file was written to take over.
  */
 async function applyRoleAssignment(config: LocalConfig): Promise<LocalConfig> {
+  // The role a workflow copy runs with goes on top of whatever the member holds, at every load and refresh.
+  const { withCheckoutRole } = await import('./checkout-roles.js');
+
+  return withCheckoutRole(await assignMemberRoles(config));
+}
+
+/** `applyRoleAssignment` for the member alone: the roles `manifest/members.yaml` assigns, without a copy's role. */
+async function assignMemberRoles(config: LocalConfig): Promise<LocalConfig> {
   // Idempotent: a project config passes through `readConfigFrom` and then the
   // loader that migrates it, and the second pass must not read the overlaid
   // roles as the local selection to keep.
@@ -252,6 +260,8 @@ export async function refreshRoleAssignment(config: LocalConfig): Promise<void> 
   delete config.roleAssignment;
   delete config.roleUnresolved;
   delete config.primaryRole;
+  // So is a copy's role: a copy released since the load runs with none.
+  delete config.stepRole;
   Object.assign(config, refreshed);
 }
 
@@ -635,7 +645,9 @@ export async function loadLocalConfig(options: LoadOptions = {}): Promise<LocalC
  * lives inside that directory, so it must never be persisted (a stale absolute
  * path would defeat the anchor-derived design and break on another machine).
  * `roleUnresolved` describes one load of the roles manifest, not the member,
- * and `children` one read of a workspace (#913).
+ * `children` one read of a workspace (#913), and `stepRole` the workflow copy
+ * the config was loaded for, which every checkout's shared config.yaml must not
+ * keep.
  * The workspace scope is written under its current name, `workspace` (#1099).
  * Only a write that happens anyway uses it (a save, or the legacy role
  * migration); a plain load leaves a `scope: project` file as it is.
@@ -644,7 +656,7 @@ function serializeLocalConfig(config: LocalConfig, carriedSettings?: MemberSetti
   // The overlaid roles are the team's, read fresh on every load. Writing them
   // would leave a stale copy behind once the assignment changes or the file
   // goes, and a stale copy is exactly what a member must not be able to keep.
-  const { dataHome: _dataHome, branchHome: _branchHome, roleUnresolved: _roleUnresolved, children: _children, roleAssignment: _assignment, memberSettingsOverlay: overlay, ...persisted } = withLocalRoles(config);
+  const { dataHome: _dataHome, branchHome: _branchHome, roleUnresolved: _roleUnresolved, children: _children, roleAssignment: _assignment, memberSettingsOverlay: overlay, stepRole: _stepRole, ...persisted } = withLocalRoles(config);
   const localSettings = overlay?.local ?? MemberSettingsSchema.parse(persisted);
 
   const settings = { ...localSettings };

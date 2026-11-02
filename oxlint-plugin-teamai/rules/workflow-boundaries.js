@@ -65,7 +65,7 @@ const ENTRIES = [
     // index.ts moves the home of a command a step started in its clone to that clone's own install.
     // check-run.ts clones and sets up the commit a check runs on, for a benchmark and a scorer alike.
     entries: { 'place.ts': ['src/index.ts', 'src/workflow/engine.ts', 'src/workflow/protocol.ts', 'src/workflow/drivers/local/local-driver.ts', `${BENCHMARK}trial.ts`, `${BENCHMARK}start.ts`, 'src/workflow/check-run.ts'], 'setup.ts': ['src/workflow/check-run.ts'] },
-    testEntries: ['place.ts', 'team-without.ts'],
+    testEntries: ['place.ts', 'team-without.ts', 'role-copy.ts'],
   },
   // workflow-published-runs.ts judges an offered run by the tool the local driver would launch for its prompt steps.
   { folder: LOCAL, entries: { 'local-driver.ts': ['src/workflow-commands.ts', 'src/workflow-published-runs.ts'], 'local-tool-adapter.ts': [] }, testEntries: ['local-driver.ts', 'local-tool-adapter.ts'] },

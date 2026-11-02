@@ -51,6 +51,10 @@ Two callers:
 
 In a workspace with children (#913) every delivered member holds the workspace's assignment: a child cannot select a role, so the selection it recorded is not one to honour.
 
+### A step role beside the assigned roles
+
+A clone step's `role` (`workspace: { clone: … }`) is not an assignment and changes none. The member keeps their assigned roles, and the clone's own install runs with the step's role as `stepRole`, a runtime-only field of the loaded config. It is recorded for the copy in `checkout-roles.json` in the data home that governs it (`checkout-roles.ts`) and applied after the assignment at every load, so `refreshRoleAssignment` and the save never write it. The two split what a role grants (`withStepRoleKnowledge` in `resource-namespaces.ts`): knowledge (skills, rules, agents, docs, wiki, learnings) comes from the step role and the member's projects. Channels (hooks, MCP, env, models) and discovery (workflows, prompts, scorers, benchmarks) stay the assigned roles'. A step role `roles.yaml` does not declare delivers nothing; it never falls back to the member's knowledge or to every namespace. The checkout record keeps `stepRole` in its selection, and the fast path compares it with the assigned roles.
+
 ### What the member sees
 
 - `teamai roles set` refuses, naming the file and the roles held, and exits non-zero.

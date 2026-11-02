@@ -85,8 +85,10 @@ const DIMENSIONS: Record<Dimension, (entry: ViewedLabel) => GroupValue[] | undef
   definition: ({ agent }) => one(agent?.definition?.name),
   role: ({ agent }) => {
     const selection = observed(agent)?.team?.selection;
+    // A pass in a workflow copy ran with the copy's role, whatever the member's is.
+    const role = selection?.stepRole ?? selection?.primaryRole;
 
-    return selection ? many(selection.primaryRole ? [selection.primaryRole] : []) : undefined;
+    return selection ? many(role ? [role] : []) : undefined;
   },
   project: ({ agent }) => {
     const selection = observed(agent)?.team?.selection;

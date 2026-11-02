@@ -615,9 +615,24 @@ export async function reopenConfigConflicts(dir: string, saved: string): Promise
   if (paths.length > 0) await restoreConflictStages(dir, conflicts, paths);
 }
 
-/** Copies the agent configuration `dir` has into `saved`: the copy `restoreUneditedConfig` puts back. */
-export async function saveConfig(dir: string, saved: string): Promise<void> {
-  for (const relative of AGENT_PATHS) {
+/** Where a copy saved with paths beyond AGENT_PATHS lists them, so every later step on it covers the same paths. */
+const SAVED_PATHS = '_paths.json';
+
+/** The paths `saved` holds the agent configuration of: AGENT_PATHS, unless `saveConfig` was given others. */
+export async function savedConfigPaths(saved: string): Promise<readonly string[]> {
+  const listed = z.array(z.string().min(1)).safeParse(JSON.parse(await fs.readFile(path.join(saved, SAVED_PATHS), 'utf8').catch(() => 'null')));
+
+  return listed.success ? listed.data : AGENT_PATHS;
+}
+
+/**
+ * Copies the agent configuration `dir` has into `saved`: the copy `restoreUneditedConfig` puts back. `paths`, relative
+ * to `dir`, are AGENT_PATHS unless a copy's install delivers elsewhere in it too; `saved` then lists them.
+ */
+export async function saveConfig(dir: string, saved: string, paths: readonly string[] = AGENT_PATHS): Promise<void> {
+  if (paths !== AGENT_PATHS) await fs.writeFile(path.join(saved, SAVED_PATHS), JSON.stringify(paths));
+
+  for (const relative of paths) {
     try {
       await copyEntry(path.join(dir, relative), path.join(saved, relative));
     } catch {
@@ -628,7 +643,7 @@ export async function saveConfig(dir: string, saved: string): Promise<void> {
 
 /** Puts the agent configuration `from` holds in place of `dir`'s, path by path. */
 export async function replaceConfig(dir: string, from: string): Promise<void> {
-  for (const relative of AGENT_PATHS) {
+  for (const relative of await savedConfigPaths(from)) {
     await fs.rm(path.join(dir, relative), { recursive: true, force: true });
 
     try {
@@ -641,8 +656,9 @@ export async function replaceConfig(dir: string, from: string): Promise<void> {
 
 /** Records the agent files present after team delivery, so that delivery is not a step edit. */
 export async function recordConfigOverlay(dir: string, saved: string): Promise<void> {
-  await fs.writeFile(path.join(saved, '_overlay.json'), JSON.stringify(await fileManifest(dir)));
-  await fs.writeFile(path.join(saved, '_dirs.json'), JSON.stringify(await agentDirs(dir)));
+  const paths = await savedConfigPaths(saved);
+  await fs.writeFile(path.join(saved, '_overlay.json'), JSON.stringify(await fileManifest(dir, paths)));
+  await fs.writeFile(path.join(saved, '_dirs.json'), JSON.stringify(await agentDirs(dir, paths)));
 }
 
 /**
@@ -652,8 +668,9 @@ export async function recordConfigOverlay(dir: string, saved: string): Promise<v
  */
 export async function restoreUneditedConfig(dir: string, _commit: string, saved: string, runGit: Git = git): Promise<string | undefined> {
   // Listed before anything changes. The index stays as it is until the files are back.
+  const paths = await savedConfigPaths(saved);
   const unmergedListed = await gitPaths(dir, ['diff', '--name-only', '--diff-filter=U'], runGit);
-  const indexed = await gitPaths(dir, ['ls-files', '--', ...AGENT_PATHS], runGit);
+  const indexed = await gitPaths(dir, ['ls-files', '--', ...paths], runGit);
   const unlisted = [unmergedListed, indexed].find((listed) => listed.code !== 0);
 
   if (unlisted) {
@@ -661,8 +678,8 @@ export async function restoreUneditedConfig(dir: string, _commit: string, saved:
   }
 
   const overlay = z.record(z.string(), z.string()).parse(JSON.parse(await fs.readFile(path.join(saved, '_overlay.json'), 'utf8')));
-  const current = await fileManifest(dir);
-  const branch = await fileManifest(saved);
+  const current = await fileManifest(dir, paths);
+  const branch = await fileManifest(saved, paths);
   const conflicts = await fs.readFile(path.join(saved, '_conflicts'), 'utf8').catch(() => '');
   const dirs = z.array(z.string()).parse(JSON.parse(await fs.readFile(path.join(saved, '_dirs.json'), 'utf8').catch(() => '[]')));
   const marked = await markedConflicts(dir, conflictPaths(conflicts));
@@ -679,7 +696,7 @@ export async function restoreUneditedConfig(dir: string, _commit: string, saved:
   // delete or write files outside the worktree.
   const linked: string[] = [];
 
-  for (const root of AGENT_PATHS) if (await linkedParent(dir, root)) linked.push(path.join(root));
+  for (const root of paths) if (await linkedParent(dir, root)) linked.push(path.join(root));
   const files = new Set([...Object.keys(overlay), ...Object.keys(current), ...Object.keys(branch)]);
 
   for (const relative of files) {
@@ -714,7 +731,7 @@ export async function restoreUneditedConfig(dir: string, _commit: string, saved:
   await fs.rm(saved, { recursive: true, force: true });
   // `checkout` of the base copies staged those paths. Put the index back with the files, or a step that
   // edits nothing still looks dirty and the empty commit fails it.
-  const present = await presentAgentPaths(dir, indexed.paths);
+  const present = await presentAgentPaths(dir, indexed.paths, paths);
 
   if (present.length > 0) await runGit(dir, ['add', '-A', '--', ...present]);
 
@@ -727,10 +744,10 @@ export async function restoreUneditedConfig(dir: string, _commit: string, saved:
  * Agent paths in the worktree or among `indexed`, the index's agent files. `git add` stages nothing when one of its paths
  * matches neither.
  */
-async function presentAgentPaths(dir: string, indexed: string[]): Promise<string[]> {
+async function presentAgentPaths(dir: string, indexed: string[], paths: readonly string[]): Promise<string[]> {
   const present: string[] = [];
 
-  for (const relative of AGENT_PATHS) {
+  for (const relative of paths) {
     const tracked = indexed.some((file) => file === relative || file.startsWith(`${relative}/`));
 
     if (tracked || await fs.lstat(path.join(dir, relative)).then(() => true, () => false)) present.push(relative);
@@ -771,7 +788,7 @@ async function restoreConflictStages(dir: string, conflicts: string, paths: stri
   if (payload.length > 0) await runGit(dir, ['update-index', '--index-info'], { input: `${payload.join('\n')}\n` });
 }
 
-async function fileManifest(root: string): Promise<Record<string, string>> {
+async function fileManifest(root: string, paths: readonly string[]): Promise<Record<string, string>> {
   const files: Record<string, string> = {};
 
   const walk = async (relative: string): Promise<void> => {
@@ -802,7 +819,7 @@ async function fileManifest(root: string): Promise<Record<string, string>> {
     if (stats.isFile()) files[relative] = `file:${(stats.mode & 0o777).toString(8)}:${(await fs.readFile(current)).toString('base64')}`;
   };
 
-  for (const relative of AGENT_PATHS) await walk(relative);
+  for (const relative of paths) await walk(relative);
 
   return files;
 }
@@ -970,7 +987,7 @@ async function markedConflicts(dir: string, paths: string[]): Promise<string[]> 
   return marked;
 }
 
-async function agentDirs(root: string): Promise<string[]> {
+async function agentDirs(root: string, paths: readonly string[]): Promise<string[]> {
   const dirs: string[] = [];
 
   const walk = async (relative: string): Promise<void> => {
@@ -988,7 +1005,7 @@ async function agentDirs(root: string): Promise<string[]> {
     for (const name of await fs.readdir(path.join(root, relative))) await walk(path.join(relative, name));
   };
 
-  for (const relative of AGENT_PATHS) await walk(relative);
+  for (const relative of paths) await walk(relative);
 
   return dirs;
 }

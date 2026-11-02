@@ -18,15 +18,17 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
-import { observeCheckout, ReportedAgentSchema, type ReportedAgent } from '../../agent-observation.js';
+import { observeCheckout, PreparedAgentSchema, type PreparedAgent } from '../../agent-observation.js';
 import { resolveCliEntry } from '../../builtin-hooks.js';
-import { saveLocalConfigForScope } from '../../config.js';
+import { recordCheckoutRole, withCheckoutRole, type CheckoutRoleWrite } from '../../checkout-roles.js';
+import { loadTeamConfig, saveLocalConfigForScope } from '../../config.js';
 import { stepEnvironment } from '../../env-exec.js';
 import { removeGitHook } from '../../git-hook.js';
 import { createProjectToolRoots } from '../../project-agent-root.js';
 import { scoresDir } from '../../scorers/attempts.js';
 import { removeSubjectEvidence } from '../../scorers/evidence.js';
 import { homeVariables, isToolId, TOOLS } from '../../tools.js';
+import { listRoleIds, loadRolesManifestIfPresent } from '../../roles.js';
 import { getDataHome, LocalConfigSchema, type LocalConfig } from '../../types.js';
 import { execCommand } from '../../utils/exec.js';
 import { readJson, writeJsonAtomic } from '../../utils/fs.js';
@@ -44,8 +46,9 @@ import { findAttemptRun } from '../run-location.js';
 import { readRun, runsDir, type RunId } from '../store.js';
 import type { RunState, WorkflowFailure } from '../types.js';
 import { cloneBranchOf } from '../workspace.js';
+import { copyKnowledgePaths, roleCopyRefusal } from './role-copy.js';
 import { commitWithout } from './team-without.js';
-import { boundedGit, commitWork, recordConfigOverlay, replaceConfig, restoreUneditedConfig, saveConfig, untrustedGit, type Git } from '../worktree.js';
+import { AGENT_PATHS, boundedGit, commitWork, recordConfigOverlay, replaceConfig, restoreUneditedConfig, saveConfig, savedConfigPaths, untrustedGit, type Git } from '../worktree.js';
 
 /**
  * The commit a clone's install pulled for a treatment without some paths, which teamai made of `revision` without them.
@@ -64,7 +67,7 @@ const WithoutTreatmentSchema = z.object({ without: z.array(z.string()) });
  * and the commit it pulled for a treatment without some paths.
  */
 const Made = {
-  prepared: ReportedAgentSchema,
+  prepared: PreparedAgentSchema,
   install: z.object({ config: LocalConfigSchema, dataHome: z.string().min(1), without: WithoutSchema.optional() }).strict().optional(),
 };
 
@@ -125,6 +128,8 @@ export interface CloneLease {
   withhold: readonly string[];
   /** The tool the step runs on, which the install delivers to; else the member's enabled agents. */
   tool?: string;
+  /** The team role the clone runs with, the step's `role`: the install delivers that role's knowledge, not the member's. */
+  role?: string;
   expiresAt?: string;
 }
 
@@ -201,7 +206,7 @@ async function redeliver(root: string): Promise<void> {
   const partial = `${saved}.partial`;
   await fs.rm(partial, { recursive: true, force: true });
   await fs.mkdir(partial);
-  await saveConfig(clone, partial);
+  await saveConfig(clone, partial, await savedConfigPaths(delivered));
   await replaceConfig(clone, delivered);
   await recordConfigOverlay(clone, partial);
   await fs.rename(partial, saved);
@@ -228,8 +233,9 @@ export async function preparedClone(config: LocalConfig, run: RunId, branch: str
   const { prepared, install } = found.state;
   const clone: PreparedClone = { prepared };
 
+  // The receipt keeps the install's config as saved, so the role it runs with is read again, as every load reads it.
   if (install) {
-    clone.install = { ...install.config, dataHome: install.dataHome };
+    clone.install = await withCheckoutRole({ ...install.config, dataHome: install.dataHome });
 
     if (install.without) clone.without = install.without;
   }
@@ -239,7 +245,7 @@ export async function preparedClone(config: LocalConfig, run: RunId, branch: str
 
 /** A clone as teamai prepared it; see `preparedClone`. */
 export interface PreparedClone {
-  prepared: ReportedAgent;
+  prepared: PreparedAgent;
   install?: LocalConfig;
   without?: Without;
 }
@@ -494,8 +500,6 @@ async function installTeam(input: {
   const tools = selection.enabledAgents ?? (lease.tool !== undefined ? [lease.tool] : member.enabledAgents ?? []);
   const clone = path.join(root, 'r');
   const saved = path.join(root, 'saved');
-  await fs.mkdir(saved);
-  await saveConfig(clone, saved);
   const anchors = await resolveAnchors(clone);
 
   if (!anchors) return failed(`The clone ${clone} is not a git repository teamai can install into.`);
@@ -526,12 +530,12 @@ async function installTeam(input: {
   if (fetched) return fetched;
   let without: Without | undefined;
 
-  const paths = WithoutTreatmentSchema.safeParse(team.treatment).data?.without;
+  const withoutPaths = WithoutTreatmentSchema.safeParse(team.treatment).data?.without;
 
-  if (paths) {
-    const made = await commitWithout(copy, { repo: bare, revision, paths });
+  if (withoutPaths) {
+    const made = await commitWithout(copy, { repo: bare, revision, paths: withoutPaths });
 
-    if ('failed' in made) return failed(`Team revision ${revision} without ${paths.join(', ')} could not be made for the clone (${made.failed}).`);
+    if ('failed' in made) return failed(`Team revision ${revision} without ${withoutPaths.join(', ')} could not be made for the clone (${made.failed}).`);
     without = { commit: made.commit, revision };
   }
 
@@ -543,9 +547,9 @@ async function installTeam(input: {
 
   if (cloned) return cloned;
   const pulling = without?.commit ?? revision;
-  const role: Pick<LocalConfig, 'primaryRole'> = {};
+  const primary: Pick<LocalConfig, 'primaryRole'> = {};
 
-  if (selection.primaryRole) role.primaryRole = selection.primaryRole;
+  if (selection.primaryRole) primary.primaryRole = selection.primaryRole;
   const tags: Pick<LocalConfig, 'subscribedTags'> = {};
 
   if (selection.subscribedTags) tags.subscribedTags = selection.subscribedTags;
@@ -553,14 +557,47 @@ async function installTeam(input: {
   const config: LocalConfig = {
     repo: { localPath: teamClone, remote: member.repo.remote, kind: 'git' },
     username: member.username, provider: 'git', scope: 'project', projectRoot: anchors.workspaceRoot, dataHome: partition,
-    ...role,
+    ...primary,
     additionalRoles: selection.additionalRoles, projects: selection.projects, excludedSkills: selection.excludedSkills,
     ...tags,
     enabledAgents: tools,
     recallEnabled: false, contributeHintEnabled: false, mrHintEnabled: false, usageReportEnabled: false, coAuthorEnabled: false, codexTrustEnabled: false,
   };
 
+  const { role } = lease;
+  const unavailable = (message: string): WorkflowFailure => ({ code: 'role_unavailable', message });
+
+  if (role !== undefined) {
+    const roles = await loadRolesManifestIfPresent(teamClone).catch(() => null);
+    const declared = roles ? listRoleIds(roles) : [];
+
+    if (!declared.includes(role)) {
+      return unavailable(`Role ${role} was not delivered into the clone for step "${lease.step}": manifest/roles.yaml at team revision ${revision} does not declare it, so the clone would get no role's knowledge. Add the role to manifest/roles.yaml at that revision, or run the step with a role it declares.`);
+    }
+  }
+
+  // Without a teamai.yaml the pull delivers nothing, which the check of a role's delivery below reports.
+  const teamConfig = await loadTeamConfig(teamClone);
+
+  if (role !== undefined && teamConfig) {
+    const refused = await roleCopyRefusal({ team: teamConfig, install: config, role });
+
+    if (refused) return refused;
+  }
+
+  // The overlay covers every place inside the clone the install delivers knowledge to, beyond the agent paths.
+  const paths = [...AGENT_PATHS, ...teamConfig ? await copyKnowledgePaths({ team: teamConfig, install: config }) : []];
+  await fs.mkdir(saved);
+  await saveConfig(clone, saved, paths);
   await saveLocalConfigForScope(config);
+
+  if (role !== undefined) {
+    const recorded = await recordCheckoutRole({ config, checkout: anchors.workspaceRoot, role });
+    const why = recordedRoleProblem(recorded);
+
+    if (why !== undefined) return unavailable(`Role ${role} was not delivered into the clone for step "${lease.step}": ${why}`);
+  }
+
   await createProjectToolRoots({ config, tools });
   const entry = resolveCliEntry();
 
@@ -577,7 +614,15 @@ async function installTeam(input: {
   if (pulled.code !== 0) {
     const tail = (pulled.stderr.trim() || pulled.stdout.trim()).slice(-500);
 
-    return failed(`teamai pull --team-ref ${pulling.slice(0, 7)} exited ${pulled.code}: ${tail}`);
+    return role === undefined
+      ? failed(`teamai pull --team-ref ${pulling.slice(0, 7)} exited ${pulled.code}: ${tail}`)
+      : unavailable(`Role ${role} was not delivered into the clone for step "${lease.step}": its teamai pull --team-ref ${pulling.slice(0, 7)} exited ${pulled.code}: ${tail}`);
+  }
+
+  if (role !== undefined) {
+    const why = await roleDeliveryProblem({ install: config, tools, role });
+
+    if (why !== undefined) return unavailable(`Role ${role} was not delivered into the clone for step "${lease.step}": ${why}`);
   }
 
   try {
@@ -589,13 +634,49 @@ async function installTeam(input: {
   await recordConfigOverlay(clone, saved);
   // What a later step in the clone gets again, as its first step's commit takes the delivery out.
   await fs.mkdir(path.join(root, DELIVERED));
-  await saveConfig(clone, path.join(root, DELIVERED));
+  await saveConfig(clone, path.join(root, DELIVERED), paths);
 
   const installed: InstalledClone = { config, dataHome: partition };
 
   if (without) installed.without = without;
 
   return installed;
+}
+
+/** Why a write of the clone's role did not record it, or undefined when it did. */
+function recordedRoleProblem(written: CheckoutRoleWrite): string | undefined {
+  switch (written.kind) {
+    case 'recorded': return undefined;
+    case 'busy': return `another teamai held ${written.lock} too long. Start the workflow again, as a run with a clone cannot be retried.`;
+    case 'unreadable': return `${written.file} cannot be read (${written.error}). Delete it, then start the workflow again, as a run with a clone cannot be retried.`;
+    default: {
+      const unhandled: never = written;
+
+      return unhandled;
+    }
+  }
+}
+
+/**
+ * Why the clone's own install, `install` as every teamai in the clone loads it, did not deliver role `role` to each of
+ * `tools`, or undefined when it did: its checkout record holds a complete delivery made for that role.
+ */
+export async function roleDeliveryProblem(input: { install: LocalConfig; tools: readonly string[]; role: string }): Promise<string | undefined> {
+  const loaded = await withCheckoutRole(input.install);
+
+  if (loaded.stepRole !== input.role) return `the clone's install does not load it (it loads ${loaded.stepRole ?? 'no role'}). Start the workflow again, as a run with a clone cannot be retried.`;
+  const { teamDelivery } = await import('../../pull.js');
+
+  for (const tool of input.tools) {
+    const delivery = await teamDelivery(loaded, tool).catch(() => undefined);
+
+    if (!delivery?.complete) return `its pull did not record a complete delivery for ${tool} (${delivery?.gap ?? 'its record cannot be read'}). Start the workflow again, as a run with a clone cannot be retried.`;
+    const delivered = delivery.record.selection?.stepRole;
+
+    if (delivered !== input.role) return `its pull delivered for ${delivered ?? 'the member\'s roles'} instead. Start the workflow again, as a run with a clone cannot be retried.`;
+  }
+
+  return undefined;
 }
 
 /** The root, then the receipt that names it. rm retries a busy file, as Windows reports one still being closed. */

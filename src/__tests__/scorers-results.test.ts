@@ -132,6 +132,15 @@ describe('scorer results', () => {
       expect(groups(labels, 'teamRevision')).toEqual([`${REV_A} n=3`]);
     });
 
+    it('groups a pass in a workflow copy under the role the copy ran with, not the member\'s', () => {
+      const selection = { scope: 'project' as const, primaryRole: 'frontend', additionalRoles: [] };
+      const labels = [
+        viewed(sessionLabel(), { agent: observed({ team: { revision: REV_A, localChanges: false, selection: { ...selection, stepRole: 'review' } } }) }),
+        viewed(sessionLabel(), { agent: observed({ team: { revision: REV_A, localChanges: false, selection } }) }),
+      ];
+      expect(groups(labels, 'role')).toEqual(['frontend n=1', 'review n=1']);
+    });
+
     it('counts a label under every skill it used, and one that used none under none', () => {
       const labels = [
         viewed(sessionLabel({ used: { skills: ['tdd', 'review'] } })),

@@ -1090,6 +1090,12 @@ export type LocalConfig = z.infer<typeof LocalConfigSchema> & {
   children?: WorkspaceChildren;
   roleAssignment?: RoleAssignment;
   memberSettingsOverlay?: MemberSettingsOverlay;
+  /**
+   * The team role the workflow copy this config governs runs with, from `checkout-roles.json` in its data home
+   * (`withCheckoutRole`). Runtime-only: read on every load, never written to config.yaml. It decides the copy's
+   * knowledge (skills, rules, agents, docs, instructions, learnings, wiki); hooks, MCP, env and models stay the member's.
+   */
+  stepRole?: string;
 };
 
 /**
@@ -1221,6 +1227,8 @@ export const DeliverySelectionSchema = z.object({
   additionalRoles: z.array(z.string()),
   /** The roles came from manifest/members.yaml (#1186): holding none then filters, where a bare config does not. */
   rolesAssigned: z.boolean().optional(),
+  /** The team role the checkout, a workflow copy, runs with: its knowledge came from this role, not `primaryRole`'s. */
+  stepRole: z.string().optional(),
   projects: z.array(z.string()).optional(),
   subscribedTags: z.array(z.string()).optional(),
   excludedSkills: z.array(z.string()).optional(),
@@ -3673,6 +3681,15 @@ export function getConfigPath(scope: Scope, projectRoot?: string): string {
  */
 export function getStatePath(localConfig: LocalConfig): string {
   return path.join(getDataHome(localConfig), 'state.json');
+}
+
+/**
+ * The team role each workflow copy of the project runs with, by the copy's real path (`checkout-roles.json`). It
+ * lives in the data home, which every checkout of the project shares, and never in state.json, which several
+ * commands rewrite whole without a lock.
+ */
+export function getCheckoutRolesPath(localConfig: LocalConfig): string {
+  return path.join(getDataHome(localConfig), 'checkout-roles.json');
 }
 
 /**

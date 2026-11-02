@@ -37,7 +37,7 @@ export async function placeRoot({ cwd, checkout }: { cwd: string; checkout: stri
   return here !== null && here !== there ? cwd : checkout;
 }
 
-export { attemptCloneHome, cloneDelivery, cloneHead, commitCacheOf, freshClone, preparedClone, scratchCloneRoot, stageSettledEvidence, sweepClones } from './clone.js';
+export { attemptCloneHome, cloneDelivery, cloneHead, commitCacheOf, freshClone, preparedClone, roleDeliveryProblem, scratchCloneRoot, stageSettledEvidence, sweepClones } from './clone.js';
 
 /**
  * The place key two attempts of one driver must not share: the copy of the lease's branch, its clone, else the checkout.
@@ -94,20 +94,22 @@ export async function adoptedPlaceOf(input: { config: LocalConfig; run: RunId; b
 }
 
 /**
- * The lease fields a place reads. Its `expiresAt` bounds setup. A clone gets the step's `tool` installed, and keeps
- * `envScope.withhold` from its git and its install.
+ * The lease fields a place reads. Its `expiresAt` bounds setup. A clone gets the step's `tool` installed, for its
+ * `role` when it has one, and keeps `envScope.withhold` from its git and its install.
  */
-export type PlaceLease = Pick<LeaseWire, 'attempt' | 'step' | 'prompt' | 'interactive' | 'readOnly' | 'workspace' | 'setup' | 'expiresAt' | 'tool' | 'envScope'> & { executor: 'command' | 'prompt' };
+export type PlaceLease = Pick<LeaseWire, 'attempt' | 'step' | 'prompt' | 'interactive' | 'readOnly' | 'workspace' | 'setup' | 'expiresAt' | 'tool' | 'role' | 'envScope'> & { executor: 'command' | 'prompt' };
 
 /** The place fields of `lease`, a lease `next` answered with. */
 export function placeLeaseOf(lease: LeaseWire): PlaceLease {
-  const { attempt, step, command, prompt, interactive, readOnly, workspace, setup, expiresAt, tool, envScope } = lease;
+  const { attempt, step, command, prompt, interactive, readOnly, workspace, setup, expiresAt, tool, role, envScope } = lease;
 
   const place: PlaceLease = { attempt, step, executor: command !== undefined ? 'command' : 'prompt' };
 
   if (prompt !== undefined) place.prompt = prompt;
 
   if (tool !== undefined) place.tool = tool;
+
+  if (role !== undefined) place.role = role;
 
   if (envScope) place.envScope = envScope;
 
@@ -287,6 +289,8 @@ async function prepareClone(input: {
   const cloneLease: CloneLease = { attempt: lease.attempt, step: lease.step, branch: workspace.branch, clone: workspace.clone, start: workspace.start.commit, withhold };
 
   if (lease.tool !== undefined) cloneLease.tool = lease.tool;
+
+  if (lease.role !== undefined) cloneLease.role = lease.role;
 
   if (lease.expiresAt !== undefined) cloneLease.expiresAt = lease.expiresAt;
   const opened = await openClone({ config, run, checkout: root, lease: cloneLease });

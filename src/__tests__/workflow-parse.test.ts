@@ -1716,6 +1716,75 @@ steps:
   });
 });
 
+describe('role on a clone step', () => {
+  const COMMIT = 'c'.repeat(40);
+  const REVISION = 'd'.repeat(40);
+  const TEAM = `{ revision: ${REVISION}, selection: { additionalRoles: [], projects: [], excludedSkills: [] }, treatment: pulled }`;
+
+  it('keeps the role a clone step names, which the steps continuing its clone run with', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Review in a clean clone.
+steps:
+  - id: review
+    role: review
+    workspace: { clone: { commit: ${COMMIT}, team: ${TEAM} } }
+    workflow:
+      steps:
+        - id: look
+          workspace: continue
+          prompt: Review the change.
+`);
+    expect(result.ok, result.ok ? '' : result.diagnostics.map(formatDiagnostic).join('\n')).toBe(true);
+    if (!result.ok) return;
+    expect(result.definition.steps[0]?.role).toBe('review');
+  });
+
+  it('refuses a role on a step that opens no clone, the steps continuing one included', () => {
+    expect(rejected(`schemaVersion: v1alpha1
+name: build
+description: Review in a copy.
+steps:
+  - id: copy
+    role: review
+    workspace: new
+    prompt: Review the change.
+  - id: clone
+    needs: []
+    workspace: { clone: { commit: ${COMMIT}, team: ${TEAM} } }
+    workflow:
+      steps:
+        - id: look
+          role: review
+          workspace: continue
+          prompt: Review the change.
+`)).toEqual([
+      { code: 'bad_role', message: 'workflows/build.yaml:6: field "steps[0].role": step "copy" has role review but opens no clone; set role on the step whose workspace is { clone: … }, and every step continuing that clone runs with it' },
+      { code: 'bad_role', message: 'workflows/build.yaml:15: field "steps[1].workflow.steps[0].role": step "look" has role review but opens no clone; set role on the step whose workspace is { clone: … }, and every step continuing that clone runs with it' },
+    ]);
+  });
+
+  it('refuses a role on a clone that installs no team, and a role that is not an id', () => {
+    expect(rejected(`schemaVersion: v1alpha1
+name: build
+description: Review in a clean clone.
+steps:
+  - id: bare
+    role: review
+    workspace: { clone: { commit: ${COMMIT}, team: { treatment: none } } }
+    prompt: Review the change.
+  - id: listed
+    needs: []
+    role: [review]
+    workspace: { clone: { commit: ${COMMIT}, team: ${TEAM} } }
+    prompt: Review the change.
+`)).toEqual([
+      { code: 'bad_role', message: 'workflows/build.yaml:6: field "steps[0].role": step "bare" has role review but its clone installs no team (team: { treatment: none }); give the clone a team revision and selection, or remove role' },
+      { code: 'bad_role', message: 'workflows/build.yaml:11: field "steps[1].role": step "listed" role must be the id of a role in manifest/roles.yaml, such as review' },
+    ]);
+  });
+});
+
 describe('finally', () => {
   const problems = (content: string): string[] => {
     const result = parse(content);
