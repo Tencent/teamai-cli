@@ -561,6 +561,29 @@ describe('#1083 workflow stats merge', () => {
     );
   });
 
+  it('counts a workflow total the stats file holds as text from zero instead of appending to it', async () => {
+    const { config, origin } = await reportsRemote('alice');
+    const clone = path.dirname(origin) + '/team-repo';
+    const git = simpleGit(clone);
+    await git.checkout(['--orphan', 'teamai-reports']);
+    await git.raw(['rm', '-rf', '--cached', '.']);
+    fs.mkdirSync(path.join(clone, 'stats'));
+    fs.writeFileSync(
+      path.join(clone, 'stats', 'alice.yaml'),
+      'skills: {}\nupdatedAt: 2026-10-13T00:00:00.000Z\nusername: alice\nworkflows:\n  runs: "3"\n  totalDurationMs: "1000"\n',
+    );
+    await git.add(['stats/alice.yaml']);
+    await git.commit('stats');
+    await git.push('origin', 'teamai-reports');
+    await git.checkout(['-f', 'main']);
+    await enqueueRecord(config, buildEndRecord(runState(), driver, 'alice'), {});
+
+    expect(await publishPendingRecords(config)).toEqual({ state: 'published' });
+
+    const stats = YAML.parse(await simpleGit(origin).show(['teamai-reports:stats/alice.yaml']));
+    expect(stats.workflows).toEqual({ runs: 1, succeeded: 1, failed: 0, totalDurationMs: 150000 });
+  });
+
   it('moves a run out of the stats of the member whose end another member replaced', async () => {
     const { config, origin } = await reportsRemote('bob');
     await enqueueRecord(config, buildEndRecord(runState({ status: 'failed' }), driver, 'alice'), {});

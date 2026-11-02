@@ -6,6 +6,7 @@ import fs from 'fs-extra';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+    getCacheStatus,
     loadCacheIndex,
     saveCacheIndex,
     statDirSize,
@@ -182,6 +183,25 @@ describe('cache-index', () => {
             // 不应因软链抛错
             const size = await statDirSize(dir);
             expect(size).toBeGreaterThan(0);
+        });
+    });
+
+    describe('getCacheStatus', () => {
+        it('totals only the entries that record a size, leaving out one without size_bytes', async () => {
+            await fs.ensureDir(path.join(tmpDir, 'github', 'acme', 'shop'));
+            await fs.ensureDir(path.join(tmpDir, 'github', 'acme', 'docs'));
+            await fs.writeFile(path.join(tmpDir, '.cache-index.json'), JSON.stringify({
+                version: 1,
+                updated_at: '2025-01-01T00:00:00.000Z',
+                entries: [
+                    { key: 'github/acme/shop', size_bytes: 1234, last_used: '2025-01-01T00:00:00.000Z' },
+                    { key: 'github/acme/docs', last_used: '2025-01-01T00:00:00.000Z' },
+                ],
+            }), 'utf8');
+
+            const status = await getCacheStatus();
+            expect(status.totalBytes).toBe(1234);
+            expect(status.entries.map((entry) => entry.key)).toEqual(['github/acme/shop']);
         });
     });
 

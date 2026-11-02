@@ -138,3 +138,39 @@ describe('computeMrHintOutput resolves the switch before it touches the repo', (
     }
   });
 });
+
+describe('computeMrHintOutput with a merged-PR list that holds a broken entry', () => {
+  let dir: string;
+
+  const ran = (stdout: string) => ({ pid: 0, output: [null, stdout, ''], stdout, stderr: '', status: 0, signal: null });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.mocked(spawnSync).mockClear();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('hints the PRs gh lists in full and skips the one without a title', async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-mrhint-'));
+    vi.stubEnv('HOME', dir);
+    vi.stubEnv('TEAMAI_MR_HINT_CWD', dir);
+    vi.stubEnv('TEAMAI_MR_HINT_DISABLED', '');
+    const mergedAt = new Date().toISOString();
+    vi.mocked(spawnSync)
+      .mockImplementationOnce(() => ran('https://github.com/acme/shop.git\n'))
+      .mockImplementationOnce(() => ran(JSON.stringify([
+        { number: 1, title: 'Fix the login redirect', url: 'https://github.com/acme/shop/pull/1', mergedAt },
+        { number: 2, url: 'https://github.com/acme/shop/pull/2', mergedAt },
+      ])));
+
+    const output = await computeMrHintOutput('en', null);
+
+    expect(output).not.toBeNull();
+    const hint: string = JSON.parse(output ?? '').hookSpecificOutput.additionalContext;
+    expect(hint).toContain('Found 1 recently merged MR(s)');
+    expect(hint).toContain('- Fix the login redirect');
+    expect(hint).toContain('https://github.com/acme/shop/pull/1');
+    expect(hint).not.toContain('https://github.com/acme/shop/pull/2');
+    expect(hint).not.toContain('undefined');
+  });
+});

@@ -48,6 +48,10 @@ describe('agy hook payloads', () => {
     expect(agyHookPayload('stop', COMMON)).toMatchObject({ transcript_path: COMMON.transcriptPath });
   });
 
+  it.each(['constructor', 'toString', '__proto__'])('passes a tool named %s through by that name', (name) => {
+    expect(agyHookPayload('pre-tool-use', { ...COMMON, toolCall: { name, args: {} } })).toMatchObject({ tool_name: name });
+  });
+
   it('names the session start and stop events', () => {
     expect(agyHookPayload('session-start', COMMON)).toMatchObject({ hook_event_name: 'SessionStart', cwd: '/work/shop' });
     expect(agyHookPayload('stop', { ...COMMON, terminationReason: 'NO_TOOL_CALL' })).toMatchObject({ hook_event_name: 'Stop' });
