@@ -11,6 +11,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { isPlaceableType } from '../../push-namespaces.js';
 import { isSelfMode, LocalConfigSchema, type LocalConfig } from '../../types.js';
 import { NON_INTERACTIVE_GIT_ENV } from '../../utils/git-env.js';
 import { isSilent, setSilent } from '../../utils/logger.js';
@@ -99,6 +100,49 @@ export async function openTeamClone(input: { config: LocalConfig; run: RunId; st
 }
 
 /**
+ * The files the commit `to` changes against `base` in the clone at `root`, as paths in `dir`, with the ones `teamai pull`
+ * would not place, each as `<file>: <why>`: one outside `dir`, outside a directory pull places, a symlink or a
+ * submodule, or a benchmark file in no suite.
+ */
+async function unplacedTeamFiles(input: { root: string; dir: string; base: string; to: string }): Promise<{ files: Set<string>; unplaced: string[] }> {
+  const { root, dir, base, to } = input;
+  const relative = path.relative(root, dir).split(path.sep).join('/');
+  const under = relative === '' ? '' : `${relative}/`;
+  const changed = await git(root, ['diff', '--no-renames', '--name-only', '-z', base, to, '--']);
+  const listed = await git(root, ['ls-tree', '-r', '-z', '--full-tree', to]);
+  const modes = new Map<string, string>();
+
+  for (const entry of listed.stdout.split('\0').filter(Boolean)) {
+    const tab = entry.indexOf('\t');
+    modes.set(entry.slice(tab + 1), entry.slice(0, entry.indexOf(' ')));
+  }
+
+  const suites = [...modes.keys()].flatMap((file) => (file.startsWith(`${under}benchmarks/`) && file.endsWith('/suite.yaml') ? [file.slice(under.length, -'suite.yaml'.length)] : []));
+  const files = new Set<string>();
+  const unplaced: string[] = [];
+
+  for (const file of changed.stdout.split('\0').filter(Boolean)) {
+    if (!file.startsWith(under)) {
+      unplaced.push(`${file}: outside ${under}, where the team files are`);
+      continue;
+    }
+
+    const teamPath = file.slice(under.length);
+    const [top = '', ...below] = teamPath.split('/');
+    const mode = modes.get(file);
+
+    if (!isPlaceableType(top) || below.length === 0) unplaced.push(`${teamPath}: not in a directory teamai pulls, such as skills/, rules/, scorers/ or benchmarks/`);
+    else if (mode === '120000') unplaced.push(`${teamPath}: a symlink, which teamai pull does not place`);
+    else if (mode === '160000') unplaced.push(`${teamPath}: a submodule, which teamai pull does not place`);
+    else if (top === 'benchmarks' && mode !== undefined && !suites.some((suite) => teamPath.startsWith(suite))) {
+      unplaced.push(`${teamPath}: in no suite, since no directory above it under benchmarks/ has a suite.yaml`);
+    } else files.add(teamPath);
+  }
+
+  return { files, unplaced };
+}
+
+/**
  * What `teamai pull` would say against the team files in `dir` that `files` names, each as `<file>:<line>: <message>`:
  * workflows, scorers and suites, read as a review of a branch reads them, without this machine's cache.
  */
@@ -126,7 +170,7 @@ async function rejectedTeamFiles(dir: string, files: ReadonlySet<string>): Promi
 
 /**
  * Commits what `step` left in the clone at `root`, deletions included, and pushes it to `branch` while origin still has
- * the branch at `found`, or still has none, unless a team file it changed is one `teamai pull` would reject. The
+ * the branch at `found`, or still has none, unless a file it changed is one `teamai pull` would not place or would reject. The
  * changes run from the commit the branch had, so they hold the merge of the default branch too. `dir` is where the
  * team files are: `root`, or its `.teamai/` in single-repo mode.
  */
@@ -141,8 +185,8 @@ export async function finishTeamClone(input: { root: string; dir: string; step: 
 
   // Nothing beyond what origin has: no push, and nothing to deliver unless the branch already holds work.
   if (committed.to === base || committed.to === found) return { changes };
-  const changed = await git(dir, ['diff', '--relative', '--no-renames', '--name-only', '-z', base, committed.to, '--']);
-  const rejected = await rejectedTeamFiles(dir, new Set(changed.stdout.split('\0').filter(Boolean)));
+  const { files, unplaced } = await unplacedTeamFiles({ root, dir, base, to: committed.to });
+  const rejected = [...unplaced, ...await rejectedTeamFiles(dir, files)];
 
   if (rejected.length > 0) {
     return {

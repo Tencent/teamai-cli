@@ -52,10 +52,10 @@ describe('a step in the team workspace, run through the real CLI', () => {
   const onBranch = (file: string): string => git(['show', `${BRANCH}:${file}`]);
   const filesOnBranch = (): string[] => git(['ls-tree', '-r', '--name-only', BRANCH]).split('\n');
 
-  /** Runs edit-team on topic alpha with the local driver, or `workflow` on `inputs`; `script` is what its step does in the team clone. */
-  const run = async (script: string, { workflow = 'edit-team', inputs = { topic: 'alpha' } }: { workflow?: string; inputs?: Record<string, string> } = {}): Promise<{ outcome: unknown; state: z.infer<typeof RunSchema>; said: string }> => {
+  /** Runs edit-team on topic alpha with the local driver, or workflow `name` on `inputs`; `script` is what its step does in the team clone. */
+  const run = async (script: string, { name = 'edit-team', inputs = { topic: 'alpha' } }: { name?: string; inputs?: Record<string, string> } = {}): Promise<{ outcome: unknown; state: z.infer<typeof RunSchema>; said: string }> => {
     fs.writeFileSync(edit, script);
-    const ran = await fixture.teamai(['workflow', 'start', workflow, '--driver', 'local', '--inputs', JSON.stringify(inputs)]);
+    const ran = await fixture.teamai(['workflow', 'start', name, '--driver', 'local', '--inputs', JSON.stringify(inputs)]);
     const done = z.object({ run: z.string(), outcome: z.string() }).safeParse(envelope(ran).data?.done);
     if (!done.success) throw new Error(`no run: ${said(ran)}`);
     return { outcome: done.data.outcome, state: RunSchema.parse(fixture.runFile(done.data.run)), said: said(ran) };
@@ -129,10 +129,37 @@ describe('a step in the team workspace, run through the real CLI', () => {
     expect(branchHead()).toBe(before);
   }, 120_000);
 
+  it('pushes nothing teamai pull would not place, and names each file with why', async () => {
+    const before = branchHead();
+
+    const refused = await run([
+      "const fs = require('fs');",
+      "fs.writeFileSync('notes.txt', 'loose\\n');",
+      "fs.symlinkSync('notes.md', 'rules/link.md');",
+      "fs.mkdirSync('benchmarks/nowhere/tasks', { recursive: true });",
+      "fs.writeFileSync('benchmarks/nowhere/tasks/orphan.yaml', 'prompt: nothing runs this\\n');",
+      "fs.mkdirSync('benchmarks/broken', { recursive: true });",
+      "fs.writeFileSync('benchmarks/broken/suite.yaml', 'schemaVersion: v1alpha1\\nname: broken\\n');",
+    ].join('\n'));
+
+    expect(refused.outcome, refused.said).toBe('failed');
+    const failure = refused.state.steps.find((step) => step.id === 'edit')?.failure;
+    expect(failure?.code).toBe('push_failed');
+    const lines = failure?.message.split('\n') ?? [];
+    expect(lines[0]).toBe('Step "edit" left team files teamai pull would reject, so nothing was pushed to teamai/notes/alpha:');
+    expect(lines).toEqual(expect.arrayContaining([
+      'notes.txt: not in a directory teamai pulls, such as skills/, rules/, scorers/ or benchmarks/',
+      'rules/link.md: a symlink, which teamai pull does not place',
+      'benchmarks/nowhere/tasks/orphan.yaml: in no suite, since no directory above it under benchmarks/ has a suite.yaml',
+      expect.stringMatching(/^benchmarks\/broken\/suite\.yaml:\d+: /),
+    ]));
+    expect(branchHead()).toBe(before);
+  }, 120_000);
+
   it('runs nothing on the team repo\'s default branch, so no change skips review', async () => {
     const main = git(['rev-parse', 'main']);
 
-    const refused = await run("require('fs').appendFileSync('rules/notes.md', 'unreviewed\\n');", { workflow: 'edit-any', inputs: { branch: 'main' } });
+    const refused = await run("require('fs').appendFileSync('rules/notes.md', 'unreviewed\\n');", { name: 'edit-any', inputs: { branch: 'main' } });
 
     expect(refused.outcome, refused.said).toBe('failed');
     expect(refused.state.steps.find((step) => step.id === 'edit')?.failure).toEqual({
