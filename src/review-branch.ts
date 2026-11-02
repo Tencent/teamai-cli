@@ -1207,7 +1207,7 @@ async function workflowFindings(repoDir: string, received: readonly Received[]):
         path: diagnostic.file,
         message: formatDiagnostic(diagnostic),
       })),
-      ...await invokeAliasFindings(repoDir),
+      ...await newerWorkflowKeyFindings(repoDir),
     ];
   } finally {
     setSilent(wasSilent);
@@ -1219,7 +1219,7 @@ async function workflowFindings(repoDir: string, received: readonly Received[]):
  * A warning on each valid workflow file that sets `invoke`, `alias`, `defaults.role` or a step `role`: a member or CI
  * job on an older CLI drops the whole workflow, and nothing refuses that older CLI.
  */
-async function invokeAliasFindings(repoDir: string): Promise<Finding[]> {
+async function newerWorkflowKeyFindings(repoDir: string): Promise<Finding[]> {
   const findings: Finding[] = [];
   const files = (await listRepoFilesRecursive(path.join(repoDir, 'workflows'))).filter((file) => file.endsWith('.yaml')).sort();
 

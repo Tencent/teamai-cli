@@ -379,11 +379,12 @@ export type HostPlacePrepared =
 type Leased = { kind: 'leased'; lease: PlaceLease; root: string; others: AttemptId[]; mode?: RunMode };
 
 /**
- * `report` with what teamai knows of a prompt it prepared a clone for, whatever the driver says of it: the team revision
- * and project commit it observed of the clone, and the exact model and effort the step asked for. So the step records
- * what its tool ran on. Unchanged when the report names no tool, or the attempt runs in no clone this machine prepared.
+ * `report` with what teamai knows of a prompt it prepared a copy for, whatever the driver says of it: in a clone, the team
+ * revision and project commit it observed of the clone, and the exact model and effort the step asked for; in a worktree
+ * copy that runs with a role, the team it delivered there. So the step records what its tool ran on. Unchanged when the
+ * report names no tool, or the attempt runs in no such copy this machine prepared.
  */
-async function withPreparedClone(config: LocalConfig, runId: RunId, report: ReportInput): Promise<ReportInput> {
+async function withPreparedCopy(config: LocalConfig, runId: RunId, report: ReportInput): Promise<ReportInput> {
   const tool = report.tool ?? report.agent?.tool?.name;
 
   if (tool === undefined) return report;
@@ -604,7 +605,7 @@ export function inProcessClient({ config, env }: { config: LocalConfig; env: Wor
 
       if (isRefusal(parsed)) return { error: { code: 'invalid_report', message: parsed } };
       const run = RunIdSchema.safeParse(runId);
-      const report = run.success ? await withPreparedClone(config, run.data, parsed.report) : parsed.report;
+      const report = run.success ? await withPreparedCopy(config, run.data, parsed.report) : parsed.report;
 
       return withIgnored(await managedReport({ config, runId, report, secrets: env.secrets, lock: options?.lock }), parsed.ignored);
     },

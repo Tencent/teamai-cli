@@ -17,13 +17,13 @@ interface Level extends RoleLevel {
   /** Where this file writes the step; undefined for a step of a workflow file it runs by name. */
   written?: { field: string; item: Node | undefined };
   /** Whether the `defaultRole` in effect is this file's own `defaults.role`. */
-  ownDefaults: boolean;
+  isOwnDefaultRole: boolean;
 }
 
 /** The `defaults.role` in effect, and whether it is this file's own. */
 interface Defaults {
   role?: string;
-  own: boolean;
+  isOwn: boolean;
 }
 
 /**
@@ -41,8 +41,8 @@ interface Caller {
 interface RoleSource {
   node: Node | undefined;
   field: string;
-  unconsumed: string;
-  consumed: boolean;
+  unconsumedMessage: string;
+  isConsumed: boolean;
 }
 
 /**
@@ -150,8 +150,8 @@ export function roleDiagnostics(root: Node, workflow: { defaults?: WorkflowDefau
 
   if (defaultRole !== undefined) {
     sources.set('defaults.role', {
-      node: valueNode(valueNode(root, 'defaults'), 'role'), field: 'defaults.role', consumed: false,
-      unconsumed: `defaults.role ${defaultRole} is the role of no step: no step that names no role of its own opens or continues a copy, so none runs with it; give such a step workspace: new, or remove defaults.role`,
+      node: valueNode(valueNode(root, 'defaults'), 'role'), field: 'defaults.role', isConsumed: false,
+      unconsumedMessage: `defaults.role ${defaultRole} is the role of no step: no step that names no role of its own opens or continues a copy, so none runs with it; give such a step workspace: new, or remove defaults.role`,
     });
   }
 
@@ -161,10 +161,10 @@ export function roleDiagnostics(root: Node, workflow: { defaults?: WorkflowDefau
 
     if (resolved === undefined) return;
     const level = resolved.from === 'defaults' ? undefined : levels[resolved.from];
-    const key = resolved.from === 'defaults' ? (levels.at(-1)?.ownDefaults ? 'defaults.role' : undefined) : level?.written && `${level.written.field}.role`;
+    const key = resolved.from === 'defaults' ? (levels.at(-1)?.isOwnDefaultRole ? 'defaults.role' : undefined) : level?.written && `${level.written.field}.role`;
     const source = key === undefined ? undefined : sources.get(key);
 
-    if (source) source.consumed = true;
+    if (source) source.isConsumed = true;
   };
 
   /**
@@ -222,7 +222,7 @@ export function roleDiagnostics(root: Node, workflow: { defaults?: WorkflowDefau
       copyRole: copy.runsWith.kind === 'role' ? writtenRole(copy.runsWith.role) : undefined,
     };
 
-    const own = resolved.from === 'defaults' ? (last.ownDefaults ? sources.get('defaults.role') : undefined)
+    const own = resolved.from === 'defaults' ? (last.isOwnDefaultRole ? sources.get('defaults.role') : undefined)
       : named?.written && { node: valueNode(named.written.item, 'role'), field: `${named.written.field}.role` };
 
     if (own) report('bad_role', own.node, own.field, roleConflictMessage(conflict));
@@ -290,7 +290,7 @@ export function roleDiagnostics(root: Node, workflow: { defaults?: WorkflowDefau
       const item: unknown = isSeq(node) ? node.items[index] : undefined;
 
       return {
-        ...roleLevelOf(step, defaults.role), label: `step "${step.id}"`, ownDefaults: defaults.own,
+        ...roleLevelOf(step, defaults.role), label: `step "${step.id}"`, isOwnDefaultRole: defaults.isOwn,
         ...(caller ? {} : { written: { field: `${at}steps[${index}]`, item: isYamlNode(item) ? item : undefined } }),
       };
     };
@@ -302,8 +302,8 @@ export function roleDiagnostics(root: Node, workflow: { defaults?: WorkflowDefau
 
       if (step.role !== undefined && runs !== undefined && level.written) {
         sources.set(`${level.written.field}.role`, {
-          node: valueNode(level.written.item, 'role'), field: `${level.written.field}.role`, consumed: false,
-          unconsumed: `${level.label} has role ${step.role}, but no step in it that names no role of its own opens or continues a copy, so none runs with it; give such a step workspace: new, or remove role`,
+          node: valueNode(level.written.item, 'role'), field: `${level.written.field}.role`, isConsumed: false,
+          unconsumedMessage: `${level.label} has role ${step.role}, but no step in it that names no role of its own opens or continues a copy, so none runs with it; give such a step workspace: new, or remove role`,
         });
       }
 
@@ -324,7 +324,7 @@ export function roleDiagnostics(root: Node, workflow: { defaults?: WorkflowDefau
           if (!child) consume(levels);
           else {
             walk(child.steps, {
-              node: undefined, at: '', outer: levels, defaults: child.defaults?.role !== undefined ? { role: child.defaults.role, own: false } : defaults,
+              node: undefined, at: '', outer: levels, defaults: child.defaults?.role !== undefined ? { role: child.defaults.role, isOwn: false } : defaults,
               caller: {
                 step: caller?.step ?? level.label, node: caller?.node ?? valueNode(level.written?.item, 'workflow'),
                 field: caller?.field ?? `${level.written?.field ?? at}.workflow`, runs: [...caller?.runs ?? [], runs.name],
@@ -355,10 +355,10 @@ export function roleDiagnostics(root: Node, workflow: { defaults?: WorkflowDefau
     });
   };
 
-  walk(workflow.steps, { node: valueNode(root, 'steps'), at: '', outer: [], defaults: { ...(defaultRole !== undefined ? { role: defaultRole } : {}), own: true }, caller: undefined });
+  walk(workflow.steps, { node: valueNode(root, 'steps'), at: '', outer: [], defaults: { ...(defaultRole !== undefined ? { role: defaultRole } : {}), isOwn: true }, caller: undefined });
 
   for (const source of sources.values()) {
-    if (!source.consumed) report('bad_role', source.node, source.field, source.unconsumed);
+    if (!source.isConsumed) report('bad_role', source.node, source.field, source.unconsumedMessage);
   }
 
   return diagnostics;

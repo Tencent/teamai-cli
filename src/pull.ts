@@ -1383,7 +1383,7 @@ export function deliverySelection(localConfig: LocalConfig): DeliverySelection {
  * clear lastPullRev; an assignment arrives with a fetch, and a copy's role
  * with no command at all, so the fast path has to compare these itself.
  */
-function assignedRolePart(selection: DeliverySelection): Pick<DeliverySelection, 'primaryRole' | 'additionalRoles' | 'rolesAssigned' | 'stepRole'> {
+function rolesDeliveredFor(selection: DeliverySelection): Pick<DeliverySelection, 'primaryRole' | 'additionalRoles' | 'rolesAssigned' | 'stepRole'> {
   return { primaryRole: selection.primaryRole, additionalRoles: [...selection.additionalRoles].sort(), rolesAssigned: selection.rolesAssigned ?? false, stepRole: selection.stepRole };
 }
 
@@ -2131,7 +2131,7 @@ async function pullForScope(
       // fast path before. A record without a selection is from an older CLI
       // and is read as unchanged.
       const sameRoles = checkout?.selection === undefined
-        || isDeepStrictEqual(assignedRolePart(checkout.selection), assignedRolePart(deliverySelection(localConfig)));
+        || isDeepStrictEqual(rolesDeliveredFor(checkout.selection), rolesDeliveredFor(deliverySelection(localConfig)));
 
       if (!sameRoles) log.debug(`[${scopeLabel}] The roles delivered for changed, syncing`);
 
