@@ -16,6 +16,16 @@ This repository's own lint rules. `npm run lint` loads them through `jsPlugins` 
 | `teamai/config-load-options` | Missing preview options at named `loadLocalConfig`, `loadLocalConfigForScope`, and `autoDetectInit` calls outside their owner. Forwarded options are accepted; wrapper behavior still needs tests. |
 | `teamai/remove-delivered` | A bare `remove(` of a delivered copy in pull's files, which leaves a stale entry on the delivery record (#1577). Use `removeDelivered(ledger, dest)`. It checks only the files in `PULL_SIDE_FILES`: a new file that deletes delivered copies must be added there. |
 | `teamai/tool-facts` | A list of tool ids, or a table keyed by tool that leaves some out, outside `src/tools.ts`. Put the fact in `TOOLS`, or key the table by every tool (`Record<ToolId, ...>`), so a new tool fails the type check until it is decided. An ordered registry, an alias map or a frozen history table carries an explained disable. |
+| `teamai/suppression-reason` | An `oxlint-disable` / `eslint-disable`, or a `@ts-expect-error` / `@ts-ignore` / `@ts-nocheck`, that says nothing about why. End it with `-- reason` (after a TypeScript directive, just the reason), or put the reason in a comment on the line above. |
+
+The plugin also carries the generic rules of [dmmulroy/anti-slop](https://github.com/dmmulroy/anti-slop), vendored in `anti-slop/` (`anti-slop/UPSTREAM.md` says from where). They report as `teamai/<rule>` and hold production code only; tests are exempt. Each message names its fix, for example:
+
+| You wrote | `npm run lint` says | Fix |
+|---|---|---|
+| `typeof payload.session_id === 'string'` on parsed hook JSON | `` teamai(no-runtime-typeof): A `typeof` check narrows a representation without establishing its contract. `` | Parse the payload with a zod schema where it comes in, then read `parsed.data.session_id`. |
+| `return name as ToolId;` | `` teamai(require-safety-comment-for-type-assertion): This type assertion has no `SAFETY:` justification. `` | Drop the cast, or write the check that makes it true on the line above: `// SAFETY: the includes() check above proves name is a ToolId.` |
+| `const body: Record<string, unknown> = { name, private: true }` | `` teamai(no-known-value-widening): The explicit open dictionary type on binding `body` discards known type evidence. `` | `const body = { name, private: true }` |
+| `items.filter((item) => item.active).map((item) => item.id)` | `` teamai(no-array-filter-map): Avoid consecutive array `filter` and `map` passes. `` | `items.flatMap((item) => (item.active ? [item.id] : []))` |
 
 ## Add a rule
 

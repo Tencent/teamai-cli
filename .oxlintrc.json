@@ -1,6 +1,12 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
   "jsPlugins": ["./oxlint-plugin-teamai/index.js"],
+  // Vendored unchanged from dmmulroy/anti-slop, and linted there.
+  "ignorePatterns": [
+    "oxlint-plugin-teamai/anti-slop/rules/**",
+    "oxlint-plugin-teamai/anti-slop/shared/**",
+    "oxlint-plugin-teamai/anti-slop/vendor/**"
+  ],
   "categories": {
     "suspicious": "warn",
     "perf": "warn"
@@ -40,10 +46,8 @@
     "typescript/require-array-sort-compare": "off",
     "typescript/restrict-template-expressions": "off",
     "typescript/unbound-method": "off",
-    // Enabling the suspicious/perf categories below also reaches the
-    // type-aware typescript/* rules in those categories. Type-aware linting
-    // beyond no-floating-promises/no-misused-promises remains a separate
-    // follow-up under #836; #863 already enabled the two promise rules.
+    // The suspicious/perf categories also reach these type-aware rules; only
+    // no-floating-promises and no-misused-promises (#863) are on so far.
     "typescript/no-unsafe-type-assertion": "off",
     "typescript/no-unnecessary-type-assertion": "off",
     "typescript/no-unnecessary-type-conversion": "off",
@@ -82,9 +86,47 @@
     "teamai/windows-tests": "error",
     "teamai/rules-locate": "error",
     "teamai/workflow-failure-codes": "error",
-    "teamai/tool-facts": "error"
+    "teamai/tool-facts": "error",
+    // A reducer that copies its accumulator each step is quadratic.
+    "oxc/no-accumulating-spread": "warn",
+    // The generic rules of dmmulroy/anti-slop (#828), vendored in
+    // oxlint-plugin-teamai/anti-slop. Production code only: see overrides.
+    "teamai/no-module-mocking": "warn",
+    "teamai/no-reduce-accumulator-copy": "warn",
+    "teamai/no-reflect-apply": "warn",
+    "teamai/no-reflect-get": "warn",
+    "teamai/no-unknown-type-aliases": "warn",
+    "teamai/no-widen-then-assert": "warn",
+    // A suppression with no reason can't be reviewed or removed later.
+    "teamai/suppression-reason": "error"
   },
   "overrides": [
+    {
+      // The anti-slop rules hold production code. Tests build partial and
+      // malformed values on purpose, and CONTRIBUTING asks them to mock
+      // external I/O (git, fetch, child_process) at the module boundary.
+      "files": ["src/__tests__/**", "**/*.test.ts", "oxlint-plugin-teamai/test/**"],
+      "rules": {
+        "teamai/no-array-filter-map": "off",
+        "teamai/no-chained-type-assertions": "off",
+        "teamai/no-conditional-empty-object-spread": "off",
+        "teamai/no-known-value-widening": "off",
+        "teamai/no-module-mocking": "off",
+        "teamai/no-object-parameters": "off",
+        "teamai/no-reduce-accumulator-copy": "off",
+        "teamai/no-reflect-apply": "off",
+        "teamai/no-reflect-get": "off",
+        "teamai/no-runtime-typeof": "off",
+        "teamai/no-shape-in-symbol-names": "off",
+        "teamai/no-unknown-parameters": "off",
+        "teamai/no-unknown-returns": "off",
+        "teamai/no-unknown-type-aliases": "off",
+        "teamai/no-unsafe-dictionary-type": "off",
+        "teamai/no-widen-then-assert": "off",
+        "teamai/require-readable-spacing": "off",
+        "teamai/require-safety-comment-for-type-assertion": "off"
+      }
+    },
     {
       "files": ["src/__tests__/**"],
       "rules": {

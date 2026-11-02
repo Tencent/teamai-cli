@@ -302,8 +302,9 @@ const RUN_REWRITES = {
 function handed<T extends object, R extends FieldRules<T>>(value: T, rules: R, rewrites: Rewrites<T, R>): Record<string, unknown> {
   const entries: Array<[string, unknown]> = Object.entries(rules);
   const builders: Array<(value: T) => Record<string, unknown>> = Object.values(rewrites);
+  const fields = new Map(Object.entries(value));
   const kept = entries.flatMap(([key, rule]) => {
-    const field: unknown = Reflect.get(value, key);
+    const field: unknown = fields.get(key);
     return rule === 'publish' && field !== undefined ? [[key, field] as const] : [];
   });
   return Object.assign(Object.fromEntries(kept), ...builders.map((build) => build(value)));

@@ -153,7 +153,7 @@ console.log(JSON.stringify({ type: 'result', structured_output: { label: 'thorou
       const done = literal(`teamai workflow next ${turn.run} --driver skill`).data.turn;
       expect(done).toMatchObject({ status: 'done', events: [{ kind: 'settled', step: 'review', outcome: 'success' }, { kind: 'judging', step: 'review', scorers: ['review-quality'] }],
         actions: [{ kind: 'done', outcome: 'succeeded', judging: { step: 'review', scorers: ['review-quality'] } }],
-        // oxlint-disable-next-line unicorn/no-thenable
+        // oxlint-disable-next-line unicorn/no-thenable -- a workflow turn names its next step `then`; it is data, not a promise method
         then: { kind: 'poll' } });
       const judged = literal(done.then.run, 120_000).data.turn;
       expect(judged).toEqual({ run: turn.run, status: 'done', running: [], events: [{ kind: 'judged', step: 'review', scorer: 'review-quality', label: 'thorough' }], actions: [{ kind: 'done', outcome: 'succeeded', prs: [] }] });

@@ -1,3 +1,4 @@
+import { register } from 'node:module';
 import { definePlugin } from '@oxlint/plugins';
 
 import homeEnv from './rules/home-env.js';
@@ -12,6 +13,14 @@ import rulesLocate from './rules/rules-locate.js';
 import workflowFailureCodes from './rules/workflow-failure-codes.js';
 import configLoadOptions from './rules/config-load-options.js';
 import toolFacts from './rules/tool-facts.js';
+import suppressionReason from './rules/suppression-reason.js';
+
+// The anti-slop rules are vendored TypeScript. oxlint imports plugins with plain
+// Node, and `npm run lint` runs on Node 20 in CI, which can't import TypeScript:
+// load them through the esbuild loader the scripts use.
+register('../scripts/typescript-loader.mjs', import.meta.url);
+
+const { antiSlopRules } = await import('./anti-slop/index.ts');
 
 export default definePlugin({
   meta: { name: 'teamai' },
@@ -28,5 +37,7 @@ export default definePlugin({
     'remove-delivered': removeDelivered,
     'learnings-root': learningsRoot,
     'tool-facts': toolFacts,
+    'suppression-reason': suppressionReason,
+    ...antiSlopRules,
   },
 });
