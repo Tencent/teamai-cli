@@ -574,7 +574,7 @@ const ADAPTER_BUILTIN_HOOKS: Record<HookAdapterId, AdapterBuiltinHooks | null> =
 export function installedBuiltinHookDefs(tool: string, settingsDriven: boolean): HookDef[] {
   if (settingsDriven) return builtinHookDefs(tool);
   const channel = channelsOf(tool).hooks.user;
-  const adapter = typeof channel === 'object' && channel.channel === 'adapter' ? ADAPTER_BUILTIN_HOOKS[channel.adapter] : null;
+  const adapter = channel !== 'none' && channel !== 'unknown' && channel.channel === 'adapter' ? ADAPTER_BUILTIN_HOOKS[channel.adapter] : null;
 
   if (!adapter) return [];
 

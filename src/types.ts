@@ -1703,10 +1703,10 @@ export type ManagedMcpManifest = Record<string, ManagedMcpRecord[]>;
  * target can update and clean what the other's pull wrote, instead of a
  * per-tool claim the sibling's reconcile would skip as foreign.
  */
-const MCP_MANIFEST_KEY_ALIAS: ReadonlyMap<string, string> = new Map([
+const MCP_MANIFEST_KEY_ALIAS: ReadonlyMap<string, string> = new Map(Object.entries({
   // Trae and Trae CN map the same <root>/.trae/mcp.json (#904).
-  ['trae-cn', 'trae'],
-]);
+  'trae-cn': 'trae',
+}));
 
 export function managedMcpManifestKey(tool: string, projectScope: boolean): string {
   const owner = MCP_MANIFEST_KEY_ALIAS.get(tool) ?? tool;

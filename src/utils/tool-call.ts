@@ -22,7 +22,7 @@ import { resolveHookCwd } from './hook-cwd.js';
 import { classifyShellCommand } from './shell-command.js';
 import { normalizeToolName } from './tool-names.js';
 import { z } from 'zod';
-import { HookPayloadSchema, type HookPayload, type ToolId } from '../types.js';
+import { HookPayloadSchema, type HookPayload } from '../types.js';
 import { isToolId, TOOLS } from '../tools.js';
 
 /** What a call did: `read`/`search`/`list` whether a tool or a shell command did it; `shell` for any other shell call. */

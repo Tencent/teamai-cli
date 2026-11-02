@@ -474,7 +474,7 @@ function isOpenEndedDiscovery(internal: ConfigObject, entries: ConfigObject): bo
 }
 
 /** True when this openclaw.json loads teamai's workspace hook: internal hooks on and its entry enabled. */
-export function openclawHookEnabledIn(config: Record<string, unknown>): boolean {
+export function openclawHookEnabledIn(config: ConfigObject): boolean {
   const internal = internalHooksOf(config);
 
   return internal.enabled !== false && childObject(childObject(internal, 'entries'), OPENCLAW_HOOK_KEY)?.enabled === true;

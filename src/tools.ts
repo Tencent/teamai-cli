@@ -1742,7 +1742,7 @@ export function channelsOf(tool: string): Pick<ToolDescriptor, 'rules' | 'blocks
 export function selfLocalSettingsOf(tool: string): string | null {
   const self = channelsOf(tool).hooks.self;
 
-  if (typeof self !== 'object' || self.reads === 'unknown') return null;
+  if (self === 'user' || self === 'none' || self === 'unknown' || self.reads === 'unknown') return null;
 
   return self.reads.find((read) => read.base === 'project' && read.path.endsWith('/settings.local.json'))?.path ?? null;
 }

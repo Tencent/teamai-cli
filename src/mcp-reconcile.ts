@@ -1609,7 +1609,7 @@ export async function unclaimedMcpServers(target: McpTarget, claimed: readonly s
 function neverJudgedTeamaiOnly(tool: string, localConfig: LocalConfig): boolean {
   const project = channelsOf(tool).mcp.project;
 
-  return typeof project === 'object' && !project.judgedTeamaiOnly && !(tool === 'claude' && isSelfMode(localConfig));
+  return project !== 'none' && project !== 'unknown' && !project.judgedTeamaiOnly && !(tool === 'claude' && isSelfMode(localConfig));
 }
 
 /**

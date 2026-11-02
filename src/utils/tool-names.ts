@@ -28,7 +28,7 @@ export function normalizeToolName(name: string): string {
   return IDE_TO_CLI.get(name) ?? name;
 }
 
-// oxlint-disable-next-line teamai/tool-facts -- aliases: a tool left out is its own agent type, the right default for a new tool
+// A tool left out is its own agent type, the right default for a new tool.
 const AGENT_TYPE_ALIASES = new Map(Object.entries({
   tcodex: 'codex',
   'codex-internal': 'codex',
@@ -51,6 +51,7 @@ export function normalizeAgentType(name: string): string {
  * `src/tools.ts` holds data and type-only imports, so loading it costs little.
  */
 export type CodexToolId = { [T in ToolId]: (typeof TOOLS)[T]['launch'] extends 'codex' ? T : never }[ToolId];
+
 export const CODEX_TOOL_IDS: readonly CodexToolId[] = TOOL_IDS.filter((tool): tool is CodexToolId => TOOLS[tool].launch === 'codex');
 
 /** Whether `tool` runs Codex (`CODEX_TOOL_IDS`). */

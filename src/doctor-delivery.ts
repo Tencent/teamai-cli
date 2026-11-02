@@ -3033,8 +3033,10 @@ export async function buildInstructionDeliveryChecks(ctx: DoctorContext): Promis
       check: async () => channel.ready && overLimit === null,
       fix: channel.ready ? overLimit ?? '' : channel.fix,
     });
+
     if (hook.probe === 'hermes-plugin' && channel.ready) {
       const check = await hermesSectionCheck();
+
       if (check !== null) checks.push(check);
     }
   }
@@ -3074,6 +3076,7 @@ async function hermesSectionCheck(): Promise<Check | null> {
   const name = 'Hermes\'s last logged session took teamai\'s instructions section';
   // Hermes logs a rendered section at INFO: below that level an old skip stays the last line.
   const lastSession = (at: string) => `The Hermes session at ${at} got none of the team instructions`;
+
   switch (section.kind) {
     case 'unseen':
       return null;
@@ -3107,6 +3110,7 @@ async function hermesSectionCheck(): Promise<Check | null> {
       };
     default: {
       const unhandled: never = section;
+
       return unhandled;
     }
   }

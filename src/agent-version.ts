@@ -140,6 +140,7 @@ const DETECTORS: Record<ToolId, VersionDetector | null> = {
 /** The detector for `agentType`: a tool's, or the CodeBuddy IDE's (`codebuddy-ide`). */
 function detectorOf(agentType: string): VersionDetector | null {
   if (agentType === 'codebuddy-ide') return detectCodebuddyIdeVersion;
+
   return isToolId(agentType) ? DETECTORS[agentType] : null;
 }
 

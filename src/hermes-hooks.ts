@@ -63,15 +63,21 @@ export async function lastInstructionsSection(home = toolHome('hermes')): Promis
   const id = HERMES_INSTRUCTIONS_SECTION.replaceAll('.', '\\.');
   const rendered = new RegExp(`: Session plugin prompt section: id=${id} `);
   const skipped = new RegExp(`: Plugin system prompt section ${id} (?:\\([^)]*\\) )?(.+)$`);
+
   // Python writes the log in text mode: CRLF on Windows.
   for (const line of (agentLog ?? '').split(/\r?\n/).toReversed()) {
     const at = line.slice(0, 19);
+
     if (rendered.test(line)) return { kind: 'rendered', at };
     const reason = skipped.exec(line)?.[1];
+
     if (reason === undefined) continue;
+
     if (/^exceeded the (?:aggregate session|section-count) budget/.test(reason)) return { kind: 'crowded-out', at, reason };
+
     return { kind: reason.startsWith('exceeded max_chars') ? 'too-long' : 'skipped', at, reason };
   }
+
   return { kind: 'unseen' };
 }
 
