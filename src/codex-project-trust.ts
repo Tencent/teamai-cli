@@ -4,9 +4,16 @@
  * evaluates it, because the verdict needs a TOML parse and git's checkout
  * anchors. Read-only: granting trust is codex-trust.ts.
  */
+import { z } from 'zod';
 import type { ReadGate } from './locate.js';
 import { pathExists, readFileSafe } from './utils/fs.js';
 import { withoutTomlBom } from './utils/toml.js';
+
+/** Codex's `[projects]` table, keyed by directory; anything but a table holds no entries. */
+const CodexProjectsTableSchema = z.record(z.string(), z.unknown());
+
+/** A `[projects."<dir>"]` entry; one without a string `trust_level` decides nothing. */
+const CodexProjectEntrySchema = z.object({ trust_level: z.string() });
 
 export type CodexProjectTrust =
   | { readonly kind: 'trusted' }
@@ -41,14 +48,12 @@ export async function codexProjectTrust(gate: Extract<ReadGate, { kind: 'codex-p
     return { kind: 'unreadable', reason: `could not be parsed (${error instanceof Error ? error.message.split('\n')[0] : String(error)})` };
   }
 
-  if (typeof projects !== 'object' || projects === null) return { kind: 'untrusted', main };
-  const entries = new Map<string, unknown>(Object.entries(projects));
+  const entries = new Map(Object.entries(CodexProjectsTableSchema.safeParse(projects).data ?? {}));
 
   for (const dir of dirs) {
-    const entry = entries.get(dir);
-    const level = typeof entry === 'object' && entry !== null && 'trust_level' in entry ? entry.trust_level : undefined;
+    const level = CodexProjectEntrySchema.safeParse(entries.get(dir)).data?.trust_level;
 
-    if (typeof level !== 'string') continue;
+    if (level === undefined) continue;
 
     return level === 'trusted' ? { kind: 'trusted' } : { kind: 'untrusted', main, decidedBy: { dir, level } };
   }
