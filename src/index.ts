@@ -1285,7 +1285,13 @@ if (shouldRegisterSessionFlowCommands()) {
 program
   .command('digest')
   .description('Generate weekly team activity digest')
-  .action(async () => {
+  .option('--json', 'Print what an improvement starts from instead, as one JSON envelope: the failing score labels of the last 30 days, each with its subject and the commit its work started at, and each scorer\'s cohorts with the agreement of its model judge with hand labels. Never a judge\'s reasoning; a benchmark\'s labels are left out')
+  .action(async (cmdOpts: { json?: boolean }) => {
+    if (cmdOpts.json) {
+      const { DigestFailures } = await import('./digest-failures.js');
+      await DigestFailures.print();
+      return;
+    }
     const { generateDigest } = await import('./digest.js');
     await generateDigest();
   });

@@ -428,6 +428,7 @@ Generated: do not edit by hand. Regenerate with
 ## digest
 
 - `teamai digest` — Generate weekly team activity digest
+  - `--json` — Print what an improvement starts from instead, as one JSON envelope: the failing score labels of the last 30 days, each with its subject and the commit its work started at, and each scorer's cohorts with the agreement of its model judge with hand labels. Never a judge's reasoning; a benchmark's labels are left out
 
 ## dashboard
 

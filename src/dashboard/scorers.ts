@@ -229,7 +229,7 @@ async function committedRubric(config: LocalConfig, { scorer, sourceHash, teamRe
  * is read from the cache, and any other rubric of a scorer with a hand label from the team clone at a team revision its
  * labels carry. A rubric neither reads stays out, and the view falls back to the values its labels stored.
  */
-async function rubricLabelsOf(config: LocalConfig, labels: readonly ScoreLabel[]): Promise<RubricLabels> {
+export async function rubricLabelsOf(config: LocalConfig, labels: readonly ScoreLabel[]): Promise<RubricLabels> {
   const cached = await Promise.all((await cachedScorerNames(config)).map((name) => loadCachedScorer(config, name)));
   const known = new Map<string, readonly string[]>(cached.flatMap((scorer) => (scorer ? [[scorer.sourceHash, scorer.definition.labels.map((label) => label.value)] as const] : [])));
   const handLabelled = new Set(labels.flatMap((label) => (label.judge.kind === 'human' ? [label.scorer] : [])));
@@ -334,16 +334,11 @@ async function reminderInput({ events, windowDays, now }: { events: readonly Das
 }
 
 /**
- * The Scorers page's answer for one workspace. `events` are this machine's dashboard events of the workspace; without
- * them there is no reminder table. `refresh` refreshes the reports checkout from origin first, as every reader of it.
+ * Every label the scorer views count, as they read it: this machine's and the team's, with what the judged work ran as
+ * and the name of an archived session, and without the labels of an isolated run, such as a benchmark's.
+ * `refresh` refreshes the reports checkout from origin first, as every reader of it.
  */
-export async function scorerResults({ config, query, now = new Date(), events, refresh = true }: {
-  config: LocalConfig;
-  query: ScorerQuery;
-  now?: Date;
-  events?: readonly DashboardEvent[];
-  refresh?: boolean;
-}): Promise<ScorerResultsView> {
+export async function readScorerLabels(config: LocalConfig, { refresh = true }: { refresh?: boolean } = {}): Promise<ViewedLabel[]> {
   if (usesBranchWorktree(config)) {
     const { readableReportsWorktree } = await import('../utils/reports-branch.js');
     await readableReportsWorktree(config, { dryRun: !refresh });
@@ -360,7 +355,7 @@ export async function scorerResults({ config, query, now = new Date(), events, r
   const runs = new Map(await Promise.all([...runIds].map(async (runId) => [runId, await runAgents(config, runId, { isLocal: localRuns.has(runId), team })] as const)));
   const { names } = team;
 
-  const viewed: ViewedLabel[] = labels.flatMap(({ label, author }): ViewedLabel[] => {
+  return labels.flatMap(({ label, author }): ViewedLabel[] => {
     if (label.source === 'session') {
       const sessionName = names.get(sessionKey(label.subject.platform, label.subject.sessionId));
 
@@ -387,7 +382,20 @@ export async function scorerResults({ config, query, now = new Date(), events, r
 
     return [entry];
   });
+}
 
+/**
+ * The Scorers page's answer for one workspace. `events` are this machine's dashboard events of the workspace; without
+ * them there is no reminder table. `refresh` refreshes the reports checkout from origin first, as every reader of it.
+ */
+export async function scorerResults({ config, query, now = new Date(), events, refresh = true }: {
+  config: LocalConfig;
+  query: ScorerQuery;
+  now?: Date;
+  events?: readonly DashboardEvent[];
+  refresh?: boolean;
+}): Promise<ScorerResultsView> {
+  const viewed = await readScorerLabels(config, { refresh });
   const { commit, ...rest } = query;
 
   const [split, reminders, rubricLabels] = await Promise.all([

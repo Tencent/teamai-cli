@@ -522,3 +522,56 @@ describe('agreement with hand labels', () => {
     expect(scorers[0]?.agreement).toEqual({ paired: 2, agree: 1 });
   });
 });
+
+describe('failures to improve from', () => {
+  const COMMIT = 'c'.repeat(40);
+  const ran = (project?: { commit: string; dirty: boolean }): RecordedAgent => ({
+    v: 1, tool: { name: 'claude' }, teamai: '1.0.0', driver: 'local', ...(project ? { project } : {}),
+  });
+  const failing = (sessionId: string, overrides: Partial<Extract<ScoreLabel, { source: 'session' }>> = {}) => sessionLabel({
+    subject: { platform: 'claude-code', sessionId }, label: 'missed-bug', score: 0, passed: false, ...overrides,
+  });
+
+  it('lists each failing label once, newest first, with its subject, the commit its work started at, and nothing that passed', () => {
+    const labels = [
+      viewed(failing('7c1e', { scoredAt: '2026-03-10T00:00:00.000Z' }), { agent: ran({ commit: COMMIT, dirty: false }) }),
+      viewed(failing('7c1e', { scoredAt: '2026-03-12T00:00:00.000Z', runMode: 'attended' }), { agent: ran({ commit: COMMIT, dirty: false }), sessionName: 'claude-code_fix-retry_20260309' }),
+      viewed(failing('9d2f', { scoredAt: '2026-03-11T00:00:00.000Z' }), { agent: ran({ commit: COMMIT, dirty: true }) }),
+      viewed(failing('a0b1', { scoredAt: '2026-03-09T00:00:00.000Z' })),
+      viewed(sessionLabel({ subject: { platform: 'claude-code', sessionId: 'passed' } })),
+      viewed(failing('old', { scoredAt: '2026-01-01T00:00:00.000Z' }), { agent: ran({ commit: COMMIT, dirty: false }) }),
+    ];
+    const { window, failures } = ScorerResults.failures({ labels, windowDays: 30, now: NOW });
+    expect(window.days).toBe(30);
+    expect(failures.map(({ failure, start }) => [failure.subject, start])).toEqual([
+      [{ platform: 'claude-code', sessionId: '7c1e' }, { commit: COMMIT }],
+      [{ platform: 'claude-code', sessionId: '9d2f' }, { refused: 'tracked_changes' }],
+      [{ platform: 'claude-code', sessionId: 'a0b1' }, { refused: 'not_recorded' }],
+    ]);
+    expect(failures[0]).toMatchObject({
+      failure: { scorer: 'review-quality', label: 'missed-bug', author: 'alice', runMode: 'attended', scoredAt: '2026-03-12T00:00:00.000Z', agent: { tool: { name: 'claude' } } },
+      session: { name: 'claude-code_fix-retry_20260309' },
+    });
+    expect(JSON.stringify(failures)).not.toContain('reasoning');
+  });
+
+  it('gives each scorer its cohorts, and each model cohort its agreement with hand labels in both directions', () => {
+    const labels = [
+      viewed(failing('s1')),
+      viewed(sessionLabel({ subject: { platform: 'claude-code', sessionId: 's2' } })),
+      viewed(sessionLabel({ subject: { platform: 'claude-code', sessionId: 's1' }, judge: { kind: 'human' } })),
+      viewed(sessionLabel({ subject: { platform: 'claude-code', sessionId: 's2' }, judge: { kind: 'human' }, label: 'missed-bug', score: 0, passed: false })),
+    ];
+    const { scorers, failures } = ScorerResults.failures({ labels, windowDays: 30, now: NOW });
+    const [scorer] = scorers;
+    expect(scorer?.scorer).toBe('review-quality');
+    expect(scorer?.cohorts.map(({ judge, stats, agreement }) => ({ judge: judge.kind, stats: [stats.passed, stats.failed], agreement }))).toEqual([
+      { judge: 'model', stats: [1, 1], agreement: { handLabelled: 2, paired: 2, agree: 0, judgePassedHumanFailed: 1, judgeFailedHumanPassed: 1 } },
+      { judge: 'human', stats: [1, 1], agreement: undefined },
+    ]);
+    expect(failures.map(({ failure }) => [failure.subject, failure.cohort === scorer?.cohorts[0]?.id ? 'model' : 'human'])).toEqual([
+      [{ platform: 'claude-code', sessionId: 's1' }, 'model'],
+      [{ platform: 'claude-code', sessionId: 's2' }, 'human'],
+    ]);
+  });
+});
