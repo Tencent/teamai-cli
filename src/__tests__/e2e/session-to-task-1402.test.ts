@@ -1,7 +1,7 @@
 /**
  * Real CLI: a Claude Code session that fixed a bug keeps it as a benchmark task with teamai's default
  * teamai-session-to-task, driving the run with the skill driver as the session's agent does. Its SessionStart hook
- * records the commit it started at; describe proposes that commit, the fix at HEAD and the suite; the draft step writes
+ * records the commit it started at; describe proposes that commit, the solution at HEAD and the suite; the draft step writes
  * the task file; the propose step runs `teamai push --file --path` for real, which opens the pull request on the fake gh.
  * Then the team repo's CI job from the benchmarks guide tries the task on that pull request's branch.
  */
@@ -160,11 +160,11 @@ describe('teamai-session-to-task from a Claude Code session', () => {
     git(m.work, ['add', 'answer.js', 'test/refresh.test.js'], m.env);
     git(m.work, ['commit', '-qm', 'reject reused refresh tokens'], m.env);
     git(m.work, ['push', '-q', 'origin', 'HEAD:main'], m.env);
-    const fix = git(m.work, ['rev-parse', 'HEAD']);
+    const solution = git(m.work, ['rev-parse', 'HEAD']);
 
     const described = DescribeSchema.parse(agentRuns(m, 'teamai workflow start --describe teamai-session-to-task --driver skill')).describe.ask.question;
-    const inputs = Object.fromEntries(['session', 'source', 'suite', 'start', 'fix'].map((name) => [name, proposed(described.inputs, name)]));
-    expect(inputs).toEqual({ session: SESSION, source: 'claude-code', suite: 'benchmarks/fix-auth', start, fix });
+    const inputs = Object.fromEntries(['session', 'source', 'suite', 'start', 'solution'].map((name) => [name, proposed(described.inputs, name)]));
+    expect(inputs).toEqual({ session: SESSION, source: 'claude-code', suite: 'benchmarks/fix-auth', start, solution });
 
     const taskFile = path.join(m.root, 'refresh-race.yaml');
     let turn = TurnSchema.parse(agentRuns(m, described.options[0].start.replace('{inputs}', JSON.stringify(inputs))).turn);
@@ -187,17 +187,18 @@ describe('teamai-session-to-task from a Claude Code session', () => {
         expect(action.step).toBe('draft');
         turn = TurnSchema.parse(agentRuns(m, action.ack).turn);
         const brief = fs.readFileSync(action.brief, 'utf8');
-        expect(brief).toContain(`The task starts at commit ${start}; the fix, the commit that completes it, is ${fix}`);
-        // The session drafts the task with the person: the fix's test is hidden in check.add.
+        expect(brief).toContain(`The task starts at commit ${start}; the solution, the commit that completes it, is ${solution}`);
+        // The session drafts the task with the person: the solution's test is hidden in check.add.
         fs.writeFileSync(taskFile, `schemaVersion: v1alpha1
 title: Reused refresh tokens are accepted
 prompt: A refresh token that was already used still gets new tokens. Reject it.
 startingCommit: ${start}
+solutionCommit: ${solution}
 check:
   run: node test/refresh.test.js
   protect: ['test/**']
   add: ['test/refresh.test.js']
-source: { platform: claude-code, sessionId: ${SESSION}, fix: ${fix} }
+source: { platform: claude-code, sessionId: ${SESSION} }
 `);
         const result = /Write `([^`]+result\.json)`/.exec(brief)?.[1];
         if (result === undefined) throw new Error(`the brief names no result file:\n${brief}`);
@@ -225,6 +226,6 @@ source: { platform: claude-code, sessionId: ${SESSION}, fix: ${fix} }
     const step = z.object({ jobs: z.object({ try: z.object({ steps: z.array(z.object({ run: z.string().optional() }).passthrough()) }) }) }).parse(YAML.parse(block ?? '')).jobs.try.steps.find((one) => one.run?.includes('teamai benchmark try'));
     const job = spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', step?.run ?? 'exit 9'], { cwd: path.join(ci, 'project'), env: { ...m.env, BASE_REF: 'main' }, encoding: 'utf8', timeout: 120_000 });
     expect(job.status, `${job.stdout}${job.stderr}`).toBe(0);
-    expect(`${job.stdout}${job.stderr}`).toContain(`the check fails at ${start.slice(0, 7)} and passes at the fix ${fix.slice(0, 7)}`);
+    expect(`${job.stdout}${job.stderr}`).toContain(`the check fails at ${start.slice(0, 7)} and passes at the solution ${solution.slice(0, 7)}`);
   }, 240_000);
 });

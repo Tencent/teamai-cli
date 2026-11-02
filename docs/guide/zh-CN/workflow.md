@@ -600,7 +600,7 @@ teamai 自带一些工作流，团队不用自己编写就能使用：
 | `teamai-share-learnings` | 把会话学到的东西分享为团队经验（一条或多条），然后运行 `teamai-share-session` | [recall](knowledge.md) 开启且来源可写时，因为它的第一步运行 `teamai skill get share`；团队的同名副本也一样 |
 | `teamai-share-session` | 发布会话的转录（已脱敏），并用团队的评分器给它评分 | 始终 |
 | `teamai-benchmark` | 通过 `teamai benchmark run` 运行 [benchmark suite](benchmarks.md#benchmark-工作流) | 始终 |
-| `teamai-session-to-task` | 把会话完成的工作（如修 bug 或加功能）变成 [benchmark 任务](benchmarks.md#把会话变成任务)，用 `teamai push --file --path` 提议给团队。输入：`session`、`source`、`suite`、`start`、`fix` | 始终 |
+| `teamai-session-to-task` | 把会话完成的工作（如修 bug 或加功能）变成 [benchmark 任务](benchmarks.md#把会话变成任务)，用 `teamai push --file --path` 提议给团队。输入：`session`、`source`、`suite`、`start`、`solution` | 始终 |
 
 团队写一个同名文件就会取代默认工作流：
 
@@ -749,13 +749,13 @@ agent   proposes teamai-share-session: publish and score, no learnings
 `teamai-session-to-task` 把会话完成的工作（修 bug、加功能或重构）留作 benchmark 任务。由人向 agent 提出（“把这个修复变成 benchmark 任务”“把这个功能留作 benchmark 任务”）；没有任何东西会主动提供它。
 
 ```text
-teamai-session-to-task {"session":"7c1e…","source":"claude-code","suite":"benchmarks/fix-auth","start":"3f2c9a7…","fix":"9a1d4e7…"}
+teamai-session-to-task {"session":"7c1e…","source":"claude-code","suite":"benchmarks/fix-auth","start":"3f2c9a7…","solution":"9a1d4e7…"}
 ├─ draft     interactive, worked by this session with the person. Returns {verdict: draft | skip, file, path}
 └─ propose   only on verdict draft. Optional approval: Propose benchmarks/fix-auth/tasks/<task>.yaml to the team as a pull request?
              teamai push --file "$FILE" --path "$TASK_PATH"
 ```
 
-describe 为调用它的会话提议每个输入并附 `why`：会话第一次启动时记录的提交、作为完成任务的提交（`fix`）的 `HEAD`，以及 `repo` 是 checkout `origin` 的那唯一一个套件。规则和它起草的任务文件见 [Benchmarks](benchmarks.md#describe-提议什么)。文件是已安装包中的 `workflows/teamai-session-to-task.yaml`。
+describe 为调用它的会话提议每个输入并附 `why`：会话第一次启动时记录的提交、作为完成任务的提交（`solution`）的 `HEAD`，以及 `repo` 是 checkout `origin` 的那唯一一个套件。规则和它起草的任务文件见 [Benchmarks](benchmarks.md#describe-提议什么)。文件是已安装包中的 `workflows/teamai-session-to-task.yaml`。
 
 ### 覆盖默认工作流
 

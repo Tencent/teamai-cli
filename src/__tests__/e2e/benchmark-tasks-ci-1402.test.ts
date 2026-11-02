@@ -87,7 +87,7 @@ function pullRequest(tasks: (commits: Record<string, string>) => Record<string, 
   git(root, ['clone', '-q', teamOrigin, team]);
   commit(team, {
     'benchmarks/fix-auth/suite.yaml': 'schemaVersion: v1alpha1\nname: fix-auth\nrepo: https://github.com/acme/auth-service.git\ndefaults: { tool: claude }\narms: [{ name: main }]\ntimeout: 30m\n',
-    'benchmarks/fix-auth/tasks/existing.yaml': task(commits.start, { fix: commits.fix, add: true }),
+    'benchmarks/fix-auth/tasks/existing.yaml': task(commits.start, { solution: commits.fix, add: true }),
   }, 'suite');
   git(team, ['push', '-q', 'origin', 'HEAD:main']);
   git(team, ['checkout', '-q', '-b', 'tasks']);
@@ -100,63 +100,64 @@ function pullRequest(tasks: (commits: Record<string, string>) => Record<string, 
 }
 
 /** A task of benchmarks/fix-auth whose check runs test/startup.test.js, protecting test/. */
-function task(start: string, { fix, add }: { fix?: string; add?: boolean | string } = {}): string {
+function task(start: string, { solution, add }: { solution?: string; add?: boolean | string } = {}): string {
   const added = add === true ? 'test/startup.test.js' : add;
   return `schemaVersion: v1alpha1
 title: Pods time out on first start
 prompt: The first start of a pod times out after 30 s on a cold node. Make it start.
 startingCommit: ${start}
-check:
+${solution ? `solutionCommit: ${solution}\n` : ''}check:
   run: node test/startup.test.js
   protect: ['test/**']
-${added ? `  add: ['${added}']\n` : ''}${fix ? `source: { platform: claude-code, sessionId: 7c1e, fix: ${fix} }\n` : ''}`;
+${added ? `  add: ['${added}']\n` : ''}source: { platform: claude-code, sessionId: 7c1e }
+`;
 }
 
 const short = (commit: string): string => commit.slice(0, 7);
 
 describe('the guide\'s CI job for benchmark task pull requests', () => {
-  it('passes for a task whose fix brought the test check.add hides, and for one whose fix added a case to a test file', () => {
-    const job = pullRequest((c) => ({ 'pod-startup': task(c.start, { fix: c.fix, add: true }), 'startup-case': task(c.caseStart, { fix: c.caseFix, add: true }) }));
+  it('passes for a task whose solution brought the test check.add hides, and for one whose solution added a case to a test file', () => {
+    const job = pullRequest((c) => ({ 'pod-startup': task(c.start, { solution: c.fix, add: true }), 'startup-case': task(c.caseStart, { solution: c.caseFix, add: true }) }));
 
     expect(job.code, job.output).toBe(0);
-    expect(job.output).toContain(`the check fails at ${short(job.commits.start)} and passes at the fix ${short(job.commits.fix)}`);
-    expect(job.output).toContain(`the check fails at ${short(job.commits.caseStart)} and passes at the fix ${short(job.commits.caseFix)}`);
+    expect(job.output).toContain(`the check fails at ${short(job.commits.start)} and passes at the solution ${short(job.commits.fix)}`);
+    expect(job.output).toContain(`the check fails at ${short(job.commits.caseStart)} and passes at the solution ${short(job.commits.caseFix)}`);
     expect(job.output).not.toContain('existing.yaml');
   }, 120_000);
 
-  it('passes for a task with no check.add whose check fails at startingCommit and passes at the fix', () => {
-    const job = pullRequest((c) => ({ 'tested-start': task(c.testedStart, { fix: c.testedFix }) }));
+  it('passes for a task with no check.add whose check fails at startingCommit and passes at the solution', () => {
+    const job = pullRequest((c) => ({ 'tested-start': task(c.testedStart, { solution: c.testedFix }) }));
 
     expect(job.code, job.output).toBe(0);
-    expect(job.output).toContain(`the check fails at ${short(job.commits.testedStart)} and passes at the fix ${short(job.commits.testedFix)}`);
+    expect(job.output).toContain(`the check fails at ${short(job.commits.testedStart)} and passes at the solution ${short(job.commits.testedFix)}`);
   }, 120_000);
 
   it.each<[string, (c: Record<string, string>) => string, (c: Record<string, string>) => string]>([
-    ['the fix\'s test is not in check.add', (c) => task(c.start, { fix: c.fix }), (c) => `the check fails at the fix ${short(c.fix)}`],
-    ['a check.add path is not a file at the fix', (c) => task(c.start, { fix: c.fix, add: 'test/missing.test.js' }), (c) => `test/missing.test.js is not a file at the fix ${short(c.fix)}`],
+    ['the solution\'s test is not in check.add', (c) => task(c.start, { solution: c.fix }), (c) => `the check fails at the solution ${short(c.fix)}`],
+    ['a check.add path is not a file at the solution', (c) => task(c.start, { solution: c.fix, add: 'test/missing.test.js' }), (c) => `test/missing.test.js is not a file at the solutionCommit ${c.fix}`],
     ['the check passes without changes', (c) => task(c.fix), (c) => `the check passes without changes at ${short(c.fix)}`],
   ])('fails when %s, and tries every other task', (_case, failing, said) => {
-    const job = pullRequest((c) => ({ 'a-failing': failing(c), 'b-passing': task(c.start, { fix: c.fix, add: true }) }));
+    const job = pullRequest((c) => ({ 'a-failing': failing(c), 'b-passing': task(c.start, { solution: c.fix, add: true }) }));
 
     expect(job.code, job.output).not.toBe(0);
     expect(job.output).toContain(said(job.commits));
-    expect(job.output).toContain(`and passes at the fix ${short(job.commits.fix)}`);
+    expect(job.output).toContain(`and passes at the solution ${short(job.commits.fix)}`);
   }, 120_000);
 
   it('tries a task the pull request renames and changes', () => {
-    const job = pullRequest((c) => ({ existing: null, renamed: task(c.start, { fix: c.fix }) }));
+    const job = pullRequest((c) => ({ existing: null, renamed: task(c.start, { solution: c.fix }) }));
 
     expect(job.code, job.output).not.toBe(0);
-    expect(job.output).toContain(`the check fails at the fix ${short(job.commits.fix)}`);
+    expect(job.output).toContain(`the check fails at the solution ${short(job.commits.fix)}`);
   }, 120_000);
 
   it('tries, per matrix entry, only the tasks of that entry\'s suite', () => {
-    const tasks = (c: Record<string, string>) => ({ 'pod-startup': task(c.start, { fix: c.fix, add: true }), 'not-added': task(c.start, { fix: c.fix }) });
+    const tasks = (c: Record<string, string>) => ({ 'pod-startup': task(c.start, { solution: c.fix, add: true }), 'not-added': task(c.start, { solution: c.fix }) });
 
     const frontend = pullRequest(tasks, { header: MATRIX_JOB_FILE, env: { BASE_REF: 'main', SUITE: 'benchmarks/fix-auth' } });
     expect(frontend.code, frontend.output).not.toBe(0);
-    expect(frontend.output).toContain(`the check fails at the fix ${short(frontend.commits.fix)}`);
-    expect(frontend.output).toContain(`and passes at the fix ${short(frontend.commits.fix)}`);
+    expect(frontend.output).toContain(`the check fails at the solution ${short(frontend.commits.fix)}`);
+    expect(frontend.output).toContain(`and passes at the solution ${short(frontend.commits.fix)}`);
 
     const checkout = pullRequest(tasks, { header: MATRIX_JOB_FILE, env: { BASE_REF: 'main', SUITE: 'benchmarks/payments/checkout' } });
     expect(checkout.code, checkout.output).toBe(0);
@@ -164,7 +165,7 @@ describe('the guide\'s CI job for benchmark task pull requests', () => {
   }, 120_000);
 
   it.each([[JOB_FILE, {}], [MATRIX_JOB_FILE, { SUITE: 'benchmarks/fix-auth' }]] as const)('fails, rather than trying nothing, when the base branch is missing: %s', (header, more) => {
-    const job = pullRequest((c) => ({ 'pod-startup': task(c.start, { fix: c.fix, add: true }) }), { header, env: { BASE_REF: 'renamed-default', ...more } });
+    const job = pullRequest((c) => ({ 'pod-startup': task(c.start, { solution: c.fix, add: true }) }), { header, env: { BASE_REF: 'renamed-default', ...more } });
 
     expect(job.code, job.output).not.toBe(0);
     expect(job.output).toContain('origin/renamed-default');

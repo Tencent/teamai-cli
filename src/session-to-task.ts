@@ -1,13 +1,13 @@
 /**
  * What `workflow start --describe` proposes for the inputs of teamai's default `teamai-session-to-task` (#1402), each
- * with why, also when it proposes no value: the calling session and its tool, the commit it started at, the fix at
- * HEAD, and the one benchmark suite whose repo is this checkout's origin.
+ * with why, also when it proposes no value: the calling session and its tool, the commit it started at, the
+ * solution at HEAD, and the one benchmark suite whose repo is this checkout's origin.
  *
  *   start   earliest dashboard session_start of the session → its gitAtStart, when clean
- *   fix     HEAD of the caller's checkout, when clean and not start
+ *   solution  HEAD of the caller's checkout, when clean and not start
  *   suite   the one cached suite whose repo matches origin → its directory
  *
- * A task of that suite whose source already names this session or this fix is named in that input's why, so a person
+ * A task of that suite that already names this session as its source, or this commit as its solutionCommit, is named in that input's why, so a person
  * does not propose the same task twice.
  */
 import path from 'node:path';
@@ -21,7 +21,7 @@ import type { OutputSchema } from './workflow/types.js';
 const SESSION_TO_TASK = 'teamai-session-to-task';
 
 /** The inputs teamai proposes values for, by name: a team override that declares one as a string gets it filled. */
-const CONTRACT = ['session', 'source', 'suite', 'start', 'fix'] as const;
+const CONTRACT = ['session', 'source', 'suite', 'start', 'solution'] as const;
 type ContractInput = typeof CONTRACT[number];
 
 function isContractInput(name: string): name is ContractInput {
@@ -53,8 +53,8 @@ function startProposal(starts: readonly SessionStart[]): Proposal {
   return { value: earliest.gitAtStart.head, why: 'The commit this session started at.' };
 }
 
-/** HEAD of the caller's checkout, when it holds a fix: it differs from `start`, and no tracked file is modified. */
-function fixProposal(start: string | undefined, head: HeadState | null): Proposal {
+/** HEAD of the caller's checkout, when it holds the solution: it differs from `start`, and no tracked file is modified. */
+function solutionProposal(start: string | undefined, head: HeadState | null): Proposal {
   if (start === undefined) return { why: 'No value: there is no starting commit to compare HEAD with. Give the commit that completes the task.' };
   if (head === null) return { why: 'No value: this directory has no commit checked out. Give the commit that completes the task.' };
   if (head.dirty) return { why: 'No value: tracked files are modified. Commit the change, then ask again, or give the commit.' };
@@ -79,8 +79,8 @@ function suiteProposal(origin: readonly string[], suites: readonly Suite[]): { p
 }
 
 /** `proposal` with the tasks of `suite` that `comesFrom` picks named in its why. */
-function namingTasks(proposal: Proposal, suite: Suite | undefined, comesFrom: (source: NonNullable<Task['source']>) => boolean): Proposal {
-  const tasks = (suite?.tasks ?? []).flatMap((task) => (task.source !== undefined && comesFrom(task.source) ? [task.relativePath] : []));
+function namingTasks(proposal: Proposal, suite: Suite | undefined, comesFrom: (task: Task) => boolean): Proposal {
+  const tasks = (suite?.tasks ?? []).flatMap((task) => (comesFrom(task) ? [task.relativePath] : []));
   if (tasks.length === 0) return proposal;
   return { ...proposal, why: `${proposal.why} ${tasks.join(', ')} already ${tasks.length > 1 ? 'come' : 'comes'} from it.` };
 }
@@ -101,15 +101,15 @@ async function offer(config: LocalConfig, { session, tool, cwd }: { session: str
   const [events, head, written, rewritten, suites] = await Promise.all([readEvents(), headOf(cwd), getConfiguredRemoteUrl(cwd), getRemoteUrl(cwd), listCachedSuites(config)]);
   const origin = [...new Set([written, rewritten].flatMap((url) => (url === null ? [] : [url])))];
   const start = startProposal(events.filter((event) => event.type === 'session_start' && event.sessionId === session));
-  const fix = fixProposal(start.value, head);
+  const solution = solutionProposal(start.value, head);
   const { proposal: suite, suite: proposed } = suiteProposal(origin, suites);
   const platform = AgentSession.platformForTool(tool);
   return {
-    session: namingTasks({ value: session, why: 'This session: the one that made the change.' }, proposed, (source) => source.sessionId === session),
+    session: namingTasks({ value: session, why: 'This session: the one that made the change.' }, proposed, (task) => task.source?.sessionId === session),
     source: platform === undefined ? { value: tool, why: 'This session\'s tool.' } : { value: platform, why: 'This session\'s tool, as teamai session list names it.' },
     suite,
     start,
-    fix: namingTasks(fix, proposed, (source) => fix.value !== undefined && source.fix === fix.value),
+    solution: namingTasks(solution, proposed, (task) => solution.value !== undefined && task.solutionCommit === solution.value),
   };
 }
 
@@ -119,7 +119,7 @@ const NO_SESSION: Record<ContractInput, Proposal> = {
   source: { why: NO_SESSION_WHY },
   suite: { why: 'No value: no agent session found. Give the suite\'s directory, such as benchmarks/frontend.' },
   start: { why: 'No value: no agent session found. Give the commit the task starts from.' },
-  fix: { why: 'No value: no agent session found. Give the commit that completes the task.' },
+  solution: { why: 'No value: no agent session found. Give the commit that completes the task.' },
 };
 
 /**

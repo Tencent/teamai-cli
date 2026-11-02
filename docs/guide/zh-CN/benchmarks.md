@@ -329,9 +329,9 @@ setup-error    setup failed           not tried                          1: name
 你：     把这个修复变成 benchmark 任务
 agent:  teamai workflow start --describe teamai-session-to-task --driver skill
         proposes session 7c1e…, source claude-code, suite benchmarks/fix-auth,
-                 start 3f2c9a7…, fix 9a1d4e7…
+                 start 3f2c9a7…, solution 9a1d4e7…
 你：     可以，但可选审批要问我
-agent:  和你一起起草任务：你最初描述的 bug、检查、修复带来的测试
+agent:  和你一起起草任务：你最初描述的 bug、检查、解决方案带来的测试
 agent:  Propose benchmarks/fix-auth/tasks/refresh-race.yaml to the team as a pull request?
 你：     是
 step:   teamai push --file /tmp/refresh-race.yaml --path benchmarks/fix-auth/tasks/refresh-race.yaml
@@ -346,23 +346,24 @@ schemaVersion: v1alpha1
 title: Racing refreshes reuse a token
 prompt: |
   Two refreshes that race with the same refresh token both get new tokens. Reject the second one.
-  The fix may add rotateRefreshToken(token, { now }) to src/auth/refresh.ts; the check calls it.
+  The solution may add rotateRefreshToken(token, { now }) to src/auth/refresh.ts; the check calls it.
 startingCommit: 3f2c9a7d1e0b4c6a8f5d2e1b0c9a8f7e6d5c4b3a
+solutionCommit: 9a1d4e7c2b8f0a3d6e5c1b9f8a7d2e4c6b0a1f3e
 check:
   run: npx vitest run test/auth/refresh-race.test.ts
   protect: ['test/**', 'vitest.config.ts', 'package.json', 'package-lock.json']
-  add: ['test/auth/refresh-race.test.ts']   # the fix's own test: hidden from the agent, written in before the check
-source: { platform: claude-code, sessionId: 7c1e2b9a, fix: 9a1d4e7c2b8f0a3d6e5c1b9f8a7d2e4c6b0a1f3e }
+  add: ['test/auth/refresh-race.test.ts']   # the solution's own test: hidden from the agent, written in before the check
+source: { platform: claude-code, sessionId: 7c1e2b9a }
 ```
 
-由会话起草，因为它已经知道你问了什么、怎么修的；不用回读任何转录。`check.add` 让修复自带的测试不进入 trial 的 clone（见[修复带来的测试](#修复带来的测试)），prompt 写出该测试调用的函数，这样不看测试也能完成任务。
+由会话起草，因为它已经知道你问了什么、怎么做的；不用回读任何转录。`check.add` 让解决方案自带的测试不进入 trial 的 clone（见[解决方案带来的测试](#解决方案带来的测试)），prompt 写出该测试调用的函数，这样不看测试也能完成任务。
 
 不同的会话起草不同的任务：
 
 | 会话 | 它起草的任务 |
 | --- | --- |
 | 修了 bug 并新增 `test/auth/refresh-race.test.ts` | `check`，带 `add: [test/auth/refresh-race.test.ts]`，如上 |
-| 修了 bug 并在 `test/auth/refresh.test.ts` 里加了一个用例 | `check`，带 `add: [test/auth/refresh.test.ts]`：文件取修复时的内容，含该用例 |
+| 修了 bug 并在 `test/auth/refresh.test.ts` 里加了一个用例 | `check`，带 `add: [test/auth/refresh.test.ts]`：文件取解决方案中的内容，含该用例 |
 | 修了一个没有测试覆盖的布局 bug | `successCriteria: "The checkout button stays visible at 320 px wide."`，由模型评判 |
 | 新增 `POST /sessions/revoke-all` 及 `test/auth/revoke-all.test.ts` | `check`，带 `add: [test/auth/revoke-all.test.ts]`；prompt 写出测试调用的端点及其返回 |
 | 把 token 存储移到 `TokenStore` 之后，行为不变 | `successCriteria: "Every read and write of tokens goes through TokenStore; the auth tests still pass."`：改动前测试也通过，`check` 分不出它和没有改动 |
@@ -376,7 +377,7 @@ describe 为调用它的会话填好每个输入，并说明原因，没有提�
 | --- | --- | --- |
 | `session`、`source` | 本会话及其工具 | 没有 agent 会话：所有输入都没有值 |
 | `start` | 本会话第一次启动时记录的提交 | 会话启动时有已跟踪文件被修改，或 teamai 没有记录启动（恢复会话不算） |
-| `fix` | `HEAD` | `HEAD` 仍是 `start`、有已跟踪文件被修改，或没有 `start` |
+| `solution` | `HEAD` | `HEAD` 仍是 `start`、有已跟踪文件被修改，或没有 `start` |
 | `suite` | `repo` 是本 checkout `origin` 的那唯一一个套件：`benchmarks/fix-auth`，在 namespace 中则如 `benchmarks/web/fix-auth` | 没有套件或有多个套件匹配 `origin` |
 
 ```text
@@ -387,7 +388,7 @@ start     HEAD         proposal
 (none)    9a1d4e7      neither: give both
 ```
 
-`fix` 是完成任务的那个提交，无论是什么工作：修复，或功能、重构的提交。当该套件已有任务来自本会话或这个提交时，`session` 或 `fix` 的 why 会写出它，例如 `benchmarks/fix-auth/tasks/refresh-race.yaml already comes from it.`，避免同一份工作被提议两次。
+`solution` 是完成任务的那个提交，无论是什么工作：修复，或功能、重构的提交。任务把它记为 `solutionCommit`。当该套件已有任务来自本会话或这个提交时，`session` 或 `solution` 的 why 会写出它，例如 `benchmarks/fix-auth/tasks/refresh-race.yaml already comes from it.`，避免同一份工作被提议两次。
 
 | 你怎样启动 | 谁回答“Propose … as a pull request?” |
 | --- | --- |
@@ -399,7 +400,7 @@ start     HEAD         proposal
 
 ### 在团队仓库的 CI 中检查任务
 
-任务的检查会运行项目的 setup 和代码，所以在 CI 中试，而不是在你的机器上。这个 job 用 [`benchmark try`](#试运行任务) 试拉取请求新增或修改的每个任务，任何一个分不清修复与未修改时就失败：
+任务的检查会运行项目的 setup 和代码，所以在 CI 中试，而不是在你的机器上。这个 job 用 [`benchmark try`](#试运行任务) 试拉取请求新增或修改的每个任务，任何一个分不清解决方案与未修改时就失败：
 
 ```yaml
 # .github/workflows/benchmark-tasks.yml in the team repo
@@ -432,16 +433,16 @@ jobs:
 ```
 
 ```text
-task           at startingCommit   at source.fix   job
-refresh-race    check fails  ✔      check passes ✔  passes
-refresh-case   check fails  ✔      check passes ✔  passes: the fix added a case to a test file, listed in check.add
-old-bug        check passes ✖      not tried       fails: "the check passes without changes at 3f2c9a7"
-not-added      check fails  ✔      check fails ✖   fails: "the check fails at the fix 9a1d4e7": the fix's test is not in check.add
-add-missing    not tried           not tried       fails: "test/auth/refresh-race.test.ts is not a file at the fix 9a1d4e7": commit it, or fix source.fix
-no-fix         check fails  ✔      not tried       passes, and says the check was not tried on a fix
+task           at startingCommit   at solutionCommit   job
+refresh-race   check fails  ✔      check passes ✔      passes
+refresh-case   check fails  ✔      check passes ✔      passes: the solution added a case to a test file, listed in check.add
+old-bug        check passes ✖      not tried           fails: "the check passes without changes at 3f2c9a7"
+not-added      check fails  ✔      check fails ✖       fails: "the check fails at the solution 9a1d4e7": the solution's test is not in check.add
+add-missing    not tried           not tried           fails: "check.add path test/auth/refresh-race.test.ts is not a file at the solutionCommit 9a1d4e7…": commit it, or fix solutionCommit
+no-solution    check fails  ✔      not tried           passes, and says the check was not tried on a solution
 ```
 
-每个任务都会被试一遍，job 在失败前列出每个失败。`git diff` 读不到基础分支时，job 直接失败，而不是什么都不试。在团队仓库的合并规则里把它设为必需，失败的任务就进不了套件。`PROJECT_READ_TOKEN` 读取套件的仓库。修复不在那个仓库的远端时，job 会失败并写出该提交：推送修复所在的分支，或把 `source.fix` 设为把修复合入默认分支的提交，再重跑。
+每个任务都会被试一遍，job 在失败前列出每个失败。`git diff` 读不到基础分支时，job 直接失败，而不是什么都不试。在团队仓库的合并规则里把它设为必需，失败的任务就进不了套件。`PROJECT_READ_TOKEN` 读取套件的仓库。解决方案不在那个仓库的远端时，job 会失败并写出该提交：推送解决方案所在的分支，或把 `solutionCommit` 设为把它合入默认分支的提交，再重跑。
 
 团队有多个仓库的套件时，每个套件对它自己的仓库试：
 

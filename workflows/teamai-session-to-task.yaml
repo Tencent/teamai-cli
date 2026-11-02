@@ -2,22 +2,22 @@ schemaVersion: v1alpha1
 name: teamai-session-to-task
 description: Turn the work this session finished, such as a bug fix, a feature or a refactor, into a benchmark task, proposed to the team as a pull request. Use when the person asks to keep this session, fix or change as a benchmark task or add it to a benchmark suite.
 invoke: ask
-inputs: { session: string, source: string, suite: string, start: string, fix: string }
+inputs: { session: string, source: string, suite: string, start: string, solution: string }
 steps:
   - id: draft
     interactive: true
     prompt: |
       Turn the work this {{ inputs.source }} session {{ inputs.session }} finished (a bug fix, a feature, a refactor) into one task of the benchmark suite in {{ inputs.suite }}.
-      Work it with the person. The task starts at commit {{ inputs.start }}; the fix, the commit that completes it, is {{ inputs.fix }} (empty when there is none).
+      Work it with the person. The task starts at commit {{ inputs.start }}; the solution, the commit that completes it, is {{ inputs.solution }} (empty when there is none).
       Write the task file outside the repository, in the format of the files under {{ inputs.suite }}/tasks/:
-      schemaVersion v1alpha1; title; prompt, the bug or the request as the person first described it, without the fix;
-      startingCommit {{ inputs.start }}; exactly one of check or successCriteria;
-      and source with platform {{ inputs.source }}, sessionId {{ inputs.session }} and, when there is a fix, fix {{ inputs.fix }}.
+      schemaVersion v1alpha1; title; prompt, the bug or the request as the person first described it, without the solution;
+      startingCommit {{ inputs.start }}; when there is a solution, solutionCommit {{ inputs.solution }}; exactly one of check or successCriteria;
+      and source with platform {{ inputs.source }} and sessionId {{ inputs.session }}.
       check has run, and protect listing every test, config, script and manifest the check reads.
-      When there is a fix, check also has add: every file under protect that the fix added or changed and the check reads
-      (tests, fixtures, helpers; git diff --name-only {{ inputs.start }} {{ inputs.fix }} lists the candidates), one path each, no globs.
+      When there is a solution, check also has add: every file under protect that the solution added or changed and the check reads
+      (tests, fixtures, helpers; git diff --name-only {{ inputs.start }} {{ inputs.solution }} lists the candidates), one path each, no globs.
       The trial's agent never sees the add files, so it cannot fit its change to them.
-      Every add path must be a file at commit {{ inputs.fix }}; if one is not, tell the person to commit it and start teamai-session-to-task again, and return skip.
+      Every add path must be a file at commit {{ inputs.solution }}; if one is not, tell the person to commit it and start teamai-session-to-task again, and return skip.
       When an add file calls a function, file, option or export that commit {{ inputs.start }} lacks, name it and its signature in prompt,
       so the task can be solved without seeing the test.
       If the person decides the session is not a good task, return {"verdict":"skip","file":"","path":""}.

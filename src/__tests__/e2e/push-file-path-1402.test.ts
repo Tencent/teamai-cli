@@ -20,11 +20,12 @@ title: Pods time out on first start
 prompt: |
   The first start of a pod times out after 30 s on a cold node. Make it start.
 startingCommit: 3f2c9a7d1e0b4c6a8f5d2e1b0c9a8f7e6d5c4b3a
+solutionCommit: 9a1d4e7c2b8f0a3d6e5c1b9f8a7d2e4c6b0a1f3e
 check:
   run: npx vitest run test/startup.test.ts
   protect: ['test/**', 'package.json']
   add: ['test/startup.test.ts']
-source: { platform: claude-code, sessionId: 7c1e, fix: 9a1d4e7c2b8f0a3d6e5c1b9f8a7d2e4c6b0a1f3e }
+source: { platform: claude-code, sessionId: 7c1e }
 `;
 const SUITE = `schemaVersion: v1alpha1
 name: frontend

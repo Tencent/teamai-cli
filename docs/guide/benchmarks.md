@@ -329,9 +329,9 @@ Work you finished with your agent, a bug fix, a feature or a refactor, is the be
 you:    turn this fix into a benchmark task
 agent:  teamai workflow start --describe teamai-session-to-task --driver skill
         proposes session 7c1e…, source claude-code, suite benchmarks/fix-auth,
-                 start 3f2c9a7…, fix 9a1d4e7…
+                 start 3f2c9a7…, solution 9a1d4e7…
 you:    ok, but ask me at optional approvals
-agent:  drafts the task with you: the bug as you first described it, the check, the test the fix brought
+agent:  drafts the task with you: the bug as you first described it, the check, the test the solution brought
 agent:  Propose benchmarks/fix-auth/tasks/refresh-race.yaml to the team as a pull request?
 you:    yes
 step:   teamai push --file /tmp/refresh-race.yaml --path benchmarks/fix-auth/tasks/refresh-race.yaml
@@ -346,23 +346,24 @@ schemaVersion: v1alpha1
 title: Racing refreshes reuse a token
 prompt: |
   Two refreshes that race with the same refresh token both get new tokens. Reject the second one.
-  The fix may add rotateRefreshToken(token, { now }) to src/auth/refresh.ts; the check calls it.
+  The solution may add rotateRefreshToken(token, { now }) to src/auth/refresh.ts; the check calls it.
 startingCommit: 3f2c9a7d1e0b4c6a8f5d2e1b0c9a8f7e6d5c4b3a
+solutionCommit: 9a1d4e7c2b8f0a3d6e5c1b9f8a7d2e4c6b0a1f3e
 check:
   run: npx vitest run test/auth/refresh-race.test.ts
   protect: ['test/**', 'vitest.config.ts', 'package.json', 'package-lock.json']
-  add: ['test/auth/refresh-race.test.ts']   # the fix's own test: hidden from the agent, written in before the check
-source: { platform: claude-code, sessionId: 7c1e2b9a, fix: 9a1d4e7c2b8f0a3d6e5c1b9f8a7d2e4c6b0a1f3e }
+  add: ['test/auth/refresh-race.test.ts']   # the solution's own test: hidden from the agent, written in before the check
+source: { platform: claude-code, sessionId: 7c1e2b9a }
 ```
 
-The session drafts it because it already knows what you asked and how it was fixed; no transcript is read back. `check.add` keeps the fix's test out of the trial's clone (see [Tests the fix brought](#tests-the-fix-brought)), and the prompt names the function that test calls, so the task can be solved without seeing it.
+The session drafts it because it already knows what you asked and how it was done; no transcript is read back. `check.add` keeps the solution's test out of the trial's clone (see [Tests the solution brought](#tests-the-solution-brought)), and the prompt names the function that test calls, so the task can be solved without seeing it.
 
 Other sessions draft other tasks:
 
 | The session | The task it drafts |
 | --- | --- |
 | Fixed a bug and added `test/auth/refresh-race.test.ts` | `check` with `add: [test/auth/refresh-race.test.ts]`, as above |
-| Fixed a bug and added a case to `test/auth/refresh.test.ts` | `check` with `add: [test/auth/refresh.test.ts]`: the file as the fix has it, case included |
+| Fixed a bug and added a case to `test/auth/refresh.test.ts` | `check` with `add: [test/auth/refresh.test.ts]`: the file as the solution has it, case included |
 | Fixed a layout bug no test covers | `successCriteria: "The checkout button stays visible at 320 px wide."`, judged by a model |
 | Added `POST /sessions/revoke-all` with `test/auth/revoke-all.test.ts` | `check` with `add: [test/auth/revoke-all.test.ts]`; the prompt names the endpoint and what it returns, as the test calls it |
 | Moved token storage behind `TokenStore`, behavior unchanged | `successCriteria: "Every read and write of tokens goes through TokenStore; the auth tests still pass."`: the tests pass before the change too, so a `check` could not tell it from no change |
@@ -376,7 +377,7 @@ describe fills every input for the calling session, and says why, also when it p
 | --- | --- | --- |
 | `session`, `source` | this session and its tool | no agent session: no input gets a value |
 | `start` | the commit this session's first start recorded | the session started with tracked files modified, or teamai recorded no start (a resume does not count) |
-| `fix` | `HEAD` | `HEAD` is still `start`, tracked files are modified, or there is no `start` |
+| `solution` | `HEAD` | `HEAD` is still `start`, tracked files are modified, or there is no `start` |
 | `suite` | the one suite whose `repo` is this checkout's `origin`: `benchmarks/fix-auth`, or `benchmarks/web/fix-auth` in a namespace | no suite, or several, match `origin` |
 
 ```text
@@ -387,7 +388,7 @@ start     HEAD         proposal
 (none)    9a1d4e7      neither: give both
 ```
 
-`fix` is the commit that completes the task, whatever the work was: the fix, or the feature's or refactor's commit. When a task of that suite already comes from this session or this commit, the why of `session` or `fix` names it, for example `benchmarks/fix-auth/tasks/refresh-race.yaml already comes from it.`, so the same work is not proposed twice.
+`solution` is the commit that completes the task, whatever the work was: the fix, or the feature's or refactor's commit. The task keeps it as `solutionCommit`. When a task of that suite already comes from this session or this commit, the why of `session` or `solution` names it, for example `benchmarks/fix-auth/tasks/refresh-race.yaml already comes from it.`, so the same work is not proposed twice.
 
 | How you start it | Who answers "Propose … as a pull request?" |
 | --- | --- |
@@ -399,7 +400,7 @@ The approval is optional because the pull request is reviewed anyway: a wrong ta
 
 ### Check tasks in the team repo's CI
 
-The task's check runs your project's setup and code, so it is tried in CI, not on your machine. This job tries every task a pull request adds or changes, with [`benchmark try`](#try-a-task), and fails if any of them does not tell its fix from no change:
+The task's check runs your project's setup and code, so it is tried in CI, not on your machine. This job tries every task a pull request adds or changes, with [`benchmark try`](#try-a-task), and fails if any of them does not tell its solution from no change:
 
 ```yaml
 # .github/workflows/benchmark-tasks.yml in the team repo
@@ -432,16 +433,16 @@ jobs:
 ```
 
 ```text
-task           at startingCommit   at source.fix   job
-refresh-race    check fails  ✔      check passes ✔  passes
-refresh-case   check fails  ✔      check passes ✔  passes: the fix added a case to a test file, listed in check.add
-old-bug        check passes ✖      not tried       fails: "the check passes without changes at 3f2c9a7"
-not-added      check fails  ✔      check fails ✖   fails: "the check fails at the fix 9a1d4e7": the fix's test is not in check.add
-add-missing    not tried           not tried       fails: "test/auth/refresh-race.test.ts is not a file at the fix 9a1d4e7": commit it, or fix source.fix
-no-fix         check fails  ✔      not tried       passes, and says the check was not tried on a fix
+task           at startingCommit   at solutionCommit   job
+refresh-race   check fails  ✔      check passes ✔      passes
+refresh-case   check fails  ✔      check passes ✔      passes: the solution added a case to a test file, listed in check.add
+old-bug        check passes ✖      not tried           fails: "the check passes without changes at 3f2c9a7"
+not-added      check fails  ✔      check fails ✖       fails: "the check fails at the solution 9a1d4e7": the solution's test is not in check.add
+add-missing    not tried           not tried           fails: "check.add path test/auth/refresh-race.test.ts is not a file at the solutionCommit 9a1d4e7…": commit it, or fix solutionCommit
+no-solution    check fails  ✔      not tried           passes, and says the check was not tried on a solution
 ```
 
-Every task is tried, and the job lists each failure before it fails. If `git diff` cannot read the base branch, the job fails rather than trying nothing. Mark it required in the team repo's merge rules, so a task that fails it never reaches the suite. `PROJECT_READ_TOKEN` reads the suite's repo. A fix that is not on that repo's remote fails the job naming the commit: push the fix's branch, or set `source.fix` to the commit that landed it on the default branch, and re-run.
+Every task is tried, and the job lists each failure before it fails. If `git diff` cannot read the base branch, the job fails rather than trying nothing. Mark it required in the team repo's merge rules, so a task that fails it never reaches the suite. `PROJECT_READ_TOKEN` reads the suite's repo. A solution that is not on that repo's remote fails the job naming the commit: push the solution's branch, or set `solutionCommit` to the commit that landed it on the default branch, and re-run.
 
 A team with suites for several repositories tries each suite against its own repository:
 

@@ -600,7 +600,7 @@ teamai ships workflows a team gets without writing them:
 | `teamai-share-learnings` | shares what the session taught as team learnings, one or several, then runs `teamai-share-session` | while [recall](knowledge.md) is on and the source is writable, since its first step runs `teamai skill get share`; a team copy of it too |
 | `teamai-share-session` | publishes the session's transcript, scrubbed, and scores it with the team's scorers | always |
 | `teamai-benchmark` | runs a [benchmark suite](benchmarks.md#the-benchmark-workflow) through `teamai benchmark run` | always |
-| `teamai-session-to-task` | turns the work the session finished, such as a bug fix or a feature, into a [benchmark task](benchmarks.md#turn-a-session-into-a-task), proposed to the team with `teamai push --file --path`. Inputs: `session`, `source`, `suite`, `start`, `fix` | always |
+| `teamai-session-to-task` | turns the work the session finished, such as a bug fix or a feature, into a [benchmark task](benchmarks.md#turn-a-session-into-a-task), proposed to the team with `teamai push --file --path`. Inputs: `session`, `source`, `suite`, `start`, `solution` | always |
 
 A team file with the same name replaces a default:
 
@@ -749,13 +749,13 @@ An unattended session is never offered either default, and describe refuses them
 `teamai-session-to-task` keeps the work a session finished, such as a bug fix, a feature or a refactor, as a benchmark task. A person asks their agent for it ("turn this fix into a benchmark task", "keep this feature as a benchmark task"); nothing offers it on its own.
 
 ```text
-teamai-session-to-task {"session":"7c1e…","source":"claude-code","suite":"benchmarks/fix-auth","start":"3f2c9a7…","fix":"9a1d4e7…"}
+teamai-session-to-task {"session":"7c1e…","source":"claude-code","suite":"benchmarks/fix-auth","start":"3f2c9a7…","solution":"9a1d4e7…"}
 ├─ draft     interactive, worked by this session with the person. Returns {verdict: draft | skip, file, path}
 └─ propose   only on verdict draft. Optional approval: Propose benchmarks/fix-auth/tasks/<task>.yaml to the team as a pull request?
              teamai push --file "$FILE" --path "$TASK_PATH"
 ```
 
-describe proposes each input for the calling session with a `why`: the commit its first start recorded, `HEAD` as the commit that completes the task (`fix`), and the one suite whose `repo` is the checkout's `origin`. [Benchmarks](benchmarks.md#what-describe-proposes) has the rules and the task files it drafts. The file is `workflows/teamai-session-to-task.yaml` in the installed package.
+describe proposes each input for the calling session with a `why`: the commit its first start recorded, `HEAD` as the commit that completes the task (`solution`), and the one suite whose `repo` is the checkout's `origin`. [Benchmarks](benchmarks.md#what-describe-proposes) has the rules and the task files it drafts. The file is `workflows/teamai-session-to-task.yaml` in the installed package.
 
 ### Override a default
 

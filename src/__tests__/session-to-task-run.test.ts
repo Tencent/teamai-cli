@@ -9,8 +9,8 @@ import { respondProvenance, respondToHitl } from '../workflow/run-controls.js';
 import type { WorkflowEnvelope } from '../workflow/types.js';
 
 const START = '3f2c9a7d1e0b4c6a8f5d2e1b0c9a8f7e6d5c4b3a';
-const FIX = '9a1d4e7c2b8f0a3d6e5c1b9f8a7d2e4c6b0a1f3e';
-const INPUTS = { session: '7c1e0000-0000-4000-8000-000000000004', source: 'claude-code', suite: 'benchmarks/frontend', start: START, fix: FIX };
+const SOLUTION = '9a1d4e7c2b8f0a3d6e5c1b9f8a7d2e4c6b0a1f3e';
+const INPUTS = { session: '7c1e0000-0000-4000-8000-000000000004', source: 'claude-code', suite: 'benchmarks/frontend', start: START, solution: SOLUTION };
 const DRAFT = { verdict: 'draft', file: '/tmp/pod-startup.yaml', path: 'benchmarks/frontend/tasks/pod-startup.yaml' };
 const SKIP = { verdict: 'skip', file: '', path: '' };
 
@@ -76,7 +76,7 @@ describe('a teamai-session-to-task run', () => {
       'draft: Turn the work this claude-code session 7c1e0000-0000-4000-8000-000000000004 finished (a bug fix, a feature, a refactor) into one task of the benchmark suite in benchmarks/frontend.',
       'propose: teamai push --file "$FILE" --path "$TASK_PATH"',
     ]);
-    expect(run.prompts[0]).toContain(`The task starts at commit ${START}; the fix, the commit that completes it, is ${FIX}`);
+    expect(run.prompts[0]).toContain(`The task starts at commit ${START}; the solution, the commit that completes it, is ${SOLUTION}`);
     expect(run.asked).toEqual(['propose: Propose benchmarks/frontend/tasks/pod-startup.yaml to the team as a pull request?']);
     expect(run.envs).toEqual([{ FILE: '/tmp/pod-startup.yaml', TASK_PATH: 'benchmarks/frontend/tasks/pod-startup.yaml' }]);
     expect(run.outcome).toBe('succeeded');

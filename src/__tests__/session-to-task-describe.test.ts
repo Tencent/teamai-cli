@@ -94,7 +94,7 @@ function input(inputs: unknown[], name: string): unknown {
 const STRING = { type: 'string' };
 
 describe('describe of teamai-session-to-task', () => {
-  it('proposes the session, its tool, the commit it started at, the fix at HEAD and the suite whose repo is origin', async () => {
+  it('proposes the session, its tool, the commit it started at, the solution at HEAD and the suite whose repo is origin', async () => {
     const { inputs, start, head } = await described({});
 
     expect(inputs).toEqual([
@@ -102,7 +102,7 @@ describe('describe of teamai-session-to-task', () => {
       { name: 'source', type: STRING, value: 'claude-code', why: 'This session\'s tool, as teamai session list names it.' },
       { name: 'suite', type: STRING, value: 'benchmarks/frontend', why: 'The one benchmark suite whose repo is this checkout\'s origin.' },
       { name: 'start', type: STRING, value: start, why: 'The commit this session started at.' },
-      { name: 'fix', type: STRING, value: head, why: 'The commit at HEAD: the change this session made.' },
+      { name: 'solution', type: STRING, value: head, why: 'The commit at HEAD: the change this session made.' },
     ]);
     expect(head).toMatch(/^[0-9a-f]{40}$/);
   });
@@ -111,7 +111,7 @@ describe('describe of teamai-session-to-task', () => {
     const { inputs } = await described({ events: (head) => [{ type: 'session_start', timestamp: '2026-11-02T09:00:00.000Z', gitAtStart: { head, dirty: true } }] });
 
     expect(input(inputs, 'start')).toEqual({ name: 'start', type: STRING, why: 'No value: tracked files were modified when this session started, so no commit holds the starting state. Give the commit the task starts from.' });
-    expect(input(inputs, 'fix')).toEqual({ name: 'fix', type: STRING, why: 'No value: there is no starting commit to compare HEAD with. Give the commit that completes the task.' });
+    expect(input(inputs, 'solution')).toEqual({ name: 'solution', type: STRING, why: 'No value: there is no starting commit to compare HEAD with. Give the commit that completes the task.' });
   });
 
   it('proposes no start from a resume when the session\'s earliest start recorded no commit', async () => {
@@ -136,20 +136,20 @@ describe('describe of teamai-session-to-task', () => {
     expect(input(inputs, 'start')).toMatchObject({ value: start });
   });
 
-  it('proposes no fix while HEAD is still the starting commit', async () => {
+  it('proposes no solution while HEAD is still the starting commit', async () => {
     const { inputs, start } = await described({ work: 'nothing' });
 
     expect(input(inputs, 'start')).toMatchObject({ value: start });
-    expect(input(inputs, 'fix')).toEqual({ name: 'fix', type: STRING, why: 'No value: HEAD is still the starting commit. Commit the change, then ask again, or give the commit.' });
+    expect(input(inputs, 'solution')).toEqual({ name: 'solution', type: STRING, why: 'No value: HEAD is still the starting commit. Commit the change, then ask again, or give the commit.' });
   });
 
-  it('proposes no fix while tracked files are modified', async () => {
+  it('proposes no solution while tracked files are modified', async () => {
     const { inputs } = await described({ work: 'commit-then-dirty' });
 
-    expect(input(inputs, 'fix')).toEqual({ name: 'fix', type: STRING, why: 'No value: tracked files are modified. Commit the change, then ask again, or give the commit.' });
+    expect(input(inputs, 'solution')).toEqual({ name: 'solution', type: STRING, why: 'No value: tracked files are modified. Commit the change, then ask again, or give the commit.' });
   });
 
-  it('says which task of the suite already comes from this session, or from this fix', async () => {
+  it('says which task of the suite already comes from this session, or from this solution', async () => {
     const fromSession = await described({
       team: {
         'benchmarks/frontend/suite.yaml': suite('frontend'),
@@ -158,14 +158,14 @@ describe('describe of teamai-session-to-task', () => {
     });
     expect(input(fromSession.inputs, 'session')).toEqual({ name: 'session', type: STRING, value: SESSION, why: 'This session: the one that made the change. benchmarks/frontend/tasks/pod-startup.yaml already comes from it.' });
 
-    const fromFix = await described({
+    const fromSolution = await described({
       team: (head) => ({
         'benchmarks/frontend/suite.yaml': suite('frontend'),
-        'benchmarks/frontend/tasks/pod-startup.yaml': task(`source: { platform: claude-code, sessionId: other, fix: ${head} }\n`),
+        'benchmarks/frontend/tasks/pod-startup.yaml': task(`solutionCommit: ${head}\nsource: { platform: claude-code, sessionId: other }\n`),
       }),
     });
-    expect(input(fromFix.inputs, 'session')).toMatchObject({ why: 'This session: the one that made the change.' });
-    expect(input(fromFix.inputs, 'fix')).toEqual({ name: 'fix', type: STRING, value: fromFix.head, why: 'The commit at HEAD: the change this session made. benchmarks/frontend/tasks/pod-startup.yaml already comes from it.' });
+    expect(input(fromSolution.inputs, 'session')).toMatchObject({ why: 'This session: the one that made the change.' });
+    expect(input(fromSolution.inputs, 'solution')).toEqual({ name: 'solution', type: STRING, value: fromSolution.head, why: 'The commit at HEAD: the change this session made. benchmarks/frontend/tasks/pod-startup.yaml already comes from it.' });
   });
 
   it('matches an SSH origin with a suite whose repo is HTTPS, and proposes a namespaced suite by its directory', async () => {
@@ -215,7 +215,7 @@ describe('describe of teamai-session-to-task', () => {
       { name: 'source', type: STRING, why: 'No agent session found: give the session and its tool.' },
       { name: 'suite', type: STRING, why: 'No value: no agent session found. Give the suite\'s directory, such as benchmarks/frontend.' },
       { name: 'start', type: STRING, why: 'No value: no agent session found. Give the commit the task starts from.' },
-      { name: 'fix', type: STRING, why: 'No value: no agent session found. Give the commit that completes the task.' },
+      { name: 'solution', type: STRING, why: 'No value: no agent session found. Give the commit that completes the task.' },
     ]);
   });
 });
