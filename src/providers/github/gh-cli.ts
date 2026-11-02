@@ -656,9 +656,9 @@ const FAILED_CONCLUSIONS = new Set(['failure', 'timed_out', 'action_required', '
 const PASSED_CONCLUSIONS = new Set(['success', 'neutral', 'skipped']);
 
 /**
- * How the CI of a commit went on GitHub: its check runs (Actions and apps) and its combined commit status. Any failed one
- * fails it; else any still running, or more check runs than one page shows, leaves it pending; else any that passed
- * passes it; else it has none.
+ * How the CI of a commit went on GitHub: its check runs (Actions and apps) and its combined commit status. Any still
+ * running, or more check runs than one page shows, leaves it pending, since the CI has not finished; else any failed one
+ * fails it; else any that passed passes it; else it has none.
  */
 export async function ghCommitChecks({ repo, commit, timeoutMs }: CommitRef): Promise<CiStatus> {
   const [runsAnswer, statusAnswer] = await Promise.all([
@@ -670,8 +670,8 @@ export async function ghCommitChecks({ repo, commit, timeoutMs }: CommitRef): Pr
   if (!runs.success || !status.success) throw new Error(unreadable(CHECKS_LOOKUP));
   const conclusions = runs.data.check_runs.map((run) => (run.status === 'completed' ? run.conclusion ?? 'unknown' : 'running'));
   const statuses = status.data.total_count > 0 ? [status.data.state] : [];
-  if (conclusions.some((conclusion) => FAILED_CONCLUSIONS.has(conclusion)) || statuses.some((state) => state === 'failure' || state === 'error')) return 'failed';
   if (conclusions.includes('running') || statuses.includes('pending') || runs.data.total_count > runs.data.check_runs.length) return 'pending';
+  if (conclusions.some((conclusion) => FAILED_CONCLUSIONS.has(conclusion)) || statuses.some((state) => state === 'failure' || state === 'error')) return 'failed';
   return conclusions.some((conclusion) => PASSED_CONCLUSIONS.has(conclusion)) || statuses.includes('success') ? 'passed' : 'none';
 }
 

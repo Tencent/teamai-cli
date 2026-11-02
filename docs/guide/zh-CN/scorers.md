@@ -185,10 +185,10 @@ Judge whether the pull request delivers what the issue asked, and only that.
 | 阶段 | 何时未通过 | `decidedBy` |
 |---|---|---|
 | 评分器检查 | 在交付提交的全新克隆中，先把 `protect` 路径恢复为工作开始时的样子，再运行 `check.run`，退出码非零。为了通过而修改 `test/` 的代理无法以这种方式通过。 | `check` |
-| 合并请求 CI | 交付提交的 CI 失败。GitHub：任一检查运行失败、超时或需要操作，或提交状态为失败。GitLab：最新的流水线失败。 | `ci` |
+| 合并请求 CI | 交付提交的 CI 已结束且失败。GitHub：任一检查运行失败、超时或需要操作，或提交状态为失败。GitLab：最新的流水线失败。 | `ci` |
 | 受保护路径 | 该轮修改了运行保护的路径，步骤以 `protected_path` 失败，没有交付任何内容。 | `protected` |
 
-未通过时的标签是低于 `passingScore` 的最高标签，此例中为 `partial`。不启动评审者，不消耗 token。所有阶段都通过时，或者 CI 仍在运行、没有任何检查、源仓库不在 GitHub 或 GitLab 上时，由评审者判定，标签记为 `"decidedBy":"judge"`。没有 `check` 的评分器跳过该阶段。未做任何修改的执行没有交付提交，因此同样跳过检查和 CI。
+未通过时的标签是低于 `passingScore` 的最高标签，此例中为 `partial`。不启动评审者，不消耗 token。所有阶段都通过时，或者仍有 CI 检查在运行、没有任何检查、源仓库不在 GitHub 或 GitLab 上时，由评审者判定，标签记为 `"decidedBy":"judge"`。没有 `check` 的评分器跳过该阶段。未做任何修改的执行没有交付提交，因此同样跳过检查和 CI。
 
 交付步骤的评审者还会读取运行的输入（`inputs.json`）和每个步骤的输出，从而把合并请求与 `read-issue` 返回的 issue 进行对比。
 

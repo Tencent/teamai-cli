@@ -44,9 +44,7 @@ import { buildEvidence, evidenceHash, evidencePlan, missingEvidence } from './sc
 import { decideBeforeJudge, failingLabel, judgedAlone } from './scoring-stages.js';
 import { isUnsettled, judgeablePasses, sameSubject, scoredPasses, verdictEntries, verdictsFrozen } from './scoring-entries.js';
 import { error, ok } from './engine.js';
-import { runPasses } from './loop.js';
 import { stepDefinitions } from './scope.js';
-import { agentPassOf } from './step-state.js';
 import { parseStepPath } from './step-path.js';
 import { installOwner, isRunId, readRun, runsDir } from './store.js';
 import { isWorkflowFile, workflowRunBy, type InlineWorkflow, type RunState, type WorkflowDefinition, type WorkflowEnvelope, type WorkflowStep } from './types.js';
@@ -1404,10 +1402,10 @@ export async function scoreOnDemand(config: LocalConfig, demand: ScoreDemand, no
   let { step } = demand;
   if (step === undefined) {
     const named = demand.scorers.join(', ');
-    // The steps whose definition lists every scorer, whether or not they succeeded: --step may be left out only when the
-    // workflow lists the scorer on one step.
+    // The steps whose definition lists every scorer, whether they succeeded, failed or never ran: --step may be left out
+    // only when the workflow lists the scorer on one step.
     const definitionOf = stepDefinitions(run);
-    const listing = [...new Set(runPasses(run, agentPassOf).map((pass) => pass.step).filter((stepPath) => {
+    const listing = [...new Set(run.steps.map((state) => state.id).filter((stepPath) => {
       const definition = definitionOf(stepPath);
       if (!definition || (definition.forEach && parseStepPath(stepPath).at(-1)?.index === undefined)) return false;
       return demand.scorers.every((scorer) => definition.scorers?.names.includes(scorer));

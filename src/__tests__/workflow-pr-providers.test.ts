@@ -139,6 +139,8 @@ describe('GitHub commit checks', () => {
     ['a check run that timed out', [run('completed', 'timed_out')], { state: 'pending', total_count: 0 }, 'failed'],
     ['a commit status that failed', [run('completed', 'success')], { state: 'failure', total_count: 1 }, 'failed'],
     ['a check run still running', [run('completed', 'success'), run('in_progress')], { state: 'pending', total_count: 0 }, 'pending'],
+    ['a failed check run while another still runs', [run('completed', 'failure'), run('in_progress')], { state: 'pending', total_count: 0 }, 'pending'],
+    ['a failed check run while a commit status is pending', [run('completed', 'failure')], { state: 'pending', total_count: 1 }, 'pending'],
     ['a commit status still pending', [run('completed', 'success')], { state: 'pending', total_count: 2 }, 'pending'],
     ['every check passed or skipped', [run('completed', 'success'), run('completed', 'skipped')], { state: 'success', total_count: 1 }, 'passed'],
     ['no check at all', [], { state: 'pending', total_count: 0 }, 'none'],

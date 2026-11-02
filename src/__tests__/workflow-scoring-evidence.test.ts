@@ -679,6 +679,22 @@ console.log(JSON.stringify({ type: 'result', structured_output: { label: 'comple
     } });
   });
 
+  it('asks for --step when the workflow lists the scorer on a second step that never ran', async () => {
+    const { config, runId } = await deliveredRun(unsampled);
+    const scorers = { names: ['quality'] };
+    await updateRun(config, runId, await knownSecrets(config), async (run) => (run === 'missing' ? { value: undefined } : { value: undefined, write: {
+      ...run,
+      definition: { ...run.definition, steps: [...run.definition.steps, { id: 'announce', needs: ['change'], prompt: 'Announce the change.', scorers }] },
+      steps: [...run.steps, { id: 'announce', status: 'pending' as const }],
+    } }));
+    fakeClaude();
+
+    expect(await scoreOnDemand(config, { run: runId, scorers: ['quality'] })).toEqual({ error: {
+      code: 'step_ambiguous',
+      message: `Run ${runId} lists scorer quality on steps change, announce. Pass --step <path> to pick one.`,
+    } });
+  });
+
   it('fails, names the session that is gone, and writes no label', async () => {
     const { config, runId } = await deliveredRun(unsampled, { session: 'session-change' });
     fakeClaude();
