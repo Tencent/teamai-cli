@@ -31,7 +31,7 @@
 
 import path from 'node:path';
 import { z } from 'zod';
-import { writeIfChanged, pathExists, readJsonObject, writeJsonAtomic, remove, symlinkTarget } from './utils/fs.js';
+import { writeIfChanged, pathExists, readJson5Object, readJsonObject, writeJsonAtomic, remove, symlinkTarget } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { getUserHome } from './utils/home.js';
 import { OPENCLAW_TEAM_HOOK_PLUGIN, openclawTeamHookPluginIn, resolveOpenclawConfigPath, resolveOpenclawStateDir } from './openclaw-home.js';
@@ -356,6 +356,31 @@ function isConfigObject(value: unknown): value is ConfigObject {
   return ConfigObjectSchema.safeParse(value).success;
 }
 
+/**
+ * openclaw.json as OpenClaw reads it (`readJson5Object`). `plainJson` is
+ * false for JSON5 (comments, trailing commas, unquoted keys): teamai decides
+ * from it but does not write it back, which would drop the member's comments.
+ */
+type OpenclawConfigRead =
+  | { readonly kind: 'missing' }
+  | { readonly kind: 'invalid'; readonly error: string }
+  | { readonly kind: 'ok'; readonly value: ConfigObject; readonly plainJson: boolean };
+
+async function readOpenclawConfigFile(cfgPath: string): Promise<OpenclawConfigRead> {
+  const read = await readJson5Object(cfgPath);
+
+  if (read.kind !== 'ok') return read;
+
+  return { kind: 'ok', value: read.value, plainJson: (await readJsonObject(cfgPath)).kind === 'ok' };
+}
+
+/** Why teamai left openclaw.json as it is: it does not parse, or it is JSON5, whose comments a rewrite would drop. */
+function leftAsWritten(cfgPath: string, read: Extract<OpenclawConfigRead, { kind: 'invalid' }> | { readonly kind: 'json5' }): string {
+  return read.kind === 'invalid'
+    ? `OpenClaw: ${cfgPath} does not parse as JSON or JSON5 (${read.error}), so teamai left it as it is.`
+    : `OpenClaw: ${cfgPath} has comments or other JSON5 syntax, so teamai left it as it is: rewriting it would drop them.`;
+}
+
 /** A list of openclaw.json. */
 const ConfigListSchema = z.array(z.unknown());
 
@@ -426,14 +451,16 @@ async function updateOpenClawPluginConfig(file: string, action: 'load' | 'unload
   const cfgPath = resolveOpenclawConfigPath();
 
   if (!await pathExists(path.dirname(cfgPath))) return;
-  const read = await readJsonObject(cfgPath);
+  const read = await readOpenclawConfigFile(cfgPath);
 
   if (read.kind === 'missing' && action === 'unload') return;
 
+  const handEdit = action === 'load'
+    ? `The team's hooks do not run until you add ${file} to plugins.load.paths.`
+    : `Its plugins.load.paths still lists ${file}, the team hooks plugin; remove it by hand.`;
+
   if (read.kind === 'invalid') {
-    log.warn(action === 'load'
-      ? `OpenClaw: ${cfgPath} is not plain JSON (${read.error}), and teamai rewrites it only while it is, so your comments stay. The team's hooks do not run. Add ${file} to plugins.load.paths by hand.`
-      : `OpenClaw: ${cfgPath} is not plain JSON (${read.error}), and teamai rewrites it only while it is, so your comments stay. The team's hooks plugin is still listed there. Remove ${file} from plugins.load.paths by hand.`);
+    log.warn(`${leftAsWritten(cfgPath, read)} ${handEdit}`);
 
     return;
   }
@@ -451,6 +478,13 @@ async function updateOpenClawPluginConfig(file: string, action: 'load' | 'unload
   const next = withTeamHookPlugin(config, file, action);
 
   if (JSON.stringify(next) === JSON.stringify(config)) return;
+
+  if (read.kind === 'ok' && !read.plainJson) {
+    log.warn(`${leftAsWritten(cfgPath, { kind: 'json5' })} ${handEdit}`);
+
+    return;
+  }
+
   await writeJsonAtomic(await symlinkTarget(cfgPath), next);
   log.success(action === 'load'
     ? `Loaded the teamai OpenClaw team hooks plugin in ${cfgPath}`
@@ -493,7 +527,7 @@ export function openclawHookEnabledIn(config: ConfigObject): boolean {
  * of one, which would silently stop every other hook, so there the config is
  * left alone and a warning names the command that enables it. The same warning is
  * given when the user switched internal hooks or this entry off, or the config
- * is not plain JSON. No-op when the config's directory does not exist.
+ * does not parse or is JSON5. No-op when the config's directory does not exist.
  */
 async function enableOpenClawHookEntry(hookKey: string): Promise<void> {
   const cfgPath = resolveOpenclawConfigPath();
@@ -505,11 +539,11 @@ async function enableOpenClawHookEntry(hookKey: string): Promise<void> {
   }
 
   const enableCmd = `\`openclaw hooks enable ${hookKey}\``;
-  const read = await readJsonObject(cfgPath);
+  const read = await readOpenclawConfigFile(cfgPath);
+  const handEdit = `teamai's hook ${hookKey} does not run until you run ${enableCmd}.`;
 
   if (read.kind === 'invalid') {
-    log.warn(`OpenClaw: ${cfgPath} is not plain JSON (${read.error}), and teamai rewrites it only while it is, so your comments stay. `
-      + `teamai's hook ${hookKey} does not run until you run ${enableCmd}.`);
+    log.warn(`${leftAsWritten(cfgPath, read)} ${handEdit}`);
 
     return;
   }
@@ -548,6 +582,12 @@ async function enableOpenClawHookEntry(hookKey: string): Promise<void> {
     return;
   }
 
+  if (read.kind === 'ok' && !read.plainJson) {
+    log.warn(`${leftAsWritten(cfgPath, { kind: 'json5' })} ${handEdit}`);
+
+    return;
+  }
+
   const hooks = childObject(config, 'hooks') ?? {};
   config.hooks = { ...hooks, internal: { ...internal, entries: { ...entries, [hookKey]: { ...entry, enabled: true } } } };
 
@@ -575,13 +615,13 @@ function withoutKey(obj: ConfigObject, key: string): ConfigObject | undefined {
  */
 export async function removeOpenClawHookEntry(hookKey: string = OPENCLAW_HOOK_KEY): Promise<void> {
   const cfgPath = resolveOpenclawConfigPath();
-  const read = await readJsonObject(cfgPath);
+  const read = await readOpenclawConfigFile(cfgPath);
+  const handEdit = `It may still enable teamai's hook ${hookKey} (hooks.internal.entries.${hookKey}); remove that entry by hand or run \`openclaw hooks disable ${hookKey}\`.`;
 
   if (read.kind === 'missing') return;
 
   if (read.kind === 'invalid') {
-    log.warn(`OpenClaw: ${cfgPath} is not plain JSON (${read.error}), and teamai rewrites it only while it is, so your comments stay. `
-      + `hooks.internal.entries.${hookKey} is still there; remove it by hand or run \`openclaw hooks disable ${hookKey}\`.`);
+    log.warn(`${leftAsWritten(cfgPath, read)} ${handEdit}`);
 
     return;
   }
@@ -595,6 +635,12 @@ export async function removeOpenClawHookEntry(hookKey: string = OPENCLAW_HOOK_KE
 
   if (isOpenEndedDiscovery(internal, rest ?? {})) {
     log.debug(`openclaw: keeping ${hookKey} in ${cfgPath}; removing it would load every discovered hook`);
+
+    return;
+  }
+
+  if (!read.plainJson) {
+    log.warn(`${leftAsWritten(cfgPath, { kind: 'json5' })} ${handEdit}`);
 
     return;
   }

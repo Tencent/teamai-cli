@@ -124,6 +124,24 @@ describe('injectOpenClawHooks enables the hook in openclaw.json', () => {
     expect(JSON.parse(fs.readFileSync(target, 'utf-8'))).toEqual({ agents: { defaults: { workspace: wsDir } } });
   });
 
+  it('on removal, says nothing for a JSON5 openclaw.json without its entry, and names the command for one with it', async () => {
+    const without = `{ // JSON5\n  agents: { defaults: { workspace: ${JSON.stringify(wsDir)} } },\n}\n`;
+    fs.writeFileSync(cfgPath(), without);
+
+    await removeOpenClawHookEntry();
+
+    expect(fs.readFileSync(cfgPath(), 'utf-8')).toBe(without);
+    expect(warn).not.toHaveBeenCalled();
+
+    const withEntry = `{ // JSON5\n  hooks: { internal: { entries: { 'teamai-status-report': { enabled: true } } } },\n}\n`;
+    fs.writeFileSync(cfgPath(), withEntry);
+
+    await removeOpenClawHookEntry();
+
+    expect(fs.readFileSync(cfgPath(), 'utf-8')).toBe(withEntry);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('openclaw hooks disable teamai-status-report'));
+  });
+
   it('adds the entry beside existing named entries', async () => {
     writeCfg({
       agents: { defaults: { workspace: wsDir } },
@@ -657,7 +675,19 @@ if (process.argv.includes('--team-hooks') && process.argv[3] === 'Stop') process
     await injectOpenClawHooks('openclaw');
 
     expect(fs.readFileSync(cfgPath(), 'utf-8')).toBe('{ // JSON5\n  agents: {} }\n');
-    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/team's hooks do not run\. Add .*teamai-team-hooks\.mjs to plugins\.load\.paths by hand/));
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/comments or other JSON5 syntax.*team's hooks do not run until you add .*teamai-team-hooks\.mjs to plugins\.load\.paths/));
+  });
+
+  it('says nothing about a JSON5 openclaw.json when the team has no hooks for OpenClaw and the file lists no plugin', async () => {
+    const json5 = `{ // JSON5\n  agents: { defaults: { workspace: ${JSON.stringify(wsDir)} } },\n  hooks: { internal: { entries: { 'teamai-status-report': { enabled: true } } } },\n}\n`;
+    fs.writeFileSync(cfgPath(), json5);
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {});
+    teamHooksOn([]);
+
+    await injectOpenClawHooks('openclaw');
+
+    expect(fs.readFileSync(cfgPath(), 'utf-8')).toBe(json5);
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it('takes the plugin and its config back out once the team has no hooks for OpenClaw', async () => {
