@@ -6,9 +6,11 @@
  */
 import type { ScorerDefinition, ScorerLabel } from '../scorers/definition.js';
 import type { Decider, RunSubject } from '../scorers/label.js';
+import { log } from '../utils/logger.js';
 import { runPasses } from './loop.js';
+import { deliveredCi } from './pr-delivery.js';
 import { stepDefinitions } from './scope.js';
-import { agentPassOf } from './step-state.js';
+import { agentPassOf, type StepPass } from './step-state.js';
 import type { RunState } from './types.js';
 
 /** What the stages say of a pass: a stage decided it, with the reasoning its label keeps locally, or the judge decides. */
@@ -31,14 +33,35 @@ export function failingLabel(definition: Pick<ScorerDefinition, 'labels' | 'pass
   return below.reduce((best, label) => (label.score > best.score ? label : best));
 }
 
+const passOf = (run: RunState, subject: RunSubject): StepPass | undefined =>
+  runPasses(run, agentPassOf).find((each) => each.step === subject.step && each.pass === subject.pass);
+
+/**
+ * The CI of the pull request the pass delivered, read once: a failed one decides; a pending one, none, or a host whose
+ * CI TeamAI does not read says nothing, and neither does a host that did not answer, which is warned of.
+ */
+async function ciStage(run: RunState, subject: RunSubject, pass: StepPass | undefined): Promise<StageVerdict> {
+  const receipt = run.deliveries?.find((each) => each.step === subject.step && each.pass === subject.pass);
+  const head = pass?.delivery?.head;
+  if (!receipt || !head || !run.checkout) return { kind: 'judge' };
+  const ci = await deliveredCi(run.checkout, head);
+  if (ci.kind === 'unanswered') log.warn(`The CI of ${receipt.url} could not be read, so the judge of step "${subject.step}" decides without it: ${ci.reason}`);
+  if (ci.kind !== 'read' || ci.status !== 'failed') return { kind: 'judge' };
+  return { kind: 'decided', by: 'ci', reasoning: `Decided by CI, before any judge: the checks of commit ${head} on ${receipt.url} failed.` };
+}
+
 /** The delivery's own refusal of the pass, recorded when it changed a path no pull request TeamAI opens may change. */
-function protectedStage(run: RunState, subject: RunSubject): StageVerdict {
-  const pass = runPasses(run, agentPassOf).find((each) => each.step === subject.step && each.pass === subject.pass);
+function protectedStage(pass: StepPass | undefined): StageVerdict {
   if (pass?.failure?.code !== 'protected_path') return { kind: 'judge' };
   return { kind: 'decided', by: 'protected', reasoning: `Decided by protected paths, before any judge: ${pass.failure.message}` };
 }
 
-/** What decides delivered pass `subject` before its judge. */
-export function decideBeforeJudge(run: RunState, subject: RunSubject): StageVerdict {
-  return protectedStage(run, subject);
+/** What decides delivered pass `subject` before its judge, stage by stage in order. */
+export async function decideBeforeJudge(run: RunState, subject: RunSubject): Promise<StageVerdict> {
+  const pass = passOf(run, subject);
+  for (const stage of [() => ciStage(run, subject, pass), async () => protectedStage(pass)]) {
+    const verdict = await stage();
+    if (verdict.kind !== 'judge') return verdict;
+  }
+  return { kind: 'judge' };
 }

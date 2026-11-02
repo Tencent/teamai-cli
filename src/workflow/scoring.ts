@@ -665,7 +665,7 @@ async function takeOneLease(
         await fs.rm(evidenceDir(config, attempt.attempt), { recursive: true, force: true, maxRetries: 3 });
         return { kind: 'evidence_empty', closed: leased.members.map((member) => ({ ref: leaseRefOf(member.attempt), code: built.code })) };
       }
-      const stage = isDelivered(entry.run, entry.subject) ? decideBeforeJudge(entry.run, entry.subject) : { kind: 'judge' as const };
+      const stage = isDelivered(entry.run, entry.subject) ? await decideBeforeJudge(entry.run, entry.subject) : { kind: 'judge' as const };
       if (stage.kind === 'decided') {
         // Published with the next label a judge submits, or by the caller, as a drain publishes once at its end.
         const settled = await labelJudgeLease(config, leaseRefOf(attempt), {

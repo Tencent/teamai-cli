@@ -23,7 +23,9 @@ import { nextJudgeLease, scoreOnDemand, submitJudgeLease, type JudgeRequest } fr
 import { LabelStore } from '../scorers/label-store.js';
 import { branchName } from '../workflow/workspace.js';
 import { worktreePath } from '../workflow/worktree.js';
-import type { DriverIdentity, WorkflowEnvelope } from '../workflow/types.js';
+import type { DriverIdentity, RunState, WorkflowEnvelope } from '../workflow/types.js';
+import { fakeGh } from './helpers/fake-gh.js';
+import { PrUrlSchema } from '../workflow/pr-url.js';
 import { knownSecrets } from '../env-resolution.js';
 import { getTeamSecretsPath, writeSecretStore } from '../secret-store.js';
 import { removeSubjectEvidence, subjectEvidenceDirOf } from '../scorers/evidence.js';
@@ -428,10 +430,22 @@ samplingRate: 100
 Judge whether the pull request delivers what the issue asked, and only that.
 `;
 
-/** Rewrites the `change` step of run `runId` as `rewrite` leaves it. */
-async function rewriteChange(config: LocalConfig, runId: string, rewrite: (step: StepState) => StepState): Promise<void> {
+/** Rewrites the `change` step of run `runId` as `rewrite` leaves it, and the run as `around` does. */
+async function rewriteChange(config: LocalConfig, runId: string, rewrite: (step: StepState) => StepState, around: (run: RunState) => RunState = (run) => run): Promise<void> {
   await updateRun(config, runId, await knownSecrets(config), async (run) => (run === 'missing' ? { value: undefined }
-    : { value: undefined, write: { ...run, steps: run.steps.map((step) => (step.id === 'change' ? rewrite(step) : step)) } }));
+    : { value: undefined, write: around({ ...run, steps: run.steps.map((step) => (step.id === 'change' ? rewrite(step) : step)) }) }));
+}
+
+const PR = PrUrlSchema.parse('https://github.com/acme/app/pull/57');
+
+/** Settles `change` as delivered in pull request PR, from a checkout whose origin is on GitHub. */
+async function deliverChange(config: LocalConfig, runId: string, checkout: string): Promise<void> {
+  git(checkout, 'remote', 'add', 'origin', 'https://github.com/acme/app.git');
+  await rewriteChange(config, runId, (step) => (step.status !== 'delivering' ? step : { ...step, status: 'succeeded', outcome: 'success' }), (run) => {
+    const change = run.steps.find((step) => step.id === 'change');
+    const branch = change && 'delivery' in change ? change.delivery?.branch ?? 'missing' : 'missing';
+    return { ...run, deliveries: [{ url: PR, branch, base: 'main', step: 'change', pass: 1 }] };
+  });
 }
 
 describe('evidence of what a run delivered', () => {
@@ -480,6 +494,33 @@ describe('evidence of what a run delivered', () => {
     const [label] = await LabelStore.local(config);
     expect(label).toMatchObject({ label: 'partial', score: 0.5, passed: false, decidedBy: 'protected', judge: { kind: 'model', tool: 'claude' }, evidenceHash: expect.stringMatching(/^sha256:/) });
     expect(label?.judge).not.toHaveProperty('usage');
+  });
+
+  it('gives a delivered pull request whose CI failed the best label below passing, decided by ci, with no judge', async () => {
+    const { config, runId, checkout } = await deliveredRun(DELIVERED);
+    await deliverChange(config, runId, checkout);
+    const gh = fakeGh(path.join(root, 'gh'), { checks: { runs: [{ status: 'completed', conclusion: 'success' }, { status: 'completed', conclusion: 'failure' }] } });
+
+    const answer = data(await nextJudgeLease(config, request));
+
+    expect(answer).not.toHaveProperty('lease');
+    expect(answer.decided).toEqual([expect.objectContaining({ subject: { runId, step: 'change', pass: 1 }, label: 'partial', decidedBy: 'ci' })]);
+    expect(await LabelStore.local(config)).toMatchObject([{ label: 'partial', passed: false, decidedBy: 'ci', judge: { kind: 'model', tool: 'claude' } }]);
+    const after = await readRun(config, runId);
+    const change = typeof after === 'object' ? after.steps.find((step) => step.id === 'change') : undefined;
+    const delivered = change && 'delivery' in change ? change.delivery?.head : undefined;
+    expect(gh.calls().map((call) => call.args[1])).toContain(`repos/acme/app/commits/${delivered}/check-runs?per_page=100`);
+  });
+
+  it('hands a delivered pull request whose CI is still running to the judge, as one with no CI', async () => {
+    const { config, runId, checkout } = await deliveredRun(DELIVERED);
+    await deliverChange(config, runId, checkout);
+    fakeGh(path.join(root, 'gh'), { checks: { runs: [{ status: 'in_progress', conclusion: null }] } });
+
+    const lease = LeaseSchema.parse(data(await nextJudgeLease(config, request)).lease);
+
+    expect(lease.subject).toMatchObject({ step: 'change' });
+    expect(await LabelStore.local(config)).toEqual([]);
   });
 });
 
