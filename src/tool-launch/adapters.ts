@@ -221,6 +221,7 @@ function readPlainReply({ stdout }: CallOutput): CallReading {
 }
 
 /** How teamai launches each family of tools headless. A tool picks its adapter with the `launch` facet in `TOOLS`. */
+// oxlint-disable-next-line teamai/tool-facts -- keyed by launch adapter id, which this table defines; a tool picks one with TOOLS.launch
 export const LAUNCH_ADAPTERS = {
   claude: {
     call: { evidence: 'verified', prompt: 'stdin', args: () => ['-p', '--output-format', 'json'], read: readClaudeResult },
@@ -253,9 +254,10 @@ export const LAUNCH_ADAPTERS = {
     // CodeBuddy lists about 70 tools whatever `--tools` says.
     judge: { evidence: 'docs', env: ['CODEBUDDY_API_KEY', 'CODEBUDDY_AUTH_TOKEN', 'CODEBUDDY_CONFIG_DIR'], homeEnv: 'CODEBUDDY_CONFIG_DIR', access: 'full' },
   },
-  // One embedded turn with ephemeral state, so no call leaves a session in the member's conversations (#1308).
+  // One embedded turn with ephemeral state, so no call leaves a session in the member's conversations (#1308):
+  // after calls on OpenClaw 2026.8.1 (the first with `agent exec`) and 2026.10.9, `openclaw sessions --all-agents --json` counts 0.
   openclaw: {
-    call: { evidence: 'docs', prompt: 'stdin', args: () => ['agent', 'exec', '--json', '--message-file', '-'], read: readOpenClawExec },
+    call: { evidence: 'verified', prompt: 'stdin', args: () => ['agent', 'exec', '--json', '--message-file', '-'], read: readOpenClawExec },
   },
   cursor: {
     executable: 'cursor-agent',

@@ -3961,7 +3961,9 @@ async function reportPostPullChecks(
     );
 
     const failures = results.filter((r) => !r.ok);
-    if (failures.length === 0) return;
+    // A pass with something left to do, such as a trust prompt the tool shows when the member opens it here.
+    const warnings = results.filter((r) => r.warning);
+    if (failures.length === 0 && warnings.length === 0) return;
 
     // A check marked `informational` (e.g. a stale leftover file) is a
     // cleanup opportunity, not a sign the pull that just ran did anything
@@ -3979,8 +3981,8 @@ async function reportPostPullChecks(
         for (const line of detail) log.dim(line);
       }
     }
-    for (const failure of informational) {
-      const [headline, ...detail] = formatCheckResult(failure);
+    for (const result of [...informational, ...warnings]) {
+      const [headline, ...detail] = formatCheckResult(result);
       log.dim(headline);
       for (const line of detail) log.dim(line);
     }

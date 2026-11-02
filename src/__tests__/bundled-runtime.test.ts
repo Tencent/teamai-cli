@@ -14,12 +14,12 @@ vi.mock('../utils/logger.js', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
-import { ensureBundledRuntimeOnPath, resetBundledRuntimeCache } from '../bundled-runtime.js';
+import { ensureBundledRuntimeOnPath, resetBundledRuntimeCache, resolveWorkbuddyNode } from '../bundled-runtime.js';
 import { log } from '../utils/logger.js';
 
 /** Lay out a WorkBuddy PortableGit runtime under the test home. */
-function makePortableGit(version: string, dirs = ['cmd', 'usr/bin', 'mingw64/bin']): string {
-  const root = path.join(homeState.home, '.workbuddy', 'binaries', 'PortableGit', 'versions', version);
+function makePortableGit(version: string, dirs = ['cmd', 'usr/bin', 'mingw64/bin'], dataRoot = '.workbuddy'): string {
+  const root = path.join(homeState.home, dataRoot, 'binaries', 'PortableGit', 'versions', version);
   for (const dir of dirs) {
     fs.mkdirSync(path.join(root, dir), { recursive: true });
   }
@@ -140,6 +140,15 @@ describe('ensureBundledRuntimeOnPath', () => {
     expect(process.env.PATH!.split(path.delimiter)[0]).toBe(path.join(older, 'cmd'));
   });
 
+  it('finds the PortableGit of WorkBuddy AI, the international edition', () => {
+    const root = makePortableGit('1.2.0', undefined, '.workbuddy-ai');
+    process.env.PATH = '';
+
+    ensureBundledRuntimeOnPath('win32');
+
+    expect((process.env.PATH ?? '').split(path.delimiter)[0]).toBe(path.join(root, 'cmd'));
+  });
+
   it('leaves PATH alone off Windows', () => {
     makePortableGit('1.2.0');
     const original = makeEmptyPathDir();
@@ -148,5 +157,69 @@ describe('ensureBundledRuntimeOnPath', () => {
     ensureBundledRuntimeOnPath('darwin');
 
     expect(process.env.PATH).toBe(original);
+  });
+});
+
+// WorkBuddy 5.6.2 and 5.7.6 (`VENDOR_ASSETS` in main/index.js) unpack Node into
+// <data root>/binaries/node/versions/<version>-<variant>: bin/node, or node.exe on Windows.
+describe('resolveWorkbuddyNode', () => {
+  let savedConfigDir: string | undefined;
+
+  beforeEach(() => {
+    homeState.home = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-runtime-'));
+    savedConfigDir = process.env.WORKBUDDY_CONFIG_DIR;
+    delete process.env.WORKBUDDY_CONFIG_DIR;
+  });
+
+  afterEach(() => {
+    fs.rmSync(homeState.home, { recursive: true, force: true });
+    if (savedConfigDir === undefined) delete process.env.WORKBUDDY_CONFIG_DIR;
+    else process.env.WORKBUDDY_CONFIG_DIR = savedConfigDir;
+  });
+
+  function makeNode(versions: string, binary = path.join('bin', 'node')): string {
+    const file = path.join(versions, binary);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, '');
+    return file;
+  }
+  const versionsIn = (dataRoot: string) => path.join(dataRoot, 'binaries', 'node', 'versions');
+
+  it('finds the Node WorkBuddy unpacked', () => {
+    const node = makeNode(path.join(versionsIn(path.join(homeState.home, '.workbuddy')), '22.22.2-6'));
+    expect(resolveWorkbuddyNode('darwin')).toBe(node);
+  });
+
+  it('finds the Node of WorkBuddy AI, the international edition', () => {
+    const node = makeNode(path.join(versionsIn(path.join(homeState.home, '.workbuddy-ai')), '22.22.2-6'));
+    expect(resolveWorkbuddyNode('linux')).toBe(node);
+  });
+
+  it('takes node.exe from the version directory on Windows', () => {
+    const node = makeNode(path.join(versionsIn(path.join(homeState.home, '.workbuddy')), '22.22.2-6'), 'node.exe');
+    expect(resolveWorkbuddyNode('win32')).toBe(node);
+  });
+
+  it('takes the newest complete version, past the active-version file and an unfinished unpack', () => {
+    const versions = versionsIn(path.join(homeState.home, '.workbuddy'));
+    makeNode(path.join(versions, '22.9.0-3'));
+    makeNode(path.join(versions, '22.22.2-3'));
+    const newest = makeNode(path.join(versions, '22.22.2-6'));
+    fs.mkdirSync(path.join(versions, '24.0.0-1'), { recursive: true });
+    fs.mkdirSync(path.join(versions, '24.1.0-1.installing.42'), { recursive: true });
+    fs.writeFileSync(path.join(versions, 'current'), '22.22.2-6');
+    expect(resolveWorkbuddyNode('darwin')).toBe(newest);
+  });
+
+  it('looks in WORKBUDDY_CONFIG_DIR first', () => {
+    makeNode(path.join(versionsIn(path.join(homeState.home, '.workbuddy')), '22.22.2-6'));
+    const moved = path.join(homeState.home, 'wb-data');
+    process.env.WORKBUDDY_CONFIG_DIR = moved;
+    const node = makeNode(path.join(versionsIn(moved), '22.22.2-6'));
+    expect(resolveWorkbuddyNode('darwin')).toBe(node);
+  });
+
+  it('finds nothing without a WorkBuddy runtime', () => {
+    expect(resolveWorkbuddyNode('darwin')).toBeNull();
   });
 });

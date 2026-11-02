@@ -59,6 +59,7 @@ export interface RuleFormat {
  * body only, and a file teamai did not deliver is the member's own rule in the
  * tool's format, never a new team rule.
  */
+// oxlint-disable-next-line teamai/tool-facts -- keyed by rule format id, which this table defines; a tool picks one in TOOLS.rules
 const RULE_FORMATS = {
   'cursor-mdc': CURSOR_MDC_FORMAT,
   joycode: JOYCODE_RULE_FORMAT,

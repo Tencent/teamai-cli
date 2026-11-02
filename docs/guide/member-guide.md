@@ -162,4 +162,12 @@ sharing:
 
 `teamai pull` lists the paths it delivered in this clone's `.git/info/exclude`. It does not change `.gitignore`. The tools still load the files. `git status` does not show them.
 
+In a single-repo team, these tools' committed hook settings keep only teamai's built-in hooks, so a fresh clone still has them. The team's own hooks go to the file beside them that the tool reads as yours:
+
+| Tool | Committed | Team hooks |
+|---|---|---|
+| Claude Code | `.claude/settings.json` | `.claude/settings.local.json` |
+| CodeBuddy | `.codebuddy/settings.json` | `.codebuddy/settings.local.json` |
+| Qoder | `.qoder/settings.json` | `.qoder/settings.local.json` |
+
 `gitExcludeEnabled` in this project's local config wins. The next pull applies it.

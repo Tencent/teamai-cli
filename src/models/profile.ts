@@ -26,6 +26,7 @@ export const ModelProtocolSchema = z.enum([
 ]);
 export type ModelProtocol = z.infer<typeof ModelProtocolSchema>;
 
+// oxlint-disable-next-line teamai/tool-facts -- the agents models switch supports, in output order; each needs its own switch code
 export const ModelAgentSchema = z.enum([
   'claude',
   'codex',

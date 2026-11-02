@@ -81,7 +81,8 @@
     "teamai/no-provider-merge": "error",
     "teamai/windows-tests": "error",
     "teamai/rules-locate": "error",
-    "teamai/workflow-failure-codes": "error"
+    "teamai/workflow-failure-codes": "error",
+    "teamai/tool-facts": "error"
   },
   "overrides": [
     {

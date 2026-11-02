@@ -4,7 +4,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { getUserHome, expandHome } from './utils/home.js';
 import { log } from './utils/logger.js';
-import { channelsOf } from './tools.js';
+import { channelsOf, type ToolId } from './tools.js';
 import type { WorkspaceChildren } from './workspace-children.js';
 import type { HeadState } from './utils/git.js';
 import type { RunMode } from './launch-context.js';
@@ -706,10 +706,7 @@ export const DEFAULT_TOOL_PATHS = {
     mcpProject: '.agents/plugins/teamai/mcp_config.json',
     userScope: { skills: '.gemini/config/skills', rules: '.gemini/config/rules', agents: '.gemini/config/agents' },
   },
-} satisfies Record<string, z.infer<typeof ToolPathsSchema>>;
-
-/** A built-in tool. Custom tools in a team's `toolPaths` stay plain strings. */
-export type ToolId = keyof typeof DEFAULT_TOOL_PATHS;
+} satisfies Record<ToolId, z.infer<typeof ToolPathsSchema>>;
 
 export const TeamaiConfigBaseSchema = z.object({
   team: z.string(),

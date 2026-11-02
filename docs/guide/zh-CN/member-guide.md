@@ -162,4 +162,12 @@ sharing:
 
 `teamai pull` 把下发的路径写进本机 `.git/info/exclude`，不改 `.gitignore`。这些文件工具照常加载，`git status` 看不到。
 
+在单仓库团队中，下列工具提交的 hook 配置只保留 teamai 的内置 hook，新克隆的仓库照样有。团队自己的 hook 写进旁边那个工具视为你个人的文件：
+
+| 工具 | 提交的文件 | 团队 hook |
+|---|---|---|
+| Claude Code | `.claude/settings.json` | `.claude/settings.local.json` |
+| CodeBuddy | `.codebuddy/settings.json` | `.codebuddy/settings.local.json` |
+| Qoder | `.qoder/settings.json` | `.qoder/settings.local.json` |
+
 本机项目配置里的 `gitExcludeEnabled` 优先。下一次 pull 生效。

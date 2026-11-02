@@ -36,9 +36,9 @@ const SKILL_IMPORTS = {
   // Whether the local driver launches the session's tool, so a local start or resume can name it.
   'src/tool-launch/tools.ts': { names: ['isLaunchTool', 'LAUNCH_ORDER', 'LaunchTool'] },
   'src/builtin-hooks.ts': { names: ['resolveCliEntry'] },
-  // The tools a session may name with `--tools default=<tool>`, which of them a child's model resolves for, and the
+  // The tools (`ToolId`) a session may name with `--tools default=<tool>`, which of them a child's model resolves for, and the
   // skill-data root the host question's reference is under.
-  'src/tools.ts': { names: ['isToolId', 'TOOLS', 'isAgentToolId'] },
+  'src/tools.ts': { names: ['isToolId', 'TOOLS', 'isAgentToolId', 'ToolId'] },
   'src/skill-content.ts': { names: ['packagedSkillRoots'] },
   // What the confined judge of the session tool can do, which the driver declares on `score --next`.
   'src/scorers/judge.ts': { names: ['isJudgeTool', 'judgeAccess'] },

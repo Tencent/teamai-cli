@@ -10,7 +10,7 @@
 
 import path from 'node:path';
 import { chmod } from 'node:fs/promises';
-import { generatedFileState, writeIfChanged, pathExists, remove } from './utils/fs.js';
+import { generatedFileState, writeIfChanged, pathExists, readFileSafe, remove } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { resolveCliEntry } from './builtin-hooks.js';
 import { hookAdapterDirIn } from './locate.js';
@@ -38,6 +38,42 @@ export const HERMES_INSTRUCTIONS_PLUGIN = 'teamai-instructions';
  * skipped, so teamai reports it rather than truncating the instructions.
  */
 export const HERMES_SECTION_LIMIT = 4000;
+
+/** The id teamai's plugin registers its prompt section under, which Hermes sorts sections by. */
+export const HERMES_INSTRUCTIONS_SECTION = 'teamai.instructions';
+
+/** What Hermes did with teamai's section in the last session its `logs/agent.log` records. */
+export type InstructionsSection =
+  | { readonly kind: 'unseen' }
+  | { readonly kind: 'rendered'; readonly at: string }
+  /** Other plugins' sections took the shared budget, 8,000 characters or 32 sections, first. */
+  | { readonly kind: 'crowded-out'; readonly at: string; readonly reason: string }
+  /** teamai's own section ran over its 4,000-character limit, which depends on the project's instructions. */
+  | { readonly kind: 'too-long'; readonly at: string; readonly reason: string }
+  /** Another skip of teamai's own section Hermes logged. */
+  | { readonly kind: 'skipped'; readonly at: string; readonly reason: string };
+
+/**
+ * Hermes v0.22.5 renders plugin sections once per session, in section id order, and skips one
+ * that does not fit whole, logging each outcome (`plugins_dispatch.py` render_system_prompt_sections).
+ * Which sections other plugins add is only known once they run, so this reads what Hermes logged.
+ */
+export async function lastInstructionsSection(home = toolHome('hermes')): Promise<InstructionsSection> {
+  const agentLog = await readFileSafe(path.join(home, 'logs', 'agent.log'));
+  const id = HERMES_INSTRUCTIONS_SECTION.replaceAll('.', '\\.');
+  const rendered = new RegExp(`: Session plugin prompt section: id=${id} `);
+  const skipped = new RegExp(`: Plugin system prompt section ${id} (?:\\([^)]*\\) )?(.+)$`);
+  // Python writes the log in text mode: CRLF on Windows.
+  for (const line of (agentLog ?? '').split(/\r?\n/).toReversed()) {
+    const at = line.slice(0, 19);
+    if (rendered.test(line)) return { kind: 'rendered', at };
+    const reason = skipped.exec(line)?.[1];
+    if (reason === undefined) continue;
+    if (/^exceeded the (?:aggregate session|section-count) budget/.test(reason)) return { kind: 'crowded-out', at, reason };
+    return { kind: reason.startsWith('exceeded max_chars') ? 'too-long' : 'skipped', at, reason };
+  }
+  return { kind: 'unseen' };
+}
 
 /** Directory of teamai's Hermes plugin in `home`. */
 export function getInstructionsPluginDir(home = toolHome('hermes')): string {
@@ -106,7 +142,7 @@ export function buildInstructionsPlugin(entry = resolveCliEntry()): { manifest: 
     '',
     'def register(ctx):',
     '    ctx.register_system_prompt_section(',
-    '        "teamai.instructions",',
+    `        "${HERMES_INSTRUCTIONS_SECTION}",`,
     '        _instructions,',
     '        position="after_memory",',
     `        max_chars=${HERMES_SECTION_LIMIT},`,

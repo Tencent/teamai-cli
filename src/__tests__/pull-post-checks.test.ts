@@ -315,6 +315,27 @@ describe('checks at the end of an interactive pull', () => {
     expect(output).toContain('~/.bashrc still carries a teamai env block');
   });
 
+  it('shows a prompt the member has not answered yet dimmed with a warning mark, not as a failed check', async () => {
+    // The member has Pi installed but has not opened it in this project: Pi asks then, so nothing is broken.
+    vi.mocked(buildChecks).mockResolvedValue([
+      { name: 'Team repo exists locally', source: 'local', check: async () => true },
+      {
+        name: 'Pi trusts this project, so it loads its team skills',
+        source: 'local',
+        check: async () => 'warn',
+        fix: 'Start `pi` in /work/web-app and choose Trust',
+      },
+    ]);
+
+    await pull({ force: true });
+
+    const output = printedOutput();
+    expect(output).not.toContain('check(s) failed');
+    expect(output).toContain('  ⚠ Pi trusts this project, so it loads its team skills');
+    expect(output).toContain('Start `pi` in /work/web-app and choose Trust');
+    expect(vi.mocked(log.warn).mock.calls.flat().join('\n')).not.toContain('Pi trusts this project');
+  });
+
   it('counts a blocking failure but not an informational one alongside it', async () => {
     vi.mocked(buildChecks).mockResolvedValue([
       {

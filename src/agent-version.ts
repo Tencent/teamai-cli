@@ -11,6 +11,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { log } from './utils/logger.js';
 import { probeBinary } from './utils/exec.js';
+import { isToolId, type ToolId } from './tools.js';
 
 const VERSION_CACHE = new Map<string, string>();
 
@@ -94,21 +95,42 @@ async function detectOpenclawVersion(): Promise<string> {
 
 type VersionDetector = () => Promise<string>;
 
-const DETECTORS: Record<string, VersionDetector> = {
+/** How teamai reads each tool's version, or null when it reads none. */
+const DETECTORS: Record<ToolId, VersionDetector | null> = {
   claude: detectClaudeVersion,
+  codex: null,
+  'codex-internal': null,
+  'claude-internal': null,
+  tclaude: null,
+  tcodex: null,
   cursor: detectCursorVersion,
+  copilot: null,
+  joycode: null,
+  qoder: null,
+  'qoder-cn': null,
+  kiro: null,
+  trae: null,
+  'trae-cn': null,
+  zcode: null,
+  omp: null,
+  pi: detectPiVersion,
   codebuddy: detectCodebuddyCliVersion,
-  'codebuddy-ide': detectCodebuddyIdeVersion,
-  workbuddy: detectWorkbuddyVersion,
-  hermes: detectHermesVersion,
   openclaw: detectOpenclawVersion,
+  hermes: detectHermesVersion,
   // DeepSeek Harness: `dsh --version` prints e.g. "0.1.1" (optionally with a
   // leading "v" or trailing commit info). Extract leading semver-ish digits.
   dsh: detectDshVersion,
+  workbuddy: detectWorkbuddyVersion,
+  opencode: null,
   muse: detectMuseVersion,
   agy: detectAgyVersion,
-  pi: detectPiVersion,
 };
+
+/** The detector for `agentType`: a tool's, or the CodeBuddy IDE's (`codebuddy-ide`). */
+function detectorOf(agentType: string): VersionDetector | null {
+  if (agentType === 'codebuddy-ide') return detectCodebuddyIdeVersion;
+  return isToolId(agentType) ? DETECTORS[agentType] : null;
+}
 
 async function detectPiVersion(): Promise<string> {
   // Pi Coding Agent: "1.4.0"
@@ -141,7 +163,7 @@ async function detectAgyVersion(): Promise<string> {
 export async function getAgentVersion(agentType: string): Promise<string> {
   if (VERSION_CACHE.has(agentType)) return VERSION_CACHE.get(agentType)!;
 
-  const detector = DETECTORS[agentType];
+  const detector = detectorOf(agentType);
   let version = '';
   if (detector) {
     try {

@@ -2,9 +2,9 @@ import { KNOWN_AGENTS } from '../src/known-agents.js';
 import {
   isToolId, TOOLS,
   type CodebuddyConfigFile, type Evidence, type FirstExistingRead, type HomeMove, type HomeRead, type ProjectRead,
-  type RunTime, type Support, type ToolDescriptor, type ToolFeatures,
+  type RunTime, type Support, type ToolDescriptor, type ToolFeatures, type ToolId,
 } from '../src/tools.js';
-import { DEFAULT_TOOL_PATHS, type ToolId } from '../src/types.js';
+import { DEFAULT_TOOL_PATHS } from '../src/types.js';
 
 // ─── Generated support page ──────────────────────────────
 //

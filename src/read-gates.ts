@@ -11,7 +11,7 @@ import { getAgentVersion } from './agent-version.js';
 import type { ReadGate } from './locate.js';
 import { codexProjectTrust, codexTrustFix } from './codex-project-trust.js';
 import { realFilePath } from './git-exclude.js';
-import { readFileSafe, readJsonObject, type JsonObjectRead } from './utils/fs.js';
+import { pathExists, readFileIfExists, readJsonObject } from './utils/fs.js';
 
 /**
  * What teamai holds in the gated place. `summary` opens the fix
@@ -20,9 +20,18 @@ import { readFileSafe, readJsonObject, type JsonObjectRead } from './utils/fs.js
  */
 export type Held = { readonly summary: string; readonly noun: string; readonly names: readonly string[] };
 
-export type ReadGateVerdict = { readonly met: true } | { readonly met: false; readonly fix: string };
+/**
+ * What the tool answers for the held resource. `unanswered`: the tool has not
+ * asked yet, and asks the first time the member opens it here, so doctor warns
+ * without failing. `blocked`: the member or a setting said no, or the answer
+ * cannot be read, so opening the tool changes nothing and doctor fails.
+ */
+export type ReadGateVerdict =
+  | { readonly kind: 'met' }
+  | { readonly kind: 'unanswered'; readonly fix: string }
+  | { readonly kind: 'blocked'; readonly fix: string };
 
-const MET: ReadGateVerdict = { met: true };
+const MET: ReadGateVerdict = { kind: 'met' };
 
 /** The doctor check's name: what the gate decides for the held resource. */
 export function readGateCheckName(gate: ReadGate, noun: string): string {
@@ -47,6 +56,10 @@ export function readGateCheckName(gate: ReadGate, noun: string): string {
       return 'Cursor CLI approves this project\'s team MCP servers';
     case 'claude-hooks-enabled':
       return 'Claude Code has not turned hooks off with disableAllHooks';
+    case 'openclaw-hooks-enabled':
+      return 'OpenClaw hook enabled';
+    case 'openclaw-plugins-enabled':
+      return 'OpenClaw loads teamai\'s team hooks plugin';
     default: {
       const unhandled: never = gate;
       return unhandled;
@@ -60,7 +73,11 @@ export async function readGateVerdict(gate: ReadGate, held: Held): Promise<ReadG
       const trust = await codexProjectTrust(gate);
       return trust.kind === 'trusted'
         ? MET
-        : { met: false, fix: codexTrustFix(trust, gate, `${held.summary}, but Codex loads a project's ${held.noun} only in a trusted project`) };
+        : {
+          // Codex asks about a checkout that no entry decides; an entry that does, or a config it cannot read, it does not.
+          kind: trust.kind === 'untrusted' && !trust.decidedBy ? 'unanswered' : 'blocked',
+          fix: codexTrustFix(trust, gate, `${held.summary}, but Codex loads a project's ${held.noun} only in a trusted project`),
+        };
     }
     case 'pi-project-trust':
       return piProjectTrust(gate, `${held.summary}, but Pi loads a project's ${held.noun} only in a trusted project`);
@@ -80,6 +97,10 @@ export async function readGateVerdict(gate: ReadGate, held: Held): Promise<ReadG
       return cursorMcpApproval(gate, held);
     case 'claude-hooks-enabled':
       return claudeHooksEnabled(gate, `${held.summary}, but Claude Code runs no hooks while the settings that decide set disableAllHooks`);
+    case 'openclaw-hooks-enabled':
+      return openclawHooksEnabled(gate, `${held.summary}, but OpenClaw loads a workspace hook only once openclaw.json enables its entry`);
+    case 'openclaw-plugins-enabled':
+      return openclawPluginLoaded(gate, `${held.summary}, but OpenClaw runs a plugin only once openclaw.json loads and enables it`);
     default: {
       const unhandled: never = gate;
       return unhandled;
@@ -90,7 +111,7 @@ export async function readGateVerdict(gate: ReadGate, held: Held): Promise<ReadG
 /** `question`: what the file would have answered ("Pi trusts this project"). */
 function unreadable({ cause, file, reason, question }: { cause: string; file: string; reason: string; question: string }): ReadGateVerdict {
   return {
-    met: false,
+    kind: 'blocked',
     fix: `${cause}, and ${file} ${reason}, so whether ${question} is unknown. Fix ${file}, then run \`teamai doctor\` again.`,
   };
 }
@@ -113,8 +134,8 @@ async function piProjectTrust(gate: Extract<ReadGate, { kind: 'pi-project-trust'
   const version = semver.valid(await getAgentVersion('pi'));
   if (version !== null && semver.lt(version, '0.79.0')) return MET;
   const root = await realFilePath(gate.checkout);
-  const trust = await readJsonObject(gate.config);
-  if (trust.kind === 'invalid') return unreadable({ cause, file: gate.config, reason: `does not parse (${trust.error})`, question: 'Pi trusts this project' });
+  const trust = await readStore(gate.config);
+  if (trust.kind === 'unreadable') return unreadable({ cause, file: gate.config, reason: trust.reason, question: 'Pi trusts this project' });
   const entries = trust.kind === 'ok' ? trust.value : {};
   const invalidEntry = Object.entries(entries).find(([, value]) => value !== true && value !== false && value !== null);
   if (invalidEntry) return unreadable({ cause, file: gate.config, reason: `holds ${JSON.stringify(invalidEntry[1])} for ${invalidEntry[0]}, where Pi takes true, false or null`, question: 'Pi trusts this project' });
@@ -123,18 +144,18 @@ async function piProjectTrust(gate: Extract<ReadGate, { kind: 'pi-project-trust'
     const value = entries[dir];
     if (value === true) return MET;
     if (value === false) {
-      return { met: false, fix: `${cause}, and ${gate.config} sets ${JSON.stringify(dir)}: false, the entry Pi reads for ${root}. Set it to true, or ${grant}.` };
+      return { kind: 'blocked', fix: `${cause}, and ${gate.config} sets ${JSON.stringify(dir)}: false, the entry Pi reads for ${root}. Set it to true, or ${grant}.` };
     }
   }
-  const settings = await readJsonObject(gate.settings);
-  if (settings.kind === 'invalid') return unreadable({ cause, file: gate.settings, reason: `does not parse (${settings.error})`, question: 'Pi trusts this project' });
+  const settings = await readStore(gate.settings);
+  if (settings.kind === 'unreadable') return unreadable({ cause, file: gate.settings, reason: settings.reason, question: 'Pi trusts this project' });
   const fallback = settings.kind === 'ok' ? settings.value.defaultProjectTrust : undefined;
   if (fallback === 'always') return MET;
   if (fallback === 'never') {
-    return { met: false, fix: `${cause}, and ${gate.settings} sets defaultProjectTrust to "never" while ${gate.config} has no entry for ${root}. To trust this project only, ${grant}.` };
+    return { kind: 'blocked', fix: `${cause}, and ${gate.settings} sets defaultProjectTrust to "never" while ${gate.config} has no entry for ${root}. To trust this project only, ${grant}.` };
   }
   return {
-    met: false,
+    kind: 'unanswered',
     fix: `${cause}, and ${gate.config} has no entry for ${root} or a folder above it. Start \`pi\` in ${root} and choose Trust, `
       + `or ${grant}. Until then a headless run (\`pi -p\`) skips them.`,
   };
@@ -150,8 +171,8 @@ async function museWorkspaceTrust(gate: Extract<ReadGate, { kind: 'muse-workspac
   const { resolveAnchors } = await import('./utils/git.js');
   const target = (await resolveAnchors(gate.checkout))?.workspaceRoot ?? await realFilePath(gate.checkout);
   const grant = `add ${JSON.stringify(target)}: {"decision": "trusted"} under "projects" in ${gate.config}, beside "schema_version": 1`;
-  const store = await readJsonObject(gate.config);
-  if (store.kind === 'invalid') return unreadable({ cause, file: gate.config, reason: `does not parse (${store.error})`, question: 'Muse Code trusts this project' });
+  const store = await readStore(gate.config);
+  if (store.kind === 'unreadable') return unreadable({ cause, file: gate.config, reason: store.reason, question: 'Muse Code trusts this project' });
   if (store.kind === 'ok') {
     const { schema_version: version, projects } = store.value;
     if (version !== 1) return unreadable({ cause, file: gate.config, reason: `has schema_version ${JSON.stringify(version)}, where Muse Code takes 1`, question: 'Muse Code trusts this project' });
@@ -159,12 +180,12 @@ async function museWorkspaceTrust(gate: Extract<ReadGate, { kind: 'muse-workspac
     const decision = typeof entry === 'object' && entry !== null && 'decision' in entry ? entry.decision : undefined;
     if (decision === 'trusted') return MET;
     if (decision === 'untrusted') {
-      return { met: false, fix: `${cause}, and ${gate.config} records "untrusted" for ${target}, so Muse Code never asks again. Set that decision to "trusted".` };
+      return { kind: 'blocked', fix: `${cause}, and ${gate.config} records "untrusted" for ${target}, so Muse Code never asks again. Set that decision to "trusted".` };
     }
     if (decision !== undefined) return unreadable({ cause, file: gate.config, reason: `holds the decision ${JSON.stringify(decision)} for ${target}, where Muse Code takes "trusted" or "untrusted"`, question: 'Muse Code trusts this project' });
   }
   return {
-    met: false,
+    kind: 'unanswered',
     fix: `${cause}, and ${gate.config} has no decision for ${target}. Start \`muse\` in ${target} and choose "Trust and continue", `
       + `or ${grant}. Each worktree needs its own entry. Until then \`muse exec\` skips them.`,
   };
@@ -180,8 +201,8 @@ async function copilotFolderTrust(gate: Extract<ReadGate, { kind: 'copilot-folde
   const { resolveAnchors } = await import('./utils/git.js');
   const root = await realFilePath(gate.checkout);
   const main = (await resolveAnchors(gate.checkout))?.mainCheckout ?? root;
-  const config = await readCommentedJsonObject(gate.config);
-  if (config.kind === 'invalid') return unreadable({ cause, file: gate.config, reason: `does not parse (${config.error})`, question: 'Copilot CLI trusts this project' });
+  const config = await readStore(gate.config, { comments: true });
+  if (config.kind === 'unreadable') return unreadable({ cause, file: gate.config, reason: config.reason, question: 'Copilot CLI trusts this project' });
   const folders = config.kind === 'ok' ? [config.value.trustedFolders, config.value.trusted_folders].flatMap((list) => Array.isArray(list) ? list : []) : [];
   for (const folder of folders) {
     if (typeof folder !== 'string') continue;
@@ -189,7 +210,7 @@ async function copilotFolderTrust(gate: Extract<ReadGate, { kind: 'copilot-folde
     if ([root, main].some((dir) => isAtOrUnder(dir, real))) return MET;
   }
   return {
-    met: false,
+    kind: 'unanswered',
     fix: `${cause}, and no folder in "trustedFolders" of ${gate.config} covers ${main}. Start \`copilot\` in ${main} and choose `
       + `"Yes, and remember this folder for future sessions", or add ${JSON.stringify(main)} to "trustedFolders" in ${gate.config}. `
       + 'Trusting the main checkout covers every worktree of it. Until then `copilot -p` skips them unless it runs with `--trust-folder`.',
@@ -201,18 +222,36 @@ function isAtOrUnder(dir: string, root: string): boolean {
   return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
-/** A JSON object file that may open with `//` comment lines, as Copilot writes config.json. */
-async function readCommentedJsonObject(file: string): Promise<JsonObjectRead> {
-  const raw = await readFileSafe(file);
+/** A tool's own trust or approval store: absent, there but unreadable (and why), or its object. */
+type StoreRead =
+  | { readonly kind: 'missing' }
+  | { readonly kind: 'unreadable'; readonly reason: string }
+  | { readonly kind: 'ok'; readonly value: Record<string, unknown> };
+
+/**
+ * Only an absent store means the tool has not asked yet; one that is there
+ * but cannot be read or parsed leaves its verdict unknown. `comments` drops
+ * the `//` lines Copilot heads config.json with; `notJson` words a parse failure.
+ */
+async function readStore(
+  file: string,
+  { comments = false, notJson = (error: string) => `does not parse (${error})` }: { comments?: boolean; notJson?: (error: string) => string } = {},
+): Promise<StoreRead> {
+  let raw: string | null;
+  try {
+    raw = await readFileIfExists(file);
+  } catch (error) {
+    return { kind: 'unreadable', reason: `cannot be read (${error instanceof Error ? error.message : String(error)})` };
+  }
   if (raw === null) return { kind: 'missing' };
-  const body = raw.split(/\r?\n/).filter((line) => !line.trimStart().startsWith('//')).join('\n');
+  const body = comments ? raw.split(/\r?\n/).filter((line) => !line.trimStart().startsWith('//')).join('\n') : raw;
   try {
     const value: unknown = JSON.parse(body);
     return typeof value === 'object' && value !== null && !Array.isArray(value)
       ? { kind: 'ok', value: Object.fromEntries(Object.entries(value)) }
-      : { kind: 'invalid', error: 'not a JSON object' };
+      : { kind: 'unreadable', reason: notJson('not a JSON object') };
   } catch (error) {
-    return { kind: 'invalid', error: error instanceof Error ? error.message : String(error) };
+    return { kind: 'unreadable', reason: notJson(error instanceof Error ? error.message : String(error)) };
   }
 }
 
@@ -225,8 +264,8 @@ async function readCommentedJsonObject(file: string): Promise<JsonObjectRead> {
  */
 async function qoderFolderTrust(gate: Extract<ReadGate, { kind: 'qoder-folder-trust' }>, cause: string): Promise<ReadGateVerdict> {
   const root = await realFilePath(gate.checkout);
-  const settings = await readJsonObject(gate.config);
-  if (settings.kind === 'invalid') return unreadable({ cause, file: gate.config, reason: `does not parse (${settings.error})`, question: 'Qoder CLI trusts this folder' });
+  const settings = await readStore(gate.config);
+  if (settings.kind === 'unreadable') return unreadable({ cause, file: gate.config, reason: settings.reason, question: 'Qoder CLI trusts this folder' });
   const value = settings.kind === 'ok' ? settings.value : {};
   if (fieldOf(fieldOf(fieldOf(value, 'security'), 'folderTrust'), 'enabled') === false) return MET;
   const permissions = fieldOf(value, 'permissions');
@@ -235,7 +274,7 @@ async function qoderFolderTrust(gate: Extract<ReadGate, { kind: 'qoder-folder-tr
     if (typeof folder === 'string' && isAtOrUnder(root, await realFilePath(folder))) return MET;
   }
   return {
-    met: false,
+    kind: 'unanswered',
     fix: `${cause}, and permissions.trustDirectories in ${gate.config} does not cover ${root}. Start \`qodercli\` in ${root} and trust the folder `
       + `when it asks, or add ${JSON.stringify(root)} to permissions.trustDirectories in ${gate.config}. \`qodercli -p\` loads them either way.`,
   };
@@ -257,7 +296,8 @@ function approvalVerdict({ cause, approval, approve, undo }: { cause: string; ap
     ...pending.length === 0 ? [] : [`${pending.join(', ')} ${pending.length === 1 ? 'waits' : 'wait'} for approval`],
     ...rejected.length === 0 ? [] : [`${rejected.join(', ')} ${rejected.length === 1 ? 'was' : 'were'} rejected`],
   ];
-  return { met: false, fix: `${cause}, and ${parts.join(', and ')}. ${[...pending.length === 0 ? [] : [approve], ...rejected.length === 0 ? [] : [undo]].join(' ')}` };
+  // A rejection stays until someone lifts it; a server only waiting is asked about when the member opens the tool.
+  return { kind: rejected.length > 0 ? 'blocked' : 'unanswered', fix: `${cause}, and ${parts.join(', and ')}. ${[...pending.length === 0 ? [] : [approve], ...rejected.length === 0 ? [] : [undo]].join(' ')}` };
 }
 
 /** Approval kept as name lists: `disabled` rejects, `enabled` or `all` approves, and the rest wait. */
@@ -280,10 +320,10 @@ function listedApproval(
 async function claudeHooksEnabled(gate: Extract<ReadGate, { kind: 'claude-hooks-enabled' }>, cause: string): Promise<ReadGateVerdict> {
   const files = [path.join(gate.checkout, '.claude', 'settings.local.json'), path.join(gate.checkout, '.claude', 'settings.json'), gate.settings];
   for (const file of files) {
-    const settings = await readJsonObject(file);
-    if (settings.kind === 'invalid') return unreadable({ cause, file, reason: `does not parse (${settings.error})`, question: 'Claude Code runs hooks' });
+    const settings = await readStore(file);
+    if (settings.kind === 'unreadable') return unreadable({ cause, file, reason: settings.reason, question: 'Claude Code runs hooks' });
     const disabled = settings.kind === 'ok' ? settings.value.disableAllHooks : undefined;
-    if (disabled === true) return { met: false, fix: `${cause}, and ${file} sets it. Remove "disableAllHooks" from ${file}, or set it to false.` };
+    if (disabled === true) return { kind: 'blocked', fix: `${cause}, and ${file} sets it. Remove "disableAllHooks" from ${file}, or set it to false.` };
     if (disabled === false) return MET;
   }
   return MET;
@@ -321,8 +361,8 @@ async function qoderMcpApproval(gate: Extract<ReadGate, { kind: 'qoder-mcp-appro
   const disabled = new Set<string>();
   let all = false;
   for (const file of files) {
-    const settings = await readJsonObject(file);
-    if (settings.kind === 'invalid') return unreadable({ cause, file, reason: `does not parse (${settings.error})`, question: 'Qoder CLI approved these servers' });
+    const settings = await readStore(file);
+    if (settings.kind === 'unreadable') return unreadable({ cause, file, reason: settings.reason, question: 'Qoder CLI approved these servers' });
     const mcp = settings.kind === 'ok' ? fieldOf(settings.value, 'mcp') : undefined;
     for (const name of namesIn(fieldOf(mcp, 'enabledProjectMcpServers'))) enabled.add(name);
     for (const name of namesIn(fieldOf(mcp, 'disabledProjectMcpServers'))) disabled.add(name);
@@ -352,8 +392,8 @@ async function claudeMcpApproval(gate: Extract<ReadGate, { kind: 'claude-mcp-app
   const { resolveAnchors } = await import('./utils/git.js');
   const root = await realFilePath(gate.checkout);
   const main = (await resolveAnchors(gate.checkout))?.mainCheckout ?? root;
-  const config = await readJsonObject(gate.config);
-  if (config.kind === 'invalid') return unreadable({ cause, file: gate.config, reason: `does not parse (${config.error})`, question: 'Claude Code approved these servers' });
+  const config = await readStore(gate.config);
+  if (config.kind === 'unreadable') return unreadable({ cause, file: gate.config, reason: config.reason, question: 'Claude Code approved these servers' });
   const entry = fieldOf(fieldOf(config.kind === 'ok' ? config.value : {}, 'projects'), main);
   const trusted = fieldOf(entry, 'hasTrustDialogAccepted') === true;
   const local = path.join(main, '.claude', 'settings.local.json');
@@ -371,8 +411,8 @@ async function claudeMcpApproval(gate: Extract<ReadGate, { kind: 'claude-mcp-app
   for (const source of sources) {
     let value = source.value;
     if (value === undefined && source.file !== gate.config) {
-      const settings = await readJsonObject(source.file);
-      if (settings.kind === 'invalid') return unreadable({ cause, file: source.file, reason: `does not parse (${settings.error})`, question: 'Claude Code approved these servers' });
+      const settings = await readStore(source.file);
+      if (settings.kind === 'unreadable') return unreadable({ cause, file: source.file, reason: settings.reason, question: 'Claude Code approved these servers' });
       value = settings.kind === 'ok' ? settings.value : undefined;
     }
     const off = namesIn(fieldOf(value, 'disabledMcpjsonServers'));
@@ -403,8 +443,8 @@ async function claudeMcpApproval(gate: Extract<ReadGate, { kind: 'claude-mcp-app
  */
 async function codebuddyMcpApproval(gate: Extract<ReadGate, { kind: 'codebuddy-mcp-approval' }>, held: Held): Promise<ReadGateVerdict> {
   const cause = `${held.summary}, but CodeBuddy Code starts a project's .mcp.json servers only once you approve them`;
-  const settings = await readJsonObject(gate.config);
-  if (settings.kind === 'invalid') return unreadable({ cause, file: gate.config, reason: `does not parse (${settings.error})`, question: 'CodeBuddy Code approved these servers' });
+  const settings = await readStore(gate.config);
+  if (settings.kind === 'unreadable') return unreadable({ cause, file: gate.config, reason: settings.reason, question: 'CodeBuddy Code approved these servers' });
   const value = settings.kind === 'ok' ? settings.value : {};
   const enabled = namesIn(fieldOf(value, 'enabledMcpjsonServers'));
   const disabled = namesIn(fieldOf(value, 'disabledMcpjsonServers'));
@@ -436,7 +476,12 @@ async function cursorMcpApproval(gate: Extract<ReadGate, { kind: 'cursor-mcp-app
   const dir = path.join(gate.projects, root.replace(/[^a-zA-Z0-9]/g, '-').replace(/-+/g, '-').replace(/^-+|-+$/g, ''));
   const lists: Record<'disabled' | 'approvals', Set<string> | null> = { disabled: null, approvals: null };
   for (const [key, file] of [['disabled', 'mcp-disabled.json'], ['approvals', 'mcp-approvals.json']] as const) {
-    const raw = await readFileSafe(path.join(dir, file));
+    let raw: string | null;
+    try {
+      raw = await readFileIfExists(path.join(dir, file));
+    } catch (error) {
+      return unreadable({ cause, file: path.join(dir, file), reason: `cannot be read (${error instanceof Error ? error.message : String(error)})`, question: 'the Cursor CLI approved these servers' });
+    }
     if (raw === null) continue;
     try {
       lists[key] = namesIn(JSON.parse(raw));
@@ -445,7 +490,7 @@ async function cursorMcpApproval(gate: Extract<ReadGate, { kind: 'cursor-mcp-app
     }
   }
   const { disabled } = lists;
-  const cliHasRun = await readFileSafe(gate.cliConfig) !== null;
+  const cliHasRun = await pathExists(gate.cliConfig);
   const approvals = lists.approvals ?? (cliHasRun ? new Set<string>() : null);
   const project = await readJsonObject(path.join(root, '.cursor', 'mcp.json'));
   const servers = project.kind === 'ok' ? fieldOf(project.value, 'mcpServers') : undefined;
@@ -466,4 +511,47 @@ async function cursorMcpApproval(gate: Extract<ReadGate, { kind: 'cursor-mcp-app
     approve: `Run ${enable(pending)} in ${root}, or approve them when an interactive \`cursor-agent\` asks.${envNote}`,
     undo: `Run ${enable(rejected)} in ${root}: it clears ${path.join(dir, 'mcp-disabled.json')} and approves the server.`,
   });
+}
+
+/** openclaw.json as OpenClaw writes it is plain JSON; a member may write JSON5, which teamai cannot read. */
+async function readOpenclawConfig(
+  config: string, cause: string, question: string,
+): Promise<{ readonly read: true; readonly value: Record<string, unknown> } | { readonly read: false; readonly verdict: ReadGateVerdict }> {
+  const found = await readStore(config, { notJson: (error) => `is not plain JSON (${error}), as comments or JSON5 make it` });
+  if (found.kind === 'unreadable') return { read: false, verdict: unreadable({ cause, file: config, reason: found.reason, question }) };
+  return { read: true, value: found.kind === 'ok' ? found.value : {} };
+}
+
+/**
+ * OpenClaw 2026.10.9 loads teamai's workspace hook only while
+ * `hooks.internal.entries.<key>.enabled` is true and `hooks.internal.enabled`
+ * is not false (`src/hooks/configured.ts`); the Gateway, not `hooks list`, honours the master switch.
+ */
+async function openclawHooksEnabled(gate: Extract<ReadGate, { kind: 'openclaw-hooks-enabled' }>, cause: string): Promise<ReadGateVerdict> {
+  const { OPENCLAW_HOOK_KEY, openclawHookEnabledIn } = await import('./openclaw-hooks.js');
+  const config = await readOpenclawConfig(gate.config, cause, 'OpenClaw loads teamai\'s hook');
+  if (!config.read) return config.verdict;
+  if (openclawHookEnabledIn(config.value)) return MET;
+  return {
+    kind: 'blocked',
+    fix: `${cause} (hooks.internal.entries.${OPENCLAW_HOOK_KEY}.enabled, with internal hooks not switched off in ${gate.config}), `
+      + `so OpenClaw sends no status report or sync. Run \`openclaw hooks enable ${OPENCLAW_HOOK_KEY}\`.`,
+  };
+}
+
+/**
+ * OpenClaw 2026.10.9 loads a `plugins.load.paths` plugin unless `plugins.enabled` is false, `plugins.deny`
+ * lists it, its entry is disabled, or a non-empty `plugins.allow` leaves it out
+ * (`src/plugins/config-activation-shared.ts`).
+ */
+async function openclawPluginLoaded(gate: Extract<ReadGate, { kind: 'openclaw-plugins-enabled' }>, cause: string): Promise<ReadGateVerdict> {
+  const { pluginsOf, teamHookPluginBlocker } = await import('./openclaw-hooks.js');
+  const config = await readOpenclawConfig(gate.config, cause, 'OpenClaw loads the team hooks plugin');
+  if (!config.read) return config.verdict;
+  const plugins = pluginsOf(config.value);
+  const blocker = teamHookPluginBlocker(plugins);
+  if (blocker !== null) return { kind: 'blocked', fix: `${cause}, and in ${gate.config} ${blocker}. teamai leaves that setting to you.` };
+  const paths = plugins.load?.paths;
+  if (Array.isArray(paths) && paths.includes(gate.plugin)) return MET;
+  return { kind: 'blocked', fix: `${cause}, and plugins.load.paths in ${gate.config} does not list it. Run \`teamai hooks inject\`.` };
 }

@@ -199,6 +199,28 @@ describe('a single-repo team keeps what teamai delivers out of git (#915)', () =
     expect(hasTeamHook(cloned)).toBe(false);
   });
 
+  it.each([['codebuddy', '.codebuddy'], ['qoder', '.qoder']])('%s takes the team hooks in its own settings.local.json, out of git, beside what the member keeps there', (tool, dir) => {
+    const m = member(`self-${tool}`);
+    fs.mkdirSync(path.join(m.home, dir), { recursive: true });
+    const settings = `${dir}/settings.json`;
+    const local = `${dir}/settings.local.json`;
+    writeFile(path.join(m.dir, local), '{"enabledMcpjsonServers":["mine"]}\n');
+
+    const init = m.ok(['init', '.', '--provider', 'git', '--agent', tool]);
+    m.ok(['pull']);
+
+    expect(m.status(), init.output).toEqual(MEMBER_STATUS);
+    expect(m.git(['show', `HEAD:${settings}`])).toContain('hook-dispatch session-start');
+    expect(hasTeamHook(hookCommands(path.join(m.dir, settings)))).toBe(false);
+    expect(hasTeamHook(hookCommands(path.join(m.dir, local)))).toBe(true);
+    expect(JSON.parse(fs.readFileSync(path.join(m.dir, local), 'utf8')).enabledMcpjsonServers).toEqual(['mine']);
+    expect(m.notIgnored([local])).toEqual([]);
+
+    m.ok(['hooks', 'remove']);
+    expect(hasTeamHook(hookCommands(path.join(m.dir, local)))).toBe(false);
+    expect(JSON.parse(fs.readFileSync(path.join(m.dir, local), 'utf8')).enabledMcpjsonServers).toEqual(['mine']);
+  });
+
   it.each(['claude-internal', 'tclaude'])('%s instructions stay excluded only while they contain TeamAI blocks alone', (tool) => {
     const m = member(`self-${tool}`, { committed: { '.teamai/claudemd/shared.md': 'Shared internal instructions.\n' } });
     fs.mkdirSync(path.join(m.home, `.${tool}`), { recursive: true });

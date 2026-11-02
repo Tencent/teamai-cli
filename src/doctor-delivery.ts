@@ -28,7 +28,7 @@ import { loadStateForScope } from './config.js';
 import { installOf, isInstalledFor, locate, ownOf, unreadWrites, workspaceHooksOf, writable, writesOf, type DirPlace, type FilesChannel, type Install, type Location, type ReadGate, type Session, type Unread } from './locate.js';
 import { readGateCheckName, readGateVerdict, type Held } from './read-gates.js';
 import { amongPlaces, placesRecordOf, samePlaces } from './resources/places.js';
-import { realHost } from './tool-home.js';
+import { realHost, toolHome } from './tool-home.js';
 import { getsRulesFromExtension, ruleFormatForTool, ruleStemsForTool } from './resources/rule-format.js';
 import { declaredSecretKeys } from './resources/secrets.js';
 import { isReservedTeamEnvKey } from './env-reserved.js';
@@ -230,14 +230,14 @@ export function nameList(names: string[]): string {
 }
 
 /** One check per gate a tool's read of `held` waits on: the tool's own verdict on this project (`read-gates.ts`). */
-async function readGateChecks(gates: readonly ReadGate[], held: Held): Promise<Check[]> {
+export async function readGateChecks(gates: readonly ReadGate[], held: Held): Promise<Check[]> {
   return Promise.all(gates.map(async (gate): Promise<Check> => {
     const verdict = await readGateVerdict(gate, held);
     return {
       name: readGateCheckName(gate, held.noun),
       source: 'local',
-      check: async () => verdict.met,
-      fix: verdict.met ? '' : verdict.fix,
+      check: async () => verdict.kind === 'met' || (verdict.kind === 'unanswered' ? 'warn' : false),
+      fix: verdict.kind === 'met' ? '' : verdict.fix,
     };
   }));
 }
@@ -2633,6 +2633,10 @@ export async function buildInstructionDeliveryChecks(ctx: DoctorContext): Promis
       check: async () => channel.ready && overLimit === null,
       fix: channel.ready ? overLimit ?? '' : channel.fix,
     });
+    if (hook.probe === 'hermes-plugin' && channel.ready) {
+      const check = await hermesSectionCheck();
+      if (check !== null) checks.push(check);
+    }
   }
 
   const leftovers: string[] = [];
@@ -2650,4 +2654,56 @@ export async function buildInstructionDeliveryChecks(ctx: DoctorContext): Promis
     fix: [...warnings, `An earlier teamai release or sharing.gitExclude setting left team instruction blocks in ${nameList(leftovers)}, which can carry another member's selection. ${pullNow}`].join(' '),
   });
   return checks;
+}
+
+/**
+ * Whether Hermes's last logged session took teamai's prompt section, as its log says: the team
+ * instructions reach Hermes only through it. Null while the log records no outcome for it.
+ * The log names no project, and both why a section is crowded out and how long it is depend on
+ * the project the session ran in, so a section Hermes dropped warns.
+ */
+async function hermesSectionCheck(): Promise<Check | null> {
+  const { HERMES_INSTRUCTIONS_SECTION, HERMES_SECTION_LIMIT, lastInstructionsSection } = await import('./hermes-hooks.js');
+  const { getHermesConfigPath } = await import('./hermes-config.js');
+  const section = await lastInstructionsSection();
+  const agentLog = path.join(toolHome('hermes'), 'logs', 'agent.log');
+  const name = 'Hermes\'s last logged session took teamai\'s instructions section';
+  // Hermes logs a rendered section at INFO: below that level an old skip stays the last line.
+  const lastSession = (at: string) => `The Hermes session at ${at} got none of the team instructions`;
+  switch (section.kind) {
+    case 'unseen':
+      return null;
+    case 'rendered':
+      return { name, source: 'local', check: async () => true };
+    case 'crowded-out':
+      return {
+        name,
+        source: 'local',
+        check: async () => 'warn',
+        fix: `${lastSession(section.at)}: ${HERMES_INSTRUCTIONS_SECTION} ${section.reason}. `
+          + `Plugin sections share 8,000 characters and 32 sections, filled in id order, and other plugins' sections sorting before `
+          + `${HERMES_INSTRUCTIONS_SECTION} took them first. Disable a plugin you do not need (plugins.disabled in ${getHermesConfigPath()}) `
+          + `or shorten its section, then start a new Hermes session. ${agentLog} lists each section Hermes rendered and its size.`,
+      };
+    case 'too-long':
+      return {
+        name,
+        source: 'local',
+        check: async () => 'warn',
+        fix: `${lastSession(section.at)}: ${HERMES_INSTRUCTIONS_SECTION} ${section.reason}. Hermes takes at most ${HERMES_SECTION_LIMIT} `
+          + 'characters in one section; `teamai doctor` in the project that session ran in names the instructions to shorten, then start a new Hermes session.',
+      };
+    case 'skipped':
+      return {
+        name,
+        source: 'local',
+        check: async () => 'warn',
+        fix: `${lastSession(section.at)}: ${HERMES_INSTRUCTIONS_SECTION} ${section.reason}. `
+          + `Run \`teamai hooks inject\`, then start a new Hermes session; ${agentLog} has the details.`,
+      };
+    default: {
+      const unhandled: never = section;
+      return unhandled;
+    }
+  }
 }
