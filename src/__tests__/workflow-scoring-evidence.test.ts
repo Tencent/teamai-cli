@@ -657,6 +657,18 @@ console.log(JSON.stringify({ type: 'result', structured_output: { label: 'comple
     } });
     expect(await LabelStore.local(config)).toEqual([]);
   });
+
+  it('fails, names the check that could not run, and writes no label', async () => {
+    const scorer = unsampled.replace('passingScore: 1', "passingScore: 1\ncheck: { run: teamai-no-such-check-1247, protect: ['test/**'] }");
+    const { config, runId } = await deliveredRun(scorer);
+    fakeClaude();
+
+    expect(await scoreOnDemand(config, { run: runId, scorers: ['quality'] })).toEqual({ error: {
+      code: 'check_could_not_run',
+      message: expect.stringMatching(/^The check of scorer quality, `teamai-no-such-check-1247`, could not run on commit [0-9a-f]{40} \(.+\)\. Fix the check, then run this command again\. No label was written\.$/),
+    } });
+    expect(await LabelStore.local(config)).toEqual([]);
+  });
 });
 
 describe('subject evidence removal', () => {

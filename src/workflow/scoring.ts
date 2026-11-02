@@ -338,10 +338,8 @@ function sameChoice(left: JudgeChoice, right: JudgeChoice): boolean {
 
 type JudgeChoice = Pick<LeasedAttempt['judge'], 'tool' | 'model' | 'by' | 'noModel'>;
 
-interface ClosedEntry {
-  ref: string;
-  code: string;
-}
+/** An entry that settled unscored while a lease was looked for: its evidence was empty, or its scorer's check could not run. */
+type ClosedEntry = { ref: string; code: 'evidence_empty' } | { ref: string; code: 'check_could_not_run'; message: string };
 
 /** Work none of this driver's tools can run the scorer's model for, left open for a driver whose tools can. */
 export interface SkippedEntry {
@@ -678,7 +676,7 @@ async function takeOneLease(
         });
         if (failed.status === 'busy') return { kind: 'busy' };
         await fs.rm(evidenceDir(config, attempt.attempt), { recursive: true, force: true, maxRetries: 3 });
-        return { kind: 'evidence_empty', closed: [{ ref: leaseRefOf(attempt), code: 'check_could_not_run' }] };
+        return { kind: 'evidence_empty', closed: [{ ref: leaseRefOf(attempt), code: 'check_could_not_run', message: stage.message }] };
       }
       if (stage.kind === 'decided') {
         // Published with the next label a judge submits, or by the caller, as a drain publishes once at its end.
@@ -1449,8 +1447,17 @@ export async function scoreOnDemand(config: LocalConfig, demand: ScoreDemand, no
       const delivered = await publishLabels(config, { kind: 'labelled', attempts: taken.decided });
       published &&= 'published' in delivered && delivered.published;
     }
-    if (taken.closed.some((closed) => closed.code === 'evidence_empty')) {
-      return error('evidence_empty', 'No recorded evidence could be read for this pass. Restore its commits or session, then run this command again.');
+    for (const closed of taken.closed) {
+      switch (closed.code) {
+        case 'evidence_empty':
+          return error('evidence_empty', 'No recorded evidence could be read for this pass. Restore its commits or session, then run this command again.');
+        case 'check_could_not_run':
+          return error('check_could_not_run', `${closed.message} Fix the check, then run this command again. No label was written.`);
+        default: {
+          const unhandled: never = closed;
+          return unhandled;
+        }
+      }
     }
     if (taken.kind === 'idle') {
       if (taken.skipped.length === 0) break;
