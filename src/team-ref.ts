@@ -80,8 +80,8 @@ export class DirtyTeamRepoError extends Error {
 
 /** A failed reattachment of a detached clone with no pin, which fails the pull where a plain refresh would not. */
 export class DetachedRecoveryError extends Error {
-  constructor(error: unknown) {
-    super(error instanceof Error ? error.message : String(error), { cause: error });
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
   }
 }
 

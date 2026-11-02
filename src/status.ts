@@ -347,16 +347,16 @@ export async function list(type: string | undefined, options: ListOptions): Prom
     return;
   }
 
-  if (type && !RESOURCE_TYPES.includes(type as ResourceType)) {
+  const selected = RESOURCE_TYPES.find((resourceType) => resourceType === type);
+
+  if (type && selected === undefined) {
     log.error(`Unknown resource type: ${type}. Supported: ${RESOURCE_TYPES.join(', ')}`);
     process.exitCode = 1;
 
     return;
   }
 
-  const types: ResourceType[] = type
-    ? [type as ResourceType]
-    : [...RESOURCE_TYPES];
+  const types: ResourceType[] = selected ? [selected] : [...RESOURCE_TYPES];
 
   // ── Repo section ────────────────────────────────────
   if (source === 'repo' || source === 'all') {

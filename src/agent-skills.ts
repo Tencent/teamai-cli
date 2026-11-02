@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { z } from 'zod';
 import { listDirs, pathExists, readFileSafe } from './utils/fs.js';
 import { detectInstalledAgents, type ResolvedAgent } from './known-agents.js';
 import { isCliOwnedSkillName } from './builtin-skills.js';
@@ -256,9 +257,9 @@ export async function readSkillDescription(skillMdPath: string): Promise<string>
 
   if (!content) return '';
   const { data } = parseFrontmatter(content);
-  const desc = data['description'];
+  const desc = z.string().safeParse(data['description']).data;
 
-  if (typeof desc !== 'string') return '';
+  if (desc === undefined) return '';
 
   // Normalize whitespace: collapse newlines + indentation into single spaces
   return desc.split('\n').map((l) => l.trim()).filter(Boolean).join(' ');

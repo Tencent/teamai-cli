@@ -13,6 +13,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { unzipSync } from 'fflate';
+import { z } from 'zod';
 import { ensureDir, remove, writeFile, pathExists, readFileSafe, readJson, writeJson } from './utils/fs.js';
 import { assertSafeResourceName, assertWithinRoot } from './utils/path-safety.js';
 import { log } from './utils/logger.js';
@@ -127,11 +128,9 @@ async function readSkillNameFromExtracted(skillDir: string): Promise<string | nu
 
   if (!content) return null;
   const { data } = parseFrontmatter(content);
-  const name = data['name'];
+  const name = z.string().safeParse(data['name']).data;
 
-  if (typeof name === 'string') return name.trim() || null;
-
-  return null;
+  return name?.trim() || null;
 }
 
 function slugMapPath(targetSkillsDir: string): string {
@@ -248,8 +247,9 @@ export async function installSkillZip(
  */
 export async function executeSkillCommand(cmd: SkillCommand, targetSkillsDir: string): Promise<void> {
   assertSafeResourceName(cmd.skill_slug);
+  const { type } = cmd;
 
-  switch (cmd.type) {
+  switch (type) {
     case 'install_skill':
     case 'update_skill': {
       if (!cmd.download_url) {
@@ -287,7 +287,10 @@ export async function executeSkillCommand(cmd: SkillCommand, targetSkillsDir: st
       return;
     }
 
-    default:
-      throw new Error(`unknown skill command type: ${(cmd as SkillCommand).type}`);
+    default: {
+      // A server on a newer contract can still send a type this release does not know.
+      const unknownType: never = type;
+      throw new Error(`unknown skill command type: ${String(unknownType)}`);
+    }
   }
 }
