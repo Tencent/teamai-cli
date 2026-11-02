@@ -10,6 +10,7 @@ One document per feature design, in English. The status column says how far each
 | Implemented | [Model profiles](model-profiles.md) — `teamai models` | — |
 | Implemented | [Team env by directory](env-by-directory.md) — each directory's shell gets the env of the scope that governs it | #1018 |
 | Implemented | [Assigned roles](assigned-roles.md) — `manifest/members.yaml` decides a member's roles | #1186 |
+| Implemented | [Workflow step roles](workflow-step-roles.md) — a workflow step runs with a team role's knowledge in a copy of its own | — |
 | Implemented | [Workspace children](workspace-children.md) — a workspace also delivers what the repos set up inside it select | #913 |
 | Implemented | [Skill serving](skill-serving.md) — built-in skill content shipped with the CLI (`teamai skill get`) | #678 |
 | Implemented, living | [Team secrets](team-secrets.md) — describes only what the current version does | #875, #879 |
