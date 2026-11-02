@@ -420,8 +420,8 @@ export async function resolveInstructionTargets(
   // OpenCode V1 reads ~/.claude/CLAUDE.md while its own user AGENTS.md does
   // not exist; when Claude's blocks are there, listing OpenCode's file too
   // would duplicate them. That holds for blocks an excluded Claude left there
-  // too: V1 reads them all the same. V2 reads neither CLAUDE.md nor
-  // `instructions`, so OpenCode's file is still written for teamai's plugin.
+  // too: V1 reads them all the same. V2 reads no CLAUDE.md, and teamai's
+  // plugin hands it OpenCode's file, so that file is still written.
   const claude = writable(await locate('claude', 'blocks', install));
   const claudeFile = opencodeV1ClaudeFile(getUserHome());
   const claudeDelivers = claude !== null && claude.path === claudeFile && targets.get(claudeFile)?.tools.includes('claude') === true;
@@ -473,7 +473,8 @@ export async function registerOpencodeContext(
   const location = await locate('opencode', 'blocks', installOf(teamConfig, localConfig));
   const contextFile = ownOf(location)?.path;
   if (contextFile === undefined || location.channel !== 'files') return null;
-  // OpenCode V2 ignores the entry, and teamai's plugin reads the file (#915).
+  // teamai's plugin adds the file on OpenCode V2 (#915), which applies
+  // `instructions` too: listing it there would load it twice.
   const { opencodeDeliversThroughPlugin } = await import('./opencode-hooks.js');
   if (await opencodeDeliversThroughPlugin(teamConfig, localConfig)) return null;
   const targeted = resolved.targets.some((target) => target.path === contextFile);

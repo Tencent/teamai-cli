@@ -773,9 +773,9 @@ function olderRuleCopyMeaning(tool: string): string {
 }
 
 /**
- * On OpenCode V2, which parses `instructions` and ignores it (#993), the check
- * that teamai's plugin in HOME is installed as this build writes it; its
- * context hook is what adds `what`. Null on V1, which loads `instructions`.
+ * On OpenCode V2, where teamai delivers through its plugin rather than
+ * `instructions` (#915), the check that the plugin in HOME is installed as this
+ * build writes it; its context hook is what adds `what`. Null on V1.
  */
 async function opencodeV2PluginCheck(ctx: DoctorContext, name: string, what: string): Promise<Check | null> {
   const { opencodeContextPlugin, opencodeMajorVersion } = await import('./opencode-hooks.js');
@@ -790,7 +790,7 @@ async function opencodeV2PluginCheck(ctx: DoctorContext, name: string, what: str
     name,
     source: 'local',
     check: async () => ready,
-    fix: `${file} is missing or out of date. OpenCode V2 ignores \`instructions\` and gets ${what} only through this plugin. `
+    fix: `${file} is missing or out of date. On OpenCode V2 teamai delivers ${what} only through this plugin. `
       + `Run \`teamai hooks inject\` to reinstall it.${keeps}`,
   };
 }
@@ -2592,7 +2592,7 @@ export async function buildInstructionDeliveryChecks(ctx: DoctorContext): Promis
       check: async () => false,
       fix: `OpenCode V2 gets the team instructions, rules and MCP servers through teamai's plugin, but teamai's entries for OpenCode V1 `
         + `are still in ${v1Left.map(({ file, entries }) => `${file} (${entries.join(', ')})`).join(' and ')}: git tracks the file, or pull `
-        + 'cannot edit it, so pull leaves it as it is. V2 ignores `instructions` and loads those servers a second time. '
+        + 'cannot edit it, so pull leaves it as it is. V2 reads them too and loads those instructions, rules and servers a second time. '
         + 'Remove teamai\'s entries by hand once no one on the project uses OpenCode V1.',
     });
   }
