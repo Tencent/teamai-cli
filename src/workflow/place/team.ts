@@ -9,13 +9,11 @@
  */
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { isPlaceableType } from '../../push-namespaces.js';
-import { isSelfMode, LocalConfigSchema, type LocalConfig } from '../../types.js';
+import { isSelfMode, type LocalConfig } from '../../types.js';
 import { NON_INTERACTIVE_GIT_ENV } from '../../utils/git-env.js';
 import { checkoutCredentials, getConfiguredRemoteUrl, redactGitCredentials } from '../../utils/git.js';
-import { isSilent, setSilent } from '../../utils/logger.js';
 import type { StepChanges } from '../workspace.js';
 import { runsDir, type RunId } from '../store.js';
 import type { WorkflowFailure } from '../types.js';
@@ -152,29 +150,20 @@ async function unplacedTeamFiles(input: { root: string; dir: string; base: strin
 }
 
 /**
- * What `teamai pull` would say against the team files in `dir` that `files` names, each as `<file>:<line>: <message>`:
- * workflows, scorers and suites, read as a review of a branch reads them, without this machine's cache.
+ * What a review of the branch would fail in the team files in `dir` that `files` names, or in a directory holding one,
+ * each line starting with its file: what `teamai review-branch` checks, such as the workflows, scorers and suites each
+ * role's and project's pull would reject, read without this machine's cache.
  */
 async function rejectedTeamFiles(dir: string, files: ReadonlySet<string>): Promise<string[]> {
-  const [{ syncTeamDefinitions }, { formatDiagnostic }] = await Promise.all([
-    // oxlint-disable-next-line teamai/workflow-boundaries -- pull validates suites with the team's other definitions, and this must reject what pull rejects
-    import('../../benchmark/suite-cache.js'),
-    import('../parse.js'),
-  ]);
+  const { reviewBranchDir } = await import('../../review-branch.js');
+  const review = await reviewBranchDir('team workspace', dir);
+  const isChanged = (at: string): boolean => files.has(at) || [...files].some((file) => file.startsWith(`${at}/`));
 
-  const dataHome = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-team-files-'));
-  const wasSilent = isSilent();
-  setSilent(true);
+  return [...new Set(review.findings.flatMap(({ level, path: at, message }) => {
+    if (level !== 'fail' || at === undefined || !isChanged(at)) return [];
 
-  try {
-    const config = { ...LocalConfigSchema.parse({ repo: { localPath: dir, remote: 'local' }, username: 'team-files' }), dataHome };
-    const result = await syncTeamDefinitions(config, { dryRun: true, everyNamespace: true, scopeLabel: 'team files' });
-
-    return [...new Set(result.invalid.filter((diagnostic) => files.has(diagnostic.file)).map(formatDiagnostic))];
-  } finally {
-    setSilent(wasSilent);
-    await fs.rm(dataHome, { recursive: true, force: true });
-  }
+    return [message.startsWith(at) ? message : `${at}: ${message}`];
+  }))];
 }
 
 /**

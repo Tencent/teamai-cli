@@ -149,6 +149,8 @@ describe('a step in the team workspace, run through the real CLI', () => {
       "fs.writeFileSync('benchmarks/nowhere/tasks/orphan.yaml', 'prompt: nothing runs this\\n');",
       "fs.mkdirSync('benchmarks/broken', { recursive: true });",
       "fs.writeFileSync('benchmarks/broken/suite.yaml', 'schemaVersion: v1alpha1\\nname: broken\\n');",
+      "fs.mkdirSync('scorers', { recursive: true });",
+      "fs.writeFileSync('scorers/broken.md', '---\\nname: broken\\n---\\nNo labels.\\n');",
     ].join('\n'));
 
     expect(refused.outcome, refused.said).toBe('failed');
@@ -162,6 +164,7 @@ describe('a step in the team workspace, run through the real CLI', () => {
       'rules/vendored: a submodule, which teamai pull does not place',
       'benchmarks/nowhere/tasks/orphan.yaml: in no suite, since no directory above it under benchmarks/ has a suite.yaml',
       expect.stringMatching(/^benchmarks\/broken\/suite\.yaml:\d+: /),
+      expect.stringMatching(/^scorers\/broken\.md\b/),
     ]));
     expect(branchHead()).toBe(before);
   }, 120_000);
