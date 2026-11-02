@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { join } from 'node:path';
 import { z } from 'zod';
 import { parseReportedAgent, parseReportedUsed, settleObservation, type ReportedAgent, type Used } from '../agent-observation.js';
 import { DefaultWorkflows } from '../default-workflows.js';
@@ -6,7 +7,8 @@ import { DriverSchema, sameDriver } from '../driver-identity.js';
 import { RunModeSchema, type RunMode } from '../launch-context.js';
 import { log } from '../utils/logger.js';
 import { getDefaultBranch } from '../utils/git.js';
-import type { JsonValue, LocalConfig } from '../types.js';
+import { getDataHome, SYNC_LOCK_FILENAME, type JsonValue, type LocalConfig } from '../types.js';
+import { acquireLock, releaseLock } from '../update.js';
 import { loadCachedWorkflow, loadWorkflowTree, namespaceConflictOf, startingAlias } from './cache.js';
 import { claimedAway, claimRun, publishRunEnd, reconcileTakenCopies } from './handoff.js';
 import {
@@ -1637,7 +1639,17 @@ async function drainDeliveries(config: LocalConfig, runId: string, secrets: Reco
       if ('job' in picked.value) {
         const { job } = picked.value;
         tried.push({ ...job.key, target: job.target });
-        const outcome = await deliverPr(job, () => markCreating(config, runId, secrets, job));
+        // A team branch is delivered from the member's team repo, which teamai pull and push update under this lock.
+        const syncLock = job.checkout === team?.checkout ? join(getDataHome(config), SYNC_LOCK_FILENAME) : undefined;
+
+        if (syncLock !== undefined && !await acquireLock(syncLock)) return requeued;
+        let outcome: Awaited<ReturnType<typeof deliverPr>>;
+
+        try {
+          outcome = await deliverPr(job, () => markCreating(config, runId, secrets, job));
+        } finally {
+          if (syncLock !== undefined) await releaseLock(syncLock);
+        }
 
         // As when the pick is busy: the step still delivers, and a later call checks and delivers it.
         if (outcome === 'busy') return requeued;

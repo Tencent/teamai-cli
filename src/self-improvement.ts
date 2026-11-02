@@ -11,12 +11,14 @@
  *              pull request, which the next run updates
  */
 import { execFile } from 'node:child_process';
+import path from 'node:path';
 import { promisify } from 'node:util';
 import { taskSourceOf } from './benchmark/suite.js';
 import { BENCHMARK_NAME } from './benchmark/terms.js';
 import type { DigestFailure } from './digest-failures.js';
 import { loadCachedScorer } from './scorers/cache.js';
-import type { LocalConfig } from './types.js';
+import { getDataHome, SYNC_LOCK_FILENAME, type LocalConfig } from './types.js';
+import { acquireLock, releaseLock } from './update.js';
 import { canonicalJson } from './utils/canonical-json.js';
 
 const run = promisify(execFile);
@@ -127,10 +129,23 @@ const SUITE_DIR = new RegExp(`^benchmarks/(?:${BENCHMARK_NAME.source.slice(1, -1
 
 /**
  * The tasks of `suite` that name a subject as their `source`, by the subject's canonical JSON, as `<suite>/tasks/<file>`:
- * those on `proposal` first, then those on the default branch, both as origin has them now, read in `teamCheckout`, a
- * clone of the team repo, or the directory of the team files in a project's. `hasProposal`: origin has `proposal`.
+ * those on `proposal` first, then those on the default branch, both as origin has them now, read in the member's team
+ * checkout. `hasProposal`: origin has `proposal`. `busy` while a teamai pull or push holds that checkout: the fetch
+ * updates the refs a pull updates.
  */
-async function coveringTasks(teamCheckout: string, { suite, proposal }: { suite: string; proposal?: string }): Promise<{ tasks: Map<string, string>; hasProposal: boolean }> {
+async function coveringTasks(config: LocalConfig, input: { suite: string; proposal?: string }): Promise<{ tasks: Map<string, string>; hasProposal: boolean } | 'busy'> {
+  const lock = path.join(getDataHome(config), SYNC_LOCK_FILENAME);
+
+  if (!await acquireLock(lock)) return 'busy';
+
+  try {
+    return await tasksOnOrigin(config.repo.localPath, input);
+  } finally {
+    await releaseLock(lock);
+  }
+}
+
+async function tasksOnOrigin(teamCheckout: string, { suite, proposal }: { suite: string; proposal?: string }): Promise<{ tasks: Map<string, string>; hasProposal: boolean }> {
   const top = await git(teamCheckout, ['rev-parse', '--show-toplevel']);
   const prefix = await git(teamCheckout, ['rev-parse', '--show-prefix']);
   const listed = await git(top, ['ls-remote', '--symref', 'origin', 'HEAD', ...(proposal !== undefined ? [`refs/heads/${proposal}`] : [])]);
@@ -177,9 +192,13 @@ async function plan(config: LocalConfig, input: { failures: readonly DigestFailu
   const starts = failures.flatMap(({ start }) => ('commit' in start ? [start.commit] : []));
 
   const [covering, present] = await Promise.all([
-    coveringTasks(config.repo.localPath, { suite, proposal }),
+    coveringTasks(config, { suite, proposal }),
     commitsIn(config.projectRoot ?? process.cwd(), starts),
   ]);
+
+  if (covering === 'busy') {
+    return { code: 'busy', message: 'Another teamai pull/push is in progress for this project, so the regression tasks on origin were not read. Re-run once it finishes.' };
+  }
 
   const picked = pick({ failures, scorer, tasks: covering.tasks, hasCommit: (commit) => present.has(commit) });
 

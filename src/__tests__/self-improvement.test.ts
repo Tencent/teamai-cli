@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import type { DigestFailure } from '../digest-failures.js';
 import { SelfImprovement } from '../self-improvement.js';
+import { LocalConfigSchema, type LocalConfig } from '../types.js';
 import { canonicalJson } from '../utils/canonical-json.js';
 
 const HERE = 'a'.repeat(40);
@@ -141,7 +142,8 @@ describe('the tasks that already cover a failure', () => {
     git(root, 'clone', '-q', origin, member);
     commit(writer, { 'benchmarks/regressions/tasks/landed.yaml': task('s1'), 'benchmarks/web/tasks/other.yaml': task('s3') }, 'tasks');
     git(writer, 'push', '-q', 'origin', 'main');
-    return { writer, member };
+    const config: LocalConfig = { ...LocalConfigSchema.parse({ repo: { localPath: member, remote: origin }, username: 'member' }), dataHome: path.join(root, 'data') };
+    return { writer, member: config };
   };
 
   it('lists the suite\'s tasks on origin\'s default branch and on the proposal, by the subject each names', async () => {
@@ -152,6 +154,7 @@ describe('the tasks that already cover a failure', () => {
 
     const covered = await SelfImprovement.coveringTasks(member, { suite: 'benchmarks/regressions', proposal: 'teamai/self-improvement/review-quality' });
 
+    if (covered === 'busy') throw new Error('the sync lock was free');
     expect(covered.hasProposal).toBe(true);
     expect(Object.fromEntries(covered.tasks)).toEqual({
       [canonicalJson(session('s1'))]: 'benchmarks/regressions/tasks/landed.yaml',
@@ -164,7 +167,21 @@ describe('the tasks that already cover a failure', () => {
 
     const covered = await SelfImprovement.coveringTasks(member, { suite: 'benchmarks/regressions', proposal: 'teamai/self-improvement/review-quality' });
 
+    if (covered === 'busy') throw new Error('the sync lock was free');
     expect(covered.hasProposal).toBe(false);
     expect([...covered.tasks.values()]).toEqual(['benchmarks/regressions/tasks/landed.yaml']);
+  });
+
+  it('reads nothing while a teamai pull or push holds the team repo, and leaves its refs as they were', async () => {
+    const { member } = team();
+    const lock = path.join(member.dataHome ?? '', '.sync-lock');
+    fs.mkdirSync(path.dirname(lock), { recursive: true });
+    fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), owner: 'pull' }));
+    const before = git(member.repo.localPath, 'rev-parse', 'refs/remotes/origin/main');
+
+    const covered = await SelfImprovement.coveringTasks(member, { suite: 'benchmarks/regressions', proposal: 'teamai/self-improvement/review-quality' });
+
+    expect(covered).toBe('busy');
+    expect(git(member.repo.localPath, 'rev-parse', 'refs/remotes/origin/main')).toBe(before);
   });
 });

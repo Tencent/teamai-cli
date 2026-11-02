@@ -187,6 +187,31 @@ describe('a step in the team workspace, run through the real CLI', () => {
     expect(gh.pulls()).toEqual([]);
   }, 120_000);
 
+  it('opens the pull request only once a teamai pull or push in progress lets go of the team repo', async () => {
+    const delta = 'teamai/notes/delta';
+    const lock = path.join(fixture.dataHome(), '.sync-lock');
+    // A live process holds the lock, as a teamai pull does while it updates the member's team repo.
+    fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), owner: 'pull' }));
+    const running = run("require('fs').writeFileSync('rules/delta.md', '# Delta\\n');", { inputs: { topic: 'delta' } });
+
+    try {
+      for (const until = Date.now() + 60_000; spawnSync('git', ['--git-dir', fixture.teamOrigin, 'rev-parse', '--verify', '-q', `refs/heads/${delta}`]).status !== 0;) {
+        if (Date.now() > until) throw new Error('the step never pushed its branch');
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      expect(gh.pulls().map((pull) => pull.head)).not.toContain(delta);
+    } finally {
+      fs.rmSync(lock, { force: true });
+    }
+
+    const delivered = await running;
+
+    expect(delivered.outcome, delivered.said).toBe('succeeded');
+    expect(gh.pulls().map((pull) => pull.head)).toContain(delta);
+  }, 180_000);
+
   it('runs nothing on a branch that conflicts with main, and says how to resolve it', async () => {
     const before = branchHead();
     fixture.pushTeam({ 'rules/notes.md': '# Notes\nfrom main\n' });
