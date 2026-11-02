@@ -24,6 +24,12 @@ vi.mock('yaml', () => ({
   default: {
     stringify: (obj: unknown) => JSON.stringify(obj),
     parse: (str: string) => JSON.parse(str),
+    // parseYaml reads a document, so a malformed one still throws from here.
+    parseDocument: (str: string) => {
+      const value: unknown = JSON.parse(str);
+
+      return { warnings: [], errors: [], toJS: () => value };
+    },
   },
 }));
 
