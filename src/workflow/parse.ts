@@ -16,6 +16,7 @@ import {
   conditionDiagnostics, endDiagnostics, expressionSite, readDiagnostics, readScope, splitReads, type ConditionNode, type Ending, type ReadSite,
 } from './reads.js';
 import { parseHitl } from './parse-hitl.js';
+import { roleDiagnostics } from './parse-roles.js';
 import { loopProblems, stepLoops } from './loop.js';
 import { modelValueProblem } from '../models/aliases.js';
 import type { StepModel } from './step-model.js';
@@ -318,6 +319,8 @@ export function parseWorkflow(file: string, content: string, files?: WorkflowFil
 
   if (diagnostics.length === 0) withheldEnvRequired(root, { defaults, steps }, '', {}, ctx, { says: '', runs: [] });
 
+  if (diagnostics.length === 0) diagnostics.push(...roleDiagnostics(root, { ...(defaults ? { defaults } : {}), steps }, ctx));
+
   if (diagnostics.length > 0 || !name || !description) return { ok: false, diagnostics };
   const header: Omit<WorkflowDefinition, 'schemaVersion' | 'name' | 'description' | 'steps' | 'finally'> = {};
 
@@ -362,8 +365,6 @@ interface BodyOptions {
   finally?: WorkflowStep[];
   /** Whether a loop around an inline workflow runs it again; asked once every step around it is parsed. */
   runsAgain?: () => boolean;
-  /** Whether a step around the inline workflow opens a clone, which its steps continue with the clone's role. */
-  inClone?: boolean;
 }
 
 /** A parsed workflow body, and what its steps read of enclosing steps. */
@@ -384,7 +385,7 @@ function parseBody(
   ctx: ParseContext,
   inputs: Record<string, OutputSchema> | undefined,
   itemBound: boolean,
-  { parent, checks, list = 'steps', finally: finallySteps = [], runsAgain = () => false, inClone = false }: BodyOptions = {},
+  { parent, checks, list = 'steps', finally: finallySteps = [], runsAgain = () => false }: BodyOptions = {},
 ): ParsedBody {
   const { file, lineCounter, diagnostics, promptFileLocations, files } = ctx;
   const header = (key: string): (typeof root.items)[number] | undefined => (list === 'steps' ? root.items.find((pair) => scalarString(pair.key) === key) : undefined);
@@ -514,7 +515,6 @@ function parseBody(
       const inline = workflowMap && !workflowFromPair
         ? parseInline(workflowMap, `${field}.workflow`, stepLabel, ctx, inputs, bindsItem, {
           parent: { steps, needs }, checks: queue,
-          inClone: inClone || typeof parseStepWorkspace(item.items.find((pair) => scalarString(pair.key) === 'workspace')?.value) === 'object',
           runsAgain: () => runsAgain() || loop !== undefined || [...stepLoops(steps).ranges.values()].some((range) => range.has(id ?? '')),
         })
         : undefined;
@@ -822,24 +822,18 @@ function parseBody(
 
       const rolePair = item.items.find((pair) => scalarString(pair.key) === 'role');
       const role = scalarString(rolePair?.value)?.trim();
-      // A role is the knowledge of the copy a prompt works in: one a clone step opens for every step continuing it, or
-      // the worktree copy a prompt step opens or continues.
+      // A role is the knowledge of the copy a step works in, which the step that opens the copy resolves, and a
+      // `workflow` step's is the role of the steps inside it. Where a role reaches a copy is checked on the whole tree
+      // (`roleDiagnostics`); only what no enclosing step changes is checked here.
       const runsPrompt = promptPair !== undefined || promptFilePair !== undefined;
 
       const roleProblem = !rolePair ? undefined
         : role === undefined || !TOKEN.test(role) ? `${stepLabel} role must be the id of a role in manifest/roles.yaml, such as review`
           : typeof workspace === 'object' ? !('revision' in workspace.clone.team) ? `${stepLabel} has role ${role} but its clone installs no team (team: { treatment: none }); give the clone a team revision and selection, or remove role` : undefined
-            : inClone ? `${stepLabel} has role ${role} but continues a clone, which runs with the role of the step that opens it; set role on that step`
-              : commandPair !== undefined && !runsPrompt ? `${stepLabel} has role ${role}, but a command step launches no agent to take the role's knowledge; set role on the prompt step that opens or continues the copy`
-                : !runsPrompt || (workspace !== 'new' && workspace !== 'continue') ? `${stepLabel} has role ${role} but neither opens nor continues a copy; give the prompt step workspace: new to open a copy that runs with the role, or workspace: continue to run with it in the copy around it`
-                  : undefined;
+            : commandPair !== undefined && !runsPrompt ? `${stepLabel} has role ${role}, but a command step launches no agent to take the role's knowledge; set role on the prompt step that opens or continues the copy`
+              : undefined;
 
-      const roleUndeclared = !rolePair || roleProblem !== undefined || role === undefined ? undefined
-        : files?.roles === undefined || files.roles.has(role) ? undefined
-          : files.roles.size === 0 ? `${stepLabel} has role ${role}, which manifest/roles.yaml does not declare; the team repo declares no role, so add it to manifest/roles.yaml or remove role`
-            : `${stepLabel} has role ${role}, which manifest/roles.yaml does not declare; add it there, or name a role it declares: ${[...files.roles].join(', ')}`;
-
-      const roleRefused = roleProblem ?? roleUndeclared;
+      const roleRefused = roleProblem ?? (role === undefined ? undefined : undeclaredRole(stepLabel, role, files));
 
       if (rolePair && roleRefused !== undefined) {
         diagnostics.push({ ...locate(file, lineCounter, rolePair.value ?? rolePair.key ?? item, `${field}.role`, roleRefused), code: 'bad_role' });
@@ -1379,6 +1373,29 @@ function parseStepModel(node: Node | null | undefined, field: string, ctx: Parse
   return model;
 }
 
+/**
+ * Why `owner`, a step label or `defaults`, may not name `role`: `manifest/roles.yaml` does not declare it. Undefined when
+ * it does, or when the sync could not read the manifest, so a lease checks the role then.
+ */
+function undeclaredRole(owner: string, role: string, files: WorkflowFiles | undefined): string | undefined {
+  if (files?.roles === undefined || files.roles.has(role)) return undefined;
+
+  return files.roles.size === 0
+    ? `${owner} has role ${role}, which manifest/roles.yaml does not declare; the team repo declares no role, so add it to manifest/roles.yaml or remove role`
+    : `${owner} has role ${role}, which manifest/roles.yaml does not declare; add it there, or name a role it declares: ${[...files.roles].join(', ')}`;
+}
+
+/** `defaults.role`: the id of a role `manifest/roles.yaml` declares, as on a step. */
+function parseDefaultRole(node: Node | undefined, ctx: ParseContext): string | undefined {
+  const role = scalarString(node)?.trim();
+  const refused = role === undefined || !TOKEN.test(role) ? 'defaults.role must be the id of a role in manifest/roles.yaml, such as review' : undeclaredRole('defaults', role, ctx.files);
+
+  if (refused === undefined) return role;
+  ctx.diagnostics.push({ ...locate(ctx.file, ctx.lineCounter, node, 'defaults.role', refused), code: 'bad_role' });
+
+  return undefined;
+}
+
 function parseDefaults(node: Node | null | undefined, ctx: ParseContext): WorkflowDefaults | undefined {
   const { file, lineCounter, diagnostics } = ctx;
 
@@ -1391,18 +1408,20 @@ function parseDefaults(node: Node | null | undefined, ctx: ParseContext): Workfl
   let model: string | undefined;
   let scorers: { batch: boolean } | undefined;
   let requires: Requirements | undefined;
+  let role: string | undefined;
 
   for (const pair of node.items) {
     const keyNode = isYamlNode(pair.key) ? pair.key : undefined;
     const key = scalarString(keyNode);
 
     if (key === 'model') model = parseModel(valueNode(node, 'model'), 'defaults.model', ctx);
+    else if (key === 'role') role = parseDefaultRole(valueNode(node, 'role'), ctx);
     else if (key === 'scorers') scorers = parseDefaultScorers(valueNode(node, 'scorers'), ctx);
     else if (key === 'requires') requires = parseRequires(valueNode(node, 'requires'), 'defaults.requires', ctx);
     else diagnostics.push(unknownKey(file, lineCounter, keyNode ?? node, `defaults.${key ?? 'key'}`, key ?? 'key'));
   }
 
-  if (model === undefined && scorers === undefined && requires === undefined) return undefined;
+  if (model === undefined && scorers === undefined && requires === undefined && role === undefined) return undefined;
   const defaults: WorkflowDefaults = {};
 
   if (model !== undefined) defaults.model = model;
@@ -1410,6 +1429,8 @@ function parseDefaults(node: Node | null | undefined, ctx: ParseContext): Workfl
   if (scorers) defaults.scorers = scorers;
 
   if (requires) defaults.requires = requires;
+
+  if (role !== undefined) defaults.role = role;
 
   return defaults;
 }

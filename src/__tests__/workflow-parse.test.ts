@@ -1751,6 +1751,7 @@ steps:
     prompt: Write the spec.
   - id: change
     needs: [plan]
+    role: review
     workspace: new
     workflow:
       steps:
@@ -1767,7 +1768,7 @@ steps:
     expect(inline?.kind === 'inline' ? inline.workflow.steps[0]?.role : undefined).toBe('review');
   });
 
-  it('refuses a role on a step that runs in no copy, on a command step, and on a step continuing a clone', () => {
+  it('refuses a role on a step that runs in no copy, and on a step continuing a clone opened with another', () => {
     expect(rejected(`schemaVersion: v1alpha1
 name: build
 description: Review where no role reaches.
@@ -1775,11 +1776,6 @@ steps:
   - id: read
     role: review
     prompt: Review the change.
-  - id: check
-    needs: []
-    role: review
-    workspace: new
-    command: npm test
   - id: clone
     needs: []
     workspace: { clone: { commit: ${COMMIT}, team: ${TEAM} } }
@@ -1791,8 +1787,21 @@ steps:
           prompt: Review the change.
 `)).toEqual([
       { code: 'bad_role', message: 'workflows/build.yaml:6: field "steps[0].role": step "read" has role review but neither opens nor continues a copy; give the prompt step workspace: new to open a copy that runs with the role, or workspace: continue to run with it in the copy around it' },
-      { code: 'bad_role', message: 'workflows/build.yaml:10: field "steps[1].role": step "check" has role review, but a command step launches no agent to take the role\'s knowledge; set role on the prompt step that opens or continues the copy' },
-      { code: 'bad_role', message: 'workflows/build.yaml:19: field "steps[2].workflow.steps[0].role": step "look" has role review but continues a clone, which runs with the role of the step that opens it; set role on that step' },
+      { code: 'bad_role', message: 'workflows/build.yaml:14: field "steps[1].workflow.steps[0].role": step "look" has role review but continues a clone, which runs with the role of the step that opens it; set role on that step' },
+    ]);
+  });
+
+  it('refuses a role on a command step', () => {
+    expect(rejected(`schemaVersion: v1alpha1
+name: build
+description: Check as a reviewer.
+steps:
+  - id: check
+    role: review
+    workspace: new
+    command: npm test
+`)).toEqual([
+      { code: 'bad_role', message: 'workflows/build.yaml:6: field "steps[0].role": step "check" has role review, but a command step launches no agent to take the role\'s knowledge; set role on the prompt step that opens or continues the copy' },
     ]);
   });
 
@@ -1814,6 +1823,218 @@ steps:
       { code: 'bad_role', message: 'workflows/build.yaml:6: field "steps[0].role": step "bare" has role review but its clone installs no team (team: { treatment: none }); give the clone a team revision and selection, or remove role' },
       { code: 'bad_role', message: 'workflows/build.yaml:11: field "steps[1].role": step "listed" role must be the id of a role in manifest/roles.yaml, such as review' },
     ]);
+  });
+});
+
+describe('a role for the steps inside a workflow step, and defaults.role', () => {
+  const REVIEW_CONTAINER = `schemaVersion: v1alpha1
+name: build
+description: Fix the change and review it as a reviewer, then lint it.
+steps:
+  - id: review
+    role: review
+    workflow:
+      steps:
+        - id: change
+          workspace: new
+          workflow:
+            steps:
+              - id: fix
+                prompt: Fix the change.
+              - id: look
+                needs: [fix]
+                workspace: continue
+                prompt: Review the fix.
+              - id: lint
+                needs: [look]
+                workspace: continue
+                command: npm run lint
+`;
+
+  it('keeps a role on a workflow step without a workspace, whose steps open and continue a copy, a command check without a role included', () => {
+    const result = parse(REVIEW_CONTAINER);
+    expect(result.ok, result.ok ? '' : result.diagnostics.map(formatDiagnostic).join('\n')).toBe(true);
+    if (!result.ok) return;
+    expect(result.definition.steps[0]?.role).toBe('review');
+  });
+
+  it('refuses a role on a step continuing a copy that runs with another, and on a workflow step inside one whose steps continue it', () => {
+    expect(rejected(REVIEW_CONTAINER.replace('                workspace: continue\n                prompt: Review the fix.', '                role: spec\n                workspace: continue\n                prompt: Review the fix.'))).toEqual([
+      { code: 'bad_role', message: 'workflows/build.yaml:17: field "steps[0].workflow.steps[0].workflow.steps[1].role": step "look" has role spec but continues the copy step "change" opens with role review, which every step there runs with; remove role from step "look", or set it on step "change"' },
+    ]);
+    expect(rejected(`schemaVersion: v1alpha1
+name: build
+description: Plan in a reviewer's copy.
+steps:
+  - id: change
+    role: review
+    workspace: new
+    workflow:
+      steps:
+        - id: plan
+          role: spec
+          workflow:
+            steps:
+              - id: write
+                prompt: Write the plan.
+`)).toEqual([
+      { code: 'bad_role', message: 'workflows/build.yaml:11: field "steps[0].workflow.steps[0].role": step "plan" has role spec, but step "write" in it continues the copy step "change" opens with role review, which every step there runs with; remove role from step "plan", or set it on step "change"' },
+    ]);
+  });
+
+  it('refuses a defaults.role and a workflow step\'s role that no step opening or continuing a copy takes', () => {
+    expect(rejected(`schemaVersion: v1alpha1
+name: build
+description: Read as a reviewer.
+defaults:
+  role: review
+steps:
+  - id: read
+    prompt: Read the change.
+  - id: test
+    needs: []
+    command: npm test
+`)).toEqual([
+      { code: 'bad_role', message: 'workflows/build.yaml:5: field "defaults.role": defaults.role review is the role of no step: no step that names no role of its own opens or continues a copy, so none runs with it; give such a step workspace: new, or remove defaults.role' },
+    ]);
+    expect(rejected(`schemaVersion: v1alpha1
+name: build
+description: Check as a reviewer.
+steps:
+  - id: checks
+    role: review
+    workflow:
+      steps:
+        - id: test
+          command: npm test
+        - id: plan
+          needs: []
+          role: spec
+          workspace: new
+          prompt: Write the plan.
+`)).toEqual([
+      { code: 'bad_role', message: 'workflows/build.yaml:6: field "steps[0].role": step "checks" has role review, but no step in it that names no role of its own opens or continues a copy, so none runs with it; give such a step workspace: new, or remove role' },
+    ]);
+  });
+
+  it('refuses a session.from of a step that runs with another role', () => {
+    expect(rejected(`schemaVersion: v1alpha1
+name: build
+description: Plan, then review in the planner's session.
+steps:
+  - id: plan
+    role: spec
+    workspace: new
+    prompt: Write the plan.
+  - id: review
+    needs: [plan]
+    role: review
+    workspace: new
+    session: { from: plan }
+    prompt: Review the plan.
+  - id: read
+    needs: [plan]
+    session: { from: plan }
+    prompt: Read the plan.
+`)).toEqual([
+      { code: 'bad_session', message: 'workflows/build.yaml:13: field "steps[1].session.from": step "review" session.from names "plan", which runs with role spec, while step "review" runs with role review; a session goes on only with the knowledge it started with, so run both steps with one role, or start a new session' },
+      { code: 'bad_session', message: 'workflows/build.yaml:17: field "steps[2].session.from": step "read" session.from names "plan", which runs with role spec, while step "read" runs with your roles; a session goes on only with the knowledge it started with, so run both steps with one role, or start a new session' },
+    ]);
+  });
+
+  it('gives a step its own role over the nearest workflow step\'s, and that over defaults.role, and lets a new copy run with another', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Plan as a spec writer, fix as a reviewer, and audit on the way.
+defaults:
+  role: spec
+steps:
+  - id: plan
+    workspace: new
+    prompt: Write the plan.
+  - id: review
+    needs: [plan]
+    role: review
+    workflow:
+      steps:
+        - id: fix
+          workspace: new
+          prompt: Fix the change.
+        - id: audit
+          needs: [fix]
+          role: audit
+          workspace: new
+          prompt: Audit the fix.
+        - id: change
+          needs: [audit]
+          workspace: new
+          workflow:
+            steps:
+              - id: again
+                role: review
+                prompt: Review it again.
+`);
+    expect(result.ok, result.ok ? '' : result.diagnostics.map(formatDiagnostic).join('\n')).toBe(true);
+    if (!result.ok) return;
+    expect(result.definition.defaults?.role).toBe('spec');
+  });
+
+  it('checks the steps of a workflow file a step runs by name against the copy that step opens, at that step', () => {
+    const child = parse(`schemaVersion: v1alpha1
+name: look
+description: Look at the change.
+defaults:
+  role: spec
+steps:
+  - id: look
+    workspace: continue
+    prompt: Look at the change.
+  - id: note
+    needs: [look]
+    role: audit
+    workspace: continue
+    prompt: Note what you saw.
+`, 'workflows/look.yaml');
+    if (!child.ok) throw new Error(child.diagnostics.map(formatDiagnostic).join('\n'));
+    const files = { runnable: (name: string) => (name === 'look' ? child.definition : null), cycle: () => undefined };
+    const result = parseWorkflow(FILE, `schemaVersion: v1alpha1
+name: build
+description: Review the change in a reviewer's copy.
+defaults:
+  role: review
+steps:
+  - id: change
+    workspace: new
+    workflow: look
+`, files);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.diagnostics.map((diagnostic) => ({ message: formatDiagnostic(diagnostic), code: diagnostic.code }))).toEqual([
+      { code: 'bad_role', message: 'workflows/build.yaml:9: field "steps[0].workflow": step "change" runs workflow "look", whose defaults.role spec is the role of step "look", but it continues the copy step "change" opens with role review, which every step there runs with; remove defaults.role, or set role spec on step "change"' },
+      { code: 'bad_role', message: 'workflows/build.yaml:9: field "steps[0].workflow": step "change" runs workflow "look", whose step "note" has role audit but continues the copy step "change" opens with role review, which every step there runs with; remove role from step "note", or set it on step "change"' },
+    ]);
+  });
+
+  it('lets a workflow step\'s role reach a workflow file it runs by name, whose steps open a copy', () => {
+    const child = parse(`schemaVersion: v1alpha1
+name: fix
+description: Fix the change.
+steps:
+  - id: fix
+    workspace: new
+    prompt: Fix the change.
+`, 'workflows/fix.yaml');
+    if (!child.ok) throw new Error(child.diagnostics.map(formatDiagnostic).join('\n'));
+    const files = { runnable: (name: string) => (name === 'fix' ? child.definition : null), cycle: () => undefined };
+    const result = parseWorkflow(FILE, `schemaVersion: v1alpha1
+name: build
+description: Fix the change as a reviewer.
+steps:
+  - id: review
+    role: review
+    workflow: fix
+`, files);
+    expect(result.ok, result.ok ? '' : result.diagnostics.map(formatDiagnostic).join('\n')).toBe(true);
   });
 });
 

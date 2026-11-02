@@ -1216,8 +1216,8 @@ async function workflowFindings(repoDir: string, received: readonly Received[]):
 }
 
 /**
- * A warning on each valid workflow file that sets `invoke` or `alias`: a member or CI job on an older CLI drops the
- * whole workflow, and nothing refuses that older CLI.
+ * A warning on each valid workflow file that sets `invoke`, `alias`, `defaults.role` or a step `role`: a member or CI
+ * job on an older CLI drops the whole workflow, and nothing refuses that older CLI.
  */
 async function invokeAliasFindings(repoDir: string): Promise<Finding[]> {
   const findings: Finding[] = [];
@@ -1242,7 +1242,16 @@ async function invokeAliasFindings(repoDir: string): Promise<Finding[]> {
 
     const roled = stepsWithRole([...parsed.definition.steps, ...parsed.definition.finally ?? []], '');
 
-    if (roled.length > 0) {
+    if (parsed.definition.defaults?.role !== undefined) {
+      findings.push({
+        level: 'warn',
+        check: 'workflows',
+        path: relativePath,
+        message: roled.length > 0
+          ? `${relativePath} sets defaults.role and role on step ${roled.join(', ')}: teamai before ${STEP_ROLE_SINCE} drops a workflow that sets a role, so members and CI jobs must run at least ${STEP_ROLE_SINCE}.`
+          : `${relativePath} sets defaults.role: teamai before ${STEP_ROLE_SINCE} drops a workflow that sets a role, so members and CI jobs must run at least ${STEP_ROLE_SINCE}.`,
+      });
+    } else if (roled.length > 0) {
       findings.push({
         level: 'warn',
         check: 'workflows',

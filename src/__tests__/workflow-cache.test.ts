@@ -2444,4 +2444,20 @@ steps:
     ]);
     expect(result.invalid[0]).toMatchObject({ code: 'bad_role' });
   });
+
+  it('leaves unrunnable a clone step that runs a workflow file whose step continues the clone with another role', async () => {
+    const config = testConfig();
+    fs.mkdirSync(path.join(config.repo.localPath, 'manifest'), { recursive: true });
+    fs.writeFileSync(path.join(config.repo.localPath, 'manifest', 'roles.yaml'), 'version: 1\nroles:\n  - id: review\n    resources: { knowledge: [], skills: [review] }\n  - id: spec\n    resources: { knowledge: [], skills: [spec] }\n');
+    writeWorkflow(config, 'review', `${cloneStep('review').replace('    prompt: Review the change.\n', '')}    workflow: look\n`);
+    writeWorkflow(config, 'look', 'schemaVersion: v1alpha1\nname: look\ndescription: Look at the change as a spec writer.\nsteps:\n  - id: look\n    role: spec\n    workspace: continue\n    prompt: Write the spec.\n');
+
+    const result = await syncWorkflowDefinitions(config);
+
+    expect(result.cached).toEqual(['look']);
+    expect(result.invalid.map((diagnostic) => ({ message: formatDiagnostic(diagnostic), code: diagnostic.code }))).toEqual([{
+      code: 'bad_role',
+      message: 'workflows/review.yaml:8: field "steps[0].workflow": step "review" runs workflow "look", whose step "look" has role spec but continues a clone, which runs with the role of the step that opens it; set role on that step',
+    }]);
+  });
 });

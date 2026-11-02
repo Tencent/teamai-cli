@@ -1,0 +1,252 @@
+/**
+ * Where a workflow file's roles reach a copy. A `defaults.role` or a `workflow` step's `role` is the role of each step
+ * inside it that names none (`resolvedRoleOf`), and takes effect where such a step opens a copy: every step continuing
+ * that copy runs with the copy's role (`copyOf`). Checked once the file parses, over its steps, its inline workflows
+ * and, with `files`, the workflow files they run by name, whose problems are reported at the step that runs them.
+ */
+import type { Node } from 'yaml';
+import { isSeq } from 'yaml';
+import { isYamlNode, locate, valueNode, type ParseContext } from './parse-context.js';
+import { stepWorkflow, type WorkflowDefaults, type WorkflowDiagnostic, type WorkflowStep } from './types.js';
+import { cloneOf, copyOf, copyRoleConflict, resolveMode, resolvedRoleOf, type RoleLevel, type StepCopy } from './workspace.js';
+
+/** A step on the way to a step: its label, and, in this file, its field and YAML mapping. */
+interface Level extends RoleLevel {
+  label: string;
+  /** Where this file writes the step; undefined for a step of a workflow file it runs by name. */
+  written?: { field: string; item: Node | undefined };
+  /** Whether the `defaultRole` in effect is this file's own `defaults.role`. */
+  ownDefaults: boolean;
+}
+
+/** The `defaults.role` in effect, and whether it is this file's own. */
+interface Defaults {
+  role?: string;
+  own: boolean;
+}
+
+/** A workflow file this one runs by name: how a message names it, and where the step that runs it is written. */
+interface Caller {
+  says: string;
+  node: Node | undefined;
+  field: string;
+  runs: readonly string[];
+}
+
+/** A role a step inside may take: this file's `defaults.role` or a `workflow` step's, until a copy runs with it. */
+interface RoleSource {
+  node: Node | undefined;
+  field: string;
+  unconsumed: string;
+  consumed: boolean;
+}
+
+/** The `bad_role` and `bad_session` diagnostics of the roles of `workflow`, the file whose YAML mapping is `root`. */
+export function roleDiagnostics(root: Node, workflow: { defaults?: WorkflowDefaults; steps: readonly WorkflowStep[] }, ctx: ParseContext): WorkflowDiagnostic[] {
+  const { file, lineCounter } = ctx;
+  const diagnostics: WorkflowDiagnostic[] = [];
+  const reported = new Set<string>();
+
+  const report = (code: 'bad_role' | 'bad_session', node: Node | undefined, field: string, message: string): void => {
+    if (reported.has(`${field}\n${message}`)) return;
+    reported.add(`${field}\n${message}`);
+    diagnostics.push({ ...locate(file, lineCounter, node, field, message), code });
+  };
+
+  const sources = new Map<string, RoleSource>();
+  const defaultRole = workflow.defaults?.role;
+
+  if (defaultRole !== undefined) {
+    sources.set('defaults.role', {
+      node: valueNode(valueNode(root, 'defaults'), 'role'), field: 'defaults.role', consumed: false,
+      unconsumed: `defaults.role ${defaultRole} is the role of no step: no step that names no role of its own opens or continues a copy, so none runs with it; give such a step workspace: new, or remove defaults.role`,
+    });
+  }
+
+  /** Marks the source of the role `levels` resolve as taken by a copy. */
+  const consume = (levels: readonly Level[]): void => {
+    const resolved = resolvedRoleOf(levels);
+
+    if (resolved === undefined) return;
+    const level = resolved.from === 'defaults' ? undefined : levels[resolved.from];
+    const key = resolved.from === 'defaults' ? (levels.at(-1)?.ownDefaults ? 'defaults.role' : undefined) : level?.written && `${level.written.field}.role`;
+    const source = key === undefined ? undefined : sources.get(key);
+
+    if (source) source.consumed = true;
+  };
+
+  /** What a step runs with, as `levels` reach it, or `unknown` in a copy that a step running this file opens. */
+  const runsWith = (levels: readonly Level[]): StepCopy['runsWith'] | { kind: 'unknown' } => {
+    const copy = copyOf(levels);
+    const last = levels.at(-1);
+
+    if (copy) return copy.runsWith;
+
+    return last && resolveMode(last.step, levels.slice(0, -1).map((level) => level.step)) === 'continue' ? { kind: 'unknown' } : { kind: 'member' };
+  };
+
+  /**
+   * Reports that the last of `levels` resolves a role other than the one of the copy `copy`, which an enclosing step
+   * opened: where this file names that role, else at the step of this file that runs the workflow naming it.
+   */
+  const conflictAt = (levels: readonly Level[], copy: StepCopy, caller: Caller | undefined): void => {
+    const resolved = resolvedRoleOf(levels);
+    const last = levels.at(-1);
+    const opener = levels[copy.opener];
+
+    // A copy that a workflow this file runs opens is that file's to check.
+    if (!last || !opener?.written || resolved === undefined) return;
+    const opened = copy.runsWith.kind === 'role' ? `with role ${copy.runsWith.role}` : 'without a role';
+    const named = resolved.from === 'defaults' ? undefined : levels[resolved.from];
+
+    const said = (message: string): void => {
+      const own = resolved.from === 'defaults' ? (last.ownDefaults ? sources.get('defaults.role') : undefined)
+        : named?.written && { node: valueNode(named.written.item, 'role'), field: `${named.written.field}.role` };
+
+      if (own) report('bad_role', own.node, own.field, message);
+      else if (caller) report('bad_role', caller.node, caller.field, `${caller.says}${message}`);
+    };
+
+    if (resolved.from === 'defaults') {
+      said(`defaults.role ${resolved.role} is the role of ${last.label}, but it continues the copy step "${opener.step.id}" opens ${opened}, which every step there runs with; remove defaults.role, or set role ${resolved.role} on step "${opener.step.id}"`);
+    } else if (named && named !== last) {
+      said(`${named.label} has role ${resolved.role}, but ${last.label} in it continues the copy step "${opener.step.id}" opens ${opened}, which every step there runs with; remove role from ${named.label}, or set it on step "${opener.step.id}"`);
+    } else if (cloneOf(opener.step)) {
+      said(`${last.label} has role ${resolved.role} but continues a clone, which runs with the role of the step that opens it; set role on that step`);
+    } else {
+      said(`${last.label} has role ${resolved.role} but continues the copy step "${opener.step.id}" opens ${opened}, which every step there runs with; remove role from ${last.label}, or set it on step "${opener.step.id}"`);
+    }
+  };
+
+  /** A step that runs no workflow: where its role reaches, and what it takes. */
+  const leaf = (levels: readonly Level[], caller: Caller | undefined): void => {
+    const last = levels.at(-1);
+
+    if (!last) return;
+    const copy = copyOf(levels);
+
+    if (!copy) {
+      if (runsWith(levels).kind === 'unknown') consume(levels);
+      else if (last.step.role !== undefined && last.written) {
+        report('bad_role', valueNode(last.written.item, 'role'), `${last.written.field}.role`, `${last.label} has role ${last.step.role} but neither opens nor continues a copy; give the prompt step workspace: new to open a copy that runs with the role, or workspace: continue to run with it in the copy around it`);
+      }
+
+      return;
+    }
+
+    if (copy.runsWith.kind === 'no_team') {
+      if (last.step.role !== undefined && copy.opener !== levels.length - 1 && last.written) {
+        report('bad_role', valueNode(last.written.item, 'role'), `${last.written.field}.role`, `${last.label} has role ${last.step.role} but continues a clone, which runs with the role of the step that opens it; set role on that step`);
+      }
+
+      return;
+    }
+
+    // The copy runs with its opener's role whatever a step there resolves, and a conflict is reported once, as such.
+    consume(levels);
+    consume(levels.slice(0, copy.opener + 1));
+
+    if (copyRoleConflict(levels)) conflictAt(levels, copy, caller);
+  };
+
+  /**
+   * The step `levels` end at resumes the session of `from`, a step before it, which must run with the same role, as
+   * `sessionOf` checks at lease: a step in a clone without a team, as one outside any copy, runs with no step role.
+   */
+  const session = (levels: readonly Level[], from: readonly Level[], fromId: string): void => {
+    const last = levels.at(-1);
+    const own = runsWith(levels);
+    const theirs = runsWith(from);
+
+    if (!last?.written || own.kind === 'unknown' || theirs.kind === 'unknown') return;
+    const roleOf = (runs: StepCopy['runsWith']): string | undefined => (runs.kind === 'role' ? runs.role : undefined);
+
+    if (roleOf(own) === roleOf(theirs)) return;
+    const named = (role: string | undefined): string => (role === undefined ? 'your roles' : `role ${role}`);
+    report('bad_session', valueNode(valueNode(last.written.item, 'session'), 'from'), `${last.written.field}.session.from`,
+      `${last.label} session.from names "${fromId}", which runs with ${named(roleOf(theirs))}, while ${last.label} runs with ${named(roleOf(own))}; a session goes on only with the knowledge it started with, so run both steps with one role, or start a new session`);
+  };
+
+  const walk = (steps: readonly WorkflowStep[], input: {
+    node: Node | undefined; at: string; outer: readonly Level[]; defaults: Defaults; caller: Caller | undefined;
+    around?: { steps: readonly WorkflowStep[]; outer: readonly Level[]; levelOf: (step: WorkflowStep) => Level };
+  }): void => {
+    const { node, at, outer, defaults, caller } = input;
+
+    const levelOf = (step: WorkflowStep, index: number): Level => {
+      const item: unknown = isSeq(node) ? node.items[index] : undefined;
+
+      return {
+        step, label: `step "${step.id}"`, ownDefaults: defaults.own, ...(defaults.role !== undefined ? { defaultRole: defaults.role } : {}),
+        ...(caller ? {} : { written: { field: `${at}steps[${index}]`, item: isYamlNode(item) ? item : undefined } }),
+      };
+    };
+
+    steps.forEach((step, index) => {
+      const level = levelOf(step, index);
+      const levels = [...outer, level];
+      const runs = stepWorkflow(step);
+
+      if (step.role !== undefined && runs !== undefined && level.written) {
+        sources.set(`${level.written.field}.role`, {
+          node: valueNode(level.written.item, 'role'), field: `${level.written.field}.role`, consumed: false,
+          unconsumed: `${level.label} has role ${step.role}, but no step in it that names no role of its own opens or continues a copy, so none runs with it; give such a step workspace: new, or remove role`,
+        });
+      }
+
+      switch (runs?.kind) {
+        case undefined:
+          leaf(levels, caller);
+          break;
+        case 'inline':
+          walk(runs.workflow.steps, {
+            node: valueNode(valueNode(level.written?.item, 'workflow'), 'steps'), at: `${at}steps[${index}].workflow.`, outer: levels, defaults, caller,
+            around: { steps, outer, levelOf: (around) => levelOf(around, steps.indexOf(around)) },
+          });
+          break;
+        case 'named': {
+          const child = caller?.runs.includes(runs.name) ? null : ctx.files?.runnable(runs.name) ?? null;
+
+          // A workflow this sync cannot read takes the role, as far as this file can tell; its lease checks it.
+          if (!child) consume(levels);
+          else {
+            walk(child.steps, {
+              node: undefined, at: '', outer: levels, defaults: child.defaults?.role !== undefined ? { role: child.defaults.role, own: false } : defaults,
+              caller: {
+                says: `${caller?.says ?? ''}${level.label} runs workflow "${runs.name}", whose `, node: caller?.node ?? valueNode(level.written?.item, 'workflow'),
+                field: caller?.field ?? `${level.written?.field ?? at}.workflow`, runs: [...caller?.runs ?? [], runs.name],
+              },
+            });
+          }
+
+          break;
+        }
+
+        case 'from':
+          // A workflow a step outputs is admitted when it reports; its lease checks the role then.
+          consume(levels);
+          break;
+        default: {
+          const unhandled: never = runs;
+          void unhandled;
+        }
+      }
+
+      if (caller || step.session === undefined || !('from' in step.session)) return;
+      const fromId = step.session.from;
+      const sibling = steps.find((other) => other.id === fromId);
+      const enclosing = sibling ? undefined : input.around?.steps.find((other) => other.id === fromId);
+
+      if (sibling) session(levels, [...outer, levelOf(sibling, steps.indexOf(sibling))], fromId);
+      else if (enclosing && input.around) session(levels, [...input.around.outer, input.around.levelOf(enclosing)], fromId);
+    });
+  };
+
+  walk(workflow.steps, { node: valueNode(root, 'steps'), at: '', outer: [], defaults: { ...(defaultRole !== undefined ? { role: defaultRole } : {}), own: true }, caller: undefined });
+
+  for (const source of sources.values()) {
+    if (!source.consumed) report('bad_role', source.node, source.field, source.unconsumed);
+  }
+
+  return diagnostics;
+}

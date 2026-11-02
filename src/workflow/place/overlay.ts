@@ -59,7 +59,8 @@ export function unrestoredConfig(reason: string, dir: string): string {
 /**
  * Gives a workflow worktree the skills, rules, agents and MCP a new worktree of this checkout gets. It runs after the
  * base agent files are in place and before their overlay is recorded, so the delivered files are not the step's edits.
- * Answers what the pull did for the copy.
+ * The base agent files replaced what an earlier step's pull delivered into a copy it continues, while the copy's record
+ * still holds that delivery, so the pull delivers in full rather than take the fast path. Answers what it did.
  */
 async function deliverTeamAssets(dir: string): Promise<PullDelivery> {
   const exitCode = process.exitCode;
@@ -69,7 +70,7 @@ async function deliverTeamAssets(dir: string): Promise<PullDelivery> {
     await createProjectToolRoots({ cwd: dir });
     const { pull } = await import('../../pull.js');
     const result: { completed: boolean; delivery?: PullDelivery } = { completed: false };
-    await pull({ silent: true, inline: true, gitHook: 'post-checkout', prepareCheckout: 'always', cwd: dir }, result);
+    await pull({ silent: true, inline: true, force: true, gitHook: 'post-checkout', prepareCheckout: 'always', cwd: dir }, result);
 
     return result.delivery ?? 'failed';
   } finally {

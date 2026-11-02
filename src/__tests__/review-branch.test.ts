@@ -590,6 +590,36 @@ steps:
     });
   });
 
+  it('warns that older CLIs drop a workflow that sets defaults.role, or a role on a workflow step', async () => {
+    await fse.ensureDir(path.join(repoDir, 'manifest'));
+    await fse.writeFile(path.join(repoDir, 'manifest', 'roles.yaml'), 'version: 1\nroles:\n  - id: review\n    resources: { knowledge: [], skills: [review] }\n');
+    await writeWorkflow(repoDir, 'review', `schemaVersion: v1alpha1
+name: review
+description: Review the change as a reviewer.
+defaults:
+  role: review
+steps:
+  - id: change
+    workspace: new
+    prompt: Review the change.
+  - id: checks
+    needs: []
+    role: review
+    workflow:
+      steps:
+        - id: fix
+          workspace: new
+          prompt: Fix what the review found.
+`);
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(review.findings).toContainEqual({
+      level: 'warn', check: 'workflows', path: 'workflows/review.yaml',
+      message: `workflows/review.yaml sets defaults.role and role on step checks: teamai before ${STEP_ROLE_SINCE} drops a workflow that sets a role, so members and CI jobs must run at least ${STEP_ROLE_SINCE}.`,
+    });
+  });
+
   it('fails a workflow whose prompt file is missing', async () => {
     await writeWorkflow(repoDir, 'release', MISSING_PROMPT);
 

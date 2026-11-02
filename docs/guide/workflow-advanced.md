@@ -509,14 +509,15 @@ A step with `workspace: { clone: { commit, repo?, team } }` runs in a fresh clon
 
 ### Run a step as a team role
 
-A prompt step with `workspace: new` runs with its `role` in a worktree of its own. One with `workspace: continue` runs with it in the copy an enclosing `workflow` step opened with `new`; another step there without `role` runs with your roles. A code review that writes its findings beside the change:
+A prompt step with `workspace: new` runs with its `role` in a worktree of its own. A `workflow` step that opens a copy with `role` runs every step continuing that copy with it, commands included. A code review that writes its findings beside the change, then checks them:
 
 ```yaml
 schemaVersion: v1alpha1
 name: review-change
-description: Make a change, then review it in the same copy as a reviewer.
+description: Make a change as a reviewer, review it in the same copy, and test it there.
 steps:
   - id: change
+    role: review
     workspace: new
     workflow:
       steps:
@@ -525,14 +526,17 @@ steps:
           prompt: Make the change the issue asks for.
         - id: review
           needs: [build]
-          role: review
           workspace: continue
           prompt: Review the change and write what must be fixed in REVIEW.md.
+        - id: test
+          needs: [review]
+          workspace: continue
+          command: npm test
 ```
 
-`teamai workflow start review-change --driver local` runs `build` with your roles and `review` with `review`. Before each step teamai records the role the copy runs with in `checkout-roles.json` in your data directory, and the copy's own pull delivers for it. The copy gets the role's skills, rules, agents, docs, wiki and learnings, with your projects; your tags and skill exclusions do not filter it. It keeps your hooks, MCP servers, env and models. A `teamai pull` or a hook run in the copy keeps the role, the session the step launches there runs no pull of its own, and `teamai recall` there reads an index of the copy's own. Your checkout, its index and your config do not change, and the step's commit holds none of what the pull delivered.
+`teamai workflow start review-change --driver local` runs `build`, `review` and `test` with `review`. Before each step teamai records the role the copy runs with in `checkout-roles.json` in your data directory, and the copy's own pull delivers for it. The copy gets the role's skills, rules, agents, docs, wiki and learnings, with your projects; your tags and skill exclusions do not filter it. It keeps your hooks, MCP servers, env and models. A `teamai pull` or a hook run in the copy keeps the role, the session the step launches there runs no pull of its own, and `teamai recall` there reads an index of the copy's own. Your checkout, its index and your config do not change, and the step's commit holds none of what the pull delivered.
 
-`role` goes on a prompt step with `workspace: new` or `continue`. Pull refuses it on a step with no `workspace`, on a command step, and on a step continuing a clone, as `bad_role`. A step fails `role_unavailable`, and says why, when no project install of teamai governs the checkout, when `manifest/roles.yaml` does not declare the role, when a tool's knowledge would land outside the copy, or when the copy's pull did not deliver for the role, for example because another pull held the team's lock. Retry the step once the cause is fixed. Only a driver that declares [`can.role`](#requirements-and-limits) and asks `next --prepare` takes the step, so that teamai delivers the role. The run records `agent.team.selection.stepRole` from what teamai delivered, never from what a driver reports.
+`role` goes on a prompt step that opens or continues a copy, on a `workflow` step for the steps inside it, or in `defaults`; [Run a step as a team role](workflow.md#run-a-step-as-a-team-role) has the precedence. Pull refuses, as `bad_role`, a `role` on a command step, on a prompt step that runs in no copy, on a step continuing a copy with a role other than the copy's, and a `role` or `defaults.role` no step in a copy takes. A step fails `role_unavailable`, and says why, when no project install of teamai governs the checkout, when `manifest/roles.yaml` does not declare the role, when a tool's knowledge would land outside the copy, or when the copy's pull did not deliver for the role, for example because another pull held the team's lock. Retry the step once the cause is fixed. Only a driver that declares [`can.role`](#requirements-and-limits) and asks `next --prepare` takes the step, so that teamai delivers the role. The run records `agent.team.selection.stepRole` from what teamai delivered, never from what a driver reports.
 
 ### Run a clone as a team role
 
@@ -555,7 +559,7 @@ A clone step can run with a role from `manifest/roles.yaml` other than yours, su
 
 Start it as any workflow, `teamai workflow start review`. Every step that continues the clone runs with its role. The clone's install gets the knowledge of `review` and of your projects: skills, rules, agents, docs, wiki and learnings. It keeps what you may run: your roles' hooks, MCP servers, env and models, and the workflows, prompts, scorers and benchmarks you can find. A `teamai pull` or a hook run inside the clone keeps the role, and your own config and checkout are not changed.
 
-The run records it: each step in the clone has `agent.team.selection.stepRole: review` beside your `primaryRole`, and the scorer results group such a step under `review`. In a clone, `role` goes on the step whose workspace is `{ clone: … }`, and that clone must install a team. Pull refuses a role on a step that continues the clone, or one `manifest/roles.yaml` does not declare, as `bad_role`. When the role cannot be delivered into the clone, the step fails `role_unavailable` and says why. For example, `sharing.docs.localDir` may put the docs outside the clone, where every checkout reads them. The step's commit holds only its own edits, and none of what the install delivered. Only a driver that declares [`can.role`](#requirements-and-limits) takes the step, such as `local`. The skill driver of a coding session does not, so the step waits with `wait.held[].missing` naming `role`. teamai before 0.29.0 drops a workflow with a step `role`, and `teamai review --branch` warns about it.
+The run records it: each step in the clone has `agent.team.selection.stepRole: review` beside your `primaryRole`, and the scorer results group such a step under `review`. In a clone, `role` goes on the step whose workspace is `{ clone: … }`, and that clone must install a team. Pull refuses a role on a step that continues the clone other than the clone's, or one `manifest/roles.yaml` does not declare, as `bad_role`. When the role cannot be delivered into the clone, the step fails `role_unavailable` and says why. For example, `sharing.docs.localDir` may put the docs outside the clone, where every checkout reads them. The step's commit holds only its own edits, and none of what the install delivered. Only a driver that declares [`can.role`](#requirements-and-limits) takes the step, such as `local`. The skill driver of a coding session does not, so the step waits with `wait.held[].missing` naming `role`. teamai before 0.29.0 drops a workflow with a step `role` or `defaults.role`, and `teamai review --branch` warns about it.
 
 ### Isolated runs
 

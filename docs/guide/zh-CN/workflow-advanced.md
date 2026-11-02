@@ -509,14 +509,15 @@ steps:
 
 ### 以团队角色运行步骤
 
-带 `workspace: new` 的提示词步骤在自己的 worktree 中以其 `role` 运行。带 `workspace: continue` 的提示词步骤在外层 `workflow` 步骤用 `new` 打开的副本中以其 `role` 运行；该副本中没有 `role` 的其他步骤以你的角色运行。下例是一次代码评审，把结论写在改动旁边：
+带 `workspace: new` 的提示词步骤在自己的 worktree 中以其 `role` 运行。用 `role` 打开副本的 `workflow` 步骤，会让所有延续该副本的步骤都以这个角色运行，命令步骤也一样。下例是一次代码评审，把结论写在改动旁边，然后在同一副本中检查：
 
 ```yaml
 schemaVersion: v1alpha1
 name: review-change
-description: Make a change, then review it in the same copy as a reviewer.
+description: Make a change as a reviewer, review it in the same copy, and test it there.
 steps:
   - id: change
+    role: review
     workspace: new
     workflow:
       steps:
@@ -525,14 +526,17 @@ steps:
           prompt: Make the change the issue asks for.
         - id: review
           needs: [build]
-          role: review
           workspace: continue
           prompt: Review the change and write what must be fixed in REVIEW.md.
+        - id: test
+          needs: [review]
+          workspace: continue
+          command: npm test
 ```
 
-`teamai workflow start review-change --driver local` 以你的角色运行 `build`，以 `review` 运行 `review`。每个步骤开始前，teamai 在数据目录的 `checkout-roles.json` 中记录副本运行时使用的角色，副本自己的 pull 按该角色交付。副本获得该角色的 skill、规则、agent、文档、wiki 和经验，加上你的项目；你的标签和 skill 排除不会过滤它。它保留你的 hook、MCP 服务器、env 和模型。在副本中运行的 `teamai pull` 或 hook 会保留该角色，步骤在那里启动的会话不会自己再 pull，那里的 `teamai recall` 读取副本自己的索引。你的检出目录、它的索引和你的配置都不会改变，步骤的提交不包含 pull 交付的任何内容。
+`teamai workflow start review-change --driver local` 以 `review` 运行 `build`、`review` 和 `test`。每个步骤开始前，teamai 在数据目录的 `checkout-roles.json` 中记录副本运行时使用的角色，副本自己的 pull 按该角色交付。副本获得该角色的 skill、规则、agent、文档、wiki 和经验，加上你的项目；你的标签和 skill 排除不会过滤它。它保留你的 hook、MCP 服务器、env 和模型。在副本中运行的 `teamai pull` 或 hook 会保留该角色，步骤在那里启动的会话不会自己再 pull，那里的 `teamai recall` 读取副本自己的索引。你的检出目录、它的索引和你的配置都不会改变，步骤的提交不包含 pull 交付的任何内容。
 
-`role` 写在带 `workspace: new` 或 `continue` 的提示词步骤上。pull 会以 `bad_role` 拒绝写在没有 `workspace` 的步骤、命令步骤和沿用克隆的步骤上的 role。以下情况步骤会以 `role_unavailable` 失败并说明原因：没有 teamai 的项目安装管理该检出目录，`manifest/roles.yaml` 未声明该角色，某个工具的知识会落在副本之外，或副本的 pull 没有按该角色交付（例如另一个 pull 占着团队的锁）。修复原因后重试该步骤。只有声明了 [`can.role`](#要求和限制) 并用 `next --prepare` 请求的驱动才会接这个步骤，这样角色由 teamai 交付。运行按 teamai 交付的内容记录 `agent.team.selection.stepRole`，从不采用驱动报告的值。
+`role` 写在打开或沿用副本的提示词步骤上，写在 `workflow` 步骤上（作用于其中的步骤），或写在 `defaults` 中；优先级见[以团队角色运行步骤](workflow.md#以团队角色运行步骤)。pull 会以 `bad_role` 拒绝：命令步骤上的 `role`、不在任何副本中运行的提示词步骤上的 `role`、以不同于副本的角色沿用副本的步骤，以及没有任何副本中的步骤采用的 `role` 或 `defaults.role`。以下情况步骤会以 `role_unavailable` 失败并说明原因：没有 teamai 的项目安装管理该检出目录，`manifest/roles.yaml` 未声明该角色，某个工具的知识会落在副本之外，或副本的 pull 没有按该角色交付（例如另一个 pull 占着团队的锁）。修复原因后重试该步骤。只有声明了 [`can.role`](#要求和限制) 并用 `next --prepare` 请求的驱动才会接这个步骤，这样角色由 teamai 交付。运行按 teamai 交付的内容记录 `agent.team.selection.stepRole`，从不采用驱动报告的值。
 
 ### 以团队角色运行克隆
 
@@ -555,7 +559,7 @@ steps:
 
 像其他工作流一样用 `teamai workflow start review` 启动它。所有延续该克隆的步骤都使用这个角色。克隆的安装获得 `review` 和你的项目的知识：skill、规则、agent、文档、wiki 和 learnings。你可以运行的东西保持不变：你的角色的 hook、MCP 服务器、env 和模型，以及你能找到的工作流、prompt、scorer 和 benchmark。在克隆中运行的 `teamai pull` 或 hook 保留这个角色，你自己的配置和检出目录不会改变。
 
-运行会记录它：克隆中的每个步骤在你的 `primaryRole` 旁边带有 `agent.team.selection.stepRole: review`，scorer 结果把这样的步骤归在 `review` 下。在克隆中，`role` 写在 workspace 为 `{ clone: … }` 的步骤上，且该克隆必须安装团队。pull 会以 `bad_role` 拒绝写在沿用该克隆的步骤上的 role，以及 `manifest/roles.yaml` 未声明的 role。角色无法交付到克隆中时，步骤以 `role_unavailable` 失败并说明原因。例如，`sharing.docs.localDir` 可能把文档放在克隆之外，所有检出目录都会读到它们。步骤的提交只包含它自己的修改，不包含安装交付的内容。只有声明了 [`can.role`](#要求和限制) 的驱动才会接这个步骤，例如 `local`。编程会话的 skill 驱动不声明它，因此该步骤会等待，`wait.held[].missing` 列出 `role`。0.29.0 之前的 teamai 会丢弃带步骤 `role` 的工作流，`teamai review --branch` 会对此发出警告。
+运行会记录它：克隆中的每个步骤在你的 `primaryRole` 旁边带有 `agent.team.selection.stepRole: review`，scorer 结果把这样的步骤归在 `review` 下。在克隆中，`role` 写在 workspace 为 `{ clone: … }` 的步骤上，且该克隆必须安装团队。pull 会以 `bad_role` 拒绝写在沿用该克隆的步骤上、与克隆不同的 role，以及 `manifest/roles.yaml` 未声明的 role。角色无法交付到克隆中时，步骤以 `role_unavailable` 失败并说明原因。例如，`sharing.docs.localDir` 可能把文档放在克隆之外，所有检出目录都会读到它们。步骤的提交只包含它自己的修改，不包含安装交付的内容。只有声明了 [`can.role`](#要求和限制) 的驱动才会接这个步骤，例如 `local`。编程会话的 skill 驱动不声明它，因此该步骤会等待，`wait.held[].missing` 列出 `role`。0.29.0 之前的 teamai 会丢弃带步骤 `role` 或 `defaults.role` 的工作流，`teamai review --branch` 会对此发出警告。
 
 ### 隔离运行
 

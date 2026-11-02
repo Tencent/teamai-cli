@@ -21,7 +21,7 @@ import type { LocalToolAdapter } from '../workflow/drivers/local/local-tool-adap
 import { parseWorkflow } from '../workflow/parse.js';
 import { readRun, updateRun } from '../workflow/store.js';
 import type { DriverIdentity, RunState } from '../workflow/types.js';
-import { branchName } from '../workflow/workspace.js';
+import { branchName, stepRoleOf } from '../workflow/workspace.js';
 import { applyBaseConfig, ensureWorktree, git as workflowGit, hooksPath, pushIfOrigin, worktreePath } from '../workflow/worktree.js';
 import { launchHoldsCheckout } from '../launch-context.js';
 import { teamDelivery } from '../pull.js';
@@ -4037,6 +4037,49 @@ steps:
         code: 'workspace_base',
         message: `step "change.test" reads branches ${branchName(runId, 'change.left', 1)}, ${branchName(runId, 'change.right', 1)}; add a step that merges them and need that step`,
       },
+    });
+  });
+});
+
+describe('the role a step runs with', () => {
+  const definitionOf = (file: string, yaml: string): RunState['definition'] => {
+    const parsed = parseWorkflow(`workflows/${file}.yaml`, yaml);
+    if (!parsed.ok) throw new Error(parsed.diagnostics.map((diagnostic) => diagnostic.message).join('\n'));
+    return parsed.definition;
+  };
+
+  it('is the role of the copy it runs in: its opener\'s own, else the nearest workflow step\'s, else the nearest defaults.role', () => {
+    const run = {
+      steps: [],
+      definition: definitionOf('build', `schemaVersion: v1alpha1
+name: build
+description: Plan, fix, and take notes.
+defaults:
+  role: spec
+steps:
+  - id: plan
+    workspace: new
+    prompt: Write the plan.
+  - id: read
+    needs: []
+    prompt: Read the change.
+  - id: review
+    needs: []
+    role: review
+    workflow: fix
+  - id: change
+    needs: []
+    workspace: new
+    workflow: notes
+`),
+      workflows: {
+        fix: definitionOf('fix', 'schemaVersion: v1alpha1\nname: fix\ndescription: Fix it.\ndefaults:\n  role: audit\nsteps:\n  - id: fix\n    workspace: new\n    prompt: Fix it.\n'),
+        notes: definitionOf('notes', 'schemaVersion: v1alpha1\nname: notes\ndescription: Take notes.\ndefaults:\n  role: audit\nsteps:\n  - id: look\n    workspace: continue\n    prompt: Look.\n  - id: again\n    needs: []\n    workspace: new\n    prompt: Look again.\n'),
+      },
+    };
+
+    expect(Object.fromEntries(['plan', 'read', 'review.fix', 'change.look', 'change.again'].map((step) => [step, stepRoleOf(run, step)]))).toEqual({
+      plan: 'spec', read: undefined, 'review.fix': 'review', 'change.look': 'spec', 'change.again': 'audit',
     });
   });
 });

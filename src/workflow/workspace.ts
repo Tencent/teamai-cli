@@ -9,7 +9,7 @@ import { localId, statesIn, stepDefinitions, type Scope } from './scope.js';
 import { parseStepPath } from './step-path.js';
 import { passOf, type Delivery, type StepState } from './step-state.js';
 import { ClonePlaceSchema, type ClonePlace } from './clone.js';
-import { stepWorkflow, workflowRunBy, type DriverIdentity, type RunState, type WorkflowDefinition, type WorkflowFailure, type WorkflowStep, type WORKSPACE_MODES } from './types.js';
+import { isWorkflowFile, stepWorkflow, workflowRunBy, type DriverIdentity, type InlineWorkflow, type RunState, type WorkflowDefinition, type WorkflowFailure, type WorkflowStep, type WORKSPACE_MODES } from './types.js';
 
 export type WorkspaceMode = typeof WORKSPACE_MODES[number];
 
@@ -558,6 +558,16 @@ export function sessionOf(run: RunState, scope: Scope, state: StepState, definit
     return { code: 'bad_session', message: `step "${state.id}" resumes "${name}", which is a for_each step` };
   }
 
+  // A workflow a step outputs may set roles pull never saw around it.
+  const own = stepRoleOf(run, state.id);
+  const theirs = stepRoleOf(run, target.id);
+
+  if (own !== theirs) {
+    const named = (role: string | undefined): string => (role === undefined ? 'your roles' : `role ${role}`);
+
+    return { code: 'bad_session', message: `step "${state.id}" resumes "${name}", which ran with ${named(theirs)}, while step "${state.id}" runs with ${named(own)}; a session goes on only with the knowledge it started with, so run both steps with one role, or start a new session` };
+  }
+
   const current = passOf(target);
 
   return latestContinuation(run, sessionFromPasses([...(target.passes ?? []), ...(current ? [current] : [])]));
@@ -594,10 +604,10 @@ export function planWorkspace(
   const cloned = mode === 'clone' ? { clone: cloneOf(definition), instance: state.id, pass: state.pass ?? 1 }
     : owner && cloneOf(owner.step) ? { clone: cloneOf(owner.step), instance: owner.instance, pass: owner.pass } : undefined;
 
-  // A clone runs with the role it was opened with; a step another file runs there may name another only by mistake.
-  if (cloned?.clone && mode !== 'clone' && owner && definition.role !== undefined && definition.role !== owner.step.role) {
-    return { mode, fail: { code: 'role_unavailable', message: `step "${state.id}" has role ${definition.role} but continues the clone step "${owner.instance}" opened ${owner.step.role === undefined ? 'without a role' : `with role ${owner.step.role}`}, which every step there runs with; remove role from step "${state.id}", or set it on step "${owner.instance}"` } };
-  }
+  // A copy runs with the role it was opened with; a step another file runs there may resolve another only by mistake.
+  const conflict = copyRoleConflict(roleLevelsOf(run, state.id));
+
+  if (conflict) return { mode, fail: copyRoleFailure(state.id, conflict) };
 
   if (cloned?.clone) return planClone(run, state, request, { ...cloned, clone: cloned.clone, mode, session, handback });
 
@@ -684,6 +694,32 @@ export function planWorkspace(
 }
 
 /**
+ * The failure of step instance `path`, which resolves a role other than the one of the copy an enclosing step opened:
+ * what each runs with, and where to set the role instead.
+ */
+function copyRoleFailure(path: string, { copy, resolved }: NonNullable<ReturnType<typeof copyRoleConflict>>): WorkflowFailure {
+  const opener = path.split('.').slice(0, copy.opener + 1).join('.');
+  const opened = copy.runsWith.kind === 'role' ? `with role ${copy.runsWith.role}` : 'without a role';
+  const failed = (message: string): WorkflowFailure => ({ code: 'role_unavailable', message });
+
+  if (resolved === undefined) {
+    return failed(`step "${path}" runs with your roles but continues the copy step "${opener}" opened ${opened}, which every step there runs with; give step "${path}" that role, or remove it from step "${opener}"`);
+  }
+
+  if (resolved.from === 'defaults') {
+    return failed(`step "${path}" gets role ${resolved.role} from defaults.role but continues the copy step "${opener}" opened ${opened}, which every step there runs with; give the steps continuing that copy its role, or set role ${resolved.role} on step "${opener}"`);
+  }
+
+  const named = path.split('.').slice(0, resolved.from + 1).join('.');
+
+  if (named === path) {
+    return failed(`step "${path}" has role ${resolved.role} but continues the copy step "${opener}" opened ${opened}, which every step there runs with; remove role from step "${path}", or set it on step "${opener}"`);
+  }
+
+  return failed(`step "${path}" gets role ${resolved.role} from step "${named}" but continues the copy step "${opener}" opened ${opened}, which every step there runs with; remove role from step "${named}", or set it on step "${opener}"`);
+}
+
+/**
  * The contract of a step in the clone `instance` opened, `instance` itself or its nearest enclosing copy: the clone's
  * commit is its base, whatever the run's, and its agent configuration; it merges nothing, as `needs` only order steps
  * there. It continues the clone's branch, held by the driver that opened it. A read-only step is refused: a clone has
@@ -730,34 +766,113 @@ export function cloneBranchOf(run: StepTree & Pick<RunState, 'id'>, path: string
 }
 
 /**
- * The team role step instance `path` runs with: the role of the clone step it opens, else of the step that opened the
- * clone of its nearest enclosing copy. Undefined when it runs in no clone, or in one opened without a role.
+ * A step on the way to a step, outermost first and that step last, with the `defaults.role` in effect where it sits:
+ * its own workflow file's, else that of the nearest file around it that sets one.
  */
-export function cloneRoleOf(run: StepTree, path: string): string | undefined {
-  const own = stepDefinitions(run)(path);
+export interface RoleLevel {
+  step: WorkflowStep;
+  defaultRole?: string;
+}
 
-  if (own && cloneOf(own)) return own.role;
-  const owner = ancestorsOf(run, path).toReversed().find((ancestor) => opensCopy(ancestor.step));
-
-  return owner && cloneOf(owner.step) ? owner.step.role : undefined;
+/** The role the last of a list of levels resolves, and where it is named: the index of a level, or `defaults`. */
+export interface ResolvedRole {
+  role: string;
+  from: number | 'defaults';
 }
 
 /**
- * The team role step instance `path` runs with: its clone's, as `cloneRoleOf` reads it, in a clone; else its own, which
- * only a prompt step that opens or continues a worktree copy may name. Undefined when it runs with the member's roles.
+ * The role the last of `levels` resolves, outside the copy it may run in: its own `role`, else the nearest enclosing
+ * workflow step's, else `defaults.role` in effect there. Undefined when none names one, so it runs with the member's.
  */
-export function stepRoleOf(run: StepTree, path: string): string | undefined {
-  return cloneBranchOwner(run, path) ? cloneRoleOf(run, path) : stepDefinitions(run)(path)?.role;
+export function resolvedRoleOf(levels: readonly RoleLevel[]): ResolvedRole | undefined {
+  for (let at = levels.length - 1; at >= 0; at -= 1) {
+    const role = levels[at]?.step.role;
+
+    if (role !== undefined) return { role, from: at };
+  }
+
+  const role = levels.at(-1)?.defaultRole;
+
+  return role === undefined ? undefined : { role, from: 'defaults' };
 }
 
-/** Whether step instance `path` opens a clone or runs in one. */
-function cloneBranchOwner(run: StepTree, path: string): boolean {
-  const own = stepDefinitions(run)(path);
+/**
+ * The copy the last of a list of levels runs in, by the index of the level that opens it, and what the copy runs with:
+ * the role its opener resolves, the member's roles without one, or no team at all in a clone that installs none.
+ */
+export interface StepCopy {
+  opener: number;
+  runsWith: { kind: 'role'; role: string } | { kind: 'member' } | { kind: 'no_team' };
+}
 
-  if (own && cloneOf(own)) return true;
-  const owner = ancestorsOf(run, path).toReversed().find((ancestor) => opensCopy(ancestor.step));
+/**
+ * The copy the last of `levels` runs in: one it opens, else the one the nearest enclosing step opened, as
+ * `planWorkspace` places it. Undefined when it runs in no copy: a step reading the member's checkout, or a `continue`
+ * step no enclosing step opens a copy for.
+ */
+export function copyOf(levels: readonly RoleLevel[]): StepCopy | undefined {
+  const last = levels.at(-1);
 
-  return owner !== undefined && cloneOf(owner.step) !== undefined;
+  if (!last) return undefined;
+  const ancestors = levels.slice(0, -1).map((level) => level.step);
+  const mode = resolveMode(last.step, ancestors);
+  const opener = mode === 'new' || mode === 'clone' ? levels.length - 1 : ancestors.findLastIndex((ancestor) => opensCopy(ancestor));
+  const opening = levels.slice(0, opener + 1);
+  const opens = opening.at(-1);
+
+  if (opener < 0 || !opens) return undefined;
+  const clone = cloneOf(opens.step);
+
+  if (clone && !('revision' in clone.team)) return { opener, runsWith: { kind: 'no_team' } };
+  const resolved = resolvedRoleOf(opening);
+
+  return { opener, runsWith: resolved ? { kind: 'role', role: resolved.role } : { kind: 'member' } };
+}
+
+/**
+ * Why the last of `levels` must not run in the copy an enclosing step opened: it resolves a role other than the one
+ * that copy runs with, which every step there runs with. Undefined when it opens its copy, runs in none, or agrees.
+ */
+export function copyRoleConflict(levels: readonly RoleLevel[]): { copy: StepCopy; resolved: ResolvedRole | undefined } | undefined {
+  const copy = copyOf(levels);
+
+  if (!copy || copy.opener === levels.length - 1 || copy.runsWith.kind === 'no_team') return undefined;
+  const resolved = resolvedRoleOf(levels);
+  const copyRole = copy.runsWith.kind === 'role' ? copy.runsWith.role : undefined;
+
+  return resolved?.role === copyRole ? undefined : { copy, resolved };
+}
+
+/** The levels to step instance `path` in the run's definitions, or none when they have no such step. */
+function roleLevelsOf(run: StepTree, path: string): RoleLevel[] {
+  const levels: RoleLevel[] = [];
+  let workflow: WorkflowDefinition | InlineWorkflow | undefined = run.definition;
+  let defaultRole = run.definition.defaults?.role;
+  let prefix = '';
+
+  for (const segment of path.split('.')) {
+    const id = parseStepPath(segment)[0]?.id ?? segment;
+    const step = workflow?.steps.find((item) => item.id === id);
+
+    if (!step) return [];
+    levels.push({ step, ...(defaultRole !== undefined ? { defaultRole } : {}) });
+    workflow = workflowRunBy(run, step, prefix);
+
+    if (workflow && isWorkflowFile(workflow)) defaultRole = workflow.defaults?.role ?? defaultRole;
+    prefix = `${prefix}${segment}.`;
+  }
+
+  return levels;
+}
+
+/**
+ * The team role step instance `path` runs with: the role of the copy it runs in, which the step that opens the copy
+ * resolves (`copyOf`). Undefined when it runs in no copy, or in one that runs with the member's roles.
+ */
+export function stepRoleOf(run: StepTree, path: string): string | undefined {
+  const runsWith = copyOf(roleLevelsOf(run, path))?.runsWith;
+
+  return runsWith?.kind === 'role' ? runsWith.role : undefined;
 }
 
 /** Whether the steps inside `step` run in a copy it opens rather than in the one around it. */

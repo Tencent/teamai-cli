@@ -181,16 +181,15 @@ name: build
 description: Review twice in one copy.
 steps:
   - id: change
+    role: review
     workspace: new
     workflow:
       steps:
         - id: first
-          role: review
           workspace: continue
           prompt: Review the change.
         - id: second
           needs: [first]
-          role: review
           workspace: continue
           prompt: Review it again.
 `, { tools: ['claude'] });
