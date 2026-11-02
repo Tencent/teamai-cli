@@ -252,13 +252,18 @@ const ReportOptionsSchema = z.object({
 /** The JSON object `workflow start --inputs` carries, with either driver. */
 export function parseInputsFlag(raw: string): { inputs: unknown } | { error: WorkflowFailure } {
   try {
-    return { inputs: JSON.parse(raw) as unknown };
+    const inputs: unknown = JSON.parse(raw);
+
+    return { inputs };
   } catch {
     return { error: { code: 'invalid_json', message: 'Could not parse --inputs as JSON' } };
   }
 }
 
-function invalid(error: z.ZodError): { error: SkillError } {
+/** A command line the skill driver refuses before it runs anything. */
+type Refused = { error: SkillError };
+
+function invalid(error: z.ZodError): Refused {
   return { error: { code: 'invalid_arguments', message: error.issues[0]?.message ?? 'invalid options', next: null } };
 }
 
@@ -279,6 +284,7 @@ function hitlOf(options: { hitl?: 'person' | 'recommend'; autoApprove?: boolean 
 }
 
 /** The resume a `--driver skill` command line asks for, apart from its run, which `resume --next` checks before it picks one. */
+// oxlint-disable-next-line teamai/no-unknown-parameters -- the parse boundary: the command's options as the CLI parser read them
 export function parseSkillResume(options: unknown, env: NodeJS.ProcessEnv): Omit<Extract<SkillCall, { kind: 'resume' }>, 'kind' | 'run'> | { error: SkillError } {
   const parsed = ResumeOptionsSchema.safeParse(options);
 
@@ -288,10 +294,18 @@ export function parseSkillResume(options: unknown, env: NodeJS.ProcessEnv): Omit
 
   if ('error' in hitl) return hitl;
 
-  return {
-    claim: next ? 'offered' : claim ? 'any' : 'lacking', confirmed: confirmed === true, ...(tools !== undefined ? { tool: tools } : {}),
-    answers: { ...(parallel !== undefined ? { parallel } : {}), ...hitl, ...(judge === false ? { judge } : {}) },
-  };
+  const answers: ResumeAnswers = {};
+
+  if (parallel !== undefined) answers.parallel = parallel;
+
+  if (hitl.hitl !== undefined) answers.hitl = hitl.hitl;
+
+  if (judge === false) answers.judge = judge;
+  const resume: Omit<Extract<SkillCall, { kind: 'resume' }>, 'kind' | 'run'> = { claim: next ? 'offered' : claim ? 'any' : 'lacking', confirmed: confirmed === true, answers };
+
+  if (tools !== undefined) resume.tool = tools;
+
+  return resume;
 }
 
 /**
@@ -322,10 +336,19 @@ export function parseSkillCall(
 
     if ('error' in hitl) return hitl;
 
-    return {
-      kind: 'start', name: raw.name, inputs, ...tool, ...(raw.timeoutMs !== undefined ? { timeoutMs: raw.timeoutMs } : {}),
-      answers: { ...(parallel !== undefined ? { parallel } : {}), confirmed: confirmed === true, ...hitl, ...(judge === false ? { judge } : {}) },
-    };
+    const answers: Extract<SkillCall, { kind: 'start' }>['answers'] = { confirmed: confirmed === true };
+
+    if (parallel !== undefined) answers.parallel = parallel;
+
+    if (hitl.hitl !== undefined) answers.hitl = hitl.hitl;
+
+    if (judge === false) answers.judge = judge;
+
+    const call: Extract<SkillCall, { kind: 'start' }> = { kind: 'start', name: raw.name, inputs, ...tool, answers };
+
+    if (raw.timeoutMs !== undefined) call.timeoutMs = raw.timeoutMs;
+
+    return call;
   }
 
   const run = RunIdSchema.safeParse(raw.run);
@@ -408,7 +431,7 @@ async function answerOf(call: SkillCall, caller: SkillContext): Promise<SkillAns
         return { error: { code: 'invalid_arguments', message: `--parallel ${call.answers.parallel} is above the most this machine runs at once, ${ceiling}.`, next: null } };
       }
 
-      return foreground(context, call.run, { kind: 'resume', claim: call.claim, confirmed: call.confirmed, answers: call.answers, ...(call.tool !== undefined ? { tool: call.tool } : {}) });
+      return foreground(context, call.run, { kind: 'resume', claim: call.claim, confirmed: call.confirmed, answers: call.answers, tool: call.tool });
     }
 
     case 'next':
@@ -440,7 +463,7 @@ const ANSWERABLE_START_REFUSALS: ReadonlySet<string> = new Set(['invalid_inputs'
 
 async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, context: SkillContext): Promise<SkillAnswer> {
   const ceiling = ceilingOf(context.config);
-  const described = await context.client.describe(call.name, { ceiling, can: canFor(undefined), checkout: context.cwd, ...(context.tool !== undefined ? { tool: context.tool } : {}) });
+  const described = await context.client.describe(call.name, { ceiling, can: canFor(undefined), checkout: context.cwd, tool: context.tool });
 
   if ('error' in described) return { error: { ...described.error, next: null } };
   const { description, judging, undeliverable } = described;
@@ -452,8 +475,8 @@ async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, c
     const attended = attendedReason(description, 'start');
 
     const { row, verdict } = describeRow({
-      needed: neededAnswers(description), ...denied, ...(undeliverable ? { undeliverable: undeliverable.message } : {}), ...why, judged: judgedBy(judging) !== undefined,
-      mode: context.mode, ...(attended !== undefined ? { attended } : {}), needsTool: needsTool(description, { tool: context.tool, judged: true }),
+      needed: neededAnswers(description), ...denied, undeliverable: undeliverable?.message, ...why, judged: judgedBy(judging) !== undefined,
+      mode: context.mode, attended, needsTool: needsTool(description, { tool: context.tool, judged: true }),
     });
 
     context.trace?.(row);
@@ -467,7 +490,7 @@ async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, c
   const check = checkStartAnswers({ description, answers: call.answers, inputs: call.inputs, ceiling, tool: context.tool });
   const judge = call.answers.judge !== false ? judgedBy(judging) : undefined;
   const attended = context.mode === 'unattended' ? attendedReason(description, 'start') : undefined;
-  const taken = startRow({ name: description.name, check, ...why, ...(attended !== undefined ? { attended } : {}), prompts: description.facts.prompts.length > 0, ...(judge !== undefined ? { judge } : {}) });
+  const taken = startRow({ name: description.name, check, ...why, attended, prompts: description.facts.prompts.length > 0, judge });
   context.trace?.(taken.row);
 
   if (taken.row === 'R25') return { error: { ...taken.error, next: null } };
@@ -477,8 +500,8 @@ async function start(call: Extract<SkillCall, { kind: 'describe' | 'start' }>, c
   const planned = taken.start;
 
   const started = await context.client.start(description.name, {
-    ...(call.inputs !== undefined ? { inputs: call.inputs } : {}), checkout: context.cwd, caller: { evidence: context.evidence, confirmed: call.answers.confirmed, mode: context.mode },
-    ...(call.timeoutMs !== undefined ? { timeout: call.timeoutMs } : {}),
+    inputs: call.inputs, checkout: context.cwd, caller: { evidence: context.evidence, confirmed: call.answers.confirmed, mode: context.mode },
+    timeout: call.timeoutMs,
   });
 
   if ('error' in started) {

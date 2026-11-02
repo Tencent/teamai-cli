@@ -571,6 +571,7 @@ for (const page of SCORER_PAGES) {
 function benchmarkFilesOf(page: string): SourceFile[] {
   return examplesOf(page).flatMap(({ source }) => {
     const relativePath = /^# (benchmarks\/\S+\.yaml)\n/.exec(source)?.[1];
+
     return relativePath === undefined ? [] : [{ relativePath, content: source }];
   });
 }
@@ -580,9 +581,11 @@ function gitlabCommandsOf(page: string): string[] {
   const JobsSchema = z.record(z.string(), z.unknown()).transform((jobs) =>
     Object.values(jobs).flatMap((job) => {
       const script = z.object({ script: z.array(z.string()) }).safeParse(job);
+
       return script.success ? [script.data.script] : [];
     }),
   );
+
   return examplesOf(page).flatMap(({ source }) => JobsSchema.parse(parseDocument(source).toJS() ?? {}).flat());
 }
 
@@ -597,6 +600,7 @@ for (const page of BENCHMARK_PAGES) {
     for (const example of examplesOf(page)) assert.deepEqual(parseDocument(example.source).errors, [], example.label);
     const files = benchmarkFilesOf(page);
     const [suite, ...others] = files.filter((file) => file.relativePath.endsWith('/suite.yaml'));
+
     if (!suite || others.length > 0) throw new Error(`${page} shows ${others.length + (suite ? 1 : 0)} suite files, not one`);
     const tasks = files.filter((file) => file !== suite);
     assert.deepEqual(
@@ -626,6 +630,7 @@ await check('shows the same benchmark files and CI commands in every language', 
     commands: ciRecipesOf(path.join(ROOT, page)).map(runCommandsOf),
     gitlab: gitlabCommandsOf(page),
   }));
+
   for (const other of others) {
     assert.deepEqual(other.files, english?.files, other.page);
     assert.deepEqual(other.commands, english?.commands, other.page);

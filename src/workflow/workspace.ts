@@ -91,7 +91,16 @@ export function branchName(runId: string, stepPath: string, pass: number): strin
  * per item, so siblings do not share a worktree.
  */
 export function resolveMode(step: WorkflowStep, ancestors: WorkflowStep[]): WorkspaceMode {
-  if (step.workspace) return typeof step.workspace === 'object' ? 'clone' : step.workspace;
+  switch (step.workspace) {
+    case undefined:
+      break;
+    case 'read-only':
+    case 'new':
+    case 'continue':
+      return step.workspace;
+    default:
+      return 'clone';
+  }
 
   if (step.command !== undefined && step.prompt === undefined && step.promptFile === undefined) return 'read-only';
 
@@ -108,7 +117,15 @@ export function resolveMode(step: WorkflowStep, ancestors: WorkflowStep[]): Work
 
 /** The clone `step` opens, or undefined when it opens none. */
 export function cloneOf(step: WorkflowStep): ClonePlace | undefined {
-  return typeof step.workspace === 'object' ? step.workspace.clone : undefined;
+  switch (step.workspace) {
+    case undefined:
+    case 'read-only':
+    case 'new':
+    case 'continue':
+      return undefined;
+    default:
+      return step.workspace.clone;
+  }
 }
 
 /**
@@ -505,7 +522,7 @@ function latestContinuation(run: RunState, session: SessionRef | undefined): Lea
     latest = next.to;
   }
 
-  return { tool: latest.tool, id: latest.id, ...(earlier.length > 0 ? { earlier } : {}) };
+  return earlier.length > 0 ? { tool: latest.tool, id: latest.id, earlier } : { tool: latest.tool, id: latest.id };
 }
 
 /**
@@ -649,7 +666,7 @@ export function planWorkspace(
 
   return {
     mode,
-    ...(sessionResult ? { session: sessionResult } : {}),
+    ...session,
     contract: {
       mode,
       base,

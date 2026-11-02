@@ -117,11 +117,16 @@ function stripExtension(segment: string): string {
  * them (`<root>/<ns>/<name>` is namespaced, `<root>/<name>` is shared). The
  * handlers' own `name` is not used: for rules it carries the namespace segment.
  */
+interface PathIdentity {
+  name: string;
+  namespace?: string;
+}
+
 function parseRelativePath(
   type: PlaceableType,
   relativePath: string,
   index: ManifestIndex,
-): { name: string; namespace?: string } {
+): PathIdentity {
   const rootSegs = rootSegmentsFor(type);
   const all = relativePath.split('/');
   const rest = all.slice(rootSegs);
@@ -210,9 +215,12 @@ async function relationsFindings(resources: ReviewResource[], readText: (p: stri
 
 /** Enumerate the resources on the branch through the same scanners pull uses. */
 async function scanResources(repoDir: string, index: ManifestIndex): Promise<ReviewResource[]> {
+  // SAFETY: the skills, rules, agents and mcp pull scanners read only repo.localPath from LocalConfig.
   const localConfig = { repo: { localPath: repoDir } } as LocalConfig;
+  // SAFETY: those scanners ignore the TeamaiConfig argument.
   const teamConfig = {} as TeamaiConfig;
   const handlerTypes = ['skills', 'rules', 'agents', 'mcp'] as const;
+  const isHandlerType = (type: PlaceableType): boolean => handlerTypes.some((handlerType) => handlerType === type);
   const items: Array<{ type: PlaceableType; item: ResourceItem }> = [];
 
   for (const type of handlerTypes) {
@@ -221,7 +229,7 @@ async function scanResources(repoDir: string, index: ManifestIndex): Promise<Rev
   }
 
   for (const type of PLACEABLE_TYPES) {
-    if ((handlerTypes as readonly PlaceableType[]).includes(type)) continue;
+    if (isHandlerType(type)) continue;
     const rootRel = repoRootFor(type);
     const root = path.join(repoDir, ...rootRel.split('/'));
 
@@ -282,7 +290,7 @@ async function scanResources(repoDir: string, index: ManifestIndex): Promise<Rev
     // (e.g. 'ops/foo' for rules/ops/foo.md), so we parse name/namespace from
     // the path instead. Hook entry ids are authoritative too — they are what
     // pull delivers by (the scan above already set them with the namespace).
-    if (((handlerTypes as readonly PlaceableType[]).includes(type) && type !== 'rules') || type === 'hooks') {
+    if ((isHandlerType(type) && type !== 'rules') || type === 'hooks') {
       return {
         type,
         name: item.name,
@@ -321,19 +329,22 @@ interface ManifestIndex {
   manifestFree: boolean;
 }
 
+/** The namespaces a role or project declares, per resource axis. */
+type DeclaredNamespaces = Partial<Record<AllProjectResourceType, readonly string[]>>;
+
 function buildManifestIndex(roles: RolesManifest | null, projects: ProjectsManifest | null): ManifestIndex {
-  const listsByAxis = new Map<AllProjectResourceType, string[][]>();
+  const listsByAxis = new Map<AllProjectResourceType, Array<readonly string[]>>();
 
   for (const axis of AXES) listsByAxis.set(axis, []);
 
-  const collect = (resources: Record<string, unknown> | undefined): void => {
+  const collect = (resources: DeclaredNamespaces | undefined): void => {
     if (!resources) return;
 
     for (const axis of AXES) {
       const list = resources[axis];
 
-      if (Array.isArray(list) && list.length > 0) {
-        listsByAxis.get(axis)!.push(list as string[]);
+      if (list && list.length > 0) {
+        listsByAxis.get(axis)!.push(list);
       }
     }
   };
@@ -342,7 +353,7 @@ function buildManifestIndex(roles: RolesManifest | null, projects: ProjectsManif
 
   for (const project of projects?.projects ?? []) collect(project.resources);
 
-  const fold = (list: string[]): Set<string> => new Set(list.map(caseFoldKey));
+  const fold = (list: readonly string[]): Set<string> => new Set(list.map(caseFoldKey));
 
   return {
     declares: (axis, namespace) => {
@@ -481,15 +492,18 @@ async function namingFindings(resources: ReviewResource[], readText: (p: string)
   return findings;
 }
 
+/** A frontmatter field that counts only when it is a string. */
+const FrontmatterTextSchema = z.string().optional().catch(undefined);
+
 /** The `name` a resource declares in its frontmatter/YAML, or null when it declares none. */
 async function frontmatterName(resource: ReviewResource, readText: (p: string) => Promise<string | null>): Promise<string | null> {
   if (resource.type === 'skills') {
     const content = await readText(path.join(resource.absolutePath, 'SKILL.md'));
 
     if (content === null) return null;
-    const name = splitFrontmatter(content).data['name'];
+    const name = FrontmatterTextSchema.parse(splitFrontmatter(content).data['name']);
 
-    return typeof name === 'string' && name.trim() !== '' ? name : null;
+    return name !== undefined && name.trim() !== '' ? name : null;
   }
 
   if (resource.type === 'agents') {
@@ -503,9 +517,9 @@ async function frontmatterName(resource: ReviewResource, readText: (p: string) =
       return parsed.ok ? parsed.spec.name : null;
     }
 
-    const name = splitFrontmatter(content).data['name'];
+    const name = FrontmatterTextSchema.parse(splitFrontmatter(content).data['name']);
 
-    return typeof name === 'string' && name.trim() !== '' ? name : null;
+    return name !== undefined && name.trim() !== '' ? name : null;
   }
 
   return null;
@@ -544,9 +558,9 @@ async function formatFindings(resources: ReviewResource[], readText: (p: string)
         });
       }
 
-      const name = data['name'];
+      const name = FrontmatterTextSchema.parse(data['name']);
 
-      if (typeof name === 'string' && !AGENT_SKILLS_NAME.test(name)) {
+      if (name !== undefined && !AGENT_SKILLS_NAME.test(name)) {
         findings.push({
           level: 'warn',
           check: 'format',
@@ -556,8 +570,8 @@ async function formatFindings(resources: ReviewResource[], readText: (p: string)
         });
       }
 
-      const description = data['description'];
-      const descriptionLength = typeof description === 'string' ? Array.from(description.trim()).length : 0;
+      const description = FrontmatterTextSchema.parse(data['description']);
+      const descriptionLength = description === undefined ? 0 : Array.from(description.trim()).length;
 
       if (descriptionLength > AGENT_SKILLS_DESCRIPTION_MAX) {
         findings.push({
@@ -569,7 +583,7 @@ async function formatFindings(resources: ReviewResource[], readText: (p: string)
         });
       }
 
-      if (typeof description !== 'string' || description.trim() === '') {
+      if (description === undefined || description.trim() === '') {
         findings.push({
           level: 'warn',
           check: 'format',
@@ -1467,10 +1481,10 @@ async function modelFindings(resources: ReviewResource[], readText: (p: string) 
       for (const { path: stepPath, step, defaultModel } of promptSteps(definition, workflows, definition.defaults?.model)) {
         const own = step.model !== undefined;
         // A run takes `defaults.model` unless the step's agent sets its own; an agent the branch does not have may set one.
-        const model = step.model ?? defaultModel;
-
         // An exact model resolves through no alias.
-        if (model === undefined || typeof model !== 'string') continue;
+        const model = z.string().safeParse(step.model ?? defaultModel).data;
+
+        if (model === undefined) continue;
 
         if (!own && step.agent !== undefined) {
           const agent = agents.find(({ resource, spec }) => spec.name === step.agent && receives(context, resource.namespace));

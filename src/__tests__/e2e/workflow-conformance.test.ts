@@ -40,7 +40,7 @@ async function runBenchmarkScenario(scenario: BenchmarkScenario, profile: Driver
         if (!isRunState(run)) throw new Error(`run ${runId} is not a run file`);
         return run;
       },
-      readEndRecord: async (runId) => fixture.endRecord(runId),
+      readEndRecord: async (runId) => fixture.endRecord(runId) as WorkflowRunRecord,
       advance: (ms) => new Promise((resolve) => { setTimeout(resolve, ms); }),
       expect,
     }, profile);

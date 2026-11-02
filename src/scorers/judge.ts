@@ -396,7 +396,7 @@ export async function runLocalJudge(input: JudgeInput, { resolveTool = resolveCl
     }
 
     const { stdinOf }: CallLaunch = LAUNCH_ADAPTERS[family].call;
-    const result = await runTool({ executable, args, cwd, env, stdin: stdinOf ? stdinOf(prompt) : prompt, timeoutMs: JUDGE_TIMEOUT_MS, detached: true, group: input.group, ...(input.signal ? { signal: input.signal } : {}) });
+    const result = await runTool({ executable, args, cwd, env, stdin: stdinOf ? stdinOf(prompt) : prompt, timeoutMs: JUDGE_TIMEOUT_MS, detached: true, group: input.group, signal: input.signal });
 
     if (family === 'codebuddy' && /Authentication required/.test(result.stdout + result.stderr)) {
       return { ok: false, code: 'judge_tool_unavailable', message: 'CodeBuddy is not signed in. Sign in with codebuddy /login or set CODEBUDDY_API_KEY, then retry, or submit this lease through another driver.', raw: result.stdout + '\n' + result.stderr };

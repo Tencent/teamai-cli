@@ -48,7 +48,7 @@ export function outputMismatch(schema: OutputSchema, value: unknown, path = 'out
     case 'json':
       return value === undefined ? `${path} is missing` : null;
     case 'workflow':
-      return typeof value === 'object' && value !== null && !Array.isArray(value) ? null : `${path} must be an object that holds a workflow definition`;
+      return isRecord(value) ? null : `${path} must be an object that holds a workflow definition`;
     default:
       return `${path} is not a supported shorthand`;
   }

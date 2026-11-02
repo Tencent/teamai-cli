@@ -12,7 +12,7 @@ import { CommitIdSchema, DeliveryReceiptSchema, UnresolvedCreateSchema } from '.
 import {
   ArchivedPassSchema, LimitsFromSchema, ReleasedTokensSchema, SessionContinuationSchema, StepCheckpointSchema, type ArchivedPass, type HitlAnswer, type StepPass, type StepState,
 } from './step-state.js';
-import type { RunState, StepLease, WorkflowDefinition, WorkflowFailure } from './types.js';
+import type { Finalizing, RunState, StepLease, WorkflowDefinition, WorkflowFailure } from './types.js';
 
 /**
  * The run state one install hands to another, at `workflows/runs/<id>/state.json` on `teamai-reports`. It carries what
@@ -282,9 +282,15 @@ const LEASE_RULES = { attempt: 'publish', revision: 'publish', driver: 'rewrite'
 // An isolated run, the only one with a clone, is never published.
 const COPY_RULES = { owner: 'drop', commit: 'publish', from: 'publish', used: 'drop', kind: 'drop' } satisfies FieldRules<NonNullable<RunState['copies']>[string]>;
 
+const FINALIZING_RULES = { outcome: 'publish', end: 'publish', failure: 'rewrite', since: 'publish', until: 'publish' } satisfies FieldRules<Finalizing>;
+
 const FAILURE_REWRITES = {
   message: () => ({ message: HANDED_FAILURE_MESSAGE }),
 } satisfies Rewrites<WorkflowFailure, typeof FAILURE_RULES>;
+
+const FINALIZING_REWRITES = {
+  failure: (finalizing) => (finalizing.failure ? { failure: handed(finalizing.failure, FAILURE_RULES, FAILURE_REWRITES) } : {}),
+} satisfies Rewrites<Finalizing, typeof FINALIZING_RULES>;
 
 const LEASE_REWRITES = {
   driver: (lease) => ({ driverKind: lease.driver.kind }),
@@ -311,9 +317,7 @@ const RUN_REWRITES = {
     ? { scorers: Object.fromEntries(Object.entries(run.scorers).map(([name, pin]) => [name, { sourceHash: pin.sourceHash }])) }
     : {}),
   failure: (run) => (run.failure ? { failure: handed(run.failure, FAILURE_RULES, FAILURE_REWRITES) } : {}),
-  finalizing: (run) => (run.finalizing ? {
-    finalizing: { ...run.finalizing, ...(run.finalizing.failure ? { failure: handed(run.finalizing.failure, FAILURE_RULES, FAILURE_REWRITES) } : {}) },
-  } : {}),
+  finalizing: (run) => (run.finalizing ? { finalizing: handed(run.finalizing, FINALIZING_RULES, FINALIZING_REWRITES) } : {}),
   steps: (run) => ({ steps: run.steps.map((step) => handed(step, STEP_RULES, STEP_REWRITES)) }),
   // settledAttempts only dedups reports on this machine; the engine counts from it when settledCount is absent.
   settledAttempts: () => ({}),

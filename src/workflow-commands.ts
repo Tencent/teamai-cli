@@ -17,9 +17,9 @@ import { callerProvenance, cancelRun, respondProvenance, respondToHitl, restartC
 import { isIsolated } from './workflow/workspace.js';
 import { localStrictCan, personAnswers, runLocalDriver, withDriverLock } from './workflow/drivers/local/local-driver.js';
 import { driverIdentity } from './driver-identity.js';
-import { getBusinessRoot, getDataHome, usesBranchWorktree, type LocalConfig, type TeamaiConfig } from './types.js';
+import { getBusinessRoot, getDataHome, usesBranchWorktree, type JsonValue, type LocalConfig, type TeamaiConfig } from './types.js';
 import { AttemptIdSchema, installOwner, readRun, RunIdSchema, runsDir } from './workflow/store.js';
-import { inProcessClient, resumeRefusal, workflowNotFound, type InvokeCaller, type NextPrepare } from './workflow/protocol.js';
+import { inProcessClient, isRefusal, resumeRefusal, workflowNotFound, type InvokeCaller, type NextPrepare } from './workflow/protocol.js';
 import { parseInputsFlag, parseSkillCall, parseSkillResume, runSkillCall, sessionDrivesRun, skillContext } from './workflow/drivers/skill/skill-driver.js';
 import { loadCachedWorkflow, namespaceConflictOf, resolveStart } from './workflow/cache.js';
 import { durationMs } from './workflow/parse.js';
@@ -44,12 +44,15 @@ function writeEnvelope(envelope: WorkflowEnvelope, secrets: Record<string, strin
     return;
   }
 
-  const done = envelope.data.done;
+  const done = DoneOutcomeSchema.safeParse(envelope.data.done);
 
-  if (done && typeof done === 'object' && ['failed', 'cancelled'].includes(String((done as { outcome?: unknown }).outcome))) {
+  if (done.success && ['failed', 'cancelled'].includes(String(done.data.outcome))) {
     process.exitCode = 1;
   }
 }
+
+/** The `done` of an envelope, whose outcome sets the exit code. */
+const DoneOutcomeSchema = z.object({ outcome: z.unknown() });
 
 /**
  * Prints what the local driver answered for a run of `config`, with why each step of a failed run failed, then, once an unattended run is done, drains the run's
@@ -60,7 +63,9 @@ async function writeDriven(config: LocalConfig, envelope: WorkflowEnvelope, secr
   writeEnvelope(envelope, secrets);
 
   if ('error' in envelope || !('done' in envelope.data)) return;
-  await explainFailedSteps(config, envelope.data.done, secrets);
+  const failed = FailedDoneSchema.safeParse(envelope.data.done);
+
+  if (failed.success) await explainFailedSteps(config, failed.data.run, secrets);
 
   if (resolveRunMode(process.env) !== 'unattended') return;
   const { Drain } = await import('./score-drain.js');
@@ -80,14 +85,10 @@ const FailedDoneSchema = z.object({ run: z.string(), outcome: z.literal('failed'
  * On stderr, why each step of a failed run failed and the commands that retry it, since the `done` envelope carries
  * only the outcome. A person who ran the local driver otherwise finds the reason only in the run file.
  */
-async function explainFailedSteps(config: LocalConfig, done: unknown, secrets: Record<string, string>): Promise<void> {
-  const failed = FailedDoneSchema.safeParse(done);
-
-  if (!failed.success) return;
-  const { run: runId } = failed.data;
+async function explainFailedSteps(config: LocalConfig, runId: string, secrets: Record<string, string>): Promise<void> {
   const run = await readRun(config, runId);
 
-  if (typeof run === 'string') return;
+  if (run === 'missing' || run === 'corrupt') return;
   const failedIds = run.steps.filter((step) => step.status === 'failed').map((step) => step.id);
   const isolated = isIsolated(run);
   // A fan-out or workflow step fails, with no failure of its own, when a step under it fails: name that step instead.
@@ -144,7 +145,7 @@ async function loadConfig(readOnly = false): Promise<{ config: LocalConfig; team
 }
 
 type JsonRead =
-  | { ok: true; value: unknown }
+  | { ok: true; value: JsonValue }
   | { ok: false; envelope: WorkflowEnvelope };
 
 function readJson(payload: string | undefined, missing: string): JsonRead {
@@ -153,7 +154,9 @@ function readJson(payload: string | undefined, missing: string): JsonRead {
   }
 
   try {
-    return { ok: true, value: JSON.parse(payload) as unknown };
+    const value: JsonValue = JSON.parse(payload);
+
+    return { ok: true, value };
   } catch {
     return { ok: false, envelope: { error: { code: 'invalid_json', message: 'Could not parse --json payload' } } };
   }
@@ -241,20 +244,21 @@ function invokeCaller(confirmed: boolean | undefined): InvokeCaller {
   return { evidence: agentEvidence(process.env), confirmed: confirmed === true, mode: resolveRunMode(process.env) };
 }
 
-function parseTools(value: string | undefined): Record<string, string> | string {
-  if (value === undefined) return {};
+function parseTools(value: string | undefined): { ok: true; tools: Record<string, string> } | { ok: false; message: string } {
   const tools: Record<string, string> = {};
+
+  if (value === undefined) return { ok: true, tools };
 
   for (const pair of value.split(',')) {
     const separator = pair.indexOf('=');
     const name = pair.slice(0, separator).trim();
     const tool = pair.slice(separator + 1).trim();
 
-    if (separator < 1 || name === '' || tool === '') return 'Pass --tools as comma-separated name=tool pairs';
+    if (separator < 1 || name === '' || tool === '') return { ok: false, message: 'Pass --tools as comma-separated name=tool pairs' };
     tools[name] = tool;
   }
 
-  return tools;
+  return { ok: true, tools };
 }
 
 /** Runs a `--driver skill` call: the skill driver answers with a describe reply, a turn, or an error naming what to run. */
@@ -324,7 +328,7 @@ async function startWorkflow(name: string, options: StartOptions): Promise<Workf
       return;
     }
 
-    await workflowSkill({ kind: 'start', name, options: rest, ...(timeoutMs !== undefined ? { timeoutMs } : {}) });
+    await workflowSkill({ kind: 'start', name, options: rest, timeoutMs });
 
     return;
   }
@@ -359,7 +363,15 @@ async function startWorkflow(name: string, options: StartOptions): Promise<Workf
     }
 
     const { description, alias, invoke, inputs } = cached.definition;
-    writeEnvelope({ data: { name: cached.definition.name, description, ...(alias ? { alias } : {}), source: cached.source, invoke: invoke ?? 'deny', inputs: inputs ?? {} } }, secrets);
+    const data: EnvelopeData = {};
+    data.name = cached.definition.name;
+    data.description = description;
+
+    if (alias) data.alias = alias;
+    data.source = cached.source;
+    data.invoke = invoke ?? 'deny';
+    data.inputs = inputs ?? {};
+    writeEnvelope({ data }, secrets);
 
     return;
   }
@@ -370,14 +382,15 @@ async function startWorkflow(name: string, options: StartOptions): Promise<Workf
     return;
   }
 
-  const tools = parseTools(options.tools);
+  const parsedTools = parseTools(options.tools);
 
-  if (typeof tools === 'string') {
-    writeEnvelope({ error: { code: 'invalid_tools', message: tools } }, secrets);
+  if (!parsedTools.ok) {
+    writeEnvelope({ error: { code: 'invalid_tools', message: parsedTools.message } }, secrets);
 
     return;
   }
 
+  const { tools } = parsedTools;
   const read = options.inputs === undefined ? { inputs: {} } : parseInputsFlag(options.inputs);
 
   if ('error' in read) {
@@ -388,8 +401,8 @@ async function startWorkflow(name: string, options: StartOptions): Promise<Workf
 
   const { inputs } = read;
   const caller = invokeCaller(options.confirmed);
-  const alone = options.driver === 'local' ? { alone: localStrictCan(config, options) } : {};
-  const started = await inProcessClient({ config, env }).start(name, { inputs, checkout: process.cwd(), caller, ...alone, ...(timeout !== undefined ? { timeout } : {}) });
+  const alone = options.driver === 'local' ? localStrictCan(config, options) : undefined;
+  const started = await inProcessClient({ config, env }).start(name, { inputs, checkout: process.cwd(), caller, alone, timeout });
 
   if ('error' in started || options.driver !== 'local') {
     writeEnvelope(started, secrets);
@@ -397,13 +410,15 @@ async function startWorkflow(name: string, options: StartOptions): Promise<Workf
     return;
   }
 
-  const runId = started.data.run;
+  const startedRun = z.string().safeParse(started.data.run);
 
-  if (typeof runId !== 'string') {
+  if (!startedRun.success) {
     writeEnvelope({ error: { code: 'run_unreadable', message: 'The new run id was missing' } }, secrets);
 
     return;
   }
+
+  const runId = startedRun.data;
 
   log.info(`Run ${runId} started. If it stops before it ends, continue it with: teamai workflow resume ${runId}${options.sandbox ? ' --sandbox' : ''}`);
   const driven = await runLocalDriver(config, runId, process.cwd(), { tools, toolPaths: teamConfig.toolPaths, autoApprove: options.autoApprove, sandbox: options.sandbox });
@@ -419,6 +434,15 @@ function interruptSignal(): AbortSignal {
   for (const name of ['SIGINT', 'SIGTERM'] as const) process.once(name, () => controller.abort(name));
 
   return controller.signal;
+}
+
+/** The data of a successful envelope. */
+type EnvelopeData = Extract<WorkflowEnvelope, { data: unknown }>['data'];
+
+/** What `workflow next --json` does besides send its payload: the payload, and the prepare it asks for. */
+interface JsonNextOptions {
+  json?: string;
+  prepare?: NextPrepare;
 }
 
 /** Refuses `--driver <kind>` on `command`, which takes only `--driver skill`, naming the kind given. */
@@ -445,10 +469,17 @@ const JsonNextOptionsSchema = z.object({
 }).superRefine((options, ctx) => {
   if (options.adopt !== undefined && options.attempt === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, message: '--adopt needs --attempt, the attempt whose place the host made' });
   else if (options.attempt !== undefined && !options.prepare) ctx.addIssue({ code: z.ZodIssueCode.custom, message: '--attempt needs --prepare' });
-}).transform((options, ctx): { json?: string; prepare?: NextPrepare } => {
-  const json = options.json !== undefined ? { json: options.json } : {};
+}).transform((options, ctx): JsonNextOptions => {
+  const next: JsonNextOptions = {};
 
-  if (options.attempt === undefined) return { ...json, ...(options.prepare ? { prepare: true } : {}) };
+  if (options.json !== undefined) next.json = options.json;
+
+  if (options.attempt === undefined) {
+    if (options.prepare) next.prepare = true;
+
+    return next;
+  }
+
   const attempt = AttemptIdSchema.safeParse(options.attempt);
 
   if (!attempt.success) {
@@ -457,7 +488,9 @@ const JsonNextOptionsSchema = z.object({
     return z.NEVER;
   }
 
-  return { ...json, prepare: { attempt: attempt.data, ...(options.adopt !== undefined ? { adopt: path.resolve(options.adopt) } : {}) } };
+  next.prepare = options.adopt !== undefined ? { attempt: attempt.data, adopt: path.resolve(options.adopt) } : { attempt: attempt.data };
+
+  return next;
 });
 
 /** The flags of `workflow report` for a driver that sends `--json`. The skill driver's flags are refused. */
@@ -511,7 +544,7 @@ export async function workflowNext(runId: string, options: {
 
   const parsed = parseNextPayload(payload.value);
 
-  if (typeof parsed === 'string') {
+  if (isRefusal(parsed)) {
     writeEnvelope({ error: { code: 'invalid_json', message: parsed } }, collectEnvSecrets());
 
     return;
@@ -581,7 +614,7 @@ export async function workflowReport(runId: string, options: { json?: string; dr
 
   const parsed = parseReport(payload.value);
 
-  if (typeof parsed === 'string') {
+  if (isRefusal(parsed)) {
     writeEnvelope({ error: { code: 'invalid_report', message: parsed } }, collectEnvSecrets());
 
     return;
@@ -658,7 +691,7 @@ export async function workflowRespond(runId: string, step: string, choice: strin
 
     const declared = parseResponsePayload(payload.value);
 
-    if (typeof declared === 'string') {
+    if (isRefusal(declared)) {
       writeEnvelope({ error: { code: 'invalid_json', message: declared } }, collectEnvSecrets());
 
       return;
@@ -670,7 +703,7 @@ export async function workflowRespond(runId: string, step: string, choice: strin
   const caller = callerProvenance(process.env, process.stdin);
   const provenance = respondProvenance(driverAnswer ? { kind: 'driver-json', driver: driverAnswer.driver, caller } : { kind: 'terminal', caller });
   await workflowControl(runId, async (config, secrets) => withIgnored(await respondToHitl(config, runId, secrets, {
-    step, choice, ...(options.note !== undefined ? { note: options.note } : {}), ...(pass !== undefined ? { pass } : {}), provenance,
+    step, choice, note: options.note, pass, provenance,
   }), driverAnswer?.ignored ?? []));
 }
 
@@ -698,7 +731,7 @@ export async function workflowPublish(runId: string, options: { sessions?: boole
   }
 
   const { secrets } = loaded;
-  const published = await publishRun(loaded.config, runId, { checkout: process.cwd(), ...(options.sessions ? { sessions: resumableSessions } : {}) });
+  const published = await publishRun(loaded.config, runId, { checkout: process.cwd(), sessions: options.sessions ? resumableSessions : undefined });
 
   if (published.ok && published.value.skipped) {
     const list = published.value.skipped.map((session) => `${session.tool} session ${session.id}`).join(', ');
@@ -764,14 +797,15 @@ export async function workflowResume(runId: string | undefined, options: ResumeO
     return;
   }
 
-  const tools = parseTools(options.tools);
+  const parsedTools = parseTools(options.tools);
 
-  if (typeof tools === 'string') {
-    writeEnvelope({ error: { code: 'invalid_tools', message: tools } }, secrets);
+  if (!parsedTools.ok) {
+    writeEnvelope({ error: { code: 'invalid_tools', message: parsedTools.message } }, secrets);
 
     return;
   }
 
+  const { tools } = parsedTools;
   const caller = invokeCaller(options.confirmed);
   const refused = await sessionDrivesRun(loaded.config, run.data) ? undefined : await resumeRefusal(loaded.config, run.data, caller, { published: true });
 
@@ -788,7 +822,7 @@ export async function workflowResume(runId: string | undefined, options: ResumeO
     if (!resumed.ok) return { error: resumed.error };
     const stored = await readRun(loaded.config, runId);
 
-    if (typeof stored !== 'object') {
+    if (stored === 'missing' || stored === 'corrupt') {
       return stored === 'missing'
         ? { error: { code: 'run_not_found', message: `Run ${runId} was not found` } }
         : { error: { code: 'run_unreadable', message: `Run ${runId} could not be read` } };
@@ -834,14 +868,15 @@ async function resumeOffered(runId: string | undefined, options: ResumeOptions):
     return;
   }
 
-  const tools = isSkill ? {} : parseTools(options.tools);
+  const parsedTools = isSkill ? parseTools(undefined) : parseTools(options.tools);
 
-  if (typeof tools === 'string') {
-    answer({ error: { code: 'invalid_tools', message: tools } });
+  if (!parsedTools.ok) {
+    answer({ error: { code: 'invalid_tools', message: parsedTools.message } });
 
     return;
   }
 
+  const { tools } = parsedTools;
   const loaded = await readyConfig();
 
   if (!('config' in loaded)) {
@@ -852,7 +887,9 @@ async function resumeOffered(runId: string | undefined, options: ResumeOptions):
 
   const evidence = agentEvidence(process.env);
   // `--driver skill` counts as an agent's, as it does for a start.
-  const caller: InvokeCaller = { ...invokeCaller(options.confirmed), ...(isSkill && evidence.kind === 'none' ? { evidence: { kind: 'skill-driver' } } : {}) };
+  const caller: InvokeCaller = invokeCaller(options.confirmed);
+
+  if (isSkill && evidence.kind === 'none') caller.evidence = { kind: 'skill-driver' };
   // The skill driver's session asks the person; the local driver asks at this terminal, which a cron job has not.
   const taker: Taker = isSkill ? { caller, driver: 'skill', hasPerson: caller.mode === 'attended' } : { caller, driver: 'local', tools, hasPerson: personAnswers(caller.mode) };
 
@@ -1198,9 +1235,10 @@ export async function benchmarkRun(suite: string, options: { driver?: string; sa
   // A team workflow without input aliases plans with the team's aliases, as teamai benchmark plan does without --aliases.
   const aliases = workflow.definition.inputs?.aliases === undefined ? {} : { aliases: memberAliases ? 'member' : 'team' };
 
-  const done = await startWorkflow(BENCHMARK_WORKFLOW, {
-    driver: options.driver ?? 'local', inputs: JSON.stringify({ suite, ...aliases }), timeout: `${preflight.timeoutMs}ms`, ...(options.sandbox ? { sandbox: true } : {}),
-  });
+  const start: StartOptions = { driver: options.driver ?? 'local', inputs: JSON.stringify({ suite, ...aliases }), timeout: `${preflight.timeoutMs}ms` };
+
+  if (options.sandbox) start.sandbox = true;
+  const done = await startWorkflow(BENCHMARK_WORKFLOW, start);
 
   const ended = done && 'data' in done ? BenchmarkDoneSchema.safeParse(done.data.done) : undefined;
 

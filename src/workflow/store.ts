@@ -5,14 +5,14 @@ import { z } from 'zod';
 import { DriverSchema } from '../driver-identity.js';
 import { readFileSafe, writeFileAtomic, writeJsonAtomic } from '../utils/fs.js';
 import { redactJson } from '../utils/redact.js';
-import { getDataHome, type LocalConfig } from '../types.js';
+import { getDataHome, type JsonValue, type LocalConfig } from '../types.js';
 import { EntryVerdictSchema } from '../scorers/entry.js';
 import { PinnedScorerSchema } from '../scorers/pin.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { ArchivedPassSchema, FailureSchema, ReleasedTokensSchema, SessionContinuationSchema, StepStateSchema, StoppedAttemptSchema } from './step-state.js';
 import type { HandoffOwner } from './snapshot.js';
 import { uniqueOutcomes, WorkOutcomeSchema, type WorkOutcome } from '../outcomes.js';
-import type { RunState, WorkflowDefinition } from './types.js';
+import type { RunState } from './types.js';
 
 /**
  * Run ids: `r` + 16 hex digits. Records are a team-wide key on the reports
@@ -129,7 +129,7 @@ export async function readAttemptOutcomes(config: LocalConfig, run: string, atte
   }));
 }
 
-function parsedJson(text: string | null): unknown {
+function parsedJson(text: string | null): JsonValue | undefined {
   try {
     return text === null ? undefined : JSON.parse(text);
   } catch {
@@ -211,28 +211,25 @@ export async function runnerAlive(config: LocalConfig, run: RunId, attempt: Atte
   return !await acquireLock(runnerLockPath(config, run, attempt), { dryRun: true });
 }
 
-function isDefinition(value: unknown): value is WorkflowDefinition {
-  if (!value || typeof value !== 'object') return false;
-  const definition = value as WorkflowDefinition;
-
-  return definition.schemaVersion === 'v1alpha1'
-    && typeof definition.name === 'string'
-    && typeof definition.description === 'string'
-    && Array.isArray(definition.steps);
-}
+/** The fields a run file must hold to be read as a run; every other field passes through as written. */
+const RunFileSchema = z.looseObject({
+  schemaVersion: z.literal('v1alpha1'),
+  id: z.string().regex(RUN_ID),
+  name: z.string(),
+  revision: z.number(),
+  status: z.enum(['running', 'succeeded', 'failed', 'cancelled']),
+  definition: z.looseObject({
+    schemaVersion: z.literal('v1alpha1'),
+    name: z.string(),
+    description: z.string(),
+    steps: z.array(z.unknown()),
+  }),
+  steps: z.array(z.unknown()),
+  settledAttempts: z.array(z.unknown()),
+});
 
 export function isRunState(value: unknown): value is RunState {
-  if (!value || typeof value !== 'object') return false;
-  const run = value as RunState;
-
-  return run.schemaVersion === 'v1alpha1'
-    && isRunId(run.id)
-    && typeof run.name === 'string'
-    && typeof run.revision === 'number'
-    && (run.status === 'running' || run.status === 'succeeded' || run.status === 'failed' || run.status === 'cancelled')
-    && isDefinition(run.definition)
-    && Array.isArray(run.steps)
-    && Array.isArray(run.settledAttempts);
+  return RunFileSchema.safeParse(value).success;
 }
 
 /** The parts of a run file the step union governs, with what a file written before them reads as. */
@@ -278,7 +275,7 @@ export async function readRuns(config: LocalConfig): Promise<RunState[]> {
   const ids = files.filter((file) => file.endsWith('.json')).map((file) => file.slice(0, -'.json'.length)).filter(isRunId);
   const runs = await Promise.all(ids.map((id) => readRun(config, id)));
 
-  return runs.filter((run): run is RunState => typeof run === 'object');
+  return runs.filter((run): run is RunState => run !== 'missing' && run !== 'corrupt');
 }
 
 const LOCK_ATTEMPTS = 40;
@@ -298,7 +295,7 @@ export type RunUpdate<T> = { status: 'done'; value: T } | { status: 'busy' } | {
 const PINNED: ReadonlySet<string> = new Set(['definition', 'workflows', 'scorers', 'admitted'] satisfies Array<keyof RunState>);
 
 /** `run` as its file holds it: each of `secrets` masked in every field but the pinned definitions. */
-function maskedRun(run: RunState, secrets: Record<string, string>): unknown {
+function maskedRun(run: RunState, secrets: Record<string, string>) {
   if (Object.keys(secrets).length === 0) return run;
 
   return Object.fromEntries(Object.entries(run).map(([key, value]) => [key, PINNED.has(key) ? value : redactJson(value, secrets)]));
@@ -367,14 +364,10 @@ export async function installOwner(config: LocalConfig): Promise<HandoffOwner> {
   return { id, user: config.username };
 }
 
+const OwnerFileSchema = z.object({ id: z.string().min(1) });
+
 function ownerId(text: string | null): string | undefined {
-  if (text === null) return undefined;
+  const owner = OwnerFileSchema.safeParse(parsedJson(text));
 
-  try {
-    const value: unknown = JSON.parse(text);
-
-    return typeof value === 'object' && value !== null && 'id' in value && typeof value.id === 'string' && value.id !== '' ? value.id : undefined;
-  } catch {
-    return undefined;
-  }
+  return owner.success ? owner.data.id : undefined;
 }

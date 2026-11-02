@@ -106,7 +106,7 @@ export const DRY_RUN_PREVIEW: ReadonlySet<string> = new Set([
  * not in DRY_RUN_PREVIEW; this list makes the choice explicit, and a test fails
  * on a command that is in neither.
  */
-export const NO_DRY_RUN_PREVIEW: Readonly<Record<string, string>> = {
+export const NO_DRY_RUN_PREVIEW = {
   digest: 'creates or refreshes the reports worktree; #900 C11',
   init: 'no preview; clones, saves config and injects hooks (single-repo: bootstraps the clone)',
   'script run': 'runs the team script, which can write files and read the terminal',
@@ -141,7 +141,7 @@ export const NO_DRY_RUN_PREVIEW: Readonly<Record<string, string>> = {
   'benchmark try': 'runs a task\'s check in a scratch clone of its starting commit',
   'benchmark plan': 'fills the commit cache with the commits the suite\'s trials read',
   'benchmark report': 'writes the run\'s benchmark record and publishes it to teamai-reports',
-};
+} satisfies Readonly<Record<string, string>>;
 
 /** The refusal printed when a command has no `--dry-run` preview. */
 export function noDryRunPreview(command: string): string {

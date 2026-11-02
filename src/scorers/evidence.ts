@@ -4,6 +4,7 @@ import path from 'node:path';
 import { canonicalJson } from '../utils/canonical-json.js';
 import type { ScorerDefinition } from './definition.js';
 import type { RunSubject } from './label.js';
+import type { JsonValue } from '../types.js';
 
 /** What the evidence could not hold, and says so instead of guessing. */
 export const EVIDENCE_GAPS = [
@@ -83,7 +84,7 @@ export function rubricPrompt(rubrics: Rubrics): string {
   ].join('\n');
 }
 
-function labelSchema(definition: ScorerDefinition): Record<string, unknown> {
+function labelSchema(definition: ScorerDefinition): JsonValue {
   return {
     type: 'object',
     required: ['label', 'reasoning'],
@@ -93,7 +94,7 @@ function labelSchema(definition: ScorerDefinition): Record<string, unknown> {
 }
 
 /** The JSON Schema of the judge's answer: a label of the scorer and the reasoning for it, or one of those per scorer of a batch. */
-export function answerSchema(rubrics: Rubrics): Record<string, unknown> {
+export function answerSchema(rubrics: Rubrics): JsonValue {
   const [only, ...others] = rubrics;
 
   if (others.length === 0) return labelSchema(only);

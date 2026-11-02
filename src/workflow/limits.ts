@@ -101,10 +101,17 @@ export function countLateTokens(run: RunState, stopped: StoppedAttempt, tokens: 
  * What a workflow step, or `for_each` item, starting at `now` records: when its timeout ends it, and where the budget of
  * what it runs counts from. What it ran before, such as an earlier pass a loop archived, is not counted again.
  */
-export function startLimits(run: RunState, state: StepState, step: WorkflowStep, now: string): { expiresAt?: string; limitsFrom: LimitsFrom } {
+export function startLimits(run: RunState, state: StepState, step: WorkflowStep, now: string): StartLimits {
   const expiresAt = ownDeadline(run, state, step, now);
+  const from: LimitsFrom = { at: now, tokens: spentUnder(run, state) };
 
-  return { ...(expiresAt !== undefined ? { expiresAt } : {}), limitsFrom: { at: now, tokens: spentUnder(run, state) } };
+  return expiresAt !== undefined ? { expiresAt, limitsFrom: from } : { limitsFrom: from };
+}
+
+/** `expiresAt`: when the step's timeout ends it, absent when nothing bounds it. */
+export interface StartLimits {
+  expiresAt?: string;
+  limitsFrom: LimitsFrom;
 }
 
 /** Where the limits of a workflow of the run count from: the run's, or those its running step recorded when it started. */
@@ -197,7 +204,13 @@ function allowanceLeft(run: RunState, granted: GrantedAllowance): Allowance {
   const tokens = granted.tokens === undefined ? undefined : granted.tokens - itemsSpent(run, state);
   const spent = state.allowanceSpent === true || (timeoutMs !== undefined && timeoutMs <= 0) || (tokens !== undefined && tokens <= 0);
 
-  return { step: granted.step, ...(timeoutMs !== undefined ? { timeoutMs } : {}), ...(tokens !== undefined ? { tokens } : {}), spent };
+  const left: Omit<Allowance, 'spent'> = { step: granted.step };
+
+  if (timeoutMs !== undefined) left.timeoutMs = timeoutMs;
+
+  if (tokens !== undefined) left.tokens = tokens;
+
+  return { ...left, spent };
 }
 
 /** The steps whose allowances, among those workflow `scope` runs inside, are spent: nothing pending under them starts. */
@@ -236,14 +249,25 @@ export function turnLimits(run: RunState, scope: Scope, step: WorkflowStep): Tur
   const tokens = least(own ? step.budget?.tokens : undefined, ...allowances.map((allowance) => allowance.tokens));
   const maxTurns = own ? step.maxTurns : undefined;
 
-  return {
-    ...(timeoutMs !== undefined ? { timeoutMs } : {}), ...(maxTurns !== undefined ? { maxTurns } : {}),
-    ...(tokens !== undefined ? { budget: { tokens } } : {}), onLimit: 'end_turn',
-  };
+  const limits: Omit<TurnLimits, 'onLimit'> = {};
+
+  if (timeoutMs !== undefined) limits.timeoutMs = timeoutMs;
+
+  if (maxTurns !== undefined) limits.maxTurns = maxTurns;
+
+  if (tokens !== undefined) limits.budget = { tokens };
+
+  return { ...limits, onLimit: 'end_turn' };
+}
+
+/** What a limit is in a lease's limits, and what of it an allowance has left. */
+interface LeasedLimit {
+  leased?: number;
+  left: (allowance: Allowance) => number | undefined;
 }
 
 /** What `limit` is in `limits`, and what of it `allowance` has left. */
-function limitOf(limit: Limit, limits: TurnLimits): { leased?: number; left: (allowance: Allowance) => number | undefined } {
+function limitOf(limit: Limit, limits: TurnLimits): LeasedLimit {
   switch (limit) {
     case 'timeout':
       return { leased: limits.timeoutMs, left: (allowance) => allowance.timeoutMs };

@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import type { LocalConfig } from '../types.js';
 import { shellQuoteValue } from '../utils/shell-profile.js';
 import { agentEvidence, type AgentEvidence } from './attempt-marker.js';
@@ -423,12 +424,13 @@ function retryInstance(run: RunState, state: StepState, now: string): void {
  */
 export function restartCommand(run: RunState): string {
   const inputs = isRecord(run.inputs) ? run.inputs : {};
+  const suite = z.string().safeParse(inputs.suite).data;
 
-  if (run.name !== 'teamai-benchmark' || typeof inputs.suite !== 'string') {
+  if (run.name !== 'teamai-benchmark' || suite === undefined) {
     return `teamai workflow start ${run.name}${Object.keys(inputs).length > 0 ? ` --inputs ${shellQuoteValue(JSON.stringify(inputs))}` : ''}`;
   }
 
-  return `teamai benchmark run ${inputs.suite}${inputs.aliases === 'member' ? ' --member-aliases' : ''}`;
+  return `teamai benchmark run ${suite}${inputs.aliases === 'member' ? ' --member-aliases' : ''}`;
 }
 
 /** Retries a step and its dependency cone, retaining pass history and reopening a settled run. */

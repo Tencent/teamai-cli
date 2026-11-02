@@ -22,7 +22,7 @@ import {
 } from './snapshot.js';
 import { takeOver, type UnleasedStep } from './step-state.js';
 import { installOwner, isRunId, readRun, updateRun } from './store.js';
-import { workflowRunBy, type RunState, type RunStatus, type WorkflowDefinition, type WorkflowFailure, type WorkflowSource, type WorkflowStep } from './types.js';
+import { workflowRunBy, type RunPublication, type RunState, type RunStatus, type WorkflowDefinition, type WorkflowFailure, type WorkflowSource, type WorkflowStep } from './types.js';
 import { branchName, isIsolated, stepMode, type LeaseSession, type SessionRef } from './workspace.js';
 import { fetchMissingCommits, git, reconcileCopy } from './worktree.js';
 
@@ -53,7 +53,10 @@ export type HandoffError =
   | { code: 'branch_diverged'; branch: string; expected: string; actual: string; message: string }
   | { code: 'isolated_run'; message: string };
 
-export type Result<T> = { ok: true; value: T } | { ok: false; error: HandoffError };
+/** Why a handoff did not happen. */
+type Refusal = { ok: false; error: HandoffError };
+
+export type Result<T> = { ok: true; value: T } | Refusal;
 
 /** A lease the run held when it was published; whoever claims the run releases it. */
 export interface InFlightLease {
@@ -87,7 +90,7 @@ function ok<T>(value: T): Result<T> {
   return { ok: true, value };
 }
 
-function refused(error: HandoffError): { ok: false; error: HandoffError } {
+function refused(error: HandoffError): Refusal {
   return { ok: false, error };
 }
 
@@ -254,7 +257,7 @@ export async function publishRun(
   if (!pinned.ok) return pinned;
 
   const drained = await publishPendingRecords(config, { run: runId })
-    .catch((error: unknown): RecordDelivery => ({ state: 'pending', reason: error instanceof Error ? error.message : String(error) }));
+    .catch((cause: unknown): RecordDelivery => ({ state: 'pending', reason: cause instanceof Error ? cause.message : String(cause) }));
 
   if (drained.state === 'pending') return refused(recordsPending(runId, drained.reason));
   const shared = options.sessions ? await shareSessions(config, runId, options.sessions(stored), checkout) : undefined;
@@ -405,10 +408,17 @@ function writeFailed(runId: string, result: { status: string; reason?: string })
 }
 
 function receipt(runId: string, publication: PublishReceipt['publication'], snapshot: RunSnapshot, shared?: SessionShare): PublishReceipt {
-  return {
+  const answer: PublishReceipt = {
     run: runId, publication, stateRevision: snapshot.stateRevision, offered: snapshot.offered !== undefined, inFlight: inFlight(snapshot),
-    ...(shared ? { sessions: shared.archived, ...(shared.skipped.length > 0 ? { skipped: shared.skipped } : {}) } : {}),
   };
+
+  if (shared) {
+    answer.sessions = shared.archived;
+
+    if (shared.skipped.length > 0) answer.skipped = shared.skipped;
+  }
+
+  return answer;
 }
 
 /**
@@ -550,9 +560,9 @@ async function decidePublish(
   if (seen !== origin.stateRevision) return { value: refused(stateConflict(local.id, origin.stateRevision, seen)) };
 
   if (holdsState(origin, body.value, handoff)) {
-    const write = local.publication?.pending === undefined ? undefined : published(local, { stateRevision: seen });
+    const value = ok<PublishVerdict>({ kind: 'unchanged', snapshot: origin });
 
-    return { value: ok({ kind: 'unchanged', snapshot: origin }), ...(write ? { write } : {}) };
+    return local.publication?.pending === undefined ? { value } : { value, write: published(local, { stateRevision: seen }) };
   }
 
   const snapshot = header(local.id, owner, origin.ownedAt, origin.stateRevision + 1, body.value, handoff);
@@ -568,7 +578,13 @@ async function decidePublish(
 function handoffOf(local: RunState, repository: string | undefined, origin: RunSnapshot | 'absent', now: string): Handoff {
   const offered = local.status !== 'running' || repository === undefined ? undefined : origin !== 'absent' && origin.offered ? origin.offered : { at: now };
 
-  return { ...(repository !== undefined ? { repository } : {}), ...(offered ? { offered } : {}) };
+  const handoff: Handoff = {};
+
+  if (repository !== undefined) handoff.repository = repository;
+
+  if (offered) handoff.offered = offered;
+
+  return handoff;
 }
 
 /** Whether `origin` holds `body`, and says `handoff` of it. */
@@ -632,7 +648,7 @@ async function acknowledge(
 export async function publishRunEnd(config: LocalConfig, runId: string, checkout: string): Promise<HandoffError | undefined> {
   const stored = await readRun(config, runId);
 
-  if (typeof stored !== 'object' || stored.publication === undefined || stored.status === 'running') return undefined;
+  if (stored === 'missing' || stored === 'corrupt' || stored.publication === undefined || stored.status === 'running') return undefined;
   const publishResult = await publishRun(config, runId, { checkout });
 
   if (publishResult.ok) return undefined;
@@ -659,7 +675,7 @@ export interface Definitions {
 export async function claimRun(config: LocalConfig, runId: string, options: { checkout: string }): Promise<Result<ClaimReceipt>> {
   const stored = isRunId(runId) ? await readRun(config, runId) : 'missing';
 
-  if (typeof stored === 'object' && isIsolated(stored)) return refused(isolatedUnclaimable(runId));
+  if (stored !== 'missing' && stored !== 'corrupt' && isIsolated(stored)) return refused(isolatedUnclaimable(runId));
 
   return acquire(config, runId, await publishedRun(config, runId), { take: 'any', checkout: options.checkout });
 }
@@ -681,7 +697,7 @@ export async function claimedAway(config: LocalConfig, runId: string): Promise<H
   if (!usesBranchWorktree(config)) return undefined;
   const local = await readRun(config, runId);
 
-  if (typeof local !== 'object' || local.publication === undefined) return undefined;
+  if (local === 'missing' || local === 'corrupt' || local.publication === undefined) return undefined;
   const text = await readReportsOriginFile(getReportsDir(config), snapshotPath(runId));
   const snapshot = text === null ? undefined : parseSnapshot(text, runId);
 
@@ -845,7 +861,7 @@ export async function carriedRun(config: LocalConfig, runId: string, { published
 export async function reconcileTakenCopies(config: LocalConfig, runId: string, active: string): Promise<WorkflowFailure | undefined> {
   const run = await readRun(config, runId);
 
-  if (typeof run !== 'object' || !run.publication?.reconcileCopies || run.status !== 'running') return undefined;
+  if (run === 'missing' || run === 'corrupt' || !run.publication?.reconcileCopies || run.status !== 'running') return undefined;
   const recorded = Object.entries(run.copies ?? {}).flatMap(([branch, copy]) => (copy.commit === undefined ? [] : [{ branch, commit: copy.commit }]));
   const fetched = await fetchMissingCommits(active, { run: runId, commits: recorded.map((copy) => copy.commit) });
 
@@ -1195,20 +1211,20 @@ async function install(
   const cached = await pinScorers(config, Object.keys(publishedScorers ?? {}));
   const scorers = Object.fromEntries(Object.entries(cached).filter(([name, pin]) => publishedScorers?.[name]?.sourceHash === pin.sourceHash));
 
+  const publication: RunPublication = { stateRevision: snapshot.stateRevision };
+
+  if (Object.values(handed.copies).some((copy) => copy.commit !== undefined)) publication.reconcileCopies = true;
+  const pinned: Pick<RunState, 'workflows' | 'scorers'> = {};
+
+  if (Object.keys(definitions.workflows).length > 0) pinned.workflows = definitions.workflows;
+
+  if (Object.keys(scorers).length > 0) pinned.scorers = scorers;
+  const copied: Pick<RunState, 'copies'> = {};
+
+  if (Object.keys(handed.copies).length > 0) copied.copies = handed.copies;
+
   const run: RunState = {
-    ...body,
-    id: runId,
-    definition: definitions.definition,
-    ...(Object.keys(definitions.workflows).length > 0 ? { workflows: definitions.workflows } : {}),
-    ...(Object.keys(scorers).length > 0 ? { scorers } : {}),
-    steps: handed.steps,
-    settledAttempts: [],
-    ...(Object.keys(handed.copies).length > 0 ? { copies: handed.copies } : {}),
-    checkout,
-    publication: {
-      stateRevision: snapshot.stateRevision,
-      ...(Object.values(handed.copies).some((copy) => copy.commit !== undefined) ? { reconcileCopies: true } : {}),
-    },
+    ...body, id: runId, definition: definitions.definition, ...pinned, steps: handed.steps, settledAttempts: [], ...copied, checkout, publication,
   };
 
   const installed = await updateRun(config, runId, secrets, async (local) => {

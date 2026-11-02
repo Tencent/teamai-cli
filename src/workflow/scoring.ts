@@ -108,6 +108,7 @@ function issueText(issues: z.ZodIssue[]): string {
   return `${issue.path.join('.') || 'payload'}: ${issue.message}`;
 }
 
+// oxlint-disable-next-line teamai/no-unknown-parameters -- the payload as a driver sent it; this is where it is parsed
 export function parseJudgeRequest(value: unknown): JudgeRequest | string {
   const parsed = NextPayloadSchema.safeParse(value);
 
@@ -115,9 +116,16 @@ export function parseJudgeRequest(value: unknown): JudgeRequest | string {
   const { can, ...driver } = parsed.data.driver;
   const { running, run, canTakeLease } = parsed.data;
 
-  return { driver, judge: can.judge, running, ...(run !== undefined ? { run } : {}), ...(canTakeLease !== undefined ? { canTakeLease } : {}) };
+  const request: JudgeRequest = { driver, judge: can.judge, running };
+
+  if (run !== undefined) request.run = run;
+
+  if (canTakeLease !== undefined) request.canTakeLease = canTakeLease;
+
+  return request;
 }
 
+// oxlint-disable-next-line teamai/no-unknown-parameters -- the payload as a driver sent it; this is where it is parsed
 export function parseJudgeSubmission(value: unknown): JudgeSubmission | string {
   const parsed = SubmitPayloadSchema.safeParse(value);
 
@@ -154,7 +162,7 @@ export async function localRuns(config: LocalConfig): Promise<RunState[]> {
   const ids = files.filter((file) => file.endsWith('.json')).map((file) => file.slice(0, -'.json'.length)).filter(isRunId);
   const runs = await Promise.all(ids.map((id) => readRun(config, id)));
 
-  return runs.filter((run): run is RunState => typeof run === 'object').sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  return runs.filter((run): run is RunState => run !== 'missing' && run !== 'corrupt').sort((left, right) => left.createdAt.localeCompare(right.createdAt));
 }
 
 /** The runs a judge may still be asked about: running ones, those `kept` names, and those changed inside the entry window. */
@@ -205,13 +213,17 @@ async function scoreEntries(config: LocalConfig, now: string, teamBatch: boolean
         labels: labels.filter((label) => sameSubject(label, scorer, pin.sourceHash, subject)),
         attempts: attempts.get(id) ?? [],
         subjectChangedAt: run.updatedAt,
-        ...(request ? { requestedAt: request.requestedAt } : {}),
+        requestedAt: request?.requestedAt,
         now,
       });
 
       const batch = request?.batch ?? batchesScorers({ step: stepDefinitions(run)(subject.step)?.scorers?.batch, workflow: workflowBatch(run, subject.step), team: teamBatch });
 
-      return [{ source: 'workflow', id, run, scorer, pin, definition, subject, state, batch, ...(request ? { requestedAt: request.requestedAt } : {}) }];
+      const entry: RunEntry = { source: 'workflow', id, run, scorer, pin, definition, subject, state, batch };
+
+      if (request) entry.requestedAt = request.requestedAt;
+
+      return [entry];
     };
 
     const requested = requests.filter((request) => request.subject.runId === run.id)
@@ -313,8 +325,12 @@ function leaseCwdOf(config: LocalConfig, lease: Lease): string | undefined {
   }
 }
 
-function rubricOf(pin: PinnedScorer): { sourceHash: string; teamRevision?: string } {
-  return { sourceHash: pin.sourceHash, ...(pin.teamRevision ? { teamRevision: pin.teamRevision } : {}) };
+function rubricOf(pin: PinnedScorer): ScoreLabel['rubric'] {
+  const rubric: ScoreLabel['rubric'] = { sourceHash: pin.sourceHash };
+
+  if (pin.teamRevision) rubric.teamRevision = pin.teamRevision;
+
+  return rubric;
 }
 
 /** What a lease keeps of `pin`: the revision and file it came from. Its text is kept by hash. */
@@ -337,6 +353,13 @@ function rubricsOf<T>(members: readonly [T, ...T[]], definitionOf: (member: T) =
   return [definitionOf(head), ...tail.map(definitionOf)];
 }
 
+/** The parts of a lease answer that are there only when they apply: where to judge, and how the lease was taken. */
+interface LeaseExtras {
+  cwd?: string;
+  batched?: true;
+  handedBack?: true;
+}
+
 async function leaseAnswer(config: LocalConfig, lease: Lease) {
   const members: readonly [Member | SessionMember, ...Array<Member | SessionMember>] = lease.members;
   const [{ entry, attempt }] = members;
@@ -345,6 +368,14 @@ async function leaseAnswer(config: LocalConfig, lease: Lease) {
   const prompt = path.join(dir, 'prompt.md');
   const ref = leaseRefOf(attempt);
   const batched = members.length > 1;
+  const located: Pick<LeaseExtras, 'cwd'> = {};
+
+  if (cwd) located.cwd = cwd;
+  const marks: Pick<LeaseExtras, 'batched' | 'handedBack'> = {};
+
+  if (batched) marks.batched = true;
+
+  if (lease.source === 'workflow' && lease.handedBack) marks.handedBack = true;
 
   return {
     ref,
@@ -358,10 +389,9 @@ async function leaseAnswer(config: LocalConfig, lease: Lease) {
     prompt,
     answer: { schema: answerSchema(rubricsOf(members, (member) => member.entry.definition)) },
     expiresAt: attempt.expiresAt,
-    ...(cwd ? { cwd } : {}),
+    ...located,
     submit: `teamai score --lease ${ref} --submit --stdin`,
-    ...(batched ? { batched: true } : {}),
-    ...(lease.source === 'workflow' && lease.handedBack ? { handedBack: true } : {}),
+    ...marks,
   };
 }
 
@@ -436,7 +466,12 @@ export async function takeJudgeLease(config: LocalConfig, request: JudgeRequest,
 }
 
 /** The named session `entries` asks for, or the workflow entry ids it keeps to; neither when it asks for no entries. */
-function entrySources(entries: JudgeRequest['entries']): { named?: NamedSession; ids?: readonly string[] } {
+interface EntrySources {
+  named?: NamedSession;
+  ids?: readonly string[];
+}
+
+function entrySources(entries: JudgeRequest['entries']): EntrySources {
   if (entries === undefined) return {};
 
   switch (entries.source) {
@@ -647,6 +682,9 @@ async function takeOneLease(config: LocalConfig, request: JudgeRequest, now: str
       const attempt = newAttemptId();
       const tried = [{ entry, choice: chosen.choice }, ...mates];
       const batch = mates.length > 0 ? tried.map((member) => member.entry.id) : undefined;
+      const batched: Pick<LeasedSessionAttempt, 'batch'> = {};
+
+      if (batch) batched.batch = batch;
 
       const taken = ({ entry: member, choice }: (typeof tried)[number]) => ({
         attempt,
@@ -659,7 +697,7 @@ async function takeOneLease(config: LocalConfig, request: JudgeRequest, now: str
         judge: { ...choice, isolation: request.judge.isolation, access: request.judge.access ?? 'full' },
         leasedAt: now,
         expiresAt: later(now, LEASE_TTL_MS),
-        ...(batch ? { batch } : {}),
+        ...batched,
       });
 
       if (!prepared.read.ok) {
@@ -691,19 +729,24 @@ async function takeOneLease(config: LocalConfig, request: JudgeRequest, now: str
       const chosen = chooseJudgeModel(aliases, entry.definition, request.judge.tools);
       const attempt = newAttemptId();
 
-      const leased = (member: RunEntry, choice: JudgeChoice, batch?: string[]): LeasedRunAttempt => ({
-        status: 'leased',
-        attempt,
-        entry: member.id,
-        scorer: member.scorer,
-        rubric: sourceOf(member.pin),
-        subject: member.subject,
-        driver: request.driver,
-        judge: { ...choice, isolation: request.judge.isolation, access: request.judge.access ?? 'full' },
-        leasedAt: now,
-        expiresAt: later(now, LEASE_TTL_MS),
-        ...(batch ? { batch } : {}),
-      });
+      const leased = (member: RunEntry, choice: JudgeChoice, batch?: string[]): LeasedRunAttempt => {
+        const record: LeasedRunAttempt = {
+          status: 'leased',
+          attempt,
+          entry: member.id,
+          scorer: member.scorer,
+          rubric: sourceOf(member.pin),
+          subject: member.subject,
+          driver: request.driver,
+          judge: { ...choice, isolation: request.judge.isolation, access: request.judge.access ?? 'full' },
+          leasedAt: now,
+          expiresAt: later(now, LEASE_TTL_MS),
+        };
+
+        if (batch) record.batch = batch;
+
+        return record;
+      };
 
       if (!chosen.ok) {
         skipped.push({ scorer: entry.scorer, subject: entry.subject, code: chosen.code, message: chosen.message });
@@ -785,6 +828,19 @@ async function takeOneLease(config: LocalConfig, request: JudgeRequest, now: str
   }
 }
 
+type Notices = Partial<Pick<Extract<TakenLease, { kind: 'lease' }>, 'closed' | 'skipped'>>;
+
+/** The entries that closed and the ones skipped, each only when there are any. */
+function noticesOf(taken: Extract<TakenLease, { kind: 'lease' | 'idle' }>): Notices {
+  const notices: Notices = {};
+
+  if (taken.closed.length) notices.closed = taken.closed;
+
+  if (taken.skipped.length) notices.skipped = taken.skipped;
+
+  return notices;
+}
+
 /**
  * `teamai score --next`: the lease `takeJudgeLease` took, or `idle` with counts, the entries that closed meanwhile, and
  * why the driver's tools cannot judge the ones it skipped.
@@ -794,9 +850,9 @@ export async function nextJudgeLease(config: LocalConfig, request: JudgeRequest,
 
   switch (taken.kind) {
     case 'lease':
-      return ok({ lease: taken.lease, ...(taken.closed.length ? { closed: taken.closed } : {}), ...(taken.skipped.length ? { skipped: taken.skipped } : {}) });
+      return ok({ lease: taken.lease, ...noticesOf(taken) });
     case 'idle':
-      return ok({ idle: { open: taken.open, leased: taken.leased }, ...(taken.closed.length ? { closed: taken.closed } : {}), ...(taken.skipped.length ? { skipped: taken.skipped } : {}) });
+      return ok({ idle: { open: taken.open, leased: taken.leased }, ...noticesOf(taken) });
     case 'busy':
       return error('busy', 'The judge attempts are locked by another process. Ask again.');
     default: {
@@ -872,14 +928,16 @@ type Returned = { kind: 'returned'; status: 'released' | 'failed' };
 
 type SubmittedLease = SettledLease | Returned;
 
-function labelAnswer(config: LocalConfig, attempt: SucceededAttempt): Record<string, unknown> {
+type LabelAnswer = Pick<SucceededAttempt, 'scorer' | 'subject' | 'labelId'> & Pick<SucceededAttempt['verdict'], 'label' | 'score' | 'passed'> & { reasoning: string };
+
+function labelAnswer(config: LocalConfig, attempt: SucceededAttempt): LabelAnswer {
   const { label, score, passed, version } = attempt.verdict;
 
   return { scorer: attempt.scorer, subject: attempt.subject, label, score, passed, labelId: attempt.labelId, reasoning: reasoningPath(config, version) };
 }
 
 /** `{ label }` for a lease of one scorer, `{ labels }` in the step's order for a batch. */
-function labelsAnswer(config: LocalConfig, attempts: readonly SucceededAttempt[]): Record<string, unknown> {
+function labelsAnswer(config: LocalConfig, attempts: readonly SucceededAttempt[]): { label: LabelAnswer } | { labels: LabelAnswer[] } {
   const [only, ...more] = attempts;
 
   return only && more.length === 0 ? { label: labelAnswer(config, only) } : { labels: attempts.map((attempt) => labelAnswer(config, attempt)) };
@@ -933,7 +991,7 @@ async function leaseMembers(config: LocalConfig, attempt: AttemptRecord, ref: st
     if (!record || !isRunAttempt(record)) return error('lease_unknown', `Judge lease ${ref} is not on this machine.`);
     const rubric = await leasedRubric(config, record);
 
-    if (typeof run !== 'object') return error('lease_unknown', `Run ${record.subject.runId}, which judge lease ${ref} was for, is not on this machine.`);
+    if (run === 'missing' || run === 'corrupt') return error('lease_unknown', `Run ${record.subject.runId}, which judge lease ${ref} was for, is not on this machine.`);
 
     if (!rubric) return error('lease_unknown', `The rubric of scorer ${record.scorer} that judge lease ${ref} was taken with is not on this machine.`);
     members.push({ attempt: record, ...rubric });
@@ -941,7 +999,7 @@ async function leaseMembers(config: LocalConfig, attempt: AttemptRecord, ref: st
 
   const [head, ...tail] = members;
 
-  if (!head || typeof run !== 'object') return error('lease_unknown', `Judge lease ${ref} is not on this machine.`);
+  if (!head || run === 'missing' || run === 'corrupt') return error('lease_unknown', `Judge lease ${ref} is not on this machine.`);
 
   return { source: 'workflow', run, members: [head, ...tail] };
 }
@@ -1086,12 +1144,14 @@ function usageOnHead(submission: JudgeSubmission, members: readonly [Judged, ...
 
 async function publishLabels(config: LocalConfig, labelled: Labelled): Promise<SettledLease> {
   // Publishing is best effort: a label that does not reach teamai-reports now stays pending for the next pull.
-  const delivery = await LabelStore.publish(config).catch((e: unknown) => ({ state: 'pending' as const, reason: e instanceof Error ? e.message : String(e) }));
+  const delivery = await LabelStore.publish(config).catch((cause: unknown) => ({ state: 'pending' as const, reason: cause instanceof Error ? cause.message : String(cause) }));
 
   if (delivery.state === 'pending') log.debug(`[scores] Labels stay pending: ${delivery.reason}`);
 
   return { ...labelled, published: delivery.state === 'published' };
 }
+
+type WorkflowLabel = Extract<ScoreLabel, { source: 'workflow' }>;
 
 /** What the local judge that ran could do, the isolation it measured, and the model and effort it ran with. */
 type LocalRun = Pick<Extract<ScoreLabel['judge'], { kind: 'model' }>, 'access' | 'isolation' | 'model' | 'effort'>;
@@ -1102,7 +1162,13 @@ function judgeIdentity(attempt: AttemptRecord, submission: JudgeSubmission, loca
   const model = observedModel({ ...ran.model, alias: attempt.judge.alias });
   const effort = ran.effort && observedEffort(ran.effort);
 
-  return { ...(model ? { model } : {}), ...(effort ? { effort } : {}) };
+  const identity: Pick<LocalRun, 'model' | 'effort'> = {};
+
+  if (model) identity.model = model;
+
+  if (effort) identity.effort = effort;
+
+  return identity;
 }
 
 /** What a verdict's label holds on any subject: the scorer, its rubric, the label chosen, and the judge. */
@@ -1116,7 +1182,11 @@ interface AttemptLabel {
 }
 
 function toSucceeded(attempt: LeasedAttempt, settled: { settledAt: string; usage?: JudgeUsage; labelId: string; verdict: SucceededAttempt['verdict'] }): SucceededAttempt {
-  return { ...attempt, settledAt: settled.settledAt, ...(settled.usage ? { usage: settled.usage } : {}), status: 'succeeded', labelId: settled.labelId, verdict: settled.verdict };
+  const spent: Pick<SucceededAttempt, 'usage'> = {};
+
+  if (settled.usage) spent.usage = settled.usage;
+
+  return { ...attempt, settledAt: settled.settledAt, ...spent, status: 'succeeded', labelId: settled.labelId, verdict: settled.verdict };
 }
 
 /**
@@ -1138,7 +1208,14 @@ async function labelJudgeLease(
           // The pass's mode, or the one every pass a workflow step ran agrees on: never the judge's.
           const runMode = agreedRunMode(judged.map((pass) => pass.runMode));
 
-          return { label: { scorer, rubric, label, score, passed, source: 'workflow', subject: attempt.subject, ...(used ? { used } : {}), judge, ...(runMode ? { runMode } : {}), scoredAt } };
+          const reportedUse: Pick<WorkflowLabel, 'used'> = {};
+
+          if (used) reportedUse.used = used;
+          const mode: Pick<WorkflowLabel, 'runMode'> = {};
+
+          if (runMode) mode.runMode = runMode;
+
+          return { label: { scorer, rubric, label, score, passed, source: 'workflow', subject: attempt.subject, ...reportedUse, judge, ...mode, scoredAt } };
         } });
       case 'session':
         return labelMembers({ config, submission, now, local, members: lease.members, labelOf: (attempt, verdict) => ({
@@ -1189,21 +1266,24 @@ async function labelMembers<T extends LeasedAttempt>({ config, submission, now, 
   }
 
   const settle = async ({ judged: { attempt, pin }, ...verdict }: (typeof verdicts.verdicts)[number]): Promise<SucceededAttempt> => {
+    const judge: Extract<ScoreLabel['judge'], { kind: 'model' }> = {
+      kind: 'model',
+      tool,
+      ...judgeIdentity(attempt, submission, local),
+      ...usageOnHead(submission, members, attempt),
+      isolation,
+      access: local?.access ?? attempt.judge.access,
+    };
+
+    if (members.length > 1) judge.batched = true;
+
     const { label, prompt, sessionId } = labelOf(attempt, {
       scorer: attempt.scorer,
       rubric: rubricOf(pin),
       label: verdict.label.value,
       score: verdict.label.score,
       passed: verdict.passed,
-      judge: {
-        kind: 'model',
-        tool,
-        ...judgeIdentity(attempt, submission, local),
-        ...usageOnHead(submission, members, attempt),
-        isolation,
-        access: local?.access ?? attempt.judge.access,
-        ...(members.length > 1 ? { batched: true as const } : {}),
-      },
+      judge,
       scoredAt: now,
     });
 
@@ -1358,7 +1438,10 @@ async function closeSessionLease(config: LocalConfig, members: JudgedMembers<Ses
 
       if (current?.status !== 'leased' || current.source !== 'session') continue;
       const spent = attempt === members[0].attempt ? sumUsage(current.usage, usage) : current.usage;
-      await AttemptStore.write(config, { ...current, ...(spent ? { usage: spent } : {}), status: 'failed', code, settledAt: now });
+      const charged: Pick<AttemptRecord, 'usage'> = {};
+
+      if (spent) charged.usage = spent;
+      await AttemptStore.write(config, { ...current, ...charged, status: 'failed', code, settledAt: now });
     }
   }), (outcome) => outcome.status === 'busy');
 
@@ -1413,7 +1496,7 @@ export async function judgeLease(
     if (refused) return refused;
   }
 
-  const result = await runLocalJudge({ tool: attempt.judge.tool, model: attempt.judge.model, evidence, schema: answerSchema(rubrics), isolation, ...(group !== undefined ? { group } : {}), ...(signal ? { signal } : {}) });
+  const result = await runLocalJudge({ tool: attempt.judge.tool, model: attempt.judge.model, evidence, schema: answerSchema(rubrics), isolation, group, signal });
   const verdicts = result.ok ? verdictsOf(members, (member) => member.definition, result.answer) : undefined;
 
   if (!result.ok || !verdicts?.ok) {
@@ -1460,6 +1543,7 @@ export async function judgeLease(
 }
 
 /** `teamai score --lease <ref>` with `value` as its payload: `judgeLease` for the driver it names. */
+// oxlint-disable-next-line teamai/no-unknown-parameters -- the payload as a driver sent it; parsed below
 export async function runJudgeLease(config: LocalConfig, ref: string, value: unknown, options: { clock?: () => string; group?: string } = {}): Promise<WorkflowEnvelope> {
   const parsed = z.object({ driver: DriverSchema }).safeParse(value);
 
@@ -1522,7 +1606,7 @@ export type RunJudging =
 export async function judgeRunEntries(config: LocalConfig, runId: string, cwd: string, signal?: AbortSignal): Promise<RunJudging> {
   const run = await readRun(config, runId);
 
-  if (typeof run !== 'object') return { kind: 'settled', count: 0 };
+  if (run === 'missing' || run === 'corrupt') return { kind: 'settled', count: 0 };
   const open = (await verdictEntries(config, run, new Date().toISOString())).filter(isUnsettled);
 
   if (open.length === 0) return { kind: 'settled', count: 0 };
@@ -1569,7 +1653,10 @@ export async function judgeRunEntries(config: LocalConfig, runId: string, cwd: s
     const { subject } = taken.lease;
     log.warn(`The judge of ${'step' in subject ? subject.step : subject.sessionId} failed, so its entry settles unscored: ${judged.error.message}`);
     const code = JUDGE_FAILURES.find((failure) => failure === judged.error.code);
-    const failed = await submitJudgeLease(config, taken.lease.ref, { driver, outcome: 'failed', ...(code ? { code } : {}) });
+    const failure: Extract<JudgeSubmission, { outcome: 'failed' }> = { driver, outcome: 'failed' };
+
+    if (code) failure.code = code;
+    const failed = await submitJudgeLease(config, taken.lease.ref, failure);
 
     if ('error' in failed) return failed.error.code === 'busy' ? { kind: 'busy' } : skipped(failed.error.message);
     count += 1;
@@ -1603,7 +1690,7 @@ export async function scoreOnDemand(config: LocalConfig, demand: ScoreDemand, no
   if (!scoring.ok) return error('scoring_settings_invalid', scoring.reason);
   const run = isRunId(demand.run) ? await readRun(config, demand.run) : 'missing';
 
-  if (typeof run !== 'object') {
+  if (run === 'missing' || run === 'corrupt') {
     const ids = (await localRuns(config)).toReversed().slice(0, 10).map((known) => known.id);
 
     return error('run_not_found', `Run ${demand.run} is not on this machine. ${ids.length > 0 ? `Runs here, newest first: ${ids.join(', ')}.` : 'This scope has no runs.'}`);
@@ -1640,7 +1727,10 @@ export async function scoreOnDemand(config: LocalConfig, demand: ScoreDemand, no
 
   const recorded = await AttemptStore.locked(config, async () => {
     for (const { scorer, pin } of asked) {
-      await AttemptStore.writeRequest(config, { entry: entryIdOf(scorer, subject), scorer, subject, pin, requestedAt: now, ...(demand.batch ? { batch: true } : {}) });
+      const request: ScoreRequest = { entry: entryIdOf(scorer, subject), scorer, subject, pin, requestedAt: now };
+
+      if (demand.batch) request.batch = true;
+      await AttemptStore.writeRequest(config, request);
     }
   });
 

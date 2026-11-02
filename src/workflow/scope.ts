@@ -2,7 +2,7 @@
  * Scopes: the workflows inside a run, and the step instances directly in each. The instances of a scope are read from an
  * index kept per `run.steps` array, so settling one scope does not scan every step of the run.
  */
-import { branchNames, type ExpressionStep } from './expression.js';
+import { branchNames, type ExpressionContext, type ExpressionStep } from './expression.js';
 import { isItem } from './fan-out.js';
 import { passesOf, previousPass, stepLoops, type StepLoops } from './loop.js';
 import { parseStepPath } from './step-path.js';
@@ -16,7 +16,7 @@ export interface Scope {
   /** What every step path inside it starts with: '' at the top, `<workflow step path>.` inside a sub-workflow. */
   prefix: string;
   definition: WorkflowDefinition | InlineWorkflow;
-  inputs: Record<string, unknown> | undefined;
+  inputs: RunState['inputs'] | undefined;
   /** For an inline workflow: the enclosing workflows' steps, by id, which its own steps hide. */
   outer?: Record<string, ExpressionStep>;
   loops: StepLoops;
@@ -48,7 +48,11 @@ export interface GrantedAllowance {
 /** The allowances inside the workflow `state` runs: those around it, then its own under `on_limit: end_turn`. */
 function allowancesOf(scope: Scope, state: StepState, step: WorkflowStep): Pick<Scope, 'allowances'> {
   if (step.onLimit !== 'end_turn') return { allowances: scope.allowances };
-  const own = { step: state.id, ...(step.timeout !== undefined ? { timeoutMs: step.timeout } : {}), ...(step.budget ? { tokens: step.budget.tokens } : {}) };
+  const own: GrantedAllowance = { step: state.id };
+
+  if (step.timeout !== undefined) own.timeoutMs = step.timeout;
+
+  if (step.budget) own.tokens = step.budget.tokens;
 
   return { allowances: [...scope.allowances, own] };
 }
@@ -209,7 +213,7 @@ export function localId(scope: Scope, state: StepState): string {
   return segment?.id ?? state.id;
 }
 
-function itemOf(scope: Scope, state: StepState | undefined): { item?: unknown } {
+function itemOf(scope: Scope, state: StepState | undefined): Pick<Scope, 'item'> {
   if (state && isItem(state)) return { item: state.item };
 
   return Object.hasOwn(scope, 'item') ? { item: scope.item } : {};
@@ -225,16 +229,33 @@ export function contextOf(scope: Scope, states: StepState[], reader?: StepState)
  * and, in an inline workflow, the enclosing steps its own steps do not hide. For `reader`, a step it reads in the
  * previous pass is that pass.
  */
-function expressionSteps(scope: Scope, states: StepState[], reader?: StepState): Record<string, ExpressionStep> {
+function expressionSteps(scope: Scope, states: StepState[], reader?: StepState): ExpressionContext['steps'] {
   const previous = reader ? scope.loops.previous(localId(scope, reader)) : new Set<string>();
 
-  return { ...scope.outer, ...Object.fromEntries(states.map((step) => [localId(scope, step), previous.has(localId(scope, step)) ? previousPass(step) : {
-    ...(settled(step) ? { outcome: visibleOutcome(step) } : {}),
-    ...('end' in step && step.end !== undefined ? { end: step.end } : {}),
-    ...('outputs' in step && step.outputs !== undefined ? { outputs: step.outputs } : {}),
-    ...('results' in step && step.results !== undefined ? { results: step.results } : {}),
-    ...('results' in step && branchNames(step.results) ? { branches: branchNames(step.results) } : {}),
-    ...(step.answer ? { choice: step.answer.choice, note: step.answer.note } : {}),
-    passes: passesOf(step),
-  }])) };
+  return { ...scope.outer, ...Object.fromEntries(states.map((step) => [localId(scope, step), previous.has(localId(scope, step)) ? previousPass(step) : currentStep(step)])) };
+}
+
+/** What `steps.<id>` reads of a step instance in its current pass. */
+function currentStep(step: StepState): ExpressionStep {
+  const current: ExpressionStep = {};
+
+  if (settled(step)) current.outcome = visibleOutcome(step);
+
+  if ('end' in step && step.end !== undefined) current.end = step.end;
+
+  if ('outputs' in step && step.outputs !== undefined) current.outputs = step.outputs;
+
+  if ('results' in step && step.results !== undefined) current.results = step.results;
+  const branches = 'results' in step ? branchNames(step.results) : undefined;
+
+  if (branches) current.branches = branches;
+
+  if (step.answer) {
+    current.choice = step.answer.choice;
+    current.note = step.answer.note;
+  }
+
+  current.passes = passesOf(step);
+
+  return current;
 }

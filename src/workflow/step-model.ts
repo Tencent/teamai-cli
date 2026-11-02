@@ -24,6 +24,7 @@ import type { WorkflowFailure } from './types.js';
  * every driver passes it to the tool as is.
  */
 export const StepModelSchema = z.object({ name: z.string().min(1), effort: z.string().min(1).optional() }).strict();
+
 export type StepModel = z.infer<typeof StepModelSchema>;
 
 /**
@@ -87,7 +88,8 @@ function definitionModel(agent: AgentSpec | undefined, tool: ToolName): string |
 
 export async function chooseStepModel(request: StepModelRequest): Promise<StepModelChoice> {
   const { step, tool, agent } = request;
-  if (typeof request.model === 'object') return { ok: true, by: 'step', model: request.model };
+
+  if (request.model instanceof Object) return { ok: true, by: 'step', model: request.model };
   const defined = definitionModel(agent, tool);
 
   const chosen: { origin: ModelOrigin; value: string } | undefined = request.model !== undefined

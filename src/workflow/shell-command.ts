@@ -32,35 +32,46 @@ export async function runShellCommand({ command, cwd, env, signal, expiresAt, st
   stderr?: 'keep' | 'forward';
 }): Promise<{ exit: CommandExit; output: string; errors: string }> {
   const remaining = expiresAt === undefined ? undefined : Math.max(0, Date.parse(expiresAt) - Date.now());
+
   if (remaining === 0) return { exit: { kind: 'timeout' }, output: '', errors: '' };
   const detached = process.platform !== 'win32';
   const child = spawn(command, { cwd, env, shell: true, windowsHide: true, detached, stdio: ['ignore', 'pipe', 'pipe'] });
   let output = '';
   let errors = '';
+
   const exited = new Promise<CommandExit>((resolve) => {
     const keep = (chunk: string): void => { output = (output + chunk).slice(-OUTPUT_KEPT); };
+
     child.stdout.setEncoding('utf8').on('data', keep);
     child.stderr.setEncoding('utf8').on('data', (chunk: string) => {
       errors = (errors + chunk).slice(-OUTPUT_KEPT);
+
       if (stderr === 'forward') process.stderr.write(chunk);
       else keep(chunk);
     });
     child.on('error', (error) => resolve({ kind: 'spawn_failed', message: error.message }));
     child.on('close', (code, by) => resolve(by === null ? { kind: 'exited', code: code ?? 1 } : { kind: 'signal', signal: by }));
   });
+
   const stop = stopProcess(child, exited, detached);
   const onAbort = (): void => { void stop(); };
+
   signal?.addEventListener('abort', onAbort, { once: true });
+
   if (signal?.aborted) onAbort();
   let timedOut = false;
+
   // A longer delay fires at once, so a deadline that far away is left to the caller's own deadline handling.
   const timer = remaining === undefined || remaining > MAX_TIMER_DELAY
     ? undefined
     : setTimeout(() => { timedOut = true; void stop(); }, remaining);
+
   try {
     const exit = await exited;
+
     // Settles once the whole group is gone, so nothing the command started still runs.
     if (timedOut || signal?.aborted) await stop();
+
     return { exit: timedOut ? { kind: 'timeout' } : exit, output, errors };
   } finally {
     clearTimeout(timer);

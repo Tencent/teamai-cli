@@ -36,6 +36,7 @@ export type Host = {
 /** `env` without any variable that moves a tool's home: under an install's home, each tool's home is the install's. */
 function withoutToolHomeVariables(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const names = new Set(Object.keys(TOOLS).filter(isToolId).flatMap(homeVariables));
+
   return Object.fromEntries(Object.entries(env).filter(([name]) => !names.has(name)));
 }
 

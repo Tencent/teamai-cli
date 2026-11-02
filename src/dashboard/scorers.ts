@@ -51,14 +51,26 @@ export function parseScorerQuery(params: URLSearchParams): ScorerQuery {
 
   const { window, scorer, cohort, groupBy, commit, group, failing } = parsed.data;
 
-  return {
-    windowDays: window ?? 30,
-    ...(scorer ? { scorer } : {}),
-    ...(cohort ? { cohort } : {}),
-    ...(groupBy ? { groupBy } : {}),
-    ...(commit ? { commit: commit.toLowerCase() } : {}),
-    ...(group || failing ? { failing: { ...(group ? { group } : {}), ...(failing ? { limit: failing } : {}) } } : {}),
-  };
+  const query: ScorerQuery = { windowDays: window ?? 30 };
+
+  if (scorer) query.scorer = scorer;
+
+  if (cohort) query.cohort = cohort;
+
+  if (groupBy) query.groupBy = groupBy;
+
+  if (commit) query.commit = commit.toLowerCase();
+
+  if (group || failing) {
+    const listed: NonNullable<ScorerQuery['failing']> = {};
+
+    if (group) listed.group = group;
+
+    if (failing) listed.limit = failing;
+    query.failing = listed;
+  }
+
+  return query;
 }
 
 /** What a run record holds that the view reads: each pass's agent, and whether the run was isolated (#1180). */
@@ -100,7 +112,7 @@ async function runAgents(config: LocalConfig, runId: string, { isLocal, team }: 
   const [local, published] = await Promise.all([isLocal ? readRun(config, runId) : undefined, team.record(runId)]);
   const isolatedRecord = (record: PublishedRecord): boolean => record.isolated === true;
 
-  if (typeof local === 'object') {
+  if (local !== undefined && local !== 'missing' && local !== 'corrupt') {
     const record = buildEndRecord(local, local.driver, '');
 
     return { source: 'local', isIsolated: isolatedRecord(record) || (published !== undefined && isolatedRecord(published)), agents: read(record.steps) };
@@ -352,7 +364,13 @@ export async function scorerResults({ config, query, now = new Date(), events, r
     if (label.source === 'session') {
       const sessionName = names.get(sessionKey(label.subject.platform, label.subject.sessionId));
 
-      return [{ label, author, ...label.agent ? { agent: label.agent } : {}, ...sessionName ? { sessionName } : {} }];
+      const entry: ViewedLabel = { label, author };
+
+      if (label.agent) entry.agent = label.agent;
+
+      if (sessionName) entry.sessionName = sessionName;
+
+      return [entry];
     }
 
     const run = runs.get(label.subject.runId);
@@ -360,7 +378,13 @@ export async function scorerResults({ config, query, now = new Date(), events, r
     if (run?.isIsolated) return [];
     const agent = run?.agents.get(passKey(label.subject.step, label.subject.pass));
 
-    return [{ label, author, ...agent ? { agent } : {}, ...run ? { runSource: run.source } : {} }];
+    const entry: ViewedLabel = { label, author };
+
+    if (agent) entry.agent = agent;
+
+    if (run) entry.runSource = run.source;
+
+    return [entry];
   });
 
   const { commit, ...rest } = query;
@@ -375,5 +399,9 @@ export async function scorerResults({ config, query, now = new Date(), events, r
     rubricLabelsOf(config, viewed.map(({ label }) => label)),
   ]);
 
-  return ScorerResults.of({ labels: viewed, query: { ...rest, ...split ? { split } : {} }, now, rubricLabels, ...reminders ? { reminders } : {} });
+  const resultsQuery: ScorerResultsQuery = { ...rest };
+
+  if (split) resultsQuery.split = split;
+
+  return ScorerResults.of({ labels: viewed, query: resultsQuery, now, rubricLabels, reminders });
 }

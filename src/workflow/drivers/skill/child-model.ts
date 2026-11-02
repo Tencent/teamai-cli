@@ -2,7 +2,7 @@
 import { isAgentToolId } from '../../../tools.js';
 import type { LocalConfig, TeamaiConfig } from '../../../types.js';
 import type { ToolId } from '../../../tools.js';
-import { chooseStepModel, loadDeployedAgent, type StepModel } from '../../step-model.js';
+import { StepModelSchema, chooseStepModel, loadDeployedAgent, type StepModel, type StepModelRequest } from '../../step-model.js';
 import type { WorkflowFailure } from '../../types.js';
 import type { ModelPick } from './skill-state.js';
 
@@ -23,8 +23,10 @@ export async function pickChildModel(input: {
   agent?: string;
 }): Promise<{ ok: true; model: ModelPick } | { ok: false; failure: WorkflowFailure }> {
   const { config, toolPaths, step, tool, model, agent } = input;
+  const exact = StepModelSchema.safeParse(model);
+
   // An exact model needs no tool to resolve it for.
-  if (typeof model === 'object') return { ok: true, model: { by: 'step', ...model } };
+  if (exact.success) return { ok: true, model: { by: 'step', ...exact.data } };
   // Agent files and model aliases exist only for a tool teamai renders agents for.
   const agentTool = tool !== undefined && isAgentToolId(tool) ? tool : undefined;
   const definition = agent !== undefined && agentTool !== undefined ? await loadDeployedAgent({ tool: agentTool, name: agent, config, toolPaths }) : null;
@@ -41,14 +43,25 @@ export async function pickChildModel(input: {
     return { ok: false, failure: { code: 'model_unavailable', message: `Step "${step}" needs model ${asked}, and teamai resolves no model for ${tool}, the coding session's tool.` } };
   }
 
-  const chosen = await chooseStepModel({
-    step, tool: agentTool, config, ...(model !== undefined ? { model } : {}), ...(defaultModel !== undefined ? { defaultModel } : {}), ...(definition !== null ? { agent: definition.spec } : {}),
-  });
+  const request: StepModelRequest = { step, tool: agentTool, config };
+
+  if (model !== undefined) request.model = model;
+
+  if (defaultModel !== undefined) request.defaultModel = defaultModel;
+
+  if (definition !== null) request.agent = definition.spec;
+  const chosen = await chooseStepModel(request);
 
   if (!chosen.ok) return chosen;
 
   if (chosen.model === undefined || chosen.by === 'definition') return { ok: true, model: { by: 'definition' } };
   const { name, effort } = chosen.model;
 
-  return { ok: true, model: { by: chosen.by, name, ...(effort !== undefined ? { effort } : {}), ...(chosen.alias !== undefined ? { alias: chosen.alias } : {}) } };
+  const pick: ModelPick = { by: chosen.by, name };
+
+  if (effort !== undefined) pick.effort = effort;
+
+  if (chosen.alias !== undefined) pick.alias = chosen.alias;
+
+  return { ok: true, model: pick };
 }

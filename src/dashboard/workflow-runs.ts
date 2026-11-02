@@ -88,7 +88,7 @@ const RecordSchema: z.ZodType<ReadRecord> = z.object({
     pass: z.number(),
     outcome: z.enum(['success', 'failed', 'timeout', 'cancelled']).optional(),
     tokens: TokensSchema.optional(),
-    agent: z.unknown().transform(readRecordedAgent).optional(),
+    agent: z.unknown().transform((agent) => readRecordedAgent(agent)).optional(),
     answer: z.object({ choice: z.string(), channel: z.string() }).optional(),
     outcomes: z.array(z.unknown()).optional().catch(undefined),
   })).optional(),

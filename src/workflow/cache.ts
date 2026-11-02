@@ -2,12 +2,14 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { z } from 'zod';
 import { loadLocalConfigForScope } from '../config.js';
 import { syncScorerDefinitions, type SyncScorerOptions, type SyncScorerResult } from '../scorers/cache.js';
 import { log } from '../utils/logger.js';
 import { pathExists, readFileSafe, remove, writeJsonAtomic } from '../utils/fs.js';
 import { isSafeNamespaceSegment } from '../manifest-schema.js';
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
+import type { ResourceNamespaces } from '../roles.js';
 import { resolveNamespacedItems, type NamespaceCandidate } from '../namespace-resolver.js';
 import {
   getBusinessRoot,
@@ -18,7 +20,6 @@ import {
   type LocalConfig,
 } from '../types.js';
 import { LineCounter, parseDocument } from 'yaml';
-import { z } from 'zod';
 import { formatDiagnostic, parseWorkflow, promptFileDiagnostics, stepField } from './parse.js';
 import { locate, valueNode, type WorkflowFiles } from './parse-context.js';
 import { stepWorkflow, type CachedWorkflow, type OutputSchema, type ResolvedWorkflow, type WorkflowDefinition, type WorkflowDiagnostic, type WorkflowStep } from './types.js';
@@ -123,6 +124,15 @@ function cachePath(config: LocalConfig, name: string): string {
   return path.join(cacheDir(config), `${name}.json`);
 }
 
+/** The fields a cache file must hold to be read as workflow `name`; `syncWorkflows` writes the rest. */
+const CacheFileSchema = z.looseObject({ definition: z.looseObject({ schemaVersion: z.literal('v1alpha1'), name: z.string() }) });
+
+function isCachedWorkflow(value: unknown, name: string): value is CachedWorkflow {
+  const cached = CacheFileSchema.safeParse(value);
+
+  return cached.success && cached.data.definition.name === name;
+}
+
 async function readCache(config: LocalConfig, name: string): Promise<CachedWorkflow | null> {
   const raw = await readFileSafe(cachePath(config, name));
 
@@ -131,12 +141,7 @@ async function readCache(config: LocalConfig, name: string): Promise<CachedWorkf
   try {
     const value: unknown = JSON.parse(raw);
 
-    if (!value || typeof value !== 'object') return null;
-    const cached = value as CachedWorkflow;
-
-    if (cached.definition?.schemaVersion !== 'v1alpha1' || cached.definition.name !== name) return null;
-
-    return cached;
+    return isCachedWorkflow(value, name) ? value : null;
   } catch {
     return null;
   }
@@ -341,22 +346,22 @@ export async function syncWorkflowDefinitions(
     }
   }
 
-  let resourceNamespaces: Awaited<ReturnType<typeof resolveResourceNamespaces>> = null;
+  let activeNamespaces: Partial<ResourceNamespaces> | null = null;
 
   if (hasNamespaced) {
     try {
-      resourceNamespaces = await resolveResourceNamespaces(config);
+      activeNamespaces = (await resolveResourceNamespaces(config))?.activeNamespaces ?? null;
     } catch {
       // A manifest exists but cannot be read: be conservative. Treating
       // every on-disk namespace as active (the null fallback) would cache
       // an inactive namespace's workflow as runnable for this member.
       // An empty resolution means "no namespace is active".
-      resourceNamespaces = { activeNamespaces: {} } as Awaited<ReturnType<typeof resolveResourceNamespaces>>;
+      activeNamespaces = {};
     }
   }
 
-  const activeWorkflows = resourceNamespaces?.activeNamespaces.workflows ?? (resourceNamespaces ? [] : null);
-  const activePrompts = resourceNamespaces?.activeNamespaces.prompts ?? (resourceNamespaces ? [] : null);
+  const activeWorkflows = activeNamespaces?.workflows ?? (activeNamespaces ? [] : null);
+  const activePrompts = activeNamespaces?.prompts ?? (activeNamespaces ? [] : null);
   // Manifest-free: discover prompt namespaces from disk so a namespaced
   // prompt directory is still found even without a roles/projects manifest.
   let effectiveActivePrompts: readonly string[] | null = activePrompts;
@@ -469,10 +474,12 @@ export async function syncWorkflowDefinitions(
       ? revision?.revision
       : undefined;
 
-    checked.push({
-      stem, relativePath, content, definition: resolved.definition, sourceHash: hash.digest('hex'),
-      ...(teamRevision ? { teamRevision } : {}), promptFileLocations: parsed.promptFileLocations,
-    });
+    const candidate: Candidate = {
+      stem, relativePath, content, definition: resolved.definition, sourceHash: hash.digest('hex'), promptFileLocations: parsed.promptFileLocations,
+    };
+
+    if (teamRevision) candidate.teamRevision = teamRevision;
+    checked.push(candidate);
   }
 
   const kept = new Map<string, CachedWorkflow | null>();
@@ -541,10 +548,15 @@ export async function syncWorkflowDefinitions(
     const teamRevision = file.teamRevision ?? (previous?.sourceHash === file.sourceHash ? previous.teamRevision : undefined);
 
     if (options.dryRun || (previous?.sourceHash === file.sourceHash && previous.teamRevision === teamRevision)) continue;
+
+    const pinned: Pick<CachedWorkflow, 'teamRevision'> = {};
+
+    if (teamRevision) pinned.teamRevision = teamRevision;
+
     await writeJsonAtomic(cachePath(config, file.definition.name), {
       relativePath: file.relativePath,
       sourceHash: file.sourceHash,
-      ...(teamRevision ? { teamRevision } : {}),
+      ...pinned,
       content: file.content,
       definition: file.definition,
       validatedAt: new Date().toISOString(),
@@ -658,14 +670,26 @@ export function dropsKeptVersion(diagnostics: WorkflowDiagnostic[]): boolean {
  * with the path of the step that runs each one, such as `group.run-b`.
  * Every walk across files, at pull and at start, follows references through here.
  */
-export function workflowsRunBy(definition: { steps: WorkflowStep[] }, prefix = ''): Array<{ step: string; workflow: string; with?: Record<string, unknown> }> {
+export function workflowsRunBy(definition: { steps: WorkflowStep[] }, prefix = ''): WorkflowRun[] {
   return definition.steps.flatMap((step) => {
     const child = stepWorkflow(step);
 
     if (child?.kind === 'inline') return workflowsRunBy(child.workflow, `${prefix}${step.id}.`);
 
-    return child?.kind === 'named' ? [{ step: `${prefix}${step.id}`, workflow: child.name, ...(step.with ? { with: step.with } : {}) }] : [];
+    if (child?.kind !== 'named') return [];
+    const run: WorkflowRun = { step: `${prefix}${step.id}`, workflow: child.name };
+
+    if (step.with) run.with = step.with;
+
+    return [run];
   });
+}
+
+/** A step that runs a workflow file by name: the step's path, the workflow's name, and the inputs the step passes it. */
+export interface WorkflowRun {
+  step: string;
+  workflow: string;
+  with?: WorkflowStep['with'];
 }
 
 /** The workflows a cached workflow runs, by name, and one hash over its sources and theirs. */
@@ -683,7 +707,7 @@ type TreeFailure = { code: 'workflow_recursion' | 'workflow_not_found' | 'invali
  * fit. Every declared input is required, so the names alone tell, before any value renders: a run that would fail
  * there, after the steps before it already ran, never starts.
  */
-function withMismatch(parent: string, { step, with: passed }: { step: string; with?: Record<string, unknown> }, child: WorkflowDefinition): TreeFailure | undefined {
+function withMismatch(parent: string, { step, with: passed }: Pick<WorkflowRun, 'step' | 'with'>, child: WorkflowDefinition): TreeFailure | undefined {
   const names = Object.keys(passed ?? {});
   const declared = Object.keys(child.inputs ?? {});
   const extra = names.filter((name) => !declared.includes(name));
@@ -716,9 +740,12 @@ function sameType(left: OutputSchema, right: OutputSchema): boolean {
       const names = Object.keys(left.fields);
 
       return names.length === Object.keys(right.fields).length
-        && names.every((name) => { const other = right.fields[name]; const own = left.fields[name];
+        && names.every((name) => {
+          const other = right.fields[name];
+          const own = left.fields[name];
 
- return own !== undefined && other !== undefined && sameType(own, other); });
+          return own !== undefined && other !== undefined && sameType(own, other);
+        });
     }
 
     default: {
@@ -735,7 +762,7 @@ function sameType(left: OutputSchema, right: OutputSchema): boolean {
  * for teamai's own definition of that workflow, so a value of the default's type would fail `child` at the step,
  * after the steps before it ran. Team workflows are matched by input name only.
  */
-function retypedInputs(parent: WorkflowDefinition, { step, workflow, with: passed }: { step: string; workflow: string; with?: Record<string, unknown> }, child: WorkflowDefinition): string[] {
+function retypedInputs(parent: WorkflowDefinition, { step, workflow, with: passed }: WorkflowRun, child: WorkflowDefinition): string[] {
   const shipped = DefaultWorkflows.named(workflow)?.definition;
 
   if (DefaultWorkflows.named(parent.name)?.definition !== parent || !shipped || shipped === child) return [];
@@ -759,7 +786,7 @@ export async function loadWorkflowTree(
   const hashes: Array<[string, string]> = [];
   const revisions: Array<string | undefined> = [cached.teamRevision];
 
-  const retyped = (parent: WorkflowDefinition, run: { step: string; workflow: string; with?: Record<string, unknown> }, child: WorkflowDefinition): TreeFailure | undefined => {
+  const retyped = (parent: WorkflowDefinition, run: WorkflowRun, child: WorkflowDefinition): TreeFailure | undefined => {
     const [reason] = retypedInputs(parent, run, child);
 
     return reason === undefined ? undefined : { code: 'invalid_inputs', message: `Workflow "${parent.name}" ${reason}. Make the two agree, then pull again.` };
@@ -812,14 +839,21 @@ export async function loadWorkflowTree(
     ? cached.teamRevision
     : undefined;
 
-  if (hashes.length === 0) return { workflows, sourceHash: cached.sourceHash, ...(teamRevision ? { teamRevision } : {}) };
+  if (hashes.length === 0) return treeWithRevision({ workflows, sourceHash: cached.sourceHash }, teamRevision);
   const hash = createHash('sha256').update(cached.sourceHash);
 
   for (const [name, sourceHash] of hashes.sort(([left], [right]) => left.localeCompare(right))) {
     hash.update('\0').update(name).update('\0').update(sourceHash);
   }
 
-  return { workflows, sourceHash: hash.digest('hex'), ...(teamRevision ? { teamRevision } : {}) };
+  return treeWithRevision({ workflows, sourceHash: hash.digest('hex') }, teamRevision);
+}
+
+/** `tree`, with `teamRevision` when every workflow in it is from that team commit. */
+function treeWithRevision(tree: WorkflowTree, teamRevision: string | undefined): WorkflowTree {
+  if (teamRevision) tree.teamRevision = teamRevision;
+
+  return tree;
 }
 
 /** A workflow, every workflow it runs, and one hash over all of their sources. */
@@ -868,7 +902,7 @@ export async function withTeamRevision<T>(
   const present = (): Promise<boolean> => git.raw(['cat-file', '-e', `${revision}^{commit}`]).then(() => true, () => false);
 
   if (!await present()) {
-    const fetched = await git.fetch(['origin']).then(() => '', (error: unknown) => (error instanceof Error ? error.message.trim() : String(error)));
+    const fetched = await git.fetch(['origin']).then(() => '', (cause: unknown) => (cause instanceof Error ? cause.message.trim() : String(cause)));
 
     if (!await present()) {
       return { failed: `the team repo at ${repoRoot} does not have it, even after fetching origin${fetched ? ` (${fetched})` : ''}` };

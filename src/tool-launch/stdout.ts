@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { JsonValueSchema, type JsonValue } from '../types.js';
 import type { LaunchAdapterId } from './adapters.js';
 
 export interface TokenUsage {
@@ -20,64 +21,93 @@ export interface ToolReport {
   unfinished?: boolean;
 }
 
-function finiteNumber(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
-}
+/** A count a tool printed, or nothing when the field holds something else. */
+const Count = z.number().optional().catch(undefined);
+
+/** A label a tool printed (a model, a session id, an event type), or nothing when the field holds something else. */
+const Label = z.string().optional().catch(undefined);
+
+/** Claude's `result` and `system` events: the fields its report reads. */
+const ClaudeEvent = z.object({
+  type: Label,
+  subtype: Label,
+  model: Label,
+  session_id: Label,
+  result: JsonValueSchema.optional(),
+  usage: JsonValueSchema.optional(),
+  total_cost_usd: Count,
+});
+
+const ClaudeUsage = z.object({ input_tokens: Count, output_tokens: Count, cache_read_input_tokens: Count });
 
 function claudeStdout(stdout: string): ToolReport | null {
-  const events = jsonRecords(stdout);
+  const events = jsonRecords(stdout).flatMap((record) => {
+    const event = ClaudeEvent.safeParse(record);
+
+    return event.success ? [event.data] : [];
+  });
+
   // The `init` event names the session's model. `modelUsage` keys every model the session billed, a side call's and a
   // subagent's included, so it cannot tell which one ran the step (#1176).
   const init = events.find((event) => event.type === 'system' && event.subtype === 'init');
-  const model = typeof init?.model === 'string' ? init.model : undefined;
+  const model = init?.model;
   const record = events.findLast((event) => event.type === 'result');
 
   if (!record) {
     // A Claude stopped before its final result still named its model and session as it started.
-    const session = typeof init?.session_id === 'string' ? init.session_id : undefined;
+    const session = init?.session_id;
 
     if (model === undefined && session === undefined) return null;
+    const unfinished: ToolReport = { unfinished: true };
 
-    return { unfinished: true, ...(model !== undefined ? { model } : {}), ...(session !== undefined ? { session } : {}) };
+    if (model !== undefined) unfinished.model = model;
+
+    if (session !== undefined) unfinished.session = session;
+
+    return unfinished;
   }
 
-  const usage = record.usage as Record<string, unknown> | undefined;
-  let output: unknown;
+  const report: ToolReport = {};
+  const result = z.string().safeParse(record.result);
 
-  if (typeof record.result === 'string') {
+  if (result.success) {
     try {
-      output = JSON.parse(record.result) as unknown;
+      const output: unknown = JSON.parse(result.data);
+
+      if (output !== undefined) report.output = output;
     } catch {
-      output = undefined;
+      // A result that is not JSON reports no output.
     }
   } else if (record.result !== undefined) {
-    output = record.result;
+    report.output = record.result;
   }
 
-  const cost = finiteNumber(record.total_cost_usd);
+  if (model !== undefined) report.model = model;
 
-  return {
-    ...(output !== undefined ? { output } : {}),
-    ...(model !== undefined ? { model } : {}),
-    ...(typeof record.session_id === 'string' ? { session: record.session_id } : {}),
-    ...(cost !== undefined && cost >= 0 ? { cost: { amount: cost, unit: 'USD' } } : {}),
-    ...(record.subtype === 'error_max_turns' ? { reachedMaxTurns: true } : {}),
-    ...(usage ? {
-      tokens: {
-        ...(finiteNumber(usage.input_tokens) !== undefined ? { input: finiteNumber(usage.input_tokens) } : {}),
-        ...(finiteNumber(usage.output_tokens) !== undefined ? { output: finiteNumber(usage.output_tokens) } : {}),
-        ...(finiteNumber(usage.cache_read_input_tokens) !== undefined ? { cachedInput: finiteNumber(usage.cache_read_input_tokens) } : {}),
-      },
-    } : {}),
-  };
+  if (record.session_id !== undefined) report.session = record.session_id;
+
+  if (record.total_cost_usd !== undefined && record.total_cost_usd >= 0) report.cost = { amount: record.total_cost_usd, unit: 'USD' };
+
+  if (record.subtype === 'error_max_turns') report.reachedMaxTurns = true;
+
+  if (record.usage) {
+    const usage = ClaudeUsage.safeParse(record.usage).data;
+    const tokens: TokenUsage = {};
+
+    if (usage?.input_tokens !== undefined) tokens.input = usage.input_tokens;
+
+    if (usage?.output_tokens !== undefined) tokens.output = usage.output_tokens;
+
+    if (usage?.cache_read_input_tokens !== undefined) tokens.cachedInput = usage.cache_read_input_tokens;
+    report.tokens = tokens;
+  }
+
+  return report;
 }
 
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
-}
-
-function jsonRecords(stdout: string): Record<string, unknown>[] {
-  const records: Record<string, unknown>[] = [];
+/** The JSON object on each line of `stdout` that holds one; a tool may print non-JSON lines beside its events. */
+function jsonRecords(stdout: string): JsonValue[] {
+  const records: JsonValue[] = [];
 
   for (const line of stdout.split(/\r?\n/)) {
     const trimmed = line.trim();
@@ -85,9 +115,9 @@ function jsonRecords(stdout: string): Record<string, unknown>[] {
     if (!trimmed.startsWith('{')) continue;
 
     try {
-      const value = asRecord(JSON.parse(trimmed) as unknown);
+      const value = JsonValueSchema.safeParse(JSON.parse(trimmed));
 
-      if (value) records.push(value);
+      if (value.success) records.push(value.data);
     } catch {
       // A tool may print a non-JSON line beside its JSON events.
     }
@@ -96,18 +126,45 @@ function jsonRecords(stdout: string): Record<string, unknown>[] {
   return records;
 }
 
-function tokenUsage(record: Record<string, unknown>): TokenUsage | undefined {
-  const usage = asRecord(record.usage) ?? asRecord(record.tokens);
+const MetadataUsage = z.object({
+  input_tokens: Count,
+  input: Count,
+  output_tokens: Count,
+  output: Count,
+  cached_input_tokens: Count,
+  cache_read_input_tokens: Count,
+  cache: z.object({ read: Count }).optional().catch(undefined),
+});
+
+const SessionInfo = z.object({ id: Label });
+
+/** The fields of an event that report a run's model, session and tokens; `item`, `part`, `properties` and `info` may nest more. */
+const MetadataEvent = z.object({
+  type: Label,
+  model: Label,
+  modelID: Label,
+  thread_id: Label,
+  session_id: Label,
+  sessionID: Label,
+  cost: Count,
+  usage: MetadataUsage.optional().catch(undefined),
+  tokens: MetadataUsage.optional().catch(undefined),
+  item: JsonValueSchema.optional(),
+  part: JsonValueSchema.optional(),
+  properties: JsonValueSchema.optional(),
+  info: JsonValueSchema.optional(),
+});
+
+type MetadataEvent = z.infer<typeof MetadataEvent>;
+
+function tokenUsage(event: MetadataEvent): TokenUsage | undefined {
+  const usage = event.usage ?? event.tokens;
 
   if (!usage) return undefined;
-  const cache = asRecord(usage.cache);
   const tokens: TokenUsage = {};
-  const input = finiteNumber(usage.input_tokens) ?? finiteNumber(usage.input);
-  const output = finiteNumber(usage.output_tokens) ?? finiteNumber(usage.output);
-
-  const cached = finiteNumber(usage.cached_input_tokens)
-    ?? finiteNumber(usage.cache_read_input_tokens)
-    ?? finiteNumber(cache?.read);
+  const input = usage.input_tokens ?? usage.input;
+  const output = usage.output_tokens ?? usage.output;
+  const cached = usage.cached_input_tokens ?? usage.cache_read_input_tokens ?? usage.cache?.read;
 
   if (input !== undefined) tokens.input = input;
 
@@ -137,40 +194,41 @@ function addTokens(current: TokenUsage | undefined, next: TokenUsage): TokenUsag
   return tokens;
 }
 
-function absorbMetadata(record: Record<string, unknown>, found: ToolReport, depth: number): void {
-  if (typeof record.model === 'string' && record.model !== '') found.model = record.model;
+function absorbMetadata(record: JsonValue | undefined, found: ToolReport, depth: number): void {
+  const parsed = MetadataEvent.safeParse(record);
 
-  if (typeof record.modelID === 'string' && record.modelID !== '') found.model = record.modelID;
+  if (!parsed.success) return;
+  const event = parsed.data;
+
+  if (event.model) found.model = event.model;
+
+  if (event.modelID) found.model = event.modelID;
 
   for (const key of ['thread_id', 'session_id', 'sessionID'] as const) {
-    const value = record[key];
+    const value = event[key];
 
-    if (typeof value === 'string' && value !== '') found.session = value;
+    if (value) found.session = value;
   }
 
-  if (typeof record.type === 'string' && record.type.startsWith('session')) {
-    const info = asRecord(asRecord(record.properties)?.info) ?? asRecord(record.info);
+  if (event.type?.startsWith('session')) {
+    const nested = SessionInfo.safeParse(z.object({ info: JsonValueSchema.optional() }).safeParse(event.properties).data?.info);
+    const info = nested.success ? nested : SessionInfo.safeParse(event.info);
 
-    if (typeof info?.id === 'string' && info.id !== '') found.session = info.id;
+    if (info.success && info.data.id) found.session = info.data.id;
   }
 
-  if (record.type === 'turn.completed' || record.type === 'step_finish' || record.type === 'step-finish') {
-    const tokens = tokenUsage(record);
+  if (event.type === 'turn.completed' || event.type === 'step_finish' || event.type === 'step-finish') {
+    const tokens = tokenUsage(event);
 
     if (tokens) found.tokens = addTokens(found.tokens, tokens);
-    // OpenCode states each step's cost in USD.
-    const cost = finiteNumber(record.cost);
 
-    if (cost !== undefined && cost >= 0) found.cost = { amount: (found.cost?.amount ?? 0) + cost, unit: 'USD' };
+    // OpenCode states each step's cost in USD.
+    if (event.cost !== undefined && event.cost >= 0) found.cost = { amount: (found.cost?.amount ?? 0) + event.cost, unit: 'USD' };
   }
 
   if (depth >= 4) return;
 
-  for (const key of ['item', 'part', 'properties', 'info'] as const) {
-    const child = asRecord(record[key]);
-
-    if (child) absorbMetadata(child, found, depth + 1);
-  }
+  for (const key of ['item', 'part', 'properties', 'info'] as const) absorbMetadata(event[key], found, depth + 1);
 }
 
 export function readToolMetadata(stdout: string): ToolReport | null {
@@ -197,44 +255,77 @@ const AgyResult = z.object({
 });
 
 /** The run agy's stream-json output reports: the model its `init` event names, and the last `result` event. */
-export function agyRun(stdout: string): { model?: string; result?: z.infer<typeof AgyResult>['result']; tokens?: TokenUsage } {
+export interface AgyRun {
+  model?: string;
+  result?: z.infer<typeof AgyResult>['result'];
+  tokens?: TokenUsage;
+}
+
+export function agyRun(stdout: string): AgyRun {
   const events = jsonRecords(stdout);
-  const model = events.flatMap((event) => { const init = AgyInit.safeParse(event);
 
- return init.success ? [init.data.init.model] : []; }).at(0);
-  const result = events.flatMap((event) => { const parsed = AgyResult.safeParse(event);
+  const model = events.flatMap((event) => {
+    const init = AgyInit.safeParse(event);
 
- return parsed.success ? [parsed.data.result] : []; }).at(-1);
+    return init.success ? [init.data.init.model] : [];
+  }).at(0);
+
+  const result = events.flatMap((event) => {
+    const parsed = AgyResult.safeParse(event);
+
+    return parsed.success ? [parsed.data.result] : [];
+  }).at(-1);
+
   const usage = result?.usage;
+  const tokens: TokenUsage = {};
 
-  const tokens: TokenUsage = {
-    ...(usage?.input_tokens !== undefined ? { input: usage.input_tokens } : {}),
-    ...(usage?.output_tokens !== undefined ? { output: usage.output_tokens } : {}),
-    ...(usage?.cache_read_tokens !== undefined ? { cachedInput: usage.cache_read_tokens } : {}),
-  };
+  if (usage?.input_tokens !== undefined) tokens.input = usage.input_tokens;
 
-  return { ...(model ? { model } : {}), ...(result ? { result } : {}), ...(Object.keys(tokens).length > 0 ? { tokens } : {}) };
+  if (usage?.output_tokens !== undefined) tokens.output = usage.output_tokens;
+
+  if (usage?.cache_read_tokens !== undefined) tokens.cachedInput = usage.cache_read_tokens;
+  const run: AgyRun = {};
+
+  if (model) run.model = model;
+
+  if (result) run.result = result;
+
+  if (Object.keys(tokens).length > 0) run.tokens = tokens;
+
+  return run;
 }
 
 function agyStdout(stdout: string): ToolReport | null {
   const { model, result, tokens } = agyRun(stdout);
 
   if (!result) return null;
-  let output: unknown;
+  const report: ToolReport = {};
 
   try {
-    output = result.response === undefined ? undefined : JSON.parse(result.response) as unknown;
+    const output: unknown = result.response === undefined ? undefined : JSON.parse(result.response);
+
+    if (output !== undefined) report.output = output;
   } catch {
-    output = undefined;
+    // A response that is not JSON reports no output.
   }
 
-  return {
-    ...(output !== undefined ? { output } : {}),
-    ...(model !== undefined ? { model } : {}),
-    ...(result.conversation_id ? { session: result.conversation_id } : {}),
-    ...(tokens ? { tokens } : {}),
-  };
+  if (model !== undefined) report.model = model;
+
+  if (result.conversation_id) report.session = result.conversation_id;
+
+  if (tokens) report.tokens = tokens;
+
+  return report;
 }
+
+/** A `stream_event` line of Claude's `--include-partial-messages`: the event it wraps, a message's start or a delta. */
+const ClaudeStreamLine = z.object({
+  type: z.literal('stream_event'),
+  event: z.looseObject({ type: Label, message: JsonValueSchema.optional() }),
+});
+
+/** The message a `message_start` event opens: its id, and the usage it starts with. */
+const StartedMessage = MetadataEvent.extend({ id: Label });
 
 /**
  * Counts what a tool billed while its stdout streams, fed one line at a time, and returns the total so far: Claude's
@@ -263,11 +354,12 @@ export function tokenMeter(adapter: LaunchAdapterId): (line: string) => TokenUsa
 
     return (line) => {
       for (const record of jsonRecords(line)) {
-        const event = record.type === 'stream_event' ? asRecord(record.event) : undefined;
-        const started = event?.type === 'message_start' ? asRecord(event.message) : undefined;
+        const event = ClaudeStreamLine.safeParse(record).data?.event;
+        const started = event?.type === 'message_start' ? StartedMessage.safeParse(event.message).data : undefined;
 
-        if (typeof started?.id === 'string') current = started.id;
-        const usage = started ? tokenUsage(started) : event?.type === 'message_delta' ? tokenUsage(event) : undefined;
+        if (started?.id !== undefined) current = started.id;
+        const delta = event?.type === 'message_delta' ? MetadataEvent.safeParse(event).data : undefined;
+        const usage = started ? tokenUsage(started) : delta ? tokenUsage(delta) : undefined;
 
         if (current === undefined || !usage) continue;
         // A message_delta may state only the counts that changed, such as output tokens; the others keep their value.

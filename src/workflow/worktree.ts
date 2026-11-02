@@ -170,7 +170,8 @@ function spawnGit(cwd: string, args: string[], options: GitOptions | undefined, 
   if (options === undefined) {
     return new Promise((resolve) => {
       execFile('git', args, { cwd, env: base, windowsHide: true }, (error, stdout, stderr) => {
-        const code = typeof error?.code === 'number' ? error.code : error ? 1 : 0;
+        const exit = z.number().safeParse(error?.code);
+        const code = exit.success ? exit.data : error ? 1 : 0;
         resolve({ code, stdout: String(stdout), stderr: String(stderr) });
       });
     });
@@ -659,11 +660,11 @@ export async function restoreUneditedConfig(dir: string, _commit: string, saved:
     return `git could not list the files in ${dir} (${unlisted.stderr.trim() || 'no message'}); the branch's agent files are still in ${saved}`;
   }
 
-  const overlay = JSON.parse(await fs.readFile(path.join(saved, '_overlay.json'), 'utf8')) as Record<string, string>;
+  const overlay = z.record(z.string(), z.string()).parse(JSON.parse(await fs.readFile(path.join(saved, '_overlay.json'), 'utf8')));
   const current = await fileManifest(dir);
   const branch = await fileManifest(saved);
   const conflicts = await fs.readFile(path.join(saved, '_conflicts'), 'utf8').catch(() => '');
-  const dirs = JSON.parse(await fs.readFile(path.join(saved, '_dirs.json'), 'utf8').catch(() => '[]')) as string[];
+  const dirs = z.array(z.string()).parse(JSON.parse(await fs.readFile(path.join(saved, '_dirs.json'), 'utf8').catch(() => '[]')));
   const marked = await markedConflicts(dir, conflictPaths(conflicts));
   // Staging a conflict without leaving markers is a resolution, even when the text matches the overlay.
   // An unstaged file that still matches the overlay is not.
@@ -1283,7 +1284,7 @@ export async function putBackCopy({ dir, branch, commit, found, changed, attempt
 
     if (marker) await writeJsonAtomic(marker, record);
 
-    return { state: 'unrestored', reason, ...(kept ? { kept } : {}) };
+    return kept ? { state: 'unrestored', reason, kept } : { state: 'unrestored', reason };
   };
 
   // The keep below records a submodule only as its commit, so a submodule update would destroy its files.

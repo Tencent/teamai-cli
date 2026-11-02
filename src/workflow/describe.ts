@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { sameEnvName } from '../resources/env-key.js';
 import { mergeRequirements, negotiate, requiredEnvKeys, type Allow, type DriverCan, type EnvFacts, type InEffect, type Missing, type Setup } from './requirements.js';
 import { stepWorkflow, workflowRunBy, type Invoke, type OutputSchema, type WorkflowDefinition, type WorkflowSource, type WorkflowStep } from './types.js';
@@ -44,11 +45,11 @@ function guardsOf(step: WorkflowStep, steps: WorkflowStep[], prefix: string): Ga
   if (step.prompt !== undefined || step.promptFile !== undefined) return { kind: 'prompt' };
   const child = stepWorkflow(step);
 
-  if (child) return { kind: 'workflow', ...(child.kind === 'named' ? { name: child.name } : {}) };
+  if (child) return child.kind === 'named' ? { kind: 'workflow', name: child.name } : { kind: 'workflow' };
 
-  if (step.end !== undefined) return { kind: 'end', end: step.end, ...(prefix !== '' ? { workflow: prefix.slice(0, -1) } : {}) };
+  if (step.end !== undefined) return prefix !== '' ? { kind: 'end', end: step.end, workflow: prefix.slice(0, -1) } : { kind: 'end', end: step.end };
 
-  return { kind: 'none', waiting: steps.filter((other) => other.needs?.includes(step.id)).map((other) => `${prefix}${other.id}`) };
+  return { kind: 'none', waiting: steps.flatMap((other) => (other.needs?.includes(step.id) ? [`${prefix}${other.id}`] : [])) };
 }
 
 /** What a workflow will do, read from its definition before any run, as far as choosing how to start it needs. */
@@ -103,6 +104,10 @@ export interface WorkflowDescription {
   };
 }
 
+type Facts = WorkflowDescription['facts'];
+
+type Gate = Facts['gates'][number];
+
 /** What the steps of one workflow in the tree run under, as the engine's scopes give it. */
 interface Scope {
   prefix: string;
@@ -136,15 +141,21 @@ export function describeWorkflow(input: {
 }): WorkflowDescription {
   const { definition, source, workflows, ceiling, can, allow, env, base } = input;
   const runEnvKeys = requiredEnvKeys([definition, ...Object.values(workflows)]);
+  const branch: Pick<Facts, 'base'> = {};
 
-  const facts: WorkflowDescription['facts'] = {
-    prompts: [], interactive: [], modeled: [], width: 0, gates: [], inWorkspace: [], scored: [], deliver: [], ...(base !== undefined ? { base } : {}),
+  if (base !== undefined) branch.base = base;
+  const limit: Pick<Facts, 'timeout'> = {};
+
+  if (definition.timeout !== undefined) limit.timeout = definition.timeout;
+
+  const facts: Facts = {
+    prompts: [], interactive: [], modeled: [], width: 0, gates: [], inWorkspace: [], scored: [], deliver: [], ...branch,
     requiresEnv: {
       keys: [...runEnvKeys],
       missingHere: [...runEnvKeys].filter((key) => sameEnvName(env.present, key) === undefined),
       declaredHere: [...runEnvKeys].filter((key) => sameEnvName(env.declared, key) !== undefined),
     },
-    ...(definition.timeout !== undefined ? { timeout: definition.timeout } : {}),
+    ...limit,
     budgets: definition.budget ? [{ tokens: definition.budget.tokens }] : [],
     runs: [],
     held: [],
@@ -161,14 +172,19 @@ export function describeWorkflow(input: {
     const requires = mergeRequirements(scope.requires, step.requires);
     const executor = step.command !== undefined ? 'command' : 'prompt';
     const setupEnv = hasContract ? scope.setup?.requires?.env ?? [] : [];
-    facts.runs.push({ step: path, executor, env: [...new Set([...requires.env ?? [], ...setupEnv])], ...(executor === 'prompt' && step.agent !== undefined ? { agent: step.agent } : {}), ...(executor === 'prompt' && step.tool !== undefined ? { tool: step.tool } : {}) });
+    const run: Facts['runs'][number] = { step: path, executor, env: [...new Set([...requires.env ?? [], ...setupEnv])] };
+
+    if (executor === 'prompt' && step.agent !== undefined) run.agent = step.agent;
+
+    if (executor === 'prompt' && step.tool !== undefined) run.tool = step.tool;
+    facts.runs.push(run);
 
     const negotiation = negotiate({
       // Whether the driver calls next --prepare is not part of its can: a step in a clone is described as a driver with clone takes it.
       step: path, executor, requires, prepare: false, clone: false,
       interactive: step.interactive === true, hasContract, envKeys: Object.keys(step.env ?? {}), runEnvKeys, budgeted: step.prompt !== undefined && scope.budgeted,
-      ...(step.maxTurns !== undefined ? { maxTurns: step.maxTurns } : {}), ...(hasContract && scope.setup ? { setup: scope.setup } : {}),
-      ...(step.tool !== undefined ? { tool: step.tool } : {}),
+      maxTurns: step.maxTurns, setup: hasContract ? scope.setup : undefined,
+      tool: step.tool,
       unattended: step.permissions === 'unattended',
     }, can, allow, env);
 
@@ -210,10 +226,19 @@ export function describeWorkflow(input: {
 
       if (step.hitl) {
         const { kind, options, required, default: defaultOption } = step.hitl;
-        facts.gates.push({
-          step: path, required, guards: guardsOf(step, steps, scope.prefix),
-          ...(kind === 'choose' ? { kind, options, ...(defaultOption !== undefined ? { default: defaultOption } : {}) } : { kind, ...(step.deliver === 'pr' ? { deliver: true as const } : {}) }),
-        });
+        const asked = { step: path, required, guards: guardsOf(step, steps, scope.prefix) };
+
+        if (kind === 'choose') {
+          const gate: Extract<Gate, { kind: 'choose' }> = { ...asked, kind, options };
+
+          if (defaultOption !== undefined) gate.default = defaultOption;
+          facts.gates.push(gate);
+        } else {
+          const gate: Extract<Gate, { kind: 'approve' }> = { ...asked, kind };
+
+          if (step.deliver === 'pr') gate.deliver = true;
+          facts.gates.push(gate);
+        }
       }
 
       if (!child && step.end === undefined && !runsInCheckout(step, scope.ancestors)) facts.inWorkspace.push(path);
@@ -222,7 +247,7 @@ export function describeWorkflow(input: {
 
       if (step.interactive) facts.interactive.push(path);
 
-      if ((step.prompt !== undefined || step.promptFile !== undefined) && (typeof step.model === 'string' || (step.model === undefined && step.agent === undefined && scope.defaultModel !== undefined))) facts.modeled.push(path);
+      if ((step.prompt !== undefined || step.promptFile !== undefined) && (z.string().safeParse(step.model).success || (step.model === undefined && step.agent === undefined && scope.defaultModel !== undefined))) facts.modeled.push(path);
 
       if (step.scorers && step.scorers.names.length > 0) facts.scored.push({ step: path, scorers: step.scorers.names });
 
@@ -231,7 +256,10 @@ export function describeWorkflow(input: {
         let from = startsFrom(step, seen);
 
         while (from && from.deliver !== 'pr') from = startsFrom(from, seen);
-        facts.deliver.push({ step: path, ...(from ? { onto: `${scope.prefix}${from.id}` } : {}) });
+        const delivery: Facts['deliver'][number] = { step: path };
+
+        if (from) delivery.onto = `${scope.prefix}${from.id}`;
+        facts.deliver.push(delivery);
       }
 
       let own = 0;
@@ -248,9 +276,9 @@ export function describeWorkflow(input: {
           prefix: `${path}.`, ancestors: [...scope.ancestors, step],
           requires: mergeRequirements(scope.requires, step.requires, named?.defaults?.requires),
           budgeted: scope.budgeted || step.budget !== undefined || named?.budget !== undefined,
-          ...(setup ? { setup } : {}),
-          ...(opensCopy(step) ? { copy: path } : scope.copy !== undefined ? { copy: scope.copy } : {}),
-          ...(defaultModel !== undefined ? { defaultModel } : {}),
+          setup,
+          copy: opensCopy(step) ? path : scope.copy,
+          defaultModel,
         });
       } else if (step.command !== undefined || step.prompt !== undefined || step.promptFile !== undefined) {
         own = 1;
@@ -278,8 +306,8 @@ export function describeWorkflow(input: {
 
   const top: Scope = {
     prefix: '', ancestors: [], requires: mergeRequirements(definition.defaults?.requires), budgeted: definition.budget !== undefined,
-    ...(definition.setup ? { setup: definition.setup } : {}),
-    ...(definition.defaults?.model !== undefined ? { defaultModel: definition.defaults.model } : {}),
+    setup: definition.setup,
+    defaultModel: definition.defaults?.model,
   };
 
   // The finally steps run under the same scope once the steps settled, never beside them.
@@ -289,5 +317,9 @@ export function describeWorkflow(input: {
   if (route?.[1].held) facts.localRoute = { opener: route[0], held: route[1].held.step, missing: route[1].held.missing };
   const { name, description, alias, invoke, inputs } = definition;
 
-  return { name, description, ...(alias ? { alias } : {}), source, invoke: invoke ?? 'deny', inputs: inputs ?? {}, facts };
+  const aliased: Pick<WorkflowDescription, 'alias'> = {};
+
+  if (alias) aliased.alias = alias;
+
+  return { name, description, ...aliased, source, invoke: invoke ?? 'deny', inputs: inputs ?? {}, facts };
 }

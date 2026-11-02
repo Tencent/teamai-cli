@@ -9,7 +9,7 @@ import { McpHandler } from './mcp.js';
 import { RepoResourceHandler } from './repo-resource.js';
 import type { ResourceType } from '../types.js';
 
-const handlers: Record<ResourceType, ResourceHandler> = {
+const handlers = {
   skills: new SkillsHandler(),
   rules: new RulesHandler(),
   docs: new DocsHandler(),
@@ -25,9 +25,10 @@ const handlers: Record<ResourceType, ResourceHandler> = {
   prompts: new RepoResourceHandler('prompts', 'prompts'),
   scorers: new RepoResourceHandler('scorers', 'scorers'),
   benchmarks: new RepoResourceHandler('benchmarks', 'benchmarks'),
-};
+} satisfies Record<ResourceType, ResourceHandler>;
 
-export function getHandler(type: ResourceType): ResourceHandler {
+/** The handler of `type`, typed as its own class: `getHandler('rules')` is a RulesHandler. */
+export function getHandler<TType extends ResourceType>(type: TType): (typeof handlers)[TType] {
   return handlers[type];
 }
 

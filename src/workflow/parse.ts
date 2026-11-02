@@ -9,7 +9,7 @@ import type {
 } from './types.js';
 import { INVOKE_VALUES, STEP_ACTIONS, stepWorkflow } from './types.js';
 import {
-  isYamlNode, locate, position, scalarString, unknownKey, valueNode, unavailableField, undeclaredField, undeclaredOutput,
+  isYamlNode, locate, position, scalarOf, scalarString, scalarText, unknownKey, valueNode, unavailableField, undeclaredField, undeclaredOutput,
   type Child, type GraphNode, type ParseContext, type WorkflowFiles,
 } from './parse-context.js';
 import {
@@ -45,7 +45,6 @@ const FINALLY_STEP_KEYS = new Set(['id', 'needs', 'if', 'command', 'env', 'outpu
 
 /** The actions as a sentence: `command, prompt, prompt_file, or workflow`. */
 const ACTION_LIST = `${ACTION_KEYS.slice(0, -1).join(', ')}, or ${ACTION_KEYS.at(-1)}`;
-const TYPE_NAMES = new Set(['string', 'number', 'boolean']);
 const TOKEN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 /** A scorer a step lists: a token, the name of a file in scorers/, or a scorer a run generates, whose name holds a colon. */
@@ -53,6 +52,11 @@ const SCORER_NAME = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const DURATION = /^(\d+)(ms|s|m|h)$/;
 const DURATION_UNITS = new Map([['ms', 1], ['s', 1000], ['m', 60_000], ['h', 3_600_000]]);
+
+/** The type names of the output shorthand. */
+function isTypeName(name: string | undefined): name is 'string' | 'number' | 'boolean' {
+  return name === 'string' || name === 'number' || name === 'boolean';
+}
 
 /**
  * How pull checks what each step expression other than `if` reads; an `if` is also checked for being always false.
@@ -86,37 +90,40 @@ function parseOutput(node: Node, field: string, ctx: ParseContext, place: Output
   const inner: OutputPlace = place === 'input' ? 'input' : 'nested';
 
   if (isScalar(node)) {
-    if (typeof node.value !== 'string') {
+    const shorthand = scalarString(node);
+
+    if (shorthand === undefined) {
       diagnostics.push(locate(file, lineCounter, node, field, 'output shorthand must be string, number, boolean, a literal union, an object, or an array'));
 
       return undefined;
     }
 
-    const parts = node.value.split('|').map((part) => part.trim()).filter((part) => part.length > 0);
+    const parts = shorthand.split('|').map((part) => part.trim()).filter((part) => part.length > 0);
+    const [only] = parts;
 
-    if (parts.length === 1 && TYPE_NAMES.has(parts[0])) {
-      return { type: parts[0] as 'string' | 'number' | 'boolean' };
+    if (parts.length === 1 && isTypeName(only)) {
+      return { type: only };
     }
 
-    if (parts.length === 1 && parts[0] === 'json') {
+    if (parts.length === 1 && only === 'json') {
       if (place !== 'input') return { type: 'json' };
       diagnostics.push(locate(file, lineCounter, node, field, 'an input cannot be json; only a step output can'));
 
       return undefined;
     }
 
-    if (parts.length === 1 && parts[0] === 'workflow') {
+    if (parts.length === 1 && only === 'workflow') {
       if (place === 'field') return { type: 'workflow' };
       diagnostics.push(locate(file, lineCounter, node, field, place === 'input' ? 'an input cannot be a workflow; only a field of a step output can' : WORKFLOW_PLACE));
 
       return undefined;
     }
 
-    if (parts.length >= 2 && parts.every((part) => TOKEN.test(part) && !TYPE_NAMES.has(part))) {
+    if (parts.length >= 2 && parts.every((part) => TOKEN.test(part) && !isTypeName(part))) {
       return { type: 'enum', values: parts };
     }
 
-    diagnostics.push(locate(file, lineCounter, node, field, `unknown output type "${node.value}"`));
+    diagnostics.push(locate(file, lineCounter, node, field, `unknown output type "${shorthand}"`));
 
     return undefined;
   }
@@ -272,12 +279,12 @@ export function parseWorkflow(file: string, content: string, files?: WorkflowFil
   const inputsPair = root.items.find((pair) => scalarString(pair.key) === 'inputs');
   let inputs: Record<string, OutputSchema> | undefined;
 
-  if (inputsPair && !isMap(inputsPair.value)) {
-    diagnostics.push(locate(file, lineCounter, inputsPair.value ?? inputsPair.key ?? root, 'inputs', 'inputs must map each input name to a type'));
-  } else if (inputsPair) {
-    const schema = parseOutput(inputsPair.value as Node, 'inputs', ctx, 'input');
+  if (inputsPair && isMap(inputsPair.value)) {
+    const schema = parseOutput(inputsPair.value, 'inputs', ctx, 'input');
 
     if (schema?.type === 'object') inputs = schema.fields;
+  } else if (inputsPair) {
+    diagnostics.push(locate(file, lineCounter, inputsPair.value ?? inputsPair.key ?? root, 'inputs', 'inputs must map each input name to a type'));
   }
 
   const defaultsPair = root.items.find((pair) => scalarString(pair.key) === 'defaults');
@@ -306,14 +313,34 @@ export function parseWorkflow(file: string, content: string, files?: WorkflowFil
   if (diagnostics.length === 0) withheldEnvRequired(root, { defaults, steps }, '', {}, ctx, { says: '', runs: [] });
 
   if (diagnostics.length > 0 || !name || !description) return { ok: false, diagnostics };
+  const header: Omit<WorkflowDefinition, 'schemaVersion' | 'name' | 'description' | 'steps' | 'finally'> = {};
+
+  if (invoke) header.invoke = invoke;
+
+  if (alias) header.alias = alias;
+
+  if (inputs) header.inputs = inputs;
+
+  if (ends) header.ends = ends;
+
+  if (outputs) header.outputs = outputs;
+
+  if (loop) header.loop = loop;
+
+  if (defaults) header.defaults = defaults;
+
+  if (timeout !== undefined) header.timeout = timeout;
+
+  if (budget) header.budget = budget;
+
+  if (setup) header.setup = setup;
+  const definition: WorkflowDefinition = { schemaVersion: 'v1alpha1', name, description, ...header, steps };
+
+  if (finallySteps) definition.finally = finallySteps;
 
   return {
     ok: true,
-    definition: {
-      schemaVersion: 'v1alpha1', name, description, ...(invoke ? { invoke } : {}), ...(alias ? { alias } : {}), ...(inputs ? { inputs } : {}), ...(ends ? { ends } : {}), ...(outputs ? { outputs } : {}),
-      ...(loop ? { loop } : {}), ...(defaults ? { defaults } : {}), ...(timeout !== undefined ? { timeout } : {}), ...(budget ? { budget } : {}), ...(setup ? { setup } : {}), steps,
-      ...(finallySteps ? { finally: finallySteps } : {}),
-    },
+    definition,
     promptFileLocations,
   };
 }
@@ -331,6 +358,12 @@ interface BodyOptions {
   runsAgain?: () => boolean;
 }
 
+/** A parsed workflow body, and what its steps read of enclosing steps. */
+interface ParsedBody {
+  workflow: InlineWorkflow;
+  outer: ReadSite[];
+}
+
 /**
  * The `ends`, `outputs`, `loop`, and `steps` of a workflow file, or of an inline workflow whose fields start with `at`.
  * An inline workflow returns, in `outer`, what its steps read of enclosing steps, for the enclosing workflow to check.
@@ -344,7 +377,7 @@ function parseBody(
   inputs: Record<string, OutputSchema> | undefined,
   itemBound: boolean,
   { parent, checks, list = 'steps', finally: finallySteps = [], runsAgain = () => false }: BodyOptions = {},
-): { workflow: InlineWorkflow; outer: ReadSite[] } {
+): ParsedBody {
   const { file, lineCounter, diagnostics, promptFileLocations, files } = ctx;
   const header = (key: string): (typeof root.items)[number] | undefined => (list === 'steps' ? root.items.find((pair) => scalarString(pair.key) === key) : undefined);
   const endsPair = header('ends');
@@ -422,13 +455,14 @@ function parseBody(
 
       if (needsPair) {
         const values = isSeq(needsPair.value) ? needsPair.value.items.map((need) => scalarString(isYamlNode(need) ? need : undefined)) : [];
+        const ids = values.filter((need): need is string => !!need && TOKEN.test(need));
 
-        if (!isSeq(needsPair.value) || values.some((need) => !need || !TOKEN.test(need))) {
+        if (!isSeq(needsPair.value) || ids.length !== values.length) {
           diagnostics.push(locate(file, lineCounter, needsPair.value ?? needsPair.key ?? item, `${field}.needs`, `${stepLabel} needs must be a list of step ids`));
         } else {
-          needs = values as string[];
+          needs = ids;
 
-          if (id && TOKEN.test(id)) graph.push({ id, field: `${field}.needs`, needs, node: needsPair.value as Node });
+          if (id && TOKEN.test(id)) graph.push({ id, field: `${field}.needs`, needs, node: needsPair.value });
         }
       } else if (index > 0) {
         diagnostics.push({
@@ -440,7 +474,7 @@ function parseBody(
       // A step with a malformed id or missing needs is already reported; checking what it reads would only add noise.
       const inGraph = id !== undefined && TOKEN.test(id) && (needs !== undefined || index === 0);
       const ifPair = item.items.find((pair) => scalarString(pair.key) === 'if');
-      const condition = ifPair ? conditionSource(ifPair.value) : undefined;
+      const condition = ifPair ? scalarText(ifPair.value) : undefined;
 
       if (ifPair) {
         const parsed = condition === undefined ? undefined : parseExpression(condition);
@@ -478,8 +512,8 @@ function parseBody(
 
       if (workflowFromPair && !runsFrom) {
         diagnostics.push(locate(file, lineCounter, workflowMap, `${field}.workflow`, `${stepLabel} workflow must be the name of a workflow in workflows/, an inline workflow, or { from: <step> }`));
-      } else if (runsFrom && id) {
-        fromSites.push({ id, from: runsFrom.from, needs, node: (workflowFromPair?.value ?? workflowMap) as Node, field: `${field}.workflow.from` });
+      } else if (runsFrom && id && workflowMap) {
+        fromSites.push({ id, from: runsFrom.from, needs, node: isYamlNode(workflowFromPair?.value) ? workflowFromPair.value : workflowMap, field: `${field}.workflow.from` });
       }
 
       const approvePair = item.items.find((pair) => scalarString(pair.key) === 'approve');
@@ -494,7 +528,7 @@ function parseBody(
       const interactivePair = item.items.find((pair) => scalarString(pair.key) === 'interactive');
       const interactive = isScalar(interactivePair?.value) && interactivePair.value.value === true;
 
-      if (interactivePair && (!isScalar(interactivePair.value) || typeof interactivePair.value.value !== 'boolean')) {
+      if (interactivePair && scalarOf(interactivePair.value, z.boolean()) === undefined) {
         diagnostics.push(locate(file, lineCounter, interactivePair.value, `${field}.interactive`, 'interactive must be a boolean'));
       } else if (interactive && !promptPair && !promptFilePair) {
         diagnostics.push(locate(file, lineCounter, interactivePair?.value, `${field}.interactive`, 'interactive needs a prompt or prompt_file: a person works in the tool on that prompt'));
@@ -509,7 +543,7 @@ function parseBody(
       if (endPair && (!end || !TOKEN.test(end))) {
         diagnostics.push(locate(file, lineCounter, endPair.value ?? endPair.key ?? item, `${field}.end`, `${stepLabel} end must be a name from ends`));
       } else if (endPair && end && id && TOKEN.test(id)) {
-        endings.push({ id, field: `${field}.end`, end, node: endPair.value as Node, only: actions.length === 0 });
+        endings.push({ id, field: `${field}.end`, end, node: endPair.value ?? endPair.key, only: actions.length === 0 });
       }
 
       if ((endPair || approvePair || choosePair) && actions.length === 0) {
@@ -517,7 +551,7 @@ function parseBody(
           const key = scalarString(pair.key);
 
           if (!key || !STEP_KEYS.has(key) || ACTIONLESS_KEYS.has(key) || (key === 'interactive' && isScalar(pair.value) && pair.value.value === false)) continue;
-          diagnostics.push(locate(file, lineCounter, pair.key as Node, `${field}.${key}`, `${stepLabel} has no action, so it carries only id, needs, if, end, approve, choose, loop, and break`));
+          diagnostics.push(locate(file, lineCounter, pair.key, `${field}.${key}`, `${stepLabel} has no action, so it carries only id, needs, if, end, approve, choose, loop, and break`));
         }
       }
 
@@ -536,7 +570,7 @@ function parseBody(
       const commandTemplate = command === undefined ? undefined : findTemplate(command, bindsItem);
 
       if (commandTemplate !== undefined) {
-        diagnostics.push(locate(file, lineCounter, commandPair?.value as Node, `${field}.command`,
+        diagnostics.push(locate(file, lineCounter, commandPair?.value, `${field}.command`,
           `${stepLabel} command contains ${commandTemplate}; command strings are not templated; pass the value through env:`));
       }
 
@@ -592,8 +626,8 @@ function parseBody(
       const budgetPair = item.items.find((pair) => scalarString(pair.key) === 'budget');
       const budget = budgetPair ? parseBudget(budgetPair.value ?? budgetPair.key, `${field}.budget`, ctx) : undefined;
       const maxTurnsPair = item.items.find((pair) => scalarString(pair.key) === 'max_turns');
-      const maxTurnsValue: unknown = isScalar(maxTurnsPair?.value) ? maxTurnsPair.value.value : undefined;
-      const maxTurns = typeof maxTurnsValue === 'number' && Number.isSafeInteger(maxTurnsValue) && maxTurnsValue > 0 ? maxTurnsValue : undefined;
+      const maxTurnsValue = scalarOf(maxTurnsPair?.value, z.number());
+      const maxTurns = maxTurnsValue !== undefined && Number.isSafeInteger(maxTurnsValue) && maxTurnsValue > 0 ? maxTurnsValue : undefined;
 
       if (maxTurnsPair && maxTurns === undefined) {
         diagnostics.push(locate(file, lineCounter, maxTurnsPair.value ?? maxTurnsPair.key, `${field}.max_turns`, `${stepLabel} max_turns must be a positive whole number`));
@@ -626,20 +660,21 @@ function parseBody(
       const envPair = item.items.find((pair) => scalarString(pair.key) === 'env');
       const env = envPair ? parseEnv(envPair.value ?? envPair.key, `${field}.env`, stepLabel, ctx) : undefined;
       const withPair = item.items.find((pair) => scalarString(pair.key) === 'with');
-      let withValues: Record<string, unknown> | undefined;
+      let withValues: WorkflowStep['with'];
 
       // A step with no action already reports every key it may not carry.
       if (withPair && commandPair) {
-        diagnostics.push(locate(file, lineCounter, withPair.key as Node, `${field}.with`, `${stepLabel} with is not allowed on a command step; pass values through env:`));
+        diagnostics.push(locate(file, lineCounter, withPair.key, `${field}.with`, `${stepLabel} with is not allowed on a command step; pass values through env:`));
       } else if (withPair && inline) {
-        diagnostics.push(locate(file, lineCounter, withPair.key as Node, `${field}.with`,
+        diagnostics.push(locate(file, lineCounter, withPair.key, `${field}.with`,
           `${stepLabel} with is not allowed on an inline workflow; its steps read the enclosing inputs and steps`));
       } else if (withPair && actions.length > 0) {
         if (!isMap(withPair.value) || withPair.value.items.length === 0) {
           const what = workflowPair ? "the workflow's inputs" : 'names';
           diagnostics.push(locate(file, lineCounter, withPair.value ?? withPair.key ?? item, `${field}.with`, `${stepLabel} with must map ${what} to values`));
         } else {
-          withValues = withPair.value.toJSON() as Record<string, unknown>;
+          // SAFETY: toJSON of a YAML map is a plain object keyed by the text of its keys
+          withValues = withPair.value.toJSON() as WorkflowStep['with'];
         }
       }
 
@@ -651,7 +686,7 @@ function parseBody(
         if (produces !== undefined) {
           queue.push(() => {
             if (!bindsItem && !runsAgain() && loop === undefined && ![...stepLoops(steps).ranges.values()].some((range) => range.has(id))) return;
-            diagnostics.push(locate(file, lineCounter, workflowPair.value as Node, `${field}.workflow`,
+            diagnostics.push(locate(file, lineCounter, workflowPair.value, `${field}.workflow`,
               `${stepLabel} runs workflow "${workflow}", whose step "${produces}" outputs a workflow, so it runs once; ${stepLabel} may not repeat in a loop or run per item of a for_each`));
           });
         }
@@ -660,11 +695,11 @@ function parseBody(
       if (workflowPair && workflow && TOKEN.test(workflow) && files) {
         // A malformed with is already reported, so its keys are not compared.
         const keys = !withPair ? [] : withValues && isMap(withPair.value)
-          ? withPair.value.items.map((pair) => ({ name: isScalar(pair.key) ? String(pair.key.value) : '', node: pair.key as Node }))
+          ? withPair.value.items.map((pair) => ({ name: isScalar(pair.key) ? String(pair.key.value) : '', node: pair.key }))
           : undefined;
 
         diagnostics.push(...referenceDiagnostics(ctx, files, {
-          label: stepLabel, field, workflow, node: workflowPair.value as Node, with: keys && { node: (withPair?.key ?? workflowPair.value) as Node, keys },
+          label: stepLabel, field, workflow, node: workflowPair.value ?? workflowPair.key, with: keys && { node: withPair?.key ?? workflowPair.value ?? workflowPair.key, keys },
         }));
       }
 
@@ -672,7 +707,7 @@ function parseBody(
         const name = what.slice(what.indexOf('.') + 1);
         const node = what === 'approve.message' ? valueNode(approvePair?.value, 'message') ?? approvePair?.value : what === 'choose.message' ? valueNode(choosePair?.value, 'message') : what === 'prompt' ? promptPair?.value : valueNode(what.startsWith('with.') ? withPair?.value : envPair?.value, name);
 
-        return { what, field: `${field}.${what}`, node: node as Node, text };
+        return { what, field: `${field}.${what}`, node, text };
       });
 
       for (const template of templates) {
@@ -695,10 +730,11 @@ function parseBody(
         }
 
         if (inGraph && parsed.ok) {
-          reads.push({
-            ...expressionSite(id, template.field, position(lineCounter, template.node), template.what, templateExpressions(parsed.template)),
-            ...(forEachPair ? { item: true } : {}), code: 'bad_template',
-          });
+          const site: ReadSite = expressionSite(id, template.field, position(lineCounter, template.node), template.what, templateExpressions(parsed.template));
+
+          if (forEachPair) site.item = true;
+          site.code = 'bad_template';
+          reads.push(site);
         }
       }
 
@@ -709,17 +745,17 @@ function parseBody(
 
       // A step with no action already reports every key it may not carry.
       if (envPair && !commandPair && actions.length > 0) {
-        diagnostics.push(locate(file, lineCounter, envPair.key as Node, `${field}.env`, `${stepLabel} env is only allowed on a command step`));
+        diagnostics.push(locate(file, lineCounter, envPair.key, `${field}.env`, `${stepLabel} env is only allowed on a command step`));
       }
 
       const stepLoopPair = item.items.find((pair) => scalarString(pair.key) === 'loop');
       const stepLoop = stepLoopPair ? parseLoop(stepLoopPair.value ?? stepLoopPair.key, `${field}.loop`, stepLabel, ctx, true) : undefined;
       const breakPair = item.items.find((pair) => scalarString(pair.key) === 'break');
-      const breakSource = breakPair ? conditionSource(breakPair.value) : undefined;
+      const breakSource = breakPair ? scalarText(breakPair.value) : undefined;
 
       if (breakPair) {
         const parsed = breakSource === undefined ? undefined : parseExpression(breakSource);
-        const node = (breakPair.value ?? breakPair.key ?? item) as Node;
+        const node = breakPair.value ?? breakPair.key ?? item;
 
         const reject = (message: string): void => {
           diagnostics.push({ ...locate(file, lineCounter, node, `${field}.break`, `${stepLabel} break ${message}`), code: 'bad_loop' });
@@ -732,7 +768,7 @@ function parseBody(
       const forEach = forEachPair ? parseForEach(forEachPair.value ?? forEachPair.key, `${field}.for_each`, stepLabel, ctx) : undefined;
 
       if (inGraph) {
-        const nodes: Record<StepExpression['what'], unknown> = {
+        const nodes: Record<StepExpression['what'], Node | null | undefined> = {
           if: ifPair?.value,
           'loop.while': valueNode(stepLoopPair?.value, 'while'),
           break: breakPair?.value,
@@ -743,7 +779,7 @@ function parseBody(
           const parsed = parseExpression(source);
 
           if (!parsed.ok) continue;
-          const node = (nodes[what] ?? item) as Node;
+          const node = nodes[what] ?? item;
 
           if (what === 'if') conditions.push({ id, field: `${field}.if`, node, expression: parsed.expression });
           else reads.push(expressionSite(id, `${field}.${what}`, position(lineCounter, node), what, [parsed.expression], EXPRESSION_SITES[what]));
@@ -754,7 +790,7 @@ function parseBody(
       const outputPair = item.items.find((pair) => scalarString(pair.key) === 'output');
 
       if (outputPair && workflowPair) {
-        diagnostics.push(locate(file, lineCounter, outputPair.key as Node, `${field}.output`, `${stepLabel} output is not allowed on a workflow step; declare outputs in the workflow it runs`));
+        diagnostics.push(locate(file, lineCounter, outputPair.key, `${field}.output`, `${stepLabel} output is not allowed on a workflow step; declare outputs in the workflow it runs`));
       } else if (outputPair?.value) {
         output = parseOutput(outputPair.value, `${field}.output`, ctx, 'output');
 
@@ -805,7 +841,7 @@ function parseBody(
         else if (from && !extra && TOKEN.test(from)) {
           session = { from };
 
-          if (id && TOKEN.test(id)) sessions.push({ id, from, node: (fromPair?.value ?? sessionPair.value) as Node, field: `${field}.session.from` });
+          if (id && TOKEN.test(id)) sessions.push({ id, from, node: fromPair?.value ?? sessionPair.value ?? sessionPair.key, field: `${field}.session.from` });
         } else {
           diagnostics.push({
             ...locate(file, lineCounter, sessionPair.value ?? sessionPair.key ?? item, `${field}.session`, `${stepLabel} session must be continue, or { from: <step> }`),
@@ -823,39 +859,68 @@ function parseBody(
       }
 
       if (id && TOKEN.test(id) && (actions.length === 1 || endPair || hitl) && !diagnostics.some((d) => d.field === field || d.field.startsWith(`${field}.`))) {
-        steps.push({
-          id,
-          ...(hitl ? { hitl } : {}),
-          ...(interactive ? { interactive: true } : {}),
-          ...(needs ? { needs } : {}),
-          ...(condition !== undefined ? { if: condition } : {}),
-          ...(command ? { command } : {}),
-          ...(env ? { env } : {}),
-          ...(prompt ? { prompt } : {}),
-          ...(promptFile ? { promptFile } : {}),
-          ...(inline ? { workflow: inline.workflow } : {}),
-          ...(runsFrom ? { workflow: runsFrom } : {}),
-          ...(workflow ? { workflow } : {}),
-          ...(withValues ? { with: withValues } : {}),
-          ...(agent ? { agent } : {}),
-          ...(tool ? { tool } : {}),
-          ...(model !== undefined ? { model } : {}),
-          ...(scorers ? { scorers } : {}),
-          ...(requires ? { requires } : {}),
-          ...(timeout !== undefined ? { timeout } : {}),
-          ...(budget ? { budget } : {}),
-          ...(maxTurns !== undefined ? { maxTurns } : {}),
-          ...(permissions ? { permissions } : {}),
-          ...(onLimit ? { onLimit } : {}),
-          ...(output ? { output } : {}),
-          ...(end ? { end } : {}),
-          ...(stepLoop ? { loop: stepLoop } : {}),
-          ...(breakSource !== undefined ? { break: breakSource } : {}),
-          ...(forEach ? { forEach } : {}),
-          ...(workspace ? { workspace } : {}),
-          ...(deliver === 'pr' ? { deliver } : {}),
-          ...(session ? { session } : {}),
-        });
+        const step: WorkflowStep = { id };
+
+        if (hitl) step.hitl = hitl;
+
+        if (interactive) step.interactive = true;
+
+        if (needs) step.needs = needs;
+
+        if (condition !== undefined) step.if = condition;
+
+        if (command) step.command = command;
+
+        if (env) step.env = env;
+
+        if (prompt) step.prompt = prompt;
+
+        if (promptFile) step.promptFile = promptFile;
+
+        if (inline) step.workflow = inline.workflow;
+
+        if (runsFrom) step.workflow = runsFrom;
+
+        if (workflow) step.workflow = workflow;
+
+        if (withValues) step.with = withValues;
+
+        if (agent) step.agent = agent;
+
+        if (tool) step.tool = tool;
+
+        if (model !== undefined) step.model = model;
+
+        if (scorers) step.scorers = scorers;
+
+        if (requires) step.requires = requires;
+
+        if (timeout !== undefined) step.timeout = timeout;
+
+        if (budget) step.budget = budget;
+
+        if (maxTurns !== undefined) step.maxTurns = maxTurns;
+
+        if (permissions) step.permissions = permissions;
+
+        if (onLimit) step.onLimit = onLimit;
+
+        if (output) step.output = output;
+
+        if (end) step.end = end;
+
+        if (stepLoop) step.loop = stepLoop;
+
+        if (breakSource !== undefined) step.break = breakSource;
+
+        if (forEach) step.forEach = forEach;
+
+        if (workspace) step.workspace = workspace;
+
+        if (deliver === 'pr') step.deliver = deliver;
+
+        if (session) step.session = session;
+        steps.push(step);
       }
     });
     queue.push(() => diagnostics.push(...sessionProblems(file, lineCounter, steps, parent, sessions)));
@@ -875,8 +940,8 @@ function parseBody(
 
     for (const problem of loopProblems(steps, stepReads(split.local), loop !== undefined)) {
       const placedStep = placed.get(problem.id);
-      const node = problem.key.split('.').reduce<unknown>((map, key) => valueNode(map, key), placedStep?.item);
-      diagnostics.push({ ...locate(file, lineCounter, (node ?? placedStep?.item) as Node, `${placedStep?.field}.${problem.key}`, problem.message), code: 'bad_loop' });
+      const node = problem.key.split('.').reduce<Node | undefined>((map, key) => valueNode(map, key), placedStep?.item);
+      diagnostics.push({ ...locate(file, lineCounter, node ?? placedStep?.item, `${placedStep?.field}.${problem.key}`, problem.message), code: 'bad_loop' });
     }
 
     // A malformed ends header is already reported; checking steps against it would only add noise.
@@ -885,7 +950,15 @@ function parseBody(
     diagnostics.push(...outputDiagnostics(ctx, outputEntries ?? [], at, new Set(readable.map((step) => step.id)), readable, children));
   }
 
-  return { workflow: { ...(ends ? { ends } : {}), ...(outputs ? { outputs } : {}), ...(loop ? { loop } : {}), steps }, outer };
+  const bodyHeader: Omit<InlineWorkflow, 'steps'> = {};
+
+  if (ends) bodyHeader.ends = ends;
+
+  if (outputs) bodyHeader.outputs = outputs;
+
+  if (loop) bodyHeader.loop = loop;
+
+  return { workflow: { ...bodyHeader, steps }, outer };
 }
 
 function stepReads(sites: ReadSite[]): Map<string, Set<string>> {
@@ -910,7 +983,7 @@ function parseInline(
   inputs: Record<string, OutputSchema> | undefined,
   itemBound: boolean,
   options: BodyOptions,
-): { workflow: InlineWorkflow; outer: ReadSite[] } {
+): ParsedBody {
   const { file, lineCounter, diagnostics } = ctx;
 
   for (const pair of node.items) {
@@ -1162,14 +1235,14 @@ function parseLoop(node: Node | null | undefined, field: string, label: string, 
 
   if (step && (!backTo || !TOKEN.test(backTo))) reject(at('back_to') ?? node, `${field}.back_to`, `${label} loop.back_to must name a step`);
   const maxNode = at('max_iterations');
-  const max: unknown = isScalar(maxNode) ? maxNode.value : undefined;
+  const max = scalarOf(maxNode, z.number());
 
-  if (typeof max !== 'number' || !Number.isInteger(max) || max < 1) {
+  if (max === undefined || !Number.isInteger(max) || max < 1) {
     reject(at('max_iterations') ?? node, `${field}.max_iterations`, `${label} loop.max_iterations must be a whole number from 1`);
   }
 
   const whileNode = at('while');
-  const condition = whileNode ? conditionSource(whileNode) : undefined;
+  const condition = whileNode ? scalarText(whileNode) : undefined;
 
   if (whileNode) {
     const parsed = condition === undefined ? undefined : parseExpression(condition);
@@ -1178,10 +1251,14 @@ function parseLoop(node: Node | null | undefined, field: string, label: string, 
     else if (!parsed.ok) reject(whileNode, `${field}.while`, `${label} loop.while does not parse at column ${parsed.column}: ${parsed.message}`);
   }
 
-  if (diagnostics.length > before) return undefined;
-  const loop = { ...(condition !== undefined ? { while: condition } : {}), maxIterations: max as number };
+  if (diagnostics.length > before || max === undefined) return undefined;
+  const loop: Partial<StepLoop> = {};
 
-  return backTo ? { backTo, ...loop } : loop;
+  if (backTo) loop.backTo = backTo;
+
+  if (condition !== undefined) loop.while = condition;
+
+  return { ...loop, maxIterations: max };
 }
 
 function parseForEach(node: Node | null | undefined, field: string, label: string, ctx: ParseContext): ForEach | undefined {
@@ -1202,7 +1279,7 @@ function parseForEach(node: Node | null | undefined, field: string, label: strin
   }
 
   const itemsNode = map ? valueNode(map, 'items') : node;
-  const items = conditionSource(itemsNode);
+  const items = scalarText(itemsNode);
   const parsed = items === undefined ? undefined : parseExpression(items);
 
   if (!parsed) {
@@ -1213,15 +1290,18 @@ function parseForEach(node: Node | null | undefined, field: string, label: strin
   }
 
   const maxNode = map ? valueNode(map, 'max_parallel') : undefined;
-  const max: unknown = isScalar(maxNode) ? maxNode.value : undefined;
+  const max = scalarOf(maxNode, z.number());
 
-  if (maxNode && (typeof max !== 'number' || !Number.isInteger(max) || max < 1)) {
+  if (maxNode && (max === undefined || !Number.isInteger(max) || max < 1)) {
     reject(maxNode, `${field}.max_parallel`, `${label} for_each.max_parallel must be a whole number from 1`);
   }
 
   if (diagnostics.length > before || items === undefined) return undefined;
+  const forEach: ForEach = { items };
 
-  return { items, ...(maxNode ? { maxParallel: max as number } : {}) };
+  if (maxNode && max !== undefined) forEach.maxParallel = max;
+
+  return forEach;
 }
 
 /** A `model`, on a step or in `defaults`: an alias or a model name, which the lease carries as written. */
@@ -1256,7 +1336,11 @@ function parseStepModel(node: Node | null | undefined, field: string, ctx: Parse
     return undefined;
   }
 
-  return { name, ...(effort !== undefined ? { effort } : {}) };
+  const model: StepModel = { name };
+
+  if (effort !== undefined) model.effort = effort;
+
+  return model;
 }
 
 function parseDefaults(node: Node | null | undefined, ctx: ParseContext): WorkflowDefaults | undefined {
@@ -1283,12 +1367,21 @@ function parseDefaults(node: Node | null | undefined, ctx: ParseContext): Workfl
   }
 
   if (model === undefined && scorers === undefined && requires === undefined) return undefined;
+  const defaults: WorkflowDefaults = {};
 
-  return { ...(model !== undefined ? { model } : {}), ...(scorers ? { scorers } : {}), ...(requires ? { requires } : {}) };
+  if (model !== undefined) defaults.model = model;
+
+  if (scorers) defaults.scorers = scorers;
+
+  if (requires) defaults.requires = requires;
+
+  return defaults;
 }
 
 function parseBatch(node: Node | undefined, field: string, ctx: ParseContext): boolean | undefined {
-  if (isScalar(node) && typeof node.value === 'boolean') return node.value;
+  const batch = scalarOf(node, z.boolean());
+
+  if (batch !== undefined) return batch;
   ctx.diagnostics.push(locate(ctx.file, ctx.lineCounter, node, field, 'batch must be true or false'));
 
   return undefined;
@@ -1358,7 +1451,13 @@ function parseScorers(node: Node | null | undefined, field: string, ctx: ParseCo
     }
   }
 
-  return { names, ...(batch !== undefined ? { batch } : {}), ...(sampling ? { sampling } : {}) };
+  const scorers: StepScorers = { names };
+
+  if (batch !== undefined) scorers.batch = batch;
+
+  if (sampling) scorers.sampling = sampling;
+
+  return scorers;
 }
 
 function parseSampling(node: Node | undefined, field: string, ctx: ParseContext): 'all' | undefined {
@@ -1394,8 +1493,7 @@ function parseRequires(node: Node | null | undefined, field: string, ctx: ParseC
 
   if (!parsed.success) {
     for (const issue of parsed.error.issues) {
-      const [key] = issue.path;
-      const at = typeof key === 'string' ? valueNode(node, key) ?? node : node;
+      const at = issueNode(node, issue.path);
       diagnostics.push(locate(file, lineCounter, at, [field, ...issue.path].join('.'), `${[field, ...issue.path].join('.')}: ${issue.message}`));
     }
   }
@@ -1419,7 +1517,7 @@ interface Caller {
  * workflow files its steps run, reported at the step of this file that runs them.
  */
 function withheldEnvRequired(node: Node | undefined, workflow: { defaults?: WorkflowDefaults; steps: readonly WorkflowStep[] }, at: string, outer: InEffect, ctx: ParseContext, caller: Caller): void {
-  const report = (requires: InEffect, level: unknown, field: string, env: readonly string[] | undefined): void => {
+  const report = (requires: InEffect, level: Node | undefined, field: string, env: readonly string[] | undefined): void => {
     const withheld = withheldKeys(requires, env);
 
     if (withheld.length === 0) return;
@@ -1432,7 +1530,8 @@ function withheldEnvRequired(node: Node | undefined, workflow: { defaults?: Work
   report(scope, valueNode(node, 'defaults'), `${at}defaults`, workflow.defaults?.requires?.env);
   const steps = valueNode(node, 'steps');
   workflow.steps.forEach((step, index) => {
-    const item = isSeq(steps) ? steps.items[index] : undefined;
+    const listed = isSeq(steps) ? steps.items[index] : undefined;
+    const item = isYamlNode(listed) ? listed : undefined;
     const field = `${at}steps[${index}]`;
     const requires = mergeRequirements(scope, step.requires);
     report(requires, item, field, step.requires?.env);
@@ -1500,8 +1599,7 @@ function parseSetup(node: Node | null | undefined, ctx: ParseContext): Setup | u
     for (const issue of parsed.error.issues) {
       if (issue.code === 'unrecognized_keys') continue;
       const field = ['setup', ...issue.path].join('.');
-      const [key] = issue.path;
-      const at = typeof key === 'string' ? valueNode(node, key) ?? node : node;
+      const at = issueNode(node, issue.path);
       diagnostics.push(locate(file, lineCounter, at, field, issue.path[0] === 'command' ? 'setup.command must be a shell command' : `${field}: ${issue.message}`));
     }
   }
@@ -1585,9 +1683,9 @@ function parseBudget(node: Node | null | undefined, field: string, ctx: ParseCon
   }
 
   const tokensNode = valueNode(node, 'tokens');
-  const tokens: unknown = isScalar(tokensNode) ? tokensNode.value : undefined;
+  const tokens = scalarOf(tokensNode, z.number());
 
-  if (typeof tokens === 'number' && Number.isSafeInteger(tokens) && tokens > 0) return { tokens };
+  if (tokens !== undefined && Number.isSafeInteger(tokens) && tokens > 0) return { tokens };
   diagnostics.push(locate(file, lineCounter, tokensNode ?? node, `${field}.tokens`, `${field}.tokens must be a positive whole number of tokens`));
 
   return undefined;
@@ -1614,15 +1712,15 @@ function parseEnv(node: Node | null | undefined, field: string, label: string, c
       continue;
     }
 
-    const value: unknown = isScalar(pair.value) ? pair.value.value : undefined;
+    const value = scalarText(isYamlNode(pair.value) ? pair.value : undefined);
 
-    if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') {
+    if (value === undefined) {
       const at = isYamlNode(pair.value) ? pair.value : isYamlNode(pair.key) ? pair.key : node;
       diagnostics.push(locate(file, lineCounter, at, `${field}.${name}`, `${label} env.${name} must be a string, number, or boolean`));
       continue;
     }
 
-    env[name] = String(value);
+    env[name] = value;
   }
 
   return Object.keys(env).length === node.items.length ? env : undefined;
@@ -1695,12 +1793,12 @@ function parseOutputs(node: Node | null | undefined, prefix: string, ctx: ParseC
     const source = scalarString(outputValueNode);
     const parsed = source === undefined ? undefined : parseExpression(source);
 
-    if (source === undefined || !parsed?.ok || parsed.expression.kind !== 'path' || parsed.expression.path.root !== 'steps') {
+    if (outputValueNode === undefined || source === undefined || !parsed?.ok || parsed.expression.kind !== 'path' || parsed.expression.path.root !== 'steps') {
       diagnostics.push(locate(file, lineCounter, outputValueNode ?? keyNode, `${prefix}outputs.${name}`, `output "${name}" must be a path that reads a step, ${OUTPUT_PATH}`));
       continue;
     }
 
-    entries.push({ name, source, node: outputValueNode as Node, path: parsed.expression.path });
+    entries.push({ name, source, node: outputValueNode, path: parsed.expression.path });
   }
 
   return entries;
@@ -1796,16 +1894,15 @@ function graphDiagnostics({ file, lineCounter }: ParseContext, graph: GraphNode[
   return diagnostics;
 }
 
-/** The text of an `if`. A YAML boolean or number is read as the same literal, so `if: false` is the expression `false`. */
-function conditionSource(node: unknown): string | undefined {
-  if (!isScalar(node)) return undefined;
-  const value: unknown = node.value;
+/** Where a schema issue under `node` points: the value of the key its path starts with, or `node` itself. */
+function issueNode(node: YAMLMap, path: PropertyKey[]): Node {
+  const key = z.string().safeParse(path[0]);
 
-  return typeof value === 'string' || typeof value === 'boolean' || typeof value === 'number' ? String(value) : undefined;
+  return (key.success ? valueNode(node, key.data) : undefined) ?? node;
 }
 
 /** `{{ with.<name> }}` reads a value its step's own `with` declares, and only from the step's prompt or prompt_file text. */
-function withReadProblems(label: string, what: string, template: Template, declared: Record<string, unknown> | undefined): string[] {
+function withReadProblems(label: string, what: string, template: Template, declared: WorkflowStep['with']): string[] {
   return templateWithPaths(template).flatMap((path) => {
     const read = `${label} ${what} reads with${fieldsText(path.fields)}`;
 
@@ -1857,9 +1954,11 @@ export function promptFileDiagnostics(
   const diagnostics: WorkflowDiagnostic[] = withReadProblems(`step "${step.id}"`, 'prompt_file', parsed.template, step.with)
     .map((message): WorkflowDiagnostic => ({ file, ...at, field, message, code: 'bad_template' }));
 
-  let sites: ReadSite[] = [{
-    ...expressionSite(step.id, field, at, 'prompt_file', templateExpressions(parsed.template)), ...(step.forEach ? { item: true } : {}), code: 'bad_template',
-  }];
+  const promptSite: ReadSite = expressionSite(step.id, field, at, 'prompt_file', templateExpressions(parsed.template));
+
+  if (step.forEach) promptSite.item = true;
+  promptSite.code = 'bad_template';
+  let sites = [promptSite];
 
   // Check the reads in the step's own workflow, then hand what it reads of enclosing steps out, one workflow at a time.
   for (let level = levels.length - 1; level >= 0 && sites.length > 0; level -= 1) {

@@ -196,7 +196,9 @@ export type StepWorkflow =
 /** The workflow `step` runs, as its `workflow` names it, or undefined for a step that runs none. Every reader of `workflow` goes through here. */
 export function stepWorkflow({ workflow }: Pick<WorkflowStep, 'workflow'>): StepWorkflow | undefined {
   if (workflow === undefined) return undefined;
-  if (typeof workflow === 'string') return { kind: 'named', name: workflow };
+
+  if (!(workflow instanceof Object)) return { kind: 'named', name: workflow };
+
   return 'from' in workflow ? { kind: 'from', step: workflow.from } : { kind: 'inline', workflow };
 }
 
@@ -214,6 +216,7 @@ export function workflowRunBy(
   run: Pick<RunState, 'workflows' | 'admitted'>, step: Pick<WorkflowStep, 'workflow'>, prefix: string,
 ): WorkflowDefinition | InlineWorkflow | undefined {
   const runs = stepWorkflow(step);
+
   switch (runs?.kind) {
     case undefined:
       return undefined;
@@ -225,6 +228,7 @@ export function workflowRunBy(
       return run.admitted?.[`${prefix}${runs.step}`]?.definition;
     default: {
       const unhandled: never = runs;
+
       return unhandled;
     }
   }
@@ -241,15 +245,6 @@ export interface InlineWorkflow {
   steps: WorkflowStep[];
 }
 
-/** The inline workflow a step's `workflow` holds, or undefined when it names a workflow file, or the step runs none. */
-export function inlineWorkflowOf(workflow: string | InlineWorkflow | undefined): InlineWorkflow | undefined {
-  return workflow instanceof Object ? workflow : undefined;
-}
-
-/** The workflow file a step's `workflow` names, or undefined when it holds an inline workflow, or the step runs none. */
-export function workflowFileOf(workflow: string | InlineWorkflow | undefined): string | undefined {
-  return workflow instanceof Object ? undefined : workflow;
-}
 
 /** Values a workflow file sets for its steps. */
 export interface WorkflowDefaults {
@@ -489,6 +484,7 @@ export interface RunState {
  * the output field that held the workflow; and the workflow that field defines, which a `from` step runs.
  */
 export interface AdmittedWorkflow {
+  // oxlint-disable-next-line teamai/no-unsafe-dictionary-type -- the output as the producer's report held it, kept and hashed as is; admission parses only the field it reads
   output: Record<string, unknown>;
   hash: string;
   field: string;

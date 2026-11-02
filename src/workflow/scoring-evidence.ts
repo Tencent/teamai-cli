@@ -77,7 +77,7 @@ export function evidencePlan(run: RunState, subject: RunSubject, settling?: RunP
 interface GitIn { env: NodeJS.ProcessEnv; config: readonly string[]; expiresAt?: string | undefined }
 
 /** The time git has left before `expiresAt`, at least 1 ms: a timeout of 0 never stops it. Throws once it passed. */
-function timeLeft({ expiresAt }: GitIn): { timeout?: number } {
+function timeLeft({ expiresAt }: GitIn) {
   if (expiresAt === undefined) return {};
   const left = Date.parse(expiresAt) - Date.now();
 
@@ -136,6 +136,16 @@ async function exportRepo(checkout: string, gitIn: GitIn, commit: string, dir: s
   return sections;
 }
 
+/** `evidence.json`: what the judge's evidence covers, the commit its repo files are from, and what it could not include. */
+interface EvidenceManifest {
+  subject: RunSubject;
+  kind: ReturnType<typeof evidencePlan>['kind'];
+  ranges: ReturnType<typeof evidencePlan>['ranges'];
+  repoAt?: string;
+  gaps: EvidenceGap[];
+  omitted?: string[];
+}
+
 /** The fenced block a judge prompt quotes the evidence in, kept beside the files so a prompt can be assembled for any rubrics. */
 const FENCED = '.fenced.md';
 
@@ -192,12 +202,12 @@ export async function collectEvidence(
         gaps.add('commit_missing');
       }
     } else if (plan.repoAt) gaps.add('no_checkout');
-    const outputs: Record<string, unknown> = {};
+    const outputs = new Map<string, unknown>();
 
     for (const pass of plan.passes) {
       const name = `${pass.step}#${pass.pass}`;
 
-      if (pass.outputs !== undefined) { outputs[name] = pass.outputs; content = true; }
+      if (pass.outputs !== undefined) { outputs.set(name, pass.outputs); content = true; }
 
       const platform = pass.tool && AgentSession.platformForTool(pass.tool);
 
@@ -217,14 +227,17 @@ export async function collectEvidence(
       sections.push({ title: `transcripts/${name}.md`, body });
     }
 
-    const outputText = mask(JSON.stringify(outputs, null, 2));
+    const outputText = mask(JSON.stringify(Object.fromEntries(outputs), null, 2));
     await fs.writeFile(path.join(tmp, 'outputs.json'), outputText);
 
     if (omitted.length > 0) gaps.add('files_omitted');
 
-    const manifest = {
-      subject, kind: plan.kind, ranges: plan.ranges, ...(plan.repoAt ? { repoAt: plan.repoAt } : {}), gaps: [...gaps], ...(omitted.length > 0 ? { omitted } : {}),
-    };
+    const pinned: Pick<EvidenceManifest, 'repoAt'> = {};
+
+    if (plan.repoAt) pinned.repoAt = plan.repoAt;
+    const manifest: EvidenceManifest = { subject, kind: plan.kind, ranges: plan.ranges, ...pinned, gaps: [...gaps] };
+
+    if (omitted.length > 0) manifest.omitted = omitted;
 
     await fs.writeFile(path.join(tmp, 'evidence.json'), JSON.stringify(manifest, null, 2));
     sections.unshift({ title: 'evidence.json', body: JSON.stringify(manifest) });
@@ -253,7 +266,7 @@ export async function stageEvidence(config: LocalConfig, run: RunState, subject:
   if (source.settling) await fs.rm(dir, { recursive: true, force: true, maxRetries: 3 });
 
   const collected = await collectEvidence(config, run, subject, dir, { ...source, sessionCwd: source.checkout })
-    .catch((e: unknown) => {
+    .catch((e) => {
       log.warn(`The judge evidence of step "${subject.step}" could not be collected, so its judges find none: ${e instanceof Error ? e.message : String(e)}`);
 
       return { ok: false } as const;

@@ -53,7 +53,6 @@ export const TurnLimitsSchema = z.object({
 
 export type TurnLimits = z.infer<typeof TurnLimitsSchema>;
 
-/** Whether `limits` sets `limit`. */
 export function setsLimit(limits: TurnLimits, limit: Limit): boolean {
   switch (limit) {
     case 'timeout':
@@ -299,7 +298,13 @@ function raised<T extends Floor>(values: T, floor: Floor): T {
   // Denying the network keeps a step further from the member's machine, so only a floor of `false` raises a value.
   const network = floor.network === false ? false : values.network;
 
-  return { ...values, ...(isolation !== undefined ? { isolation } : {}), ...(network !== undefined ? { network } : {}) };
+  const result = { ...values };
+
+  if (isolation !== undefined) result.isolation = isolation;
+
+  if (network !== undefined) result.network = network;
+
+  return result;
 }
 
 /**
@@ -321,7 +326,12 @@ export interface EnvFacts {
 export type Executor = 'command' | 'prompt';
 
 /** Whether `can.env` covers a step run by `executor`, and the setup before it. */
-function envCovers(env: DriverCan['env'], executor: Executor): { step: boolean; setup: boolean } {
+interface EnvCover {
+  step: boolean;
+  setup: boolean;
+}
+
+function envCovers(env: DriverCan['env'], executor: Executor): EnvCover {
   switch (env) {
     case undefined:
     case false:
@@ -458,9 +468,14 @@ export function negotiate(offer: Offer, can: DriverCan, allow: Allow, env: EnvFa
   const maxTurns = offer.maxTurns !== undefined && can.max_turns && !limits.limits ? { maxTurns: offer.maxTurns } : {};
   const setupWithhold = [...new Set(guarded)].filter((key) => sameEnvName(setupKeys, key) === undefined).sort();
 
-  const setup = offer.setup && {
-    setup: { command: offer.setup.command, ...(covers.setup && (setupKeys.length > 0 || setupWithhold.length > 0) ? { envScope: { provide: setupKeys, withhold: setupWithhold } } : {}) },
-  };
+  const setup: Pick<Terms, 'setup'> = {};
+
+  if (offer.setup) {
+    const leased: LeaseSetup = { command: offer.setup.command };
+
+    if (covers.setup && (setupKeys.length > 0 || setupWithhold.length > 0)) leased.envScope = { provide: setupKeys, withhold: setupWithhold };
+    setup.setup = leased;
+  }
 
   return { kind: 'grant', terms: { requires, ...envScope, ...maxTurns, ...limits, ...setup, unenforced } };
 }

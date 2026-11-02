@@ -33,10 +33,14 @@ export function settledHere(run: RunState, pass: RunPass, install: string): bool
  */
 export function judgeablePasses(run: RunState): Array<{ pass: RunPass; definition: WorkflowStep }> {
   const definitionOf = stepDefinitions(run);
+
   return runPasses(run, agentPassOf).flatMap((pass) => {
     const definition: WorkflowStep | undefined = definitionOf(pass.step);
+
     if (!agentSucceeded(pass) || !definition) return [];
+
     if (definition.forEach && parseStepPath(pass.step).at(-1)?.index === undefined) return [];
+
     return [{ pass, definition }];
   });
 }
@@ -49,12 +53,17 @@ export function judgeablePasses(run: RunState): Array<{ pass: RunPass; definitio
 export function scoredPasses(run: RunState, install: string): ScorablePass[] {
   const all = runPasses(run, agentPassOf);
   const pinned = run.scorers ?? {};
+
   return judgeablePasses(run).flatMap(({ pass, definition }) => {
     const scorers = (definition.scorers?.names ?? []).filter((name) => Object.hasOwn(pinned, name));
+
     if (scorers.length === 0) return [];
+
     const owner = definition.workflow === undefined ? pass
       : firstSettled(passesWithin(run, all, pass.step, pass.pass).filter((child) => child.installId !== undefined));
+
     if (!settledHere(run, owner ?? pass, install)) return [];
+
     return [{ subject: { runId: run.id, step: pass.step, pass: pass.pass }, scorers }];
   });
 }
@@ -93,15 +102,19 @@ export async function verdictEntries(config: LocalConfig, run: RunState, now: st
   const definitionOf = stepDefinitions(run);
   const passes = scoredPasses(run, (await installOwner(config)).id).filter(({ subject }) => definitionOf(subject.step)?.scorers?.sampling === 'all');
   const labels = await LabelStore.local(config);
+
   const entries = passes.flatMap(({ subject, scorers }) => scorers.flatMap((scorer) => {
     const pin = run.scorers?.[scorer];
+
     return pin && pinnedDefinition(scorer, pin) ? [{ scorer, pin, subject }] : [];
   }));
+
   return Promise.all(entries.map(async ({ scorer, pin, subject }) => {
     const id = entryIdOf(scorer, subject);
     const [attempts, request] = await Promise.all([AttemptStore.ofEntry(config, id), AttemptStore.request(config, id)]);
     const own = labels.filter((label) => sameSubject(label, scorer, pin.sourceHash, subject));
-    const state = entryState({ labels: own, attempts, subjectChangedAt: run.updatedAt, ...(request ? { requestedAt: request.requestedAt } : {}), now });
+    const state = entryState({ labels: own, attempts, subjectChangedAt: run.updatedAt, requestedAt: request?.requestedAt, now });
+
     return { scorer, pin, subject, state, labels: own, attempts };
   }));
 }
@@ -115,7 +128,12 @@ export async function verdictEntries(config: LocalConfig, run: RunState, now: st
 export async function freezeVerdicts(config: LocalConfig, run: RunState, now: string): Promise<EntryVerdict[]> {
   return (await verdictEntries(config, run, now)).map((entry) => {
     const scoringCost = scoringCostOf(entry);
-    return { scorer: entry.scorer, step: entry.subject.step, pass: entry.subject.pass, outcome: outcomeOf(entry), ...(scoringCost ? { scoringCost } : {}) };
+
+    const verdict: EntryVerdict = { scorer: entry.scorer, step: entry.subject.step, pass: entry.subject.pass, outcome: outcomeOf(entry) };
+
+    if (scoringCost) verdict.scoringCost = scoringCost;
+
+    return verdict;
   });
 }
 
@@ -132,6 +150,7 @@ function outcomeOf({ state }: VerdictEntry): EntryVerdict['outcome'] {
       return { kind: 'unscored', because: 'run_ended' };
     default: {
       const unhandled: never = state;
+
       return unhandled;
     }
   }
@@ -145,10 +164,13 @@ function outcomeOf({ state }: VerdictEntry): EntryVerdict['outcome'] {
 function scoringCostOf({ state, attempts }: VerdictEntry): EntryVerdict['scoringCost'] {
   const spending = attempts.filter((attempt) => attempt.batch === undefined || attempt.batch[0] === attempt.entry);
   const [first] = spending.flatMap((attempt) => attempt.usage?.cost ?? []);
+
   if (!first) return undefined;
   const inUnit = spending.flatMap((attempt) => (attempt.usage?.cost?.unit === first.unit ? [attempt.usage.cost.amount] : []));
   const ranJudge = (attempt: AttemptRecord) => attempt.status === 'succeeded' || (attempt.status === 'failed' && (attempt.code === 'judge_failed' || attempt.code === 'judge_answer_invalid'));
+
   const complete = spending.every((attempt) => (attempt.usage?.cost ? attempt.usage.cost.unit === first.unit : !ranJudge(attempt)))
     && (state.kind !== 'labelled' || attempts.some((attempt) => attempt.status === 'succeeded'));
+
   return { amount: inUnit.reduce((sum, amount) => sum + amount, 0), unit: first.unit, complete };
 }

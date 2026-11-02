@@ -376,13 +376,12 @@ export function createLocalToolAdapter(
       }
 
       if (completed.error) {
-        return {
-          started: true,
-          exitCode: completed.exitCode,
-          ...applied,
-          ...(stopped ? { stoppedBy: stopped } : {}),
-          failure: { code: 'tool_failed', message: `${tool} could not be started` },
-        };
+        const failed: LocalToolResult = { started: true, exitCode: completed.exitCode, ...applied };
+
+        if (stopped) failed.stoppedBy = stopped;
+        failed.failure = { code: 'tool_failed', message: `${tool} could not be started` };
+
+        return failed;
       }
 
       const fileResult = await readResultFile(input.resultPath);
