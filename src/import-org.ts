@@ -59,7 +59,13 @@ export interface ImportFromOrgOptions {
  *
  * @param org 用户输入
  */
-function parseOrgInput(org: string): { providerName: string; orgPath: string } {
+/** The provider an org input is hosted on, and the org's path there. */
+interface OrgTarget {
+    providerName: string;
+    orgPath: string;
+}
+
+function parseOrgInput(org: string): OrgTarget {
     const trimmed = org.trim();
 
     // 完整 HTTPS URL

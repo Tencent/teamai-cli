@@ -42,11 +42,11 @@ export interface ImportFromRepoListResult {
  * @returns       排序后的副本
  */
 function sortByPriority(entries: RepoListEntry[]): RepoListEntry[] {
-    const order: Record<string, number> = { high: 0, normal: 1, low: 2 };
+    const order = new Map<string, number>([['high', 0], ['normal', 1], ['low', 2]]);
 
     return [...entries].sort((a, b) => {
-        const pa = order[a.priority ?? 'normal'] ?? 1;
-        const pb = order[b.priority ?? 'normal'] ?? 1;
+        const pa = order.get(a.priority ?? 'normal') ?? 1;
+        const pb = order.get(b.priority ?? 'normal') ?? 1;
 
         return pa - pb;
     });
@@ -185,7 +185,7 @@ export async function importFromRepoList(
             await publishTeamwikiViaMR(target.team, '[teamai] Batch import: graph');
         } catch (e) {
             DetachedTeamRepoError.rethrow(e);
-            log.warn(`[git] batch push failed (non-blocking): ${(e as Error).message}`);
+            log.warn(`[git] batch push failed (non-blocking): ${e instanceof Error ? e.message : String(e)}`);
         }
     }
 

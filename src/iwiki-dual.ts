@@ -8,6 +8,7 @@
 
 import path from 'node:path';
 import fs from 'fs-extra';
+import { z } from 'zod';
 
 import { IWikiClient } from './utils/iwiki-client.js';
 import type { IWikiDocument, IWikiPage } from './utils/iwiki-client.js';
@@ -28,11 +29,11 @@ const DOWNLOAD_BATCH_SIZE = 5;
 const DEFAULT_MAX_PAGES = 200;
 
 /** 各章节的中文标题。 */
-const SECTION_TITLES: Record<string, string> = {
-    'business-api': '业务接口',
-    'external-knowledge': '外部知识源',
-    'glossary': '术语表',
-};
+const SECTION_TITLES = new Map<string, string>([
+    ['business-api', '业务接口'],
+    ['external-knowledge', '外部知识源'],
+    ['glossary', '术语表'],
+]);
 
 // ─── 类型 ────────────────────────────────────────────────
 
@@ -56,18 +57,25 @@ export interface IWikiDualOptions {
 }
 
 /** AI 抽取的三章节内容。 */
-interface AiSectionOutput {
-    'business-api': string;
-    'external-knowledge': string;
-    'glossary': string;
-}
+/** The sections the AI extracted; one that is not text reads as absent, and a reply that is not an object as none. */
+const AiSectionOutputSchema = z.object({
+    'business-api': z.string().optional().catch(undefined),
+    'external-knowledge': z.string().optional().catch(undefined),
+    'glossary': z.string().optional().catch(undefined),
+});
 
 // ─── 辅助函数 ────────────────────────────────────────────
 
 /**
  * 解析用户输入，识别 Space ID 或页面 ID（与 import-iwiki 保持一致）。
  */
-function parseIWikiInput(input: string): { type: 'space' | 'page'; id: string } {
+/** What an iWiki input names: a whole space, or one page. */
+interface IWikiTarget {
+    type: 'space' | 'page';
+    id: string;
+}
+
+function parseIWikiInput(input: string): IWikiTarget {
     const trimmed = input.trim();
 
     if (/^\d+$/.test(trimmed)) {
@@ -207,7 +215,7 @@ function replaceManagedSection(
     }
 
     // 找到对应章节标题并追加
-    const title = SECTION_TITLES[sectionKey] ?? sectionKey;
+    const title = SECTION_TITLES.get(sectionKey) ?? sectionKey;
     const headingRegex = new RegExp(`(##\\s+${title}\\s*\\n)`, 'm');
     const headingMatch = content.match(headingRegex);
 
@@ -316,10 +324,10 @@ export async function importFromIWikiDual(opts: IWikiDualOptions): Promise<{
     const rawOutput = (await callTool(prompt, { launchedBy: 'iwiki-dual' })).text;
     const jsonStr = extractJson(rawOutput);
 
-    let aiOutput: Partial<AiSectionOutput> = {};
+    let aiOutput: z.infer<typeof AiSectionOutputSchema> = {};
 
     try {
-        aiOutput = JSON.parse(jsonStr) as Partial<AiSectionOutput>;
+        aiOutput = AiSectionOutputSchema.safeParse(JSON.parse(jsonStr)).data ?? {};
     } catch (err) {
         log.warn(`iWiki dual import: AI output is not valid JSON; skipped all sections. Error: ${String(err)}`);
 

@@ -301,8 +301,8 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
       // check is advisory: a broken projects.yaml narrows it to the shared
       // root, as recall does.
       const learningsNamespaces = await deliveredLearningsNamespaces(localConfig)
-        .catch((e: unknown) => {
-          log.warn(`The duplicate check reads the shared learnings only: ${e instanceof Error ? e.message : String(e)}`);
+        .catch((cause: unknown) => {
+          log.warn(`The duplicate check reads the shared learnings only: ${cause instanceof Error ? cause.message : String(cause)}`);
 
           return [];
         });
@@ -369,8 +369,8 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
             // learning was written into.
             const report = await publishQueuedLearnings(localConfig, localConfig.username);
             // Recall finds them where they are now: published, or still queued.
-            await rebuildIndexAfterContribute(localConfig).catch((e: unknown) =>
-              log.debug(`import: index rebuild skipped: ${e instanceof Error ? e.message : String(e)}`));
+            await rebuildIndexAfterContribute(localConfig).catch((cause: unknown) =>
+              log.debug(`import: index rebuild skipped: ${cause instanceof Error ? cause.message : String(cause)}`));
 
             const queued = ctx.items
               .filter((item) => item.learningFile)
@@ -431,7 +431,7 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
                 });
                 ctx.didUpdate = true;
               } catch (e) {
-                skipped.push(`Incremental update skipped: ${(e as Error).message}`);
+                skipped.push(`Incremental update skipped: ${e instanceof Error ? e.message : String(e)}`);
               }
             }
 
@@ -537,7 +537,7 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
           sourceDir: dirPath,
           slug,
           // A suffixed slug is a new codebase; the directory-named evidence is another source's.
-          ...(slug === dirSlug ? { legacySlug } : {}),
+          legacySlug: slug === dirSlug ? legacySlug : undefined,
           wikiRoot,
           incremental: opts.incremental ?? false,
           skipEnrich: opts.skipEnrich ?? false,
@@ -602,7 +602,7 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
       return;
     }
   } catch (err: unknown) {
-    log.error((err as Error).message);
+    log.error(err instanceof Error ? err.message : String(err));
     process.exit(1);
   }
 }

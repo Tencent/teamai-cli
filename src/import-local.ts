@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 
+import { z } from 'zod';
+
 import { callToolParallel, isOverrideInvalid } from './tool-launch/call.js';
 import { listFilesRecursive, readFileSafe, writeFile, expandHome, ensureDir } from './utils/fs.js';
 import { log } from './utils/logger.js';
@@ -93,6 +95,16 @@ function buildClassifyPrompt(filePath: string, rawContent: string): string {
  * @param output      AI 输出文本
  * @returns           ClassifiedItem
  */
+/** The AI's classification of a file; a field of the wrong type reads as absent, and a tag that is not text is dropped. */
+const ClassifyReplySchema = z.object({
+  type: z.unknown().optional(),
+  title: z.string().optional().catch(undefined),
+  summary: z.string().optional().catch(undefined),
+  tags: z.array(z.string().optional().catch(undefined)).catch([]),
+  confidence: z.number().optional().catch(undefined),
+  isPersonal: z.boolean().optional().catch(undefined),
+});
+
 function parseClassifyOutput(
   sourcePath: string,
   rawContent: string,
@@ -102,14 +114,7 @@ function parseClassifyOutput(
   const cleaned = output.replace(/^```[a-z]*\n?/i, '').replace(/\n?```$/i, '').trim();
 
   try {
-    const parsed = JSON.parse(cleaned) as {
-      type?: string;
-      title?: string;
-      summary?: string;
-      tags?: unknown[];
-      confidence?: number;
-      isPersonal?: boolean;
-    };
+    const parsed = ClassifyReplySchema.parse(JSON.parse(cleaned));
 
     const typeValue = parsed.type;
 
@@ -122,13 +127,11 @@ function parseClassifyOutput(
       sourcePath,
       rawContent,
       type: knownType,
-      title: typeof parsed.title === 'string' ? parsed.title : path.basename(sourcePath),
-      summary: typeof parsed.summary === 'string' ? parsed.summary : '',
-      tags: Array.isArray(parsed.tags)
-        ? (parsed.tags as string[]).filter((t) => typeof t === 'string')
-        : [],
-      confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0,
-      isPersonal: typeof parsed.isPersonal === 'boolean' ? parsed.isPersonal : false,
+      title: parsed.title ?? path.basename(sourcePath),
+      summary: parsed.summary ?? '',
+      tags: parsed.tags.flatMap((tag) => (tag === undefined ? [] : [tag])),
+      confidence: parsed.confidence ?? 0,
+      isPersonal: parsed.isPersonal ?? false,
     };
   } catch (parseErr: unknown) {
     // 解析失败 → 保守策略：标记为个人（不导入团队库），confidence=0
@@ -377,6 +380,7 @@ export async function interactiveReview(
   if (opts.resume) {
     try {
       const raw = fs.readFileSync(expandHome(sessionPath), 'utf-8');
+      // SAFETY: persistSession is the only writer of the session file, and it writes an ImportSession.
       session = JSON.parse(raw) as ImportSession;
     } catch (loadErr: unknown) {
       // 文件不存在或解析失败 → 新建会话

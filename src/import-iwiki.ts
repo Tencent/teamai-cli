@@ -27,7 +27,13 @@ import { pathExists } from './utils/fs.js';
  * @returns      解析结果 `{ type, id }`
  * @throws       无法识别格式时抛出 Error
  */
-function parseIWikiInput(input: string): { type: 'space' | 'page'; id: string } {
+/** What an iWiki input names: a whole space, or one page. */
+interface IWikiTarget {
+  type: 'space' | 'page';
+  id: string;
+}
+
+function parseIWikiInput(input: string): IWikiTarget {
   const trimmed = input.trim();
 
   // 纯数字视为 space id
@@ -56,7 +62,13 @@ function parseIWikiInput(input: string): { type: 'space' | 'page'; id: string } 
  * @param doc  iWiki 文档对象
  * @returns    候选格式对象
  */
-function docToCandidate(doc: IWikiDocument): { path: string; rawContent: string } {
+/** A document as classifyWithAI takes it. */
+interface ClassifyCandidate {
+  path: string;
+  rawContent: string;
+}
+
+function docToCandidate(doc: IWikiDocument): ClassifyCandidate {
   return {
     path: `iwiki://p/${doc.docid}`,
     rawContent: doc.content.slice(0, 3000),
@@ -301,7 +313,7 @@ export async function reconcileIwikiWithCodebase(
 
     for (const project of projects) {
       const projectDir = path.join(evidenceDir, project);
-      const files = await readdir(projectDir).catch(() => [] as string[]);
+      const files = await readdir(projectDir).catch(() => []);
 
       for (const file of files) {
         if (!file.endsWith('.md')) continue;

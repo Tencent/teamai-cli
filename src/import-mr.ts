@@ -3,6 +3,7 @@ import path from 'node:path';
 import readline from 'node:readline/promises';
 
 import matter from 'gray-matter';
+import { z } from 'zod';
 
 import { fetchGitHubPR } from './providers/github/mr-fetch.js';
 import { fetchGitLabMR } from './providers/gitlab/mr-fetch.js';
@@ -230,7 +231,19 @@ ${diff3000}${threads ? `\n\nReview threads（${mr.discussions!.length}）：\n${
  * @param raw  Raw string returned by the AI
  * @returns    Normalized content plus parsed frontmatter data (empty object on parse failure)
  */
-export function parseLearningDraft(raw: string): { content: string; data: Record<string, unknown> } {
+/** The frontmatter fields a learning draft is read for; one of the wrong type reads as absent, and other keys pass through. */
+const DraftFrontmatterSchema = z.looseObject({
+  title: z.string().optional().catch(undefined),
+  tags: z.array(z.string().optional().catch(undefined)).optional().catch(undefined),
+});
+
+/** A learning draft's normalized content and its frontmatter. */
+interface ParsedLearningDraft {
+  content: string;
+  data: z.infer<typeof DraftFrontmatterSchema>;
+}
+
+export function parseLearningDraft(raw: string): ParsedLearningDraft {
   let content = raw
     .replace(/^```(?:markdown|md|yaml)?\s*\n/m, '')
     .replace(/\n```\s*$/, '');
@@ -245,7 +258,7 @@ export function parseLearningDraft(raw: string): { content: string; data: Record
   try {
     const parsed = matter(content);
 
-    return { content, data: parsed.data };
+    return { content, data: DraftFrontmatterSchema.safeParse(parsed.data).data ?? {} };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     log.warn(`⚠️  Failed to parse learning frontmatter, using fallback: ${message}`);
@@ -365,7 +378,7 @@ export async function importFromMR(opts: {
   // ── 步骤 3：解析 learning 草稿 + dedup ─────────────────
   const { content: normalizedContent, data: frontmatter } = parseLearningDraft(learningContent);
   learningContent = normalizedContent;
-  const learningTitle = typeof frontmatter['title'] === 'string' ? frontmatter['title'] : mr.title;
+  const learningTitle = frontmatter.title ?? mr.title;
 
   const draftKeywords = extractKeywords(learningContent);
 
@@ -380,9 +393,7 @@ export async function importFromMR(opts: {
   // ── 步骤 4：打印摘要 ────────────────────────────────────
   log.info(`✅ Learning draft generated: ${learningTitle}`);
 
-  const tags = Array.isArray(frontmatter['tags'])
-    ? frontmatter['tags'].filter((tag): tag is string => typeof tag === 'string')
-    : [];
+  const tags = (frontmatter.tags ?? []).flatMap((tag) => (tag === undefined ? [] : [tag]));
 
   if (tags.length > 0) {
     log.info(`   Tags: ${tags.join(', ')}`);

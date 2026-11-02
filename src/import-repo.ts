@@ -18,6 +18,7 @@ import { log } from './utils/logger.js';
 import { hasFrontmatter, stripFrontmatter } from './utils/frontmatter.js';
 import { assertTeamwikiWritable, lockTeamwiki, resolveTeamwiki } from './utils/teamwiki-root.js';
 import { isOverrideInvalid } from './tool-launch/call.js';
+import { SourceManifestSchema } from './wiki-engine/code-knowledge/code-collector.js';
 
 // ─── Types ──────────────────────────────────────────────
 
@@ -295,8 +296,8 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<boole
     // Where the evidence goes: <output>/teamwiki, else the team repo's teamwiki/.
     // Resolved before the clone so a missing team repo fails fast; a preview
     // without one still reports what it can.
-    const target = await resolveTeamwiki({ output, dryRun }).catch((error: unknown) => {
-        if (!dryRun) throw error;
+    const target = await resolveTeamwiki({ output, dryRun }).catch((cause: unknown) => {
+        if (!dryRun) throw cause;
 
         return undefined;
     });
@@ -308,7 +309,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<boole
     // only when this teamwiki already holds that commit, not when another
     // --output or team repo was imported at it.
     const publishedHead = async (): Promise<string | undefined> => evidenceDest
-        ? ((await fs.readJson(path.join(evidenceDest, 'source-manifest.json')).catch(() => null)) as { headSha?: string } | null)?.headSha
+        ? SourceManifestSchema.safeParse(await fs.readJson(path.join(evidenceDest, 'source-manifest.json')).catch(() => null)).data?.headSha
         : undefined;
 
     // A preview asks for the target remote commit and stops: the clone replaces the
@@ -323,7 +324,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<boole
             });
         } catch (error) {
             if (!useIncremental) throw error;
-            log.warn(`[incremental] preview refresh failed, previewing a full clone instead: ${(error as Error).message}`);
+            log.warn(`[incremental] preview refresh failed, previewing a full clone instead: ${error instanceof Error ? error.message : String(error)}`);
             head = await remoteHeadSha(url, providerName, { forceSsh, forceAnonymous });
             previewIncremental = false;
         }

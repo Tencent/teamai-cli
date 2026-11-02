@@ -1,9 +1,22 @@
 import { readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+
+import { z } from 'zod';
 import { pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { HOT_TEMPLATE } from './wiki-engine/adapters/templates.js';
-import type { CodebaseOutputManifestV2 } from './wiki-engine/manifest-schema.js';
+
+/** The parts of an evidence `_manifest.json` the index reads. */
+const IndexedManifestSchema = z.object({
+  components: z.array(z.object({ slug: z.string(), responsibilities: z.array(z.string()).optional() })),
+});
+
+/** An evidence `_domains.json`; a field of the wrong type reads as absent. */
+const DomainMetaSchema = z.object({
+  domain: z.string().optional().catch(undefined),
+  description: z.string().optional().catch(undefined),
+  keywords: z.array(z.string()).optional().catch(undefined),
+});
 
 interface ProjectInfo {
   slug: string;
@@ -79,7 +92,7 @@ export async function rebuildWikiIndex(teamwikiRoot: string): Promise<void> {
     if (await pathExists(manifestPath)) {
       try {
         const raw = await readFile(manifestPath, 'utf-8');
-        const manifest = JSON.parse(raw) as CodebaseOutputManifestV2;
+        const manifest = IndexedManifestSchema.parse(JSON.parse(raw));
 
         for (const comp of manifest.components) {
           if (comp.responsibilities) info.responsibilities.push(...comp.responsibilities);
@@ -94,7 +107,7 @@ export async function rebuildWikiIndex(teamwikiRoot: string): Promise<void> {
     if (await pathExists(domainsPath)) {
       try {
         const raw = await readFile(domainsPath, 'utf-8');
-        const domainMeta = JSON.parse(raw) as { domain?: string; description?: string; keywords?: string[] };
+        const domainMeta = DomainMetaSchema.parse(JSON.parse(raw));
 
         if (domainMeta.domain) {
           info.domain = domainMeta.domain;

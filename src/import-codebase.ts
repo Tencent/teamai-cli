@@ -6,6 +6,8 @@ import fs from 'fs-extra';
 import { z } from 'zod';
 
 import { extractCodebase, sourceRepositoryMetadata } from './codebase-extract.js';
+import { JsonValueSchema, type JsonValue } from './types.js';
+import { SourceManifestSchema } from './wiki-engine/code-knowledge/code-collector.js';
 import type { TeamaiInit } from './config.js';
 import { log } from './utils/logger.js';
 import { remotesMatch } from './utils/git.js';
@@ -74,27 +76,26 @@ export interface ImportCodebaseOptions {
   sourceMrUrl?: string | readonly string[];
 }
 
-type EvidenceJson = Record<string, unknown>;
+/** An evidence JSON object, its keys in file order so a rewrite keeps them in place. */
+const EvidenceJsonSchema = z.record(z.string(), JsonValueSchema);
 
+type EvidenceJson = z.infer<typeof EvidenceJsonSchema>;
+
+/** The evidence JSON object in `file`, or null when it is missing, unreadable, or not an object. */
 async function readJsonIfPresent(file: string): Promise<EvidenceJson | null> {
   try {
-    return (await fs.readJson(file)) as EvidenceJson;
+    return EvidenceJsonSchema.safeParse(await fs.readJson(file)).data ?? null;
   } catch {
     return null;
   }
 }
 
+/** A manifest's components; an entry without a slug names none. */
+const ManifestComponentsSchema = z.array(z.object({ slug: z.string().min(1) }).nullable().catch(null)).catch([]);
+
 /** The component slugs a published or freshly extracted manifest declares. */
 function componentSlugs(manifest: EvidenceJson | null): Set<string> {
-  const components = manifest?.['components'];
-
-  if (!Array.isArray(components)) return new Set();
-
-  return new Set(components
-    .map((component) => (component && typeof component === 'object'
-      ? (component as Record<string, unknown>)['slug']
-      : undefined))
-    .filter((slug): slug is string => typeof slug === 'string' && slug.length > 0));
+  return new Set(ManifestComponentsSchema.parse(manifest?.['components']).flatMap((component) => (component ? [component.slug] : [])));
 }
 
 /** The parts of `_manifest.json` a skipped-enrichment import merges; the rest passes through. */
@@ -109,7 +110,7 @@ const CodebaseManifestSchema = z.object({
  * and the edges between them), with the doc path and entrypoints just
  * extracted; a new component keeps its static entry.
  */
-function keepEnrichedComponents(manifests: { published: unknown; staged: unknown }): Record<string, unknown> | null {
+function keepEnrichedComponents(manifests: { published: EvidenceJson | null; staged: EvidenceJson | null }) {
   const publishedManifest = CodebaseManifestSchema.safeParse(manifests.published);
   const stagedManifest = CodebaseManifestSchema.safeParse(manifests.staged);
 
@@ -371,8 +372,8 @@ async function seedBaseline(wikiRoot: string, stagingWiki: string, slug: string)
   const rootManifest = path.join(wikiRoot, 'source-manifest.json');
   const ownIndices = path.join(evidenceDir, '.indices');
 
-  const readManifest = (file: string) =>
-    fs.readJson(file).catch(() => null) as Promise<{ project?: string; headSha?: string } | null>;
+  const readManifest = async (file: string) =>
+    SourceManifestSchema.safeParse(await fs.readJson(file).catch(() => null)).data ?? null;
 
   let manifest: string | undefined;
   let indices: string | undefined;
@@ -500,7 +501,7 @@ export async function importCodebase(opts: ImportCodebaseOptions): Promise<boole
     const removedComponents = new Set([...publishedComponents].filter((component) => !currentComponents.has(component)));
 
     const stagedDocs = new Set(
-      await fs.readdir(path.join(stagingEvidence, 'docs')).catch(() => [] as string[]),
+      await fs.readdir(path.join(stagingEvidence, 'docs')).catch(() => []),
     );
 
     const stagedDomains = await fs.pathExists(path.join(stagingEvidence, '_domains.json'));
@@ -583,14 +584,16 @@ export async function importCodebase(opts: ImportCodebaseOptions): Promise<boole
         const domains = await readJsonIfPresent(domainsPath);
 
         if (domains) {
+          // A JSON value that is not a string is in neither set, so it is dropped from components and kept in keywords.
+          const current = new Set<JsonValue>(currentComponents);
+          const removed = new Set<JsonValue>(removedComponents);
+
           if (Array.isArray(domains['components']) && stagedManifest) {
-            domains['components'] = domains['components']
-              .filter((component): component is string => typeof component === 'string' && currentComponents.has(component));
+            domains['components'] = domains['components'].filter((component) => current.has(component));
           }
 
           if (Array.isArray(domains['keywords']) && removedComponents.size > 0) {
-            domains['keywords'] = domains['keywords']
-              .filter((keyword) => typeof keyword !== 'string' || !removedComponents.has(keyword));
+            domains['keywords'] = domains['keywords'].filter((keyword) => !removed.has(keyword));
           }
 
           await fs.writeJson(domainsPath, domains, { spaces: 2 });
@@ -652,7 +655,7 @@ export async function reconcileAndDeepEnrich(params: {
       log.info(`  reconcile: ${result.mappings} mappings, ${result.gaps.length} gaps, ${result.graphEdges.length} MAPS_TO edges`);
     }
   } catch (err) {
-    log.debug(`reconcile skipped: ${(err as Error).message}`);
+    log.debug(`reconcile skipped: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   const evidenceDir = path.join(wikiRoot, 'evidence', 'code', slug);
@@ -703,7 +706,7 @@ export async function refreshTeamwikiIndexes(wikiRoot: string): Promise<void> {
     const { aggregateGlobalGraph } = await import('./graph-aggregate.js');
     await aggregateGlobalGraph(wikiRoot);
   } catch (e) {
-    log.warn(`[graph] global aggregation failed (non-blocking): ${(e as Error).message}`);
+    log.warn(`[graph] global aggregation failed (non-blocking): ${e instanceof Error ? e.message : String(e)}`);
   }
 
   try {
