@@ -4,6 +4,7 @@ import path from 'node:path';
 import chalk from 'chalk';
 
 import { pathExists } from './utils/fs.js';
+import type { LintAssetGraph } from './lint-asset-graph.js';
 import type { GraphIndex } from './wiki-engine/adapters/index.js';
 
 export type WikiLintSeverity = 'high' | 'medium' | 'low' | 'info';
@@ -24,12 +25,23 @@ export interface WikiLintReport {
     low: number;
     info: number;
   };
+  /**
+   * Graph metrics from `.indices/graph-index.json`; `null` when the graph is
+   * missing or corrupt — "not checked", never a measured 0% (#1637 review).
+   * The field can be `null` in every mode, standalone `--output` included:
+   * scripts reading `graphHealth.connectivity` must handle it.
+   */
   graphHealth: {
     nodeCount: number;
     edgeCount: number;
     orphanNodes: number;
     connectivity: number;
-  };
+  } | null;
+  /**
+   * The member's asset-relation counts (#1562). Absent with standalone
+   * `--output` or when there is no member: then there is no asset data.
+   */
+  assetGraph?: LintAssetGraph;
 }
 
 export async function lintTeamwiki(opts: {
@@ -162,8 +174,9 @@ export async function lintTeamwiki(opts: {
     }
   }
 
-  // Graph health metrics
-  let graphHealth = { nodeCount: 0, edgeCount: 0, orphanNodes: 0, connectivity: 0 };
+  // Graph health metrics; null stays "not checked" when the graph is missing
+  // or corrupt, so a JSON reader never mistakes it for a measured 0% (#1637).
+  let graphHealth: { nodeCount: number; edgeCount: number; orphanNodes: number; connectivity: number } | null = null;
   if (graph) {
     const connectedNodes = new Set<string>();
     for (const edge of graph.edges) {
@@ -217,34 +230,46 @@ export function formatWikiLintReport(report: WikiLintReport): string {
 
   lines.push(chalk.bold('=== teamwiki/ knowledge graph health check ==='));
   lines.push('');
-  lines.push(`Graph: ${report.graphHealth.nodeCount} nodes, ${report.graphHealth.edgeCount} edges, connectivity ${(report.graphHealth.connectivity * 100).toFixed(0)}%`);
-  if (report.graphHealth.orphanNodes > 0) {
-    lines.push(chalk.dim(`  (${report.graphHealth.orphanNodes} orphan nodes)`));
+  if (report.graphHealth === null) {
+    lines.push('graph: not checked (graph-index.json missing or corrupt)');
+  } else {
+    lines.push(`Graph: ${report.graphHealth.nodeCount} nodes, ${report.graphHealth.edgeCount} edges, connectivity ${(report.graphHealth.connectivity * 100).toFixed(0)}%`);
+    if (report.graphHealth.orphanNodes > 0) {
+      lines.push(chalk.dim(`  (${report.graphHealth.orphanNodes} orphan nodes)`));
+    }
   }
   lines.push('');
 
   if (report.issues.length === 0) {
     lines.push(chalk.green('✓ No issues'));
-    return lines.join('\n');
-  }
-
-  const byCategory = new Map<string, WikiLintIssue[]>();
-  for (const issue of report.issues) {
-    const existing = byCategory.get(issue.category) ?? [];
-    existing.push(issue);
-    byCategory.set(issue.category, existing);
-  }
-
-  for (const [category, categoryIssues] of byCategory) {
-    lines.push(chalk.bold(`[${category}] (${categoryIssues.length})`));
-    for (const issue of categoryIssues) {
-      const sevColor = issue.severity === 'high' ? chalk.red
-        : issue.severity === 'medium' ? chalk.yellow : chalk.dim;
-      lines.push(`  ${sevColor(`[${issue.severity}]`)} ${issue.location}: ${issue.message}`);
+  } else {
+    const byCategory = new Map<string, WikiLintIssue[]>();
+    for (const issue of report.issues) {
+      const existing = byCategory.get(issue.category) ?? [];
+      existing.push(issue);
+      byCategory.set(issue.category, existing);
     }
-    lines.push('');
+
+    for (const [category, categoryIssues] of byCategory) {
+      lines.push(chalk.bold(`[${category}] (${categoryIssues.length})`));
+      for (const issue of categoryIssues) {
+        const sevColor = issue.severity === 'high' ? chalk.red
+          : issue.severity === 'medium' ? chalk.yellow : chalk.dim;
+        lines.push(`  ${sevColor(`[${issue.severity}]`)} ${issue.location}: ${issue.message}`);
+      }
+      lines.push('');
+    }
+
+    lines.push(`Total: ${report.summary.high} high, ${report.summary.medium} medium, ${report.summary.low} low, ${report.summary.info} info`);
   }
 
-  lines.push(`Total: ${report.summary.high} high, ${report.summary.medium} medium, ${report.summary.low} low, ${report.summary.info} info`);
+  if (report.assetGraph) {
+    lines.push(formatAssetGraphLine(report.assetGraph));
+  }
   return lines.join('\n');
+}
+
+/** The one asset-count line `--lint` prints after the report (#1562). */
+export function formatAssetGraphLine(graph: LintAssetGraph): string {
+  return `Assets: ${graph.assetCount}, relations: ${graph.relationCount}, without a relation: ${graph.withoutRelation.length}, unresolved: ${graph.unresolved.length}`;
 }

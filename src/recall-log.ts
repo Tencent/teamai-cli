@@ -19,6 +19,19 @@ import path from 'node:path';
 import { appendJsonlBatch, readJsonl } from './utils/jsonl-store.js';
 import { getDataHome, getTeamaiHomeDir } from './types.js';
 import type { KnowledgeType, LocalConfig } from './types.js';
+import type { AssetRelationType } from './asset-relations.js';
+
+/**
+ * One `Related:` line's target, as a run records it for a doc (#1562):
+ * exactly what recall printed, `direction` naming the arrow.
+ */
+export interface RelatedRef {
+  relation: AssetRelationType;
+  /** `out` for a printed `→` line, `in` for `←`. */
+  direction: 'out' | 'in';
+  /** The resolved path the line printed. */
+  path: string;
+}
 
 /** A doc a run returned, as recall printed it. */
 export interface RecalledDoc {
@@ -32,6 +45,8 @@ export interface RecalledDoc {
   score: number;
   /** False for an inherited user-scope doc while a project is active: it stays read-only. */
   eligible: boolean;
+  /** The `Related:` targets the run printed for this doc (#1562); absent when none. */
+  related?: RelatedRef[];
 }
 
 /**

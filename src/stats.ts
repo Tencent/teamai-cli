@@ -323,9 +323,9 @@ export async function showStats(options: ShowStatsOptions = {}): Promise<void> {
     console.log(`Recall (last ${RECALL_SESSIONS_SHOWN} sessions):`);
     console.log('');
     const cells = recallRows.map((r) => [
-      r.session.slice(0, 8), r.agent ?? '-', String(r.runs), String(r.recalled), String(r.adopted),
+      r.session.slice(0, 8), r.agent ?? '-', String(r.runs), String(r.recalled), String(r.adopted), String(r.viaRelation),
     ]);
-    const header = ['session', 'agent', 'runs', 'recalled', 'adopted'];
+    const header = ['session', 'agent', 'runs', 'recalled', 'adopted', 'via relation'];
     const widths = header.map((h, i) => Math.max(h.length, ...cells.map((c) => c[i].length)));
     // Text columns left-aligned, counts right-aligned.
     const format = (row: string[]): string => `  ${row.map((c, i) => (i < 2 ? c.padEnd(widths[i]) : c.padStart(widths[i]))).join('  ')}`;

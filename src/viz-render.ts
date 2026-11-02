@@ -264,6 +264,43 @@ function renderSilentSection(silent: EntryMetric[]): string {
   ].join('');
 }
 
+/** Render the asset-relation health section (#1562 part 2): the counts headline plus the assets behind each count, as an HTML string. */
+function renderRelationsSection(data: VizData): string {
+  const rel = data.relations;
+  const headline =
+    `${rel.assetCount} assets · ${rel.relationCount} relations · ` +
+    `${rel.withoutRelation.length} without a relation · ${rel.unresolved.length} unresolved`;
+  const details = (title: string, items: readonly string[]): string => {
+    if (items.length === 0) return '';
+    const rows = items.map((item) => `<li><code>${escapeHtml(item)}</code></li>`).join('');
+    return [
+      `<details>`,
+      `  <summary><span data-i18n>${title}</span> (${items.length})</summary>`,
+      `  <ul>${rows}</ul>`,
+      `</details>`,
+    ].join('');
+  };
+  // The counts resolve against this report's own scope and say so: a team repo
+  // and a personal ~/.teamai resolve different relation sets.
+  const scopeNote =
+    `<p class="muted"><span data-i18n>Resolved for</span> ` +
+    `<span class="source-badge source-${data.source.scope}">${escapeHtml(data.source.label)}</span></p>`;
+  const silentLine =
+    rel.silentAndWithoutRelation.length === 0
+      ? `<p><span data-i18n>Silent and without a relation</span>: <span data-i18n>none</span></p>`
+      : details('Silent and without a relation', rel.silentAndWithoutRelation);
+  return [
+    `<section id="relations">`,
+    `  <h2 data-i18n>Relations</h2>`,
+    `  ${scopeNote}`,
+    `  <p>${escapeHtml(headline)}</p>`,
+    `  ${details('Without a relation', rel.withoutRelation)}`,
+    `  ${silentLine}`,
+    `  ${details('Unresolved', rel.unresolved)}`,
+    `</section>`,
+  ].join('');
+}
+
 /** Render the monthly last-recall trend line chart section as an HTML string. */
 function renderTrendSection(trend: TrendPoint[]): string {
   const chart = renderLineChart(trend);
@@ -394,6 +431,7 @@ export function renderDashboardReport(data: VizData): { context: string; mainten
   return {
     context: renderOverviewCards(data) + renderCoverageSection(data.coverage)
       + renderTopRecalledSection(data.topRecalled) + renderSilentSection(data.silent)
+      + renderRelationsSection(data)
       + renderTrendSection(data.trend) + renderAuthorsSection(data.authors),
     maintenance: renderMaintenanceSection(data),
   };
@@ -748,6 +786,7 @@ export function renderReport(data: VizData): string {
     renderCoverageSection(data.coverage),
     renderTopRecalledSection(data.topRecalled),
     renderSilentSection(data.silent),
+    renderRelationsSection(data),
     renderTrendSection(data.trend),
     renderAuthorsSection(data.authors),
     renderMaintenanceSection(data),
