@@ -43,6 +43,13 @@ OpenCode hooks use the Node executable and TeamAI entry recorded by `teamai hook
 
 `doctor` checks the whole Hermes `SOUL.md`, including personal text. An explicit `context_file_max_chars` in Hermes' `config.yaml` is a hard cap. Without it, the cap depends on the selected model; files over the 20,000-character minimum produce an informational warning. Shorten the file or review the cap; `pull` does not truncate your instructions.
 
+In a project, Hermes gets the team instructions from teamai's plugin section, which shares 8,000 characters and 32 sections with every other plugin's. Hermes fills them in section id order and drops a section that does not fit whole. Which sections other plugins add is only known once they run, so `doctor` reads the last outcome Hermes logged in `logs/agent.log`:
+
+```text
+  ✖ Hermes's last session took teamai's instructions section
+    → Hermes's session at 2026-11-01 10:22:03 got none of the team instructions: teamai.instructions exceeded the aggregate session budget (8000 chars) and was skipped. Plugin sections share 8,000 characters and 32 sections, filled in id order, and other plugins' sections sorting before teamai.instructions took them first. Disable a plugin you do not need (plugins.disabled in /home/ana/.hermes/config.yaml) or shorten its section, then start a new Hermes session. /home/ana/.hermes/logs/agent.log lists each section Hermes rendered and its size.
+```
+
 Pi extensions launch the Node executable and TeamAI entry recorded by `teamai pull` or `teamai hooks inject`. After moving or reinstalling either, rerun one of those commands and restart Pi.
 
 Pi reads `AGENTS.override.md` before `AGENTS.md` from 0.84.0 (`@earendil-works/pi-coding-agent`). When you keep an override, pull writes the team instructions there, and an older Pi never sees them:

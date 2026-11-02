@@ -28,7 +28,7 @@ import { loadStateForScope } from './config.js';
 import { installOf, isInstalledFor, locate, ownOf, unreadWrites, workspaceHooksOf, writable, writesOf, type DirPlace, type FilesChannel, type Install, type Location, type ReadGate, type Session, type Unread } from './locate.js';
 import { readGateCheckName, readGateVerdict, type Held } from './read-gates.js';
 import { amongPlaces, placesRecordOf, samePlaces } from './resources/places.js';
-import { realHost } from './tool-home.js';
+import { realHost, toolHome } from './tool-home.js';
 import { getsRulesFromExtension, ruleFormatForTool, ruleStemsForTool } from './resources/rule-format.js';
 import { declaredSecretKeys } from './resources/secrets.js';
 import { isReservedTeamEnvKey } from './env-reserved.js';
@@ -2633,6 +2633,10 @@ export async function buildInstructionDeliveryChecks(ctx: DoctorContext): Promis
       check: async () => channel.ready && overLimit === null,
       fix: channel.ready ? overLimit ?? '' : channel.fix,
     });
+    if (hook.probe === 'hermes-plugin') {
+      const check = await hermesSectionCheck();
+      if (check !== null) checks.push(check);
+    }
   }
 
   const leftovers: string[] = [];
@@ -2650,4 +2654,44 @@ export async function buildInstructionDeliveryChecks(ctx: DoctorContext): Promis
     fix: [...warnings, `An earlier teamai release or sharing.gitExclude setting left team instruction blocks in ${nameList(leftovers)}, which can carry another member's selection. ${pullNow}`].join(' '),
   });
   return checks;
+}
+
+/**
+ * Whether Hermes's last session took teamai's prompt section, as its log says: the team
+ * instructions reach Hermes only through it. Null while the log records no outcome for it.
+ */
+async function hermesSectionCheck(): Promise<Check | null> {
+  const { HERMES_INSTRUCTIONS_SECTION, lastInstructionsSection } = await import('./hermes-hooks.js');
+  const { getHermesConfigPath } = await import('./hermes-config.js');
+  const section = await lastInstructionsSection();
+  const agentLog = path.join(toolHome('hermes'), 'logs', 'agent.log');
+  const name = 'Hermes\'s last session took teamai\'s instructions section';
+  switch (section.kind) {
+    case 'unseen':
+      return null;
+    case 'rendered':
+      return { name, source: 'local', check: async () => true };
+    case 'crowded-out':
+      return {
+        name,
+        source: 'local',
+        check: async () => false,
+        fix: `Hermes's session at ${section.at} got none of the team instructions: ${HERMES_INSTRUCTIONS_SECTION} ${section.reason}. `
+          + `Plugin sections share 8,000 characters and 32 sections, filled in id order, and other plugins' sections sorting before `
+          + `${HERMES_INSTRUCTIONS_SECTION} took them first. Disable a plugin you do not need (plugins.disabled in ${getHermesConfigPath()}) `
+          + `or shorten its section, then start a new Hermes session. ${agentLog} lists each section Hermes rendered and its size.`,
+      };
+    case 'failed':
+      return {
+        name,
+        source: 'local',
+        check: async () => false,
+        fix: `Hermes's session at ${section.at} got none of the team instructions: ${HERMES_INSTRUCTIONS_SECTION} ${section.reason}. `
+          + `Run \`teamai hooks inject\`, then start a new Hermes session; ${agentLog} has the details.`,
+      };
+    default: {
+      const unhandled: never = section;
+      return unhandled;
+    }
+  }
 }

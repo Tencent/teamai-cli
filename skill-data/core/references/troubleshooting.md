@@ -511,3 +511,7 @@ A recreated namespace source can be edited directly; the retired flattened copy 
 ## Hermes hooks after moving Node or TeamAI
 
 The generated status script and instructions plugin capture the installed Node executable and TeamAI entry. After moving or reinstalling either, run `teamai pull` or `teamai hooks inject`, then restart Hermes.
+
+## Hermes sessions miss the team instructions
+
+`doctor` fails "Hermes's last session took teamai's instructions section" when Hermes logged that it dropped teamai's plugin section. Other plugins' sections share Hermes's 8,000-character, 32-section budget and are filled first when their id sorts before `teamai.instructions`. Disable a plugin the member does not need (`plugins.disabled` in the Hermes `config.yaml`) or shorten its section, then start a new Hermes session. `logs/agent.log` in the Hermes home lists each section and its size.
