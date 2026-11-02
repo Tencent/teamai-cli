@@ -250,11 +250,14 @@ async function proposedChanges(config: LocalConfig, { refresh }: { refresh: bool
  * The newest of `runs` whose pulled arm installed one of `revisions`: the run a job pinned to the change, as
  * `benchmark run --team-ref` pins a pull request. An arm on a named ref, such as the default branch, is the baseline a
  * run compares against, so a later run whose baseline has the change proves another one. A squash- or rebase-merged
- * change has its request's head among `revisions` when the host stated it: no other run is taken for its proof.
+ * change has its request's head among `revisions` when the host stated it: no other run is taken for its proof. The run
+ * has each regression task the change adds, so another suite's run of the same revision is not taken for it.
  */
-function proofOf(runs: readonly BenchmarkRunInput[], { revisions }: { revisions: readonly string[] }): Proof | undefined {
+function proofOf(runs: readonly BenchmarkRunInput[], { revisions, tasks }: { revisions: readonly string[]; tasks: readonly string[] }): Proof | undefined {
+  const ids = tasks.map((file) => path.posix.basename(file, '.yaml'));
   const run = runs
-    .filter((candidate) => candidate.benchmark.arms.some(({ team }) => team.kind === 'pulled' && revisions.includes(team.revision)))
+    .filter((candidate) => candidate.benchmark.arms.some(({ team }) => team.kind === 'pulled' && revisions.includes(team.revision))
+      && ids.every((id) => candidate.benchmark.tasks.some((task) => task.id === id)))
     .sort((left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt))[0];
   if (run === undefined) return undefined;
   const armOf = (key: string): ProofArm | undefined => {
@@ -390,7 +393,7 @@ export async function selfImprovementView({ config, now = new Date(), refresh = 
     }];
   });
   const proven = <T extends Exclude<Change, ClosedChange>>(change: T, revisions: readonly string[]): T => {
-    const proof = proofOf(runs, { revisions });
+    const proof = proofOf(runs, { revisions, tasks: change.tasks });
     return proof === undefined ? change : { ...change, proof };
   };
   const withImpact = await Promise.all(landed.map(async ({ change, revisions }): Promise<Change> => {

@@ -50,6 +50,24 @@ describe('picking the failures a self-improvement starts from', () => {
     expect(picked.refused).toEqual([]);
   });
 
+  it('starts from a subject\'s recorded failure when a newer hand label of it has no start recorded', () => {
+    const picked = SelfImprovement.pick({
+      failures: [
+        failing('s1', { refused: 'not_recorded' }, { judge: 'human' }),
+        failing('s2', { refused: 'not_recorded' }, { judge: 'human' }),
+        failing('s1', { commit: HERE }),
+        failing('s2', { commit: HERE }),
+      ],
+      scorer: 'review-quality',
+      tasks: new Map(),
+      hasCommit: (commit) => commit === HERE,
+    });
+
+    expect(sessionIds(picked.failures)).toEqual(['s1', 's2']);
+    expect(picked.failures.map(({ start }) => start)).toEqual([{ commit: HERE }, { commit: HERE }]);
+    expect(picked.refused).toEqual([]);
+  });
+
   it('lists a failure a task already names as covered by that task, once, instead of picking it', () => {
     const task = 'benchmarks/regressions/tasks/missed-null-check.yaml';
     const picked = SelfImprovement.pick({
@@ -160,7 +178,34 @@ describe('proposing a change', () => {
     await SelfImprovement.propose({ team, branch: 'teamai/self-improvement/review-quality' });
 
     expect(process.exitCode).toBe(1);
-    expect(errors).toEqual([expect.stringMatching(/^invalid_task: The suite cannot run these regression tasks, so nothing was proposed\. Fix them in .+:\nbenchmarks\/regressions\/tasks\/missed-null-check\.yaml:1: field "startingCommit": /)]);
+    expect(errors).toEqual([expect.stringMatching(/^invalid_task: The regression suite cannot run with these files, so nothing was proposed\. Fix them in .+:\nbenchmarks\/regressions\/tasks\/missed-null-check\.yaml:1: field "startingCommit": /)]);
     expect(git(team, 'ls-remote', '--heads', 'origin')).not.toContain('teamai/self-improvement/review-quality');
+  });
+
+  it('refuses a change to the suite file that leaves the suite unable to run, and pushes nothing', async () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-self-improvement-propose-')));
+    roots.push(root);
+    const origin = path.join(root, 'origin.git');
+    const team = path.join(root, 'team');
+    git(root, 'init', '-q', '--bare', '-b', 'main', origin);
+    git(root, 'clone', '-q', origin, team);
+    fs.mkdirSync(path.join(team, 'benchmarks/regressions/tasks'), { recursive: true });
+    const suite = 'schemaVersion: v1alpha1\nname: regressions\nrepo: https://github.com/acme/auth-service.git\ndefaults: { tool: claude }\nmatrix: { team: [main, pulled] }\ntimeout: 2h\n';
+    fs.writeFileSync(path.join(team, 'benchmarks/regressions/suite.yaml'), suite);
+    fs.writeFileSync(path.join(team, 'benchmarks/regressions/tasks/missed-null-check.yaml'), `schemaVersion: v1alpha1\ntitle: Missed a null check\nprompt: Review the change.\nstartingCommit: ${'a'.repeat(40)}\nsuccessCriteria: Flags the missing null check.\n`);
+    git(team, 'add', '-A');
+    git(team, 'commit', '-qm', 'suite');
+    git(team, 'push', '-q', 'origin', 'main');
+    fs.writeFileSync(path.join(team, 'benchmarks/regressions/suite.yaml'), suite.replace('name: regressions', 'name: renamed'));
+    pushed.calls.length = 0;
+    const errors: string[] = [];
+    const { log } = await import('../utils/logger.js');
+    vi.spyOn(log, 'error').mockImplementation((message: string) => { errors.push(message); });
+
+    await SelfImprovement.propose({ team, branch: 'teamai/self-improvement/review-quality' });
+
+    expect(process.exitCode).toBe(1);
+    expect(errors).toEqual([expect.stringMatching(/\nbenchmarks\/regressions\/suite\.yaml:\d+: .*must be named after its directory/)]);
+    expect(pushed.calls).toEqual([]);
   });
 });

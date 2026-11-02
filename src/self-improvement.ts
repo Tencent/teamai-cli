@@ -23,6 +23,7 @@ import { loadCachedScorer } from './scorers/cache.js';
 import { getDataHome, isSelfMode, type LocalConfig } from './types.js';
 import { canonicalJson } from './utils/canonical-json.js';
 import { log, setStderrOnly } from './utils/logger.js';
+import { workflowFileNames } from './workflow/cache.js';
 import { formatDiagnostic } from './workflow/parse.js';
 
 const run = promisify(execFile);
@@ -75,20 +76,26 @@ function pick({ failures, scorer, tasks, hasCommit }: {
   hasCommit: (commit: string) => boolean;
 }): Picked {
   const picked: Picked = { failures: [], covered: [], refused: [] };
-  const seen = new Set<string>();
+  const why = ({ start }: DigestFailure): Unusable | undefined => ('refused' in start ? start.refused : hasCommit(start.commit) ? undefined : 'not_in_checkout');
+  // Each subject's failures, newest first: one label of it may have a start another lacks, such as a hand label's.
+  const bySubject = new Map<string, [DigestFailure, ...DigestFailure[]]>();
   for (const entry of failures) {
     if (entry.failure.scorer !== scorer) continue;
     const subject = canonicalJson(entry.failure.subject);
-    if (seen.has(subject)) continue;
-    seen.add(subject);
+    const listed = bySubject.get(subject);
+    if (listed) listed.push(entry);
+    else bySubject.set(subject, [entry]);
+  }
+  for (const [subject, [newest, ...older]] of bySubject) {
     const task = tasks.get(subject);
     if (task !== undefined) {
       if (!picked.covered.includes(task)) picked.covered.push(task);
       continue;
     }
-    const why = 'refused' in entry.start ? entry.start.refused : hasCommit(entry.start.commit) ? undefined : 'not_in_checkout';
-    if (why === undefined) picked.failures.push(entry);
-    else picked.refused.push({ subject: entry.failure.subject, why });
+    const refused = why(newest);
+    const usable = refused === undefined ? newest : older.find((entry) => why(entry) === undefined);
+    if (usable !== undefined) picked.failures.push(usable);
+    else if (refused !== undefined) picked.refused.push({ subject: newest.failure.subject, why: refused });
   }
   return picked;
 }
@@ -176,19 +183,23 @@ async function plan(scorer: string, { suite }: { suite: string }): Promise<void>
   process.stdout.write(`${JSON.stringify({ team, branch, ready, ...picked })}\n`);
 }
 
-/** A regression task file of a suite under `benchmarks/`. */
-const TASK_FILE = /^(benchmarks\/.+)\/tasks\/[^/]+\.ya?ml$/;
+/** A suite's file under `benchmarks/`, `suite.yaml` or a task, with its suite's directory. */
+const SUITE_PART = /^(benchmarks\/.+)\/(?:suite\.yaml|tasks\/[^/]+\.yaml)$/;
 
-/** What the suite of each task file of `files` says against that file, as `teamai pull` would parse it, one line each. */
+/**
+ * What each suite whose `suite.yaml` or tasks `files` changes says against the changed files, one line each: the suite
+ * parsed with every task of it, as `teamai pull` parses it.
+ */
 async function invalidTasks(team: string, files: readonly string[]): Promise<string[]> {
   const suites = new Map<string, string[]>();
   for (const file of files) {
-    const dir = TASK_FILE.exec(file)?.[1];
+    const dir = SUITE_PART.exec(file)?.[1];
     if (dir !== undefined) suites.set(dir, [...suites.get(dir) ?? [], file]);
   }
   const found = await Promise.all([...suites].map(async ([dir, changed]) => {
     const read = async (relativePath: string) => ({ relativePath, content: await fs.readFile(path.join(team, relativePath), 'utf8').catch(() => '') });
-    const [suite, tasks] = await Promise.all([read(`${dir}/suite.yaml`), Promise.all(changed.map(read))]);
+    const names = await workflowFileNames(path.join(team, dir, 'tasks'));
+    const [suite, tasks] = await Promise.all([read(`${dir}/suite.yaml`), Promise.all(names.map((name) => read(`${dir}/tasks/${name}`)))]);
     const parsed = parseSuite({ suite, tasks, files: await readSuiteFiles(path.join(team, dir), dir, tasks) });
     return parsed.diagnostics.filter(({ file }) => changed.includes(file)).map(formatDiagnostic);
   }));
@@ -221,7 +232,7 @@ async function propose({ team, branch }: { team: string; branch: string }): Prom
   }
   const invalid = await invalidTasks(team, files);
   if (invalid.length > 0) {
-    refuse('invalid_task', `The suite cannot run these regression tasks, so nothing was proposed. Fix them in ${team}:\n${invalid.join('\n')}`);
+    refuse('invalid_task', `The regression suite cannot run with these files, so nothing was proposed. Fix them in ${team}:\n${invalid.join('\n')}`);
     return;
   }
   const { pushFile } = await import('./push-file.js');

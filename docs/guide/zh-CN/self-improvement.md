@@ -250,14 +250,14 @@ jobs:
       - name: Fail on a regression
         run: |
           jq -e '.data.done.outputs.table as $table
-            | [$table.pairs[]? | select(.dimension == "team")] as $pairs
+            | [$table.pairs[]? | select(.dimension == "team" and (.from | fromjson)[4] == {kind: "ref", ref: "main"} and (.to | fromjson)[4].kind == "pulled")] as $pairs
             | ($table.invalid | length) == 0
               and all($table.results[]?; .counts.not_run == 0)
               and ($pairs | length) > 0
               and all($pairs[].tasks[]; .to.planned > 0 and .to.passed * .from.planned >= .from.passed * .to.planned)' done.json
 ```
 
-它在任何修改资产的 PR 上运行，人提的 PR 也一样，所以每次改动都会和之前修好的每个失败对比。PR 每推送一次就再跑一次，替换两个标记之间的部分；正文其余部分保持不变，所以 `teamai push` 打开 PR 时写的文件列表，在后来的运行更新 PR 时不会增加：当前的文件集看 PR 的 files 标签页。`--team-ref "$HEAD_REF"` 把运行固定到 PR 的分支：`pulled` 组和套件的任务来自它，`main` 组来自 `main`。评审一致性表格在自我改进 PR 上只列这个 PR 针对的评分器，在人提的 PR 上列出所有评分器。最后一步在任何工具上有任务在 PR 上比在 `main` 上通过得少，有任务的检查无法运行或在改动前就通过、有试验没有运行，或者这次运行没有比较 `main` 和 PR 两组时，让任务失败。在团队仓库的合并规则里把这个任务设为必需，就能把没通过的改动挡在 `main` 之外。
+它在任何修改资产的 PR 上运行，人提的 PR 也一样，所以每次改动都会和之前修好的每个失败对比。PR 每推送一次就再跑一次，替换两个标记之间的部分；正文其余部分保持不变，所以 `teamai push` 打开 PR 时写的文件列表，在后来的运行更新 PR 时不会增加：当前的文件集看 PR 的 files 标签页。`--team-ref "$HEAD_REF"` 把运行固定到 PR 的分支：`pulled` 组和套件的任务来自它，`main` 组来自 `main`。评审一致性表格在自我改进 PR 上只列这个 PR 针对的评分器，在人提的 PR 上列出所有评分器。最后一步在任何工具上有任务在 PR 上比在 `main` 上通过得少，有任务的检查无法运行或在改动前就通过、有试验没有运行，或者这次运行没有把 `main` 组和 PR 组放在一起比较时，让任务失败：只看这些配对，所以去掉 PR 组的套件也会让它失败。在团队仓库的合并规则里把这个任务设为必需，就能把没通过的改动挡在 `main` 之外。
 
 Dashboard 的[自我改进页面](dashboard.md#自我改进self-improvement)跟踪每个提议和每个已合并的修改：它改了哪些资产、它在回归套件上每个工具的证明，以及合并前后评分器的通过率。
 

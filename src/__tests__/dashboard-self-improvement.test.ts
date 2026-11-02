@@ -107,16 +107,18 @@ function proposal(origin: string, startingCommit: string): string {
  * The record a regression suite run publishes: each task of `trials` run once on the arm `main`, the team's default
  * branch at `main`, and once on `pulled`, the team revision `pulled` the job pinned.
  */
-function publishBenchmark(config: LocalConfig, { run, main, pulled, trials }: { run: string; main: string; pulled: string; trials: Record<string, { main: 'passed' | 'failed'; pulled: 'passed' | 'failed' }> }): void {
+function publishBenchmark(config: LocalConfig, { run, main, pulled, trials, suite = 'regressions', startedAt = '2026-03-19T09:00:00.000Z' }: {
+  run: string; main: string; pulled: string; trials: Record<string, { main: 'passed' | 'failed'; pulled: 'passed' | 'failed' }>; suite?: string; startedAt?: string;
+}): void {
   const arms = [
     { name: 'main', tool: 'claude', source: 'team', team: { kind: 'ref', ref: 'main', revision: main } },
     { name: 'pulled', tool: 'claude', source: 'team', team: { kind: 'pulled', revision: pulled } },
   ];
   let order = 0;
   write(path.join(getReportsDir(config), 'benchmarks', 'runs', `${run}.json`), JSON.stringify({
-    schemaVersion: 1, run, outcome: 'succeeded', teamaiVersion: '1.0.0', startedAt: '2026-03-19T09:00:00.000Z', finishedAt: '2026-03-19T10:00:00.000Z', username: 'ci',
+    schemaVersion: 1, run, outcome: 'succeeded', teamaiVersion: '1.0.0', startedAt, finishedAt: startedAt, username: 'ci',
     workflow: { name: 'teamai-benchmark', origin: { source: 'default', teamaiVersion: '1.0.0' }, sourceHash: 'w'.repeat(64) },
-    suite: { name: 'regressions', sourceHash: 's1' }, repetitions: 1, baselineTeamRevision: pulled, scorers: [],
+    suite: { name: suite, sourceHash: 's1' }, repetitions: 1, baselineTeamRevision: pulled, scorers: [],
     tasks: Object.keys(trials).map((id) => ({ id, startingCommit: 'a'.repeat(40), sourceHash: `task-${id}`, baseline: 'valid' })),
     arms,
     trials: Object.entries(trials).flatMap(([taskId, results]) => (['main', 'pulled'] as const).map((arm) => ({
@@ -389,6 +391,20 @@ describe('dashboard self-improvement', () => {
         ],
       }],
     } })]);
+  });
+
+  it('keeps as a proposal\'s proof the run that had its regression tasks, when a later run of another suite pinned it too', async () => {
+    const start = project();
+    const { config, repo, origin } = team(start.dir);
+    const head = proposal(origin, start.commit);
+    publishLabels(config, [label('new-1', { recorded: agent({ commit: start.commit }) })]);
+    const main = git(repo, 'rev-parse', 'HEAD');
+    publishBenchmark(config, { run: 'r00000000000000a1', main, pulled: head, trials: { 'skipped-the-diff': { main: 'failed', pulled: 'passed' } } });
+    publishBenchmark(config, { run: 'r00000000000000a2', main, pulled: head, suite: 'web-smoke', startedAt: '2026-03-19T15:00:00.000Z', trials: { 'home-page-loads': { main: 'passed', pulled: 'passed' } } });
+
+    const view = await selfImprovementView({ config, now: NOW, refresh: true });
+
+    expect(view.changes).toEqual([expect.objectContaining({ state: 'proposed', proof: expect.objectContaining({ run: 'r00000000000000a1', suite: 'regressions' }) })]);
   });
 
   it('finds the jobs that run and prove the loop in GitLab CI too', async () => {

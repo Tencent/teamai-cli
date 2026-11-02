@@ -158,7 +158,7 @@ Landed    Review skill: check every early return       review-quality  skills/co
 | 已关闭（Closed） | 来自 `teamai/self-improvement/<scorer>` 分支、被托管平台未合并就关闭的 pull request：团队拒绝的修改。 |
 | 已合并的 PR（Pull requests merged） | 所有评分器分支上已结束的请求中，托管平台合并了多少。本机能登录 GitHub、GitLab、TGit 和 GitCode 时它们会回答。其他托管平台或没有回应的平台改为显示**打开的提议（Open proposals）**。 |
 | 资产（Assets） | 修改新增或改动的文件，按顶层目录和名字显示。回归任务只计数，不列出。 |
-| 证明（Proof） | `pulled` 臂运行了这个修改的最新一次基准测试：每个工具先在 `main` 上、再在修改上的通过率。以 squash 或 rebase 方式合并的 PR 保留托管平台所合并 head 的那次运行，GitHub 和 GitLab 会给出这个 head。点下面的日期打开这次运行。 |
+| 证明（Proof） | `pulled` 臂运行了这个修改及其回归任务的最新一次基准测试：每个工具先在 `main` 上、再在修改上的通过率。以 squash 或 rebase 方式合并的 PR 保留托管平台所合并 head 的那次运行，GitHub 和 GitLab 会给出这个 head。点下面的日期打开这次运行。 |
 | 前 → 后通过率 | 评分器的默认度量在修改的提交处拆分，和评分器页面的**按团队提交拆分**一样，统计 180 天。 |
 
 **参与循环的评分器**显示最近 30 天有标签的每个评分器，现在运行一次会从哪些失败开始：
