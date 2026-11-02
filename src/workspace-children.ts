@@ -26,7 +26,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { findProject, loadProjectsManifest, resolveActiveLearningsNamespaces } from './projects.js';
-import type { LocalConfig } from './types.js';
+import type { JsonValue, LocalConfig } from './types.js';
 import { readFileSafe, readJsonObject, writeJson } from './utils/fs.js';
 import { remotesMatch } from './utils/git.js';
 import { log } from './utils/logger.js';
@@ -163,18 +163,16 @@ export async function deliveredMembers(config: LocalConfig): Promise<readonly Lo
     // so the selection it recorded is not a selection to honour.
     const roles = own.roleAssignment
       ? { primaryRole: own.primaryRole, additionalRoles: own.additionalRoles ?? [] }
-      : {
-        ...(child.selection.primaryRole ? { primaryRole: child.selection.primaryRole } : {}),
-        additionalRoles: child.selection.additionalRoles ?? [],
-      };
+      // withoutSelection() already holds the primaryRole key, so an unset one stays undefined.
+      : { primaryRole: child.selection.primaryRole || undefined, additionalRoles: child.selection.additionalRoles ?? [] };
 
     members.push({
       ...base,
       ...withoutSelection(),
       ...roles,
       projects,
-      ...(child.selection.subscribedTags ? { subscribedTags: child.selection.subscribedTags } : {}),
-      ...(child.selection.excludedSkills ? { excludedSkills: child.selection.excludedSkills } : {}),
+      subscribedTags: child.selection.subscribedTags,
+      excludedSkills: child.selection.excludedSkills,
     });
   }
 
@@ -214,7 +212,7 @@ export function selectedProjects(config: LocalConfig): string[] {
  */
 export function formatProjectsManifestWarning(
   caller: string,
-  error: unknown,
+  cause: unknown,
   config: LocalConfig,
   options: {
     verb?: string;
@@ -225,7 +223,7 @@ export function formatProjectsManifestWarning(
 ): string {
   const projects = selectedProjects(config);
   const verb = options.verb ?? 'read';
-  const errText = error instanceof Error ? error.message : String(error);
+  const errText = cause instanceof Error ? cause.message : String(cause);
   const action = options.rebuildAction ? ` and ${options.rebuildAction}` : '';
   let subject = '';
 
@@ -397,8 +395,9 @@ export async function syncWorkspaceInstructionExcludes(input: {
 
   const settings = read.kind === 'ok' ? read.value : {};
   const current = Array.isArray(settings.claudeMdExcludes) ? settings.claudeMdExcludes : [];
-  const stale = new Set(input.previous.filter((entry) => !desired.includes(entry)));
-  const kept = current.filter((entry) => typeof entry !== 'string' || !stale.has(entry));
+  // Only strings are ever stale, so any other entry is kept.
+  const stale = new Set<JsonValue>(input.previous.filter((entry) => !desired.includes(entry)));
+  const kept = current.filter((entry) => !stale.has(entry));
   const next = [...kept, ...desired.filter((entry) => !kept.includes(entry))];
   // An entry the member already had stays the member's, so withdrawing leaves it.
   const owned = desired.filter((entry) => input.previous.includes(entry) || !current.includes(entry));
@@ -595,13 +594,16 @@ function withoutSelection(): Pick<LocalConfig, 'additionalRoles' | 'projects'> &
 }
 
 function selectionOf(config: LocalConfig): ChildSelection {
-  return {
-    ...(config.primaryRole ? { primaryRole: config.primaryRole } : {}),
-    additionalRoles: config.additionalRoles ?? [],
-    projects: config.projects ?? [],
-    ...(config.subscribedTags ? { subscribedTags: config.subscribedTags } : {}),
-    ...(config.excludedSkills ? { excludedSkills: config.excludedSkills } : {}),
-  };
+  const role: Pick<ChildSelection, 'primaryRole'> = {};
+
+  if (config.primaryRole) role.primaryRole = config.primaryRole;
+  const selection: ChildSelection = { ...role, additionalRoles: config.additionalRoles ?? [], projects: config.projects ?? [] };
+
+  if (config.subscribedTags) selection.subscribedTags = config.subscribedTags;
+
+  if (config.excludedSkills) selection.excludedSkills = config.excludedSkills;
+
+  return selection;
 }
 
 function fingerprintOf(children: readonly WorkspaceChild[], leftOut: readonly LeftOutChild[]): string {
