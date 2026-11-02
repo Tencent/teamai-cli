@@ -35,7 +35,7 @@ export async function nextToolHomes(
   host: Host,
   by: 'init' | 'pull',
 ): Promise<{ readonly homes: Record<string, string>; readonly changes: readonly ToolHomeChange[] }> {
-  const homes: Record<string, string> = { ...recorded };
+  const homes = { ...recorded };
   const changes: ToolHomeChange[] = [];
 
   for (const tool of Object.keys(TOOLS).filter(isToolId)) {
