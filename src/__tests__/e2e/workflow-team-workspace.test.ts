@@ -201,6 +201,15 @@ describe('a step in the team workspace, run through the real CLI', () => {
     expect(branchHead('teamai/notes/theta')).toBe('');
   }, 120_000);
 
+  it('pushes what the step changed in a team file pull already rejects on main, when it breaks nothing more there', async () => {
+    fixture.pushTeam({ 'workflows/legacy.yaml': 'schemaVersion: v1alpha1\nname: legacy\ndescription: Kept as it was.\ncolour: blue\nsteps:\n  - id: run\n    command: "true"\n' });
+
+    const pushed = await run("const fs = require('fs'); fs.writeFileSync('workflows/legacy.yaml', '# Kept for the old CI.\\n' + fs.readFileSync('workflows/legacy.yaml', 'utf8'));", { inputs: { topic: 'iota' } });
+
+    expect(pushed.outcome, pushed.said).toBe('succeeded');
+    expect(onBranch('teamai/notes/iota', 'workflows/legacy.yaml')).toMatch(/^# Kept for the old CI\.\n/);
+  }, 120_000);
+
   it('runs nothing on the team repo\'s default branch, so no change skips review', async () => {
     const main = git(['rev-parse', 'main']);
 
