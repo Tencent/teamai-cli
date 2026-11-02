@@ -167,11 +167,18 @@ async function rejectedTeamFiles(input: { root: string; dir: string; base: strin
   if (added.code !== 0) return [`(base): could not check out ${base} to compare the team files against: ${said(added)}`];
 
   try {
-    // A failure is the same one wherever its line now is.
+    // A failure is the same one wherever its line now is; one more of the same is still new.
     const withoutLine = (failure: string): string => failure.replace(/^([^:\s]+):\d+: /, '$1: ');
-    const had = new Set((await teamFailures(path.join(before, path.relative(root, dir)))).map(withoutLine));
+    const had = new Map<string, number>();
 
-    return (await teamFailures(dir)).filter((failure) => !had.has(withoutLine(failure)));
+    for (const failure of await teamFailures(path.join(before, path.relative(root, dir)))) had.set(withoutLine(failure), (had.get(withoutLine(failure)) ?? 0) + 1);
+
+    return (await teamFailures(dir)).filter((failure) => {
+      const left = had.get(withoutLine(failure)) ?? 0;
+      had.set(withoutLine(failure), left - 1);
+
+      return left <= 0;
+    });
   } finally {
     await git(root, ['worktree', 'remove', '--force', '--', before]);
     await fs.rm(before, { recursive: true, force: true });

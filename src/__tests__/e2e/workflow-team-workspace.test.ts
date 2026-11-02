@@ -210,6 +210,16 @@ describe('a step in the team workspace, run through the real CLI', () => {
     expect(onBranch('teamai/notes/iota', 'workflows/legacy.yaml')).toMatch(/^# Kept for the old CI\.\n/);
   }, 120_000);
 
+  it('pushes nothing when the step adds one more of an error main already has', async () => {
+    fixture.pushTeam({ 'workflows/inputs.yaml': 'schemaVersion: v1alpha1\nname: inputs\ndescription: Kept as it was.\ninputs:\n  old/name: string\nsteps:\n  - id: run\n    command: "true"\n' });
+
+    const refused = await run("const fs = require('fs'); fs.writeFileSync('workflows/inputs.yaml', fs.readFileSync('workflows/inputs.yaml', 'utf8').replace('  old/name: string\\n', '  old/name: string\\n  new/name: string\\n'));", { inputs: { topic: 'kappa' } });
+
+    expect(refused.outcome, refused.said).toBe('failed');
+    expect(refused.state.steps.find((step) => step.id === 'edit')?.failure?.message.split('\n')).toEqual(expect.arrayContaining([expect.stringMatching(/^workflows\/inputs\.yaml:\d+: field "inputs"/)]));
+    expect(branchHead('teamai/notes/kappa')).toBe('');
+  }, 120_000);
+
   it('runs nothing on the team repo\'s default branch, so no change skips review', async () => {
     const main = git(['rev-parse', 'main']);
 
@@ -296,7 +306,7 @@ describe('a step in the team workspace, run through the real CLI', () => {
   }, 120_000);
 });
 
-describe('a step in the team workspace of a team whose role overrides a shared workflow', () => {
+describe('a step in the team workspace of a team that assigns roles, one of which overrides a shared workflow', () => {
   let fixture: BenchmarkFixture;
   let edit: string;
   const scripts = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-team-edit-'));
@@ -309,6 +319,8 @@ describe('a step in the team workspace of a team whose role overrides a shared w
       sandbox: false,
       team: {
         'manifest/roles.yaml': 'version: 1\nroles:\n  - id: ops\n    resources:\n      knowledge: []\n      skills: []\n      workflows: [ops]\n',
+        // The team assigns roles, so a member it does not list holds none and pulls the shared workflow.
+        'manifest/members.yaml': 'version: 1\nmembers:\n  alice: [ops]\n',
         'workflows/ops/check.yaml': CHECK,
         'workflows/check.yaml': CHECK,
         'workflows/edit-team.yaml': workflow(edit),
