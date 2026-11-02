@@ -57,6 +57,8 @@ async function loadTeamStats(repoPath: string): Promise<UserStats[]> {
       if (!content) continue;
 
       try {
+        // SAFETY: stats/<user>.yaml is written by teamai's stats push from a UserStats value, and the
+        // check below drops a file without username or skills. No UserStats schema exists to check the rest.
         const parsed = YAML.parse(content) as UserStats;
 
         if (parsed?.username && parsed?.skills) {
@@ -108,7 +110,7 @@ function parseGitLogOutput(output: string): Array<{ author: string; message: str
  * this is the exact spot that broke in single-repo mode (git emitted
  * ".teamai/skills/..." paths that never matched a bare "skills/..." regex).
  */
-export function buildSkillChangePathspec(subdir = ''): { pathspec: string; skillRe: RegExp } {
+export function buildSkillChangePathspec(subdir = '') {
   const prefix = subdir ? `${subdir.replace(/\/+$/, '')}/` : '';
   const pathspec = `${prefix}skills/*/SKILL.md`;
   const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

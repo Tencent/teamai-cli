@@ -42,7 +42,7 @@ export type TeamScriptEvent = (typeof TEAM_SCRIPT_EVENTS)[number];
 const PROMPTED: ReadonlySet<TeamScriptEvent> = new Set(['preInit', 'postInit']);
 
 export function isTeamScriptEvent(value: string): value is TeamScriptEvent {
-  return (TEAM_SCRIPT_EVENTS as readonly string[]).includes(value);
+  return TEAM_SCRIPT_EVENTS.some((event) => event === value);
 }
 
 /** preInit and postInit read the terminal. The others must not. */

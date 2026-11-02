@@ -33,7 +33,7 @@ export function withUpdatePolicy(
 ): LocalConfig {
   const { updatePolicy: _, ...rest } = config;
 
-  return policy === undefined ? (rest as LocalConfig) : { ...rest, updatePolicy: policy };
+  return policy === undefined ? rest : { ...rest, updatePolicy: policy };
 }
 
 /**
@@ -47,5 +47,5 @@ export function withAutoUpdate(
 ): TeamaiConfig {
   const { autoUpdate: _, ...rest } = config;
 
-  return value === undefined ? (rest as TeamaiConfig) : { ...rest, autoUpdate: value };
+  return value === undefined ? rest : { ...rest, autoUpdate: value };
 }
