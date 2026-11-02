@@ -51,7 +51,7 @@ import {
 } from './codex-trust.js';
 import { codexDispatcherCheckouts, codexDispatcherProjects, dispatchedCodexHooks, isCodexTeamHookDispatcher, reconcileCodexDispatchers, runsFromCodexDispatcher, setCodexDispatcherHooks } from './codex-team-hooks.js';
 import type { CodexTeamHook } from './codex-team-hooks.js';
-import { channelsOf, hookFormatOf, hookSettingsFormatOf, TOOL_IDS, TOOLS, type HookFormat } from './tools.js';
+import { channelsOf, hookFormatOf, hookSettingsFormatOf, selfLocalSettingsOf, TOOL_IDS, TOOLS, type HookFormat } from './tools.js';
 import { BRIDGED_TEAM_HOOK_EVENTS, bridgedTeamHookFile, isBridgedTeamHookTool } from './bridged-team-hooks.js';
 import { earlierHookAdapterDir, hookSettingsFile, installOf, locate, openclawWorkspaceDir, ownOf, workspaceHooksOf } from './locate.js';
 import { toolHome } from './tool-home.js';
@@ -1440,14 +1440,12 @@ async function placeCodexTeamHooks(
 }
 
 /**
- * Self mode (#915): the tools whose team hooks leave the committed settings
- * for the checkout's own `settings.local.json` while `sharing.gitExclude` is
- * on. Their built-ins stay committed, so a fresh clone still has them.
+ * Self mode (#915): a tool with a `selfLocalSettingsOf` takes the team hooks
+ * in that file of the checkout while `sharing.gitExclude` is on. Its
+ * built-ins stay committed, so a fresh clone still has them.
  */
-const SELF_LOCAL_TEAM_HOOK_TOOLS: ReadonlySet<string> = new Set(['claude']);
-
 function selfLocalHookFile(baseDir: string, tool: string, settings: string): string | null {
-  return SELF_LOCAL_TEAM_HOOK_TOOLS.has(tool) ? path.join(baseDir, path.dirname(settings), 'settings.local.json') : null;
+  return selfLocalSettingsOf(tool) === null ? null : path.join(baseDir, path.dirname(settings), 'settings.local.json');
 }
 
 /** This self-mode checkout's `settings.local.json` that can hold `tool`'s team hooks, or null. */
@@ -3355,7 +3353,7 @@ export async function reconcileHooksToAllTools(
      * root rather than the path's two-segment shape (see `toolGateRoot`).
      */
     toolRoots?: Record<string, string>;
-    /** Self mode: team hooks of SELF_LOCAL_TEAM_HOOK_TOOLS go to `settings.local.json` while `relocate` (#915). */
+    /** Self mode: team hooks of a tool with a `selfLocalSettingsOf` go to `settings.local.json` while `relocate` (#915). */
     selfLocalTeamHooks?: { relocate: boolean };
     /** Project scope: Codex team hooks may run from the dispatcher instead of the project's file (#915). */
     codexTeamHooks?: CodexTeamHookPlacement;
@@ -4379,10 +4377,15 @@ async function projectHookFiles(
     files.push({ file: claudeFile, tool: 'claude', manifestPath: main.manifestPath });
   }
   // Self mode: this checkout's own settings.local.json while its manifest records team hooks there.
-  const selfLocal = selfLocalTeamHookFile(localConfig, scopedToolPaths(teamConfig, localConfig), 'claude');
+  const selfToolPaths = scopedToolPaths(teamConfig, localConfig);
   const selfManifest = getManagedHooksPath(localConfig);
-  if (selfLocal && ((await readManifest(selfManifest)).claude?.length ?? 0) > 0) {
-    files.push({ file: selfLocal, tool: 'claude', manifestPath: selfManifest });
+  const selfRecords = await readManifest(selfManifest);
+  const selfFiles = new Set<string>();
+  for (const tool of Object.keys(selfToolPaths)) {
+    const selfLocal = selfLocalTeamHookFile(localConfig, selfToolPaths, tool);
+    if (selfLocal === null || selfFiles.has(selfLocal) || (selfRecords[tool]?.length ?? 0) === 0) continue;
+    selfFiles.add(selfLocal);
+    files.push({ file: selfLocal, tool, manifestPath: selfManifest });
   }
   const copilotHooks = await locate(COPILOT_TOOL_ID, 'hooks', installOf(teamConfig, localConfig));
   const copilotFile = (workspaceHooksOf(copilotHooks) ?? ownOf(copilotHooks))?.path;

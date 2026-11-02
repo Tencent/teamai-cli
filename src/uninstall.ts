@@ -1054,7 +1054,7 @@ async function buildRemovalPlan(
   // Self mode: team hooks in the checkout's settings.local.json (#915), removed
   // by their records before the tracked file's pass drops those records.
   const selfLocalToolPaths = scopedToolPaths(teamConfig, { ...localConfig, scope: primaryHookScope.scope });
-  if (selfLocalTeamHookFile(localConfig, selfLocalToolPaths, 'claude')) {
+  if (Object.keys(selfLocalToolPaths).some((tool) => selfLocalTeamHookFile(localConfig, selfLocalToolPaths, tool) !== null)) {
     hookTargets.unshift({
       baseDir: primaryHookScope.baseDir,
       manifestPath: primaryHookScope.manifestPath,

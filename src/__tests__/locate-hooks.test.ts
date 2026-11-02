@@ -123,9 +123,13 @@ const ROWS: readonly (FilesRow | OtherRow)[] = [
     env: { QODER_CLI_HOME: '/qoder-cli' }, reads: [{ at: '/qoder-cli/.qoder/settings.json', when: 'always', key: HOOK_LIST }], source: 'QODER_CLI_HOME moves the project install user hook file',
   }),
   selfSettings('qoder', '<root>/.qoder/settings.json', '~/.qoder', 'cwdOnly', {
+    reads: [
+      { at: '<root>/.qoder/settings.json', when: 'cwdOnly', key: HOOK_LIST },
+      { at: '<root>/.qoder/settings.local.json', when: 'cwdOnly', key: HOOK_LIST },
+    ],
     broken: { 'project-subdir': { reason: 'cwd-only', issue: '#1221' } },
     readGates: [{ kind: 'qoder-folder-trust', config: '~/.qoder/settings.json', checkout: '<root>' }],
-    source: `${SELF}: <cwd>/.qoder/settings.json, shared with Qoder CN; Qoder CLI 1.1.81 reads it only in a trusted folder`,
+    source: `${SELF}: <cwd>/.qoder/settings.json, shared with Qoder CN, then settings.local.json beside it; Qoder CLI 1.1.81 reads both only in a trusted folder`,
   }),
   settings('qoder-cn', 'user', '~/.qoder-cn/settings.json', '~/.qoder-cn'),
   settings('qoder-cn', 'user', '/qodercn/settings.json', '/qodercn', {
@@ -141,6 +145,10 @@ const ROWS: readonly (FilesRow | OtherRow)[] = [
     env: { QODERCN_CLI_HOME: '/qodercn-cli' }, reads: [{ at: '/qodercn-cli/.qoder-cn/settings.json', when: 'always', key: HOOK_LIST }], source: 'QODERCN_CLI_HOME supplies the parent of the Qoder CN project install user hook file',
   }),
   selfSettings('qoder-cn', '<root>/.qoder/settings.json', '~/.qoder-cn', 'cwdOnly', {
+    reads: [
+      { at: '<root>/.qoder/settings.json', when: 'cwdOnly', key: HOOK_LIST },
+      { at: '<root>/.qoder/settings.local.json', when: 'cwdOnly', key: HOOK_LIST },
+    ],
     broken: { 'project-subdir': { reason: 'cwd-only', issue: '#1221' } },
     source: `${SELF}: Qoder CN's project hooks are Qoder's <cwd>/.qoder/settings.json`,
   }),
@@ -161,8 +169,12 @@ const ROWS: readonly (FilesRow | OtherRow)[] = [
     source: `${CODEBUDDY_SOURCE}; a workspace takes the user hooks`,
   }),
   selfSettings('codebuddy', '<root>/.codebuddy/settings.json', '<root>/.codebuddy', 'cwdOnly', {
+    reads: [
+      { at: '<root>/.codebuddy/settings.json', when: 'cwdOnly', key: HOOK_LIST },
+      { at: '<root>/.codebuddy/settings.local.json', when: 'cwdOnly', key: HOOK_LIST },
+    ],
     broken: { 'project-subdir': { reason: 'cwd-only', issue: '#1221' } },
-    source: `${SELF}: CodeBuddy reads project settings from the session cwd only`,
+    source: `${SELF}: CodeBuddy Code 2.179.1 runs the hooks of settings.json and settings.local.json, from the session cwd only`,
   }),
   settings('workbuddy', 'user', '~/.workbuddy/settings.json', '~/.workbuddy', { source: 'issue #1221 matrix, WorkBuddy user hooks (t)' }),
   selfSettings('workbuddy', '<root>/.workbuddy/settings.json', '<root>/.workbuddy', 'cwdOnly', { reads: 'unknown', source: `${SELF}: WorkBuddy (?t)` }),

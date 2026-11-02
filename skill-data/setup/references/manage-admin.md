@@ -241,6 +241,10 @@ true|false` in the project's `config.yaml` (`~/.teamai/projects/<slug>/config.ya
 Either takes effect on the next pull, no `--force`; turned off, the next pull
 removes only that block. `teamai doctor` says where the setting comes from and
 what git still sees; `teamai pull --dry-run` previews the block.
+In a single-repo team the committed hook settings keep only the built-ins; the
+team's hooks for Claude Code, CodeBuddy and Qoder go to the `settings.local.json`
+beside them, listed in that block, and Codex's run from `~/.codex/hooks.json`.
+The other tools have no such file, so their team hooks stay in the committed file.
 
 ## Team dashboard (web UI)
 
