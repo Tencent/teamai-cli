@@ -2615,31 +2615,93 @@ export interface SearchIndex {
   children?: string;
 }
 
-/** Per-user vote file (votes/<user>.yaml). */
-export interface UserVotes {
-  votes: Record<string, { at: string }>;
-}
+/** Strings from a list a hand edit may have corrupted: other entries are dropped. */
+const VoteIdsSchema = z.array(z.string().nullable().catch(null)).transform((ids) => ids.filter((id) => id !== null));
+
+/** Per-user vote file (votes/<user>.yaml), v1. */
+export const UserVotesSchema = z.looseObject({
+  votes: z.record(z.string(), z.looseObject({ at: z.string().catch('') })),
+});
+
+export type UserVotes = z.infer<typeof UserVotesSchema>;
 
 /** Vote entry with dual counters (V2). */
-export interface VoteEntryV2 {
-  recalled_count: number;
-  upvoted_count: number;
-  last_recalled_at: string;
-  last_upvoted_at?: string;
-}
+const VoteEntryV2Schema = z.looseObject({
+  recalled_count: z.number().catch(0),
+  upvoted_count: z.number().catch(0),
+  last_recalled_at: z.string().catch(''),
+  last_upvoted_at: z.string().optional().catch(undefined),
+});
+
+export type VoteEntryV2 = z.infer<typeof VoteEntryV2Schema>;
 
 /** Unsynchronized delta for a single document (V2). */
-export interface VoteDelta {
-  recalled_delta: number;
-  upvoted_delta: number;
-}
+const VoteDeltaSchema = z.looseObject({
+  recalled_delta: z.number().catch(0),
+  upvoted_delta: z.number().catch(0),
+});
 
-/** Per-user vote file V2 format (votes/<user>.yaml). */
-export interface UserVotesV2 {
-  version: 2;
-  votes: Record<string, VoteEntryV2>;
-  deltas: Record<string, VoteDelta>;
-}
+export type VoteDelta = z.infer<typeof VoteDeltaSchema>;
+
+const VoteDeltasSchema = z.record(z.string(), VoteDeltaSchema);
+
+/**
+ * One session in the upvote ledger. `firstTs` is when the session first
+ * appeared: the ledger TTL counts from it, so a long or resumed session cannot
+ * be credited again just because its entry was refreshed. `ts` is the last
+ * update, kept for observability. Entries written before `firstTs` existed
+ * read it from `ts`.
+ */
+const UpvoteLedgerEntrySchema = z
+  .object({ docIds: VoteIdsSchema, ts: z.string(), firstTs: z.string().optional().catch(undefined) })
+  .transform(({ docIds, ts, firstTs }) => ({ docIds, ts, firstTs: firstTs ?? ts }));
+
+/**
+ * The per-session set of doc-ids already upvoted, keyed by sessionId. It lives
+ * INSIDE the votes file, so the claim and the increment are one locked write.
+ * A malformed entry is dropped (a string `docIds` must not be iterated per
+ * character).
+ */
+const UpvoteLedgerSchema = z
+  .record(z.string(), UpvoteLedgerEntrySchema.nullable().catch(null))
+  .transform((entries) => {
+    const ledger: Record<string, z.output<typeof UpvoteLedgerEntrySchema>> = {};
+
+    for (const [sessionId, entry] of Object.entries(entries)) {
+      if (entry) ledger[sessionId] = entry;
+    }
+
+    return ledger;
+  });
+
+export type UpvoteLedger = z.infer<typeof UpvoteLedgerSchema>;
+
+/**
+ * Delivery record for a stage whose push may have landed without its
+ * confirmation (#1027): the id the stage stamped into the remote file's
+ * `deliveredSyncIds`, plus the delta set it staged, to subtract once delivery
+ * is recognized.
+ */
+const PendingVoteSyncSchema = z.object({ syncId: z.string(), deltas: VoteDeltasSchema });
+
+export type PendingVoteSync = z.infer<typeof PendingVoteSyncSchema>;
+
+/**
+ * Per-user vote file V2 format (votes/<user>.yaml). Besides the counters it
+ * carries ride-along fields: the local file's upvote ledger and pending
+ * delivery record, and the remote file's recent delivery ids. A malformed
+ * ride-along reads as absent; unknown keys are kept so a save writes them back.
+ */
+export const UserVotesV2Schema = z.looseObject({
+  version: z.literal(2),
+  votes: z.record(z.string(), VoteEntryV2Schema).default({}),
+  deltas: VoteDeltasSchema.default({}),
+  upvotedSessions: UpvoteLedgerSchema.optional().catch(undefined),
+  pendingSync: PendingVoteSyncSchema.optional().catch(undefined),
+  deliveredSyncIds: VoteIdsSchema.optional().catch(undefined),
+});
+
+export type UserVotesV2 = z.infer<typeof UserVotesV2Schema>;
 
 // User-scope (A2) learnings mirror / search index / votes. Getters, not consts,
 // so HOME isolation works in tests (issue #374 P3). The project-scope equivalents

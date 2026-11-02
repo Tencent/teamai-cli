@@ -4,7 +4,8 @@ import path from 'node:path';
 
 import YAML from 'yaml';
 
-import type { LocalConfig, UserVotes, UserVotesV2, VoteEntryV2 } from './types.js';
+import { UserVotesSchema, UserVotesV2Schema } from './types.js';
+import type { LocalConfig, PendingVoteSync, UpvoteLedger, UserVotes, UserVotesV2, VoteEntryV2 } from './types.js';
 import { readFileSafe, writeFileAtomic, ensureDir, expandHome } from './utils/fs.js';
 import { log } from './utils/logger.js';
 
@@ -66,46 +67,11 @@ export async function withVotesLock<T>(
   }
 }
 
-/**
- * The per-session set of doc-ids already upvoted, persisted INSIDE the votes file
- * (so the claim and the increment are one atomic, lock-protected write). Keyed by
- * sessionId; entries are pruned by age so the file does not grow without bound.
- */
-interface UpvoteLedger {
-  //  - firstTs: when this session first appeared in the ledger. The TTL is
-  //    measured from THIS, not from the last credit, so a doc adopted early in a
-  //    long/resumed session cannot be re-credited later just because the entry
-  //    was refreshed — the entry ages out (and its dedup guarantee ends) a fixed
-  //    window after the session started, not perpetually.
-  //  - ts: last-updated, kept for observability only.
-  [sessionId: string]: { docIds: string[]; ts: string; firstTs: string };
-}
-
 const LEDGER_TTL_MS = 24 * 60 * 60 * 1000; // 1 day
 
+/** A copy of the file's upvote ledger, for the caller to prune or extend. */
 function readLedger(data: UserVotesV2): UpvoteLedger {
-  const raw = (data as unknown as { upvotedSessions?: unknown }).upvotedSessions;
-
-  if (!raw || typeof raw !== 'object') return {};
-  // Shape-validate each entry: a hand-edited/corrupted file must not, for example,
-  // let a string `docIds` be iterated per-character. Drop malformed entries.
-  const out: UpvoteLedger = {};
-
-  for (const [sid, e] of Object.entries(raw as Record<string, unknown>)) {
-    const entry = e as { docIds?: unknown; ts?: unknown; firstTs?: unknown } | null;
-
-    if (entry && Array.isArray(entry.docIds) && typeof entry.ts === 'string') {
-      // Back-compat: entries written before firstTs existed fall back to ts.
-      const firstTs = typeof entry.firstTs === 'string' ? entry.firstTs : entry.ts;
-      out[sid] = {
-        docIds: entry.docIds.filter((d): d is string => typeof d === 'string'),
-        ts: entry.ts,
-        firstTs,
-      };
-    }
-  }
-
-  return out;
+  return { ...data.upvotedSessions };
 }
 
 /** Drop ledger entries whose FIRST-seen time is older than the TTL (or with an
@@ -143,14 +109,8 @@ export async function creditedDocIdsForSession(votePath: string, sessionId: stri
     const content = await readFileSafe(votePath);
 
     if (!content) return new Set();
-    let parsed: unknown;
 
-    try { parsed = YAML.parse(content); } catch { return new Set(); }
-
-    if (!parsed || typeof parsed !== 'object') return new Set();
-    const ledger = readLedger(parsed as UserVotesV2);
-
-    return new Set(ledger[sessionId]?.docIds ?? []);
+    return new Set(readUserVotesFromContent(content).upvotedSessions?.[sessionId]?.docIds ?? []);
   } catch {
     return new Set();
   }
@@ -170,7 +130,7 @@ export async function pruneUpvoteLedger(votePath: string): Promise<void> {
     if (Object.keys(ledger).length === 0) return;
 
     if (!pruneLedger(ledger, Date.now())) return;
-    (data as unknown as { upvotedSessions: UpvoteLedger }).upvotedSessions = ledger;
+    data.upvotedSessions = ledger;
     await saveUserVotes(votePath, data);
   });
 }
@@ -192,12 +152,16 @@ export function migrateV1ToV2(v1: UserVotes): UserVotesV2 {
   return { version: 2, votes, deltas: {} };
 }
 
+function emptyUserVotes(): UserVotesV2 {
+  return { version: 2, votes: {}, deltas: {} };
+}
+
 /**
  * Parse a votes file into the v2 shape. `migrated` is true only for a real v1
  * file, i.e. exactly when a caller that wants the upgrade on disk has to save.
  */
 async function parseUserVotes(votePath: string): Promise<{ data: UserVotesV2; migrated: boolean }> {
-  const empty = { data: { version: 2, votes: {}, deltas: {} } as UserVotesV2, migrated: false };
+  const empty = { data: emptyUserVotes(), migrated: false };
   const content = await readFileSafe(votePath);
 
   if (!content) return empty;
@@ -220,26 +184,16 @@ function parseUserVotesContent(content: string): { data: UserVotesV2; migrated: 
     return null;
   }
 
-  if (!parsed || typeof parsed !== 'object') {
-    return null;
-  }
+  // Older stages serialized deltas and pendingSync.deltas as YAML aliases. The
+  // parse builds fresh objects, so a writer incrementing the live counters
+  // leaves the receipt alone.
+  const v2 = UserVotesV2Schema.safeParse(parsed);
 
-  const obj = parsed as Record<string, unknown>;
+  if (v2.success) return { data: v2.data, migrated: false };
 
-  if (obj['version'] === 2) {
-    const v2 = obj as unknown as UserVotesV2;
-    // Older stages serialized deltas and pendingSync.deltas as YAML aliases.
-    // Detach live counters before a writer increments them, preserving the receipt.
-    v2.deltas = structuredClone(v2.deltas ?? {});
+  const v1 = UserVotesSchema.safeParse(parsed);
 
-    return { data: v2, migrated: false };
-  }
-
-  if (obj['votes'] !== undefined) {
-    return { data: migrateV1ToV2(obj as unknown as UserVotes), migrated: true };
-  }
-
-  return null;
+  return v1.success ? { data: migrateV1ToV2(v1.data), migrated: true } : null;
 }
 
 /**
@@ -248,7 +202,7 @@ function parseUserVotesContent(content: string): { data: UserVotesV2; migrated: 
  * fallback `readUserVotes` gives a corrupt file. Never writes.
  */
 export function readUserVotesFromContent(content: string): UserVotesV2 {
-  return parseUserVotesContent(content)?.data ?? { version: 2, votes: {}, deltas: {} };
+  return parseUserVotesContent(content)?.data ?? emptyUserVotes();
 }
 
 /**
@@ -367,11 +321,11 @@ export async function incrementUpvoted(
         // Nothing new to credit. Only rewrite if pruning actually changed the
         // ledger, to avoid a needless write on every repeated Stop.
         if (pruned) {
-          (data as unknown as { upvotedSessions: UpvoteLedger }).upvotedSessions = ledger;
+          data.upvotedSessions = ledger;
           await saveUserVotes(votePath, data);
         }
 
-        return [] as string[];
+        return [];
       }
     }
 
@@ -397,7 +351,7 @@ export async function incrementUpvoted(
       for (const id of toCredit) prev.add(id);
       // Preserve firstTs across turns so the TTL measures age from session start.
       ledger[sessionId] = { docIds: [...prev], ts: now, firstTs: existing?.firstTs ?? now };
-      (data as unknown as { upvotedSessions: UpvoteLedger }).upvotedSessions = ledger;
+      data.upvotedSessions = ledger;
     }
 
     await saveUserVotes(votePath, data);
@@ -544,55 +498,14 @@ export interface StagedVotes {
   syncedDeltas: UserVotesV2['deltas'];
 }
 
-/**
- * Delivery record for a stage whose push may have landed without its
- * confirmation (#1027): the unique id the stage stamped into the remote file's
- * `deliveredSyncIds`, plus the delta set it staged. Persisted in the LOCAL
- * votes file (a ride-along field, like `upvotedSessions`) at stage time —
- * before the push — and consumed by {@link confirmVotesSynced} or by the next
- * stage.
- */
-export interface PendingVoteSync {
-  /** The id the stage appended to the remote `deliveredSyncIds` list. */
-  syncId: string;
-  /** The delta set that was staged, to subtract when delivery is recognized. */
-  deltas: UserVotesV2['deltas'];
-}
-
 /** How many recent delivery ids the remote file keeps. */
 const MAX_DELIVERED_SYNC_IDS = 10;
 
-/** Read the local delivery record, shape-checked like the upvote ledger. */
-function readPendingSync(data: UserVotesV2): PendingVoteSync | undefined {
-  const raw = (data as unknown as { pendingSync?: unknown }).pendingSync;
-
-  if (!raw || typeof raw !== 'object') return undefined;
-  const p = raw as Partial<PendingVoteSync>;
-
-  if (typeof p.syncId !== 'string' || !p.deltas || typeof p.deltas !== 'object') {
-    return undefined;
-  }
-
-  return p as PendingVoteSync;
-}
-
 /** The same votes snapshot with the delivery record set (or removed). */
-function withPendingSync(data: UserVotesV2, pending: PendingVoteSync | undefined): UserVotesV2 {
-  const out = { ...data } as UserVotesV2 & { pendingSync?: PendingVoteSync };
+function withPendingSync(data: UserVotesV2, pendingSync: PendingVoteSync | undefined): UserVotesV2 {
+  const { pendingSync: _previous, ...rest } = data;
 
-  if (pending) out.pendingSync = pending;
-  else delete out.pendingSync;
-
-  return out;
-}
-
-/** The delivery ids a remote snapshot records, from its ride-along field. */
-function deliveredSyncIdsOf(remote: UserVotesV2): string[] {
-  const raw = (remote as unknown as { deliveredSyncIds?: unknown }).deliveredSyncIds;
-
-  if (!Array.isArray(raw)) return [];
-
-  return raw.filter((id): id is string => typeof id === 'string');
+  return pendingSync ? { ...rest, pendingSync } : rest;
 }
 
 /** Confirmed team votes plus this scope's undelivered deltas, for index builds.
@@ -638,9 +551,9 @@ export async function readIndexVoteFiles(config: LocalConfig): Promise<Array<{ p
     const filename = `${config.username}.yaml`;
     const source = files.get(filename);
     const base = readUserVotesFromContent(source?.content ?? '');
-    const pending = readPendingSync(local);
+    const pending = local.pendingSync;
 
-    const deltas = pending && deliveredSyncIdsOf(base).includes(pending.syncId)
+    const deltas = pending && (base.deliveredSyncIds ?? []).includes(pending.syncId)
       ? remainingDeltasAfter(local.deltas, pending.deltas) : local.deltas;
 
     if (Object.keys(deltas).length > 0) {
@@ -650,7 +563,7 @@ export async function readIndexVoteFiles(config: LocalConfig): Promise<Array<{ p
       const parsed = parseUserVotesContent(source?.content ?? '');
 
       if (parsed?.migrated && source) {
-        const legacy = YAML.parse(source.content) as UserVotes;
+        const legacy = UserVotesSchema.parse(YAML.parse(source.content));
 
         for (const id of Object.keys(deltas)) delete legacy.votes[id];
 
@@ -716,7 +629,7 @@ export async function stageVotesMerge(
 
   const { acquired, value } = await withVotesLock(localVotePath, async () => {
     let local = await loadUserVotes(localVotePath);
-    const base = confirmedRemote ?? { version: 2, votes: {}, deltas: {} };
+    const base = confirmedRemote ?? emptyUserVotes();
 
     // A previous stage may have been delivered without its confirmation: the
     // push landed and the process died (or the clear's lock was exhausted)
@@ -725,10 +638,10 @@ export async function stageVotesMerge(
     // re-adding it on top of itself. A missing id means the push never landed
     // (or cannot be proven landed): the record is superseded and the deltas
     // re-merge below, idempotently.
-    const pending = readPendingSync(local);
+    const pending = local.pendingSync;
 
     if (pending) {
-      const delivered = deliveredSyncIdsOf(base).includes(pending.syncId);
+      const delivered = (base.deliveredSyncIds ?? []).includes(pending.syncId);
       local = withPendingSync(
         { ...local, deltas: delivered ? remainingDeltasAfter(local.deltas, pending.deltas) : local.deltas },
         undefined,
@@ -747,7 +660,7 @@ export async function stageVotesMerge(
 
     const merged: UserVotesV2 & { deliveredSyncIds: string[] } = {
       ...mergeDeltas(local, base),
-      deliveredSyncIds: [...deliveredSyncIdsOf(base), syncId].slice(-MAX_DELIVERED_SYNC_IDS),
+      deliveredSyncIds: [...(base.deliveredSyncIds ?? []), syncId].slice(-MAX_DELIVERED_SYNC_IDS),
     };
 
     await saveUserVotes(remoteVotePath, merged);
@@ -808,7 +721,7 @@ export async function recallFeedback(opts: { positive?: string; negative?: strin
       // No user config, or one that cannot be read: say which.
       const { getUserConfigPath } = await import('./types.js');
       reason = await throwMissingOrInvalid(expandHome(getUserConfigPath()))
-        .catch((e: unknown) => e instanceof Error ? e.message : String(e));
+        .catch((cause: unknown) => cause instanceof Error ? cause.message : String(cause));
     }
 
     log.error(`No feedback recorded: ${reason}`);
