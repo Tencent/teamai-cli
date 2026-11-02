@@ -606,4 +606,48 @@ describe('doctor — the tool trusts the project it reads team files from', () =
       expect(await check(APPROVAL)).toBeUndefined();
     });
   });
+  // Cursor CLI 2026.10.21 keeps, per project, `mcp-approvals.json` (`<name>-<hash
+  // of the parsed server>`) and `mcp-disabled.json` (names it never loads) in
+  // ~/.cursor/projects/<real git root, non-alphanumerics as "-">/. The hash
+  // covers env values of the shell Cursor runs in, so doctor reads names only.
+  describe('Cursor CLI MCP approval', () => {
+    const APPROVAL = 'Cursor CLI approves this project\'s team MCP servers';
+    const projectDir = (): string => path.join(homeDir, '.cursor', 'projects', projectRoot.replace(/[^a-zA-Z0-9]/g, '-').replace(/-+/g, '-').replace(/^-+|-+$/g, ''));
+
+    beforeEach(async () => {
+      execFileSync('git', ['init', '-q'], { cwd: projectRoot });
+      await fse.ensureDir(path.join(homeDir, '.cursor'));
+      teamConfig.toolPaths = { cursor: { mcp: '.cursor/mcp.json', mcpProject: '.cursor/mcp.json' } };
+      await fse.outputFile(path.join(repoPath, 'mcp', 'mcp.yaml'), 'servers:\n  - name: issues\n    transport: stdio\n    command: issues-server\n');
+      await fse.outputJson(path.join(projectRoot, '.cursor', 'mcp.json'), { mcpServers: { issues: { command: 'issues-server' } } });
+      await fse.outputJson(managedMcpManifestPath(getDataHome(localConfig), projectRoot), { [managedMcpManifestKey('cursor', true)]: [{ name: 'issues', hash: 'h' }] });
+    });
+
+    it('fails while the member declined the server, naming the command that enables it', async () => {
+      await fse.outputJson(path.join(projectDir(), 'mcp-disabled.json'), ['issues']);
+
+      const found = await check(APPROVAL);
+      expect(await found?.check()).toBe(false);
+      expect(found?.fix).toContain('issues was rejected');
+      expect(found?.fix).toContain('cursor-agent mcp enable issues');
+    });
+
+    it('fails when the CLI approved other servers here and not this one', async () => {
+      await fse.outputJson(path.join(projectDir(), 'mcp-approvals.json'), ['docs-9e751cee26e3f96a']);
+
+      const found = await check(APPROVAL);
+      expect(await found?.check()).toBe(false);
+      expect(found?.fix).toContain('issues waits for approval');
+    });
+
+    it('passes once the CLI holds an approval for the server', async () => {
+      await fse.outputJson(path.join(projectDir(), 'mcp-approvals.json'), ['issues-ab198a3220d3e501']);
+
+      expect(await (await check(APPROVAL))?.check()).toBe(true);
+    });
+
+    it('passes while the CLI keeps no state for the project, as for a member on the Cursor IDE', async () => {
+      expect(await (await check(APPROVAL))?.check()).toBe(true);
+    });
+  });
 });

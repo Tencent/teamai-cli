@@ -123,7 +123,7 @@ export type RunTimeVia = 'session-hook' | 'extension' | 'plugin';
  * project's MCP servers. `read-gates.ts` evaluates each one.
  */
 export type ReadGateKind = 'codex-project-trust' | 'pi-project-trust' | 'muse-workspace-trust' | 'copilot-folder-trust' | 'qoder-folder-trust'
-  | 'qoder-mcp-approval' | 'claude-mcp-approval' | 'codebuddy-mcp-approval';
+  | 'qoder-mcp-approval' | 'claude-mcp-approval' | 'codebuddy-mcp-approval' | 'cursor-mcp-approval';
 
 /** The frontmatter teamai writes above its blocks when it creates an owned blocks file a rules loader reads. */
 export type BlocksHeader = 'always-apply' | 'apply-to-all' | 'trigger-always-on' | 'inclusion-always';
@@ -570,7 +570,8 @@ export const TOOLS = {
     },
     mcp: {
       user: { format: 'cursor', reads: [{ base: 'home', path: '.cursor/mcp.json', evidence: 'source' }] },
-      project: { format: 'cursor', reads: [{ base: 'project', path: '.cursor/mcp.json', when: 'workspaceUnder', evidence: 'source' }] },
+      // The Cursor CLI (2026.10.21, verified) loads a project server only once it is approved; the IDE's approvals are not traced.
+      project: { format: 'cursor', reads: [{ base: 'project', path: '.cursor/mcp.json', when: 'workspaceUnder', evidence: 'source' }], readGates: ['cursor-mcp-approval'] },
     },
     hooks: { user: { channel: 'settings', format: 'cursor', reads: [{ base: 'home', path: '.cursor/hooks.json', evidence: 'source' }] }, self: { channel: 'settings', format: 'cursor', reads: [{ base: 'project', path: '.cursor/hooks.json', when: 'workspaceUnder', evidence: 'source' }] } },
     sessions: ['cursor'],

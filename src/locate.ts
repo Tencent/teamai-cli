@@ -161,7 +161,9 @@ export type ReadGate =
    */
   | { readonly kind: 'claude-mcp-approval'; readonly config: string; readonly settings: string; readonly checkout: string }
   /** `config`: the project's .codebuddy/settings.local.json (`CODEBUDDY_PROJECT_CONFIG_DIR` moves it), the only file CodeBuddy Code reads approvals from. */
-  | { readonly kind: 'codebuddy-mcp-approval'; readonly config: string; readonly checkout: string };
+  | { readonly kind: 'codebuddy-mcp-approval'; readonly config: string; readonly checkout: string }
+  /** `config`: the Cursor CLI's directory of per-project state, `~/.cursor/projects`. */
+  | { readonly kind: 'cursor-mcp-approval'; readonly config: string; readonly checkout: string };
 
 /**
  * A place teamai wrote this resource to before and no longer writes, and why.
@@ -652,6 +654,8 @@ async function readGatesOf(kinds: readonly ReadGateKind[] | undefined, install: 
         const dir = moved ? host.path.resolve(install.projectRoot, moved) : host.path.join(install.projectRoot, '.codebuddy');
         return { kind, config: host.path.join(dir, 'settings.local.json'), checkout: install.projectRoot };
       }
+      case 'cursor-mcp-approval':
+        return { kind, config: rootsOf('cursor', user, host).declared('home', '.cursor/projects'), checkout: install.projectRoot };
       case 'qoder-folder-trust':
       case 'qoder-mcp-approval':
         return { kind, config: rootsOf('qoder', user, host).declared('home', '.qoder/settings.json'), checkout: install.projectRoot };

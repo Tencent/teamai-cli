@@ -167,7 +167,8 @@ const COMPLETE_ROWS: readonly MatrixRow[] = [
     existingDirs: ['<root>/.cursor'],
     installed: { probe: '<root>/.cursor', met: true },
     reads: [{ at: '<root>/.cursor/mcp.json', key: ['mcpServers'], when: 'workspaceUnder' }],
-    source: 'Cursor CLI 2026.09.28 and IDE 3.16.29 config loader, issue #1221 Matrix',
+    readGates: [{ kind: 'cursor-mcp-approval', config: '~/.cursor/projects', checkout: '<root>' }],
+    source: 'Cursor CLI 2026.09.28 and IDE 3.16.29 config loader, issue #1221 Matrix; CLI 2026.10.21 loads a project server only once approved',
   },
   {
     tool: 'copilot', scope: 'user',
