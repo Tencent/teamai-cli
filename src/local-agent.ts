@@ -124,6 +124,7 @@ import { skillOrigin, withSkillFrontmatter } from './resources/skills.js';
 import { hookSettingsFile, installOf, locate, ownOf, writable, type FilePlace } from './locate.js';
 import { mcpFormatOf } from './tools.js';
 import { acquireLock, releaseLock } from './update.js';
+import { isJsonObject, type JsonObject } from './types.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -358,14 +359,6 @@ const ModelConfigManifestSchema = BuddyModelManifestSchema.extend({
 type ModelAgentKind = 'codebuddy' | 'workbuddy' | 'claude';
 
 type BuddyAgentKind = 'codebuddy' | 'workbuddy';
-
-/** A JSON object: a settings or models document another tool owns. */
-type JsonObject = { [key: string]: JsonValue };
-
-/** Whether a JSON value is an object, rather than an array, a primitive or null. */
-function isJsonObject(value: JsonValue | undefined): value is JsonObject {
-  return value instanceof Object && !Array.isArray(value);
-}
 
 /** A string field of a file another tool owns, absent when it holds anything else. */
 const OptionalText = z.string().optional().catch(undefined);

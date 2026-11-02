@@ -8,10 +8,11 @@
 import { z } from 'zod';
 import type { JsonValue } from '../types.js';
 import {
-  evaluateExpression, expressionPaths, isJsonObject, parseExpression, parseFields, resolvePath,
+  evaluateExpression, expressionPaths, parseExpression, parseFields, resolvePath,
   readsLikeExpression, type Expression, type ExpressionContext, type ExpressionPath, type PathField,
 } from './expression.js';
 import type { WorkflowStep } from './types.js';
+import { isJsonObject } from '../types.js';
 
 /** A `{{ with.<name>… }}` read: a value the step's own `with` names. Only templates read it; an `if` cannot. */
 export interface WithPath {

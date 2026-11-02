@@ -1,7 +1,6 @@
 import path from 'node:path';
 import { z } from 'zod';
-import type { JsonValue } from '../types.js';
-import { isJsonObject, type JsonObject } from './mcp-format.js';
+import { isJsonObject, type JsonObject, type JsonValue } from '../types.js';
 import { readFileSafe, writeJsonAtomic, pathExists, remove, symlinkTarget } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 

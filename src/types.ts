@@ -16,6 +16,14 @@ export const JsonValueSchema = z.json();
 
 export type JsonValue = z.infer<typeof JsonValueSchema>;
 
+/** A JSON object: a document, or a mapping inside one. */
+export type JsonObject = { [key: string]: JsonValue };
+
+/** Whether a JSON value is an object, not an array, a primitive or null: JSON and YAML parse every object as an Object instance. */
+export function isJsonObject(value: JsonValue | undefined): value is JsonObject {
+  return value instanceof Object && !Array.isArray(value);
+}
+
 const COPILOT_USER_MCP_CONFIG = 'mcp-config.json';
 const COPILOT_PROJECT_MCP_CONFIG = '.github/mcp.json';
 

@@ -42,7 +42,7 @@
 import path from 'node:path';
 import YAML from 'yaml';
 import { z } from 'zod';
-import { getTeamaiHomeDir, JsonValueSchema, type JsonValue, type LocalConfig } from '../types.js';
+import { getTeamaiHomeDir, isJsonObject, JsonValueSchema, type JsonObject, type JsonValue, type LocalConfig } from '../types.js';
 import { activeEntryNamespaces, describeEntryFailure, entryLayout, listEntryFiles, namespaceDir, readEntryFileText, type EntryLayout } from '../namespaced-entries.js';
 import { resolveNamespacedItems, type NamespaceCandidate } from '../namespace-resolver.js';
 import { listDirs } from '../utils/fs.js';
@@ -740,11 +740,3 @@ function optionFields(option: AliasOption): { model: string; effort?: string } {
 
 /** The tool extras of an agent, as `toolExtrasFor` reads them. */
 type ToolExtras = NonNullable<ReturnType<typeof toolExtrasFor>>;
-
-/** A JSON object: a mapping in an aliases document. */
-type JsonObject = { [key: string]: JsonValue };
-
-/** Whether a JSON value is an object, rather than an array, a primitive or null. */
-function isJsonObject(value: JsonValue | undefined): value is JsonObject {
-  return value instanceof Object && !Array.isArray(value);
-}

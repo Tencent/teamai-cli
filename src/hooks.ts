@@ -20,7 +20,7 @@ import {
   hookToolPathsForConfig,
   toolGateRoot,
 } from './types.js';
-import { JsonValueSchema } from './types.js';
+import { isJsonObject, JsonValueSchema } from './types.js';
 import type { HookDef, JsonValue, TeamaiConfig, LocalConfig, ManagedMcpManifest, Scope } from './types.js';
 import type { ToolId } from './tools.js';
 import {
@@ -505,11 +505,6 @@ interface TeamHookRender extends HookRender {
  */
 function isJsonValue(value: unknown): value is JsonValue {
   return JsonValueSchema.safeParse(value).success;
-}
-
-/** Whether `value` is a JSON object (not an array or null), checked without copying it. */
-function isJsonObject(value: JsonValue | undefined): value is { [key: string]: JsonValue } {
-  return z.record(z.string(), z.unknown()).safeParse(value).success;
 }
 
 /** What `judgeUnrecordedTeamEntries` found in a hook file. */

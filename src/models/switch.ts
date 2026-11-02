@@ -13,7 +13,7 @@ import { acquireLock, releaseLock } from '../update.js';
 import { entryHash } from '../resources/mcp-format.js';
 import { detectShellProfile, SHELL_PROFILE_CANDIDATE_NAMES, shellQuoteValue, toGeneratedForm } from '../utils/shell-profile.js';
 import { resolveMemberToolRoots } from '../config.js';
-import { JsonValueSchema, recordedToolRootDir, RELOCATABLE_TOOLS, type JsonValue, type LocalConfig } from '../types.js';
+import { isJsonObject, JsonValueSchema, recordedToolRootDir, RELOCATABLE_TOOLS, type JsonObject, type JsonValue, type LocalConfig } from '../types.js';
 import { ALL_MODEL_AGENTS, ModelAgentSchema, type ModelAgent, type ModelProtocol, type ResolvedModelProfile, sameTeamIdentity } from './profile.js';
 
 export { ALL_MODEL_AGENTS } from './profile.js';
@@ -34,15 +34,7 @@ const CLAUDE_ENV_KEYS = [
 
 const CLAUDE_PROVIDER_KEYS = ['CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY'] as const;
 
-/** A JSON object: a settings document, or the part of one a snapshot records. */
-type JsonObject = { [key: string]: JsonValue };
-
 const JsonObjectSchema = z.record(z.string(), JsonValueSchema);
-
-/** Whether a JSON value is an object, rather than an array, a primitive or null. */
-function isJsonObject(value: JsonValue | undefined): value is JsonObject {
-  return value instanceof Object && !Array.isArray(value);
-}
 
 /** The message of a caught error, which fs, JSON and YAML raise as an `Error`. */
 function messageOf(cause: unknown): string {

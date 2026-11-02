@@ -1,8 +1,7 @@
 import path from 'node:path';
 import { z } from 'zod';
 import { updateFileLocked } from './git-exclude.js';
-import { isJsonObject, type JsonObject } from './resources/mcp-format.js';
-import { getDataHome, type GlobalOptions, type JsonValue, type LocalConfig } from './types.js';
+import { getDataHome, isJsonObject, type GlobalOptions, type JsonObject, type JsonValue, type LocalConfig } from './types.js';
 import { pathExists, readFileSafe } from './utils/fs.js';
 import { getUserHome } from './utils/home.js';
 import { log } from './utils/logger.js';

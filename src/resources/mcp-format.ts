@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { z } from 'zod';
-import type { JsonValue, McpServerDef, McpTransport } from '../types.js';
+import { isJsonObject, type JsonObject, type JsonValue, type McpServerDef, type McpTransport } from '../types.js';
 import { sameEnvName } from './env-key.js';
 
 // ─── Per-tool rendering ──────────────────────────────────────
@@ -202,14 +202,6 @@ export function resolvePlaceholders(def: McpServerDef, vars: Record<string, stri
 }
 
 // ─── Renderers ───────────────────────────────────────────────
-
-/** A JSON object: an MCP config file, its server map, or one server's entry. */
-export interface JsonObject { [key: string]: JsonValue }
-
-/** Whether a JSON value is an object, not an array: JSON parsing creates every object as an Object instance. */
-export function isJsonObject(value: JsonValue | undefined): value is JsonObject {
-  return value instanceof Object && !Array.isArray(value);
-}
 
 /** One server's entry in a JSON MCP config, as teamai renders it or a tool saved it. */
 export type McpJsonEntry = JsonObject;

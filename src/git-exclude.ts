@@ -9,8 +9,7 @@ import { checkoutLocation } from './utils/git.js';
 import { withoutGitRepositoryEnv } from './utils/git-env.js';
 import { getUserHome } from './utils/home.js';
 import { z } from 'zod';
-import type { JsonValue } from './types.js';
-import { isJsonObject, type JsonObject } from './resources/mcp-format.js';
+import { isJsonObject, type JsonObject, type JsonValue } from './types.js';
 
 // ─── Git exclude blocks ──────────────────────────────────────
 //

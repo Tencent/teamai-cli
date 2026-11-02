@@ -37,9 +37,7 @@ import {
   museEntryHash,
   MCP_SERVER_KEY,
   sameServerKey,
-  isJsonObject,
   UntypedStdioEntrySchema,
-  type JsonObject,
   type McpFormat,
 } from './resources/mcp-format.js';
 import { mcpEntryReader, parseTeamMcpServers, teamMcpToDef } from './resources/mcp.js';
@@ -94,6 +92,7 @@ import {
   type McpFileObservation,
 } from './mcp-resolved-files.js';
 import { hasWorkspaceChildren } from './workspace-children.js';
+import { isJsonObject, type JsonObject } from './types.js';
 
 // ─── Reconcile engine ────────────────────────────────────────
 //
