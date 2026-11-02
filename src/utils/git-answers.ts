@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
 import { getCurrentVersion } from '../package-info.js';
+import type { JsonValue } from '../types.js';
 import { writeFileAtomic } from './fs.js';
 import { log } from './logger.js';
 
@@ -101,12 +102,12 @@ function keptFile(): Promise<string | null> {
 /** The answers kept in `file`: none when it is missing, unreadable, or not in their shape. */
 async function readKept(file: string): Promise<Kept> {
   const text = await fs.promises.readFile(file, 'utf8').catch(() => '');
-  let json: unknown;
+  let json: JsonValue = null;
 
   try {
     json = JSON.parse(text);
   } catch {
-    json = null;
+    // Not JSON: nothing kept.
   }
 
   const parsed = Kept.safeParse(json);

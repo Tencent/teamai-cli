@@ -142,7 +142,7 @@ export async function findOverlappingLearnings(
         results.push({ filename, overlap: ratio });
       }
     } catch (err: unknown) {
-      log.debug(`dedup: skip ${filename} — ${(err as Error).message}`);
+      log.debug(`dedup: skip ${filename} — ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 

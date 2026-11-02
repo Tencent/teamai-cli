@@ -75,7 +75,10 @@ export async function historicalVersions(
 /** The bytes of one blob of `repoPath`, or null when git cannot read it. */
 export async function readBlob(repoPath: string, blob: string): Promise<Buffer | null> {
   try {
-    return Buffer.from(await createGit(repoPath).binaryCatFile(['blob', blob]) as Uint8Array);
+    // simple-git types this `any`; it documents the result as the stdout Buffer.
+    const bytes: Buffer = await createGit(repoPath).binaryCatFile(['blob', blob]);
+
+    return Buffer.from(bytes);
   } catch {
     return null;
   }
@@ -89,7 +92,9 @@ export async function readBlob(repoPath: string, blob: string): Promise<Buffer |
  */
 export async function readRenderedBlob(repoPath: string, blob: string, path: string): Promise<Buffer | null> {
   try {
-    return Buffer.from(await createGit(repoPath).binaryCatFile(['--filters', `--path=${path}`, blob]) as Uint8Array);
+    const bytes: Buffer = await createGit(repoPath).binaryCatFile(['--filters', `--path=${path}`, blob]);
+
+    return Buffer.from(bytes);
   } catch {
     return null;
   }
@@ -106,7 +111,7 @@ export async function blobIdOf(repoPath: string, content: string | Uint8Array): 
     objectFormats.set(repoPath, format);
   }
 
-  const bytes = typeof content === 'string' ? Buffer.from(content, 'utf8') : content;
+  const bytes = content instanceof Uint8Array ? content : Buffer.from(content, 'utf8');
 
   return createHash(await format).update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
 }

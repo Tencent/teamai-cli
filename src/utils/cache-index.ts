@@ -1,7 +1,9 @@
 import path from 'node:path';
 
 import fs from 'fs-extra';
+import { z } from 'zod';
 
+import { errnoCode } from './fs.js';
 import { getUserHome } from './home.js';
 import { log } from './logger.js';
 
@@ -39,6 +41,23 @@ export interface CacheIndex {
     updated_at: string;
     entries: CacheIndexEntry[];
 }
+
+/**
+ * The index file as read. Unknown fields are kept, so a save writes them back;
+ * an entry without a cache entry's fields is dropped instead of read as one.
+ */
+const CacheIndexFileSchema = z.looseObject({
+    version: z.literal(1),
+    updated_at: z.string().catch(''),
+    entries: z
+        .array(
+            z
+                .looseObject({ key: z.string(), size_bytes: z.number(), last_used: z.string(), last_synced_sha: z.string().optional() })
+                .nullable()
+                .catch(null),
+        )
+        .transform((entries) => entries.filter((entry) => entry !== null)),
+});
 
 export interface GcOptions {
     /** 默认 DEFAULT_MAX_BYTES（可被 TEAMAI_CACHE_MAX_BYTES 覆盖） */
@@ -113,17 +132,17 @@ export async function loadCacheIndex(): Promise<CacheIndex> {
         }
 
         const raw = await fs.readFile(indexPath, 'utf8');
-        const parsed = JSON.parse(raw) as CacheIndex;
+        const parsed = CacheIndexFileSchema.safeParse(JSON.parse(raw));
 
-        if (parsed.version !== 1 || !Array.isArray(parsed.entries)) {
+        if (!parsed.success) {
             log.debug('[cache-index] Unrecognized index format; using an empty index');
 
             return emptyIndex();
         }
 
-        return parsed;
+        return parsed.data;
     } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        if (errnoCode(err) !== 'ENOENT') {
             log.debug(`[cache-index] Failed to read the index; using an empty index: ${String(err)}`);
         }
 
@@ -246,8 +265,9 @@ export async function touchCacheEntry(args: {
         key,
         size_bytes: sizeBytes,
         last_used: new Date().toISOString(),
-        ...(lastSyncedSha !== undefined ? { last_synced_sha: lastSyncedSha } : {}),
     };
+
+    if (lastSyncedSha !== undefined) newEntry.last_synced_sha = lastSyncedSha;
 
     // 保留已有 last_synced_sha（若本次未提供）
     if (existingIdx >= 0) {

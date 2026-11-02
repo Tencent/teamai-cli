@@ -48,7 +48,7 @@ export async function mirrorLearnings(
   destinationDir: string,
   activeNamespaces: string[],
 ): Promise<void> {
-  const roots = typeof sourceDirs === 'string' ? [sourceDirs] : sourceDirs;
+  const roots = [sourceDirs].flat();
   const presentRoots: string[] = [];
 
   for (const root of roots) {

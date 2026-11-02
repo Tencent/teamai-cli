@@ -622,9 +622,7 @@ async function* profileChain(start: string): AsyncGenerator<{ file: string; cont
   const visited = new Set<string>();
   const queue: string[] = [start];
 
-  while (queue.length > 0) {
-    const current = queue.shift() as string;
-
+  for (let current = queue.shift(); current !== undefined; current = queue.shift()) {
     if (visited.has(current)) continue;
     visited.add(current);
 

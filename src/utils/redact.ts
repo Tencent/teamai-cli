@@ -32,6 +32,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { z } from 'zod';
 
 const PLACEHOLDER = (label: string): string => `<REDACTED:${label}>`;
 
@@ -52,6 +53,9 @@ export const MIN_ENV_VALUE_LENGTH = 8;
 /** Minimum length of a value the team declares secret: a shorter one cannot be told from ordinary text. */
 export const MIN_DECLARED_SECRET_LENGTH = 4;
 
+/** A match's named groups when its `passedOver` group took part (see SECRET_PATTERNS). */
+const PassedOverSchema = z.object({ passedOver: z.string() });
+
 /**
  * (label, regex) pairs matched and replaced wholesale. Order matters: more
  * specific prefixes (e.g. `sk-ant-`) run before broader ones (e.g. `sk-`).
@@ -61,10 +65,6 @@ export const MIN_DECLARED_SECRET_LENGTH = 4;
  * later offset, so the scan skips it once instead of rescanning it per offset.
  * Only that name keeps a match, so any other capture group still redacts.
  */
-function wasPassedOver(groups: unknown): boolean {
-  return typeof groups === 'object' && groups !== null && 'passedOver' in groups && typeof groups.passedOver === 'string';
-}
-
 const SECRET_PATTERNS: ReadonlyArray<readonly [string, RegExp]> = [
   ['pem', /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----|(?<passedOver>[\s\S]*))/g],
   ['anthropic', /\bsk-ant-[A-Za-z0-9_-]{20,}/g],
@@ -115,11 +115,11 @@ export interface RedactOptions {
  * name. Kept separate from {@link redact} so redaction stays a pure function of
  * its inputs (and so the env scan can be unit-tested with a fake env).
  */
-export function collectEnvSecrets(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
+export function collectEnvSecrets(env: NodeJS.ProcessEnv = process.env) {
   const secrets: Record<string, string> = {};
 
   for (const [name, value] of Object.entries(env)) {
-    if (typeof value !== 'string' || value.length < MIN_ENV_VALUE_LENGTH) continue;
+    if (value === undefined || value.length < MIN_ENV_VALUE_LENGTH) continue;
 
     if (!SECRET_NAME_PATTERN.test(name.toUpperCase())) continue;
 
@@ -162,7 +162,7 @@ export function redact(text: string, options: RedactOptions = {}): string {
   if (options.patterns !== false) {
     for (const [label, pattern] of SECRET_PATTERNS) {
       out = out.replace(pattern, (match: string, ...rest: unknown[]) =>
-        wasPassedOver(rest.at(-1)) ? match : PLACEHOLDER(label),
+        PassedOverSchema.safeParse(rest.at(-1)).success ? match : PLACEHOLDER(label),
       );
     }
 

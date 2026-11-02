@@ -135,7 +135,7 @@ async function remoteBranchExists(spec: BranchWorktreeSpec, repoRoot: string): P
   try {
     const res = await git.listRemote(['--heads', 'origin', spec.branch]);
 
-    return typeof res === 'string' && res.trim().length > 0;
+    return res.trim().length > 0;
   } catch {
     return null;
   }
@@ -308,7 +308,7 @@ async function openWorktree(
 
         return { wt, current: true };
       } catch (e) {
-        log.debug(`[${spec.logTag}] initial push skipped: ${(e as Error).message}`);
+        log.debug(`[${spec.logTag}] initial push skipped: ${e instanceof Error ? e.message : String(e)}`);
       }
     } else if (onOrigin === false) {
       // Origin said just now it has no such branch: nothing to sync from.
@@ -616,17 +616,17 @@ const GIT_PROGRESS_LINE = /^(?:To |Pushing to |hint:|Enumerating |Counting |Delt
  * The reason a failed side-branch write reports: short for a refusal that was warned, else its lines but git's
  * progress, on one line. A caller ends the sentence, so the reason has no final period.
  */
-export function failureReason(e: unknown): string {
-  if (e instanceof CheckoutRefusedError && warnedRefusals.has(e.message)) return e.summary;
-  const message = e instanceof Error ? e.message : String(e);
+export function failureReason(cause: unknown): string {
+  if (cause instanceof CheckoutRefusedError && warnedRefusals.has(cause.message)) return cause.summary;
+  const message = cause instanceof Error ? cause.message : String(cause);
   const problems = message.split('\n').map((line) => line.trim().replace(/\s+/g, ' ')).filter((line) => line !== '' && !GIT_PROGRESS_LINE.test(line));
 
   return problems.length > 0 ? problems.join('; ').replace(/\.$/, '') : message;
 }
 
 /** A failed write; `refused` when a checkout refusal stopped it, which every retry meets until the member acts. */
-function failedWith(e: unknown): PublishResult {
-  return { status: 'failed', reason: failureReason(e), refused: e instanceof CheckoutRefusedError || undefined };
+function failedWith(cause: unknown): PublishResult {
+  return { status: 'failed', reason: failureReason(cause), refused: cause instanceof CheckoutRefusedError || undefined };
 }
 
 /**
@@ -889,7 +889,7 @@ async function commitAndPushAt(
       const stalled = pushErr instanceof GitPluginError && pushErr.plugin === 'timeout';
 
       if (attempt === maxRetries || stalled) {
-        log.debug(`[${spec.logTag}] push failed after ${attempt} attempts: ${(pushErr as Error).message}`);
+        log.debug(`[${spec.logTag}] push failed after ${attempt} attempts: ${pushErr instanceof Error ? pushErr.message : String(pushErr)}`);
 
         return { status: 'failed', reason: failureReason(pushErr) };
       }
@@ -905,7 +905,7 @@ async function commitAndPushAt(
         if (carried) await git.raw(['reset', '--hard', 'HEAD']);
         await git.rebase([`origin/${spec.branch}`]);
       } catch (rebaseErr) {
-        log.debug(`[${spec.logTag}] rebase failed, retrying: ${(rebaseErr as Error).message}`);
+        log.debug(`[${spec.logTag}] rebase failed, retrying: ${rebaseErr instanceof Error ? rebaseErr.message : String(rebaseErr)}`);
 
         // Abort a half-finished rebase so the next attempt starts clean.
         try {
@@ -954,7 +954,7 @@ async function commitAndPushImpl(
 
     return await commitAndPushAt(spec, wt, message, files, options);
   } catch (e) {
-    log.debug(`[${spec.logTag}] commitAndPush failed (non-blocking): ${(e as Error).message}`);
+    log.debug(`[${spec.logTag}] commitAndPush failed (non-blocking): ${e instanceof Error ? e.message : String(e)}`);
 
     return failedWith(e);
   } finally {
@@ -1010,7 +1010,7 @@ async function updateImpl(
     try {
       if (!current) await syncWorktree(spec, wt);
     } catch (e) {
-      log.debug(`[${spec.logTag}] sync before write failed, writing onto the local copy: ${(e as Error).message}`);
+      log.debug(`[${spec.logTag}] sync before write failed, writing onto the local copy: ${e instanceof Error ? e.message : String(e)}`);
     }
 
     let delivered: (() => Promise<void>) | undefined;
@@ -1031,13 +1031,13 @@ async function updateImpl(
       try {
         await delivered();
       } catch (e) {
-        log.debug(`[${spec.logTag}] onDelivered hook failed (deltas stay pending): ${(e as Error).message}`);
+        log.debug(`[${spec.logTag}] onDelivered hook failed (deltas stay pending): ${e instanceof Error ? e.message : String(e)}`);
       }
     }
 
     return result;
   } catch (e) {
-    log.debug(`[${spec.logTag}] update failed (non-blocking): ${(e as Error).message}`);
+    log.debug(`[${spec.logTag}] update failed (non-blocking): ${e instanceof Error ? e.message : String(e)}`);
 
     return failedWith(e);
   } finally {
@@ -1093,7 +1093,7 @@ async function restoreConflictedFiles(spec: BranchWorktreeSpec, git: SimpleGit):
     await git.raw(['reset', 'HEAD', '--', ...conflicted]);
     log.debug(`[${spec.logTag}] restored uncommitted files after a stash-apply conflict; using the local copy`);
   } catch (e) {
-    log.debug(`[${spec.logTag}] could not restore stash-apply conflicts: ${(e as Error).message}`);
+    log.debug(`[${spec.logTag}] could not restore stash-apply conflicts: ${e instanceof Error ? e.message : String(e)}`);
 
     try {
       await git.raw(['reset', '--hard', 'HEAD']);
@@ -1297,7 +1297,7 @@ async function syncWorktree(spec: BranchWorktreeSpec, wt: string): Promise<void>
     // below sees fresh commits even in a --single-branch clone (#706).
     await fetchTrackingRef(git, spec.branch);
   } catch (e) {
-    log.debug(`[${spec.logTag}] fetch failed, using the local copy: ${(e as Error).message}`);
+    log.debug(`[${spec.logTag}] fetch failed, using the local copy: ${e instanceof Error ? e.message : String(e)}`);
 
     return;
   }
@@ -1328,7 +1328,7 @@ async function syncWorktree(spec: BranchWorktreeSpec, wt: string): Promise<void>
     try {
       await git.raw(['reset', '--hard', 'HEAD']);
     } catch (e) {
-      log.debug(`[${spec.logTag}] could not clear the worktree for rebase; using the local copy: ${(e as Error).message}`);
+      log.debug(`[${spec.logTag}] could not clear the worktree for rebase; using the local copy: ${e instanceof Error ? e.message : String(e)}`);
       await applyDirtySnapshot(spec, git, carried);
 
       return;
@@ -1352,18 +1352,18 @@ async function syncWorktree(spec: BranchWorktreeSpec, wt: string): Promise<void>
 
     if (carried) {
       await applyDirtySnapshot(spec, git, carried);
-      log.debug(`[${spec.logTag}] uncommitted files block the refresh; using the local copy: ${(e as Error).message}`);
+      log.debug(`[${spec.logTag}] uncommitted files block the refresh; using the local copy: ${e instanceof Error ? e.message : String(e)}`);
 
       return;
     }
 
     if (dirty) {
-      log.debug(`[${spec.logTag}] uncommitted files block the refresh; using the local copy: ${(e as Error).message}`);
+      log.debug(`[${spec.logTag}] uncommitted files block the refresh; using the local copy: ${e instanceof Error ? e.message : String(e)}`);
 
       return;
     }
 
-    log.debug(`[${spec.logTag}] dropping ${ahead} unpushed commit(s) that conflict with ${upstream}: ${(e as Error).message}`);
+    log.debug(`[${spec.logTag}] dropping ${ahead} unpushed commit(s) that conflict with ${upstream}: ${e instanceof Error ? e.message : String(e)}`);
     await git.raw(['reset', '--hard', upstream]);
 
     return;

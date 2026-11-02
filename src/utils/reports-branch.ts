@@ -204,6 +204,11 @@ export interface ReportsChange<T> {
   write: ReportsWrite | null;
 }
 
+/** The value a `write` handed back, kept until the publish outcome is known. */
+interface HeldChange<T> {
+  change?: { value: T };
+}
+
 /**
  * Under the reports lock: sync with origin, run `write`, commit, push.
  *
@@ -219,7 +224,7 @@ export async function updateReports<T = never>(
   write: (worktree: string, ctx: ReportsWriteContext) => Promise<ReportsWrite | ReportsChange<T> | null>,
   options: BranchPushOptions & EnsureReportsWorktreeOptions = {},
 ): Promise<PublishResult & { value?: T }> {
-  const held: { change?: { value: T } } = {};
+  const held: HeldChange<T> = {};
 
   const result = await reportsBranch.update(localConfig, async (worktree, ctx) => {
     const change = await write(worktree, ctx);
@@ -317,14 +322,10 @@ export async function withKnowledgeWorktree<T>(
     await git.raw(['worktree', 'add', '--detach', wt, base]);
   }
 
-  const worktreeConfig: LocalConfig = {
-    ...localConfig,
-    repo: {
-      ...localConfig.repo,
-      localPath: selfMode ? path.join(wt, '.teamai') : wt,
-      ...(selfMode ? { businessRepoRoot: wt } : {}),
-    },
-  };
+  const repo: LocalConfig['repo'] = { ...localConfig.repo, localPath: selfMode ? path.join(wt, '.teamai') : wt };
+
+  if (selfMode) repo.businessRepoRoot = wt;
+  const worktreeConfig: LocalConfig = { ...localConfig, repo };
 
   try {
     return await fn(worktreeConfig);
@@ -342,7 +343,7 @@ export async function withKnowledgeWorktree<T>(
 /** A failed refresh, distinct from errors while reading the preview checkout. */
 export class PreviewFetchError extends Error {
   constructor(cause: unknown) {
-    super((cause as Error).message, { cause });
+    super(cause instanceof Error ? cause.message : undefined, { cause });
     this.name = 'PreviewFetchError';
   }
 }
@@ -420,7 +421,7 @@ export async function withDefaultBranchPreview<T>(
     }
   } catch (e) {
     if (!options.allowStale) throw new PreviewFetchError(e);
-    log.warn(`Could not fetch origin/${branch} (${(e as Error).message}); ${selfMode ? 'previewing against the copy fetched last.' : 'previewing against the local checkout.'}`);
+    log.warn(`Could not fetch origin/${branch} (${e instanceof Error ? e.message : String(e)}); ${selfMode ? 'previewing against the copy fetched last.' : 'previewing against the local checkout.'}`);
     base = selfMode ? await getHeadCommit(repoRoot, `origin/${branch}`) ?? head : head;
   }
 

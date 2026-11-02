@@ -156,7 +156,7 @@ export async function knowledgeRoots(localConfig: LocalConfig): Promise<string[]
       pendingLearningsDir(localConfig),
     );
   } catch (e) {
-    log.debug(`knowledgeRoots: could not resolve the learnings roots: ${(e as Error).message}`);
+    log.debug(`knowledgeRoots: could not resolve the learnings roots: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   return roots.filter(Boolean);

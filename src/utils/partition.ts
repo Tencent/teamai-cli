@@ -2,9 +2,10 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import YAML from 'yaml';
+import { z } from 'zod';
 import { getUserHome } from './home.js';
-import { readFileSafe, writeFileAtomic, expandHome } from './fs.js';
-import { managedMcpWorkspaceId } from '../types.js';
+import { readFileSafe, writeFileAtomic, expandHome, errnoCode } from './fs.js';
+import { managedMcpWorkspaceId, type JsonValue } from '../types.js';
 import { completeWorktreeList, gitCommonDir, isLiveCheckout, isLiveProjectCheckout, resolveAnchors } from './git.js';
 
 /**
@@ -255,7 +256,7 @@ async function adoptLegacyPartition(canonical: string, legacyDir: string): Promi
 
     return canonical;
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+    if (errnoCode(err) === 'ENOENT') {
       // Nothing to adopt — the common fresh-install case (or a concurrent
       // process just adopted it, in which case canonical now exists).
       return canonical;
@@ -311,29 +312,29 @@ async function rebaseLocalPathAfterAdoption(canonical: string, legacyDir: string
   const content = await readFileSafe(configPath);
 
   if (!content) return;
-  let doc: Record<string, unknown>;
+  let doc: JsonValue;
 
   try {
-    doc = YAML.parse(content) as Record<string, unknown>;
+    doc = YAML.parse(content);
   } catch {
     return; // malformed config — leave it for status/doctor to surface
   }
 
-  const repo = doc?.repo as { localPath?: string } | undefined;
+  if (!(doc instanceof Object) || Array.isArray(doc) || !(doc.repo instanceof Object) || Array.isArray(doc.repo)) return;
+  const localPath = z.string().safeParse(doc.repo.localPath).data;
 
-  if (!repo?.localPath) return;
-  const rel = path.relative(legacyDir, expandHome(repo.localPath));
+  if (!localPath) return;
+  const rel = path.relative(legacyDir, expandHome(localPath));
 
   if (rel === '' ? false : rel.startsWith('..') || path.isAbsolute(rel)) return; // not inside legacyDir
   const rebased = rel === '' ? canonical : path.join(canonical, rel);
 
-  if (rebased === repo.localPath) return;
-  repo.localPath = rebased;
+  if (rebased === localPath) return;
   // Atomic write (same-dir temp + rename): config.yaml is the partition's only
   // copy and the legacy source has already been renamed away, so a partial
   // overwrite (ENOSPC/EFBIG/crash mid-write) would truncate it with no way back.
   // A failed rename leaves the original config.yaml untouched.
-  await writeFileAtomic(configPath, YAML.stringify(doc));
+  await writeFileAtomic(configPath, YAML.stringify({ ...doc, repo: { ...doc.repo, localPath: rebased } }));
 }
 
 async function dirExists(p: string): Promise<boolean> {

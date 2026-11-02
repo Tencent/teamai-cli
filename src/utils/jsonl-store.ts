@@ -19,8 +19,10 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { z } from 'zod';
+import type { JsonValue } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
-import { ensureDir } from './fs.js';
+import { ensureDir, errnoCode } from './fs.js';
 import { log } from './logger.js';
 
 /** How long a writer waits for the lock, in wall time. */
@@ -49,12 +51,15 @@ export type JsonlRecord = Record<string, unknown>;
 
 const OWNER_ONLY = 0o600;
 
+/** A record's side-record id: a string, or absent for any other value. */
+const PendingIdSchema = z.string().optional().catch(undefined);
+
 /**
  * Append one record. Returns null when it landed in the file, or the side
  * record's path when the lock was still held after the wait. Throws on I/O
  * errors; the caller decides whether a lost record is worth reporting.
  */
-export async function appendJsonl(filePath: string, record: object, options: JsonlStoreOptions = {}): Promise<string | null> {
+export async function appendJsonl<Entry extends object>(filePath: string, record: Entry, options: JsonlStoreOptions = {}): Promise<string | null> {
   return appendJsonlBatch(filePath, [record], options);
 }
 
@@ -94,7 +99,7 @@ export async function readJsonl(filePath: string, options: { includePending?: bo
   const records = parseLines(await readOrEmpty(filePath));
 
   if (options.includePending !== false) {
-    const inFile = new Set(records.map((r) => r.pendingId).filter((id) => typeof id === 'string'));
+    const inFile = new Set(records.flatMap((r) => PendingIdSchema.parse(r.pendingId) ?? []));
 
     for (const pendingPath of await sideRecordPaths(filePath)) {
       const content = await readOrEmpty(pendingPath).catch(() => '');
@@ -103,7 +108,9 @@ export async function readJsonl(filePath: string, options: { includePending?: bo
       if (!content.endsWith('\n')) continue;
 
       for (const record of parseLines(content)) {
-        if (typeof record.pendingId === 'string' && inFile.has(record.pendingId)) continue;
+        const pendingId = PendingIdSchema.parse(record.pendingId);
+
+        if (pendingId !== undefined && inFile.has(pendingId)) continue;
         records.push(record);
       }
     }
@@ -199,7 +206,7 @@ function pendingPrefix(filePath: string): string {
 async function sideRecordPaths(filePath: string): Promise<string[]> {
   const dir = path.dirname(filePath);
   const prefix = pendingPrefix(filePath);
-  const names = await fs.promises.readdir(dir).catch(() => [] as string[]);
+  const names = await fs.promises.readdir(dir).catch((): string[] => []);
 
   return names.filter((n) => n.startsWith(prefix) && n.endsWith('.jsonl')).map((n) => path.join(dir, n));
 }
@@ -268,7 +275,7 @@ async function appendWhole(filePath: string, text: string, mode: number): Promis
 async function removeOrphanTemps(target: string): Promise<void> {
   const dir = path.dirname(target);
   const prefix = `${path.basename(target)}.`;
-  const names = await fs.promises.readdir(dir).catch(() => [] as string[]);
+  const names = await fs.promises.readdir(dir).catch((): string[] => []);
 
   for (const name of names) {
     if (!name.startsWith(prefix) || !/^\d+\.[0-9a-f]{12}\.tmp$/.test(name.slice(prefix.length))) continue;
@@ -281,9 +288,7 @@ function pendingIdOf(line: string): string | undefined {
   if (!line.includes('"pendingId"')) return undefined;
 
   try {
-    const { pendingId } = JSON.parse(line) as { pendingId?: unknown };
-
-    return typeof pendingId === 'string' ? pendingId : undefined;
+    return z.looseObject({ pendingId: PendingIdSchema }).safeParse(JSON.parse(line)).data?.pendingId;
   } catch {
     return undefined;
   }
@@ -293,7 +298,7 @@ async function readOrEmpty(filePath: string): Promise<string> {
   try {
     return await fs.promises.readFile(filePath, 'utf-8');
   } catch (e) {
-    if (typeof e === 'object' && e !== null && 'code' in e && e.code === 'ENOENT') return '';
+    if (errnoCode(e) === 'ENOENT') return '';
     throw e;
   }
 }
@@ -307,10 +312,11 @@ function parseLines(content: string): JsonlRecord[] {
     if (!trimmed) continue;
 
     try {
-      const parsed: unknown = JSON.parse(trimmed);
+      // JSON.parse returns `any`; what it builds is a JsonValue by construction.
+      const parsed: JsonValue = JSON.parse(trimmed);
 
-      if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
-        records.push(parsed as JsonlRecord);
+      if (parsed instanceof Object && !Array.isArray(parsed)) {
+        records.push(parsed);
         continue;
       }
     } catch {

@@ -140,11 +140,13 @@ export function wordSegments(text: string): string[] {
   let lastWasCjkWord = false;
 
   const flushRun = (): void => {
-    if (run.length > 0 && lastWasCjkWord) {
-      // The first char is a suffix the segmenter peeled off the previous word,
-      // so it belongs there rather than leading a word of its own. Only the
-      // first: the rest are separate words the segmenter failed to join.
-      words[words.length - 1] += run.shift() as string;
+    // The first char is a suffix the segmenter peeled off the previous word,
+    // so it belongs there rather than leading a word of its own. Only the
+    // first: the rest are separate words the segmenter failed to join.
+    const suffix = lastWasCjkWord ? run.shift() : undefined;
+
+    if (suffix !== undefined) {
+      words[words.length - 1] += suffix;
       lastWasCjkWord = false;
     }
 

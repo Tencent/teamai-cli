@@ -1,5 +1,9 @@
 import path from 'node:path';
 import { stat } from 'node:fs/promises';
+import { z } from 'zod';
+
+/** A launcher argument as a handler encodes it: one path, or a list of them. */
+const LauncherPathsSchema = z.union([z.string().transform((value) => [value]), z.array(z.string())]);
 
 /** Compare generated handlers without requiring the inspecting CLI's launcher. */
 export async function hookSourceMatches(actual: string | null, expected: string): Promise<boolean> {
@@ -14,11 +18,9 @@ export async function hookSourceMatches(actual: string | null, expected: string)
 
     const launcher = (encoded: string, runtime = true): void => {
       try {
-        const parsed: unknown = JSON.parse(encoded);
-        const values: unknown = typeof parsed === 'string' ? [parsed] : parsed;
+        const values = LauncherPathsSchema.safeParse(JSON.parse(encoded)).data;
 
-        if (!Array.isArray(values)
-          || !values.every((value): value is string => typeof value === 'string' && path.isAbsolute(value))) {
+        if (!values || !values.every((value) => path.isAbsolute(value))) {
           valid = false;
         } else {
           paths.push(...values);

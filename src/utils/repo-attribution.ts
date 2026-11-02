@@ -171,7 +171,7 @@ export function repoLabel(key: string, allKeys: Iterable<string>): string {
   if (others.length === 0) return name;
   const qualified = (k: string) => `${path.basename(path.dirname(naming(k).dir))}/${nameOf(k)}`;
   const label = qualified(key);
-  const remoteLabels = new Set(keys.filter((k) => !path.isAbsolute(k)).map(nameOf));
+  const remoteLabels = new Set(keys.flatMap((k) => (path.isAbsolute(k) ? [] : [nameOf(k)])));
 
   return (others.some((k) => qualified(k) === label) || remoteLabels.has(label)) ? dir : label;
 }

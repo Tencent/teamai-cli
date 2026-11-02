@@ -3,9 +3,10 @@ import fs from 'node:fs';
 import { realpath } from 'node:fs/promises';
 import path from 'node:path';
 import fse from 'fs-extra';
-import { simpleGit, type SimpleGit, type outputHandler } from 'simple-git';
+import { simpleGit, type SimpleGit, type SimpleGitOptions, type outputHandler } from 'simple-git';
 import { z } from 'zod';
 import { execCommand } from './exec.js';
+import { errnoCode } from './fs.js';
 import { GitAnswers } from './git-answers.js';
 import { gitFindsNoRepository, linkedWorktreesStamp, repositoryStamp } from './git-discovery.js';
 import { log } from './logger.js';
@@ -71,7 +72,9 @@ function lookUpGit(pathEnv: string): string {
     } catch (e) {
       // A miss moves on, as the spawn's own lookup does; anything else (a
       // symlink loop, say) is left to that lookup and the error it gives.
-      if (typeof e === 'object' && e !== null && 'code' in e && (e.code === 'ENOENT' || e.code === 'ENOTDIR')) continue;
+      const code = errnoCode(e);
+
+      if (code === 'ENOENT' || code === 'ENOTDIR') continue;
 
       return 'git';
     }
@@ -203,14 +206,16 @@ export function createGit(basePath?: string, abort?: AbortSignal): SimpleGit {
   // otherwise block the whole pull. Keep this override in the Git process.
   const config = process.platform === 'win32' ? ['core.longpaths=true'] : [];
 
-  const git = simpleGit({
-    ...(basePath ? { baseDir: basePath } : {}),
+  const options: Partial<SimpleGitOptions> = {
     binary: gitBinary(),
     abort,
     config,
     // The caller owns ambient Git configuration; the guard still checks explicit .env() additions.
     allowEnvironment: [...GIT_ENVIRONMENT, ...Object.keys(process.env)],
-  });
+  };
+
+  if (basePath) options.baseDir = basePath;
+  const git = simpleGit(options);
 
   return git.outputHandler(markOutputSeen);
 }
@@ -242,13 +247,15 @@ export function createGitWithBlockTimeout(basePath?: string): SimpleGit {
     'http.lowSpeedLimit=1', `http.lowSpeedTime=${Math.ceil(block / 1000) + 1}`,
   ];
 
-  const git = simpleGit({
-    ...(basePath ? { baseDir: basePath } : {}),
+  const options: Partial<SimpleGitOptions> = {
     binary: gitBinary(),
     timeout: { block },
     config,
     allowEnvironment: [...GIT_ENVIRONMENT, ...Object.keys(process.env)],
-  });
+  };
+
+  if (basePath) options.baseDir = basePath;
+  const git = simpleGit(options);
 
   return git.outputHandler(markOutputSeen);
 }
@@ -564,8 +571,8 @@ export class DetachedTeamRepoError extends Error {
     this.name = 'DetachedTeamRepoError';
   }
 
-  static rethrow(error: unknown): void {
-    if (error instanceof DetachedTeamRepoError) throw error;
+  static rethrow(cause: unknown): void {
+    if (cause instanceof DetachedTeamRepoError) throw cause;
   }
 }
 
@@ -832,14 +839,15 @@ export async function autoPushTeamRepo(repoPath: string, message: string, files:
     return await pushRepoDirectly(repoPath, message, files);
   } catch (err) {
     DetachedTeamRepoError.rethrow(err);
-    const lines = (err as Error).message.split('\n').map(line => line.trim()).filter(Boolean);
+    const failure = err instanceof Error ? err.message : String(err);
+    const lines = failure.split('\n').map(line => line.trim()).filter(Boolean);
     // Keep the lines that say why git refused: the `! [rejected]` ref line (fetch first,
     // pre-receive hook declined, protected branch), the hook's `remote:` output and the generic
     // error:/fatal: line. git prints the remote URL first, which is not a cause.
     const reasonLines = lines.filter(line => /^(error|fatal|remote):/.test(line) || /^!\s/.test(line) || /\[(remote )?rejected\]/.test(line));
     const reason = (reasonLines.length > 0 ? reasonLines : lines.slice(0, 1)).join('\n') || 'unknown error';
     // Only a stale clone is fixed by pulling; a protected branch or a hook rejection is not.
-    const stale = /\(fetch first\)|\(non-fast-forward\)/.test((err as Error).message);
+    const stale = /\(fetch first\)|\(non-fast-forward\)/.test(failure);
     const advice = stale ? '\nRun `teamai pull`, then rerun this command.' : '';
     throw new Error(`Push to the team repo failed: ${reason}${advice}`, { cause: err });
   }
@@ -880,7 +888,7 @@ export async function autoPushViaMR(
     return prUrl;
   } catch (err) {
     DetachedTeamRepoError.rethrow(err);
-    log.warn(`[git] autoPushViaMR failed (non-blocking): ${(err as Error).message}`);
+    log.warn(`[git] autoPushViaMR failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`);
 
     try { await checkoutMaster(repoPath); } catch { /* best effort */ }
 
@@ -939,7 +947,7 @@ export async function remoteBranchExists(
 
     return out.trim().length > 0;
   } catch (e) {
-    log.debug(`ls-remote failed for ${branchName}: ${(e as Error).message}`);
+    log.debug(`ls-remote failed for ${branchName}: ${e instanceof Error ? e.message : String(e)}`);
 
     return null;
   }
@@ -977,7 +985,7 @@ export async function pushRepoBranch(
     try {
       await git.fetch(['origin', branchName]);
     } catch (e) {
-      log.debug(`Could not fetch ${branchName}: ${(e as Error).message}`);
+      log.debug(`Could not fetch ${branchName}: ${e instanceof Error ? e.message : String(e)}`);
     }
 
     // -B resets a leftover local branch of the same name onto the default branch.
@@ -1073,7 +1081,7 @@ async function switchToDefaultBranch(git: SimpleGit, defaultBranch: string): Pro
 
     return true;
   } catch (e) {
-    const msg = (e as Error).message ?? '';
+    const msg = e instanceof Error ? e.message : '';
 
     if (/already (used|checked out) by worktree|is already checked out/i.test(msg)) {
       log.debug(`Skipping switch to ${defaultBranch}: already checked out in another worktree`);
@@ -1647,7 +1655,7 @@ export async function blobInHistory(
 
     return out.trim().length > 0;
   } catch (e) {
-    log.debug(`git log --find-object failed for ${filePath}: ${(e as Error).message}`);
+    log.debug(`git log --find-object failed for ${filePath}: ${e instanceof Error ? e.message : String(e)}`);
 
     return null;
   }
@@ -1689,7 +1697,7 @@ async function pathChangedSince(
 
     return out.trim().length > 0;
   } catch (e) {
-    log.debug(`git log --diff-filter=${filter} failed for ${filePath}: ${(e as Error).message}`);
+    log.debug(`git log --diff-filter=${filter} failed for ${filePath}: ${e instanceof Error ? e.message : String(e)}`);
 
     return null;
   }
@@ -1706,7 +1714,7 @@ export async function getFileContentWhenAdded(repoPath: string, filePath: string
 
     return sha ? await getFileContentAtRev(repoPath, sha, `./${filePath}`) : null;
   } catch (e) {
-    log.debug(`git log --diff-filter=A failed for ${filePath}: ${(e as Error).message}`);
+    log.debug(`git log --diff-filter=A failed for ${filePath}: ${e instanceof Error ? e.message : String(e)}`);
 
     return null;
   }

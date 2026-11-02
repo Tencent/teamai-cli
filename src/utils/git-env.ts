@@ -27,13 +27,13 @@ import { isInteractive } from './prompt.js';
  * explicit value always wins there. A git child that must never prompt, even
  * in an interactive run, gets it as its own environment.
  */
-export const NON_INTERACTIVE_GIT_ENV: Readonly<Record<string, string>> = {
+export const NON_INTERACTIVE_GIT_ENV = {
   GIT_TERMINAL_PROMPT: '0',
   // `echo` answers the askpass request with an empty line, so the credential is
   // rejected at once instead of a dialog waiting for a person who is not there.
   GIT_ASKPASS: 'echo',
   GCM_INTERACTIVE: 'never',
-};
+} as const satisfies Readonly<Record<string, string>>;
 
 /**
  * Close the prompts a git child could open, when this run has no one to answer

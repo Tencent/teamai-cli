@@ -242,15 +242,17 @@ export async function toPendingItems(items: ResourceItem[], repoPath: string): P
       log.warn(`[${i.type}] ${i.name}: could not hash ${i.relativePath}, so this machine will not treat it as its placement once merged.`);
     }
 
-    const sourcePath = (i as ResourceItem & { prePlacementPath?: string }).prePlacementPath;
-    out.push({
-      type: i.type,
-      name: i.name,
-      relativePath: i.relativePath,
-      namespace: i.namespace,
-      ...(sourcePath ? { sourcePath } : {}),
-      ...(blob ? { placed: true, blob } : {}),
-    });
+    const sourcePath = i.prePlacementPath;
+    const pending: PendingPushItem = { type: i.type, name: i.name, relativePath: i.relativePath, namespace: i.namespace };
+
+    if (sourcePath) pending.sourcePath = sourcePath;
+
+    if (blob) {
+      pending.placed = true;
+      pending.blob = blob;
+    }
+
+    out.push(pending);
   }
 
   return out;
@@ -277,11 +279,11 @@ export async function toPendingItems(items: ResourceItem[], repoPath: string): P
  * (`needsDeliveredBlob`), the edit gives it one.
  */
 export function isPlacement(item: ResourceItem): boolean {
-  if (item.type === 'agents' && 'supersedes' in item && typeof item.supersedes === 'string') return true;
+  if (item.type === 'agents' && item.supersedes !== undefined) return true;
 
-  if (item.type === 'agents' && 'deliveredBlob' in item && typeof item.deliveredBlob === 'string') return true;
+  if (item.type === 'agents' && item.deliveredBlob !== undefined) return true;
 
-  if (item.type === 'agents' && 'needsDeliveredBlob' in item && item.needsDeliveredBlob === true) return true;
+  if (item.type === 'agents' && item.needsDeliveredBlob === true) return true;
 
   if (item.status !== 'new' || !item.namespace) return false;
 
@@ -307,7 +309,7 @@ function isRepoPlacement(item: ResourceItem): boolean {
   // or a path derived from the skill name), so they are not keyed this way.
   if (item.type === 'skills' || item.type === 'rules' || item.type === 'agents') return false;
 
-  return 'prePlacementPath' in item && typeof item.prePlacementPath === 'string';
+  return item.prePlacementPath !== undefined;
 }
 
 /** The shared-root file(s) that, if present, mean `name` is not ours to redirect. */

@@ -1,5 +1,6 @@
 import spawn from 'cross-spawn';
 import type { ChildProcess } from 'node:child_process';
+import { Socket } from 'node:net';
 import type { Readable } from 'node:stream';
 import { StringDecoder } from 'node:string_decoder';
 
@@ -149,7 +150,9 @@ export function captureTail(child: ChildProcess, maxChars: number): () => string
 export function detachPipe(stream: Readable): void {
   stream.removeAllListeners('data');
   stream.resume();
-  (stream as unknown as { unref?: () => void }).unref?.();
+
+  // A child's pipe is a socket; a stream that is not (a test double) has no handle to unref.
+  if (stream instanceof Socket) stream.unref();
 }
 
 /**

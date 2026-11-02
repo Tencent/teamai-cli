@@ -46,6 +46,14 @@ export interface ShellClassification {
   verb?: string;
 }
 
+/** Command words and what each one does, looked up with `Object.hasOwn` so no prototype key matches. */
+interface VerbTable<Verb> {
+  readonly [word: string]: Verb;
+}
+
+/** The files a reader verb's arguments read. */
+type FileReader = (args: string[]) => string[];
+
 const REDIRECT = /^(?:&>>?|<<<|<<-?|<>|<&|>>|>&|>\||<|>)/;
 
 /** The characters an unquoted backslash escapes: whitespace and those the shell gives a meaning. */
@@ -242,7 +250,7 @@ const BAT_VALUE_FLAGS = ['-l', '--language', '-H', '--highlight-line', '-r', '--
  * classification in Codex's codex-rs/shell-command/src/parse_command.rs
  * (Apache-2.0).
  */
-const READERS: Record<string, (args: string[]) => string[]> = {
+const READERS: VerbTable<FileReader> = {
   cat: (args) => operands(args),
   bat: (args) => operands(args, BAT_VALUE_FLAGS),
   batcat: (args) => operands(args, BAT_VALUE_FLAGS),
@@ -294,7 +302,7 @@ function getContentFiles(args: string[]): string[] {
  * Get-Content and its aliases `gc`, `type` (cmd's too) and `cat`. `cat` as
  * written in lowercase is POSIX cat's, which reads `cat -Path x` the same.
  */
-const POWERSHELL_READERS: Record<string, (args: string[]) => string[]> = {
+const POWERSHELL_READERS: VerbTable<FileReader> = {
   'get-content': getContentFiles,
   gc: getContentFiles,
   type: getContentFiles,
@@ -344,7 +352,7 @@ const GREP: SearchVerb = {
  * The search verbs, each with its flags; `git grep` is `git-grep`. Ported from
  * the same Codex classification as the readers.
  */
-const SEARCHERS: Record<string, SearchVerb> = {
+const SEARCHERS: VerbTable<SearchVerb> = {
   grep: GREP,
   egrep: GREP,
   fgrep: GREP,
@@ -389,7 +397,12 @@ const LISTERS = new Set(['ls', 'find', 'fd', 'tree', 'git-ls-files']);
 const EXPANDS = /[$`*?[\]{}()]/;
 
 /** What a search prints, from its flags, and its file or directory operands. */
-function searchArgs(args: string[], verb: SearchVerb): { shows: 'lines' | 'paths' | 'counts'; operands: string[] } {
+interface SearchOperands {
+  shows: 'lines' | 'paths' | 'counts';
+  operands: string[];
+}
+
+function searchArgs(args: string[], verb: SearchVerb): SearchOperands {
   let shows: 'lines' | 'paths' | 'counts' = 'lines';
   let pattern = false;
   const words: string[] = [];
@@ -489,7 +502,11 @@ function classifySimple(command: SimpleCommand, simple: boolean, flavor: ShellFl
   if (shows === 'counts') return { category: 'search', paths: [], simple, verb };
   const target = roots.length === 1 && !EXPANDS.test(roots[0]) ? roots[0] : undefined;
 
-  return { category: 'search', paths: roots.length > 0 ? roots.map(searchRoot) : ['.'], ...(target ? { target } : {}), simple, verb };
+  const paths = roots.length > 0 ? roots.map(searchRoot) : ['.'];
+
+  if (target) return { category: 'search', paths, target, simple, verb };
+
+  return { category: 'search', paths, simple, verb };
 }
 
 /**

@@ -8,7 +8,12 @@ import { channelsOf, TOOL_IDS, TOOLS, type ToolId } from '../tools.js';
  * while teamai hooks expect CLI-style names like `Bash`, `Grep`.
  */
 
-const IDE_TO_CLI: Record<string, string> = {
+/** A tool name as one source writes it → the name teamai uses. */
+interface ToolNameTable {
+  readonly [name: string]: string;
+}
+
+const IDE_TO_CLI: ToolNameTable = {
   execute_command: 'Bash',
   search_content: 'Grep',
   write_to_file: 'Write',
@@ -27,7 +32,7 @@ export function normalizeToolName(name: string): string {
 }
 
 // oxlint-disable-next-line teamai/tool-facts -- aliases: a tool left out is its own agent type, the right default for a new tool
-const AGENT_TYPE_ALIASES: Record<string, string> = {
+const AGENT_TYPE_ALIASES: ToolNameTable = {
   tcodex: 'codex',
   'codex-internal': 'codex',
   tclaude: 'claude',
@@ -53,7 +58,7 @@ export const CODEX_TOOL_IDS: readonly CodexToolId[] = TOOL_IDS.filter((tool): to
 
 /** Whether `tool` runs Codex (`CODEX_TOOL_IDS`). */
 export function isCodexTool(tool: string): boolean {
-  return (CODEX_TOOL_IDS as readonly string[]).includes(tool);
+  return CODEX_TOOL_IDS.some((id) => id === tool);
 }
 
 /**

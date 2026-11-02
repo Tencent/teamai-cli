@@ -216,7 +216,12 @@ function withoutSpansAndComments(text: string): string {
   return kept + text.slice(at);
 }
 
-const NAMED_CHARACTER_REFERENCES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: '\u00a0' };
+/** A named character reference → the text it stands for. */
+interface NamedReferenceTable {
+  readonly [name: string]: string;
+}
+
+const NAMED_CHARACTER_REFERENCES: NamedReferenceTable = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: '\u00a0' };
 
 /** `text` with numeric character references and the common named ones (`&amp;`, `&lt;`, …) decoded, as Markdown reads a destination. */
 function decodeCharacterReferences(text: string): string {

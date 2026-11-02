@@ -62,7 +62,7 @@ export async function syncTeamUpdatesToLocal(
   placedRules?: Record<string, string>,
   delivered?: DeliveredHashes,
 ): Promise<void> {
-  const bases = (typeof baseRevs === 'string' ? [baseRevs] : baseRevs ?? []).filter((rev) => rev !== '');
+  const bases = [baseRevs ?? []].flat().filter((rev) => rev !== '');
 
   if (bases.length === 0) {
     log.debug('No base revision — skipping pre-push sync');
@@ -344,9 +344,9 @@ async function replaceSkillDir(teamSkillDir: string, localSkillDir: string): Pro
  */
 async function removeLeftover(dir: string): Promise<void> {
   try {
-    const stat = await fse.lstat(dir).catch((error: unknown) => {
-      if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return null;
-      throw error;
+    const stat = await fse.lstat(dir).catch((cause: unknown) => {
+      if (cause instanceof Error && 'code' in cause && cause.code === 'ENOENT') return null;
+      throw cause;
     });
 
     if (stat === null) return;

@@ -107,7 +107,7 @@ export function askQuestion(prompt: string, defaultValue?: string): Promise<stri
 
 /** Ask for a secret without echoing it to the terminal. */
 export function askSecret(prompt: string): Promise<string> {
-  if (!isInteractive() || !process.stdout.isTTY || typeof process.stdin.setRawMode !== 'function') {
+  if (!isInteractive() || !process.stdout.isTTY || !process.stdin.setRawMode) {
     return Promise.reject(new Error(`Cannot prompt for a secret in non-interactive mode: "${prompt.trim()}"`));
   }
 

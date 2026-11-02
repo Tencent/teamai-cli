@@ -13,7 +13,7 @@ import type { SimpleGit } from 'simple-git';
 import { z } from 'zod';
 
 import { ensureDir, writeFileAtomic } from './fs.js';
-import { parseFrontmatter } from './frontmatter.js';
+import { parseFrontmatter, type FrontmatterData } from './frontmatter.js';
 import { createGitWithBlockTimeout } from './git.js';
 import { learningsBranch } from './learnings-branch.js';
 import { CheckoutRefusedError, failureReason, fetchTrackingRef, type PublishResult } from './branch-worktree.js';
@@ -158,7 +158,7 @@ async function publishUnderSyncLock(
   } catch (e) {
     // Never throw: a contribution is already safe in the queue, and publishing
     // it is never the reason a command fails.
-    log.debug(`[learnings] publishing failed (non-blocking): ${(e as Error).message}`);
+    log.debug(`[learnings] publishing failed (non-blocking): ${e instanceof Error ? e.message : String(e)}`);
 
     return {
       published: [],
@@ -189,11 +189,17 @@ export function syncLockPath(localConfig: LocalConfig): string | null {
  */
 const IMPORT_REMNANT_NAME = /^\d{4}-\d{2}-\d{2}-(.*)\.md$/;
 
-/** The merge request a learning was extracted from, from its frontmatter. */
-function sourceMr(frontmatter: Record<string, unknown>): string | null {
-  const mr = frontmatter.source_mr;
+/** The frontmatter fields an import remnant is told by; a value that is not a string reads as absent. */
+const RemnantFrontmatterSchema = z.object({
+  source_mr: z.string().optional().catch(undefined),
+  title: z.string().optional().catch(undefined),
+});
 
-  return typeof mr === 'string' && mr.trim() !== '' ? mr.trim() : null;
+/** The merge request a learning was extracted from, from its frontmatter. */
+function sourceMr(frontmatter: FrontmatterData): string | null {
+  const mr = RemnantFrontmatterSchema.parse(frontmatter).source_mr?.trim();
+
+  return mr ? mr : null;
 }
 
 /**
@@ -230,8 +236,8 @@ async function queueImportRemnants(localConfig: LocalConfig): Promise<void> {
       const file = path.join(checkout, rel);
 
       // One that cannot be read, such as a dangling link, must not hold back the rest on every run.
-      const content = await fs.promises.readFile(file, 'utf-8').catch((e: unknown) => {
-        log.debug(`[learnings] cannot read ${file}: ${failureReason(e)}`);
+      const content = await fs.promises.readFile(file, 'utf-8').catch((cause: unknown) => {
+        log.debug(`[learnings] cannot read ${file}: ${failureReason(cause)}`);
 
         return null;
       });
@@ -241,7 +247,8 @@ async function queueImportRemnants(localConfig: LocalConfig): Promise<void> {
       const mr = sourceMr(data);
 
       if (mr === null) continue;
-      const title = typeof data.title === 'string' && data.title.trim() ? data.title : named[1];
+      const fields = RemnantFrontmatterSchema.parse(data);
+      const title = fields.title?.trim() ? fields.title : named[1];
       remnants.push({ file, content, mr, title: title || undefined });
     }
 
@@ -380,9 +387,11 @@ export async function publishLearningsMaintenance(
 ): Promise<PublishResult> {
   const checkout = learningsBranch.dir(localConfig);
 
-  const inCheckout = changed
-    .map((file) => path.relative(checkout, file))
-    .filter((rel) => rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel));
+  const inCheckout = changed.flatMap((file) => {
+    const rel = path.relative(checkout, file);
+
+    return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel) ? [rel] : [];
+  });
 
   if (inCheckout.length < changed.length) {
     log.debug(`[learnings] maintenance changed files outside ${checkout}; not publishing those`);
