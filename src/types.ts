@@ -2795,8 +2795,9 @@ export type PendingVoteSync = z.infer<typeof PendingVoteSyncSchema>;
  */
 export const UserVotesV2Schema = z.looseObject({
   version: z.literal(2),
-  votes: voteTableSchema(VoteEntryV2Schema).default({}),
-  deltas: VoteDeltasSchema.default({}),
+  // A table left empty by a hand edit (`deltas:`) is null in YAML, and reads as empty, as it did before the schema.
+  votes: voteTableSchema(VoteEntryV2Schema).nullish().transform((table) => table ?? {}),
+  deltas: VoteDeltasSchema.nullish().transform((table) => table ?? {}),
   upvotedSessions: UpvoteLedgerSchema.optional().catch(undefined),
   pendingSync: PendingVoteSyncSchema.optional().catch(undefined),
   deliveredSyncIds: VoteIdsSchema.optional().catch(undefined),

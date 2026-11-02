@@ -90,6 +90,25 @@ describe('loadUserVotes', () => {
     expect(result.deltas).toEqual({ 'doc-a': { recalled_delta: 3, upvoted_delta: 1 } });
   });
 
+  it.each(['deltas:', 'deltas: null'])('keeps the counters of a v2 file whose table a hand edit emptied (%s)', async (deltas) => {
+    const filePath = path.join(tmpDir, 'user.yaml');
+    fs.writeFileSync(filePath, [
+      'version: 2',
+      'votes:',
+      '  doc-a:',
+      '    recalled_count: 40',
+      '    upvoted_count: 7',
+      '    last_recalled_at: "2026-06-01T00:00:00Z"',
+      deltas,
+      '',
+    ].join('\n'));
+
+    const result = await loadUserVotes(filePath);
+
+    expect(result.votes['doc-a']).toMatchObject({ recalled_count: 40, upvoted_count: 7 });
+    expect(result.deltas).toEqual({});
+  });
+
   it('auto-migrates v1 file on read', async () => {
     const v1: UserVotes = { votes: { 'doc-x': { at: '2026-06-01T00:00:00Z' } } };
     const filePath = path.join(tmpDir, 'user.yaml');
