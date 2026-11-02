@@ -680,11 +680,31 @@ describe('doctor — the tool trusts the project it reads team files from', () =
       expect(found?.fix).toContain('issues waits for approval');
     });
 
-    it('takes any approval of the name for a server whose definition reads the shell env, which the CLI hashes resolved', async () => {
-      await fse.outputJson(path.join(projectRoot, '.cursor', 'mcp.json'), { mcpServers: { issues: { command: 'issues-server', env: { TOKEN: '${env:ISSUES_TOKEN}' } } } });
-      await fse.outputJson(path.join(projectDir(), 'mcp-approvals.json'), ['issues-5b6d737cb9790349']);
+    describe('a server whose definition reads the env, which the CLI hashes resolved', () => {
+      const entry = { command: 'issues-server', args: ['--org=${ISSUES_ORG:-acme}'], env: { TOKEN: '${env:ISSUES_TOKEN}' } };
 
-      expect(await (await check(APPROVAL))?.check()).toBe(true);
+      beforeEach(async () => {
+        vi.stubEnv('ISSUES_TOKEN', 'abc');
+        vi.stubEnv('ISSUES_ORG', undefined);
+        await fse.outputJson(path.join(projectRoot, '.cursor', 'mcp.json'), { mcpServers: { issues: entry } });
+      });
+
+      it('passes once the CLI approved it as this env resolves it', async () => {
+        const resolved = { command: 'issues-server', args: ['--org=acme'], env: { TOKEN: 'abc' } };
+        await fse.outputJson(path.join(projectDir(), 'mcp-approvals.json'), [cursorKey('issues', resolved)]);
+
+        expect(await (await check(APPROVAL))?.check()).toBe(true);
+      });
+
+      it('fails on an approval of an earlier definition, naming the env doctor resolved it with', async () => {
+        const earlier = { command: 'issues-server', args: [], env: { TOKEN: 'abc' } };
+        await fse.outputJson(path.join(projectDir(), 'mcp-approvals.json'), [cursorKey('issues', earlier)]);
+
+        const found = await check(APPROVAL);
+        expect(await found?.check()).toBe(false);
+        expect(found?.fix).toContain('issues waits for approval');
+        expect(found?.fix).toContain('with the env of this shell');
+      });
     });
 
     it('fails with no approvals for the project once the CLI has run on this machine', async () => {

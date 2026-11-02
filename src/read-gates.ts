@@ -267,6 +267,19 @@ function listedApproval(
   };
 }
 
+/** Cursor CLI 2026.10.21's interpolation, over every string of an MCP entry: an unset name stays as written. */
+const CURSOR_PLACEHOLDER = /\$\{(?:env:([A-Za-z_][A-Za-z0-9_]*)|([^:}]+)(?::-([^}]*))?)\}/g;
+
+function withCursorEnv(value: unknown): unknown {
+  if (typeof value === 'string') {
+    return value.replace(CURSOR_PLACEHOLDER, (whole, envName: string | undefined, name: string | undefined, fallback: string | undefined) =>
+      envName !== undefined ? process.env[envName] ?? whole : name === undefined ? whole : process.env[name] ?? fallback ?? whole);
+  }
+  if (Array.isArray(value)) return value.map(withCursorEnv);
+  if (typeof value === 'object' && value !== null) return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, withCursorEnv(item)]));
+  return value;
+}
+
 /** Names in a string-array value, as a set. */
 function namesIn(list: unknown): Set<string> {
   return new Set(Array.isArray(list) ? list.filter((name): name is string => typeof name === 'string') : []);
@@ -390,8 +403,9 @@ async function codebuddyMcpApproval(gate: Extract<ReadGate, { kind: 'codebuddy-m
  * over the root's `.cursor/mcp.json` entry. With no approvals file the CLI
  * approves nothing; until the CLI has run on this machine (its
  * `cli-config.json`) the member is taken to be on the Cursor IDE, whose own
- * approvals are not read. An entry reading `${...}` is hashed resolved with
- * the env of the shell Cursor runs in, so any approval of its name counts.
+ * approvals are not read. The CLI hashes an entry after resolving its
+ * `${env:NAME}`, `${NAME}` and `${NAME:-default}` with the env of the shell
+ * it runs in; doctor resolves them with its own.
  */
 async function cursorMcpApproval(gate: Extract<ReadGate, { kind: 'cursor-mcp-approval' }>, held: Held): Promise<ReadGateVerdict> {
   const cause = `${held.summary}, but the Cursor CLI loads a project's servers only once you approve them`;
@@ -415,19 +429,19 @@ async function cursorMcpApproval(gate: Extract<ReadGate, { kind: 'cursor-mcp-app
   const servers = project.kind === 'ok' ? fieldOf(project.value, 'mcpServers') : undefined;
   const approved = (name: string): boolean => {
     const server = fieldOf(servers, name);
-    if (server !== undefined && !JSON.stringify(server).includes('${')) {
-      const hash = createHash('sha256').update(JSON.stringify({ path: root, server })).digest('hex').slice(0, 16);
-      return approvals?.has(`${name}-${hash}`) === true;
-    }
-    return [...approvals ?? []].some((entry) => entry.startsWith(`${name}-`) && /^[0-9a-f]{16}$/.test(entry.slice(name.length + 1)));
+    if (server === undefined) return false;
+    const hash = createHash('sha256').update(JSON.stringify({ path: root, server: withCursorEnv(server) })).digest('hex').slice(0, 16);
+    return approvals?.has(`${name}-${hash}`) === true;
   };
   const rejected = held.names.filter((name) => disabled?.has(name));
   const pending = approvals === null ? [] : held.names.filter((name) => !rejected.includes(name) && !approved(name));
   const enable = (names: readonly string[]): string => names.map((name) => `\`cursor-agent mcp enable ${name}\``).join(', ');
+  const readsEnv = pending.some((name) => JSON.stringify(fieldOf(servers, name) ?? null).includes('${'));
+  const envNote = readsEnv ? ' `teamai doctor` resolved their ${...} with the env of this shell; run it from the shell you start `cursor-agent` in.' : '';
   return approvalVerdict({
     cause,
     approval: { rejected, pending },
-    approve: `Run ${enable(pending)} in ${root}, or approve them when an interactive \`cursor-agent\` asks.`,
+    approve: `Run ${enable(pending)} in ${root}, or approve them when an interactive \`cursor-agent\` asks.${envNote}`,
     undo: `Run ${enable(rejected)} in ${root}: it clears ${path.join(dir, 'mcp-disabled.json')} and approves the server.`,
   });
 }
