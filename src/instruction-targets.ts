@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { z } from 'zod';
 import { hookSourceMatches } from './utils/hook-source.js';
 import { getsRulesFromExtension } from './resources/rule-format.js';
 import { pathExists, readFileSafe, readJsonObject, remove, writeFile } from './utils/fs.js';
@@ -43,12 +44,15 @@ import {
  * `alwaysApply`, which CodeBuddy and WorkBuddy read too; Copilot inlines a
  * `.github/instructions` file in every request only for the `**` glob (#915).
  */
-const HEADERS: { readonly [H in BlocksHeader]: string } = {
+const HEADERS = {
   'always-apply': '---\nalwaysApply: true\n---\n',
   'apply-to-all': '---\napplyTo: "**"\n---\n',
   'trigger-always-on': '---\ntrigger: always_on\n---\n',
   'inclusion-always': '---\ninclusion: always\n---\n',
-};
+} satisfies { readonly [H in BlocksHeader]: string };
+
+/** ZCode runs the hooks it registers only with `hooks.enabled: true`. */
+const ZcodeHooksEnabledSchema = z.object({ enabled: z.literal(true) });
 
 type MarkerPair = readonly [start: string, end: string, name: string];
 
@@ -77,7 +81,7 @@ const STALE_BLOCKS: readonly MarkerPair[] = [CULTURE, CLAUDEMD, RECALL, LEGACY_R
 async function hasRecallAgent(tool: string, install: Install): Promise<boolean> {
   const blocks = channelsOf(tool).blocks[install.scope];
 
-  if (typeof blocks === 'object' && blocks.channel === 'file' && blocks.noRecallAgent === true) return false;
+  if (blocks instanceof Object && blocks.channel === 'file' && blocks.noRecallAgent === true) return false;
 
   return ownOf(await locate(tool, 'agents', install)) !== null;
 }
@@ -139,7 +143,7 @@ export function deliversInstructionsByHook(tool: string, scope: Scope): boolean 
 function runTimeBlocksOf(tool: string, scope: Scope): RunTime | null {
   const channel = channelsOf(tool).blocks[scope];
 
-  return typeof channel === 'object' && channel.channel !== 'file' ? channel : null;
+  return channel instanceof Object && channel.channel !== 'file' ? channel : null;
 }
 
 /**
@@ -149,8 +153,7 @@ function runTimeBlocksOf(tool: string, scope: Scope): RunTime | null {
  */
 export function instructionHookText(blocks: InstructionBlocks, recall: boolean): string {
   return [blocks.culture, blocks.claudemd, recall ? blocks.recall : blocks.directRecall]
-    .filter((block): block is string => typeof block === 'string')
-    .map(managedBlockBody)
+    .flatMap((block) => (block === undefined || block === null ? [] : [managedBlockBody(block)]))
     .filter((body) => body !== '')
     .join('\n\n');
 }
@@ -281,10 +284,9 @@ export async function channelReadiness(
       }
 
       const read = await readJsonObject(file);
-      const hooks = read.kind === 'ok' ? read.value.hooks : undefined;
 
       return {
-        ready: typeof hooks === 'object' && hooks !== null && 'enabled' in hooks && hooks.enabled === true,
+        ready: read.kind === 'ok' && ZcodeHooksEnabledSchema.safeParse(read.value.hooks).success,
         fix: `${file} sets hooks.enabled to something other than true, so ZCode runs none of the hooks it registers, and sessions `
           + 'in this project get none of the team rules or instructions. Run `teamai hooks inject`, which turns them on.',
       };
