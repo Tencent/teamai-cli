@@ -266,6 +266,16 @@ describe('doctor — the tool trusts the project it reads team files from', () =
       expect(found?.fix).toContain(`${path.join(projectRoot, '.mcp.json')} holds team MCP servers (issues)`);
     });
 
+    it('asks nothing of a Muse that is not installed, though the project .mcp.json it would read holds team servers', async () => {
+      await fse.remove(path.join(homeDir, '.config', 'muse'));
+      teamConfig.toolPaths = { claude: { mcp: '.claude.json', mcpProject: '.mcp.json' }, muse: { mcp: '.config/muse/settings.json' } };
+      await fse.outputFile(path.join(repoPath, 'mcp', 'mcp.yaml'), 'servers:\n  - name: issues\n    transport: stdio\n    command: issues-server\n');
+      await fse.outputJson(path.join(projectRoot, '.mcp.json'), { mcpServers: { issues: { type: 'stdio', command: 'issues-server' } } });
+      await fse.outputJson(managedMcpManifestPath(getDataHome(localConfig), projectRoot), { [managedMcpManifestKey('claude', true)]: [{ name: 'issues', hash: 'h' }] });
+
+      expect(await check('Muse Code trusts this project, so it loads its team MCP servers')).toBeUndefined();
+    });
+
     it('checks teamai\'s hooks in a self-mode project\'s .muse/hooks.json', async () => {
       Object.assign(localConfig, { repo: { kind: 'self', localPath: projectRoot, remote: 'owner/repo' } });
       teamConfig.toolPaths = { muse: { settings: '.muse/hooks.json' } };

@@ -1785,7 +1785,7 @@ export async function buildMcpReadGateChecks(ctx: DoctorContext): Promise<Check[
   const checks: Check[] = [];
   for (const tool of Object.keys(ctx.toolPaths)) {
     const where = await locate(tool, 'mcp', install);
-    if (where.channel !== 'files' || where.readGates.length === 0) continue;
+    if (where.channel !== 'files' || where.readGates.length === 0 || !isInstalledFor(where)) continue;
     const writer = where.writtenBy ?? tool;
     targets ??= await resolveMcpTargets(teamConfig, localConfig);
     const target = targets.find((candidate) => candidate.tool === writer && !mcpTargetExcluded(localConfig, candidate));
