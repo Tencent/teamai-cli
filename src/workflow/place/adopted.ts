@@ -5,7 +5,7 @@
 import fs from 'node:fs/promises';
 import { gitCommonDir } from '../../utils/git.js';
 import type { WorkflowFailure } from '../types.js';
-import type { WorkspaceContract } from '../workspace.js';
+import type { CopyContract, WorkspaceContract } from '../workspace.js';
 import { fetchMissingCommits, git, hooksPath, offBranch, setupUnfinished, worktreeHooks } from '../worktree.js';
 import { leaseCommits } from './created.js';
 import type { PlaceRecord } from './record.js';
@@ -17,7 +17,7 @@ interface Adoption {
   dir: string;
   run: string;
   attempt: string;
-  workspace: WorkspaceContract;
+  workspace: CopyContract;
 }
 
 /**
@@ -47,6 +47,8 @@ export async function adoptRefusal(input: {
   const { workspace } = lease;
 
   if (!workspace) return `Step "${lease.step}" runs in the checkout itself, so attempt ${lease.attempt} cannot adopt a place. Prepare it without --adopt.`;
+
+  if (workspace.mode === 'team') return `Step "${lease.step}" runs in a clone of the team repo TeamAI makes, so attempt ${lease.attempt} cannot adopt a place. Prepare it without --adopt.`;
 
   if (workspace.mode === 'read-only' && adopt !== hosted) return `Step "${lease.step}" reads a copy TeamAI keeps, so attempt ${lease.attempt} cannot adopt a place. Prepare it without --adopt.`;
 

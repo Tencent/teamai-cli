@@ -1,11 +1,14 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { join } from 'node:path';
 import { z } from 'zod';
 import { parseReportedAgent, parseReportedUsed, settleObservation, type ReportedAgent, type Used } from '../agent-observation.js';
 import { DefaultWorkflows } from '../default-workflows.js';
 import { DriverSchema, sameDriver } from '../driver-identity.js';
 import { RunModeSchema, type RunMode } from '../launch-context.js';
 import { log } from '../utils/logger.js';
-import type { JsonValue, LocalConfig } from '../types.js';
+import { getDefaultBranch } from '../utils/git.js';
+import { getDataHome, SYNC_LOCK_FILENAME, type JsonValue, type LocalConfig } from '../types.js';
+import { acquireLock, releaseLock } from '../update.js';
 import { loadCachedWorkflow, loadWorkflowTree, namespaceConflictOf, startingAlias } from './cache.js';
 import { claimedAway, claimRun, publishRunEnd, reconcileTakenCopies } from './handoff.js';
 import {
@@ -30,7 +33,7 @@ import { allowanceInUse, budgetSpent, countLateTokens, expire, itemsSpent, lease
 import { addItems, afterStanding, expandItems, isItem, itemsAfter, itemsOf, itemsSettled, startedItems } from './fan-out.js';
 import { decideRound, decideStepLoop, exhaustedAtStart, firstPass, isUnder, loopSettled } from './loop.js';
 import { childScope, contextOf, finallyScope, insertChildren, localId, statesIn, stepDefinitions, topScope, type Scope } from './scope.js';
-import { deliverableOf, deliveryTarget, planWorkspace, plannedBranch, sessionOf, stepRoleOf, workLeftUndelivered, type LeaseSession, type SessionRef, type WorkspaceContract, type WorkspacePlan } from './workspace.js';
+import { contractClone, deliverableOf, deliveryTarget, planWorkspace, plannedBranch, sessionOf, stepRoleOf, workLeftUndelivered, type LeaseSession, type SessionRef, type WorkspaceContract, type WorkspacePlan } from './workspace.js';
 import {
   deliverPr, deliveryFailure, findDelivered, reportedPrMismatch, type DeliveryJob,
 } from './pr-delivery.js';
@@ -457,11 +460,20 @@ function leaseData(
  * and, before the copy has a commit, the branch it starts from.
  */
 function rememberCopy(run: RunState, plan: WorkspacePlan, driver: DriverIdentity): void {
-  const branch = plan.contract?.branch;
+  const { contract } = plan;
 
-  if (!branch) return;
-  const from = plan.contract?.start.branch ?? plan.contract?.merge[0]?.branch;
+  if (!contract) return;
+  const { branch } = contract;
   const copy = (run.copies ??= {})[branch];
+
+  if (contract.mode === 'team') {
+    if (copy) copy.owner ??= driver;
+    else run.copies[branch] = { owner: driver, kind: 'team' };
+
+    return;
+  }
+
+  const from = contract.start.branch ?? contract.merge[0]?.branch;
 
   if (copy) {
     copy.owner ??= driver;
@@ -473,7 +485,7 @@ function rememberCopy(run: RunState, plan: WorkspacePlan, driver: DriverIdentity
 
     if (from && from !== branch) opened.from = from;
 
-    if (plan.contract?.mode !== 'read-only' && plan.contract?.clone) opened.kind = 'clone';
+    if (contractClone(contract)) opened.kind = 'clone';
     run.copies[branch] = opened;
   }
 }
@@ -1439,13 +1451,14 @@ function offerTerms(
     envKeys: Object.keys(step.env ?? {}),
     runEnvKeys: context.runEnvKeys,
     budgeted: step.prompt !== undefined && scope.budgeted,
-    // negotiate reads an undefined maxTurns, endTurn, setup or tool as not set.
+    // negotiate reads an undefined maxTurns, endTurn, setup or tool as not set. Setup prepares a copy of the run's
+    // repository, never the team repo.
     maxTurns: step.maxTurns,
     endTurn,
-    setup: plan?.contract ? scope.setup : undefined,
+    setup: plan?.contract && plan.contract.mode !== 'team' ? scope.setup : undefined,
     tool: step.tool,
     unattended: step.permissions === 'unattended',
-    clone: plan?.contract?.mode !== 'read-only' && plan?.contract?.clone !== undefined,
+    clone: contractClone(plan?.contract) !== undefined,
     prepare: context.prepare,
     ...role,
   }, context.can, context.allow, context.facts);
@@ -1597,7 +1610,12 @@ async function drainDeliveries(config: LocalConfig, runId: string, secrets: Reco
   if (loaded === 'missing' || loaded === 'corrupt') return;
   const delivering = loaded.status === 'running' && loaded.steps.some((step) => step.status === 'delivering');
 
-  if (!delivering && !unresolvedCreate(loaded, [])) return;
+  // A team branch is delivered from the member's team clone, into the branch its origin defaults to.
+  const team = Object.values(loaded.copies ?? {}).some((copy) => copy.kind === 'team')
+    ? { checkout: config.repo.localPath, target: await getDefaultBranch(config.repo.localPath) }
+    : undefined;
+
+  if (!delivering && !unresolvedCreate(loaded, [], team)) return;
 
   const drained = await withFileLock(deliveryLockPath(config, runId), { attempts: 1, delayMs: 0 }, async () => {
     let requeued = false;
@@ -1609,8 +1627,8 @@ async function drainDeliveries(config: LocalConfig, runId: string, secrets: Reco
         if (run === 'missing') return { value: undefined };
         const before = JSON.stringify(run);
         const now = new Date().toISOString();
-        const job = nextDelivery(run, (item) => reconcileRun(item, now), branchWriterLeased, waiting);
-        const value = job ? { job } : unresolvedCreate(run, tried);
+        const job = nextDelivery(run, (item) => reconcileRun(item, now), branchWriterLeased, waiting, team);
+        const value = job ? { job } : unresolvedCreate(run, tried, team);
 
         return { value, write: JSON.stringify(run) !== before ? { ...run, updatedAt: now } : undefined };
       });
@@ -1621,7 +1639,17 @@ async function drainDeliveries(config: LocalConfig, runId: string, secrets: Reco
       if ('job' in picked.value) {
         const { job } = picked.value;
         tried.push({ ...job.key, target: job.target });
-        const outcome = await deliverPr(job, () => markCreating(config, runId, secrets, job));
+        // A team branch is delivered from the member's team repo, which teamai pull and push update under this lock.
+        const syncLock = job.checkout === team?.checkout ? join(getDataHome(config), SYNC_LOCK_FILENAME) : undefined;
+
+        if (syncLock !== undefined && !await acquireLock(syncLock)) return requeued;
+        let outcome: Awaited<ReturnType<typeof deliverPr>>;
+
+        try {
+          outcome = await deliverPr(job, () => markCreating(config, runId, secrets, job));
+        } finally {
+          if (syncLock !== undefined) await releaseLock(syncLock);
+        }
 
         // As when the pick is busy: the step still delivers, and a later call checks and delivers it.
         if (outcome === 'busy') return requeued;
@@ -2288,6 +2316,15 @@ function rememberSettledAttempt(run: RunState, attempt: string): void {
  * A step that writes reports `changes`. A read-only step in a copy reports `read`, and a success must carry it.
  */
 function workspaceMismatch(report: ReportInput, contract: WorkspaceContract | undefined): string | undefined {
+  // The team clone's base is origin's default branch when the clone was made, which only the place knows.
+  if (contract?.mode === 'team') {
+    if (report.read) return `read names branch ${report.read.branch}, but attempt ${report.attempt} was leased team branch ${contract.branch}`;
+
+    if (report.changes && report.changes.branch !== contract.branch) return `changes name branch ${report.changes.branch}, but attempt ${report.attempt} was leased team branch ${contract.branch}`;
+
+    return undefined;
+  }
+
   const readOnly = contract?.mode === 'read-only';
   const leased = contract ? `${readOnly ? 'read-only ' : ''}branch ${contract.branch} on base ${contract.base.commit}` : 'no workspace';
   const elsewhere = (branch: string, base: string): boolean => !contract || branch !== contract.branch || base !== contract.base.commit;
@@ -2417,6 +2454,9 @@ async function reportedPrUnmatched(config: LocalConfig, runId: string, report: R
   const run = await readRun(config, runId);
 
   if (run === 'missing' || run === 'corrupt' || !run.checkout) return undefined;
+
+  // TeamAI opens a team branch's pull request itself, and keeps no URL a driver reported for it.
+  if (run.copies?.[report.changes.branch]?.kind === 'team') return `branch ${report.changes.branch} is a team repo branch, whose pull request TeamAI looks up itself`;
   const target = deliveryTarget(run, report.changes.branch);
   const step = run.steps.find((item) => item.status === 'leased' && item.lease.attempt === report.attempt);
 
@@ -2681,7 +2721,8 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
       const copy = (run.copies ??= {})[report.changes.branch] ?? { owner: report.driver };
       copy.owner ??= report.driver;
       copy.commit = report.changes.to;
-      run.copies[report.changes.branch] = copy;
+      // A pull request from a team branch is compared with the default branch tip its last step started from.
+      run.copies[report.changes.branch] = contract?.mode === 'team' ? { ...copy, kind: 'team', base: report.changes.base } : copy;
     }
 
     // The step itself ran in the copy, not only its staging or setup.

@@ -238,7 +238,7 @@ successCriteria: The error names the wrong field and still reveals nothing about
 | `check` | `run`, a command that exits 0 once the task is done, and `protect`, the paths the agent must not supply. |
 | `check.add` | Optional: files written before the check that the agent never has: a file as `solutionCommit` has it, such as the solution's test, or `{ from, to }`, a file or directory of the suite directory. A directory adds every file under it except its dot entries, such as `.DS_Store`; name a dotfile in `from` to add it. See [Tests the solution brought](#tests-the-solution-brought) and [Tests in the suite directory](#tests-in-the-suite-directory). |
 | `successCriteria` | Instead of `check`: a judge decides from these. |
-| `source` | Optional: where the task came from, the session's `platform` and `sessionId`. Nothing runs from it. |
+| `source` | Optional: where the task came from: a session's `platform` and `sessionId`, or a workflow pass's `runId`, `step` and `pass`. Nothing runs from it; [`digest --json`](self-improvement.md#what-teamai-reads) marks the failure it names as covered. |
 
 `teamai pull` and `teamai review --branch` check every file and report each problem with its file and line. A suite in `benchmarks/<namespace>/<suite>/` goes only to members of that role or project, as [Roles and projects](distribution.md#roles-and-projects) describes.
 
@@ -697,6 +697,8 @@ Arm "claude" passed 4/9 paired trials, against 8/9 in run r1c0d9e2f4b6a8c7d: a d
 ```
 
 `--fail-on-regression` compares this run with the newest earlier run of the suite that succeeded and is published on `teamai-reports` with the same tasks and arms. An arm is the same when its name, tool, model, effort, workflow and team treatment are, whatever revision it pulled. Trials pair by task and repetition, as the dashboard's Compare pairs them, and the run exits 1 when an arm's pass rate dropped by more than chance. Records still waiting on this machine are not compared. With no such run, it prints a notice and leaves the exit code alone. It needs the local driver: with `--driver skill` the coding session drives the run after the command returns, so the command refuses the flag.
+
+To turn a scorer's repeated failures into a PR that changes the team's assets and adds one regression task each, proven on every tool before and after, see [Self-improvement](self-improvement.md).
 
 ## Run in CI
 

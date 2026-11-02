@@ -948,6 +948,22 @@ workflowCmd
     await workflowCancel(run, step);
   });
 
+const selfImprovementCmd = program
+  .command('self-improvement')
+  .description('Improve the team\'s harness from a scorer\'s repeated failures: change the assets teamai delivers so that work like the failing one passes, with one regression task per failure, proposed as one pull request on the team repo that the next run updates. run starts the workflow teamai-self-improvement, teamai\'s default or the team\'s file of that name.');
+
+selfImprovementCmd
+  .command('run <scorer>')
+  .description('Start the workflow teamai-self-improvement with --inputs {"scorer":"<scorer>","suite":"<--suite>"} and drive it. A team\'s workflows/teamai-self-improvement.yaml replaces teamai\'s default, and must take inputs scorer and suite. The default reads digest --json --scorer and improves only when it says ready: two failures or more of the scorer in the last 30 days that a task can start from, or one more for a proposal already on origin. Its prompt step needs a sandbox, and runs in a fresh clone of the team repo on teamai/self-improvement/<scorer>, whose pull request it opens or updates. Prints the run\'s done envelope.')
+  .option('--suite <dir>', 'The suite the regression tasks go in, which the team repo\'s default branch must have', 'benchmarks/regressions')
+  .option('--driver <kind>', 'The driver that runs it: local (default), or skill, which only a team workflow with invoke: allow or ask accepts; teamai\'s default denies agents')
+  .option('--tools <list>', 'The tools its prompt steps run on, as workflow start --tools takes them, such as default=claude')
+  .option('--sandbox', 'With --driver local, declare this machine a sandbox for this process, where the prompt step, which edits files without asking, may run. workflows.sandbox in config declares it for every process.')
+  .action(async (scorer: string, cmdOpts: { suite: string; driver?: string; tools?: string; sandbox?: boolean }) => {
+    const { selfImprovementRun } = await import('./workflow-commands.js');
+    await selfImprovementRun(scorer, cmdOpts);
+  });
+
 const benchmarkCmd = program
   .command('benchmark')
   .description('Run a benchmark suite, and the commands its run\'s steps run. run starts the workflow teamai-benchmark, teamai\'s default or the team\'s file of that name, whose plan, check and report steps run the other commands; try needs no run.');
@@ -1285,7 +1301,25 @@ if (shouldRegisterSessionFlowCommands()) {
 program
   .command('digest')
   .description('Generate weekly team activity digest')
-  .action(async () => {
+  .option('--json', 'Print what an improvement starts from instead, as one JSON envelope: the failing score labels of the last 30 days, each with its subject and the commit its work started at, and each scorer\'s cohorts with the agreement of its model judge with hand labels. Never a judge\'s reasoning; a benchmark\'s labels are left out')
+  .option('--scorer <name>', 'With --json, also print data.improvement for this scorer: failures, its failures a regression task can start from (a recorded start commit this checkout has, and no task of --suite on the team repo\'s default branch or on an open --proposal names its subject), each subject once, newest first; covered, the tasks that name its other failures; refused, each failure no task can start from, with why: tracked_changes, not_recorded or not_in_checkout; and hasProposal, whether --proposal is open: origin has it, and its default branch neither merged it nor has each regression task it adds. The workflow\'s if decides from these whether it runs')
+  .option('--suite <dir>', 'With --scorer, the suite whose tasks cover a failure', 'benchmarks/regressions')
+  .option('--proposal <branch>', 'With --scorer, the team repo branch an open proposal is on, whose tasks cover failures too')
+  .action(async (cmdOpts: { json?: boolean; scorer?: string; suite: string; proposal?: string }) => {
+    if (cmdOpts.json) {
+      const { DigestFailures } = await import('./digest-failures.js');
+      await DigestFailures.print(cmdOpts.scorer === undefined ? {} : { improvement: { scorer: cmdOpts.scorer, suite: cmdOpts.suite, proposal: cmdOpts.proposal } });
+
+      return;
+    }
+
+    if (cmdOpts.scorer !== undefined || cmdOpts.proposal !== undefined) {
+      log.error('invalid_arguments: --scorer and --proposal print with --json. Add --json.');
+      process.exitCode = 1;
+
+      return;
+    }
+
     const { generateDigest } = await import('./digest.js');
     await generateDigest();
   });

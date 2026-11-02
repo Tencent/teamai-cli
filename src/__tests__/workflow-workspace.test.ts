@@ -4083,4 +4083,32 @@ steps:
       'change.look': { kind: 'role', role: 'spec' }, 'change.again': { kind: 'role', role: 'audit' },
     });
   });
+
+  it('is none for a step in the team workspace, which runs in its own clone of the team repo rather than the copy around it', () => {
+    const run = {
+      steps: [],
+      definition: definitionOf('tidy', `schemaVersion: v1alpha1
+name: tidy
+description: Review the change, then tidy the team's rules.
+steps:
+  - id: review
+    role: review
+    workspace: new
+    workflow:
+      steps:
+        - id: look
+          prompt: Review the change.
+        - id: tidy
+          needs: [look]
+          workspace: { team: {} }
+          deliver: pr
+          prompt: Tidy the rules.
+`),
+      workflows: {},
+    };
+
+    expect(Object.fromEntries(['review.look', 'review.tidy'].map((step) => [step, stepRoleOf(run, step)]))).toEqual({
+      'review.look': { kind: 'role', role: 'review' }, 'review.tidy': { kind: 'none' },
+    });
+  });
 });

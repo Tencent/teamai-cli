@@ -70,7 +70,8 @@ async function openPage(labels: ViewedLabel[], { groupBy = 'role', language = 'e
   const moved: string[] = [];
   const clicks: Array<(event: { target: { closest: (selector: string) => unknown } }) => void> = [];
   const scope = {
-    t, e, label: (text: string) => e(t(text)), number: (value: number) => new Intl.NumberFormat('en').format(value), when: (value: string) => value,
+    // As client.ts defines it on the page.
+    t, e, label: (text: string) => e(t(text)), link: (key: string, text: string) => `<button class="link" data-page="${key}">${e(t(text))} →</button>`, number: (value: number) => new Intl.NumberFormat('en').format(value), when: (value: string) => value,
     read: (key: string, fallback: string) => (key === 'teamai-dashboard-scorer-group' ? groupBy : fallback), save: () => undefined,
     // Each element of the page, recording where the page scrolled and what it focused.
     $: (id: string) => ({ scrollIntoView: () => moved.push(`scrolled to ${id}`), focus: () => moved.push(`focused ${id}`) }),
@@ -185,9 +186,9 @@ describe('the Scorers page of a workflow whose review step runs with a role of i
     const { html } = await renderPage(LABELS);
 
     expect(rowsUnder(html, 'Failing labels')).toEqual([
-      '2026-10-27T10:00:00.000Z bob missed-defect claude · claude-review-1 · high · review step role · aaaaaaa Workflow run — r0000000000000001 ↗ review #1',
-      '2026-10-25T10:00:00.000Z ana missed-defect codex · gpt-5 · frontend member role · bbbbbbb Workflow run — r0000000000000003 Run not found implement #1',
-      '2026-10-24T10:00:00.000Z ana missed-defect Harness not recorded Workflow run — r0000000000000004 Run not found implement #1',
+      '2026-10-27T10:00:00.000Z bob missed-defect claude · claude-review-1 · high · review step role · aaaaaaa Workflow run — Start not recorded — r0000000000000001 ↗ review #1',
+      '2026-10-25T10:00:00.000Z ana missed-defect codex · gpt-5 · frontend member role · bbbbbbb Workflow run — Start not recorded — r0000000000000003 Run not found implement #1',
+      '2026-10-24T10:00:00.000Z ana missed-defect Harness not recorded Workflow run — Start not recorded — r0000000000000004 Run not found implement #1',
     ]);
     expect(html).toContain('<span class="role-of step">step role</span>');
     expect(html).toContain('data-run="r0000000000000001" data-run-source="reported"');
@@ -199,7 +200,7 @@ describe('the Scorers page of a workflow whose review step runs with a role of i
     const section = html.split('<section').find((part) => part.includes('<h2>Failing labels ')) ?? '';
     const [row] = [...section.matchAll(/<tbody>(<tr>.*?<\/tr>)/gs)].map(([, first]) => first ?? '');
 
-    expect([...(row ?? '').matchAll(/<td[^>]*data-label="([^"]+)"/g)].map(([, name]) => name)).toEqual(['SCORED', 'AUTHOR', 'LABEL', 'HARNESS', 'PLATFORM', 'SKILLS', 'OPEN']);
+    expect([...(row ?? '').matchAll(/<td[^>]*data-label="([^"]+)"/g)].map(([, name]) => name)).toEqual(['SCORED', 'AUTHOR', 'LABEL', 'HARNESS', 'PLATFORM', 'SKILLS', 'REGRESSION', 'LEARNINGS', 'OPEN']);
     expect(section).toContain('class="session-table failing-labels"');
   });
 

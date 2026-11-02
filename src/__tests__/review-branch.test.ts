@@ -636,6 +636,43 @@ steps:
     ]);
   });
 
+  it('fails a shared workflow a role overrides, which a member the team assigned no role still pulls', async () => {
+    await fse.outputFile(path.join(repoDir, 'manifest', 'roles.yaml'), 'version: 1\nroles:\n  - id: ops\n    resources: { knowledge: [], skills: [], workflows: [ops] }\n');
+    await fse.outputFile(path.join(repoDir, 'manifest', 'members.yaml'), 'version: 1\nmembers:\n  alice: [ops]\n');
+    await writeWorkflow(repoDir, 'release', MISSING_PROMPT);
+    await fse.outputFile(path.join(repoDir, 'workflows', 'ops', 'release.yaml'), VALID_BUILD.replace('name: build', 'name: release'));
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(review.findings).toContainEqual({
+      level: 'fail',
+      check: 'workflows',
+      path: 'workflows/release.yaml',
+      message: 'workflows/release.yaml:6: field "steps[0].prompt_file": prompt_file "prompts/release.md" must be a readable, non-symlink file under prompts/',
+    });
+  });
+
+  it('fails a shared workflow a role overrides, for members whose assigned roles roles.yaml no longer declares', async () => {
+    await fse.outputFile(path.join(repoDir, 'manifest', 'roles.yaml'), 'version: 1\nroles:\n  - id: ops\n    resources: { knowledge: [], skills: [], workflows: [ops] }\n');
+    await fse.outputFile(path.join(repoDir, 'manifest', 'members.yaml'), 'version: 1\nmembers:\n  alice: [ops]\ndefault: [retired]\n');
+    await writeWorkflow(repoDir, 'release', MISSING_PROMPT);
+    await fse.outputFile(path.join(repoDir, 'workflows', 'ops', 'release.yaml'), VALID_BUILD.replace('name: build', 'name: release'));
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(review.findings).toContainEqual(expect.objectContaining({ level: 'fail', path: 'workflows/release.yaml' }));
+  });
+
+  it('passes a shared workflow whose prompt only a role\'s namespace holds, in a team that assigns no roles', async () => {
+    await fse.outputFile(path.join(repoDir, 'manifest', 'roles.yaml'), 'version: 1\nroles:\n  - id: ops\n    resources: { knowledge: [], skills: [], prompts: [ops] }\n');
+    await fse.outputFile(path.join(repoDir, 'prompts', 'ops', 'release.md'), 'Write the release notes.\n');
+    await writeWorkflow(repoDir, 'release', MISSING_PROMPT);
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(review.findings.filter((finding) => finding.level === 'fail')).toEqual([]);
+  });
+
   it('fails a workflow and the workflow that runs it when the child has no runnable version', async () => {
     await writeWorkflow(repoDir, 'ship', runsWorkflow('ship', 'check'));
     await writeWorkflow(repoDir, 'check', runsWorkflow('check', 'gone'));

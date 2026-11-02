@@ -8,7 +8,8 @@ import { agentHarnessOf, type AgentHarness, type AgentObservation, type Recorded
 import { wilson } from '../benchmark/history.js';
 import type { RunMode } from '../launch-context.js';
 import { canonicalJson } from '../utils/canonical-json.js';
-import { DECIDERS, isStageDecider, labelId, type Decider, type ScoreLabel } from './label.js';
+import type { FailureLinks } from './failure-links.js';
+import { DECIDERS, isStageDecider, judgeCohort, labelId, type Decider, type JudgeCohort, type RunSubject, type ScoreLabel, type SessionSubject } from './label.js';
 
 /** A label as the view reads it: who published it, and what the judged work ran as when that was recorded. */
 export type ViewedLabel = {
@@ -22,11 +23,6 @@ export type ViewedLabel = {
   /** Where the run a workflow label judges is listed: this machine's runs, or the team's records. */
   runSource?: 'local' | 'reported';
 };
-
-/** A judge as a cohort tells judges apart: a model judge by its tool and the model it recorded. */
-export type JudgeCohort =
-  | { kind: 'human' }
-  | { kind: 'model'; tool: string; model?: { id: string; isReported: boolean; alias?: string } };
 
 /** One measurement. `runMode` is null for labels that recorded none. */
 export type Cohort = {
@@ -151,9 +147,20 @@ export type SubjectRef =
 
 /**
  * A failing label as the view lists it, with the harness the judged work ran with when that was recorded: never its
- * subject's native session id, reasoning or prompt.
+ * subject's native session id, reasoning or prompt. `start`: where its work started, as an improvement reads it; `task`:
+ * the regression task that names its subject; `learnings`, for a session only: the ids of the learnings that name it.
  */
-export type FailingLabel = { author: string; scoredAt: string; label: string; skills?: string[]; decidedBy?: Decider; harness?: AgentHarness } & SubjectRef;
+export type FailingLabel = {
+  author: string;
+  scoredAt: string;
+  label: string;
+  skills?: string[];
+  decidedBy?: Decider;
+  harness?: AgentHarness;
+  start: FailureStart;
+  task?: string;
+  learnings?: string[];
+} & SubjectRef;
 
 /**
  * What decided a workflow cohort's labels (#1247): its labels per stage, the most first and those that recorded none
@@ -215,6 +222,36 @@ export type Disagreement = SubjectRef & {
   hand: { label: string; passed: boolean; author: string; scoredAt: string };
 };
 
+/**
+ * Where a failure's work started, as its agent recorded the project: the commit, or why no commit holds that state.
+ * `tracked_changes`: tracked files were modified when it started. `not_recorded`: nothing recorded the project.
+ */
+export type FailureStart = { commit: string } | { refused: 'tracked_changes' | 'not_recorded' };
+
+/** A failing label as improvement reads it: its native subject, never its reasoning, a prompt or a transcript. */
+export type Failure = {
+  failure: Pick<ScoreLabel, 'scorer' | 'rubric' | 'label' | 'score' | 'scoredAt' | 'runMode' | 'used'> & {
+    /** The cohort it counts in, as the scorers list names it, and the judge that gave it. */
+    cohort: string;
+    judge: JudgeCohort;
+    author: string;
+    agent?: RecordedAgent;
+  } & ({ source: 'session'; subject: SessionSubject } | { source: 'workflow'; subject: RunSubject });
+  start: FailureStart;
+  /** The name of the pushed session it judges, when the team archive holds it. */
+  session?: { name: string };
+};
+
+/** A cohort with its counts over the window, and for a model judge its agreement with hand labels. */
+export type CohortFailures = Cohort & { stats: Stats; agreement?: Omit<JudgeAgreement, 'judge' | 'labels'> & { handLabelled: number } };
+
+export type ScorerFailures = {
+  window: ScorerResultsView['window'];
+  scorers: Array<{ scorer: string; cohorts: CohortFailures[] }>;
+  /** Every failing label in the window, the newest per key, newest first. */
+  failures: Failure[];
+};
+
 /** The values each rubric the caller could read lists, by `rubric.sourceHash`. */
 export type RubricLabels = ReadonlyMap<string, readonly string[]>;
 
@@ -230,11 +267,12 @@ export type SelectedCohort = {
   groups?: Group[];
   split?: Split;
   /**
-   * The newest failing labels the query asked for, and how many it matches. With a group selected, `byHarness` counts
+   * The newest failing labels the query asked for, and how many it matches. `covered`: how many have a regression task;
+   * `startable`: how many more a task can start from, with a recorded commit. With a group selected, `byHarness` counts
    * all of them by the harness each ran with, the most failures first: whether one harness causes them; and
    * `revisionChange`, when the group's labels show one, names the team revision they started failing on.
    */
-  failing: { labels: FailingLabel[]; total: number; byHarness?: HarnessFailures[]; revisionChange?: RevisionChange };
+  failing: { labels: FailingLabel[]; total: number; covered: number; startable: number; byHarness?: HarnessFailures[]; revisionChange?: RevisionChange };
   /** Only for a workflow cohort whose labels recorded what decided them. */
   decided?: Decided;
   /** Only for a session cohort on a dashboard that read this machine's reminder state: the sessions of the last `days`. */
@@ -251,28 +289,6 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** The windows a view offers, in days of `scoredAt`. */
 export const SCORER_WINDOWS = [7, 30, 90, 180] as const;
-
-function judgeCohort(judge: ScoreLabel['judge']): JudgeCohort {
-  switch (judge.kind) {
-    case 'human':
-      return { kind: 'human' };
-    case 'model': {
-      const id = judge.model?.reported ?? judge.model?.requested;
-
-      const cohort: Extract<JudgeCohort, { kind: 'model' }> = { kind: 'model', tool: judge.tool };
-
-      if (id) cohort.model = { id, isReported: judge.model?.reported !== undefined };
-
-      return cohort;
-    }
-
-    default: {
-      const unhandled: never = judge;
-
-      return unhandled;
-    }
-  }
-}
 
 /** A model judge with the team alias its newest label named it by, which a cohort shows but never tells judges apart by. */
 function withAlias(judge: JudgeCohort, newestFirst: readonly ViewedLabel[]): JudgeCohort {
@@ -435,7 +451,7 @@ function subjectRef(entry: ViewedLabel): SubjectRef {
   }
 }
 
-function failingLabel(entry: ViewedLabel): FailingLabel {
+function failingLabel(entry: ViewedLabel, links: FailureLinks | undefined): FailingLabel {
   const { label } = entry;
   const harness = agentHarnessOf(entry.agent);
 
@@ -443,10 +459,13 @@ function failingLabel(entry: ViewedLabel): FailingLabel {
     author: entry.author,
     scoredAt: label.scoredAt,
     label: label.label,
-    // Left undefined without skills, a recorded decider or a harness, so the JSON view leaves them out.
+    // Left undefined when absent, so the JSON view leaves them out.
     skills: label.used?.skills.length ? label.used.skills : undefined,
     decidedBy: label.source === 'workflow' ? label.decidedBy : undefined,
     harness,
+    start: startOf(entry.agent),
+    task: links?.taskOf(label.subject),
+    learnings: label.source === 'session' && links ? links.learningsOf(label.subject).map(({ id }) => id) : undefined,
     ...subjectRef(entry),
   };
 }
@@ -691,6 +710,26 @@ function defaultCohort(scored: ReadonlyArray<{ summary: CohortSummary; all: View
     .sort((left, right) => right.stats.n - left.stats.n || right.lastScoredAt.localeCompare(left.lastScoredAt))[0];
 }
 
+function startOf(agent: RecordedAgent | undefined): FailureStart {
+  const project = observed(agent)?.project;
+
+  if (!project) return { refused: 'not_recorded' };
+
+  return project.dirty ? { refused: 'tracked_changes' } : { commit: project.commit };
+}
+
+function failureOf(entry: ViewedLabel, cohort: CohortIdentity): Failure {
+  const { label, author, agent, sessionName } = entry;
+  const { scorer, rubric, label: value, score, scoredAt, runMode, used } = label;
+  const recorded = { scorer, cohort: cohort.id, judge: cohort.judge, rubric, label: value, score, scoredAt, author, runMode, agent, used };
+
+  return {
+    failure: label.source === 'session' ? { ...recorded, source: 'session', subject: label.subject } : { ...recorded, source: 'workflow', subject: label.subject },
+    start: startOf(agent),
+    session: sessionName ? { name: sessionName } : undefined,
+  };
+}
+
 export const ScorerResults = {
   /** The `days` before `now`, as the view counts them: by when labels were scored, not when the work happened. */
   window(days: number, now: Date): ScorerResultsView['window'] {
@@ -706,8 +745,40 @@ export const ScorerResults = {
     }));
   },
 
+  /**
+   * What an improvement starts from: every failing label in the window, the newest per key, and each scorer's cohorts
+   * with their counts and, for a model judge, how it agrees with hand labels.
+   */
+  failures({ labels, windowDays, now, rubricLabels }: { labels: readonly ViewedLabel[]; windowDays: number; now: Date; rubricLabels?: RubricLabels }): ScorerFailures {
+    const view = ScorerResults.of({ labels, query: { windowDays }, now, rubricLabels });
+    const { from, to } = view.window;
+    const inWindow = (entry: ViewedLabel) => entry.label.scoredAt >= from && entry.label.scoredAt <= to;
+    const kept = current(labels);
+
+    const scorers = view.scorers.map(({ scorer, cohorts }) => ({
+      scorer,
+      cohorts: cohorts.map(({ trend: _trend, lastScoredAt: _last, ...cohort }): CohortFailures => {
+        if (cohort.judge.kind !== 'model') return cohort;
+        const identity = kept.map((entry) => identityOf(entry.label).cohort).find(({ id }) => id === cohort.id)?.judge;
+        const row = agreement({ labels: kept, scorer, sourceHash: cohort.rubric.sourceHash, source: cohort.source, inWindow, rubricLabels });
+        const judged = row.judges.find(({ judge }) => canonicalJson(judge) === canonicalJson(identity));
+
+        if (!judged) return cohort;
+        const { judge: _judge, labels: _labels, ...counts } = judged;
+
+        return { ...cohort, agreement: { handLabelled: row.handLabelled, ...counts } };
+      }),
+    }));
+
+    const failures = kept.filter((entry) => !entry.label.passed && inWindow(entry))
+      .sort((left, right) => right.label.scoredAt.localeCompare(left.label.scoredAt))
+      .map((entry) => failureOf(entry, identityOf(entry.label).cohort));
+
+    return { window: view.window, scorers, failures };
+  },
+
   /** The results of every scorer in `labels`, with the selected scorer's cohort counted over the window. */
-  of({ labels, query, now, reminders, rubricLabels }: { labels: readonly ViewedLabel[]; query: ScorerResultsQuery; now: Date; reminders?: ReminderInput; rubricLabels?: RubricLabels }): ScorerResultsView {
+  of({ labels, query, now, reminders, rubricLabels, links }: { labels: readonly ViewedLabel[]; query: ScorerResultsQuery; now: Date; reminders?: ReminderInput; rubricLabels?: RubricLabels; links?: FailureLinks }): ScorerResultsView {
     const window = ScorerResults.window(query.windowDays, now);
     const { from, to } = window;
     const inWindow = (entry: ViewedLabel) => entry.label.scoredAt >= from && entry.label.scoredAt <= to;
@@ -795,7 +866,14 @@ export const ScorerResults = {
 
     const change = groupBy && group !== undefined ? revisionChange(counted.filter(inGroup)) : undefined;
     const stageBreakdown = summary.source === 'workflow' ? decided(counted) : undefined;
-    const failingList: SelectedCohort['failing'] = { labels: failing.slice(0, query.failing?.limit ?? FAILING_PAGE).map(failingLabel), total: failing.length };
+    const isCovered = (entry: ViewedLabel) => links?.taskOf(entry.label.subject) !== undefined;
+
+    const failingList: SelectedCohort['failing'] = {
+      labels: failing.slice(0, query.failing?.limit ?? FAILING_PAGE).map((entry) => failingLabel(entry, links)),
+      total: failing.length,
+      covered: failing.filter(isCovered).length,
+      startable: failing.filter((entry) => !isCovered(entry) && 'commit' in startOf(entry.agent)).length,
+    };
 
     if (groupBy && group !== undefined) failingList.byHarness = failuresByHarness(failing);
 

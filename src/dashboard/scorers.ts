@@ -15,6 +15,7 @@ import type { ScoreLabel } from '../scorers/label.js';
 import { LabelStore } from '../scorers/label-store.js';
 import { cachedScorerNames, loadCachedScorer, scorerSourceHash } from '../scorers/cache.js';
 import { parseScorer } from '../scorers/definition.js';
+import { FailureLinks } from '../scorers/failure-links.js';
 import { DIMENSIONS_OFFERED, FAILING_MAX, SCORER_WINDOWS, ScorerResults, type ReminderInput, type RubricLabels, type ScorerResultsQuery, type ScorerResultsView, type Side, type ViewedLabel } from '../scorers/results.js';
 import { sessionArchiveRoot } from '../session-flow/session-cmd-shared.js';
 import { SyncManager } from '../session-flow/sync.js';
@@ -229,7 +230,7 @@ async function committedRubric(config: LocalConfig, { scorer, sourceHash, teamRe
  * is read from the cache, and any other rubric of a scorer with a hand label from the team clone at a team revision its
  * labels carry. A rubric neither reads stays out, and the view falls back to the values its labels stored.
  */
-async function rubricLabelsOf(config: LocalConfig, labels: readonly ScoreLabel[]): Promise<RubricLabels> {
+export async function rubricLabelsOf(config: LocalConfig, labels: readonly ScoreLabel[]): Promise<RubricLabels> {
   const cached = await Promise.all((await cachedScorerNames(config)).map((name) => loadCachedScorer(config, name)));
   const known = new Map<string, readonly string[]>(cached.flatMap((scorer) => (scorer ? [[scorer.sourceHash, scorer.definition.labels.map((label) => label.value)] as const] : [])));
   const handLabelled = new Set(labels.flatMap((label) => (label.judge.kind === 'human' ? [label.scorer] : [])));
@@ -294,7 +295,7 @@ async function resolveCommit(config: LocalConfig, commit: string): Promise<strin
 const SPLIT_GIT_BATCH = 8;
 
 /** Which side of `commit` each revision is on: after when the revision contains it. A revision this clone lacks has none. */
-async function sidesOf(config: LocalConfig, commit: string, revisions: ReadonlySet<string>): Promise<Map<string, Side>> {
+export async function sidesOf(config: LocalConfig, commit: string, revisions: ReadonlySet<string>): Promise<Map<string, Side>> {
   const sides = new Map<string, Side>();
   const pending = [...revisions];
 
@@ -334,16 +335,11 @@ async function reminderInput({ events, windowDays, now }: { events: readonly Das
 }
 
 /**
- * The Scorers page's answer for one workspace. `events` are this machine's dashboard events of the workspace; without
- * them there is no reminder table. `refresh` refreshes the reports checkout from origin first, as every reader of it.
+ * Every label the scorer views count, as they read it: this machine's and the team's, with what the judged work ran as
+ * and the name of an archived session, and without the labels of an isolated run, such as a benchmark's.
+ * `refresh` refreshes the reports checkout from origin first, as every reader of it.
  */
-export async function scorerResults({ config, query, now = new Date(), events, refresh = true }: {
-  config: LocalConfig;
-  query: ScorerQuery;
-  now?: Date;
-  events?: readonly DashboardEvent[];
-  refresh?: boolean;
-}): Promise<ScorerResultsView> {
+export async function readScorerLabels(config: LocalConfig, { refresh = true }: { refresh?: boolean } = {}): Promise<ViewedLabel[]> {
   if (usesBranchWorktree(config)) {
     const { readableReportsWorktree } = await import('../utils/reports-branch.js');
     await readableReportsWorktree(config, { dryRun: !refresh });
@@ -360,7 +356,7 @@ export async function scorerResults({ config, query, now = new Date(), events, r
   const runs = new Map(await Promise.all([...runIds].map(async (runId) => [runId, await runAgents(config, runId, { isLocal: localRuns.has(runId), team })] as const)));
   const { names } = team;
 
-  const viewed: ViewedLabel[] = labels.flatMap(({ label, author }): ViewedLabel[] => {
+  return labels.flatMap(({ label, author }): ViewedLabel[] => {
     if (label.source === 'session') {
       const sessionName = names.get(sessionKey(label.subject.platform, label.subject.sessionId));
 
@@ -387,10 +383,23 @@ export async function scorerResults({ config, query, now = new Date(), events, r
 
     return [entry];
   });
+}
 
+/**
+ * The Scorers page's answer for one workspace. `events` are this machine's dashboard events of the workspace; without
+ * them there is no reminder table. `refresh` refreshes the reports checkout from origin first, as every reader of it.
+ */
+export async function scorerResults({ config, query, now = new Date(), events, refresh = true }: {
+  config: LocalConfig;
+  query: ScorerQuery;
+  now?: Date;
+  events?: readonly DashboardEvent[];
+  refresh?: boolean;
+}): Promise<ScorerResultsView> {
+  const viewed = await readScorerLabels(config, { refresh });
   const { commit, ...rest } = query;
 
-  const [split, reminders, rubricLabels] = await Promise.all([
+  const [split, reminders, rubricLabels, links] = await Promise.all([
     commit ? (async () => {
       const full = await resolveCommit(config, commit);
 
@@ -398,11 +407,12 @@ export async function scorerResults({ config, query, now = new Date(), events, r
     })() : undefined,
     events ? reminderInput({ events, windowDays: query.windowDays, now }) : undefined,
     rubricLabelsOf(config, viewed.map(({ label }) => label)),
+    FailureLinks.read(config),
   ]);
 
   const resultsQuery: ScorerResultsQuery = { ...rest };
 
   if (split) resultsQuery.split = split;
 
-  return ScorerResults.of({ labels: viewed, query: resultsQuery, now, rubricLabels, reminders });
+  return ScorerResults.of({ labels: viewed, query: resultsQuery, now, rubricLabels, reminders, links });
 }

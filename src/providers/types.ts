@@ -78,8 +78,40 @@ export type CiStatus = 'passed' | 'failed' | 'pending' | 'none';
 export interface PullRequestLookup {
   /** The web URL of the open request `ref` names, if any. Throws when the host cannot answer, never answering "none". */
   findOpen(ref: PullRequestRef): Promise<string | undefined>;
+  /** Every request from `ref`'s branch into its target, newest first, with how it ended. Throws when the host cannot answer. */
+  history(ref: PullRequestRef): Promise<PullRequestRecord[]>;
   /** How the CI of `ref` went (#1247). Throws when the host cannot answer. Absent on a host whose CI TeamAI does not read. */
   checks?(ref: CommitRef): Promise<CiStatus>;
+}
+
+/**
+ * A request as its host lists it: still open, closed without merging at `closedAt`, or merged at `closedAt`, with what
+ * it merged as when the host states it.
+ */
+export type PullRequestRecord = { url: string; title: string; openedAt: string } & (
+  | { state: 'open' }
+  | { state: 'closed'; closedAt: string }
+  | { state: 'merged'; closedAt: string; merge?: MergedAs }
+);
+
+/** What a merged request landed as: the source branch's head it merged, and the commit that put it on the target branch. */
+export type MergedAs = { head: string; commit: string };
+
+/**
+ * A listed request as a GitLab-style host states it: `opened` or `reopened` is open, `merged` is merged, any other state
+ * ended without merging. An ended request with no time the host gave is listed as ended when it was opened.
+ */
+export function endedRequest({ url, title, openedAt, state, closedAt, merge }: { url: string; title: string; openedAt: string; state: string; closedAt: string | null | undefined; merge?: MergedAs }): PullRequestRecord {
+  if (state === 'opened' || state === 'reopened' || state === 'open') return { url, title, openedAt, state: 'open' };
+
+  if (state !== 'merged') return { url, title, openedAt, state: 'closed', closedAt: closedAt ?? openedAt };
+
+  return { url, title, openedAt, state: 'merged', closedAt: closedAt ?? openedAt, merge: merge || undefined };
+}
+
+/** `merge` when the host stated both commits of it. */
+export function mergedAs({ head, commit }: { head: string | null | undefined; commit: string | null | undefined }): MergedAs | undefined {
+  return head && commit ? { head, commit } : undefined;
 }
 
 /**

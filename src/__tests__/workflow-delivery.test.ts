@@ -476,7 +476,7 @@ describe('delivering a step', () => {
 
     expect(await take(config, runId)).toMatchObject({ step: 'review' });
     const env = { GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: 'echo', GCM_INTERACTIVE: 'never' };
-    expect(fetches).toHaveBeenCalledWith(cwd, { run: runId, commits: [fix.workspace?.base.commit, to] }, { timeoutMs: 30000, env });
+    expect(fetches).toHaveBeenCalledWith(cwd, { run: runId, commits: [fix.workspace?.base.commit, to], branch: fix.workspace?.branch }, { timeoutMs: 30000, env });
     const askpass = fs.readFileSync(log, 'utf8').trim().split('\n');
     expect(askpass.length).toBeGreaterThanOrEqual(3);
     expect(askpass.filter((given) => given !== 'echo')).toEqual([]);
@@ -920,7 +920,7 @@ describe('reported URLs from a driver', () => {
 function providerDouble(findOpen: PullRequestLookup['findOpen'], create: GitProvider['createPullRequest'], hostname = 'github.com') {
   const provider = new GitHubProvider();
   const createSpy = vi.spyOn(provider, 'createPullRequest').mockImplementation(create);
-  vi.spyOn(registry, 'providerForRemote').mockReturnValue({ kind: 'provider', provider, pullRequests: { findOpen }, repo: 'fixture/app', hostname });
+  vi.spyOn(registry, 'providerForRemote').mockReturnValue({ kind: 'provider', provider, pullRequests: { findOpen, history: async () => [] }, repo: 'fixture/app', hostname });
   return createSpy;
 }
 

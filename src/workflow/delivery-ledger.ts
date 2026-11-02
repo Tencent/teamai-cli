@@ -27,8 +27,25 @@ export function deliveringStep(run: RunState, key: DeliveryKey): DeliveringStep 
  * later drain, and so does one whose branch a leased step writes, since that step's next push would enter its pull
  * request unchecked. Undefined when nothing delivers, or when the run settles, which the locked body of `next` finishes.
  */
+/** Where the member's team clone is and the branch its origin defaults to, which team branches are delivered from and into. */
+export type TeamCheckout = { checkout: string; target: string };
+
+/**
+ * Where a pull request from `branch` is checked and what it goes into: the run's checkout, base and target, or, for a
+ * branch of the team repo, `team` and the default branch tip its last step started from. Undefined when neither is known.
+ */
+function deliveryPlace(run: RunState, branch: string, team: TeamCheckout | undefined): { checkout: string; base: string; target: string } | undefined {
+  const copy = run.copies?.[branch];
+
+  if (copy?.kind === 'team') return team && copy.base !== undefined ? { checkout: team.checkout, base: copy.base, target: team.target } : undefined;
+  const target = deliveryTarget(run, branch);
+
+  return run.checkout && run.base && target !== undefined ? { checkout: run.checkout, base: run.base.commit, target } : undefined;
+}
+
 export function nextDelivery(
   run: RunState, reconcile: (run: RunState) => object, writerLeased: (run: RunState, branch: string) => boolean, waiting: readonly DeliveryKey[],
+  team?: TeamCheckout,
 ): DeliveryJob | undefined {
   if (run.status !== 'running') return undefined;
   const settledRun = reconcile(run);
@@ -40,15 +57,15 @@ export function nextDelivery(
     const key = deliveryKey(step);
 
     if (waiting.some((ahead) => sameKey(ahead, key)) || writerLeased(run, key.branch)) continue;
-    const target = deliveryTarget(run, key.branch);
+    const place = deliveryPlace(run, key.branch, team);
 
-    if (!run.checkout || !run.base || target === undefined) {
+    if (!place) {
       deliveryFailed(step, deliveryFailure({ runId: run.id, key }, { kind: 'no_checkout' }));
       continue;
     }
 
     const job: DeliveryJob = {
-      key, runId: run.id, runName: run.name, checkout: run.checkout, base: run.base.commit, target,
+      key, runId: run.id, runName: run.name, ...place,
       recordedHead: run.copies?.[key.branch]?.commit, childWork: childWorkOff(run, step, key.branch),
       openedBy: run.steps.find((item) => item !== step && branchName(run.id, item.id, item.pass ?? 1) === key.branch)?.id,
     };
@@ -62,9 +79,9 @@ export function nextDelivery(
 }
 
 /** The first request in `run.creating` that this drain has not looked up yet. */
-export function unresolvedCreate(run: RunState, tried: readonly Omit<UnresolvedCreate, 'lookups'>[]): { create: UnresolvedCreate; checkout: string } | undefined {
-  const { checkout } = run;
+export function unresolvedCreate(run: RunState, tried: readonly Omit<UnresolvedCreate, 'lookups'>[], team?: TeamCheckout): { create: UnresolvedCreate; checkout: string } | undefined {
   const create = run.creating?.find((listed) => !tried.some((done) => sameCreate(done, listed)));
+  const checkout = create && (run.copies?.[create.branch]?.kind === 'team' ? team?.checkout : run.checkout);
 
   return create && checkout ? { create, checkout } : undefined;
 }

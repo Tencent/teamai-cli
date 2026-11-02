@@ -8,6 +8,7 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { LineCounter, parseDocument } from 'yaml';
+import { parseYaml } from '../utils/yaml.js';
 import { z } from 'zod';
 import { isYamlNode, locate } from '../workflow/parse-context.js';
 import { durationMs } from '../workflow/parse.js';
@@ -18,6 +19,7 @@ import { definedFields } from '../utils/defined-fields.js';
 import { CheckRunSchema, isRelativePath, RepoPathSchema, segmentPattern } from '../workflow/check.js';
 import { RoleIdSchema } from '../roles.js';
 import { BENCHMARK_NAME, BenchmarkNameSchema, type TrialLimits } from './terms.js';
+import { RunSubjectSchema, SessionSubjectSchema } from '../scorers/label.js';
 
 /** The project the tasks start from. A URL, never a local path or a URL with credentials: it travels in plan and record. */
 const RepoUrlSchema = z.string().refine((value) => {
@@ -310,6 +312,30 @@ function pathspecMatches(spec: readonly string[], file: readonly string[]): bool
   return segmentPattern(head)?.test(name) === true && pathspecMatches(rest, below);
 }
 
+/** The work a task was made from: a session, or a workflow pass, as a score label names its subject. */
+export const TaskSourceSchema = z.union([SessionSubjectSchema.strict(), RunSubjectSchema.strict()], {
+  error: 'source names where the task came from: a session, { platform, sessionId }, or a workflow pass, { runId, step, pass }',
+});
+
+export type TaskSource = z.infer<typeof TaskSourceSchema>;
+
+const TaskWithSourceSchema = z.object({ source: TaskSourceSchema });
+
+/** The work the task file `text` names as its `source`, or undefined for a file that is not YAML or names none. */
+export function taskSourceOf(text: string): TaskSource | undefined {
+  let task: unknown;
+
+  try {
+    task = parseYaml(text);
+  } catch {
+    return undefined;
+  }
+
+  const parsed = TaskWithSourceSchema.safeParse(task);
+
+  return parsed.success ? parsed.data.source : undefined;
+}
+
 /**
  * A task file, in a suite whose directory holds `files`, keyed by their path in it. A `{ from, to }` entry of check.add
  * names one of them, or a directory of them, whose files it writes under `to`.
@@ -324,8 +350,8 @@ function taskFileSchema(files: ReadonlyMap<string, SuiteFile>) {
     solutionCommit: CommitSchema.optional(),
     check: CheckFileSchema.optional(),
     successCriteria: z.string().trim().min(1).optional(),
-    /** Where the task came from: the session it was made from. Provenance only; nothing runs from it. */
-    source: z.object({ platform: z.string().min(1), sessionId: z.string().min(1) }).strict().optional(),
+    /** Where the task came from: the session or the workflow pass it was made from. Provenance only; nothing runs from it. */
+    source: TaskSourceSchema.optional(),
   }).strict().transform(({ check, successCriteria, ...task }, ctx) => {
     if (successCriteria !== undefined && !check) return { ...task, judge: { kind: 'criteria', successCriteria } satisfies TaskJudge };
 
@@ -446,8 +472,8 @@ export interface Task {
   /** The commit with the reference solution, which `benchmark try` checks the check passes at. */
   solutionCommit?: string;
   judge: TaskJudge;
-  /** The session the task was made from, as provenance. */
-  source?: { platform: string; sessionId: string };
+  /** The session or workflow pass the task was made from, as provenance. */
+  source?: TaskSource;
   /** sha256 of the file bytes. */
   sourceHash: string;
 }

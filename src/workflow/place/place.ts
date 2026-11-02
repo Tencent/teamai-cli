@@ -16,7 +16,7 @@ import type { RunPass } from '../loop.js';
 import { stageEvidence } from '../scoring-evidence.js';
 import { attemptDir, AttemptIdSchema, attemptsDir, readRun, type AttemptId, type RunId, type RunLock } from '../store.js';
 import type { RunState, WorkflowFailure } from '../types.js';
-import type { WorkspaceContract } from '../workspace.js';
+import { type CopyContract, type WorkspaceContract } from '../workspace.js';
 import { clearWorktreeHooks, headCommit, markReadCopy, markSetup, removeWorktree, reopenConfigConflicts, stepCheckout, worktreePath } from '../worktree.js';
 import { adoptRefusal, takeAdopted } from './adopted.js';
 import { cloneEnv, cloneKeyOf, commitClone, markCloneReady, openClone, preparedClone, removeClone, type CloneLease } from './clone.js';
@@ -26,6 +26,7 @@ import { cloneRoleProblem, launchedTools, releaseWorktreeRole, roleNotDeliveredF
 import { finishReader, leaveReadCopy, readCopyFailure, stageReader } from './reader.js';
 import { PlaceFinishedSchema, readPlaceRecord, writePlaceRecord, type PlaceRecord } from './record.js';
 import { runSetup } from './setup.js';
+import { finishTeamClone, openTeamClone, removeTeamClone, teamKeyOf } from './team.js';
 import { finishWriter, mergeBranches, rememberConflicts, withUnpushed } from './writer.js';
 
 /**
@@ -49,7 +50,9 @@ export { cloneRoleProblem, roleNotDeliveredFailure, worktreeRoleProblem } from '
  * A clone keeps its key once prepared, as its directory is not known before.
  */
 export function placeOf(lease: { cwd?: string; workspace?: WorkspaceContract }, root: string): string {
-  if (lease.workspace?.mode !== 'read-only' && lease.workspace?.clone) return cloneKeyOf(lease.workspace.branch);
+  if ((lease.workspace?.mode === 'new' || lease.workspace?.mode === 'continue') && lease.workspace.clone) return cloneKeyOf(lease.workspace.branch);
+
+  if (lease.workspace?.mode === 'team') return teamKeyOf(lease.workspace.branch);
 
   return lease.cwd ?? stepCheckout(root, lease.workspace?.branch);
 }
@@ -216,6 +219,8 @@ export async function preparePlace(input: { config: LocalConfig; lock: RunLock; 
 
   const { workspace } = lease;
 
+  if (workspace?.mode === 'team') return prepareTeam({ config, run, root, lease, workspace, recorded });
+
   if (workspace && workspace.mode !== 'read-only' && workspace.clone) {
     return prepareClone({ config, run, root, lease, workspace: { ...workspace, clone: workspace.clone }, recorded });
   }
@@ -347,6 +352,37 @@ async function prepareClone(input: {
   return preparedOf(ready, lease.prompt);
 }
 
+/**
+ * Prepares the team clone `workspace` names, made afresh for every attempt so it starts from origin as it is now. A
+ * second prepare of the attempt answers with the clone recorded ready.
+ */
+async function prepareTeam(input: {
+  config: LocalConfig; run: RunId; root: string; lease: PlaceLease; recorded: PlaceRecord | undefined; workspace: Extract<WorkspaceContract, { mode: 'team' }>;
+}): Promise<PlacePrepared> {
+  const { config, run, root, lease, workspace, recorded } = input;
+
+  if (recorded?.phase === 'ready' && recorded.place.role === 'team') return preparedOf(recorded, lease.prompt);
+  const opened = await openTeamClone({ config, run, step: lease.step, branch: workspace.branch });
+
+  const base: OpeningBase = {
+    version: 1, run, attempt: lease.attempt, step: lease.step, executor: lease.executor, root,
+  };
+
+  if (lease.interactive) base.interactive = true;
+
+  if ('code' in opened) {
+    await removeTeamClone(config, run, workspace.branch);
+
+    return { kind: 'failed', failure: opened };
+  }
+
+  const { dir, root: clone, base: commit, start, found } = opened;
+  const ready: Placed = { ...base, dir, place: { role: 'team', workspace, clone, base: commit, start, found }, phase: 'ready' };
+  await writePlaceRecord(config, ready);
+
+  return preparedOf(ready, lease.prompt);
+}
+
 /** The place a prepare recorded for the attempt before, unless it gave the place up or left its git undone. */
 async function recordedResult(config: LocalConfig, recorded: PlaceRecord | undefined, lease: OverlaidLease): Promise<PlacePrepared | undefined> {
   if (recorded === undefined || recorded.phase === 'abandoned' || recorded.phase === 'opening') return undefined;
@@ -360,7 +396,7 @@ async function recordedResult(config: LocalConfig, recorded: PlaceRecord | undef
  * `opening` record comes before git touches the copy.
  */
 async function openCopy(input: {
-  config: LocalConfig; base: OpeningBase; lease: PlaceLease; workspace: WorkspaceContract; reopened: Opening | undefined; adopt: string | undefined; hosted: string | undefined;
+  config: LocalConfig; base: OpeningBase; lease: PlaceLease; workspace: CopyContract; reopened: Opening | undefined; adopt: string | undefined; hosted: string | undefined;
 }): Promise<{ opening: Opening; dir: string; created: boolean } | WorkflowFailure> {
   const { config, base, lease, workspace, reopened, adopt, hosted } = input;
   let opening: Opening;
@@ -398,7 +434,7 @@ async function openCopy(input: {
  * then recorded `preparing`, with the lease's setup when the copy is new, and gets the base overlay.
  */
 async function stageRole(input: {
-  config: LocalConfig; base: OpeningBase; lease: PlaceLease; workspace: WorkspaceContract; opening: Opening; dir: string; created: boolean;
+  config: LocalConfig; base: OpeningBase; lease: PlaceLease; workspace: CopyContract; opening: Opening; dir: string; created: boolean;
 }): Promise<PlacePrepared> {
   const { config, base, lease, workspace, opening, dir, created } = input;
   let place: Preparing['place'];
@@ -497,6 +533,7 @@ async function settle(config: LocalConfig, record: PlaceRecordBase): Promise<Pla
   switch (place.role) {
     case 'checkout':
     case 'clone':
+    case 'team':
       break;
     case 'reader': {
       const before = await stageReader(record.dir, files.snapshot);
@@ -579,6 +616,7 @@ async function giveUpSetup(config: LocalConfig, record: Extract<PlaceRecord, { p
   if (isWorktreeCopy(place)) await releaseWorktreeRole(dir);
 
   if (place.role === 'clone') await removeClone(config, record.run, place.workspace.branch);
+  else if (place.role === 'team') await removeTeamClone(config, record.run, place.workspace.branch);
   else if (record.adopted && place.role !== 'checkout') {
     unrestored = await restoreOverlay({ dir, configCommit: place.workspace.configCommit, saved: overlay });
     await clearWorktreeHooks(dir);
@@ -739,6 +777,12 @@ async function finishRole(files: PlaceFiles, record: Placed, end: StepEnd): Prom
       return finished;
     }
 
+    case 'team': {
+      const finished = await finishTeamClone({ root: place.clone, dir, step, branch: place.workspace.branch, base: place.base, start: place.start, found: place.found });
+
+      return 'code' in finished ? { outcome: 'failed', message: finished.message, failure: finished } : { ...end, changes: finished.changes };
+    }
+
     case 'clone': {
       const committed = await commitClone({
         dir, branch: place.workspace.branch, step, base: place.workspace.base.commit, start: place.rangeFrom, withhold: place.withhold, expiresAt: place.expiresAt,
@@ -816,6 +860,10 @@ export async function abandonPlace(input: { config: LocalConfig; lock: RunLock; 
       // A clone this attempt made has no step's work yet, so the next attempt gets a fresh one.
       if (place.created) await removeClone(config, run, place.workspace.branch);
       break;
+    case 'team':
+      // The next attempt clones the team repo again, so nothing here is kept.
+      await removeTeamClone(config, run, place.workspace.branch);
+      break;
     case 'reader':
       unrestored = await restoreOverlay({ dir, configCommit: place.workspace.configCommit, saved: files.overlay });
 
@@ -845,6 +893,7 @@ function isWorktreeCopy(place: Extract<PlaceRecord, { place: unknown }>['place']
       return true;
     case 'checkout':
     case 'clone':
+    case 'team':
       return false;
     default: {
       const unhandled: never = place;
@@ -882,6 +931,12 @@ export async function placeRecorded(input: { config: LocalConfig; run: RunId; at
 export async function releasePlace(input: { config: LocalConfig; lock: RunLock; attempt: AttemptId }): Promise<'removed' | 'left'> {
   const read = await readPlaceRecord(input.config, input.lock.run, input.attempt);
   const recorded = read.kind === 'found' ? read.record : undefined;
+
+  if (recorded?.phase !== 'opening' && recorded?.place.role === 'team') {
+    await removeTeamClone(input.config, input.lock.run, recorded.place.workspace.branch);
+
+    return 'removed';
+  }
 
   if (!recorded || recorded.phase === 'opening' || !isWorktreeCopy(recorded.place)) return 'left';
   // The role it ran with goes with the copy, and from a place the host made, which it leaves.

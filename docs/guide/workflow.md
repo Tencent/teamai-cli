@@ -308,6 +308,39 @@ A step that opens a copy of its own may name another role. A step outside any co
 ⚠ [workflows] workflows/review-fix.yaml:17: field "steps[0].workflow.steps[0].workflow.steps[1].role": step "look" has role spec but continues the copy step "change" opens with role review, which every step there runs with; remove role from step "look", or set it on step "change"
 ```
 
+### The team workspace
+
+`workspace: { team: { branch } }` runs a step in a fresh clone of the team repo, for work that changes the team's assets rather than the project. With `deliver: pr`, its pull request goes into the team repo's default branch.
+
+```yaml
+schemaVersion: v1alpha1
+name: tighten-rule
+description: Tighten one team rule, as a pull request on the team repo.
+inputs: { rule: string }
+steps:
+  - id: tighten
+    workspace: { team: { branch: "tighten/{{ inputs.rule }}" } }
+    deliver: pr
+    prompt: "Make rules/{{ inputs.rule }}.md shorter and more precise. Change no other file."
+```
+
+```text
+teamai workflow start tighten-rule --inputs '{"rule":"backend"}'
+  clone the team repo                         origin has tighten/backend? go on from it, with main merged in
+                                              else a new branch from main
+  run the step in the clone                   in .teamai/ of the project repo's clone in single-repo mode
+  commit, check, push tighten/backend         lease on the tip the clone found
+  open its pull request into main             or update the one already open
+```
+
+- `branch` reads only `{{ inputs.* }}`, so a later run with the same inputs goes on with the same branch and pull request. Without it, the step uses the run's branch for that step and pass. A branch that is the team repo's default branch fails the step with `workspace_base`.
+- A branch that conflicts with the default branch fails the step with `merge_conflict` before it runs. Merge the default branch into it, or delete it.
+- Only a command or prompt step that runs once takes it, never a `workflow` step or a `for_each`, and it lists no `scorers`, since the clone is gone once the step reports. It takes no `role` either, even from a `workflow` step around it, since it runs in its own clone rather than that step's copy. Only the local driver runs it, and `workflow publish` refuses its run, since the clone is on that machine only.
+- Before it pushes, the commit must be one `teamai pull` would take. Every file it changes must be in a directory pull places (`skills/`, `rules/`, `scorers/`, `benchmarks/` and the others), and none may be a symlink or a submodule. A benchmark file must be inside a suite pull reads, `benchmarks/<suite>/` or `benchmarks/<namespace>/<suite>/` with a `suite.yaml`, and pull must reject nothing it did not reject on the default branch, such as a workflow whose scorer the step deleted. Otherwise the step fails with `push_failed`, names each file and why, and pushes nothing.
+- A commit a teammate pushed to the branch while the step ran fails it with `push_failed`. Origin keeps that commit, and the next run starts from it.
+- When the branch holds what the default branch holds, as once its pull request was squash-merged, the step pushes nothing and opens no pull request.
+- Opening the pull request waits while a `teamai pull` or `push` holds the member's team repo.
+
 ## Deliver a PR
 
 Set `deliver: pr` on a step that writes a branch, and TeamAI opens a pull request from that branch once the step succeeds. It never merges it. A step writes a branch when it has `workspace: new` or `continue`, or when it is a prompt inside a workflow that opened one. A command that delivers must set `workspace`, since a command without one is read-only. A `workflow` step with `workspace: new` delivers its branch once, for all its steps. A step inside it that writes a branch of its own needs a later step that merges that branch through `needs`, or its own `deliver: pr`. Otherwise the delivery fails with `delivery_failed`, since the pull request would leave that work out. On a `for_each` step, each item delivers its own branch.
@@ -666,6 +699,7 @@ teamai ships workflows a team gets without writing them:
 | `teamai-share-learnings` | shares what the session taught as team learnings, one or several, then runs `teamai-share-session` | while [recall](knowledge.md) is on and the source is writable, since its first step runs `teamai skill get share`; a team copy of it too |
 | `teamai-share-session` | publishes the session's transcript, scrubbed, and scores it with the team's scorers | always |
 | `teamai-benchmark` | runs a [benchmark suite](benchmarks.md#the-benchmark-workflow) through `teamai benchmark run` | always |
+| `teamai-self-improvement` | changes the team's assets from a scorer's repeated failures and adds one regression task per failure, as one pull request the next run updates, through [`teamai self-improvement run`](self-improvement.md). Inputs: `scorer`, `suite` | always |
 | `teamai-session-to-task` | turns the work the session finished, such as a bug fix or a feature, into a [benchmark task](benchmarks.md#turn-a-session-into-a-task), proposed to the team with `teamai push --file --path`. Inputs: `session`, `source`, `suite`, `start`, `solution` | always |
 
 A team file with the same name replaces a default:

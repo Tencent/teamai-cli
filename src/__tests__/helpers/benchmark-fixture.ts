@@ -127,6 +127,8 @@ export interface BenchmarkFixture {
   /** The project commit the task starts from. */
   startingCommit: string;
   teamai(args: string[]): Promise<CliResult>;
+  /** The workspace's data home, which holds its runs and the pull/push lock. */
+  dataHome(): string;
   /** The run file of `run`, as JSON. */
   runFile(run: string): unknown;
   /** Commits `files` to the team origin's main branch, as another member's push would; a null file or directory is deleted. */
@@ -519,7 +521,7 @@ process.stdout.write(JSON.stringify({ type: 'result', session_id: 'fake-session'
   fs.writeFileSync(configPath, YAML.stringify({ ...parsed, workflows: { ...parsed.workflows, sandbox: options.sandbox, ...(options.maxParallel !== undefined ? { max_parallel: options.maxParallel } : {}) } }));
 
   return {
-    root, home, work, bin, env, teamOrigin, productOrigin, tmp, teamClone: parsed.repo.localPath, startingCommit, teamai,
+    root, home, work, bin, env, teamOrigin, productOrigin, tmp, teamClone: parsed.repo.localPath, startingCommit, teamai, dataHome,
     runFile: (run) => {
       const value: unknown = JSON.parse(fs.readFileSync(path.join(dataHome(), 'workflows', 'runs', `${run}.json`), 'utf8'));
       return value;

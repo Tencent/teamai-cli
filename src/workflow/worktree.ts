@@ -410,12 +410,14 @@ export async function clearWorktreeHooks(dir: string): Promise<void> {
  * fetch itself failed. `fetch` bounds the fetch and sets its environment.
  */
 export async function fetchMissingCommits(
-  dir: string, { run, commits }: { run: string; commits: string[] }, fetch?: { timeoutMs: number; env?: NodeJS.ProcessEnv },
+  dir: string, { run, commits, branch }: { run: string; commits: string[]; branch?: string }, fetch?: { timeoutMs: number; env?: NodeJS.ProcessEnv },
 ): Promise<{ missing: string[]; fetchError?: string }> {
   const lacking = await lackedCommits(dir, commits);
 
   if (lacking.length === 0) return { missing: [] };
-  const fetched = await git(dir, ['fetch', '--quiet', '--no-tags', 'origin', `+refs/heads/teamai/${run}/*:refs/remotes/origin/teamai/${run}/*`], fetch);
+  // `branch` is fetched too when the run's own refspec does not cover it, as a team repo branch's is not.
+  const own = branch === undefined || branch.startsWith(`teamai/${run}/`) ? [] : [`+refs/heads/${branch}:refs/remotes/origin/${branch}`];
+  const fetched = await git(dir, ['fetch', '--quiet', '--no-tags', 'origin', `+refs/heads/teamai/${run}/*:refs/remotes/origin/teamai/${run}/*`, ...own], fetch);
   const missing = await lackedCommits(dir, lacking);
 
   if (fetched.code === 0 || missing.length === 0) return { missing };

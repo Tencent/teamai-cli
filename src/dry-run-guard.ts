@@ -141,6 +141,7 @@ export const NO_DRY_RUN_PREVIEW = {
   'benchmark try': 'runs a task\'s check in a scratch clone of its starting commit',
   'benchmark plan': 'fills the commit cache with the commits the suite\'s trials read',
   'benchmark report': 'writes the run\'s benchmark record and publishes it to teamai-reports',
+  'self-improvement run': 'creates a self-improvement run, whose steps clone the team repo, edit it and open a pull request',
 } satisfies Readonly<Record<string, string>>;
 
 /** The refusal printed when a command has no `--dry-run` preview. */

@@ -45,7 +45,8 @@ import { hooksEntryReader } from './resources/hooks.js';
 import { getHandler } from './resources/index.js';
 import { listRepoFilesRecursive } from './resources/repo-resource.js';
 import { isNamespaceDir, resolveResourceNamespaces } from './resource-namespaces.js';
-import { loadRolesManifestIfPresent, type RolesManifest } from './roles.js';
+import { loadRoleAssignmentsIfPresent } from './role-assignments.js';
+import { listRoleIds, loadRolesManifestIfPresent, type RolesManifest } from './roles.js';
 import { AGENT_TOOLS } from './tools.js';
 import { LocalConfigSchema, type GlobalOptions, type LocalConfig, type ResourceItem, type TeamaiConfig } from './types.js';
 import { splitFrontmatter, type FrontmatterValue } from './utils/frontmatter.js';
@@ -1398,7 +1399,7 @@ async function receivedDefinitions(config: LocalConfig): Promise<Received> {
   }
 }
 
-/** The members of one selection of the branch: no role or project, one role, or one project. */
+/** The members of one selection of the branch: no role or project, assigned no role, one role, or one project. */
 interface ModelContext {
   /** How a finding names these members: `role dev`. */
   label: string;
@@ -1408,11 +1409,30 @@ interface ModelContext {
   agentNamespaces: readonly string[] | null;
 }
 
+/**
+ * Whether `manifest/members.yaml` leaves a member with no role: one it lists, or every one it does not, with no role
+ * `roles` declares, since pull drops an assigned role the manifest does not declare.
+ */
+async function assignsNoRole(repoDir: string, roles: RolesManifest | null): Promise<boolean> {
+  try {
+    const assignments = await loadRoleAssignmentsIfPresent(repoDir);
+    const declared = new Set(roles ? listRoleIds(roles) : []);
+
+    return assignments !== null && [assignments.default, ...Object.values(assignments.members)].some((held) => !held.some((role) => declared.has(role)));
+  } catch {
+    // A file that does not read gives every member no role, as pull does.
+    return true;
+  }
+}
+
 async function modelContexts(repoDir: string, roles: RolesManifest | null, projects: ProjectsManifest | null): Promise<ModelContext[]> {
   const base = reviewTreeConfig(repoDir, os.tmpdir());
 
   const selections: Array<{ label: string; config: LocalConfig }> = [
     { label: 'no role or project', config: base },
+    // With no role and no project, a roles-only team delivers every namespace, so a namespace that overrides a shared
+    // resource hides it; a member the team assigned no role receives the shared resources only.
+    ...(await assignsNoRole(repoDir, roles) ? [{ label: 'assigned no role', config: { ...base, roleAssignment: { source: 'default' as const, local: { additionalRoles: [] } } } }] : []),
     ...(roles?.roles ?? []).map((role) => ({ label: `role ${role.id}`, config: { ...base, primaryRole: role.id } })),
     ...(projects?.projects ?? []).map((project) => ({ label: `project ${project.id}`, config: { ...base, projects: [project.id] } })),
   ];

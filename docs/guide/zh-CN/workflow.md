@@ -308,6 +308,39 @@ steps:
 ⚠ [workflows] workflows/review-fix.yaml:17: field "steps[0].workflow.steps[0].workflow.steps[1].role": step "look" has role spec but continues the copy step "change" opens with role review, which every step there runs with; remove role from step "look", or set it on step "change"
 ```
 
+### 团队工作区
+
+`workspace: { team: { branch } }` 让步骤在团队仓库的一个全新克隆里运行，用于修改团队资产而不是项目的工作。配合 `deliver: pr`，它的 pull request 合入团队仓库的默认分支。
+
+```yaml
+schemaVersion: v1alpha1
+name: tighten-rule
+description: Tighten one team rule, as a pull request on the team repo.
+inputs: { rule: string }
+steps:
+  - id: tighten
+    workspace: { team: { branch: "tighten/{{ inputs.rule }}" } }
+    deliver: pr
+    prompt: "Make rules/{{ inputs.rule }}.md shorter and more precise. Change no other file."
+```
+
+```text
+teamai workflow start tighten-rule --inputs '{"rule":"backend"}'
+  克隆团队仓库                     origin 有 tighten/backend？从它继续，并合并 main
+                                   否则从 main 新建分支
+  在克隆里运行步骤                 单仓库模式下在项目仓库克隆的 .teamai/ 里
+  提交、检查、推送 tighten/backend  以克隆时看到的分支顶端作为 lease
+  打开合入 main 的 pull request    或更新已经打开的那个
+```
+
+- `branch` 只能读取 `{{ inputs.* }}`，这样之后输入相同的运行会沿用同一个分支和 pull request。不写时，步骤使用运行为该步骤和 pass 命名的分支。分支是团队仓库的默认分支时，步骤以 `workspace_base` 失败。
+- 分支和默认分支冲突时，步骤在运行前以 `merge_conflict` 失败。把默认分支合并进它，或者删除它。
+- 只有只运行一次的 command 或 prompt 步骤能用它，`workflow` 步骤和 `for_each` 不行；它也不能列 `scorers`，因为步骤报告后克隆就被删除了。它也不带 `role`，外层 `workflow` 步骤的也不继承，因为它在自己的克隆里运行，而不在那个步骤的副本里。只有本地驱动运行它；`workflow publish` 会拒绝它的运行，因为克隆只在那台机器上。
+- 推送前，提交必须是 `teamai pull` 会接受的：改动的每个文件都在 pull 放置的目录里（`skills/`、`rules/`、`scorers/`、`benchmarks/` 等），不能是符号链接或子模块；benchmark 文件必须在 pull 读取的套件里，即带 `suite.yaml` 的 `benchmarks/<suite>/` 或 `benchmarks/<namespace>/<suite>/`；pull 不能拒绝默认分支上原本接受的任何文件，比如步骤删掉了某个工作流所用的评分器。否则步骤以 `push_failed` 失败，逐个列出文件和原因，什么也不推送。
+- 步骤运行期间队友推送到该分支的提交会让步骤以 `push_failed` 失败。origin 保留那个提交，下一次运行从它开始。
+- 分支的内容和默认分支相同时（比如它的 pull request 已被 squash 合并），步骤什么也不推送，也不打开 pull request。
+- 成员的团队仓库被 `teamai pull` 或 `push` 占用时，打开 pull request 会等待。
+
 ## 交付 PR
 
 在写分支的步骤上设置 `deliver: pr`，步骤成功后 TeamAI 会从这条分支开一个 pull request，并且从不合并它。设置了 `workspace: new` 或 `continue` 的步骤会写分支，位于已开分支的工作流中的提示词步骤也会。交付的命令必须设置 `workspace`，因为没有 `workspace` 的命令是只读的。设置了 `workspace: new` 的 `workflow` 步骤为它的全部步骤只交付一次自己的分支。其中写自己分支的步骤，需要有后续步骤通过 `needs` 合并那条分支，或者自己设置 `deliver: pr`。否则交付以 `delivery_failed` 失败，因为 pull request 会漏掉那部分工作。`for_each` 步骤的每个 item 各自交付自己的分支。
@@ -666,6 +699,7 @@ teamai 自带一些工作流，团队不用自己编写就能使用：
 | `teamai-share-learnings` | 把会话学到的东西分享为团队经验（一条或多条），然后运行 `teamai-share-session` | [recall](knowledge.md) 开启且来源可写时，因为它的第一步运行 `teamai skill get share`；团队的同名副本也一样 |
 | `teamai-share-session` | 发布会话的转录（已脱敏），并用团队的评分器给它评分 | 始终 |
 | `teamai-benchmark` | 通过 `teamai benchmark run` 运行 [benchmark suite](benchmarks.md#benchmark-工作流) | 始终 |
+| `teamai-self-improvement` | 根据评分器反复判定的失败修改团队资产，每个失败加一个回归任务，作为一个由下次运行更新的拉取请求，通过 [`teamai self-improvement run`](self-improvement.md) 运行。输入：`scorer`、`suite` | 始终 |
 | `teamai-session-to-task` | 把会话完成的工作（如修 bug 或加功能）变成 [benchmark 任务](benchmarks.md#把会话变成任务)，用 `teamai push --file --path` 提议给团队。输入：`session`、`source`、`suite`、`start`、`solution` | 始终 |
 
 团队写一个同名文件就会取代默认工作流：

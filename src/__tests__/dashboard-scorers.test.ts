@@ -215,7 +215,7 @@ describe('dashboard scorer results', () => {
     write(path.join(config.repo.localPath, 'sessions', 'repos', 'github.com%2Facme%2Fapp', 'bob', 'fix-login-flow.jsonl'), 'TRANSCRIPT-SECRET\n');
     write(path.join(config.dataHome ?? '', 'scores', 'reasoning', 'x.md'), 'REASONING-SECRET');
     const view = await scorerResults({ config, query: { windowDays: 30 }, now: NOW });
-    expect(view.selected?.failing).toEqual({ total: 1, labels: [{ author: 'bob', scoredAt: '2026-03-18T10:00:00.000Z', label: 'poor', source: 'session', platform: 'claude', sessionName: 'fix-login-flow' }] });
+    expect(view.selected?.failing).toEqual({ total: 1, covered: 0, startable: 0, labels: [{ author: 'bob', scoredAt: '2026-03-18T10:00:00.000Z', label: 'poor', source: 'session', platform: 'claude', sessionName: 'fix-login-flow', start: { refused: 'not_recorded' }, learnings: [] }] });
     expect(JSON.stringify(view)).not.toMatch(/native-7f3a91|TITLE-SECRET|private\/work|TRANSCRIPT-SECRET|REASONING-SECRET|isolation|access/);
   });
 

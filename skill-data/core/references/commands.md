@@ -276,6 +276,15 @@ Generated: do not edit by hand. Regenerate with
     - `--sessions` — Also put the agent sessions that the run's unsettled steps continue (session: continue or session.from) in the team session archive, scrubbed, so whoever continues the run resumes them; listed in the envelope as sessions. Without it, those steps start new sessions on another machine
   - `teamai workflow cancel <run> [step]` — Cancel a whole run, or a pending, waiting, leased, running, or delivering step and its open descendants. Invalidates leases; drivers stop tools listed in next.cancelled. Prints one JSON envelope.
 
+## self-improvement
+
+- `teamai self-improvement` — Improve the team's harness from a scorer's repeated failures: change the assets teamai delivers so that work like the failing one passes, with one regression task per failure, proposed as one pull request on the team repo that the next run updates. run starts the workflow teamai-self-improvement, teamai's default or the team's file of that name.
+  - `teamai self-improvement run <scorer>` — Start the workflow teamai-self-improvement with --inputs {"scorer":"<scorer>","suite":"<--suite>"} and drive it. A team's workflows/teamai-self-improvement.yaml replaces teamai's default, and must take inputs scorer and suite. The default reads digest --json --scorer and improves only when it says ready: two failures or more of the scorer in the last 30 days that a task can start from, or one more for a proposal already on origin. Its prompt step needs a sandbox, and runs in a fresh clone of the team repo on teamai/self-improvement/<scorer>, whose pull request it opens or updates. Prints the run's done envelope.
+    - `--suite <dir>` — The suite the regression tasks go in, which the team repo's default branch must have
+    - `--driver <kind>` — The driver that runs it: local (default), or skill, which only a team workflow with invoke: allow or ask accepts; teamai's default denies agents
+    - `--tools <list>` — The tools its prompt steps run on, as workflow start --tools takes them, such as default=claude
+    - `--sandbox` — With --driver local, declare this machine a sandbox for this process, where the prompt step, which edits files without asking, may run. workflows.sandbox in config declares it for every process.
+
 ## benchmark
 
 - `teamai benchmark` — Run a benchmark suite, and the commands its run's steps run. run starts the workflow teamai-benchmark, teamai's default or the team's file of that name, whose plan, check and report steps run the other commands; try needs no run.
@@ -428,6 +437,10 @@ Generated: do not edit by hand. Regenerate with
 ## digest
 
 - `teamai digest` — Generate weekly team activity digest
+  - `--json` — Print what an improvement starts from instead, as one JSON envelope: the failing score labels of the last 30 days, each with its subject and the commit its work started at, and each scorer's cohorts with the agreement of its model judge with hand labels. Never a judge's reasoning; a benchmark's labels are left out
+  - `--scorer <name>` — With --json, also print data.improvement for this scorer: failures, its failures a regression task can start from (a recorded start commit this checkout has, and no task of --suite on the team repo's default branch or on an open --proposal names its subject), each subject once, newest first; covered, the tasks that name its other failures; refused, each failure no task can start from, with why: tracked_changes, not_recorded or not_in_checkout; and hasProposal, whether --proposal is open: origin has it, and its default branch neither merged it nor has each regression task it adds. The workflow's if decides from these whether it runs
+  - `--suite <dir>` — With --scorer, the suite whose tasks cover a failure
+  - `--proposal <branch>` — With --scorer, the team repo branch an open proposal is on, whose tasks cover failures too
 
 ## dashboard
 

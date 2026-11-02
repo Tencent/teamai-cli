@@ -14,7 +14,7 @@ import { inProcessClient } from '../workflow/protocol.js';
 import type { StepState } from '../workflow/step-state.js';
 import { readRun } from '../workflow/store.js';
 import type { DriverIdentity, RunState } from '../workflow/types.js';
-import type { WorkspaceContract } from '../workflow/workspace.js';
+import type { CopyContract } from '../workflow/workspace.js';
 import { knownSecrets, resolveWorkflowEnv } from '../env-resolution.js';
 
 const dirs: string[] = [];
@@ -105,7 +105,7 @@ describe.each(DRIVERS_UNDER_TEST)('workflow git conformance as %s', (profile) =>
       for (const step of scenario.elsewhere ?? []) {
         const next = await leaseNext(starter, runId, other, { can: { workspace: ['new', 'continue', 'read-only'] } });
         if (!('data' in next) || !next.data.lease) throw new Error(`no lease for ${step.step}: ${JSON.stringify(next)}`);
-        const lease = next.data.lease as { step: string; attempt: string; revision: number; workspace: WorkspaceContract };
+        const lease = next.data.lease as { step: string; attempt: string; revision: number; workspace: CopyContract };
         expect(lease).toMatchObject({ step: step.step, workspace: { merge: [] } });
         const { branch, start, base } = lease.workspace;
         git(elsewhere, 'checkout', '-q', '-B', branch, start.commit);

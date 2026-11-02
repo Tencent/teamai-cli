@@ -238,7 +238,7 @@ successCriteria: The error names the wrong field and still reveals nothing about
 | `check` | `run`：任务完成后以 0 退出的命令；`protect`：agent 不能提供的路径。 |
 | `check.add` | 可选：check 之前写入、agent 永远拿不到的文件：按 `solutionCommit` 中的样子写入的文件，例如解决方案的测试；或者 `{ from, to }`，套件目录中的一个文件或目录。目录会加入其下的所有文件，但不包括以点开头的条目，例如 `.DS_Store`；要加入点文件，在 `from` 中直接指明它。见[解决方案带来的测试](#解决方案带来的测试)和[套件目录中的测试](#套件目录中的测试)。 |
 | `successCriteria` | 代替 `check`：由评判器按这些标准判定。 |
-| `source` | 可选：任务的来源，即会话的 `platform` 和 `sessionId`。不会从它运行任何东西。 |
+| `source` | 可选：任务的来源：会话的 `platform` 和 `sessionId`，或工作流 pass 的 `runId`、`step` 和 `pass`。不会从它运行任何东西；[`digest --json`](self-improvement.md#teamai-读取什么) 会把它指向的失败标为已覆盖。 |
 
 `teamai pull` 和 `teamai review --branch` 检查每个文件，并带文件和行号报告每个问题。`benchmarks/<namespace>/<suite>/` 下的套件只发给该角色或项目的成员，见[角色和项目](distribution.md#角色和项目)。
 
@@ -697,6 +697,8 @@ Arm "claude" passed 4/9 paired trials, against 8/9 in run r1c0d9e2f4b6a8c7d: a d
 ```
 
 `--fail-on-regression` 把这次运行与该套件最新的一次更早的运行比较，那次运行必须已成功、已发布在 `teamai-reports` 上，并且任务和 arm 相同。名字、工具、模型、effort、工作流和团队处理方式都相同的 arm 就是同一个 arm，无论它 pull 到的是哪个修订。trial 按任务和重复次数配对，就像 Dashboard 的 Compare 那样配对，某个 arm 的通过率下降超出偶然范围时，运行以 1 退出。仍在本机等待的记录不参与比较。没有这样的运行时，它打印一条提示，不改变退出码。它需要本地驱动：使用 `--driver skill` 时，命令返回之后才由编码会话驱动运行，所以命令会拒绝这个参数。
+
+要把评分器反复判定的失败变成一个修改团队资产、每个失败加一个回归任务的 PR，并在每个工具上对比改动前后，见[自我改进](self-improvement.md)。
 
 ## 在 CI 中运行
 

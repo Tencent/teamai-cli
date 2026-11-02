@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { z } from 'zod';
 import { GITLAB_HOST } from './repo-url.js';
 import { sanitizeGitUrl } from '../../utils/redact.js';
-import type { CiStatus, CommitRef, PullRequestRef } from '../types.js';
+import { endedRequest, mergedAs, type CiStatus, type CommitRef, type PullRequestRecord, type PullRequestRef } from '../types.js';
 
 /**
  * GitLab REST API client (API v4).
@@ -502,6 +502,46 @@ export async function gitlabCommitPipelines({ repo, commit, timeoutMs }: CommitR
   if (status === 'failed') return 'failed';
 
   return status !== undefined && PIPELINE_RUNNING.has(status) ? 'pending' : 'none';
+}
+
+const GitLabMrHistorySchema = GitLabOpenMrSchema.extend({
+  title: z.string(),
+  created_at: z.string(),
+  closed_at: z.string().nullish(),
+  merged_at: z.string().nullish(),
+  updated_at: z.string().nullish(),
+  sha: z.string().nullish(),
+  merge_commit_sha: z.string().nullish(),
+  squash_commit_sha: z.string().nullish(),
+});
+
+/**
+ * Every merge request from `source` into `target` in project `repo`, newest first, with how it ended. A request from a
+ * fork with the same branch name is not one of them. Throws, rather than listing none, as `gitlabFindOpenMr` does.
+ */
+export async function gitlabMrHistory({ repo, source, target, timeoutMs }: PullRequestRef): Promise<PullRequestRecord[]> {
+  const token = requireToken();
+  const query = new URLSearchParams({ state: 'all', source_branch: source, target_branch: target, per_page: String(LOOKUP_PAGE) });
+
+  const response = await fetch(`${gitlabApiBase()}/projects/${encodeURIComponent(repo)}/merge_requests?${query}`, {
+    headers: authHeaders(token), redirect: 'manual', signal: AbortSignal.timeout(timeoutMs),
+  });
+
+  if (!response.ok) throw new Error(`GitLab answered the merge request history lookup with HTTP ${response.status}. Check the token's access to the project.`);
+  const requests = z.array(GitLabMrHistorySchema).safeParse(await response.json().catch(() => undefined));
+
+  if (!requests.success) throw new Error('GitLab answered the merge request history lookup with data TeamAI cannot read.');
+
+  if (requests.data.length >= LOOKUP_PAGE) throw new Error('GitLab listed more merge requests than one page, so TeamAI cannot tell how this branch\'s requests ended.');
+  const ours = requests.data.filter((mr) => mr.source_branch === source && mr.target_branch === target && mr.source_project_id === mr.target_project_id);
+
+  if (ours.some((mr) => hostOf(mr.web_url) !== hostOf(gitlabBaseUrl()))) throw new Error('GitLab answered the merge request history lookup with a URL on another host.');
+
+  // A fast-forward merge without a squash puts the head itself on the target branch.
+  return ours.map((mr) => endedRequest({
+    url: mr.web_url, title: mr.title, openedAt: mr.created_at, state: mr.state, closedAt: mr.closed_at ?? mr.merged_at ?? mr.updated_at,
+    merge: mergedAs({ head: mr.sha, commit: mr.merge_commit_sha ?? mr.squash_commit_sha ?? mr.sha }),
+  }));
 }
 
 function hostOf(url: string): string | undefined {

@@ -23,7 +23,7 @@ import {
 import { takeOver, type UnleasedStep } from './step-state.js';
 import { installOwner, isRunId, readRun, updateRun } from './store.js';
 import { workflowRunBy, type RunPublication, type RunState, type RunStatus, type WorkflowDefinition, type WorkflowFailure, type WorkflowSource, type WorkflowStep } from './types.js';
-import { branchName, isIsolated, stepMode, type LeaseSession, type SessionRef } from './workspace.js';
+import { branchName, isIsolated, stepMode, worksInTeam, type LeaseSession, type SessionRef } from './workspace.js';
 import { fetchMissingCommits, git, reconcileCopy } from './worktree.js';
 
 /**
@@ -230,6 +230,11 @@ export async function publishRun(
   if (stored === 'corrupt') return refused(runUnreadable(runId));
 
   if (isIsolated(stored)) return refused(isolatedUnpublishable(runId));
+
+  if (worksInTeam(stored)) {
+    return refused({ code: 'isolated_run', message: `Run ${runId} has a step in the team workspace, whose clone is on this machine only, so it cannot be published. Start the workflow again on the other machine.` });
+  }
+
   const secrets = await knownSecrets(config, env);
   const projected = projectRun(stored, secrets);
 

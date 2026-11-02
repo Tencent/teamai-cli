@@ -1,0 +1,36 @@
+schemaVersion: v1alpha1
+name: teamai-self-improvement
+description: Improve the team's harness from a scorer's repeated failures - change the assets teamai delivers so that work like the failing one passes, add one regression task per failure, and propose it all as one pull request on the team repo that the next run updates. Its prompt step needs a sandbox.
+invoke: deny
+inputs: { scorer: string, suite: string }
+steps:
+  - id: plan
+    command: teamai digest --json --scorer "$SCORER" --suite "$SUITE" --proposal "teamai/self-improvement/$SCORER"
+    env: { SCORER: "{{ inputs.scorer }}", SUITE: "{{ inputs.suite }}" }
+    output: { data: { improvement: { hasProposal: boolean, failures: [json], covered: [string] } } }
+  - id: improve
+    needs: [plan]
+    # Two failures a task can start from, since one is not a pattern, or one more for a proposal already open.
+    if: length(steps.plan.outputs.data.improvement.failures) >= 2 || (length(steps.plan.outputs.data.improvement.failures) >= 1 && steps.plan.outputs.data.improvement.hasProposal)
+    workspace: { team: { branch: "teamai/self-improvement/{{ inputs.scorer }}" } }
+    deliver: pr
+    permissions: unattended
+    requires: { isolation: sandbox, strict: true }
+    prompt: |
+      Improve the team's harness so that the scorer {{ inputs.scorer }} stops failing.
+      The current directory holds the team's files, on the open proposal's branch when there is one, with the default branch merged in.
+      The scorer's rubric is scorers/{{ inputs.scorer }}.md.
+      Failures to fix, newest first: {{ steps.plan.outputs.data.improvement.failures }}
+      Regression tasks the team already has for other failures of this scorer, keep them: {{ steps.plan.outputs.data.improvement.covered }}
+      Each failure has the label its judge gave, what the work ran as (agent, and the team skills it used), the commit it started at (start.commit),
+      and, for a session, the learnings that name it: read each one at its path.
+      1. Find what the failures share. Change the team's assets here so that work like this passes the rubric. Any asset teamai delivers may
+         change: skills, rules, agents, prompts, hooks, MCP servers, models, env, the team culture (claudemd), docs and workflows.
+         Change the scorer only when the failures show its rubric is wrong. Never change application code.
+         Change only files in the directories teamai pulls, and add no symlink: a file anywhere else fails the whole proposal.
+      2. For each failure, write {{ inputs.suite }}/tasks/<id>.yaml, where <id> is letters, digits, "-" or "_", with:
+         schemaVersion v1alpha1; title, what went wrong in a few words; prompt, the request the work was given, as its learnings or its workflow
+         step describe it, without the fix; startingCommit, its start.commit; successCriteria, what the rubric's passing label asks of this work,
+         in one or two sentences; source, its failure.subject exactly as given.
+      3. When the failures share no cause an asset can fix, change nothing: nothing is proposed.
+      teamai commits what you change, pushes it to teamai/self-improvement/{{ inputs.scorer }} and opens or updates its pull request.

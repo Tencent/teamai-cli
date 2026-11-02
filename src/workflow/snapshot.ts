@@ -279,8 +279,9 @@ const FAILURE_RULES = { 'code': 'publish', message: 'rewrite' } satisfies FieldR
 // A lease another machine held is released when the run is handed over, so the session it offered stays here.
 const LEASE_RULES = { attempt: 'publish', revision: 'publish', driver: 'rewrite', session: 'drop', unenforced: 'drop', expiresAt: 'drop', leasedAt: 'drop', runMode: 'drop', limits: 'drop' } satisfies FieldRules<StepLease>;
 
-// An isolated run, the only one with a clone, is never published.
-const COPY_RULES = { owner: 'drop', commit: 'publish', from: 'publish', used: 'drop', kind: 'drop' } satisfies FieldRules<NonNullable<RunState['copies']>[string]>;
+// An isolated run, the only one with a clone, is never published. A team copy is delivered only where it ran: another
+// machine reads its branch as a run branch, which the project's origin does not have, so its delivery fails.
+const COPY_RULES = { owner: 'drop', commit: 'publish', from: 'publish', used: 'drop', kind: 'drop', base: 'drop' } satisfies FieldRules<NonNullable<RunState['copies']>[string]>;
 
 const FINALIZING_RULES = { outcome: 'publish', end: 'publish', failure: 'rewrite', since: 'publish', until: 'publish' } satisfies FieldRules<Finalizing>;
 

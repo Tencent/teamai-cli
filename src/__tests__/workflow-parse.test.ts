@@ -1710,8 +1710,81 @@ steps:
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.diagnostics.map(formatDiagnostic)).toEqual([
-      'workflows/build.yaml:6: field "steps[0].workspace": step "short" workspace must be read-only, new, continue, or { clone: { commit, repo?, team } } with a full commit and team { treatment: none } or { revision, selection, treatment }',
-      'workflows/build.yaml:10: field "steps[1].workspace": step "revised" workspace must be read-only, new, continue, or { clone: { commit, repo?, team } } with a full commit and team { treatment: none } or { revision, selection, treatment }',
+      'workflows/build.yaml:6: field "steps[0].workspace": step "short" workspace must be read-only, new, continue, { team: { branch? } }, or { clone: { commit, repo?, team } } with a full commit and team { treatment: none } or { revision, selection, treatment }',
+      'workflows/build.yaml:10: field "steps[1].workspace": step "revised" workspace must be read-only, new, continue, { team: { branch? } }, or { clone: { commit, repo?, team } } with a full commit and team { treatment: none } or { revision, selection, treatment }',
+    ]);
+  });
+});
+
+describe('team workspace', () => {
+  it('reads the branch a step commits to in the team repo, or none for the run\'s own', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Tidy the team's rules.
+inputs: { topic: string }
+steps:
+  - id: named
+    workspace: { team: { branch: "teamai/tidy/{{ inputs.topic }}" } }
+    deliver: pr
+    command: ./tidy.sh
+  - id: own
+    needs: [named]
+    workspace: { team: {} }
+    prompt: Tidy the rules.
+`);
+    expect(result.ok && result.definition.steps.map((step) => step.workspace)).toEqual([
+      { team: { branch: 'teamai/tidy/{{ inputs.topic }}' } },
+      { team: {} },
+    ]);
+  });
+
+  it('rejects a branch that reads a step, and a team workspace on a step that runs a workflow, runs per item, or is scored', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Tidy the team's rules.
+inputs: { targets: [string] }
+steps:
+  - id: plan
+    command: ./plan.sh
+    output: { topic: string }
+  - id: fromStep
+    needs: [plan]
+    workspace: { team: { branch: "teamai/tidy/{{ steps.plan.outputs.topic }}" } }
+    command: ./tidy.sh
+  - id: perItem
+    needs: []
+    for_each: inputs.targets
+    workspace: { team: {} }
+    command: ./tidy.sh
+  - id: scored
+    needs: []
+    workspace: { team: {} }
+    scorers: [review-quality]
+    prompt: Tidy the rules.
+`);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.diagnostics.map(formatDiagnostic)).toEqual([
+      'workflows/build.yaml:11: field "steps[1].workspace": step "fromStep" workspace team branch may read only {{ inputs.<name> }}, so every run with the same inputs goes on with the same branch',
+      'workflows/build.yaml:16: field "steps[2].workspace": step "perItem" workspace team is only allowed on a command or prompt step that runs once: each step in the team workspace clones the team repo again',
+      'workflows/build.yaml:20: field "steps[3].workspace": step "scored" workspace team is not allowed with scorers: the team clone is gone once the step reports, so a scorer could not read what it changed',
+    ]);
+  });
+
+  it('rejects a role on a step in the team workspace, which runs with no role\'s knowledge', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Tidy the team's rules.
+steps:
+  - id: tidy
+    role: review
+    workspace: { team: {} }
+    prompt: Tidy the rules.
+`);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.diagnostics.map(formatDiagnostic)).toEqual([
+      'workflows/build.yaml:6: field "steps[0].role": step "tidy" has role review but runs in the team workspace, which takes no role\'s knowledge; remove role',
     ]);
   });
 });
