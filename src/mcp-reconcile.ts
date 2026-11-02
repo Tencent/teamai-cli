@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type {
+  JsonValue,
   LocalConfig,
   TeamaiConfig,
   McpServerDef,
@@ -22,6 +23,7 @@ import {
   resolveBaseDir,
 } from './types.js';
 import YAML from 'yaml';
+import { z } from 'zod';
 import { parse as parseToml } from 'smol-toml';
 import { withoutTomlBom } from './utils/toml.js';
 import {
@@ -35,6 +37,9 @@ import {
   museEntryHash,
   MCP_SERVER_KEY,
   sameServerKey,
+  isJsonObject,
+  UntypedStdioEntrySchema,
+  type JsonObject,
   type McpFormat,
 } from './resources/mcp-format.js';
 import { mcpEntryReader, parseTeamMcpServers, teamMcpToDef } from './resources/mcp.js';
@@ -176,7 +181,7 @@ export interface McpReconcileResult {
 async function readManifest(manifestPath: string): Promise<ManagedMcpManifest> {
   const data = await readJson<ManagedMcpManifest>(expandHome(manifestPath));
 
-  return data && typeof data === 'object' ? data : {};
+  return data instanceof Object ? data : {};
 }
 
 // ─── Secret lookup ───────────────────────────────────────────
@@ -411,7 +416,7 @@ export function describeMcpLocation(target: Pick<McpTarget, 'file' | 'projectKey
 function localMcpScopeOf(tool: string): McpProject['localScope'] {
   const { project } = channelsOf(tool).mcp;
 
-  return typeof project === 'object' ? project.localScope : undefined;
+  return project !== 'none' && project !== 'unknown' ? project.localScope : undefined;
 }
 
 /**
@@ -452,12 +457,13 @@ function unmovedHost(host: Host): Host {
 
 function mcpTargetAt(tool: string, format: McpFormat, place: EntryPlace, projectScope: boolean): McpTarget {
   const ownKey = format !== 'codex' && isDeepStrictEqual(place.key, [MCP_SERVER_KEY[format]]);
+  const target: McpTarget = { tool, format, file: place.path, projectScope };
 
-  return {
-    tool, format, file: place.path, projectScope,
-    ...(place.projectKey === undefined ? {} : { projectKey: place.projectKey }),
-    ...(format === 'codex' || ownKey ? {} : { key: place.key }),
-  };
+  if (place.projectKey !== undefined) target.projectKey = place.projectKey;
+
+  if (format !== 'codex' && !ownKey) target.key = place.key;
+
+  return target;
 }
 
 /**
@@ -503,7 +509,7 @@ async function mcpFileReaders(writer: string, file: string, install: Install, ho
   for (const reader of Object.keys(TOOLS)) {
     const { project } = channelsOf(reader).mcp;
 
-    if (typeof project !== 'object' || project.writtenBy !== writer || install.toolPaths[reader] === undefined) continue;
+    if (project === 'none' || project === 'unknown' || project.writtenBy !== writer || install.toolPaths[reader] === undefined) continue;
     const where = await locate(reader, 'mcp', install, host);
 
     if (writable(where) === null || where.channel !== 'files' || where.reads === 'unknown') continue;
@@ -525,7 +531,11 @@ export function recordedFileOf(target: Pick<McpTarget, 'file' | 'mappedFile' | '
 
 /** `target` at the place `record` holds its server in: its file, and the key it notes there. */
 function recordedPlaceOf(target: McpTarget, record: ManagedMcpRecord): McpTarget {
-  return { ...target, file: recordedFileOf(target, record), ...record.key === undefined ? {} : { key: record.key } };
+  const place: McpTarget = { ...target, file: recordedFileOf(target, record) };
+
+  if (record.key !== undefined) place.key = record.key;
+
+  return place;
 }
 
 /** The recorded file and server key, including the retired place an earlier release's record, noting no file, holds its server in (`retiredPlaceOf`). */
@@ -619,7 +629,7 @@ export async function resolveMcpTargets(
   for (const tool of tools) {
     const channel = channelsOf(tool).mcp[install.scope];
 
-    if (typeof channel !== 'object') continue;
+    if (channel === 'none' || channel === 'unknown') continue;
     const where = await locate(tool, 'mcp', install, host);
 
     if (where.channel !== 'files' || where.writtenBy !== null) continue;
@@ -628,7 +638,11 @@ export async function resolveMcpTargets(
 
     if (fallbacks) {
       for (const { place, was } of where.retired) {
-        if (was === 'builtin') builtins.push({ ...mcpTargetAt(tool, channel.format, place, true), builtinFallback: true, ...installed ? {} : { undetected: true } });
+        if (was !== 'builtin') continue;
+        const builtin: McpTarget = { ...mcpTargetAt(tool, channel.format, place, true), builtinFallback: true };
+
+        if (!installed) builtin.undetected = true;
+        builtins.push(builtin);
       }
     }
 
@@ -660,15 +674,26 @@ export async function resolveMcpTargets(
     // Every release before #1221 wrote there under the default home: a lookup tool's mapped file (#993).
     const unmoved = inTree && isToolId(tool) && hasDefaultHomeLeftovers(tool) ? await locate(tool, 'mcp', install, unmovedHost(host)) : null;
     const unmovedFile = unmoved?.channel === 'files' ? unmoved.lookup?.mapped ?? ownOf(unmoved)?.path : undefined;
-    targets.push({
-      ...mcpTargetAt(tool, museOnly ? 'muse' : channel.format, plugin && where.alternate ? where.alternate : place, projectScope),
-      ...museReads && !museOnly ? { museReads: true as const } : {},
-      ...installed || museReads ? {} : { undetected: true as const },
-      ...lookup ? { mappedFile: lookup.mapped, lookupFiles: [...lookup.files] } : {},
-      ...where.alternate ? { mappedFile: place.path, alternateFile: where.alternate.path } : {},
-      ...retired.length > 0 ? { retired } : {},
-      ...unmovedFile !== undefined && unmovedFile !== (lookup?.mapped ?? place.path) ? { unmovedFile } : {},
-    });
+    const target = mcpTargetAt(tool, museOnly ? 'muse' : channel.format, plugin && where.alternate ? where.alternate : place, projectScope);
+
+    if (museReads && !museOnly) target.museReads = true;
+
+    if (!installed && !museReads) target.undetected = true;
+
+    if (lookup) {
+      target.mappedFile = lookup.mapped;
+      target.lookupFiles = [...lookup.files];
+    }
+
+    if (where.alternate) {
+      target.mappedFile = place.path;
+      target.alternateFile = where.alternate.path;
+    }
+
+    if (retired.length > 0) target.retired = retired;
+
+    if (unmovedFile !== undefined && unmovedFile !== (lookup?.mapped ?? place.path)) target.unmovedFile = unmovedFile;
+    targets.push(target);
   }
 
   return [...targets, ...builtins];
@@ -698,7 +723,7 @@ export async function unmappedMcpDefaults(targets: McpTarget[]): Promise<Set<Mcp
 
   for (const target of targets) {
     if (!target.builtinFallback) continue;
-    const own = await Promise.all(targets.filter((t) => t.tool === target.tool && !t.builtinFallback).map((t) => realFilePath(t.file)));
+    const own = await Promise.all(targets.flatMap((t) => (t.tool === target.tool && !t.builtinFallback ? [realFilePath(t.file)] : [])));
 
     if (!own.includes(await realFilePath(target.file))) unmapped.add(target);
   }
@@ -738,15 +763,15 @@ export async function unrecordedUnmappedMcpDefaults(
 // ─── JSON target I/O ─────────────────────────────────────────
 
 export interface JsonDoc {
-  data: Record<string, unknown>;
-  servers: Record<string, unknown>;
+  data: JsonObject;
+  servers: JsonObject;
   /** The existing document stores server names directly at the top level. */
   bare: boolean;
   /**
    * A Copilot project file holding `serverKey` as well: the servers at its top level beside it.
    * These may belong to the member or come from a previous bare write (#882).
    */
-  beside?: Record<string, unknown>;
+  beside?: JsonObject;
   /** A local scope (#915): the servers are under `projects[projectKey]`, not at the top level. */
   projectKey?: string;
 }
@@ -766,31 +791,38 @@ export async function readJsonDoc(
   /** A local scope (#915): read the servers of `projects[projectKey]`. */
   projectKey?: string,
 ): Promise<JsonDoc | null> {
-  const local = projectKey === undefined ? {} : { projectKey };
-  const keys = typeof serverKey === 'string' ? [serverKey] : serverKey;
+  const keys = mcpKeyPath(serverKey);
 
-  if (!await pathExists(file)) return { data: {}, servers: {}, bare: false, ...local };
+  const emptyDoc = (bare: boolean): JsonDoc => {
+    const doc: JsonDoc = { data: {}, servers: {}, bare };
+
+    if (projectKey !== undefined) doc.projectKey = projectKey;
+
+    return doc;
+  };
+
+  if (!await pathExists(file)) return emptyDoc(false);
   const raw = await readFileSafe(file);
 
   if (raw === null) return null;
 
-  if (raw.trim() === '') return { data: {}, servers: {}, bare: allowBare, ...local };
+  if (raw.trim() === '') return emptyDoc(allowBare);
 
   try {
-    const data = JSON.parse(raw) as Record<string, unknown>;
+    const data = parseJsonText(raw);
 
-    if (typeof data !== 'object' || data === null || Array.isArray(data)) return null;
+    if (!isJsonObject(data)) return null;
 
     if (projectKey !== undefined) {
       const projects = data.projects ?? {};
 
-      if (typeof projects !== 'object' || projects === null || Array.isArray(projects)) return null;
-      const project = (projects as Record<string, unknown>)[projectKey] ?? {};
+      if (!isJsonObject(projects)) return null;
+      const project = projects[projectKey] ?? {};
 
       if (!isJsonObject(project)) return null;
       const servers = valueAt(project, keys) ?? {};
 
-      if (typeof servers !== 'object' || servers === null || Array.isArray(servers)) return null;
+      if (!isJsonObject(servers)) return null;
 
       return { data, servers: { ...servers }, bare: false, projectKey };
     }
@@ -798,15 +830,34 @@ export async function readJsonDoc(
     const bare = allowBare && !(keys[0] in data);
     const servers = bare ? data : valueAt(data, keys) ?? {};
 
-    if (typeof servers !== 'object' || servers === null || Array.isArray(servers)) return null;
+    if (!isJsonObject(servers)) return null;
 
-    const beside = allowBare && !bare ? Object.fromEntries(Object.entries(data).filter(([key, value]) =>
-      !SERVER_KEYS.has(key) && typeof value === 'object' && value !== null && !Array.isArray(value))) : {};
+    const beside: JsonObject = {};
 
-    return { data, servers: { ...servers }, bare, ...Object.keys(beside).length > 0 ? { beside } : {} };
+    if (allowBare && !bare) {
+      for (const [key, value] of Object.entries(data)) {
+        if (!SERVER_KEYS.has(key) && isJsonObject(value)) beside[key] = value;
+      }
+    }
+
+    const doc: JsonDoc = { data, servers: { ...servers }, bare };
+
+    if (Object.keys(beside).length > 0) doc.beside = beside;
+
+    return doc;
   } catch {
     return null;
   }
+}
+
+/** JSON text as the value it holds: JSON.parse yields nothing but JSON values. */
+function parseJsonText(text: string): JsonValue {
+  return JSON.parse(text);
+}
+
+/** The key path a server key names: one key, or the path to a nested server map. */
+function mcpKeyPath(serverKey: string | McpKey): readonly string[] {
+  return [serverKey].flat();
 }
 
 /**
@@ -825,13 +876,16 @@ export async function writeJsonDoc(
     return;
   }
 
-  const keys = typeof serverKey === 'string' ? [serverKey] : serverKey;
+  const keys = mcpKeyPath(serverKey);
 
   if (doc.projectKey !== undefined) {
     // Every other key of the project's entry and of the file is carried over. An entry left holding
     // nothing but an empty server map goes: the tool reads a missing one as the same.
-    const projects = (doc.data.projects ?? {}) as Record<string, Record<string, unknown>>;
-    const project = withValueAt(projects[doc.projectKey] ?? {}, keys, doc.servers);
+    // readJsonDoc returned no doc for a file whose projects or project entry is not an object.
+    const stored = doc.data.projects;
+    const projects: JsonObject = isJsonObject(stored) ? stored : {};
+    const entry = projects[doc.projectKey];
+    const project = withValueAt(isJsonObject(entry) ? entry : {}, keys, doc.servers);
 
     if (Object.keys(doc.servers).length === 0 && Object.keys(project).length === 1) delete projects[doc.projectKey];
     else projects[doc.projectKey] = project;
@@ -845,13 +899,9 @@ export async function writeJsonDoc(
   await writeMcpJson(file, doc.data, options);
 }
 
-function isJsonObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
 /** What `data` holds under `keys`: undefined where a key is missing, and the first value on the way that is not an object. */
-function valueAt(data: Record<string, unknown>, keys: readonly string[]): unknown {
-  let value: unknown = data;
+function valueAt(data: JsonObject, keys: readonly string[]): JsonValue | undefined {
+  let value: JsonValue | undefined = data;
 
   for (const key of keys) {
     if (!isJsonObject(value)) return value;
@@ -862,7 +912,7 @@ function valueAt(data: Record<string, unknown>, keys: readonly string[]): unknow
 }
 
 /** `data` with `value` under `keys`, every other key on the way kept. */
-function withValueAt(data: Record<string, unknown>, keys: readonly string[], value: unknown): Record<string, unknown> {
+function withValueAt(data: JsonObject, keys: readonly string[], value: JsonValue): JsonObject {
   const [key, ...rest] = keys;
 
   if (key === undefined) return data;
@@ -872,7 +922,7 @@ function withValueAt(data: Record<string, unknown>, keys: readonly string[], val
 }
 
 /** Whether `data` holds nothing but an empty server map under `keys`. */
-function holdsOnlyEmptyServers(data: Record<string, unknown>, keys: readonly string[]): boolean {
+function holdsOnlyEmptyServers(data: JsonObject, keys: readonly string[]): boolean {
   const [key, ...rest] = keys;
 
   if (key === undefined) return isJsonObject(data) && Object.keys(data).length === 0;
@@ -886,7 +936,7 @@ function holdsOnlyEmptyServers(data: Record<string, unknown>, keys: readonly str
  * dotfiles setup): the write lands in the file it points to and the link
  * stays, and the git checks judge that file (`realFilePath`).
  */
-export async function writeMcpJson(file: string, data: unknown, options?: { mode?: number }): Promise<void> {
+export async function writeMcpJson(file: string, data: JsonValue, options?: { mode?: number }): Promise<void> {
   await writeJsonAtomic(await symlinkTarget(file), data, options);
 }
 
@@ -1018,7 +1068,8 @@ export function codexServerNames(source: string): string[] {
 
 /** One team server in the rendered form that lands in a tool's own config. */
 export interface DesiredMcpEntry {
-  entry: unknown;
+  /** The JSON entry, or Codex's TOML block. */
+  entry: JsonValue;
   hash: string;
   /** Codex alone stores a TOML block rather than a JSON value. */
   block?: string;
@@ -1068,11 +1119,18 @@ export async function buildDesiredMcpContext(
  * the next, and an entry an earlier pull wrote stays as it is. With
  * declarations that failed, every skipped server is kept.
  */
+/** The servers `target` gets, the ones it skips, and the skipped ones whose current copy stays. */
+export interface DesiredMcp {
+  desired: Map<string, DesiredMcpEntry>;
+  skipped: McpChange[];
+  kept: Set<string>;
+}
+
 export function desiredMcpForTarget(
   target: McpTarget,
   teamDefs: McpServerDef[],
   ctx: DesiredMcpContext,
-): { desired: Map<string, DesiredMcpEntry>; skipped: McpChange[]; kept: Set<string> } {
+): DesiredMcp {
   const desired = new Map<string, DesiredMcpEntry>();
   const skipped: McpChange[] = [];
   const kept = new Set<string>();
@@ -1227,12 +1285,12 @@ function judgeUnrecordedMcpEntry(
   claimed: ReadonlySet<string>,
   history: () => Promise<TeamMcpHistory> = teamMcpHistory(localConfig),
 ): McpEntryJudge {
-  const renders = once(async (): Promise<Map<string, unknown[]> | null> => {
+  const renders = once(async (): Promise<Map<string, JsonValue[]> | null> => {
     const layout = entryLayout('mcp');
     const versions = await history();
 
     if (versions === null) return null;
-    const entries = new Map<string, unknown[]>();
+    const entries = new Map<string, JsonValue[]>();
 
     for (const version of versions) {
       if (path.posix.basename(version.path) !== layout.file) continue;
@@ -1255,7 +1313,7 @@ function judgeUnrecordedMcpEntry(
   return async (name, entry, recordedHash) => {
     if (claimed.has(name)) return 'another tool';
 
-    const matches = (rendered: unknown) => (recordedHash === undefined || entryHash(rendered) === recordedHash)
+    const matches = (rendered: JsonValue | undefined) => (recordedHash === undefined || entryHash(rendered) === recordedHash)
       && isDeepStrictEqual(rendered, entry);
 
     if (desired.has(name) && matches(desired.get(name)?.entry)) return 'teamai';
@@ -1315,7 +1373,7 @@ export async function installedMcpEntries(
   target: McpTarget,
   /** Only the servers under the format's key, as the tool reads them: not a Copilot file's bare ones beside it. */
   options: { underKeyOnly?: boolean } = {},
-): Promise<Map<string, unknown> | null> {
+): Promise<Map<string, JsonValue> | null> {
   if (target.format === 'codex') {
     const raw = await readCodexConfig(target.file);
 
@@ -1605,15 +1663,15 @@ export async function judgeTeamaiOnlyMcpConfigs(
       continue;
     }
 
-    let data: unknown;
+    let data: JsonValue;
 
     try {
-      data = JSON.parse(raw);
+      data = parseJsonText(raw);
     } catch {
       data = null;
     }
 
-    if (typeof data !== 'object' || data === null || Array.isArray(data)) {
+    if (!isJsonObject(data)) {
       verdicts.push({ file, teamaiOnly: false });
       continue;
     }
@@ -1627,7 +1685,7 @@ export async function judgeTeamaiOnlyMcpConfigs(
     let owned = 0;
     let foreign = false;
 
-    const inspect = (value: unknown, keyPath: readonly string[]): void => {
+    const inspect = (value: JsonValue, keyPath: readonly string[]): void => {
       if (!isJsonObject(value)) {
         foreign = true;
 
@@ -1715,7 +1773,10 @@ async function splitByFile(
 
     if (retired !== undefined) {
       const { file, key } = retired;
-      elsewhere.push({ ...record, file, ...isDeepStrictEqual(key, mcpKeyOf(target)) ? {} : { key } });
+      const moved: ManagedMcpRecord = { ...record, file };
+
+      if (!isDeepStrictEqual(key, mcpKeyOf(target))) moved.key = key;
+      elsewhere.push(moved);
       continue;
     }
 
@@ -1787,9 +1848,8 @@ export async function recordedMcpTargets(cfg: LocalConfig, known: McpTarget[]): 
 
     const targets = entry.tools.filter((tool) => !mappedBy.includes(tool)).flatMap((tool): McpTarget[] => {
       const format = mcpFormatOf(tool);
-      const channel = channelsOf(tool).mcp.project;
 
-      return format ? [{ tool, format, file, projectScope: true, ...(typeof channel === 'object' && channel.key !== undefined ? { key: channel.key } : {}) }] : [];
+      return format ? [projectMcpTarget(tool, format, file)] : [];
     });
 
     if (targets.length > 0) recorded.set(file, { targets, mappedBy, tracked: entry.tracked === true });
@@ -1800,9 +1860,26 @@ export async function recordedMcpTargets(cfg: LocalConfig, known: McpTarget[]): 
 
 // Built-in mcpProject defaults an older teamai wrote to and no longer maps:
 // no teamai.yaml revision names them.
-const EARLIER_BUILTIN_MCP_PROJECT = {
-  codebuddy: { mcpProject: '.codebuddy/mcp.json' }, // before 57636a27
+/** `toolPaths.<tool>.mcpProject` in a teamai.yaml revision; anything else there maps no MCP file. */
+const EarlierMcpMappingsSchema = z.object({
+  toolPaths: z.record(z.string(), z.object({ mcpProject: z.string().optional().catch(undefined) }).catch({})).optional().catch(undefined),
+}).catch({});
+
+const EARLIER_BUILTIN_MCP_PROJECT: z.infer<typeof EarlierMcpMappingsSchema> = {
+  toolPaths: {
+    codebuddy: { mcpProject: '.codebuddy/mcp.json' }, // before 57636a27
+  },
 };
+
+/** `tool`'s project MCP target in `file`, under the key its channel names, if any. */
+function projectMcpTarget(tool: string, format: McpFormat, file: string): McpTarget {
+  const target: McpTarget = { tool, format, file, projectScope: true };
+  const channel = channelsOf(tool).mcp.project;
+
+  if (channel !== 'none' && channel !== 'unknown' && channel.key !== undefined) target.key = channel.key;
+
+  return target;
+}
 
 /**
  * The files earlier revisions of the team's teamai.yaml mapped a tool's
@@ -1858,23 +1935,21 @@ export async function earlierMappedMcpTargets(
       reads.push(getFileContentAtRev(repoPath, revisions[reads.length], './teamai.yaml').catch(() => null));
     }
 
-    let toolPaths: unknown = EARLIER_BUILTIN_MCP_PROJECT;
+    let mappings = EARLIER_BUILTIN_MCP_PROJECT;
 
     if (revision !== null) {
       try {
-        toolPaths = (YAML.parse((await reads[i - 1])?.toString() ?? '') as { toolPaths?: unknown } | null)?.toolPaths;
+        mappings = EarlierMcpMappingsSchema.parse(YAML.parse((await reads[i - 1])?.toString() ?? ''));
       } catch {
         continue;
       }
     }
 
-    if (typeof toolPaths !== 'object' || toolPaths === null) continue;
-
-    for (const [tool, paths] of Object.entries(toolPaths)) {
-      const rel: unknown = typeof paths === 'object' && paths !== null ? (paths as { mcpProject?: unknown }).mcpProject : undefined;
+    for (const [tool, paths] of Object.entries(mappings.toolPaths ?? {})) {
+      const rel = paths.mcpProject;
       const format = mcpFormatOf(tool);
 
-      if (typeof rel !== 'string' || !format) continue;
+      if (rel === undefined || !format) continue;
       const file = path.resolve(resolveBaseDir(cfg), rel);
       const key = `${tool}\0${file}`;
 
@@ -1886,8 +1961,7 @@ export async function earlierMappedMcpTargets(
 
       if (reached(tool, real) || !await pathExists(file)) continue;
       const mappedBy = [...new Set(mapped.filter((r) => r.real === real).map((r) => r.tool))];
-      const channel = channelsOf(tool).mcp.project;
-      found.set(key, { tool, format, file, projectScope: true, ...(typeof channel === 'object' && channel.key !== undefined ? { key: channel.key } : {}), tracked: (await gitTracks(file)).kind === 'tracked', mappedBy });
+      found.set(key, { ...projectMcpTarget(tool, format, file), tracked: (await gitTracks(file)).kind === 'tracked', mappedBy });
     }
   }
 
@@ -1952,7 +2026,7 @@ export async function recordedMcpFileEvidence(targets: McpTarget[], owned?: McpO
  * the file does not parse (#882). `installedMcpEntries` merges the two by name, the keyed one winning: a
  * bare server beside one of its name under `mcpServers` is judged on its own here.
  */
-async function mcpEntriesByPlacement(target: McpTarget): Promise<{ keyed: Map<string, unknown>; bare: Map<string, unknown> } | null> {
+async function mcpEntriesByPlacement(target: McpTarget): Promise<{ keyed: Map<string, JsonValue>; bare: Map<string, JsonValue> } | null> {
   if (target.format !== 'copilot' || !target.projectScope) {
     const keyed = await installedMcpEntries(target);
 
@@ -1962,7 +2036,7 @@ async function mcpEntriesByPlacement(target: McpTarget): Promise<{ keyed: Map<st
   const doc = await readJsonDoc(target.file, MCP_SERVER_KEY.copilot, true);
 
   if (!doc) return null;
-  const entries = (servers: Record<string, unknown> | undefined): Map<string, unknown> => new Map(Object.entries(servers ?? {}));
+  const entries = (servers: JsonObject | undefined): Map<string, JsonValue> => new Map(Object.entries(servers ?? {}));
 
   return doc.bare ? { keyed: new Map(), bare: entries(doc.servers) } : { keyed: entries(doc.servers), bare: entries(doc.beside) };
 }
@@ -2034,11 +2108,12 @@ async function observeMcpConfigs(
     const holding = !stillTracked && await recordedMcpFileEvidence(group, owned) !== null;
 
     for (const target of group) {
-      observations.push({
-        file, tool: target.tool, state, holding, owned: owned ? [...owned(target)] : [],
-        ...tracked ? { tracked: stillTracked } : {},
-        ...owned && !stillTracked ? { remapped: true as const } : {},
-      });
+      const observation: McpFileObservation = { file, tool: target.tool, state, holding, owned: owned ? [...owned(target)] : [] };
+
+      if (tracked) observation.tracked = stillTracked;
+
+      if (owned && !stillTracked) observation.remapped = true;
+      observations.push(observation);
     }
   }
 
@@ -2051,7 +2126,7 @@ async function settleRecordedMcpConfigs(
   observations: McpFileObservation[],
   options?: { earlierMappingsRead?: boolean },
 ): Promise<void> {
-  const result = await settleResolvedMcpFiles(localConfig, observations, options).catch((e: unknown) => e instanceof Error ? e.message : String(e));
+  const result = await settleResolvedMcpFiles(localConfig, observations, options).catch((cause: unknown) => cause instanceof Error ? cause.message : String(cause));
 
   if (result !== 'written' && result !== 'unchanged') {
     log.debug(`Did not update managed-mcp-files.json: ${result === 'locked' ? 'another teamai command held it past the wait' : result}. The next pull tries again.`);
@@ -2522,7 +2597,7 @@ export async function protectLocalAgentMcpConfigs(
 
   // A failure does not undo the line: the exclusion protects the file.
   const result = await trackResolvedMcpFiles(localConfig, held.map(({ tool, file }) => ({ tool, file })))
-    .catch((e: unknown) => e instanceof Error ? e.message : String(e));
+    .catch((cause: unknown) => cause instanceof Error ? cause.message : String(cause));
 
   if (result !== 'written' && result !== 'unchanged') {
     log.debug(`Did not record ${held.map((target) => target.file).join(', ')} in managed-mcp-files.json: ${result === 'locked' ? 'another teamai command held it past the wait' : result}.`);
@@ -2579,8 +2654,8 @@ async function protectProjectMcpConfigs(
   const observations = await observeMcpConfigs(localConfig, targets, manifest, holds);
 
   // Once per worktree, what a teamai that kept no record of paths wrote under a mapping the team has since changed.
-  const earlier = earlierMappingsRead ? [] : await earlierMappedMcpTargets(localConfig, mapped).catch((e: unknown) => {
-    log.debug(`Did not read the MCP configs earlier toolPaths mappings reach: ${e instanceof Error ? e.message : String(e)}`);
+  const earlier = earlierMappingsRead ? [] : await earlierMappedMcpTargets(localConfig, mapped).catch((cause: unknown) => {
+    log.debug(`Did not read the MCP configs earlier toolPaths mappings reach: ${cause instanceof Error ? cause.message : String(cause)}`);
 
     return null;
   });
@@ -2604,7 +2679,10 @@ async function protectProjectMcpConfigs(
     const holding = await earlierMappedMcpFileEvidence(target, teamDefs, vars, ctx, owned) !== null;
 
     if (holding) found.push(target.file);
-    observations.push({ file: target.file, tool: target.tool, state, holding, owned: owned ? [...owned(target)] : [], ...owned ? { remapped: true as const } : {} });
+    const observation: McpFileObservation = { file: target.file, tool: target.tool, state, holding, owned: owned ? [...owned(target)] : [] };
+
+    if (owned) observation.remapped = true;
+    observations.push(observation);
   }
 
   const holding = new Set(observations.filter((o) => o.holding).map((o) => o.file));
@@ -2614,7 +2692,7 @@ async function protectProjectMcpConfigs(
   // And readable by this user only (#879), written this run or not: a disabled or moved tool's too.
   for (const file of holding) {
     await excludeFromGit(file);
-    await tightenMode(file).catch((e: unknown) => log.debug(`Could not make ${file} 0600: ${e instanceof Error ? e.message : String(e)}`));
+    await tightenMode(file).catch((cause: unknown) => log.debug(`Could not make ${file} 0600: ${cause instanceof Error ? cause.message : String(cause)}`));
   }
 
   // A line this run added for a file it then did not write restores the file's state before the run.
@@ -2647,11 +2725,11 @@ async function protectProjectMcpConfigs(
 async function noteUnclaimedMcpServers(localConfig: LocalConfig, unclaimed: Map<string, string[]>): Promise<Set<string>> {
   if (unclaimed.size === 0) return new Set();
   const found = [...unclaimed].map(([file, names]) => ({ file, names }));
-  const result = await recordUnverifiedMcpServers(localConfig, found).catch((e: unknown) => e instanceof Error ? e.message : String(e));
+  const result = await recordUnverifiedMcpServers(localConfig, found).catch((cause: unknown) => cause instanceof Error ? cause.message : String(cause));
   // Read back: a file the settle did not record takes no note.
   const { files } = await readResolvedMcpFiles(localConfig);
-  const noted = new Set(found.filter(({ file, names }) => names.every((name) => files[file]?.unverified?.includes(name))).map((f) => f.file));
-  const missed = found.filter((f) => !noted.has(f.file)).map((f) => f.file);
+  const noted = new Set(found.flatMap(({ file, names }) => (names.every((name) => files[file]?.unverified?.includes(name)) ? [file] : [])));
+  const missed = found.flatMap((f) => (noted.has(f.file) ? [] : [f.file]));
 
   if (missed.length > 0) {
     const why = result === 'locked' ? 'another teamai command held managed-mcp-files.json past the wait'
@@ -2682,8 +2760,8 @@ async function markMcpRecordsNoted(manifestPath: string, manifest: ManagedMcpMan
   }
 
   if (!changed) return;
-  await writeJsonAtomic(manifestPath, manifest).catch((e: unknown) => {
-    log.debug(`Did not update ${manifestPath}: ${e instanceof Error ? e.message : String(e)}. The next pull notes its MCP configs' other servers again.`);
+  await writeJsonAtomic(manifestPath, manifest).catch((cause: unknown) => {
+    log.debug(`Did not update ${manifestPath}: ${cause instanceof Error ? cause.message : String(cause)}. The next pull notes its MCP configs' other servers again.`);
   });
 }
 
@@ -3139,7 +3217,7 @@ async function noteUnverifiedMcpServers(
   }
 
   if (found.length === 0) return [];
-  const result = await recordUnverifiedMcpServers(localConfig, found).catch((e: unknown) => e instanceof Error ? e.message : String(e));
+  const result = await recordUnverifiedMcpServers(localConfig, found).catch((cause: unknown) => cause instanceof Error ? cause.message : String(cause));
 
   if (result === 'written' || result === 'unchanged') return [];
   log.debug(
@@ -3157,7 +3235,7 @@ async function noteUnverifiedMcpServers(
  * records it.
  */
 async function recordResolvedMcpFile(localConfig: LocalConfig, target: McpTarget): Promise<void> {
-  const result = await trackResolvedMcpFiles(localConfig, [target]).catch((e: unknown) => e instanceof Error ? e.message : String(e));
+  const result = await trackResolvedMcpFiles(localConfig, [target]).catch((cause: unknown) => cause instanceof Error ? cause.message : String(cause));
 
   if (result !== 'written' && result !== 'unchanged') {
     log.debug(`Did not record ${target.file} in managed-mcp-files.json: ${result === 'locked' ? 'another teamai command held it past the wait' : result}. The next pull records it.`);
@@ -3170,7 +3248,7 @@ async function recordResolvedMcpFile(localConfig: LocalConfig, target: McpTarget
  */
 async function forgetUnwrittenMcpConfigs(localConfig: LocalConfig, targets: McpTarget[]): Promise<void> {
   if (targets.length === 0) return;
-  const result = await untrackResolvedMcpFiles(localConfig, targets).catch((e: unknown) => e instanceof Error ? e.message : String(e));
+  const result = await untrackResolvedMcpFiles(localConfig, targets).catch((cause: unknown) => cause instanceof Error ? cause.message : String(cause));
 
   if (result !== 'written' && result !== 'unchanged') {
     log.debug(`Did not take ${targets.map((t) => t.file).join(', ')} back out of managed-mcp-files.json: ${result === 'locked' ? 'another teamai command held it past the wait' : result}.`);
@@ -3182,7 +3260,7 @@ async function forgetUnwrittenMcpConfigs(localConfig: LocalConfig, targets: McpT
  * added the key (#882): a completed bare write in `owned`, with matching content. A member's own server of that name,
  * or one edited since, is left alone.
  */
-export function isTeamaiBareCopy(doc: { beside?: Record<string, unknown> }, name: string, owned: readonly ManagedMcpRecord[]): boolean {
+export function isTeamaiBareCopy(doc: Pick<JsonDoc, 'beside'>, name: string, owned: readonly ManagedMcpRecord[]): boolean {
   const bare = doc.beside?.[name];
 
   return bare !== undefined && owned.some((record) => record.name === name && record.bare === true && record.hash === entryHash(bare));
@@ -3210,15 +3288,12 @@ export function ownsJsonMcpEntry(
 }
 
 /** Muse saves stdio entries without the inferred type; retain the original render for ownership hashes. */
-function normalizeMuseServers(target: McpTarget, servers: Record<string, unknown>): void {
+function normalizeMuseServers(target: McpTarget, servers: JsonObject): void {
   if (target.format !== 'muse') return;
 
   for (const [name, value] of Object.entries(servers)) {
-    if (typeof value !== 'object' || value === null || Array.isArray(value)) continue;
-    const entry = value as Record<string, unknown>;
-
-    if (entry.type === undefined && typeof entry.command === 'string' && entry.url === undefined) {
-      servers[name] = { type: 'stdio', ...entry };
+    if (isJsonObject(value) && UntypedStdioEntrySchema.safeParse(value).success) {
+      servers[name] = { type: 'stdio', ...value };
     }
   }
 }
@@ -3226,7 +3301,7 @@ function normalizeMuseServers(target: McpTarget, servers: Record<string, unknown
 // ─── Appliers ────────────────────────────────────────────────
 
 /** `judgeUnrecordedMcpEntry` for one target. */
-type McpEntryJudge = (name: string, entry: unknown, recordedHash?: string) => Promise<UnrecordedMcpOwner>;
+type McpEntryJudge = (name: string, entry: JsonValue | undefined, recordedHash?: string) => Promise<UnrecordedMcpOwner>;
 
 /**
  * A server this tool's record does not claim, left as it is: another tool's,
@@ -3649,7 +3724,7 @@ async function heldMcpEntriesToMove(
 
   if (held.size === 0) return moving;
 
-  const add = async (record: ManagedMcpRecord, installed: Map<string, unknown> | null, fromLocalScope = false): Promise<void> => {
+  const add = async (record: ManagedMcpRecord, installed: Map<string, JsonValue> | null, fromLocalScope = false): Promise<void> => {
     const entry = installed?.get(record.name);
 
     if (held.has(record.name) && entry !== undefined && entryHash(entry) === record.hash) {
@@ -3944,7 +4019,7 @@ export async function deleteEmptiedMcpFile(file: string, serverKey: string | Mcp
   } else {
     const doc = await readJsonDoc(file, serverKey);
 
-    if (!doc || !holdsOnlyEmptyServers(doc.data, typeof serverKey === 'string' ? [serverKey] : serverKey)) return false;
+    if (!doc || !holdsOnlyEmptyServers(doc.data, mcpKeyPath(serverKey))) return false;
   }
 
   if (await keepsTrackedCopy(file) || (await gitTracks(file)).kind === 'unknown') return false;

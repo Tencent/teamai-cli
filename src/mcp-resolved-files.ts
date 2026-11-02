@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { z } from 'zod';
-import { getDataHome, managedMcpManifestPath, type LocalConfig } from './types.js';
+import { getDataHome, managedMcpManifestPath, type JsonValue, type LocalConfig } from './types.js';
 import { readFileSafe } from './utils/fs.js';
 import { updateFileLocked, type ExcludeUpdate } from './git-exclude.js';
 
@@ -67,12 +67,12 @@ export function resolvedMcpFilesPath(cfg: LocalConfig): string | null {
 
 /** Missing, not JSON, of another shape or version: no files. An entry of the wrong shape, or under a relative path, is left out. */
 function parse(content: string): Sidecar {
-  let data: unknown;
+  let data: JsonValue = null;
 
   try {
     data = JSON.parse(content);
   } catch {
-    data = null;
+    // Not JSON: no files.
   }
 
   const parsed = SidecarSchema.safeParse(data);
@@ -97,7 +97,11 @@ export async function readResolvedMcpFiles(cfg: LocalConfig): Promise<ResolvedMc
   if (content === null) return { version: 1, files: {} };
   const sidecar = parse(content);
 
-  return { version: 1, files: sidecar.files, ...sidecar.earlierMappingsRead === true ? { earlierMappingsRead: true } : {} };
+  const resolved: ResolvedMcpFiles = { version: 1, files: sidecar.files };
+
+  if (sidecar.earlierMappingsRead === true) resolved.earlierMappingsRead = true;
+
+  return resolved;
 }
 
 /**

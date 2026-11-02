@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { z } from 'zod';
 import type { McpServerDef } from './types.js';
 import type { McpTarget } from './mcp-reconcile.js';
 import {
@@ -54,22 +55,40 @@ export function carriesResolvedValue(
  * not `${VAR}` references teamai resolves, so nothing tells a token from a
  * plain setting: every one counts. Only a bare stdio command does not.
  */
-export function carriesLocalAgentCredential(entry: unknown): boolean {
-  if (typeof entry !== 'object' || entry === null) return false;
-  const fields = entry as Record<string, unknown>;
+export function carriesLocalAgentCredential<TEntry>(entry: TEntry): boolean {
+  const parsed = LocalAgentEntrySchema.safeParse(entry);
 
-  const nonEmpty = (value: unknown): boolean =>
-    Array.isArray(value) ? value.length > 0 : typeof value === 'object' && value !== null && Object.keys(value).length > 0;
+  if (!parsed.success) return false;
+  const fields = parsed.data;
 
   // OpenCode keeps env under `environment`, and a stdio command with its arguments under `command`.
-  if (['headers', 'env', 'environment', 'args'].some((key) => nonEmpty(fields[key]))) return true;
+  if ([fields.headers, fields.env, fields.environment, fields.args].some((value) => FilledSchema.safeParse(value).success)) return true;
   // A command line in one string, or OpenCode's one-element array holding it, carries its arguments too.
-  const commandParts: unknown[] = Array.isArray(fields.command) ? fields.command : [fields.command];
+  const command = z.array(z.unknown()).safeParse(fields.command);
+  const commandParts = command.success ? command.data : [fields.command];
 
-  if (commandParts.length > 1 || commandParts.some((part) => typeof part === 'string' && /\s/.test(part.trim()))) return true;
+  if (commandParts.length > 1 || commandParts.some((part) => /\s/.test(TextOrEmptySchema.parse(part).trim()))) return true;
 
-  return ['url', 'serverUrl', 'httpUrl'].some((key) => typeof fields[key] === 'string' && fields[key].trim() !== '');
+  return [fields.url, fields.serverUrl, fields.httpUrl].some((value) => TextOrEmptySchema.parse(value).trim() !== '');
 }
+
+/** The fields of an installed JSON MCP entry that can carry a credential, each holding anything. */
+const LocalAgentEntrySchema = z.object({
+  headers: z.unknown().optional(),
+  env: z.unknown().optional(),
+  environment: z.unknown().optional(),
+  args: z.unknown().optional(),
+  command: z.unknown().optional(),
+  url: z.unknown().optional(),
+  serverUrl: z.unknown().optional(),
+  httpUrl: z.unknown().optional(),
+});
+
+/** A list with an item, or a map with a key. */
+const FilledSchema = z.union([z.array(z.unknown()).min(1), z.record(z.string(), z.unknown()).refine((map) => Object.keys(map).length > 0)]);
+
+/** A string value, or '' for anything else. */
+const TextOrEmptySchema = z.string().catch('');
 
 /**
  * The variable whose value, resolved by teamai into `target`, `raw` (a project

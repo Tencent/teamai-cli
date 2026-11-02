@@ -72,14 +72,14 @@ function parseMcpContent(content: string | null): McpYamlRead {
 
   try {
     const raw: unknown = YAML.parse(content);
-    const shapeProblem = missingTopLevelKeyReason(raw, McpYamlSchema);
+    const topLevelProblem = missingTopLevelKeyReason(raw, McpYamlSchema);
 
-    if (shapeProblem) return { ok: false, reason: shapeProblem };
+    if (topLevelProblem) return { ok: false, reason: topLevelProblem };
     const yaml = McpYamlSchema.parse(raw);
 
     return { ok: true, yaml, unknownKeys: unknownEntryKeys(raw, 'servers', yaml.servers, TeamMcpServerFields) };
   } catch (e) {
-    return { ok: false, reason: (e as Error).message };
+    return { ok: false, reason: e instanceof Error ? e.message : String(e) };
   }
 }
 
@@ -152,13 +152,15 @@ export class McpHandler extends ResourceHandler {
       }
 
       for (const server of read.yaml?.servers ?? []) {
-        items.push({
+        const item: ResourceItem = {
           name: server.name,
           type: 'mcp',
           sourcePath,
           relativePath,
-          ...(namespace === null ? {} : { namespace }),
-        });
+        };
+
+        if (namespace !== null) item.namespace = namespace;
+        items.push(item);
       }
     }
 

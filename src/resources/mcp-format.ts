@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
-import type { McpServerDef, McpTransport } from '../types.js';
+import { z } from 'zod';
+import type { JsonValue, McpServerDef, McpTransport } from '../types.js';
 import { sameEnvName } from './env-key.js';
 
 // ─── Per-tool rendering ──────────────────────────────────────
@@ -202,19 +203,28 @@ export function resolvePlaceholders(def: McpServerDef, vars: Record<string, stri
 
 // ─── Renderers ───────────────────────────────────────────────
 
-export type McpJsonEntry = Record<string, unknown>;
+/** A JSON object: an MCP config file, its server map, or one server's entry. */
+export interface JsonObject { [key: string]: JsonValue }
+
+/** Whether a JSON value is an object, not an array: JSON parsing creates every object as an Object instance. */
+export function isJsonObject(value: JsonValue | undefined): value is JsonObject {
+  return value instanceof Object && !Array.isArray(value);
+}
+
+/** One server's entry in a JSON MCP config, as teamai renders it or a tool saved it. */
+export type McpJsonEntry = JsonObject;
 
 function renderClaude(def: McpServerDef): McpJsonEntry {
   const e: McpJsonEntry = { type: def.transport };
 
   if (def.transport === 'stdio') {
-    e.command = def.command;
+    if (def.command !== undefined) e.command = def.command;
 
     if (def.args?.length) e.args = def.args;
 
     if (def.env && Object.keys(def.env).length) e.env = def.env;
   } else {
-    e.url = def.url;
+    if (def.url !== undefined) e.url = def.url;
 
     if (def.headers && Object.keys(def.headers).length) e.headers = def.headers;
   }
@@ -238,14 +248,15 @@ function renderCursor(def: McpServerDef): McpJsonEntry {
   const e: McpJsonEntry = {};
 
   if (def.transport === 'stdio') {
-    e.command = def.command;
+    if (def.command !== undefined) e.command = def.command;
 
     if (def.args?.length) e.args = def.args.map(toCursorEnvSyntax);
 
     if (def.env && Object.keys(def.env).length) e.env = mapVals(def.env);
   } else {
     e.type = def.transport;
-    e.url = def.url ? toCursorEnvSyntax(def.url) : def.url;
+
+    if (def.url !== undefined) e.url = toCursorEnvSyntax(def.url);
 
     if (def.headers && Object.keys(def.headers).length) e.headers = mapVals(def.headers);
   }
@@ -264,7 +275,7 @@ function renderBuddy(def: McpServerDef): McpJsonEntry {
   const e: McpJsonEntry = {};
 
   if (def.transport === 'stdio') {
-    e.command = def.command;
+    if (def.command !== undefined) e.command = def.command;
 
     if (def.args?.length) e.args = def.args;
 
@@ -274,7 +285,8 @@ function renderBuddy(def: McpServerDef): McpJsonEntry {
     // family — an older `transportType: "streamable-http"` is ignored, so the
     // Authorization header never ships and the server 401s.
     e.type = def.transport;
-    e.url = def.url;
+
+    if (def.url !== undefined) e.url = def.url;
 
     if (def.headers && Object.keys(def.headers).length) e.headers = def.headers;
   }
@@ -292,12 +304,12 @@ function renderCopilot(def: McpServerDef): McpJsonEntry {
   };
 
   if (def.transport === 'stdio') {
-    e.command = def.command;
+    if (def.command !== undefined) e.command = def.command;
     e.args = def.args ?? [];
 
     if (def.env && Object.keys(def.env).length) e.env = def.env;
   } else {
-    e.url = def.url;
+    if (def.url !== undefined) e.url = def.url;
 
     if (def.headers && Object.keys(def.headers).length) e.headers = def.headers;
   }
@@ -326,7 +338,8 @@ function renderOpencode(def: McpServerDef): McpJsonEntry {
     if (def.env && Object.keys(def.env).length) e.environment = def.env;
   } else {
     e.type = 'remote';
-    e.url = def.url;
+
+    if (def.url !== undefined) e.url = def.url;
 
     if (def.headers && Object.keys(def.headers).length) e.headers = def.headers;
   }
@@ -418,28 +431,26 @@ export function renderCodexBlock(def: McpServerDef): string {
   return lines.join('\n') + '\n';
 }
 
-/** Stable content hash of a rendered entry; drives idempotent rewrites. */
-export function entryHash(rendered: unknown): string {
+/** Stable content hash of a rendered entry, or of any value by its JSON text; drives idempotent rewrites. */
+export function entryHash<TValue>(rendered: TValue): string {
   return crypto.createHash('sha1').update(JSON.stringify(rendered)).digest('hex').slice(0, 16);
 }
 
+/** A stdio entry as Muse saves it: `command` and no `type`, which Muse infers. */
+export const UntypedStdioEntrySchema = z.looseObject({ type: z.undefined().optional(), command: z.string(), url: z.undefined().optional() });
+
 /** Muse saves inferred stdio types and object keys differently; array order remains meaningful. */
-export function museEntryHash(rendered: unknown): string {
+export function museEntryHash(rendered: JsonValue | undefined): string {
   let value = rendered;
 
-  if (value && typeof value === 'object' && !Array.isArray(value)) {
-    const entry = value as Record<string, unknown>;
-
-    if (entry.type === undefined && typeof entry.command === 'string' && entry.url === undefined) {
-      value = { type: 'stdio', ...entry };
-    }
+  if (isJsonObject(value) && UntypedStdioEntrySchema.safeParse(value).success) {
+    value = { type: 'stdio', ...value };
   }
 
-  const canonical = JSON.stringify(value, (_key, item: unknown) => {
-    if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
-    const object = item as Record<string, unknown>;
+  const canonical = JSON.stringify(value, (_key, item: JsonValue) => {
+    if (!isJsonObject(item)) return item;
 
-    return Object.fromEntries(Object.keys(object).sort().map(key => [key, object[key]]));
+    return Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]]));
   });
 
   return crypto.createHash('sha1').update(canonical).digest('hex').slice(0, 16);
