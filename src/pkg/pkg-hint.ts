@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { z } from 'zod';
+
 import { detectProjectConfig, loadLocalConfig } from '../config.js';
 import { ensureDir, readJson, writeJsonAtomic } from '../utils/fs.js';
 import { getUserHome } from '../utils/home.js';
@@ -113,7 +115,7 @@ export async function computePackageHintOutput(cwd: string): Promise<string | nu
 
     return state ? packageHintOutput(state.message) : null;
   } catch (error) {
-    log.debug(`pkg-hint: ${(error as Error).message}`);
+    log.debug(`pkg-hint: ${error instanceof Error ? error.message : String(error)}`);
 
     return null;
   }
@@ -147,8 +149,8 @@ async function claimPackageHint(sessionId: string, manifestHash: string): Promis
 
     return true;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
-    log.debug(`pkg-hint claim: ${(error as Error).message}`);
+    if (error instanceof Error && 'code' in error && error.code === 'EEXIST') return false;
+    log.debug(`pkg-hint claim: ${error instanceof Error ? error.message : String(error)}`);
 
     // A failed dedup marker must not suppress the user-facing safety prompt.
     return true;
@@ -167,7 +169,7 @@ export async function claimPackageHintOutput(
 
     return packageHintOutput(state.message);
   } catch (error) {
-    log.debug(`pkg-hint: ${(error as Error).message}`);
+    log.debug(`pkg-hint: ${error instanceof Error ? error.message : String(error)}`);
 
     return null;
   }
@@ -199,17 +201,20 @@ export async function stashPackageHintAfterPull(
     if (!state || !await claimPackageHint(sessionId, state.manifestHash)) return;
     await writeJsonAtomic(pendingPath(sessionId), { message: state.message });
   } catch (error) {
-    log.debug(`pkg-hint stash: ${(error as Error).message}`);
+    log.debug(`pkg-hint stash: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
+
+/** A stashed hint; one without a message is not delivered. */
+const PendingHintSchema = z.object({ message: z.string().min(1) });
 
 /** Drain a hint produced after the detached SessionStart pull completed. */
 export async function takePendingPackageHint(sessionId: string): Promise<string | null> {
   const filePath = pendingPath(sessionId);
-  const pending = await readJson<{ message?: unknown }>(filePath);
+  const pending = PendingHintSchema.safeParse(await readJson(filePath));
 
-  if (!pending || typeof pending.message !== 'string' || !pending.message) return null;
+  if (!pending.success) return null;
   await fs.promises.unlink(filePath).catch(() => undefined);
 
-  return pending.message;
+  return pending.data.message;
 }

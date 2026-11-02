@@ -31,13 +31,23 @@ import type {
 } from './types.js';
 import { PackageManifestSchema } from './types.js';
 
-const OFFICIAL_MARKETPLACES: Record<string, string> = {
-  'claude-plugins-official': 'anthropics/claude-plugins-official',
-};
+const OFFICIAL_MARKETPLACES = new Map<string, string>([
+  ['claude-plugins-official', 'anthropics/claude-plugins-official'],
+]);
 
 interface ParsedNpmTarget {
   name: string;
   version?: string;
+}
+
+/** The target split at `separator`, the `@` before its version, with the version left out when it is empty. */
+function splitNpmTarget(target: string, separator: number): ParsedNpmTarget {
+  const parsed: ParsedNpmTarget = { name: target.slice(0, separator) };
+  const version = target.slice(separator + 1);
+
+  if (version) parsed.version = version;
+
+  return parsed;
 }
 
 function parseNpmTarget(target: string): ParsedNpmTarget {
@@ -46,19 +56,13 @@ function parseNpmTarget(target: string): ParsedNpmTarget {
     const separator = target.lastIndexOf('@');
 
     if (slash < 0) throw new Error(`Invalid scoped npm package: "${target}"`);
-    const version = separator > slash ? target.slice(separator + 1) : '';
 
-    return separator > slash
-      ? { name: target.slice(0, separator), ...(version ? { version } : {}) }
-      : { name: target };
+    return separator > slash ? splitNpmTarget(target, separator) : { name: target };
   }
 
   const separator = target.lastIndexOf('@');
-  const version = separator > 0 ? target.slice(separator + 1) : '';
 
-  return separator > 0
-    ? { name: target.slice(0, separator), ...(version ? { version } : {}) }
-    : { name: target };
+  return separator > 0 ? splitNpmTarget(target, separator) : { name: target };
 }
 
 function pluginMarketplace(target: string): string | null {
@@ -113,7 +117,7 @@ async function resolveClaudeTarget(
 
   if (declared) return { marketplace, declaration: declared };
 
-  const officialRepo = OFFICIAL_MARKETPLACES[marketplace];
+  const officialRepo = OFFICIAL_MARKETPLACES.get(marketplace);
 
   if (officialRepo) {
     return { marketplace, declaration: { name: marketplace, repo: officialRepo } };
@@ -149,11 +153,12 @@ async function addTarget(
   options: Pick<GlobalOptions, 'global' | 'registry' | 'npm' | 'claude'>,
 ): Promise<AddedTarget> {
   const addNpm = (): AddedTarget => {
-    const spec = upsertNpm(manifest, {
-      ...parseNpmTarget(target),
-      ...(options.global ? { global: true } : {}),
-      ...(options.registry ? { registry: options.registry } : {}),
-    });
+    const requested: ParsedNpmTarget & Pick<NpmSpec, 'global' | 'registry'> = parseNpmTarget(target);
+
+    if (options.global) requested.global = true;
+
+    if (options.registry) requested.registry = options.registry;
+    const spec = upsertNpm(manifest, requested);
 
     return { ecosystem: 'npm', npm: spec };
   };
@@ -251,16 +256,11 @@ export async function pkgInstall(
     previousPackages: previousLock?.packages,
   };
 
-  const lock: PackageLock = {
-    version: 1,
-    ...(previousLock?.declarationHash
-      ? { declarationHash: previousLock.declarationHash }
-      : {}),
-    ...(previousLock?.projectDeclarationHashes
-      ? { projectDeclarationHashes: previousLock.projectDeclarationHashes }
-      : {}),
-    packages: previousLock?.packages ?? {},
-  };
+  const lock: PackageLock = { version: 1, packages: previousLock?.packages ?? {} };
+
+  if (previousLock?.declarationHash) lock.declarationHash = previousLock.declarationHash;
+
+  if (previousLock?.projectDeclarationHashes) lock.projectDeclarationHashes = previousLock.projectDeclarationHashes;
 
   if (!target) {
     if (localConfig.scope === 'user') {
@@ -339,7 +339,7 @@ export async function pkgDoctorReport(
       lines: [
         '',
         '  Packages',
-        `  ✖ Package manifest is invalid: ${(error as Error).message}`,
+        `  ✖ Package manifest is invalid: ${error instanceof Error ? error.message : String(error)}`,
       ],
       allPassed: false,
     };

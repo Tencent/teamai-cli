@@ -1,5 +1,7 @@
 import path from 'node:path';
 
+import { z } from 'zod';
+
 import { pathExists, readJson } from '../../utils/fs.js';
 import { formatCommand } from '../../utils/exec.js';
 import { log } from '../../utils/logger.js';
@@ -9,22 +11,30 @@ import {
   type PackageInstallContext,
 } from './base.js';
 
-interface LockPackage {
-  version?: string;
-  integrity?: string;
-  resolved?: string;
-}
+/** A package entry of a lockfile or `list --json`; a malformed one reads as null, a malformed field as absent. */
+const LockPackageSchema = z.object({
+  version: z.string().optional().catch(undefined),
+  integrity: z.string().optional().catch(undefined),
+  resolved: z.string().optional().catch(undefined),
+}).nullable().catch(null);
+
+type LockPackage = z.infer<typeof LockPackageSchema>;
+
+const ListedDependenciesSchema = z.record(z.string(), LockPackageSchema).optional().catch(undefined);
+
+/** `npm list --json` output, and one project of `pnpm list --json`. */
+const NpmListOutputSchema = z.object({
+  dependencies: ListedDependenciesSchema,
+  devDependencies: ListedDependenciesSchema,
+  optionalDependencies: ListedDependenciesSchema,
+});
+
+const PnpmListOutputSchema = z.array(NpmListOutputSchema.nullable().catch(null));
 
 interface NpmPackageLock {
   lockfileVersion?: number;
   packages?: Record<string, LockPackage>;
   dependencies?: Record<string, LockPackage>;
-}
-
-interface NpmListOutput {
-  dependencies?: Record<string, LockPackage>;
-  devDependencies?: Record<string, LockPackage>;
-  optionalDependencies?: Record<string, LockPackage>;
 }
 
 interface PackageJson {
@@ -101,13 +111,12 @@ export function extractNpmLockEntries(
       ?? lock.dependencies?.[spec.name];
 
     if (!value?.version) continue;
-    entries.push({
-      name: spec.name,
-      version: value.version,
-      source: 'npm',
-      ...(value.integrity ? { integrity: value.integrity } : {}),
-      ...(value.resolved ? { resolved: value.resolved } : {}),
-    });
+    const entry: NpmLockEntry = { name: spec.name, version: value.version, source: 'npm' };
+
+    if (value.integrity) entry.integrity = value.integrity;
+
+    if (value.resolved) entry.resolved = value.resolved;
+    entries.push(entry);
   }
 
   return entries;
@@ -134,7 +143,7 @@ export class NpmAdapter extends PackageAdapter<NpmSpec[], NpmLockEntry[]> {
         );
 
         if (result.code !== 0 || !result.stdout.trim()) return [];
-        const [listed] = JSON.parse(result.stdout) as NpmListOutput[];
+        const [listed] = PnpmListOutputSchema.parse(JSON.parse(result.stdout));
 
         const dependencies = {
           ...listed?.dependencies,
@@ -166,22 +175,22 @@ export class NpmAdapter extends PackageAdapter<NpmSpec[], NpmLockEntry[]> {
       );
 
       if (!result.stdout.trim()) return [];
-      const listed = JSON.parse(result.stdout) as NpmListOutput;
+      const listed = NpmListOutputSchema.parse(JSON.parse(result.stdout));
 
       return global.flatMap((spec) => {
         const actual = listed.dependencies?.[spec.name];
 
         if (!actual?.version) return [];
 
-        return [{
-          name: spec.name,
-          version: actual.version,
-          source: 'npm' as const,
-          global: true,
-          ...(spec.registry ? { registry: spec.registry } : {}),
-          ...(actual.integrity ? { integrity: actual.integrity } : {}),
-          ...(actual.resolved ? { resolved: actual.resolved } : {}),
-        }];
+        const entry: NpmLockEntry = { name: spec.name, version: actual.version, source: 'npm', global: true };
+
+        if (spec.registry) entry.registry = spec.registry;
+
+        if (actual.integrity) entry.integrity = actual.integrity;
+
+        if (actual.resolved) entry.resolved = actual.resolved;
+
+        return [entry];
       });
     } catch {
       return [];
@@ -277,18 +286,19 @@ export class NpmAdapter extends PackageAdapter<NpmSpec[], NpmLockEntry[]> {
       const versionMatches = !entry?.version
         || satisfiesDeclaredVersion(semver, spec.version, entry.version);
 
-      return {
-        name: spec.name,
-        installed: !!entry && versionMatches,
-        ...(entry?.version ? { version: entry.version } : {}),
-        ...(!entry ? {
-          detail: spec.global
-            ? 'declared but not installed globally'
-            : 'declared but not present in package-lock.json',
-        } : !versionMatches ? {
-          detail: `declared ${spec.version}, installed ${entry.version}`,
-        } : {}),
-      };
+      const status: PackageStatus = { name: spec.name, installed: !!entry && versionMatches };
+
+      if (entry?.version) status.version = entry.version;
+
+      if (!entry) {
+        status.detail = spec.global
+          ? 'declared but not installed globally'
+          : 'declared but not present in package-lock.json';
+      } else if (!versionMatches) {
+        status.detail = `declared ${spec.version}, installed ${entry.version}`;
+      }
+
+      return status;
     });
   }
 }

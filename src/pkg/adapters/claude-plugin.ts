@@ -1,5 +1,7 @@
 import path from 'node:path';
 
+import { z } from 'zod';
+
 import { formatCommand } from '../../utils/exec.js';
 import { log } from '../../utils/logger.js';
 import type {
@@ -14,23 +16,30 @@ import {
   type PackageInstallContext,
 } from './base.js';
 
-export interface ClaudePluginListItem {
-  id?: string;
-  version?: string;
-  scope?: string;
-  enabled?: boolean;
-  installPath?: string;
-}
+/** A field of `claude plugin ... list --json` output; one of the wrong type reads as absent. */
+const listedString = z.string().optional().catch(undefined);
 
-export interface ClaudeMarketplaceListItem {
-  name?: string;
-  source?: string;
-  repo?: string;
-  url?: string;
-  path?: string;
-  ref?: string;
-  installLocation?: string;
-}
+const ClaudePluginListItemSchema = z.object({
+  id: listedString,
+  version: listedString,
+  scope: listedString,
+  enabled: z.boolean().optional().catch(undefined),
+  installPath: listedString,
+});
+
+export type ClaudePluginListItem = z.infer<typeof ClaudePluginListItemSchema>;
+
+const ClaudeMarketplaceListItemSchema = z.object({
+  name: listedString,
+  source: listedString,
+  repo: listedString,
+  url: listedString,
+  path: listedString,
+  ref: listedString,
+  installLocation: listedString,
+});
+
+export type ClaudeMarketplaceListItem = z.infer<typeof ClaudeMarketplaceListItemSchema>;
 
 export interface ClaudeLockSection {
   marketplaces: ClaudeMarketplaceLock[];
@@ -76,12 +85,12 @@ function marketplaceLocationsEqual(declared: string, actual: string, cwd: string
   return declared.replace(/[\\/]+$/, '') === actual.replace(/[\\/]+$/, '');
 }
 
-function parseJsonArray<T>(stdout: string): T[] {
+function parseJsonArray<T>(stdout: string, item: z.ZodType<T>): T[] {
   const parsed: unknown = JSON.parse(stdout);
 
   if (!Array.isArray(parsed)) throw new Error('expected a JSON array');
 
-  return parsed as T[];
+  return z.array(item).parse(parsed);
 }
 
 export class ClaudePluginAdapter extends PackageAdapter<ClaudeEcosystem, ClaudeLockSection> {
@@ -107,7 +116,7 @@ export class ClaudePluginAdapter extends PackageAdapter<ClaudeEcosystem, ClaudeL
 
       if (result.code !== 0) return [];
 
-      return parseJsonArray<ClaudePluginListItem>(result.stdout);
+      return parseJsonArray(result.stdout, ClaudePluginListItemSchema);
     } catch {
       return [];
     }
@@ -123,7 +132,7 @@ export class ClaudePluginAdapter extends PackageAdapter<ClaudeEcosystem, ClaudeL
 
       if (result.code !== 0) return [];
 
-      return parseJsonArray<ClaudeMarketplaceListItem>(result.stdout);
+      return parseJsonArray(result.stdout, ClaudeMarketplaceListItemSchema);
     } catch {
       return [];
     }
@@ -153,24 +162,32 @@ export class ClaudePluginAdapter extends PackageAdapter<ClaudeEcosystem, ClaudeL
         .map((item) => {
           const declared = marketplaceDeclarations.get(item.name!);
           const repo = marketplaceSourceLocation(item) ?? declared?.repo;
+          const lock: ClaudeMarketplaceLock = { name: item.name! };
 
-          return {
-            name: item.name!,
-            ...(item.source ? { source: item.source } : {}),
-            ...(repo ? { repo } : {}),
-            ...(declared?.ref ? { ref: declared.ref } : {}),
-            ...(item.installLocation ? { installLocation: item.installLocation } : {}),
-          };
+          if (item.source) lock.source = item.source;
+
+          if (repo) lock.repo = repo;
+
+          if (declared?.ref) lock.ref = declared.ref;
+
+          if (item.installLocation) lock.installLocation = item.installLocation;
+
+          return lock;
         }),
       plugins: plugins
         .filter((item) => item.id && declaredPlugins.has(item.id))
-        .map((item) => ({
-          id: item.id!,
-          version: item.version ?? 'unknown',
-          scope: item.scope ?? 'user',
-          enabled: item.enabled ?? true,
-          ...(item.installPath ? { installPath: item.installPath } : {}),
-        })),
+        .map((item) => {
+          const lock: ClaudePluginLock = {
+            id: item.id!,
+            version: item.version ?? 'unknown',
+            scope: item.scope ?? 'user',
+            enabled: item.enabled ?? true,
+          };
+
+          if (item.installPath) lock.installPath = item.installPath;
+
+          return lock;
+        }),
     };
   }
 
@@ -313,17 +330,19 @@ export class ClaudePluginAdapter extends PackageAdapter<ClaudeEcosystem, ClaudeL
         && actual.version !== 'unknown'
         && plugin.version !== actual.version;
 
-      return {
-        name: plugin.name,
-        installed: !!actual && !versionMismatch,
-        ...(actual?.version ? { version: actual.version } : {}),
-        ...(actual ? { enabled: actual.enabled ?? true } : {}),
-        ...(!actual
-          ? { detail: 'declared but not installed' }
-          : versionMismatch
-            ? { detail: `declared ${plugin.version}, installed ${actual.version}` }
-            : {}),
-      };
+      const status: PackageStatus = { name: plugin.name, installed: !!actual && !versionMismatch };
+
+      if (actual?.version) status.version = actual.version;
+
+      if (actual) status.enabled = actual.enabled ?? true;
+
+      if (!actual) {
+        status.detail = 'declared but not installed';
+      } else if (versionMismatch) {
+        status.detail = `declared ${plugin.version}, installed ${actual.version}`;
+      }
+
+      return status;
     });
   }
 
