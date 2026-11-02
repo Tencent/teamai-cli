@@ -23,12 +23,13 @@
  */
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
+import { z } from 'zod';
 import { describeOverride, repeatedNames, resolveNamespacedItems, type NamespaceCandidate } from './namespace-resolver.js';
 import { resolveResourceNamespaces } from './resource-namespaces.js';
 import { activeRoleIds, findRole, loadRolesManifestIfPresent } from './roles.js';
 import { findProject, loadProjectsManifest, unknownProjectMessage } from './projects.js';
 import { caseFoldKey, isSafeNamespaceSegment, NAMESPACE_RULE } from './manifest-schema.js';
-import type { LocalConfig } from './types.js';
+import type { JsonValue, LocalConfig } from './types.js';
 import { listDirs, pathExists, readFileIfExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { warnOnce } from './utils/warn-once.js';
@@ -80,7 +81,7 @@ export function entryLayout(type: EntryType): EntryLayout {
 }
 
 function asLayout(where: EntryType | EntryLayout): EntryLayout {
-  return typeof where === 'string' ? entryLayout(where) : where;
+  return where instanceof Object ? where : entryLayout(where);
 }
 
 /** Repo-relative (`/`-separated) path of a type's file in the root (`null`) or a namespace. */
@@ -139,11 +140,13 @@ export interface EntryScopeKeys {
 
 /** The list under `listKey` of a parsed file, as written, before its schema drops any key. */
 export function writtenList(document: unknown, listKey: string): unknown {
-  if (document === null || typeof document !== 'object') return undefined;
-  const fields: [string, unknown][] = Object.entries(document);
+  const fields = WrittenFieldsSchema.safeParse(document);
 
-  return fields.find(([key]) => key === listKey)?.[1];
+  return fields.success ? Object.entries(fields.data).find(([key]) => key === listKey)?.[1] : undefined;
 }
+
+/** A parsed file's top-level fields as written; a file that is not a mapping has none. */
+const WrittenFieldsSchema = z.record(z.string(), z.unknown());
 
 /**
  * The keys each entry was written with that `schema` does not know, for the
@@ -155,7 +158,7 @@ export function unknownEntryKeys<E>(
   document: unknown,
   listKey: string,
   entries: readonly E[],
-  schema: { readonly shape: object },
+  schema: z.ZodObject,
 ): Map<E, string[]> {
   const byEntry = new Map<E, string[]>();
   const raw = writtenList(document, listKey);
@@ -165,7 +168,8 @@ export function unknownEntryKeys<E>(
   entries.forEach((entry, index) => {
     const written: unknown = raw[index];
 
-    if (written === null || typeof written !== 'object') return;
+    // An entry written as a list reports its indexes, as Object.keys reads it.
+    if (!(written instanceof Object)) return;
     const unknown = Object.keys(written).filter((key) => !known.includes(key));
 
     if (unknown.length > 0) byEntry.set(entry, unknown);
@@ -181,8 +185,8 @@ export function unknownEntryKeys<E>(
  * `servers:` read as "no entries" and removed every installed one (#822). An
  * extra key beside a known one stays permitted, as for env.yaml (#662).
  */
-export function missingTopLevelKeyReason(document: unknown, schema: { readonly shape: object }): string | null {
-  if (document === null || typeof document !== 'object' || Array.isArray(document)) return null;
+export function missingTopLevelKeyReason(document: unknown, schema: z.ZodObject): string | null {
+  if (!(document instanceof Object) || Array.isArray(document)) return null;
   const found = Object.keys(document);
   const expected = Object.keys(schema.shape);
 
@@ -223,7 +227,7 @@ export interface EntryReader<E> {
    * does. A workspace whose members' entries of one name agree on it delivers
    * the first and names the difference, instead of holding the name back (#913).
    */
-  delivered?(entry: E): unknown;
+  delivered?(entry: E): JsonValue;
 }
 
 export interface ResolvedEntry<E> {
@@ -484,7 +488,7 @@ async function resolveWorkspaceEntries<E>(
     actives.push(resolution.active);
   }
 
-  const same = (a: { entries: ResolvedEntry<E>[] }, b: { entries: ResolvedEntry<E>[] }, part: (entry: E) => unknown): boolean =>
+  const same = <TPart>(a: { entries: ResolvedEntry<E>[] }, b: { entries: ResolvedEntry<E>[] }, part: (entry: E) => TPart): boolean =>
     isDeepStrictEqual(a.entries.map((entry) => part(entry.entry)), b.entries.map((entry) => part(entry.entry)));
 
   const { items, held } = await unionMemberItems({
