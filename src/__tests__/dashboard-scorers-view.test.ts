@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { AgentObservation } from '../agent-observation.js';
 import { agentHarnessView } from '../dashboard/agent-harness-view.js';
+import { benchmarksClient } from '../dashboard/benchmarks-client.js';
+import type { RoleArm } from '../dashboard/benchmarks.js';
+import { chartFitView } from '../dashboard/chart-fit-view.js';
 import { dashboardMessages } from '../dashboard/locales.js';
 import { dashboardStyles } from '../dashboard/styles.js';
 import { scorersClient } from '../dashboard/scorers-client.js';
@@ -44,12 +47,18 @@ const LABELS: ViewedLabel[] = [
 /**
  * The Scorers page as the dashboard renders `labels` grouped by role, the grouping saved as `groupBy`, in `language`: its
  * HTML, every message key it asked for, each query it sent, and `click`, which clicks the first element an attribute
- * names and renders the page again. The server answers each query with the failing labels of the group it names.
+ * names and renders the page again. The server answers each query with the failing labels of the group it names, split at
+ * the commit it names.
  */
-async function openPage(labels: ViewedLabel[], { groupBy = 'role', language = 'en', split }: { groupBy?: string; language?: 'en' | 'zh-CN'; split?: { commit: string; sideOf: ReadonlyMap<string, 'before' | 'after'> } } = {}) {
+async function openPage(labels: ViewedLabel[], { groupBy = 'role', language = 'en', split, roleArms = [] }: { groupBy?: string; language?: 'en' | 'zh-CN'; split?: { commit: string; sideOf: ReadonlyMap<string, 'before' | 'after'> }; roleArms?: RoleArm[] } = {}) {
   const viewOf = (url: string) => {
-    const group = new URLSearchParams(url.split('?')[1]).get('group');
-    return { configured: true, ...ScorerResults.of({ labels, query: { windowDays: 30, groupBy: 'role', ...(group ? { failing: { group } } : {}), ...(split ? { split } : {}) }, now: NOW }) };
+    // The Benchmarks page's answer, with no run but the arms that ran with a role.
+    if (url.startsWith('/api/benchmarks')) return { configured: true, window: { from: '', to: '' }, suites: [], teamCommits: {}, teamDiffs: {}, roleArms };
+    const params = new URLSearchParams(url.split('?')[1]);
+    const group = params.get('group'), commit = params.get('commit');
+    // Without a split of its own, a commit the page asks to split at is on the team clone, with work on it after it.
+    const at = split ?? (commit ? { commit, sideOf: new Map([[commit, 'after' as const]]) } : undefined);
+    return { configured: true, ...ScorerResults.of({ labels, query: { windowDays: 30, groupBy: 'role', ...(group ? { failing: { group } } : {}), ...(at ? { split: at } : {}) }, now: NOW }) };
   };
   const keys: string[] = [];
   const t = (text: string): string => {
@@ -58,21 +67,35 @@ async function openPage(labels: ViewedLabel[], { groupBy = 'role', language = 'e
   };
   const e = (value: unknown): string => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   const queries: string[] = [];
+  const moved: string[] = [];
   const clicks: Array<(event: { target: { closest: (selector: string) => unknown } }) => void> = [];
   const scope = {
     t, e, label: (text: string) => e(t(text)), number: (value: number) => new Intl.NumberFormat('en').format(value), when: (value: string) => value,
-    read: (key: string, fallback: string) => (key === 'teamai-dashboard-scorer-group' ? groupBy : fallback), save: () => undefined, $: () => undefined,
+    read: (key: string, fallback: string) => (key === 'teamai-dashboard-scorer-group' ? groupBy : fallback), save: () => undefined,
+    // Each element of the page, recording where the page scrolled and what it focused.
+    $: (id: string) => ({ scrollIntoView: () => moved.push(`scrolled to ${id}`), focus: () => moved.push(`focused ${id}`) }),
     apiQuery: (route: string, params: Record<string, string>) => `${route}?${new URLSearchParams(params)}`, errorPanel: (text: string) => text, render: () => undefined, page: 'scorers', workspaceGeneration: 0,
     fetch: async (url: string) => {
       queries.push(url);
       return { ok: true, json: async () => viewOf(url) };
     },
-    document: { addEventListener: (type: string, listener: (typeof clicks)[number]) => (type === 'click' ? clicks.push(listener) : undefined) },
+    window: { innerWidth: 1440 }, location: { hash: 'scorers' },
+    document: {
+      addEventListener: (type: string, listener: (typeof clicks)[number]) => (type === 'click' ? clicks.push(listener) : undefined),
+      // Each chart the page drew, laid out in a box `box` px wide.
+      querySelectorAll: () => [...html.matchAll(/<svg data-chart="([^"]+)" viewBox="0 0 (\d+) /g)].map(([, chart, drawn]) => ({
+        dataset: { chart }, viewBox: { baseVal: { width: Number(drawn) } }, getBoundingClientRect: () => ({ width: box }),
+      })),
+    },
   };
-  const page = new Function(...Object.keys(scope), `${agentHarnessView}\n${scorersClient}\nreturn { scorersPage, loadScorers };`)(...Object.values(scope)) as {
-    scorersPage: () => string; loadScorers: () => Promise<void>;
+  const page = new Function(...Object.keys(scope), `${agentHarnessView}\n${chartFitView}\n${scorersClient}\n${benchmarksClient}\nreturn { scorersPage, loadScorers, fitCharts: () => fitCharts() };`)(...Object.values(scope)) as {
+    scorersPage: () => string; loadScorers: () => Promise<void>; fitCharts: () => void;
   };
+  let box = 0;
   await page.loadScorers();
+  page.scorersPage();
+  // Once every answer the page asked for arrived.
+  await new Promise((resolve) => setTimeout(resolve, 0));
   let html = page.scorersPage();
   /** Clicks the first element of the page that `attribute` names, with the value the page gave it. */
   const click = async (attribute: string) => {
@@ -84,9 +107,18 @@ async function openPage(labels: ViewedLabel[], { groupBy = 'role', language = 'e
     for (const listener of clicks) listener({ target });
     await new Promise((resolve) => setTimeout(resolve, 0));
     html = page.scorersPage();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    html = page.scorersPage();
     return html;
   };
-  return { html, keys, queries, click };
+  /** Lays every chart out in a box `boxWidth` px wide, lets the page measure it, and renders the page again. */
+  const resize = (boxWidth: number) => {
+    box = boxWidth;
+    page.fitCharts();
+    html = page.scorersPage();
+    return html;
+  };
+  return { html, keys, queries, moved, location: scope.location, click, resize };
 }
 
 async function renderPage(labels: ViewedLabel[], options: Parameters<typeof openPage>[1] = {}): Promise<{ html: string; keys: string[] }> {
@@ -125,6 +157,23 @@ describe('the Scorers page of a workflow whose review step runs with a role of i
     expect(dashboardStyles).toMatch(/@container\(max-width:760px\)\{[^@]*\.failing-labels thead,[^@]*\.scorer-groups thead[^{]*\{display:none\}/);
   });
 
+  it('draws the weekly pass rate as wide as its box, so a phone reads its week labels at full size', async () => {
+    const { resize } = await openPage(LABELS);
+    const drawn = (html: string) => [...html.matchAll(/<svg data-chart="trend" viewBox="0 0 (\d+) /g)].map(([, width]) => Number(width));
+
+    expect(drawn(resize(332))).toEqual([332]);
+    expect(drawn(resize(1000))).toEqual([1000]);
+  });
+
+  it('lays the scorer table out as cards by its panel\'s width too, naming each part', async () => {
+    const { html } = await renderPage(LABELS);
+    const [row] = [...html.matchAll(/<table class="session-table scorer-summary">.*?<tbody>(<tr[^>]*>.*?<\/tr>)/gs)].map(([, first]) => first ?? '');
+
+    expect(html).toContain('<div class="table-scroll card-table"><table class="session-table scorer-summary">');
+    expect([...(row ?? '').matchAll(/<td[^>]*data-label="([^"]+)"/g)].map(([, name]) => name)).toEqual(['SCORER', 'MEASUREMENT', 'LABELS', 'PASS RATE', 'AGREES WITH HAND LABELS', 'TREND']);
+    expect(dashboardStyles).toMatch(/@container\(max-width:760px\)\{[^@]*\.scorer-summary thead[^{]*\{display:none\}/);
+  });
+
   it('shows each failing label\'s harness on one line, opens a run still listed, and says when the harness was not recorded', async () => {
     const { html } = await renderPage(LABELS);
 
@@ -155,7 +204,7 @@ describe('the Scorers page of a workflow whose review step runs with a role of i
       viewed('cy', label('r0000000000000006', 'review', { passed: false, scoredAt: '2026-10-28T10:00:00.000Z', agent: later })),
     ];
     const review = JSON.stringify(['value', 'review', null, false]);
-    const { html: grouped, click, queries } = await openPage(labels);
+    const { html: grouped, click, queries, moved } = await openPage(labels);
     expect(grouped).not.toContain('harness-failures');
     const html = await click('data-scorer-group');
     const failing = html.split('<section').find((part) => part.includes('<h2>Failing labels ')) ?? '';
@@ -167,16 +216,52 @@ describe('the Scorers page of a workflow whose review step runs with a role of i
       '2 failing claude · claude-review-2 · high · review step role · bbbbbbb',
       '1 failing claude · claude-review-1 · high · review step role · aaaaaaa',
     ]);
-    expect(summary).toContain(`<button class="link" type="button" data-scorer-split="${MEMBER}" title="Split at team commit ${MEMBER}"`);
+    expect(summary).toContain(`<span class="role-of step">step role</span></span>\u00a0·\u00a0<span class="harness-part"><button class="link" type="button" data-scorer-split="${MEMBER}" title="Split at team commit ${MEMBER}"`);
 
     const split = await click('data-scorer-split');
     expect(new URLSearchParams(queries.at(-1)?.split('?')[1]).get('commit')).toBe(MEMBER);
     expect(new URLSearchParams(queries.at(-1)?.split('?')[1]).get('group')).toBe(review);
     expect(split).toContain(`id="scorer-commit" name="commit" autocomplete="off" spellcheck="false" placeholder="commit SHA" value="${MEMBER}"`);
+    // The split shows far above the list on a phone, so the page takes the reader to it.
+    expect(split).toContain('<h2 class="section-label" id="scorer-split" tabindex="-1">Before and after team commit');
+    expect(moved).toEqual(['scrolled to scorer-split', 'focused scorer-split']);
 
     const chinese = await openPage(labels, { language: 'zh-CN' });
     expect(await chinese.click('data-scorer-group')).toContain('<h3>按 Harness 汇总的失败</h3>');
     expect([...new Set(chinese.keys)].filter((key) => !Object.hasOwn(dashboardMessages, key))).toEqual([]);
+  });
+
+  it('says at which team revision a selected group started failing, when its labels show it clearly, and splits there', async () => {
+    const review = (runId: string, passed: boolean, scoredAt: string, revision: string) => viewed('bob', label(runId, 'review', { passed, scoredAt, agent: ranAs({ tool: 'claude', model: 'claude-review-1', revision, stepRole: 'review' }) }));
+    const turned = [review('r0000000000000011', true, '2026-10-25T10:00:00.000Z', REVIEWED), review('r0000000000000012', false, '2026-10-26T10:00:00.000Z', MEMBER), review('r0000000000000013', false, '2026-10-27T10:00:00.000Z', MEMBER)];
+    const hint = (html: string) => text(/<p class="scorer-hint revision-change">.*?<\/p>/s.exec(html)?.[0] ?? '');
+
+    const { click, queries, moved } = await openPage(turned);
+    const html = await click('data-scorer-group');
+    expect(hint(html)).toBe('First failed at team revision bbbbbbb · last passed on aaaaaaa');
+    await click('data-scorer-split');
+    expect(new URLSearchParams(queries.at(-1)?.split('?')[1]).get('commit')).toBe(MEMBER);
+    expect(moved).toEqual(['scrolled to scorer-split', 'focused scorer-split']);
+
+    // The review step passed and failed on the same revision: no revision to name.
+    expect(hint(await (await openPage(LABELS)).click('data-scorer-group'))).toBe('');
+    const chinese = await openPage(turned, { language: 'zh-CN' });
+    await chinese.click('data-scorer-group');
+    expect([...new Set(chinese.keys)].filter((key) => !Object.hasOwn(dashboardMessages, key))).toEqual([]);
+  });
+
+  it('links a role to the benchmark arms that ran with it, and opens Benchmarks on that suite with the arm marked', async () => {
+    const roleArms = [{ role: 'review', suite: 'review-sql', arm: 'review' }, { role: 'review', suite: 'review-sql', arm: 'codex-review' }, { role: 'spec', suite: 'spec-api', arm: 'spec' }];
+    const { html, click, queries, location } = await openPage(LABELS, { roleArms });
+
+    expect(rowsUnder(html, 'By Role')).toEqual(['review step Benchmark arms: review-sql · review ↗ review-sql · codex-review ↗ 2 1 1 50%', 'frontend member 1 0 1 0%', 'Not recorded 1 0 1 0%']);
+    expect(queries).toContain('/api/benchmarks?window=90');
+
+    await click('data-scorer-arm');
+    expect(location.hash).toBe('benchmarks');
+    expect(queries.at(-1)).toBe('/api/benchmarks?window=90&suite=review-sql');
+    // Without benchmark arms, or grouped by anything else, nothing changes.
+    expect(rowsUnder((await openPage(LABELS)).html, 'By Role')[0]).toBe('review step 2 1 1 50%');
   });
 
   it('names the selected group in the heading of its failing labels', async () => {

@@ -1,21 +1,21 @@
 /**
  * The Benchmarks page of the dashboard client (#1180), embedded in `dashboardClient`'s closure after the Scorers page,
  * whose helpers it uses: `$`, `e`, `t`, `label`, `number`, `when`, `read`, `save`, `apiQuery`, `errorPanel`, `render`,
- * `page`, `workspaceGeneration`, `pct`, `short`, `sparkline`, `kpiCard` and `meter`. Every value from the API is escaped
+ * `page`, `workspaceGeneration`, `pct`, `short`, `sparkline`, `kpiCard` and `meter`, and `chartWidth` from `chartFitView`. Every value from the API is escaped
  * with `e`. A run opens through the Workflow Runs dialog. An arm with a role shows that role's production pass rate, from
  * `/api/scorers` grouped by role in the Scorers page's window and measurement (`scorerQuery`), and opens that group with
- * `openScorers`.
+ * `openScorers`. Another page opens this one on an arm with `openBenchmarks`.
  */
 import { BENCHMARK_WINDOWS } from '../benchmark/history.js';
 
 export const benchmarksClient = `
-let benchData=null, benchError='', benchLoading=false, benchHtml='', benchRequest=0, benchAxis='tokens', benchDimension='', benchComparison='', benchConfig='', benchRevision='', benchProduction=null;
+let benchData=null, benchError='', benchLoading=false, benchHtml='', benchRequest=0, benchAxis='tokens', benchDimension='', benchComparison='', benchConfig='', benchRevision='', benchArm='', benchProduction=null;
 const savedBenchView=read('teamai-dashboard-benchmark-view','arms');
 let benchView=['arms','compare','team'].includes(savedBenchView)?savedBenchView:'arms';
 const benchWindows=${JSON.stringify(BENCHMARK_WINDOWS.map(String))};
 const savedBenchWindow=read('teamai-dashboard-benchmark-window','90');
 let benchQuery={window:benchWindows.includes(savedBenchWindow)?savedBenchWindow:'90',suite:''};
-function resetSelection(){benchComparison='';benchConfig='';benchRevision='';}
+function resetSelection(){benchComparison='';benchConfig='';benchRevision='';benchArm='';}
 function resetBenchmarks(){benchData=null;benchError='';benchLoading=false;benchHtml='';benchProduction=null;benchQuery={...benchQuery,suite:''};resetSelection();}
 const passOf=r=>r&&r.planned?r.passed/r.planned:null;
 const rateCell=r=>r&&r.planned?pct(r.passed/r.planned)+' <small>'+number(r.passed)+'/'+number(r.planned)+'</small>':'<span class="muted">—</span>';
@@ -26,17 +26,29 @@ const armSetup=a=>a.tool+(a.model?' · '+a.model:'')+(a.effort?' · '+a.effort:'
 const armConfig=a=>(a.role?roleText(a)+' · ':'')+armSetup(a);
 const armTitle=a=>a.arm+' ('+armConfig(a)+')';
 const swatch=i=>'<i class="swatch" style="background:'+armColor(i)+'"></i>';
-function armName(a,i){ return swatch(i)+'<span data-verbatim>'+e(a.arm)+'</span>'+(a.role?'<span class="arm-role" data-verbatim>'+e(roleText(a))+'</span>':'')+'<small data-verbatim>'+e(armSetup(a))+'</small>'; }
+// An arm named after its role carries a role marker beside its name, not the same word again under it.
+function armName(a,i){ return swatch(i)+'<span data-verbatim>'+e(a.arm)+'</span>'+(a.role===a.arm?' <span class="role-of">'+label('role')+'</span>':a.role?'<span class="arm-role" data-verbatim>'+e(roleText(a))+'</span>':'')+'<small data-verbatim>'+e(armSetup(a))+'</small>'; }
 function heat(rate){ return rate==null?'':'background:color-mix(in oklab,color-mix(in oklab,var(--green) '+Math.round(rate*100)+'%,var(--error)) '+Math.round(30+Math.abs(rate-0.5)*80)+'%,var(--panel))'; }
-// A chart is drawn as wide as its box, so its text keeps its size and it never scrolls. Until the page has measured a box, the window's width guesses it.
-const chartWidths={};
-const chartWidth=(key,wide=760)=>chartWidths[key]||(window.innerWidth<700?440:window.innerWidth>=1300?wide:760);
-/** After a render or a resize: measures each chart's box, and renders again when a chart was drawn at another width. */
-function fitCharts(){
- const charts=[...document.querySelectorAll('#view svg[data-chart]')].map(svg=>({key:svg.dataset.chart,drawn:svg.viewBox.baseVal.width,box:Math.round(svg.getBoundingClientRect().width)})).filter(c=>c.box>0).map(c=>({...c,box:Math.max(320,c.box)}));
- if(!charts.some(c=>Math.abs(c.box-c.drawn)>2))return;
- for(const c of charts)chartWidths[c.key]=c.box;
- render();
+/**
+ * Places the name of each point beside it: on its preferred side, else under or over it, else on the other side, else
+ * a row lower or higher, at the first spot inside \`bounds\` that no other name, point or \`obstacles\` box covers. A
+ * character of a 12 px semibold name is taken as 7.4 px wide. Each item is \`{text,x,y,r,prefer:'left'|'right'}\`.
+ */
+function placeLabels(items,bounds,obstacles=[]){
+ const taken=[...obstacles,...items.map(p=>({left:p.x-p.r,right:p.x+p.r,top:p.y-p.r,bottom:p.y+p.r}))];
+ const free=b=>b.left>=bounds.left&&b.right<=bounds.right&&b.top>=bounds.top&&b.bottom<=bounds.bottom&&taken.every(o=>b.right<=o.left||o.right<=b.left||b.bottom<=o.top||o.bottom<=b.top);
+ return items.map(p=>{
+  const w=p.text.length*7.4, gap=p.r+4, other=p.prefer==='left'?'right':'left';
+  const at=(side,dy)=>{
+   if(side==='left'||side==='right'){const left=side==='left'?p.x-gap-w:p.x+gap, base=p.y+4+dy; return {left,right:left+w,top:base-11,bottom:base+3,x:side==='left'?p.x-gap:p.x+gap,y:base,anchor:side==='left'?'end':'start'};}
+   const left=Math.min(Math.max(p.x-w/2,bounds.left),bounds.right-w), base=side==='below'?p.y+p.r+14:p.y-p.r-5;
+   return {left,right:left+w,top:base-11,bottom:base+3,x:left+w/2,y:base,anchor:'middle'};
+  };
+  const spots=[at(p.prefer,0),at('below',0),at('above',0),at(other,0),at(p.prefer,16),at(other,16),at(p.prefer,-16),at(other,-16)];
+  const spot=spots.find(free)||spots.find(b=>b.left>=bounds.left&&b.right<=bounds.right)||spots[0];
+  taken.push(spot);
+  return '<text class="point-label'+(p.cls?' '+p.cls:'')+'" x="'+spot.x.toFixed(1)+'" y="'+spot.y.toFixed(1)+'"'+(spot.anchor==='start'?'':' text-anchor="'+spot.anchor+'"')+'>'+e(p.text)+'</text>';
+ });
 }
 function costText(cost){
  if(!cost||cost.kind==='unknown')return '<span class="muted">—</span>';
@@ -50,7 +62,7 @@ const overlaps=(a,b)=>a.pooled.low<=b.pooled.high&&b.pooled.low<=a.pooled.high;
 const cardRow=(cls,heads,cells)=>'<tr class="'+cls+'">'+cells.map((cell,i)=>'<td data-label="'+e(heads[i])+'">'+cell+'</td>').join('')+'</tr>';
 function suitesPanel(d){
  const heads=['SUITE','RUNS','LAST RUN','TASKS × ARMS','LEADER IN THE LAST RUN','PASS RATE PER RUN'];
- return '<section class="panel sessions"><div class="panelhead"><h2>'+label('Suites')+' <span class="count">'+number(d.suites.length)+'</span></h2><span class="label">'+label('Pass rate is passed trials over planned trials, as each run\\'s own table prints it.')+'</span></div><div class="table-scroll"><table class="session-table bench-cards"><thead><tr>'+heads.map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
+ return '<section class="panel sessions"><div class="panelhead"><h2>'+label('Suites')+' <span class="count">'+number(d.suites.length)+'</span></h2><span class="label">'+label('Pass rate is passed trials over planned trials, as each run\\'s own table prints it.')+'</span></div><div class="table-scroll card-table"><table class="session-table bench-cards"><thead><tr>'+heads.map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
   +d.suites.map(s=>{const selected=d.selected&&d.selected.suite===s.suite; return cardRow(selected?'selected-row':'',heads.map(t),['<button class="link" data-bench-suite="'+e(s.suite)+'" aria-pressed="'+selected+'" data-verbatim>'+e(s.suite)+'</button>',number(s.runs),e(when(s.lastRunAt)),number(s.tasks)+' × '+number(s.arms),s.leader?'<span data-verbatim>'+e(s.leader.arm)+'</span> '+rateCell(s.leader):'—',sparkline(s.trend.map(p=>({rate:passOf(p)})))]);}).join('')
   +'</tbody></table></div></section>';
 }
@@ -77,20 +89,30 @@ async function loadBenchProduction(){
  finally{if(current()&&page==='benchmarks'){const html=benchmarksPage();if(html!==benchHtml){benchHtml=html;render();}}}
 }
 function productionGroup(role){ const sel=benchProduction&&benchProduction.data&&benchProduction.data.selected; return sel&&sel.groups?sel.groups.find(g=>g.kind==='value'&&g.value===role):undefined; }
+/**
+ * The role's pass rate in production under its arm: with the 95% interval the server gives its group, \`not separated\`
+ * and not in bold while that interval overlaps the arm's, as two arms are told apart, and whether the labels ran with the role as the step's or the
+ * member's, as By Role says. Each part stays whole and the line wraps between parts.
+ */
 function armProduction(a){
  if(!a.role)return '';
- const p=benchProduction, head='<span>'+label('In production')+':</span> ';
+ const p=benchProduction, head='<span>'+label('In production')+':</span> ', part=html=>'<span class="production-part">'+html+'</span>';
  if(!p||p.state==='loading')return '<div class="arm-production">'+head+'<span class="muted">…</span></div>';
  if(p.state==='error')return '<div class="arm-production">'+head+'<span class="muted">'+label('Could not load scorer results.')+'</span></div>';
  const days=number(Number(p.data.window?p.data.window.days:scorerQuery.window))+' '+label('days'), g=productionGroup(a.role);
  if(!g)return '<div class="arm-production">'+head+'<span class="muted">'+label('no labels for this role')+' · '+days+'</span></div>';
- return '<div class="arm-production" title="'+e(t('In production')+': '+p.data.selected.cohort.scorer)+'">'+head+'<b>'+pct(g.stats.rate)+'</b> <small>'+number(g.stats.passed)+'/'+number(g.stats.n)+'<span class="production-scorer"> · <span data-verbatim>'+e(p.data.selected.cohort.scorer)+'</span></span> · '+days+'</small> <button class="link" type="button" data-bench-production="'+e(a.role)+'">'+label('Scorers')+' ↗</button></div>';
+ const ci=g.interval, apart=ci.high<a.pooled.low||ci.low>a.pooled.high;
+ const parts=[(apart?'<b>'+pct(g.stats.rate)+'</b>':'<span class="production-rate">'+pct(g.stats.rate)+'</span>')+' '+number(g.stats.passed)+'/'+number(g.stats.n),'95% '+pct(ci.low)+'–'+pct(ci.high)]
+  .concat(apart?[]:['<span class="amber" title="'+e(t('Its 95% interval overlaps this arm\\'s, so these labels do not tell production apart from the benchmark.'))+'">'+label('not separated')+'</span>'])
+  .concat(g.roleOf?['<span class="role-of '+e(g.roleOf)+'">'+label(g.roleOf)+'</span>']:[])
+  .concat(['<span data-verbatim>'+e(p.data.selected.cohort.scorer)+'</span>',days]);
+ return '<div class="arm-production" title="'+e(t('In production')+': '+p.data.selected.cohort.scorer)+'">'+head+'<small>'+parts.map(part).join(' · ')+'</small> <button class="link" type="button" data-bench-production="'+e(a.role)+'">'+label('Scorers')+' ↗</button></div>';
 }
 function armBars(sel){
  const arms=sel.arms.filter(a=>a.pooled);
  if(page==='benchmarks'&&arms.some(a=>a.role)&&(!benchProduction||benchProduction.key!==JSON.stringify(productionQuery())))loadBenchProduction();
  return '<section class="panel bench-panel"><div class="panelhead"><h2>'+label('Pass rate by arm')+'</h2><span class="label">'+label('Pooled over the runs of the current suite version. The line is the 95% interval: two arms whose lines overlap are not told apart by these runs.')+'</span></div><div class="arm-bars">'
-  +arms.map(a=>{const i=sel.arms.indexOf(a), rate=passOf(a.pooled); return '<div class="arm-bar" title="'+e(armTitle(a)+': '+Math.round(rate*100)+'% ('+a.pooled.passed+'/'+a.pooled.planned+'), 95% '+Math.round(a.pooled.low*100)+'–'+Math.round(a.pooled.high*100)+'%')+'"><div class="arm-label">'+armName(a,i)+'</div><div class="arm-track" role="img" aria-label="'+e(armTitle(a)+' '+Math.round(rate*100)+'%')+'"><span class="arm-fill" style="width:'+(rate*100).toFixed(1)+'%;background:'+armColor(i)+'"></span><span class="arm-ci" style="left:'+(a.pooled.low*100).toFixed(1)+'%;width:'+((a.pooled.high-a.pooled.low)*100).toFixed(1)+'%"></span></div><div class="arm-value"><b>'+pct(rate)+'</b><small>'+number(a.pooled.passed)+'/'+number(a.pooled.planned)+' · '+number(a.pooled.runs)+' '+label(a.pooled.runs===1?'run':'runs')+'</small>'+(a.pooled.deviations?'<small class="amber">'+number(a.pooled.deviations)+' '+label(a.pooled.deviations===1?'deviation':'deviations')+'</small>':'')+(a.pooled.notVerified?'<small class="muted">'+number(a.pooled.notVerified)+' '+label('not verified')+'</small>':'')+'</div>'+armProduction(a)+'</div>';}).join('')
+  +arms.map(a=>{const i=sel.arms.indexOf(a), rate=passOf(a.pooled); return '<div class="arm-bar'+(a.arm===benchArm?' marked" aria-current="true':'')+'" title="'+e(armTitle(a)+': '+Math.round(rate*100)+'% ('+a.pooled.passed+'/'+a.pooled.planned+'), 95% '+Math.round(a.pooled.low*100)+'–'+Math.round(a.pooled.high*100)+'%')+'"><div class="arm-label">'+armName(a,i)+'</div><div class="arm-track" role="img" aria-label="'+e(armTitle(a)+' '+Math.round(rate*100)+'%')+'"><span class="arm-fill" style="width:'+(rate*100).toFixed(1)+'%;background:'+armColor(i)+'"></span><span class="arm-ci" style="left:'+(a.pooled.low*100).toFixed(1)+'%;width:'+((a.pooled.high-a.pooled.low)*100).toFixed(1)+'%"></span></div><div class="arm-value"><b>'+pct(rate)+'</b><small>'+number(a.pooled.passed)+'/'+number(a.pooled.planned)+' · '+number(a.pooled.runs)+' '+label(a.pooled.runs===1?'run':'runs')+'</small>'+(a.pooled.deviations?'<small class="amber">'+number(a.pooled.deviations)+' '+label(a.pooled.deviations===1?'deviation':'deviations')+'</small>':'')+(a.pooled.notVerified?'<small class="muted">'+number(a.pooled.notVerified)+' '+label('not verified')+'</small>':'')+'</div>'+armProduction(a)+'</div>';}).join('')
   +'</div></section>';
 }
 function historyChart(sel){
@@ -152,7 +174,7 @@ function scatterPanel(sel){
   +usageGrid({W,H,pl,pr,pb,pw,x,y,max,axis,unit})
   +'<text class="better" x="'+(pl+8)+'" y="'+(pt+14)+'">↖ '+e(t('better: higher pass rate for less'))+'</text>'
   +(frontier.length>1?'<polyline class="frontier" points="'+frontier.map(q=>x(q.vx).toFixed(1)+','+y(q.vy).toFixed(1)).join(' ')+'"/>':'')
-  +placed.map(q=>'<g><title>'+e(armTitle(q.a)+': '+Math.round(q.vy*100)+'% ('+q.a.pooled.passed+'/'+q.a.pooled.planned+'), 95% '+Math.round(q.a.pooled.low*100)+'–'+Math.round(q.a.pooled.high*100)+'% · '+fmt(q.vx)+' · '+usedBy(usageUsed(q.a,axis)))+'</title><line class="ci" x1="'+x(q.vx)+'" x2="'+x(q.vx)+'" y1="'+y(q.a.pooled.low)+'" y2="'+y(q.a.pooled.high)+'" style="stroke:'+armColor(q.i)+'"/><circle cx="'+x(q.vx)+'" cy="'+y(q.vy)+'" r="7" style="fill:'+armColor(q.i)+'"/><text class="point-label" x="'+(x(q.vx)>W*0.7?x(q.vx)-11:x(q.vx)+11)+'" y="'+(y(q.vy)+4)+'"'+(x(q.vx)>W*0.7?' text-anchor="end"':'')+'>'+e(q.a.arm)+'</text></g>').join('')
+  +(names=>placed.map((q,k)=>'<g><title>'+e(armTitle(q.a)+': '+Math.round(q.vy*100)+'% ('+q.a.pooled.passed+'/'+q.a.pooled.planned+'), 95% '+Math.round(q.a.pooled.low*100)+'–'+Math.round(q.a.pooled.high*100)+'% · '+fmt(q.vx)+' · '+usedBy(usageUsed(q.a,axis)))+'</title><line class="ci" x1="'+x(q.vx)+'" x2="'+x(q.vx)+'" y1="'+y(q.a.pooled.low)+'" y2="'+y(q.a.pooled.high)+'" style="stroke:'+armColor(q.i)+'"/><circle cx="'+x(q.vx)+'" cy="'+y(q.vy)+'" r="7" style="fill:'+armColor(q.i)+'"/>'+names[k]+'</g>').join(''))(placeLabels(placed.map(q=>({text:q.a.arm,x:x(q.vx),y:y(q.vy),r:7,prefer:x(q.vx)>W*0.7?'left':'right'})),{left:0,right:W,top:0,bottom:H-pb}))
   +'</svg>';
  return '<section class="panel bench-panel"><div class="panelhead"><h2>'+label('Pass rate against cost')+'</h2>'+toggle+'</div><div class="chart-scroll">'+svg+'</div><p class="scorer-hint">'+label('The dashed line joins the arms nothing beats on both: each is the cheapest way to reach its pass rate. Usage is the median over the trials whose tool reported it.')+'</p></section>';
 }
@@ -182,7 +204,7 @@ function latestPanel(sel){
 function runsPanel(sel){
  const arms=sel.arms.filter(a=>a.isCurrent), heads=['STARTED','MEMBER','FROM','SUITE VERSION','TEAM REVISION','PASS RATE'];
  const names=heads.map(t).concat(arms.map(a=>a.arm));
- return '<section class="panel sessions bench-panel"><div class="panelhead"><h2>'+label('Runs')+' <span class="count">'+number(sel.runs.length)+'</span></h2><span class="label">'+label('Newest first. A team revision marked changed installed other team assets than the run before it.')+'</span></div><div class="table-scroll"><table class="session-table bench-cards"><thead><tr>'+heads.map(x=>'<th>'+label(x)+'</th>').join('')+arms.map(a=>'<th title="'+e(armTitle(a))+'"><div class="arm-label">'+swatch(sel.arms.indexOf(a))+'<span data-verbatim>'+e(a.arm)+'</span></div></th>').join('')+'</tr></thead><tbody>'
+ return '<section class="panel sessions bench-panel"><div class="panelhead"><h2>'+label('Runs')+' <span class="count">'+number(sel.runs.length)+'</span></h2><span class="label">'+label('Newest first. A team revision marked changed installed other team assets than the run before it.')+'</span></div><div class="table-scroll card-table"><table class="session-table bench-cards"><thead><tr>'+heads.map(x=>'<th>'+label(x)+'</th>').join('')+arms.map(a=>'<th title="'+e(armTitle(a))+'"><div class="arm-label">'+swatch(sel.arms.indexOf(a))+'<span data-verbatim>'+e(a.arm)+'</span></div></th>').join('')+'</tr></thead><tbody>'
   +sel.runs.map((r,i)=>{const older=sel.runs[i+1], current=r.sourceHash===sel.versions[0].sourceHash; return cardRow('',names,[
    '<button class="link" data-run="'+e(r.run)+'" data-run-source="'+e(r.source)+'">'+e(when(r.startedAt))+' ↗</button><small data-verbatim>'+e(r.run)+'</small>',
    '<span data-verbatim>'+e(r.username||'—')+'</span>',
@@ -261,12 +283,14 @@ function arrowPanel(sel,list,chosen){
   +'</svg>';
  return '<section class="panel bench-panel">'+head+'<div class="chart-scroll">'+svg+'</div><p class="scorer-hint">'+label('Hollow: the arm the difference is measured from. Filled: the other. An arrow up and to the left passes more for less.')+'</p></section>';
 }
-// The filled end names the arm, or what both arms share. Compared by role, the hollow end names its role too, so the arrow reads from one role to the other.
+// The filled end names the arm, or what both arms share. Compared by role, the hollow end names its role too, so the arrow reads from one role to the other. Each name sits on the side of its point away from the shaft.
 function arrowLabels(sel,c,{x1,y1,x2,y2,W,H,pb}){
- const flip=x2>W*0.7, to='<text class="point-label" x="'+(flip?x2-10:x2+10)+'" y="'+(y2+4)+'"'+(flip?' text-anchor="end"':'')+'>'+e(c.dimension==='role'?sideName(sel,c.to,c.dimension):facetOf(sel,c)||sideName(sel,c.to,c.dimension))+'</text>';
- if(c.dimension!=='role')return to;
- const below=y1+18<=H-pb-4, anchor=x1>W*0.7?'end':x1<W*0.3?'start':'middle';
- return '<text class="point-label from" x="'+x1.toFixed(1)+'" y="'+(below?y1+18:y1-10).toFixed(1)+'" text-anchor="'+anchor+'">'+e(sideName(sel,c.from,c.dimension))+'</text>'+to;
+ const away=x1===x2?(x2>W*0.7?'left':'right'):x2<x1?'left':'right', back=away==='left'?'right':'left';
+ const to={text:c.dimension==='role'?sideName(sel,c.to,c.dimension):facetOf(sel,c)||sideName(sel,c.to,c.dimension),x:x2,y:y2,r:6,prefer:away};
+ const shaft={left:Math.min(x1,x2)-2,right:Math.max(x1,x2)+2,top:Math.min(y1,y2)-2,bottom:Math.max(y1,y2)+2};
+ const items=c.dimension==='role'?[{text:sideName(sel,c.from,c.dimension),x:x1,y:y1,r:5,prefer:back,cls:'from'},to]:[to];
+ const [first,second]=placeLabels(items,{left:0,right:W,top:0,bottom:H-pb},[shaft]);
+ return first+(second||'');
 }
 function taskDeltaPanel(sel,c){
  const rows=c.tasks.map(x=>({x,f:passOf(x.from),to:passOf(x.to)}));
@@ -312,7 +336,7 @@ function revisionDetail(points,q){
  const diff=prev?(benchData.teamDiffs||{})[prev.r.revision+'..'+q.r.revision]:undefined;
  const changes=diff?'<ul class="changed-files">'+diff.files.map(f=>'<li><code data-verbatim>'+e(f.path)+'</code><small><span class="up">+'+number(f.added)+'</span> <span class="down">−'+number(f.removed)+'</span></small></li>').join('')+(diff.more?'<li class="muted">'+label('and')+' '+number(diff.more)+' '+label(diff.more===1?'more file':'more files')+'</li>':'')+(diff.files.length?'':'<li class="muted">'+label('No file outside benchmarks/ changed.')+'</li>')+'</ul>'
   :'<p class="muted">'+(prev?label('This machine\\'s team clone lacks one of the two revisions, so it cannot list what changed.'):label('The first team revision in the window.'))+'</p>';
- return '<section class="panel bench-panel"><div class="panelhead"><h2><span data-verbatim>'+short(q.r.revision)+'</span>'+(commit?' · <span data-verbatim>'+e(commit.subject)+'</span>':'')+(prev?' <span class="label">'+label('against')+' <span data-verbatim>'+short(prev.r.revision)+'</span></span>':'')+'</h2>'+(sep?'<span class="tag '+(sep==='down'?'down':'up')+'">'+label(sep==='down'?'told apart: lower':'told apart: higher')+'</span>':'')+'</div><h3 class="caption">'+label('Team files changed')+'</h3>'+changes+'<div class="table-scroll"><table class="session-table bench-cards"><thead><tr>'+heads.map(h=>'<th'+(h===heads[0]||h==='CHANGE'?'':' data-verbatim')+'>'+(h===heads[0]||h==='CHANGE'?label(h):e(h))+'</th>').join('')+'</tr></thead><tbody>'+rows+'</tbody></table></div></section>';
+ return '<section class="panel bench-panel"><div class="panelhead"><h2><span data-verbatim>'+short(q.r.revision)+'</span>'+(commit?' · <span data-verbatim>'+e(commit.subject)+'</span>':'')+(prev?' <span class="label">'+label('against')+' <span data-verbatim>'+short(prev.r.revision)+'</span></span>':'')+'</h2>'+(sep?'<span class="tag '+(sep==='down'?'down':'up')+'">'+label(sep==='down'?'told apart: lower':'told apart: higher')+'</span>':'')+'</div><h3 class="caption">'+label('Team files changed')+'</h3>'+changes+'<div class="table-scroll card-table"><table class="session-table bench-cards"><thead><tr>'+heads.map(h=>'<th'+(h===heads[0]||h==='CHANGE'?'':' data-verbatim')+'>'+(h===heads[0]||h==='CHANGE'?label(h):e(h))+'</th>').join('')+'</tr></thead><tbody>'+rows+'</tbody></table></div></section>';
 }
 function benchmarksPage(){
  if(page==='benchmarks'&&!benchData&&!benchLoading&&!benchError)loadBenchmarks();
@@ -340,6 +364,8 @@ async function loadBenchmarks(){
  }catch{if(current())benchError=t('Could not load benchmark runs.');}
  finally{if(current()){benchLoading=false;if(page==='benchmarks'){const html=benchmarksPage();if(html!==benchHtml){benchHtml=html;render();}}}}
 }
+/** Opens the page on the Arms of \`suite\` with \`arm\` marked, such as an arm another page links a role to. */
+function openBenchmarks({suite,arm}){ benchData=null;benchError='';benchView='arms';save('teamai-dashboard-benchmark-view',benchView);setBenchQuery({suite});benchArm=arm;location.hash='benchmarks'; }
 function setBenchQuery(changes){ if(changes.suite!==undefined&&changes.suite!==benchQuery.suite)resetSelection(); benchQuery={...benchQuery,...changes}; save('teamai-dashboard-benchmark-window',benchQuery.window); loadBenchmarks(); }
 document.addEventListener('change',event=>{ if(event.target.id==='bench-window')setBenchQuery({window:event.target.value}); });
 document.addEventListener('click',event=>{

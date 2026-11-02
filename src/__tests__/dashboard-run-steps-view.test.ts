@@ -40,8 +40,8 @@ describe("a run's Steps", () => {
     const [first] = [...html.matchAll(/<tbody>(<tr>.*?<\/tr>)/gs)].map(([, row]) => row ?? '');
 
     expect(html).toMatch(/^<div class="table-scroll card-table"><table class="run-steps">/);
-    expect([...(first ?? '').matchAll(/<td data-label="([^"]+)"/g)].map(([, name]) => name)).toEqual(['STEP', 'PASS', 'STATUS', 'Tokens', 'ANSWER', 'SCORES', 'OUTCOMES']);
-    expect(first).toContain('<span class="harness-part"><span data-verbatim>spec</span> <span class="role-of step">step role</span></span> · <span class="harness-part" data-verbatim>ccccccc</span>');
+    expect([...(first ?? '').matchAll(/<td data-label="([^"]+)"/g)].map(([, name]) => name)).toEqual(['STEP', 'PASS', 'STATUS', 'TOKENS', 'ANSWER', 'SCORES', 'OUTCOMES']);
+    expect(first).toContain('<span class="harness-part"><span data-verbatim>spec</span> <span class="role-of step">step role</span></span>\u00a0·\u00a0<span class="harness-part" data-verbatim>ccccccc</span>');
   });
 
   it('switches to cards by the width of the drawer, not of the window', () => {

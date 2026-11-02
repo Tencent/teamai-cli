@@ -5,6 +5,7 @@
  */
 import { createHash } from 'node:crypto';
 import { agentHarnessOf, type AgentHarness, type AgentObservation, type RecordedAgent } from '../agent-observation.js';
+import { wilson } from '../benchmark/history.js';
 import type { RunMode } from '../launch-context.js';
 import { canonicalJson } from '../utils/canonical-json.js';
 import { DECIDERS, isStageDecider, labelId, type Decider, type ScoreLabel } from './label.js';
@@ -116,10 +117,11 @@ export type Split = { commit: string; before: Stats; after: Stats; notRecorded: 
 export type RoleOf = 'step' | 'member' | 'both';
 
 /**
- * The labels of a cohort that recorded one value of a dimension, or none, or did not record it. A role group says
- * where its role came from in `roleOf`.
+ * The labels of a cohort that recorded one value of a dimension, or none, or did not record it, with the 95% Wilson
+ * interval of their pass rate, as a benchmark arm's: what tells a role's production apart from its arm. A role group
+ * says where its role came from in `roleOf`.
  */
-export type Group = { key: string; stats: Stats; split?: Omit<Split, 'commit'> } & (
+export type Group = { key: string; stats: Stats; interval: { low: number; high: number }; split?: Omit<Split, 'commit'> } & (
   | ({ kind: 'value'; roleOf?: RoleOf } & GroupValue)
   | { kind: 'none' }
   | { kind: 'not recorded' }
@@ -161,6 +163,9 @@ export type Decided = { rows: Array<{ by: Decider | 'not recorded'; key: string;
 
 /** How many failing labels judged work that ran with one harness; without `harness` when the work recorded none. */
 export type HarnessFailures = { harness?: AgentHarness; failed: number };
+
+/** The team revision a group's labels last passed on, and the one they failed on from then on. */
+export type RevisionChange = { lastPassed: string; firstFailed: string };
 
 /**
  * The friction reminder per session run on this machine (#1182): `hinted` from the member's contribute state, by
@@ -226,9 +231,10 @@ export type SelectedCohort = {
   split?: Split;
   /**
    * The newest failing labels the query asked for, and how many it matches. With a group selected, `byHarness` counts
-   * all of them by the harness each ran with, the most failures first: whether one harness causes them.
+   * all of them by the harness each ran with, the most failures first: whether one harness causes them; and
+   * `revisionChange`, when the group's labels show one, names the team revision they started failing on.
    */
-  failing: { labels: FailingLabel[]; total: number; byHarness?: HarnessFailures[] };
+  failing: { labels: FailingLabel[]; total: number; byHarness?: HarnessFailures[]; revisionChange?: RevisionChange };
   /** Only for a workflow cohort whose labels recorded what decided them. */
   decided?: Decided;
   /** Only for a session cohort on a dashboard that read this machine's reminder state: the sessions of the last `days`. */
@@ -478,6 +484,28 @@ function failuresByHarness(failing: readonly ViewedLabel[]): HarnessFailures[] {
   return [...counts.values()].sort((left, right) => right.failed - left.failed);
 }
 
+/**
+ * Where a group's labels turned from passing to failing, by the team revision each judged work ran on: only when, in
+ * the order they were scored, every label that recorded a revision passed up to one point and failed from it on, on
+ * revisions none of the passing ones ran on. Anything less clear names no revision, rather than a guess.
+ */
+function revisionChange(labels: readonly ViewedLabel[]): RevisionChange | undefined {
+  const ran = labels.flatMap((entry) => {
+    const revision = observed(entry.agent)?.team?.revision;
+
+    return revision === undefined ? [] : [{ revision, passed: entry.label.passed, at: entry.label.scoredAt }];
+  }).sort((left, right) => left.at.localeCompare(right.at));
+
+  const turn = ran.findIndex(({ passed }) => !passed);
+  const [passing, failing] = [ran.slice(0, turn), ran.slice(turn)];
+  const lastPassed = passing.at(-1), firstFailed = failing[0];
+
+  if (turn <= 0 || !lastPassed || !firstFailed || failing.some(({ passed }) => passed)) return undefined;
+  const passedOn = new Set(passing.map(({ revision }) => revision));
+
+  return failing.some(({ revision }) => passedOn.has(revision)) ? undefined : { lastPassed: lastPassed.revision, firstFailed: firstFailed.revision };
+}
+
 /** The reminder table of a session cohort: each session counts once, under the label of this cohort it has. */
 function reminderRows(labels: readonly ViewedLabel[], input: ReminderInput): ReminderRow[] {
   const verdicts = new Map(labels.flatMap(({ label }) => (label.source === 'session' ? [[label.subject.sessionId, label.passed] as const] : [])));
@@ -519,8 +547,11 @@ function groups(labels: readonly ViewedLabel[], dimension: Dimension, sideOf: Re
     }
   }
 
+  // A group holds at least one label, so its interval is always defined.
   const counts = (members: readonly ViewedLabel[]) => {
-    const counted: Pick<Group, 'stats' | 'split'> = { stats: stats(members) };
+    const counted: Pick<Group, 'stats' | 'interval' | 'split'> = {
+      stats: stats(members), interval: wilson({ passed: members.filter(({ label }) => label.passed).length, planned: members.length }),
+    };
 
     if (sideOf) counted.split = splitStats(members, sideOf);
 
@@ -758,10 +789,13 @@ export const ScorerResults = {
     const failing = counted.filter((entry) => !entry.label.passed && inGroup(entry))
       .sort((left, right) => right.label.scoredAt.localeCompare(left.label.scoredAt));
 
+    const change = groupBy && group !== undefined ? revisionChange(counted.filter(inGroup)) : undefined;
     const stageBreakdown = summary.source === 'workflow' ? decided(counted) : undefined;
     const failingList: SelectedCohort['failing'] = { labels: failing.slice(0, query.failing?.limit ?? FAILING_PAGE).map(failingLabel), total: failing.length };
 
     if (groupBy && group !== undefined) failingList.byHarness = failuresByHarness(failing);
+
+    if (change) failingList.revisionChange = change;
 
     const selected: SelectedCohort = {
       cohort: { ...summary, values: valueCounts(counted) },

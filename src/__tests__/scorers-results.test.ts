@@ -182,6 +182,33 @@ describe('scorer results', () => {
       expect(ScorerResults.of({ labels, query: { windowDays: 30, groupBy: 'role' }, now: NOW }).selected?.failing).not.toHaveProperty('byHarness');
     });
 
+    it("gives each group its pass rate's 95% Wilson interval, as a benchmark arm's, so 1 of 1 weighs less than 20 of 20", () => {
+      const on = (stepRole: string) => observed({ team: { revision: REV_A, localChanges: false, selection: { scope: 'project', primaryRole: 'frontend', additionalRoles: [], stepRole } } });
+      const labels = [viewed(sessionLabel(), { agent: on('spec') }), ...Array.from({ length: 20 }, () => viewed(sessionLabel(), { agent: on('review') })),
+        viewed(sessionLabel(), { agent: on('plan') }), viewed(sessionLabel({ passed: false, label: 'poor', score: 0 }), { agent: on('plan') })];
+      const intervals = Object.fromEntries((ScorerResults.of({ labels, query: { windowDays: 30, groupBy: 'role' }, now: NOW }).selected?.groups ?? [])
+        .map((group) => [group.kind === 'value' ? group.value : group.kind, [group.interval.low, group.interval.high].map((bound) => Math.round(bound * 1000) / 1000)]));
+
+      expect(intervals).toEqual({ review: [0.839, 1], plan: [0.095, 0.905], spec: [0.207, 1] });
+    });
+
+    it("names the team revision a selected group's labels started failing on, only when they passed before it and failed from it on", () => {
+      const [REV_B, REV_C] = ['b'.repeat(40), 'c'.repeat(40)];
+      const on = (revision: string) => observed({ team: { revision, localChanges: false, selection: { scope: 'project', primaryRole: 'frontend', additionalRoles: [], stepRole: 'spec' } } });
+      const scored = (day: number, passed: boolean, revision: string) => viewed(sessionLabel({ passed, label: passed ? 'good' : 'poor', score: passed ? 1 : 0, scoredAt: `2026-03-${String(day).padStart(2, '0')}T10:00:00.000Z` }), { agent: on(revision) });
+      const spec = JSON.stringify(['value', 'spec', null, false]);
+      const changeOf = (labels: ViewedLabel[], group: string | null = spec) => ScorerResults.of({ labels, query: { windowDays: 30, groupBy: 'role', ...(group ? { failing: { group } } : {}) }, now: NOW }).selected?.failing.revisionChange;
+      // Passed on a, then failed on b and on c: b is where it turned.
+      const turned = [scored(12, false, REV_B), scored(10, true, REV_A), scored(13, false, REV_C), scored(11, true, REV_A)];
+
+      expect(changeOf(turned)).toEqual({ lastPassed: REV_A, firstFailed: REV_B });
+      expect(changeOf(turned, null)).toBeUndefined();
+      // A pass after the first failure, a revision that both passed and failed, or no pass at all is no clear change.
+      expect(changeOf([...turned, scored(14, true, REV_C)])).toBeUndefined();
+      expect(changeOf([scored(10, true, REV_A), scored(11, false, REV_A), scored(12, false, REV_B)])).toBeUndefined();
+      expect(changeOf([scored(10, false, REV_A), scored(11, false, REV_B)])).toBeUndefined();
+    });
+
     it('counts a label under every skill it used, and one that used none under none', () => {
       const labels = [
         viewed(sessionLabel({ used: { skills: ['tdd', 'review'] } })),

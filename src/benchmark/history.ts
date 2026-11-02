@@ -225,8 +225,8 @@ function beats(left: PassRate, right: PassRate): boolean {
   return left.passed * right.planned > right.passed * left.planned;
 }
 
-/** The Wilson score interval of `passed` out of `planned`, planned above 0. */
-function wilson({ passed, planned }: PassRate) {
+/** The 95% Wilson score interval of `passed` out of `planned`, planned above 0: a benchmark arm's, and a Scorers group's. */
+export function wilson({ passed, planned }: PassRate) {
   const p = passed / planned;
   const z2 = Z * Z;
   const denominator = 1 + z2 / planned;

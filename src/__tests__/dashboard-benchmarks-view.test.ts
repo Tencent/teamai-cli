@@ -4,7 +4,9 @@ import type { TrialResult } from '../benchmark/result.js';
 import type { AgentObservation } from '../agent-observation.js';
 import { agentHarnessView } from '../dashboard/agent-harness-view.js';
 import { benchmarksClient } from '../dashboard/benchmarks-client.js';
+import { chartFitView } from '../dashboard/chart-fit-view.js';
 import { dashboardMessages } from '../dashboard/locales.js';
+import { dashboardStyles } from '../dashboard/styles.js';
 import { scorersClient } from '../dashboard/scorers-client.js';
 import type { ScoreLabel } from '../scorers/label.js';
 import { ScorerResults, type ViewedLabel } from '../scorers/results.js';
@@ -73,8 +75,8 @@ async function openPage(runs: BenchmarkRunInput[], { view = 'arms', dimension = 
   };
   const names = Object.keys(scope);
   // The dashboard client embeds the Benchmarks page after the Scorers page, in one closure.
-  const page = new Function(...names, `${agentHarnessView}\n${scorersClient}\n${benchmarksClient}\nreturn { benchmarksPage, loadBenchmarks, fitCharts: () => fitCharts(), compareBy: (key) => { benchDimension = key; } };`)(...Object.values(scope)) as {
-    benchmarksPage: () => string; loadBenchmarks: () => Promise<void>; fitCharts: () => void; compareBy: (key: string) => void;
+  const page = new Function(...names, `${agentHarnessView}\n${chartFitView}\n${scorersClient}\n${benchmarksClient}\nreturn { benchmarksPage, loadBenchmarks, fitCharts: () => fitCharts(), compareBy: (key) => { benchDimension = key; }, openBenchmarks: (to) => openBenchmarks(to) };`)(...Object.values(scope)) as {
+    benchmarksPage: () => string; loadBenchmarks: () => Promise<void>; fitCharts: () => void; compareBy: (key: string) => void; openBenchmarks: (to: { suite: string; arm: string }) => void;
   };
   let html = '', box = 0;
   const settle = async () => {
@@ -100,7 +102,14 @@ async function openPage(runs: BenchmarkRunInput[], { view = 'arms', dimension = 
     html = page.benchmarksPage();
     return html;
   };
-  return { html, queries, location, click, resize };
+  /** Opens the page as another page links to an arm of a suite, and renders it once its runs arrived. */
+  const open = async (to: { suite: string; arm: string }) => {
+    page.openBenchmarks(to);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    html = await settle();
+    return html;
+  };
+  return { html, queries, location, click, resize, open };
 }
 
 async function renderPage(runs: BenchmarkRunInput[], options: Parameters<typeof openPage>[1] = {}): Promise<string> {
@@ -145,6 +154,20 @@ describe('the Benchmarks page of a suite that compares roles', () => {
     expect(legend).toMatch(/^<span class="arm-label"><i class="swatch"[^>]*><\/i><span data-verbatim>claude-frontend<\/span><span class="arm-role" data-verbatim>frontend role<\/span>/);
   });
 
+  it('marks an arm named after its role once, instead of repeating the role under its name', async () => {
+    const [run] = runs;
+    // The suite names each arm after the role it runs with: frontend, review.
+    const named: BenchmarkRunInput[] = run ? [{ ...run, benchmark: { ...run.benchmark,
+      arms: run.benchmark.arms.filter(({ tool }) => tool === 'claude').map((arm) => ({ ...arm, name: arm.role ?? '' })),
+      trials: run.benchmark.trials.filter(({ arm }) => arm.startsWith('claude-')).map((trial) => ({ ...trial, arm: trial.arm.split('-')[1] ?? '' })) } }] : [];
+    const html = await renderPage(named);
+    const bars = [...html.matchAll(/<div class="arm-label">(.*?)<\/div>/gs)].map(([, name]) => text(name ?? '').trim());
+
+    expect(bars.slice(0, 2)).toEqual(['frontend role claude', 'review role claude']);
+    expect(html).toContain('<span data-verbatim>review</span> <span class="role-of">role</span>');
+    expect(html).not.toContain('review role</span>');
+  });
+
   it('names the two roles at the ends of the cost arrow, and says what it compares by when that is the only choice', async () => {
     const html = await renderPage([roleRun({ 'claude-frontend': 'passed', 'claude-review': 'passed' }, { 'claude-frontend': 1200, 'claude-review': 1000 })], { view: 'compare' });
     const arrow = html.split('<g class="arrow active"')[1]?.split('</g>')[0] ?? '';
@@ -172,8 +195,9 @@ describe('the Benchmarks page of a suite that compares roles', () => {
     const bars = (html.split('<div class="arm-bars">')[1] ?? '').split('<div class="arm-bar" ');
     const production = (arm: string) => text(bars.find((bar) => bar.includes(`<span data-verbatim>${arm}</span>`))?.split(/<div class="arm-production"[^>]*>/)[1]?.split('</div>')[0] ?? '').trim();
 
-    expect(production('claude-review')).toBe('In production: 50% 1/2 · review-quality · 30 days Scorers ↗');
-    expect(production('codex-review')).toBe('In production: 50% 1/2 · review-quality · 30 days Scorers ↗');
+    // Two labels, 1 of 2 passing, can not tell production apart from an arm that passed its one trial.
+    expect(production('claude-review')).toBe('In production: 50% 1/2 · 95% 9%–91% · not separated · step · review-quality · 30 days Scorers ↗');
+    expect(production('codex-review')).toBe('In production: 50% 1/2 · 95% 9%–91% · not separated · step · review-quality · 30 days Scorers ↗');
     expect(production('claude-frontend')).toBe('In production: no labels for this role · 30 days');
 
     await click('data-bench-production');
@@ -181,6 +205,42 @@ describe('the Benchmarks page of a suite that compares roles', () => {
     const opened = new URLSearchParams(queries.map((query) => query.split('?')[1]).find((query) => new URLSearchParams(query).has('group')));
     expect(location.hash).toBe('scorers');
     expect([opened.get('window'), opened.get('groupBy'), opened.get('group')]).toEqual(['30', 'role', JSON.stringify(['value', 'review', null, false])]);
+  });
+
+  it("weighs a role's production pass rate by its labels, and says whether the role was the step's or the member's", async () => {
+    const ran = (stepRole?: string): AgentObservation => ({
+      v: 1, tool: { name: 'claude' }, teamai: '1.0.0', driver: 'local',
+      team: { revision: TEAM, localChanges: false, selection: { scope: 'project', primaryRole: 'frontend', additionalRoles: [], ...(stepRole ? { stepRole } : {}) } },
+    });
+    const judged = (index: number, passed: boolean, agent: AgentObservation): ViewedLabel => {
+      const label: ScoreLabel = {
+        scorer: 'review-quality', rubric: { sourceHash: 'rubric-1', teamRevision: TEAM }, label: passed ? 'thorough' : 'missed-defect', score: passed ? 1 : 0, passed,
+        judge: { kind: 'model', tool: 'claude', model: { reported: 'claude-judge-1' }, isolation: 'verified', access: 'read' },
+        scoredAt: '2026-10-27T10:00:00.000Z', source: 'workflow', subject: { runId: `r${String(index).padStart(16, '0')}`, step: 'review', pass: 1 }, agent,
+      };
+      return { label, author: 'bob', agent };
+    };
+    // The review step failed 20 times in production; one member working as frontend passed once.
+    const labels = [...Array.from({ length: 20 }, (_, index) => judged(index, false, ran('review'))), judged(20, true, ran())];
+    const html = await renderPage([roleRun({ 'claude-frontend': 'failed', 'claude-review': 'passed' })], { labels });
+    const line = (arm: string) => ((html.split('<div class="arm-bars">')[1] ?? '').split('<div class="arm-bar" ').find((bar) => bar.includes(`<span data-verbatim>${arm}</span>`))?.split(/<div class="arm-production"[^>]*>/)[1]?.split('</div>')[0] ?? '');
+
+    // 0 of 20 is told apart from the review arm's 1 of 1, and weighs as much as it.
+    expect(text(line('claude-review')).trim()).toBe('In production: 0% 0/20 · 95% 0%–16% · step · review-quality · 30 days Scorers ↗');
+    expect(line('claude-review')).toContain('<b>0%</b>');
+    // 1 of 1 is not, so it reads lighter than the arm's own rate.
+    expect(text(line('claude-frontend')).trim()).toBe('In production: 100% 1/1 · 95% 21%–100% · not separated · member · review-quality · 30 days Scorers ↗');
+    expect(line('claude-frontend')).not.toContain('<b>100%</b>');
+  });
+
+  it('opens on the Arms of the suite another page links to, with the linked arm marked', async () => {
+    const { open, location, queries } = await openPage(runs, { view: 'compare' });
+    const html = await open({ suite: 'review-roles', arm: 'codex-review' });
+
+    expect(location.hash).toBe('benchmarks');
+    expect(queries.findLast((query) => query.startsWith('/api/benchmarks'))).toBe('/api/benchmarks?window=90&suite=review-roles');
+    expect(html).toContain('<div class="arm-bars">');
+    expect([...html.matchAll(/<div class="arm-bar marked" aria-current="true"[^>]*><div class="arm-label">(.*?)<\/div>/gs)].map(([, name]) => text(name ?? '').trim())).toEqual(['codex-review review role codex']);
   });
 
   it('labels a role in Chinese, keeping the role id as written', async () => {
@@ -205,6 +265,50 @@ describe('the Benchmarks page at every width', () => {
 
     const compare = await openPage(runs, { view: 'compare', width: 768 });
     expect(drawnWidths(compare.resize(486))).toEqual([486]);
+  });
+
+  /** The box each point label of `chart` takes, at an assumed 7 px a character of 12 px semibold text. */
+  const labelBoxes = (html: string, chart: string) => {
+    const svg = html.split(`<svg data-chart="${chart}"`)[1]?.split('</svg>')[0] ?? '';
+    return [...svg.matchAll(/<text class="point-label[^"]*" x="([\d.]+)" y="([\d.]+)"(?: text-anchor="(\w+)")?>([^<]*)<\/text>/g)].map(([, x, y, anchor, name]) => {
+      const width = (name ?? '').length * 7, left = Number(x) - (anchor === 'end' ? width : anchor === 'middle' ? width / 2 : 0);
+      return { name, left, right: left + width, top: Number(y) - 11, bottom: Number(y) + 3 };
+    });
+  };
+  const apart = (a: { left: number; right: number; top: number; bottom: number }, b: typeof a) => a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top;
+
+  it('keeps the names of two close points on the cost chart apart and inside it, at a phone, a tablet and a desktop width', async () => {
+    const arms = await openPage(runs, { width: 768 });
+    for (const box of [330, 486, 518]) {
+      const [left, right, ...more] = labelBoxes(arms.resize(box), 'cost');
+
+      expect(more).toEqual([]);
+      expect([left?.name, right?.name]).toEqual(['claude-frontend', 'claude-review']);
+      expect(left && right && apart(left, right), `labels overlap in a ${box} px chart`).toBe(true);
+      for (const label of [left, right]) expect((label?.left ?? -1) >= 0 && (label?.right ?? Infinity) <= box, `${label?.name} leaves a ${box} px chart`).toBe(true);
+    }
+  });
+
+  it('names the hollow end of the arrow beside or under its own point, away from the shaft', async () => {
+    const compare = await openPage(runs, { view: 'compare', width: 768 });
+    for (const box of [330, 486, 518]) {
+      const html = compare.resize(box);
+      const arrow = html.split('<g class="arrow active"')[1]?.split('</g>')[0] ?? '';
+      const [x1 = 0, , x2 = 0] = [...arrow.matchAll(/<line class="\w+" x1="([\d.]+)" y1="[\d.]+" x2="([\d.]+)"/g)].flatMap(([, a, b]) => [Number(a), 0, Number(b)]);
+      const [from, to] = labelBoxes(html, 'arrow');
+
+      expect(x2 < x1, 'the arrow runs from claude-frontend on the right to claude-review on the left').toBe(true);
+      expect(from && to && apart(from, to)).toBe(true);
+      // Centred under the hollow point at most: never stretched along the shaft, towards the filled end.
+      expect(((from?.left ?? 0) + (from?.right ?? 0)) / 2, `in a ${box} px chart`).toBeGreaterThanOrEqual(x1 - 1);
+    }
+  });
+
+  it('lays the suites and runs tables out as cards by their panel\'s width, not the window\'s', async () => {
+    const html = await renderPage(runs);
+
+    expect(html.match(/<div class="table-scroll card-table"><table class="session-table bench-cards">/g)).toHaveLength(2);
+    expect(dashboardStyles).toMatch(/@container\(max-width:760px\)\{[^@]*\.bench-cards thead\{display:none\}/);
   });
 
   it('counts one run of an arm as "1 run"', async () => {

@@ -16,7 +16,7 @@ const HARNESS_CHANGED: Record<HarnessChange['part'], string> = {
  * it, and so supplies `e`, `t`, `label`, `number`, `runStatus`, `outcomesHtml`, `agentHarness`, `harnessRole` and `deciderText`.
  */
 export const runStepsView = `
-const RUN_STEP_HEADS=['STEP','PASS','STATUS','Tokens','ANSWER','SCORES','OUTCOMES'];
+const RUN_STEP_HEADS=['STEP','PASS','STATUS','TOKENS','ANSWER','SCORES','OUTCOMES'];
 const HARNESS_CHANGED=${JSON.stringify(HARNESS_CHANGED)};
 function changedValue(part,value) {
  if(value===undefined)return '<span class="muted">'+label('not recorded')+'</span>';

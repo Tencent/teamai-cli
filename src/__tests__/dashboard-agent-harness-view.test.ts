@@ -29,7 +29,10 @@ describe('the harness line of a pass', () => {
     const { html } = render({ tool: 'claude', model: 'claude-review-1', effort: 'high', role: { of: 'step', names: ['review'] }, teamRevision: REVISION });
 
     expect(text(html)).toBe('claude · claude-review-1 · high · review step role · ccccccc');
-    expect(parts(html)).toEqual(['claude', 'claude-review-1', 'high', 'review step role', 'ccccccc']);
+    // The short revision stays on the line of the part before it, so it never sits alone on a line.
+    expect(parts(html)).toEqual(['claude', 'claude-review-1', 'high', 'review step role · ccccccc']);
+    // One unbreakable span holds both: a browser may break after an inline-block marker even at a no-break space.
+    expect(html).toMatch(/<span class="harness-part"><span class="harness-part"><span data-verbatim>review<\/span> <span class="role-of step">step role<\/span><\/span>\u00a0·\u00a0<span class="harness-part" data-verbatim>ccccccc<\/span><\/span><\/span>$/);
     expect(html).toContain('<span class="role-of step">step role</span>');
     expect(html).toContain(`title="Team revision ${REVISION}"`);
   });
