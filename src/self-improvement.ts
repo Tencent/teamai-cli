@@ -128,14 +128,19 @@ async function git(cwd: string, args: string[]): Promise<string> {
 const TASK_FILE = /(^|\/)benchmarks\/.+\/tasks\/[^/]+\.yaml$/;
 
 /**
- * Whether `base` holds the proposal at `head`: it merged it, or has each regression task the proposal adds exactly as the
- * proposal has it, as a squash or rebase merge leaves a kept branch. Both are refs of the team checkout `cwd`.
+ * Whether `base` holds the proposal at `head`: it merged it, or a commit of its own added each regression task the
+ * proposal adds exactly as the proposal has it, as a squash or rebase merge leaves a kept branch, whatever `base` did with
+ * the task since. Both are refs of the team checkout `cwd`.
  */
 async function holdsProposal(cwd: string, { base, head }: { base: string; head: string }): Promise<boolean> {
   if (await git(cwd, ['merge-base', '--is-ancestor', head, base]).then(() => true, () => false)) return true;
   const added = (await git(cwd, ['diff', '--relative', '--no-renames', '--name-only', '--diff-filter=A', `${base}...${head}`])).split('\n').filter((file) => TASK_FILE.test(file));
 
-  return added.length > 0 && await git(cwd, ['diff', '--quiet', base, head, '--', ...added]).then(() => true, () => false);
+  if (added.length === 0) return false;
+  const blobs = await Promise.all(added.map((file) => git(cwd, ['rev-parse', `${head}:./${file}`])));
+  const landed = await Promise.all(blobs.map((blob) => git(cwd, ['log', '-1', '--format=%H', `--find-object=${blob}`, base, '--not', head])));
+
+  return landed.every((commit) => commit !== '');
 }
 
 /** A suite directory under `benchmarks/`, such as benchmarks/regressions or benchmarks/web/regressions. */
