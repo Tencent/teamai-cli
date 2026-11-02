@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { getHookStatus, hasTeamaiHooks } from '../hooks.js';
+import { getHookStatus, hasTeamaiHooks, reconcileHooks } from '../hooks.js';
 
 let tmpDir: string;
 
@@ -52,5 +52,26 @@ describe('hasTeamaiHooks on a hook file the member edited', () => {
     ['zcode', { hooks: { events: { SessionStart: {}, Stop: [null, 1] } } }],
   ])('reads malformed %s events and entries as no teamai hook', async (tool, json) => {
     await expect(hasTeamaiHooks(write('hooks.json', json), tool)).resolves.toBe(false);
+  });
+});
+
+describe('reconcileHooks on a hook file the member edited', () => {
+  it.each([
+    ['claude', { hooks: { SessionStart: {} } }, 'hooks.SessionStart is not a list'],
+    ['claude', { hooks: { SessionStart: 'x' } }, 'hooks.SessionStart is not a list'],
+    ['claude', { hooks: 'x' }, 'hooks is not an object'],
+    ['cursor', { version: 1, hooks: { sessionStart: {} } }, 'hooks.sessionStart is not a list'],
+    ['copilot', { version: 1, hooks: { SessionStart: 'x' } }, 'hooks.SessionStart is not a list'],
+    ['codex', { hooks: { SessionStart: {} } }, 'hooks.SessionStart is not a list'],
+    ['zcode', { hooks: { events: { SessionStart: {} } } }, 'hooks.events.SessionStart is not a list'],
+    ['zcode', { hooks: { events: [] } }, 'hooks.events is not an object'],
+  ])('leaves a %s file whose events are not lists as it is and names the key', async (tool, json, problem) => {
+    const file = write('hooks.json', json);
+    const before = fs.readFileSync(file, 'utf8');
+
+    await expect(reconcileHooks(file, tool, [])).rejects.toThrow(
+      `${file}: ${problem}, so teamai left the file as it is. Fix it, then run the command again.`,
+    );
+    expect(fs.readFileSync(file, 'utf8')).toBe(before);
   });
 });
