@@ -82,10 +82,12 @@ describe('a step in the team workspace, run through the real CLI', () => {
   afterAll(() => fixture?.remove());
 
   it('commits what the step changed to the branch on the team origin, and opens one pull request from it into main', async () => {
-    const first = await run("require('fs').appendFileSync('rules/notes.md', 'first\\n');");
+    // A skill with no description draws a review warning, which pull still places.
+    const first = await run("const fs = require('fs'); fs.appendFileSync('rules/notes.md', 'first\\n'); fs.mkdirSync('skills/draft', { recursive: true }); fs.writeFileSync('skills/draft/SKILL.md', '---\\nname: draft\\n---\\n# Draft\\n');");
 
     expect(first.outcome, first.said).toBe('succeeded');
     expect(onBranch(BRANCH, 'rules/notes.md')).toBe('# Notes\nfirst');
+    expect(onBranch(BRANCH, 'skills/draft/SKILL.md')).toBe('---\nname: draft\n---\n# Draft');
     expect(pullsFrom(BRANCH)).toHaveLength(1);
     expect(first.state.deliveries).toEqual([{ url: pullsFrom(BRANCH)[0]?.url, branch: BRANCH, base: 'main', step: 'edit', pass: 1 }]);
   }, 120_000);
@@ -184,6 +186,21 @@ describe('a step in the team workspace, run through the real CLI', () => {
     expect(branchHead()).toBe(before);
   }, 120_000);
 
+  it('pushes nothing when what the step deletes breaks a team file it left alone, and names that file', async () => {
+    fixture.pushTeam({
+      'scorers/kept.md': '---\nlabels:\n  - { value: good, score: 1, description: Good. }\n  - { value: bad, score: 0, description: Bad. }\npassingScore: 1\n---\nJudge it.\n',
+      'workflows/scored.yaml': 'schemaVersion: v1alpha1\nname: scored\ndescription: Review the change.\nsteps:\n  - id: review\n    scorers: [kept]\n    prompt: Review the change.\n',
+    });
+
+    const refused = await run("const fs = require('fs'); fs.rmSync('scorers/kept.md'); fs.rmSync('benchmarks/fix/tasks', { recursive: true });", { inputs: { topic: 'theta' } });
+
+    expect(refused.outcome, refused.said).toBe('failed');
+    const lines = refused.state.steps.find((step) => step.id === 'edit')?.failure?.message.split('\n') ?? [];
+    expect(lines[0]).toBe('Step "edit" left team files teamai pull would reject, so nothing was pushed to teamai/notes/theta:');
+    expect(lines).toEqual(expect.arrayContaining([expect.stringMatching(/^workflows\/scored\.yaml\b.*\bkept\b/), expect.stringMatching(/^benchmarks\/fix\/suite\.yaml\b/)]));
+    expect(branchHead('teamai/notes/theta')).toBe('');
+  }, 120_000);
+
   it('runs nothing on the team repo\'s default branch, so no change skips review', async () => {
     const main = git(['rev-parse', 'main']);
 
@@ -267,6 +284,42 @@ describe('a step in the team workspace, run through the real CLI', () => {
       code: 'isolated_run',
       message: `Run ${ran.run} has a step in the team workspace, whose clone is on this machine only, so it cannot be published. Start the workflow again on the other machine.`,
     });
+  }, 120_000);
+});
+
+describe('a step in the team workspace of a team whose role overrides a shared workflow', () => {
+  let fixture: BenchmarkFixture;
+  let edit: string;
+  const scripts = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-team-edit-'));
+  const CHECK = 'schemaVersion: v1alpha1\nname: check\ndescription: Check the change.\nsteps:\n  - id: check\n    command: "true"\n';
+
+  beforeAll(async () => {
+    edit = path.join(scripts, 'edit.js');
+    fixture = await benchmarkFixture({
+      tool: 'does-nothing',
+      sandbox: false,
+      team: {
+        'manifest/roles.yaml': 'version: 1\nroles:\n  - id: ops\n    resources:\n      knowledge: []\n      skills: []\n      workflows: [ops]\n',
+        'workflows/ops/check.yaml': CHECK,
+        'workflows/check.yaml': CHECK,
+        'workflows/edit-team.yaml': workflow(edit),
+        'rules/notes.md': '# Notes\n',
+      },
+    });
+    const gh = fakeGhHost(path.join(fixture.root, 'gh'));
+    fs.symlinkSync(gh.bin, path.join(fixture.bin, 'gh'));
+  }, 120_000);
+
+  afterAll(() => {
+    fixture?.remove();
+    fs.rmSync(scripts, { recursive: true, force: true });
+  });
+
+  it('pushes nothing when the step breaks the shared workflow, which members outside the role still pull', async () => {
+    const refused = await runEdit(fixture, edit, "require('fs').writeFileSync('workflows/check.yaml', 'schemaVersion: v1alpha1\\nname: check\\nsteps: []\\n');", {});
+
+    expect(refused.outcome, refused.said).toBe('failed');
+    expect(refused.state.steps.find((step) => step.id === 'edit')?.failure?.message.split('\n')).toEqual(expect.arrayContaining([expect.stringMatching(/^workflows\/check\.yaml:\d+: /)]));
   }, 120_000);
 });
 

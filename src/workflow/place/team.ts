@@ -15,6 +15,7 @@ import { isSelfMode, LocalConfigSchema, type LocalConfig } from '../../types.js'
 import { NON_INTERACTIVE_GIT_ENV } from '../../utils/git-env.js';
 import { checkoutCredentials, getConfiguredRemoteUrl, redactGitCredentials } from '../../utils/git.js';
 import type { StepChanges } from '../workspace.js';
+import { formatDiagnostic, parseWorkflow } from '../parse.js';
 import { runsDir, type RunId } from '../store.js';
 import type { WorkflowFailure } from '../types.js';
 import { commitWork, git } from '../worktree.js';
@@ -152,20 +153,46 @@ async function unplacedTeamFiles(input: { root: string; dir: string; base: strin
 }
 
 /**
- * What a review of the branch would fail in the team files in `dir` that `files` names, or in a directory holding one,
- * each line starting with its file: what `teamai review-branch` checks, such as the workflows, scorers and suites each
- * role's and project's pull would reject, read without this machine's cache.
+ * What `teamai pull` would reject in the team files at `dir` that it would not reject at `base`, each line starting with
+ * its file. Comparing the two trees catches a deletion that breaks a file the step left alone, as a workflow whose
+ * scorer it deleted, without failing the step for what the default branch already had. A tree is checked by what
+ * `teamai review-branch` checks for each role and project, and by each workflow in `files` on its own, since a
+ * namespace that overrides a shared workflow hides it from that review.
  */
-async function rejectedTeamFiles(dir: string, files: ReadonlySet<string>): Promise<string[]> {
+async function rejectedTeamFiles(input: { root: string; dir: string; base: string; files: ReadonlySet<string> }): Promise<string[]> {
+  const { root, dir, base, files } = input;
+  const before = `${root}.base`;
+  await fs.rm(before, { recursive: true, force: true });
+  const added = await git(root, ['worktree', 'add', '-q', '--detach', '--', before, base]);
+
+  if (added.code !== 0) return [`(base): could not check out ${base} to compare the team files against: ${said(added)}`];
+
+  try {
+    const had = new Set(await teamFailures(path.join(before, path.relative(root, dir)), files));
+
+    return (await teamFailures(dir, files)).filter((failure) => !had.has(failure));
+  } finally {
+    await git(root, ['worktree', 'remove', '--force', '--', before]);
+    await fs.rm(before, { recursive: true, force: true });
+  }
+}
+
+/** The failures in the team files at `dir`: what a review of the branch fails, and the diagnostics of each workflow in `files` on its own. */
+async function teamFailures(dir: string, files: ReadonlySet<string>): Promise<string[]> {
   const { reviewBranchDir } = await import('../../review-branch.js');
   const review = await reviewBranchDir('team workspace', dir);
-  const isChanged = (at: string): boolean => files.has(at) || [...files].some((file) => file.startsWith(`${at}/`));
+  const reviewed = review.findings.flatMap(({ level, path: at, message }) => (level === 'fail' && at !== undefined ? [message.startsWith(at) ? message : `${at}: ${message}`] : []));
 
-  return [...new Set(review.findings.flatMap(({ level, path: at, message }) => {
-    if (level !== 'fail' || at === undefined || !isChanged(at)) return [];
+  const diagnosticsOf = async (file: string): Promise<string[]> => {
+    const content = await fs.readFile(path.join(dir, file), 'utf8').catch(() => undefined);
+    const result = content === undefined ? undefined : parseWorkflow(file, content);
 
-    return [message.startsWith(at) ? message : `${at}: ${message}`];
-  }))];
+    return result === undefined || result.ok ? [] : result.diagnostics.map(formatDiagnostic);
+  };
+
+  const parsed = await Promise.all([...files].flatMap((file) => (/^workflows\/(?:[^/]+\/)?[^/]+\.yaml$/.test(file) ? [diagnosticsOf(file)] : [])));
+
+  return [...new Set([...reviewed, ...parsed.flat()])];
 }
 
 /**
@@ -192,7 +219,7 @@ export async function finishTeamClone(input: { root: string; dir: string; step: 
   // Nothing beyond what origin has: no push, and nothing to deliver unless the branch already holds work.
   if (committed.to === found) return { changes };
   const { files, unplaced } = await unplacedTeamFiles({ root, dir, base, to: committed.to });
-  const rejected = [...unplaced, ...await rejectedTeamFiles(dir, files)];
+  const rejected = [...unplaced, ...await rejectedTeamFiles({ root, dir, base, files })];
 
   if (rejected.length > 0) {
     return {
