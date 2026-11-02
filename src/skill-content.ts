@@ -40,7 +40,7 @@ const SKILL_MD = 'SKILL.md';
  * muscle memory and older team guides keep resolving after the content
  * moves under skill-data/.
  */
-const SKILL_ALIASES: Readonly<Record<string, string>> = {
+const SKILL_ALIASES: ReadonlyMap<string, string> = new Map(Object.entries({
   default: 'core',
   onboarding: 'setup',
   join: 'setup',
@@ -49,7 +49,7 @@ const SKILL_ALIASES: Readonly<Record<string, string>> = {
   learning: 'share',
   learnings: 'share',
   'teamai-share-learnings': 'share',
-};
+}));
 
 /**
  * Served skills that write to the team repo and need recall to be on.
@@ -115,7 +115,7 @@ export async function detectTeam(cwd?: string, options: { dryRun?: boolean } = {
         // worktree) holds no project config, and git refuses to open it. Any
         // other failure (no permission, a path through a file) leaves the
         // project unknown, not absent.
-        if (typeof e === 'object' && e !== null && 'code' in e && e.code === 'ENOENT') {
+        if (e instanceof Error && 'code' in e && e.code === 'ENOENT') {
           return { kind: 'team', init: await requireInit(options) };
         }
 
@@ -311,7 +311,7 @@ async function resolvePackagedSkill(
 
   if (direct) return direct;
 
-  const aliased = SKILL_ALIASES[name];
+  const aliased = SKILL_ALIASES.get(name);
 
   if (aliased) {
     const match = candidates.find((s) => s.name === aliased);
@@ -375,6 +375,12 @@ export function blockNote(reason: SkillBlockReason, env: NodeJS.ProcessEnv = pro
   return BLOCK_NOTES[reason];
 }
 
+/** What a command prints for a blocked skill: the problem, then how to clear it. */
+export interface SkillBlockMessage {
+  headline: string;
+  hint: string;
+}
+
 /**
  * The two lines every command prints for a blocked skill. With
  * `TEAMAI_RECALL_DISABLED=1` recall is off whatever the config says, so the
@@ -385,7 +391,7 @@ export function blockMessage(
   name: string,
   block: SkillBlock,
   env: NodeJS.ProcessEnv = process.env,
-): { headline: string; hint: string } {
+): SkillBlockMessage {
   switch (block.reason) {
     case 'recall':
       if (env.TEAMAI_RECALL_DISABLED === '1') {
