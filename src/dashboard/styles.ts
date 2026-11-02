@@ -59,7 +59,7 @@ aside{background:var(--sidebar)}.brand svg g[stroke]{stroke:var(--logo)}.brand s
 .bench-panel{margin:0 0 20px}.bench-panel .panelhead{flex-wrap:wrap;gap:10px}
 .arm-bars{padding:4px 23px 20px;display:flex;flex-direction:column;gap:16px}
 .arm-bar,.latest-arm{display:grid;grid-template-columns:minmax(120px,180px) minmax(0,1fr) 96px;gap:14px;align-items:center}.latest-arm{grid-template-columns:minmax(120px,180px) minmax(0,1fr) minmax(170px,auto)}
-.arm-label{display:flex;align-items:center;flex-wrap:wrap;min-width:0}.arm-label small,th .arm-label small{flex-basis:100%;padding-left:17px;color:var(--muted);font-size:11px;font-weight:400;overflow-wrap:anywhere}
+.arm-label{display:flex;align-items:center;flex-wrap:wrap;min-width:0}.arm-label .arm-role{flex-basis:100%;padding-left:17px;font-size:11px;font-weight:550;letter-spacing:0;color:var(--text);overflow-wrap:anywhere}.arm-label small,th .arm-label small{flex-basis:100%;padding-left:17px;color:var(--muted);font-size:11px;font-weight:400;overflow-wrap:anywhere}
 .arm-track{position:relative;height:22px;border-radius:6px;background:var(--track)}
 .arm-fill{position:absolute;left:0;top:0;bottom:0;border-radius:6px;opacity:.88}
 .arm-ci{position:absolute;top:50%;border-top:2px solid var(--text);transform:translateY(-1px)}.arm-ci::before,.arm-ci::after{content:'';position:absolute;top:-6px;height:10px;border-left:2px solid var(--text)}.arm-ci::before{left:-1px}.arm-ci::after{right:-1px}

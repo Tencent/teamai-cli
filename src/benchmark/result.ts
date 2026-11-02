@@ -53,6 +53,8 @@ export const BenchmarkRecordSchema = z.object({
     source: z.enum(['team', 'member']), team: ArmTeamSchema,
     /** The team workflow the arm's trials ran on each task instead of one prompt. */
     workflow: z.object({ name: z.string(), sourceHash: z.string() }).optional(),
+    /** The team role the arm's trial clones ran with; absent: the member's roles. */
+    role: z.string().optional(),
   })),
   /** The team skills each arm adds, removes or changes against the baseline team revision; absent when no arm changes one. */
   skillChanges: z.array(SkillChangesSchema).optional(),

@@ -147,14 +147,14 @@ The panels above are the **Arms** tab. Two more tabs answer what changed between
 | Did the auth-tokens skill help claude on `fix-auth`? | **Team changes**, on `claude · claude-opus-5-5` | 67%, 62%, 70% over three team revisions, in commit order, none told apart from the one before it. Click `67ee2ce · Add the auth-tokens skill and a security reviewer`: it changed three files, and `session-fixation` went from 1/12 to 3/12. |
 | Did a tool update move the numbers? | **Arms**, **Pass rate per run** | A dashed `Tool updated · claude 2.4.0` line marks the first run on the new version. |
 
-**Compare** lists each two arms of the suite's current version that differ only in their team assets, tool, model or workflow, and pairs their trials by run, task and repetition. **Team changes** follows one tool, model and workflow across the team revisions it ran on with the pulled assets or a ref, and names each revision from this machine's team clone, with the files outside `benchmarks/` it changed since the one before it.
+**Compare** lists each two arms of the suite's current version that differ only in their team assets, tool, model, workflow or role, and pairs their trials by run, task and repetition. **Team changes** follows one tool, model and workflow across the team revisions it ran on with the pulled assets or a ref, and names each revision from this machine's team clone, with the files outside `benchmarks/` it changed since the one before it.
 
 How the numbers are counted:
 
 - A pass rate is passed trials over planned trials, as the run's own table prints it.
 - The pooled numbers, the task tables and the leader count only the runs of the suite's current version: the suite files of its newest run. **Pass rate per run** also draws the older runs, after a dashed `Suite changed` line.
-- An arm is its name, tool, model, effort and team assets. When one of them changed, the older runs are a separate line, marked `earlier configuration`.
-- **Pass rate by arm** also counts the arm's deviations and trials not verified over those runs, as each run's table counts them. A deviation is a trial whose prompt ran on another tool, model or team revision than its arm's.
+- An arm is its name, tool, model, effort, team assets, workflow and role. Each arm with a role shows it under its name, such as `review role`. When one of them changed, the older runs are a separate line, marked `earlier configuration`.
+- **Pass rate by arm** also counts the arm's deviations and trials not verified over those runs, as each run's table counts them. A deviation is a trial whose prompt ran on another tool, model, team revision or role than its arm's.
 - The interval is a 95% Wilson score interval. Two arms whose intervals overlap are not told apart by these runs.
 - A difference in **Compare** is over paired trials, with a 95% interval for paired proportions (Newcombe). One whose interval crosses zero is `not separated`.
 - Usage is the median over the trials whose tool reported it. Cost is per trial.

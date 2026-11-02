@@ -37,11 +37,12 @@ setup:
 | 键 | 值 |
 | --- | --- |
 | `repo` | 任务所基于的项目：不带凭据的 https、ssh 或 git URL。 |
-| `defaults` | 其他 arm 用来对比的那个 arm：`tool`，以及可选的 `model`、`team` 和 `workflow`。它不是工作流的 `defaults`。 |
+| `defaults` | 其他 arm 用来对比的那个 arm：`tool`，以及可选的 `model`、`team`、`workflow` 和 `role`。它不是工作流的 `defaults`。 |
 | `arms` | 1 到 6 个。每个最多改变一个 `defaults` 键，最多只有一个什么都不改。 |
 | `matrix` | 代替 `arms`：teamai 把这些值列表交叉组合成 arm。见[用 matrix 交叉工具和团队资产](#用-matrix-交叉工具和团队资产)。 |
 | `team` | arm 运行时使用的团队资产。见[使用其他团队资产的 arm](#使用其他团队资产的-arm)。 |
 | `workflow` | 每个 trial 在任务上运行的团队工作流，代替单个 prompt。见[运行工作流的 arm](#运行工作流的-arm)。 |
+| `role` | 每个 trial 的克隆使用的 `manifest/roles.yaml` 中的角色。见[以角色运行的 arm](#以角色运行的-arm)。 |
 | `model` | `models/aliases.yaml` 里的模型别名（运行启动时按每个 arm 的工具解析），或一个模型名。 |
 | `repetitions` | 1 到 10，默认 3。 |
 | `parallel` | 运行基线和 trial 的通道数，1 到 32，默认 1。见[并行通道](#并行通道)。 |
@@ -127,6 +128,62 @@ arms:
 
 运行在 arm 的团队修订上读取该工作流及其运行的工作流，像任何团队工作流一样经过你接收的命名空间，并在 arm 的工具、模型和 effort 上运行其中每个 prompt 步骤，像 trial 自己的 prompt 一样无人值守。工作流没有输入 `task`、还要求其他输入，或有 `finally` 步骤时，它的某个步骤会交付、询问某个人、打开 `continue` 以外的工作区、以 `workspace: continue` 按 `for_each` 的每一项运行工作流，或运行 `workflow: { from }` 时，或者它的某个 prompt 运行 `agent` 而 arm 没有设置 `model`（agent 自己的模型可能取代工具的默认模型；请在 `defaults` 中设置 `model`：带 `workflow` 的 arm 不能再改其他键）时，运行拒绝该 arm（`arm_workflow_unrunnable`）；你接收的两个命名空间都有该工作流时，以 `workflow_namespace_conflict` 拒绝。trial 的 check 或评判根据工作流留在克隆中的内容判定。它的时长是各个 prompt 轮次之和，token 和成本是各个 prompt 之和。[trial 限制](#trial-限制)的 `timeout` 和 `budget` 是它的 prompt 加起来可以花费的量；`max_turns` 不执行，会列在 `unenforced` 中。
 
+### 以角色运行的 arm
+
+在同一个改动上，审查者的知识是否比前端开发者的知识发现更多问题？给每个 arm 一个角色：
+
+```yaml
+schemaVersion: v1alpha1
+name: review-sql
+description: Flag unsafe SQL in a change before it merges.
+repo: https://github.com/acme/billing.git
+defaults:
+  tool: claude
+  model: strong
+  role: frontend
+arms:
+  - name: frontend
+  - name: review
+    role: review
+repetitions: 3
+timeout: 45m
+```
+
+```console
+$ teamai benchmark run review-sql --sandbox
+```
+
+两个 arm 使用相同的工具、模型和团队修订。每个 trial 的克隆像[带 `role` 的克隆步骤](workflow-advanced.md#以团队角色运行克隆)一样获得其 arm 的角色：该角色的 skill、规则、agent、文档和其他知识，加上你的项目，以及你自己的 hook、MCP 服务器、env 和模型。记录在 arm 上保留角色，并在每个 trial 上保留其克隆交付时使用的角色：
+
+```json
+"arms": [
+  { "name": "frontend", "tool": "claude", "model": "claude-opus-5-5", "alias": "strong", "source": "team", "team": { "kind": "pulled", "revision": "3f9c2ab…" }, "role": "frontend" },
+  { "name": "review", "tool": "claude", "model": "claude-opus-5-5", "alias": "strong", "source": "team", "team": { "kind": "pulled", "revision": "3f9c2ab…" }, "role": "review" }
+],
+"trials": [
+  { "task": "orders-report", "arm": "review", "result": "passed", "agent": { "team": { "revision": "3f9c2ab…", "selection": { "primaryRole": "frontend", "stepRole": "review", … } }, … }, … }
+]
+```
+
+运行打印的结果多出一个 Role 列：
+
+```text
+| Arm | Tool | Model (source) | Role | Planned | Passed | Failed | Error | Unscored | Not run | Stopped by a limit | Deviations | Not verified | Pass rate |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| frontend | claude | claude-opus-5-5 (team) | frontend | 6 | 2 | 4 | 0 | 0 | 0 | 0 | 0 | 0 | 33% (2/6) |
+| review | claude | claude-opus-5-5 (team) | review | 6 | 5 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 83% (5/6) |
+```
+
+克隆运行时的角色与其 arm 不同的 trial 计入“偏差”，记录中没有角色的 trial 计入“未验证”。在有角色 arm 的套件中，没有 `role` 的 arm 显示为 `member's roles`：它使用你自己的角色。在仪表盘的 [Benchmarks 页面](dashboard.md#benchmarks)上，每个 arm 的名字下方显示 `review 角色`；**对比** 按 **角色** 显示 `review 角色 对比 frontend 角色`，逐个 trial 配对。
+
+运行会在 arm 所用的团队修订上检查 `manifest/roles.yaml` 是否声明了该 arm 的角色，未声明时在任何 trial 运行之前拒绝：
+
+```text
+role_unavailable: Arm "review" runs with role review, which manifest/roles.yaml at team revision 3f9c2ab does not declare; it declares frontend, backend. Add the role to manifest/roles.yaml, or fix the arm's role, push it, run teamai pull, and start again.
+```
+
+带角色的 arm 需要团队资产供角色选择，因此套件拒绝同时写 `role` 和 `team: none`。matrix 也可以交叉角色：`matrix: { tool: [claude, codex], role: [frontend, review] }` 生成 `claude-frontend`、`claude-review`、`codex-frontend` 和 `codex-review`。对比会在每个工具上配对两个角色，在每个角色内配对两个工具，绝不配对两者都不同的一对。
+
 ### 用 matrix 交叉工具和团队资产
 
 `matrix` 为其值的每种组合生成一个 arm，因此任意两个只差一个值的 arm 只比较这一个值。下面这个例子同时回答：团队资产对每个工具帮助多大，以及带上资产后哪个工具更好：
@@ -146,7 +203,7 @@ matrix:
 | `codex-pulled` | codex | pulled |
 | `codex-none` | codex | none |
 
-matrix 可以变化 `tool`、`model`、`team` 或 `workflow`，其中至少一个要有两个或更多值，并生成 2 到 12 个 arm。它没写的键取自 `defaults`。每个 arm 的名字由各个变化键的值拼接而成：ref 原样使用，字母、数字、`-`、`_` 以外的字符写成 `-`，`without: [skills/auth-tokens]` 写成 `without-skills-auth-tokens`。一个套件只能有 `arms` 或 `matrix` 之一。
+matrix 可以变化 `tool`、`model`、`team`、`workflow` 或 `role`，其中至少一个要有两个或更多值，并生成 2 到 12 个 arm。它没写的键取自 `defaults`。每个 arm 的名字由各个变化键的值拼接而成：ref 原样使用，字母、数字、`-`、`_` 以外的字符写成 `-`，`without: [skills/auth-tokens]` 写成 `without-skills-auth-tokens`。一个套件只能有 `arms` 或 `matrix` 之一。
 
 任务从 `repo` 的一个完整提交开始，并且恰好由 `check` 和 `successCriteria` 之一判定：
 
@@ -614,7 +671,7 @@ These results hold for these tasks, this run and this machine.
 
 | 表格 | 内容 |
 | --- | --- |
-| Arm | 按结果统计每个 arm 的 trial，以及被 [trial 限制](#trial-限制)停止的数量。偏差是 prompt 运行时的工具、团队修订或模型与其 arm 不同的 trial，或者其 driver 无法执行某个 trial 限制的 trial。记录缺少其中某个值的 trial 为未验证。有 arm 使用 pull 到的修订以外的团队资产时，Team 列显示每个 arm 的团队资产，例如 `pulled 3f9c2ab`、`next 81d0e4c`、`3f9c2ab without skills/auth-tokens` 或 `none`。 |
+| Arm | 按结果统计每个 arm 的 trial，以及被 [trial 限制](#trial-限制)停止的数量。偏差是 prompt 运行时的工具、团队修订、模型或角色与其 arm 不同的 trial，或者其 driver 无法执行某个 trial 限制的 trial。记录缺少其中某个值的 trial 为未验证。有 arm 使用 pull 到的修订以外的团队资产时，Team 列显示每个 arm 的团队资产，例如 `pulled 3f9c2ab`、`next 81d0e4c`、`3f9c2ab without skills/auth-tokens` 或 `none`。有 arm [以角色运行](#以角色运行的-arm)时，Role 列显示每个 arm 的角色，或 `member's roles`。 |
 | 用量 | 每个 arm 的中位数和成本合计，并注明各自用了多少个 trial。token 和成本只按工具自己声明的显示，所以不声明的工具显示 `unknown (0)`。如果一个 trial 的各次 pass 没有全部声明 token（输入和输出）、成本或时长，它在这一项上按没有声明处理，并让成本合计显示 `incomplete`。 |
 | 任务 | 每个任务在每个 arm 上的通过率。 |
 | 基线 | 没有运行的任务及原因。 |

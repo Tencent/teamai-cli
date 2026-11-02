@@ -39,6 +39,8 @@ const PlannedArmSchema = z.object({
   team: ArmTeamSchema,
   /** The team workflow the arm's trials run on each task instead of one prompt, by the hash of its sources and theirs. */
   workflow: z.object({ name: z.string().min(1), sourceHash: Sha256 }).strict().optional(),
+  /** The team role the arm's trial clones run with, as its suite named it; absent: the member's roles. */
+  role: z.string().refine(isRecordableLabel).optional(),
 }).strict();
 
 export type PlannedArm = z.infer<typeof PlannedArmSchema>;
@@ -236,7 +238,7 @@ export interface CompiledBundle {
  *                                 baselines, else needs []; each later one needs the one before it
  *     <task>                      needs the task before it
  *       <arm>                     needs the arm before it; a check task's: if steps.baselines.outputs.<task> == 'failed';
- *                                 workspace: a clone of the starting commit with the arm's team
+ *                                 workspace: a clone of the starting commit with the arm's team; role: the arm's, when it has one
  *         prompt                  workspace continue; tool, exact model, limits under on_limit: end_turn; scorers;
  *                                 permissions: unattended when `unattended`
  *         | workflow              for an arm that runs one: its pinned copy, with { task }; workspace continue; the limits
@@ -309,6 +311,9 @@ export function compileBundle(
     if (task.judge.kind === 'check') step.if = `steps.${BASELINES}.outputs.${task.id} == 'failed'`;
     // The arm's tool, not the first step's: a workflow arm may open its clone with a command.
     step.workspace = { clone: { commit: task.startingCommit, repo: suite.repo, team: cloneTeamOf(arm.team, { ...plan.selection, enabledAgents: [arm.tool] }) } };
+
+    // On the step that opens the clone, so the prompt, a workflow arm's steps and the check all continue it with the role.
+    if (arm.role !== undefined) step.role = arm.role;
     step.workflow = { steps: [work, ...check] };
 
     return [step];

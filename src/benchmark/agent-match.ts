@@ -1,6 +1,7 @@
 /**
- * Whether a trial ran as its arm: the tool, the team revision, and the model when the arm names a concrete model id, as
- * teamai observed the prompt. The record picks a workflow arm's observation by it, and the table counts deviations by it.
+ * Whether a trial ran as its arm: the tool, the team revision, the role its clone ran with when the arm names one, and
+ * the model when the arm names a concrete model id, as teamai observed the prompt. The record picks a workflow arm's
+ * observation by it, and the table counts deviations by it.
  */
 import type { AgentObservation } from '../agent-observation.js';
 import { isNativeModelAlias } from '../models/aliases.js';
@@ -9,11 +10,12 @@ import type { BenchmarkRecord } from './result.js';
 export type Comparison = 'match' | 'deviation' | 'not_verified';
 
 /**
- * How a trial's prompt ran against its arm, on the values that can be compared: the tool, the team revision, and the
- * model when the arm names a concrete model id. A value the record lacks is not verified; a deviation outweighs it. A
- * tool's own model selector such as `opus`, or the tool's default model, is not compared with the model id it reports.
+ * How a trial's prompt ran against its arm, on the values that can be compared: the tool, the team revision, the role
+ * when the arm names one, and the model when the arm names a concrete model id. A value the record lacks is not
+ * verified; a deviation outweighs it. A tool's own model selector such as `opus`, or the tool's default model, is not
+ * compared with the model id it reports. The role is the one teamai delivered the clone for, never a driver's say.
  */
-export function compareAgent(arm: Pick<BenchmarkRecord['arms'][number], 'tool' | 'model' | 'team'>, observed: AgentObservation): Comparison {
+export function compareAgent(arm: Pick<BenchmarkRecord['arms'][number], 'tool' | 'model' | 'team' | 'role'>, observed: AgentObservation): Comparison {
   const compare = (intended: string, recorded: string | undefined, same = (left: string, right: string): boolean => left === right): Comparison => {
     if (recorded === undefined) return 'not_verified';
 
@@ -23,6 +25,7 @@ export function compareAgent(arm: Pick<BenchmarkRecord['arms'][number], 'tool' |
   const comparisons = new Set([
     compare(arm.tool, observed.tool.name),
     compareTeam(arm.team, observed.team),
+    ...(arm.role !== undefined ? [compare(arm.role, observed.team?.selection?.stepRole)] : []),
     ...(arm.model !== undefined && !isNativeModelAlias(arm.model) ? [compare(arm.model, observed.model?.reported, sameModel)] : []),
   ]);
 

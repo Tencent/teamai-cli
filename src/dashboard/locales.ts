@@ -531,6 +531,8 @@ export const dashboardMessages = {
   "without": "不含",
   "Tool updated": "工具已更新",
   "tool default": "工具默认",
+  "role": "角色",
+  "member's roles": "成员自己的角色",
   "Benchmark views": "基准测试视图",
   "Arms": "Arm",
   "Compare": "对比",

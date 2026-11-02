@@ -37,11 +37,12 @@ setup:
 | Key | Value |
 | --- | --- |
 | `repo` | The project the tasks start from: an https, ssh or git URL without credentials. |
-| `defaults` | The arm the others are compared with: `tool`, and optionally `model`, `team` and `workflow`. Not a workflow's `defaults`. |
+| `defaults` | The arm the others are compared with: `tool`, and optionally `model`, `team`, `workflow` and `role`. Not a workflow's `defaults`. |
 | `arms` | 1 to 6. Each changes at most one `defaults` key, and at most one changes none. |
 | `matrix` | Instead of `arms`: lists of values that teamai crosses into arms. See [Cross tools with team assets](#cross-tools-with-team-assets). |
 | `team` | The team assets an arm runs with. See [Arms on other team assets](#arms-on-other-team-assets). |
 | `workflow` | A team workflow each trial runs on the task, instead of one prompt. See [Arms that run a workflow](#arms-that-run-a-workflow). |
+| `role` | A role from `manifest/roles.yaml` each trial's clone runs with. See [Arms that run as a role](#arms-that-run-as-a-role). |
 | `model` | A model alias from `models/aliases.yaml`, resolved for each arm's tool when the run starts, or a model name. |
 | `repetitions` | 1 to 10, 3 by default. |
 | `parallel` | 1 to 32 lanes that baselines and trials run in, 1 by default. See [Parallel lanes](#parallel-lanes). |
@@ -127,6 +128,62 @@ arms:
 
 The run reads the workflow, and the workflows it runs, at the arm's team revision, through the namespaces you receive like any team workflow, and runs every prompt step in it on the arm's tool, model and effort, unattended as the trial's own prompt would be. It refuses the arm (`arm_workflow_unrunnable`) when the workflow takes no input `task`, requires another input, or has `finally` steps, when a step of it delivers, asks a person, opens a workspace other than `continue`, runs a workflow per item of a `for_each` with `workspace: continue`, or runs `workflow: { from }`, or when a prompt of it runs an `agent` and the arm sets no `model`, as the agent's own model could replace the tool's default (set `model` in `defaults`: an arm with `workflow` changes no other key), and with `workflow_namespace_conflict` when two namespaces you receive both have it. The trial's check, or its judge, decides on what the workflow left in the clone. Its duration is the sum of its prompt turns, its tokens and cost the sum of its prompts'. [Trial limits](#trial-limits) `timeout` and `budget` are what its prompts may spend together; `max_turns` is not enforced, and is listed in `unenforced`.
 
+### Arms that run as a role
+
+Does a reviewer's knowledge catch more than a frontend developer's on the same change? Give each arm a role:
+
+```yaml
+schemaVersion: v1alpha1
+name: review-sql
+description: Flag unsafe SQL in a change before it merges.
+repo: https://github.com/acme/billing.git
+defaults:
+  tool: claude
+  model: strong
+  role: frontend
+arms:
+  - name: frontend
+  - name: review
+    role: review
+repetitions: 3
+timeout: 45m
+```
+
+```console
+$ teamai benchmark run review-sql --sandbox
+```
+
+Both arms run the same tool, model and team revision. Each trial's clone gets its arm's role the way a [clone step with `role`](workflow-advanced.md#run-a-clone-as-a-team-role) does: that role's skills, rules, agents, docs and other knowledge, with your projects, and your own hooks, MCP servers, env and models. The record keeps the role on the arm, and on each trial the role its clone was delivered for:
+
+```json
+"arms": [
+  { "name": "frontend", "tool": "claude", "model": "claude-opus-5-5", "alias": "strong", "source": "team", "team": { "kind": "pulled", "revision": "3f9c2ab…" }, "role": "frontend" },
+  { "name": "review", "tool": "claude", "model": "claude-opus-5-5", "alias": "strong", "source": "team", "team": { "kind": "pulled", "revision": "3f9c2ab…" }, "role": "review" }
+],
+"trials": [
+  { "task": "orders-report", "arm": "review", "result": "passed", "agent": { "team": { "revision": "3f9c2ab…", "selection": { "primaryRole": "frontend", "stepRole": "review", … } }, … }, … }
+]
+```
+
+The results the run prints gain a Role column:
+
+```text
+| Arm | Tool | Model (source) | Role | Planned | Passed | Failed | Error | Unscored | Not run | Stopped by a limit | Deviations | Not verified | Pass rate |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| frontend | claude | claude-opus-5-5 (team) | frontend | 6 | 2 | 4 | 0 | 0 | 0 | 0 | 0 | 0 | 33% (2/6) |
+| review | claude | claude-opus-5-5 (team) | review | 6 | 5 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 83% (5/6) |
+```
+
+A trial whose clone ran with another role than its arm's counts under Deviations, and one whose record names no role under Not verified. An arm without `role` in a suite that has role arms reads `member's roles`: it runs with your own. On the dashboard's [Benchmarks page](dashboard.md#benchmarks), each arm shows `review role` under its name, and **Compare**, by **Role**, reads `review role against frontend role`, paired trial by trial.
+
+The run checks each arm's role in `manifest/roles.yaml` at the team revision the arm runs on, and refuses one it does not declare before any trial runs:
+
+```text
+role_unavailable: Arm "review" runs with role review, which manifest/roles.yaml at team revision 3f9c2ab does not declare; it declares frontend, backend. Add the role to manifest/roles.yaml, or fix the arm's role, push it, run teamai pull, and start again.
+```
+
+An arm with a role needs team assets for it to select, so the suite refuses `role` with `team: none`. A matrix crosses roles too: `matrix: { tool: [claude, codex], role: [frontend, review] }` makes `claude-frontend`, `claude-review`, `codex-frontend` and `codex-review`. Compare then pairs the two roles on each tool, and the two tools within each role, never a pair that differs in both.
+
 ### Cross tools with team assets
 
 `matrix` makes one arm for each combination of its values, so every two arms that differ in one value compare that value alone. Here, how much the team's assets help each tool, and which tool does better with them:
@@ -146,7 +203,7 @@ matrix:
 | `codex-pulled` | codex | pulled |
 | `codex-none` | codex | none |
 
-A matrix varies `tool`, `model`, `team` or `workflow`, at least one of them with two values or more, and makes 2 to 12 arms. A key it leaves out comes from `defaults`. Each arm's name joins its values for the keys that vary: a ref is used as it is, with a character other than a letter, digit, `-` or `_` written `-`, and `without: [skills/auth-tokens]` is `without-skills-auth-tokens`. A suite has `arms` or `matrix`, not both.
+A matrix varies `tool`, `model`, `team`, `workflow` or `role`, at least one of them with two values or more, and makes 2 to 12 arms. A key it leaves out comes from `defaults`. Each arm's name joins its values for the keys that vary: a ref is used as it is, with a character other than a letter, digit, `-` or `_` written `-`, and `without: [skills/auth-tokens]` is `without-skills-auth-tokens`. A suite has `arms` or `matrix`, not both.
 
 A task starts from a full commit of `repo` and is decided by exactly one of `check` and `successCriteria`:
 
@@ -614,7 +671,7 @@ These results hold for these tasks, this run and this machine.
 
 | Table | Shows |
 | --- | --- |
-| Arms | Each arm's trials by result, and how many a [trial limit](#trial-limits) stopped. A deviation is a trial whose prompt ran on another tool, team revision or model than its arm's, or without a trial limit its driver could not enforce. A trial is not verified when its record lacks one of those. When an arm runs on other team assets than the pulled revision, a Team column shows each arm's, such as `pulled 3f9c2ab`, `next 81d0e4c`, `3f9c2ab without skills/auth-tokens` or `none`. |
+| Arms | Each arm's trials by result, and how many a [trial limit](#trial-limits) stopped. A deviation is a trial whose prompt ran on another tool, team revision, model or role than its arm's, or without a trial limit its driver could not enforce. A trial is not verified when its record lacks one of those. When an arm runs on other team assets than the pulled revision, a Team column shows each arm's, such as `pulled 3f9c2ab`, `next 81d0e4c`, `3f9c2ab without skills/auth-tokens` or `none`. When an arm [runs as a role](#arms-that-run-as-a-role), a Role column shows each arm's role, or `member's roles`. |
 | Usage | Each arm's medians and cost total, with how many trials each used. Tokens and cost appear only as the tool stated them, so a tool that states none shows `unknown (0)`. A trial whose passes did not all state its tokens (input and output), cost or duration counts as one that stated none of it, and makes a cost total `incomplete`. |
 | Tasks | Each task's pass rate on each arm. |
 | Baselines | The tasks that did not run, and why. |

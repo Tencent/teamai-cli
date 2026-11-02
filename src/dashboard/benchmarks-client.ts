@@ -19,10 +19,12 @@ const passOf=r=>r&&r.planned?r.passed/r.planned:null;
 const rateCell=r=>r&&r.planned?pct(r.passed/r.planned)+' <small>'+number(r.passed)+'/'+number(r.planned)+'</small>':'<span class="muted">—</span>';
 const armColor=i=>'var(--arm'+(i%12+1)+')';
 const teamText=team=>!team||team.kind==='pulled'?t('pulled team'):team.kind==='none'?t('no team assets'):team.kind==='ref'?team.ref:t('without')+' '+team.paths.join(', ');
-const armConfig=a=>a.tool+(a.model?' · '+a.model:'')+(a.effort?' · '+a.effort:'')+(a.team&&a.team.kind!=='pulled'?' · '+teamText(a.team):'');
+const roleText=a=>a.role+' '+t('role');
+const armSetup=a=>a.tool+(a.model?' · '+a.model:'')+(a.effort?' · '+a.effort:'')+(a.team&&a.team.kind!=='pulled'?' · '+teamText(a.team):'');
+const armConfig=a=>(a.role?roleText(a)+' · ':'')+armSetup(a);
 const armTitle=a=>a.arm+' ('+armConfig(a)+')';
 const swatch=i=>'<i class="swatch" style="background:'+armColor(i)+'"></i>';
-function armName(a,i){ return swatch(i)+'<span data-verbatim>'+e(a.arm)+'</span><small data-verbatim>'+e(armConfig(a))+'</small>'; }
+function armName(a,i){ return swatch(i)+'<span data-verbatim>'+e(a.arm)+'</span>'+(a.role?'<span class="arm-role" data-verbatim>'+e(roleText(a))+'</span>':'')+'<small data-verbatim>'+e(armSetup(a))+'</small>'; }
 function heat(rate){ return rate==null?'':'background:color-mix(in oklab,color-mix(in oklab,var(--green) '+Math.round(rate*100)+'%,var(--error)) '+Math.round(30+Math.abs(rate-0.5)*80)+'%,var(--panel))'; }
 const chartWidth=()=>window.innerWidth<700?440:760;
 function costText(cost){
@@ -159,7 +161,7 @@ function runsPanel(sel){
   +'</tbody></table></div></section>';
 }
 const BENCH_VIEWS=[['arms','Arms'],['compare','Compare'],['team','Team changes']];
-const DIMENSIONS=[['team','Team assets'],['tool','Tool'],['model','Model'],['workflow','Workflow']];
+const DIMENSIONS=[['team','Team assets'],['tool','Tool'],['model','Model'],['workflow','Workflow'],['role','Role']];
 const pp=v=>{const n=Math.round(v*100); return (n>0?'+':n<0?'−':'')+number(Math.abs(n))+' pp';};
 const costNumber=v=>String(Number(v.toPrecision(2)));
 const seriesBy=(sel,key)=>sel.arms.find(a=>a.key===key);
@@ -167,11 +169,11 @@ const comparisonId=c=>c.from+'>'+c.to;
 const diffClass=d=>d.low>0?'up':d.high<0?'down':'amber';
 function sideName(sel,key,dimension){
  const a=seriesBy(sel,key); if(!a)return '?';
- return dimension==='team'?teamText(a.team):dimension==='tool'?a.tool:dimension==='workflow'?(a.workflow||t('one prompt')):a.model?a.model+(a.effort?' '+a.effort:''):t('tool default');
+ return dimension==='team'?teamText(a.team):dimension==='tool'?a.tool:dimension==='workflow'?(a.workflow||t('one prompt')):dimension==='role'?(a.role?roleText(a):t('member\\'s roles')):a.model?a.model+(a.effort?' '+a.effort:''):t('tool default');
 }
 function facetOf(sel,c){
  const a=seriesBy(sel,c.from); if(!a)return '';
- return [c.dimension!=='tool'?a.tool:'',c.dimension!=='model'&&a.model?a.model+(a.effort?' '+a.effort:''):'',c.dimension!=='team'&&a.team.kind!=='pulled'?teamText(a.team):'',c.dimension!=='workflow'&&a.workflow?a.workflow:''].filter(Boolean).join(' · ');
+ return [c.dimension!=='tool'?a.tool:'',c.dimension!=='model'&&a.model?a.model+(a.effort?' '+a.effort:''):'',c.dimension!=='team'&&a.team.kind!=='pulled'?teamText(a.team):'',c.dimension!=='workflow'&&a.workflow?a.workflow:'',c.dimension!=='role'&&a.role?roleText(a):''].filter(Boolean).join(' · ');
 }
 function benchTabs(sel){
  const counts={compare:sel.comparisons.length,team:sel.teamChanges.revisions.length};
@@ -228,11 +230,11 @@ function arrowPanel(sel,list,chosen){
 }
 function taskDeltaPanel(sel,c){
  const rows=c.tasks.map(x=>({x,f:passOf(x.from),to:passOf(x.to)}));
- return '<section class="panel bench-panel"><div class="panelhead"><h2>'+label('Each task')+' · <span data-verbatim>'+e(sideName(sel,c.from,c.dimension))+' → '+e(sideName(sel,c.to,c.dimension))+'</span></h2><span class="label">'+label('Hollow: the arm the difference is measured from. Green where the task passed more often, red where less.')+'</span></div><div class="dumbbells">'
+ return '<section class="panel bench-panel"><div class="panelhead"><h2>'+label('Each task')+' · <span data-verbatim>'+e(sideName(sel,c.from,c.dimension))+' → '+e(sideName(sel,c.to,c.dimension))+(facetOf(sel,c)?' · '+e(facetOf(sel,c)):'')+'</span></h2><span class="label">'+label('Hollow: the arm the difference is measured from. Green where the task passed more often, red where less.')+'</span></div><div class="dumbbells">'
   +rows.map(r=>{const lo=Math.min(r.f,r.to), hi=Math.max(r.f,r.to), cls=r.to>r.f?'up':r.to<r.f?'down':'same'; return '<div class="dumbbell"><span class="dumbbell-task" data-verbatim>'+e(r.x.task)+'</span><span class="dumbbell-track"><i class="dumbbell-line '+cls+'" style="left:'+(lo*100).toFixed(1)+'%;width:'+((hi-lo)*100).toFixed(1)+'%"></i><i class="dumbbell-from" style="left:'+(r.f*100).toFixed(1)+'%"></i><i class="dumbbell-to '+cls+'" style="left:'+(r.to*100).toFixed(1)+'%"></i></span><span class="dumbbell-value '+cls+'"><b>'+pp(r.to-r.f)+'</b><small>'+number(r.x.from.passed)+'/'+number(r.x.from.planned)+' → '+number(r.x.to.passed)+'/'+number(r.x.to.planned)+'</small></span></div>';}).join('')
   +'<div class="dumbbell dumbbell-axis" aria-hidden="true"><span></span><span class="forest-scale"><small>0%</small><small>50%</small><small>100%</small></span><span></span></div></div></section>';
 }
-const configName=c=>c.tool+(c.model?' · '+c.model:'')+(c.effort?' · '+c.effort:'')+(c.workflow?' · '+c.workflow:'');
+const configName=c=>c.tool+(c.model?' · '+c.model:'')+(c.effort?' · '+c.effort:'')+(c.workflow?' · '+c.workflow:'')+(c.role?' · '+roleText(c):'');
 function teamPanel(sel){
  const tc=sel.teamChanges;
  if(!tc.revisions.length)return emptyView('No tool and model ran on two team revisions yet','Team changes follows one tool and model across the team revisions it ran on, so you see what a change to the team\\'s skills, rules or agents did. Add an arm on another revision of the team repo:','arms:\\n  - name: team          # the revision you pulled\\n  - name: main\\n    team: main          # a branch, tag or commit of the team repo','Or run the suite again after each change to the team repo: each run installs the revision you pulled.');

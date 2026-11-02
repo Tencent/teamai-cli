@@ -13,14 +13,14 @@ type RecordedArm = BenchmarkRecord['arms'][number];
 
 type RecordedTrial = BenchmarkRecord['trials'][number];
 
-export interface ArmResults extends Pick<RecordedArm, 'tool' | 'model' | 'effort' | 'source' | 'team'> {
+export interface ArmResults extends Pick<RecordedArm, 'tool' | 'model' | 'effort' | 'source' | 'team' | 'role'> {
   arm: string;
   planned: number;
   counts: Record<TrialResult, number>;
   /** Trials whose prompt a limit of the suite's `trial` ended; their check or judge still decided them. In `planned`. */
   stoppedByLimit: number;
   /**
-   * Trials whose prompt ran as something other than the arm: another tool, team revision, or concrete model, or without a
+   * Trials whose prompt ran as something other than the arm: another tool, team revision, role or concrete model, or without a
    * limit of the suite's `trial` its driver could not enforce. In `planned`.
    */
   deviations: number;
@@ -157,6 +157,7 @@ export function benchmarkTable(record: BenchmarkTableInput): BenchmarkTable {
 
       return definedFields<ArmResults>({
         arm: arm.name, tool: arm.tool, model: arm.model || undefined, effort: arm.effort || undefined, source: arm.source, team: arm.team,
+        role: arm.role,
         planned: own.length, counts,
         stoppedByLimit: own.filter((trial) => trial.limit !== undefined).length,
         ...deviationsOf(arm, observed.filter(({ trial }) => trial.arm === arm.name)),
@@ -185,12 +186,15 @@ function skillLoadsOf(trials: readonly RecordedTrial[], arm: string, skill: stri
 export function benchmarkCells(table: BenchmarkTable): BenchmarkCells {
   // Every arm on the pulled revision, as most suites run: the column would repeat one commit on every row.
   const namesTeam = table.results.some(({ team }) => team.kind !== 'pulled');
+  // Only a suite that compares roles: an arm without one runs with the member's own roles.
+  const namesRole = table.results.some(({ role }) => role !== undefined);
 
   return definedFields<BenchmarkCells>({
     results: {
-      header: ['Arm', 'Tool', 'Model (source)', ...(namesTeam ? ['Team'] : []), 'Planned', ...TRIAL_RESULTS.map((result) => RESULT_COLUMNS[result]), 'Stopped by a limit', 'Deviations', 'Not verified', 'Pass rate'],
+      header: ['Arm', 'Tool', 'Model (source)', ...(namesTeam ? ['Team'] : []), ...(namesRole ? ['Role'] : []), 'Planned', ...TRIAL_RESULTS.map((result) => RESULT_COLUMNS[result]), 'Stopped by a limit', 'Deviations', 'Not verified', 'Pass rate'],
       rows: table.results.map((arm) => [
-        arm.arm, arm.tool, `${arm.model ? [arm.model, ...(arm.effort ? [arm.effort] : [])].join(' ') : 'tool default'} (${arm.source})`, ...(namesTeam ? [formatTeam(arm.team)] : []), String(arm.planned),
+        arm.arm, arm.tool, `${arm.model ? [arm.model, ...(arm.effort ? [arm.effort] : [])].join(' ') : 'tool default'} (${arm.source})`, ...(namesTeam ? [formatTeam(arm.team)] : []),
+        ...(namesRole ? [arm.role ?? "member's roles"] : []), String(arm.planned),
         ...TRIAL_RESULTS.map((result) => String(arm.counts[result])), String(arm.stoppedByLimit), String(arm.deviations), String(arm.notVerified), formatPassRate(arm.passRate),
       ]),
     },
