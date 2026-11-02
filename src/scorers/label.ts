@@ -114,6 +114,8 @@ export const ScoreLabelSchema = z.discriminatedUnion('source', [
     ...LabelFields,
     source: z.literal('workflow'),
     subject: RunSubjectSchema,
+    /** What the judged work ran as: the pass's observation, or the one every prompt pass of a workflow step agrees on. */
+    agent: AgentObservationSchema.optional(),
     /** The team skills the judged pass loaded, as its driver reported them. */
     used: UsedSchema.optional(),
     /** Absent on a label an older teamai wrote, which the judge decided. */

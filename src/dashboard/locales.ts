@@ -701,6 +701,8 @@ export const dashboardMessages = {
   "PLATFORM": "平台",
   "SKILLS": "技能",
   "OPEN": "打开",
+  "HARNESS": "Harness",
+  "Harness not recorded": "未记录 Harness",
   "REMINDER FIRED": "已触发提醒",
   "SESSIONS": "会话",
   "LABELLED": "已标注",

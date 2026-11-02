@@ -327,6 +327,40 @@ function article(type: string): string {
   return /^[aeiou]/.test(type) ? `an ${type}` : `a ${type}`;
 }
 
+/**
+ * The agent harness a recorded agent names, as a result shows it: the tool, the model and effort it reported or else
+ * asked for, the role its knowledge came from, and the team revision delivered. `role.of` is `step` when the step ran
+ * with a role of its own in a workflow copy, `member` when it ran with the member's roles.
+ */
+export type AgentHarness = {
+  tool: string;
+  model?: string;
+  effort?: string;
+  role?: { of: 'step' | 'member'; names: string[] };
+  teamRevision?: string;
+};
+
+/** The harness `agent` names, or undefined when it observed no tool, as a record written before #1176. */
+export function agentHarnessOf(agent: RecordedAgent | undefined): AgentHarness | undefined {
+  if (!agent || !('tool' in agent)) return undefined;
+  const model = agent.model?.reported ?? agent.model?.requested;
+  const effort = agent.effort?.reported ?? agent.effort?.requested;
+  const selection = agent.team?.selection;
+  const memberRoles = selection ? [...selection.primaryRole !== undefined ? [selection.primaryRole] : [], ...selection.additionalRoles] : [];
+
+  const role = selection?.stepRole !== undefined
+    ? { of: 'step' as const, names: [selection.stepRole] }
+    : memberRoles.length > 0 ? { of: 'member' as const, names: memberRoles } : undefined;
+
+  return {
+    tool: agent.tool.name,
+    ...(model !== undefined ? { model } : {}),
+    ...(effort !== undefined ? { effort } : {}),
+    ...(role ? { role } : {}),
+    ...(agent.team ? { teamRevision: agent.team.revision } : {}),
+  };
+}
+
 /** A published entry's `agent`: the string of a record written before #1176 (empty for none), an observation, or only a definition. */
 const RecordedAgentFieldSchema = z
   .union([

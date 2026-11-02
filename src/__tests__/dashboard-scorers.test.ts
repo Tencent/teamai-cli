@@ -128,6 +128,72 @@ describe('dashboard scorer results', () => {
     expect(view.scorers).toEqual([]);
   });
 
+  describe('the agent a workflow label carries', () => {
+    const byTool = async (config: LocalConfig) => (await scorerResults({ config, query: { windowDays: 30, groupBy: 'tool' }, now: NOW }))
+      .selected?.groups?.map((group) => [group.kind === 'value' ? group.value : group.kind, group.stats.n]);
+
+    it('counts a label under its own agent when the run it judged is gone, and under its own agent over the run\'s record', async () => {
+      const { config } = team();
+      publishRecord(config, { run: 'r0000000000000001', steps: [{ step: 'implement', pass: 1, agent: observation('codex') }] });
+      publishLabels(config, 'bob', [
+        workflowLabel('r0000000000000001', { agent: observation('claude') }),
+        workflowLabel('r0000000000000009', { agent: observation('opencode') }),
+      ]);
+
+      expect(await byTool(config)).toEqual([['claude', 1], ['opencode', 1]]);
+    });
+
+    it('still leaves out the labels of an isolated run, whatever agent they carry', async () => {
+      const { config } = team();
+      publishRecord(config, { run: 'r0000000000000002', isolated: true, steps: [{ step: 'implement', pass: 1, agent: observation('codex') }] });
+      publishLabels(config, 'bob', [workflowLabel('r0000000000000002', { agent: observation('claude') })]);
+
+      expect((await scorerResults({ config, query: { windowDays: 30 }, now: NOW })).scorers).toEqual([]);
+    });
+
+    it('groups a label by the role its pass ran with in a workflow copy, and a member pass by the member\'s role', async () => {
+      const { config } = team();
+      const ranAs = (selection: { primaryRole: string; stepRole?: string }): AgentObservation => ({
+        ...observation('claude'), team: { revision: 'a'.repeat(40), localChanges: false, selection: { scope: 'project', additionalRoles: [], ...selection } },
+      });
+      publishLabels(config, 'bob', [
+        workflowLabel('r0000000000000003', { agent: ranAs({ primaryRole: 'frontend', stepRole: 'review' }), subject: { runId: 'r0000000000000003', step: 'review', pass: 1 } }),
+        workflowLabel('r0000000000000003', { agent: ranAs({ primaryRole: 'frontend' }), passed: false, label: 'missed', score: 0 }),
+      ]);
+
+      const view = await scorerResults({ config, query: { windowDays: 30, groupBy: 'role' }, now: NOW });
+
+      expect(view.selected?.groups?.map((group) => [group.kind === 'value' ? group.value : group.kind, group.stats.passed, group.stats.failed])).toEqual([['frontend', 0, 1], ['review', 1, 0]]);
+    });
+
+    it('lists a failing label with the harness it judged, opens its run while the run is listed, and names no harness for a label that recorded none', async () => {
+      const { config } = team();
+      const revision = 'a'.repeat(40);
+      const reviewer: AgentObservation = {
+        ...observation('claude'), model: { reported: 'claude-review-1' }, effort: { requested: 'high' },
+        team: { revision, localChanges: false, selection: { scope: 'project', primaryRole: 'frontend', additionalRoles: [], stepRole: 'review' } },
+      };
+      publishRecord(config, { run: 'r0000000000000001', steps: [{ step: 'implement', pass: 1, agent: reviewer }] });
+      const failed = { passed: false, label: 'missed', score: 0 };
+      publishLabels(config, 'bob', [
+        workflowLabel('r0000000000000001', { ...failed, agent: reviewer, scoredAt: '2026-03-18T12:00:00.000Z' }),
+        workflowLabel('r0000000000000009', { ...failed, agent: observation('codex'), scoredAt: '2026-03-18T11:00:00.000Z' }),
+        workflowLabel('r0000000000000008', failed),
+      ]);
+
+      const view = await scorerResults({ config, query: { windowDays: 30 }, now: NOW });
+
+      expect(view.selected?.failing.labels).toEqual([
+        expect.objectContaining({
+          run: { id: 'r0000000000000001', step: 'implement', pass: 1, source: 'reported' },
+          harness: { tool: 'claude', model: 'claude-review-1', effort: 'high', role: { of: 'step', names: ['review'] }, teamRevision: revision },
+        }),
+        expect.objectContaining({ run: { id: 'r0000000000000009', step: 'implement', pass: 1 }, harness: { tool: 'codex' } }),
+        expect.not.objectContaining({ harness: expect.anything() }),
+      ]);
+    });
+  });
+
   it('splits at a team commit with this clone\'s ancestry, and refuses a commit the clone does not have', async () => {
     const { config, commits: [A, B, C] } = team();
     const labels = [A, B, C, undefined].map((revision, index) => sessionLabel(`s-${index}`, { agent: observation('claude', revision) }));

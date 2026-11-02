@@ -4,7 +4,7 @@
  * summed. Pure: callers read the labels and what their subjects ran as, and this module only counts them.
  */
 import { createHash } from 'node:crypto';
-import type { AgentObservation, RecordedAgent } from '../agent-observation.js';
+import { agentHarnessOf, type AgentHarness, type AgentObservation, type RecordedAgent } from '../agent-observation.js';
 import type { RunMode } from '../launch-context.js';
 import { canonicalJson } from '../utils/canonical-json.js';
 import { DECIDERS, isStageDecider, labelId, type Decider, type ScoreLabel } from './label.js';
@@ -14,7 +14,7 @@ export type ViewedLabel = {
   label: ScoreLabel;
   /** The member whose label file holds it. */
   author: string;
-  /** A session label's own `agent`, or the `agent` of the pass a workflow label judges. */
+  /** The label's own `agent`; for a workflow label written before labels carried one, the `agent` of the pass it judges. */
   agent?: RecordedAgent;
   /** The name of the pushed session a session label judges, when the team archive holds it. */
   sessionName?: string;
@@ -141,8 +141,11 @@ export type SubjectRef =
   | { source: 'session'; platform: string; sessionName?: string }
   | { source: 'workflow'; run: { id: string; step: string; pass: number; source?: 'local' | 'reported' } };
 
-/** A failing label as the view lists it: never its subject's native session id, reasoning or prompt. */
-export type FailingLabel = { author: string; scoredAt: string; label: string; skills?: string[]; decidedBy?: Decider } & SubjectRef;
+/**
+ * A failing label as the view lists it, with the harness the judged work ran with when that was recorded: never its
+ * subject's native session id, reasoning or prompt.
+ */
+export type FailingLabel = { author: string; scoredAt: string; label: string; skills?: string[]; decidedBy?: Decider; harness?: AgentHarness } & SubjectRef;
 
 /**
  * What decided a workflow cohort's labels (#1247): its labels per stage, the most first and those that recorded none
@@ -416,14 +419,16 @@ function subjectRef(entry: ViewedLabel): SubjectRef {
 
 function failingLabel(entry: ViewedLabel): FailingLabel {
   const { label } = entry;
+  const harness = agentHarnessOf(entry.agent);
 
   return {
     author: entry.author,
     scoredAt: label.scoredAt,
     label: label.label,
-    // Left undefined without skills or a recorded decider, so the JSON view leaves them out.
+    // Left undefined without skills, a recorded decider or a harness, so the JSON view leaves them out.
     skills: label.used?.skills.length ? label.used.skills : undefined,
     decidedBy: label.source === 'workflow' ? label.decidedBy : undefined,
+    harness,
     ...subjectRef(entry),
   };
 }

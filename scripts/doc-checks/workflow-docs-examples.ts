@@ -157,6 +157,9 @@ function writeExamples(page: string, config: LocalConfig) {
     const value: JsonValue = document.toJS();
 
     if (!isWorkflow(value)) continue;
+
+    // A scorer page also shows the `steps:` of a workflow, unnamed, to show where `scorers` goes; it pulls only whole files.
+    if (SCORER_PAGES.includes(page) && value.name === undefined) continue;
     const file = `workflows/${String(value.name)}.yaml`;
     const twin = byFile.get(file);
 
@@ -259,7 +262,7 @@ await check(
   cleanup,
 );
 
-for (const page of PAGES) {
+for (const page of [...PAGES, ...SCORER_PAGES]) {
   await check(
     `${page}: each yaml block parses, and its complete workflows pass pull unless the page shows their failure`,
     async () => {

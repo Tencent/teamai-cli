@@ -941,6 +941,110 @@ describe('the run mode of a judged pass (#1384)', () => {
   });
 });
 
+describe('the harness a judged pass ran with', () => {
+  const labelled = async (config: LocalConfig): Promise<Record<string, unknown>> => {
+    const lease = leaseOf(await nextJudgeLease(config, request()));
+    data(await submitJudgeLease(config, lease.ref, { driver: judgeDriver, outcome: 'success', answer: { label: 'good', reasoning: 'r' } }));
+    return z.object({}).passthrough().parse((await LabelStore.local(config))[0]);
+  };
+  const team = { revision: 'a'.repeat(40), localChanges: false, selection: { scope: 'project' as const, primaryRole: 'frontend', additionalRoles: [] } };
+  const agentOfStep = (run: RunState, id: string) => {
+    const step = run.steps.find((each) => each.id === id);
+    return step && 'agent' in step ? step.agent : undefined;
+  };
+
+  it('labels a prompt pass with the agent its pass recorded, also when it recorded no model and so no fingerprint', async () => {
+    const config = fixture(scorer(100));
+    const runId = await settledRun(config, { tool: 'claude', agent: { tool: { version: '2.1.308' }, effort: { requested: 'high' }, team } });
+    const recorded = agentOfStep(await runOf(config, runId), 'review');
+
+    const label = await labelled(config);
+
+    expect(recorded).toMatchObject({ tool: { name: 'claude', version: '2.1.308' }, effort: { requested: 'high' }, team, driver: 'external' });
+    expect(recorded).not.toHaveProperty('fingerprint');
+    expect(label.agent).toEqual(recorded);
+  });
+
+  it('shows the judge nothing of the harness: its prompt and evidence name no tool version, model, role or team revision of the pass', async () => {
+    const config = fixture(scorer(100));
+    const stepTeam = { ...team, revision: 'e'.repeat(40), selection: { ...team.selection, primaryRole: 'harness-only-role' } };
+    await settledRun(config, { tool: 'claude', model: 'harness-only-model', agent: { tool: { version: '9.8.7' }, team: stepTeam } });
+
+    const lease = leaseOf(await nextJudgeLease(config, request()));
+    const read = (dir: string): string[] => fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+      const file = path.join(dir, entry.name);
+      return entry.isDirectory() ? read(file) : [fs.readFileSync(file, 'utf8')];
+    });
+    const shown = [fs.readFileSync(lease.prompt, 'utf8'), ...read(lease.evidence)].join('\n');
+
+    expect(shown).toContain('Judge the review.');
+    for (const harness of ['9.8.7', 'harness-only-model', 'harness-only-role', 'e'.repeat(40)]) expect(shown).not.toContain(harness);
+    data(await submitJudgeLease(config, lease.ref, { driver: judgeDriver, outcome: 'success', answer: { label: 'good', reasoning: 'r' } }));
+    expect((await LabelStore.local(config))[0]).toMatchObject({ agent: { model: { reported: 'harness-only-model' }, team: stepTeam } });
+  });
+
+  describe('of a workflow step', () => {
+    const subWorkflow = (reviewKeys: string) => `schemaVersion: v1alpha1
+name: review
+description: A drafted, checked and reviewed change, judged as one.
+steps:
+  - id: check
+    scorers: [quality]
+    workflow:
+      steps:
+        - id: draft
+          prompt: Draft the change.
+        - id: lint
+          needs: [draft]
+          command: npm run lint
+        - id: review
+          needs: [lint]
+          prompt: Review the change.${reviewKeys}
+`;
+    const ran = { tool: 'claude', model: 'claude-review-1', agent: { effort: { requested: 'high' }, team } };
+    const project = (commit: string) => ({ project: { commit: commit.repeat(40), dirty: false } });
+
+    /** Runs the workflow with `reviewKeys` on its review step, reporting each step as `reports` gives, and labels `check`. */
+    async function labelledCheck(reviewKeys: string, reports: Record<'draft' | 'lint' | 'review', Record<string, unknown>>) {
+      const config = fixture(scorer(100));
+      fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'review.yaml'), subWorkflow(reviewKeys));
+      await syncWorkflowDefinitions(config);
+      const runId = String(data(await startRun(config, 'review', {}, { secrets: await knownSecrets(config) })).run);
+      for (const step of ['draft', 'lint', 'review'] as const) {
+        const lease = z.object({ attempt: z.string(), revision: z.number(), step: z.string() }).parse(data(await leaseNext(config, runId, workDriver)).lease);
+        expect(lease.step).toBe(`check.${step}`);
+        await reportAttempt(config, runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: workDriver, outputs: { done: true }, ...reports[step] });
+      }
+      expect(data(await leaseNext(config, runId, workDriver))).toMatchObject({ done: { outcome: 'succeeded' } });
+      const run = await runOf(config, runId);
+      const label = z.object({ subject: z.object({ step: z.literal('check') }) }).passthrough().parse(await labelled(config));
+      return { label, run };
+    }
+
+    it('takes the agent of its first prompt pass when every prompt pass agrees on it, whatever its command passes recorded', async () => {
+      const { label, run } = await labelledCheck('', {
+        draft: { ...ran, agent: { ...ran.agent, ...project('c') } },
+        lint: {},
+        review: { ...ran, agent: { ...ran.agent, ...project('d') } },
+      });
+
+      const draft = agentOfStep(run, 'check.draft');
+      expect(draft).toMatchObject({ tool: { name: 'claude' }, model: { reported: 'claude-review-1' }, project: { commit: 'c'.repeat(40) } });
+      expect(label.agent).toEqual(draft);
+    });
+
+    it.each([
+      ['their definitions differ', '\n          agent: reviewer', { review: ran }],
+      ['one ran with a role of its own', '', { review: { ...ran, agent: { ...ran.agent, team: { ...team, selection: { ...team.selection, stepRole: 'review' } } } } }],
+      ['one recorded no agent', '', { review: {} }],
+    ])('records no agent when its prompt passes do not agree because %s', async (_, reviewKeys, reports) => {
+      const { label } = await labelledCheck(reviewKeys, { draft: ran, lint: {}, ...reports });
+
+      expect(label).not.toHaveProperty('agent');
+    });
+  });
+});
+
 describe('run snapshot', () => {
   it('publishes the pinned scorers by hash only, and the install and within stamps as they are', async () => {
     const config = fixture(scorer(100));

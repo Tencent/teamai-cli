@@ -1,8 +1,8 @@
 /**
  * The Scorers page of the dashboard client (#1182), embedded in `dashboardClient`'s closure, whose helpers it uses:
- * `$`, `e`, `t`, `label`, `number`, `when`, `json`, `read`, `save`, `apiQuery`, `errorPanel`, `render`, `page` and
- * `workspaceGeneration`. Every value from the API is escaped with `e`. A workflow row opens its run through the
- * Workflow Runs dialog.
+ * `$`, `e`, `t`, `label`, `number`, `when`, `json`, `read`, `save`, `apiQuery`, `errorPanel`, `render`, `page`,
+ * `workspaceGeneration` and `agentHarness`. Every value from the API is escaped with `e`. A workflow row opens its run
+ * through the Workflow Runs dialog.
  */
 import type { Decider } from '../scorers/label.js';
 import { DIMENSIONS_OFFERED, FAILING_MAX, FAILING_PAGE, SCORER_WINDOWS, type Dimension } from '../scorers/results.js';
@@ -135,11 +135,12 @@ function agreementPanel(sel){
   +'<p class="scorer-hint">'+label('A judge label in the window pairs with the newest hand label of its session, whoever gave it and whenever, while this rubric lists its value. Judge passed, human failed: the judge is more lenient than members. Judge failed, human passed: it is stricter.')+'</p>'
   +list+how+'</section>';
 }
+function harnessCell(h){ return h?agentHarness(h,{inlineRevision:true}):'<small class="harness muted">'+label('Harness not recorded')+'</small>'; }
 function failingPanel(sel){
- const rows=sel.failing.labels, total=sel.failing.total, staged=!!sel.decided;
+ const rows=sel.failing.labels, total=sel.failing.total, staged=!!sel.decided, heads=['SCORED','AUTHOR','LABEL'].concat(staged?['DECIDED BY']:[],['HARNESS','PLATFORM','SKILLS','OPEN']);
  return '<section class="panel sessions"><div class="panelhead"><h2>'+label('Failing labels')+' <span class="count">'+number(total)+'</span></h2>'+(scorerQuery.group?'<button class="link" data-scorer-group="">'+label('Show every group')+'</button>':'<span class="label">'+label('Newest first')+'</span>')+'</div>'
-  +(rows.length?'<div class="table-scroll"><table class="session-table"><thead><tr>'+['SCORED','AUTHOR','LABEL'].concat(staged?['DECIDED BY']:[],['PLATFORM','SKILLS','OPEN']).map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
-  +rows.map(r=>'<tr><td>'+e(when(r.scoredAt))+'</td><td data-verbatim>'+e(r.author)+'</td><td class="amber" data-verbatim>'+e(r.label)+'</td>'+(staged?'<td>'+deciderText(r.decidedBy||'not recorded')+'</td>':'')+'<td data-verbatim>'+e(r.platform||(r.run?t('Workflow run'):'—'))+'</td><td>'+(r.skills?r.skills.map(s=>'<span class="tag" data-verbatim>'+e(s)+'</span>').join(' '):'—')+'</td><td>'+subjectCell(r)+'</td></tr>').join('')
+  +(rows.length?'<div class="table-scroll"><table class="session-table failing-labels"><thead><tr>'+heads.map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
+  +rows.map(r=>'<tr>'+[e(when(r.scoredAt)),'<span data-verbatim>'+e(r.author)+'</span>','<span class="amber" data-verbatim>'+e(r.label)+'</span>'].concat(staged?[deciderText(r.decidedBy||'not recorded')]:[],[harnessCell(r.harness),'<span data-verbatim>'+e(r.platform||(r.run?t('Workflow run'):'—'))+'</span>',r.skills?r.skills.map(s=>'<span class="tag" data-verbatim>'+e(s)+'</span>').join(' '):'—',subjectCell(r)]).map((cell,i)=>'<td data-label="'+e(t(heads[i]))+'">'+cell+'</td>').join('')+'</tr>').join('')
   +'</tbody></table></div>'+(rows.length<total?'<div class="cardfoot scorer-foot"><span class="label">'+number(rows.length)+' / '+number(total)+'</span> '+(rows.length<failingMax?'<button class="link" data-scorer-more>'+label('Show more')+'</button>':'<span class="label">'+label('Pick a group or a shorter window to list the rest.')+'</span>')+'</div>':''):'<div class="empty"><p>'+label('No failing labels in this window.')+'</p></div>')+'</section>';
 }
 function remindersPanel(sel){

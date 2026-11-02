@@ -7,6 +7,7 @@
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import { DriverSchema, driverIdentity, sameDriver } from '../driver-identity.js';
 import type { LocalConfig } from '../types.js';
@@ -23,7 +24,7 @@ import type { ScorerDefinition } from '../scorers/definition.js';
 import {
   ENTRY_WINDOW_MS, LEASE_TTL_MS, entryIdOf, entryState, hasLapsed, leaseRefOf, liveSessionLease, parseLeaseRef, type EntryState,
 } from '../scorers/entry.js';
-import { observedEffort, observedModel } from '../agent-observation.js';
+import { observedEffort, observedModel, type AgentObservation } from '../agent-observation.js';
 import {
   ACCESS_LEVELS, ISOLATIONS, JudgeUsageSchema, sumUsage, type Isolation, type JudgeAccess, type JudgeUsage, type RunSubject, type ScoreLabel, type SessionLabel,
   type SessionSubject, type Decider,
@@ -42,6 +43,7 @@ import { agreedRunMode } from '../launch-context.js';
 import { sessionLabel, SessionWork, writeSessionEvidence, type JudgedSession, type NamedSession, type SessionEntry } from '../session-flow/session-work.js';
 import { buildEvidence, evidenceHash, evidencePlan, missingEvidence } from './scoring-evidence.js';
 import { decideBeforeJudge, failingLabel, judgedAlone } from './scoring-stages.js';
+import type { RunPass } from './loop.js';
 import { isUnsettled, judgeablePasses, sameSubject, scoredPasses, verdictEntries, verdictsFrozen } from './scoring-entries.js';
 import { error, ok } from './engine.js';
 import { stepDefinitions } from './scope.js';
@@ -1252,6 +1254,23 @@ function toSucceeded(attempt: LeasedAttempt, settled: { settledAt: string; usage
   return { ...attempt, settledAt: settled.settledAt, ...spent, status: 'succeeded', labelId: settled.labelId, verdict: settled.verdict };
 }
 
+/** The parts two observations of one harness agree on: what ran, not where or by which CLI and driver. */
+const harnessParts = ({ tool, model, effort, definition, team }: AgentObservation) => ({ tool, model, effort, definition, team });
+
+/**
+ * What the judged passes ran as, which their label carries: the first observation of the prompt passes when each
+ * recorded one and all agree by value on tool, model, effort, definition and team, else none. A command pass runs no
+ * agent, so it is left out. The judge never reads it.
+ */
+function judgedAgent(run: RunState, judged: readonly RunPass[]): AgentObservation | undefined {
+  const definitionOf = stepDefinitions(run);
+  const [first, ...rest] = judged.filter((pass) => definitionOf(pass.step)?.prompt !== undefined).map((pass) => pass.agent);
+
+  if (!first) return undefined;
+
+  return rest.every((agent) => agent !== undefined && isDeepStrictEqual(harnessParts(agent), harnessParts(first))) ? first : undefined;
+}
+
 /**
  * A success must name a label of each scorer it judges, else nothing is written and the lease stays open; TeamAI
  * computes the score and whether it passed. `local` is the local judge that ran, at the isolation it measured. A driver's
@@ -1273,7 +1292,11 @@ async function labelJudgeLease(
           const used = reported.length > 0 ? { skills: [...new Set(reported.flatMap((each) => each.skills))].sort() } : undefined;
           // The pass's mode, or the one every pass a workflow step ran agrees on: never the judge's.
           const runMode = agreedRunMode(judged.map((pass) => pass.runMode));
+          const agent = judgedAgent(lease.run, judged);
 
+          const observed: Pick<WorkflowLabel, 'agent'> = {};
+
+          if (agent) observed.agent = agent;
           const reportedUse: Pick<WorkflowLabel, 'used'> = {};
 
           if (used) reportedUse.used = used;
@@ -1284,7 +1307,7 @@ async function labelJudgeLease(
 
           if (hash) hashed.evidenceHash = hash;
 
-          return { label: { scorer, rubric, label, score, passed, source: 'workflow', subject: attempt.subject, ...reportedUse, judge, ...mode, decidedBy, ...hashed, scoredAt } };
+          return { label: { scorer, rubric, label, score, passed, source: 'workflow', subject: attempt.subject, ...observed, ...reportedUse, judge, ...mode, decidedBy, ...hashed, scoredAt } };
         } });
       }
 

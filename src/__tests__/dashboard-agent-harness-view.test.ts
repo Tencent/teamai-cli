@@ -1,14 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { dashboardMessages } from '../dashboard/locales.js';
-import { stepHarnessView } from '../dashboard/step-harness-view.js';
-import type { RunDetail } from '../dashboard/workflow-runs.js';
+import type { AgentHarness } from '../agent-observation.js';
+import { agentHarnessView } from '../dashboard/agent-harness-view.js';
 
 const messages: Record<string, string> = dashboardMessages;
 
-type Harness = NonNullable<RunDetail['steps'][number]['harness']>;
-
 /** The line the Steps table shows under a pass's step, as the page renders `harness` in `language`, with every message key it asked for. */
-function render(harness: Harness | undefined, language: 'en' | 'zh-CN' = 'en'): { html: string; keys: string[] } {
+function render(harness: AgentHarness | undefined, language: 'en' | 'zh-CN' = 'en'): { html: string; keys: string[] } {
   const keys: string[] = [];
   const t = (text: string) => {
     keys.push(text);
@@ -16,7 +14,7 @@ function render(harness: Harness | undefined, language: 'en' | 'zh-CN' = 'en'): 
   };
   const e = (value: unknown) => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   const label = (text: string) => e(t(text));
-  const line = new Function('t', 'e', 'label', `${stepHarnessView}\nreturn stepHarness;`)(t, e, label) as (harness: Harness | undefined) => string;
+  const line = new Function('t', 'e', 'label', `${agentHarnessView}\nreturn agentHarness;`)(t, e, label) as (harness: AgentHarness | undefined) => string;
   return { html: line(harness), keys };
 }
 
