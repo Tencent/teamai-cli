@@ -2711,7 +2711,23 @@ const VoteDeltaSchema = z.looseObject({
 
 export type VoteDelta = z.infer<typeof VoteDeltaSchema>;
 
-const VoteDeltasSchema = z.record(z.string(), VoteDeltaSchema);
+/**
+ * A table of a votes file whose entries a hand edit may have broken: such an entry is dropped, and the next writer
+ * starts it again from zero, as it does for a missing one.
+ */
+function voteTableSchema<TEntry>(entry: z.ZodType<TEntry>) {
+  return z.record(z.string(), entry.nullable().catch(null)).transform((entries) => {
+    const table: Record<string, TEntry> = {};
+
+    for (const [docId, value] of Object.entries(entries)) {
+      if (value !== null) table[docId] = value;
+    }
+
+    return table;
+  });
+}
+
+const VoteDeltasSchema = voteTableSchema(VoteDeltaSchema);
 
 /**
  * One session in the upvote ledger. `firstTs` is when the session first
@@ -2762,7 +2778,7 @@ export type PendingVoteSync = z.infer<typeof PendingVoteSyncSchema>;
  */
 export const UserVotesV2Schema = z.looseObject({
   version: z.literal(2),
-  votes: z.record(z.string(), VoteEntryV2Schema).default({}),
+  votes: voteTableSchema(VoteEntryV2Schema).default({}),
   deltas: VoteDeltasSchema.default({}),
   upvotedSessions: UpvoteLedgerSchema.optional().catch(undefined),
   pendingSync: PendingVoteSyncSchema.optional().catch(undefined),

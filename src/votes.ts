@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
 import YAML from 'yaml';
+import { z } from 'zod';
 import { parseYaml } from './utils/yaml.js';
 
 import { UserVotesSchema, UserVotesV2Schema } from './types.js';
@@ -69,6 +70,9 @@ export async function withVotesLock<T>(
 }
 
 const LEDGER_TTL_MS = 24 * 60 * 60 * 1000; // 1 day
+
+/** A votes file that says it is v2, whatever else it holds. */
+const DeclaresV2Schema = z.looseObject({ version: z.literal(2) });
 
 /** A copy of the file's upvote ledger, for the caller to prune or extend. */
 function readLedger(data: UserVotesV2): UpvoteLedger {
@@ -188,9 +192,12 @@ function parseUserVotesContent(content: string): { data: UserVotesV2; migrated: 
   // Older stages serialized deltas and pendingSync.deltas as YAML aliases. The
   // parse builds fresh objects, so a writer incrementing the live counters
   // leaves the receipt alone.
-  const v2 = UserVotesV2Schema.safeParse(parsed);
+  // The version decides the format: a v2 file that does not parse is never migrated as v1, which would reset its counters.
+  if (DeclaresV2Schema.safeParse(parsed).success) {
+    const v2 = UserVotesV2Schema.safeParse(parsed);
 
-  if (v2.success) return { data: v2.data, migrated: false };
+    return v2.success ? { data: v2.data, migrated: false } : null;
+  }
 
   const v1 = UserVotesSchema.safeParse(parsed);
 
