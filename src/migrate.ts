@@ -1,6 +1,7 @@
 import path from 'node:path';
 import fse from 'fs-extra';
 import YAML from 'yaml';
+import { z } from 'zod';
 import { isSelfMode, LocalConfigSchema, SYNC_LOCK_FILENAME, WORKTREE_DIRNAMES, type LocalConfig } from './types.js';
 import { getRemoteUrl, resolveAnchors } from './utils/git.js';
 import { resolvePartitionDir, writeAnchorFile } from './utils/partition.js';
@@ -691,6 +692,9 @@ function isInside(p: string, dir: string): boolean {
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
+/** The staged config's `repo.localPath`, the one path it records under the legacy dir. */
+const StagedRepoSchema = z.object({ localPath: z.string() });
+
 /**
  * Rewrite absolute paths in the staged config.yaml that pointed into the legacy
  * dir so they name the partition instead. Only `repo.localPath` is persisted as
@@ -706,7 +710,7 @@ async function rebaseConfigPaths(
   const content = await readFileSafe(stagedConfig);
 
   if (!content) return;
-  let doc: Record<string, unknown>;
+  let doc: unknown;
 
   try {
     doc = YAML.parse(content);
@@ -714,11 +718,14 @@ async function rebaseConfigPaths(
     return; // verifyStaging already validated parseability; be defensive anyway
   }
 
-  const repo = doc?.repo as { localPath?: string } | undefined;
-  const rebased = await rebasePath(repo?.localPath, legacyDir, partitionDir);
+  if (!(doc instanceof Object) || !('repo' in doc) || !(doc.repo instanceof Object)) return;
+  const { repo } = doc;
+  const localPath = StagedRepoSchema.safeParse(repo).data?.localPath;
+  const rebased = await rebasePath(localPath, legacyDir, partitionDir);
 
-  if (repo && rebased !== undefined && rebased !== repo.localPath) {
-    repo.localPath = rebased;
+  if (rebased !== undefined && rebased !== localPath) {
+    // Assigned in place, so every other key of the staged config is written back as read.
+    Object.assign(repo, { localPath: rebased });
     await writeFile(stagedConfig, YAML.stringify(doc));
   }
 }
@@ -867,6 +874,8 @@ async function retireSupersededInstall(legacyDir: string, partitionDir: string, 
   return true;
 }
 
+const SelfModeTeamaiYamlSchema = z.object({ mode: z.literal('self') });
+
 /**
  * True when `dir` (a `.teamai/`) carries single-repo team knowledge — a
  * `teamai.yaml` with `mode: self`. Such a directory is committed to main and must
@@ -878,9 +887,7 @@ async function holdsSelfKnowledge(dir: string): Promise<boolean> {
   if (!content) return false;
 
   try {
-    const raw = YAML.parse(content) as { mode?: string } | null;
-
-    return raw?.mode === 'self';
+    return SelfModeTeamaiYamlSchema.safeParse(YAML.parse(content)).success;
   } catch {
     return false;
   }
