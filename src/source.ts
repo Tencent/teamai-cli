@@ -2,6 +2,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import fse from 'fs-extra';
 import YAML from 'yaml';
+import { z } from 'zod';
 import { loadTeamConfig, autoDetectInit, loadLocalConfig, detectProjectConfig } from './config.js';
 import { assertAttachedTeamRepo, createGit, DetachedTeamRepoError, pullRepo } from './utils/git.js';
 import { parseFrontmatter } from './utils/frontmatter.js';
@@ -96,9 +97,18 @@ async function listSourceNames(): Promise<string[]> {
 
     return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    if (errnoCode(error) === 'ENOENT') return [];
     throw error;
   }
+}
+
+const ErrnoErrorSchema = z.object({ code: z.string() });
+
+/** The error code (`ENOENT`, ...) a failed fs call carries, or undefined when the thrown value has none. */
+function errnoCode(cause: unknown): string | undefined {
+  const parsed = ErrnoErrorSchema.safeParse(cause);
+
+  return parsed.success ? parsed.data.code : undefined;
 }
 
 function getSourceRepoId(source: SourceConfig): string {
@@ -128,7 +138,7 @@ export async function listInstallationRecords(): Promise<InstallationRecord[]> {
       if (!file.endsWith('.json')) continue;
       const manifestPath = path.join(installationsDir, file);
       const manifest = await readSourceManifest(manifestPath).catch(() => null);
-      records.push({ path: manifestPath, teamCheckout: typeof manifest?.teamCheckout === 'string' ? manifest.teamCheckout : null });
+      records.push({ path: manifestPath, teamCheckout: manifest?.teamCheckout ?? null });
     }
   }
 
@@ -197,6 +207,23 @@ function isRecordedDestination(value: string): boolean {
   return isRelativeDescendant(value) || isAbsoluteDestination(value);
 }
 
+/**
+ * A source installation record as read from disk. Each field a later step trusts is checked, and any
+ * failure makes the whole record invalid. `teamCheckout` and `installedHomes` are only hints: a value
+ * of the wrong type reads as absent. Other keys (`lastPull`) ride along for the next write.
+ */
+const SourceInstallRecordSchema = z.looseObject({
+  destinationRoot: z.string().refine((root) => path.isAbsolute(root)).optional(),
+  teamCheckout: z.string().optional().catch(undefined),
+  repositoryId: z.string().optional(),
+  installedSkills: z.array(z.string().refine(isCanonicalSkillName)),
+  installedPaths: z.record(z.string(), z.array(z.string().refine(isRecordedDestination))).optional(),
+  installedPhysicalPaths: z.record(z.string().refine(isRecordedDestination), z.string().refine(isAbsoluteDestination)).optional(),
+  installedHomes: z.record(z.string(), z.string().optional().catch(undefined)).optional().catch(undefined),
+}).refine((record) => record.installedPhysicalPaths === undefined || record.installedPaths !== undefined);
+
+type SourceInstallRecord = z.infer<typeof SourceInstallRecordSchema>;
+
 /** How the manifest records `target`: relative inside the scope root, else absolute (Hermes home, OpenClaw workspace). */
 function recordedDestination(baseDir: string, target: string): string {
   const relative = path.relative(baseDir, target);
@@ -211,8 +238,8 @@ async function resolveSourcePhysicalPath(target: string): Promise<string> {
   try {
     return await fse.realpath(absolute);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-      throw new Error(`Cannot verify source destination: ${absolute}. Manual review is required (${(error as NodeJS.ErrnoException).code ?? 'unknown error'}).`, { cause: error });
+    if (errnoCode(error) !== 'ENOENT') {
+      throw new Error(`Cannot verify source destination: ${absolute}. Manual review is required (${errnoCode(error) ?? 'unknown error'}).`, { cause: error });
     }
 
     // A missing leaf is safe to append; an existing dangling link is not.
@@ -220,7 +247,7 @@ async function resolveSourcePhysicalPath(target: string): Promise<string> {
       await fse.lstat(absolute);
       throw new Error(`Cannot determine source destination through a dangling symlink: ${absolute}. Manual review is required.`, { cause: error });
     } catch (statError) {
-      if ((statError as NodeJS.ErrnoException).code !== 'ENOENT') throw statError;
+      if (errnoCode(statError) !== 'ENOENT') throw statError;
     }
 
     const parent = path.dirname(absolute);
@@ -238,19 +265,19 @@ async function resolveSourceCopyDestination(target: string): Promise<{ path: str
       return { path: path.join(await resolveSourcePhysicalPath(path.dirname(target)), path.basename(target)), replacesSymlink: true };
     }
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    if (errnoCode(error) !== 'ENOENT') throw error;
   }
 
   return { path: await resolveSourcePhysicalPath(target), replacesSymlink: false };
 }
 
-async function readSourceManifest(manifestPath: string): Promise<SourceInstallManifest | null> {
+async function readSourceManifest(manifestPath: string): Promise<SourceInstallRecord | null> {
   let raw: string;
 
   try {
     raw = await fse.readFile(manifestPath, 'utf8');
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    if (errnoCode(error) === 'ENOENT') return null;
     throw new Error(`Cannot read source ownership record: ${manifestPath}`, { cause: error });
   }
 
@@ -262,23 +289,10 @@ async function readSourceManifest(manifestPath: string): Promise<SourceInstallMa
     throw new Error(`Invalid JSON in source ownership record: ${manifestPath}`);
   }
 
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error(`Invalid source ownership record: ${manifestPath}`);
-  }
+  const parsed = SourceInstallRecordSchema.safeParse(value);
 
-  const manifest = value as SourceInstallManifest;
-
-  if (!Array.isArray(manifest.installedSkills) || !manifest.installedSkills.every((skill) => typeof skill === 'string' && isCanonicalSkillName(skill))
-    || (manifest.installedPaths !== undefined && (!manifest.installedPaths || typeof manifest.installedPaths !== 'object'
-      || Array.isArray(manifest.installedPaths) || !Object.values(manifest.installedPaths).every((paths) => Array.isArray(paths) && paths.every((target) => typeof target === 'string' && isRecordedDestination(target)))))
-    || (manifest.destinationRoot !== undefined && (typeof manifest.destinationRoot !== 'string' || !path.isAbsolute(manifest.destinationRoot)))
-    || (manifest.installedPhysicalPaths !== undefined && (!manifest.installedPaths || !manifest.installedPhysicalPaths
-      || typeof manifest.installedPhysicalPaths !== 'object' || Array.isArray(manifest.installedPhysicalPaths)
-      || !Object.entries(manifest.installedPhysicalPaths).every(([target, physical]) => isRecordedDestination(target)
-        && typeof physical === 'string' && !physical.includes('\0') && path.isAbsolute(physical) && path.resolve(physical) === physical && path.parse(physical).root !== physical)))
-    || (manifest.repositoryId !== undefined && typeof manifest.repositoryId !== 'string')) {
-    throw new Error(`Invalid source ownership record: ${manifestPath}`);
-  }
+  if (!parsed.success) throw new Error(`Invalid source ownership record: ${manifestPath}`);
+  const manifest = parsed.data;
 
   // A destination outside the scope root is checked against its tool's home. One recorded in a
   // home that has since moved (OpenClaw configured to another workspace) is no longer managed:
@@ -294,7 +308,7 @@ async function readSourceManifest(manifestPath: string): Promise<SourceInstallMa
       }
 
       const home = manifest.installedHomes?.[target];
-      const relative = typeof home === 'string' && path.isAbsolute(home) ? path.relative(home, target) : '';
+      const relative = home !== undefined && path.isAbsolute(home) ? path.relative(home, target) : '';
 
       if (!isRelativeDescendant(relative) || relative.split(path.sep).length < 2) {
         throw new Error(`Invalid source ownership record: ${manifestPath}`);
@@ -319,11 +333,11 @@ async function readSourceManifest(manifestPath: string): Promise<SourceInstallMa
   return manifest;
 }
 
-async function loadSourceManifest(sourceName: string, localConfig: LocalConfig): Promise<SourceInstallManifest | null> {
+async function loadSourceManifest(sourceName: string, localConfig: LocalConfig): Promise<SourceInstallRecord | null> {
   return readSourceManifest(getSourceManifestPath(sourceName, localConfig));
 }
 
-async function saveSourceManifest(sourceName: string, localConfig: LocalConfig, manifest: SourceInstallManifest): Promise<void> {
+async function saveSourceManifest(sourceName: string, localConfig: LocalConfig, manifest: SourceInstallManifest | SourceInstallRecord): Promise<void> {
   // The home each absolute destination lies in now, so a later move of that home is recognized (#993).
   const installedHomes: Record<string, string> = {};
 
@@ -396,7 +410,7 @@ async function ensureSourceRepo(source: SourceConfig, force: boolean, dryRun = f
 
       return repoDir;
     } catch (e) {
-      log.warn(`[source:${source.name}] Pull failed: ${(e as Error).message}`);
+      log.warn(`[source:${source.name}] Pull failed: ${e instanceof Error ? e.message : String(e)}`);
 
       // Return existing repo even if pull fails (use cached version)
       return repoDir;
@@ -424,7 +438,7 @@ async function ensureSourceRepo(source: SourceConfig, force: boolean, dryRun = f
 
     return repoDir;
   } catch (e) {
-    log.warn(`[source:${source.name}] Clone failed: ${(e as Error).message}`);
+    log.warn(`[source:${source.name}] Clone failed: ${e instanceof Error ? e.message : String(e)}`);
 
     return null;
   }
@@ -459,7 +473,7 @@ async function sourceAddLocked(repoUrl: string, options: { name?: string } & Glo
   try {
     assertSafeResourceName(name);
   } catch (e) {
-    log.error(`Invalid source name "${name}": ${(e as Error).message}`);
+    log.error(`Invalid source name "${name}": ${e instanceof Error ? e.message : String(e)}`);
 
     return;
   }
@@ -873,7 +887,7 @@ export async function pullSources(localConfig: LocalConfig, options: GlobalOptio
     await withSourceLock(options, () => pullSourcesLocked(localConfig, options, recorder));
   } catch (error) {
     recorder?.failed('sources');
-    log.warn(`[source] ${(error as Error).message}`);
+    log.warn(`[source] ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
@@ -902,7 +916,7 @@ async function pullSourcesLocked(localConfig: LocalConfig, options: GlobalOption
       if (!await pullSingleSource(source, teamConfig, localConfig, baseDir, options, recorder)) recorder?.failed('sources');
     } catch (e) {
       recorder?.failed('sources');
-      log.warn(`[source:${source.name}] Pull failed: ${(e as Error).message}`);
+      log.warn(`[source:${source.name}] Pull failed: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -1402,7 +1416,7 @@ async function findSkillInRepo(skillsDir: string, skillName: string): Promise<st
     try {
       if ((await fse.lstat(candidate)).isSymbolicLink()) await resolveSourcePhysicalPath(candidate);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      if (errnoCode(error) !== 'ENOENT') throw error;
     }
 
     return pathExists(path.join(candidate, 'SKILL.md'));
@@ -1528,11 +1542,11 @@ async function assertSourceSkillRootIsNotSymlink(target: string): Promise<void> 
       throw new Error(`Installed source skill root is a symlink: ${target}. Keeping the installation unchanged. Manual review is required; review the link, its referent, and the retained ownership record before retrying.`);
     }
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    if (errnoCode(error) !== 'ENOENT') throw error;
   }
 }
 
-async function assertSourceDestinationsUnchanged(manifest: SourceInstallManifest, baseDir: string): Promise<void> {
+async function assertSourceDestinationsUnchanged(manifest: SourceInstallRecord, baseDir: string): Promise<void> {
   for (const skill of manifest.installedSkills) {
     for (const relative of getRetainedSkillPaths(skill, manifest, baseDir)) {
       const target = path.resolve(baseDir, relative);
@@ -1546,7 +1560,7 @@ async function assertSourceDestinationsUnchanged(manifest: SourceInstallManifest
 }
 
 /** Retained ownership must come from recorded destinations, never today's config. */
-function getRetainedSkillPaths(skill: string, manifest: SourceInstallManifest, baseDir: string): string[] {
+function getRetainedSkillPaths(skill: string, manifest: SourceInstallRecord, baseDir: string): string[] {
   const paths = manifest.installedPaths?.[skill];
 
   if (!paths?.length) throw new Error(`Source skill "${skill}" has unrecorded destinations. Manual review is required.`);
@@ -1565,7 +1579,7 @@ function getRetainedSkillPaths(skill: string, manifest: SourceInstallManifest, b
 }
 
 /** A descendant owner cannot account for all bytes retained in its parent. */
-function hasNestedSourceOwner(skill: string, manifest: SourceInstallManifest, baseDir: string, otherOwners: SourcePathOwner[]): boolean {
+function hasNestedSourceOwner(skill: string, manifest: SourceInstallRecord, baseDir: string, otherOwners: SourcePathOwner[]): boolean {
   const paths = getRetainedSkillPaths(skill, manifest, baseDir);
 
   return paths.some((target) => {
@@ -1594,7 +1608,7 @@ export async function getSourcePathOwners(currentManifest?: string): Promise<Sou
       if (manifestPath === currentManifest || !file.endsWith('.json')) continue;
       const manifest = await readSourceManifest(manifestPath);
 
-      if (!manifest || typeof manifest.destinationRoot !== 'string' || !path.isAbsolute(manifest.destinationRoot)) continue;
+      if (!manifest || manifest.destinationRoot === undefined || !path.isAbsolute(manifest.destinationRoot)) continue;
       const root = path.resolve(manifest.destinationRoot);
 
       for (const skill of manifest.installedSkills) {
@@ -1890,7 +1904,7 @@ export async function getSourcePushQuarantineNames(localConfig: LocalConfig): Pr
   for (const sourceName of await listSourceNames()) {
     const currentPath = getSourceManifestPath(sourceName, localConfig);
 
-    const quarantineScoped = (scoped: SourceInstallManifest | null, manifestPath: string) => {
+    const quarantineScoped = (scoped: SourceInstallRecord | null, manifestPath: string) => {
       let ambiguous = false;
 
       for (const skill of scoped?.installedSkills ?? []) {
