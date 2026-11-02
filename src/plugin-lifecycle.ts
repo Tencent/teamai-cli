@@ -1,6 +1,7 @@
 /** Plugin lifecycle reconciliation engine. All I/O is injected via `ReconcileDeps` for pure-logic testing. */
 
 import { createHash } from 'node:crypto';
+import { z } from 'zod';
 
 // ---------------------------------------------------------------------------
 // Domain types
@@ -178,7 +179,7 @@ export async function reconcilePlugins(
         // else: steady state — plugin self-manages, teamai is no-op
       }
     } catch (err) {
-      const msg = (err as Error).message;
+      const msg = err instanceof Error ? err.message : String(err);
       deps.log.warn(`plugin ${d.slug} reconcile failed: ${msg}`);
       await deps.mutatePlugins((m) => {
         const prev = m[d.slug];
@@ -215,7 +216,7 @@ export async function reconcilePlugins(
       });
       deps.log.debug(`plugin ${slug}: uninstalled`);
     } catch (err) {
-      deps.log.warn(`plugin ${slug} uninstall failed: ${(err as Error).message}`);
+      deps.log.warn(`plugin ${slug} uninstall failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 }
@@ -238,7 +239,7 @@ export async function teardownAllPlugins(deps: ReconcileDeps): Promise<void> {
       });
       deps.log.debug(`plugin ${slug}: torn down`);
     } catch (err) {
-      deps.log.warn(`plugin ${slug} teardown failed: ${(err as Error).message}`);
+      deps.log.warn(`plugin ${slug} teardown failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 }
@@ -263,38 +264,63 @@ const PLUGIN_VAR_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
  * identifier (`[A-Za-z_][A-Za-z0-9_]*`). Command/version fields are excluded.
  * If two plugin sections share a field name, the later section wins.
  */
-export function parseGetConfig(resp: unknown): { vars: Record<string, string>; plugins: PluginDescriptor[] } {
+export interface PluginConfig {
+  vars: Record<string, string>;
+  plugins: PluginDescriptor[];
+}
+
+const NonEmptyText = z.string().min(1);
+
+/** A get-config section that is a plugin; an optional field that is not a non-empty string reads as absent. */
+const PluginSectionSchema = z.looseObject({
+  install_cmd: NonEmptyText,
+  run_cmd: NonEmptyText,
+  uninstall_cmd: NonEmptyText,
+  version: NonEmptyText.optional().catch(undefined),
+  update_cmd: NonEmptyText.optional().catch(undefined),
+});
+
+/** A substitution var's value: a finite number as its decimal text, or a non-empty string. */
+const PluginVarSchema = z.union([z.number().transform(String), NonEmptyText]);
+
+/** The response's sections by key; an array's entries are keyed by index, and any other response has none. */
+const GetConfigSectionsSchema = z.union([
+  z.record(z.string(), z.unknown()),
+  z.array(z.unknown()).transform((items) => Object.fromEntries(items.entries())),
+]).catch({});
+
+const GetConfigSchema = GetConfigSectionsSchema.transform((sections): PluginConfig => {
   const vars: Record<string, string> = {};
   const plugins: PluginDescriptor[] = [];
 
-  if (!resp || typeof resp !== 'object') return { vars, plugins };
+  for (const [key, section] of Object.entries(sections)) {
+    const parsed = PluginSectionSchema.safeParse(section);
 
-  for (const [key, section] of Object.entries(resp as Record<string, unknown>)) {
-    if (!section || typeof section !== 'object') continue;
-    const s = section as Record<string, unknown>;
-    const isStr = (v: unknown): v is string => typeof v === 'string' && v.length > 0;
-
-    if (!isStr(s['install_cmd']) || !isStr(s['run_cmd']) || !isStr(s['uninstall_cmd'])) continue;
+    if (!parsed.success) continue;
+    const s = parsed.data;
 
     for (const [field, value] of Object.entries(s)) {
       if (PLUGIN_CMD_FIELDS.has(field) || !PLUGIN_VAR_NAME.test(field)) continue;
+      const text = PluginVarSchema.safeParse(value);
 
-      if (typeof value === 'number' && Number.isFinite(value)) vars[field] = String(value);
-      else if (isStr(value)) vars[field] = value;
+      if (text.success) vars[field] = text.data;
     }
 
     plugins.push({
       slug: key,
-      version: isStr(s['version']) ? (s['version'] as string) : undefined,
-      installCmd: s['install_cmd'] as string,
-      updateCmd: isStr(s['update_cmd']) ? (s['update_cmd'] as string) : undefined,
-      uninstallCmd: s['uninstall_cmd'] as string,
-      runCmd: s['run_cmd'] as string,
+      version: s.version,
+      installCmd: s.install_cmd,
+      updateCmd: s.update_cmd,
+      uninstallCmd: s.uninstall_cmd,
+      runCmd: s.run_cmd,
     });
   }
 
   return { vars, plugins };
-}
+});
+
+/** Parse a raw get-config response; see the contract above. */
+export const parseGetConfig = GetConfigSchema.parse;
 
 /** Replace ${key} occurrences in cmd with vars[key]. Unknown keys are left untouched. */
 export function substituteVars(cmd: string, vars: Record<string, string>): string {
