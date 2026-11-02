@@ -18,3 +18,8 @@ export function mapStrings(value: JsonValue, rewrite: (text: string) => string):
       : isJsonObject(value) ? Object.fromEntries(Object.entries(value).map(([key, field]) => [key, mapStrings(field, rewrite)]))
         : value;
 }
+
+/** A list whose malformed elements are skipped, so one bad entry does not cost the others. */
+export function lenientList<T>(element: z.ZodType<T>) {
+  return z.array(element.nullable().catch(null)).transform((list) => list.flatMap((entry) => (entry === null ? [] : [entry])));
+}

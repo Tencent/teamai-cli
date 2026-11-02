@@ -6,6 +6,7 @@ import { z } from 'zod';
 
 import { getTGitToken, tgitFetch } from './providers/tgit/rest-auth.js';
 import { log } from './utils/logger.js';
+import { lenientList } from './utils/json.js';
 import { getUserHome } from './utils/home.js';
 import { type LocalConfig, JsonObjectSchema } from './types.js';
 
@@ -52,7 +53,7 @@ export interface MRSummary {
 /** Persisted cache for a repo. */
 const HintCacheSchema = z.object({
   /** MR IDs that have already been hinted. */
-  hintedMrIds: z.array(z.string()),
+  hintedMrIds: lenientList(z.string()),
   /** ISO 8601 timestamp of last update. */
   updatedAt: z.string(),
 });
@@ -250,7 +251,7 @@ async function listTGitMergedMRs(
       return [];
     }
 
-    const items = z.array(TGitMRSchema).parse(await resp.json());
+    const items = lenientList(TGitMRSchema).parse(await resp.json());
     const sinceMs = since.getTime();
 
     return items
@@ -315,7 +316,7 @@ async function listGitHubMergedMRsViaREST(
       return [];
     }
 
-    const items = z.array(GitHubRestPRSchema).parse(await resp.json());
+    const items = lenientList(GitHubRestPRSchema).parse(await resp.json());
     const sinceMs = since.getTime();
 
     return items
@@ -364,7 +365,7 @@ async function listGitHubMergedMRs(
     );
 
     if (result.status === 0 && result.stdout.trim()) {
-      const items = z.array(GhPRSchema).parse(JSON.parse(result.stdout));
+      const items = lenientList(GhPRSchema).parse(JSON.parse(result.stdout));
       const sinceMs = since.getTime();
 
       return items

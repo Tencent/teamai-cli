@@ -3,12 +3,13 @@ import path from 'node:path';
 
 import { z } from 'zod';
 import { pathExists } from './utils/fs.js';
+import { lenientList } from './utils/json.js';
 import { log } from './utils/logger.js';
 import { HOT_TEMPLATE } from './wiki-engine/adapters/templates.js';
 
 /** The parts of an evidence `_manifest.json` the index reads. */
 const IndexedManifestSchema = z.object({
-  components: z.array(z.object({ slug: z.string(), responsibilities: z.array(z.string()).optional() })),
+  components: lenientList(z.object({ slug: z.string(), responsibilities: z.array(z.string()).optional() })),
 });
 
 /** An evidence `_domains.json`; a field of the wrong type reads as absent. */

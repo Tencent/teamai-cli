@@ -5,6 +5,7 @@ import path from 'node:path';
 import { z } from 'zod';
 
 import { pathExists } from './utils/fs.js';
+import { lenientList } from './utils/json.js';
 import { CallError, callTool, callToolParallel, isOverrideInvalid } from './tool-launch/call.js';
 import { log } from './utils/logger.js';
 import { assertSafeResourceName, assertWithinRoot } from './utils/path-safety.js';
@@ -67,20 +68,12 @@ const ManifestEdgeSchema = z.object({
 
 type ManifestEdge = z.infer<typeof ManifestEdgeSchema>;
 
-/** A list whose malformed elements are skipped rather than failing the whole manifest. */
-function lenientList<T>(element: z.ZodType<T>) {
-  return z.array(element.nullable().catch(null))
-    .transform((list) => list.flatMap((entry) => (entry === null ? [] : [entry])))
-    .optional()
-    .catch(undefined);
-}
-
 /** The evidence `_manifest.json`; a field of the wrong type reads as absent. */
 const ManifestSchema = z.object({
   project: OptionalTextSchema,
   generatedAt: OptionalTextSchema,
-  components: lenientList(ManifestComponentSchema),
-  edges: lenientList(ManifestEdgeSchema),
+  components: lenientList(ManifestComponentSchema).optional().catch(undefined),
+  edges: lenientList(ManifestEdgeSchema).optional().catch(undefined),
 });
 
 type Manifest = z.infer<typeof ManifestSchema>;

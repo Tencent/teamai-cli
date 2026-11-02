@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { z } from "zod";
 
 import { safeIgnore, toPosix } from "../core/wiki-protocol.js";
+import { lenientList } from "../../utils/json.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -50,7 +51,7 @@ export const SourceManifestSchema = z.object({
   branch: z.string().optional().catch(undefined),
   lastScan: z.string().optional().catch(undefined),
   files: z.array(SourceManifestFileSchema).optional().catch(undefined),
-  ingestedMrs: z.array(IngestedMrSchema).optional().catch(undefined),
+  ingestedMrs: lenientList(IngestedMrSchema).optional().catch(undefined),
 });
 
 export type SourceManifest = z.infer<typeof SourceManifestSchema>;
