@@ -28,7 +28,7 @@ import { createProjectToolRoots } from '../../project-agent-root.js';
 import { scoresDir } from '../../scorers/attempts.js';
 import { removeSubjectEvidence } from '../../scorers/evidence.js';
 import { homeVariables, isToolId, TOOLS } from '../../tools.js';
-import { listRoleIds, loadRolesManifestIfPresent } from '../../roles.js';
+import { roleDeclaration } from '../../roles.js';
 import { getDataHome, LocalConfigSchema, type LocalConfig } from '../../types.js';
 import { execCommand } from '../../utils/exec.js';
 import { readJson, writeJsonAtomic } from '../../utils/fs.js';
@@ -568,11 +568,22 @@ async function installTeam(input: {
   const unavailable = (message: string): WorkflowFailure => ({ code: 'role_unavailable', message });
 
   if (role !== undefined) {
-    const roles = await loadRolesManifestIfPresent(teamClone).catch(() => null);
-    const declared = roles ? listRoleIds(roles) : [];
+    const declaration = await roleDeclaration(teamClone, role);
 
-    if (!declared.includes(role)) {
-      return unavailable(`Role ${role} was not delivered into the clone for step "${lease.step}": manifest/roles.yaml at team revision ${revision} does not declare it, so the clone would get no role's knowledge. Add the role to manifest/roles.yaml at that revision, or run the step with a role it declares.`);
+    switch (declaration.kind) {
+      case 'declared':
+        break;
+      case 'undeclared':
+        return unavailable(`Role ${role} was not delivered into the clone for step "${lease.step}": manifest/roles.yaml at team revision ${revision} does not declare it, so the clone would get no role's knowledge. Add the role to manifest/roles.yaml at that revision, or run the step with a role it declares.`);
+      case 'missing':
+        return unavailable(`Role ${role} was not delivered into the clone for step "${lease.step}": team revision ${revision} has no manifest/roles.yaml, so it declares no role and the clone would get no role's knowledge. Add manifest/roles.yaml declaring the role at that revision, or run the step without a role.`);
+      case 'unreadable':
+        return unavailable(`Role ${role} was not delivered into the clone for step "${lease.step}": manifest/roles.yaml at team revision ${revision} cannot be read (${declaration.error}). Fix it at that revision, or run the step on another revision.`);
+      default: {
+        const unhandled: never = declaration;
+
+        return unhandled;
+      }
     }
   }
 

@@ -11,7 +11,7 @@ import { isModelAlias, loadModelAliases, loadTeamModelAliases, noModelCause, noM
 import { pinScorers } from '../scorers/cache.js';
 import type { PinnedScorer } from '../scorers/pin.js';
 import { resolveTeamRef, TeamRefError } from '../team-ref.js';
-import { listRoleIds, loadRolesManifestIfPresent } from '../roles.js';
+import { roleDeclaration, type RoleDeclaration } from '../roles.js';
 import { isAgentToolId } from '../tools.js';
 import type { LocalConfig } from '../types.js';
 import { definedFields } from '../utils/defined-fields.js';
@@ -396,27 +396,34 @@ function unpublishableArm(arm: PlannedArm): string | undefined {
  * revision the arm runs on must declare it, as the trial's clone checks it again before its pull.
  */
 async function undeclaredArmRole(config: LocalConfig, arms: readonly PlannedArm[]): Promise<string | undefined> {
-  const declared = new Map<string, Promise<string[] | { failed: string }>>();
+  const declared = new Map<string, Promise<RoleDeclaration | { failed: string }>>();
 
   for (const { name, role, team } of arms) {
     if (role === undefined || team.kind === 'none') continue;
     const { revision } = team;
-
-    const roles = declared.get(revision) ?? withTeamRevision(config, revision, async (at) => {
-      const manifest = await loadRolesManifestIfPresent(at.repo.localPath);
-
-      return manifest ? listRoleIds(manifest) : [];
-    });
-
+    const roles = declared.get(revision) ?? withTeamRevision(config, revision, (at) => roleDeclaration(at.repo.localPath));
     declared.set(revision, roles);
-    const ids = await roles;
+    const read = await roles;
 
-    if ('failed' in ids) {
-      return `Arm "${name}" runs with role ${role}, and manifest/roles.yaml at team revision ${short(revision)} cannot be read: ${ids.failed}. Fix manifest/roles.yaml on that revision, or run the arm on another team revision, push it, run teamai pull, and start again.`;
+    if ('failed' in read) {
+      return `Arm "${name}" runs with role ${role}, and team revision ${short(revision)} cannot be read: ${read.failed}. Run the arm on another team revision, push it, run teamai pull, and start again.`;
     }
 
-    if (!ids.includes(role)) {
-      return `Arm "${name}" runs with role ${role}, which manifest/roles.yaml at team revision ${short(revision)} does not declare; it declares ${ids.join(', ') || 'none'}. Add the role to manifest/roles.yaml, or fix the arm's role, push it, run teamai pull, and start again.`;
+    switch (read.kind) {
+      case 'declared':
+      case 'undeclared':
+        if (read.ids.includes(role)) continue;
+
+        return `Arm "${name}" runs with role ${role}, which manifest/roles.yaml at team revision ${short(revision)} does not declare; it declares ${read.ids.join(', ') || 'none'}. Add the role to manifest/roles.yaml, or fix the arm's role, push it, run teamai pull, and start again.`;
+      case 'missing':
+        return `Arm "${name}" runs with role ${role}, and team revision ${short(revision)} has no manifest/roles.yaml to declare it. Add manifest/roles.yaml declaring the role, or remove the arm's role, push it, run teamai pull, and start again.`;
+      case 'unreadable':
+        return `Arm "${name}" runs with role ${role}, and manifest/roles.yaml at team revision ${short(revision)} cannot be read: ${read.error}. Fix manifest/roles.yaml on that revision, or run the arm on another team revision, push it, run teamai pull, and start again.`;
+      default: {
+        const unhandled: never = read;
+
+        return unhandled;
+      }
     }
   }
 

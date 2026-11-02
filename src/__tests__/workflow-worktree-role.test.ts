@@ -62,9 +62,9 @@ function git(args: string[], cwd: string): string {
 /**
  * A self-mode project whose member has role frontend, delivering to `tools`, its team declaring roles frontend and
  * review with a skill each and the `rules` given, and a started run of `yaml` with `inputs`, whose steps run on the
- * first tool. With `baseTeamYaml`, the run's base commit holds that teamai.yaml instead.
+ * first tool. With `base`, the run's base commit holds those team repo files, by path inside it, instead.
  */
-async function roleWorkspace(yaml: string, options: { tools: readonly string[]; rules?: Record<string, string>; inputs?: unknown; baseTeamYaml?: string }): Promise<{ config: LocalConfig; workspace: string; runId: string }> {
+async function roleWorkspace(yaml: string, options: { tools: readonly string[]; rules?: Record<string, string>; inputs?: unknown; base?: Record<string, string> }): Promise<{ config: LocalConfig; workspace: string; runId: string }> {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-worktree-role-')));
   dirs.push(root);
   const workspace = path.join(root, 'workspace');
@@ -110,9 +110,9 @@ async function roleWorkspace(yaml: string, options: { tools: readonly string[]; 
   if (!config) throw new Error('project config was not found');
   config.workflows = { tools: { default: options.tools[0] ?? 'claude' }, max_parallel: 1 };
   await syncWorkflowDefinitions(config);
-  if (options.baseTeamYaml !== undefined) {
-    fs.writeFileSync(path.join(knowledge, 'teamai.yaml'), options.baseTeamYaml);
-    git(['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qam', 'team config'], workspace);
+  if (options.base !== undefined) {
+    for (const [file, text] of Object.entries(options.base)) fs.writeFileSync(path.join(knowledge, file), text);
+    git(['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qam', 'team files'], workspace);
   }
   const started = await startRun(config, 'build', options.inputs ?? {}, { secrets: await knownSecrets(config), checkout: workspace, base: { ref: 'main', commit: git(['rev-parse', 'HEAD'], workspace) } });
   if ('error' in started) throw new Error(started.error.message);
@@ -344,7 +344,7 @@ steps:
   });
 
   it("fails the step before anything is delivered when the team's teamai.yaml cannot be loaded, as where the copy's knowledge lands is then unknown", async () => {
-    const { config, workspace, runId } = await roleWorkspace(REVIEW_IN_COPY, { tools: ['claude'], baseTeamYaml: 'team: [unclosed\n' });
+    const { config, workspace, runId } = await roleWorkspace(REVIEW_IN_COPY, { tools: ['claude'], base: { 'teamai.yaml': 'team: [unclosed\n' } });
     const ran: string[] = [];
 
     const done = await runLocalDriver(config, runId, workspace, { adapter: fakeTool(async (input) => { ran.push(input.prompt); }) });
@@ -354,6 +354,18 @@ steps:
     const run = await readRun(config, RunIdSchema.parse(runId));
     expect(typeof run === 'object' && run.steps.find((step) => step.id === 'review')).toMatchObject({
       status: 'failed', failure: { code: 'role_unavailable', message: expect.stringContaining('teamai.yaml in the team repo is missing or does not parse') },
+    });
+  });
+
+  it("says the team's manifest/roles.yaml cannot be read, rather than that it declares no role, when it does not parse", async () => {
+    const { config, workspace, runId } = await roleWorkspace(REVIEW_IN_COPY, { tools: ['claude'], base: { 'manifest/roles.yaml': 'roles: [unclosed\n' } });
+
+    const done = await runLocalDriver(config, runId, workspace, { adapter: fakeTool(async () => undefined) });
+
+    expect(done, JSON.stringify(done)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const run = await readRun(config, RunIdSchema.parse(runId));
+    expect(typeof run === 'object' && run.steps.find((step) => step.id === 'review')).toMatchObject({
+      status: 'failed', failure: { code: 'role_unavailable', message: expect.stringMatching(/^Role review was not delivered into the copy for step "review": manifest\/roles\.yaml in the team repo cannot be read \(.+\)\. Fix it, push it and run teamai pull, then retry the step\.$/) },
     });
   });
 

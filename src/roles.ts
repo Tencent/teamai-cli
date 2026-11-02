@@ -172,6 +172,36 @@ export async function loadRolesManifestIfPresent(repoPath: string): Promise<Role
   }
 }
 
+/**
+ * Whether the team repo at `repoPath` declares a role, as its manifest/roles.yaml reads: `declared`; `undeclared`, with
+ * the ids it declares; `unreadable`, a manifest that exists but cannot be read or parsed, with the first line of why;
+ * `missing`, no manifest. `role` undefined asks for the declared ids alone, which `declared` then carries.
+ */
+export type RoleDeclaration =
+  | { kind: 'declared'; ids: readonly string[] }
+  | { kind: 'undeclared'; ids: readonly string[] }
+  | { kind: 'unreadable'; error: string }
+  | { kind: 'missing' };
+
+/** Whether `manifest/roles.yaml` in the team repo at `repoPath` declares `role`: see `RoleDeclaration`. */
+export async function roleDeclaration(repoPath: string, role?: string): Promise<RoleDeclaration> {
+  let manifest: RolesManifest | null;
+
+  try {
+    manifest = await loadRolesManifestIfPresent(repoPath);
+  } catch (error) {
+    // The first line names the problem and where; a YAML error's code frame follows it.
+    const message = error instanceof Error ? error.message : String(error);
+
+    return { kind: 'unreadable', error: message.split('\n')[0]?.trim() ?? message };
+  }
+
+  if (!manifest) return { kind: 'missing' };
+  const ids = listRoleIds(manifest);
+
+  return role === undefined || ids.includes(role) ? { kind: 'declared', ids } : { kind: 'undeclared', ids };
+}
+
 export async function saveRolesManifest(repoPath: string, manifest: RolesManifest): Promise<void> {
   // Re-validate before writing to prevent persisting invalid manifests
   checkRolesManifest(manifest);

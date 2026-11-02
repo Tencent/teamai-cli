@@ -12,7 +12,7 @@ import { detectProjectConfig, loadTeamConfig } from '../../config.js';
 import { cleanupOf, installOf, KNOWLEDGE_RESOURCES, locate, resolvedPathOn, type KnowledgeResource, type Location, type Place } from '../../locate.js';
 import type { PullDelivery } from '../../pull.js';
 import { resolveDocsDestination } from '../../resources/docs.js';
-import { listRoleIds, loadRolesManifestIfPresent } from '../../roles.js';
+import { roleDeclaration, type RoleDeclaration } from '../../roles.js';
 import { realHost, type Host } from '../../tool-home.js';
 import { getProjectSearchIndexPath, selfModeGitignorePath, type LocalConfig, type TeamaiConfig } from '../../types.js';
 import { log } from '../../utils/logger.js';
@@ -143,7 +143,7 @@ export async function roleDeliveryGap(input: { install: LocalConfig; tools: read
 type WorktreeRoleGap =
   | { kind: 'no_project_install' }
   | { kind: 'no_team_config'; repo: string }
-  | { kind: 'undeclared'; declared: readonly string[] }
+  | { kind: 'undeclared'; declaration: Exclude<RoleDeclaration, { kind: 'declared' }> }
   | { kind: 'role_file'; written: Exclude<CheckoutRoleWrite, { kind: 'recorded' }> }
   | { kind: 'pull'; delivery: Exclude<PullDelivery, 'delivered' | 'unchanged'> }
   | RoleDeliveryGap;
@@ -159,7 +159,7 @@ function worktreeRoleFailure(input: { gap: WorktreeRoleGap; role: string; step: 
     case 'no_team_config':
       return failed(`Role ${role} was not delivered into the copy for step "${step}": teamai.yaml in the team repo is missing or does not parse (${gap.repo}), so where the copy's knowledge would land is unknown. Run teamai pull in ${dir} to see why, fix teamai.yaml, then retry the step.`);
     case 'undeclared':
-      return failed(`Role ${role} was not delivered into the copy for step "${step}": manifest/roles.yaml in the team repo does not declare it (it declares ${gap.declared.join(', ') || 'no role'}), so the copy would get no role's knowledge. Add the role to manifest/roles.yaml, push it and run teamai pull, or give the step a role it declares, then retry the step.`);
+      return undeclaredRoleFailure({ declaration: gap.declaration, role, step });
     case 'role_file':
       return gap.written.kind === 'busy'
         ? failed(`Role ${role} was not delivered into the copy for step "${step}": another teamai held ${gap.written.lock} too long. Retry the step.`)
@@ -176,6 +176,26 @@ function worktreeRoleFailure(input: { gap: WorktreeRoleGap; role: string; step: 
       return failed(`Role ${role} was not delivered into the copy for step "${step}": its last pull delivered for ${gap.delivered ?? 'the member\'s roles'} instead. Retry the step.`);
     default: {
       const unhandled: never = gap;
+
+      return unhandled;
+    }
+  }
+}
+
+/** The failure of step `step`, whose worktree copy cannot get role `role` because of what the team's roles.yaml says. */
+function undeclaredRoleFailure(input: { declaration: Exclude<RoleDeclaration, { kind: 'declared' }>; role: string; step: string }): WorkflowFailure {
+  const { declaration, role, step } = input;
+  const failed = (message: string): WorkflowFailure => ({ code: 'role_unavailable', message });
+
+  switch (declaration.kind) {
+    case 'undeclared':
+      return failed(`Role ${role} was not delivered into the copy for step "${step}": manifest/roles.yaml in the team repo does not declare it (it declares ${declaration.ids.join(', ') || 'no role'}), so the copy would get no role's knowledge. Add the role to manifest/roles.yaml, push it and run teamai pull, or give the step a role it declares, then retry the step.`);
+    case 'missing':
+      return failed(`Role ${role} was not delivered into the copy for step "${step}": the team repo has no manifest/roles.yaml, so it declares no role and the copy would get no role's knowledge. Add manifest/roles.yaml declaring the role, push it and run teamai pull, or run the step without a role, then retry the step.`);
+    case 'unreadable':
+      return failed(`Role ${role} was not delivered into the copy for step "${step}": manifest/roles.yaml in the team repo cannot be read (${declaration.error}). Fix it, push it and run teamai pull, then retry the step.`);
+    default: {
+      const unhandled: never = declaration;
 
       return unhandled;
     }
@@ -207,10 +227,9 @@ export async function setUpWorktreeRole(input: { dir: string; step: string; role
   const refused = (gap: WorktreeRoleGap): WorkflowFailure => worktreeRoleFailure({ gap, role, step, dir });
 
   if (!project) return refused({ kind: 'no_project_install' });
-  const manifest = await loadRolesManifestIfPresent(project.repo.localPath).catch(() => null);
-  const declared = manifest ? listRoleIds(manifest) : [];
+  const declaration = await roleDeclaration(project.repo.localPath, role);
 
-  if (!declared.includes(role)) return refused({ kind: 'undeclared', declared });
+  if (declaration.kind !== 'declared') return refused({ kind: 'undeclared', declaration });
 
   if (!team) return refused({ kind: 'no_team_config', repo: project.repo.localPath });
   // Only the step's tool needs its knowledge places: for every other tool, a place outside the copy is no place (`locate`).

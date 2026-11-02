@@ -9,7 +9,7 @@ import { log } from '../utils/logger.js';
 import { pathExists, readFileSafe, remove, writeJsonAtomic } from '../utils/fs.js';
 import { isSafeNamespaceSegment } from '../manifest-schema.js';
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
-import { listRoleIds, loadRolesManifestIfPresent, type ResourceNamespaces } from '../roles.js';
+import { roleDeclaration, type ResourceNamespaces } from '../roles.js';
 import { resolveNamespacedItems, type NamespaceCandidate } from '../namespace-resolver.js';
 import {
   getBusinessRoot,
@@ -936,12 +936,21 @@ export async function withTeamRevision<T>(
  * a step's role is then checked when its clone is prepared.
  */
 async function declaredRoleIds(knowledgeRoot: string): Promise<ReadonlySet<string> | undefined> {
-  try {
-    const manifest = await loadRolesManifestIfPresent(knowledgeRoot);
+  const declaration = await roleDeclaration(knowledgeRoot);
 
-    return new Set(manifest ? listRoleIds(manifest) : []);
-  } catch {
-    return undefined;
+  switch (declaration.kind) {
+    case 'declared':
+    case 'undeclared':
+      return new Set(declaration.ids);
+    case 'missing':
+      return new Set();
+    case 'unreadable':
+      return undefined;
+    default: {
+      const unhandled: never = declaration;
+
+      return unhandled;
+    }
   }
 }
 
