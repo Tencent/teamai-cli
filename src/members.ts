@@ -53,6 +53,12 @@ export async function readMemberConfig(roots: string[], username: string): Promi
   return null;
 }
 
+/** A merged roster entry and whether it differs from the one it was merged into. */
+export interface MemberConfigMerge {
+  config: MemberConfig;
+  changed: boolean;
+}
+
 /**
  * Merge a member's roster entry with newly-active role/projects, returning the
  * updated config and whether anything changed. Projects use **append + dedupe**
@@ -63,7 +69,7 @@ export async function readMemberConfig(roots: string[], username: string): Promi
 export function mergeMemberConfig(
   existing: MemberConfig | null,
   input: { username: string; role?: string; projects?: string[] },
-): { config: MemberConfig; changed: boolean } {
+): MemberConfigMerge {
   const prevProjects = existing?.projects ?? [];
   const mergedProjects: string[] = [...prevProjects];
   const seen = new Set(prevProjects);
@@ -81,9 +87,11 @@ export function mergeMemberConfig(
     username: input.username,
     displayName: existing?.displayName || input.username,
     registeredAt: existing?.registeredAt ?? new Date().toISOString(),
-    ...(role ? { role } : {}),
-    ...(mergedProjects.length > 0 ? { projects: mergedProjects } : {}),
   };
+
+  if (role) config.role = role;
+
+  if (mergedProjects.length > 0) config.projects = mergedProjects;
 
   const changed =
     !existing ||
