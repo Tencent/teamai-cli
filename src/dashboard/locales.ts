@@ -1,5 +1,5 @@
 /** Simplified Chinese interface messages. English keys are the default locale. */
-export const dashboardMessages: Record<string, string> = {
+export const dashboardMessages = {
   "Too few sessions in prior period to compare": "上期会话太少，不做对比",
   "Prior period": "上期",
   "No prior data": "无上期数据",
@@ -818,4 +818,4 @@ export const dashboardMessages: Record<string, string> = {
   "Could not load token usage.": "无法加载 token 用量。",
   "Could not refresh token usage. Any displayed values are the last successful result.": "无法刷新 token 用量。显示的数值为上次成功的结果。",
   "No cost in the prior period": "上一周期没有费用"
-};
+} satisfies Record<string, string>;

@@ -113,7 +113,7 @@ export async function dashboardWorkspaces(events: DashboardEvent[]): Promise<Das
 
   const unnamed = events.filter(event => !event.projectAnchor || !seen.has(event.projectAnchor));
 
-  for (const cwd of new Set([process.cwd(), ...unnamed.map(event => event.cwd).filter(Boolean)])) {
+  for (const cwd of new Set([process.cwd(), ...unnamed.flatMap(event => (event.cwd ? [event.cwd] : []))])) {
     const anchors = await resolveAnchors(cwd).catch(() => null);
 
     if (anchors) {

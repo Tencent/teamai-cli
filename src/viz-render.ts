@@ -138,17 +138,15 @@ function renderLineChart(points: TrendPoint[]): string {
   // X-axis labels (show every Nth label to avoid overlap)
   const step = Math.max(1, Math.ceil(n / 8));
 
-  const xLabels = points
-    .map((p, origIdx) => ({ p, origIdx }))
-    .filter(({ origIdx }) => origIdx % step === 0 || origIdx === n - 1)
-    .map(({ p, origIdx }) => {
-      const x = toX(origIdx);
+  const xLabels = points.flatMap((p, origIdx) => {
+    if (origIdx % step !== 0 && origIdx !== n - 1) return [];
+    const x = toX(origIdx);
 
-      return (
-        `<text x="${x}" y="${H - 8}" text-anchor="middle"` +
-        ` style="${mono};font-size:10px;fill:var(--text2)">${escapeHtml(p.period)}</text>`
-      );
-    });
+    return [
+      `<text x="${x}" y="${H - 8}" text-anchor="middle"` +
+      ` style="${mono};font-size:10px;fill:var(--text2)">${escapeHtml(p.period)}</text>`,
+    ];
+  });
 
   const axisVert =
     `<line x1="${PAD_L}" y1="${PAD_T}" x2="${PAD_L}" y2="${bottomY}"` +
@@ -468,7 +466,7 @@ function renderMaintenanceSection(data: VizData): string {
 }
 
 /** Reuse every existing KB report section inside the unified dashboard. */
-export function renderDashboardReport(data: VizData): { context: string; maintenance: string } {
+export function renderDashboardReport(data: VizData) {
   return {
     context: renderOverviewCards(data) + renderCoverageSection(data.coverage)
       + renderTopRecalledSection(data.topRecalled) + renderSilentSection(data.silent)

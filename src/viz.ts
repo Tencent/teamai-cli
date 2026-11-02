@@ -258,11 +258,15 @@ export async function resolveVizRoot(opts: VizOptions): Promise<VizPaths> {
         return deliveredLearningsNamespaces(workspace);
       })
       .then((namespaces) => ({ ok: true as const, namespaces }))
-      .catch((e: unknown) => ({ ok: false as const, reason: e instanceof Error ? e.message : String(e) }));
+      .catch((cause: unknown) => ({ ok: false as const, reason: cause instanceof Error ? cause.message : String(cause) }));
 
     const source: VizSource = config.repo.kind === 'self'
       ? { scope: 'local', label: 'Personal repo · your recalls only' }
       : { scope: 'team', label: 'Team repo · aggregated across the team' };
+
+    const childPart: Pick<VizPaths, 'children'> = {};
+
+    if (children) childPart.children = children;
 
     return {
       root: knowledgeRoot,
@@ -273,7 +277,7 @@ export async function resolveVizRoot(opts: VizOptions): Promise<VizPaths> {
       learningsDirs,
       indexLearningsDirs,
       learningsNamespaces,
-      ...(children ? { children } : {}),
+      ...childPart,
       scope,
       statsDir: path.join(reportsRoot, 'stats'),
       indexPath,
@@ -317,10 +321,10 @@ export async function aggregateTeamVotes(votesDir: string): Promise<{
     const entries = await fs.readdir(votesDir);
     files = entries.filter((f) => f.endsWith('.yaml'));
   } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
+    const code = err instanceof Error && 'code' in err ? err.code : undefined;
 
     if (code !== 'ENOENT') {
-      console.warn(`Failed to read votes directory ${votesDir}: ${(err as Error).message}`);
+      console.warn(`Failed to read votes directory ${votesDir}: ${err instanceof Error ? err.message : String(err)}`);
     }
 
     return { byDoc: {}, activeContributors: 0 };
@@ -400,7 +404,7 @@ async function loadEntries(paths: VizPaths): Promise<SearchIndexEntry[]> {
       });
       index = await loadIndex(tmpIndexPath);
     } catch (err) {
-      console.warn(`Warning: could not build search index: ${(err as Error).message}`);
+      console.warn(`Warning: could not build search index: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
@@ -416,7 +420,7 @@ async function deliveredSources(scope: LocalConfig): Promise<Pick<BuildIndexOpti
   try {
     return await deliveredIndexSources(scope);
   } catch (err) {
-    console.warn(`Warning: the report leaves out docs, rules and skills: ${(err as Error).message}. \`teamai doctor\` shows the problem.`);
+    console.warn(`Warning: the report leaves out docs, rules and skills: ${err instanceof Error ? err.message : String(err)}. \`teamai doctor\` shows the problem.`);
 
     return { docFiles: [], ruleFiles: [], skills: { kind: 'dirs', dirs: [] } };
   }
@@ -427,7 +431,7 @@ async function deliveredSources(scope: LocalConfig): Promise<Pick<BuildIndexOpti
 /** Compute per-type and overall coverage statistics from the full metrics array. */
 function buildCoverage(
   metrics: EntryMetric[],
-): { coverage: CoverageStat[]; overallCoveragePct: number } {
+): Pick<VizData, 'coverage' | 'overallCoveragePct'> {
   const byType = new Map<string, { total: number; covered: number }>();
 
   for (const m of metrics) {
@@ -577,24 +581,24 @@ export async function buildVizData(paths: VizPaths): Promise<VizData> {
   const namespaces = paths.learningsNamespaces.ok ? paths.learningsNamespaces.namespaces : undefined;
 
   const [promote, prune, stale] = await Promise.all([
-    findPromotionCandidates(paths.learningsDirs, paths.votesDir, paths.promotionCheckout, { namespaces }).catch((err: Error) => {
+    findPromotionCandidates(paths.learningsDirs, paths.votesDir, paths.promotionCheckout, { namespaces }).catch((err: Error): PromotionCandidate[] => {
       console.warn(`Warning: could not load promotion candidates: ${err.message}`);
 
-      return [] as PromotionCandidate[];
+      return [];
     }),
-    findPruneCandidates(paths.learningsDirs, paths.votesDir, { namespaces }).catch((err: Error) => {
+    findPruneCandidates(paths.learningsDirs, paths.votesDir, { namespaces }).catch((err: Error): PruneCandidate[] => {
       console.warn(`Warning: could not load prune candidates: ${err.message}`);
 
-      return [] as PruneCandidate[];
+      return [];
     }),
     findStaleEntries(paths.votesDir, {
       docs: path.join(paths.knowledgeRoot, 'docs'),
       rules: path.join(paths.knowledgeRoot, 'rules'),
       skills: path.join(paths.knowledgeRoot, 'skills'),
-    }).catch((err: Error) => {
+    }).catch((err: Error): StaleEntry[] => {
       console.warn(`Warning: could not load stale entries: ${err.message}`);
 
-      return [] as StaleEntry[];
+      return [];
     }),
   ]);
 

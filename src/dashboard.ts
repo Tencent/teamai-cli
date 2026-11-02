@@ -2,6 +2,7 @@ import type http from 'node:http';
 import { dashboardWorkspaces, ownSessionEvents, workspaceEvents, type DashboardWorkspace } from './dashboard/workspaces.js';
 import fs from 'node:fs';
 import path from 'node:path';
+import { z } from 'zod';
 import { log } from './utils/logger.js';
 import { ensureDir } from './utils/fs.js';
 import { dataHomeKey, readEvents, readLocalRequestRecords, readSessionOutcomes, rebuildSessions, appendEvent, memberEvents, sessionRuns } from './dashboard-collector.js';
@@ -11,6 +12,7 @@ import {
   DASHBOARD_PID_CHECK_INTERVAL_MS,
   type DashboardEvent,
   getDataHome,
+  type JsonValue,
   type LocalConfig,
   type RunModeSplit,
 } from './types.js';
@@ -37,6 +39,9 @@ import type { ReportedHistory } from './dashboard/workflow-runs.js';
 //
 
 type SSEClient = http.ServerResponse;
+
+/** A request to exclude a team skill from this workspace's delivery, or to include it again. */
+const SkillExclusionRequestSchema = z.object({ name: z.string().min(1), excluded: z.boolean() });
 
 const KB_SUMMARY_TTL_MS = 30_000;
 let kbSummaryCache: { ts: number; data: VizSummary } | null = null;
@@ -108,7 +113,7 @@ export async function startDashboard(port?: number): Promise<void> {
         client.write(`data: ${workspace ? JSON.stringify(rebuildSessions(workspaceEvents(events, workspace, workspaces), outcomes)) : data}\n\n`);
       }
     } catch (e) {
-      log.debug(`dashboard: SSE push error: ${(e as Error).message}`);
+      log.debug(`dashboard: SSE push error: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
 
@@ -185,7 +190,7 @@ export async function startDashboard(port?: number): Promise<void> {
         }
       }
     } catch (e) {
-      log.debug(`dashboard: PID check error: ${(e as Error).message}`);
+      log.debug(`dashboard: PID check error: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
 
@@ -205,7 +210,7 @@ export async function startDashboard(port?: number): Promise<void> {
   };
 
   const handleDistribution = async (req: http.IncomingMessage, res: http.ServerResponse, pathname: string, scopeId: string | null) => {
-    const json = (status: number, body: unknown) => {
+    const json = <TBody>(status: number, body: TBody) => {
       res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
       res.end(JSON.stringify(body));
     };
@@ -262,7 +267,7 @@ export async function startDashboard(port?: number): Promise<void> {
         return;
       }
 
-      log.debug(`dashboard: ${pathname} failed: ${(e as Error).message}`);
+      log.debug(`dashboard: ${pathname} failed: ${e instanceof Error ? e.message : String(e)}`);
       json(500, { error: 'Failed to update distribution.' });
     }
   };
@@ -302,7 +307,7 @@ export async function startDashboard(port?: number): Promise<void> {
   const handleWorkflows = async (req: http.IncomingMessage, res: http.ServerResponse, url: URL, workspace: DashboardWorkspace | undefined) => {
     const config = workspace?.config ?? null;
 
-    const json = (status: number, body: unknown) => {
+    const json = <TBody>(status: number, body: TBody) => {
       res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
       res.end(JSON.stringify(body));
     };
@@ -357,7 +362,7 @@ export async function startDashboard(port?: number): Promise<void> {
         return;
       }
 
-      log.debug(`dashboard: ${url.pathname} failed: ${(e as Error).message}`);
+      log.debug(`dashboard: ${url.pathname} failed: ${e instanceof Error ? e.message : String(e)}`);
       json(500, { error: 'Failed to load workflow runs.' });
     }
   };
@@ -367,7 +372,7 @@ export async function startDashboard(port?: number): Promise<void> {
   const scorersRefreshed = new Map<string, number>();
 
   const handleScorers = async (req: http.IncomingMessage, res: http.ServerResponse, url: URL, workspace: DashboardWorkspace | undefined) => {
-    const json = (status: number, body: unknown) => {
+    const json = <TBody>(status: number, body: TBody) => {
       res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
       res.end(JSON.stringify(body));
     };
@@ -488,7 +493,7 @@ export async function startDashboard(port?: number): Promise<void> {
         res.end(JSON.stringify(sessions));
       } catch (e) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: (e as Error).message }));
+        res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
       }
 
       return;
@@ -500,7 +505,7 @@ export async function startDashboard(port?: number): Promise<void> {
         const key = workspace?.config ? await dataHomeKey(getDataHome(workspace.config)) : undefined;
         const events = workspace && !key ? [] : await readSessionOutcomes(eventsPath);
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(SessionOutcomes.summarize(events, { ...(key ? { dataHomeKey: key } : {}), now: Date.now() })));
+        res.end(JSON.stringify(SessionOutcomes.summarize(events, { dataHomeKey: key, now: Date.now() })));
       } catch (e) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
@@ -537,7 +542,7 @@ export async function startDashboard(port?: number): Promise<void> {
         }));
       } catch (e) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: (e as Error).message }));
+        res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
       }
 
       return;
@@ -552,7 +557,7 @@ export async function startDashboard(port?: number): Promise<void> {
 
         // A workspace's requests are those its data home recorded; older ones, those of its sessions still in the event log.
         const scope = workspace ? {
-          ...(workspace.config ? { dataHomeKey: await dataHomeKey(getDataHome(workspace.config)) } : {}),
+          dataHomeKey: workspace.config ? await dataHomeKey(getDataHome(workspace.config)) : undefined,
           sessionIds: new Set(memberEvents(await scopedEvents(scopeId)).map((event) => event.sessionId)),
         } : undefined;
 
@@ -636,7 +641,7 @@ export async function startDashboard(port?: number): Promise<void> {
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify({ configured: true, rules }));
       } catch (e) {
-        log.debug(`dashboard: /api/resources/rules failed: ${(e as Error).message}`);
+        log.debug(`dashboard: /api/resources/rules failed: ${e instanceof Error ? e.message : String(e)}`);
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Failed to load rules.' }));
       }
@@ -695,7 +700,7 @@ export async function startDashboard(port?: number): Promise<void> {
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify({ configured: true, skills: inventory.skills, skillConflict: inventory.skillConflict }));
       } catch (e) {
-        log.debug(`dashboard: /api/resources/skills failed: ${(e as Error).message}`);
+        log.debug(`dashboard: /api/resources/skills failed: ${e instanceof Error ? e.message : String(e)}`);
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Failed to load skills.' }));
       }
@@ -734,7 +739,7 @@ export async function startDashboard(port?: number): Promise<void> {
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify({ configured: true, skill }));
       } catch (e) {
-        log.debug(`dashboard: /api/resources/skills/detail failed: ${(e as Error).message}`);
+        log.debug(`dashboard: /api/resources/skills/detail failed: ${e instanceof Error ? e.message : String(e)}`);
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Failed to load the skill.' }));
       }
@@ -753,10 +758,10 @@ export async function startDashboard(port?: number): Promise<void> {
           req.on('end', () => resolve(data));
         });
 
-        let parsed: { name?: unknown; excluded?: unknown };
+        let parsed: JsonValue;
 
         try {
-          parsed = JSON.parse(body) as { name?: unknown; excluded?: unknown };
+          parsed = JSON.parse(body);
         } catch {
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: false, error: 'invalid_json' }));
@@ -764,16 +769,17 @@ export async function startDashboard(port?: number): Promise<void> {
           return;
         }
 
-        const name = parsed.name;
-        const excluded = parsed.excluded;
+        const request = SkillExclusionRequestSchema.safeParse(parsed);
         const ownConfig = workspace?.config ?? null;
 
-        if (typeof name !== 'string' || name === '' || typeof excluded !== 'boolean' || !ownConfig) {
+        if (!request.success || !ownConfig) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: false, error: 'invalid_request' }));
 
           return;
         }
+
+        const { name, excluded } = request.data;
 
         const [{ loadTeamConfig }, { buildRolePullContext }, { setSkillExclusion }, { readWorkspaceChildren }] = await Promise.all([
           import('./config.js'), import('./resources/desired.js'), import('./dashboard/resources-skills.js'), import('./workspace-children.js'),
@@ -807,7 +813,7 @@ export async function startDashboard(port?: number): Promise<void> {
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify({ ...result, note: 'applies on the next pull' }));
       } catch (e) {
-        log.debug(`dashboard: /api/resources/skills/exclusions failed: ${(e as Error).message}`);
+        log.debug(`dashboard: /api/resources/skills/exclusions failed: ${e instanceof Error ? e.message : String(e)}`);
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: 'Failed to save the exclusion.' }));
       }
@@ -880,7 +886,7 @@ export async function startDashboard(port?: number): Promise<void> {
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify(cached.data));
       } catch (e) {
-        log.debug(`dashboard: /api/context failed: ${(e as Error).message}`);
+        log.debug(`dashboard: /api/context failed: ${e instanceof Error ? e.message : String(e)}`);
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Failed to load knowledge base health.' }));
       }
@@ -919,8 +925,8 @@ export async function startDashboard(port?: number): Promise<void> {
   const { createServer } = await import('node:http');
 
   const server = createServer((req, res) => {
-    handleRequest(req, res).catch((e: unknown) => {
-      log.debug(`dashboard: request error: ${e instanceof Error ? e.message : String(e)}`);
+    handleRequest(req, res).catch((cause: unknown) => {
+      log.debug(`dashboard: request error: ${cause instanceof Error ? cause.message : String(cause)}`);
 
       if (!res.headersSent) {
         res.writeHead(500, { 'Content-Type': 'application/json' });

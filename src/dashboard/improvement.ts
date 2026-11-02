@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
+import { z } from 'zod';
 import { BUILTIN_SKILL_NAMES, LEGACY_BUILTIN_SKILL_NAMES } from '../builtin-skills.js';
 
 const WINDOW_DAYS = 30;
@@ -31,13 +32,29 @@ export interface ImprovementData {
   };
 }
 
-interface StatsFile {
-  username?: string;
-  updatedAt?: string;
-  skills?: Record<string, { count?: number; lastUsed?: string }>;
-  interventions?: { sessions?: number; interrupt?: number; toolReject?: number; correction?: number };
-  daily?: Record<string, Record<string, unknown>>;
-}
+/** A count a member published, 0 for anything that is not a finite number. */
+const StatsCountSchema = z.number().catch(0);
+
+/** A day's counters a member published, by name; a day that is not an object reads as absent. */
+const DailyCountsSchema = z.record(z.string(), StatsCountSchema).optional().catch(undefined);
+
+type DailyCounts = z.infer<typeof DailyCountsSchema>;
+
+/** A member's published stats file; a field of the wrong type reads as absent. */
+const StatsObjectSchema = z.object({
+  username: z.string().optional().catch(undefined),
+  updatedAt: z.string().optional().catch(undefined),
+  skills: z.record(z.string(), z.object({ count: StatsCountSchema, lastUsed: z.unknown().optional() }).catch({ count: 0 }))
+    .optional().catch(undefined),
+  interventions: z.object({ sessions: StatsCountSchema, interrupt: StatsCountSchema, toolReject: StatsCountSchema, correction: StatsCountSchema })
+    .optional().catch(undefined),
+  daily: z.record(z.string(), DailyCountsSchema).optional().catch(undefined),
+});
+
+type StatsFile = z.infer<typeof StatsObjectSchema>;
+
+/** A member's stats file as read: a YAML list still counts as a member's file, one with no stats. */
+const StatsFileSchema = z.union([StatsObjectSchema, z.array(z.unknown()).transform((): StatsFile => ({}))]);
 
 interface MaintenanceInput {
   promote: Array<{ docId: string; title: string; suggestedCategory: string; confidence: number; upvotedCount: number; userCount: number }>;
@@ -45,12 +62,11 @@ interface MaintenanceInput {
   stale: Array<{ docId: string; type: string; recalledCount: number; upvotedCount: number; userCount: number }>;
 }
 
-const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
 const isoDay = (d: Date): string => d.toISOString().slice(0, 10);
 const isDay = (day: string): boolean => /^\d{4}-\d{2}-\d{2}$/.test(day) && !Number.isNaN(Date.parse(`${day}T00:00:00Z`));
 
 // A published day counts once any counter on it is positive: a day with prompts or cost but no ended session is still data.
-const hasActivity = (v: unknown): boolean => !!v && typeof v === 'object' && Object.values(v as Record<string, unknown>).some((x) => num(x) > 0);
+const hasActivity = (day: DailyCounts): boolean => !!day && Object.values(day).some((count) => count > 0);
 
 async function readStats(statsDir: string): Promise<StatsFile[]> {
   let names: string[];
@@ -61,9 +77,9 @@ async function readStats(statsDir: string): Promise<StatsFile[]> {
 
   for (const name of names.filter((n) => n.endsWith('.yaml'))) {
     try {
-      const parsed = YAML.parse(await fs.promises.readFile(path.join(statsDir, name), 'utf-8')) as StatsFile | null;
+      const parsed = StatsFileSchema.safeParse(YAML.parse(await fs.promises.readFile(path.join(statsDir, name), 'utf-8')));
 
-      if (parsed && typeof parsed === 'object') out.push(parsed);
+      if (parsed.success) out.push(parsed.data);
     } catch { /* one unreadable member file does not hide the rest */ }
   }
 
@@ -131,37 +147,37 @@ export async function buildImprovement(
     const user = f.username ?? '';
 
     for (const [day, v] of Object.entries(f.daily ?? {})) {
-      if (!v || typeof v !== 'object' || day < historyDay || day > toDay) continue;
+      if (!v || day < historyDay || day > toDay) continue;
       const p = byDay.get(day);
 
       if (!p) continue;
-      p.ended += num(v.sessionsEnded);
-      p.succeeded += num(v.sessionsSucceeded);
-      p.corrected += num(v.sessionsCorrected);
-      p.prompts += num(v.promptTurns);
-      p.durationMs += num(v.durationMs);
-      p.costMicros += num(v.costMicros);
-      p.priced += num(v.pricedRequests);
-      p.cacheRead += num(v.cacheReadTokens);
-      p.cacheEligible += num(v.cacheEligibleInputTokens);
+      p.ended += v.sessionsEnded ?? 0;
+      p.succeeded += v.sessionsSucceeded ?? 0;
+      p.corrected += v.sessionsCorrected ?? 0;
+      p.prompts += v.promptTurns ?? 0;
+      p.durationMs += v.durationMs ?? 0;
+      p.costMicros += v.costMicros ?? 0;
+      p.priced += v.pricedRequests ?? 0;
+      p.cacheRead += v.cacheReadTokens ?? 0;
+      p.cacheEligible += v.cacheEligibleInputTokens ?? 0;
 
-      if (num(v.sessionsEnded) > 0) p.members += 1;
+      if ((v.sessionsEnded ?? 0) > 0) p.members += 1;
     }
 
-    if (f.interventions && num(f.interventions.sessions) > 0) {
+    if (f.interventions && f.interventions.sessions > 0) {
       friction.members += 1;
-      friction.sessions += num(f.interventions.sessions);
-      friction.interrupt += num(f.interventions.interrupt);
-      friction.toolReject += num(f.interventions.toolReject);
-      friction.correction += num(f.interventions.correction);
+      friction.sessions += f.interventions.sessions;
+      friction.interrupt += f.interventions.interrupt;
+      friction.toolReject += f.interventions.toolReject;
+      friction.correction += f.interventions.correction;
     }
 
     for (const [name, s] of Object.entries(f.skills ?? {})) {
-      const last = String(s?.lastUsed ?? '');
+      const last = String(s.lastUsed ?? '');
 
       if (!last || last.slice(0, 10) < fromDay || NOT_SKILLS.has(name) || name.includes('/')) continue;
       const u = usage.get(name) ?? { uses: 0, users: new Set<string>(), lastUsed: '' };
-      u.uses += num(s.count);
+      u.uses += s.count;
       u.users.add(user);
 
       if (last > u.lastUsed) u.lastUsed = last;
@@ -174,7 +190,12 @@ export async function buildImprovement(
   const toUse = (name: string): SkillUse => {
     const u = usage.get(name);
 
-    return { name, ...(team.has(name) && team.get(name) ? { namespace: team.get(name) } : {}), uses: u?.uses ?? 0, users: u?.users.size ?? 0, lastUsed: u?.lastUsed || null };
+    const namespace = team.get(name);
+    const scoped: Pick<SkillUse, 'namespace'> = {};
+
+    if (namespace) scoped.namespace = namespace;
+
+    return { name, ...scoped, uses: u?.uses ?? 0, users: u?.users.size ?? 0, lastUsed: u?.lastUsed || null };
   };
 
   // Uses are all-time, so recency (not the cumulative count) breaks ties after member count.
@@ -191,9 +212,9 @@ export async function buildImprovement(
     friction,
     skills: {
       teamTotal: team.size,
-      used: teamNames.filter((n) => usage.has(n)).map(toUse).sort(byUse),
-      unused: teamNames.filter((n) => !usage.has(n)).map(toUse).sort((a, b) => (a.namespace ?? '').localeCompare(b.namespace ?? '') || a.name.localeCompare(b.name)),
-      outside: [...usage.keys()].filter((n) => !team.has(n) && !builtin(n) && (usage.get(n)?.users.size ?? 0) >= 2).map(toUse).sort(byUse),
+      used: teamNames.flatMap((n) => (usage.has(n) ? [toUse(n)] : [])).sort(byUse),
+      unused: teamNames.flatMap((n) => (usage.has(n) ? [] : [toUse(n)])).sort((a, b) => (a.namespace ?? '').localeCompare(b.namespace ?? '') || a.name.localeCompare(b.name)),
+      outside: [...usage.keys()].flatMap((n) => (!team.has(n) && !builtin(n) && (usage.get(n)?.users.size ?? 0) >= 2 ? [toUse(n)] : [])).sort(byUse),
     },
     maintenance: {
       promote: maintenance.promote.slice(0, LIST_LIMIT).map((c) => ({ docId: c.docId, title: c.title, category: c.suggestedCategory, confidence: c.confidence, upvoted: c.upvotedCount, users: c.userCount })),

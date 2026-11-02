@@ -3,12 +3,14 @@ import { dashboardMessages } from '../dashboard/locales.js';
 import type { SessionSharing } from '../dashboard/session-sharing.js';
 import { sessionSharingView } from '../dashboard/session-sharing-view.js';
 
+const messages: Record<string, string> = dashboardMessages;
+
 /** The panel as the page renders `sharing`, in `language`, with every message key it asked to translate. */
 function render(sharing: SessionSharing, language: 'en' | 'zh-CN' = 'en'): { html: string; keys: string[] } {
   const keys: string[] = [];
   const t = (text: string) => {
     keys.push(text);
-    return language === 'zh-CN' && Object.hasOwn(dashboardMessages, text) ? dashboardMessages[text] : text;
+    return language === 'zh-CN' && Object.hasOwn(dashboardMessages, text) ? messages[text] : text;
   };
   const e = (value: unknown) => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   const label = (text: string) => e(t(text));

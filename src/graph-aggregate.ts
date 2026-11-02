@@ -38,6 +38,8 @@ export async function buildAggregatedGraph(teamwikiRoot: string) {
         if (!(await fs.pathExists(graphPath))) continue;
 
         try {
+            // SAFETY: only teamai's own code extraction writes a per-repo graph-index.json; a file without
+            // nodes or edges arrays throws on the loops below and the catch skips that repo.
             const overlay = JSON.parse(await fs.readFile(graphPath, 'utf8')) as GraphIndex;
 
             // Stamp ownership onto the data itself before it ever enters the
@@ -84,7 +86,7 @@ export async function buildAggregatedGraph(teamwikiRoot: string) {
                 globalGraph = overlay;
             }
         } catch (e) {
-            log.warn(`[graph] skipped ${dir.name} graph: ${(e as Error).message}`);
+            log.warn(`[graph] skipped ${dir.name} graph: ${e instanceof Error ? e.message : String(e)}`);
         }
     }
 

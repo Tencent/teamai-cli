@@ -73,6 +73,8 @@ async function loadReportedStats(dryRun = false): Promise<UserStats | null> {
     const content = await readFileSafe(statsPath);
 
     if (!content) return null;
+    // SAFETY: the stats push writes this file from a UserStats; the check below rejects any file without its
+    // username and skills, and every other field is optional.
     const parsed = YAML.parse(content) as UserStats;
 
     if (parsed?.username && parsed?.skills) return parsed;

@@ -5,7 +5,7 @@
  * saved yet with the one that is.
  */
 import { loadTeamConfig } from '../config.js';
-import type { RolesManifest, ResourceNamespaces } from '../roles.js';
+import type { RolesManifest } from '../roles.js';
 import type { ProjectsManifest } from '../projects.js';
 import { buildRolePullContext, describeDeliveryConflict, resolveDesiredRules, resolveDesiredSkills } from '../resources/desired.js';
 import type { LocalConfig } from '../types.js';
@@ -18,7 +18,12 @@ export type NamespaceType = typeof NAMESPACE_TYPES[number];
 export type Namespaces = Record<NamespaceType, string[]>;
 
 export function pickNamespaces(resources: Partial<Record<NamespaceType, string[]>>): Namespaces {
-  return Object.fromEntries(NAMESPACE_TYPES.map((type) => [type, [...(resources[type] ?? [])]])) as Namespaces;
+  return {
+    skills: [...(resources.skills ?? [])],
+    knowledge: [...(resources.knowledge ?? [])],
+    agents: [...(resources.agents ?? [])],
+    learnings: [...(resources.learnings ?? [])],
+  };
 }
 
 export interface Delivery {
@@ -52,14 +57,17 @@ export async function resolveDelivery(config: LocalConfig): Promise<Delivery> {
   const rules = await resolveDesiredRules(teamConfig, config, roleContext);
   const resolved = skills.kind === 'resolved' ? skills : null;
 
-  return {
-    namespaces: roleContext ? pickNamespaces(roleContext.activeNamespaces as ResourceNamespaces) : null,
+  const delivery: Delivery = {
+    namespaces: roleContext ? pickNamespaces(roleContext.activeNamespaces) : null,
     skills: (resolved?.items ?? []).map((item) => item.name).sort(),
     skillNamespaces: [...new Set((resolved?.items ?? []).flatMap((item) => (item.namespace ? [item.namespace] : [])))].sort(),
     rules: rules.items.map((item) => item.name).sort(),
     heldSkills: [...(resolved?.held ?? [])].sort(),
-    ...(skills.kind === 'conflict' ? { skillConflict: describeDeliveryConflict(skills) } : {}),
   };
+
+  if (skills.kind === 'conflict') delivery.skillConflict = describeDeliveryConflict(skills);
+
+  return delivery;
 }
 
 /**
@@ -70,7 +78,7 @@ export async function resolveDelivery(config: LocalConfig): Promise<Delivery> {
  */
 function everyNamespace(manifests: Manifests, delivery: Delivery): Namespaces {
   const declared = [...(manifests.roles?.roles ?? []), ...(manifests.projects?.projects ?? [])]
-    .map((entry) => entry.resources as Partial<Record<NamespaceType, string[]>>);
+    .map((entry): Partial<Namespaces> => entry.resources);
 
   const union = (type: NamespaceType, seen: string[]) => [...new Set([...declared.flatMap((resources) => resources[type] ?? []), ...seen])].sort();
   const ruleNamespaces = delivery.rules.flatMap((name) => (name.includes('/') ? [name.split('/')[0]] : []));
@@ -100,12 +108,20 @@ export function diffDelivery(before: Delivery, after: Delivery, manifests: Manif
   // A held skill keeps its installed copy, and a skill conflict leaves every
   // skill as installed: neither is a skill leaving.
   const skills = after.skillConflict ? { entering: [], leaving: [] } : diff(before.skills, after.skills);
+  const conflict: Pick<Delivery, 'skillConflict'> = {};
+
+  if (after.skillConflict) conflict.skillConflict = after.skillConflict;
 
   return {
     unfiltered: { before: before.namespaces === null, after: after.namespaces === null },
-    namespaces: Object.fromEntries(NAMESPACE_TYPES.map((type) => [type, diff(from[type], to[type])])) as Record<NamespaceType, ReturnType<typeof diff>>,
+    namespaces: {
+      skills: diff(from.skills, to.skills),
+      knowledge: diff(from.knowledge, to.knowledge),
+      agents: diff(from.agents, to.agents),
+      learnings: diff(from.learnings, to.learnings),
+    },
     skills: { entering: skills.entering, leaving: skills.leaving.filter((name) => !after.heldSkills.includes(name)), held: after.heldSkills },
     rules: diff(before.rules, after.rules),
-    ...(after.skillConflict ? { skillConflict: after.skillConflict } : {}),
+    ...conflict,
   };
 }

@@ -8,12 +8,16 @@
  * dashboard must not return rule bodies or environment values.
  */
 import matter from 'gray-matter';
+import { z } from 'zod';
 import { buildRolePullContext, filterRulesByKnowledgeNamespaces, resolveDesiredRules } from '../resources/desired.js';
 import { getHandler } from '../resources/index.js';
 import { filterByTags, loadTagsConfig } from '../utils/tags.js';
 import { deliveredMembers } from '../workspace-children.js';
 import { readFileSafe } from '../utils/fs.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
+
+/** The frontmatter `description` a rule or skill may carry; any other value reads as absent. */
+export const FrontmatterDescriptionSchema = z.object({ description: z.string().optional().catch(undefined) }).catch({});
 
 export interface DashboardRule {
   /** The rule's team name: `ns/name` for a namespaced rule, `name` at the root. */
@@ -37,9 +41,9 @@ async function ruleDescription(sourcePath: string): Promise<string | null> {
 
   try {
     const { data } = matter(raw);
-    const description = (data as { description?: unknown }).description;
+    const description = FrontmatterDescriptionSchema.parse(data).description?.trim();
 
-    return typeof description === 'string' && description.trim() !== '' ? description.trim() : null;
+    return description ? description : null;
   } catch {
     // Damaged frontmatter must not take the whole listing down.
     return null;

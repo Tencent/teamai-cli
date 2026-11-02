@@ -14,6 +14,7 @@ import { installOf, locate, writable } from '../locate.js';
 import { getHandler } from '../resources/index.js';
 import { loadTagsConfig } from '../utils/tags.js';
 import { readFileSafe } from '../utils/fs.js';
+import { FrontmatterDescriptionSchema } from './resources.js';
 import { pathExists } from '../utils/fs.js';
 import { type LocalConfig, type TeamaiConfig } from '../types.js';
 import { loadLocalConfig, loadLocalConfigForScope, loadStateForScope, saveLocalConfig, saveLocalConfigForScope, saveStateForScope } from '../config.js';
@@ -57,9 +58,9 @@ async function skillDescription(sourcePath: string): Promise<string | null> {
 
   try {
     const { data } = matter(raw);
-    const description = (data as { description?: unknown }).description;
+    const description = FrontmatterDescriptionSchema.parse(data).description?.trim();
 
-    return typeof description === 'string' && description.trim() !== '' ? description.trim() : null;
+    return description ? description : null;
   } catch {
     // Damaged frontmatter must not take the whole listing down.
     return null;
