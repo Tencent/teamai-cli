@@ -3,7 +3,9 @@
  * and settles once every item has, keeping how each one went in `results`. These rules decide the items and the
  * step's result; the engine settles and leases the items.
  */
-import { isRecord } from './expression.js';
+import { z } from 'zod';
+import type { JsonValue } from '../types.js';
+import { isRecord, jsonType } from './expression.js';
 import { firstCycle, firstPass } from './loop.js';
 import { parseStepPath } from './step-path.js';
 import { passOf, stopped, type ItemResult, type StepState } from './step-state.js';
@@ -26,28 +28,35 @@ export function addItems(run: RunState, state: StepState, items: unknown[]): voi
     const id = `${state.id}[${index}]`;
     const pass = firstPass(run, id);
 
-    return { id, status: 'pending', item, ...(pass > 1 ? { pass } : {}) };
+    const added: StepState = { id, status: 'pending', item };
+
+    if (pass > 1) added.pass = pass;
+
+    return added;
   }), ...run.steps.slice(at)];
 }
 
-function kindOf(value: unknown): string {
-  if (value === null || value === undefined) return 'null';
+function kindOf(value: JsonValue | undefined): string {
+  if (value === undefined) return 'null';
+  const type = jsonType(value);
 
-  return typeof value === 'object' ? 'an object' : `a ${typeof value}`;
+  return type === 'object' ? 'an object' : `a ${type}`;
 }
 
 /** The items the `for_each` of step `id` gives, or why the step cannot run them. */
-export function expandItems(id: string, value: unknown): unknown[] | WorkflowFailure {
+export function expandItems(id: string, value: JsonValue | undefined): unknown[] | WorkflowFailure {
   if (!Array.isArray(value)) return { code: 'invalid_items', message: `step "${id}" for_each gives ${kindOf(value)}, not a list of items` };
   const after = itemsAfter(id, value);
 
   if (!Array.isArray(after)) return after;
 
   // `after` names only items with an id, so only they can be in a cycle.
-  const edges = new Map(after.flatMap((indexes, index) => {
-    const name = idOf(value[index]);
+  const ids = itemIds(value);
 
-    return name === undefined ? [] : [[name, indexes.map((other) => idOf(value[other]) ?? '')] as const];
+  const edges = new Map(after.flatMap((indexes, index) => {
+    const name = ids[index];
+
+    return name === undefined ? [] : [[name, indexes.map((other) => ids[other] ?? '')] as const];
   }));
 
   const cycle = firstCycle([...edges.keys()], edges);
@@ -57,8 +66,17 @@ export function expandItems(id: string, value: unknown): unknown[] | WorkflowFai
   return value;
 }
 
-function idOf(item: unknown): string | undefined {
-  return isRecord(item) && typeof item.id === 'string' ? item.id : undefined;
+const ItemIdSchema = z.object({ id: z.string() });
+
+const ItemAfterSchema = z.array(z.string());
+
+/** The `id` of each item, in item order: undefined for an item that has none. */
+function itemIds(items: unknown[]): Array<string | undefined> {
+  return items.map((item) => {
+    const named = ItemIdSchema.safeParse(item);
+
+    return named.success ? named.data.id : undefined;
+  });
 }
 
 /**
@@ -68,10 +86,9 @@ function idOf(item: unknown): string | undefined {
 export function itemsAfter(id: string, items: unknown[]): number[][] | WorkflowFailure {
   const invalid = (message: string): WorkflowFailure => ({ code: 'invalid_items', message: `step "${id}" ${message}` });
   const indexes = new Map<string, number>();
+  const ids = itemIds(items);
 
-  for (const [index, item] of items.entries()) {
-    const own = idOf(item);
-
+  for (const [index, own] of ids.entries()) {
     if (own === undefined) continue;
     const earlier = indexes.get(own);
 
@@ -89,14 +106,14 @@ export function itemsAfter(id: string, items: unknown[]): number[][] | WorkflowF
       continue;
     }
 
-    if (!Array.isArray(names) || !names.every((name): name is string => typeof name === 'string')) {
-      return invalid(`item ${index} after must be a list of item ids`);
-    }
+    const listed = ItemAfterSchema.safeParse(names);
 
-    const unknown = names.find((name) => !indexes.has(name));
+    if (!listed.success) return invalid(`item ${index} after must be a list of item ids`);
+
+    const unknown = listed.data.find((name) => !indexes.has(name));
 
     if (unknown !== undefined) return invalid(`item ${index} runs after "${unknown}", which is not the id of an item`);
-    after.push(names.map((name) => indexes.get(name)!));
+    after.push(listed.data.map((name) => indexes.get(name)!));
   }
 
   return after;
@@ -117,25 +134,33 @@ export function startedItems(items: StepState[]): number {
   return items.filter((item) => item.status === 'leased' || item.status === 'running').length;
 }
 
+/** How a `for_each` step settled, with how each of its items went. */
+export interface SettledItems {
+  outcome: 'succeeded' | 'failed';
+  settledAt: number;
+  results: ItemResult[];
+}
+
 /**
  * How a `for_each` step settles at `settledAt` once every item has: failed when an item stopped, with each item's
  * outcome and outputs. With no items, it succeeds.
  */
 export function itemsSettled(
   items: StepState[], settledAt: number, run?: RunState,
-): { outcome: 'succeeded' | 'failed'; settledAt: number; results: ItemResult[] } {
+): SettledItems {
   const fromChildren = run ? branchesFromChildren(run) : undefined;
 
   const results = items.map((state): ItemResult => {
     const pass = passOf(state);
     const branch = pass?.changes?.branch ?? fromChildren?.get(state.id);
 
-    return {
-      item: state.item,
-      outcome: pass?.outcome ?? 'skipped',
-      ...(pass?.outputs !== undefined ? { outputs: pass.outputs } : {}),
-      ...(branch ? { branch } : {}),
-    };
+    const result: ItemResult = { item: state.item, outcome: pass?.outcome ?? 'skipped' };
+
+    if (pass?.outputs !== undefined) result.outputs = pass.outputs;
+
+    if (branch) result.branch = branch;
+
+    return result;
   });
 
   return {
