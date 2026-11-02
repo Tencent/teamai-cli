@@ -1,4 +1,4 @@
-import { bothSkillProfiles, type DriverProfile } from '../conformance-interpreter.js';
+import { bothSkillProfiles, type DriverProfile, type ScenarioJson } from '../conformance-interpreter.js';
 
 /** A value a scenario reads from the run once it is done: its base, or what a step reported in `changes`. */
 export type GitConformanceName = 'base.commit' | 'base.ref' | `steps.${string}.commit` | `steps.${string}.branch`;
@@ -28,7 +28,7 @@ export interface GitConformanceScenario {
   /** The run reaches the driver under test through a publish on the other machine and a claim on its own. */
   handoff?: true;
   /** Expected fields in the persisted run after the driver under test is done. */
-  expectState: Record<string, unknown>;
+  expectState: ScenarioJson;
   /** By step id: the step's reported `changes.to` is the tip of `changes.branch` on origin, and that tip holds these files. */
   expectPushed?: Record<string, Record<string, string>>;
   /** The step's `message` contains each named value as a whole word, and its `failure.code` is not `codeIsNot`. */

@@ -1,7 +1,7 @@
 import type { ConformanceOperation, WorkflowScenario, DriverProfile } from '../conformance-interpreter.js';
 
 /** What the checkout of every place scenario holds on `main`, which origin has too. */
-export const PLACE_CHECKOUT_FILES: Record<string, string> = { 'README.md': '# fixture\n', 'AGENTS.md': 'Trusted base instructions.\n' };
+export const PLACE_CHECKOUT_FILES = { 'README.md': '# fixture\n', 'AGENTS.md': 'Trusted base instructions.\n' } satisfies Record<string, string>;
 
 const PREPARED_CHANGE = `schemaVersion: v1alpha1
 name: build
