@@ -2,6 +2,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
 import { spawnSync } from 'node:child_process';
+import semver from 'semver';
 import { expandHome, listFilesRecursive, pathExists, readFileSafe, readJsonObject } from './utils/fs.js';
 import {
   DEFAULT_TOOL_PATHS, getDataHome, getMcpSharing, getTeamaiHome, isAgentExcluded, isGitExcludeEnabled, managedMcpManifestKey, MUSE_TOOL_ID,
@@ -24,8 +25,8 @@ import {
 } from './utils/shell-profile.js';
 import { getUserHome } from './utils/home.js';
 import { loadStateForScope } from './config.js';
-import { installOf, isInstalledFor, locate, ownOf, unreadWrites, writable, writesOf, type DirPlace, type FilesChannel, type Install, type Location, type Session, type Unread } from './locate.js';
-import { codexProjectTrust, codexTrustFix } from './codex-project-trust.js';
+import { installOf, isInstalledFor, locate, ownOf, unreadWrites, workspaceHooksOf, writable, writesOf, type DirPlace, type FilesChannel, type Install, type Location, type ReadGate, type Session, type Unread } from './locate.js';
+import { readGateCheckName, readGateVerdict, type Held } from './read-gates.js';
 import { amongPlaces, placesRecordOf, samePlaces } from './resources/places.js';
 import { realHost } from './tool-home.js';
 import { getsRulesFromExtension, ruleFormatForTool, ruleStemsForTool } from './resources/rule-format.js';
@@ -228,6 +229,19 @@ export function nameList(names: string[]): string {
   return `${shown} and ${names.length - MAX_NAMED_IN_FIX} more`;
 }
 
+/** One check per gate a tool's read of `held` waits on: the tool's own verdict on this project (`read-gates.ts`). */
+async function readGateChecks(gates: readonly ReadGate[], held: Held): Promise<Check[]> {
+  return Promise.all(gates.map(async (gate): Promise<Check> => {
+    const verdict = await readGateVerdict(gate, held);
+    return {
+      name: readGateCheckName(gate, held.noun),
+      source: 'local',
+      check: async () => verdict.met,
+      fix: verdict.met ? '' : verdict.fix,
+    };
+  }));
+}
+
 /**
  * Build one delivery check per installed tool: every skill the member should
  * have, against what is actually on disk for that tool.
@@ -323,8 +337,12 @@ export async function buildDeliveryChecks(ctx: DoctorContext): Promise<Check[]> 
   const { deliveredHashes } = await import('./pull.js');
   const { describeKeptEntry, judgeCopy } = await import('./resources/delivered-copies.js');
   const previous = await deliveredHashes(localConfig);
+  // The team's copies on disk, by the tool they were written for.
+  const held = new Map<string, { dir: string; names: string[] }>();
   const { byTool } = await walkDelivery(getHandler('skills'), ctx, items, async (target, item) => {
     if (!await pathExists(target.dest)) return labels[0];
+    const copies = held.get(target.tool) ?? { dir: path.dirname(target.dest), names: [] };
+    held.set(target.tool, { dir: copies.dir, names: [...copies.names, item.name] });
     if ((await judgeCopy(previous, item, target)).kind === 'member') {
       linesFor(memberLines, target.tool).push(await describeKeptEntry(target.dest, item.relativePath));
       return MEMBERS_OWN;
@@ -332,7 +350,17 @@ export async function buildDeliveryChecks(ctx: DoctorContext): Promise<Check[]> 
     return await skillIsDiscoverable(target.dest, item.name) ? null : labels[1];
   });
 
-  return [...byTool].map(([tool, delivery]) => ({
+  const gated: Check[] = [];
+  if (localConfig.scope === 'project') {
+    const install = installOf(teamConfig, localConfig);
+    for (const [tool, { dir, names }] of held) {
+      const where = await locate(tool, 'skills', install);
+      if (where.channel !== 'files') continue;
+      gated.push(...await readGateChecks(where.readGates, { summary: `${dir} holds team skills (${nameList(names)})`, noun: 'skills', names }));
+    }
+  }
+
+  return [...[...byTool].map(([tool, delivery]): Check => ({
     name: `Skills delivered to ${tool}`,
     source: 'local',
     check: async () => delivery.problems.size === 0,
@@ -345,7 +373,7 @@ export async function buildDeliveryChecks(ctx: DoctorContext): Promise<Check[]> 
           + 'discovers it.'
         : '')
       + membersOwnFix(memberLines, delivery),
-  }));
+  })), ...gated];
 }
 
 /**
@@ -746,9 +774,9 @@ function olderRuleCopyMeaning(tool: string): string {
 }
 
 /**
- * On OpenCode V2, which parses `instructions` and ignores it (#993), the check
- * that teamai's plugin in HOME is installed as this build writes it; its
- * context hook is what adds `what`. Null on V1, which loads `instructions`.
+ * On OpenCode V2, where teamai delivers through its plugin rather than
+ * `instructions` (#915), the check that the plugin in HOME is installed as this
+ * build writes it; its context hook is what adds `what`. Null on V1.
  */
 async function opencodeV2PluginCheck(ctx: DoctorContext, name: string, what: string): Promise<Check | null> {
   const { opencodeContextPlugin, opencodeMajorVersion } = await import('./opencode-hooks.js');
@@ -763,7 +791,7 @@ async function opencodeV2PluginCheck(ctx: DoctorContext, name: string, what: str
     name,
     source: 'local',
     check: async () => ready,
-    fix: `${file} is missing or out of date. OpenCode V2 ignores \`instructions\` and gets ${what} only through this plugin. `
+    fix: `${file} is missing or out of date. On OpenCode V2 teamai delivers ${what} only through this plugin. `
       + `Run \`teamai hooks inject\` to reinstall it.${keeps}`,
   };
 }
@@ -1321,25 +1349,7 @@ async function agentsTrustChecks(ctx: DoctorContext, handler: ResourceHandler, i
       if ((await handler.deliveryTargets(teamConfig, localConfig, item, received)).some((target) => target.tool === tool)) names.push(item.name);
     }
     if (names.length === 0) continue;
-    for (const gate of where.readGates) {
-      switch (gate.kind) {
-        case 'codex-project-trust': {
-          const trust = await codexProjectTrust(gate);
-          const cause = `${own} holds team agents (${nameList(names)}), but Codex loads a project's agents only in a trusted project`;
-          checks.push({
-            name: 'Codex trusts this project, so it loads its team agents',
-            source: 'local',
-            check: async () => trust.kind === 'trusted',
-            fix: trust.kind === 'trusted' ? '' : codexTrustFix(trust, gate, cause),
-          });
-          break;
-        }
-        default: {
-          const unhandled: never = gate.kind;
-          return unhandled;
-        }
-      }
-    }
+    checks.push(...await readGateChecks(where.readGates, { summary: `${own} holds team agents (${nameList(names)})`, noun: 'agents', names }));
   }
   return checks;
 }
@@ -1732,44 +1742,63 @@ export async function buildLocalAgentMcpLocationChecks(ctx: DoctorContext): Prom
 }
 
 /**
- * Codex loads a project's `.codex/config.toml` only in a trusted project, and
- * skips an untrusted one silently (#954), so team servers a pull or
- * `teamai mcp inject` wrote there are on disk and inert. Built while that file
- * holds a server this worktree's `managed-mcp.json` records for Codex.
- * Read-only: this check only reads Codex's config.
+ * A tool that runs a project's hook file only in a trusted project (Muse Code
+ * in self mode): teamai's hooks there are inert until the member trusts it.
+ * Built per gate `locate` declares, while the file holds a teamai hook.
  */
-export async function buildCodexProjectTrustCheck(ctx: DoctorContext): Promise<Check[]> {
+export async function buildHookReadGateChecks(ctx: DoctorContext): Promise<Check[]> {
+  const { localConfig, teamConfig } = ctx;
+  if (!teamConfig || localConfig.scope !== 'project') return [];
+  const install = installOf(teamConfig, localConfig);
+  const { TEAMAI_HOOK_SUBCOMMANDS } = await import('./hooks.js');
+  const checks: Check[] = [];
+  for (const tool of Object.keys(ctx.toolPaths)) {
+    const where = await locate(tool, 'hooks', install);
+    // Only a hook file is gated; an adapter's directory is the tool's home.
+    if (where.channel !== 'files' || !('format' in where) || where.readGates.length === 0) continue;
+    // A workspace's gates are on the project file it takes the team's hooks in, beside the user hooks.
+    const file = writable(where) === null ? null : workspaceHooksOf(where) ?? where.own;
+    if (file === null || !(await readFileSafe(file.path))?.includes(`teamai ${TEAMAI_HOOK_SUBCOMMANDS[0]}`)) continue;
+    checks.push(...await readGateChecks(where.readGates, { summary: `${file.path} holds teamai's hooks`, noun: 'hooks', names: [] }));
+  }
+  return checks;
+}
+
+/**
+ * A tool that reads a project's MCP file only once it trusts the project, or
+ * starts its servers only once the member approves them (Codex #954): team
+ * servers a pull or `teamai mcp inject` wrote there are on disk and inert
+ * until then. Built per gate `locate` declares, while the file holds a server
+ * this worktree's `managed-mcp.json` records. Read-only: it only reads the
+ * tool's own config.
+ */
+export async function buildMcpReadGateChecks(ctx: DoctorContext): Promise<Check[]> {
   const { localConfig, teamConfig } = ctx;
   const { projectRoot } = localConfig;
   if (!teamConfig || localConfig.scope !== 'project' || !projectRoot) return [];
 
+  const install = installOf(teamConfig, localConfig);
   const { resolveMcpTargets, mcpTargetExcluded, installedMcpEntries } = await import('./mcp-reconcile.js');
-  const { isCodexTrustGatedTool } = await import('./hooks.js');
-  const target = (await resolveMcpTargets(teamConfig, localConfig))
-    .find((candidate) => isCodexTrustGatedTool(candidate.tool) && !mcpTargetExcluded(localConfig, candidate));
-  if (!target) return [];
-
   const { loadProjectMcpManifest } = await import('./utils/mcp-manifest.js');
-  const { manifest } = await loadProjectMcpManifest(getDataHome(localConfig), projectRoot, { dryRun: true });
-  const installed = await installedMcpEntries(target);
-  const names = (manifest[managedMcpManifestKey(target.tool, true)] ?? [])
-    .map((record) => record.name)
-    .filter((name) => installed?.has(name));
-  if (names.length === 0) return [];
-
-  const where = await locate(target.tool, 'mcp', installOf(teamConfig, localConfig));
-  const gate = where.channel === 'files' ? where.readGates.find((readGate) => readGate.kind === 'codex-project-trust') : undefined;
-  if (gate === undefined) return [];
-  const trust = await codexProjectTrust(gate);
-  const cause = `${target.file} holds team MCP servers (${nameList(names)}), but Codex loads a project's `
-    + '.codex/config.toml only in a trusted project';
-
-  return [{
-    name: 'Codex trusts this project, so it loads its team MCP servers',
-    source: 'local',
-    check: async () => trust.kind === 'trusted',
-    fix: trust.kind === 'trusted' ? '' : codexTrustFix(trust, gate, cause),
-  }];
+  let targets: McpTarget[] | undefined;
+  let manifest: Awaited<ReturnType<typeof loadProjectMcpManifest>>['manifest'] | undefined;
+  const checks: Check[] = [];
+  for (const tool of Object.keys(ctx.toolPaths)) {
+    const where = await locate(tool, 'mcp', install);
+    if (where.channel !== 'files' || where.readGates.length === 0 || !isInstalledFor(where)) continue;
+    const writer = where.writtenBy ?? tool;
+    targets ??= await resolveMcpTargets(teamConfig, localConfig);
+    const target = targets.find((candidate) => candidate.tool === writer && !mcpTargetExcluded(localConfig, candidate));
+    if (!target) continue;
+    manifest ??= (await loadProjectMcpManifest(getDataHome(localConfig), projectRoot, { dryRun: true })).manifest;
+    const installed = await installedMcpEntries(target);
+    const names = (manifest[managedMcpManifestKey(writer, true)] ?? [])
+      .map((record) => record.name)
+      .filter((name) => installed?.has(name));
+    if (names.length === 0) continue;
+    checks.push(...await readGateChecks(where.readGates, { summary: `${target.file} holds team MCP servers (${nameList(names)})`, noun: 'MCP servers', names }));
+  }
+  return checks;
 }
 
 /**
@@ -2508,6 +2537,26 @@ export async function buildInstructionDeliveryChecks(ctx: DoctorContext): Promis
     });
   }
 
+  // Pi reads AGENTS.override.md before AGENTS.md only from 0.84.0; an older
+  // Pi reads AGENTS.md, which pull leaves without team blocks beside it.
+  const piOverride = targets.find((target) => target.tools.includes('pi') && path.basename(target.path) === 'AGENTS.override.md');
+  const { getAgentVersion } = await import('./agent-version.js');
+  const piVersion = piOverride ? semver.valid(await getAgentVersion('pi')) : null;
+  if (piOverride && piVersion !== null) {
+    // Before 0.74.0 Pi was @mariozechner/pi-coding-agent, whose `pi` command blocks installing the new package (EEXIST).
+    const upgrade = semver.lt(piVersion, '0.74.0')
+      ? 'Upgrade Pi (`npm uninstall -g @mariozechner/pi-coding-agent && npm install -g @earendil-works/pi-coding-agent`), '
+      : 'Upgrade Pi (`npm install -g @earendil-works/pi-coding-agent`), ';
+    checks.push({
+      name: 'Pi reads the AGENTS.override.md holding the team instructions',
+      source: 'local',
+      check: async () => semver.gte(piVersion, '0.84.0'),
+      fix: `Pi ${piVersion} reads ${path.join(path.dirname(piOverride.path), 'AGENTS.md')}, not ${piOverride.path}, so it never sees the team instructions: `
+        + `Pi reads AGENTS.override.md from 0.84.0. ${upgrade}`
+        + `or move your text from ${piOverride.path} into AGENTS.md, delete the override, and run \`teamai pull\`.`,
+    });
+  }
+
   const hermesSoul = targets.find((target) => target.tools.includes('hermes'));
   if (hermesSoul && await holdsInstructionBlocks(hermesSoul.path)) {
     const { hermesContextFileBudget, getHermesConfigPath } = await import('./hermes-config.js');
@@ -2564,7 +2613,7 @@ export async function buildInstructionDeliveryChecks(ctx: DoctorContext): Promis
       check: async () => false,
       fix: `OpenCode V2 gets the team instructions, rules and MCP servers through teamai's plugin, but teamai's entries for OpenCode V1 `
         + `are still in ${v1Left.map(({ file, entries }) => `${file} (${entries.join(', ')})`).join(' and ')}: git tracks the file, or pull `
-        + 'cannot edit it, so pull leaves it as it is. V2 ignores `instructions` and loads those servers a second time. '
+        + 'cannot edit it, so pull leaves it as it is. V2 reads them too and loads those instructions, rules and servers a second time. '
         + 'Remove teamai\'s entries by hand once no one on the project uses OpenCode V1.',
     });
   }

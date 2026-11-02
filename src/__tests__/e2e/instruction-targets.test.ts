@@ -1368,7 +1368,7 @@ describe('OpenCode V2 delivery through the teamai plugin (#993 bug 6)', () => {
     };
     const pulled = await pullAs(member, [], withOpencode('opencode v2.0.24'));
     expect(pulled.code, pulled.output).toBe(0);
-    // V2 ignores these entries: doctor does not ask for them.
+    // On V2 the plugin adds the file: doctor does not ask for these entries.
     fs.writeFileSync(path.join(member.projectRoot, '.opencode', 'opencode.json'), '{}\n');
 
     const v2 = await doctor(withOpencode('opencode v2.0.24'));

@@ -20,7 +20,7 @@ export type CodexProjectTrust =
  * main checkout of its repository, each keyed by real path; an entry without
  * one decides nothing.
  */
-export async function codexProjectTrust(gate: ReadGate): Promise<CodexProjectTrust> {
+export async function codexProjectTrust(gate: Extract<ReadGate, { kind: 'codex-project-trust' }>): Promise<CodexProjectTrust> {
   const { resolveAnchors } = await import('./utils/git.js');
   const { realFilePath } = await import('./git-exclude.js');
   const root = await realFilePath(gate.checkout);
@@ -50,7 +50,7 @@ export async function codexProjectTrust(gate: ReadGate): Promise<CodexProjectTru
 }
 
 /** The manual fix for a project Codex does not trust; `cause` opens the sentence and names the resource. */
-export function codexTrustFix(trust: Exclude<CodexProjectTrust, { kind: 'trusted' }>, gate: ReadGate, cause: string): string {
+export function codexTrustFix(trust: Exclude<CodexProjectTrust, { kind: 'trusted' }>, gate: Extract<ReadGate, { kind: 'codex-project-trust' }>, cause: string): string {
   const configFile = gate.config;
   const table = (dir: string): string => `[projects.${JSON.stringify(dir)}]`;
   switch (trust.kind) {

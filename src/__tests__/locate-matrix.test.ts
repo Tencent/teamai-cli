@@ -88,7 +88,8 @@ const ROWS: readonly FilesRow[] = [
     writes: ['<root>/.agents/skills'],
     existingDirs: ['/xdg/muse'], installed: { probe: '/xdg/muse', met: true },
     reads: [{ at: '<root>/.agents/skills', when: 'workspaceUnder' }],
-    source: MUSE_SOURCE,
+    readGates: [{ kind: 'muse-workspace-trust', config: '/xdg/muse/trust.json', checkout: '<root>' }],
+    source: `${MUSE_SOURCE}; Muse Code 1.4.14 reads trust.json beside its settings`,
   },
   {
     tool: 'hermes', scope: 'user', platforms: ['darwin', 'linux'],
@@ -151,6 +152,7 @@ const ROWS: readonly FilesRow[] = [
     writes: ['<root>/.pi/skills'],
     existingDirs: ['<root>/.pi'], installed: { probe: '<root>/.pi', met: true },
     reads: [{ at: '<root>/.pi/skills', when: 'cwdOnly' }],
+    readGates: [{ kind: 'pi-project-trust', config: '~/.pi/agent/trust.json', settings: '~/.pi/agent/settings.json', checkout: '<root>' }],
     broken: { 'project-subdir': { reason: 'cwd-only', issue: '#1221' } },
     source: 'issue #1221 Conditions: session started in a project subdirectory, Pi skills (v, Pi 0.99.2)',
   },

@@ -118,6 +118,14 @@ This is the #1 onboarding issue. In order:
    reports it as `tool homes record is readable`. Fix the entry the reason
    names (each home must be an absolute directory), or delete the file and
    re-run `teamai init` from a shell your tools run in.
+9. **The files are there, but the tool has not trusted the project.**
+   `teamai doctor` fails `<Tool> trusts this project, so it loads its team
+   <resource>` or `<Tool> approves this project's team MCP servers` and names
+   the tool's own file. Have the user open that tool once in the project and
+   accept its trust or MCP prompt. On a machine that only runs the tool
+   headless, add the entry the fix names. A server listed as rejected is never
+   offered again: follow the fix to clear the rejection. Do not edit a trust
+   file for the user without asking.
 
 ## Path names appear in skill usage statistics
 
@@ -482,6 +490,8 @@ Doctor checks the serialized rules reply against the user config `hooks.maxOutpu
 ## Pi user instructions with an override file
 
 Pi reads `AGENTS.override.md` before `AGENTS.md` in the same directory. In user scope, pull writes rules and instruction blocks into the existing override and strips only TeamAI blocks from the older configured file. Personal text in both files is preserved, including on uninstall. Without an override, the configured user file remains the target.
+
+Pi reads the override from 0.84.0 (`@earendil-works/pi-coding-agent`). An older Pi, including every `@mariozechner/pi-coding-agent` release, reads only `AGENTS.md` and never sees the team instructions; `doctor` fails `Pi reads the AGENTS.override.md holding the team instructions`. Upgrade Pi (from `@mariozechner/pi-coding-agent`, uninstall that package first, or npm stops on the existing `pi` command), or move the member's text from the override into `AGENTS.md`, delete the override, and run `teamai pull`.
 
 ## A file blocks skill delivery
 

@@ -107,7 +107,14 @@ const DETECTORS: Record<string, VersionDetector> = {
   dsh: detectDshVersion,
   muse: detectMuseVersion,
   agy: detectAgyVersion,
+  pi: detectPiVersion,
 };
+
+async function detectPiVersion(): Promise<string> {
+  // Pi Coding Agent: "1.4.0"
+  const raw = await execVersion('pi');
+  return raw.match(/\d+\.\d+\.\d+/)?.[0] ?? '';
+}
 
 async function detectDshVersion(): Promise<string> {
   const raw = await execVersion('dsh');
