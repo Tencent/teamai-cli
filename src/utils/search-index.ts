@@ -3,7 +3,8 @@ import { readFile, readdir, rm, stat } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import type { Dirent } from 'node:fs';
 import matter from 'gray-matter';
-import { expandHome, readFileSafe, readJson, writeJsonAtomic, listFiles, pathExists, isIgnored } from './fs.js';
+import { z } from 'zod';
+import { errnoCode, expandHome, readFileSafe, readJson, writeJsonAtomic, listFiles, pathExists, isIgnored } from './fs.js';
 import { tokenize, wordSegments, MAX_TOKENIZE_CHARS } from './tokenizer.js';
 import { log } from './logger.js';
 import { teamRuleBody, teamRuleData } from '../resources/team-rule.js';
@@ -18,9 +19,9 @@ import {
   type SearchIndex,
   type SearchIndexEntry,
   type SearchIndexFileCache,
-  type UserVotes,
-  type VoteEntryV2,
   type KnowledgeType,
+  UserVotesSchema,
+  UserVotesV2Schema,
 } from '../types.js';
 import { getUserHome } from './home.js';
 import { walkLearningsTree } from './learnings-roots.js';
@@ -314,6 +315,20 @@ export function inferDomain(
 export { tokenize, wordSegments, MAX_TOKENIZE_CHARS };
 
 /**
+ * The frontmatter fields a learning document's index entry reads. A field of
+ * the wrong type reads as absent; `Tags` is the comma-separated spelling read
+ * when `tags` is not a list.
+ */
+const LearningFrontmatterSchema = z.object({
+  title: z.string().optional().catch(undefined),
+  author: z.string().optional().catch(undefined),
+  date: z.union([z.string(), z.date().transform((date) => date.toISOString().slice(0, 10))]).optional().catch(undefined),
+  tags: z.array(z.string().nullable().catch(null)).transform((tags) => tags.filter((tag) => tag !== null))
+    .optional().catch(undefined),
+  Tags: z.string().optional().catch(undefined),
+});
+
+/**
  * Parse a learning document's frontmatter and body.
  * Returns null if the file is empty or unreadable.
  */
@@ -323,7 +338,7 @@ export function parseLearningDoc(
 ): { meta: LearningDocMeta; bodyExcerpt: string } | null {
   if (!content.trim()) return null;
 
-  let data: Record<string, unknown>;
+  let data: unknown;
   let body: string;
 
   try {
@@ -336,19 +351,13 @@ export function parseLearningDoc(
     body = teamRuleBody(content);
   }
 
+  const fields = LearningFrontmatterSchema.parse(data);
+
   const meta: LearningDocMeta = {
-    title: typeof data.title === 'string' ? data.title : undefined,
-    author: typeof data.author === 'string' ? data.author : undefined,
-    date: typeof data.date === 'string'
-      ? data.date
-      : data.date instanceof Date
-        ? data.date.toISOString().slice(0, 10)
-        : undefined,
-    tags: Array.isArray(data.tags)
-      ? data.tags.filter((t: unknown) => typeof t === 'string')
-      : typeof data.Tags === 'string'
-        ? data.Tags.split(/[,，]\s*/).map((t: string) => t.trim()).filter(Boolean)
-        : undefined,
+    title: fields.title,
+    author: fields.author,
+    date: fields.date,
+    tags: fields.tags ?? fields.Tags?.split(/[,，]\s*/).map((t: string) => t.trim()).filter(Boolean),
   };
 
   return { meta, bodyExcerpt: body };
@@ -390,14 +399,11 @@ async function aggregateVotes(votesDir?: string, voteScope?: LocalConfig): Promi
 
     try {
       const YAML = (await import('yaml')).default;
-      const parsed = YAML.parse(content) as Record<string, unknown> | null;
+      const parsed = YAML.parse(content);
+      const v2 = UserVotesV2Schema.safeParse(parsed);
 
-      if (!parsed?.votes) continue;
-
-      if (parsed.version === 2) {
-        const votes = parsed.votes as Record<string, VoteEntryV2>;
-
-        for (const [docId, entry] of Object.entries(votes)) {
+      if (v2.success) {
+        for (const [docId, entry] of Object.entries(v2.data.votes)) {
           const recalled = entry.recalled_count ?? 0;
           const upvoted = entry.upvoted_count ?? 0;
           scores.set(docId, (scores.get(docId) ?? 0) + recalled * 0.3 + upvoted * 1.0);
@@ -417,9 +423,11 @@ async function aggregateVotes(votesDir?: string, voteScope?: LocalConfig): Promi
           agg.set(docId, existing);
         }
       } else {
-        const votes = (parsed as unknown as UserVotes).votes;
+        const v1 = UserVotesSchema.safeParse(parsed);
 
-        for (const [docId, entry] of Object.entries(votes)) {
+        if (!v1.success) continue;
+
+        for (const [docId, entry] of Object.entries(v1.data.votes)) {
           scores.set(docId, (scores.get(docId) ?? 0) + 1);
 
           const existing = agg.get(docId) ?? { recalled: 0, upvoted: 0, lastRecalled: '', lastUpvoted: '' };
@@ -474,6 +482,14 @@ interface BuildReads {
 }
 
 type CachedFile = Omit<SearchIndexFileCache['files'][number], 'entry'> & { entry: SearchIndexEntry | null };
+
+/**
+ * What reusing a previous index's file record relies on. The previous index is
+ * read from disk unchecked, so a record or entry that fails these is rebuilt.
+ */
+const ReusableFileRecordSchema = z.looseObject({ key: z.string(), fingerprint: z.string(), hash: z.string() });
+
+const ReusableEntrySchema = z.looseObject({ tokens: z.array(z.unknown()), tags: z.array(z.unknown()), filename: z.string() });
 
 // Bump the derivation revision when parsing, domain inference or token construction changes.
 // Intl.Segmenter's output also depends on the runtime's Unicode/ICU tables.
@@ -610,7 +626,7 @@ async function entryFromMdFile(
   // `domain` frontmatter field directly from the raw gray-matter parse.
   const rawFrontmatterDomain = (() => {
     try {
-      return (matter(content).data['domain'] as string | undefined);
+      return z.string().optional().catch(undefined).parse(matter(content).data['domain']);
     } catch {
       return undefined;
     }
@@ -646,9 +662,9 @@ async function entryFromMdFile(
   if (treePath && (type === 'rules' || type === 'docs' || type === 'learnings')) {
     const sourceKind = type === 'rules' ? 'rule' : type === 'docs' ? 'doc' : 'learning';
 
-    const rawRelated = (() => {
+    const rawRelated: unknown = (() => {
       try {
-        return (matter(content).data['related'] as unknown);
+        return matter(content).data['related'];
       } catch {
         return undefined;
       }
@@ -710,8 +726,8 @@ async function entriesFromMdFiles(
 }
 
 /** Why an fs call failed: its error code, such as `EACCES`, or the message when there is none. */
-function failureReason(e: unknown): string {
-  return e instanceof Error ? (e as NodeJS.ErrnoException).code ?? e.message : String(e);
+function failureReason(cause: unknown): string {
+  return cause instanceof Error ? errnoCode(cause) ?? cause.message : String(cause);
 }
 
 /**
@@ -727,7 +743,7 @@ async function listDir(dir: string, reads: BuildReads): Promise<Dirent[] | null>
   try {
     return (await readdir(expandHome(dir), { withFileTypes: true })).filter((entry) => !isIgnored(entry.name));
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    if (errnoCode(e) === 'ENOENT') return [];
     reads.unreadable.push({ path: dir, reason: failureReason(e) });
 
     return null;
@@ -749,20 +765,21 @@ async function listMdFilesUnder(
   const entries = await listDir(current, reads);
 
   if (!entries) return { files: [], kept: await keptUnder(current, type, reads, (rel) => rel.endsWith('.md')) };
-  const out = { files: [] as string[], kept: [] as SearchIndexEntry[] };
+  const files: string[] = [];
+  const kept: SearchIndexEntry[] = [];
 
   for (const entry of entries) {
     const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
 
-    if (entry.isFile() && rel.endsWith('.md')) out.files.push(rel);
+    if (entry.isFile() && rel.endsWith('.md')) files.push(rel);
     else if (entry.isDirectory()) {
       const sub = await listMdFilesUnder(dir, type, reads, rel);
-      out.files.push(...sub.files);
-      out.kept.push(...sub.kept);
+      files.push(...sub.files);
+      kept.push(...sub.kept);
     }
   }
 
-  return out;
+  return { files, kept };
 }
 
 /** Collect entries from a flat *.md directory (used for `learnings`). */
@@ -857,7 +874,7 @@ async function collectListedMdEntries(
   const treePathOf = type === 'rules' || type === 'docs' ? (rel: string) => `${type}/${rel}` : undefined;
 
   return entriesFromMdFiles(
-    files.filter((rel) => rel.endsWith('.md')).map((rel) => ({ absPath: path.join(dir, rel), id: rel })), type, reads, treePathOf);
+    files.flatMap((rel) => (rel.endsWith('.md') ? [{ absPath: path.join(dir, rel), id: rel }] : [])), type, reads, treePathOf);
 }
 
 /**
@@ -1022,9 +1039,9 @@ export async function buildIndex(
   // Backward compatibility: original signature was
   //   buildIndex(learningsDir: string, votesDir?: string, indexPath?: string)
   // The Phase 1 multi-category form takes a single options object instead.
-  const opts: BuildIndexOptions = typeof optionsOrLearningsDir === 'string'
-    ? { learningsDir: optionsOrLearningsDir, votesDir, indexPath }
-    : optionsOrLearningsDir;
+  const opts: BuildIndexOptions = optionsOrLearningsDir instanceof Object
+    ? optionsOrLearningsDir
+    : { learningsDir: optionsOrLearningsDir, votesDir, indexPath };
 
   const index = await indexInMemory(opts);
 
@@ -1092,11 +1109,10 @@ export async function indexInMemory(opts: BuildIndexOptions): Promise<SearchInde
   if (prior?.version === SEARCH_INDEX_VERSION && prior.fileCache?.derivation === FILE_DERIVATION
       && Array.isArray(prior.fileCache.files)) {
     for (const file of prior.fileCache.files) {
-      if (typeof file?.key !== 'string' || typeof file.fingerprint !== 'string' || typeof file.hash !== 'string') continue;
-      const entry = typeof file.entry === 'number' ? prior.entries[file.entry] : file.entry;
+      if (!ReusableFileRecordSchema.safeParse(file).success) continue;
+      const entry = file.entry === null || file.entry instanceof Object ? file.entry : prior.entries[file.entry];
 
-      if (entry !== null && (!entry || !Array.isArray(entry.tokens)
-          || !Array.isArray(entry.tags) || typeof entry.filename !== 'string'
+      if (entry !== null && (!ReusableEntrySchema.safeParse(entry).success
           || JSON.stringify([entry.path, entry.filename, entry.type]) !== file.key)) continue;
       cached.set(file.key, { ...file, entry: derivedEntry(entry) });
     }
@@ -1187,7 +1203,7 @@ export async function indexInMemory(opts: BuildIndexOptions): Promise<SearchInde
   log.debug(`Search index files: ${reads.counts.reused} reused, ${reads.counts.rebuilt} rebuilt, ${dropped} dropped`);
   const positions = new Map(entries.map((entry, i) => [JSON.stringify([entry.path, entry.filename, entry.type]), i]));
 
-  return {
+  const index: SearchIndex = {
     version: SEARCH_INDEX_VERSION,
     builtAt: new Date().toISOString(),
     elapsedMs: Date.now() - start,
@@ -1199,8 +1215,11 @@ export async function indexInMemory(opts: BuildIndexOptions): Promise<SearchInde
       files: [...reads.files.values()].sort((a, b) => a.key.localeCompare(b.key))
         .map((file) => ({ ...file, entry: positions.get(file.key) ?? file.entry })),
     },
-    ...(opts.children ? { children: opts.children } : {}),
   };
+
+  if (opts.children) index.children = opts.children;
+
+  return index;
 }
 
 /**
@@ -1211,7 +1230,9 @@ export async function indexInMemory(opts: BuildIndexOptions): Promise<SearchInde
 export function isLegacyIndex(index: SearchIndex | null): boolean {
   if (!index) return false;
 
-  if (typeof index.version !== 'number' || index.version < SEARCH_INDEX_VERSION) return true;
+  const version = z.number().safeParse(index.version);
+
+  if (!version.success || version.data < SEARCH_INDEX_VERSION) return true;
 
   return index.entries.some((e) => !e.type || e.domain === undefined)
     || !index.df
