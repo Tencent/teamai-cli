@@ -3,7 +3,13 @@
  * frontmatter), link-derived REFERENCES, their storage on search-index
  * entries, and the `Related:` lines recall prints for them.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+
+// buildRelationContext resolves the team filter through this module; give it a
+// deterministic "unfiltered" answer so the code-page pool is exercised.
+vi.mock('../resource-namespaces.js', () => ({
+  resolveResourceNamespaces: async () => ({ inactiveWikiNamespaces: [] }),
+}));
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -19,9 +25,34 @@ import {
 import type { RelationSeverity, StoredRelation } from '../asset-relations.js';
 import { indexInMemory } from '../utils/search-index.js';
 import { localLinkTargets } from '../utils/markdown-links.js';
-import { formatResults, relationLines } from '../recall.js';
+import { buildRelationContext, collectCodePages, formatResults, relationLines, computeDerivedRelations } from '../recall.js';
 import type { RelationContext } from '../recall.js';
-import type { SearchIndexEntry } from '../types.js';
+import { matchGlob } from '../utils/glob.js';
+import type { SearchIndex, SearchIndexEntry } from '../types.js';
+
+describe('matchGlob', () => {
+  it('matches within and across segments', () => {
+    expect(matchGlob('src/ledger/receipts.ts', 'src/ledger/receipts.ts')).toBe(true);
+    expect(matchGlob('src/ledger/*.ts', 'src/ledger/receipts.ts')).toBe(true);
+    expect(matchGlob('src/ledger/*.ts', 'src/ledger/a/b.ts')).toBe(false);
+    expect(matchGlob('src/*/receipts.ts', 'src/ledger/receipts.ts')).toBe(true);
+    expect(matchGlob('src/ledger/receipt?.ts', 'src/ledger/receipts.ts')).toBe(true);
+  });
+
+  it('** crosses any depth, including zero', () => {
+    expect(matchGlob('src/ledger/**', 'src/ledger/receipts.ts')).toBe(true);
+    expect(matchGlob('src/ledger/**', 'src/ledger/a/b/c.ts')).toBe(true);
+    expect(matchGlob('src/**/receipts.ts', 'src/receipts.ts')).toBe(true);
+    expect(matchGlob('src/**/receipts.ts', 'src/ledger/receipts.ts')).toBe(true);
+    expect(matchGlob('**/receipts.ts', 'a/b/c/receipts.ts')).toBe(true);
+    expect(matchGlob('src/ledger/**', 'src/other/receipts.ts')).toBe(false);
+  });
+
+  it('ignores a leading ./ or /', () => {
+    expect(matchGlob('./src/**', 'src/a.ts')).toBe(true);
+    expect(matchGlob('/src/**', 'src/a.ts')).toBe(true);
+  });
+});
 
 // ─── normalizeTargetPath ─────────────────────────────────
 
@@ -505,5 +536,215 @@ describe('formatResults — Related: lines', () => {
 describe('ASSET_RELATIONS', () => {
   it('is the four declarable relation names', () => {
     expect(ASSET_RELATIONS).toEqual(['MAPS_TO', 'REFERENCES', 'SUPERSEDES', 'CONFLICTS_WITH']);
+  });
+});
+
+// ─── path-derived relations (#1563 part 1) ───────────────
+
+describe('computeDerivedRelations — rule paths to code page sources', () => {
+  // The source: frontmatter is read from the page file on disk; write it.
+  // Returns the codePages element a scope built from its own index.
+  function codePage(tmp: string, slugPath: string, sources: string[]): { treePath: string; slug: string; sources: string[] } {
+    const treePath = `teamwiki/evidence/code/${slugPath}`;
+    const abs = path.join(tmp, treePath);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, ['---', 'title: p', 'source:', ...sources.map((s) => `  - ${s}`), '---', '', '# P', ''].join('\n'));
+    return { treePath, slug: slugPath.split('/')[0], sources };
+  }
+
+  it('a glob matching one visible codebase page gives one edge in each direction', () => {
+    const tmp = makeTmpDir();
+    try {
+      const pg = codePage(tmp, 'pay/modules/ledger.md', ['src/ledger/receipts.ts']);
+      const contexts = new Map<string, RelationContext>([['project', ctx({
+        ruleGlobs: new Map([['rules/payments.md', ['src/ledger/**']]]),
+        codePages: [pg],
+      })]]);
+      const derived = computeDerivedRelations(contexts).get('project');
+      expect(derived).toBeDefined();
+      expect([...derived!.out.get('rules/payments.md') ?? []]).toEqual(['teamwiki/evidence/code/pay/modules/ledger.md']);
+      expect([...derived!.in.get('teamwiki/evidence/code/pay/modules/ledger.md') ?? []]).toEqual(['rules/payments.md']);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('a glob matching pages in two codebases gives no edge, even when a query would return only one', () => {
+    const tmp = makeTmpDir();
+    try {
+      const a = codePage(tmp, 'pay/modules/ledger.md', ['src/ledger/receipts.ts']);
+      const b = codePage(tmp, 'shop/modules/ledger.md', ['src/ledger/shop.ts']);
+      const contexts = new Map<string, RelationContext>([['project', ctx({
+        ruleGlobs: new Map([['rules/payments.md', ['src/ledger/**']]]),
+        // Both pages are visible to the scope; the old code judged only the
+        // pages a query returned, so a query hitting just `a` printed an edge
+        // a both-page query suppressed. The pool is the scope's index.
+        codePages: [a, b],
+      })]]);
+      const derived = computeDerivedRelations(contexts).get('project');
+      expect(derived!.out.size).toBe(0);
+      expect(derived!.in.size).toBe(0);
+
+      const none = computeDerivedRelations(ctxMap('src/other/**', [a])).get('project');
+      expect(none!.out.size).toBe(0);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  function ctxMap(glob: string, codePages: Array<{ treePath: string; slug: string; sources: string[] }>): Map<string, RelationContext> {
+    return new Map([['project', ctx({ ruleGlobs: new Map([['rules/payments.md', [glob]]]), codePages })]]);
+  }
+
+  it('ambiguity is judged per glob: two globs matching two codebases each give their edge', () => {
+    const tmp = makeTmpDir();
+    try {
+      const a = codePage(tmp, 'pay/modules/ledger.md', ['src/pay/receipts.ts']);
+      const b = codePage(tmp, 'shop/modules/ledger.md', ['src/shop/till.ts']);
+      const contexts = new Map<string, RelationContext>([['project', ctx({
+        ruleGlobs: new Map([['rules/payments.md', ['src/pay/**', 'src/shop/**']]]),
+        codePages: [a, b],
+      })]]);
+      const derived = computeDerivedRelations(contexts).get('project');
+      expect([...derived!.out.get('rules/payments.md') ?? []].sort()).toEqual([
+        'teamwiki/evidence/code/pay/modules/ledger.md',
+        'teamwiki/evidence/code/shop/modules/ledger.md',
+      ]);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('pages come from the scope own index: a user rule never sees a project page', () => {
+    const tmp = makeTmpDir();
+    try {
+      const projectPage = codePage(tmp, 'pay/modules/ledger.md', ['src/ledger/receipts.ts']);
+      const contexts = new Map<string, RelationContext>([
+        ['project', ctx({ codePages: [projectPage] })],
+        ['user', ctx({ ruleGlobs: new Map([['rules/payments.md', ['src/ledger/**']]]) })],
+      ]);
+      // The user rule's glob matches the project page's sources, but the
+      // page lives in the project scope's index, so the user bucket — built
+      // from the user index, which holds no pages — stays empty.
+      const derived = computeDerivedRelations(contexts);
+      expect(derived.get('user')!.out.size).toBe(0);
+      expect(derived.get('project')!.out.size).toBe(0); // project bucket has no rule globs
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('edges stay inside their scope: a user rule never marks a project hit', () => {
+    const tmp = makeTmpDir();
+    try {
+      const pg = codePage(tmp, 'pay/modules/ledger.md', ['src/ledger/receipts.ts']);
+      const contexts = new Map<string, RelationContext>([
+        ['project', ctx({ byTreePath: new Map([['rules/payments.md', entry({ filename: 'payments.md', treePath: 'rules/payments.md', path: '/repo/rules/payments.md' })]]) })],
+        ['user', ctx({ ruleGlobs: new Map([['rules/payments.md', ['src/ledger/**']]]), codePages: [pg] })],
+      ]);
+      const derived = computeDerivedRelations(contexts);
+      // The user rule's glob matches the page, but only the user scope bucket holds it.
+      expect([...derived.get('user')!.out.get('rules/payments.md') ?? []]).toEqual(['teamwiki/evidence/code/pay/modules/ledger.md']);
+      expect(derived.get('project')!.out.size).toBe(0);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('derived edges do not depend on which pages the query returned', async () => {
+    const tmp = makeTmpDir();
+    try {
+      const a = codePage(tmp, 'pay/modules/ledger.md', ['src/ledger/receipts.ts']);
+      const b = codePage(tmp, 'shop/modules/ledger.md', ['src/ledger/shop.ts']);
+      const ruleAbs = path.join(tmp, 'rules/payments.md');
+      fs.mkdirSync(path.dirname(ruleAbs), { recursive: true });
+      fs.writeFileSync(ruleAbs, ['---', 'title: r', 'paths:', '  - src/ledger/**', '---', '', '# R', ''].join('\n'));
+      const index = {
+        version: 1,
+        entries: [entry({ filename: 'payments.md', treePath: 'rules/payments.md', path: ruleAbs })],
+      } as unknown as SearchIndex;
+      // A one-codebase team where the rule hits but no page does: the scope's
+      // index still holds both pages, so the glob is ambiguous and no edge
+      // prints — the same answer a query returning both pages would give.
+      const context = await buildRelationContext({ index, config: { repo: { localPath: tmp } } as never });
+      expect(context.codePages?.map((cp) => cp.treePath).sort()).toEqual([a.treePath, b.treePath]);
+      const derived = computeDerivedRelations(new Map([['project', context]])).get('project');
+      expect(derived!.out.size).toBe(0);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('brace globs expand where the rule renderers expand them (#1636 review)', async () => {
+    const tmp = makeTmpDir();
+    try {
+      const a = codePage(tmp, 'pay/modules/ledger.md', ['src/pay/receipts.ts']);
+      const b = codePage(tmp, 'shop/modules/ledger.md', ['src/shop/till.ts']);
+      const ruleAbs = path.join(tmp, 'rules/payments.md');
+      fs.mkdirSync(path.dirname(ruleAbs), { recursive: true });
+      fs.writeFileSync(ruleAbs, ['---', 'title: r', 'paths:', '  - src/{pay,shop}/**', '---', '', '# R', ''].join('\n'));
+      const index = {
+        version: 1,
+        entries: [entry({ filename: 'payments.md', treePath: 'rules/payments.md', path: ruleAbs })],
+      } as unknown as SearchIndex;
+      const context = await buildRelationContext({ index, config: { repo: { localPath: tmp } } as never });
+      const derived = computeDerivedRelations(new Map([['project', context]])).get('project');
+      expect([...derived!.out.get('rules/payments.md') ?? []].sort()).toEqual([a.treePath, b.treePath]);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('collectCodePages reads the scope wiki, honoring withheld and null', () => {
+    const tmp = makeTmpDir();
+    try {
+      const a = codePage(tmp, 'pay/modules/ledger.md', ['src/ledger/receipts.ts']);
+      const b = codePage(tmp, 'shop/modules/till.md', ['src/shop/till.ts']);
+      const wiki = path.join(tmp, 'teamwiki');
+      // Unfiltered: both pages, with their sources and slugs.
+      const all = collectCodePages(wiki, new Set());
+      expect(all).toEqual([
+        { treePath: a.treePath, slug: 'pay', sources: ['src/ledger/receipts.ts'] },
+        { treePath: b.treePath, slug: 'shop', sources: ['src/shop/till.ts'] },
+      ]);
+      // Withheld: the filtered codebase's page leaves the pool.
+      expect(collectCodePages(wiki, new Set(['shop'])).map((cp) => cp.slug)).toEqual(['pay']);
+      // Unreadable namespace list: no page is certain to be visible.
+      expect(collectCodePages(wiki, null)).toEqual([]);
+      // No wiki at all.
+      expect(collectCodePages(path.join(tmp, 'nowhere'), new Set())).toEqual([]);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('relationLines renders derived edges and a declared relation wins', () => {
+    const tmp = makeTmpDir();
+    try {
+      const treePath = 'teamwiki/evidence/code/pay/modules/ledger.md';
+      codePage(tmp, 'pay/modules/ledger.md', ['src/ledger/receipts.ts']);
+      const page = entry({ filename: 'pay/modules/ledger.md', title: 'p', author: '', date: '', tags: [], tokens: [], votes: 0, type: 'docs', path: path.join(tmp, treePath), treePath });
+      const context = ctx({
+        byTreePath: new Map([
+          [treePath, page],
+          ['rules/payments.md', entry({ filename: 'payments.md', treePath: 'rules/payments.md', path: '/repo/rules/payments.md' })],
+        ]),
+        teamwikiRoot: path.join(tmp, 'teamwiki'),
+        withheld: new Set(),
+      });
+      const derived = { out: new Set([treePath]) };
+      expect(relationLines(context, entry({ filename: 'payments.md', treePath: 'rules/payments.md', path: '/repo/rules/payments.md' }), derived))
+        .toEqual([`Related: → MAPS_TO ${page.path}`]);
+
+      // Declared MAPS_TO to the same page beats the derived one.
+      const declared = entry({
+        filename: 'payments.md', treePath: 'rules/payments.md', path: '/repo/rules/payments.md',
+        related: [{ relation: 'MAPS_TO', target: treePath, via: 'declared' }],
+      });
+      const lines = relationLines(context, declared, derived);
+      expect(lines.filter((l) => l.includes('MAPS_TO'))).toHaveLength(1);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });

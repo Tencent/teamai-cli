@@ -81,7 +81,7 @@ related:
 ---
 ```
 
-`MAPS_TO` 指向 teamwiki 代码页面，`REFERENCES` 指向任意资产，`SUPERSEDES` / `CONFLICTS_WITH` 指向规则、文档或 learning。`teamai recall` 会把每条声明的关系作为 `Related:` 行打印在命中结果上，会话拿到关系的一端时也就看到了另一端。`teamai review --branch` 会判定 `related:` 块使用了表格外关系的规则或文档为失败；指向分支上不存在资产的关系是警告，不会判定失败。
+`MAPS_TO` 指向 teamwiki 代码页面，`REFERENCES` 指向任意资产，`SUPERSEDES` / `CONFLICTS_WITH` 指向规则、文档或 learning。`teamai recall` 会把每条声明的关系、以及每条由 `paths:` glob 派生的关系（见知识指南），作为 `Related:` 行打印在命中结果上，会话拿到关系的一端时也就看到了另一端。`teamai review --branch` 会判定 `related:` 块使用了表格外关系的规则或文档为失败；指向分支上不存在资产的关系是警告，不会判定失败。
 
 ## Agents
 
