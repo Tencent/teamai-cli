@@ -514,7 +514,7 @@ async function assignedOverSelection(input: { config: LocalConfig; selection: Te
   const roles = (primary: string | undefined, additional: readonly string[]): string => `primaryRole ${primary ?? 'none'} and additionalRoles [${additional.join(', ')}]`;
   const named = selection.primaryRole ?? selection.additionalRoles[0] ?? '';
 
-  return `The clone's team selection names ${roles(selection.primaryRole, selection.additionalRoles)}, but manifest/members.yaml at team revision ${revision} assigns ${config.username} ${roles(effective.primaryRole, assigned)}, and while that file exists it decides a member's roles, so the clone would not install the selection it names. Remove primaryRole and additionalRoles from the selection to install the roles it assigns, or give the step role: ${named} to run it with that role's knowledge.`;
+  return `The clone's team selection names ${roles(selection.primaryRole, selection.additionalRoles)}, but manifest/members.yaml at team revision ${revision} assigns ${config.username} ${roles(effective.primaryRole, assigned)}, and while that file exists it decides a member's roles, so the clone would not install the selection it names. Remove primaryRole and additionalRoles from the selection to install the roles it assigns, and to run the step with ${named}'s knowledge, also give it role: ${named}.`;
 }
 
 async function installTeam(input: {
