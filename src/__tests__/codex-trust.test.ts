@@ -337,6 +337,20 @@ describe('Codex hook trust — user scope', () => {
     expect(reconciled.codexTrust).toEqual({ kind: 'trusted', hooks: teamai.length });
   });
 
+  it("trusts teamai's hooks beside a member mcp_tool hook, which Codex lists without a command", async () => {
+    await writeYaml(LINT_HOOK);
+    await fse.writeJson(path.join(codexHome(), 'hooks.json'), {
+      hooks: { Stop: [{ hooks: [{ type: 'mcp_tool', server: 'docs', tool: 'check_links' }] }] },
+    });
+
+    const reconciled = await writeAndTrust(userConfig());
+
+    const teamai = (await codexEntries(path.join(codexHome(), 'hooks.json'))).filter((e) => e.command !== undefined);
+    expect(teamai.some((e) => e.command === 'npm run lint')).toBe(true);
+    expect(trustedKeys().sort()).toEqual(teamai.map((e) => e.key).sort());
+    expect(reconciled.codexTrust).toEqual({ kind: 'trusted', hooks: teamai.length });
+  });
+
   it('does not trust a member command containing a teamai marker', async () => {
     await writeAndTrust(userConfig());
     const file = path.join(codexHome(), 'hooks.json');

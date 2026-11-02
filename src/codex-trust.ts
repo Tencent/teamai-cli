@@ -8,6 +8,7 @@ import { getCurrentVersion } from './package-info.js';
 import type { CodexBuild, CodexBuildSkew, JsonValue } from './types.js';
 import { JsonValueSchema, JsonObjectSchema } from './types.js';
 import { probeBinary } from './utils/exec.js';
+import { lenientList } from './utils/json.js';
 import { log } from './utils/logger.js';
 import { findOnPath } from './utils/lookpath.js';
 
@@ -476,9 +477,10 @@ async function listHooks(server: AppServer, cwd: string): Promise<HookInfo[]> {
   const listed = HooksListReplySchema.safeParse(await server.request('hooks/list', { cwds: [canonical(cwd)] }));
 
   if (!listed.success || listed.data.data[0].hooks === null) return [];
-  const hooks = z.array(HookInfoSchema).safeParse(listed.data.data[0].hooks);
+  // A hook with another handler, such as `mcp_tool`, is listed without a command; teamai writes none of those.
+  const hooks = lenientList(HookInfoSchema).safeParse(listed.data.data[0].hooks);
 
-  if (!hooks.success) throw new AppServerError('hooks/list: a listed hook has no key, command, sourcePath, currentHash or trustStatus string');
+  if (!hooks.success) throw new AppServerError('hooks/list: the hooks of the cwd are not a list');
 
   return hooks.data;
 }
