@@ -22,7 +22,7 @@ import {
   applyInstructionPlan, channelReadiness, holdsInstructionBlocks, hookLimitProblem, instructionHookChannelInstallable, instructionHookText,
   planInstructionFiles, registerOpencodeContext, resolveInstructionTargets, retiredFilesOfReached, type InstructionBlocks, type InstructionTarget,
 } from './instruction-targets.js';
-import { getHandler, RulesHandler, DocsHandler, EnvHandler, AgentsHandler } from './resources/index.js';
+import { getHandler, EnvHandler } from './resources/index.js';
 import { removedAgentOrigin, reportHeldAgents, updateJoycodeAgentIndex, type RedeployedCopy } from './resources/agents.js';
 import { ruleOrigin, rulesReceivingTools } from './resources/rules.js';
 import {
@@ -733,7 +733,7 @@ async function cleanupTombstonedResources(
     // Agents deploy flattened, so a namespaced agent tombstone has to be read
     // as the stem the local copy carries (`AgentsHandler.removedStems`).
     const tombstones = type === 'agents'
-      ? await registeredAgentsHandler().removedStems(freshConfig, localConfig)
+      ? await getHandler('agents').removedStems(freshConfig, localConfig)
       : await handler.readTombstones(localConfig);
 
     for (const name of extraNames?.[type] ?? []) tombstones.add(name);
@@ -1005,21 +1005,6 @@ async function removeRecallFilesQuietly(teamConfig: TeamaiConfig, localConfig: L
   } catch (e) {
     log.debug(`Recall agent and rule removal skipped: ${e instanceof Error ? e.message : String(e)}`);
   }
-}
-
-function registeredRulesHandler(): RulesHandler {
-  // SAFETY: the handler registry in resources/index.ts registers `new RulesHandler()` under 'rules'.
-  return getHandler('rules') as RulesHandler;
-}
-
-function registeredAgentsHandler(): AgentsHandler {
-  // SAFETY: the handler registry in resources/index.ts registers `new AgentsHandler()` under 'agents'.
-  return getHandler('agents') as AgentsHandler;
-}
-
-function registeredDocsHandler(): DocsHandler {
-  // SAFETY: the handler registry in resources/index.ts registers `new DocsHandler()` under 'docs'.
-  return getHandler('docs') as DocsHandler;
 }
 
 /**
@@ -1474,7 +1459,7 @@ async function rerenderOutdatedRules(
     const key = await checkoutRecordKey(localConfig);
     const state = await loadStateForScope(localConfig);
     const ledger = await openCheckoutLedger(localConfig, state, recorder);
-    const handler = registeredRulesHandler();
+    const handler = getHandler('rules');
     const reclaimed = await handler.reclaimLegacyRuleCopies(freshConfig, localConfig, items, ledger);
     // With no record yet, it still rewrites a copy its bytes prove teamai's.
     const rewritten = key ? await handler.rerenderOutdatedCopies(freshConfig, localConfig, items, ledger) : [];
@@ -1527,7 +1512,7 @@ async function redeployAgentsWithChangedModels(
     if (desired.kind === 'conflict') return false;
     const state = await loadStateForScope(localConfig);
     const ledger = await openCheckoutLedger(localConfig, state, recorder);
-    const handler = registeredAgentsHandler();
+    const handler = getHandler('agents');
     const redeploy = await handler.agentsToRedeploy(desired.items, freshConfig, localConfig, ledger);
 
     for (const { item } of redeploy) await handler.pullItem(item, freshConfig, localConfig, ledger);
@@ -2193,7 +2178,7 @@ async function pullForScope(
           if (resourceTypes.includes('rules')) {
             try {
               const record = await editDeliveryRecord(localConfig);
-              await registeredRulesHandler().reclaimReservedRuleCopies(freshConfig, localConfig, record.ledger);
+              await getHandler('rules').reclaimReservedRuleCopies(freshConfig, localConfig, record.ledger);
               await record.save();
             } catch (error) {
               log.warn(`[${scopeLabel}] The earlier copy of the team rule teamai-context was not reclaimed: ${error instanceof Error ? error.message : String(error)}. Run \`teamai pull --force\` to retry.`);
@@ -2225,7 +2210,7 @@ async function pullForScope(
 
             if (items !== undefined) {
               try {
-                await registeredRulesHandler().syncUserRulesFiles(freshConfig, localConfig, items);
+                await getHandler('rules').syncUserRulesFiles(freshConfig, localConfig, items);
               } catch (error) {
                 // A file that fails is named by syncUserRulesFiles.
                 log.warn(`[${scopeLabel}] No tool's own user rules file (such as ~/.codex/AGENTS.md or ~/.zcode/AGENTS.md) was updated: ${error instanceof Error ? error.message : String(error)}. Run \`teamai pull\` to retry.`);
@@ -2234,7 +2219,7 @@ async function pullForScope(
               // Same reason: a CLI that moves OpenCode's rules globs writes them
               // to their new config file and reclaims the old ones (#946).
               try {
-                await registeredRulesHandler().activateOpencodeInstructions(freshConfig, localConfig, items);
+                await getHandler('rules').activateOpencodeInstructions(freshConfig, localConfig, items);
               } catch (error) {
                 log.warn(`[${scopeLabel}] OpenCode's rules globs were not updated: ${error instanceof Error ? error.message : String(error)}. Run \`teamai pull\` to retry.`);
               }
@@ -2357,7 +2342,7 @@ async function pullForScope(
     const handler = getHandler(type);
 
     if (type === 'rules') {
-      const rulesHandler = registeredRulesHandler();
+      const rulesHandler = getHandler('rules');
       const { items, replaced, skippedByTags } = await resolveDesiredRules(freshConfig, localConfig, roleContext);
 
       if (options.dryRun) {
@@ -2451,7 +2436,7 @@ async function pullForScope(
       // A declared namespace reaches only members with it active (#707), and
       // the mirror runs even when nothing is delivered: removing stale local
       // docs and a deactivated namespace's unchanged copies both need it.
-      const docsHandler = registeredDocsHandler();
+      const docsHandler = getHandler('docs');
 
       try {
         const desired = await resolveDesiredDocs(localConfig.repo.localPath, roleContext?.inactiveDocsNamespaces ?? []);
@@ -2581,7 +2566,7 @@ async function pullForScope(
       let held = 0;
 
       if (type === 'agents') {
-        await registeredAgentsHandler().queueModelHolds(items, freshConfig, localConfig, ledger);
+        await getHandler('agents').queueModelHolds(items, freshConfig, localConfig, ledger);
         held = reportHeldAgents(ledger, scopeLabel);
       }
 
@@ -2694,7 +2679,7 @@ async function pullForScope(
 
       // Same revocation for agents: a role change must remove the previous
       // role's agents, not just stop deploying them.
-      await registeredAgentsHandler().cleanupInactiveNamespaces(
+      await getHandler('agents').cleanupInactiveNamespaces(
         freshConfig,
         localConfig,
         roleContext.activeNamespaces.agents,
