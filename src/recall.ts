@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import matter from 'gray-matter';
+import { z } from 'zod';
 import { requireInit, detectProjectConfig, describeUnreadableConfig, loadLocalConfigForScope } from './config.js';
 import { loadIndex, buildIndex, indexInMemory, search, isLegacyIndex } from './utils/search-index.js';
 import type { BuildIndexOptions, SearchResult, UnreadableFile } from './utils/search-index.js';
@@ -370,15 +371,17 @@ export interface RelationContext {
   readonly codePages?: ReadonlyArray<{ treePath: string; slug: string; sources: readonly string[] }>;
 }
 
+/** A code page's `source:` field: one path or a list of them; an entry of another type names nothing. */
+const PageSourcesSchema = z.union([z.string().transform((source) => [source]), z.array(z.string().nullable().catch(null))]).catch([]);
+
 /** The `source:` files a teamwiki code page names, read where the page sits. */
 function pageSourcePaths(pageAbsPath: string | undefined): string[] {
   if (!pageAbsPath || !existsSync(pageAbsPath)) return [];
 
   try {
-    const raw = matter(readFileSync(pageAbsPath, 'utf-8')).data['source'];
-    const list = Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : [];
+    const sources = PageSourcesSchema.parse(matter(readFileSync(pageAbsPath, 'utf-8')).data['source']);
 
-    return list.filter((s): s is string => typeof s === 'string' && s.trim() !== '').map((s) => s.trim());
+    return sources.flatMap((source) => (source !== null && source.trim() !== '' ? [source.trim()] : []));
   } catch {
     return [];
   }
@@ -404,7 +407,7 @@ export function collectCodePages(
   let rels: string[];
 
   try {
-    rels = readdirSync(codeRoot, { recursive: true }) as string[];
+    rels = readdirSync(codeRoot, { recursive: true, encoding: 'utf8' });
   } catch {
     return pages; // no code pages in this wiki
   }
@@ -638,7 +641,7 @@ function resultsRelations(
   results: ScopedSearchResult[],
   relationContexts: ReadonlyMap<string, RelationContext>,
 ): PrintedRelation[][] {
-  const fallbackCtx = relationContexts.values().next().value as RelationContext | undefined;
+  const fallbackCtx = relationContexts.values().next().value;
   // Path-derived rule→page edges, computed once over the pages each scope
   // can see (#1563 part 1). Never stored, and independent of which pages
   // this query returned.
@@ -655,7 +658,7 @@ function resultsRelations(
 
     // Derived edges belong to the hit's scope like every other relation.
     const derivedForScope = (scope !== undefined ? derived.get(scope) : undefined)
-      ?? (scope === undefined ? derived.values().next().value as DerivedEdges | undefined : undefined);
+      ?? (scope === undefined ? derived.values().next().value : undefined);
 
     return printedRelations(ctx, entry, derivedForScope && entry.treePath
       ? { out: derivedForScope.out.get(entry.treePath), in: derivedForScope.in.get(entry.treePath) }
@@ -903,7 +906,7 @@ async function recordRun(
           eligible: !(projectActive && scope === 'user'),
           // Exactly what stdout showed for this doc (#1562); nothing recorded
           // for a doc with no Related: line, so old readers see no change.
-          ...(related?.[i] && related[i].length > 0 ? { related: [...related[i]] } : {}),
+          related: related?.[i] && related[i].length > 0 ? [...related[i]] : undefined,
         };
       }),
     });

@@ -24,7 +24,7 @@ import {
   getReportsDir,
   getProjectSearchIndexPath,
 } from './types.js';
-import type { LocalConfig, SearchIndex, SearchIndexEntry } from './types.js';
+import type { LocalConfig, SearchIndexEntry } from './types.js';
 import { findPromotionCandidates, type PromotionCandidate } from './maintenance/promote.js';
 import { findPruneCandidates, type PruneCandidate } from './maintenance/prune.js';
 import { findStaleEntries, type StaleEntry } from './maintenance/quality-update.js';
@@ -508,9 +508,11 @@ async function computeRelationStats(
     ? computeLintAssetGraph(memberGraphs)
     : await (async () => {
         const ctx = await buildRelationContext({
-          index: { builtAt: '', elapsedMs: 0, entries } as SearchIndex,
+          index: { builtAt: '', elapsedMs: 0, entries },
           // --repo and the ~/.teamai fallback have no LocalConfig; the knowledge root
           // is the team-tree root in both, which is all relation resolution reads.
+          // SAFETY: buildRelationContext reads repo.localPath, and resolveResourceNamespaces reads it with
+          // children, projects, primaryRole, additionalRoles and roleAssignment, each absent here and read as unset.
           config: { repo: { localPath: paths.knowledgeRoot } } as LocalConfig,
         });
 
@@ -524,9 +526,7 @@ async function computeRelationStats(
         return computeLintAssetGraph([{ ctx, targetExists }]);
       })();
 
-  const silentPaths = new Set(
-    entries.filter(isSilent).map((e) => e.treePath).filter((p): p is string => typeof p === 'string'),
-  );
+  const silentPaths = new Set(entries.flatMap((e) => (isSilent(e) && e.treePath !== undefined ? [e.treePath] : [])));
 
   return {
     assetCount: graph.assetCount,
