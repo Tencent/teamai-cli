@@ -26,7 +26,7 @@ const COPILOT_MARKER = '--tool copilot';
  * Copilot runs goes through this one predicate. The shell guard runs the same
  * logic from COPILOT_RUNS_ENTRIES_SOURCE; claude-hook-host.test.ts runs both.
  */
-export function copilotRunsEntries(data: JsonValue): Array<[string, string | undefined, string]> {
+export function copilotRunsEntries(data: JsonValue): Array<[string, JsonValue | undefined, string]> {
   const file = CopilotRunsFileSchema.safeParse(data);
 
   if (!file.success || file.data.disableAllHooks) return [];
@@ -40,7 +40,7 @@ export function copilotRunsEntries(data: JsonValue): Array<[string, string | und
       if (!entry.success) return [];
       const { bash, powershell, command, matcher } = entry.data;
 
-      return [bash, powershell, command].flatMap((run): Array<[string, string | undefined, string]> => (run === undefined ? [] : [[event, matcher, run]]));
+      return [bash, powershell, command].flatMap((run): Array<[string, JsonValue | undefined, string]> => (run === undefined ? [] : [[event, matcher, run]]));
     });
   });
 }
@@ -55,13 +55,10 @@ const CopilotRunsFileSchema = z.object({
 /** A command field Copilot runs; one that is not text runs nothing. */
 const CopilotRunsCommandSchema = z.string().optional().catch(undefined);
 
-/**
- * A hook entry Copilot runs. An entry whose matcher is not text is left out:
- * its matcher equals no matcher teamai writes.
- */
+/** A hook entry Copilot runs. Its matcher is kept as written, as the shell guard reads it. */
 const CopilotRunsEntrySchema = z.object({
   type: z.literal('command'),
-  matcher: z.string().optional(),
+  matcher: JsonValueSchema.optional(),
   bash: CopilotRunsCommandSchema,
   powershell: CopilotRunsCommandSchema,
   command: CopilotRunsCommandSchema,

@@ -24,6 +24,7 @@ const FILES: Array<[string, JsonValue]> = [
   ['a null hook', { version: 1, hooks: { sessionStart: [null, hook({ bash: 'a' })] } }],
   ['every command field', { version: 1, hooks: { preToolUse: [hook({ bash: 'b', powershell: 'p', command: 'c', matcher: 'Bash' })] } }],
   ['a non-string command', { version: 1, hooks: { sessionStart: [hook({ bash: 1, command: 'c' })] } }],
+  ['a non-string matcher', { version: 1, hooks: { preToolUse: [hook({ bash: 'b', matcher: 5 })] } }],
   ['several events', {
     version: 1,
     hooks: { sessionStart: [hook({ bash: 'a' })], stop: [hook({ command: 'b', matcher: '*' }), hook({ powershell: 'c' })] },
