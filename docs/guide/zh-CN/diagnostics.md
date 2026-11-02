@@ -46,3 +46,55 @@ OpenCode hooks 使用 `teamai hooks inject` 或 `teamai pull` 记录的 Node 可
 Pi 扩展会启动 `teamai pull` 或 `teamai hooks inject` 记录的 Node 可执行文件和 TeamAI 入口。移动或重新安装后，请重新运行其中一个命令并重启 Pi。
 
 Hermes hooks 和指令插件会启动 `teamai hooks inject` 或 `teamai pull` 记录的 Node 可执行文件与 TeamAI 入口。移动或重新安装后，请重新运行其中一个命令并重启 Hermes。
+
+## 工具还没有信任这个项目
+
+有些工具要等你信任项目后才读取项目里的文件，或者要等你批准后才启动项目的 MCP server。`pull` 照常写入文件；`doctor` 读取每个工具自己的结论，在你给出之前一直报失败。
+
+新 checkout 第一次 pull 之后：
+
+```text
+$ teamai doctor
+  ✖ Pi trusts this project, so it loads its team skills
+    → /home/ana/work/web-app/.pi/skills holds team skills (release-notes), but Pi loads a project's skills only in a trusted project, and /home/ana/.pi/agent/trust.json has no entry for /home/ana/work/web-app or a folder above it. Start `pi` in /home/ana/work/web-app and choose Trust, or add "/home/ana/work/web-app": true to /home/ana/.pi/agent/trust.json. Until then a headless run (`pi -p`) skips them.
+  ✖ Claude Code approves this project's team MCP servers
+    → /home/ana/work/web-app/.mcp.json holds team MCP servers (issues), but Claude Code starts a project's .mcp.json servers in an interactive session only once you approve them, and issues waits for approval. ...
+```
+
+在项目里把每个工具各打开一次，回答它的提示：
+
+```text
+$ cd ~/work/web-app
+$ pi          # 选 "Trust"
+$ claude      # 信任文件夹，然后选 "Use this MCP server"
+$ teamai doctor
+  ✔ Pi trusts this project, so it loads its team skills
+  ✔ Claude Code approves this project's team MCP servers
+```
+
+有人拒绝过一次的 server 会一直关闭，也不会再被询问：
+
+```text
+  ✖ Claude Code approves this project's team MCP servers
+    → /home/ana/work/web-app/.mcp.json holds team MCP servers (issues), but ... issues was rejected. Remove the rejected ones from disabledMcpjsonServers in /home/ana/work/web-app/.claude/settings.local.json; `claude mcp reset-project-choices` in /home/ana/work/web-app clears the local settings' choices.
+```
+
+只以无界面方式运行工具的机器（CI runner、跑 workflow 的机器）永远不会被询问，按修复提示加上那一项即可：
+
+```bash
+# Pi，信任 ~/work 下的所有 checkout
+echo '{ "/home/ci/work": true }' > ~/.pi/agent/trust.json
+```
+
+| 工具 | 等待的内容 | 结论保存在 | 如何给出 |
+|---|---|---|---|
+| Claude Code | `.mcp.json` 里的 server（交互式会话） | `~/.claude/settings.json`、主 checkout 的 `.claude/settings*.json`，信任记录在 `~/.claude.json` | 信任文件夹，再批准 server |
+| Codex | 项目 agents、`.codex/config.toml` | `~/.codex/config.toml` 的 `[projects."<主 checkout>"]` | Codex 询问时信任项目 |
+| Copilot CLI | `.github/mcp.json`、`.github/hooks` | `~/.copilot/config.json` 的 `trustedFolders` | "Yes, and remember this folder" |
+| Pi | `.pi/skills`、`.pi/mcp.json` | `~/.pi/agent/trust.json` | "Trust" |
+| Muse Code | `.agents/skills`、`.mcp.json`、`.muse/hooks.json` | `~/.config/muse/trust.json`，每个 worktree 一项 | "Trust and continue" |
+| Qoder CLI | `.qoder/settings.json`（交互式会话） | `~/.qoder/settings.json` 的 `permissions.trustDirectories` 和 `mcp.*ProjectMcpServers` | 信任文件夹，再批准 server |
+| CodeBuddy Code | `.mcp.json` 里的 server，`-p` 也一样 | `.codebuddy/settings.local.json` | "Use this MCP server" |
+| Cursor CLI | `.cursor/mcp.json` 里的 server | `~/.cursor/projects/<project>/` | `cursor-agent mcp enable <name>` |
+
+Oh My Pi 没有信任门槛。

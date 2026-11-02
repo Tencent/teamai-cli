@@ -46,3 +46,55 @@ OpenCode hooks use the Node executable and TeamAI entry recorded by `teamai hook
 Pi extensions launch the Node executable and TeamAI entry recorded by `teamai pull` or `teamai hooks inject`. After moving or reinstalling either, rerun one of those commands and restart Pi.
 
 Hermes hooks and its instructions plugin launch the Node executable and TeamAI entry recorded by `teamai hooks inject` or `teamai pull`. After moving or reinstalling either, rerun one of those commands and restart Hermes.
+
+## A tool has not trusted the project yet
+
+Some tools load a project's files only after you trust the project, or start its MCP servers only after you approve them. `pull` writes the files either way. `doctor` reads each tool's own answer and fails until you give it.
+
+A new checkout, right after the first pull:
+
+```text
+$ teamai doctor
+  ✖ Pi trusts this project, so it loads its team skills
+    → /home/ana/work/web-app/.pi/skills holds team skills (release-notes), but Pi loads a project's skills only in a trusted project, and /home/ana/.pi/agent/trust.json has no entry for /home/ana/work/web-app or a folder above it. Start `pi` in /home/ana/work/web-app and choose Trust, or add "/home/ana/work/web-app": true to /home/ana/.pi/agent/trust.json. Until then a headless run (`pi -p`) skips them.
+  ✖ Claude Code approves this project's team MCP servers
+    → /home/ana/work/web-app/.mcp.json holds team MCP servers (issues), but Claude Code starts a project's .mcp.json servers in an interactive session only once you approve them, and issues waits for approval. ...
+```
+
+Open each tool once in the project and answer its prompt:
+
+```text
+$ cd ~/work/web-app
+$ pi          # choose "Trust"
+$ claude      # trust the folder, then "Use this MCP server"
+$ teamai doctor
+  ✔ Pi trusts this project, so it loads its team skills
+  ✔ Claude Code approves this project's team MCP servers
+```
+
+A server someone turned down once stays off and is never offered again:
+
+```text
+  ✖ Claude Code approves this project's team MCP servers
+    → /home/ana/work/web-app/.mcp.json holds team MCP servers (issues), but ... issues was rejected. Remove the rejected ones from disabledMcpjsonServers in /home/ana/work/web-app/.claude/settings.local.json; `claude mcp reset-project-choices` in /home/ana/work/web-app clears the local settings' choices.
+```
+
+A machine that only runs tools headless (a CI runner, a workflow box) is never asked, so add the entry the fix names:
+
+```bash
+# Pi, for every checkout under ~/work
+echo '{ "/home/ci/work": true }' > ~/.pi/agent/trust.json
+```
+
+| Tool | What waits | Where the answer is kept | How to give it |
+|---|---|---|---|
+| Claude Code | `.mcp.json` servers, in an interactive session | `~/.claude/settings.json`, `.claude/settings*.json` of the main checkout, trust in `~/.claude.json` | Trust the folder, then approve the servers |
+| Codex | project agents, `.codex/config.toml` | `[projects."<main checkout>"]` in `~/.codex/config.toml` | Trust the project when Codex asks |
+| Copilot CLI | `.github/mcp.json`, `.github/hooks` | `trustedFolders` in `~/.copilot/config.json` | "Yes, and remember this folder" |
+| Pi | `.pi/skills`, `.pi/mcp.json` | `~/.pi/agent/trust.json` | "Trust" |
+| Muse Code | `.agents/skills`, `.mcp.json`, `.muse/hooks.json` | `~/.config/muse/trust.json`, one entry per worktree | "Trust and continue" |
+| Qoder CLI | `.qoder/settings.json`, in an interactive session | `permissions.trustDirectories` and `mcp.*ProjectMcpServers` in `~/.qoder/settings.json` | Trust the folder, then approve the servers |
+| CodeBuddy Code | `.mcp.json` servers, `-p` too | `.codebuddy/settings.local.json` | "Use this MCP server" |
+| Cursor CLI | `.cursor/mcp.json` servers | `~/.cursor/projects/<project>/` | `cursor-agent mcp enable <name>` |
+
+Oh My Pi has no trust gate.
