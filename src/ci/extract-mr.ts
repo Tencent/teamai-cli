@@ -10,6 +10,7 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { z } from 'zod';
 
 import { importFromMR } from '../import-mr.js';
 // applyCodebaseSuggestions removed: codebase updates now handled by teamwiki/ graph engine
@@ -38,6 +39,9 @@ export interface CiExtractMrOptions {
 
 // ─── Git user setup ───────────────────────────────────────
 
+const GitHubUserSchema = z.object({ login: z.string(), email: z.string().nullish() });
+const TGitUserSchema = z.object({ username: z.string(), email: z.string() });
+
 /**
  * Sets git user.name and user.email automatically.
  *
@@ -62,7 +66,7 @@ async function configureGitUser(repoPath: string, provider: 'github' | 'tgit' | 
         });
 
         if (resp.ok) {
-          const user = (await resp.json()) as { login: string; email: string | null };
+          const user = GitHubUserSchema.parse(await resp.json());
           name = user.login;
           email = user.email ?? `${user.login}@users.noreply.github.com`;
         }
@@ -81,7 +85,7 @@ async function configureGitUser(repoPath: string, provider: 'github' | 'tgit' | 
       const resp = await tgitFetch('/user', { signal: AbortSignal.timeout(8000) });
 
       if (resp.ok) {
-        const user = (await resp.json()) as { username: string; email: string };
+        const user = TGitUserSchema.parse(await resp.json());
         name = user.username;
         email = user.email;
       }
@@ -176,7 +180,7 @@ async function writeKnowledgeToRepo(
       await pushRepoDirectly(teamRepo, `[teamai] CI extract knowledge from MR`, changedFiles);
       log.success('Pushed to the team repo');
     } catch (err) {
-      log.warn(`Push failed: ${(err as Error).message}; the files are written locally`);
+      log.warn(`Push failed: ${err instanceof Error ? err.message : String(err)}; the files are written locally`);
     }
   }
 }

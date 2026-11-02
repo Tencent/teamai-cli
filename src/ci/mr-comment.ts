@@ -7,6 +7,7 @@
  * and then updated.
  */
 
+import { z } from 'zod';
 import type { LearningDraft, CodebaseSuggestion } from '../types.js';
 import { tgitFetch } from '../providers/tgit/rest-auth.js';
 import { getGitLabToken } from '../providers/gitlab/gitlab-api.js';
@@ -126,34 +127,36 @@ export function formatComment(
 
 // ─── GitHub Comment API ─────────────────────────────────
 
-async function githubRequest(path: string, method: string, body?: unknown): Promise<Response> {
+async function githubRequest(path: string, method: string, body?: { body: string }): Promise<Response> {
   const token = process.env['GITHUB_TOKEN'];
 
   if (!token) throw new Error('GITHUB_TOKEN environment variable is not set');
 
   const url = `https://api.github.com${path}`;
 
-  const headers: Record<string, string> = {
+  const headers = {
     Authorization: `Bearer ${token}`,
     Accept: 'application/vnd.github+json',
     'User-Agent': 'teamai-cli',
   };
 
-  if (body) headers['Content-Type'] = 'application/json';
-
   return fetch(url, {
     method,
-    headers,
+    headers: body ? { ...headers, 'Content-Type': 'application/json' } : headers,
     body: body ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(API_TIMEOUT_MS),
   });
 }
 
-interface GitHubComment {
-  id: number;
-  body: string;
-  html_url: string;
-}
+const GitHubCommentSchema = z.object({
+  id: z.number(),
+  body: z.string(),
+});
+
+type GitHubComment = z.infer<typeof GitHubCommentSchema>;
+
+/** The comment GitHub returns for a post or an update; only its link is read. */
+const GitHubPostedCommentSchema = z.object({ html_url: z.string().optional() });
 
 async function findGitHubComment(
   owner: string,
@@ -170,7 +173,7 @@ async function findGitHubComment(
     throw new Error(`GitHub comment list request failed (${resp.status})`);
   }
 
-  const comments = (await resp.json()) as GitHubComment[];
+  const comments = z.array(GitHubCommentSchema).parse(await resp.json());
 
   return comments.find((c) => c.body.includes(marker)) ?? null;
 }
@@ -192,7 +195,7 @@ async function postGitHubComment(
     throw new Error(`GitHub comment post failed (${resp.status}): ${errText}`);
   }
 
-  const data = (await resp.json()) as GitHubComment;
+  const data = GitHubPostedCommentSchema.parse(await resp.json());
 
   return { created: true, url: data.html_url };
 }
@@ -214,29 +217,41 @@ async function updateGitHubComment(
     throw new Error(`GitHub comment update failed (${resp.status}): ${errText}`);
   }
 
-  const data = (await resp.json()) as GitHubComment;
+  const data = GitHubPostedCommentSchema.parse(await resp.json());
 
   return { created: false, url: data.html_url };
 }
 
 // ─── TGit Comment API ───────────────────────────────────
 
-async function tgitRequest(path: string, method: string, body?: unknown): Promise<Response> {
+async function tgitRequest(
+  path: string,
+  method: string,
+  body?: { body: string; path?: string; line?: number; line_type?: string },
+): Promise<Response> {
   return tgitFetch(path, {
     method,
     body: body ? JSON.stringify(body) : undefined,
   });
 }
 
-interface TGitNote {
-  id: number;
-  body: string;
-}
+const TGitNoteSchema = z.object({
+  id: z.number(),
+  body: z.string(),
+});
 
-interface TGitMRInfo {
-  id: number;
-  iid: number;
-}
+type TGitNote = z.infer<typeof TGitNoteSchema>;
+
+const TGitMRInfoSchema = z.object({
+  id: z.number(),
+  iid: z.number(),
+});
+
+/** The branches of an MR, which the compare API takes. */
+const TGitMRBranchesSchema = z.object({ source_branch: z.string(), target_branch: z.string() });
+
+/** A compare result; only the first changed file is read. */
+const TGitCompareSchema = z.object({ diffs: z.array(z.object({ new_path: z.string() })).optional() });
 
 /**
  * The TGit Notes API takes the MR's global id (not the project-scoped iid), so
@@ -252,7 +267,7 @@ async function getMrGlobalId(projectId: string, mrIid: string): Promise<number> 
     throw new Error(`TGit MR lookup failed (${resp.status})`);
   }
 
-  const mrs = (await resp.json()) as TGitMRInfo[];
+  const mrs = z.array(TGitMRInfoSchema).parse(await resp.json());
   const mr = mrs.find((m) => String(m.iid) === mrIid);
 
   if (!mr) {
@@ -276,7 +291,7 @@ async function findTGitComment(
     throw new Error(`TGit note list request failed (${resp.status})`);
   }
 
-  const notes = (await resp.json()) as TGitNote[];
+  const notes = z.array(TGitNoteSchema).parse(await resp.json());
 
   return notes.find((n) => n.body.includes(marker)) ?? null;
 }
@@ -322,10 +337,12 @@ async function updateTGitComment(
 
 // ─── GitLab Comment API ─────────────────────────────────
 
-interface GitLabNote {
-  id: number;
-  body: string;
-}
+const GitLabNoteSchema = z.object({
+  id: z.number(),
+  body: z.string(),
+});
+
+type GitLabNote = z.infer<typeof GitLabNoteSchema>;
 
 /**
  * The GitLab Notes API takes the MR's project-scoped iid directly (TGit needs the
@@ -338,7 +355,7 @@ async function gitlabNotesBase(mrUrl: string): Promise<string> {
   return `${apiBase}/projects/${encodeURIComponent(projectPath)}/merge_requests/${mrIid}/notes`;
 }
 
-async function gitlabRequest(mrUrl: string, path: string, method: string, body?: unknown): Promise<Response> {
+async function gitlabRequest(mrUrl: string, path: string, method: string, body?: { body: string }): Promise<Response> {
   const token = getGitLabToken();
 
   if (!token) {
@@ -366,11 +383,11 @@ async function findGitLabComment(mrUrl: string, marker: string): Promise<GitLabN
 
   // Pipeline updates edit the original comment without changing created_at.
   // Search recent edits first, then stop at the most recently updated marker.
-  const notes = await paginateGitLab<GitLabNote>(
+  const notes = await paginateGitLab(
     (page) => gitlabRequest(mrUrl, `?per_page=100&order_by=updated_at&sort=desc&page=${page}`, 'GET'),
     MAX_NOTE_PAGES,
     'GitLab note list',
-    { stopWhen: matchesMarker },
+    { item: GitLabNoteSchema, stopWhen: matchesMarker },
   );
 
   return notes.find(matchesMarker) ?? null;
@@ -626,7 +643,7 @@ export async function postIndividualComments(
     let anchorFile = 'README.md';
 
     if (mrListResp.ok) {
-      const mrList = (await mrListResp.json()) as Array<{ source_branch: string; target_branch: string }>;
+      const mrList = z.array(TGitMRBranchesSchema).parse(await mrListResp.json());
 
       if (mrList.length > 0) {
         const { source_branch, target_branch } = mrList[0];
@@ -637,7 +654,7 @@ export async function postIndividualComments(
         );
 
         if (compareResp.ok) {
-          const compareData = (await compareResp.json()) as { diffs?: Array<{ new_path: string }> };
+          const compareData = TGitCompareSchema.parse(await compareResp.json());
 
           if (compareData.diffs && compareData.diffs.length > 0) {
             anchorFile = compareData.diffs[0].new_path;

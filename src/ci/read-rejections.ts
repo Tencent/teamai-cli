@@ -7,6 +7,7 @@
  * - TGit: emoji 8 (☝️) on the note = reject, no emoji = approve (written by default)
  */
 
+import { z } from 'zod';
 import { parseMrUrl } from './mr-comment.js';
 import { tgitFetch } from '../providers/tgit/rest-auth.js';
 import { getGitLabToken } from '../providers/gitlab/gitlab-api.js';
@@ -53,14 +54,14 @@ export function extractMarkerId(body: string): string | null {
 
 // ─── GitHub ─────────────────────────────────────────────
 
-interface GitHubComment {
-  id: number;
-  body: string;
-}
+const GitHubCommentSchema = z.object({
+  id: z.number(),
+  body: z.string(),
+});
 
-interface GitHubReaction {
-  content: string; // "+1", "-1", "laugh", etc.
-}
+const GitHubReactionSchema = z.object({
+  content: z.string().optional().catch(undefined), // "+1", "-1", "laugh", etc.
+});
 
 async function githubRequest(path: string): Promise<Response> {
   const token = process.env['GITHUB_TOKEN'];
@@ -84,7 +85,7 @@ async function readGitHubRejections(owner: string, repo: string, prNumber: strin
   const resp = await githubRequest(`/repos/${owner}/${repo}/issues/${prNumber}/comments?per_page=100`);
 
   if (!resp.ok) throw new Error(`GitHub comments request failed (${resp.status})`);
-  const comments = (await resp.json()) as GitHubComment[];
+  const comments = z.array(GitHubCommentSchema).parse(await resp.json());
 
   for (const comment of comments) {
     const markerId = extractMarkerId(comment.body);
@@ -101,7 +102,7 @@ async function readGitHubRejections(owner: string, repo: string, prNumber: strin
       throw new Error(`GitHub reactions request failed for comment ${comment.id} (${reactResp.status})`);
     }
 
-    const reactions = (await reactResp.json()) as GitHubReaction[];
+    const reactions = z.array(GitHubReactionSchema).parse(await reactResp.json());
     const hasThumbsDown = reactions.some((r) => r.content === '-1');
 
     if (hasThumbsDown) {
@@ -119,18 +120,12 @@ async function readGitHubRejections(owner: string, repo: string, prNumber: strin
 /** TGit emoji number 8 = ☝️ (raised index finger), the reject signal */
 const TGIT_REJECT_EMOJI = 8;
 
-interface TGitNoteComment {
-  comment: number;
-  author: { username: string };
-}
+const TGitNoteSchema = z.object({
+  body: z.string(),
+  comments: z.array(z.object({ comment: z.number().optional().catch(undefined) })).nullish(),
+});
 
-interface TGitNote {
-  id: number;
-  body: string;
-  resolve_state: number;
-  file_path: string | null;
-  comments: TGitNoteComment[];
-}
+const TGitMRInfoSchema = z.object({ id: z.number(), iid: z.number() });
 
 async function tgitRequest(path: string): Promise<Response> {
   return tgitFetch(path);
@@ -140,7 +135,7 @@ async function getMrGlobalId(projectId: string, mrIid: string): Promise<number> 
   const resp = await tgitRequest(`/projects/${projectId}/merge_requests?iid=${mrIid}`);
 
   if (!resp.ok) throw new Error(`TGit MR lookup failed (${resp.status})`);
-  const mrs = (await resp.json()) as Array<{ id: number; iid: number }>;
+  const mrs = z.array(TGitMRInfoSchema).parse(await resp.json());
   const mr = mrs.find((m) => String(m.iid) === mrIid);
 
   if (!mr) throw new Error(`TGit MR !${mrIid} not found`);
@@ -158,7 +153,7 @@ async function readTGitRejections(owner: string, repo: string, mrIid: string): P
   const resp = await tgitRequest(`/projects/${projectId}/merge_requests/${mrGlobalId}/notes?per_page=100`);
 
   if (!resp.ok) throw new Error(`TGit notes request failed (${resp.status})`);
-  const notes = (await resp.json()) as TGitNote[];
+  const notes = z.array(TGitNoteSchema).parse(await resp.json());
 
   for (const note of notes) {
     const markerId = extractMarkerId(note.body);
@@ -181,14 +176,14 @@ async function readTGitRejections(owner: string, repo: string, mrIid: string): P
 
 // ─── GitLab ─────────────────────────────────────────────
 
-interface GitLabNote {
-  id: number;
-  body: string;
-}
+const GitLabNoteSchema = z.object({
+  id: z.number(),
+  body: z.string(),
+});
 
-interface GitLabAward {
-  name: string; // 'thumbsdown', 'thumbsup', ...
-}
+const GitLabAwardSchema = z.object({
+  name: z.string(), // 'thumbsdown', 'thumbsup', ...
+});
 
 async function readGitLabRejections(mrUrl: string): Promise<RejectionResult> {
   const result: RejectionResult = { rejectedIds: new Set(), approvedIds: new Set(), allIds: new Set() };
@@ -218,10 +213,11 @@ async function readGitLabRejections(mrUrl: string): Promise<RejectionResult> {
   // GitLab returns notes newest-first, capped at 100 per page. Page through
   // all of them: a 👎 on an older note (pushed past page 1 by newer discussion)
   // must still reject the learning, same as fetchGitLabDiscussions paging.
-  const notes = await paginateGitLab<GitLabNote>(
+  const notes = await paginateGitLab(
     (page) => doFetch(`/projects/${enc}/merge_requests/${mrIid}/notes?per_page=100&page=${page}`),
     MAX_NOTE_PAGES,
     'GitLab notes',
+    { item: GitLabNoteSchema },
   );
 
   for (const note of notes) {
@@ -232,12 +228,13 @@ async function readGitLabRejections(mrUrl: string): Promise<RejectionResult> {
 
     // A note can carry more than 100 awards; a thumbsdown past the first page
     // still means the suggestion is rejected.
-    const awards = await paginateGitLab<GitLabAward>(
+    const awards = await paginateGitLab(
       (page) => doFetch(
         `/projects/${enc}/merge_requests/${mrIid}/notes/${note.id}/award_emoji?per_page=100&page=${page}`,
       ),
       MAX_NOTE_PAGES,
       `GitLab award_emoji for note ${note.id}`,
+      { item: GitLabAwardSchema },
     );
 
     // GitLab: 👎 (thumbsdown) = reject, no emoji = approve (written by default, same as GitHub)

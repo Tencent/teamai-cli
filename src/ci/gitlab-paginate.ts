@@ -1,3 +1,5 @@
+import { z } from 'zod';
+
 /**
  * GitLab REST pagination helper (shared by the CI comment and rejection paths).
  *
@@ -12,24 +14,22 @@
  *    duplicate) and miss a 👎 (writing a rejected learning to the knowledge repo).
  */
 
-/** Parses the items out of one page's response (an array by default). */
-export type GitLabPageParser<T> = (json: unknown) => T[];
-
 /**
  * Fetches a GitLab list endpoint until `x-next-page` is gone or a lookup matches.
  *
  * @param fetchPage - fetches one page (must set `redirect: 'manual'` itself)
  * @param maxPages - page limit (GitLab returns up to 100 items per page)
  * @param label - endpoint name used in error messages
- * @param options - custom page parser and a stop condition for item lookups; omit when all items are needed
+ * @param options - the schema of one item, and a stop condition for item lookups (omit `stopWhen` when all items are needed)
  */
 export async function paginateGitLab<T>(
   fetchPage: (page: number) => Promise<Response>,
   maxPages: number,
   label: string,
-  options: { parse?: GitLabPageParser<T>; stopWhen?: (item: T) => boolean } = {},
+  options: { item: z.ZodType<T>; stopWhen?: (item: T) => boolean },
 ): Promise<T[]> {
-  const { parse = (json: unknown) => json as T[], stopWhen } = options;
+  const { item, stopWhen } = options;
+  const pageSchema = z.array(item);
   const all: T[] = [];
 
   for (let page = 1; page <= maxPages; page++) {
@@ -46,7 +46,7 @@ export async function paginateGitLab<T>(
       throw new Error(`${label} request failed (${resp.status})`);
     }
 
-    const items = parse(await resp.json());
+    const items = pageSchema.parse(await resp.json());
     all.push(...items);
 
     if (stopWhen && items.some(stopWhen)) return all;

@@ -160,7 +160,13 @@ async function contributedSession(localConfig: LocalConfig, named: string | unde
   const platform = fromEnv ?? (captured.length === 1 ? captured[0] : undefined);
   const tool = own ? env.agent : platform && AgentSession.toolForPlatform(platform);
 
-  return { sessionId, own, ...(platform ? { platform } : {}), ...(tool ? { tool } : {}) };
+  const session: ContributedSession = { sessionId, own };
+
+  if (platform) session.platform = platform;
+
+  if (tool) session.tool = tool;
+
+  return session;
 }
 
 /** The session a contribution names, and whether this process runs in it, so its run mode and launcher are that session's. */
@@ -173,13 +179,19 @@ interface ContributedSession {
 
 /** Record the learning at `relPath` as an outcome of `session`, on this machine only. */
 async function recordLearningOutcome(localConfig: LocalConfig, session: ContributedSession, relPath: string): Promise<void> {
+  const timestamp = new Date().toISOString();
+  const homeKey = await dataHomeKey(getDataHome(localConfig));
+  const run = session.own ? await ownSessionRun(localConfig) : undefined;
+
+  // Absent fields stay undefined, which the JSON line omits.
   await appendEvent({
     type: 'session_outcome',
-    timestamp: new Date().toISOString(),
+    timestamp,
     sessionId: session.sessionId,
-    ...(session.tool ? { tool: session.tool } : {}),
-    dataHomeKey: await dataHomeKey(getDataHome(localConfig)),
-    ...(session.own ? await ownSessionRun(localConfig) : {}),
+    tool: session.tool || undefined,
+    dataHomeKey: homeKey,
+    runMode: run?.runMode,
+    launchedBy: run?.launchedBy,
     outcomes: [{ kind: 'learning', id: learningIdOf(relPath) }],
   });
 }
@@ -329,7 +341,7 @@ export async function contribute(
   try {
     content = await fs.promises.readFile(options.file, 'utf-8');
   } catch (e) {
-    log.error(`Cannot read file: ${options.file} — ${(e as Error).message}`);
+    log.error(`Cannot read file: ${options.file} — ${e instanceof Error ? e.message : String(e)}`);
 
     return;
   }
@@ -349,7 +361,7 @@ export async function contribute(
   try {
     scope = options.scope === undefined ? undefined : parseInstallScope(options.scope);
   } catch (e) {
-    log.error((e as Error).message);
+    log.error(e instanceof Error ? e.message : String(e));
     process.exitCode = 1;
 
     return;
@@ -444,7 +456,7 @@ export async function contribute(
 
     if (attempt) await recordStepOutcome(localConfig, attempt, relPath);
   } catch (e) {
-    spin.fail(`Contribution failed: ${(e as Error).message}`);
+    spin.fail(`Contribution failed: ${e instanceof Error ? e.message : String(e)}`);
     log.info('You can retry with: teamai contribute --file <path>');
 
     return;
@@ -455,7 +467,7 @@ export async function contribute(
   try {
     await rebuildIndexAfterContribute(localConfig);
   } catch (e) {
-    log.debug(`contribute: index rebuild skipped: ${(e as Error).message}`);
+    log.debug(`contribute: index rebuild skipped: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   const report = await publishQueuedLearnings(localConfig, username);
@@ -470,7 +482,7 @@ export async function contribute(
     try {
       await rebuildIndexAfterContribute(localConfig);
     } catch (e) {
-      log.debug(`contribute: post-publish index rebuild skipped: ${(e as Error).message}`);
+      log.debug(`contribute: post-publish index rebuild skipped: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 

@@ -91,31 +91,19 @@ export function sanitizeSessionId(sessionId: string): string {
 
 const MAX_CONTRIBUTE_PROMPT_SUMMARY_CHARS = 160;
 
-function isNonNegativeInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
-}
+const NonNegativeIntegerSchema = z.number().nonnegative().refine(Number.isInteger);
 
-/** Parse cached friction defensively; malformed legacy/tampered state is a cache miss. */
-function parseSessionFriction(raw: unknown): SessionFriction | undefined {
-  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
-  const candidate = raw as Record<string, unknown>;
-  const { interrupt, toolReject, correction, toolError } = candidate;
-
-  if (
-    !isNonNegativeInteger(interrupt)
-    || !isNonNegativeInteger(toolReject)
-    || !isNonNegativeInteger(correction)
-    || !isNonNegativeInteger(toolError)
-  ) {
-    return undefined;
-  }
-
-  return { interrupt, toolReject, correction, toolError };
-}
+/** Cached friction; malformed legacy/tampered state is a cache miss. */
+const SessionFrictionSchema = z.object({
+  interrupt: NonNegativeIntegerSchema,
+  toolReject: NonNegativeIntegerSchema,
+  correction: NonNegativeIntegerSchema,
+  toolError: NonNegativeIntegerSchema,
+});
 
 /** Redact and flatten user-controlled prompt text before caching or displaying it. */
 function normalizePromptSummary(raw?: string): string | undefined {
-  if (typeof raw !== 'string') return undefined;
+  if (raw === undefined) return undefined;
 
   const normalized = redactWithEnv(raw)
     .replace(/[\r\n\t]+/g, ' ')
@@ -144,6 +132,23 @@ function getSessionPath(sessionId: string): string {
   );
 }
 
+/** A persisted state file, read field by field: a field of the wrong type reads as absent. */
+const PersistedContributeStateSchema = z.object({
+  smartScore: z.number().optional().catch(undefined),
+  contributed: z.boolean().catch(false),
+  toolCount: z.number().optional().catch(undefined),
+  uniqueTools: z.number().optional().catch(undefined),
+  lastEvaluated: z.number().optional().catch(undefined),
+  hinted: z.boolean().optional().catch(undefined),
+  sessionStartIso: z.string().optional().catch(undefined),
+  hasGitCommit: z.boolean().optional().catch(undefined),
+  isKnowledgeGap: z.boolean().optional().catch(undefined),
+  friction: SessionFrictionSchema.optional().catch(undefined),
+  promptSummary: z.string().optional().catch(undefined),
+  pendingHint: z.string().optional().catch(undefined),
+  offered: SessionShareOfferedSchema.optional().catch(undefined),
+});
+
 /** Default empty state for a new session. */
 function defaultState(): ContributeState {
   return {
@@ -158,7 +163,7 @@ function defaultState(): ContributeState {
 export async function readContributeState(sessionId: string): Promise<ContributeState> {
   try {
     const file = getSessionPath(sessionId);
-    const raw = await readJson<Record<string, unknown>>(file);
+    const raw = await readJson(file);
 
     if (!raw) {
       const swept = await readOfferFacts(path.join(sweptDir(path.dirname(file)), path.basename(file)), SweptSchema);
@@ -166,22 +171,22 @@ export async function readContributeState(sessionId: string): Promise<Contribute
       return swept ? { ...defaultState(), ...swept } : defaultState();
     }
 
+    const persisted = PersistedContributeStateSchema.safeParse(raw).data;
+
     return {
-      smartScore: typeof raw.smartScore === 'number' ? raw.smartScore : undefined,
-      contributed: typeof raw.contributed === 'boolean' ? raw.contributed : false,
-      toolCount: typeof raw.toolCount === 'number' ? raw.toolCount : undefined,
-      uniqueTools: typeof raw.uniqueTools === 'number' ? raw.uniqueTools : undefined,
-      lastEvaluated: typeof raw.lastEvaluated === 'number' ? raw.lastEvaluated : undefined,
-      hinted: typeof raw.hinted === 'boolean' ? raw.hinted : undefined,
-      sessionStartIso: typeof raw.sessionStartIso === 'string' ? raw.sessionStartIso : undefined,
-      hasGitCommit: typeof raw.hasGitCommit === 'boolean' ? raw.hasGitCommit : undefined,
-      isKnowledgeGap: typeof raw.isKnowledgeGap === 'boolean' ? raw.isKnowledgeGap : undefined,
-      friction: parseSessionFriction(raw.friction),
-      promptSummary: typeof raw.promptSummary === 'string'
-        ? normalizePromptSummary(raw.promptSummary)
-        : undefined,
-      pendingHint: typeof raw.pendingHint === 'string' ? raw.pendingHint : undefined,
-      offered: SessionShareOfferedSchema.safeParse(raw.offered).data,
+      smartScore: persisted?.smartScore,
+      contributed: persisted?.contributed ?? false,
+      toolCount: persisted?.toolCount,
+      uniqueTools: persisted?.uniqueTools,
+      lastEvaluated: persisted?.lastEvaluated,
+      hinted: persisted?.hinted,
+      sessionStartIso: persisted?.sessionStartIso,
+      hasGitCommit: persisted?.hasGitCommit,
+      isKnowledgeGap: persisted?.isKnowledgeGap,
+      friction: persisted?.friction,
+      promptSummary: normalizePromptSummary(persisted?.promptSummary),
+      pendingHint: persisted?.pendingHint,
+      offered: persisted?.offered,
     };
   } catch {
     return defaultState();
@@ -196,7 +201,7 @@ export async function writeContributeState(sessionId: string, state: ContributeS
 
     const persistedState: ContributeState = {
       ...state,
-      friction: parseSessionFriction(state.friction),
+      friction: SessionFrictionSchema.safeParse(state.friction).data,
       promptSummary: normalizePromptSummary(state.promptSummary),
     };
 
@@ -204,7 +209,7 @@ export async function writeContributeState(sessionId: string, state: ContributeS
     // Best-effort cleanup of stale session files (>24h)
     await cleanupStaleSessions(path.dirname(filePath), sessionId);
   } catch (e) {
-    log.error(`Failed to write contribute state: ${(e as Error).message}`);
+    log.error(`Failed to write contribute state: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
@@ -243,7 +248,11 @@ async function readOfferFacts(file: string, schema: typeof StateSchema | typeof 
   if (!parsed.success) return undefined;
   const { hinted, contributed, offered } = parsed.data;
 
-  return { hinted: hinted === true, contributed: contributed === true, ...(offered ? { offered } : {}) };
+  const facts: OfferFacts = { hinted: hinted === true, contributed: contributed === true };
+
+  if (offered) facts.offered = offered;
+
+  return facts;
 }
 
 /**
@@ -281,11 +290,14 @@ export async function cleanupStaleSessions(dir: string, currentSessionId: string
         if (live !== undefined) {
           const kept = await readOfferFacts(record, SweptSchema);
           const offered = live.offered ?? kept?.offered;
-          await writeJsonAtomic(record, {
+
+          const merged: OfferFacts = {
             hinted: live.hinted || kept?.hinted === true,
             contributed: live.contributed || kept?.contributed === true,
-            ...(offered ? { offered } : {}),
-          } satisfies OfferFacts);
+          };
+
+          if (offered) merged.offered = offered;
+          await writeJsonAtomic(record, merged);
         }
 
         await fs.promises.unlink(filePath);
@@ -431,7 +443,7 @@ export function applyPhase2Adjustments(
   sessionId: string,
   cwd?: string,
   sessionStartIso?: string,
-): { score: number; isKnowledgeGap: boolean; hasGitCommit: boolean } {
+) {
   let score = baseScore;
   let isKnowledgeGap = false;
   let gitCommitDetected = false;
@@ -461,19 +473,22 @@ export function applyPhase2Adjustments(
   return { score: Math.max(0, score), isKnowledgeGap, hasGitCommit: gitCommitDetected };
 }
 
+/** The Stop hook's STDIN JSON; other fields are read by the session-id and scope helpers. */
+const HookStdinSchema = z.looseObject({ transcript_path: z.string().optional().catch(undefined) });
+
 /** Read STDIN and extract sessionId from hook JSON. */
 async function readStdinAndDeriveSession(): Promise<{
   sessionId: string;
   cwd?: string;
   transcriptPath?: string;
-  hookData: Record<string, unknown>;
+  hookData: z.infer<typeof HookStdinSchema>;
 } | null> {
   if (process.stdin.isTTY) return null;
 
   const chunks: Buffer[] = [];
 
   for await (const chunk of process.stdin) {
-    chunks.push(chunk as Buffer);
+    chunks.push(chunk);
   }
 
   const raw = Buffer.concat(chunks).toString('utf-8');
@@ -481,14 +496,15 @@ async function readStdinAndDeriveSession(): Promise<{
   if (!raw.trim()) return null;
 
   try {
-    const hookData = JSON.parse(raw) as Record<string, unknown>;
+    const parsed = HookStdinSchema.safeParse(JSON.parse(raw));
+
+    if (!parsed.success) return null;
+    const hookData = parsed.data;
     // Derive session ID: session_id field > env > PID+cwd fallback
     const sessionId = deriveSessionId(hookData, { includeCwd: true });
     const cwd = resolveHookCwd(hookData);
 
-    const transcriptPath = typeof hookData.transcript_path === 'string'
-      ? hookData.transcript_path
-      : undefined;
+    const transcriptPath = hookData.transcript_path;
 
     return { sessionId, cwd, transcriptPath, hookData };
   } catch {
@@ -503,7 +519,7 @@ function countToolUseEvents(events: DashboardEvent[]): number {
 
 /** Count unique tool names across tool_use events. */
 function countUniqueTools(events: DashboardEvent[]): number {
-  return new Set(events.filter((e) => e.toolName).map((e) => e.toolName)).size;
+  return new Set(events.flatMap((e) => (e.toolName ? [e.toolName] : []))).size;
 }
 
 /**
@@ -548,12 +564,14 @@ function extractFriction(
   return { interrupt, toolReject, correction, toolError };
 }
 
+/** A prompt summary from an events.jsonl line, which the file does not guarantee is a string. */
+const NonBlankTextSchema = z.string().refine((text) => text.trim().length > 0);
+
 /** Extract and sanitize the first user task recorded for the session. */
 function extractPromptSummary(events: DashboardEvent[]): string | undefined {
   const firstPrompt = events.find(
     (event) => event.type === 'prompt_submit'
-      && typeof event.promptSummary === 'string'
-      && event.promptSummary.trim().length > 0,
+      && NonBlankTextSchema.safeParse(event.promptSummary).success,
   );
 
   return normalizePromptSummary(firstPrompt?.promptSummary);
