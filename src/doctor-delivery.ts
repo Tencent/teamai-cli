@@ -2657,7 +2657,7 @@ export async function buildInstructionDeliveryChecks(ctx: DoctorContext): Promis
 }
 
 /**
- * Whether Hermes's last session took teamai's prompt section, as its log says: the team
+ * Whether Hermes's last logged session took teamai's prompt section, as its log says: the team
  * instructions reach Hermes only through it. Null while the log records no outcome for it.
  * The log names no project, and both why a section is crowded out and how long it is depend on
  * the project the session ran in, so a section Hermes dropped warns.
@@ -2667,7 +2667,7 @@ async function hermesSectionCheck(): Promise<Check | null> {
   const { getHermesConfigPath } = await import('./hermes-config.js');
   const section = await lastInstructionsSection();
   const agentLog = path.join(toolHome('hermes'), 'logs', 'agent.log');
-  const name = 'Hermes\'s last session took teamai\'s instructions section';
+  const name = 'Hermes\'s last logged session took teamai\'s instructions section';
   // Hermes logs a rendered section at INFO: below that level an old skip stays the last line.
   const lastSession = (at: string) => `The Hermes session at ${at} got none of the team instructions`;
   switch (section.kind) {
@@ -2691,7 +2691,7 @@ async function hermesSectionCheck(): Promise<Check | null> {
         source: 'local',
         check: async () => 'warn',
         fix: `${lastSession(section.at)}: ${HERMES_INSTRUCTIONS_SECTION} ${section.reason}. Hermes takes at most ${HERMES_SECTION_LIMIT} `
-          + 'characters in one section; `teamai doctor` in the project that session ran in names the instructions to shorten.',
+          + 'characters in one section; `teamai doctor` in the project that session ran in names the instructions to shorten, then start a new Hermes session.',
       };
     case 'skipped':
       return {
