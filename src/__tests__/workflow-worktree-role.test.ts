@@ -346,6 +346,31 @@ steps:
     expect(snapshot()).toEqual(before);
   });
 
+  it("runs a command step that continues the copy for a member whose Hermes takes skills from their home, as a command launches no tool", async () => {
+    const yaml = `schemaVersion: v1alpha1
+name: build
+description: Review the change, then run the tests in the same copy.
+steps:
+  - id: change
+    role: review
+    workspace: new
+    workflow:
+      steps:
+        - id: look
+          workspace: continue
+          prompt: Review the change.
+        - id: check
+          needs: [look]
+          workspace: continue
+          command: echo checked
+`;
+    const { config, workspace, runId } = await roleWorkspace(yaml, { tools: ['claude', 'hermes'] });
+
+    const done = await runLocalDriver(config, runId, workspace, { adapter: fakeTool(async () => undefined) });
+
+    expect(done, JSON.stringify(done)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+  });
+
   it("fails the step before anything is delivered when the team's teamai.yaml cannot be loaded, as where the copy's knowledge lands is then unknown", async () => {
     const { config, workspace, runId } = await roleWorkspace(REVIEW_IN_COPY, { tools: ['claude'], base: { 'teamai.yaml': 'team: [unclosed\n' } });
     const ran: string[] = [];

@@ -441,11 +441,11 @@ type OpeningBase = Omit<PlaceRecordBase, 'dir' | 'place'>;
  * `resume` finishes an overlay a killed prepare left. An overlay git refused leaves the copy as prepare found it.
  */
 async function overlaid(config: LocalConfig, record: Preparing, lease: OverlaidLease, resume: { resume?: true } = {}): Promise<PlacePrepared> {
-  const { root, dir, place, setup, expiresAt, step } = record;
+  const { root, dir, place, setup, expiresAt, step, executor } = record;
   const { prompt, role, tool } = lease;
 
   const failure = await applyOverlay({
-    root, dir, configCommit: place.workspace.configCommit, saved: placeFiles(config, record.run, record.attempt).overlay, step, role, tool, ...resume,
+    root, dir, configCommit: place.workspace.configCommit, saved: placeFiles(config, record.run, record.attempt).overlay, step, executor, role, tool, ...resume,
   });
 
   if (failure) {

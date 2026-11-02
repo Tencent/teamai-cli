@@ -16,6 +16,7 @@ import { roleDeclaration, type RoleDeclaration } from '../../roles.js';
 import { realHost, type Host } from '../../tool-home.js';
 import { getProjectSearchIndexPath, selfModeGitignorePath, type LocalConfig, type TeamaiConfig } from '../../types.js';
 import { log } from '../../utils/logger.js';
+import type { Executor } from '../requirements.js';
 import type { WorkflowFailure } from '../types.js';
 import { AGENT_PATHS } from '../worktree.js';
 
@@ -306,12 +307,14 @@ function cloneRoleMessage(input: { role: string; step: string; gap: CloneRoleGap
 
 /**
  * Sets up what the worktree copy `dir` runs step `step` with, before the base agent configuration goes on and its pull
- * delivers: with `role`, after checking a project install governs the copy, the team declares the role, and every
- * knowledge place of `tool` (each tool the install delivers to without one) is inside the copy, the copy is recorded to
- * run with the role; without, any role an earlier step recorded for it is cleared. Answers the paths the copy's overlay
- * covers: the agent paths and the copy's other knowledge places, so no delivered file is committed as the step's edit.
+ * delivers: with `role`, after checking a project install governs the copy, the team declares the role, the team docs
+ * land inside the copy and, for a prompt step, every knowledge place of `tool` (each tool the install delivers to
+ * without one) is inside it, the copy is recorded to run with the role; without, any role an earlier step recorded for
+ * it is cleared. Answers the paths the copy's overlay covers: the agent paths and the copy's other knowledge places, so
+ * no delivered file is committed as the step's edit; and the tools whose delivery of the role `worktreeRoleProblem`
+ * then checks, those the step launches.
  */
-export async function setUpWorktreeRole(input: { dir: string; step: string; role?: string; tool?: string }): Promise<{ paths: readonly string[] } | WorkflowFailure> {
+export async function setUpWorktreeRole(input: { dir: string; step: string; executor: Executor; role?: string; tool?: string }): Promise<{ paths: readonly string[]; tools: readonly string[] } | WorkflowFailure> {
   const { dir, step, role } = input;
   const install = await detectProjectConfig(dir);
   const project = install?.scope === 'project' ? install : undefined;
@@ -323,10 +326,10 @@ export async function setUpWorktreeRole(input: { dir: string; step: string; role
 
     switch (cleared.kind) {
       case 'recorded':
-        return { paths };
+        return { paths, tools: [] };
       // Every teamai that loads an unreadable checkout-roles.json runs with no role (`withCheckoutRole`), as this step must.
       case 'unreadable':
-        return { paths };
+        return { paths, tools: [] };
       case 'busy':
         return { code: 'role_unavailable', message: `The role an earlier step ran with in the copy for step "${step}" could not be cleared: another teamai held ${cleared.lock} too long, and the step would run with that role. Retry the step.` };
       default: {
@@ -345,8 +348,9 @@ export async function setUpWorktreeRole(input: { dir: string; step: string; role
   if (declaration.kind !== 'declared') return refused({ kind: 'undeclared', declaration });
 
   if (!team) return refused({ kind: 'no_team_config', repo: project.repo.localPath });
-  // Only the step's tool needs its knowledge places: for every other tool, a place outside the copy is no place (`locate`).
-  const tools = input.tool !== undefined ? [input.tool] : project.enabledAgents ?? [];
+  // Only a tool the step launches needs its knowledge places, and a command launches none: for every other tool, a place
+  // outside the copy is no place (`locate`).
+  const tools = launchedTools({ executor: input.executor, tool: input.tool, enabled: project.enabledAgents ?? [] });
   const outside = await roleCopyRefusal({ team, install: { ...project, enabledAgents: tools }, role });
 
   if (outside) return outside;
@@ -354,13 +358,29 @@ export async function setUpWorktreeRole(input: { dir: string; step: string; role
 
   if (written.kind !== 'recorded') return refused({ kind: 'role_file', written });
 
-  return { paths };
+  return { paths, tools };
+}
+
+/** The tools a step of `executor` launches in a copy: none for a command, else its `tool`, or any tool `enabled`. */
+function launchedTools(input: { executor: Executor; tool: string | undefined; enabled: readonly string[] }): string[] {
+  switch (input.executor) {
+    case 'command':
+      return [];
+    case 'prompt':
+      return input.tool !== undefined ? [input.tool] : [...input.enabled];
+    default: {
+      const unhandled: never = input.executor;
+
+      return unhandled;
+    }
+  }
 }
 
 /**
- * Why step `step` must not run in the worktree copy `dir` with role `role` on `tools`, or undefined when it may: the
- * copy's pull, whose outcome setup passes as `delivery`, delivered for the role, and its record says so for each tool.
- * Checked as setup ends and again right before launch, as something may have pulled there since.
+ * Why step `step` must not run in the worktree copy `dir` with role `role` on `tools`, the tools it launches there, or
+ * undefined when it may: the copy's pull, whose outcome setup passes as `delivery`, delivered for the role, the copy
+ * loads it, and its record says so for each tool. Checked as setup ends and again right before launch, as something may
+ * have pulled there since.
  */
 export async function worktreeRoleProblem(input: { dir: string; step: string; role: string; tools: readonly string[]; delivery?: PullDelivery }): Promise<WorkflowFailure | undefined> {
   const { dir, step, role, tools, delivery } = input;
@@ -384,7 +404,7 @@ export async function worktreeRoleProblem(input: { dir: string; step: string; ro
   const install = await detectProjectConfig(dir);
 
   if (install?.scope !== 'project') return refused({ kind: 'no_project_install' });
-  const gap = await roleDeliveryGap({ install, tools: tools.length > 0 ? tools : install.enabledAgents ?? [], role });
+  const gap = await roleDeliveryGap({ install, tools, role });
 
   return gap && refused(gap);
 }

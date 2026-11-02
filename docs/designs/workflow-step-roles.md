@@ -59,11 +59,12 @@ workflow next --prepare, driver.can.role                         engine.ts offer
   │    setUpWorktreeRole                                         place/role-copy.ts
   │      project install governs the copy? roles.yaml declares the role?
   │      teamai.yaml loads? roleCopyRefusal: the step tool's knowledge inside? (D7)
+  │        (a command step launches no tool: the docs only)
   │      recordCheckoutRole        (no role: clearCheckoutRole of an earlier step's)
   │    applyBaseConfig over AGENT_PATHS + copyKnowledgePaths                (D11)
   │    deliverTeamAssets → pull({ force, inline }) → PullDelivery
   │    worktreeRoleProblem: delivered or unchanged, record complete for the
-  │      tool, record.selection.stepRole == role          else restore, role_unavailable
+  │      launched tool, record.selection.stepRole == role  else restore, role_unavailable
   │    recordConfigOverlay
   └─ clone copy: installTeam                                     place/clone.ts
        roles.yaml at the clone's team revision declares the role? roleCopyRefusal

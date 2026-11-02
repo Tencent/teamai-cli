@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import type { PullDelivery, PullOutcome } from '../../pull.js';
 import { pathExists } from '../../utils/fs.js';
+import type { Executor } from '../requirements.js';
 import type { WorkflowFailure } from '../types.js';
 import { applyBaseConfig, hooksPath, recordConfigOverlay, restoreUneditedConfig } from '../worktree.js';
 import { setUpWorktreeRole, worktreeRoleProblem } from './role-copy.js';
@@ -12,17 +13,17 @@ import { setUpWorktreeRole, worktreeRoleProblem } from './role-copy.js';
  * Step `step` runs there with the lease's `role` when it has one, delivered for its `tool`: a copy whose pull did not
  * deliver that role gets the branch's files back, and the step fails.
  */
-export async function applyOverlay({ root, dir, configCommit, saved, resume, step, role, tool }: {
-  root: string; dir: string; configCommit: string; saved: string; resume?: true; step: string; role?: string; tool?: string;
+export async function applyOverlay({ root, dir, configCommit, saved, resume, step, executor, role, tool }: {
+  root: string; dir: string; configCommit: string; saved: string; resume?: true; step: string; executor: Executor; role?: string; tool?: string;
 }): Promise<WorkflowFailure | undefined> {
-  const set = await setUpWorktreeRole({ dir, step, role, tool });
+  const set = await setUpWorktreeRole({ dir, step, executor, role, tool });
 
   if ('code' in set) return set;
   const applied = await applyBaseConfig(dir, configCommit, hooksPath(root), saved, resume ? { paths: set.paths, resume } : { paths: set.paths });
 
   if (!applied.ok) return { code: 'base_config', message: applied.message };
   const delivery = await deliverTeamAssets(dir);
-  const refused = role !== undefined ? await worktreeRoleProblem({ dir, step, role, tools: tool !== undefined ? [tool] : [], delivery }) : undefined;
+  const refused = role !== undefined ? await worktreeRoleProblem({ dir, step, role, tools: set.tools, delivery }) : undefined;
 
   if (refused && role !== undefined) {
     const unrestored = await restoreOverlay({ dir, configCommit, saved, unfinished: true });
