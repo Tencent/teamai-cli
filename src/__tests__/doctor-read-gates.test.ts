@@ -172,6 +172,15 @@ describe('doctor — the tool trusts the project it reads team files from', () =
       expect(found?.fix).toContain('whether Pi trusts this project is unknown');
     });
 
+    it('fails, not warns, when trust.json is there but cannot be read', async () => {
+      await fse.ensureDir(trustFile());
+
+      const found = await check(SKILLS);
+      expect(await found?.check()).toBe(false);
+      expect(found?.fix).toContain(`${trustFile()} cannot be read`);
+      expect(found?.fix).toContain('whether Pi trusts this project is unknown');
+    });
+
     it('checks the project MCP servers too', async () => {
       teamConfig.toolPaths = { pi: { mcp: '.pi/agent/mcp.json', mcpProject: '.pi/mcp.json' } };
       await fse.outputFile(path.join(repoPath, 'mcp', 'mcp.yaml'), 'servers:\n  - name: issues\n    transport: stdio\n    command: issues-server\n');
