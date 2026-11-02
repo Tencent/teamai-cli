@@ -47,6 +47,7 @@ import { readCopilotShutdown } from './token-usage/formats/copilot-shutdown.js';
 import { isTokenFormatId, readTokenUsage, type TokenRequest } from './token-usage/index.js';
 import { priceTokens } from './token-usage/pricing.js';
 import { isToolId, TOOLS, type ToolDescriptor } from './tools.js';
+import { HookStdinSchema, type HookStdin } from './hook-dispatch.js';
 
 // ─── Event collection data flow ─────────────────────────
 //
@@ -1058,16 +1059,11 @@ function codexReplyText(prompt: string): string {
   }
 }
 
-/** A hook's STDIN payload: a JSON object, whose fields each reader parses for itself. */
-const HookStdinSchema = z.looseObject({});
-
-export type HookStdin = z.infer<typeof HookStdinSchema>;
-
 /**
  * The hook STDIN fields the collector reads; a field of the wrong type reads as
  * absent. Other fields pass through for the session id and cwd resolvers.
  */
-const HookPayloadSchema = HookStdinSchema.extend({
+const HookPayloadSchema = z.looseObject({
   hook_event_name: z.string().optional().catch(undefined),
   timestamp: z.union([z.string(), z.number()]).optional().catch(undefined),
   tool_name: z.string().optional().catch(undefined),

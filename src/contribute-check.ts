@@ -28,6 +28,7 @@ import {
   SessionShareOfferedSchema,
 } from './types.js';
 import { getUserHome } from './utils/home.js';
+import { HookStdinSchema, stdinString, type HookStdin } from './hook-dispatch.js';
 
 // ─── Contribute check data flow (Stop hook) ────────────────
 //
@@ -473,15 +474,12 @@ export function applyPhase2Adjustments(
   return { score: Math.max(0, score), isKnowledgeGap, hasGitCommit: gitCommitDetected };
 }
 
-/** The Stop hook's STDIN JSON; other fields are read by the session-id and scope helpers. */
-const HookStdinSchema = z.looseObject({ transcript_path: z.string().optional().catch(undefined) });
-
 /** Read STDIN and extract sessionId from hook JSON. */
 async function readStdinAndDeriveSession(): Promise<{
   sessionId: string;
   cwd?: string;
   transcriptPath?: string;
-  hookData: z.infer<typeof HookStdinSchema>;
+  hookData: HookStdin;
 } | null> {
   if (process.stdin.isTTY) return null;
 
@@ -504,7 +502,7 @@ async function readStdinAndDeriveSession(): Promise<{
     const sessionId = deriveSessionId(hookData, { includeCwd: true });
     const cwd = resolveHookCwd(hookData);
 
-    const transcriptPath = hookData.transcript_path;
+    const transcriptPath = stdinString(hookData, 'transcript_path');
 
     return { sessionId, cwd, transcriptPath, hookData };
   } catch {

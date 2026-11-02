@@ -18,6 +18,7 @@ import { log } from '../utils/logger.js';
 import { AgentSession } from './agent-session.js';
 import { OptionalString } from './fs.js';
 import type { Session } from './ir.js';
+import type { HookStdin } from '../hook-dispatch.js';
 
 export const SessionCaptureSchema = z.object({
   captureId: z.string().uuid(),
@@ -85,7 +86,7 @@ async function writeCapture(config: LocalConfig, capture: SessionCapture): Promi
  * none, and neither does a session teamai launched: a workflow step is scored as a step, and a judge never. A capture
  * that fails is logged at debug level, so it never fails the hook.
  */
-async function atStart(config: LocalConfig, tool: string, payload: Record<string, unknown>, env: NodeJS.ProcessEnv): Promise<string | undefined> {
+async function atStart(config: LocalConfig, tool: string, payload: HookStdin, env: NodeJS.ProcessEnv): Promise<string | undefined> {
   const platform = AgentSession.platformForTool(tool);
 
   if (launchedBy(env) || payload.source === 'compact') return undefined;
@@ -170,7 +171,7 @@ async function rewrite(config: LocalConfig, platform: string, sessionId: string,
 }
 
 /** In the hook's background pass: adds the tool's version, which the start leaves out so it never waits on it. */
-async function addToolVersion(config: LocalConfig, tool: string, payload: Record<string, unknown>): Promise<void> {
+async function addToolVersion(config: LocalConfig, tool: string, payload: HookStdin): Promise<void> {
   const platform = AgentSession.platformForTool(tool);
   const fields = ToolVersionPayloadSchema.safeParse(payload);
 
@@ -230,7 +231,7 @@ function withTeamSkillInfo(capture: SessionCapture, pulled: Record<string, Deliv
  * delivered another revision, or the same one for another selection or other workspace children, than the checkout
  * held `before` it.
  */
-async function markTeamChanged(config: LocalConfig, tool: string, payload: Record<string, unknown>, before: CheckoutDelivery): Promise<void> {
+async function markTeamChanged(config: LocalConfig, tool: string, payload: HookStdin, before: CheckoutDelivery): Promise<void> {
   const platform = AgentSession.platformForTool(tool);
   const fields = PulledPayloadSchema.safeParse(payload);
 
