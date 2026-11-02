@@ -19,6 +19,7 @@ export type DigestFailure = Failure & { task?: string; learnings?: LinkedLearnin
 export type DigestFailuresView = Omit<ScorerFailures, 'failures'> & { failures: DigestFailure[] };
 
 /** The window failures are read over, in days of `scoredAt`: the dashboard's default. */
+/** The window the failures are read over. */
 const WINDOW_DAYS = 30;
 
 /**
@@ -45,4 +46,4 @@ async function print(): Promise<void> {
   console.log(JSON.stringify({ data: await read(config) }));
 }
 
-export const DigestFailures = { read, print } as const;
+export const DigestFailures = { WINDOW_DAYS, read, print } as const;

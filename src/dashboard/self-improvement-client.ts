@@ -6,7 +6,7 @@
  */
 export const selfImprovementClient = `
 let loopData=null, loopError='', loopLoading=false, loopHtml='', loopRequest=0;
-let loopFilter=['all','proposed','landed'].includes(read('teamai-dashboard-loop-filter','all'))?read('teamai-dashboard-loop-filter','all'):'all';
+let loopFilter=['all','proposed','landed','closed'].includes(read('teamai-dashboard-loop-filter','all'))?read('teamai-dashboard-loop-filter','all'):'all';
 function resetLoop(){loopData=null;loopError='';loopLoading=false;loopHtml='';}
 const loopDelta=(from,to)=>from==null||to==null?null:Math.round((to-from)*100);
 const loopRate=r=>r.planned?r.passed/r.planned:null;
@@ -31,23 +31,36 @@ function loopImpact(c){
  if(!i.after.n)return '<span class="muted">'+label('Waiting for labelled work on it')+'</span><small>'+label('Before')+' '+pct(i.before.rate)+' · '+number(i.before.n)+' '+label('labels')+'</small>';
  return pct(i.before.rate)+' → '+pct(i.after.rate)+' '+loopPts(loopDelta(i.before.rate,i.after.rate))+'<small>'+number(i.before.n)+' / '+number(i.after.n)+' '+label('labels')+'</small>';
 }
+function loopLink(url,text){ return /^https?:\\/\\//.test(url)?'<a class="link" href="'+e(url)+'" target="_blank" rel="noopener noreferrer">'+label(text)+' ↗</a>':'<span data-verbatim>'+e(url)+'</span>'; }
 function loopOpen(c){
+ if(c.state==='closed')return loopLink(c.url,'Pull request');
  if(c.state==='landed')return '<span class="tag" data-verbatim title="'+e(c.commit)+'">'+short(c.commit)+'</span>';
  const r=c.request;
- if(r.kind==='open'&&/^https?:\\/\\//.test(r.url))return '<a class="link" href="'+e(r.url)+'" target="_blank" rel="noopener noreferrer">'+label('Pull request')+' ↗</a>';
+ if(r.kind==='open')return loopLink(r.url,'Pull request');
  return (r.kind==='not_open'?'<span class="amber">'+label('No open pull request')+'</span>':'<span class="muted">'+label('Branch')+'</span>')+'<small data-verbatim>'+e(c.branch)+'</small>';
 }
-function loopState(c){ return c.state==='landed'?'<span class="tag good">'+label('Landed')+'</span>':'<span class="tag amber">'+label('Proposed')+'</span>'; }
+function loopState(c){ return c.state==='landed'?'<span class="tag good">'+label('Landed')+'</span>':c.state==='closed'?'<span class="tag muted">'+label('Closed')+'</span>':'<span class="tag amber">'+label('Proposed')+'</span>'; }
+/** When the change happened: a request's opening while proposed, its closing once closed, else its commit. */
+function loopWhen(c){
+ if(c.state==='proposed'&&c.request.kind==='open')return e(when(c.request.openedAt))+'<small>'+label('Opened')+'</small>';
+ if(c.state==='closed')return e(when(c.at))+'<small>'+label('Closed without merging')+'</small>';
+ return e(when(c.at));
+}
+function loopCells(c){
+ const scorer='<button class="link" data-loop-scorer="'+e(c.scorer)+'" data-verbatim>'+e(c.scorer)+'</button>';
+ if(c.state==='closed')return [loopState(c)+' <span data-verbatim>'+e(c.title)+'</span>',scorer,'<span class="muted">—</span>','<span class="muted">—</span>','<span class="muted">'+label('Never landed')+'</span>',loopWhen(c),loopOpen(c)];
+ return [loopState(c)+' <span data-verbatim>'+e(c.title)+'</span><small>'+number(c.tasks.length)+' '+(c.tasks.length===1?label('regression task'):label('regression tasks'))+'</small>',scorer,loopAssets(c),loopProof(c),loopImpact(c),loopWhen(c),loopOpen(c)];
+}
 function loopChanges(d){
- const counts={all:d.changes.length,proposed:d.changes.filter(c=>c.state==='proposed').length,landed:d.changes.filter(c=>c.state==='landed').length};
+ const counts={all:d.changes.length}; for(const k of ['proposed','landed','closed'])counts[k]=d.changes.filter(c=>c.state===k).length;
  const rows=d.changes.filter(c=>loopFilter==='all'||c.state===loopFilter);
- const tabs='<div class="imp-tabs" role="tablist">'+[['all','All'],['proposed','Proposed'],['landed','Landed']].map(([k,n])=>'<button role="tab" data-loop-filter="'+k+'" aria-selected="'+(k===loopFilter)+'" class="'+(k===loopFilter?'active':'')+'">'+label(n)+' <span>'+number(counts[k])+'</span></button>').join('')+'</div>';
+ const tabs='<div class="imp-tabs" role="tablist">'+[['all','All'],['proposed','Proposed'],['landed','Landed'],['closed','Closed']].filter(([k])=>k!=='closed'||counts.closed).map(([k,n])=>'<button role="tab" data-loop-filter="'+k+'" aria-selected="'+(k===loopFilter)+'" class="'+(k===loopFilter?'active':'')+'">'+label(n)+' <span>'+number(counts[k])+'</span></button>').join('')+'</div>';
  const heads=['CHANGE','SCORER','ASSETS','PROOF ON THE REGRESSION SUITE','PASS RATE BEFORE → AFTER','WHEN','OPEN'];
  const body=rows.length?'<div class="table-scroll"><table class="session-table loop-changes"><thead><tr>'+heads.map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
-  +rows.map(c=>{const cells=[loopState(c)+' <span data-verbatim>'+e(c.title)+'</span><small>'+number(c.tasks.length)+' '+(c.tasks.length===1?label('regression task'):label('regression tasks'))+'</small>','<button class="link" data-loop-scorer="'+e(c.scorer)+'" data-verbatim>'+e(c.scorer)+'</button>',loopAssets(c),loopProof(c),loopImpact(c),e(when(c.at)),loopOpen(c)];
+  +rows.map(c=>{const cells=loopCells(c);
    return '<tr>'+cells.map((x,i)=>'<td data-label="'+e(t(heads[i]))+'">'+x+'</td>').join('')+'</tr>';}).join('')+'</tbody></table></div>'
   :'<div class="empty"><p>'+(d.changes.length?label('None in this view.'):label('No change yet. A run proposes one once a scorer has two failures a regression task can start from.'))+'</p></div>';
- return '<section class="panel sessions" id="loop-changes"><div class="panelhead"><h2>'+label('Changes')+' <span class="count">'+number(d.changes.length)+'</span></h2><span class="label">'+label('Proposed on origin, or landed on the default branch in the last 180 days')+'</span></div>'+tabs+body+'</section>';
+ return '<section class="panel sessions" id="loop-changes"><div class="panelhead"><h2>'+label('Changes')+' <span class="count">'+number(d.changes.length)+'</span></h2><span class="label">'+label('Proposed on origin, landed on the default branch in the last 180 days, or closed without merging')+'</span></div>'+tabs+body+'</section>';
 }
 function loopNext(s){
  if(s.isReady)return '<div class="imp-cmd"><code data-verbatim>'+e(s.command)+'</code><button class="link copy" data-copy="'+e(s.command)+'" aria-label="'+label('Copy command')+'">'+label('Copy')+'</button></div>';
@@ -63,7 +76,7 @@ function loopScorers(d){
  return '<section class="panel sessions"><div class="panelhead"><h2>'+label('Scorers in the loop')+' <span class="count">'+number(d.scorers.length)+'</span></h2><span class="label">'+label('What teamai self-improvement run would start from now')+'</span></div>'
   +(d.scorers.length?'<div class="table-scroll"><table class="session-table loop-scorers"><thead><tr>'+heads.map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
   +d.scorers.map(s=>{const mine=d.changes.filter(c=>c.scorer===s.scorer), open=mine.filter(c=>c.state==='proposed').length;
-   const cells=['<button class="link" data-loop-scorer="'+e(s.scorer)+'" data-verbatim>'+e(s.scorer)+'</button><small>'+label('Failing labels')+' →</small>',meter(s.stats.rate)+' '+pct(s.stats.rate)+'<small>'+number(s.stats.n)+' '+label('labels')+'</small>',sparkline(s.trend),loopQueue(s),loopNext(s),number(open)+' '+label('open')+' · '+number(mine.length-open)+' '+label('landed')];
+   const cells=['<button class="link" data-loop-scorer="'+e(s.scorer)+'" data-verbatim>'+e(s.scorer)+'</button><small>'+label('Failing labels')+' →</small>',meter(s.stats.rate)+' '+pct(s.stats.rate)+'<small>'+number(s.stats.n)+' '+label('labels')+'</small>',sparkline(s.trend),loopQueue(s),loopNext(s),'<div class="loop-counts">'+(s.requests?[[s.requests.open,'open'],[s.requests.merged,'merged'],[s.requests.closed,'closed']]:[[open,'open'],[mine.filter(c=>c.state==='landed').length,'landed']]).map(([n,name])=>'<span>'+number(n)+' '+label(name)+'</span>').join('')+'</div>'];
    return '<tr>'+cells.map((x,i)=>'<td data-label="'+e(t(heads[i]))+'">'+x+'</td>').join('')+'</tr>';}).join('')+'</tbody></table></div>'
   :'<div class="empty"><p>'+label('No score labels yet. Labels appear once a scorer judges work and they reach teamai-reports.')+'</p></div>')+'</section>';
 }
@@ -73,6 +86,12 @@ function loopFlow(d){
  const steps=[[failing,'Failing labels','last 30 days'],[covered,'Regression tasks','from those failures'],[proposed.length,'Proposed','open on origin'],[d.changes.filter(c=>c.proof).length,'Proven','on the regression suite'],[landed.length,'Landed','last 180 days'],[better,'Better after','pass rate went up']];
  return '<ol class="loop-flow" aria-label="'+label('The loop')+'">'+steps.map(([n,name,sub])=>'<li><b>'+number(n)+'</b><span>'+label(name)+'</span><small>'+label(sub)+'</small></li>').join('')+'</ol>';
 }
+/** How the host ended the proposals' pull requests: merged against all that ended. */
+function loopReview(r,proposed){
+ if(r.kind!=='answered')return kpiCard(label('Open proposals'),number(proposed.length),number(proposed.filter(c=>c.proof).length)+' '+label('proven on the regression suite'));
+ const ended=r.merged+r.closed;
+ return kpiCard(label('Pull requests merged'),number(r.merged)+' <small>/ '+number(ended)+(ended?' · '+pct(r.merged/ended):'')+'</small>',number(r.closed)+' '+label('closed without merging')+' · '+number(r.open)+' '+label('open'));
+}
 function loopKpis(d){
  const landed=d.changes.filter(c=>c.state==='landed'), proposed=d.changes.filter(c=>c.state==='proposed');
  const deltas=landed.flatMap(c=>c.impact&&c.impact.after.n?[loopDelta(c.impact.before.rate,c.impact.after.rate)]:[]).filter(x=>x!==null);
@@ -80,7 +99,7 @@ function loopKpis(d){
  const failing=d.scorers.reduce((n,s)=>n+s.stats.failed,0), covered=d.scorers.reduce((n,s)=>n+s.covered.length,0), startable=d.scorers.reduce((n,s)=>n+s.startable,0);
  return '<div class="kpis loop-kpis">'
   +kpiCard(label('Landed'),number(landed.length),deltas.length?label('Pass rate after them')+' '+loopPts(mean)+' '+label('on average'):label('No labelled work after them yet'))
-  +kpiCard(label('Open proposals'),number(proposed.length),number(proposed.filter(c=>c.proof).length)+' '+label('proven on the regression suite'))
+  +loopReview(d.requests,proposed)
   +kpiCard(label('Failures with a regression task'),number(covered)+' <small>/ '+number(failing)+'</small>',number(startable)+' '+label('can become a task'))
   +kpiCard(label('Ready to run'),number(d.scorers.filter(s=>s.isReady).length)+' <small>/ '+number(d.scorers.length)+'</small>',label('scorers with enough failures'))
   +'</div>';
@@ -102,13 +121,13 @@ function loopRuns(d){
  const heads=['STARTED','STATUS','BY','RUN'];
  return '<section class="panel sessions"><div class="panelhead"><h2>'+label('Recent runs')+' <span class="count">'+number(d.runs.length)+'</span></h2><span class="label" data-verbatim>teamai-self-improvement</span></div>'
   +(d.runs.length?'<div class="table-scroll"><table class="session-table compact loop-runs"><thead><tr>'+heads.map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
-  +d.runs.map(r=>'<tr><td>'+e(when(r.startedAt))+'</td><td><span class="'+(r.status==='succeeded'?'good':r.status==='failed'?'amber':'muted')+'">'+e(t(r.status))+'</span></td><td data-verbatim>'+e(r.username||t('This machine'))+'</td><td><button class="link" data-run="'+e(r.run)+'" data-run-source="'+e(r.source)+'"><span data-verbatim>'+e(r.run)+'</span> ↗</button></td></tr>').join('')
+  +d.runs.map(r=>'<tr><td>'+e(when(r.startedAt))+'</td><td>'+runStatus(r.status)+'</td><td data-verbatim>'+e(r.username||t('This machine'))+'</td><td><button class="link" data-run="'+e(r.run)+'" data-run-source="'+e(r.source)+'"><span data-verbatim>'+e(r.run)+'</span> ↗</button></td></tr>').join('')
   +'</tbody></table></div>':'<div class="empty"><p>'+label('No run yet.')+'</p></div>')+'</section>';
 }
 function loopStatus(d){
  const last=d.runs[0], s=d.setup, active=!!s.jobs.improve;
  return '<div class="statusline loop-status"><span class="'+(active?'good':'amber')+'"><span class="connection-dot"></span>'+(active?label('Runs in CI'):label('Not scheduled'))+'</span>'
-  +(last?'<span>'+label('Last run')+' <button class="link" data-run="'+e(last.run)+'" data-run-source="'+e(last.source)+'">'+e(when(last.startedAt))+'</button> · '+e(t(last.status))+'</span>':'<span>'+label('No run yet.')+'</span>')
+  +(last?'<span>'+label('Last run')+' <button class="link" data-run="'+e(last.run)+'" data-run-source="'+e(last.source)+'">'+e(when(last.startedAt))+'</button> · '+runStatus(last.status)+'</span>':'<span>'+label('No run yet.')+'</span>')
   +'<span>'+label('Window')+': '+e(when(d.window.from))+' – '+e(when(d.window.to))+'</span></div>';
 }
 function selfImprovementPage(){

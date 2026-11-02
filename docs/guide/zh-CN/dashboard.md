@@ -135,20 +135,28 @@ Runs in CI · Last run 11/2/2026 07:29 · succeeded
 
 10 Failing labels › 3 Regression tasks › 1 Proposed › 2 Proven › 2 Landed › 2 Better after
 
-Changes  All 3 | Proposed 1 | Landed 2
-CHANGE                                             SCORER          ASSETS                           PROOF ON THE REGRESSION SUITE              PASS RATE BEFORE → AFTER   OPEN
-Proposed  [teamai] Add skills/code-review/SKILL.md review-quality  prompts/review skills/code-review claude 3/5 → 5/5 +40 pts                   Measured once it lands     Pull request
+Landed 2                 Pull requests merged 2 / 3 · 67%     Failures with a regression task 3 / 10   Ready to run 1 / 2
+Pass rate after them     1 closed without merging · 1 open    4 can become a task                      scorers with enough failures
++14 pts on average
+
+Changes  All 4 | Proposed 1 | Landed 2 | Closed 1
+CHANGE                                             SCORER          ASSETS                           PROOF ON THE REGRESSION SUITE   PASS RATE BEFORE → AFTER   WHEN                       OPEN
+Proposed  [teamai] Add skills/code-review/SKILL.md review-quality  prompts/review skills/code-review claude 3/5 → 5/5 +40 pts        Measured once it lands     11/2/2026 · Opened         Pull request
           and 3 more files · 2 regression tasks                                                     codex  2/5 → 4/5 +40 pts
-Landed    Reviewer agent: read tests before the code   review-quality  agents/reviewer                  claude 2/3 → 3/3 +33 pts                   53% → 62% +8 pts           a16e6e2
+Landed    Reviewer agent: read tests before the code   review-quality  agents/reviewer                  claude 2/3 → 3/3 +33 pts        53% → 62% +8 pts           10/24/2026                 a16e6e2
           (#44) · 1 regression task                                    rules/review-checklist
-Landed    Review skill: check every early return       review-quality  skills/code-review               Not run yet                                44% → 63% +19 pts          415b103
+Closed    Review skill: ask for tests first            review-quality  —                                —                               Never landed               10/16/2026 · Closed        Pull request
+                                                                                                                                                                without merging
+Landed    Review skill: check every early return       review-quality  skills/code-review               Not run yet                     44% → 63% +19 pts          10/12/2026                 415b103
           (#41) · 2 regression tasks
 ```
 
 | 部分 | 来源 |
 | --- | --- |
-| 已提议（Proposed） | origin 上默认分支还没包含的 `teamai/self-improvement/<scorer>` 分支。托管平台有回应时，**Open** 链接到它的 pull request，否则显示分支名。 |
+| 已提议（Proposed） | origin 上默认分支还没包含的 `teamai/self-improvement/<scorer>` 分支。托管平台有回应时，**Open** 链接到它的 pull request，否则显示分支名。**When** 是 pull request 打开的时间，或分支最后一次提交的时间。 |
 | 已合并（Landed） | 最近 180 天默认分支上的一个提交，它新增的回归任务来源于一个未通过的标签。 |
+| 已关闭（Closed） | 来自 `teamai/self-improvement/<scorer>` 分支、被托管平台未合并就关闭的 pull request：团队拒绝的修改。 |
+| 已合并的 PR（Pull requests merged） | 所有评分器分支上已结束的请求中，托管平台合并了多少。本机能登录 GitHub、GitLab、TGit 和 GitCode 时它们会回答。其他托管平台或没有回应的平台改为显示**打开的提议（Open proposals）**。 |
 | 资产（Assets） | 修改新增或改动的文件，按顶层目录和名字显示。回归任务只计数，不列出。 |
 | 证明（Proof） | `pulled` 臂运行了这个修改的最新一次基准测试：每个工具先在 `main` 上、再在修改上的通过率。点下面的日期打开这次运行。 |
 | 前 → 后通过率 | 评分器的默认度量在修改的提交处拆分，和评分器页面的**按团队提交拆分**一样，统计 180 天。 |
@@ -157,13 +165,13 @@ Landed    Review skill: check every early return       review-quality  skills/co
 
 ```text
 SCORER          PASS RATE, 30 DAYS  FAILURES                                      NEXT RUN                                                                      CHANGES
-review-quality  61% · 23 labels     3 can become a task · 3 covered               teamai self-improvement run review-quality --tools default=claude --sandbox  1 open · 2 landed
+review-quality  61% · 23 labels     3 can become a task · 3 covered               teamai self-improvement run review-quality --tools default=claude --sandbox  1 open · 2 merged · 1 closed
                                     Not usable: 1 uncommitted changes ·
                                     1 start not recorded · 1 commit not in this checkout
-test-quality    80% · 5 labels      1 can become a task · 0 covered               Waiting for a second failure a task can start from                            0 open · 0 landed
+test-quality    80% · 5 labels      1 can become a task · 0 covered               Waiting for a second failure a task can start from                            0 open · 0 merged · 0 closed
 ```
 
-评分器有两个能开始任务的失败，或者有一个且另有一个已被回归任务覆盖时，就可以运行。**设置**检查其余部分：生效的工作流（默认的，或团队的 `workflows/teamai-self-improvement.yaml`）、运行 `teamai self-improvement run` 的定时任务、运行 `teamai benchmark run` 的 pull request 任务，以及回归套件和它的任务。**最近运行**列出这个工作流最近十次运行。点击评分器会在评分器页面打开它。
+评分器有两个能开始任务的失败，或者 origin 上已有提案时再有一个，就可以运行，和 `self-improvement plan` 输出的 `ready` 一样。**设置**检查其余部分：生效的工作流（默认的，或团队的 `workflows/teamai-self-improvement.yaml`）、`.github/workflows/` 或 `.gitlab-ci.yml` 里运行 `teamai self-improvement run` 的定时任务和运行 `teamai benchmark run` 的 pull request 任务，以及回归套件和它的任务。**最近运行**列出这个工作流最近十次运行。点击评分器会在评分器页面打开它。
 
 ## 基准测试（Benchmarks）
 

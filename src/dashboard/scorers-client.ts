@@ -173,9 +173,9 @@ function learningsCell(r){
  return r.learnings&&r.learnings.length?r.learnings.map(id=>'<span class="tag" data-verbatim title="'+e(id)+'">'+e(id.split('/').pop().replace(/-\\d{4}-\\d{2}-\\d{2}-[a-z0-9]+$/,''))+'</span>').join(' '):'—';
 }
 function improveHint(sel){
- const f=sel.failing, ready=f.startable>=2||(f.startable>=1&&f.covered>=1);
+ const f=sel.failing;
  const counts='<span class="label">'+number(f.covered)+' '+label('with a regression task')+' · '+number(f.startable)+' '+label('can become one')+'</span>';
- return '<div class="improve-hint">'+counts+(ready?'<p class="scorer-hint">'+label('Turn them into one pull request that changes the team\\'s assets and adds a regression task each, on a machine to throw away such as a CI runner:')+'</p><code class="command" data-verbatim>teamai self-improvement run '+e(sel.cohort.scorer)+' --tools default=claude --sandbox</code>':'')+'<p class="scorer-hint">'+link('self-improvement','See what earlier runs changed and proved')+'</p></div>';
+ return '<div class="improve-hint">'+counts+'<p class="scorer-hint">'+link('self-improvement','Turn them into a pull request that changes the team\\'s harness, and see what earlier ones proved')+'</p></div>';
 }
 function failingPanel(sel){
  const rows=sel.failing.labels, total=sel.failing.total, staged=!!sel.decided, heads=['SCORED','AUTHOR','LABEL'].concat(staged?['DECIDED BY']:[],['HARNESS','PLATFORM','SKILLS','REGRESSION','LEARNINGS','OPEN']), group=scorerQuery.group&&sel.groups?sel.groups.find(g=>g.key===scorerQuery.group):undefined;

@@ -135,20 +135,28 @@ Runs in CI · Last run 11/2/2026 07:29 · succeeded
 
 10 Failing labels › 3 Regression tasks › 1 Proposed › 2 Proven › 2 Landed › 2 Better after
 
-Changes  All 3 | Proposed 1 | Landed 2
-CHANGE                                             SCORER          ASSETS                           PROOF ON THE REGRESSION SUITE              PASS RATE BEFORE → AFTER   OPEN
-Proposed  [teamai] Add skills/code-review/SKILL.md review-quality  prompts/review skills/code-review claude 3/5 → 5/5 +40 pts                   Measured once it lands     Pull request
+Landed 2                 Pull requests merged 2 / 3 · 67%     Failures with a regression task 3 / 10   Ready to run 1 / 2
+Pass rate after them     1 closed without merging · 1 open    4 can become a task                      scorers with enough failures
++14 pts on average
+
+Changes  All 4 | Proposed 1 | Landed 2 | Closed 1
+CHANGE                                             SCORER          ASSETS                           PROOF ON THE REGRESSION SUITE   PASS RATE BEFORE → AFTER   WHEN                       OPEN
+Proposed  [teamai] Add skills/code-review/SKILL.md review-quality  prompts/review skills/code-review claude 3/5 → 5/5 +40 pts        Measured once it lands     11/2/2026 · Opened         Pull request
           and 3 more files · 2 regression tasks                                                     codex  2/5 → 4/5 +40 pts
-Landed    Reviewer agent: read tests before the code   review-quality  agents/reviewer                  claude 2/3 → 3/3 +33 pts                   53% → 62% +8 pts           a16e6e2
+Landed    Reviewer agent: read tests before the code   review-quality  agents/reviewer                  claude 2/3 → 3/3 +33 pts        53% → 62% +8 pts           10/24/2026                 a16e6e2
           (#44) · 1 regression task                                    rules/review-checklist
-Landed    Review skill: check every early return       review-quality  skills/code-review               Not run yet                                44% → 63% +19 pts          415b103
+Closed    Review skill: ask for tests first            review-quality  —                                —                               Never landed               10/16/2026 · Closed        Pull request
+                                                                                                                                                                without merging
+Landed    Review skill: check every early return       review-quality  skills/code-review               Not run yet                     44% → 63% +19 pts          10/12/2026                 415b103
           (#41) · 2 regression tasks
 ```
 
 | Part | Where it comes from |
 | --- | --- |
-| Proposed | A `teamai/self-improvement/<scorer>` branch on origin that the default branch does not contain. **Open** links its pull request when the host answers, otherwise names the branch. |
+| Proposed | A `teamai/self-improvement/<scorer>` branch on origin that the default branch does not contain. **Open** links its pull request when the host answers, otherwise names the branch. **When** is when the pull request opened, or the branch's last commit. |
 | Landed | A commit on the default branch in the last 180 days that adds a regression task whose source is a failing label. |
+| Closed | A pull request from a `teamai/self-improvement/<scorer>` branch that the host closed without merging: a change the team turned down. |
+| Pull requests merged | Of the requests from every scorer's branch that ended, how many the host merged. GitHub, GitLab, TGit and GitCode answer when this machine can sign in to them. Another host, or one that does not answer, shows **Open proposals** instead. |
 | Assets | The files the change adds or edits, by top directory and name. Regression tasks are counted, not listed. |
 | Proof | The newest benchmark run whose `pulled` arms ran the change: each tool's pass rate on `main`, then on the change. The run opens from the date under it. |
 | Pass rate before → after | The scorer's default measurement split at the change's commit, as **Split at team commit** on the Scorers page does, over 180 days. |
@@ -157,13 +165,13 @@ Landed    Review skill: check every early return       review-quality  skills/co
 
 ```text
 SCORER          PASS RATE, 30 DAYS  FAILURES                                      NEXT RUN                                                                      CHANGES
-review-quality  61% · 23 labels     3 can become a task · 3 covered               teamai self-improvement run review-quality --tools default=claude --sandbox  1 open · 2 landed
+review-quality  61% · 23 labels     3 can become a task · 3 covered               teamai self-improvement run review-quality --tools default=claude --sandbox  1 open · 2 merged · 1 closed
                                     Not usable: 1 uncommitted changes ·
                                     1 start not recorded · 1 commit not in this checkout
-test-quality    80% · 5 labels      1 can become a task · 0 covered               Waiting for a second failure a task can start from                            0 open · 0 landed
+test-quality    80% · 5 labels      1 can become a task · 0 covered               Waiting for a second failure a task can start from                            0 open · 0 merged · 0 closed
 ```
 
-A scorer is ready with two failures a task can start from, or one when a regression task covers another. **Setup** checks the rest: the workflow in effect (the default, or the team's `workflows/teamai-self-improvement.yaml`), a scheduled job that runs `teamai self-improvement run`, a pull request job that runs `teamai benchmark run`, and the regression suite with its tasks. **Recent runs** lists the last ten runs of the workflow. Click a scorer to open it on the Scorers page.
+A scorer is ready, as `self-improvement plan` prints `ready`, with two failures a task can start from, or one more for a proposal already on origin. **Setup** checks the rest: the workflow in effect (the default, or the team's `workflows/teamai-self-improvement.yaml`), a scheduled job that runs `teamai self-improvement run` and a pull request job that runs `teamai benchmark run`, in `.github/workflows/` or `.gitlab-ci.yml`, and the regression suite with its tasks. **Recent runs** lists the last ten runs of the workflow. Click a scorer to open it on the Scorers page.
 
 ## Benchmarks
 

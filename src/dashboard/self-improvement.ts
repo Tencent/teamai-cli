@@ -3,6 +3,7 @@
  * team's harness, and what each change did.
  *
  *   labels ─► queue (what `self-improvement run` would start from now) ─► proposal (open branch and request)
+ *          ─► review (each request the host merged, closed without merging, or keeps open)
  *          ─► proof (the regression suite, main against the change) ─► landed (on the default branch)
  *          ─► impact (the scorer's pass rate before and after the change)
  *
@@ -11,15 +12,15 @@
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { parse as parseYaml } from 'yaml';
 import { armKey, runComparisons, type ArmComparison, type BenchmarkRunInput } from '../benchmark/history.js';
 import { listCachedSuites } from '../benchmark/suite-cache.js';
-import { TaskSourceSchema } from '../benchmark/suite.js';
+import { taskSourceOf } from '../benchmark/suite.js';
 import { DigestFailures } from '../digest-failures.js';
 import { ScorerResults, type RubricLabels, type Split, type Stats, type TrendWeek, type ViewedLabel } from '../scorers/results.js';
 import { SelfImprovement, type Unusable } from '../self-improvement.js';
 import type { LocalConfig } from '../types.js';
 import { providerForRemote } from '../providers/registry.js';
+import type { PullRequestRecord } from '../providers/types.js';
 import { canonicalJson } from '../utils/canonical-json.js';
 import { execCommand } from '../utils/exec.js';
 import { getConfiguredRemoteUrl } from '../utils/git.js';
@@ -28,8 +29,6 @@ import { benchmarkRuns } from './benchmarks.js';
 import { readScorerLabels, rubricLabelsOf, sidesOf } from './scorers.js';
 import { listLocalRuns, listReportedRuns, type LocalRunRow, type ReportedRunRow } from './workflow-runs.js';
 
-/** The window failures are read over, as `self-improvement plan` reads them. */
-const WINDOW_DAYS = 30;
 
 /** One scorer's loop: how its default measurement passes, and what a run would start from now. */
 export type ScorerLoop = {
@@ -41,16 +40,23 @@ export type ScorerLoop = {
   /** Regression tasks the team repo already has for its failures. */
   covered: string[];
   refused: Record<Unusable, number>;
-  /** Whether a run would change anything: two failures to start from, or one more beside a task. */
+  /** Whether a run would change anything, as `self-improvement plan` prints `ready`. */
   isReady: boolean;
   command: string;
+  /** How the host ended the requests of the scorer's proposal branch; absent when it was not asked or could not answer. */
+  requests?: RequestCounts;
 };
+
+/** The requests of proposal branches by how they ended. */
+export type RequestCounts = { open: number; merged: number; closed: number };
+/** Every scorer's requests, once the host answered for each one's branch. */
+export type Requests = ({ kind: 'answered' } & RequestCounts) | { kind: 'unknown' };
 
 /** The scorer's default measurement on each side of a change: work that ran on a team revision without it, and with it. */
 export type Impact = Omit<Split, 'commit'>;
 
-/** The request of a proposal's branch on the team repo's host: open, none open, or a host that cannot say. */
-export type Request = { kind: 'open'; url: string } | { kind: 'not_open' } | { kind: 'unknown' };
+/** The request of a proposal's branch on the team repo's host: open since `openedAt`, none open, or a host that cannot say. */
+export type ProposalRequest = { kind: 'open'; url: string; openedAt: string } | { kind: 'not_open' } | { kind: 'unknown' };
 
 /**
  * The newest run of a suite that installed a change's team revision on one of its arms, and each pair of its arms that
@@ -74,8 +80,11 @@ type ChangeBase = { scorer: string; commit: string; title: string; at: string; f
 /** A change, and the team revisions a suite run that proves it installed: its head, or a merge's other parents. */
 type Found<T extends Change['state']> = { change: Extract<Change, { state: T }>; revisions: string[] };
 export type Change =
-  | ChangeBase & { state: 'proposed'; branch: string; request: Request }
-  | ChangeBase & { state: 'landed'; impact?: Impact };
+  | ChangeBase & { state: 'proposed'; branch: string; request: ProposalRequest }
+  | ChangeBase & { state: 'landed'; impact?: Impact }
+  | ClosedChange;
+/** A request of a proposal branch the host closed without merging: a change the team turned down. `at`: when it closed. */
+export type ClosedChange = { state: 'closed'; scorer: string; title: string; url: string; openedAt: string; at: string };
 
 /**
  * What runs the loop. `workflow`: the team's `workflows/teamai-self-improvement.yaml` or teamai's default. `jobs`: the
@@ -96,12 +105,12 @@ export type SelfImprovementView = {
   scorers: ScorerLoop[];
   /** Newest first. */
   changes: Change[];
+  requests: Requests;
   setup: Setup;
   /** The newest runs of the workflow, newest first. */
   runs: LoopRun[];
 };
 
-const WORKFLOW = 'teamai-self-improvement';
 /** How many of the workflow's runs the page lists. */
 const RUN_LIMIT = 10;
 
@@ -117,17 +126,10 @@ async function teamGit(config: LocalConfig, args: string[]): Promise<string | un
 }
 
 /** The subject the task file `file` names as its `source` at `commit`, as canonical JSON. */
-async function sourceAt(config: LocalConfig, commit: string, file: string): Promise<string | undefined> {
+async function sourceAt(config: LocalConfig, { commit, file }: { commit: string; file: string }): Promise<string | undefined> {
   const text = await teamGit(config, ['show', `${commit}:./${file}`]);
-  if (text === undefined) return undefined;
-  let task: unknown;
-  try {
-    task = parseYaml(text);
-  } catch {
-    return undefined;
-  }
-  const source = TaskSourceSchema.safeParse(typeof task === 'object' && task !== null && 'source' in task ? task.source : undefined);
-  return source.success ? canonicalJson(source.data) : undefined;
+  const source = text === undefined ? undefined : taskSourceOf(text);
+  return source === undefined ? undefined : canonicalJson(source);
 }
 
 /**
@@ -146,7 +148,7 @@ async function landedChanges(config: LocalConfig, { since, scorerOf }: { since: 
       return status !== undefined && file !== undefined ? [{ status, file }] : [];
     });
     const added = entries.filter(({ status, file }) => status === 'A' && TASK_FILE.test(file)).map(({ file }) => file);
-    const scored = (await Promise.all(added.map(async (file) => ({ file, scorer: scorerOf.get(await sourceAt(config, commit, file) ?? '') }))))
+    const scored = (await Promise.all(added.map(async (file) => ({ file, scorer: scorerOf.get(await sourceAt(config, { commit, file }) ?? '') }))))
       .flatMap(({ file, scorer }) => (scorer === undefined ? [] : [{ file, scorer }]));
     const scorer = scored[0]?.scorer;
     if (scorer === undefined) continue;
@@ -159,25 +161,36 @@ async function landedChanges(config: LocalConfig, { since, scorerOf }: { since: 
   return changes;
 }
 
-/** Where a run pushes its proposal for each scorer, and where the team clone keeps what it fetched of them. */
-const PROPOSAL_PREFIX = 'teamai/self-improvement/';
-const PROPOSAL_REFS = `refs/remotes/origin/${PROPOSAL_PREFIX}`;
-/** How long the host may take to say whether a proposal's request is open. */
+/** Where the team clone keeps what it fetched of the proposal branches. */
+const PROPOSAL_REFS = `refs/remotes/origin/${SelfImprovement.BRANCH_PREFIX}`;
+/** How long the host may take to list a proposal branch's requests. */
 const LOOKUP_TIMEOUT_MS = 15_000;
-/** The request of each proposal head the host answered for, by branch and head: a page load asks only for a new head. */
-const requests = new Map<string, Request>();
+/** The requests the host last listed for each proposal branch, by repository and branch: a load that does not refresh reads these. */
+const histories = new Map<string, PullRequestRecord[]>();
 
-/** The open request of `branch` on the team repo's host. Unknown when the host is not one teamai can ask, or cannot answer. */
-async function requestOf(config: LocalConfig, { branch, head, target, refresh }: { branch: string; head: string; target: string; refresh: boolean }): Promise<Request> {
-  const key = `${branch} ${head}`;
-  const known = requests.get(key);
-  if (known !== undefined || !refresh) return known ?? { kind: 'unknown' };
+/**
+ * The requests of each scorer's proposal branch into `target`, as the host lists them, asked again when `refresh` is set.
+ * Undefined when the host is not one teamai can ask, or has not answered for every scorer, so counts are never partial.
+ */
+async function historiesOf(config: LocalConfig, { scorers, target, refresh }: { scorers: readonly string[]; target: string; refresh: boolean }): Promise<Map<string, PullRequestRecord[]> | undefined> {
   const origin = providerForRemote(await getConfiguredRemoteUrl(config.repo.localPath) ?? '');
-  if (origin.kind !== 'provider') return { kind: 'unknown' };
-  const request: Request = await origin.pullRequests.findOpen({ repo: origin.repo, source: branch, target, timeoutMs: LOOKUP_TIMEOUT_MS })
-    .then((url): Request => (url === undefined ? { kind: 'not_open' } : { kind: 'open', url }), (): Request => ({ kind: 'unknown' }));
-  if (request.kind !== 'unknown') requests.set(key, request);
-  return request;
+  if (origin.kind !== 'provider') return undefined;
+  const answers = await Promise.all(scorers.map(async (scorer) => {
+    const source = SelfImprovement.branchOf(scorer);
+    const key = `${origin.repo} ${source}`;
+    if (refresh) {
+      const listed = await origin.pullRequests.history({ repo: origin.repo, source, target, timeoutMs: LOOKUP_TIMEOUT_MS }).catch(() => undefined);
+      if (listed !== undefined) histories.set(key, listed);
+    }
+    return [scorer, histories.get(key)] as const;
+  }));
+  const known = answers.flatMap(([scorer, listed]) => (listed === undefined ? [] : [[scorer, listed] as const]));
+  return known.length === answers.length ? new Map(known) : undefined;
+}
+
+/** The default branch of the team clone: the branch it has checked out. */
+async function defaultBranch(config: LocalConfig): Promise<string> {
+  return (await teamGit(config, ['rev-parse', '--abbrev-ref', 'HEAD']))?.trim() || 'main';
 }
 
 /**
@@ -186,12 +199,8 @@ async function requestOf(config: LocalConfig, { branch, head, target, refresh }:
  * shows what the last fetch got.
  */
 async function proposedChanges(config: LocalConfig, { refresh }: { refresh: boolean }): Promise<Array<Found<'proposed'> & { sources: Map<string, string> }>> {
-  if (refresh) await teamGit(config, ['fetch', '-q', '--prune', 'origin', `+refs/heads/${PROPOSAL_PREFIX}*:${PROPOSAL_REFS}*`]);
-  const [refs, current] = await Promise.all([
-    teamGit(config, ['for-each-ref', '--format=%(objectname)%09%(refname)', PROPOSAL_REFS]),
-    teamGit(config, ['rev-parse', '--abbrev-ref', 'HEAD']),
-  ]);
-  const target = current?.trim() || 'main';
+  if (refresh) await teamGit(config, ['fetch', '-q', '--prune', 'origin', `+refs/heads/${SelfImprovement.BRANCH_PREFIX}*:${PROPOSAL_REFS}*`]);
+  const refs = await teamGit(config, ['for-each-ref', '--format=%(objectname)%09%(refname)', PROPOSAL_REFS]);
   const proposals = (refs ?? '').split('\n').flatMap((line) => {
     const [head, ref] = line.split('\t');
     return head && ref?.startsWith(PROPOSAL_REFS) ? [{ head, branch: ref.slice('refs/remotes/origin/'.length) }] : [];
@@ -199,10 +208,9 @@ async function proposedChanges(config: LocalConfig, { refresh }: { refresh: bool
   const changes = await Promise.all(proposals.map(async ({ head, branch }): Promise<Found<'proposed'> & { sources: Map<string, string> } | undefined> => {
     const merged = await execCommand('git', ['merge-base', '--is-ancestor', head, 'HEAD'], { cwd: config.repo.localPath, timeoutMs: 10_000 }).catch(() => undefined);
     if (merged?.code === 0) return undefined;
-    const [diff, header, request] = await Promise.all([
+    const [diff, header] = await Promise.all([
       teamGit(config, ['diff', '--relative', '--no-renames', '--name-status', `HEAD...${head}`]),
       teamGit(config, ['log', '-1', '--format=%cI%x09%s', head]),
-      requestOf(config, { branch, head, target, refresh }),
     ]);
     if (diff === undefined || header === undefined) return undefined;
     const [at = '', title = ''] = header.trim().split('\t');
@@ -211,10 +219,10 @@ async function proposedChanges(config: LocalConfig, { refresh }: { refresh: bool
       return status !== undefined && file !== undefined && status !== 'D' ? [{ status, file }] : [];
     });
     const tasks = entries.filter(({ status, file }) => status === 'A' && TASK_FILE.test(file)).map(({ file }) => file).sort();
-    const sources = new Map((await Promise.all(tasks.map(async (file) => [await sourceAt(config, head, file), file] as const)))
+    const sources = new Map((await Promise.all(tasks.map(async (file) => [await sourceAt(config, { commit: head, file }), file] as const)))
       .flatMap(([source, file]) => (source === undefined ? [] : [[source, file] as const])));
     return {
-      change: { state: 'proposed', scorer: branch.slice(PROPOSAL_PREFIX.length), branch, commit: head, title, at, files: entries.map(({ file }) => file).sort(), tasks, request },
+      change: { state: 'proposed', scorer: branch.slice(SelfImprovement.BRANCH_PREFIX.length), branch, commit: head, title, at, files: entries.map(({ file }) => file).sort(), tasks, request: { kind: 'unknown' } },
       revisions: [head],
       sources,
     };
@@ -252,24 +260,23 @@ async function impactOf(config: LocalConfig, { labels, scorer, commit, now, rubr
   return impact;
 }
 
-/** The team repo's CI workflow files: the first that runs `self-improvement run`, and the first that runs `benchmark run`. */
+/**
+ * The team repo's CI files, GitHub Actions workflows then `.gitlab-ci.yml`: the first that runs `self-improvement run`,
+ * and the first that runs `benchmark run`.
+ */
 async function ciJobs(config: LocalConfig): Promise<Setup['jobs']> {
   const top = (await teamGit(config, ['rev-parse', '--show-toplevel']))?.trim();
   if (top === undefined) return {};
-  const dir = path.join(top, '.github', 'workflows');
-  const files = (await fs.readdir(dir).catch((): string[] => [])).filter((file) => /\.ya?ml$/.test(file)).sort();
-  const jobs: Setup['jobs'] = {};
-  for (const file of files) {
-    const text = await fs.readFile(path.join(dir, file), 'utf8').catch(() => '');
-    const relative = `.github/workflows/${file}`;
-    if (jobs.improve === undefined && /\bself-improvement run\b/.test(text)) jobs.improve = relative;
-    if (jobs.proof === undefined && /\bbenchmark run\b/.test(text)) jobs.proof = relative;
-  }
-  return jobs;
+  const actions = (await fs.readdir(path.join(top, '.github', 'workflows')).catch((): string[] => []))
+    .filter((file) => /\.ya?ml$/.test(file)).sort().map((file) => `.github/workflows/${file}`);
+  const texts = await Promise.all([...actions, '.gitlab-ci.yml'].map(async (relative) => ({ relative, text: await fs.readFile(path.join(top, relative), 'utf8').catch(() => '') })));
+  const first = (command: RegExp): string | undefined => texts.find(({ text }) => command.test(text))?.relative;
+  const [improve, proof] = [first(/\bself-improvement run\b/), first(/\bbenchmark run\b/)];
+  return { ...improve === undefined ? {} : { improve }, ...proof === undefined ? {} : { proof } };
 }
 
 async function setupOf(config: LocalConfig): Promise<Setup> {
-  const [workflow, jobs, suites] = await Promise.all([loadCachedWorkflow(config, WORKFLOW), ciJobs(config), listCachedSuites(config)]);
+  const [workflow, jobs, suites] = await Promise.all([loadCachedWorkflow(config, SelfImprovement.WORKFLOW), ciJobs(config), listCachedSuites(config)]);
   return {
     workflow: workflow === null ? { source: 'missing' } : workflow.source === 'team' ? { source: 'team', path: workflow.relativePath } : { source: 'default' },
     jobs,
@@ -287,7 +294,7 @@ async function loopRuns(config: LocalConfig): Promise<LoopRun[]> {
   const [local, reported] = await Promise.all([listLocalRuns(config).catch(() => []), listReportedRuns(config).catch(() => [])]);
   const localIds = new Set(local.map(({ run }) => run));
   return [...local, ...reported.filter(({ run }) => !localIds.has(run))]
-    .filter(({ workflow }) => workflow === WORKFLOW)
+    .filter(({ workflow }) => workflow === SelfImprovement.WORKFLOW)
     .sort((left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt))
     .slice(0, RUN_LIMIT)
     .map(({ run, status, startedAt, endedAt, source, ...rest }) => ({
@@ -295,26 +302,37 @@ async function loopRuns(config: LocalConfig): Promise<LoopRun[]> {
     }));
 }
 
-/** Whether `self-improvement run` would reach its improve step, as its workflow's gate decides. */
-function isReady(startable: number, covered: number): boolean {
-  return startable >= 2 || (startable >= 1 && covered >= 1);
+/** The proposal's request as the host listed it: the open one, none open, or not known. */
+function proposalRequest(listed: readonly PullRequestRecord[] | undefined): ProposalRequest {
+  if (listed === undefined) return { kind: 'unknown' };
+  const open = listed.find((request) => request.state === 'open');
+  return open === undefined ? { kind: 'not_open' } : { kind: 'open', url: open.url, openedAt: open.openedAt };
+}
+
+function countsOf(listed: readonly PullRequestRecord[]): RequestCounts {
+  const counts: RequestCounts = { open: 0, merged: 0, closed: 0 };
+  for (const { state } of listed) counts[state] += 1;
+  return counts;
 }
 
 /** The page's answer for one workspace. `refresh` refreshes the reports checkout from origin first. */
 export async function selfImprovementView({ config, now = new Date(), refresh = true }: { config: LocalConfig; now?: Date; refresh?: boolean }): Promise<SelfImprovementView> {
   const [digest, labels] = await Promise.all([DigestFailures.read(config, { now, refresh }), readScorerLabels(config, { refresh: false })]);
   const rubricLabels = await rubricLabelsOf(config, labels.map(({ label }) => label));
-  const summaries = ScorerResults.of({ labels, query: { windowDays: WINDOW_DAYS }, now, rubricLabels });
+  const summaries = ScorerResults.of({ labels, query: { windowDays: DigestFailures.WINDOW_DAYS }, now, rubricLabels });
   const scorerOf = new Map(labels.flatMap(({ label }) => (label.passed ? [] : [[canonicalJson(label.subject), label.scorer] as const])));
   const starts = digest.failures.flatMap(({ start }) => ('commit' in start ? [start.commit] : []));
-  const [proposed, landed, runs, setup, loop, present] = await Promise.all([
+  const [proposed, landed, runs, setup, loop, present, target] = await Promise.all([
     proposedChanges(config, { refresh }),
     landedChanges(config, { since: new Date(now.getTime() - CHANGE_DAYS * DAY_MS), scorerOf }),
     benchmarkRuns(config, { refresh: false }),
     setupOf(config),
     loopRuns(config),
     SelfImprovement.commitsIn(config.projectRoot ?? process.cwd(), starts),
+    defaultBranch(config),
   ]);
+  const asked = [...new Set([...summaries.scorers.map(({ scorer }) => scorer), ...proposed.map(({ change }) => change.scorer)])].sort();
+  const listed = await historiesOf(config, { scorers: asked, target, refresh });
   // The tasks a run for the scorer reads: the default branch's, and those its open proposal adds, as plan clones it.
   const pulled = digest.failures.flatMap((entry) => (entry.task === undefined ? [] : [[canonicalJson(entry.failure.subject), entry.task] as const]));
   const tasksOf = (scorer: string) => new Map([...pulled, ...proposed.find(({ change }) => change.scorer === scorer)?.sources ?? []]);
@@ -331,11 +349,12 @@ export async function selfImprovementView({ config, now = new Date(), refresh = 
       startable: picked.failures.length,
       covered: picked.covered,
       refused,
-      isReady: isReady(picked.failures.length, picked.covered.length),
-      command: `teamai self-improvement run ${scorer} --tools default=claude --sandbox`,
+      isReady: SelfImprovement.isReady({ startable: picked.failures.length, hasProposal: proposed.some(({ change }) => change.scorer === scorer) }),
+      command: SelfImprovement.commandOf(scorer),
+      ...listed?.has(scorer) ? { requests: countsOf(listed.get(scorer) ?? []) } : {},
     }];
   });
-  const proven = <T extends Change>(change: T, revisions: readonly string[]): T => {
+  const proven = <T extends Exclude<Change, ClosedChange>>(change: T, revisions: readonly string[]): T => {
     const proof = proofOf(runs, revisions);
     return proof === undefined ? change : { ...change, proof };
   };
@@ -343,7 +362,14 @@ export async function selfImprovementView({ config, now = new Date(), refresh = 
     const impact = await impactOf(config, { labels, scorer: change.scorer, commit: change.commit, now, rubricLabels });
     return proven(impact === undefined ? change : { ...change, impact }, revisions);
   }));
-  const changes = [...proposed.map(({ change, revisions }) => proven(change, revisions)), ...withImpact]
-    .sort((left, right) => Date.parse(right.at) - Date.parse(left.at));
-  return { window: summaries.window, scorers, changes, setup, runs: loop };
+  const closed = [...listed ?? []].flatMap(([scorer, requests]) => requests.flatMap((request): ClosedChange[] => (
+    request.state === 'closed' ? [{ state: 'closed', scorer, title: request.title, url: request.url, openedAt: request.openedAt, at: request.closedAt }] : []
+  )));
+  const changes = [
+    ...proposed.map(({ change, revisions }) => proven({ ...change, request: proposalRequest(listed?.get(change.scorer)) }, revisions)),
+    ...withImpact,
+    ...closed,
+  ].sort((left, right) => Date.parse(right.at) - Date.parse(left.at));
+  const requests: Requests = listed === undefined ? { kind: 'unknown' } : { kind: 'answered', ...countsOf([...listed.values()].flat()) };
+  return { window: summaries.window, scorers, changes, requests, setup, runs: loop };
 }

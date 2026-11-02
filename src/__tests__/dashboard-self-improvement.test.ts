@@ -14,6 +14,9 @@ vi.mock('../utils/reports-branch.js', async (importOriginal) => {
 import type { AgentObservation } from '../agent-observation.js';
 import { syncTeamDefinitions } from '../benchmark/suite-cache.js';
 import { selfImprovementView } from '../dashboard/self-improvement.js';
+import { GitHubProvider } from '../providers/github/index.js';
+import * as registry from '../providers/registry.js';
+import type { PullRequestRef } from '../providers/types.js';
 import type { ScoreLabel } from '../scorers/label.js';
 import { getReportsDir, type LocalConfig } from '../types.js';
 
@@ -27,6 +30,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   process.env.HOME = originalHome;
   fs.rmSync(root, { recursive: true, force: true });
 });
@@ -238,6 +242,33 @@ describe('dashboard self-improvement', () => {
     expect(view.scorers).toEqual([expect.objectContaining({ startable: 0, covered: ['benchmarks/regressions/tasks/skipped-the-diff.yaml'] })]);
   });
 
+  it('counts how the host ended each scorer\'s pull requests, and lists one closed without merging as a change', async () => {
+    const start = project();
+    const { config, origin } = team(start.dir);
+    proposal(origin, start.commit);
+    publishLabels(config, [label('new-1', { recorded: agent({ commit: start.commit }) })]);
+    const asked: PullRequestRef[] = [];
+    const history = async (ref: PullRequestRef) => {
+      asked.push(ref);
+      return [
+        { url: 'https://github.com/acme/team/pull/12', title: 'Reviewer: read the diff first', openedAt: '2026-03-18T09:00:00Z', state: 'open' as const },
+        { url: 'https://github.com/acme/team/pull/10', title: 'Review skill: ask for tests', openedAt: '2026-03-05T09:00:00Z', state: 'closed' as const, closedAt: '2026-03-06T09:00:00Z' },
+        { url: 'https://github.com/acme/team/pull/9', title: 'Review skill: null checks', openedAt: '2026-03-01T09:00:00Z', state: 'merged' as const, closedAt: '2026-03-02T09:00:00Z' },
+      ];
+    };
+    vi.spyOn(registry, 'providerForRemote').mockReturnValue({ kind: 'provider', provider: new GitHubProvider(), pullRequests: { findOpen: async () => undefined, history }, repo: 'acme/team', hostname: 'github.com' });
+
+    const view = await selfImprovementView({ config, now: NOW, refresh: true });
+
+    expect(asked).toEqual([{ repo: 'acme/team', source: 'teamai/self-improvement/review-quality', target: 'main', timeoutMs: expect.any(Number) }]);
+    expect(view.requests).toEqual({ kind: 'answered', open: 1, merged: 1, closed: 1 });
+    expect(view.scorers).toEqual([expect.objectContaining({ scorer: 'review-quality', requests: { open: 1, merged: 1, closed: 1 } })]);
+    expect(view.changes).toEqual([
+      expect.objectContaining({ state: 'proposed', request: { kind: 'open', url: 'https://github.com/acme/team/pull/12', openedAt: '2026-03-18T09:00:00Z' } }),
+      { state: 'closed', scorer: 'review-quality', title: 'Review skill: ask for tests', url: 'https://github.com/acme/team/pull/10', openedAt: '2026-03-05T09:00:00Z', at: '2026-03-06T09:00:00Z' },
+    ]);
+  });
+
   it('shows with a proposal the regression suite run that pinned it: each task on the default branch and on the proposal', async () => {
     const start = project();
     const { config, repo, origin } = team(start.dir);
@@ -247,7 +278,7 @@ describe('dashboard self-improvement', () => {
 
     const view = await selfImprovementView({ config, now: NOW, refresh: true });
 
-    expect(view.changes[0]?.proof).toEqual({
+    expect(view.changes).toEqual([expect.objectContaining({ state: 'proposed', proof: {
       run: 'r00000000000000a1',
       source: 'reported',
       suite: 'regressions',
@@ -261,7 +292,21 @@ describe('dashboard self-improvement', () => {
           { task: 'missed-null-check', from: { passed: 1, planned: 1 }, to: { passed: 1, planned: 1 } },
         ],
       }],
-    });
+    } })]);
+  });
+
+  it('finds the jobs that run and prove the loop in GitLab CI too', async () => {
+    const start = project();
+    const { config, repo } = team(start.dir);
+    write(path.join(repo, '.gitlab-ci.yml'), [
+      'improve:', '  rules: [{ if: \'$CI_PIPELINE_SOURCE == "schedule"\' }]', '  script: [npx teamai-cli self-improvement run review-quality --tools default=claude --sandbox]',
+      'regressions:', '  rules: [{ if: \'$CI_PIPELINE_SOURCE == "merge_request_event"\' }]', '  script: [npx teamai-cli benchmark run regressions --sandbox]', '',
+    ].join('\n'));
+    commit(repo, 'Run the loop in GitLab CI');
+
+    const view = await selfImprovementView({ config, now: NOW, refresh: false });
+
+    expect(view.setup.jobs).toEqual({ improve: '.gitlab-ci.yml', proof: '.gitlab-ci.yml' });
   });
 
   it('says what runs the loop: the workflow, the CI jobs that run and prove it, its regression suites and its last runs', async () => {
