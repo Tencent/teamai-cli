@@ -7,6 +7,7 @@ import type { GlobalOptions, LocalConfig } from './types.js';
 import type { MaintenancePaths } from './maintenance/paths.js';
 import type { ScoreOptions } from './score-commands.js';
 import { GLOBAL_OPTIONS } from './global-options.js';
+import { ATTEMPT_ENV } from './launch-context.js';
 import { TEAMAI_HOOK_SUBCOMMANDS } from './hooks.js';
 import { dryRunRefusal } from './dry-run-guard.js';
 import { registerPackagesCommand } from './pkg/register-command.js';
@@ -225,6 +226,12 @@ program
   .action(async (cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     if (cmdOpts.silent) setSilent(true);
+    // A pull a step starts in its clone runs as that clone's own install did, so nothing it writes reaches the member's home.
+    if (process.env[ATTEMPT_ENV] !== undefined) {
+      const { attemptCloneInstall, useInstallHome } = await import('./workflow/place/place.js');
+      const install = await attemptCloneInstall(process.cwd(), process.env);
+      if (install) useInstallHome(process.env, install.home);
+    }
     const { pull } = await import('./pull.js');
     // Only notify when a real (non-dry-run) sync completed. The SessionStart hook
     // drives its own `session-start` webhook, so the silent hook pull never fires

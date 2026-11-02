@@ -32,6 +32,7 @@ import { log } from './utils/logger.js';
 import { listRoleIds, loadRolesManifest, RolesManifestNotFoundError } from './roles.js';
 import { loadRoleAssignmentsIfPresent, resolveAssignedRoles, ROLE_ASSIGNMENTS_FILE } from './role-assignments.js';
 import { warnOnce } from './utils/warn-once.js';
+import { ATTEMPT_ENV } from './launch-context.js';
 import { AllowSchema } from './workflow/requirements.js';
 
 /**
@@ -948,7 +949,9 @@ async function findProjectConfig(
     // before the #546 naming widening still carries the legacy
     // `<basename>-<hash>` name; adoption renames it into the current name so
     // detection — and every command after it — keeps finding the config.
-    const partitionDir = await resolvePartitionDir(anchors.projectAnchor, options);
+    // A step's clone holds its own install, under the clone's root: a tool the step starts there keeps the member's HOME.
+    const partitionDir = (process.env[ATTEMPT_ENV] !== undefined ? (await (await import('./workflow/place/place.js')).attemptCloneInstall(anchors.workspaceRoot, process.env))?.partition : undefined)
+      ?? await resolvePartitionDir(anchors.projectAnchor, options);
     const fromPartition = await readConfigFrom(partitionDir, anchors.workspaceRoot, undefined, onUnreadable);
     if (fromPartition) return fromPartition;
     // 2. No partition config yet. A workspace that declares `mode: self` self-heals

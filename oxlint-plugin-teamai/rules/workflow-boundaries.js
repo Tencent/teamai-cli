@@ -60,7 +60,8 @@ const ENTRIES = [
   {
     folder: PLACE,
     // engine.ts stages, before it saves a run, the evidence a step that settled there left in its clone.
-    entries: { 'place.ts': ['src/workflow/engine.ts', 'src/workflow/protocol.ts', 'src/workflow/drivers/local/local-driver.ts', `${BENCHMARK}trial.ts`, `${BENCHMARK}start.ts`], 'setup.ts': [`${BENCHMARK}trial.ts`] },
+    // config.ts and the pull command resolve, for a process a step started in its clone, that clone's own install.
+    entries: { 'place.ts': ['src/config.ts', 'src/index.ts', 'src/workflow/engine.ts', 'src/workflow/protocol.ts', 'src/workflow/drivers/local/local-driver.ts', `${BENCHMARK}trial.ts`, `${BENCHMARK}start.ts`], 'setup.ts': [`${BENCHMARK}trial.ts`] },
     testEntries: ['place.ts', 'team-without.ts'],
   },
   // workflow-published-runs.ts judges an offered run by the tool the local driver would launch for its prompt steps.
