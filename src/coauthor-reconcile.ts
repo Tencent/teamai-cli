@@ -1,5 +1,7 @@
 import path from 'node:path';
+import { z } from 'zod';
 import type { LocalConfig, TeamaiConfig, State } from './types.js';
+import { JsonValueSchema } from './types.js';
 import { isCodexTool } from './utils/tool-names.js';
 import {
   DEFAULT_CODEX_ROOT,
@@ -203,6 +205,21 @@ function preFixSharedTargets(teamConfig: TeamaiConfig, localConfig: LocalConfig)
   return files;
 }
 
+/** The `attribution` teamai wrote before #993: exactly `{"commit": "", "pr": ""}`. */
+const PreFixAttributionSchema = z.object({ attribution: z.strictObject({ commit: z.literal(''), pr: z.literal('') }) });
+
+/**
+ * A settings file's `attribution` as a copy to edit: an object's members, an array's entries by index (as a spread
+ * copies them), and nothing for any other value.
+ */
+const AttributionCopySchema = z.union([
+  z.record(z.string(), JsonValueSchema),
+  z.array(JsonValueSchema).transform((items) => Object.fromEntries(items.entries())),
+]).catch(() => ({}));
+
+/** An `attribution` that holds teamai's empty trailer for commits or PRs. */
+const EmptyTrailerSchema = z.union([z.object({ commit: z.literal('') }), z.object({ pr: z.literal('') })]);
+
 /**
  * A shared settings file's text without its pre-#993 `attribution`, when that
  * is exactly what teamai wrote (`{"commit": "", "pr": ""}`): only that
@@ -222,12 +239,7 @@ async function withoutPreFixAttribution(file: string): Promise<{ kind: 'stripped
     return { kind: 'unreadable' };
   }
 
-  const attribution = (parsed as Record<string, unknown> | null)?.attribution as Record<string, unknown> | undefined;
-
-  if (typeof attribution !== 'object' || attribution === null) return { kind: 'none' };
-  const keys = Object.keys(attribution);
-
-  if (keys.length !== 2 || attribution.commit !== '' || attribution.pr !== '') return { kind: 'none' };
+  if (!PreFixAttributionSchema.safeParse(parsed).success) return { kind: 'none' };
   const text = removeTopLevelJsonMember(source, 'attribution');
 
   return text === null ? { kind: 'none' } : { kind: 'stripped', text };
@@ -305,6 +317,7 @@ function removeTopLevelJsonMember(source: string, key: string): string | null {
 
       depth--;
     } else if (depth === 1 && c === ':' && lastKey) {
+      // SAFETY: lastKey.text runs from an opening quote to the quote that closed it in a document that parsed as JSON, so it is a JSON string.
       current = { key: JSON.parse(lastKey.text) as string, start: lastKey.start, end: -1 };
       lastKey = null;
     } else if (depth === 1 && c === ',' && current) {
@@ -349,9 +362,7 @@ async function applyClaude(file: string, enabled: boolean): Promise<boolean> {
   if (read.kind === 'invalid') throw new Error(`${file} is not a JSON object (${read.error}); left as it is`);
   const settings = read.kind === 'ok' ? read.value : {};
 
-  const attribution = (typeof settings.attribution === 'object' && settings.attribution !== null
-    ? { ...(settings.attribution as Record<string, unknown>) }
-    : {}) as Record<string, unknown>;
+  const attribution = AttributionCopySchema.parse(settings.attribution);
 
   const before = JSON.stringify(settings.attribution ?? null);
 
@@ -443,9 +454,7 @@ async function applyCursor(file: string, enabled: boolean): Promise<boolean> {
   if (read.kind === 'invalid') throw new Error(`${file} is not a JSON object (${read.error}); left as it is`);
   const config = read.kind === 'ok' ? read.value : {};
 
-  const attribution = (typeof config.attribution === 'object' && config.attribution !== null
-    ? { ...(config.attribution as Record<string, unknown>) }
-    : {}) as Record<string, unknown>;
+  const attribution = AttributionCopySchema.parse(config.attribution);
 
   const before = JSON.stringify(config.attribution ?? null);
 
@@ -490,10 +499,7 @@ export async function coAuthorLocalSettingsFile(
   if (read.kind === 'invalid') return { kind: 'unreadable', file };
   const attribution = read.kind === 'ok' ? read.value.attribution : undefined;
 
-  if (typeof attribution !== 'object' || attribution === null) return { kind: 'none' };
-  const { commit, pr } = attribution as Record<string, unknown>;
-
-  return commit === '' || pr === '' ? { kind: 'holds', file } : { kind: 'none' };
+  return EmptyTrailerSchema.safeParse(attribution).success ? { kind: 'holds', file } : { kind: 'none' };
 }
 
 // ─── Main entry ──────────────────────────────────────────────
@@ -507,7 +513,7 @@ export async function reconcileCoAuthorForConfig(
   localConfig: LocalConfig,
   state: State,
 ): Promise<CoAuthorReconcileResult> {
-  const managed: Record<string, boolean> = { ...state.coAuthorManaged };
+  const managed = { ...state.coAuthorManaged };
   const changes: CoAuthorChange[] = [];
 
   const intent = resolveCoAuthor(localConfig, teamConfig);
@@ -547,7 +553,7 @@ export async function reconcileCoAuthorForConfig(
       changes.push({ tool, file, enabled: false, action: moveTo ? 'moved' : 'removed' });
     } catch (e) {
       managed[file] = recorded;
-      changes.push({ tool, file, enabled: false, action: 'skipped', reason: (e as Error).message, failed: true });
+      changes.push({ tool, file, enabled: false, action: 'skipped', reason: e instanceof Error ? e.message : String(e), failed: true });
     }
   }
 
@@ -581,7 +587,7 @@ export async function reconcileCoAuthorForConfig(
         reason: changed ? undefined : 'already up-to-date',
       });
     } catch (e) {
-      changes.push({ tool: t.tool, file: t.file, enabled: intent, action: 'skipped', reason: (e as Error).message, failed: true });
+      changes.push({ tool: t.tool, file: t.file, enabled: intent, action: 'skipped', reason: e instanceof Error ? e.message : String(e), failed: true });
     }
   }
 
