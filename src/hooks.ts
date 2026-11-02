@@ -4873,10 +4873,15 @@ async function cleanGitDirectoryHooks(localConfig: LocalConfig, toolPaths: Teama
       continue;
     }
 
-    await reconcileHooks(file, tool, [], {
-      manifestPath, legacyManifestPath: legacyManagedHooksPath(common), removeAll: true, teamOnly: true,
-      teamHookHistory: teamHookHistory(localConfig), codexTrust: codexTrustPolicy(localConfig),
-    });
+    try {
+      await reconcileHooks(file, tool, [], {
+        manifestPath, legacyManifestPath: legacyManagedHooksPath(common), removeAll: true, teamOnly: true,
+        teamHookHistory: teamHookHistory(localConfig), codexTrust: codexTrustPolicy(localConfig),
+      });
+    } catch (error) {
+      // The old copy is cleanup only: it must not stop this pull from delivering the hooks every tool runs.
+      log.warn(`Kept the old Git-directory hooks: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 }
 

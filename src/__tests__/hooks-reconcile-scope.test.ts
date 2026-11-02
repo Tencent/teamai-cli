@@ -1654,3 +1654,17 @@ describe('reconcileHooks — a hook a workspace holds back (#913)', () => {
     expect((await fse.readJson(manifestPath)).dsh.map((r: { id: string }) => r.id)).toEqual(['held-hook']);
   });
 });
+
+describe('reconcileTeamHooksForConfig — the old Git-directory hooks', () => {
+  it('still delivers the other tools when an old Git-directory hook file holds a broken hooks key', async () => {
+    await writeYaml('hooks:\n  - id: lint\n    description: lint\n    event: Stop\n    command: npm run lint\n');
+    execFileSync('git', ['init', '-q'], { cwd: project });
+    const legacy = path.join(project, '.git', '.claude', 'settings.local.json');
+    await fse.outputFile(legacy, '{"hooks":null}');
+
+    await reconcileTeamHooksForConfig(teamConfig, localConfig());
+
+    expect(JSON.stringify((await cursorSettings()).hooks.stop)).toContain('npm run lint');
+    expect(await fse.readFile(legacy, 'utf8')).toBe('{"hooks":null}');
+  });
+});
