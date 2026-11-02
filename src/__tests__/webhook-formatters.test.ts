@@ -15,7 +15,7 @@ describe('webhook-formatters', () => {
 
   describe('formatFeishuMessage', () => {
     it('should format push event correctly', () => {
-      const result = formatFeishuMessage(basePayload) as Record<string, unknown>;
+      const result = formatFeishuMessage(basePayload);
 
       expect(result.msg_type).toBe('text');
       expect(result.content).toBeDefined();
@@ -35,7 +35,7 @@ describe('webhook-formatters', () => {
         data: { skillName: 'my-skill' },
       };
 
-      const result = formatFeishuMessage(payload) as Record<string, unknown>;
+      const result = formatFeishuMessage(payload);
       const text = (result.content as { text: string }).text;
 
       expect(text).toContain('Event: Skill Used');
@@ -49,7 +49,7 @@ describe('webhook-formatters', () => {
         data: { sessionId: 'abc12345' },
       };
 
-      const result = formatFeishuMessage(payload) as Record<string, unknown>;
+      const result = formatFeishuMessage(payload);
       const text = (result.content as { text: string }).text;
 
       expect(text).toContain('Event: Session Started');
@@ -64,7 +64,7 @@ describe('webhook-formatters', () => {
         data: {},
       };
 
-      const result = formatFeishuMessage(payload) as Record<string, unknown>;
+      const result = formatFeishuMessage(payload);
       const text = (result.content as { text: string }).text;
 
       expect(text).toContain('Event: Pull Complete');
@@ -74,7 +74,7 @@ describe('webhook-formatters', () => {
 
   describe('formatWecomMessage', () => {
     it('should format push event correctly', () => {
-      const result = formatWecomMessage(basePayload) as Record<string, unknown>;
+      const result = formatWecomMessage(basePayload);
 
       expect(result.msgtype).toBe('text');
       expect(result.text).toBeDefined();
@@ -93,7 +93,7 @@ describe('webhook-formatters', () => {
         data: { skillName: 'deploy-skill' },
       };
 
-      const result = formatWecomMessage(payload) as Record<string, unknown>;
+      const result = formatWecomMessage(payload);
       const text = (result.text as { content: string }).content;
 
       expect(text).toContain('Event: Skill Used');
@@ -103,7 +103,7 @@ describe('webhook-formatters', () => {
 
   describe('formatGenericJson', () => {
     it('should format all fields correctly', () => {
-      const result = formatGenericJson(basePayload) as Record<string, unknown>;
+      const result = formatGenericJson(basePayload);
 
       expect(result.event).toBe('push');
       expect(result.timestamp).toBe('2026-09-19T10:30:00.000Z');
@@ -122,7 +122,7 @@ describe('webhook-formatters', () => {
         data: {},
       };
 
-      const result = formatGenericJson(payload) as Record<string, unknown>;
+      const result = formatGenericJson(payload);
 
       expect(result.event).toBe('pull');
       expect(result.username).toBeUndefined();

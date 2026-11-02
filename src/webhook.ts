@@ -3,7 +3,7 @@ import { autoDetectInit, loadTeamConfig } from './config.js';
 import { log } from './utils/logger.js';
 import { redactWithEnv } from './utils/redact.js';
 import { getWebhookSharing, type LocalConfig, type WebhookEndpoint, type WebhookConfig, type WebhookPayload } from './types.js';
-import { formatFeishuMessage, formatWecomMessage, formatGenericJson } from './webhook-formatters.js';
+import { formatFeishuMessage, formatWecomMessage, formatGenericJson, type WebhookMessage } from './webhook-formatters.js';
 
 /**
  * Send a webhook notification to all configured endpoints.
@@ -55,15 +55,15 @@ async function sendToEndpoint(
   const { url, type, secret, timeout, retries } = endpoint;
 
   const body = formatMessage(type, payload);
-  const serialized = typeof body === 'string' ? body : JSON.stringify(body);
+  const serialized = JSON.stringify(body);
   // Defense-in-depth: scrub any secret that slipped through the field whitelist
   // before the payload leaves the machine (#701). Route the whole outbound string
   // through the shared redact module rather than hand-masking at the call site.
   const outbound = redactWithEnv(serialized);
 
-  const headers: Record<string, string> = {
-    'Content-Type': type === 'json' ? 'application/json' : 'text/plain; charset=utf-8',
-  };
+  const headerEntries: [string, string][] = [
+    ['Content-Type', type === 'json' ? 'application/json' : 'text/plain; charset=utf-8'],
+  ];
 
   if (secret) {
     // Sign the exact bytes sent so a receiver that verifies the signature over
@@ -72,8 +72,10 @@ async function sendToEndpoint(
       .update(outbound)
       .digest('hex');
 
-    headers['X-TeamAI-Signature'] = `sha256=${signature}`;
+    headerEntries.push(['X-TeamAI-Signature', `sha256=${signature}`]);
   }
+
+  const headers = Object.fromEntries(headerEntries);
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     let failure: string;
@@ -104,7 +106,7 @@ async function sendToEndpoint(
     } catch (error) {
       failure = error instanceof Error && error.name === 'AbortError'
         ? `timed out after ${timeout}ms`
-        : (error as Error).message;
+        : error instanceof Error ? error.message : String(error);
     } finally {
       clearTimeout(timeoutId);
     }
@@ -127,7 +129,7 @@ async function sendToEndpoint(
 function formatMessage(
   type: WebhookEndpoint['type'],
   payload: WebhookPayload,
-): string | Record<string, unknown> {
+): WebhookMessage {
   switch (type) {
     case 'feishu':
       return formatFeishuMessage(payload);
