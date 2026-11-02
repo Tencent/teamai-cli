@@ -113,7 +113,10 @@ export async function pinScorers(config: LocalConfig, names: Iterable<string>): 
     const entry = await readCache(config, name);
 
     if (!entry || !(await loadCachedScorer(config, name))) continue;
-    pins[name] = { sourceHash: entry.sourceHash, ...(entry.teamRevision ? { teamRevision: entry.teamRevision } : {}), relativePath: entry.relativePath, content: entry.content };
+    const pin: PinnedScorer = { sourceHash: entry.sourceHash, relativePath: entry.relativePath, content: entry.content };
+
+    if (entry.teamRevision) pin.teamRevision = entry.teamRevision;
+    pins[name] = pin;
   }
 
   return pins;
@@ -274,7 +277,8 @@ export async function syncScorerDefinitions(config: LocalConfig, options: SyncSc
     await writeJsonAtomic(cachePath(config, name), {
       relativePath,
       sourceHash,
-      ...(teamRevision ? { teamRevision } : {}),
+      // Left undefined when absent, so the JSON leaves it out.
+      teamRevision: teamRevision || undefined,
       content,
       validatedAt: new Date().toISOString(),
     } satisfies CacheEntry);

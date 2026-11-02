@@ -75,7 +75,12 @@ const DIMENSIONS: Record<Dimension, (entry: ViewedLabel) => GroupValue[] | undef
   teamRevision: ({ agent }) => {
     const team = observed(agent)?.team;
 
-    return team ? [{ value: team.revision, ...(team.localChanges ? { localChanges: true } : {}) }] : undefined;
+    if (!team) return undefined;
+    const revision: GroupValue = { value: team.revision };
+
+    if (team.localChanges) revision.localChanges = true;
+
+    return [revision];
   },
   definition: ({ agent }) => one(agent?.definition?.name),
   role: ({ agent }) => {
@@ -221,7 +226,11 @@ function judgeCohort(judge: ScoreLabel['judge']): JudgeCohort {
     case 'model': {
       const id = judge.model?.reported ?? judge.model?.requested;
 
-      return { kind: 'model', tool: judge.tool, ...(id ? { model: { id, isReported: judge.model?.reported !== undefined } } : {}) };
+      const cohort: Extract<JudgeCohort, { kind: 'model' }> = { kind: 'model', tool: judge.tool };
+
+      if (id) cohort.model = { id, isReported: judge.model?.reported !== undefined };
+
+      return cohort;
     }
 
     default: {
@@ -244,9 +253,14 @@ function withAlias(judge: JudgeCohort, newestFirst: readonly ViewedLabel[]): Jud
 type CohortIdentity = Omit<Cohort, 'rubric'> & { rubric: { sourceHash: string } };
 
 /** Each label's cohort and key, kept for as long as the label is: a caller that keeps its labels between views reuses them. */
-const identities = new WeakMap<ScoreLabel, { cohort: CohortIdentity; key: string }>();
+interface LabelIdentity {
+  cohort: CohortIdentity;
+  key: string;
+}
 
-function identityOf(label: ScoreLabel): { cohort: CohortIdentity; key: string } {
+const identities = new WeakMap<ScoreLabel, LabelIdentity>();
+
+function identityOf(label: ScoreLabel): LabelIdentity {
   const kept = identities.get(label);
 
   if (kept) return kept;
@@ -347,10 +361,25 @@ function subjectRef(entry: ViewedLabel): SubjectRef {
   const { label } = entry;
 
   switch (label.source) {
-    case 'session':
-      return { source: 'session', platform: label.subject.platform, ...entry.sessionName ? { sessionName: entry.sessionName } : {} };
-    case 'workflow':
-      return { source: 'workflow', run: { id: label.subject.runId, step: label.subject.step, pass: label.subject.pass, ...entry.runSource ? { source: entry.runSource } : {} } };
+    case 'session': {
+      const ref: Extract<SubjectRef, { source: 'session' }> = { source: 'session', platform: label.subject.platform };
+
+      if (entry.sessionName) ref.sessionName = entry.sessionName;
+
+      return ref;
+    }
+
+    case 'workflow': {
+      const ref: Extract<SubjectRef, { source: 'workflow' }> = {
+        source: 'workflow',
+        run: { id: label.subject.runId, step: label.subject.step, pass: label.subject.pass },
+      };
+
+      if (entry.runSource) ref.run.source = entry.runSource;
+
+      return ref;
+    }
+
     default: {
       const unhandled: never = label;
 
@@ -366,7 +395,8 @@ function failingLabel(entry: ViewedLabel): FailingLabel {
     author: entry.author,
     scoredAt: label.scoredAt,
     label: label.label,
-    ...label.used?.skills.length ? { skills: label.used.skills } : {},
+    // Left undefined without skills, so the JSON view leaves it out.
+    skills: label.used?.skills.length ? label.used.skills : undefined,
     ...subjectRef(entry),
   };
 }
@@ -412,7 +442,13 @@ function groups(labels: readonly ViewedLabel[], dimension: Dimension, sideOf: Re
     }
   }
 
-  const counts = (members: readonly ViewedLabel[]) => ({ stats: stats(members), ...sideOf ? { split: splitStats(members, sideOf) } : {} });
+  const counts = (members: readonly ViewedLabel[]) => {
+    const counted: Pick<Group, 'stats' | 'split'> = { stats: stats(members) };
+
+    if (sideOf) counted.split = splitStats(members, sideOf);
+
+    return counted;
+  };
 
   const counted: Group[] = [...values].map(([key, { value, labels: members }]) => ({ key, kind: 'value' as const, ...value, ...counts(members) }))
     .sort((left, right) => right.stats.n - left.stats.n || left.key.localeCompare(right.key));
@@ -569,9 +605,13 @@ export const ScorerResults = {
       const newestFirst = [...all].sort((left, right) => right.label.scoredAt.localeCompare(left.label.scoredAt));
       const teamRevision = newestFirst.find(({ label }) => label.rubric.teamRevision)?.label.rubric.teamRevision;
 
+      const rubric: CohortSummary['rubric'] = { sourceHash: cohort.rubric.sourceHash };
+
+      if (teamRevision) rubric.teamRevision = teamRevision;
+
       const summary: CohortSummary = {
         ...cohort,
-        rubric: { sourceHash: cohort.rubric.sourceHash, ...(teamRevision ? { teamRevision } : {}) },
+        rubric,
         judge: withAlias(cohort.judge, newestFirst),
         stats: stats(all.filter(inWindow)),
         trend: trend({ labels: all.filter(inWindow), from, to }),
@@ -598,7 +638,10 @@ export const ScorerResults = {
           .find((row) => canonicalJson(row.judge) === canonicalJson(judge))
         : undefined;
 
-      scorers.push({ scorer, defaultCohort: opened.id, cohorts: ordered, ...(judged ? { agreement: { paired: judged.paired, agree: judged.agree } } : {}) });
+      const scorerSummary: ScorerSummary = { scorer, defaultCohort: opened.id, cohorts: ordered };
+
+      if (judged) scorerSummary.agreement = { paired: judged.paired, agree: judged.agree };
+      scorers.push(scorerSummary);
     }
 
     const scorer = scorers.find((summary) => summary.scorer === query.scorer) ?? scorers[0];
@@ -621,10 +664,12 @@ export const ScorerResults = {
       selected: {
         cohort: { ...summary, values: valueCounts(counted) },
         agreement: agreement({ labels: kept, scorer: summary.scorer, sourceHash: summary.rubric.sourceHash, source: summary.source, inWindow, rubricLabels }),
-        ...(groupBy ? { groupBy, groups: groups(counted, groupBy, split?.sideOf) } : {}),
-        ...(split ? { split: { commit: split.commit, ...splitStats(counted, split.sideOf) } } : {}),
+        // Parts the query did not ask for stay undefined, which the JSON view leaves out.
+        groupBy: groupBy || undefined,
+        groups: groupBy ? groups(counted, groupBy, split?.sideOf) : undefined,
+        split: split ? { commit: split.commit, ...splitStats(counted, split.sideOf) } : undefined,
         failing: { labels: failing.slice(0, query.failing?.limit ?? FAILING_PAGE).map(failingLabel), total: failing.length },
-        ...(reminders && summary.source === 'session' ? { reminders: { days: reminders.days, rows: reminderRows(chosen.all, reminders) } } : {}),
+        reminders: reminders && summary.source === 'session' ? { days: reminders.days, rows: reminderRows(chosen.all, reminders) } : undefined,
       },
     };
   },

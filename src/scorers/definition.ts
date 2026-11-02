@@ -75,7 +75,7 @@ export function formatScorerDiagnostic(diagnostic: ScorerDiagnostic): string {
 
 /** `labels[0].score`, as a scorer author writes the field. */
 function fieldOf(at: ReadonlyArray<PropertyKey>): string {
-  return at.map((part, index) => (typeof part === 'number' ? `[${part}]` : index === 0 ? String(part) : `.${String(part)}`)).join('');
+  return at.map((part, index) => (Number.isInteger(part) ? `[${String(part)}]` : index === 0 ? String(part) : `.${String(part)}`)).join('');
 }
 
 function issueMessages(issue: z.ZodIssue): string[] {

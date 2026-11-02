@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { AgentObservationSchema, ObservedEffortSchema, ObservedModelSchema, UsedSchema } from '../agent-observation.js';
 import { RunModeSchema } from '../launch-context.js';
 import { canonicalJson } from '../utils/canonical-json.js';
+import type { JsonValue } from '../types.js';
 
 export const RunSubjectSchema = z.object({ runId: z.string().min(1), step: z.string().min(1), pass: z.number().int().positive() });
 
@@ -33,7 +34,15 @@ export function sumUsage(first: JudgeUsage | undefined, second: JudgeUsage | und
   const outputTokens = tokens(first.outputTokens, second.outputTokens);
   const cost = first.cost && second.cost?.unit === first.cost.unit ? { amount: first.cost.amount + second.cost.amount, unit: first.cost.unit } : second.cost ?? first.cost;
 
-  return { ...(inputTokens !== undefined ? { inputTokens } : {}), ...(outputTokens !== undefined ? { outputTokens } : {}), ...(cost ? { cost } : {}) };
+  const sum: JudgeUsage = {};
+
+  if (inputTokens !== undefined) sum.inputTokens = inputTokens;
+
+  if (outputTokens !== undefined) sum.outputTokens = outputTokens;
+
+  if (cost) sum.cost = cost;
+
+  return sum;
 }
 
 export const ISOLATIONS = ['best-effort', 'verified'] as const;
@@ -109,7 +118,7 @@ export const SessionLabelContextSchema = SessionLabelSchema.pick({ agent: true, 
 export type SessionLabelContext = z.infer<typeof SessionLabelContextSchema>;
 
 /** The label `value` holds, or undefined when it is not one. */
-export function parseScoreLabel(value: unknown): ScoreLabel | undefined {
+export function parseScoreLabel(value: JsonValue): ScoreLabel | undefined {
   const parsed = ScoreLabelSchema.safeParse(value);
 
   return parsed.success ? parsed.data : undefined;

@@ -32,7 +32,15 @@ export function skillsEvidence(
 
   if (!available) return { gap: 'skills_unknown' };
 
-  return { skills: { available: available.map((skill) => ({ ...skill, ...(skill.description !== undefined ? { description: mask(skill.description) } : {}) })), used: [...used] } };
+  const masked = available.map((skill) => {
+    const shown: AvailableSkill = { ...skill };
+
+    if (skill.description !== undefined) shown.description = mask(skill.description);
+
+    return shown;
+  });
+
+  return { skills: { available: masked, used: [...used] } };
 }
 
 /** The delivered team skills a session's `captures` record, unmasked and without what it used: what `skillsEvidence`

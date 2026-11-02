@@ -18,14 +18,22 @@ import { executableOf, JUDGE_TOOLS, launchAdapterIdOf, opencodeModelArgs, type J
 import { JudgeAnswerSchema, type JudgeAnswer } from './batch.js';
 import type { ScoreLabel, Isolation, JudgeAccess, JudgeUsage } from './label.js';
 import { agyGatewayEnv } from '../models/agy-gateway.js';
+import type { JsonValue } from '../types.js';
 
-const RecordSchema = z.record(z.string(), z.unknown());
+/** A JSON line a judge tool prints; a field of the wrong type reads as absent. */
+const RecordSchema = z.looseObject({
+  type: z.unknown().optional(),
+  result: z.string().optional().catch(undefined),
+  structured_output: z.unknown().optional(),
+  total_cost_usd: z.number().optional().catch(undefined),
+});
+
 const JUDGE_TIMEOUT_MS = 10 * 60_000;
 const COMMON_ENV = ['PATH', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'SystemRoot', 'WINDIR', 'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LC_ALL', 'TERM', 'USER', 'LOGNAME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY', 'SSL_CERT_FILE', 'NODE_EXTRA_CA_CERTS'];
 const CODEX_DISABLED = ['hooks', 'plugins', 'apps', 'browser_use', 'computer_use', 'multi_agent', 'multi_agent_v2'];
 
 export function isJudgeTool(value: string): value is JudgeTool {
-  return (JUDGE_TOOLS as readonly string[]).includes(value);
+  return JUDGE_TOOLS.some((tool) => tool === value);
 }
 
 /** The judge tools on this machine's PATH: `preferred` first, then the rest in launch-tool order. */
@@ -76,12 +84,18 @@ export interface JudgeInput {
   tool: JudgeTool;
   model?: { name: string; effort?: string };
   evidence: string;
-  schema: Record<string, unknown>;
+  /** The JSON Schema the judge's answer must follow. */
+  schema: JsonValue;
   isolation?: Isolation;
   /** The directory the judge tool's process group is recorded in, where `stopRecordedGroup` finds it if its caller dies. */
   group?: string;
   /** Stops the judge tool, as its ten-minute limit does. */
   signal?: AbortSignal;
+}
+
+/** What a judge call spent, carried on its result when the tool reported any. */
+interface JudgeSpend {
+  usage?: JudgeUsage;
 }
 
 export type LocalJudgeResult =
@@ -104,13 +118,15 @@ function judgeEnv(tool: JudgeTool): NodeJS.ProcessEnv {
   const { env: toolEnv, homeEnv: variable } = judgeProfile(tool);
   const moved = variable !== undefined && restored[variable] === undefined && isToolId(tool) ? movedToolHome(tool, realHost({ env: restored })) : null;
 
-  return {
-    ...Object.fromEntries([...COMMON_ENV, ...toolEnv].flatMap((key) => restored[key] === undefined ? [] : [[key, restored[key]]])),
-    ...(variable !== undefined && moved !== null ? { [variable]: moved } : {}),
-    ...(tool === 'agy' ? agyGatewayEnv(restored) : {}),
-    [LAUNCHED_BY_ENV]: 'scorer',
-    [RUN_MODE_ENV]: resolveRunMode(process.env),
-  };
+  const env: NodeJS.ProcessEnv = Object.fromEntries([...COMMON_ENV, ...toolEnv].flatMap((key) => restored[key] === undefined ? [] : [[key, restored[key]]]));
+
+  if (variable !== undefined && moved !== null) env[variable] = moved;
+
+  if (tool === 'agy') Object.assign(env, agyGatewayEnv(restored));
+  env[LAUNCHED_BY_ENV] = 'scorer';
+  env[RUN_MODE_ENV] = resolveRunMode(process.env);
+
+  return env;
 }
 
 async function optionalFile(file: string): Promise<string | undefined> {
@@ -124,7 +140,8 @@ async function claudeSettings(tool: JudgeTool, env: NodeJS.ProcessEnv, tmp: stri
   const settings = text ? z.object({ env: z.record(z.string(), z.string()).optional(), model: z.string().optional() }).parse(JSON.parse(text)) : {};
   const allowed = Object.fromEntries(Object.entries(settings.env ?? {}).filter(([key]) => judgeProfile(tool).env.includes(key)));
   const target = path.join(tmp, 'claude-settings.json');
-  await fs.writeFile(target, JSON.stringify({ env: allowed, ...(settings.model ? { model: settings.model } : {}) }));
+  // An empty model stays undefined, which the JSON leaves out.
+  await fs.writeFile(target, JSON.stringify({ env: allowed, model: settings.model || undefined }));
 
   return target;
 }
@@ -215,7 +232,7 @@ function codexProfile(evidence: string): string {
   });
 }
 
-function records(stdout: string): Array<Record<string, unknown>> {
+function records(stdout: string): Array<z.infer<typeof RecordSchema>> {
   return stdout.split('\n').flatMap((line) => {
     try { const parsed = RecordSchema.safeParse(JSON.parse(line));
 
@@ -240,7 +257,7 @@ async function answerFrom(tool: JudgeTool, stdout: string, tmp: string): Promise
 
       if (structured.success) return structured.data;
 
-      return parseAnswer(typeof last?.result === 'string' ? last.result : '');
+      return parseAnswer(last?.result ?? '');
     }
 
     case 'opencode': {
@@ -388,11 +405,20 @@ export async function runLocalJudge(input: JudgeInput, { resolveTool = resolveCl
     const report = toolStdout(family, result.stdout);
     const reading = LAUNCH_ADAPTERS[family].call.read({ stdout: result.stdout, lastMessage: undefined });
     const tokens = report?.tokens ?? (reading.ok ? reading.tokens : undefined);
-    const cost = records(result.stdout).findLast((record) => typeof record.total_cost_usd === 'number')?.total_cost_usd;
+    const cost = records(result.stdout).findLast((record) => record.total_cost_usd !== undefined)?.total_cost_usd;
+    let spent: JudgeSpend = {};
 
-    const spent = tokens || typeof cost === 'number'
-      ? { usage: { ...(tokens?.input !== undefined ? { inputTokens: tokens.input } : {}), ...(tokens?.output !== undefined ? { outputTokens: tokens.output } : {}), ...(typeof cost === 'number' ? { cost: { amount: cost, unit: 'USD' } } : {}) } }
-      : {};
+    if (tokens || cost !== undefined) {
+      const usage: JudgeUsage = {};
+
+      if (tokens?.input !== undefined) usage.inputTokens = tokens.input;
+
+      if (tokens?.output !== undefined) usage.outputTokens = tokens.output;
+
+      if (cost !== undefined) usage.cost = { amount: cost, unit: 'USD' };
+      spent = { usage };
+    }
+
 
     if (family === 'opencode' && report?.session) {
       const deleted = await runTool({ executable, args: ['session', 'delete', report.session, '--standalone'], cwd, env, stdin: '', timeoutMs: JUDGE_TIMEOUT_MS, detached: true });
@@ -419,7 +445,8 @@ export async function runLocalJudge(input: JudgeInput, { resolveTool = resolveCl
 
     if (!version) isolation = 'best-effort';
 
-    return { ok: true, answer, judge: { tool: input.tool, ...(ranModel ? { model: ranModel } : {}), ...(ranEffort ? { effort: ranEffort } : {}), isolation, access: judgeProfile(input.tool).access, ...spent } };
+    // A model or effort it did not observe stays undefined, which the label's JSON leaves out.
+    return { ok: true, answer, judge: { tool: input.tool, model: ranModel || undefined, effort: ranEffort || undefined, isolation, access: judgeProfile(input.tool).access, ...spent } };
   } catch (error) {
     return { ok: false, code: 'judge_failed', message: `The judge could not run: ${error instanceof Error ? error.message : String(error)}. Fix that, then retry this lease.` };
   } finally { await fs.rm(tmp, { recursive: true, force: true, maxRetries: 3 }); }

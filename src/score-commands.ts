@@ -3,8 +3,8 @@ import { resolveRunMode } from './launch-context.js';
 import { AttemptStore, isRunAttempt } from './scorers/attempts.js';
 import { isScorerFile } from './scorers/definition.js';
 import { parseLeaseRef } from './scorers/entry.js';
-import { scoreSession, type OwnJudge, type SessionDemand } from './session-flow/scoring.js';
-import type { LocalConfig } from './types.js';
+import { scoreSession, type OwnJudge, type SessionDemand, type TeamSession } from './session-flow/scoring.js';
+import type { JsonValue, LocalConfig } from './types.js';
 import { LabelStore } from './scorers/label-store.js';
 import { setStderrOnly } from './utils/logger.js';
 import { findRunConfig, partitionConfig, projectPartitions } from './workflow/run-location.js';
@@ -50,14 +50,16 @@ async function readStdin(): Promise<string> {
   return Buffer.concat(chunks).toString('utf8');
 }
 
-async function payloadOf(options: ScoreOptions): Promise<{ ok: true; value: unknown } | { ok: false; envelope: WorkflowEnvelope }> {
+async function payloadOf(options: ScoreOptions): Promise<{ ok: true; value: JsonValue } | { ok: false; envelope: WorkflowEnvelope }> {
   if (options.json !== undefined && options.stdin) return { ok: false, envelope: failure('invalid_json', 'Pass the payload with --json or --stdin, not both') };
   const text = options.stdin ? await readStdin() : options.json;
 
   if (text === undefined || text.trim() === '') return { ok: false, envelope: failure('invalid_json', 'Pass the payload with --json <payload> or --stdin') };
 
   try {
-    return { ok: true, value: JSON.parse(text) as unknown };
+    const value: JsonValue = JSON.parse(text);
+
+    return { ok: true, value };
   } catch {
     return { ok: false, envelope: failure('invalid_json', 'Could not parse the payload as JSON') };
   }
@@ -84,10 +86,15 @@ function demandOf(options: ScoreOptions): ScoreDemand | WorkflowEnvelope {
     return failure('invalid_pass', 'Pass --pass as a positive integer: the pass of the step to judge');
   }
 
-  return {
-    run: options.run, step: options.step, scorers: [scorer, ...scorers],
-    ...(pass !== undefined ? { pass } : {}), ...(options.queue ? { queue: true } : {}), ...(options.batch ? { batch: true } : {}),
-  };
+  const demand: ScoreDemand = { run: options.run, step: options.step, scorers: [scorer, ...scorers] };
+
+  if (pass !== undefined) demand.pass = pass;
+
+  if (options.queue) demand.queue = true;
+
+  if (options.batch) demand.batch = true;
+
+  return demand;
 }
 
 /** The session `--session` asks for, or the failure that says what is missing. */
@@ -108,16 +115,29 @@ function sessionDemandOf(options: ScoreOptions): SessionDemand | WorkflowEnvelop
 
   if (options.author !== undefined && options.teamSession === undefined) return failure('invalid_arguments', '--author picks who pushed --team-session <name>. Pass it with --team-session.');
 
-  const named = options.teamSession !== undefined
-    ? { teamSession: { name: options.teamSession, ...(options.author !== undefined ? { author: options.author } : {}) } }
-    : { ...(options.session !== undefined ? { session: options.session } : {}), ...(options.source !== undefined ? { source: options.source } : {}) };
+  let demand: SessionDemand;
 
-  return {
-    scorers: [scorer, ...scorers],
-    ...named,
-    ...(options.label !== undefined ? { label: options.label } : {}),
-    ...(options.batch ? { batch: true } : {}), ...(options.push ? { push: true } : {}),
-  };
+  if (options.teamSession !== undefined) {
+    const teamSession: TeamSession = { name: options.teamSession };
+
+    if (options.author !== undefined) teamSession.author = options.author;
+    demand = { scorers: [scorer, ...scorers], teamSession };
+  } else {
+    const local: SessionDemand & { teamSession?: never } = { scorers: [scorer, ...scorers] };
+
+    if (options.session !== undefined) local.session = options.session;
+
+    if (options.source !== undefined) local.source = options.source;
+    demand = local;
+  }
+
+  if (options.label !== undefined) demand.label = options.label;
+
+  if (options.batch) demand.batch = true;
+
+  if (options.push) demand.push = true;
+
+  return demand;
 }
 
 async function localConfig(): Promise<{ ok: true; config: LocalConfig } | { ok: false; envelope: WorkflowEnvelope }> {
@@ -198,7 +218,8 @@ async function score(options: ScoreOptions): Promise<WorkflowEnvelope> {
       if (!payload.ok) return payload.envelope;
       const request = parseJudgeRequest(payload.value);
 
-      if (typeof request === 'string') return failure('invalid_json', request);
+      // The parser answers a string when the payload is not a request.
+      if (!(request instanceof Object)) return failure('invalid_json', request);
 
       if (request.run !== undefined || request.canTakeLease !== undefined) {
         return failure('invalid_json', 'A --session payload leases the session it names: leave out run and canTakeLease.');
@@ -241,7 +262,8 @@ async function score(options: ScoreOptions): Promise<WorkflowEnvelope> {
   if (options.next) {
     const request = parseJudgeRequest(payload.value);
 
-    if (typeof request === 'string') return failure('invalid_json', request);
+    // The parser answers a string when the payload is not a request.
+    if (!(request instanceof Object)) return failure('invalid_json', request);
     const scoped = request.run !== undefined ? await runConfig(request.run) : await localConfig();
 
     return scoped.ok ? nextJudgeLease(scoped.config, request) : scoped.envelope;
@@ -255,7 +277,8 @@ async function score(options: ScoreOptions): Promise<WorkflowEnvelope> {
   if (options.lease !== undefined && !options.submit) return runJudgeLease(config, options.lease, payload.value);
   const submission = parseJudgeSubmission(payload.value);
 
-  if (typeof submission === 'string') return failure('invalid_json', submission);
+  // The parser answers a string when the payload is not a submission.
+  if (!(submission instanceof Object)) return failure('invalid_json', submission);
 
   return submitJudgeLease(config, options.lease ?? '', submission);
 }

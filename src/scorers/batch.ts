@@ -42,7 +42,7 @@ export function verdictsOf<T>(
   const single = LabelAnswerSchema.safeParse(answer);
   const batch = BatchAnswerSchema.safeParse(answer);
 
-  const shape = batched
+  const expectedAnswer = batched
     ? `{${rubrics.map((definition) => `"${definition.name}":{"label":…,"reasoning":…}`).join(',')}}`
     : '{"label":…,"reasoning":…}';
 
@@ -52,7 +52,7 @@ export function verdictsOf<T>(
     const definition = definitionOf(item);
     const given = batched ? (batch.success ? batch.data[definition.name] : undefined) : single.success ? single.data : undefined;
 
-    if (!given) return { ok: false, message: `The answer has no label for scorer ${definition.name}. Answer ${shape}. The lease stays open.` };
+    if (!given) return { ok: false, message: `The answer has no label for scorer ${definition.name}. Answer ${expectedAnswer}. The lease stays open.` };
     const label = definition.labels.find((candidate) => candidate.value === given.label);
 
     if (!label) {
