@@ -123,9 +123,6 @@ const RUN_LIMIT = 10;
 const CHANGE_DAYS = 180;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/** A regression task's file, under a suite of `benchmarks/`. */
-const TASK_FILE = /(^|\/)benchmarks\/.+\/tasks\/[^/]+\.yaml$/;
-
 async function teamGit(config: LocalConfig, args: string[]): Promise<string | undefined> {
   const result = await execCommand('git', args, { cwd: config.repo.localPath, timeoutMs: 20_000 }).catch(() => undefined);
 
@@ -166,7 +163,7 @@ async function landedChanges(config: LocalConfig, { since, scorersOf, proposalOf
       return status !== undefined && file !== undefined ? [{ status, file }] : [];
     });
 
-    const added = entries.filter(({ status, file }) => status === 'A' && TASK_FILE.test(file)).map(({ file }) => file);
+    const added = entries.filter(({ status, file }) => status === 'A' && SelfImprovement.TASK_FILE.test(file)).map(({ file }) => file);
 
     const scored = (await Promise.all(added.map(async (file) => ({ file, scorers: scorersOf.get(await sourceAt(config, { commit, file }) ?? '') }))))
       .flatMap(({ file, scorers }) => (scorers === undefined ? [] : [{ file, scorers }]));
@@ -247,9 +244,7 @@ async function proposedChanges(config: LocalConfig, { refresh }: { refresh: bool
   });
 
   const changes = await Promise.all(proposals.map(async ({ head, branch }): Promise<Found<'proposed'> & { sources: Map<string, string> } | undefined> => {
-    const merged = await execCommand('git', ['merge-base', '--is-ancestor', head, 'HEAD'], { cwd: config.repo.localPath, timeoutMs: 10_000 }).catch(() => undefined);
-
-    if (merged?.code === 0) return undefined;
+    if (await SelfImprovement.holdsProposal(config.repo.localPath, { base: 'HEAD', head }).catch(() => false)) return undefined;
 
     const [diff, header] = await Promise.all([
       teamGit(config, ['diff', '--relative', '--no-renames', '--name-status', `HEAD...${head}`]),
@@ -265,14 +260,7 @@ async function proposedChanges(config: LocalConfig, { refresh }: { refresh: bool
       return status !== undefined && file !== undefined && status !== 'D' ? [{ status, file }] : [];
     });
 
-    const tasks = entries.filter(({ status, file }) => status === 'A' && TASK_FILE.test(file)).map(({ file }) => file).sort();
-
-    // A proposal squash- or rebase-merged leaves its branch apart from the default branch, which has its tasks as they are.
-    if (tasks.length > 0) {
-      const landed = await execCommand('git', ['diff', '--quiet', 'HEAD', head, '--', ...tasks], { cwd: config.repo.localPath, timeoutMs: 10_000 }).catch(() => undefined);
-
-      if (landed?.code === 0) return undefined;
-    }
+    const tasks = entries.filter(({ status, file }) => status === 'A' && SelfImprovement.TASK_FILE.test(file)).map(({ file }) => file).sort();
 
     const sources = new Map((await Promise.all(tasks.map(async (file) => [await sourceAt(config, { commit: head, file }), file] as const)))
       .flatMap(([source, file]) => (source === undefined ? [] : [[source, file] as const])));

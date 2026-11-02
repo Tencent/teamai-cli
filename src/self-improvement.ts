@@ -124,13 +124,28 @@ async function git(cwd: string, args: string[]): Promise<string> {
   return (await run('git', args, { cwd, maxBuffer: 16 * 1024 * 1024 })).stdout.trim();
 }
 
+/** A regression task file of any suite, as a path in the team repo. */
+const TASK_FILE = /(^|\/)benchmarks\/.+\/tasks\/[^/]+\.yaml$/;
+
+/**
+ * Whether `base` holds the proposal at `head`: it merged it, or has each regression task the proposal adds exactly as the
+ * proposal has it, as a squash or rebase merge leaves a kept branch. Both are refs of the team checkout `cwd`.
+ */
+async function holdsProposal(cwd: string, { base, head }: { base: string; head: string }): Promise<boolean> {
+  if (await git(cwd, ['merge-base', '--is-ancestor', head, base]).then(() => true, () => false)) return true;
+  const added = (await git(cwd, ['diff', '--relative', '--no-renames', '--name-only', '--diff-filter=A', `${base}...${head}`])).split('\n').filter((file) => TASK_FILE.test(file));
+
+  return added.length > 0 && await git(cwd, ['diff', '--quiet', base, head, '--', ...added]).then(() => true, () => false);
+}
+
 /** A suite directory under `benchmarks/`, such as benchmarks/regressions or benchmarks/web/regressions. */
 const SUITE_DIR = new RegExp(`^benchmarks/(?:${BENCHMARK_NAME.source.slice(1, -1)}/)?${BENCHMARK_NAME.source.slice(1, -1)}$`);
 
 /**
  * The tasks of `suite` that name a subject as their `source`, by the subject's canonical JSON, as `<suite>/tasks/<file>`:
  * those on `proposal` first, then those on the default branch, both as origin has them now, read in the member's team
- * checkout. `hasProposal`: origin has `proposal`, and its default branch does not hold it. `busy` while a teamai pull or push holds that checkout: the fetch
+ * checkout. `hasProposal`: origin has `proposal`, and its default branch does not hold it (`holdsProposal`); the tasks of
+ * one it holds are read from the default branch alone. `busy` while a teamai pull or push holds that checkout: the fetch
  * updates the refs a pull updates.
  */
 async function coveringTasks(config: LocalConfig, input: { suite: string; proposal?: string }): Promise<{ tasks: Map<string, string>; hasProposal: boolean } | 'busy'> {
@@ -155,11 +170,11 @@ async function tasksOnOrigin(teamCheckout: string, { suite, proposal }: { suite:
 
   if (branches.length > 0) await git(top, ['fetch', '-q', '--no-tags', 'origin', ...branches.map((branch) => `+refs/heads/${branch}:refs/remotes/origin/${branch}`)]);
   // A branch the default branch holds is a proposal that merged and was kept, as the dashboard reads it: none is open.
-  const merged = onOrigin && base !== undefined && await git(top, ['merge-base', '--is-ancestor', `refs/remotes/origin/${proposal}`, `refs/remotes/origin/${base}`]).then(() => true, () => false);
+  const merged = onOrigin && base !== undefined && await holdsProposal(teamCheckout, { base: `refs/remotes/origin/${base}`, head: `refs/remotes/origin/${proposal}` });
   const hasProposal = onOrigin && !merged;
   const tasks = new Map<string, string>();
 
-  for (const branch of branches) {
+  for (const branch of merged ? branches.slice(1) : branches) {
     const ref = `refs/remotes/origin/${branch}`;
 
     const files = (await git(top, ['ls-tree', '-r', '--name-only', ref, '--', `${prefix}${suite}/tasks/`])).split('\n')
@@ -208,4 +223,4 @@ async function plan(config: LocalConfig, input: { failures: readonly DigestFailu
   return { ...picked, ready: isReady({ startable: picked.failures.length, hasProposal: covering.hasProposal }), hasProposal: covering.hasProposal };
 }
 
-export const SelfImprovement = { WORKFLOW, SUITE, BRANCH_PREFIX, pick, isReady, commandOf, branchOf, commitsIn, coveringTasks, plan } as const;
+export const SelfImprovement = { WORKFLOW, SUITE, BRANCH_PREFIX, TASK_FILE, holdsProposal, pick, isReady, commandOf, branchOf, commitsIn, coveringTasks, plan } as const;

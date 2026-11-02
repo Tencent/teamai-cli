@@ -178,6 +178,40 @@ describe('the tasks that already cover a failure', () => {
     expect(Object.keys(Object.fromEntries(covered.tasks))).toContain(canonicalJson(session('s2')));
   });
 
+  it('says there is no proposal once main has each task the branch adds, as a squash merge leaves a kept branch', async () => {
+    const { writer, member } = team();
+    git(writer, 'checkout', '-q', '-b', 'teamai/self-improvement/review-quality');
+    commit(writer, { 'benchmarks/regressions/tasks/proposed.yaml': task('s2') }, 'proposal');
+    git(writer, 'push', '-q', 'origin', 'teamai/self-improvement/review-quality');
+    git(writer, 'checkout', '-q', 'main');
+    git(writer, 'merge', '-q', '--squash', 'teamai/self-improvement/review-quality');
+    git(writer, 'commit', '-qm', 'the proposal, squashed');
+    git(writer, 'push', '-q', 'origin', 'main');
+
+    const covered = await SelfImprovement.coveringTasks(member, { suite: 'benchmarks/regressions', proposal: 'teamai/self-improvement/review-quality' });
+
+    if (covered === 'busy') throw new Error('the sync lock was free');
+    expect(covered.hasProposal).toBe(false);
+  });
+
+  it('covers no failure with a task of a merged proposal that main deleted since', async () => {
+    const { writer, member } = team();
+    git(writer, 'checkout', '-q', '-b', 'teamai/self-improvement/review-quality');
+    commit(writer, { 'benchmarks/regressions/tasks/proposed.yaml': task('s2') }, 'proposal');
+    git(writer, 'push', '-q', 'origin', 'teamai/self-improvement/review-quality');
+    git(writer, 'checkout', '-q', 'main');
+    git(writer, 'merge', '-q', '--no-ff', '-m', 'merge the proposal', 'teamai/self-improvement/review-quality');
+    git(writer, 'rm', '-q', 'benchmarks/regressions/tasks/proposed.yaml');
+    git(writer, 'commit', '-qm', 'drop the task');
+    git(writer, 'push', '-q', 'origin', 'main');
+
+    const covered = await SelfImprovement.coveringTasks(member, { suite: 'benchmarks/regressions', proposal: 'teamai/self-improvement/review-quality' });
+
+    if (covered === 'busy') throw new Error('the sync lock was free');
+    expect(covered.hasProposal).toBe(false);
+    expect([...covered.tasks.values()]).toEqual(['benchmarks/regressions/tasks/landed.yaml']);
+  });
+
   it('says there is no proposal when origin has no such branch', async () => {
     const { member } = team();
 
