@@ -45,6 +45,13 @@ OpenCode hooks use the Node executable and TeamAI entry recorded by `teamai hook
 
 Pi extensions launch the Node executable and TeamAI entry recorded by `teamai pull` or `teamai hooks inject`. After moving or reinstalling either, rerun one of those commands and restart Pi.
 
+Pi reads `AGENTS.override.md` before `AGENTS.md` from 0.84.0 (`@earendil-works/pi-coding-agent`). When you keep an override, pull writes the team instructions there, and an older Pi never sees them:
+
+```text
+  ✖ pi reads the AGENTS.override.md holding the team instructions
+    → Pi 0.73.1 reads /home/ana/.pi/agent/AGENTS.md, not /home/ana/.pi/agent/AGENTS.override.md, so it never sees the team instructions: Pi reads AGENTS.override.md from 0.84.0. Upgrade Pi (`npm install -g @earendil-works/pi-coding-agent`), or move your text from /home/ana/.pi/agent/AGENTS.override.md into AGENTS.md, delete the override, and run `teamai pull`.
+```
+
 Hermes hooks and its instructions plugin launch the Node executable and TeamAI entry recorded by `teamai hooks inject` or `teamai pull`. After moving or reinstalling either, rerun one of those commands and restart Hermes.
 
 ## A tool has not trusted the project yet

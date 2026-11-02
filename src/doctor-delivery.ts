@@ -2536,6 +2536,23 @@ export async function buildInstructionDeliveryChecks(ctx: DoctorContext): Promis
     });
   }
 
+  // Pi reads AGENTS.override.md before AGENTS.md only from 0.84.0; an older
+  // Pi reads AGENTS.md, which pull leaves without team blocks beside it.
+  const piOverride = targets.find((target) => target.tools.includes('pi') && path.basename(target.path) === 'AGENTS.override.md');
+  const { probeBinary } = await import('./utils/exec.js');
+  const piVersion = piOverride ? /^(\d+)\.(\d+)\.\d+/.exec(await probeBinary('pi')) : null;
+  if (piOverride && piVersion) {
+    const readsOverride = Number(piVersion[1]) > 0 || Number(piVersion[2]) >= 84;
+    checks.push({
+      name: 'pi reads the AGENTS.override.md holding the team instructions',
+      source: 'local',
+      check: async () => readsOverride,
+      fix: `Pi ${piVersion[0]} reads ${path.join(path.dirname(piOverride.path), 'AGENTS.md')}, not ${piOverride.path}, so it never sees the team instructions: `
+        + 'Pi reads AGENTS.override.md from 0.84.0. Upgrade Pi (`npm install -g @earendil-works/pi-coding-agent`), '
+        + `or move your text from ${piOverride.path} into AGENTS.md, delete the override, and run \`teamai pull\`.`,
+    });
+  }
+
   const hermesSoul = targets.find((target) => target.tools.includes('hermes'));
   if (hermesSoul && await holdsInstructionBlocks(hermesSoul.path)) {
     const { hermesContextFileBudget, getHermesConfigPath } = await import('./hermes-config.js');
