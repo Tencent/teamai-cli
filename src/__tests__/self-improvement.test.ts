@@ -2,12 +2,8 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
-const pushed = vi.hoisted(() => ({ calls: [] as Array<{ path: string[]; branch: string }> }));
-vi.mock('../push-file.js', () => ({
-  pushFile: async ({ path: paths, branch }: { path: string[]; branch: string }) => { pushed.calls.push({ path: paths, branch }); },
-}));
 import type { DigestFailure } from '../digest-failures.js';
 import { SelfImprovement } from '../self-improvement.js';
 import { canonicalJson } from '../utils/canonical-json.js';
@@ -111,11 +107,9 @@ describe('whether a run improves the harness', () => {
   });
 });
 
-describe('proposing a change', () => {
+describe('the tasks that already cover a failure', () => {
   const roots: string[] = [];
   afterEach(() => {
-    process.exitCode = undefined;
-    vi.restoreAllMocks();
     for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
   });
 
@@ -123,89 +117,54 @@ describe('proposing a change', () => {
     cwd, stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t.co', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t.co' },
   }).toString().trim();
+  const task = (sessionId: string) => `schemaVersion: v1alpha1\ntitle: t\nprompt: p\nstartingCommit: ${HERE}\nsuccessCriteria: s\nsource: { platform: claude-code, sessionId: ${sessionId} }\n`;
+  const commit = (dir: string, files: Record<string, string>, message: string) => {
+    for (const [file, text] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+      fs.writeFileSync(path.join(dir, file), text);
+    }
+    git(dir, 'add', '-A');
+    git(dir, 'commit', '-qm', message);
+  };
 
-  it('proposes what the proposal and this run changed, never reverting what the default branch changed since', async () => {
-    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-self-improvement-propose-')));
+  /** A team origin whose main has a task of the suite and one of another suite, and the member's clone of it from before both. */
+  const team = () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-self-improvement-covered-')));
     roots.push(root);
     const origin = path.join(root, 'origin.git');
-    const team = path.join(root, 'team');
-    const other = path.join(root, 'other');
+    const writer = path.join(root, 'writer');
+    const member = path.join(root, 'member');
     git(root, 'init', '-q', '--bare', '-b', 'main', origin);
-    git(root, 'clone', '-q', origin, team);
-    fs.mkdirSync(path.join(team, 'rules'), { recursive: true });
-    fs.writeFileSync(path.join(team, 'rules/style.md'), 'v1\n');
-    git(team, 'add', '-A');
-    git(team, 'commit', '-qm', 'base');
-    git(team, 'push', '-q', 'origin', 'main');
-    git(team, 'checkout', '-q', '-b', 'teamai/self-improvement/review-quality');
-    fs.mkdirSync(path.join(team, 'skills/review'), { recursive: true });
-    fs.writeFileSync(path.join(team, 'skills/review/SKILL.md'), 'read the diff\n');
-    git(team, 'add', '-A');
-    git(team, 'commit', '-qm', 'proposal');
-    git(team, 'push', '-q', 'origin', 'teamai/self-improvement/review-quality');
-    git(root, 'clone', '-q', origin, other);
-    fs.writeFileSync(path.join(other, 'rules/style.md'), 'v2\n');
-    fs.writeFileSync(path.join(other, 'rules/new.md'), 'new\n');
-    git(other, 'add', '-A');
-    git(other, 'commit', '-qm', 'main moves on');
-    git(other, 'push', '-q', 'origin', 'main');
-    fs.mkdirSync(path.join(team, 'agents'), { recursive: true });
-    fs.writeFileSync(path.join(team, 'agents/reviewer.md'), 'reviewer\n');
-    pushed.calls.length = 0;
+    git(root, 'clone', '-q', origin, writer);
+    commit(writer, { 'README.md': 'team\n' }, 'start');
+    git(writer, 'push', '-q', 'origin', 'main');
+    git(root, 'clone', '-q', origin, member);
+    commit(writer, { 'benchmarks/regressions/tasks/landed.yaml': task('s1'), 'benchmarks/web/tasks/other.yaml': task('s3') }, 'tasks');
+    git(writer, 'push', '-q', 'origin', 'main');
+    return { writer, member };
+  };
 
-    await SelfImprovement.propose({ team, branch: 'teamai/self-improvement/review-quality' });
+  it('lists the suite\'s tasks on origin\'s default branch and on the proposal, by the subject each names', async () => {
+    const { writer, member } = team();
+    git(writer, 'checkout', '-q', '-b', 'teamai/self-improvement/review-quality');
+    commit(writer, { 'benchmarks/regressions/tasks/proposed.yaml': task('s2') }, 'proposal');
+    git(writer, 'push', '-q', 'origin', 'teamai/self-improvement/review-quality');
 
-    expect(pushed.calls).toEqual([{ path: ['agents/reviewer.md', 'skills/review/SKILL.md'], branch: 'teamai/self-improvement/review-quality' }]);
+    const covered = await SelfImprovement.coveringTasks(member, { suite: 'benchmarks/regressions', proposal: 'teamai/self-improvement/review-quality' });
+
+    expect(covered.hasProposal).toBe(true);
+    expect(Object.fromEntries(covered.tasks)).toEqual({
+      [canonicalJson(session('s1'))]: 'benchmarks/regressions/tasks/landed.yaml',
+      [canonicalJson(session('s2'))]: 'benchmarks/regressions/tasks/proposed.yaml',
+    });
   });
 
-  it('refuses a regression task the suite cannot run, naming it, and pushes nothing', async () => {
-    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-self-improvement-propose-')));
-    roots.push(root);
-    const origin = path.join(root, 'origin.git');
-    const team = path.join(root, 'team');
-    git(root, 'init', '-q', '--bare', '-b', 'main', origin);
-    git(root, 'clone', '-q', origin, team);
-    fs.mkdirSync(path.join(team, 'benchmarks/regressions/tasks'), { recursive: true });
-    fs.writeFileSync(path.join(team, 'benchmarks/regressions/suite.yaml'), 'schemaVersion: v1alpha1\nname: regressions\nrepo: https://github.com/acme/auth-service.git\ndefaults: { tool: claude }\nmatrix: { team: [main, pulled] }\ntimeout: 2h\n');
-    git(team, 'add', '-A');
-    git(team, 'commit', '-qm', 'suite');
-    git(team, 'push', '-q', 'origin', 'main');
-    fs.writeFileSync(path.join(team, 'benchmarks/regressions/tasks/missed-null-check.yaml'), 'schemaVersion: v1alpha1\ntitle: Missed a null check\nprompt: Review the change.\n');
-    const errors: string[] = [];
-    const { log } = await import('../utils/logger.js');
-    vi.spyOn(log, 'error').mockImplementation((message: string) => { errors.push(message); });
+  it('says there is no proposal when origin has no such branch', async () => {
+    const { member } = team();
 
-    await SelfImprovement.propose({ team, branch: 'teamai/self-improvement/review-quality' });
+    const covered = await SelfImprovement.coveringTasks(member, { suite: 'benchmarks/regressions', proposal: 'teamai/self-improvement/review-quality' });
 
-    expect(process.exitCode).toBe(1);
-    expect(errors).toEqual([expect.stringMatching(/^invalid_task: The regression suite cannot run with these files, so nothing was proposed\. Fix them in .+:\nbenchmarks\/regressions\/tasks\/missed-null-check\.yaml:1: field "startingCommit": /)]);
-    expect(git(team, 'ls-remote', '--heads', 'origin')).not.toContain('teamai/self-improvement/review-quality');
-  });
-
-  it('refuses a change to the suite file that leaves the suite unable to run, and pushes nothing', async () => {
-    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-self-improvement-propose-')));
-    roots.push(root);
-    const origin = path.join(root, 'origin.git');
-    const team = path.join(root, 'team');
-    git(root, 'init', '-q', '--bare', '-b', 'main', origin);
-    git(root, 'clone', '-q', origin, team);
-    fs.mkdirSync(path.join(team, 'benchmarks/regressions/tasks'), { recursive: true });
-    const suite = 'schemaVersion: v1alpha1\nname: regressions\nrepo: https://github.com/acme/auth-service.git\ndefaults: { tool: claude }\nmatrix: { team: [main, pulled] }\ntimeout: 2h\n';
-    fs.writeFileSync(path.join(team, 'benchmarks/regressions/suite.yaml'), suite);
-    fs.writeFileSync(path.join(team, 'benchmarks/regressions/tasks/missed-null-check.yaml'), `schemaVersion: v1alpha1\ntitle: Missed a null check\nprompt: Review the change.\nstartingCommit: ${'a'.repeat(40)}\nsuccessCriteria: Flags the missing null check.\n`);
-    git(team, 'add', '-A');
-    git(team, 'commit', '-qm', 'suite');
-    git(team, 'push', '-q', 'origin', 'main');
-    fs.writeFileSync(path.join(team, 'benchmarks/regressions/suite.yaml'), suite.replace('name: regressions', 'name: renamed'));
-    pushed.calls.length = 0;
-    const errors: string[] = [];
-    const { log } = await import('../utils/logger.js');
-    vi.spyOn(log, 'error').mockImplementation((message: string) => { errors.push(message); });
-
-    await SelfImprovement.propose({ team, branch: 'teamai/self-improvement/review-quality' });
-
-    expect(process.exitCode).toBe(1);
-    expect(errors).toEqual([expect.stringMatching(/\nbenchmarks\/regressions\/suite\.yaml:\d+: .*must be named after its directory/)]);
-    expect(pushed.calls).toEqual([]);
+    expect(covered.hasProposal).toBe(false);
+    expect([...covered.tasks.values()]).toEqual(['benchmarks/regressions/tasks/landed.yaml']);
   });
 });

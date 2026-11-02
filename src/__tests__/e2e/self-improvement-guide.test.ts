@@ -95,8 +95,8 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const said = process.argv.slice(2).join('\\n');
 if (said.includes("Improve the team's harness")) {
-  const team = /checked out at (\\S+?),/.exec(said)[1];
-  const suite = new RegExp(team.replace(/[.*+?^\${}()|[\\]\\\\]/g, '\\\\$&') + '/(\\\\S+)/tasks/<id>\\\\.yaml').exec(said)[1];
+  const team = process.cwd();
+  const suite = /write (\\S+)\\/tasks\\/<id>\\.yaml/.exec(said)[1];
   const failures = JSON.parse(/Failures to fix, newest first: (.*)$/m.exec(said)[1]);
   fs.appendFileSync(${JSON.stringify(improveLog)}, JSON.stringify({ cwd: process.cwd(), failures }) + '\\n');
   if (fs.existsSync(${JSON.stringify(during)})) {
@@ -315,7 +315,14 @@ describe.skipIf(spawnSync('jq', ['--version']).status !== 0)('the self-improveme
 
     const theirs = git(teammate, ['rev-parse', 'HEAD']);
     expect(ran.some((step) => step.status !== 0), said(ran)).toBe(true);
-    expect(said(ran)).toContain(`${BRANCH} moved on origin to ${theirs}`);
+    const done = z.object({ data: z.object({ done: z.object({ run: z.string() }) }) }).parse(JSON.parse(ran.at(-1)?.stdout.trim().split('\n').at(-1) ?? '{}'));
+    // The run state is in the data home of the runner that ran the job.
+    const state = fs.readdirSync(fixture.root, { recursive: true, encoding: 'utf8' })
+      .find((name) => name.split(path.sep).join('/').endsWith(`/workflows/runs/${done.data.done.run}.json`));
+    if (state === undefined) throw new Error(`no run state for ${done.data.done.run}\n${said(ran)}`);
+    const improveStep = z.object({ steps: z.array(z.object({ id: z.string(), failure: z.object({ message: z.string() }).optional() })) })
+      .parse(JSON.parse(fs.readFileSync(path.join(fixture.root, state), 'utf8'))).steps.find((step) => step.id === 'improve');
+    expect(improveStep?.failure?.message, said(ran)).toContain(`${BRANCH} moved on origin while step "improve" ran, so nothing was pushed and origin keeps it.`);
     expect(branchHead()).toBe(theirs);
     expect(proposed()).toContain('rules/during.md');
   }, 240_000);

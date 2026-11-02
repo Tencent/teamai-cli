@@ -40,8 +40,8 @@ Generated: do not edit by hand. Regenerate with
   - `--project <id>` — Target a project: each new resource goes to that project's namespace for its own type — skills, knowledge for rules, agents, learnings, docs, env, hooks, mcp, models, and more (from manifest/projects.yaml)
   - `--shared` — Place new resources at the shared root for all roles; cannot combine with --role or --project
   - `--branch <name>` — Push to this destination branch instead of a generated teamai/push branch
-  - `--file <local file>` — Push exactly this local file, byte for byte, to the team path --path names, as a pull request. No other change in the team clone joins it; requires --path. Repeatable: each --file goes with the --path in the same position, all in one pull request
-  - `--path <team path>` — Where --file goes in the team repo, such as benchmarks/frontend/tasks/pod-startup.yaml or scorers/review.md. Placed exactly there, never relocated; cannot combine with --skill, --role, --project, --shared, --all or --carried. Repeatable, once per --file
+  - `--file <local file>` — Push exactly this local file, byte for byte, to the team path --path names, as a pull request. No other change in the team clone joins it; requires --path
+  - `--path <team path>` — Where --file goes in the team repo, such as benchmarks/frontend/tasks/pod-startup.yaml or scorers/review.md. Placed exactly there, never relocated; cannot combine with --skill, --role, --project, --shared, --all or --carried
   - `--carried <path@blob>` — Override the stop for a push that would overwrite or delete a placed agent file a teammate changed. Use it only after carrying that change into your root copy, with the value the stop printed; a later team edit stops the push again. Repeatable
 
 ## pull
@@ -278,17 +278,12 @@ Generated: do not edit by hand. Regenerate with
 
 ## self-improvement
 
-- `teamai self-improvement` — Improve the team's harness from a scorer's repeated failures: change the assets teamai delivers so that work like the failing one passes, with one regression task per failure, proposed as one pull request that the next run updates. run starts the workflow teamai-self-improvement, teamai's default or the team's file of that name, whose plan and propose steps run the other commands.
-  - `teamai self-improvement run <scorer>` — Start the workflow teamai-self-improvement with --inputs {"scorer":"<scorer>","suite":"<--suite>"} and drive it. A team's workflows/teamai-self-improvement.yaml replaces teamai's default, and must take inputs scorer and suite. The default improves only when plan says ready: two failures or more of the scorer in the last 30 days that a task can start from, or one more for a proposal already on origin, and its prompt step needs a sandbox. Prints the run's done envelope.
+- `teamai self-improvement` — Improve the team's harness from a scorer's repeated failures: change the assets teamai delivers so that work like the failing one passes, with one regression task per failure, proposed as one pull request on the team repo that the next run updates. run starts the workflow teamai-self-improvement, teamai's default or the team's file of that name.
+  - `teamai self-improvement run <scorer>` — Start the workflow teamai-self-improvement with --inputs {"scorer":"<scorer>","suite":"<--suite>"} and drive it. A team's workflows/teamai-self-improvement.yaml replaces teamai's default, and must take inputs scorer and suite. The default reads digest --json --scorer and improves only when it says ready: two failures or more of the scorer in the last 30 days that a task can start from, or one more for a proposal already on origin. Its prompt step needs a sandbox, and runs in a fresh clone of the team repo on teamai/self-improvement/<scorer>, whose pull request it opens or updates. Prints the run's done envelope.
     - `--suite <dir>` — The suite the regression tasks go in, which the team repo's default branch must have
     - `--driver <kind>` — The driver that runs it: local (default), or skill
     - `--tools <list>` — The tools its prompt steps run on, as workflow start --tools takes them, such as default=claude
     - `--sandbox` — With --driver local, declare this machine a sandbox for this process, where the prompt step, which edits files without asking, may run. workflows.sandbox in config declares it for every process.
-  - `teamai self-improvement plan <scorer>` — The workflow's first step: clone the team repo into the data home, on teamai/self-improvement/<scorer> when origin has that branch with the default branch merged in (refused as proposal_conflict when they conflict), and print one JSON object: team, that checkout (its .teamai/ in single-repo mode); branch; ready, whether the workflow's improve step runs: two failures to start from, or one when origin has the branch; failures, the scorer's failures digest --json lists that a task can start from (a recorded start commit this checkout has, and no task of --suite in the clone names its subject), each subject once, newest first; covered, the tasks of --suite that already name a failure; and refused, each other failure with why: tracked_changes, not_recorded or not_in_checkout.
-    - `--suite <dir>` — The suite whose tasks count as covering a failure, such as benchmarks/regressions
-  - `teamai self-improvement propose` — The workflow's last step: push every file the team checkout --team adds or changes against the default branch on its origin to --branch, in one pull request, as teamai push --file --path --branch does, so an open pull request of that branch is updated. A deleted file is not proposed, and is named on stderr. Pushes nothing when --branch on origin moved since plan cloned it, so a commit pushed meanwhile is kept, or when a changed suite or task would not parse.
-    - `--team <dir>` — The team checkout plan printed as team
-    - `--branch <branch>` — The branch plan printed as branch
 
 ## benchmark
 
@@ -443,6 +438,9 @@ Generated: do not edit by hand. Regenerate with
 
 - `teamai digest` — Generate weekly team activity digest
   - `--json` — Print what an improvement starts from instead, as one JSON envelope: the failing score labels of the last 30 days, each with its subject and the commit its work started at, and each scorer's cohorts with the agreement of its model judge with hand labels. Never a judge's reasoning; a benchmark's labels are left out
+  - `--scorer <name>` — With --json, also print data.improvement for this scorer: failures, its failures a regression task can start from (a recorded start commit this checkout has, and no task of --suite on the team repo's default branch or on --proposal names its subject), each subject once, newest first; covered, the tasks that name its other failures; refused, each failure no task can start from, with why: tracked_changes, not_recorded or not_in_checkout; hasProposal, whether origin has --proposal; and ready: two failures or more, or one more when it has
+  - `--suite <dir>` — With --scorer, the suite whose tasks cover a failure
+  - `--proposal <branch>` — With --scorer, the team repo branch an open proposal is on, whose tasks cover failures too
 
 ## dashboard
 

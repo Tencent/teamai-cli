@@ -40,10 +40,25 @@ async function read(config: LocalConfig, { now = new Date(), refresh = true }: {
   };
 }
 
-/** Prints the digest's JSON envelope on stdout, and only that. */
-async function print(): Promise<void> {
+/**
+ * Prints the digest's JSON envelope on stdout, and only that. With `improvement`, its data also holds what a
+ * self-improvement of that scorer starts from; a suite or scorer it cannot read prints an error envelope and exits 1.
+ */
+async function print({ improvement }: { improvement?: { scorer: string; suite: string; proposal?: string } } = {}): Promise<void> {
   const config = await detectProjectConfig(undefined, undefined, { dryRun: true }) ?? (await requireInit({ dryRun: true })).localConfig;
-  console.log(JSON.stringify({ data: await read(config) }));
+  const view = await read(config);
+  if (improvement === undefined) {
+    console.log(JSON.stringify({ data: view }));
+    return;
+  }
+  const { SelfImprovement } = await import('./self-improvement.js');
+  const planned = await SelfImprovement.plan(config, { failures: view.failures, ...improvement });
+  if ('code' in planned) {
+    console.log(JSON.stringify({ error: planned }));
+    process.exitCode = 1;
+    return;
+  }
+  console.log(JSON.stringify({ data: { ...view, improvement: planned } }));
 }
 
 export const DigestFailures = { WINDOW_DAYS, read, print } as const;

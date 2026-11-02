@@ -262,45 +262,6 @@ describe('teamai push --file --path', () => {
     expect(member.gh.calls().filter((call) => call.args[1] === 'create')).toHaveLength(1);
   });
 
-  it('proposes several files in one pull request, each at its own path, and updates that request with the next set', async () => {
-    const member = teamMember({ 'agents/reviewer.md': '---\nname: reviewer\ndescription: Reviews changes.\n---\nReview the change.\n' });
-    const reviewer = localFile(member, 'reviewer.md', '---\nname: reviewer\ndescription: Reviews changes.\n---\nReview the change. Check every removed null check.\n');
-    const first = localFile(member, 'missed-null-check.yaml', TASK);
-    const second = localFile(member, 'missed-retry.yaml', TASK.replace('Pods time out on first start', 'The retry loop never stops'));
-    const files = (tasks: string[]) => ['--file', reviewer, '--path', 'agents/reviewer.md', ...tasks.flatMap((task) => ['--file', task, '--path', `benchmarks/frontend/tasks/${path.basename(task)}`])];
-
-    const opened = teamai(member, ['push', ...files([first]), '--branch', 'teamai/improve/review-quality']);
-
-    expect(opened.code, opened.output).toBe(0);
-    expect(proposed(member)).toEqual({ 'teamai/improve/review-quality': ['agents/reviewer.md', 'benchmarks/frontend/tasks/missed-null-check.yaml'] });
-    const create = member.gh.calls().find((call) => call.args[1] === 'create')?.args ?? [];
-    expect(create[create.indexOf('-t') + 1]).toBe('[teamai] Update agents/reviewer.md and 1 more file from member');
-    expect(create[create.indexOf('-b') + 1]).toBe('Proposes these files exactly as given, with teamai push --file --path:\n- agents/reviewer.md\n- benchmarks/frontend/tasks/missed-null-check.yaml');
-
-    const updated = teamai(member, ['push', ...files([first, second]), '--branch', 'teamai/improve/review-quality']);
-
-    expect(updated.code, updated.output).toBe(0);
-    expect(updated.output).toContain('Updated pull request https://github.com/acme/team/pull/1');
-    expect(proposed(member)).toEqual({ 'teamai/improve/review-quality': ['agents/reviewer.md', 'benchmarks/frontend/tasks/missed-null-check.yaml', 'benchmarks/frontend/tasks/missed-retry.yaml'] });
-    expect(member.gh.calls().filter((call) => call.args[1] === 'create')).toHaveLength(1);
-  });
-
-  it.each([
-    [['--file', '{file}', '--path', 'scorers/a.md', '--file', '{file}'], 'Each --file needs its own --path: 2 --file and 1 --path were given, paired in order.'],
-    [['--file', '{file}', '--path', 'scorers/a.md', '--file', '{file}', '--path', 'scorers/a.md'], 'scorers/a.md is given twice as --path. Give each destination once.'],
-  ])('refuses %j before touching any repo', (args, message) => {
-    const member = teamMember();
-    const file = localFile(member, 'a.md', 'A.\n');
-    const main = git(member.origin, ['rev-parse', 'main']);
-
-    const pushed = teamai(member, ['push', ...args.map((arg) => (arg === '{file}' ? file : arg))]);
-
-    expect(pushed.code).toBe(2);
-    expect(pushed.output).toContain(message);
-    expect(proposed(member)).toEqual({});
-    expect(git(member.origin, ['rev-parse', 'main'])).toBe(main);
-  });
-
   it('refuses a --branch that origin has with no open pull request, and leaves that branch as it was', async () => {
     const member = teamMember();
     git(path.join(member.root, 'seed-team'), ['push', '-q', member.origin, 'main:refs/heads/release']);
