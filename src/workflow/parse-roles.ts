@@ -268,8 +268,16 @@ export function roleDiagnostics(root: Node, workflow: { defaults?: WorkflowDefau
     const own = resolved.from === 'defaults' ? (last.isOwnDefaultRole ? sources.get('defaults.role') : undefined)
       : named?.written && { node: valueNode(named.written.item, 'role'), field: `${named.written.field}.role` };
 
-    if (own) report('bad_role', own.node, own.field, roleConflictMessage(conflict));
-    else if (caller) report('bad_role', caller.node, caller.field, roleConflictMessage(conflict, caller));
+    // Setting the role on the opener helps only once the team pulled now declares it; a pinned clone checks its own revision.
+    const id = roleIdNamedNow(resolved.role);
+    const declared = ctx.files?.roles;
+
+    const declareFirst = id !== undefined && declared !== undefined && !declared.has(id) && !opensPinnedClone(opener.step)
+      ? ` once manifest/roles.yaml declares ${id}, which it does not: it declares ${declared.size === 0 ? 'no role' : [...declared].join(', ')}`
+      : '';
+
+    if (own) report('bad_role', own.node, own.field, `${roleConflictMessage(conflict)}${declareFirst}`);
+    else if (caller) report('bad_role', caller.node, caller.field, `${roleConflictMessage(conflict, caller)}${declareFirst}`);
   };
 
   /**
