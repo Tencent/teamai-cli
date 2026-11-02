@@ -251,6 +251,6 @@ describe('lastInstructionsSection', () => {
     writeLog(rendered, raised);
     expect(await lastInstructionsSection()).toEqual({ kind: 'skipped', at: '2026-11-01 12:00:00', reason: 'raised and was skipped: boom' });
     writeLog(rendered, tooLong);
-    expect(await lastInstructionsSection()).toEqual({ kind: 'skipped', at: '2026-11-01 14:00:00', reason: 'exceeded max_chars (4210 > 4000) and was skipped' });
+    expect(await lastInstructionsSection()).toEqual({ kind: 'too-long', at: '2026-11-01 14:00:00', reason: 'exceeded max_chars (4210 > 4000) and was skipped' });
   });
 });

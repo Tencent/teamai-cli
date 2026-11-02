@@ -514,4 +514,10 @@ The generated status script and instructions plugin capture the installed Node e
 
 ## Hermes sessions miss the team instructions
 
-`doctor` warns "Hermes's last session took teamai's instructions section" when Hermes logged that it dropped teamai's plugin section in the last session on this machine, whichever project it ran in. Other plugins' sections share Hermes's 8,000-character, 32-section budget and are filled first when their id sorts before `teamai.instructions`. Disable a plugin the member does not need (`plugins.disabled` in the Hermes `config.yaml`) or shorten its section, then start a new Hermes session. `logs/agent.log` in the Hermes home lists each section and its size.
+`doctor` warns "Hermes's last session took teamai's instructions section" when Hermes logged that it dropped teamai's plugin section in a session on this machine, whichever project it ran in. The fix line quotes Hermes's reason:
+
+- `exceeded the aggregate session budget` or `section-count budget`: other plugins' sections, filled first when their id sorts before `teamai.instructions`, took Hermes's 8,000-character, 32-section budget. Disable a plugin the member does not need (`plugins.disabled` in the Hermes `config.yaml`) or shorten its section.
+- `exceeded max_chars`: that project's team instructions are over 4,000 characters. Run `teamai doctor` in that project; it names what to shorten.
+- Anything else: run `teamai hooks inject`.
+
+Then start a new Hermes session. `logs/agent.log` in the Hermes home lists each section and its size.

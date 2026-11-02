@@ -2669,7 +2669,7 @@ async function hermesSectionCheck(): Promise<Check | null> {
   const agentLog = path.join(toolHome('hermes'), 'logs', 'agent.log');
   const name = 'Hermes\'s last session took teamai\'s instructions section';
   // Hermes logs a rendered section at INFO: below that level an old skip stays the last line.
-  const lastSession = (at: string) => `The last Hermes session on this machine, at ${at}, got none of the team instructions`;
+  const lastSession = (at: string) => `The Hermes session at ${at} got none of the team instructions`;
   switch (section.kind) {
     case 'unseen':
       return null;
@@ -2685,15 +2685,21 @@ async function hermesSectionCheck(): Promise<Check | null> {
           + `${HERMES_INSTRUCTIONS_SECTION} took them first. Disable a plugin you do not need (plugins.disabled in ${getHermesConfigPath()}) `
           + `or shorten its section, then start a new Hermes session. ${agentLog} lists each section Hermes rendered and its size.`,
       };
+    case 'too-long':
+      return {
+        name,
+        source: 'local',
+        check: async () => 'warn',
+        fix: `${lastSession(section.at)}: ${HERMES_INSTRUCTIONS_SECTION} ${section.reason}. Hermes takes at most ${HERMES_SECTION_LIMIT} `
+          + 'characters in one section; `teamai doctor` in the project that session ran in names the instructions to shorten.',
+      };
     case 'skipped':
       return {
         name,
         source: 'local',
         check: async () => 'warn',
         fix: `${lastSession(section.at)}: ${HERMES_INSTRUCTIONS_SECTION} ${section.reason}. `
-          + (section.reason.startsWith('exceeded max_chars')
-            ? `Hermes takes at most ${HERMES_SECTION_LIMIT} characters in one section; \`teamai doctor\` in the project that session ran in names the instructions to shorten.`
-            : `Run \`teamai hooks inject\`, then start a new Hermes session; ${agentLog} has the details.`),
+          + `Run \`teamai hooks inject\`, then start a new Hermes session; ${agentLog} has the details.`,
       };
     default: {
       const unhandled: never = section;
