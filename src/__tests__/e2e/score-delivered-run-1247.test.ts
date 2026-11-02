@@ -42,6 +42,16 @@ steps:
     deliver: pr
     scorers: [delivered]
 `;
+// The same run, with the change made by a workflow of its own, which delivers what its steps wrote.
+const SHIP_BY_WORKFLOW = SHIP.replace(`    prompt: "Do what issue {{ inputs.issue }} asks: {{ steps.read-issue.outputs.body }}"
+    tool: claude
+    workspace: new`, `    workspace: new
+    workflow:
+      steps:
+        - id: write
+          prompt: "Do what issue {{ inputs.issue }} asks: {{ steps.read-issue.outputs.body }}"
+          tool: claude
+          workspace: continue`);
 // What the issue tracker answers for an issue, as a typed output.
 const READ_ISSUE = "console.log(JSON.stringify({ title: 'Answer 42', body: 'Issue ' + process.env.ISSUE + ': make answer.js export 42.' }));\n";
 // The fixture's claude, as a prompt tool, ends on a detached HEAD, which a new workspace refuses. This one fixes the
@@ -91,9 +101,9 @@ function published(fixture: BenchmarkFixture): { text: string; labels: Array<z.i
  * Runs ship-issue for `issue` against a GitHub origin whose `gh` answers `checkRuns` for any commit, then scores its
  * delivering pass on demand with only --run and --scorer.
  */
-async function shipAndScore(checkRuns: unknown[], issue = 42): Promise<{ fixture: BenchmarkFixture; run: string }> {
+async function shipAndScore(checkRuns: unknown[], issue = 42, ship = SHIP): Promise<{ fixture: BenchmarkFixture; run: string }> {
   const fixture = await benchmarkFixture({
-    tool: 'does-nothing', sandbox: false, tools: ['claude'], team: { 'scorers/delivered.md': DELIVERED, 'workflows/ship-issue.yaml': SHIP },
+    tool: 'does-nothing', sandbox: false, tools: ['claude'], team: { 'scorers/delivered.md': DELIVERED, 'workflows/ship-issue.yaml': ship },
     app: { 'read-issue.js': READ_ISSUE },
   });
   fixtures.push(fixture);
@@ -131,6 +141,15 @@ describe('scoring what a workflow run delivered, through the real CLI', () => {
   it('labels a delivered pull request whose scorer check fails from the check, before its CI is read', async () => {
     // Issue 13's answer is 43, so the base commit's test.js fails on the delivered commit; CI would pass.
     const { fixture, run } = await shipAndScore([{ name: 'test', status: 'completed', conclusion: 'success' }], 13);
+
+    expect(fixture.judgeLaunches()).toEqual([]);
+    expect(published(fixture).labels).toEqual([expect.objectContaining({
+      label: 'partial', passed: false, decidedBy: 'check', subject: { runId: run, step: 'change', pass: 1 },
+    })]);
+  }, 180_000);
+
+  it('runs the scorer\'s check on what a workflow step delivered, which decides as for a prompt step', async () => {
+    const { fixture, run } = await shipAndScore([{ name: 'test', status: 'completed', conclusion: 'success' }], 13, SHIP_BY_WORKFLOW);
 
     expect(fixture.judgeLaunches()).toEqual([]);
     expect(published(fixture).labels).toEqual([expect.objectContaining({
