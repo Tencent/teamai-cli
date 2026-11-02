@@ -64,13 +64,13 @@ function trendChart(weeks){
 }
 const kpiCard=(title, value, foot)=>'<article class="card kpi"><div class="cardtop">'+title+'</div><div class="big">'+value+'</div>'+(foot?'<div class="statusline">'+foot+'</div>':'')+'</article>';
 function kpis(stats){
- return '<div class="kpis">'+kpiCard(label('Pass rate'),pct(stats.rate),number(stats.n)+' '+label('labels'))+kpiCard(label('Passed'),'<span class="good">'+number(stats.passed)+'</span>')+kpiCard(label('Failed'),'<span class="amber">'+number(stats.failed)+'</span>')+'</div>';
+ return '<div class="kpis">'+kpiCard(label('Pass rate'),pct(stats.rate),number(stats.n)+' '+label(stats.n===1?'label':'labels'))+kpiCard(label('Passed'),'<span class="good">'+number(stats.passed)+'</span>')+kpiCard(label('Failed'),'<span class="amber">'+number(stats.failed)+'</span>')+'</div>';
 }
 function splitCards(split){
  const delta=split.after.rate!=null&&split.before.rate!=null?Math.round((split.after.rate-split.before.rate)*100):null;
  return '<h2 class="section-label">'+label('Before and after team commit')+' <span class="tag" title="'+e(split.commit)+'" data-verbatim>'+short(split.commit)+'</span></h2><div class="kpis">'
-  +kpiCard(label('Before'),pct(split.before.rate),number(split.before.n)+' '+label('labels'))
-  +kpiCard(label('After'),pct(split.after.rate),number(split.after.n)+' '+label('labels')+(delta===null?'':' · <b class="'+(delta>=0?'good':'amber')+'">'+(delta>=0?'+':'')+number(delta)+' '+label('pts')+'</b>'))
+  +kpiCard(label('Before'),pct(split.before.rate),number(split.before.n)+' '+label(split.before.n===1?'label':'labels'))
+  +kpiCard(label('After'),pct(split.after.rate),number(split.after.n)+' '+label(split.after.n===1?'label':'labels')+(delta===null?'':' · <b class="'+(delta>=0?'good':'amber')+'">'+(delta>=0?'+':'')+number(delta)+' '+label(Math.abs(delta)===1?'pt':'pts')+'</b>'))
   +kpiCard(label('Not recorded'),'<span class="muted">'+number(split.notRecorded.n)+'</span>',label('labels'))+'</div>'
   +'<p class="label">'+label('After means the team revision contains the commit, checked in this machine\\'s team clone. A label on a revision this clone does not have is not recorded.')+'</p>';
 }
@@ -123,7 +123,7 @@ function agreementPanel(sel){
  const a=sel.agreement, c=sel.cohort;
  if(c.source!=='session'&&!a.handLabelled)return '';
  const how='<p class="scorer-hint">'+label('Label the session you are in, or one a teammate pushed (from teamai session list):')+'</p><code class="command" data-verbatim>teamai score --scorer '+e(c.scorer)+' --label &lt;value&gt; --push\\nteamai score --team-session &lt;name&gt; --scorer '+e(c.scorer)+' --label &lt;value&gt; --push</code>';
- const head='<div class="panelhead"><h2>'+label('Judge agreement with hand labels')+' <span class="count">'+number(a.handLabelled)+' '+label('hand-labelled sessions')+'</span></h2><span class="label">'+label('Does the judge pass and fail the sessions members do?')+'</span></div>';
+ const head='<div class="panelhead"><h2>'+label('Judge agreement with hand labels')+' <span class="count">'+number(a.handLabelled)+' '+label(a.handLabelled===1?'hand-labelled session':'hand-labelled sessions')+'</span></h2><span class="label">'+label('Does the judge pass and fail the sessions members do?')+'</span></div>';
  if(!a.handLabelled)return '<section class="panel sessions agreement">'+head+'<div class="empty agreement-empty"><p>'+label('No hand label this rubric can pair with yet. A few hand labels show whether to trust this pass rate.')+'</p>'+how+'</div></section>';
  const rows=a.judges.map(j=>'<tr class="'+(sameJudge(j.judge,c.judge)?'selected-row':'')+'"><td class="judge">'+judgeText(j.judge)+'</td><td>'+number(j.labels)+'</td><td>'+number(j.paired)+'</td><td>'+number(j.agree)+'</td><td>'+(j.paired?meter(j.agree/j.paired)+' '+pct(j.agree/j.paired):'—')+'</td><td'+(j.judgePassedHumanFailed?' class="amber"':'')+'>'+number(j.judgePassedHumanFailed)+'</td><td'+(j.judgeFailedHumanPassed?' class="amber"':'')+'>'+number(j.judgeFailedHumanPassed)+'</td></tr>').join('')
   +'<tr><td>'+label('Hand label')+'</td><td>'+number(a.handLabelled)+'</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>';
@@ -143,8 +143,8 @@ function harnessFailures(byHarness){
   +(f.harness?'<span class="harness">'+harnessParts(f.harness).concat(f.harness.teamRevision?['<span class="harness-part">'+splitButton(f.harness.teamRevision)+'</span>']:[]).join(' · ')+'</span>':'<span class="harness muted">'+label('Harness not recorded')+'</span>')+'</li>').join('')+'</ul></div>';
 }
 function failingPanel(sel){
- const rows=sel.failing.labels, total=sel.failing.total, staged=!!sel.decided, heads=['SCORED','AUTHOR','LABEL'].concat(staged?['DECIDED BY']:[],['HARNESS','PLATFORM','SKILLS','OPEN']);
- return '<section class="panel sessions"><div class="panelhead"><h2>'+label('Failing labels')+' <span class="count">'+number(total)+'</span></h2>'+(scorerQuery.group?'<button class="link" data-scorer-group="">'+label('Show every group')+'</button>':'<span class="label">'+label('Newest first')+'</span>')+'</div>'
+ const rows=sel.failing.labels, total=sel.failing.total, staged=!!sel.decided, heads=['SCORED','AUTHOR','LABEL'].concat(staged?['DECIDED BY']:[],['HARNESS','PLATFORM','SKILLS','OPEN']), group=scorerQuery.group&&sel.groups?sel.groups.find(g=>g.key===scorerQuery.group):undefined;
+ return '<section class="panel sessions"><div class="panelhead"><h2>'+label('Failing labels')+(group?' · '+groupName(group):'')+' <span class="count">'+number(total)+'</span></h2>'+(scorerQuery.group?'<button class="link" data-scorer-group="">'+label('Show every group')+'</button>':'<span class="label">'+label('Newest first')+'</span>')+'</div>'
   +harnessFailures(sel.failing.byHarness)
   +(rows.length?'<div class="table-scroll card-table"><table class="session-table failing-labels"><thead><tr>'+heads.map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
   +rows.map(r=>'<tr>'+[e(when(r.scoredAt)),'<span data-verbatim>'+e(r.author)+'</span>','<span class="amber" data-verbatim>'+e(r.label)+'</span>'].concat(staged?[deciderText(r.decidedBy||'not recorded')]:[],[harnessCell(r.harness),'<span data-verbatim>'+e(r.platform||(r.run?t('Workflow run'):'—'))+'</span>',r.skills?r.skills.map(s=>'<span class="tag" data-verbatim>'+e(s)+'</span>').join(' '):'—',subjectCell(r)]).map((cell,i)=>'<td data-label="'+e(t(heads[i]))+'">'+cell+'</td>').join('')+'</tr>').join('')

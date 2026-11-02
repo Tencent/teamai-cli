@@ -46,10 +46,10 @@ const LABELS: ViewedLabel[] = [
  * HTML, every message key it asked for, each query it sent, and `click`, which clicks the first element an attribute
  * names and renders the page again. The server answers each query with the failing labels of the group it names.
  */
-async function openPage(labels: ViewedLabel[], { groupBy = 'role', language = 'en' }: { groupBy?: string; language?: 'en' | 'zh-CN' } = {}) {
+async function openPage(labels: ViewedLabel[], { groupBy = 'role', language = 'en', split }: { groupBy?: string; language?: 'en' | 'zh-CN'; split?: { commit: string; sideOf: ReadonlyMap<string, 'before' | 'after'> } } = {}) {
   const viewOf = (url: string) => {
     const group = new URLSearchParams(url.split('?')[1]).get('group');
-    return { configured: true, ...ScorerResults.of({ labels, query: { windowDays: 30, groupBy: 'role', ...(group ? { failing: { group } } : {}) }, now: NOW }) };
+    return { configured: true, ...ScorerResults.of({ labels, query: { windowDays: 30, groupBy: 'role', ...(group ? { failing: { group } } : {}), ...(split ? { split } : {}) }, now: NOW }) };
   };
   const keys: string[] = [];
   const t = (text: string): string => {
@@ -89,7 +89,7 @@ async function openPage(labels: ViewedLabel[], { groupBy = 'role', language = 'e
   return { html, keys, queries, click };
 }
 
-async function renderPage(labels: ViewedLabel[], options: { groupBy?: string; language?: 'en' | 'zh-CN' } = {}): Promise<{ html: string; keys: string[] }> {
+async function renderPage(labels: ViewedLabel[], options: Parameters<typeof openPage>[1] = {}): Promise<{ html: string; keys: string[] }> {
   const { html, keys } = await openPage(labels, options);
   return { html, keys };
 }
@@ -179,10 +179,50 @@ describe('the Scorers page of a workflow whose review step runs with a role of i
     expect([...new Set(chinese.keys)].filter((key) => !Object.hasOwn(dashboardMessages, key))).toEqual([]);
   });
 
+  it('names the selected group in the heading of its failing labels', async () => {
+    const { html: every, click } = await openPage(LABELS);
+    const heading = (html: string) => text(/<h2>Failing labels.*?<\/h2>/s.exec(html)?.[0] ?? '');
+
+    expect(heading(every)).toBe('Failing labels 3');
+    expect(heading(await click('data-scorer-group'))).toBe('Failing labels · review step 1');
+  });
+
   it('translates every label the role groups and the failing list ask for', async () => {
     const { keys } = await renderPage(LABELS, { language: 'zh-CN' });
 
     expect(keys).toEqual(expect.arrayContaining(['HARNESS', 'Harness not recorded', 'step role', 'member role', 'Team revision', 'step', 'member']));
     expect([...new Set(keys)].filter((key) => !Object.hasOwn(dashboardMessages, key))).toEqual([]);
+  });
+});
+
+describe('the Scorers page counts one of a thing in the singular', () => {
+  const ran = (revision: string) => ranAs({ tool: 'claude', model: 'claude-review-1', revision, stepRole: 'review' });
+  /** `count` labels of the review step, `passed` of them passing, on work delivered at `revision`, from run `first` on. */
+  const reviews = ({ count, passed, revision, first }: { count: number; passed: number; revision: string; first: number }) => Array.from({ length: count }, (_, index) =>
+    viewed('bob', label(`r${String(first + index).padStart(16, '0')}`, 'review', { passed: index < passed, scoredAt: '2026-10-27T10:00:00.000Z', agent: ran(revision) })));
+  const split = { commit: MEMBER, sideOf: new Map([[REVIEWED, 'before' as const], [MEMBER, 'after' as const]]) };
+  /** The title and the line under the value of each card that has one. */
+  const feet = (html: string) => html.split('<article class="card kpi">').slice(1).flatMap((card) => {
+    const foot = /<div class="statusline">(.*?)<\/div><\/article>/s.exec(card)?.[1];
+    return foot === undefined ? [] : [`${text(/<div class="cardtop">(.*?)<\/div>/s.exec(card)?.[1] ?? '')}: ${text(foot)}`];
+  });
+
+  it('"1 label", under the pass rate and on each side of a team commit', async () => {
+    const { html } = await renderPage([...reviews({ count: 1, passed: 1, revision: REVIEWED, first: 1 }), ...reviews({ count: 1, passed: 0, revision: MEMBER, first: 2 })], { split });
+
+    expect(feet(html)).toEqual(expect.arrayContaining(['Pass rate: 2 labels', 'Before: 1 label', 'After: 1 label · -100 pts']));
+  });
+
+  it('"+1 pt", the change after a team commit', async () => {
+    const { html } = await renderPage([...reviews({ count: 2, passed: 1, revision: REVIEWED, first: 1 }), ...reviews({ count: 100, passed: 51, revision: MEMBER, first: 3 })], { split });
+
+    expect(feet(html)).toContain('After: 100 labels · +1 pt');
+  });
+
+  it('"1 hand-labelled session", beside the judge agreement', async () => {
+    const judged = label('r0000000000000001', 'review', { passed: true, scoredAt: '2026-10-27T10:00:00.000Z', agent: ran(REVIEWED) });
+    const { html } = await renderPage([viewed('bob', judged), viewed('ana', { ...judged, judge: { kind: 'human' }, scoredAt: '2026-10-27T11:00:00.000Z' })]);
+
+    expect(text(/<h2>Judge agreement with hand labels.*?<\/h2>/s.exec(html)?.[0] ?? '')).toBe('Judge agreement with hand labels 1 hand-labelled session');
   });
 });

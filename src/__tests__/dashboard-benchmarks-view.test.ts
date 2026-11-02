@@ -35,10 +35,12 @@ function roleRun(results: Record<string, TrialResult>, tokens: Record<string, nu
 /**
  * The Benchmarks page as the dashboard renders `runs`, with the Scorers `labels` of production, in `view` and compared by
  * `dimension`, in `language`: its HTML once every answer it asked for arrived, each query it sent, where it went, and
- * `click`, which clicks the first element an attribute names and renders the page again.
+ * `click`, which clicks the first element an attribute names and renders the page again, and `resize`, which lays every
+ * chart out in a box `boxWidth` px wide, as the browser does once the page is in a window `width` px wide, lets the page measure
+ * it, and renders the page again.
  */
-async function openPage(runs: BenchmarkRunInput[], { view = 'arms', dimension = '', language = 'en', labels = [] }: { view?: string; dimension?: string; language?: 'en' | 'zh-CN'; labels?: ViewedLabel[] } = {}) {
-  const history = { configured: true, ...BenchmarkHistory.of({ runs, query: { windowDays: 90 }, now: NOW }) };
+async function openPage(runs: BenchmarkRunInput[], { view = 'arms', dimension = '', language = 'en', labels = [], width = 1440, teamDiffs = {} }: { view?: string; dimension?: string; language?: 'en' | 'zh-CN'; labels?: ViewedLabel[]; width?: number; teamDiffs?: Record<string, { files: Array<{ path: string; added: number; removed: number }>; more: number }> } = {}) {
+  const history = { configured: true, ...BenchmarkHistory.of({ runs, query: { windowDays: 90 }, now: NOW }), teamDiffs };
   const queries: string[] = [];
   const clicks: Array<(event: { target: { closest: (selector: string) => unknown } }) => void> = [];
   const location = { hash: 'benchmarks' };
@@ -60,14 +62,21 @@ async function openPage(runs: BenchmarkRunInput[], { view = 'arms', dimension = 
       queries.push(url);
       return { ok: true, json: async () => answer(url) };
     },
-    window: { innerWidth: 1440 }, location, $: () => undefined,
-    document: { addEventListener: (type: string, listener: (typeof clicks)[number]) => (type === 'click' ? clicks.push(listener) : undefined) },
+    window: { innerWidth: width }, location, $: () => undefined,
+    document: {
+      addEventListener: (type: string, listener: (typeof clicks)[number]) => (type === 'click' ? clicks.push(listener) : undefined),
+      // Each chart the page drew, laid out in a box `box` px wide.
+      querySelectorAll: () => [...html.matchAll(/<svg data-chart="([^"]+)" viewBox="0 0 (\d+) /g)].map(([, chart, drawn]) => ({
+        dataset: { chart }, viewBox: { baseVal: { width: Number(drawn) } }, getBoundingClientRect: () => ({ width: box }),
+      })),
+    },
   };
   const names = Object.keys(scope);
   // The dashboard client embeds the Benchmarks page after the Scorers page, in one closure.
-  const page = new Function(...names, `${agentHarnessView}\n${scorersClient}\n${benchmarksClient}\nreturn { benchmarksPage, loadBenchmarks, compareBy: (key) => { benchDimension = key; } };`)(...Object.values(scope)) as {
-    benchmarksPage: () => string; loadBenchmarks: () => Promise<void>; compareBy: (key: string) => void;
+  const page = new Function(...names, `${agentHarnessView}\n${scorersClient}\n${benchmarksClient}\nreturn { benchmarksPage, loadBenchmarks, fitCharts: () => fitCharts(), compareBy: (key) => { benchDimension = key; } };`)(...Object.values(scope)) as {
+    benchmarksPage: () => string; loadBenchmarks: () => Promise<void>; fitCharts: () => void; compareBy: (key: string) => void;
   };
+  let html = '', box = 0;
   const settle = async () => {
     page.benchmarksPage();
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -75,7 +84,7 @@ async function openPage(runs: BenchmarkRunInput[], { view = 'arms', dimension = 
   };
   await page.loadBenchmarks();
   page.compareBy(dimension);
-  let html = await settle();
+  html = await settle();
   const click = async (attribute: string) => {
     const value = new RegExp(`${attribute}="([^"]*)"`).exec(html)?.[1];
     if (value === undefined) throw new Error(`The page has no ${attribute}`);
@@ -85,10 +94,16 @@ async function openPage(runs: BenchmarkRunInput[], { view = 'arms', dimension = 
     html = await settle();
     return html;
   };
-  return { html, queries, location, click };
+  const resize = (boxWidth: number) => {
+    box = boxWidth;
+    page.fitCharts();
+    html = page.benchmarksPage();
+    return html;
+  };
+  return { html, queries, location, click, resize };
 }
 
-async function renderPage(runs: BenchmarkRunInput[], options: { view?: string; dimension?: string; language?: 'en' | 'zh-CN'; labels?: ViewedLabel[] } = {}): Promise<string> {
+async function renderPage(runs: BenchmarkRunInput[], options: Parameters<typeof openPage>[1] = {}): Promise<string> {
   return (await openPage(runs, options)).html;
 }
 
@@ -173,5 +188,99 @@ describe('the Benchmarks page of a suite that compares roles', () => {
 
     expect(text(html)).toContain('review 角色');
     expect(text(html)).toContain('角色');
+  });
+});
+
+describe('the Benchmarks page at every width', () => {
+  const runs = [roleRun({ 'claude-frontend': 'passed', 'claude-review': 'passed' }, { 'claude-frontend': 1200, 'claude-review': 1000 })];
+  const drawnWidths = (html: string) => [...html.matchAll(/<svg data-chart="[^"]+" viewBox="0 0 (\d+) /g)].map(([, width]) => Number(width));
+
+  it('draws each chart as wide as its box, so its text keeps its size and nothing scrolls, and draws it again on a resize', async () => {
+    // A window 768 px wide, whose sidebar leaves each chart a box 486 px wide.
+    const arms = await openPage(runs, { width: 768 });
+    expect(drawnWidths(arms.html)).toEqual([760, 760]);
+    expect(drawnWidths(arms.resize(486))).toEqual([486, 486]);
+    // The window turns into a phone's, without reloading the page.
+    expect(drawnWidths(arms.resize(330))).toEqual([330, 330]);
+
+    const compare = await openPage(runs, { view: 'compare', width: 768 });
+    expect(drawnWidths(compare.resize(486))).toEqual([486]);
+  });
+
+  it('counts one run of an arm as "1 run"', async () => {
+    const html = await renderPage(runs);
+    const values = [...html.matchAll(/<div class="arm-value">(.*?)<\/div>/gs)].map(([, value]) => text(value ?? '').trim());
+
+    expect(values).toEqual(['100% 1/1 · 1 run', '100% 1/1 · 1 run']);
+  });
+
+  it('keeps the cost per passed trial neutral while the pass rates of the pair are not separated', async () => {
+    const [run] = runs;
+    const costs: Record<string, number> = { 'claude-frontend': 0.038, 'claude-review': 0.036 };
+    // A trial's cost counts once its prompt ran, as teamai observed.
+    const ranAs = (role: string): AgentObservation => ({
+      v: 1, tool: { name: 'claude' }, teamai: '1.0.0', driver: 'local',
+      team: { revision: TEAM, localChanges: false, selection: { scope: 'project', primaryRole: 'frontend', additionalRoles: [], stepRole: role } },
+    });
+    const costed: BenchmarkRunInput[] = run ? [{ ...run, benchmark: { ...run.benchmark, trials: run.benchmark.trials.map((trial) => ({ ...trial, agent: ranAs(trial.arm.split('-')[1] ?? ''), cost: { amount: costs[trial.arm] ?? 0, unit: 'USD', complete: true } })) } }] : [];
+    const html = await renderPage(costed, { view: 'compare' });
+    const cost = /<div class="cardtop">Cost per passed trial<\/div><div class="big">(.*?)<\/div>/s.exec(html)?.[1] ?? '';
+
+    expect(text(html)).toContain('not separated');
+    expect(text(cost).trim()).toBe('−5%');
+    expect(cost).not.toMatch(/class="(up|down)"/);
+  });
+});
+
+describe('the Benchmarks page counts one of a thing in the singular', () => {
+  const runs = [roleRun({ 'claude-frontend': 'passed', 'claude-review': 'passed' }, { 'claude-frontend': 1200, 'claude-review': 1000 })];
+
+  it('"1 deviation", under the arm and in its latest run', async () => {
+    const [run] = runs;
+    // claude-review's prompt ran on codex.
+    const deviated: BenchmarkRunInput[] = run ? [{ ...run, benchmark: { ...run.benchmark, trials: run.benchmark.trials.map((trial) => (trial.arm === 'claude-review' ? { ...trial, agent: { v: 1 as const, tool: { name: 'codex' }, teamai: '1.0.0', driver: 'local' as const } } : trial)) } }] : [];
+    const html = text(await renderPage(deviated));
+
+    expect(html.match(/1 deviation /g)).toHaveLength(2);
+    expect(html).not.toContain('1 deviations');
+  });
+
+  it('"1 trial reported it", in the title of a usage', async () => {
+    const html = await renderPage(runs);
+
+    expect(html).toContain('1 trial reported it');
+    expect(html).not.toContain('1 trials reported it');
+  });
+
+  it('"1 paired trial", under the pass rates of a pair', async () => {
+    const html = text(await renderPage(runs, { view: 'compare' }));
+
+    expect(html).toContain('100% → 100% 1 paired trial ');
+  });
+
+  it('"1 pair", beside the difference of a pair of arms', async () => {
+    const html = await renderPage(runs, { view: 'compare' });
+
+    expect(html).toContain('<small>1 pair</small>');
+  });
+
+  describe('on a team revision', () => {
+    const [run] = runs;
+    const AFTER = 'c'.repeat(40);
+    // The same suite, run again a day later on a newer team revision.
+    const later: BenchmarkRunInput[] = run ? [{ ...run, run: 'r2', startedAt: '2026-10-21T09:00:00Z', benchmark: { ...run.benchmark, baselineTeamRevision: AFTER, arms: run.benchmark.arms.map((arm) => ({ ...arm, team: { kind: 'pulled' as const, revision: AFTER } })) } }] : [];
+    const both = [...runs, ...later];
+
+    it('"1 run", in the title of its point', async () => {
+      const html = await renderPage(both, { view: 'team' });
+
+      expect(html).toMatch(/<g class="revision[^"]*" data-bench-revision="c{40}"><title>[^<]* · 1 run<\/title>/);
+    });
+
+    it('"and 1 more file", under the files it changed', async () => {
+      const html = text(await renderPage(both, { view: 'team', teamDiffs: { [`${TEAM}..${AFTER}`]: { files: [{ path: 'skills/review/SKILL.md', added: 3, removed: 1 }], more: 1 } } }));
+
+      expect(html).toContain('and 1 more file ');
+    });
   });
 });

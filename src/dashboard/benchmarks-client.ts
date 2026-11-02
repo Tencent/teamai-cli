@@ -28,7 +28,16 @@ const armTitle=a=>a.arm+' ('+armConfig(a)+')';
 const swatch=i=>'<i class="swatch" style="background:'+armColor(i)+'"></i>';
 function armName(a,i){ return swatch(i)+'<span data-verbatim>'+e(a.arm)+'</span>'+(a.role?'<span class="arm-role" data-verbatim>'+e(roleText(a))+'</span>':'')+'<small data-verbatim>'+e(armSetup(a))+'</small>'; }
 function heat(rate){ return rate==null?'':'background:color-mix(in oklab,color-mix(in oklab,var(--green) '+Math.round(rate*100)+'%,var(--error)) '+Math.round(30+Math.abs(rate-0.5)*80)+'%,var(--panel))'; }
-const chartWidth=()=>window.innerWidth<700?440:760;
+// A chart is drawn as wide as its box, so its text keeps its size and it never scrolls. Until the page has measured a box, the window's width guesses it.
+const chartWidths={};
+const chartWidth=(key,wide=760)=>chartWidths[key]||(window.innerWidth<700?440:window.innerWidth>=1300?wide:760);
+/** After a render or a resize: measures each chart's box, and renders again when a chart was drawn at another width. */
+function fitCharts(){
+ const charts=[...document.querySelectorAll('#view svg[data-chart]')].map(svg=>({key:svg.dataset.chart,drawn:svg.viewBox.baseVal.width,box:Math.round(svg.getBoundingClientRect().width)})).filter(c=>c.box>0).map(c=>({...c,box:Math.max(320,c.box)}));
+ if(!charts.some(c=>Math.abs(c.box-c.drawn)>2))return;
+ for(const c of charts)chartWidths[c.key]=c.box;
+ render();
+}
 function costText(cost){
  if(!cost||cost.kind==='unknown')return '<span class="muted">—</span>';
  if(cost.kind==='mixed')return label('Mixed units');
@@ -81,16 +90,16 @@ function armBars(sel){
  const arms=sel.arms.filter(a=>a.pooled);
  if(page==='benchmarks'&&arms.some(a=>a.role)&&(!benchProduction||benchProduction.key!==JSON.stringify(productionQuery())))loadBenchProduction();
  return '<section class="panel bench-panel"><div class="panelhead"><h2>'+label('Pass rate by arm')+'</h2><span class="label">'+label('Pooled over the runs of the current suite version. The line is the 95% interval: two arms whose lines overlap are not told apart by these runs.')+'</span></div><div class="arm-bars">'
-  +arms.map(a=>{const i=sel.arms.indexOf(a), rate=passOf(a.pooled); return '<div class="arm-bar" title="'+e(armTitle(a)+': '+Math.round(rate*100)+'% ('+a.pooled.passed+'/'+a.pooled.planned+'), 95% '+Math.round(a.pooled.low*100)+'–'+Math.round(a.pooled.high*100)+'%')+'"><div class="arm-label">'+armName(a,i)+'</div><div class="arm-track" role="img" aria-label="'+e(armTitle(a)+' '+Math.round(rate*100)+'%')+'"><span class="arm-fill" style="width:'+(rate*100).toFixed(1)+'%;background:'+armColor(i)+'"></span><span class="arm-ci" style="left:'+(a.pooled.low*100).toFixed(1)+'%;width:'+((a.pooled.high-a.pooled.low)*100).toFixed(1)+'%"></span></div><div class="arm-value"><b>'+pct(rate)+'</b><small>'+number(a.pooled.passed)+'/'+number(a.pooled.planned)+' · '+number(a.pooled.runs)+' '+label('runs')+'</small>'+(a.pooled.deviations?'<small class="amber">'+number(a.pooled.deviations)+' '+label('deviations')+'</small>':'')+(a.pooled.notVerified?'<small class="muted">'+number(a.pooled.notVerified)+' '+label('not verified')+'</small>':'')+'</div>'+armProduction(a)+'</div>';}).join('')
+  +arms.map(a=>{const i=sel.arms.indexOf(a), rate=passOf(a.pooled); return '<div class="arm-bar" title="'+e(armTitle(a)+': '+Math.round(rate*100)+'% ('+a.pooled.passed+'/'+a.pooled.planned+'), 95% '+Math.round(a.pooled.low*100)+'–'+Math.round(a.pooled.high*100)+'%')+'"><div class="arm-label">'+armName(a,i)+'</div><div class="arm-track" role="img" aria-label="'+e(armTitle(a)+' '+Math.round(rate*100)+'%')+'"><span class="arm-fill" style="width:'+(rate*100).toFixed(1)+'%;background:'+armColor(i)+'"></span><span class="arm-ci" style="left:'+(a.pooled.low*100).toFixed(1)+'%;width:'+((a.pooled.high-a.pooled.low)*100).toFixed(1)+'%"></span></div><div class="arm-value"><b>'+pct(rate)+'</b><small>'+number(a.pooled.passed)+'/'+number(a.pooled.planned)+' · '+number(a.pooled.runs)+' '+label(a.pooled.runs===1?'run':'runs')+'</small>'+(a.pooled.deviations?'<small class="amber">'+number(a.pooled.deviations)+' '+label(a.pooled.deviations===1?'deviation':'deviations')+'</small>':'')+(a.pooled.notVerified?'<small class="muted">'+number(a.pooled.notVerified)+' '+label('not verified')+'</small>':'')+'</div>'+armProduction(a)+'</div>';}).join('')
   +'</div></section>';
 }
 function historyChart(sel){
  const runs=[...sel.runs].reverse(), index=new Map(runs.map((r,i)=>[r.run,i]));
- const W=window.innerWidth>=1300?1100:chartWidth(),H=W<500?274:284,pl=40,pr=16,pt=54,pb=34,pw=W-pl-pr,ph=H-pt-pb;
+ const W=chartWidth('runs',1100),H=W<500?274:284,pl=40,pr=16,pt=54,pb=34,pw=W-pl-pr,ph=H-pt-pb;
  const x=i=>pl+(runs.length<2?pw/2:i*pw/(runs.length-1)), y=r=>pt+(1-r)*ph;
  const toolChange=(r,i)=>i>0?Object.entries(r.toolVersions).filter(([tool,version])=>runs[i-1].toolVersions[tool]&&runs[i-1].toolVersions[tool]!==version):[];
  const every=Math.max(1,Math.ceil(runs.length/(W<500?4:8)));
- let svg='<svg viewBox="0 0 '+W+' '+H+'" role="img" aria-label="'+e(t('Pass rate per run'))+'">'
+ let svg='<svg data-chart="runs" viewBox="0 0 '+W+' '+H+'" role="img" aria-label="'+e(t('Pass rate per run'))+'">'
   +[0,0.25,0.5,0.75,1].map(v=>'<line class="grid" x1="'+pl+'" x2="'+(W-pr)+'" y1="'+y(v)+'" y2="'+y(v)+'"/><text class="axis" x="'+(pl-8)+'" y="'+(y(v)+4)+'" text-anchor="end">'+Math.round(v*100)+'%</text>').join('');
  const labelled=W>=500;
  runs.forEach((r,i)=>{ const mx=i>0?(x(i-1)+x(i))/2:0, flip=mx>W*0.7, anchor=flip?' text-anchor="end"':'', tx=flip?mx-4:mx+4;
@@ -107,7 +116,7 @@ function historyChart(sel){
  const legend='<div class="legend">'+sel.arms.map((a,i)=>'<span class="arm-label'+(a.isCurrent?'':' muted')+'">'+armName(a,i)+(a.isCurrent?'':' <small>'+label('earlier configuration')+'</small>')+'</span>').join('')+marks+'</div>';
  return '<section class="panel bench-panel"><div class="panelhead"><h2>'+label('Pass rate per run')+'</h2><span class="label">'+label('Each point is one run of one arm. A dashed line marks a change to the suite\\'s files: runs on either side measured different tasks.')+'</span></div><div class="chart-scroll">'+svg+'</div>'+legend+'</section>';
 }
-const usedBy=n=>number(n)+' '+t('trials reported it');
+const usedBy=n=>number(n)+' '+t(n===1?'trial reported it':'trials reported it');
 function usageX(a,axis){ return a.pooled?usageAt(a.pooled.usage,axis):null; }
 function usageAt(u,axis){
  if(axis==='duration')return u.durationMs.value==null?null:u.durationMs.value/1000;
@@ -135,11 +144,11 @@ function scatterPanel(sel){
  const toggle=axisToggle(axis,unit);
  const placed=arms.map(a=>({a,i:sel.arms.indexOf(a),vx:usageX(a,axis),vy:passOf(a.pooled)})).filter(q=>q.vx!=null);
  if(!placed.length)return '<section class="panel bench-panel"><div class="panelhead"><h2>'+label('Pass rate against cost')+'</h2>'+toggle+'</div><div class="empty"><p>'+label('No arm reported this value.')+'</p></div></section>';
- const W=chartWidth(),H=300,pl=44,pr=20,pt=20,pb=46,pw=W-pl-pr,ph=H-pt-pb, max=Math.max(...placed.map(q=>q.vx))*1.15||1;
+ const W=chartWidth('cost'),H=300,pl=44,pr=20,pt=20,pb=46,pw=W-pl-pr,ph=H-pt-pb, max=Math.max(...placed.map(q=>q.vx))*1.15||1;
  const x=v=>pl+v/max*pw, y=r=>pt+(1-r)*ph;
  const sorted=[...placed].sort((p,q)=>p.vx-q.vx||q.vy-p.vy), frontier=[]; let best=-1; for(const q of sorted){ if(q.vy>best){frontier.push(q);best=q.vy;} }
  const fmt=usageFormat(axis);
- let svg='<svg viewBox="0 0 '+W+' '+H+'" role="img" aria-label="'+e(t('Pass rate against cost'))+'">'
+ let svg='<svg data-chart="cost" viewBox="0 0 '+W+' '+H+'" role="img" aria-label="'+e(t('Pass rate against cost'))+'">'
   +usageGrid({W,H,pl,pr,pb,pw,x,y,max,axis,unit})
   +'<text class="better" x="'+(pl+8)+'" y="'+(pt+14)+'">↖ '+e(t('better: higher pass rate for less'))+'</text>'
   +(frontier.length>1?'<polyline class="frontier" points="'+frontier.map(q=>x(q.vx).toFixed(1)+','+y(q.vy).toFixed(1)).join(' ')+'"/>':'')
@@ -165,7 +174,7 @@ function latestPanel(sel){
  const table=sel.latest.table, run=sel.runs[0];
  const parts=[['passed','Passed'],['failed','Failed'],['error','Error'],['unscored','Unscored'],['not_run','Not run']];
  return '<section class="panel bench-panel"><div class="panelhead"><h2>'+label('Last run')+' <span class="tag" data-verbatim>'+e(sel.latest.run)+'</span></h2><button class="link" data-run="'+e(sel.latest.run)+'" data-run-source="'+e(sel.latest.source)+'">'+label('Open the run')+' ↗</button></div><div class="latest">'
-  +table.results.map((r,i)=>{const usage=table.usage[i], idx=sel.arms.findIndex(a=>a.arm===r.arm&&a.isCurrent); return '<div class="latest-arm"><div class="arm-label">'+armName(sel.arms[idx]||{arm:r.arm,tool:r.tool,model:r.model,effort:r.effort},idx<0?i:idx)+'</div><div class="stack" role="img" aria-label="'+e(parts.map(([key,name])=>t(name)+' '+r.counts[key]).join(', '))+'">'+parts.map(([key,name])=>r.counts[key]?'<span class="seg '+key+'" style="flex:'+r.counts[key]+'" title="'+e(t(name)+': '+r.counts[key])+'">'+number(r.counts[key])+'</span>':'').join('')+'</div><div class="latest-usage"><b>'+rateCell(r.passRate)+'</b><small><span title="'+e(usedBy(usage.tokens.used))+'">'+(usage.tokens.value==null?'—':number(Math.round(usage.tokens.value)))+' '+label('tokens')+'</span> · <span title="'+e(usedBy(usage.durationMs.used))+'">'+secondsText(usage.durationMs.value)+'</span> · <span title="'+e(usedBy(usage.cost.used||0))+'">'+costText(usage.cost)+'</span></small>'+(r.deviations||r.notVerified||r.stoppedByLimit?'<small>'+(r.deviations?'<span class="amber">'+number(r.deviations)+' '+label('deviations')+'</span> ':'')+(r.notVerified?'<span class="muted">'+number(r.notVerified)+' '+label('not verified')+'</span> ':'')+(r.stoppedByLimit?'<span class="muted">'+number(r.stoppedByLimit)+' '+label('stopped by a limit')+'</span>':'')+'</small>':'')+'</div></div>';}).join('')
+  +table.results.map((r,i)=>{const usage=table.usage[i], idx=sel.arms.findIndex(a=>a.arm===r.arm&&a.isCurrent); return '<div class="latest-arm"><div class="arm-label">'+armName(sel.arms[idx]||{arm:r.arm,tool:r.tool,model:r.model,effort:r.effort},idx<0?i:idx)+'</div><div class="stack" role="img" aria-label="'+e(parts.map(([key,name])=>t(name)+' '+r.counts[key]).join(', '))+'">'+parts.map(([key,name])=>r.counts[key]?'<span class="seg '+key+'" style="flex:'+r.counts[key]+'" title="'+e(t(name)+': '+r.counts[key])+'">'+number(r.counts[key])+'</span>':'').join('')+'</div><div class="latest-usage"><b>'+rateCell(r.passRate)+'</b><small><span title="'+e(usedBy(usage.tokens.used))+'">'+(usage.tokens.value==null?'—':number(Math.round(usage.tokens.value)))+' '+label('tokens')+'</span> · <span title="'+e(usedBy(usage.durationMs.used))+'">'+secondsText(usage.durationMs.value)+'</span> · <span title="'+e(usedBy(usage.cost.used||0))+'">'+costText(usage.cost)+'</span></small>'+(r.deviations||r.notVerified||r.stoppedByLimit?'<small>'+(r.deviations?'<span class="amber">'+number(r.deviations)+' '+label(r.deviations===1?'deviation':'deviations')+'</span> ':'')+(r.notVerified?'<span class="muted">'+number(r.notVerified)+' '+label('not verified')+'</span> ':'')+(r.stoppedByLimit?'<span class="muted">'+number(r.stoppedByLimit)+' '+label('stopped by a limit')+'</span>':'')+'</small>':'')+'</div></div>';}).join('')
   +'<div class="legend">'+parts.map(([key,name])=>'<span><i class="swatch seg '+key+'"></i>'+label(name)+'</span>').join('')+'</div>'
   +(table.invalid.length?'<p class="scorer-hint amber">'+label('Not measured in this run')+': '+table.invalid.map(x=>'<span data-verbatim>'+e(x.task)+'</span> ('+(x.baseline==='invalid'?label('check passes without changes'):label('check could not run'))+')').join(', ')+'</p>':'')
   +'</div><p class="scorer-hint">'+label('Started')+' '+e(when(run.startedAt))+(run.username?' · <span data-verbatim>'+e(run.username)+'</span>':'')+' · '+label('These results hold for these tasks, this run and this machine.')+'</p></section>';
@@ -222,11 +231,11 @@ function compareKpis(sel,c){
  const costs=unit?sides.map(side=>c.rates[side].passed>0?c.usage[side].cost.amount/c.rates[side].passed:null):[null,null], hasCost=costs.every(v=>v!=null)&&costs[0]>0;
  const tokens=sides.map(side=>usageAt(c.usage[side],'tokens')), hasTokens=tokens.every(v=>v!=null&&v>0);
  const change=(a,b)=>(b>=a?'+':'−')+number(Math.abs(Math.round((b/a-1)*100)))+'%';
- const third=hasCost?kpiCard(label('Cost per passed trial'),'<span class="'+(costs[1]<=costs[0]?'up':'down')+'">'+change(costs[0],costs[1])+'</span>',e(costNumber(costs[0])+' → '+costNumber(costs[1])+' '+unit))
+ const third=hasCost?kpiCard(label('Cost per passed trial'),diffClass(d)==='amber'?change(costs[0],costs[1]):'<span class="'+(costs[1]<=costs[0]?'up':'down')+'">'+change(costs[0],costs[1])+'</span>',e(costNumber(costs[0])+' → '+costNumber(costs[1])+' '+unit))
   :kpiCard(label('Median tokens per trial'),hasTokens?change(tokens[0],tokens[1]):'—',hasTokens?number(Math.round(tokens[0]))+' → '+number(Math.round(tokens[1])):label('Not every arm reported it'));
  return '<div class="kpis bench-kpis">'
   +kpiCard('<span data-verbatim>'+e(sideName(sel,c.from,c.dimension))+' → '+e(sideName(sel,c.to,c.dimension))+'</span>','<span class="'+diffClass(d)+'">'+pp(d.value)+'</span>','95% '+pp(d.low)+' '+label('to')+' '+pp(d.high)+(diffClass(d)==='amber'?' · <b class="amber">'+label('not separated')+'</b>':''))
-  +kpiCard(label('Pass rate'),pct(passOf(c.rates.from))+' → '+pct(passOf(c.rates.to)),number(c.pairs)+' '+label('paired trials'))
+  +kpiCard(label('Pass rate'),'<span class="kpi-fit">'+pct(passOf(c.rates.from))+' → '+pct(passOf(c.rates.to))+'</span>',number(c.pairs)+' '+label(c.pairs===1?'paired trial':'paired trials'))
   +third
   +kpiCard(label('Tasks'),number(up)+' <span class="up">↑</span> · '+number(down)+' <span class="down">↓</span> · '+number(c.tasks.length-up-down)+' =',label('pass rate on each task, against the arm it is measured from'))
   +'</div>';
@@ -235,7 +244,7 @@ function forestPanel(sel,list,chosen){
  const at=v=>((v+1)/2*100).toFixed(1)+'%';
  return '<section class="panel bench-panel"><div class="panelhead"><h2>'+label('Difference per pair of arms')+'</h2><span class="label">'+label('Two arms that differ only in this, trial by trial. The line is the 95% interval of the difference: one that crosses the middle does not tell them apart.')+'</span></div><div class="forest">'
   +'<div class="forest-row forest-axis" aria-hidden="true"><span></span><span class="forest-scale"><small>−100</small><small>0</small><small>+100 pp</small></span><span></span></div>'
-  +list.map(c=>{const d=c.difference, active=c===chosen, cls=diffClass(d); return '<button class="forest-row'+(active?' active':'')+'" data-bench-comparison="'+e(comparisonId(c))+'" aria-pressed="'+active+'" title="'+e(pp(d.value)+', 95% '+pp(d.low)+' – '+pp(d.high))+'"><span class="forest-label"><b data-verbatim>'+e(sideName(sel,c.from,c.dimension))+' → '+e(sideName(sel,c.to,c.dimension))+'</b><small data-verbatim>'+e(facetOf(sel,c))+'</small></span><span class="forest-track"><i class="forest-zero"></i><i class="forest-ci '+cls+'" style="left:'+at(d.low)+';width:'+((d.high-d.low)/2*100).toFixed(1)+'%"></i><i class="forest-dot '+cls+'" style="left:'+at(d.value)+'"></i></span><span class="forest-value '+cls+'"><b>'+pp(d.value)+'</b><small>'+number(c.pairs)+' '+label('pairs')+'</small></span></button>';}).join('')
+  +list.map(c=>{const d=c.difference, active=c===chosen, cls=diffClass(d); return '<button class="forest-row'+(active?' active':'')+'" data-bench-comparison="'+e(comparisonId(c))+'" aria-pressed="'+active+'" title="'+e(pp(d.value)+', 95% '+pp(d.low)+' – '+pp(d.high))+'"><span class="forest-label"><b data-verbatim>'+e(sideName(sel,c.from,c.dimension))+' → '+e(sideName(sel,c.to,c.dimension))+'</b><small data-verbatim>'+e(facetOf(sel,c))+'</small></span><span class="forest-track"><i class="forest-zero"></i><i class="forest-ci '+cls+'" style="left:'+at(d.low)+';width:'+((d.high-d.low)/2*100).toFixed(1)+'%"></i><i class="forest-dot '+cls+'" style="left:'+at(d.value)+'"></i></span><span class="forest-value '+cls+'"><b>'+pp(d.value)+'</b><small>'+number(c.pairs)+' '+label(c.pairs===1?'pair':'pairs')+'</small></span></button>';}).join('')
   +'</div></section>';
 }
 function arrowPanel(sel,list,chosen){
@@ -243,9 +252,9 @@ function arrowPanel(sel,list,chosen){
  const head='<div class="panelhead"><h2>'+label('Pass rate against cost, from one arm to the other')+'</h2>'+axisToggle(axis,unit)+'</div>';
  const placed=list.map(c=>({c,fx:usageAt(c.usage.from,axis),tx:usageAt(c.usage.to,axis),fy:passOf(c.rates.from),ty:passOf(c.rates.to)})).filter(q=>q.fx!=null&&q.tx!=null);
  if(!placed.length)return '<section class="panel bench-panel">'+head+'<div class="empty"><p>'+label('No arm reported this value.')+'</p></div></section>';
- const W=chartWidth(),H=300,pl=44,pr=20,pt=20,pb=46,pw=W-pl-pr,ph=H-pt-pb, max=Math.max(...placed.flatMap(q=>[q.fx,q.tx]))*1.15||1;
+ const W=chartWidth('arrow'),H=300,pl=44,pr=20,pt=20,pb=46,pw=W-pl-pr,ph=H-pt-pb, max=Math.max(...placed.flatMap(q=>[q.fx,q.tx]))*1.15||1;
  const x=v=>pl+v/max*pw, y=r=>pt+(1-r)*ph;
- const svg='<svg viewBox="0 0 '+W+' '+H+'" role="img" aria-label="'+e(t('Pass rate against cost, from one arm to the other'))+'"><defs>'+[['up','green'],['down','error'],['amber','amber']].map(([cls,color])=>'<marker id="bench-arrow-'+cls+'" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" style="fill:var(--'+color+')"/></marker>').join('')+'</defs>'
+ const svg='<svg data-chart="arrow" viewBox="0 0 '+W+' '+H+'" role="img" aria-label="'+e(t('Pass rate against cost, from one arm to the other'))+'"><defs>'+[['up','green'],['down','error'],['amber','amber']].map(([cls,color])=>'<marker id="bench-arrow-'+cls+'" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" style="fill:var(--'+color+')"/></marker>').join('')+'</defs>'
   +usageGrid({W,H,pl,pr,pb,pw,x,y,max,axis,unit})
   +placed.map(q=>{const active=q.c===chosen, x1=x(q.fx), y1=y(q.fy), x2=x(q.tx), y2=y(q.ty), len=Math.hypot(x2-x1,y2-y1)||1, k=Math.max(0,(len-9)/len);
    return '<g class="arrow'+(active?' active':'')+'" data-bench-comparison="'+e(comparisonId(q.c))+'"><title>'+e(sideName(sel,q.c.from,q.c.dimension)+' → '+sideName(sel,q.c.to,q.c.dimension)+' · '+facetOf(sel,q.c)+': '+Math.round(q.fy*100)+'% → '+Math.round(q.ty*100)+'%')+'</title><line class="'+diffClass(q.c.difference)+'" x1="'+x1.toFixed(1)+'" y1="'+y1.toFixed(1)+'" x2="'+(x1+(x2-x1)*k).toFixed(1)+'" y2="'+(y1+(y2-y1)*k).toFixed(1)+'" marker-end="url(#bench-arrow-'+diffClass(q.c.difference)+')"/><circle class="from" cx="'+x1.toFixed(1)+'" cy="'+y1.toFixed(1)+'" r="5"/><circle class="to" cx="'+x2.toFixed(1)+'" cy="'+y2.toFixed(1)+'" r="6"/>'+(active?arrowLabels(sel,q.c,{x1,y1,x2,y2,W,H,pb}):'')+'</g>';}).join('')
@@ -277,15 +286,15 @@ function teamPanel(sel){
 }
 const separatedFrom=(q,prev)=>prev&&(q.c.high<prev.c.low?'down':q.c.low>prev.c.high?'up':'');
 function revisionChart(points,chosen){
- const W=window.innerWidth>=1300?1100:chartWidth(),H=300,pl=40,pr=24,pt=34,pb=64,pw=W-pl-pr,ph=H-pt-pb;
+ const W=chartWidth('revisions',1100),H=300,pl=40,pr=24,pt=34,pb=64,pw=W-pl-pr,ph=H-pt-pb;
  const inset=Math.min(90,pw/6), x=i=>pl+(points.length<2?pw/2:inset+i*(pw-2*inset)/(points.length-1)), y=r=>pt+(1-r)*ph, commits=benchData.teamCommits||{};
  const every=Math.max(1,Math.ceil(points.length/(W<500?3:7)));
- let svg='<svg viewBox="0 0 '+W+' '+H+'" role="img" aria-label="'+e(t('Pass rate per team revision'))+'">'
+ let svg='<svg data-chart="revisions" viewBox="0 0 '+W+' '+H+'" role="img" aria-label="'+e(t('Pass rate per team revision'))+'">'
   +[0,0.25,0.5,0.75,1].map(v=>'<line class="grid" x1="'+pl+'" x2="'+(W-pr)+'" y1="'+y(v)+'" y2="'+y(v)+'"/><text class="axis" x="'+(pl-8)+'" y="'+(y(v)+4)+'" text-anchor="end">'+Math.round(v*100)+'%</text>').join('');
  if(points.length>1)svg+='<polyline class="series" style="stroke:var(--arm1)" points="'+points.map((q,i)=>x(i).toFixed(1)+','+y(passOf(q.c)).toFixed(1)).join(' ')+'"/>';
  svg+=points.map((q,i)=>{const sep=separatedFrom(q,points[i-1]), commit=commits[q.r.revision], rate=passOf(q.c), active=q===chosen, cx=x(i).toFixed(1);
   const subject=commit?(commit.subject.length>26?commit.subject.slice(0,25)+'…':commit.subject):'';
-  return '<g class="revision'+(active?' active':'')+(sep?' '+sep:'')+'" data-bench-revision="'+e(q.r.revision)+'"><title>'+e(short(q.r.revision)+(commit?' · '+commit.subject:'')+': '+Math.round(rate*100)+'% ('+q.c.passed+'/'+q.c.planned+'), 95% '+Math.round(q.c.low*100)+'–'+Math.round(q.c.high*100)+'% · '+q.c.runs+' '+t('runs'))+'</title>'
+  return '<g class="revision'+(active?' active':'')+(sep?' '+sep:'')+'" data-bench-revision="'+e(q.r.revision)+'"><title>'+e(short(q.r.revision)+(commit?' · '+commit.subject:'')+': '+Math.round(rate*100)+'% ('+q.c.passed+'/'+q.c.planned+'), 95% '+Math.round(q.c.low*100)+'–'+Math.round(q.c.high*100)+'% · '+q.c.runs+' '+t(q.c.runs===1?'run':'runs'))+'</title>'
    +'<rect class="hit" x="'+(x(i)-18).toFixed(1)+'" y="'+pt+'" width="36" height="'+(ph+pb-8)+'"/>'
    +'<line class="ci" x1="'+cx+'" x2="'+cx+'" y1="'+y(q.c.low).toFixed(1)+'" y2="'+y(q.c.high).toFixed(1)+'"/><circle class="point" cx="'+cx+'" cy="'+y(rate).toFixed(1)+'" r="'+(active?7:5.5)+'"/>'
    +'<text class="rate" x="'+cx+'" y="'+(y(q.c.high)-8).toFixed(1)+'" text-anchor="middle">'+Math.round(rate*100)+'%'+(sep==='down'?' ↓':sep==='up'?' ↑':'')+'</text>'
@@ -301,7 +310,7 @@ function revisionDetail(points,q){
  const rows=tasks.map(task=>{const before=prev&&prev.c.tasks.find(x=>x.task===task), after=q.c.tasks.find(x=>x.task===task), delta=before&&after?passOf(after)-passOf(before):null;
   return cardRow('',heads.map(h=>h===heads[0]||h==='CHANGE'?t(h):h),['<span data-verbatim>'+e(task)+'</span>',...(prev?[rateCell(before)]:[]),rateCell(after),delta==null?'—':'<span class="'+(delta>0?'up':delta<0?'down':'')+'">'+pp(delta)+'</span>']);}).join('');
  const diff=prev?(benchData.teamDiffs||{})[prev.r.revision+'..'+q.r.revision]:undefined;
- const changes=diff?'<ul class="changed-files">'+diff.files.map(f=>'<li><code data-verbatim>'+e(f.path)+'</code><small><span class="up">+'+number(f.added)+'</span> <span class="down">−'+number(f.removed)+'</span></small></li>').join('')+(diff.more?'<li class="muted">'+label('and')+' '+number(diff.more)+' '+label('more files')+'</li>':'')+(diff.files.length?'':'<li class="muted">'+label('No file outside benchmarks/ changed.')+'</li>')+'</ul>'
+ const changes=diff?'<ul class="changed-files">'+diff.files.map(f=>'<li><code data-verbatim>'+e(f.path)+'</code><small><span class="up">+'+number(f.added)+'</span> <span class="down">−'+number(f.removed)+'</span></small></li>').join('')+(diff.more?'<li class="muted">'+label('and')+' '+number(diff.more)+' '+label(diff.more===1?'more file':'more files')+'</li>':'')+(diff.files.length?'':'<li class="muted">'+label('No file outside benchmarks/ changed.')+'</li>')+'</ul>'
   :'<p class="muted">'+(prev?label('This machine\\'s team clone lacks one of the two revisions, so it cannot list what changed.'):label('The first team revision in the window.'))+'</p>';
  return '<section class="panel bench-panel"><div class="panelhead"><h2><span data-verbatim>'+short(q.r.revision)+'</span>'+(commit?' · <span data-verbatim>'+e(commit.subject)+'</span>':'')+(prev?' <span class="label">'+label('against')+' <span data-verbatim>'+short(prev.r.revision)+'</span></span>':'')+'</h2>'+(sep?'<span class="tag '+(sep==='down'?'down':'up')+'">'+label(sep==='down'?'told apart: lower':'told apart: higher')+'</span>':'')+'</div><h3 class="caption">'+label('Team files changed')+'</h3>'+changes+'<div class="table-scroll"><table class="session-table bench-cards"><thead><tr>'+heads.map(h=>'<th'+(h===heads[0]||h==='CHANGE'?'':' data-verbatim')+'>'+(h===heads[0]||h==='CHANGE'?label(h):e(h))+'</th>').join('')+'</tr></thead><tbody>'+rows+'</tbody></table></div></section>';
 }

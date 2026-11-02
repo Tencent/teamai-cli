@@ -344,6 +344,7 @@ function render() {
  else if(retryKey) document.querySelector('[data-retry="'+retryKey+'"]')?.focus({preventScroll:true});
  else if(runFocus) [...document.querySelectorAll('[data-run]')].find(el=>el.dataset.run===runFocus)?.focus({preventScroll:true});
  else if(fieldId){const field=$(fieldId);field?.focus({preventScroll:true});if(caret&&field?.setSelectionRange)field.setSelectionRange(caret[0],caret[1]);}
+ if(page==='benchmarks')fitCharts();
 }
     // ─── Lightweight inline markdown parser ─────────────
     // Backtick char via hex escape (cannot use literal backtick inside TS template)
@@ -535,6 +536,7 @@ document.addEventListener('click',event=>{
  if(event.target.closest('[data-save-button]'))saveSelection();
 });
 $('title').tabIndex=-1;
+window.addEventListener('resize',()=>{if(page==='benchmarks')fitCharts();});
 window.addEventListener('hashchange',()=>{page=Object.hasOwn(pageNames,location.hash.slice(1))?location.hash.slice(1):'overview';render();$('title').focus();});
 $('session-dialog').addEventListener('close',()=>{const id=selectedSession;selectedSession=null;selectedSnapshot=null;runKey=null;runDetail=null;answerError='';const button=[...document.querySelectorAll('[data-session]')].find(el=>el.dataset.session===id);(button||focusBeforeDialog)?.focus({preventScroll:true});});
 function switchWorkspace(id) {
