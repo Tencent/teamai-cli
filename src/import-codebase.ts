@@ -6,7 +6,7 @@ import fs from 'fs-extra';
 import { z } from 'zod';
 
 import { extractCodebase, sourceRepositoryMetadata } from './codebase-extract.js';
-import { JsonValueSchema, type JsonValue } from './types.js';
+import { type JsonValue, JsonObjectSchema } from './types.js';
 import { SourceManifestSchema } from './wiki-engine/code-knowledge/code-collector.js';
 import type { TeamaiInit } from './config.js';
 import { log } from './utils/logger.js';
@@ -77,7 +77,7 @@ export interface ImportCodebaseOptions {
 }
 
 /** An evidence JSON object, its keys in file order so a rewrite keeps them in place. */
-const EvidenceJsonSchema = z.record(z.string(), JsonValueSchema);
+const EvidenceJsonSchema = JsonObjectSchema;
 
 type EvidenceJson = z.infer<typeof EvidenceJsonSchema>;
 

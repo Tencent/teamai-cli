@@ -10,7 +10,7 @@ import { LeaseWireSchema } from '../../src/workflow/lease-wire.js';
 import { syncScorerDefinitions } from '../../src/scorers/cache.js';
 import { ciRecipesOf, runCommandsOf } from '../ci-recipe.js';
 import { formatScorerDiagnostic } from '../../src/scorers/definition.js';
-import { isJsonObject, JsonValueSchema, type JsonObject, type JsonValue, type LocalConfig } from '../../src/types.js';
+import { isJsonObject, JsonValueSchema, type JsonObject, type JsonValue, type LocalConfig, JsonObjectSchema } from '../../src/types.js';
 import { formatUnknownScorer, syncWorkflowDefinitions } from '../../src/workflow/cache.js';
 import { leaseNext, reportAttempt, startRun } from '../../src/workflow/engine.js';
 import { formatDiagnostic } from '../../src/workflow/parse.js';
@@ -183,7 +183,7 @@ const ExampleLeaseSchema = LeaseWireSchema.safeExtend({ pass: z.number() });
 
 type Lease = z.infer<typeof ExampleLeaseSchema>;
 
-const ExampleEnvelopeSchema = z.object({ data: z.record(z.string(), JsonValueSchema) });
+const ExampleEnvelopeSchema = z.object({ data: JsonObjectSchema });
 
 /** Each first group of `pattern` on `page`, parsed as JSON. */
 function jsonOn(page: string, pattern: RegExp): JsonValue[] {

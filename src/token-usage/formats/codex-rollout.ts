@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import { z } from 'zod';
 
-import { emptyTokenUsage, JsonValueSchema, type JsonValue, type TokenSnapshotScope, type TokenUsage } from '../../types.js';
+import { emptyTokenUsage, JsonValueSchema, type JsonValue, type TokenSnapshotScope, type TokenUsage, JsonObjectSchema } from '../../types.js';
 import type { TokenReading, TokenRequest, TokenSource, TokenSpeed } from '../index.js';
 import { forEachJsonLine } from './jsonl.js';
 
@@ -17,7 +17,7 @@ const Usage = z.object({
 
 type Usage = z.infer<typeof Usage>;
 
-const Line = z.object({ type: z.string(), timestamp: z.string().catch('').default(''), payload: z.record(z.string(), JsonValueSchema).catch({}) });
+const Line = z.object({ type: z.string(), timestamp: z.string().catch('').default(''), payload: JsonObjectSchema.catch({}) });
 
 type Payload = z.infer<typeof Line>['payload'];
 

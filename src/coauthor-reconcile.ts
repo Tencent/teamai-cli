@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { z } from 'zod';
 import type { LocalConfig, TeamaiConfig, State } from './types.js';
-import { JsonValueSchema } from './types.js';
+import { JsonValueSchema, JsonObjectSchema } from './types.js';
 import { isCodexTool } from './utils/tool-names.js';
 import {
   DEFAULT_CODEX_ROOT,
@@ -213,7 +213,7 @@ const PreFixAttributionSchema = z.object({ attribution: z.strictObject({ commit:
  * copies them), and nothing for any other value.
  */
 const AttributionCopySchema = z.union([
-  z.record(z.string(), JsonValueSchema),
+  JsonObjectSchema,
   z.array(JsonValueSchema).transform((items) => Object.fromEntries(items.entries())),
 ]).catch(() => ({}));
 

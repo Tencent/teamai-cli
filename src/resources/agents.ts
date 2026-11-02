@@ -4,7 +4,7 @@ import { isDeepStrictEqual } from 'node:util';
 import matter from 'gray-matter';
 import { z } from 'zod';
 import { ResourceHandler, type PlacementRecords, type ScanForPushOptions } from './base.js';
-import { JsonValueSchema, type JsonValue } from '../types.js';
+import { JsonValueSchema, type JsonValue, JsonObjectSchema } from '../types.js';
 import type { CopyOrigin, ResourceItem, ResourceItemStatus, DeliveryTarget, TeamaiConfig, LocalConfig, AgentModelRecords, RecordedAgentModel, Scope } from '../types.js';
 import { listFiles, listDirs, pathExists, copyFile, ensureDir, remove, fileContentEqual, getFileMtime, writeFile, readFileSafe, fileHash } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
@@ -1585,7 +1585,7 @@ function joycodeAgentId(contentPath: string): string {
 }
 
 /** JoyCode's agent index: `version`, `agents`, and any metadata of the member's, all written back. */
-const JoycodeIndexSchema = z.record(z.string(), JsonValueSchema);
+const JoycodeIndexSchema = JsonObjectSchema;
 
 /** The fields teamai reads from one index entry; the entry itself is written back whole. */
 const JoycodeIndexEntrySchema = z.object({ agentId: JsonValueSchema.optional(), contentPath: JsonValueSchema.optional() });

@@ -12,7 +12,7 @@ import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { z } from 'zod';
-import { JsonValueSchema, type JsonValue } from './types.js';
+import { JsonValueSchema, type JsonValue, JsonObjectSchema } from './types.js';
 import { shellQuoteValue } from './utils/shell-profile.js';
 import { findGitBashWindows } from './bundled-runtime.js';
 
@@ -49,7 +49,7 @@ export function copilotRunsEntries(data: JsonValue): Array<[string, string | und
 const CopilotRunsFileSchema = z.object({
   version: z.literal(1),
   disableAllHooks: JsonValueSchema.optional(),
-  hooks: z.union([z.record(z.string(), JsonValueSchema), z.array(JsonValueSchema)]),
+  hooks: z.union([JsonObjectSchema, z.array(JsonValueSchema)]),
 });
 
 /** A command field Copilot runs; one that is not text runs nothing. */

@@ -41,7 +41,7 @@ import {
   coercedText,
   OptionalString,
 } from '../fs.js';
-import { JsonValueSchema, type JsonValue } from '../../types.js';
+import { JsonValueSchema, type JsonValue, JsonObjectSchema } from '../../types.js';
 import { sessionStoreDir } from '../../locate.js';
 import {
   cleanTitleText,
@@ -175,7 +175,7 @@ const CcBlockSchema = z.object({
   signature: JsonValueSchema.optional(),
   name: coercedText(),
   id: coercedText(),
-  input: z.record(z.string(), JsonValueSchema).optional().catch(undefined),
+  input: JsonObjectSchema.optional().catch(undefined),
   tool_use_id: coercedText(),
   content: JsonValueSchema.optional(),
   is_error: JsonValueSchema.optional(),

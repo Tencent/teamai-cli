@@ -14,7 +14,7 @@ import { acquireLock, releaseLock } from '../update.js';
 import { entryHash } from '../resources/mcp-format.js';
 import { detectShellProfile, SHELL_PROFILE_CANDIDATE_NAMES, shellQuoteValue, toGeneratedForm } from '../utils/shell-profile.js';
 import { resolveMemberToolRoots } from '../config.js';
-import { isJsonObject, JsonValueSchema, recordedToolRootDir, RELOCATABLE_TOOLS, type JsonObject, type JsonValue, type LocalConfig } from '../types.js';
+import { isJsonObject, JsonValueSchema, recordedToolRootDir, RELOCATABLE_TOOLS, type JsonObject, type JsonValue, type LocalConfig, JsonObjectSchema } from '../types.js';
 import { ALL_MODEL_AGENTS, ModelAgentSchema, type ModelAgent, type ModelProtocol, type ResolvedModelProfile, sameTeamIdentity } from './profile.js';
 
 export { ALL_MODEL_AGENTS } from './profile.js';
@@ -34,8 +34,6 @@ const CLAUDE_ENV_KEYS = [
 ] as const;
 
 const CLAUDE_PROVIDER_KEYS = ['CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY'] as const;
-
-const JsonObjectSchema = z.record(z.string(), JsonValueSchema);
 
 /** The message of a caught error, which fs, JSON and YAML raise as an `Error`. */
 function messageOf(cause: unknown): string {
@@ -241,7 +239,7 @@ const PendingSchema = z.looseObject({
 
 const ManifestRootSchema = z.looseObject({
   version: z.literal(1),
-  agents: z.record(z.string(), JsonValueSchema),
+  agents: JsonObjectSchema,
   legacyValueDeclines: JsonValueSchema.optional(),
 });
 

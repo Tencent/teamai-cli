@@ -20,6 +20,9 @@ export type JsonValue = z.infer<typeof JsonValueSchema>;
 /** A JSON object: a document, or a mapping inside one. */
 export type JsonObject = { [key: string]: JsonValue };
 
+/** A JSON object, parsed: a copy that leaves out `__proto__` keys, so check a file that is written back without it. */
+export const JsonObjectSchema = z.record(z.string(), JsonValueSchema) satisfies z.ZodType<JsonObject>;
+
 /** Whether a JSON value is an object, not an array, a primitive or null: JSON and YAML parse every object as an Object instance. */
 export function isJsonObject(value: JsonValue | undefined): value is JsonObject {
   return value instanceof Object && !Array.isArray(value);

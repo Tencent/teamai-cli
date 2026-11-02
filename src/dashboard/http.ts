@@ -6,7 +6,7 @@
 import type http from 'node:http';
 import { z } from 'zod';
 
-import { JsonValueSchema, type JsonValue } from '../types.js';
+import { type JsonValue, JsonObjectSchema } from '../types.js';
 
 /** A request the dashboard answers with a client error, not a 500. */
 export class HttpError extends Error {
@@ -19,7 +19,7 @@ export class HttpError extends Error {
 const MAX_JSON_BODY_BYTES = 64 * 1024;
 
 /** A write route's request body: a JSON object, whose fields the route parses. */
-const JsonBodySchema = z.record(z.string(), JsonValueSchema);
+const JsonBodySchema = JsonObjectSchema;
 
 export type JsonBody = z.infer<typeof JsonBodySchema>;
 

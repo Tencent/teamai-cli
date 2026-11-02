@@ -3,12 +3,12 @@ import path from 'node:path';
 import { z } from 'zod';
 
 import { log } from '../../utils/logger.js';
-import { addTokenUsage, emptyTokenUsage, INTERVENTION_SCAN_MAX_BYTES, JsonValueSchema, type JsonValue, type TokenUsage } from '../../types.js';
+import { addTokenUsage, emptyTokenUsage, INTERVENTION_SCAN_MAX_BYTES, type JsonValue, type TokenUsage, JsonObjectSchema } from '../../types.js';
 import type { TokenReading, TokenRequest, TokenSource } from '../index.js';
 import { forEachJsonLine } from './jsonl.js';
 
 const Count = z.number().finite().nonnegative();
-const Fields = z.record(z.string(), JsonValueSchema);
+const Fields = JsonObjectSchema;
 
 type Fields = z.infer<typeof Fields>;
 

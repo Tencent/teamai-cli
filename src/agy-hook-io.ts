@@ -11,7 +11,7 @@
  */
 
 import { z } from 'zod';
-import { JsonValueSchema, type JsonValue } from './types.js';
+import { type JsonValue, JsonObjectSchema } from './types.js';
 import type { HookStdin } from './hook-dispatch.js';
 
 /** teamai's dispatch events and the Claude Code event each one carries. */
@@ -81,7 +81,7 @@ const AgyPayload = z.object({
   transcriptPath: z.string().optional().catch(undefined),
   /** On PostToolUse: empty when the call ran, else why it did not. */
   error: z.string().optional().catch(undefined),
-  toolCall: z.object({ name: z.string(), args: z.record(z.string(), JsonValueSchema).catch({}).default({}) }).optional().catch(undefined),
+  toolCall: z.object({ name: z.string(), args: JsonObjectSchema.catch({}).default({}) }).optional().catch(undefined),
 });
 
 /**

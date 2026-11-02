@@ -13,14 +13,14 @@
  */
 
 import { z } from 'zod';
-import { JsonValueSchema } from './types.js';
+import { JsonObjectSchema } from './types.js';
 import type { LocalConfig } from './types.js';
 import { log } from './utils/logger.js';
 
 // ─── Public types ───────────────────────────────────────
 
 /** A hook's STDIN payload: the JSON object the host wrote. */
-export const HookStdinSchema = z.record(z.string(), JsonValueSchema);
+export const HookStdinSchema = JsonObjectSchema;
 
 export type HookStdin = z.infer<typeof HookStdinSchema>;
 
@@ -121,7 +121,7 @@ const DEFAULT_TIMEOUT_MS = 60_000;
 const HookContextReplySchema = z.object({ hookSpecificOutput: z.object({ additionalContext: z.string() }) });
 
 /** A hook reply in either structured schema: a JSON object. */
-const HookReplySchema = z.record(z.string(), JsonValueSchema);
+const HookReplySchema = JsonObjectSchema;
 
 const StringsSchema = z.array(z.string());
 

@@ -11,7 +11,7 @@ import { readEvents, dataHomeKey, isHumanPromptEntry, TranscriptEntrySchema, typ
 import { readFileSafe, ensureDir, pathExists, readJson } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import type { RequestCostMetrics, TokenUsage } from './types.js';
-import { getDataHome, getTeamaiHomeDir, emptyTokenUsage, JsonValueSchema } from './types.js';
+import { getDataHome, getTeamaiHomeDir, emptyTokenUsage, JsonObjectSchema } from './types.js';
 import { projectsRootDir } from './utils/partition.js';
 import { parseDailySnapshot, SnapshotCountSchema, type DailySessionSnapshot, type ReportedDailySessions } from './session-trends.js';
 
@@ -104,7 +104,7 @@ const ReportedSizeSchema = z.object({
 export const reportedSize = ReportedSizeSchema.parse;
 
 /** A snapshot file: entries by session ID, each read by the parser of its kind; null for what is not one. */
-const SnapshotFileSchema = z.record(z.string(), JsonValueSchema).nullable().catch(null);
+const SnapshotFileSchema = JsonObjectSchema.nullable().catch(null);
 
 /** A snapshot as its file holds it, or as this report computed it. */
 type ScopeSnapshot = z.infer<typeof SnapshotFileSchema> | ReportedInterventions | ReportedPromptTokens | ReportedDailySessions;

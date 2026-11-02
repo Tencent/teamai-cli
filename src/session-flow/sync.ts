@@ -39,7 +39,7 @@ import { z } from 'zod';
 import { AgentObservationSchema, type AgentObservation } from '../agent-observation.js';
 import type { Session } from './ir.js';
 import { OptionalString } from './fs.js';
-import { JsonValueSchema } from '../types.js';
+import { JsonValueSchema, JsonObjectSchema } from '../types.js';
 import { titleSpellsLocalPath, type LocalPathRoots } from './scrub.js';
 import { messageToDict, messageFromDict } from './ir.js';
 
@@ -1553,7 +1553,7 @@ export class SyncManager {
     // an index rebuild, not a session change, so retain the committed bytes
     // when its session projection is already identical.
     try {
-      const current = z.record(z.string(), JsonValueSchema).parse(JSON.parse(fs.readFileSync(indexPath, 'utf-8')));
+      const current = JsonObjectSchema.parse(JSON.parse(fs.readFileSync(indexPath, 'utf-8')));
 
       if (JSON.stringify({ ...current, updatedAt: undefined }) === JSON.stringify({ ...rebuilt, updatedAt: undefined })) {
         return entries.length;

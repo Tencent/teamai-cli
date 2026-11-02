@@ -30,7 +30,7 @@ import { z } from 'zod';
 import type { ContentBlock, Session, ToolArguments } from './ir.js';
 import { imagePlaceholderText } from './ir.js';
 import { mayReadLocalImageFile, OptionalString, safeFileName } from './fs.js';
-import { JsonValueSchema, type JsonValue } from '../types.js';
+import { JsonValueSchema, type JsonValue, JsonObjectSchema } from '../types.js';
 import { isInjectedText, titleFromUserText , visibleUserText } from './title.js';
 
 // ---------------------------------------------------------------------------
@@ -948,8 +948,8 @@ const IdeBlockSchema = z.object({
   id: JsonValueSchema.optional(),
   toolCallId: JsonValueSchema.optional(),
   toolName: JsonValueSchema.optional(),
-  args: z.record(z.string(), JsonValueSchema).optional().catch(undefined),
-  arguments: z.record(z.string(), JsonValueSchema).optional().catch(undefined),
+  args: JsonObjectSchema.optional().catch(undefined),
+  arguments: JsonObjectSchema.optional().catch(undefined),
   isError: JsonValueSchema.optional(),
   result: JsonValueSchema.optional(),
   image: JsonValueSchema.optional(),

@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { readFileSafe, writeFile, pathExists, listDirs } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { parseFrontmatter } from '../utils/frontmatter.js';
-import { JsonValueSchema } from '../types.js';
+import { JsonObjectSchema } from '../types.js';
 import type { JsonValue } from '../types.js';
 
 // ─── Marketplace refresh ────────────────────────────────
@@ -38,7 +38,7 @@ interface MarketplacePlugin {
  * objects. Only checked; the refresh edits the parsed file itself, so a write
  * keeps the keys and their order as the team wrote them.
  */
-const MarketplaceFileSchema = z.looseObject({ plugins: z.array(z.record(z.string(), JsonValueSchema)) });
+const MarketplaceFileSchema = z.looseObject({ plugins: z.array(JsonObjectSchema) });
 
 interface MarketplaceJson {
   name: string;

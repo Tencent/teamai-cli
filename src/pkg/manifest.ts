@@ -6,7 +6,7 @@ import YAML from 'yaml';
 import { parseYaml } from '../utils/yaml.js';
 import { z } from 'zod';
 
-import { getDataHome, getTeamaiHome, isSelfMode, JsonValueSchema, type JsonValue, type LocalConfig } from '../types.js';
+import { getDataHome, getTeamaiHome, isSelfMode, type JsonValue, type LocalConfig, JsonObjectSchema } from '../types.js';
 import { pathExists, readFileSafe, writeFile } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import {
@@ -94,7 +94,7 @@ export async function packageLockDir(localConfig: LocalConfig, options: { readOn
 }
 
 /** teamai.yaml read as a map, its keys in file order so a save writes them back in place. */
-const YamlObjectSchema = z.record(z.string(), JsonValueSchema);
+const YamlObjectSchema = JsonObjectSchema;
 
 /** The fields of teamai.yaml that can name the team; one of the wrong type reads as absent. */
 const TeamNameSchema = z.object({

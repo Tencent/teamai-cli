@@ -11,7 +11,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { z } from 'zod';
-import { JsonValueSchema } from '../types.js';
+import { JsonValueSchema, JsonObjectSchema } from '../types.js';
 import type { Session } from './ir.js';
 import type { JsonlRecord } from '../utils/jsonl-store.js';
 
@@ -139,7 +139,7 @@ export function decodeCwdGeneric(encoded: string): string {
 // ---------------------------------------------------------------------------
 
 /** One line of a JSONL transcript: a JSON object, its values not yet read by any platform's schema. */
-const JsonlRecordSchema = z.record(z.string(), JsonValueSchema) satisfies z.ZodType<JsonlRecord>;
+const JsonlRecordSchema = JsonObjectSchema satisfies z.ZodType<JsonlRecord>;
 
 /** A transcript field read the way `String(value ?? fallback)` reads it: any JSON value, coerced to text. */
 export function coercedText(fallback = '') {

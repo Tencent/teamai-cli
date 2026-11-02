@@ -11,7 +11,7 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import { z } from 'zod';
 
-import { JsonValueSchema, type JsonValue } from './types.js';
+import { type JsonValue, JsonObjectSchema } from './types.js';
 import { log } from './utils/logger.js';
 
 // ─── 类型 ────────────────────────────────────────────────
@@ -20,7 +20,7 @@ const RISKS = ['high', 'medium', 'low'] as const;
 
 export type Risk = typeof RISKS[number];
 
-const PendingReviewPayloadSchema = z.record(z.string(), JsonValueSchema);
+const PendingReviewPayloadSchema = JsonObjectSchema;
 
 export type PendingReviewPayload = z.infer<typeof PendingReviewPayloadSchema>;
 

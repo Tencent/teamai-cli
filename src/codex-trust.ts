@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { desktopCodexBinaries } from './codex-desktop.js';
 import { getCurrentVersion } from './package-info.js';
 import type { CodexBuild, CodexBuildSkew, JsonValue } from './types.js';
-import { JsonValueSchema } from './types.js';
+import { JsonValueSchema, JsonObjectSchema } from './types.js';
 import { probeBinary } from './utils/exec.js';
 import { log } from './utils/logger.js';
 import { findOnPath } from './utils/lookpath.js';
@@ -377,7 +377,7 @@ const BatchWriteReplySchema = z.object({ status: JsonValueSchema.optional() }).c
 
 /** `config/read`'s `config.projects`, by project path; a reply without them has none. */
 const ProjectsReadSchema = z
-  .object({ config: z.object({ projects: z.record(z.string(), JsonValueSchema) }) })
+  .object({ config: z.object({ projects: JsonObjectSchema }) })
   .transform(({ config }) => config.projects)
   .catch(() => ({}));
 

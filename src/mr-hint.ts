@@ -7,7 +7,7 @@ import { z } from 'zod';
 import { getTGitToken, tgitFetch } from './providers/tgit/rest-auth.js';
 import { log } from './utils/logger.js';
 import { getUserHome } from './utils/home.js';
-import { JsonValueSchema, type LocalConfig } from './types.js';
+import { type LocalConfig, JsonObjectSchema } from './types.js';
 
 // ─── MR Hint data flow ──────────────────────────────────
 //
@@ -565,7 +565,7 @@ export async function computeMrHintOutput(
 }
 
 /** The SessionStart hook's stdin object; anything else reads as no payload. */
-const HookPayloadSchema = z.record(z.string(), JsonValueSchema);
+const HookPayloadSchema = JsonObjectSchema;
 
 type HookPayload = z.infer<typeof HookPayloadSchema>;
 

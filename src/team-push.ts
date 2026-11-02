@@ -16,7 +16,7 @@ import { log } from './utils/logger.js';
 import type {
   UserStats, UserModeStats, UserInterventionStats, SessionMetrics, TokenUsage, DashboardEvent, LocalConfig, RequestCostMetrics, UserVotesV2,
 } from './types.js';
-import { getVotesDir, getDataHome, getReportsDir, emptyTokenUsage, addTokenUsage, usesBranchWorktree, JsonValueSchema, parseUserStats } from './types.js';
+import { getVotesDir, getDataHome, getReportsDir, emptyTokenUsage, addTokenUsage, usesBranchWorktree, JsonValueSchema, parseUserStats, JsonObjectSchema } from './types.js';
 import { filterEventsByScope, runsOfLog } from './dashboard-scope.js';
 import {
   creditedPrompts, interventionsEntry, promptTokensEntry, readOwnerCredits, recordSessionOwners, reportedBeyondShared, reportedSize,
@@ -436,7 +436,7 @@ function segmentKey(transcript: string): string {
 }
 
 /** A snapshot entry's reported rollouts as a file holds them. */
-const StoredSegmentsSchema = z.object({ segments: z.record(z.string(), JsonValueSchema) });
+const StoredSegmentsSchema = z.object({ segments: JsonObjectSchema });
 
 /** A stored rollout's fields beyond its prompts, tokens and interventions: 0, none and false for what it does not hold. */
 const StoredSegmentFieldsSchema = z.object({

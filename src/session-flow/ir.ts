@@ -12,7 +12,7 @@
  */
 
 import { z } from 'zod';
-import { JsonValueSchema, type JsonValue } from '../types.js';
+import { JsonValueSchema, type JsonValue, JsonObjectSchema } from '../types.js';
 import { coercedText, OptionalString } from './fs.js';
 
 // ---------------------------------------------------------------------------
@@ -38,7 +38,7 @@ export interface ToolCallBlock {
 }
 
 /** A tool call's input as the source platform recorded it: arbitrary JSON keyed by argument name. */
-export const ToolArgumentsSchema = z.record(z.string(), JsonValueSchema);
+export const ToolArgumentsSchema = JsonObjectSchema;
 
 export type ToolArguments = z.infer<typeof ToolArgumentsSchema>;
 

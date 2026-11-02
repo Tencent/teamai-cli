@@ -24,6 +24,7 @@ import {
   type JsonValue,
   type LocalConfig,
   type TeamaiConfig,
+  JsonObjectSchema,
 } from './types.js';
 import { readFileSafe } from './utils/fs.js';
 
@@ -139,7 +140,7 @@ function publishMode(key: string): RunMode | undefined {
 const MACHINE_WIDE_MEMBER_SETTINGS = new Set(['updatePolicy', 'autoCompactTokens']);
 
 /** A JSON object of a config tree, such as a config file or one of its sections. */
-const ConfigObjectSchema = z.record(z.string(), JsonValueSchema);
+const ConfigObjectSchema = JsonObjectSchema;
 
 type ConfigObject = z.infer<typeof ConfigObjectSchema>;
 
