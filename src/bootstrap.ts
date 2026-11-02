@@ -16,6 +16,7 @@
  */
 import path from 'node:path';
 import YAML from 'yaml';
+import { z } from 'zod';
 import {
   BOOTSTRAP_LOCK_FILENAME,
   SELF_BRANCH_HOME_DIRNAME,
@@ -31,6 +32,13 @@ import { getMemberConfig, mergeMemberConfig } from './members.js';
 
 export type BootstrapResult = 'bootstrapped' | 'already' | 'skip';
 
+/** The `mode: self` marker; a repo or provider that is not a string reads as unset. */
+const SelfModeMarkerSchema = z.object({
+  mode: z.literal('self'),
+  repo: z.string().optional().catch(undefined),
+  provider: z.string().optional().catch(undefined),
+});
+
 /**
  * Read `.teamai/teamai.yaml` at dir and return it iff it declares `mode: self`.
  * Returns null otherwise (not a single-repo project). Purely a marker read — no
@@ -43,10 +51,10 @@ export async function readSelfModeMarker(dir: string): Promise<{ repo?: string; 
   if (!content) return null;
 
   try {
-    const raw = YAML.parse(content) as Partial<TeamaiConfig> | null;
+    const marker = SelfModeMarkerSchema.safeParse(YAML.parse(content)).data;
 
-    if (raw && raw.mode === 'self') {
-      return { repo: raw.repo, provider: raw.provider };
+    if (marker) {
+      return { repo: marker.repo, provider: marker.provider };
     }
   } catch {
     // malformed yaml — not our concern here
@@ -182,8 +190,9 @@ async function planSelfBootstrap(
     // Both scopes of a self-mode repo share one side-branch checkout (#1443).
     branchHome: path.join(partitionHome, SELF_BRANCH_HOME_DIRNAME),
     additionalRoles: [],
-    ...(enabledAgents.length > 0 ? { enabledAgents } : {}),
   };
+
+  if (enabledAgents.length > 0) localConfig.enabledAgents = enabledAgents;
 
   // Role (non-interactive): auto-select when the repo defines exactly one role.
   // Multi-role repos leave role unset — the member can set it later with
@@ -220,7 +229,7 @@ export async function previewSelfBootstrap(dir?: string): Promise<LocalConfig | 
   const businessRepoRoot = dir ?? process.cwd();
   const pending = await findPendingBootstrap(businessRepoRoot, true);
 
-  if (typeof pending === 'string') return null;
+  if (!(pending instanceof Object)) return null;
   const plan = await planSelfBootstrap(businessRepoRoot, pending.partitionHome, pending.marker, true, true);
 
   if (!plan) return null;
@@ -250,7 +259,7 @@ export async function bootstrapSelfRepo(
 
   const pending = await findPendingBootstrap(businessRepoRoot, false);
 
-  if (typeof pending === 'string') return pending;
+  if (!(pending instanceof Object)) return pending;
   const { configPath } = pending;
 
   const lockPath = path.join(businessRepoRoot, '.teamai', BOOTSTRAP_LOCK_FILENAME);
