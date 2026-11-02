@@ -14,6 +14,7 @@ import { durationMs } from '../workflow/parse.js';
 import { SetupSchema, type Setup } from '../workflow/requirements.js';
 import type { WorkflowDiagnostic } from '../workflow/types.js';
 import { CommitSchema, TeamPathSchema } from '../workflow/clone.js';
+import { CheckRunSchema, isRelativePath, RepoPathSchema, segmentPattern } from './check.js';
 import { BENCHMARK_NAME, BenchmarkNameSchema, type TrialLimits } from './terms.js';
 
 /** The project the tasks start from. A URL, never a local path or a URL with credentials: it travels in plan and record. */
@@ -22,21 +23,6 @@ const RepoUrlSchema = z.string().refine((value) => {
   const url = new URL(value);
   return ['https:', 'ssh:', 'git:'].includes(url.protocol) && url.username === '' && url.password === '';
 }, 'must be an https, ssh or git URL without credentials');
-
-/** Whether `value` is a relative path written segment by segment, so joined to a directory it stays inside it. */
-function isRelativePath(value: string): boolean {
-  return !value.includes('\\') && value.split('/').every((segment) => segment !== '' && segment !== '.' && segment !== '..');
-}
-
-/**
- * A git pathspec relative to the repo; globs allowed (`test/**`). Passed to git as an argv element, never through a shell.
- * Written as git lists paths, segment by segment and with no glob escape, so a protected path is compared with a
- * submodule's as git would.
- */
-const RepoPathSchema = z.string().min(1).refine(
-  (value) => !value.startsWith(':') && isRelativePath(value),
-  'must be a path relative to the repo, with no backslash and no ".", ".." or empty segment',
-);
 
 /** A file or directory of the suite directory, `benchmarks/<suite>/`, read as bytes by the sync. */
 const SuitePathSchema = z.string().min(1).refine(isRelativePath, 'must be a path inside the suite directory, with no backslash and no ".", ".." or empty segment');
@@ -233,32 +219,9 @@ function matrixProblem(defaults: ArmValues, matrix: Matrix): string | undefined 
   return undefined;
 }
 
-/**
- * One segment of a glob pathspec as a regular expression, undefined when its `[` class never closes. A class stays a
- * class, `[!a]` as `[^a]`, whose `*` and `?` are literal, and so is a `]` right after `[` or `[!`; a `^` that opens no
- * class is literal, as git reads it.
- */
-function segmentPattern(segment: string): RegExp | undefined {
-  const pattern = segment.replace(/\[(!?)(\]?[^\]]*)\]|[*?.+^${}()|\\]/g, (token, negated: string | undefined, members: string | undefined) => {
-    if (members !== undefined) return `[${negated ? '^' : ''}${members.replace(/[\\\]]/g, '\\$&')}]`;
-    return token === '*' ? '[^/]*' : token === '?' ? '.' : `\\${token}`;
-  });
-  try {
-    return new RegExp(`^${pattern}$`);
-  } catch {
-    return undefined;
-  }
-}
-
 const AddedPathSchema = RepoPathSchema.refine((value) => !/[*?[]/.test(value), 'must name one file, without glob characters');
 
-const ProtectedPathSchema = RepoPathSchema.refine((value) => value.split('/').every((segment) => segmentPattern(segment) !== undefined), 'has a [ class with no closing ]')
-  .refine((value) => !/\[:[a-z]+:\]/.test(value), 'has a named class such as [:digit:], which a check cannot read; list its characters, such as [0-9]');
-
-const CheckFileSchema = z.object({
-  run: z.string().trim().min(1, 'check.run is a command'),
-  protect: z.array(ProtectedPathSchema).nonempty('check.protect lists every path the check reads and the agent must not supply')
-    .pipe(z.tuple([ProtectedPathSchema], ProtectedPathSchema)),
+const CheckFileSchema = CheckRunSchema.extend({
   /**
    * Files written before the check whether or not the starting commit has them, so the agent never sees them: a path of
    * `solutionCommit`, such as its test, or `{ from, to }`, a file or directory of the suite directory written at `to`.

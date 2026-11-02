@@ -1,5 +1,5 @@
 /**
- * How a task's check ended, classified once, by `teamai benchmark check` (trial.ts), which prints the result as its
+ * What a check is, written in a benchmark task or a scorer, and how it ended, classified once, by `teamai benchmark check` (trial.ts), which prints the result as its
  * step's output. Pure. result.ts maps the output its step stored: nothing classifies a check a second time, and no
  * result is read back from a failure code.
  */
@@ -18,6 +18,51 @@ export type CheckVerdict =
 export const CHECK_RESULTS = ['passed', 'failed', 'could_not_run'] as const satisfies ReadonlyArray<CheckVerdict['verdict']>;
 export const CheckOutputSchema = z.object({ result: z.enum(CHECK_RESULTS) });
 export type CheckResult = (typeof CHECK_RESULTS)[number];
+
+/** Whether `value` is a relative path written segment by segment, so joined to a directory it stays inside it. */
+export function isRelativePath(value: string): boolean {
+  return !value.includes('\\') && value.split('/').every((segment) => segment !== '' && segment !== '.' && segment !== '..');
+}
+
+/**
+ * A git pathspec relative to the repo; globs allowed (`test/**`). Passed to git as an argv element, never through a shell.
+ * Written as git lists paths, segment by segment and with no glob escape, so a protected path is compared with a
+ * submodule's as git would.
+ */
+export const RepoPathSchema = z.string().min(1).refine(
+  (value) => !value.startsWith(':') && isRelativePath(value),
+  'must be a path relative to the repo, with no backslash and no ".", ".." or empty segment',
+);
+
+/**
+ * One segment of a glob pathspec as a regular expression, undefined when its `[` class never closes. A class stays a
+ * class, `[!a]` as `[^a]`, whose `*` and `?` are literal, and so is a `]` right after `[` or `[!`; a `^` that opens no
+ * class is literal, as git reads it.
+ */
+export function segmentPattern(segment: string): RegExp | undefined {
+  const pattern = segment.replace(/\[(!?)(\]?[^\]]*)\]|[*?.+^${}()|\\]/g, (token, negated: string | undefined, members: string | undefined) => {
+    if (members !== undefined) return `[${negated ? '^' : ''}${members.replace(/[\\\]]/g, '\\$&')}]`;
+    return token === '*' ? '[^/]*' : token === '?' ? '.' : `\\${token}`;
+  });
+  try {
+    return new RegExp(`^${pattern}$`);
+  } catch {
+    return undefined;
+  }
+}
+
+const ProtectedPathSchema = RepoPathSchema.refine((value) => value.split('/').every((segment) => segmentPattern(segment) !== undefined), 'has a [ class with no closing ]')
+  .refine((value) => !/\[:[a-z]+:\]/.test(value), 'has a named class such as [:digit:], which a check cannot read; list its characters, such as [0-9]');
+
+/**
+ * What a check runs and the paths it reads that the agent must not supply: a benchmark task's check (#1180), which adds
+ * `add`, and a scorer's (#1247). Strict, so a key either does not know is reported.
+ */
+export const CheckRunSchema = z.object({
+  run: z.string().trim().min(1, 'check.run is a command'),
+  protect: z.array(ProtectedPathSchema).nonempty('check.protect lists every path the check reads and the agent must not supply')
+    .pipe(z.tuple([ProtectedPathSchema], ProtectedPathSchema)),
+}).strict();
 
 const SHELL_SIGNAL_BASE = 128;
 /** The highest signal number on Linux, whose real-time signals go up to 64; other POSIX systems stop below it. */
