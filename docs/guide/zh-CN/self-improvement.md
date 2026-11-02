@@ -260,11 +260,11 @@ jobs:
             | ($table.invalid | length) == 0
               and all($table.results[]?; .counts.not_run == 0)
               and ($pairs | length) > 0
-              and ([$table.results[]? | select(.team.kind == "pulled") | .tool] - [$pairs[] | (.to | fromjson)[1]] | length) == 0
+              and ([$table.results[]? | select(.team.kind == "pulled" or .team.kind == "ref") | .tool] - [$pairs[] | (.to | fromjson)[1]] | length) == 0
               and all($pairs[].tasks[]; .to.planned > 0 and .to.passed * .from.planned >= .from.passed * .to.planned)' done.json
 ```
 
-它在每个 PR 上运行，人提的 PR 也一样，所以每次改动都会和之前修好的每个失败对比。它没有 `paths:` 过滤：被过滤跳过的必需检查在 GitHub 上会一直等待，会挡住所有不在这些路径里的 PR。PR 每推送一次就再跑一次，替换两个标记之间的部分；正文其余部分保持不变。`--team-ref "$HEAD_REF"` 把运行固定到 PR 的分支：`pulled` 组和套件的任务来自它，`main` 组来自 `main`。评审一致性表格在自我改进 PR 上只列这个 PR 针对的评分器，在人提的 PR 上列出所有评分器。最后一步在任何工具上有任务在 PR 上比在 `main` 上通过得少，有任务的检查无法运行或在改动前就通过、有试验没有运行，或者某个有 PR 组的工具没有可以对比的 `main` 组时，让任务失败：只看这些配对，所以去掉 PR 组或 `main` 组的套件也会让它失败。在团队仓库的合并规则里把这个任务设为必需，就能把没通过的改动挡在 `main` 之外。
+它在每个 PR 上运行，人提的 PR 也一样，所以每次改动都会和之前修好的每个失败对比。它没有 `paths:` 过滤：被过滤跳过的必需检查在 GitHub 上会一直等待，会挡住所有不在这些路径里的 PR。PR 每推送一次就再跑一次，替换两个标记之间的部分；正文其余部分保持不变。`--team-ref "$HEAD_REF"` 把运行固定到 PR 的分支：`pulled` 组和套件的任务来自它，`main` 组来自 `main`。评审一致性表格在自我改进 PR 上只列这个 PR 针对的评分器，在人提的 PR 上列出所有评分器。最后一步在任何工具上有任务在 PR 上比在 `main` 上通过得少，有任务的检查无法运行或在改动前就通过、有试验没有运行，或者某个有 PR 组或 `main` 组的工具没有这两者的配对可以对比时，让任务失败：只看这些配对，所以去掉 PR 组或 `main` 组的套件也会让它失败。在团队仓库的合并规则里把这个任务设为必需，就能把没通过的改动挡在 `main` 之外。
 
 Dashboard 的[自我改进页面](dashboard.md#自我改进self-improvement)跟踪每个提议和每个已合并的修改：它改了哪些资产、它在回归套件上每个工具的证明，以及合并前后评分器的通过率。
 
