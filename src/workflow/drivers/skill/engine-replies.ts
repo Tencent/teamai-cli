@@ -7,27 +7,48 @@ import { LeaseWireSchema } from '../../lease-wire.js';
 import { FailureSchema } from '../../step-state.js';
 import { AttemptIdSchema, type AttemptId, type RunId } from '../../store.js';
 import type { WorkflowEnvelope } from '../../types.js';
-import type { EngineReply, ReadLease, ReportReply, RespondReply, ScoreReply } from './transitions.js';
+import type { AskedGate, EngineReply, ReadLease, ReportReply, RespondReply, ScoreReply } from './transitions.js';
 
 /** The lease `raw` the engine sent, as this driver runs it. Undefined when this teamai cannot run it. */
+// oxlint-disable-next-line teamai/no-unknown-parameters -- the parse boundary: the engine's answer and a runner's job file carry the lease unread
 export function readLease(raw: unknown): ReadLease | undefined {
   const read = LeaseWireSchema.safeParse(raw);
 
   if (!read.success) return undefined;
   const { attempt, step: id, revision, expiresAt, command, env, envScope, prompt, workspace, agent, model, defaultModel, output, interactive, readOnly, requires } = read.data;
-  const base = { attempt, step: id, revision, ...(expiresAt !== undefined ? { expiresAt } : {}) };
+  let lease: ReadLease;
 
-  if (command !== undefined) return { ...base, executor: 'command', command, env: env ?? {}, ...(envScope ? { envScope } : {}) };
+  if (command !== undefined) {
+    lease = { attempt, step: id, revision, executor: 'command', command, env: env ?? {} };
 
-  // The schema reads a lease with a command or a prompt, so one without a command has its prompt.
-  if (prompt === undefined) return undefined;
+    if (envScope) lease.envScope = envScope;
+  } else {
+    // The schema reads a lease with a command or a prompt, so one without a command has its prompt.
+    if (prompt === undefined) return undefined;
 
-  return {
-    ...base, executor: 'prompt', prompt, place: workspace === undefined ? 'checkout' : 'workspace', writes: workspace?.mode === 'new' || workspace?.mode === 'continue',
-    ...(interactive ? { interactive } : {}), ...(readOnly ? { readOnly } : {}), ...(requires?.isolation === 'sandbox' ? { isolation: requires.isolation } : {}),
-    ...(agent !== undefined ? { agent } : {}), ...(model !== undefined ? { model } : {}), ...(defaultModel !== undefined ? { defaultModel } : {}),
-    ...(output !== undefined ? { output } : {}),
-  };
+    lease = {
+      attempt, step: id, revision, executor: 'prompt', prompt, place: workspace === undefined ? 'checkout' : 'workspace',
+      writes: workspace?.mode === 'new' || workspace?.mode === 'continue',
+    };
+
+    if (interactive) lease.interactive = interactive;
+
+    if (readOnly) lease.readOnly = readOnly;
+
+    if (requires?.isolation === 'sandbox') lease.isolation = requires.isolation;
+
+    if (agent !== undefined) lease.agent = agent;
+
+    if (model !== undefined) lease.model = model;
+
+    if (defaultModel !== undefined) lease.defaultModel = defaultModel;
+
+    if (output !== undefined) lease.output = output;
+  }
+
+  if (expiresAt !== undefined) lease.expiresAt = expiresAt;
+
+  return lease;
 }
 
 const NextDataSchema = z.object({
@@ -43,8 +64,14 @@ const NextDataSchema = z.object({
   done: z.object({ outcome: z.enum(['succeeded', 'failed', 'cancelled']), failure: FailureSchema.optional(), prs: z.array(z.string()).optional(), notPublished: z.object({ code: z.string() }).optional() }).optional(),
 });
 
+/** What `engineReply` reads from an answer to `next`. */
+interface NextAnswer {
+  reply: EngineReply;
+  cancelled: AttemptId[];
+}
+
 /** The engine's answer to `next`, and the attempts it no longer leases to this driver. */
-export function engineReply(run: RunId, answer: WorkflowEnvelope): { reply: EngineReply; cancelled: AttemptId[] } {
+export function engineReply(run: RunId, answer: WorkflowEnvelope): NextAnswer {
   if ('error' in answer) return { reply: { kind: 'error', error: { code: answer.error.code, message: answer.error.message } }, cancelled: [] };
   const data = NextDataSchema.safeParse(answer.data);
 
@@ -54,12 +81,22 @@ export function engineReply(run: RunId, answer: WorkflowEnvelope): { reply: Engi
 
   const { done, lease, hitl, wait, cancelled = [] } = data.data;
 
-  if (done) return { reply: { kind: 'done', outcome: done.outcome, ...(done.failure ? { failure: done.failure } : {}), prs: done.prs ?? [], out: done.notPublished === undefined || done.notPublished.code === 'not_owner' }, cancelled };
+  if (done) {
+    const reply: EngineReply = { kind: 'done', outcome: done.outcome, prs: done.prs ?? [], out: done.notPublished === undefined || done.notPublished.code === 'not_owner' };
+
+    if (done.failure) reply.failure = done.failure;
+
+    return { reply, cancelled };
+  }
 
   if (hitl) {
     const { step: id, pass, kind, message, options, default: chosen, required } = hitl;
 
-    return { reply: { kind: 'hitl', gate: { step: id, pass, kind, message, options, ...(chosen !== undefined ? { default: chosen } : {}), required } }, cancelled };
+    const gate: AskedGate = { step: id, pass, kind, message, options, required };
+
+    if (chosen !== undefined) gate.default = chosen;
+
+    return { reply: { kind: 'hitl', gate }, cancelled };
   }
 
   if (lease === undefined) {
@@ -95,7 +132,11 @@ export function reportReply(answer: WorkflowEnvelope): ReportReply {
   if (!data.success) return { kind: 'error', error: { code: 'run_unreadable', message: 'The engine answered a report with a reply this teamai cannot read. Update teamai.' } };
   const { outcome, failure } = data.data.step;
 
-  return { kind: 'reported', outcome, ...(failure ? { failure } : {}) };
+  const reply: ReportReply = { kind: 'reported', outcome };
+
+  if (failure) reply.failure = failure;
+
+  return reply;
 }
 
 const ScoreDataSchema = z.object({

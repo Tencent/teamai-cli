@@ -44,7 +44,7 @@ export async function writeChildBrief(input: {
   secrets: Record<string, string>;
 }): Promise<string> {
   const { config, run, attempt, step, dir, changes, prompt, by, output, report, secrets } = input;
-  const shape = output === undefined ? 'a short summary of what you did, as a JSON string' : `a value that matches the JSON schema \`${JSON.stringify(output)}\``;
+  const expected = output === undefined ? 'a short summary of what you did, as a JSON string' : `a value that matches the JSON schema \`${JSON.stringify(output)}\``;
 
   const brief = [
     `# Step ${step}, attempt ${attempt} of run ${run}`,
@@ -71,7 +71,7 @@ export async function writeChildBrief(input: {
     '## Finish',
     '',
     `1. Write \`${attemptResultPath(config, run, attempt)}\` with one JSON object:`,
-    `   - When the step is done: \`{"kind":"output","output":...}\`, where \`output\` is ${shape}.`,
+    `   - When the step is done: \`{"kind":"output","output":...}\`, where \`output\` is ${expected}.`,
     '   - When you cannot do it: `{"kind":"failure","failure":{"code":"blocked","message":"..."}}`, with a short code and a message that says what stopped you.',
     by === 'child'
       ? `2. Run \`${report}\` once, and end with its reply as your last message. The orchestrator learns from TeamAI that you reported.`

@@ -187,14 +187,17 @@ async function attemptCheckRow(context: SkillContext, state: SkillState, open: A
 export function plannedState(context: SkillContext, run: RunId, planned: StartRun): SkillState {
   return newSkillState({
     run, driver: driverIdentity('skill', context.cwd), invocation: context.invocation, options: { parallel: planned.parallel, hitl: planned.hitl, mode: context.mode },
-    host: planned.host, session: context.session, tool: context.tool, at: context.now().toISOString(), ...(planned.judge !== undefined ? { judge: planned.judge } : {}),
+    host: planned.host, session: context.session, tool: context.tool, at: context.now().toISOString(), judge: planned.judge,
   });
 }
 
 /** The end a `done` names, whether the engine answered it or the driver kept it, so the two compare as equal text. */
-function endOf(done: { outcome: string; failure?: WorkflowFailure; prs: string[] }): unknown {
+function endOf(done: KeptEnd): KeptEnd {
   return { outcome: done.outcome, failure: done.failure, prs: done.prs };
 }
+
+/** The parts of a run's end the driver compares with what the engine answers. */
+type KeptEnd = Pick<NonNullable<SkillState['done']>, 'outcome' | 'failure' | 'prs'>;
 
 /**
  * The steps' tick: sends the reports a crash left stored, respawns runners that are gone and gives up the attempts a
@@ -229,7 +232,7 @@ async function stepTick(context: SkillContext, lock: RunLock, start: SkillState,
 
   for (;;) {
     const version = state.done ? await context.client.runVersion(state.run) : undefined;
-    const ticked = traced(context, tickRow(state, { role, ...(version ? { version } : {}) }));
+    const ticked = traced(context, tickRow(state, { role, version }));
 
     if (!('request' in ticked)) return { state, spawned };
 
@@ -237,9 +240,10 @@ async function stepTick(context: SkillContext, lock: RunLock, start: SkillState,
     const { request } = ticked;
     probed = probed || !request.canTakeLease;
 
+    // The engine reads an absent autoApprove and an undefined one alike, and the CLI's JSON drops it.
     const body = {
       driver: { ...state.driver, can: canFor(state.host.kind === 'chosen' ? state.host.id : undefined) }, running: request.running, canTakeLease: request.canTakeLease,
-      runMode: state.options.mode, ...(request.autoApprove ? { autoApprove: true } : {}),
+      runMode: state.options.mode, autoApprove: request.autoApprove ? true : undefined,
     };
 
     const answer = await context.client.next(state.run, body);
@@ -251,7 +255,7 @@ async function stepTick(context: SkillContext, lock: RunLock, start: SkillState,
     for (const attempt of cancelled) state = traced(context, cancelledRow(state, { attempt, at }))?.state ?? state;
     state = traced(context, gateCheckRow(state, reply))?.state ?? state;
     const ended = reply.kind === 'done' && !state.done ? await context.client.runVersion(state.run) : undefined;
-    const replied = traced(context, replyRow(state, { reply, at, ...(ended ? { version: ended } : {}) }));
+    const replied = traced(context, replyRow(state, { reply, at, version: ended }));
 
     if (!replied) return { state, spawned };
 
@@ -280,7 +284,13 @@ async function stepTick(context: SkillContext, lock: RunLock, start: SkillState,
     const freed = !request.canTakeLease && role === 'call' && !state.done && hasSlot(state);
 
     if (!freed && (!leased || (!hasSlot(state) && (state.gate === undefined || probed)))) {
-      return { state, spawned, ...(replied.waiting ? { waiting: replied.waiting } : {}), ...(replied.turn ? { turn: replied.turn } : {}) };
+      const result: Ticked = { state, spawned };
+
+      if (replied.waiting) result.waiting = replied.waiting;
+
+      if (replied.turn) result.turn = replied.turn;
+
+      return result;
     }
   }
 }
@@ -322,7 +332,7 @@ async function called(context: SkillContext, lock: RunLock, same: Literal, input
 
     if (carried && (local !== undefined || attended !== undefined)) {
       const readied: RunReadied = { kind: 'ready', installed: false, ...carried, judging: { kind: 'none' } };
-      const refused = traced(context, readiedRow({ run, readied, kept: false, mode: context.mode, ...(local !== undefined ? { local } : {}), ...(attended !== undefined ? { attended } : {}), needsTool: false, answers, confirmed }));
+      const refused = traced(context, readiedRow({ run, readied, kept: false, mode: context.mode, local, attended, needsTool: false, answers, confirmed }));
 
       if (refused && 'answer' in refused) return { answer: { error: errorOf(refused.answer, { invocation: context.invocation, same, localTool }) } };
     }
@@ -330,15 +340,14 @@ async function called(context: SkillContext, lock: RunLock, same: Literal, input
 
   if (input.resume !== undefined || (input.takeover && !state)) {
     const readied = await context.client.resume(run, {
-      lock, claim: input.resume === undefined ? 'none' : input.resume.claim, checkout: context.cwd, ceiling: ceilingOf(context.config), can: canFor(undefined),
-      ...(context.tool !== undefined ? { tool: context.tool } : {}),
+      lock, claim: input.resume === undefined ? 'none' : input.resume.claim, checkout: context.cwd, ceiling: ceilingOf(context.config), can: canFor(undefined), tool: context.tool,
     });
 
     const local = readied.kind === 'ready' ? localReason(readied.description) : undefined;
     const attended = readied.kind === 'ready' && context.mode === 'unattended' ? attendedNow(readied) : undefined;
 
     const taken = traced(context, readiedRow({
-      run, readied, kept: state !== undefined, mode: context.mode, ...(local !== undefined ? { local } : {}), ...(attended !== undefined ? { attended } : {}), answers, confirmed,
+      run, readied, kept: state !== undefined, mode: context.mode, local, attended, answers, confirmed,
       needsTool: readied.kind === 'ready' && needsTool(readied.description, { tool: context.tool, judged: answers.judge !== false }),
     }));
 
@@ -377,8 +386,7 @@ function rendered(state: SkillState, answer: TurnAnswer, input: { events: TurnEv
     : { kind: answer.after, run: answer.after === 'wake' ? nextLiteral(state.invocation, state.run) : pollLiteral(state.invocation, state.run) };
 
   return turnOf(state, {
-    events: answer.events === 'unseen' ? input.events : [], ...(after ? { after } : {}), ...(input.waiting ? { waiting: input.waiting } : {}), ...(answer.quiet ? { quiet: true } : {}),
-    localTool: input.localTool,
+    events: answer.events === 'unseen' ? input.events : [], after, waiting: input.waiting, quiet: answer.quiet ? true : undefined, localTool: input.localTool,
   });
 }
 
@@ -393,7 +401,7 @@ async function finish(context: SkillContext, lock: RunLock, state: SkillState, t
   const shown = traced(context, turnRow(state, { session: context.session, ticked }));
   await writeSkillState(context.config, lock, shown.state, context.env.secrets);
 
-  return { data: { turn: rendered(shown.state, shown.turn, { events, ...(shown.waiting ? { waiting: shown.waiting } : {}), localTool: runPromptTool(context, shown.state) }) } };
+  return { data: { turn: rendered(shown.state, shown.turn, { events, waiting: shown.waiting, localTool: runPromptTool(context, shown.state) }) } };
 }
 
 /**
@@ -675,7 +683,7 @@ export async function poll(context: SkillContext, run: RunId): Promise<SkillAnsw
 
       if (!('turn' in polled)) return 'sleep';
 
-      return { data: { turn: rendered(last, polled.turn, { events, ...(polled.waiting ? { waiting: polled.waiting } : {}), localTool: runPromptTool(context, last) }) } };
+      return { data: { turn: rendered(last, polled.turn, { events, waiting: polled.waiting, localTool: runPromptTool(context, last) }) } };
     }, 0);
 
     switch (ticked.kind) {

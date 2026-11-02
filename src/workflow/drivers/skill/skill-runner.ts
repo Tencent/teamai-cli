@@ -21,7 +21,7 @@ import { commandEnd, type WorkflowClient } from '../../protocol.js';
 import { attemptDir, runnerAlive, withRunnerLock, type AttemptId, type RunId, type RunLock } from '../../store.js';
 import type { WorkflowEnvelope, WorkflowFailure } from '../../types.js';
 import { judgeCan } from './host-profiles.js';
-import { writeSkillState, readSkillState, type AttemptState, type Judge, type ReportBody, type SkillState } from './skill-state.js';
+import { writeSkillState, readSkillState, type AttemptState, type Dispatch, type Judge, type ReportBody, type SkillState } from './skill-state.js';
 import { pickChildModel } from './child-model.js';
 import { writeChildBrief } from './child-brief.js';
 import { reportLiteral, runnerArgs } from './literals.js';
@@ -263,10 +263,13 @@ async function prepare(context: SkillContext, lock: RunLock, attempt: AttemptId)
       return { kind: 'gone', status: 'queued' };
     }
 
-    return {
-      kind: 'prepared', dir: prepared.dir, job, mode: state.options.mode,
-      ...(prepared.prompt !== undefined ? { prompt: prepared.prompt } : {}), ...(open.expiresAt !== undefined ? { expiresAt: open.expiresAt } : {}),
-    };
+    const stage: Stage = { kind: 'prepared', dir: prepared.dir, job, mode: state.options.mode };
+
+    if (prepared.prompt !== undefined) stage.prompt = prepared.prompt;
+
+    if (open.expiresAt !== undefined) stage.expiresAt = open.expiresAt;
+
+    return stage;
   };
 
   if (open.phase !== 'preparing' || !open.request) return placed(await context.client.prepare(lock, job.raw));
@@ -274,7 +277,7 @@ async function prepare(context: SkillContext, lock: RunLock, attempt: AttemptId)
 
   if (hosted.kind !== 'needs-place') return placed(hosted);
   const { name, branch, start, refused } = hosted;
-  const placing = traced(context, placingRow(state, open, { ask: { name, branch, start }, ...(refused !== undefined ? { refused } : {}) }));
+  const placing = traced(context, placingRow(state, open, { ask: { name, branch, start }, refused }));
   await writeSkillState(context.config, lock, placing.state, context.env.secrets);
 
   return { kind: 'gone', status: 'placing' };
@@ -315,15 +318,18 @@ async function begin(context: SkillContext, lock: RunLock, attempt: AttemptId, p
     const running = open.phase === 'preparing' ? traced(context, preparedRow(state, attempt))?.state ?? state : state;
     await writeSkillState(context.config, lock, running, context.env.secrets);
 
-    return { kind: 'run', dir, command: lease.command, env: { ...scoped.env, ...lease.env }, mode: state.options.mode, ...(open.expiresAt !== undefined ? { expiresAt: open.expiresAt } : {}) };
+    const stage: Stage = { kind: 'run', dir, command: lease.command, env: { ...scoped.env, ...lease.env }, mode: state.options.mode };
+
+    if (open.expiresAt !== undefined) stage.expiresAt = open.expiresAt;
+
+    return stage;
   }
 
   if (open.phase !== 'preparing') return { kind: 'gone', status: 'gone' };
   const { agent, model, defaultModel, output, place, writes, interactive, readOnly, isolation } = lease;
 
   const picked = await pickChildModel({
-    config: context.config, toolPaths: context.toolPaths, step: open.step, tool: state.orchestrator.tool ?? context.tool,
-    ...(agent !== undefined ? { agent } : {}), ...(model !== undefined ? { model } : {}), ...(defaultModel !== undefined ? { defaultModel } : {}),
+    config: context.config, toolPaths: context.toolPaths, step: open.step, tool: state.orchestrator.tool ?? context.tool, agent, model, defaultModel,
   });
 
   if (!picked.ok) return failed(picked.failure, 'model');
@@ -332,12 +338,17 @@ async function begin(context: SkillContext, lock: RunLock, attempt: AttemptId, p
     config: context.config, run: lock.run, attempt, step: open.step, dir, prompt: prepared.prompt ?? lease.prompt,
     changes: writes ? 'commit' : interactive && place === 'checkout' && !readOnly ? 'keep' : 'none',
     by: interactive ? 'person' : state.host.kind === 'chosen' && state.host.id === 'h4' ? 'self' : 'child',
-    ...(output !== undefined ? { output } : {}), report: reportLiteral(state.invocation, lock.run, attempt), secrets: context.env.secrets,
+    output, report: reportLiteral(state.invocation, lock.run, attempt), secrets: context.env.secrets,
   });
 
-  const offered = traced(context, offerRow(state, {
-    attempt, dispatch: { place, ...(interactive ? { person: true } : {}), ...(isolation ? { isolation } : {}), dir, brief, ...(agent !== undefined ? { agent } : {}), model: picked.model },
-  }));
+  const dispatch: Dispatch = { place, dir, brief, model: picked.model };
+
+  if (interactive) dispatch.person = true;
+
+  if (isolation) dispatch.isolation = isolation;
+
+  if (agent !== undefined) dispatch.agent = agent;
+  const offered = traced(context, offerRow(state, { attempt, dispatch }));
 
   if (offered) await writeSkillState(context.config, lock, offered.state, context.env.secrets);
 
@@ -396,7 +407,7 @@ async function whileOpen<T>(context: SkillContext, run: RunId, attempt: AttemptI
 async function setUp(context: SkillContext, run: RunId, attempt: AttemptId, prepared: Extract<Stage, { kind: 'prepared' }>): Promise<WorkflowFailure | undefined> {
   const stop = new AbortController();
   const setup = context.client.setup(run, attempt, prepared.mode, stop.signal);
-  const ended = await whileOpen(context, run, attempt, { work: setup.then((failure) => ({ failure })), phases: ['preparing', 'running'], ...(prepared.expiresAt !== undefined ? { expiresAt: prepared.expiresAt } : {}) });
+  const ended = await whileOpen(context, run, attempt, { work: setup.then((failure) => ({ failure })), phases: ['preparing', 'running'], expiresAt: prepared.expiresAt });
 
   if (ended) return ended.failure;
   stop.abort();
@@ -410,7 +421,7 @@ async function setUp(context: SkillContext, run: RunId, attempt: AttemptId, prep
  */
 async function runCommand(context: SkillContext, run: RunId, attempt: AttemptId, stage: Extract<Stage, { kind: 'run' }>): Promise<CommandExit> {
   const command = context.runners.command({ run, attempt, command: stage.command, cwd: stage.dir, env: { ...stage.env, ...attemptEnv(run, attempt, stage.mode) } });
-  const exited = (await whileOpen(context, run, attempt, { work: command.exit, phases: ['running'], ...(stage.expiresAt !== undefined ? { expiresAt: stage.expiresAt } : {}) })) ?? (await command.stop());
+  const exited = (await whileOpen(context, run, attempt, { work: command.exit, phases: ['running'], expiresAt: stage.expiresAt })) ?? (await command.stop());
   const output = redact(exited.output, { envSecrets: context.env.secrets, patterns: false });
   await writeFileAtomic(path.join(attemptDir(context.config, run, attempt), 'output.log'), output);
 
@@ -428,5 +439,5 @@ async function report(context: SkillContext, lock: RunLock, attempt: AttemptId, 
   const body: ReportBody = { attempt, revision: open.revision, driver: state.driver, ...commandEnd(exited) };
   const tail = exited.output.trim().slice(-400);
 
-  return send(context, lock, exitedRow(state, { attempt, body, ...(tail ? { tail } : {}) }), attempt);
+  return send(context, lock, exitedRow(state, { attempt, body, tail }), attempt);
 }

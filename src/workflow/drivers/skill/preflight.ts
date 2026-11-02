@@ -123,7 +123,13 @@ export function checkStartAnswers(input: {
   const missing = [...neededAnswers(description), ...(needsTool(description, { tool: input.tool, judged: answers.judge !== false }) ? ['tool' as const] : [])].filter((answer) => !given[answer]);
   const outOfRange = answers.parallel !== undefined && answers.parallel > ceiling ? { parallel: answers.parallel, ceiling } : undefined;
 
-  if (missing.length > 0 || outOfRange) return { kind: 'confirm-needed', missing, ...(outOfRange ? { outOfRange } : {}) };
+  if (missing.length > 0 || outOfRange) {
+    const check: StartCheck = { kind: 'confirm-needed', missing };
+
+    if (outOfRange) check.outOfRange = outOfRange;
+
+    return check;
+  }
 
   return { kind: 'ok', parallel: answers.parallel ?? 1, hitl: answers.hitl ?? 'person' };
 }
@@ -297,7 +303,7 @@ function factsOf(description: WorkflowDescription, judging: Judging, answering: 
  */
 function optionsOf(description: WorkflowDescription, judging: Judging, invocation: Invocation, tool: ToolId | undefined): Array<{ label: string; start: Literal }> {
   const { name, facts } = description;
-  const flags = { ...startFlags(description), ...(tool !== undefined ? { tool } : {}) };
+  const flags = { ...startFlags(description), tool };
   const noun = gatesNoun(facts.gates.filter((gate) => !gate.required), true);
   const judged = judgedBy(judging) !== undefined;
   const recommended = recommendedPick(description);
@@ -330,7 +336,7 @@ interface StartPick {
 }
 
 /** Whether every start of `description` carries the person's yes, and the `{inputs}` slot. */
-function startFlags(description: WorkflowDescription): { confirmed: boolean; inputs: boolean } {
+function startFlags(description: WorkflowDescription) {
   const needed = neededAnswers(description);
 
   return { confirmed: needed.includes('confirmed'), inputs: needed.includes('inputs') };
@@ -340,7 +346,13 @@ function startFlags(description: WorkflowDescription): { confirmed: boolean; inp
 function recommendedPick(description: WorkflowDescription): StartPick {
   const needed = neededAnswers(description);
 
-  return { ...(needed.includes('parallel') ? { parallel: description.facts.width } : {}), ...(needed.includes('hitl') ? { hitl: 'recommend' as const } : {}) };
+  const pick: StartPick = {};
+
+  if (needed.includes('parallel')) pick.parallel = description.facts.width;
+
+  if (needed.includes('hitl')) pick.hitl = 'recommend';
+
+  return pick;
 }
 
 /** The inputs of `description`, as describe lists them for its `{inputs}` slot, each with what `proposed` holds for it. */
@@ -376,12 +388,12 @@ export function askFor(verdict: DescribeVerdict, description: WorkflowDescriptio
 
   switch (verdict.ask) {
     case 'start':
-      return { kind: 'start', ...(facts.length > 0 ? { say: facts.join('\n') } : {}), start: startLiteral(invocation, name, session) };
+      return startAsk(facts, startLiteral(invocation, name, session), []);
     case 'unattended': {
       const inputs = inputsOf(description, proposed);
       const start = startLiteral(invocation, name, { ...startFlags(description), ...recommendedPick(description), hitl: 'auto-approve', ...session });
 
-      return { kind: 'start', ...(facts.length > 0 ? { say: facts.join('\n') } : {}), start, ...(inputs.length > 0 ? { inputs } : {}) };
+      return startAsk(facts, start, inputs);
     }
 
     case 'tool':
@@ -408,6 +420,17 @@ export function askFor(verdict: DescribeVerdict, description: WorkflowDescriptio
       return unhandled;
     }
   }
+}
+
+/** The `start` ask: the facts to say before it, when there are any, and the inputs its `{inputs}` slot lists, when it has one. */
+function startAsk(facts: string[], start: Literal, inputs: DescribedInput[]): DescribeAsk {
+  const ask: DescribeAsk = { kind: 'start', start };
+
+  if (facts.length > 0) ask.say = facts.join('\n');
+
+  if (inputs.length > 0) ask.inputs = inputs;
+
+  return ask;
 }
 
 /** The most steps the skill driver runs at once when the member set no `workflows.max_parallel`. */

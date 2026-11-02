@@ -177,7 +177,7 @@ const SkillStateSchema = z.object({
    * works in, which `--tools default=<tool>` names or its host does, so a runner resolves its children's models for it;
    * dropped when this teamai knows no such tool.
    */
-  orchestrator: z.object({ session: z.string().optional(), tool: z.custom<ToolId>((tool) => typeof tool === 'string' && isToolId(tool)).optional().catch(undefined), lastCallAt: z.string() }),
+  orchestrator: z.object({ session: z.string().optional(), tool: z.string().refine(isToolId).optional().catch(undefined), lastCallAt: z.string() }),
   attempts: z.array(AttemptStateSchema),
   /** Present while this driver judges the run's scored steps with the confined judge of `tool`. `open`: the judge running now. */
   judging: z.object({ tool: z.string(), open: JudgeSchema.optional() }).optional(),
@@ -214,9 +214,14 @@ export function newSkillState(input: {
 }): SkillState {
   const { run, driver, invocation, options, host, session, tool, at, judge } = input;
 
+  const orchestrator: SkillState['orchestrator'] = { lastCallAt: at };
+
+  if (session !== undefined) orchestrator.session = session;
+
+  if (tool !== undefined) orchestrator.tool = tool;
+
   return {
-    version: 1, run, driver, invocation, options, host,
-    orchestrator: { ...(session !== undefined ? { session } : {}), ...(tool !== undefined ? { tool } : {}), lastCallAt: at },
+    version: 1, run, driver, invocation, options, host, orchestrator,
     attempts: [], ...judgingState(judge), seq: 0, events: [], seen: {}, settled: [],
   };
 }

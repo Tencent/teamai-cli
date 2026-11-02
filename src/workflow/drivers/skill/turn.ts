@@ -214,10 +214,10 @@ export function errorOf(answer: Answer, context: { invocation: Invocation; same:
 
   const { refusal } = answer;
 
-  return {
-    code: refusal.code, message: refusalMessage(refusal, { invocation, tool: context.localTool }), ...(refusal.code === 'orchestrator_active' ? { idleSeconds: refusal.idleSeconds } : {}),
-    next: refusalNext(refusal, { invocation, same, tool: context.tool }),
-  };
+  const message = refusalMessage(refusal, { invocation, tool: context.localTool });
+  const next = refusalNext(refusal, { invocation, same, tool: context.tool });
+
+  return refusal.code === 'orchestrator_active' ? { code: refusal.code, message, idleSeconds: refusal.idleSeconds, next } : { code: refusal.code, message, next };
 }
 
 /**
@@ -347,14 +347,24 @@ function dispatchOf(state: SkillState, open: Extract<AttemptState, { phase: 'off
   const { attempt, step, dispatch } = open;
   const { invocation, run } = state;
 
-  return {
-    kind: 'dispatch', offer: `dispatch.${attempt}`, attempt, step, title: titleOf(open),
-    needs: { place: dispatch.place, parallel: childCap(state) > 1 && !dispatch.person, person: dispatch.person === true, ...(dispatch.isolation ? { isolation: dispatch.isolation } : {}) },
-    dir: dispatch.dir, brief: dispatch.brief, ...(dispatch.agent !== undefined ? { agent: dispatch.agent } : {}), model: dispatch.model,
+  const needs: DispatchAction['needs'] = { place: dispatch.place, parallel: childCap(state) > 1 && !dispatch.person, person: dispatch.person === true };
+
+  if (dispatch.isolation) needs.isolation = dispatch.isolation;
+
+  const action: DispatchAction = {
+    kind: 'dispatch', offer: `dispatch.${attempt}`, attempt, step, title: titleOf(open), needs, dir: dispatch.dir, brief: dispatch.brief, model: dispatch.model,
     ack: ackLiteral(invocation, run, attempt), report: reportLiteral(invocation, run, attempt),
-    ...(dispatch.model.by !== 'definition' ? { unavailable: unavailableLiteral(invocation, run, attempt) } : {}),
-    ...(open.phase === 'offered' && open.reissued ? { reissued: `An earlier session was given this dispatch, and its child may still run as ${titleOf(open)}. Stop that child if you can reach it, then dispatch this one.` } : {}),
   };
+
+  if (dispatch.agent !== undefined) action.agent = dispatch.agent;
+
+  if (dispatch.model.by !== 'definition') action.unavailable = unavailableLiteral(invocation, run, attempt);
+
+  if (open.phase === 'offered' && open.reissued) {
+    action.reissued = `An earlier session was given this dispatch, and its child may still run as ${titleOf(open)}. Stop that child if you can reach it, then dispatch this one.`;
+  }
+
+  return action;
 }
 
 /** The action of `gate`: the person's approval, or the agent's choice. */
@@ -369,10 +379,14 @@ function gateAction(state: SkillState, gate: Gate): GateAction | PersonAction {
     };
   }
 
-  return {
-    kind: 'choose', about: 'gate', decide: gate.decide, step, pass, question: message, ...(gate.default !== undefined ? { default: gate.default } : {}),
+  const action: GateAction = {
+    kind: 'choose', about: 'gate', decide: gate.decide, step, pass, question: message,
     options: gate.options.map((choice) => ({ choice, run: respondLiteral(state.invocation, state.run, { step, pass, choice }) })),
   };
+
+  if (gate.default !== undefined) action.default = gate.default;
+
+  return action;
 }
 
 /**
@@ -392,19 +406,29 @@ function actionsOf(state: SkillState): Action[] {
 
   const offers = state.attempts.flatMap((open) => (open.phase === 'offered' ? [dispatchOf(state, open)] : []));
 
-  const places = state.attempts.flatMap((open): PlaceAction[] => (open.phase === 'placing'
-    ? [{
-      kind: 'place', attempt: open.attempt, step: open.step, ...open.ask, adopt: adoptLiteral(state.invocation, state.run, open.attempt),
-      ...(open.refused !== undefined ? { refused: open.refused } : {}), reference: reference('places.md'),
-    }]
-    : []));
+  const places = state.attempts.flatMap((open): PlaceAction[] => {
+    if (open.phase !== 'placing') return [];
+    const place: PlaceAction = { kind: 'place', attempt: open.attempt, step: open.step, ...open.ask, adopt: adoptLiteral(state.invocation, state.run, open.attempt), reference: reference('places.md') };
+
+    if (open.refused !== undefined) place.refused = open.refused;
+
+    return [place];
+  });
 
   const judge = state.judging?.open;
 
-  const end: Action[] = state.done ? [{
-    kind: 'done', outcome: state.done.outcome, ...(state.done.failure ? { failure: state.done.failure } : {}), prs: state.done.prs, ...(judge ? { judging: { step: judge.step, scorers: judge.scorers } } : {}),
-    ...(state.sessionJudge ? { score: sessionJudgeLiteral(state.invocation, state.run, state.driver, state.orchestrator.tool ?? state.sessionJudge.tool) } : {}),
-  }] : [];
+  const end: Action[] = [];
+
+  if (state.done) {
+    const done: Action = { kind: 'done', outcome: state.done.outcome, prs: state.done.prs };
+
+    if (state.done.failure) done.failure = state.done.failure;
+
+    if (judge) done.judging = { step: judge.step, scorers: judge.scorers };
+
+    if (state.sessionJudge) done.score = sessionJudgeLiteral(state.invocation, state.run, state.driver, state.orchestrator.tool ?? state.sessionJudge.tool);
+    end.push(done);
+  }
 
   const gate = state.gate && !state.done ? [gateAction(state, state.gate)] : [];
 
@@ -430,22 +454,30 @@ function handoffOf(state: SkillState, waiting: { reason: string; held: NonNullab
  * it is open. A `quiet` turn carries no action; any other shows the handoff of a `waiting` that holds steps.
  */
 export function turnOf(state: SkillState, input: { events: TurnEvent[]; after?: NonNullable<Turn['then']>; waiting?: Waiting; quiet?: true; localTool?: string }): Turn {
-  const running = state.attempts.map((open): RunningEntry => ({
-    attempt: open.attempt, step: open.step, phase: open.phase, ...(reportedByAgent(open) ? { report: reportLiteral(state.invocation, state.run, open.attempt) } : {}),
-  }));
+  const running = state.attempts.map((open): RunningEntry => {
+    const entry: RunningEntry = { attempt: open.attempt, step: open.step, phase: open.phase };
+
+    if (reportedByAgent(open)) entry.report = reportLiteral(state.invocation, state.run, open.attempt);
+
+    return entry;
+  });
 
   const waiting = input.waiting && !state.done && state.attempts.length === 0 ? input.waiting : undefined;
   const handoff = waiting?.held && !input.quiet ? [handoffOf(state, { reason: waiting.reason, held: waiting.held }, input.localTool)] : [];
 
-  return {
+  const turn: Turn = {
     run: state.run,
     status: state.done ? 'done' : 'driving',
     actions: input.quiet ? [] : [...actionsOf(state), ...handoff],
     running,
     events: input.events,
-    ...(waiting ? { waiting } : {}),
-    // `then` is a value, never a function, so awaiting a turn does not treat it as a promise.
-    // oxlint-disable-next-line unicorn/no-thenable
-    ...(input.after && (!state.done || state.attempts.length > 0 || state.judging?.open) ? { then: input.after } : {}),
   };
+
+  if (waiting) turn.waiting = waiting;
+
+  // `then` is a value, never a function, so awaiting a turn does not treat it as a promise.
+  // oxlint-disable-next-line unicorn/no-thenable
+  if (input.after && (!state.done || state.attempts.length > 0 || state.judging?.open)) turn.then = input.after;
+
+  return turn;
 }
