@@ -600,6 +600,7 @@ teamai ships workflows a team gets without writing them:
 | `teamai-share-learnings` | shares what the session taught as team learnings, one or several, then runs `teamai-share-session` | while [recall](knowledge.md) is on and the source is writable, since its first step runs `teamai skill get share`; a team copy of it too |
 | `teamai-share-session` | publishes the session's transcript, scrubbed, and scores it with the team's scorers | always |
 | `teamai-benchmark` | runs a [benchmark suite](benchmarks.md#the-benchmark-workflow) through `teamai benchmark run` | always |
+| `teamai-session-to-task` | turns the bug the session fixed into a [benchmark task](benchmarks.md#turn-a-session-into-a-task), proposed to the team with `teamai push --file --path`. Inputs: `session`, `source`, `suite`, `start`, `fix` | always |
 
 A team file with the same name replaces a default:
 
@@ -742,6 +743,19 @@ Who answers each approval:
 | `approve` (optional) | the agent under the recommended start (`--hitl recommend`); the person with "ask me at optional approvals" (`--hitl person`); yes with "answer optional approvals automatically" (`--auto-approve`) |
 
 An unattended session is never offered either default, and describe refuses them there: `invoke: ask` needs a person.
+
+### teamai-session-to-task
+
+`teamai-session-to-task` keeps the bug a session fixed as a benchmark task. A person asks their agent for it ("turn this fix into a benchmark task"); nothing offers it on its own.
+
+```text
+teamai-session-to-task {"session":"7c1e…","source":"claude-code","suite":"benchmarks/fix-auth","start":"3f2c9a7…","fix":"9a1d4e7…"}
+├─ draft     interactive, worked by this session with the person. Returns {verdict: draft | skip, file, path}
+└─ propose   only on verdict draft. Optional approval: Propose benchmarks/fix-auth/tasks/<task>.yaml to the team as a pull request?
+             teamai push --file "$FILE" --path "$TASK_PATH"
+```
+
+describe proposes each input for the calling session with a `why`: the commit its first start recorded, `HEAD` as the fix, and the one suite whose `repo` is the checkout's `origin`. [Benchmarks](benchmarks.md#what-describe-proposes) has the rules and the task files it drafts. The file is `workflows/teamai-session-to-task.yaml` in the installed package.
 
 ### Override a default
 

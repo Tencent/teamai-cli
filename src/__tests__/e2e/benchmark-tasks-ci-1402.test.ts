@@ -40,8 +40,8 @@ const TEST = "require('node:assert').strictEqual(require('../answer.js'), 42);\n
 const OTHER_CASE = "require('node:assert').ok(true);\n";
 
 /**
- * The suite's repo, acme/frontend, with the commits each task names, checked out at `project`; and the team repo with the
- * suite benchmarks/frontend on main, checked out at `team` on a pull request branch that adds `tasks`. The job's step
+ * The suite's repo, acme/auth-service, with the commits each task names, checked out at `project`; and the team repo with the
+ * suite benchmarks/fix-auth on main, checked out at `team` on a pull request branch that adds `tasks`. The job's step
  * runs in `project`, with `teamai` on PATH running the CLI under test.
  */
 function pullRequest(tasks: (commits: Record<string, string>) => Record<string, string>, job: { header: string; env: Record<string, string> } = { header: JOB_FILE, env: { BASE_REF: 'main' } }): { code: number | null; output: string; commits: Record<string, string> } {
@@ -81,12 +81,12 @@ function pullRequest(tasks: (commits: Record<string, string>) => Record<string, 
   git(root, ['init', '-q', '--bare', '-b', 'main', teamOrigin]);
   git(root, ['clone', '-q', teamOrigin, team]);
   commit(team, {
-    'benchmarks/frontend/suite.yaml': 'schemaVersion: v1alpha1\nname: frontend\nrepo: https://github.com/acme/frontend.git\ndefaults: { tool: claude }\narms: [{ name: main }]\ntimeout: 30m\n',
-    'benchmarks/frontend/tasks/existing.yaml': task(commits.start, { fix: commits.fix, add: true }),
+    'benchmarks/fix-auth/suite.yaml': 'schemaVersion: v1alpha1\nname: fix-auth\nrepo: https://github.com/acme/auth-service.git\ndefaults: { tool: claude }\narms: [{ name: main }]\ntimeout: 30m\n',
+    'benchmarks/fix-auth/tasks/existing.yaml': task(commits.start, { fix: commits.fix, add: true }),
   }, 'suite');
   git(team, ['push', '-q', 'origin', 'HEAD:main']);
   git(team, ['checkout', '-q', '-b', 'tasks']);
-  commit(team, Object.fromEntries(Object.entries(tasks(commits)).map(([name, text]) => [`benchmarks/frontend/tasks/${name}.yaml`, text])), 'add tasks');
+  commit(team, Object.fromEntries(Object.entries(tasks(commits)).map(([name, text]) => [`benchmarks/fix-auth/tasks/${name}.yaml`, text])), 'add tasks');
   const step = guideStep(job.header);
   // GitHub sets each env value the step declares; this run sets the same names.
   expect(Object.keys(step.env).sort()).toEqual(Object.keys(job.env).sort());
@@ -94,7 +94,7 @@ function pullRequest(tasks: (commits: Record<string, string>) => Record<string, 
   return { code: ran.status, output: `${ran.stdout}${ran.stderr}`, commits };
 }
 
-/** A task of benchmarks/frontend whose check runs test/startup.test.js, protecting test/. */
+/** A task of benchmarks/fix-auth whose check runs test/startup.test.js, protecting test/. */
 function task(start: string, { fix, add }: { fix?: string; add?: boolean | string } = {}): string {
   const added = add === true ? 'test/startup.test.js' : add;
   return `schemaVersion: v1alpha1
@@ -141,7 +141,7 @@ describe('the guide\'s CI job for benchmark task pull requests', () => {
   it('tries, per matrix entry, only the tasks of that entry\'s suite', () => {
     const tasks = (c: Record<string, string>) => ({ 'pod-startup': task(c.start, { fix: c.fix, add: true }), 'not-added': task(c.start, { fix: c.fix }) });
 
-    const frontend = pullRequest(tasks, { header: MATRIX_JOB_FILE, env: { BASE_REF: 'main', SUITE: 'benchmarks/frontend' } });
+    const frontend = pullRequest(tasks, { header: MATRIX_JOB_FILE, env: { BASE_REF: 'main', SUITE: 'benchmarks/fix-auth' } });
     expect(frontend.code, frontend.output).not.toBe(0);
     expect(frontend.output).toContain(`the check fails at the fix ${short(frontend.commits.fix)}`);
     expect(frontend.output).toContain(`and passes at the fix ${short(frontend.commits.fix)}`);

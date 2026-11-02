@@ -321,6 +321,163 @@ setup-error    setup failed           not tried                          1: name
 
 `benchmark try` 按原样读取任务文件及其上两级目录中的 `suite.yaml`，并像 `teamai pull` 一样校验两者（连同其 `check.add` 条目从该套件目录指明的文件）。它不需要 `teamai init`。检出目录缺少的提交会像运行时一样，按 SHA 从套件的 `repo` 获取。每个提交都有一个全新克隆、套件的 `setup`、trial 得到的环境（见[运行套件](#运行套件)），以及套件的 `timeout`。它不创建运行，也不写记录。check 会在你的机器上运行项目代码，所以只试运行你信任的任务。
 
+## 把会话变成任务
+
+你和 agent 一起修好的 bug，是套件能得到的最好任务：真实的 bug，在你的代码里，还有证明它的修复。让修好它的那个会话把它留下来：
+
+```text
+你：     把这个修复变成 benchmark 任务
+agent:  teamai workflow start --describe teamai-session-to-task --driver skill
+        proposes session 7c1e…, source claude-code, suite benchmarks/fix-auth,
+                 start 3f2c9a7…, fix 9a1d4e7…
+你：     可以，但可选审批要问我
+agent:  和你一起起草任务：你最初描述的 bug、检查、修复带来的测试
+agent:  Propose benchmarks/fix-auth/tasks/refresh-race.yaml to the team as a pull request?
+你：     是
+step:   teamai push --file /tmp/refresh-race.yaml --path benchmarks/fix-auth/tasks/refresh-race.yaml
+        ✔ Pull Request created: https://github.com/acme/team/pull/77
+```
+
+拉取请求只新增一个文件：
+
+```yaml
+# benchmarks/fix-auth/tasks/refresh-race.yaml
+schemaVersion: v1alpha1
+title: Racing refreshes reuse a token
+prompt: |
+  Two refreshes that race with the same refresh token both get new tokens. Reject the second one.
+  The fix may add rotateRefreshToken(token, { now }) to src/auth/refresh.ts; the check calls it.
+startingCommit: 3f2c9a7d1e0b4c6a8f5d2e1b0c9a8f7e6d5c4b3a
+check:
+  run: npx vitest run test/auth/refresh-race.test.ts
+  protect: ['test/**', 'vitest.config.ts', 'package.json', 'package-lock.json']
+  add: ['test/auth/refresh-race.test.ts']   # the fix's own test: hidden from the agent, written in before the check
+source: { platform: claude-code, sessionId: 7c1e2b9a, fix: 9a1d4e7c2b8f0a3d6e5c1b9f8a7d2e4c6b0a1f3e }
+```
+
+由会话起草，因为它已经知道你问了什么、怎么修的；不用回读任何转录。`check.add` 让修复自带的测试不进入 trial 的 clone（见[修复带来的测试](#修复带来的测试)），prompt 写出该测试调用的函数，这样不看测试也能完成任务。
+
+不同的会话起草不同的任务：
+
+| 会话 | 它起草的任务 |
+| --- | --- |
+| 修了 bug 并新增 `test/auth/refresh-race.test.ts` | `check`，带 `add: [test/auth/refresh-race.test.ts]`，如上 |
+| 修了 bug 并在 `test/auth/refresh.test.ts` 里加了一个用例 | `check`，带 `add: [test/auth/refresh.test.ts]`：文件取修复时的内容，含该用例 |
+| 修了一个没有测试覆盖的布局 bug | `successCriteria: "The checkout button stays visible at 320 px wide."`，由模型评判 |
+| 只是在探索，没有修复 | 什么都不起草：你说它不是好任务，运行结束，不开拉取请求 |
+
+### describe 提议什么
+
+describe 为调用它的会话填好每个输入，并说明原因，没有提议值时也说明：
+
+| 输入 | 提议 | 不提议的情况 |
+| --- | --- | --- |
+| `session`、`source` | 本会话及其工具 | 没有 agent 会话：所有输入都没有值 |
+| `start` | 本会话第一次启动时记录的提交 | 会话启动时有已跟踪文件被修改，或 teamai 没有记录启动（恢复会话不算） |
+| `fix` | `HEAD` | `HEAD` 仍是 `start`、有已跟踪文件被修改，或没有 `start` |
+| `suite` | `repo` 是本 checkout `origin` 的那唯一一个套件：`benchmarks/fix-auth`，在 namespace 中则如 `benchmarks/web/fix-auth` | 没有套件或有多个套件匹配 `origin` |
+
+```text
+start     HEAD         proposal
+3f2c9a7   9a1d4e7      both
+3f2c9a7   3f2c9a7      start only: "No value: HEAD is still the starting commit. Commit the fix, then ask again, or give the commit."
+3f2c9a7   9a1d4e7 *    start only: "No value: tracked files are modified. Commit the fix, then ask again, or give the commit."
+(none)    9a1d4e7      neither: give both
+```
+
+当该套件已有任务来自本会话或这个修复时，`session` 或 `fix` 的 why 会写出它，例如 `benchmarks/fix-auth/tasks/refresh-race.yaml already comes from it.`，避免同一个修复被提议两次。
+
+| 你怎样启动 | 谁回答“Propose … as a pull request?” |
+| --- | --- |
+| 推荐选项 | 你的 agent，并说明理由；dashboard 把它记为 agent 的回答 |
+| “Same, but ask me at optional approvals” | 你 |
+| “Same, but answer optional approvals automatically” | teamai 回答 yes |
+
+这个审批是可选的，因为拉取请求无论如何都会被评审：错误的任务只多花一次评审，不会弄坏套件。没有任何东西会主动提供这个工作流；你可以直接要求，或由生成的 `teamai-session-to-task` skill 把 agent 指向它。团队文件 `workflows/teamai-session-to-task.yaml` 会取代它，describe 仍按名称为它保留的字符串输入填值。
+
+### 在团队仓库的 CI 中检查任务
+
+任务的检查会运行项目的 setup 和代码，所以在 CI 中试，而不是在你的机器上。这个 job 用 [`benchmark try`](#试运行任务) 试拉取请求新增或修改的每个任务，任何一个分不清修复与未修改时就失败：
+
+```yaml
+# .github/workflows/benchmark-tasks.yml in the team repo
+on:
+  pull_request:
+    paths: ['benchmarks/fix-auth/tasks/*.yaml']
+jobs:
+  try:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5          # the team repo, at the pull request
+        with: { path: team, fetch-depth: 0 }
+      - uses: actions/checkout@v5          # the suite's repo, with every commit a task names
+        with: { repository: acme/auth-service, path: project, fetch-depth: 0, token: "${{ secrets.PROJECT_READ_TOKEN }}" }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: npm install -g teamai-cli
+      - name: Try each new or changed task
+        working-directory: project
+        shell: bash
+        env: { BASE_REF: "${{ github.base_ref }}" }
+        run: |
+          failed=0
+          while read -r file; do
+            teamai benchmark try "../team/$file" || failed=1
+          done < <(git -C ../team diff --name-only --diff-filter=AM "origin/$BASE_REF...HEAD" -- 'benchmarks/fix-auth/tasks/*.yaml')
+          exit "$failed"
+```
+
+```text
+task           at startingCommit   at source.fix   job
+refresh-race    check fails  ✔      check passes ✔  passes
+refresh-case   check fails  ✔      check passes ✔  passes: the fix added a case to a test file, listed in check.add
+old-bug        check passes ✖      not tried       fails: "the check passes without changes at 3f2c9a7"
+not-added      check fails  ✔      check fails ✖   fails: "the check fails at the fix 9a1d4e7": the fix's test is not in check.add
+add-missing    not tried           not tried       fails: "test/auth/refresh-race.test.ts is not a file at the fix 9a1d4e7": commit it, or fix source.fix
+no-fix         check fails  ✔      not tried       passes, and says the check was not tried on a fix
+```
+
+每个任务都会被试一遍，job 在失败前列出每个失败。在团队仓库的合并规则里把它设为必需，失败的任务就进不了套件。`PROJECT_READ_TOKEN` 读取套件的仓库。修复不在那个仓库的远端时，job 会失败并写出该提交：推送修复所在的分支，或把 `source.fix` 设为把修复合入默认分支的提交，再重跑。
+
+团队有多个仓库的套件时，每个套件对它自己的仓库试：
+
+```yaml
+# .github/workflows/benchmark-tasks.yml, one suite per matrix entry
+on:
+  pull_request:
+    paths: ['benchmarks/**/tasks/*.yaml']
+jobs:
+  try:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { suite: benchmarks/fix-auth, repository: acme/auth-service }
+          - { suite: benchmarks/payments/checkout, repository: acme/checkout }
+    steps:
+      - uses: actions/checkout@v5
+        with: { path: team, fetch-depth: 0 }
+      - uses: actions/checkout@v5
+        with: { repository: "${{ matrix.repository }}", path: project, fetch-depth: 0, token: "${{ secrets.PROJECT_READ_TOKEN }}" }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: npm install -g teamai-cli
+      - working-directory: project
+        shell: bash
+        env: { BASE_REF: "${{ github.base_ref }}", SUITE: "${{ matrix.suite }}" }
+        run: |
+          failed=0
+          while read -r file; do
+            teamai benchmark try "../team/$file" || failed=1
+          done < <(git -C ../team diff --name-only --diff-filter=AM "origin/$BASE_REF...HEAD" -- "$SUITE/tasks/*.yaml")
+          exit "$failed"
+```
+
+拉取请求没有改动其套件的 matrix 项什么都不试，直接通过。
+
 ## 运行套件
 
 ```console

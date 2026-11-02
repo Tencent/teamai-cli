@@ -328,30 +328,30 @@ A bug you fixed with your agent is the best task a suite can get: a real bug, in
 ```text
 you:    turn this fix into a benchmark task
 agent:  teamai workflow start --describe teamai-session-to-task --driver skill
-        proposes session 7c1e…, source claude-code, suite benchmarks/frontend,
+        proposes session 7c1e…, source claude-code, suite benchmarks/fix-auth,
                  start 3f2c9a7…, fix 9a1d4e7…
 you:    ok, but ask me at optional approvals
 agent:  drafts the task with you: the bug as you first described it, the check, the test the fix brought
-agent:  Propose benchmarks/frontend/tasks/pod-startup.yaml to the team as a pull request?
+agent:  Propose benchmarks/fix-auth/tasks/refresh-race.yaml to the team as a pull request?
 you:    yes
-step:   teamai push --file /tmp/pod-startup.yaml --path benchmarks/frontend/tasks/pod-startup.yaml
+step:   teamai push --file /tmp/refresh-race.yaml --path benchmarks/fix-auth/tasks/refresh-race.yaml
         ✔ Pull Request created: https://github.com/acme/team/pull/77
 ```
 
 The pull request adds one file:
 
 ```yaml
-# benchmarks/frontend/tasks/pod-startup.yaml
+# benchmarks/fix-auth/tasks/refresh-race.yaml
 schemaVersion: v1alpha1
-title: Pods time out on first start
+title: Racing refreshes reuse a token
 prompt: |
-  The first start of a pod times out after 30 s on a cold node. Make it start.
-  The fix may add waitForReady(pod, { timeoutMs }) to src/startup.ts; the check calls it.
+  Two refreshes that race with the same refresh token both get new tokens. Reject the second one.
+  The fix may add rotateRefreshToken(token, { now }) to src/auth/refresh.ts; the check calls it.
 startingCommit: 3f2c9a7d1e0b4c6a8f5d2e1b0c9a8f7e6d5c4b3a
 check:
-  run: npx vitest run test/startup.test.ts
+  run: npx vitest run test/auth/refresh-race.test.ts
   protect: ['test/**', 'vitest.config.ts', 'package.json', 'package-lock.json']
-  add: ['test/startup.test.ts']   # the fix's own test: hidden from the agent, written in before the check
+  add: ['test/auth/refresh-race.test.ts']   # the fix's own test: hidden from the agent, written in before the check
 source: { platform: claude-code, sessionId: 7c1e2b9a, fix: 9a1d4e7c2b8f0a3d6e5c1b9f8a7d2e4c6b0a1f3e }
 ```
 
@@ -361,7 +361,7 @@ Other sessions draft other tasks:
 
 | The session | The task it drafts |
 | --- | --- |
-| Fixed a bug and added `test/startup.test.ts` | `check` with `add: [test/startup.test.ts]`, as above |
+| Fixed a bug and added `test/auth/refresh-race.test.ts` | `check` with `add: [test/auth/refresh-race.test.ts]`, as above |
 | Fixed a bug and added a case to `test/auth/refresh.test.ts` | `check` with `add: [test/auth/refresh.test.ts]`: the file as the fix has it, case included |
 | Fixed a layout bug no test covers | `successCriteria: "The checkout button stays visible at 320 px wide."`, judged by a model |
 | Was exploring, not fixing | Nothing: you say it is not a good task, the run ends, no pull request |
@@ -375,7 +375,7 @@ describe fills every input for the calling session, and says why, also when it p
 | `session`, `source` | this session and its tool | no agent session: no input gets a value |
 | `start` | the commit this session's first start recorded | the session started with tracked files modified, or teamai recorded no start (a resume does not count) |
 | `fix` | `HEAD` | `HEAD` is still `start`, tracked files are modified, or there is no `start` |
-| `suite` | the one suite whose `repo` is this checkout's `origin`: `benchmarks/frontend`, or `benchmarks/web/frontend` in a namespace | no suite, or several, match `origin` |
+| `suite` | the one suite whose `repo` is this checkout's `origin`: `benchmarks/fix-auth`, or `benchmarks/web/fix-auth` in a namespace | no suite, or several, match `origin` |
 
 ```text
 start     HEAD         proposal
@@ -385,7 +385,7 @@ start     HEAD         proposal
 (none)    9a1d4e7      neither: give both
 ```
 
-When a task of that suite already comes from this session or this fix, the why of `session` or `fix` names it, for example `benchmarks/frontend/tasks/pod-startup.yaml already comes from it.`, so the same fix is not proposed twice.
+When a task of that suite already comes from this session or this fix, the why of `session` or `fix` names it, for example `benchmarks/fix-auth/tasks/refresh-race.yaml already comes from it.`, so the same fix is not proposed twice.
 
 | How you start it | Who answers "Propose … as a pull request?" |
 | --- | --- |
@@ -393,7 +393,7 @@ When a task of that suite already comes from this session or this fix, the why o
 | "Same, but ask me at optional approvals" | You |
 | "Same, but answer optional approvals automatically" | teamai answers yes |
 
-The approval is optional because the pull request is reviewed anyway: a wrong task costs a review, not a broken suite. Nothing offers this workflow on its own; ask for it, or let the generated `workflow-teamai-session-to-task` skill point your agent at it. A team file `workflows/teamai-session-to-task.yaml` replaces it, and describe still fills the inputs it keeps by name, as strings.
+The approval is optional because the pull request is reviewed anyway: a wrong task costs a review, not a broken suite. Nothing offers this workflow on its own; ask for it, or let the generated `teamai-session-to-task` skill point your agent at it. A team file `workflows/teamai-session-to-task.yaml` replaces it, and describe still fills the inputs it keeps by name, as strings.
 
 ### Check tasks in the team repo's CI
 
@@ -403,7 +403,7 @@ The task's check runs your project's setup and code, so it is tried in CI, not o
 # .github/workflows/benchmark-tasks.yml in the team repo
 on:
   pull_request:
-    paths: ['benchmarks/frontend/tasks/*.yaml']
+    paths: ['benchmarks/fix-auth/tasks/*.yaml']
 jobs:
   try:
     runs-on: ubuntu-latest
@@ -412,7 +412,7 @@ jobs:
       - uses: actions/checkout@v5          # the team repo, at the pull request
         with: { path: team, fetch-depth: 0 }
       - uses: actions/checkout@v5          # the suite's repo, with every commit a task names
-        with: { repository: acme/frontend, path: project, fetch-depth: 0, token: "${{ secrets.PROJECT_READ_TOKEN }}" }
+        with: { repository: acme/auth-service, path: project, fetch-depth: 0, token: "${{ secrets.PROJECT_READ_TOKEN }}" }
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
       - run: npm install -g teamai-cli
@@ -424,17 +424,17 @@ jobs:
           failed=0
           while read -r file; do
             teamai benchmark try "../team/$file" || failed=1
-          done < <(git -C ../team diff --name-only --diff-filter=AM "origin/$BASE_REF...HEAD" -- 'benchmarks/frontend/tasks/*.yaml')
+          done < <(git -C ../team diff --name-only --diff-filter=AM "origin/$BASE_REF...HEAD" -- 'benchmarks/fix-auth/tasks/*.yaml')
           exit "$failed"
 ```
 
 ```text
 task           at startingCommit   at source.fix   job
-pod-startup    check fails  ✔      check passes ✔  passes
-startup-case   check fails  ✔      check passes ✔  passes: the fix added a case to a test file, listed in check.add
+refresh-race    check fails  ✔      check passes ✔  passes
+refresh-case   check fails  ✔      check passes ✔  passes: the fix added a case to a test file, listed in check.add
 old-bug        check passes ✖      not tried       fails: "the check passes without changes at 3f2c9a7"
 not-added      check fails  ✔      check fails ✖   fails: "the check fails at the fix 9a1d4e7": the fix's test is not in check.add
-add-missing    not tried           not tried       fails: "test/startup.test.ts is not a file at the fix 9a1d4e7": commit it, or fix source.fix
+add-missing    not tried           not tried       fails: "test/auth/refresh-race.test.ts is not a file at the fix 9a1d4e7": commit it, or fix source.fix
 no-fix         check fails  ✔      not tried       passes, and says the check was not tried on a fix
 ```
 
@@ -455,7 +455,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { suite: benchmarks/frontend, repository: acme/frontend }
+          - { suite: benchmarks/fix-auth, repository: acme/auth-service }
           - { suite: benchmarks/payments/checkout, repository: acme/checkout }
     steps:
       - uses: actions/checkout@v5
