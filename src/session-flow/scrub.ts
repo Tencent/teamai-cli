@@ -22,8 +22,9 @@ import { z } from 'zod';
 import type { Session, Message, ContentBlock, MessageMetadata, ToolArguments } from './ir.js';
 import { collectEnvSecrets, redact, redactJson } from '../utils/redact.js';
 import { imagePlaceholderText, ToolArgumentsSchema } from './ir.js';
-import { JsonValueSchema, type JsonValue } from '../types.js';
+import { JsonValueSchema } from '../types.js';
 import { maskCutSecret } from './title.js';
+import { mapStrings } from '../utils/json.js';
 
 export interface ScrubResult {
   session: Session;
@@ -168,16 +169,6 @@ function rewriteMetadata(metadata: MessageMetadata, rewrite: (text: string) => s
   });
 
   return changed.length === 0 ? metadata : { ...metadata, ...Object.fromEntries(changed) };
-}
-
-/** `value` with `rewrite` applied to each string it holds, keys left as they are. */
-function mapStrings(value: JsonValue, rewrite: (text: string) => string): JsonValue {
-  if (Array.isArray(value)) return value.map((item) => mapStrings(item, rewrite));
-
-  if (value instanceof Object) return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, mapStrings(item, rewrite)]));
-  const text = z.string().safeParse(value);
-
-  return text.success ? rewrite(text.data) : value;
 }
 
 /** Count how many replacements happened between before/after strings. */

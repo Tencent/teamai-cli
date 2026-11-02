@@ -6,6 +6,7 @@ import { lstat, readdir, realpath, rm } from 'node:fs/promises';
 import { z } from 'zod';
 import { readJson, readJsonObject, writeJson, readFileSafe, writeFile, expandHome, ensureDir, pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
+import { mapStrings } from './utils/json.js';
 import {
   COPILOT_TOOL_ID,
   TEAMAI_HOOK_DESCRIPTION_PREFIX,
@@ -1023,16 +1024,6 @@ function regateTeamHookCommand(command: string, projectRoot: string, childRoots:
   const payload = /^case "\$PWD" in .*?\) ;; \*\) \(([\s\S]*)\);; esac$/.exec(run)?.[1] ?? /^\(([\s\S]*)\)$/.exec(run)?.[1];
 
   return payload === undefined ? null : gateTeamHookCommand(payload, projectRoot, childRoots);
-}
-
-/** `value` with each string in it, at any depth, replaced by `map`'s result. */
-function mapStrings(value: JsonValue, map: (value: string) => string): JsonValue {
-  const text = z.string().safeParse(value);
-
-  return text.success ? map(text.data)
-    : Array.isArray(value) ? value.map((item) => mapStrings(item, map))
-      : isJsonObject(value) ? Object.fromEntries(Object.entries(value).map(([key, field]) => [key, mapStrings(field, map)]))
-        : value;
 }
 
 /**
