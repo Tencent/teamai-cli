@@ -20,7 +20,7 @@ async function findSessionLog(sessionId: string): Promise<string | null> {
   if (!SESSION_UUID_RE.test(sessionId)) return null;
   const dataHome = process.env.XDG_DATA_HOME?.trim() || path.join(getUserHome(), '.local', 'share');
 
-  const subdirs = async (dir: string) => (await fs.promises.readdir(dir).catch(() => [] as string[]))
+  const subdirs = async (dir: string) => (await fs.promises.readdir(dir).catch((): string[] => []))
     .filter((name) => /^\d+$/.test(name)).sort().toReversed().map((name) => path.join(dir, name));
 
   for (const year of await subdirs(path.join(dataHome, 'muse', 'sessions'))) {

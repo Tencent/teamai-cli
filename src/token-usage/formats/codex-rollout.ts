@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import { z } from 'zod';
 
-import { emptyTokenUsage, type TokenSnapshotScope, type TokenUsage } from '../../types.js';
+import { emptyTokenUsage, JsonValueSchema, type JsonValue, type TokenSnapshotScope, type TokenUsage } from '../../types.js';
 import type { TokenReading, TokenRequest, TokenSource, TokenSpeed } from '../index.js';
 import { forEachJsonLine } from './jsonl.js';
 
@@ -17,7 +17,12 @@ const Usage = z.object({
 
 type Usage = z.infer<typeof Usage>;
 
-const Line = z.object({ type: z.string(), timestamp: z.string().catch('').default(''), payload: z.record(z.string(), z.unknown()).catch({}) });
+const Line = z.object({ type: z.string(), timestamp: z.string().catch('').default(''), payload: z.record(z.string(), JsonValueSchema).catch({}) });
+
+type Payload = z.infer<typeof Line>['payload'];
+
+/** A string field of a payload; any other value reads as absent. */
+const Text = z.string().optional().catch(undefined);
 
 function tokensOf(usage: Usage): TokenUsage {
   return {
@@ -28,14 +33,14 @@ function tokensOf(usage: Usage): TokenUsage {
   };
 }
 
-const parseUsage = (value: unknown): Usage | undefined => {
+const parseUsage = (value: JsonValue | undefined): Usage | undefined => {
   const usage = Usage.safeParse(value);
 
   return usage.success ? usage.data : undefined;
 };
 
 /** `fast` and `priority` bill at the priority rates, `flex` at the flex rates; `default` and no tier at standard ones. */
-const speedOf = (tier: unknown): TokenSpeed => (tier === 'priority' || tier === 'fast' ? 'fast' : tier === 'flex' ? 'flex' : 'standard');
+const speedOf = (tier: string | undefined): TokenSpeed => (tier === 'priority' || tier === 'fast' ? 'fast' : tier === 'flex' ? 'flex' : 'standard');
 
 type Snapshot = { tokens: TokenUsage; scope: TokenSnapshotScope };
 
@@ -44,7 +49,7 @@ type Snapshot = { tokens: TokenUsage; scope: TokenSnapshotScope };
  * `token_usage_record.thread_token_usage` when present, else the legacy
  * per-file `token_count.total_token_usage`.
  */
-function snapshotOf(type: string, payload: Record<string, unknown>): Snapshot | undefined {
+function snapshotOf(type: string, payload: Payload): Snapshot | undefined {
   if (type === 'token_usage_record') {
     const usage = parseUsage(payload.thread_token_usage);
 
@@ -52,7 +57,7 @@ function snapshotOf(type: string, payload: Record<string, unknown>): Snapshot | 
   }
 
   if (type === 'event_msg' && payload.type === 'token_count') {
-    const info = z.object({ total_token_usage: z.unknown() }).safeParse(payload.info);
+    const info = z.object({ total_token_usage: JsonValueSchema }).safeParse(payload.info);
     const usage = info.success ? parseUsage(info.data.total_token_usage) : undefined;
 
     return usage && { tokens: tokensOf(usage), scope: 'transcript' };
@@ -79,9 +84,11 @@ async function readOnce(file: string): Promise<{ reading: TokenReading; snapshot
     const { type, timestamp, payload } = line.data;
 
     // The first meta names this rollout's thread; a fork copies its parent's after it.
-    if (type === 'session_meta') thread ??= typeof payload.id === 'string' ? payload.id : '';
-    else if (type === 'turn_context' && typeof payload.model === 'string') model = payload.model;
-    else if (payload.type === 'thread_settings_applied') speed = speedOf(z.object({ service_tier: z.unknown() }).catch({ service_tier: undefined }).parse(payload.thread_settings).service_tier);
+    const turnModel = type === 'turn_context' ? Text.parse(payload.model) : undefined;
+
+    if (type === 'session_meta') thread ??= Text.parse(payload.id) ?? '';
+    else if (turnModel !== undefined) model = turnModel;
+    else if (payload.type === 'thread_settings_applied') speed = speedOf(z.object({ service_tier: Text }).catch({ service_tier: undefined }).parse(payload.thread_settings).service_tier);
     const snapshot = snapshotOf(type, payload);
 
     if (snapshot?.scope === 'session') session = snapshot;
@@ -95,13 +102,14 @@ async function readOnce(file: string): Promise<{ reading: TokenReading; snapshot
       // Codex 0.153 and later: one record per model response, its id the key.
       const usage = parseUsage(payload.usage);
       const own = !thread || payload.thread_id === undefined || payload.thread_id === thread;
+      const responseId = Text.parse(payload.response_id);
 
-      if (usage && own && typeof payload.response_id === 'string' && usage.input_tokens + usage.output_tokens > 0) {
-        responses.push({ key: payload.response_id, timestamp, model, tokens: tokensOf(usage), speed });
+      if (usage && own && responseId !== undefined && usage.input_tokens + usage.output_tokens > 0) {
+        responses.push({ key: responseId, timestamp, model, tokens: tokensOf(usage), speed });
       }
     } else if (snapshot?.scope === 'transcript' && !perResponse) {
       // Older rollouts, and the calls before a resume on a newer Codex: a token count per response, re-emitted unchanged when only rate limits update.
-      const info = z.object({ last_token_usage: z.unknown(), total_token_usage: z.unknown() }).safeParse(payload.info);
+      const info = z.object({ last_token_usage: JsonValueSchema, total_token_usage: JsonValueSchema }).safeParse(payload.info);
       const last = info.success ? parseUsage(info.data.last_token_usage) : undefined;
       const total = info.success ? JSON.stringify(info.data.total_token_usage) : '';
 
@@ -111,13 +119,12 @@ async function readOnce(file: string): Promise<{ reading: TokenReading; snapshot
     }
   });
   const snapshot = session ?? transcript;
+  const scoped: Pick<TokenReading, 'scope'> = {};
+
+  if (snapshot) scoped.scope = snapshot.scope;
 
   return {
-    reading: {
-      tokens: snapshot?.tokens ?? emptyTokenUsage(),
-      ...(snapshot ? { scope: snapshot.scope } : {}),
-      requests: [...counted, ...responses],
-    },
+    reading: { tokens: snapshot?.tokens ?? emptyTokenUsage(), ...scoped, requests: [...counted, ...responses] },
     snapshot,
   };
 }

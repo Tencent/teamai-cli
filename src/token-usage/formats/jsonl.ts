@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import readline from 'node:readline';
 
 import { log } from '../../utils/logger.js';
-import { INTERVENTION_SCAN_MAX_BYTES } from '../../types.js';
+import { INTERVENTION_SCAN_MAX_BYTES, type JsonValue } from '../../types.js';
 
 /**
  * Stream a JSONL transcript, handing each parsed line that contains one of
@@ -12,7 +12,7 @@ import { INTERVENTION_SCAN_MAX_BYTES } from '../../types.js';
 export async function forEachJsonLine(
   file: string,
   markers: readonly string[],
-  visit: (entry: unknown) => void,
+  visit: (entry: JsonValue) => void,
 ): Promise<void> {
   let size: number;
 
@@ -33,7 +33,7 @@ export async function forEachJsonLine(
   try {
     for await (const line of lines) {
       if (!markers.some((marker) => line.includes(marker))) continue;
-      let entry: unknown;
+      let entry: JsonValue;
 
       try {
         entry = JSON.parse(line);

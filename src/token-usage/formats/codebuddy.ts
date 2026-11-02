@@ -3,15 +3,17 @@ import path from 'node:path';
 import { z } from 'zod';
 
 import { log } from '../../utils/logger.js';
-import { addTokenUsage, emptyTokenUsage, INTERVENTION_SCAN_MAX_BYTES, type TokenUsage } from '../../types.js';
+import { addTokenUsage, emptyTokenUsage, INTERVENTION_SCAN_MAX_BYTES, JsonValueSchema, type JsonValue, type TokenUsage } from '../../types.js';
 import type { TokenReading, TokenRequest, TokenSource } from '../index.js';
 import { forEachJsonLine } from './jsonl.js';
 
 const Count = z.number().finite().nonnegative();
-const Fields = z.record(z.string(), z.unknown());
+const Fields = z.record(z.string(), JsonValueSchema);
+
+type Fields = z.infer<typeof Fields>;
 
 /** The first positive count among `names`, looked up in `usage` and its OpenAI-style detail lists. */
-function firstCount(usage: Record<string, unknown>, names: readonly string[]): number {
+function firstCount(usage: Fields, names: readonly string[]): number {
   for (const name of names) {
     const [field, nested] = name.split('.');
 
@@ -31,7 +33,7 @@ const CACHE_READ = ['cache_read_input_tokens', 'cacheReadInputTokens', 'inputTok
 const CACHE_WRITE = ['cache_creation_input_tokens', 'cacheCreationInputTokens', 'prompt_cache_write_tokens'];
 
 /** CodeBuddy's counters, raw first as its own usage helpers read them; input includes both cache buckets. */
-function tokensOf(raw: Record<string, unknown>, usage: Record<string, unknown>): TokenUsage {
+function tokensOf(raw: Fields, usage: Fields): TokenUsage {
   const source = Object.keys(raw).length ? raw : usage;
   const input = firstCount(raw, ['prompt_tokens']) || firstCount(usage, ['inputTokens']);
   const output = firstCount(raw, ['completion_tokens']) || firstCount(usage, ['outputTokens']);
@@ -65,7 +67,7 @@ async function readCliJsonl(file: string): Promise<TokenReading> {
   const requests: TokenRequest[] = [];
   const counted = new Set<string>();
 
-  const visit = (entry: unknown) => {
+  const visit = (entry: JsonValue) => {
     const item = Item.safeParse(entry);
 
     if (!item.success) return;
