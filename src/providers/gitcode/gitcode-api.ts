@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
-import type { PullRequestRef } from '../types.js';
+import { endedRequest, type PullRequestRecord, type PullRequestRef } from '../types.js';
 import { GITCODE_HOST } from './repo-url.js';
 import { getUserHome, legacyUserHome } from '../../utils/home.js';
 import { sanitizeGitUrl } from '../../utils/redact.js';
@@ -398,4 +398,31 @@ export async function gitcodeFindOpenPull({ repo, source, target, timeoutMs }: P
   if (!found.html_url.startsWith(`https://${GITCODE_HOST}/`)) throw new Error('GitCode answered the open pull request lookup with a URL on another host.');
 
   return found.html_url;
+}
+
+const GitCodePullHistorySchema = GitCodeOpenPullSchema.extend({
+  title: z.string(),
+  created_at: z.string(),
+  closed_at: z.string().nullish(),
+  merged_at: z.string().nullish(),
+});
+
+/**
+ * Every pull request from `source` into `target` in `repo`, newest first, with how it ended. A request from a fork with
+ * the same branch name is not one of them. Throws, rather than listing none, as `gitcodeFindOpenPull` does.
+ */
+export async function gitcodePullHistory({ repo, source, target, timeoutMs }: PullRequestRef): Promise<PullRequestRecord[]> {
+  const token = requireToken();
+  const query = new URLSearchParams({ state: 'all', head: source, base: target, per_page: String(LOOKUP_PAGE) });
+  const resp = await fetch(`${gitcodeApiBase()}/repos/${repo}/pulls?${query}`, {
+    headers: authHeaders(token), redirect: 'manual', signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!resp.ok) throw new Error(`GitCode answered the pull request history lookup with HTTP ${resp.status}. Check GITCODE_TOKEN and its access to the repository.`);
+  const pulls = z.array(GitCodePullHistorySchema).safeParse(await resp.json().catch(() => undefined));
+  if (!pulls.success) throw new Error('GitCode answered the pull request history lookup with data TeamAI cannot read.');
+  if (pulls.data.length >= LOOKUP_PAGE) throw new Error('GitCode listed more pull requests than one page, so TeamAI cannot tell how this branch\'s requests ended.');
+  const ours = (name: string | undefined): boolean => name?.toLowerCase() === repo.toLowerCase();
+  const found = pulls.data.filter((pull) => pull.head.ref === source && pull.base.ref === target && ours(pull.head.repo?.full_name) && ours(pull.base.repo.full_name));
+  if (found.some((pull) => !pull.html_url.startsWith(`https://${GITCODE_HOST}/`))) throw new Error('GitCode answered the pull request history lookup with a URL on another host.');
+  return found.map((pull) => endedRequest({ url: pull.html_url, title: pull.title, openedAt: pull.created_at, state: pull.state, closedAt: pull.merged_at ?? pull.closed_at }));
 }

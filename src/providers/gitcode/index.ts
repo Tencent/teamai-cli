@@ -7,6 +7,7 @@ import {
   gitcodeCreateRepo,
   gitcodePullCreate,
   gitcodeFindOpenPull,
+  gitcodePullHistory,
   writeNetrcToken,
   GitCodeRepoNotFoundError,
 } from './gitcode-api.js';
@@ -27,7 +28,7 @@ import { askQuestion, isInteractive } from '../../utils/prompt.js';
  */
 export class GitCodeProvider implements GitProvider {
   readonly name = 'gitcode';
-  readonly pullRequests: PullRequestLookup = { findOpen: gitcodeFindOpenPull };
+  readonly pullRequests: PullRequestLookup = { findOpen: gitcodeFindOpenPull, history: gitcodePullHistory };
 
   parseRepoInput(input: string): RepoInfo {
     return parseGitCodeRepoInput(input);

@@ -9,6 +9,7 @@ import {
   gfCreateRepo,
   gfMrCreate,
   tgitFindOpenMr,
+  tgitMrHistory,
   RepoNotFoundError as GfRepoNotFoundError,
 } from './gf-cli.js';
 import { gfListOrgRepos } from './gf-org.js';
@@ -16,7 +17,7 @@ import { parseTGitRepoInput } from './repo-url.js';
 
 export class TGitProvider implements GitProvider {
   readonly name = 'tgit';
-  readonly pullRequests: PullRequestLookup = { findOpen: tgitFindOpenMr };
+  readonly pullRequests: PullRequestLookup = { findOpen: tgitFindOpenMr, history: tgitMrHistory };
 
   parseRepoInput(input: string): RepoInfo {
     return parseTGitRepoInput(input);

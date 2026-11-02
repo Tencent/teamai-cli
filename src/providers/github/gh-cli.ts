@@ -5,7 +5,7 @@ import type { JsonValue } from '../../types.js';
 import { log } from '../../utils/logger.js';
 import { resolveCliPath } from '../../utils/cli-path.js';
 import { isInteractive } from '../../utils/prompt.js';
-import type { CiStatus, CommitRef, PullRequestRef } from '../types.js';
+import { endedRequest, type CiStatus, type CommitRef, type PullRequestRecord, type PullRequestRef } from '../types.js';
 
 // ─── Constants ───────────────────────────────────────────
 
@@ -750,8 +750,36 @@ export async function ghCommitChecks({ repo, commit, timeoutMs }: CommitRef): Pr
 interface GhLookup { gh: string; name: string }
 
 const OPEN_LOOKUP: GhLookup = { gh: 'look up open pull requests', name: 'the open pull request lookup' };
+const HISTORY_LOOKUP: GhLookup = { gh: 'list pull requests', name: 'the pull request history lookup' };
 const CHECKS_LOOKUP: GhLookup = { gh: 'read the checks of the commit', name: 'the commit checks lookup' };
 const unreadable = (lookup: GhLookup): string => `GitHub answered ${lookup.name} with data TeamAI cannot read.`;
+
+const HISTORY_PAGE = 100;
+
+const GhPullHistorySchema = GhPullSchema.extend({
+  state: z.enum(['open', 'closed']),
+  title: z.string(),
+  created_at: z.string(),
+  closed_at: z.string().nullable(),
+  merged_at: z.string().nullable(),
+});
+
+/**
+ * Every pull request from `source` into `target` in `repo`, newest first, as `ghFindOpenPull` asks for the open one.
+ * Throws, rather than listing none, when GitHub cannot be asked, answers what this cannot read, or fills a whole page.
+ */
+export async function ghPullHistory({ repo, source, target, timeoutMs }: PullRequestRef): Promise<PullRequestRecord[]> {
+  const owner = repo.split('/')[0] ?? repo;
+  const query = new URLSearchParams({ state: 'all', head: `${owner}:${source}`, base: target, per_page: String(HISTORY_PAGE) });
+  const pulls = z.array(GhPullHistorySchema).safeParse(await ghApiGet(`repos/${repo}/pulls?${query}`, timeoutMs, HISTORY_LOOKUP));
+  if (!pulls.success) throw new Error(unreadable(HISTORY_LOOKUP));
+  if (pulls.data.length >= HISTORY_PAGE) throw new Error('GitHub listed more pull requests than one page, so TeamAI cannot tell how this branch\'s requests ended.');
+  const ours = (name: string | undefined): boolean => name?.toLowerCase() === repo.toLowerCase();
+  return pulls.data
+    .filter((pull) => pull.head.ref === source && pull.base.ref === target && ours(pull.head.repo?.full_name) && ours(pull.base.repo.full_name))
+    .map((pull) => endedRequest({ url: pull.html_url, title: pull.title, openedAt: pull.created_at, state: pull.merged_at === null ? pull.state : 'merged', closedAt: pull.closed_at }));
+}
+
 
 async function ghApiGet(path: string, timeoutMs: number, lookup: GhLookup): Promise<JsonValue> {
   const ghPath = getGhPath();

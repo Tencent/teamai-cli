@@ -91,6 +91,7 @@ vi.mock('../providers/tgit/gf-cli.js', () => {
     ensureAuthenticated: vi.fn().mockReturnValue('testuser'),
     isGfInstalled: vi.fn().mockReturnValue(true),
     tgitFindOpenMr: vi.fn(),
+    tgitMrHistory: vi.fn(),
     RepoNotFoundError,
   };
 });

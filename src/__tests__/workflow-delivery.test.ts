@@ -920,7 +920,7 @@ describe('reported URLs from a driver', () => {
 function providerDouble(findOpen: PullRequestLookup['findOpen'], create: GitProvider['createPullRequest'], hostname = 'github.com') {
   const provider = new GitHubProvider();
   const createSpy = vi.spyOn(provider, 'createPullRequest').mockImplementation(create);
-  vi.spyOn(registry, 'providerForRemote').mockReturnValue({ kind: 'provider', provider, pullRequests: { findOpen }, repo: 'fixture/app', hostname });
+  vi.spyOn(registry, 'providerForRemote').mockReturnValue({ kind: 'provider', provider, pullRequests: { findOpen, history: async () => [] }, repo: 'fixture/app', hostname });
   return createSpy;
 }
 

@@ -78,8 +78,25 @@ export type CiStatus = 'passed' | 'failed' | 'pending' | 'none';
 export interface PullRequestLookup {
   /** The web URL of the open request `ref` names, if any. Throws when the host cannot answer, never answering "none". */
   findOpen(ref: PullRequestRef): Promise<string | undefined>;
+  /** Every request from `ref`'s branch into its target, newest first, with how it ended. Throws when the host cannot answer. */
+  history(ref: PullRequestRef): Promise<PullRequestRecord[]>;
   /** How the CI of `ref` went (#1247). Throws when the host cannot answer. Absent on a host whose CI TeamAI does not read. */
   checks?(ref: CommitRef): Promise<CiStatus>;
+}
+
+/** A request as its host lists it: still open, or ended at `closedAt` merged or closed without merging. */
+export type PullRequestRecord = { url: string; title: string; openedAt: string } & (
+  | { state: 'open' }
+  | { state: 'merged' | 'closed'; closedAt: string }
+);
+
+/**
+ * A listed request as a GitLab-style host states it: `opened` or `reopened` is open, `merged` is merged, any other state
+ * ended without merging. An ended request with no time the host gave is listed as ended when it was opened.
+ */
+export function endedRequest({ url, title, openedAt, state, closedAt }: { url: string; title: string; openedAt: string; state: string; closedAt: string | null | undefined }): PullRequestRecord {
+  if (state === 'opened' || state === 'reopened' || state === 'open') return { url, title, openedAt, state: 'open' };
+  return { url, title, openedAt, state: state === 'merged' ? 'merged' : 'closed', closedAt: closedAt ?? openedAt };
 }
 
 /**

@@ -186,6 +186,40 @@ describe('GitHub commit checks', () => {
   });
 });
 
+describe('GitHub pull request history', () => {
+  const ended = (head: string, number: number, state: 'open' | 'closed', mergedAt: string | null, repo = 'acme/app') => ({
+    ...pull(head, repo, number), state, title: `Change ${number}`, created_at: `2026-10-0${number}T10:00:00Z`,
+    closed_at: state === 'closed' ? `2026-10-0${number}T12:00:00Z` : null, merged_at: mergedAt,
+  });
+
+  it('lists every request of this repository branch into the target with how it ended, never a fork with the same branch name', async () => {
+    resolveGh(null);
+    vi.stubEnv('GITHUB_TOKEN', 'test-token');
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify([
+      ended(ref.source, 9, 'open', null), ended(ref.source, 8, 'closed', null), ended(ref.source, 6, 'closed', null, 'fork/app'), ended(ref.source, 5, 'closed', '2026-10-05T12:00:00Z'),
+    ])));
+    vi.stubGlobal('fetch', fetcher);
+
+    expect(await lookup().history(ref)).toEqual([
+      { url: 'https://github.com/acme/app/pull/9', title: 'Change 9', openedAt: '2026-10-09T10:00:00Z', state: 'open' },
+      { url: 'https://github.com/acme/app/pull/8', title: 'Change 8', openedAt: '2026-10-08T10:00:00Z', state: 'closed', closedAt: '2026-10-08T12:00:00Z' },
+      { url: 'https://github.com/acme/app/pull/5', title: 'Change 5', openedAt: '2026-10-05T10:00:00Z', state: 'merged', closedAt: '2026-10-05T12:00:00Z' },
+    ]);
+    const url = new URL(String(fetcher.mock.calls[0]?.[0]));
+    expect([url.pathname, url.searchParams.get('state'), url.searchParams.get('head'), url.searchParams.get('base')])
+      .toEqual(['/repos/acme/app/pulls', 'all', `acme:${ref.source}`, 'main']);
+  });
+
+  it('fails, rather than listing nothing, on an answer it cannot read or see past', async () => {
+    resolveGh(null);
+    vi.stubEnv('GITHUB_TOKEN', 'test-token');
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify([pull(ref.source)]))));
+    await expect(lookup().history(ref)).rejects.toThrow(/^GitHub answered the pull request history lookup with data TeamAI cannot read\.$/);
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify(Array.from({ length: 100 }, (_, index) => ended(`other-${index}`, 1, 'open', null))))));
+    await expect(lookup().history(ref)).rejects.toThrow('more pull requests than one page');
+  });
+});
+
 function lookupOf(provider: GitProvider): PullRequestLookup {
   if (!provider.pullRequests) throw new Error(`${provider.name} has no pull request lookup`);
   return provider.pullRequests;
@@ -243,6 +277,23 @@ describe('GitLab merge request lookup', () => {
     await expect(gitlabLookup.findOpen(ref)).rejects.toThrow('on another host');
     hanging();
     await expect(gitlabLookup.findOpen({ ...ref, timeoutMs: 20 })).rejects.toThrow();
+  });
+
+  it('lists every request of this project branch into the target with how it ended, never one from a fork', async () => {
+    const at = (iid: number, state: string, ended: Record<string, string | null>) => ({ ...mr(ref.source, iid), state, title: `Change ${iid}`, created_at: `2026-10-0${iid}T10:00:00Z`, ...ended });
+    const fetcher = answering([
+      at(9, 'opened', { closed_at: null, merged_at: null }), at(8, 'closed', { closed_at: '2026-10-08T12:00:00Z', merged_at: null }),
+      { ...at(6, 'closed', { closed_at: '2026-10-06T12:00:00Z', merged_at: null }), source_project_id: 2 }, at(5, 'merged', { closed_at: null, merged_at: '2026-10-05T12:00:00Z' }),
+    ]);
+
+    expect(await lookupOf(new GitLabProvider()).history(ref)).toEqual([
+      { url: 'https://gitlab.com/acme/app/-/merge_requests/9', title: 'Change 9', openedAt: '2026-10-09T10:00:00Z', state: 'open' },
+      { url: 'https://gitlab.com/acme/app/-/merge_requests/8', title: 'Change 8', openedAt: '2026-10-08T10:00:00Z', state: 'closed', closedAt: '2026-10-08T12:00:00Z' },
+      { url: 'https://gitlab.com/acme/app/-/merge_requests/5', title: 'Change 5', openedAt: '2026-10-05T10:00:00Z', state: 'merged', closedAt: '2026-10-05T12:00:00Z' },
+    ]);
+    expect(new URL(String(fetcher.mock.calls[0]?.[0])).searchParams.get('state')).toBe('all');
+    answering([{ ...at(7, 'opened', {}), web_url: 'https://evil.example/acme/app/-/merge_requests/7' }]);
+    await expect(lookupOf(new GitLabProvider()).history(ref)).rejects.toThrow('on another host');
   });
 
   it('gives up on a create GitLab does not answer in time', async () => {
@@ -306,6 +357,18 @@ describe('TGit merge request lookup', () => {
     hanging();
     await expect(tgitLookup.findOpen({ ...ref, timeoutMs: 20 })).rejects.toThrow();
   });
+
+  it('lists every request of this project branch into the target with how it ended, a reopened one as open', async () => {
+    const at = (iid: number, state: string, updated: string) => ({ ...tgitMr(ref.source, iid, 1, state), title: `Change ${iid}`, created_at: `2026-10-0${iid}T10:00:00Z`, updated_at: updated });
+    const fetcher = answering([at(9, 'reopened', '2026-10-09T11:00:00Z'), at(8, 'closed', '2026-10-08T12:00:00Z'), at(5, 'merged', '2026-10-05T12:00:00Z')]);
+
+    expect(await lookupOf(new TGitProvider()).history(ref)).toEqual([
+      { url: 'https://git.woa.com/acme/app/merge_requests/9', title: 'Change 9', openedAt: '2026-10-09T10:00:00Z', state: 'open' },
+      { url: 'https://git.woa.com/acme/app/merge_requests/8', title: 'Change 8', openedAt: '2026-10-08T10:00:00Z', state: 'closed', closedAt: '2026-10-08T12:00:00Z' },
+      { url: 'https://git.woa.com/acme/app/merge_requests/5', title: 'Change 5', openedAt: '2026-10-05T10:00:00Z', state: 'merged', closedAt: '2026-10-05T12:00:00Z' },
+    ]);
+    expect(new URL(String(fetcher.mock.calls[0]?.[0])).searchParams.get('state')).toBe('all');
+  });
 });
 
 describe('GitCode pull request lookup', () => {
@@ -337,6 +400,21 @@ describe('GitCode pull request lookup', () => {
     await expect(gitcodeLookup.findOpen(ref)).rejects.toThrow('on another host');
     hanging();
     await expect(gitcodeLookup.findOpen({ ...ref, timeoutMs: 20 })).rejects.toThrow();
+  });
+
+  it('lists every request of this repository branch into the target with how it ended, never a fork', async () => {
+    const at = (number: number, state: string, ended: Record<string, string | null>, repo = 'acme/app') => ({ ...gitcodePull(ref.source, repo, number, state), title: `Change ${number}`, created_at: `2026-10-0${number}T10:00:00Z`, ...ended });
+    const fetcher = answering([
+      at(9, 'open', { closed_at: null, merged_at: null }), at(8, 'closed', { closed_at: '2026-10-08T12:00:00Z', merged_at: null }),
+      at(6, 'closed', { closed_at: '2026-10-06T12:00:00Z', merged_at: null }, 'fork/app'), at(5, 'merged', { closed_at: '2026-10-05T12:00:00Z', merged_at: '2026-10-05T12:00:00Z' }),
+    ]);
+
+    expect(await lookupOf(new GitCodeProvider()).history(ref)).toEqual([
+      { url: 'https://gitcode.com/acme/app/pull/9', title: 'Change 9', openedAt: '2026-10-09T10:00:00Z', state: 'open' },
+      { url: 'https://gitcode.com/acme/app/pull/8', title: 'Change 8', openedAt: '2026-10-08T10:00:00Z', state: 'closed', closedAt: '2026-10-08T12:00:00Z' },
+      { url: 'https://gitcode.com/acme/app/pull/5', title: 'Change 5', openedAt: '2026-10-05T10:00:00Z', state: 'merged', closedAt: '2026-10-05T12:00:00Z' },
+    ]);
+    expect(new URL(String(fetcher.mock.calls[0]?.[0])).searchParams.get('state')).toBe('all');
   });
 });
 
@@ -374,6 +452,6 @@ describe('the provider of a checkout origin', () => {
   });
 });
 
-it('request lookup only reads: open requests and the checks of a commit', () => {
-  expectTypeOf<keyof PullRequestLookup>().toEqualTypeOf<'findOpen' | 'checks'>();
+it('request lookup only reads: open requests, how a branch\'s requests ended, and the checks of a commit', () => {
+  expectTypeOf<keyof PullRequestLookup>().toEqualTypeOf<'findOpen' | 'history' | 'checks'>();
 });
