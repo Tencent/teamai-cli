@@ -58,6 +58,19 @@ export interface PullRequestRef {
   timeoutMs: number;
 }
 
+/** A commit of `repo` whose CI is read, as a delivered pull request's head. */
+export interface CommitRef {
+  /** Repository in "owner/repo" format, as parseRepoInput gives it. */
+  repo: string;
+  /** The full commit id. */
+  commit: string;
+  /** How long the host may take to answer. */
+  timeoutMs: number;
+}
+
+/** How a commit's CI went, as its host reports it: `none` when nothing ran on it that passes or fails. */
+export type CiStatus = 'passed' | 'failed' | 'pending' | 'none';
+
 /**
  * Read-only pull request lookup for workflow delivery. It has no merge, close, approve or update member, and a test
  * pins its key set. It never prompts, logs in or calls authenticate().
@@ -65,6 +78,8 @@ export interface PullRequestRef {
 export interface PullRequestLookup {
   /** The web URL of the open request `ref` names, if any. Throws when the host cannot answer, never answering "none". */
   findOpen(ref: PullRequestRef): Promise<string | undefined>;
+  /** How the CI of `ref` went (#1247). Throws when the host cannot answer. Absent on a host whose CI TeamAI does not read. */
+  checks?(ref: CommitRef): Promise<CiStatus>;
 }
 
 /**

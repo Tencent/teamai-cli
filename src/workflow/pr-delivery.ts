@@ -6,7 +6,7 @@
 import os from 'node:os';
 import { providerForRemote, type OriginProvider } from '../providers/registry.js';
 import { NON_INTERACTIVE_GIT_ENV } from '../utils/git-env.js';
-import type { PullRequestRef } from '../providers/types.js';
+import type { CiStatus, PullRequestRef } from '../providers/types.js';
 import { sanitizePrUrl, type PrUrl } from './pr-url.js';
 import type { DeliveryKey, UnresolvedCreate } from './delivery-schema.js';
 import type { DeliveryFailure } from './step-state.js';
@@ -217,6 +217,26 @@ export async function findDelivered(
   if (origin.kind === 'transport') return { kind: 'failed' };
 
   return findOpen(origin, { repo: origin.repo, source: branch, target, timeoutMs: DELIVERY_TIMEOUT_MS });
+}
+
+/**
+ * How the CI of `commit`, the head of a pull request delivered from `checkout`, went on the origin's host (#1247), or why
+ * it was not read: the host's CI is one TeamAI does not read, or the host did not answer, with what it failed on. Read
+ * once, with no wait for a pending one.
+ */
+export async function deliveredCi({ checkout, commit }: { checkout: string; commit: string }): Promise<
+  { kind: 'read'; status: CiStatus } | { kind: 'unsupported' } | { kind: 'unanswered'; reason: string }
+> {
+  if (!OBJECT_ID.test(commit)) return { kind: 'unsupported' };
+  const origin = await originOf(checkout);
+
+  if (origin.kind === 'transport' || !origin.pullRequests.checks) return { kind: 'unsupported' };
+
+  try {
+    return { kind: 'read', status: await origin.pullRequests.checks({ repo: origin.repo, commit, timeoutMs: DELIVERY_TIMEOUT_MS }) };
+  } catch (e) {
+    return { kind: 'unanswered', reason: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 /** The provider of the checkout's configured origin; git alone when the checkout has none. */

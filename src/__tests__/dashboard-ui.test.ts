@@ -109,7 +109,8 @@ describe('unified dashboard', () => {
     const literals = [...scorersClient.matchAll(/\b(?:label|t)\('((?:[^'\\]|\\.)+)'\)/g)].map((match) => (match[1] ?? '').replace(/\\'/g, "'"));
     const dimensions = Object.values(z.record(z.string(), z.string()).parse(JSON.parse(scorersClient.match(/const scorerDimensions=(\{[^}]*\})/)?.[1] ?? 'null')));
     const headings = [...scorersClient.matchAll(/\[((?:'[A-Z][A-Z ,]+',?)+)\]/g)].flatMap((match) => [...(match[1] ?? '').matchAll(/'([^']+)'/g)].map((heading) => heading[1] ?? ''));
-    const all = [...new Set([...literals, ...dimensions, ...headings])];
+    const deciders = Object.values(z.record(z.string(), z.string()).parse(JSON.parse(scorersClient.match(/const deciderNames=(\{[^}]*\})/)?.[1] ?? 'null')));
+    const all = [...new Set([...literals, ...dimensions, ...headings, ...deciders])];
     expect(all.length).toBeGreaterThan(60);
     expect(all.filter((text) => !Object.hasOwn(dashboardMessages, text))).toEqual([]);
   });

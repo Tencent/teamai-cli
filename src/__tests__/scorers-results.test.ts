@@ -258,6 +258,67 @@ describe('scorer results', () => {
   });
 });
 
+describe('what decided workflow labels', () => {
+  /** A label of `delivered` on a delivering pass, decided by `decidedBy`, passing only when the judge passed it. */
+  function delivered(decidedBy: 'check' | 'ci' | 'protected' | 'judge' | undefined, passed: boolean, pass: number): ScoreLabel {
+    return {
+      ...sessionLabel(), scorer: 'delivered', label: passed ? 'complete' : 'partial', score: passed ? 1 : 0.5, passed,
+      source: 'workflow', subject: { runId: 'run-1', step: 'change', pass }, ...(decidedBy ? { decidedBy } : {}),
+    };
+  }
+  const labels = [
+    delivered('ci', false, 1), delivered('ci', false, 2), delivered('check', false, 3), delivered('protected', false, 4),
+    delivered('judge', true, 5), delivered('judge', true, 6), delivered('judge', false, 7), delivered(undefined, true, 8),
+  ].map((label) => viewed(label));
+
+  it('says how many labels each stage decided, how many never reached a judge, and how the judge did on the rest', () => {
+    const decided = ScorerResults.of({ labels, query: { windowDays: 30 }, now: NOW }).selected?.decided;
+
+    expect(decided?.rows.map(({ by, stats }) => ({ by, stats }))).toEqual([
+      { by: 'judge', stats: { n: 3, passed: 2, failed: 1, rate: 2 / 3 } },
+      { by: 'ci', stats: { n: 2, passed: 0, failed: 2, rate: 0 } },
+      { by: 'check', stats: { n: 1, passed: 0, failed: 1, rate: 0 } },
+      { by: 'protected', stats: { n: 1, passed: 0, failed: 1, rate: 0 } },
+      { by: 'not recorded', stats: { n: 1, passed: 1, failed: 0, rate: 1 } },
+    ]);
+    expect(decided?.beforeJudge).toBe(4);
+  });
+
+  it('groups by what decided a label, and lists each failing label with the stage that decided it', () => {
+    const ci = ScorerResults.of({ labels, query: { windowDays: 30 }, now: NOW }).selected?.decided?.rows.find((row) => row.by === 'ci')?.key;
+    const selected = ScorerResults.of({ labels, query: { windowDays: 30, groupBy: 'decidedBy', failing: { group: ci } }, now: NOW }).selected;
+
+    expect(selected?.groups?.map((group) => `${group.kind === 'value' ? group.value : group.kind} ${group.stats.n}`)).toEqual(['judge 3', 'ci 2', 'check 1', 'protected 1', 'not recorded 1']);
+    expect(selected?.failing.labels.map((failing) => failing.decidedBy)).toEqual(['ci', 'ci']);
+    expect(selected?.decided?.rows.map((row) => row.key)).toEqual(selected?.groups?.map((group) => group.key));
+  });
+
+  it('counts a label a stage decided in the measurement of the judge tool it names, though that judge reported no model for it', () => {
+    // A stage label names the judge the lease chose, which never reported a model; the judge's own labels did.
+    const judge = (tool: string, model: { requested: string } | { reported: string }) => ({ kind: 'model' as const, tool, model, isolation: 'verified' as const, access: 'read' as const });
+    const claudeStage = { ...delivered('ci', false, 9), judge: judge('claude', { requested: 'haiku' }) };
+    const codexJudged = { ...delivered('judge', true, 10), judge: judge('codex', { reported: 'gpt-5.1-codex' }) };
+    const codexStage = { ...delivered('check', false, 11), judge: judge('codex', { requested: 'gpt-5.1-codex' }) };
+    const all = [...labels, viewed(claudeStage), viewed(codexJudged), viewed(codexStage)];
+    const view = ScorerResults.of({ labels: all, query: { windowDays: 30 }, now: NOW });
+
+    expect(view.scorers[0]?.cohorts.map((cohort) => `${cohort.judge.kind === 'model' ? cohort.judge.tool : 'human'} ${cohort.stats.n}`).sort()).toEqual(['claude 9', 'codex 2']);
+    const claude = view.scorers[0]?.cohorts.find((cohort) => cohort.judge.kind === 'model' && cohort.judge.tool === 'claude')?.id;
+    expect(ScorerResults.of({ labels: all, query: { windowDays: 30, cohort: claude }, now: NOW }).selected?.decided?.rows
+      .map((row) => `${row.by} ${row.stats.n}`)).toEqual(['ci 3', 'judge 3', 'check 1', 'protected 1', 'not recorded 1']);
+  });
+
+  it('keeps labels a stage decided as their own measurement while no judge labelled the rubric', () => {
+    const view = ScorerResults.of({ labels: [delivered('ci', false, 1), delivered('protected', false, 2)].map((label) => viewed(label)), query: { windowDays: 30 }, now: NOW });
+
+    expect(view.scorers[0]?.cohorts.map((cohort) => cohort.stats.n)).toEqual([2]);
+  });
+
+  it('says nothing of stages for session labels, which a judge always decides', () => {
+    expect(ScorerResults.of({ labels: [viewed(sessionLabel())], query: { windowDays: 30 }, now: NOW }).selected).not.toHaveProperty('decided');
+  });
+});
+
 describe('agreement with hand labels', () => {
   const session = (n: number) => ({ platform: 'claude-code', sessionId: `s-${n}` });
   const byHand = (n: number, overrides: Partial<Extract<ScoreLabel, { source: 'session' }>> = {}) => sessionLabel({ subject: session(n), judge: { kind: 'human' }, ...overrides });

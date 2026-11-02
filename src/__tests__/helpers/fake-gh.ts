@@ -12,13 +12,14 @@ export type GhCall = z.infer<typeof CallSchema>;
  * `'fail-after-open'` opens the request and still fails, as a create that timed out after GitHub took it. `open`
  * replaces the open requests. `hold` waits inside that call, a create once it recorded the request, until a file named
  * `release` is in the fake's directory, or 20 seconds passed; while it waits, `<hold>.held` there holds the pid of the
- * process that called it.
+ * process that called it. `checks` answers the check runs and the combined status of any commit: no status by default.
  */
 export interface FakeGhOptions {
   lookup?: 'fail';
   create?: 'fail' | 'fail-after-open';
   open?: unknown[];
   hold?: 'lookup' | 'create';
+  checks?: { runs: unknown[]; status?: { state: string; total_count: number; statuses: Array<{ state: string }> } };
 }
 
 function script(dir: string): string {
@@ -39,6 +40,9 @@ const hold = (call) => {
 if (args[0] === 'api') {
   if (options.lookup === 'fail') { console.error('HTTP 401: Bad credentials for token ghp_fake_secret'); process.exit(1); }
   hold('lookup');
+  const checks = options.checks || { runs: [] };
+  if (String(args[1]).includes('/check-runs')) { console.log(JSON.stringify({ total_count: checks.runs.length, check_runs: checks.runs })); process.exit(0); }
+  if (String(args[1]).includes('/status')) { console.log(JSON.stringify(checks.status || { state: 'pending', total_count: 0, statuses: [] })); process.exit(0); }
   console.log(JSON.stringify(open));
   process.exit(0);
 }

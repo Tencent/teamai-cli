@@ -9,7 +9,7 @@ import { TGitProvider } from '../providers/tgit/index.js';
 import { GitCodeProvider } from '../providers/gitcode/index.js';
 import { GenericGitProvider } from '../providers/git/index.js';
 import { providerForRemote } from '../providers/registry.js';
-import type { GitProvider, PullRequestLookup, PullRequestRef } from '../providers/types.js';
+import type { CommitRef, GitProvider, PullRequestLookup, PullRequestRef } from '../providers/types.js';
 import { fakeGh, resolveGh } from './helpers/fake-gh.js';
 
 const ref: PullRequestRef = { repo: 'acme/app', source: 'teamai/run/work/p1', target: 'main', timeoutMs: 3000 };
@@ -112,6 +112,80 @@ setInterval(() => {}, 1000);
   });
 });
 
+const SHA = 'c'.repeat(40);
+const commit: CommitRef = { repo: 'acme/app', commit: SHA, timeoutMs: 3000 };
+const run = (status: string, conclusion: string | null = null) => ({ status, conclusion });
+type CombinedStatus = { state: string; total_count: number; statuses: Array<{ state: string }> };
+
+/** Answers GitHub's check runs and combined status of a commit, by path. */
+/** The combined status GitHub answers for commit statuses in `states`: its state as GitHub combines them, and each context. */
+function statuses(...states: string[]): CombinedStatus {
+  const state = states.some((each) => each === 'failure' || each === 'error') ? 'failure' : states.includes('pending') || states.length === 0 ? 'pending' : 'success';
+  return { state, total_count: states.length, statuses: states.map((each) => ({ state: each })) };
+}
+
+function githubAnswering(runs: unknown[], status: CombinedStatus) {
+  const fetcher = vi.fn<typeof fetch>().mockImplementation(async (url) => {
+    const { pathname } = new URL(String(url));
+    if (pathname.endsWith('/check-runs')) return new Response(JSON.stringify({ total_count: runs.length, check_runs: runs }));
+    if (pathname.endsWith('/status')) return new Response(JSON.stringify(status));
+    return new Response('{}', { status: 404 });
+  });
+  vi.stubGlobal('fetch', fetcher);
+  return fetcher;
+}
+
+describe('GitHub commit checks', () => {
+  beforeEach(() => {
+    resolveGh(null);
+    vi.stubEnv('GITHUB_TOKEN', 'test-token');
+  });
+
+  it.each([
+    ['a check run that failed', [run('completed', 'success'), run('completed', 'failure')], statuses(), 'failed'],
+    ['a check run that timed out', [run('completed', 'timed_out')], statuses(), 'failed'],
+    ['a commit status that failed', [run('completed', 'success')], statuses('failure'), 'failed'],
+    ['a check run still running', [run('completed', 'success'), run('in_progress')], statuses(), 'pending'],
+    ['a failed check run while another still runs', [run('completed', 'failure'), run('in_progress')], statuses(), 'pending'],
+    ['a failed check run while a commit status is pending', [run('completed', 'failure')], statuses('pending'), 'pending'],
+    // GitHub's combined state is failure here, though one context has not finished.
+    ['a failed commit status while another is pending', [run('completed', 'success')], statuses('failure', 'pending'), 'pending'],
+    ['more commit statuses than one page shows', [run('completed', 'success')], { ...statuses('failure'), total_count: 101 }, 'pending'],
+    ['a commit status still pending', [run('completed', 'success')], statuses('pending', 'success'), 'pending'],
+    ['every check passed or skipped', [run('completed', 'success'), run('completed', 'skipped')], statuses('success'), 'passed'],
+    ['no check at all', [], statuses(), 'none'],
+    ['only cancelled check runs', [run('completed', 'cancelled')], statuses(), 'none'],
+  ])('reads %s', async (_case, runs, status, expected) => {
+    const fetcher = githubAnswering(runs, status);
+
+    expect(await lookup().checks?.(commit)).toBe(expected);
+    expect(fetcher.mock.calls.map(([url]) => new URL(String(url)).pathname).sort())
+      .toEqual([`/repos/acme/app/commits/${SHA}/check-runs`, `/repos/acme/app/commits/${SHA}/status`]);
+  });
+
+  it('asks an installed gh with prompts off', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-fake-gh-'));
+    dirs.push(dir);
+    const gh = fakeGh(dir, { checks: { runs: [run('completed', 'failure')] } });
+
+    expect(await lookup().checks?.(commit)).toBe('failed');
+    expect(gh.calls().sort((left, right) => String(left.args[1]).localeCompare(String(right.args[1])))).toMatchObject([
+      { args: ['api', `repos/acme/app/commits/${SHA}/check-runs?per_page=100`], prompt: '0' },
+      { args: ['api', `repos/acme/app/commits/${SHA}/status?per_page=100`], prompt: '0' },
+    ]);
+  });
+
+  it('fails, rather than reading no checks, without credentials or on an answer it cannot read', async () => {
+    vi.stubEnv('GITHUB_TOKEN', ''); vi.stubEnv('GH_TOKEN', '');
+    await expect(lookup().checks?.(commit)).rejects.toThrow('GitHub credentials are unavailable');
+    vi.stubEnv('GITHUB_TOKEN', 'test-token');
+    answering({ message: 'private-token-in-body' }, 403);
+    await expect(lookup().checks?.(commit)).rejects.toThrow(/^GitHub answered the commit checks lookup with HTTP 403\.(?!.*private-token-in-body)/);
+    answering({ unexpected: true });
+    await expect(lookup().checks?.(commit)).rejects.toThrow(/^GitHub answered the commit checks lookup with data TeamAI cannot read\.$/);
+  });
+});
+
 function lookupOf(provider: GitProvider): PullRequestLookup {
   if (!provider.pullRequests) throw new Error(`${provider.name} has no pull request lookup`);
   return provider.pullRequests;
@@ -174,6 +248,31 @@ describe('GitLab merge request lookup', () => {
   it('gives up on a create GitLab does not answer in time', async () => {
     hanging();
     await expect(new GitLabProvider().createPullRequest({ repo: 'acme/app', source: ref.source, target: 'main', title: 't', spawnTimeoutMs: 20 })).rejects.toThrow();
+  });
+});
+
+describe('GitLab commit pipelines', () => {
+  beforeEach(() => {
+    vi.stubEnv('GITLAB_TOKEN', 'test-token');
+    vi.stubEnv('GITLAB_URL', '');
+    vi.stubEnv('TEAMAI_GITLAB_HOST', '');
+  });
+
+  it.each([
+    ['failed', 'failed'], ['success', 'passed'], ['running', 'pending'], ['created', 'pending'], ['canceled', 'none'], ['skipped', 'none'],
+  ])('reads the newest pipeline of the commit, %s, as %s', async (status, expected) => {
+    const fetcher = answering([{ status }, { status: 'success' }]);
+
+    expect(await lookupOf(new GitLabProvider()).checks?.(commit)).toBe(expected);
+    const url = new URL(String(fetcher.mock.calls[0]?.[0]));
+    expect([url.pathname, url.searchParams.get('sha'), url.searchParams.get('order_by')]).toEqual(['/api/v4/projects/acme%2Fapp/pipelines', SHA, 'id']);
+  });
+
+  it('reads a commit no pipeline ran for as none, and fails on an answer it cannot read', async () => {
+    answering([]);
+    expect(await lookupOf(new GitLabProvider()).checks?.(commit)).toBe('none');
+    answering({ message: 'private-token-in-body' }, 403);
+    await expect(lookupOf(new GitLabProvider()).checks?.(commit)).rejects.toThrow(/^GitLab answered the commit pipelines lookup with HTTP 403\.(?!.*private-token-in-body)/);
   });
 });
 
@@ -275,6 +374,6 @@ describe('the provider of a checkout origin', () => {
   });
 });
 
-it('request lookup exposes only finding open requests', () => {
-  expectTypeOf<keyof PullRequestLookup>().toEqualTypeOf<'findOpen'>();
+it('request lookup only reads: open requests and the checks of a commit', () => {
+  expectTypeOf<keyof PullRequestLookup>().toEqualTypeOf<'findOpen' | 'checks'>();
 });

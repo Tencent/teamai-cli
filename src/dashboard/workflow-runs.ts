@@ -212,6 +212,15 @@ function rowOf(record: ReadRecord): RunRow {
   return row;
 }
 
+/** A pass's label as the page shows it; `decidedBy` only when a stage before the judge decided it. */
+function scoreCell({ scorer, label, passed, decidedBy }: PassScore): PassScore {
+  const cell: PassScore = { scorer, label, passed };
+
+  if (decidedBy) cell.decidedBy = decidedBy;
+
+  return cell;
+}
+
 function stepRow(entry: StepEntry, status: string, scores: ReadonlyMap<string, PassScore[]> | undefined, gate?: Gate): StepRow {
   const passScores = scores?.get(`${entry.step}#${entry.pass}`);
 
@@ -229,7 +238,7 @@ function stepRow(entry: StepEntry, status: string, scores: ReadonlyMap<string, P
 
   if (gate) row.gate = gate;
 
-  if (passScores) row.scores = passScores.map(({ scorer, label, passed }) => ({ scorer, label, passed }));
+  if (passScores) row.scores = passScores.map(scoreCell);
 
   if (outcomes?.length) row.outcomes = outcomes;
 

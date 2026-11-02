@@ -4,6 +4,7 @@
  */
 import path from 'node:path';
 import { z } from 'zod';
+import { CheckRunSchema } from '../workflow/check.js';
 import { modelValueProblem } from '../models/aliases.js';
 import { splitFrontmatter } from '../utils/frontmatter.js';
 
@@ -37,6 +38,8 @@ const FrontmatterSchema = z.object({
   isolation: z.enum(['verified', 'best-effort'], { error: 'must be verified or best-effort' }).optional(),
   /** `true`: this scorer judges a member's finished agent sessions too, in the background where the member turns that on. */
   sessions: z.boolean({ error: 'must be true or false' }).optional(),
+  /** Runs on what a `deliver: pr` step delivered before the judge (#1247), as a benchmark task's check runs (#1180). */
+  check: CheckRunSchema.optional(),
 }).strict().superRefine((scorer, ctx) => {
   const seen = new Set<string>();
   scorer.labels.forEach((label, index) => {
@@ -85,7 +88,7 @@ function issueMessages(issue: z.ZodIssue): string[] {
     return issue.keys.map((key) => `${field ? `${field} ` : ''}uses \`${key}\`, which this teamai does not know. Update teamai.`);
   }
 
-  return [`${field} ${issue.message}`];
+  return [issue.message.startsWith(`${field} `) ? issue.message : `${field} ${issue.message}`];
 }
 
 export function parseScorer(relativePath: string, content: string): ParsedScorer {

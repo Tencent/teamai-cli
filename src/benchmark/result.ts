@@ -16,7 +16,7 @@ import { stepDefinitions } from '../workflow/scope.js';
 import { LimitSchema } from '../workflow/requirements.js';
 import type { RunState } from '../workflow/types.js';
 import { definedFields } from '../utils/defined-fields.js';
-import { CheckOutputSchema, type CheckResult } from './check.js';
+import { CheckOutputSchema, type CheckResult } from '../workflow/check.js';
 import { compareAgent } from './agent-match.js';
 import { baselineStepOf, checkStepOf, correctnessScorerName, type BenchmarkPlan, type PlannedArm, type PlannedTask, type PlannedTrial } from './plan.js';
 import type { RunPlan } from './run-plan.js';
