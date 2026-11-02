@@ -16,7 +16,7 @@ import {
   conditionDiagnostics, endDiagnostics, expressionSite, readDiagnostics, readScope, splitReads, type ConditionNode, type Ending, type ReadSite,
 } from './reads.js';
 import { parseHitl } from './parse-hitl.js';
-import { roleDiagnostics, roleIdNamedNow, undeclaredRole } from './parse-roles.js';
+import { roleDiagnostics } from './parse-roles.js';
 import { loopProblems, stepLoops } from './loop.js';
 import { modelValueProblem } from '../models/aliases.js';
 import { isRoleId } from '../roles.js';
@@ -838,14 +838,10 @@ function parseBody(
             : commandPair !== undefined && !runsPrompt ? `${stepLabel} has role ${role}, but a command step launches no agent to take the role's knowledge; set role on the prompt step that opens or continues the copy`
               : undefined;
 
-      // A clone installs the team at the revision it pins, whose roles.yaml its setup checks; the one pulled now may
-      // name other roles. A `workflow` step's role is checked where its steps take it (`roleDiagnostics`).
-      const opensPinnedClone = workspace instanceof Object && 'revision' in workspace.clone.team;
-      const checkedId = roleSpec && !opensPinnedClone && workflowPair === undefined ? roleIdNamedNow(roleSpec) : undefined;
-      const roleRefused = roleProblem ?? (checkedId === undefined ? undefined : undeclaredRole(stepLabel, checkedId, files));
-
-      if (rolePair && roleRefused !== undefined) {
-        diagnostics.push({ ...locate(file, lineCounter, rolePair.value ?? rolePair.key ?? item, `${field}.role`, roleRefused), code: 'bad_role' });
+      // Whether manifest/roles.yaml declares the role is checked where a copy takes it (`roleDiagnostics`): a clone's
+      // setup checks it at the team revision the clone pins.
+      if (rolePair && roleProblem !== undefined) {
+        diagnostics.push({ ...locate(file, lineCounter, rolePair.value ?? rolePair.key ?? item, `${field}.role`, roleProblem), code: 'bad_role' });
       }
 
       const sessionPair = item.items.find((pair) => scalarString(pair.key) === 'session');

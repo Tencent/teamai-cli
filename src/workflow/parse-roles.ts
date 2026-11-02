@@ -65,7 +65,7 @@ function opensPinnedClone(step: WorkflowStep): boolean {
  * Why `owner`, a step label or `defaults`, may not name `role`: `manifest/roles.yaml` does not declare it. Undefined when
  * it does, or when the sync could not read the manifest, so a lease checks the role then.
  */
-export function undeclaredRole(owner: string, role: string, files: WorkflowFiles | undefined): string | undefined {
+function undeclaredRole(owner: string, role: string, files: WorkflowFiles | undefined): string | undefined {
   if (files?.roles === undefined || files.roles.has(role)) return undefined;
 
   return files.roles.size === 0
@@ -74,7 +74,7 @@ export function undeclaredRole(owner: string, role: string, files: WorkflowFiles
 }
 
 /** The id a step `role` names as parse reads it, to check against `manifest/roles.yaml`; none for a template, which each item's lease checks. */
-export function roleIdNamedNow(role: StepRoleSpec): string | undefined {
+function roleIdNamedNow(role: StepRoleSpec): string | undefined {
   switch (role.kind) {
     case 'id': return role.id;
     case 'item_template': return undefined;
@@ -271,6 +271,19 @@ export function roleDiagnostics(root: Node, workflow: { defaults?: WorkflowDefau
     else if (caller) report('bad_role', caller.node, caller.field, roleConflictMessage(conflict, caller));
   };
 
+  /**
+   * Reports the role id `level` names itself when a copy that runs with the team pulled now takes it and that team's
+   * manifest/roles.yaml does not declare it. A pinned clone's setup checks it at the clone's revision instead.
+   */
+  const ownRoleDeclared = (level: Level, by: Exclude<RoleTaker, 'none'>): void => {
+    const id = level.role && roleIdNamedNow(level.role);
+
+    if (by === 'pinned_clone' || !level.written || id === undefined) return;
+    const undeclared = undeclaredRole(level.label, id, ctx.files);
+
+    if (undeclared !== undefined) report('bad_role', valueNode(level.written.item, 'role'), `${level.written.field}.role`, undeclared);
+  };
+
   /** A step that runs no workflow: where its role reaches, and what it takes. */
   const leaf = (levels: readonly Level[], caller: Caller | undefined): void => {
     const last = levels.at(-1);
@@ -279,8 +292,10 @@ export function roleDiagnostics(root: Node, workflow: { defaults?: WorkflowDefau
     const copy = copyOf(levels);
 
     if (!copy) {
-      if (runsWith(levels).kind === 'unknown') consume(levels, 'current_team');
-      else if (last.step.role !== undefined && last.written) {
+      if (runsWith(levels).kind === 'unknown') {
+        consume(levels, 'current_team');
+        ownRoleDeclared(last, 'current_team');
+      } else if (last.step.role !== undefined && last.written) {
         report('bad_role', valueNode(last.written.item, 'role'), `${last.written.field}.role`, `${last.label} has role ${last.step.role} but neither opens nor continues a copy; give the prompt step workspace: new to open a copy that runs with the role, or workspace: continue to run with it in the copy around it`);
       }
 
@@ -304,6 +319,7 @@ export function roleDiagnostics(root: Node, workflow: { defaults?: WorkflowDefau
     const templated = rendersPerItem(resolvedRoleOf(levels)?.role) || rendersPerItem(copy.runsWith.kind === 'role' ? copy.runsWith.role : undefined);
 
     if (!templated && copyRoleConflict(levels)) conflictAt(levels, copy, caller);
+    else ownRoleDeclared(last, by);
   };
 
   /**

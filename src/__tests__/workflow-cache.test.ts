@@ -2456,6 +2456,19 @@ steps:
     expect(result.cached.toSorted()).toEqual(['defaulted', 'enclosed']);
   });
 
+  it("caches a step that continues a pinned clone with the clone's role, which the team pulled now does not declare, as the clone's setup checks it", async () => {
+    const config = testConfig();
+    fs.mkdirSync(path.join(config.repo.localPath, 'manifest'), { recursive: true });
+    fs.writeFileSync(path.join(config.repo.localPath, 'manifest', 'roles.yaml'), 'version: 1\nroles:\n  - id: review\n    resources: { knowledge: [], skills: [review] }\n');
+    writeWorkflow(config, 'continued', cloneStep('old-review').replace('name: review', 'name: continued')
+      .replace('    prompt: Review the change.\n', '    workflow:\n      steps:\n        - id: look\n          role: old-review\n          workspace: continue\n          prompt: Review the change.\n'));
+
+    const result = await syncWorkflowDefinitions(config);
+
+    expect(result.invalid.map(formatDiagnostic)).toEqual([]);
+    expect(result.cached).toEqual(['continued']);
+  });
+
   it("refuses a role the team pulled now does not declare where a step runs with that team: a new copy, one a workflow step's role reaches, or a clone and a copy that share defaults.role", async () => {
     const config = testConfig();
     fs.mkdirSync(path.join(config.repo.localPath, 'manifest'), { recursive: true });
