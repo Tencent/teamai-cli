@@ -105,8 +105,8 @@ function armProduction(a){
  const parts=[(apart?'<b>'+pct(g.stats.rate)+'</b>':'<span class="production-rate">'+pct(g.stats.rate)+'</span>')+' '+number(g.stats.passed)+'/'+number(g.stats.n),'95% '+pct(ci.low)+'–'+pct(ci.high)]
   .concat(apart?[]:['<span class="amber" title="'+e(t('Its 95% interval overlaps this arm\\'s, so these labels do not tell production apart from the benchmark.'))+'">'+label('not separated')+'</span>'])
   .concat(g.roleOf?['<span class="role-of '+e(g.roleOf)+'">'+label(g.roleOf)+'</span>']:[])
-  .concat(['<span data-verbatim>'+e(p.data.selected.cohort.scorer)+'</span>',days]);
- return '<div class="arm-production" title="'+e(t('In production')+': '+p.data.selected.cohort.scorer)+'">'+head+'<small>'+parts.map(part).join(' · ')+'</small> <button class="link" type="button" data-bench-production="'+e(a.role)+'">'+label('Scorers')+' ↗</button></div>';
+  .concat(['<span data-verbatim>'+e(p.data.selected.cohort.scorer)+'</span>']);
+ return '<div class="arm-production" title="'+e(t('In production')+': '+p.data.selected.cohort.scorer)+'">'+head+'<small>'+parts.map(part).join(' · ')+' · </small>'+part('<small>'+days+'</small> <button class="link" type="button" data-bench-production="'+e(a.role)+'">'+label('Scorers')+' ↗</button>')+'</div>';
 }
 function armBars(sel){
  const arms=sel.arms.filter(a=>a.pooled);
@@ -166,15 +166,17 @@ function scatterPanel(sel){
  const toggle=axisToggle(axis,unit);
  const placed=arms.map(a=>({a,i:sel.arms.indexOf(a),vx:usageX(a,axis),vy:passOf(a.pooled)})).filter(q=>q.vx!=null);
  if(!placed.length)return '<section class="panel bench-panel"><div class="panelhead"><h2>'+label('Pass rate against cost')+'</h2>'+toggle+'</div><div class="empty"><p>'+label('No arm reported this value.')+'</p></div></section>';
- const W=chartWidth('cost'),H=300,pl=44,pr=20,pt=20,pb=46,pw=W-pl-pr,ph=H-pt-pb, max=Math.max(...placed.map(q=>q.vx))*1.15||1;
+ const W=chartWidth('cost'),H=300,pl=44,pr=20,pt=34,pb=46,pw=W-pl-pr,ph=H-pt-pb, max=Math.max(...placed.map(q=>q.vx))*1.15||1;
  const x=v=>pl+v/max*pw, y=r=>pt+(1-r)*ph;
  const sorted=[...placed].sort((p,q)=>p.vx-q.vx||q.vy-p.vy), frontier=[]; let best=-1; for(const q of sorted){ if(q.vy>best){frontier.push(q);best=q.vy;} }
- const fmt=usageFormat(axis);
+ const fmt=usageFormat(axis), better='↖ '+t('better: higher pass rate for less');
+ // The note sits above the 100% line, so the best arms, drawn on that line, never cover it: 11 px text, taken as 6 px a character.
+ const note={left:pl+8,right:pl+8+better.length*6,top:pt-22,bottom:pt-9};
  let svg='<svg data-chart="cost" viewBox="0 0 '+W+' '+H+'" role="img" aria-label="'+e(t('Pass rate against cost'))+'">'
   +usageGrid({W,H,pl,pr,pb,pw,x,y,max,axis,unit})
-  +'<text class="better" x="'+(pl+8)+'" y="'+(pt+14)+'">↖ '+e(t('better: higher pass rate for less'))+'</text>'
+  +'<text class="better" x="'+(pl+8)+'" y="'+(pt-12)+'">'+e(better)+'</text>'
   +(frontier.length>1?'<polyline class="frontier" points="'+frontier.map(q=>x(q.vx).toFixed(1)+','+y(q.vy).toFixed(1)).join(' ')+'"/>':'')
-  +(names=>placed.map((q,k)=>'<g><title>'+e(armTitle(q.a)+': '+Math.round(q.vy*100)+'% ('+q.a.pooled.passed+'/'+q.a.pooled.planned+'), 95% '+Math.round(q.a.pooled.low*100)+'–'+Math.round(q.a.pooled.high*100)+'% · '+fmt(q.vx)+' · '+usedBy(usageUsed(q.a,axis)))+'</title><line class="ci" x1="'+x(q.vx)+'" x2="'+x(q.vx)+'" y1="'+y(q.a.pooled.low)+'" y2="'+y(q.a.pooled.high)+'" style="stroke:'+armColor(q.i)+'"/><circle cx="'+x(q.vx)+'" cy="'+y(q.vy)+'" r="7" style="fill:'+armColor(q.i)+'"/>'+names[k]+'</g>').join(''))(placeLabels(placed.map(q=>({text:q.a.arm,x:x(q.vx),y:y(q.vy),r:7,prefer:x(q.vx)>W*0.7?'left':'right'})),{left:0,right:W,top:0,bottom:H-pb}))
+  +(names=>placed.map((q,k)=>'<g><title>'+e(armTitle(q.a)+': '+Math.round(q.vy*100)+'% ('+q.a.pooled.passed+'/'+q.a.pooled.planned+'), 95% '+Math.round(q.a.pooled.low*100)+'–'+Math.round(q.a.pooled.high*100)+'% · '+fmt(q.vx)+' · '+usedBy(usageUsed(q.a,axis)))+'</title><line class="ci" x1="'+x(q.vx)+'" x2="'+x(q.vx)+'" y1="'+y(q.a.pooled.low)+'" y2="'+y(q.a.pooled.high)+'" style="stroke:'+armColor(q.i)+'"/><circle cx="'+x(q.vx)+'" cy="'+y(q.vy)+'" r="7" style="fill:'+armColor(q.i)+'"/>'+names[k]+'</g>').join(''))(placeLabels(placed.map(q=>({text:q.a.arm,x:x(q.vx),y:y(q.vy),r:7,prefer:x(q.vx)>W*0.7?'left':'right'})),{left:0,right:W,top:0,bottom:H-pb},[note]))
   +'</svg>';
  return '<section class="panel bench-panel"><div class="panelhead"><h2>'+label('Pass rate against cost')+'</h2>'+toggle+'</div><div class="chart-scroll">'+svg+'</div><p class="scorer-hint">'+label('The dashed line joins the arms nothing beats on both: each is the cheapest way to reach its pass rate. Usage is the median over the trials whose tool reported it.')+'</p></section>';
 }

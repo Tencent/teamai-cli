@@ -234,6 +234,8 @@ describe('the Benchmarks page of a suite that compares roles', () => {
     // 1 of 1 is not, so it reads lighter than the arm's own rate.
     expect(text(line('claude-frontend')).trim()).toBe('In production: 100% 1/1 · 95% 21%–100% · not separated · member · review-quality · 30 days Scorers ↗');
     expect(line('claude-frontend')).not.toContain('<b>100%</b>');
+    // The link wraps with the window before it, never onto a line of its own.
+    expect(line('claude-review')).toContain('<span class="production-part"><small>30 days</small> <button class="link" type="button" data-bench-production="review">Scorers ↗</button></span>');
   });
 
   it('opens on the Arms of the suite another page links to, with the linked arm marked', async () => {
@@ -293,6 +295,18 @@ describe('the Benchmarks page at every width', () => {
       expect([left?.name, right?.name]).toEqual(['claude-frontend', 'claude-review']);
       expect(left && right && apart(left, right), `labels overlap in a ${box} px chart`).toBe(true);
       for (const label of [left, right]) expect((label?.left ?? -1) >= 0 && (label?.right ?? Infinity) <= box, `${label?.name} leaves a ${box} px chart`).toBe(true);
+    }
+  });
+
+  it('keeps the names of points in the top left corner off the "better" note there', async () => {
+    const arms = await openPage(runs, { width: 768 });
+    for (const box of [330, 486, 518]) {
+      const html = arms.resize(box);
+      // The note is 11 px text, taken as 6 px a character.
+      const [, x = '0', y = '0', note = ''] = /<text class="better" x="([\d.]+)" y="([\d.]+)">([^<]*)<\/text>/.exec(html) ?? [];
+      const better = { left: Number(x), right: Number(x) + note.length * 6, top: Number(y) - 10, bottom: Number(y) + 3 };
+
+      for (const label of labelBoxes(html, 'cost')) expect(apart(label, better), `${label.name} covers the note in a ${box} px chart`).toBe(true);
     }
   });
 
