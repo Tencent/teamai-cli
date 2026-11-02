@@ -211,6 +211,9 @@ describe.skipIf(spawnSync('jq', ['--version']).status !== 0)('the self-improveme
   let proof: Ran[];
   let again: Ran[];
   let branchAfterFirst: string;
+  let proposedAfterFirst: string[];
+  let branchAfterAgain: string;
+  let launchesAfterAgain: number;
 
   beforeAll(async () => {
     fixture = await benchmarkFixture({ tool: 'does-nothing', sandbox: false });
@@ -249,9 +252,12 @@ describe.skipIf(spawnSync('jq', ['--version']).status !== 0)('the self-improveme
 
     first = improve();
     branchAfterFirst = branchHead();
+    proposedAfterFirst = proposed();
     const [pull] = gh.pulls();
     proof = pull ? prove(Number(pull.url.split('/').pop())) : [];
     again = improve();
+    branchAfterAgain = branchHead();
+    launchesAfterAgain = improveLaunches().length;
   }, 600_000);
 
   afterAll(() => fixture?.remove());
@@ -259,12 +265,12 @@ describe.skipIf(spawnSync('jq', ['--version']).status !== 0)('the self-improveme
   it('opens one pull request that changes the skill and adds a regression task per clean failure', () => {
     expect(first.map((step) => step.status), said(first)).toEqual(first.map(() => 0));
     expect(gh.pulls().map((pull) => pull.head)).toEqual([BRANCH]);
-    expect(proposed().sort()).toEqual([
+    expect(proposedAfterFirst.sort()).toEqual([
       'benchmarks/regressions/tasks/missed-null-check-s1000000.yaml',
       'benchmarks/regressions/tasks/missed-null-check-s2000000.yaml',
       'skills/review/SKILL.md',
     ]);
-    const task = git(fixture.root, ['--git-dir', fixture.teamOrigin, 'show', `${BRANCH}:benchmarks/regressions/tasks/missed-null-check-s1000000.yaml`]);
+    const task = git(fixture.root, ['--git-dir', fixture.teamOrigin, 'show', `${branchAfterFirst}:benchmarks/regressions/tasks/missed-null-check-s1000000.yaml`]);
     expect(task).toContain(`startingCommit: ${fixture.startingCommit}`);
     expect(task).toContain('source: {"platform":"claude-code","sessionId":"s1000000"}');
   });
@@ -286,8 +292,8 @@ describe.skipIf(spawnSync('jq', ['--version']).status !== 0)('the self-improveme
   it('opens nothing more when run again on the same failures', () => {
     expect(again.map((step) => step.status), said(again)).toEqual(again.map(() => 0));
     expect(gh.pulls()).toHaveLength(1);
-    expect(branchHead()).toBe(branchAfterFirst);
-    expect(improveLaunches()).toHaveLength(1);
+    expect(branchAfterAgain).toBe(branchAfterFirst);
+    expect(launchesAfterAgain).toBe(1);
   });
 
   it('updates the same pull request with a task for a new failure, keeping the earlier ones', () => {
@@ -295,7 +301,11 @@ describe.skipIf(spawnSync('jq', ['--version']).status !== 0)('the self-improveme
     const ran = improve();
     expect(ran.map((step) => step.status), said(ran)).toEqual(ran.map(() => 0));
     expect(gh.pulls().map((pull) => pull.head)).toEqual([BRANCH]);
-    expect(improveLaunches().at(-1)?.failures.map(({ failure }) => failure.subject.sessionId)).toEqual(['s4000000']);
+    // A failure another test left uncovered may come along; the ones the proposal covers never do.
+    const launched = improveLaunches().at(-1)?.failures.map(({ failure }) => failure.subject.sessionId) ?? [];
+    expect(launched).toContain('s4000000');
+    expect(launched).not.toContain('s1000000');
+    expect(launched).not.toContain('s2000000');
     expect(proposed()).toContain('benchmarks/regressions/tasks/missed-null-check-s4000000.yaml');
     expect(proposed()).toContain('benchmarks/regressions/tasks/missed-null-check-s1000000.yaml');
   }, 240_000);
