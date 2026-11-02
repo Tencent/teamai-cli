@@ -4015,6 +4015,14 @@ describe('local-agent: config.json a person edited', () => {
     expect(await loadLocalAgentConfig({ dryRun: true, envFallback: false })).toBeNull();
   });
 
+  it('reads a config with no createdAt without making one up', async () => {
+    await writeConfig({ endpoint: 'https://test.example.com/api', workspaceBindings: {} });
+
+    const { loadLocalAgentConfig } = await import('../local-agent.js');
+
+    expect((await loadLocalAgentConfig({ dryRun: true, envFallback: false }))?.createdAt).toBeUndefined();
+  });
+
   it('leaves out a workspace binding that is not an object', async () => {
     const ok = { projectId: 3, projectName: 'p', boundAt: 'x' };
     await writeConfig({ endpoint: 'https://test.example.com/api', createdAt: 'x', workspaceBindings: { '/ws/bad': null, '/ws/ok': ok } });

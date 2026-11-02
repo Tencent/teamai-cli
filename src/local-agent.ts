@@ -212,7 +212,8 @@ export interface LocalAgentConfig {
    * older config.json files still load without a rewrite.
    */
   localAgentId?: string;
-  createdAt: string;
+  /** When `teamai local-agent` first set this up; a hand-written file may leave it out. */
+  createdAt?: string;
   userGroupId?: number;
   userGroupName?: string;
   workspaceBindings: Record<string, WorkspaceBinding>;
@@ -870,7 +871,7 @@ const StoredLocalAgentConfigSchema = z.looseObject({
   token: OptionalText,
   agentTokens: TextMapSchema.optional().catch(undefined),
   localAgentId: OptionalText,
-  createdAt: z.string().catch(() => new Date().toISOString()),
+  createdAt: OptionalText,
   workspaceBindings: z.record(z.string(), JsonValueSchema).catch({}),
   userGroupId: z.number().optional().catch(undefined),
   userGroupName: OptionalText,
@@ -2444,7 +2445,7 @@ export type ReportPayload = AgentIdentityPayload & {
   agent_version: string;
   host_name: string;
   os: string;
-  started_at: string;
+  started_at?: string;
   last_status: string;
   user_level: { group_id: number | undefined } & ReportedScopeResources;
   workspaces?: Array<ReportedWorkspace & ReportedScopeResources>;
