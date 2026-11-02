@@ -176,15 +176,16 @@ jobs:
 
 | Step | Does |
 | --- | --- |
-| `plan` | `teamai self-improvement plan <scorer> --suite <dir>`: clones the team repo into the data home, on `teamai/self-improvement/<scorer>` when origin has it, and prints the failures a task can start from: the scorer's failures in [`digest --json`](#what-teamai-reads) with a recorded start commit this checkout has, and no task of the suite in that clone naming them. Each subject once, newest first. |
-| `improve` | Runs on two failures or more, or one more for an open proposal: a single failure is not a pattern. The agent reads each failure, its learnings and the rubric, changes the assets in the clone, and writes one task per failure there. |
+| `plan` | `teamai self-improvement plan <scorer> --suite <dir>`: clones the team repo into the data home, on `teamai/self-improvement/<scorer>` when origin has it, and prints the failures a task can start from: the scorer's failures in [`digest --json`](#what-teamai-reads) with a recorded start commit this checkout has, and no task of the suite in that clone naming them. Each subject once, newest first. `ready` says whether `improve` runs. |
+| `improve` | Runs when `ready`: two failures or more, or one more for a proposal already on origin. A single failure is not a pattern, even when a task that landed covers another. The agent reads each failure, its learnings and the rubric, changes the assets in the clone, and writes one task per failure there. |
 | `propose` | `teamai self-improvement propose --team <clone> --branch <branch>`: pushes every file the clone adds or changes against the default branch, in one PR, as `teamai push --file --path --branch` does. When the branch has an open PR, it is rebuilt with the new set and that PR is updated. |
 
 ```console
-$ teamai self-improvement plan review-quality --suite benchmarks/regressions | jq '{team, branch, failures: (.failures | length), covered, refused}'
+$ teamai self-improvement plan review-quality --suite benchmarks/regressions | jq '{team, branch, ready, failures: (.failures | length), covered, refused}'
 {
   "team": "/home/runner/.teamai/projects/…/self-improvement/review-quality",
   "branch": "teamai/self-improvement/review-quality",
+  "ready": true,
   "failures": 1,
   "covered": [
     "benchmarks/regressions/tasks/missed-null-check.yaml",
@@ -241,7 +242,7 @@ jobs:
             echo '### How far each judge agrees with hand labels'
             echo '| Scorer | Judge | Paired | Agree | Judge passed, member failed | Judge failed, member passed |'
             echo '| --- | --- | --- | --- | --- | --- |'
-            jq -r '.data.scorers[] | .scorer as $s | .cohorts[] | select(.agreement) | "| \($s) | \(.judge.tool) \(.judge.model.id // "") | \(.agreement.paired) | \(.agreement.agree) | \(.agreement.judgePassedHumanFailed) | \(.agreement.judgeFailedHumanPassed) |"' digest.json
+            jq -r --arg ref "$HEAD_REF" '($ref | ltrimstr("teamai/self-improvement/")) as $mine | .data.scorers[] | select($mine == $ref or .scorer == $mine) | .scorer as $s | .cohorts[] | select(.agreement) | "| \($s) | \(.judge.tool) \(.judge.model.id // "") | \(.agreement.paired) | \(.agreement.agree) | \(.agreement.judgePassedHumanFailed) | \(.agreement.judgeFailedHumanPassed) |"' digest.json
             echo '<!-- /teamai:regressions -->'
           } > evidence.md
           gh pr view "$PR" -R "$GITHUB_REPOSITORY" --json body -q .body | sed '/<!-- teamai:regressions -->/,/<!-- \/teamai:regressions -->/d' > body.md
@@ -249,7 +250,7 @@ jobs:
           gh pr edit "$PR" -R "$GITHUB_REPOSITORY" --body-file body.md
 ```
 
-It runs on any PR that changes an asset, a person's too, so every change is measured against every failure fixed before. Each push to the PR runs it again and replaces the section between the two markers; the rest of the body stays, so the file list `teamai push` wrote when it opened the PR does not grow when a later run updates it: the PR's files tab has the current set. `--team-ref "$HEAD_REF"` pins the run to the PR's branch: the `pulled` arms and the suite's tasks come from it, the `main` arms from `main`. Mark the job required in the team repo's merge rules to keep a change that fails it out of `main`.
+It runs on any PR that changes an asset, a person's too, so every change is measured against every failure fixed before. Each push to the PR runs it again and replaces the section between the two markers; the rest of the body stays, so the file list `teamai push` wrote when it opened the PR does not grow when a later run updates it: the PR's files tab has the current set. `--team-ref "$HEAD_REF"` pins the run to the PR's branch: the `pulled` arms and the suite's tasks come from it, the `main` arms from `main`. The judge agreement table lists the scorer a self-improvement PR is for, and every scorer on a person's PR. Mark the job required in the team repo's merge rules to keep a change that fails it out of `main`.
 
 The dashboard's [Self-improvement page](dashboard.md#self-improvement) follows each proposal and each landed change: the assets it touched, its proof on the regression suite per tool, and the scorer's pass rate before and after it landed.
 

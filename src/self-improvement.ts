@@ -14,8 +14,8 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { parse as parseYaml } from 'yaml';
-import { TaskSourceSchema } from './benchmark/suite.js';
+import { readSuiteFiles } from './benchmark/suite-cache.js';
+import { parseSuite, taskSourceOf } from './benchmark/suite.js';
 import { BENCHMARK_NAME } from './benchmark/terms.js';
 import { detectProjectConfig, requireInit } from './config.js';
 import { DigestFailures, type DigestFailure } from './digest-failures.js';
@@ -23,12 +23,31 @@ import { loadCachedScorer } from './scorers/cache.js';
 import { getDataHome, isSelfMode, type LocalConfig } from './types.js';
 import { canonicalJson } from './utils/canonical-json.js';
 import { log, setStderrOnly } from './utils/logger.js';
+import { formatDiagnostic } from './workflow/parse.js';
 
 const run = promisify(execFile);
 
+/** teamai's default workflow that `teamai self-improvement run` starts, unless the team pushed its own of that name. */
+const WORKFLOW = 'teamai-self-improvement';
+/** The prefix of the branch every run proposes on. */
+const BRANCH_PREFIX = 'teamai/self-improvement/';
+
 /** The branch every run for `scorer` proposes on, so a later run updates the open pull request instead of opening another. */
 function branchOf(scorer: string): string {
-  return `teamai/self-improvement/${scorer}`;
+  return `${BRANCH_PREFIX}${scorer}`;
+}
+
+/**
+ * Whether a run changes the harness: two failures a task can start from, since one is not a pattern, or one more for a
+ * proposal already on origin. A task that landed on the default branch does not make one new failure a pattern.
+ */
+function isReady({ startable, hasProposal }: { startable: number; hasProposal: boolean }): boolean {
+  return startable >= 2 || (startable >= 1 && hasProposal);
+}
+
+/** The command that runs the loop for `scorer` on a machine to throw away, as the guide's scheduled job does. */
+function commandOf(scorer: string): string {
+  return `teamai self-improvement run ${scorer} --tools default=claude --sandbox`;
 }
 
 /** Why a failure of the scorer cannot become a task: no commit holds its start, or this checkout lacks the one that does. */
@@ -78,26 +97,22 @@ async function tasksBySource(teamRoot: string, suite: string): Promise<Map<strin
   const files = (await fs.readdir(dir).catch(() => [])).filter((file) => file.endsWith('.yaml')).sort();
   const tasks = new Map<string, string>();
   for (const file of files) {
-    let task: unknown;
-    try {
-      task = parseYaml(await fs.readFile(path.join(dir, file), 'utf8'));
-    } catch {
-      continue;
-    }
-    const source = TaskSourceSchema.safeParse(typeof task === 'object' && task !== null && 'source' in task ? task.source : undefined);
-    if (source.success && !tasks.has(canonicalJson(source.data))) tasks.set(canonicalJson(source.data), `${suite}/tasks/${file}`);
+    const source = taskSourceOf(await fs.readFile(path.join(dir, file), 'utf8'));
+    if (source !== undefined && !tasks.has(canonicalJson(source))) tasks.set(canonicalJson(source), `${suite}/tasks/${file}`);
   }
   return tasks;
 }
 
-/** The commits of `commits` the checkout `cwd` has. */
+/** The commits of `commits` the checkout `cwd` has, asked of git once; none when `cwd` is not a checkout. */
 async function commitsIn(cwd: string, commits: Iterable<string>): Promise<Set<string>> {
-  const found = new Set<string>();
-  for (const commit of new Set(commits)) {
-    const has = await run('git', ['cat-file', '-e', `${commit}^{commit}`], { cwd }).then(() => true, () => false);
-    if (has) found.add(commit);
-  }
-  return found;
+  const wanted = [...new Set(commits)];
+  if (wanted.length === 0) return new Set();
+  const answer = await new Promise<string>((resolve, reject) => {
+    const child = execFile('git', ['cat-file', '--batch-check=%(objecttype)'], { cwd, maxBuffer: 16 * 1024 * 1024 }, (error, stdout) => (error ? reject(error) : resolve(stdout)));
+    child.stdin?.end(wanted.map((commit) => `${commit}^{commit}\n`).join(''));
+  }).catch(() => '');
+  const types = answer.split('\n');
+  return new Set(wanted.filter((_, index) => types[index] === 'commit'));
 }
 
 async function git(cwd: string, args: string[]): Promise<string> {
@@ -105,15 +120,14 @@ async function git(cwd: string, args: string[]): Promise<string> {
 }
 
 /** A fresh clone of the team repo at `<data home>/self-improvement/<scorer>`, on `branch` when origin has it. */
-async function checkout(config: LocalConfig, scorer: string, branch: string): Promise<string> {
+async function checkout(config: LocalConfig, { scorer, branch }: { scorer: string; branch: string }): Promise<{ dir: string; hasProposal: boolean }> {
   const dir = path.join(getDataHome(config), 'self-improvement', scorer);
   await fs.rm(dir, { recursive: true, force: true });
   await fs.mkdir(path.dirname(dir), { recursive: true });
   await run('git', ['clone', '-q', config.repo.remote, dir]);
-  if (await git(dir, ['ls-remote', '--heads', 'origin', `refs/heads/${branch}`]) !== '') {
-    await git(dir, ['checkout', '-q', '-B', branch, `origin/${branch}`]);
-  }
-  return dir;
+  const hasProposal = await git(dir, ['ls-remote', '--heads', 'origin', `refs/heads/${branch}`]) !== '';
+  if (hasProposal) await git(dir, ['checkout', '-q', '-B', branch, `origin/${branch}`]);
+  return { dir, hasProposal };
 }
 
 function refuse(code: string, message: string): void {
@@ -128,7 +142,7 @@ async function projectConfig(): Promise<LocalConfig> {
 /** A suite directory under `benchmarks/`, such as benchmarks/regressions or benchmarks/web/regressions. */
 const SUITE_DIR = new RegExp(`^benchmarks/(?:${BENCHMARK_NAME.source.slice(1, -1)}/)?${BENCHMARK_NAME.source.slice(1, -1)}$`);
 
-/** `teamai self-improvement plan <scorer> --suite <dir>`: prints `{ team, branch, failures, covered, refused }`. */
+/** `teamai self-improvement plan <scorer> --suite <dir>`: prints `{ team, branch, ready, failures, covered, refused }`. */
 async function plan(scorer: string, { suite }: { suite: string }): Promise<void> {
   setStderrOnly(true);
   if (!SUITE_DIR.test(suite)) {
@@ -141,13 +155,33 @@ async function plan(scorer: string, { suite }: { suite: string }): Promise<void>
     return;
   }
   const branch = branchOf(scorer);
-  const clone = await checkout(config, scorer, branch);
-  const team = isSelfMode(config) ? path.join(clone, '.teamai') : clone;
+  const clone = await checkout(config, { scorer, branch });
+  const team = isSelfMode(config) ? path.join(clone.dir, '.teamai') : clone.dir;
   const { failures } = await DigestFailures.read(config);
   const starts = failures.flatMap(({ start }) => ('commit' in start ? [start.commit] : []));
   const [tasks, present] = await Promise.all([tasksBySource(team, suite), commitsIn(process.cwd(), starts)]);
   const picked = pick({ failures, scorer, tasks, hasCommit: (commit) => present.has(commit) });
-  process.stdout.write(`${JSON.stringify({ team, branch, ...picked })}\n`);
+  const ready = isReady({ startable: picked.failures.length, hasProposal: clone.hasProposal });
+  process.stdout.write(`${JSON.stringify({ team, branch, ready, ...picked })}\n`);
+}
+
+/** A regression task file of a suite under `benchmarks/`. */
+const TASK_FILE = /^(benchmarks\/.+)\/tasks\/[^/]+\.ya?ml$/;
+
+/** What the suite of each task file of `files` says against that file, as `teamai pull` would parse it, one line each. */
+async function invalidTasks(team: string, files: readonly string[]): Promise<string[]> {
+  const suites = new Map<string, string[]>();
+  for (const file of files) {
+    const dir = TASK_FILE.exec(file)?.[1];
+    if (dir !== undefined) suites.set(dir, [...suites.get(dir) ?? [], file]);
+  }
+  const found = await Promise.all([...suites].map(async ([dir, changed]) => {
+    const read = async (relativePath: string) => ({ relativePath, content: await fs.readFile(path.join(team, relativePath), 'utf8').catch(() => '') });
+    const [suite, tasks] = await Promise.all([read(`${dir}/suite.yaml`), Promise.all(changed.map(read))]);
+    const parsed = parseSuite({ suite, tasks, files: await readSuiteFiles(path.join(team, dir), dir, tasks) });
+    return parsed.diagnostics.filter(({ file }) => changed.includes(file)).map(formatDiagnostic);
+  }));
+  return found.flat();
 }
 
 /**
@@ -172,8 +206,13 @@ async function propose({ team, branch }: { team: string; branch: string }): Prom
     log.info(`No changes to propose: ${team} adds or changes no file against ${base}.`);
     return;
   }
+  const invalid = await invalidTasks(team, files);
+  if (invalid.length > 0) {
+    refuse('invalid_task', `The suite cannot run these regression tasks, so nothing was proposed. Fix them in ${team}:\n${invalid.join('\n')}`);
+    return;
+  }
   const { pushFile } = await import('./push-file.js');
   await pushFile({ file: files.map((file) => path.join(team, file)), path: files, branch });
 }
 
-export const SelfImprovement = { pick, plan, propose, branchOf, commitsIn } as const;
+export const SelfImprovement = { WORKFLOW, BRANCH_PREFIX, pick, isReady, commandOf, plan, propose, branchOf, commitsIn } as const;

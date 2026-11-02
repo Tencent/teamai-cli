@@ -7,10 +7,10 @@ steps:
   - id: plan
     command: teamai self-improvement plan "$SCORER" --suite "$SUITE"
     env: { SCORER: "{{ inputs.scorer }}", SUITE: "{{ inputs.suite }}" }
-    output: { team: string, branch: string, failures: [json], covered: [string], refused: [json] }
+    output: { team: string, branch: string, ready: boolean, failures: [json], covered: [string], refused: [json] }
   - id: improve
     needs: [plan]
-    if: length(steps.plan.outputs.failures) >= 2 || (length(steps.plan.outputs.failures) >= 1 && length(steps.plan.outputs.covered) >= 1)
+    if: steps.plan.outputs.ready
     permissions: unattended
     requires: { isolation: sandbox, strict: true }
     prompt: |
@@ -18,7 +18,7 @@ steps:
       The team repo is checked out at {{ steps.plan.outputs.team }}, on the open proposal's branch when there is one.
       The scorer's rubric is {{ steps.plan.outputs.team }}/scorers/{{ inputs.scorer }}.md.
       Failures to fix, newest first: {{ steps.plan.outputs.failures }}
-      Regression tasks the proposal already has, keep them: {{ steps.plan.outputs.covered }}
+      Regression tasks the team already has for other failures of this scorer, keep them: {{ steps.plan.outputs.covered }}
       Each failure has the label its judge gave, what the work ran as (agent, and the team skills it used), the commit it started at (start.commit),
       and, for a session, the learnings that name it: read each one at its path.
       1. Find what the failures share. Change the team's assets in {{ steps.plan.outputs.team }} so that work like this passes the rubric. Any asset
@@ -27,8 +27,7 @@ steps:
       2. For each failure, write {{ steps.plan.outputs.team }}/{{ inputs.suite }}/tasks/<id>.yaml, where <id> is letters, digits, "-" or "_", with:
          schemaVersion v1alpha1; title, what went wrong in a few words; prompt, the request the work was given, as its learnings or its workflow
          step describe it, without the fix; startingCommit, its start.commit; successCriteria, what the rubric's passing label asks of this work,
-         in one or two sentences, or instead check: { run: <command> } when a test command in the project shows it; source, its failure.subject
-         exactly as given.
+         in one or two sentences; source, its failure.subject exactly as given.
       3. Return verdict proposed when you changed an asset and wrote the tasks, or skip when the failures share no cause an asset can fix.
     output: { verdict: proposed | skip }
   - id: propose

@@ -954,7 +954,7 @@ const selfImprovementCmd = program
 
 selfImprovementCmd
   .command('run <scorer>')
-  .description('Start the workflow teamai-self-improvement with --inputs {"scorer":"<scorer>","suite":"<--suite>"} and drive it. A team\'s workflows/teamai-self-improvement.yaml replaces teamai\'s default, and must take inputs scorer and suite. The default improves only from two failures or more of the scorer in the last 30 days, or one more for an open proposal, and its prompt step needs a sandbox. Prints the run\'s done envelope.')
+  .description('Start the workflow teamai-self-improvement with --inputs {"scorer":"<scorer>","suite":"<--suite>"} and drive it. A team\'s workflows/teamai-self-improvement.yaml replaces teamai\'s default, and must take inputs scorer and suite. The default improves only when plan says ready: two failures or more of the scorer in the last 30 days that a task can start from, or one more for a proposal already on origin, and its prompt step needs a sandbox. Prints the run\'s done envelope.')
   .option('--suite <dir>', 'The suite the regression tasks go in, which the team repo\'s default branch must have', 'benchmarks/regressions')
   .option('--driver <kind>', 'The driver that runs it: local (default), or skill')
   .option('--tools <list>', 'The tools its prompt steps run on, as workflow start --tools takes them, such as default=claude')
@@ -966,7 +966,7 @@ selfImprovementCmd
 
 selfImprovementCmd
   .command('plan <scorer>')
-  .description('The workflow\'s first step: clone the team repo into the data home, on teamai/self-improvement/<scorer> when origin has that branch, and print one JSON object: team, that checkout (its .teamai/ in single-repo mode); branch; failures, the scorer\'s failures digest --json lists that a task can start from (a recorded start commit this checkout has, and no task of --suite in the clone names its subject), each subject once, newest first; covered, the tasks of --suite that already name a failure; and refused, each other failure with why: tracked_changes, not_recorded or not_in_checkout.')
+  .description('The workflow\'s first step: clone the team repo into the data home, on teamai/self-improvement/<scorer> when origin has that branch, and print one JSON object: team, that checkout (its .teamai/ in single-repo mode); branch; ready, whether the workflow\'s improve step runs: two failures to start from, or one when origin has the branch; failures, the scorer\'s failures digest --json lists that a task can start from (a recorded start commit this checkout has, and no task of --suite in the clone names its subject), each subject once, newest first; covered, the tasks of --suite that already name a failure; and refused, each other failure with why: tracked_changes, not_recorded or not_in_checkout.')
   .requiredOption('--suite <dir>', 'The suite whose tasks count as covering a failure, such as benchmarks/regressions')
   .action(async (scorer: string, cmdOpts: { suite: string }) => {
     const { SelfImprovement } = await import('./self-improvement.js');
