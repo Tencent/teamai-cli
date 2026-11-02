@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { parse } from '@babel/parser';
 import { isIdentifier, traverseFast } from '@babel/types';
+import { stringLiteralValue } from './utils.js';
 
 /** @param {ESTree.ImportDeclaration['specifiers'][number]} specifier */
 function importedName(specifier) {
@@ -24,10 +25,9 @@ function mockedModule(node) {
   const source = node.arguments[0];
 
   if (callee.type !== 'MemberExpression' || callee.object.type !== 'Identifier' || callee.object.name !== 'vi'
-    || callee.property.type !== 'Identifier' || callee.property.name !== 'mock'
-    || source?.type !== 'Literal' || typeof source.value !== 'string') return undefined;
+    || callee.property.type !== 'Identifier' || callee.property.name !== 'mock') return undefined;
 
-  return source.value;
+  return stringLiteralValue(source);
 }
 
 /** Every import syntax the workflow policy owns, including dynamic imports and vi.mock. */
@@ -48,7 +48,9 @@ export function importVisitors(/** @type {(edge: { node: ESTree.Node; specifier:
     },
     /** @param {ESTree.ImportExpression} node */
     ImportExpression(node) {
-      if (node.source.type === 'Literal' && typeof node.source.value === 'string') visit({ node, specifier: node.source.value, typeOnly: false, names: ['*'] });
+      const specifier = stringLiteralValue(node.source);
+
+      if (specifier !== undefined) visit({ node, specifier, typeOnly: false, names: ['*'] });
     },
     /** @param {ESTree.CallExpression} node */
     CallExpression(node) {

@@ -1,4 +1,4 @@
-/** @import { Context } from '@oxlint/plugins' */
+/** @import { Context, ESTree } from '@oxlint/plugins' */
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -74,4 +74,14 @@ export function scopedFiles(files) {
   if (missing.length > 0) throw new Error(`Lint rule scope file missing: ${missing.join(', ')}. Point the rule at the file's new path.`);
 
   return files;
+}
+
+/**
+ * The text of a string literal; undefined for any other node, and for a number, boolean, null, bigint or RegExp literal.
+ * @param {ESTree.Node | null | undefined} node
+ * @returns {string | undefined}
+ */
+export function stringLiteralValue(node) {
+  // oxlint-disable-next-line teamai/no-runtime-typeof -- an ESTree Literal's value is a string, number, boolean, null, bigint or RegExp, and typeof is how ESTree tells them apart
+  return node?.type === 'Literal' && typeof node.value === 'string' ? node.value : undefined;
 }

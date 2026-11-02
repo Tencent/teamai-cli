@@ -1,5 +1,5 @@
 import { defineRule } from '@oxlint/plugins';
-import { isOneOf, scopedFiles, sourcePath } from '../utils.js';
+import { isOneOf, scopedFiles, sourcePath, stringLiteralValue } from '../utils.js';
 
 const DELIVERY = scopedFiles(['src/workflow/pr-delivery.ts']);
 
@@ -13,7 +13,9 @@ export default defineRule({
 
     return {
       Literal(node) {
-        if (typeof node.value === 'string' && MERGE.test(node.value)) context.report({ node, message });
+        const value = stringLiteralValue(node);
+
+        if (value !== undefined && MERGE.test(value)) context.report({ node, message });
       },
       TemplateLiteral(node) {
         if (node.quasis.some((quasi) => MERGE.test(quasi.value.raw))) context.report({ node, message });

@@ -1,6 +1,7 @@
 /** @import { ESTree } from '@oxlint/plugins' */
 import { defineRule } from '@oxlint/plugins';
 import { KNOWN_FAILURE_CODES } from '../failure-codes.js';
+import { stringLiteralValue } from '../utils.js';
 import { inProductionSource, lintedPath } from '../utils.js';
 
 export default defineRule({
@@ -15,7 +16,9 @@ export default defineRule({
 
     return {
       Literal(node) {
-        if (typeof node.value !== 'string' || KNOWN_FAILURE_CODES.has(node.value)) return;
+        const value = stringLiteralValue(node);
+
+        if (value === undefined || KNOWN_FAILURE_CODES.has(value)) return;
         /** @type {ESTree.Node | null} */
         let ancestor = node.parent;
 
@@ -27,8 +30,10 @@ export default defineRule({
         if (node.callee.type !== 'Identifier' || !['error', 'failure'].includes(node.callee.name)) return;
         const code = node.arguments[0];
 
-        if (code?.type === 'Literal' && typeof code.value === 'string') {
-          if (!KNOWN_FAILURE_CODES.has(code.value)) context.report({ node, message });
+        const value = stringLiteralValue(code);
+
+        if (value !== undefined) {
+          if (!KNOWN_FAILURE_CODES.has(value)) context.report({ node, message });
         } else {
           context.report({ node, message: 'Explain this forwarded workflow failure code with an inline disable; its producer must be classified separately.' });
         }

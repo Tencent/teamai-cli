@@ -2,7 +2,7 @@ import { defineRule } from '@oxlint/plugins';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { parse } from '@babel/parser';
-import { lintedPath } from '../utils.js';
+import { lintedPath, stringLiteralValue } from '../utils.js';
 
 const listFile = fileURLToPath(new URL('../../src/__tests__/helpers/windows-tests.ts', import.meta.url));
 
@@ -36,13 +36,15 @@ export default defineRule({
         const name = callee.type === 'Identifier' ? callee.name
           : callee.type === 'MemberExpression' && callee.property.type === 'Identifier' ? callee.property.name : undefined;
 
-        const command = node.arguments[0];
+        const command = stringLiteralValue(node.arguments[0]);
 
         if (name && (/^(?:chmod|symlink)(?:Sync)?$/.test(name)
-          || (/^(?:spawn(?:Sync)?|exec(?:File)?(?:Sync)?)$/.test(name) && command?.type === 'Literal' && typeof command.value === 'string' && /^(?:ba|z)?sh\b/.test(command.value)))) context.report({ node, message });
+          || (/^(?:spawn(?:Sync)?|exec(?:File)?(?:Sync)?)$/.test(name) && command !== undefined && /^(?:ba|z)?sh\b/.test(command)))) context.report({ node, message });
       },
       Literal(node) {
-        if (typeof node.value === 'string' && (/#!\/(?:usr\/)?bin\/|\bsh -c\b/.test(node.value) || (!bashRenderingAllowed && /\bbash -lc\b/.test(node.value)))) context.report({ node, message });
+        const value = stringLiteralValue(node);
+
+        if (value !== undefined && (/#!\/(?:usr\/)?bin\/|\bsh -c\b/.test(value) || (!bashRenderingAllowed && /\bbash -lc\b/.test(value)))) context.report({ node, message });
       },
       TemplateLiteral(node) {
         if (node.quasis.some((part) => /#!\/(?:usr\/)?bin\/|\bsh -c\b/.test(part.value.raw) || (!bashRenderingAllowed && /\bbash -lc\b/.test(part.value.raw)))) context.report({ node, message });

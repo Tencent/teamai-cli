@@ -1,5 +1,5 @@
 import { defineRule } from '@oxlint/plugins';
-import { inProductionSource, isOneOf } from '../utils.js';
+import { inProductionSource, isOneOf, stringLiteralValue } from '../utils.js';
 
 const VARIABLES = new Set(['TEAMAI_MODE', 'TEAMAI_LAUNCHED_BY', 'TEAMAI_WORKFLOW_ATTEMPT']);
 
@@ -11,7 +11,9 @@ export default defineRule({
 
     return {
       Literal(node) {
-        if (typeof node.value === 'string' && VARIABLES.has(node.value)) context.report({ node, message });
+        const value = stringLiteralValue(node);
+
+        if (value !== undefined && VARIABLES.has(value)) context.report({ node, message });
       },
       TemplateLiteral(node) {
         if (node.expressions.length === 0 && VARIABLES.has(node.quasis[0]?.value.raw ?? '')) context.report({ node, message });
