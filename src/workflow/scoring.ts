@@ -7,7 +7,6 @@
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import { DriverSchema, driverIdentity, sameDriver } from '../driver-identity.js';
 import type { LocalConfig } from '../types.js';
@@ -24,7 +23,7 @@ import type { ScorerDefinition } from '../scorers/definition.js';
 import {
   ENTRY_WINDOW_MS, LEASE_TTL_MS, entryIdOf, entryState, hasLapsed, leaseRefOf, liveSessionLease, parseLeaseRef, type EntryState,
 } from '../scorers/entry.js';
-import { observedEffort, observedModel, type AgentObservation } from '../agent-observation.js';
+import { observedEffort, observedModel, sameHarness, type AgentObservation } from '../agent-observation.js';
 import {
   ACCESS_LEVELS, ISOLATIONS, JudgeUsageSchema, sumUsage, type Isolation, type JudgeAccess, type JudgeUsage, type RunSubject, type ScoreLabel, type SessionLabel,
   type SessionSubject, type Decider,
@@ -1257,9 +1256,6 @@ function toSucceeded(attempt: LeasedAttempt, settled: { settledAt: string; usage
   return { ...attempt, settledAt: settled.settledAt, ...spent, status: 'succeeded', labelId: settled.labelId, verdict: settled.verdict };
 }
 
-/** The parts two observations of one harness agree on: what ran, not where or by which CLI and driver. */
-const harnessParts = ({ tool, model, effort, definition, team }: AgentObservation) => ({ tool, model, effort, definition, team });
-
 /**
  * What the judged passes ran as, which their label carries: the first observation of the prompt passes when each
  * recorded one and all agree by value on tool, model, effort, definition and team, else none. A command pass runs no
@@ -1271,7 +1267,7 @@ function judgedAgent(run: RunState, judged: readonly RunPass[]): AgentObservatio
 
   if (!first) return undefined;
 
-  return rest.every((agent) => agent !== undefined && isDeepStrictEqual(harnessParts(agent), harnessParts(first))) ? first : undefined;
+  return rest.every((agent) => agent !== undefined && sameHarness(agent, first)) ? first : undefined;
 }
 
 /**

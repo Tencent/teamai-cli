@@ -1,7 +1,7 @@
 /**
  * The Scorers page of the dashboard client (#1182), embedded in `dashboardClient`'s closure, whose helpers it uses:
  * `$`, `e`, `t`, `label`, `number`, `when`, `json`, `read`, `save`, `apiQuery`, `errorPanel`, `render`, `page`,
- * `workspaceGeneration`, `agentHarness`, `harnessParts`, `harnessLine` and `chartWidth`. Every value from the API is
+ * `workspaceGeneration`, `agentHarness`, `harnessPartsHtml`, `harnessLine` and `chartWidth`. Every value from the API is
  * escaped with `e`. A workflow row opens its run through the Workflow Runs dialog. Another page opens this one on a
  * group with `openScorers`. Grouped by role, a role links to the benchmark arms that ran with it, from
  * `/api/benchmarks` in the Benchmarks page's window (`benchQuery`), and opens one with `openBenchmarks`.
@@ -159,7 +159,7 @@ function splitButton(revision){ return '<button class="link" type="button" data-
 function harnessFailures(byHarness){
  if(!byHarness||!byHarness.length)return '';
  return '<div class="harness-failures"><h3>'+label('Failures by harness')+'</h3><ul>'+byHarness.map(f=>'<li><b class="amber">'+number(f.failed)+' '+label('failing')+'</b> '
-  +(f.harness?'<span class="harness">'+harnessLine(harnessParts(f.harness),f.harness.teamRevision?'<span class="harness-part">'+splitButton(f.harness.teamRevision)+'</span>':'')+'</span>':'<span class="harness muted">'+label('Harness not recorded')+'</span>')+'</li>').join('')+'</ul></div>';
+  +(f.harness?'<span class="harness">'+harnessLine(harnessPartsHtml(f.harness),f.harness.teamRevision?'<span class="harness-part">'+splitButton(f.harness.teamRevision)+'</span>':'')+'</span>':'<span class="harness muted">'+label('Harness not recorded')+'</span>')+'</li>').join('')+'</ul></div>';
 }
 function revisionChangeHint(change){
  return change?'<p class="scorer-hint revision-change">'+label('First failed at team revision')+' '+splitButton(change.firstFailed)+' · '+label('last passed on')+' <span title="'+e(change.lastPassed)+'" data-verbatim>'+short(change.lastPassed)+'</span></p>':'';

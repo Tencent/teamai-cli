@@ -7,7 +7,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
-import { AgentObservationSchema, observeCheckout, settleObservation, type AgentObservation, type ToolLaunch } from '../agent-observation.js';
+import { AgentObservationSchema, observeCheckout, sameHarness, settleObservation, type AgentObservation, type ToolLaunch } from '../agent-observation.js';
 import { getAgentVersion } from '../agent-version.js';
 import { agreedRunMode, launchedBy, resolveRunMode, RunModeSchema, type RunMode } from '../launch-context.js';
 import type { CheckoutRecord } from '../pull.js';
@@ -367,9 +367,8 @@ function agentOf(captures: readonly SessionCapture[], reportedModel: string | un
 
   if (!first) return undefined;
   const teamChanged = captures.some((capture) => capture.teamChanged);
-  const compared = ({ definition, tool, model, effort, team }: AgentObservation) => ({ definition, tool, model, effort, team: teamChanged ? undefined : team });
 
-  if (rest.some((capture) => !isDeepStrictEqual(compared(capture.agent), compared(first.agent)))) return undefined;
+  if (rest.some((capture) => !sameHarness(capture.agent, first.agent, { comparesTeam: !teamChanged }))) return undefined;
   const { definition, tool, model, effort, team, project, teamai, driver } = first.agent;
 
   const settled = settleObservation({

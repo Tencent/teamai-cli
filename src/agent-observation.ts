@@ -12,6 +12,7 @@
  * `agent` of records written before.
  */
 import crypto from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import { getAgentVersion } from './agent-version.js';
 import { getCurrentVersion } from './package-info.js';
@@ -359,6 +360,17 @@ export function agentHarnessOf(agent: RecordedAgent | undefined): AgentHarness |
     ...(role ? { role } : {}),
     ...(agent.team ? { teamRevision: agent.team.revision } : {}),
   };
+}
+
+/**
+ * Whether two observations ran one harness: the same tool (its version included), model, effort, definition and team,
+ * whoever's CLI and driver ran it, wherever. Without `comparesTeam`, the team is left out, as for session captures one
+ * of which saw the team change.
+ */
+export function sameHarness(left: AgentObservation, right: AgentObservation, { comparesTeam = true }: { comparesTeam?: boolean } = {}): boolean {
+  const parts = ({ tool, model, effort, definition, team }: AgentObservation) => ({ tool, model, effort, definition, team: comparesTeam ? team : undefined });
+
+  return isDeepStrictEqual(parts(left), parts(right));
 }
 
 /** A part of the harness that differs between two passes; without `from` or `to` when that pass recorded none. */
