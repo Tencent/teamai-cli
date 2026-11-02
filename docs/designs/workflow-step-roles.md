@@ -67,11 +67,14 @@ workflow next --prepare, driver.can.role                         engine.ts offer
   │    worktreeRoleProblem: delivered or unchanged, record complete for the
   │      launched tool, record.selection.stepRole == role  else restore, role_unavailable
   │    recordConfigOverlay
-  └─ clone copy: installTeam                                     place/clone.ts
-       roles.yaml at the clone's team revision declares the role? roleCopyRefusal
-       recordCheckoutRole in the clone's own partition
-       child `teamai pull --team-ref <rev>` under HOME=<root>/h   exit ≠ 0 → role_unavailable
-       cloneRoleProblem; removeGitHook; recordConfigOverlay
+  └─ clone copy, the step that opens it: installTeam             place/clone.ts
+  │    roles.yaml at the clone's team revision declares the role?
+  │    roleCopyRefusal for the tools that step launches (a command: the docs only)
+  │    recordCheckoutRole in the clone's own partition
+  │    child `teamai pull --team-ref <rev>` under HOME=<root>/h   exit ≠ 0 → role_unavailable
+  │    cloneRoleProblem; removeGitHook; recordConfigOverlay
+  └─ clone copy, a later step: cloneRoleProblem for the tools it launches    place/place.ts
+       (roleCopyRefusal + the record's delivery)                  else role_unavailable
 local driver promptReport                                        drivers/local/local-driver.ts
   worktreeRoleProblem / cloneRoleProblem again                   else role_unavailable
   launch the tool in the copy with TEAMAI_WORKFLOW_ATTEMPT

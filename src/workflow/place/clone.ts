@@ -44,9 +44,10 @@ import { stageEvidence } from '../scoring-evidence.js';
 import { settled } from '../step-state.js';
 import { findAttemptRun } from '../run-location.js';
 import { readRun, runsDir, type RunId } from '../store.js';
+import type { Executor } from '../requirements.js';
 import type { RunState, WorkflowFailure } from '../types.js';
 import { cloneBranchOf } from '../workspace.js';
-import { cloneRoleProblem, copyKnowledgePaths, roleCopyRefusal, roleNotDeliveredFailure, type CloneRoleGap } from './role-copy.js';
+import { cloneRoleProblem, copyKnowledgePaths, launchedTools, roleCopyRefusal, roleNotDeliveredFailure, type CloneRoleGap } from './role-copy.js';
 import { commitWithout } from './team-without.js';
 import { AGENT_PATHS, boundedGit, commitWork, recordConfigOverlay, replaceConfig, restoreUneditedConfig, saveConfig, savedConfigPaths, untrustedGit, type Git } from '../worktree.js';
 
@@ -126,6 +127,8 @@ export interface CloneLease {
   start: string;
   /** The names the clone's git, its install, and whatever they start never get. */
   withhold: readonly string[];
+  /** Whether the step that opens the clone runs a command, which launches no tool, or a prompt. */
+  executor: Executor;
   /** The tool the step runs on, which the install delivers to; else the member's enabled agents. */
   tool?: string;
   /** The team role the clone runs with, the step's `role`: the install delivers that role's knowledge, not the member's. */
@@ -498,6 +501,8 @@ async function installTeam(input: {
   const failed = (message: string): WorkflowFailure => ({ code: 'clone_prepare_failed', message });
   const { revision, selection } = team;
   const tools = selection.enabledAgents ?? (lease.tool !== undefined ? [lease.tool] : member.enabledAgents ?? []);
+  // The install delivers for every tool a step in the clone may run; the role is checked for the ones this step launches.
+  const launched = launchedTools({ executor: lease.executor, tool: lease.tool, enabled: tools });
   const clone = path.join(root, 'r');
   const saved = path.join(root, 'saved');
   const anchors = await resolveAnchors(clone);
@@ -578,7 +583,7 @@ async function installTeam(input: {
   if (role !== undefined) {
     // Without a teamai.yaml that parses, where the clone's knowledge would land is unknown, so nothing is delivered.
     if (!teamConfig) return undelivered(role, { kind: 'no_team_config', revision });
-    const refused = await roleCopyRefusal({ team: teamConfig, install: config, role });
+    const refused = await roleCopyRefusal({ team: teamConfig, install: { ...config, enabledAgents: launched }, role });
 
     if (refused) return refused;
   }
@@ -617,7 +622,7 @@ async function installTeam(input: {
   }
 
   if (role !== undefined) {
-    const refused = await cloneRoleProblem({ install: config, step: lease.step, role, tools });
+    const refused = await cloneRoleProblem({ install: config, step: lease.step, role, tools: launched });
 
     if (refused) return refused;
   }
