@@ -2,6 +2,7 @@ import path from 'node:path';
 
 import { z } from 'zod';
 
+import type { JsonValue } from '../../types.js';
 import { pathExists, readJson } from '../../utils/fs.js';
 import { formatCommand } from '../../utils/exec.js';
 import { log } from '../../utils/logger.js';
@@ -37,9 +38,14 @@ interface NpmPackageLock {
   dependencies?: Record<string, LockPackage>;
 }
 
-interface PackageJson {
-  packageManager?: string;
-}
+/** A project's `package-lock.json`, which npm and the member write: a malformed part reads as absent. */
+const NpmPackageLockSchema = z.object({
+  packages: ListedDependenciesSchema,
+  dependencies: ListedDependenciesSchema,
+});
+
+/** The field teamai reads from a project's `package.json`: one that is not text reads as absent. */
+const PackageJsonSchema = z.object({ packageManager: z.string().optional().catch(undefined) });
 
 type LocalPackageManager = 'npm' | 'pnpm';
 
@@ -67,8 +73,8 @@ async function detectLocalPackageManager(cwd: string): Promise<LocalPackageManag
       return { manager: 'pnpm', isWorkspaceRoot: false };
     }
 
-    const packageJson = await readJson<PackageJson>(path.join(at, 'package.json'));
-    const declaredManager = packageJson?.packageManager?.split('@', 1)[0];
+    const packageJson = PackageJsonSchema.safeParse(await readJson<JsonValue>(path.join(at, 'package.json')));
+    const declaredManager = packageJson.data?.packageManager?.split('@', 1)[0];
 
     if (declaredManager === 'pnpm') {
       return { manager: 'pnpm', isWorkspaceRoot: false };
@@ -157,9 +163,9 @@ export class NpmAdapter extends PackageAdapter<NpmSpec[], NpmLockEntry[]> {
       }
     }
 
-    const lock = await readJson<NpmPackageLock>(path.join(cwd, 'package-lock.json'));
+    const lock = NpmPackageLockSchema.safeParse(await readJson<JsonValue>(path.join(cwd, 'package-lock.json')));
 
-    return lock ? extractNpmLockEntries(lock, local) : [];
+    return lock.success ? extractNpmLockEntries(lock.data, local) : [];
   }
 
   private async snapshotGlobal(declaration: NpmSpec[]): Promise<NpmLockEntry[]> {
