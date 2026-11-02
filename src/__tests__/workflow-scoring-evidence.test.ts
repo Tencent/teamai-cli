@@ -21,6 +21,7 @@ import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, startRun, type NextOptions } from '../workflow/engine.js';
 import { nextJudgeLease, scoreOnDemand, submitJudgeLease, type JudgeRequest } from '../workflow/scoring.js';
 import { LabelStore } from '../scorers/label-store.js';
+import { workflowRunDetail } from '../dashboard/workflow-runs.js';
 import { branchName } from '../workflow/workspace.js';
 import { worktreePath } from '../workflow/worktree.js';
 import type { DriverIdentity, RunState, WorkflowEnvelope } from '../workflow/types.js';
@@ -506,6 +507,19 @@ describe('evidence of what a run delivered', () => {
     const [label] = await LabelStore.local(config);
     expect(label).toMatchObject({ label: 'partial', score: 0.5, passed: false, decidedBy: 'protected', judge: { kind: 'model', tool: 'claude' }, evidenceHash: expect.stringMatching(/^sha256:/) });
     expect(label?.judge).not.toHaveProperty('usage');
+  });
+
+  it('shows on the run\'s page what decided the label of the delivered pass, and counts no judge call for it', async () => {
+    const { config, runId } = await deliveredRun(DELIVERED);
+    await rewriteChange(config, runId, (step) => (step.status !== 'delivering' ? step : {
+      ...step, status: 'failed', outcome: 'failed', failure: { code: 'protected_path', message: 'Step "change" changed protected paths against the run base: AGENTS.md.' },
+    }));
+    data(await nextJudgeLease(config, request));
+
+    const detail = await workflowRunDetail(config, 'local', runId);
+
+    expect(detail?.steps.find((step) => step.step === 'change')?.scores).toEqual([{ scorer: 'quality', label: 'partial', passed: false, decidedBy: 'protected' }]);
+    expect(detail?.scoring).toEqual({ judged: 0, inputTokens: 0, outputTokens: 0 });
   });
 
   it('gives a delivered pull request whose CI failed the best label below passing, decided by ci, with no judge', async () => {

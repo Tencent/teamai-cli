@@ -99,6 +99,12 @@ export function isRunAttempt(attempt: AttemptRecord): attempt is RunAttempt {
   return attempt.source !== 'session';
 }
 
+/** A stage settled this attempt before any judge ran (#1247): it labelled the pass, or found its check could not run. */
+export function isDecidedBeforeJudge(attempt: AttemptRecord): boolean {
+  if (attempt.status === 'succeeded') return (attempt.verdict.decidedBy ?? 'judge') !== 'judge';
+  return attempt.status === 'failed' && attempt.code === 'check_could_not_run';
+}
+
 /**
  * `<entryId>/request.json`: a member asked for this (scorer, pass) to be judged, whatever sampling says. Attempts and
  * labels older than `requestedAt` no longer close the entry. `pin` is the rubric that judges it.

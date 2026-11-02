@@ -3,7 +3,7 @@
  * `sampling: all` scorers stand. It imports neither engine.ts nor local-driver.ts, so the engine can import it without a
  * cycle.
  */
-import { AttemptStore, type AttemptRecord } from '../scorers/attempts.js';
+import { AttemptStore, isDecidedBeforeJudge, type AttemptRecord } from '../scorers/attempts.js';
 import { entryIdOf, entryState, type EntryState, type EntryVerdict } from '../scorers/entry.js';
 import type { RunSubject, ScoreLabel } from '../scorers/label.js';
 import { LabelStore } from '../scorers/label-store.js';
@@ -148,7 +148,7 @@ function scoringCostOf({ state, attempts }: VerdictEntry): EntryVerdict['scoring
   if (!first) return undefined;
   const inUnit = spending.flatMap((attempt) => (attempt.usage?.cost?.unit === first.unit ? [attempt.usage.cost.amount] : []));
   // A label a stage decided before the judge (#1247) ran none, so it states no cost.
-  const ranJudge = (attempt: AttemptRecord) => (attempt.status === 'succeeded' && (attempt.verdict.decidedBy ?? 'judge') === 'judge')
+  const ranJudge = (attempt: AttemptRecord) => (attempt.status === 'succeeded' && !isDecidedBeforeJudge(attempt))
     || (attempt.status === 'failed' && (attempt.code === 'judge_failed' || attempt.code === 'judge_answer_invalid'));
   const complete = spending.every((attempt) => (attempt.usage?.cost ? attempt.usage.cost.unit === first.unit : !ranJudge(attempt)))
     && (state.kind !== 'labelled' || attempts.some((attempt) => attempt.status === 'succeeded'));

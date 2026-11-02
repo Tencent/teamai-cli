@@ -10,8 +10,8 @@ import { loadTeamConfig } from '../config.js';
 import { getReportsDir, isUsageReportEnabled, usesBranchWorktree, type LocalConfig } from '../types.js';
 import { readFileSafe, writeFileAtomic, writeJsonAtomic } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
-import { AttemptStore, isRunAttempt, scoresDir } from './attempts.js';
-import { labelId, labelVersion, newestLabels, parseScoreLabel, parseScoreLabels, type JudgeUsage, type ScoreLabel } from './label.js';
+import { AttemptStore, isDecidedBeforeJudge, isRunAttempt, scoresDir } from './attempts.js';
+import { labelId, labelVersion, newestLabels, parseScoreLabel, parseScoreLabels, type Decider, type JudgeUsage, type ScoreLabel } from './label.js';
 
 function labelsFile(config: LocalConfig): string {
   return path.join(scoresDir(config), 'labels.jsonl');
@@ -82,8 +82,10 @@ async function publishedLabels(config: LocalConfig): Promise<ScoreLabel[]> {
 /** Where `publish` left the labels. `unsupported`: the team repo has no teamai-reports branch, so they stay pending here. */
 export type LabelDelivery = { state: 'published' } | { state: 'pending' | 'unsupported'; reason: string };
 
-/** What Workflow Runs shows of a label: never its reasoning, judge, or usage. */
-export type PassScore = Pick<ScoreLabel, 'scorer' | 'label' | 'passed'>;
+/** What Workflow Runs shows of a label: never its reasoning, judge, or usage. `decidedBy` is absent on labels from before #1247. */
+export type PassScore = Pick<ScoreLabel, 'scorer' | 'label' | 'passed'> & { decidedBy?: Decider };
+
+type RunLabel = Extract<ScoreLabel, { source: 'workflow' }>;
 
 function addUsage(total: { inputTokens: number; outputTokens: number }, usage: JudgeUsage | undefined): void {
   total.inputTokens += usage?.inputTokens ?? 0;
@@ -204,10 +206,10 @@ export const LabelStore = {
     const outranks = (label: ScoreLabel, other: ScoreLabel): boolean => (label.judge.kind === other.judge.kind
       ? label.scoredAt > other.scoredAt
       : label.judge.kind === 'human');
-    const byRun = new Map<string, Map<string, ScoreLabel[]>>();
+    const byRun = new Map<string, Map<string, RunLabel[]>>();
     for (const label of labels) {
       if (label.source !== 'workflow' || !wanted.has(label.subject.runId)) continue;
-      const passes = byRun.get(label.subject.runId) ?? new Map<string, ScoreLabel[]>();
+      const passes = byRun.get(label.subject.runId) ?? new Map<string, RunLabel[]>();
       byRun.set(label.subject.runId, passes);
       const key = `${label.subject.step}#${label.subject.pass}`;
       const shown = passes.get(key) ?? [];
@@ -218,17 +220,17 @@ export const LabelStore = {
       passes.set(key, shown);
     }
     return new Map([...byRun].map(([run, passes]) => [run, new Map([...passes].map(([key, shown]) => [
-      key, shown.map((label) => ({ scorer: label.scorer, label: label.label, passed: label.passed })),
+      key, shown.map((label) => ({ scorer: label.scorer, label: label.label, passed: label.passed, ...label.decidedBy ? { decidedBy: label.decidedBy } : {} })),
     ]))]));
   },
 
-  /** What judging run `runId` cost: every attempt on this machine, or, for a published run, its labels. */
+  /** What judging run `runId` cost: every judge attempt on this machine, or, for a published run, its judge labels. */
   async scoringTotal(config: LocalConfig, runId: string, source: 'local' | 'published'): Promise<{ judged: number; inputTokens: number; outputTokens: number }> {
     const total = { judged: 0, inputTokens: 0, outputTokens: 0 };
     if (source === 'local') {
       for (const attempts of (await AttemptStore.read(config)).values()) {
         for (const attempt of attempts) {
-          if (!isRunAttempt(attempt) || attempt.subject.runId !== runId) continue;
+          if (!isRunAttempt(attempt) || attempt.subject.runId !== runId || isDecidedBeforeJudge(attempt)) continue;
           total.judged += 1;
           addUsage(total, attempt.usage);
         }
@@ -236,7 +238,7 @@ export const LabelStore = {
       return total;
     }
     for (const label of newestLabels(await publishedLabels(config))) {
-      if (label.source !== 'workflow' || label.subject.runId !== runId || label.judge.kind !== 'model') continue;
+      if (label.source !== 'workflow' || label.subject.runId !== runId || label.judge.kind !== 'model' || (label.decidedBy ?? 'judge') !== 'judge') continue;
       total.judged += 1;
       addUsage(total, label.judge.usage);
     }
