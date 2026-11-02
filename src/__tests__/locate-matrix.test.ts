@@ -151,6 +151,7 @@ const ROWS: readonly FilesRow[] = [
     writes: ['<root>/.pi/skills'],
     existingDirs: ['<root>/.pi'], installed: { probe: '<root>/.pi', met: true },
     reads: [{ at: '<root>/.pi/skills', when: 'cwdOnly' }],
+    readGates: [{ kind: 'pi-project-trust', config: '~/.pi/agent/trust.json', settings: '~/.pi/agent/settings.json', checkout: '<root>' }],
     broken: { 'project-subdir': { reason: 'cwd-only', issue: '#1221' } },
     source: 'issue #1221 Conditions: session started in a project subdirectory, Pi skills (v, Pi 0.99.2)',
   },

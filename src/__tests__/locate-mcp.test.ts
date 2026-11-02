@@ -317,6 +317,7 @@ const COMPLETE_ROWS: readonly MatrixRow[] = [
     existingDirs: ['<root>/.pi'],
     installed: { probe: '<root>/.pi', met: true },
     reads: [{ at: '<root>/.pi/mcp.json', key: ['mcpServers'], when: 'cwdOnly' }],
+    readGates: [{ kind: 'pi-project-trust', config: '~/.pi/agent/trust.json', settings: '~/.pi/agent/settings.json', checkout: '<root>' }],
     source: 'Pi 0.99.2 mcp list, issue #1221 Matrix',
     broken: { 'project-subdir': { reason: 'cwd-only', issue: '#1221' } },
   },

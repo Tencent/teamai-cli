@@ -13,7 +13,7 @@ import { SESSION_PLATFORM_FACTS, type SessionPlatform, type StoredSessionPlatfor
 import {
   channelsOf, installGateOf, isToolId, hasDefaultHomeLeftovers, TOOLS,
   type Activation, type BlocksFile, type BlocksHeader, type ChannelProbe, type FirstExistingRead, type HomeRead, type HookAdapter,
-  type HookAdapterId, type HookFormat, type HookSettings, type McpProject, type McpUser, type ProjectRead, type ReadGateKind, type RunTime,
+  type HookAdapterId, type HookFormat, type HookSettings, type McpProject, type McpUser, type ProjectRead, type ReadGateKind, type RunTime, type SkillReads,
   type RunTimeVia,
 } from './tools.js';
 import {
@@ -138,12 +138,14 @@ export type Gate =
  * Declared, not evaluated: doctor evaluates it, and pull writes regardless,
  * so a trust a later step of the same pull grants never holds a write back.
  */
-export type ReadGate = {
-  readonly kind: ReadGateKind;
-  /** The tool config that holds the verdict. */
-  readonly config: string;
-  readonly checkout: string;
-};
+export type ReadGate =
+  /** `config`: Codex's config.toml, whose `projects` entry for the checkout or its main checkout decides. */
+  | { readonly kind: 'codex-project-trust'; readonly config: string; readonly checkout: string }
+  /**
+   * `config`: Pi's trust.json, whose nearest entry walking up from the
+   * checkout decides; else `defaultProjectTrust` in `settings`.
+   */
+  | { readonly kind: 'pi-project-trust'; readonly config: string; readonly settings: string; readonly checkout: string };
 
 /**
  * A place teamai wrote this resource to before and no longer writes, and why.
@@ -611,6 +613,10 @@ async function readGatesOf(kinds: readonly ReadGateKind[] | undefined, install: 
     switch (kind) {
       case 'codex-project-trust':
         return { kind, config: rootsOf('codex', user, host).declared('home', '.codex/config.toml'), checkout: install.projectRoot };
+      case 'pi-project-trust': {
+        const roots = rootsOf('pi', user, host);
+        return { kind, config: roots.declared('home', '.pi/agent/trust.json'), settings: roots.declared('home', '.pi/agent/settings.json'), checkout: install.projectRoot };
+      }
       default: {
         const unhandled: never = kind;
         return unhandled;
@@ -673,10 +679,16 @@ async function locateSkills(tool: string, install: Install, host: Host): Promise
     own: own === null ? null : { kind: 'dir', path: own },
     shared: shared === null ? null : { kind: 'dir', path: shared },
     reads: await readsOf(isToolId(tool) ? TOOLS[tool].skills[install.scope] : 'unknown', roots, host),
-    readGates: [],
+    readGates: await readGatesOf(skillReadGatesOf(tool), install, host),
     retired: [],
     gates: await gatesOf(tool, install, host, roots, 'skills'),
   };
+}
+
+function skillReadGatesOf(tool: string): readonly ReadGateKind[] | undefined {
+  if (!isToolId(tool)) return undefined;
+  const skills: SkillReads = TOOLS[tool].skills;
+  return skills.readGates;
 }
 
 async function locateRules(tool: string, install: Install, host: Host): Promise<Location<'rules'>> {

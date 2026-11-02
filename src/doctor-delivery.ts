@@ -336,8 +336,12 @@ export async function buildDeliveryChecks(ctx: DoctorContext): Promise<Check[]> 
   const { deliveredHashes } = await import('./pull.js');
   const { describeKeptEntry, judgeCopy } = await import('./resources/delivered-copies.js');
   const previous = await deliveredHashes(localConfig);
+  // The team's copies on disk, by the tool they were written for.
+  const held = new Map<string, { dir: string; names: string[] }>();
   const { byTool } = await walkDelivery(getHandler('skills'), ctx, items, async (target, item) => {
     if (!await pathExists(target.dest)) return labels[0];
+    const copies = held.get(target.tool) ?? { dir: path.dirname(target.dest), names: [] };
+    held.set(target.tool, { dir: copies.dir, names: [...copies.names, item.name] });
     if ((await judgeCopy(previous, item, target)).kind === 'member') {
       linesFor(memberLines, target.tool).push(await describeKeptEntry(target.dest, item.relativePath));
       return MEMBERS_OWN;
@@ -345,7 +349,17 @@ export async function buildDeliveryChecks(ctx: DoctorContext): Promise<Check[]> 
     return await skillIsDiscoverable(target.dest, item.name) ? null : labels[1];
   });
 
-  return [...byTool].map(([tool, delivery]) => ({
+  const gated: Check[] = [];
+  if (localConfig.scope === 'project') {
+    const install = installOf(teamConfig, localConfig);
+    for (const [tool, { dir, names }] of held) {
+      const where = await locate(tool, 'skills', install);
+      if (where.channel !== 'files') continue;
+      gated.push(...await readGateChecks(where.readGates, { summary: `${dir} holds team skills (${nameList(names)})`, noun: 'skills', names }));
+    }
+  }
+
+  return [...[...byTool].map(([tool, delivery]): Check => ({
     name: `Skills delivered to ${tool}`,
     source: 'local',
     check: async () => delivery.problems.size === 0,
@@ -358,7 +372,7 @@ export async function buildDeliveryChecks(ctx: DoctorContext): Promise<Check[]> 
           + 'discovers it.'
         : '')
       + membersOwnFix(memberLines, delivery),
-  }));
+  })), ...gated];
 }
 
 /**

@@ -100,6 +100,8 @@ type Reads<R> = readonly R[] | 'unknown';
 export type SkillReads = {
   readonly user: Reads<HomeRead>;
   readonly project: Reads<HomeRead | ProjectRead>;
+  /** What the project reads wait on. */
+  readonly readGates?: readonly ReadGateKind[];
 };
 
 /**
@@ -115,7 +117,12 @@ export type ChannelProbe = 'codex-hooks' | 'zcode-session-start' | 'dsh-session-
 /** How teamai adds a resource to each session of the tool instead of writing it to a file the tool reads. */
 export type RunTimeVia = 'session-hook' | 'extension' | 'plugin';
 
-export type ReadGateKind = 'codex-project-trust';
+/**
+ * The tool's own verdict on a project that decides whether it reads what
+ * teamai wrote there: its trust in the project, or its approval of the
+ * project's MCP servers. `read-gates.ts` evaluates each one.
+ */
+export type ReadGateKind = 'codex-project-trust' | 'pi-project-trust';
 
 /** The frontmatter teamai writes above its blocks when it creates an owned blocks file a rules loader reads. */
 export type BlocksHeader = 'always-apply' | 'apply-to-all' | 'trigger-always-on' | 'inclusion-always';
@@ -948,6 +955,7 @@ export const TOOLS = {
     skills: {
       user: [{ base: 'home', path: '.pi/agent/skills', evidence: 'verified' }],
       project: [{ base: 'project', path: '.pi/skills', when: 'cwdOnly', evidence: 'verified' }],
+      readGates: ['pi-project-trust'],
     },
     rules: {
       user: { channel: 'inline', label: 'Pi AGENTS.md' },
@@ -961,7 +969,7 @@ export const TOOLS = {
     agents: NONE,
     mcp: {
       user: { format: 'pi', reads: [{ base: 'home', path: '.pi/agent/mcp.json', evidence: 'verified' }] },
-      project: { format: 'pi', reads: [{ base: 'project', path: '.pi/mcp.json', when: 'cwdOnly', evidence: 'verified' }] },
+      project: { format: 'pi', reads: [{ base: 'project', path: '.pi/mcp.json', when: 'cwdOnly', evidence: 'verified' }], readGates: ['pi-project-trust'] },
     },
     hooks: { user: { channel: 'adapter', adapter: 'pi-extension', evidence: 'verified' }, self: 'user' },
     // Pi 1.4.0: v3 JSONL under --session-dir > PI_CODING_AGENT_SESSION_DIR > the sessionDir setting > PI_CODING_AGENT_DIR/sessions.
