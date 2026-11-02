@@ -1,10 +1,12 @@
 /**
- * What a check is, written in a benchmark task or a scorer, and how it ended, classified once, by `teamai benchmark check` (trial.ts), which prints the result as its
- * step's output. Pure. result.ts maps the output its step stored: nothing classifies a check a second time, and no
- * result is read back from a failure code.
+ * What a check is, written in a benchmark task or a scorer, and how it ended, classified once, by `teamai benchmark check`
+ * (benchmark/trial.ts), which prints the result as its step's output, and by a scorer's check (scoring-stages.ts). Pure.
+ * benchmark/result.ts maps the output its step stored: nothing classifies a check a second time, and no result is read
+ * back from a failure code.
  */
 import { z } from 'zod';
-import type { CommandExit } from '../workflow/shell-command.js';
+import { CommitSchema } from './clone.js';
+import type { CommandExit } from './shell-command.js';
 
 /** What a check says about the repo it ran in. */
 export type CheckVerdict =
@@ -63,6 +65,13 @@ export const CheckRunSchema = z.object({
   protect: z.array(ProtectedPathSchema).nonempty('check.protect lists every path the check reads and the agent must not supply')
     .pipe(z.tuple([ProtectedPathSchema], ProtectedPathSchema)),
 }).strict();
+
+/**
+ * Files a check task's `check.add` writes before each run of its check, as `commit` has them: its `solutionCommit`, or
+ * the commit start made of the files it names in the suite directory, as `kind` says.
+ */
+export const AddedSchema = z.object({ kind: z.enum(['solution', 'suite']), commit: CommitSchema, paths: z.array(z.string().min(1)).nonempty() }).strict();
+export type Added = z.infer<typeof AddedSchema>;
 
 const SHELL_SIGNAL_BASE = 128;
 /** The highest signal number on Linux, whose real-time signals go up to 64; other POSIX systems stop below it. */

@@ -17,8 +17,8 @@ import type { Suite, Task, TaskJudge } from './suite.js';
 import type { CommittedSuite } from './trial.js';
 import type { PinnedArmWorkflow } from './arm-workflow.js';
 import { CommitSchema, TeamSelectionSchema, type CloneTeam, type TeamSelection } from '../workflow/clone.js';
-import { CHECK_RESULTS } from './check.js';
-import { AddedSchema, ArmTeamSchema, BenchmarkNameSchema, SkillChangesSchema, TrialLimitsSchema, type Added, type ArmTeam, type SkillChanges } from './terms.js';
+import { AddedSchema, CHECK_RESULTS, type Added } from '../workflow/check.js';
+import { ArmTeamSchema, BenchmarkNameSchema, SkillChangesSchema, TrialLimitsSchema, type ArmTeam, type SkillChanges } from './terms.js';
 
 const Sha256 = z.string().regex(/^[0-9a-f]{64}$/);
 

@@ -4,11 +4,10 @@
  * the delivery's protected-path refusal (#1090). The first stage that fails decides the label; one that passes or has
  * nothing to say hands the pass on, and the judge runs only once every stage did.
  */
-// oxlint-disable-next-line teamai/workflow-boundaries -- a scorer's check runs exactly as a benchmark trial's check does (#1180), and trial.ts owns that runner
-import { tryCheckAt } from '../benchmark/trial.js';
 import type { ScorerDefinition, ScorerLabel } from '../scorers/definition.js';
 import type { Decider, RunSubject } from '../scorers/label.js';
 import { log } from '../utils/logger.js';
+import { runCheckAt } from './check-run.js';
 import { runPasses } from './loop.js';
 import { deliveredCi } from './pr-delivery.js';
 import { evidencePlan, isDelivered } from './scoring-evidence.js';
@@ -74,7 +73,7 @@ async function checkStage(run: RunState, subject: RunSubject, pass: StepPass | u
   if (!startingCommit || !run.checkout) {
     return { kind: 'unrunnable', message: `The check of scorer ${scorer} cannot run on commit ${head} of step "${subject.step}": the run recorded no commit its work started from, or no checkout.` };
   }
-  const ran = await tryCheckAt({ commit: head, startingCommit, command: check.run, protect: check.protect, sources: [run.checkout], expiresAt });
+  const ran = await runCheckAt({ commit: head, startingCommit, command: check.run, protect: check.protect, sources: [run.checkout], expiresAt });
   if (ran.kind === 'error') return { kind: 'unrunnable', message: `The check of scorer ${scorer} could not be set up on commit ${head}: ${ran.failure.message}` };
   const { verdict } = ran;
   switch (verdict.verdict) {

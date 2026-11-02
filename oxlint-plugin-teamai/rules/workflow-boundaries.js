@@ -63,7 +63,8 @@ const ENTRIES = [
     folder: PLACE,
     // engine.ts stages, before it saves a run, the evidence a step that settled there left in its clone.
     // index.ts moves the home of a command a step started in its clone to that clone's own install.
-    entries: { 'place.ts': ['src/index.ts', 'src/workflow/engine.ts', 'src/workflow/protocol.ts', 'src/workflow/drivers/local/local-driver.ts', `${BENCHMARK}trial.ts`, `${BENCHMARK}start.ts`], 'setup.ts': [`${BENCHMARK}trial.ts`] },
+    // check-run.ts clones and sets up the commit a check runs on, for a benchmark and a scorer alike.
+    entries: { 'place.ts': ['src/index.ts', 'src/workflow/engine.ts', 'src/workflow/protocol.ts', 'src/workflow/drivers/local/local-driver.ts', `${BENCHMARK}trial.ts`, `${BENCHMARK}start.ts`, 'src/workflow/check-run.ts'], 'setup.ts': ['src/workflow/check-run.ts'] },
     testEntries: ['place.ts', 'team-without.ts'],
   },
   // workflow-published-runs.ts judges an offered run by the tool the local driver would launch for its prompt steps.
@@ -73,12 +74,12 @@ const ENTRIES = [
   {
     folder: BENCHMARK,
     entries: {
-      'plan.ts': 'any', 'terms.ts': 'any', 'suite.ts': 'any', 'check.ts': 'any', 'table.ts': 'any', 'result.ts': 'any', 'history.ts': 'any', 'suite-cache.ts': 'any',
+      'plan.ts': 'any', 'terms.ts': 'any', 'suite.ts': 'any', 'table.ts': 'any', 'result.ts': 'any', 'history.ts': 'any', 'suite-cache.ts': 'any',
       'trial.ts': ['src/workflow-commands.ts'],
       'start.ts': ['src/workflow-commands.ts'],
       'report.ts': ['src/workflow-commands.ts'],
     },
-    testEntries: ['plan.ts', 'terms.ts', 'suite.ts', 'check.ts', 'table.ts', 'result.ts', 'trial.ts', 'start.ts', 'history.ts', 'run-plan.ts', 'conformance.ts', 'suite-cache.ts', 'arm-workflow.ts', 'team-without.ts'],
+    testEntries: ['plan.ts', 'terms.ts', 'suite.ts', 'table.ts', 'result.ts', 'trial.ts', 'start.ts', 'history.ts', 'run-plan.ts', 'conformance.ts', 'suite-cache.ts', 'arm-workflow.ts', 'team-without.ts'],
   },
 ];
 

@@ -1,4 +1,4 @@
-/** The names, team assets, limits and check files a benchmark plan records. Zod and the commit schema only. */
+/** The names, team assets and limits a benchmark plan records. Zod and the commit schema only. */
 import { z } from 'zod';
 import { CommitSchema, TeamPathSchema } from '../workflow/clone.js';
 
@@ -46,11 +46,4 @@ export const TrialLimitsSchema = z.object({
   maxTurns: z.number().int().positive().optional(),
 }).strict();
 export type TrialLimits = z.infer<typeof TrialLimitsSchema>;
-
-/**
- * Files a check task's `check.add` writes before each run of its check, as `commit` has them: its `solutionCommit`, or
- * the commit start made of the files it names in the suite directory, as `kind` says.
- */
-export const AddedSchema = z.object({ kind: z.enum(['solution', 'suite']), commit: CommitSchema, paths: z.array(z.string().min(1)).nonempty() }).strict();
-export type Added = z.infer<typeof AddedSchema>;
 
