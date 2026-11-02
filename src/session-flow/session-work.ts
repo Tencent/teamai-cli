@@ -27,7 +27,7 @@ import { skillsEvidence, availableTeamSkills, type SkillsEvidence } from '../sco
 import { routingScorers } from '../scorers/skill-routing.js';
 import type { ScopeScoring } from '../scorers/settings.js';
 import { typedIn, usedSkills } from '../skill-use.js';
-import { getDataHome, JsonValueSchema, type LocalConfig } from '../types.js';
+import { getDataHome, isJsonObject, JsonValueSchema, type JsonValue, type LocalConfig } from '../types.js';
 import { readWorkspaceChildren } from '../workspace-children.js';
 import { mapStrings } from '../utils/json.js';
 import { redact } from '../utils/redact.js';
@@ -36,15 +36,24 @@ import type { SubagentsRead } from './adapters/base.js';
 import { SessionCaptures, type CapturedSession, type SessionCapture } from './captures.js';
 import type { Session } from './ir.js';
 
+/** `value` with `mask` applied to each string in it, object keys included. */
+function maskedArguments(value: JsonValue, mask: (text: string) => string): JsonValue {
+  if (Array.isArray(value)) return value.map((item) => maskedArguments(item, mask));
+
+  if (isJsonObject(value)) return Object.fromEntries(Object.entries(value).map(([key, item]) => [mask(key), maskedArguments(item, mask)]));
+
+  return mapStrings(value, mask);
+}
+
 /**
- * Each string of a tool call's arguments is masked before they are serialized: a `"password": "…"` pair or a known
- * secret with a quote is escaped once serialized, and escaped again in the transcript, so masking the body misses it.
+ * Each string of a tool call's arguments, keys included, is masked before they are serialized: a `"password": "…"` pair
+ * or a known secret with a quote is escaped once serialized, and escaped again in the transcript, so masking the body misses it.
  */
 function transcriptOf(session: Session, budget: number, mask: (text: string) => string): string {
   const capped: Session = {
     ...session,
     messages: session.messages.map((message) => ({ ...message, content: message.content.map((block) =>
-      block.type === 'tool_call' ? { ...block, arguments: { excerpt: keepEnds(JSON.stringify(mapStrings(JsonValueSchema.parse(block.arguments ?? {}), mask)), TOOL_CALL_MAX_CHARS) } } : block) })),
+      block.type === 'tool_call' ? { ...block, arguments: { excerpt: keepEnds(JSON.stringify(maskedArguments(JsonValueSchema.parse(block.arguments ?? {}), mask)), TOOL_CALL_MAX_CHARS) } } : block) })),
   };
 
   return keepEnds(AgentSession.transcript(capped).map((entry) => `### ${entry.role}\n${entry.text}\n${entry.toolOutput}`).join('\n\n'), budget);

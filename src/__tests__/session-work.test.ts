@@ -400,4 +400,17 @@ describe('the transcript a judge reads', () => {
     expect(judged.body).not.toContain('w0rd');
     expect(judged.body).toContain('<REDACTED:DB_PASSWORD>');
   });
+
+  it('masks a known secret with a quote or backslash used as an argument key', () => {
+    const secret = 'p@ss"w0rd\\x9';
+    const session = withCommand('psql');
+    session.messages[0].content[0] = { type: 'tool_call', toolName: 'db', callId: 'toolu_1', arguments: { [secret]: 'login' } };
+    const judged = judgeSession({
+      platform: 'claude-code', found: { session },
+      captures: [], mask: (text) => redact(text, { envSecrets: { DB_PASSWORD: secret } }),
+    });
+
+    expect(judged.body).not.toContain('w0rd');
+    expect(judged.body).toContain('<REDACTED:DB_PASSWORD>');
+  });
 });
