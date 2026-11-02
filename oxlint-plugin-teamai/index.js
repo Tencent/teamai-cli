@@ -6,6 +6,7 @@ import learningsRoot from './rules/learnings-root.js';
 import configuredToolPaths from './rules/configured-tool-paths.js';
 import launchEnv from './rules/launch-env.js';
 import noProviderMerge from './rules/no-provider-merge.js';
+import noChainedTypeAssertions from './rules/no-chained-type-assertions.js';
 import workflowBoundaries from './rules/workflow-boundaries.js';
 import windowsTests from './rules/windows-tests.js';
 import rulesLocate from './rules/rules-locate.js';
@@ -19,6 +20,7 @@ export default definePlugin({
     'configured-tool-paths': configuredToolPaths,
     'launch-env': launchEnv,
     'no-provider-merge': noProviderMerge,
+    'no-chained-type-assertions': noChainedTypeAssertions,
     'workflow-boundaries': workflowBoundaries,
     'windows-tests': windowsTests,
     'rules-locate': rulesLocate,
