@@ -32,6 +32,10 @@ export function readGateCheckName(gate: ReadGate, noun: string): string {
       return `Muse Code trusts this project, so it loads its team ${noun}`;
     case 'copilot-folder-trust':
       return `Copilot CLI trusts this folder, so it loads its team ${noun}`;
+    case 'qoder-folder-trust':
+      return `Qoder CLI trusts this folder, so it loads its team ${noun}`;
+    case 'qoder-mcp-approval':
+      return 'Qoder CLI approves this project\'s team MCP servers';
     default: {
       const unhandled: never = gate;
       return unhandled;
@@ -53,6 +57,10 @@ export async function readGateVerdict(gate: ReadGate, held: Held): Promise<ReadG
       return museWorkspaceTrust(gate, `${held.summary}, but Muse Code loads a project's ${held.noun} only in a trusted workspace`);
     case 'copilot-folder-trust':
       return copilotFolderTrust(gate, `${held.summary}, but Copilot CLI loads a repository's ${held.noun} only in a trusted folder`);
+    case 'qoder-folder-trust':
+      return qoderFolderTrust(gate, `${held.summary}, but an interactive Qoder CLI session loads a project's ${held.noun} only in a trusted folder`);
+    case 'qoder-mcp-approval':
+      return qoderMcpApproval(gate, held);
     default: {
       const unhandled: never = gate;
       return unhandled;
@@ -183,4 +191,81 @@ async function readCommentedJsonObject(file: string): Promise<JsonObjectRead> {
   } catch (error) {
     return { kind: 'invalid', error: error instanceof Error ? error.message : String(error) };
   }
+}
+
+/**
+ * Qoder CLI 1.1.81: an entry of `permissions.trustDirectories` (or
+ * `permissions.additionalDirectories`) in the user settings covers its folder
+ * and every folder under it, by real path; `security.folderTrust.enabled:
+ * false` turns the check off. A project's own settings cannot trust it, and
+ * `qodercli -p` takes every folder as trusted.
+ */
+async function qoderFolderTrust(gate: Extract<ReadGate, { kind: 'qoder-folder-trust' }>, cause: string): Promise<ReadGateVerdict> {
+  const root = await realFilePath(gate.checkout);
+  const settings = await readJsonObject(gate.config);
+  if (settings.kind === 'invalid') return unreadable(cause, gate.config, `does not parse (${settings.error})`, 'Qoder CLI');
+  const value = settings.kind === 'ok' ? settings.value : {};
+  if (fieldOf(fieldOf(fieldOf(value, 'security'), 'folderTrust'), 'enabled') === false) return MET;
+  const permissions = fieldOf(value, 'permissions');
+  const folders = [fieldOf(permissions, 'trustDirectories'), fieldOf(permissions, 'additionalDirectories')].flatMap((list) => Array.isArray(list) ? list : []);
+  for (const folder of folders) {
+    if (typeof folder === 'string' && isAtOrUnder(root, await realFilePath(folder))) return MET;
+  }
+  return {
+    met: false,
+    fix: `${cause}, and permissions.trustDirectories in ${gate.config} does not cover ${root}. Start \`qodercli\` in ${root} and trust the folder `
+      + `when it asks, or add ${JSON.stringify(root)} to permissions.trustDirectories in ${gate.config}. \`qodercli -p\` loads them either way.`,
+  };
+}
+
+/** `object[key]` of a parsed JSON value, or undefined when it is not an object. */
+function fieldOf(object: unknown, key: string): unknown {
+  return typeof object === 'object' && object !== null && !Array.isArray(object) ? Object.entries(object).find(([name]) => name === key)?.[1] : undefined;
+}
+
+/** The team's servers a tool holds back: `rejected` it never starts, `pending` it starts once approved. */
+type Approval = { readonly rejected: readonly string[]; readonly pending: readonly string[] };
+
+/** A verdict from `approval`: `how` says how to approve, `undo` how to lift a rejection. */
+function approvalVerdict(cause: string, approval: Approval, how: string, undo: string): ReadGateVerdict {
+  const { rejected, pending } = approval;
+  if (rejected.length === 0 && pending.length === 0) return MET;
+  const parts = [
+    ...pending.length === 0 ? [] : [`${pending.join(', ')} ${pending.length === 1 ? 'waits' : 'wait'} for approval`],
+    ...rejected.length === 0 ? [] : [`${rejected.join(', ')} ${rejected.length === 1 ? 'was' : 'were'} rejected`],
+  ];
+  return { met: false, fix: `${cause}, and ${parts.join(', and ')}. ${[...pending.length === 0 ? [] : [how], ...rejected.length === 0 ? [] : [undo]].join(' ')}` };
+}
+
+/** Names in a string-array value, as a set. */
+function namesIn(list: unknown): Set<string> {
+  return new Set(Array.isArray(list) ? list.filter((name): name is string => typeof name === 'string') : []);
+}
+
+/**
+ * Qoder CLI 1.1.81: a server in `mcp.disabledProjectMcpServers` of the user,
+ * project or local settings is rejected, even in `qodercli -p`; one in
+ * `mcp.enabledProjectMcpServers`, or any with `mcp.enableAllProjectMcpServers`,
+ * is approved; the rest wait for the dialog of an interactive session, while
+ * `-p` starts them. Approval is by name, in every project.
+ */
+async function qoderMcpApproval(gate: Extract<ReadGate, { kind: 'qoder-mcp-approval' }>, held: Held): Promise<ReadGateVerdict> {
+  const cause = `${held.summary}, but Qoder CLI starts a project's servers in an interactive session only once you approve them`;
+  const files = [gate.config, path.join(gate.checkout, '.qoder', 'settings.json'), path.join(gate.checkout, '.qoder', 'settings.local.json')];
+  const enabled = new Set<string>();
+  const disabled = new Set<string>();
+  let all = false;
+  for (const file of files) {
+    const settings = await readJsonObject(file);
+    if (settings.kind === 'invalid') return unreadable(cause, file, `does not parse (${settings.error})`, 'Qoder CLI');
+    const mcp = settings.kind === 'ok' ? fieldOf(settings.value, 'mcp') : undefined;
+    for (const name of namesIn(fieldOf(mcp, 'enabledProjectMcpServers'))) enabled.add(name);
+    for (const name of namesIn(fieldOf(mcp, 'disabledProjectMcpServers'))) disabled.add(name);
+    all ||= fieldOf(mcp, 'enableAllProjectMcpServers') === true;
+  }
+  return approvalVerdict(cause, {
+    rejected: held.names.filter((name) => disabled.has(name)),
+    pending: held.names.filter((name) => !disabled.has(name) && !all && !enabled.has(name)),
+  }, `Approve them when an interactive \`qodercli\` asks, or add them to mcp.enabledProjectMcpServers in ${gate.config}.`,
+  `Remove the rejected ones from mcp.disabledProjectMcpServers in ${files.join(', ')}, or run \`qodercli mcp reset-project-choices\` to be asked again.`);
 }

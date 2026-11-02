@@ -61,6 +61,8 @@ describe('doctor — the tool trusts the project it reads team files from', () =
     vi.stubEnv('PI_CODING_AGENT_DIR', undefined);
     vi.stubEnv('XDG_CONFIG_HOME', undefined);
     vi.stubEnv('COPILOT_HOME', undefined);
+    vi.stubEnv('QODER_CONFIG_DIR', undefined);
+    vi.stubEnv('QODER_CLI_HOME', undefined);
     await fse.ensureDir(projectRoot);
     await writeTeamSkill('release-notes');
 
@@ -357,6 +359,98 @@ describe('doctor — the tool trusts the project it reads team files from', () =
       const found = await check('Copilot CLI trusts this folder, so it loads its team hooks');
       expect(await found?.check()).toBe(false);
       expect(found?.fix).toContain(`${hooksFile} holds teamai's hooks`);
+    });
+  });
+  // Qoder CLI 1.1.81 ignores a project's .qoder/settings.json (its MCP servers
+  // and hooks) in an interactive session until a user-settings
+  // `permissions.trustDirectories` entry covers the folder, by real path.
+  // `qodercli -p` takes every folder as trusted.
+  describe('Qoder CLI folder trust', () => {
+    const TRUST = 'Qoder CLI trusts this folder, so it loads its team MCP servers';
+    const userSettings = (): string => path.join(homeDir, '.qoder', 'settings.json');
+
+    beforeEach(async () => {
+      await fse.ensureDir(path.join(homeDir, '.qoder'));
+      teamConfig.toolPaths = { qoder: { mcp: '.qoder/settings.json', mcpProject: '.qoder/settings.json' } };
+      await fse.outputFile(path.join(repoPath, 'mcp', 'mcp.yaml'), 'servers:\n  - name: issues\n    transport: stdio\n    command: issues-server\n');
+      await fse.outputJson(path.join(projectRoot, '.qoder', 'settings.json'), { mcpServers: { issues: { type: 'stdio', command: 'issues-server' } } });
+      await fse.outputJson(managedMcpManifestPath(getDataHome(localConfig), projectRoot), { [managedMcpManifestKey('qoder', true)]: [{ name: 'issues', hash: 'h' }] });
+    });
+
+    it('fails while no trusted directory covers the project, naming the entry to add', async () => {
+      await fse.outputJson(userSettings(), { permissions: { trustDirectories: [] } });
+
+      const found = await check(TRUST);
+      expect(await found?.check()).toBe(false);
+      expect(found?.fix).toContain(`${path.join(projectRoot, '.qoder', 'settings.json')} holds team MCP servers (issues)`);
+      expect(found?.fix).toContain(`add "${projectRoot}" to permissions.trustDirectories in ${userSettings()}`);
+    });
+
+    it.each([
+      ['a trusted folder above it', (): object => ({ permissions: { trustDirectories: [tempDir] } })],
+      ['folder trust switched off', (): object => ({ security: { folderTrust: { enabled: false } } })],
+    ])('passes with %s', async (_label, body) => {
+      await fse.outputJson(userSettings(), body());
+
+      expect(await (await check(TRUST))?.check()).toBe(true);
+    });
+
+    it('does not take the project\'s own settings as trust', async () => {
+      await fse.outputJson(path.join(projectRoot, '.qoder', 'settings.local.json'), { permissions: { trustDirectories: [projectRoot] } });
+
+      expect(await (await check(TRUST))?.check()).toBe(false);
+    });
+
+    it('reads the user settings from QODER_CONFIG_DIR', async () => {
+      const qoderHome = path.join(tempDir, 'qoder-home');
+      vi.stubEnv('QODER_CONFIG_DIR', qoderHome);
+      await fse.outputJson(path.join(qoderHome, 'settings.json'), { permissions: { trustDirectories: [projectRoot] } });
+
+      expect(await (await check(TRUST))?.check()).toBe(true);
+    });
+
+    it('checks teamai\'s hooks in a self-mode project\'s .qoder/settings.json', async () => {
+      Object.assign(localConfig, { repo: { kind: 'self', localPath: projectRoot, remote: 'owner/repo' } });
+      teamConfig.toolPaths = { qoder: { settings: '.qoder/settings.json' } };
+      await fse.outputJson(path.join(projectRoot, '.qoder', 'settings.json'), { hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'teamai hook-dispatch session-start' }] }] } });
+
+      const found = await check('Qoder CLI trusts this folder, so it loads its team hooks');
+      expect(await found?.check()).toBe(false);
+    });
+
+    // Approval is by server name across every project: `mcp.enabledProjectMcpServers`,
+    // `mcp.disabledProjectMcpServers` and `mcp.enableAllProjectMcpServers` in the
+    // user, project and local settings. A rejected server stays off in `-p` too.
+    describe('MCP approval', () => {
+      const APPROVAL = 'Qoder CLI approves this project\'s team MCP servers';
+
+      it('fails while the server waits for approval, naming it and the key', async () => {
+        await fse.outputJson(userSettings(), { permissions: { trustDirectories: [projectRoot] } });
+
+        const found = await check(APPROVAL);
+        expect(await found?.check()).toBe(false);
+        expect(found?.fix).toContain('issues waits for approval');
+        expect(found?.fix).toContain(`mcp.enabledProjectMcpServers in ${userSettings()}`);
+      });
+
+      it.each([
+        ['by name', { enabledProjectMcpServers: ['issues'] }],
+        ['all at once', { enableAllProjectMcpServers: true }],
+      ])('passes once the user settings approve it %s', async (_label, mcp) => {
+        await fse.outputJson(userSettings(), { permissions: { trustDirectories: [projectRoot] }, mcp });
+
+        expect(await (await check(APPROVAL))?.check()).toBe(true);
+      });
+
+      it('fails on a rejection in the project settings, whatever the user settings approve', async () => {
+        await fse.outputJson(userSettings(), { mcp: { enableAllProjectMcpServers: true } });
+        await fse.outputJson(path.join(projectRoot, '.qoder', 'settings.local.json'), { mcp: { disabledProjectMcpServers: ['issues'] } });
+
+        const found = await check(APPROVAL);
+        expect(await found?.check()).toBe(false);
+        expect(found?.fix).toContain('issues was rejected');
+        expect(found?.fix).toContain('qodercli mcp reset-project-choices');
+      });
     });
   });
 });

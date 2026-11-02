@@ -149,7 +149,11 @@ export type ReadGate =
   /** `config`: Muse's trust.json, whose entry for the real path of the checkout's git root decides. */
   | { readonly kind: 'muse-workspace-trust'; readonly config: string; readonly checkout: string }
   /** `config`: Copilot's config.json, whose `trustedFolders` covers the checkout or its main checkout. */
-  | { readonly kind: 'copilot-folder-trust'; readonly config: string; readonly checkout: string };
+  | { readonly kind: 'copilot-folder-trust'; readonly config: string; readonly checkout: string }
+  /** `config`: Qoder's user settings.json, whose `permissions.trustDirectories` covers the checkout. */
+  | { readonly kind: 'qoder-folder-trust'; readonly config: string; readonly checkout: string }
+  /** `config`: Qoder's user settings.json, where its approval dialog records `mcp.*ProjectMcpServers`; the project's own settings add theirs. */
+  | { readonly kind: 'qoder-mcp-approval'; readonly config: string; readonly checkout: string };
 
 /**
  * A place teamai wrote this resource to before and no longer writes, and why.
@@ -625,6 +629,9 @@ async function readGatesOf(kinds: readonly ReadGateKind[] | undefined, install: 
         return { kind, config: rootsOf('muse', user, host).declared('home', '.config/muse/trust.json'), checkout: install.projectRoot };
       case 'copilot-folder-trust':
         return { kind, config: rootsOf('copilot', user, host).declared('home', '.copilot/config.json'), checkout: install.projectRoot };
+      case 'qoder-folder-trust':
+      case 'qoder-mcp-approval':
+        return { kind, config: rootsOf('qoder', user, host).declared('home', '.qoder/settings.json'), checkout: install.projectRoot };
       default: {
         const unhandled: never = kind;
         return unhandled;

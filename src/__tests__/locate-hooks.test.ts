@@ -111,7 +111,8 @@ const ROWS: readonly (FilesRow | OtherRow)[] = [
   }),
   selfSettings('qoder', '<root>/.qoder/settings.json', '~/.qoder', 'cwdOnly', {
     broken: { 'project-subdir': { reason: 'cwd-only', issue: '#1221' } },
-    source: `${SELF}: <cwd>/.qoder/settings.json, shared with Qoder CN`,
+    readGates: [{ kind: 'qoder-folder-trust', config: '~/.qoder/settings.json', checkout: '<root>' }],
+    source: `${SELF}: <cwd>/.qoder/settings.json, shared with Qoder CN; Qoder CLI 1.1.81 reads it only in a trusted folder`,
   }),
   settings('qoder-cn', 'user', '~/.qoder-cn/settings.json', '~/.qoder-cn'),
   settings('qoder-cn', 'user', '/qodercn/settings.json', '/qodercn', {

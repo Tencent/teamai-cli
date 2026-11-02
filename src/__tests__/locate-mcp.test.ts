@@ -207,7 +207,11 @@ const COMPLETE_ROWS: readonly MatrixRow[] = [
     existingDirs: ['~/.qoder'],
     installed: { probe: '~/.qoder', met: true },
     reads: [{ at: '<root>/.qoder/settings.json', key: ['mcpServers'], when: 'workspaceUnder' }],
-    source: 'Qoder CLI 1.1.73 loader source, issue #1221 Matrix',
+    readGates: [
+      { kind: 'qoder-folder-trust', config: '~/.qoder/settings.json', checkout: '<root>' },
+      { kind: 'qoder-mcp-approval', config: '~/.qoder/settings.json', checkout: '<root>' },
+    ],
+    source: 'Qoder CLI 1.1.73 loader source, issue #1221 Matrix; 1.1.81 trust and approval (interactive sessions)',
   },
   {
     tool: 'qoder-cn', scope: 'user',
