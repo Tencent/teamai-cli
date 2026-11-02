@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { hookToolPathsForConfig } from './types.js';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
@@ -584,12 +585,29 @@ function sessionHookRulesCheck(tool: string, settingsPath: string): Check {
   };
 }
 
+/** One start event's handler groups; anything but a list reads as none. */
+const CodexHookGroupsSchema = z.array(z.unknown()).optional().catch(undefined);
+
+const CodexHooksFileSchema = z.object({
+  hooks: z.looseObject({ SessionStart: CodexHookGroupsSchema, SubagentStart: CodexHookGroupsSchema }),
+});
+
+const CodexHookGroupSchema = z.object({ hooks: z.array(z.unknown()) });
+
+/** A Codex handler entry; only a numeric `additionalContextLimit` is kept. */
+const CodexHookEntrySchema = z.object({
+  command: z.string(),
+  additionalContextLimit: z.number().optional().catch(undefined),
+});
+
+type CodexHookEntry = z.infer<typeof CodexHookEntrySchema>;
+
 /** The teamai handlers for one event in a Codex hooks.json; none when it does not parse. */
 async function teamaiHookEntries(
   settingsPath: string,
   event: 'SessionStart' | 'SubagentStart',
   subcommand: string,
-): Promise<Array<{ additionalContextLimit?: unknown }>> {
+): Promise<CodexHookEntry[]> {
   let parsed: unknown;
 
   try {
@@ -598,14 +616,15 @@ async function teamaiHookEntries(
     return [];
   }
 
-  const groups = (parsed as { hooks?: Record<string, unknown> } | null)?.hooks?.[event];
-
-  if (!Array.isArray(groups)) return [];
+  const groups = CodexHooksFileSchema.safeParse(parsed).data?.hooks[event] ?? [];
 
   return groups
-    .flatMap((group) => (Array.isArray(group?.hooks) ? group.hooks : []))
-    .filter((entry): entry is { command: string; additionalContextLimit?: unknown } =>
-      typeof entry?.command === 'string' && entry.command.includes(`teamai hook-dispatch ${subcommand}`));
+    .flatMap((group) => CodexHookGroupSchema.safeParse(group).data?.hooks ?? [])
+    .flatMap((entry) => {
+      const hook = CodexHookEntrySchema.safeParse(entry).data;
+
+      return hook?.command.includes(`teamai hook-dispatch ${subcommand}`) ? [hook] : [];
+    });
 }
 
 /**
@@ -972,12 +991,18 @@ async function buildGitHookChecks(localConfig: LocalConfig, stage: CheckStage): 
   const failure = await readGitHookFailure(localConfig);
   const report = failure ? describeGitHookFailure(failure) : null;
 
-  const installed: Check[] = !status || (!status.installed && status.reason === 'not-a-repository') ? [] : [{
-    name: 'Git hook syncs new worktrees and git pull',
-    source: 'local',
-    check: async () => status.installed,
-    ...(status.installed ? {} : { fix: describeMissingGitHook(status) }),
-  }];
+  const installed: Check[] = [];
+
+  if (status && (status.installed || status.reason !== 'not-a-repository')) {
+    const hookCheck: Check = {
+      name: 'Git hook syncs new worktrees and git pull',
+      source: 'local',
+      check: async () => status.installed,
+    };
+
+    if (!status.installed) hookCheck.fix = describeMissingGitHook(status);
+    installed.push(hookCheck);
+  }
 
   return [
     ...installed,
@@ -1187,16 +1212,13 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
   const memberSettings = await memberSettingsReport(ctx);
 
   if (jsonMode) {
-    emitReport({
-      ok: allPassed,
-      scope,
-      runMode,
-      checks: results,
-      memberSettings,
-      // pkgDoctorReport renders its own lines; they are human text, not checks.
-      ...(packageReport ? { packages: { ok: packageReport.allPassed, lines: packageReport.lines } } : {}),
-      ...(notes.length > 0 ? { notes } : {}),
-    });
+    const report: DoctorReport = { ok: allPassed, scope, runMode, checks: results, memberSettings };
+
+    // pkgDoctorReport renders its own lines; they are human text, not checks.
+    if (packageReport) report.packages = { ok: packageReport.allPassed, lines: packageReport.lines };
+
+    if (notes.length > 0) report.notes = notes;
+    emitReport(report);
 
     return allPassed;
   }
