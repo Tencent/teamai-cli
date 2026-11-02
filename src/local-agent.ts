@@ -849,31 +849,80 @@ function mergeWorkspaceBindings(
   return base;
 }
 
+/** A string map of config.json: an entry that is not text is left out. */
+const TextMapSchema = z.record(z.string(), JsonValueSchema).transform((map) => Object.fromEntries(
+  Object.entries(map).flatMap(([key, value]): Array<[string, string]> => {
+    const text = z.string().safeParse(value);
+
+    return text.success ? [[key, text.data]] : [];
+  })));
+
+/**
+ * config.json as teamai reads it. A person edits it too (`routes` is set by
+ * hand only), so a field of another type reads as absent and a map entry that
+ * is not text is left out; the workspace bindings stay as written for the load
+ * to read one by one. Unknown keys are kept for the write back, after the
+ * known ones, which are listed in the order teamai writes them.
+ */
+const StoredLocalAgentConfigSchema = z.looseObject({
+  endpoint: z.string(),
+  token: OptionalText,
+  agentTokens: TextMapSchema.optional().catch(undefined),
+  localAgentId: OptionalText,
+  createdAt: z.string().catch(() => new Date().toISOString()),
+  workspaceBindings: z.record(z.string(), JsonValueSchema).catch({}),
+  userGroupId: z.number().optional().catch(undefined),
+  userGroupName: OptionalText,
+  routes: TextMapSchema.optional().catch(undefined),
+});
+
+/** A workspace binding of config.json; one whose projectId is not a number binds nothing. */
+const WorkspaceBindingSchema = z.looseObject({
+  projectId: z.number(),
+  projectName: OptionalText,
+  boundAt: z.string().catch(''),
+  ideType: OptionalText,
+});
+
+/**
+ * The config a config.json value stores, or null when it names no endpoint,
+ * with the paths of the legacy group-based bindings (groupId without
+ * projectId) it leaves out.
+ */
+function storedLocalAgentConfig(json: JsonValue | undefined): { config: LocalAgentConfig; removedLegacyPaths: string[] } | null {
+  const stored = StoredLocalAgentConfigSchema.safeParse(json);
+
+  if (!stored.success || !stored.data.endpoint) return null;
+  const removedLegacyPaths: string[] = [];
+  const workspaceBindings: Record<string, WorkspaceBinding> = {};
+
+  for (const [wsPath, raw] of Object.entries(stored.data.workspaceBindings)) {
+    const binding = WorkspaceBindingSchema.safeParse(raw);
+
+    if (binding.success) {
+      workspaceBindings[wsPath] = binding.data;
+    } else if (isJsonObject(raw) && 'groupId' in raw && !('projectId' in raw)) {
+      removedLegacyPaths.push(wsPath);
+    }
+  }
+
+  return { config: { ...stored.data, endpoint: normalizeEndpoint(stored.data.endpoint), workspaceBindings }, removedLegacyPaths };
+}
+
 /** `envFallback: false` reads only what is stored: config.json or a legacy config.yaml. */
 export async function loadLocalAgentConfig(
   options: { dryRun?: boolean; envFallback?: boolean } = {},
 ): Promise<LocalAgentConfig | null> {
-  const fileConfig = await readJson<LocalAgentConfig | { disabled?: boolean }>(getConfigPath());
+  const fileConfig = await readJson<JsonValue>(getConfigPath());
 
   // A removed source must not reconnect through legacy config or environment fallback.
-  if (fileConfig && 'disabled' in fileConfig && fileConfig.disabled === true) return null;
+  if (isJsonObject(fileConfig) && fileConfig.disabled === true) return null;
 
-  if (fileConfig && 'endpoint' in fileConfig && fileConfig.endpoint) {
-    const config = {
-      ...fileConfig,
-      endpoint: normalizeEndpoint(fileConfig.endpoint),
-      workspaceBindings: fileConfig.workspaceBindings ?? {},
-    };
+  const stored = storedLocalAgentConfig(fileConfig);
 
-    // Migrate: clear legacy group-based bindings (groupId without projectId)
-    const removedLegacyPaths: string[] = [];
-
-    for (const [wsPath, binding] of Object.entries(config.workspaceBindings)) {
-      if ('groupId' in binding && !('projectId' in binding)) {
-        delete config.workspaceBindings[wsPath];
-        removedLegacyPaths.push(wsPath);
-      }
-    }
+  if (stored) {
+    // Migrate: the legacy group-based bindings are cleared.
+    const { config, removedLegacyPaths } = stored;
 
     if (removedLegacyPaths.length > 0 && options.dryRun) {
       log.info(`[dry-run] Would remove ${removedLegacyPaths.length} legacy group-based workspace binding(s).`);
@@ -6175,9 +6224,9 @@ export async function shutdownLocalAgentHttp(retry: string): Promise<'none' | 'r
  * reads it (`loadLocalAgentConfig` sees only the marker).
  */
 async function interruptedRemovalConfig(): Promise<LocalAgentConfig | null> {
-  const marker = await readJson<{ disabled?: boolean; removing?: LocalAgentConfig }>(getConfigPath());
+  const marker = await readJson<JsonValue>(getConfigPath());
 
-  return marker?.disabled === true && marker.removing?.endpoint ? marker.removing : null;
+  return isJsonObject(marker) && marker.disabled === true ? storedLocalAgentConfig(marker.removing)?.config ?? null : null;
 }
 
 async function removeLocalAgentHttpLocked(retry: string): Promise<'none' | 'removed' | 'incomplete'> {
