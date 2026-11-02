@@ -325,7 +325,7 @@ describe('a clone place', () => {
 
     const answer = await prepared(client, runId);
 
-    expect(answer).toMatchObject({ error: { code: 'clone_prepare_failed', message: `The clone's team selection names primaryRole review and additionalRoles [], but manifest/members.yaml at team revision ${revision} assigns tester primaryRole audit and additionalRoles [], and while that file exists it decides a member's roles, so the clone would not install the selection it names. Remove primaryRole and additionalRoles from the selection to install the roles it assigns, and to run the step with review's knowledge, also give it role: review.` } });
+    expect(answer).toMatchObject({ error: { code: 'clone_prepare_failed', message: `The clone's team selection names primaryRole review and additionalRoles [], but manifest/members.yaml at team revision ${revision} assigns tester primaryRole audit and additionalRoles [], and while that file exists it decides a member's roles, so the clone would not install the selection it names. Remove primaryRole and additionalRoles from the selection to install the roles it assigns, and to run the step with review's knowledge, also give it role: review. A benchmark writes the selection from your roles as the run starts, so run its arm on a team revision whose manifest/members.yaml assigns you the same ones.` } });
   });
 
   it('fails a read-only step inside a clone, as a clone has no reader place', async () => {

@@ -514,7 +514,7 @@ async function assignedOverSelection(input: { config: LocalConfig; selection: Te
   const roles = (primary: string | undefined, additional: readonly string[]): string => `primaryRole ${primary ?? 'none'} and additionalRoles [${additional.join(', ')}]`;
   const named = selection.primaryRole ?? selection.additionalRoles[0] ?? '';
 
-  return `The clone's team selection names ${roles(selection.primaryRole, selection.additionalRoles)}, but manifest/members.yaml at team revision ${revision} assigns ${config.username} ${roles(effective.primaryRole, assigned)}, and while that file exists it decides a member's roles, so the clone would not install the selection it names. Remove primaryRole and additionalRoles from the selection to install the roles it assigns, and to run the step with ${named}'s knowledge, also give it role: ${named}.`;
+  return `The clone's team selection names ${roles(selection.primaryRole, selection.additionalRoles)}, but manifest/members.yaml at team revision ${revision} assigns ${config.username} ${roles(effective.primaryRole, assigned)}, and while that file exists it decides a member's roles, so the clone would not install the selection it names. Remove primaryRole and additionalRoles from the selection to install the roles it assigns, and to run the step with ${named}'s knowledge, also give it role: ${named}. A benchmark writes the selection from your roles as the run starts, so run its arm on a team revision whose manifest/members.yaml assigns you the same ones.`;
 }
 
 async function installTeam(input: {

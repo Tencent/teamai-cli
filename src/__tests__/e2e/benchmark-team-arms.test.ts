@@ -141,6 +141,26 @@ describe('benchmark arm team', () => {
     ]);
   }, 240_000);
 
+  it("fails an arm on a team revision whose manifest/members.yaml assigns the member other roles than the ones they run with", async () => {
+    const roles = 'version: 1\nroles:\n  - id: frontend\n    resources: { knowledge: [], skills: [fixer] }\n  - id: review\n    resources: { knowledge: [], skills: [helper] }\n';
+    const members = (role: string): string => `version: 1\nmembers:\n  member: [${role}]\ndefault: []\n`;
+    const { fixture, first } = await twoRevisions((before) => `arms:\n  - name: now\n  - name: before\n    team: ${before}\n`, { 'manifest/members.yaml': members('frontend') }, {
+      firstMore: { 'manifest/roles.yaml': roles, 'manifest/members.yaml': members('review') },
+    });
+
+    const ran = await fixture.teamai(['benchmark', 'run', 'fix']);
+
+    const runId = z.object({ run: z.string() }).parse(envelope(ran).data?.done).run;
+    const { trials } = RecordSchema.parse(fixture.benchmarkRecord(runId));
+    expect(trials.map(({ arm, result }) => ({ arm, result }))).toEqual([{ arm: 'now', result: 'passed' }, { arm: 'before', result: 'error' }]);
+    const failed = z.object({ steps: z.array(z.object({ id: z.string(), failure: z.object({ code: z.string(), message: z.string() }).optional() }).passthrough()) })
+      .parse(fixture.runFile(runId)).steps.flatMap(({ id, failure }) => (failure ? [{ id, failure }] : []));
+    expect(failed).toEqual([{
+      id: 'trials.r1.fix.before.prompt',
+      failure: { code: 'clone_prepare_failed', message: `The clone's team selection names primaryRole frontend and additionalRoles [], but manifest/members.yaml at team revision ${first} assigns member primaryRole review and additionalRoles [], and while that file exists it decides a member's roles, so the clone would not install the selection it names. Remove primaryRole and additionalRoles from the selection to install the roles it assigns, and to run the step with frontend's knowledge, also give it role: frontend. A benchmark writes the selection from your roles as the run starts, so run its arm on a team revision whose manifest/members.yaml assigns you the same ones.` },
+    }]);
+  }, 240_000);
+
   it('runs an arm without a whole namespace directory the member receives, and its clone gets none of its skills', async () => {
     const fixture = await benchmarkFixture({
       tool: 'fixes', sandbox: true, tools: ['claude'],
