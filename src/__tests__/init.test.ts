@@ -218,6 +218,7 @@ vi.mock('../utils/fs.js', async (importOriginal) => ({
   },
   readFileSafe: vi.fn().mockResolvedValue(null),
   readJsonObject: vi.fn().mockResolvedValue({ kind: 'missing' }),
+  readJson5Object: vi.fn().mockResolvedValue({ kind: 'missing' }),
   remove: (p: string) => mockRemove(p),
 }));
 

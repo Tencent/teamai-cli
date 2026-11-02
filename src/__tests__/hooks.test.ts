@@ -9,6 +9,8 @@ vi.mock('../utils/fs.js', () => ({
   readJson: vi.fn(async (filePath: string) => mockFiles[filePath] ?? null),
   readJsonObject: vi.fn(async (filePath: string) => (filePath in mockFiles
     ? { kind: 'ok', value: mockFiles[filePath] } : { kind: 'missing' })),
+  readJson5Object: vi.fn(async (filePath: string) => (filePath in mockFiles
+    ? { kind: 'ok', value: mockFiles[filePath] } : { kind: 'missing' })),
   writeJson: vi.fn(async (filePath: string, data: unknown) => {
     mockFiles[filePath] = JSON.parse(JSON.stringify(data));
   }),
