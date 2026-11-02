@@ -149,11 +149,14 @@ const EVERY_STEP = ['plan', 'trials.baselines.fix', 'trials.r1.fix.claude.prompt
 
 describe('the benchmark workflow, driven from outside', () => {
   it('runs only the trial whose tool the driver lists, and the suite timeout settles the other not_run', async () => {
-    const fixture = await benchmarkFixture({ tool: 'fixes', sandbox: false, suite: twoArms('15s') });
+    // The suite's deadline counts from the start, so it has to leave the plan, the baseline and the claude trial room to
+    // report on a slow runner: the case waits it out, since the codex trial is only settled once it passes.
+    const suiteTimeout = '40s';
+    const fixture = await benchmarkFixture({ tool: 'fixes', sandbox: false, suite: twoArms(suiteTimeout) });
     try {
       const status = fixture.status();
       const baseline = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fixture.teamClone, encoding: 'utf8' }).trim();
-      const runId = await startFixBenchmark(fixture, '15s');
+      const runId = await startFixBenchmark(fixture, suiteTimeout);
 
       const result = await drive(fixture, { run: runId, can: SANDBOX_CLAUDE, prepare: true, maxPolls: 40 });
 
