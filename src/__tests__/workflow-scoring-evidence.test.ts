@@ -13,11 +13,12 @@ vi.mock('node:os', async (importOriginal) => {
 
 import type { LocalConfig } from '../types.js';
 import { collectEvidence, evidencePlan } from '../workflow/scoring-evidence.js';
-import { readRun } from '../workflow/store.js';
+import { readRun, updateRun } from '../workflow/store.js';
+import type { StepState } from '../workflow/step-state.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';
 import { AgentSession } from '../session-flow/agent-session.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
-import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
+import { leaseNext, reportAttempt, startRun, type NextOptions } from '../workflow/engine.js';
 import { nextJudgeLease, scoreOnDemand, submitJudgeLease, type JudgeRequest } from '../workflow/scoring.js';
 import { LabelStore } from '../scorers/label-store.js';
 import { branchName } from '../workflow/workspace.js';
@@ -376,7 +377,7 @@ steps:
 `;
 
 /** A run of SHIP whose `change` step delivered a pagination commit, with the issue's text as `read-issue` returned it. */
-async function deliveredRun(): Promise<{ config: LocalConfig; runId: string; checkout: string }> {
+async function deliveredRun(scorer = SCORER): Promise<{ config: LocalConfig; runId: string; checkout: string }> {
   const checkout = path.join(root, 'app');
   fs.mkdirSync(checkout, { recursive: true });
   git(checkout, 'init', '-q', '-b', 'main');
@@ -390,14 +391,14 @@ async function deliveredRun(): Promise<{ config: LocalConfig; runId: string; che
   fs.mkdirSync(path.join(knowledge, 'workflows'), { recursive: true });
   fs.mkdirSync(path.join(knowledge, 'scorers'), { recursive: true });
   fs.writeFileSync(path.join(knowledge, 'workflows', 'ship-issue.yaml'), SHIP);
-  fs.writeFileSync(path.join(knowledge, 'scorers', 'quality.md'), SCORER);
+  fs.writeFileSync(path.join(knowledge, 'scorers', 'quality.md'), scorer);
   const config: LocalConfig = {
     repo: { localPath: knowledge, remote: 'local', kind: 'self' },
     username: 'tester', scope: 'project', additionalRoles: [], projectRoot: checkout, dataHome: path.join(root, 'data'),
   };
   await syncWorkflowDefinitions(config);
   const runId = String(data(await startRun(config, 'ship-issue', { issue: 42 }, { secrets: await knownSecrets(config), base: { ref: 'main', commit: from }, checkout })).run);
-  const can = { can: { workspace: ['new', 'continue', 'read-only'] } };
+  const can: Omit<NextOptions, 'env'> = { can: { workspace: ['new', 'continue', 'read-only'] } };
   const issue = z.object({ attempt: z.string(), revision: z.number() }).parse(data(await leaseNext(config, runId, external, can)).lease);
   data(await reportAttempt(config, runId, {
     attempt: issue.attempt, revision: issue.revision, outcome: 'success', driver: external, outputs: { title: 'Paginate /users', body: 'Add pagination to /users' },
@@ -413,6 +414,24 @@ async function deliveredRun(): Promise<{ config: LocalConfig; runId: string; che
     outputs: { summary: 'paginated' }, changes: { branch: change.workspace.branch, base: from, from, to, commits: [to] },
   }));
   return { config, runId, checkout };
+}
+
+/** The scorer of #1247's example: a red CI or a failed check gives `partial`, its best label below `passingScore`. */
+const DELIVERED = `---
+labels:
+  - { value: complete, score: 1, description: Delivers what was asked and nothing else. }
+  - { value: partial, score: 0.5, description: Delivers part of what was asked. }
+  - { value: off-target, score: 0, description: Delivers something other than what was asked. }
+passingScore: 1
+samplingRate: 100
+---
+Judge whether the pull request delivers what the issue asked, and only that.
+`;
+
+/** Rewrites the `change` step of run `runId` as `rewrite` leaves it. */
+async function rewriteChange(config: LocalConfig, runId: string, rewrite: (step: StepState) => StepState): Promise<void> {
+  await updateRun(config, runId, await knownSecrets(config), async (run) => (run === 'missing' ? { value: undefined }
+    : { value: undefined, write: { ...run, steps: run.steps.map((step) => (step.id === 'change' ? rewrite(step) : step)) } }));
 }
 
 describe('evidence of what a run delivered', () => {
@@ -445,6 +464,22 @@ describe('evidence of what a run delivered', () => {
     expect(first).toMatchObject({ subject: { runId, step: 'change', pass: 1 }, decidedBy: 'judge', evidenceHash: expect.stringMatching(/^sha256:[0-9a-f]{64}$/) });
     expect(second?.scoredAt).not.toBe(first?.scoredAt);
     expect(second).toMatchObject({ evidenceHash: first && 'evidenceHash' in first ? first.evidenceHash : 'missing' });
+  });
+
+  it('gives a pass whose delivery changed protected paths the best label below passing, decided by protected, with no judge', async () => {
+    const { config, runId } = await deliveredRun(DELIVERED);
+    await rewriteChange(config, runId, (step) => (step.status !== 'delivering' ? step : {
+      ...step, status: 'failed', outcome: 'failed',
+      failure: { code: 'protected_path', message: 'Step "change" changed protected paths against the run base: .github/workflows/ci.yml.' },
+    }));
+
+    const answer = data(await nextJudgeLease(config, request));
+
+    expect(answer).not.toHaveProperty('lease');
+    expect(answer.decided).toEqual([expect.objectContaining({ scorer: 'quality', subject: { runId, step: 'change', pass: 1 }, label: 'partial', passed: false, decidedBy: 'protected' })]);
+    const [label] = await LabelStore.local(config);
+    expect(label).toMatchObject({ label: 'partial', score: 0.5, passed: false, decidedBy: 'protected', judge: { kind: 'model', tool: 'claude' }, evidenceHash: expect.stringMatching(/^sha256:/) });
+    expect(label?.judge).not.toHaveProperty('usage');
   });
 });
 

@@ -106,6 +106,7 @@ async function judge(config: LocalConfig, clock: () => string): Promise<Pick<Dra
     for (const offer of offers) {
       for (;;) {
         const taken = await takeJudgeLease(config, { driver, judge: offer, running: [] }, clock());
+        if (taken.kind !== 'busy' && taken.decided.length > 0) judged.push({ source: 'workflow', scorers: taken.decided.map((attempt) => attempt.scorer) });
         // Of the open entries an idle answer counts, those it did not skip for their model need more isolation.
         if (taken.kind === 'idle') [leftOpen, unmetIsolation] = [taken.skipped, taken.open - taken.skipped.length];
         if (taken.kind !== 'lease' || tried.has(taken.lease.ref)) break;

@@ -12,7 +12,7 @@ import { DriverSchema } from '../driver-identity.js';
 import { getDataHome, type LocalConfig } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { readFileSafe, writeJsonAtomic } from '../utils/fs.js';
-import { ACCESS_LEVELS, ISOLATIONS, JudgeUsageSchema, RunSubjectSchema, SessionLabelContextSchema, SessionSubjectSchema } from './label.js';
+import { ACCESS_LEVELS, DECIDERS, ISOLATIONS, JudgeUsageSchema, RunSubjectSchema, SessionLabelContextSchema, SessionSubjectSchema } from './label.js';
 import { PinnedScorerSchema } from './pin.js';
 
 const ENTRY_ID = /^s[0-9a-f]{13}$/;
@@ -56,7 +56,7 @@ const AttemptBase = {
 const Settled = { settledAt: z.string() };
 const Verdict = {
   labelId: z.string().min(1),
-  verdict: z.object({ label: z.string().min(1), score: z.number(), passed: z.boolean(), version: z.string().min(1) }),
+  verdict: z.object({ label: z.string().min(1), score: z.number(), passed: z.boolean(), version: z.string().min(1), decidedBy: z.enum(DECIDERS).optional() }),
 };
 
 /** A workflow attempt names no source, as every attempt file written before session attempts did. */

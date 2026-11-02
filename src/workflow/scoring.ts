@@ -16,7 +16,7 @@ import {
   AttemptStore, isRunAttempt, JUDGE_FAILURES, newAttemptId, rawOutputPath, scoresDir, type AttemptRecord, type JudgeDriver, type JudgeFailureCode, type LeasedAttempt, type LeasedRunAttempt,
   type LeasedSessionAttempt, type RunAttempt, type ScoreRequest, type SessionAttempt, type SucceededAttempt,
 } from '../scorers/attempts.js';
-import { batchesScorers, JudgeAnswerSchema, verdictsOf } from '../scorers/batch.js';
+import { batchesScorers, JudgeAnswerSchema, verdictsOf, type JudgeAnswer } from '../scorers/batch.js';
 import { cachedScorerNames, pinScorers } from '../scorers/cache.js';
 import { pinnedDefinition, type PinnedScorer } from '../scorers/pin.js';
 import type { ScorerDefinition } from '../scorers/definition.js';
@@ -41,6 +41,7 @@ import { answerSchema, evidenceDirOf, sweepEvidence, type Rubrics } from '../sco
 import { agreedRunMode } from '../launch-context.js';
 import { sessionLabel, SessionWork, writeSessionEvidence, type JudgedSession, type NamedSession, type SessionEntry } from '../session-flow/session-work.js';
 import { buildEvidence, evidenceHash, evidencePlan } from './scoring-evidence.js';
+import { decideBeforeJudge, failingLabel, isDelivered } from './scoring-stages.js';
 import { isUnsettled, judgeablePasses, sameSubject, scoredPasses, verdictEntries, verdictsFrozen } from './scoring-entries.js';
 import { error, ok } from './engine.js';
 import { stepDefinitions } from './scope.js';
@@ -354,8 +355,11 @@ type OneLease =
   | { kind: 'lease'; lease: Awaited<ReturnType<typeof leaseAnswer>>; skipped: SkippedEntry[] }
   | { kind: 'idle'; open: number; leased: number; skipped: SkippedEntry[] };
 
-/** `busy`: another process holds the attempts lock. */
-export type TakenLease = (OneLease & { closed: ClosedEntry[] }) | { kind: 'busy' };
+/**
+ * `busy`: another process holds the attempts lock. `decided`: the labels a stage before the judge gave while the lease
+ * was looked for (#1247), each entry settled with no judge.
+ */
+export type TakenLease = (OneLease & { closed: ClosedEntry[]; decided: SucceededAttempt[] }) | { kind: 'busy' };
 
 /**
  * The one way to get judge work; `workflow next` never hands it out. Releases a live lease of this driver that it no
@@ -370,19 +374,23 @@ export type TakenLease = (OneLease & { closed: ClosedEntry[] }) | { kind: 'busy'
  */
 export async function takeJudgeLease(config: LocalConfig, request: JudgeRequest, now: string): Promise<TakenLease> {
   const earlier: ClosedEntry[] = [];
+  const decided: SucceededAttempt[] = [];
   for (;;) {
     const taken = await takeOneLease(config, request, now);
     switch (taken.kind) {
       case 'evidence_empty':
         earlier.push(...taken.closed);
         // A named session is open again after a failed attempt, so reading it again would fail again.
-        if (request.entries?.source === 'session') return { kind: 'idle', open: 0, leased: 0, skipped: [], closed: earlier };
+        if (request.entries?.source === 'session') return { kind: 'idle', open: 0, leased: 0, skipped: [], closed: earlier, decided };
+        break;
+      case 'decided':
+        decided.push(...taken.attempts);
         break;
       case 'raced':
         break;
       case 'lease':
       case 'idle':
-        return { ...taken, closed: earlier };
+        return { ...taken, closed: earlier, decided };
       case 'busy':
         return taken;
       default: {
@@ -473,7 +481,16 @@ export async function openJudgeEntries(config: LocalConfig, now: string): Promis
   return [...runs, ...sessions].filter((entry) => isOpenEntry(entry, { limited, released: new Set(), named: false })).length;
 }
 
-async function takeOneLease(config: LocalConfig, request: JudgeRequest, now: string): Promise<OneLease | { kind: 'busy' } | { kind: 'evidence_empty'; closed: ClosedEntry[] } | { kind: 'raced' }> {
+/** The answer a stage gives the members of a lease: each scorer's best label below passing, with what decided it. */
+function stageAnswer(members: Members, reasoning: string): JudgeAnswer {
+  const [only, ...more] = members;
+  const answer = (member: Member) => ({ label: failingLabel(member.entry.definition).value, reasoning });
+  return more.length === 0 ? answer(only) : Object.fromEntries(members.map((member) => [member.entry.definition.name, answer(member)]));
+}
+
+async function takeOneLease(
+  config: LocalConfig, request: JudgeRequest, now: string,
+): Promise<OneLease | { kind: 'busy' } | { kind: 'evidence_empty'; closed: ClosedEntry[] } | { kind: 'decided'; attempts: SucceededAttempt[] } | { kind: 'raced' }> {
   const requested = await requestedEntries(config, request, now);
   if (!requested) return { kind: 'idle', open: 0, leased: 0, skipped: [] };
   const { scoring, all, runs, sessions, captured, named } = requested;
@@ -648,6 +665,15 @@ async function takeOneLease(config: LocalConfig, request: JudgeRequest, now: str
         await fs.rm(evidenceDir(config, attempt.attempt), { recursive: true, force: true, maxRetries: 3 });
         return { kind: 'evidence_empty', closed: leased.members.map((member) => ({ ref: leaseRefOf(member.attempt), code: built.code })) };
       }
+      const stage = isDelivered(entry.run, entry.subject) ? decideBeforeJudge(entry.run, entry.subject) : { kind: 'judge' as const };
+      if (stage.kind === 'decided') {
+        // Published with the next label a judge submits, or by the caller, as a drain publishes once at its end.
+        const settled = await labelJudgeLease(config, leaseRefOf(attempt), {
+          driver: request.driver, outcome: 'success', answer: stageAnswer(leased.members, stage.reasoning),
+        }, now, { decidedBy: stage.by, publish: false });
+        if ('error' in settled) return settled.error.code === 'busy' ? { kind: 'busy' } : { kind: 'raced' };
+        return { kind: 'decided', attempts: [...settled.attempts] };
+      }
       return { kind: 'lease', lease: await leaseAnswer(config, { source: 'workflow', members: leased.members, handedBack: leased.handedBack }), skipped };
     }
     case 'session': {
@@ -679,9 +705,13 @@ export async function nextJudgeLease(config: LocalConfig, request: JudgeRequest,
   const taken = await takeJudgeLease(config, request, now);
   switch (taken.kind) {
     case 'lease':
-      return ok({ lease: taken.lease, ...(taken.closed.length ? { closed: taken.closed } : {}), ...(taken.skipped.length ? { skipped: taken.skipped } : {}) });
-    case 'idle':
-      return ok({ idle: { open: taken.open, leased: taken.leased }, ...(taken.closed.length ? { closed: taken.closed } : {}), ...(taken.skipped.length ? { skipped: taken.skipped } : {}) });
+    case 'idle': {
+      const found = taken.kind === 'lease' ? { lease: taken.lease } : { idle: { open: taken.open, leased: taken.leased } };
+      return ok({
+        ...found, ...(taken.closed.length ? { closed: taken.closed } : {}), ...(taken.skipped.length ? { skipped: taken.skipped } : {}),
+        ...(taken.decided.length ? { decided: taken.decided.map((attempt) => labelAnswer(config, attempt)) } : {}),
+      });
+    }
     case 'busy':
       return error('busy', 'The judge attempts are locked by another process. Ask again.');
     default: {
@@ -745,8 +775,8 @@ type Returned = { kind: 'returned'; status: 'released' | 'failed' };
 type SubmittedLease = SettledLease | Returned;
 
 function labelAnswer(config: LocalConfig, attempt: SucceededAttempt): Record<string, unknown> {
-  const { label, score, passed, version } = attempt.verdict;
-  return { scorer: attempt.scorer, subject: attempt.subject, label, score, passed, labelId: attempt.labelId, reasoning: reasoningPath(config, version) };
+  const { label, score, passed, version, decidedBy } = attempt.verdict;
+  return { scorer: attempt.scorer, subject: attempt.subject, label, score, passed, ...(decidedBy ? { decidedBy } : {}), labelId: attempt.labelId, reasoning: reasoningPath(config, version) };
 }
 
 /** `{ label }` for a lease of one scorer, `{ labels }` in the step's order for a batch. */
@@ -1029,7 +1059,8 @@ async function labelMembers<T extends LeasedAttempt>({ config, submission, now, 
     const { id, version } = await LabelStore.append(config, label, verdict.reasoning, prompt);
     if (!label.passed) log.info(shareFailedLabelHint(reasoningPath(config, version), sessionId));
     const succeeded = toSucceeded(attempt, {
-      settledAt: now, ...usageOnHead(submission, members, attempt), labelId: id, verdict: { label: label.label, score: label.score, passed: label.passed, version },
+      settledAt: now, ...usageOnHead(submission, members, attempt), labelId: id,
+      verdict: { label: label.label, score: label.score, passed: label.passed, version, ...(label.source === 'workflow' && label.decidedBy ? { decidedBy: label.decidedBy } : {}) },
     });
     await AttemptStore.write(config, succeeded);
     return succeeded;
@@ -1296,7 +1327,7 @@ export async function judgeRunEntries(config: LocalConfig, runId: string, cwd: s
     if (signal?.aborted) return { kind: 'stopped' };
     const taken = await takeJudgeLease(config, { driver, judge: { isolation: 'verified', tools: [tool, ...tools] }, running: [], entries: { source: 'workflow', ids: entries } }, new Date().toISOString());
     if (taken.kind === 'busy') return taken;
-    count += taken.closed.length;
+    count += taken.closed.length + taken.decided.length;
     if (taken.kind === 'idle') {
       if (count > 0) return { kind: 'settled', count };
       return skipped(taken.skipped.map((entry) => entry.message).join(' ') || (taken.leased > 0 ? 'another driver holds their judge leases' : 'no judge here meets the isolation they need'));
@@ -1383,6 +1414,11 @@ export async function scoreOnDemand(config: LocalConfig, demand: ScoreDemand, no
   for (;;) {
     const taken = await takeJudgeLease(config, { driver, judge: { isolation: 'verified', tools: [tool, ...tools] }, running: [], entries: { source: 'workflow', ids } }, now);
     if (taken.kind === 'busy') return error('busy', 'The judge attempts are locked by another process. Ask again.');
+    if (taken.decided.length > 0) {
+      labelled.push(...taken.decided);
+      const delivered = await publishLabels(config, { kind: 'labelled', attempts: taken.decided });
+      published &&= 'published' in delivered && delivered.published;
+    }
     if (taken.closed.some((closed) => closed.code === 'evidence_empty')) {
       return error('evidence_empty', 'No recorded evidence could be read for this pass. Restore its commits or session, then run this command again.');
     }
