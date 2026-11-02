@@ -564,6 +564,26 @@ describe('evidence of what a run delivered', () => {
     expect(data(await nextJudgeLease(config, request))).toMatchObject({ idle: { open: 0 } });
   });
 
+  it('gives two passes that delivered two pull requests a label each, told apart by subject.pass', async () => {
+    const { config, runId, checkout } = await deliveredRun(DELIVERED);
+    await deliverChange(config, runId, checkout);
+    // A loop ran `change` again: its first pass is kept in passes, and the second delivered pull request 58.
+    await rewriteChange(config, runId, (step) => {
+      if (step.status !== 'succeeded' || !step.delivery || !step.changes) return step;
+      const first = { pass: 1, outcome: 'success' as const, changes: step.changes, delivery: step.delivery };
+      return { ...step, pass: 2, passes: [first], delivery: { ...step.delivery, branch: `${step.delivery.branch}-2` } };
+    }, (run) => ({ ...run, deliveries: [...run.deliveries ?? [], { url: PrUrlSchema.parse('https://github.com/acme/app/pull/58'), branch: 'p2', base: 'main', step: 'change', pass: 2 }] }));
+    fakeGh(path.join(root, 'gh'), { checks: { runs: [{ status: 'completed', conclusion: 'failure' }] } });
+
+    const answer = data(await nextJudgeLease(config, request));
+
+    expect(answer.decided).toEqual([
+      expect.objectContaining({ subject: { runId, step: 'change', pass: 1 }, decidedBy: 'ci' }),
+      expect.objectContaining({ subject: { runId, step: 'change', pass: 2 }, decidedBy: 'ci' }),
+    ]);
+    expect((await LabelStore.local(config)).map((label) => label.subject)).toEqual([{ runId, step: 'change', pass: 1 }, { runId, step: 'change', pass: 2 }]);
+  });
+
   it('hands a delivered pull request whose CI is still running to the judge, as one with no CI', async () => {
     const { config, runId, checkout } = await deliveredRun(DELIVERED);
     await deliverChange(config, runId, checkout);
