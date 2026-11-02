@@ -1,6 +1,8 @@
 import fse from 'fs-extra';
 import crypto from 'node:crypto';
 import path from 'node:path';
+import { z } from 'zod';
+import type { JsonValue } from '../types.js';
 import { log } from './logger.js';
 import { expandHome } from './home.js';
 
@@ -17,6 +19,18 @@ export function isIgnored(name: string): boolean {
 }
 
 export { expandHome } from './home.js';
+
+const ErrnoErrorSchema = z.object({ code: z.string() });
+
+/**
+ * The error code (`ENOENT`, `EACCES`, ...) a failed fs or child-process call
+ * carries, or undefined when the thrown value has none.
+ */
+export function errnoCode(cause: unknown): string | undefined {
+  const parsed = ErrnoErrorSchema.safeParse(cause);
+
+  return parsed.success ? parsed.data.code : undefined;
+}
 
 /**
  * Ensure a directory exists
@@ -46,7 +60,7 @@ export async function readFileIfExists(filePath: string): Promise<string | null>
   try {
     return await fse.readFile(expandHome(filePath), 'utf-8');
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    if (errnoCode(error) === 'ENOENT') return null;
     throw error;
   }
 }
@@ -74,7 +88,7 @@ export async function symlinkTarget(filePath: string): Promise<string> {
     try {
       if (!(await fse.lstat(target)).isSymbolicLink()) return target;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return target;
+      if (errnoCode(error) === 'ENOENT') return target;
       throw error;
     }
 
@@ -114,7 +128,7 @@ export async function writeFileAtomic(
   try {
     if (options?.mode === undefined) mode = (await fse.stat(expanded)).mode & 0o777;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    if (errnoCode(error) !== 'ENOENT') throw error;
   }
 
   const tmp = `${expanded}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
@@ -160,20 +174,21 @@ export async function readJsonObject(filePath: string): Promise<JsonObjectRead> 
   if (raw === null) return { kind: 'missing' };
 
   try {
-    const value: unknown = JSON.parse(raw);
+    // JSON.parse returns `any`; what it builds is a JsonValue by construction.
+    const value: JsonValue = JSON.parse(raw);
 
-    return value && typeof value === 'object' && !Array.isArray(value)
-      ? { kind: 'ok', value: value as Record<string, unknown> }
+    return value instanceof Object && !Array.isArray(value)
+      ? { kind: 'ok', value }
       : { kind: 'invalid', error: 'not a JSON object' };
   } catch (e) {
-    return { kind: 'invalid', error: (e as Error).message };
+    return { kind: 'invalid', error: e instanceof Error ? e.message : String(e) };
   }
 }
 
 /**
  * Write JSON file
  */
-export async function writeJson(filePath: string, data: unknown): Promise<void> {
+export async function writeJson<T>(filePath: string, data: T): Promise<void> {
   await writeFile(filePath, JSON.stringify(data, null, 2) + '\n');
 }
 
@@ -192,9 +207,9 @@ export async function writeJson(filePath: string, data: unknown): Promise<void> 
  * @param options.mode - Force permission bits instead of preserving the target.
  * @param options.compact - Write without indentation, for a large file no one reads by hand.
  */
-export async function writeJsonAtomic(
+export async function writeJsonAtomic<T>(
   filePath: string,
-  data: unknown,
+  data: T,
   options?: { mode?: number; compact?: boolean },
 ): Promise<void> {
   const expanded = expandHome(filePath);
@@ -206,7 +221,7 @@ export async function writeJsonAtomic(
     try {
       mode = (await fse.stat(expanded)).mode & 0o777;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      if (errnoCode(error) !== 'ENOENT') throw error;
     }
   }
 

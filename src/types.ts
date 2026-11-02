@@ -67,11 +67,18 @@ export const ToolPathsSchema = z.object({
     .optional(),
 });
 
+/** Tool paths keyed by tool id: the `toolPaths` section of a team config. */
+const ToolPathsTableSchema = z.record(z.string(), ToolPathsSchema);
+
 // ─── Scope ──────────────────────────────────────────────
 
-const unknownScopeError = (issue: { input?: unknown }) => typeof issue.input === 'string'
-  ? `scope "${issue.input}" is not one this teamai knows; a newer teamai may have written it. Run \`teamai update\``
-  : undefined;
+const unknownScopeError = (issue: { input?: unknown }) => {
+  const scope = z.string().safeParse(issue.input);
+
+  return scope.success
+    ? `scope "${scope.data}" is not one this teamai knows; a newer teamai may have written it. Run \`teamai update\``
+    : undefined;
+};
 
 export const ScopeEnum = z.enum(['user', 'project'], { error: unknownScopeError });
 
@@ -218,15 +225,12 @@ export const SharingConfigSchema = z.object({
 /** Defaulted view of the optional `sharing.intervention` config. */
 export function getInterventionSharing(config: {
   sharing?: { intervention?: { correctionKeywords?: string[] } };
-}): { correctionKeywords: string[] } {
+}) {
   return { correctionKeywords: config.sharing?.intervention?.correctionKeywords ?? [] };
 }
 
 /** Defaulted view of the optional `sharing.hooks` config. */
-export function getHooksSharing(config: { sharing?: { hooks?: { autoApply?: boolean; requireTeamScripts?: boolean } } }): {
-  autoApply: boolean;
-  requireTeamScripts: boolean;
-} {
+export function getHooksSharing(config: { sharing?: { hooks?: { autoApply?: boolean; requireTeamScripts?: boolean } } }) {
   const h = config.sharing?.hooks;
 
   return {
@@ -238,7 +242,7 @@ export function getHooksSharing(config: { sharing?: { hooks?: { autoApply?: bool
 /** Defaulted view of the optional `sharing.mcp` config. */
 export function getMcpSharing(config: {
   sharing?: { mcp?: { autoApply?: boolean; allowedCommands?: string[]; allowedHosts?: string[] } };
-}): { autoApply: boolean; allowedCommands: string[]; allowedHosts: string[] } {
+}) {
   const m = config.sharing?.mcp;
 
   return {
@@ -249,9 +253,7 @@ export function getMcpSharing(config: {
 }
 
 /** Defaulted view of the optional `sharing.recall` config. */
-export function getRecallSharing(config: { sharing?: { recall?: { enabled?: boolean } } }): {
-  enabled: boolean;
-} {
+export function getRecallSharing(config: { sharing?: { recall?: { enabled?: boolean } } }) {
   return { enabled: config.sharing?.recall?.enabled ?? false };
 }
 
@@ -803,9 +805,9 @@ export const TeamaiConfigBaseSchema = z.object({
   // A team's `toolPaths` section merges over the built-in defaults tool by tool (#1185):
   // each tool named in the team config overrides that tool's default entry whole,
   // while built-in tools not named by the team retain their defaults.
-  toolPaths: z.record(z.string(), ToolPathsSchema)
+  toolPaths: ToolPathsTableSchema
     .default({})
-    .transform((custom): Record<string, z.infer<typeof ToolPathsSchema>> => ({
+    .transform((custom): z.infer<typeof ToolPathsTableSchema> => ({
       ...DEFAULT_TOOL_PATHS,
       ...custom,
     })),
@@ -1460,6 +1462,12 @@ export interface ResourceItem {
   fromInactiveNamespace?: true;
   /** When placed into a namespace, the original relative path superseded by this item. */
   supersedes?: string;
+  /** Agents only: the blob this machine placed at the file this push replaces (`AgentItem.deliveredBlob`). */
+  deliveredBlob?: string;
+  /** Agents only: reached through a placement record that holds no delivered blob yet (`AgentItem.needsDeliveredBlob`). */
+  needsDeliveredBlob?: boolean;
+  /** Repo-backed resources placed into a namespace: the shared-root path the author keeps editing. */
+  prePlacementPath?: string;
 }
 
 export interface ResourceDiff {
@@ -1559,6 +1567,33 @@ export interface HookDef {
   tools?: string[];
 }
 
+// ─── Hook payloads (what an agent sends a hook on stdin) ─────
+
+/**
+ * The fields of an agent's hook payload that teamai's shared hook helpers
+ * read. A field of the wrong type reads as absent; every other field is kept.
+ * The tool fields are PostToolUse's: `tool_response` (Claude and the agents
+ * that copy it), Cursor's `tool_output` string, Copilot's `tool_result`, and a
+ * generated bridge's normalized `tool_status`.
+ */
+export const HookPayloadSchema = z.looseObject({
+  session_id: z.string().optional().catch(undefined),
+  sessionId: z.string().optional().catch(undefined),
+  /** Cursor's session id on its tool hooks. */
+  conversation_id: z.string().optional().catch(undefined),
+  cwd: z.string().optional().catch(undefined),
+  /** Cursor SessionStart's stand-in for `cwd`; a root that is not a string is null. */
+  workspace_roots: z.array(z.string().nullable().catch(null)).optional().catch(undefined),
+  tool_name: z.string().optional().catch(undefined),
+  tool_input: z.record(z.string(), z.unknown()).optional().catch(undefined),
+  tool_response: z.unknown().optional(),
+  tool_output: z.string().optional().catch(undefined),
+  tool_result: z.unknown().optional(),
+  tool_status: z.enum(['success', 'failure', 'unknown']).optional().catch(undefined),
+});
+
+export type HookPayload = z.infer<typeof HookPayloadSchema>;
+
 // ─── MCP server definitions ──────────────────────────────
 //
 //  Team-declared MCP servers (mcp/mcp.yaml) are parsed into this tool-neutral
@@ -1656,13 +1691,13 @@ export type ManagedMcpManifest = Record<string, ManagedMcpRecord[]>;
  * target can update and clean what the other's pull wrote, instead of a
  * per-tool claim the sibling's reconcile would skip as foreign.
  */
-const MCP_MANIFEST_KEY_ALIAS: Readonly<Record<string, string>> = {
+const MCP_MANIFEST_KEY_ALIAS: ReadonlyMap<string, string> = new Map([
   // Trae and Trae CN map the same <root>/.trae/mcp.json (#904).
-  'trae-cn': 'trae',
-};
+  ['trae-cn', 'trae'],
+]);
 
 export function managedMcpManifestKey(tool: string, projectScope: boolean): string {
-  const owner = MCP_MANIFEST_KEY_ALIAS[tool] ?? tool;
+  const owner = MCP_MANIFEST_KEY_ALIAS.get(tool) ?? tool;
 
   return projectScope ? `${owner}:project` : owner;
 }
@@ -2929,7 +2964,12 @@ function isAddressableRootSegment(segment: string): boolean {
  * here for `applyToolRoots` to move. A stale record of either root is not caught
  * by that check.
  */
-export const RELOCATABLE_TOOLS: Readonly<Record<string, RelocatableTool>> = {
+/** Every relocatable tool root, keyed by the name `toolRoots` records it under. */
+export interface RelocatableToolTable {
+  readonly [tool: string]: RelocatableTool;
+}
+
+export const RELOCATABLE_TOOLS: RelocatableToolTable = {
   [CLAUDE_TOOL_ID]: { label: 'Claude Code', envVar: 'CLAUDE_CONFIG_DIR', defaultRoot: DEFAULT_CLAUDE_ROOT },
   [CODEX_TOOL_ID]: { label: 'Codex', envVar: 'CODEX_HOME', defaultRoot: DEFAULT_CODEX_ROOT },
   [CURSOR_DATA_TOOL_ID]: { label: 'Cursor transcripts', envVar: 'CURSOR_DATA_DIR', defaultRoot: DEFAULT_CURSOR_ROOT },
@@ -3257,7 +3297,7 @@ export function applyToolRoots(
 function applyWorkBuddyGeneration(
   toolPaths: Record<string, z.infer<typeof ToolPathsSchema>>,
   localConfig: { scope?: Scope; projectRoot?: string },
-): Record<string, z.infer<typeof ToolPathsSchema>> {
+): z.infer<typeof ToolPathsTableSchema> {
   const workbuddy = toolPaths[WORKBUDDY_TOOL_ID];
 
   if (!workbuddy || workbuddy.skills !== '.workbuddy/skills') return toolPaths;
@@ -3315,15 +3355,13 @@ export function scopedToolPaths(
       continue;
     }
 
-    const scoped = {
-      ...paths,
-      ...(us.skills !== undefined ? { skills: us.skills } : {}),
-      ...(typeof us.rules === 'string' ? { rules: us.rules } : {}),
-      ...(us.settings !== undefined ? { settings: us.settings } : {}),
-      ...(us.agents !== undefined ? { agents: us.agents } : {}),
-      ...(us.hooks !== undefined ? { hooks: us.hooks } : {}),
-      ...(us.claudemd !== undefined ? { claudemd: us.claudemd } : {}),
-    };
+    const scoped = { ...paths };
+
+    for (const key of ['skills', 'rules', 'settings', 'agents', 'hooks', 'claudemd'] as const) {
+      const override = us[key];
+
+      if (override !== undefined && override !== null) scoped[key] = override;
+    }
 
     // `rules: null`: no rules directory in user scope.
     if (us.rules === null) delete scoped.rules;
@@ -3638,9 +3676,16 @@ export function legacyManagedHooksPath(projectRoot: string): string {
  * rather than throwing — so read-only callers like `doctor` never crash on a
  * partially-broken config.
  */
+/** Where hooks for a config are written, and the scope their tool paths resolve at. */
+export interface HookScopeResolution {
+  baseDir: string;
+  manifestPath: string;
+  scope: Scope;
+}
+
 export function resolveHookScope(
   localConfig: LocalConfig,
-): { baseDir: string; manifestPath: string; scope: Scope } {
+): HookScopeResolution {
   const selfWithRoot = isSelfMode(localConfig) && !!localConfig.projectRoot;
 
   if (localConfig.scope === 'project' && !selfWithRoot) {
@@ -3948,7 +3993,7 @@ export function getWebhookSharing(config: {
       enabled?: boolean;
       endpoints?: Array<{
         url: string;
-        type: string;
+        type: WebhookEndpoint['type'];
         secret?: string;
         events?: string[];
         timeout?: number;
@@ -3967,7 +4012,7 @@ export function getWebhookSharing(config: {
     // rejected the (unsigned) webhook (#703).
     endpoints: (w?.endpoints ?? []).map((ep) => ({
       url: ep.url,
-      type: ep.type as 'feishu' | 'wecom' | 'json',
+      type: ep.type,
       secret: ep.secret,
       events: ep.events ?? ['push', 'pull', 'skill-use', 'session-start', 'session-stop'],
       timeout: ep.timeout ?? 5000,
