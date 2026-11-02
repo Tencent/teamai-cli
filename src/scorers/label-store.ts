@@ -11,7 +11,7 @@ import { getReportsDir, isUsageReportEnabled, usesBranchWorktree, type LocalConf
 import { readFileSafe, writeFileAtomic, writeJsonAtomic } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { AttemptStore, isDecidedBeforeJudge, isRunAttempt, scoresDir } from './attempts.js';
-import { labelId, labelVersion, newestLabels, parseScoreLabel, parseScoreLabels, type Decider, type JudgeUsage, type ScoreLabel } from './label.js';
+import { isStageDecider, labelId, labelVersion, newestLabels, parseScoreLabel, parseScoreLabels, type Decider, type JudgeUsage, type ScoreLabel } from './label.js';
 
 function labelsFile(config: LocalConfig): string {
   return path.join(scoresDir(config), 'labels.jsonl');
@@ -238,7 +238,7 @@ export const LabelStore = {
       return total;
     }
     for (const label of newestLabels(await publishedLabels(config))) {
-      if (label.source !== 'workflow' || label.subject.runId !== runId || label.judge.kind !== 'model' || (label.decidedBy ?? 'judge') !== 'judge') continue;
+      if (label.source !== 'workflow' || label.subject.runId !== runId || label.judge.kind !== 'model' || isStageDecider(label.decidedBy)) continue;
       total.judged += 1;
       addUsage(total, label.judge.usage);
     }

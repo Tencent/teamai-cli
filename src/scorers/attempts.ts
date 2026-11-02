@@ -12,7 +12,7 @@ import { DriverSchema } from '../driver-identity.js';
 import { getDataHome, type LocalConfig } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { readFileSafe, writeJsonAtomic } from '../utils/fs.js';
-import { ACCESS_LEVELS, DECIDERS, ISOLATIONS, JudgeUsageSchema, RunSubjectSchema, SessionLabelContextSchema, SessionSubjectSchema } from './label.js';
+import { ACCESS_LEVELS, DECIDERS, isStageDecider, ISOLATIONS, JudgeUsageSchema, RunSubjectSchema, SessionLabelContextSchema, SessionSubjectSchema } from './label.js';
 import { PinnedScorerSchema } from './pin.js';
 
 const ENTRY_ID = /^s[0-9a-f]{13}$/;
@@ -101,7 +101,7 @@ export function isRunAttempt(attempt: AttemptRecord): attempt is RunAttempt {
 
 /** A stage settled this attempt before any judge ran (#1247): it labelled the pass, or found its check could not run. */
 export function isDecidedBeforeJudge(attempt: AttemptRecord): boolean {
-  if (attempt.status === 'succeeded') return (attempt.verdict.decidedBy ?? 'judge') !== 'judge';
+  if (attempt.status === 'succeeded') return isStageDecider(attempt.verdict.decidedBy);
   return attempt.status === 'failed' && attempt.code === 'check_could_not_run';
 }
 

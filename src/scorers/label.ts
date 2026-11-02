@@ -85,6 +85,11 @@ export type SessionLabel = z.infer<typeof SessionLabelSchema>;
 export const DECIDERS = ['check', 'ci', 'protected', 'judge'] as const;
 export type Decider = (typeof DECIDERS)[number];
 
+/** Whether a check, CI or protected-path stage decided a label before any judge ran. A label from before #1247 has none: a judge decided it. */
+export function isStageDecider(by: Decider | undefined): boolean {
+  return by !== undefined && by !== 'judge';
+}
+
 /** Unknown keys are dropped, so a label a newer teamai wrote still reads here. */
 export const ScoreLabelSchema = z.discriminatedUnion('source', [
   z.object({
