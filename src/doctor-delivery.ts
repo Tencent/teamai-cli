@@ -230,7 +230,7 @@ export function nameList(names: string[]): string {
 }
 
 /** One check per gate a tool's read of `held` waits on: the tool's own verdict on this project (`read-gates.ts`). */
-async function readGateChecks(gates: readonly ReadGate[], held: Held): Promise<Check[]> {
+export async function readGateChecks(gates: readonly ReadGate[], held: Held): Promise<Check[]> {
   return Promise.all(gates.map(async (gate): Promise<Check> => {
     const verdict = await readGateVerdict(gate, held);
     return {

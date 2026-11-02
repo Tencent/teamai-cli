@@ -454,20 +454,21 @@ async function buildHookChecks(
       continue;
     }
     if (tool === 'openclaw') {
-      // OpenClaw has no settings file: its hook is a workspace hook directory,
-      // which OpenClaw loads only once openclaw.json enables its entry.
-      const { isOpenclawHookEnabled, OPENCLAW_HOOK_DIR, OPENCLAW_HOOK_KEY } = await import('./openclaw-hooks.js');
-      const hooksDir = ownOf(await locate(tool, 'hooks', install))?.path;
+      // OpenClaw has no settings file: its hook is a workspace hook directory, and the
+      // team's hooks a plugin. openclaw.json decides whether each loads (the gates `locate` declares).
+      const { OPENCLAW_HOOK_DIR } = await import('./openclaw-hooks.js');
+      const { readGateChecks } = await import('./doctor-delivery.js');
+      const where = await locate(tool, 'hooks', install);
+      const hooksDir = ownOf(where)?.path;
       if (!hooksDir || !await pathExists(path.join(hooksDir, OPENCLAW_HOOK_DIR))) continue;
-      checks.push({
-        name: 'OpenClaw hook enabled',
-        source: 'local',
-        check: isOpenclawHookEnabled,
-        fix: `OpenClaw loads teamai's hook only when openclaw.json sets hooks.internal.entries.${OPENCLAW_HOOK_KEY}.enabled `
-          + `(and internal hooks are not switched off), so OpenClaw sends no status report or sync. `
-          + `Run \`openclaw hooks enable ${OPENCLAW_HOOK_KEY}\`. If it is enabled already, openclaw.json is not plain JSON `
-          + `(comments, JSON5), which teamai cannot read: \`openclaw hooks info ${OPENCLAW_HOOK_KEY}\` shows what OpenClaw sees.`,
-      });
+      for (const gate of where.channel === 'files' ? where.readGates : []) {
+        if (gate.kind === 'openclaw-plugins-enabled') {
+          if (!await pathExists(gate.plugin)) continue;
+          checks.push(...await readGateChecks([gate], { summary: `${gate.plugin} holds the team's hooks`, noun: 'hooks', names: [] }));
+        } else {
+          checks.push(...await readGateChecks([gate], { summary: `${path.join(hooksDir, OPENCLAW_HOOK_DIR)} holds teamai's hook`, noun: 'hook', names: [] }));
+        }
+      }
       continue;
     }
     const settings = hookToolPaths[tool]?.settings;

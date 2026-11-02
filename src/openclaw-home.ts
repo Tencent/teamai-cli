@@ -10,6 +10,14 @@ export function resolveOpenclawStateDir(): string {
   return toolHome('openclaw');
 }
 
+/** The plugin that runs the team's hooks in OpenClaw: its id, which is also its `plugins.entries` key. */
+export const OPENCLAW_TEAM_HOOK_PLUGIN = 'teamai-team-hooks';
+
+/** Where teamai writes that plugin under the state dir. */
+export function openclawTeamHookPluginIn(stateDir: string, host: Host = realHost()): string {
+  return host.path.join(stateDir, 'teamai', `${OPENCLAW_TEAM_HOOK_PLUGIN}.mjs`);
+}
+
 /** The `openclaw.json` OpenClaw reads: `OPENCLAW_CONFIG_PATH`, else the state dir's. */
 export function resolveOpenclawConfigPath(host: Host = realHost(), stateDir: string = resolveOpenclawStateDir()): string {
   const p = host.path;

@@ -83,10 +83,10 @@ export type FilesRow = RowCommon & {
     /** The root of a `workspaceUnder` or `cwdOnly` read: the project root unless the row says otherwise. */
     readonly root?: Spot;
   }[] | 'unknown';
-  /** Each gate's files: `config` for most; `settings` a second file (Pi's `defaultProjectTrust`); Cursor's `projects` and `cliConfig`. */
+  /** Each gate's files: `config` for most; `settings` a second file (Pi's `defaultProjectTrust`); Cursor's `projects` and `cliConfig`; OpenClaw's `plugin`. A gate on the checkout names it. */
   readonly readGates?: readonly {
-    readonly kind: ReadGateKind; readonly checkout: Spot;
-    readonly config?: Spot; readonly settings?: Spot; readonly projects?: Spot; readonly cliConfig?: Spot;
+    readonly kind: ReadGateKind; readonly checkout?: Spot;
+    readonly config?: Spot; readonly settings?: Spot; readonly projects?: Spot; readonly cliConfig?: Spot; readonly plugin?: Spot;
   }[];
   /** OpenCode's `instructions` key (rules, blocks); null when the row omits it and the location has the field. */
   readonly activation?: PlaceSpec;
@@ -221,9 +221,8 @@ function expectFiles(row: FilesRow, where: Location, cell: Cell, host: Host): vo
     ...(read.shadowedBy === undefined ? {} : { shadowedBy: at(read.shadowedBy, cell) }),
     ...(read.when === 'always' ? { when: read.when } : { when: read.when, root: at(read.root ?? '<root>', cell) }),
   })));
-  expect(where.readGates).toEqual((row.readGates ?? []).map(({ kind, checkout, ...files }) => ({
+  expect(where.readGates).toEqual((row.readGates ?? []).map(({ kind, ...files }) => ({
     kind,
-    checkout: at(checkout, cell),
     ...Object.fromEntries(Object.entries(files).flatMap(([field, spot]) => spot === undefined ? [] : [[field, at(spot, cell)]])),
   })));
   if ('activation' in where) expect(where.activation).toEqual(row.activation === undefined ? null : expect.objectContaining(placeOf(row.activation, cell)));

@@ -122,7 +122,8 @@ export type RunTimeVia = 'session-hook' | 'extension' | 'plugin';
  * project's MCP servers. `read-gates.ts` evaluates each one.
  */
 export type ReadGateKind = 'codex-project-trust' | 'pi-project-trust' | 'muse-workspace-trust' | 'copilot-folder-trust' | 'qoder-folder-trust'
-  | 'qoder-mcp-approval' | 'claude-mcp-approval' | 'codebuddy-mcp-approval' | 'cursor-mcp-approval' | 'claude-hooks-enabled';
+  | 'qoder-mcp-approval' | 'claude-mcp-approval' | 'codebuddy-mcp-approval' | 'cursor-mcp-approval' | 'claude-hooks-enabled'
+  | 'openclaw-hooks-enabled' | 'openclaw-plugins-enabled';
 
 /** The frontmatter teamai writes above its blocks when it creates an owned blocks file a rules loader reads. */
 export type BlocksHeader = 'always-apply' | 'apply-to-all' | 'trigger-always-on' | 'inclusion-always';
@@ -231,7 +232,7 @@ export type HookSettings<R> = { readonly channel: 'settings'; readonly format: H
 
 /** A file or directory of teamai's own the tool loads from its home, written by the tool's own adapter. */
 export type HookAdapterId = 'opencode-plugin' | 'pi-extension' | 'omp-extension' | 'hermes-plugin' | 'openclaw-hook' | 'dsh-hooks' | 'kiro-hooks' | 'agy-hooks';
-export type HookAdapter = { readonly channel: 'adapter'; readonly adapter: HookAdapterId; readonly evidence: Evidence };
+export type HookAdapter = { readonly channel: 'adapter'; readonly adapter: HookAdapterId; readonly evidence: Evidence; readonly readGates?: readonly ReadGateKind[] };
 
 /**
  * Where teamai installs the tool's hooks. A workspace takes the user hooks
@@ -1265,7 +1266,7 @@ export const TOOLS = {
     },
     agents: NONE,
     mcp: NONE,
-    hooks: { user: { channel: 'adapter', adapter: 'openclaw-hook', evidence: 'verified' }, self: 'user', subagentStop: false, stopReply: false, shell: 'system', teamHooks: 'home' },
+    hooks: { user: { channel: 'adapter', adapter: 'openclaw-hook', evidence: 'verified', readGates: ['openclaw-hooks-enabled', 'openclaw-plugins-enabled'] }, self: 'user', subagentStop: false, stopReply: false, shell: 'system', teamHooks: 'home' },
     // OpenClaw 2026.10: rows in ~/.openclaw/agents/<id>/agent/openclaw-agent.sqlite, moved by OPENCLAW_STATE_DIR.
     sessions: 'none',
     launch: 'openclaw',

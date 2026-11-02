@@ -33,7 +33,7 @@ import path from 'node:path';
 import { writeIfChanged, pathExists, readJsonObject, writeJsonAtomic, remove, symlinkTarget } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { getUserHome } from './utils/home.js';
-import { resolveOpenclawConfigPath, resolveOpenclawStateDir } from './openclaw-home.js';
+import { OPENCLAW_TEAM_HOOK_PLUGIN, openclawTeamHookPluginIn, resolveOpenclawConfigPath, resolveOpenclawStateDir } from './openclaw-home.js';
 import { resolveCliEntry } from './builtin-hooks.js';
 import { openclawWorkspaceDir } from './locate.js';
 import { bridgedTeamHookEvents, bridgedTeamHookFile } from './bridged-team-hooks.js';
@@ -192,14 +192,14 @@ export async function refreshOpenClawTeamHooks(): Promise<void> {
 }
 
 /** The team-hook plugin's id, which OpenClaw takes from its file name. */
-const TEAM_HOOK_PLUGIN = 'teamai-team-hooks';
+const TEAM_HOOK_PLUGIN = OPENCLAW_TEAM_HOOK_PLUGIN;
 
 /**
  * In a directory of its own: OpenClaw reads a standalone plugin's manifest,
  * when there is one, from the file's directory.
  */
 function openclawTeamHookPluginFile(stateDir = resolveOpenclawStateDir()): string {
-  return path.join(stateDir, 'teamai', `${TEAM_HOOK_PLUGIN}.mjs`);
+  return openclawTeamHookPluginIn(stateDir);
 }
 
 /** The entry teamai writes under `plugins.entries`: conversation access lets the plugin read the prompt. */
@@ -340,12 +340,12 @@ export async function removeOpenClawTeamHooks(): Promise<void> {
 
 type PluginsConfig = { enabled?: unknown; allow?: unknown; deny?: unknown; load?: { paths?: unknown }; entries?: Record<string, unknown> };
 
-function pluginsOf(config: Record<string, unknown>): PluginsConfig {
+export function pluginsOf(config: Record<string, unknown>): PluginsConfig {
   return config.plugins && typeof config.plugins === 'object' ? config.plugins as PluginsConfig : {};
 }
 
 /** Why the plugin does not load under this config and the fix, or null when it loads once listed and enabled. */
-function teamHookPluginBlocker(plugins: PluginsConfig): string | null {
+export function teamHookPluginBlocker(plugins: PluginsConfig): string | null {
   const listed = (list: unknown) => Array.isArray(list) && list.includes(TEAM_HOOK_PLUGIN);
   if (plugins.enabled === false) return 'plugins are switched off (plugins.enabled: false); turn them on';
   if (listed(plugins.deny)) return `plugins.deny lists ${TEAM_HOOK_PLUGIN}; take it out`;
@@ -427,11 +427,9 @@ function isOpenEndedDiscovery(internal: OpenclawInternalHooks, entries: Record<s
   return internal.enabled === true && !Object.keys(entries).some((name) => name.trim()) && !hasExtraDirs;
 }
 
-/** True when OpenClaw's config loads teamai's workspace hook: internal hooks on and its entry enabled. */
-export async function isOpenclawHookEnabled(): Promise<boolean> {
-  const read = await readJsonObject(resolveOpenclawConfigPath());
-  if (read.kind !== 'ok') return false;
-  const internal = internalHooksOf(read.value);
+/** True when this openclaw.json loads teamai's workspace hook: internal hooks on and its entry enabled. */
+export function openclawHookEnabledIn(config: Record<string, unknown>): boolean {
+  const internal = internalHooksOf(config);
   return internal.enabled !== false && internal.entries?.[OPENCLAW_HOOK_KEY]?.enabled === true;
 }
 

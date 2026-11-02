@@ -56,6 +56,10 @@ export function readGateCheckName(gate: ReadGate, noun: string): string {
       return 'Cursor CLI approves this project\'s team MCP servers';
     case 'claude-hooks-enabled':
       return 'Claude Code has not turned hooks off with disableAllHooks';
+    case 'openclaw-hooks-enabled':
+      return 'OpenClaw hook enabled';
+    case 'openclaw-plugins-enabled':
+      return 'OpenClaw loads teamai\'s team hooks plugin';
     default: {
       const unhandled: never = gate;
       return unhandled;
@@ -93,6 +97,10 @@ export async function readGateVerdict(gate: ReadGate, held: Held): Promise<ReadG
       return cursorMcpApproval(gate, held);
     case 'claude-hooks-enabled':
       return claudeHooksEnabled(gate, `${held.summary}, but Claude Code runs no hooks while the settings that decide set disableAllHooks`);
+    case 'openclaw-hooks-enabled':
+      return openclawHooksEnabled(gate, `${held.summary}, but OpenClaw loads a workspace hook only once openclaw.json enables its entry`);
+    case 'openclaw-plugins-enabled':
+      return openclawPluginLoaded(gate, `${held.summary}, but OpenClaw runs a plugin only once openclaw.json loads and enables it`);
     default: {
       const unhandled: never = gate;
       return unhandled;
@@ -480,4 +488,49 @@ async function cursorMcpApproval(gate: Extract<ReadGate, { kind: 'cursor-mcp-app
     approve: `Run ${enable(pending)} in ${root}, or approve them when an interactive \`cursor-agent\` asks.${envNote}`,
     undo: `Run ${enable(rejected)} in ${root}: it clears ${path.join(dir, 'mcp-disabled.json')} and approves the server.`,
   });
+}
+
+/** openclaw.json as OpenClaw writes it is plain JSON; a member may write JSON5, which teamai cannot read. */
+async function readOpenclawConfig(
+  config: string, cause: string, question: string,
+): Promise<{ readonly read: true; readonly value: Record<string, unknown> } | { readonly read: false; readonly verdict: ReadGateVerdict }> {
+  const found = await readJsonObject(config);
+  if (found.kind === 'invalid') {
+    return { read: false, verdict: unreadable({ cause, file: config, reason: `is not plain JSON (${found.error}), as comments or JSON5 make it`, question }) };
+  }
+  return { read: true, value: found.kind === 'ok' ? found.value : {} };
+}
+
+/**
+ * OpenClaw 2026.10.9 loads teamai's workspace hook only while
+ * `hooks.internal.entries.<key>.enabled` is true and `hooks.internal.enabled`
+ * is not false (`src/hooks/configured.ts`); the Gateway, not `hooks list`, honours the master switch.
+ */
+async function openclawHooksEnabled(gate: Extract<ReadGate, { kind: 'openclaw-hooks-enabled' }>, cause: string): Promise<ReadGateVerdict> {
+  const { OPENCLAW_HOOK_KEY, openclawHookEnabledIn } = await import('./openclaw-hooks.js');
+  const config = await readOpenclawConfig(gate.config, cause, 'OpenClaw loads teamai\'s hook');
+  if (!config.read) return config.verdict;
+  if (openclawHookEnabledIn(config.value)) return MET;
+  return {
+    kind: 'blocked',
+    fix: `${cause} (hooks.internal.entries.${OPENCLAW_HOOK_KEY}.enabled, with internal hooks not switched off in ${gate.config}), `
+      + `so OpenClaw sends no status report or sync. Run \`openclaw hooks enable ${OPENCLAW_HOOK_KEY}\`.`,
+  };
+}
+
+/**
+ * OpenClaw 2026.10.9 loads a `plugins.load.paths` plugin unless `plugins.enabled` is false, `plugins.deny`
+ * lists it, its entry is disabled, or a non-empty `plugins.allow` leaves it out
+ * (`src/plugins/config-activation-shared.ts`).
+ */
+async function openclawPluginLoaded(gate: Extract<ReadGate, { kind: 'openclaw-plugins-enabled' }>, cause: string): Promise<ReadGateVerdict> {
+  const { pluginsOf, teamHookPluginBlocker } = await import('./openclaw-hooks.js');
+  const config = await readOpenclawConfig(gate.config, cause, 'OpenClaw loads the team hooks plugin');
+  if (!config.read) return config.verdict;
+  const plugins = pluginsOf(config.value);
+  const blocker = teamHookPluginBlocker(plugins);
+  if (blocker !== null) return { kind: 'blocked', fix: `${cause}, and in ${gate.config} ${blocker}. teamai leaves that setting to you.` };
+  const paths = plugins.load?.paths;
+  if (Array.isArray(paths) && paths.includes(gate.plugin)) return MET;
+  return { kind: 'blocked', fix: `${cause}, and plugins.load.paths in ${gate.config} does not list it. Run \`teamai hooks inject\`.` };
 }
