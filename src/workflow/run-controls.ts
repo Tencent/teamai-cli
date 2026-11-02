@@ -7,7 +7,7 @@ import {
   type RunReads, type WorkflowResult,
 } from './engine.js';
 import { evaluateExpression, isRecord, isTruthy } from './expression.js';
-import { isItem, itemsAfter, itemsOf } from './fan-out.js';
+import { isItem, itemsAfter, itemsOf, keptResults } from './fan-out.js';
 import { publishRunEnd } from './handoff.js';
 import { archiveUnder, isUnder } from './loop.js';
 import { spentTokens, startLimits } from './limits.js';
@@ -273,7 +273,7 @@ export async function cancelRun(config: LocalConfig, runId: string, secrets: Rec
       changed.push(state.id);
 
       if (state.status === 'leased') stopAttempt(run, state, now);
-      cancel(state, failure, run.revision);
+      cancel(state, failure, run.revision, keptResults(run, state, located.step));
       const reconciled = reconcileRun(run, now);
 
       if ('unreadable' in reconciled) return error('run_unreadable', reconciled.unreadable);

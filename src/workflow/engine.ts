@@ -1205,7 +1205,7 @@ function settleScope(run: RunState, scope: Scope, now: string): Settled {
 
     if (states.every(settled)) {
       const result: WorkflowResult = {
-        outcome: states.some(stopped) ? 'failed' : 'succeeded',
+        outcome: states.some((state) => stopped(state) && !definitionOf(state)?.continueOnFailure) ? 'failed' : 'succeeded',
         outputs: workflowOutputs(scope, states, reads.outputs),
         settledAt: run.revision,
       };

@@ -39,7 +39,7 @@ export const STEP_ROLE_SINCE = '0.29.0';
 
 const HEADER_KEYS = new Set(['schemaVersion', 'name', 'description', 'inputs', 'defaults', 'ends', 'outputs', 'loop', 'timeout', 'budget', 'setup', 'steps', 'finally', 'invoke', 'alias']);
 const ACTION_KEYS = Object.keys(STEP_ACTIONS);
-const STEP_KEYS = new Set(['id', 'needs', 'if', ...ACTION_KEYS, 'env', 'with', 'agent', 'tool', 'model', 'output', 'end', 'loop', 'break', 'for_each', 'approve', 'choose', 'interactive', 'workspace', 'role', 'session', 'scorers', 'requires', 'timeout', 'budget', 'max_turns', 'on_limit', 'permissions', 'deliver']);
+const STEP_KEYS = new Set(['id', 'needs', 'if', ...ACTION_KEYS, 'env', 'with', 'agent', 'tool', 'model', 'output', 'end', 'loop', 'break', 'for_each', 'approve', 'choose', 'interactive', 'workspace', 'role', 'session', 'scorers', 'requires', 'timeout', 'budget', 'max_turns', 'on_limit', 'permissions', 'deliver', 'continue_on_failure']);
 const EXACT_MODEL_KEYS: ReadonlySet<string> = new Set(['name', 'effort']);
 const STEP_LOOP_KEYS = new Set(['back_to', 'while', 'max_iterations']);
 const FOR_EACH_KEYS = new Set(['items', 'max_parallel']);
@@ -544,6 +544,13 @@ function parseBody(
         diagnostics.push(locate(file, lineCounter, interactivePair?.value, `${field}.interactive`, 'interactive needs a prompt or prompt_file: a person works in the tool on that prompt'));
       }
 
+      const continuePair = item.items.find((pair) => scalarString(pair.key) === 'continue_on_failure');
+      const continueOnFailure = continuePair ? scalarOf(continuePair.value, z.boolean()) : undefined;
+
+      if (continuePair && continueOnFailure === undefined) {
+        diagnostics.push(locate(file, lineCounter, continuePair.value ?? continuePair.key, `${field}.continue_on_failure`, `${stepLabel} continue_on_failure must be true or false`));
+      }
+
       const actions = ACTION_KEYS.map((key) => item.items.find((pair) => scalarString(pair.key) === key)).filter(Boolean);
 
       if (choosePair && actions.length > 0) diagnostics.push(locate(file, lineCounter, choosePair.key, `${field}.choose`, 'a choose step records the choice; put the work in a step that needs it'));
@@ -965,6 +972,8 @@ function parseBody(
         if (breakSource !== undefined) step.break = breakSource;
 
         if (forEach) step.forEach = forEach;
+
+        if (continueOnFailure) step.continueOnFailure = true;
 
         if (workspace) step.workspace = workspace;
 

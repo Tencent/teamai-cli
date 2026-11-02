@@ -93,6 +93,11 @@ export interface WorkflowStep {
   /** Runs the step's action once per item of a list, each as an instance such as `build[2]`. */
   forEach?: ForEach;
   /**
+   * The step, or any of its items, may end failed, timed out or cancelled without failing the workflow it is in. Its
+   * outcome still reads as it ended, and its dependents follow the usual rules.
+   */
+  continueOnFailure?: true;
+  /**
    * Where the step runs. A command that omits it uses the active checkout and is read-only.
    * A prompt that omits it continues an enclosing `new`, `continue` or clone copy, or stays read-only.
    */
