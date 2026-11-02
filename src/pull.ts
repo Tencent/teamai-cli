@@ -226,15 +226,15 @@ async function refreshTeamRepo(
   // The git-pull hook caps the fetch: git pull is waiting on it.
   const cap = options.fetchTimeoutMs === undefined ? undefined : AbortSignal.timeout(options.fetchTimeoutMs);
 
-  const transition = await transitionTeamRepo(localConfig, options, cap).catch((e: unknown) => {
+  const transition = await transitionTeamRepo(localConfig, options, cap).catch((cause: unknown) => {
     if (cap?.aborted) {
-      const cause = new Error(`team repo fetch exceeded ${options.fetchTimeoutMs} ms, left to the detached pull`);
-      const timeout = e instanceof DetachedRecoveryError ? new DetachedRecoveryError(cause) : cause;
+      const exceeded = new Error(`team repo fetch exceeded ${options.fetchTimeoutMs} ms, left to the detached pull`);
+      const timeout = cause instanceof DetachedRecoveryError ? new DetachedRecoveryError(exceeded) : exceeded;
       timeout.name = TEAM_FETCH_TIMEOUT;
       throw timeout;
     }
 
-    throw e;
+    throw cause;
   });
 
   if (transition.transition === 'pinned' && localConfig.repo.ref !== transition.ref) {
@@ -253,7 +253,7 @@ async function refreshTeamRepo(
   }
 
   await writeJson(teamFetchStamp(localConfig), { lastFetch: new Date().toISOString() })
-    .catch((e) => log.debug(`Could not record the team repo fetch: ${(e as Error).message}`));
+    .catch((e) => log.debug(`Could not record the team repo fetch: ${e instanceof Error ? e.message : String(e)}`));
 
   let version: string | null = null;
 
@@ -322,7 +322,7 @@ async function refreshTeamRepo(
     }
   } catch (e) {
     submodulesFailed = true;
-    log.warn(`Submodule update failed for ${localConfig.repo.localPath}: ${(e as Error).message}`);
+    log.warn(`Submodule update failed for ${localConfig.repo.localPath}: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   return { label: transition.label, version, submodulesFailed, submodulesChanged };
@@ -733,7 +733,7 @@ async function cleanupTombstonedResources(
     // Agents deploy flattened, so a namespaced agent tombstone has to be read
     // as the stem the local copy carries (`AgentsHandler.removedStems`).
     const tombstones = type === 'agents'
-      ? await (handler as AgentsHandler).removedStems(freshConfig, localConfig)
+      ? await registeredAgentsHandler().removedStems(freshConfig, localConfig)
       : await handler.readTombstones(localConfig);
 
     for (const name of extraNames?.[type] ?? []) tombstones.add(name);
@@ -782,7 +782,7 @@ async function cleanupTombstonedResources(
       // A removed root rule's name can be the flat name a live namespaced rule
       // is written under (`fe.style` for `fe/style`): that file is not the removed rule's.
       const liveFlatStems = type === 'rules' && ruleFormatForTool(tool)?.flat
-        ? new Set([...ruleStemsForTool(tool, teamNames)].filter(([name]) => name.includes('/')).map(([, stem]) => stem))
+        ? new Set([...ruleStemsForTool(tool, teamNames)].flatMap(([name, stem]) => (name.includes('/') ? [stem] : [])))
         : new Set<string>();
 
       for (const stem of flatStems) {
@@ -982,7 +982,7 @@ async function reconcileEnvForUnchangedRepo(
     const envShPath = path.join(getDataHome(localConfig), 'env.sh');
     process.exitCode = 1;
     log.warn(
-      `[${installScopeName(localConfig.scope)}] Could not refresh env variables: ${(e as Error).message}. `
+      `[${installScopeName(localConfig.scope)}] Could not refresh env variables: ${e instanceof Error ? e.message : String(e)}. `
       + `${envShPath} may still export variables the team no longer delivers to this directory. `
       + 'Fix the cause, run `teamai pull --force`, then open a new shell.',
     );
@@ -1003,8 +1003,23 @@ async function removeRecallFilesQuietly(teamConfig: TeamaiConfig, localConfig: L
 
     if (removed > 0) log.info(`[${scopeLabel}] Removed the teamai-recall agent and rule: recall is off.`);
   } catch (e) {
-    log.debug(`Recall agent and rule removal skipped: ${(e as Error).message}`);
+    log.debug(`Recall agent and rule removal skipped: ${e instanceof Error ? e.message : String(e)}`);
   }
+}
+
+function registeredRulesHandler(): RulesHandler {
+  // SAFETY: the handler registry in resources/index.ts registers `new RulesHandler()` under 'rules'.
+  return getHandler('rules') as RulesHandler;
+}
+
+function registeredAgentsHandler(): AgentsHandler {
+  // SAFETY: the handler registry in resources/index.ts registers `new AgentsHandler()` under 'agents'.
+  return getHandler('agents') as AgentsHandler;
+}
+
+function registeredDocsHandler(): DocsHandler {
+  // SAFETY: the handler registry in resources/index.ts registers `new DocsHandler()` under 'docs'.
+  return getHandler('docs') as DocsHandler;
 }
 
 /**
@@ -1012,8 +1027,8 @@ async function removeRecallFilesQuietly(teamConfig: TeamaiConfig, localConfig: L
  * not silent. A SessionStart pull runs detached with its output discarded, so
  * debug.log keeps the record.
  */
-function warnStubNotDeployed(scopeLabel: string, e: unknown): void {
-  const message = `[${scopeLabel}] The built-in teamai skill was not deployed: ${e instanceof Error ? e.message : String(e)}`;
+function warnStubNotDeployed(scopeLabel: string, cause: unknown): void {
+  const message = `[${scopeLabel}] The built-in teamai skill was not deployed: ${cause instanceof Error ? cause.message : String(cause)}`;
   log.warn(message);
   log.persist(message);
 }
@@ -1192,7 +1207,7 @@ export async function resolveCheckoutBases(
  */
 function homeRevs(state: Pick<State, 'lastPullRev' | 'lastInheritedPullRev'>): string[] {
   return [...new Set([state.lastPullRev, state.lastInheritedPullRev])]
-    .filter((rev): rev is string => typeof rev === 'string' && rev !== FORCED_FULL_SYNC_REV);
+    .filter((rev): rev is string => rev !== null && rev !== undefined && rev !== FORCED_FULL_SYNC_REV);
 }
 
 /**
@@ -1206,8 +1221,10 @@ export async function userScopeRecord(state: State): Promise<CheckoutRecord> {
   const rev = state.lastPullRev ?? FORCED_FULL_SYNC_REV;
   const pushBaseRevs = homeRevs(state).filter((base) => base !== rev);
 
-  const record = state.lastPullByWorkspace?.[key]
-    ?? { rev, targets: state.lastPullTargets ?? [], ...(pushBaseRevs.length > 0 ? { pushBaseRevs } : {}) };
+  const fromSharedFields: CheckoutRecord = { rev, targets: state.lastPullTargets ?? [] };
+
+  if (pushBaseRevs.length > 0) fromSharedFields.pushBaseRevs = pushBaseRevs;
+  const record = state.lastPullByWorkspace?.[key] ?? fromSharedFields;
 
   state.lastPullByWorkspace = { ...state.lastPullByWorkspace, [key]: record };
 
@@ -1262,7 +1279,11 @@ export async function teamDelivery(localConfig: LocalConfig, tool: string, optio
   const state = await loadStateForScope(localConfig);
   const key = await checkoutRecordKey(localConfig);
   const record = key ? state.lastPullByWorkspace?.[key] : undefined;
-  const gap = (reason: DeliveryGap): TeamDelivery => ({ complete: false, key, ...(record ? { record } : {}), gap: reason });
+
+  const gap = (reason: DeliveryGap): TeamDelivery => (record
+    ? { complete: false, key, record, gap: reason }
+    : { complete: false, key, gap: reason });
+
 
   if (!key || !record) return gap('no_record');
 
@@ -1341,7 +1362,7 @@ async function excludeWorkspaceInstructions(localConfig: LocalConfig, options: G
     else delete record.claudeMdExcludes;
     await saveStateForScope(state, localConfig);
   } catch (e) {
-    log.warn(`[${installScopeName(localConfig.scope)}] The workspace's instructions were not excluded from Claude Code sessions here: ${(e as Error).message}. Run \`teamai pull\` to retry.`);
+    log.warn(`[${installScopeName(localConfig.scope)}] The workspace's instructions were not excluded from Claude Code sessions here: ${e instanceof Error ? e.message : String(e)}. Run \`teamai pull\` to retry.`);
   }
 }
 
@@ -1358,14 +1379,15 @@ export function deliverySelection(localConfig: LocalConfig): DeliverySelection {
   const { scope, primaryRole, additionalRoles, roleAssignment, projects, subscribedTags, excludedSkills, inheritUserScope } = localConfig;
   const lists = Object.entries({ projects, subscribedTags, excludedSkills }).flatMap(([key, values]) => values ? [[key, [...values].sort()]] : []);
 
-  return DeliverySelectionSchema.parse({
-    scope,
-    ...(primaryRole !== undefined ? { primaryRole } : {}),
-    additionalRoles: [...additionalRoles].sort(),
-    ...(roleAssignment ? { rolesAssigned: true } : {}),
-    ...Object.fromEntries(lists),
-    ...(inheritUserScope !== undefined ? { inheritUserScope } : {}),
-  });
+  const selection: DeliverySelection = { scope, additionalRoles: [...additionalRoles].sort(), ...Object.fromEntries(lists) };
+
+  if (primaryRole !== undefined) selection.primaryRole = primaryRole;
+
+  if (roleAssignment) selection.rolesAssigned = true;
+
+  if (inheritUserScope !== undefined) selection.inheritUserScope = inheritUserScope;
+
+  return DeliverySelectionSchema.parse(selection);
 }
 
 /**
@@ -1452,7 +1474,7 @@ async function rerenderOutdatedRules(
     const key = await checkoutRecordKey(localConfig);
     const state = await loadStateForScope(localConfig);
     const ledger = await openCheckoutLedger(localConfig, state, recorder);
-    const handler = getHandler('rules') as RulesHandler;
+    const handler = registeredRulesHandler();
     const reclaimed = await handler.reclaimLegacyRuleCopies(freshConfig, localConfig, items, ledger);
     // With no record yet, it still rewrites a copy its bytes prove teamai's.
     const rewritten = key ? await handler.rerenderOutdatedCopies(freshConfig, localConfig, items, ledger) : [];
@@ -1471,7 +1493,7 @@ async function rerenderOutdatedRules(
     }
   } catch (e) {
     log.warn(
-      `[${scopeLabel}] Could not check whether delivered rules need their tool's format or a new place: ${(e as Error).message}. `
+      `[${scopeLabel}] Could not check whether delivered rules need their tool's format or a new place: ${e instanceof Error ? e.message : String(e)}. `
       + 'Copies may still be in an older format, or where the tool does not read them; fix the cause, then run `teamai pull`.',
     );
   }
@@ -1505,7 +1527,7 @@ async function redeployAgentsWithChangedModels(
     if (desired.kind === 'conflict') return false;
     const state = await loadStateForScope(localConfig);
     const ledger = await openCheckoutLedger(localConfig, state, recorder);
-    const handler = getHandler('agents') as AgentsHandler;
+    const handler = registeredAgentsHandler();
     const redeploy = await handler.agentsToRedeploy(desired.items, freshConfig, localConfig, ledger);
 
     for (const { item } of redeploy) await handler.pullItem(item, freshConfig, localConfig, ledger);
@@ -1563,7 +1585,7 @@ async function redeployAgentsWithChangedModels(
     return held;
   } catch (e) {
     log.warn(
-      `[${scopeLabel}] Could not check whether agent models changed: ${(e as Error).message}. `
+      `[${scopeLabel}] Could not check whether agent models changed: ${e instanceof Error ? e.message : String(e)}. `
       + 'Deployed agents may still carry the previous model; fix the cause, then run `teamai pull --force`.',
     );
 
@@ -1588,18 +1610,23 @@ function awaitingFullSync(records: Record<string, CheckoutRecord>): Record<strin
     const pushBaseRevs = checkoutBaseRevs(record).slice(0, MAX_PUSH_BASE_REVS);
     const places = placesRecordOf(record);
 
-    const reset: CheckoutRecord = {
-      rev: FORCED_FULL_SYNC_REV,
-      ...(record.teamRef !== undefined ? { teamRef: record.teamRef } : {}),
-      ...(record.root !== undefined ? { root: record.root } : {}),
-      targets: record.targets,
-      ...(record.delivered ? { delivered: record.delivered } : {}),
-      ...(record.agentModels ? { agentModels: record.agentModels } : {}),
-      ...(record.gitExcludePaths ? { gitExcludePaths: record.gitExcludePaths } : {}),
-      ...(places ? { places } : {}),
-      ...(record.rootsSeeded ? { rootsSeeded: true } : {}),
-      ...(record.claudeMdExcludes ? { claudeMdExcludes: record.claudeMdExcludes } : {}),
-    };
+    const reset: CheckoutRecord = { rev: FORCED_FULL_SYNC_REV, targets: record.targets };
+
+    if (record.teamRef !== undefined) reset.teamRef = record.teamRef;
+
+    if (record.root !== undefined) reset.root = record.root;
+
+    if (record.delivered) reset.delivered = record.delivered;
+
+    if (record.agentModels) reset.agentModels = record.agentModels;
+
+    if (record.gitExcludePaths) reset.gitExcludePaths = record.gitExcludePaths;
+
+    if (places) reset.places = places;
+
+    if (record.rootsSeeded) reset.rootsSeeded = true;
+
+    if (record.claudeMdExcludes) reset.claudeMdExcludes = record.claudeMdExcludes;
 
     return [key, pushBaseRevs.length === 0 ? reset : { ...reset, pushBaseRevs }];
   }));
@@ -1675,7 +1702,7 @@ async function pullForScope(
     pullSpin.succeed(outcome);
     log.debug(outcome);
   } catch (e) {
-    const reason = `[${scopeLabel}] Pull failed: ${(e as Error).message}`;
+    const reason = `[${scopeLabel}] Pull failed: ${e instanceof Error ? e.message : String(e)}`;
     pullSpin.fail(reason);
     log.persist(reason);
 
@@ -1689,9 +1716,9 @@ async function pullForScope(
     if (options.gitHook && localConfig.scope === 'project') {
       const { recordGitHookFailure } = await import('./git-hook.js');
       const at = new Date().toISOString();
-      await recordGitHookFailure(localConfig, (e as Error).name === TEAM_FETCH_TIMEOUT
+      await recordGitHookFailure(localConfig, e instanceof Error && e.name === TEAM_FETCH_TIMEOUT
         ? { kind: 'fetch-timeout', event: options.gitHook, at, capMs: options.fetchTimeoutMs ?? 0 }
-        : { kind: 'fetch-failed', event: options.gitHook, at, error: (e as Error).message });
+        : { kind: 'fetch-failed', event: options.gitHook, at, error: (e instanceof Error ? e.message : String(e)) });
     }
 
     return;
@@ -1727,7 +1754,7 @@ async function pullForScope(
         await saveStateForScope(recordsState, localConfig);
       }
     } catch (e) {
-      log.debug(`[${scopeLabel}] Placement record cleanup skipped: ${(e as Error).message}`);
+      log.debug(`[${scopeLabel}] Placement record cleanup skipped: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -1764,7 +1791,7 @@ async function pullForScope(
       );
     }
   } catch (e) {
-    log.debug(`publishing queued learnings skipped: ${(e as Error).message}`);
+    log.debug(`publishing queued learnings skipped: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   // Read teamai.yaml only after the refresh: a clone that lacks it must still
@@ -1786,7 +1813,7 @@ async function pullForScope(
   try {
     roleContext = await buildRolePullContext(localConfig);
   } catch (e) {
-    log.error(`[${scopeLabel}] ${(e as Error).message}`);
+    log.error(`[${scopeLabel}] ${e instanceof Error ? e.message : String(e)}`);
 
     if (result) { result.resourceSyncFailed = true; result.delivery = 'failed'; }
 
@@ -1818,7 +1845,7 @@ async function pullForScope(
 
         return await readableReportsWorktree(localConfig);
       } catch (e) {
-        log.debug(`reports worktree unavailable: ${(e as Error).message}`);
+        log.debug(`reports worktree unavailable: ${e instanceof Error ? e.message : String(e)}`);
 
         return undefined;
       }
@@ -1870,13 +1897,13 @@ async function pullForScope(
         // Busy or failed: index what is there.
         if (refreshed.status === 'failed') log.debug(`learnings worktree unavailable: ${refreshed.reason}`);
       } catch (e) {
-        log.debug(`learnings worktree unavailable: ${(e as Error).message}`);
+        log.debug(`learnings worktree unavailable: ${e instanceof Error ? e.message : String(e)}`);
       }
 
       // What the rebuild is given and cannot resolve: as for a directory it
       // cannot list, the index keeps what it held under each (#1006).
       const unresolved: UnreadableFile[] = [];
-      const unresolvedReason = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+      const unresolvedReason = (cause: unknown): string => (cause instanceof Error ? cause.message : String(cause));
       // Without another repository's learnings checkout, if one sits where
       // this project's would (#808): the refusal was warned, and everything
       // else this project has stays indexed.
@@ -1976,22 +2003,22 @@ async function pullForScope(
         const { buildIndex, dropOtherCheckoutIndexes } = await import('./utils/search-index.js');
         // Other checkouts' indexes: this checkout's rebuild goes ahead without them.
         await dropOtherCheckoutIndexes(localConfig)
-          .catch((e: unknown) => log.warn(`[${scopeLabel}] Could not remove the search indexes of this project's other checkouts: ${unresolvedReason(e)}. `
+          .catch((cause: unknown) => log.warn(`[${scopeLabel}] Could not remove the search indexes of this project's other checkouts: ${unresolvedReason(cause)}. `
             + 'Recall there may return what you no longer receive until you fix the cause and run `teamai pull` in each.'));
 
         // The docs and rules pull delivers here, not the whole trees (#707).
         // A set that cannot be resolved counts as given and unreadable, whole:
         // the build reads nothing under it and keeps what it indexed there.
         const docFiles = await resolveDesiredDocs(localConfig.repo.localPath, roleContext?.inactiveDocsNamespaces ?? [])
-          .then(({ files }): readonly string[] | undefined => files, (e: unknown) => {
-            unresolved.push({ path: docsRepoDir, reason: unresolvedReason(e) });
+          .then(({ files }): readonly string[] | undefined => files, (cause: unknown) => {
+            unresolved.push({ path: docsRepoDir, reason: unresolvedReason(cause) });
 
             return undefined;
           });
 
         const ruleFiles = await indexedRuleFiles(freshConfig, localConfig, roleContext)
-          .catch((e: unknown) => {
-            unresolved.push({ path: rulesRepoDir, reason: unresolvedReason(e) });
+          .catch((cause: unknown) => {
+            unresolved.push({ path: rulesRepoDir, reason: unresolvedReason(cause) });
 
             return undefined;
           });
@@ -2028,7 +2055,7 @@ async function pullForScope(
         }
       }
     } catch (e) {
-      log.debug(`Learnings/index sync skipped: ${(e as Error).message}`);
+      log.debug(`Learnings/index sync skipped: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       // Done before the caller lets the partition sync lock go.
       await reportsRootReady;
@@ -2043,7 +2070,7 @@ async function pullForScope(
     const { syncTeamModelProfiles } = await import('./models-cmd.js');
     modelCatalogHint = await syncTeamModelProfiles(localConfig, { dryRun: options.dryRun });
   } catch (error) {
-    log.warn(`[${scopeLabel}] Team model profiles were not updated: ${(error as Error).message}`);
+    log.warn(`[${scopeLabel}] Team model profiles were not updated: ${error instanceof Error ? error.message : String(error)}`);
   }
 
   // Before anything probes which tools this checkout has; once, like a new
@@ -2166,10 +2193,10 @@ async function pullForScope(
           if (resourceTypes.includes('rules')) {
             try {
               const record = await editDeliveryRecord(localConfig);
-              await (getHandler('rules') as RulesHandler).reclaimReservedRuleCopies(freshConfig, localConfig, record.ledger);
+              await registeredRulesHandler().reclaimReservedRuleCopies(freshConfig, localConfig, record.ledger);
               await record.save();
             } catch (error) {
-              log.warn(`[${scopeLabel}] The earlier copy of the team rule teamai-context was not reclaimed: ${(error as Error).message}. Run \`teamai pull --force\` to retry.`);
+              log.warn(`[${scopeLabel}] The earlier copy of the team rule teamai-context was not reclaimed: ${error instanceof Error ? error.message : String(error)}. Run \`teamai pull --force\` to retry.`);
             }
           }
 
@@ -2193,23 +2220,23 @@ async function pullForScope(
             try {
               ({ items } = await resolveDesiredRules(freshConfig, localConfig, roleContext));
             } catch (error) {
-              log.warn(`[${scopeLabel}] Could not resolve the team rules, so no OpenCode rules glob, older rule copy or, in user scope, tool's own rules file (such as ~/.codex/AGENTS.md) was updated: ${(error as Error).message}. Run \`teamai pull\` to retry.`);
+              log.warn(`[${scopeLabel}] Could not resolve the team rules, so no OpenCode rules glob, older rule copy or, in user scope, tool's own rules file (such as ~/.codex/AGENTS.md) was updated: ${error instanceof Error ? error.message : String(error)}. Run \`teamai pull\` to retry.`);
             }
 
             if (items !== undefined) {
               try {
-                await (getHandler('rules') as RulesHandler).syncUserRulesFiles(freshConfig, localConfig, items);
+                await registeredRulesHandler().syncUserRulesFiles(freshConfig, localConfig, items);
               } catch (error) {
                 // A file that fails is named by syncUserRulesFiles.
-                log.warn(`[${scopeLabel}] No tool's own user rules file (such as ~/.codex/AGENTS.md or ~/.zcode/AGENTS.md) was updated: ${(error as Error).message}. Run \`teamai pull\` to retry.`);
+                log.warn(`[${scopeLabel}] No tool's own user rules file (such as ~/.codex/AGENTS.md or ~/.zcode/AGENTS.md) was updated: ${error instanceof Error ? error.message : String(error)}. Run \`teamai pull\` to retry.`);
               }
 
               // Same reason: a CLI that moves OpenCode's rules globs writes them
               // to their new config file and reclaims the old ones (#946).
               try {
-                await (getHandler('rules') as RulesHandler).activateOpencodeInstructions(freshConfig, localConfig, items);
+                await registeredRulesHandler().activateOpencodeInstructions(freshConfig, localConfig, items);
               } catch (error) {
-                log.warn(`[${scopeLabel}] OpenCode's rules globs were not updated: ${(error as Error).message}. Run \`teamai pull\` to retry.`);
+                log.warn(`[${scopeLabel}] OpenCode's rules globs were not updated: ${error instanceof Error ? error.message : String(error)}. Run \`teamai pull\` to retry.`);
               }
 
               // Same reason: a CLI that gives a tool its own rules format must
@@ -2330,7 +2357,7 @@ async function pullForScope(
     const handler = getHandler(type);
 
     if (type === 'rules') {
-      const rulesHandler = handler as RulesHandler;
+      const rulesHandler = registeredRulesHandler();
       const { items, replaced, skippedByTags } = await resolveDesiredRules(freshConfig, localConfig, roleContext);
 
       if (options.dryRun) {
@@ -2424,7 +2451,7 @@ async function pullForScope(
       // A declared namespace reaches only members with it active (#707), and
       // the mirror runs even when nothing is delivered: removing stale local
       // docs and a deactivated namespace's unchanged copies both need it.
-      const docsHandler = handler as DocsHandler;
+      const docsHandler = registeredDocsHandler();
 
       try {
         const desired = await resolveDesiredDocs(localConfig.repo.localPath, roleContext?.inactiveDocsNamespaces ?? []);
@@ -2554,7 +2581,7 @@ async function pullForScope(
       let held = 0;
 
       if (type === 'agents') {
-        await (handler as AgentsHandler).queueModelHolds(items, freshConfig, localConfig, ledger);
+        await registeredAgentsHandler().queueModelHolds(items, freshConfig, localConfig, ledger);
         held = reportHeldAgents(ledger, scopeLabel);
       }
 
@@ -2667,7 +2694,7 @@ async function pullForScope(
 
       // Same revocation for agents: a role change must remove the previous
       // role's agents, not just stop deploying them.
-      await (getHandler('agents') as AgentsHandler).cleanupInactiveNamespaces(
+      await registeredAgentsHandler().cleanupInactiveNamespaces(
         freshConfig,
         localConfig,
         roleContext.activeNamespaces.agents,
@@ -2841,7 +2868,7 @@ async function pullForScope(
     }
   } catch (e) {
     recorder?.failed('builtin');
-    log.debug(`[${scopeLabel}] Built-in rules deployment skipped: ${(e as Error).message}`);
+    log.debug(`[${scopeLabel}] Built-in rules deployment skipped: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   // Step 4.6: Deploy CLI built-in agents (e.g. teamai-recall subagent)
@@ -2855,7 +2882,7 @@ async function pullForScope(
     }
   } catch (e) {
     recorder?.failed('builtin');
-    log.debug(`[${scopeLabel}] Built-in agents deployment skipped: ${(e as Error).message}`);
+    log.debug(`[${scopeLabel}] Built-in agents deployment skipped: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   if (!isRecallEnabled(localConfig, freshConfig)) await removeRecallFilesQuietly(freshConfig, localConfig, scopeLabel, dryRun);
@@ -2872,14 +2899,16 @@ async function pullForScope(
   if (!options.dryRun && resourceTypes.includes('skills')) {
     const previous = recordKey ? (await loadStateForScope(localConfig)).lastPullByWorkspace?.[recordKey] : undefined;
     // A resource a collision held, or this pull did not sync, keeps the places recorded before.
+    const syncedCurrent: PlacesRecord = { blocks: current.blocks };
+
+    if (!skillsHeld) syncedCurrent.skills = current.skills;
+
+    if (resourceTypes.includes('rules')) syncedCurrent.rules = current.rules;
+
+    if (!agentsHeld) syncedCurrent.agents = current.agents;
     ({ places: syncedPlaces, sessionToolHomes: syncedSessionToolHomes } = await recordPlaces({
       previous,
-      current: {
-        ...skillsHeld ? {} : { skills: current.skills },
-        ...resourceTypes.includes('rules') ? { rules: current.rules } : {},
-        blocks: current.blocks,
-        ...agentsHeld ? {} : { agents: current.agents },
-      },
+      current: syncedCurrent,
       incomplete: {
         skills: workspaceHeldSkills || stubFailed ? new Set(Object.keys(current.skills ?? {})) : ledger.toolsMissingSkills,
         rules: ledger.toolsMissingRules,
@@ -2990,18 +3019,21 @@ async function pullForScope(
       const seeded = rootsSeeded || state.lastPullByWorkspace?.[recordKey]?.rootsSeeded;
       const claudeMdExcludes = state.lastPullByWorkspace?.[recordKey]?.claudeMdExcludes;
 
-      const record: CheckoutRecord = {
-        rev: deliveredRev,
-        ...(localConfig.repo.ref !== undefined ? { teamRef: localConfig.repo.ref } : {}),
-        ...(localConfig.scope === 'project' && localConfig.projectRoot ? { root: localConfig.projectRoot } : {}),
-        targets: syncedTargets,
-        delivered: ledger.hashes,
-        ...(syncedPlaces ? { places: syncedPlaces } : {}),
-        ...(syncedSessionToolHomes ? { sessionToolHomes: syncedSessionToolHomes } : {}),
-        ...(gitExcludePaths ? { gitExcludePaths } : {}),
-        ...(seeded ? { rootsSeeded: true } : {}),
-        ...(claudeMdExcludes ? { claudeMdExcludes } : {}),
-      };
+      const record: CheckoutRecord = { rev: deliveredRev, targets: syncedTargets, delivered: ledger.hashes };
+
+      if (localConfig.repo.ref !== undefined) record.teamRef = localConfig.repo.ref;
+
+      if (localConfig.scope === 'project' && localConfig.projectRoot) record.root = localConfig.projectRoot;
+
+      if (syncedPlaces) record.places = syncedPlaces;
+
+      if (syncedSessionToolHomes) record.sessionToolHomes = syncedSessionToolHomes;
+
+      if (gitExcludePaths) record.gitExcludePaths = gitExcludePaths;
+
+      if (seeded) record.rootsSeeded = true;
+
+      if (claudeMdExcludes) record.claudeMdExcludes = claudeMdExcludes;
 
       setChildren(record, localConfig);
       record.selection = deliverySelection(localConfig);
@@ -3096,7 +3128,7 @@ async function pullForScope(
  * Returns null if the culture.md cannot be parsed or has no useful content.
  */
 export function compileCulture(raw: string): string | null {
-    let parsed: { data: Record<string, unknown>; content: string };
+    let parsed: matter.GrayMatterFile<string>;
 
     try {
         parsed = matter(raw);
@@ -3175,9 +3207,11 @@ export function compileCulture(raw: string): string | null {
  * Returns null if all contents are empty.
  */
 export function compileClaudemd(contents: string[]): string | null {
-    const parts = contents
-        .map((c) => c.trim())
-        .filter(Boolean);
+    const parts = contents.flatMap((c) => {
+        const trimmed = c.trim();
+
+        return trimmed ? [trimmed] : [];
+    });
 
     if (parts.length === 0) return null;
 
@@ -3218,10 +3252,10 @@ export async function resolveInstructionBlocks(
       log.warn(`Skipped team culture sync because ${culturePath} is empty or invalid`);
     }
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === FILE_NOT_FOUND_ERROR_CODE) {
+    if (error instanceof Error && 'code' in error && error.code === FILE_NOT_FOUND_ERROR_CODE) {
       blocks.culture = null;
     } else {
-      log.warn(`Failed to read team culture from ${culturePath}: ${(error as Error).message}`);
+      log.warn(`Failed to read team culture from ${culturePath}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -3232,7 +3266,7 @@ export async function resolveInstructionBlocks(
     blocks.claudemd = compileClaudemd(contents);
     claudemdFiles = contents.length;
   } catch (e) {
-    log.debug(`Shared instructions sync skipped: ${(e as Error).message}`);
+    log.debug(`Shared instructions sync skipped: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   return { blocks, claudemdFiles };
@@ -3306,7 +3340,7 @@ async function syncManagedInstructions(
     }
   } catch (e) {
     opencodeReady = false;
-    log.warn(`[${scopeLabel}] Failed to list the team instructions in OpenCode's config: ${(e as Error).message}. Run \`teamai doctor\`, which names the config file and the entry to add by hand.`);
+    log.warn(`[${scopeLabel}] Failed to list the team instructions in OpenCode's config: ${e instanceof Error ? e.message : String(e)}. Run \`teamai doctor\`, which names the config file and the entry to add by hand.`);
   }
 
   // Hook targets (Pi, OMP, Hermes, Codex) are reported after the hooks are
@@ -3704,7 +3738,7 @@ export async function pull(
         { dryRun: options.dryRun },
       );
     } catch (e) {
-      log.warn(`Workspace-scope detection error: ${(e as Error).message}`);
+      log.warn(`Workspace-scope detection error: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -3815,8 +3849,8 @@ export async function pull(
       }
     } catch (e) {
       if (e instanceof EnvScopesUnreadableError) process.exitCode = 1;
-      log.warn(`User-scope pull error: ${(e as Error).message}`);
-      startupErrors.push(`User-scope pull: ${(e as Error).message}`);
+      log.warn(`User-scope pull error: ${e instanceof Error ? e.message : String(e)}`);
+      startupErrors.push(`User-scope pull: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -3844,8 +3878,8 @@ export async function pull(
       }
     } catch (e) {
       if (e instanceof EnvScopesUnreadableError) process.exitCode = 1;
-      log.warn(`Workspace-scope pull error: ${(e as Error).message}`);
-      startupErrors.push(`Workspace-scope pull: ${(e as Error).message}`);
+      log.warn(`Workspace-scope pull error: ${e instanceof Error ? e.message : String(e)}`);
+      startupErrors.push(`Workspace-scope pull: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -3880,7 +3914,7 @@ export async function pull(
         await reinjectLegacyHooks(migrateScope);
       } catch (e) {
         // Non-fatal — pull continues even if hook migration fails.
-        startupErrors.push(`Hook migration: ${(e as Error).message}`);
+        startupErrors.push(`Hook migration: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
   }
@@ -4005,7 +4039,7 @@ export async function pull(
 
             if (usageReported && eventCount > 0) await truncateUsageAfterReport(eventCount, t.opts.selfConfig);
           } catch (e) {
-            log.error(`Auto-report to ${t.repoPath} skipped: ${(e as Error).message}`);
+            log.error(`Auto-report to ${t.repoPath} skipped: ${e instanceof Error ? e.message : String(e)}`);
           } finally {
             reportOutcomes.set(t.opts.selfConfig, { reported: usageReported, at: new Date().toISOString() });
           }
@@ -4016,7 +4050,7 @@ export async function pull(
             const { publishPendingRecords } = await import('./workflow/records.js');
             await publishPendingRecords(t.opts.selfConfig);
           } catch (e) {
-            log.debug(`Workflow record publish to ${t.repoPath} deferred: ${(e as Error).message}`);
+            log.debug(`Workflow record publish to ${t.repoPath} deferred: ${e instanceof Error ? e.message : String(e)}`);
           }
 
           // Score labels a submit could not publish (#1085) ride the same drain.
@@ -4038,7 +4072,7 @@ export async function pull(
           if (scope) await capUsageEvents(scope);
         }
       } catch (e) {
-        log.debug(`Auto-report skipped: ${(e as Error).message}`);
+        log.debug(`Auto-report skipped: ${e instanceof Error ? e.message : String(e)}`);
       }
     })().finally(() => { pendingUsageReport = undefined; });
     usageReport = pendingUsageReport;
@@ -4046,7 +4080,7 @@ export async function pull(
     try {
       await withTimeout(pendingUsageReport, 5000, 'Auto-report is still running after 5s');
     } catch (e) {
-      log.debug((e as Error).message);
+      log.debug((e instanceof Error ? e.message : String(e)));
     }
   }
 
@@ -4065,8 +4099,8 @@ export async function pull(
       // Only what the project scope delivers is kept out of git (#915).
       await pullSources(sourceConfig, options, sourceConfig === reconcileProject ? deliveryRecorder : undefined);
     } catch (e) {
-      log.debug(`Source pull skipped: ${(e as Error).message}`);
-      startupErrors.push(`Source skills: ${(e as Error).message}`);
+      log.debug(`Source pull skipped: ${e instanceof Error ? e.message : String(e)}`);
+      startupErrors.push(`Source skills: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -4095,10 +4129,10 @@ export async function pull(
       reported.add('git-exclude-foreign');
     } catch (e) {
       await failGitExcludeSync(reconcileProject, [
-        `Could not update teamai's delivered git exclude block: ${(e as Error).message}. Fix the cause, then run \`teamai pull\` again.`,
+        `Could not update teamai's delivered git exclude block: ${e instanceof Error ? e.message : String(e)}. Fix the cause, then run \`teamai pull\` again.`,
       ], options);
       reported.add('git-exclude-sync');
-      startupErrors.push(`Git exclude: ${(e as Error).message}`);
+      startupErrors.push(`Git exclude: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -4106,7 +4140,7 @@ export async function pull(
     try {
       await previewDeliveredGitExclude(reconcileProject, deliveryRecorder);
     } catch (e) {
-      log.info(`[dry-run] Could not preview teamai's delivered git exclude block: ${(e as Error).message}`);
+      log.info(`[dry-run] Could not preview teamai's delivered git exclude block: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -4151,7 +4185,7 @@ export async function pull(
         const commit = await getHeadRev(projectConfig.repo.localPath);
         log.info(teamRefNotice(projectConfig.repo.ref, commit, await getDefaultBranch(projectConfig.repo.localPath)));
       } catch (error) {
-        log.debug(`Could not read the pinned team revision: ${(error as Error).message}`);
+        log.debug(`Could not read the pinned team revision: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
 
@@ -4174,7 +4208,7 @@ export async function pull(
 
           await saveStateForScope(state, config);
         } catch (error) {
-          log.error(`Could not save auto-report status: ${(error as Error).message}`);
+          log.error(`Could not save auto-report status: ${error instanceof Error ? error.message : String(error)}`);
         }
       }
 
@@ -4186,7 +4220,7 @@ export async function pull(
     // the same data while this pull is no longer waiting.
     if (usageReport && usageReport === pendingUsageReport) {
       lateUsageReport = usageReport.then(finishReportAndReleaseLocks, finishReportAndReleaseLocks).catch((e) => {
-        log.error(`Could not release report sync locks: ${(e as Error).message}`);
+        log.error(`Could not release report sync locks: ${e instanceof Error ? e.message : String(e)}`);
       });
     } else {
       await finishReportAndReleaseLocks();
@@ -4300,7 +4334,7 @@ async function reportTeamaiOnlyFiles(
     judged = await judgeTeamaiOnlyFiles(teamConfig, localConfig);
   } catch (e) {
     recorder.failed('teamai-only');
-    log.warn(`Could not tell which shared config files hold only teamai's entries: ${(e as Error).message}. `
+    log.warn(`Could not tell which shared config files hold only teamai's entries: ${e instanceof Error ? e.message : String(e)}. `
       + 'Their git exclude lines stay as the last pull left them. Fix the cause, then run `teamai pull` again.');
 
     return [];
@@ -4526,7 +4560,7 @@ async function reportPostPullChecks(
     // the whole budget is the same "reported success, nothing happened" shape
     // these checks exist to catch. The reason stays on the debug channel
     // because it is about teamai, not about the member's repo.
-    log.debug(`Post-pull checks skipped: ${(e as Error).message}`);
+    log.debug(`Post-pull checks skipped: ${e instanceof Error ? e.message : String(e)}`);
     log.dim('  Post-pull checks did not run. Run `teamai doctor` for the full report.');
   }
 }
@@ -4633,7 +4667,7 @@ async function reconcileHooksAllScopes(
 
           if (retired) log.info(`${options.dryRun ? '[dry-run]' : `[${installScopeName(localConfig.scope)}]`} ${retired}`);
         } catch (e) {
-          log.warn(`[${installScopeName(localConfig.scope)}] Could not take teamai's OpenCode V1 instructions out of .opencode/opencode.json: ${(e as Error).message}. The next pull tries again.`);
+          log.warn(`[${installScopeName(localConfig.scope)}] Could not take teamai's OpenCode V1 instructions out of .opencode/opencode.json: ${e instanceof Error ? e.message : String(e)}. The next pull tries again.`);
         }
       }
 
@@ -4646,13 +4680,13 @@ async function reconcileHooksAllScopes(
 
           for (const problem of await instructionChannelProblems(teamConfig, localConfig)) log.warn(`[${installScopeName(localConfig.scope)}] ${problem}`);
         } catch (e) {
-          log.debug(`[${installScopeName(localConfig.scope)}] Team instruction check skipped: ${(e as Error).message}`);
+          log.debug(`[${installScopeName(localConfig.scope)}] Team instruction check skipped: ${e instanceof Error ? e.message : String(e)}`);
         }
       }
     } catch (e) {
       scopeRecorder?.failed('hooks');
-      log.debug(`[${installScopeName(localConfig.scope)}] Hook reconcile skipped: ${(e as Error).message}`);
-      errors.push(`[${installScopeName(localConfig.scope)}] Hooks: ${(e as Error).message}`);
+      log.debug(`[${installScopeName(localConfig.scope)}] Hook reconcile skipped: ${e instanceof Error ? e.message : String(e)}`);
+      errors.push(`[${installScopeName(localConfig.scope)}] Hooks: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -4683,7 +4717,7 @@ async function trustCodexAllScopes(
       if (!options.silent) reportCodexTrust(skewAlreadyWarned ? { ...trust, skew: undefined } : trust, 'problems');
       else if (trust) log.debug(`[${installScopeName(localConfig.scope)}] Codex trust: ${trust.kind}${'reason' in trust ? ` (${trust.reason})` : ''}`);
     } catch (e) {
-      log.debug(`[${installScopeName(localConfig.scope)}] Codex trust skipped: ${(e as Error).message}`);
+      log.debug(`[${installScopeName(localConfig.scope)}] Codex trust skipped: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 }
@@ -4751,8 +4785,8 @@ async function reconcileMcpAllScopes(
         }
       }
     } catch (e) {
-      log.debug(`[${installScopeName(localConfig.scope)}] MCP reconcile skipped: ${(e as Error).message}`);
-      errors.push(`[${installScopeName(localConfig.scope)}] MCP: ${(e as Error).message}`);
+      log.debug(`[${installScopeName(localConfig.scope)}] MCP reconcile skipped: ${e instanceof Error ? e.message : String(e)}`);
+      errors.push(`[${installScopeName(localConfig.scope)}] MCP: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -4779,7 +4813,7 @@ async function reportEnvAdvisories(
 
       for (const advisory of await envAdvisories(localConfig, teamConfig, teamEnv)) log.warn(describeEnvAdvisory(advisory));
     } catch (e) {
-      log.debug(`[${installScopeName(localConfig.scope)}] Env advisories skipped: ${(e as Error).message}`);
+      log.debug(`[${installScopeName(localConfig.scope)}] Env advisories skipped: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 }
@@ -4867,7 +4901,7 @@ async function reconcileAutoCompact(localConfig: LocalConfig | null, options: Gl
       log.warn(`Auto-compact threshold not applied to ${c.tool}: ${c.reason}`);
     }
   } catch (e) {
-    log.debug(`[autocompact] reconcile failed: ${(e as Error).message}`);
+    log.debug(`[autocompact] reconcile failed: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
@@ -4898,7 +4932,7 @@ async function reconcileCoAuthorAllScopes(
 
         if (local?.kind === 'holds') recorder.report('coauthor', local.file);
       } catch (e) {
-        log.debug(`[dry-run] co-author preview skipped: ${(e as Error).message}`);
+        log.debug(`[dry-run] co-author preview skipped: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
 
@@ -4972,9 +5006,9 @@ async function reconcileCoAuthorAllScopes(
       }
     } catch (e) {
       scopeRecorder?.failed('coauthor');
-      log.debug(`[${installScopeName(localConfig.scope)}] co-author reconcile skipped: ${(e as Error).message}`);
+      log.debug(`[${installScopeName(localConfig.scope)}] co-author reconcile skipped: ${e instanceof Error ? e.message : String(e)}`);
 
-      if (localConfig === projectConfig) unwritten.push(`co-author: ${(e as Error).message}`);
+      if (localConfig === projectConfig) unwritten.push(`co-author: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 

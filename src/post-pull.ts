@@ -112,7 +112,7 @@ export async function runDeclaredPostPull(
       await runPostPull(scriptPath, repoPath, POST_PULL_BUDGET_SEC, env);
     }
   } catch (e) {
-    log.debug(`postPull: skipped: ${(e as Error).message}`);
+    log.debug(`postPull: skipped: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
