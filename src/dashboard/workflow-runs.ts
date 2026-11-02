@@ -199,7 +199,7 @@ function stepRow(entry: StepEntry, status: string, scores: ReadonlyMap<string, P
     ...(entry.tokens ? { tokens: entry.tokens } : {}),
     ...(entry.answer ? { answer: { choice: entry.answer.choice, channel: entry.answer.channel } } : {}),
     ...(gate ? { gate } : {}),
-    ...(passScores ? { scores: passScores.map(({ scorer, label, passed }) => ({ scorer, label, passed })) } : {}),
+    ...(passScores ? { scores: passScores.map(({ scorer, label, passed, decidedBy }) => ({ scorer, label, passed, ...decidedBy ? { decidedBy } : {} })) } : {}),
     ...(outcomes?.length ? { outcomes } : {}),
   };
 }

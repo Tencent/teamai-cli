@@ -78,6 +78,18 @@ const SessionLabelSchema = z.object({
 });
 export type SessionLabel = z.infer<typeof SessionLabelSchema>;
 
+/**
+ * What settled a workflow label (#1247): the scorer's `check`, the delivered pull request's CI, the delivery's
+ * protected-path refusal, each before any judge runs, or the judge.
+ */
+export const DECIDERS = ['check', 'ci', 'protected', 'judge'] as const;
+export type Decider = (typeof DECIDERS)[number];
+
+/** Whether a check, CI or protected-path stage decided a label before any judge ran. A label from before #1247 has none: a judge decided it. */
+export function isStageDecider(by: Decider | undefined): boolean {
+  return by !== undefined && by !== 'judge';
+}
+
 /** Unknown keys are dropped, so a label a newer teamai wrote still reads here. */
 export const ScoreLabelSchema = z.discriminatedUnion('source', [
   z.object({
@@ -86,6 +98,10 @@ export const ScoreLabelSchema = z.discriminatedUnion('source', [
     subject: RunSubjectSchema,
     /** The team skills the judged pass loaded, as its driver reported them. */
     used: UsedSchema.optional(),
+    /** Absent on a label an older teamai wrote, which the judge decided. */
+    decidedBy: z.enum(DECIDERS).optional(),
+    /** `sha256:<hex>` of the evidence the label was decided on, so a rescore of unchanged evidence shows the same hash. */
+    evidenceHash: z.string().regex(/^sha256:[0-9a-f]{64}$/).optional(),
   }),
   SessionLabelSchema,
 ]);

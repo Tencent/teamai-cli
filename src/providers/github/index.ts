@@ -8,6 +8,7 @@ import {
   ghRepoClone,
   ghCreateRepo,
   ghPrCreate,
+  ghCommitChecks,
   ghFindOpenPull,
   RepoNotFoundError as GhRepoNotFoundError,
 } from './gh-cli.js';
@@ -16,7 +17,7 @@ import { parseGitHubRepoInput } from './repo-url.js';
 
 export class GitHubProvider implements GitProvider {
   readonly name = 'github';
-  readonly pullRequests: PullRequestLookup = { findOpen: ghFindOpenPull };
+  readonly pullRequests: PullRequestLookup = { findOpen: ghFindOpenPull, checks: ghCommitChecks };
 
   parseRepoInput(input: string): RepoInfo {
     return parseGitHubRepoInput(input);

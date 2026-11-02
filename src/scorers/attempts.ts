@@ -12,7 +12,7 @@ import { DriverSchema } from '../driver-identity.js';
 import { getDataHome, type LocalConfig } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { readFileSafe, writeJsonAtomic } from '../utils/fs.js';
-import { ACCESS_LEVELS, ISOLATIONS, JudgeUsageSchema, RunSubjectSchema, SessionLabelContextSchema, SessionSubjectSchema } from './label.js';
+import { ACCESS_LEVELS, DECIDERS, isStageDecider, ISOLATIONS, JudgeUsageSchema, RunSubjectSchema, SessionLabelContextSchema, SessionSubjectSchema } from './label.js';
 import { PinnedScorerSchema } from './pin.js';
 
 const ENTRY_ID = /^s[0-9a-f]{13}$/;
@@ -23,7 +23,8 @@ const RubricSchema = PinnedScorerSchema.pick({ sourceHash: true, content: true }
 type Rubric = z.infer<typeof RubricSchema>;
 
 /** Why a judge attempt closed without a label. */
-export const JUDGE_FAILURES = ['judge_failed', 'lease_expired', 'evidence_empty', 'judge_answer_invalid', 'judge_tool_unavailable'] as const;
+/** `check_could_not_run`: the scorer's check of a delivered pass (#1247) could not start, was killed or timed out. */
+export const JUDGE_FAILURES = ['judge_failed', 'lease_expired', 'evidence_empty', 'judge_answer_invalid', 'judge_tool_unavailable', 'check_could_not_run'] as const;
 export type JudgeFailureCode = (typeof JUDGE_FAILURES)[number];
 
 export type JudgeDriver = z.infer<typeof DriverSchema>;
@@ -56,7 +57,7 @@ const AttemptBase = {
 const Settled = { settledAt: z.string() };
 const Verdict = {
   labelId: z.string().min(1),
-  verdict: z.object({ label: z.string().min(1), score: z.number(), passed: z.boolean(), version: z.string().min(1) }),
+  verdict: z.object({ label: z.string().min(1), score: z.number(), passed: z.boolean(), version: z.string().min(1), decidedBy: z.enum(DECIDERS).optional() }),
 };
 
 /** A workflow attempt names no source, as every attempt file written before session attempts did. */
@@ -96,6 +97,12 @@ export type SucceededAttempt = Extract<AttemptRecord, { status: 'succeeded' }>;
 
 export function isRunAttempt(attempt: AttemptRecord): attempt is RunAttempt {
   return attempt.source !== 'session';
+}
+
+/** A stage settled this attempt before any judge ran (#1247): it labelled the pass, or found its check could not run. */
+export function isDecidedBeforeJudge(attempt: AttemptRecord): boolean {
+  if (attempt.status === 'succeeded') return isStageDecider(attempt.verdict.decidedBy);
+  return attempt.status === 'failed' && attempt.code === 'check_could_not_run';
 }
 
 /**

@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -6,6 +7,7 @@ import { AgentSession } from '../session-flow/agent-session.js';
 import { judgedTranscript } from '../session-flow/session-work.js';
 import { knownSecrets } from '../env-resolution.js';
 import type { LocalConfig } from '../types.js';
+import { readFileIfExists } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { redact } from '../utils/redact.js';
 import { scoresDir } from '../scorers/attempts.js';
@@ -55,7 +57,43 @@ export function evidencePlan(run: RunState, subject: RunSubject, settling?: RunP
   });
   if (diff?.source === 'copy') ranges.unshift({ step: subject.step, pass: subject.pass, ...diff });
   if (!diff && ranges.length === 0) gaps.push('no_recorded_range');
-  return { subject, kind: workflow ? 'workflow' : 'prompt', checkout: run.checkout, diff, repoAt: diff?.to ?? ranges.at(-1)?.to, passes, ranges, gaps };
+  // What a run delivered is judged against what the run was asked (#1247): its inputs and every step's outputs, as the
+  // run stored them when each step reported, so a later edit to an issue a step read changes neither.
+  const delivers = isDelivered(run, subject);
+  const isOwn = (pass: RunPass) => pass.step === subject.step && pass.pass === subject.pass;
+  const reported = !delivers ? passes : own && !all.some(isOwn) ? [...all, own] : all.map((pass) => (own && isOwn(pass) ? own : pass));
+  return {
+    subject, kind: workflow ? 'workflow' : 'prompt', checkout: run.checkout, diff, repoAt: diff?.to ?? ranges.at(-1)?.to, passes, ranges, gaps,
+    reported, ...(delivers && run.inputs !== undefined ? { inputs: run.inputs } : {}),
+  };
+}
+
+/** Whether `subject` is a pass of a `deliver: pr` step: what its judge reads, and what decides it first (#1247). */
+export function isDelivered(run: RunState, subject: RunSubject): boolean {
+  return stepDefinitions(run)(subject.step)?.deliver === 'pr';
+}
+
+/**
+ * What `subject`'s evidence needs that is no longer on this machine, each as a person restores it: a commit its diff
+ * spans, or a session one of its passes recorded. Empty when everything is there, or when the step ran in a clone, whose
+ * evidence was copied when it settled.
+ */
+export async function missingEvidence(run: RunState, subject: RunSubject): Promise<string[]> {
+  if (cloneBranchOf(run, subject.step) !== undefined) return [];
+  const plan = evidencePlan(run, subject);
+  const ranges = plan.diff ? [plan.diff] : plan.ranges;
+  const commits = [...new Set(ranges.flatMap((range) => [range.from, range.to]))];
+  const gitIn: GitIn = { env: process.env, config: [] };
+  const has = async (commit: string) => plan.checkout !== undefined && await git(plan.checkout, ['cat-file', '-e', `${commit}^{commit}`], gitIn).then(() => true, () => false);
+  const missing: string[] = [];
+  for (const commit of commits) if (!await has(commit)) missing.push(`commit ${commit} of branch ${ranges.find((range) => range.from === commit || range.to === commit)?.branch ?? 'unknown'}`);
+  for (const pass of plan.passes) {
+    const platform = pass.tool && AgentSession.platformForTool(pass.tool);
+    if (!pass.session || !platform) continue;
+    const found = await AgentSession.find({ platform, sessionId: pass.session, cwd: ranIn(run, pass) });
+    if (found.status !== 'done') missing.push(`${platform} session ${pass.session} of ${pass.step}#${pass.pass}`);
+  }
+  return missing;
 }
 
 /**
@@ -125,7 +163,7 @@ async function secretMask(config: LocalConfig): Promise<(text: string) => string
 
 /**
  * Writes a subject's evidence into `dir` without any rubric: diff.patch, repo/, transcripts/, outputs.json and
- * evidence.json, and the fenced block a prompt quotes them in, all at once through writeEvidence. `source` names the
+ * evidence.json, with inputs.json for a step that delivers, and the fenced block a prompt quotes them in, all at once through writeEvidence. `source` names the
  * checkout and the session cwd to read; without it, the run's own are read. A checkout another process controls comes
  * with `untrustedEnv`, the whole environment git gets there, and git starts with UNTRUSTED_CONFIG. A report that
  * collects the evidence before the engine settles its pass gives that pass as `settling`, and its run's deadline as
@@ -167,9 +205,16 @@ export async function collectEvidence(
       }
     } else if (plan.repoAt) gaps.add('no_checkout');
     const outputs: Record<string, unknown> = {};
+    for (const pass of plan.reported) {
+      if (pass.outputs !== undefined) { outputs[`${pass.step}#${pass.pass}`] = pass.outputs; content = true; }
+    }
+    if (plan.inputs !== undefined) {
+      const body = mask(JSON.stringify(plan.inputs, null, 2));
+      await fs.writeFile(path.join(tmp, 'inputs.json'), body);
+      sections.push({ title: 'inputs.json', body });
+    }
     for (const pass of plan.passes) {
       const name = `${pass.step}#${pass.pass}`;
-      if (pass.outputs !== undefined) { outputs[name] = pass.outputs; content = true; }
       const platform = pass.tool && AgentSession.platformForTool(pass.tool);
       if (!pass.session || !platform) { gaps.add('transcript_not_found'); continue; }
       const found = await AgentSession.find({ platform, sessionId: pass.session, cwd: source?.sessionCwd ?? ranIn(run, pass) }, { subagents: true });
@@ -191,7 +236,7 @@ export async function collectEvidence(
     await fs.writeFile(path.join(tmp, 'evidence.json'), JSON.stringify(manifest, null, 2));
     sections.unshift({ title: 'evidence.json', body: JSON.stringify(manifest) });
     sections.push({ title: 'outputs.json', body: outputText });
-    await fs.writeFile(path.join(tmp, FENCED), fencedEvidence(sections, 'diff.patch, repo/, transcripts/, outputs.json and evidence.json'));
+    await fs.writeFile(path.join(tmp, FENCED), fencedEvidence(sections, `diff.patch, repo/, transcripts/, ${plan.inputs !== undefined ? 'inputs.json, ' : ''}outputs.json and evidence.json`));
   });
   return content ? { ok: true } : { ok: false, code: 'evidence_empty' };
 }
@@ -217,6 +262,15 @@ export async function stageEvidence(config: LocalConfig, run: RunState, subject:
     });
   if (!collected.ok) await fs.rm(dir, { recursive: true, force: true, maxRetries: 3 });
   return dir;
+}
+
+/**
+ * `sha256:<hex>` of the evidence collectEvidence wrote in `dir`, as the judge reads it quoted, without any rubric; undefined
+ * when `dir` holds none.
+ */
+export async function evidenceHash(dir: string): Promise<string | undefined> {
+  const fenced = await readFileIfExists(path.join(dir, FENCED));
+  return fenced === null ? undefined : `sha256:${createHash('sha256').update(fenced).digest('hex')}`;
 }
 
 /** Writes prompt.md in `dir`, which collectEvidence filled: what `rubrics` ask, then the fenced evidence. */

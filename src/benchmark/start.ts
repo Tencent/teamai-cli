@@ -26,10 +26,12 @@ import { addedOf, compileBundle, freezePlan, type BenchmarkPlan, type PlannedArm
 import { defaultsArmOf, parseSuite, type Arm, type Suite, type TaskJudge } from './suite.js';
 import { pinArmWorkflow, type PinnedArmWorkflow } from './arm-workflow.js';
 import type { TeamSelection } from '../workflow/clone.js';
-import type { Added, ArmTeam, SkillChanges } from './terms.js';
+import type { ArmTeam, SkillChanges } from './terms.js';
+import type { Added } from '../workflow/check.js';
+import { runCheckAt, type CheckRun } from '../workflow/check-run.js';
 import { commitCacheOf } from '../workflow/place/place.js';
 import { leavesOut, withoutRefusal } from './team-without.js';
-import { commitCheckFiles, trialBlocker, tryCheckAt, type CheckRun, type CommittedSuite } from './trial.js';
+import { commitCheckFiles, trialBlocker, type CommittedSuite } from './trial.js';
 import { trialsUnattended } from './run-plan.js';
 
 /** What planning reads besides the suite. */
@@ -419,7 +421,7 @@ export async function tryBenchmarkTask(file: string, options: { checkout: string
 async function tryCheck(suite: Suite, task: Suite['tasks'][number], judge: Extract<TaskJudge, { kind: 'check' }>, add: readonly Added[], sources: readonly string[], options: { checkout: string; signal?: AbortSignal; progress: (line: string) => void }): Promise<WorkflowEnvelope> {
   const { startingCommit } = task;
   const expiresAt = new Date(Date.now() + suite.timeoutMs).toISOString();
-  const at = (commit: string, protect?: readonly string[]): Promise<CheckRun> => tryCheckAt({
+  const at = (commit: string, protect?: readonly string[]): Promise<CheckRun> => runCheckAt({
     commit, startingCommit, command: judge.run, ...(protect ? { protect } : {}), add, ...(suite.setup ? { setup: suite.setup } : {}),
     sources, expiresAt, ...(options.signal ? { signal: options.signal } : {}),
   });

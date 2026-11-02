@@ -119,7 +119,7 @@ With `run`, `score --next` finds the run's scope by its id, so a driver can ask 
 | `access` | What the judge can do: `answer` (no tools), `read` (reads the evidence) or `full` (any tool), the default. Labels record it. |
 | `tools` | In your order of preference. The first that resolves the scorer's model wins. |
 
-A label the scorer does not list is refused, and the lease stays open. `running` lists the refs you still judge, which renews them; a lease lapses 30 minutes after it was taken or renewed. Never list a judge ref in `workflow next`'s `running`: it answers `judge_lease` and changes nothing. `run`, a run id, takes only that run's workflow passes and never a session. `canTakeLease: false` renews `running` and takes nothing. `teamai score --help` has every field.
+An answer's `decided` lists the labels a stage gave [a delivered pull request](#score-what-a-run-delivered) while the lease was looked for; they need no judge. A label the scorer does not list is refused, and the lease stays open. `running` lists the refs you still judge, which renews them; a lease lapses 30 minutes after it was taken or renewed. Never list a judge ref in `workflow next`'s `running`: it answers `judge_lease` and changes nothing. `run`, a run id, takes only that run's workflow passes and never a session. `canTakeLease: false` renews `running` and takes nothing. `teamai score --help` has every field.
 
 Your driver names the team skills a pass loaded when it reports the pass, and the pass's labels carry them:
 
@@ -132,11 +132,87 @@ Names only: a value that is not a skill name, such as a path, is dropped. A repo
 ## On demand
 
 ```console
-$ teamai score --run r3f9… --step review --scorer review-quality                     # judge the latest succeeded pass here
+$ teamai score --run r3f9… --scorer review-quality                                   # the one step that lists it, latest succeeded pass
 $ teamai score --run r3f9… --step review --pass 2 --scorer review-quality --queue     # any driver's --next takes it
 ```
 
-Sampling does not apply, and judge work that failed or expired opens again. A scorer the run pinned judges with that rubric; any other scorer `teamai pull` cached, with its current one. Without `--queue`, the first judge tool on PATH runs, preferring the tool that ran the pass. An unknown run, step, pass or scorer fails and lists the ones that exist. A scorer whose model no judge tool here runs fails `judge_model_unavailable` and stays open. The error's `labels` lists what the other scorers labelled.
+`--step` is optional when one step of the run with a succeeded pass lists the scorer. Otherwise the error names the steps to pick from. Sampling does not apply, and judge work that failed or expired opens again. A scorer the run pinned judges with that rubric; any other scorer `teamai pull` cached, with its current one. Without `--queue`, the first judge tool on PATH runs, preferring the tool that ran the pass. An unknown run, step, pass or scorer fails and lists the ones that exist. A scorer whose model no judge tool here runs fails `judge_model_unavailable` and stays open. The error's `labels` lists what the other scorers labelled.
+
+A pass whose commits or recorded session are gone from this machine fails before any judge, and no label is written:
+
+```console
+$ teamai score --run r3f9… --scorer delivered
+{"error":{"code":"evidence_missing","message":"Pass 1 of step change in run r3f9… cannot be scored: no longer on this machine: claude-code session 6f1c2a0e-… of change#1. Restore what is missing, or score another pass. No label was written."}}
+```
+
+## Score what a run delivered
+
+A step with `deliver: pr` hands its work to review as a pull request. A scorer on that step judges the pull request, and three stages can decide its label before any judge runs.
+
+```yaml
+# workflows/ship-issue.yaml
+inputs: { issue: number }
+steps:
+  - id: read-issue
+    prompt: Read issue {{ inputs.issue }} and return its title and body.
+    output: { title: string, body: string }
+  - id: change
+    needs: [read-issue]
+    prompt: Make the change the issue asks for.
+    workspace: new
+    deliver: pr
+    scorers: [delivered]
+```
+
+`scorers/delivered.md`:
+
+```markdown
+---
+labels:
+  - { value: complete, score: 1, description: Delivers what the issue asked and nothing else. }
+  - { value: partial, score: 0.5, description: Delivers part of what was asked. }
+  - { value: off-target, score: 0, description: Delivers something other than what was asked. }
+passingScore: 1
+check:
+  run: npm test
+  protect: [test/**, package.json]
+---
+Judge whether the pull request delivers what the issue asked, and only that.
+```
+
+The stages run in this order, and the first that fails decides:
+
+| Stage | Fails when | `decidedBy` |
+|---|---|---|
+| Scorer check | `check.run` exits non-zero in a fresh clone of the delivered commit, after the `protect` paths are put back as they were where the work started. An agent that edited `test/` to pass cannot pass this way. | `check` |
+| Pull request CI | The CI of the delivered commit finished and failed. GitHub: any check run that failed, timed out or needs action, or a failed commit status. GitLab: the newest pipeline failed. | `ci` |
+| Protected paths | The pass changed a path the run protects, so the step failed with `protected_path` and delivered nothing. | `protected` |
+
+The failing label is the highest one below `passingScore`, here `partial`. No judge is launched and no tokens are spent. When every stage passes, or any CI check is still running, there are no checks, or the origin is not GitHub or GitLab, the judge decides and the label says `"decidedBy":"judge"`. A scorer without `check` skips that stage. A pass that changed nothing delivered no commit, so its check and CI are skipped too.
+
+The judge of a delivering step also reads the run's inputs (`inputs.json`) and the outputs of every step, so it can compare the pull request with the issue `read-issue` returned.
+
+A CI failure, as `teamai score --run r3f9… --scorer delivered` publishes it:
+
+```json
+{"scorer":"delivered","label":"partial","score":0.5,"passed":false,"source":"workflow",
+ "subject":{"runId":"r3f9…","step":"change","pass":1},"decidedBy":"ci",
+ "evidenceHash":"sha256:8ddbddc64a7180bc866ce3fc0da3e5ad940854e7855a51b0318851f932737ba1",
+ "judge":{"kind":"model","tool":"claude",…},…}
+```
+
+`evidenceHash` identifies the evidence the label read. Two labels of one pass with the same hash read the same work, so if their labels differ, the rubric or the judge changed, not the work. What the stage found (the check's exit code, the CI result) is kept only in the local reasoning file the command prints. The label has no `usage`, since no judge ran.
+
+A check that cannot run, such as a command this machine does not have or one that times out, writes no label. Fix the check, then score the pass again:
+
+```console
+$ teamai score --run r3f9… --scorer delivered
+{"error":{"code":"check_could_not_run","message":"The check of scorer delivered, `npm test`, could not run on commit 4be1c0d… (not_found). Fix the check, then run this command again. No label was written."}}
+```
+
+`score --next` closes that entry with `check_could_not_run` and the same reason. A scorer with a `check` is never [batched](#batching) with others, since its check runs alone. Two passes of one step that delivered two pull requests get a label each, told apart by `subject.pass`.
+
+[The Scorers page](dashboard.md#scorers) shows how many labels each stage decided.
 
 ## Score a session
 

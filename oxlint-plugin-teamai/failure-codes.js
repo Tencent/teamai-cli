@@ -70,7 +70,7 @@ const answers = ['invalid_json', 'driver_running', 'invalid_run', 'repeated_resp
       // Refusals of teamai workflow publish and a claim of an isolated run, which stays on the machine that started it.
       'isolated_run',
       // Refusals of teamai score --run, answered to the member who asked for a pass to be judged.
-      'scoring_unavailable', 'pass_not_found', 'scorer_not_found', 'entry_leased',
+      'scoring_unavailable', 'pass_not_found', 'scorer_not_found', 'entry_leased', 'step_ambiguous', 'evidence_missing',
       // Refusals of teamai score --session, answered to the member who asked for a session to be judged.
       'session_required', 'source_required', 'session_not_found', 'session_ambiguous', 'scorer_invalid',
       // Why a judge attempt closed: kept with the attempt under scores/, never on a run.

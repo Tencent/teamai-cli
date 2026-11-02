@@ -61,20 +61,20 @@ async function payloadOf(options: ScoreOptions): Promise<{ ok: true; value: unkn
 /** The on-demand request `--run` asks for, or the failure that says what is missing. */
 function demandOf(options: ScoreOptions): ScoreDemand | WorkflowEnvelope {
   if (options.next || options.lease !== undefined || options.json !== undefined || options.stdin) {
-    return failure('invalid_arguments', '--run takes no --next, --lease or payload: teamai score --run <id> --step <path> [--pass <n>] --scorer <name> [--queue] [--batch]');
+    return failure('invalid_arguments', '--run takes no --next, --lease or payload: teamai score --run <id> [--step <path>] [--pass <n>] --scorer <name> [--queue] [--batch]');
   }
   const [scorer, ...scorers] = options.scorer ?? [];
   const file = options.scorer?.find(isScorerFile);
   if (file !== undefined) return failure('invalid_arguments', `--run takes scorer names, not the file ${file}: a run pins its scorers when it starts`);
-  if (options.run === undefined || options.step === undefined || scorer === undefined) {
-    return failure('invalid_arguments', 'Pass --run <id> --step <path> --scorer <name> to judge a pass on demand; --pass <n> picks a pass, else the latest that succeeded');
+  if (options.run === undefined || scorer === undefined) {
+    return failure('invalid_arguments', 'Pass --run <id> --scorer <name> to judge a pass on demand; --step <path> picks the step when the run lists the scorer on several, --pass <n> a pass, else the latest that succeeded');
   }
   const pass = options.pass === undefined ? undefined : Number(options.pass);
   if (pass !== undefined && (!/^\d+$/.test(options.pass ?? '') || !Number.isSafeInteger(pass) || pass < 1)) {
     return failure('invalid_pass', 'Pass --pass as a positive integer: the pass of the step to judge');
   }
   return {
-    run: options.run, step: options.step, scorers: [scorer, ...scorers],
+    run: options.run, ...(options.step !== undefined ? { step: options.step } : {}), scorers: [scorer, ...scorers],
     ...(pass !== undefined ? { pass } : {}), ...(options.queue ? { queue: true } : {}), ...(options.batch ? { batch: true } : {}),
   };
 }
@@ -184,7 +184,7 @@ async function score(options: ScoreOptions): Promise<WorkflowEnvelope> {
     return loaded.ok ? scoreOnDemand(loaded.config, demand) : loaded.envelope;
   }
   if (options.next === (options.lease !== undefined)) {
-    return failure('invalid_arguments', 'Pass --next to take judge work, --lease <ref> to judge it here, --lease <ref> --submit to settle it, --run <id> --step <path> --scorer <name> to judge a pass on demand, --scorer <name> [--session <id>] to judge a session, or --push to publish pending labels');
+    return failure('invalid_arguments', 'Pass --next to take judge work, --lease <ref> to judge it here, --lease <ref> --submit to settle it, --run <id> --scorer <name> [--step <path>] to judge a pass on demand, --scorer <name> [--session <id>] to judge a session, or --push to publish pending labels');
   }
   const payload = await payloadOf(options);
   if (!payload.ok) return payload.envelope;
